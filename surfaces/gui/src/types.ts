@@ -24,7 +24,9 @@ export type EventType =
   | "deskmate_memory_update"
   | "deskmate_memory_learned"
   | "deskmate_context_injected"
-  | "deskmate_proofread";
+  | "deskmate_proofread"
+  | "compacting"
+  | "compacted";
 
 export interface WsEvent {
   type: EventType;
@@ -42,6 +44,25 @@ export type ApprovalDecision = "once" | "deny" | "always_tool" | "always_command
 export interface TodoItem {
   content: string;
   status: "pending" | "in_progress" | "done";
+}
+
+// Per-round-trip token counts, as attached by the server to assistant messages and
+// the assistant_message event (`{model, input, output, cache_read, cache_write}`).
+// Absent on older servers and on backends that don't report usage.
+export interface TurnUsage {
+  model?: string | null;
+  input: number;
+  output: number;
+  cache_read: number;
+  cache_write: number;
+}
+
+// Per-session accumulation, keyed by model id (multiple models when the user
+// switched mid-session). `context` = the latest round-trip's prompt-side total —
+// what currently occupies the active model's context window.
+export interface SessionUsage {
+  byModel: Record<string, TurnUsage>;
+  context: number;
 }
 
 export interface SessionInfo {
