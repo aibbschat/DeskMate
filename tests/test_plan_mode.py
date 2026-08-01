@@ -186,6 +186,38 @@ def test_build_engine_interactive_registers_tool_without_reminder(tmp_path):
         engine.executor.close()
 
 
+def test_build_engine_deskmate_auto_inject_wiring(tmp_path, monkeypatch):
+    """P3 接线验证：_deskmate_memory_context() 是 build_engine 的 context_provider 闭包
+    实际调用的函数。此处单测该函数——DESKMATE_AUTO_INJECT 关闭返回空；开启且指定记忆
+    目录后返回含 <memory-context> 的记忆块。
+
+    注：完整 build_engine 集成测试在本 venv 无法运行——aisuite 0.1.14 移除了
+    OpenWorker 核心依赖的 aisuite.agents / aisuite.tool / aisuite.toolkits，
+    导致引擎无法构建（pre-existing 环境坑，与 P3 无关）。context_provider 闭包已改为
+    调用本函数（见 coworker/agent.py），故单测本函数即可验证接线。
+    """
+    from coworker.agent import _deskmate_memory_context
+
+    monkeypatch.delenv("DESKMATE_AUTO_INJECT", raising=False)
+    monkeypatch.delenv("DESKMATE_MEMORY_DIR", raising=False)
+
+    # 默认关闭：不注入
+    assert _deskmate_memory_context() == ""
+
+    # 开启开关 + 指定记忆目录：注入
+    mem_dir = tmp_path / "deskmate_mem"
+    mem_dir.mkdir()
+    (mem_dir / "USER.md").write_text(
+        "用户偏好标记-DESKMATE_INJECT_TEST", encoding="utf-8"
+    )
+    monkeypatch.setenv("DESKMATE_AUTO_INJECT", "1")
+    monkeypatch.setenv("DESKMATE_MEMORY_DIR", str(mem_dir))
+
+    ctx = _deskmate_memory_context()
+    assert "DESKMATE_INJECT_TEST" in ctx
+    assert "<memory-context>" in ctx
+
+
 def test_discuss_mode_blocks_writes_without_plan_pressure(tmp_path):
     engine, permissions = _plan_engine(
         tmp_path,

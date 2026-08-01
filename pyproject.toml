@@ -14,9 +14,10 @@ dependencies = [
     "textual>=1.0",
     "fastapi>=0.110",
     "uvicorn[standard]>=0.27",
-    # aisuite (toolkits/tracing), pinned to the commit this repo was imported from;
-    # swap for a PyPI pin ("aisuite>=x.y") once the next aisuite release ships.
-    "aisuite @ git+https://github.com/andrewyng/aisuite.git@1b4bbf303ec21968230b1ec869a144d054e9b3c4",
+    # aisuite: OpenWorker 需要 aisuite.toolkits / aisuite.agents / 顶层 aisuite.tool /
+    # aisuite.ToolMetadata，这些在 PyPI 0.1.x 已全部移除，仅在 main 分支还原。
+    # 钉到 main 上同时满足全部用法的 commit（SHA 精确钉，可复现）。
+    "aisuite @ git+https://github.com/andrewyng/aisuite.git@cb29165b00f719cceae6a82ed4621cbcb79aaaf7",
     "docstring_parser",
     "pyyaml>=6",  # persona manifest frontmatter (YAML)
     "pydantic>=2",
@@ -51,7 +52,7 @@ openworker-connectors = "coworker.connectors.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["coworker*"]
+include = ["coworker*", "deskmate*"]
 
 [tool.setuptools.package-data]
 coworker = ["personas/builtin/*.md"]

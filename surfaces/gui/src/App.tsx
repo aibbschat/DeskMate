@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type PointerEvent } from "react";
+import { useCallback, useEffect, useRef, useState, type PointerEvent, Component, type ReactNode } from "react";
 import {
   announceInboxUnlock,
   finalizeAutomationRun,
@@ -56,6 +56,30 @@ import { ApprovalCard } from "./components/ApprovalCard";
 import { DirectoryRequestCard } from "./components/DirectoryRequestCard";
 import { PlanCard } from "./components/PlanCard";
 import { WorkspaceTrustPrompt } from "./components/WorkspaceTrustPrompt";
+import { DeskMateOverlay } from "./components/deskmate/DeskMateOverlay";
+import { DeskHome } from "./components/deskmate/DeskHome";
+import { EXPERTS, getExpert, type Expert } from "./components/deskmate/experts";
+import { ExpertAvatar } from "./components/deskmate/ExpertAvatar";
+import { ReportDialog } from "./components/deskmate/ReportDialog";
+
+import { ExpertsCenter } from "./components/deskmate/ExpertsCenter";
+
+class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | null }> {
+  state = { error: null as Error | null };
+  static getDerivedStateFromError(error: Error) { return { error }; }
+  render() {
+    if (this.state.error) {
+      return (
+        <div style={{ padding: 24, fontFamily: "monospace", color: "#f44", background: "#1a1a2e", minHeight: "100vh" }}>
+          <h2>React Error</h2>
+          <pre style={{ whiteSpace: "pre-wrap", fontSize: 13 }}>{this.state.error.message}</pre>
+          <pre style={{ whiteSpace: "pre-wrap", fontSize: 11, color: "#888" }}>{this.state.error.stack}</pre>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
 
 const newId = () =>
   (crypto as any).randomUUID ? crypto.randomUUID().slice(0, 12) : Math.random().toString(36).slice(2, 14);
@@ -150,6 +174,26 @@ export function App() {
   const [workspaceTrustRequest, setWorkspaceTrustRequest] =
     useState<WorkspaceCommandTrust | null>(null);
   const [agent, setAgent] = useState("cowork");
+  // 当前激活的专家（专家模式）。null = 普通模式，回复角色显示「助手」。
+  const [currentExpert, setCurrentExpert] = useState<Expert | null>(null);
+  // 编辑专家：打开文稿选择弹窗
+  const [reportDialogOpen, setReportDialogOpen] = useState(false);
+  // 专家模式：桌搭首页「召唤专家」→ 切换到专家 persona 的 Agent 会话。
+  // 如果专家有关联的 personaId，创建新会话并切换 agent；否则仅设置 currentExpert。
+  const startNewSessionRef = useRef<(forAgent?: string) => void>(() => {});
+  useEffect(() => {
+    const onSummon = (e: Event) => {
+      const detail = (e as CustomEvent<{ expertId?: string }>).detail;
+      const expert = detail?.expertId ? getExpert(detail.expertId) : undefined;
+      if (expert?.personaId) {
+        // 专家有独立 persona → 切换到该 Agent 会话
+        startNewSessionRef.current(expert.personaId);
+      }
+      setCurrentExpert(expert ?? null);
+    };
+    window.addEventListener("deskmate:summon-expert", onSummon);
+    return () => window.removeEventListener("deskmate:summon-expert", onSummon);
+  }, []);
   const [model, setModel] = useState("gpt-5.6-sol");
   const [models, setModels] = useState<string[]>([]);
   const [modelLabels, setModelLabels] = useState<Record<string, string>>({});
@@ -174,6 +218,9 @@ export function App() {
     reasoningRef.current = value;
     setReasoningStreamState(value);
   };
+  // DeskMate perception: tool success/failure tallies used as a live confidence proxy.
+  const dmToolTotal = useRef(0);
+  const dmToolOk = useRef(0);
   const [todo, setTodo] = useState<TodoItem[]>([]);
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
   const [projects, setProjects] = useState<RecentWorkspace[]>([]);
@@ -201,7 +248,7 @@ export function App() {
   // load; corrected by loadSettings.
   const [modelReady, setModelReady] = useState(true);
   const [surface, setSurface] = useState<
-    "session" | "scheduled" | "integrations" | "audit" | "inbox" | "persona" | "settings"
+    "session" | "scheduled" | "integrations" | "audit" | "inbox" | "persona" | "settings" | "experts"
   >("session");
   // A remembered Scheduled-detail target must not outlive the surface (see the
   // scheduledOpenId comment above): nav re-entry lands on the list, never a
@@ -219,6 +266,12 @@ export function App() {
     setPersonaViewReturn(from);
     setPersonaViewId(id);
     setSurface("persona");
+  };
+  // 专家中心：召唤某专家进入专家模式（复用既有的 deskmate:summon-expert 事件），
+  // 并切回会话视图，使 Composer 专家条与「生成审阅报告」等能力立即可用。
+  const summonExpert = (id: string) => {
+    window.dispatchEvent(new CustomEvent("deskmate:summon-expert", { detail: { expertId: id } }));
+    setSurface("session");
   };
   const [browserRefreshKey, setBrowserRefreshKey] = useState(0);
   const [railHidden, setRailHidden] = useState(false);
@@ -504,8 +557,12 @@ export function App() {
 
   // Poll the session list so the attention/liveness badges stay live and sessions created
   // out-of-band (unattended work, messaging, automations) appear without a manual refresh.
+  // 15s (was 5s): the 5s poll fires getSessions() which iterates all sessions and calls
+  // inbox.pending() + liveness + subscriptions for each one - a synchronous burst on the
+  // single-threaded Python event loop. Combined with the 4s inbox poll, the server was
+  // servicing a REST request every ~2s, and session-switch requests queued behind them.
   useEffect(() => {
-    const t = setInterval(refreshSessions, 5000);
+    const t = setInterval(refreshSessions, 15000);
     return () => clearInterval(t);
   }, [refreshSessions]);
 
@@ -537,6 +594,21 @@ export function App() {
     if (gatesWorkspace(agent) && !workspace) return; // Code needs a folder (gate handles it)
     const handleEvent = (ev: WsEvent) => {
       const d = ev.data || {};
+      // DeskMate perception: translate the session's real agent-state events into the
+      // window CustomEvents the DeskMate overlay listens for. No-op unless the active
+      // agent is "deskmate" (the overlay only mounts for that agent anyway).
+      const dmPush = (
+        activity: string,
+        emotion: string,
+        confidence?: number,
+      ) => {
+        if (agent !== "deskmate") return;
+        window.dispatchEvent(
+          new CustomEvent("deskmate:status", {
+            detail: { activity, emotion, confidence },
+          }),
+        );
+      };
       // An interrupted/errored turn never emits assistant_message, so its streamed partial
       // would otherwise live only in the ephemeral buffer until the next turn_start wipes it
       // (owner-hit 2026-07-22). Promote it to a durable transcript item — the engine persists
@@ -565,11 +637,31 @@ export function App() {
           if (d.command_trust?.required) setWorkspaceTrustRequest(d.command_trust);
           // Cowork: adopt the server-provisioned scratch dir (only when we don't already have one).
           if (d.workspace) setWorkspace((cur) => cur || d.workspace);
+          // DeskMate: load memory panel immediately on session connect so the
+          // pet status panel shows SOUL/USER/MEMORY without waiting for a turn.
+          if (agent === "deskmate") {
+            import("./api").then(({ httpBase, authedFetch }) => {
+              authedFetch(`${httpBase()}/v1/deskmate/memory`)
+                .then((r) => (r.ok ? r.json() : null))
+                .then((data) => {
+                  if (data?.files?.length) {
+                    window.dispatchEvent(
+                      new CustomEvent("deskmate:memory-update", { detail: { files: data.files } }),
+                    );
+                  }
+                })
+                .catch(() => {});
+            });
+          }
           break;
         case "turn_start":
           setRunning(true);
           setStreaming("");
           setReasoningStream("");
+          dmToolTotal.current = 0;
+          dmToolOk.current = 0;
+          window.__deskmateTurnActive = true;
+          dmPush("正在理解你的请求…", "thinking");
           // Background-delivered turns (channel message, self-wake, durable resume) have no local
           // send(), so the triggering message isn't in `items` yet — surface it. A connector message
           // carries a structured `source` (§3.1) → render the rich card; otherwise a plain user item.
@@ -593,15 +685,30 @@ export function App() {
           break;
         case "assistant_delta":
           setStreaming((s) => s + (d.text || ""));
+          dmPush("正在写回复…", "focused");
           break;
         case "reasoning_delta":
           setReasoningStream(reasoningRef.current + (d.text || ""));
+          dmPush("正在思考 / 推理…", "thinking");
           break;
         case "assistant_message": {
           // The event's reasoning is authoritative (covers background-delivered turns);
           // the local buffer is the fallback for older servers.
           const reasoning = d.reasoning || reasoningRef.current;
-          if (d.text || reasoning)
+          // Report card: deskMate background report generation embeds `report` + `report_name`
+          // on the assistant message — render the rich ReportViewer instead of plain text.
+          if (d.report && d.report_name) {
+            let report: any = d.report;
+            if (typeof report === "string") {
+              try { report = JSON.parse(report); } catch { report = null; }
+            }
+            if (report && typeof report === "object") {
+              setItems((p) => [
+                ...p,
+                { kind: "report", name: String(d.report_name), report },
+              ]);
+            }
+          } else if (d.text || reasoning) {
             setItems((p) => [
               ...p,
               {
@@ -611,6 +718,7 @@ export function App() {
                 ...(reasoning ? { reasoning } : {}),
               },
             ]);
+          }
           setStreaming(""); // finalized into items (or empty tool-only turn)
           setReasoningStream("");
           break;
@@ -662,6 +770,9 @@ export function App() {
             },
           ]);
           break;
+        case "tool_started":
+          dmPush(`正在调用工具：${d.name}`, "focused");
+          break;
         case "tool_finished":
           setItems((p) =>
             updateLastTool(
@@ -672,6 +783,12 @@ export function App() {
               d.display?.hidden_by_filters,
               d.standing_rule,
             ),
+          );
+          dmToolTotal.current += 1;
+          if (d.status === "ok") dmToolOk.current += 1;
+          dmPush(
+            d.status === "error" ? `工具出错：${d.name}` : `工具完成：${d.name}`,
+            d.status === "error" ? "concerned" : "focused",
           );
           // Refresh the right rail when something it shows may have changed: browser state, or a
           // file write that should appear under Artifacts immediately (not only after the turn).
@@ -709,6 +826,11 @@ export function App() {
         case "turn_done":
           setRunning(false);
           refreshSessions();
+          window.__deskmateTurnActive = false;
+          {
+            const conf = dmToolTotal.current > 0 ? dmToolOk.current / dmToolTotal.current : undefined;
+            dmPush("待机", "idle", conf);
+          }
           // Catch-all artifact refresh: files created via shell or on a brand-new session (whose
           // record only exists after the first save) appear once the turn completes.
           setBrowserRefreshKey((k) => k + 1);
@@ -720,6 +842,37 @@ export function App() {
               finalizeAutomationRun(ar.taskId, ar.runId).catch(() => {});
             }
           }
+          break;
+        case "deskmate_suggestion":
+          if (agent !== "deskmate") break;
+          window.dispatchEvent(new CustomEvent("deskmate:suggestion", { detail: d }));
+          break;
+        case "deskmate_memory_update":
+          if (agent !== "deskmate") break;
+          window.dispatchEvent(
+            new CustomEvent("deskmate:memory-update", { detail: d }),
+          );
+          break;
+        case "deskmate_memory_learned":
+          if (agent !== "deskmate") break;
+          // 本轮自动抽取到的新记忆 → 让浮层展示「我刚记住了」提示，让「越用越懂你」可见
+          window.dispatchEvent(
+            new CustomEvent("deskmate:memory-learned", { detail: d }),
+          );
+          break;
+        case "deskmate_context_injected":
+          if (agent !== "deskmate") break;
+          // 本轮向对话注入了相关记忆 → 让浮层低调提示「我在用记忆帮你」（非模态轻提示）
+          window.dispatchEvent(
+            new CustomEvent("deskmate:context-injected", { detail: d }),
+          );
+          break;
+        case "deskmate_proofread":
+          if (agent !== "deskmate") break;
+          // 聊天「审阅第X章」触发：把审读结果推给浮层，自动打开批改台定位到该章
+          window.dispatchEvent(
+            new CustomEvent("deskmate:proofread", { detail: d }),
+          );
           break;
       }
     };
@@ -811,6 +964,9 @@ export function App() {
 
   // Keep the active session's pending Inbox items fresh (answer-in-context card). Loads on session
   // change + after each turn, plus a slow poll so an unattended agent's new question surfaces.
+  // 10s (was 4s): the 4s poll fires two REST calls (getInbox + getUnattended) that queue on
+  // the Python event loop. When combined with the session-list poll, switching sessions
+  // had to wait behind a pile of in-flight poll responses.
   useEffect(() => {
     if (surface !== "session") return;
     const load = () => {
@@ -818,7 +974,7 @@ export function App() {
       getUnattended(sessionId).then(markUnattended).catch(() => markUnattended(false));
     };
     load();
-    const t = setInterval(load, 4000);
+    const t = setInterval(load, 10000);
     return () => clearInterval(t);
   }, [surface, sessionId, browserRefreshKey, markUnattended]);
 
@@ -898,6 +1054,9 @@ export function App() {
     if (!gatesWorkspace(target)) setWorkspace(null);
     setSessionId(newId());
   };
+  // Keep the ref in sync so the summon-expert useEffect can call startNewSession
+  // without depending on it (avoids re-registering the event listener every render).
+  startNewSessionRef.current = startNewSession;
   // Inbox → session: the item carries its session's workspace/agent, so open it directly.
   // UX-026: 5s top-right toast when a SCHEDULED automation run starts (never for
   // manual Run-now — the user is already watching). Rides the app-wide /ws/events
@@ -1129,7 +1288,7 @@ export function App() {
         {overlay && (
           <div className="titlebar-drag" data-tauri-drag-region>
             <span className="titlebar-brand brand-wordmark">
-              <Icon name="logo" size={13} className="mark" /> OpenWorker<span className="beta-tag">BETA</span>
+              <Icon name="logo" size={13} className="mark" /> OpenWorker<span className="beta-tag">{import.meta.env.VITE_APP_VERSION}</span>
             </span>
           </div>
         )}
@@ -1145,13 +1304,14 @@ export function App() {
         </div>
         <div className="boot-text">
           {resumedExisting ? "Restoring your session…" : "Starting OpenWorker…"}
-          <span className="beta-tag">BETA</span>
+          <span className="beta-tag">{import.meta.env.VITE_APP_VERSION}</span>
         </div>
       </div>
     );
   }
 
   return (
+    <ErrorBoundary>
     <div
       className={
         "app" +
@@ -1278,10 +1438,12 @@ export function App() {
         onOpenIntegrations={() => setSurface("integrations")}
         onOpenAudit={() => setSurface("audit")}
         onOpenInbox={() => setSurface("inbox")}
+        onOpenExperts={() => setSurface("experts")}
         scheduledActive={surface === "scheduled"}
         integrationsActive={surface === "integrations"}
         auditActive={surface === "audit"}
         inboxActive={surface === "inbox"}
+        expertsActive={surface === "experts"}
         collapsed={navCollapsed}
         onCollapse={toggleNav}
         onPeekLeave={() => setNavPeek(false)}
@@ -1311,6 +1473,13 @@ export function App() {
             personaViewReturn === "settings" ? openSettings("personas") : setSurface("session")
           }
           onOpenIntegrations={() => setSurface("integrations")}
+        />
+      ) : surface === "experts" ? (
+        <ExpertsCenter
+          experts={EXPERTS}
+          activeExpertId={currentExpert?.id ?? null}
+          onSummon={summonExpert}
+          onBack={() => setSurface("session")}
         />
       ) : (
       <div className={"main" + (surface === "session" && agent !== "chat" && !railHidden ? " rail-open" : "")}>
@@ -1438,12 +1607,25 @@ export function App() {
             )}
             <div className="main-scroll" ref={scrollRef} onScroll={handleScroll}>
               {idle ? (
-                agent === "cowork" ? (
+                currentExpert ? (
+                  <div className="expert-intro">
+                    <ExpertAvatar expert={currentExpert} size={72} />
+                    <h1 className="expert-intro-name">{currentExpert.displayName}</h1>
+                    <p className="expert-intro-desc">{currentExpert.description}</p>
+                    <div className="expert-intro-hint">
+                      {currentExpert.manuscriptReview
+                        ? "点右上角「提交书稿」即可开始深度审阅；选中章节后，审阅会在对话中分批完成。"
+                        : "在下方输入框描述你的需求，开始与专家协作。"}
+                    </div>
+                  </div>
+                ) : agent === "cowork" ? (
                   <SessionIntro
                     sessionId={sessionId}
                     onOpenSessionSettings={openAccess}
                     onPrefill={prefillComposer}
                   />
+                ) : agent === "deskmate" ? (
+                  <DeskHome />
                 ) : (
                   <div className="hero">
                     <h1 className="greeting">
@@ -1474,6 +1656,7 @@ export function App() {
                     // group (header when collapsed, quiet line when expanded) — never as a
                     // floating paragraph.
                     streamingText={streamMode(streaming, items, running) === "quiet" ? streaming : undefined}
+                    expert={currentExpert}
                   />
                   {/* Live thinking (reasoning models): a quiet collapsed block that streams the
                       trace for anyone who expands it; folds into the answer's disclosure when
@@ -1490,7 +1673,7 @@ export function App() {
                   {streaming && streamMode(streaming, items, running) === "answer" && (
                     <div className="transcript">
                       <div className="bubble-assistant">
-                        <div className="who">assistant</div>
+                        <div className="who">{currentExpert?.displayName ?? "assistant"}</div>
                         <Markdown text={streaming} />
                         <span className="stream-cursor">▍</span>
                       </div>
@@ -1533,6 +1716,17 @@ export function App() {
               workspace={needsWorkspace(agent) ? workspace || "" : undefined}
               unattended={unattended}
               onUnattendedChange={agent !== "chat" ? toggleUnattended : undefined}
+              expert={currentExpert}
+              onExitExpert={() => {
+                setCurrentExpert(null);
+                // 退出专家模式时切回桌搭
+                if (agent !== "deskmate") startNewSessionRef.current("deskmate");
+              }}
+              onOpenReportDialog={
+                currentExpert?.manuscriptReview
+                  ? () => setReportDialogOpen(true)
+                  : undefined
+              }
               prefill={composerPrefill}
               resetKey={sessionId}
               placeholder={
@@ -1634,7 +1828,55 @@ export function App() {
           onClose={() => setWorkspaceTrustRequest(null)}
         />
       )}
+
+      {/* DeskMate 浮动覆盖层（粒子角色 + 状态面板 + 建议弹窗 + 记忆编辑器） */}
+      <DeskMateOverlay agent={agent} sessionId={sessionId} idle={idle} activeExpert={currentExpert} />
+
+      {reportDialogOpen && (
+        <ReportDialog
+          onClose={() => setReportDialogOpen(false)}
+          onDone={(info) => {
+            setReportDialogOpen(false);
+            // 把文稿信息组装成自然语言指令发给 Agent Loop。
+            // 已存书稿 / 本地路径只需书名或路径，Agent 的 load_manuscript_file 会按名/路径调出，
+            // 不必把冗余 JSON 暴露给用户（已存书稿尤其如此，JSON 里的 name 与上文重复）。
+            const parts: string[] = ["请审阅以下文稿："];
+            if (info.source === "manuscript") {
+              parts.push(`来源：已存书稿《${info.name}》`);
+            } else if (info.source === "text") {
+              parts.push(`来源：粘贴文本（${(info.text?.length ?? 0).toLocaleString()} 字）`);
+            } else if (info.source === "file") {
+              parts.push(`来源：上传文件 ${info.filename}`);
+            } else {
+              parts.push(`来源：本地路径 ${info.path}`);
+            }
+            if (info.chapter_indices && info.chapter_indices.length > 0) {
+              const idxs = [...info.chapter_indices].sort((a, b) => a - b);
+              const titles = info.chapters
+                ?.filter((c) => idxs.includes(c.idx))
+                .map((c) => `第${c.idx}章 ${c.title}`);
+              parts.push(`章节（共 ${idxs.length} 章）：${titles?.join("、") ?? idxs.join(", ")}`);
+              parts.push(`（审阅章节索引：${idxs.join(", ")}）`);
+            }
+            if (info.source === "text" && info.text) {
+              // 粘贴文本：把全文附在末尾供 Agent 直接审阅（这是审阅所需内容，无法省略）。
+              parts.push(`\n书稿全文如下，请基于以下内容审阅：\n${info.text}`);
+            } else if (info.source === "file") {
+              // 上传文件：以 JSON 透传 base64（Agent 的 load_manuscript_file 可解码），保持原机制。
+              const payload: Record<string, unknown> = {
+                source: "file",
+                filename: info.filename,
+                content_base64: info.content_base64,
+                chapter_indices: info.chapter_indices,
+              };
+              parts.push(`\n\`\`\`json\n${JSON.stringify(payload, null, 2)}\n\`\`\``);
+            }
+            send(parts.join("\n"));
+          }}
+        />
+      )}
     </div>
+    </ErrorBoundary>
   );
 }
 

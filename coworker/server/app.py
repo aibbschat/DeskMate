@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import re
 import secrets
@@ -163,6 +164,7 @@ from .manager import SessionManager
 
 
 def create_app(manager: SessionManager) -> FastAPI:
+
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
         try:
@@ -230,6 +232,63 @@ def create_app(manager: SessionManager) -> FastAPI:
         allow_headers=["*"],
     )
     app.state.manager = manager
+
+    # ---- DeskMate 学习历史辅助函数（模块级，供 @app.get 路由和 ws_session 闭包共用）----
+    def _classify_learned_fact(fact: str) -> str:
+        """启发式归类一条学到的记忆（用于「了解度」统计）。"""
+        t = (fact or "").lower()
+        if any(k in t for k in ("偏好", "喜欢", "倾向", "爱用", "常用", "希望", "想要", "期望", "不愿", "讨厌", "避免", "prefer", "like", "hate")):
+            return "preference"
+        if any(k in t for k in ("习惯", "通常", "一般", "每天", "每次", "经常", "往往", "固定", "habit", "usually", "always")):
+            return "habit"
+        if any(k in t for k in ("工具", "用", "使用", "命令", "快捷键", "软件", "编辑器", "ide", "tool", "use", "command")):
+            return "tool"
+        return "other"
+
+    def _append_learned_history(desk_dir: "Path", facts: list) -> None:
+        """把本轮学到的记忆追加落盘到 learned_history.jsonl（带时间戳 + 分类）。"""
+        import json as _json
+        from datetime import datetime as _dt
+        from pathlib import Path
+        hist_dir = Path(desk_dir) / "memory"
+        hist_dir.mkdir(parents=True, exist_ok=True)
+        hist_path = hist_dir / "learned_history.jsonl"
+        ts = _dt.now().isoformat(timespec="seconds")
+        with hist_path.open("a", encoding="utf-8") as f:
+            for fact in facts:
+                fact = str(fact).strip() if fact else ""
+                if not fact:
+                    continue
+                rec = {"ts": ts, "fact": fact, "category": _classify_learned_fact(fact)}
+                f.write(_json.dumps(rec, ensure_ascii=False) + "\n")
+
+    def _read_learned_history(desk_dir: "Path", limit: int = 30) -> dict:
+        """读取 learned_history.jsonl，返回最近条目 + 统计（了解度）。"""
+        import json as _json
+        from pathlib import Path
+        hist_path = Path(desk_dir) / "memory" / "learned_history.jsonl"
+        items: list = []
+        if hist_path.exists():
+            for line in reversed(hist_path.read_text(encoding="utf-8").splitlines()):
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    items.append(_json.loads(line))
+                except Exception:
+                    continue
+                if len(items) >= limit:
+                    break
+            items.reverse()
+        by_category: dict = {}
+        for it in items:
+            c = it.get("category", "other")
+            by_category[c] = by_category.get(c, 0) + 1
+        total = 0
+        if hist_path.exists():
+            total = sum(1 for _ in hist_path.read_text(encoding="utf-8").splitlines() if _.strip())
+        return {"items": items, "stats": {"total": total, "by_category": by_category}}
+    # ---- end DeskMate 学习历史辅助函数 ----
 
     @app.get("/v1/health")
     def health(request: Request) -> dict[str, Any]:
@@ -590,8 +649,16 @@ def create_app(manager: SessionManager) -> FastAPI:
         return {"sessions": manager.list_sessions(workspace)}
 
     @app.get("/v1/sessions/{session_id}/messages")
-    def session_messages(session_id: str) -> dict[str, Any]:
-        return {"messages": manager.session_messages(session_id)}
+    def session_messages(session_id: str, limit: int = 100, offset: int = 0) -> dict[str, Any]:
+        messages = manager.session_messages(session_id)
+        # 分页：返回 offset 到 offset+limit 的消息
+        paginated = messages[offset:offset + limit]
+        return {
+            "messages": paginated,
+            "total": len(messages),
+            "offset": offset,
+            "limit": limit
+        }
 
     @app.patch("/v1/sessions/{session_id}")
     def session_patch(session_id: str, body: dict) -> dict[str, Any]:
@@ -1456,6 +1523,722 @@ def create_app(manager: SessionManager) -> FastAPI:
     def automation_run_finalize(task_id: str, run_id: str) -> dict[str, Any]:
         return manager.finalize_manual_run(task_id, run_id)
 
+    @app.post("/v1/deskmate/memory")
+    async def save_deskmate_memory(request: Request) -> dict[str, Any]:
+        """保存 DeskMate 记忆文件（SOUL/USER/MEMORY）并广播更新到指定会话浮层。"""
+        try:
+            body = await request.json()
+        except Exception:
+            return JSONResponse({"error": "invalid json"}, status_code=400)
+        section = body.get("section")
+        content = body.get("content", "")
+        session_id_req = body.get("session_id")
+        if section not in ("soul", "user", "memory"):
+            return JSONResponse({"error": "invalid section"}, status_code=400)
+        try:
+            from pathlib import Path as _P
+
+            from deskmate.memory.manager import DeskMateMemoryManager
+
+            desk_dir = _P(
+                os.environ.get("DESKMATE_DIR", os.path.expanduser("~/.deskmate"))
+            )
+            mm = DeskMateMemoryManager(base_dir=desk_dir)
+            message = mm.write_memory(section, content)
+            fname = f"{section.upper()}.md"
+            fpath = desk_dir / fname
+            # 广播更新给该会话（浮层 onMemoryUpdate 会刷新对应文件）
+            if session_id_req:
+                try:
+                    await manager.broadcast_session(
+                        session_id_req,
+                        {
+                            "type": "deskmate_memory_update",
+                            "data": {
+                                "files": [
+                                    {
+                                        "id": section,
+                                        "name": fname,
+                                        "path": str(fpath),
+                                        "content": content,
+                                        "lastModified": fpath.stat().st_mtime * 1000
+                                        if fpath.exists()
+                                        else None,
+                                    }
+                                ]
+                            },
+                        },
+                    )
+                except Exception:
+                    logging.exception("broadcast deskmate memory save failed")
+            return {"ok": True, "message": message}
+        except Exception:
+            logging.exception("save deskmate memory failed")
+            return JSONResponse({"error": "save failed"}, status_code=500)
+
+    @app.get("/v1/deskmate/memory")
+    async def get_deskmate_memory() -> dict[str, Any]:
+        """读取 DeskMate 记忆文件（SOUL/USER/MEMORY），供前端打开记忆查看器时即时填充。"""
+        try:
+            from pathlib import Path as _P
+
+            from deskmate.memory.manager import DeskMateMemoryManager
+
+            desk_dir = _P(
+                os.environ.get("DESKMATE_DIR", os.path.expanduser("~/.deskmate"))
+            )
+            # Reuse a module-level singleton to avoid creating a ThreadPoolExecutor
+            # on every request (this endpoint fires on every session switch + memory panel open)
+            global _deskmate_mm_rest
+            if "_deskmate_mm_rest" not in globals():
+                _deskmate_mm_rest = DeskMateMemoryManager(base_dir=desk_dir)
+            mm = _deskmate_mm_rest
+            # SOUL.md 为「运行期演化层」：若文件缺失，先落盘默认模板，
+            # 使其成为真实可编辑文件（否则 lastModified 为 null、标签看似空白）。
+            from deskmate.memory.soul import save_soul, load_soul
+
+            soul_path = desk_dir / "SOUL.md"
+            if not soul_path.exists():
+                try:
+                    save_soul(desk_dir, load_soul(desk_dir))
+                except Exception:
+                    logging.exception("seed SOUL.md failed")
+            files = []
+            for fid, sec, name in (
+                ("soul", "soul", "SOUL.md"),
+                ("user", "user", "USER.md"),
+                ("memory", "memory", "MEMORY.md"),
+            ):
+                path = desk_dir / name
+                content = mm.read_memory(sec)
+                mtime = path.stat().st_mtime * 1000 if path.exists() else None
+                files.append(
+                    {
+                        "id": fid,
+                        "name": name,
+                        "path": str(path),
+                        "content": content,
+                        "lastModified": mtime,
+                    }
+                )
+            return {"files": files}
+        except Exception:
+            logging.exception("get deskmate memory failed")
+            return JSONResponse({"error": "read failed"}, status_code=500)
+
+    @app.get("/v1/deskmate/vault")
+    async def get_deskmate_vault() -> dict[str, Any]:
+        """读取 DeskMate vault（Obsidian 长期记忆）的文件列表和统计。"""
+        try:
+            from pathlib import Path as _P
+
+            from deskmate.memory.manager import DeskMateMemoryManager
+
+            desk_dir = _P(
+                os.environ.get("DESKMATE_DIR", os.path.expanduser("~/.deskmate"))
+            )
+            mm = DeskMateMemoryManager(base_dir=desk_dir)
+            entries = mm.list_vault_entries()
+            stats = mm.vault_stats()
+            return {"entries": entries, "stats": stats}
+        except Exception:
+            logging.exception("get deskmate vault failed")
+            return JSONResponse({"error": "read failed"}, status_code=500)
+
+    @app.post("/v1/deskmate/vault/import")
+    async def import_memory_to_vault() -> dict[str, Any]:
+        """把 MEMORY.md 的所有内容导入到 vault（首次启用时用）。"""
+        try:
+            from pathlib import Path as _P
+
+            from deskmate.memory.manager import DeskMateMemoryManager
+
+            desk_dir = _P(
+                os.environ.get("DESKMATE_DIR", os.path.expanduser("~/.deskmate"))
+            )
+            mm = DeskMateMemoryManager(base_dir=desk_dir)
+            result = mm.import_memory_to_vault()
+            return result
+        except Exception:
+            logging.exception("import memory to vault failed")
+            return JSONResponse({"error": "import failed"}, status_code=500)
+
+    @app.get("/v1/deskmate/learned-history")
+    async def get_deskmate_learned_history(limit: int = 30) -> dict[str, Any]:
+        """读取 DeskMate 学习历史（越用越懂你的时间线 + 了解度统计）。
+
+        前端感知面板「我对你的了解」在展开时调用：返回最近学到的 facts（带时间戳+分类）
+        与统计（total / 按 category 计数）。落盘在 run_turn 每轮自动记忆抽取时完成。
+        """
+        try:
+            from pathlib import Path as _P
+
+            desk_dir = _P(
+                os.environ.get("DESKMATE_DIR", os.path.expanduser("~/.deskmate"))
+            )
+            return _read_learned_history(desk_dir, limit=max(1, min(limit, 200)))
+        except Exception:
+            logging.exception("get deskmate learned history failed")
+            return {"items": [], "stats": {"total": 0, "by_category": {}}}
+
+    @app.post("/v1/deskmate/feedback")
+    async def deskmate_feedback(request: Request) -> dict[str, Any]:
+        """记录用户对主动建议的反馈（接受/忽略），写入防打扰持久化文件。
+
+        前端 DeskMateOverlay 在用户点「接受」/「忽略」时发出 deskmate:feedback
+        CustomEvent，App.tsx 监听后调本端点。本端点直接操作 DisturbManager 的
+        持久化文件（与 proactivity MCP 服务用的是同一份 disturb_state.json），
+        这样防打扰规则（连续忽略 3 次降级、30 分钟冷却）就能真正生效。
+        """
+        try:
+            body = await request.json()
+        except Exception:
+            return JSONResponse({"error": "invalid json"}, status_code=400)
+        suggestion_key = body.get("suggestion_key", "")
+        accepted = bool(body.get("accepted", False))
+        if not suggestion_key:
+            return JSONResponse({"error": "missing suggestion_key"}, status_code=400)
+        try:
+            from pathlib import Path as _P
+
+            from deskmate.proactivity.disturb import DisturbManager
+
+            desk_dir = _P(
+                os.environ.get("DESKMATE_DIR", os.path.expanduser("~/.deskmate"))
+            )
+            disturb_path = desk_dir / "memory" / "disturb_state.json"
+            mgr = DisturbManager()
+            mgr.persist(disturb_path)  # 加载已有的持久化状态
+            mgr.record_feedback(suggestion_key, accepted)
+            # record_feedback 内部会调 _persist()，但 DisturbManager 可能未设 persist_path
+            mgr.persist_path = disturb_path
+            mgr._persist()
+            return {"ok": True, "accepted": accepted}
+        except Exception:
+            logging.exception("deskmate feedback failed")
+            return JSONResponse({"error": "feedback failed"}, status_code=500)
+
+    @app.get("/v1/deskmate/proactive")
+    async def get_deskmate_proactive_status() -> dict[str, Any]:
+        """获取 DeskMate 主动推理状态（静默模式、统计）。"""
+        try:
+            from pathlib import Path as _P
+
+            from deskmate.proactivity.disturb import DisturbManager
+
+            desk_dir = _P(
+                os.environ.get("DESKMATE_DIR", os.path.expanduser("~/.deskmate"))
+            )
+            disturb_path = desk_dir / "memory" / "disturb_state.json"
+            mgr = DisturbManager()
+            mgr.persist(disturb_path)
+            stats = mgr.get_stats()
+            return {
+                "silent": mgr.silent_mode,
+                "stats": stats,
+            }
+        except Exception:
+            logging.exception("deskmate proactive status failed")
+            return JSONResponse({"error": "status failed"}, status_code=500)
+
+    @app.post("/v1/deskmate/proactive")
+    async def toggle_deskmate_proactive(request: Request) -> dict[str, Any]:
+        """切换 DeskMate 主动推理开关（静默模式）。
+
+        Body: {"enabled": true/false}
+        - enabled=true  → 取消静默模式，恢复主动建议
+        - enabled=false → 开启静默模式，暂停所有建议
+        """
+        try:
+            body = await request.json()
+        except Exception:
+            return JSONResponse({"error": "invalid json"}, status_code=400)
+        enabled = body.get("enabled")
+        if enabled is None or not isinstance(enabled, bool):
+            return JSONResponse(
+                {"error": "missing or invalid 'enabled' (must be boolean)"},
+                status_code=400,
+            )
+        try:
+            from pathlib import Path as _P
+
+            from deskmate.proactivity.disturb import DisturbManager
+
+            desk_dir = _P(
+                os.environ.get("DESKMATE_DIR", os.path.expanduser("~/.deskmate"))
+            )
+            disturb_path = desk_dir / "memory" / "disturb_state.json"
+            mgr = DisturbManager()
+            mgr.persist(disturb_path)
+            mgr.persist_path = disturb_path
+            mgr.set_silent_mode(not enabled)  # enabled=true → silent=false
+            return {"ok": True, "enabled": enabled, "silent": mgr.silent_mode}
+        except Exception:
+            logging.exception("deskmate proactive toggle failed")
+            return JSONResponse({"error": "toggle failed"}, status_code=500)
+
+    @app.post("/v1/deskmate/proactive/tick")
+    async def deskmate_proactive_tick(request: Request) -> dict[str, Any]:
+        """执行一次 DeskMate 主动推理 TICK（感知->思考->行动->学习）。
+
+        前端每 15 秒调一次，驱动桌宠状态更新和主动建议。
+        engine.tick() is synchronous (subprocess + LLM call) so it MUST run
+        via asyncio.to_thread to avoid freezing the event loop for 2-10s,
+        which would block session switching, message loading, and WS events.
+        """
+        try:
+            body = await request.json() if request.headers.get("content-type") else {}
+        except Exception:
+            body = {}
+        try:
+            from pathlib import Path as _P
+
+            from deskmate.proactivity.tick import ProactiveEngine
+
+            desk_dir = _P(
+                os.environ.get("DESKMATE_DIR", os.path.expanduser("~/.deskmate"))
+            )
+            # Reuse a cached ProactiveEngine to preserve DisturbManager state
+            # and avoid re-importing + re-initializing on every tick.
+            global _deskmate_tick_engine
+            if "_deskmate_tick_engine" not in globals():
+                _deskmate_tick_engine = ProactiveEngine(base_dir=desk_dir)
+            engine = _deskmate_tick_engine
+            engine.disturb.persist(desk_dir / "memory" / "disturb_state.json")
+            # Run the sync tick in a thread to avoid blocking the event loop.
+            # The tick does: subprocess (osascript/pbpaste) + LLM call + evaluate.
+            result = await asyncio.to_thread(
+                engine.tick,
+                user_message=body.get("user_message", ""),
+                skip_activity_check=bool(body.get("skip_activity_check", False)),
+            )
+            return result.to_dict()
+        except Exception:
+            logging.exception("deskmate proactive tick failed")
+            return JSONResponse({"error": "tick failed"}, status_code=500)
+
+    @app.post("/v1/deskmate/style-profile")
+    async def deskmate_style_profile(request: Request) -> dict[str, Any]:
+        """从本地样本文件抽作者风格画像，存 ~/.deskmate/style_profile.json。
+
+        Body: {"path": "/abs/path/to/sample.txt|.docx"}
+        返回: {"ok": true, "profile": {...}, "chars": n}
+        """
+        try:
+            body = await request.json()
+        except Exception:
+            return JSONResponse({"error": "invalid json"}, status_code=400)
+        path = (body.get("path") or "").strip()
+        content_b64 = (body.get("content_base64") or "").strip()
+        filename = (body.get("filename") or "sample.txt").strip()
+        if not path and not content_b64:
+            return JSONResponse({"error": "missing path or content"}, status_code=400)
+        try:
+            from pathlib import Path as _P
+
+            from deskmate.writing import (
+                extract_style_profile,
+                read_text_from_path,
+                read_text_from_base64,
+            )
+            from datetime import datetime as _dt
+
+            desk_dir = _P(
+                os.environ.get("DESKMATE_DIR", os.path.expanduser("~/.deskmate"))
+            )
+            if path:
+                sample = read_text_from_path(path)
+                source = path
+            else:
+                sample = read_text_from_base64(filename, content_b64)
+                source = f"{filename}（上传）"
+            if not sample:
+                return JSONResponse({"error": "文件内容为空"}, status_code=400)
+            profile = extract_style_profile(sample)
+            profile_path = desk_dir / "style_profile.json"
+            profile_path.parent.mkdir(parents=True, exist_ok=True)
+            profile_path.write_text(
+                json.dumps(
+                    {
+                        "profile": profile,
+                        "source": source,
+                        "chars": len(sample),
+                        "updated_at": _dt.now().isoformat(timespec="seconds"),
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+            return {"ok": True, "profile": profile, "chars": len(sample)}
+        except FileNotFoundError as e:
+            return JSONResponse({"error": str(e)}, status_code=404)
+        except ValueError as e:
+            return JSONResponse({"error": str(e)}, status_code=400)
+        except Exception:
+            logging.exception("deskmate style-profile failed")
+            return JSONResponse({"error": "风格抽取失败"}, status_code=500)
+
+    @app.get("/v1/deskmate/style-profile")
+    async def get_deskmate_style_profile() -> dict[str, Any]:
+        """读取已保存的作者风格画像（无则返回 {"profile": null}）。"""
+        try:
+            from pathlib import Path as _P
+
+            desk_dir = _P(
+                os.environ.get("DESKMATE_DIR", os.path.expanduser("~/.deskmate"))
+            )
+            p = desk_dir / "style_profile.json"
+            if not p.is_file():
+                return {"profile": None}
+            data = json.loads(p.read_text(encoding="utf-8"))
+            return {"profile": data.get("profile")}
+        except Exception:
+            logging.exception("get deskmate style-profile failed")
+            return {"profile": None}
+
+    @app.post("/v1/deskmate/chapters")
+    async def deskmate_chapters(request: Request) -> dict[str, Any]:
+        """返回文稿章节列表（按 第X章/回/节 切分），供前端章节下拉。
+
+        Body: {"text": "...", "path": "本地路径", "content_base64"+ "filename": "..."}。
+        """
+        try:
+            body = await request.json() if request.headers.get("content-type") else {}
+        except Exception:
+            body = {}
+        try:
+            from pathlib import Path as _P
+
+            from deskmate.writing import split_into_chapters, read_text_from_path, read_text_from_base64
+
+            raw_text = (body.get("text") or "").strip()
+            path = (body.get("path") or "").strip()
+            content_b64 = (body.get("content_base64") or "").strip()
+            filename = (body.get("filename") or "draft.txt").strip()
+            if not raw_text and path:
+                raw_text = read_text_from_path(path)
+            if not raw_text and content_b64:
+                raw_text = read_text_from_base64(filename, content_b64)
+            if not raw_text:
+                return JSONResponse({"error": "missing text or path"}, status_code=400)
+            return {"chapters": [
+                {"idx": c["idx"], "title": c["title"], "char_count": len(c["text"]), "text": c["text"]}
+                for c in split_into_chapters(raw_text)
+            ]}
+        except FileNotFoundError as e:
+            return JSONResponse({"error": str(e)}, status_code=404)
+        except ValueError as e:
+            return JSONResponse({"error": str(e)}, status_code=400)
+        except Exception:
+            logging.exception("deskmate chapters failed")
+            return JSONResponse({"error": "章节解析失败"}, status_code=500)
+
+    @app.post("/v1/deskmate/proofread")
+    async def deskmate_proofread(request: Request) -> dict[str, Any]:
+        """对文稿做专业编辑审阅，返回 {"letter": ..., "items": [...]}。
+
+        Body: {"text": "...", "path": "可选的本地 .txt/.docx 路径"}（text 优先）。
+        需先校准风格（POST /v1/deskmate/style-profile）效果更好，但无风格画像也能通用润色。
+        """
+        try:
+            body = await request.json() if request.headers.get("content-type") else {}
+        except Exception:
+            body = {}
+        try:
+            from pathlib import Path as _P
+
+            from deskmate.writing import proofread, read_text_from_path, read_text_from_base64
+
+            raw_text = (body.get("text") or "").strip()
+            path = (body.get("path") or "").strip()
+            content_b64 = (body.get("content_base64") or "").strip()
+            filename = (body.get("filename") or "draft.txt").strip()
+            if not raw_text and path:
+                raw_text = read_text_from_path(path)
+            if not raw_text and content_b64:
+                raw_text = read_text_from_base64(filename, content_b64)
+            if not raw_text:
+                return JSONResponse({"error": "missing text or path"}, status_code=400)
+
+            # 章节选择（int 序号 / str 标题）；None 表示审整篇
+            chapter = body.get("chapter")
+            if isinstance(chapter, str):
+                chapter = chapter.strip() or None
+
+            # 载入风格画像（可选）
+            profile = None
+            desk_dir = _P(
+                os.environ.get("DESKMATE_DIR", os.path.expanduser("~/.deskmate"))
+            )
+            sp = desk_dir / "style_profile.json"
+            if sp.is_file():
+                try:
+                    data = json.loads(sp.read_text(encoding="utf-8"))
+                    profile = data.get("profile")
+                except Exception:
+                    pass
+
+            # proofread 含多次 LLM 调用，放到线程避免阻塞事件循环
+            result = await asyncio.to_thread(proofread, raw_text, profile, chapter)
+            return result
+        except FileNotFoundError as e:
+            return JSONResponse({"error": str(e)}, status_code=404)
+        except ValueError as e:
+            return JSONResponse({"error": str(e)}, status_code=400)
+        except Exception:
+            logging.exception("deskmate proofread failed")
+            return JSONResponse({"error": "批改失败"}, status_code=500)
+
+    @app.post("/v1/deskmate/manuscript")
+    async def deskmate_save_manuscript(request: Request) -> dict[str, Any]:
+        """保存整本书稿（含各章正文），供聊天「审阅第X章」直接调出。
+
+        Body: {"name": "书名", "chapters": [{idx,title,text}, ...]}
+        """
+        try:
+            import re as _re
+
+            from deskmate.writing import save_manuscript
+
+            body = await request.json()
+            name = (body.get("name") or "").strip()
+            chapters = body.get("chapters") or []
+            if not name:
+                return JSONResponse({"error": "missing name"}, status_code=400)
+            if not isinstance(chapters, list) or not chapters:
+                return JSONResponse({"error": "missing chapters"}, status_code=400)
+            safe = _re.sub(r"[\\/]", "_", name)
+            return save_manuscript(safe, chapters)
+        except Exception:
+            logging.exception("save manuscript failed")
+            return JSONResponse({"error": "保存书稿失败"}, status_code=500)
+
+    @app.get("/v1/deskmate/manuscripts")
+    async def deskmate_list_manuscripts() -> dict[str, Any]:
+        try:
+            from deskmate.writing import list_manuscripts
+
+            return {"manuscripts": list_manuscripts()}
+        except Exception:
+            logging.exception("list manuscripts failed")
+            return {"manuscripts": []}
+
+    @app.get("/v1/deskmate/manuscript/{name}")
+    async def deskmate_load_manuscript(name: str) -> dict[str, Any]:
+        try:
+            from deskmate.writing import load_manuscript
+
+            safe = name.strip()
+            chapters = load_manuscript(safe)
+            if chapters is None:
+                return JSONResponse({"error": "not found"}, status_code=404)
+            return {"name": safe, "chapters": chapters}
+        except Exception:
+            logging.exception("load manuscript failed")
+            return JSONResponse({"error": "读取书稿失败"}, status_code=500)
+
+    def _safe_report_name(name: str) -> str:
+        s = (name or "").strip().replace("\x00", "").replace("/", "_").replace("\\", "_")
+        while ".." in s:
+            s = s.replace("..", "_")
+        s = s.lstrip(". ")
+        return s or "manuscript"
+
+    @app.post("/v1/deskmate/report")
+    async def deskmate_generate_report(request: Request) -> dict[str, Any]:
+        """生成整书深度审阅报告（逐章细抠 + 总报告）—— 同步执行。
+
+        注意：编辑专家 Agent 会话已改用原生 Agent Loop + review/generate_report 工具，
+        本端点保留用于向后兼容（如直接 API 调用）。
+        """
+        try:
+            body = await request.json() if request.headers.get("content-type") else {}
+        except Exception:
+            body = {}
+        try:
+            from pathlib import Path as _P
+
+            from deskmate.report import generate_review_report
+            from deskmate.writing import (
+                load_manuscript,
+                read_text_from_base64,
+                read_text_from_path,
+            )
+
+            desk_dir = _P(
+                os.environ.get("DESKMATE_DIR", os.path.expanduser("~/.deskmate"))
+            )
+
+            name = (body.get("name") or "").strip()
+            raw_text = (body.get("text") or "").strip()
+            path = (body.get("path") or body.get("folder") or "").strip()
+            content_b64 = (body.get("content_base64") or "").strip()
+            filename = (body.get("filename") or "draft.txt").strip()
+            bible: dict = {}
+
+            if name:
+                chapters = load_manuscript(name)
+                if not chapters:
+                    return JSONResponse({"error": f"未找到书稿：{name}"}, status_code=404)
+                raw_text = "\n\n".join(
+                    f"{c.get('title', '')}\n{c.get('text', '')}" for c in chapters
+                )
+            elif path:
+                from deskmate.novel_memory.core import read_bible, scan_novel
+
+                pp = _P(path).expanduser()
+                if pp.is_dir():
+                    try:
+                        raw_text, _ = scan_novel(str(pp))
+                    except FileNotFoundError as e:
+                        return JSONResponse({"error": str(e)}, status_code=404)
+                    if not raw_text.strip():
+                        return JSONResponse(
+                            {"error": f"该文件夹未找到可读的小说文本（.txt/.md 等）：{path}"},
+                            status_code=400,
+                        )
+                    try:
+                        bible = read_bible(str(pp))
+                    except Exception:
+                        bible = {}
+                elif pp.is_file():
+                    try:
+                        raw_text = read_text_from_path(str(pp))
+                    except FileNotFoundError as e:
+                        return JSONResponse({"error": str(e)}, status_code=404)
+                    except ValueError as e:
+                        return JSONResponse({"error": str(e)}, status_code=400)
+                    try:
+                        bible = read_bible(str(pp.parent))
+                    except Exception:
+                        bible = {}
+                else:
+                    return JSONResponse({"error": f"路径不存在：{path}"}, status_code=404)
+            elif content_b64:
+                try:
+                    raw_text = read_text_from_base64(filename, content_b64)
+                except ValueError as e:
+                    return JSONResponse({"error": str(e)}, status_code=400)
+            if not raw_text:
+                return JSONResponse(
+                    {"error": "缺少文稿来源（name/text/path/folder/content_base64）"},
+                    status_code=400,
+                )
+
+            profile = None
+            sp = desk_dir / "style_profile.json"
+            if sp.is_file():
+                try:
+                    profile = json.loads(sp.read_text(encoding="utf-8")).get("profile")
+                except Exception:
+                    pass
+
+            src_name = name or (path.rsplit("/", 1)[-1] if path else "manuscript")
+            safe = _safe_report_name(src_name)
+            chapter_indices = body.get("chapter_indices")
+
+            # 同步生成报告
+            report = await asyncio.to_thread(
+                generate_review_report,
+                raw_text, profile, safe, bible or None, chapter_indices,
+            )
+
+            # 保存报告
+            rdir = desk_dir / "reports"
+            rdir.mkdir(parents=True, exist_ok=True)
+            (rdir / f"{safe}.json").write_text(
+                json.dumps({"name": safe, "report": report}, ensure_ascii=False, indent=1),
+                encoding="utf-8",
+            )
+
+            return {"ok": True, "report": report, "report_name": safe}
+        except FileNotFoundError as e:
+            return JSONResponse({"error": str(e)}, status_code=404)
+        except ValueError as e:
+            return JSONResponse({"error": str(e)}, status_code=400)
+        except Exception:
+            logging.exception("deskmate report failed")
+            return JSONResponse({"error": "生成审阅报告失败"}, status_code=500)
+
+    @app.get("/v1/deskmate/reports")
+    async def deskmate_list_reports() -> dict[str, Any]:
+        """列出已生成的审阅报告（按生成时间倒序）。"""
+        try:
+            from pathlib import Path as _P
+
+            desk_dir = _P(
+                os.environ.get("DESKMATE_DIR", os.path.expanduser("~/.deskmate"))
+            )
+            rdir = desk_dir / "reports"
+            out: list[dict] = []
+            if rdir.is_dir():
+                for p in sorted(
+                    rdir.glob("*.json"), key=lambda x: x.stat().st_mtime, reverse=True
+                ):
+                    try:
+                        data = json.loads(p.read_text(encoding="utf-8"))
+                    except Exception:
+                        continue
+                    rep = data.get("report", {})
+                    meta = rep.get("meta", {})
+                    out.append(
+                        {
+                            "name": data.get("name", p.stem),
+                            "title": rep.get("title", ""),
+                            "generated_at": rep.get("generated_at", ""),
+                            "chapter_count": meta.get("chapter_count", 0),
+                        }
+                    )
+            return {"reports": out}
+        except Exception:
+            logging.exception("list reports failed")
+            return {"reports": []}
+
+    @app.get("/v1/deskmate/report/{name}/docx")
+    async def deskmate_report_docx(name: str) -> "Response":
+        """下载指定审阅报告的 Word(.docx) 文档。"""
+        try:
+            from pathlib import Path as _P
+            from urllib.parse import quote
+
+            from fastapi.responses import Response as _Resp
+
+            from deskmate.report import render_report_docx
+
+            desk_dir = _P(
+                os.environ.get("DESKMATE_DIR", os.path.expanduser("~/.deskmate"))
+            )
+            p = desk_dir / "reports" / f"{name.strip()}.json"
+            if not p.is_file():
+                return JSONResponse({"error": "报告不存在"}, status_code=404)
+            data = json.loads(p.read_text(encoding="utf-8"))
+            report = data.get("report")
+            if not report:
+                return JSONResponse({"error": "报告内容为空"}, status_code=500)
+            docx_bytes = render_report_docx(report)
+            fname = f"{name.strip()}_审阅报告.docx"
+            return _Resp(
+                content=docx_bytes,
+                media_type=(
+                    "application/vnd.openxmlformats-officedocument."
+                    "wordprocessingml.document"
+                ),
+                headers={
+                    "Content-Disposition": (
+                        f"attachment; filename=\"{quote(fname)}\"; "
+                        f"filename*=UTF-8''{quote(fname)}"
+                    )
+                },
+            )
+        except FileNotFoundError as e:
+            return JSONResponse({"error": str(e)}, status_code=404)
+        except ValueError as e:
+            return JSONResponse({"error": str(e)}, status_code=400)
+        except Exception:
+            logging.exception("deskmate report docx failed")
+            return JSONResponse({"error": "生成 Word 失败"}, status_code=500)
+
     @app.websocket("/ws/session/{session_id}")
     async def ws_session(ws: WebSocket, session_id: str) -> None:
         if not _websocket_authenticated(ws):
@@ -1710,6 +2493,282 @@ def create_app(manager: SessionManager) -> FastAPI:
             "iteration_end",
         }
 
+        async def _push_deskmate_memory() -> None:
+            """把 DeskMate 记忆文件（SOUL/USER/MEMORY）实时推给当前会话的浮层。
+
+            仅在 agent=="deskmate" 时执行；cowork 等其它 agent 不触发。记忆读取是纯文件 IO，
+            失败不影响对话主流程。
+            """
+            if agent != "deskmate":
+                return
+            try:
+                from pathlib import Path as _P
+
+                from deskmate.memory.manager import DeskMateMemoryManager
+
+                desk_dir = _P(
+                    os.environ.get("DESKMATE_DIR", os.path.expanduser("~/.deskmate"))
+                )
+                # Reuse cached manager to avoid creating a new ThreadPoolExecutor
+                # on every turn_start (leaks threads + adds ~50ms init overhead)
+                if not hasattr(ws_session, "_deskmate_mm_cache"):
+                    ws_session._deskmate_mm_cache = {}
+                mm_cache_key = str(desk_dir)
+                mm = ws_session._deskmate_mm_cache.get(mm_cache_key)
+                if mm is None:
+                    mm = DeskMateMemoryManager(base_dir=desk_dir)
+                    ws_session._deskmate_mm_cache[mm_cache_key] = mm
+                files = []
+                for fid, sec, name in (
+                    ("soul", "soul", "SOUL.md"),
+                    ("user", "user", "USER.md"),
+                    ("memory", "memory", "MEMORY.md"),
+                ):
+                    path = desk_dir / name
+                    content = await asyncio.to_thread(mm.read_memory, sec)
+                    mtime = path.stat().st_mtime * 1000 if path.exists() else None
+                    files.append(
+                        {
+                            "id": fid,
+                            "name": name,
+                            "path": str(path),
+                            "content": content,
+                            "lastModified": mtime,
+                        }
+                    )
+                await manager.broadcast_session(
+                    session_id,
+                    {"type": "deskmate_memory_update", "data": {"files": files}},
+                )
+            except Exception:
+                logging.exception("push deskmate memory failed")
+
+        async def _handle_review_intent(text: str, intent: dict, session_id: str) -> None:
+            """聊天「审阅第X章」意图处理：定位书稿章节 → 跑编辑 pass → 广播结果让面板自动打开。
+
+            不进入普通对话引擎；自带 turn_start / assistant_delta / deskmate_proofread / turn_done
+            广播。running 锁由调用方（user_message 分支）先 try_mark_running，这里 finally 释放。
+            """
+            try:
+                await manager.broadcast_session(session_id, {"type": "turn_start", "data": {}})
+
+                from pathlib import Path as _P
+                from deskmate.writing import (
+                    list_manuscripts,
+                    load_manuscript,
+                    resolve_chapter,
+                    proofread,
+                )
+
+                desk_dir = _P(
+                    os.environ.get("DESKMATE_DIR", os.path.expanduser("~/.deskmate"))
+                )
+                # 载入风格画像（可选）
+                profile = None
+                sp = desk_dir / "style_profile.json"
+                if sp.is_file():
+                    try:
+                        data = json.loads(sp.read_text(encoding="utf-8"))
+                        profile = data.get("profile")
+                    except Exception:
+                        pass
+
+                mans = list_manuscripts()
+                if not mans:
+                    reply = (
+                        "我还没存你的书稿。请先在桌搭的「写作批改」里打开文稿"
+                        "（会自动存为书稿），之后说「审阅第X章」我就能直接调出来审。"
+                    )
+                    await manager.broadcast_session(
+                        session_id, {"type": "assistant_delta", "data": {"text": reply}}
+                    )
+                    return
+
+                # 选书稿：优先命中意图里的书名，否则取最近保存的一本
+                q = intent.get("manuscript_query")
+                man = None
+                if q:
+                    for m in mans:
+                        if q and q in m["name"]:
+                            man = m
+                            break
+                if man is None:
+                    man = mans[0]
+                chapters = load_manuscript(man["name"])
+                if not chapters:
+                    reply = (
+                        f"书稿《{man['name']}》的章节没读出来，可能已损坏。"
+                        "请在写作批改面板里重新打开它。"
+                    )
+                    await manager.broadcast_session(
+                        session_id, {"type": "assistant_delta", "data": {"text": reply}}
+                    )
+                    return
+
+                target = resolve_chapter(chapters, intent["chapter"])
+                if target is None and intent["chapter"] != "all":
+                    titles = "、".join(
+                        c["title"] or f"第{c['idx']}章" for c in chapters
+                    )
+                    reply = f"在《{man['name']}》里没找到「{intent['chapter']}」。现有章节：{titles}"
+                    await manager.broadcast_session(
+                        session_id, {"type": "assistant_delta", "data": {"text": reply}}
+                    )
+                    return
+
+                chapter_idx = target["idx"] if target else None
+                chapter_text = (
+                    target["text"]
+                    if target
+                    else "\n\n".join(c["text"] for c in chapters)
+                )
+                # proofread 含多次 LLM 调用，放到线程避免阻塞事件循环
+                result = await asyncio.to_thread(proofread, chapter_text, profile, chapter_idx)
+
+                scope = (
+                    "全篇"
+                    if chapter_idx is None
+                    else (target.get("title") or f"第{chapter_idx}章")
+                )
+                n = len(result.get("items", []))
+                reply = (
+                    f"已审完《{man['name']}》{scope}，共 {n} 条建议，已在批改台打开——"
+                    f"逐条点「采纳」即可改回草稿。"
+                )
+                await manager.broadcast_session(
+                    session_id, {"type": "assistant_delta", "data": {"text": reply}}
+                )
+                await manager.broadcast_session(
+                    session_id,
+                    {
+                        "type": "deskmate_proofread",
+                        "data": {
+                            "name": man["name"],
+                            "chapter_idx": chapter_idx,
+                            "chapter_title": scope,
+                            "chapters": [
+                                {"idx": c["idx"], "title": c["title"], "char_count": len(c.get("text", ""))}
+                                for c in chapters
+                            ],
+                            "draft": target["text"] if target else chapter_text,
+                            "result": result,
+                        },
+                    },
+                )
+            except Exception:
+                logging.exception("handle review intent failed")
+                try:
+                    await manager.broadcast_session(
+                        session_id,
+                        {
+                            "type": "assistant_delta",
+                            "data": {
+                                "text": "审读时出了点问题，请稍后再试，或直接在写作批改面板里打开文稿。"
+                            },
+                        },
+                    )
+                except Exception:
+                    pass
+            finally:
+                manager.mark_idle(session_id)
+                try:
+                    await manager.broadcast_session(
+                        session_id, {"type": "turn_done", "data": {}}
+                    )
+                except Exception:
+                    pass
+
+        # -- DeskMate 学习历史（越用越懂你的时间线 + 了解度统计）-----------
+        # _classify_learned_fact / _append_learned_history / _read_learned_history
+        # 已提升到 create_app 顶层，供 @app.get 路由和此闭包共用。
+
+        async def _deskmate_post_turn(
+            session_id: str, agent: str, engine, manager
+        ) -> None:
+            """DeskMate post-turn processing, run as a fire-and-forget background task.
+
+            All sync LLM calls and file I/O run via asyncio.to_thread so the event
+            loop is never blocked. Broadcasts (memory_learned, context_injected)
+            happen after the blocking work completes; a small delay is acceptable
+            since these are informational UI updates, not turn-flow-critical events.
+            """
+            try:
+                last_user = ""
+                last_asst = ""
+                for msg in reversed(engine.messages):
+                    role = msg.get("role")
+                    content = msg.get("content", "")
+                    if not content:
+                        continue
+                    if role == "assistant" and not last_asst:
+                        last_asst = content if isinstance(content, str) else str(content)
+                    elif role == "user" and not last_user:
+                        last_user = content if isinstance(content, str) else str(content)
+                    if last_user and last_asst:
+                        break
+                if not (last_user or last_asst):
+                    return
+
+                from pathlib import Path as _P
+                from deskmate.memory.manager import DeskMateMemoryManager
+
+                desk_dir = _P(
+                    os.environ.get("DESKMATE_DIR", os.path.expanduser("~/.deskmate"))
+                )
+                # Reuse cached manager to avoid creating a new ThreadPoolExecutor each turn
+                if not hasattr(ws_session, "_deskmate_mm_cache"):
+                    ws_session._deskmate_mm_cache = {}
+                mm_cache_key = str(desk_dir)
+                mm = ws_session._deskmate_mm_cache.get(mm_cache_key)
+                if mm is None:
+                    mm = DeskMateMemoryManager(base_dir=desk_dir)
+                    ws_session._deskmate_mm_cache[mm_cache_key] = mm
+
+                # post_session_summary makes a sync LLM call - run in a thread
+                summary = await asyncio.to_thread(
+                    mm.post_session_summary, last_user, last_asst
+                )
+                learned = (summary or {}).get("learned") or []
+                if learned:
+                    try:
+                        _append_learned_history(desk_dir, learned)
+                    except Exception:
+                        logging.exception("persist learned history failed")
+                    try:
+                        await manager.broadcast_session(
+                            session_id,
+                            {"type": "deskmate_memory_learned", "data": {"facts": learned}},
+                        )
+                    except Exception:
+                        logging.exception("broadcast deskmate memory learned failed")
+
+                # Context injection visibility: count injected memory blocks
+                from deskmate.memory.llm import llm_available as _llm_ok
+                _auto_inject = (
+                    os.environ.get("DESKMATE_AUTO_INJECT") == "1" or _llm_ok()
+                )
+                if _auto_inject:
+                    try:
+                        ctx = await asyncio.to_thread(
+                            mm.build_full_context_for_turn, last_user
+                        )
+                        if ctx:
+                            inner = ctx
+                            for tag in ("<memory-context>", "</memory-context>"):
+                                inner = inner.replace(tag, "")
+                            injected = inner.count("## ")
+                        else:
+                            injected = 0
+                        if injected > 0:
+                            await manager.broadcast_session(
+                                session_id,
+                                {"type": "deskmate_context_injected", "data": {"count": injected}},
+                            )
+                    except Exception:
+                        logging.exception("broadcast context injected failed")
+            except Exception:
+                logging.exception("deskmate post-turn processing failed")
+
         async def run_turn(content, *, retry: bool = False) -> None:
             # The receive loop atomically claims this session before scheduling the task.
             # Keeping the claim outside prevents two back-to-back frames from both starting.
@@ -1723,12 +2782,24 @@ def create_app(manager: SessionManager) -> FastAPI:
                     )
                     if event.type.value in _CHECKPOINTS:
                         manager.save(session_id, engine)
+                    if event.type.value == "turn_start":
+                        await _push_deskmate_memory()
             finally:
                 manager.mark_idle(session_id)
                 manager.save(session_id, engine)
+                # turn_done MUST be sent before any DeskMate post-processing:
+                # the post-processing includes a sync LLM call (post_session_summary)
+                # that would freeze the event loop for 2-10s, delaying turn_done
+                # and blocking interrupt/session-switch/other WS events.
                 await manager.broadcast_session(
                     session_id, {"type": "turn_done", "data": {}}
                 )
+                # DeskMate post-processing runs as a fire-and-forget background
+                # task so it never blocks the event loop or the turn_done signal.
+                if agent == "deskmate":
+                    asyncio.create_task(
+                        _deskmate_post_turn(session_id, agent, engine, manager)
+                    )
 
         # This socket is now a live view of the session; background turns (channel delivery,
         # self-wake, durable resume) broadcast here too, not just locally driven run_turns.

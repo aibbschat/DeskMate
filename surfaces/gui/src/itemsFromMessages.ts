@@ -33,10 +33,48 @@ export function itemsFromMessages(messages: ConversationMessage[]): Item[] {
         continue;
       }
       const user = userItemFromContent(m.content);
+      // `attachments` (chat file chips) is a display-only sidecar — if the server put
+      // one on the message, surface it as a chip. Engine strips it before the LLM call.
+      if (Array.isArray(m.attachments)) {
+        for (const a of m.attachments) {
+          if (a && a.kind && a.name) {
+            user.attachments = user.attachments || [];
+            user.attachments.push({
+              kind: a.kind === "image" || a.kind === "pdf" ? a.kind : "text",
+              name: String(a.name),
+              ...(a.text ? { text: String(a.text) } : {}),
+            });
+          }
+        }
+      }
       // `ts` (unix seconds) is the server's canonical-message stamp; older sessions have none.
       if (typeof m.ts === "number") user.ts = m.ts;
       if (user.text || user.attachments?.length) items.push(user);
     } else if (m.role === "assistant") {
+      // A generated review-report card: render the rich ReportViewer instead of plain text.
+      // The `report`/`report_name` sidecars are stripped before the LLM sees this message.
+      // `report` 正常是嵌套对象；个别情况下可能是 JSON 字符串（旧存储/异常），这里兼容解析；
+      // 解析失败则退化为普通助手文本，绝不抛错（否则 ErrorBoundary 会用红屏替换整个 App）。
+      if (m.report && m.report_name) {
+        let report: any = m.report;
+        if (typeof report === "string") {
+          try {
+            report = JSON.parse(report);
+          } catch {
+            report = null;
+          }
+        }
+        if (report && typeof report === "object") {
+          items.push({
+            kind: "report",
+            name: String(m.report_name),
+            report,
+            ...(typeof m.content === "string" && m.content ? { caption: m.content } : {}),
+            ...(typeof m.ts === "number" ? { ts: m.ts } : {}),
+          });
+          continue;
+        }
+      }
       if (m.content || m.reasoning)
         items.push({
           kind: "assistant",

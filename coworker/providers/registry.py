@@ -294,6 +294,14 @@ DESCRIPTORS: list[ProviderDescriptor] = [
         endpoint_help="Prefilled with Alibaba Model Studio's international endpoint. China (Beijing): https://dashscope.aliyuncs.com/compatible-mode/v1",
     ),
     _compat(
+        "xiaomi",
+        "Xiaomi (MiMo)",
+        base_url="https://token-plan-cn.xiaomimimo.com/v1",
+        recommended_model="mimo-v2.5-pro",
+        env_key="XIAOMI_API_KEY",
+        endpoint_help="Xiaomi Token Plan API (xiaomimimo.com). Text models: claude-sonnet-5, mimo-v2.5.",
+    ),
+    _compat(
         "xai",
         "xAI (Grok)",
         base_url="https://api.x.ai/v1",

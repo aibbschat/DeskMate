@@ -16,7 +16,6 @@
 
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
-#[cfg(target_os = "windows")]
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -30,11 +29,110 @@ use tauri::{
 use tauri_plugin_autostart::ManagerExt;
 use uuid::Uuid;
 
-/// The sidecar server child — killed on exit (orphaned servers have bitten us before).
-struct ServerProcess(Mutex<Option<Child>>);
+/// The sidecar server child - killed on exit (orphaned servers have bitten us before).
+/// The watcher can replace it if the process dies silently. Shared via Arc so both
+/// the Tauri state and the watcher thread see the same child.
+struct ServerProcess(Arc<Mutex<Option<Child>>>);
+
+/// Configuration needed to (re)spawn the Python sidecar. Extracted from setup()
+/// so the watcher can reuse it without reconstructing the original Command.
+struct ServerSpawnConfig {
+    bin: PathBuf,
+    port: u16,
+    api_token: String,
+}
+
+/// Health-watch thread: pings /v1/health every 10s. If 3 consecutive attempts fail
+/// (connection refused / timeout), the sidecar is assumed dead and respawned.
+/// Stops watching when the app exits (checked via the running flag).
+struct SidecarWatcher {
+    config: ServerSpawnConfig,
+    server: Arc<Mutex<Option<Child>>>,
+    running: Arc<AtomicBool>,
+}
+
+impl SidecarWatcher {
+    fn spawn_once(&self) {
+        let mut cmd = Command::new(&self.config.bin);
+        cmd.args(["--host", "127.0.0.1", "--port", &self.config.port.to_string()])
+            .env("COWORKER_EXIT_WITH_PARENT", "1")
+            .env("COWORKER_PARENT_PID", std::process::id().to_string())
+            .env("COWORKER_API_TOKEN", &self.config.api_token)
+            .stdin(Stdio::null());
+        match server_log_file() {
+            Some(log) => {
+                if let Ok(err_clone) = log.try_clone() {
+                    cmd.stdout(Stdio::from(log)).stderr(Stdio::from(err_clone));
+                } else {
+                    cmd.stdout(Stdio::from(log)).stderr(Stdio::null());
+                }
+            }
+            None => {
+                cmd.stdout(Stdio::null()).stderr(Stdio::null());
+            }
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            cmd.creation_flags(0x0800_0000);
+        }
+        match cmd.spawn() {
+            Ok(child) => {
+                let mut guard = self.server.lock().unwrap();
+                // Kill any previous child (should already be dead, but just in case)
+                if let Some(mut old) = guard.take() {
+                    let _ = old.kill();
+                }
+                *guard = Some(child);
+                eprintln!("[coworker] sidecar respawned on port {}", self.config.port);
+            }
+            Err(e) => {
+                eprintln!("[coworker] failed to respawn sidecar: {e}");
+            }
+        }
+    }
+
+    fn check_health(&self) -> bool {
+        // Use a raw TCP connect instead of an HTTP client to avoid adding dependencies.
+        // If the port accepts a connection, the server is alive.
+        std::net::TcpStream::connect_timeout(
+            &std::net::SocketAddr::from(([127, 0, 0, 1], self.config.port)),
+            std::time::Duration::from_secs(3),
+        )
+        .is_ok()
+    }
+
+    fn run(self) {
+        // Give the server time to start before the first check.
+        std::thread::sleep(std::time::Duration::from_secs(5));
+        let mut failures = 0u32;
+        while self.running.load(Ordering::SeqCst) {
+            if self.check_health() {
+                failures = 0;
+            } else {
+                failures += 1;
+                eprintln!(
+                    "[coworker] sidecar health check failed ({}/3)",
+                    failures
+                );
+                if failures >= 3 {
+                    eprintln!("[coworker] sidecar appears dead, attempting respawn...");
+                    self.spawn_once();
+                    failures = 0;
+                    // Give the new process time to start before resuming checks.
+                    std::thread::sleep(std::time::Duration::from_secs(8));
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_secs(10));
+        }
+    }
+}
 /// The active keep-awake guard while keep-awake is on (None when off). Dropping the guard
 /// releases the hold (kills `caffeinate` on macOS, clears the execution state on Windows).
 struct KeepAwake(Mutex<Option<KeepAwakeGuard>>);
+
+/// Flag the watcher thread checks to know when to stop.
+struct SidecarRunningFlag(Arc<AtomicBool>);
 
 fn free_port() -> u16 {
     std::net::TcpListener::bind("127.0.0.1:0")
@@ -626,10 +724,15 @@ pub fn run() {
         ])
         .setup(move |app| {
             // 1. Start the Python server sidecar on the chosen port (inherits our env).
-            let mut server_cmd = Command::new(server_bin());
+            let spawn_config = ServerSpawnConfig {
+                bin: server_bin(),
+                port,
+                api_token: api_token.clone(),
+            };
+            let mut server_cmd = Command::new(&spawn_config.bin);
             server_cmd
                 .args(["--host", "127.0.0.1", "--port", &port.to_string()])
-                // The sidecar self-exits if we die abruptly (dev-watcher restart, crash) —
+                // The sidecar self-exits if we die abruptly (dev-watcher restart, crash) -
                 // belt-and-suspenders alongside the RunEvent::ExitRequested kill below.
                 // The explicit PID matters: under PyInstaller onefile the python process is a
                 // *grandchild* (bootloader in between), so getppid() never points at us and a
@@ -637,12 +740,6 @@ pub fn run() {
                 .env("COWORKER_EXIT_WITH_PARENT", "1")
                 .env("COWORKER_PARENT_PID", std::process::id().to_string())
                 .env("COWORKER_API_TOKEN", &api_token)
-                // This GUI app has no console, so a console-subsystem child would inherit
-                // invalid std handles and crash a few seconds in when uvicorn writes its logs
-                // (the "Starting coworker…" freeze on Windows). Hand it real handles: the
-                // server's output goes to a log file so field issues are debuggable at all
-                // ("relay off, no messages" was undiagnosable with everything on /dev/null).
-                // One file per launch, previous run kept as .old.
                 .stdin(Stdio::null());
             match server_log_file() {
                 Some(log) => {
@@ -672,7 +769,23 @@ pub fn run() {
                     None
                 }
             };
-            app.manage(ServerProcess(Mutex::new(child)));
+            // Shared state so the watcher can replace the child on respawn.
+            let server_state = Arc::new(Mutex::new(child));
+            app.manage(ServerProcess(server_state.clone()));
+
+            // 1b. Start the sidecar health watcher.
+            //     Every 10s: TCP-probe the sidecar port. 3 consecutive failures -> respawn.
+            //     This catches silent crashes (OOM, segfault, macOS jetsam) that leave the
+            //     Tauri shell running with a dead backend - the user sees "slow response" and
+            //     blank conversations because the frontend has no server to talk to.
+            let watcher_running = Arc::new(AtomicBool::new(true));
+            app.manage(SidecarRunningFlag(watcher_running.clone()));
+            let watcher = SidecarWatcher {
+                config: spawn_config,
+                server: server_state.clone(),
+                running: watcher_running,
+            };
+            std::thread::spawn(move || watcher.run());
 
             // Restore keep-awake from the last session.
             let ka = if read_keep_awake_pref() {
@@ -758,6 +871,10 @@ pub fn run() {
             // Also on Exit: belt-and-suspenders in case a quit path reaches teardown without
             // a preceding ExitRequested (observed with macOS Cmd+Q under the tray setup).
             if matches!(event, RunEvent::ExitRequested { .. } | RunEvent::Exit) {
+                // Stop the health watcher first so it doesn't respawn mid-shutdown.
+                if let Some(state) = app.try_state::<SidecarRunningFlag>() {
+                    state.0.store(false, Ordering::SeqCst);
+                }
                 if let Some(state) = app.try_state::<ServerProcess>() {
                     if let Some(mut child) = state.0.lock().unwrap().take() {
                         let _ = child.kill();

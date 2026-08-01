@@ -5,7 +5,7 @@ declare const __COWORKER_DEV_TOKEN__: string;
 // Endpoint resolution order: runtime-injected globals (Tauri sets `window.__COWORKER_HTTP__`
 // for its dynamically-chosen sidecar port) → Vite env → the 127.0.0.1:8765 dev default. This
 // keeps a single codebase: browser `npm run dev` hits 8765; the desktop shell hits its sidecar.
-const httpBase = (): string =>
+export const httpBase = (): string =>
   (globalThis as any).__COWORKER_HTTP__ ||
   (import.meta as any).env?.VITE_COWORKER_HTTP ||
   "http://127.0.0.1:8765";
@@ -20,7 +20,7 @@ const apiToken = (): string =>
 
 // All local REST calls pass through this module, so a module-local wrapper applies launch
 // authentication without asking every endpoint helper to remember the security header.
-const fetch = (
+export const authedFetch = (
   input: RequestInfo | URL,
   init: RequestInit = {},
 ): Promise<Response> => {
@@ -58,12 +58,12 @@ export interface WorkspaceCommandTrust {
 }
 
 export async function getHealth(): Promise<Health> {
-  const res = await fetch(`${httpBase()}/v1/health`);
+  const res = await authedFetch(`${httpBase()}/v1/health`);
   return res.json();
 }
 
 export async function getRecentWorkspaces(): Promise<RecentWorkspace[]> {
-  const res = await fetch(`${httpBase()}/v1/workspaces/recent`);
+  const res = await authedFetch(`${httpBase()}/v1/workspaces/recent`);
   return (await res.json()).workspaces ?? [];
 }
 
@@ -71,7 +71,7 @@ export async function getRecentWorkspaces(): Promise<RecentWorkspace[]> {
  * paths from web file dialogs. Blocks until the user picks or cancels; null on cancel/unavailable. */
 export async function pickFolderViaServer(): Promise<string | null> {
   try {
-    const res = await fetch(`${httpBase()}/v1/workspaces/pick`, { method: "POST" });
+    const res = await authedFetch(`${httpBase()}/v1/workspaces/pick`, { method: "POST" });
     const d = await res.json();
     return d.ok && d.path ? d.path : null;
   } catch {
@@ -89,7 +89,7 @@ export async function openWorkspace(
   git_branch?: string | null;
   command_trust?: WorkspaceCommandTrust;
 }> {
-  const res = await fetch(`${httpBase()}/v1/workspaces/open`, {
+  const res = await authedFetch(`${httpBase()}/v1/workspaces/open`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ path, create }),
@@ -98,7 +98,7 @@ export async function openWorkspace(
 }
 
 export async function getTrustedWorkspaces(): Promise<WorkspaceCommandTrust[]> {
-  const res = await fetch(`${httpBase()}/v1/workspaces/trusted`);
+  const res = await authedFetch(`${httpBase()}/v1/workspaces/trusted`);
   return (await res.json()).workspaces ?? [];
 }
 
@@ -106,7 +106,7 @@ export async function setWorkspaceTrusted(
   path: string,
   trusted: boolean,
 ): Promise<{ ok: boolean; error?: string } & WorkspaceCommandTrust> {
-  const res = await fetch(`${httpBase()}/v1/workspaces/trust`, {
+  const res = await authedFetch(`${httpBase()}/v1/workspaces/trust`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ path, trusted }),
@@ -116,7 +116,7 @@ export async function setWorkspaceTrusted(
 
 export async function getSessions(workspace?: string): Promise<SessionInfo[]> {
   const q = workspace ? `?workspace=${encodeURIComponent(workspace)}` : "";
-  const res = await fetch(`${httpBase()}/v1/sessions${q}`);
+  const res = await authedFetch(`${httpBase()}/v1/sessions${q}`);
   return (await res.json()).sessions ?? [];
 }
 
@@ -145,12 +145,12 @@ export interface ConversationMessage {
 }
 
 export async function getSessionMessages(sessionId: string): Promise<ConversationMessage[]> {
-  const res = await fetch(`${httpBase()}/v1/sessions/${sessionId}/messages`);
+  const res = await authedFetch(`${httpBase()}/v1/sessions/${sessionId}/messages`);
   return (await res.json()).messages ?? [];
 }
 
 export async function renameSession(sessionId: string, title: string): Promise<{ ok: boolean; error?: string }> {
-  const res = await fetch(`${httpBase()}/v1/sessions/${encodeURIComponent(sessionId)}`, {
+  const res = await authedFetch(`${httpBase()}/v1/sessions/${encodeURIComponent(sessionId)}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ title }),
@@ -162,7 +162,7 @@ export async function setSessionFlags(
   sessionId: string,
   flags: { pinned?: boolean; archived?: boolean },
 ): Promise<{ ok: boolean; error?: string }> {
-  const res = await fetch(`${httpBase()}/v1/sessions/${encodeURIComponent(sessionId)}`, {
+  const res = await authedFetch(`${httpBase()}/v1/sessions/${encodeURIComponent(sessionId)}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(flags),
@@ -171,8 +171,255 @@ export async function setSessionFlags(
 }
 
 export async function deleteSession(sessionId: string): Promise<{ ok: boolean; error?: string }> {
-  const res = await fetch(`${httpBase()}/v1/sessions/${encodeURIComponent(sessionId)}`, { method: "DELETE" });
+  const res = await authedFetch(`${httpBase()}/v1/sessions/${encodeURIComponent(sessionId)}`, { method: "DELETE" });
   return res.json();
+}
+
+// ---------------------------------------------------------------------------
+// DeskMate 行文编辑（润色台）
+// ---------------------------------------------------------------------------
+
+export interface ProofreadItem {
+  id: string;
+  excerpt: string;
+  type: string;
+  suggestion: string;
+  reason: string;
+}
+
+export interface ProofreadResult {
+  letter: string;
+  items: ProofreadItem[];
+  chapters?: { idx: number; title: string; char_count: number }[];
+  current_chapter?: number | null;
+}
+
+export interface ManuscriptChapter {
+  idx: number;
+  title: string;
+  char_count: number;
+  text: string;
+}
+
+export interface StyleProfile {
+  summary?: string;
+  features?: Record<string, string>;
+}
+
+/** 校准作者风格：传本地文件路径，或上传文件（base64 + 文件名）。 */
+export async function calibrateWritingStyle(opts: {
+  path?: string;
+  content_base64?: string;
+  filename?: string;
+}): Promise<{ ok: boolean; profile: StyleProfile; chars: number }> {
+  const res = await authedFetch(`${httpBase()}/v1/deskmate/style-profile`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(opts),
+  });
+  if (!res.ok) {
+    const e = await res.json().catch(() => ({} as any));
+    throw new Error(e.error || `风格校准失败 (${res.status})`);
+  }
+  return res.json();
+}
+
+/** 读取已保存的作者风格画像。 */
+export async function getWritingStyle(): Promise<{ profile: StyleProfile | null }> {
+  const res = await authedFetch(`${httpBase()}/v1/deskmate/style-profile`);
+  return res.json();
+}
+
+/** 对文稿做编辑审阅。text 优先；或传 path / 上传文件（base64 + 文件名）。 */
+export async function proofreadDraft(opts: {
+  text?: string;
+  path?: string;
+  content_base64?: string;
+  filename?: string;
+  chapter?: number | string;
+}): Promise<ProofreadResult> {
+  const res = await authedFetch(`${httpBase()}/v1/deskmate/proofread`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(opts),
+  });
+  if (!res.ok) {
+    const e = await res.json().catch(() => ({} as any));
+    throw new Error(e.error || `批改失败 (${res.status})`);
+  }
+  return res.json();
+}
+
+/** 识别文稿章节（按 第X章/回/节 切分），返回含正文的章节列表，供前端章节下拉与按章编辑。 */
+export async function listManuscriptChapters(opts: {
+  text?: string;
+  path?: string;
+  content_base64?: string;
+  filename?: string;
+}): Promise<ManuscriptChapter[]> {
+  const res = await authedFetch(`${httpBase()}/v1/deskmate/chapters`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(opts),
+  });
+  if (!res.ok) {
+    const e = await res.json().catch(() => ({} as any));
+    throw new Error(e.error || `章节识别失败 (${res.status})`);
+  }
+  const d = await res.json();
+  return d.chapters ?? [];
+}
+
+export interface ManuscriptInfo {
+  name: string;
+  chapter_count: number;
+  saved_at: string;
+}
+
+/** 把整本书稿（含各章正文）存为书稿，供聊天「审阅第X章」直接调出。 */
+export async function saveManuscript(name: string, chapters: ManuscriptChapter[]): Promise<void> {
+  await authedFetch(`${httpBase()}/v1/deskmate/manuscript`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name, chapters }),
+  });
+}
+
+/** 列出已存书稿。 */
+export async function listManuscripts(): Promise<ManuscriptInfo[]> {
+  const res = await authedFetch(`${httpBase()}/v1/deskmate/manuscripts`, { method: "GET" });
+  if (!res.ok) return [];
+  const d = await res.json().catch(() => ({ manuscripts: [] }));
+  return d.manuscripts ?? [];
+}
+
+/** 读取某本已存书稿的章节。 */
+export async function loadManuscript(name: string): Promise<ManuscriptChapter[]> {
+  const res = await authedFetch(
+    `${httpBase()}/v1/deskmate/manuscript/${encodeURIComponent(name)}`,
+    { method: "GET" },
+  );
+  if (!res.ok) throw new Error(`读取书稿失败 (${res.status})`);
+  const d = await res.json();
+  return d.chapters ?? [];
+}
+
+// --------------------------------------------------------------------------- //
+// 深度审阅报告（编辑专家交付物：逐章细抠 + 总报告）
+// --------------------------------------------------------------------------- //
+export interface ReviewReportIssue {
+  type: string;
+  excerpt: string;
+  comment: string;
+}
+export interface ReviewReportChapter {
+  idx: number;
+  title: string;
+  summary: string;
+  analysis: string;
+  issues: ReviewReportIssue[];
+}
+export interface ReviewReportOverall {
+  summary: string;
+  scores: Record<string, number>;
+  strengths: string[];
+  weaknesses: string[];
+  character_consistency: string[];
+  recommendations: string[];
+}
+export interface ReviewReport {
+  title: string;
+  generated_at: string;
+  overall: ReviewReportOverall;
+  per_chapter: ReviewReportChapter[];
+  meta: { chapter_count: number; detailed_count: number; truncated: boolean; bible?: string[] };
+}
+export interface ReviewReportSummary {
+  name: string;
+  title: string;
+  generated_at: string;
+  chapter_count: number;
+}
+
+/** 生成整书深度审阅报告（逐章细抠 + 总报告）。文稿来源四选一：
+ *  name（已存书稿）/ text（粘贴）/ path（本地文件或文件夹，自动连带 analyze_novel 圣经）/ content_base64（上传）。
+ *  传 sessionId 时，生成结果会作为「提交文稿 + 报告」两条消息写入该会话，使报告留在对话上下文中。 */
+export async function generateReport(opts: {
+  name?: string;
+  text?: string;
+  path?: string;
+  folder?: string;
+  content_base64?: string;
+  filename?: string;
+  chapter_indices?: number[];
+  sessionId?: string;
+}): Promise<{ ok: boolean; task_id: string }> {
+  const { sessionId, ...rest } = opts;
+  const body: Record<string, unknown> = { ...rest };
+  if (sessionId) body.session_id = sessionId;
+  const res = await authedFetch(`${httpBase()}/v1/deskmate/report`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const e = await res.json().catch(() => ({} as any));
+    throw new Error(e.error || `生成报告失败 (${res.status})`);
+  }
+  return res.json();
+}
+
+/** 查询审阅报告生成任务的当前进度。 */
+export async function getReportProgress(
+  taskId: string,
+): Promise<{ status: string; progress: { completed: number; total: number; current_title: string } }> {
+  const res = await authedFetch(`${httpBase()}/v1/deskmate/report/progress/${encodeURIComponent(taskId)}`);
+  if (!res.ok) {
+    const e = await res.json().catch(() => ({} as any));
+    throw new Error(e.error || `查询进度失败 (${res.status})`);
+  }
+  return res.json();
+}
+
+/** 下载指定报告的 Word(.docx) 文档的 URL（直接用 <a download> 打开）。 */
+export function getReportDocxUrl(name: string): string {
+  return `${httpBase()}/v1/deskmate/report/${encodeURIComponent(name)}/docx`;
+}
+
+/**
+ * 通过带鉴权的 authedFetch 拉取报告 Word 文档并以 blob 方式触发下载。
+ * 不能用裸 URL 直连（<a href> / window.open）：那样不带 X-OpenWorker-Token，
+ * 会被后端 middleware 以「missing or invalid OpenWorker sidecar token」拒绝，
+ * 且直连失败会让 webview 跳到错误页导致整个软件崩溃。这里走 authedFetch，
+ * 任何错误都会抛给调用方在 UI 上温和提示，不会崩溃。
+ */
+export async function downloadReportDocx(name: string): Promise<void> {
+  const res = await authedFetch(
+    `${httpBase()}/v1/deskmate/report/${encodeURIComponent(name)}/docx`,
+  );
+  if (!res.ok) {
+    throw new Error(`下载 Word 失败（${res.status}）`);
+  }
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  try {
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${name}.docx`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  } finally {
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+}
+
+/** 列出已生成的审阅报告。 */
+export async function listReports(): Promise<ReviewReportSummary[]> {
+  const res = await authedFetch(`${httpBase()}/v1/deskmate/reports`, { method: "GET" });
+  if (!res.ok) return [];
+  const d = await res.json().catch(() => ({ reports: [] }));
+  return d.reports ?? [];
 }
 
 export interface ArtifactInfo {
@@ -195,13 +442,13 @@ export interface ArtifactContent {
 }
 
 export async function getArtifacts(sessionId: string): Promise<ArtifactInfo[]> {
-  const res = await fetch(`${httpBase()}/v1/sessions/${encodeURIComponent(sessionId)}/artifacts`);
+  const res = await authedFetch(`${httpBase()}/v1/sessions/${encodeURIComponent(sessionId)}/artifacts`);
   return (await res.json()).artifacts ?? [];
 }
 
 export async function readArtifact(sessionId: string, path: string): Promise<ArtifactContent> {
   const q = new URLSearchParams({ path });
-  const res = await fetch(`${httpBase()}/v1/sessions/${encodeURIComponent(sessionId)}/artifacts/read?${q.toString()}`);
+  const res = await authedFetch(`${httpBase()}/v1/sessions/${encodeURIComponent(sessionId)}/artifacts/read?${q.toString()}`);
   return res.json();
 }
 
@@ -211,7 +458,7 @@ export async function revealArtifact(
   path: string,
   mode: "reveal" | "open" = "reveal",
 ): Promise<{ ok: boolean; error?: string }> {
-  const res = await fetch(`${httpBase()}/v1/sessions/${encodeURIComponent(sessionId)}/artifacts/reveal`, {
+  const res = await authedFetch(`${httpBase()}/v1/sessions/${encodeURIComponent(sessionId)}/artifacts/reveal`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ path, mode }),
@@ -229,7 +476,7 @@ export interface RootInfo {
 }
 
 export async function getRoots(sessionId: string): Promise<RootInfo[]> {
-  const res = await fetch(`${httpBase()}/v1/sessions/${encodeURIComponent(sessionId)}/roots`);
+  const res = await authedFetch(`${httpBase()}/v1/sessions/${encodeURIComponent(sessionId)}/roots`);
   return (await res.json()).roots ?? [];
 }
 
@@ -238,7 +485,7 @@ export async function addRoot(
   path: string,
   writable: boolean,
 ): Promise<{ ok: boolean; error?: string; roots?: RootInfo[] }> {
-  const res = await fetch(`${httpBase()}/v1/sessions/${encodeURIComponent(sessionId)}/roots`, {
+  const res = await authedFetch(`${httpBase()}/v1/sessions/${encodeURIComponent(sessionId)}/roots`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ path, writable }),
@@ -251,7 +498,7 @@ export async function removeRoot(
   path: string,
 ): Promise<{ ok: boolean; error?: string; roots?: RootInfo[] }> {
   const q = new URLSearchParams({ path });
-  const res = await fetch(
+  const res = await authedFetch(
     `${httpBase()}/v1/sessions/${encodeURIComponent(sessionId)}/roots?${q.toString()}`,
     { method: "DELETE" },
   );
@@ -274,12 +521,12 @@ export interface McpServer {
 }
 
 export async function getMcpServers(): Promise<McpServer[]> {
-  const res = await fetch(`${httpBase()}/v1/mcp`);
+  const res = await authedFetch(`${httpBase()}/v1/mcp`);
   return (await res.json()).servers ?? [];
 }
 
 export async function addMcpServer(name: string, config: Record<string, any>) {
-  const res = await fetch(`${httpBase()}/v1/mcp`, {
+  const res = await authedFetch(`${httpBase()}/v1/mcp`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ name, config }),
@@ -288,7 +535,7 @@ export async function addMcpServer(name: string, config: Record<string, any>) {
 }
 
 export async function patchMcpServer(name: string, changes: Record<string, any>) {
-  const res = await fetch(`${httpBase()}/v1/mcp/${encodeURIComponent(name)}`, {
+  const res = await authedFetch(`${httpBase()}/v1/mcp/${encodeURIComponent(name)}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(changes),
@@ -297,26 +544,26 @@ export async function patchMcpServer(name: string, changes: Record<string, any>)
 }
 
 export async function deleteMcpServer(name: string) {
-  const res = await fetch(`${httpBase()}/v1/mcp/${encodeURIComponent(name)}`, { method: "DELETE" });
+  const res = await authedFetch(`${httpBase()}/v1/mcp/${encodeURIComponent(name)}`, { method: "DELETE" });
   return res.json();
 }
 
 export async function getMcpTools(
   name: string,
 ): Promise<{ ok: boolean; error?: string; tools: { name: string; description: string }[] }> {
-  const res = await fetch(`${httpBase()}/v1/mcp/${encodeURIComponent(name)}/tools`);
+  const res = await authedFetch(`${httpBase()}/v1/mcp/${encodeURIComponent(name)}/tools`);
   return res.json();
 }
 
 export async function reloadMcp() {
-  const res = await fetch(`${httpBase()}/v1/mcp/reload`, { method: "POST" });
+  const res = await authedFetch(`${httpBase()}/v1/mcp/reload`, { method: "POST" });
   return res.json();
 }
 
 /** Connect one MCP server now. For OAuth servers this opens the system browser;
  * poll getMcpServers() for the status flip (authorizing → connected / needs_auth). */
 export async function connectMcp(name: string): Promise<{ ok: boolean; started?: boolean }> {
-  const res = await fetch(`${httpBase()}/v1/mcp/${encodeURIComponent(name)}/connect`, {
+  const res = await authedFetch(`${httpBase()}/v1/mcp/${encodeURIComponent(name)}/connect`, {
     method: "POST",
   });
   return res.json();
@@ -324,7 +571,7 @@ export async function connectMcp(name: string): Promise<{ ok: boolean; started?:
 
 /** Drop the connection and forget the stored OAuth tokens. */
 export async function signoutMcp(name: string): Promise<{ ok: boolean }> {
-  const res = await fetch(`${httpBase()}/v1/mcp/${encodeURIComponent(name)}/signout`, {
+  const res = await authedFetch(`${httpBase()}/v1/mcp/${encodeURIComponent(name)}/signout`, {
     method: "POST",
   });
   return res.json();
@@ -477,7 +724,7 @@ export interface CloudStatus {
 export async function setCloudTelemetry(
   enabled: boolean,
 ): Promise<{ ok: boolean; telemetry_enabled?: boolean }> {
-  const res = await fetch(`${httpBase()}/v1/cloud/telemetry`, {
+  const res = await authedFetch(`${httpBase()}/v1/cloud/telemetry`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ enabled }),
@@ -486,13 +733,13 @@ export async function setCloudTelemetry(
 }
 
 export async function getCloudStatus(): Promise<CloudStatus> {
-  const res = await fetch(`${httpBase()}/v1/cloud/status`);
+  const res = await authedFetch(`${httpBase()}/v1/cloud/status`);
   return res.json();
 }
 
 export async function cloudLogin(): Promise<{ ok: boolean }> {
   // The sidecar opens the system browser; the GUI just polls status after.
-  const res = await fetch(`${httpBase()}/v1/cloud/login`, { method: "POST" });
+  const res = await authedFetch(`${httpBase()}/v1/cloud/login`, { method: "POST" });
   return res.json();
 }
 
@@ -525,7 +772,7 @@ export function waitForCloudSignIn(
 }
 
 export async function cloudLogout(): Promise<{ ok: boolean }> {
-  const res = await fetch(`${httpBase()}/v1/cloud/logout`, { method: "POST" });
+  const res = await authedFetch(`${httpBase()}/v1/cloud/logout`, { method: "POST" });
   return res.json();
 }
 
@@ -533,7 +780,7 @@ export async function connectManaged(
   name: string,
   options?: { access?: "read" | "write" },
 ): Promise<{ ok: boolean; error?: string }> {
-  const res = await fetch(
+  const res = await authedFetch(
     `${httpBase()}/v1/connectors/${encodeURIComponent(name)}/connect-managed`,
     {
       method: "POST",
@@ -553,7 +800,7 @@ export async function connectManaged(
  * opens the vendor's sign-in in the browser (local OAuth, no cloud account needed);
  * poll getConnectors until the card flips to connected. */
 export async function connectMcpBacked(name: string): Promise<{ ok: boolean; error?: string }> {
-  const res = await fetch(
+  const res = await authedFetch(
     `${httpBase()}/v1/connectors/${encodeURIComponent(name)}/mcp-connect`,
     { method: "POST" },
   );
@@ -570,7 +817,7 @@ export interface ConnectorTool {
 }
 
 export async function getConnectors(): Promise<Connector[]> {
-  const res = await fetch(`${httpBase()}/v1/connectors`);
+  const res = await authedFetch(`${httpBase()}/v1/connectors`);
   return (await res.json()).connectors ?? [];
 }
 
@@ -578,7 +825,7 @@ export async function connectConnector(
   name: string,
   fields: Record<string, string>,
 ): Promise<{ ok: boolean; account?: string; error?: string }> {
-  const res = await fetch(`${httpBase()}/v1/connectors/${encodeURIComponent(name)}/connect`, {
+  const res = await authedFetch(`${httpBase()}/v1/connectors/${encodeURIComponent(name)}/connect`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ fields }),
@@ -587,7 +834,7 @@ export async function connectConnector(
 }
 
 export async function disconnectConnector(name: string): Promise<{ ok: boolean }> {
-  const res = await fetch(`${httpBase()}/v1/connectors/${encodeURIComponent(name)}/disconnect`, {
+  const res = await authedFetch(`${httpBase()}/v1/connectors/${encodeURIComponent(name)}/disconnect`, {
     method: "POST",
   });
   return res.json();
@@ -597,7 +844,7 @@ export async function updateConnectorTools(
   name: string,
   enabled: Record<string, boolean>,
 ): Promise<{ ok: boolean; error?: string; tools?: Record<string, boolean> }> {
-  const res = await fetch(`${httpBase()}/v1/connectors/${encodeURIComponent(name)}/tools`, {
+  const res = await authedFetch(`${httpBase()}/v1/connectors/${encodeURIComponent(name)}/tools`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ enabled }),
@@ -633,7 +880,7 @@ export async function getAudit(params: {
   if (params.session_id) q.set("session_id", params.session_id);
   if (params.connector) q.set("connector", params.connector);
   if (params.tool) q.set("tool", params.tool);
-  const res = await fetch(`${httpBase()}/v1/audit${q.toString() ? "?" + q.toString() : ""}`);
+  const res = await authedFetch(`${httpBase()}/v1/audit${q.toString() ? "?" + q.toString() : ""}`);
   return (await res.json()).events ?? [];
 }
 
@@ -651,17 +898,17 @@ export interface BrowserState {
 }
 
 export async function getBrowserState(): Promise<BrowserState> {
-  const res = await fetch(`${httpBase()}/v1/browser/state`);
+  const res = await authedFetch(`${httpBase()}/v1/browser/state`);
   return res.json();
 }
 
 export async function takeBrowserScreenshot(): Promise<BrowserState & { ok?: boolean; error?: string }> {
-  const res = await fetch(`${httpBase()}/v1/browser/screenshot`, { method: "POST" });
+  const res = await authedFetch(`${httpBase()}/v1/browser/screenshot`, { method: "POST" });
   return res.json();
 }
 
 export async function closeBrowser(): Promise<{ ok?: boolean; error?: string }> {
-  const res = await fetch(`${httpBase()}/v1/browser/close`, { method: "POST" });
+  const res = await authedFetch(`${httpBase()}/v1/browser/close`, { method: "POST" });
   return res.json();
 }
 
@@ -708,7 +955,7 @@ export interface PdfSettings {
 export async function setPdfSettings(
   patch: Partial<PdfSettings>,
 ): Promise<{ ok: boolean; error?: string } & Partial<PdfSettings>> {
-  const res = await fetch(`${httpBase()}/v1/settings/pdf`, {
+  const res = await authedFetch(`${httpBase()}/v1/settings/pdf`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(patch),
@@ -720,7 +967,7 @@ export async function setPdfSettings(
 export async function inspectPdf(
   dataUrl: string,
 ): Promise<{ ok: boolean; pages?: number; bytes?: number; error?: string }> {
-  const res = await fetch(`${httpBase()}/v1/attachments/inspect-pdf`, {
+  const res = await authedFetch(`${httpBase()}/v1/attachments/inspect-pdf`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ data_url: dataUrl }),
@@ -732,7 +979,7 @@ export async function inspectPdf(
 export async function setSessionsPeek(
   n: number,
 ): Promise<{ ok: boolean; sessions_peek?: number; error?: string }> {
-  const res = await fetch(`${httpBase()}/v1/settings/sessions-peek`, {
+  const res = await authedFetch(`${httpBase()}/v1/settings/sessions-peek`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ sessions_peek: n }),
@@ -743,7 +990,7 @@ export async function setSessionsPeek(
 export async function setScratchBase(
   path: string,
 ): Promise<{ ok: boolean; error?: string; scratch_base?: string }> {
-  const res = await fetch(`${httpBase()}/v1/settings/scratch-base`, {
+  const res = await authedFetch(`${httpBase()}/v1/settings/scratch-base`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ path }),
@@ -754,7 +1001,7 @@ export async function setScratchBase(
 export async function setSurfaces(
   flags: { chat?: boolean; code?: boolean },
 ): Promise<{ ok: boolean; surfaces: SurfaceVisibility }> {
-  const res = await fetch(`${httpBase()}/v1/settings/surfaces`, {
+  const res = await authedFetch(`${httpBase()}/v1/settings/surfaces`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(flags),
@@ -766,7 +1013,7 @@ export async function setSurfaces(
 export async function setNavLayout(
   layout: "flat" | "grouped",
 ): Promise<{ ok: boolean; nav_layout?: "flat" | "grouped"; error?: string }> {
-  const res = await fetch(`${httpBase()}/v1/settings/nav-layout`, {
+  const res = await authedFetch(`${httpBase()}/v1/settings/nav-layout`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ nav_layout: layout }),
@@ -828,7 +1075,7 @@ export interface PersonaConsent {
 }
 
 export async function getPersonas(): Promise<Persona[]> {
-  const res = await fetch(`${httpBase()}/v1/personas`);
+  const res = await authedFetch(`${httpBase()}/v1/personas`);
   return (await res.json()).personas;
 }
 
@@ -836,7 +1083,7 @@ export async function updatePersona(
   id: string,
   body: { enabled?: boolean; surfaced?: boolean; default?: boolean },
 ): Promise<{ ok: boolean; personas?: Persona[]; error?: string }> {
-  const res = await fetch(`${httpBase()}/v1/personas/${encodeURIComponent(id)}`, {
+  const res = await authedFetch(`${httpBase()}/v1/personas/${encodeURIComponent(id)}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
@@ -850,7 +1097,7 @@ export async function updatePersona(
 export async function deletePersona(
   id: string,
 ): Promise<{ ok: boolean; personas?: Persona[]; error?: string }> {
-  const res = await fetch(`${httpBase()}/v1/personas/${encodeURIComponent(id)}`, {
+  const res = await authedFetch(`${httpBase()}/v1/personas/${encodeURIComponent(id)}`, {
     method: "DELETE",
   });
   const out = await res.json();
@@ -880,7 +1127,7 @@ export async function getCloudGallery(): Promise<{
   personas: GalleryPersona[];
   error?: string;
 }> {
-  const res = await fetch(`${httpBase()}/v1/cloud/gallery`);
+  const res = await authedFetch(`${httpBase()}/v1/cloud/gallery`);
   return res.json();
 }
 
@@ -904,14 +1151,14 @@ export interface GalleryDetail {
 }
 
 export async function getCloudGalleryDetail(slug: string): Promise<GalleryDetail> {
-  const res = await fetch(`${httpBase()}/v1/cloud/gallery/${encodeURIComponent(slug)}`);
+  const res = await authedFetch(`${httpBase()}/v1/cloud/gallery/${encodeURIComponent(slug)}`);
   return res.json();
 }
 
 export async function installPersona(
   body: { dir?: string; git_url?: string; gallery_slug?: string },
 ): Promise<{ ok: boolean; consent?: PersonaConsent[]; personas?: Persona[]; error?: string }> {
-  const res = await fetch(`${httpBase()}/v1/personas/install`, {
+  const res = await authedFetch(`${httpBase()}/v1/personas/install`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
@@ -957,7 +1204,7 @@ export interface PersonaDetail {
 }
 
 export async function getPersonaDetail(id: string): Promise<PersonaDetail> {
-  const res = await fetch(`${httpBase()}/v1/personas/${encodeURIComponent(id)}`);
+  const res = await authedFetch(`${httpBase()}/v1/personas/${encodeURIComponent(id)}`);
   return res.json();
 }
 
@@ -967,7 +1214,7 @@ export async function setPersonaConnection(
   connector: string,
   enabled: boolean,
 ): Promise<{ ok: boolean; default_connections?: PersonaDefaultConnection[]; error?: string }> {
-  const res = await fetch(`${httpBase()}/v1/personas/${encodeURIComponent(id)}/connections`, {
+  const res = await authedFetch(`${httpBase()}/v1/personas/${encodeURIComponent(id)}/connections`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ connector, enabled }),
@@ -980,7 +1227,7 @@ export async function setPersonaEnabled(
   id: string,
   enabled: boolean,
 ): Promise<{ ok: boolean; personas?: Persona[]; error?: string }> {
-  const res = await fetch(`${httpBase()}/v1/personas/${encodeURIComponent(id)}/enable`, {
+  const res = await authedFetch(`${httpBase()}/v1/personas/${encodeURIComponent(id)}/enable`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ enabled }),
@@ -1020,7 +1267,7 @@ export async function getSessionConnections(
   persona?: string,
 ): Promise<SessionConnections> {
   const q = persona ? `?persona=${encodeURIComponent(persona)}` : "";
-  const res = await fetch(
+  const res = await authedFetch(
     `${httpBase()}/v1/sessions/${encodeURIComponent(sessionId)}/connections${q}`,
   );
   return res.json();
@@ -1036,7 +1283,7 @@ export async function setSessionConnection(
   enabled: boolean,
   clear = false,
 ): Promise<{ ok: boolean; error?: string }> {
-  const res = await fetch(`${httpBase()}/v1/sessions/${encodeURIComponent(sessionId)}/connections`, {
+  const res = await authedFetch(`${httpBase()}/v1/sessions/${encodeURIComponent(sessionId)}/connections`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ connector, enabled, ...(clear ? { clear: true } : {}) }),
@@ -1074,7 +1321,7 @@ export async function getInbox(sessionId?: string, state?: string): Promise<Inbo
   const q = new URLSearchParams();
   if (sessionId) q.set("session_id", sessionId);
   if (state) q.set("state", state);
-  const res = await fetch(`${httpBase()}/v1/inbox?${q.toString()}`);
+  const res = await authedFetch(`${httpBase()}/v1/inbox?${q.toString()}`);
   return (await res.json()).items;
 }
 
@@ -1082,7 +1329,7 @@ export async function resolveInboxItem(
   id: string,
   resolution: string,
 ): Promise<{ ok: boolean }> {
-  const res = await fetch(`${httpBase()}/v1/inbox/${encodeURIComponent(id)}/resolve`, {
+  const res = await authedFetch(`${httpBase()}/v1/inbox/${encodeURIComponent(id)}/resolve`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ resolution }),
@@ -1109,7 +1356,7 @@ export interface RecentChannel {
 }
 
 export async function getSubscriptions(): Promise<Subscription[]> {
-  const res = await fetch(`${httpBase()}/v1/subscriptions`);
+  const res = await authedFetch(`${httpBase()}/v1/subscriptions`);
   return (await res.json()).subscriptions ?? [];
 }
 
@@ -1121,7 +1368,7 @@ export interface InboxBinding {
 }
 
 export async function getInboxRouting(): Promise<InboxBinding[]> {
-  const res = await fetch(`${httpBase()}/v1/inbox/routing`);
+  const res = await authedFetch(`${httpBase()}/v1/inbox/routing`);
   return (await res.json()).bindings ?? [];
 }
 
@@ -1130,7 +1377,7 @@ export async function setInboxBinding(
   channel: string | null,
   target: string,
 ): Promise<{ ok: boolean; bindings?: InboxBinding[]; error?: string }> {
-  const res = await fetch(`${httpBase()}/v1/inbox/routing/binding`, {
+  const res = await authedFetch(`${httpBase()}/v1/inbox/routing/binding`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ name, channel, target }),
@@ -1147,12 +1394,12 @@ export interface UnroutedItem {
 }
 
 export async function getUnrouted(): Promise<UnroutedItem[]> {
-  const res = await fetch(`${httpBase()}/v1/unrouted`);
+  const res = await authedFetch(`${httpBase()}/v1/unrouted`);
   return (await res.json()).items ?? [];
 }
 
 export async function getRecentChannels(): Promise<RecentChannel[]> {
-  const res = await fetch(`${httpBase()}/v1/channels/recent`);
+  const res = await authedFetch(`${httpBase()}/v1/channels/recent`);
   return (await res.json()).channels ?? [];
 }
 
@@ -1160,7 +1407,7 @@ export async function subscribeChannel(
   sessionId: string,
   channel: string,
 ): Promise<{ ok: boolean; channel?: string; error?: string }> {
-  const res = await fetch(`${httpBase()}/v1/subscriptions`, {
+  const res = await authedFetch(`${httpBase()}/v1/subscriptions`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ session_id: sessionId, channel }),
@@ -1172,7 +1419,7 @@ export async function unsubscribeChannel(
   sessionId: string,
   channel: string,
 ): Promise<{ ok: boolean; removed?: boolean }> {
-  const res = await fetch(`${httpBase()}/v1/subscriptions/remove`, {
+  const res = await authedFetch(`${httpBase()}/v1/subscriptions/remove`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ session_id: sessionId, channel }),
@@ -1181,7 +1428,7 @@ export async function unsubscribeChannel(
 }
 
 export async function getUnattended(sessionId: string): Promise<boolean> {
-  const res = await fetch(
+  const res = await authedFetch(
     `${httpBase()}/v1/sessions/${encodeURIComponent(sessionId)}/unattended`,
   );
   return (await res.json()).unattended;
@@ -1191,7 +1438,7 @@ export async function setUnattended(
   sessionId: string,
   unattended: boolean,
 ): Promise<{ ok: boolean; unattended: boolean }> {
-  const res = await fetch(
+  const res = await authedFetch(
     `${httpBase()}/v1/sessions/${encodeURIComponent(sessionId)}/unattended`,
     {
       method: "POST",
@@ -1203,14 +1450,14 @@ export async function setUnattended(
 }
 
 export async function getSettings(): Promise<ModelSettings> {
-  const res = await fetch(`${httpBase()}/v1/settings`);
+  const res = await authedFetch(`${httpBase()}/v1/settings`);
   return res.json();
 }
 
 export async function setModelKey(
   apiKey: string,
 ): Promise<{ ok: boolean; error?: string; has_key?: boolean; source?: string }> {
-  const res = await fetch(`${httpBase()}/v1/settings/model-key`, {
+  const res = await authedFetch(`${httpBase()}/v1/settings/model-key`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ api_key: apiKey }),
@@ -1221,7 +1468,7 @@ export async function setModelKey(
 export async function setDefaultModel(
   model: string,
 ): Promise<{ ok: boolean; error?: string; model?: string }> {
-  const res = await fetch(`${httpBase()}/v1/settings/default-model`, {
+  const res = await authedFetch(`${httpBase()}/v1/settings/default-model`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ model }),
@@ -1230,7 +1477,7 @@ export async function setDefaultModel(
 }
 
 export async function addModel(model: string): Promise<ModelSettings & { ok: boolean; error?: string }> {
-  const res = await fetch(`${httpBase()}/v1/settings/models/add`, {
+  const res = await authedFetch(`${httpBase()}/v1/settings/models/add`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ model }),
@@ -1239,7 +1486,7 @@ export async function addModel(model: string): Promise<ModelSettings & { ok: boo
 }
 
 export async function removeModel(model: string): Promise<ModelSettings & { ok: boolean }> {
-  const res = await fetch(`${httpBase()}/v1/settings/models/remove`, {
+  const res = await authedFetch(`${httpBase()}/v1/settings/models/remove`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ model }),
@@ -1248,7 +1495,7 @@ export async function removeModel(model: string): Promise<ModelSettings & { ok: 
 }
 
 export async function setOnboarded(value: boolean): Promise<{ ok: boolean; onboarded: boolean }> {
-  const res = await fetch(`${httpBase()}/v1/settings/onboarded`, {
+  const res = await authedFetch(`${httpBase()}/v1/settings/onboarded`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ value }),
@@ -1282,7 +1529,7 @@ export interface ProviderInfo {
 }
 
 export async function getProviders(): Promise<ProviderInfo[]> {
-  const res = await fetch(`${httpBase()}/v1/providers`);
+  const res = await authedFetch(`${httpBase()}/v1/providers`);
   return res.json();
 }
 
@@ -1290,7 +1537,7 @@ export async function setProvider(
   name: string,
   fields: Record<string, string>,
 ): Promise<{ ok: boolean; error?: string; provider?: string; recommended_model?: string | null }> {
-  const res = await fetch(`${httpBase()}/v1/providers`, {
+  const res = await authedFetch(`${httpBase()}/v1/providers`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ name, fields }),
@@ -1300,7 +1547,7 @@ export async function setProvider(
 
 /** Forget a provider's stored config (Settings ▸ Models "Remove key…"). */
 export async function removeProvider(name: string): Promise<{ ok: boolean; error?: string }> {
-  const res = await fetch(`${httpBase()}/v1/providers/${encodeURIComponent(name)}`, {
+  const res = await authedFetch(`${httpBase()}/v1/providers/${encodeURIComponent(name)}`, {
     method: "DELETE",
   });
   return res.json();
@@ -1311,7 +1558,7 @@ export async function verifyProvider(
   name: string,
   fields: Record<string, string>,
 ): Promise<{ ok: boolean; error?: string }> {
-  const res = await fetch(`${httpBase()}/v1/providers/verify`, {
+  const res = await authedFetch(`${httpBase()}/v1/providers/verify`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ name, fields }),
@@ -1342,12 +1589,12 @@ export interface RecentSender {
 
 // -- direct-message routing ---------------------------------------------------
 export async function getDmRoute(): Promise<string | null> {
-  const res = await fetch(`${httpBase()}/v1/messaging/dm-route`);
+  const res = await authedFetch(`${httpBase()}/v1/messaging/dm-route`);
   return (await res.json()).dm_session ?? null;
 }
 
 export async function setDmRoute(sessionId: string): Promise<{ ok: boolean; dm_session: string | null }> {
-  const res = await fetch(`${httpBase()}/v1/messaging/dm-route`, {
+  const res = await authedFetch(`${httpBase()}/v1/messaging/dm-route`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ session_id: sessionId }),
@@ -1395,7 +1642,7 @@ export interface AutomationRun {
 }
 
 export async function getAutomations(): Promise<Automation[]> {
-  const res = await fetch(`${httpBase()}/v1/automations`);
+  const res = await authedFetch(`${httpBase()}/v1/automations`);
   return (await res.json()).tasks ?? [];
 }
 
@@ -1439,7 +1686,7 @@ export function connectEvents(
 
 /** Advance the automation's seen mark — clears its unseen-runs badge (UX-023). */
 export async function markAutomationSeen(id: string): Promise<{ ok: boolean }> {
-  const res = await fetch(`${httpBase()}/v1/automations/${id}/seen`, { method: "POST" });
+  const res = await authedFetch(`${httpBase()}/v1/automations/${id}/seen`, { method: "POST" });
   return res.json();
 }
 
@@ -1453,7 +1700,7 @@ export async function createAutomation(payload: {
   // Only target-bound write entries survive server-side validation.
   permissions?: { tool: string; target: string; access: "read" | "write" }[];
 }): Promise<{ ok: boolean; error?: string; task?: Automation }> {
-  const res = await fetch(`${httpBase()}/v1/automations`, {
+  const res = await authedFetch(`${httpBase()}/v1/automations`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
@@ -1462,12 +1709,12 @@ export async function createAutomation(payload: {
 }
 
 export async function getAutomation(id: string): Promise<{ task: Automation; runs: AutomationRun[] }> {
-  const res = await fetch(`${httpBase()}/v1/automations/${encodeURIComponent(id)}`);
+  const res = await authedFetch(`${httpBase()}/v1/automations/${encodeURIComponent(id)}`);
   return res.json();
 }
 
 export async function updateAutomation(id: string, changes: Record<string, any>) {
-  const res = await fetch(`${httpBase()}/v1/automations/${encodeURIComponent(id)}`, {
+  const res = await authedFetch(`${httpBase()}/v1/automations/${encodeURIComponent(id)}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(changes),
@@ -1476,7 +1723,7 @@ export async function updateAutomation(id: string, changes: Record<string, any>)
 }
 
 export async function deleteAutomation(id: string) {
-  const res = await fetch(`${httpBase()}/v1/automations/${encodeURIComponent(id)}`, { method: "DELETE" });
+  const res = await authedFetch(`${httpBase()}/v1/automations/${encodeURIComponent(id)}`, { method: "DELETE" });
   return res.json();
 }
 
@@ -1492,13 +1739,13 @@ export interface PreparedRun {
 
 /** Prepare a live manual run: returns the session to open + the opening prompt to send. */
 export async function runAutomation(id: string): Promise<PreparedRun> {
-  const res = await fetch(`${httpBase()}/v1/automations/${encodeURIComponent(id)}/run`, { method: "POST" });
+  const res = await authedFetch(`${httpBase()}/v1/automations/${encodeURIComponent(id)}/run`, { method: "POST" });
   return res.json();
 }
 
 /** Mark a manual run complete after its first turn finished. */
 export async function finalizeAutomationRun(id: string, runId: string) {
-  const res = await fetch(
+  const res = await authedFetch(
     `${httpBase()}/v1/automations/${encodeURIComponent(id)}/runs/${encodeURIComponent(runId)}/finalize`,
     { method: "POST" },
   );
@@ -1511,7 +1758,7 @@ export async function allowUser(
   teamId?: string | null,
   displayName?: string,
 ) {
-  const res = await fetch(`${httpBase()}/v1/connectors/${encodeURIComponent(name)}/allow`, {
+  const res = await authedFetch(`${httpBase()}/v1/connectors/${encodeURIComponent(name)}/allow`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -1546,7 +1793,7 @@ export async function getSlackDirectory(
   teamId: string,
   q = "",
 ): Promise<{ ok: boolean; error?: string; members?: SlackMember[] }> {
-  const res = await fetch(
+  const res = await authedFetch(
     `${httpBase()}/v1/connectors/slack/workspaces/${encodeURIComponent(teamId)}/directory?q=${encodeURIComponent(q)}`,
   );
   return res.json();
@@ -1557,7 +1804,7 @@ export async function getSlackChannels(
   teamId: string,
   q = "",
 ): Promise<{ ok: boolean; error?: string; channels?: SlackChannelEntry[] }> {
-  const res = await fetch(
+  const res = await authedFetch(
     `${httpBase()}/v1/connectors/slack/workspaces/${encodeURIComponent(teamId)}/channels?q=${encodeURIComponent(q)}`,
   );
   return res.json();
@@ -1569,7 +1816,7 @@ export async function resolveUnauthorized(
   itemId: string,
   action: "dismiss" | "allow" | "allow_deliver",
 ): Promise<{ ok: boolean; error?: string }> {
-  const res = await fetch(
+  const res = await authedFetch(
     `${httpBase()}/v1/connectors/${encodeURIComponent(name)}/unauthorized/${encodeURIComponent(itemId)}`,
     {
       method: "POST",
@@ -1581,7 +1828,7 @@ export async function resolveUnauthorized(
 }
 
 export async function disallowUser(name: string, userId: string, teamId?: string | null) {
-  const res = await fetch(`${httpBase()}/v1/connectors/${encodeURIComponent(name)}/disallow`, {
+  const res = await authedFetch(`${httpBase()}/v1/connectors/${encodeURIComponent(name)}/disallow`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(teamId ? { user_id: userId, team_id: teamId } : { user_id: userId }),
@@ -1593,7 +1840,7 @@ export async function addSlackApprovalOwner(
   userId: string,
   displayName?: string,
 ): Promise<{ ok: boolean; error?: string }> {
-  const res = await fetch(`${httpBase()}/v1/connectors/slack/approval-owners/add`, {
+  const res = await authedFetch(`${httpBase()}/v1/connectors/slack/approval-owners/add`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -1607,7 +1854,7 @@ export async function addSlackApprovalOwner(
 export async function removeSlackApprovalOwner(
   userId: string,
 ): Promise<{ ok: boolean; error?: string }> {
-  const res = await fetch(`${httpBase()}/v1/connectors/slack/approval-owners/remove`, {
+  const res = await authedFetch(`${httpBase()}/v1/connectors/slack/approval-owners/remove`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ user_id: userId }),
@@ -1617,7 +1864,7 @@ export async function removeSlackApprovalOwner(
 
 /** Stop relaying one managed Slack workspace (the app stays installed in Slack). */
 export async function disconnectSlackWorkspace(teamId: string): Promise<{ ok: boolean; error?: string; remaining_workspaces?: number }> {
-  const res = await fetch(
+  const res = await authedFetch(
     `${httpBase()}/v1/connectors/slack/workspaces/${encodeURIComponent(teamId)}/disconnect`,
     { method: "POST" },
   );
@@ -1626,7 +1873,7 @@ export async function disconnectSlackWorkspace(teamId: string): Promise<{ ok: bo
 
 /** Drop ONE Gmail mailbox; the default pointer moves to the next account. */
 export async function disconnectGmailAccount(email: string): Promise<{ ok: boolean; error?: string; remaining_accounts?: number }> {
-  const res = await fetch(
+  const res = await authedFetch(
     `${httpBase()}/v1/connectors/gmail/accounts/${encodeURIComponent(email)}/disconnect`,
     { method: "POST" },
   );
@@ -1634,7 +1881,7 @@ export async function disconnectGmailAccount(email: string): Promise<{ ok: boole
 }
 
 export async function setGmailDefaultAccount(email: string): Promise<{ ok: boolean; error?: string }> {
-  const res = await fetch(
+  const res = await authedFetch(
     `${httpBase()}/v1/connectors/gmail/accounts/${encodeURIComponent(email)}/default`,
     { method: "POST" },
   );
@@ -1643,7 +1890,7 @@ export async function setGmailDefaultAccount(email: string): Promise<{ ok: boole
 
 /** Drop ONE Google Calendar account; the default pointer moves to the next one. */
 export async function disconnectGcalAccount(email: string): Promise<{ ok: boolean; error?: string; remaining_accounts?: number }> {
-  const res = await fetch(
+  const res = await authedFetch(
     `${httpBase()}/v1/connectors/google_calendar/accounts/${encodeURIComponent(email)}/disconnect`,
     { method: "POST" },
   );
@@ -1651,7 +1898,7 @@ export async function disconnectGcalAccount(email: string): Promise<{ ok: boolea
 }
 
 export async function setGcalDefaultAccount(email: string): Promise<{ ok: boolean; error?: string }> {
-  const res = await fetch(
+  const res = await authedFetch(
     `${httpBase()}/v1/connectors/google_calendar/accounts/${encodeURIComponent(email)}/default`,
     { method: "POST" },
   );
@@ -1661,7 +1908,7 @@ export async function setGcalDefaultAccount(email: string): Promise<{ ok: boolea
 /** Drop ONE account of a generic multi-account connector (notion, attio,
  * posthog, …); the default pointer moves to the next account. */
 export async function disconnectAccount(connector: string, accountId: string): Promise<{ ok: boolean; error?: string; remaining_accounts?: number }> {
-  const res = await fetch(
+  const res = await authedFetch(
     `${httpBase()}/v1/connectors/${encodeURIComponent(connector)}/accounts/${encodeURIComponent(accountId)}/disconnect`,
     { method: "POST" },
   );
@@ -1669,7 +1916,7 @@ export async function disconnectAccount(connector: string, accountId: string): P
 }
 
 export async function setDefaultAccount(connector: string, accountId: string): Promise<{ ok: boolean; error?: string }> {
-  const res = await fetch(
+  const res = await authedFetch(
     `${httpBase()}/v1/connectors/${encodeURIComponent(connector)}/accounts/${encodeURIComponent(accountId)}/default`,
     { method: "POST" },
   );
@@ -1678,7 +1925,7 @@ export async function setDefaultAccount(connector: string, accountId: string): P
 
 /** Replace the "Never show agents" lists (senders and/or labels; omit to keep). */
 export async function setGmailFilters(filters: { senders?: string[]; labels?: string[] }): Promise<{ ok: boolean; filters?: GmailFilters; error?: string }> {
-  const res = await fetch(`${httpBase()}/v1/connectors/gmail/filters`, {
+  const res = await authedFetch(`${httpBase()}/v1/connectors/gmail/filters`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(filters),
@@ -1698,13 +1945,13 @@ export interface GithubStatus {
 }
 
 export async function getGithubStatus(): Promise<GithubStatus> {
-  const res = await fetch(`${httpBase()}/v1/connectors/github/status`);
+  const res = await authedFetch(`${httpBase()}/v1/connectors/github/status`);
   return res.json();
 }
 
 /** Stop relaying ONE GitHub App installation to this computer. */
 export async function disconnectGithubInstallation(installationId: string): Promise<{ ok: boolean; error?: string; remaining_installs?: number }> {
-  const res = await fetch(
+  const res = await authedFetch(
     `${httpBase()}/v1/connectors/github/installations/${encodeURIComponent(installationId)}/disconnect`,
     { method: "POST" },
   );
@@ -1713,7 +1960,7 @@ export async function disconnectGithubInstallation(installationId: string): Prom
 
 /** Drop ONE HubSpot portal; the default pointer moves to the next portal. */
 export async function disconnectHubSpotPortal(hubId: string): Promise<{ ok: boolean; error?: string; remaining_portals?: number }> {
-  const res = await fetch(
+  const res = await authedFetch(
     `${httpBase()}/v1/connectors/hubspot/portals/${encodeURIComponent(hubId)}/disconnect`,
     { method: "POST" },
   );
@@ -1721,7 +1968,7 @@ export async function disconnectHubSpotPortal(hubId: string): Promise<{ ok: bool
 }
 
 export async function setHubSpotDefaultPortal(hubId: string): Promise<{ ok: boolean; error?: string }> {
-  const res = await fetch(
+  const res = await authedFetch(
     `${httpBase()}/v1/connectors/hubspot/portals/${encodeURIComponent(hubId)}/default`,
     { method: "POST" },
   );
@@ -1730,7 +1977,7 @@ export async function setHubSpotDefaultPortal(hubId: string): Promise<{ ok: bool
 
 /** Replace the hidden-fields denylist (properties stripped from agent reads). */
 export async function setHubSpotHiddenFields(fields: string[]): Promise<{ ok: boolean; hidden_fields?: string[]; error?: string }> {
-  const res = await fetch(`${httpBase()}/v1/connectors/hubspot/hidden-fields`, {
+  const res = await authedFetch(`${httpBase()}/v1/connectors/hubspot/hidden-fields`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ hidden_fields: fields }),
@@ -1752,7 +1999,7 @@ export interface SlackStatus {
 }
 
 export async function getSlackStatus(): Promise<SlackStatus> {
-  const res = await fetch(`${httpBase()}/v1/connectors/slack/status`);
+  const res = await authedFetch(`${httpBase()}/v1/connectors/slack/status`);
   return res.json();
 }
 

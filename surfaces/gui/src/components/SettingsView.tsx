@@ -1,4 +1,6 @@
 import { useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
+import i18n from "../i18n";
 import {
   getSettings,
   getTrustedWorkspaces,
@@ -58,11 +60,11 @@ const BTN_ACCENT = "text-[12.5px] px-3 py-2 rounded-lg bg-accent text-white shri
 const BTN_BORDERED =
   "text-[12.5px] px-3 py-2 rounded-lg border border-line bg-paper hover:border-lineStrong shrink-0";
 
-const SET_TABS: { key: SetTab; label: string; icon: "sliders" | "code" | "mic" | "sparkle" }[] = [
-  { key: "appearance", label: "General", icon: "sliders" },
-  { key: "models", label: "Models", icon: "code" },
-  { key: "voice", label: "Voice input", icon: "mic" },
-  { key: "personas", label: "Personas", icon: "sparkle" },
+const SET_TABS: { key: SetTab; labelKey: string; icon: "sliders" | "code" | "mic" | "sparkle" }[] = [
+  { key: "appearance", labelKey: "settings.general", icon: "sliders" },
+  { key: "models", labelKey: "settings.models", icon: "code" },
+  { key: "voice", labelKey: "settings.voiceInput", icon: "mic" },
+  { key: "personas", labelKey: "settings.personas", icon: "sparkle" },
 ];
 
 export function SettingsView({
@@ -72,11 +74,12 @@ export function SettingsView({
   initialTab?: SetTab;
   onOpenPersona?: (id: string) => void;
 }) {
+  const { t } = useTranslation();
   // Personas is flag-gated (hidden for launch) — filter the tab AND coerce a stale
   // deep-link to it (openSettings("personas") callers) so the page never opens on a
   // section with no nav entry.
   const personas = showPersonas();
-  const tabs = personas ? SET_TABS : SET_TABS.filter((t) => t.key !== "personas");
+  const tabs = personas ? SET_TABS : SET_TABS.filter((tabItem) => tabItem.key !== "personas");
   const wanted = initialTab && (personas || initialTab !== "personas") ? initialTab : "appearance";
   const [tab, setTab] = useState<SetTab>(wanted);
 
@@ -84,20 +87,20 @@ export function SettingsView({
     <main className="flex-1 min-w-0 flex bg-paper">
       <nav className="page-subnav w-[208px] shrink-0 border-r border-line bg-panel/40 px-3 py-4">
         <div className="px-2 text-[13.5px] font-semibold mb-3 flex items-center gap-2">
-          <Icon name="gear" size={16} /> Settings
+          <Icon name="gear" size={16} /> {t("settings.title")}
         </div>
-        {tabs.map((t) => {
-          const active = tab === t.key;
+        {tabs.map((tabItem) => {
+          const active = tab === tabItem.key;
           return (
             <button
-              key={t.key}
+              key={tabItem.key}
               className={
                 "w-full text-left px-2.5 py-2 rounded-lg text-[13px] flex items-center gap-2 " +
                 (active ? "bg-paper text-accent font-medium" : "text-muted hover:bg-paper hover:text-ink")
               }
-              onClick={() => setTab(t.key)}
+              onClick={() => setTab(tabItem.key)}
             >
-              <Icon name={t.icon} size={15} /> {t.label}
+              <Icon name={tabItem.icon} size={15} /> {t(tabItem.labelKey)}
             </button>
           );
         })}
@@ -110,8 +113,8 @@ export function SettingsView({
           ) : tab === "models" ? (
             <section>
               <PanelHead
-                title="Models"
-                sub="Providers and the models offered in the composer's picker. Keys are stored only on this computer."
+                title={t("settings.models")}
+                sub={t("settings.modelsSub")}
               />
               <ModelsTab />
               {/* Token savings is model-spend behavior, so it lives here (UX-021),
@@ -133,7 +136,7 @@ export function SettingsView({
 
 // -- Voice input: deliberate model provisioning + compatibility + microphone test (§37) --------
 const voiceError = (error: unknown) =>
-  error instanceof Error ? error.message : typeof error === "string" ? error : "Voice Input could not complete that action.";
+  error instanceof Error ? error.message : typeof error === "string" ? error : i18n.t("settings.voiceErrorFallback");
 
 const formatBytes = (bytes: number) => {
   if (!bytes) return "0 MiB";
@@ -141,6 +144,7 @@ const formatBytes = (bytes: number) => {
 };
 
 function VoiceInputSection() {
+  const { t } = useTranslation();
   const [status, setStatus] = useState<DictationStatus | null>(null);
   const [progress, setProgress] = useState<DictationDownloadProgress | null>(null);
   const [phase, setPhase] = useState<"idle" | "downloading" | "verifying" | "testing" | "transcribing">("idle");
@@ -215,7 +219,7 @@ function VoiceInputSection() {
   };
 
   const remove = async () => {
-    if (!window.confirm("Delete the local Whisper model and disable Voice Input?")) return;
+    if (!window.confirm(t("settings.deleteWhisperConfirm"))) return;
     setError(null);
     try {
       publish(await deleteDictationModel());
@@ -234,7 +238,7 @@ function VoiceInputSection() {
         setPhase("transcribing");
         const transcript = (await stopDictation()).trim();
         setTestTranscript(transcript);
-        if (!transcript) throw new Error("No speech was detected. Try again and speak for a little longer.");
+        if (!transcript) throw new Error(t("settings.noSpeechDetected"));
         publish(await markDictationTestPassed());
       } else {
         setTestTranscript("");
@@ -258,37 +262,37 @@ function VoiceInputSection() {
   return (
     <section>
       <PanelHead
-        title="Voice input"
-        sub="Speak naturally in the composer. Recordings and transcripts stay on this device."
+        title={t("settings.voiceInput")}
+        sub={t("settings.voiceInputSub")}
       />
 
       {!desktop ? (
-        <div className={CARD + " p-4 text-[13px] text-muted"}>Voice Input setup is available in the OpenWorker desktop app.</div>
+        <div className={CARD + " p-4 text-[13px] text-muted"}>{t("settings.voiceInputDesktopOnly")}</div>
       ) : (
         <div className="space-y-4">
           <div className="rounded-xl border border-green-200 bg-green-50/70 px-4 py-3 text-[12.5px] text-green-800">
-            <span className="font-medium">Private by design.</span> Audio is held in memory only while you record and is transcribed locally.
+            <span className="font-medium">{t("settings.privateByDesign")}</span> {t("settings.privateByDesignFull")}
           </div>
 
           <div className={CARD}>
             <div className="p-4 flex items-start gap-3">
               <Icon name="code" size={18} className="text-accent mt-0.5" />
               <div className="min-w-0 flex-1">
-                <div className="text-[13.5px] font-medium">This device</div>
-                <div className="text-[12px] text-muted mt-1">{status?.device_summary || "Checking compatibility…"}</div>
+                <div className="text-[13.5px] font-medium">{t("settings.thisDevice")}</div>
+                <div className="text-[12px] text-muted mt-1">{status?.device_summary || t("settings.checkingCompatibility")}</div>
                 {status?.compatibility_reason && <div className="text-[12px] text-red-600 mt-1.5">{status.compatibility_reason}</div>}
               </div>
               {status && (
                 <span className={"text-[11.5px] px-2 py-1 rounded-full " + (status.supported ? "bg-green-50 text-green-700" : "bg-red-50 text-red-600")}>
-                  {status.supported ? "● Compatible" : "Unsupported"}
+                  {status.supported ? t("settings.compatible") : t("settings.unsupported")}
                 </span>
               )}
             </div>
             <div className="border-t border-line bg-paper/50 px-4 py-3 grid grid-cols-2 gap-3 text-[12px] text-muted">
-              <div><span className="block text-ink font-medium">Mac</span>macOS 12+ · Apple Silicon M1+</div>
-              <div><span className="block text-ink font-medium">Windows</span>Windows 10 22H2/11 · x64</div>
-              <div><span className="block text-ink font-medium">Memory</span>8 GB recommended</div>
-              <div><span className="block text-ink font-medium">Processor</span>4 CPU cores recommended</div>
+              <div><span className="block text-ink font-medium">{t("settings.macLabel")}</span>{t("settings.macRequirements")}</div>
+              <div><span className="block text-ink font-medium">{t("settings.windowsLabel")}</span>{t("settings.windowsRequirements")}</div>
+              <div><span className="block text-ink font-medium">{t("settings.memoryLabel")}</span>{t("settings.memoryRequirements")}</div>
+              <div><span className="block text-ink font-medium">{t("settings.processorLabel")}</span>{t("settings.processorRequirements")}</div>
             </div>
           </div>
 
@@ -296,23 +300,23 @@ function VoiceInputSection() {
             <div className="p-4 flex items-center gap-3">
               <div className="w-9 h-9 rounded-lg bg-accentSoft text-accent grid place-items-center font-semibold">W</div>
               <div className="min-w-0 flex-1">
-                <div className="text-[13.5px] font-medium">Whisper Base · English</div>
+                <div className="text-[13.5px] font-medium">{t("settings.whisperBaseEnglish")}</div>
                 <div className="text-[12px] text-muted mt-0.5">
-                  {status?.model_verified ? `Installed and verified · ${formatBytes(status.model_bytes)}` : `Local voice model · ${formatBytes(status?.model_bytes || 147_964_211)}`}
+                  {status?.model_verified ? t("settings.installedAndVerified", { size: formatBytes(status.model_bytes) }) : t("settings.localVoiceModel", { size: formatBytes(status?.model_bytes || 147_964_211) })}
                 </div>
               </div>
               {status?.model_verified ? (
                 <>
-                  <span className="text-[11.5px] px-2 py-1 rounded-full bg-green-50 text-green-700">Verified</span>
-                  <button className={BTN_BORDERED} onClick={() => void repair()}>Repair</button>
-                  <button className="text-[12px] text-red-600 px-2 py-2" onClick={() => void remove()}>Delete</button>
+                  <span className="text-[11.5px] px-2 py-1 rounded-full bg-green-50 text-green-700">{t("settings.verified")}</span>
+                  <button className={BTN_BORDERED} onClick={() => void repair()}>{t("settings.repair")}</button>
+                  <button className="text-[12px] text-red-600 px-2 py-2" onClick={() => void remove()}>{t("settings.delete")}</button>
                 </>
               ) : downloading ? (
-                <button className={BTN_BORDERED} onClick={() => void cancelDownload()}>Cancel</button>
+                <button className={BTN_BORDERED} onClick={() => void cancelDownload()}>{t("settings.cancel")}</button>
               ) : phase === "verifying" ? (
-                <span className="text-[12px] text-muted">Verifying…</span>
+                <span className="text-[12px] text-muted">{t("settings.verifying")}</span>
               ) : (
-                <button className={BTN_ACCENT} disabled={!status?.supported} onClick={() => void download()}>Download model</button>
+                <button className={BTN_ACCENT} disabled={!status?.supported} onClick={() => void download()}>{t("settings.downloadModel")}</button>
               )}
             </div>
             {downloading && (
@@ -327,18 +331,18 @@ function VoiceInputSection() {
             <div className="p-4 flex items-center gap-3">
               <Icon name="mic" size={18} className={ready ? "text-green-600" : "text-muted"} />
               <div className="min-w-0 flex-1">
-                <div className="text-[13.5px] font-medium">Microphone test</div>
+                <div className="text-[13.5px] font-medium">{t("settings.microphoneTest")}</div>
                 <div className="text-[12px] text-muted mt-0.5">
-                  {ready ? "Your microphone and local transcription engine are working." : "Record a short phrase to enable the composer microphone."}
+                  {ready ? t("settings.micReady") : t("settings.micSetup")}
                 </div>
               </div>
-              {ready && <span className="text-[11.5px] px-2 py-1 rounded-full bg-green-50 text-green-700">● Ready</span>}
+              {ready && <span className="text-[11.5px] px-2 py-1 rounded-full bg-green-50 text-green-700">{t("settings.ready")}</span>}
               <button className={BTN_BORDERED} disabled={!status?.supported || !status?.model_verified || phase === "transcribing"} onClick={() => void toggleTest()}>
-                {status?.recording ? "Stop and check" : phase === "transcribing" ? "Transcribing…" : ready ? "Test again" : "Test microphone"}
+                {status?.recording ? t("settings.stopAndCheck") : phase === "transcribing" ? t("settings.transcribingStatus") : ready ? t("settings.testAgain") : t("settings.testMicrophone")}
               </button>
             </div>
-            {status?.recording && <div className="border-t border-line px-4 py-3 text-[12px] text-accent" role="status">● Listening… speak a short phrase, then stop.</div>}
-            {testTranscript && <div className="border-t border-line bg-paper/50 px-4 py-3 text-[13px]">“{testTranscript}”</div>}
+            {status?.recording && <div className="border-t border-line px-4 py-3 text-[12px] text-accent" role="status">{t("settings.listeningSpeak")}</div>}
+            {testTranscript && <div className="border-t border-line bg-paper/50 px-4 py-3 text-[13px]}">&ldquo;{testTranscript}&rdquo;</div>}
           </div>
 
           {error && <div role="alert" className="rounded-lg border border-red-200 bg-red-50 px-3 py-2.5 text-[12px] text-red-700">{error}</div>}
@@ -352,14 +356,15 @@ function VoiceInputSection() {
 // entry point to the Persona Gallery (a screen-sized modal — installs finish back
 // here, disabled pending consent; a gallery install re-mounts the list in place).
 function PersonasSection({ onOpenPersona }: { onOpenPersona?: (id: string) => void }) {
+  const { t } = useTranslation();
   const [galleryBump, setGalleryBump] = useState(0);
   const [galleryOpen, setGalleryOpen] = useState(false);
 
   return (
     <section>
       <PanelHead
-        title="Personas"
-        sub="Which coworkers are enabled and shown in the picker, plus installing new persona bundles."
+        title={t("settings.personas")}
+        sub={t("settings.personasSub")}
       />
       <PersonasTab key={galleryBump} onOpenPersona={onOpenPersona} />
       <button
@@ -369,12 +374,12 @@ function PersonasSection({ onOpenPersona }: { onOpenPersona?: (id: string) => vo
       >
         <Icon name="sparkle" size={16} className="text-accent shrink-0" />
         <span className="min-w-0 flex-1">
-          <span className="block text-[13.5px] font-medium">Browse the Persona Gallery</span>
+          <span className="block text-[13.5px] font-medium">{t("settings.browsePersonaGallery")}</span>
           <span className="block text-[12px] text-muted">
-            Curated coworkers from the OpenWorker team — see what each can do before installing.
+            {t("settings.browsePersonaGallerySub")}
           </span>
         </span>
-        <span className="text-[12.5px] text-accent shrink-0">Open →</span>
+        <span className="text-[12.5px] text-accent shrink-0">{t("settings.openArrow")}</span>
       </button>
       {galleryOpen && (
         <GalleryModal
@@ -388,10 +393,16 @@ function PersonasSection({ onOpenPersona }: { onOpenPersona?: (id: string) => vo
 
 // -- Appearance + app behaviour ------------------------------------------------
 function AppearanceSection() {
+  const { t } = useTranslation();
   const [theme, setTheme] = useThemePref();
   const [autostart, setAuto] = useState(false);
   const [keepAwake, setKeep] = useState(false);
   const desktop = isTauri();
+  // 桌宠大小（localStorage 持久化，DeskMateOverlay 读取并实时响应）
+  const [petScale, setPetScale] = useState<number>(() => {
+    const v = parseFloat(localStorage.getItem("deskmate_pet_scale") || "");
+    return Number.isFinite(v) && v >= 0.5 && v <= 2 ? v : 1.0;
+  });
 
   useEffect(() => {
     if (isTauri()) {
@@ -409,18 +420,43 @@ function AppearanceSection() {
 
   return (
     <section>
-      <PanelHead title="General" sub="How OpenWorker looks and behaves on this machine." />
+      <PanelHead title={t("settings.general")} sub={t("settings.generalSub")} />
 
       <div className={CARD + " p-4 mb-4"}>
-        <div className={FIELD_LABEL}>Theme</div>
-        <div className="seg mt-2.5" role="radiogroup" aria-label="Appearance">
+        <div className={FIELD_LABEL}>{t("settings.theme")}</div>
+        <div className="seg mt-2.5" role="radiogroup" aria-label={t("settings.appearanceAria")}>
           {(["light", "dark", "auto"] as const).map((p) => (
             <button key={p} className={p === theme ? "active" : ""} onClick={() => setTheme(p)}>
-              {p === "light" ? "Light" : p === "dark" ? "Dark" : "Auto"}
+              {p === "light" ? t("settings.light") : p === "dark" ? t("settings.dark") : t("settings.auto")}
             </button>
           ))}
         </div>
-        <div className={FIELD_HELP}>Auto follows your Mac&rsquo;s appearance.</div>
+        <div className={FIELD_HELP}>{t("settings.autoHelp")}</div>
+      </div>
+
+      {/* 桌宠大小（仅「桌搭 DeskMate」模式生效） */}
+      <div className={CARD + " p-4 mb-4"}>
+        <div className={FIELD_LABEL + " mb-2.5"}>桌宠大小</div>
+        <div className="flex items-center gap-3">
+          <input
+            type="range"
+            min={0.5}
+            max={2}
+            step={0.05}
+            value={petScale}
+            onChange={(e) => {
+              const v = parseFloat(e.target.value);
+              setPetScale(v);
+              localStorage.setItem("deskmate_pet_scale", String(v));
+              window.dispatchEvent(new CustomEvent("deskmate:pet-scale", { detail: v }));
+            }}
+            className="flex-1"
+          />
+          <span className="text-[12px] tabular-nums text-muted w-10 text-right">
+            {Math.round(petScale * 100)}%
+          </span>
+        </div>
+        <div className={FIELD_HELP}>调整桌面桌宠（墨灵）的显示大小，仅「桌搭 DeskMate」模式下可见。</div>
       </div>
 
       <SidebarCard />
@@ -431,19 +467,19 @@ function AppearanceSection() {
 
       {desktop && (
         <div className={CARD + " p-4"}>
-          <div className={FIELD_LABEL + " mb-2.5"}>Always-on</div>
+          <div className={FIELD_LABEL + " mb-2.5"}>{t("settings.alwaysOn")}</div>
           <label className="flex items-start gap-3 py-2">
             <input type="checkbox" className="mt-0.5" checked={autostart} onChange={(e) => toggleAuto(e.target.checked)} />
             <span>
-              <span className="block text-[13px] text-ink">Open at login</span>
-              <span className="block text-[12px] text-muted">Launch OpenWorker automatically when you sign in.</span>
+              <span className="block text-[13px] text-ink">{t("settings.openAtLogin")}</span>
+              <span className="block text-[12px] text-muted">{t("settings.openAtLoginDesc")}</span>
             </span>
           </label>
           <label className="flex items-start gap-3 py-2">
             <input type="checkbox" className="mt-0.5" checked={keepAwake} onChange={(e) => toggleKeep(e.target.checked)} />
             <span>
-              <span className="block text-[13px] text-ink">Keep this system awake</span>
-              <span className="block text-[12px] text-muted">Prevent idle sleep so scheduled tasks fire on time.</span>
+              <span className="block text-[13px] text-ink">{t("settings.keepAwake")}</span>
+              <span className="block text-[12px] text-muted">{t("settings.keepAwakeDesc")}</span>
             </span>
           </label>
         </div>
@@ -453,20 +489,21 @@ function AppearanceSection() {
           every build, the browser dev shell runs the same first-run flow) and, on
           desktop, the manual update check (launch also checks automatically). */}
       <div className={CARD + " p-4 mt-4"}>
-        <div className={FIELD_LABEL + " mb-2"}>Setup &amp; updates</div>
+        <div className={FIELD_LABEL + " mb-2"}>{t("settings.setupAndUpdates")}</div>
         <div className="flex items-center gap-2">
           <button className={BTN_BORDERED} onClick={runSetupAgain}>
-            Run setup again
+            {t("settings.runSetupAgain")}
           </button>
           {desktop && <UpdateInline />}
         </div>
-        <div className={FIELD_HELP}>Replays the first-run setup: model, first automation, tips.</div>
+        <div className={FIELD_HELP}>{t("settings.setupHelp")}</div>
       </div>
     </section>
   );
 }
 
 function TrustedWorkspacesCard() {
+  const { t } = useTranslation();
   const [workspaces, setWorkspaces] = useState<WorkspaceCommandTrust[] | null>(null);
 
   const refresh = () =>
@@ -479,21 +516,21 @@ function TrustedWorkspacesCard() {
   }, []);
 
   const revoke = async (path: string) => {
-    if (!window.confirm(`Revoke command trust for ${path}?`)) return;
+    if (!window.confirm(t("settings.revokeCommandTrustConfirm", { path }))) return;
     await setWorkspaceTrusted(path, false);
     refresh();
   };
 
   return (
     <div className={CARD + " p-4 mb-4"} data-testid="trusted-workspaces-card">
-      <div className={FIELD_LABEL}>Trusted workspaces</div>
+      <div className={FIELD_LABEL}>{t("settings.trustedWorkspaces")}</div>
       <div className={FIELD_HELP}>
-        Trusted projects may manage their command allowances in .coworker/config.toml.
+        {t("settings.trustedWorkspacesHelp")}
       </div>
       {workspaces === null ? (
-        <div className="text-[12px] text-muted mt-3">Loading…</div>
+        <div className="text-[12px] text-muted mt-3">{t("settings.loading")}</div>
       ) : workspaces.length === 0 ? (
-        <div className="text-[12px] text-muted mt-3">No workspaces are trusted.</div>
+        <div className="text-[12px] text-muted mt-3">{t("settings.noWorkspacesTrusted")}</div>
       ) : (
         <div className="mt-3 divide-y divide-line">
           {workspaces.map((workspace) => (
@@ -502,16 +539,16 @@ function TrustedWorkspacesCard() {
                 <div className="text-[12.5px] text-ink break-all">{workspace.workspace}</div>
                 <div className="text-[11.5px] text-muted mt-0.5">
                   {workspace.requested_commands.length
-                    ? `${workspace.requested_commands.length} project command allowance${workspace.requested_commands.length === 1 ? "" : "s"}`
-                    : "No project command allowances currently declared"}
-                  {!workspace.exists ? " · Folder unavailable" : ""}
+                    ? `${workspace.requested_commands.length}${workspace.requested_commands.length === 1 ? t("settings.projectCommandAllowance") : t("settings.projectCommandAllowances")}`
+                    : t("settings.noProjectCommandAllowances")}
+                  {!workspace.exists ? t("settings.folderUnavailable") : ""}
                 </div>
               </div>
               <button
                 className="text-[12px] text-red-600 px-2 py-1"
                 onClick={() => void revoke(workspace.workspace)}
               >
-                Revoke
+                {t("settings.revoke")}
               </button>
             </div>
           ))}
@@ -522,6 +559,7 @@ function TrustedWorkspacesCard() {
 }
 
 function UpdateInline() {
+  const { t } = useTranslation();
   const [state, setState] = useState<"idle" | "checking" | "none" | "found" | "installing" | "error">("idle");
   const [version, setVersion] = useState("");
 
@@ -549,11 +587,18 @@ function UpdateInline() {
     }
   };
 
+  const statusText =
+    state === "none"
+      ? t("settings.latestVersion")
+      : state === "error"
+        ? t("settings.couldNotCheck")
+        : t("settings.downloadingRestart");
+
   return (
     <span className="inline-flex items-center gap-2.5">
       {state === "found" ? (
         <button className={BTN_BORDERED} onClick={install} data-testid="settings-update-install">
-          Update to v{version} and restart
+          {t("settings.updateToVersion", { version })}
         </button>
       ) : (
         <button
@@ -562,16 +607,12 @@ function UpdateInline() {
           disabled={state === "checking" || state === "installing"}
           data-testid="settings-update-check"
         >
-          {state === "checking" ? "Checking…" : "Check for updates"}
+          {state === "checking" ? t("settings.checking") : t("settings.checkForUpdates")}
         </button>
       )}
       {(state === "none" || state === "error" || state === "installing") && (
         <span className="text-[12px] text-muted">
-          {state === "none"
-            ? "You're on the latest version."
-            : state === "error"
-              ? "Couldn't check right now — try again later."
-              : "Downloading — OpenWorker restarts by itself when it's ready."}
+          {statusText}
         </span>
       )}
     </span>
@@ -588,6 +629,7 @@ function UpdateInline() {
 // then this card is the user's dial: attach thresholds + the fallback for models
 // without native PDF support.
 function TokenSavingsCard() {
+  const { t } = useTranslation();
   const [pdf, setPdf] = useState<PdfSettings | null>(null);
 
   useEffect(() => {
@@ -610,36 +652,33 @@ function TokenSavingsCard() {
   if (!pdf) return null;
   return (
     <div className={CARD + " p-4 mb-4"} data-testid="token-savings-card">
-      <div className={FIELD_LABEL}>Token savings</div>
+      <div className={FIELD_LABEL}>{t("settings.tokenSavings")}</div>
       <div className={FIELD_HELP}>
-        PDF attachments travel with every turn of a conversation, so large documents multiply
-        what you spend on tokens.
+        {t("settings.tokenSavingsHelp")}
       </div>
 
-      <div className="mt-3 text-[13px] text-ink">PDFs on models without native PDF support</div>
-      <div className="seg mt-2" role="radiogroup" aria-label="PDF fallback" data-testid="pdf-fallback">
+      <div className="mt-3 text-[13px] text-ink">{t("settings.pdfsNoNativePdf")}</div>
+      <div className="seg mt-2" role="radiogroup" aria-label={t("settings.pdfFallbackAria")} data-testid="pdf-fallback">
         <button
           className={pdf.pdf_fallback === "text" ? "active" : ""}
           onClick={() => save({ pdf_fallback: "text" })}
         >
-          Extract text
+          {t("settings.extractText")}
         </button>
         <button
           className={pdf.pdf_fallback === "images" ? "active" : ""}
           onClick={() => save({ pdf_fallback: "images" })}
         >
-          Send page images
+          {t("settings.sendPageImages")}
         </button>
       </div>
       <div className={FIELD_HELP}>
-        Claude, GPT and Gemini read PDFs natively — this only applies to models that
-        don&rsquo;t (GLM, Kimi, DeepSeek, local models…). Text extraction is cheapest; page
-        images cost more tokens and need a vision-capable model.
+        {t("settings.pdfFallbackHelp")}
       </div>
 
       <div className="mt-3 flex items-center gap-5">
         <label className="flex items-center gap-2.5">
-          <span className="text-[13px] text-ink">Max pages</span>
+          <span className="text-[13px] text-ink">{t("settings.maxPages")}</span>
           <input
             type="number"
             min={1}
@@ -651,7 +690,7 @@ function TokenSavingsCard() {
           />
         </label>
         <label className="flex items-center gap-2.5">
-          <span className="text-[13px] text-ink">Max size</span>
+          <span className="text-[13px] text-ink">{t("settings.maxSize")}</span>
           <input
             type="number"
             min={1}
@@ -661,18 +700,18 @@ function TokenSavingsCard() {
             className="w-16 px-2 py-1.5 rounded-lg border border-line bg-paper text-[13px] text-ink outline-none focus:border-accent"
             onChange={(e) => save({ pdf_max_mb: Math.max(1, Math.min(Number(e.target.value) || 10, 10)) })}
           />
-          <span className="text-[12.5px] text-muted">MB</span>
+          <span className="text-[12.5px] text-muted">{t("settings.mb")}</span>
         </label>
       </div>
       <div className={FIELD_HELP}>
-        PDFs over these limits are not attached — you&rsquo;ll see a notice in the composer
-        instead.
+        {t("settings.pdfLimitsHelp")}
       </div>
     </div>
   );
 }
 
 function SidebarCard() {
+  const { t } = useTranslation();
   const [peek, setPeek] = useState<number | null>(null);
 
   useEffect(() => {
@@ -690,9 +729,9 @@ function SidebarCard() {
   if (peek === null) return null;
   return (
     <div className={CARD + " p-4 mb-4"}>
-      <div className={FIELD_LABEL}>Sidebar</div>
+      <div className={FIELD_LABEL}>{t("settings.sidebar")}</div>
       <label className="flex items-center gap-3 mt-2.5">
-        <span className="text-[13px] text-ink">Conversations shown per coworker</span>
+        <span className="text-[13px] text-ink">{t("settings.conversationsShownPerCoworker")}</span>
         <input
           type="number"
           min={1}
@@ -703,7 +742,7 @@ function SidebarCard() {
         />
       </label>
       <div className={FIELD_HELP}>
-        Longer lists collapse behind &ldquo;Show more&rdquo;. Applies per coworker and per project.
+        {t("settings.sidebarHelp")}
       </div>
     </div>
   );
@@ -712,6 +751,7 @@ function SidebarCard() {
 // -- Files (scratch location) — one card inside General (UX-021: a single option
 // doesn't earn its own tab) -----------------------------------------------------
 function FilesCard() {
+  const { t } = useTranslation();
   const [settings, setSettings] = useState<ModelSettings | null>(null);
   const [scratchDraft, setScratchDraft] = useState("");
   const [scratchMsg, setScratchMsg] = useState<string | null>(null);
@@ -732,10 +772,10 @@ function FilesCard() {
     setScratchMsg(null);
     const res = await setScratchBase(scratchDraft.trim());
     if (res.ok) {
-      setScratchMsg("Saved. New conversations will use this location.");
+      setScratchMsg(t("settings.savedNewConversations"));
       refresh();
     } else {
-      setScratchMsg(res.error || "Could not use that location.");
+      setScratchMsg(res.error || t("settings.couldNotUseLocation"));
     }
   };
   const browseScratch = async () => {
@@ -747,12 +787,12 @@ function FilesCard() {
 
   return (
     <div className={CARD + " p-4 mb-4"}>
-      <div className={FIELD_LABEL}>Files</div>
+      <div className={FIELD_LABEL}>{t("settings.files")}</div>
         <div className="flex items-center gap-2 mt-2.5">
           <input
             className={INPUT}
             type="text"
-            placeholder="~/OpenWorker"
+            placeholder={t("settings.filesPlaceholder")}
             value={scratchDraft}
             spellCheck={false}
             autoComplete="off"
@@ -760,17 +800,16 @@ function FilesCard() {
             onKeyDown={(e) => e.key === "Enter" && saveScratch()}
           />
           {desktop && (
-            <button className={BTN_BORDERED} onClick={browseScratch} title="Pick a folder">
-              Browse
+            <button className={BTN_BORDERED} onClick={browseScratch} title={t("settings.pickFolder")}>
+              {t("settings.browse")}
             </button>
           )}
           <button className={BTN_ACCENT} onClick={saveScratch} disabled={!scratchDraft.trim()}>
-            Save
+            {t("settings.save")}
           </button>
         </div>
       <div className={FIELD_HELP}>
-        Each conversation gets its own folder under this location. Existing conversations keep their current
-        folder; you can grant access to more folders inside any conversation.
+        {t("settings.filesHelp")}
       </div>
       {scratchMsg && <div className="text-[12.5px] text-muted mt-2.5">{scratchMsg}</div>}
     </div>

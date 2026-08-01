@@ -6,6 +6,7 @@ the skill catalog (progressive disclosure) + load_skill into a TurnEngine.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any, Optional
 
@@ -104,6 +105,96 @@ def _skill_dirs(workspace: Optional[Path]) -> list[Path]:
     if workspace is not None:
         dirs.append(workspace / ".coworker" / "skills")
     return dirs
+
+
+def _deskmate_memory_context(messages: list | None = None) -> str:
+    """DeskMate 记忆每轮自动注入（opt-in，DESKMATE_AUTO_INJECT=1）。
+
+    接入 OpenWorker 官方每轮 context_provider 机制：返回的 <system-context> 块在
+    引擎发送时附到最新 user message（不持久化）。未开启或异常时返回空串，绝不影响
+    原生行为（遵循「扩展而非 fork」）。
+
+    Args:
+        messages: 当前对话的消息列表，用于提取最后一条用户消息做关键词搜索。
+    """
+    if os.environ.get("DESKMATE_AUTO_INJECT") != "1":
+        return ""
+    try:
+        from deskmate.memory.manager import DeskMateMemoryManager
+
+        base = os.environ.get("DESKMATE_MEMORY_DIR") or str(Path.home() / ".deskmate")
+        # Reuse a module-level singleton: creating a DeskMateMemoryManager constructs a
+        # ThreadPoolExecutor each time, and context_provider runs on EVERY turn before
+        # the LLM call - the overhead compounds quickly.
+        global _deskmate_mgr_singleton
+        if "_deskmate_mgr_singleton" not in globals():
+            _deskmate_mgr_singleton = DeskMateMemoryManager(Path(base))
+        mgr = _deskmate_mgr_singleton
+        # 从 messages 中提取最后一条用户消息
+        last_user = ""
+        if messages:
+            for msg in reversed(messages):
+                if msg.get("role") == "user":
+                    content = msg.get("content", "")
+                    if isinstance(content, str):
+                        last_user = content
+                    elif isinstance(content, list):
+                        # 多模态消息，取文本部分
+                        for part in content:
+                            if isinstance(part, dict) and part.get("type") == "text":
+                                last_user = part.get("text", "")
+                                break
+                    break
+        return mgr.build_full_context_for_turn(last_user)
+    except Exception:
+        return ""
+
+
+def _deskmate_post_turn_hook(user_msg: str, assistant_msg: str) -> None:
+    """DeskMate 会话后自动抽取（opt-in，DESKMATE_AUTO_INJECT=1）。
+
+    在引擎每轮对话完成后自动调用，提取记忆和技能。
+    火后即忘，绝不阻塞主循环。
+    """
+    if os.environ.get("DESKMATE_AUTO_INJECT") != "1":
+        return
+    try:
+        from deskmate.memory.manager import DeskMateMemoryManager
+
+        base = os.environ.get("DESKMATE_MEMORY_DIR") or str(Path.home() / ".deskmate")
+        mgr = DeskMateMemoryManager(Path(base))
+        mgr.post_session_summary(user_msg, assistant_msg)
+    except Exception:
+        pass  # best-effort, never block
+
+    # 技能进化闭环：成功执行后尝试优化相关技能
+    try:
+        from deskmate.skills.manager import SkillManager
+
+        base = os.environ.get("DESKMATE_MEMORY_DIR") or str(Path.home() / ".deskmate")
+        skill_mgr = SkillManager(base_dir=Path(base))
+        skill_mgr.evolve_skill_on_success(user_msg, assistant_msg)
+    except Exception:
+        pass  # best-effort, never block
+
+
+def _deskmate_skill_index() -> str:
+    """DeskMate 技能索引（注入系统 prompt）。
+
+    读取 ~/.deskmate/skills/ 下所有技能，生成 <available_skills> 块。
+    LLM 看到匹配任务时自觉调用 skill_view(name) 加载完整技能。
+    无技能或异常时返回空串。
+    """
+    if os.environ.get("DESKMATE_AUTO_INJECT") != "1":
+        return ""
+    try:
+        from deskmate.skills.manager import SkillManager
+
+        base = os.environ.get("DESKMATE_MEMORY_DIR") or str(Path.home() / ".deskmate")
+        mgr = SkillManager(base_dir=Path(base))
+        return mgr.build_skill_index()
+    except Exception:
+        return ""
 
 
 def build_engine(
@@ -241,6 +332,10 @@ def build_engine(
         registry.register_all(selfwake_tools(wake_store, session_id))
 
     instructions = f"{agent.system_prompt}\n\n{_NARRATION_GUIDANCE}"
+    # DeskMate 技能索引：注入 <available_skills> 块，LLM 自觉加载
+    skill_index = _deskmate_skill_index()
+    if skill_index:
+        instructions = f"{instructions}\n\n{skill_index}"
     if ws is not None:
         instructions = f"{instructions}\n\n{environment_context(ws)}"
         conventions = load_agents_md(ws)
@@ -294,7 +389,7 @@ def build_engine(
         else None
     )
 
-    def context_provider() -> str:
+    def context_provider(messages: list | None = None) -> str:
         parts = []
         if permissions.mode is Mode.PLAN:
             parts.append(_PLAN_MODE_CONTEXT)
@@ -304,6 +399,10 @@ def build_engine(
             ctx = roots_context()
             if ctx:
                 parts.append(ctx)
+        # DeskMate 记忆自动注入（opt-in，DESKMATE_AUTO_INJECT=1）
+        dm_ctx = _deskmate_memory_context(messages)
+        if dm_ctx:
+            parts.append(dm_ctx)
         return "\n\n".join(parts)
 
     engine = TurnEngine(
@@ -325,6 +424,7 @@ def build_engine(
         directory_requester=directory_requester,
         plan_approver=plan_approver,
         question_asker=question_asker,
+        post_turn_hook=_deskmate_post_turn_hook,
     )
     engine.executor = executor  # type: ignore[attr-defined]
     engine.todo = todo  # type: ignore[attr-defined]

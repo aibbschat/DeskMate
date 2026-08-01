@@ -6,3 +6,9 @@ __pycache__/
 build/
 dist/
 .coverage
+
+# --- Fork-local / OS / build artifacts (added when baselining the 二开 fork) ---
+.DS_Store
+.venv.bak/
+.workbuddy/
+vite.config.ts.timestamp-*.mjs

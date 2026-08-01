@@ -18,7 +18,13 @@ export type EventType =
   | "input_rejected"
   | "interrupted"
   | "model_changed"
-  | "turn_done";
+  | "turn_done"
+  // DeskMate extension events (dispatched by DeskMate MCP server)
+  | "deskmate_suggestion"
+  | "deskmate_memory_update"
+  | "deskmate_memory_learned"
+  | "deskmate_context_injected"
+  | "deskmate_proofread";
 
 export interface WsEvent {
   type: EventType;
@@ -81,6 +87,9 @@ export type Item =
   // registry — no per-connector special-casing.
   | { kind: "connector"; source: MessageSource }
   | { kind: "assistant"; text: string; ts?: number; reasoning?: string }
+  // A generated review-report card (编辑专家「生成审阅报告」产物），内嵌在会话里，
+  // 重开软件后仍在。引擎发 LLM 前会剥离 `report`/`report_name` sidecar 字段。
+  | { kind: "report"; name: string; report: any; caption?: string; ts?: number }
   // `hidden` = results the user's privacy filters removed before the agent saw them
   // (from the tool message's `_display` sidecar; the agent-visible content has no trace).
   // `standingRule` = the task-scoped rule that auto-allowed this call ("tool → target").

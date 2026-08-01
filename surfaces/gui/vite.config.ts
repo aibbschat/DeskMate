@@ -4,6 +4,21 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
+// 应用版本：以 tauri.conf.json 为单一数据源，构建时注入到 import.meta.env.VITE_APP_VERSION，
+// 使侧边栏品牌标能显示真实版本号（如 1.2.0），无需在两处手动同步。
+function readAppVersion(): string {
+  try {
+    const conf = JSON.parse(
+      fs.readFileSync(path.resolve(__dirname, "src-tauri/tauri.conf.json"), "utf-8"),
+    );
+    if (conf?.version) return String(conf.version);
+  } catch {
+    /* 读不到则用占位值，构建不因此中断 */
+  }
+  return "0.0.0";
+}
+const APP_VERSION = readAppVersion();
+
 // `base: "./"` makes built asset URLs relative, so the bundle loads from the `tauri://`
 // origin in the desktop shell (absolute `/assets` 404s there); a server-hosted build is
 // unaffected. Dev runs on a fixed port (1420) with strictPort so the Tauri webview always
@@ -28,7 +43,10 @@ export default defineConfig(({ command }) => {
     base: "./",
     plugins: [react()],
     server: { port: 1420, strictPort: true },
-    define: { __COWORKER_DEV_TOKEN__: JSON.stringify(devToken) },
+    define: {
+      __COWORKER_DEV_TOKEN__: JSON.stringify(devToken),
+      "import.meta.env.VITE_APP_VERSION": JSON.stringify(APP_VERSION),
+    },
     // Tauri CLI looks for these; harmless for the browser build.
     clearScreen: false,
     envPrefix: ["VITE_", "TAURI_"],

@@ -10,9 +10,27 @@ from pathlib import Path
 
 from ..config import load_config
 from ..permissions import Mode
-from ..secrets import state_dir, write_private_text
+from ..secrets import _load_dotenv, state_dir, write_private_text
 from .app import _WS_MAX_FRAME_BYTES, create_app
 from .manager import SessionManager
+
+
+def _load_env_file() -> None:
+    """Load ~/.config/coworker/.env into os.environ (does NOT override existing vars).
+
+    SecretStore only resolves ${VAR} refs inside JSON configs; it never populates
+    os.environ. But deskmate feature flags (DESKMATE_AUTO_INJECT,
+    DESKMATE_PROACTIVE_BACKGROUND) are read via os.environ.get() at runtime in the
+    main process. Without this loader, those flags are always off even if .env
+    sets them - the "gets smarter over time" loop never closes.
+    """
+    try:
+        env = _load_dotenv(state_dir() / ".env")
+        for k, v in env.items():
+            if k not in os.environ:
+                os.environ[k] = v
+    except Exception:
+        pass  # never block startup on .env loading
 
 
 def _exit_when_orphaned() -> None:
@@ -137,6 +155,7 @@ def _ensure_api_token(port: int) -> Path | None:
 
 
 def main(argv=None) -> None:
+    _load_env_file()
     _ensure_ca_bundle()
     cfg = load_config()  # global config supplies defaults
     parser = argparse.ArgumentParser(prog="openworker-server")

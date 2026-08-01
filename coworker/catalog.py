@@ -27,6 +27,9 @@ from .tools.search import search_tools
 from .tools.shell import shell_tools
 from .tools.todo import todo_tools
 
+# Editor expert tools (deskmate package, sibling to coworker)
+from deskmate.tools.review import review_chapter, generate_report, load_manuscript_file
+
 # Context prerequisites a capability may require, mapped to a predicate over AgentContext.
 _REQUIREMENTS: dict[str, Callable[[AgentContext], bool]] = {
     "workspace": lambda c: c.workspace is not None,
@@ -145,6 +148,14 @@ _CAPS: list[Capability] = [
         description="Maintain a visible task/progress list.",
         build=_todo,
         requires=("todo",),
+        risk=(RiskClass.READ,),
+    ),
+    Capability(
+        id="review",
+        name="Manuscript review",
+        description="Deep chapter-by-chapter literary review + overall report generation.",
+        build=lambda _ctx: [review_chapter, generate_report, load_manuscript_file],
+        requires=(),
         risk=(RiskClass.READ,),
     ),
 ]

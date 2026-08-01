@@ -31,6 +31,11 @@ class EventType(str, Enum):
     TURN_END = "turn_end"
     ERROR = "error"
     INTERRUPTED = "interrupted"
+    # DeskMate overlay signals (carried over the same /ws/session channel, translated
+    # by the GUI into window CustomEvents the DeskMateOverlay listens for).
+    DESKMATE_SUGGESTION = "deskmate_suggestion"
+    DESKMATE_MEMORY_UPDATE = "deskmate_memory_update"
+    DESKMATE_MEMORY_LEARNED = "deskmate_memory_learned"
 
 
 @dataclass

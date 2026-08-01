@@ -63,7 +63,7 @@ class TurnEngine:
         model_settings: Optional[dict[str, Any]] = None,
         messages: Optional[list[dict[str, Any]]] = None,
         audit_sink: Optional[Callable[[dict[str, Any]], None]] = None,
-        context_provider: Optional[Callable[[], str]] = None,
+        context_provider: Optional[Callable[[list], str]] = None,
         directory_requester: Optional[
             Callable[[dict[str, Any]], "Awaitable[dict[str, Any]]"]
         ] = None,
@@ -76,6 +76,9 @@ class TurnEngine:
         # Called (thread-safe, best-effort) when the user stops the turn — e.g. the
         # executor's kill for a running shell command.
         interrupt_hooks: Optional[list[Callable[[], None]]] = None,
+        # Called (best-effort, fire-and-forget) after each completed turn, with the
+        # last user message and assistant message. Used for post-turn memory extraction.
+        post_turn_hook: Optional[Callable[[str, str], None]] = None,
     ) -> None:
         self.provider = provider
         self.registry = registry
@@ -115,6 +118,7 @@ class TurnEngine:
         # TOOL_FINISHED event can carry the note to the tool card (§25).
         self._standing_notes: dict[str, str] = {}
         self._interrupt_hooks: list[Callable[[], None]] = list(interrupt_hooks or [])
+        self._post_turn_hook = post_turn_hook
 
     # -- external controls ------------------------------------------------------
     def request_interrupt(self) -> None:
@@ -366,6 +370,23 @@ class TurnEngine:
                 if self._steering:
                     self._inject_steering()
                     continue
+                # Post-turn hook: fire-and-forget memory/skill extraction
+                if self._post_turn_hook is not None:
+                    try:
+                        last_user = last_asst = ""
+                        for msg in reversed(self.messages):
+                            role = msg.get("role", "")
+                            content = msg.get("content", "")
+                            if role == "assistant" and not last_asst:
+                                last_asst = content if isinstance(content, str) else str(content)
+                            elif role == "user" and not last_user:
+                                last_user = content if isinstance(content, str) else str(content)
+                            if last_user and last_asst:
+                                break
+                        if last_user or last_asst:
+                            self._post_turn_hook(last_user, last_asst)
+                    except Exception:
+                        pass  # best-effort, never block turn completion
                 yield Event(
                     EventType.TURN_END,
                     {"status": "completed", "iterations": iterations},
@@ -889,7 +910,10 @@ class TurnEngine:
         # (e.g. filter-hidden counts), `ts` (append-time timestamps), and `reasoning`
         # (thinking text) — copying only messages that carry one. Whole `notice` messages
         # (error/interrupted/model-switch markers) are display-only too: dropped entirely.
-        _SIDECARS = ("source", "_display", "ts", "reasoning")
+        # `attachments` (chat file chips), `report` / `report_name` (a generated
+        # review-report card embedded in the transcript for inline display) are
+        # display-only too — never sent to the provider.
+        _SIDECARS = ("source", "_display", "ts", "reasoning", "attachments", "report", "report_name")
         out = [
             (
                 {k: v for k, v in msg.items() if k not in _SIDECARS}
@@ -961,7 +985,7 @@ class TurnEngine:
                 ]
 
         context = (
-            self.context_provider() if self.context_provider is not None else ""
+            self.context_provider(out) if self.context_provider is not None else ""
         ) or ""
         if not context:
             return out

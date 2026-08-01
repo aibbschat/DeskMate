@@ -179,8 +179,15 @@ class SessionManager:
         # The scheduler also resumes self-wake'd sessions each tick (extra_tick).
         self.task_store = TaskStore(base / "automation.db")
         self.scheduler = Scheduler(
-            self.task_store, self._run_scheduled_task, extra_tick=self.resume_due_wakes
+            self.task_store,
+            self._run_scheduled_task,
+            extra_tick=self._combined_extra_tick,
         )
+        # Cached DeskMate proactive engine (created once, reused across ticks).
+        # Without this, _combined_extra_tick would construct a new ProactiveEngine
+        # every 30s, discarding DisturbManager state (consecutive-ignore counters,
+        # accepted/sent history) and wasting ~50ms on init + module imports.
+        self._deskmate_proactive_engine = None
         # Personas: registry + lifecycle state under this manager's data dir. Installed as the
         # process singleton so agents.get_agent resolves persona ids (incl. third-party) here.
         self.personas = PersonaRegistry(state_path=base / "personas.json")
@@ -2715,6 +2722,70 @@ class SessionManager:
                 self.wakes.mark_fired(wake.id)
         return resumed
 
+    async def _combined_extra_tick(self) -> None:
+        """每次 scheduler tick 的扩展钩子：先恢复 self-wake，再（opt-in）触发 DeskMate 后台主动推理。
+
+        默认只做 OpenWorker 原生 resume_due_wakes。仅当环境变量 DESKMATE_PROACTIVE_BACKGROUND=1
+        时，额外触发 DeskMate 主动推理 tick（通过 deskmate.proactivity.background 懒加载接入，
+        不 fork 引擎）。所有外部调用都包在 try/except 中：即使 deskmate 未安装或出错，也不影响
+        OpenWorker 原生调度行为。
+        """
+        # 原生行为（恢复 self-wake 会话）
+        try:
+            await self.resume_due_wakes()
+        except Exception:
+            logging.exception("resume_due_wakes failed in combined extra_tick")
+
+        if os.environ.get("DESKMATE_PROACTIVE_BACKGROUND") == "1":
+            try:
+                from pathlib import Path as _Path
+
+                from deskmate.proactivity.background import make_extra_tick
+                from deskmate.proactivity.tick import ProactiveEngine
+
+                desk_dir = Path(
+                    os.environ.get("DESKMATE_DIR", os.path.expanduser("~/.deskmate"))
+                )
+                # Reuse cached engine to preserve DisturbManager state across ticks
+                if self._deskmate_proactive_engine is None:
+                    self._deskmate_proactive_engine = ProactiveEngine(base_dir=desk_dir)
+                tick = make_extra_tick(self._deskmate_proactive_engine)
+                result = await tick()
+                if result is not None:
+                    await self._broadcast_deskmate_suggestion(result)
+            except Exception:
+                logging.exception("deskmate proactive background tick failed")
+
+    async def _broadcast_deskmate_suggestion(self, result) -> None:
+        """把一次 proactive tick 产生的「建议」广播给所有已连接会话。
+
+        DeskMate 浮层只在 agent=="deskmate" 的会话里渲染，因此广播给全部会话是安全的
+        （其它 agent 的窗口没有监听 deskmate:suggestion 的组件）。
+        """
+        try:
+            if not getattr(result, "has_suggestion", False):
+                return
+            j = result.judgment
+            if j is None:
+                return
+            payload = {
+                "id": f"sug-{int(time.time() * 1000)}",
+                "suggestion_type": getattr(j, "suggestion_type", ""),
+                "suggestion_content": getattr(j, "suggestion_content", ""),
+                "confidence": getattr(result.decision, "confidence", 0.0)
+                if result.decision
+                else 0.0,
+                "reasoning": getattr(j, "reasoning", ""),
+            }
+            msg = {"type": "deskmate_suggestion", "data": payload}
+            for sid in list(self._session_clients.keys()):
+                try:
+                    await self.broadcast_session(sid, msg)
+                except Exception:
+                    logging.exception("broadcast deskmate suggestion failed for %s", sid)
+        except Exception:
+            logging.exception("broadcast deskmate suggestion failed")
+
     def mark_running(self, session_id: str) -> None:
         self._running_sessions.add(session_id)
 
@@ -3523,6 +3594,28 @@ class SessionManager:
             return list(engine.messages)
         record = self.session_store.load(session_id)
         return record.messages if record else []
+
+    def append_session_messages(
+        self, session_id: str, messages: list[dict[str, Any]]
+    ) -> bool:
+        """Append already-built transcript messages (e.g. a generated review-report
+        card) to a session so they persist and reappear on reload.
+
+        Keeps the live engine (if one exists for this session) in sync — otherwise a
+        later `save(engine)` would rewrite the file from the engine's shorter list and
+        drop what we just appended. Returns False if the session doesn't exist.
+        """
+        if not messages:
+            return True
+        engine = self._engines.get(session_id)
+        if engine is not None:
+            engine.messages.extend(messages)
+        record = self.session_store.load(session_id)
+        if record is None:
+            return False
+        record.messages = (record.messages or []) + messages
+        self.session_store.save(record)
+        return True
 
     def rename_session(self, session_id: str, title: str) -> dict[str, Any]:
         if session_id.startswith("__"):

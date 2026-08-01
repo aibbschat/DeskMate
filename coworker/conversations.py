@@ -70,6 +70,9 @@ class ConversationStore:
         self._lock = threading.RLock()
         self._conn = sqlite3.connect(self.db_path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
+
+        # 消息缓存：避免重复读取 JSONL 文件
+        self._message_cache: dict[str, tuple[float, list[dict]]] = {}  # {sid: (mtime, messages)}
         self._conn.executescript("""
             CREATE TABLE IF NOT EXISTS sessions (
                 session_id TEXT PRIMARY KEY, workspace TEXT, model TEXT, mode TEXT,
@@ -111,24 +114,54 @@ class ConversationStore:
         path = self._file(sid)
         if not path.exists():
             return None
-        return [
-            json.loads(line)
-            for line in path.read_text(encoding="utf-8").splitlines()
-            if line.strip()
-        ]
+
+        # 检查缓存
+        try:
+            mtime = path.stat().st_mtime
+            if sid in self._message_cache:
+                cached_mtime, cached_messages = self._message_cache[sid]
+                if cached_mtime == mtime:
+                    return cached_messages
+        except OSError:
+            mtime = 0
+
+        # Stream lines instead of read_text() to avoid loading the entire file
+        # into memory at once for large conversations.
+        out: list[dict] = []
+        with open(path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    try:
+                        out.append(json.loads(line))
+                    except json.JSONDecodeError:
+                        continue  # skip malformed lines
+
+        # 更新缓存
+        self._message_cache[sid] = (mtime, out)
+        return out
 
     def _count(self, sid: str) -> int:
         path = self._file(sid)
         if not path.exists():
             return 0
-        return sum(
-            1 for line in path.read_text(encoding="utf-8").splitlines() if line.strip()
-        )
+        # Iterate lazily over file lines instead of reading the entire file
+        # into memory. For large conversations (2MB+) this avoids a multi-hundred-
+        # millisecond blocking read on every save() call (save runs on every
+        # CHECKPOINT event: turn_start, iteration_end, permission_required, etc.).
+        count = 0
+        with open(path, "r", encoding="utf-8") as f:
+            for line in f:
+                if line.strip():
+                    count += 1
+        return count
 
     def _append(self, sid: str, messages: list[dict]) -> None:
         with open(self._file(sid), "a", encoding="utf-8") as f:
             for m in messages:
                 f.write(json.dumps(m) + "\n")
+        # 写入后清除缓存
+        self._message_cache.pop(sid, None)
 
     def _backfill_counts(self) -> None:
         """One-time per session: move any inline blob into a .jsonl and persist
@@ -187,6 +220,8 @@ class ConversationStore:
                 with open(self._file(sid), "w", encoding="utf-8") as f:
                     for m in record.messages:
                         f.write(json.dumps(m) + "\n")
+                # 覆盖写入后清除缓存
+                self._message_cache.pop(sid, None)
 
             title = record.title or title_from(record.messages)
             self._conn.execute(
@@ -338,6 +373,8 @@ class ConversationStore:
         path = self._file(session_id)
         if path.exists():
             path.unlink()
+        # 删除后清除缓存
+        self._message_cache.pop(session_id, None)
         return cur.rowcount > 0
 
     def rename(self, session_id: str, title: str) -> bool:

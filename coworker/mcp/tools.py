@@ -60,7 +60,7 @@ def build_callables(
     call_async: CallAsync,
     loop: asyncio.AbstractEventLoop,
     *,
-    timeout: float = 120.0,
+    timeout: float = 300.0,
 ) -> list[Callable[..., Any]]:
     """Wrap a server's (filtered) MCP tools as registry-ready callables."""
     callables: list[Callable[..., Any]] = []
