@@ -108,6 +108,16 @@ class DeskMateMemoryManager:
     # Prefetch（每轮对话前，参考 Hermes prefetch_all）
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _cap_layer(layer: str, budget: int) -> str:
+        """每层记忆按预算硬截断；被截断时追加省略号，提示模型内容有省略。
+
+        与文件内其它截断点保持一致（text[:N] + "\\n…"）。
+        """
+        if len(layer) > budget:
+            return layer[:budget] + "\n…"
+        return layer
+
     def prefetch(self, user_message: str) -> str:
         """每轮对话前：检索相关记忆，返回 <memory-context> 标签包裹的内容。
 
@@ -122,22 +132,22 @@ class DeskMateMemoryManager:
         # 1. Core 层：偏好和纠正，每轮无条件注入
         core_mem = self._get_core_memory()
         if core_mem:
-            context_parts.append(core_mem[:budget_per_layer])
+            context_parts.append(self._cap_layer(core_mem, budget_per_layer))
 
         # 2. Recall 层：7 天内的近期记忆，关键词匹配优先
         recall_mem, recall_section_ids = self._search_recent_memory(user_message)
         if recall_mem:
-            context_parts.append(recall_mem[:budget_per_layer])
+            context_parts.append(self._cap_layer(recall_mem, budget_per_layer))
 
         # 3. 全局记忆关键词匹配（补充 Recall 未覆盖的，排除 Core + Recall 已覆盖的 section）
         global_mem = self._search_global_memory(user_message, exclude_tags=CORE_TAGS, exclude_section_ids=recall_section_ids)
         if global_mem:
-            context_parts.append(global_mem[:budget_per_layer])
+            context_parts.append(self._cap_layer(global_mem, budget_per_layer))
 
         # 4. Archival 层：vault 长期知识
         vault_mem = self._search_vault(user_message)
         if vault_mem:
-            context_parts.append(vault_mem[:budget_per_layer])
+            context_parts.append(self._cap_layer(vault_mem, budget_per_layer))
 
         # 5. 项目记忆
         if self.active_project:
