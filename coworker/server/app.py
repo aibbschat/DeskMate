@@ -1697,6 +1697,60 @@ def create_app(manager: SessionManager) -> FastAPI:
             logging.exception("get deskmate learned history failed")
             return {"items": [], "stats": {"total": 0, "by_category": {}}}
 
+    @app.get("/v1/deskmate/growth")
+    async def get_deskmate_growth() -> dict[str, Any]:
+        """获取 DeskMate 成长系统状态（等级/亲密度/信任感/默契度/技能熟练度/事件时间线）。
+
+        前端成长面板在展开时调用。所有数值都有真实行为后果（proactive 阈值、
+        记忆预算、技能排序、语气），非展示用空数字。
+        """
+        try:
+            from pathlib import Path as _P
+
+            from deskmate.growth.engine import GrowthEngine
+
+            desk_dir = _P(
+                os.environ.get("DESKMATE_DIR", os.path.expanduser("~/.deskmate"))
+            )
+            return GrowthEngine(base_dir=desk_dir).snapshot()
+        except Exception:
+            logging.exception("get deskmate growth failed")
+            return JSONResponse({"error": "growth failed"}, status_code=500)
+
+    @app.post("/v1/deskmate/growth/proactive")
+    async def set_deskmate_growth_proactive(request: Request) -> dict[str, Any]:
+        """设置信任感是否调制 proactive 主动打扰阈值。
+
+        Body: {"control": true/false}
+        - control=true  → 信任感影响主动打扰（默认）
+        - control=false → 关闭该调制
+        """
+        try:
+            body = await request.json()
+        except Exception:
+            return JSONResponse({"error": "invalid json"}, status_code=400)
+        control = body.get("control")
+        if control is None or not isinstance(control, bool):
+            return JSONResponse(
+                {"error": "missing or invalid 'control' (must be boolean)"},
+                status_code=400,
+            )
+        try:
+            from pathlib import Path as _P
+
+            from deskmate.growth.engine import GrowthEngine
+
+            desk_dir = _P(
+                os.environ.get("DESKMATE_DIR", os.path.expanduser("~/.deskmate"))
+            )
+            engine = GrowthEngine(base_dir=desk_dir)
+            engine.state.trust_controls_proactive = control
+            engine.save()
+            return {"ok": True, "control": control}
+        except Exception:
+            logging.exception("deskmate growth proactive failed")
+            return JSONResponse({"error": "set failed"}, status_code=500)
+
     @app.post("/v1/deskmate/feedback")
     async def deskmate_feedback(request: Request) -> dict[str, Any]:
         """记录用户对主动建议的反馈（接受/忽略），写入防打扰持久化文件。
@@ -1997,6 +2051,32 @@ def create_app(manager: SessionManager) -> FastAPI:
 
             # proofread 含多次 LLM 调用，放到线程避免阻塞事件循环
             result = await asyncio.to_thread(proofread, raw_text, profile, chapter)
+
+            # 若带 session_id，把"提交 + 结构化报告"作为两条消息落盘进会话，
+            # 前端聊天直接呈现（重启不丢）；并实时推给正在查看该会话的客户端。
+            session_id = (body.get("session_id") or "").strip()
+            title = (body.get("title") or "").strip()
+            report = (result.get("report") or "").strip()
+            if session_id and report:
+                try:
+                    import time as _t
+
+                    now = int(_t.time())
+                    label = f"《{title}》" if title else "草稿"
+                    msgs = [
+                        {"role": "user", "content": f"📝 文稿编校：{label}", "ts": now},
+                        {"role": "assistant", "content": report, "ts": now + 1},
+                    ]
+                    if manager.append_session_messages(session_id, msgs):
+                        try:
+                            await manager.broadcast_session(
+                                session_id,
+                                {"type": "assistant_message", "data": {"text": report}},
+                            )
+                        except Exception:
+                            pass
+                except Exception:
+                    logging.warning("proofread: 写入会话失败（不影响批改结果）")
             return result
         except FileNotFoundError as e:
             return JSONResponse({"error": str(e)}, status_code=404)

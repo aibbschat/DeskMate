@@ -14,7 +14,7 @@ import { authedFetch, httpBase } from "../../api";
 import { Mascot } from "./Mascot";
 import { useMascotWalk } from "./useMascotWalk";
 import { useProactiveTick } from "./useProactiveTick";
-import { StatusPanel, type LearnedHistory } from "./StatusPanel";
+import { StatusPanel, type GrowthSnapshot, type LearnedHistory } from "./StatusPanel";
 import { SuggestionToast, type Suggestion } from "./SuggestionToast";
 import { MemoryViewer, type MemoryFile } from "./MemoryViewer";
 import { MemoryLearnedToast } from "./MemoryLearnedToast";
@@ -146,6 +146,9 @@ export function DeskMateOverlay({ agent, sessionId, idle, activeExpert }: Props)
   // 学习历史（了解度 + 时间线），面板展开时拉取
   const [learned, setLearned] = useState<LearnedHistory | null>(null);
 
+  // 成长系统快照（等级/亲密度/信任感/默契度/技能熟练度），面板展开时拉取
+  const [growth, setGrowth] = useState<GrowthSnapshot | null>(null);
+
   // 记忆注入低调提示（非模态、节流）
   const [contextHint, setContextHint] = useState<string | null>(null);
   const lastCtxRef = useRef(0);
@@ -175,6 +178,13 @@ export function DeskMateOverlay({ agent, sessionId, idle, activeExpert }: Props)
       .then((r) => (r.ok ? r.json() : null))
       .then((d) => {
         if (d && d.items) setLearned(d);
+      })
+      .catch(() => {/* 静默降级 */});
+    // 拉取成长系统快照（等级/亲密度/信任感/默契度/技能熟练度）
+    authedFetch(`${httpBase()}/v1/deskmate/growth`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => {
+        if (d && typeof d.level === "number") setGrowth(d);
       })
       .catch(() => {/* 静默降级 */});
   }, [panelOpen]);
@@ -417,6 +427,7 @@ export function DeskMateOverlay({ agent, sessionId, idle, activeExpert }: Props)
         proactiveEnabled={proactiveEnabled}
         onToggleProactive={handleToggleProactive}
         learned={learned}
+        growth={growth}
       />
 
       {/* 建议弹窗 - 右上角 */}
@@ -464,6 +475,7 @@ export function DeskMateOverlay({ agent, sessionId, idle, activeExpert }: Props)
         <ProofreadPanel
           open={proofreadOpen}
           seed={proofreadSeed}
+          sessionId={sessionId}
           initialFocus={proofreadFocus ?? undefined}
           onClose={() => {
             setProofreadOpen(false);

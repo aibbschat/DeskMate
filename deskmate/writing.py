@@ -367,34 +367,42 @@ def _select_chapter(chapters: list[dict], chapter) -> Optional[dict]:
 
 def proofread(draft: str, profile: Optional[dict] = None,
               chapter=None) -> dict:
-    """对文稿做编辑审阅，返回 {letter, items, chapters, current_chapter}。
+    """对文稿做编辑审阅，返回 {letter, items, chapters, current_chapter, report}。
 
-    - chapter 为 None：审整篇（兼容旧行为）。
+    - chapter 为 None：逐章审整篇（按章归因，便于报告按章分组）；
     - chapter 为 int/str：只审匹配到的那一章（按序号或标题）。
-    items: [{id, excerpt, type, suggestion, reason}, ...]
+    items: [{id, excerpt, type, suggestion, reason, chapter}, ...]
     chapters: 元信息列表（供前端章节下拉）。
     current_chapter: 本次实际审的章序号（None 表示整篇）。
+    report: 面向聊天的结构化 markdown（【原文】/【建议】/【理由】按章分组），
+            前端直接作为助手消息渲染，不再依赖专用采纳面板。
     """
     draft = draft.strip()
     if not draft:
-        return {"letter": "", "items": [],
+        return {"letter": "", "items": [], "report": "",
                 "chapters": [{"idx": 1, "title": "全文", "char_count": 0}],
                 "current_chapter": None}
 
     chapters = split_into_chapters(draft)
     target = _select_chapter(chapters, chapter)
-    work_text = target["text"] if target else draft
+    # 整篇审：逐章归因（长书按章分组、跨章不串）；单章审：只跑那一章。
+    if target:
+        work_units = [(target["idx"], target["title"], target["text"])]
+    else:
+        work_units = [(c["idx"], c["title"], c["text"]) for c in chapters]
 
     profile_text = format_profile_for_prompt(profile)
 
-    chunks = _chunk_text(work_text)
     collected: list[dict] = []
-    for ch in chunks:
-        try:
-            collected.extend(_proofread_chunk(ch, profile_text))
-        except Exception:
-            # 单段瞬时失败（如模型偶发返回空）不应拖垮整篇审阅；跳过该段并告警。
-            _log_warning("单段编辑审阅失败，已跳过该段")
+    for _idx, title, text in work_units:
+        for ch in _chunk_text(text):
+            try:
+                for it in _proofread_chunk(ch, profile_text):
+                    it["chapter"] = title
+                    collected.append(it)
+            except Exception:
+                # 单段瞬时失败（如模型偶发返回空）不应拖垮整篇审阅；跳过该段并告警。
+                _log_warning("单段编辑审阅失败，已跳过该段")
 
     items = _dedupe_items(collected)
 
@@ -421,15 +429,58 @@ def proofread(draft: str, profile: Optional[dict] = None,
         except Exception:
             _log_warning("生成编辑评语失败")
             letter = ""
+
+    report = _format_report(items, letter)
     return {
         "letter": letter.strip(),
         "items": items,
+        "report": report,
         "chapters": [{"idx": c["idx"], "title": c["title"], "char_count": len(c["text"])}
                      for c in chapters],
         # current_chapter 优先用传入的章序号：前端按章审时只发单章文本，后端 re-split 后
         # 序号对不上（_select_chapter 落空），若只用 target["idx"] 会把标记丢成 None。
         "current_chapter": chapter if chapter is not None else (target["idx"] if target else None),
     }
+
+
+def _format_report(items: list[dict], letter: str) -> str:
+    """把逐条审阅结果渲染成面向聊天的结构化 markdown。
+
+    每条用【原文】/【建议】/【理由】三行标注；按章节分组；整体编辑评语置顶。
+    前端只需把整段文本作为助手消息渲染即可，无需专用采纳面板——
+    作者自行阅读、在脑中过滤、回到原稿手动修改认可的条目。
+    """
+    from collections import OrderedDict
+
+    lines: list[str] = []
+    if letter and letter.strip():
+        lines.append("📝 **编辑评语**")
+        lines.append(letter.strip())
+        lines.append("")
+
+    groups: "OrderedDict[str, list[dict]]" = OrderedDict()
+    for it in items:
+        ch = (it.get("chapter") or "").strip() or "全文"
+        groups.setdefault(ch, []).append(it)
+
+    for ch, its in groups.items():
+        lines.append(f"## 📖 {ch}（{len(its)} 处）")
+        lines.append("")
+        for it in its:
+            t = (it.get("type") or "").strip()
+            bullet = f"• **【{t}】**" if t else "•"
+            lines.append(bullet)
+            lines.append(f"> 【原文】{it.get('excerpt', '')}")
+            lines.append(f"> 【建议】{it.get('suggestion', '')}")
+            reason = (it.get("reason") or "").strip()
+            if reason:
+                lines.append(f"> 【理由】{reason}")
+            lines.append("")
+
+    if not items:
+        lines.append("✅ 这篇文稿没有明显可改的地方，或建议都已处理。")
+
+    return "\n".join(lines).rstrip() + "\n"
 
 
 import logging

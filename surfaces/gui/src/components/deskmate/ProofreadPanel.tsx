@@ -9,7 +9,6 @@ import {
   saveManuscript,
   type ManuscriptChapter,
   type ManuscriptInfo,
-  type ProofreadItem,
   type ProofreadResult,
   type StyleProfile,
 } from "../../api";
@@ -29,19 +28,11 @@ interface Props {
   open: boolean;
   onClose: () => void;
   seed?: ProofreadSeed | null;
+  /** 当前会话 id：校对结果作为结构化消息写入该会话（聊天呈现，重启不丢）。 */
+  sessionId?: string;
   /** 首页 chip 进入焦点：edit 常规 / manuscripts 书稿库（自动载入最近一本）/ style 风格库（未校准则唤起校准）。 */
   initialFocus?: "edit" | "manuscripts" | "style";
 }
-
-// 六个编辑维度对应的标签色
-const TYPE_COLOR: Record<string, string> = {
-  冗余: "#ef9a9a",
-  节奏: "#ffcc80",
-  用词: "#a5d6a7",
-  连贯: "#90caf9",
-  错字: "#ce93d8",
-  考据: "#ffab91",
-};
 
 function bufToBase64(buf: ArrayBuffer): string {
   const bytes = new Uint8Array(buf);
@@ -74,7 +65,7 @@ async function readFileInput(file: File): Promise<{
   throw new Error("仅支持 .txt / .docx 文件");
 }
 
-export function ProofreadPanel({ open, onClose, seed, initialFocus }: Props) {
+export function ProofreadPanel({ open, onClose, seed, sessionId, initialFocus }: Props) {
   const [draft, setDraft] = useState("");
   const [draftFile, setDraftFile] = useState<{ content_base64: string; filename: string } | null>(null);
   const [manuscriptText, setManuscriptText] = useState<string | null>(null);
@@ -85,10 +76,7 @@ export function ProofreadPanel({ open, onClose, seed, initialFocus }: Props) {
   const [profile, setProfile] = useState<StyleProfile | null>(null);
   const [profileSource, setProfileSource] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
-  const [result, setResult] = useState<ProofreadResult | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [hidden, setHidden] = useState<Set<string>>(new Set());
-  const [applied, setApplied] = useState<ProofreadItem[]>([]);
   const [toast, setToast] = useState<string | null>(null);
   const toastTimer = useRef<number | null>(null);
   const draftInputRef = useRef<HTMLInputElement>(null);
@@ -111,10 +99,7 @@ export function ProofreadPanel({ open, onClose, seed, initialFocus }: Props) {
     setDraft(seed.draft ?? "");
     setManuscriptText(seed.draft ?? null);
     setManuscriptName(seed.name ?? null);
-    setResult(seed.result ?? null);
     setDraftFile(null);
-    setApplied([]);
-    setHidden(new Set());
     setError(null);
   }, [seed]);
 
@@ -187,9 +172,6 @@ export function ProofreadPanel({ open, onClose, seed, initialFocus }: Props) {
     setError(null);
     try {
       const r = await readFileInput(file);
-      setResult(null);
-      setApplied([]);
-      setHidden(new Set());
       if (r.text !== undefined) {
         setManuscriptText(r.text);
         setDraftFile(null);
@@ -235,9 +217,6 @@ export function ProofreadPanel({ open, onClose, seed, initialFocus }: Props) {
       const full = cs.map((c) => c.text).join("\n\n");
       setManuscriptText(full);
       setDraft(full);
-      setResult(null);
-      setApplied([]);
-      setHidden(new Set());
     } catch (e) {
       setError((e as Error).message);
     }
@@ -245,8 +224,6 @@ export function ProofreadPanel({ open, onClose, seed, initialFocus }: Props) {
 
   const onProofread = async () => {
     setError(null);
-    setApplied([]);
-    setHidden(new Set());
     const opts: Record<string, unknown> = {};
     if (selectedChapter !== null) {
       const ch = chapters.find((c) => c.idx === selectedChapter);
@@ -269,18 +246,12 @@ export function ProofreadPanel({ open, onClose, seed, initialFocus }: Props) {
     setRunning(true);
     emitEmotion("thinking");
     try {
-      const res = await proofreadDraft(opts);
-      setResult(res);
-      // 同步章节元信息（含后端重新识别的），便于下拉展示与定位
-      // 保留已有章节文本，仅更新后端返回的元信息（title, char_count 等）
-      if (res.chapters && res.chapters.length) {
-        // 前端 chapters 基于全本 split 且带 text，最可信；后端 res.chapters 既无 text、
-        // 又可能因传入单章文本被重新切分导致序号错位，故前端已有章节时直接保留、不覆盖。
-        setChapters((prev) => {
-          if (prev.length && prev[0].text) return prev;
-          return res.chapters as unknown as ManuscriptChapter[];
-        });
-      }
+      if (sessionId) opts.sessionId = sessionId;
+      if (manuscriptName) opts.title = manuscriptName;
+      await proofreadDraft(opts);
+      // 结果已由后端作为结构化消息写入当前会话聊天，关闭面板让用户在聊天中查看
+      showToast("编校完成，结果已发到聊天 ✅");
+      window.setTimeout(() => onClose(), 1400);
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -307,56 +278,12 @@ export function ProofreadPanel({ open, onClose, seed, initialFocus }: Props) {
     }
   };
 
-  const onAccept = (item: ProofreadItem) => {
-    setApplied((prev) => (prev.some((x) => x.id === item.id) ? prev : [...prev, item]));
-    if (draft.includes(item.excerpt)) {
-      const next = draft.replace(item.excerpt, item.suggestion);
-      setDraft(next);
-      // 若当前在某章内，回写也同步进章节缓存，再次缩放不丢改动
-      if (selectedChapter !== null) {
-        setChapters((prev) =>
-          prev.map((c) => (c.idx === selectedChapter ? { ...c, text: next } : c)),
-        );
-      }
-      showToast("已采纳，已改回左侧草稿");
-    } else {
-      navigator.clipboard?.writeText(item.suggestion).catch(() => {});
-      showToast("已采纳并记入清单，建议已复制到剪贴板");
-    }
-    setHidden((prev) => new Set(prev).add(item.id));
-  };
-
-  const onReject = (item: ProofreadItem) => {
-    setHidden((prev) => new Set(prev).add(item.id));
-  };
-
   const exportName = () => {
     if (selectedChapter !== null) {
       const ch = chapters.find((c) => c.idx === selectedChapter);
       if (ch) return ch.title;
     }
     return draftFile?.filename?.replace(/\.(docx|txt)$/i, "") || "manuscript";
-  };
-
-  const onExportApplied = () => {
-    if (applied.length === 0) return;
-    const lines = applied.map((it, i) => {
-      const head = `【${i + 1}】(${it.type})`;
-      const reason = it.reason ? `\n理由：${it.reason}` : "";
-      return `${head}\n原文：${it.excerpt}\n建议：${it.suggestion}${reason}\n`;
-    });
-    const stamp = new Date().toLocaleString("zh-CN");
-    const title = selectedChapter !== null ? `（第 ${selectedChapter} 章）` : "（全篇）";
-    const header = `《${exportName()}》${title}已采纳的修改（共 ${applied.length} 条）\n导出时间：${stamp}\n\n`;
-    const blob = new Blob([header + lines.join("\n")], { type: "text/plain;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `采纳修改_${exportName()}.txt`;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    URL.revokeObjectURL(url);
   };
 
   const onExportChapter = () => {
@@ -375,7 +302,6 @@ export function ProofreadPanel({ open, onClose, seed, initialFocus }: Props) {
     URL.revokeObjectURL(url);
   };
 
-  const visibleItems = result?.items.filter((it) => !hidden.has(it.id)) ?? [];
   const scopeLabel =
     selectedChapter !== null ? `审：第 ${selectedChapter} 章` : "审：整篇 / 全部";
   const canPickChapter = chapters.length > 1;
@@ -567,128 +493,17 @@ export function ProofreadPanel({ open, onClose, seed, initialFocus }: Props) {
             />
           </div>
 
-          {/* 右：报告 */}
+          {/* 右：说明（结果已发到聊天，不再内置采纳面板） */}
           <div className="flex-1 min-h-0 flex flex-col p-3 gap-2 overflow-y-auto">
             {running && (
               <div className="text-[13px] italic" style={{ color: "var(--muted)" }}>
-                桌搭正在逐句审读你的文稿…
+                桌搭正在逐句审读你的文稿… 完成后结果会发到聊天。
               </div>
             )}
-            {!running && !result && (
-              <div className="text-[13px] italic" style={{ color: "var(--faint)" }}>
-                批改结果会显示在这里：先是一封整体编辑评语，再是逐条建议。点「采纳」可直接改回你的草稿。
-              </div>
-            )}
-            {result && result.letter && (
-              <div
-                className="rounded-lg border p-3 text-[13px] leading-relaxed"
-                style={{
-                  borderColor: "var(--line)",
-                  background: "var(--paper)",
-                  color: "var(--ink)",
-                  whiteSpace: "pre-wrap",
-                }}
-              >
-                <div
-                  className="text-[10px] uppercase tracking-wider mb-1"
-                  style={{ color: "var(--faint)" }}
-                >
-                  编辑评语
-                </div>
-                {result.letter}
-              </div>
-            )}
-            {visibleItems.map((it) => (
-              <div
-                key={it.id}
-                className="rounded-lg border p-3"
-                style={{ borderColor: "var(--line)", background: "var(--paper)" }}
-              >
-                <div className="flex items-center gap-2 mb-1.5">
-                  <span
-                    className="text-[11px] px-1.5 py-0.5 rounded"
-                    style={{ background: TYPE_COLOR[it.type] || "#ccc", color: "#222" }}
-                  >
-                    {it.type}
-                  </span>
-                </div>
-                <div className="text-[12.5px] mb-1" style={{ color: "var(--ink)" }}>
-                  <span style={{ color: "var(--faint)" }}>原文：</span>
-                  {it.excerpt}
-                </div>
-                <div className="text-[12.5px] mb-1" style={{ color: "var(--ink)" }}>
-                  <span style={{ color: "var(--accent)" }}>建议：</span>
-                  {it.suggestion}
-                </div>
-                {it.reason && (
-                  <div className="text-[12px] mb-2" style={{ color: "var(--muted)" }}>
-                    理由：{it.reason}
-                  </div>
-                )}
-                <div className="flex gap-2">
-                  <button
-                    className="text-[12px] px-2.5 py-1 rounded font-medium"
-                    style={{ background: "var(--accent)", color: "#fff" }}
-                    onClick={() => onAccept(it)}
-                  >
-                    采纳
-                  </button>
-                  <button
-                    className="text-[12px] px-2.5 py-1 rounded border"
-                    style={{ borderColor: "var(--line)", color: "var(--muted)" }}
-                    onClick={() => onReject(it)}
-                  >
-                    打回
-                  </button>
-                </div>
-              </div>
-            ))}
-            {applied.length > 0 && (
-              <div
-                className="rounded-lg border p-3"
-                style={{ borderColor: "var(--accent)", background: "var(--paper)" }}
-              >
-                <div className="flex items-center justify-between mb-2">
-                  <span className="text-[12px] font-semibold" style={{ color: "var(--ink)" }}>
-                    已采纳的修改（{applied.length}）
-                  </span>
-                  <button
-                    className="text-[11.5px] px-2 py-1 rounded border"
-                    style={{ borderColor: "var(--line)", color: "var(--accent)" }}
-                    onClick={onExportApplied}
-                  >
-                    ⬇ 导出清单
-                  </button>
-                </div>
-                <div className="flex flex-col gap-2">
-                  {applied.map((it) => (
-                    <div
-                      key={it.id}
-                      className="text-[12px] rounded p-2"
-                      style={{
-                        background: "var(--panel)",
-                        borderLeft: `3px solid ${TYPE_COLOR[it.type] || "#ccc"}`,
-                      }}
-                    >
-                      <div style={{ color: "var(--faint)" }}>原文：{it.excerpt}</div>
-                      <div style={{ color: "var(--accent)" }}>建议：{it.suggestion}</div>
-                      <button
-                        className="text-[11px] mt-1 underline"
-                        style={{ color: "var(--muted)" }}
-                        onClick={() =>
-                          navigator.clipboard?.writeText(it.suggestion).catch(() => {})
-                        }
-                      >
-                        复制建议
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-            {result && visibleItems.length === 0 && applied.length === 0 && (
-              <div className="text-[13px] italic" style={{ color: "var(--faint)" }}>
-                这篇文稿没有明显可改的地方，或建议都已处理。👍
+            {!running && (
+              <div className="text-[13px] italic leading-relaxed" style={{ color: "var(--faint)" }}>
+                校对完成后，结果会以结构化消息发到聊天（【原文】/【建议】/【理由】按章分组）。
+                你可以在聊天里直接阅读，回到原稿手动修改你认可的条目。
               </div>
             )}
           </div>

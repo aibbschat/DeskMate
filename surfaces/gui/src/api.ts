@@ -198,6 +198,7 @@ export interface ProofreadItem {
 export interface ProofreadResult {
   letter: string;
   items: ProofreadItem[];
+  report?: string;
   chapters?: { idx: number; title: string; char_count: number }[];
   current_chapter?: number | null;
 }
@@ -238,13 +239,16 @@ export async function getWritingStyle(): Promise<{ profile: StyleProfile | null 
   return res.json();
 }
 
-/** 对文稿做编辑审阅。text 优先；或传 path / 上传文件（base64 + 文件名）。 */
+/** 对文稿做编辑审阅。text 优先；或传 path / 上传文件（base64 + 文件名）。
+ *  传 sessionId + title 时，结构化结果会作为两条消息写入该会话（聊天呈现，重启不丢）。 */
 export async function proofreadDraft(opts: {
   text?: string;
   path?: string;
   content_base64?: string;
   filename?: string;
   chapter?: number | string;
+  sessionId?: string;
+  title?: string;
 }): Promise<ProofreadResult> {
   const res = await authedFetch(`${httpBase()}/v1/deskmate/proofread`, {
     method: "POST",
