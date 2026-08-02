@@ -147,8 +147,13 @@ export interface ConversationMessage {
   [key: string]: any;
 }
 
-export async function getSessionMessages(sessionId: string): Promise<ConversationMessage[]> {
-  const res = await authedFetch(`${httpBase()}/v1/sessions/${sessionId}/messages`);
+export async function getSessionMessages(
+  sessionId: string,
+  limit = 10000,
+): Promise<ConversationMessage[]> {
+  const res = await authedFetch(
+    `${httpBase()}/v1/sessions/${sessionId}/messages?limit=${limit}`,
+  );
   return (await res.json()).messages ?? [];
 }
 
