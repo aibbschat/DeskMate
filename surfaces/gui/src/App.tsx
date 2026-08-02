@@ -1767,7 +1767,10 @@ export function App() {
               onInterrupt={interrupt}
               onModeChange={changeMode}
               onModelChange={changeModel}
-              workspace={needsWorkspace(agent) ? workspace || "" : undefined}
+              // 桌搭模式同样暴露权限选择菜单（讨论 / 需授权 / 完全访问）：它也会跑
+              // run_shell 等需审批工具，但需要「完全访问」时不应被一步步点授权卡住。
+              // workspace 本身仅为触发 ModeMenu 渲染（空串即视为已定义），桌搭无目录工作区。
+              workspace={needsWorkspace(agent) || agent === "deskmate" ? (workspace || "") : undefined}
               unattended={unattended}
               onUnattendedChange={agent !== "chat" ? toggleUnattended : undefined}
               expert={currentExpert}
