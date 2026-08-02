@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, type CSSProperties } from "react";
 import { type EmotionName, getEmotionParams } from "./EmotionState";
 import { Icon } from "../Icon";
 
@@ -36,6 +36,43 @@ function relTime(ts: string): string {
 }
 
 // ---------------------------------------------------------------------------
+// 成长 / 亲密度（QQ 宠物式升级玩法）
+// ---------------------------------------------------------------------------
+
+/** 每一级所需的「累计了解条数」阈值（cumulative）。Indexed by level-1。 */
+const LEVEL_THRESHOLDS = [0, 5, 15, 30, 50, 80, 120, 170, 230, 300, 400, 520];
+
+interface Growth {
+  level: number;
+  cur: number; // 当前级已积累
+  span: number; // 当前级所需
+  progress: number; // 0-1
+  toNext: number; // 距下一阶还差几条
+  maxed: boolean;
+}
+
+/** 由「了解度」（已学到的关于用户的事实总数）推导等级与升级进度。 */
+function computeGrowth(total: number): Growth {
+  let level = 1;
+  for (let i = 1; i < LEVEL_THRESHOLDS.length; i++) {
+    if (total >= LEVEL_THRESHOLDS[i]) level = i + 1;
+    else break;
+  }
+  const curBase = LEVEL_THRESHOLDS[level - 1];
+  const nextBase = LEVEL_THRESHOLDS[level] ?? curBase + 120;
+  const span = Math.max(1, nextBase - curBase);
+  const cur = total - curBase;
+  const progress = Math.min(1, cur / span);
+  const toNext = Math.max(0, nextBase - total);
+  return { level, cur, span, progress, toNext, maxed: level >= LEVEL_THRESHOLDS.length };
+}
+
+/** 亲密度：随「了解度」增长（每了解 40 件事满值），体现桌宠与用户的情感联结。 */
+function computeIntimacy(total: number): number {
+  return Math.min(100, Math.round(total * 2.5));
+}
+
+// ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
@@ -62,11 +99,18 @@ export interface StatusPanelProps {
   onToggleProactive?: (enabled: boolean) => void;
   /** 学习历史（越用越懂你的时间线 + 了解度统计）。 */
   learned?: LearnedHistory | null;
+  /** 桌宠在屏幕中的左上角坐标（用于把弹窗智能定位在视口内）。 */
+  petPos?: { x: number; y: number };
+  /** 桌宠当前显示宽度（用于把弹窗水平居中对准桌宠中心）。 */
+  petWidth?: number;
 }
 
 // ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
+
+const POPUP_W = 280;
+const EDGE = 8;
 
 export function StatusPanel({
   emotion,
@@ -80,6 +124,8 @@ export function StatusPanel({
   proactiveEnabled = true,
   onToggleProactive,
   learned = null,
+  petPos,
+  petWidth,
 }: StatusPanelProps) {
   const params = getEmotionParams(emotion);
 
@@ -96,12 +142,43 @@ export function StatusPanel({
 
   if (!visible) return null;
 
+  // ----- 智能定位：把弹窗夹在视口内，顶部空间不足时翻到桌宠下方 -----
+  const vw = typeof window !== "undefined" ? window.innerWidth : 1280;
+  const vh = typeof window !== "undefined" ? window.innerHeight : 800;
+  const petW = petWidth ?? 180;
+  const petCenterX = (petPos?.x ?? 0) + petW / 2;
+  let leftX = petCenterX - POPUP_W / 2;
+  leftX = Math.max(EDGE, Math.min(leftX, vw - POPUP_W - EDGE));
+  const styleLeft = leftX - (petPos?.x ?? 0);
+  const below = (petPos?.y ?? vh) < 288; // 桌宠太靠上 → 弹窗改到下方
+  const arrowX = petCenterX - leftX; // 箭头对准桌宠中心
+
+  const arrowStyle: CSSProperties = {
+    left: Math.max(12, Math.min(arrowX, POPUP_W - 12)),
+    width: 0,
+    height: 0,
+    borderLeft: "6px solid transparent",
+    borderRight: "6px solid transparent",
+  };
+  if (below) {
+    arrowStyle.top = -6;
+    arrowStyle.borderBottom = "6px solid var(--line)";
+  } else {
+    arrowStyle.bottom = -6;
+    arrowStyle.borderTop = "6px solid var(--line)";
+  }
+
+  // ----- 成长 / 亲密度 -----
+  const total = learned?.stats.total ?? 0;
+  const growth = computeGrowth(total);
+  const intimacy = computeIntimacy(total);
+
   return (
     <div
-      className="absolute bottom-full left-1/2 mb-3 z-30"
+      className={`absolute z-50 ${below ? "top-full mt-3" : "bottom-full mb-3"}`}
       style={{
-        transform: "translateX(-50%)",
-        width: 280,
+        left: styleLeft,
+        width: POPUP_W,
         opacity: open ? 1 : 0,
         transition: "opacity 0.2s ease, transform 0.2s ease",
       }}
@@ -128,7 +205,16 @@ export function StatusPanel({
               className="text-[12.5px] font-semibold"
               style={{ color: "var(--ink)" }}
             >
-              DeskMate
+              墨灵
+            </span>
+            <span
+              className="text-[10.5px] font-bold px-1.5 py-0.5 rounded"
+              style={{
+                color: "#b8791f",
+                background: "linear-gradient(90deg,#fde9c4,#f8d89a)",
+              }}
+            >
+              Lv.{growth.level}
             </span>
             <span
               className="text-[11px] px-1.5 py-0.5 rounded"
@@ -150,9 +236,12 @@ export function StatusPanel({
           </button>
         </div>
 
-        {/* Body */}
-        <div className="px-3.5 py-2.5 flex flex-col gap-2.5">
-          {/* Current activity */}
+        {/* Body（超高时滚动，避免被边框/视口裁切） */}
+        <div
+          className="px-3.5 py-2.5 flex flex-col gap-2.5"
+          style={{ maxHeight: "min(64vh, 460px)", overflowY: "auto" }}
+        >
+          {/* 当前 */}
           <div>
             <div
               className="text-[10px] uppercase tracking-wider mb-1"
@@ -165,7 +254,104 @@ export function StatusPanel({
             </div>
           </div>
 
-          {/* Proactive mode toggle */}
+          {/* 成长 / 等级（QQ 宠物式升级进度） */}
+          <div>
+            <div className="flex items-center justify-between mb-1">
+              <span
+                className="text-[10px] uppercase tracking-wider"
+                style={{ color: "var(--faint)" }}
+              >
+                ✨ 成长
+              </span>
+              <span
+                className="text-[10.5px] tabular-nums"
+                style={{ color: "var(--muted)" }}
+              >
+                {growth.maxed ? "已满级 ✦" : `经验 ${growth.cur}/${growth.span}`}
+              </span>
+            </div>
+            <div
+              className="h-2 rounded-full overflow-hidden"
+              style={{ background: "var(--line)" }}
+            >
+              <div
+                className="h-full rounded-full transition-all duration-500"
+                style={{
+                  width: `${Math.round(growth.progress * 100)}%`,
+                  background: "linear-gradient(90deg,#f6c453,#f0a93b)",
+                }}
+              />
+            </div>
+            {!growth.maxed && (
+              <div className="text-[10.5px] mt-1" style={{ color: "var(--faint)" }}>
+                再了解 {growth.toNext} 件事，墨灵就能升到 Lv.{growth.level + 1} 啦 ✨
+              </div>
+            )}
+          </div>
+
+          {/* 亲密度 */}
+          <div>
+            <div className="flex items-center justify-between mb-1">
+              <span
+                className="text-[10px] uppercase tracking-wider"
+                style={{ color: "var(--faint)" }}
+              >
+                💗 亲密度
+              </span>
+              <span
+                className="text-[11px] tabular-nums"
+                style={{ color: "var(--muted)" }}
+              >
+                {intimacy}%
+              </span>
+            </div>
+            <div
+              className="h-1.5 rounded-full overflow-hidden"
+              style={{ background: "var(--line)" }}
+            >
+              <div
+                className="h-full rounded-full transition-all duration-500"
+                style={{
+                  width: `${intimacy}%`,
+                  background: "linear-gradient(90deg,#f78fb3,#ef5da8)",
+                }}
+              />
+            </div>
+          </div>
+
+          {/* 置信度 */}
+          {confidence !== undefined && (
+            <div>
+              <div className="flex items-center justify-between mb-1">
+                <span
+                  className="text-[10px] uppercase tracking-wider"
+                  style={{ color: "var(--faint)" }}
+                >
+                  🤝 置信度
+                </span>
+                <span
+                  className="text-[11px] tabular-nums"
+                  style={{ color: "var(--muted)" }}
+                >
+                  {Math.round(confidence * 100)}%
+                </span>
+              </div>
+              <div
+                className="h-1.5 rounded-full overflow-hidden"
+                style={{ background: "var(--line)" }}
+              >
+                <div
+                  className="h-full rounded-full transition-all duration-500"
+                  style={{
+                    width: `${Math.round(confidence * 100)}%`,
+                    background: params.color,
+                  }}
+                />
+              </div>
+            </div>
+          )}
+
+          {/* 主动模式开关 */}
           {onToggleProactive && (
             <div>
               <div
@@ -178,13 +364,10 @@ export function StatusPanel({
                 className="flex items-center gap-2 w-full text-left group"
                 onClick={() => onToggleProactive(!proactiveEnabled)}
               >
-                {/* Toggle switch */}
                 <div
                   className="relative w-8 h-4.5 rounded-full transition-colors duration-200"
                   style={{
-                    background: proactiveEnabled
-                      ? params.color
-                      : "var(--line)",
+                    background: proactiveEnabled ? params.color : "var(--line)",
                   }}
                 >
                   <div
@@ -204,49 +387,14 @@ export function StatusPanel({
                 </span>
               </button>
               {!proactiveEnabled && (
-                <div
-                  className="text-[10.5px] mt-1"
-                  style={{ color: "var(--faint)" }}
-                >
+                <div className="text-[10.5px] mt-1" style={{ color: "var(--faint)" }}>
                   关闭后不再主动弹出建议
                 </div>
               )}
             </div>
           )}
 
-          {/* Confidence */}
-          {confidence !== undefined && (
-            <div>
-              <div
-                className="text-[10px] uppercase tracking-wider mb-1"
-                style={{ color: "var(--faint)" }}
-              >
-                置信度
-              </div>
-              <div className="flex items-center gap-2">
-                <div
-                  className="flex-1 h-1.5 rounded-full overflow-hidden"
-                  style={{ background: "var(--line)" }}
-                >
-                  <div
-                    className="h-full rounded-full transition-all duration-500"
-                    style={{
-                      width: `${Math.round(confidence * 100)}%`,
-                      background: params.color,
-                    }}
-                  />
-                </div>
-                <span
-                  className="text-[11px] tabular-nums"
-                  style={{ color: "var(--muted)" }}
-                >
-                  {Math.round(confidence * 100)}%
-                </span>
-              </div>
-            </div>
-          )}
-
-          {/* Recent memories */}
+          {/* 近期记忆 */}
           {recentMemories.length > 0 && (
             <div>
               <div
@@ -316,7 +464,7 @@ export function StatusPanel({
           )}
 
           {/* Empty state */}
-          {recentMemories.length === 0 && (
+          {recentMemories.length === 0 && !learned && (
             <div
               className="text-[11.5px] italic"
               style={{ color: "var(--faint)" }}
@@ -344,23 +492,14 @@ export function StatusPanel({
               onClick={onOpenProofread}
             >
               <Icon name="pencil" size={13} />
-              编辑模式
+              文稿编校
             </button>
           )}
         </div>
       </div>
 
-      {/* Arrow pointing down */}
-      <div
-        className="absolute left-1/2 -translate-x-1/2 -bottom-1.5"
-        style={{
-          width: 0,
-          height: 0,
-          borderLeft: "6px solid transparent",
-          borderRight: "6px solid transparent",
-          borderTop: "6px solid var(--line)",
-        }}
-      />
+      {/* 指向桌宠的小箭头（夹在弹窗内，避免跑到边框外） */}
+      <div className="absolute -translate-x-1/2" style={arrowStyle} />
     </div>
   );
 }

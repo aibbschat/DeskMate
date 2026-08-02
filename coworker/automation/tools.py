@@ -16,6 +16,19 @@ import aisuite as ai
 from .models import Schedule, ScheduledTask, grant_entries
 from .store import TaskStore
 
+# Baseline standing grants a scheduled (autonomous) task receives when the creating
+# agent proposes no `permissions` of its own. Without these, an auto task that reads
+# files or shells out (the deskmate's normal behavior) would block on a per-run approval
+# card that nobody can click in `Mode.INTERACTIVE`, hanging forever. These are low-risk
+# file/workspace-scoped tools on the user's own machine, surfaced for approval at creation
+# time via the consent card — so the human still signs off before the task goes live.
+DEFAULT_SCHEDULED_TOOLS = [
+    "run_shell",
+    "read_file",
+    "list_directory",
+    "write_file",
+]
+
 _CREATE_SCHEMA = {
     "type": "function",
     "function": {
@@ -176,6 +189,11 @@ def scheduling_tools(
         # call (the consent card rendered the proposal). Only validated write grants stick:
         # tool must declare a target argument (never exec/destructive), target non-empty.
         grants = grant_entries(permissions)
+        # Systemic fix: an autonomous task with zero standing grants stalls on the first
+        # run_shell/read it attempts (approval card nobody can click). Fall back to a safe
+        # baseline so scheduled tasks stay runnable unattended.
+        if not grants:
+            grants = list(DEFAULT_SCHEDULED_TOOLS)
         task = ScheduledTask(
             title=title,
             instructions=instructions,

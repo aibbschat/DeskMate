@@ -277,7 +277,7 @@ export function DeskMateOverlay({ agent, sessionId, idle, activeExpert }: Props)
         setProofreadOpen(true);
       }
     };
-    // 首页 chip 入口：编辑模式 / 书稿库 / 风格库 → 打开批改台（带焦点）
+    // 首页 chip 入口：文稿编校 / 书稿库 / 风格库 → 打开批改台（带焦点）
     const onOpenProofread = (e: Event) => {
       const d = (e as CustomEvent<{ focus?: string }>).detail;
       const focus = d?.focus;
@@ -414,6 +414,8 @@ export function DeskMateOverlay({ agent, sessionId, idle, activeExpert }: Props)
             proactiveEnabled={proactiveEnabled}
             onToggleProactive={handleToggleProactive}
             learned={learned}
+            petPos={position}
+            petWidth={Math.round(180 * petScale)}
           />
         </div>
       </div>
@@ -458,7 +460,7 @@ export function DeskMateOverlay({ agent, sessionId, idle, activeExpert }: Props)
         />
       )}
 
-      {/* 写作批改（编辑模式 / 书稿库 / 风格库）— 全屏模态 */}
+      {/* 写作批改（文稿编校 / 书稿库 / 风格库）— 全屏模态 */}
       {proofreadOpen && (
         <ProofreadPanel
           open={proofreadOpen}

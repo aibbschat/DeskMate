@@ -233,7 +233,7 @@ export function ReportDialog({
               <div className="source-pane">
                 {manuscripts.length === 0 ? (
                   <div className="source-empty">
-                    暂无已存书稿。可在「编辑模式」面板中保存书稿，或改用「粘贴文本 / 上传文件 / 本地路径」。
+                    暂无已存书稿。可在「文稿编校」面板中保存书稿，或改用「粘贴文本 / 上传文件 / 本地路径」。
                   </div>
                 ) : (
                   <select

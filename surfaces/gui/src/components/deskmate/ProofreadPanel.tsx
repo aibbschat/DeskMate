@@ -403,7 +403,7 @@ export function ProofreadPanel({ open, onClose, seed, initialFocus }: Props) {
           <div className="flex items-center gap-2">
             <Icon name="pencil" size={16} />
             <span className="text-[14px] font-semibold" style={{ color: "var(--ink)" }}>
-              编辑模式
+              文稿编校
             </span>
             {manuscriptName && (
               <span
