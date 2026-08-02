@@ -280,6 +280,34 @@ class TestTickResult:
         result = TickResult(action=ActionType.NO_ACTION)
         assert not result.has_suggestion
 
+    def test_heartbeat_interval_serialized(self):
+        result = TickResult(
+            action=ActionType.NO_ACTION,
+            skipped_reason="测试",
+            heartbeat_interval_ms=180_000,
+        )
+        d = result.to_dict()
+        assert d["heartbeat_interval_ms"] == 180_000
+
+    def test_no_action_still_serializes_user_activity(self):
+        from deskmate.proactivity.user_active import ActivityState, UserActivity
+
+        result = TickResult(
+            action=ActionType.NO_ACTION,
+            skipped_reason="测试",
+            activity=ActivityState(
+                level=UserActivity.ACTIVE,
+                idle_seconds=0,
+                window_title="",
+                app_name="",
+                reason="在桌前",
+            ),
+            heartbeat_interval_ms=180_000,
+        )
+        d = result.to_dict()
+        assert d["user_activity"] == "active"
+        assert d["heartbeat_interval_ms"] == 180_000
+
 
 # ============================================================
 # PROACTIVE ENGINE

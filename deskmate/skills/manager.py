@@ -56,6 +56,9 @@ class SkillManager:
                 by_cat[cat] = []
             by_cat[cat].append(s)
 
+        # 技能熟练度徽标：<熟练> / <入门> / <生疏>
+        prof_map = self._proficiency_map()
+
         lines = ["<available_skills>"]
         for cat in ["writing", "coding", "office", "general"]:
             if cat not in by_cat:
@@ -65,6 +68,9 @@ class SkillManager:
                 desc = s.get("description", "")[:80]
                 trigger = s.get("trigger", "")
                 entry = f"    - {s['name']}: {desc}"
+                badge = self._proficiency_badge(prof_map.get(s["name"]))
+                if badge:
+                    entry += f"（{badge}）"
                 if trigger:
                     entry += f"（触发：{trigger}）"
                 # 截断到 120 字符，保持索引紧凑
@@ -74,6 +80,30 @@ class SkillManager:
         lines.append("</available_skills>")
 
         return "\n".join(lines)
+
+    def _proficiency_map(self) -> dict[str, float]:
+        """读取技能熟练度映射（name → proficiency 0-1）。失败返回空 dict。"""
+        try:
+            from deskmate.growth.engine import GrowthEngine
+
+            engine = GrowthEngine(base_dir=self.base_dir)
+            return {
+                name: p.proficiency
+                for name, p in engine.state.skill_proficiency.items()
+            }
+        except Exception:
+            return {}
+
+    @staticmethod
+    def _proficiency_badge(prof: float | None) -> str:
+        """熟练度徽标：0-1 → 文本徽标。"""
+        if prof is None or prof <= 0:
+            return ""
+        if prof >= 0.7:
+            return "熟练"
+        if prof >= 0.35:
+            return "入门"
+        return "生疏"
 
     # ------------------------------------------------------------------
     # 自动匹配（每轮对话前）
@@ -103,7 +133,32 @@ class SkillManager:
                         existing_names.add(m["name"])
                 results.sort(key=lambda s: s.get("score", 0), reverse=True)
 
+        # 熟练度加权：熟练的技能更容易被选中（越用越顺手）
+        results = self._apply_proficiency_ranking(results)
+
         return results[:limit]
+
+    def _apply_proficiency_ranking(self, results: list[dict]) -> list[dict]:
+        """按技能熟练度对匹配结果重新加权排序。
+
+        熟练度 (proficiency) 由 GrowthEngine 从使用次数/成功率/时效性派生，
+        加权 ±20%：熟练的技能分数上浮，生疏的技能分数下浮。
+        """
+        if not results:
+            return results
+        try:
+            from deskmate.growth.engine import GrowthEngine
+
+            engine = GrowthEngine(base_dir=self.base_dir)
+            for r in results:
+                r["score"] = engine.modulate_skill_ranking(
+                    float(r.get("score", 0)), r["name"]
+                )
+                r["proficiency"] = round(engine.get_proficiency(r["name"]), 3)
+            results.sort(key=lambda s: s.get("score", 0), reverse=True)
+        except Exception:
+            pass  # 成长系统异常不阻断技能匹配
+        return results
 
     def _semantic_match(self, user_message: str, skills: list[dict], limit: int = 3) -> list[dict]:
         """用 LLM 做口语化语义匹配。
@@ -182,6 +237,8 @@ class SkillManager:
             # 记录技能被使用
             self.store.record_use(s["name"], context=user_message[:100], success=True)
             self.store.increment_uses(s["path"])
+            # 成长系统：技能使用事件（熟练度 + XP + 亲密度）
+            self._record_growth_skill_use(s["name"], s["path"])
 
             parts.append(
                 f"### 技能：{s['name']}\n"
@@ -194,6 +251,32 @@ class SkillManager:
             combined = combined[:max_chars] + "\n…"
 
         return f"<skills-context>\n{combined}\n</skills-context>"
+
+    def _record_growth_skill_use(self, name: str, path: str) -> None:
+        """向成长系统上报技能使用事件（熟练度 + XP + 亲密度）。"""
+        try:
+            from deskmate.growth.engine import GrowthEngine
+
+            full = self.store.read_skill(path)
+            uses = full["meta"].get("uses", 0) if full else 1
+            rate = full["meta"].get("success_rate", 0.0) if full else 0.0
+            engine = GrowthEngine(base_dir=self.base_dir)
+            engine.record_skill_use(name, success=True, skill_store_uses=uses, skill_store_rate=rate)
+        except Exception:
+            pass  # 成长系统异常不阻断技能使用
+
+    def _record_growth_skill_evolved(self, name: str, path: str) -> None:
+        """向成长系统上报技能进化事件。"""
+        try:
+            from deskmate.growth.engine import GrowthEngine
+
+            full = self.store.read_skill(path)
+            uses = full["meta"].get("uses", 0) if full else 1
+            rate = full["meta"].get("success_rate", 0.0) if full else 0.0
+            engine = GrowthEngine(base_dir=self.base_dir)
+            engine.record_skill_evolved(name, skill_store_uses=uses, skill_store_rate=rate)
+        except Exception:
+            pass  # 成长系统异常不阻断技能进化
 
     # ------------------------------------------------------------------
     # 自动抽取（对话结束后）
@@ -287,6 +370,14 @@ class SkillManager:
             trigger=result.get("trigger", ""),
             category=result.get("category", "general"),
         )
+        # 成长系统：技能创建事件
+        if created.get("status") == "已创建":
+            try:
+                from deskmate.growth.engine import GrowthEngine
+
+                GrowthEngine(base_dir=self.base_dir).record_skill_created(name)
+            except Exception:
+                pass  # 成长系统异常不阻断技能创建
         return created
 
     # ------------------------------------------------------------------
@@ -358,6 +449,8 @@ class SkillManager:
                 )
                 if patch_result.get("status") == "ok":
                     updated.append({"name": s["name"], "path": s["path"]})
+                    # 成长系统：技能进化事件（用户纠正后打磨 → 熟练度提升）
+                    self._record_growth_skill_evolved(s["name"], s["path"])
 
         return updated
 
@@ -439,6 +532,8 @@ class SkillManager:
                 if patch_result.get("status") == "ok":
                     # 递增使用计数
                     self.store.increment_uses(s["path"])
+                    # 成长系统：技能进化事件（成功执行后积累经验）
+                    self._record_growth_skill_evolved(s["name"], s["path"])
                     return {"name": s["name"], "path": s["path"], "status": "已从成功执行中进化"}
 
         return None

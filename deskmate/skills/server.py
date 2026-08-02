@@ -73,6 +73,20 @@ def skill_view(name: str) -> str:
             return f"技能不存在：{name}"
         # 标记使用
         _get_mgr().store.increment_uses(name)
+        # 成长系统：技能查看 = 使用事件（increment 后再读 meta，避免 uses 滞后）
+        try:
+            from deskmate.growth.engine import GrowthEngine
+
+            fresh = _get_mgr().store.read_skill(name)
+            meta = (fresh or skill).get("meta", {})
+            GrowthEngine(base_dir=_base_dir).record_skill_use(
+                name,
+                success=True,
+                skill_store_uses=meta.get("uses", 1),
+                skill_store_rate=meta.get("success_rate", 0.0),
+            )
+        except Exception:
+            pass  # 成长系统异常不阻断技能查看
         # 返回完整内容
         meta_lines = [f"# {skill['meta'].get('name', name)}"]
         if skill["meta"].get("description"):
@@ -120,6 +134,14 @@ def skill_create(
             trigger=trigger,
             category=category,
         )
+        # 成长系统：技能创建事件
+        if result.get("status") == "已创建":
+            try:
+                from deskmate.growth.engine import GrowthEngine
+
+                GrowthEngine(base_dir=_base_dir).record_skill_created(name)
+            except Exception:
+                pass  # 成长系统异常不阻断技能创建
         return json.dumps(result, ensure_ascii=False)
     except Exception as e:
         return json.dumps({"status": "error", "message": str(e)}, ensure_ascii=False)
@@ -261,6 +283,20 @@ def skill_record_use(skill_name: str, success: bool = True, context: str = "") -
     try:
         _get_mgr().store.record_use(skill_name, context=context, success=success)
         _get_mgr().store.increment_uses(skill_name, success=success)
+        # 成长系统：技能使用事件
+        try:
+            from deskmate.growth.engine import GrowthEngine
+
+            full = _get_mgr().store.read_skill(skill_name)
+            meta = full.get("meta", {}) if full else {}
+            GrowthEngine(base_dir=_base_dir).record_skill_use(
+                skill_name,
+                success=success,
+                skill_store_uses=meta.get("uses", 1),
+                skill_store_rate=meta.get("success_rate", 0.0),
+            )
+        except Exception:
+            pass  # 成长系统异常不阻断
         return json.dumps({"status": "ok", "skill": skill_name, "success": success}, ensure_ascii=False)
     except Exception as e:
         return f"记录使用失败：{e}"

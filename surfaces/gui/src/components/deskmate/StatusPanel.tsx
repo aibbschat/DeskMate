@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, type ReactNode } from "react";
 import { type EmotionName, getEmotionParams } from "./EmotionState";
 import { Icon } from "../Icon";
 
@@ -39,7 +39,7 @@ function relTime(ts: string): string {
 // 成长 / 亲密度（QQ 宠物式升级玩法）
 // ---------------------------------------------------------------------------
 
-/** 每一级所需的「累计了解条数」阈值（cumulative）。Indexed by level-1。 */
+/** 每一级所需的「累计成长值」阈值（cumulative）。Indexed by level-1。 */
 const LEVEL_THRESHOLDS = [0, 5, 15, 30, 50, 80, 120, 170, 230, 300, 400, 520];
 
 interface Growth {
@@ -51,7 +51,7 @@ interface Growth {
   maxed: boolean;
 }
 
-/** 由「了解度」（已学到的关于用户的事实总数）推导等级与升级进度。 */
+/** 由「成长值」推导等级与升级进度。 */
 function computeGrowth(total: number): Growth {
   let level = 1;
   for (let i = 1; i < LEVEL_THRESHOLDS.length; i++) {
@@ -67,9 +67,41 @@ function computeGrowth(total: number): Growth {
   return { level, cur, span, progress, toNext, maxed: level >= LEVEL_THRESHOLDS.length };
 }
 
-/** 亲密度：随「了解度」增长（每了解 40 件事满值），体现桌宠与用户的情感联结。 */
-function computeIntimacy(total: number): number {
-  return Math.min(100, Math.round(total * 2.5));
+/** 成长系统快照（来自后端 /v1/deskmate/growth）。 */
+export interface GrowthSnapshot {
+  level: number;
+  growth_value: number;
+  intimacy: number;
+  trust: number;
+  empathy: number;
+  mood: number;
+  vitality: number;
+  trust_controls_proactive: boolean;
+  level_progress?: {
+    level: number;
+    cur: number;
+    span: number;
+    progress: number;
+    toNext: number;
+    maxed: boolean;
+  };
+  skill_proficiency: Record<string, { uses: number; success_rate: number; last_used: string; proficiency: number }>;
+  recent_events: Array<{ ts: string; kind: string; [k: string]: unknown }>;
+}
+
+const PROFICIENCY_LABEL: Record<string, string> = {
+  skill_created: "掌握了新技能",
+  skill_used: "使用了技能",
+  skill_evolved: "技能进化",
+  suggestion_accepted: "采纳了我的建议",
+  suggestion_ignored: "忽略了我的建议",
+  memory_learned: "记住了新信息",
+};
+
+function proficiencyText(p: number): string {
+  if (p >= 0.7) return "熟练";
+  if (p >= 0.35) return "入门";
+  return "生疏";
 }
 
 // ---------------------------------------------------------------------------
@@ -99,13 +131,66 @@ export interface StatusPanelProps {
   onToggleProactive?: (enabled: boolean) => void;
   /** 学习历史（越用越懂你的时间线 + 了解度统计）。 */
   learned?: LearnedHistory | null;
+  /** 成长系统快照（等级/亲密度/信任感/默契度/技能熟练度）。 */
+  growth?: GrowthSnapshot | null;
+}
+
+// ---------------------------------------------------------------------------
+// Small presentational helpers
+// ---------------------------------------------------------------------------
+
+function StatBar({
+  label,
+  value,
+  percent,
+  color,
+  inline = false,
+}: {
+  label: string;
+  value: string;
+  percent: number;
+  color: string;
+  inline?: boolean;
+}) {
+  return (
+    <div className="flex flex-col gap-0.5">
+      <div className="flex items-center justify-between gap-1">
+        <span className="text-[10.5px] truncate" style={{ color: "var(--muted)" }}>
+          {label}
+        </span>
+        <span className="text-[10px] tabular-nums shrink-0" style={{ color: "var(--faint)" }}>
+          {value}
+        </span>
+      </div>
+      <div className="h-1.5 rounded-full overflow-hidden" style={{ background: "var(--line)" }}>
+        <div
+          className="h-full rounded-full transition-all duration-500"
+          style={{
+            width: `${Math.min(100, Math.max(0, percent))}%`,
+            background: `linear-gradient(90deg,${color},${color})`,
+          }}
+        />
+      </div>
+      {inline && <div />}
+    </div>
+  );
+}
+
+function SectionTitle({ children }: { children: ReactNode }) {
+  return (
+    <div
+      className="text-[10px] uppercase tracking-wider mb-1.5"
+      style={{ color: "var(--faint)" }}
+    >
+      {children}
+    </div>
+  );
 }
 
 // ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
 
-const POPUP_W = 280;
 const EDGE = 8;
 
 export function StatusPanel({
@@ -120,6 +205,7 @@ export function StatusPanel({
   proactiveEnabled = true,
   onToggleProactive,
   learned = null,
+  growth = null,
 }: StatusPanelProps) {
   const params = getEmotionParams(emotion);
 
@@ -136,14 +222,22 @@ export function StatusPanel({
 
   if (!visible) return null;
 
-  // ----- 固定锚定到窗口右下角 -----
-  // 不再跟随桌宠坐标，避免桌宠靠边/靠上时弹窗被窗口边框裁切。
-  // 弹窗从右下角长出、向上展开，底部始终贴住窗口底边留白，永远在可视区内。
-
   // ----- 成长 / 亲密度 -----
+  const growthData = growth?.level_progress ?? null;
+  const cur = growthData?.cur ?? 0;
+  const span = growthData?.span ?? 1;
+  const progress = growthData?.progress ?? 0;
+  const maxed = growthData?.maxed ?? false;
+  // 回退：无成长快照时用了解度推导（向后兼容）
   const total = learned?.stats.total ?? 0;
-  const growth = computeGrowth(total);
-  const intimacy = computeIntimacy(total);
+  const fallback = computeGrowth(total);
+  const level = growthData?.level ?? fallback.level;
+  const toNext = growthData?.toNext ?? fallback.toNext;
+  const intimacy = growth?.intimacy ?? Math.min(100, Math.round(total * 2.5));
+  const trust = growth?.trust ?? 0;
+  const empathy = growth?.empathy ?? 0;
+  const mood = growth?.mood ?? 0;
+  const vitality = growth?.vitality ?? 0;
 
   return (
     <div
@@ -151,7 +245,7 @@ export function StatusPanel({
       style={{
         right: EDGE,
         bottom: EDGE,
-        width: POPUP_W,
+        width: 372,
         opacity: open ? 1 : 0,
         transition: "opacity 0.2s ease",
       }}
@@ -187,7 +281,7 @@ export function StatusPanel({
                 background: "linear-gradient(90deg,#fde9c4,#f8d89a)",
               }}
             >
-              Lv.{growth.level}
+              Lv.{level}
             </span>
             <span
               className="text-[11px] px-1.5 py-0.5 rounded"
@@ -211,17 +305,12 @@ export function StatusPanel({
 
         {/* Body（超高时滚动，避免被边框/视口裁切） */}
         <div
-          className="px-3.5 py-2.5 flex flex-col gap-2.5"
-          style={{ maxHeight: "min(64vh, 460px)", overflowY: "auto" }}
+          className="px-3.5 py-3 flex flex-col gap-3"
+          style={{ maxHeight: "min(70vh, 520px)", overflowY: "auto" }}
         >
           {/* 当前 */}
           <div>
-            <div
-              className="text-[10px] uppercase tracking-wider mb-1"
-              style={{ color: "var(--faint)" }}
-            >
-              当前
-            </div>
+            <SectionTitle>当前</SectionTitle>
             <div className="text-[12.5px]" style={{ color: "var(--ink)" }}>
               {currentActivity || params.description}
             </div>
@@ -240,7 +329,7 @@ export function StatusPanel({
                 className="text-[10.5px] tabular-nums"
                 style={{ color: "var(--muted)" }}
               >
-                {growth.maxed ? "已满级 ✦" : `经验 ${growth.cur}/${growth.span}`}
+                {maxed ? "已满级 ✦" : `经验 ${cur}/${span}`}
               </span>
             </div>
             <div
@@ -250,76 +339,132 @@ export function StatusPanel({
               <div
                 className="h-full rounded-full transition-all duration-500"
                 style={{
-                  width: `${Math.round(growth.progress * 100)}%`,
+                  width: `${Math.round(progress * 100)}%`,
                   background: "linear-gradient(90deg,#f6c453,#f0a93b)",
                 }}
               />
             </div>
-            {!growth.maxed && (
+            {!maxed && (
               <div className="text-[10.5px] mt-1" style={{ color: "var(--faint)" }}>
-                再了解 {growth.toNext} 件事，墨灵就能升到 Lv.{growth.level + 1} 啦 ✨
+                再积累 {toNext} 点成长值，墨灵就能升到 Lv.{level + 1} 啦 ✨
               </div>
             )}
           </div>
 
-          {/* 亲密度 */}
-          <div>
-            <div className="flex items-center justify-between mb-1">
-              <span
-                className="text-[10px] uppercase tracking-wider"
-                style={{ color: "var(--faint)" }}
-              >
-                💗 亲密度
-              </span>
-              <span
-                className="text-[11px] tabular-nums"
-                style={{ color: "var(--muted)" }}
-              >
-                {intimacy}%
-              </span>
+          {/* 关系轨 + 状态轨（两栏并排，平铺不再堆叠） */}
+          <div className="grid grid-cols-2 gap-x-4 gap-y-2.5">
+            <div>
+              <SectionTitle>关系轨</SectionTitle>
+              <div className="flex flex-col gap-2">
+                <StatBar
+                  label="💗 亲密度"
+                  value={`${Math.round(intimacy)}%`}
+                  percent={intimacy}
+                  color="#f78fb3"
+                />
+                <StatBar
+                  label="🤝 信任感"
+                  value={`${Math.round(trust * 100)}%`}
+                  percent={trust * 100}
+                  color="#6fb1f7"
+                />
+                <StatBar
+                  label="✨ 默契度"
+                  value={`${Math.round(empathy)}%`}
+                  percent={empathy}
+                  color="#5fcb86"
+                />
+              </div>
             </div>
-            <div
-              className="h-1.5 rounded-full overflow-hidden"
-              style={{ background: "var(--line)" }}
-            >
-              <div
-                className="h-full rounded-full transition-all duration-500"
-                style={{
-                  width: `${intimacy}%`,
-                  background: "linear-gradient(90deg,#f78fb3,#ef5da8)",
-                }}
-              />
+            <div>
+              <SectionTitle>状态轨</SectionTitle>
+              <div className="flex flex-col gap-2">
+                <StatBar
+                  label="☀️ 心情"
+                  value={`${Math.round(mood)}%`}
+                  percent={mood}
+                  color="#f8c34f"
+                />
+                <StatBar
+                  label="⚡ 活力"
+                  value={`${Math.round(vitality)}%`}
+                  percent={vitality}
+                  color="#8a5ff0"
+                />
+                {confidence !== undefined && (
+                  <StatBar
+                    label="🤝 置信度"
+                    value={`${Math.round(confidence * 100)}%`}
+                    percent={confidence * 100}
+                    color={params.color}
+                  />
+                )}
+              </div>
             </div>
           </div>
 
-          {/* 置信度 */}
-          {confidence !== undefined && (
+          {/* 技能熟练度（反哺匹配排序的真实能力） */}
+          {growth && Object.keys(growth.skill_proficiency).length > 0 && (
             <div>
-              <div className="flex items-center justify-between mb-1">
-                <span
-                  className="text-[10px] uppercase tracking-wider"
-                  style={{ color: "var(--faint)" }}
-                >
-                  🤝 置信度
-                </span>
-                <span
-                  className="text-[11px] tabular-nums"
-                  style={{ color: "var(--muted)" }}
-                >
-                  {Math.round(confidence * 100)}%
-                </span>
+              <SectionTitle>技能熟练度</SectionTitle>
+              <div className="flex flex-col gap-1.5 max-h-32 overflow-y-auto">
+                {Object.entries(growth.skill_proficiency)
+                  .sort((a, b) => b[1].proficiency - a[1].proficiency)
+                  .map(([name, p]) => (
+                    <div key={name} className="flex items-center gap-2">
+                      <span
+                        className="text-[11px] flex-1 truncate"
+                        style={{ color: "var(--muted)" }}
+                      >
+                        {name}
+                      </span>
+                      <span
+                        className="text-[10px] px-1.5 py-0.5 rounded shrink-0"
+                        style={{
+                          color: "var(--ink)",
+                          background: "var(--paper)",
+                        }}
+                      >
+                        {proficiencyText(p.proficiency)} · {p.uses}次
+                      </span>
+                      <div
+                        className="w-12 h-1 rounded-full overflow-hidden shrink-0"
+                        style={{ background: "var(--line)" }}
+                      >
+                        <div
+                          className="h-full rounded-full"
+                          style={{
+                            width: `${Math.round(p.proficiency * 100)}%`,
+                            background: "linear-gradient(90deg,#f6c453,#f0a93b)",
+                          }}
+                        />
+                      </div>
+                    </div>
+                  ))}
               </div>
-              <div
-                className="h-1.5 rounded-full overflow-hidden"
-                style={{ background: "var(--line)" }}
-              >
-                <div
-                  className="h-full rounded-full transition-all duration-500"
-                  style={{
-                    width: `${Math.round(confidence * 100)}%`,
-                    background: params.color,
-                  }}
-                />
+            </div>
+          )}
+
+          {/* 成长时间线 */}
+          {growth && growth.recent_events.length > 0 && (
+            <div>
+              <SectionTitle>成长记录</SectionTitle>
+              <div className="flex flex-col gap-1 max-h-28 overflow-y-auto">
+                {[...growth.recent_events].reverse().slice(-5).map((ev, i) => (
+                  <div
+                    key={`${ev.ts}-${i}`}
+                    className="text-[11px] px-2 py-1 rounded"
+                    style={{
+                      color: "var(--muted)",
+                      background: "var(--paper)",
+                      lineHeight: 1.4,
+                    }}
+                  >
+                    <span style={{ color: "var(--faint)" }}>{relTime(String(ev.ts))} </span>
+                    {PROFICIENCY_LABEL[String(ev.kind)] ?? String(ev.kind)}
+                    {ev.skill_name ? ` · ${String(ev.skill_name)}` : ""}
+                  </div>
+                ))}
               </div>
             </div>
           )}
@@ -327,38 +472,40 @@ export function StatusPanel({
           {/* 主动模式开关 */}
           {onToggleProactive && (
             <div>
-              <div
-                className="text-[10px] uppercase tracking-wider mb-1"
-                style={{ color: "var(--faint)" }}
-              >
-                主动模式
-              </div>
-              <button
-                className="flex items-center gap-2 w-full text-left group"
-                onClick={() => onToggleProactive(!proactiveEnabled)}
-              >
-                <div
-                  className="relative w-8 h-4.5 rounded-full transition-colors duration-200"
-                  style={{
-                    background: proactiveEnabled ? params.color : "var(--line)",
-                  }}
-                >
-                  <div
-                    className="absolute top-0.5 w-3.5 h-3.5 rounded-full bg-white shadow transition-transform duration-200"
-                    style={{
-                      left: proactiveEnabled ? "calc(100% - 1rem)" : "0.125rem",
-                    }}
-                  />
-                </div>
+              <div className="flex items-center justify-between">
                 <span
-                  className="text-[11.5px]"
-                  style={{
-                    color: proactiveEnabled ? "var(--ink)" : "var(--faint)",
-                  }}
+                  className="text-[10px] uppercase tracking-wider"
+                  style={{ color: "var(--faint)" }}
                 >
-                  {proactiveEnabled ? "已开启" : "已关闭"}
+                  主动模式
                 </span>
-              </button>
+                <button
+                  className="flex items-center gap-2 group"
+                  onClick={() => onToggleProactive(!proactiveEnabled)}
+                >
+                  <span
+                    className="text-[11.5px]"
+                    style={{
+                      color: proactiveEnabled ? "var(--ink)" : "var(--faint)",
+                    }}
+                  >
+                    {proactiveEnabled ? "已开启" : "已关闭"}
+                  </span>
+                  <div
+                    className="relative w-8 h-4.5 rounded-full transition-colors duration-200"
+                    style={{
+                      background: proactiveEnabled ? params.color : "var(--line)",
+                    }}
+                  >
+                    <div
+                      className="absolute top-0.5 w-3.5 h-3.5 rounded-full bg-white shadow transition-transform duration-200"
+                      style={{
+                        left: proactiveEnabled ? "calc(100% - 1rem)" : "0.125rem",
+                      }}
+                    />
+                  </div>
+                </button>
+              </div>
               {!proactiveEnabled && (
                 <div className="text-[10.5px] mt-1" style={{ color: "var(--faint)" }}>
                   关闭后不再主动弹出建议
@@ -370,12 +517,7 @@ export function StatusPanel({
           {/* 近期记忆 */}
           {recentMemories.length > 0 && (
             <div>
-              <div
-                className="text-[10px] uppercase tracking-wider mb-1"
-                style={{ color: "var(--faint)" }}
-              >
-                近期记忆
-              </div>
+              <SectionTitle>近期记忆</SectionTitle>
               <div className="flex flex-col gap-1">
                 {recentMemories.slice(0, 4).map((mem, i) => (
                   <div
@@ -398,12 +540,7 @@ export function StatusPanel({
           {/* 我对你的了解（越用越懂你的时间线 + 了解度） */}
           {learned && (
             <div>
-              <div
-                className="text-[10px] uppercase tracking-wider mb-1"
-                style={{ color: "var(--faint)" }}
-              >
-                我对你的了解
-              </div>
+              <SectionTitle>我对你的了解</SectionTitle>
               <div className="flex items-center gap-2 mb-2">
                 <span
                   className="text-[12.5px] font-semibold"
@@ -446,28 +583,28 @@ export function StatusPanel({
             </div>
           )}
 
-          {/* Open memory viewer */}
-          {onOpenMemory && (
-            <button
-              className="text-[11.5px] font-medium px-2 py-1.5 rounded text-left w-full"
-              style={{ color: "var(--accent)", background: "var(--paper)" }}
-              onClick={onOpenMemory}
-            >
-              📝 查看 / 编辑记忆
-            </button>
-          )}
-
-          {/* Open writing proofread (润色台) */}
-          {onOpenProofread && (
-            <button
-              className="inline-flex items-center gap-1.5 text-[11.5px] font-medium px-2 py-1.5 rounded text-left w-full"
-              style={{ color: "var(--accent)", background: "var(--paper)" }}
-              onClick={onOpenProofread}
-            >
-              <Icon name="pencil" size={13} />
-              文稿编校
-            </button>
-          )}
+          {/* Actions */}
+          <div className="flex gap-2">
+            {onOpenMemory && (
+              <button
+                className="flex-1 text-[11.5px] font-medium px-2 py-1.5 rounded text-left"
+                style={{ color: "var(--accent)", background: "var(--paper)" }}
+                onClick={onOpenMemory}
+              >
+                📝 查看 / 编辑记忆
+              </button>
+            )}
+            {onOpenProofread && (
+              <button
+                className="flex-1 inline-flex items-center justify-center gap-1.5 text-[11.5px] font-medium px-2 py-1.5 rounded"
+                style={{ color: "var(--accent)", background: "var(--paper)" }}
+                onClick={onOpenProofread}
+              >
+                <Icon name="pencil" size={13} />
+                文稿编校
+              </button>
+            )}
+          </div>
         </div>
       </div>
 

@@ -30,6 +30,7 @@ class TickResult:
     decision: ActionDecision | None = None
     skipped_reason: str = ""
     elapsed_ms: int = 0
+    heartbeat_interval_ms: int | None = None
 
     @property
     def has_suggestion(self) -> bool:
@@ -47,22 +48,23 @@ class TickResult:
             # no_action 提前 return 时也必须带上，否则前端永远走 else 分支。
             if self.activity:
                 result["user_activity"] = self.activity.level.value
-            return result
+        else:
+            result = {
+                "action": self.action.value,
+                "confidence": self.decision.confidence if self.decision else 0.0,
+            }
+            if self.judgment:
+                result.update({
+                    "suggestion_type": self.judgment.suggestion_type,
+                    "suggestion_content": self.judgment.suggestion_content,
+                    "reasoning": self.judgment.reasoning,
+                })
+            if self.activity:
+                result["user_activity"] = self.activity.level.value
 
-        result = {
-            "action": self.action.value,
-            "confidence": self.decision.confidence if self.decision else 0.0,
-        }
-
-        if self.judgment:
-            result.update({
-                "suggestion_type": self.judgment.suggestion_type,
-                "suggestion_content": self.judgment.suggestion_content,
-                "reasoning": self.judgment.reasoning,
-            })
-
-        if self.activity:
-            result["user_activity"] = self.activity.level.value
+        # 心跳间隔（活力调制）：前端据此重新调度慢心跳
+        if self.heartbeat_interval_ms:
+            result["heartbeat_interval_ms"] = self.heartbeat_interval_ms
 
         return result
 
@@ -86,6 +88,8 @@ class ProactiveEngine:
     last_tick_time: float = 0.0
     _memory_context: str = ""
     _project_context: str = ""
+    _growth_interval_ratio: float = 1.0
+    _heartbeat_interval_ms: int | None = None
 
     def set_memory_context(self, memory_context: str) -> None:
         """设置记忆上下文（由 MCP 工具调用者提供）。"""
@@ -110,6 +114,22 @@ class ProactiveEngine:
             TickResult
         """
         start = time.time()
+        # 照顾循环 + 成长调制（每次 tick 先让时间流逝生效）：
+        # - tick_decay: 活力缓慢恢复 / 心情向中性收敛
+        # - 信任感 → 阈值偏移；活力 → 心跳间隔（返回给前端重新调度）
+        try:
+            from deskmate.growth.engine import GrowthEngine
+
+            growth = GrowthEngine(base_dir=self.base_dir)
+            growth.tick_decay()
+            suggest_thr = growth.modulate_proactive_threshold(THRESHOLD_SUGGEST)
+            prepare_thr = growth.modulate_proactive_threshold(THRESHOLD_PREPARE)
+            self._growth_interval_ratio = growth.modulate_proactive_frequency(1.0)
+        except Exception:
+            suggest_thr = THRESHOLD_SUGGEST
+            prepare_thr = THRESHOLD_PREPARE
+            self._growth_interval_ratio = 1.0
+        self._heartbeat_interval_ms = int(5 * 60_000 * self._growth_interval_ratio)
         # ===== 1. 感知（Perceive）=====
         # 先获取活动窗口信息，传给 detect_user_activity 做会议应用检测
         from deskmate.perception.window_monitor import get_active_window
@@ -129,6 +149,7 @@ class ProactiveEngine:
                     activity=activity,
                     skipped_reason=f"用户不在桌前（空闲 {activity.idle_seconds // 60} 分钟）",
                     elapsed_ms=int((time.time() - start) * 1000),
+                    heartbeat_interval_ms=self._heartbeat_interval_ms,
                 )
             # BUSY 状态（会议/通话）不跳过推理：
             # 用户在会议中也可能需要提醒（如伏笔遗漏），只是防打扰阈值更严
@@ -150,15 +171,19 @@ class ProactiveEngine:
                 activity=activity,
                 skipped_reason="感知信息不足，跳过推理",
                 elapsed_ms=int((time.time() - start) * 1000),
+                heartbeat_interval_ms=self._heartbeat_interval_ms,
             )
 
         # ===== 2. 思考（Think）=====
         judgment = judge_proactive_action(context_text, model=self.model)
 
         # ===== 3. 行动（Act）=====
+        # 信任感调制阈值已在开头算好（trust 高 → 阈值下调 → 更敢主动）
         decision = evaluate_action(
             confidence=judgment.confidence,
             reason=judgment.reasoning,
+            suggest_threshold=suggest_thr,
+            prepare_threshold=prepare_thr,
         )
 
         if decision.action == ActionType.NO_ACTION:
@@ -169,6 +194,7 @@ class ProactiveEngine:
                 decision=decision,
                 skipped_reason=decision.reason,
                 elapsed_ms=int((time.time() - start) * 1000),
+                heartbeat_interval_ms=self._heartbeat_interval_ms,
             )
 
         if decision.action == ActionType.SUGGEST:
@@ -182,6 +208,7 @@ class ProactiveEngine:
                     decision=decision,
                     skipped_reason="防打扰机制拦截",
                     elapsed_ms=int((time.time() - start) * 1000),
+                    heartbeat_interval_ms=self._heartbeat_interval_ms,
                 )
             # 记录建议
             self.disturb.record_suggestion(
@@ -197,11 +224,21 @@ class ProactiveEngine:
             activity=activity,
             decision=decision,
             elapsed_ms=int((time.time() - start) * 1000),
+            heartbeat_interval_ms=self._heartbeat_interval_ms,
         )
 
     def record_feedback(self, suggestion_key: str, accepted: bool) -> None:
-        """记录用户反馈。"""
+        """记录用户反馈。
+
+        同时上报成长系统：接受 → 信任/默契/心情上升；忽略 → 下降。
+        """
         self.disturb.record_feedback(suggestion_key, accepted)
+        try:
+            from deskmate.growth.engine import GrowthEngine
+
+            GrowthEngine(base_dir=self.base_dir).record_suggestion_feedback(accepted)
+        except Exception:
+            pass  # 成长系统异常不阻断反馈记录
 
     def set_silent(self, silent: bool) -> None:
         """设置静默模式。"""

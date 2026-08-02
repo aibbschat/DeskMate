@@ -102,6 +102,16 @@ class DeskMateMemoryManager:
             if proj_mem:
                 parts.append(proj_mem)
 
+        # 5. 亲密度语气提示（成长系统）
+        try:
+            from deskmate.growth.engine import GrowthEngine
+
+            tone = GrowthEngine(base_dir=self.base_dir).modulate_tone_prompt()
+            if tone:
+                parts.append(f"## 与用户的关系\n{tone}")
+        except Exception:
+            pass  # 成长系统异常不阻断 prompt 组装
+
         return "\n\n---\n\n".join(parts)
 
     # ------------------------------------------------------------------
@@ -128,6 +138,17 @@ class DeskMateMemoryManager:
         """
         context_parts: list[str] = []
         budget_per_layer = MEMORY_CONTEXT_MAX_CHARS // 3
+
+        # 默契度调制记忆预算：默契越高 → 注入越多（AI 更懂你要什么）
+        try:
+            from deskmate.growth.engine import GrowthEngine
+
+            modulated_budget = GrowthEngine(base_dir=self.base_dir).modulate_memory_budget(
+                MEMORY_CONTEXT_MAX_CHARS
+            )
+        except Exception:
+            modulated_budget = MEMORY_CONTEXT_MAX_CHARS
+        budget_per_layer = modulated_budget // 3
 
         # 1. Core 层：偏好和纠正，每轮无条件注入
         core_mem = self._get_core_memory()
@@ -159,9 +180,9 @@ class DeskMateMemoryManager:
             return ""
 
         combined = "\n\n".join(context_parts)
-        # 限制总长度
-        if len(combined) > MEMORY_CONTEXT_MAX_CHARS:
-            combined = combined[:MEMORY_CONTEXT_MAX_CHARS] + "\n…"
+        # 限制总长度（与默契度调制后的预算一致）
+        if len(combined) > modulated_budget:
+            combined = combined[:modulated_budget] + "\n…"
 
         return f"<memory-context>\n{combined}\n</memory-context>"
 
@@ -1240,6 +1261,14 @@ class DeskMateMemoryManager:
                         pass  # vault 写入失败不影响主流程
             except Exception:
                 continue
+        # 成长系统：记住新事实 → 默契/亲密度微增（AI 更懂你）
+        if written > 0:
+            try:
+                from deskmate.growth.engine import GrowthEngine
+
+                GrowthEngine(base_dir=self.base_dir).record_memory_learned(written)
+            except Exception:
+                pass  # 成长系统异常不阻断记忆归档
         return {"written": written, "skipped": skipped, "learned": learned, "notes": f"已归档 {written} 条（跳过 {skipped} 条重复）"}
 
     def _is_duplicate(self, new_entry: str) -> bool:

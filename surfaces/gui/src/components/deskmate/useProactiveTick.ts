@@ -25,13 +25,16 @@ export function useProactiveTick({
   agent: string;
   enabled?: boolean;
 }) {
-  const timerRef = useRef<ReturnType<typeof setInterval>>();
+  const heartbeatRef = useRef<ReturnType<typeof setTimeout>>();
 
   useEffect(() => {
     if (agent !== "deskmate" || !enabled) return;
 
     let lastTick = 0;
     const MIN_GAP = 15_000; // 15s（原 45s 太长，用户离开再回来要等很久才感知到状态变化）
+    // 慢心跳兜底间隔：默认 5 分钟；后端 tick 返回 heartbeat_interval_ms 时用活力调制值覆盖
+    // （活力低 → 间隔拉长 → 累了不打扰）。
+    const heartbeatMsRef = { current: 5 * 60_000 };
 
     const tick = async () => {
       // 对话进行中：不动状态、不烧 LLM，等本轮结束再说
@@ -45,6 +48,11 @@ export function useProactiveTick({
         if (!res.ok) return;
         const data = await res.json();
         if (!data) return;
+
+        // 活力调制的心跳间隔：后端已按活力折算好，前端据此重新调度慢心跳
+        if (data.heartbeat_interval_ms && data.heartbeat_interval_ms >= 5_000) {
+          heartbeatMsRef.current = data.heartbeat_interval_ms;
+        }
 
         // 对话中再次校验（tick 请求发出后可能已进入一轮）
         if (window.__deskmateTurnActive) return;
@@ -116,18 +124,22 @@ export function useProactiveTick({
     window.addEventListener("mousemove", maybeTick);
     window.addEventListener("keydown", maybeTick);
 
-    // 5 分钟慢心跳兜底（仅页面可见时）
-    const heartbeat = setInterval(() => {
-      if (!document.hidden) maybeTick();
-    }, 5 * 60_000);
+    // 慢心跳兜底（仅页面可见时）：自调度 setTimeout，间隔跟随活力调制动态变化
+    const scheduleHeartbeat = () => {
+      if (heartbeatRef.current) clearTimeout(heartbeatRef.current);
+      heartbeatRef.current = setTimeout(() => {
+        if (!document.hidden) maybeTick();
+        scheduleHeartbeat();
+      }, heartbeatMsRef.current);
+    };
+    scheduleHeartbeat();
 
     // 首屏延迟 8 秒先跑一次
     const firstTimer = setTimeout(maybeTick, 8_000);
 
     return () => {
       clearTimeout(firstTimer);
-      clearInterval(heartbeat);
-      if (timerRef.current) clearInterval(timerRef.current);
+      if (heartbeatRef.current) clearTimeout(heartbeatRef.current);
       window.removeEventListener("focus", maybeTick);
       document.removeEventListener("visibilitychange", maybeTick as EventListener);
       window.removeEventListener("mousemove", maybeTick);
