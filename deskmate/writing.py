@@ -395,14 +395,14 @@ def proofread(draft: str, profile: Optional[dict] = None,
 
     collected: list[dict] = []
     for _idx, title, text in work_units:
-        for ch in _chunk_text(text):
-            try:
-                for it in _proofread_chunk(ch, profile_text):
-                    it["chapter"] = title
-                    collected.append(it)
-            except Exception:
-                # 单段瞬时失败（如模型偶发返回空）不应拖垮整篇审阅；跳过该段并告警。
-                _log_warning("单段编辑审阅失败，已跳过该段")
+        try:
+            res = proofread_chapter(title, text, profile_text)
+            for it in res["items"]:
+                it["chapter"] = title
+                collected.append(it)
+        except Exception:
+            # 单章审阅失败（如 LLM 未就绪）不应拖垮整篇；跳过该章并告警。
+            _log_warning(f"章节编辑审阅失败，已跳过：{title}")
 
     items = _dedupe_items(collected)
 
@@ -411,24 +411,7 @@ def proofread(draft: str, profile: Optional[dict] = None,
         it["id"] = str(i)
 
     # 生成整体编辑评语
-    letter = ""
-    if items:
-        try:
-            items_json = json.dumps(
-                [{"type": i["type"], "excerpt": i["excerpt"], "reason": i["reason"]}
-                 for i in items],
-                ensure_ascii=False,
-                indent=1,
-            )
-            letter = chat(
-                _LETTER_SYSTEM,
-                _LETTER_USER.replace("<<<ITEMS>>>", items_json),
-                temperature=0.4,
-                max_tokens=600,
-            )
-        except Exception:
-            _log_warning("生成编辑评语失败")
-            letter = ""
+    letter = generate_letter(items)
 
     report = _format_report(items, letter)
     return {
@@ -441,6 +424,92 @@ def proofread(draft: str, profile: Optional[dict] = None,
         # 序号对不上（_select_chapter 落空），若只用 target["idx"] 会把标记丢成 None。
         "current_chapter": chapter if chapter is not None else (target["idx"] if target else None),
     }
+
+
+def proofread_chapter(title: str, text: str, profile_text: str) -> dict:
+    """审阅单章：分块调 LLM，返回 {title, items}。
+
+    单块瞬时失败（如模型偶发返回空）跳过该块，不拖垮整章；LLM 整体不可用时抛错，
+    交由上层（逐章流式路由）写失败提示并继续下一章。
+    """
+    if not llm_available():
+        raise RuntimeError("LLM 未就绪（未配置可用 provider）")
+    text = (text or "").strip()
+    if not text:
+        return {"title": title, "items": []}
+    collected: list[dict] = []
+    for ch in _chunk_text(text):
+        try:
+            for it in _proofread_chunk(ch, profile_text):
+                collected.append(it)
+        except Exception:
+            _log_warning(f"单段编辑审阅失败，已跳过该段（{title}）")
+    return {"title": title, "items": _dedupe_items(collected)}
+
+
+def generate_letter(items: list[dict]) -> str:
+    """基于重点问题清单生成 200 字以内的整体编辑评语（纯文本）。失败返回空。"""
+    if not items:
+        return ""
+    try:
+        items_json = json.dumps(
+            [{"type": i.get("type"), "excerpt": i.get("excerpt"), "reason": i.get("reason")}
+             for i in items],
+            ensure_ascii=False,
+            indent=1,
+        )
+        return chat(
+            _LETTER_SYSTEM,
+            _LETTER_USER.replace("<<<ITEMS>>>", items_json),
+            temperature=0.4,
+            max_tokens=600,
+        ).strip()
+    except Exception:
+        _log_warning("生成编辑评语失败")
+        return ""
+
+
+def format_chapter_block(title: str, items: list[dict]) -> str:
+    """单章的【原文】/【建议】/【理由】块，逐章流式时作为一条助手消息发进聊天。"""
+    lines: list[str] = [f"## 📖 {title}（{len(items)} 处）", ""]
+    if not items:
+        lines.append("✅ 本章没有明显可改的地方。")
+        return "\n".join(lines).rstrip() + "\n"
+    for it in items:
+        t = (it.get("type") or "").strip()
+        bullet = f"• **【{t}】**" if t else "•"
+        lines.append(bullet)
+        lines.append(f"> 【原文】{it.get('excerpt', '')}")
+        lines.append(f"> 【建议】{it.get('suggestion', '')}")
+        reason = (it.get("reason") or "").strip()
+        if reason:
+            lines.append(f"> 【理由】{reason}")
+        lines.append("")
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def format_report_card(
+    label: str,
+    per_chapter: list,
+    total_items: int,
+    letter: str,
+) -> str:
+    """结尾总览报告卡（聊天里的一条助手消息）：各章条数汇总 + 总数 + 编辑评语。
+
+    per_chapter: [(章节标题, 该章条数), ...]
+    """
+    lines: list[str] = [f"📋 **文稿编校总览 · {label}**", ""]
+    for ch_title, n in per_chapter:
+        lines.append(f"· {ch_title}：{n} 处")
+    lines.append(f"**共 {total_items} 处建议**")
+    lines.append("")
+    if letter:
+        lines.append("**编辑评语**")
+        lines.append(letter)
+        lines.append("")
+    if total_items == 0:
+        lines.append("✅ 这篇文稿没有明显可改的地方，或建议都已处理。")
+    return "\n".join(lines).rstrip() + "\n"
 
 
 def _format_report(items: list[dict], letter: str) -> str:

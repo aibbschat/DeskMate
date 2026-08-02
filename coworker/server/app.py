@@ -2006,19 +2006,33 @@ def create_app(manager: SessionManager) -> FastAPI:
 
     @app.post("/v1/deskmate/proofread")
     async def deskmate_proofread(request: Request) -> dict[str, Any]:
-        """对文稿做专业编辑审阅，返回 {"letter": ..., "items": [...]}。
+        """对文稿做专业编辑审阅，逐章流式产出。
 
-        Body: {"text": "...", "path": "可选的本地 .txt/.docx 路径"}（text 优先）。
-        需先校准风格（POST /v1/deskmate/style-profile）效果更好，但无风格画像也能通用润色。
+        逐章调 proofread_chapter，每章完成即把【原文】/【建议】/【理由】块作为助手消息
+        落盘并进聊天；某章失败写提示并继续（不怕中间出问题）；最后补一张总览报告卡。
+
+        Body: {"text": "...", "path": "...", "content_base64": "...", "filename": "...",
+               "chapter": 可选 int/str, "session_id": "...", "title": "..."}
         """
         try:
             body = await request.json() if request.headers.get("content-type") else {}
         except Exception:
             body = {}
         try:
+            import time as _t
             from pathlib import Path as _P
 
-            from deskmate.writing import proofread, read_text_from_path, read_text_from_base64
+            from deskmate.writing import (
+                proofread_chapter,
+                format_chapter_block,
+                format_report_card,
+                generate_letter,
+                split_into_chapters,
+                _select_chapter,
+                format_profile_for_prompt,
+                read_text_from_path,
+                read_text_from_base64,
+            )
 
             raw_text = (body.get("text") or "").strip()
             path = (body.get("path") or "").strip()
@@ -2049,35 +2063,86 @@ def create_app(manager: SessionManager) -> FastAPI:
                 except Exception:
                     pass
 
-            # proofread 含多次 LLM 调用，放到线程避免阻塞事件循环
-            result = await asyncio.to_thread(proofread, raw_text, profile, chapter)
+            # 拆分 / 选章
+            chapters = split_into_chapters(raw_text)
+            target = _select_chapter(chapters, chapter)
+            if target:
+                work_units = [(target["idx"], target["title"], target["text"])]
+            else:
+                work_units = [(c["idx"], c["title"], c["text"]) for c in chapters]
+            profile_text = format_profile_for_prompt(profile)
 
-            # 若带 session_id，把"提交 + 结构化报告"作为两条消息落盘进会话，
-            # 前端聊天直接呈现（重启不丢）；并实时推给正在查看该会话的客户端。
             session_id = (body.get("session_id") or "").strip()
             title = (body.get("title") or "").strip()
-            report = (result.get("report") or "").strip()
-            if session_id and report:
-                try:
-                    import time as _t
+            label = f"《{title}》" if title else "草稿"
 
-                    now = int(_t.time())
-                    label = f"《{title}》" if title else "草稿"
-                    msgs = [
-                        {"role": "user", "content": f"📝 文稿编校：{label}", "ts": now},
-                        {"role": "assistant", "content": report, "ts": now + 1},
-                    ]
-                    if manager.append_session_messages(session_id, msgs):
-                        try:
-                            await manager.broadcast_session(
-                                session_id,
-                                {"type": "assistant_message", "data": {"text": report}},
-                            )
-                        except Exception:
-                            pass
+            # ---- 逐章流式：每章完成即落盘 + 推聊天 ----
+            all_items: list[dict] = []
+            per_chapter: list = []
+            now = int(_t.time())
+
+            if session_id:
+                try:
+                    await manager.broadcast_session(session_id, {"type": "turn_start", "data": {}})
+                    manager.append_session_messages(
+                        session_id, [{"role": "user", "content": f"📝 文稿编校：{label}", "ts": now}]
+                    )
                 except Exception:
-                    logging.warning("proofread: 写入会话失败（不影响批改结果）")
-            return result
+                    logging.warning("proofread: 会话初始化失败（继续处理）")
+
+            for _idx, ctitle, ctext in work_units:
+                try:
+                    res = await asyncio.to_thread(proofread_chapter, ctitle, ctext, profile_text)
+                    items = res["items"]
+                    block = format_chapter_block(ctitle, items)
+                    all_items.extend(items)
+                    per_chapter.append((ctitle, len(items)))
+                    if session_id:
+                        ts = int(_t.time())
+                        manager.append_session_messages(
+                            session_id, [{"role": "assistant", "content": block, "ts": ts}]
+                        )
+                        await manager.broadcast_session(
+                            session_id, {"type": "assistant_message", "data": {"text": block}}
+                        )
+                except Exception as e:
+                    logging.warning("proofread chapter %s failed: %s", ctitle, e)
+                    if session_id:
+                        note = f"⚠️ 《{label}》「{ctitle}」审阅失败：{e}，已跳过该章，其余继续。"
+                        ts = int(_t.time())
+                        manager.append_session_messages(
+                            session_id, [{"role": "assistant", "content": note, "ts": ts}]
+                        )
+                        await manager.broadcast_session(
+                            session_id, {"type": "assistant_message", "data": {"text": note}}
+                        )
+
+            # ---- 结尾总览报告卡 ----
+            try:
+                letter = await asyncio.to_thread(generate_letter, all_items)
+            except Exception:
+                letter = ""
+            total = len(all_items)
+            card = format_report_card(label, per_chapter, total, letter)
+            if session_id:
+                ts = int(_t.time())
+                manager.append_session_messages(
+                    session_id, [{"role": "assistant", "content": card, "ts": ts}]
+                )
+                await manager.broadcast_session(
+                    session_id, {"type": "assistant_message", "data": {"text": card}}
+                )
+                await manager.broadcast_session(session_id, {"type": "turn_done", "data": {}})
+
+            return {
+                "letter": letter,
+                "items": all_items,
+                "report": card,
+                "chapters": [{"idx": c["idx"], "title": c["title"], "char_count": len(c["text"])}
+                             for c in chapters],
+                "current_chapter": chapter if chapter is not None else (target["idx"] if target else None),
+                "total_items": total,
+            }
         except FileNotFoundError as e:
             return JSONResponse({"error": str(e)}, status_code=404)
         except ValueError as e:

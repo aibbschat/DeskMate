@@ -201,6 +201,7 @@ export interface ProofreadResult {
   report?: string;
   chapters?: { idx: number; title: string; char_count: number }[];
   current_chapter?: number | null;
+  total_items?: number;
 }
 
 export interface ManuscriptChapter {
