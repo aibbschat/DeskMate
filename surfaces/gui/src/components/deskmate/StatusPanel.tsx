@@ -1,4 +1,4 @@
-import { useState, useEffect, type CSSProperties } from "react";
+import { useState, useEffect } from "react";
 import { type EmotionName, getEmotionParams } from "./EmotionState";
 import { Icon } from "../Icon";
 
@@ -99,10 +99,6 @@ export interface StatusPanelProps {
   onToggleProactive?: (enabled: boolean) => void;
   /** 学习历史（越用越懂你的时间线 + 了解度统计）。 */
   learned?: LearnedHistory | null;
-  /** 桌宠在屏幕中的左上角坐标（用于把弹窗智能定位在视口内）。 */
-  petPos?: { x: number; y: number };
-  /** 桌宠当前显示宽度（用于把弹窗水平居中对准桌宠中心）。 */
-  petWidth?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -124,8 +120,6 @@ export function StatusPanel({
   proactiveEnabled = true,
   onToggleProactive,
   learned = null,
-  petPos,
-  petWidth,
 }: StatusPanelProps) {
   const params = getEmotionParams(emotion);
 
@@ -142,31 +136,9 @@ export function StatusPanel({
 
   if (!visible) return null;
 
-  // ----- 智能定位：把弹窗夹在视口内，顶部空间不足时翻到桌宠下方 -----
-  const vw = typeof window !== "undefined" ? window.innerWidth : 1280;
-  const vh = typeof window !== "undefined" ? window.innerHeight : 800;
-  const petW = petWidth ?? 180;
-  const petCenterX = (petPos?.x ?? 0) + petW / 2;
-  let leftX = petCenterX - POPUP_W / 2;
-  leftX = Math.max(EDGE, Math.min(leftX, vw - POPUP_W - EDGE));
-  const styleLeft = leftX - (petPos?.x ?? 0);
-  const below = (petPos?.y ?? vh) < 288; // 桌宠太靠上 → 弹窗改到下方
-  const arrowX = petCenterX - leftX; // 箭头对准桌宠中心
-
-  const arrowStyle: CSSProperties = {
-    left: Math.max(12, Math.min(arrowX, POPUP_W - 12)),
-    width: 0,
-    height: 0,
-    borderLeft: "6px solid transparent",
-    borderRight: "6px solid transparent",
-  };
-  if (below) {
-    arrowStyle.top = -6;
-    arrowStyle.borderBottom = "6px solid var(--line)";
-  } else {
-    arrowStyle.bottom = -6;
-    arrowStyle.borderTop = "6px solid var(--line)";
-  }
+  // ----- 固定锚定到窗口右下角 -----
+  // 不再跟随桌宠坐标，避免桌宠靠边/靠上时弹窗被窗口边框裁切。
+  // 弹窗从右下角长出、向上展开，底部始终贴住窗口底边留白，永远在可视区内。
 
   // ----- 成长 / 亲密度 -----
   const total = learned?.stats.total ?? 0;
@@ -175,12 +147,13 @@ export function StatusPanel({
 
   return (
     <div
-      className={`absolute z-50 ${below ? "top-full mt-3" : "bottom-full mb-3"}`}
+      className="fixed z-50"
       style={{
-        left: styleLeft,
+        right: EDGE,
+        bottom: EDGE,
         width: POPUP_W,
         opacity: open ? 1 : 0,
-        transition: "opacity 0.2s ease, transform 0.2s ease",
+        transition: "opacity 0.2s ease",
       }}
     >
       <div
@@ -498,8 +471,7 @@ export function StatusPanel({
         </div>
       </div>
 
-      {/* 指向桌宠的小箭头（夹在弹窗内，避免跑到边框外） */}
-      <div className="absolute -translate-x-1/2" style={arrowStyle} />
+      {/* 右下角锚定，无指向箭头 */}
     </div>
   );
 }

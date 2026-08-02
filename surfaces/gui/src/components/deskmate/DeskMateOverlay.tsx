@@ -401,24 +401,23 @@ export function DeskMateOverlay({ agent, sessionId, idle, activeExpert }: Props)
               try { setMemoryOpen(true); } catch (e) { console.error("dblclick error", e); }
             }}
           />
-          {/* 状态面板 — 点击桌宠后显示 */}
-          <StatusPanel
-            emotion={currentEmotion}
-            currentActivity={activity}
-            recentMemories={memories}
-            confidence={confidence}
-            open={panelOpen}
-            onClose={() => setPanelOpen(false)}
-            onOpenMemory={() => setMemoryOpen(true)}
-            onOpenProofread={() => setProofreadOpen(true)}
-            proactiveEnabled={proactiveEnabled}
-            onToggleProactive={handleToggleProactive}
-            learned={learned}
-            petPos={position}
-            petWidth={Math.round(180 * petScale)}
-          />
         </div>
       </div>
+
+      {/* 状态面板 — 点击桌宠后显示，固定锚定到窗口右下角（不再跟随桌宠，避免被边框裁切） */}
+      <StatusPanel
+        emotion={currentEmotion}
+        currentActivity={activity}
+        recentMemories={memories}
+        confidence={confidence}
+        open={panelOpen}
+        onClose={() => setPanelOpen(false)}
+        onOpenMemory={() => setMemoryOpen(true)}
+        onOpenProofread={() => setProofreadOpen(true)}
+        proactiveEnabled={proactiveEnabled}
+        onToggleProactive={handleToggleProactive}
+        learned={learned}
+      />
 
       {/* 建议弹窗 - 右上角 */}
       <SuggestionToast

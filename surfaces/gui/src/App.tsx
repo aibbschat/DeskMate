@@ -489,9 +489,9 @@ export function App() {
           const messages = await getSessionMessages(last.session_id);
           setItems(itemsFromMessages(messages));
           setUsage(usageFromMessages(messages));
-        } catch {
-          setItems([]);
-          setUsage(emptyUsage());
+        } catch (err) {
+          // 拉取历史失败：保留当前界面内容，避免启动期接口/令牌未就绪时瞬间清空会话
+          console.error("[resume] 恢复会话历史失败，保留当前界面:", err);
         }
         setSessionId(last.session_id);
         setShowGate(false);
