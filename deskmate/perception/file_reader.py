@@ -24,14 +24,37 @@ _DOCX_EXTS = {".docx"}
 # 最大读取大小（100KB）
 MAX_READ_SIZE = 100_000
 
+# 单次读取的默认返回上限。默认值刻意远小于 MAX_READ_SIZE：一次吞下整本长稿会把
+# 上下文顶过压缩触发线，压缩器随即清掉工具返回，模型「读完就忘」进而编造情节。
+# 借鉴 Hermes（tools/file_tools.py:745 read_file_tool 默认 limit=500 行）的思路 —
+# 默认就少读，需要更多由调用方显式索取。
+# 20K 字符 ≈ 18K tokens，够读两三个正常章节；整本长稿必然超限，从而被导向按章读取。
+DEFAULT_READ_CHARS = 20_000
 
-def read_file_safe(path: str, max_chars: int = MAX_READ_SIZE) -> str:
+# 章节标题识别：第X章/回/节（可带标题）、楔子、序章、尾声、番外、后记。
+_CHAPTER_RE = re.compile(
+    r"^[\s\u3000]*("
+    r"第[〇零一二三四五六七八九十百千两0-9]{1,12}[章回节][^\n]{0,40}"
+    r"|(?:楔子|序章|序言|自序|引子|尾声|终章|番外|后记|附录)[^\n]{0,40}"
+    r")[\s\u3000]*$",
+    re.MULTILINE,
+)
+
+
+def read_file_safe(
+    path: str,
+    max_chars: int = DEFAULT_READ_CHARS,
+    offset: int = 0,
+) -> str:
     """安全读取文件内容。
 
-    - 只读取文本文件（按扩展名判断）
-    - 超过 max_chars 截断
-    - 跳过二进制文件
-    - 返回内容或错误信息
+    - 只读取文本文件（按扩展名判断），.docx 经 python-docx 抽取正文
+    - 超过 max_chars **不再静默截断**：返回明确的超限说明 + 总字数 + 后续动作建议
+    - offset 支持从指定字符位置续读，配合超限提示实现分页
+
+    为什么改成「拒绝」而不是「截断」：静默截断会让模型拿到一段看起来完整的开头，
+    它据此宣称「全读完了」，再用记忆补齐没读到的部分——这正是编造人物的成因。
+    明确报错并告知真实规模，模型才会去分章/分页读。
     """
     p = Path(path).expanduser().resolve()
 
@@ -40,40 +63,63 @@ def read_file_safe(path: str, max_chars: int = MAX_READ_SIZE) -> str:
     if not p.is_file():
         return f"（不是文件：{path}）"
 
-    # 扩展名检查
+    text = _extract_text(p)
+    if text is None:
+        ext = p.suffix.lower()
+        return f"（不支持读取 {ext or '无扩展名'} 文件，仅支持文本文件与 .docx）"
+    if text.startswith("（") and text.endswith("）") and "\n" not in text:
+        return text  # 抽取阶段的错误信息，原样返回
+
+    total = len(text)
+    offset = max(0, int(offset or 0))
+    if offset >= total and total:
+        return f"（起始位置 {offset} 超过文件总长 {total} 字符）"
+
+    window = text[offset : offset + max_chars]
+    remaining = total - (offset + len(window))
+
+    if remaining <= 0:
+        return window
+
+    # 超出窗口——如实告知，并给出章节目录，让下一步是「读某一章」而不是「继续瞎猜」。
+    # 提示放在正文之前：模型读到内容时已经知道这不是全文。
+    chapters = split_chapters(text)
+    if len(chapters) > 1:
+        toc = "；".join(f"{i}.{t}（{len(b):,}字）" for i, (t, b) in enumerate(chapters, 1))
+        nav = f"\n本稿分 {len(chapters)} 节：{toc}\n建议改用 read_chapter 只读需要的一节。"
+    else:
+        nav = ""
+    return (
+        f"⚠️ 未读完：本次仅返回第 {offset:,}–{offset + len(window):,} 字符，"
+        f"全文共 {total:,} 字符，还有 {remaining:,} 字符未读。\n"
+        f"不得据此声称「读完了」，也不得推测未读部分的内容。"
+        f"继续顺读用 offset={offset + len(window)}。{nav}\n\n"
+        f"—— 以下为本次读到的片段 ——\n{window}"
+    )
+
+
+def _extract_text(p: Path) -> str | None:
+    """把文件抽成纯文本全文（不截断）。不支持的类型返回 None。"""
     ext = p.suffix.lower()
     name = p.name.lower()
 
-    # .docx 文件用 python-docx 解析
     if ext in _DOCX_EXTS:
-        return _read_docx(p, max_chars)
+        return _extract_docx(p)
 
-    # 允许无扩展名的常见文本文件
     allow_no_ext = name in {"makefile", "dockerfile", "readme", "license", "changelog"}
     if ext not in _TEXT_EXTS and not allow_no_ext:
-        return f"（不支持读取 {ext or '无扩展名'} 文件，仅支持文本文件）"
-
-    # 大小检查
-    try:
-        size = p.stat().st_size
-    except OSError:
-        return f"（无法读取文件信息：{path}）"
-
-    if size > max_chars * 2:
-        return f"（文件过大：{size} 字节，超过限制 {max_chars * 2}）"
+        return None
 
     try:
-        text = p.read_text(encoding="utf-8", errors="replace")
+        if p.stat().st_size > MAX_READ_SIZE * 20:
+            return f"（文件过大：{p.stat().st_size} 字节，请改用支持分段的工具）"
+        return p.read_text(encoding="utf-8", errors="replace")
     except OSError as e:
         return f"（读取失败：{e}）"
 
-    if len(text) > max_chars:
-        return text[:max_chars] + f"\n\n…（截断，共 {len(text)} 字符）"
-    return text
 
-
-def _read_docx(p: Path, max_chars: int) -> str:
-    """读取 .docx 文件内容。"""
+def _extract_docx(p: Path) -> str:
+    """抽取 .docx 全文（段落 + 表格），不截断。"""
     try:
         from docx import Document
     except ImportError:
@@ -84,24 +130,105 @@ def _read_docx(p: Path, max_chars: int) -> str:
     except Exception as e:
         return f"（读取 .docx 失败：{e}）"
 
-    paragraphs = []
-    for para in doc.paragraphs:
-        text = para.text.strip()
-        if text:
-            paragraphs.append(text)
-
-    # 也读取表格中的文本
+    paragraphs = [t for para in doc.paragraphs if (t := para.text.strip())]
     for table in doc.tables:
         for row in table.rows:
             for cell in row.cells:
-                text = cell.text.strip()
-                if text:
-                    paragraphs.append(text)
+                if t := cell.text.strip():
+                    paragraphs.append(t)
+    return "\n".join(paragraphs)
 
-    content = "\n".join(paragraphs)
+
+def _read_docx(p: Path, max_chars: int) -> str:
+    """兼容旧调用：抽取 .docx 并按 max_chars 截断。新代码请用 read_file_safe。"""
+    content = _extract_docx(p)
     if len(content) > max_chars:
         return content[:max_chars] + f"\n\n…（截断，共 {len(content)} 字符）"
     return content
+
+
+def split_chapters(text: str) -> list[tuple[str, str]]:
+    """按章节标题把正文切成 [(标题, 正文), ...]。
+
+    识别「第X章/回/节」「楔子」「尾声」「番外」等常见中文小说体例。
+    标题前的内容归入伪章节「（卷首）」，没有任何标题时返回单条「（全文）」。
+    """
+    if not text:
+        return []
+    marks = [(m.start(), m.group(1).strip()) for m in _CHAPTER_RE.finditer(text)]
+    if not marks:
+        return [("（全文）", text)]
+
+    out: list[tuple[str, str]] = []
+    head = text[: marks[0][0]].strip()
+    if head:
+        out.append(("（卷首）", head))
+    for i, (pos, title) in enumerate(marks):
+        end = marks[i + 1][0] if i + 1 < len(marks) else len(text)
+        out.append((title, text[pos:end].strip()))
+    return out
+
+
+def list_chapters(path: str) -> str:
+    """列出稿件的章节目录与各章字数——先看目录，再决定读哪一章。"""
+    p = Path(path).expanduser().resolve()
+    if not p.is_file():
+        return f"（文件不存在：{path}）"
+    text = _extract_text(p)
+    if text is None:
+        return f"（不支持的文件类型：{p.suffix or '无扩展名'}）"
+    if text.startswith("（") and "\n" not in text:
+        return text
+
+    chapters = split_chapters(text)
+    if not chapters:
+        return "（文件为空）"
+    lines = [f"《{p.stem}》共 {len(chapters)} 节，全文 {len(text):,} 字："]
+    lines += [f"  {i}. {title}（{len(body):,} 字）" for i, (title, body) in enumerate(chapters, 1)]
+    lines.append("用 read_chapter(path, chapter) 读取其中一节，chapter 可填序号或标题。")
+    return "\n".join(lines)
+
+
+def read_chapter(path: str, chapter: str | int, max_chars: int = MAX_READ_SIZE) -> str:
+    """只读取指定的一章——与全书长度无关，因此长稿也不会顶爆上下文。
+
+    chapter 可以是序号（1 起）、完整标题，或标题片段（如「第二章」「财当道」）。
+    """
+    p = Path(path).expanduser().resolve()
+    if not p.is_file():
+        return f"（文件不存在：{path}）"
+    text = _extract_text(p)
+    if text is None:
+        return f"（不支持的文件类型：{p.suffix or '无扩展名'}）"
+    if text.startswith("（") and "\n" not in text:
+        return text
+
+    chapters = split_chapters(text)
+    if not chapters:
+        return "（文件为空）"
+
+    picked: tuple[str, str] | None = None
+    key = str(chapter).strip()
+    if key.isdigit() and 1 <= int(key) <= len(chapters):
+        picked = chapters[int(key) - 1]
+    else:
+        norm = key.replace(" ", "").replace("\u3000", "")
+        for title, body in chapters:
+            if norm and norm in title.replace(" ", "").replace("\u3000", ""):
+                picked = (title, body)
+                break
+
+    if picked is None:
+        titles = "、".join(t for t, _ in chapters[:20])
+        return f"（未找到「{chapter}」。本稿章节为：{titles}）"
+
+    title, body = picked
+    if len(body) > max_chars:
+        return (
+            f"【{title}】（本章 {len(body):,} 字，超过单次上限 {max_chars:,}，以下为前半部分，"
+            f"勿据此声称读完本章）\n\n{body[:max_chars]}"
+        )
+    return f"【{title}】（{len(body):,} 字，本章完整）\n\n{body}"
 
 
 def extract_file_path_from_title(title: str, app: str) -> str | None:

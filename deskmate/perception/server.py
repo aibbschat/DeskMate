@@ -8,7 +8,9 @@
 - get_recent_file_changes  最近文件变更
 - read_clipboard       剪贴板内容
 - get_calendar_events  日历事件
-- read_file            安全读取文件
+- read_file            安全读取文件（超大文件会提示分页/按章读取，不静默截断）
+- list_chapters        列出稿件章节目录与字数
+- read_chapter         只读指定的一章（与全书长度无关，长稿不会顶爆上下文）
 - list_directory       列出目录内容
 - diff_files           对比文件差异
 """
@@ -20,7 +22,7 @@ from mcp.server.fastmcp import FastMCP
 from .calendar_reader import get_calendar_events
 from .clipboard_monitor import clipboard_has_image, read_clipboard
 from .diff_changes import diff_files
-from .file_reader import list_dir, read_file_safe
+from .file_reader import list_dir, read_chapter, list_chapters, read_file_safe
 from .filesystem_watcher import FilesystemWatcher
 from .window_monitor import get_active_window
 
@@ -146,19 +148,67 @@ def get_calendar_events_tool(days: int = 1, max_events: int = 20) -> str:
 @mcp.tool()
 def read_file(path: str, max_chars: int = 40000) -> str:
     """安全读取文件内容（支持文本/代码/配置/小说等常见格式）。
-    超大文件自动截断，二进制文件会被跳过。
+
+    超大文件**不会静默截断**：超出默认上限时会返回全文总字数、章节目录，
+    并提示改用 list_chapters / read_chapter 按章读取，同时明确警告「不得声称读完了」。
+    二进制文件会被跳过。
 
     Args:
         path: 文件绝对路径
-        max_chars: 最大返回字符数（默认40000）
+        max_chars: 最大返回字符数（默认40000，仅作为分页窗口）
 
     Returns:
-        文件内容或错误信息
+        文件内容或错误信息 / 分页引导
     """
     try:
         return read_file_safe(path, max_chars=max_chars)
     except Exception as e:
         return f"（读取文件失败：{e}）"
+
+
+@mcp.tool()
+def list_chapters(path: str) -> str:
+    """列出稿件的章节目录与每章字数——读长稿前先看目录，再决定读哪一章。
+
+    适用于 .docx / .txt / .md 等小说稿件。返回格式：
+      《书名》共 N 节，全文 M 字：
+        1. 楔子（xxx 字）
+        2. 第一章：xxx（xxx 字）
+      …
+
+    Args:
+        path: 稿件绝对路径
+
+    Returns:
+        章节目录（含每章字数）与读取建议；文件不存在/不支持时返回错误
+    """
+    try:
+        return list_chapters(path)
+    except Exception as e:
+        return f"（读取章节目录失败：{e}）"
+
+
+@mcp.tool()
+def read_chapter(path: str, chapter: str, max_chars: int = 100000) -> str:
+    """只读指定的一章——与全书长度无关，长稿也不会顶爆上下文。
+
+    这是读长篇小说的**首选方式**：无论全书十几万字还是几十万字，每次只取
+    一章（通常几千字），绝不会因整本读取触发上下文压缩而丢失内容、进而编造。
+
+    chapter 可以是序号（从 1 起）、完整标题，或标题片段（如「第二章」「财当道」）。
+
+    Args:
+        path: 稿件绝对路径
+        chapter: 章节序号 / 完整标题 / 标题片段
+        max_chars: 单章上限（默认100000，正常章节远小于此）
+
+    Returns:
+        以【章节标题】（字数，本章完整）开头的正文；未找到/不支持时返回错误
+    """
+    try:
+        return read_chapter(path, chapter, max_chars=max_chars)
+    except Exception as e:
+        return f"（读取章节失败：{e}）"
 
 
 @mcp.tool()

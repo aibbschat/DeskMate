@@ -33,6 +33,28 @@ SUMMARY_MAX_TOKENS = 3_000
 # first casualty (huge and mostly stale — a file read 40 turns ago is better re-read).
 _SPAN_TOOL_RESULT_CLIP = 400
 _SPAN_BUDGET_CHARS = 400_000
+# Tools whose output IS source material (manuscript prose, clipboard, file bodies).
+# For these the clip above is not applied at all: a 400-char prefix of a novel still
+# reads like the novel, so the model treats it as "what I read" and invents the rest.
+# They are replaced by a description of the call instead (see _summarize_tool_result).
+# Matched on the bare name, so MCP-prefixed variants (perception__read_file) also hit.
+_READER_TOOL_NAMES = frozenset({
+    "read_file",
+    "read_chapter",
+    "list_chapters",
+    "read_clipboard_text",
+    "novel_recall",
+    "analyze_novel",
+    "diff_two_files",
+    "grep",
+    "search_files",
+})
+
+
+def _is_reader_tool(name: str) -> bool:
+    """True for tools that return source material, MCP prefix tolerated."""
+    bare = (name or "").rsplit("__", 1)[-1].rsplit(".", 1)[-1]
+    return bare in _READER_TOOL_NAMES
 # User messages preserved mechanically in the compacted block ("trimmed of pasted bulk").
 # The list is capped to the newest N across repeated compactions — otherwise it appends
 # forever and the block slowly reclaims the window it freed. Dropped ones stay counted
@@ -334,10 +356,66 @@ CONTINUATION_CONTRACT = (
 )
 
 
+def _index_tool_calls(span: list[dict[str, Any]]) -> dict[str, tuple[str, str]]:
+    """tool_call_id -> (tool name, raw arguments json), so a tool result can be
+    described by what produced it rather than by a slice of its own body."""
+    index: dict[str, tuple[str, str]] = {}
+    for msg in span:
+        if msg.get("role") != "assistant":
+            continue
+        for tc in msg.get("tool_calls") or []:
+            fn = tc.get("function") or {}
+            cid = str(tc.get("id") or "")
+            if cid:
+                index[cid] = (str(fn.get("name") or "unknown"), str(fn.get("arguments") or ""))
+    return index
+
+
+def _summarize_tool_result(name: str, args_json: str, text: str) -> str:
+    """One informative line describing a tool call, used instead of a prefix of its
+    output.
+
+    A truncated *prefix* of a reader tool's output is actively harmful: it still
+    reads like source material, so the model treats it as "the content I already
+    read" and confabulates the rest from memory. Naming the call and stating that
+    the body is gone leaves no such anchor — the model must re-read to answer.
+    Ported from Hermes (agent/context_compressor.py::_summarize_tool_result)."""
+    try:
+        args = json.loads(args_json) if args_json else {}
+    except (json.JSONDecodeError, TypeError):
+        args = {}
+    if not isinstance(args, dict):
+        args = {}
+
+    n = len(text)
+    target = args.get("path") or args.get("file") or args.get("manuscript") or ""
+    if isinstance(target, str) and len(target) > 80:
+        target = "…" + target[-79:]
+
+    if _is_reader_tool(name):
+        where = f" {target}" if target else ""
+        chapter = args.get("chapter") or args.get("title")
+        if chapter:
+            where += f" 的《{chapter}》"
+        offset = args.get("offset")
+        if offset and offset != 1:
+            where += f" 自第{offset}行起"
+        return (
+            f"{name} 读取{where} → {n:,} 字，正文已清除。"
+            "需要其中任何内容都必须重新读取，不得凭此行回忆作答。"
+        )
+
+    if n > _SPAN_TOOL_RESULT_CLIP:
+        return f"{name} → {n:,} 字（截取开头）: {text[: _SPAN_TOOL_RESULT_CLIP - 1]}…"
+    return f"{name} → {text}" if name != "unknown" else text
+
+
 def _render_span(span: list[dict[str, Any]], *, budget_chars: int = _SPAN_BUDGET_CHARS) -> str:
-    """The summarized span as compact text for the summarizer. Tool results are clipped
-    hard (first casualty); if the whole render still exceeds the budget, oldest lines are
+    """The summarized span as compact text for the summarizer. Tool results are reduced
+    to a one-line description of the call (reader output is dropped outright, never
+    prefix-clipped); if the whole render still exceeds the budget, oldest lines are
     dropped — the newest context is the most load-bearing."""
+    call_index = _index_tool_calls(span)
     lines: list[str] = []
     for msg in span:
         role = msg.get("role")
@@ -346,11 +424,9 @@ def _render_span(span: list[dict[str, Any]], *, budget_chars: int = _SPAN_BUDGET
         if role == "notice":
             continue
         if role == "tool":
-            text = _text_of(msg.get("content"))
-            text = " ".join(text.split())
-            if len(text) > _SPAN_TOOL_RESULT_CLIP:
-                text = text[: _SPAN_TOOL_RESULT_CLIP - 1] + "…"
-            lines.append(f"[tool result] {text}")
+            text = " ".join(_text_of(msg.get("content")).split())
+            name, args_json = call_index.get(str(msg.get("tool_call_id") or ""), ("unknown", ""))
+            lines.append(f"[tool result] {_summarize_tool_result(name, args_json, text)}")
             continue
         text = _text_of(msg.get("content"))
         if role == "assistant":
