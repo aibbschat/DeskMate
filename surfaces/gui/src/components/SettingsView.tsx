@@ -724,6 +724,11 @@ function CompactionCard() {
   const [cfg, setCfg] = useState<CompactionSettings | null>(null);
   const [models, setModels] = useState<string[]>([]);
   const [labels, setLabels] = useState<Record<string, string>>({});
+  // Uncommitted keystrokes for the two numeric fields. Saving on every keystroke would
+  // clamp partial input to the minimum ("1" of "100000" → 10_000 persisted instantly),
+  // silently crippling the compaction trigger. Commit on blur / Enter instead.
+  const [draftPct, setDraftPct] = useState<string | null>(null);
+  const [draftCap, setDraftCap] = useState<string | null>(null);
 
   useEffect(() => {
     getSettings()
@@ -752,6 +757,25 @@ function CompactionCard() {
 
   if (!cfg) return null;
   const modelLabel = (id: string) => labels[id]?.split(" · ")[0] || id;
+  const pctValue = Math.round(cfg.compaction_threshold_pct * 100);
+  const commitPct = () => {
+    if (draftPct === null) return;
+    const n = Number(draftPct);
+    const next =
+      draftPct.trim() === "" || !Number.isFinite(n) ? pctValue : Math.max(10, Math.min(n, 95));
+    setDraftPct(null);
+    if (next !== pctValue) save({ compaction_threshold_pct: next / 100 });
+  };
+  const commitCap = () => {
+    if (draftCap === null) return;
+    const n = Number(draftCap);
+    const next =
+      draftCap.trim() === "" || !Number.isFinite(n)
+        ? cfg.compaction_cap_tokens
+        : Math.max(10_000, Math.min(n, 2_000_000));
+    setDraftCap(null);
+    if (next !== cfg.compaction_cap_tokens) save({ compaction_cap_tokens: next });
+  };
   return (
     <div className={CARD + " p-4 mb-4"} data-testid="compaction-card">
       <div className={FIELD_LABEL}>Context compaction</div>
@@ -768,15 +792,15 @@ function CompactionCard() {
             type="number"
             min={10}
             max={95}
-            value={Math.round(cfg.compaction_threshold_pct * 100)}
+            value={draftPct ?? pctValue}
             data-testid="compaction-threshold"
             className="w-16 px-2 py-1.5 rounded-lg border border-line bg-paper text-[13px] text-ink outline-none focus:border-accent"
-            onChange={(e) =>
-              save({
-                compaction_threshold_pct:
-                  Math.max(10, Math.min(Number(e.target.value) || 80, 95)) / 100,
-              })
-            }
+            onChange={(e) => setDraftPct(e.target.value)}
+            onBlur={commitPct}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") e.currentTarget.blur();
+              if (e.key === "Escape") setDraftPct(null);
+            }}
           />
           <span className="text-[12.5px] text-muted">% of the context window</span>
         </label>
@@ -787,17 +811,15 @@ function CompactionCard() {
             min={10_000}
             max={2_000_000}
             step={10_000}
-            value={cfg.compaction_cap_tokens}
+            value={draftCap ?? cfg.compaction_cap_tokens}
             data-testid="compaction-cap"
             className="w-28 px-2 py-1.5 rounded-lg border border-line bg-paper text-[13px] text-ink outline-none focus:border-accent"
-            onChange={(e) =>
-              save({
-                compaction_cap_tokens: Math.max(
-                  10_000,
-                  Math.min(Number(e.target.value) || 250_000, 2_000_000),
-                ),
-              })
-            }
+            onChange={(e) => setDraftCap(e.target.value)}
+            onBlur={commitCap}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") e.currentTarget.blur();
+              if (e.key === "Escape") setDraftCap(null);
+            }}
           />
           <span className="text-[12.5px] text-muted">tokens, whichever is smaller</span>
         </label>

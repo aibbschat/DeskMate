@@ -32,6 +32,10 @@ dependencies = [
     # ships its own libpdfium — NOT PyMuPDF, whose AGPL license can't ride in the DMG).
     "pypdf>=5",
     "pypdfium2>=4",
+    # .docx text extraction for DeskMate's perception reader (deskmate/perception/file_reader.py).
+    # Without it read_file_safe() returns "（python-docx 未安装）" for every Word manuscript and
+    # the model reports on an empty source — i.e. it hallucinates. MIT licensed, DMG-safe.
+    "python-docx>=1.1",
     # IANA tz database for zoneinfo. Windows ships no system tz db, so without this every
     # named schedule timezone (UTC, Asia/Kolkata, …) silently falls back to local time.
     "tzdata; sys_platform == 'win32'",
