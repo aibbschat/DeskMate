@@ -9,25 +9,13 @@ import {
   saveManuscript,
   type ManuscriptChapter,
   type ManuscriptInfo,
-  type ProofreadResult,
   type StyleProfile,
 } from "../../api";
 import { Icon } from "../Icon";
 
-/** 聊天「审阅第X章」触发时，由 DeskMateOverlay 传入，用于预载面板到指定章节。 */
-export interface ProofreadSeed {
-  name: string;
-  chapter_idx: number | null;
-  chapter_title: string;
-  chapters: ManuscriptChapter[];
-  draft: string;
-  result: ProofreadResult;
-}
-
 interface Props {
   open: boolean;
   onClose: () => void;
-  seed?: ProofreadSeed | null;
   /** 当前会话 id：校对结果作为结构化消息写入该会话（聊天呈现，重启不丢）。 */
   sessionId?: string;
   /** 首页 chip 进入焦点：edit 常规 / manuscripts 书稿库（自动载入最近一本）/ style 风格库（未校准则唤起校准）。 */
@@ -65,7 +53,7 @@ async function readFileInput(file: File): Promise<{
   throw new Error("仅支持 .txt / .docx 文件");
 }
 
-export function ProofreadPanel({ open, onClose, seed, sessionId, initialFocus }: Props) {
+export function ProofreadPanel({ open, onClose, sessionId, initialFocus }: Props) {
   const [draft, setDraft] = useState("");
   const [draftFile, setDraftFile] = useState<{ content_base64: string; filename: string } | null>(null);
   const [manuscriptText, setManuscriptText] = useState<string | null>(null);
@@ -90,18 +78,6 @@ export function ProofreadPanel({ open, onClose, seed, sessionId, initialFocus }:
       .catch(() => {/* 静默 */});
     listManuscripts().then(setSavedManuscripts).catch(() => {});
   }, [open]);
-
-  // 聊天「审阅第X章」触发：用 seed 预载到指定章节
-  useEffect(() => {
-    if (!seed) return;
-    setChapters(seed.chapters ?? []);
-    setSelectedChapter(seed.chapter_idx ?? null);
-    setDraft(seed.draft ?? "");
-    setManuscriptText(seed.draft ?? null);
-    setManuscriptName(seed.name ?? null);
-    setDraftFile(null);
-    setError(null);
-  }, [seed]);
 
   // 粘贴/输入时（非 docx、未缩放至某章）自动识别章节，填充下拉
   useEffect(() => {

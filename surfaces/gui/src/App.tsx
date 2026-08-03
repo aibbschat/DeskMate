@@ -925,13 +925,6 @@ export function App() {
             new CustomEvent("deskmate:context-injected", { detail: d }),
           );
           break;
-        case "deskmate_proofread":
-          if (agent !== "deskmate") break;
-          // 聊天「审阅第X章」触发：把审读结果推给浮层，自动打开批改台定位到该章
-          window.dispatchEvent(
-            new CustomEvent("deskmate:proofread", { detail: d }),
-          );
-          break;
       }
     };
 

@@ -66,8 +66,6 @@ export function DeskMateOverlay({ agent, sessionId, idle, activeExpert }: Props)
   const [panelOpen, setPanelOpen] = useState(false);
   const [memoryOpen, setMemoryOpen] = useState(false);
   const [proofreadOpen, setProofreadOpen] = useState(false);
-  // 聊天「审阅第X章」触发时，携带预载数据打开批改台
-  const [proofreadSeed, setProofreadSeed] = useState<import("./ProofreadPanel").ProofreadSeed | null>(null);
   // 首页 chip 触发：了解度轻量卡 / 批改台进入焦点
   const [understandingOpen, setUnderstandingOpen] = useState(false);
   const [proofreadFocus, setProofreadFocus] = useState<"edit" | "manuscripts" | "style" | null>(null);
@@ -279,14 +277,6 @@ export function DeskMateOverlay({ agent, sessionId, idle, activeExpert }: Props)
     window.addEventListener("deskmate:memory-update", onMemoryUpdate);
     window.addEventListener("deskmate:memory-learned", onMemoryLearned);
     window.addEventListener("deskmate:context-injected", onContextInjected);
-    // 聊天「审阅第X章」：打开批改台并预载到对应章节
-    const onProofreadEvent = (e: Event) => {
-      const d = (e as CustomEvent).detail;
-      if (d && d.chapters && d.result) {
-        setProofreadSeed(d as import("./ProofreadPanel").ProofreadSeed);
-        setProofreadOpen(true);
-      }
-    };
     // 首页 chip 入口：文稿编校 / 书稿库 / 风格库 → 打开批改台（带焦点）
     const onOpenProofread = (e: Event) => {
       const d = (e as CustomEvent<{ focus?: string }>).detail;
@@ -301,7 +291,6 @@ export function DeskMateOverlay({ agent, sessionId, idle, activeExpert }: Props)
     // 首页 chip 入口：主动建议 → 切换开关
     const onToggleProactive = () => handleToggleProactive(!proactiveEnabled);
 
-    window.addEventListener("deskmate:proofread", onProofreadEvent);
     window.addEventListener("deskmate:open-proofread", onOpenProofread);
     window.addEventListener("deskmate:open-memory", onOpenMemory);
     window.addEventListener("deskmate:open-understanding", onOpenUnderstanding);
@@ -313,7 +302,6 @@ export function DeskMateOverlay({ agent, sessionId, idle, activeExpert }: Props)
       window.removeEventListener("deskmate:memory-update", onMemoryUpdate);
       window.removeEventListener("deskmate:memory-learned", onMemoryLearned);
       window.removeEventListener("deskmate:context-injected", onContextInjected);
-      window.removeEventListener("deskmate:proofread", onProofreadEvent);
       window.removeEventListener("deskmate:open-proofread", onOpenProofread);
       window.removeEventListener("deskmate:open-memory", onOpenMemory);
       window.removeEventListener("deskmate:open-understanding", onOpenUnderstanding);
@@ -474,12 +462,10 @@ export function DeskMateOverlay({ agent, sessionId, idle, activeExpert }: Props)
       {proofreadOpen && (
         <ProofreadPanel
           open={proofreadOpen}
-          seed={proofreadSeed}
           sessionId={sessionId}
           initialFocus={proofreadFocus ?? undefined}
           onClose={() => {
             setProofreadOpen(false);
-            setProofreadSeed(null);
             setProofreadFocus(null);
           }}
         />

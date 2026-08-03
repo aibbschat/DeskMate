@@ -24,7 +24,6 @@ export type EventType =
   | "deskmate_memory_update"
   | "deskmate_memory_learned"
   | "deskmate_context_injected"
-  | "deskmate_proofread"
   | "compacting"
   | "compacted";
 
