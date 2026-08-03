@@ -9,7 +9,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-from deskmate.perception.accessibility_reader import read_frontmost_app_text
+from deskmate.perception.accessibility_reader import (
+    is_truncated_text,
+    read_frontmost_app_text,
+)
 from deskmate.perception.calendar_reader import get_calendar_events
 from deskmate.perception.clipboard_monitor import read_clipboard
 from deskmate.perception.file_reader import extract_file_path_from_title, read_file_safe
@@ -162,7 +165,11 @@ def format_context_for_judge(ctx: ProactiveContext) -> str:
     if ctx.perception.active_window:
         parts.append(f"- 活动窗口: {ctx.perception.active_window}")
     if ctx.perception.active_file_content:
-        parts.append(f"- 当前文件内容:\n{ctx.perception.active_file_content}")
+        if is_truncated_text(ctx.perception.active_file_content):
+            label = "前台应用文本片段（不完整，可能已截断，勿据此对全文下结论）"
+        else:
+            label = "前台应用文本内容"
+        parts.append(f"- {label}:\n{ctx.perception.active_file_content}")
     if ctx.perception.recent_files:
         parts.append(f"- 最近文件变更:\n{ctx.perception.recent_files}")
     if ctx.perception.clipboard:

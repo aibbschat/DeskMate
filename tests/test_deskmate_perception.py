@@ -124,16 +124,18 @@ class TestReadFileSafe:
     def test_truncation(self, tmp_path: Path):
         f = tmp_path / "big.txt"
         f.write_text("A" * 1000, encoding="utf-8")
-        # max_chars=600 → limit=1200, file(1000) < limit → triggers truncation at 600
+        # max_chars=600 < 全文 1000 → 不再静默截断，而是明确「未读完」并给出续读 offset
         result = read_file_safe(str(f), max_chars=600)
-        assert "截断" in result
+        assert "未读完" in result
+        assert "offset=" in result
 
-    def test_too_large_rejected(self, tmp_path: Path):
+    def test_oversize_guided(self, tmp_path: Path):
         f = tmp_path / "huge.txt"
         f.write_text("A" * 1000, encoding="utf-8")
-        # max_chars=100 → limit=200, file(1000) > limit → rejected
+        # max_chars=100 << 全文 1000 → 不再硬拒，而是返回「未读完」提示并给出续读 offset
         result = read_file_safe(str(f), max_chars=100)
-        assert "文件过大" in result
+        assert "未读完" in result
+        assert "offset=" in result
 
     def test_allows_makefile(self, tmp_path: Path):
         f = tmp_path / "Makefile"

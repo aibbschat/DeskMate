@@ -9,19 +9,45 @@ import subprocess
 from typing import Optional
 
 
+def _cap_and_mark(text: str, max_chars: int) -> str:
+    """截断到上限，并附「不完整 + 禁止编造」的明确提示。
+
+    关键：截断时不仅告知全文长度，还要明确告诉模型「这只是片段、不得据此
+    补全情节或编造正文中不存在的人名/设定」——否则模型会对有头无尾的文本
+    做「合理补全」式脑补（这正是桌搭读长稿瞎编的根因之一）。
+    """
+    if len(text) <= max_chars:
+        return text
+    shown = max_chars
+    return (
+        text[:shown]
+        + f"\n\n[⚠️ 以上仅为前台应用文档的「前 {shown:,} 字符」片段，"
+        f"全文约 {len(text):,} 字符，并非完整内容。"
+        f"不得据此对全文下结论、补全未出现的情节，或编造正文中不存在的人名/设定。"
+        f"如需完整审阅，请让用户通过 read_file / read_chapter 工具读取对应文件。]"
+    )
+
+
+def is_truncated_text(text: str) -> bool:
+    """判断文本是否由 _cap_and_mark 标记为截断片段。"""
+    return "⚠️ 以上仅为前台应用文档" in (text or "")
+
+
 def read_frontmost_app_text(max_chars: int = 12000) -> str:
     """读取前台应用的文本内容。
 
     优先用 AXUIElement 直接读取（快、准确），失败则回退到 AppleScript。
-    返回截断后的文本，或空字符串。
+    超出上限会截断并明确标注「仅为片段、禁止编造」后返回，或空字符串。
     """
     text = _read_via_axui(max_chars)
     if text and len(text) > 50:
-        return text
+        return _cap_and_mark(text, max_chars)
 
     # 回退：AppleScript（兼容性更好，但只能读部分应用）
     text = _read_via_applescript(max_chars)
-    return text or ""
+    if text and len(text) > 50:
+        return _cap_and_mark(text, max_chars)
+    return ""
 
 
 def _read_via_axui(max_chars: int) -> str:
@@ -89,10 +115,9 @@ def _extract_text_from_element(element, max_chars: int, depth: int = 0) -> str:
                 if total >= max_chars:
                     break
 
-    text = "\n".join(parts)
-    if len(text) > max_chars:
-        return text[:max_chars] + f"\n\n…（截断，共 {len(text)} 字符）"
-    return text
+    # 不在递归内截断/标注；由公开函数 read_frontmost_app_text 统一截断并标注，
+    # 避免嵌套调用时重复包裹提示。
+    return "\n".join(parts)
 
 
 def _ax_get_attribute(element, attribute: str):
@@ -154,10 +179,8 @@ def _read_via_applescript(max_chars: int) -> str:
             capture_output=True, text=True, timeout=10,
         )
         if result.returncode == 0:
-            text = result.stdout.strip()
-            if len(text) > max_chars:
-                return text[:max_chars] + f"\n\n…（截断，共 {len(text)} 字符）"
-            return text
+            # 返回原始全文，由公开函数统一截断并标注
+            return result.stdout.strip()
     except (subprocess.TimeoutExpired, FileNotFoundError):
         pass
     return ""
