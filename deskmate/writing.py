@@ -365,67 +365,6 @@ def _select_chapter(chapters: list[dict], chapter) -> Optional[dict]:
     return None
 
 
-def proofread(draft: str, profile: Optional[dict] = None,
-              chapter=None) -> dict:
-    """对文稿做编辑审阅，返回 {letter, items, chapters, current_chapter, report}。
-
-    - chapter 为 None：逐章审整篇（按章归因，便于报告按章分组）；
-    - chapter 为 int/str：只审匹配到的那一章（按序号或标题）。
-    items: [{id, excerpt, type, suggestion, reason, chapter}, ...]
-    chapters: 元信息列表（供前端章节下拉）。
-    current_chapter: 本次实际审的章序号（None 表示整篇）。
-    report: 面向聊天的结构化 markdown（【原文】/【建议】/【理由】按章分组），
-            前端直接作为助手消息渲染，不再依赖专用采纳面板。
-    """
-    draft = draft.strip()
-    if not draft:
-        return {"letter": "", "items": [], "report": "",
-                "chapters": [{"idx": 1, "title": "全文", "char_count": 0}],
-                "current_chapter": None}
-
-    chapters = split_into_chapters(draft)
-    target = _select_chapter(chapters, chapter)
-    # 整篇审：逐章归因（长书按章分组、跨章不串）；单章审：只跑那一章。
-    if target:
-        work_units = [(target["idx"], target["title"], target["text"])]
-    else:
-        work_units = [(c["idx"], c["title"], c["text"]) for c in chapters]
-
-    profile_text = format_profile_for_prompt(profile)
-
-    collected: list[dict] = []
-    for _idx, title, text in work_units:
-        try:
-            res = proofread_chapter(title, text, profile_text)
-            for it in res["items"]:
-                it["chapter"] = title
-                collected.append(it)
-        except Exception:
-            # 单章审阅失败（如 LLM 未就绪）不应拖垮整篇；跳过该章并告警。
-            _log_warning(f"章节编辑审阅失败，已跳过：{title}")
-
-    items = _dedupe_items(collected)
-
-    # 给每条编号
-    for i, it in enumerate(items, 1):
-        it["id"] = str(i)
-
-    # 生成整体编辑评语
-    letter = generate_letter(items)
-
-    report = _format_report(items, letter)
-    return {
-        "letter": letter.strip(),
-        "items": items,
-        "report": report,
-        "chapters": [{"idx": c["idx"], "title": c["title"], "char_count": len(c["text"])}
-                     for c in chapters],
-        # current_chapter 优先用传入的章序号：前端按章审时只发单章文本，后端 re-split 后
-        # 序号对不上（_select_chapter 落空），若只用 target["idx"] 会把标记丢成 None。
-        "current_chapter": chapter if chapter is not None else (target["idx"] if target else None),
-    }
-
-
 def proofread_chapter(title: str, text: str, profile_text: str) -> dict:
     """审阅单章：分块调 LLM，返回 {title, items}。
 
@@ -512,46 +451,6 @@ def format_report_card(
     return "\n".join(lines).rstrip() + "\n"
 
 
-def _format_report(items: list[dict], letter: str) -> str:
-    """把逐条审阅结果渲染成面向聊天的结构化 markdown。
-
-    每条用【原文】/【建议】/【理由】三行标注；按章节分组；整体编辑评语置顶。
-    前端只需把整段文本作为助手消息渲染即可，无需专用采纳面板——
-    作者自行阅读、在脑中过滤、回到原稿手动修改认可的条目。
-    """
-    from collections import OrderedDict
-
-    lines: list[str] = []
-    if letter and letter.strip():
-        lines.append("📝 **编辑评语**")
-        lines.append(letter.strip())
-        lines.append("")
-
-    groups: "OrderedDict[str, list[dict]]" = OrderedDict()
-    for it in items:
-        ch = (it.get("chapter") or "").strip() or "全文"
-        groups.setdefault(ch, []).append(it)
-
-    for ch, its in groups.items():
-        lines.append(f"## 📖 {ch}（{len(its)} 处）")
-        lines.append("")
-        for it in its:
-            t = (it.get("type") or "").strip()
-            bullet = f"• **【{t}】**" if t else "•"
-            lines.append(bullet)
-            lines.append(f"> 【原文】{it.get('excerpt', '')}")
-            lines.append(f"> 【建议】{it.get('suggestion', '')}")
-            reason = (it.get("reason") or "").strip()
-            if reason:
-                lines.append(f"> 【理由】{reason}")
-            lines.append("")
-
-    if not items:
-        lines.append("✅ 这篇文稿没有明显可改的地方，或建议都已处理。")
-
-    return "\n".join(lines).rstrip() + "\n"
-
-
 import logging
 
 def _log_warning(msg: str) -> None:
@@ -567,7 +466,7 @@ DIMENSIONS = _DIMENSIONS
 
 
 # --------------------------------------------------------------------------- #
-# 书稿持久化（二期：聊天说「审阅第X章」自动定位）
+# 书稿持久化：选稿弹窗与编辑专家 Agent 调出的书稿库（~/.deskmate/manuscripts）
 # --------------------------------------------------------------------------- #
 def _manuscript_dir() -> Path:
     d = Path(os.environ.get("DESKMATE_DIR", os.path.expanduser("~/.deskmate"))) / "manuscripts"
