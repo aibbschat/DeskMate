@@ -146,22 +146,25 @@ def get_calendar_events_tool(days: int = 1, max_events: int = 20) -> str:
 
 
 @mcp.tool()
-def read_file(path: str, max_chars: int = 40000) -> str:
+def read_file(path: str, max_chars: int = 40000, offset: int = 0) -> str:
     """安全读取文件内容（支持文本/代码/配置/小说等常见格式）。
 
-    超大文件**不会静默截断**：超出默认上限时会返回全文总字数、章节目录，
-    并提示改用 list_chapters / read_chapter 按章读取，同时明确警告「不得声称读完了」。
-    二进制文件会被跳过。
+    超大文件**不会静默截断**：超出默认上限时会返回全文总字数、剩余字数，
+    并明确提示「继续顺读用 offset=N」（即 next_offset 续读游标），
+    同时告知可改用 list_chapters / read_chapter 按章读取。
+    若只读取了片段，会明确标注「未读完」并给出后续 offset，
+    **不得据此声称读完了或编造正文未见的内容**。
 
     Args:
         path: 文件绝对路径
-        max_chars: 最大返回字符数（默认40000，仅作为分页窗口）
+        max_chars: 单页窗口字符数（默认40000，仅作为分页窗口，非上限）
+        offset: 起始字符位置（默认0）；返回片段时会提示下一个 offset 用于续读
 
     Returns:
-        文件内容或错误信息 / 分页引导
+        文件内容片段，或分页引导 / 错误信息
     """
     try:
-        return read_file_safe(path, max_chars=max_chars)
+        return read_file_safe(path, max_chars=max_chars, offset=offset)
     except Exception as e:
         return f"（读取文件失败：{e}）"
 
