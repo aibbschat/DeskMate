@@ -61,17 +61,38 @@ def _parse_skill(md: Path) -> Skill:
         if end != -1:
             frontmatter = text[3:end]
             body = text[end + 4 :].lstrip("\n")
+            fields: dict[str, str] = {}
+            folded_key: str | None = None
+            folded_lines: list[str] = []
             for line in frontmatter.splitlines():
+                stripped = line.strip()
+                if not stripped:
+                    continue
+                if folded_key and (line.startswith(" ") or line.startswith("\t")):
+                    folded_lines.append(stripped)
+                    continue
+                if folded_key and folded_lines:
+                    fields[folded_key] = " ".join(folded_lines)
+                    folded_key = None
+                    folded_lines = []
                 if ":" not in line:
                     continue
                 key, value = line.split(":", 1)
                 key, value = key.strip().lower(), value.strip()
-                if key == "name" and value:
-                    name = value
-                elif key == "description":
-                    description = value
-                elif key in ("allowed-tools", "allowed_tools"):
-                    allowed = [t.strip() for t in value.split(",") if t.strip()]
+                if value in (">", ">-"):
+                    folded_key = key
+                    folded_lines = []
+                    continue
+                fields[key] = value
+            if folded_key and folded_lines:
+                fields[folded_key] = " ".join(folded_lines)
+            name = fields.get("name") or name
+            description = fields.get("description", "").strip("\"'")
+            allowed = [
+                t.strip()
+                for t in fields.get("allowed-tools", fields.get("allowed_tools", "")).split(",")
+                if t.strip()
+            ]
     return Skill(
         name=name,
         description=description,

@@ -80,6 +80,37 @@ def test_skill_loader_catalog_and_load(tmp_path):
     assert reg.execute("load_skill", {"name": "missing"})["error"]
 
 
+def test_skill_loader_parses_folded_and_quoted_descriptions(tmp_path):
+    skills_dir = tmp_path / "skills"
+    (skills_dir / "proofreader").mkdir(parents=True)
+    (skills_dir / "proofreader" / "SKILL.md").write_text(
+        "---\n"
+        "name: proofreader\n"
+        "description: >\n"
+        '    Use when a user asks to "proofread" or "fix grammar".\n'
+        "risk: safe\n"
+        "---\n\n"
+        "Correct the text, preserve the author's voice.\n",
+        encoding="utf-8",
+    )
+    (skills_dir / "avoid-ai").mkdir(parents=True)
+    (skills_dir / "avoid-ai" / "SKILL.md").write_text(
+        '---\n'
+        'description: "Audit and rewrite to remove AI writing patterns"\n'
+        "---\n\n"
+        "Strip the AI-isms.\n",
+        encoding="utf-8",
+    )
+    loader = SkillLoader([skills_dir])
+
+    p = loader.get("proofreader")
+    assert p.description == 'Use when a user asks to "proofread" or "fix grammar".'
+    assert "author" in p.instructions
+    a = loader.get("avoid-ai")
+    assert a.description == "Audit and rewrite to remove AI writing patterns"
+    assert "AI-isms" in a.instructions
+
+
 # -- engine assembly per agent --------------------------------------------------
 
 
