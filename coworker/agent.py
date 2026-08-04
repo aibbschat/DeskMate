@@ -28,7 +28,7 @@ from .connectors import (
 from .engine import Approver, TurnEngine
 from .environment import environment_context
 from .memory import MemoryStore, Scope, format_memories, memory_tools
-from .permissions import Mode, PermissionEngine
+from .permissions import EXECUTION_LEVELS, Mode, PermissionEngine
 from .project import load_agents_md
 from .roots import RootDir, normalize_roots, render_context
 from .providers import ProviderClient, ProviderRouter
@@ -227,6 +227,13 @@ def build_engine(
     channel_buffer: Optional[Any] = None,
     routing_targets: Optional[list[str]] = None,
     connector_filter: Optional[set[str]] = None,
+    # Governance / sandbox overrides from user settings (the Settings panel). When
+    # omitted, the Config (TOML) defaults apply. These let the UI flip the execution
+    # level and sandbox on/off without editing a config file.
+    execution_level: Optional[str] = None,
+    sandbox_enabled: Optional[bool] = None,
+    sandbox_network: Optional[bool] = None,
+    sandbox_deny_paths: Optional[list] = None,
 ) -> TurnEngine:
     ws = Path(workspace).expanduser().resolve() if workspace else None
     if agent.needs_workspace and ws is None:
@@ -244,14 +251,20 @@ def build_engine(
 
     workspace_trusted = bool(ws and WorkspaceTrustStore().is_trusted(ws))
     config = load_config(ws, workspace_trusted=workspace_trusted)
+    # Effective governance/sandbox values: explicit overrides (UI settings) win over
+    # the Config (TOML) defaults.
+    eff_exec_level = execution_level if execution_level in EXECUTION_LEVELS else config.execution_level
+    eff_sandbox_enabled = sandbox_enabled if sandbox_enabled is not None else config.sandbox_enabled
+    eff_sandbox_network = sandbox_network if sandbox_network is not None else config.sandbox_network
+    eff_sandbox_deny = sandbox_deny_paths if sandbox_deny_paths is not None else config.sandbox_deny_paths
     # Build the sandbox config (None when disabled or unsupported → unsandboxed).
     sandbox_cfg = None
-    if config.sandbox_enabled and ws is not None:
+    if eff_sandbox_enabled and ws is not None:
         from .sandbox import sandbox_config_from_dict
 
-        sd: dict[str, object] = {"network_allow": config.sandbox_network}
-        if config.sandbox_deny_paths:
-            sd["deny_paths"] = list(config.sandbox_deny_paths)
+        sd: dict[str, object] = {"network_allow": eff_sandbox_network}
+        if eff_sandbox_deny:
+            sd["deny_paths"] = list(eff_sandbox_deny)
         sandbox_cfg = sandbox_config_from_dict(ws, sd)
     executor = (
         LocalExecutor(cwd=ws, sandbox=sandbox_cfg)
@@ -380,7 +393,7 @@ def build_engine(
     # Governance Tool Guard: regex-signature scan of shell commands. Built once per
     # session; disabled when execution_level == "off" (evaluate() short-circuits).
     tool_guard = None
-    if config.execution_level != "off":
+    if eff_exec_level != "off":
         try:
             from .governance import RuleGuardian
 
@@ -398,7 +411,7 @@ def build_engine(
         roots=root_list or None,
         risk_overrides=risk_overrides,
         tool_guard=tool_guard,
-        execution_level=config.execution_level,
+        execution_level=eff_exec_level,
     )
     # The plan-mode exit door. Always registered (surfaces can flip a live session into
     # plan mode via set_mode, and the registry is fixed at build); the engine rejects the

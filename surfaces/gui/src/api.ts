@@ -968,6 +968,12 @@ export interface ModelSettings {
   compaction_threshold_pct?: number; // default 0.8, 0.10–0.95
   compaction_cap_tokens?: number; // default 250000
   compaction_model?: string;
+  // Governance: execution level + sandbox (Settings → Safety & sandbox). Optional so the
+  // GUI is robust to an older backend that hasn't shipped these fields.
+  execution_level?: "off" | "auto" | "strict"; // default "auto"
+  sandbox_enabled?: boolean; // default true
+  sandbox_network?: boolean; // default true
+  sandbox_deny_paths?: string[]; // default []
 }
 
 export interface PdfSettings {
@@ -1060,6 +1066,25 @@ export async function setSurfaces(
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(flags),
+  });
+  return res.json();
+}
+
+export interface GovernanceSettings {
+  execution_level: "off" | "auto" | "strict";
+  sandbox_enabled: boolean;
+  sandbox_network: boolean;
+  sandbox_deny_paths: string[];
+}
+
+/** Set governance/sandbox choices. Persists and hot-applies the execution level. */
+export async function setGovernance(patch: Partial<GovernanceSettings>): Promise<
+  { ok: boolean; error?: string } & Partial<GovernanceSettings>
+> {
+  const res = await authedFetch(`${httpBase()}/v1/settings/governance`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(patch),
   });
   return res.json();
 }

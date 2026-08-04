@@ -11,7 +11,9 @@ import {
   setScratchBase,
   setSessionsPeek,
   setWorkspaceTrusted,
+  setGovernance,
   type CompactionSettings,
+  type GovernanceSettings,
   type ModelSettings,
   type PdfSettings,
   type WorkspaceCommandTrust,
@@ -469,6 +471,8 @@ function AppearanceSection() {
 
       <FilesCard />
 
+      <SafetyCard />
+
       <TrustedWorkspacesCard />
 
       {desktop && (
@@ -560,6 +564,102 @@ function TrustedWorkspacesCard() {
           ))}
         </div>
       )}
+    </div>
+  );
+}
+
+// -- Safety & sandbox (governance): execution level + sandbox toggles ---------
+// Execution level is hot-applied to running sessions; sandbox flags take effect for
+// new sessions (they wrap the executor process at build time).
+function SafetyCard() {
+  const { t } = useTranslation();
+  const [gov, setGov] = useState<GovernanceSettings | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    getSettings()
+      .then((s) =>
+        setGov({
+          execution_level: s.execution_level || "auto",
+          sandbox_enabled: s.sandbox_enabled !== false,
+          sandbox_network: s.sandbox_network !== false,
+          sandbox_deny_paths: s.sandbox_deny_paths || [],
+        }),
+      )
+      .catch(() =>
+        setGov({
+          execution_level: "auto",
+          sandbox_enabled: true,
+          sandbox_network: true,
+          sandbox_deny_paths: [],
+        }),
+      );
+  }, []);
+
+  const save = async (patch: Partial<GovernanceSettings>) => {
+    if (!gov) return;
+    const next = { ...gov, ...patch };
+    setGov(next);
+    setBusy(true);
+    try {
+      await setGovernance(patch);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (!gov) return null;
+  return (
+    <div className={CARD + " p-4 mb-4"} data-testid="safety-card">
+      <div className={FIELD_LABEL}>{t("settings.safety")}</div>
+      <div className={FIELD_HELP}>{t("settings.safetyHelp")}</div>
+
+      <div className="mt-3 text-[13px] text-ink">{t("settings.executionLevel")}</div>
+      <div className="seg mt-2" role="radiogroup" aria-label={t("settings.executionLevel")} data-testid="execution-level">
+        {(["off", "auto", "strict"] as const).map((lv) => (
+          <button
+            key={lv}
+            className={gov.execution_level === lv ? "active" : ""}
+            disabled={busy}
+            onClick={() => save({ execution_level: lv })}
+          >
+            {t(`settings.level${lv[0].toUpperCase()}${lv.slice(1)}`)}
+          </button>
+        ))}
+      </div>
+      <div className={FIELD_HELP}>{t("settings.executionLevelHelp")}</div>
+
+      <label className="flex items-start gap-3 py-2.5">
+        <input
+          type="checkbox"
+          className="mt-0.5"
+          data-testid="sandbox-enabled"
+          checked={gov.sandbox_enabled}
+          disabled={busy}
+          onChange={(e) => save({ sandbox_enabled: e.target.checked })}
+        />
+        <span>
+          <span className="block text-[13px] text-ink">{t("settings.sandboxEnabled")}</span>
+          <span className="block text-[12px] text-muted">{t("settings.sandboxEnabledHelp")}</span>
+        </span>
+      </label>
+
+      <label className="flex items-start gap-3 py-2.5">
+        <input
+          type="checkbox"
+          className="mt-0.5"
+          data-testid="sandbox-network"
+          checked={gov.sandbox_network}
+          disabled={busy || !gov.sandbox_enabled}
+          onChange={(e) => save({ sandbox_network: e.target.checked })}
+        />
+        <span>
+          <span className="block text-[13px] text-ink">{t("settings.sandboxNetwork")}</span>
+          <span className="block text-[12px] text-muted">{t("settings.sandboxNetworkHelp")}</span>
+        </span>
+      </label>
+
+      <div className={FIELD_HELP}>{t("settings.sandboxAppliesNew")}</div>
     </div>
   );
 }

@@ -70,7 +70,7 @@ from ..mcp import (
     read_global,
 )
 from ..memory import MemoryStore, Scope, SQLiteMemoryStore
-from ..permissions import Mode
+from ..permissions import EXECUTION_LEVELS, Mode
 from ..agents import list_agents as _list_agents
 from ..providers import (
     ProviderClient,
@@ -461,6 +461,9 @@ class SessionManager:
             routing_targets=self._routing_targets(session_id, agent),
             # Per-session connection hierarchy: expose only effective-enabled connectors' tools.
             connector_filter=self.effective_connectors(session_id, agent_name),
+            # User governance/sandbox settings (Settings → Safety & sandbox), applied to
+            # this new session's engine.
+            **self.governance_settings(),
         )
         # An automation run rebuilt here (manual "Run now" over WS, durable resume) still
         # carries its task's standing allowances — the rules live on the task record.
@@ -1828,6 +1831,7 @@ class SessionManager:
             "secrets_path": str(self.secrets.path),
             **self.pdf_settings(),
             **self.compaction_settings_payload(),
+            **self.governance_settings(),
         }
 
     def _surfaces(self) -> dict[str, bool]:
@@ -1999,6 +2003,68 @@ class SessionManager:
         settings = self.pdf_settings()
         set_fallback_mode(settings["pdf_fallback"])  # engines read the module global
         return {"ok": True, **settings}
+
+    # -- Governance: execution level + sandbox (Settings → Safety & sandbox) ------
+    # The execution level is hot-applied to running engines; the sandbox flags take
+    # effect for new sessions (they wrap the executor process at build time). Both are
+    # persisted in prefs so the choice survives restarts.
+    DEFAULT_EXECUTION_LEVEL = "auto"
+    DEFAULT_SANDBOX_ENABLED = True
+    DEFAULT_SANDBOX_NETWORK = True
+
+    def governance_settings(self) -> dict[str, Any]:
+        el = self._prefs.get("execution_level")
+        if el not in EXECUTION_LEVELS:
+            el = self.DEFAULT_EXECUTION_LEVEL
+        se = self._prefs.get("sandbox_enabled")
+        sn = self._prefs.get("sandbox_network")
+        return {
+            "execution_level": el,
+            "sandbox_enabled": bool(se) if isinstance(se, bool) else self.DEFAULT_SANDBOX_ENABLED,
+            "sandbox_network": bool(sn) if isinstance(sn, bool) else self.DEFAULT_SANDBOX_NETWORK,
+            "sandbox_deny_paths": list(self._prefs.get("sandbox_deny_paths") or []),
+        }
+
+    def set_governance_settings(
+        self,
+        execution_level: Any = None,
+        sandbox_enabled: Any = None,
+        sandbox_network: Any = None,
+        sandbox_deny_paths: Any = None,
+    ) -> dict[str, Any]:
+        """Persist governance/sandbox choices and hot-apply the execution level to every
+        running engine (mirrors the WS `set_mode` handler). Invalid execution levels are
+        rejected; other values are coerced best-effort."""
+        if execution_level is not None:
+            if execution_level not in EXECUTION_LEVELS:
+                return {"ok": False, "error": f"execution_level must be one of {EXECUTION_LEVELS}"}
+            self._prefs["execution_level"] = execution_level
+        if sandbox_enabled is not None:
+            self._prefs["sandbox_enabled"] = bool(sandbox_enabled)
+        if sandbox_network is not None:
+            self._prefs["sandbox_network"] = bool(sandbox_network)
+        if sandbox_deny_paths is not None:
+            if not isinstance(sandbox_deny_paths, list):
+                return {"ok": False, "error": "sandbox_deny_paths must be a list"}
+            self._prefs["sandbox_deny_paths"] = [str(p) for p in sandbox_deny_paths]
+        self._save_prefs()
+
+        # Hot-apply the execution level to every live engine (runtime guard on/off +
+        # severity behavior). Sandbox flags apply to new sessions at build_engine time.
+        el = self._prefs.get("execution_level")
+        if el in EXECUTION_LEVELS:
+            for engine in self._engines.values():
+                try:
+                    engine.permissions.execution_level = el
+                    if el == "off":
+                        engine.permissions.tool_guard = None
+                    elif engine.permissions.tool_guard is None:
+                        from ..governance import RuleGuardian
+
+                        engine.permissions.tool_guard = RuleGuardian()
+                except Exception:  # noqa: BLE001 - never let a settings save wedge sessions
+                    continue
+        return {"ok": True, **self.governance_settings()}
 
     def set_model_key(self, api_key: str) -> dict[str, Any]:
         """Persist the model API key to the SecretStore (0600). The new provider client is
@@ -2707,6 +2773,8 @@ class SessionManager:
             # Scheduled runs respect the same per-session connection hierarchy as live sessions:
             # expose only the persona's effective-enabled connectors' tools (§4.3).
             connector_filter=self.effective_connectors(session_id, task.agent),
+            # User governance/sandbox settings also govern scheduled runs.
+            **self.governance_settings(),
         )
         self._seed_task_permissions(engine, task)
         return engine

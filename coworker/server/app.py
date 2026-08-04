@@ -1412,6 +1412,17 @@ def create_app(manager: SessionManager) -> FastAPI:
     def settings_set_onboarded(body: dict) -> dict[str, Any]:
         return manager.set_onboarded(bool((body or {}).get("value", True)))
 
+    @app.post("/v1/settings/governance")
+    def settings_set_governance(body: dict) -> dict[str, Any]:
+        """Set governance/sandbox choices (execution level + sandbox toggles). Persists to
+        prefs and hot-applies the execution level to running engines."""
+        return manager.set_governance_settings(
+            execution_level=body.get("execution_level"),
+            sandbox_enabled=body.get("sandbox_enabled"),
+            sandbox_network=body.get("sandbox_network"),
+            sandbox_deny_paths=body.get("sandbox_deny_paths"),
+        )
+
     @app.post("/v1/settings/experimental-connectors")
     def settings_set_experimental(body: dict) -> dict[str, Any]:
         return manager.set_experimental_connectors(bool((body or {}).get("value")))
