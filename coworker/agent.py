@@ -6,9 +6,12 @@ the skill catalog (progressive disclosure) + load_skill into a TurnEngine.
 
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
 from typing import Any, Optional
+
+logger = logging.getLogger(__name__)
 
 from .agents import Agent, AgentContext, code_agent
 from .automation import scheduling_tools
@@ -241,8 +244,19 @@ def build_engine(
 
     workspace_trusted = bool(ws and WorkspaceTrustStore().is_trusted(ws))
     config = load_config(ws, workspace_trusted=workspace_trusted)
+    # Build the sandbox config (None when disabled or unsupported → unsandboxed).
+    sandbox_cfg = None
+    if config.sandbox_enabled and ws is not None:
+        from .sandbox import sandbox_config_from_dict
+
+        sd: dict[str, object] = {"network_allow": config.sandbox_network}
+        if config.sandbox_deny_paths:
+            sd["deny_paths"] = list(config.sandbox_deny_paths)
+        sandbox_cfg = sandbox_config_from_dict(ws, sd)
     executor = (
-        LocalExecutor(cwd=ws) if (agent.needs_workspace and ws is not None) else None
+        LocalExecutor(cwd=ws, sandbox=sandbox_cfg)
+        if (agent.needs_workspace and ws is not None)
+        else None
     )
     todo = TodoList()
     context = AgentContext(
@@ -363,6 +377,16 @@ def build_engine(
     # User-local risk overrides (mainly to relax MCP's conservative default). Empty store →
     # no-op; never written by persona loading (the no-self-grant rule).
     risk_overrides = RiskOverrideStore(state_dir() / "risk_overrides.json").resolver()
+    # Governance Tool Guard: regex-signature scan of shell commands. Built once per
+    # session; disabled when execution_level == "off" (evaluate() short-circuits).
+    tool_guard = None
+    if config.execution_level != "off":
+        try:
+            from .governance import RuleGuardian
+
+            tool_guard = RuleGuardian()
+        except Exception as exc:  # noqa: BLE001 - guard must never wedge the session
+            logger.warning("governance Tool Guard unavailable: %s", exc)
     permissions = PermissionEngine(
         workspace_root=ws or (root_list[0].path if root_list else Path.cwd()),
         mode=mode,
@@ -373,6 +397,8 @@ def build_engine(
         auto_allow_tools=set(config.auto_allow),
         roots=root_list or None,
         risk_overrides=risk_overrides,
+        tool_guard=tool_guard,
+        execution_level=config.execution_level,
     )
     # The plan-mode exit door. Always registered (surfaces can flip a live session into
     # plan mode via set_mode, and the registry is fixed at build); the engine rejects the

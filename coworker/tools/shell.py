@@ -22,6 +22,7 @@ when they exit or via `shell_task_kill`.
 
 from __future__ import annotations
 
+import logging
 import os
 import queue
 import signal
@@ -36,7 +37,10 @@ from typing import Any, Optional
 
 import aisuite as ai
 
+from ..sandbox import SandboxConfig, build_sandbox
+
 _IS_WINDOWS = sys.platform == "win32"
+logger = logging.getLogger(__name__)
 
 # Foreground timeout bounds: long enough for installs/builds/test runs by default, capped so
 # a model-requested timeout can't wedge the turn for more than ten minutes.
@@ -76,7 +80,14 @@ class _BackgroundTask:
     """One detached background command: its own process (not the persistent shell), a
     reader thread draining output into a buffer, and an incremental-read cursor."""
 
-    def __init__(self, task_id: str, command: str, cwd: str, env: dict[str, str]):
+    def __init__(
+        self,
+        task_id: str,
+        command: str,
+        cwd: str,
+        env: dict[str, str],
+        sandbox: Optional[Any] = None,
+    ):
         self.id = task_id
         self.command = command
         if _IS_WINDOWS:
@@ -87,6 +98,9 @@ class _BackgroundTask:
         else:
             argv = ["/bin/bash", "-c", command]
             spawn_kwargs = {"start_new_session": True}
+        # Confine the background process to the sandbox when one is available.
+        if sandbox is not None:
+            argv = [*sandbox.argv_prefix(), *argv]
         self.proc = subprocess.Popen(
             argv,
             stdin=subprocess.DEVNULL,
@@ -143,6 +157,7 @@ class LocalExecutor(Executor):
         shell_path: Optional[str] = None,
         default_timeout: float = _DEFAULT_TIMEOUT,
         max_output_chars: int = 20_000,
+        sandbox: Optional[SandboxConfig] = None,
     ) -> None:
         self.cwd = str(Path(cwd).expanduser().resolve())
         self.default_timeout = default_timeout
@@ -151,6 +166,8 @@ class LocalExecutor(Executor):
         self._is_windows = _IS_WINDOWS
         self._bg_tasks: dict[str, _BackgroundTask] = {}
         self._bg_counter = 0
+        # Build the sandbox backend (None when unavailable → run unsandboxed).
+        self._sandbox = build_sandbox(sandbox) if sandbox is not None else None
         # Set by interrupt_now() (user Stop) — run()'s read loop treats it like an
         # early deadline, so the in-flight foreground command dies within one tick.
         self._abort = threading.Event()
@@ -187,6 +204,10 @@ class LocalExecutor(Executor):
         else:
             argv = [self._shell_path]
             spawn_kwargs = {"start_new_session": True}
+        # Confine the persistent shell itself: every command fed to it via stdin
+        # then runs inside the native policy (deny OS writes, secrets, inbound net).
+        if self._sandbox is not None:
+            argv = [*self._sandbox.argv_prefix(), *argv]
 
         self._proc = subprocess.Popen(
             argv,
@@ -308,7 +329,9 @@ class LocalExecutor(Executor):
         self._bg_counter += 1
         task_id = f"bg-{self._bg_counter}"
         try:
-            task = _BackgroundTask(task_id, command, self.cwd, self._env)
+            task = _BackgroundTask(
+                task_id, command, self.cwd, self._env, self._sandbox
+            )
         except OSError as exc:
             return {"error": f"failed to start background task: {exc}"}
         self._bg_tasks[task_id] = task

@@ -2911,6 +2911,20 @@ def create_app(manager: SessionManager) -> FastAPI:
                         engine.permissions.mode = Mode(message.get("mode"))
                     except (TypeError, ValueError):
                         pass
+                    # Governance execution level may travel alongside mode.
+                    lvl = message.get("execution_level")
+                    if lvl in ("off", "auto", "strict"):
+                        engine.permissions.execution_level = lvl
+                        # Rebuild the guard when toggling it on/off.
+                        if lvl == "off":
+                            engine.permissions.tool_guard = None
+                        elif engine.permissions.tool_guard is None:
+                            try:
+                                from ..governance import RuleGuardian
+
+                                engine.permissions.tool_guard = RuleGuardian()
+                            except Exception:  # noqa: BLE001
+                                pass
                 elif kind == "set_model":
                     model = message.get("model")
                     if model is not None and not isinstance(model, str):

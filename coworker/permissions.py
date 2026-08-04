@@ -8,11 +8,14 @@ prefixes) and a session allowlist. The engine only *decides*; the turn engine ro
 
 from __future__ import annotations
 
+import logging
 import shlex
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 from typing import Any, Optional
+
+logger = logging.getLogger(__name__)
 
 # Shell metacharacters that turn one "allowlisted" command into several. Any of these in a
 # command disqualifies it from allowlist auto-run — approval is required instead. Covers
@@ -57,6 +60,17 @@ class Decision:
     # Set when a task-scoped standing rule allowed the call ("tool → target") so the
     # engine can audit the exact rule and the tool card can say so (§25).
     rule: str = ""
+    # Governance Tool Guard findings for this call (shell commands only). Empty when
+    # nothing matched or the guard is disabled. Surfaces may render these as a warning.
+    findings: list = field(default_factory=list)
+
+
+# Execution levels for the governance Tool Guard. Mirrors QwenPaw's
+# off/auto/smart/strict idea, trimmed to what OpenWorker needs:
+#   off    -> guard disabled (legacy behavior; dangerous commands only ask)
+#   auto   -> HIGH findings force approval, CRITICAL findings are DENIED
+#   strict -> ANY finding forces approval (even LOW), CRITICAL still DENIED
+EXECUTION_LEVELS = ("off", "auto", "strict")
 
 
 def standing_rule_candidate(
@@ -98,6 +112,11 @@ class PermissionEngine:
     # `workspace_root` is the sole writable root (back-compat). Kept by reference and re-read on
     # every check, so runtime add/remove of folders takes effect without rebuilding the engine.
     roots: Optional[list] = None
+    # Governance Tool Guard: regex-signature detection of dangerous shell commands. None →
+    # disabled. When set, shell calls are scanned and CRITICAL findings deny the call.
+    tool_guard: Any = None
+    # Execution level for the guard: "off" | "auto" | "strict" (see EXECUTION_LEVELS).
+    execution_level: str = "auto"
 
     def __post_init__(self) -> None:
         self.workspace_root = Path(self.workspace_root).expanduser().resolve()
@@ -126,6 +145,36 @@ class PermissionEngine:
         is_write = risk is RiskClass.WRITE_LOCAL
         is_shell = risk is RiskClass.EXEC
         consequential = is_consequential(risk)
+
+        # Governance Tool Guard: scan shell commands for destructive / evasive /
+        # privilege-escalating patterns BEFORE the mode logic decides. CRITICAL
+        # findings are denied outright (catastrophic: rm -rf /, reverse shells,
+        # fork bombs); HIGH/MEDIUM force an approval; "strict" promotes any
+        # finding to an approval. This is independent of (and stricter than) the
+        # allowlist, so even an allowlisted prefix can't slip a dangerous command
+        # past it — but it never auto-APPROVES, only denies or asks.
+        findings: list = []
+        if is_shell and self.tool_guard is not None and self.execution_level != "off":
+            findings = self.tool_guard.scan(tool_name, arguments)
+            if findings:
+                worst = self.tool_guard.worst_severity(findings)
+                label = "; ".join(
+                    f"{f.rule_id}:{f.severity}" for f in findings[:3]
+                )
+                if worst == "CRITICAL":
+                    return Decision(
+                        False,
+                        f"blocked by governance guard ({label})",
+                        needs_user=False,
+                        findings=findings,
+                    )
+                if self.execution_level == "strict" or worst in ("HIGH", "MEDIUM"):
+                    return Decision(
+                        False,
+                        f"requires approval: governance guard flagged {label}",
+                        needs_user=True,
+                        findings=findings,
+                    )
 
         # Discuss / plan modes: read-only.
         if self.mode in READ_ONLY_MODES and consequential:

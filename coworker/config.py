@@ -35,6 +35,16 @@ class Config:
     # In "custom" permission mode, these tools are auto-approved (e.g. file edits)
     # while everything else still asks.
     auto_allow: list[str] = field(default_factory=list)
+    # Governance: execution level for the shell-command Tool Guard
+    # ("off" | "auto" | "strict"). auto = HIGH findings ask, CRITICAL denies;
+    # strict = any finding asks. See coworker/governance.
+    execution_level: str = "auto"
+    # Sandbox: confine the agent's shell to a native OS policy (Seatbelt on macOS).
+    # Reads broadly, writes confined to the workspace + /tmp, secrets + OS dirs
+    # always denied. Set sandbox_enabled=false to run unsandboxed.
+    sandbox_enabled: bool = True
+    sandbox_network: bool = True  # allow the sandboxed shell outbound network
+    sandbox_deny_paths: list[str] = field(default_factory=list)  # extra denied paths
     host: str = "127.0.0.1"
     port: int = 8765
     # Web search provider: "duckduckgo" (keyless default) | "tavily" | "brave" (need a key).
@@ -64,6 +74,10 @@ _FIELDS = {
     "max_iterations",
     "allowed_commands",
     "auto_allow",
+    "execution_level",
+    "sandbox_enabled",
+    "sandbox_network",
+    "sandbox_deny_paths",
     "host",
     "port",
     "web_search_provider",
