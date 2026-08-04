@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import os
 import re
+import sqlite3
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -28,6 +30,9 @@ _BIBLE_FILES = {
 
 # 扫描的小说文本扩展名
 _TEXT_EXTS = {".txt", ".md", ".markdown", ".text", ".novel"}
+
+# FTS5 索引数据库文件名（相对于 .deskmate 目录）
+_FTS5_DB = "fts5.db"
 
 
 def _client():
@@ -153,15 +158,19 @@ _MERGE_SYS = (
 _DOC_TAGS = list(_BIBLE_FILES.keys())
 
 
-def build_bible(folder: str) -> dict[str, str]:
+def build_bible(folder: str, progress_callback: callable = None) -> dict[str, str]:
     """通读全书 -> 抽取 -> 合并成四份圣经文档。返回 {文档名: markdown}。"""
-    text, _ = scan_novel(folder)
+    if progress_callback:
+        progress_callback("scanning", {"folder": folder})
+    text, titles = scan_novel(folder)
     if not text.strip():
         raise ValueError(f"在 {folder} 未找到可读的小说文本（.txt/.md 等）。")
 
     # 1) 逐批抽取（并发，大幅缩短总耗时）
     batches = _split_batches(text)
     extracts: list[str] = [""] * len(batches)
+    if progress_callback:
+        progress_callback("extracting", {"total": len(batches), "folder": folder})
 
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -180,8 +189,12 @@ def build_bible(folder: str) -> dict[str, str]:
         for future in as_completed(futures):
             idx, part = future.result()
             extracts[idx] = f"===== 第 {idx + 1} 批 =====\n{part}"
+            if progress_callback:
+                progress_callback("extract_progress", {"idx": idx + 1, "total": len(batches)})
 
     # 2) 合并成圣经
+    if progress_callback:
+        progress_callback("merging", {"total_batches": len(batches)})
     merged = _chat(_MERGE_SYS, "\n\n".join(extracts), timeout=120)
 
     # 3) 解析成四份文档
@@ -189,6 +202,9 @@ def build_bible(folder: str) -> dict[str, str]:
     # 兜底：若解析失败，整体存为 CHARACTERS
     if not docs.get("CHARACTERS"):
         docs["CHARACTERS"] = merged
+
+    if progress_callback:
+        progress_callback("completed", {"docs": list(docs.keys()), "folder": folder})
     return docs
 
 
@@ -209,6 +225,139 @@ def _parse_bible_docs(merged: str) -> dict[str, str]:
         if m:
             tag = m.group(1).upper()
             docs[tag] = b
+    return docs
+
+
+def incremental_bible_update(folder: str, progress_callback: callable = None) -> dict[str, str] | None:
+    """增量更新圣经：只扫描修改过的文件，合并到现有圣经中。
+
+    与 build_bible（全量重建）不同，本函数：
+    1. 读取现有圣经（.deskmate/CHARACTERS.md 等）
+    2. 只扫描新增/修改的文件（对比 .deskmate/ 文件的 mtime 和正文文件的 mtime）
+    3. 只将新内容抽取后合并到现有圣经
+
+    Args:
+        folder: 小说文件夹绝对路径
+        progress_callback: 可选进度回调
+
+    Returns:
+        更新后的圣经 dict，或 None（无变化）
+    """
+    root = Path(folder).expanduser().resolve()
+    bible_dir = root / _BIBLE_DIR
+
+    # 读取现有圣经
+    existing = read_bible(folder)
+    if not existing:
+        # 没有现有圣经，退化到全量
+        if progress_callback:
+            progress_callback("no_existing_bible", {"folder": folder})
+        return None
+
+    # 找新增/修改过的文件
+    bible_mtime = 0.0
+    for tag, fname in _BIBLE_FILES.items():
+        fp = bible_dir / fname
+        if fp.is_file():
+            bible_mtime = max(bible_mtime, fp.stat().st_mtime)
+
+    new_files = []
+    text_files = sorted(
+        p for p in root.rglob("*")
+        if p.is_file() and p.suffix.lower() in _TEXT_EXTS
+        and not any(part.startswith(".") or part == ".deskmate" or part == ".git"
+                    for part in p.relative_to(root).parts)
+    )
+    for p in text_files:
+        if p.stat().st_mtime > bible_mtime:
+            new_files.append(p)
+
+    if not new_files:
+        if progress_callback:
+            progress_callback("no_new_content", {"folder": folder})
+        return existing  # 无新内容，返回现有圣经
+
+    # 读取新文件内容
+    if progress_callback:
+        progress_callback("scanning_new", {"count": len(new_files), "folder": folder})
+    new_text = ""
+    new_titles = []
+    for p in new_files:
+        try:
+            text = p.read_text(encoding="utf-8", errors="ignore")
+        except Exception:
+            continue
+        if not text.strip():
+            continue
+        rel = p.relative_to(root).as_posix()
+        new_titles.append(rel)
+        new_text += f"# 文件：{rel}\n\n{text}\n\n"
+
+    if not new_text.strip():
+        if progress_callback:
+            progress_callback("no_new_content", {"folder": folder})
+        return existing
+
+    # 抽取新内容
+    batches = _split_batches(new_text)
+    if not batches:
+        return existing
+
+    if progress_callback:
+        progress_callback("extracting_new", {"total": len(batches), "files": new_titles})
+
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    extracts: list[str] = [""] * len(batches)
+
+    def _extract_one(idx: int, batch: str) -> tuple[int, str]:
+        try:
+            part = _chat(_EXTRACT_SYS, batch)
+        except Exception as e:
+            part = f"（第 {idx + 1} 批抽取失败：{e}）"
+        return idx, part
+
+    with ThreadPoolExecutor(max_workers=min(5, len(batches))) as pool:
+        futures = {
+            pool.submit(_extract_one, i, batch): i
+            for i, batch in enumerate(batches)
+        }
+        for future in as_completed(futures):
+            idx, part = future.result()
+            extracts[idx] = f"===== 第 {idx + 1} 批 =====\n{part}"
+            if progress_callback:
+                progress_callback("extract_progress", {"idx": idx + 1, "total": len(batches)})
+
+    # 合并到现有圣经（带已有内容上下文）
+    if progress_callback:
+        progress_callback("merging", {"total_batches": len(batches)})
+    existing_text = "\n\n".join(
+        f"## {tag}\n{content}" for tag, content in existing.items() if content
+    )
+    merge_prompt = (
+        "以下是一本小说的「现有圣经」和「新章节的抽取结果」。\n"
+        "请将新章节的信息合并到现有圣经中，更新人物关系、情节、时间线。\n"
+        "规则：新章节的明确描写优先级高于旧数据；如果新章节与旧数据冲突，"
+        "以新章节为准并注明。\n\n"
+        "输出四份独立 Markdown 文档，用分隔符 ===== 隔开，顺序固定为：\n"
+        "CHARACTERS（人物关系总表，核心）\nOUTLINE（情节主线与弧光）\n"
+        "TIMELINE（关键事件时间线）\nNOTES（世界观/势力/伏笔/待确认）。\n"
+        "每份以「## 标题」开头。只输出内容，不要解释。"
+    )
+    extracts_joined = "\n\n".join(extracts)
+    merged = _chat(
+        merge_prompt,
+        f"【现有圣经】\n{existing_text[:10000]}\n\n"
+        f"【新章节抽取】\n{extracts_joined}",
+        timeout=120,
+    )
+
+    docs = _parse_bible_docs(merged)
+    if not docs.get("CHARACTERS"):
+        docs = existing  # 合并失败，保底返回现有圣经
+
+    if progress_callback:
+        progress_callback("completed", {"docs": list(docs.keys()), "folder": folder})
     return docs
 
 
@@ -289,11 +438,271 @@ def read_bible(folder: str) -> dict[str, str]:
     return out
 
 
-def novel_recall(query: str, folder: str, max_snippets: int = 8) -> str:
-    """跨章检索：圣经相关段落 + 正文中命中关键词的片段。
+# ---------------------------------------------------------------------------
+# FTS5 全文检索
+# ---------------------------------------------------------------------------
 
-    检索策略：提取查询中所有关键词（≥2字），逐文件扫描，
-    按命中关键词数量排序，优先返回多关键词命中的片段。
+def _fts5_db_path(folder: str) -> Path:
+    """返回 FTS5 数据库的完整路径。"""
+    root = Path(folder).expanduser().resolve()
+    return root / _BIBLE_DIR / _FTS5_DB
+
+
+def _fts5_connection(folder: str) -> sqlite3.Connection | None:
+    """返回 FTS5 数据库连接，若不存在则返回 None。"""
+    db_path = _fts5_db_path(folder)
+    if not db_path.exists():
+        return None
+    conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def build_fts5_index(folder: str) -> int:
+    """构建或增量更新 FTS5 全文索引。
+
+    扫描所有文本文件，将内容写入 SQLite FTS5 虚拟表。
+    仅重新索引 mtime 发生变化的文件（增量更新）。
+
+    返回本次索引的文件数。
+    """
+    root = Path(folder).expanduser().resolve()
+    db_path = _fts5_db_path(folder)
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+
+    conn = sqlite3.connect(str(db_path))
+    conn.execute("PRAGMA journal_mode=WAL")
+
+    # 创建 FTS5 虚拟表（如果不存在）
+    conn.execute("""
+        CREATE VIRTUAL TABLE IF NOT EXISTS novels USING fts5(
+            file_path,
+            title,
+            content,
+            tokenize='unicode61'
+        )
+    """)
+
+    # 创建文件跟踪表（记录 mtime 以实现增量索引）
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS file_tracker (
+            file_path TEXT PRIMARY KEY,
+            mtime REAL NOT NULL,
+            indexed_at REAL NOT NULL
+        )
+    """)
+
+    # 收集所有文本文件
+    text_files = sorted(
+        p for p in root.rglob("*")
+        if p.is_file() and p.suffix.lower() in _TEXT_EXTS
+        and not any(part.startswith(".") or part == ".deskmate" or part == ".git"
+                    for part in p.relative_to(root).parts)
+    )
+
+    indexed_count = 0
+    for p in text_files:
+        rel_path = str(p.relative_to(root))
+        current_mtime = p.stat().st_mtime
+
+        # 检查 mtime 是否变化
+        row = conn.execute(
+            "SELECT mtime FROM file_tracker WHERE file_path = ?",
+            (rel_path,),
+        ).fetchone()
+
+        if row is not None and abs(row[0] - current_mtime) < 0.001:
+            continue  # 未变化，跳过
+
+        try:
+            text = p.read_text(encoding="utf-8", errors="ignore")
+        except Exception:
+            continue
+
+        title = p.stem  # 文件名（不含扩展名）作为标题
+
+        # 删除旧记录（如果有），再插入新记录
+        conn.execute("DELETE FROM novels WHERE file_path = ?", (rel_path,))
+        conn.execute(
+            "INSERT INTO novels (file_path, title, content) VALUES (?, ?, ?)",
+            (rel_path, title, text),
+        )
+        conn.execute(
+            "INSERT OR REPLACE INTO file_tracker (file_path, mtime, indexed_at) VALUES (?, ?, ?)",
+            (rel_path, current_mtime, time.time()),
+        )
+        indexed_count += 1
+
+    conn.commit()
+    conn.close()
+    return indexed_count
+
+
+def novel_search_fts5(query: str, folder: str, max_results: int = 10) -> str:
+    """使用 FTS5 进行全文检索。
+
+    如果 FTS5 索引不存在，自动回退到 keyword-based novel_recall。
+    支持 CJK 查询：FTS5 的 unicode61 tokenizer 不原生支持 CJK 分词，
+    因此对于 CJK 密集的查询会使用 LIKE 作为回退。
+    """
+    root = Path(folder).expanduser().resolve()
+    db_path = _fts5_db_path(folder)
+
+    # 索引不存在 -> 回退到 keyword 检索
+    if not db_path.exists():
+        return _keyword_recall(query, folder, max_snippets=max_results)
+
+    try:
+        conn = sqlite3.connect(str(db_path))
+        conn.row_factory = sqlite3.Row
+
+        # 检查是否包含 CJK 字符（中文、日文、韩文）
+        has_cjk = bool(re.search(r"[\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff\uac00-\ud7af]", query))
+
+        if has_cjk:
+            # FTS5 unicode61 不原生支持 CJK 分词，回退到 LIKE 搜索
+            # 提取关键词（≥2字），每个关键词用 LIKE 匹配
+            kws = list(dict.fromkeys(
+                w for w in re.split(r"[\s，。、？！,.?!；：“”‘’…—()\[\]【】-]+", query)
+                if len(w) >= 2
+            ))[:8]
+
+            if not kws:
+                conn.close()
+                return _keyword_recall(query, folder, max_snippets=max_results)
+
+            # 构建 LIKE 子句
+            like_clauses = " OR ".join("content LIKE ?" for _ in kws)
+            like_params = [f"%{kw}%" for kw in kws]
+            sql = f"""
+                SELECT file_path, title, content
+                FROM novels
+                WHERE {like_clauses}
+                ORDER BY rowid
+                LIMIT ?
+            """
+            rows = conn.execute(sql, (*like_params, max_results)).fetchall()
+        else:
+            # 非 CJK 查询：使用 FTS5 原生 MATCH
+            # 对查询进行简单转义（移除 FTS5 特殊字符）
+            sanitized = re.sub(r'[^\w\s]', ' ', query).strip()
+            if not sanitized:
+                conn.close()
+                return _keyword_recall(query, folder, max_snippets=max_results)
+
+            rows = conn.execute(
+                "SELECT file_path, title, content, rank FROM novels WHERE content MATCH ? ORDER BY rank LIMIT ?",
+                (sanitized, max_results),
+            ).fetchall()
+
+        conn.close()
+
+        if not rows:
+            # FTS5 无结果 -> 回退到 keyword 检索
+            return _keyword_recall(query, folder, max_snippets=max_results)
+
+        # 格式化结果
+        parts: list[str] = []
+        for i, row in enumerate(rows, 1):
+            file_path = row["file_path"]
+            content = row["content"]
+            # 查找查询词在内容中的位置，提取上下文片段
+            snippet = _extract_snippet(content, query, context_chars=200)
+            parts.append(f"[{i}] {file_path}")
+            parts.append(f"    {snippet}")
+            parts.append("")
+
+        # 附加圣经摘要
+        bible = read_bible(str(root))
+        if bible:
+            bible_parts: list[str] = []
+            if bible.get("CHARACTERS"):
+                bible_parts.append(bible["CHARACTERS"][:4000])
+            for tag in ("OUTLINE", "TIMELINE", "NOTES"):
+                if bible.get(tag):
+                    bible_parts.append(f"## {tag}\n{bible[tag][:1500]}")
+            if bible_parts:
+                parts.append("【人物圣经摘要】")
+                parts.append("\n\n".join(bible_parts))
+
+        return "\n".join(parts)
+
+    except Exception:
+        # 任何 FTS5 异常 -> 安全回退到 keyword 检索
+        return _keyword_recall(query, folder, max_snippets=max_results)
+
+
+def _extract_snippet(text: str, query: str, context_chars: int = 200) -> str:
+    """从文本中提取包含查询词的最佳上下文片段。"""
+    # 提取查询中的关键词
+    kws = [w for w in re.split(r"[\s，。、？！,.?!；：“”‘’…—()\[\]【】-]+", query) if len(w) >= 2]
+    if not kws:
+        return text[:context_chars * 2].strip()
+
+    # 找到第一个关键词的位置
+    best_pos = -1
+    for kw in kws:
+        pos = text.find(kw)
+        if pos != -1 and (best_pos == -1 or pos < best_pos):
+            best_pos = pos
+
+    if best_pos == -1:
+        return text[:context_chars * 2].strip()
+
+    start = max(0, best_pos - context_chars)
+    end = min(len(text), best_pos + context_chars)
+    snippet = text[start:end].strip()
+    if start > 0:
+        snippet = "…" + snippet
+    if end < len(text):
+        snippet = snippet + "…"
+    return snippet
+
+
+def fts5_index_status(folder: str) -> str:
+    """报告 FTS5 索引的状态。
+
+    返回：索引是否存在、文件数、最后更新时间。
+    """
+    db_path = _fts5_db_path(folder)
+    if not db_path.exists():
+        return "FTS5 索引不存在。请运行 build_fts5_index() 创建。"
+
+    try:
+        conn = sqlite3.connect(str(db_path))
+
+        # 查询索引文件数
+        count = conn.execute("SELECT COUNT(*) FROM novels").fetchone()[0]
+
+        # 查询最后更新时间
+        last = conn.execute(
+            "SELECT MAX(indexed_at) FROM file_tracker"
+        ).fetchone()[0]
+
+        # 查询数据库文件信息
+        db_size = db_path.stat().st_size
+        db_mtime = db_path.stat().st_mtime
+
+        conn.close()
+
+        lines = [
+            f"FTS5 索引状态：",
+            f"  - 数据库：{db_path}",
+            f"  - 文件数：{count}",
+            f"  - 数据库大小：{db_size / 1024:.1f} KB",
+            f"  - 最后索引时间：{time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(last)) if last else '未知'}",
+            f"  - 数据库修改时间：{time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(db_mtime))}",
+        ]
+        return "\n".join(lines)
+
+    except Exception as e:
+        return f"FTS5 索引状态查询失败：{e}"
+
+
+def _keyword_recall(query: str, folder: str, max_snippets: int = 8) -> str:
+    """纯关键词检索（原始实现）：逐文件扫描，正则匹配关键词提取片段。
+
+    这是 FTS5 不可用时的回退方案。
     """
     root = Path(folder).expanduser().resolve()
     parts: list[str] = []
@@ -366,6 +775,26 @@ def novel_recall(query: str, folder: str, max_snippets: int = 8) -> str:
     return "\n".join(parts)
 
 
+def novel_recall(query: str, folder: str, max_snippets: int = 8) -> str:
+    """跨章检索：优先使用 FTS5 全文索引，无索引或无结果时回退到关键词匹配。
+
+    检索策略：
+    1. 尝试 FTS5 全文检索（如果索引存在）
+    2. FTS5 无结果或无索引时，降级到关键词逐文件扫描
+    """
+    # 尝试 FTS5 优先路径
+    db_path = _fts5_db_path(folder)
+    if db_path.exists():
+        try:
+            result = novel_search_fts5(query, folder, max_results=max_snippets)
+            return result
+        except Exception:
+            pass  # 降级到 keyword
+
+    # 回退到纯关键词检索
+    return _keyword_recall(query, folder, max_snippets=max_snippets)
+
+
 def novel_relationships(character: str, folder: str) -> str:
     """查某角色在圣经中的所有关系。"""
     bible = read_bible(folder)
@@ -377,6 +806,8 @@ def novel_relationships(character: str, folder: str) -> str:
     if not lines:
         return f"圣经中未直接提及「{character}」。可运行 novel_recall 做跨章检索。"
     return "\n".join(lines)
+
+
 
 
 # ---------------------------------------------------------------------------

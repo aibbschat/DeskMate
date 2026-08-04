@@ -100,6 +100,38 @@ def read_text_from_path(path: str, *, max_chars: int = 200_000) -> str:
     return text
 
 
+# --------------------------------------------------------------------------- #
+# 风格画像自动加载
+# --------------------------------------------------------------------------- #
+_DEFAULT_STYLE_PROFILE_PATHS = [
+    "style_profile.json",
+    ".style_profile.json",
+    ".deskmate/style_profile.json",
+]
+
+
+def _auto_load_style_profile(workspace: str | None = None) -> str:
+    """从工作区目录自动加载风格画像。如果 workspace 未指定，检查当前目录和 ~/.deskmate/。
+
+    Returns:
+        格式化的风格画像文本（用于注入 prompt），或空串（无画像）。
+    """
+    if workspace:
+        candidates = [Path(workspace) / p for p in _DEFAULT_STYLE_PROFILE_PATHS]
+    else:
+        candidates = [Path(p) for p in _DEFAULT_STYLE_PROFILE_PATHS]
+        candidates.append(Path.home() / ".deskmate" / "style_profile.json")
+    for fp in candidates:
+        fp = fp.expanduser().resolve()
+        if fp.is_file():
+            try:
+                data = json.loads(fp.read_text(encoding="utf-8"))
+                return format_profile_for_prompt(data)
+            except (OSError, json.JSONDecodeError):
+                continue
+    return ""
+
+
 def read_text_from_base64(filename: str, content_base64: str, *, max_chars: int = 200_000) -> str:
     """从前端上传的（base64）文件内容解析文本，用于无 Tauri dialog 时的 .docx 上传。"""
     try:
@@ -365,14 +397,30 @@ def _select_chapter(chapters: list[dict], chapter) -> Optional[dict]:
     return None
 
 
-def proofread_chapter(title: str, text: str, profile_text: str) -> dict:
+def proofread_chapter(title: str, text: str, profile_text: str = "", workspace: str = "") -> dict:
     """审阅单章：分块调 LLM，返回 {title, items}。
+
+    如果 profile_text 为空，自动从工作区目录加载风格画像。
 
     单块瞬时失败（如模型偶发返回空）跳过该块，不拖垮整章；LLM 整体不可用时抛错，
     交由上层（逐章流式路由）写失败提示并继续下一章。
+
+    Args:
+        title: 章节标题。
+        text: 正文文本。
+        profile_text: 可选风格画像文本。为空时自动从 workspace 加载。
+        workspace: 工作区目录（用于自动加载风格画像）。
     """
     if not llm_available():
         raise RuntimeError("LLM 未就绪（未配置可用 provider）")
+    # 自动加载风格画像
+    if not profile_text and workspace:
+        auto = _auto_load_style_profile(workspace)
+        if auto:
+            profile_text = auto
+    # 如果仍然为空，使用默认提示
+    if not profile_text:
+        profile_text = "（暂无风格画像，按通用优秀中文写作标准润色，但尽量尊重作者原声口）"
     text = (text or "").strip()
     if not text:
         return {"title": title, "items": []}

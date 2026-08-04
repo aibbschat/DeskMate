@@ -16,6 +16,7 @@
 - vault_search         搜索 vault（CJK 2-gram 分词）
 - vault_list           列出 vault 文件
 - vault_delete         删除 vault 文件
+- diagnostics_health   全局诊断健康报告
 """
 
 from __future__ import annotations
@@ -26,6 +27,7 @@ from pathlib import Path
 from mcp.server.fastmcp import FastMCP
 
 from .manager import DeskMateMemoryManager
+from ..diagnostics import diagnostics_health
 
 mcp = FastMCP("deskmate-memory")
 
@@ -447,6 +449,22 @@ def memory_stats() -> str:
         return json.dumps(stats, ensure_ascii=False, indent=2)
     except Exception as e:
         return f"获取统计失败：{e}"
+
+
+@mcp.tool()
+def diagnostics_health() -> str:
+    """返回全局诊断健康报告：总错误数、按模块/工具统计、最近 10 条错误。
+
+    用于快速排查 DeskMate 各模块运行状况。
+    """
+    try:
+        import json
+        from ..diagnostics import diagnostics_health as _health
+
+        report = _health()
+        return json.dumps(report, ensure_ascii=False, indent=2)
+    except Exception as e:
+        return f"获取诊断报告失败：{e}"
 
 
 def main() -> None:

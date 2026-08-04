@@ -136,7 +136,61 @@ def search_tools(workspace: str) -> list:
         requires_approval=False,
     )
     grep.__coworker_schema__ = _SCHEMA
-    return [grep]
+
+    # --- search_text: descriptive alias for grep ---
+    _SEARCH_TEXT_SCHEMA = {
+        "type": "function",
+        "function": {
+            "name": "search_text",
+            "description": (
+                "Search the workspace for a regular-expression pattern and return matching lines "
+                "as file:line:text. Ripgrep-powered, .gitignore-aware (skips node_modules, build "
+                "dirs, etc.). A descriptive alias for the `grep` tool. Read-only."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "pattern": {
+                        "type": "string",
+                        "description": "Regular expression to search for.",
+                    },
+                    "path": {
+                        "type": "string",
+                        "description": "Subdirectory to search (default: whole workspace).",
+                    },
+                    "glob": {
+                        "type": "string",
+                        "description": "Optional filename glob filter, e.g. '*.py'.",
+                    },
+                    "max_results": {
+                        "type": "integer",
+                        "description": "Max matches (default 100, max 1000).",
+                    },
+                },
+                "required": ["pattern"],
+            },
+        },
+    }
+
+    def search_text(
+        pattern: str,
+        path: str = ".",
+        glob: Optional[str] = None,
+        max_results: int = 100,
+    ) -> dict[str, Any]:
+        return grep(pattern, path, glob, max_results)
+
+    search_text.__name__ = "search_text"
+    search_text.__doc__ = _SEARCH_TEXT_SCHEMA["function"]["description"]
+    search_text.__aisuite_tool_metadata__ = ai.ToolMetadata(
+        name="search_text",
+        category="search",
+        risk_level="low",
+        capabilities=["search"],
+        requires_approval=False,
+    )
+    search_text.__coworker_schema__ = _SEARCH_TEXT_SCHEMA
+    return [grep, search_text]
 
 
 def _rel(path: str, root: Path) -> str:

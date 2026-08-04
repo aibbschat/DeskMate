@@ -14,10 +14,12 @@ from .core import (
     check_consistency,
     check_consistency_enhanced,
     inject_bible,
+    incremental_bible_update,
     novel_recall,
     novel_relationships,
     read_bible,
 )
+from . import core as _core
 
 mcp = FastMCP("novel-memory")
 
@@ -57,7 +59,7 @@ def novel_recall(query: str, folder: str) -> str:
         folder: 小说文件夹绝对路径（当前工作区）。
     """
     try:
-        return novel_recall(query, folder)
+        return _core.novel_recall(query, folder)
     except Exception as e:
         return f"❌ novel_recall 失败：{e}"
 
@@ -99,9 +101,37 @@ def novel_relationships(character: str, folder: str) -> str:
         folder: 小说文件夹绝对路径（当前工作区）。
     """
     try:
-        return novel_relationships(character, folder)
+        return _core.novel_relationships(character, folder)
     except Exception as e:
         return f"❌ novel_relationships 失败：{e}"
+
+
+@mcp.tool()
+def novel_analyze_incremental(folder: str) -> str:
+    """增量更新人物圣经：只扫描新增/修改过的章节，合并到现有圣经中。
+
+    与 analyze_novel（全量重建）不同，本工具只处理自上次分析以来修改过的文件，
+    大幅减少 token 消耗和时间。适合「写了新章节后刷新圣经」的场景。
+
+    Args:
+        folder: 小说文件夹的绝对路径。
+    """
+    try:
+        docs = _core.incremental_bible_update(folder)
+        if docs is None:
+            return "（尚未生成人物圣经，请先运行 analyze_novel 进行全量分析）"
+        if docs == _core.read_bible(folder):
+            return "✅ 未发现新增/修改章节，圣经已是最新。"
+        written = _core.inject_bible(folder, docs)
+        names = "、".join(docs.keys()) or "（无）"
+        return (
+            f"✅ 增量更新完成。\n"
+            f"更新文档：{names}\n"
+            f"已写入 OpenWorker workspace 记忆 {written} 条。\n"
+            f"新写的章节内容已合并到人物圣经中。"
+        )
+    except Exception as e:
+        return f"❌ novel_analyze_incremental 失败：{e}"
 
 
 def main() -> None:

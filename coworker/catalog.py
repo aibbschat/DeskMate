@@ -90,7 +90,7 @@ def _git(context: AgentContext) -> list:
 
 
 def _search(context: AgentContext) -> list:
-    return search_tools(str(context.workspace))  # grep (ripgrep, .gitignore-aware)
+    return search_tools(str(context.workspace))  # grep + search_text (ripgrep, .gitignore-aware)
 
 
 def _shell(context: AgentContext) -> list:

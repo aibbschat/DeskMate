@@ -37,6 +37,7 @@ class ProactiveContext:
     memory_context: str         # 相关记忆
     user_activity: str          # 用户活跃状态描述
     project_context: str        # 项目上下文
+    bible: str = ""             # 小说圣经（人物关系/情节/时间线，来自 analyze_novel）
 
 
 # ---------------------------------------------------------------------------
@@ -123,6 +124,34 @@ def get_calendar_summary(days: int = 1, max_events: int = 5) -> str:
         return ""
 
 
+def get_bible_from_workspace(workspace: str | None = None) -> str:
+    """从工作区目录读取小说圣经（.deskmate/CHARACTERS.md 等文件）。
+
+    如果 workspace 不存在或目录中没有 .deskmate/ 子目录，返回空字符串。
+    """
+    if not workspace:
+        return ""
+    bible_dir = Path(workspace).expanduser().resolve() / ".deskmate"
+    if not bible_dir.is_dir():
+        return ""
+    parts: list[str] = []
+    bible_files = {
+        "CHARACTERS": "人物关系圣经（一致性准绳）",
+        "OUTLINE": "情节主线与弧光",
+        "TIMELINE": "关键事件时间线",
+        "NOTES": "世界观 / 势力 / 伏笔 / 备注",
+    }
+    for tag, label in bible_files.items():
+        fp = bible_dir / f"{tag}.md"
+        if fp.is_file():
+            content = fp.read_text(encoding="utf-8", errors="ignore")[:4000]
+            if content.strip():
+                parts.append(f"### {label}\n{content.strip()}")
+    if not parts:
+        return ""
+    return "## 小说圣经（来自 analyze_novel 分析）\n" + "\n\n".join(parts)
+
+
 # ---------------------------------------------------------------------------
 # 上下文组装
 # ---------------------------------------------------------------------------
@@ -147,13 +176,18 @@ def build_proactive_context(
     memory_context: str = "",
     user_activity: str = "",
     project_context: str = "",
+    bible: str = "",
 ) -> ProactiveContext:
     """组装完整的主动推理上下文。"""
+    # 如果未传入 bible 但传了 workspace，自动从工作区加载
+    if not bible and workspace:
+        bible = get_bible_from_workspace(workspace)
     return ProactiveContext(
         perception=build_perception_context(workspace),
         memory_context=memory_context,
         user_activity=user_activity,
         project_context=project_context,
+        bible=bible,
     )
 
 
@@ -185,5 +219,8 @@ def format_context_for_judge(ctx: ProactiveContext) -> str:
 
     if ctx.memory_context:
         parts.append(f"\n## 相关记忆\n{ctx.memory_context}")
+
+    if ctx.bible:
+        parts.append(f"\n{ctx.bible}")
 
     return "\n".join(parts)

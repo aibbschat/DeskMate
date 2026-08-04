@@ -413,6 +413,30 @@ def generate_review_report(text: str, profile: Optional[dict] = None,
         },
     }
     _emit("completed", report=report)
+
+    # 自动写入 Vault 持久化（知识分类），供后续对话参考
+    try:
+        from deskmate.memory.vault_store import VaultStore
+        import json
+        vault = VaultStore()
+        summary = overall.get("summary", "")[:200]
+        vault.write_entry(
+            content=f"# 《{name}》审阅报告\n\n"
+                    f"**生成时间**：{report['generated_at']}\n\n"
+                    f"## 总评\n{overall.get('summary', '')}\n\n"
+                    f"## 逐章评析\n{json.dumps([{'title': c['title'], 'summary': c.get('summary', ''), 'issues': len(c.get('issues', []))} for c in per_chapter], ensure_ascii=False, indent=2)}\n\n"
+                    f"## 元数据\n"
+                    f"- 全书章节数：{report['meta']['chapter_count']}\n"
+                    f"- 已评析章数：{report['meta']['detailed_count']}\n"
+                    f"- 使用圣经：{', '.join(report['meta']['bible']) if report['meta']['bible'] else '无'}\n",
+            category="knowledge",
+            tags=["审阅报告", name],
+            source=f"review:{name}",
+            filename=f"审阅报告_{name}",
+        )
+    except Exception:
+        pass  # Vault 写入异常不阻断报告返回
+
     return report
 
 
