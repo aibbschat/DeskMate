@@ -182,6 +182,8 @@ def create_app(manager: SessionManager) -> FastAPI:
 
     app = FastAPI(title="coworker", version="0.0.0", lifespan=lifespan)
     api_token = os.environ.get("COWORKER_API_TOKEN", "")
+    # A2A 路由前缀放行的路由（SDK 注册的 /tasks/{id} 等带路径参数的端点用前缀匹配）
+    A2A_OPEN_PREFIXES = ("/tasks/", "/message:", "/.well-known/agent-card")
     tokenless_paths = {
         "/v1/health",
         "/auth/callback",
@@ -191,6 +193,9 @@ def create_app(manager: SessionManager) -> FastAPI:
         "/.well-known/agent-card.json",
         "/a2a",
         "/",
+        "/message:send",
+        "/message:stream",
+        "/extendedAgentCard",
     }
 
     def _request_authenticated(request: Request) -> bool:
@@ -219,6 +224,7 @@ def create_app(manager: SessionManager) -> FastAPI:
             not api_token
             or request.method == "OPTIONS"
             or request.url.path in tokenless_paths
+            or request.url.path.startswith(A2A_OPEN_PREFIXES)
             or _request_authenticated(request)
         ):
             return await call_next(request)
@@ -304,28 +310,14 @@ def create_app(manager: SessionManager) -> FastAPI:
             "model": manager.model,
         }
 
-    # ---- A2A (Agent-to-Agent) 服务端：让桌搭可被其它 agent 发现与调用 ----
-    async def _a2a_rpc(request: Request) -> dict[str, Any]:
-        from coworker.server.a2a_server import handle_a2a_request
-        try:
-            payload = await request.json()
-        except Exception:
-            return {"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": "Parse error"}}
-        return handle_a2a_request(payload)
-
-    @app.post("/a2a")
-    async def a2a_rpc(request: Request) -> dict[str, Any]:
-        return await _a2a_rpc(request)
-
-    @app.post("/")
-    async def a2a_rpc_root(request: Request) -> dict[str, Any]:
-        return await _a2a_rpc(request)
-
-    @app.get("/.well-known/agent-card.json")
-    def agent_card(request: Request) -> dict[str, Any]:
-        from coworker.server.a2a_server import build_agent_card
-        base = str(request.base_url).rstrip("/")
-        return build_agent_card(base)
+    # ---- A2A (Agent-to-Agent) 服务端：基于官方 a2a-sdk（canonical v1.0）----
+    # 让桌搭可被其它 agent 发现与调用；支持 message/send 与旧 v0.3 方言 SendMessage 双方言。
+    # 路由（Agent Card / JSON-RPC / REST）由 SDK 直接并入本 app，详见 a2a_server.register_a2a。
+    try:
+        from coworker.server.a2a_server import register_a2a
+        register_a2a(app, manager=manager)
+    except Exception as _e:  # A2A 注册失败不应拖垮主服务
+        logging.getLogger(__name__).warning("A2A 服务端注册失败（不影响主流程）：%s", _e)
 
     @app.get("/v1/agents")
     def agents() -> dict[str, Any]:

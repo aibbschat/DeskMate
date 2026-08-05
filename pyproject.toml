@@ -39,6 +39,10 @@ dependencies = [
     # IANA tz database for zoneinfo. Windows ships no system tz db, so without this every
     # named schedule timezone (UTC, Asia/Kolkata, …) silently falls back to local time.
     "tzdata; sys_platform == 'win32'",
+    # A2A (Agent-to-Agent) 协议官方 SDK（canonical v1.0+）：桌搭对外 agent 互操作层。
+    # 注意：a2a-sdk 会拉入 docstring_parser<0.16，与 aisuite 要求的 >=0.16 存在 pip 解析警告，
+    # 实测 aisuite 在 0.15 下仍可正常 import（仅警告），暂不影响功能。
+    "a2a-sdk>=1.1.2",
 ]
 
 [project.optional-dependencies]

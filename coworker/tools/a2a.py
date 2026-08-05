@@ -24,9 +24,17 @@ _DEFAULT_TIMEOUT = 120
 # A2A JSON-RPC helpers
 # ---------------------------------------------------------------------------
 
+# A2A v1.0 权威 JSON-RPC method 名（取自官方 a2a-sdk v1.x 的 proto A2AService RPC 名）。
+# 注意：规范 markdown 老写法 `message/send` 在官方 SDK 里已被归到 `a2a/compat/v0_3`
+# （老 v0.3 方言），v1.0 服务端（含官方 SDK 与我们这套）只认 `SendMessage` / `SendStreamingMessage`。
+_PRIMARY_METHOD = "SendMessage"
+_FALLBACK_METHOD = "message/send"
+
 _PROTOCOL_VERSION = "1.0"
 
+# v1.0 ProtoJSON 用大写枚举值 ROLE_USER；老 v0.3 方言用小写 user。
 _ROLE_USER = "ROLE_USER"
+_ROLE_USER_V03 = "user"
 
 
 def _new_id() -> str:
@@ -88,14 +96,18 @@ def _input_required(result: Any) -> bool:
     return "INPUT_REQUIRED" in state
 
 
-def _send_message(url: str, message: str, context_id: str = "", timeout: int = _DEFAULT_TIMEOUT) -> dict:
-    """Send an A2A JSON-RPC message and return the parsed response."""
+def _send_message(url: str, message: str, context_id: str = "", timeout: int = _DEFAULT_TIMEOUT, method: str = _PRIMARY_METHOD, role: str = _ROLE_USER) -> dict:
+    """Send an A2A JSON-RPC message and return the parsed response.
+
+    method 默认走规范 v1.0 权威名 `SendMessage`（官方 a2a-sdk 即如此）。
+    对只认老 v0.3 方言（`message/send` + 小写 role）的 peer，由调用方在 -32601 时回退（见 a2a_call）。
+    """
     payload = {
         "jsonrpc": "2.0",
         "id": _new_id(),
-        "method": "SendMessage",
+        "method": method,
         "params": {
-            "message": _text_message(message, context_id=context_id),
+            "message": _text_message(message, role=role, context_id=context_id),
         },
     }
     data = json.dumps(payload).encode("utf-8")
@@ -187,7 +199,7 @@ def a2a_call(
         return "Error: 'message' is required."
 
     try:
-        resp = _send_message(url, message, context_id=context_id)
+        resp = _send_message(url, message, context_id=context_id, method=_PRIMARY_METHOD)
     except urllib.error.HTTPError as e:
         if e.code in (401, 403):
             return f"Error: peer at {url} rejected auth (HTTP {e.code})."
@@ -199,7 +211,22 @@ def a2a_call(
 
     if "error" in resp:
         err = resp["error"]
-        return f"Error: peer returned an error — {err.get('message', err)}"
+        # 老方言（v0.3）peer 只认 message/send（且 role 用小写）：自动回退一次再试
+        if err.get("code") == -32601:
+            try:
+                resp = _send_message(
+                    url,
+                    message,
+                    context_id=context_id,
+                    method=_FALLBACK_METHOD,
+                    role=_ROLE_USER_V03,
+                )
+            except Exception as e:
+                return f"Error: call to {url} failed — {e}."
+            if "error" in resp:
+                return f"Error: peer returned an error — {resp['error'].get('message', resp['error'])}"
+        else:
+            return f"Error: peer returned an error — {err.get('message', err)}"
 
     result = resp.get("result", {})
     reply = _reply_text(result)
