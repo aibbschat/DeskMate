@@ -25,6 +25,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 
 from deskmate.roundtable.coordinator import PeerSpec, Roundtable
+from deskmate.roundtable.personas import PERSONAS
 
 logger = logging.getLogger(__name__)
 
@@ -74,10 +75,14 @@ def create_app(rt_port: int = 9920) -> FastAPI:
         topic: str = DEFAULT_TOPIC,
         max_rounds: int = 2,
         peers: str = "",
+        personas: str = "",
+        context: str = "",
     ):
         """SSE：把圆桌事件逐个推给前端。
 
         peers 格式：逗号分隔的 `名称|url`（如 `OpenCode|http://localhost:9920/opencode-a2a`）。
+        personas 格式：逗号分隔的人格 id（historian/editor/proofreader/reader），不传则默认全部。
+        context 格式：上一轮讨论记录文本（续聊时由前端携带），注入给主持与各方作为前情。
         """
         peer_list: list[PeerSpec] = []
         for part in (peers or "").split(","):
@@ -90,7 +95,20 @@ def create_app(rt_port: int = 9920) -> FastAPI:
             else:
                 peer_list.append(PeerSpec(part, part))
 
-        rt = Roundtable(topic=topic, peers=peer_list or None, max_rounds=int(max_rounds))
+        # 解析选中的进程内人格（前端勾选）
+        selected_personas = None
+        ids = [p.strip() for p in (personas or "").split(",") if p.strip()]
+        if ids:
+            by_id = {p.id: p for p in PERSONAS}
+            selected_personas = [by_id[i] for i in ids if i in by_id] or None
+
+        rt = Roundtable(
+            topic=topic,
+            peers=peer_list or None,
+            personas=selected_personas,
+            max_rounds=int(max_rounds),
+            context=context or "",
+        )
 
         async def gen():
             async for ev in rt.run_stream():

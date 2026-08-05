@@ -88,12 +88,15 @@ class Roundtable:
         peers: Optional[list[PeerSpec]] = None,
         personas: Optional[list[Persona]] = None,
         max_rounds: int = 2,
+        context: str = "",
     ) -> None:
         self.topic = topic
         self.peers = peers or []
         self.personas = personas or PERSONAS
         # 有界：上限 1..3
         self.max_rounds = max(1, min(3, max_rounds))
+        # 续聊上下文：上一轮圆桌的讨论记录 + 用户追问，注入给主持与各方作为前情
+        self.context = (context or "").strip()
 
     # ---- 文本/解析辅助 ----
     def _fmt(self, turns: list[Turn]) -> str:
@@ -116,9 +119,16 @@ class Roundtable:
     def _participant_prompt(
         self, ctx: str, round_no: int, divergences: list[str], peer_name: str | None = None
     ) -> str:
+        bg = self.context
         if round_no == 1:
-            base = (
-                f"圆桌话题：{self.topic}\n\n已有讨论记录：\n{ctx}\n\n"
+            base = f"圆桌话题：{self.topic}\n\n"
+            if bg:
+                base += (
+                    "【背景：此前圆桌的讨论记录，供你了解前情，不必复述】\n"
+                    f"{bg}\n\n"
+                )
+            base += (
+                f"已有讨论记录：\n{ctx}\n\n"
                 f"请以上述身份，针对话题发表你的看法（中文，聚焦你的职责）。"
             )
         else:
@@ -228,7 +238,7 @@ class Roundtable:
         opening = await self._host(
             "请为话题开场：点明议题、说明规则（有界多轮、到达序发言、最后由你做纪要），"
             "并抛出一个讨论引子。",
-            "",
+            self.context,
         )
         yield {
             "type": "turn",
@@ -288,7 +298,7 @@ class Roundtable:
                 div_text = await self._host(
                     "根据上面第 %d 轮讨论，提炼仍未达成一致的关键分歧点"
                     "（最多 3 条，每条一句话，用『- 』开头）。若已高度一致，请直接写『无重大分歧』。" % r,
-                    self._fmt(transcript),
+                    (self.context + "\n\n" + self._fmt(transcript)).strip(),
                 )
                 divergences = self._parse_divergences(div_text)
                 yield {
@@ -309,7 +319,7 @@ class Roundtable:
         synthesis = await self._host(
             "圆桌结束。请基于全部讨论写一份《圆桌纪要》：先列共识，再列尚存分歧，"
             "最后给作者 3 条可执行的修改建议。",
-            self._fmt(transcript),
+            (self.context + "\n\n" + self._fmt(transcript)).strip(),
         )
         if not synthesis or synthesis.startswith("（"):
             # 兜底：纪要生成仍失败则给出基于发言的最小摘要，避免产出空纪要

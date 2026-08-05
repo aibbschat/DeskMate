@@ -8,76 +8,112 @@
   * { box-sizing: border-box; margin: 0; padding: 0; }
   :root {
     --wx-green: #07c160;
-    --bg: #c9d2dc;
     --chat-bg: #ededed;
-    --nav: #2e2e2e;
-    --host: #f6e7c1;
-    --host-bd: #e6c97a;
+    --panel: #ffffff;
+    --line: #e6e9ed;
+    --host: #fbf0d3;
+    --host-bd: #eccf86;
+    --ink: #1a1a1a;
+    --sub: #8a929c;
   }
+  html, body { height: 100%; }
   body {
     font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
-    background: radial-gradient(circle at 30% 20%, #d7dee8, #b9c4d2);
-    display: flex; justify-content: center; align-items: flex-start;
-    min-height: 100vh; padding: 24px 12px; gap: 18px; flex-wrap: wrap;
+    background: #dfe4ea; display: flex; height: 100vh; overflow: hidden;
   }
-  /* 设置面板 */
-  .setup {
-    width: 320px; background: #fff; border-radius: 16px; padding: 18px;
-    box-shadow: 0 16px 40px rgba(0,0,0,.18); align-self: flex-start;
+
+  /* 左侧控制栏 */
+  .sidebar {
+    width: 320px; flex-shrink: 0; background: var(--panel); border-right: 1px solid var(--line);
+    padding: 22px 20px; overflow-y: auto; display: flex; flex-direction: column;
+    transition: width .26s ease, padding .26s ease, opacity .2s ease; position: relative;
   }
-  .setup h2 { font-size: 16px; color: #222; margin-bottom: 4px; }
-  .setup p.hint { font-size: 11px; color: #999; margin-bottom: 12px; line-height: 1.5; }
-  .setup label { font-size: 12px; color: #555; display: block; margin: 10px 0 4px; }
-  .setup textarea {
-    width: 100%; height: 96px; border: 1px solid #e2e2e2; border-radius: 10px;
-    padding: 10px; font-size: 13px; resize: vertical; font-family: inherit; line-height: 1.5;
+  .sidebar.collapsed { width: 0 !important; padding-left: 0; padding-right: 0; border-right: none; opacity: 0; pointer-events: none; }
+  .side-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  .collapse-btn {
+    border: 1px solid var(--line); background: #fff; color: #8a929c; width: 30px; height: 30px;
+    border-radius: 8px; cursor: pointer; font-size: 16px; line-height: 1; flex-shrink: 0; transition: .15s;
   }
-  .rowctl { display: flex; align-items: center; gap: 14px; margin-top: 10px; flex-wrap: wrap; }
-  .rowctl select { padding: 6px 10px; border-radius: 8px; border: 1px solid #e2e2e2; font-size: 13px; }
-  .chk { font-size: 12px; color: #444; display: flex; align-items: center; gap: 5px; cursor: pointer; }
+  .collapse-btn:hover { color: var(--wx-green); border-color: var(--wx-green); }
+  .brand { display: flex; align-items: center; gap: 9px; margin-bottom: 4px; }
+  .brand .logo { font-size: 22px; }
+  .brand h1 { font-size: 17px; color: var(--ink); font-weight: 700; }
+
+  /* 折叠后，展开悬浮按钮移到左下角（不遮挡群聊标题） */
+  .expand-fab {
+    position: fixed; bottom: 78px; left: 16px; z-index: 30; display: none; align-items: center; gap: 6px;
+    background: var(--panel); border: 1px solid var(--line); color: #555; padding: 9px 14px; border-radius: 22px;
+    font-size: 12.5px; cursor: pointer; box-shadow: 0 3px 12px rgba(0,0,0,.12); transition: .15s;
+  }
+  .expand-fab:hover { color: var(--wx-green); border-color: var(--wx-green); }
+  body.sidebar-collapsed .expand-fab { display: flex; }
+  .sidebar .tag { font-size: 11px; color: var(--sub); margin-bottom: 18px; line-height: 1.5; }
+  .sidebar label { font-size: 12px; color: #555; display: block; margin: 14px 0 5px; font-weight: 600; }
+  .sidebar textarea {
+    width: 100%; height: 100px; border: 1px solid var(--line); border-radius: 10px;
+    padding: 10px; font-size: 13px; resize: vertical; font-family: inherit; line-height: 1.55; color: #222;
+  }
+  .sidebar textarea:focus { outline: none; border-color: var(--wx-green); }
+  .rowctl { display: flex; align-items: center; gap: 14px; margin-top: 12px; flex-wrap: wrap; }
+  .rowctl select { padding: 6px 10px; border-radius: 8px; border: 1px solid var(--line); font-size: 13px; background: #fff; color: #222; }
+  .chk { font-size: 12.5px; color: #444; display: flex; align-items: center; gap: 5px; cursor: pointer; user-select: none; }
+  .chk input { accent-color: var(--wx-green); width: 15px; height: 15px; }
   .start {
-    margin-top: 16px; width: 100%; background: var(--wx-green); color: #fff; border: none;
-    border-radius: 10px; padding: 11px; font-size: 14px; font-weight: 600; cursor: pointer;
+    margin-top: 20px; width: 100%; background: var(--wx-green); color: #fff; border: none;
+    border-radius: 10px; padding: 12px; font-size: 14px; font-weight: 600; cursor: pointer;
     transition: filter .15s, transform .05s;
   }
   .start:hover { filter: brightness(1.05); }
   .start:active { transform: scale(.99); }
   .start:disabled { background: #b6c4bd; cursor: default; }
-  .health { font-size: 11px; margin-top: 10px; color: #888; }
+  .health { font-size: 11.5px; margin-top: 14px; color: #888; line-height: 1.5; }
   .health b { color: var(--wx-green); }
   .health b.off { color: #d9534f; }
+  .legend { margin-top: auto; padding-top: 18px; font-size: 10.5px; color: #aaa; line-height: 1.7; border-top: 1px dashed var(--line); }
+  .legend code { background: #f1f3f5; padding: 1px 5px; border-radius: 4px; color: #777; }
 
-  /* 手机外壳 */
-  .phone {
-    width: 400px; height: 86vh; max-height: 860px; background: var(--chat-bg);
-    border-radius: 34px; box-shadow: 0 24px 64px rgba(0,0,0,.35);
-    overflow: hidden; display: flex; flex-direction: column; border: 9px solid #111;
-    position: relative;
-  }
-  .nav { background: var(--nav); color: #fff; padding: 13px 14px 9px; flex-shrink: 0; }
-  .nav-top { display: flex; align-items: center; font-size: 15px; font-weight: 600; }
-  .nav-top .back { font-size: 21px; margin-right: 8px; opacity: .8; }
-  .nav-top .title { flex: 1; text-align: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 0 6px; }
-  .nav-top .more { font-size: 19px; opacity: .8; }
-  .nav-sub { text-align: center; font-size: 10.5px; color: #b9b9b9; margin-top: 3px; }
-  .statusbar {
-    background: #f3f3f3; border-bottom: 1px solid #e2e2e2; font-size: 10.5px; color: #777;
-    padding: 5px 12px; flex-shrink: 0; min-height: 24px; line-height: 1.3;
-  }
-  .statusbar .thinking { color: var(--wx-green); font-weight: 600; }
+  /* 右侧主区：桌面群聊面板（无手机框） */
+  .main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
 
-  /* 成员条 */
+  /* 群聊头部：精致化 */
+  .room-header {
+    background: linear-gradient(180deg, #ffffff 0%, #fbfcfd 100%);
+    border-bottom: 1px solid var(--line);
+    padding: 15px 24px 12px; box-shadow: 0 1px 4px rgba(0,0,0,.035);
+  }
+  .room-title { font-size: 18px; font-weight: 700; color: var(--ink); display: flex; align-items: center; gap: 9px; }
+  .room-title .live {
+    width: 9px; height: 9px; border-radius: 50%; background: var(--wx-green);
+    box-shadow: 0 0 0 3px rgba(7,193,96,.18);
+  }
+  .room-meta { display: flex; align-items: center; gap: 10px; margin-top: 5px; }
+  .room-sub { font-size: 12px; color: var(--sub); }
+  .meta-pill {
+    font-size: 11px; color: #5a6b78; background: #eef2f6; border: 1px solid #e3e8ee;
+    border-radius: 11px; padding: 2px 9px;
+  }
+
+  /* 成员条：带在线小绿点 */
   .roster {
-    display: flex; gap: 7px; padding: 8px 10px; background: #fafafa;
-    border-bottom: 1px solid #e8e8e8; overflow-x: auto; flex-shrink: 0;
+    display: flex; gap: 14px; padding: 12px 24px; background: #fafbfc;
+    border-bottom: 1px solid #eef0f2; overflow-x: auto; align-items: flex-start;
   }
-  .member { display: flex; flex-direction: column; align-items: center; min-width: 46px; }
+  .member { display: flex; flex-direction: column; align-items: center; min-width: 52px; }
+  .av-wrap { position: relative; }
   .avatar {
-    width: 36px; height: 36px; border-radius: 9px; display: flex; align-items: center;
-    justify-content: center; font-size: 19px; color: #fff; box-shadow: 0 1px 2px rgba(0,0,0,.12);
+    width: 40px; height: 40px; border-radius: 11px; display: flex; align-items: center;
+    justify-content: center; font-size: 20px; color: #fff; box-shadow: 0 1px 3px rgba(0,0,0,.14);
   }
-  .member .nm { font-size: 9.5px; color: #555; margin-top: 3px; max-width: 46px; text-align: center; line-height: 1.15; }
-  .member.offline { opacity: .4; filter: grayscale(1); }
+  .member .on-dot {
+    position: absolute; right: -2px; bottom: -2px; width: 11px; height: 11px; border-radius: 50%;
+    background: var(--wx-green); border: 2px solid #fafbfc;
+  }
+  .member .off-tag {
+    position: absolute; right: -4px; bottom: -5px; font-size: 8px; color: #fff; background: #bcc4cc;
+    border-radius: 6px; padding: 0 4px; line-height: 13px;
+  }
+  .member .nm { font-size: 10.5px; color: #666; margin-top: 5px; max-width: 54px; text-align: center; line-height: 1.15; }
+  .member.offline { opacity: .5; filter: grayscale(1); }
   .a-host { background: #e0a800; }
   .a-hist { background: #e08a2b; }
   .a-edit { background: #3a7bd5; }
@@ -86,78 +122,121 @@
   .a-oc { background: #34495e; }
   .a-hermes { background: #555; }
 
+  /* 状态行：柔和胶囊 */
+  .statusbar { font-size: 12px; color: #6b7480; padding: 8px 24px; background: #f5f6f8; border-bottom: 1px solid #eceef0; min-height: 34px; display: flex; align-items: center; gap: 8px; }
+  .statusbar b { color: #3a7bd5; }
+  .statusbar .thinking { color: var(--wx-green); font-weight: 600; }
+
   /* 聊天区 */
   .chat {
-    flex: 1; padding: 14px 12px; overflow-y: auto; display: flex; flex-direction: column; gap: 13px;
+    flex: 1; padding: 18px 24px; overflow-y: auto; display: flex; flex-direction: column; gap: 14px;
+    background: var(--chat-bg);
   }
-  .row { display: flex; gap: 8px; align-items: flex-start; animation: pop .26s ease-out; }
+  .row { display: flex; gap: 9px; align-items: flex-start; animation: pop .26s ease-out; max-width: 880px; }
   @keyframes pop { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
   .row.host .bubble { background: var(--host); border: 1px solid var(--host-bd); font-style: italic; }
   .row.host .name { color: #b8860b; }
-  .bubble-wrap { max-width: 78%; display: flex; flex-direction: column; }
-  .name { font-size: 11px; color: #888; margin: 0 4px 3px; }
+  .bubble-wrap { max-width: 80%; display: flex; flex-direction: column; }
+  .name { font-size: 11.5px; color: #8a929c; margin: 0 4px 4px; }
   .name .round {
-    font-size: 9px; background: #e6e6e6; color: #888; border-radius: 4px; padding: 0 4px; margin-left: 4px;
+    font-size: 9.5px; background: #e3e6ea; color: #8a929c; border-radius: 4px; padding: 0 5px; margin-left: 5px;
   }
   .bubble {
-    padding: 9px 12px; border-radius: 8px; font-size: 14px; line-height: 1.55; color: #111;
-    background: #fff; box-shadow: 0 1px 1px rgba(0,0,0,.06); white-space: pre-wrap; word-break: break-word;
+    padding: 10px 13px; border-radius: 8px; font-size: 14px; line-height: 1.62; color: #111;
+    background: #fff; box-shadow: 0 1px 1px rgba(0,0,0,.05); white-space: pre-wrap; word-break: break-word;
   }
   .ext-tag {
-    display: inline-block; font-size: 9px; background: #dfe6ec; color: #5a6b78; border-radius: 4px;
+    display: inline-block; font-size: 9.5px; background: #dfe6ec; color: #5a6b78; border-radius: 4px;
     padding: 1px 5px; margin-left: 6px; vertical-align: middle;
   }
-  /* 打字中 */
-  .typing .bubble { display: flex; gap: 4px; padding: 12px 14px; }
+  .typing .bubble { display: flex; gap: 4px; padding: 13px 15px; }
   .dot { width: 7px; height: 7px; border-radius: 50%; background: #bcc4cc; animation: blink 1.2s infinite; }
   .dot:nth-child(2) { animation-delay: .2s; }
   .dot:nth-child(3) { animation-delay: .4s; }
   @keyframes blink { 0%,60%,100% { opacity: .3; } 30% { opacity: 1; } }
-  /* 轮次分隔 */
   .divider { text-align: center; font-size: 11px; color: #9aa3ab; margin: 2px 0; }
   .divider span { background: #d9dee3; padding: 2px 12px; border-radius: 10px; }
+  .divider.note span { background: #dfeafc; color: #3a7bd5; }
   .sysnote {
-    align-self: center; font-size: 11px; color: #888; background: #e3e7eb; padding: 5px 12px;
+    align-self: center; font-size: 11.5px; color: #888; background: #e3e7eb; padding: 6px 14px;
     border-radius: 10px; max-width: 88%; text-align: center; animation: pop .26s ease-out;
   }
-  .footer-note {
-    text-align: center; font-size: 11px; color: #07c160; font-weight: 600; padding: 6px 0 2px;
+  .chat::-webkit-scrollbar { width: 7px; }
+  .chat::-webkit-scrollbar-thumb { background: #c3cbd2; border-radius: 4px; }
+
+  /* 底部追问输入条 */
+  .composer { display: flex; gap: 10px; align-items: flex-end; padding: 12px 18px; background: var(--panel); border-top: 1px solid var(--line); }
+  .composer textarea {
+    flex: 1; resize: none; border: 1px solid var(--line); border-radius: 18px; padding: 10px 14px;
+    font-size: 13.5px; font-family: inherit; line-height: 1.45; max-height: 92px; color: #222; background: #fff;
   }
-  .chat::-webkit-scrollbar { width: 6px; }
-  .chat::-webkit-scrollbar-thumb { background: #c3cbd2; border-radius: 3px; }
+  .composer textarea:focus { outline: none; border-color: var(--wx-green); }
+  .composer textarea:disabled { background: #f4f6f8; color: #aab; }
+  .composer button {
+    background: var(--wx-green); color: #fff; border: none; border-radius: 18px; padding: 10px 20px;
+    font-size: 13.5px; font-weight: 600; cursor: pointer; flex-shrink: 0; transition: .15s;
+  }
+  .composer button:hover:not(:disabled) { filter: brightness(1.05); }
+  .composer button:disabled { background: #b6c4bd; cursor: default; }
 </style>
 </head>
 <body>
-  <div class="setup">
-    <h2>🪑 创作圆桌</h2>
-    <p class="hint">有界多轮群聊：进程内 4 人格（史料考据 / 文学编辑 / 文字校勘 / 读者视角）+ 桌搭主持串场；可勾选外部 A2A peer。发言按「到达序」实时冒出。</p>
+  <aside class="sidebar" id="sidebar">
+    <div class="side-head">
+      <div class="brand"><span class="logo">🪑</span><h1>创作圆桌</h1></div>
+      <button class="collapse-btn" onclick="toggleSidebar()" title="折叠设定栏">«</button>
+    </div>
+    <p class="tag">有界多轮群聊：进程内人格 + 桌搭主持串场；可勾选外部 A2A peer。发言按「到达序」实时冒出。</p>
     <label for="topic">圆桌议题</label>
     <textarea id="topic" placeholder="粘贴一段待评审的文稿，或描述想讨论的创作问题…"></textarea>
-    <div class="rowctl">
-      <div>
-        <label for="rounds" style="margin-top:0">轮次</label>
-        <select id="rounds">
-          <option value="1">1 轮</option>
-          <option value="2" selected>2 轮（收窄）</option>
-          <option value="3">3 轮（上限）</option>
-        </select>
-      </div>
+
+    <label style="margin-top:16px">桌搭人格（可多选）</label>
+    <div class="rowctl" id="personaChks" style="margin-top:6px">
+      <label class="chk"><input type="checkbox" class="pc" value="historian" checked /> 史料考据</label>
+      <label class="chk"><input type="checkbox" class="pc" value="editor" checked /> 文学编辑</label>
+      <label class="chk"><input type="checkbox" class="pc" value="proofreader" checked /> 文字校勘</label>
+      <label class="chk"><input type="checkbox" class="pc" value="reader" checked /> 读者视角</label>
+    </div>
+
+    <label style="margin-top:16px">轮次</label>
+    <select id="rounds" style="margin-top:6px; padding:6px 10px; border-radius:8px; border:1px solid var(--line); font-size:13px; background:#fff; color:#222;">
+      <option value="1">1 轮</option>
+      <option value="2" selected>2 轮（收窄）</option>
+      <option value="3">3 轮（上限）</option>
+    </select>
+
+    <label style="margin-top:16px">外部 peer（经 A2A）</label>
+    <div class="rowctl" style="margin-top:6px">
       <label class="chk"><input type="checkbox" id="cb-oc" checked /> OpenCode</label>
       <label class="chk"><input type="checkbox" id="cb-hermes" /> Hermes</label>
     </div>
+
     <button class="start" id="startBtn" onclick="startRoundtable()">开始圆桌</button>
     <div class="health" id="health"></div>
-  </div>
-
-  <div class="phone">
-    <div class="nav">
-      <div class="nav-top"><span class="back">‹</span><span class="title" id="topicTitle">《待定》创作圆桌</span><span class="more">⋯</span></div>
-      <div class="nav-sub" id="navSub">桌搭主持 · 有界多轮 · 到达序</div>
+    <div class="legend">
+      模式：到达序发言 · 桌搭主持串场 · 收窄式有界多轮（每轮仅针对上轮分歧点答辩）。<br/>
+      外部 peer 经 A2A 探活，离线自动跳过。圆桌结束后可底部追问续聊。
     </div>
-    <div class="statusbar" id="statusbar">准备就绪 — 在左侧设置议题后点「开始圆桌」</div>
+  </aside>
+
+  <button class="expand-fab" onclick="toggleSidebar()" title="展开设定栏">⚙ 圆桌设定</button>
+
+  <main class="main">
+    <div class="room-header">
+      <div class="room-title"><span class="live" id="liveDot"></span><span id="topicTitle">《待定》创作圆桌</span></div>
+      <div class="room-meta">
+        <span class="room-sub" id="roomSub">桌搭主持 · 有界多轮 · 到达序</span>
+        <span class="meta-pill" id="rosterCount">— 人</span>
+      </div>
+    </div>
     <div class="roster" id="roster"></div>
+    <div class="statusbar" id="statusbar">准备就绪 — 在左侧设置议题后点「开始圆桌」</div>
     <div class="chat" id="chat"></div>
-  </div>
+    <div class="composer">
+      <textarea id="composerInput" placeholder="圆桌结束后，可在此追问或补充，回车发送…" disabled></textarea>
+      <button id="sendBtn" onclick="sendFollowup()" disabled>发送</button>
+    </div>
+  </main>
 
 <script>
   const DEFAULT_TOPIC = "（未填写议题）";
@@ -174,10 +253,18 @@
     "OpenCode": { emoji: "🤖", cls: "a-oc" },
     "Hermes":   { emoji: "🌐", cls: "a-hermes" },
   };
+  // 进程内人格名 -> 后端 id（供勾选过滤）
+  const PERSONA_IDS = {
+    "史料考据": "historian", "文学编辑": "editor", "文字校勘": "proofreader", "读者视角": "reader",
+  };
+  let activePersonas = [];   // 当前参与圆桌的进程内成员（含主持），用于成员条
+  let onlineNames = new Set();
 
   let pending = {};   // speaker -> [rowEl]  （思考中气泡队列，FIFO）
   let evSource = null;
   let done = false;
+  let currentCfg = null;     // 当前圆桌配置（续聊时复用，免重新设置）
+  let transcriptText = "";   // 已发生讨论的纯文本（续聊时作为前情回传）
 
   function esc(s) {
     return String(s == null ? "" : s)
@@ -198,14 +285,18 @@
 
   function buildRoster(online, offline) {
     const r = $("roster"); r.innerHTML = "";
-    BASE.forEach(m => addMember(r, m, false));
-    (online || []).forEach(n => { const s = styleFor(n); addMember(r, { name: n, ...s, role: s.role || "外部·A2A" }, false); });
-    (offline || []).forEach(n => { const s = styleFor(n); addMember(r, { name: n, ...s, role: s.role || "外部·A2A" }, true); });
+    const baseList = (activePersonas.length ? activePersonas : BASE);
+    onlineNames = new Set(baseList.map(m => m.name).concat(online || []));
+    baseList.forEach(m => addMember(r, m, true));
+    (online || []).forEach(n => { const s = styleFor(n); addMember(r, { name: n, ...s, role: s.role || "外部·A2A" }, true); });
+    (offline || []).forEach(n => { const s = styleFor(n); addMember(r, { name: n, ...s, role: s.role || "外部·A2A" }, false); });
+    $("rosterCount").textContent = r.children.length + " 人";
   }
-  function addMember(r, m, off) {
+  function addMember(r, m, on) {
     const d = document.createElement("div");
-    d.className = "member" + (off ? " offline" : "");
-    d.innerHTML = `<div class="avatar ${m.cls}">${m.emoji}</div><div class="nm">${esc(m.name)}</div>`;
+    d.className = "member" + (on ? "" : " offline");
+    const badge = on ? `<span class="on-dot"></span>` : `<span class="off-tag">离线</span>`;
+    d.innerHTML = `<div class="av-wrap"><div class="avatar ${m.cls}">${m.emoji}</div>${badge}</div><div class="nm">${esc(m.name)}</div>`;
     r.appendChild(d);
   }
 
@@ -254,12 +345,22 @@
       <div class="bubble">${esc(d.text)}</div></div>`;
     if (!row.parentNode) $("chat").appendChild(row);
     scroll(); updateThinking();
+
+    // 累积讨论文本，供续聊回传
+    const t = d.round === 0 ? "开场" : ("第" + d.round + "轮");
+    transcriptText += `【${t} · ${d.speaker}】\n${d.text}\n\n`;
   }
 
   function addDivider(round) {
     const d = document.createElement("div");
     d.className = "divider";
     d.innerHTML = `<span>— 第 ${round} 轮 —</span>`;
+    $("chat").appendChild(d); scroll();
+  }
+  function addDividerNote(text) {
+    const d = document.createElement("div");
+    d.className = "divider note";
+    d.innerHTML = `<span>${esc(text)}</span>`;
     $("chat").appendChild(d); scroll();
   }
   function addSystem(text) {
@@ -285,27 +386,89 @@
     if (evSource) evSource.close();
     addSystem(`✅ 圆桌结束 · 实际 ${d.rounds_held} 轮` + (d.divergences && d.divergences.length ? ` · 收尾分歧 ${d.divergences.length} 条` : " · 已达成一致"));
     const b = $("startBtn"); b.disabled = false; b.textContent = "重新开始";
+    // 结束后不自动展开设定栏（续聊走底部追问框）；保持折叠让用户专注阅读
+    $("liveDot").style.background = "#bbb";
+    $("liveDot").style.boxShadow = "none";
     $("statusbar").innerHTML = `外部 peer 在线：<b>${esc((d.peers_online||[]).join("、")||"无")}</b>　|　离线跳过：<b>${esc((d.peers_offline||[]).join("、")||"无")}</b>`;
+    setComposer(true);
   }
 
-  function startRoundtable() {
-    if (evSource) evSource.close();
-    done = false; pending = {};
+  function toggleSidebar() {
+    const sb = $("sidebar");
+    const collapsed = sb.classList.toggle("collapsed");
+    document.body.classList.toggle("sidebar-collapsed", collapsed);
+  }
+
+  function setComposer(enabled, ph) {
+    const c = $("composerInput");
+    c.disabled = !enabled;
+    c.placeholder = ph || (enabled ? "圆桌结束后，可在此追问或补充，回车发送…" : "圆桌进行中…");
+    $("sendBtn").disabled = !enabled;
+  }
+
+  function readConfig() {
     const topic = $("topic").value.trim();
     const rounds = $("rounds").value;
+    const host = BASE.find(m => m.kind === "host");
+    const chosen = BASE.filter(m => m.kind === "persona" && PERSONA_IDS[m.name] &&
+      document.querySelector('.pc[value="' + PERSONA_IDS[m.name] + '"]').checked);
+    activePersonas = [host, ...chosen];
     const peers = [];
     if ($("cb-oc").checked) peers.push("OpenCode|" + location.origin + "/opencode-a2a/");
     if ($("cb-hermes").checked) peers.push("Hermes|http://localhost:9900");
+    const personaIds = Array.from(document.querySelectorAll(".pc:checked")).map(c => c.value).join(",");
+    return { topic, rounds, peers, personaIds };
+  }
+
+  function launch(opts) {
+    opts = opts || {};
+    if (evSource) evSource.close();
+    done = false; pending = {};
+    const cfg = currentCfg || readConfig();
+    currentCfg = cfg;
+
     const btn = $("startBtn");
     btn.disabled = true; btn.textContent = "圆桌进行中…";
-    $("chat").innerHTML = ""; $("roster").innerHTML = "";
-    const url = "/api/stream?topic=" + encodeURIComponent(topic || DEFAULT_TOPIC) +
-                "&max_rounds=" + rounds +
-                "&peers=" + encodeURIComponent(peers.join(","));
+    setComposer(false);
+    $("liveDot").style.background = "var(--wx-green)";
+    $("liveDot").style.boxShadow = "0 0 0 3px rgba(7,193,96,.18)";
+
+    if (opts.clear) { $("chat").innerHTML = ""; $("roster").innerHTML = ""; }
+    if (opts.followupText) addDividerNote("用户追问：" + opts.followupText);
+
+    const ctxParam = opts.followupText
+      ? (transcriptText + "\n\n【用户追问】" + opts.followupText)
+      : "";
+    const url = "/api/stream?topic=" + encodeURIComponent(cfg.topic || DEFAULT_TOPIC) +
+                "&max_rounds=" + cfg.rounds +
+                "&peers=" + encodeURIComponent(cfg.peers.join(",")) +
+                "&personas=" + encodeURIComponent(cfg.personaIds) +
+                (ctxParam ? "&context=" + encodeURIComponent(ctxParam) : "");
     evSource = new EventSource(url);
     evSource.onmessage = (e) => { try { handle(JSON.parse(e.data)); } catch (_) {} };
     evSource.onerror = () => { if (done && evSource) evSource.close(); };
+
+    // 初次开始才自动折叠设定栏；续聊不打扰阅读
+    if (opts.clear && !$("sidebar").classList.contains("collapsed")) toggleSidebar();
   }
+
+  function startRoundtable() {
+    transcriptText = "";
+    launch({ clear: true });
+  }
+
+  function sendFollowup() {
+    const ta = $("composerInput");
+    const text = ta.value.trim();
+    if (!text || !currentCfg) return;
+    ta.value = "";
+    launch({ clear: false, followupText: text });
+  }
+
+  // 回车发送追问（Shift+Enter 换行）
+  $("composerInput").addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendFollowup(); }
+  });
 
   // 启动时探一下 LLM 可用性（仅提示，不影响运行）
   fetch("/api/health").then(r => r.json()).then(j => {
