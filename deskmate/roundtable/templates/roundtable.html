@@ -183,6 +183,48 @@
   }
   .composer button:hover:not(:disabled) { filter: brightness(1.05); }
   .composer button:disabled { background: #b6c4bd; cursor: default; }
+
+  /* 第一层：精简设定卡片（点击进入第二层） */
+  .compact {
+    border: 1px solid var(--line); border-radius: 10px; padding: 9px 11px; margin-top: 6px;
+    display: flex; align-items: center; gap: 10px; background: #fafbfc;
+  }
+  .compact .c-label { font-size: 12px; color: #555; white-space: nowrap; font-weight: 600; }
+  .compact .c-val {
+    font-size: 12px; color: #333; flex: 1; text-align: left; padding: 0 4px; line-height: 1.5;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .more-btn {
+    border: 1px solid var(--wx-green); background: #fff; color: var(--wx-green); border-radius: 8px;
+    padding: 6px 12px; font-size: 12.5px; font-weight: 600; cursor: pointer; white-space: nowrap; flex-shrink: 0; transition: .15s;
+  }
+  .more-btn:hover { background: var(--wx-green); color: #fff; }
+  .more-btn.purple { border-color: #8e44ad; color: #8e44ad; }
+  .more-btn.purple:hover { background: #8e44ad; color: #fff; }
+
+  /* 第二层：设定弹层 */
+  .modal-mask {
+    position: fixed; inset: 0; background: rgba(0,0,0,.42); z-index: 60;
+    display: none; align-items: center; justify-content: center; padding: 24px;
+  }
+  .modal-mask.show { display: flex; }
+  .modal {
+    width: 600px; max-width: 100%; max-height: 88vh; overflow-y: auto; background: #fff;
+    border-radius: 16px; box-shadow: 0 14px 48px rgba(0,0,0,.28); animation: pop .2s ease-out;
+  }
+  .modal-head {
+    position: sticky; top: 0; background: #fff; display: flex; align-items: center; justify-content: space-between;
+    padding: 15px 20px; border-bottom: 1px solid var(--line); z-index: 1;
+  }
+  .modal-head h2 { font-size: 15px; color: var(--ink); font-weight: 700; }
+  .modal-close { border: none; background: #f0f2f5; color: #666; width: 30px; height: 30px; border-radius: 8px; font-size: 16px; cursor: pointer; line-height: 1; transition: .15s; }
+  .modal-close:hover { background: #e6e9ed; }
+  .modal-body { padding: 4px 20px 22px; }
+  .modal-sec { margin-top: 18px; }
+  .modal-sec + .modal-sec { border-top: 1px solid #f0f2f5; padding-top: 18px; }
+  .modal-sec > h3 { font-size: 13px; color: #444; font-weight: 700; margin-bottom: 12px; }
+  .modal .rowctl { flex-direction: column; align-items: flex-start; gap: 3px; }
+  .modal .chk { padding: 4px 0; font-size: 13px; }
 </style>
 </head>
 <body>
@@ -206,40 +248,17 @@
       <div class="rstat" id="readStat" style="font-size:11px;color:#666;margin-top:5px;line-height:1.5"></div>
     </div>
 
-    <label style="margin-top:16px">📈 潮流简报（手动沉淀 · 与圆桌解耦）</label>
-    <div id="trendStatus" style="font-size:11.5px;color:#666;margin-top:4px;line-height:1.5">当前生效：加载中…</div>
-    <div id="trendList" style="margin-top:6px;display:flex;flex-direction:column;gap:6px"></div>
-    <button id="trendNewBtn" onclick="openTrendEditor()" style="margin-top:8px;width:100%;background:#8e44ad;color:#fff;border:none;border-radius:10px;padding:9px;font-size:12.5px;font-weight:600;cursor:pointer">＋ 新一期潮流</button>
-
-    <div id="trendEditor" style="display:none;margin-top:8px;border:1px solid var(--line);border-radius:10px;padding:12px">
-      <input id="trendGenre" placeholder="类型视角（如 历史小说，留空=通用）" style="width:100%;font-size:12px;padding:7px 9px;border:1px solid var(--line);border-radius:8px;box-sizing:border-box;margin-bottom:6px" />
-      <input id="trendTitle" placeholder="本期标题（可选）" style="width:100%;font-size:12px;padding:7px 9px;border:1px solid var(--line);border-radius:8px;box-sizing:border-box;margin-bottom:6px" />
-      <textarea id="trendMd" rows="9" placeholder="粘贴/写下你对当下潮流的观察…" style="width:100%;font-size:12.5px;padding:8px;border:1px solid var(--line);border-radius:8px;box-sizing:border-box;resize:vertical;font-family:inherit;line-height:1.55;color:#222"></textarea>
-      <div style="display:flex;gap:7px;margin-top:8px;flex-wrap:wrap">
-        <button onclick="saveTrend()" style="background:var(--wx-green);color:#fff;border:none;border-radius:8px;padding:8px 14px;font-size:12.5px;font-weight:600;cursor:pointer">保存本期</button>
-        <button onclick="aiFormatTrend()" style="background:#fff;color:#555;border:1px solid var(--line);border-radius:8px;padding:8px 12px;font-size:12.5px;cursor:pointer">让 AI 整理</button>
-        <button onclick="closeTrendEditor()" style="background:#fff;color:#888;border:1px solid var(--line);border-radius:8px;padding:8px 12px;font-size:12.5px;cursor:pointer">取消</button>
-      </div>
-      <div id="trendMsg" style="font-size:11px;color:#666;margin-top:6px;min-height:14px"></div>
+    <div class="compact" style="margin-top:14px">
+      <span class="c-label">📈 潮流简报</span>
+      <span class="c-val" id="trendSummary">加载中…</span>
+      <button class="more-btn purple" onclick="openLayer2('trend')">管理 ▸</button>
     </div>
 
-    <div id="trendViewer" style="display:none;margin-top:8px;border:1px dashed var(--line);border-radius:10px;padding:10px;background:#fafbfc">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
-        <b id="trendViewerTitle" style="font-size:12.5px;color:#444"></b>
-        <span onclick="closeTrendViewer()" style="font-size:12px;color:#999;cursor:pointer">✕</span>
-      </div>
-      <pre id="trendViewerBody" style="white-space:pre-wrap;word-break:break-word;font-size:12px;line-height:1.55;color:#333;max-height:240px;overflow:auto;margin:0"></pre>
-    </div>
-
-    <label style="margin-top:16px">桌搭人格（可多选）</label>
-    <div class="rowctl" id="personaChks" style="margin-top:6px">
-      <label class="chk"><input type="checkbox" class="pc" value="historian" checked /> 史料考据</label>
-      <label class="chk"><input type="checkbox" class="pc" value="editor" checked /> 文学编辑</label>
-      <label class="chk"><input type="checkbox" class="pc" value="proofreader" checked /> 文字校勘</label>
-      <label class="chk"><input type="checkbox" class="pc" value="reader" checked /> 读者视角</label>
-      <label class="chk"><input type="checkbox" class="pc" value="publisher" checked /> 发行部主任</label>
-      <label class="chk"><input type="checkbox" class="pc" value="adaptation" checked /> 影视改编策划</label>
-      <label class="chk"><input type="checkbox" class="pc" value="genre" checked /> 类型出版策划</label>
+    <label style="margin-top:16px">桌搭人格</label>
+    <div class="compact" style="margin-top:6px">
+      <span class="c-label">已选</span>
+      <span class="c-val" id="personaSummary">文学编辑 · 读者视角</span>
+      <button class="more-btn" onclick="openLayer2('persona')">更多 ▸</button>
     </div>
 
     <label style="margin-top:16px">轮次</label>
@@ -263,6 +282,59 @@
       外部 peer 经 A2A 探活，离线自动跳过。圆桌结束后可底部追问续聊。
     </div>
   </aside>
+
+  <!-- 第二层：设定弹层（全人格 + 完整潮流简报，独立滚动，布局从容） -->
+  <div class="modal-mask" id="modalMask" onclick="if(event.target===this)closeLayer2()">
+    <div class="modal">
+      <div class="modal-head">
+        <h2>更多设定</h2>
+        <button class="modal-close" onclick="closeLayer2()" title="关闭">✕</button>
+      </div>
+      <div class="modal-body">
+
+        <div class="modal-sec" id="sec-persona">
+          <h3>🪑 桌搭人格（可多选）</h3>
+          <div class="rowctl" id="personaChks">
+            <label class="chk"><input type="checkbox" class="pc" value="historian" /> 史料考据</label>
+            <label class="chk"><input type="checkbox" class="pc" value="editor" checked /> 文学编辑</label>
+            <label class="chk"><input type="checkbox" class="pc" value="proofreader" /> 文字校勘</label>
+            <label class="chk"><input type="checkbox" class="pc" value="reader" checked /> 读者视角</label>
+            <label class="chk"><input type="checkbox" class="pc" value="publisher" /> 发行部主任</label>
+            <label class="chk"><input type="checkbox" class="pc" value="adaptation" /> 影视改编策划</label>
+            <label class="chk"><input type="checkbox" class="pc" value="genre" /> 类型出版策划</label>
+          </div>
+        </div>
+
+        <div class="modal-sec" id="sec-trend">
+          <h3>📈 潮流简报（手动沉淀 · 与圆桌解耦）</h3>
+          <div id="trendStatus" style="font-size:11.5px;color:#666;line-height:1.5">当前生效：加载中…</div>
+          <div id="trendList" style="margin-top:8px;display:flex;flex-direction:column;gap:6px"></div>
+          <button id="trendNewBtn" onclick="openTrendEditor()" style="margin-top:10px;width:100%;background:#8e44ad;color:#fff;border:none;border-radius:10px;padding:9px;font-size:12.5px;font-weight:600;cursor:pointer">＋ 新一期潮流</button>
+
+          <div id="trendEditor" style="display:none;margin-top:10px;border:1px solid var(--line);border-radius:10px;padding:12px">
+            <input id="trendGenre" placeholder="类型视角（如 历史小说，留空=通用）" style="width:100%;font-size:12px;padding:7px 9px;border:1px solid var(--line);border-radius:8px;box-sizing:border-box;margin-bottom:6px" />
+            <input id="trendTitle" placeholder="本期标题（可选）" style="width:100%;font-size:12px;padding:7px 9px;border:1px solid var(--line);border-radius:8px;box-sizing:border-box;margin-bottom:6px" />
+            <textarea id="trendMd" rows="9" placeholder="粘贴/写下你对当下潮流的观察…" style="width:100%;font-size:12.5px;padding:8px;border:1px solid var(--line);border-radius:8px;box-sizing:border-box;resize:vertical;font-family:inherit;line-height:1.55;color:#222"></textarea>
+            <div style="display:flex;gap:7px;margin-top:8px;flex-wrap:wrap">
+              <button onclick="saveTrend()" style="background:var(--wx-green);color:#fff;border:none;border-radius:8px;padding:8px 14px;font-size:12.5px;font-weight:600;cursor:pointer">保存本期</button>
+              <button onclick="aiFormatTrend()" style="background:#fff;color:#555;border:1px solid var(--line);border-radius:8px;padding:8px 12px;font-size:12.5px;cursor:pointer">让 AI 整理</button>
+              <button onclick="closeTrendEditor()" style="background:#fff;color:#888;border:1px solid var(--line);border-radius:8px;padding:8px 12px;font-size:12.5px;cursor:pointer">取消</button>
+            </div>
+            <div id="trendMsg" style="font-size:11px;color:#666;margin-top:6px;min-height:14px"></div>
+          </div>
+
+          <div id="trendViewer" style="display:none;margin-top:10px;border:1px dashed var(--line);border-radius:10px;padding:10px;background:#fafbfc">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+              <b id="trendViewerTitle" style="font-size:12.5px;color:#444"></b>
+              <span onclick="closeTrendViewer()" style="font-size:12px;color:#999;cursor:pointer">✕</span>
+            </div>
+            <pre id="trendViewerBody" style="white-space:pre-wrap;word-break:break-word;font-size:12px;line-height:1.55;color:#333;max-height:240px;overflow:auto;margin:0"></pre>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </div>
 
   <button class="expand-fab" onclick="toggleSidebar()" title="展开设定栏">⚙ 圆桌设定</button>
 
@@ -651,6 +723,10 @@
       } else {
         $("trendStatus").textContent = "当前生效：尚无（圆桌将以纯静态人格运行）";
       }
+      const cur2 = latest ? briefs.find(b => b.id === latest) : null;
+      $("trendSummary").textContent = cur2
+        ? "当前生效：" + cur2.date + (cur2.title ? " · " + cur2.title : "")
+        : "尚无（纯静态）";
       list.innerHTML = "";
       briefs.forEach(b => {
         const div = document.createElement("div");
@@ -731,8 +807,31 @@
   }
   function closeTrendViewer() { $("trendViewer").style.display = "none"; }
 
+  // ===== 第二层设定弹层 =====
+  function openLayer2(section) {
+    $("modalMask").classList.add("show");
+    const sec = $("sec-" + section);
+    if (sec) sec.scrollIntoView({ block: "start" });
+  }
+  function closeLayer2() {
+    $("modalMask").classList.remove("show");
+    updatePersonaSummary();
+  }
+  function updatePersonaSummary() {
+    const ids = Array.from(document.querySelectorAll(".pc:checked")).map(c => c.value);
+    const names = ids.map(id => {
+      for (const k in PERSONA_IDS) if (PERSONA_IDS[k] === id) return k;
+      return id;
+    });
+    const el = $("personaSummary");
+    if (!names.length) { el.textContent = "（未选，将仅主持）"; return; }
+    if (names.length <= 4) el.textContent = names.join(" · ");
+    else el.textContent = names.slice(0, 3).join(" · ") + " 等 " + names.length + " 个";
+  }
+
   // 页面载入即拉取潮流简报列表
   loadTrends();
+  updatePersonaSummary();
 </script>
 </body>
 </html>
