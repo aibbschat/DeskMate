@@ -119,20 +119,21 @@ class Roundtable:
                 out.append(m.group(2).strip())
         return out[:3]
 
-    def _manuscript_block(self) -> str:
+    def _manuscript_block(self, max_chars: int = 20000) -> str:
         """构造待评审文稿的 prompt 片段（截断防超 context）。"""
         if not self.manuscript_text:
             return ""
         text = self.manuscript_text
-        if len(text) > 20000:
-            text = text[:20000] + "\n…（文稿较长，已截断至前段）"
+        if len(text) > max_chars:
+            text = text[:max_chars] + "\n…（文稿较长，已截断至前段）"
         return f"【待评审文稿】\n{text}\n\n"
 
     def _participant_prompt(
-        self, ctx: str, round_no: int, divergences: list[str], peer_name: str | None = None
+        self, ctx: str, round_no: int, divergences: list[str], peer_name: str | None = None,
+        max_ms_chars: int = 20000,
     ) -> str:
         bg = self.context
-        ms = self._manuscript_block()
+        ms = self._manuscript_block(max_ms_chars)
         if round_no == 1:
             base = f"圆桌议题：{self.topic}\n\n"
             if ms:
@@ -210,16 +211,22 @@ class Roundtable:
     ) -> str:
         from coworker.tools.a2a import a2a_call
 
-        prompt = self._participant_prompt(ctx, round_no, divergences, peer_name=peer.name)
+        # 外部 peer 输入截短（8000 字 vs 进程内人格 20000），减少远端处理时间
+        prompt = self._participant_prompt(
+            ctx, round_no, divergences, peer_name=peer.name, max_ms_chars=8000
+        )
         last = f"（{peer.name} 调用失败）"
         for attempt in range(3):  # 与 _call_llm 一致的重试（含短退避），避免网络抖动误判 peer 离线
             try:
                 res = await asyncio.wait_for(
-                    asyncio.to_thread(a2a_call, peer.url, prompt), timeout=120
+                    asyncio.to_thread(a2a_call, peer.url, prompt), timeout=240
                 )
                 if res and res.strip():
                     return _strip_a2a_header(res)
                 last = f"（{peer.name} 返回空内容）"
+            except asyncio.TimeoutError:
+                logger.warning("peer %s 超时(第%d次, 240s)", peer.name, attempt + 1)
+                last = f"（{peer.name} 在 240 秒内未响应，可能正在处理长文本）"
             except Exception as exc:  # noqa: BLE001
                 logger.warning("peer %s 调用失败(第%d次): %s", peer.name, attempt + 1, exc)
                 last = f"（{peer.name} 调用失败：{exc}）"
