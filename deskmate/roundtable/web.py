@@ -16,9 +16,11 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import logging
 import os
+from pathlib import Path
 from typing import Optional
 
 from fastapi import FastAPI, Request
@@ -50,12 +52,84 @@ class StreamBody(BaseModel):
     chapter_range: str = ""
 
 
+class ReadBody(BaseModel):
+    """POST /api/read 的请求体：触发「阅读全书」（生成圣经 + FTS5 索引）。"""
+
+    path: str = ""
+    chapter_range: str = ""
+
+
 def _read_html() -> str:
     try:
         with open(TEMPLATE_PATH, "r", encoding="utf-8") as f:
             return f.read()
     except FileNotFoundError:
         return "<h1>roundtable.html 模板缺失</h1>"
+
+
+def _run_read_book(mp: str, emit) -> None:
+    """阻塞执行：阅读全书（带 up-to-date 跳过）+ 建 FTS5 索引。
+
+    emit(dict) 推进度事件，由 SSE 端点流式传给前端。
+    """
+    from deskmate.novel_memory import core as nb
+    import time
+
+    # up-to-date 判断：若四份圣经已存在且新于源文件，直接跳过（避免每改几章就全量重读）
+    try:
+        bible_dir = nb._bible_root(mp) / nb._BIBLE_DIR
+        bible_files = [bible_dir / fn for fn in nb._BIBLE_FILES.values()]
+        if all(p.is_file() for p in bible_files):
+            bible_mtime = max(p.stat().st_mtime for p in bible_files)
+            scan_root, _ = nb._resolve_root(mp)
+            src_mtime = 0.0
+            for sp in nb._iter_text_files(scan_root):
+                try:
+                    src_mtime = max(src_mtime, sp.stat().st_mtime)
+                except OSError:
+                    pass
+            if bible_mtime >= src_mtime - 1.0:
+                emit({"type": "status", "stage": "skip",
+                      "message": "✅ 该书稿已读且为最新，无需重读。"})
+                emit({"type": "done", "ok": True})
+                return
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("阅读全书 up-to-date 检查失败（将重新生成）: %s", exc)
+
+    def cb(stage, data):
+        if stage == "extract_progress":
+            emit({"type": "progress", "stage": "extract",
+                  "idx": data.get("idx"), "total": data.get("total")})
+        elif stage == "scanning":
+            emit({"type": "status", "stage": "scanning", "message": "🔍 扫描全书文本…"})
+        elif stage == "extracting":
+            emit({"type": "status", "stage": "extracting",
+                  "message": f"📝 逐段抽取摘要（共 {data.get('total')} 段）…"})
+        elif stage == "merging":
+            emit({"type": "status", "stage": "merging",
+                  "message": "🧩 综合全书，生成人物 / 情节 / 时间线 / 伏笔…"})
+        elif stage == "completed":
+            emit({"type": "status", "stage": "merged",
+                  "message": f"📚 圣经生成完成：{', '.join(data.get('docs', []))}"})
+
+    emit({"type": "status", "stage": "start", "message": "📖 开始阅读全书…"})
+    docs = nb.build_bible(mp, progress_callback=cb)
+    # 落盘四份圣经（否则圆桌 read_bible 读不到宏观摘要）+ upsert 进 workspace 记忆
+    try:
+        nb.inject_bible(mp, docs)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("圣经落盘失败: %s", exc)
+        emit({"type": "status", "stage": "inject_error",
+              "message": f"⚠️ 圣经生成成功但落盘失败（圆桌读不到摘要）：{exc}"})
+    try:
+        n = nb.build_fts5_index(mp)
+        emit({"type": "status", "stage": "fts5",
+              "message": f"🔎 全文检索索引已建立（{n} 个文件）。"})
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("FTS5 索引失败: %s", exc)
+        emit({"type": "status", "stage": "fts5_error",
+              "message": f"⚠️ 索引建立失败（不影响宏观摘要）：{exc}"})
+    emit({"type": "done", "ok": True})
 
 
 def create_app(rt_port: int = 9920) -> FastAPI:
@@ -196,6 +270,61 @@ def create_app(rt_port: int = 9920) -> FastAPI:
         return _make_stream(
             request, body.topic, body.max_rounds, body.peers, body.personas,
             body.context, body.manuscript_path, body.chapter_range,
+        )
+
+    @app.post("/api/read")
+    async def read_book(request: Request, body: ReadBody):
+        """SSE：阅读全书（生成圣经 + 建立 FTS5 索引），带实时进度。
+
+        请求体 {"path": "<稿件路径>", "chapter_range": "可选"}。
+        进度事件：{"type":"progress"|"status"|"done"|"error", ...}
+        """
+        mp = (body.path or "").strip()
+        if not mp:
+            return JSONResponse({"error": "missing manuscript path"}, status_code=400)
+        if not Path(mp).expanduser().exists():
+            return JSONResponse({"error": f"路径不存在: {mp}"}, status_code=400)
+
+        loop = asyncio.get_running_loop()
+        queue: asyncio.Queue = asyncio.Queue()
+
+        def emit(d: dict) -> None:
+            loop.call_soon_threadsafe(queue.put_nowait, d)
+
+        async def gen():
+            worker = asyncio.ensure_future(
+                asyncio.to_thread(_run_read_book, mp, emit)
+            )
+            while True:
+                try:
+                    d = await asyncio.wait_for(queue.get(), timeout=1.0)
+                except asyncio.TimeoutError:
+                    if worker.done():
+                        break
+                    continue
+                yield f"data: {json.dumps(d, ensure_ascii=False)}\n\n"
+                if d.get("type") in ("done", "error"):
+                    break
+            # 排空残留事件
+            while not queue.empty():
+                try:
+                    d = queue.get_nowait()
+                    yield f"data: {json.dumps(d, ensure_ascii=False)}\n\n"
+                except Exception:  # noqa: BLE001
+                    break
+            try:
+                await worker
+            except Exception as exc:  # noqa: BLE001
+                yield f"data: {json.dumps({'type': 'error', 'message': str(exc)}, ensure_ascii=False)}\n\n"
+
+        return StreamingResponse(
+            gen(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",
+                "Connection": "keep-alive",
+            },
         )
 
     return app

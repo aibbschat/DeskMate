@@ -170,16 +170,25 @@ class Roundtable:
         return (self.manuscript_text or "").strip()
 
     def _bible_character_names(self, n: int = 3) -> list[str]:
-        """从圣经 CHARACTERS 段提取主角名（**加粗** 即人物），用于检索兜底：人物名必现于正文。"""
+        """从圣经 CHARACTERS 段提取主角名，用于检索兜底：人物名必现于正文。
+
+        兼容两种书稿格式：
+        - 列表项「- 韩笑文：…」（最常见）
+        - 行内 ``**韩笑文**`` 加粗
+        """
         bible = self._load_bible()
         chars = bible.get("CHARACTERS", "") if bible else ""
         if not chars:
             return []
         import re as _re
-        names = _re.findall(r"\*\*([^*]+?)\*\*", chars)
         seen: set[str] = set()
         out: list[str] = []
-        for nm in names:
+        for nm in _re.findall(r"\*\*([^*]+?)\*\*", chars):
+            nm = nm.strip()
+            if nm and nm not in seen and len(nm) <= 8:
+                seen.add(nm)
+                out.append(nm)
+        for nm in _re.findall(r"^\s*-\s*([^\s：:]{1,8})\s*[：:]", chars, _re.MULTILINE):
             nm = nm.strip()
             if nm and nm not in seen and len(nm) <= 8:
                 seen.add(nm)
@@ -189,6 +198,10 @@ class Roundtable:
     async def _fts5_recall(self, query: str, max_results: int = 6, max_chars: int = 1800) -> str:
         """全书按需检索（P0-3）：按议题/分歧点召回全书相关片段，补充前情与伏笔呼应。
 
+        实现用 novel_memory 的正则关键词检索（_keyword_recall）：对中文更可靠
+        —— FTS5 的 unicode61 分词会把中文拆成单字，导致「韩笑文」这类二元词被 AND 匹配而落空；
+        正则子串 OR 反而精准。圆桌已单独注入四份圣经，故检索结果里的「人物圣经摘要」一律剔除，只留正文片段。
+
         议题式查询（如「人物关系铺垫」）在原文里往往不是连续子串，会落空；
         此时自动改用人名（圣经主角，必现于正文）检索，保证真实返回正文片段。
         """
@@ -197,30 +210,33 @@ class Roundtable:
             return ""
 
         def _search(q: str) -> str:
-            from deskmate.novel_memory.core import novel_search_fts5
-            return novel_search_fts5(q, mp, max_results)
+            from deskmate.novel_memory.core import _keyword_recall
+            return _keyword_recall(q, mp, max_results)
 
         def _clean(raw: str) -> str:
-            # novel_search_fts5 / _keyword_recall 可能附「人物圣经摘要」，圆桌已单独注入圣经，剔除避免重复
-            idx = raw.find("【人物圣经摘要】")
-            if idx != -1:
-                raw = raw[:idx].strip()
-            return raw.strip()
+            # 只保留真正的正文片段（【正文命中片段】之后），剔除附带的「人物圣经摘要」（圆桌已单独注入）
+            i = raw.find("【正文命中片段】")
+            return raw[i:].strip() if i != -1 else ""
 
         try:
             recall = _clean(await asyncio.to_thread(_search, query))
         except Exception as exc:
             logger.warning("FTS5 检索失败: %s", exc)
             return ""
-        # 议题落空 -> 回退到圣经人物名检索
+        # 议题落空 -> 优先用「议题中出现过的圣经人物名」检索（文学讨论往往围绕某角色，
+        # 且该角色名必现于正文）；否则退而求其次用前若干主角名逐个试，取首个有正文片段者。
         if not recall:
-            names = self._bible_character_names()
-            if names:
+            all_names = self._bible_character_names(20)
+            topic_names = [n for n in all_names if n and n in query]
+            for nm in (topic_names or all_names[:8]):
                 try:
-                    recall = _clean(await asyncio.to_thread(_search, " ".join(names)))
+                    r = _clean(await asyncio.to_thread(_search, nm))
                 except Exception as exc:
-                    logger.warning("FTS5 人物名检索失败: %s", exc)
-                    return ""
+                    logger.warning("FTS5 人物名检索失败(%s): %s", nm, exc)
+                    r = ""
+                if r:
+                    recall = r
+                    break
         if not recall:
             return ""
         if len(recall) > max_chars:
@@ -348,6 +364,16 @@ class Roundtable:
         prompt = self._participant_prompt(
             ctx, round_no, divergences, peer_name=peer.name, story_block=story_block[:8000]
         )
+        # 外部强 Agent（Hermes/OpenCode）：额外给稿件完整路径，让其自行通读全书。
+        # 能力强的外部 agent 应自读全文（自带大上下文与读文件能力），而非只吃我们提炼/截断过的摘要；
+        # 同时保留上方当前章原文与宏观摘要，供其快速对齐但不必局限于此。
+        if self.manuscript_path:
+            prompt = (
+                prompt
+                + "\n\n【稿件完整文件路径】（如你具备读取本地文件的能力，请自行通读该文件以掌握全书人物、"
+                "情节与前情；以上附上的仅为当前评审章节原文与宏观摘要，供你快速对齐，但不必局限于此）\n"
+                + self.manuscript_path
+            )
         last = f"（{peer.name} 调用失败）"
         for attempt in range(3):  # 与 _call_llm 一致的重试（含短退避），避免网络抖动误判 peer 离线
             try:
