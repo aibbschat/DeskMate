@@ -187,6 +187,10 @@ def create_app(manager: SessionManager) -> FastAPI:
         "/auth/callback",
         "/mcp/oauth/callback",
         "/oauth/callback",
+        # A2A：本地可信网络内开放发现与调用；企业级鉴权后续补
+        "/.well-known/agent-card.json",
+        "/a2a",
+        "/",
     }
 
     def _request_authenticated(request: Request) -> bool:
@@ -299,6 +303,29 @@ def create_app(manager: SessionManager) -> FastAPI:
             "default_workspace": manager.default_workspace,
             "model": manager.model,
         }
+
+    # ---- A2A (Agent-to-Agent) 服务端：让桌搭可被其它 agent 发现与调用 ----
+    async def _a2a_rpc(request: Request) -> dict[str, Any]:
+        from coworker.server.a2a_server import handle_a2a_request
+        try:
+            payload = await request.json()
+        except Exception:
+            return {"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": "Parse error"}}
+        return handle_a2a_request(payload)
+
+    @app.post("/a2a")
+    async def a2a_rpc(request: Request) -> dict[str, Any]:
+        return await _a2a_rpc(request)
+
+    @app.post("/")
+    async def a2a_rpc_root(request: Request) -> dict[str, Any]:
+        return await _a2a_rpc(request)
+
+    @app.get("/.well-known/agent-card.json")
+    def agent_card(request: Request) -> dict[str, Any]:
+        from coworker.server.a2a_server import build_agent_card
+        base = str(request.base_url).rstrip("/")
+        return build_agent_card(base)
 
     @app.get("/v1/agents")
     def agents() -> dict[str, Any]:
