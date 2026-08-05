@@ -121,6 +121,9 @@
   .a-edit { background: #3a7bd5; }
   .a-proof { background: #9b59b6; }
   .a-reader { background: #e84393; }
+  .a-pub { background: #16a085; }
+  .a-film { background: #c0392b; }
+  .a-genre { background: #8e44ad; }
   .a-oc { background: #34495e; }
   .a-hermes { background: #555; }
 
@@ -209,6 +212,9 @@
       <label class="chk"><input type="checkbox" class="pc" value="editor" checked /> 文学编辑</label>
       <label class="chk"><input type="checkbox" class="pc" value="proofreader" checked /> 文字校勘</label>
       <label class="chk"><input type="checkbox" class="pc" value="reader" checked /> 读者视角</label>
+      <label class="chk"><input type="checkbox" class="pc" value="publisher" checked /> 发行部主任</label>
+      <label class="chk"><input type="checkbox" class="pc" value="adaptation" checked /> 影视改编策划</label>
+      <label class="chk"><input type="checkbox" class="pc" value="genre" checked /> 类型出版策划</label>
     </div>
 
     <label style="margin-top:16px">轮次</label>
@@ -268,6 +274,9 @@
     { name: "文学编辑",   role: "叙事技艺", kind: "persona", emoji: "✒️", cls: "a-edit" },
     { name: "文字校勘",   role: "字句打磨", kind: "persona", emoji: "🔍", cls: "a-proof" },
     { name: "读者视角",   role: "受众温度计", kind: "persona", emoji: "👓", cls: "a-reader" },
+    { name: "发行部主任", role: "市场发行", kind: "persona", emoji: "📣", cls: "a-pub" },
+    { name: "影视改编策划", role: "影视化潜力", kind: "persona", emoji: "🎬", cls: "a-film" },
+    { name: "类型出版策划", role: "类型赛道", kind: "persona", emoji: "🏷️", cls: "a-genre" },
   ];
   const PEER_STYLE = {
     "OpenCode": { emoji: "🤖", cls: "a-oc" },
@@ -276,6 +285,7 @@
   // 进程内人格名 -> 后端 id（供勾选过滤）
   const PERSONA_IDS = {
     "史料考据": "historian", "文学编辑": "editor", "文字校勘": "proofreader", "读者视角": "reader",
+    "发行部主任": "publisher", "影视改编策划": "adaptation", "类型出版策划": "genre",
   };
   let activePersonas = [];   // 当前参与圆桌的进程内成员（含主持），用于成员条
   let onlineNames = new Set();
