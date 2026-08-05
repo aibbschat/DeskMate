@@ -88,7 +88,7 @@ fi
 
 # ---- 可选：安装 ----
 if [ "$INSTALL" -eq 1 ]; then
-  echo "==> 安装到 $INSTALLED"
+  echo "==> 安装到 ${INSTALLED:-/Applications/OpenWorker.app}"
   if pgrep -f "OpenWorker.app/Contents/MacOS/openworker-desktop" >/dev/null 2>&1; then
     echo "    退出运行中的 OpenWorker…"
     osascript -e 'tell application "OpenWorker" to quit' 2>/dev/null || true
@@ -97,10 +97,10 @@ if [ "$INSTALL" -eq 1 ]; then
       sleep 0.5
     done
   fi
-  rm -rf "$INSTALLED"
+  rm -rf "${INSTALLED:-/Applications/OpenWorker.app}"
   cp -R "$APP_OUT" /Applications/
-  echo "    ✓ 已安装到 $INSTALLED（内嵌前端哈希："
-  strings "$INSTALLED/Contents/MacOS/openworker-desktop" 2>/dev/null | grep -oE 'index-[A-Za-z0-9_-]{8}\.js' | sort -u | sed 's/^/      /'
+  echo "    ✓ 已安装到 ${INSTALLED:-/Applications/OpenWorker.app}（内嵌前端哈希："
+  strings "${INSTALLED:-/Applications/OpenWorker.app}/Contents/MacOS/openworker-desktop" 2>/dev/null | grep -oE 'index-[A-Za-z0-9_-]{8}\.js' | sort -u | sed 's/^/      /'
   echo "    ）"
 fi
 
