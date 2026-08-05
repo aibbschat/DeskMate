@@ -49,6 +49,10 @@ class Turn:
 class PeerSpec:
     name: str
     url: str
+    # 是否具备读取本地文件的能力（如 Hermes 可自行通读稿件）。OpenCode 适配层只能消费
+    # 传入的 prompt 文本、无法自读文件，故传 True 时我们会截断 prompt 以省远端开销，
+    # 传 False 时必须把完整正文交给它。
+    can_read_files: bool = True
 
 
 @dataclass
@@ -211,8 +215,8 @@ class Roundtable:
             return ""
 
         def _search(q: str) -> str:
-            from deskmate.novel_memory.core import _keyword_recall
-            return _keyword_recall(q, mp, max_results)
+            from deskmate.novel_memory.core import keyword_recall
+            return keyword_recall(q, mp, max_results)
 
         def _clean(raw: str) -> str:
             # 只保留真正的正文片段（【正文命中片段】之后），剔除附带的「人物圣经摘要」（圆桌已单独注入）
@@ -371,14 +375,17 @@ class Roundtable:
     ) -> str:
         from coworker.tools.a2a import a2a_call
 
-        # 外部 peer 输入截短（8000 字 vs 进程内人格 20000），减少远端处理时间
+        # 外部 peer 输入截短：仅对「能自读文件」的 peer（如 Hermes）截断到 8000 字以省远端开销；
+        # 对无文件读取能力的 peer（如 OpenCode 适配层）必须传完整正文，否则会被截丢本章内容。
+        effective_block = story_block if not peer.can_read_files else story_block[:8000]
         prompt = self._participant_prompt(
-            ctx, round_no, divergences, peer_name=peer.name, story_block=story_block[:8000]
+            ctx, round_no, divergences, peer_name=peer.name, story_block=effective_block
         )
-        # 外部强 Agent（Hermes/OpenCode）：额外给稿件完整路径，让其自行通读全书。
+        # 外部强 Agent（Hermes 等具备读文件能力）：额外给稿件完整路径，让其自行通读全书。
         # 能力强的外部 agent 应自读全文（自带大上下文与读文件能力），而非只吃我们提炼/截断过的摘要；
         # 同时保留上方当前章原文与宏观摘要，供其快速对齐但不必局限于此。
-        if self.manuscript_path:
+        # 注意：对无文件读取能力的 peer（如 OpenCode）不附加此提示，避免误导其去读不存在的本地文件。
+        if self.manuscript_path and peer.can_read_files:
             prompt = (
                 prompt
                 + "\n\n【稿件完整文件路径】（如你具备读取本地文件的能力，请自行通读该文件以掌握全书人物、"
@@ -625,7 +632,8 @@ if __name__ == "__main__":
     if os.environ.get("HERMES_URL"):
         peers.append(PeerSpec("Hermes", os.environ["HERMES_URL"]))
     if os.environ.get("OPENCODE_URL"):
-        peers.append(PeerSpec("OpenCode", os.environ["OPENCODE_URL"]))
+        # OpenCode 适配层无法读取本地文件，必须传完整正文
+        peers.append(PeerSpec("OpenCode", os.environ["OPENCODE_URL"], can_read_files=False))
 
     topic = os.environ.get("RT_TOPIC") or (
         "一段明代背景小说开篇：主角以锦衣卫身份出入诏狱，借『东厂』之名缉拿官绅，"

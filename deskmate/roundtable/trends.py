@@ -18,8 +18,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-# 需要注入潮流简报的市场化人格（其余人格不被潮流污染）
-MARKET_PERSONA_IDS = {"publisher", "adaptation", "genre"}
+# 需要注入潮流简报的市场化人格（其余人格不被潮流污染）。
+# 从 personas.PERSONAS 中 market=True 的角色动态派生，避免与 personas.py 双重维护导致漏改。
+from deskmate.roundtable.personas import PERSONAS
+
+MARKET_PERSONA_IDS = {p.id for p in PERSONAS if p.market}
 
 # 每个市场化人格关注的标准章节（潮流简报按 ## 标题切片）
 _PERSONA_SECTIONS = {

@@ -92,13 +92,12 @@ def _run_read_book(mp: str, emit) -> None:
 
     # up-to-date 判断：若四份圣经已存在且新于源文件，直接跳过（避免每改几章就全量重读）
     try:
-        bible_dir = nb._bible_root(mp) / nb._BIBLE_DIR
-        bible_files = [bible_dir / fn for fn in nb._BIBLE_FILES.values()]
+        bible_files = nb.bible_file_paths(mp)
         if all(p.is_file() for p in bible_files):
             bible_mtime = max(p.stat().st_mtime for p in bible_files)
-            scan_root, _ = nb._resolve_root(mp)
+            scan_root, _ = nb.resolve_root(mp)
             src_mtime = 0.0
-            for sp in nb._iter_text_files(scan_root):
+            for sp in nb.iter_text_files(scan_root):
                 try:
                     src_mtime = max(src_mtime, sp.stat().st_mtime)
                 except OSError:
@@ -194,7 +193,8 @@ def create_app(rt_port: int = 9920) -> FastAPI:
                     logger.warning("加载文稿失败(%s): %s", mp, result["error"])
                 else:
                     chapters = result.get("chapters") or []
-                    # 支持章节范围选择（如 "1-3" 或 "2"），默认全部（限前 5 章防超 context）
+                    # 支持章节范围选择（如 "1-3" 或 "2"）；未指定时默认仅评第 1 章，
+                    # 避免静默截断到前 5 章却让用户误以为在评其指定的章节。
                     selected = chapters
                     cr = (chapter_range or "").strip()
                     if cr:
@@ -207,9 +207,9 @@ def create_app(rt_port: int = 9920) -> FastAPI:
                                 idx = int(cr)
                                 selected = [c for c in chapters if c.get("idx", 0) == idx]
                         except (ValueError, IndexError):
-                            selected = chapters[:5]
+                            selected = chapters[:1]
                     else:
-                        selected = chapters[:5]
+                        selected = chapters[:1]
                     parts = []
                     for c in selected:
                         parts.append(f"### {c.get('title', '')}\n{c.get('text', '')}")
@@ -227,9 +227,13 @@ def create_app(rt_port: int = 9920) -> FastAPI:
                 continue
             if "|" in part:
                 name, url = part.split("|", 1)
-                peer_list.append(PeerSpec(name.strip(), url.strip()))
             else:
-                peer_list.append(PeerSpec(part, part))
+                name, url = part, part
+            name, url = name.strip(), url.strip()
+            # OpenCode 适配层只能消费传入的 prompt 文本、无法读取本地文件，
+            # 必须传完整正文（见 coordinator._peer_speak）。
+            can_read = "opencode" not in name.lower() and "opencode" not in url.lower()
+            peer_list.append(PeerSpec(name, url, can_read_files=can_read))
 
         selected_personas = None
         ids = [p.strip() for p in (personas or "").split(",") if p.strip()]

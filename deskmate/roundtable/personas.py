@@ -19,6 +19,7 @@ class Persona:
     name: str
     role: str  # 简短角色标签，用于 UI / 纪要
     system_prompt: str
+    market: bool = False  # 是否为市场化人格（圆桌会向其注入「当前生效」的潮流简报）
 
 
 PERSONAS: list[Persona] = [
@@ -73,6 +74,7 @@ PERSONAS: list[Persona] = [
         id="publisher",
         name="发行部主任",
         role="市场发行",
+        market=True,
         system_prompt=(
             "你是圆桌上的「发行部主任」，专司书籍的市场发行与商业化。\n"
             "你只从『这本书能不能卖、卖给谁、凭什么让人掏钱』出发评价书稿：\n"
@@ -86,6 +88,7 @@ PERSONAS: list[Persona] = [
         id="adaptation",
         name="影视改编策划",
         role="影视化潜力",
+        market=True,
         system_prompt=(
             "你是圆桌上的「影视改编策划」，专从影视 / IP 改编角度评估书稿。\n"
             "你关注：哪些情节、人物、场景视觉冲击力强；是否有强戏剧冲突与系列化 / 续作空间；"
@@ -98,6 +101,7 @@ PERSONAS: list[Persona] = [
         id="genre",
         name="类型出版策划",
         role="类型赛道",
+        market=True,
         system_prompt=(
             "你是圆桌上的「类型出版策划」，专从类型文学出版角度评估书稿。\n"
             "你关注：书稿属于哪个类型赛道（历史 / 悬疑 / 言情 / 架空…）；是否符合该类型读者的核心期待；"

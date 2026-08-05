@@ -16,6 +16,21 @@ import time
 from pathlib import Path
 from typing import Optional
 
+# 稳定公开 API（圆桌等外部模块只应依赖以下名字，避免直连下划线私有函数/常量，
+# 否则 core.py 重构这些下划线符号时会静默失效）。
+__all__ = [
+    "build_bible",
+    "inject_bible",
+    "read_bible",
+    "build_fts5_index",
+    "novel_search_fts5",
+    "resolve_root",
+    "bible_root",
+    "bible_file_paths",
+    "iter_text_files",
+    "keyword_recall",
+]
+
 # ---------------------------------------------------------------------------
 # 模型调用
 # ---------------------------------------------------------------------------
@@ -172,6 +187,32 @@ def _iter_text_files(scan_root: Path) -> list[Path]:
         and not any(part.startswith(".") or part == ".deskmate" or part == ".git"
                     for part in p.relative_to(scan_root).parts)
     )
+
+
+# ---- 稳定公开 API（供圆桌等外部模块调用，避免依赖上方下划线私有符号）----
+
+def resolve_root(path: str) -> tuple[Path, Path]:
+    """公开包装：见 ``_resolve_root``。"""
+    return _resolve_root(path)
+
+
+def bible_root(folder: str) -> Path:
+    """公开包装：圣经 / FTS5 索引的落盘根目录。见 ``_bible_root``。"""
+    return _bible_root(folder)
+
+
+def bible_file_paths(folder: str) -> list[Path]:
+    """返回四份圣经文件的完整路径列表（顺序同 ``_BIBLE_FILES``）。
+
+    替代直接拼接 ``_bible_root(folder) / _BIBLE_DIR / fn``，调用方无需感知
+    内部目录名与文件名映射。
+    """
+    return [bible_root(folder) / _BIBLE_DIR / fn for fn in _BIBLE_FILES.values()]
+
+
+def iter_text_files(scan_root: Path) -> list[Path]:
+    """公开包装：见 ``_iter_text_files``。"""
+    return _iter_text_files(scan_root)
 
 
 def _rel_name(p: Path, scan_root: Path) -> str:
@@ -880,8 +921,7 @@ def fts5_index_status(folder: str) -> str:
 def _keyword_recall(query: str, folder: str, max_snippets: int = 8) -> str:
     """纯关键词检索（原始实现）：逐文件扫描，正则匹配关键词提取片段。
 
-    这是 FTS5 不可用时的回退方案。
-    """
+    这是 FTS5 不可用时的回退方案。    """
     scan_root, _ = _resolve_root(folder)
     parts: list[str] = []
 
@@ -945,6 +985,14 @@ def _keyword_recall(query: str, folder: str, max_snippets: int = 8) -> str:
     if not parts:
         return "（尚未生成人物圣经，请先运行 analyze_novel）"
     return "\n".join(parts)
+
+
+def keyword_recall(query: str, folder: str, max_snippets: int = 8) -> str:
+    """公开包装：对中文更可靠的纯关键词检索（见 ``_keyword_recall``）。
+
+    圆桌等外部模块应调用本函数而非直连 ``_keyword_recall``。
+    """
+    return _keyword_recall(query, folder, max_snippets=max_snippets)
 
 
 def novel_recall(query: str, folder: str, max_snippets: int = 8) -> str:
