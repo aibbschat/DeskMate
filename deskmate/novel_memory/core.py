@@ -28,8 +28,11 @@ _BIBLE_FILES = {
     "NOTES": "NOTES.md",             # 世界观 / 伏笔 / 写作备注
 }
 
-# 扫描的小说文本扩展名
-_TEXT_EXTS = {".txt", ".md", ".markdown", ".text", ".novel"}
+# 扫描的小说文本扩展名（.docx 需经 python-docx 解析，见 _read_file_text）
+_TEXT_EXTS = {".txt", ".md", ".markdown", ".text", ".novel", ".docx"}
+
+# 需要专用解析器的二进制格式：不能直接 read_text，否则得到乱码
+_BINARY_EXTS = {".docx"}
 
 # FTS5 索引数据库文件名（相对于 .deskmate 目录）
 _FTS5_DB = "fts5.db"
@@ -47,18 +50,133 @@ def _model() -> str:
     return _llm_model()
 
 
-def _chat(system: str, user: str, *, temperature: float = 0.2, timeout: float = 90) -> str:
+# 已知会产出 reasoning_content 的推理模型（如 deepseek-v4-flash / deepseek-r1）。
+# 它们的推理链会计入 max_tokens 预算，推理一长就把正文挤成 0 字。
+_REASONING_MODEL_HINTS = (
+    "reasoner", "r1", "-flash", "thinking", "qwq",
+    "o1", "o3", "o4", "deepseek-reasoner", "reasoning",
+)
+
+
+def _is_reasoning_model(model: str) -> bool:
+    m = (model or "").lower()
+    return any(h in m for h in _REASONING_MODEL_HINTS)
+
+
+def _chat(
+    system: str,
+    user: str,
+    *,
+    temperature: float = 0.2,
+    timeout: float = 90,
+    max_tokens: int = 3000,
+    reasoning_effort: str = "low",
+) -> str:
+    """调用 LLM 一次。
+
+    max_tokens 必须显式给足：默认走 API 缺省值时，圣经合并这类「长输出」场景
+    会被静默截断成半份文档（_parse_bible_docs 只能解析出 CHARACTERS）。
+
+    reasoning_effort=low：对推理模型（deepseek-v4-flash 等）把推理预算压到最低。
+    这类「从正文抽取事实 / 合并成圣经」的批处理任务不需要深度推理，压低推理反而
+    能让正文拿到更多 max_tokens 预算，避免「四份文档全空」。非推理模型（按模型名
+    启发式判定）不会带这个参数，避免 provider 报不识别的字段。
+    """
+    from openai import BadRequestError
+
     client = _client()
-    resp = client.chat.completions.create(
-        model=_model(),
-        temperature=temperature,
-        messages=[
-            {"role": "system", "content": system},
-            {"role": "user", "content": user},
-        ],
-        timeout=timeout,
-    )
+    messages = [
+        {"role": "system", "content": system},
+        {"role": "user", "content": user},
+    ]
+    extra = None
+    if _is_reasoning_model(_model()) and reasoning_effort:
+        extra = {"reasoning_effort": reasoning_effort}
+
+    def _create():
+        return client.chat.completions.create(
+            model=_model(),
+            temperature=temperature,
+            max_tokens=max_tokens,
+            messages=messages,
+            timeout=timeout,
+            **({"extra_body": extra} if extra else {}),
+        )
+
+    try:
+        resp = _create()
+    except BadRequestError:
+        # 个别 provider 不认 reasoning_effort，去掉重试一次
+        if extra:
+            resp = client.chat.completions.create(
+                model=_model(),
+                temperature=temperature,
+                max_tokens=max_tokens,
+                messages=messages,
+                timeout=timeout,
+            )
+        else:
+            raise
     return (resp.choices[0].message.content or "").strip()
+
+
+# ---------------------------------------------------------------------------
+# 路径与读取辅助（统一支持「目录」与「单文件」两种入口 + .docx 解析）
+# ---------------------------------------------------------------------------
+
+
+def _read_file_text(p: Path) -> str:
+    """读取单个正文文件为纯文本。.docx 走 python-docx 解析，其余按 UTF-8 读。
+
+    任何失败都返回空串，由调用方跳过——扫描全书时不该因一个坏文件整体失败。
+    """
+    try:
+        if p.suffix.lower() in _BINARY_EXTS:
+            from deskmate.writing import read_text_from_path
+
+            # max_chars 给足：writing 层默认 20 万字，长篇会被静默腰斩
+            return read_text_from_path(str(p), max_chars=10_000_000)
+        return p.read_text(encoding="utf-8", errors="ignore")
+    except Exception:
+        return ""
+
+
+def _resolve_root(path: str) -> tuple[Path, Path]:
+    """把入参解析成 (扫描根, 圣经根)。
+
+    - 传目录 → 扫描该目录，圣经落在 <目录>/.deskmate/
+    - 传单文件 → 只扫描该文件，圣经落在 <文件同级目录>/.deskmate/
+      （与 deskmate.tools.review.load_manuscript_file 的 read_bible(pp.parent) 约定一致）
+    """
+    p = Path(path).expanduser().resolve()
+    if p.is_dir():
+        return p, p
+    if p.is_file():
+        return p, p.parent
+    raise FileNotFoundError(f"路径不存在：{path}")
+
+
+def _bible_root(path: str) -> Path:
+    """圣经 / FTS5 索引的落盘根目录（传文件时取其父目录）。"""
+    p = Path(path).expanduser().resolve()
+    return p.parent if p.is_file() else p
+
+
+def _iter_text_files(scan_root: Path) -> list[Path]:
+    """收集待扫描的正文文件（稳定排序）。scan_root 为文件时即返回它自身。"""
+    if scan_root.is_file():
+        return [scan_root]
+    return sorted(
+        p for p in scan_root.rglob("*")
+        if p.is_file() and p.suffix.lower() in _TEXT_EXTS
+        and not any(part.startswith(".") or part == ".deskmate" or part == ".git"
+                    for part in p.relative_to(scan_root).parts)
+    )
+
+
+def _rel_name(p: Path, scan_root: Path) -> str:
+    """相对展示名：scan_root 是文件时用文件名，否则用相对路径。"""
+    return p.name if scan_root.is_file() else p.relative_to(scan_root).as_posix()
 
 
 # ---------------------------------------------------------------------------
@@ -67,32 +185,22 @@ def _chat(system: str, user: str, *, temperature: float = 0.2, timeout: float = 
 
 
 def scan_novel(folder: str, max_chars: int = 400_000) -> tuple[str, list[str]]:
-    """递归读取小说文件夹里的正文文本，返回 (合并正文, 章节标题列表)。
+    """读取小说正文，返回 (合并正文, 文件名列表)。
 
-    跳过 .deskmate / .git / 隐藏目录。超大则按比例截断到 max_chars。
+    folder 可以是小说文件夹（递归扫描，跳过 .deskmate / .git / 隐藏目录），
+    也可以是单个 .txt / .docx 稿件文件。超大则按比例截断到 max_chars。
     """
-    root = Path(folder).expanduser().resolve()
-    if not root.is_dir():
-        raise FileNotFoundError(f"不是目录：{folder}")
+    scan_root, _ = _resolve_root(folder)
 
     chunks: list[str] = []
     titles: list[str] = []
     total = 0
-    # 稳定顺序：按路径排序，保证章节顺序一致
-    files = sorted(
-        p for p in root.rglob("*")
-        if p.is_file() and p.suffix.lower() in _TEXT_EXTS
-        and not any(part.startswith(".") or part == ".deskmate" or part == ".git"
-                    for part in p.relative_to(root).parts)
-    )
+    files = _iter_text_files(scan_root)
     for p in files:
-        try:
-            text = p.read_text(encoding="utf-8", errors="ignore")
-        except Exception:
-            continue
+        text = _read_file_text(p)
         if not text.strip():
             continue
-        rel = p.relative_to(root).as_posix()
+        rel = _rel_name(p, scan_root)
         title = f"# 文件：{rel}"
         titles.append(rel)
         block = f"{title}\n\n{text}\n\n"
@@ -149,22 +257,89 @@ _MERGE_SYS = (
     "1. 合并同名人物，去重；关系冲突时以「更靠后章节的明确描写」为准，并注明分歧。\n"
     "2. 关系必须带类型（敌/友/亲/暧昧/上下级/同门/其他）和关键依据（章节或情节）。\n"
     "3. 禁止写入任何正文未明确支持的关系；存疑的放进「待确认」。\n"
-    "输出四份独立 Markdown 文档，用分隔符 ===== 隔开，顺序固定为：\n"
-    "CHARACTERS（人物关系总表，核心）\nOUTLINE（情节主线与弧光）\n"
-    "TIMELINE（关键事件时间线）\nNOTES（世界观/势力/伏笔/待确认）。\n"
-    "每份以「## 标题」开头。只输出内容，不要解释。"
+    "必须输出【四份】独立 Markdown 文档，用分隔符 ===== 隔开，顺序固定为：\n"
+    "=====\n## CHARACTERS\n（人物关系总表，核心）\n"
+    "=====\n## OUTLINE\n（情节主线与弧光）\n"
+    "=====\n## TIMELINE\n（关键事件时间线）\n"
+    "=====\n## NOTES\n（世界观/势力/伏笔/待确认）\n"
+    "每份文档【第一行必须是 ## CHARACTERS / ## OUTLINE / ## TIMELINE / ## NOTES 之一"
+    "（英文大写，严禁写中文标题）】。四份缺一不可，即使某份内容少也要保留其标题行。"
+    "只输出这四份内容，不要解释、不要寒暄。"
 )
 
 _DOC_TAGS = list(_BIBLE_FILES.keys())
 
+# 单次合并允许喂进去的抽取文本上限（字符）。超过则先分组预合并（两级 reduce）。
+# 依据：实测 DeepSeek 在输入 >12000 字且要求长输出时，返回空内容的概率显著上升。
+_MERGE_INPUT_LIMIT = 12000
+
+# 抽取单批摘要 / 合并长文档 的输出预算。
+# 推理模型（deepseek-v4-flash 等）的 reasoning_content 也计入 max_tokens，
+# 故留足余量：抽取批（输入 ~12K 字）给 8000，合并（可能含两级 reduce）给 16000，
+# 即便推理链占用数千 token，正文仍有空间。max_tokens 是上限而非目标，模型用完即停，
+# 不会因此多耗 token。
+_EXTRACT_MAX_TOKENS = 8000
+_MERGE_MAX_TOKENS = 16000
+
+
+def _merge_extracts(extracts: list[str], progress_callback: callable = None) -> str:
+    """把逐批抽取结果归并成一份圣经，输入过长时自动走两级 reduce。
+
+    长篇（20 万字≈17 批）直接把所有抽取拼进一次调用会超过模型的稳定输入区间，
+    表现为「返回空内容」或「四份文档只剩一份」。这里先按 _MERGE_INPUT_LIMIT
+    分组预合并，再对预合并结果做最终合并。
+    """
+    joined = "\n\n".join(extracts)
+    if len(joined) <= _MERGE_INPUT_LIMIT:
+        return _chat(_MERGE_SYS, joined, timeout=120, max_tokens=_MERGE_MAX_TOKENS)
+
+    # 分组：按累计字符数切成若干组
+    groups: list[list[str]] = []
+    cur: list[str] = []
+    cur_len = 0
+    for ex in extracts:
+        if cur and cur_len + len(ex) > _MERGE_INPUT_LIMIT:
+            groups.append(cur)
+            cur, cur_len = [], 0
+        cur.append(ex)
+        cur_len += len(ex)
+    if cur:
+        groups.append(cur)
+
+    if progress_callback:
+        progress_callback("merging_partial", {"groups": len(groups)})
+
+    partials: list[str] = []
+    for i, g in enumerate(groups):
+        try:
+            part = _chat(
+                _MERGE_SYS, "\n\n".join(g), timeout=120, max_tokens=_MERGE_MAX_TOKENS
+            )
+        except Exception as e:  # noqa: BLE001
+            part = f"（第 {i + 1} 组预合并失败：{e}）"
+        partials.append(f"===== 预合并 {i + 1}/{len(groups)} =====\n{part}")
+        if progress_callback:
+            progress_callback("merge_progress", {"idx": i + 1, "total": len(groups)})
+
+    final_input = "\n\n".join(partials)
+    # 极端情况（书特别长）：预合并结果仍超限，做一次保守截断而非直接失败
+    if len(final_input) > _MERGE_INPUT_LIMIT * 2:
+        final_input = final_input[: _MERGE_INPUT_LIMIT * 2]
+    return _chat(_MERGE_SYS, final_input, timeout=180, max_tokens=_MERGE_MAX_TOKENS)
+
 
 def build_bible(folder: str, progress_callback: callable = None) -> dict[str, str]:
-    """通读全书 -> 抽取 -> 合并成四份圣经文档。返回 {文档名: markdown}。"""
+    """通读全书 -> 抽取 -> 合并成四份圣经文档。返回 {文档名: markdown}。
+
+    folder 可为小说文件夹或单个 .txt / .docx 稿件文件。
+    """
     if progress_callback:
         progress_callback("scanning", {"folder": folder})
     text, titles = scan_novel(folder)
     if not text.strip():
-        raise ValueError(f"在 {folder} 未找到可读的小说文本（.txt/.md 等）。")
+        raise ValueError(
+            f"在 {folder} 未找到可读的小说文本（支持 .txt / .md / .docx）。"
+        )
 
     # 1) 逐批抽取（并发，大幅缩短总耗时）
     batches = _split_batches(text)
@@ -176,7 +351,7 @@ def build_bible(folder: str, progress_callback: callable = None) -> dict[str, st
 
     def _extract_one(idx: int, batch: str) -> tuple[int, str]:
         try:
-            part = _chat(_EXTRACT_SYS, batch)
+            part = _chat(_EXTRACT_SYS, batch, max_tokens=_EXTRACT_MAX_TOKENS)
         except Exception as e:
             part = f"（第 {idx + 1} 批抽取失败：{e}）"
         return idx, part
@@ -192,10 +367,10 @@ def build_bible(folder: str, progress_callback: callable = None) -> dict[str, st
             if progress_callback:
                 progress_callback("extract_progress", {"idx": idx + 1, "total": len(batches)})
 
-    # 2) 合并成圣经
+    # 2) 合并成圣经（长篇自动走两级 reduce，见 _merge_extracts）
     if progress_callback:
         progress_callback("merging", {"total_batches": len(batches)})
-    merged = _chat(_MERGE_SYS, "\n\n".join(extracts), timeout=120)
+    merged = _merge_extracts(extracts, progress_callback)
 
     # 3) 解析成四份文档
     docs = _parse_bible_docs(merged)
@@ -209,19 +384,29 @@ def build_bible(folder: str, progress_callback: callable = None) -> dict[str, st
 
 
 def _parse_bible_docs(merged: str) -> dict[str, str]:
-    """按 ===== 分隔符与文档标记切分合并输出。"""
+    """按 ===== 分隔符与文档标记切分合并输出。
+
+    兼容两种标题写法（模型习惯不同）：
+    - 英文标记开头：  ``## CHARACTERS``
+    - 中文标题含英文：``## 人物关系总表（CHARACTERS）``
+    均按标题行里的英文标签归类。
+    """
     docs: dict[str, str] = {}
     # 先按分隔符切块
     blocks = re.split(r"^=====.*$", merged, flags=re.MULTILINE)
-    # 退化：若没有分隔符，尝试按标题切
+    # 退化：若没有分隔符，按标题切（中英文标题都覆盖）
     if len(blocks) <= 1:
-        blocks = re.split(r"(?=^## (?:CHARACTERS|OUTLINE|TIMELINE|NOTES))", merged, flags=re.MULTILINE)
+        blocks = re.split(
+            r"(?=^##\s*(?:CHARACTERS|OUTLINE|TIMELINE|NOTES|人物关系|情节主线|关键事件时间线|世界观))",
+            merged, flags=re.MULTILINE,
+        )
     for b in blocks:
         b = b.strip()
         if not b:
             continue
-        # 找到文档标记
-        m = re.match(r"^##\s*(CHARACTERS|OUTLINE|TIMELINE|NOTES)\b", b, flags=re.IGNORECASE)
+        # 取标题行（第一行）找英文标签，兼容「中文（ENGLISH）」写法
+        first_line = b.split("\n", 1)[0]
+        m = re.search(r"\b(CHARACTERS|OUTLINE|TIMELINE|NOTES)\b", first_line, flags=re.IGNORECASE)
         if m:
             tag = m.group(1).upper()
             docs[tag] = b
@@ -237,14 +422,14 @@ def incremental_bible_update(folder: str, progress_callback: callable = None) ->
     3. 只将新内容抽取后合并到现有圣经
 
     Args:
-        folder: 小说文件夹绝对路径
+        folder: 小说文件夹绝对路径，或单个 .txt / .docx 稿件文件路径
         progress_callback: 可选进度回调
 
     Returns:
         更新后的圣经 dict，或 None（无变化）
     """
-    root = Path(folder).expanduser().resolve()
-    bible_dir = root / _BIBLE_DIR
+    scan_root, bible_root = _resolve_root(folder)
+    bible_dir = bible_root / _BIBLE_DIR
 
     # 读取现有圣经
     existing = read_bible(folder)
@@ -262,12 +447,7 @@ def incremental_bible_update(folder: str, progress_callback: callable = None) ->
             bible_mtime = max(bible_mtime, fp.stat().st_mtime)
 
     new_files = []
-    text_files = sorted(
-        p for p in root.rglob("*")
-        if p.is_file() and p.suffix.lower() in _TEXT_EXTS
-        and not any(part.startswith(".") or part == ".deskmate" or part == ".git"
-                    for part in p.relative_to(root).parts)
-    )
+    text_files = _iter_text_files(scan_root)
     for p in text_files:
         if p.stat().st_mtime > bible_mtime:
             new_files.append(p)
@@ -283,13 +463,10 @@ def incremental_bible_update(folder: str, progress_callback: callable = None) ->
     new_text = ""
     new_titles = []
     for p in new_files:
-        try:
-            text = p.read_text(encoding="utf-8", errors="ignore")
-        except Exception:
-            continue
+        text = _read_file_text(p)
         if not text.strip():
             continue
-        rel = p.relative_to(root).as_posix()
+        rel = _rel_name(p, scan_root)
         new_titles.append(rel)
         new_text += f"# 文件：{rel}\n\n{text}\n\n"
 
@@ -312,7 +489,7 @@ def incremental_bible_update(folder: str, progress_callback: callable = None) ->
 
     def _extract_one(idx: int, batch: str) -> tuple[int, str]:
         try:
-            part = _chat(_EXTRACT_SYS, batch)
+            part = _chat(_EXTRACT_SYS, batch, max_tokens=_EXTRACT_MAX_TOKENS)
         except Exception as e:
             part = f"（第 {idx + 1} 批抽取失败：{e}）"
         return idx, part
@@ -339,17 +516,25 @@ def incremental_bible_update(folder: str, progress_callback: callable = None) ->
         "请将新章节的信息合并到现有圣经中，更新人物关系、情节、时间线。\n"
         "规则：新章节的明确描写优先级高于旧数据；如果新章节与旧数据冲突，"
         "以新章节为准并注明。\n\n"
-        "输出四份独立 Markdown 文档，用分隔符 ===== 隔开，顺序固定为：\n"
-        "CHARACTERS（人物关系总表，核心）\nOUTLINE（情节主线与弧光）\n"
-        "TIMELINE（关键事件时间线）\nNOTES（世界观/势力/伏笔/待确认）。\n"
-        "每份以「## 标题」开头。只输出内容，不要解释。"
+        "必须输出【四份】独立 Markdown 文档，用分隔符 ===== 隔开，顺序固定为：\n"
+        "=====\n## CHARACTERS\n（人物关系总表，核心）\n"
+        "=====\n## OUTLINE\n（情节主线与弧光）\n"
+        "=====\n## TIMELINE\n（关键事件时间线）\n"
+        "=====\n## NOTES\n（世界观/势力/伏笔/待确认）\n"
+        "每份文档【第一行必须是 ## CHARACTERS / ## OUTLINE / ## TIMELINE / ## NOTES 之一"
+        "（英文大写，严禁写中文标题）】。四份缺一不可，即使某份内容少也要保留其标题行。"
+        "只输出这四份内容，不要解释、不要寒暄。"
     )
     extracts_joined = "\n\n".join(extracts)
+    # 输入双侧都限长：现有圣经 + 新抽取合计控制在 _MERGE_INPUT_LIMIT 内，
+    # 否则模型在「长输入 + 长输出」下容易直接返回空内容。
+    half = _MERGE_INPUT_LIMIT // 2
     merged = _chat(
         merge_prompt,
-        f"【现有圣经】\n{existing_text[:10000]}\n\n"
-        f"【新章节抽取】\n{extracts_joined}",
+        f"【现有圣经】\n{existing_text[:half]}\n\n"
+        f"【新章节抽取】\n{extracts_joined[:half]}",
         timeout=120,
+        max_tokens=_MERGE_MAX_TOKENS,
     )
 
     docs = _parse_bible_docs(merged)
@@ -383,7 +568,7 @@ def inject_bible(folder: str, docs: dict[str, str]) -> int:
     使用 ``coworker.memory.SQLiteMemoryStore`` API 写入，而非裸 SQL -- 这样 coworker
     schema 变更时（加字段、改表名）不会静默失败。
     """
-    root = Path(folder).expanduser().resolve()
+    root = _bible_root(folder)
     bible_dir = root / _BIBLE_DIR
     bible_dir.mkdir(parents=True, exist_ok=True)
     for tag, fname in _BIBLE_FILES.items():
@@ -429,7 +614,8 @@ def inject_bible(folder: str, docs: dict[str, str]) -> int:
 
 
 def read_bible(folder: str) -> dict[str, str]:
-    bible_dir = Path(folder).expanduser().resolve() / _BIBLE_DIR
+    """读取已生成的四份圣经。folder 可为小说目录或单个稿件文件。"""
+    bible_dir = _bible_root(folder) / _BIBLE_DIR
     out: dict[str, str] = {}
     for tag, fname in _BIBLE_FILES.items():
         p = bible_dir / fname
@@ -443,9 +629,8 @@ def read_bible(folder: str) -> dict[str, str]:
 # ---------------------------------------------------------------------------
 
 def _fts5_db_path(folder: str) -> Path:
-    """返回 FTS5 数据库的完整路径。"""
-    root = Path(folder).expanduser().resolve()
-    return root / _BIBLE_DIR / _FTS5_DB
+    """返回 FTS5 数据库的完整路径（folder 可为目录或单个稿件文件）。"""
+    return _bible_root(folder) / _BIBLE_DIR / _FTS5_DB
 
 
 def _fts5_connection(folder: str) -> sqlite3.Connection | None:
@@ -466,7 +651,7 @@ def build_fts5_index(folder: str) -> int:
 
     返回本次索引的文件数。
     """
-    root = Path(folder).expanduser().resolve()
+    scan_root, _ = _resolve_root(folder)
     db_path = _fts5_db_path(folder)
     db_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -493,16 +678,11 @@ def build_fts5_index(folder: str) -> int:
     """)
 
     # 收集所有文本文件
-    text_files = sorted(
-        p for p in root.rglob("*")
-        if p.is_file() and p.suffix.lower() in _TEXT_EXTS
-        and not any(part.startswith(".") or part == ".deskmate" or part == ".git"
-                    for part in p.relative_to(root).parts)
-    )
+    text_files = _iter_text_files(scan_root)
 
     indexed_count = 0
     for p in text_files:
-        rel_path = str(p.relative_to(root))
+        rel_path = _rel_name(p, scan_root)
         current_mtime = p.stat().st_mtime
 
         # 检查 mtime 是否变化
@@ -514,9 +694,8 @@ def build_fts5_index(folder: str) -> int:
         if row is not None and abs(row[0] - current_mtime) < 0.001:
             continue  # 未变化，跳过
 
-        try:
-            text = p.read_text(encoding="utf-8", errors="ignore")
-        except Exception:
+        text = _read_file_text(p)
+        if not text.strip():
             continue
 
         title = p.stem  # 文件名（不含扩展名）作为标题
@@ -545,7 +724,6 @@ def novel_search_fts5(query: str, folder: str, max_results: int = 10) -> str:
     支持 CJK 查询：FTS5 的 unicode61 tokenizer 不原生支持 CJK 分词，
     因此对于 CJK 密集的查询会使用 LIKE 作为回退。
     """
-    root = Path(folder).expanduser().resolve()
     db_path = _fts5_db_path(folder)
 
     # 索引不存在 -> 回退到 keyword 检索
@@ -613,7 +791,7 @@ def novel_search_fts5(query: str, folder: str, max_results: int = 10) -> str:
             parts.append("")
 
         # 附加圣经摘要
-        bible = read_bible(str(root))
+        bible = read_bible(folder)
         if bible:
             bible_parts: list[str] = []
             if bible.get("CHARACTERS"):
@@ -704,10 +882,10 @@ def _keyword_recall(query: str, folder: str, max_snippets: int = 8) -> str:
 
     这是 FTS5 不可用时的回退方案。
     """
-    root = Path(folder).expanduser().resolve()
+    scan_root, _ = _resolve_root(folder)
     parts: list[str] = []
 
-    bible = read_bible(str(root))
+    bible = read_bible(folder)
     if bible:
         parts.append("【人物圣经摘要】")
         if bible.get("CHARACTERS"):
@@ -731,18 +909,12 @@ def _keyword_recall(query: str, folder: str, max_snippets: int = 8) -> str:
 
     # 收集候选片段：(score, file_rel, snippet_text)
     candidates: list[tuple[int, str, str]] = []
-    text_files = sorted(
-        p for p in root.rglob("*")
-        if p.is_file() and p.suffix.lower() in _TEXT_EXTS
-        and not any(part.startswith(".") or part == ".deskmate" or part == ".git"
-                    for part in p.relative_to(root).parts)
-    )
+    text_files = _iter_text_files(scan_root)
     for p in text_files:
-        try:
-            text = p.read_text(encoding="utf-8", errors="ignore")
-        except Exception:
+        text = _read_file_text(p)
+        if not text.strip():
             continue
-        rel = str(p.relative_to(root))
+        rel = _rel_name(p, scan_root)
         covered: list[tuple[int, int]] = []  # 已覆盖的字符位置（去重重叠片段）
         file_hits = 0
         for m in pattern.finditer(text):
