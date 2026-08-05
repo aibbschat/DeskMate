@@ -1,0 +1,318 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>创作圆桌 · 有界多轮群聊</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  :root {
+    --wx-green: #07c160;
+    --bg: #c9d2dc;
+    --chat-bg: #ededed;
+    --nav: #2e2e2e;
+    --host: #f6e7c1;
+    --host-bd: #e6c97a;
+  }
+  body {
+    font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+    background: radial-gradient(circle at 30% 20%, #d7dee8, #b9c4d2);
+    display: flex; justify-content: center; align-items: flex-start;
+    min-height: 100vh; padding: 24px 12px; gap: 18px; flex-wrap: wrap;
+  }
+  /* 设置面板 */
+  .setup {
+    width: 320px; background: #fff; border-radius: 16px; padding: 18px;
+    box-shadow: 0 16px 40px rgba(0,0,0,.18); align-self: flex-start;
+  }
+  .setup h2 { font-size: 16px; color: #222; margin-bottom: 4px; }
+  .setup p.hint { font-size: 11px; color: #999; margin-bottom: 12px; line-height: 1.5; }
+  .setup label { font-size: 12px; color: #555; display: block; margin: 10px 0 4px; }
+  .setup textarea {
+    width: 100%; height: 96px; border: 1px solid #e2e2e2; border-radius: 10px;
+    padding: 10px; font-size: 13px; resize: vertical; font-family: inherit; line-height: 1.5;
+  }
+  .rowctl { display: flex; align-items: center; gap: 14px; margin-top: 10px; flex-wrap: wrap; }
+  .rowctl select { padding: 6px 10px; border-radius: 8px; border: 1px solid #e2e2e2; font-size: 13px; }
+  .chk { font-size: 12px; color: #444; display: flex; align-items: center; gap: 5px; cursor: pointer; }
+  .start {
+    margin-top: 16px; width: 100%; background: var(--wx-green); color: #fff; border: none;
+    border-radius: 10px; padding: 11px; font-size: 14px; font-weight: 600; cursor: pointer;
+    transition: filter .15s, transform .05s;
+  }
+  .start:hover { filter: brightness(1.05); }
+  .start:active { transform: scale(.99); }
+  .start:disabled { background: #b6c4bd; cursor: default; }
+  .health { font-size: 11px; margin-top: 10px; color: #888; }
+  .health b { color: var(--wx-green); }
+  .health b.off { color: #d9534f; }
+
+  /* 手机外壳 */
+  .phone {
+    width: 400px; height: 86vh; max-height: 860px; background: var(--chat-bg);
+    border-radius: 34px; box-shadow: 0 24px 64px rgba(0,0,0,.35);
+    overflow: hidden; display: flex; flex-direction: column; border: 9px solid #111;
+    position: relative;
+  }
+  .nav { background: var(--nav); color: #fff; padding: 13px 14px 9px; flex-shrink: 0; }
+  .nav-top { display: flex; align-items: center; font-size: 15px; font-weight: 600; }
+  .nav-top .back { font-size: 21px; margin-right: 8px; opacity: .8; }
+  .nav-top .title { flex: 1; text-align: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 0 6px; }
+  .nav-top .more { font-size: 19px; opacity: .8; }
+  .nav-sub { text-align: center; font-size: 10.5px; color: #b9b9b9; margin-top: 3px; }
+  .statusbar {
+    background: #f3f3f3; border-bottom: 1px solid #e2e2e2; font-size: 10.5px; color: #777;
+    padding: 5px 12px; flex-shrink: 0; min-height: 24px; line-height: 1.3;
+  }
+  .statusbar .thinking { color: var(--wx-green); font-weight: 600; }
+
+  /* 成员条 */
+  .roster {
+    display: flex; gap: 7px; padding: 8px 10px; background: #fafafa;
+    border-bottom: 1px solid #e8e8e8; overflow-x: auto; flex-shrink: 0;
+  }
+  .member { display: flex; flex-direction: column; align-items: center; min-width: 46px; }
+  .avatar {
+    width: 36px; height: 36px; border-radius: 9px; display: flex; align-items: center;
+    justify-content: center; font-size: 19px; color: #fff; box-shadow: 0 1px 2px rgba(0,0,0,.12);
+  }
+  .member .nm { font-size: 9.5px; color: #555; margin-top: 3px; max-width: 46px; text-align: center; line-height: 1.15; }
+  .member.offline { opacity: .4; filter: grayscale(1); }
+  .a-host { background: #e0a800; }
+  .a-hist { background: #e08a2b; }
+  .a-edit { background: #3a7bd5; }
+  .a-proof { background: #9b59b6; }
+  .a-reader { background: #e84393; }
+  .a-oc { background: #34495e; }
+  .a-hermes { background: #555; }
+
+  /* 聊天区 */
+  .chat {
+    flex: 1; padding: 14px 12px; overflow-y: auto; display: flex; flex-direction: column; gap: 13px;
+  }
+  .row { display: flex; gap: 8px; align-items: flex-start; animation: pop .26s ease-out; }
+  @keyframes pop { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+  .row.host .bubble { background: var(--host); border: 1px solid var(--host-bd); font-style: italic; }
+  .row.host .name { color: #b8860b; }
+  .bubble-wrap { max-width: 78%; display: flex; flex-direction: column; }
+  .name { font-size: 11px; color: #888; margin: 0 4px 3px; }
+  .name .round {
+    font-size: 9px; background: #e6e6e6; color: #888; border-radius: 4px; padding: 0 4px; margin-left: 4px;
+  }
+  .bubble {
+    padding: 9px 12px; border-radius: 8px; font-size: 14px; line-height: 1.55; color: #111;
+    background: #fff; box-shadow: 0 1px 1px rgba(0,0,0,.06); white-space: pre-wrap; word-break: break-word;
+  }
+  .ext-tag {
+    display: inline-block; font-size: 9px; background: #dfe6ec; color: #5a6b78; border-radius: 4px;
+    padding: 1px 5px; margin-left: 6px; vertical-align: middle;
+  }
+  /* 打字中 */
+  .typing .bubble { display: flex; gap: 4px; padding: 12px 14px; }
+  .dot { width: 7px; height: 7px; border-radius: 50%; background: #bcc4cc; animation: blink 1.2s infinite; }
+  .dot:nth-child(2) { animation-delay: .2s; }
+  .dot:nth-child(3) { animation-delay: .4s; }
+  @keyframes blink { 0%,60%,100% { opacity: .3; } 30% { opacity: 1; } }
+  /* 轮次分隔 */
+  .divider { text-align: center; font-size: 11px; color: #9aa3ab; margin: 2px 0; }
+  .divider span { background: #d9dee3; padding: 2px 12px; border-radius: 10px; }
+  .sysnote {
+    align-self: center; font-size: 11px; color: #888; background: #e3e7eb; padding: 5px 12px;
+    border-radius: 10px; max-width: 88%; text-align: center; animation: pop .26s ease-out;
+  }
+  .footer-note {
+    text-align: center; font-size: 11px; color: #07c160; font-weight: 600; padding: 6px 0 2px;
+  }
+  .chat::-webkit-scrollbar { width: 6px; }
+  .chat::-webkit-scrollbar-thumb { background: #c3cbd2; border-radius: 3px; }
+</style>
+</head>
+<body>
+  <div class="setup">
+    <h2>🪑 创作圆桌</h2>
+    <p class="hint">有界多轮群聊：进程内 4 人格（史料考据 / 文学编辑 / 文字校勘 / 读者视角）+ 桌搭主持串场；可勾选外部 A2A peer。发言按「到达序」实时冒出。</p>
+    <label for="topic">圆桌议题</label>
+    <textarea id="topic" placeholder="粘贴一段待评审的文稿，或描述想讨论的创作问题…"></textarea>
+    <div class="rowctl">
+      <div>
+        <label for="rounds" style="margin-top:0">轮次</label>
+        <select id="rounds">
+          <option value="1">1 轮</option>
+          <option value="2" selected>2 轮（收窄）</option>
+          <option value="3">3 轮（上限）</option>
+        </select>
+      </div>
+      <label class="chk"><input type="checkbox" id="cb-oc" checked /> OpenCode</label>
+      <label class="chk"><input type="checkbox" id="cb-hermes" /> Hermes</label>
+    </div>
+    <button class="start" id="startBtn" onclick="startRoundtable()">开始圆桌</button>
+    <div class="health" id="health"></div>
+  </div>
+
+  <div class="phone">
+    <div class="nav">
+      <div class="nav-top"><span class="back">‹</span><span class="title" id="topicTitle">《待定》创作圆桌</span><span class="more">⋯</span></div>
+      <div class="nav-sub" id="navSub">桌搭主持 · 有界多轮 · 到达序</div>
+    </div>
+    <div class="statusbar" id="statusbar">准备就绪 — 在左侧设置议题后点「开始圆桌」</div>
+    <div class="roster" id="roster"></div>
+    <div class="chat" id="chat"></div>
+  </div>
+
+<script>
+  const DEFAULT_TOPIC = "（未填写议题）";
+
+  // 基础成员（进程内人格 + 主持）
+  const BASE = [
+    { name: "桌搭（主持）", role: "主持", kind: "host",   emoji: "🎙️", cls: "a-host" },
+    { name: "史料考据",   role: "史实核验", kind: "persona", emoji: "📜", cls: "a-hist" },
+    { name: "文学编辑",   role: "叙事技艺", kind: "persona", emoji: "✒️", cls: "a-edit" },
+    { name: "文字校勘",   role: "字句打磨", kind: "persona", emoji: "🔍", cls: "a-proof" },
+    { name: "读者视角",   role: "受众温度计", kind: "persona", emoji: "👓", cls: "a-reader" },
+  ];
+  const PEER_STYLE = {
+    "OpenCode": { emoji: "🤖", cls: "a-oc" },
+    "Hermes":   { emoji: "🌐", cls: "a-hermes" },
+  };
+
+  let pending = {};   // speaker -> [rowEl]  （思考中气泡队列，FIFO）
+  let evSource = null;
+  let done = false;
+
+  function esc(s) {
+    return String(s == null ? "" : s)
+      .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  }
+  function styleFor(name) {
+    const b = BASE.find(m => m.name === name);
+    if (b) return b;
+    if (PEER_STYLE[name]) return { name, role: "外部·A2A", kind: "peer", ...PEER_STYLE[name] };
+    return { name, role: "外部·A2A", kind: "peer", emoji: "🤖", cls: "a-hermes" };
+  }
+  function $(id) { return document.getElementById(id); }
+  function scroll() { const c = $("chat"); c.scrollTop = c.scrollHeight; }
+
+  function setTopic(t) {
+    $("topicTitle").textContent = "《" + (t.length > 14 ? t.slice(0, 14) + "…" : t) + "》创作圆桌";
+  }
+
+  function buildRoster(online, offline) {
+    const r = $("roster"); r.innerHTML = "";
+    BASE.forEach(m => addMember(r, m, false));
+    (online || []).forEach(n => { const s = styleFor(n); addMember(r, { name: n, ...s, role: s.role || "外部·A2A" }, false); });
+    (offline || []).forEach(n => { const s = styleFor(n); addMember(r, { name: n, ...s, role: s.role || "外部·A2A" }, true); });
+  }
+  function addMember(r, m, off) {
+    const d = document.createElement("div");
+    d.className = "member" + (off ? " offline" : "");
+    d.innerHTML = `<div class="avatar ${m.cls}">${m.emoji}</div><div class="nm">${esc(m.name)}</div>`;
+    r.appendChild(d);
+  }
+
+  function setStatus(online, offline) {
+    const o = (online && online.length) ? online.join("、") : "无";
+    const f = (offline && offline.length) ? offline.join("、") : "无";
+    $("statusbar").innerHTML = `外部 peer 在线：<b>${esc(o)}</b>　|　离线跳过：<b>${esc(f)}</b>`;
+  }
+
+  function updateThinking() {
+    let n = 0; for (const k in pending) n += pending[k].length;
+    const base = $("statusbar").innerHTML.split("　|　")[0];
+    if (n > 0) {
+      $("statusbar").innerHTML = `${base}　|　<span class="thinking">${n} 人思考中…</span>`;
+    } else {
+      $("statusbar").innerHTML = base + "　|　<span class=\"thinking\"></span>";
+    }
+  }
+
+  function addTyping(d) {
+    const s = styleFor(d.speaker);
+    const row = document.createElement("div");
+    row.className = "row typing";
+    row.innerHTML = `<div class="avatar ${s.cls}">${s.emoji}</div>
+      <div class="bubble-wrap"><div class="name">${esc(d.speaker)} <span class="round">R${d.round}</span></div>
+      <div class="bubble"><span class="dot"></span><span class="dot"></span><span class="dot"></span></div></div>`;
+    $("chat").appendChild(row); scroll();
+    (pending[d.speaker] = pending[d.speaker] || []).push(row);
+    updateThinking();
+  }
+
+  function addTurn(d) {
+    const s = styleFor(d.speaker);
+    let row, q = pending[d.speaker];
+    if (q && q.length) { row = q.shift(); if (q.length === 0) delete pending[d.speaker]; }
+    else { row = document.createElement("div"); }
+    let tag = "R" + d.round;
+    if (d.round === 0) tag = "开场";
+    else if (d.phase === "divergence") tag = "串场·分歧";
+    else if (d.phase === "synthesis") tag = "收尾·纪要";
+    const peerTag = d.kind === "peer" ? `<span class="ext-tag">外部·A2A</span>` : "";
+    const hostCls = d.kind === "host" ? " host" : "";
+    row.className = "row" + hostCls;
+    row.innerHTML = `<div class="avatar ${s.cls}">${s.emoji}</div>
+      <div class="bubble-wrap"><div class="name">${esc(d.speaker)} <span class="round">${tag}</span>${peerTag}</div>
+      <div class="bubble">${esc(d.text)}</div></div>`;
+    if (!row.parentNode) $("chat").appendChild(row);
+    scroll(); updateThinking();
+  }
+
+  function addDivider(round) {
+    const d = document.createElement("div");
+    d.className = "divider";
+    d.innerHTML = `<span>— 第 ${round} 轮 —</span>`;
+    $("chat").appendChild(d); scroll();
+  }
+  function addSystem(text) {
+    const d = document.createElement("div");
+    d.className = "sysnote"; d.textContent = text;
+    $("chat").appendChild(d); scroll();
+  }
+
+  function handle(d) {
+    switch (d.type) {
+      case "meta": setTopic(d.topic); break;
+      case "peers": buildRoster(d.online, d.offline); setStatus(d.online, d.offline); break;
+      case "round_start": addDivider(d.round); break;
+      case "speaking": addTyping(d); break;
+      case "turn": addTurn(d); break;
+      case "info": addSystem(d.text); break;
+      case "done": finish(d); break;
+    }
+  }
+
+  function finish(d) {
+    done = true;
+    if (evSource) evSource.close();
+    addSystem(`✅ 圆桌结束 · 实际 ${d.rounds_held} 轮` + (d.divergences && d.divergences.length ? ` · 收尾分歧 ${d.divergences.length} 条` : " · 已达成一致"));
+    const b = $("startBtn"); b.disabled = false; b.textContent = "重新开始";
+    $("statusbar").innerHTML = `外部 peer 在线：<b>${esc((d.peers_online||[]).join("、")||"无")}</b>　|　离线跳过：<b>${esc((d.peers_offline||[]).join("、")||"无")}</b>`;
+  }
+
+  function startRoundtable() {
+    if (evSource) evSource.close();
+    done = false; pending = {};
+    const topic = $("topic").value.trim();
+    const rounds = $("rounds").value;
+    const peers = [];
+    if ($("cb-oc").checked) peers.push("OpenCode|" + location.origin + "/opencode-a2a/");
+    if ($("cb-hermes").checked) peers.push("Hermes|http://localhost:9900");
+    const btn = $("startBtn");
+    btn.disabled = true; btn.textContent = "圆桌进行中…";
+    $("chat").innerHTML = ""; $("roster").innerHTML = "";
+    const url = "/api/stream?topic=" + encodeURIComponent(topic || DEFAULT_TOPIC) +
+                "&max_rounds=" + rounds +
+                "&peers=" + encodeURIComponent(peers.join(","));
+    evSource = new EventSource(url);
+    evSource.onmessage = (e) => { try { handle(JSON.parse(e.data)); } catch (_) {} };
+    evSource.onerror = () => { if (done && evSource) evSource.close(); };
+  }
+
+  // 启动时探一下 LLM 可用性（仅提示，不影响运行）
+  fetch("/api/health").then(r => r.json()).then(j => {
+    $("health").innerHTML = j.llm
+      ? "后端 LLM：<b>已就绪</b>，可真实发言"
+      : "后端 LLM：<b class=\"off\">未就绪</b>，将返回占位文本（仍可测试流程）";
+  }).catch(() => { $("health").textContent = ""; });
+</script>
+</body>
+</html>

@@ -76,6 +76,8 @@ class OpenCodeDriver:
                 "（`npm i -g opencode-ai` 或下载独立二进制）并确保在 PATH 中，或在环境变量\n"
                 "OPENCODE_BIN 指定其路径，本适配层即自动生效。"
             )
+        # 默认用 opencode 免费模型（实测可用、无需 API key）；可用 OPENCODE_MODEL 覆盖。
+        model = os.environ.get("OPENCODE_MODEL", "opencode/deepseek-v4-flash-free")
         try:
             # opencode 是编码 agent，会在给定目录里读写文件；用临时目录沙箱，
             # 并明确要求「只回答、不要改动文件」，避免它去动用户工程。
@@ -84,10 +86,14 @@ class OpenCodeDriver:
                 "你正在参与一场文学创作圆桌讨论，请仅以文字回答、"
                 f"不要创建或修改任何文件。问题：{prompt}"
             )
-            # 无头调用参数组合（opencode 桌面版 asar 内含这些 flag；若实际 CLI 略有差异，
-            # 返回文本会带上 stderr 便于排查）。
+            # 无头调用：`opencode run` 为当前 CLI 的无头执行子命令；
+            # `--pure` 关闭外部插件避免干扰；模型显式指定避免依赖用户默认 provider。
+            args = [binpath, "run", "--pure"]
+            if model:
+                args += ["-m", model]
+            args.append(safe_prompt)
             proc = subprocess.run(
-                [binpath, "--prompt", safe_prompt, "--print", "--non-interactive"],
+                args,
                 cwd=workdir,
                 capture_output=True,
                 text=True,

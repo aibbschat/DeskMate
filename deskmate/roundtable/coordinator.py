@@ -134,13 +134,13 @@ class Roundtable:
 
     # ---- 各类发言 ----
     async def _call_llm(
-        self, system: str, user: str, temperature: float = 0.5, max_tokens: int = 1200, retries: int = 2
+        self, system: str, user: str, temperature: float = 0.5, max_tokens: int = 1200, retries: int = 3
     ) -> str:
-        """带重试的 LLM 调用：空内容/异常时重试，避免偶发空回复拖垮圆桌。"""
+        """带重试的 LLM 调用：空内容/异常时重试（含短退避），避免偶发空回复拖垮圆桌。"""
         if not llm_available():
             return "（LLM 未就绪）"
         last = "（LLM 未返回内容）"
-        for _ in range(retries + 1):
+        for attempt in range(retries + 1):
             try:
                 out = await asyncio.to_thread(
                     chat, system, user, temperature=temperature, max_tokens=max_tokens
@@ -151,6 +151,8 @@ class Roundtable:
             except Exception as exc:  # noqa: BLE001
                 logger.exception("llm call failed")
                 last = f"（调用失败：{exc}）"
+            if attempt < retries:
+                await asyncio.sleep(1.5)
         return last
 
     async def _host(self, instruction: str, ctx: str) -> str:
@@ -184,14 +186,6 @@ class Roundtable:
         except Exception as exc:  # noqa: BLE001
             return f"（{peer.name} 调用失败：{exc}）"
 
-    async def _persona_turn(self, persona, ctx, r, divergences) -> Turn:
-        text = await self._persona_speak(persona, ctx, r, divergences)
-        return Turn(r, persona.name, persona.role, text, "persona")
-
-    async def _peer_turn(self, peer, ctx, r, divergences) -> Turn:
-        text = await self._peer_speak(peer, ctx, r, divergences)
-        return Turn(r, peer.name, "peer", text, "peer")
-
     async def _probe_peers(self) -> tuple[list[PeerSpec], list[str]]:
         online: list[PeerSpec] = []
         offline: list[str] = []
@@ -210,43 +204,108 @@ class Roundtable:
                 offline.append(p.name)
         return online, offline
 
-    # ---- 主流程 ----
-    async def run(self) -> RoundtableResult:
+    # ---- 主流程（流式：逐个事件吐出，供 SSE / UI 实时渲染）----
+    async def run_stream(self):
+        """异步生成器：边跑边 yield 事件 dict，供 SSE / UI 实时驱动。
+
+        事件类型：
+          - meta:     {topic, max_rounds}
+          - peers:    {online:[name], offline:[name]}
+          - speaking: {round, speaker, role, kind}            # 开始"思考"
+          - turn:     {round, speaker, role, kind, text, phase?}  # 发言完成
+          - round_start: {round}
+          - info:     {text}
+          - done:     {rounds_held, divergences, peers_online, peers_offline, synthesis}
+        """
         online, offline = await self._probe_peers()
+        yield {"type": "meta", "topic": self.topic, "max_rounds": self.max_rounds}
+        yield {"type": "peers", "online": [p.name for p in online], "offline": offline}
+
         transcript: list[Turn] = []
 
         # 开场
+        yield {"type": "speaking", "round": 0, "speaker": "桌搭（主持）", "role": "host", "kind": "host"}
         opening = await self._host(
             "请为话题开场：点明议题、说明规则（有界多轮、到达序发言、最后由你做纪要），"
             "并抛出一个讨论引子。",
             "",
         )
+        yield {
+            "type": "turn",
+            "round": 0,
+            "speaker": "桌搭（主持）",
+            "role": "host",
+            "kind": "host",
+            "text": opening,
+        }
         transcript.append(Turn(0, "桌搭（主持）", "host", opening, "host"))
 
         divergences: list[str] = []
         rounds_held = 0
         for r in range(1, self.max_rounds + 1):
             ctx = self._fmt(transcript)
-            # 到达序：并发提交，按完成顺序收集
-            coros = [self._persona_turn(p, ctx, r, divergences) for p in self.personas]
-            coros += [self._peer_turn(p, ctx, r, divergences) for p in online]
-            for fut in asyncio.as_completed(coros):
-                turn = await fut
-                transcript.append(turn)
+            yield {"type": "round_start", "round": r}
+
+            # 到达序：并发提交，按完成顺序收集；发言前先广播"思考中"
+            items = [
+                (p.name, p.role, "persona", self._persona_speak(p, ctx, r, divergences))
+                for p in self.personas
+            ]
+            items += [
+                (p.name, "peer", "peer", self._peer_speak(p, ctx, r, divergences))
+                for p in online
+            ]
+            tasks = []
+            for name, role, kind, coro in items:
+                tasks.append((asyncio.create_task(coro), name, role, kind))
+                yield {"type": "speaking", "round": r, "speaker": name, "role": role, "kind": kind}
+
+            meta_by_task = {t: (name, role, kind) for (t, name, role, kind) in tasks}
+            pending_set = {t for t, _, _, _ in tasks}
+            while pending_set:
+                done, pending_set = await asyncio.wait(
+                    pending_set, return_when=asyncio.FIRST_COMPLETED
+                )
+                for fut in done:
+                    name, role, kind = meta_by_task[fut]
+                    text = fut.result()
+                    turn = Turn(r, name, role, text, kind)
+                    transcript.append(turn)
+                    yield {
+                        "type": "turn",
+                        "round": r,
+                        "speaker": name,
+                        "role": role,
+                        "kind": kind,
+                        "text": text,
+                    }
+
             rounds_held = r
 
-            # 第 1..(n-1) 轮后做分歧归纳；收窄轮若无分歧则提前收尾
+            # 收窄轮：归纳分歧；若已一致则提前收尾
             if r < self.max_rounds:
+                yield {"type": "speaking", "round": r, "speaker": "桌搭（主持）", "role": "host", "kind": "host"}
                 div_text = await self._host(
                     "根据上面第 %d 轮讨论，提炼仍未达成一致的关键分歧点"
                     "（最多 3 条，每条一句话，用『- 』开头）。若已高度一致，请直接写『无重大分歧』。" % r,
                     self._fmt(transcript),
                 )
                 divergences = self._parse_divergences(div_text)
+                yield {
+                    "type": "turn",
+                    "round": r,
+                    "speaker": "桌搭（主持）",
+                    "role": "host",
+                    "kind": "host",
+                    "text": div_text,
+                    "phase": "divergence",
+                }
                 if not divergences:
+                    yield {"type": "info", "text": "各方已高度一致，圆桌提前收尾。"}
                     break
 
         # 纪要
+        yield {"type": "speaking", "round": rounds_held + 1, "speaker": "桌搭（主持）", "role": "host", "kind": "host"}
         synthesis = await self._host(
             "圆桌结束。请基于全部讨论写一份《圆桌纪要》：先列共识，再列尚存分歧，"
             "最后给作者 3 条可执行的修改建议。",
@@ -262,8 +321,50 @@ class Roundtable:
                     if t.kind != "host"
                 )
             )
-        transcript.append(Turn(rounds_held + 1, "桌搭（主持）", "host", synthesis, "host"))
+        yield {
+            "type": "turn",
+            "round": rounds_held + 1,
+            "speaker": "桌搭（主持）",
+            "role": "host",
+            "kind": "host",
+            "text": synthesis,
+            "phase": "synthesis",
+        }
+        yield {
+            "type": "done",
+            "rounds_held": rounds_held,
+            "divergences": divergences,
+            "peers_online": [p.name for p in online],
+            "peers_offline": offline,
+            "synthesis": synthesis,
+        }
 
+    async def run(self) -> RoundtableResult:
+        """便捷同步式运行：消费 run_stream 汇总为结构化结果（保留原 CLI / 测试接口）。"""
+        transcript: list[Turn] = []
+        online: list[PeerSpec] = []
+        offline: list[str] = []
+        rounds_held = 0
+        divergences: list[str] = []
+        synthesis = ""
+        async for ev in self.run_stream():
+            t = ev["type"]
+            if t == "turn":
+                # 主持的"分歧归纳"轮不计入 transcript（与原始行为一致）
+                if ev.get("phase") == "divergence":
+                    continue
+                transcript.append(
+                    Turn(ev["round"], ev["speaker"], ev["role"], ev["text"], ev.get("kind", "persona"))
+                )
+            elif t == "peers":
+                online = [PeerSpec(n, "") for n in ev["online"]]
+                offline = ev["offline"]
+            elif t == "done":
+                rounds_held = ev["rounds_held"]
+                divergences = ev["divergences"]
+                online = [PeerSpec(n, "") for n in ev["peers_online"]]
+                offline = ev["peers_offline"]
+                synthesis = ev["synthesis"]
         return RoundtableResult(
             topic=self.topic,
             turns=transcript,

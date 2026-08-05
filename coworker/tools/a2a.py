@@ -115,7 +115,11 @@ def _send_message(url: str, message: str, context_id: str = "", timeout: int = _
         "Content-Type": "application/json",
         "A2A-Version": _PROTOCOL_VERSION,
     }
-    req = urllib.request.Request(url, data=data, headers=headers, method="POST")
+    # 规范化尾斜杠：A2A JSON-RPC 端点挂在服务根 `/`，而 Starlette 的 submount
+    # （如 /opencode-a2a）会把无尾斜杠的 POST 307 重定向到 `/opencode-a2a/`，
+    # 标准库 urlopen 对 307 不一定跟随，直接带上尾斜杠规避。
+    post_url = url if url.endswith("/") else url + "/"
+    req = urllib.request.Request(post_url, data=data, headers=headers, method="POST")
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         return json.loads(resp.read().decode("utf-8"))
 
