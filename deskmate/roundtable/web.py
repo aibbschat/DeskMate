@@ -59,6 +59,21 @@ class ReadBody(BaseModel):
     chapter_range: str = ""
 
 
+class TrendSaveBody(BaseModel):
+    """POST /api/trends 与 /api/trends/format 的请求体：沉淀 / 整理潮流简报。"""
+
+    markdown: str = ""
+    genre: str = ""
+    title: str = ""
+    llm_format: bool = False
+
+
+class TrendActiveBody(BaseModel):
+    """POST /api/trends/active 的请求体：切换当前生效简报。"""
+
+    id: str = ""
+
+
 def _read_html() -> str:
     try:
         with open(TEMPLATE_PATH, "r", encoding="utf-8") as f:
@@ -326,6 +341,60 @@ def create_app(rt_port: int = 9920) -> FastAPI:
                 "Connection": "keep-alive",
             },
         )
+
+    @app.get("/api/trends")
+    async def list_trends():
+        """列出各期潮流简报 + 当前生效 id。"""
+        from deskmate.roundtable import trends as _trends
+
+        briefs = _trends.list_briefs()
+        latest = _trends.get_latest()
+        return JSONResponse({"briefs": briefs, "latest": latest.get("id") if latest else None})
+
+    @app.get("/api/trends/{bid}")
+    async def get_trend(bid: str):
+        """查看某一期潮流简报（含正文）。"""
+        from deskmate.roundtable import trends as _trends
+
+        b = _trends.get_brief(bid)
+        if not b:
+            return JSONResponse({"error": "not found"}, status_code=404)
+        return JSONResponse(b)
+
+    @app.post("/api/trends")
+    async def save_trend(body: TrendSaveBody):
+        """沉淀一期潮流简报（可选让 LLM 先结构化）。"""
+        from deskmate.roundtable import trends as _trends
+
+        md = (body.markdown or "").strip()
+        if not md:
+            return JSONResponse({"error": "empty markdown"}, status_code=400)
+        if body.llm_format:
+            md = _trends.build_via_llm(md, body.genre)
+        b = _trends.save_brief(md, genre=body.genre, title=body.title)
+        return JSONResponse(b)
+
+    @app.post("/api/trends/active")
+    async def set_trend_active(body: TrendActiveBody):
+        """切换当前生效的潮流简报。"""
+        from deskmate.roundtable import trends as _trends
+
+        if not body.id:
+            return JSONResponse({"error": "missing id"}, status_code=400)
+        if not _trends.set_active(body.id):
+            return JSONResponse({"error": "not found"}, status_code=404)
+        return JSONResponse({"ok": True, "active": body.id})
+
+    @app.post("/api/trends/format")
+    async def format_trend(body: TrendSaveBody):
+        """把零散观察交给 LLM 整理成标准格式（不落盘，仅返回结构化文本）。"""
+        from deskmate.roundtable import trends as _trends
+
+        md = (body.markdown or "").strip()
+        if not md:
+            return JSONResponse({"error": "empty markdown"}, status_code=400)
+        out = _trends.build_via_llm(md, body.genre)
+        return JSONResponse({"markdown": out})
 
     return app
 

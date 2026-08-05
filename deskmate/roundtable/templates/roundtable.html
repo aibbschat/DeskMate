@@ -206,6 +206,31 @@
       <div class="rstat" id="readStat" style="font-size:11px;color:#666;margin-top:5px;line-height:1.5"></div>
     </div>
 
+    <label style="margin-top:16px">📈 潮流简报（手动沉淀 · 与圆桌解耦）</label>
+    <div id="trendStatus" style="font-size:11.5px;color:#666;margin-top:4px;line-height:1.5">当前生效：加载中…</div>
+    <div id="trendList" style="margin-top:6px;display:flex;flex-direction:column;gap:6px"></div>
+    <button id="trendNewBtn" onclick="openTrendEditor()" style="margin-top:8px;width:100%;background:#8e44ad;color:#fff;border:none;border-radius:10px;padding:9px;font-size:12.5px;font-weight:600;cursor:pointer">＋ 新一期潮流</button>
+
+    <div id="trendEditor" style="display:none;margin-top:8px;border:1px solid var(--line);border-radius:10px;padding:12px">
+      <input id="trendGenre" placeholder="类型视角（如 历史小说，留空=通用）" style="width:100%;font-size:12px;padding:7px 9px;border:1px solid var(--line);border-radius:8px;box-sizing:border-box;margin-bottom:6px" />
+      <input id="trendTitle" placeholder="本期标题（可选）" style="width:100%;font-size:12px;padding:7px 9px;border:1px solid var(--line);border-radius:8px;box-sizing:border-box;margin-bottom:6px" />
+      <textarea id="trendMd" rows="9" placeholder="粘贴/写下你对当下潮流的观察…" style="width:100%;font-size:12.5px;padding:8px;border:1px solid var(--line);border-radius:8px;box-sizing:border-box;resize:vertical;font-family:inherit;line-height:1.55;color:#222"></textarea>
+      <div style="display:flex;gap:7px;margin-top:8px;flex-wrap:wrap">
+        <button onclick="saveTrend()" style="background:var(--wx-green);color:#fff;border:none;border-radius:8px;padding:8px 14px;font-size:12.5px;font-weight:600;cursor:pointer">保存本期</button>
+        <button onclick="aiFormatTrend()" style="background:#fff;color:#555;border:1px solid var(--line);border-radius:8px;padding:8px 12px;font-size:12.5px;cursor:pointer">让 AI 整理</button>
+        <button onclick="closeTrendEditor()" style="background:#fff;color:#888;border:1px solid var(--line);border-radius:8px;padding:8px 12px;font-size:12.5px;cursor:pointer">取消</button>
+      </div>
+      <div id="trendMsg" style="font-size:11px;color:#666;margin-top:6px;min-height:14px"></div>
+    </div>
+
+    <div id="trendViewer" style="display:none;margin-top:8px;border:1px dashed var(--line);border-radius:10px;padding:10px;background:#fafbfc">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+        <b id="trendViewerTitle" style="font-size:12.5px;color:#444"></b>
+        <span onclick="closeTrendViewer()" style="font-size:12px;color:#999;cursor:pointer">✕</span>
+      </div>
+      <pre id="trendViewerBody" style="white-space:pre-wrap;word-break:break-word;font-size:12px;line-height:1.55;color:#333;max-height:240px;overflow:auto;margin:0"></pre>
+    </div>
+
     <label style="margin-top:16px">桌搭人格（可多选）</label>
     <div class="rowctl" id="personaChks" style="margin-top:6px">
       <label class="chk"><input type="checkbox" class="pc" value="historian" checked /> 史料考据</label>
@@ -613,6 +638,101 @@
       ? "后端 LLM：<b>已就绪</b>，可真实发言"
       : "后端 LLM：<b class=\"off\">未就绪</b>，将返回占位文本（仍可测试流程）";
   }).catch(() => { $("health").textContent = ""; });
+
+  // ===== 潮流简报（手动沉淀，与圆桌解耦）=====
+  function loadTrends() {
+    fetch(API + "/trends").then(r => r.json()).then(j => {
+      const list = $("trendList");
+      const latest = j.latest;
+      const briefs = j.briefs || [];
+      if (latest) {
+        const cur = briefs.find(b => b.id === latest);
+        if (cur) $("trendStatus").innerHTML = "当前生效：<b style=\"color:#8e44ad\">" + esc(cur.date) + (cur.title ? " · " + esc(cur.title) : "") + "</b>";
+      } else {
+        $("trendStatus").textContent = "当前生效：尚无（圆桌将以纯静态人格运行）";
+      }
+      list.innerHTML = "";
+      briefs.forEach(b => {
+        const div = document.createElement("div");
+        div.style.cssText = "border:1px solid var(--line);border-radius:8px;padding:7px 9px;font-size:11.5px;";
+        const isCur = b.id === latest;
+        div.innerHTML =
+          "<div style=\"color:#444\"><b>" + esc(b.date) + "</b>" + (b.title ? " · " + esc(b.title) : "") +
+          (b.genre ? " · <span style='color:#8a929c'>" + esc(b.genre) + "</span>" : "") +
+          (isCur ? " · <span style='color:#8e44ad'>当前</span>" : "") + "</div>" +
+          "<div style=\"margin-top:5px;display:flex;gap:8px\">" +
+            (isCur ? "" : "<span style=\"color:#8e44ad;cursor:pointer\" onclick=\"setActiveTrend('" + b.id + "')\">设为当前</span>") +
+            "<span style=\"color:#3a7bd5;cursor:pointer\" onclick=\"viewTrend('" + b.id + "')\">查看</span>" +
+          "</div>";
+        list.appendChild(div);
+      });
+    }).catch(() => { $("trendStatus").textContent = "潮流简报加载失败"; });
+  }
+
+  function openTrendEditor() {
+    const d = new Date();
+    const today = d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
+    $("trendGenre").value = "";
+    $("trendTitle").value = "";
+    $("trendMd").value =
+      "# 潮流简报 · " + today + "\n\n> 类型视角：历史小说\n\n## 流行元素\n- \n\n## 影视风向\n- \n\n## 类型热点\n- ";
+    $("trendMsg").textContent = "";
+    $("trendEditor").style.display = "block";
+    $("trendViewer").style.display = "none";
+  }
+  function closeTrendEditor() { $("trendEditor").style.display = "none"; }
+
+  function saveTrend() {
+    const md = $("trendMd").value.trim();
+    if (!md) { $("trendMsg").textContent = "内容不能为空"; return; }
+    $("trendMsg").textContent = "保存中…";
+    fetch(API + "/trends", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ markdown: md, genre: $("trendGenre").value.trim(), title: $("trendTitle").value.trim() }),
+    }).then(r => r.json()).then(j => {
+      if (j.error) { $("trendMsg").textContent = "保存失败：" + j.error; return; }
+      $("trendMsg").textContent = "✅ 已沉淀一期（已自动设为当前）";
+      setTimeout(() => { closeTrendEditor(); loadTrends(); }, 600);
+    }).catch(e => { $("trendMsg").textContent = "保存失败：" + e.message; });
+  }
+
+  function aiFormatTrend() {
+    const md = $("trendMd").value.trim();
+    if (!md) { $("trendMsg").textContent = "先写点观察再让 AI 整理"; return; }
+    $("trendMsg").textContent = "AI 整理中…";
+    fetch(API + "/trends/format", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ markdown: md, genre: $("trendGenre").value.trim() }),
+    }).then(r => r.json()).then(j => {
+      if (j.error) { $("trendMsg").textContent = "整理失败：" + j.error; return; }
+      $("trendMd").value = j.markdown;
+      $("trendMsg").textContent = "✅ 已整理为标准格式，确认后点保存";
+    }).catch(e => { $("trendMsg").textContent = "整理失败：" + e.message; });
+  }
+
+  function setActiveTrend(id) {
+    fetch(API + "/trends/active", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id }),
+    }).then(() => loadTrends()).catch(() => {});
+  }
+
+  function viewTrend(id) {
+    fetch(API + "/trends/" + id).then(r => r.json()).then(j => {
+      if (j.error) return;
+      $("trendViewerTitle").textContent = j.date + (j.title ? " · " + j.title : "") + (j.genre ? " · " + j.genre : "");
+      $("trendViewerBody").textContent = j.content;
+      $("trendViewer").style.display = "block";
+      $("trendEditor").style.display = "none";
+    }).catch(() => {});
+  }
+  function closeTrendViewer() { $("trendViewer").style.display = "none"; }
+
+  // 页面载入即拉取潮流简报列表
+  loadTrends();
 </script>
 </body>
 </html>

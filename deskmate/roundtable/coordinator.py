@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Optional
 
 from deskmate.memory.llm import chat, llm_available
+from deskmate.roundtable import trends
 from deskmate.roundtable.personas import PERSONAS, Persona
 
 logger = logging.getLogger(__name__)
@@ -351,8 +352,18 @@ class Roundtable:
         self, persona: Persona, ctx: str, round_no: int, divergences: list[str], story_block: str = ""
     ) -> str:
         prompt = self._participant_prompt(ctx, round_no, divergences, story_block=story_block)
+        # 市场化人格（publisher/adaptation/genre）注入「当前生效」的潮流简报，
+        # 让它们拿到"今天的眼光"；其余人格不被潮流污染。无简报时安静跳过。
+        system = persona.system_prompt
+        if persona.id in trends.MARKET_PERSONA_IDS:
+            try:
+                inject = trends.trend_for_persona(persona.id)
+                if inject:
+                    system = persona.system_prompt + "\n\n" + inject
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("潮流简报注入失败(跳过): %s", exc)
         return await self._call_llm(
-            persona.system_prompt, prompt, temperature=0.7, max_tokens=6000, retries=2
+            system, prompt, temperature=0.7, max_tokens=6000, retries=2
         )
 
     async def _peer_speak(
