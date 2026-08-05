@@ -1614,7 +1614,11 @@ export interface ProviderInfo {
 
 export async function getProviders(): Promise<ProviderInfo[]> {
   const res = await authedFetch(`${httpBase()}/v1/providers`);
-  return res.json();
+  // 防御：非 2xx（后端未就绪/500）或返回非数组（错误体对象）时兜底为空数组，
+  // 否则 setProviders 收到非数组会导致 providers.find(...) 白屏崩溃。
+  if (!res.ok) return [];
+  const data = await res.json();
+  return Array.isArray(data) ? data : [];
 }
 
 export async function setProvider(

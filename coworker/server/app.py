@@ -3077,6 +3077,21 @@ def create_app(manager: SessionManager) -> FastAPI:
         finally:
             manager.unregister_event_client(ws.send_json)
 
+    # A2A 多租户 Mount('/{tenant}') 是贪婪的前缀挂载，会把 /v1/agents、
+    # /v1/providers 等 /v1/* 业务路由当作 tenant=v1 拦截掉（返回 404，前端
+    # 把错误体当数组用而白屏崩溃）。把它移到路由表末尾作为兜底，确保所有
+    # 具体业务路由（/v1/*、/roundtable）优先匹配；真正的多租户路径
+    # （如 /acme/message:send）仍会落到这里。
+    try:
+        _routes = app.router.routes
+        for _i in range(len(_routes) - 1, -1, -1):
+            if getattr(_routes[_i], "path", "") == "/{tenant}":
+                _tenant_mount = _routes.pop(_i)
+                _routes.append(_tenant_mount)
+                break
+    except Exception as exc:  # noqa: BLE001
+        logging.getLogger(__name__).warning("调整 /{tenant} 挂载顺序失败：%s", exc)
+
     # 创作圆桌：挂到 /roundtable（独立页面，本地可信，免鉴权）。
     # 圆桌内部自带 /opencode-a2a 适配层，挂载后完整路径为 /roundtable/opencode-a2a。
     try:
