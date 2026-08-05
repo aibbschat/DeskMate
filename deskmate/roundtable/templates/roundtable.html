@@ -188,7 +188,10 @@
     </div>
     <p class="tag">有界多轮群聊：进程内人格 + 桌搭主持串场；可勾选外部 A2A peer。发言按「到达序」实时冒出。</p>
     <label for="topic">圆桌议题</label>
-    <textarea id="topic" placeholder="粘贴一段待评审的文稿，或描述想讨论的创作问题…"></textarea>
+    <textarea id="topic" placeholder="描述想讨论的创作问题，例如：请评审第一章的开篇节奏与人物出场"></textarea>
+
+    <label for="manuscript" style="margin-top:12px">待评审文稿（文件路径 / 书名）</label>
+    <input type="text" id="manuscript" class="inp" placeholder="如 /Users/.../国子监秘闻录.docx 或 国子监秘闻录" style="margin-top:6px;width:100%;font-size:12px;box-sizing:border-box" />
 
     <label style="margin-top:16px">桌搭人格（可多选）</label>
     <div class="rowctl" id="personaChks" style="margin-top:6px">
@@ -424,7 +427,8 @@
     if ($("cb-oc").checked) peers.push("OpenCode|" + location.origin + OPENCODE_A2A);
     if ($("cb-hermes").checked) peers.push("Hermes|" + $("hermes-url").value.trim());
     const personaIds = Array.from(document.querySelectorAll(".pc:checked")).map(c => c.value).join(",");
-    return { topic, rounds, peers, personaIds };
+    const manuscriptPath = $("manuscript") ? $("manuscript").value.trim() : "";
+    return { topic, rounds, peers, personaIds, manuscriptPath };
   }
 
   function launch(opts) {
@@ -452,6 +456,7 @@
       peers: cfg.peers.join(","),
       personas: cfg.personaIds,
       context: ctxParam,
+      manuscript_path: cfg.manuscriptPath || "",
     };
     evSource = { _ctrl: new AbortController(), close() { this._ctrl.abort(); } };
     (async () => {

@@ -46,6 +46,7 @@ class StreamBody(BaseModel):
     peers: str = ""
     personas: str = ""
     context: str = ""
+    manuscript_path: str = ""
 
 
 def _read_html() -> str:
@@ -87,8 +88,30 @@ def create_app(rt_port: int = 9920) -> FastAPI:
         peers: str,
         personas: str,
         context: str,
+        manuscript_path: str = "",
     ) -> StreamingResponse:
-        """构造圆桌 SSE 响应：peer/persona/context 解析 + 协调器流式事件。"""
+        """构造圆桌 SSE 响应：peer/persona/context/manuscript 解析 + 协调器流式事件。"""
+        # 加载待评审文稿（文件路径/书名），注入 prompt 让人格基于真实文本发言
+        manuscript_text = ""
+        mp = (manuscript_path or "").strip()
+        if mp:
+            try:
+                from deskmate.tools.review import load_manuscript_file
+
+                result = load_manuscript_file(mp)
+                if result.get("error"):
+                    logger.warning("加载文稿失败(%s): %s", mp, result["error"])
+                else:
+                    chapters = result.get("chapters") or []
+                    parts = []
+                    for c in chapters[:5]:  # 限前 5 章防超 context
+                        parts.append(f"### {c.get('title', '')}\n{c.get('text', '')}")
+                    manuscript_text = "\n\n".join(parts)
+                    if result.get("bible"):
+                        manuscript_text = f"【设定圣经摘要】\n{result['bible'][:2000]}\n\n" + manuscript_text
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("加载文稿异常(%s): %s", mp, exc)
+
         peer_list: list[PeerSpec] = []
         for part in (peers or "").split(","):
             part = part.strip()
@@ -112,6 +135,7 @@ def create_app(rt_port: int = 9920) -> FastAPI:
             personas=selected_personas,
             max_rounds=int(max_rounds),
             context=context or "",
+            manuscript_text=manuscript_text,
         )
 
         async def gen():
@@ -139,15 +163,17 @@ def create_app(rt_port: int = 9920) -> FastAPI:
         peers: str = "",
         personas: str = "",
         context: str = "",
+        manuscript_path: str = "",
     ):
-        """SSE（GET，兼容小 context）。peers: 逗号分隔 `名称|url`；context: 续聊前情。"""
-        return _make_stream(request, topic, max_rounds, peers, personas, context)
+        """SSE（GET，兼容小 context）。manuscript_path: 稿件文件路径/书名，注入 prompt。"""
+        return _make_stream(request, topic, max_rounds, peers, personas, context, manuscript_path)
 
     @app.post("/api/stream")
     async def stream_post(request: Request, body: StreamBody):
         """SSE（POST，context 放 body，避免续聊累积超 URL 长度限制）。"""
         return _make_stream(
-            request, body.topic, body.max_rounds, body.peers, body.personas, body.context
+            request, body.topic, body.max_rounds, body.peers, body.personas,
+            body.context, body.manuscript_path,
         )
 
     return app

@@ -89,6 +89,7 @@ class Roundtable:
         personas: Optional[list[Persona]] = None,
         max_rounds: int = 2,
         context: str = "",
+        manuscript_text: str = "",
     ) -> None:
         self.topic = topic
         self.peers = peers or []
@@ -97,6 +98,8 @@ class Roundtable:
         self.max_rounds = max(1, min(3, max_rounds))
         # 续聊上下文：上一轮圆桌的讨论记录 + 用户追问，注入给主持与各方作为前情
         self.context = (context or "").strip()
+        # 待评审的文稿正文（从文件加载或用户粘贴），注入 prompt 让人格基于真实文本发言
+        self.manuscript_text = (manuscript_text or "").strip()
 
     # ---- 文本/解析辅助 ----
     def _fmt(self, turns: list[Turn]) -> str:
@@ -116,12 +119,28 @@ class Roundtable:
                 out.append(m.group(2).strip())
         return out[:3]
 
+    def _manuscript_block(self) -> str:
+        """构造待评审文稿的 prompt 片段（截断防超 context）。"""
+        if not self.manuscript_text:
+            return ""
+        text = self.manuscript_text
+        if len(text) > 20000:
+            text = text[:20000] + "\n…（文稿较长，已截断至前段）"
+        return f"【待评审文稿】\n{text}\n\n"
+
     def _participant_prompt(
         self, ctx: str, round_no: int, divergences: list[str], peer_name: str | None = None
     ) -> str:
         bg = self.context
+        ms = self._manuscript_block()
         if round_no == 1:
-            base = f"圆桌话题：{self.topic}\n\n"
+            base = f"圆桌议题：{self.topic}\n\n"
+            if ms:
+                base += ms
+                base += (
+                    "⚠️ 请严格基于上述文稿内容发言，不得编造文中没有的人物、情节或场景。"
+                    "如果文稿内容不足以支撑你的判断，请明言\"文稿未提供足够信息\"。\n\n"
+                )
             if bg:
                 base += (
                     "【背景：此前圆桌的讨论记录，供你了解前情，不必复述】\n"
@@ -129,12 +148,15 @@ class Roundtable:
                 )
             base += (
                 f"已有讨论记录：\n{ctx}\n\n"
-                f"请以上述身份，针对话题发表你的看法（中文，聚焦你的职责）。"
+                f"请以上述身份，针对议题发表你的看法（中文，聚焦你的职责）。"
             )
         else:
             d = "\n".join(f"- {d}" for d in divergences) or "（无）"
-            base = (
-                f"圆桌话题：{self.topic}\n\n当前讨论记录：\n{ctx}\n\n"
+            base = f"圆桌议题：{self.topic}\n\n"
+            if ms:
+                base += ms
+            base += (
+                f"当前讨论记录：\n{ctx}\n\n"
                 f"本轮为收窄式答辩，请【仅针对以下尚未达成一致的分歧点】发表你的补充或答辩，"
                 f"不要重复已说过的内容：\n{d}"
             )
@@ -166,9 +188,10 @@ class Roundtable:
         return last
 
     async def _host(self, instruction: str, ctx: str) -> str:
+        ms = self._manuscript_block()
         return await self._call_llm(
             HOST_SYSTEM,
-            f"{instruction}\n\n圆桌上下文：\n{ctx}",
+            f"{instruction}\n\n{ms}圆桌上下文：\n{ctx}",
             temperature=0.4,
             max_tokens=1500,
             retries=2,
