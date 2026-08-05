@@ -4,6 +4,7 @@ import {
   finalizeAutomationRun,
   getArtifacts,
   getHealth,
+  httpBase,
   getRecentWorkspaces,
   getSessionMessages,
   getSessions,
@@ -1547,7 +1548,7 @@ export function App() {
         />
       ) : surface === "roundtable" ? (
         <div className="roundtable-view">
-          <iframe src="/roundtable/" title="创作圆桌" />
+          <iframe src={`${httpBase()}/roundtable/`} title="创作圆桌" />
         </div>
       ) : (
       <div className={"main" + (surface === "session" && agent !== "chat" && !railHidden ? " rail-open" : "")}>

@@ -18,6 +18,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import re
@@ -48,6 +49,7 @@ from deskmate.memory.llm import chat, llm_available
 from deskmate.tools.review import review_chapter
 from deskmate.writing import (
     format_chapter_block,
+    format_profile_for_prompt,
     format_report_card,
     generate_letter,
     proofread_chapter,
@@ -235,10 +237,20 @@ class DeskmateAgentExecutor(AgentExecutor):
     async def _run_editorial(self, query: str) -> str:
         chapters = _split_chapters(query)
         parts: list[str] = []
+        # 加载全局风格画像（~/.deskmate/style_profile.json），提升编辑专家分析质量
+        profile_text = ""
+        try:
+            _desk = os.path.expanduser(os.environ.get("DESKMATE_DIR", "~/.deskmate"))
+            _sp = os.path.join(_desk, "style_profile.json")
+            if os.path.isfile(_sp):
+                _p = json.loads(open(_sp, encoding="utf-8").read()).get("profile")
+                profile_text = format_profile_for_prompt(_p)
+        except Exception:  # noqa: BLE001
+            pass
         for title, body in chapters:
             if not body:
                 continue
-            r = await asyncio.to_thread(review_chapter, title, body, "", "")
+            r = await asyncio.to_thread(review_chapter, title, body, profile_text, "")
             parts.append(f"## {title}")
             if isinstance(r, dict) and r.get("error"):
                 parts.append(f"⚠️ {r['error']}")

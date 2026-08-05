@@ -23,6 +23,7 @@ from typing import Optional
 
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
+from pydantic import BaseModel
 
 from deskmate.roundtable.coordinator import PeerSpec, Roundtable
 from deskmate.roundtable.personas import PERSONAS
@@ -35,6 +36,16 @@ DEFAULT_TOPIC = (
 )
 
 TEMPLATE_PATH = os.path.join(os.path.dirname(__file__), "templates", "roundtable.html")
+
+
+class StreamBody(BaseModel):
+    """POST /api/stream 的请求体（context 放 body 避免 URL 超长）。"""
+
+    topic: str = DEFAULT_TOPIC
+    max_rounds: int = 2
+    peers: str = ""
+    personas: str = ""
+    context: str = ""
 
 
 def _read_html() -> str:
@@ -69,21 +80,15 @@ def create_app(rt_port: int = 9920) -> FastAPI:
 
         return JSONResponse({"llm": llm_available()})
 
-    @app.get("/api/stream")
-    async def stream(
+    def _make_stream(
         request: Request,
-        topic: str = DEFAULT_TOPIC,
-        max_rounds: int = 2,
-        peers: str = "",
-        personas: str = "",
-        context: str = "",
-    ):
-        """SSE：把圆桌事件逐个推给前端。
-
-        peers 格式：逗号分隔的 `名称|url`（如 `OpenCode|http://localhost:9920/opencode-a2a`）。
-        personas 格式：逗号分隔的人格 id（historian/editor/proofreader/reader），不传则默认全部。
-        context 格式：上一轮讨论记录文本（续聊时由前端携带），注入给主持与各方作为前情。
-        """
+        topic: str,
+        max_rounds: int,
+        peers: str,
+        personas: str,
+        context: str,
+    ) -> StreamingResponse:
+        """构造圆桌 SSE 响应：peer/persona/context 解析 + 协调器流式事件。"""
         peer_list: list[PeerSpec] = []
         for part in (peers or "").split(","):
             part = part.strip()
@@ -95,7 +100,6 @@ def create_app(rt_port: int = 9920) -> FastAPI:
             else:
                 peer_list.append(PeerSpec(part, part))
 
-        # 解析选中的进程内人格（前端勾选）
         selected_personas = None
         ids = [p.strip() for p in (personas or "").split(",") if p.strip()]
         if ids:
@@ -125,6 +129,25 @@ def create_app(rt_port: int = 9920) -> FastAPI:
                 "X-Accel-Buffering": "no",
                 "Connection": "keep-alive",
             },
+        )
+
+    @app.get("/api/stream")
+    async def stream(
+        request: Request,
+        topic: str = DEFAULT_TOPIC,
+        max_rounds: int = 2,
+        peers: str = "",
+        personas: str = "",
+        context: str = "",
+    ):
+        """SSE（GET，兼容小 context）。peers: 逗号分隔 `名称|url`；context: 续聊前情。"""
+        return _make_stream(request, topic, max_rounds, peers, personas, context)
+
+    @app.post("/api/stream")
+    async def stream_post(request: Request, body: StreamBody):
+        """SSE（POST，context 放 body，避免续聊累积超 URL 长度限制）。"""
+        return _make_stream(
+            request, body.topic, body.max_rounds, body.peers, body.personas, body.context
         )
 
     return app

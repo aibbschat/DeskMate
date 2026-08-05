@@ -210,6 +210,7 @@
       <label class="chk"><input type="checkbox" id="cb-oc" checked /> OpenCode</label>
       <label class="chk"><input type="checkbox" id="cb-hermes" /> Hermes</label>
     </div>
+    <input type="text" id="hermes-url" value="http://localhost:9900" placeholder="Hermes A2A URL" style="margin-top:6px;width:100%;font-size:12px;box-sizing:border-box" />
 
     <button class="start" id="startBtn" onclick="startRoundtable()">开始圆桌</button>
     <div class="health" id="health"></div>
@@ -421,7 +422,7 @@
     activePersonas = [host, ...chosen];
     const peers = [];
     if ($("cb-oc").checked) peers.push("OpenCode|" + location.origin + OPENCODE_A2A);
-    if ($("cb-hermes").checked) peers.push("Hermes|http://localhost:9900");
+    if ($("cb-hermes").checked) peers.push("Hermes|" + $("hermes-url").value.trim());
     const personaIds = Array.from(document.querySelectorAll(".pc:checked")).map(c => c.value).join(",");
     return { topic, rounds, peers, personaIds };
   }
@@ -445,14 +446,41 @@
     const ctxParam = opts.followupText
       ? (transcriptText + "\n\n【用户追问】" + opts.followupText)
       : "";
-    const url = API + "/stream?topic=" + encodeURIComponent(cfg.topic || DEFAULT_TOPIC) +
-                "&max_rounds=" + cfg.rounds +
-                "&peers=" + encodeURIComponent(cfg.peers.join(",")) +
-                "&personas=" + encodeURIComponent(cfg.personaIds) +
-                (ctxParam ? "&context=" + encodeURIComponent(ctxParam) : "");
-    evSource = new EventSource(url);
-    evSource.onmessage = (e) => { try { handle(JSON.parse(e.data)); } catch (_) {} };
-    evSource.onerror = () => { if (done && evSource) evSource.close(); };
+    const payload = {
+      topic: cfg.topic || DEFAULT_TOPIC,
+      max_rounds: parseInt(cfg.rounds),
+      peers: cfg.peers.join(","),
+      personas: cfg.personaIds,
+      context: ctxParam,
+    };
+    evSource = { _ctrl: new AbortController(), close() { this._ctrl.abort(); } };
+    (async () => {
+      try {
+        const resp = await fetch(API + "/stream", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+          signal: evSource._ctrl.signal,
+        });
+        const reader = resp.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+        for (;;) {
+          const { done: _done, value } = await reader.read();
+          if (_done) break;
+          buffer += decoder.decode(value, { stream: true });
+          let idx;
+          while ((idx = buffer.indexOf("\n\n")) >= 0) {
+            const chunk = buffer.slice(0, idx);
+            buffer = buffer.slice(idx + 2);
+            const line = chunk.split("\n").find(l => l.startsWith("data: "));
+            if (line) { try { handle(JSON.parse(line.slice(6))); } catch (_) {} }
+          }
+        }
+      } catch (e) {
+        if (e.name !== "AbortError") console.error("圆桌 SSE 错误", e);
+      }
+    })();
 
     // 初次开始才自动折叠设定栏；续聊不打扰阅读
     if (opts.clear && !$("sidebar").classList.contains("collapsed")) toggleSidebar();

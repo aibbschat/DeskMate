@@ -185,16 +185,24 @@ class Roundtable:
     async def _peer_speak(
         self, peer: PeerSpec, ctx: str, round_no: int, divergences: list[str]
     ) -> str:
-        try:
-            from coworker.tools.a2a import a2a_call
+        from coworker.tools.a2a import a2a_call
 
-            prompt = self._participant_prompt(ctx, round_no, divergences, peer_name=peer.name)
-            res = await asyncio.wait_for(
-                asyncio.to_thread(a2a_call, peer.url, prompt), timeout=120
-            )
-            return _strip_a2a_header(res)
-        except Exception as exc:  # noqa: BLE001
-            return f"（{peer.name} 调用失败：{exc}）"
+        prompt = self._participant_prompt(ctx, round_no, divergences, peer_name=peer.name)
+        last = f"（{peer.name} 调用失败）"
+        for attempt in range(3):  # 与 _call_llm 一致的重试（含短退避），避免网络抖动误判 peer 离线
+            try:
+                res = await asyncio.wait_for(
+                    asyncio.to_thread(a2a_call, peer.url, prompt), timeout=120
+                )
+                if res and res.strip():
+                    return _strip_a2a_header(res)
+                last = f"（{peer.name} 返回空内容）"
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("peer %s 调用失败(第%d次): %s", peer.name, attempt + 1, exc)
+                last = f"（{peer.name} 调用失败：{exc}）"
+            if attempt < 2:
+                await asyncio.sleep(1.5)
+        return last
 
     async def _probe_peers(self) -> tuple[list[PeerSpec], list[str]]:
         online: list[PeerSpec] = []
@@ -204,7 +212,7 @@ class Roundtable:
                 from coworker.tools.a2a import a2a_discover
 
                 res = await asyncio.wait_for(
-                    asyncio.to_thread(a2a_discover, p.url), timeout=6
+                    asyncio.to_thread(a2a_discover, p.url), timeout=12
                 )
                 if res.startswith("Error") or res.startswith("No Agent Card"):
                     offline.append(p.name)
@@ -360,9 +368,6 @@ class Roundtable:
         async for ev in self.run_stream():
             t = ev["type"]
             if t == "turn":
-                # 主持的"分歧归纳"轮不计入 transcript（与原始行为一致）
-                if ev.get("phase") == "divergence":
-                    continue
                 transcript.append(
                     Turn(ev["round"], ev["speaker"], ev["role"], ev["text"], ev.get("kind", "persona"))
                 )
