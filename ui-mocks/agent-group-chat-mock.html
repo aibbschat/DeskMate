@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>创作圆桌 · 有界多轮群聊原型</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+    background: #c9d2dc;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    min-height: 100vh;
+    padding: 20px;
+  }
+  .phone {
+    width: 390px;
+    height: 820px;
+    background: #ededed;
+    border-radius: 38px;
+    box-shadow: 0 20px 60px rgba(0,0,0,.35);
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    border: 10px solid #111;
+    position: relative;
+  }
+  .nav { background: #2e2e2e; color: #fff; padding: 14px 14px 10px; }
+  .nav-top { display: flex; align-items: center; font-size: 16px; font-weight: 600; }
+  .nav-top .back { font-size: 22px; margin-right: 8px; }
+  .nav-top .title { flex: 1; text-align: center; }
+  .nav-top .more { font-size: 20px; }
+  .nav-sub { text-align: center; font-size: 11px; color: #b9b9b9; margin-top: 2px; }
+  .roster { display: flex; gap: 6px; padding: 8px 10px; background: #fafafa; border-bottom: 1px solid #e2e2e2; overflow-x: auto; }
+  .member { display: flex; flex-direction: column; align-items: center; min-width: 44px; }
+  .avatar { width: 36px; height: 36px; border-radius: 9px; display: flex; align-items: center; justify-content: center; font-size: 19px; color: #fff; }
+  .member .nm { font-size: 10px; color: #555; margin-top: 3px; max-width: 44px; text-align: center; line-height: 1.1; }
+  .a-author { background: #07c160; }
+  .a-host { background: #e0a800; }
+  .a-hist { background: #e08a2b; }
+  .a-edit { background: #3a7bd5; }
+  .a-proof { background: #9b59b6; }
+  .a-reader { background: #e84393; }
+  .a-hermes { background: #555; }
+  .chat { flex: 1; padding: 12px 10px; overflow-y: auto; display: flex; flex-direction: column; gap: 13px; }
+  .row { display: flex; gap: 8px; align-items: flex-start; }
+  .row.me { flex-direction: row-reverse; }
+  .row.host .bubble { background: #fff7e6; border: 1px solid #f0d999; font-style: italic; }
+  .bubble-wrap { max-width: 76%; display: flex; flex-direction: column; }
+  .row.me .bubble-wrap { align-items: flex-end; }
+  .name { font-size: 11px; color: #888; margin: 0 4px 3px; }
+  .name .round { font-size: 9px; background: #eee; color: #999; border-radius: 4px; padding: 0 4px; margin-left: 4px; }
+  .bubble { padding: 9px 12px; border-radius: 8px; font-size: 14px; line-height: 1.5; color: #111; background: #fff; box-shadow: 0 1px 1px rgba(0,0,0,.06); word-break: break-word; }
+  .row.me .bubble { background: #95ec69; }
+  .ext-tag { display: inline-block; font-size: 9px; background: #ddd; color: #666; border-radius: 4px; padding: 1px 5px; margin-left: 6px; vertical-align: middle; }
+  .typing .bubble { display: flex; gap: 4px; padding: 12px; }
+  .dot { width: 7px; height: 7px; border-radius: 50%; background: #bbb; animation: blink 1.2s infinite; }
+  .dot:nth-child(2) { animation-delay: .2s; }
+  .dot:nth-child(3) { animation-delay: .4s; }
+  @keyframes blink { 0%,60%,100%{opacity:.3} 30%{opacity:1} }
+  .inputbar { background: #f7f7f7; border-top: 1px solid #e2e2e2; padding: 9px 12px; display: flex; align-items: center; gap: 8px; }
+  .inputbar .box { flex: 1; background: #fff; border-radius: 6px; padding: 9px 12px; color: #bbb; font-size: 14px; }
+  .inputbar .at { color: #07c160; font-weight: 700; }
+  .hidden { display: none; }
+  .replay { position: absolute; bottom: 22px; right: 14px; background: #07c160; color: #fff; border: none; border-radius: 18px; padding: 8px 14px; font-size: 12px; cursor: pointer; box-shadow: 0 4px 12px rgba(0,0,0,.25); }
+</style>
+</head>
+<body>
+  <div class="phone">
+    <div class="nav">
+      <div class="nav-top"><span class="back">‹</span><span class="title">《国子监秘闻录》创作圆桌</span><span class="more">⋯</span></div>
+      <div class="nav-sub">7 人 · 桌搭主持 · 史料考据 · 文学编辑 · 文字校勘 · 读者视角 · Hermes · 我</div>
+    </div>
+    <div class="roster">
+      <div class="member"><div class="avatar a-author">我</div><div class="nm">我</div></div>
+      <div class="member"><div class="avatar a-host">🎙️</div><div class="nm">桌搭主持</div></div>
+      <div class="member"><div class="avatar a-hist">📜</div><div class="nm">史料考据</div></div>
+      <div class="member"><div class="avatar a-edit">✒️</div><div class="nm">文学编辑</div></div>
+      <div class="member"><div class="avatar a-proof">🔍</div><div class="nm">文字校勘</div></div>
+      <div class="member"><div class="avatar a-reader">👓</div><div class="nm">读者视角</div></div>
+      <div class="member"><div class="avatar a-hermes">🤖</div><div class="nm">Hermes</div></div>
+    </div>
+    <div class="chat" id="chat">
+
+      <div class="row me" data-step="0">
+        <div class="avatar a-author">我</div>
+        <div class="bubble-wrap"><div class="bubble">第三章贴上来啦，大家看看节奏和史实哈～ @史料考据 @文学编辑</div></div>
+      </div>
+
+      <div class="row hidden" data-step="1">
+        <div class="avatar a-hist">📜</div>
+        <div class="bubble-wrap"><div class="name">史料考据官 <span class="round">R1</span></div>
+          <div class="bubble">第4页写"永乐三年设东厂"——东厂是永乐十八年（1420）才立，年份提前了十五年。另"司业"秩从四品，文中写成正三品了。两处建议改。</div></div>
+      </div>
+
+      <div class="row hidden" data-step="2">
+        <div class="avatar a-edit">✒️</div>
+        <div class="bubble-wrap"><div class="name">文学编辑 <span class="round">R1</span></div>
+          <div class="bubble">第二章结尾转场太急：主角从朝堂直接跳到市井，缺情绪过渡，读者会被"扔出去"。建议加半页由朝堂余怒到市井烟火的铺陈。</div></div>
+      </div>
+
+      <div class="row hidden" data-step="3">
+        <div class="avatar a-proof">🔍</div>
+        <div class="bubble-wrap"><div class="name">文字校勘 <span class="round">R1</span></div>
+          <div class="bubble">通读一遍无明显语病；仅第6页"既可…亦可…"句式重复三次，略显单调，可换一种。</div></div>
+      </div>
+
+      <div class="row hidden" data-step="4">
+        <div class="avatar a-reader">👓</div>
+        <div class="bubble-wrap"><div class="name">读者视角 <span class="round">R1</span></div>
+          <div class="bubble">作为明粉读者，最想知道国子监日常啥样，目前铺垫偏少。开头来段"监生晨读"的生活气描写，代入感会强很多。</div></div>
+      </div>
+
+      <div class="row hidden" data-step="5">
+        <div class="avatar a-hermes">🤖</div>
+        <div class="bubble-wrap"><div class="name">Hermes<span class="ext-tag">外部·A2A</span> <span class="round">R1</span></div>
+          <div class="bubble">查同时期话本，市井对话偏口语多俚语。第6页书生对话偏文绉绉，可掺几句俚语更贴身份。来源：明中叶白话小说语料库。</div></div>
+      </div>
+
+      <div class="row host hidden" data-step="6">
+        <div class="avatar a-host">🎙️</div>
+        <div class="bubble-wrap"><div class="name">桌搭主持 <span class="round">串场</span></div>
+          <div class="bubble">第一轮收到五位意见～有两个分歧点值得再聊：①东厂设立年份（史料考据官指出硬伤）②第二章转场节奏（文学编辑建议加过渡）。第二轮请史料考据官、文学编辑就这两点针对性补充，其余老师先歇着👀</div></div>
+      </div>
+
+      <div class="row hidden" data-step="7">
+        <div class="avatar a-hist">📜</div>
+        <div class="bubble-wrap"><div class="name">史料考据官 <span class="round">R2·针对①</span></div>
+          <div class="bubble">补充：东厂确为永乐十八年。若情节需要"提早布局"的戏剧感，可改为"内臣已有预置东厂之议"，既保留张力又不踩硬伤。</div></div>
+      </div>
+
+      <div class="row hidden" data-step="8">
+        <div class="avatar a-edit">✒️</div>
+        <div class="bubble-wrap"><div class="name">文学编辑 <span class="round">R2·针对②</span></div>
+          <div class="bubble">同意加过渡；若嫌篇幅，也可用一句主角内心独白带过朝堂到市井的情绪切换，更省墨。两种都给你。</div></div>
+      </div>
+
+      <div class="row host hidden" data-step="9">
+        <div class="avatar a-host">🎙️</div>
+        <div class="bubble-wrap"><div class="name">桌搭主持 <span class="round">收尾</span></div>
+          <div class="bubble">两轮到这～ <b>共识</b>：史料年份、转场都需打磨，文字与读者视角无争议。 <b>待你拍板</b>：①东厂用"预置之议"改法？②转场用半页铺陈还是一句独白？要"群纪要"我随时出 📋</div></div>
+      </div>
+
+    </div>
+    <div class="inputbar"><div class="box">说点什么… <span class="at">@</span> 提及某人</div></div>
+  </div>
+  <button class="replay" onclick="replay()">▶ 重播群聊</button>
+
+<script>
+  function replay() {
+    const steps = document.querySelectorAll('[data-step]');
+    steps.forEach(s => s.classList.add('hidden'));
+    let i = 0;
+    function next() {
+      if (i < steps.length) { steps[i].classList.remove('hidden'); i++; setTimeout(next, 1000); }
+    }
+    setTimeout(next, 400);
+  }
+  replay();
+</script>
+</body>
+</html>

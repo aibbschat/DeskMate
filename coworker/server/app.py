@@ -225,6 +225,7 @@ def create_app(manager: SessionManager) -> FastAPI:
             or request.method == "OPTIONS"
             or request.url.path in tokenless_paths
             or request.url.path.startswith(A2A_OPEN_PREFIXES)
+            or request.url.path.startswith("/roundtable/")
             or _request_authenticated(request)
         ):
             return await call_next(request)
@@ -3075,6 +3076,24 @@ def create_app(manager: SessionManager) -> FastAPI:
             pass
         finally:
             manager.unregister_event_client(ws.send_json)
+
+    # 创作圆桌：挂到 /roundtable（独立页面，本地可信，免鉴权）。
+    # 圆桌内部自带 /opencode-a2a 适配层，挂载后完整路径为 /roundtable/opencode-a2a。
+    try:
+        from deskmate.roundtable.web import create_app as _create_roundtable_app
+        from starlette.routing import Mount as _Mount
+
+        _rt_mount = _Mount("/roundtable", _create_roundtable_app())
+        # 必须排在 /{tenant} 通配挂载之前，否则 /roundtable/ 会被 A2A 多租户路由抢匹配返回 404。
+        _routes = app.router.routes
+        _idx = next(
+            (i for i, r in enumerate(_routes) if getattr(r, "path", "") == "/{tenant}"),
+            len(_routes),
+        )
+        _routes.insert(_idx, _rt_mount)
+        logging.getLogger(__name__).info("创作圆桌已挂载于 /roundtable")
+    except Exception as exc:  # noqa: BLE001
+        logging.getLogger(__name__).warning("创作圆桌挂载失败（功能不可用）：%s", exc)
 
     return app
 

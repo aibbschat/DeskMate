@@ -289,7 +289,7 @@ export function App() {
   // load; corrected by loadSettings.
   const [modelReady, setModelReady] = useState(true);
   const [surface, setSurface] = useState<
-    "session" | "scheduled" | "integrations" | "audit" | "inbox" | "persona" | "settings" | "experts"
+    "session" | "scheduled" | "integrations" | "audit" | "inbox" | "persona" | "settings" | "experts" | "roundtable"
   >("session");
   // A remembered Scheduled-detail target must not outlive the surface (see the
   // scheduledOpenId comment above): nav re-entry lands on the list, never a
@@ -1501,6 +1501,8 @@ export function App() {
         onOpenAudit={() => setSurface("audit")}
         onOpenInbox={() => setSurface("inbox")}
         onOpenExperts={() => setSurface("experts")}
+        onOpenRoundtable={() => setSurface("roundtable")}
+        roundtableActive={surface === "roundtable"}
         scheduledActive={surface === "scheduled"}
         integrationsActive={surface === "integrations"}
         auditActive={surface === "audit"}
@@ -1543,6 +1545,10 @@ export function App() {
           onSummon={summonExpert}
           onBack={() => setSurface("session")}
         />
+      ) : surface === "roundtable" ? (
+        <div className="roundtable-view" style={{ position: "absolute", inset: 0 }}>
+          <iframe src="/roundtable/" title="创作圆桌" className="w-full h-full border-0" />
+        </div>
       ) : (
       <div className={"main" + (surface === "session" && agent !== "chat" && !railHidden ? " rail-open" : "")}>
         <div className="main-topbar">

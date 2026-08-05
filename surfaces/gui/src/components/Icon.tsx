@@ -41,7 +41,8 @@ export type IconName =
   | "table"
   | "mic"
   | "stop"
-  | "x";
+  | "x"
+  | "users";
 
 export function Icon({
   name,
@@ -101,6 +102,16 @@ export function Icon({
         <svg {...s}>
           <path d="M9 4H5.5A1.5 1.5 0 0 0 4 5.5v13A1.5 1.5 0 0 0 5.5 20H9" />
           <path d="M15 8l4 4-4 4M19 12H9" />
+        </svg>
+      );
+    case "users":
+      // 群聊 / 圆桌：两个头像（一人略小、略后），代表多人讨论。
+      return (
+        <svg {...s}>
+          <circle cx="9" cy="9" r="3.2" />
+          <path d="M3.6 19a5.4 5.4 0 0 1 10.8 0" />
+          <circle cx="16.5" cy="10.5" r="2.4" />
+          <path d="M14.2 19a4 4 0 0 1 6.4 0" />
         </svg>
       );
     case "folder":

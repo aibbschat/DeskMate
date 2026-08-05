@@ -414,7 +414,7 @@
       document.querySelector('.pc[value="' + PERSONA_IDS[m.name] + '"]').checked);
     activePersonas = [host, ...chosen];
     const peers = [];
-    if ($("cb-oc").checked) peers.push("OpenCode|" + location.origin + "/opencode-a2a/");
+    if ($("cb-oc").checked) peers.push("OpenCode|" + location.origin + "/roundtable/opencode-a2a/");
     if ($("cb-hermes").checked) peers.push("Hermes|http://localhost:9900");
     const personaIds = Array.from(document.querySelectorAll(".pc:checked")).map(c => c.value).join(",");
     return { topic, rounds, peers, personaIds };
