@@ -125,8 +125,9 @@ def create_app(rt_port: int = 9920) -> FastAPI:
                     for c in selected:
                         parts.append(f"### {c.get('title', '')}\n{c.get('text', '')}")
                     manuscript_text = "\n\n".join(parts)
-                    if result.get("bible"):
-                        manuscript_text = f"【设定圣经摘要】\n{result['bible'][:2000]}\n\n" + manuscript_text
+                    # 注意：圣经宏观摘要与全书检索片段改由协调器统一注入
+                    # （deskmate.roundtable.coordinator.Roundtable._build_story_context），
+                    # 此处不再预插，避免与协调器的完整摘要重复。
             except Exception as exc:  # noqa: BLE001
                 logger.warning("加载文稿异常(%s): %s", mp, exc)
 
@@ -154,6 +155,8 @@ def create_app(rt_port: int = 9920) -> FastAPI:
             max_rounds=int(max_rounds),
             context=context or "",
             manuscript_text=manuscript_text,
+            manuscript_path=mp,
+            chapter_range=chapter_range,
         )
 
         async def gen():

@@ -17,6 +17,7 @@ import asyncio
 import logging
 import re
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Optional
 
 from deskmate.memory.llm import chat, llm_available
@@ -92,6 +93,8 @@ class Roundtable:
         max_rounds: int = 2,
         context: str = "",
         manuscript_text: str = "",
+        manuscript_path: str = "",
+        chapter_range: str = "",
     ) -> None:
         self.topic = topic
         self.peers = peers or []
@@ -102,6 +105,12 @@ class Roundtable:
         self.context = (context or "").strip()
         # 待评审的文稿正文（从文件加载或用户粘贴），注入 prompt 让人格基于真实文本发言
         self.manuscript_text = (manuscript_text or "").strip()
+        # 稿件来源路径（文件/目录/书稿名）：用于读取圣经与全书 FTS5 检索，不传则只注入正文
+        self.manuscript_path = (manuscript_path or "").strip()
+        self.chapter_range = (chapter_range or "").strip()
+        # 圣经懒加载缓存
+        self._bible_cache: Optional[dict] = None
+        self._bible_loaded: bool = False
 
     # ---- 文本/解析辅助 ----
     def _fmt(self, turns: list[Turn]) -> str:
@@ -121,8 +130,130 @@ class Roundtable:
                 out.append(m.group(2).strip())
         return out[:3]
 
-    def _manuscript_block(self, max_chars: int = 12000) -> str:
-        """构造待评审文稿的 prompt 片段（截断防超 context）。"""
+    # ---- 圣经 / 全局理解 上下文（P0：圆桌接入圣经）----
+    def _load_bible(self) -> Optional[dict]:
+        """懒加载稿件圣经（仅当提供了真实存在的稿件路径时；书稿名等非路径情况优雅跳过）。"""
+        if self._bible_loaded:
+            return self._bible_cache
+        self._bible_loaded = True
+        mp = self.manuscript_path
+        if not mp:
+            return None
+        if not Path(mp).expanduser().exists():
+            return None
+        try:
+            from deskmate.novel_memory.core import read_bible
+            self._bible_cache = read_bible(mp)
+        except Exception as exc:
+            logger.warning("读取圣经失败(%s): %s", mp, exc)
+            self._bible_cache = None
+        return self._bible_cache
+
+    def _bible_summary(self, max_chars: int = 4000) -> str:
+        """宏观摘要（P0-1）：把四份圣经压成一段总览，帮助人格把握前情，不局限于当前章。"""
+        bible = self._load_bible()
+        if not bible:
+            return ""
+        try:
+            from deskmate.report import format_bible_for_prompt
+            text = format_bible_for_prompt(bible).strip()
+        except Exception:
+            text = "\n\n".join(v.strip() for v in bible.values() if v and v.strip())
+        if not text:
+            return ""
+        if len(text) > max_chars:
+            text = text[:max_chars] + "\n…（圣经较长，已截断至宏观摘要）"
+        return text
+
+    def _current_chapter_text(self) -> str:
+        """当前评审章节原文（P0-2）：完整不截断，由 web.py 按章节范围选好传入 manuscript_text。"""
+        return (self.manuscript_text or "").strip()
+
+    def _bible_character_names(self, n: int = 3) -> list[str]:
+        """从圣经 CHARACTERS 段提取主角名（**加粗** 即人物），用于检索兜底：人物名必现于正文。"""
+        bible = self._load_bible()
+        chars = bible.get("CHARACTERS", "") if bible else ""
+        if not chars:
+            return []
+        import re as _re
+        names = _re.findall(r"\*\*([^*]+?)\*\*", chars)
+        seen: set[str] = set()
+        out: list[str] = []
+        for nm in names:
+            nm = nm.strip()
+            if nm and nm not in seen and len(nm) <= 8:
+                seen.add(nm)
+                out.append(nm)
+        return out[:n]
+
+    async def _fts5_recall(self, query: str, max_results: int = 6, max_chars: int = 1800) -> str:
+        """全书按需检索（P0-3）：按议题/分歧点召回全书相关片段，补充前情与伏笔呼应。
+
+        议题式查询（如「人物关系铺垫」）在原文里往往不是连续子串，会落空；
+        此时自动改用人名（圣经主角，必现于正文）检索，保证真实返回正文片段。
+        """
+        mp = self.manuscript_path
+        if not mp or not Path(mp).expanduser().exists():
+            return ""
+
+        def _search(q: str) -> str:
+            from deskmate.novel_memory.core import novel_search_fts5
+            return novel_search_fts5(q, mp, max_results)
+
+        def _clean(raw: str) -> str:
+            # novel_search_fts5 / _keyword_recall 可能附「人物圣经摘要」，圆桌已单独注入圣经，剔除避免重复
+            idx = raw.find("【人物圣经摘要】")
+            if idx != -1:
+                raw = raw[:idx].strip()
+            return raw.strip()
+
+        try:
+            recall = _clean(await asyncio.to_thread(_search, query))
+        except Exception as exc:
+            logger.warning("FTS5 检索失败: %s", exc)
+            return ""
+        # 议题落空 -> 回退到圣经人物名检索
+        if not recall:
+            names = self._bible_character_names()
+            if names:
+                try:
+                    recall = _clean(await asyncio.to_thread(_search, " ".join(names)))
+                except Exception as exc:
+                    logger.warning("FTS5 人物名检索失败: %s", exc)
+                    return ""
+        if not recall:
+            return ""
+        if len(recall) > max_chars:
+            recall = recall[:max_chars] + "\n…（检索片段较长，已截断）"
+        return recall
+
+    async def _build_story_context(self, round_no: int, divergence_query: str = "") -> str:
+        """组装全局理解上下文：宏观摘要 + 当前章原文(不截断) + 全书检索片段(按需)。"""
+        parts: list[str] = []
+        bible = self._bible_summary()
+        if bible:
+            parts.append(
+                "【设定圣经·宏观摘要】（全书人物/情节/时间线/伏笔总览，帮助你把握前情，"
+                "不局限于当前章）\n" + bible
+            )
+        chapter = self._current_chapter_text()
+        if chapter:
+            parts.append(
+                "【当前评审章节原文】（完整，未截断，请严格基于真实文本发言，勿编造文中没有的内容）\n"
+                + chapter
+            )
+        # 全书检索（按需）：第1轮按议题，后续轮按分歧点
+        if self.manuscript_path:
+            query = divergence_query or self.topic
+            recall = await self._fts5_recall(query)
+            if recall:
+                parts.append(
+                    "【全书相关片段（按议题检索所得，补充前情与伏笔呼应）】\n" + recall
+                )
+        return "\n\n".join(parts)
+
+    def _manuscript_block(self, max_chars: int = 24000) -> str:
+        """兜底：无稿件路径时，直接把 manuscript_text 截断注入（保留旧行为）。"""
         if not self.manuscript_text:
             return ""
         text = self.manuscript_text
@@ -132,10 +263,10 @@ class Roundtable:
 
     def _participant_prompt(
         self, ctx: str, round_no: int, divergences: list[str], peer_name: str | None = None,
-        max_ms_chars: int = 12000,
+        story_block: str = "",
     ) -> str:
         bg = self.context
-        ms = self._manuscript_block(max_ms_chars)
+        ms = story_block or self._manuscript_block()
         if round_no == 1:
             base = f"圆桌议题：{self.topic}\n\n"
             if ms:
@@ -190,8 +321,8 @@ class Roundtable:
                 await asyncio.sleep(1.5)
         return last
 
-    async def _host(self, instruction: str, ctx: str) -> str:
-        ms = self._manuscript_block()
+    async def _host(self, instruction: str, ctx: str, story_block: str = "") -> str:
+        ms = story_block or self._manuscript_block()
         return await self._call_llm(
             HOST_SYSTEM,
             f"{instruction}\n\n圆桌议题：{self.topic}\n\n{ms}圆桌上下文：\n{ctx}",
@@ -201,21 +332,21 @@ class Roundtable:
         )
 
     async def _persona_speak(
-        self, persona: Persona, ctx: str, round_no: int, divergences: list[str]
+        self, persona: Persona, ctx: str, round_no: int, divergences: list[str], story_block: str = ""
     ) -> str:
-        prompt = self._participant_prompt(ctx, round_no, divergences)
+        prompt = self._participant_prompt(ctx, round_no, divergences, story_block=story_block)
         return await self._call_llm(
             persona.system_prompt, prompt, temperature=0.7, max_tokens=6000, retries=2
         )
 
     async def _peer_speak(
-        self, peer: PeerSpec, ctx: str, round_no: int, divergences: list[str]
+        self, peer: PeerSpec, ctx: str, round_no: int, divergences: list[str], story_block: str = ""
     ) -> str:
         from coworker.tools.a2a import a2a_call
 
         # 外部 peer 输入截短（8000 字 vs 进程内人格 20000），减少远端处理时间
         prompt = self._participant_prompt(
-            ctx, round_no, divergences, peer_name=peer.name, max_ms_chars=8000
+            ctx, round_no, divergences, peer_name=peer.name, story_block=story_block[:8000]
         )
         last = f"（{peer.name} 调用失败）"
         for attempt in range(3):  # 与 _call_llm 一致的重试（含短退避），避免网络抖动误判 peer 离线
@@ -275,10 +406,12 @@ class Roundtable:
 
         # 开场
         yield {"type": "speaking", "round": 0, "speaker": "桌搭（主持）", "role": "host", "kind": "host"}
+        opening_ctx = await self._build_story_context(0, "")
         opening = await self._host(
             "请为话题开场：首先直接复述用户的原始议题（原样引用，不要重新定义或缩小范围），"
             "然后说明规则（有界多轮、到达序发言、最后由你做纪要），并抛出一个讨论引子。",
             self.context,
+            opening_ctx,
         )
         yield {
             "type": "turn",
@@ -292,17 +425,21 @@ class Roundtable:
 
         divergences: list[str] = []
         rounds_held = 0
+        story_block = ""
         for r in range(1, self.max_rounds + 1):
             ctx = self._fmt(transcript)
             yield {"type": "round_start", "round": r}
+            # 构造本轮全局理解上下文（宏观摘要 + 当前章全文 + 全书检索片段）
+            div_query = "\n".join(divergences) if r > 1 else ""
+            story_block = await self._build_story_context(r, div_query)
 
             # 到达序：并发提交，按完成顺序收集；发言前先广播"思考中"
             items = [
-                (p.name, p.role, "persona", self._persona_speak(p, ctx, r, divergences))
+                (p.name, p.role, "persona", self._persona_speak(p, ctx, r, divergences, story_block))
                 for p in self.personas
             ]
             items += [
-                (p.name, "peer", "peer", self._peer_speak(p, ctx, r, divergences))
+                (p.name, "peer", "peer", self._peer_speak(p, ctx, r, divergences, story_block))
                 for p in online
             ]
             tasks = []
@@ -339,6 +476,7 @@ class Roundtable:
                     "根据上面第 %d 轮讨论，提炼仍未达成一致的关键分歧点"
                     "（最多 3 条，每条一句话，用『- 』开头）。若已高度一致，请直接写『无重大分歧』。" % r,
                     (self.context + "\n\n" + self._fmt(transcript)).strip(),
+                    story_block,
                 )
                 divergences = self._parse_divergences(div_text)
                 yield {
@@ -360,6 +498,7 @@ class Roundtable:
             "圆桌结束。请基于全部讨论写一份《圆桌纪要》：先列共识，再列尚存分歧，"
             "最后给作者 3 条可执行的修改建议。",
             (self.context + "\n\n" + self._fmt(transcript)).strip(),
+            story_block,
         )
         if not synthesis or synthesis.startswith("（"):
             # 兜底：纪要生成仍失败则给出基于发言的最小摘要，避免产出空纪要
