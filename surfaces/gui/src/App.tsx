@@ -1546,8 +1546,8 @@ export function App() {
           onBack={() => setSurface("session")}
         />
       ) : surface === "roundtable" ? (
-        <div className="roundtable-view" style={{ position: "absolute", inset: 0 }}>
-          <iframe src="/roundtable/" title="创作圆桌" className="w-full h-full border-0" />
+        <div className="roundtable-view">
+          <iframe src="/roundtable/" title="创作圆桌" />
         </div>
       ) : (
       <div className={"main" + (surface === "session" && agent !== "chat" && !railHidden ? " rail-open" : "")}>

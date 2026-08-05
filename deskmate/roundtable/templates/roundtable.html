@@ -241,6 +241,12 @@
 <script>
   const DEFAULT_TOPIC = "（未填写议题）";
 
+  // 自适应挂载前缀：整块挂在 /roundtable/ 下时，API 与 opencode-a2a 也须走 /roundtable 前缀；
+  // 独立运行在根 / （python -m deskmate.roundtable.web）时退化为 /api、/opencode-a2a。
+  const BASE_DIR = location.pathname.split("/").slice(0, -1).join("/");  // "/roundtable" 或 ""
+  const API = BASE_DIR + "/api";                       // "/roundtable/api" 或 "/api"
+  const OPENCODE_A2A = BASE_DIR + "/opencode-a2a/";   // "/roundtable/opencode-a2a/" 或 "/opencode-a2a/"
+
   // 基础成员（进程内人格 + 主持）
   const BASE = [
     { name: "桌搭（主持）", role: "主持", kind: "host",   emoji: "🎙️", cls: "a-host" },
@@ -414,7 +420,7 @@
       document.querySelector('.pc[value="' + PERSONA_IDS[m.name] + '"]').checked);
     activePersonas = [host, ...chosen];
     const peers = [];
-    if ($("cb-oc").checked) peers.push("OpenCode|" + location.origin + "/roundtable/opencode-a2a/");
+    if ($("cb-oc").checked) peers.push("OpenCode|" + location.origin + OPENCODE_A2A);
     if ($("cb-hermes").checked) peers.push("Hermes|http://localhost:9900");
     const personaIds = Array.from(document.querySelectorAll(".pc:checked")).map(c => c.value).join(",");
     return { topic, rounds, peers, personaIds };
@@ -439,7 +445,7 @@
     const ctxParam = opts.followupText
       ? (transcriptText + "\n\n【用户追问】" + opts.followupText)
       : "";
-    const url = "/api/stream?topic=" + encodeURIComponent(cfg.topic || DEFAULT_TOPIC) +
+    const url = API + "/stream?topic=" + encodeURIComponent(cfg.topic || DEFAULT_TOPIC) +
                 "&max_rounds=" + cfg.rounds +
                 "&peers=" + encodeURIComponent(cfg.peers.join(",")) +
                 "&personas=" + encodeURIComponent(cfg.personaIds) +
@@ -471,7 +477,7 @@
   });
 
   // 启动时探一下 LLM 可用性（仅提示，不影响运行）
-  fetch("/api/health").then(r => r.json()).then(j => {
+  fetch(API + "/health").then(r => r.json()).then(j => {
     $("health").innerHTML = j.llm
       ? "后端 LLM：<b>已就绪</b>，可真实发言"
       : "后端 LLM：<b class=\"off\">未就绪</b>，将返回占位文本（仍可测试流程）";
