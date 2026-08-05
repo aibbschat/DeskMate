@@ -192,6 +192,8 @@
 
     <label for="manuscript" style="margin-top:12px">待评审文稿（文件路径 / 书名）</label>
     <input type="text" id="manuscript" class="inp" placeholder="如 /Users/.../国子监秘闻录.docx 或 国子监秘闻录" style="margin-top:6px;width:100%;font-size:12px;box-sizing:border-box" />
+    <label for="chapters" style="margin-top:8px">评审章节范围（可选）</label>
+    <input type="text" id="chapters" class="inp" placeholder="如 1-3 或 2（默认前 5 章）" style="margin-top:6px;width:100%;font-size:12px;box-sizing:border-box" />
 
     <label style="margin-top:16px">桌搭人格（可多选）</label>
     <div class="rowctl" id="personaChks" style="margin-top:6px">
@@ -428,7 +430,8 @@
     if ($("cb-hermes").checked) peers.push("Hermes|" + $("hermes-url").value.trim());
     const personaIds = Array.from(document.querySelectorAll(".pc:checked")).map(c => c.value).join(",");
     const manuscriptPath = $("manuscript") ? $("manuscript").value.trim() : "";
-    return { topic, rounds, peers, personaIds, manuscriptPath };
+    const chapterRange = $("chapters") ? $("chapters").value.trim() : "";
+    return { topic, rounds, peers, personaIds, manuscriptPath, chapterRange };
   }
 
   function launch(opts) {
@@ -457,6 +460,7 @@
       personas: cfg.personaIds,
       context: ctxParam,
       manuscript_path: cfg.manuscriptPath || "",
+      chapter_range: cfg.chapterRange || "",
     };
     evSource = { _ctrl: new AbortController(), close() { this._ctrl.abort(); } };
     (async () => {

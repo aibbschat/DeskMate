@@ -121,7 +121,7 @@ class Roundtable:
                 out.append(m.group(2).strip())
         return out[:3]
 
-    def _manuscript_block(self, max_chars: int = 8000) -> str:
+    def _manuscript_block(self, max_chars: int = 12000) -> str:
         """构造待评审文稿的 prompt 片段（截断防超 context）。"""
         if not self.manuscript_text:
             return ""
@@ -132,7 +132,7 @@ class Roundtable:
 
     def _participant_prompt(
         self, ctx: str, round_no: int, divergences: list[str], peer_name: str | None = None,
-        max_ms_chars: int = 8000,
+        max_ms_chars: int = 12000,
     ) -> str:
         bg = self.context
         ms = self._manuscript_block(max_ms_chars)
@@ -194,9 +194,9 @@ class Roundtable:
         ms = self._manuscript_block()
         return await self._call_llm(
             HOST_SYSTEM,
-            f"{instruction}\n\n{ms}圆桌上下文：\n{ctx}",
+            f"{instruction}\n\n圆桌议题：{self.topic}\n\n{ms}圆桌上下文：\n{ctx}",
             temperature=0.4,
-            max_tokens=4000,
+            max_tokens=6000,
             retries=2,
         )
 
@@ -205,7 +205,7 @@ class Roundtable:
     ) -> str:
         prompt = self._participant_prompt(ctx, round_no, divergences)
         return await self._call_llm(
-            persona.system_prompt, prompt, temperature=0.7, max_tokens=4000, retries=2
+            persona.system_prompt, prompt, temperature=0.7, max_tokens=6000, retries=2
         )
 
     async def _peer_speak(

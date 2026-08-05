@@ -47,6 +47,7 @@ class StreamBody(BaseModel):
     personas: str = ""
     context: str = ""
     manuscript_path: str = ""
+    chapter_range: str = ""
 
 
 def _read_html() -> str:
@@ -89,6 +90,7 @@ def create_app(rt_port: int = 9920) -> FastAPI:
         personas: str,
         context: str,
         manuscript_path: str = "",
+        chapter_range: str = "",
     ) -> StreamingResponse:
         """构造圆桌 SSE 响应：peer/persona/context/manuscript 解析 + 协调器流式事件。"""
         # 加载待评审文稿（文件路径/书名），注入 prompt 让人格基于真实文本发言
@@ -103,8 +105,24 @@ def create_app(rt_port: int = 9920) -> FastAPI:
                     logger.warning("加载文稿失败(%s): %s", mp, result["error"])
                 else:
                     chapters = result.get("chapters") or []
+                    # 支持章节范围选择（如 "1-3" 或 "2"），默认全部（限前 5 章防超 context）
+                    selected = chapters
+                    cr = (chapter_range or "").strip()
+                    if cr:
+                        try:
+                            if "-" in cr:
+                                lo, hi = cr.split("-", 1)
+                                lo_i, hi_i = int(lo.strip()), int(hi.strip())
+                                selected = [c for c in chapters if lo_i <= c.get("idx", 0) <= hi_i]
+                            else:
+                                idx = int(cr)
+                                selected = [c for c in chapters if c.get("idx", 0) == idx]
+                        except (ValueError, IndexError):
+                            selected = chapters[:5]
+                    else:
+                        selected = chapters[:5]
                     parts = []
-                    for c in chapters[:5]:  # 限前 5 章防超 context
+                    for c in selected:
                         parts.append(f"### {c.get('title', '')}\n{c.get('text', '')}")
                     manuscript_text = "\n\n".join(parts)
                     if result.get("bible"):
@@ -164,16 +182,17 @@ def create_app(rt_port: int = 9920) -> FastAPI:
         personas: str = "",
         context: str = "",
         manuscript_path: str = "",
+        chapter_range: str = "",
     ):
-        """SSE（GET，兼容小 context）。manuscript_path: 稿件文件路径/书名，注入 prompt。"""
-        return _make_stream(request, topic, max_rounds, peers, personas, context, manuscript_path)
+        """SSE（GET）。manuscript_path: 稿件路径/书名；chapter_range: 如 1-3 指定评审章节。"""
+        return _make_stream(request, topic, max_rounds, peers, personas, context, manuscript_path, chapter_range)
 
     @app.post("/api/stream")
     async def stream_post(request: Request, body: StreamBody):
         """SSE（POST，context 放 body，避免续聊累积超 URL 长度限制）。"""
         return _make_stream(
             request, body.topic, body.max_rounds, body.peers, body.personas,
-            body.context, body.manuscript_path,
+            body.context, body.manuscript_path, body.chapter_range,
         )
 
     return app
