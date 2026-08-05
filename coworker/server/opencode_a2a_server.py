@@ -83,8 +83,10 @@ class OpenCodeDriver:
             # 并明确要求「只回答、不要改动文件」，避免它去动用户工程。
             workdir = tempfile.mkdtemp(prefix="opencode_rt_")
             safe_prompt = (
-                "你正在参与一场文学创作圆桌讨论，请仅以文字回答、"
-                f"不要创建或修改任何文件。问题：{prompt}"
+                "【重要：这是一场文学创作讨论，你只需要用文字发表观点，"
+                "严禁执行任何 shell 命令、读写文件或修改代码。"
+                "请像论坛回帖一样直接给出你的文字回复。】\n\n"
+                f"{prompt}"
             )
             # 无头调用：`opencode run` 为当前 CLI 的无头执行子命令；
             # `--pure` 关闭外部插件避免干扰；模型显式指定避免依赖用户默认 provider。
