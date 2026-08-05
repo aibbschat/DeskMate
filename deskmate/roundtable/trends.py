@@ -118,6 +118,60 @@ def set_active(bid: str) -> bool:
     return True
 
 
+def update_brief(bid: str, markdown: str, genre: str = "", title: str = "") -> Optional[dict]:
+    """覆盖更新某一期：保留 id/date，重写正文并刷新 index 的 genre/title。不存在返回 None。"""
+    fp = store_root() / f"trend_{bid}.md"
+    if not fp.is_file():
+        return None
+    fp.write_text(markdown, encoding="utf-8")
+    idx = _index_file()
+    arr = []
+    if idx.is_file():
+        try:
+            arr = json.loads(idx.read_text(encoding="utf-8"))
+        except Exception:
+            arr = []
+    for m in arr:
+        if m.get("id") == bid:
+            m["genre"] = (genre or "").strip()
+            m["title"] = (title or "").strip()
+            break
+    idx.write_text(json.dumps(arr, ensure_ascii=False, indent=2), encoding="utf-8")
+    return get_brief(bid)
+
+
+def delete_brief(bid: str) -> bool:
+    """删除某一期；若删的是当前生效，则 latest 自动改为剩余最新一期（无则清空）。成功返回 True。"""
+    fp = store_root() / f"trend_{bid}.md"
+    if not fp.is_file():
+        return False
+    fp.unlink()
+    idx = _index_file()
+    arr = []
+    if idx.is_file():
+        try:
+            arr = json.loads(idx.read_text(encoding="utf-8"))
+        except Exception:
+            arr = []
+    arr = [m for m in arr if m.get("id") != bid]
+    idx.write_text(json.dumps(arr, ensure_ascii=False, indent=2), encoding="utf-8")
+    # 若删除的恰是当前生效，重置 latest
+    lf = _latest_file()
+    cur = None
+    if lf.is_file():
+        try:
+            cur = json.loads(lf.read_text(encoding="utf-8")).get("id")
+        except Exception:
+            cur = None
+    if cur == bid:
+        new_id = max((m.get("id", "") for m in arr), default=None)
+        if new_id:
+            lf.write_text(json.dumps({"id": new_id}, ensure_ascii=False), encoding="utf-8")
+        elif lf.is_file():
+            lf.unlink()
+    return True
+
+
 def _sections(md: str) -> dict:
     """把 markdown 按 ## 标题切成 {标题: 正文}。"""
     out: dict = {}

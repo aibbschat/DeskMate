@@ -396,6 +396,30 @@ def create_app(rt_port: int = 9920) -> FastAPI:
         out = _trends.build_via_llm(md, body.genre)
         return JSONResponse({"markdown": out})
 
+    @app.put("/api/trends/{bid}")
+    async def update_trend(bid: str, body: TrendSaveBody):
+        """覆盖更新某一期潮流简报（保留 id/日期，重写正文与 meta）。"""
+        from deskmate.roundtable import trends as _trends
+
+        md = (body.markdown or "").strip()
+        if not md:
+            return JSONResponse({"error": "empty markdown"}, status_code=400)
+        if body.llm_format:
+            md = _trends.build_via_llm(md, body.genre)
+        b = _trends.update_brief(bid, md, genre=body.genre, title=body.title)
+        if not b:
+            return JSONResponse({"error": "not found"}, status_code=404)
+        return JSONResponse(b)
+
+    @app.delete("/api/trends/{bid}")
+    async def delete_trend(bid: str):
+        """删除某一期潮流简报（若删的是当前生效，自动改指剩余最新一期）。"""
+        from deskmate.roundtable import trends as _trends
+
+        if not _trends.delete_brief(bid):
+            return JSONResponse({"error": "not found"}, status_code=404)
+        return JSONResponse({"ok": True})
+
     return app
 
 

@@ -251,14 +251,14 @@
     <div class="compact" style="margin-top:14px">
       <span class="c-label">📈 潮流简报</span>
       <span class="c-val" id="trendSummary">加载中…</span>
-      <button class="more-btn purple" onclick="openLayer2('trend')">管理 ▸</button>
+      <button class="more-btn purple" onclick="openTrendLayer()">管理 ▸</button>
     </div>
 
     <label style="margin-top:16px">桌搭人格</label>
     <div class="compact" style="margin-top:6px">
       <span class="c-label">已选</span>
       <span class="c-val" id="personaSummary">文学编辑 · 读者视角</span>
-      <button class="more-btn" onclick="openLayer2('persona')">更多 ▸</button>
+      <button class="more-btn" onclick="openPersonaLayer()">更多 ▸</button>
     </div>
 
     <label style="margin-top:16px">轮次</label>
@@ -283,16 +283,15 @@
     </div>
   </aside>
 
-  <!-- 第二层：设定弹层（全人格 + 完整潮流简报，独立滚动，布局从容） -->
-  <div class="modal-mask" id="modalMask" onclick="if(event.target===this)closeLayer2()">
+  <!-- 第二层 · A：更多人格设定（独立层，以后可在此加其它功能选项） -->
+  <div class="modal-mask" id="modalPersona" onclick="if(event.target===this)closePersonaLayer()">
     <div class="modal">
       <div class="modal-head">
-        <h2>更多设定</h2>
-        <button class="modal-close" onclick="closeLayer2()" title="关闭">✕</button>
+        <h2>更多人格设定</h2>
+        <button class="modal-close" onclick="closePersonaLayer()" title="关闭">✕</button>
       </div>
       <div class="modal-body">
-
-        <div class="modal-sec" id="sec-persona">
+        <div class="modal-sec">
           <h3>🪑 桌搭人格（可多选）</h3>
           <div class="rowctl" id="personaChks">
             <label class="chk"><input type="checkbox" class="pc" value="historian" /> 史料考据</label>
@@ -303,20 +302,32 @@
             <label class="chk"><input type="checkbox" class="pc" value="adaptation" /> 影视改编策划</label>
             <label class="chk"><input type="checkbox" class="pc" value="genre" /> 类型出版策划</label>
           </div>
+          <div style="font-size:11px;color:#999;margin-top:8px;line-height:1.5">默认仅勾「文学编辑 · 读者视角」。关闭后选择会自动汇总回第一层摘要。</div>
         </div>
+      </div>
+    </div>
+  </div>
 
-        <div class="modal-sec" id="sec-trend">
-          <h3>📈 潮流简报（手动沉淀 · 与圆桌解耦）</h3>
-          <div id="trendStatus" style="font-size:11.5px;color:#666;line-height:1.5">当前生效：加载中…</div>
+  <!-- 第二层 · B：潮流简报（独立层，含完整编辑，因有正文内容需独立空间） -->
+  <div class="modal-mask" id="modalTrend" onclick="if(event.target===this)closeTrendLayer()">
+    <div class="modal">
+      <div class="modal-head">
+        <h2>📈 潮流简报</h2>
+        <button class="modal-close" onclick="closeTrendLayer()" title="关闭">✕</button>
+      </div>
+      <div class="modal-body">
+        <div class="modal-sec">
+          <h3>当前生效</h3>
+          <div id="trendStatus" style="font-size:11.5px;color:#666;line-height:1.5">加载中…</div>
           <div id="trendList" style="margin-top:8px;display:flex;flex-direction:column;gap:6px"></div>
           <button id="trendNewBtn" onclick="openTrendEditor()" style="margin-top:10px;width:100%;background:#8e44ad;color:#fff;border:none;border-radius:10px;padding:9px;font-size:12.5px;font-weight:600;cursor:pointer">＋ 新一期潮流</button>
 
           <div id="trendEditor" style="display:none;margin-top:10px;border:1px solid var(--line);border-radius:10px;padding:12px">
             <input id="trendGenre" placeholder="类型视角（如 历史小说，留空=通用）" style="width:100%;font-size:12px;padding:7px 9px;border:1px solid var(--line);border-radius:8px;box-sizing:border-box;margin-bottom:6px" />
             <input id="trendTitle" placeholder="本期标题（可选）" style="width:100%;font-size:12px;padding:7px 9px;border:1px solid var(--line);border-radius:8px;box-sizing:border-box;margin-bottom:6px" />
-            <textarea id="trendMd" rows="9" placeholder="粘贴/写下你对当下潮流的观察…" style="width:100%;font-size:12.5px;padding:8px;border:1px solid var(--line);border-radius:8px;box-sizing:border-box;resize:vertical;font-family:inherit;line-height:1.55;color:#222"></textarea>
+            <textarea id="trendMd" rows="11" placeholder="粘贴/写下你对当下潮流的观察…" style="width:100%;font-size:12.5px;padding:8px;border:1px solid var(--line);border-radius:8px;box-sizing:border-box;resize:vertical;font-family:inherit;line-height:1.55;color:#222"></textarea>
             <div style="display:flex;gap:7px;margin-top:8px;flex-wrap:wrap">
-              <button onclick="saveTrend()" style="background:var(--wx-green);color:#fff;border:none;border-radius:8px;padding:8px 14px;font-size:12.5px;font-weight:600;cursor:pointer">保存本期</button>
+              <button id="trendSaveBtn" onclick="saveTrend()" style="background:var(--wx-green);color:#fff;border:none;border-radius:8px;padding:8px 14px;font-size:12.5px;font-weight:600;cursor:pointer">保存本期</button>
               <button onclick="aiFormatTrend()" style="background:#fff;color:#555;border:1px solid var(--line);border-radius:8px;padding:8px 12px;font-size:12.5px;cursor:pointer">让 AI 整理</button>
               <button onclick="closeTrendEditor()" style="background:#fff;color:#888;border:1px solid var(--line);border-radius:8px;padding:8px 12px;font-size:12.5px;cursor:pointer">取消</button>
             </div>
@@ -331,7 +342,6 @@
             <pre id="trendViewerBody" style="white-space:pre-wrap;word-break:break-word;font-size:12px;line-height:1.55;color:#333;max-height:240px;overflow:auto;margin:0"></pre>
           </div>
         </div>
-
       </div>
     </div>
   </div>
@@ -739,36 +749,56 @@
           "<div style=\"margin-top:5px;display:flex;gap:8px\">" +
             (isCur ? "" : "<span style=\"color:#8e44ad;cursor:pointer\" onclick=\"setActiveTrend('" + b.id + "')\">设为当前</span>") +
             "<span style=\"color:#3a7bd5;cursor:pointer\" onclick=\"viewTrend('" + b.id + "')\">查看</span>" +
+            "<span style=\"color:#2e7d32;cursor:pointer\" onclick=\"editTrend('" + b.id + "')\">编辑</span>" +
+            "<span style=\"color:#c0392b;cursor:pointer\" onclick=\"deleteTrend('" + b.id + "')\">删除</span>" +
           "</div>";
         list.appendChild(div);
       });
     }).catch(() => { $("trendStatus").textContent = "潮流简报加载失败"; });
   }
 
-  function openTrendEditor() {
+  let trendEditId = null;  // 非空表示正在编辑已有某期
+
+  function openTrendEditor(existing) {
     const d = new Date();
     const today = d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
-    $("trendGenre").value = "";
-    $("trendTitle").value = "";
-    $("trendMd").value =
-      "# 潮流简报 · " + today + "\n\n> 类型视角：历史小说\n\n## 流行元素\n- \n\n## 影视风向\n- \n\n## 类型热点\n- ";
-    $("trendMsg").textContent = "";
+    if (existing) {
+      // 编辑模式：载入原内容
+      trendEditId = existing.id;
+      $("trendGenre").value = existing.genre || "";
+      $("trendTitle").value = existing.title || "";
+      $("trendMd").value = existing.content || "";
+      $("trendSaveBtn").textContent = "保存修改";
+      $("trendMsg").textContent = "正在编辑：" + existing.date + (existing.title ? " · " + existing.title : "");
+    } else {
+      // 新建模式
+      trendEditId = null;
+      $("trendGenre").value = "";
+      $("trendTitle").value = "";
+      $("trendMd").value =
+        "# 潮流简报 · " + today + "\n\n> 类型视角：历史小说\n\n## 流行元素\n- \n\n## 影视风向\n- \n\n## 类型热点\n- ";
+      $("trendSaveBtn").textContent = "保存本期";
+      $("trendMsg").textContent = "";
+    }
     $("trendEditor").style.display = "block";
     $("trendViewer").style.display = "none";
   }
-  function closeTrendEditor() { $("trendEditor").style.display = "none"; }
+  function closeTrendEditor() { $("trendEditor").style.display = "none"; trendEditId = null; }
 
   function saveTrend() {
     const md = $("trendMd").value.trim();
     if (!md) { $("trendMsg").textContent = "内容不能为空"; return; }
     $("trendMsg").textContent = "保存中…";
-    fetch(API + "/trends", {
-      method: "POST",
+    const payload = { markdown: md, genre: $("trendGenre").value.trim(), title: $("trendTitle").value.trim() };
+    const url = trendEditId ? (API + "/trends/" + trendEditId) : (API + "/trends");
+    const method = trendEditId ? "PUT" : "POST";
+    fetch(url, {
+      method: method,
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ markdown: md, genre: $("trendGenre").value.trim(), title: $("trendTitle").value.trim() }),
+      body: JSON.stringify(payload),
     }).then(r => r.json()).then(j => {
       if (j.error) { $("trendMsg").textContent = "保存失败：" + j.error; return; }
-      $("trendMsg").textContent = "✅ 已沉淀一期（已自动设为当前）";
+      $("trendMsg").textContent = trendEditId ? "✅ 已更新该期" : "✅ 已沉淀一期（已自动设为当前）";
       setTimeout(() => { closeTrendEditor(); loadTrends(); }, 600);
     }).catch(e => { $("trendMsg").textContent = "保存失败：" + e.message; });
   }
@@ -807,16 +837,26 @@
   }
   function closeTrendViewer() { $("trendViewer").style.display = "none"; }
 
-  // ===== 第二层设定弹层 =====
-  function openLayer2(section) {
-    $("modalMask").classList.add("show");
-    const sec = $("sec-" + section);
-    if (sec) sec.scrollIntoView({ block: "start" });
+  function editTrend(id) {
+    fetch(API + "/trends/" + id).then(r => r.json()).then(j => {
+      if (j.error) return;
+      openTrendEditor(j);
+    }).catch(() => {});
   }
-  function closeLayer2() {
-    $("modalMask").classList.remove("show");
-    updatePersonaSummary();
+
+  function deleteTrend(id) {
+    if (!confirm("确定删除这一期潮流简报吗？此操作不可撤销（若它是当前生效，将自动改指最新一期）。")) return;
+    fetch(API + "/trends/" + id, { method: "DELETE" }).then(r => r.json()).then(j => {
+      if (j.error) { alert("删除失败：" + j.error); return; }
+      loadTrends();
+    }).catch(e => { alert("删除失败：" + e.message); });
   }
+
+  // ===== 第二层：两个独立弹层 =====
+  function openPersonaLayer() { $("modalPersona").classList.add("show"); }
+  function closePersonaLayer() { $("modalPersona").classList.remove("show"); updatePersonaSummary(); }
+  function openTrendLayer() { loadTrends(); $("modalTrend").classList.add("show"); }
+  function closeTrendLayer() { $("modalTrend").classList.remove("show"); }
   function updatePersonaSummary() {
     const ids = Array.from(document.querySelectorAll(".pc:checked")).map(c => c.value);
     const names = ids.map(id => {
