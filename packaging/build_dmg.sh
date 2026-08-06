@@ -69,9 +69,41 @@ if [ -n "${APPLE_CERTIFICATE:-}" ] && [ -n "${APPLE_SIGNING_IDENTITY:-}" ]; then
   security list-keychains -d user -s "$KC" login.keychain-db
 fi
 
+# ---- 构建缓存指纹：版本+依赖+源码未变 → 跳过 PyInstaller 重复冻结 ----
+# 仿 LobsterAI 的 runtime-build-info.json：把"会影响冻结产物"的因素哈希成一个指纹，
+# 未变且旧 dist 还在就直接复用，省下每次 build_dmg.sh 最慢的一步（PyInstaller ~分钟级）。
+BUILD_INFO="$HERE/.pyinstaller-build-info.json"
+compute_pyinst_fingerprint() {
+  local spec="$HERE/openworker-server.spec"
+  local pip_freeze
+  pip_freeze="$("$PLATFORM/.venv/bin/pip" freeze 2>/dev/null | sort)" || true
+  local src_hash
+  src_hash="$(cd "$PLATFORM" && find coworker deskmate -name '*.py' \
+      -not -path '*/__pycache__/*' -not -path '*/tests/*' -not -path '*/node_modules/*' \
+      2>/dev/null | sort | xargs md5 -r 2>/dev/null | md5 -r | awk '{print $1}')" || true
+  local spec_hash
+  spec_hash="$(md5 -r "$spec" 2>/dev/null | awk '{print $1}')" || true
+  printf '%s|%s|%s|%s' "$VERSION" "$pip_freeze" "$spec_hash" "$src_hash" | md5 -r | awk '{print $1}'
+}
+
 echo "==> [1/5] PyInstaller: bundling openworker-server ($TRIPLE)"
-"$PLATFORM/.venv/bin/pyinstaller" --noconfirm --clean \
-  --distpath "$HERE/dist" --workpath "$HERE/build" "$HERE/openworker-server.spec"
+SKIP_FREEZE=0
+if [ -f "$BUILD_INFO" ]; then
+  OLD_FP="$(python3 -c "import json,sys; print(json.load(open('$BUILD_INFO')).get('fingerprint',''))" 2>/dev/null || true)"
+  NEW_FP="$(compute_pyinst_fingerprint)"
+  if [ "$OLD_FP" = "$NEW_FP" ] && [ -d "$HERE/dist/openworker-server" ]; then
+    echo "    指纹未变，跳过 PyInstaller 冻结（命中缓存，省时）"
+    SKIP_FREEZE=1
+  fi
+fi
+if [ "$SKIP_FREEZE" -eq 0 ]; then
+  "$PLATFORM/.venv/bin/pyinstaller" --noconfirm --clean \
+    --distpath "$HERE/dist" --workpath "$HERE/build" "$HERE/openworker-server.spec"
+  NEW_FP="$(compute_pyinst_fingerprint)"
+  echo "{\"fingerprint\": \"$NEW_FP\", \"version\": \"$VERSION\", \"generated_at\": \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}" > "$BUILD_INFO"
+else
+  echo "    （如需强制重冻，删除 $BUILD_INFO 后重跑）"
+fi
 
 echo "==> [2/5] staging sidecar resources"
 # Onedir bundle (exe + _internal/) ships via Tauri `resources` as Contents/Resources/sidecar/
@@ -104,6 +136,27 @@ if [ -n "$(find "$GUI/src-tauri/binaries/sidecar" -type d -name "*.framework" | 
   exit 1
 fi
 chmod +x "$GUI/src-tauri/binaries/sidecar/openworker-server"
+
+# 写 sidecar 完整性清单（供 Windows 安装中断自愈校验；Mac 下不使用，但一并产出便于对照）
+python3 - "$GUI/src-tauri/binaries/sidecar" <<'PY'
+import json, os, sys
+from pathlib import Path
+d = Path(sys.argv[1])
+entries = []
+if d.is_dir():
+    for p in sorted(d.rglob("*")):
+        if p.is_file():
+            entries.append({"path": p.relative_to(d).as_posix(), "size": p.stat().st_size})
+manifest = {
+    "tool": "openworker-sidecar",
+    "version": os.environ.get("VERSION", ""),
+    "file_count": len(entries),
+    "total_bytes": sum(e["size"] for e in entries),
+    "entries": entries,
+}
+(d / "sidecar-manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2))
+print(f"    ✓ sidecar-manifest.json: {len(entries)} 文件, {manifest['total_bytes']} 字节")
+PY
 
 # Sign the sidecar's Mach-O files BEFORE tauri build: `tauri build` signs the .app (sealing
 # resources into its signature) but does NOT sign nested binaries inside resources — unsigned

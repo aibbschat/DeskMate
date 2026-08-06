@@ -145,6 +145,94 @@ fn launch_token() -> String {
     format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple())
 }
 
+/// 预热闸门：阻塞等待 sidecar 在指定端口就绪（最长 timeout 秒）。
+/// 窗口在此之前不会展示，因此用户首条消息不会卡在"后端冷启动"上——这是
+/// 把 onedir 首启从感知上的卡顿压下去的关键（对标 esbuild 单文件压冷启动的等价思路）。
+/// 超时也返回，由健康 watcher 兜底，绝不因此卡死启动。
+fn wait_for_sidecar(port: u16, timeout_secs: u64) {
+    use std::net::{TcpStream, ToSocketAddrs};
+    use std::time::{Duration, Instant};
+
+    let addr = format!("127.0.0.1:{port}");
+    let start = Instant::now();
+    let timeout = Duration::from_secs(timeout_secs);
+    loop {
+        if let Ok(addrs) = addr.to_socket_addrs() {
+            if let Some(sa) = addrs.into_iter().next() {
+                if TcpStream::connect_timeout(&sa, Duration::from_millis(300)).is_ok() {
+                    eprintln!(
+                        "[coworker] sidecar 就绪于端口 {port}（耗时 {:.1}s）",
+                        start.elapsed().as_secs_f64()
+                    );
+                    return;
+                }
+            }
+        }
+        if start.elapsed() > timeout {
+            eprintln!(
+                "[coworker] 等待 sidecar 超时（{timeout_secs}s），继续启动（健康 watcher 兜底）"
+            );
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(300));
+    }
+}
+
+/// Windows 安装中断自愈：NSIS 半截解包会导致 sidecar 不完整。仅 Windows 生效，其他平台直接跳过。
+/// 校验 sidecar 入口可执行文件是否齐全；若缺失且存在恢复包，则自解包修复。
+fn ensure_sidecar_integrity() {
+    if std::env::consts::OS != "windows" {
+        return;
+    }
+    for dir in sidecar_candidate_dirs() {
+        let exe = dir.join("openworker-server.exe");
+        let manifest = dir.join("sidecar-manifest.json");
+        let recovery = dir.join("sidecar-recovery.zip");
+        if !manifest.exists() {
+            continue;
+        }
+        if exe.exists() {
+            return; // 入口齐全，视为健康
+        }
+        eprintln!("[coworker] 检测到 sidecar 不完整（可能安装中断），尝试自愈…");
+        if recovery.exists() {
+            let status = std::process::Command::new("powershell")
+                .args([
+                    "-NoProfile",
+                    "-Command",
+                    &format!(
+                        "Expand-Archive -Force -Path '{}' -DestinationPath '{}'",
+                        recovery.display(),
+                        dir.display()
+                    ),
+                ])
+                .status();
+            if status.map(|s| s.success()).unwrap_or(false) {
+                eprintln!("[coworker] 已从 sidecar-recovery.zip 自修复 sidecar");
+                return;
+            }
+        }
+        eprintln!(
+            "[coworker] ⚠ sidecar 不完整且无恢复包，请重新运行安装程序修复（控制面板→卸载/修复）"
+        );
+        return;
+    }
+}
+
+/// 解析 sidecar 可能落位的目录（与 server_bin 同源）。
+fn sidecar_candidate_dirs() -> Vec<PathBuf> {
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(parent) = exe.parent() {
+            dirs.push(parent.join("sidecar"));
+            if let Some(grand) = parent.parent() {
+                dirs.push(grand.join("Resources").join("sidecar"));
+            }
+        }
+    }
+    dirs
+}
+
 /// Path to the server entrypoint. Resolution order:
 ///   1. `COWORKER_SERVER_BIN` env override.
 ///   2. The bundled onedir sidecar shipped via Tauri `resources` (production): the
@@ -723,6 +811,9 @@ pub fn run() {
             install_update
         ])
         .setup(move |app| {
+            // 0. Windows 安装中断自愈（Mac 下为空操作，立即返回）
+            ensure_sidecar_integrity();
+
             // 1. Start the Python server sidecar on the chosen port (inherits our env).
             let spawn_config = ServerSpawnConfig {
                 bin: server_bin(),
@@ -769,6 +860,8 @@ pub fn run() {
                     None
                 }
             };
+            // 预热闸门：等后端真正监听端口再放行窗口，避免首条消息卡在冷启动
+            wait_for_sidecar(port, 45);
             // Shared state so the watcher can replace the child on respawn.
             let server_state = Arc::new(Mutex::new(child));
             app.manage(ServerProcess(server_state.clone()));

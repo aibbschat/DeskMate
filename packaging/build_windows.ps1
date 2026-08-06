@@ -81,6 +81,28 @@ Remove-Item -Force (Join-Path $BinDir "openworker-server-$Triple.exe") -ErrorAct
 Copy-Item -Recurse -Force $Src $Dst
 Write-Host "    -> $Dst"
 
+# 写 sidecar 完整性清单 + 自愈恢复包（NSIS 半截安装时由 app 自解包修复）
+$Version = (Get-Content (Join-Path $Gui "src-tauri\tauri.conf.json") -Raw | ConvertFrom-Json).version
+$Manifest = Join-Path $Dst "sidecar-manifest.json"
+$Recovery = Join-Path $Dst "sidecar-recovery.zip"
+$entries = Get-ChildItem -Path $Dst -Recurse -File -ErrorAction SilentlyContinue | ForEach-Object {
+    [PSCustomObject]@{
+        path = $_.FullName.Substring($Dst.Length + 1) -replace '\\', '/'
+        size = $_.Length
+    }
+}
+$manifestObj = [PSCustomObject]@{
+    tool        = "openworker-sidecar"
+    version     = $Version
+    file_count  = $entries.Count
+    total_bytes = ($entries | Measure-Object -Property size -Sum).Sum
+    entries     = $entries
+}
+$manifestObj | ConvertTo-Json -Depth 3 | Set-Content -Path $Manifest -Encoding utf8
+# 恢复包：把原始 sidecar 目录打成 zip，安装中断时由 app 自解包
+Compress-Archive -Path $Src -DestinationPath $Recovery -Force
+Write-Host "    -> 含 sidecar-manifest.json + sidecar-recovery.zip（供安装中断自愈）"
+
 Write-Host "==> [3/3] tauri build (--bundles $Bundles)" -ForegroundColor Cyan
 # Auto-update artifacts (NSIS setup .exe + minisign .sig): produced only when the updater
 # signing key env is present (CI secret TAURI_SIGNING_PRIVATE_KEY). Keyless builds skip

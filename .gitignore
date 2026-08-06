@@ -8,6 +8,8 @@ dist/
 .coverage
 
 # --- Fork-local / OS / build artifacts (added when baselining the 二开 fork) ---
+# PyInstaller 构建缓存指纹（版本+依赖+源码 hash，命中则跳过重冻）
+packaging/.pyinstaller-build-info.json
 .DS_Store
 .venv.bak/
 .workbuddy/
