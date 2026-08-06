@@ -19,6 +19,11 @@
 #
 # 重要：此本地包不含打包的 sidecar，换机器/删 .venv 会后端起不来。
 #       正式发布请走 build_dmg.sh（打真 sidecar，CI 能过）。
+#
+# 🔑 关键认知：本脚本后端运行时回退到 .venv/bin/openworker-server，而 .venv 里 coworker 是
+#    **editable 安装**，直接 import 仓库源码。所以【改 Python 即时生效，重开 .app 即可，
+#    不必重跑本脚本】；重跑只为刷新 .app 外壳/前端。只有改了 Rust/Tauri 才需要重跑。
+#    （对比 build_dmg.sh：它把后端冻结进 .app，改 Python 必须重跑才生效，且会走指纹跳过重冻。）
 
 set -euo pipefail
 

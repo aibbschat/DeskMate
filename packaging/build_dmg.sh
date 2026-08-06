@@ -35,6 +35,17 @@
 # Experimental (use-at-your-own-risk) connectors are EXCLUDED from this build by default —
 # the spec strips coworker.connectors.experimental. Self-builders can opt in with:
 #   COWORKER_EXPERIMENTAL=1 ./build_dmg.sh
+#
+# ⚠️ 两条构建链的区别（2026-08-06 实测澄清，别混淆）：
+#   • 本脚本 (build_dmg.sh) —— 分发构建：PyInstaller 把服务端冻结成 onedir，塞进
+#     binaries/sidecar/，最终打进 .app 的 Contents/Resources/sidecar。运行时从 .app 内
+#     的冻结产物加载，**改 Python 必须重跑本脚本才会生效**。下面 [1/5] 的指纹缓存就是为
+#     这条链省 PyInstaller 时间。
+#   • build_local_app.sh —— 本地开发：临时把 sidecar 置空绕过 APFS 老坑，运行时回退到
+#     .venv/bin/openworker-server；而 .venv 里 coworker 是 **editable 安装**，直接 import
+#     仓库源码。所以本地 .app 的后端是从源码即时加载的，**改 Python 即时生效、根本不需要重打**
+#     （重开 .app 即可），指纹机制在它身上也不触发。只有改了 Rust/Tauri 才需要 build_local_app.sh。
+#   一句话：本地改 Python → 重开 .app；要出可分发包 → 跑本脚本（且会自动用指纹跳过重冻）。
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -72,6 +83,8 @@ fi
 # ---- 构建缓存指纹：版本+依赖+源码未变 → 跳过 PyInstaller 重复冻结 ----
 # 仿 LobsterAI 的 runtime-build-info.json：把"会影响冻结产物"的因素哈希成一个指纹，
 # 未变且旧 dist 还在就直接复用，省下每次 build_dmg.sh 最慢的一步（PyInstaller ~分钟级）。
+# 注意：本指纹只服务于【分发链 build_dmg.sh】。build_local_app.sh 从不冻结（后端走
+# editable venv 源码），故该机制在本地开发链上完全不触发，勿在此处混淆两条链。
 BUILD_INFO="$HERE/.pyinstaller-build-info.json"
 compute_pyinst_fingerprint() {
   local spec="$HERE/openworker-server.spec"
