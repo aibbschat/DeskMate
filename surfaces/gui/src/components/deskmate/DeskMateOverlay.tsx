@@ -187,6 +187,16 @@ export function DeskMateOverlay({ agent, sessionId, idle, activeExpert }: Props)
       .catch(() => {/* 静默降级 */});
   }, [panelOpen]);
 
+  // 挂载时拉取一次 growth 快照，供墨灵程序化动画使用（mood/vitality/level）
+  useEffect(() => {
+    authedFetch(`${httpBase()}/v1/deskmate/growth`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => {
+        if (d && typeof d.level === "number") setGrowth(d);
+      })
+      .catch(() => {/* 静默降级 */});
+  }, []);
+
   // 挂载时读取主动模式状态
   useEffect(() => {
     authedFetch(`${httpBase()}/v1/deskmate/proactive`)
@@ -392,6 +402,9 @@ export function DeskMateOverlay({ agent, sessionId, idle, activeExpert }: Props)
             walkDirection={direction}
             isWalking={mascotState === "walking"}
             scale={petScale}
+            mood={growth?.mood ?? 80}
+            vitality={growth?.vitality ?? 100}
+            level={growth?.level ?? 1}
             onClick={() => {
               try { setPanelOpen((v) => !v); } catch (e) { console.error("click error", e); }
             }}

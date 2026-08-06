@@ -233,6 +233,9 @@ export function StatusPanel({
   const fallback = computeGrowth(total);
   const level = growthData?.level ?? fallback.level;
   const toNext = growthData?.toNext ?? fallback.toNext;
+  // 阶段名称：墨童(1-3) / 墨生(4-6) / 墨客(7-9) / 墨仙(10-12)
+  const stageName =
+    level >= 10 ? "墨仙" : level >= 7 ? "墨客" : level >= 4 ? "墨生" : "墨童";
   const intimacy = growth?.intimacy ?? Math.min(100, Math.round(total * 2.5));
   const trust = growth?.trust ?? 0;
   const empathy = growth?.empathy ?? 0;
@@ -281,7 +284,7 @@ export function StatusPanel({
                 background: "linear-gradient(90deg,#fde9c4,#f8d89a)",
               }}
             >
-              Lv.{level}
+              Lv.{level} · {stageName}
             </span>
             <span
               className="text-[11px] px-1.5 py-0.5 rounded"
