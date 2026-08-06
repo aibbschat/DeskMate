@@ -26,6 +26,19 @@ from . import core as _core
 mcp = FastMCP("novel-memory")
 
 
+def _snapshot(folder: str) -> None:
+    """读稿前的修订哨兵：顺手做一次增量索引，把此刻的稿件状态存成快照。
+
+    这样每一次「桌搭碰稿件」都会形成一个版本节点——用户改一段聊一句、再改一段
+    再聊一句，每次改动都能单独留痕；否则中间版本会被合并成一大坨 diff。
+    mtime+size 都没变时几乎零开销（只 stat，不读文件），失败一律静默。
+    """
+    try:
+        _core.build_fts5_index(folder)
+    except Exception:  # 哨兵是增强项，绝不能挡住正常工具调用
+        pass
+
+
 @mcp.tool()
 def analyze_novel(folder: str) -> str:
     """分析一本小说文件夹：通读全书正文，抽取权威「人物关系圣经」
@@ -61,6 +74,7 @@ def novel_recall(query: str, folder: str) -> str:
         folder: 小说文件夹绝对路径（当前工作区）。
     """
     try:
+        _snapshot(folder)
         return _core.novel_recall(query, folder)
     except Exception as e:
         return f"❌ novel_recall 失败：{e}"
@@ -78,6 +92,7 @@ def novel_check_consistency(folder: str, new_text: str) -> str:
         new_text: 新写的章节文本。
     """
     try:
+        _snapshot(folder)
         bible = read_bible(folder)
         if not bible:
             return "（尚未生成人物圣经，请先运行 analyze_novel）"
@@ -121,6 +136,7 @@ def novel_revisions(folder: str, file: str = "", limit: int = 20) -> str:
         limit: 返回条数上限，默认 20。
     """
     try:
+        _snapshot(folder)
         revs = list_revisions(folder, file=file or None, limit=limit)
         if not revs:
             return "（暂无修订记录。编辑稿件并刷新索引后，这里会逐条记录每次改动。）"
@@ -144,6 +160,7 @@ def novel_relationships(character: str, folder: str) -> str:
         folder: 小说文件夹绝对路径（当前工作区）。
     """
     try:
+        _snapshot(folder)
         return _core.novel_relationships(character, folder)
     except Exception as e:
         return f"❌ novel_relationships 失败：{e}"

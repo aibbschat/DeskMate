@@ -61,11 +61,18 @@ class TestScanNovel:
         assert text == ""
         assert titles == []
 
-    def test_not_a_directory(self, tmp_path: Path):
-        f = tmp_path / "not_a_dir.txt"
-        f.write_text("hi", encoding="utf-8")
+    def test_single_file_path_is_supported(self, tmp_path: Path):
+        """单个稿件文件路径是合法输入（支持 .txt/.docx 单文件后不再抛错）。"""
+        f = tmp_path / "single_chapter.txt"
+        f.write_text("第一章 开篇\n\n正文内容在此。", encoding="utf-8")
+        text, titles = scan_novel(str(f))
+        assert "正文内容在此" in text
+        assert titles
+
+    def test_missing_path_raises(self, tmp_path: Path):
+        """路径根本不存在时才抛 FileNotFoundError。"""
         with pytest.raises(FileNotFoundError):
-            scan_novel(str(f))
+            scan_novel(str(tmp_path / "不存在的目录"))
 
     def test_max_chars_truncation(self, tmp_path: Path):
         # Create a file that exceeds max_chars

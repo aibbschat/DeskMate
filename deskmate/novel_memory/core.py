@@ -478,6 +478,13 @@ def incremental_bible_update(folder: str, progress_callback: callable = None) ->
     scan_root, bible_root = _resolve_root(folder)
     bible_dir = bible_root / _BIBLE_DIR
 
+    # 先落一次修订快照：用户"刷新圣经"时往往正是刚改完稿，这一步保证本次
+    # 改动被 manuscript_revisions 记下来，否则等下次索引时只剩合并后的大 diff。
+    try:
+        build_fts5_index(folder)
+    except Exception as e:
+        logger.warning("增量圣经更新前置索引失败（不影响圣经更新）：%s", e)
+
     # 读取现有圣经
     existing = read_bible(folder)
     if not existing:
@@ -690,11 +697,18 @@ def _fts5_connection(folder: str) -> sqlite3.Connection | None:
     return conn
 
 
-def build_fts5_index(folder: str) -> int:
+def build_fts5_index(folder: str, force: bool = False) -> int:
     """构建或增量更新 FTS5 全文索引。
 
-    扫描所有文本文件，将内容写入 SQLite FTS5 虚拟表。
-    仅重新索引 mtime 发生变化的文件（增量更新）。
+    扫描所有文本文件，将内容写入 SQLite FTS5 虚拟表，并在覆盖前记录修订 diff。
+
+    变更判据为 **mtime + size 双条件**：两者都没变才跳过。单看 mtime 会漏检
+    "同一毫秒内二次保存"以及 rsync/git checkout 等保留 mtime 的写入；size 从
+    stat 里顺手就能拿到，零额外成本却能兜住绝大多数等长之外的漏检。
+
+    Args:
+        force: 忽略 mtime/size，逐文件读取正文与库内版本做内容比对。用于
+            怀疑漏检时的兜底全量校准（成本=读一遍全部稿件）。
 
     返回本次索引的文件数。
     """
@@ -717,7 +731,7 @@ def build_fts5_index(folder: str) -> int:
             )
         """)
 
-        # 创建文件跟踪表（记录 mtime 以实现增量索引）
+        # 创建文件跟踪表（记录 mtime + size 以实现增量索引）
         conn.execute("""
             CREATE TABLE IF NOT EXISTS file_tracker (
                 file_path TEXT PRIMARY KEY,
@@ -725,6 +739,10 @@ def build_fts5_index(folder: str) -> int:
                 indexed_at REAL NOT NULL
             )
         """)
+        # 旧库补 size 列（历史库没有该列，缺省 -1 表示"未知"，会强制走一次内容比对）
+        _cols = {r["name"] for r in conn.execute("PRAGMA table_info(file_tracker)")}
+        if "size" not in _cols:
+            conn.execute("ALTER TABLE file_tracker ADD COLUMN size INTEGER DEFAULT -1")
 
         # 修订记录表：稿件每次变更都存一条「旧→新」差异，供"我今天改了哪"回放
         conn.execute("""
@@ -747,16 +765,24 @@ def build_fts5_index(folder: str) -> int:
         indexed_count = 0
         for p in text_files:
             rel_path = _rel_name(p, scan_root)
-            current_mtime = p.stat().st_mtime
+            st = p.stat()
+            current_mtime = st.st_mtime
+            current_size = st.st_size
 
-            # 检查 mtime 是否变化（mtime 存在 file_tracker，不在 FTS5 表）
+            # 检查 mtime + size 是否都未变（二者存在 file_tracker，不在 FTS5 表）
             tracker_row = conn.execute(
-                "SELECT mtime FROM file_tracker WHERE file_path = ?",
+                "SELECT mtime, size FROM file_tracker WHERE file_path = ?",
                 (rel_path,),
             ).fetchone()
 
-            if tracker_row is not None and abs(tracker_row["mtime"] - current_mtime) < 0.001:
-                continue  # 未变化，跳过
+            if not force and tracker_row is not None:
+                same_mtime = abs(tracker_row["mtime"] - current_mtime) < 0.001
+                tracked_size = tracker_row["size"]
+                # size 为 -1 代表旧库无此列记录，视为未知 → 不敢跳过
+                same_size = tracked_size is not None and tracked_size >= 0 \
+                    and tracked_size == current_size
+                if same_mtime and same_size:
+                    continue  # 未变化，跳过
 
             text = _read_file_text(p)
             if not text.strip():
@@ -771,6 +797,15 @@ def build_fts5_index(folder: str) -> int:
             ).fetchone()
             old_text = old_row["content"] if old_row else ""
 
+            # 内容其实没变（touch / 元数据改动 / force 全量扫），只刷新指纹，不算一次索引
+            if old_text == text:
+                conn.execute(
+                    "INSERT OR REPLACE INTO file_tracker (file_path, mtime, size, indexed_at)"
+                    " VALUES (?, ?, ?, ?)",
+                    (rel_path, current_mtime, current_size, time.time()),
+                )
+                continue
+
             # 删除旧记录（如果有），再插入新记录
             conn.execute("DELETE FROM novels WHERE file_path = ?", (rel_path,))
             conn.execute(
@@ -778,8 +813,9 @@ def build_fts5_index(folder: str) -> int:
                 (rel_path, title, text),
             )
             conn.execute(
-                "INSERT OR REPLACE INTO file_tracker (file_path, mtime, indexed_at) VALUES (?, ?, ?)",
-                (rel_path, current_mtime, time.time()),
+                "INSERT OR REPLACE INTO file_tracker (file_path, mtime, size, indexed_at)"
+                " VALUES (?, ?, ?, ?)",
+                (rel_path, current_mtime, current_size, time.time()),
             )
 
             # 修订回顾：有上一版且内容不同 → 记录差异（绝不影响主索引流程）
@@ -798,6 +834,10 @@ def build_fts5_index(folder: str) -> int:
 # 稿件修订回顾（版本快照 + diff）
 # ---------------------------------------------------------------------------
 
+# what_changed 摘要里每次修订最多展开的 diff 行数（库内存的是完整 diff）
+_DIFF_PREVIEW_LINES = 50
+
+
 def _record_revision(conn: sqlite3.Connection, rel_path: str, title: str,
                      old_text: str, new_text: str) -> None:
     """记录一次稿件修订：把旧→新全文的差异存入 manuscript_revisions。
@@ -808,7 +848,9 @@ def _record_revision(conn: sqlite3.Connection, rel_path: str, title: str,
         from deskmate.perception.diff_changes import diff_text, summarize_changes
         import hashlib
 
-        diff = diff_text(old_text, new_text, label=rel_path)
+        # max_chars=None：入库必须存完整 diff。8000 截断是给 prompt/展示用的，
+        # 存档若被腰斩，大章节的后半段修订就永久无法回放了。
+        diff = diff_text(old_text, new_text, label=rel_path, max_chars=None)
         stats = summarize_changes(old_text, new_text)
         old_hash = hashlib.md5(old_text.encode("utf-8")).hexdigest()[:12]
         new_hash = hashlib.md5(new_text.encode("utf-8")).hexdigest()[:12]
@@ -901,10 +943,17 @@ def what_changed(folder: str, since: str = "today") -> str:
             lines.append(f"    · {ts} 的修订：")
             diff = (i.get("diff") or "").strip()
             if diff and diff != "（无变更）":
-                for dl in diff.splitlines()[:50]:
-                    if dl.startswith(("+++", "---", "@@", "Index")):
-                        continue
+                body = [dl for dl in diff.splitlines()
+                        if not dl.startswith(("+++", "---", "@@", "Index"))]
+                for dl in body[:_DIFF_PREVIEW_LINES]:
                     lines.append(f"      {dl}")
+                # 库里存的是完整 diff，这里只是展示截断——必须说明，否则用户
+                # 会以为"就改了这些"，正是当初 8000 硬截断埋下的同一类误导。
+                if len(body) > _DIFF_PREVIEW_LINES:
+                    lines.append(
+                        f"      …（此处还有 {len(body) - _DIFF_PREVIEW_LINES} 行改动未展开，"
+                        f"用 novel_revisions 查看完整 diff）"
+                    )
         lines.append("")
     return "\n".join(lines)
 
