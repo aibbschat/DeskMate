@@ -262,7 +262,7 @@ function PeopleRow({
             <button
               className={XBTN}
               title="remove"
-              onClick={() => disallowUser("github", login, installationId).then(onChanged)}
+              onClick={() => disallowUser("github", login, installationId).then(onChanged).catch(() => {})}
             >
               ×
             </button>

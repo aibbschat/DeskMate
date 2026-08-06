@@ -29,7 +29,7 @@ export type EventType =
 
 export interface WsEvent {
   type: EventType;
-  data: any;
+  data: any; // eslint-disable-line @typescript-eslint/no-explicit-any -- WS event payloads vary by type; narrowing in App.tsx's switch
 }
 
 // Re-exported for transcript items below. Lives in api.ts (the REST/WS contract source of truth);
@@ -109,15 +109,15 @@ export type Item =
   | { kind: "assistant"; text: string; ts?: number; reasoning?: string }
   // A generated review-report card (编辑专家「生成审阅报告」产物），内嵌在会话里，
   // 重开软件后仍在。引擎发 LLM 前会剥离 `report`/`report_name` sidecar 字段。
-  | { kind: "report"; name: string; report: any; caption?: string; ts?: number }
+  | { kind: "report"; name: string; report: any; caption?: string; ts?: number } // eslint-disable-line @typescript-eslint/no-explicit-any -- typed as ReviewReport at the consumer (ReportViewer)
   // `hidden` = results the user's privacy filters removed before the agent saw them
   // (from the tool message's `_display` sidecar; the agent-visible content has no trace).
   // `standingRule` = the task-scoped rule that auto-allowed this call ("tool → target").
-  | { kind: "tool"; id: string; name: string; args: any; status: string; preview?: string; hidden?: number; standingRule?: string }
+  | { kind: "tool"; id: string; name: string; args: any; status: string; preview?: string; hidden?: number; standingRule?: string } // eslint-disable-line @typescript-eslint/no-explicit-any -- args are tool-specific and consumed with runtime checks
   | {
       kind: "approval";
       name: string;
-      args: any;
+      args: any; // eslint-disable-line @typescript-eslint/no-explicit-any -- args are tool-specific and consumed with runtime checks
       reason: string;
       category?: string;
       // The exact target a standing rule could pin (server-computed) — with a run

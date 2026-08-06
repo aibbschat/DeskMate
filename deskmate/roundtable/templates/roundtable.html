@@ -5,226 +5,317 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>创作圆桌 · 有界多轮群聊</title>
 <style>
-  * { box-sizing: border-box; margin: 0; padding: 0; }
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
   :root {
-    --wx-green: #07c160;
-    --chat-bg: #ededed;
-    --panel: #ffffff;
-    --line: #e6e9ed;
-    --host: #fbf0d3;
-    --host-bd: #eccf86;
-    --ink: #1a1a1a;
-    --sub: #8a929c;
+    /* 基础色板：石板冷灰 + 清爽绿 */
+    --accent: #22c55e;
+    --accent-hover: #16a34a;
+    --accent-soft: #f0fdf4;
+    --accent-border: #bbf7d0;
+    --surface: #ffffff;
+    --surface-dim: #f8fafc;
+    --canvas: #f1f5f9;
+    --border: #e2e8f0;
+    --border-subtle: #f1f5f9;
+    --ink: #0f172a;
+    --ink-secondary: #475569;
+    --ink-muted: #94a3b8;
+    --host-bg: #fffbeb;
+    --host-border: #fde68a;
+    --host-accent: #f59e0b;
+    --sub: #64748b;
   }
   html, body { height: 100%; }
   body {
-    font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
-    background: #dfe4ea; display: flex; height: 100vh; overflow: hidden;
+    font-family: -apple-system, "SF Pro Text", "PingFang SC", "Helvetica Neue", "Microsoft YaHei", sans-serif;
+    background: var(--canvas); display: flex; height: 100vh; overflow: hidden;
+    -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale;
   }
 
-  /* 左侧控制栏 */
+  /* ── 左侧控制栏 ── */
   .sidebar {
-    width: 320px; flex-shrink: 0; background: var(--panel); border-right: 1px solid var(--line);
-    padding: 22px 20px; overflow-y: auto; display: flex; flex-direction: column;
-    transition: width .26s ease, padding .26s ease, opacity .2s ease; position: relative;
+    width: 300px; flex-shrink: 0; background: var(--surface); border-right: 1px solid var(--border);
+    padding: 0; overflow-y: auto; display: flex; flex-direction: column;
+    transition: width .26s ease, opacity .2s ease; position: relative;
   }
-  .sidebar.collapsed { width: 0 !important; padding-left: 0; padding-right: 0; border-right: none; opacity: 0; pointer-events: none; }
-  .side-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-  .collapse-btn {
-    border: 1px solid var(--line); background: #fff; color: #8a929c; width: 30px; height: 30px;
-    border-radius: 8px; cursor: pointer; font-size: 16px; line-height: 1; flex-shrink: 0; transition: .15s;
-  }
-  .collapse-btn:hover { color: var(--wx-green); border-color: var(--wx-green); }
-  .brand { display: flex; align-items: center; gap: 9px; margin-bottom: 4px; }
-  .brand .logo { font-size: 22px; }
-  .brand h1 { font-size: 17px; color: var(--ink); font-weight: 700; }
+  .sidebar.collapsed { width: 0 !important; opacity: 0; pointer-events: none; overflow: hidden; }
+  .sidebar::-webkit-scrollbar { width: 5px; }
+  .sidebar::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
 
-  /* 折叠后，展开悬浮按钮移到左下角（不遮挡群聊标题） */
+  .side-head {
+    display: flex; align-items: center; justify-content: space-between; gap: 8px;
+    padding: 18px 20px 0;
+  }
+  .collapse-btn {
+    border: 1px solid var(--border); background: var(--surface-dim); color: var(--ink-muted);
+    width: 28px; height: 28px; border-radius: 6px; cursor: pointer; font-size: 13px;
+    line-height: 1; flex-shrink: 0; transition: .15s; display: flex; align-items: center; justify-content: center;
+  }
+  .collapse-btn:hover { color: var(--ink-secondary); border-color: var(--ink-muted); background: var(--surface); }
+  .brand { display: flex; align-items: center; gap: 8px; }
+  .brand .logo { font-size: 20px; }
+  .brand h1 { font-size: 15px; color: var(--ink); font-weight: 700; letter-spacing: -0.01em; }
+
+  .sidebar .tag {
+    font-size: 11.5px; color: var(--ink-muted); margin: 0; line-height: 1.5;
+    padding: 10px 20px 14px; border-bottom: 1px solid var(--border-subtle);
+  }
+  .sidebar-inner { padding: 14px 20px 20px; flex: 1; display: flex; flex-direction: column; gap: 0; }
+  .sidebar label {
+    font-size: 11.5px; color: var(--ink-secondary); display: block; margin: 14px 0 5px;
+    font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em;
+  }
+  .sidebar label:first-child { margin-top: 0; }
+  .sidebar textarea,
+  .sidebar input[type="text"],
+  .sidebar select {
+    width: 100%; border: 1px solid var(--border); border-radius: 8px;
+    padding: 8px 10px; font-size: 13px; font-family: inherit; line-height: 1.5; color: var(--ink);
+    background: var(--surface); transition: border-color .15s, box-shadow .15s;
+  }
+  .sidebar textarea:focus,
+  .sidebar input[type="text"]:focus,
+  .sidebar select:focus {
+    outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft);
+  }
+  .sidebar textarea { height: 88px; resize: vertical; }
+
+  .rowctl { display: flex; align-items: center; gap: 14px; margin-top: 6px; flex-wrap: wrap; }
+  .chk { font-size: 12.5px; color: var(--ink-secondary); display: flex; align-items: center; gap: 5px; cursor: pointer; user-select: none; }
+  .chk input { accent-color: var(--accent); width: 14px; height: 14px; }
+
+  .start {
+    margin-top: 18px; width: 100%; background: var(--accent); color: #fff; border: none;
+    border-radius: 8px; padding: 10px; font-size: 13.5px; font-weight: 600; cursor: pointer;
+    transition: background .15s, transform .05s; letter-spacing: 0.01em;
+  }
+  .start:hover { background: var(--accent-hover); }
+  .start:active { transform: scale(.98); }
+  .start:disabled { background: #94a3b8; cursor: default; }
+
+  .readprog .bar { width: 100%; height: 5px; background: var(--border-subtle); border-radius: 3px; overflow: hidden; margin-top: 8px; }
+  .readprog .fill { height: 100%; background: var(--accent); width: 0%; transition: width .3s ease; border-radius: 3px; }
+  .readprog .rstat { font-size: 11px; color: var(--ink-muted); margin-top: 5px; line-height: 1.5; }
+
+  .health { font-size: 11px; margin-top: 12px; color: var(--ink-muted); line-height: 1.5; }
+  .health b { color: var(--accent); }
+  .health b.off { color: #ef4444; }
+
+  .legend {
+    margin-top: auto; padding: 14px 20px; font-size: 10.5px; color: var(--ink-muted);
+    line-height: 1.7; border-top: 1px solid var(--border-subtle); background: var(--surface-dim);
+  }
+  .legend code { background: var(--border-subtle); padding: 1px 4px; border-radius: 3px; color: var(--ink-muted); font-size: 10px; }
+
+  /* 展开悬浮按钮 */
   .expand-fab {
     position: fixed; bottom: 78px; left: 16px; z-index: 30; display: none; align-items: center; gap: 6px;
-    background: var(--panel); border: 1px solid var(--line); color: #555; padding: 9px 14px; border-radius: 22px;
-    font-size: 12.5px; cursor: pointer; box-shadow: 0 3px 12px rgba(0,0,0,.12); transition: .15s;
+    background: var(--surface); border: 1px solid var(--border); color: var(--ink-secondary);
+    padding: 8px 14px; border-radius: 8px; font-size: 12px; cursor: pointer;
+    box-shadow: 0 2px 8px rgba(0,0,0,.08); transition: .15s;
   }
-  .expand-fab:hover { color: var(--wx-green); border-color: var(--wx-green); }
+  .expand-fab:hover { border-color: var(--accent); color: var(--accent); }
   body.sidebar-collapsed .expand-fab { display: flex; }
-  .sidebar .tag { font-size: 11px; color: var(--sub); margin-bottom: 18px; line-height: 1.5; }
-  .sidebar label { font-size: 12px; color: #555; display: block; margin: 14px 0 5px; font-weight: 600; }
-  .sidebar textarea {
-    width: 100%; height: 100px; border: 1px solid var(--line); border-radius: 10px;
-    padding: 10px; font-size: 13px; resize: vertical; font-family: inherit; line-height: 1.55; color: #222;
-  }
-  .sidebar textarea:focus { outline: none; border-color: var(--wx-green); }
-  .rowctl { display: flex; align-items: center; gap: 14px; margin-top: 12px; flex-wrap: wrap; }
-  .rowctl select { padding: 6px 10px; border-radius: 8px; border: 1px solid var(--line); font-size: 13px; background: #fff; color: #222; }
-  .chk { font-size: 12.5px; color: #444; display: flex; align-items: center; gap: 5px; cursor: pointer; user-select: none; }
-  .chk input { accent-color: var(--wx-green); width: 15px; height: 15px; }
-  .start {
-    margin-top: 20px; width: 100%; background: var(--wx-green); color: #fff; border: none;
-    border-radius: 10px; padding: 12px; font-size: 14px; font-weight: 600; cursor: pointer;
-    transition: filter .15s, transform .05s;
-  }
-  .start:hover { filter: brightness(1.05); }
-  .start:active { transform: scale(.99); }
-  .start:disabled { background: #b6c4bd; cursor: default; }
-  .readprog .bar { width: 100%; height: 7px; background: #e6e9ed; border-radius: 4px; overflow: hidden; }
-  .readprog .fill { height: 100%; background: var(--wx-green); width: 0%; transition: width .3s ease; }
-  .health { font-size: 11.5px; margin-top: 14px; color: #888; line-height: 1.5; }
-  .health b { color: var(--wx-green); }
-  .health b.off { color: #d9534f; }
-  .legend { margin-top: auto; padding-top: 18px; font-size: 10.5px; color: #aaa; line-height: 1.7; border-top: 1px dashed var(--line); }
-  .legend code { background: #f1f3f5; padding: 1px 5px; border-radius: 4px; color: #777; }
 
-  /* 右侧主区：桌面群聊面板（无手机框） */
-  .main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+  /* ── 精简设定卡片 ── */
+  .compact {
+    border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; margin-top: 4px;
+    display: flex; align-items: center; gap: 8px; background: var(--surface-dim);
+    transition: border-color .15s;
+  }
+  .compact:hover { border-color: var(--accent-border); }
+  .compact .c-label { font-size: 11.5px; color: var(--ink-secondary); white-space: nowrap; font-weight: 600; }
+  .compact .c-val {
+    font-size: 11.5px; color: var(--ink-muted); flex: 1; text-align: left; padding: 0 2px;
+    line-height: 1.4; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .more-btn {
+    border: 1px solid var(--accent-border); background: var(--accent-soft); color: var(--accent-hover);
+    border-radius: 6px; padding: 4px 10px; font-size: 11.5px; font-weight: 600;
+    cursor: pointer; white-space: nowrap; flex-shrink: 0; transition: .15s;
+  }
+  .more-btn:hover { background: var(--accent); color: #fff; border-color: var(--accent); }
+  .more-btn.purple { border-color: #c4b5fd; background: #f5f3ff; color: #7c3aed; }
+  .more-btn.purple:hover { background: #7c3aed; color: #fff; border-color: #7c3aed; }
 
-  /* 群聊头部：精致化 */
+  /* ── 右侧主区 ── */
+  .main { flex: 1; display: flex; flex-direction: column; min-width: 0; background: var(--surface); }
+
+  /* 头部 */
   .room-header {
-    background: linear-gradient(180deg, #ffffff 0%, #fbfcfd 100%);
-    border-bottom: 1px solid var(--line);
-    padding: 15px 24px 12px; box-shadow: 0 1px 4px rgba(0,0,0,.035);
+    background: var(--surface); border-bottom: 1px solid var(--border);
+    padding: 14px 28px 12px;
   }
-  .room-title { font-size: 18px; font-weight: 700; color: var(--ink); display: flex; align-items: center; gap: 9px; }
+  .room-title {
+    font-size: 16px; font-weight: 700; color: var(--ink); display: flex; align-items: center; gap: 8px;
+    letter-spacing: -0.01em;
+  }
   .room-title .live {
-    width: 9px; height: 9px; border-radius: 50%; background: var(--wx-green);
-    box-shadow: 0 0 0 3px rgba(7,193,96,.18);
+    width: 8px; height: 8px; border-radius: 50%; background: var(--accent);
+    box-shadow: 0 0 0 3px rgba(34,197,94,.15); flex-shrink: 0;
   }
-  .room-meta { display: flex; align-items: center; gap: 10px; margin-top: 5px; }
-  .room-sub { font-size: 12px; color: var(--sub); }
+  .room-meta { display: flex; align-items: center; gap: 8px; margin-top: 4px; }
+  .room-sub { font-size: 12px; color: var(--ink-muted); }
   .meta-pill {
-    font-size: 11px; color: #5a6b78; background: #eef2f6; border: 1px solid #e3e8ee;
-    border-radius: 11px; padding: 2px 9px;
+    font-size: 10.5px; color: var(--ink-secondary); background: var(--surface-dim);
+    border: 1px solid var(--border); border-radius: 6px; padding: 2px 8px;
   }
 
-  /* 成员条：带在线小绿点 */
+  /* 成员条 */
   .roster {
-    display: flex; gap: 14px; padding: 12px 24px; background: #fafbfc;
-    border-bottom: 1px solid #eef0f2; overflow-x: auto; align-items: flex-start;
+    display: flex; gap: 16px; padding: 10px 28px; background: var(--surface-dim);
+    border-bottom: 1px solid var(--border-subtle); overflow-x: auto; align-items: flex-start;
   }
-  .member { display: flex; flex-direction: column; align-items: center; min-width: 52px; }
+  .roster::-webkit-scrollbar { height: 3px; }
+  .roster::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+  .member { display: flex; flex-direction: column; align-items: center; min-width: 50px; }
   .av-wrap { position: relative; }
   .avatar {
-    width: 40px; height: 40px; border-radius: 11px; display: flex; align-items: center;
-    justify-content: center; font-size: 20px; color: #fff; box-shadow: 0 1px 3px rgba(0,0,0,.14);
+    width: 36px; height: 36px; border-radius: 10px; display: flex; align-items: center;
+    justify-content: center; font-size: 18px; color: #fff;
   }
   .member .on-dot {
-    position: absolute; right: -2px; bottom: -2px; width: 11px; height: 11px; border-radius: 50%;
-    background: var(--wx-green); border: 2px solid #fafbfc;
+    position: absolute; right: -1px; bottom: -1px; width: 10px; height: 10px; border-radius: 50%;
+    background: var(--accent); border: 2px solid var(--surface-dim);
   }
   .member .off-tag {
-    position: absolute; right: -4px; bottom: -5px; font-size: 8px; color: #fff; background: #bcc4cc;
-    border-radius: 6px; padding: 0 4px; line-height: 13px;
+    position: absolute; right: -3px; bottom: -4px; font-size: 7.5px; color: #fff; background: #94a3b8;
+    border-radius: 4px; padding: 0 3px; line-height: 12px;
   }
-  .member .nm { font-size: 10.5px; color: #666; margin-top: 5px; max-width: 54px; text-align: center; line-height: 1.15; }
-  .member.offline { opacity: .5; filter: grayscale(1); }
-  .a-host { background: #e0a800; }
-  .a-hist { background: #e08a2b; }
-  .a-edit { background: #3a7bd5; }
-  .a-proof { background: #9b59b6; }
-  .a-reader { background: #e84393; }
-  .a-pub { background: #16a085; }
-  .a-film { background: #c0392b; }
-  .a-genre { background: #8e44ad; }
-  .a-oc { background: #34495e; }
-  .a-hermes { background: #555; }
+  .member .nm { font-size: 10px; color: var(--ink-muted); margin-top: 4px; max-width: 52px; text-align: center; line-height: 1.15; }
+  .member.offline { opacity: .45; filter: grayscale(.6); }
+  .a-host { background: #f59e0b; }
+  .a-hist { background: #ea580c; }
+  .a-edit { background: #2563eb; }
+  .a-proof { background: #9333ea; }
+  .a-reader { background: #ec4899; }
+  .a-pub { background: #0d9488; }
+  .a-film { background: #dc2626; }
+  .a-genre { background: #7c3aed; }
+  .a-oc { background: #334155; }
+  .a-hermes { background: #64748b; }
 
-  /* 状态行：柔和胶囊 */
-  .statusbar { font-size: 12px; color: #6b7480; padding: 8px 24px; background: #f5f6f8; border-bottom: 1px solid #eceef0; min-height: 34px; display: flex; align-items: center; gap: 8px; }
-  .statusbar b { color: #3a7bd5; }
-  .statusbar .thinking { color: var(--wx-green); font-weight: 600; }
+  /* 状态行 */
+  .statusbar {
+    font-size: 11.5px; color: var(--ink-muted); padding: 7px 28px; background: var(--surface-dim);
+    border-bottom: 1px solid var(--border-subtle); min-height: 32px; display: flex; align-items: center; gap: 6px;
+  }
+  .statusbar b { color: var(--accent-hover); }
+  .statusbar .thinking { color: var(--accent); font-weight: 600; }
 
   /* 聊天区 */
   .chat {
-    flex: 1; padding: 18px 24px; overflow-y: auto; display: flex; flex-direction: column; gap: 14px;
-    background: var(--chat-bg);
+    flex: 1; padding: 16px 28px; overflow-y: auto; display: flex; flex-direction: column; gap: 4px;
+    background: var(--canvas);
   }
-  .row { display: flex; gap: 9px; align-items: flex-start; animation: pop .26s ease-out; max-width: 880px; }
-  @keyframes pop { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
-  .row.host .bubble { background: var(--host); border: 1px solid var(--host-bd); font-style: italic; }
-  .row.host .name { color: #b8860b; }
-  .bubble-wrap { max-width: 80%; display: flex; flex-direction: column; }
-  .name { font-size: 11.5px; color: #8a929c; margin: 0 4px 4px; }
+  .chat::-webkit-scrollbar { width: 6px; }
+  .chat::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 3px; }
+  .chat::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+
+  /* 消息行 */
+  .row {
+    display: flex; gap: 10px; align-items: flex-start;
+    animation: msg-in .3s cubic-bezier(.16,1,.3,1); max-width: 840px;
+    padding: 6px 0;
+  }
+  @keyframes msg-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+
+  .row .avatar { width: 34px; height: 34px; border-radius: 9px; font-size: 16px; flex-shrink: 0; margin-top: 2px; }
+  .bubble-wrap { flex: 1; min-width: 0; }
+  .name {
+    font-size: 12px; color: var(--ink-secondary); margin: 0 0 3px; font-weight: 600;
+    display: flex; align-items: center; gap: 6px;
+  }
   .name .round {
-    font-size: 9.5px; background: #e3e6ea; color: #8a929c; border-radius: 4px; padding: 0 5px; margin-left: 5px;
+    font-size: 9.5px; background: var(--border-subtle); color: var(--ink-muted);
+    border-radius: 4px; padding: 1px 6px; font-weight: 500;
   }
   .bubble {
-    padding: 10px 13px; border-radius: 8px; font-size: 14px; line-height: 1.62; color: #111;
-    background: #fff; box-shadow: 0 1px 1px rgba(0,0,0,.05); white-space: pre-wrap; word-break: break-word;
+    padding: 10px 14px; border-radius: 2px 10px 10px 10px; font-size: 13.5px; line-height: 1.7; color: var(--ink);
+    background: var(--surface); white-space: pre-wrap; word-break: break-word;
+    box-shadow: 0 1px 2px rgba(0,0,0,.04);
   }
   .ext-tag {
-    display: inline-block; font-size: 9.5px; background: #dfe6ec; color: #5a6b78; border-radius: 4px;
-    padding: 1px 5px; margin-left: 6px; vertical-align: middle;
+    display: inline-block; font-size: 9px; background: var(--accent-soft); color: var(--accent-hover);
+    border-radius: 4px; padding: 1px 5px; font-weight: 600;
   }
-  .typing .bubble { display: flex; gap: 4px; padding: 13px 15px; }
-  .dot { width: 7px; height: 7px; border-radius: 50%; background: #bcc4cc; animation: blink 1.2s infinite; }
+
+  /* 主持人消息 */
+  .row.host .bubble {
+    background: var(--host-bg); border: 1px solid var(--host-border); border-radius: 2px 10px 10px 10px;
+    font-style: normal; border-left: 3px solid var(--host-accent);
+  }
+  .row.host .name { color: var(--host-accent); }
+
+  /* 思考中 */
+  .typing .bubble { display: flex; gap: 5px; padding: 12px 14px; }
+  .dot { width: 6px; height: 6px; border-radius: 50%; background: #94a3b8; animation: blink 1.4s infinite; }
   .dot:nth-child(2) { animation-delay: .2s; }
   .dot:nth-child(3) { animation-delay: .4s; }
-  @keyframes blink { 0%,60%,100% { opacity: .3; } 30% { opacity: 1; } }
-  .divider { text-align: center; font-size: 11px; color: #9aa3ab; margin: 2px 0; }
-  .divider span { background: #d9dee3; padding: 2px 12px; border-radius: 10px; }
-  .divider.note span { background: #dfeafc; color: #3a7bd5; }
-  .sysnote {
-    align-self: center; font-size: 11.5px; color: #888; background: #e3e7eb; padding: 6px 14px;
-    border-radius: 10px; max-width: 88%; text-align: center; animation: pop .26s ease-out;
+  @keyframes blink { 0%,60%,100% { opacity: .25; } 30% { opacity: 1; } }
+
+  /* 分隔线 */
+  .divider { text-align: center; font-size: 11px; color: var(--ink-muted); margin: 10px 0 6px; }
+  .divider span {
+    background: var(--border-subtle); padding: 3px 14px; border-radius: 6px;
+    font-weight: 500; letter-spacing: 0.02em;
   }
-  .chat::-webkit-scrollbar { width: 7px; }
-  .chat::-webkit-scrollbar-thumb { background: #c3cbd2; border-radius: 4px; }
+  .divider.note span { background: #eff6ff; color: #2563eb; }
+
+  /* 系统通知 */
+  .sysnote {
+    align-self: center; font-size: 11.5px; color: var(--ink-muted); background: var(--border-subtle);
+    padding: 5px 14px; border-radius: 8px; max-width: 85%; text-align: center;
+    animation: msg-in .3s cubic-bezier(.16,1,.3,1); font-weight: 500;
+  }
 
   /* 底部追问输入条 */
-  .composer { display: flex; gap: 10px; align-items: flex-end; padding: 12px 18px; background: var(--panel); border-top: 1px solid var(--line); }
+  .composer {
+    display: flex; gap: 10px; align-items: flex-end; padding: 12px 20px; background: var(--surface);
+    border-top: 1px solid var(--border);
+  }
   .composer textarea {
-    flex: 1; resize: none; border: 1px solid var(--line); border-radius: 18px; padding: 10px 14px;
-    font-size: 13.5px; font-family: inherit; line-height: 1.45; max-height: 92px; color: #222; background: #fff;
+    flex: 1; resize: none; border: 1px solid var(--border); border-radius: 10px; padding: 9px 12px;
+    font-size: 13px; font-family: inherit; line-height: 1.45; max-height: 88px; color: var(--ink);
+    background: var(--surface-dim); transition: border-color .15s, box-shadow .15s;
   }
-  .composer textarea:focus { outline: none; border-color: var(--wx-green); }
-  .composer textarea:disabled { background: #f4f6f8; color: #aab; }
+  .composer textarea:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); background: var(--surface); }
+  .composer textarea:disabled { background: var(--border-subtle); color: #aab; }
   .composer button {
-    background: var(--wx-green); color: #fff; border: none; border-radius: 18px; padding: 10px 20px;
-    font-size: 13.5px; font-weight: 600; cursor: pointer; flex-shrink: 0; transition: .15s;
+    background: var(--accent); color: #fff; border: none; border-radius: 10px; padding: 9px 18px;
+    font-size: 13px; font-weight: 600; cursor: pointer; flex-shrink: 0; transition: background .15s;
   }
-  .composer button:hover:not(:disabled) { filter: brightness(1.05); }
-  .composer button:disabled { background: #b6c4bd; cursor: default; }
+  .composer button:hover:not(:disabled) { background: var(--accent-hover); }
+  .composer button:disabled { background: #94a3b8; cursor: default; }
 
-  /* 第一层：精简设定卡片（点击进入第二层） */
-  .compact {
-    border: 1px solid var(--line); border-radius: 10px; padding: 9px 11px; margin-top: 6px;
-    display: flex; align-items: center; gap: 10px; background: #fafbfc;
-  }
-  .compact .c-label { font-size: 12px; color: #555; white-space: nowrap; font-weight: 600; }
-  .compact .c-val {
-    font-size: 12px; color: #333; flex: 1; text-align: left; padding: 0 4px; line-height: 1.5;
-    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  }
-  .more-btn {
-    border: 1px solid var(--wx-green); background: #fff; color: var(--wx-green); border-radius: 8px;
-    padding: 6px 12px; font-size: 12.5px; font-weight: 600; cursor: pointer; white-space: nowrap; flex-shrink: 0; transition: .15s;
-  }
-  .more-btn:hover { background: var(--wx-green); color: #fff; }
-  .more-btn.purple { border-color: #8e44ad; color: #8e44ad; }
-  .more-btn.purple:hover { background: #8e44ad; color: #fff; }
-
-  /* 第二层：设定弹层 */
+  /* ── 弹层 ── */
   .modal-mask {
-    position: fixed; inset: 0; background: rgba(0,0,0,.42); z-index: 60;
+    position: fixed; inset: 0; background: rgba(15,23,42,.5); backdrop-filter: blur(4px); z-index: 60;
     display: none; align-items: center; justify-content: center; padding: 24px;
   }
   .modal-mask.show { display: flex; }
   .modal {
-    width: 600px; max-width: 100%; max-height: 88vh; overflow-y: auto; background: #fff;
-    border-radius: 16px; box-shadow: 0 14px 48px rgba(0,0,0,.28); animation: pop .2s ease-out;
+    width: 560px; max-width: 100%; max-height: 88vh; overflow-y: auto; background: var(--surface);
+    border-radius: 14px; box-shadow: 0 20px 60px rgba(0,0,0,.2); animation: modal-in .2s ease-out;
   }
+  @keyframes modal-in { from { opacity: 0; transform: translateY(8px) scale(.98); } to { opacity: 1; transform: none; } }
   .modal-head {
-    position: sticky; top: 0; background: #fff; display: flex; align-items: center; justify-content: space-between;
-    padding: 15px 20px; border-bottom: 1px solid var(--line); z-index: 1;
+    position: sticky; top: 0; background: var(--surface); display: flex; align-items: center; justify-content: space-between;
+    padding: 16px 22px; border-bottom: 1px solid var(--border); z-index: 1;
   }
-  .modal-head h2 { font-size: 15px; color: var(--ink); font-weight: 700; }
-  .modal-close { border: none; background: #f0f2f5; color: #666; width: 30px; height: 30px; border-radius: 8px; font-size: 16px; cursor: pointer; line-height: 1; transition: .15s; }
-  .modal-close:hover { background: #e6e9ed; }
-  .modal-body { padding: 4px 20px 22px; }
+  .modal-head h2 { font-size: 14px; color: var(--ink); font-weight: 700; }
+  .modal-close {
+    border: none; background: var(--surface-dim); color: var(--ink-muted); width: 28px; height: 28px;
+    border-radius: 6px; font-size: 14px; cursor: pointer; line-height: 1; transition: .15s;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .modal-close:hover { background: var(--border); color: var(--ink-secondary); }
+  .modal-body { padding: 6px 22px 24px; }
   .modal-sec { margin-top: 18px; }
-  .modal-sec + .modal-sec { border-top: 1px solid #f0f2f5; padding-top: 18px; }
-  .modal-sec > h3 { font-size: 13px; color: #444; font-weight: 700; margin-bottom: 12px; }
-  .modal .rowctl { flex-direction: column; align-items: flex-start; gap: 3px; }
-  .modal .chk { padding: 4px 0; font-size: 13px; }
+  .modal-sec + .modal-sec { border-top: 1px solid var(--border-subtle); padding-top: 18px; }
+  .modal-sec > h3 { font-size: 12.5px; color: var(--ink-secondary); font-weight: 700; margin-bottom: 10px; }
+  .modal .rowctl { flex-direction: column; align-items: flex-start; gap: 2px; }
+  .modal .chk { padding: 4px 0; font-size: 12.5px; }
 </style>
 </head>
 <body>
@@ -233,67 +324,69 @@
       <div class="brand"><span class="logo">🪑</span><h1>创作圆桌</h1></div>
       <button class="collapse-btn" onclick="toggleSidebar()" title="折叠设定栏">«</button>
     </div>
-    <p class="tag">有界多轮群聊：进程内人格 + 桌搭主持串场；可勾选外部 A2A peer。发言按「到达序」实时冒出。</p>
-    <label for="topic">圆桌议题</label>
-    <textarea id="topic" placeholder="描述想讨论的创作问题，例如：请评审第一章的开篇节奏与人物出场"></textarea>
+    <p class="tag">有界多轮群聊 · 进程内人格 + 桌搭主持 · 发言按到达序实时冒出</p>
+    <div class="sidebar-inner">
+      <label for="topic">圆桌议题</label>
+      <textarea id="topic" placeholder="描述想讨论的创作问题，例如：请评审第一章的开篇节奏与人物出场"></textarea>
 
-    <label for="manuscript" style="margin-top:12px">待评审文稿（文件路径 / 书名）</label>
-    <input type="text" id="manuscript" class="inp" placeholder="如 /Users/.../国子监秘闻录.docx 或 国子监秘闻录" style="margin-top:6px;width:100%;font-size:12px;box-sizing:border-box" />
-    <label for="chapters" style="margin-top:8px">评审章节范围（可选）</label>
-    <input type="text" id="chapters" class="inp" placeholder="如 1-3 或 2（留空则默认评审第 1 章）" style="margin-top:6px;width:100%;font-size:12px;box-sizing:border-box" />
-    <div id="chapterHint" style="font-size:11px;color:#999;margin-top:4px;line-height:1.4"></div>
+      <label for="manuscript">待评审文稿</label>
+      <input type="text" id="manuscript" class="inp" placeholder="文件路径或书名" />
+      <label for="chapters">章节范围</label>
+      <input type="text" id="chapters" class="inp" placeholder="如 1-3（留空默认第 1 章）" />
+      <div id="chapterHint" style="font-size:10.5px;color:var(--ink-muted);margin-top:4px;line-height:1.4"></div>
 
-    <button class="readbtn" id="readBtn" onclick="readBook()" style="margin-top:10px;width:100%;background:var(--wx-green);color:#fff;border:none;border-radius:10px;padding:10px;font-size:13px;font-weight:600;cursor:pointer">📖 阅读全书</button>
-    <div class="readprog" id="readProg" style="display:none;margin-top:8px">
-      <div class="bar"><div class="fill" id="readFill" style="width:0%"></div></div>
-      <div class="rstat" id="readStat" style="font-size:11px;color:#666;margin-top:5px;line-height:1.5"></div>
+      <button class="readbtn" id="readBtn" onclick="readBook()" style="margin-top:10px;width:100%;background:var(--accent);color:#fff;border:none;border-radius:8px;padding:8px;font-size:12.5px;font-weight:600;cursor:pointer">📖 阅读全书</button>
+      <div class="readprog" id="readProg" style="display:none">
+        <div class="bar"><div class="fill" id="readFill" style="width:0%"></div></div>
+        <div class="rstat" id="readStat"></div>
+      </div>
+
+      <div class="compact" style="margin-top:14px">
+        <span class="c-label">📈 潮流简报</span>
+        <span class="c-val" id="trendSummary">加载中…</span>
+        <button class="more-btn purple" onclick="openTrendLayer()">管理</button>
+      </div>
+
+      <label>桌搭人格</label>
+      <div class="compact">
+        <span class="c-label">已选</span>
+        <span class="c-val" id="personaSummary">文学编辑 · 读者视角</span>
+        <button class="more-btn" onclick="openPersonaLayer()">更多</button>
+      </div>
+
+      <label>轮次</label>
+      <select id="rounds">
+        <option value="1">1 轮</option>
+        <option value="2" selected>2 轮（收窄）</option>
+        <option value="3">3 轮（上限）</option>
+      </select>
+
+      <label>外部 peer（A2A）</label>
+      <div class="rowctl">
+        <label class="chk"><input type="checkbox" id="cb-oc" checked /> OpenCode</label>
+        <label class="chk"><input type="checkbox" id="cb-hermes" /> Hermes</label>
+      </div>
+      <input type="text" id="hermes-url" value="http://localhost:9900" placeholder="Hermes A2A URL" />
+
+      <button class="start" id="startBtn" onclick="startRoundtable()">开始圆桌</button>
+      <div class="health" id="health"></div>
     </div>
-
-    <div class="compact" style="margin-top:14px">
-      <span class="c-label">📈 潮流简报</span>
-      <span class="c-val" id="trendSummary">加载中…</span>
-      <button class="more-btn purple" onclick="openTrendLayer()">管理 ▸</button>
-    </div>
-
-    <label style="margin-top:16px">桌搭人格</label>
-    <div class="compact" style="margin-top:6px">
-      <span class="c-label">已选</span>
-      <span class="c-val" id="personaSummary">文学编辑 · 读者视角</span>
-      <button class="more-btn" onclick="openPersonaLayer()">更多 ▸</button>
-    </div>
-
-    <label style="margin-top:16px">轮次</label>
-    <select id="rounds" style="margin-top:6px; padding:6px 10px; border-radius:8px; border:1px solid var(--line); font-size:13px; background:#fff; color:#222;">
-      <option value="1">1 轮</option>
-      <option value="2" selected>2 轮（收窄）</option>
-      <option value="3">3 轮（上限）</option>
-    </select>
-
-    <label style="margin-top:16px">外部 peer（经 A2A）</label>
-    <div class="rowctl" style="margin-top:6px">
-      <label class="chk"><input type="checkbox" id="cb-oc" checked /> OpenCode</label>
-      <label class="chk"><input type="checkbox" id="cb-hermes" /> Hermes</label>
-    </div>
-    <input type="text" id="hermes-url" value="http://localhost:9900" placeholder="Hermes A2A URL" style="margin-top:6px;width:100%;font-size:12px;box-sizing:border-box" />
-
-    <button class="start" id="startBtn" onclick="startRoundtable()">开始圆桌</button>
-    <div class="health" id="health"></div>
     <div class="legend">
-      模式：到达序发言 · 桌搭主持串场 · 收窄式有界多轮（每轮仅针对上轮分歧点答辩）。<br/>
-      外部 peer 经 A2A 探活，离线自动跳过。圆桌结束后可底部追问续聊。
+      到达序发言 · 桌搭主持串场 · 收窄式有界多轮<br/>
+      外部 peer 经 A2A 探活，离线自动跳过
     </div>
   </aside>
 
-  <!-- 第二层 · A：更多人格设定（独立层，以后可在此加其它功能选项） -->
+  <!-- 第二层 · A：人格设定 -->
   <div class="modal-mask" id="modalPersona" onclick="if(event.target===this)closePersonaLayer()">
     <div class="modal">
       <div class="modal-head">
-        <h2>更多人格设定</h2>
+        <h2>桌搭人格设定</h2>
         <button class="modal-close" onclick="closePersonaLayer()" title="关闭">✕</button>
       </div>
       <div class="modal-body">
         <div class="modal-sec">
-          <h3>🪑 桌搭人格（可多选）</h3>
+          <h3>🪑 选择参与人格（可多选）</h3>
           <div class="rowctl" id="personaChks">
             <label class="chk"><input type="checkbox" class="pc" value="historian" /> 史料考据</label>
             <label class="chk"><input type="checkbox" class="pc" value="editor" checked /> 文学编辑</label>
@@ -303,13 +396,13 @@
             <label class="chk"><input type="checkbox" class="pc" value="adaptation" /> 影视改编策划</label>
             <label class="chk"><input type="checkbox" class="pc" value="genre" /> 类型出版策划</label>
           </div>
-          <div style="font-size:11px;color:#999;margin-top:8px;line-height:1.5">默认仅勾「文学编辑 · 读者视角」。关闭后选择会自动汇总回第一层摘要。</div>
+          <div style="font-size:10.5px;color:var(--ink-muted);margin-top:8px;line-height:1.5">默认仅勾「文学编辑 · 读者视角」。关闭后选择会自动汇总回侧栏摘要。</div>
         </div>
       </div>
     </div>
   </div>
 
-  <!-- 第二层 · B：潮流简报（独立层，含完整编辑，因有正文内容需独立空间） -->
+  <!-- 第二层 · B：潮流简报 -->
   <div class="modal-mask" id="modalTrend" onclick="if(event.target===this)closeTrendLayer()">
     <div class="modal">
       <div class="modal-head">
@@ -319,28 +412,28 @@
       <div class="modal-body">
         <div class="modal-sec">
           <h3>当前生效</h3>
-          <div id="trendStatus" style="font-size:11.5px;color:#666;line-height:1.5">加载中…</div>
+          <div id="trendStatus" style="font-size:11.5px;color:var(--ink-secondary);line-height:1.5">加载中…</div>
           <div id="trendList" style="margin-top:8px;display:flex;flex-direction:column;gap:6px"></div>
-          <button id="trendNewBtn" onclick="openTrendEditor()" style="margin-top:10px;width:100%;background:#8e44ad;color:#fff;border:none;border-radius:10px;padding:9px;font-size:12.5px;font-weight:600;cursor:pointer">＋ 新一期潮流</button>
+          <button id="trendNewBtn" onclick="openTrendEditor()" style="margin-top:10px;width:100%;background:#7c3aed;color:#fff;border:none;border-radius:8px;padding:8px;font-size:12px;font-weight:600;cursor:pointer">＋ 新一期潮流</button>
 
-          <div id="trendEditor" style="display:none;margin-top:10px;border:1px solid var(--line);border-radius:10px;padding:12px">
-            <input id="trendGenre" placeholder="类型视角（如 历史小说，留空=通用）" style="width:100%;font-size:12px;padding:7px 9px;border:1px solid var(--line);border-radius:8px;box-sizing:border-box;margin-bottom:6px" />
-            <input id="trendTitle" placeholder="本期标题（可选）" style="width:100%;font-size:12px;padding:7px 9px;border:1px solid var(--line);border-radius:8px;box-sizing:border-box;margin-bottom:6px" />
-            <textarea id="trendMd" rows="11" placeholder="粘贴/写下你对当下潮流的观察…" style="width:100%;font-size:12.5px;padding:8px;border:1px solid var(--line);border-radius:8px;box-sizing:border-box;resize:vertical;font-family:inherit;line-height:1.55;color:#222"></textarea>
+          <div id="trendEditor" style="display:none;margin-top:10px;border:1px solid var(--border);border-radius:8px;padding:12px">
+            <input id="trendGenre" placeholder="类型视角（如 历史小说，留空=通用）" style="width:100%;font-size:12px;padding:7px 9px;border:1px solid var(--border);border-radius:6px;box-sizing:border-box;margin-bottom:6px;font-family:inherit;color:var(--ink)" />
+            <input id="trendTitle" placeholder="本期标题（可选）" style="width:100%;font-size:12px;padding:7px 9px;border:1px solid var(--border);border-radius:6px;box-sizing:border-box;margin-bottom:6px;font-family:inherit;color:var(--ink)" />
+            <textarea id="trendMd" rows="11" placeholder="粘贴/写下你对当下潮流的观察…" style="width:100%;font-size:12.5px;padding:8px;border:1px solid var(--border);border-radius:6px;box-sizing:border-box;resize:vertical;font-family:inherit;line-height:1.55;color:var(--ink)"></textarea>
             <div style="display:flex;gap:7px;margin-top:8px;flex-wrap:wrap">
-              <button id="trendSaveBtn" onclick="saveTrend()" style="background:var(--wx-green);color:#fff;border:none;border-radius:8px;padding:8px 14px;font-size:12.5px;font-weight:600;cursor:pointer">保存本期</button>
-              <button onclick="aiFormatTrend()" style="background:#fff;color:#555;border:1px solid var(--line);border-radius:8px;padding:8px 12px;font-size:12.5px;cursor:pointer">让 AI 整理</button>
-              <button onclick="closeTrendEditor()" style="background:#fff;color:#888;border:1px solid var(--line);border-radius:8px;padding:8px 12px;font-size:12.5px;cursor:pointer">取消</button>
+              <button id="trendSaveBtn" onclick="saveTrend()" style="background:var(--accent);color:#fff;border:none;border-radius:6px;padding:7px 14px;font-size:12px;font-weight:600;cursor:pointer">保存本期</button>
+              <button onclick="aiFormatTrend()" style="background:var(--surface-dim);color:var(--ink-secondary);border:1px solid var(--border);border-radius:6px;padding:7px 12px;font-size:12px;cursor:pointer">让 AI 整理</button>
+              <button onclick="closeTrendEditor()" style="background:var(--surface-dim);color:var(--ink-muted);border:1px solid var(--border);border-radius:6px;padding:7px 12px;font-size:12px;cursor:pointer">取消</button>
             </div>
-            <div id="trendMsg" style="font-size:11px;color:#666;margin-top:6px;min-height:14px"></div>
+            <div id="trendMsg" style="font-size:10.5px;color:var(--ink-muted);margin-top:6px;min-height:14px"></div>
           </div>
 
-          <div id="trendViewer" style="display:none;margin-top:10px;border:1px dashed var(--line);border-radius:10px;padding:10px;background:#fafbfc">
+          <div id="trendViewer" style="display:none;margin-top:10px;border:1px solid var(--border);border-radius:8px;padding:10px;background:var(--surface-dim)">
             <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
-              <b id="trendViewerTitle" style="font-size:12.5px;color:#444"></b>
-              <span onclick="closeTrendViewer()" style="font-size:12px;color:#999;cursor:pointer">✕</span>
+              <b id="trendViewerTitle" style="font-size:12px;color:var(--ink-secondary)"></b>
+              <span onclick="closeTrendViewer()" style="font-size:12px;color:var(--ink-muted);cursor:pointer">✕</span>
             </div>
-            <pre id="trendViewerBody" style="white-space:pre-wrap;word-break:break-word;font-size:12px;line-height:1.55;color:#333;max-height:240px;overflow:auto;margin:0"></pre>
+            <pre id="trendViewerBody" style="white-space:pre-wrap;word-break:break-word;font-size:12px;line-height:1.55;color:var(--ink-secondary);max-height:240px;overflow:auto;margin:0;font-family:inherit"></pre>
           </div>
         </div>
       </div>
@@ -568,10 +661,10 @@
     if (!h) return;
     if (mp && !cr) {
       h.textContent = "未指定章节范围：将默认评审第 1 章（如需评其他章节请填写范围，如 1-3 或 8）。";
-      h.style.color = "#c0392b";
+      h.style.color = "#ef4444";
     } else if (mp && cr) {
       h.textContent = "将评审章节范围：" + cr + "。";
-      h.style.color = "#666";
+      h.style.color = "var(--ink-secondary)";
     } else {
       h.textContent = "";
     }
@@ -590,7 +683,7 @@
     const btn = $("startBtn");
     btn.disabled = true; btn.textContent = "圆桌进行中…";
     setComposer(false);
-    $("liveDot").style.background = "var(--wx-green)";
+    $("liveDot").style.background = "var(--accent)";
     $("liveDot").style.boxShadow = "0 0 0 3px rgba(7,193,96,.18)";
 
     if (opts.clear) { $("chat").innerHTML = ""; $("roster").innerHTML = ""; }
@@ -750,7 +843,7 @@
       const briefs = j.briefs || [];
       if (latest) {
         const cur = briefs.find(b => b.id === latest);
-        if (cur) $("trendStatus").innerHTML = "当前生效：<b style=\"color:#8e44ad\">" + esc(cur.date) + (cur.title ? " · " + esc(cur.title) : "") + "</b>";
+        if (cur) $("trendStatus").innerHTML = "当前生效：<b style=\"color:#7c3aed\">" + esc(cur.date) + (cur.title ? " · " + esc(cur.title) : "") + "</b>";
       } else {
         $("trendStatus").textContent = "当前生效：尚无（圆桌将以纯静态人格运行）";
       }
@@ -761,17 +854,17 @@
       list.innerHTML = "";
       briefs.forEach(b => {
         const div = document.createElement("div");
-        div.style.cssText = "border:1px solid var(--line);border-radius:8px;padding:7px 9px;font-size:11.5px;";
+        div.style.cssText = "border:1px solid var(--border);border-radius:6px;padding:7px 9px;font-size:11px;";
         const isCur = b.id === latest;
         div.innerHTML =
-          "<div style=\"color:#444\"><b>" + esc(b.date) + "</b>" + (b.title ? " · " + esc(b.title) : "") +
-          (b.genre ? " · <span style='color:#8a929c'>" + esc(b.genre) + "</span>" : "") +
-          (isCur ? " · <span style='color:#8e44ad'>当前</span>" : "") + "</div>" +
+          "<div style=\"color:var(--ink-secondary)\"><b>" + esc(b.date) + "</b>" + (b.title ? " · " + esc(b.title) : "") +
+          (b.genre ? " · <span style='color:var(--ink-muted)'>" + esc(b.genre) + "</span>" : "") +
+          (isCur ? " · <span style='color:#7c3aed;font-weight:600'>当前</span>" : "") + "</div>" +
           "<div style=\"margin-top:5px;display:flex;gap:8px\">" +
-            (isCur ? "" : "<span style=\"color:#8e44ad;cursor:pointer\" onclick=\"setActiveTrend('" + b.id + "')\">设为当前</span>") +
-            "<span style=\"color:#3a7bd5;cursor:pointer\" onclick=\"viewTrend('" + b.id + "')\">查看</span>" +
-            "<span style=\"color:#2e7d32;cursor:pointer\" onclick=\"editTrend('" + b.id + "')\">编辑</span>" +
-            "<span style=\"color:#c0392b;cursor:pointer\" onclick=\"deleteTrend('" + b.id + "')\">删除</span>" +
+            (isCur ? "" : "<span style=\"color:#7c3aed;cursor:pointer\" onclick=\"setActiveTrend('" + b.id + "')\">设为当前</span>") +
+            "<span style=\"color:#2563eb;cursor:pointer\" onclick=\"viewTrend('" + b.id + "')\">查看</span>" +
+            "<span style=\"color:var(--accent-hover);cursor:pointer\" onclick=\"editTrend('" + b.id + "')\">编辑</span>" +
+            "<span style=\"color:#ef4444;cursor:pointer\" onclick=\"deleteTrend('" + b.id + "')\">删除</span>" +
           "</div>";
         list.appendChild(div);
       });

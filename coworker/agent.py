@@ -8,10 +8,12 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 from pathlib import Path
 from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
+_deskmate_mgr_lock = threading.Lock()
 
 from .agents import Agent, AgentContext, code_agent
 from .automation import scheduling_tools
@@ -132,7 +134,9 @@ def _deskmate_memory_context(messages: list | None = None) -> str:
         # the LLM call - the overhead compounds quickly.
         global _deskmate_mgr_singleton
         if "_deskmate_mgr_singleton" not in globals():
-            _deskmate_mgr_singleton = DeskMateMemoryManager(Path(base))
+            with _deskmate_mgr_lock:
+                if "_deskmate_mgr_singleton" not in globals():
+                    _deskmate_mgr_singleton = DeskMateMemoryManager(Path(base))
         mgr = _deskmate_mgr_singleton
         # 从 messages 中提取最后一条用户消息
         last_user = ""

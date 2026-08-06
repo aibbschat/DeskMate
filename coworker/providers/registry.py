@@ -17,6 +17,7 @@ MaaS endpoint), and `ollama` (local, OpenAI-compatible `/v1`).
 from __future__ import annotations
 
 import os
+import threading
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
@@ -26,6 +27,9 @@ from .bedrock_provider import BedrockProvider
 from .gemini_provider import GeminiProvider
 from .openai_provider import OpenAIProvider
 from .vertex_provider import VertexProvider
+
+# Lock for thread-safe os.environ mutation (shared with bedrock_provider)
+_env_lock = threading.Lock()
 
 DEFAULT_OLLAMA_URL = "http://localhost:11434"
 
@@ -661,7 +665,8 @@ def _verify_bedrock(fields: dict[str, Any], timeout: float) -> dict[str, Any]:
             # The key rides the env var (boto3's only bearer channel); bearer then wins
             # over any ambient SigV4 credentials for Bedrock calls.
             if get("bedrock_api_key"):
-                os.environ["AWS_BEARER_TOKEN_BEDROCK"] = get("bedrock_api_key")
+                with _env_lock:
+                    os.environ["AWS_BEARER_TOKEN_BEDROCK"] = get("bedrock_api_key")
             session_kwargs: dict[str, Any] = {}
         elif method == "profile":
             # Blank profile → the default credential chain (env vars / ~/.aws / role).

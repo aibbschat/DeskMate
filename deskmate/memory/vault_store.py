@@ -29,9 +29,12 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
 import re
 from datetime import date
+
+logger = logging.getLogger(__name__)
 from pathlib import Path
 from typing import Optional
 from functools import lru_cache
@@ -393,8 +396,8 @@ class VaultStore:
             content = dst.read_text(encoding="utf-8")
             content += f"\n\n<!-- archived: {reason} -->\n"
             dst.write_text(content, encoding="utf-8")
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("vault archive annotation failed: %s", e)
 
         # 归档后清除缓存
         self._invalidate_cache(src)

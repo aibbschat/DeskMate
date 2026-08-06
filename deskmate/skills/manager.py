@@ -13,10 +13,13 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 from pathlib import Path
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 from ..memory.llm import llm_available, chat
 from .skill_store import SkillStore, DEFAULT_SKILLS_DIR
@@ -91,7 +94,8 @@ class SkillManager:
                 name: p.proficiency
                 for name, p in engine.state.skill_proficiency.items()
             }
-        except Exception:
+        except Exception as e:
+            logger.debug("growth engine proficiency map failed: %s", e)
             return {}
 
     @staticmethod
@@ -156,8 +160,8 @@ class SkillManager:
                 )
                 r["proficiency"] = round(engine.get_proficiency(r["name"]), 3)
             results.sort(key=lambda s: s.get("score", 0), reverse=True)
-        except Exception:
-            pass  # 成长系统异常不阻断技能匹配
+        except Exception as e:
+            logger.debug("growth engine proficiency ranking failed: %s", e)
         return results
 
     def _semantic_match(self, user_message: str, skills: list[dict], limit: int = 3) -> list[dict]:
@@ -199,8 +203,8 @@ class SkillManager:
                 for s in skills:
                     if s["name"] == name:
                         return [{**s, "score": 5}]  # LLM 匹配给高分
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("LLM semantic skill match failed: %s", e)
         return []
 
     def format_skills_context(self, user_message: str, max_chars: int = 2000) -> str:
@@ -262,8 +266,8 @@ class SkillManager:
             rate = full["meta"].get("success_rate", 0.0) if full else 0.0
             engine = GrowthEngine(base_dir=self.base_dir)
             engine.record_skill_use(name, success=True, skill_store_uses=uses, skill_store_rate=rate)
-        except Exception:
-            pass  # 成长系统异常不阻断技能使用
+        except Exception as e:
+            logger.debug("growth engine skill_use record failed: %s", e)
 
     def _record_growth_skill_evolved(self, name: str, path: str) -> None:
         """向成长系统上报技能进化事件。"""
@@ -275,8 +279,8 @@ class SkillManager:
             rate = full["meta"].get("success_rate", 0.0) if full else 0.0
             engine = GrowthEngine(base_dir=self.base_dir)
             engine.record_skill_evolved(name, skill_store_uses=uses, skill_store_rate=rate)
-        except Exception:
-            pass  # 成长系统异常不阻断技能进化
+        except Exception as e:
+            logger.debug("growth engine skill_evolved record failed: %s", e)
 
     # ------------------------------------------------------------------
     # 自动抽取（对话结束后）
@@ -343,7 +347,8 @@ class SkillManager:
             if not m:
                 return None
             result = json.loads(m.group(0))
-        except Exception:
+        except Exception as e:
+            logger.debug("LLM skill extraction from session failed: %s", e)
             return None
 
         if not result.get("should_create"):
@@ -376,8 +381,8 @@ class SkillManager:
                 from deskmate.growth.engine import GrowthEngine
 
                 GrowthEngine(base_dir=self.base_dir).record_skill_created(name)
-            except Exception:
-                pass  # 成长系统异常不阻断技能创建
+            except Exception as e:
+                logger.debug("growth engine skill_created record failed: %s", e)
         return created
 
     # ------------------------------------------------------------------
@@ -435,7 +440,8 @@ class SkillManager:
                 if not m:
                     continue
                 result = json.loads(m.group(0))
-            except Exception:
+            except Exception as e:
+                logger.debug("LLM skill evolution failed: %s", e)
                 continue
 
             if not result.get("should_update"):
@@ -519,7 +525,8 @@ class SkillManager:
                 if not m:
                     continue
                 result = json.loads(m.group(0))
-            except Exception:
+            except Exception as e:
+                logger.debug("LLM skill evolution failed: %s", e)
                 continue
 
             if not result.get("should_update"):

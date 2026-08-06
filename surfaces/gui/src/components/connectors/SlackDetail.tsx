@@ -134,7 +134,7 @@ export function SlackDetail({ c, cloud, slack, onChanged }: DetailProps) {
               names={c.allowed_user_names}
               protectedIds={c.approval_owner_ids}
               teamId={null}
-              onRemove={(u) => disallowUser("slack", u).then(changed)}
+              onRemove={(u) => disallowUser("slack", u).then(changed).catch(() => {})}
               onChanged={changed}
             />
             <ApprovalOwnersRow

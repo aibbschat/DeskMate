@@ -161,7 +161,7 @@ export function Composer(props: Props) {
         setDictation(supplied);
         return;
       }
-      void getDictationStatus().then((status) => status && setDictation(status));
+      void getDictationStatus().then((status) => status && setDictation(status)).catch(() => {});
     };
     refresh();
     window.addEventListener("coworker:voice-input-changed", refresh);
@@ -192,7 +192,7 @@ export function Composer(props: Props) {
     const timer = window.setInterval(() => {
       getDictationLevel().then((level) => {
         if (typeof level === "number") setLevels((cur) => [...cur.slice(-13), level]);
-      });
+      }).catch(() => {});
     }, 100);
     return () => window.clearInterval(timer);
   }, [dictation?.recording]);

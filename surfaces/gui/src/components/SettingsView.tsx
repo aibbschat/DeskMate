@@ -412,8 +412,8 @@ function AppearanceSection() {
 
   useEffect(() => {
     if (isTauri()) {
-      getAutostart().then((v) => setAuto(!!v));
-      getKeepAwake().then((v) => setKeep(!!v));
+      getAutostart().then((v) => setAuto(!!v)).catch(() => {});
+      getKeepAwake().then((v) => setKeep(!!v)).catch(() => {});
     }
   }, []);
 

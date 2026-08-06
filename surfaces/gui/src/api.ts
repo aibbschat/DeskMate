@@ -5,6 +5,10 @@ declare const __COWORKER_DEV_TOKEN__: string;
 // Endpoint resolution order: runtime-injected globals (Tauri sets `window.__COWORKER_HTTP__`
 // for its dynamically-chosen sidecar port) → Vite env → the 127.0.0.1:8765 dev default. This
 // keeps a single codebase: browser `npm run dev` hits 8765; the desktop shell hits its sidecar.
+// `as any` is required here: `globalThis` and `import.meta` lack type declarations for
+// Tauri-injected runtime globals (__COWORKER_HTTP__/WS) and Vite env vars. Adding
+// augmentation declarations for these is not worth the boilerplate — they are read-only
+// at the entry boundary and narrow immediately to `string`.
 export const httpBase = (): string =>
   (globalThis as any).__COWORKER_HTTP__ ||
   (import.meta as any).env?.VITE_COWORKER_HTTP ||
@@ -137,14 +141,14 @@ export interface MessageSource {
 // itemsFromMessages reads several role-specific fields; `source` is the optional connector sidecar.
 export interface ConversationMessage {
   role: string;
-  content?: any;
-  tool_calls?: any[];
+  content?: any; // eslint-disable-line @typescript-eslint/no-explicit-any -- server returns string | array | null; used directly in text assignments
+  tool_calls?: any[]; // eslint-disable-line @typescript-eslint/no-explicit-any -- consumed in itemsFromMessages.ts with runtime destructuring
   tool_call_id?: string;
   source?: MessageSource;
   // Token counts for the round-trip that produced an assistant message
   // ({model, input, output, cache_read, cache_write}); absent on older servers.
   usage?: import("./types").TurnUsage;
-  [key: string]: any;
+  [key: string]: any; // eslint-disable-line @typescript-eslint/no-explicit-any -- dynamic fields like reasoning, attachments accessed across multiple consumers
 }
 
 export async function getSessionMessages(
@@ -907,7 +911,7 @@ export interface BrowserState {
   last_error: string;
   screenshot_data_url: string;
   updated_at: string | null;
-  controls: any[];
+  controls: unknown[];
 }
 
 export async function getBrowserState(): Promise<BrowserState> {
@@ -1004,7 +1008,7 @@ export interface CompactionSettings {
 export async function setCompactionSettings(
   patch: Partial<CompactionSettings>,
 ): Promise<{ ok: boolean; error?: string }> {
-  const res = await fetch(`${httpBase()}/v1/settings/compaction`, {
+  const res = await authedFetch(`${httpBase()}/v1/settings/compaction`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(patch),
@@ -1028,7 +1032,7 @@ export async function inspectPdf(
 export async function setContextBar(
   shown: boolean,
 ): Promise<{ ok: boolean; context_bar?: boolean; error?: string }> {
-  const res = await fetch(`${httpBase()}/v1/settings/context-bar`, {
+  const res = await authedFetch(`${httpBase()}/v1/settings/context-bar`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ context_bar: shown }),

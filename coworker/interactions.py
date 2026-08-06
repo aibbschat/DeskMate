@@ -13,8 +13,11 @@ its meaning: `(item_id, resolution)`.
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 from .inbox import KIND_APPROVAL, KIND_QUESTION
 
@@ -35,8 +38,8 @@ def decode(value: str) -> Optional[tuple[str, str]]:
         d = json.loads(value)
         if isinstance(d, dict) and d.get("id"):
             return str(d["id"]), str(d.get("r", ""))
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("button value decode failed: %s", e)
     return None
 
 

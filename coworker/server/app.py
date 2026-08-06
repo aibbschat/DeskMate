@@ -13,6 +13,7 @@ import logging
 import os
 import re
 import secrets
+import threading
 import uuid
 from collections import deque
 from contextlib import asynccontextmanager
@@ -51,6 +52,10 @@ _WS_RATE_LIMIT_COUNT = 30
 _WS_RATE_LIMIT_WINDOW_SECONDS = 10.0
 _MAX_MESSAGE_TEXT_CHARS = 200_000
 _MAX_ATTACHMENTS_BYTES = 15_000_000  # leaves JSON overhead below the 16 MiB frame cap
+
+# Thread-safe locks for module-level singleton initialization
+_deskmate_mm_lock = threading.Lock()
+_deskmate_tick_lock = threading.Lock()
 
 
 def _json_value_size(value: Any) -> int:
@@ -1638,7 +1643,9 @@ def create_app(manager: SessionManager) -> FastAPI:
             # on every request (this endpoint fires on every session switch + memory panel open)
             global _deskmate_mm_rest
             if "_deskmate_mm_rest" not in globals():
-                _deskmate_mm_rest = DeskMateMemoryManager(base_dir=desk_dir)
+                with _deskmate_mm_lock:
+                    if "_deskmate_mm_rest" not in globals():
+                        _deskmate_mm_rest = DeskMateMemoryManager(base_dir=desk_dir)
             mm = _deskmate_mm_rest
             # SOUL.md 为「运行期演化层」：若文件缺失，先落盘默认模板，
             # 使其成为真实可编辑文件（否则 lastModified 为 null、标签看似空白）。
@@ -1903,7 +1910,9 @@ def create_app(manager: SessionManager) -> FastAPI:
             # and avoid re-importing + re-initializing on every tick.
             global _deskmate_tick_engine
             if "_deskmate_tick_engine" not in globals():
-                _deskmate_tick_engine = ProactiveEngine(base_dir=desk_dir)
+                with _deskmate_tick_lock:
+                    if "_deskmate_tick_engine" not in globals():
+                        _deskmate_tick_engine = ProactiveEngine(base_dir=desk_dir)
             engine = _deskmate_tick_engine
             engine.disturb.persist(desk_dir / "memory" / "disturb_state.json")
             # Run the sync tick in a thread to avoid blocking the event loop.
@@ -2858,9 +2867,15 @@ def create_app(manager: SessionManager) -> FastAPI:
                 # DeskMate post-processing runs as a fire-and-forget background
                 # task so it never blocks the event loop or the turn_done signal.
                 if agent == "deskmate":
-                    asyncio.create_task(
+                    _task = asyncio.create_task(
                         _deskmate_post_turn(session_id, agent, engine, manager)
                     )
+
+                    def _on_post_turn_done(t: asyncio.Task) -> None:
+                        if not t.cancelled() and t.exception():
+                            logging.warning("deskmate post_turn failed: %s", t.exception())
+
+                    _task.add_done_callback(_on_post_turn_done)
 
         # This socket is now a live view of the session; background turns (channel delivery,
         # self-wake, durable resume) broadcast here too, not just locally driven run_turns.

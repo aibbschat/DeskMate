@@ -514,7 +514,7 @@ class SessionManager:
                     workspace_kind=workspace_kind,
                 )
             except Exception:
-                pass  # telemetry must never surface as a session error
+                logger.debug("telemetry emit_session_created failed", exc_info=True)
 
         threading.Thread(target=_send, daemon=True).start()
 
@@ -1702,7 +1702,8 @@ class SessionManager:
             import httpx
 
             alive = httpx.get(base + "/api/tags", timeout=0.8).status_code == 200
-        except Exception:
+        except Exception as e:
+            logger.debug("Ollama liveness check failed: %s", e)
             alive = False
         self._ollama_alive_cache = (now, alive)
         return alive
@@ -1724,7 +1725,8 @@ class SessionManager:
             return [
                 f"ollama:{m['name']}" for m in data.get("models", []) if m.get("name")
             ]
-        except Exception:
+        except Exception as e:
+            logger.debug("Ollama model list fetch failed: %s", e)
             return []
 
     def _curated_models(self) -> list[str]:

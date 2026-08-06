@@ -16,6 +16,8 @@ import io
 import json
 import logging
 import re
+
+logger = logging.getLogger(__name__)
 from typing import Any, Optional
 
 from deskmate.writing import (
@@ -332,8 +334,8 @@ def generate_review_report(text: str, profile: Optional[dict] = None,
         if progress_callback is not None:
             try:
                 progress_callback(event, kwargs)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("review progress callback failed: %s", e)
 
     chapters = split_into_chapters(text)
     if not chapters:
@@ -434,8 +436,8 @@ def generate_review_report(text: str, profile: Optional[dict] = None,
             source=f"review:{name}",
             filename=f"审阅报告_{name}",
         )
-    except Exception:
-        pass  # Vault 写入异常不阻断报告返回
+    except Exception as e:
+        logger.debug("vault write for review report failed: %s", e)
 
     return report
 

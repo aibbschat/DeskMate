@@ -9,12 +9,15 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 import sqlite3
 import time
 from pathlib import Path
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 # 稳定公开 API（圆桌等外部模块只应依赖以下名字，避免直连下划线私有函数/常量，
 # 否则 core.py 重构这些下划线符号时会静默失效）。
@@ -697,65 +700,67 @@ def build_fts5_index(folder: str) -> int:
     db_path.parent.mkdir(parents=True, exist_ok=True)
 
     conn = sqlite3.connect(str(db_path))
-    conn.execute("PRAGMA journal_mode=WAL")
+    try:
+        conn.execute("PRAGMA journal_mode=WAL")
 
-    # 创建 FTS5 虚拟表（如果不存在）
-    conn.execute("""
-        CREATE VIRTUAL TABLE IF NOT EXISTS novels USING fts5(
-            file_path,
-            title,
-            content,
-            tokenize='unicode61'
-        )
-    """)
+        # 创建 FTS5 虚拟表（如果不存在）
+        conn.execute("""
+            CREATE VIRTUAL TABLE IF NOT EXISTS novels USING fts5(
+                file_path,
+                title,
+                content,
+                tokenize='unicode61'
+            )
+        """)
 
-    # 创建文件跟踪表（记录 mtime 以实现增量索引）
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS file_tracker (
-            file_path TEXT PRIMARY KEY,
-            mtime REAL NOT NULL,
-            indexed_at REAL NOT NULL
-        )
-    """)
+        # 创建文件跟踪表（记录 mtime 以实现增量索引）
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS file_tracker (
+                file_path TEXT PRIMARY KEY,
+                mtime REAL NOT NULL,
+                indexed_at REAL NOT NULL
+            )
+        """)
 
-    # 收集所有文本文件
-    text_files = _iter_text_files(scan_root)
+        # 收集所有文本文件
+        text_files = _iter_text_files(scan_root)
 
-    indexed_count = 0
-    for p in text_files:
-        rel_path = _rel_name(p, scan_root)
-        current_mtime = p.stat().st_mtime
+        indexed_count = 0
+        for p in text_files:
+            rel_path = _rel_name(p, scan_root)
+            current_mtime = p.stat().st_mtime
 
-        # 检查 mtime 是否变化
-        row = conn.execute(
-            "SELECT mtime FROM file_tracker WHERE file_path = ?",
-            (rel_path,),
-        ).fetchone()
+            # 检查 mtime 是否变化
+            row = conn.execute(
+                "SELECT mtime FROM file_tracker WHERE file_path = ?",
+                (rel_path,),
+            ).fetchone()
 
-        if row is not None and abs(row[0] - current_mtime) < 0.001:
-            continue  # 未变化，跳过
+            if row is not None and abs(row[0] - current_mtime) < 0.001:
+                continue  # 未变化，跳过
 
-        text = _read_file_text(p)
-        if not text.strip():
-            continue
+            text = _read_file_text(p)
+            if not text.strip():
+                continue
 
-        title = p.stem  # 文件名（不含扩展名）作为标题
+            title = p.stem  # 文件名（不含扩展名）作为标题
 
-        # 删除旧记录（如果有），再插入新记录
-        conn.execute("DELETE FROM novels WHERE file_path = ?", (rel_path,))
-        conn.execute(
-            "INSERT INTO novels (file_path, title, content) VALUES (?, ?, ?)",
-            (rel_path, title, text),
-        )
-        conn.execute(
-            "INSERT OR REPLACE INTO file_tracker (file_path, mtime, indexed_at) VALUES (?, ?, ?)",
-            (rel_path, current_mtime, time.time()),
-        )
-        indexed_count += 1
+            # 删除旧记录（如果有），再插入新记录
+            conn.execute("DELETE FROM novels WHERE file_path = ?", (rel_path,))
+            conn.execute(
+                "INSERT INTO novels (file_path, title, content) VALUES (?, ?, ?)",
+                (rel_path, title, text),
+            )
+            conn.execute(
+                "INSERT OR REPLACE INTO file_tracker (file_path, mtime, indexed_at) VALUES (?, ?, ?)",
+                (rel_path, current_mtime, time.time()),
+            )
+            indexed_count += 1
 
-    conn.commit()
-    conn.close()
-    return indexed_count
+        conn.commit()
+        return indexed_count
+    finally:
+        conn.close()
 
 
 def novel_search_fts5(query: str, folder: str, max_results: int = 10) -> str:
@@ -774,47 +779,46 @@ def novel_search_fts5(query: str, folder: str, max_results: int = 10) -> str:
     try:
         conn = sqlite3.connect(str(db_path))
         conn.row_factory = sqlite3.Row
+        try:
 
-        # 检查是否包含 CJK 字符（中文、日文、韩文）
-        has_cjk = bool(re.search(r"[\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff\uac00-\ud7af]", query))
-
-        if has_cjk:
-            # FTS5 unicode61 不原生支持 CJK 分词，回退到 LIKE 搜索
-            # 提取关键词（≥2字），每个关键词用 LIKE 匹配
-            kws = list(dict.fromkeys(
-                w for w in re.split(r"[\s，。、？！,.?!；：“”‘’…—()\[\]【】-]+", query)
-                if len(w) >= 2
-            ))[:8]
-
-            if not kws:
-                conn.close()
-                return _keyword_recall(query, folder, max_snippets=max_results)
-
-            # 构建 LIKE 子句
-            like_clauses = " OR ".join("content LIKE ?" for _ in kws)
-            like_params = [f"%{kw}%" for kw in kws]
-            sql = f"""
-                SELECT file_path, title, content
-                FROM novels
-                WHERE {like_clauses}
-                ORDER BY rowid
-                LIMIT ?
-            """
-            rows = conn.execute(sql, (*like_params, max_results)).fetchall()
-        else:
-            # 非 CJK 查询：使用 FTS5 原生 MATCH
-            # 对查询进行简单转义（移除 FTS5 特殊字符）
-            sanitized = re.sub(r'[^\w\s]', ' ', query).strip()
-            if not sanitized:
-                conn.close()
-                return _keyword_recall(query, folder, max_snippets=max_results)
-
-            rows = conn.execute(
-                "SELECT file_path, title, content, rank FROM novels WHERE content MATCH ? ORDER BY rank LIMIT ?",
-                (sanitized, max_results),
-            ).fetchall()
-
-        conn.close()
+            # 检查是否包含 CJK 字符（中文、日文、韩文）
+            has_cjk = bool(re.search(r"[\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff\uac00-\ud7af]", query))
+    
+            if has_cjk:
+                # FTS5 unicode61 不原生支持 CJK 分词，回退到 LIKE 搜索
+                # 提取关键词（≥2字），每个关键词用 LIKE 匹配
+                kws = list(dict.fromkeys(
+                    w for w in re.split(r"[\s，。、？！,.?!；：“”‘’…—()\[\]【】-]+", query)
+                    if len(w) >= 2
+                ))[:8]
+    
+                if not kws:
+                    return _keyword_recall(query, folder, max_snippets=max_results)
+    
+                # 构建 LIKE 子句（转义 % 和 _ 以防止 LIKE 模式注入）
+                like_clauses = " OR ".join("content LIKE ? ESCAPE '\\'" for _ in kws)
+                like_params = [f"%{kw.replace('%', '\\%').replace('_', '\\_')}%" for kw in kws]
+                sql = f"""
+                    SELECT file_path, title, content
+                    FROM novels
+                    WHERE {like_clauses}
+                    ORDER BY rowid
+                    LIMIT ?
+                """
+                rows = conn.execute(sql, (*like_params, max_results)).fetchall()
+            else:
+                # 非 CJK 查询：使用 FTS5 原生 MATCH
+                # 对查询进行简单转义（移除 FTS5 特殊字符）
+                sanitized = re.sub(r'[^\w\s]', ' ', query).strip()
+                if not sanitized:
+                    return _keyword_recall(query, folder, max_snippets=max_results)
+    
+                rows = conn.execute(
+                    "SELECT file_path, title, content, rank FROM novels WHERE content MATCH ? ORDER BY rank LIMIT ?",
+                    (sanitized, max_results),
+                ).fetchall()
+        finally:
+            conn.close()
 
         if not rows:
             # FTS5 无结果 -> 回退到 keyword 检索
@@ -846,8 +850,9 @@ def novel_search_fts5(query: str, folder: str, max_results: int = 10) -> str:
 
         return "\n".join(parts)
 
-    except Exception:
+    except Exception as e:
         # 任何 FTS5 异常 -> 安全回退到 keyword 检索
+        logger.warning("FTS5 search failed, falling back to keyword recall: %s", e)
         return _keyword_recall(query, folder, max_snippets=max_results)
 
 
@@ -889,20 +894,20 @@ def fts5_index_status(folder: str) -> str:
 
     try:
         conn = sqlite3.connect(str(db_path))
+        try:
+            # 查询索引文件数
+            count = conn.execute("SELECT COUNT(*) FROM novels").fetchone()[0]
 
-        # 查询索引文件数
-        count = conn.execute("SELECT COUNT(*) FROM novels").fetchone()[0]
+            # 查询最后更新时间
+            last = conn.execute(
+                "SELECT MAX(indexed_at) FROM file_tracker"
+            ).fetchone()[0]
 
-        # 查询最后更新时间
-        last = conn.execute(
-            "SELECT MAX(indexed_at) FROM file_tracker"
-        ).fetchone()[0]
-
-        # 查询数据库文件信息
-        db_size = db_path.stat().st_size
-        db_mtime = db_path.stat().st_mtime
-
-        conn.close()
+            # 查询数据库文件信息
+            db_size = db_path.stat().st_size
+            db_mtime = db_path.stat().st_mtime
+        finally:
+            conn.close()
 
         lines = [
             f"FTS5 索引状态：",
@@ -1008,8 +1013,8 @@ def novel_recall(query: str, folder: str, max_snippets: int = 8) -> str:
         try:
             result = novel_search_fts5(query, folder, max_results=max_snippets)
             return result
-        except Exception:
-            pass  # 降级到 keyword
+        except Exception as e:
+            logger.warning("FTS5 search failed, falling back to keyword: %s", e)
 
     # 回退到纯关键词检索
     return _keyword_recall(query, folder, max_snippets=max_snippets)

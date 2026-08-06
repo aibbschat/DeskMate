@@ -397,18 +397,22 @@ class PersonaRegistry:
 
 # -- module singleton (used by agents.get_agent / list_agents) ------------------
 _singleton: Optional[PersonaRegistry] = None
+_singleton_lock = __import__("threading").Lock()
 
 
 def get_registry() -> PersonaRegistry:
     global _singleton
     if _singleton is None:
-        from ..secrets import state_dir
+        with _singleton_lock:
+            if _singleton is None:
+                from ..secrets import state_dir
 
-        _singleton = PersonaRegistry(state_path=state_dir() / "personas.json")
+                _singleton = PersonaRegistry(state_path=state_dir() / "personas.json")
     return _singleton
 
 
 def set_registry(registry: PersonaRegistry) -> None:
     """Install a registry as the process singleton (the manager does this with its data dir)."""
     global _singleton
-    _singleton = registry
+    with _singleton_lock:
+        _singleton = registry

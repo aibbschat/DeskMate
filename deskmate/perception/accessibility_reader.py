@@ -5,8 +5,11 @@
 
 from __future__ import annotations
 
+import logging
 import subprocess
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 
 def _cap_and_mark(text: str, max_chars: int) -> str:
@@ -81,8 +84,8 @@ def _read_via_axui(max_chars: int) -> str:
             if text and len(text) > 50:
                 return text
 
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("accessibility API read failed: %s", e)
     return ""
 
 
@@ -130,8 +133,8 @@ def _ax_get_attribute(element, attribute: str):
             if hasattr(value, '__iter__') and not isinstance(value, str):
                 return list(value)
             return value
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("accessibility attribute read failed: %s", e)
     return None
 
 

@@ -9,11 +9,14 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 from .project_memory import format_project_memory, list_projects, load_project_memory
 from .soul import load_soul, save_soul, reset_soul, evolve_soul
@@ -109,8 +112,8 @@ class DeskMateMemoryManager:
             tone = GrowthEngine(base_dir=self.base_dir).modulate_tone_prompt()
             if tone:
                 parts.append(f"## 与用户的关系\n{tone}")
-        except Exception:
-            pass  # 成长系统异常不阻断 prompt 组装
+        except Exception as e:
+            logger.debug("growth engine tone prompt failed: %s", e)
 
         return "\n\n---\n\n".join(parts)
 
@@ -146,7 +149,8 @@ class DeskMateMemoryManager:
             modulated_budget = GrowthEngine(base_dir=self.base_dir).modulate_memory_budget(
                 MEMORY_CONTEXT_MAX_CHARS
             )
-        except Exception:
+        except Exception as e:
+            logger.debug("growth engine memory budget modulation failed: %s", e)
             modulated_budget = MEMORY_CONTEXT_MAX_CHARS
         budget_per_layer = modulated_budget // 3
 
@@ -457,7 +461,8 @@ class DeskMateMemoryManager:
         try:
             resp = chat(system, content[:1000], temperature=0.1, max_tokens=50)
             return resp.strip() if resp else None
-        except Exception:
+        except Exception as e:
+            logger.debug("LLM summary generation failed: %s", e)
             return None
 
     def cleanup_redundancy(self) -> dict:
@@ -555,8 +560,8 @@ class DeskMateMemoryManager:
         try:
             vault_entries = self.vault.list_entries()
             stats["vault_entries"] = len(vault_entries)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("vault list_entries for stats failed: %s", e)
 
         return stats
 
@@ -697,10 +702,8 @@ class DeskMateMemoryManager:
                 tag = self._llm_route_section(entry)
                 if tag:
                     return tag
-            except Exception:
-                pass
-
-        # 3) 关键词匹配现有 § 标题
+            except Exception as e:
+                logger.debug("LLM section routing failed, falling back to keyword match: %s", e)
         memory = self._load_global_memory()
         if memory:
             _, sections = self._parse_sections(memory)
@@ -803,8 +806,8 @@ class DeskMateMemoryManager:
                                 source="memory-decay",
                             )
                             archived += 1
-                        except Exception:
-                            pass  # 归档失败就保留
+                        except Exception as e:
+                            logger.debug("vault archive on decay failed, keeping entry: %s", e)
                     else:
                         deleted += 1
                     modified = True
@@ -958,8 +961,8 @@ class DeskMateMemoryManager:
             resp = resp.strip()
             if resp and resp != "NO_DUP" and len(resp) < 30:
                 return resp
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("LLM cross-section duplicate check failed: %s", e)
         return None
 
     # ------------------------------------------------------------------
@@ -984,8 +987,8 @@ class DeskMateMemoryManager:
                 # 压缩淘汰的条目归档到 vault（不丢，可恢复）
                 try:
                     self._archive_compressed_entries(content, compressed)
-                except Exception:
-                    pass  # 归档失败不影响压缩
+                except Exception as e:
+                    logger.debug("archive before compression failed: %s", e)
                 self._save_global_memory(compressed)
                 return True
         elif section == "user":
@@ -1030,8 +1033,8 @@ class DeskMateMemoryManager:
             # 安全检查：压缩结果不能为空，不能比原文长
             if resp and len(resp) < len(content) and "§" in resp:
                 return resp
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("LLM memory compression failed: %s", e)
         return None
 
     def _llm_compress_user(self, content: str) -> str | None:
@@ -1048,9 +1051,9 @@ class DeskMateMemoryManager:
             resp = chat(system, content, temperature=0.1, max_tokens=2000)
             if resp and len(resp) < len(content):
                 return resp
-        except Exception:
-            pass
-        return None
+        except Exception as e:
+            logger.warning("LLM user profile compression failed: %s", e)
+            return None
 
     def _try_merge_similar(self, existing_body: str, new_entry: str) -> str | None:
         """检查新条目与同一 § 下的已有条目是否同主题，是就合并返回，不是就返回 None。
@@ -1107,8 +1110,8 @@ class DeskMateMemoryManager:
                 # 安全检查
                 if len(merged) >= len(existing_body) * 0.5 and len(merged) <= len(existing_body) + len(new_entry) * 2:
                     return merged
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("LLM memory merge check failed: %s", e)
         return None
 
     def extract_session_facts(self, limit: int = 10) -> dict:
@@ -1174,7 +1177,8 @@ class DeskMateMemoryManager:
                     # correction / work → MEMORY.md 对应 §（带 #标签便于检索）
                     self.append_to_section("memory", f"#{category} {fact_text}")
                 written += 1
-            except Exception:
+            except Exception as e:
+                logger.debug("memory fact write failed: %s", e)
                 continue
         return {"written": written, "notes": f"已归档 {written} 条事实"}
 
@@ -1257,9 +1261,10 @@ class DeskMateMemoryManager:
                                 tags=[category],
                                 source=f"session-{session_file.stem}",
                             )
-                    except Exception:
-                        pass  # vault 写入失败不影响主流程
-            except Exception:
+                    except Exception as e:
+                        logger.debug("vault sync for learned fact failed: %s", e)
+            except Exception as e:
+                logger.debug("memory fact write (single session) failed: %s", e)
                 continue
         # 成长系统：记住新事实 → 默契/亲密度微增（AI 更懂你）
         if written > 0:
@@ -1267,8 +1272,8 @@ class DeskMateMemoryManager:
                 from deskmate.growth.engine import GrowthEngine
 
                 GrowthEngine(base_dir=self.base_dir).record_memory_learned(written)
-            except Exception:
-                pass  # 成长系统异常不阻断记忆归档
+            except Exception as e:
+                logger.debug("growth engine record_memory_learned failed: %s", e)
         return {"written": written, "skipped": skipped, "learned": learned, "notes": f"已归档 {written} 条（跳过 {skipped} 条重复）"}
 
     def _is_duplicate(self, new_entry: str) -> bool:
@@ -1309,8 +1314,8 @@ class DeskMateMemoryManager:
                 # vault 返回了匹配结果，LLM 确认
                 if self._llm_check_duplicate(new_entry, vault_results):
                     return True
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("vault search for duplicate check failed: %s", e)
 
         return False
 
@@ -1326,7 +1331,8 @@ class DeskMateMemoryManager:
         try:
             resp = chat(system, prompt, temperature=0.0, max_tokens=5)
             return resp.strip().upper().startswith("Y")
-        except Exception:
+        except Exception as e:
+            logger.debug("LLM duplicate check failed: %s", e)
             return False
 
     def post_session_summary(self, user_msg: str, assistant_msg: str, limit: int = 10) -> dict:
@@ -1342,7 +1348,8 @@ class DeskMateMemoryManager:
             return {"written": 0, "notes": "未配置 LLM provider，跳过会话抽取"}
         try:
             session_file = self._save_session_turn(user_msg or "", assistant_msg or "")
-        except Exception:
+        except Exception as e:
+            logger.warning("session turn save failed: %s", e)
             session_file = None
         if not session_file:
             return {"written": 0, "notes": "会话保存失败，跳过抽取"}
@@ -1411,7 +1418,8 @@ class DeskMateMemoryManager:
             if result and len(result) > VAULT_CONTEXT_MAX_CHARS:
                 result = result[:VAULT_CONTEXT_MAX_CHARS] + "\n…"
             return result or ""
-        except Exception:
+        except Exception as e:
+            logger.debug("vault search failed: %s", e)
             return ""
 
     def _archive_compressed_entries(self, original: str, compressed: str) -> None:
@@ -1451,8 +1459,8 @@ class DeskMateMemoryManager:
                         )
                         # 再移到 archive/
                         # write_entry 刚创建了文件，找到它并 archive
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug("vault archive of compressed entry failed: %s", e)
 
     def _search_project_memory(self, query: str, project_name: str) -> str:
         """在项目记忆中按关键词检索。"""

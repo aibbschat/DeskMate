@@ -13,10 +13,13 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 # 需要注入潮流简报的市场化人格（其余人格不被潮流污染）。
 # 从 personas.PERSONAS 中 market=True 的角色动态派生，避免与 personas.py 双重维护导致漏改。
@@ -53,7 +56,8 @@ def list_briefs() -> list[dict]:
         return []
     try:
         data = json.loads(fp.read_text(encoding="utf-8"))
-    except Exception:
+    except Exception as e:
+        logger.warning("trend index parse failed: %s", e)
         return []
     return list(reversed(sorted(data, key=lambda x: x.get("id", ""))))
 
@@ -65,7 +69,8 @@ def get_latest() -> Optional[dict]:
         return None
     try:
         bid = json.loads(lf.read_text(encoding="utf-8")).get("id")
-    except Exception:
+    except Exception as e:
+        logger.warning("trend latest pointer parse failed: %s", e)
         return None
     if not bid:
         return None
@@ -105,7 +110,8 @@ def save_brief(markdown: str, genre: str = "", title: str = "") -> dict:
     if idx.is_file():
         try:
             arr = json.loads(idx.read_text(encoding="utf-8"))
-        except Exception:
+        except Exception as e:
+            logger.warning("trend index parse failed during save, resetting: %s", e)
             arr = []
     arr.append(meta)
     idx.write_text(json.dumps(arr, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -132,7 +138,8 @@ def update_brief(bid: str, markdown: str, genre: str = "", title: str = "") -> O
     if idx.is_file():
         try:
             arr = json.loads(idx.read_text(encoding="utf-8"))
-        except Exception:
+        except Exception as e:
+            logger.warning("trend index parse failed during update, resetting: %s", e)
             arr = []
     for m in arr:
         if m.get("id") == bid:
@@ -154,7 +161,8 @@ def delete_brief(bid: str) -> bool:
     if idx.is_file():
         try:
             arr = json.loads(idx.read_text(encoding="utf-8"))
-        except Exception:
+        except Exception as e:
+            logger.warning("trend index parse failed during delete, resetting: %s", e)
             arr = []
     arr = [m for m in arr if m.get("id") != bid]
     idx.write_text(json.dumps(arr, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -164,7 +172,8 @@ def delete_brief(bid: str) -> bool:
     if lf.is_file():
         try:
             cur = json.loads(lf.read_text(encoding="utf-8")).get("id")
-        except Exception:
+        except Exception as e:
+            logger.warning("trend latest pointer parse failed during delete: %s", e)
             cur = None
     if cur == bid:
         new_id = max((m.get("id", "") for m in arr), default=None)
@@ -238,7 +247,8 @@ def build_via_llm(raw_notes: str, genre: str = "") -> str:
     user = f"类型视角：{genre or '通用'}\n\n原始观察：\n{raw_notes}"
     try:
         out = chat(system, user, temperature=0.4, max_tokens=2000)
-    except Exception:
+    except Exception as e:
+        logger.debug("LLM trend briefing build failed, returning raw notes: %s", e)
         return raw_notes.strip()
     if not out or not out.strip():
         return raw_notes.strip()

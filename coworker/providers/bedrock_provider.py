@@ -35,6 +35,7 @@ import base64
 import json
 import os
 import re
+import threading
 from typing import Any, Optional
 
 from .anthropic_provider import AnthropicProvider
@@ -47,6 +48,9 @@ from .base import (
     ToolCall,
 )
 from .capabilities import capabilities_for
+
+# Lock for thread-safe os.environ mutation (boto3 reads env vars at session creation time)
+_env_lock = threading.Lock()
 
 
 def _usage_from(usage: Any) -> Optional[TokenUsage]:
@@ -311,7 +315,8 @@ class _BedrockConverseClient(ProviderClient):
             # prefers bearer auth for Bedrock whenever it's set. The sidecar process is
             # ours, so publishing the configured key there is the supported path.
             if self._bedrock_api_key:
-                os.environ["AWS_BEARER_TOKEN_BEDROCK"] = self._bedrock_api_key
+                with _env_lock:
+                    os.environ["AWS_BEARER_TOKEN_BEDROCK"] = self._bedrock_api_key
             session = boto3.session.Session(**self._session_kwargs)
             self._client = session.client("bedrock-runtime", region_name=self._region)
         return self._client

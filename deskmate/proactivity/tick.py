@@ -5,8 +5,11 @@
 
 from __future__ import annotations
 
+import logging
 import time
 from dataclasses import dataclass, field
+
+logger = logging.getLogger(__name__)
 from pathlib import Path
 from typing import Optional
 
@@ -237,8 +240,8 @@ class ProactiveEngine:
             from deskmate.growth.engine import GrowthEngine
 
             GrowthEngine(base_dir=self.base_dir).record_suggestion_feedback(accepted)
-        except Exception:
-            pass  # 成长系统异常不阻断反馈记录
+        except Exception as e:
+            logger.debug("growth engine suggestion feedback record failed: %s", e)
 
     def set_silent(self, silent: bool) -> None:
         """设置静默模式。"""
