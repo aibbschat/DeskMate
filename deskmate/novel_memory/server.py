@@ -15,9 +15,11 @@ from .core import (
     check_consistency_enhanced,
     inject_bible,
     incremental_bible_update,
+    list_revisions,
     novel_recall,
     novel_relationships,
     read_bible,
+    what_changed,
 )
 from . import core as _core
 
@@ -90,6 +92,47 @@ def novel_check_consistency(folder: str, new_text: str) -> str:
         return "\n".join(lines)
     except Exception as e:
         return f"❌ novel_check_consistency 失败：{e}"
+
+
+@mcp.tool()
+def novel_what_changed(folder: str, since: str = "today") -> str:
+    """用户问"我今天/昨天改了哪几处""改了什么细节"时务必调用本工具。
+
+    汇总自某时刻以来的稿件修订：会先刷新索引（捕获用户最新编辑），再回放每处
+    新增/删除的具体片段，效果等同于"逐条指出我新修订的内容"。
+
+    Args:
+        folder: 小说文件夹的绝对路径（当前工作区）。
+        since: 时间阈值，默认 "today"（今天）。支持 "yesterday"/"3d"/"2天" 或 ISO 日期(YYYY-MM-DD)。
+    """
+    try:
+        return what_changed(folder, since=since)
+    except Exception as e:
+        return f"❌ novel_what_changed 失败：{e}"
+
+
+@mcp.tool()
+def novel_revisions(folder: str, file: str = "", limit: int = 20) -> str:
+    """列出稿件修订记录（按时间倒序）。可指定 file（相对路径）只看某章。
+
+    Args:
+        folder: 小说文件夹的绝对路径（当前工作区）。
+        file: 可选，只列该文件的修订（如 "第二章.txt" 或 "ch02/第二章.md"）。
+        limit: 返回条数上限，默认 20。
+    """
+    try:
+        revs = list_revisions(folder, file=file or None, limit=limit)
+        if not revs:
+            return "（暂无修订记录。编辑稿件并刷新索引后，这里会逐条记录每次改动。）"
+        import datetime, json
+        for r in revs:
+            ts = r.get("ts", 0)
+            if isinstance(ts, (int, float)) and ts:
+                r["ts_readable"] = datetime.datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S")
+        return json.dumps(revs, ensure_ascii=False, indent=2, default=str)
+    except Exception as e:
+        return f"❌ novel_revisions 失败：{e}"
+
 
 
 @mcp.tool()

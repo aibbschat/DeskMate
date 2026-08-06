@@ -32,6 +32,9 @@ __all__ = [
     "bible_file_paths",
     "iter_text_files",
     "keyword_recall",
+    # 稿件修订回顾（版本快照 + diff，对标 Hermes 的"改了哪几处"）
+    "list_revisions",
+    "what_changed",
 ]
 
 # ---------------------------------------------------------------------------
@@ -700,6 +703,7 @@ def build_fts5_index(folder: str) -> int:
     db_path.parent.mkdir(parents=True, exist_ok=True)
 
     conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
     try:
         conn.execute("PRAGMA journal_mode=WAL")
 
@@ -722,6 +726,21 @@ def build_fts5_index(folder: str) -> int:
             )
         """)
 
+        # 修订记录表：稿件每次变更都存一条「旧→新」差异，供"我今天改了哪"回放
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS manuscript_revisions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                file_path TEXT NOT NULL,
+                title TEXT,
+                ts REAL NOT NULL,
+                old_hash TEXT,
+                new_hash TEXT,
+                added INTEGER DEFAULT 0,
+                removed INTEGER DEFAULT 0,
+                diff TEXT
+            )
+        """)
+
         # 收集所有文本文件
         text_files = _iter_text_files(scan_root)
 
@@ -730,13 +749,13 @@ def build_fts5_index(folder: str) -> int:
             rel_path = _rel_name(p, scan_root)
             current_mtime = p.stat().st_mtime
 
-            # 检查 mtime 是否变化
-            row = conn.execute(
+            # 检查 mtime 是否变化（mtime 存在 file_tracker，不在 FTS5 表）
+            tracker_row = conn.execute(
                 "SELECT mtime FROM file_tracker WHERE file_path = ?",
                 (rel_path,),
             ).fetchone()
 
-            if row is not None and abs(row[0] - current_mtime) < 0.001:
+            if tracker_row is not None and abs(tracker_row["mtime"] - current_mtime) < 0.001:
                 continue  # 未变化，跳过
 
             text = _read_file_text(p)
@@ -744,6 +763,13 @@ def build_fts5_index(folder: str) -> int:
                 continue
 
             title = p.stem  # 文件名（不含扩展名）作为标题
+
+            # 取上一版全文（修订 diff 的基线，存于 FTS5 表 content 列）
+            old_row = conn.execute(
+                "SELECT content FROM novels WHERE file_path = ?",
+                (rel_path,),
+            ).fetchone()
+            old_text = old_row["content"] if old_row else ""
 
             # 删除旧记录（如果有），再插入新记录
             conn.execute("DELETE FROM novels WHERE file_path = ?", (rel_path,))
@@ -755,12 +781,132 @@ def build_fts5_index(folder: str) -> int:
                 "INSERT OR REPLACE INTO file_tracker (file_path, mtime, indexed_at) VALUES (?, ?, ?)",
                 (rel_path, current_mtime, time.time()),
             )
+
+            # 修订回顾：有上一版且内容不同 → 记录差异（绝不影响主索引流程）
+            if old_text and old_text != text:
+                _record_revision(conn, rel_path, title, old_text, text)
+
             indexed_count += 1
 
         conn.commit()
         return indexed_count
     finally:
         conn.close()
+
+
+# ---------------------------------------------------------------------------
+# 稿件修订回顾（版本快照 + diff）
+# ---------------------------------------------------------------------------
+
+def _record_revision(conn: sqlite3.Connection, rel_path: str, title: str,
+                     old_text: str, new_text: str) -> None:
+    """记录一次稿件修订：把旧→新全文的差异存入 manuscript_revisions。
+
+    增强功能，任何异常都只记日志、绝不阻断主索引流程。
+    """
+    try:
+        from deskmate.perception.diff_changes import diff_text, summarize_changes
+        import hashlib
+
+        diff = diff_text(old_text, new_text, label=rel_path)
+        stats = summarize_changes(old_text, new_text)
+        old_hash = hashlib.md5(old_text.encode("utf-8")).hexdigest()[:12]
+        new_hash = hashlib.md5(new_text.encode("utf-8")).hexdigest()[:12]
+        conn.execute(
+            """INSERT INTO manuscript_revisions
+               (file_path, title, ts, old_hash, new_hash, added, removed, diff)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (rel_path, title, time.time(), old_hash, new_hash,
+             stats["added"], stats["removed"], diff),
+        )
+    except Exception as e:  # 修订是增强项，绝不能拖累主索引
+        logger.warning("记录稿件修订失败（已忽略）：%s", e)
+
+
+def list_revisions(folder: str, file: str | None = None, limit: int = 20) -> list[dict]:
+    """列出稿件修订记录（按时间倒序）。file 指定则只列该文件。
+
+    返回 dict 列表，字段含 file_path / title / ts / added / removed / diff 等。
+    """
+    conn = _fts5_connection(folder)
+    if conn is None:
+        return []
+    try:
+        sql = "SELECT * FROM manuscript_revisions"
+        params: list = []
+        if file:
+            sql += " WHERE file_path = ?"
+            params.append(file)
+        sql += " ORDER BY ts DESC LIMIT ?"
+        params.append(limit)
+        rows = conn.execute(sql, params).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def _parse_since(since: str) -> float:
+    """把 'today'/'yesterday'/'3d'/'2天'/ISO 解析成时间戳阈值。"""
+    import datetime
+
+    now = datetime.datetime.now()
+    s = (since or "today").strip().lower()
+    if s in ("today", "今天"):
+        return datetime.datetime(now.year, now.month, now.day).timestamp()
+    if s in ("yesterday", "昨天"):
+        d = now - datetime.timedelta(days=1)
+        return datetime.datetime(d.year, d.month, d.day).timestamp()
+    m = re.match(r"^(\d+)\s*(d|天|day)", s)
+    if m:
+        return (now - datetime.timedelta(days=int(m.group(1)))).timestamp()
+    for fmt in ("%Y-%m-%d", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S"):
+        try:
+            return datetime.datetime.strptime(since, fmt).timestamp()
+        except ValueError:
+            continue
+    return 0.0
+
+
+def what_changed(folder: str, since: str = "today") -> str:
+    """汇总自某时刻以来的稿件修订，返回人类可读摘要（对标 Hermes 的"改了哪几处"）。
+
+    会先执行一次增量索引（build_fts5_index），确保捕获用户最新编辑，
+    再汇总阈值之后的所有修订记录。桌搭在用户问"我今天改了哪/改了什么"时调用。
+    """
+    import datetime
+
+    try:
+        build_fts5_index(folder)
+    except Exception as e:
+        logger.warning("修订回顾前置索引失败（继续用已有记录）：%s", e)
+
+    threshold = _parse_since(since)
+    revs = list_revisions(folder, limit=200)
+    revs = [r for r in revs if r.get("ts", 0) >= threshold]
+    if not revs:
+        return (f"（自 {since} 起未检测到稿件修订记录。"
+                "若你已编辑稿件，请先刷新圣经/索引，让系统捕获这次变更后再问我。）")
+
+    by_file: dict[str, list[dict]] = {}
+    for r in revs:
+        by_file.setdefault(r["file_path"], []).append(r)
+
+    lines = [f"自 {since} 起，你共修订了 {len(by_file)} 个文件、{len(revs)} 次：", ""]
+    for fp, items in by_file.items():
+        added = sum(i.get("added", 0) for i in items)
+        removed = sum(i.get("removed", 0) for i in items)
+        lines.append(f"▸ {fp}（{len(items)} 次修订，新增 {added} / 删除 {removed} 处）")
+        for i in items:
+            ts = datetime.datetime.fromtimestamp(i["ts"]).strftime("%m-%d %H:%M")
+            lines.append(f"    · {ts} 的修订：")
+            diff = (i.get("diff") or "").strip()
+            if diff and diff != "（无变更）":
+                for dl in diff.splitlines()[:50]:
+                    if dl.startswith(("+++", "---", "@@", "Index")):
+                        continue
+                    lines.append(f"      {dl}")
+        lines.append("")
+    return "\n".join(lines)
 
 
 def novel_search_fts5(query: str, folder: str, max_results: int = 10) -> str:
