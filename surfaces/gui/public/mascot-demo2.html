@@ -1,0 +1,718 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<title>墨灵 V2 — 程序化水墨生物</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #f8f6f1;
+    font-family: -apple-system, 'PingFang SC', sans-serif;
+    color: #2c2a2a;
+    overflow: hidden;
+    height: 100vh;
+  }
+  .controls {
+    position: fixed; top: 20px; left: 20px; z-index: 100;
+    background: rgba(255,255,255,0.92); backdrop-filter: blur(10px);
+    border-radius: 16px; padding: 24px; width: 280px;
+    box-shadow: 0 4px 24px rgba(0,0,0,0.08);
+    max-height: calc(100vh - 40px); overflow-y: auto;
+  }
+  .controls h3 { font-size: 14px; font-weight: 600; margin-bottom: 16px; }
+  .cg { margin-bottom: 14px; }
+  .cg label { display: flex; justify-content: space-between; font-size: 12px; color: #666; margin-bottom: 6px; }
+  .cg label span { font-variant-numeric: tabular-nums; font-weight: 600; color: #2c2a2a; }
+  input[type="range"] { width: 100%; -webkit-appearance: none; height: 4px; background: #e5e2dd; border-radius: 2px; outline: none; }
+  input[type="range"]::-webkit-slider-thumb { -webkit-appearance: none; width: 16px; height: 16px; border-radius: 50%; background: #2c2a2a; cursor: pointer; }
+  .emotion-btns { display: flex; flex-wrap: wrap; gap: 6px; }
+  .eb { padding: 5px 10px; border: 1px solid #e5e2dd; border-radius: 8px; background: #fff; font-size: 11px; cursor: pointer; transition: all 0.2s; }
+  .eb:hover { background: #f0ede8; }
+  .eb.active { background: #2c2a2a; color: #f8f6f1; border-color: #2c2a2a; }
+  .stage-label { font-size: 11px; color: #999; margin-top: 4px; }
+  .hint { font-size: 10px; color: #aaa; margin-top: 12px; line-height: 1.6; }
+  #stage { position: fixed; inset: 0; }
+  canvas#main { width: 100%; height: 100%; display: block; }
+</style>
+</head>
+<body>
+
+<div class="controls">
+  <h3>墨灵 V2 · 程序化生命</h3>
+  <div class="cg">
+    <label>心情 <span id="mv">80</span></label>
+    <input type="range" id="mood" min="0" max="100" value="80">
+  </div>
+  <div class="cg">
+    <label>活力 <span id="vv">100</span></label>
+    <input type="range" id="vitality" min="0" max="100" value="100">
+  </div>
+  <div class="cg">
+    <label>等级 <span id="lv">1</span></label>
+    <input type="range" id="level" min="1" max="12" value="1">
+    <div class="stage-label" id="sn">墨童</div>
+  </div>
+  <div class="cg">
+    <label style="margin-bottom: 8px;">情绪</label>
+    <div class="emotion-btns">
+      <button class="eb active" data-e="idle">待机</button>
+      <button class="eb" data-e="thinking">思考</button>
+      <button class="eb" data-e="happy">开心</button>
+      <button class="eb" data-e="concerned">关注</button>
+      <button class="eb" data-e="focused">专注</button>
+      <button class="eb" data-e="walking">散步</button>
+    </div>
+  </div>
+  <div class="hint">
+    点击墨灵互动 · 拖动滑块观察变化<br>
+    观察：眼睛跟随鼠标、呼吸起伏、情绪行为
+  </div>
+</div>
+
+<div id="stage"><canvas id="main"></canvas></div>
+
+<script>
+// ─── 基础 ───
+const canvas = document.getElementById('main');
+const ctx = canvas.getContext('2d');
+const dpr = window.devicePixelRatio || 1;
+let W, H;
+
+function resize() {
+  W = window.innerWidth; H = window.innerHeight;
+  canvas.width = W * dpr; canvas.height = H * dpr;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+resize();
+window.addEventListener('resize', resize);
+
+// ─── 状态 ───
+const S = { mood: 80, vitality: 100, level: 1, emotion: 'idle' };
+let mouseX = W / 2, mouseY = H / 2;
+let clickTime = 0;
+let globalTime = 0;
+
+document.addEventListener('mousemove', e => { mouseX = e.clientX; mouseY = e.clientY; });
+canvas.addEventListener('click', e => {
+  const dx = e.clientX - cx, dy = e.clientY - cy;
+  if (Math.sqrt(dx*dx + dy*dy) < 80) clickTime = globalTime;
+});
+
+// ─── 工具 ───
+const lerp = (a, b, t) => a + (b - a) * Math.min(1, Math.max(0, t));
+const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
+const easeInOut = t => t < 0.5 ? 2*t*t : 1 - Math.pow(-2*t+2,2)/2;
+// 简单噪声
+function noise(x) { return Math.sin(x*1.7) * 0.5 + Math.sin(x*3.1) * 0.3 + Math.sin(x*5.3) * 0.2; }
+
+const cx = () => W / 2;
+const cy = () => H / 2;
+
+// ─── 阶段定义 ───
+const STAGES = [
+  { name:'墨童', range:[1,3], bodyScale:0.7, eyeSize:0.8, aura:0, pearls:0, ribbons:0 },
+  { name:'墨生', range:[4,6], bodyScale:0.85, eyeSize:0.9, aura:1, pearls:0, ribbons:0 },
+  { name:'墨客', range:[7,9], bodyScale:1.0, eyeSize:1.0, aura:1, pearls:3, ribbons:0 },
+  { name:'墨仙', range:[10,12], bodyScale:1.1, eyeSize:1.1, aura:2, pearls:3, ribbons:2 },
+];
+function getStage(lv) { return STAGES.find(s => lv >= s.range[0] && lv <= s.range[1]) || STAGES[0]; }
+
+// ─── 水墨绘制工具 ───
+
+// 墨色（不同浓度）
+function inkColor(alpha) { return `rgba(44, 44, 42, ${alpha})`; }
+
+// 画一笔不规则的墨迹（贝塞尔 + 随机毛边）
+function inkStroke(ctx, points, alpha = 0.7) {
+  if (points.length < 2) return;
+  ctx.beginPath();
+  ctx.moveTo(points[0][0], points[0][1]);
+  for (let i = 1; i < points.length; i++) {
+    const prev = points[i-1], cur = points[i];
+    const mx = (prev[0]+cur[0])/2, my = (prev[1]+cur[1])/2;
+    ctx.quadraticCurveTo(prev[0], prev[1], mx, my);
+  }
+  const last = points[points.length-1];
+  ctx.lineTo(last[0], last[1]);
+  ctx.strokeStyle = inkColor(alpha);
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  ctx.stroke();
+}
+
+// 画一个水墨圆（带毛边）
+function inkBlob(ctx, x, y, rx, ry, alpha = 0.7, detail = 12) {
+  ctx.beginPath();
+  for (let i = 0; i <= detail; i++) {
+    const angle = (i / detail) * Math.PI * 2;
+    const rNoise = noise(angle * 3 + globalTime * 0.001) * 0.15;
+    const r = 1 + rNoise;
+    const px = x + Math.cos(angle) * rx * r;
+    const py = y + Math.sin(angle) * ry * r;
+    if (i === 0) ctx.moveTo(px, py);
+    else ctx.lineTo(px, py);
+  }
+  ctx.closePath();
+  ctx.fillStyle = inkColor(alpha);
+  ctx.fill();
+}
+
+// 渐变墨晕
+function inkHalo(ctx, x, y, r, alpha = 0.1) {
+  const g = ctx.createRadialGradient(x, y, 0, x, y, r);
+  g.addColorStop(0, inkColor(alpha));
+  g.addColorStop(0.7, inkColor(alpha * 0.3));
+  g.addColorStop(1, inkColor(0));
+  ctx.beginPath();
+  ctx.arc(x, y, r, 0, Math.PI * 2);
+  ctx.fillStyle = g;
+  ctx.fill();
+}
+
+// ─── 墨灵身体参数 ───
+const body = {
+  // 当前动画状态（会平滑插值）
+  x: 0, y: 0,        // 整体位移
+  scaleX: 1, scaleY: 1, // 呼吸缩放
+  tilt: 0,            // 倾斜
+  headY: 0,           // 头部额外位移
+  eyeLX: 0, eyeRX: 0, // 眼睛偏移
+  eyeOpen: 1,         // 眼睛开合 (0-1)
+  blinkTimer: 0,
+  // 目标值
+  target: {},
+};
+
+// ─── 绘制墨灵 ───
+function drawCreature(t) {
+  const stage = getStage(S.level);
+  const sc = stage.bodyScale;
+  const mood = S.mood / 100;
+  const vit = S.vitality / 100;
+  const x = cx() + body.x;
+  const y = cy() + body.y;
+
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.rotate(body.tilt);
+  ctx.scale(body.scaleX, body.scaleY);
+
+  // ── 光环（底层）─
+  if (stage.aura > 0) {
+    const auraR = (70 + stage.aura * 20) * sc;
+    inkHalo(ctx, 0, 25 * sc, auraR, 0.04 * mood + 0.02);
+    // 底部墨池
+    const poolAlpha = 0.06 * mood + 0.02;
+    inkHalo(ctx, 0, 55 * sc, 50 * sc, poolAlpha);
+  }
+
+  // ── 身体主体 ──
+  // 不规则椭圆身体，像一滴落地的墨
+  const bodyW = 52 * sc;
+  const bodyH = 60 * sc;
+  ctx.save();
+  ctx.translate(0, 5 * sc);
+  // 主体：上方圆润，下方收拢
+  ctx.beginPath();
+  ctx.moveTo(0, -bodyH * 0.5);
+  // 右侧
+  ctx.bezierCurveTo(
+    bodyW * 0.7, -bodyH * 0.45,
+    bodyW * 0.65, bodyH * 0.1,
+    bodyW * 0.2, bodyH * 0.45
+  );
+  // 底部
+  ctx.bezierCurveTo(
+    bodyW * 0.05, bodyH * 0.55,
+    -bodyW * 0.05, bodyH * 0.55,
+    -bodyW * 0.2, bodyH * 0.45
+  );
+  // 左侧
+  ctx.bezierCurveTo(
+    -bodyW * 0.65, bodyH * 0.1,
+    -bodyW * 0.7, -bodyH * 0.45,
+    0, -bodyH * 0.5
+  );
+  ctx.closePath();
+
+  // 水墨渐变填充
+  const bodyGrad = ctx.createRadialGradient(
+    -bodyW * 0.15, -bodyH * 0.2, bodyW * 0.1,
+    0, 0, bodyW * 0.8
+  );
+  bodyGrad.addColorStop(0, inkColor(0.85));
+  bodyGrad.addColorStop(0.6, inkColor(0.75));
+  bodyGrad.addColorStop(1, inkColor(0.55));
+  ctx.fillStyle = bodyGrad;
+  ctx.fill();
+
+  // 毛边效果（用小噪点覆盖边缘）
+  ctx.save();
+  ctx.clip();
+  for (let i = 0; i < 30; i++) {
+    const angle = (i / 30) * Math.PI * 2;
+    const r = bodyW * (0.6 + noise(i + t * 0.0003) * 0.2);
+    const nx = Math.cos(angle) * r;
+    const ny = Math.sin(angle) * r * (bodyH / bodyW);
+    ctx.globalAlpha = 0.1;
+    inkBlob(ctx, nx, ny, 3, 3, 0.5, 6);
+  }
+  ctx.restore();
+
+  ctx.restore(); // 身体
+
+  // ── 眼睛 ──
+  const eyeY = -22 * sc + body.headY;
+  const eyeSpacing = 18 * sc;
+  const eyeSize = 7 * sc * stage.eyeSize;
+  const blink = body.eyeOpen;
+
+  // 眼睛跟随鼠标
+  const dx = mouseX - x;
+  const dy = mouseY - y;
+  const lookAngle = Math.atan2(dy, dx);
+  const lookDist = Math.min(4 * sc, Math.sqrt(dx*dx + dy*dy) * 0.01);
+  const lookX = Math.cos(lookAngle) * lookDist;
+  const lookY = Math.sin(lookAngle) * lookDist;
+
+  // 左眼
+  drawEye(ctx, -eyeSpacing + lookX, eyeY + lookY, eyeSize, blink, t);
+  // 右眼
+  drawEye(ctx, eyeSpacing + lookX, eyeY + lookY, eyeSize, blink, t);
+
+  // ── 墨迹触手/小手 ──
+  drawTentacles(ctx, sc, t);
+
+  // ── 阶段装饰 ──
+  if (stage.pearls > 0) {
+    drawPearls(ctx, sc, t);
+  }
+  if (stage.ribbons > 0) {
+    drawRibbons(ctx, sc, t);
+  }
+
+  ctx.restore(); // 整体变换
+}
+
+function drawEye(ctx, x, y, size, blink, t) {
+  // 眼白（不规则椭圆）
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.scale(1, blink);
+
+  // 眼眶
+  ctx.beginPath();
+  ctx.ellipse(0, 0, size, size * 0.85, 0, 0, Math.PI * 2);
+  ctx.fillStyle = '#f8f6f1';
+  ctx.fill();
+  ctx.strokeStyle = inkColor(0.6);
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+
+  // 瞳孔（跟随 look 偏移已在外部算好）
+  const pupilSize = size * 0.45;
+  ctx.beginPath();
+  ctx.arc(0, 0, pupilSize, 0, Math.PI * 2);
+  ctx.fillStyle = inkColor(0.9);
+  ctx.fill();
+
+  // 高光
+  ctx.beginPath();
+  ctx.arc(-pupilSize * 0.3, -pupilSize * 0.3, pupilSize * 0.25, 0, Math.PI * 2);
+  ctx.fillStyle = 'rgba(255,255,255,0.8)';
+  ctx.fill();
+
+  ctx.restore();
+}
+
+function drawTentacles(ctx, sc, t) {
+  // 身体两侧的小触手（代替手和脚）
+  const mood = S.mood / 100;
+  const vit = S.vitality / 100;
+  const e = S.emotion;
+
+  // 左触手
+  ctx.save();
+  ctx.lineWidth = 3 * sc;
+  ctx.lineCap = 'round';
+  ctx.strokeStyle = inkColor(0.5);
+
+  const tentacleWave = (side, i) => {
+    const base = noise(t * 0.001 + i * 2 + side) * 8 * sc * (0.5 + mood * 0.5);
+    const emo = e === 'happy' ? Math.sin(t * 0.005 + i) * 6 * sc : 0;
+    return base + emo;
+  };
+
+  // 左侧
+  ctx.beginPath();
+  ctx.moveTo(-35 * sc, 5 * sc);
+  ctx.quadraticCurveTo(
+    -50 * sc + tentacleWave(-1, 0), 20 * sc,
+    -45 * sc + tentacleWave(-1, 1), 40 * sc
+  );
+  ctx.stroke();
+
+  // 右侧
+  ctx.beginPath();
+  ctx.moveTo(35 * sc, 5 * sc);
+  ctx.quadraticCurveTo(
+    50 * sc + tentacleWave(1, 0), 20 * sc,
+    45 * sc + tentacleWave(1, 1), 40 * sc
+  );
+  ctx.stroke();
+
+  // worried / concerned 时：触手缩回身体
+  if (e === 'concerned') {
+    ctx.globalAlpha = 0.3;
+    ctx.beginPath();
+    ctx.moveTo(-30 * sc, 10 * sc);
+    ctx.quadraticCurveTo(-35 * sc, 20 * sc, -25 * sc, 30 * sc);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(30 * sc, 10 * sc);
+    ctx.quadraticCurveTo(35 * sc, 20 * sc, 25 * sc, 30 * sc);
+    ctx.stroke();
+  }
+
+  // thinking 时：一只手托腮
+  if (e === 'thinking') {
+    ctx.globalAlpha = 0.6;
+    ctx.beginPath();
+    ctx.moveTo(28 * sc, 0);
+    ctx.quadraticCurveTo(35 * sc, -10 * sc, 20 * sc, -18 * sc);
+    ctx.stroke();
+  }
+
+  ctx.restore();
+}
+
+function drawPearls(ctx, sc, t) {
+  const mood = S.mood / 100;
+  const stage = getStage(S.level);
+
+  for (let i = 0; i < stage.pearls; i++) {
+    const angle = (i / stage.pearls) * Math.PI * 2 + t * 0.0005 * (0.3 + mood * 0.7);
+    const r = (58 + Math.sin(t * 0.001 + i) * 4) * sc;
+    const px = Math.cos(angle) * r;
+    const py = -40 * sc + Math.sin(angle) * r * 0.3;
+
+    const pearlR = (3 + mood * 2) * sc;
+    inkHalo(ctx, px, py, pearlR * 2, 0.08 * mood + 0.03);
+
+    ctx.beginPath();
+    ctx.arc(px, py, pearlR, 0, Math.PI * 2);
+    ctx.fillStyle = inkColor(0.3 + mood * 0.4);
+    ctx.fill();
+
+    // 高光
+    ctx.beginPath();
+    ctx.arc(px - pearlR * 0.3, py - pearlR * 0.3, pearlR * 0.3, 0, Math.PI * 2);
+    ctx.fillStyle = `rgba(255,255,255,${0.4 + mood * 0.3})`;
+    ctx.fill();
+  }
+}
+
+function drawRibbons(ctx, sc, t) {
+  const mood = S.mood / 100;
+  const stage = getStage(S.level);
+
+  ctx.save();
+  ctx.lineWidth = 2 * sc;
+  ctx.lineCap = 'round';
+
+  for (let i = 0; i < stage.ribbons; i++) {
+    const side = i === 0 ? -1 : 1;
+    const baseX = side * 30 * sc;
+    const baseY = -15 * sc;
+
+    ctx.beginPath();
+    ctx.moveTo(baseX, baseY);
+
+    const segments = 5;
+    for (let j = 1; j <= segments; j++) {
+      const progress = j / segments;
+      const wave = Math.sin(t * 0.0015 + i * 2.5 + j * 0.8) * (6 + j * 5) * sc;
+      const py = baseY + j * 14 * sc;
+      const px = baseX + wave * side;
+      ctx.lineTo(px, py);
+    }
+
+    ctx.strokeStyle = inkColor(0.06 + mood * 0.08);
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+// ─── 粒子系统 ───
+const particles = [];
+
+function spawnParticle(type) {
+  const x = cx(), y = cy();
+  const p = {
+    type, x, y, vx: 0, vy: 0,
+    life: 1, maxLife: 1,
+    size: 4, alpha: 0.4,
+    rotation: 0, rotSpeed: 0,
+    born: globalTime,
+  };
+
+  switch(type) {
+    case 'drop': // idle 墨滴
+      p.x += (Math.random()-0.5) * 25;
+      p.y -= 55 + Math.random() * 10;
+      p.vy = 0.12 + Math.random() * 0.08;
+      p.size = 2 + Math.random() * 2.5;
+      p.alpha = 0.15 + Math.random() * 0.1;
+      p.maxLife = 200 + Math.random() * 150;
+      break;
+    case 'smoke': // thinking 墨烟
+      p.x += (Math.random()-0.5) * 15;
+      p.y -= 50;
+      p.vy = -0.25 - Math.random() * 0.15;
+      p.vx = (Math.random()-0.5) * 0.15;
+      p.rotSpeed = (Math.random()-0.5) * 0.015;
+      p.size = 3 + Math.random() * 4;
+      p.alpha = 0.12 + Math.random() * 0.08;
+      p.maxLife = 250 + Math.random() * 200;
+      break;
+    case 'splash': // happy 墨溅
+      const angle = Math.random() * Math.PI * 2;
+      const speed = 0.4 + Math.random() * 0.8;
+      p.vx = Math.cos(angle) * speed;
+      p.vy = Math.sin(angle) * speed;
+      p.size = 2 + Math.random() * 2;
+      p.alpha = 0.25 + Math.random() * 0.15;
+      p.maxLife = 100 + Math.random() * 80;
+      break;
+    case 'pulse': // concerned 墨脉
+      const pa = Math.random() * Math.PI * 2;
+      const pr = 30 + Math.random() * 15;
+      p.x += Math.cos(pa) * pr;
+      p.y += Math.sin(pa) * pr * 0.7;
+      p.size = 4 + Math.random() * 4;
+      p.alpha = 0.15;
+      p.maxLife = 100 + Math.random() * 60;
+      break;
+    case 'glow': // focused 墨光
+      p.x += (Math.random()-0.5) * 20;
+      p.y -= 50 + Math.random() * 15;
+      p.vy = -0.08;
+      p.size = 3 + Math.random() * 3;
+      p.alpha = 0.2;
+      p.maxLife = 180 + Math.random() * 120;
+      break;
+    case 'click': // 点击溅射
+      const ca = Math.random() * Math.PI * 2;
+      const cs = 0.8 + Math.random() * 1.2;
+      p.vx = Math.cos(ca) * cs;
+      p.vy = Math.sin(ca) * cs;
+      p.size = 2 + Math.random() * 2;
+      p.alpha = 0.35;
+      p.maxLife = 60 + Math.random() * 40;
+      break;
+  }
+  p.life = p.maxLife;
+  particles.push(p);
+}
+
+let spawnTimer = 0;
+
+function updateParticles(dt) {
+  spawnTimer++;
+
+  const rates = { idle: 90, thinking: 10, happy: 7, concerned: 14, focused: 12, walking: 25 };
+  const rate = rates[S.emotion] || 90;
+
+  if (spawnTimer >= rate) {
+    spawnTimer = 0;
+    const e = S.emotion;
+    if (e === 'thinking') spawnParticle('smoke');
+    else if (e === 'happy') spawnParticle('splash');
+    else if (e === 'concerned') spawnParticle('pulse');
+    else if (e === 'focused') spawnParticle('glow');
+    else spawnParticle('drop');
+  }
+
+  // 点击效果
+  if (globalTime - clickTime < 500 && globalTime - clickTime > 0 && globalTime - clickTime < 100) {
+    for (let i = 0; i < 10; i++) spawnParticle('click');
+    clickTime = -9999;
+  }
+
+  // 更新
+  for (let i = particles.length - 1; i >= 0; i--) {
+    const p = particles[i];
+    p.life -= 1;
+    if (p.life <= 0) { particles.splice(i, 1); continue; }
+
+    p.x += p.vx;
+    p.y += p.vy;
+    p.vx *= 0.995;
+    p.vy *= 0.998;
+    p.rotation += p.rotSpeed;
+
+    const lr = p.life / p.maxLife;
+
+    ctx.save();
+    ctx.translate(p.x, p.y);
+    ctx.rotate(p.rotation);
+    ctx.globalAlpha = p.alpha * lr;
+
+    if (p.type === 'smoke') {
+      // 扭曲椭圆
+      const s = p.size * (1 + (1-lr) * 2.5);
+      ctx.beginPath();
+      const pts = 8;
+      for (let j = 0; j <= pts; j++) {
+        const a = (j/pts) * Math.PI * 2;
+        const r = s * (0.6 + Math.sin(a*3 + lr*8)*0.4);
+        if (j===0) ctx.moveTo(Math.cos(a)*r, Math.sin(a)*r*0.6);
+        else ctx.lineTo(Math.cos(a)*r, Math.sin(a)*r*0.6);
+      }
+      ctx.closePath();
+      ctx.fillStyle = inkColor(0.8);
+      ctx.fill();
+    } else if (p.type === 'pulse') {
+      ctx.beginPath();
+      ctx.arc(0, 0, p.size * (1.5 - lr*0.5), 0, Math.PI*2);
+      ctx.strokeStyle = inkColor(lr * 0.25);
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+    } else if (p.type === 'glow') {
+      inkHalo(ctx, 0, 0, p.size * (1 + (1-lr)), lr * 0.3);
+    } else {
+      // 墨滴/溅/点击：不规则墨迹
+      const s = p.size * (p.type === 'drop' ? (1 + (1-lr)*1.2) : lr);
+      ctx.beginPath();
+      const edges = 6;
+      for (let j = 0; j <= edges; j++) {
+        const a = (j/edges) * Math.PI * 2;
+        const r = s * (0.7 + noise(a*2 + p.born*0.01) * 0.6);
+        if (j===0) ctx.moveTo(Math.cos(a)*r, Math.sin(a)*r);
+        else ctx.lineTo(Math.cos(a)*r, Math.sin(a)*r);
+      }
+      ctx.closePath();
+      ctx.fillStyle = inkColor(0.8);
+      ctx.fill();
+    }
+
+    ctx.restore();
+  }
+}
+
+// ─── 动画主循环 ───
+let prevTime = 0;
+
+function animate(now) {
+  globalTime = now;
+  const dt = now - prevTime;
+  prevTime = now;
+
+  ctx.clearRect(0, 0, W, H);
+
+  // 宣纸纹理（极淡的底纹）
+  ctx.fillStyle = '#f8f6f1';
+  ctx.fillRect(0, 0, W, H);
+
+  // 更新身体动画参数
+  updateBodyAnimation(now);
+
+  // 粒子（先画，叠在身体下面）
+  updateParticles(dt);
+
+  // 墨灵本体
+  drawCreature(now);
+
+  requestAnimationFrame(animate);
+}
+
+function updateBodyAnimation(now) {
+  const vit = S.vitality / 100;
+  const mood = S.mood / 100;
+
+  // 呼吸
+  const breathSpeed = vit > 0.8 ? 0.0008 : vit > 0.5 ? 0.001 : vit > 0.2 ? 0.0016 : 0.0004;
+  const breathAmp = vit > 0.8 ? 0.06 : vit > 0.5 ? 0.04 : vit > 0.2 ? 0.02 : 0.008;
+  body.scaleY = 1 + Math.sin(now * breathSpeed) * breathAmp;
+  body.scaleX = 1 - Math.sin(now * breathSpeed) * breathAmp * 0.3;
+
+  // 浮动
+  const floatSpeed = mood > 0.8 ? 0.0006 : mood > 0.5 ? 0.0004 : mood > 0.2 ? 0.00025 : 0.00012;
+  const floatAmp = mood > 0.8 ? 8 : mood > 0.5 ? 5 : mood > 0.2 ? 2 : 0.5;
+  const floatDrop = mood < 0.2 ? 8 : 0;
+  body.y = Math.sin(now * floatSpeed) * floatAmp + floatDrop;
+
+  // 头部微动（情绪相关）
+  if (S.emotion === 'thinking') {
+    body.headY = Math.sin(now * 0.002) * 3;
+    body.tilt = Math.sin(now * 0.001) * 0.02;
+  } else if (S.emotion === 'happy') {
+    body.headY = Math.sin(now * 0.004) * 4;
+    body.tilt = Math.sin(now * 0.003) * 0.03;
+  } else if (S.emotion === 'concerned') {
+    body.headY = 3;
+    body.tilt = Math.sin(now * 0.0008) * 0.015;
+  } else if (S.emotion === 'focused') {
+    body.headY = -2;
+    body.tilt = 0;
+  } else {
+    body.headY = lerp(body.headY, Math.sin(now * 0.0005) * 1, 0.02);
+    body.tilt = lerp(body.tilt, Math.sin(now * 0.0003) * 0.008, 0.02);
+  }
+
+  // 眨眼
+  body.blinkTimer++;
+  if (body.blinkTimer > 180 + Math.random() * 200) {
+    body.eyeOpen = 0;
+    if (body.blinkTimer > 190 + Math.random() * 200) {
+      body.eyeOpen = 1;
+      body.blinkTimer = 0;
+    }
+  } else {
+    body.eyeOpen = lerp(body.eyeOpen, 1, 0.15);
+  }
+  // 疲劳时眨眼更频繁
+  if (S.vitality < 30 && body.blinkTimer > 80) {
+    body.eyeOpen = Math.max(0, body.eyeOpen - 0.1);
+  }
+}
+
+requestAnimationFrame(animate);
+
+// ─── 控制面板 ───
+document.getElementById('mood').addEventListener('input', e => {
+  S.mood = +e.target.value;
+  document.getElementById('mv').textContent = S.mood;
+});
+document.getElementById('vitality').addEventListener('input', e => {
+  S.vitality = +e.target.value;
+  document.getElementById('vv').textContent = S.vitality;
+});
+document.getElementById('level').addEventListener('input', e => {
+  S.level = +e.target.value;
+  document.getElementById('lv').textContent = S.level;
+  document.getElementById('sn').textContent = getStage(S.level).name;
+});
+
+document.querySelectorAll('.eb').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.eb').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    S.emotion = btn.dataset.e;
+    particles.length = 0;
+    spawnTimer = 0;
+  });
+});
+
+document.addEventListener('keydown', e => {
+  const map = { '1':'idle', '2':'thinking', '3':'happy', '4':'concerned', '5':'focused', '6':'walking' };
+  if (map[e.key]) {
+    S.emotion = map[e.key];
+    document.querySelectorAll('.eb').forEach(b => b.classList.toggle('active', b.dataset.e === S.emotion));
+    particles.length = 0;
+    spawnTimer = 0;
+  }
+});
+</script>
+</body>
+</html>

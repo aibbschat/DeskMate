@@ -1,0 +1,809 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<title>墨灵动态效果验证</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #f8f6f1;
+    font-family: -apple-system, 'PingFang SC', sans-serif;
+    color: #2c2a2a;
+    overflow: hidden;
+    height: 100vh;
+  }
+
+  /* 控制面板 */
+  .controls {
+    position: fixed;
+    top: 20px;
+    left: 20px;
+    z-index: 100;
+    background: rgba(255,255,255,0.92);
+    backdrop-filter: blur(10px);
+    border-radius: 16px;
+    padding: 24px;
+    width: 280px;
+    box-shadow: 0 4px 24px rgba(0,0,0,0.08);
+  }
+  .controls h3 {
+    font-size: 14px;
+    font-weight: 600;
+    margin-bottom: 16px;
+    color: #2c2a2a;
+    letter-spacing: 0.5px;
+  }
+  .control-group {
+    margin-bottom: 14px;
+  }
+  .control-group label {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 12px;
+    color: #666;
+    margin-bottom: 6px;
+  }
+  .control-group label span {
+    font-variant-numeric: tabular-nums;
+    font-weight: 600;
+    color: #2c2a2a;
+  }
+  input[type="range"] {
+    width: 100%;
+    -webkit-appearance: none;
+    height: 4px;
+    background: #e5e2dd;
+    border-radius: 2px;
+    outline: none;
+  }
+  input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    background: #2c2a2a;
+    cursor: pointer;
+  }
+  .emotion-btns {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  .emotion-btn {
+    padding: 5px 10px;
+    border: 1px solid #e5e2dd;
+    border-radius: 8px;
+    background: #fff;
+    font-size: 11px;
+    cursor: pointer;
+    transition: all 0.2s;
+  }
+  .emotion-btn:hover { background: #f0ede8; }
+  .emotion-btn.active {
+    background: #2c2a2a;
+    color: #f8f6f1;
+    border-color: #2c2a2a;
+  }
+  .stage-label {
+    font-size: 11px;
+    color: #999;
+    margin-top: 4px;
+    text-align: center;
+  }
+
+  /* 舞台 */
+  #stage {
+    position: fixed;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  /* 墨灵容器 */
+  .mascot-wrap {
+    position: relative;
+    width: 200px;
+    height: 220px;
+    cursor: pointer;
+  }
+
+  /* SVG 滤镜 */
+  .ink-filter { position: absolute; width: 0; height: 0; }
+
+  /* 墨灵图片 */
+  .mascot-img {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    filter: url(#mok-ink);
+    will-change: transform, filter;
+  }
+
+  /* Canvas 粒子层 */
+  .mascot-canvas {
+    position: absolute;
+    inset: -60px;
+    width: calc(100% + 120px);
+    height: calc(100% + 120px);
+    pointer-events: none;
+  }
+
+  /* 光环 Canvas（底层） */
+  .aura-canvas {
+    position: absolute;
+    inset: -80px;
+    width: calc(100% + 160px);
+    height: calc(100% + 160px);
+    pointer-events: none;
+  }
+
+  /* 状态指示 */
+  .status-bar {
+    position: fixed;
+    bottom: 20px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: rgba(255,255,255,0.92);
+    backdrop-filter: blur(10px);
+    border-radius: 12px;
+    padding: 12px 24px;
+    display: flex;
+    gap: 24px;
+    box-shadow: 0 4px 24px rgba(0,0,0,0.08);
+    font-size: 12px;
+  }
+  .status-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .status-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    animation: pulse-dot 2s infinite;
+  }
+  @keyframes pulse-dot {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.4; }
+  }
+</style>
+</head>
+<body>
+
+<!-- 控制面板 -->
+<div class="controls">
+  <h3>墨灵动效验证</h3>
+
+  <div class="control-group">
+    <label>心情 <span id="mood-val">80</span></label>
+    <input type="range" id="mood" min="0" max="100" value="80">
+  </div>
+
+  <div class="control-group">
+    <label>活力 <span id="vitality-val">100</span></label>
+    <input type="range" id="vitality" min="0" max="100" value="100">
+  </div>
+
+  <div class="control-group">
+    <label>等级 <span id="level-val">1</span></label>
+    <input type="range" id="level" min="1" max="12" value="1">
+    <div class="stage-label" id="stage-name">墨童</div>
+  </div>
+
+  <div class="control-group">
+    <label style="margin-bottom: 8px;">情绪</label>
+    <div class="emotion-btns">
+      <button class="emotion-btn active" data-emotion="idle">待机</button>
+      <button class="emotion-btn" data-emotion="thinking">思考</button>
+      <button class="emotion-btn" data-emotion="happy">开心</button>
+      <button class="emotion-btn" data-emotion="concerned">关注</button>
+      <button class="emotion-btn" data-emotion="focused">专注</button>
+    </div>
+  </div>
+</div>
+
+<!-- 舞台 -->
+<div id="stage">
+  <div class="mascot-wrap" id="mascot">
+    <!-- SVG 墨渗滤镜 -->
+    <svg class="ink-filter">
+      <defs>
+        <filter id="mok-ink" x="-25%" y="-25%" width="150%" height="150%">
+          <feTurbulence id="ink-turb" type="fractalNoise" baseFrequency="0.022" numOctaves="2" seed="7" result="n"/>
+          <feDisplacementMap id="ink-disp" in="SourceGraphic" in2="n" scale="4" xChannelSelector="R" yChannelSelector="G"/>
+        </filter>
+      </defs>
+    </svg>
+    <!-- 光环层 -->
+    <canvas class="aura-canvas" id="aura-canvas"></canvas>
+    <!-- 粒子层 -->
+    <canvas class="mascot-canvas" id="particle-canvas"></canvas>
+    <!-- 墨灵主体 -->
+    <img class="mascot-img" id="mascot-img" src="pets/mok-dling.png" alt="墨灵" draggable="false">
+  </div>
+</div>
+
+<!-- 状态栏 -->
+<div class="status-bar">
+  <div class="status-item">
+    <div class="status-dot" id="breath-dot" style="background: #8b5cf6;"></div>
+    <span>呼吸</span>
+  </div>
+  <div class="status-item">
+    <div class="status-dot" id="particle-dot" style="background: #f59e0b;"></div>
+    <span>粒子</span>
+  </div>
+  <div class="status-item">
+    <div class="status-dot" id="aura-dot" style="background: #10b981;"></div>
+    <span>光环</span>
+  </div>
+  <div class="status-item">
+    <div class="status-dot" id="filter-dot" style="background: #ef4444;"></div>
+    <span>墨渗</span>
+  </div>
+</div>
+
+<script>
+// ─── 状态 ───
+const state = {
+  mood: 80,
+  vitality: 100,
+  level: 1,
+  emotion: 'idle',
+};
+
+// ─── 工具函数 ───
+const lerp = (a, b, t) => a + (b - a) * t;
+const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
+// 自定义缓动：先慢后快再慢，模拟水墨流动
+const easeFluid = t => t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+
+const STAGES = [
+  { name: '墨童', range: [1, 3], aura: false, pearls: 0, ribbons: 0 },
+  { name: '墨生', range: [4, 6], aura: true, pearls: 0, ribbons: 0 },
+  { name: '墨客', range: [7, 9], aura: true, pearls: 3, ribbons: 0 },
+  { name: '墨仙', range: [10, 12], aura: true, pearls: 3, ribbons: 2 },
+];
+
+function getStage(level) {
+  return STAGES.find(s => level >= s.range[0] && level <= s.range[1]) || STAGES[0];
+}
+
+// ─── DOM refs ───
+const mascotImg = document.getElementById('mascot-img');
+const particleCanvas = document.getElementById('particle-canvas');
+const auraCanvas = document.getElementById('aura-canvas');
+const inkTurb = document.getElementById('ink-turb');
+const inkDisp = document.getElementById('ink-disp');
+const pCtx = particleCanvas.getContext('2d');
+const aCtx = auraCanvas.getContext('2d');
+
+// ─── Canvas 初始化 ───
+function resizeCanvas(canvas) {
+  const wrap = canvas.parentElement;
+  const dpr = window.devicePixelRatio || 1;
+  canvas.width = wrap.offsetWidth * dpr + 240 * dpr;
+  canvas.height = wrap.offsetHeight * dpr + 240 * dpr;
+  const ctx = canvas.getContext('2d');
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  return { w: wrap.offsetWidth + 240, h: wrap.offsetHeight + 240 };
+}
+
+let pW, pH, aW, aH;
+function initCanvases() {
+  const p = resizeCanvas(particleCanvas);
+  pW = p.w; pH = p.h;
+  const a = resizeCanvas(auraCanvas);
+  aW = a.w; aH = a.h;
+}
+initCanvases();
+
+// ─── 系统 A：呼吸 + 浮动 ───
+let breathPhase = 0;
+let floatPhase = 0;
+
+function updateBreath(now) {
+  // vitality 驱动呼吸节奏
+  const v = state.vitality;
+  const breatheSpeed = v > 80 ? 0.0008 : v > 50 ? 0.001 : v > 20 ? 0.0016 : 0.0004;
+  const breatheAmp = v > 80 ? 0.06 : v > 50 ? 0.04 : v > 20 ? 0.02 : 0.01;
+  breathPhase += breatheSpeed * 16; // ~60fps
+  const breathScale = 1 + Math.sin(breathPhase) * breatheAmp;
+
+  // mood 驱动浮动
+  const m = state.mood;
+  const floatSpeed = m > 80 ? 0.0006 : m > 50 ? 0.0004 : m > 20 ? 0.00025 : 0.00015;
+  const floatAmp = m > 80 ? 10 : m > 50 ? 7 : m > 20 ? 3 : 1;
+  const floatOffset = m < 20 ? 5 : 0; // 低心情下坠
+  floatPhase += floatSpeed * 16;
+  const floatY = Math.sin(floatPhase) * floatAmp + floatOffset;
+
+  // 合并 transform
+  mascotImg.style.transform = `scaleY(${breathScale}) translateY(${floatY}px)`;
+
+  // 状态指示
+  document.getElementById('breath-dot').style.background =
+    v > 50 ? '#8b5cf6' : v > 20 ? '#a78bfa' : '#c4b5fd';
+}
+
+// ─── 系统 D：墨渗滤镜动态化 ───
+let currentBF = 0.022;
+let currentDS = 4;
+
+function updateFilter() {
+  const v = state.vitality;
+  // vitality → baseFrequency & displacementScale
+  const targetBF = v > 80 ? 0.022 : v > 50 ? 0.018 : v > 30 ? 0.014 : v > 10 ? 0.010 : 0.006;
+  const targetDS = v > 80 ? 4 : v > 50 ? 6 : v > 30 ? 10 : v > 10 ? 16 : 24;
+
+  // 平滑插值（慢速过渡，像墨在纸上慢慢化开）
+  currentBF = lerp(currentBF, targetBF, 0.01);
+  currentDS = lerp(currentDS, targetDS, 0.01);
+
+  inkTurb.setAttribute('baseFrequency', currentBF.toFixed(4));
+  inkDisp.setAttribute('scale', currentDS.toFixed(1));
+
+  document.getElementById('filter-dot').style.background =
+    state.vitality > 50 ? '#ef4444' : state.vitality > 20 ? '#f87171' : '#fca5a5';
+}
+
+// ─── 系统 B：水墨情绪粒子 ───
+const particles = [];
+
+class InkParticle {
+  constructor(type) {
+    this.type = type; // 'drop' | 'smoke' | 'splash' | 'pulse' | 'glow' | 'trail'
+    this.x = pW / 2;
+    this.y = pH / 2;
+    this.vx = 0;
+    this.vy = 0;
+    this.life = 1;
+    this.maxLife = 1;
+    this.size = 4;
+    this.alpha = 0.5;
+    this.rotation = 0;
+    this.rotSpeed = 0;
+    this.born = performance.now();
+  }
+}
+
+// 墨滴：从头顶缓慢飘落，像宣纸上的墨滴自然晕开
+function spawnDrop() {
+  const p = new InkParticle('drop');
+  p.x = pW / 2 + (Math.random() - 0.5) * 30;
+  p.y = pH / 2 - 70;
+  p.vy = 0.15 + Math.random() * 0.1;
+  p.vx = (Math.random() - 0.5) * 0.05;
+  p.maxLife = 250 + Math.random() * 200;
+  p.life = p.maxLife;
+  p.size = 2 + Math.random() * 3;
+  p.alpha = 0.2 + Math.random() * 0.15;
+  particles.push(p);
+}
+
+// 墨烟：螺旋上升，像焚香
+function spawnSmoke() {
+  const p = new InkParticle('smoke');
+  const angle = Math.random() * Math.PI * 2;
+  const r = 5 + Math.random() * 10;
+  p.x = pW / 2 + Math.cos(angle) * r;
+  p.y = pH / 2 - 50;
+  p.vy = -0.3 - Math.random() * 0.2;
+  p.vx = Math.sin(angle) * 0.2;
+  p.rotSpeed = (Math.random() - 0.5) * 0.02;
+  p.maxLife = 300 + Math.random() * 200;
+  p.life = p.maxLife;
+  p.size = 3 + Math.random() * 4;
+  p.alpha = 0.15 + Math.random() * 0.1;
+  particles.push(p);
+}
+
+// 墨溅：开心时向四周溅射
+function spawnSplash() {
+  const p = new InkParticle('splash');
+  const angle = Math.random() * Math.PI * 2;
+  const speed = 0.5 + Math.random() * 1.0;
+  p.x = pW / 2;
+  p.y = pH / 2;
+  p.vx = Math.cos(angle) * speed;
+  p.vy = Math.sin(angle) * speed;
+  p.maxLife = 150 + Math.random() * 100;
+  p.life = p.maxLife;
+  p.size = 2 + Math.random() * 3;
+  p.alpha = 0.3 + Math.random() * 0.2;
+  particles.push(p);
+}
+
+// 墨脉：concerned 时身体周围脉动
+function spawnPulse() {
+  const p = new InkParticle('pulse');
+  const angle = Math.random() * Math.PI * 2;
+  const r = 35 + Math.random() * 15;
+  p.x = pW / 2 + Math.cos(angle) * r;
+  p.y = pH / 2 + Math.sin(angle) * r * 0.7;
+  p.maxLife = 120 + Math.random() * 80;
+  p.life = p.maxLife;
+  p.size = 5 + Math.random() * 5;
+  p.alpha = 0.2;
+  particles.push(p);
+}
+
+// 墨光：focused 时头顶光圈
+function spawnGlow() {
+  const p = new InkParticle('glow');
+  const angle = Math.random() * Math.PI * 2;
+  const r = 15 + Math.random() * 12;
+  p.x = pW / 2 + Math.cos(angle) * r;
+  p.y = pH / 2 - 55 + Math.sin(angle) * r * 0.4;
+  p.maxLife = 200 + Math.random() * 150;
+  p.life = p.maxLife;
+  p.size = 3 + Math.random() * 3;
+  p.alpha = 0.25;
+  p.vx = Math.cos(angle) * 0.05;
+  p.vy = -0.1;
+  particles.push(p);
+}
+
+// 留痕：idle 微动时的自发行为
+function spawnMicroDrop() {
+  const p = new InkParticle('drop');
+  p.x = pW / 2 + (Math.random() - 0.5) * 40;
+  p.y = pH / 2 - 60 + Math.random() * 20;
+  p.vy = 0.1 + Math.random() * 0.08;
+  p.maxLife = 180 + Math.random() * 120;
+  p.life = p.maxLife;
+  p.size = 1.5 + Math.random() * 2;
+  p.alpha = 0.12 + Math.random() * 0.08;
+  particles.push(p);
+}
+
+// 粒子生成控制
+let spawnTimer = 0;
+let microTimer = 0;
+
+function updateParticles(now) {
+  spawnTimer++;
+  microTimer++;
+
+  const e = state.emotion;
+  const spawnRate = {
+    idle: 80,      // idle：很少粒子
+    thinking: 8,
+    happy: 6,
+    concerned: 12,
+    focused: 10,
+    walking: 20,
+  }[e] || 80;
+
+  // 情绪粒子生成
+  if (spawnTimer >= spawnRate) {
+    spawnTimer = 0;
+    switch (e) {
+      case 'thinking': spawnSmoke(); break;
+      case 'happy': spawnSplash(); break;
+      case 'concerned': spawnPulse(); break;
+      case 'focused': spawnGlow(); break;
+      default: spawnDrop(); break;
+    }
+  }
+
+  // idle 微动：每 8-15 秒一次
+  if (e === 'idle' && microTimer > (8 + Math.random() * 7) * 60) {
+    microTimer = 0;
+    for (let i = 0; i < 3; i++) spawnMicroDrop();
+  }
+
+  // 更新 & 绘制
+  pCtx.clearRect(0, 0, pW, pH);
+
+  for (let i = particles.length - 1; i >= 0; i--) {
+    const p = particles[i];
+    p.life--;
+    if (p.life <= 0) { particles.splice(i, 1); continue; }
+
+    const lifeRatio = p.life / p.maxLife;
+
+    // 运动
+    p.x += p.vx;
+    p.y += p.vy;
+    p.rotation += p.rotSpeed;
+
+    // 阻尼
+    p.vx *= 0.995;
+    p.vy *= 0.998;
+
+    // 绘制 — 不是圆，是不规则墨迹
+    pCtx.save();
+    pCtx.translate(p.x, p.y);
+    pCtx.rotate(p.rotation);
+    pCtx.globalAlpha = p.alpha * lifeRatio;
+
+    if (p.type === 'smoke') {
+      // 墨烟：带扭曲的椭圆
+      drawInkSmoke(pCtx, p.size, lifeRatio);
+    } else if (p.type === 'splash') {
+      // 墨溅：星状飞溅
+      drawInkSplash(pCtx, p.size, lifeRatio);
+    } else if (p.type === 'pulse') {
+      // 墨脉：同心圆脉动
+      drawInkPulse(pCtx, p.size, lifeRatio);
+    } else if (p.type === 'glow') {
+      // 墨光：柔和光点
+      drawInkGlow(pCtx, p.size, lifeRatio);
+    } else {
+      // 墨滴：自然晕开
+      drawInkDrop(pCtx, p.size, lifeRatio);
+    }
+
+    pCtx.restore();
+  }
+
+  document.getElementById('particle-dot').style.background =
+    particles.length > 20 ? '#f59e0b' : particles.length > 5 ? '#fbbf24' : '#fde68a';
+}
+
+// ─── 墨迹绘制函数 ───
+
+function drawInkDrop(ctx, size, life) {
+  // 墨滴：不是圆，而是带毛边的墨迹
+  const s = size * (1 + (1 - life) * 1.5); // 随时间晕开
+  ctx.beginPath();
+  // 用贝塞尔曲线画不规则形状
+  for (let i = 0; i < 6; i++) {
+    const angle = (i / 6) * Math.PI * 2;
+    const r = s * (0.7 + Math.random() * 0.6); // 不规则半径
+    const x = Math.cos(angle) * r;
+    const y = Math.sin(angle) * r;
+    if (i === 0) ctx.moveTo(x, y);
+    else {
+      const cpAngle = ((i - 0.5) / 6) * Math.PI * 2;
+      const cpR = s * (0.5 + Math.random() * 0.8);
+      ctx.quadraticCurveTo(Math.cos(cpAngle) * cpR, Math.sin(cpAngle) * cpR, x, y);
+    }
+  }
+  ctx.closePath();
+  ctx.fillStyle = `rgba(44, 44, 42, ${0.7})`;
+  ctx.fill();
+}
+
+function drawInkSmoke(ctx, size, life) {
+  // 墨烟：逐渐变大变淡的扭曲椭圆
+  const s = size * (1 + (1 - life) * 3);
+  const squash = 0.5 + life * 0.5;
+  ctx.scale(1, squash);
+  ctx.beginPath();
+  // 用噪声感的贝塞尔曲线
+  const points = 8;
+  for (let i = 0; i <= points; i++) {
+    const angle = (i / points) * Math.PI * 2;
+    const r = s * (0.6 + Math.sin(angle * 3 + life * 10) * 0.4);
+    const x = Math.cos(angle) * r;
+    const y = Math.sin(angle) * r;
+    if (i === 0) ctx.moveTo(x, y);
+    else ctx.lineTo(x, y);
+  }
+  ctx.closePath();
+  ctx.fillStyle = `rgba(44, 44, 42, 0.8)`;
+  ctx.fill();
+}
+
+function drawInkSplash(ctx, size, life) {
+  // 墨溅：四散的小墨点
+  const s = size * life;
+  ctx.beginPath();
+  // 星状
+  const spikes = 4;
+  for (let i = 0; i < spikes * 2; i++) {
+    const angle = (i / (spikes * 2)) * Math.PI * 2;
+    const r = i % 2 === 0 ? s : s * 0.4;
+    ctx.lineTo(Math.cos(angle) * r, Math.sin(angle) * r);
+  }
+  ctx.closePath();
+  ctx.fillStyle = `rgba(44, 44, 42, 0.9)`;
+  ctx.fill();
+}
+
+function drawInkPulse(ctx, size, life) {
+  // 墨脉：脉动的圆环
+  const s = size * (1.5 - life * 0.5);
+  ctx.beginPath();
+  ctx.arc(0, 0, s, 0, Math.PI * 2);
+  ctx.strokeStyle = `rgba(44, 44, 42, ${life * 0.3})`;
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+}
+
+function drawInkGlow(ctx, size, life) {
+  // 墨光：柔和的发光点
+  const s = size * (1 + (1 - life));
+  const gradient = ctx.createRadialGradient(0, 0, 0, 0, 0, s);
+  gradient.addColorStop(0, `rgba(44, 44, 42, ${life * 0.4})`);
+  gradient.addColorStop(0.5, `rgba(44, 44, 42, ${life * 0.15})`);
+  gradient.addColorStop(1, 'rgba(44, 44, 42, 0)');
+  ctx.beginPath();
+  ctx.arc(0, 0, s, 0, Math.PI * 2);
+  ctx.fillStyle = gradient;
+  ctx.fill();
+}
+
+// ─── 系统 C：阶段光环 ───
+let auraPhase = 0;
+const pearlAngles = [0, Math.PI * 2 / 3, Math.PI * 4 / 3]; // 3 颗墨珠角度
+const ribbonParticles = [];
+
+function updateAura(now) {
+  aCtx.clearRect(0, 0, aW, aH);
+  const stage = getStage(state.level);
+  if (!stage.aura && stage.pearls === 0 && stage.ribbons === 0) return;
+
+  const cx = aW / 2;
+  const cy = aH / 2 + 10;
+  const moodFactor = state.mood / 100;
+
+  auraPhase += 0.008 * (0.3 + moodFactor * 0.7);
+
+  // 墨晕底座
+  if (stage.aura) {
+    const auraSize = 55 + moodFactor * 10;
+    const gradient = aCtx.createRadialGradient(cx, cy + 55, 0, cx, cy + 55, auraSize);
+    gradient.addColorStop(0, `rgba(44, 44, 42, ${0.08 * moodFactor})`);
+    gradient.addColorStop(0.6, `rgba(44, 44, 42, ${0.03 * moodFactor})`);
+    gradient.addColorStop(1, 'rgba(44, 44, 42, 0)');
+    aCtx.beginPath();
+    aCtx.arc(cx, cy + 55, auraSize, 0, Math.PI * 2);
+    aCtx.fillStyle = gradient;
+    aCtx.fill();
+  }
+
+  // 墨珠
+  for (let i = 0; i < stage.pearls; i++) {
+    const angle = pearlAngles[i] + auraPhase;
+    const r = 48;
+    const px = cx + Math.cos(angle) * r;
+    const py = cy - 55 + Math.sin(angle) * r * 0.35;
+    const pearlSize = 3 + moodFactor * 2;
+
+    // 墨珠本体
+    aCtx.save();
+    aCtx.globalAlpha = 0.3 + moodFactor * 0.4;
+    const pg = aCtx.createRadialGradient(px, py, 0, px, py, pearlSize);
+    pg.addColorStop(0, 'rgba(44, 44, 42, 0.9)');
+    pg.addColorStop(0.6, 'rgba(44, 44, 42, 0.4)');
+    pg.addColorStop(1, 'rgba(44, 44, 42, 0)');
+    aCtx.beginPath();
+    aCtx.arc(px, py, pearlSize, 0, Math.PI * 2);
+    aCtx.fillStyle = pg;
+    aCtx.fill();
+    aCtx.restore();
+  }
+
+  // 墨带（披风效果）
+  if (stage.ribbons > 0) {
+    for (let i = 0; i < stage.ribbons; i++) {
+      const baseX = cx + (i === 0 ? -20 : 20);
+      const baseY = cy - 30;
+
+      aCtx.save();
+      aCtx.globalAlpha = 0.06 + moodFactor * 0.08;
+      aCtx.strokeStyle = 'rgba(44, 44, 42, 0.8)';
+      aCtx.lineWidth = 2;
+      aCtx.lineCap = 'round';
+      aCtx.beginPath();
+      aCtx.moveTo(baseX, baseY);
+
+      // 飘带用贝塞尔曲线
+      for (let j = 1; j <= 4; j++) {
+        const t = j / 4;
+        const wave = Math.sin(auraPhase * 2 + i * 2 + j * 0.8) * (8 + j * 4);
+        const py2 = baseY + j * 18;
+        const px2 = baseX + wave;
+        aCtx.lineTo(px2, py2);
+      }
+      aCtx.stroke();
+      aCtx.restore();
+    }
+  }
+
+  document.getElementById('aura-dot').style.background =
+    stage.aura ? '#10b981' : '#a7f3d0';
+}
+
+// ─── 交互反馈 ───
+let clickFeedback = 0;
+
+document.getElementById('mascot').addEventListener('click', () => {
+  clickFeedback = 30; // 帧数
+});
+
+document.getElementById('mascot').addEventListener('mouseenter', () => {
+  // 悬停加速呼吸
+  breathPhase += 0.5;
+});
+
+function updateClickFeedback() {
+  if (clickFeedback <= 0) return;
+  clickFeedback--;
+
+  const t = clickFeedback / 30;
+  const tilt = Math.sin(t * Math.PI) * 3;
+  mascotImg.style.transform += ` rotate(${tilt}deg)`;
+
+  // 溅出墨点
+  if (clickFeedback === 28) {
+    for (let i = 0; i < 8; i++) {
+      const p = new InkParticle('splash');
+      p.x = pW / 2;
+      p.y = pH / 2;
+      const angle = Math.random() * Math.PI * 2;
+      p.vx = Math.cos(angle) * (1 + Math.random());
+      p.vy = Math.sin(angle) * (1 + Math.random());
+      p.maxLife = 80;
+      p.life = 80;
+      p.size = 2 + Math.random() * 2;
+      p.alpha = 0.4;
+      particles.push(p);
+    }
+  }
+}
+
+// ─── 主循环 ───
+function mainLoop() {
+  updateBreath(performance.now());
+  updateFilter();
+  updateParticles(performance.now());
+  updateAura(performance.now);
+  updateClickFeedback();
+  requestAnimationFrame(mainLoop);
+}
+requestAnimationFrame(mainLoop);
+
+// ─── 控制面板绑定 ───
+document.getElementById('mood').addEventListener('input', (e) => {
+  state.mood = +e.target.value;
+  document.getElementById('mood-val').textContent = state.mood;
+});
+document.getElementById('vitality').addEventListener('input', (e) => {
+  state.vitality = +e.target.value;
+  document.getElementById('vitality-val').textContent = state.vitality;
+});
+document.getElementById('level').addEventListener('input', (e) => {
+  state.level = +e.target.value;
+  document.getElementById('level-val').textContent = state.level;
+  const stage = getStage(state.level);
+  document.getElementById('stage-name').textContent = stage.name;
+});
+
+document.querySelectorAll('.emotion-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.emotion-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    state.emotion = btn.dataset.emotion;
+    // 切换情绪时清除旧粒子
+    particles.length = 0;
+    spawnTimer = 0;
+  });
+});
+
+// 键盘快捷键
+document.addEventListener('keydown', (e) => {
+  if (e.key === '1') { state.emotion = 'idle'; updateEmotionBtns(); }
+  if (e.key === '2') { state.emotion = 'thinking'; updateEmotionBtns(); }
+  if (e.key === '3') { state.emotion = 'happy'; updateEmotionBtns(); }
+  if (e.key === '4') { state.emotion = 'concerned'; updateEmotionBtns(); }
+  if (e.key === '5') { state.emotion = 'focused'; updateEmotionBtns(); }
+});
+function updateEmotionBtns() {
+  document.querySelectorAll('.emotion-btn').forEach(b => {
+    b.classList.toggle('active', b.dataset.emotion === state.emotion);
+  });
+  particles.length = 0;
+  spawnTimer = 0;
+}
+</script>
+</body>
+</html>

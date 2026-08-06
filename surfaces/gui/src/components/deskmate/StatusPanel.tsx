@@ -36,6 +36,40 @@ function relTime(ts: string): string {
 }
 
 // ---------------------------------------------------------------------------
+// 成就徽章系统
+// ---------------------------------------------------------------------------
+
+interface Achievement {
+  id: string;
+  name: string;
+  icon: string;
+  description: string;
+  rarity: "common" | "rare" | "epic" | "legendary";
+  unlocked: boolean;
+  unlockedAt?: string;
+  progress?: number;
+  maxProgress?: number;
+}
+
+const RARITY_COLORS = {
+  common: { bg: "#e8e8e8", border: "#c0c0c0", text: "#666" },
+  rare: { bg: "#e3f2fd", border: "#90caf9", text: "#1976d2" },
+  epic: { bg: "#f3e5f5", border: "#ce93d8", text: "#7b1fa2" },
+  legendary: { bg: "#fff8e1", border: "#ffd54f", text: "#f57f17" },
+};
+
+// ---------------------------------------------------------------------------
+// 人格指纹图（菱形雷达图）
+// ---------------------------------------------------------------------------
+
+interface PersonalityProfile {
+  energy: number;      // 活力型 0-100
+  logic: number;       // 逻辑型 0-100
+  creativity: number;  // 创意型 0-100
+  empathy: number;     // 共情型 0-100
+}
+
+// ---------------------------------------------------------------------------
 // 成长 / 亲密度（QQ 宠物式升级玩法）
 // ---------------------------------------------------------------------------
 
@@ -133,6 +167,14 @@ export interface StatusPanelProps {
   learned?: LearnedHistory | null;
   /** 成长系统快照（等级/亲密度/信任感/默契度/技能熟练度）。 */
   growth?: GrowthSnapshot | null;
+  /** 成就列表（解锁状态）。 */
+  achievements?: Achievement[];
+  /** 人格指纹（四维数据）。 */
+  personality?: PersonalityProfile;
+  /** 连续对话天数。 */
+  streakDays?: number;
+  /** 总对话次数。 */
+  totalChats?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -188,6 +230,136 @@ function SectionTitle({ children }: { children: ReactNode }) {
 }
 
 // ---------------------------------------------------------------------------
+// 人格指纹雷达图组件
+// ---------------------------------------------------------------------------
+
+function PersonalityRadar({ profile }: { profile: PersonalityProfile }) {
+  const canvasRef = { current: null as HTMLCanvasElement | null };
+
+  // 菱形的四个顶点（上、右、下、左）
+  const dimensions = [
+    { key: "energy", label: "活力型", value: profile.energy, color: "#f59e0b" },
+    { key: "creativity", label: "创意型", value: profile.creativity, color: "#8b5cf6" },
+    { key: "empathy", label: "共情型", value: profile.empathy, color: "#ec4899" },
+    { key: "logic", label: "逻辑型", value: profile.logic, color: "#3b82f6" },
+  ];
+
+  // 绘制菱形雷达图
+  const drawRadar = (canvas: HTMLCanvasElement) => {
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+
+    const size = 140;
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width = size * dpr;
+    canvas.height = size * dpr;
+    ctx.scale(dpr, dpr);
+
+    const cx = size / 2;
+    const cy = size / 2;
+    const maxR = 50;
+
+    ctx.clearRect(0, 0, size, size);
+
+    // 绘制背景菱形网格（4层）
+    for (let level = 1; level <= 4; level++) {
+      const r = (maxR / 4) * level;
+      ctx.beginPath();
+      ctx.moveTo(cx, cy - r);
+      ctx.lineTo(cx + r, cy);
+      ctx.lineTo(cx, cy + r);
+      ctx.lineTo(cx - r, cy);
+      ctx.closePath();
+      ctx.strokeStyle = `rgba(150, 150, 150, ${0.15 + level * 0.05})`;
+      ctx.lineWidth = 1;
+      ctx.stroke();
+    }
+
+    // 绘制坐标轴
+    ctx.strokeStyle = "rgba(150, 150, 150, 0.3)";
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(cx, cy - maxR);
+    ctx.lineTo(cx, cy + maxR);
+    ctx.moveTo(cx - maxR, cy);
+    ctx.lineTo(cx + maxR, cy);
+    ctx.stroke();
+
+    // 绘制数据区域
+    const dataPoints = dimensions.map((dim, i) => {
+      const angle = (i * Math.PI) / 2 - Math.PI / 2;
+      const r = (dim.value / 100) * maxR;
+      return {
+        x: cx + Math.cos(angle) * r,
+        y: cy + Math.sin(angle) * r,
+        color: dim.color,
+      };
+    });
+
+    // 填充区域
+    ctx.beginPath();
+    ctx.moveTo(dataPoints[0].x, dataPoints[0].y);
+    for (let i = 1; i < dataPoints.length; i++) {
+      ctx.lineTo(dataPoints[i].x, dataPoints[i].y);
+    }
+    ctx.closePath();
+    const gradient = ctx.createRadialGradient(cx, cy, 0, cx, cy, maxR);
+    gradient.addColorStop(0, "rgba(99, 102, 241, 0.2)");
+    gradient.addColorStop(1, "rgba(99, 102, 241, 0.05)");
+    ctx.fillStyle = gradient;
+    ctx.fill();
+    ctx.strokeStyle = "rgba(99, 102, 241, 0.6)";
+    ctx.lineWidth = 2;
+    ctx.stroke();
+
+    // 绘制数据点
+    dataPoints.forEach((point) => {
+      ctx.beginPath();
+      ctx.arc(point.x, point.y, 4, 0, Math.PI * 2);
+      ctx.fillStyle = point.color;
+      ctx.fill();
+      ctx.strokeStyle = "white";
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+    });
+  };
+
+  return (
+    <div className="flex items-start gap-3">
+      <canvas
+        ref={(el) => {
+          if (el) {
+            canvasRef.current = el;
+            drawRadar(el);
+          }
+        }}
+        className="shrink-0"
+        style={{ width: 140, height: 140 }}
+      />
+      <div className="flex flex-col gap-1.5 pt-1">
+        {dimensions.map((dim) => (
+          <div key={dim.key} className="flex items-center gap-1.5">
+            <div
+              className="w-2 h-2 rounded-full"
+              style={{ background: dim.color }}
+            />
+            <span className="text-[10.5px]" style={{ color: "var(--muted)" }}>
+              {dim.label}
+            </span>
+            <span
+              className="text-[10px] tabular-nums ml-auto"
+              style={{ color: "var(--ink)" }}
+            >
+              {dim.value}%
+            </span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
 
@@ -206,8 +378,12 @@ export function StatusPanel({
   onToggleProactive,
   learned = null,
   growth = null,
+  achievements = [],
+  personality,
+  streakDays = 0,
 }: StatusPanelProps) {
   const params = getEmotionParams(emotion);
+  const [showAllAchievements, setShowAllAchievements] = useState(false);
 
   // Animate out before unmounting
   const [visible, setVisible] = useState(open);
@@ -405,6 +581,132 @@ export function StatusPanel({
               </div>
             </div>
           </div>
+
+          {/* 连续对话 + 成就横幅 */}
+          {(streakDays > 0 || achievements.length > 0) && (
+            <div>
+              {/* 连续对话天数 */}
+              {streakDays > 0 && (
+                <div
+                  className="flex items-center gap-2 px-2.5 py-1.5 rounded-lg mb-2"
+                  style={{
+                    background: streakDays >= 7
+                      ? "linear-gradient(90deg, #fff8e1, #ffecb3)"
+                      : streakDays >= 3
+                        ? "linear-gradient(90deg, #e3f2fd, #bbdefb)"
+                        : "var(--paper)",
+                    border: streakDays >= 7 ? "1px solid #ffd54f" : "1px solid var(--line)",
+                  }}
+                >
+                  <span className="text-[16px]">
+                    {streakDays >= 30 ? "🔥" : streakDays >= 7 ? "⭐" : "📅"}
+                  </span>
+                  <div>
+                    <div className="text-[11.5px] font-semibold" style={{ color: "var(--ink)" }}>
+                      连续对话 {streakDays} 天
+                    </div>
+                    <div className="text-[10px]" style={{ color: "var(--faint)" }}>
+                      {streakDays >= 30 ? "传奇坚持！桌宠为你骄傲" : streakDays >= 7 ? "太棒了！保持这个节奏" : "继续加油！"}
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* 成就徽章展示 */}
+              {achievements.length > 0 && (
+                <div>
+                  <div className="flex items-center justify-between mb-1.5">
+                    <SectionTitle>🏆 成就徽章</SectionTitle>
+                    {achievements.length > 6 && (
+                      <button
+                        className="text-[10px] px-1.5 py-0.5 rounded"
+                        style={{ color: "var(--accent)", background: "var(--paper)" }}
+                        onClick={() => setShowAllAchievements(!showAllAchievements)}
+                      >
+                        {showAllAchievements ? "收起" : `查看全部 (${achievements.length})`}
+                      </button>
+                    )}
+                  </div>
+                  <div className="flex flex-wrap gap-1.5">
+                    {(showAllAchievements ? achievements : achievements.slice(0, 6)).map((ach) => (
+                      <div
+                        key={ach.id}
+                        className="relative group px-2 py-1.5 rounded-lg cursor-default"
+                        style={{
+                          background: ach.unlocked ? RARITY_COLORS[ach.rarity].bg : "var(--paper)",
+                          border: ach.unlocked ? `1px solid ${RARITY_COLORS[ach.rarity].border}` : "1px dashed var(--line)",
+                          opacity: ach.unlocked ? 1 : 0.5,
+                        }}
+                      >
+                        <div className="flex items-center gap-1">
+                          <span className="text-[13px]">{ach.icon}</span>
+                          <span
+                            className="text-[10.5px] font-medium"
+                            style={{
+                              color: ach.unlocked ? RARITY_COLORS[ach.rarity].text : "var(--faint)",
+                            }}
+                          >
+                            {ach.name}
+                          </span>
+                        </div>
+                        {/* Tooltip */}
+                        <div
+                          className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1.5 px-2 py-1.5 rounded-lg shadow-lg pointer-events-none opacity-0 group-hover:opacity-100 transition-opacity z-10"
+                          style={{
+                            background: "var(--panel)",
+                            border: "1px solid var(--line)",
+                            minWidth: 120,
+                          }}
+                        >
+                          <div className="text-[11px] font-semibold mb-0.5" style={{ color: "var(--ink)" }}>
+                            {ach.icon} {ach.name}
+                          </div>
+                          <div className="text-[10px]" style={{ color: "var(--muted)" }}>
+                            {ach.description}
+                          </div>
+                          {ach.unlocked && ach.unlockedAt && (
+                            <div className="text-[9px] mt-0.5" style={{ color: "var(--faint)" }}>
+                              {relTime(ach.unlockedAt)} 解锁
+                            </div>
+                          )}
+                          {!ach.unlocked && ach.maxProgress && (
+                            <div className="mt-1">
+                              <div className="h-1 rounded-full overflow-hidden" style={{ background: "var(--line)" }}>
+                                <div
+                                  className="h-full rounded-full"
+                                  style={{
+                                    width: `${((ach.progress ?? 0) / ach.maxProgress) * 100}%`,
+                                    background: RARITY_COLORS[ach.rarity].border,
+                                  }}
+                                />
+                              </div>
+                              <div className="text-[9px] mt-0.5" style={{ color: "var(--faint)" }}>
+                                {ach.progress ?? 0}/{ach.maxProgress}
+                              </div>
+                            </div>
+                          )}
+                          <div
+                            className="text-[9px] mt-0.5 font-medium"
+                            style={{ color: RARITY_COLORS[ach.rarity].text }}
+                          >
+                            {ach.rarity === "legendary" ? "传说" : ach.rarity === "epic" ? "史诗" : ach.rarity === "rare" ? "稀有" : "普通"}
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* 人格指纹图（菱形雷达图） */}
+          {personality && (
+            <div>
+              <SectionTitle>🎭 人格指纹</SectionTitle>
+              <PersonalityRadar profile={personality} />
+            </div>
+          )}
 
           {/* 技能熟练度（反哺匹配排序的真实能力） */}
           {growth && Object.keys(growth.skill_proficiency).length > 0 && (
