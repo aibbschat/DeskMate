@@ -20,11 +20,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
-from deskmate.memory.llm import chat, llm_available
+from deskmate.memory.llm import chat_stream, llm_available
 from deskmate.roundtable import trends
 from deskmate.roundtable.personas import PERSONAS, Persona
 
 logger = logging.getLogger(__name__)
+
+# run_stream 内部驱动任务结束的哨兵（放到 out_q 末尾，消费者据此退出）
+_STOP = object()
 
 HOST_SYSTEM = (
     "你是圆桌主持人「桌搭」，历史小说作家的 AI 搭档。\n"
@@ -319,42 +322,15 @@ class Roundtable:
             base = f"你正作为外部 agent「{peer_name}」参与这场圆桌。\n" + base
         return base
 
-    # ---- 各类发言 ----
-    async def _call_llm(
-        self, system: str, user: str, temperature: float = 0.5, max_tokens: int = 1200, retries: int = 3
-    ) -> str:
-        """带重试的 LLM 调用：空内容/异常时重试（含短退避），避免偶发空回复拖垮圆桌。"""
-        if not llm_available():
-            return "（LLM 未就绪）"
-        last = "（LLM 未返回内容）"
-        for attempt in range(retries + 1):
-            try:
-                out = await asyncio.to_thread(
-                    chat, system, user, temperature=temperature, max_tokens=max_tokens
-                )
-                if out and out.strip():
-                    return out.strip()
-                last = "（LLM 返回空内容）"
-            except Exception as exc:  # noqa: BLE001
-                logger.exception("llm call failed")
-                last = f"（调用失败：{exc}）"
-            if attempt < retries:
-                await asyncio.sleep(1.5)
-        return last
+    # ---- 各类发言（原生流式：逐 token 产出，供 SSE 实时渲染）----
 
-    async def _host(self, instruction: str, ctx: str, story_block: str = "") -> str:
-        ms = story_block or self._manuscript_block()
-        return await self._call_llm(
-            HOST_SYSTEM,
-            f"{instruction}\n\n圆桌议题：{self.topic}\n\n{ms}圆桌上下文：\n{ctx}",
-            temperature=0.4,
-            max_tokens=6000,
-            retries=2,
-        )
-
-    async def _persona_speak(
+    async def _stream_persona_speak(
         self, persona: Persona, ctx: str, round_no: int, divergences: list[str], story_block: str = ""
-    ) -> str:
+    ):
+        """进程内人格流式发言：async generator，逐块 yield 文本片段。"""
+        if not llm_available():
+            yield "（LLM 未就绪）"
+            return
         prompt = self._participant_prompt(ctx, round_no, divergences, story_block=story_block)
         # 市场化人格（publisher/adaptation/genre）注入「当前生效」的潮流简报，
         # 让它们拿到"今天的眼光"；其余人格不被潮流污染。无简报时安静跳过。
@@ -366,9 +342,72 @@ class Roundtable:
                     system = persona.system_prompt + "\n\n" + inject
             except Exception as exc:  # noqa: BLE001
                 logger.warning("潮流简报注入失败(跳过): %s", exc)
-        return await self._call_llm(
-            system, prompt, temperature=0.7, max_tokens=6000, retries=2
-        )
+        async for delta in chat_stream(system, prompt, temperature=0.7, max_tokens=6000):
+            yield delta
+
+    async def _stream_host(self, instruction: str, ctx: str, story_block: str = ""):
+        """主持流式发言：async generator，逐块 yield 文本片段。"""
+        if not llm_available():
+            yield "（LLM 未就绪）"
+            return
+        ms = story_block or self._manuscript_block()
+        async for delta in chat_stream(
+            HOST_SYSTEM,
+            f"{instruction}\n\n圆桌议题：{self.topic}\n\n{ms}圆桌上下文：\n{ctx}",
+            temperature=0.4,
+            max_tokens=6000,
+        ):
+            yield delta
+
+    async def _stream_turn(
+        self, out_q, *, turn_id: str, round_no: int, speaker: str, role: str, kind: str,
+        gen_factory, phase: str | None = None, fallback_text: str | None = None, retries: int = 2,
+    ) -> Turn:
+        """驱动单个流式发言：发 turn_start → 逐块 turn_delta → 发 turn_end（含完整文本）。
+
+        gen_factory 是 0 参数可调用，每次调用返回一个新的 async generator（便于空结果重试）。
+        返回完整 Turn，供调用方记入 transcript。
+        """
+        await out_q.put({
+            "type": "turn_start", "turn_id": turn_id, "round": round_no,
+            "speaker": speaker, "role": role, "kind": kind, "phase": phase,
+        })
+        parts: list[str] = []
+        for attempt in range(retries + 1):
+            parts = []
+            try:
+                async for delta in gen_factory():
+                    parts.append(delta)
+                    await out_q.put({"type": "turn_delta", "turn_id": turn_id, "text": delta})
+                full = "".join(parts).strip()
+                if full:
+                    break
+                logger.warning("流式发言返回空（%s，第%d次重试）", speaker, attempt + 1)
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("流式发言失败(%s)", speaker)
+                parts = [f"（调用失败：{exc}）"]
+                break
+            if attempt < retries:
+                await asyncio.sleep(1.5)
+        full = "".join(parts).strip()
+        if not full or full.startswith("（"):
+            if fallback_text:
+                full = fallback_text
+            elif not full:
+                full = "（LLM 未返回内容）"
+        await out_q.put({
+            "type": "turn_end", "turn_id": turn_id, "round": round_no,
+            "speaker": speaker, "role": role, "kind": kind, "phase": phase, "text": full,
+        })
+        return Turn(round_no, speaker, role, full, kind)
+
+    async def _peer_turn(self, out_q, *, round_no: int, peer: PeerSpec, ctx: str, divergences: list[str], story_block: str = ""):
+        """外部 A2A peer：拿不到 token 流，保持整段返回（沿用原 turn 事件）。"""
+        text = await self._peer_speak(peer, ctx, round_no, divergences, story_block)
+        await out_q.put({
+            "type": "turn", "round": round_no, "speaker": peer.name, "role": "peer", "kind": "peer", "text": text,
+        })
+        return Turn(round_no, peer.name, "peer", text, "peer")
 
     async def _peer_speak(
         self, peer: PeerSpec, ctx: str, round_no: int, divergences: list[str], story_block: str = ""
@@ -433,144 +472,137 @@ class Roundtable:
     async def run_stream(self):
         """异步生成器：边跑边 yield 事件 dict，供 SSE / UI 实时驱动。
 
-        事件类型：
-          - meta:     {topic, max_rounds}
-          - peers:    {online:[name], offline:[name]}
-          - speaking: {round, speaker, role, kind}            # 开始"思考"
-          - turn:     {round, speaker, role, kind, text, phase?}  # 发言完成
-          - round_start: {round}
-          - info:     {text}
-          - done:     {rounds_held, divergences, peers_online, peers_offline, synthesis}
+        事件类型（新增 turn_start / turn_delta / turn_end 以支持原生逐字流式；
+        进程内人格与主持走流式，外部 A2A peer 仍整段返回 turn）：
+          - meta / peers / round_start / info / done：与旧版一致
+          - speaking:    {round, speaker, role, kind}                        # 开始"思考"（3 点气泡）
+          - turn_start:  {turn_id, round, speaker, role, kind, phase?}       # 创建可生长的发言气泡
+          - turn_delta:  {turn_id, text}                                    # 追加一段文本（逐字）
+          - turn_end:    {turn_id, round, speaker, role, kind, phase?, text}# 收尾（含完整文本）
+          - turn:        {round, speaker, role, kind, text, phase?}          # 仅外部 peer 用（整段）
+        """
+        out_q: asyncio.Queue = asyncio.Queue()
+        driver = asyncio.ensure_future(self._drive(out_q))
+        try:
+            while True:
+                ev = await out_q.get()
+                if ev is _STOP:
+                    break
+                yield ev
+        finally:
+            # 客户端断开 / 生成器被关闭时，取消仍在跑的驱动任务，避免泄漏
+            if not driver.done():
+                driver.cancel()
+                try:
+                    await driver
+                except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                    pass
+
+    async def _drive(self, out_q: asyncio.Queue) -> None:
+        """圆桌编排驱动：把全部事件推入 out_q，末尾推 _STOP 哨兵。
+
+        进程内人格与主持走 _stream_turn（原生逐字流式）；外部 A2A peer 走 _peer_turn（整段）。
+        内部用 asyncio.gather 并发多发言者，各发言者的 token 流按 turn_id 自然交错推给前端。
         """
         online, offline = await self._probe_peers()
-        yield {"type": "meta", "topic": self.topic, "max_rounds": self.max_rounds}
-        yield {"type": "peers", "online": [p.name for p in online], "offline": offline}
+        await out_q.put({"type": "meta", "topic": self.topic, "max_rounds": self.max_rounds})
+        await out_q.put({"type": "peers", "online": [p.name for p in online], "offline": offline})
 
         transcript: list[Turn] = []
 
-        # 开场
-        yield {"type": "speaking", "round": 0, "speaker": "桌搭（主持）", "role": "host", "kind": "host"}
+        # 开场（主持流式）
+        await out_q.put({"type": "speaking", "round": 0, "speaker": "桌搭（主持）", "role": "host", "kind": "host"})
         opening_ctx = await self._build_story_context(0, "")
-        opening = await self._host(
-            "请为话题开场：首先直接复述用户的原始议题（原样引用，不要重新定义或缩小范围），"
-            "然后说明规则（有界多轮、到达序发言、最后由你做纪要），并抛出一个讨论引子。",
-            self.context,
-            opening_ctx,
+        opening = await self._stream_turn(
+            out_q, turn_id="host-open", round_no=0, speaker="桌搭（主持）", role="host", kind="host",
+            gen_factory=lambda: self._stream_host(
+                "请为话题开场：首先直接复述用户的原始议题（原样引用，不要重新定义或缩小范围），"
+                "然后说明规则（有界多轮、到达序发言、最后由你做纪要），并抛出一个讨论引子。",
+                self.context, opening_ctx,
+            ),
         )
-        yield {
-            "type": "turn",
-            "round": 0,
-            "speaker": "桌搭（主持）",
-            "role": "host",
-            "kind": "host",
-            "text": opening,
-        }
-        transcript.append(Turn(0, "桌搭（主持）", "host", opening, "host"))
+        transcript.append(opening)
 
         divergences: list[str] = []
         rounds_held = 0
         story_block = ""
         for r in range(1, self.max_rounds + 1):
             ctx = self._fmt(transcript)
-            yield {"type": "round_start", "round": r}
+            await out_q.put({"type": "round_start", "round": r})
             # 构造本轮全局理解上下文（宏观摘要 + 当前章全文 + 全书检索片段）
             div_query = "\n".join(divergences) if r > 1 else ""
             story_block = await self._build_story_context(r, div_query)
 
-            # 到达序：并发提交，按完成顺序收集；发言前先广播"思考中"
-            items = [
-                (p.name, p.role, "persona", self._persona_speak(p, ctx, r, divergences, story_block))
-                for p in self.personas
-            ]
-            items += [
-                (p.name, "peer", "peer", self._peer_speak(p, ctx, r, divergences, story_block))
-                for p in online
-            ]
-            tasks = []
-            for name, role, kind, coro in items:
-                tasks.append((asyncio.create_task(coro), name, role, kind))
-                yield {"type": "speaking", "round": r, "speaker": name, "role": role, "kind": kind}
+            # 发言前先广播"思考中"
+            for p in self.personas:
+                await out_q.put({"type": "speaking", "round": r, "speaker": p.name, "role": p.role, "kind": "persona"})
+            for p in online:
+                await out_q.put({"type": "speaking", "round": r, "speaker": p.name, "role": "peer", "kind": "peer"})
 
-            meta_by_task = {t: (name, role, kind) for (t, name, role, kind) in tasks}
-            pending_set = {t for t, _, _, _ in tasks}
-            while pending_set:
-                done, pending_set = await asyncio.wait(
-                    pending_set, return_when=asyncio.FIRST_COMPLETED
-                )
-                for fut in done:
-                    name, role, kind = meta_by_task[fut]
-                    text = fut.result()
-                    turn = Turn(r, name, role, text, kind)
-                    transcript.append(turn)
-                    yield {
-                        "type": "turn",
-                        "round": r,
-                        "speaker": name,
-                        "role": role,
-                        "kind": kind,
-                        "text": text,
-                    }
+            # 并发提交：进程内人格走流式，外部 peer 走整段；统一 gather 收集
+            tasks = []
+            for i, p in enumerate(self.personas):
+                tasks.append(asyncio.ensure_future(self._stream_turn(
+                    out_q, turn_id=f"p{i}-r{r}", round_no=r, speaker=p.name, role=p.role, kind="persona",
+                    gen_factory=lambda p=p: self._stream_persona_speak(p, ctx, r, divergences, story_block),
+                )))
+            for p in online:
+                tasks.append(asyncio.ensure_future(self._peer_turn(
+                    out_q, round_no=r, peer=p, ctx=ctx, divergences=divergences, story_block=story_block,
+                )))
+            for t in await asyncio.gather(*tasks):
+                transcript.append(t)
 
             rounds_held = r
 
             # 收窄轮：归纳分歧；若已一致则提前收尾
             if r < self.max_rounds:
-                yield {"type": "speaking", "round": r, "speaker": "桌搭（主持）", "role": "host", "kind": "host"}
-                div_text = await self._host(
-                    "根据上面第 %d 轮讨论，提炼仍未达成一致的关键分歧点"
-                    "（最多 3 条，每条一句话，用『- 』开头）。若已高度一致，请直接写『无重大分歧』。" % r,
-                    (self.context + "\n\n" + self._fmt(transcript)).strip(),
-                    story_block,
+                await out_q.put({"type": "speaking", "round": r, "speaker": "桌搭（主持）", "role": "host", "kind": "host"})
+                div_text = await self._stream_turn(
+                    out_q, turn_id=f"host-div-{r}", round_no=r, speaker="桌搭（主持）", role="host", kind="host",
+                    gen_factory=lambda r=r, ctx=ctx: self._stream_host(
+                        "根据上面第 %d 轮讨论，提炼仍未达成一致的关键分歧点"
+                        "（最多 3 条，每条一句话，用『- 』开头）。若已高度一致，请直接写『无重大分歧』。" % r,
+                        (self.context + "\n\n" + ctx).strip(), story_block,
+                    ),
+                    phase="divergence",
                 )
-                divergences = self._parse_divergences(div_text)
-                yield {
-                    "type": "turn",
-                    "round": r,
-                    "speaker": "桌搭（主持）",
-                    "role": "host",
-                    "kind": "host",
-                    "text": div_text,
-                    "phase": "divergence",
-                }
+                divergences = self._parse_divergences(div_text.text)
                 if not divergences:
-                    yield {"type": "info", "text": "各方已高度一致，圆桌提前收尾。"}
+                    await out_q.put({"type": "info", "text": "各方已高度一致，圆桌提前收尾。"})
                     break
 
-        # 纪要
-        yield {"type": "speaking", "round": rounds_held + 1, "speaker": "桌搭（主持）", "role": "host", "kind": "host"}
-        synthesis = await self._host(
-            "圆桌结束。请基于全部讨论写一份《圆桌纪要》：先列共识，再列尚存分歧，"
-            "最后给作者 3 条可执行的修改建议。",
-            (self.context + "\n\n" + self._fmt(transcript)).strip(),
-            story_block,
-        )
-        if not synthesis or synthesis.startswith("（"):
-            # 兜底：纪要生成仍失败则给出基于发言的最小摘要，避免产出空纪要
-            synthesis = (
-                "（自动兜底纪要）以下为各轮发言概览，建议稍后重试以获得完整纪要：\n"
-                + "\n".join(
-                    f"- 第{t.round}轮 {t.speaker}：{t.text[:80]}…"
-                    for t in transcript
-                    if t.kind != "host"
-                )
+        # 纪要（主持流式）；失败兜底由 fallback_text 注入
+        await out_q.put({"type": "speaking", "round": rounds_held + 1, "speaker": "桌搭（主持）", "role": "host", "kind": "host"})
+        synthesis_ctx = (self.context + "\n\n" + self._fmt(transcript)).strip()
+        synthesis_fallback = (
+            "（自动兜底纪要）以下为各轮发言概览，建议稍后重试以获得完整纪要：\n"
+            + "\n".join(
+                f"- 第{t.round}轮 {t.speaker}：{t.text[:80]}…"
+                for t in transcript
+                if t.kind != "host"
             )
-        yield {
-            "type": "turn",
-            "round": rounds_held + 1,
-            "speaker": "桌搭（主持）",
-            "role": "host",
-            "kind": "host",
-            "text": synthesis,
-            "phase": "synthesis",
-        }
-        yield {
+        )
+        synthesis = await self._stream_turn(
+            out_q, turn_id="host-synth", round_no=rounds_held + 1, speaker="桌搭（主持）", role="host", kind="host",
+            gen_factory=lambda: self._stream_host(
+                "圆桌结束。请基于全部讨论写一份《圆桌纪要》：先列共识，再列尚存分歧，"
+                "最后给作者 3 条可执行的修改建议。",
+                synthesis_ctx, story_block,
+            ),
+            phase="synthesis",
+            fallback_text=synthesis_fallback,
+        )
+
+        await out_q.put({
             "type": "done",
             "rounds_held": rounds_held,
             "divergences": divergences,
             "peers_online": [p.name for p in online],
             "peers_offline": offline,
-            "synthesis": synthesis,
-        }
+            "synthesis": synthesis.text,
+        })
+        await out_q.put(_STOP)
 
     async def run(self) -> RoundtableResult:
         """便捷同步式运行：消费 run_stream 汇总为结构化结果（保留原 CLI / 测试接口）。"""
@@ -586,6 +618,12 @@ class Roundtable:
                 transcript.append(
                     Turn(ev["round"], ev["speaker"], ev["role"], ev["text"], ev.get("kind", "persona"))
                 )
+            elif t == "turn_end":
+                transcript.append(
+                    Turn(ev["round"], ev["speaker"], ev["role"], ev["text"], ev.get("kind", "persona"))
+                )
+                if ev.get("phase") == "synthesis":
+                    synthesis = ev["text"]
             elif t == "peers":
                 online = [PeerSpec(n, "") for n in ev["online"]]
                 offline = ev["offline"]

@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 from pathlib import Path
@@ -145,3 +146,66 @@ def chat(
         ],
     )
     return (resp.choices[0].message.content or "").strip()
+
+
+async def chat_stream(
+    system: str,
+    user: str,
+    *,
+    temperature: float = 0.3,
+    max_tokens: int = 800,
+    timeout: float = 300.0,
+):
+    """原生流式 LLM 调用：逐 token 产出文本片段（async generator）。
+
+    与 chat() 共享同一套 provider 解析。实现上用同步 OpenAI client 在独立线程里跑
+    stream=True，把每个 delta 推入线程安全队列，事件循环以非阻塞轮询取出并 yield——
+    既拿到 SDK 原生 token 流，又不占用事件循环、不占线程池。
+    无密钥 / 异常时上浮异常，由调用方 fail-safe 处理。
+    """
+    import queue
+    import threading
+
+    result_q: "queue.Queue" = queue.Queue()
+
+    def _run() -> None:
+        try:
+            from openai import OpenAI
+
+            client = OpenAI(api_key=_api_key(), base_url=_base_url(), timeout=timeout)
+            stream = client.chat.completions.create(
+                model=_model(),
+                temperature=temperature,
+                max_tokens=max_tokens,
+                stream=True,
+                messages=[
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user},
+                ],
+            )
+            for chunk in stream:
+                if not chunk.choices:
+                    continue
+                delta = chunk.choices[0].delta
+                text = getattr(delta, "content", None)
+                if text:
+                    result_q.put(("delta", text))
+            result_q.put(("done", None))
+        except Exception as exc:  # noqa: BLE001
+            # 线程里抛出的异常原样上浮给事件循环
+            result_q.put(("error", exc))
+
+    thread = threading.Thread(target=_run, daemon=True)
+    thread.start()
+    while True:
+        try:
+            kind, payload = result_q.get_nowait()
+        except queue.Empty:
+            await asyncio.sleep(0.01)
+            continue
+        if kind == "delta":
+            yield payload
+        elif kind == "done":
+            break
+        else:  # error
+            raise payload

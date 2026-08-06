@@ -492,6 +492,7 @@
   let onlineNames = new Set();
 
   let pending = {};   // speaker -> [rowEl]  （思考中气泡队列，FIFO）
+  let streams = {};   // turn_id -> { row, body, speaker, round }  （流式发言中气泡）
   let evSource = null;
   let done = false;
   let currentCfg = null;     // 当前圆桌配置（续聊时复用，免重新设置）
@@ -600,12 +601,55 @@
     $("chat").appendChild(d); scroll();
   }
 
+  function startStream(d) {
+    // 把"思考中"气泡（若已存在）转化为可生长的发言气泡，否则新建
+    const s = styleFor(d.speaker);
+    let row, q = pending[d.speaker];
+    if (q && q.length) { row = q.shift(); if (q.length === 0) delete pending[d.speaker]; }
+    else { row = document.createElement("div"); }
+    let tag = "R" + d.round;
+    if (d.round === 0) tag = "开场";
+    else if (d.phase === "divergence") tag = "串场·分歧";
+    else if (d.phase === "synthesis") tag = "收尾·纪要";
+    const peerTag = d.kind === "peer" ? `<span class="ext-tag">外部·A2A</span>` : "";
+    const hostCls = d.kind === "host" ? " host" : "";
+    row.className = "row streaming" + hostCls;
+    row.innerHTML = `<div class="avatar ${s.cls}">${s.emoji}</div>
+      <div class="bubble-wrap"><div class="name">${esc(d.speaker)} <span class="round">${tag}</span>${peerTag}</div>
+      <div class="bubble"></div></div>`;
+    if (!row.parentNode) $("chat").appendChild(row);
+    streams[d.turn_id] = { row, body: row.querySelector(".bubble"), speaker: d.speaker, round: d.round };
+    scroll(); updateThinking();
+  }
+
+  function appendStream(d) {
+    const st = streams[d.turn_id];
+    if (!st) return;
+    st.body.textContent += d.text;
+    scroll();
+  }
+
+  function endStream(d) {
+    const st = streams[d.turn_id];
+    const full = d.text || "";
+    if (st) {
+      st.body.textContent = full;          // 以最终完整文本为准（覆盖重试/空失败片段）
+      delete streams[d.turn_id];
+    }
+    // 累积讨论文本，供续聊回传（与 addTurn 保持一致）
+    const t = d.round === 0 ? "开场" : ("第" + d.round + "轮");
+    transcriptText += `【${t} · ${esc(d.speaker)}】\n${full}\n\n`;
+  }
+
   function handle(d) {
     switch (d.type) {
       case "meta": setTopic(d.topic); break;
       case "peers": buildRoster(d.online, d.offline); setStatus(d.online, d.offline); break;
       case "round_start": addDivider(d.round); break;
       case "speaking": addTyping(d); break;
+      case "turn_start": startStream(d); break;
+      case "turn_delta": appendStream(d); break;
+      case "turn_end": endStream(d); break;
       case "turn": addTurn(d); break;
       case "info": addSystem(d.text); break;
       case "done": finish(d); break;
@@ -675,7 +719,7 @@
   function launch(opts) {
     opts = opts || {};
     if (evSource) evSource.close();
-    done = false; pending = {};
+    done = false; pending = {}; streams = {};
     const cfg = currentCfg || readConfig();
     currentCfg = cfg;
     updateChapterHint();
