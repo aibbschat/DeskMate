@@ -96,6 +96,29 @@ async def test_run_aggregates_compatibly():
     assert res.synthesis.startswith("【主持】")
 
 
+async def test_followup_reuses_same_stream_pipeline():
+    """续聊（底部追问）与首次圆桌共用同一条 /api/stream 链路，因此流式天然生效。
+
+    模拟：先跑一次（首次圆桌），再跑一次（续聊，context 带上前情）。
+    两次都应产出完整的 turn_start/turn_delta/turn_end，且 turn_id 确定性复用
+    （前端在每次 launch 时重置 streams 映射，故复用 id 不会冲突——此测试锁定该契约）。
+    """
+    rt1 = C.Roundtable("测试议题：元末风物", personas=C.PERSONAS[:4], max_rounds=1)
+    t1, s1, d1, e1, _, _ = await _collect(rt1)
+    assert {"turn_start", "turn_delta", "turn_end", "done"}.issubset(set(t1))
+
+    # 续聊：把首次 transcript 注入 context，等价于前端 launch({clear:false, followupText})
+    ctx = "\n".join(f"【前文·{tid}】\n{txt}" for tid, txt in e1.items())
+    rt2 = C.Roundtable(
+        "测试议题：元末风物", personas=C.PERSONAS[:4], max_rounds=1, context=ctx
+    )
+    t2, s2, d2, e2, _, _ = await _collect(rt2)
+    assert {"turn_start", "turn_delta", "turn_end", "done"}.issubset(set(t2))
+    # 续聊不是另一条链路：事件类型集合一致，turn_id 集合确定性复用
+    assert s1 == s2 == {"host-open", "host-synth", "p0-r1", "p1-r1", "p2-r1", "p3-r1"}, (s1, s2)
+    assert len(d2) >= 6  # 续聊同样逐字流
+
+
 async def test_peer_still_uses_whole_turn():
     """外部 peer 拿不到 token 流，应整段返回 turn（而非流式三件套）。"""
     rt = C.Roundtable(
