@@ -14,7 +14,8 @@ import { authedFetch, httpBase } from "../../api";
 import { Mascot } from "./Mascot";
 import { useMascotWalk } from "./useMascotWalk";
 import { useProactiveTick } from "./useProactiveTick";
-import { StatusPanel, type GrowthSnapshot, type LearnedHistory } from "./StatusPanel";
+import { StatusPanelV2 } from "./StatusPanelV2";
+import type { GrowthSnapshot, LearnedHistory } from "./StatusPanel";
 import { SuggestionToast, type Suggestion } from "./SuggestionToast";
 import { MemoryViewer, type MemoryFile } from "./MemoryViewer";
 import { MemoryLearnedToast } from "./MemoryLearnedToast";
@@ -106,10 +107,10 @@ export function DeskMateOverlay({ agent, sessionId, idle, activeExpert }: Props)
     walkDuration: [4000, 8000],
   });
 
-  // 状态面板数据
-  const [activity, setActivity] = useState("待机中");
-  const [confidence, setConfidence] = useState<number | undefined>();
-  const [memories, setMemories] = useState<string[]>([]);
+  // 状态面板数据（V2 精简版不再展示，保留供事件系统使用）
+  const [_activity, setActivity] = useState("待机中");
+  const [_confidence, setConfidence] = useState<number | undefined>();
+  const [_memories, setMemories] = useState<string[]>([]);
 
   // 建议弹窗
   const [suggestion, setSuggestion] = useState<Suggestion | null>(null);
@@ -383,6 +384,26 @@ export function DeskMateOverlay({ agent, sessionId, idle, activeExpert }: Props)
   // 将 mascotState 转换回 emotion 供 StatusPanel 使用
   const currentEmotion = mascotToEmotionName(mascotState);
 
+  // 模拟数据用于测试新功能 UI（后端未实现前的临时测试数据）
+  const mockAchievements = [
+    { id: "first_chat", name: "初见", icon: "👋", description: "完成第一次对话", rarity: "common" as const, unlocked: true, unlockedAt: "2026-08-01T10:00:00Z" },
+    { id: "chat_100", name: "老友", icon: "🤝", description: "累计对话 100 次", rarity: "rare" as const, unlocked: true, unlockedAt: "2026-08-05T15:30:00Z", progress: 100, maxProgress: 100 },
+    { id: "first_skill", name: "造物者", icon: "🎨", description: "创建第一个技能", rarity: "common" as const, unlocked: true, unlockedAt: "2026-08-02T09:00:00Z" },
+    { id: "intimacy_50", name: "亲密伙伴", icon: "💕", description: "亲密度达到 50%", rarity: "rare" as const, unlocked: true, unlockedAt: "2026-08-04T12:00:00Z" },
+    { id: "memory_50", name: "记忆宫殿", icon: "🏛️", description: "积累 50 条记忆", rarity: "epic" as const, unlocked: false, progress: 32, maxProgress: 50 },
+    { id: "level_10", name: "墨仙", icon: "🌟", description: "达到 Lv.10", rarity: "epic" as const, unlocked: false, progress: growth?.level ?? 1, maxProgress: 10 },
+  ];
+
+  const mockPersonality = {
+    energy: 75,
+    logic: 60,
+    creativity: 85,
+    empathy: 70,
+  };
+
+  const mockStreakDays = 12;
+  const mockTotalChats = 156;
+
   return (
     <>
       {/* 桌宠角色 — 可在聊天输入框上方区域行走 */}
@@ -415,12 +436,9 @@ export function DeskMateOverlay({ agent, sessionId, idle, activeExpert }: Props)
         </div>
       </div>
 
-      {/* 状态面板 — 点击桌宠后显示，固定锚定到窗口右下角（不再跟随桌宠，避免被边框裁切） */}
-      <StatusPanel
+      {/* 状态面板 V2 — 精致重设计版，4层信息架构 */}
+      <StatusPanelV2
         emotion={currentEmotion}
-        currentActivity={activity}
-        recentMemories={memories}
-        confidence={confidence}
         open={panelOpen}
         onClose={() => setPanelOpen(false)}
         onOpenMemory={() => setMemoryOpen(true)}
@@ -429,6 +447,10 @@ export function DeskMateOverlay({ agent, sessionId, idle, activeExpert }: Props)
         onToggleProactive={handleToggleProactive}
         learned={learned}
         growth={growth}
+        achievements={mockAchievements}
+        personality={mockPersonality}
+        streakDays={mockStreakDays}
+        totalChats={mockTotalChats}
       />
 
       {/* 建议弹窗 - 右上角 */}

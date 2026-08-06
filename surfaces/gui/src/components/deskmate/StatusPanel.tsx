@@ -39,7 +39,7 @@ function relTime(ts: string): string {
 // 成就徽章系统
 // ---------------------------------------------------------------------------
 
-interface Achievement {
+export interface Achievement {
   id: string;
   name: string;
   icon: string;
@@ -62,7 +62,7 @@ const RARITY_COLORS = {
 // 人格指纹图（菱形雷达图）
 // ---------------------------------------------------------------------------
 
-interface PersonalityProfile {
+export interface PersonalityProfile {
   energy: number;      // 活力型 0-100
   logic: number;       // 逻辑型 0-100
   creativity: number;  // 创意型 0-100
