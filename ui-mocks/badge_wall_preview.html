@@ -1,0 +1,191 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>勋章墙预览 · 桌搭</title>
+<style>
+  :root {
+    --paper:#f5f6f7; --panel:#ffffff; --ink:#17191c; --muted:#5b616b;
+    --line:#e8eaed; --line-strong:#d8dce1;
+    --accent:#2563eb; --accent-soft:#e9f0fd; --accent-ink:#1d4ed8;
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--paper); color:var(--ink);
+    font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",Segoe UI,sans-serif; }
+  .experts-back { margin-top:2px; flex-shrink:0; width:32px; height:32px; display:inline-flex;
+    align-items:center; justify-content:center; border-radius:9px; color:var(--muted);
+    background:var(--panel); border:1px solid var(--line); cursor:pointer; font-size:16px; }
+  .experts-head-text { min-width:0; }
+  .experts-title { margin:0; font-size:22px; font-weight:700; letter-spacing:-0.02em; }
+  .experts-subtitle { margin:5px 0 0; font-size:13.5px; color:var(--muted); }
+  .badge-wall { max-width:1080px; margin:0 auto; padding:28px 24px 48px; }
+  .badge-wall-head { display:flex; align-items:center; gap:14px; }
+  .badge-wall-score { margin-left:auto; text-align:right; line-height:1.1; }
+  .badge-wall-score-num { font-size:26px; font-weight:800; letter-spacing:-0.02em; }
+  .badge-wall-score-total { font-size:15px; font-weight:600; color:var(--muted); margin-left:2px; }
+  .badge-wall-score-label { margin-top:2px; font-size:12px; color:var(--muted); }
+  .badge-wall-toolbar { display:flex; align-items:center; justify-content:space-between;
+    gap:12px; flex-wrap:wrap; margin:20px 0 16px; }
+  .badge-filters { display:flex; flex-wrap:wrap; gap:8px; }
+  .badge-chip { display:inline-flex; align-items:center; gap:7px; padding:6px 12px; border-radius:999px;
+    font-size:13px; color:var(--muted); background:var(--panel); border:1px solid var(--line);
+    cursor:pointer; transition:.15s; }
+  .badge-chip:hover { color:var(--ink); border-color:var(--line-strong); }
+  .badge-chip.is-on { color:var(--accent-ink); background:var(--accent-soft); border-color:var(--accent); }
+  .badge-chip-count { font-size:11.5px; font-weight:600; opacity:.72; }
+  .badge-toggle { display:inline-flex; align-items:center; gap:7px; font-size:13px; color:var(--muted); cursor:pointer; user-select:none; }
+  .badge-toggle input { accent-color:var(--accent); }
+  .badge-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(132px,1fr)); gap:14px; }
+  .badge-card { display:flex; flex-direction:column; align-items:center; gap:8px; text-align:center;
+    background:var(--panel); border:1px solid var(--line); border-radius:16px; padding:18px 14px;
+    transition:.15s; }
+  .badge-card.is-unlocked { border-color:var(--line-strong); box-shadow:0 6px 20px rgba(20,24,31,.06); }
+  .badge-card.is-locked { border-style:dashed; opacity:.92; }
+  .badge-card.is-masked .badge-emblem, .badge-card.is-masked .badge-name { filter:grayscale(1); opacity:.55; }
+  .badge-emblem { width:58px; height:58px; display:inline-flex; align-items:center; justify-content:center;
+    border-radius:50%; border:2px solid var(--line); background:var(--panel);
+    font-size:24px; font-weight:800; color:var(--muted); }
+  .badge-card.is-unlocked .badge-emblem { box-shadow:0 2px 10px rgba(20,24,31,.08); }
+  .badge-name { font-size:14px; font-weight:700; color:var(--ink); }
+  .badge-rarity { font-size:11.5px; font-weight:600; letter-spacing:.02em; }
+  .badge-desc { font-size:12px; line-height:1.5; color:var(--muted); min-height:34px; }
+  .badge-bar { width:100%; height:5px; border-radius:999px; background:var(--line); overflow:hidden; }
+  .badge-bar-fill { height:100%; border-radius:999px; transition:width .4s ease; }
+  .badge-meta { font-size:11.5px; color:var(--muted); }
+  .badge-legend { display:flex; flex-wrap:wrap; gap:14px 18px; margin-top:26px; padding-top:16px; border-top:1px solid var(--line); }
+  .badge-legend-item { display:inline-flex; align-items:center; gap:6px; font-size:12.5px; color:var(--ink); }
+  .badge-legend-dot { width:10px; height:10px; border-radius:50%; display:inline-block; }
+  .badge-legend-count { font-style:normal; font-size:11.5px; color:var(--muted); margin-left:2px; }
+  .note { max-width:1080px; margin:0 auto; padding:0 24px; color:var(--muted); font-size:12.5px; }
+
+  /* 报喜气泡示意 */
+  .demo-speech { display:flex; justify-content:center; padding:48px 0 64px; }
+  .mascot-wrap { position:relative; width:120px; }
+  .mascot-emoji { font-size:64px; text-align:center; }
+  .mascot-speech { position:absolute; left:50%; bottom:calc(100% + 10px); transform:translateX(-50%);
+    width:max-content; max-width:260px; display:flex; align-items:flex-start; gap:10px; padding:10px 12px;
+    border-radius:14px; background:var(--panel); border:1px solid var(--line-strong);
+    box-shadow:0 10px 30px rgba(20,24,31,.14); z-index:60; }
+  .mascot-speech::after { content:""; position:absolute; left:50%; top:100%; transform:translateX(-50%);
+    border:8px solid transparent; border-top-color:var(--panel); }
+  .mascot-speech-glyph { flex-shrink:0; width:34px; height:34px; border-radius:50%;
+    display:inline-flex; align-items:center; justify-content:center; font-size:17px; font-weight:800;
+    color:var(--accent-ink); background:var(--accent-soft); border:1.5px solid var(--accent); }
+  .mascot-speech-kicker { font-size:10.5px; letter-spacing:.04em; color:var(--accent); font-weight:700; }
+  .mascot-speech-name { font-size:13.5px; font-weight:700; color:var(--ink); margin-top:1px; }
+  .mascot-speech-text { font-size:12.5px; line-height:1.5; color:var(--muted); margin-top:3px; }
+</style>
+</head>
+<body>
+  <div class="badge-wall">
+    <div class="badge-wall-head">
+      <button class="experts-back" title="返回">←</button>
+      <div class="experts-head-text">
+        <h1 class="experts-title">勋章墙</h1>
+        <p class="experts-subtitle">已相伴 128 天 · 连续 12 天 · 五门四阶，共 37 枚</p>
+      </div>
+      <div class="badge-wall-score">
+        <div class="badge-wall-score-num">16<span class="badge-wall-score-total">/37</span></div>
+        <div class="badge-wall-score-label">已收集 · 43%</div>
+      </div>
+    </div>
+
+    <div class="badge-wall-toolbar">
+      <div class="badge-filters">
+        <button class="badge-chip is-on" data-cat="__all__">全部 <span class="badge-chip-count">16/37</span></button>
+<button class="badge-chip" data-cat="companionship" title="与你共度的时光">相伴 <span class="badge-chip-count">4/8</span></button>
+<button class="badge-chip" data-cat="writing" title="稿纸上的积累">笔耕 <span class="badge-chip-count">5/9</span></button>
+<button class="badge-chip" data-cat="cultivation" title="桌搭自身的成长">修行 <span class="badge-chip-count">4/9</span></button>
+<button class="badge-chip" data-cat="knowledge" title="关于你的记忆">博闻 <span class="badge-chip-count">3/6</span></button>
+<button class="badge-chip" data-cat="serendipity" title="不期而遇的时刻">奇遇 <span class="badge-chip-count">0/5</span></button>
+      </div>
+      <label class="badge-toggle"><input type="checkbox" id="onlyUnlocked" />仅看已得</label>
+    </div>
+
+    <div class="badge-grid" id="grid">
+<div class="badge-card is-unlocked" data-cat="cultivation" data-unlocked="1"><div class="badge-emblem" style="background:#e6f1fb;border-color:#378add;color:#185fa5">亲</div><div class="badge-name">亲密伙伴</div><div class="badge-rarity" style="color:#185fa5">珍品</div><div class="badge-meta">获得于 2025-10-10</div></div>
+<div class="badge-card is-unlocked" data-cat="cultivation" data-unlocked="1"><div class="badge-emblem" style="background:#e6f1fb;border-color:#378add;color:#185fa5">室</div><div class="badge-name">入室</div><div class="badge-rarity" style="color:#185fa5">珍品</div><div class="badge-meta">获得于 2025-09-03</div></div>
+<div class="badge-card is-unlocked" data-cat="knowledge" data-unlocked="1"><div class="badge-emblem" style="background:#f1efe8;border-color:#b4b2a9;color:#5f5e5a">藏</div><div class="badge-name">藏书之始</div><div class="badge-rarity" style="color:#5f5e5a">凡品</div><div class="badge-meta">获得于 2025-08-14</div></div>
+<div class="badge-card is-unlocked" data-cat="writing" data-unlocked="1"><div class="badge-emblem" style="background:#e6f1fb;border-color:#378add;color:#185fa5">桌</div><div class="badge-name">圆桌主人</div><div class="badge-rarity" style="color:#185fa5">珍品</div><div class="badge-meta">获得于 2025-07-09</div></div>
+<div class="badge-card is-unlocked" data-cat="writing" data-unlocked="1"><div class="badge-emblem" style="background:#f1efe8;border-color:#b4b2a9;color:#5f5e5a">报</div><div class="badge-name">成竹在胸</div><div class="badge-rarity" style="color:#5f5e5a">凡品</div><div class="badge-meta">获得于 2025-06-18</div></div>
+<div class="badge-card is-unlocked" data-cat="writing" data-unlocked="1"><div class="badge-emblem" style="background:#f1efe8;border-color:#b4b2a9;color:#5f5e5a">万</div><div class="badge-name">万言</div><div class="badge-rarity" style="color:#5f5e5a">凡品</div><div class="badge-meta">获得于 2025-05-02</div></div>
+<div class="badge-card is-unlocked" data-cat="cultivation" data-unlocked="1"><div class="badge-emblem" style="background:#f1efe8;border-color:#b4b2a9;color:#5f5e5a">造</div><div class="badge-name">造物者</div><div class="badge-rarity" style="color:#5f5e5a">凡品</div><div class="badge-meta">获得于 2025-04-01</div></div>
+<div class="badge-card is-unlocked" data-cat="companionship" data-unlocked="1"><div class="badge-emblem" style="background:#f1efe8;border-color:#b4b2a9;color:#5f5e5a">旬</div><div class="badge-name">而立之交</div><div class="badge-rarity" style="color:#5f5e5a">凡品</div><div class="badge-meta">获得于 2025-03-15</div></div>
+<div class="badge-card is-unlocked" data-cat="writing" data-unlocked="1"><div class="badge-emblem" style="background:#f1efe8;border-color:#b4b2a9;color:#5f5e5a">章</div><div class="badge-name">十章之功</div><div class="badge-rarity" style="color:#5f5e5a">凡品</div><div class="badge-meta">获得于 2025-03-11</div></div>
+<div class="badge-card is-unlocked" data-cat="companionship" data-unlocked="1"><div class="badge-emblem" style="background:#f1efe8;border-color:#b4b2a9;color:#5f5e5a">周</div><div class="badge-name">一周不辍</div><div class="badge-rarity" style="color:#5f5e5a">凡品</div><div class="badge-meta">获得于 2025-03-05</div></div>
+<div class="badge-card is-unlocked" data-cat="knowledge" data-unlocked="1"><div class="badge-emblem" style="background:#f1efe8;border-color:#b4b2a9;color:#5f5e5a">记</div><div class="badge-name">记事者</div><div class="badge-rarity" style="color:#5f5e5a">凡品</div><div class="badge-meta">获得于 2025-02-02</div></div>
+<div class="badge-card is-unlocked" data-cat="cultivation" data-unlocked="1"><div class="badge-emblem" style="background:#f1efe8;border-color:#b4b2a9;color:#5f5e5a">登</div><div class="badge-name">登堂</div><div class="badge-rarity" style="color:#5f5e5a">凡品</div><div class="badge-meta">获得于 2025-01-25</div></div>
+<div class="badge-card is-unlocked" data-cat="writing" data-unlocked="1"><div class="badge-emblem" style="background:#f1efe8;border-color:#b4b2a9;color:#5f5e5a">校</div><div class="badge-name">校书郎</div><div class="badge-rarity" style="color:#5f5e5a">凡品</div><div class="badge-meta">获得于 2025-01-20</div></div>
+<div class="badge-card is-unlocked" data-cat="companionship" data-unlocked="1"><div class="badge-emblem" style="background:#f1efe8;border-color:#b4b2a9;color:#5f5e5a">初</div><div class="badge-name">初见</div><div class="badge-rarity" style="color:#5f5e5a">凡品</div><div class="badge-meta">获得于 2024-09-15</div></div>
+<div class="badge-card is-unlocked" data-cat="companionship" data-unlocked="1"><div class="badge-emblem" style="background:#e6f1fb;border-color:#378add;color:#185fa5">友</div><div class="badge-name">老友</div><div class="badge-rarity" style="color:#185fa5">珍品</div><div class="badge-meta">早期补录</div></div>
+<div class="badge-card is-unlocked" data-cat="knowledge" data-unlocked="1"><div class="badge-emblem" style="background:#e6f1fb;border-color:#378add;color:#185fa5">宫</div><div class="badge-name">记忆宫殿</div><div class="badge-rarity" style="color:#185fa5">珍品</div><div class="badge-meta">早期补录</div></div>
+<div class="badge-card is-locked" data-cat="cultivation" data-unlocked="0"><div class="badge-emblem">莫</div><div class="badge-name">莫逆之交</div><div class="badge-desc">亲密度达到 90</div><div class="badge-bar"><div class="badge-bar-fill" style="width:56%;background:#7f77dd"></div></div><div class="badge-meta">50 / 90</div></div>
+<div class="badge-card is-locked" data-cat="cultivation" data-unlocked="0"><div class="badge-emblem">仙</div><div class="badge-name">墨仙</div><div class="badge-desc">桌搭等级达到 Lv.10</div><div class="badge-bar"><div class="badge-bar-fill" style="width:50%;background:#7f77dd"></div></div><div class="badge-meta">5 / 10</div></div>
+<div class="badge-card is-locked" data-cat="cultivation" data-unlocked="0"><div class="badge-emblem">峰</div><div class="badge-name">登峰造极</div><div class="badge-desc">桌搭等级修满</div><div class="badge-bar"><div class="badge-bar-fill" style="width:42%;background:#ef9f27"></div></div><div class="badge-meta">5 / 12</div></div>
+<div class="badge-card is-locked" data-cat="companionship" data-unlocked="0"><div class="badge-emblem">辍</div><div class="badge-name">寒暑不辍</div><div class="badge-desc">连续 30 天都来</div><div class="badge-bar"><div class="badge-bar-fill" style="width:40%;background:#7f77dd"></div></div><div class="badge-meta">12 / 30</div></div>
+<div class="badge-card is-locked" data-cat="cultivation" data-unlocked="0"><div class="badge-emblem">契</div><div class="badge-name">心照不宣</div><div class="badge-desc">默契度达到 60</div><div class="badge-bar"><div class="badge-bar-fill" style="width:33%;background:#378add"></div></div><div class="badge-meta">20 / 60</div></div>
+<div class="badge-card is-locked" data-cat="companionship" data-unlocked="0"><div class="badge-emblem">百</div><div class="badge-name">百日同行</div><div class="badge-desc">累计相伴 100 天</div><div class="badge-bar"><div class="badge-bar-fill" style="width:30%;background:#378add"></div></div><div class="badge-meta">30 / 100</div></div>
+<div class="badge-card is-locked" data-cat="knowledge" data-unlocked="0"><div class="badge-emblem">博</div><div class="badge-name">博闻强识</div><div class="badge-desc">积累 200 条记忆</div><div class="badge-bar"><div class="badge-bar-fill" style="width:25%;background:#7f77dd"></div></div><div class="badge-meta">50 / 200</div></div>
+<div class="badge-card is-locked" data-cat="knowledge" data-unlocked="0"><div class="badge-emblem">栋</div><div class="badge-name">汗牛充栋</div><div class="badge-desc">保存 5 部书稿</div><div class="badge-bar"><div class="badge-bar-fill" style="width:20%;background:#378add"></div></div><div class="badge-meta">1 / 5</div></div>
+<div class="badge-card is-locked" data-cat="writing" data-unlocked="0"><div class="badge-emblem">卷</div><div class="badge-name">百章不倦</div><div class="badge-desc">累计编校 100 章</div><div class="badge-bar"><div class="badge-bar-fill" style="width:14%;background:#7f77dd"></div></div><div class="badge-meta">14 / 100</div></div>
+<div class="badge-card is-locked" data-cat="writing" data-unlocked="0"><div class="badge-emblem">言</div><div class="badge-name">十万言</div><div class="badge-desc">累计编校 10 万字</div><div class="badge-bar"><div class="badge-bar-fill" style="width:12%;background:#378add"></div></div><div class="badge-meta">12,000 / 100,000</div></div>
+<div class="badge-card is-locked" data-cat="knowledge" data-unlocked="0"><div class="badge-emblem">学</div><div class="badge-name">学富五车</div><div class="badge-desc">积累 500 条记忆</div><div class="badge-bar"><div class="badge-bar-fill" style="width:10%;background:#ef9f27"></div></div><div class="badge-meta">50 / 500</div></div>
+<div class="badge-card is-locked" data-cat="companionship" data-unlocked="0"><div class="badge-emblem">千</div><div class="badge-name">千言万语</div><div class="badge-desc">累计对话 1000 次</div><div class="badge-bar"><div class="badge-bar-fill" style="width:10%;background:#7f77dd"></div></div><div class="badge-meta">100 / 1,000</div></div>
+<div class="badge-card is-locked" data-cat="writing" data-unlocked="0"><div class="badge-emblem">贤</div><div class="badge-name">群贤毕至</div><div class="badge-desc">召集创作圆桌 10 次</div><div class="badge-bar"><div class="badge-bar-fill" style="width:10%;background:#7f77dd"></div></div><div class="badge-meta">1 / 10</div></div>
+<div class="badge-card is-locked" data-cat="companionship" data-unlocked="0"><div class="badge-emblem">岁</div><div class="badge-name">岁岁年年</div><div class="badge-desc">累计相伴 365 天</div><div class="badge-bar"><div class="badge-bar-fill" style="width:8%;background:#ef9f27"></div></div><div class="badge-meta">30 / 365</div></div>
+<div class="badge-card is-locked" data-cat="cultivation" data-unlocked="0"><div class="badge-emblem">巧</div><div class="badge-name">熟能生巧</div><div class="badge-desc">技能累计使用 100 次</div><div class="badge-bar"><div class="badge-bar-fill" style="width:5%;background:#7f77dd"></div></div><div class="badge-meta">5 / 100</div></div>
+<div class="badge-card is-locked" data-cat="writing" data-unlocked="0"><div class="badge-emblem">著</div><div class="badge-name">著作等身</div><div class="badge-desc">累计编校 100 万字</div><div class="badge-bar"><div class="badge-bar-fill" style="width:1%;background:#ef9f27"></div></div><div class="badge-meta">12,000 / 1,000,000</div></div>
+<div class="badge-card is-locked is-masked" data-cat="serendipity" data-unlocked="0"><div class="badge-emblem">?</div><div class="badge-name">未知奇遇</div><div class="badge-desc">条件待揭晓——做点特别的事，它自会出现。</div></div>
+<div class="badge-card is-locked is-masked" data-cat="serendipity" data-unlocked="0"><div class="badge-emblem">?</div><div class="badge-name">未知奇遇</div><div class="badge-desc">条件待揭晓——做点特别的事，它自会出现。</div></div>
+<div class="badge-card is-locked is-masked" data-cat="serendipity" data-unlocked="0"><div class="badge-emblem">?</div><div class="badge-name">未知奇遇</div><div class="badge-desc">条件待揭晓——做点特别的事，它自会出现。</div></div>
+<div class="badge-card is-locked is-masked" data-cat="serendipity" data-unlocked="0"><div class="badge-emblem">?</div><div class="badge-name">未知奇遇</div><div class="badge-desc">条件待揭晓——做点特别的事，它自会出现。</div></div>
+<div class="badge-card is-locked is-masked" data-cat="serendipity" data-unlocked="0"><div class="badge-emblem">?</div><div class="badge-name">未知奇遇</div><div class="badge-desc">条件待揭晓——做点特别的事，它自会出现。</div></div>
+    </div>
+
+    <div class="badge-legend">
+      <span class="badge-legend-item"><i class="badge-legend-dot" style="background:#b4b2a9"></i>凡品<em class="badge-legend-count">11/11</em></span>
+<span class="badge-legend-item"><i class="badge-legend-dot" style="background:#378add"></i>珍品<em class="badge-legend-count">5/12</em></span>
+<span class="badge-legend-item"><i class="badge-legend-dot" style="background:#7f77dd"></i>秘宝<em class="badge-legend-count">0/10</em></span>
+<span class="badge-legend-item"><i class="badge-legend-dot" style="background:#ef9f27"></i>传世<em class="badge-legend-count">0/4</em></span>
+    </div>
+  </div>
+
+  <div class="note">说明：上方为「示例账号」视图——已得 16 枚（含 2 枚早期补录）、未得 16 枚、隐藏 5 枚已遮蔽。切换筛选 / 勾选「仅看已得」可交互。</div>
+
+  <div class="demo-speech">
+    <div class="mascot-wrap">
+      <div class="mascot-speech mascot-celebrate">
+        <div class="mascot-speech-glyph">校</div>
+        <div class="mascot-speech-body">
+          <div class="mascot-speech-kicker">获得新勋章</div>
+          <div class="mascot-speech-name">校书郎 · 珍品</div>
+          <div class="mascot-speech-text">头一回替你校稿，「校书郎」上任了。</div>
+        </div>
+      </div>
+      <div class="mascot-emoji">🐱</div>
+    </div>
+  </div>
+  <div class="note" style="text-align:center;padding-top:0">↑ 解锁瞬间：桌宠（墨灵）头顶冒出的报喜气泡，文案取自该勋章的 celebration 字段。</div>
+
+<script>
+  const chips = document.querySelectorAll('.badge-chip');
+  const grid = document.getElementById('grid');
+  const onlyUnlocked = document.getElementById('onlyUnlocked');
+  function apply() {
+    const on = document.querySelector('.badge-chip.is-on').dataset.cat;
+    const only = onlyUnlocked.checked;
+    document.querySelectorAll('.badge-card').forEach(c => {
+      const okCat = on === '__all__' || c.dataset.cat === on;
+      const okUn = !only || c.dataset.unlocked === '1';
+      c.style.display = (okCat && okUn) ? '' : 'none';
+    });
+  }
+  chips.forEach(ch => ch.addEventListener('click', () => {
+    chips.forEach(x => x.classList.remove('is-on'));
+    ch.classList.add('is-on'); apply();
+  }));
+  onlyUnlocked.addEventListener('change', apply);
+</script>
+</body>
+</html>
