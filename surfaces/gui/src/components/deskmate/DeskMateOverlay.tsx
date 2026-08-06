@@ -18,6 +18,8 @@ import { StatusPanelV2 } from "./StatusPanelV2";
 import type { GrowthSnapshot, LearnedHistory } from "./StatusPanel";
 import { SuggestionToast, type Suggestion } from "./SuggestionToast";
 import { MemoryViewer, type MemoryFile } from "./MemoryViewer";
+import { BadgeMedal } from "./BadgeMedal";
+import type { BadgeRarity } from "./BadgeWall";
 import { MemoryLearnedToast } from "./MemoryLearnedToast";
 import { ProofreadPanel } from "./ProofreadPanel";
 import { UnderstandingCard } from "./UnderstandingCard";
@@ -54,6 +56,7 @@ export interface CelebrationItem {
   name: string;
   glyph: string;
   icon: string;
+  category: string;
   rarity: string;
   celebration: string;
 }
@@ -462,7 +465,12 @@ export function DeskMateOverlay({ agent, sessionId, idle, activeExpert }: Props)
           />
           {activeCelebration && (
             <div className="mascot-speech mascot-celebrate" data-testid="badge-celebration">
-              <span className="mascot-speech-glyph">{activeCelebration.glyph}</span>
+              <BadgeMedal
+                rarity={activeCelebration.rarity as BadgeRarity}
+                glyph={activeCelebration.glyph}
+                category={activeCelebration.category}
+                size={34}
+              />
               <div className="mascot-speech-body">
                 <div className="mascot-speech-kicker">获得新勋章</div>
                 <div className="mascot-speech-name">{activeCelebration.name}</div>

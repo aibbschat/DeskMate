@@ -1,0 +1,1230 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>真实奖章预览 · 桌搭勋章</title>
+<style>
+  :root { --paper:#f5f6f7; --panel:#fff; --ink:#17191c; --muted:#5b616b;
+    --line:#e8eaed; --line-strong:#d8dce1; --accent:#2563eb; --accent-soft:#e9f0fd; --accent-ink:#1d4ed8; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--paper); color:var(--ink);
+    font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif; }
+  .experts-back { margin-top:2px; flex-shrink:0; width:32px;height:32px; display:inline-flex;
+    align-items:center;justify-content:center;border-radius:9px;color:var(--muted);background:var(--panel);
+    border:1px solid var(--line);cursor:pointer;font-size:16px; }
+  .experts-head-text { min-width:0; }
+  .experts-title { margin:0;font-size:22px;font-weight:700;letter-spacing:-.02em; }
+  .experts-subtitle { margin:5px 0 0;font-size:13.5px;color:var(--muted); }
+  .badge-wall { max-width:1080px;margin:0 auto;padding:28px 24px 48px; }
+  .badge-wall-head { display:flex;align-items:center;gap:14px; }
+  .badge-wall-score { margin-left:auto;text-align:right;line-height:1.1; }
+  .badge-wall-score-num { font-size:26px;font-weight:800;letter-spacing:-.02em; }
+  .badge-wall-score-total { font-size:15px;font-weight:600;color:var(--muted);margin-left:2px; }
+  .badge-wall-score-label { margin-top:2px;font-size:12px;color:var(--muted); }
+  .badge-wall-toolbar { display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin:20px 0 16px; }
+  .badge-filters { display:flex;flex-wrap:wrap;gap:8px; }
+  .badge-chip { display:inline-flex;align-items:center;gap:7px;padding:6px 12px;border-radius:999px;font-size:13px;
+    color:var(--muted);background:var(--panel);border:1px solid var(--line);cursor:pointer;transition:.15s; }
+  .badge-chip:hover { color:var(--ink);border-color:var(--line-strong); }
+  .badge-chip.is-on { color:var(--accent-ink);background:var(--accent-soft);border-color:var(--accent); }
+  .badge-chip-count { font-size:11.5px;font-weight:600;opacity:.72; }
+  .badge-toggle { display:inline-flex;align-items:center;gap:7px;font-size:13px;color:var(--muted);cursor:pointer;user-select:none; }
+  .badge-toggle input { accent-color:var(--accent); }
+  .badge-grid { display:grid;grid-template-columns:repeat(auto-fill,minmax(132px,1fr));gap:14px; }
+  .badge-card { display:flex;flex-direction:column;align-items:center;gap:8px;text-align:center;background:var(--panel);
+    border:1px solid var(--line);border-radius:16px;padding:14px 12px;transition:.15s; }
+  .badge-card.is-unlocked { border-color:var(--line-strong);box-shadow:0 6px 20px rgba(20,24,31,.06); }
+  .badge-card.is-locked { border-style:dashed;opacity:.92; }
+  .badge-medal { width:64px;height:64px; }
+  .badge-card.is-masked .badge-medal, .badge-card.is-masked .badge-name { /* 已在 svg 内灰化 */ }
+  .badge-name { font-size:14px;font-weight:700;color:var(--ink); }
+  .badge-rarity { font-size:11.5px;font-weight:600;letter-spacing:.02em; }
+  .badge-desc { font-size:12px;line-height:1.5;color:var(--muted);min-height:34px; }
+  .badge-bar { width:100%;height:5px;border-radius:999px;background:var(--line);overflow:hidden; }
+  .badge-bar-fill { height:100%;border-radius:999px;transition:width .4s ease; }
+  .badge-meta { font-size:11.5px;color:var(--muted); }
+  .badge-legend { display:flex;flex-wrap:wrap;gap:14px 18px;margin-top:26px;padding-top:16px;border-top:1px solid var(--line); }
+  .badge-legend-item { display:inline-flex;align-items:center;gap:6px;font-size:12.5px;color:var(--ink); }
+  .badge-legend-dot { width:10px;height:10px;border-radius:50%;display:inline-block; }
+  .badge-legend-count { font-style:normal;font-size:11.5px;color:var(--muted);margin-left:2px; }
+  .note { max-width:1080px;margin:0 auto;padding:0 24px;color:var(--muted);font-size:12.5px;line-height:1.7; }
+  .hero { max-width:1080px;margin:8px auto 0;padding:18px 24px;display:flex;gap:26px;align-items:flex-end;
+    background:var(--panel);border:1px solid var(--line);border-radius:16px; }
+  .hero-item { text-align:center; }
+  .hero-medal { width:96px;height:96px; }
+  .hero-label { margin-top:6px;font-size:13px;font-weight:700;color:var(--ink); }
+  .hero-cap { font-size:13px;color:var(--muted);max-width:520px;line-height:1.7; }
+  .demo-speech { display:flex;justify-content:center;padding:48px 0 10px; }
+  .mascot-wrap { position:relative;width:120px; }
+  .mascot-emoji { font-size:64px;text-align:center; }
+  .mascot-speech { position:absolute;left:50%;bottom:calc(100% + 10px);transform:translateX(-50%);width:max-content;
+    max-width:260px;display:flex;align-items:flex-start;gap:10px;padding:10px 12px;border-radius:14px;background:var(--panel);
+    border:1px solid var(--line-strong);box-shadow:0 10px 30px rgba(20,24,31,.14);z-index:60; }
+  .mascot-speech::after { content:"";position:absolute;left:50%;top:100%;transform:translateX(-50%);border:8px solid transparent;border-top-color:var(--panel); }
+  .mascot-speech-glyph { flex-shrink:0;width:34px;height:34px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;font-size:17px;font-weight:800;color:var(--accent-ink);background:var(--accent-soft);border:1.5px solid var(--accent); }
+  .mascot-speech-kicker { font-size:10.5px;letter-spacing:.04em;color:var(--accent);font-weight:700; }
+  .mascot-speech-name { font-size:13.5px;font-weight:700;color:var(--ink);margin-top:1px; }
+  .mascot-speech-text { font-size:12.5px;line-height:1.5;color:var(--muted);margin-top:3px; }
+</style></head><body>
+  <div class="hero">
+    <div style="display:flex;gap:18px;">
+      <div class="hero-item"><div class="hero-medal"><svg class="medal-svg" viewBox="0 0 120 120" width="64" height="64">
+  <defs>
+    <linearGradient id="rim-common" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#e9ebef"/>
+      <stop offset="0.5" stop-color="#aeb4bd"/>
+      <stop offset="1" stop-color="#f2f4f6"/>
+    </linearGradient>
+    <radialGradient id="field-common" cx="0.5" cy="0.42" r="0.7">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.55"/>
+      <stop offset="0.55" stop-color="#f1efe8" stop-opacity="1"/>
+      <stop offset="1" stop-color="#f1efe8" stop-opacity="1"/>
+    </radialGradient>
+  </defs>
+  <!-- 缎带（在奖章之后） -->
+  <polygon points="44,4 57,4 54,42 50,49 46,42" fill="#9aa0a8"/>
+  <polygon points="63,4 76,4 74,42 70,49 66,42" fill="#9aa0a8"/>
+  <polygon points="52,5 56,5 55,40 53.5,44 52,40" fill="#ffffff" opacity="0.35"/>
+  <polygon points="64,5 68,5 68,40 66.5,44 65,40" fill="#ffffff" opacity="0.35"/>
+  <!-- 金属外圈 -->
+  <circle cx="60" cy="66" r="38" fill="url(#rim-common)" stroke="#8b929c" stroke-width="1.5"/>
+  <circle cx="91.0" cy="66.0" r="1.5" fill="#f2f4f6"/><circle cx="90.6" cy="70.8" r="1.5" fill="#f2f4f6"/><circle cx="89.5" cy="75.6" r="1.5" fill="#f2f4f6"/><circle cx="87.6" cy="80.1" r="1.5" fill="#f2f4f6"/><circle cx="85.1" cy="84.2" r="1.5" fill="#f2f4f6"/><circle cx="81.9" cy="87.9" r="1.5" fill="#f2f4f6"/><circle cx="78.2" cy="91.1" r="1.5" fill="#f2f4f6"/><circle cx="74.1" cy="93.6" r="1.5" fill="#f2f4f6"/><circle cx="69.6" cy="95.5" r="1.5" fill="#f2f4f6"/><circle cx="64.8" cy="96.6" r="1.5" fill="#f2f4f6"/><circle cx="60.0" cy="97.0" r="1.5" fill="#f2f4f6"/><circle cx="55.2" cy="96.6" r="1.5" fill="#f2f4f6"/><circle cx="50.4" cy="95.5" r="1.5" fill="#f2f4f6"/><circle cx="45.9" cy="93.6" r="1.5" fill="#f2f4f6"/><circle cx="41.8" cy="91.1" r="1.5" fill="#f2f4f6"/><circle cx="38.1" cy="87.9" r="1.5" fill="#f2f4f6"/><circle cx="34.9" cy="84.2" r="1.5" fill="#f2f4f6"/><circle cx="32.4" cy="80.1" r="1.5" fill="#f2f4f6"/><circle cx="30.5" cy="75.6" r="1.5" fill="#f2f4f6"/><circle cx="29.4" cy="70.8" r="1.5" fill="#f2f4f6"/><circle cx="29.0" cy="66.0" r="1.5" fill="#f2f4f6"/><circle cx="29.4" cy="61.2" r="1.5" fill="#f2f4f6"/><circle cx="30.5" cy="56.4" r="1.5" fill="#f2f4f6"/><circle cx="32.4" cy="51.9" r="1.5" fill="#f2f4f6"/><circle cx="34.9" cy="47.8" r="1.5" fill="#f2f4f6"/><circle cx="38.1" cy="44.1" r="1.5" fill="#f2f4f6"/><circle cx="41.8" cy="40.9" r="1.5" fill="#f2f4f6"/><circle cx="45.9" cy="38.4" r="1.5" fill="#f2f4f6"/><circle cx="50.4" cy="36.5" r="1.5" fill="#f2f4f6"/><circle cx="55.2" cy="35.4" r="1.5" fill="#f2f4f6"/><circle cx="60.0" cy="35.0" r="1.5" fill="#f2f4f6"/><circle cx="64.8" cy="35.4" r="1.5" fill="#f2f4f6"/><circle cx="69.6" cy="36.5" r="1.5" fill="#f2f4f6"/><circle cx="74.1" cy="38.4" r="1.5" fill="#f2f4f6"/><circle cx="78.2" cy="40.9" r="1.5" fill="#f2f4f6"/><circle cx="81.9" cy="44.1" r="1.5" fill="#f2f4f6"/><circle cx="85.1" cy="47.8" r="1.5" fill="#f2f4f6"/><circle cx="87.6" cy="51.9" r="1.5" fill="#f2f4f6"/><circle cx="89.5" cy="56.4" r="1.5" fill="#f2f4f6"/><circle cx="90.6" cy="61.2" r="1.5" fill="#f2f4f6"/>
+  <!-- 珐琅彩面 -->
+  <circle cx="60" cy="66" r="27" fill="url(#field-common)" stroke="#b4b2a9" stroke-width="2.5"/>
+  <!-- 中央字（字体按门类） -->
+  <text x="60" y="66" font-family="'PingFang SC','Hiragino Sans GB',sans-serif" font-size="30" font-weight="800"
+        fill="#5f5e5a" text-anchor="middle" dominant-baseline="central">勋</text>
+</svg></div><div class="hero-label">凡品</div></div><div class="hero-item"><div class="hero-medal"><svg class="medal-svg" viewBox="0 0 120 120" width="64" height="64">
+  <defs>
+    <linearGradient id="rim-rare" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#cfe4fb"/>
+      <stop offset="0.5" stop-color="#4f8fd6"/>
+      <stop offset="1" stop-color="#e3f0ff"/>
+    </linearGradient>
+    <radialGradient id="field-rare" cx="0.5" cy="0.42" r="0.7">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.55"/>
+      <stop offset="0.55" stop-color="#e6f1fb" stop-opacity="1"/>
+      <stop offset="1" stop-color="#e6f1fb" stop-opacity="1"/>
+    </radialGradient>
+  </defs>
+  <!-- 缎带（在奖章之后） -->
+  <polygon points="44,4 57,4 54,42 50,49 46,42" fill="#378add"/>
+  <polygon points="63,4 76,4 74,42 70,49 66,42" fill="#378add"/>
+  <polygon points="52,5 56,5 55,40 53.5,44 52,40" fill="#ffffff" opacity="0.35"/>
+  <polygon points="64,5 68,5 68,40 66.5,44 65,40" fill="#ffffff" opacity="0.35"/>
+  <!-- 金属外圈 -->
+  <circle cx="60" cy="66" r="38" fill="url(#rim-rare)" stroke="#2f6fb0" stroke-width="1.5"/>
+  <circle cx="91.0" cy="66.0" r="1.5" fill="#e3f0ff"/><circle cx="90.6" cy="70.8" r="1.5" fill="#e3f0ff"/><circle cx="89.5" cy="75.6" r="1.5" fill="#e3f0ff"/><circle cx="87.6" cy="80.1" r="1.5" fill="#e3f0ff"/><circle cx="85.1" cy="84.2" r="1.5" fill="#e3f0ff"/><circle cx="81.9" cy="87.9" r="1.5" fill="#e3f0ff"/><circle cx="78.2" cy="91.1" r="1.5" fill="#e3f0ff"/><circle cx="74.1" cy="93.6" r="1.5" fill="#e3f0ff"/><circle cx="69.6" cy="95.5" r="1.5" fill="#e3f0ff"/><circle cx="64.8" cy="96.6" r="1.5" fill="#e3f0ff"/><circle cx="60.0" cy="97.0" r="1.5" fill="#e3f0ff"/><circle cx="55.2" cy="96.6" r="1.5" fill="#e3f0ff"/><circle cx="50.4" cy="95.5" r="1.5" fill="#e3f0ff"/><circle cx="45.9" cy="93.6" r="1.5" fill="#e3f0ff"/><circle cx="41.8" cy="91.1" r="1.5" fill="#e3f0ff"/><circle cx="38.1" cy="87.9" r="1.5" fill="#e3f0ff"/><circle cx="34.9" cy="84.2" r="1.5" fill="#e3f0ff"/><circle cx="32.4" cy="80.1" r="1.5" fill="#e3f0ff"/><circle cx="30.5" cy="75.6" r="1.5" fill="#e3f0ff"/><circle cx="29.4" cy="70.8" r="1.5" fill="#e3f0ff"/><circle cx="29.0" cy="66.0" r="1.5" fill="#e3f0ff"/><circle cx="29.4" cy="61.2" r="1.5" fill="#e3f0ff"/><circle cx="30.5" cy="56.4" r="1.5" fill="#e3f0ff"/><circle cx="32.4" cy="51.9" r="1.5" fill="#e3f0ff"/><circle cx="34.9" cy="47.8" r="1.5" fill="#e3f0ff"/><circle cx="38.1" cy="44.1" r="1.5" fill="#e3f0ff"/><circle cx="41.8" cy="40.9" r="1.5" fill="#e3f0ff"/><circle cx="45.9" cy="38.4" r="1.5" fill="#e3f0ff"/><circle cx="50.4" cy="36.5" r="1.5" fill="#e3f0ff"/><circle cx="55.2" cy="35.4" r="1.5" fill="#e3f0ff"/><circle cx="60.0" cy="35.0" r="1.5" fill="#e3f0ff"/><circle cx="64.8" cy="35.4" r="1.5" fill="#e3f0ff"/><circle cx="69.6" cy="36.5" r="1.5" fill="#e3f0ff"/><circle cx="74.1" cy="38.4" r="1.5" fill="#e3f0ff"/><circle cx="78.2" cy="40.9" r="1.5" fill="#e3f0ff"/><circle cx="81.9" cy="44.1" r="1.5" fill="#e3f0ff"/><circle cx="85.1" cy="47.8" r="1.5" fill="#e3f0ff"/><circle cx="87.6" cy="51.9" r="1.5" fill="#e3f0ff"/><circle cx="89.5" cy="56.4" r="1.5" fill="#e3f0ff"/><circle cx="90.6" cy="61.2" r="1.5" fill="#e3f0ff"/>
+  <!-- 珐琅彩面 -->
+  <circle cx="60" cy="66" r="27" fill="url(#field-rare)" stroke="#378add" stroke-width="2.5"/>
+  <!-- 中央字（字体按门类） -->
+  <text x="60" y="66" font-family="'PingFang SC','Hiragino Sans GB',sans-serif" font-size="30" font-weight="800"
+        fill="#185fa5" text-anchor="middle" dominant-baseline="central">勋</text>
+</svg></div><div class="hero-label">珍品</div></div><div class="hero-item"><div class="hero-medal"><svg class="medal-svg" viewBox="0 0 120 120" width="64" height="64">
+  <defs>
+    <linearGradient id="rim-epic" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#ddd9fb"/>
+      <stop offset="0.5" stop-color="#7a6fd6"/>
+      <stop offset="1" stop-color="#efeefe"/>
+    </linearGradient>
+    <radialGradient id="field-epic" cx="0.5" cy="0.42" r="0.7">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.55"/>
+      <stop offset="0.55" stop-color="#eeedfe" stop-opacity="1"/>
+      <stop offset="1" stop-color="#eeedfe" stop-opacity="1"/>
+    </radialGradient>
+  </defs>
+  <!-- 缎带（在奖章之后） -->
+  <polygon points="44,4 57,4 54,42 50,49 46,42" fill="#7f77dd"/>
+  <polygon points="63,4 76,4 74,42 70,49 66,42" fill="#7f77dd"/>
+  <polygon points="52,5 56,5 55,40 53.5,44 52,40" fill="#ffffff" opacity="0.35"/>
+  <polygon points="64,5 68,5 68,40 66.5,44 65,40" fill="#ffffff" opacity="0.35"/>
+  <!-- 金属外圈 -->
+  <circle cx="60" cy="66" r="38" fill="url(#rim-epic)" stroke="#5a4fbf" stroke-width="1.5"/>
+  <circle cx="91.0" cy="66.0" r="1.5" fill="#efeefe"/><circle cx="90.6" cy="70.8" r="1.5" fill="#efeefe"/><circle cx="89.5" cy="75.6" r="1.5" fill="#efeefe"/><circle cx="87.6" cy="80.1" r="1.5" fill="#efeefe"/><circle cx="85.1" cy="84.2" r="1.5" fill="#efeefe"/><circle cx="81.9" cy="87.9" r="1.5" fill="#efeefe"/><circle cx="78.2" cy="91.1" r="1.5" fill="#efeefe"/><circle cx="74.1" cy="93.6" r="1.5" fill="#efeefe"/><circle cx="69.6" cy="95.5" r="1.5" fill="#efeefe"/><circle cx="64.8" cy="96.6" r="1.5" fill="#efeefe"/><circle cx="60.0" cy="97.0" r="1.5" fill="#efeefe"/><circle cx="55.2" cy="96.6" r="1.5" fill="#efeefe"/><circle cx="50.4" cy="95.5" r="1.5" fill="#efeefe"/><circle cx="45.9" cy="93.6" r="1.5" fill="#efeefe"/><circle cx="41.8" cy="91.1" r="1.5" fill="#efeefe"/><circle cx="38.1" cy="87.9" r="1.5" fill="#efeefe"/><circle cx="34.9" cy="84.2" r="1.5" fill="#efeefe"/><circle cx="32.4" cy="80.1" r="1.5" fill="#efeefe"/><circle cx="30.5" cy="75.6" r="1.5" fill="#efeefe"/><circle cx="29.4" cy="70.8" r="1.5" fill="#efeefe"/><circle cx="29.0" cy="66.0" r="1.5" fill="#efeefe"/><circle cx="29.4" cy="61.2" r="1.5" fill="#efeefe"/><circle cx="30.5" cy="56.4" r="1.5" fill="#efeefe"/><circle cx="32.4" cy="51.9" r="1.5" fill="#efeefe"/><circle cx="34.9" cy="47.8" r="1.5" fill="#efeefe"/><circle cx="38.1" cy="44.1" r="1.5" fill="#efeefe"/><circle cx="41.8" cy="40.9" r="1.5" fill="#efeefe"/><circle cx="45.9" cy="38.4" r="1.5" fill="#efeefe"/><circle cx="50.4" cy="36.5" r="1.5" fill="#efeefe"/><circle cx="55.2" cy="35.4" r="1.5" fill="#efeefe"/><circle cx="60.0" cy="35.0" r="1.5" fill="#efeefe"/><circle cx="64.8" cy="35.4" r="1.5" fill="#efeefe"/><circle cx="69.6" cy="36.5" r="1.5" fill="#efeefe"/><circle cx="74.1" cy="38.4" r="1.5" fill="#efeefe"/><circle cx="78.2" cy="40.9" r="1.5" fill="#efeefe"/><circle cx="81.9" cy="44.1" r="1.5" fill="#efeefe"/><circle cx="85.1" cy="47.8" r="1.5" fill="#efeefe"/><circle cx="87.6" cy="51.9" r="1.5" fill="#efeefe"/><circle cx="89.5" cy="56.4" r="1.5" fill="#efeefe"/><circle cx="90.6" cy="61.2" r="1.5" fill="#efeefe"/>
+  <!-- 珐琅彩面 -->
+  <circle cx="60" cy="66" r="27" fill="url(#field-epic)" stroke="#7f77dd" stroke-width="2.5"/>
+  <!-- 中央字（字体按门类） -->
+  <text x="60" y="66" font-family="'PingFang SC','Hiragino Sans GB',sans-serif" font-size="30" font-weight="800"
+        fill="#534ab7" text-anchor="middle" dominant-baseline="central">勋</text>
+</svg></div><div class="hero-label">秘宝</div></div><div class="hero-item"><div class="hero-medal"><svg class="medal-svg" viewBox="0 0 120 120" width="64" height="64">
+  <defs>
+    <linearGradient id="rim-legendary" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#f7e6a6"/>
+      <stop offset="0.5" stop-color="#c9962f"/>
+      <stop offset="1" stop-color="#fbf0c4"/>
+    </linearGradient>
+    <radialGradient id="field-legendary" cx="0.5" cy="0.42" r="0.7">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.55"/>
+      <stop offset="0.55" stop-color="#faeeda" stop-opacity="1"/>
+      <stop offset="1" stop-color="#faeeda" stop-opacity="1"/>
+    </radialGradient>
+  </defs>
+  <!-- 缎带（在奖章之后） -->
+  <polygon points="44,4 57,4 54,42 50,49 46,42" fill="#ef9f27"/>
+  <polygon points="63,4 76,4 74,42 70,49 66,42" fill="#ef9f27"/>
+  <polygon points="52,5 56,5 55,40 53.5,44 52,40" fill="#ffffff" opacity="0.35"/>
+  <polygon points="64,5 68,5 68,40 66.5,44 65,40" fill="#ffffff" opacity="0.35"/>
+  <!-- 金属外圈 -->
+  <circle cx="60" cy="66" r="38" fill="url(#rim-legendary)" stroke="#9c6f1e" stroke-width="1.5"/>
+  <circle cx="91.0" cy="66.0" r="1.5" fill="#fbf0c4"/><circle cx="90.6" cy="70.8" r="1.5" fill="#fbf0c4"/><circle cx="89.5" cy="75.6" r="1.5" fill="#fbf0c4"/><circle cx="87.6" cy="80.1" r="1.5" fill="#fbf0c4"/><circle cx="85.1" cy="84.2" r="1.5" fill="#fbf0c4"/><circle cx="81.9" cy="87.9" r="1.5" fill="#fbf0c4"/><circle cx="78.2" cy="91.1" r="1.5" fill="#fbf0c4"/><circle cx="74.1" cy="93.6" r="1.5" fill="#fbf0c4"/><circle cx="69.6" cy="95.5" r="1.5" fill="#fbf0c4"/><circle cx="64.8" cy="96.6" r="1.5" fill="#fbf0c4"/><circle cx="60.0" cy="97.0" r="1.5" fill="#fbf0c4"/><circle cx="55.2" cy="96.6" r="1.5" fill="#fbf0c4"/><circle cx="50.4" cy="95.5" r="1.5" fill="#fbf0c4"/><circle cx="45.9" cy="93.6" r="1.5" fill="#fbf0c4"/><circle cx="41.8" cy="91.1" r="1.5" fill="#fbf0c4"/><circle cx="38.1" cy="87.9" r="1.5" fill="#fbf0c4"/><circle cx="34.9" cy="84.2" r="1.5" fill="#fbf0c4"/><circle cx="32.4" cy="80.1" r="1.5" fill="#fbf0c4"/><circle cx="30.5" cy="75.6" r="1.5" fill="#fbf0c4"/><circle cx="29.4" cy="70.8" r="1.5" fill="#fbf0c4"/><circle cx="29.0" cy="66.0" r="1.5" fill="#fbf0c4"/><circle cx="29.4" cy="61.2" r="1.5" fill="#fbf0c4"/><circle cx="30.5" cy="56.4" r="1.5" fill="#fbf0c4"/><circle cx="32.4" cy="51.9" r="1.5" fill="#fbf0c4"/><circle cx="34.9" cy="47.8" r="1.5" fill="#fbf0c4"/><circle cx="38.1" cy="44.1" r="1.5" fill="#fbf0c4"/><circle cx="41.8" cy="40.9" r="1.5" fill="#fbf0c4"/><circle cx="45.9" cy="38.4" r="1.5" fill="#fbf0c4"/><circle cx="50.4" cy="36.5" r="1.5" fill="#fbf0c4"/><circle cx="55.2" cy="35.4" r="1.5" fill="#fbf0c4"/><circle cx="60.0" cy="35.0" r="1.5" fill="#fbf0c4"/><circle cx="64.8" cy="35.4" r="1.5" fill="#fbf0c4"/><circle cx="69.6" cy="36.5" r="1.5" fill="#fbf0c4"/><circle cx="74.1" cy="38.4" r="1.5" fill="#fbf0c4"/><circle cx="78.2" cy="40.9" r="1.5" fill="#fbf0c4"/><circle cx="81.9" cy="44.1" r="1.5" fill="#fbf0c4"/><circle cx="85.1" cy="47.8" r="1.5" fill="#fbf0c4"/><circle cx="87.6" cy="51.9" r="1.5" fill="#fbf0c4"/><circle cx="89.5" cy="56.4" r="1.5" fill="#fbf0c4"/><circle cx="90.6" cy="61.2" r="1.5" fill="#fbf0c4"/>
+  <!-- 珐琅彩面 -->
+  <circle cx="60" cy="66" r="27" fill="url(#field-legendary)" stroke="#ef9f27" stroke-width="2.5"/>
+  <!-- 中央字（字体按门类） -->
+  <text x="60" y="66" font-family="'PingFang SC','Hiragino Sans GB',sans-serif" font-size="30" font-weight="800"
+        fill="#854f0b" text-anchor="middle" dominant-baseline="central">勋</text>
+</svg></div><div class="hero-label">传世</div></div>
+    </div>
+    <div class="hero-cap"><b>底图（一枚矢量奖章）</b>：金属外圈 + 一圈珠链 + 珐琅彩面 + 顶部缎带。
+      所有勋章共用此底图——<b>底层按稀有度换色</b>（凡品钢灰 / 珍品蓝 / 秘宝紫 / 传世金），
+      <b>中央字体按门类换</b>（相伴楷体 · 笔耕宋体 · 修行黑体 · 博闻仿宋 · 奇遇行楷）。隐藏勋章未解锁时整体灰化显示「?」。</div>
+  </div>
+
+  <div class="badge-wall">
+    <div class="badge-wall-head">
+      <button class="experts-back" title="返回">←</button>
+      <div class="experts-head-text">
+        <h1 class="experts-title">勋章墙</h1>
+        <p class="experts-subtitle">已相伴 128 天 · 连续 12 天 · 五门四阶，共 37 枚</p>
+      </div>
+      <div class="badge-wall-score">
+        <div class="badge-wall-score-num">16<span class="badge-wall-score-total">/37</span></div>
+        <div class="badge-wall-score-label">已收集 · 43%</div>
+      </div>
+    </div>
+    <div class="badge-wall-toolbar">
+      <div class="badge-filters"><button class="badge-chip is-on" data-cat="__all__">全部 <span class="badge-chip-count">16/37</span></button>
+<button class="badge-chip" data-cat="companionship" title="与你共度的时光">相伴 <span class="badge-chip-count">4/8</span></button>
+<button class="badge-chip" data-cat="writing" title="稿纸上的积累">笔耕 <span class="badge-chip-count">5/9</span></button>
+<button class="badge-chip" data-cat="cultivation" title="桌搭自身的成长">修行 <span class="badge-chip-count">4/9</span></button>
+<button class="badge-chip" data-cat="knowledge" title="关于你的记忆">博闻 <span class="badge-chip-count">3/6</span></button>
+<button class="badge-chip" data-cat="serendipity" title="不期而遇的时刻">奇遇 <span class="badge-chip-count">0/5</span></button></div>
+      <label class="badge-toggle"><input type="checkbox" id="onlyUnlocked"/>仅看已得</label>
+    </div>
+    <div class="badge-grid" id="grid"><div class="badge-card is-unlocked" data-cat="cultivation" data-unlocked="1"><div class="badge-medal"><svg class="medal-svg" viewBox="0 0 120 120" width="64" height="64">
+  <defs>
+    <linearGradient id="rim-rare" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#cfe4fb"/>
+      <stop offset="0.5" stop-color="#4f8fd6"/>
+      <stop offset="1" stop-color="#e3f0ff"/>
+    </linearGradient>
+    <radialGradient id="field-rare" cx="0.5" cy="0.42" r="0.7">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.55"/>
+      <stop offset="0.55" stop-color="#e6f1fb" stop-opacity="1"/>
+      <stop offset="1" stop-color="#e6f1fb" stop-opacity="1"/>
+    </radialGradient>
+  </defs>
+  <!-- 缎带（在奖章之后） -->
+  <polygon points="44,4 57,4 54,42 50,49 46,42" fill="#378add"/>
+  <polygon points="63,4 76,4 74,42 70,49 66,42" fill="#378add"/>
+  <polygon points="52,5 56,5 55,40 53.5,44 52,40" fill="#ffffff" opacity="0.35"/>
+  <polygon points="64,5 68,5 68,40 66.5,44 65,40" fill="#ffffff" opacity="0.35"/>
+  <!-- 金属外圈 -->
+  <circle cx="60" cy="66" r="38" fill="url(#rim-rare)" stroke="#2f6fb0" stroke-width="1.5"/>
+  <circle cx="91.0" cy="66.0" r="1.5" fill="#e3f0ff"/><circle cx="90.6" cy="70.8" r="1.5" fill="#e3f0ff"/><circle cx="89.5" cy="75.6" r="1.5" fill="#e3f0ff"/><circle cx="87.6" cy="80.1" r="1.5" fill="#e3f0ff"/><circle cx="85.1" cy="84.2" r="1.5" fill="#e3f0ff"/><circle cx="81.9" cy="87.9" r="1.5" fill="#e3f0ff"/><circle cx="78.2" cy="91.1" r="1.5" fill="#e3f0ff"/><circle cx="74.1" cy="93.6" r="1.5" fill="#e3f0ff"/><circle cx="69.6" cy="95.5" r="1.5" fill="#e3f0ff"/><circle cx="64.8" cy="96.6" r="1.5" fill="#e3f0ff"/><circle cx="60.0" cy="97.0" r="1.5" fill="#e3f0ff"/><circle cx="55.2" cy="96.6" r="1.5" fill="#e3f0ff"/><circle cx="50.4" cy="95.5" r="1.5" fill="#e3f0ff"/><circle cx="45.9" cy="93.6" r="1.5" fill="#e3f0ff"/><circle cx="41.8" cy="91.1" r="1.5" fill="#e3f0ff"/><circle cx="38.1" cy="87.9" r="1.5" fill="#e3f0ff"/><circle cx="34.9" cy="84.2" r="1.5" fill="#e3f0ff"/><circle cx="32.4" cy="80.1" r="1.5" fill="#e3f0ff"/><circle cx="30.5" cy="75.6" r="1.5" fill="#e3f0ff"/><circle cx="29.4" cy="70.8" r="1.5" fill="#e3f0ff"/><circle cx="29.0" cy="66.0" r="1.5" fill="#e3f0ff"/><circle cx="29.4" cy="61.2" r="1.5" fill="#e3f0ff"/><circle cx="30.5" cy="56.4" r="1.5" fill="#e3f0ff"/><circle cx="32.4" cy="51.9" r="1.5" fill="#e3f0ff"/><circle cx="34.9" cy="47.8" r="1.5" fill="#e3f0ff"/><circle cx="38.1" cy="44.1" r="1.5" fill="#e3f0ff"/><circle cx="41.8" cy="40.9" r="1.5" fill="#e3f0ff"/><circle cx="45.9" cy="38.4" r="1.5" fill="#e3f0ff"/><circle cx="50.4" cy="36.5" r="1.5" fill="#e3f0ff"/><circle cx="55.2" cy="35.4" r="1.5" fill="#e3f0ff"/><circle cx="60.0" cy="35.0" r="1.5" fill="#e3f0ff"/><circle cx="64.8" cy="35.4" r="1.5" fill="#e3f0ff"/><circle cx="69.6" cy="36.5" r="1.5" fill="#e3f0ff"/><circle cx="74.1" cy="38.4" r="1.5" fill="#e3f0ff"/><circle cx="78.2" cy="40.9" r="1.5" fill="#e3f0ff"/><circle cx="81.9" cy="44.1" r="1.5" fill="#e3f0ff"/><circle cx="85.1" cy="47.8" r="1.5" fill="#e3f0ff"/><circle cx="87.6" cy="51.9" r="1.5" fill="#e3f0ff"/><circle cx="89.5" cy="56.4" r="1.5" fill="#e3f0ff"/><circle cx="90.6" cy="61.2" r="1.5" fill="#e3f0ff"/>
+  <!-- 珐琅彩面 -->
+  <circle cx="60" cy="66" r="27" fill="url(#field-rare)" stroke="#378add" stroke-width="2.5"/>
+  <!-- 中央字（字体按门类） -->
+  <text x="60" y="66" font-family="'PingFang SC','Hiragino Sans GB',sans-serif" font-size="30" font-weight="800"
+        fill="#185fa5" text-anchor="middle" dominant-baseline="central">亲</text>
+</svg></div><div class="badge-name">亲密伙伴</div><div class="badge-rarity" style="color:#185fa5">珍品</div><div class="badge-meta">获得于 2025-10-10</div></div>
+<div class="badge-card is-unlocked" data-cat="cultivation" data-unlocked="1"><div class="badge-medal"><svg class="medal-svg" viewBox="0 0 120 120" width="64" height="64">
+  <defs>
+    <linearGradient id="rim-rare" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#cfe4fb"/>
+      <stop offset="0.5" stop-color="#4f8fd6"/>
+      <stop offset="1" stop-color="#e3f0ff"/>
+    </linearGradient>
+    <radialGradient id="field-rare" cx="0.5" cy="0.42" r="0.7">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.55"/>
+      <stop offset="0.55" stop-color="#e6f1fb" stop-opacity="1"/>
+      <stop offset="1" stop-color="#e6f1fb" stop-opacity="1"/>
+    </radialGradient>
+  </defs>
+  <!-- 缎带（在奖章之后） -->
+  <polygon points="44,4 57,4 54,42 50,49 46,42" fill="#378add"/>
+  <polygon points="63,4 76,4 74,42 70,49 66,42" fill="#378add"/>
+  <polygon points="52,5 56,5 55,40 53.5,44 52,40" fill="#ffffff" opacity="0.35"/>
+  <polygon points="64,5 68,5 68,40 66.5,44 65,40" fill="#ffffff" opacity="0.35"/>
+  <!-- 金属外圈 -->
+  <circle cx="60" cy="66" r="38" fill="url(#rim-rare)" stroke="#2f6fb0" stroke-width="1.5"/>
+  <circle cx="91.0" cy="66.0" r="1.5" fill="#e3f0ff"/><circle cx="90.6" cy="70.8" r="1.5" fill="#e3f0ff"/><circle cx="89.5" cy="75.6" r="1.5" fill="#e3f0ff"/><circle cx="87.6" cy="80.1" r="1.5" fill="#e3f0ff"/><circle cx="85.1" cy="84.2" r="1.5" fill="#e3f0ff"/><circle cx="81.9" cy="87.9" r="1.5" fill="#e3f0ff"/><circle cx="78.2" cy="91.1" r="1.5" fill="#e3f0ff"/><circle cx="74.1" cy="93.6" r="1.5" fill="#e3f0ff"/><circle cx="69.6" cy="95.5" r="1.5" fill="#e3f0ff"/><circle cx="64.8" cy="96.6" r="1.5" fill="#e3f0ff"/><circle cx="60.0" cy="97.0" r="1.5" fill="#e3f0ff"/><circle cx="55.2" cy="96.6" r="1.5" fill="#e3f0ff"/><circle cx="50.4" cy="95.5" r="1.5" fill="#e3f0ff"/><circle cx="45.9" cy="93.6" r="1.5" fill="#e3f0ff"/><circle cx="41.8" cy="91.1" r="1.5" fill="#e3f0ff"/><circle cx="38.1" cy="87.9" r="1.5" fill="#e3f0ff"/><circle cx="34.9" cy="84.2" r="1.5" fill="#e3f0ff"/><circle cx="32.4" cy="80.1" r="1.5" fill="#e3f0ff"/><circle cx="30.5" cy="75.6" r="1.5" fill="#e3f0ff"/><circle cx="29.4" cy="70.8" r="1.5" fill="#e3f0ff"/><circle cx="29.0" cy="66.0" r="1.5" fill="#e3f0ff"/><circle cx="29.4" cy="61.2" r="1.5" fill="#e3f0ff"/><circle cx="30.5" cy="56.4" r="1.5" fill="#e3f0ff"/><circle cx="32.4" cy="51.9" r="1.5" fill="#e3f0ff"/><circle cx="34.9" cy="47.8" r="1.5" fill="#e3f0ff"/><circle cx="38.1" cy="44.1" r="1.5" fill="#e3f0ff"/><circle cx="41.8" cy="40.9" r="1.5" fill="#e3f0ff"/><circle cx="45.9" cy="38.4" r="1.5" fill="#e3f0ff"/><circle cx="50.4" cy="36.5" r="1.5" fill="#e3f0ff"/><circle cx="55.2" cy="35.4" r="1.5" fill="#e3f0ff"/><circle cx="60.0" cy="35.0" r="1.5" fill="#e3f0ff"/><circle cx="64.8" cy="35.4" r="1.5" fill="#e3f0ff"/><circle cx="69.6" cy="36.5" r="1.5" fill="#e3f0ff"/><circle cx="74.1" cy="38.4" r="1.5" fill="#e3f0ff"/><circle cx="78.2" cy="40.9" r="1.5" fill="#e3f0ff"/><circle cx="81.9" cy="44.1" r="1.5" fill="#e3f0ff"/><circle cx="85.1" cy="47.8" r="1.5" fill="#e3f0ff"/><circle cx="87.6" cy="51.9" r="1.5" fill="#e3f0ff"/><circle cx="89.5" cy="56.4" r="1.5" fill="#e3f0ff"/><circle cx="90.6" cy="61.2" r="1.5" fill="#e3f0ff"/>
+  <!-- 珐琅彩面 -->
+  <circle cx="60" cy="66" r="27" fill="url(#field-rare)" stroke="#378add" stroke-width="2.5"/>
+  <!-- 中央字（字体按门类） -->
+  <text x="60" y="66" font-family="'PingFang SC','Hiragino Sans GB',sans-serif" font-size="30" font-weight="800"
+        fill="#185fa5" text-anchor="middle" dominant-baseline="central">室</text>
+</svg></div><div class="badge-name">入室</div><div class="badge-rarity" style="color:#185fa5">珍品</div><div class="badge-meta">获得于 2025-09-03</div></div>
+<div class="badge-card is-unlocked" data-cat="knowledge" data-unlocked="1"><div class="badge-medal"><svg class="medal-svg" viewBox="0 0 120 120" width="64" height="64">
+  <defs>
+    <linearGradient id="rim-common" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#e9ebef"/>
+      <stop offset="0.5" stop-color="#aeb4bd"/>
+      <stop offset="1" stop-color="#f2f4f6"/>
+    </linearGradient>
+    <radialGradient id="field-common" cx="0.5" cy="0.42" r="0.7">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.55"/>
+      <stop offset="0.55" stop-color="#f1efe8" stop-opacity="1"/>
+      <stop offset="1" stop-color="#f1efe8" stop-opacity="1"/>
+    </radialGradient>
+  </defs>
+  <!-- 缎带（在奖章之后） -->
+  <polygon points="44,4 57,4 54,42 50,49 46,42" fill="#9aa0a8"/>
+  <polygon points="63,4 76,4 74,42 70,49 66,42" fill="#9aa0a8"/>
+  <polygon points="52,5 56,5 55,40 53.5,44 52,40" fill="#ffffff" opacity="0.35"/>
+  <polygon points="64,5 68,5 68,40 66.5,44 65,40" fill="#ffffff" opacity="0.35"/>
+  <!-- 金属外圈 -->
+  <circle cx="60" cy="66" r="38" fill="url(#rim-common)" stroke="#8b929c" stroke-width="1.5"/>
+  <circle cx="91.0" cy="66.0" r="1.5" fill="#f2f4f6"/><circle cx="90.6" cy="70.8" r="1.5" fill="#f2f4f6"/><circle cx="89.5" cy="75.6" r="1.5" fill="#f2f4f6"/><circle cx="87.6" cy="80.1" r="1.5" fill="#f2f4f6"/><circle cx="85.1" cy="84.2" r="1.5" fill="#f2f4f6"/><circle cx="81.9" cy="87.9" r="1.5" fill="#f2f4f6"/><circle cx="78.2" cy="91.1" r="1.5" fill="#f2f4f6"/><circle cx="74.1" cy="93.6" r="1.5" fill="#f2f4f6"/><circle cx="69.6" cy="95.5" r="1.5" fill="#f2f4f6"/><circle cx="64.8" cy="96.6" r="1.5" fill="#f2f4f6"/><circle cx="60.0" cy="97.0" r="1.5" fill="#f2f4f6"/><circle cx="55.2" cy="96.6" r="1.5" fill="#f2f4f6"/><circle cx="50.4" cy="95.5" r="1.5" fill="#f2f4f6"/><circle cx="45.9" cy="93.6" r="1.5" fill="#f2f4f6"/><circle cx="41.8" cy="91.1" r="1.5" fill="#f2f4f6"/><circle cx="38.1" cy="87.9" r="1.5" fill="#f2f4f6"/><circle cx="34.9" cy="84.2" r="1.5" fill="#f2f4f6"/><circle cx="32.4" cy="80.1" r="1.5" fill="#f2f4f6"/><circle cx="30.5" cy="75.6" r="1.5" fill="#f2f4f6"/><circle cx="29.4" cy="70.8" r="1.5" fill="#f2f4f6"/><circle cx="29.0" cy="66.0" r="1.5" fill="#f2f4f6"/><circle cx="29.4" cy="61.2" r="1.5" fill="#f2f4f6"/><circle cx="30.5" cy="56.4" r="1.5" fill="#f2f4f6"/><circle cx="32.4" cy="51.9" r="1.5" fill="#f2f4f6"/><circle cx="34.9" cy="47.8" r="1.5" fill="#f2f4f6"/><circle cx="38.1" cy="44.1" r="1.5" fill="#f2f4f6"/><circle cx="41.8" cy="40.9" r="1.5" fill="#f2f4f6"/><circle cx="45.9" cy="38.4" r="1.5" fill="#f2f4f6"/><circle cx="50.4" cy="36.5" r="1.5" fill="#f2f4f6"/><circle cx="55.2" cy="35.4" r="1.5" fill="#f2f4f6"/><circle cx="60.0" cy="35.0" r="1.5" fill="#f2f4f6"/><circle cx="64.8" cy="35.4" r="1.5" fill="#f2f4f6"/><circle cx="69.6" cy="36.5" r="1.5" fill="#f2f4f6"/><circle cx="74.1" cy="38.4" r="1.5" fill="#f2f4f6"/><circle cx="78.2" cy="40.9" r="1.5" fill="#f2f4f6"/><circle cx="81.9" cy="44.1" r="1.5" fill="#f2f4f6"/><circle cx="85.1" cy="47.8" r="1.5" fill="#f2f4f6"/><circle cx="87.6" cy="51.9" r="1.5" fill="#f2f4f6"/><circle cx="89.5" cy="56.4" r="1.5" fill="#f2f4f6"/><circle cx="90.6" cy="61.2" r="1.5" fill="#f2f4f6"/>
+  <!-- 珐琅彩面 -->
+  <circle cx="60" cy="66" r="27" fill="url(#field-common)" stroke="#b4b2a9" stroke-width="2.5"/>
+  <!-- 中央字（字体按门类） -->
+  <text x="60" y="66" font-family="'FangSong','STFangsong',serif" font-size="30" font-weight="800"
+        fill="#5f5e5a" text-anchor="middle" dominant-baseline="central">藏</text>
+</svg></div><div class="badge-name">藏书之始</div><div class="badge-rarity" style="color:#5f5e5a">凡品</div><div class="badge-meta">获得于 2025-08-14</div></div>
+<div class="badge-card is-unlocked" data-cat="writing" data-unlocked="1"><div class="badge-medal"><svg class="medal-svg" viewBox="0 0 120 120" width="64" height="64">
+  <defs>
+    <linearGradient id="rim-rare" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#cfe4fb"/>
+      <stop offset="0.5" stop-color="#4f8fd6"/>
+      <stop offset="1" stop-color="#e3f0ff"/>
+    </linearGradient>
+    <radialGradient id="field-rare" cx="0.5" cy="0.42" r="0.7">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.55"/>
+      <stop offset="0.55" stop-color="#e6f1fb" stop-opacity="1"/>
+      <stop offset="1" stop-color="#e6f1fb" stop-opacity="1"/>
+    </radialGradient>
+  </defs>
+  <!-- 缎带（在奖章之后） -->
+  <polygon points="44,4 57,4 54,42 50,49 46,42" fill="#378add"/>
+  <polygon points="63,4 76,4 74,42 70,49 66,42" fill="#378add"/>
+  <polygon points="52,5 56,5 55,40 53.5,44 52,40" fill="#ffffff" opacity="0.35"/>
+  <polygon points="64,5 68,5 68,40 66.5,44 65,40" fill="#ffffff" opacity="0.35"/>
+  <!-- 金属外圈 -->
+  <circle cx="60" cy="66" r="38" fill="url(#rim-rare)" stroke="#2f6fb0" stroke-width="1.5"/>
+  <circle cx="91.0" cy="66.0" r="1.5" fill="#e3f0ff"/><circle cx="90.6" cy="70.8" r="1.5" fill="#e3f0ff"/><circle cx="89.5" cy="75.6" r="1.5" fill="#e3f0ff"/><circle cx="87.6" cy="80.1" r="1.5" fill="#e3f0ff"/><circle cx="85.1" cy="84.2" r="1.5" fill="#e3f0ff"/><circle cx="81.9" cy="87.9" r="1.5" fill="#e3f0ff"/><circle cx="78.2" cy="91.1" r="1.5" fill="#e3f0ff"/><circle cx="74.1" cy="93.6" r="1.5" fill="#e3f0ff"/><circle cx="69.6" cy="95.5" r="1.5" fill="#e3f0ff"/><circle cx="64.8" cy="96.6" r="1.5" fill="#e3f0ff"/><circle cx="60.0" cy="97.0" r="1.5" fill="#e3f0ff"/><circle cx="55.2" cy="96.6" r="1.5" fill="#e3f0ff"/><circle cx="50.4" cy="95.5" r="1.5" fill="#e3f0ff"/><circle cx="45.9" cy="93.6" r="1.5" fill="#e3f0ff"/><circle cx="41.8" cy="91.1" r="1.5" fill="#e3f0ff"/><circle cx="38.1" cy="87.9" r="1.5" fill="#e3f0ff"/><circle cx="34.9" cy="84.2" r="1.5" fill="#e3f0ff"/><circle cx="32.4" cy="80.1" r="1.5" fill="#e3f0ff"/><circle cx="30.5" cy="75.6" r="1.5" fill="#e3f0ff"/><circle cx="29.4" cy="70.8" r="1.5" fill="#e3f0ff"/><circle cx="29.0" cy="66.0" r="1.5" fill="#e3f0ff"/><circle cx="29.4" cy="61.2" r="1.5" fill="#e3f0ff"/><circle cx="30.5" cy="56.4" r="1.5" fill="#e3f0ff"/><circle cx="32.4" cy="51.9" r="1.5" fill="#e3f0ff"/><circle cx="34.9" cy="47.8" r="1.5" fill="#e3f0ff"/><circle cx="38.1" cy="44.1" r="1.5" fill="#e3f0ff"/><circle cx="41.8" cy="40.9" r="1.5" fill="#e3f0ff"/><circle cx="45.9" cy="38.4" r="1.5" fill="#e3f0ff"/><circle cx="50.4" cy="36.5" r="1.5" fill="#e3f0ff"/><circle cx="55.2" cy="35.4" r="1.5" fill="#e3f0ff"/><circle cx="60.0" cy="35.0" r="1.5" fill="#e3f0ff"/><circle cx="64.8" cy="35.4" r="1.5" fill="#e3f0ff"/><circle cx="69.6" cy="36.5" r="1.5" fill="#e3f0ff"/><circle cx="74.1" cy="38.4" r="1.5" fill="#e3f0ff"/><circle cx="78.2" cy="40.9" r="1.5" fill="#e3f0ff"/><circle cx="81.9" cy="44.1" r="1.5" fill="#e3f0ff"/><circle cx="85.1" cy="47.8" r="1.5" fill="#e3f0ff"/><circle cx="87.6" cy="51.9" r="1.5" fill="#e3f0ff"/><circle cx="89.5" cy="56.4" r="1.5" fill="#e3f0ff"/><circle cx="90.6" cy="61.2" r="1.5" fill="#e3f0ff"/>
+  <!-- 珐琅彩面 -->
+  <circle cx="60" cy="66" r="27" fill="url(#field-rare)" stroke="#378add" stroke-width="2.5"/>
+  <!-- 中央字（字体按门类） -->
+  <text x="60" y="66" font-family="'Songti SC','STSong','SimSun',serif" font-size="30" font-weight="800"
+        fill="#185fa5" text-anchor="middle" dominant-baseline="central">桌</text>
+</svg></div><div class="badge-name">圆桌主人</div><div class="badge-rarity" style="color:#185fa5">珍品</div><div class="badge-meta">获得于 2025-07-09</div></div>
+<div class="badge-card is-unlocked" data-cat="writing" data-unlocked="1"><div class="badge-medal"><svg class="medal-svg" viewBox="0 0 120 120" width="64" height="64">
+  <defs>
+    <linearGradient id="rim-common" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#e9ebef"/>
+      <stop offset="0.5" stop-color="#aeb4bd"/>
+      <stop offset="1" stop-color="#f2f4f6"/>
+    </linearGradient>
+    <radialGradient id="field-common" cx="0.5" cy="0.42" r="0.7">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.55"/>
+      <stop offset="0.55" stop-color="#f1efe8" stop-opacity="1"/>
+      <stop offset="1" stop-color="#f1efe8" stop-opacity="1"/>
+    </radialGradient>
+  </defs>
+  <!-- 缎带（在奖章之后） -->
+  <polygon points="44,4 57,4 54,42 50,49 46,42" fill="#9aa0a8"/>
+  <polygon points="63,4 76,4 74,42 70,49 66,42" fill="#9aa0a8"/>
+  <polygon points="52,5 56,5 55,40 53.5,44 52,40" fill="#ffffff" opacity="0.35"/>
+  <polygon points="64,5 68,5 68,40 66.5,44 65,40" fill="#ffffff" opacity="0.35"/>
+  <!-- 金属外圈 -->
+  <circle cx="60" cy="66" r="38" fill="url(#rim-common)" stroke="#8b929c" stroke-width="1.5"/>
+  <circle cx="91.0" cy="66.0" r="1.5" fill="#f2f4f6"/><circle cx="90.6" cy="70.8" r="1.5" fill="#f2f4f6"/><circle cx="89.5" cy="75.6" r="1.5" fill="#f2f4f6"/><circle cx="87.6" cy="80.1" r="1.5" fill="#f2f4f6"/><circle cx="85.1" cy="84.2" r="1.5" fill="#f2f4f6"/><circle cx="81.9" cy="87.9" r="1.5" fill="#f2f4f6"/><circle cx="78.2" cy="91.1" r="1.5" fill="#f2f4f6"/><circle cx="74.1" cy="93.6" r="1.5" fill="#f2f4f6"/><circle cx="69.6" cy="95.5" r="1.5" fill="#f2f4f6"/><circle cx="64.8" cy="96.6" r="1.5" fill="#f2f4f6"/><circle cx="60.0" cy="97.0" r="1.5" fill="#f2f4f6"/><circle cx="55.2" cy="96.6" r="1.5" fill="#f2f4f6"/><circle cx="50.4" cy="95.5" r="1.5" fill="#f2f4f6"/><circle cx="45.9" cy="93.6" r="1.5" fill="#f2f4f6"/><circle cx="41.8" cy="91.1" r="1.5" fill="#f2f4f6"/><circle cx="38.1" cy="87.9" r="1.5" fill="#f2f4f6"/><circle cx="34.9" cy="84.2" r="1.5" fill="#f2f4f6"/><circle cx="32.4" cy="80.1" r="1.5" fill="#f2f4f6"/><circle cx="30.5" cy="75.6" r="1.5" fill="#f2f4f6"/><circle cx="29.4" cy="70.8" r="1.5" fill="#f2f4f6"/><circle cx="29.0" cy="66.0" r="1.5" fill="#f2f4f6"/><circle cx="29.4" cy="61.2" r="1.5" fill="#f2f4f6"/><circle cx="30.5" cy="56.4" r="1.5" fill="#f2f4f6"/><circle cx="32.4" cy="51.9" r="1.5" fill="#f2f4f6"/><circle cx="34.9" cy="47.8" r="1.5" fill="#f2f4f6"/><circle cx="38.1" cy="44.1" r="1.5" fill="#f2f4f6"/><circle cx="41.8" cy="40.9" r="1.5" fill="#f2f4f6"/><circle cx="45.9" cy="38.4" r="1.5" fill="#f2f4f6"/><circle cx="50.4" cy="36.5" r="1.5" fill="#f2f4f6"/><circle cx="55.2" cy="35.4" r="1.5" fill="#f2f4f6"/><circle cx="60.0" cy="35.0" r="1.5" fill="#f2f4f6"/><circle cx="64.8" cy="35.4" r="1.5" fill="#f2f4f6"/><circle cx="69.6" cy="36.5" r="1.5" fill="#f2f4f6"/><circle cx="74.1" cy="38.4" r="1.5" fill="#f2f4f6"/><circle cx="78.2" cy="40.9" r="1.5" fill="#f2f4f6"/><circle cx="81.9" cy="44.1" r="1.5" fill="#f2f4f6"/><circle cx="85.1" cy="47.8" r="1.5" fill="#f2f4f6"/><circle cx="87.6" cy="51.9" r="1.5" fill="#f2f4f6"/><circle cx="89.5" cy="56.4" r="1.5" fill="#f2f4f6"/><circle cx="90.6" cy="61.2" r="1.5" fill="#f2f4f6"/>
+  <!-- 珐琅彩面 -->
+  <circle cx="60" cy="66" r="27" fill="url(#field-common)" stroke="#b4b2a9" stroke-width="2.5"/>
+  <!-- 中央字（字体按门类） -->
+  <text x="60" y="66" font-family="'Songti SC','STSong','SimSun',serif" font-size="30" font-weight="800"
+        fill="#5f5e5a" text-anchor="middle" dominant-baseline="central">报</text>
+</svg></div><div class="badge-name">成竹在胸</div><div class="badge-rarity" style="color:#5f5e5a">凡品</div><div class="badge-meta">获得于 2025-06-18</div></div>
+<div class="badge-card is-unlocked" data-cat="writing" data-unlocked="1"><div class="badge-medal"><svg class="medal-svg" viewBox="0 0 120 120" width="64" height="64">
+  <defs>
+    <linearGradient id="rim-common" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#e9ebef"/>
+      <stop offset="0.5" stop-color="#aeb4bd"/>
+      <stop offset="1" stop-color="#f2f4f6"/>
+    </linearGradient>
+    <radialGradient id="field-common" cx="0.5" cy="0.42" r="0.7">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.55"/>
+      <stop offset="0.55" stop-color="#f1efe8" stop-opacity="1"/>
+      <stop offset="1" stop-color="#f1efe8" stop-opacity="1"/>
+    </radialGradient>
+  </defs>
+  <!-- 缎带（在奖章之后） -->
+  <polygon points="44,4 57,4 54,42 50,49 46,42" fill="#9aa0a8"/>
+  <polygon points="63,4 76,4 74,42 70,49 66,42" fill="#9aa0a8"/>
+  <polygon points="52,5 56,5 55,40 53.5,44 52,40" fill="#ffffff" opacity="0.35"/>
+  <polygon points="64,5 68,5 68,40 66.5,44 65,40" fill="#ffffff" opacity="0.35"/>
+  <!-- 金属外圈 -->
+  <circle cx="60" cy="66" r="38" fill="url(#rim-common)" stroke="#8b929c" stroke-width="1.5"/>
+  <circle cx="91.0" cy="66.0" r="1.5" fill="#f2f4f6"/><circle cx="90.6" cy="70.8" r="1.5" fill="#f2f4f6"/><circle cx="89.5" cy="75.6" r="1.5" fill="#f2f4f6"/><circle cx="87.6" cy="80.1" r="1.5" fill="#f2f4f6"/><circle cx="85.1" cy="84.2" r="1.5" fill="#f2f4f6"/><circle cx="81.9" cy="87.9" r="1.5" fill="#f2f4f6"/><circle cx="78.2" cy="91.1" r="1.5" fill="#f2f4f6"/><circle cx="74.1" cy="93.6" r="1.5" fill="#f2f4f6"/><circle cx="69.6" cy="95.5" r="1.5" fill="#f2f4f6"/><circle cx="64.8" cy="96.6" r="1.5" fill="#f2f4f6"/><circle cx="60.0" cy="97.0" r="1.5" fill="#f2f4f6"/><circle cx="55.2" cy="96.6" r="1.5" fill="#f2f4f6"/><circle cx="50.4" cy="95.5" r="1.5" fill="#f2f4f6"/><circle cx="45.9" cy="93.6" r="1.5" fill="#f2f4f6"/><circle cx="41.8" cy="91.1" r="1.5" fill="#f2f4f6"/><circle cx="38.1" cy="87.9" r="1.5" fill="#f2f4f6"/><circle cx="34.9" cy="84.2" r="1.5" fill="#f2f4f6"/><circle cx="32.4" cy="80.1" r="1.5" fill="#f2f4f6"/><circle cx="30.5" cy="75.6" r="1.5" fill="#f2f4f6"/><circle cx="29.4" cy="70.8" r="1.5" fill="#f2f4f6"/><circle cx="29.0" cy="66.0" r="1.5" fill="#f2f4f6"/><circle cx="29.4" cy="61.2" r="1.5" fill="#f2f4f6"/><circle cx="30.5" cy="56.4" r="1.5" fill="#f2f4f6"/><circle cx="32.4" cy="51.9" r="1.5" fill="#f2f4f6"/><circle cx="34.9" cy="47.8" r="1.5" fill="#f2f4f6"/><circle cx="38.1" cy="44.1" r="1.5" fill="#f2f4f6"/><circle cx="41.8" cy="40.9" r="1.5" fill="#f2f4f6"/><circle cx="45.9" cy="38.4" r="1.5" fill="#f2f4f6"/><circle cx="50.4" cy="36.5" r="1.5" fill="#f2f4f6"/><circle cx="55.2" cy="35.4" r="1.5" fill="#f2f4f6"/><circle cx="60.0" cy="35.0" r="1.5" fill="#f2f4f6"/><circle cx="64.8" cy="35.4" r="1.5" fill="#f2f4f6"/><circle cx="69.6" cy="36.5" r="1.5" fill="#f2f4f6"/><circle cx="74.1" cy="38.4" r="1.5" fill="#f2f4f6"/><circle cx="78.2" cy="40.9" r="1.5" fill="#f2f4f6"/><circle cx="81.9" cy="44.1" r="1.5" fill="#f2f4f6"/><circle cx="85.1" cy="47.8" r="1.5" fill="#f2f4f6"/><circle cx="87.6" cy="51.9" r="1.5" fill="#f2f4f6"/><circle cx="89.5" cy="56.4" r="1.5" fill="#f2f4f6"/><circle cx="90.6" cy="61.2" r="1.5" fill="#f2f4f6"/>
+  <!-- 珐琅彩面 -->
+  <circle cx="60" cy="66" r="27" fill="url(#field-common)" stroke="#b4b2a9" stroke-width="2.5"/>
+  <!-- 中央字（字体按门类） -->
+  <text x="60" y="66" font-family="'Songti SC','STSong','SimSun',serif" font-size="30" font-weight="800"
+        fill="#5f5e5a" text-anchor="middle" dominant-baseline="central">万</text>
+</svg></div><div class="badge-name">万言</div><div class="badge-rarity" style="color:#5f5e5a">凡品</div><div class="badge-meta">获得于 2025-05-02</div></div>
+<div class="badge-card is-unlocked" data-cat="cultivation" data-unlocked="1"><div class="badge-medal"><svg class="medal-svg" viewBox="0 0 120 120" width="64" height="64">
+  <defs>
+    <linearGradient id="rim-common" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#e9ebef"/>
+      <stop offset="0.5" stop-color="#aeb4bd"/>
+      <stop offset="1" stop-color="#f2f4f6"/>
+    </linearGradient>
+    <radialGradient id="field-common" cx="0.5" cy="0.42" r="0.7">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.55"/>
+      <stop offset="0.55" stop-color="#f1efe8" stop-opacity="1"/>
+      <stop offset="1" stop-color="#f1efe8" stop-opacity="1"/>
+    </radialGradient>
+  </defs>
+  <!-- 缎带（在奖章之后） -->
+  <polygon points="44,4 57,4 54,42 50,49 46,42" fill="#9aa0a8"/>
+  <polygon points="63,4 76,4 74,42 70,49 66,42" fill="#9aa0a8"/>
+  <polygon points="52,5 56,5 55,40 53.5,44 52,40" fill="#ffffff" opacity="0.35"/>
+  <polygon points="64,5 68,5 68,40 66.5,44 65,40" fill="#ffffff" opacity="0.35"/>
+  <!-- 金属外圈 -->
+  <circle cx="60" cy="66" r="38" fill="url(#rim-common)" stroke="#8b929c" stroke-width="1.5"/>
+  <circle cx="91.0" cy="66.0" r="1.5" fill="#f2f4f6"/><circle cx="90.6" cy="70.8" r="1.5" fill="#f2f4f6"/><circle cx="89.5" cy="75.6" r="1.5" fill="#f2f4f6"/><circle cx="87.6" cy="80.1" r="1.5" fill="#f2f4f6"/><circle cx="85.1" cy="84.2" r="1.5" fill="#f2f4f6"/><circle cx="81.9" cy="87.9" r="1.5" fill="#f2f4f6"/><circle cx="78.2" cy="91.1" r="1.5" fill="#f2f4f6"/><circle cx="74.1" cy="93.6" r="1.5" fill="#f2f4f6"/><circle cx="69.6" cy="95.5" r="1.5" fill="#f2f4f6"/><circle cx="64.8" cy="96.6" r="1.5" fill="#f2f4f6"/><circle cx="60.0" cy="97.0" r="1.5" fill="#f2f4f6"/><circle cx="55.2" cy="96.6" r="1.5" fill="#f2f4f6"/><circle cx="50.4" cy="95.5" r="1.5" fill="#f2f4f6"/><circle cx="45.9" cy="93.6" r="1.5" fill="#f2f4f6"/><circle cx="41.8" cy="91.1" r="1.5" fill="#f2f4f6"/><circle cx="38.1" cy="87.9" r="1.5" fill="#f2f4f6"/><circle cx="34.9" cy="84.2" r="1.5" fill="#f2f4f6"/><circle cx="32.4" cy="80.1" r="1.5" fill="#f2f4f6"/><circle cx="30.5" cy="75.6" r="1.5" fill="#f2f4f6"/><circle cx="29.4" cy="70.8" r="1.5" fill="#f2f4f6"/><circle cx="29.0" cy="66.0" r="1.5" fill="#f2f4f6"/><circle cx="29.4" cy="61.2" r="1.5" fill="#f2f4f6"/><circle cx="30.5" cy="56.4" r="1.5" fill="#f2f4f6"/><circle cx="32.4" cy="51.9" r="1.5" fill="#f2f4f6"/><circle cx="34.9" cy="47.8" r="1.5" fill="#f2f4f6"/><circle cx="38.1" cy="44.1" r="1.5" fill="#f2f4f6"/><circle cx="41.8" cy="40.9" r="1.5" fill="#f2f4f6"/><circle cx="45.9" cy="38.4" r="1.5" fill="#f2f4f6"/><circle cx="50.4" cy="36.5" r="1.5" fill="#f2f4f6"/><circle cx="55.2" cy="35.4" r="1.5" fill="#f2f4f6"/><circle cx="60.0" cy="35.0" r="1.5" fill="#f2f4f6"/><circle cx="64.8" cy="35.4" r="1.5" fill="#f2f4f6"/><circle cx="69.6" cy="36.5" r="1.5" fill="#f2f4f6"/><circle cx="74.1" cy="38.4" r="1.5" fill="#f2f4f6"/><circle cx="78.2" cy="40.9" r="1.5" fill="#f2f4f6"/><circle cx="81.9" cy="44.1" r="1.5" fill="#f2f4f6"/><circle cx="85.1" cy="47.8" r="1.5" fill="#f2f4f6"/><circle cx="87.6" cy="51.9" r="1.5" fill="#f2f4f6"/><circle cx="89.5" cy="56.4" r="1.5" fill="#f2f4f6"/><circle cx="90.6" cy="61.2" r="1.5" fill="#f2f4f6"/>
+  <!-- 珐琅彩面 -->
+  <circle cx="60" cy="66" r="27" fill="url(#field-common)" stroke="#b4b2a9" stroke-width="2.5"/>
+  <!-- 中央字（字体按门类） -->
+  <text x="60" y="66" font-family="'PingFang SC','Hiragino Sans GB',sans-serif" font-size="30" font-weight="800"
+        fill="#5f5e5a" text-anchor="middle" dominant-baseline="central">造</text>
+</svg></div><div class="badge-name">造物者</div><div class="badge-rarity" style="color:#5f5e5a">凡品</div><div class="badge-meta">获得于 2025-04-01</div></div>
+<div class="badge-card is-unlocked" data-cat="companionship" data-unlocked="1"><div class="badge-medal"><svg class="medal-svg" viewBox="0 0 120 120" width="64" height="64">
+  <defs>
+    <linearGradient id="rim-common" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#e9ebef"/>
+      <stop offset="0.5" stop-color="#aeb4bd"/>
+      <stop offset="1" stop-color="#f2f4f6"/>
+    </linearGradient>
+    <radialGradient id="field-common" cx="0.5" cy="0.42" r="0.7">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.55"/>
+      <stop offset="0.55" stop-color="#f1efe8" stop-opacity="1"/>
+      <stop offset="1" stop-color="#f1efe8" stop-opacity="1"/>
+    </radialGradient>
+  </defs>
+  <!-- 缎带（在奖章之后） -->
+  <polygon points="44,4 57,4 54,42 50,49 46,42" fill="#9aa0a8"/>
+  <polygon points="63,4 76,4 74,42 70,49 66,42" fill="#9aa0a8"/>
+  <polygon points="52,5 56,5 55,40 53.5,44 52,40" fill="#ffffff" opacity="0.35"/>
+  <polygon points="64,5 68,5 68,40 66.5,44 65,40" fill="#ffffff" opacity="0.35"/>
+  <!-- 金属外圈 -->
+  <circle cx="60" cy="66" r="38" fill="url(#rim-common)" stroke="#8b929c" stroke-width="1.5"/>
+  <circle cx="91.0" cy="66.0" r="1.5" fill="#f2f4f6"/><circle cx="90.6" cy="70.8" r="1.5" fill="#f2f4f6"/><circle cx="89.5" cy="75.6" r="1.5" fill="#f2f4f6"/><circle cx="87.6" cy="80.1" r="1.5" fill="#f2f4f6"/><circle cx="85.1" cy="84.2" r="1.5" fill="#f2f4f6"/><circle cx="81.9" cy="87.9" r="1.5" fill="#f2f4f6"/><circle cx="78.2" cy="91.1" r="1.5" fill="#f2f4f6"/><circle cx="74.1" cy="93.6" r="1.5" fill="#f2f4f6"/><circle cx="69.6" cy="95.5" r="1.5" fill="#f2f4f6"/><circle cx="64.8" cy="96.6" r="1.5" fill="#f2f4f6"/><circle cx="60.0" cy="97.0" r="1.5" fill="#f2f4f6"/><circle cx="55.2" cy="96.6" r="1.5" fill="#f2f4f6"/><circle cx="50.4" cy="95.5" r="1.5" fill="#f2f4f6"/><circle cx="45.9" cy="93.6" r="1.5" fill="#f2f4f6"/><circle cx="41.8" cy="91.1" r="1.5" fill="#f2f4f6"/><circle cx="38.1" cy="87.9" r="1.5" fill="#f2f4f6"/><circle cx="34.9" cy="84.2" r="1.5" fill="#f2f4f6"/><circle cx="32.4" cy="80.1" r="1.5" fill="#f2f4f6"/><circle cx="30.5" cy="75.6" r="1.5" fill="#f2f4f6"/><circle cx="29.4" cy="70.8" r="1.5" fill="#f2f4f6"/><circle cx="29.0" cy="66.0" r="1.5" fill="#f2f4f6"/><circle cx="29.4" cy="61.2" r="1.5" fill="#f2f4f6"/><circle cx="30.5" cy="56.4" r="1.5" fill="#f2f4f6"/><circle cx="32.4" cy="51.9" r="1.5" fill="#f2f4f6"/><circle cx="34.9" cy="47.8" r="1.5" fill="#f2f4f6"/><circle cx="38.1" cy="44.1" r="1.5" fill="#f2f4f6"/><circle cx="41.8" cy="40.9" r="1.5" fill="#f2f4f6"/><circle cx="45.9" cy="38.4" r="1.5" fill="#f2f4f6"/><circle cx="50.4" cy="36.5" r="1.5" fill="#f2f4f6"/><circle cx="55.2" cy="35.4" r="1.5" fill="#f2f4f6"/><circle cx="60.0" cy="35.0" r="1.5" fill="#f2f4f6"/><circle cx="64.8" cy="35.4" r="1.5" fill="#f2f4f6"/><circle cx="69.6" cy="36.5" r="1.5" fill="#f2f4f6"/><circle cx="74.1" cy="38.4" r="1.5" fill="#f2f4f6"/><circle cx="78.2" cy="40.9" r="1.5" fill="#f2f4f6"/><circle cx="81.9" cy="44.1" r="1.5" fill="#f2f4f6"/><circle cx="85.1" cy="47.8" r="1.5" fill="#f2f4f6"/><circle cx="87.6" cy="51.9" r="1.5" fill="#f2f4f6"/><circle cx="89.5" cy="56.4" r="1.5" fill="#f2f4f6"/><circle cx="90.6" cy="61.2" r="1.5" fill="#f2f4f6"/>
+  <!-- 珐琅彩面 -->
+  <circle cx="60" cy="66" r="27" fill="url(#field-common)" stroke="#b4b2a9" stroke-width="2.5"/>
+  <!-- 中央字（字体按门类） -->
+  <text x="60" y="66" font-family="'Kaiti SC','KaiTi','STKaiti',serif" font-size="30" font-weight="800"
+        fill="#5f5e5a" text-anchor="middle" dominant-baseline="central">旬</text>
+</svg></div><div class="badge-name">而立之交</div><div class="badge-rarity" style="color:#5f5e5a">凡品</div><div class="badge-meta">获得于 2025-03-15</div></div>
+<div class="badge-card is-unlocked" data-cat="writing" data-unlocked="1"><div class="badge-medal"><svg class="medal-svg" viewBox="0 0 120 120" width="64" height="64">
+  <defs>
+    <linearGradient id="rim-common" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#e9ebef"/>
+      <stop offset="0.5" stop-color="#aeb4bd"/>
+      <stop offset="1" stop-color="#f2f4f6"/>
+    </linearGradient>
+    <radialGradient id="field-common" cx="0.5" cy="0.42" r="0.7">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.55"/>
+      <stop offset="0.55" stop-color="#f1efe8" stop-opacity="1"/>
+      <stop offset="1" stop-color="#f1efe8" stop-opacity="1"/>
+    </radialGradient>
+  </defs>
+  <!-- 缎带（在奖章之后） -->
+  <polygon points="44,4 57,4 54,42 50,49 46,42" fill="#9aa0a8"/>
+  <polygon points="63,4 76,4 74,42 70,49 66,42" fill="#9aa0a8"/>
+  <polygon points="52,5 56,5 55,40 53.5,44 52,40" fill="#ffffff" opacity="0.35"/>
+  <polygon points="64,5 68,5 68,40 66.5,44 65,40" fill="#ffffff" opacity="0.35"/>
+  <!-- 金属外圈 -->
+  <circle cx="60" cy="66" r="38" fill="url(#rim-common)" stroke="#8b929c" stroke-width="1.5"/>
+  <circle cx="91.0" cy="66.0" r="1.5" fill="#f2f4f6"/><circle cx="90.6" cy="70.8" r="1.5" fill="#f2f4f6"/><circle cx="89.5" cy="75.6" r="1.5" fill="#f2f4f6"/><circle cx="87.6" cy="80.1" r="1.5" fill="#f2f4f6"/><circle cx="85.1" cy="84.2" r="1.5" fill="#f2f4f6"/><circle cx="81.9" cy="87.9" r="1.5" fill="#f2f4f6"/><circle cx="78.2" cy="91.1" r="1.5" fill="#f2f4f6"/><circle cx="74.1" cy="93.6" r="1.5" fill="#f2f4f6"/><circle cx="69.6" cy="95.5" r="1.5" fill="#f2f4f6"/><circle cx="64.8" cy="96.6" r="1.5" fill="#f2f4f6"/><circle cx="60.0" cy="97.0" r="1.5" fill="#f2f4f6"/><circle cx="55.2" cy="96.6" r="1.5" fill="#f2f4f6"/><circle cx="50.4" cy="95.5" r="1.5" fill="#f2f4f6"/><circle cx="45.9" cy="93.6" r="1.5" fill="#f2f4f6"/><circle cx="41.8" cy="91.1" r="1.5" fill="#f2f4f6"/><circle cx="38.1" cy="87.9" r="1.5" fill="#f2f4f6"/><circle cx="34.9" cy="84.2" r="1.5" fill="#f2f4f6"/><circle cx="32.4" cy="80.1" r="1.5" fill="#f2f4f6"/><circle cx="30.5" cy="75.6" r="1.5" fill="#f2f4f6"/><circle cx="29.4" cy="70.8" r="1.5" fill="#f2f4f6"/><circle cx="29.0" cy="66.0" r="1.5" fill="#f2f4f6"/><circle cx="29.4" cy="61.2" r="1.5" fill="#f2f4f6"/><circle cx="30.5" cy="56.4" r="1.5" fill="#f2f4f6"/><circle cx="32.4" cy="51.9" r="1.5" fill="#f2f4f6"/><circle cx="34.9" cy="47.8" r="1.5" fill="#f2f4f6"/><circle cx="38.1" cy="44.1" r="1.5" fill="#f2f4f6"/><circle cx="41.8" cy="40.9" r="1.5" fill="#f2f4f6"/><circle cx="45.9" cy="38.4" r="1.5" fill="#f2f4f6"/><circle cx="50.4" cy="36.5" r="1.5" fill="#f2f4f6"/><circle cx="55.2" cy="35.4" r="1.5" fill="#f2f4f6"/><circle cx="60.0" cy="35.0" r="1.5" fill="#f2f4f6"/><circle cx="64.8" cy="35.4" r="1.5" fill="#f2f4f6"/><circle cx="69.6" cy="36.5" r="1.5" fill="#f2f4f6"/><circle cx="74.1" cy="38.4" r="1.5" fill="#f2f4f6"/><circle cx="78.2" cy="40.9" r="1.5" fill="#f2f4f6"/><circle cx="81.9" cy="44.1" r="1.5" fill="#f2f4f6"/><circle cx="85.1" cy="47.8" r="1.5" fill="#f2f4f6"/><circle cx="87.6" cy="51.9" r="1.5" fill="#f2f4f6"/><circle cx="89.5" cy="56.4" r="1.5" fill="#f2f4f6"/><circle cx="90.6" cy="61.2" r="1.5" fill="#f2f4f6"/>
+  <!-- 珐琅彩面 -->
+  <circle cx="60" cy="66" r="27" fill="url(#field-common)" stroke="#b4b2a9" stroke-width="2.5"/>
+  <!-- 中央字（字体按门类） -->
+  <text x="60" y="66" font-family="'Songti SC','STSong','SimSun',serif" font-size="30" font-weight="800"
+        fill="#5f5e5a" text-anchor="middle" dominant-baseline="central">章</text>
+</svg></div><div class="badge-name">十章之功</div><div class="badge-rarity" style="color:#5f5e5a">凡品</div><div class="badge-meta">获得于 2025-03-11</div></div>
+<div class="badge-card is-unlocked" data-cat="companionship" data-unlocked="1"><div class="badge-medal"><svg class="medal-svg" viewBox="0 0 120 120" width="64" height="64">
+  <defs>
+    <linearGradient id="rim-common" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#e9ebef"/>
+      <stop offset="0.5" stop-color="#aeb4bd"/>
+      <stop offset="1" stop-color="#f2f4f6"/>
+    </linearGradient>
+    <radialGradient id="field-common" cx="0.5" cy="0.42" r="0.7">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.55"/>
+      <stop offset="0.55" stop-color="#f1efe8" stop-opacity="1"/>
+      <stop offset="1" stop-color="#f1efe8" stop-opacity="1"/>
+    </radialGradient>
+  </defs>
+  <!-- 缎带（在奖章之后） -->
+  <polygon points="44,4 57,4 54,42 50,49 46,42" fill="#9aa0a8"/>
+  <polygon points="63,4 76,4 74,42 70,49 66,42" fill="#9aa0a8"/>
+  <polygon points="52,5 56,5 55,40 53.5,44 52,40" fill="#ffffff" opacity="0.35"/>
+  <polygon points="64,5 68,5 68,40 66.5,44 65,40" fill="#ffffff" opacity="0.35"/>
+  <!-- 金属外圈 -->
+  <circle cx="60" cy="66" r="38" fill="url(#rim-common)" stroke="#8b929c" stroke-width="1.5"/>
+  <circle cx="91.0" cy="66.0" r="1.5" fill="#f2f4f6"/><circle cx="90.6" cy="70.8" r="1.5" fill="#f2f4f6"/><circle cx="89.5" cy="75.6" r="1.5" fill="#f2f4f6"/><circle cx="87.6" cy="80.1" r="1.5" fill="#f2f4f6"/><circle cx="85.1" cy="84.2" r="1.5" fill="#f2f4f6"/><circle cx="81.9" cy="87.9" r="1.5" fill="#f2f4f6"/><circle cx="78.2" cy="91.1" r="1.5" fill="#f2f4f6"/><circle cx="74.1" cy="93.6" r="1.5" fill="#f2f4f6"/><circle cx="69.6" cy="95.5" r="1.5" fill="#f2f4f6"/><circle cx="64.8" cy="96.6" r="1.5" fill="#f2f4f6"/><circle cx="60.0" cy="97.0" r="1.5" fill="#f2f4f6"/><circle cx="55.2" cy="96.6" r="1.5" fill="#f2f4f6"/><circle cx="50.4" cy="95.5" r="1.5" fill="#f2f4f6"/><circle cx="45.9" cy="93.6" r="1.5" fill="#f2f4f6"/><circle cx="41.8" cy="91.1" r="1.5" fill="#f2f4f6"/><circle cx="38.1" cy="87.9" r="1.5" fill="#f2f4f6"/><circle cx="34.9" cy="84.2" r="1.5" fill="#f2f4f6"/><circle cx="32.4" cy="80.1" r="1.5" fill="#f2f4f6"/><circle cx="30.5" cy="75.6" r="1.5" fill="#f2f4f6"/><circle cx="29.4" cy="70.8" r="1.5" fill="#f2f4f6"/><circle cx="29.0" cy="66.0" r="1.5" fill="#f2f4f6"/><circle cx="29.4" cy="61.2" r="1.5" fill="#f2f4f6"/><circle cx="30.5" cy="56.4" r="1.5" fill="#f2f4f6"/><circle cx="32.4" cy="51.9" r="1.5" fill="#f2f4f6"/><circle cx="34.9" cy="47.8" r="1.5" fill="#f2f4f6"/><circle cx="38.1" cy="44.1" r="1.5" fill="#f2f4f6"/><circle cx="41.8" cy="40.9" r="1.5" fill="#f2f4f6"/><circle cx="45.9" cy="38.4" r="1.5" fill="#f2f4f6"/><circle cx="50.4" cy="36.5" r="1.5" fill="#f2f4f6"/><circle cx="55.2" cy="35.4" r="1.5" fill="#f2f4f6"/><circle cx="60.0" cy="35.0" r="1.5" fill="#f2f4f6"/><circle cx="64.8" cy="35.4" r="1.5" fill="#f2f4f6"/><circle cx="69.6" cy="36.5" r="1.5" fill="#f2f4f6"/><circle cx="74.1" cy="38.4" r="1.5" fill="#f2f4f6"/><circle cx="78.2" cy="40.9" r="1.5" fill="#f2f4f6"/><circle cx="81.9" cy="44.1" r="1.5" fill="#f2f4f6"/><circle cx="85.1" cy="47.8" r="1.5" fill="#f2f4f6"/><circle cx="87.6" cy="51.9" r="1.5" fill="#f2f4f6"/><circle cx="89.5" cy="56.4" r="1.5" fill="#f2f4f6"/><circle cx="90.6" cy="61.2" r="1.5" fill="#f2f4f6"/>
+  <!-- 珐琅彩面 -->
+  <circle cx="60" cy="66" r="27" fill="url(#field-common)" stroke="#b4b2a9" stroke-width="2.5"/>
+  <!-- 中央字（字体按门类） -->
+  <text x="60" y="66" font-family="'Kaiti SC','KaiTi','STKaiti',serif" font-size="30" font-weight="800"
+        fill="#5f5e5a" text-anchor="middle" dominant-baseline="central">周</text>
+</svg></div><div class="badge-name">一周不辍</div><div class="badge-rarity" style="color:#5f5e5a">凡品</div><div class="badge-meta">获得于 2025-03-05</div></div>
+<div class="badge-card is-unlocked" data-cat="knowledge" data-unlocked="1"><div class="badge-medal"><svg class="medal-svg" viewBox="0 0 120 120" width="64" height="64">
+  <defs>
+    <linearGradient id="rim-common" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#e9ebef"/>
+      <stop offset="0.5" stop-color="#aeb4bd"/>
+      <stop offset="1" stop-color="#f2f4f6"/>
+    </linearGradient>
+    <radialGradient id="field-common" cx="0.5" cy="0.42" r="0.7">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.55"/>
+      <stop offset="0.55" stop-color="#f1efe8" stop-opacity="1"/>
+      <stop offset="1" stop-color="#f1efe8" stop-opacity="1"/>
+    </radialGradient>
+  </defs>
+  <!-- 缎带（在奖章之后） -->
+  <polygon points="44,4 57,4 54,42 50,49 46,42" fill="#9aa0a8"/>
+  <polygon points="63,4 76,4 74,42 70,49 66,42" fill="#9aa0a8"/>
+  <polygon points="52,5 56,5 55,40 53.5,44 52,40" fill="#ffffff" opacity="0.35"/>
+  <polygon points="64,5 68,5 68,40 66.5,44 65,40" fill="#ffffff" opacity="0.35"/>
+  <!-- 金属外圈 -->
+  <circle cx="60" cy="66" r="38" fill="url(#rim-common)" stroke="#8b929c" stroke-width="1.5"/>
+  <circle cx="91.0" cy="66.0" r="1.5" fill="#f2f4f6"/><circle cx="90.6" cy="70.8" r="1.5" fill="#f2f4f6"/><circle cx="89.5" cy="75.6" r="1.5" fill="#f2f4f6"/><circle cx="87.6" cy="80.1" r="1.5" fill="#f2f4f6"/><circle cx="85.1" cy="84.2" r="1.5" fill="#f2f4f6"/><circle cx="81.9" cy="87.9" r="1.5" fill="#f2f4f6"/><circle cx="78.2" cy="91.1" r="1.5" fill="#f2f4f6"/><circle cx="74.1" cy="93.6" r="1.5" fill="#f2f4f6"/><circle cx="69.6" cy="95.5" r="1.5" fill="#f2f4f6"/><circle cx="64.8" cy="96.6" r="1.5" fill="#f2f4f6"/><circle cx="60.0" cy="97.0" r="1.5" fill="#f2f4f6"/><circle cx="55.2" cy="96.6" r="1.5" fill="#f2f4f6"/><circle cx="50.4" cy="95.5" r="1.5" fill="#f2f4f6"/><circle cx="45.9" cy="93.6" r="1.5" fill="#f2f4f6"/><circle cx="41.8" cy="91.1" r="1.5" fill="#f2f4f6"/><circle cx="38.1" cy="87.9" r="1.5" fill="#f2f4f6"/><circle cx="34.9" cy="84.2" r="1.5" fill="#f2f4f6"/><circle cx="32.4" cy="80.1" r="1.5" fill="#f2f4f6"/><circle cx="30.5" cy="75.6" r="1.5" fill="#f2f4f6"/><circle cx="29.4" cy="70.8" r="1.5" fill="#f2f4f6"/><circle cx="29.0" cy="66.0" r="1.5" fill="#f2f4f6"/><circle cx="29.4" cy="61.2" r="1.5" fill="#f2f4f6"/><circle cx="30.5" cy="56.4" r="1.5" fill="#f2f4f6"/><circle cx="32.4" cy="51.9" r="1.5" fill="#f2f4f6"/><circle cx="34.9" cy="47.8" r="1.5" fill="#f2f4f6"/><circle cx="38.1" cy="44.1" r="1.5" fill="#f2f4f6"/><circle cx="41.8" cy="40.9" r="1.5" fill="#f2f4f6"/><circle cx="45.9" cy="38.4" r="1.5" fill="#f2f4f6"/><circle cx="50.4" cy="36.5" r="1.5" fill="#f2f4f6"/><circle cx="55.2" cy="35.4" r="1.5" fill="#f2f4f6"/><circle cx="60.0" cy="35.0" r="1.5" fill="#f2f4f6"/><circle cx="64.8" cy="35.4" r="1.5" fill="#f2f4f6"/><circle cx="69.6" cy="36.5" r="1.5" fill="#f2f4f6"/><circle cx="74.1" cy="38.4" r="1.5" fill="#f2f4f6"/><circle cx="78.2" cy="40.9" r="1.5" fill="#f2f4f6"/><circle cx="81.9" cy="44.1" r="1.5" fill="#f2f4f6"/><circle cx="85.1" cy="47.8" r="1.5" fill="#f2f4f6"/><circle cx="87.6" cy="51.9" r="1.5" fill="#f2f4f6"/><circle cx="89.5" cy="56.4" r="1.5" fill="#f2f4f6"/><circle cx="90.6" cy="61.2" r="1.5" fill="#f2f4f6"/>
+  <!-- 珐琅彩面 -->
+  <circle cx="60" cy="66" r="27" fill="url(#field-common)" stroke="#b4b2a9" stroke-width="2.5"/>
+  <!-- 中央字（字体按门类） -->
+  <text x="60" y="66" font-family="'FangSong','STFangsong',serif" font-size="30" font-weight="800"
+        fill="#5f5e5a" text-anchor="middle" dominant-baseline="central">记</text>
+</svg></div><div class="badge-name">记事者</div><div class="badge-rarity" style="color:#5f5e5a">凡品</div><div class="badge-meta">获得于 2025-02-02</div></div>
+<div class="badge-card is-unlocked" data-cat="cultivation" data-unlocked="1"><div class="badge-medal"><svg class="medal-svg" viewBox="0 0 120 120" width="64" height="64">
+  <defs>
+    <linearGradient id="rim-common" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#e9ebef"/>
+      <stop offset="0.5" stop-color="#aeb4bd"/>
+      <stop offset="1" stop-color="#f2f4f6"/>
+    </linearGradient>
+    <radialGradient id="field-common" cx="0.5" cy="0.42" r="0.7">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.55"/>
+      <stop offset="0.55" stop-color="#f1efe8" stop-opacity="1"/>
+      <stop offset="1" stop-color="#f1efe8" stop-opacity="1"/>
+    </radialGradient>
+  </defs>
+  <!-- 缎带（在奖章之后） -->
+  <polygon points="44,4 57,4 54,42 50,49 46,42" fill="#9aa0a8"/>
+  <polygon points="63,4 76,4 74,42 70,49 66,42" fill="#9aa0a8"/>
+  <polygon points="52,5 56,5 55,40 53.5,44 52,40" fill="#ffffff" opacity="0.35"/>
+  <polygon points="64,5 68,5 68,40 66.5,44 65,40" fill="#ffffff" opacity="0.35"/>
+  <!-- 金属外圈 -->
+  <circle cx="60" cy="66" r="38" fill="url(#rim-common)" stroke="#8b929c" stroke-width="1.5"/>
+  <circle cx="91.0" cy="66.0" r="1.5" fill="#f2f4f6"/><circle cx="90.6" cy="70.8" r="1.5" fill="#f2f4f6"/><circle cx="89.5" cy="75.6" r="1.5" fill="#f2f4f6"/><circle cx="87.6" cy="80.1" r="1.5" fill="#f2f4f6"/><circle cx="85.1" cy="84.2" r="1.5" fill="#f2f4f6"/><circle cx="81.9" cy="87.9" r="1.5" fill="#f2f4f6"/><circle cx="78.2" cy="91.1" r="1.5" fill="#f2f4f6"/><circle cx="74.1" cy="93.6" r="1.5" fill="#f2f4f6"/><circle cx="69.6" cy="95.5" r="1.5" fill="#f2f4f6"/><circle cx="64.8" cy="96.6" r="1.5" fill="#f2f4f6"/><circle cx="60.0" cy="97.0" r="1.5" fill="#f2f4f6"/><circle cx="55.2" cy="96.6" r="1.5" fill="#f2f4f6"/><circle cx="50.4" cy="95.5" r="1.5" fill="#f2f4f6"/><circle cx="45.9" cy="93.6" r="1.5" fill="#f2f4f6"/><circle cx="41.8" cy="91.1" r="1.5" fill="#f2f4f6"/><circle cx="38.1" cy="87.9" r="1.5" fill="#f2f4f6"/><circle cx="34.9" cy="84.2" r="1.5" fill="#f2f4f6"/><circle cx="32.4" cy="80.1" r="1.5" fill="#f2f4f6"/><circle cx="30.5" cy="75.6" r="1.5" fill="#f2f4f6"/><circle cx="29.4" cy="70.8" r="1.5" fill="#f2f4f6"/><circle cx="29.0" cy="66.0" r="1.5" fill="#f2f4f6"/><circle cx="29.4" cy="61.2" r="1.5" fill="#f2f4f6"/><circle cx="30.5" cy="56.4" r="1.5" fill="#f2f4f6"/><circle cx="32.4" cy="51.9" r="1.5" fill="#f2f4f6"/><circle cx="34.9" cy="47.8" r="1.5" fill="#f2f4f6"/><circle cx="38.1" cy="44.1" r="1.5" fill="#f2f4f6"/><circle cx="41.8" cy="40.9" r="1.5" fill="#f2f4f6"/><circle cx="45.9" cy="38.4" r="1.5" fill="#f2f4f6"/><circle cx="50.4" cy="36.5" r="1.5" fill="#f2f4f6"/><circle cx="55.2" cy="35.4" r="1.5" fill="#f2f4f6"/><circle cx="60.0" cy="35.0" r="1.5" fill="#f2f4f6"/><circle cx="64.8" cy="35.4" r="1.5" fill="#f2f4f6"/><circle cx="69.6" cy="36.5" r="1.5" fill="#f2f4f6"/><circle cx="74.1" cy="38.4" r="1.5" fill="#f2f4f6"/><circle cx="78.2" cy="40.9" r="1.5" fill="#f2f4f6"/><circle cx="81.9" cy="44.1" r="1.5" fill="#f2f4f6"/><circle cx="85.1" cy="47.8" r="1.5" fill="#f2f4f6"/><circle cx="87.6" cy="51.9" r="1.5" fill="#f2f4f6"/><circle cx="89.5" cy="56.4" r="1.5" fill="#f2f4f6"/><circle cx="90.6" cy="61.2" r="1.5" fill="#f2f4f6"/>
+  <!-- 珐琅彩面 -->
+  <circle cx="60" cy="66" r="27" fill="url(#field-common)" stroke="#b4b2a9" stroke-width="2.5"/>
+  <!-- 中央字（字体按门类） -->
+  <text x="60" y="66" font-family="'PingFang SC','Hiragino Sans GB',sans-serif" font-size="30" font-weight="800"
+        fill="#5f5e5a" text-anchor="middle" dominant-baseline="central">登</text>
+</svg></div><div class="badge-name">登堂</div><div class="badge-rarity" style="color:#5f5e5a">凡品</div><div class="badge-meta">获得于 2025-01-25</div></div>
+<div class="badge-card is-unlocked" data-cat="writing" data-unlocked="1"><div class="badge-medal"><svg class="medal-svg" viewBox="0 0 120 120" width="64" height="64">
+  <defs>
+    <linearGradient id="rim-common" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#e9ebef"/>
+      <stop offset="0.5" stop-color="#aeb4bd"/>
+      <stop offset="1" stop-color="#f2f4f6"/>
+    </linearGradient>
+    <radialGradient id="field-common" cx="0.5" cy="0.42" r="0.7">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.55"/>
+      <stop offset="0.55" stop-color="#f1efe8" stop-opacity="1"/>
+      <stop offset="1" stop-color="#f1efe8" stop-opacity="1"/>
+    </radialGradient>
+  </defs>
+  <!-- 缎带（在奖章之后） -->
+  <polygon points="44,4 57,4 54,42 50,49 46,42" fill="#9aa0a8"/>
+  <polygon points="63,4 76,4 74,42 70,49 66,42" fill="#9aa0a8"/>
+  <polygon points="52,5 56,5 55,40 53.5,44 52,40" fill="#ffffff" opacity="0.35"/>
+  <polygon points="64,5 68,5 68,40 66.5,44 65,40" fill="#ffffff" opacity="0.35"/>
+  <!-- 金属外圈 -->
+  <circle cx="60" cy="66" r="38" fill="url(#rim-common)" stroke="#8b929c" stroke-width="1.5"/>
+  <circle cx="91.0" cy="66.0" r="1.5" fill="#f2f4f6"/><circle cx="90.6" cy="70.8" r="1.5" fill="#f2f4f6"/><circle cx="89.5" cy="75.6" r="1.5" fill="#f2f4f6"/><circle cx="87.6" cy="80.1" r="1.5" fill="#f2f4f6"/><circle cx="85.1" cy="84.2" r="1.5" fill="#f2f4f6"/><circle cx="81.9" cy="87.9" r="1.5" fill="#f2f4f6"/><circle cx="78.2" cy="91.1" r="1.5" fill="#f2f4f6"/><circle cx="74.1" cy="93.6" r="1.5" fill="#f2f4f6"/><circle cx="69.6" cy="95.5" r="1.5" fill="#f2f4f6"/><circle cx="64.8" cy="96.6" r="1.5" fill="#f2f4f6"/><circle cx="60.0" cy="97.0" r="1.5" fill="#f2f4f6"/><circle cx="55.2" cy="96.6" r="1.5" fill="#f2f4f6"/><circle cx="50.4" cy="95.5" r="1.5" fill="#f2f4f6"/><circle cx="45.9" cy="93.6" r="1.5" fill="#f2f4f6"/><circle cx="41.8" cy="91.1" r="1.5" fill="#f2f4f6"/><circle cx="38.1" cy="87.9" r="1.5" fill="#f2f4f6"/><circle cx="34.9" cy="84.2" r="1.5" fill="#f2f4f6"/><circle cx="32.4" cy="80.1" r="1.5" fill="#f2f4f6"/><circle cx="30.5" cy="75.6" r="1.5" fill="#f2f4f6"/><circle cx="29.4" cy="70.8" r="1.5" fill="#f2f4f6"/><circle cx="29.0" cy="66.0" r="1.5" fill="#f2f4f6"/><circle cx="29.4" cy="61.2" r="1.5" fill="#f2f4f6"/><circle cx="30.5" cy="56.4" r="1.5" fill="#f2f4f6"/><circle cx="32.4" cy="51.9" r="1.5" fill="#f2f4f6"/><circle cx="34.9" cy="47.8" r="1.5" fill="#f2f4f6"/><circle cx="38.1" cy="44.1" r="1.5" fill="#f2f4f6"/><circle cx="41.8" cy="40.9" r="1.5" fill="#f2f4f6"/><circle cx="45.9" cy="38.4" r="1.5" fill="#f2f4f6"/><circle cx="50.4" cy="36.5" r="1.5" fill="#f2f4f6"/><circle cx="55.2" cy="35.4" r="1.5" fill="#f2f4f6"/><circle cx="60.0" cy="35.0" r="1.5" fill="#f2f4f6"/><circle cx="64.8" cy="35.4" r="1.5" fill="#f2f4f6"/><circle cx="69.6" cy="36.5" r="1.5" fill="#f2f4f6"/><circle cx="74.1" cy="38.4" r="1.5" fill="#f2f4f6"/><circle cx="78.2" cy="40.9" r="1.5" fill="#f2f4f6"/><circle cx="81.9" cy="44.1" r="1.5" fill="#f2f4f6"/><circle cx="85.1" cy="47.8" r="1.5" fill="#f2f4f6"/><circle cx="87.6" cy="51.9" r="1.5" fill="#f2f4f6"/><circle cx="89.5" cy="56.4" r="1.5" fill="#f2f4f6"/><circle cx="90.6" cy="61.2" r="1.5" fill="#f2f4f6"/>
+  <!-- 珐琅彩面 -->
+  <circle cx="60" cy="66" r="27" fill="url(#field-common)" stroke="#b4b2a9" stroke-width="2.5"/>
+  <!-- 中央字（字体按门类） -->
+  <text x="60" y="66" font-family="'Songti SC','STSong','SimSun',serif" font-size="30" font-weight="800"
+        fill="#5f5e5a" text-anchor="middle" dominant-baseline="central">校</text>
+</svg></div><div class="badge-name">校书郎</div><div class="badge-rarity" style="color:#5f5e5a">凡品</div><div class="badge-meta">获得于 2025-01-20</div></div>
+<div class="badge-card is-unlocked" data-cat="companionship" data-unlocked="1"><div class="badge-medal"><svg class="medal-svg" viewBox="0 0 120 120" width="64" height="64">
+  <defs>
+    <linearGradient id="rim-common" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#e9ebef"/>
+      <stop offset="0.5" stop-color="#aeb4bd"/>
+      <stop offset="1" stop-color="#f2f4f6"/>
+    </linearGradient>
+    <radialGradient id="field-common" cx="0.5" cy="0.42" r="0.7">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.55"/>
+      <stop offset="0.55" stop-color="#f1efe8" stop-opacity="1"/>
+      <stop offset="1" stop-color="#f1efe8" stop-opacity="1"/>
+    </radialGradient>
+  </defs>
+  <!-- 缎带（在奖章之后） -->
+  <polygon points="44,4 57,4 54,42 50,49 46,42" fill="#9aa0a8"/>
+  <polygon points="63,4 76,4 74,42 70,49 66,42" fill="#9aa0a8"/>
+  <polygon points="52,5 56,5 55,40 53.5,44 52,40" fill="#ffffff" opacity="0.35"/>
+  <polygon points="64,5 68,5 68,40 66.5,44 65,40" fill="#ffffff" opacity="0.35"/>
+  <!-- 金属外圈 -->
+  <circle cx="60" cy="66" r="38" fill="url(#rim-common)" stroke="#8b929c" stroke-width="1.5"/>
+  <circle cx="91.0" cy="66.0" r="1.5" fill="#f2f4f6"/><circle cx="90.6" cy="70.8" r="1.5" fill="#f2f4f6"/><circle cx="89.5" cy="75.6" r="1.5" fill="#f2f4f6"/><circle cx="87.6" cy="80.1" r="1.5" fill="#f2f4f6"/><circle cx="85.1" cy="84.2" r="1.5" fill="#f2f4f6"/><circle cx="81.9" cy="87.9" r="1.5" fill="#f2f4f6"/><circle cx="78.2" cy="91.1" r="1.5" fill="#f2f4f6"/><circle cx="74.1" cy="93.6" r="1.5" fill="#f2f4f6"/><circle cx="69.6" cy="95.5" r="1.5" fill="#f2f4f6"/><circle cx="64.8" cy="96.6" r="1.5" fill="#f2f4f6"/><circle cx="60.0" cy="97.0" r="1.5" fill="#f2f4f6"/><circle cx="55.2" cy="96.6" r="1.5" fill="#f2f4f6"/><circle cx="50.4" cy="95.5" r="1.5" fill="#f2f4f6"/><circle cx="45.9" cy="93.6" r="1.5" fill="#f2f4f6"/><circle cx="41.8" cy="91.1" r="1.5" fill="#f2f4f6"/><circle cx="38.1" cy="87.9" r="1.5" fill="#f2f4f6"/><circle cx="34.9" cy="84.2" r="1.5" fill="#f2f4f6"/><circle cx="32.4" cy="80.1" r="1.5" fill="#f2f4f6"/><circle cx="30.5" cy="75.6" r="1.5" fill="#f2f4f6"/><circle cx="29.4" cy="70.8" r="1.5" fill="#f2f4f6"/><circle cx="29.0" cy="66.0" r="1.5" fill="#f2f4f6"/><circle cx="29.4" cy="61.2" r="1.5" fill="#f2f4f6"/><circle cx="30.5" cy="56.4" r="1.5" fill="#f2f4f6"/><circle cx="32.4" cy="51.9" r="1.5" fill="#f2f4f6"/><circle cx="34.9" cy="47.8" r="1.5" fill="#f2f4f6"/><circle cx="38.1" cy="44.1" r="1.5" fill="#f2f4f6"/><circle cx="41.8" cy="40.9" r="1.5" fill="#f2f4f6"/><circle cx="45.9" cy="38.4" r="1.5" fill="#f2f4f6"/><circle cx="50.4" cy="36.5" r="1.5" fill="#f2f4f6"/><circle cx="55.2" cy="35.4" r="1.5" fill="#f2f4f6"/><circle cx="60.0" cy="35.0" r="1.5" fill="#f2f4f6"/><circle cx="64.8" cy="35.4" r="1.5" fill="#f2f4f6"/><circle cx="69.6" cy="36.5" r="1.5" fill="#f2f4f6"/><circle cx="74.1" cy="38.4" r="1.5" fill="#f2f4f6"/><circle cx="78.2" cy="40.9" r="1.5" fill="#f2f4f6"/><circle cx="81.9" cy="44.1" r="1.5" fill="#f2f4f6"/><circle cx="85.1" cy="47.8" r="1.5" fill="#f2f4f6"/><circle cx="87.6" cy="51.9" r="1.5" fill="#f2f4f6"/><circle cx="89.5" cy="56.4" r="1.5" fill="#f2f4f6"/><circle cx="90.6" cy="61.2" r="1.5" fill="#f2f4f6"/>
+  <!-- 珐琅彩面 -->
+  <circle cx="60" cy="66" r="27" fill="url(#field-common)" stroke="#b4b2a9" stroke-width="2.5"/>
+  <!-- 中央字（字体按门类） -->
+  <text x="60" y="66" font-family="'Kaiti SC','KaiTi','STKaiti',serif" font-size="30" font-weight="800"
+        fill="#5f5e5a" text-anchor="middle" dominant-baseline="central">初</text>
+</svg></div><div class="badge-name">初见</div><div class="badge-rarity" style="color:#5f5e5a">凡品</div><div class="badge-meta">获得于 2024-09-15</div></div>
+<div class="badge-card is-unlocked" data-cat="companionship" data-unlocked="1"><div class="badge-medal"><svg class="medal-svg" viewBox="0 0 120 120" width="64" height="64">
+  <defs>
+    <linearGradient id="rim-rare" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#cfe4fb"/>
+      <stop offset="0.5" stop-color="#4f8fd6"/>
+      <stop offset="1" stop-color="#e3f0ff"/>
+    </linearGradient>
+    <radialGradient id="field-rare" cx="0.5" cy="0.42" r="0.7">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.55"/>
+      <stop offset="0.55" stop-color="#e6f1fb" stop-opacity="1"/>
+      <stop offset="1" stop-color="#e6f1fb" stop-opacity="1"/>
+    </radialGradient>
+  </defs>
+  <!-- 缎带（在奖章之后） -->
+  <polygon points="44,4 57,4 54,42 50,49 46,42" fill="#378add"/>
+  <polygon points="63,4 76,4 74,42 70,49 66,42" fill="#378add"/>
+  <polygon points="52,5 56,5 55,40 53.5,44 52,40" fill="#ffffff" opacity="0.35"/>
+  <polygon points="64,5 68,5 68,40 66.5,44 65,40" fill="#ffffff" opacity="0.35"/>
+  <!-- 金属外圈 -->
+  <circle cx="60" cy="66" r="38" fill="url(#rim-rare)" stroke="#2f6fb0" stroke-width="1.5"/>
+  <circle cx="91.0" cy="66.0" r="1.5" fill="#e3f0ff"/><circle cx="90.6" cy="70.8" r="1.5" fill="#e3f0ff"/><circle cx="89.5" cy="75.6" r="1.5" fill="#e3f0ff"/><circle cx="87.6" cy="80.1" r="1.5" fill="#e3f0ff"/><circle cx="85.1" cy="84.2" r="1.5" fill="#e3f0ff"/><circle cx="81.9" cy="87.9" r="1.5" fill="#e3f0ff"/><circle cx="78.2" cy="91.1" r="1.5" fill="#e3f0ff"/><circle cx="74.1" cy="93.6" r="1.5" fill="#e3f0ff"/><circle cx="69.6" cy="95.5" r="1.5" fill="#e3f0ff"/><circle cx="64.8" cy="96.6" r="1.5" fill="#e3f0ff"/><circle cx="60.0" cy="97.0" r="1.5" fill="#e3f0ff"/><circle cx="55.2" cy="96.6" r="1.5" fill="#e3f0ff"/><circle cx="50.4" cy="95.5" r="1.5" fill="#e3f0ff"/><circle cx="45.9" cy="93.6" r="1.5" fill="#e3f0ff"/><circle cx="41.8" cy="91.1" r="1.5" fill="#e3f0ff"/><circle cx="38.1" cy="87.9" r="1.5" fill="#e3f0ff"/><circle cx="34.9" cy="84.2" r="1.5" fill="#e3f0ff"/><circle cx="32.4" cy="80.1" r="1.5" fill="#e3f0ff"/><circle cx="30.5" cy="75.6" r="1.5" fill="#e3f0ff"/><circle cx="29.4" cy="70.8" r="1.5" fill="#e3f0ff"/><circle cx="29.0" cy="66.0" r="1.5" fill="#e3f0ff"/><circle cx="29.4" cy="61.2" r="1.5" fill="#e3f0ff"/><circle cx="30.5" cy="56.4" r="1.5" fill="#e3f0ff"/><circle cx="32.4" cy="51.9" r="1.5" fill="#e3f0ff"/><circle cx="34.9" cy="47.8" r="1.5" fill="#e3f0ff"/><circle cx="38.1" cy="44.1" r="1.5" fill="#e3f0ff"/><circle cx="41.8" cy="40.9" r="1.5" fill="#e3f0ff"/><circle cx="45.9" cy="38.4" r="1.5" fill="#e3f0ff"/><circle cx="50.4" cy="36.5" r="1.5" fill="#e3f0ff"/><circle cx="55.2" cy="35.4" r="1.5" fill="#e3f0ff"/><circle cx="60.0" cy="35.0" r="1.5" fill="#e3f0ff"/><circle cx="64.8" cy="35.4" r="1.5" fill="#e3f0ff"/><circle cx="69.6" cy="36.5" r="1.5" fill="#e3f0ff"/><circle cx="74.1" cy="38.4" r="1.5" fill="#e3f0ff"/><circle cx="78.2" cy="40.9" r="1.5" fill="#e3f0ff"/><circle cx="81.9" cy="44.1" r="1.5" fill="#e3f0ff"/><circle cx="85.1" cy="47.8" r="1.5" fill="#e3f0ff"/><circle cx="87.6" cy="51.9" r="1.5" fill="#e3f0ff"/><circle cx="89.5" cy="56.4" r="1.5" fill="#e3f0ff"/><circle cx="90.6" cy="61.2" r="1.5" fill="#e3f0ff"/>
+  <!-- 珐琅彩面 -->
+  <circle cx="60" cy="66" r="27" fill="url(#field-rare)" stroke="#378add" stroke-width="2.5"/>
+  <!-- 中央字（字体按门类） -->
+  <text x="60" y="66" font-family="'Kaiti SC','KaiTi','STKaiti',serif" font-size="30" font-weight="800"
+        fill="#185fa5" text-anchor="middle" dominant-baseline="central">友</text>
+</svg></div><div class="badge-name">老友</div><div class="badge-rarity" style="color:#185fa5">珍品</div><div class="badge-meta">早期补录</div></div>
+<div class="badge-card is-unlocked" data-cat="knowledge" data-unlocked="1"><div class="badge-medal"><svg class="medal-svg" viewBox="0 0 120 120" width="64" height="64">
+  <defs>
+    <linearGradient id="rim-rare" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#cfe4fb"/>
+      <stop offset="0.5" stop-color="#4f8fd6"/>
+      <stop offset="1" stop-color="#e3f0ff"/>
+    </linearGradient>
+    <radialGradient id="field-rare" cx="0.5" cy="0.42" r="0.7">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.55"/>
+      <stop offset="0.55" stop-color="#e6f1fb" stop-opacity="1"/>
+      <stop offset="1" stop-color="#e6f1fb" stop-opacity="1"/>
+    </radialGradient>
+  </defs>
+  <!-- 缎带（在奖章之后） -->
+  <polygon points="44,4 57,4 54,42 50,49 46,42" fill="#378add"/>
+  <polygon points="63,4 76,4 74,42 70,49 66,42" fill="#378add"/>
+  <polygon points="52,5 56,5 55,40 53.5,44 52,40" fill="#ffffff" opacity="0.35"/>
+  <polygon points="64,5 68,5 68,40 66.5,44 65,40" fill="#ffffff" opacity="0.35"/>
+  <!-- 金属外圈 -->
+  <circle cx="60" cy="66" r="38" fill="url(#rim-rare)" stroke="#2f6fb0" stroke-width="1.5"/>
+  <circle cx="91.0" cy="66.0" r="1.5" fill="#e3f0ff"/><circle cx="90.6" cy="70.8" r="1.5" fill="#e3f0ff"/><circle cx="89.5" cy="75.6" r="1.5" fill="#e3f0ff"/><circle cx="87.6" cy="80.1" r="1.5" fill="#e3f0ff"/><circle cx="85.1" cy="84.2" r="1.5" fill="#e3f0ff"/><circle cx="81.9" cy="87.9" r="1.5" fill="#e3f0ff"/><circle cx="78.2" cy="91.1" r="1.5" fill="#e3f0ff"/><circle cx="74.1" cy="93.6" r="1.5" fill="#e3f0ff"/><circle cx="69.6" cy="95.5" r="1.5" fill="#e3f0ff"/><circle cx="64.8" cy="96.6" r="1.5" fill="#e3f0ff"/><circle cx="60.0" cy="97.0" r="1.5" fill="#e3f0ff"/><circle cx="55.2" cy="96.6" r="1.5" fill="#e3f0ff"/><circle cx="50.4" cy="95.5" r="1.5" fill="#e3f0ff"/><circle cx="45.9" cy="93.6" r="1.5" fill="#e3f0ff"/><circle cx="41.8" cy="91.1" r="1.5" fill="#e3f0ff"/><circle cx="38.1" cy="87.9" r="1.5" fill="#e3f0ff"/><circle cx="34.9" cy="84.2" r="1.5" fill="#e3f0ff"/><circle cx="32.4" cy="80.1" r="1.5" fill="#e3f0ff"/><circle cx="30.5" cy="75.6" r="1.5" fill="#e3f0ff"/><circle cx="29.4" cy="70.8" r="1.5" fill="#e3f0ff"/><circle cx="29.0" cy="66.0" r="1.5" fill="#e3f0ff"/><circle cx="29.4" cy="61.2" r="1.5" fill="#e3f0ff"/><circle cx="30.5" cy="56.4" r="1.5" fill="#e3f0ff"/><circle cx="32.4" cy="51.9" r="1.5" fill="#e3f0ff"/><circle cx="34.9" cy="47.8" r="1.5" fill="#e3f0ff"/><circle cx="38.1" cy="44.1" r="1.5" fill="#e3f0ff"/><circle cx="41.8" cy="40.9" r="1.5" fill="#e3f0ff"/><circle cx="45.9" cy="38.4" r="1.5" fill="#e3f0ff"/><circle cx="50.4" cy="36.5" r="1.5" fill="#e3f0ff"/><circle cx="55.2" cy="35.4" r="1.5" fill="#e3f0ff"/><circle cx="60.0" cy="35.0" r="1.5" fill="#e3f0ff"/><circle cx="64.8" cy="35.4" r="1.5" fill="#e3f0ff"/><circle cx="69.6" cy="36.5" r="1.5" fill="#e3f0ff"/><circle cx="74.1" cy="38.4" r="1.5" fill="#e3f0ff"/><circle cx="78.2" cy="40.9" r="1.5" fill="#e3f0ff"/><circle cx="81.9" cy="44.1" r="1.5" fill="#e3f0ff"/><circle cx="85.1" cy="47.8" r="1.5" fill="#e3f0ff"/><circle cx="87.6" cy="51.9" r="1.5" fill="#e3f0ff"/><circle cx="89.5" cy="56.4" r="1.5" fill="#e3f0ff"/><circle cx="90.6" cy="61.2" r="1.5" fill="#e3f0ff"/>
+  <!-- 珐琅彩面 -->
+  <circle cx="60" cy="66" r="27" fill="url(#field-rare)" stroke="#378add" stroke-width="2.5"/>
+  <!-- 中央字（字体按门类） -->
+  <text x="60" y="66" font-family="'FangSong','STFangsong',serif" font-size="30" font-weight="800"
+        fill="#185fa5" text-anchor="middle" dominant-baseline="central">宫</text>
+</svg></div><div class="badge-name">记忆宫殿</div><div class="badge-rarity" style="color:#185fa5">珍品</div><div class="badge-meta">早期补录</div></div>
+<div class="badge-card is-locked" data-cat="cultivation" data-unlocked="0"><div class="badge-medal"><svg class="medal-svg" viewBox="0 0 120 120" width="64" height="64">
+  <defs>
+    <linearGradient id="rim-epic" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#ddd9fb"/>
+      <stop offset="0.5" stop-color="#7a6fd6"/>
+      <stop offset="1" stop-color="#efeefe"/>
+    </linearGradient>
+    <radialGradient id="field-epic" cx="0.5" cy="0.42" r="0.7">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.55"/>
+      <stop offset="0.55" stop-color="#eeedfe" stop-opacity="1"/>
+      <stop offset="1" stop-color="#eeedfe" stop-opacity="1"/>
+    </radialGradient>
+  </defs>
+  <!-- 缎带（在奖章之后） -->
+  <polygon points="44,4 57,4 54,42 50,49 46,42" fill="#7f77dd"/>
+  <polygon points="63,4 76,4 74,42 70,49 66,42" fill="#7f77dd"/>
+  <polygon points="52,5 56,5 55,40 53.5,44 52,40" fill="#ffffff" opacity="0.35"/>
+  <polygon points="64,5 68,5 68,40 66.5,44 65,40" fill="#ffffff" opacity="0.35"/>
+  <!-- 金属外圈 -->
+  <circle cx="60" cy="66" r="38" fill="url(#rim-epic)" stroke="#5a4fbf" stroke-width="1.5"/>
+  <circle cx="91.0" cy="66.0" r="1.5" fill="#efeefe"/><circle cx="90.6" cy="70.8" r="1.5" fill="#efeefe"/><circle cx="89.5" cy="75.6" r="1.5" fill="#efeefe"/><circle cx="87.6" cy="80.1" r="1.5" fill="#efeefe"/><circle cx="85.1" cy="84.2" r="1.5" fill="#efeefe"/><circle cx="81.9" cy="87.9" r="1.5" fill="#efeefe"/><circle cx="78.2" cy="91.1" r="1.5" fill="#efeefe"/><circle cx="74.1" cy="93.6" r="1.5" fill="#efeefe"/><circle cx="69.6" cy="95.5" r="1.5" fill="#efeefe"/><circle cx="64.8" cy="96.6" r="1.5" fill="#efeefe"/><circle cx="60.0" cy="97.0" r="1.5" fill="#efeefe"/><circle cx="55.2" cy="96.6" r="1.5" fill="#efeefe"/><circle cx="50.4" cy="95.5" r="1.5" fill="#efeefe"/><circle cx="45.9" cy="93.6" r="1.5" fill="#efeefe"/><circle cx="41.8" cy="91.1" r="1.5" fill="#efeefe"/><circle cx="38.1" cy="87.9" r="1.5" fill="#efeefe"/><circle cx="34.9" cy="84.2" r="1.5" fill="#efeefe"/><circle cx="32.4" cy="80.1" r="1.5" fill="#efeefe"/><circle cx="30.5" cy="75.6" r="1.5" fill="#efeefe"/><circle cx="29.4" cy="70.8" r="1.5" fill="#efeefe"/><circle cx="29.0" cy="66.0" r="1.5" fill="#efeefe"/><circle cx="29.4" cy="61.2" r="1.5" fill="#efeefe"/><circle cx="30.5" cy="56.4" r="1.5" fill="#efeefe"/><circle cx="32.4" cy="51.9" r="1.5" fill="#efeefe"/><circle cx="34.9" cy="47.8" r="1.5" fill="#efeefe"/><circle cx="38.1" cy="44.1" r="1.5" fill="#efeefe"/><circle cx="41.8" cy="40.9" r="1.5" fill="#efeefe"/><circle cx="45.9" cy="38.4" r="1.5" fill="#efeefe"/><circle cx="50.4" cy="36.5" r="1.5" fill="#efeefe"/><circle cx="55.2" cy="35.4" r="1.5" fill="#efeefe"/><circle cx="60.0" cy="35.0" r="1.5" fill="#efeefe"/><circle cx="64.8" cy="35.4" r="1.5" fill="#efeefe"/><circle cx="69.6" cy="36.5" r="1.5" fill="#efeefe"/><circle cx="74.1" cy="38.4" r="1.5" fill="#efeefe"/><circle cx="78.2" cy="40.9" r="1.5" fill="#efeefe"/><circle cx="81.9" cy="44.1" r="1.5" fill="#efeefe"/><circle cx="85.1" cy="47.8" r="1.5" fill="#efeefe"/><circle cx="87.6" cy="51.9" r="1.5" fill="#efeefe"/><circle cx="89.5" cy="56.4" r="1.5" fill="#efeefe"/><circle cx="90.6" cy="61.2" r="1.5" fill="#efeefe"/>
+  <!-- 珐琅彩面 -->
+  <circle cx="60" cy="66" r="27" fill="url(#field-epic)" stroke="#7f77dd" stroke-width="2.5"/>
+  <!-- 中央字（字体按门类） -->
+  <text x="60" y="66" font-family="'PingFang SC','Hiragino Sans GB',sans-serif" font-size="30" font-weight="800"
+        fill="#534ab7" text-anchor="middle" dominant-baseline="central">莫</text>
+</svg></div><div class="badge-name">莫逆之交</div><div class="badge-desc">亲密度达到 90</div><div class="badge-bar"><div class="badge-bar-fill" style="width:56%;background:#7f77dd"></div></div><div class="badge-meta">50 / 90</div></div>
+<div class="badge-card is-locked" data-cat="cultivation" data-unlocked="0"><div class="badge-medal"><svg class="medal-svg" viewBox="0 0 120 120" width="64" height="64">
+  <defs>
+    <linearGradient id="rim-epic" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#ddd9fb"/>
+      <stop offset="0.5" stop-color="#7a6fd6"/>
+      <stop offset="1" stop-color="#efeefe"/>
+    </linearGradient>
+    <radialGradient id="field-epic" cx="0.5" cy="0.42" r="0.7">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.55"/>
+      <stop offset="0.55" stop-color="#eeedfe" stop-opacity="1"/>
+      <stop offset="1" stop-color="#eeedfe" stop-opacity="1"/>
+    </radialGradient>
+  </defs>
+  <!-- 缎带（在奖章之后） -->
+  <polygon points="44,4 57,4 54,42 50,49 46,42" fill="#7f77dd"/>
+  <polygon points="63,4 76,4 74,42 70,49 66,42" fill="#7f77dd"/>
+  <polygon points="52,5 56,5 55,40 53.5,44 52,40" fill="#ffffff" opacity="0.35"/>
+  <polygon points="64,5 68,5 68,40 66.5,44 65,40" fill="#ffffff" opacity="0.35"/>
+  <!-- 金属外圈 -->
+  <circle cx="60" cy="66" r="38" fill="url(#rim-epic)" stroke="#5a4fbf" stroke-width="1.5"/>
+  <circle cx="91.0" cy="66.0" r="1.5" fill="#efeefe"/><circle cx="90.6" cy="70.8" r="1.5" fill="#efeefe"/><circle cx="89.5" cy="75.6" r="1.5" fill="#efeefe"/><circle cx="87.6" cy="80.1" r="1.5" fill="#efeefe"/><circle cx="85.1" cy="84.2" r="1.5" fill="#efeefe"/><circle cx="81.9" cy="87.9" r="1.5" fill="#efeefe"/><circle cx="78.2" cy="91.1" r="1.5" fill="#efeefe"/><circle cx="74.1" cy="93.6" r="1.5" fill="#efeefe"/><circle cx="69.6" cy="95.5" r="1.5" fill="#efeefe"/><circle cx="64.8" cy="96.6" r="1.5" fill="#efeefe"/><circle cx="60.0" cy="97.0" r="1.5" fill="#efeefe"/><circle cx="55.2" cy="96.6" r="1.5" fill="#efeefe"/><circle cx="50.4" cy="95.5" r="1.5" fill="#efeefe"/><circle cx="45.9" cy="93.6" r="1.5" fill="#efeefe"/><circle cx="41.8" cy="91.1" r="1.5" fill="#efeefe"/><circle cx="38.1" cy="87.9" r="1.5" fill="#efeefe"/><circle cx="34.9" cy="84.2" r="1.5" fill="#efeefe"/><circle cx="32.4" cy="80.1" r="1.5" fill="#efeefe"/><circle cx="30.5" cy="75.6" r="1.5" fill="#efeefe"/><circle cx="29.4" cy="70.8" r="1.5" fill="#efeefe"/><circle cx="29.0" cy="66.0" r="1.5" fill="#efeefe"/><circle cx="29.4" cy="61.2" r="1.5" fill="#efeefe"/><circle cx="30.5" cy="56.4" r="1.5" fill="#efeefe"/><circle cx="32.4" cy="51.9" r="1.5" fill="#efeefe"/><circle cx="34.9" cy="47.8" r="1.5" fill="#efeefe"/><circle cx="38.1" cy="44.1" r="1.5" fill="#efeefe"/><circle cx="41.8" cy="40.9" r="1.5" fill="#efeefe"/><circle cx="45.9" cy="38.4" r="1.5" fill="#efeefe"/><circle cx="50.4" cy="36.5" r="1.5" fill="#efeefe"/><circle cx="55.2" cy="35.4" r="1.5" fill="#efeefe"/><circle cx="60.0" cy="35.0" r="1.5" fill="#efeefe"/><circle cx="64.8" cy="35.4" r="1.5" fill="#efeefe"/><circle cx="69.6" cy="36.5" r="1.5" fill="#efeefe"/><circle cx="74.1" cy="38.4" r="1.5" fill="#efeefe"/><circle cx="78.2" cy="40.9" r="1.5" fill="#efeefe"/><circle cx="81.9" cy="44.1" r="1.5" fill="#efeefe"/><circle cx="85.1" cy="47.8" r="1.5" fill="#efeefe"/><circle cx="87.6" cy="51.9" r="1.5" fill="#efeefe"/><circle cx="89.5" cy="56.4" r="1.5" fill="#efeefe"/><circle cx="90.6" cy="61.2" r="1.5" fill="#efeefe"/>
+  <!-- 珐琅彩面 -->
+  <circle cx="60" cy="66" r="27" fill="url(#field-epic)" stroke="#7f77dd" stroke-width="2.5"/>
+  <!-- 中央字（字体按门类） -->
+  <text x="60" y="66" font-family="'PingFang SC','Hiragino Sans GB',sans-serif" font-size="30" font-weight="800"
+        fill="#534ab7" text-anchor="middle" dominant-baseline="central">仙</text>
+</svg></div><div class="badge-name">墨仙</div><div class="badge-desc">桌搭等级达到 Lv.10</div><div class="badge-bar"><div class="badge-bar-fill" style="width:50%;background:#7f77dd"></div></div><div class="badge-meta">5 / 10</div></div>
+<div class="badge-card is-locked" data-cat="cultivation" data-unlocked="0"><div class="badge-medal"><svg class="medal-svg" viewBox="0 0 120 120" width="64" height="64">
+  <defs>
+    <linearGradient id="rim-legendary" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#f7e6a6"/>
+      <stop offset="0.5" stop-color="#c9962f"/>
+      <stop offset="1" stop-color="#fbf0c4"/>
+    </linearGradient>
+    <radialGradient id="field-legendary" cx="0.5" cy="0.42" r="0.7">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.55"/>
+      <stop offset="0.55" stop-color="#faeeda" stop-opacity="1"/>
+      <stop offset="1" stop-color="#faeeda" stop-opacity="1"/>
+    </radialGradient>
+  </defs>
+  <!-- 缎带（在奖章之后） -->
+  <polygon points="44,4 57,4 54,42 50,49 46,42" fill="#ef9f27"/>
+  <polygon points="63,4 76,4 74,42 70,49 66,42" fill="#ef9f27"/>
+  <polygon points="52,5 56,5 55,40 53.5,44 52,40" fill="#ffffff" opacity="0.35"/>
+  <polygon points="64,5 68,5 68,40 66.5,44 65,40" fill="#ffffff" opacity="0.35"/>
+  <!-- 金属外圈 -->
+  <circle cx="60" cy="66" r="38" fill="url(#rim-legendary)" stroke="#9c6f1e" stroke-width="1.5"/>
+  <circle cx="91.0" cy="66.0" r="1.5" fill="#fbf0c4"/><circle cx="90.6" cy="70.8" r="1.5" fill="#fbf0c4"/><circle cx="89.5" cy="75.6" r="1.5" fill="#fbf0c4"/><circle cx="87.6" cy="80.1" r="1.5" fill="#fbf0c4"/><circle cx="85.1" cy="84.2" r="1.5" fill="#fbf0c4"/><circle cx="81.9" cy="87.9" r="1.5" fill="#fbf0c4"/><circle cx="78.2" cy="91.1" r="1.5" fill="#fbf0c4"/><circle cx="74.1" cy="93.6" r="1.5" fill="#fbf0c4"/><circle cx="69.6" cy="95.5" r="1.5" fill="#fbf0c4"/><circle cx="64.8" cy="96.6" r="1.5" fill="#fbf0c4"/><circle cx="60.0" cy="97.0" r="1.5" fill="#fbf0c4"/><circle cx="55.2" cy="96.6" r="1.5" fill="#fbf0c4"/><circle cx="50.4" cy="95.5" r="1.5" fill="#fbf0c4"/><circle cx="45.9" cy="93.6" r="1.5" fill="#fbf0c4"/><circle cx="41.8" cy="91.1" r="1.5" fill="#fbf0c4"/><circle cx="38.1" cy="87.9" r="1.5" fill="#fbf0c4"/><circle cx="34.9" cy="84.2" r="1.5" fill="#fbf0c4"/><circle cx="32.4" cy="80.1" r="1.5" fill="#fbf0c4"/><circle cx="30.5" cy="75.6" r="1.5" fill="#fbf0c4"/><circle cx="29.4" cy="70.8" r="1.5" fill="#fbf0c4"/><circle cx="29.0" cy="66.0" r="1.5" fill="#fbf0c4"/><circle cx="29.4" cy="61.2" r="1.5" fill="#fbf0c4"/><circle cx="30.5" cy="56.4" r="1.5" fill="#fbf0c4"/><circle cx="32.4" cy="51.9" r="1.5" fill="#fbf0c4"/><circle cx="34.9" cy="47.8" r="1.5" fill="#fbf0c4"/><circle cx="38.1" cy="44.1" r="1.5" fill="#fbf0c4"/><circle cx="41.8" cy="40.9" r="1.5" fill="#fbf0c4"/><circle cx="45.9" cy="38.4" r="1.5" fill="#fbf0c4"/><circle cx="50.4" cy="36.5" r="1.5" fill="#fbf0c4"/><circle cx="55.2" cy="35.4" r="1.5" fill="#fbf0c4"/><circle cx="60.0" cy="35.0" r="1.5" fill="#fbf0c4"/><circle cx="64.8" cy="35.4" r="1.5" fill="#fbf0c4"/><circle cx="69.6" cy="36.5" r="1.5" fill="#fbf0c4"/><circle cx="74.1" cy="38.4" r="1.5" fill="#fbf0c4"/><circle cx="78.2" cy="40.9" r="1.5" fill="#fbf0c4"/><circle cx="81.9" cy="44.1" r="1.5" fill="#fbf0c4"/><circle cx="85.1" cy="47.8" r="1.5" fill="#fbf0c4"/><circle cx="87.6" cy="51.9" r="1.5" fill="#fbf0c4"/><circle cx="89.5" cy="56.4" r="1.5" fill="#fbf0c4"/><circle cx="90.6" cy="61.2" r="1.5" fill="#fbf0c4"/>
+  <!-- 珐琅彩面 -->
+  <circle cx="60" cy="66" r="27" fill="url(#field-legendary)" stroke="#ef9f27" stroke-width="2.5"/>
+  <!-- 中央字（字体按门类） -->
+  <text x="60" y="66" font-family="'PingFang SC','Hiragino Sans GB',sans-serif" font-size="30" font-weight="800"
+        fill="#854f0b" text-anchor="middle" dominant-baseline="central">峰</text>
+</svg></div><div class="badge-name">登峰造极</div><div class="badge-desc">桌搭等级修满</div><div class="badge-bar"><div class="badge-bar-fill" style="width:42%;background:#ef9f27"></div></div><div class="badge-meta">5 / 12</div></div>
+<div class="badge-card is-locked" data-cat="companionship" data-unlocked="0"><div class="badge-medal"><svg class="medal-svg" viewBox="0 0 120 120" width="64" height="64">
+  <defs>
+    <linearGradient id="rim-epic" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#ddd9fb"/>
+      <stop offset="0.5" stop-color="#7a6fd6"/>
+      <stop offset="1" stop-color="#efeefe"/>
+    </linearGradient>
+    <radialGradient id="field-epic" cx="0.5" cy="0.42" r="0.7">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.55"/>
+      <stop offset="0.55" stop-color="#eeedfe" stop-opacity="1"/>
+      <stop offset="1" stop-color="#eeedfe" stop-opacity="1"/>
+    </radialGradient>
+  </defs>
+  <!-- 缎带（在奖章之后） -->
+  <polygon points="44,4 57,4 54,42 50,49 46,42" fill="#7f77dd"/>
+  <polygon points="63,4 76,4 74,42 70,49 66,42" fill="#7f77dd"/>
+  <polygon points="52,5 56,5 55,40 53.5,44 52,40" fill="#ffffff" opacity="0.35"/>
+  <polygon points="64,5 68,5 68,40 66.5,44 65,40" fill="#ffffff" opacity="0.35"/>
+  <!-- 金属外圈 -->
+  <circle cx="60" cy="66" r="38" fill="url(#rim-epic)" stroke="#5a4fbf" stroke-width="1.5"/>
+  <circle cx="91.0" cy="66.0" r="1.5" fill="#efeefe"/><circle cx="90.6" cy="70.8" r="1.5" fill="#efeefe"/><circle cx="89.5" cy="75.6" r="1.5" fill="#efeefe"/><circle cx="87.6" cy="80.1" r="1.5" fill="#efeefe"/><circle cx="85.1" cy="84.2" r="1.5" fill="#efeefe"/><circle cx="81.9" cy="87.9" r="1.5" fill="#efeefe"/><circle cx="78.2" cy="91.1" r="1.5" fill="#efeefe"/><circle cx="74.1" cy="93.6" r="1.5" fill="#efeefe"/><circle cx="69.6" cy="95.5" r="1.5" fill="#efeefe"/><circle cx="64.8" cy="96.6" r="1.5" fill="#efeefe"/><circle cx="60.0" cy="97.0" r="1.5" fill="#efeefe"/><circle cx="55.2" cy="96.6" r="1.5" fill="#efeefe"/><circle cx="50.4" cy="95.5" r="1.5" fill="#efeefe"/><circle cx="45.9" cy="93.6" r="1.5" fill="#efeefe"/><circle cx="41.8" cy="91.1" r="1.5" fill="#efeefe"/><circle cx="38.1" cy="87.9" r="1.5" fill="#efeefe"/><circle cx="34.9" cy="84.2" r="1.5" fill="#efeefe"/><circle cx="32.4" cy="80.1" r="1.5" fill="#efeefe"/><circle cx="30.5" cy="75.6" r="1.5" fill="#efeefe"/><circle cx="29.4" cy="70.8" r="1.5" fill="#efeefe"/><circle cx="29.0" cy="66.0" r="1.5" fill="#efeefe"/><circle cx="29.4" cy="61.2" r="1.5" fill="#efeefe"/><circle cx="30.5" cy="56.4" r="1.5" fill="#efeefe"/><circle cx="32.4" cy="51.9" r="1.5" fill="#efeefe"/><circle cx="34.9" cy="47.8" r="1.5" fill="#efeefe"/><circle cx="38.1" cy="44.1" r="1.5" fill="#efeefe"/><circle cx="41.8" cy="40.9" r="1.5" fill="#efeefe"/><circle cx="45.9" cy="38.4" r="1.5" fill="#efeefe"/><circle cx="50.4" cy="36.5" r="1.5" fill="#efeefe"/><circle cx="55.2" cy="35.4" r="1.5" fill="#efeefe"/><circle cx="60.0" cy="35.0" r="1.5" fill="#efeefe"/><circle cx="64.8" cy="35.4" r="1.5" fill="#efeefe"/><circle cx="69.6" cy="36.5" r="1.5" fill="#efeefe"/><circle cx="74.1" cy="38.4" r="1.5" fill="#efeefe"/><circle cx="78.2" cy="40.9" r="1.5" fill="#efeefe"/><circle cx="81.9" cy="44.1" r="1.5" fill="#efeefe"/><circle cx="85.1" cy="47.8" r="1.5" fill="#efeefe"/><circle cx="87.6" cy="51.9" r="1.5" fill="#efeefe"/><circle cx="89.5" cy="56.4" r="1.5" fill="#efeefe"/><circle cx="90.6" cy="61.2" r="1.5" fill="#efeefe"/>
+  <!-- 珐琅彩面 -->
+  <circle cx="60" cy="66" r="27" fill="url(#field-epic)" stroke="#7f77dd" stroke-width="2.5"/>
+  <!-- 中央字（字体按门类） -->
+  <text x="60" y="66" font-family="'Kaiti SC','KaiTi','STKaiti',serif" font-size="30" font-weight="800"
+        fill="#534ab7" text-anchor="middle" dominant-baseline="central">辍</text>
+</svg></div><div class="badge-name">寒暑不辍</div><div class="badge-desc">连续 30 天都来</div><div class="badge-bar"><div class="badge-bar-fill" style="width:40%;background:#7f77dd"></div></div><div class="badge-meta">12 / 30</div></div>
+<div class="badge-card is-locked" data-cat="cultivation" data-unlocked="0"><div class="badge-medal"><svg class="medal-svg" viewBox="0 0 120 120" width="64" height="64">
+  <defs>
+    <linearGradient id="rim-rare" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#cfe4fb"/>
+      <stop offset="0.5" stop-color="#4f8fd6"/>
+      <stop offset="1" stop-color="#e3f0ff"/>
+    </linearGradient>
+    <radialGradient id="field-rare" cx="0.5" cy="0.42" r="0.7">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.55"/>
+      <stop offset="0.55" stop-color="#e6f1fb" stop-opacity="1"/>
+      <stop offset="1" stop-color="#e6f1fb" stop-opacity="1"/>
+    </radialGradient>
+  </defs>
+  <!-- 缎带（在奖章之后） -->
+  <polygon points="44,4 57,4 54,42 50,49 46,42" fill="#378add"/>
+  <polygon points="63,4 76,4 74,42 70,49 66,42" fill="#378add"/>
+  <polygon points="52,5 56,5 55,40 53.5,44 52,40" fill="#ffffff" opacity="0.35"/>
+  <polygon points="64,5 68,5 68,40 66.5,44 65,40" fill="#ffffff" opacity="0.35"/>
+  <!-- 金属外圈 -->
+  <circle cx="60" cy="66" r="38" fill="url(#rim-rare)" stroke="#2f6fb0" stroke-width="1.5"/>
+  <circle cx="91.0" cy="66.0" r="1.5" fill="#e3f0ff"/><circle cx="90.6" cy="70.8" r="1.5" fill="#e3f0ff"/><circle cx="89.5" cy="75.6" r="1.5" fill="#e3f0ff"/><circle cx="87.6" cy="80.1" r="1.5" fill="#e3f0ff"/><circle cx="85.1" cy="84.2" r="1.5" fill="#e3f0ff"/><circle cx="81.9" cy="87.9" r="1.5" fill="#e3f0ff"/><circle cx="78.2" cy="91.1" r="1.5" fill="#e3f0ff"/><circle cx="74.1" cy="93.6" r="1.5" fill="#e3f0ff"/><circle cx="69.6" cy="95.5" r="1.5" fill="#e3f0ff"/><circle cx="64.8" cy="96.6" r="1.5" fill="#e3f0ff"/><circle cx="60.0" cy="97.0" r="1.5" fill="#e3f0ff"/><circle cx="55.2" cy="96.6" r="1.5" fill="#e3f0ff"/><circle cx="50.4" cy="95.5" r="1.5" fill="#e3f0ff"/><circle cx="45.9" cy="93.6" r="1.5" fill="#e3f0ff"/><circle cx="41.8" cy="91.1" r="1.5" fill="#e3f0ff"/><circle cx="38.1" cy="87.9" r="1.5" fill="#e3f0ff"/><circle cx="34.9" cy="84.2" r="1.5" fill="#e3f0ff"/><circle cx="32.4" cy="80.1" r="1.5" fill="#e3f0ff"/><circle cx="30.5" cy="75.6" r="1.5" fill="#e3f0ff"/><circle cx="29.4" cy="70.8" r="1.5" fill="#e3f0ff"/><circle cx="29.0" cy="66.0" r="1.5" fill="#e3f0ff"/><circle cx="29.4" cy="61.2" r="1.5" fill="#e3f0ff"/><circle cx="30.5" cy="56.4" r="1.5" fill="#e3f0ff"/><circle cx="32.4" cy="51.9" r="1.5" fill="#e3f0ff"/><circle cx="34.9" cy="47.8" r="1.5" fill="#e3f0ff"/><circle cx="38.1" cy="44.1" r="1.5" fill="#e3f0ff"/><circle cx="41.8" cy="40.9" r="1.5" fill="#e3f0ff"/><circle cx="45.9" cy="38.4" r="1.5" fill="#e3f0ff"/><circle cx="50.4" cy="36.5" r="1.5" fill="#e3f0ff"/><circle cx="55.2" cy="35.4" r="1.5" fill="#e3f0ff"/><circle cx="60.0" cy="35.0" r="1.5" fill="#e3f0ff"/><circle cx="64.8" cy="35.4" r="1.5" fill="#e3f0ff"/><circle cx="69.6" cy="36.5" r="1.5" fill="#e3f0ff"/><circle cx="74.1" cy="38.4" r="1.5" fill="#e3f0ff"/><circle cx="78.2" cy="40.9" r="1.5" fill="#e3f0ff"/><circle cx="81.9" cy="44.1" r="1.5" fill="#e3f0ff"/><circle cx="85.1" cy="47.8" r="1.5" fill="#e3f0ff"/><circle cx="87.6" cy="51.9" r="1.5" fill="#e3f0ff"/><circle cx="89.5" cy="56.4" r="1.5" fill="#e3f0ff"/><circle cx="90.6" cy="61.2" r="1.5" fill="#e3f0ff"/>
+  <!-- 珐琅彩面 -->
+  <circle cx="60" cy="66" r="27" fill="url(#field-rare)" stroke="#378add" stroke-width="2.5"/>
+  <!-- 中央字（字体按门类） -->
+  <text x="60" y="66" font-family="'PingFang SC','Hiragino Sans GB',sans-serif" font-size="30" font-weight="800"
+        fill="#185fa5" text-anchor="middle" dominant-baseline="central">契</text>
+</svg></div><div class="badge-name">心照不宣</div><div class="badge-desc">默契度达到 60</div><div class="badge-bar"><div class="badge-bar-fill" style="width:33%;background:#378add"></div></div><div class="badge-meta">20 / 60</div></div>
+<div class="badge-card is-locked" data-cat="companionship" data-unlocked="0"><div class="badge-medal"><svg class="medal-svg" viewBox="0 0 120 120" width="64" height="64">
+  <defs>
+    <linearGradient id="rim-rare" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#cfe4fb"/>
+      <stop offset="0.5" stop-color="#4f8fd6"/>
+      <stop offset="1" stop-color="#e3f0ff"/>
+    </linearGradient>
+    <radialGradient id="field-rare" cx="0.5" cy="0.42" r="0.7">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.55"/>
+      <stop offset="0.55" stop-color="#e6f1fb" stop-opacity="1"/>
+      <stop offset="1" stop-color="#e6f1fb" stop-opacity="1"/>
+    </radialGradient>
+  </defs>
+  <!-- 缎带（在奖章之后） -->
+  <polygon points="44,4 57,4 54,42 50,49 46,42" fill="#378add"/>
+  <polygon points="63,4 76,4 74,42 70,49 66,42" fill="#378add"/>
+  <polygon points="52,5 56,5 55,40 53.5,44 52,40" fill="#ffffff" opacity="0.35"/>
+  <polygon points="64,5 68,5 68,40 66.5,44 65,40" fill="#ffffff" opacity="0.35"/>
+  <!-- 金属外圈 -->
+  <circle cx="60" cy="66" r="38" fill="url(#rim-rare)" stroke="#2f6fb0" stroke-width="1.5"/>
+  <circle cx="91.0" cy="66.0" r="1.5" fill="#e3f0ff"/><circle cx="90.6" cy="70.8" r="1.5" fill="#e3f0ff"/><circle cx="89.5" cy="75.6" r="1.5" fill="#e3f0ff"/><circle cx="87.6" cy="80.1" r="1.5" fill="#e3f0ff"/><circle cx="85.1" cy="84.2" r="1.5" fill="#e3f0ff"/><circle cx="81.9" cy="87.9" r="1.5" fill="#e3f0ff"/><circle cx="78.2" cy="91.1" r="1.5" fill="#e3f0ff"/><circle cx="74.1" cy="93.6" r="1.5" fill="#e3f0ff"/><circle cx="69.6" cy="95.5" r="1.5" fill="#e3f0ff"/><circle cx="64.8" cy="96.6" r="1.5" fill="#e3f0ff"/><circle cx="60.0" cy="97.0" r="1.5" fill="#e3f0ff"/><circle cx="55.2" cy="96.6" r="1.5" fill="#e3f0ff"/><circle cx="50.4" cy="95.5" r="1.5" fill="#e3f0ff"/><circle cx="45.9" cy="93.6" r="1.5" fill="#e3f0ff"/><circle cx="41.8" cy="91.1" r="1.5" fill="#e3f0ff"/><circle cx="38.1" cy="87.9" r="1.5" fill="#e3f0ff"/><circle cx="34.9" cy="84.2" r="1.5" fill="#e3f0ff"/><circle cx="32.4" cy="80.1" r="1.5" fill="#e3f0ff"/><circle cx="30.5" cy="75.6" r="1.5" fill="#e3f0ff"/><circle cx="29.4" cy="70.8" r="1.5" fill="#e3f0ff"/><circle cx="29.0" cy="66.0" r="1.5" fill="#e3f0ff"/><circle cx="29.4" cy="61.2" r="1.5" fill="#e3f0ff"/><circle cx="30.5" cy="56.4" r="1.5" fill="#e3f0ff"/><circle cx="32.4" cy="51.9" r="1.5" fill="#e3f0ff"/><circle cx="34.9" cy="47.8" r="1.5" fill="#e3f0ff"/><circle cx="38.1" cy="44.1" r="1.5" fill="#e3f0ff"/><circle cx="41.8" cy="40.9" r="1.5" fill="#e3f0ff"/><circle cx="45.9" cy="38.4" r="1.5" fill="#e3f0ff"/><circle cx="50.4" cy="36.5" r="1.5" fill="#e3f0ff"/><circle cx="55.2" cy="35.4" r="1.5" fill="#e3f0ff"/><circle cx="60.0" cy="35.0" r="1.5" fill="#e3f0ff"/><circle cx="64.8" cy="35.4" r="1.5" fill="#e3f0ff"/><circle cx="69.6" cy="36.5" r="1.5" fill="#e3f0ff"/><circle cx="74.1" cy="38.4" r="1.5" fill="#e3f0ff"/><circle cx="78.2" cy="40.9" r="1.5" fill="#e3f0ff"/><circle cx="81.9" cy="44.1" r="1.5" fill="#e3f0ff"/><circle cx="85.1" cy="47.8" r="1.5" fill="#e3f0ff"/><circle cx="87.6" cy="51.9" r="1.5" fill="#e3f0ff"/><circle cx="89.5" cy="56.4" r="1.5" fill="#e3f0ff"/><circle cx="90.6" cy="61.2" r="1.5" fill="#e3f0ff"/>
+  <!-- 珐琅彩面 -->
+  <circle cx="60" cy="66" r="27" fill="url(#field-rare)" stroke="#378add" stroke-width="2.5"/>
+  <!-- 中央字（字体按门类） -->
+  <text x="60" y="66" font-family="'Kaiti SC','KaiTi','STKaiti',serif" font-size="30" font-weight="800"
+        fill="#185fa5" text-anchor="middle" dominant-baseline="central">百</text>
+</svg></div><div class="badge-name">百日同行</div><div class="badge-desc">累计相伴 100 天</div><div class="badge-bar"><div class="badge-bar-fill" style="width:30%;background:#378add"></div></div><div class="badge-meta">30 / 100</div></div>
+<div class="badge-card is-locked" data-cat="knowledge" data-unlocked="0"><div class="badge-medal"><svg class="medal-svg" viewBox="0 0 120 120" width="64" height="64">
+  <defs>
+    <linearGradient id="rim-epic" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#ddd9fb"/>
+      <stop offset="0.5" stop-color="#7a6fd6"/>
+      <stop offset="1" stop-color="#efeefe"/>
+    </linearGradient>
+    <radialGradient id="field-epic" cx="0.5" cy="0.42" r="0.7">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.55"/>
+      <stop offset="0.55" stop-color="#eeedfe" stop-opacity="1"/>
+      <stop offset="1" stop-color="#eeedfe" stop-opacity="1"/>
+    </radialGradient>
+  </defs>
+  <!-- 缎带（在奖章之后） -->
+  <polygon points="44,4 57,4 54,42 50,49 46,42" fill="#7f77dd"/>
+  <polygon points="63,4 76,4 74,42 70,49 66,42" fill="#7f77dd"/>
+  <polygon points="52,5 56,5 55,40 53.5,44 52,40" fill="#ffffff" opacity="0.35"/>
+  <polygon points="64,5 68,5 68,40 66.5,44 65,40" fill="#ffffff" opacity="0.35"/>
+  <!-- 金属外圈 -->
+  <circle cx="60" cy="66" r="38" fill="url(#rim-epic)" stroke="#5a4fbf" stroke-width="1.5"/>
+  <circle cx="91.0" cy="66.0" r="1.5" fill="#efeefe"/><circle cx="90.6" cy="70.8" r="1.5" fill="#efeefe"/><circle cx="89.5" cy="75.6" r="1.5" fill="#efeefe"/><circle cx="87.6" cy="80.1" r="1.5" fill="#efeefe"/><circle cx="85.1" cy="84.2" r="1.5" fill="#efeefe"/><circle cx="81.9" cy="87.9" r="1.5" fill="#efeefe"/><circle cx="78.2" cy="91.1" r="1.5" fill="#efeefe"/><circle cx="74.1" cy="93.6" r="1.5" fill="#efeefe"/><circle cx="69.6" cy="95.5" r="1.5" fill="#efeefe"/><circle cx="64.8" cy="96.6" r="1.5" fill="#efeefe"/><circle cx="60.0" cy="97.0" r="1.5" fill="#efeefe"/><circle cx="55.2" cy="96.6" r="1.5" fill="#efeefe"/><circle cx="50.4" cy="95.5" r="1.5" fill="#efeefe"/><circle cx="45.9" cy="93.6" r="1.5" fill="#efeefe"/><circle cx="41.8" cy="91.1" r="1.5" fill="#efeefe"/><circle cx="38.1" cy="87.9" r="1.5" fill="#efeefe"/><circle cx="34.9" cy="84.2" r="1.5" fill="#efeefe"/><circle cx="32.4" cy="80.1" r="1.5" fill="#efeefe"/><circle cx="30.5" cy="75.6" r="1.5" fill="#efeefe"/><circle cx="29.4" cy="70.8" r="1.5" fill="#efeefe"/><circle cx="29.0" cy="66.0" r="1.5" fill="#efeefe"/><circle cx="29.4" cy="61.2" r="1.5" fill="#efeefe"/><circle cx="30.5" cy="56.4" r="1.5" fill="#efeefe"/><circle cx="32.4" cy="51.9" r="1.5" fill="#efeefe"/><circle cx="34.9" cy="47.8" r="1.5" fill="#efeefe"/><circle cx="38.1" cy="44.1" r="1.5" fill="#efeefe"/><circle cx="41.8" cy="40.9" r="1.5" fill="#efeefe"/><circle cx="45.9" cy="38.4" r="1.5" fill="#efeefe"/><circle cx="50.4" cy="36.5" r="1.5" fill="#efeefe"/><circle cx="55.2" cy="35.4" r="1.5" fill="#efeefe"/><circle cx="60.0" cy="35.0" r="1.5" fill="#efeefe"/><circle cx="64.8" cy="35.4" r="1.5" fill="#efeefe"/><circle cx="69.6" cy="36.5" r="1.5" fill="#efeefe"/><circle cx="74.1" cy="38.4" r="1.5" fill="#efeefe"/><circle cx="78.2" cy="40.9" r="1.5" fill="#efeefe"/><circle cx="81.9" cy="44.1" r="1.5" fill="#efeefe"/><circle cx="85.1" cy="47.8" r="1.5" fill="#efeefe"/><circle cx="87.6" cy="51.9" r="1.5" fill="#efeefe"/><circle cx="89.5" cy="56.4" r="1.5" fill="#efeefe"/><circle cx="90.6" cy="61.2" r="1.5" fill="#efeefe"/>
+  <!-- 珐琅彩面 -->
+  <circle cx="60" cy="66" r="27" fill="url(#field-epic)" stroke="#7f77dd" stroke-width="2.5"/>
+  <!-- 中央字（字体按门类） -->
+  <text x="60" y="66" font-family="'FangSong','STFangsong',serif" font-size="30" font-weight="800"
+        fill="#534ab7" text-anchor="middle" dominant-baseline="central">博</text>
+</svg></div><div class="badge-name">博闻强识</div><div class="badge-desc">积累 200 条记忆</div><div class="badge-bar"><div class="badge-bar-fill" style="width:25%;background:#7f77dd"></div></div><div class="badge-meta">50 / 200</div></div>
+<div class="badge-card is-locked" data-cat="knowledge" data-unlocked="0"><div class="badge-medal"><svg class="medal-svg" viewBox="0 0 120 120" width="64" height="64">
+  <defs>
+    <linearGradient id="rim-rare" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#cfe4fb"/>
+      <stop offset="0.5" stop-color="#4f8fd6"/>
+      <stop offset="1" stop-color="#e3f0ff"/>
+    </linearGradient>
+    <radialGradient id="field-rare" cx="0.5" cy="0.42" r="0.7">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.55"/>
+      <stop offset="0.55" stop-color="#e6f1fb" stop-opacity="1"/>
+      <stop offset="1" stop-color="#e6f1fb" stop-opacity="1"/>
+    </radialGradient>
+  </defs>
+  <!-- 缎带（在奖章之后） -->
+  <polygon points="44,4 57,4 54,42 50,49 46,42" fill="#378add"/>
+  <polygon points="63,4 76,4 74,42 70,49 66,42" fill="#378add"/>
+  <polygon points="52,5 56,5 55,40 53.5,44 52,40" fill="#ffffff" opacity="0.35"/>
+  <polygon points="64,5 68,5 68,40 66.5,44 65,40" fill="#ffffff" opacity="0.35"/>
+  <!-- 金属外圈 -->
+  <circle cx="60" cy="66" r="38" fill="url(#rim-rare)" stroke="#2f6fb0" stroke-width="1.5"/>
+  <circle cx="91.0" cy="66.0" r="1.5" fill="#e3f0ff"/><circle cx="90.6" cy="70.8" r="1.5" fill="#e3f0ff"/><circle cx="89.5" cy="75.6" r="1.5" fill="#e3f0ff"/><circle cx="87.6" cy="80.1" r="1.5" fill="#e3f0ff"/><circle cx="85.1" cy="84.2" r="1.5" fill="#e3f0ff"/><circle cx="81.9" cy="87.9" r="1.5" fill="#e3f0ff"/><circle cx="78.2" cy="91.1" r="1.5" fill="#e3f0ff"/><circle cx="74.1" cy="93.6" r="1.5" fill="#e3f0ff"/><circle cx="69.6" cy="95.5" r="1.5" fill="#e3f0ff"/><circle cx="64.8" cy="96.6" r="1.5" fill="#e3f0ff"/><circle cx="60.0" cy="97.0" r="1.5" fill="#e3f0ff"/><circle cx="55.2" cy="96.6" r="1.5" fill="#e3f0ff"/><circle cx="50.4" cy="95.5" r="1.5" fill="#e3f0ff"/><circle cx="45.9" cy="93.6" r="1.5" fill="#e3f0ff"/><circle cx="41.8" cy="91.1" r="1.5" fill="#e3f0ff"/><circle cx="38.1" cy="87.9" r="1.5" fill="#e3f0ff"/><circle cx="34.9" cy="84.2" r="1.5" fill="#e3f0ff"/><circle cx="32.4" cy="80.1" r="1.5" fill="#e3f0ff"/><circle cx="30.5" cy="75.6" r="1.5" fill="#e3f0ff"/><circle cx="29.4" cy="70.8" r="1.5" fill="#e3f0ff"/><circle cx="29.0" cy="66.0" r="1.5" fill="#e3f0ff"/><circle cx="29.4" cy="61.2" r="1.5" fill="#e3f0ff"/><circle cx="30.5" cy="56.4" r="1.5" fill="#e3f0ff"/><circle cx="32.4" cy="51.9" r="1.5" fill="#e3f0ff"/><circle cx="34.9" cy="47.8" r="1.5" fill="#e3f0ff"/><circle cx="38.1" cy="44.1" r="1.5" fill="#e3f0ff"/><circle cx="41.8" cy="40.9" r="1.5" fill="#e3f0ff"/><circle cx="45.9" cy="38.4" r="1.5" fill="#e3f0ff"/><circle cx="50.4" cy="36.5" r="1.5" fill="#e3f0ff"/><circle cx="55.2" cy="35.4" r="1.5" fill="#e3f0ff"/><circle cx="60.0" cy="35.0" r="1.5" fill="#e3f0ff"/><circle cx="64.8" cy="35.4" r="1.5" fill="#e3f0ff"/><circle cx="69.6" cy="36.5" r="1.5" fill="#e3f0ff"/><circle cx="74.1" cy="38.4" r="1.5" fill="#e3f0ff"/><circle cx="78.2" cy="40.9" r="1.5" fill="#e3f0ff"/><circle cx="81.9" cy="44.1" r="1.5" fill="#e3f0ff"/><circle cx="85.1" cy="47.8" r="1.5" fill="#e3f0ff"/><circle cx="87.6" cy="51.9" r="1.5" fill="#e3f0ff"/><circle cx="89.5" cy="56.4" r="1.5" fill="#e3f0ff"/><circle cx="90.6" cy="61.2" r="1.5" fill="#e3f0ff"/>
+  <!-- 珐琅彩面 -->
+  <circle cx="60" cy="66" r="27" fill="url(#field-rare)" stroke="#378add" stroke-width="2.5"/>
+  <!-- 中央字（字体按门类） -->
+  <text x="60" y="66" font-family="'FangSong','STFangsong',serif" font-size="30" font-weight="800"
+        fill="#185fa5" text-anchor="middle" dominant-baseline="central">栋</text>
+</svg></div><div class="badge-name">汗牛充栋</div><div class="badge-desc">保存 5 部书稿</div><div class="badge-bar"><div class="badge-bar-fill" style="width:20%;background:#378add"></div></div><div class="badge-meta">1 / 5</div></div>
+<div class="badge-card is-locked" data-cat="writing" data-unlocked="0"><div class="badge-medal"><svg class="medal-svg" viewBox="0 0 120 120" width="64" height="64">
+  <defs>
+    <linearGradient id="rim-epic" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#ddd9fb"/>
+      <stop offset="0.5" stop-color="#7a6fd6"/>
+      <stop offset="1" stop-color="#efeefe"/>
+    </linearGradient>
+    <radialGradient id="field-epic" cx="0.5" cy="0.42" r="0.7">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.55"/>
+      <stop offset="0.55" stop-color="#eeedfe" stop-opacity="1"/>
+      <stop offset="1" stop-color="#eeedfe" stop-opacity="1"/>
+    </radialGradient>
+  </defs>
+  <!-- 缎带（在奖章之后） -->
+  <polygon points="44,4 57,4 54,42 50,49 46,42" fill="#7f77dd"/>
+  <polygon points="63,4 76,4 74,42 70,49 66,42" fill="#7f77dd"/>
+  <polygon points="52,5 56,5 55,40 53.5,44 52,40" fill="#ffffff" opacity="0.35"/>
+  <polygon points="64,5 68,5 68,40 66.5,44 65,40" fill="#ffffff" opacity="0.35"/>
+  <!-- 金属外圈 -->
+  <circle cx="60" cy="66" r="38" fill="url(#rim-epic)" stroke="#5a4fbf" stroke-width="1.5"/>
+  <circle cx="91.0" cy="66.0" r="1.5" fill="#efeefe"/><circle cx="90.6" cy="70.8" r="1.5" fill="#efeefe"/><circle cx="89.5" cy="75.6" r="1.5" fill="#efeefe"/><circle cx="87.6" cy="80.1" r="1.5" fill="#efeefe"/><circle cx="85.1" cy="84.2" r="1.5" fill="#efeefe"/><circle cx="81.9" cy="87.9" r="1.5" fill="#efeefe"/><circle cx="78.2" cy="91.1" r="1.5" fill="#efeefe"/><circle cx="74.1" cy="93.6" r="1.5" fill="#efeefe"/><circle cx="69.6" cy="95.5" r="1.5" fill="#efeefe"/><circle cx="64.8" cy="96.6" r="1.5" fill="#efeefe"/><circle cx="60.0" cy="97.0" r="1.5" fill="#efeefe"/><circle cx="55.2" cy="96.6" r="1.5" fill="#efeefe"/><circle cx="50.4" cy="95.5" r="1.5" fill="#efeefe"/><circle cx="45.9" cy="93.6" r="1.5" fill="#efeefe"/><circle cx="41.8" cy="91.1" r="1.5" fill="#efeefe"/><circle cx="38.1" cy="87.9" r="1.5" fill="#efeefe"/><circle cx="34.9" cy="84.2" r="1.5" fill="#efeefe"/><circle cx="32.4" cy="80.1" r="1.5" fill="#efeefe"/><circle cx="30.5" cy="75.6" r="1.5" fill="#efeefe"/><circle cx="29.4" cy="70.8" r="1.5" fill="#efeefe"/><circle cx="29.0" cy="66.0" r="1.5" fill="#efeefe"/><circle cx="29.4" cy="61.2" r="1.5" fill="#efeefe"/><circle cx="30.5" cy="56.4" r="1.5" fill="#efeefe"/><circle cx="32.4" cy="51.9" r="1.5" fill="#efeefe"/><circle cx="34.9" cy="47.8" r="1.5" fill="#efeefe"/><circle cx="38.1" cy="44.1" r="1.5" fill="#efeefe"/><circle cx="41.8" cy="40.9" r="1.5" fill="#efeefe"/><circle cx="45.9" cy="38.4" r="1.5" fill="#efeefe"/><circle cx="50.4" cy="36.5" r="1.5" fill="#efeefe"/><circle cx="55.2" cy="35.4" r="1.5" fill="#efeefe"/><circle cx="60.0" cy="35.0" r="1.5" fill="#efeefe"/><circle cx="64.8" cy="35.4" r="1.5" fill="#efeefe"/><circle cx="69.6" cy="36.5" r="1.5" fill="#efeefe"/><circle cx="74.1" cy="38.4" r="1.5" fill="#efeefe"/><circle cx="78.2" cy="40.9" r="1.5" fill="#efeefe"/><circle cx="81.9" cy="44.1" r="1.5" fill="#efeefe"/><circle cx="85.1" cy="47.8" r="1.5" fill="#efeefe"/><circle cx="87.6" cy="51.9" r="1.5" fill="#efeefe"/><circle cx="89.5" cy="56.4" r="1.5" fill="#efeefe"/><circle cx="90.6" cy="61.2" r="1.5" fill="#efeefe"/>
+  <!-- 珐琅彩面 -->
+  <circle cx="60" cy="66" r="27" fill="url(#field-epic)" stroke="#7f77dd" stroke-width="2.5"/>
+  <!-- 中央字（字体按门类） -->
+  <text x="60" y="66" font-family="'Songti SC','STSong','SimSun',serif" font-size="30" font-weight="800"
+        fill="#534ab7" text-anchor="middle" dominant-baseline="central">卷</text>
+</svg></div><div class="badge-name">百章不倦</div><div class="badge-desc">累计编校 100 章</div><div class="badge-bar"><div class="badge-bar-fill" style="width:14%;background:#7f77dd"></div></div><div class="badge-meta">14 / 100</div></div>
+<div class="badge-card is-locked" data-cat="writing" data-unlocked="0"><div class="badge-medal"><svg class="medal-svg" viewBox="0 0 120 120" width="64" height="64">
+  <defs>
+    <linearGradient id="rim-rare" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#cfe4fb"/>
+      <stop offset="0.5" stop-color="#4f8fd6"/>
+      <stop offset="1" stop-color="#e3f0ff"/>
+    </linearGradient>
+    <radialGradient id="field-rare" cx="0.5" cy="0.42" r="0.7">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.55"/>
+      <stop offset="0.55" stop-color="#e6f1fb" stop-opacity="1"/>
+      <stop offset="1" stop-color="#e6f1fb" stop-opacity="1"/>
+    </radialGradient>
+  </defs>
+  <!-- 缎带（在奖章之后） -->
+  <polygon points="44,4 57,4 54,42 50,49 46,42" fill="#378add"/>
+  <polygon points="63,4 76,4 74,42 70,49 66,42" fill="#378add"/>
+  <polygon points="52,5 56,5 55,40 53.5,44 52,40" fill="#ffffff" opacity="0.35"/>
+  <polygon points="64,5 68,5 68,40 66.5,44 65,40" fill="#ffffff" opacity="0.35"/>
+  <!-- 金属外圈 -->
+  <circle cx="60" cy="66" r="38" fill="url(#rim-rare)" stroke="#2f6fb0" stroke-width="1.5"/>
+  <circle cx="91.0" cy="66.0" r="1.5" fill="#e3f0ff"/><circle cx="90.6" cy="70.8" r="1.5" fill="#e3f0ff"/><circle cx="89.5" cy="75.6" r="1.5" fill="#e3f0ff"/><circle cx="87.6" cy="80.1" r="1.5" fill="#e3f0ff"/><circle cx="85.1" cy="84.2" r="1.5" fill="#e3f0ff"/><circle cx="81.9" cy="87.9" r="1.5" fill="#e3f0ff"/><circle cx="78.2" cy="91.1" r="1.5" fill="#e3f0ff"/><circle cx="74.1" cy="93.6" r="1.5" fill="#e3f0ff"/><circle cx="69.6" cy="95.5" r="1.5" fill="#e3f0ff"/><circle cx="64.8" cy="96.6" r="1.5" fill="#e3f0ff"/><circle cx="60.0" cy="97.0" r="1.5" fill="#e3f0ff"/><circle cx="55.2" cy="96.6" r="1.5" fill="#e3f0ff"/><circle cx="50.4" cy="95.5" r="1.5" fill="#e3f0ff"/><circle cx="45.9" cy="93.6" r="1.5" fill="#e3f0ff"/><circle cx="41.8" cy="91.1" r="1.5" fill="#e3f0ff"/><circle cx="38.1" cy="87.9" r="1.5" fill="#e3f0ff"/><circle cx="34.9" cy="84.2" r="1.5" fill="#e3f0ff"/><circle cx="32.4" cy="80.1" r="1.5" fill="#e3f0ff"/><circle cx="30.5" cy="75.6" r="1.5" fill="#e3f0ff"/><circle cx="29.4" cy="70.8" r="1.5" fill="#e3f0ff"/><circle cx="29.0" cy="66.0" r="1.5" fill="#e3f0ff"/><circle cx="29.4" cy="61.2" r="1.5" fill="#e3f0ff"/><circle cx="30.5" cy="56.4" r="1.5" fill="#e3f0ff"/><circle cx="32.4" cy="51.9" r="1.5" fill="#e3f0ff"/><circle cx="34.9" cy="47.8" r="1.5" fill="#e3f0ff"/><circle cx="38.1" cy="44.1" r="1.5" fill="#e3f0ff"/><circle cx="41.8" cy="40.9" r="1.5" fill="#e3f0ff"/><circle cx="45.9" cy="38.4" r="1.5" fill="#e3f0ff"/><circle cx="50.4" cy="36.5" r="1.5" fill="#e3f0ff"/><circle cx="55.2" cy="35.4" r="1.5" fill="#e3f0ff"/><circle cx="60.0" cy="35.0" r="1.5" fill="#e3f0ff"/><circle cx="64.8" cy="35.4" r="1.5" fill="#e3f0ff"/><circle cx="69.6" cy="36.5" r="1.5" fill="#e3f0ff"/><circle cx="74.1" cy="38.4" r="1.5" fill="#e3f0ff"/><circle cx="78.2" cy="40.9" r="1.5" fill="#e3f0ff"/><circle cx="81.9" cy="44.1" r="1.5" fill="#e3f0ff"/><circle cx="85.1" cy="47.8" r="1.5" fill="#e3f0ff"/><circle cx="87.6" cy="51.9" r="1.5" fill="#e3f0ff"/><circle cx="89.5" cy="56.4" r="1.5" fill="#e3f0ff"/><circle cx="90.6" cy="61.2" r="1.5" fill="#e3f0ff"/>
+  <!-- 珐琅彩面 -->
+  <circle cx="60" cy="66" r="27" fill="url(#field-rare)" stroke="#378add" stroke-width="2.5"/>
+  <!-- 中央字（字体按门类） -->
+  <text x="60" y="66" font-family="'Songti SC','STSong','SimSun',serif" font-size="30" font-weight="800"
+        fill="#185fa5" text-anchor="middle" dominant-baseline="central">言</text>
+</svg></div><div class="badge-name">十万言</div><div class="badge-desc">累计编校 10 万字</div><div class="badge-bar"><div class="badge-bar-fill" style="width:12%;background:#378add"></div></div><div class="badge-meta">12,000 / 100,000</div></div>
+<div class="badge-card is-locked" data-cat="knowledge" data-unlocked="0"><div class="badge-medal"><svg class="medal-svg" viewBox="0 0 120 120" width="64" height="64">
+  <defs>
+    <linearGradient id="rim-legendary" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#f7e6a6"/>
+      <stop offset="0.5" stop-color="#c9962f"/>
+      <stop offset="1" stop-color="#fbf0c4"/>
+    </linearGradient>
+    <radialGradient id="field-legendary" cx="0.5" cy="0.42" r="0.7">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.55"/>
+      <stop offset="0.55" stop-color="#faeeda" stop-opacity="1"/>
+      <stop offset="1" stop-color="#faeeda" stop-opacity="1"/>
+    </radialGradient>
+  </defs>
+  <!-- 缎带（在奖章之后） -->
+  <polygon points="44,4 57,4 54,42 50,49 46,42" fill="#ef9f27"/>
+  <polygon points="63,4 76,4 74,42 70,49 66,42" fill="#ef9f27"/>
+  <polygon points="52,5 56,5 55,40 53.5,44 52,40" fill="#ffffff" opacity="0.35"/>
+  <polygon points="64,5 68,5 68,40 66.5,44 65,40" fill="#ffffff" opacity="0.35"/>
+  <!-- 金属外圈 -->
+  <circle cx="60" cy="66" r="38" fill="url(#rim-legendary)" stroke="#9c6f1e" stroke-width="1.5"/>
+  <circle cx="91.0" cy="66.0" r="1.5" fill="#fbf0c4"/><circle cx="90.6" cy="70.8" r="1.5" fill="#fbf0c4"/><circle cx="89.5" cy="75.6" r="1.5" fill="#fbf0c4"/><circle cx="87.6" cy="80.1" r="1.5" fill="#fbf0c4"/><circle cx="85.1" cy="84.2" r="1.5" fill="#fbf0c4"/><circle cx="81.9" cy="87.9" r="1.5" fill="#fbf0c4"/><circle cx="78.2" cy="91.1" r="1.5" fill="#fbf0c4"/><circle cx="74.1" cy="93.6" r="1.5" fill="#fbf0c4"/><circle cx="69.6" cy="95.5" r="1.5" fill="#fbf0c4"/><circle cx="64.8" cy="96.6" r="1.5" fill="#fbf0c4"/><circle cx="60.0" cy="97.0" r="1.5" fill="#fbf0c4"/><circle cx="55.2" cy="96.6" r="1.5" fill="#fbf0c4"/><circle cx="50.4" cy="95.5" r="1.5" fill="#fbf0c4"/><circle cx="45.9" cy="93.6" r="1.5" fill="#fbf0c4"/><circle cx="41.8" cy="91.1" r="1.5" fill="#fbf0c4"/><circle cx="38.1" cy="87.9" r="1.5" fill="#fbf0c4"/><circle cx="34.9" cy="84.2" r="1.5" fill="#fbf0c4"/><circle cx="32.4" cy="80.1" r="1.5" fill="#fbf0c4"/><circle cx="30.5" cy="75.6" r="1.5" fill="#fbf0c4"/><circle cx="29.4" cy="70.8" r="1.5" fill="#fbf0c4"/><circle cx="29.0" cy="66.0" r="1.5" fill="#fbf0c4"/><circle cx="29.4" cy="61.2" r="1.5" fill="#fbf0c4"/><circle cx="30.5" cy="56.4" r="1.5" fill="#fbf0c4"/><circle cx="32.4" cy="51.9" r="1.5" fill="#fbf0c4"/><circle cx="34.9" cy="47.8" r="1.5" fill="#fbf0c4"/><circle cx="38.1" cy="44.1" r="1.5" fill="#fbf0c4"/><circle cx="41.8" cy="40.9" r="1.5" fill="#fbf0c4"/><circle cx="45.9" cy="38.4" r="1.5" fill="#fbf0c4"/><circle cx="50.4" cy="36.5" r="1.5" fill="#fbf0c4"/><circle cx="55.2" cy="35.4" r="1.5" fill="#fbf0c4"/><circle cx="60.0" cy="35.0" r="1.5" fill="#fbf0c4"/><circle cx="64.8" cy="35.4" r="1.5" fill="#fbf0c4"/><circle cx="69.6" cy="36.5" r="1.5" fill="#fbf0c4"/><circle cx="74.1" cy="38.4" r="1.5" fill="#fbf0c4"/><circle cx="78.2" cy="40.9" r="1.5" fill="#fbf0c4"/><circle cx="81.9" cy="44.1" r="1.5" fill="#fbf0c4"/><circle cx="85.1" cy="47.8" r="1.5" fill="#fbf0c4"/><circle cx="87.6" cy="51.9" r="1.5" fill="#fbf0c4"/><circle cx="89.5" cy="56.4" r="1.5" fill="#fbf0c4"/><circle cx="90.6" cy="61.2" r="1.5" fill="#fbf0c4"/>
+  <!-- 珐琅彩面 -->
+  <circle cx="60" cy="66" r="27" fill="url(#field-legendary)" stroke="#ef9f27" stroke-width="2.5"/>
+  <!-- 中央字（字体按门类） -->
+  <text x="60" y="66" font-family="'FangSong','STFangsong',serif" font-size="30" font-weight="800"
+        fill="#854f0b" text-anchor="middle" dominant-baseline="central">学</text>
+</svg></div><div class="badge-name">学富五车</div><div class="badge-desc">积累 500 条记忆</div><div class="badge-bar"><div class="badge-bar-fill" style="width:10%;background:#ef9f27"></div></div><div class="badge-meta">50 / 500</div></div>
+<div class="badge-card is-locked" data-cat="companionship" data-unlocked="0"><div class="badge-medal"><svg class="medal-svg" viewBox="0 0 120 120" width="64" height="64">
+  <defs>
+    <linearGradient id="rim-epic" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#ddd9fb"/>
+      <stop offset="0.5" stop-color="#7a6fd6"/>
+      <stop offset="1" stop-color="#efeefe"/>
+    </linearGradient>
+    <radialGradient id="field-epic" cx="0.5" cy="0.42" r="0.7">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.55"/>
+      <stop offset="0.55" stop-color="#eeedfe" stop-opacity="1"/>
+      <stop offset="1" stop-color="#eeedfe" stop-opacity="1"/>
+    </radialGradient>
+  </defs>
+  <!-- 缎带（在奖章之后） -->
+  <polygon points="44,4 57,4 54,42 50,49 46,42" fill="#7f77dd"/>
+  <polygon points="63,4 76,4 74,42 70,49 66,42" fill="#7f77dd"/>
+  <polygon points="52,5 56,5 55,40 53.5,44 52,40" fill="#ffffff" opacity="0.35"/>
+  <polygon points="64,5 68,5 68,40 66.5,44 65,40" fill="#ffffff" opacity="0.35"/>
+  <!-- 金属外圈 -->
+  <circle cx="60" cy="66" r="38" fill="url(#rim-epic)" stroke="#5a4fbf" stroke-width="1.5"/>
+  <circle cx="91.0" cy="66.0" r="1.5" fill="#efeefe"/><circle cx="90.6" cy="70.8" r="1.5" fill="#efeefe"/><circle cx="89.5" cy="75.6" r="1.5" fill="#efeefe"/><circle cx="87.6" cy="80.1" r="1.5" fill="#efeefe"/><circle cx="85.1" cy="84.2" r="1.5" fill="#efeefe"/><circle cx="81.9" cy="87.9" r="1.5" fill="#efeefe"/><circle cx="78.2" cy="91.1" r="1.5" fill="#efeefe"/><circle cx="74.1" cy="93.6" r="1.5" fill="#efeefe"/><circle cx="69.6" cy="95.5" r="1.5" fill="#efeefe"/><circle cx="64.8" cy="96.6" r="1.5" fill="#efeefe"/><circle cx="60.0" cy="97.0" r="1.5" fill="#efeefe"/><circle cx="55.2" cy="96.6" r="1.5" fill="#efeefe"/><circle cx="50.4" cy="95.5" r="1.5" fill="#efeefe"/><circle cx="45.9" cy="93.6" r="1.5" fill="#efeefe"/><circle cx="41.8" cy="91.1" r="1.5" fill="#efeefe"/><circle cx="38.1" cy="87.9" r="1.5" fill="#efeefe"/><circle cx="34.9" cy="84.2" r="1.5" fill="#efeefe"/><circle cx="32.4" cy="80.1" r="1.5" fill="#efeefe"/><circle cx="30.5" cy="75.6" r="1.5" fill="#efeefe"/><circle cx="29.4" cy="70.8" r="1.5" fill="#efeefe"/><circle cx="29.0" cy="66.0" r="1.5" fill="#efeefe"/><circle cx="29.4" cy="61.2" r="1.5" fill="#efeefe"/><circle cx="30.5" cy="56.4" r="1.5" fill="#efeefe"/><circle cx="32.4" cy="51.9" r="1.5" fill="#efeefe"/><circle cx="34.9" cy="47.8" r="1.5" fill="#efeefe"/><circle cx="38.1" cy="44.1" r="1.5" fill="#efeefe"/><circle cx="41.8" cy="40.9" r="1.5" fill="#efeefe"/><circle cx="45.9" cy="38.4" r="1.5" fill="#efeefe"/><circle cx="50.4" cy="36.5" r="1.5" fill="#efeefe"/><circle cx="55.2" cy="35.4" r="1.5" fill="#efeefe"/><circle cx="60.0" cy="35.0" r="1.5" fill="#efeefe"/><circle cx="64.8" cy="35.4" r="1.5" fill="#efeefe"/><circle cx="69.6" cy="36.5" r="1.5" fill="#efeefe"/><circle cx="74.1" cy="38.4" r="1.5" fill="#efeefe"/><circle cx="78.2" cy="40.9" r="1.5" fill="#efeefe"/><circle cx="81.9" cy="44.1" r="1.5" fill="#efeefe"/><circle cx="85.1" cy="47.8" r="1.5" fill="#efeefe"/><circle cx="87.6" cy="51.9" r="1.5" fill="#efeefe"/><circle cx="89.5" cy="56.4" r="1.5" fill="#efeefe"/><circle cx="90.6" cy="61.2" r="1.5" fill="#efeefe"/>
+  <!-- 珐琅彩面 -->
+  <circle cx="60" cy="66" r="27" fill="url(#field-epic)" stroke="#7f77dd" stroke-width="2.5"/>
+  <!-- 中央字（字体按门类） -->
+  <text x="60" y="66" font-family="'Kaiti SC','KaiTi','STKaiti',serif" font-size="30" font-weight="800"
+        fill="#534ab7" text-anchor="middle" dominant-baseline="central">千</text>
+</svg></div><div class="badge-name">千言万语</div><div class="badge-desc">累计对话 1000 次</div><div class="badge-bar"><div class="badge-bar-fill" style="width:10%;background:#7f77dd"></div></div><div class="badge-meta">100 / 1,000</div></div>
+<div class="badge-card is-locked" data-cat="writing" data-unlocked="0"><div class="badge-medal"><svg class="medal-svg" viewBox="0 0 120 120" width="64" height="64">
+  <defs>
+    <linearGradient id="rim-epic" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#ddd9fb"/>
+      <stop offset="0.5" stop-color="#7a6fd6"/>
+      <stop offset="1" stop-color="#efeefe"/>
+    </linearGradient>
+    <radialGradient id="field-epic" cx="0.5" cy="0.42" r="0.7">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.55"/>
+      <stop offset="0.55" stop-color="#eeedfe" stop-opacity="1"/>
+      <stop offset="1" stop-color="#eeedfe" stop-opacity="1"/>
+    </radialGradient>
+  </defs>
+  <!-- 缎带（在奖章之后） -->
+  <polygon points="44,4 57,4 54,42 50,49 46,42" fill="#7f77dd"/>
+  <polygon points="63,4 76,4 74,42 70,49 66,42" fill="#7f77dd"/>
+  <polygon points="52,5 56,5 55,40 53.5,44 52,40" fill="#ffffff" opacity="0.35"/>
+  <polygon points="64,5 68,5 68,40 66.5,44 65,40" fill="#ffffff" opacity="0.35"/>
+  <!-- 金属外圈 -->
+  <circle cx="60" cy="66" r="38" fill="url(#rim-epic)" stroke="#5a4fbf" stroke-width="1.5"/>
+  <circle cx="91.0" cy="66.0" r="1.5" fill="#efeefe"/><circle cx="90.6" cy="70.8" r="1.5" fill="#efeefe"/><circle cx="89.5" cy="75.6" r="1.5" fill="#efeefe"/><circle cx="87.6" cy="80.1" r="1.5" fill="#efeefe"/><circle cx="85.1" cy="84.2" r="1.5" fill="#efeefe"/><circle cx="81.9" cy="87.9" r="1.5" fill="#efeefe"/><circle cx="78.2" cy="91.1" r="1.5" fill="#efeefe"/><circle cx="74.1" cy="93.6" r="1.5" fill="#efeefe"/><circle cx="69.6" cy="95.5" r="1.5" fill="#efeefe"/><circle cx="64.8" cy="96.6" r="1.5" fill="#efeefe"/><circle cx="60.0" cy="97.0" r="1.5" fill="#efeefe"/><circle cx="55.2" cy="96.6" r="1.5" fill="#efeefe"/><circle cx="50.4" cy="95.5" r="1.5" fill="#efeefe"/><circle cx="45.9" cy="93.6" r="1.5" fill="#efeefe"/><circle cx="41.8" cy="91.1" r="1.5" fill="#efeefe"/><circle cx="38.1" cy="87.9" r="1.5" fill="#efeefe"/><circle cx="34.9" cy="84.2" r="1.5" fill="#efeefe"/><circle cx="32.4" cy="80.1" r="1.5" fill="#efeefe"/><circle cx="30.5" cy="75.6" r="1.5" fill="#efeefe"/><circle cx="29.4" cy="70.8" r="1.5" fill="#efeefe"/><circle cx="29.0" cy="66.0" r="1.5" fill="#efeefe"/><circle cx="29.4" cy="61.2" r="1.5" fill="#efeefe"/><circle cx="30.5" cy="56.4" r="1.5" fill="#efeefe"/><circle cx="32.4" cy="51.9" r="1.5" fill="#efeefe"/><circle cx="34.9" cy="47.8" r="1.5" fill="#efeefe"/><circle cx="38.1" cy="44.1" r="1.5" fill="#efeefe"/><circle cx="41.8" cy="40.9" r="1.5" fill="#efeefe"/><circle cx="45.9" cy="38.4" r="1.5" fill="#efeefe"/><circle cx="50.4" cy="36.5" r="1.5" fill="#efeefe"/><circle cx="55.2" cy="35.4" r="1.5" fill="#efeefe"/><circle cx="60.0" cy="35.0" r="1.5" fill="#efeefe"/><circle cx="64.8" cy="35.4" r="1.5" fill="#efeefe"/><circle cx="69.6" cy="36.5" r="1.5" fill="#efeefe"/><circle cx="74.1" cy="38.4" r="1.5" fill="#efeefe"/><circle cx="78.2" cy="40.9" r="1.5" fill="#efeefe"/><circle cx="81.9" cy="44.1" r="1.5" fill="#efeefe"/><circle cx="85.1" cy="47.8" r="1.5" fill="#efeefe"/><circle cx="87.6" cy="51.9" r="1.5" fill="#efeefe"/><circle cx="89.5" cy="56.4" r="1.5" fill="#efeefe"/><circle cx="90.6" cy="61.2" r="1.5" fill="#efeefe"/>
+  <!-- 珐琅彩面 -->
+  <circle cx="60" cy="66" r="27" fill="url(#field-epic)" stroke="#7f77dd" stroke-width="2.5"/>
+  <!-- 中央字（字体按门类） -->
+  <text x="60" y="66" font-family="'Songti SC','STSong','SimSun',serif" font-size="30" font-weight="800"
+        fill="#534ab7" text-anchor="middle" dominant-baseline="central">贤</text>
+</svg></div><div class="badge-name">群贤毕至</div><div class="badge-desc">召集创作圆桌 10 次</div><div class="badge-bar"><div class="badge-bar-fill" style="width:10%;background:#7f77dd"></div></div><div class="badge-meta">1 / 10</div></div>
+<div class="badge-card is-locked" data-cat="companionship" data-unlocked="0"><div class="badge-medal"><svg class="medal-svg" viewBox="0 0 120 120" width="64" height="64">
+  <defs>
+    <linearGradient id="rim-legendary" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#f7e6a6"/>
+      <stop offset="0.5" stop-color="#c9962f"/>
+      <stop offset="1" stop-color="#fbf0c4"/>
+    </linearGradient>
+    <radialGradient id="field-legendary" cx="0.5" cy="0.42" r="0.7">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.55"/>
+      <stop offset="0.55" stop-color="#faeeda" stop-opacity="1"/>
+      <stop offset="1" stop-color="#faeeda" stop-opacity="1"/>
+    </radialGradient>
+  </defs>
+  <!-- 缎带（在奖章之后） -->
+  <polygon points="44,4 57,4 54,42 50,49 46,42" fill="#ef9f27"/>
+  <polygon points="63,4 76,4 74,42 70,49 66,42" fill="#ef9f27"/>
+  <polygon points="52,5 56,5 55,40 53.5,44 52,40" fill="#ffffff" opacity="0.35"/>
+  <polygon points="64,5 68,5 68,40 66.5,44 65,40" fill="#ffffff" opacity="0.35"/>
+  <!-- 金属外圈 -->
+  <circle cx="60" cy="66" r="38" fill="url(#rim-legendary)" stroke="#9c6f1e" stroke-width="1.5"/>
+  <circle cx="91.0" cy="66.0" r="1.5" fill="#fbf0c4"/><circle cx="90.6" cy="70.8" r="1.5" fill="#fbf0c4"/><circle cx="89.5" cy="75.6" r="1.5" fill="#fbf0c4"/><circle cx="87.6" cy="80.1" r="1.5" fill="#fbf0c4"/><circle cx="85.1" cy="84.2" r="1.5" fill="#fbf0c4"/><circle cx="81.9" cy="87.9" r="1.5" fill="#fbf0c4"/><circle cx="78.2" cy="91.1" r="1.5" fill="#fbf0c4"/><circle cx="74.1" cy="93.6" r="1.5" fill="#fbf0c4"/><circle cx="69.6" cy="95.5" r="1.5" fill="#fbf0c4"/><circle cx="64.8" cy="96.6" r="1.5" fill="#fbf0c4"/><circle cx="60.0" cy="97.0" r="1.5" fill="#fbf0c4"/><circle cx="55.2" cy="96.6" r="1.5" fill="#fbf0c4"/><circle cx="50.4" cy="95.5" r="1.5" fill="#fbf0c4"/><circle cx="45.9" cy="93.6" r="1.5" fill="#fbf0c4"/><circle cx="41.8" cy="91.1" r="1.5" fill="#fbf0c4"/><circle cx="38.1" cy="87.9" r="1.5" fill="#fbf0c4"/><circle cx="34.9" cy="84.2" r="1.5" fill="#fbf0c4"/><circle cx="32.4" cy="80.1" r="1.5" fill="#fbf0c4"/><circle cx="30.5" cy="75.6" r="1.5" fill="#fbf0c4"/><circle cx="29.4" cy="70.8" r="1.5" fill="#fbf0c4"/><circle cx="29.0" cy="66.0" r="1.5" fill="#fbf0c4"/><circle cx="29.4" cy="61.2" r="1.5" fill="#fbf0c4"/><circle cx="30.5" cy="56.4" r="1.5" fill="#fbf0c4"/><circle cx="32.4" cy="51.9" r="1.5" fill="#fbf0c4"/><circle cx="34.9" cy="47.8" r="1.5" fill="#fbf0c4"/><circle cx="38.1" cy="44.1" r="1.5" fill="#fbf0c4"/><circle cx="41.8" cy="40.9" r="1.5" fill="#fbf0c4"/><circle cx="45.9" cy="38.4" r="1.5" fill="#fbf0c4"/><circle cx="50.4" cy="36.5" r="1.5" fill="#fbf0c4"/><circle cx="55.2" cy="35.4" r="1.5" fill="#fbf0c4"/><circle cx="60.0" cy="35.0" r="1.5" fill="#fbf0c4"/><circle cx="64.8" cy="35.4" r="1.5" fill="#fbf0c4"/><circle cx="69.6" cy="36.5" r="1.5" fill="#fbf0c4"/><circle cx="74.1" cy="38.4" r="1.5" fill="#fbf0c4"/><circle cx="78.2" cy="40.9" r="1.5" fill="#fbf0c4"/><circle cx="81.9" cy="44.1" r="1.5" fill="#fbf0c4"/><circle cx="85.1" cy="47.8" r="1.5" fill="#fbf0c4"/><circle cx="87.6" cy="51.9" r="1.5" fill="#fbf0c4"/><circle cx="89.5" cy="56.4" r="1.5" fill="#fbf0c4"/><circle cx="90.6" cy="61.2" r="1.5" fill="#fbf0c4"/>
+  <!-- 珐琅彩面 -->
+  <circle cx="60" cy="66" r="27" fill="url(#field-legendary)" stroke="#ef9f27" stroke-width="2.5"/>
+  <!-- 中央字（字体按门类） -->
+  <text x="60" y="66" font-family="'Kaiti SC','KaiTi','STKaiti',serif" font-size="30" font-weight="800"
+        fill="#854f0b" text-anchor="middle" dominant-baseline="central">岁</text>
+</svg></div><div class="badge-name">岁岁年年</div><div class="badge-desc">累计相伴 365 天</div><div class="badge-bar"><div class="badge-bar-fill" style="width:8%;background:#ef9f27"></div></div><div class="badge-meta">30 / 365</div></div>
+<div class="badge-card is-locked" data-cat="cultivation" data-unlocked="0"><div class="badge-medal"><svg class="medal-svg" viewBox="0 0 120 120" width="64" height="64">
+  <defs>
+    <linearGradient id="rim-epic" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#ddd9fb"/>
+      <stop offset="0.5" stop-color="#7a6fd6"/>
+      <stop offset="1" stop-color="#efeefe"/>
+    </linearGradient>
+    <radialGradient id="field-epic" cx="0.5" cy="0.42" r="0.7">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.55"/>
+      <stop offset="0.55" stop-color="#eeedfe" stop-opacity="1"/>
+      <stop offset="1" stop-color="#eeedfe" stop-opacity="1"/>
+    </radialGradient>
+  </defs>
+  <!-- 缎带（在奖章之后） -->
+  <polygon points="44,4 57,4 54,42 50,49 46,42" fill="#7f77dd"/>
+  <polygon points="63,4 76,4 74,42 70,49 66,42" fill="#7f77dd"/>
+  <polygon points="52,5 56,5 55,40 53.5,44 52,40" fill="#ffffff" opacity="0.35"/>
+  <polygon points="64,5 68,5 68,40 66.5,44 65,40" fill="#ffffff" opacity="0.35"/>
+  <!-- 金属外圈 -->
+  <circle cx="60" cy="66" r="38" fill="url(#rim-epic)" stroke="#5a4fbf" stroke-width="1.5"/>
+  <circle cx="91.0" cy="66.0" r="1.5" fill="#efeefe"/><circle cx="90.6" cy="70.8" r="1.5" fill="#efeefe"/><circle cx="89.5" cy="75.6" r="1.5" fill="#efeefe"/><circle cx="87.6" cy="80.1" r="1.5" fill="#efeefe"/><circle cx="85.1" cy="84.2" r="1.5" fill="#efeefe"/><circle cx="81.9" cy="87.9" r="1.5" fill="#efeefe"/><circle cx="78.2" cy="91.1" r="1.5" fill="#efeefe"/><circle cx="74.1" cy="93.6" r="1.5" fill="#efeefe"/><circle cx="69.6" cy="95.5" r="1.5" fill="#efeefe"/><circle cx="64.8" cy="96.6" r="1.5" fill="#efeefe"/><circle cx="60.0" cy="97.0" r="1.5" fill="#efeefe"/><circle cx="55.2" cy="96.6" r="1.5" fill="#efeefe"/><circle cx="50.4" cy="95.5" r="1.5" fill="#efeefe"/><circle cx="45.9" cy="93.6" r="1.5" fill="#efeefe"/><circle cx="41.8" cy="91.1" r="1.5" fill="#efeefe"/><circle cx="38.1" cy="87.9" r="1.5" fill="#efeefe"/><circle cx="34.9" cy="84.2" r="1.5" fill="#efeefe"/><circle cx="32.4" cy="80.1" r="1.5" fill="#efeefe"/><circle cx="30.5" cy="75.6" r="1.5" fill="#efeefe"/><circle cx="29.4" cy="70.8" r="1.5" fill="#efeefe"/><circle cx="29.0" cy="66.0" r="1.5" fill="#efeefe"/><circle cx="29.4" cy="61.2" r="1.5" fill="#efeefe"/><circle cx="30.5" cy="56.4" r="1.5" fill="#efeefe"/><circle cx="32.4" cy="51.9" r="1.5" fill="#efeefe"/><circle cx="34.9" cy="47.8" r="1.5" fill="#efeefe"/><circle cx="38.1" cy="44.1" r="1.5" fill="#efeefe"/><circle cx="41.8" cy="40.9" r="1.5" fill="#efeefe"/><circle cx="45.9" cy="38.4" r="1.5" fill="#efeefe"/><circle cx="50.4" cy="36.5" r="1.5" fill="#efeefe"/><circle cx="55.2" cy="35.4" r="1.5" fill="#efeefe"/><circle cx="60.0" cy="35.0" r="1.5" fill="#efeefe"/><circle cx="64.8" cy="35.4" r="1.5" fill="#efeefe"/><circle cx="69.6" cy="36.5" r="1.5" fill="#efeefe"/><circle cx="74.1" cy="38.4" r="1.5" fill="#efeefe"/><circle cx="78.2" cy="40.9" r="1.5" fill="#efeefe"/><circle cx="81.9" cy="44.1" r="1.5" fill="#efeefe"/><circle cx="85.1" cy="47.8" r="1.5" fill="#efeefe"/><circle cx="87.6" cy="51.9" r="1.5" fill="#efeefe"/><circle cx="89.5" cy="56.4" r="1.5" fill="#efeefe"/><circle cx="90.6" cy="61.2" r="1.5" fill="#efeefe"/>
+  <!-- 珐琅彩面 -->
+  <circle cx="60" cy="66" r="27" fill="url(#field-epic)" stroke="#7f77dd" stroke-width="2.5"/>
+  <!-- 中央字（字体按门类） -->
+  <text x="60" y="66" font-family="'PingFang SC','Hiragino Sans GB',sans-serif" font-size="30" font-weight="800"
+        fill="#534ab7" text-anchor="middle" dominant-baseline="central">巧</text>
+</svg></div><div class="badge-name">熟能生巧</div><div class="badge-desc">技能累计使用 100 次</div><div class="badge-bar"><div class="badge-bar-fill" style="width:5%;background:#7f77dd"></div></div><div class="badge-meta">5 / 100</div></div>
+<div class="badge-card is-locked" data-cat="writing" data-unlocked="0"><div class="badge-medal"><svg class="medal-svg" viewBox="0 0 120 120" width="64" height="64">
+  <defs>
+    <linearGradient id="rim-legendary" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#f7e6a6"/>
+      <stop offset="0.5" stop-color="#c9962f"/>
+      <stop offset="1" stop-color="#fbf0c4"/>
+    </linearGradient>
+    <radialGradient id="field-legendary" cx="0.5" cy="0.42" r="0.7">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.55"/>
+      <stop offset="0.55" stop-color="#faeeda" stop-opacity="1"/>
+      <stop offset="1" stop-color="#faeeda" stop-opacity="1"/>
+    </radialGradient>
+  </defs>
+  <!-- 缎带（在奖章之后） -->
+  <polygon points="44,4 57,4 54,42 50,49 46,42" fill="#ef9f27"/>
+  <polygon points="63,4 76,4 74,42 70,49 66,42" fill="#ef9f27"/>
+  <polygon points="52,5 56,5 55,40 53.5,44 52,40" fill="#ffffff" opacity="0.35"/>
+  <polygon points="64,5 68,5 68,40 66.5,44 65,40" fill="#ffffff" opacity="0.35"/>
+  <!-- 金属外圈 -->
+  <circle cx="60" cy="66" r="38" fill="url(#rim-legendary)" stroke="#9c6f1e" stroke-width="1.5"/>
+  <circle cx="91.0" cy="66.0" r="1.5" fill="#fbf0c4"/><circle cx="90.6" cy="70.8" r="1.5" fill="#fbf0c4"/><circle cx="89.5" cy="75.6" r="1.5" fill="#fbf0c4"/><circle cx="87.6" cy="80.1" r="1.5" fill="#fbf0c4"/><circle cx="85.1" cy="84.2" r="1.5" fill="#fbf0c4"/><circle cx="81.9" cy="87.9" r="1.5" fill="#fbf0c4"/><circle cx="78.2" cy="91.1" r="1.5" fill="#fbf0c4"/><circle cx="74.1" cy="93.6" r="1.5" fill="#fbf0c4"/><circle cx="69.6" cy="95.5" r="1.5" fill="#fbf0c4"/><circle cx="64.8" cy="96.6" r="1.5" fill="#fbf0c4"/><circle cx="60.0" cy="97.0" r="1.5" fill="#fbf0c4"/><circle cx="55.2" cy="96.6" r="1.5" fill="#fbf0c4"/><circle cx="50.4" cy="95.5" r="1.5" fill="#fbf0c4"/><circle cx="45.9" cy="93.6" r="1.5" fill="#fbf0c4"/><circle cx="41.8" cy="91.1" r="1.5" fill="#fbf0c4"/><circle cx="38.1" cy="87.9" r="1.5" fill="#fbf0c4"/><circle cx="34.9" cy="84.2" r="1.5" fill="#fbf0c4"/><circle cx="32.4" cy="80.1" r="1.5" fill="#fbf0c4"/><circle cx="30.5" cy="75.6" r="1.5" fill="#fbf0c4"/><circle cx="29.4" cy="70.8" r="1.5" fill="#fbf0c4"/><circle cx="29.0" cy="66.0" r="1.5" fill="#fbf0c4"/><circle cx="29.4" cy="61.2" r="1.5" fill="#fbf0c4"/><circle cx="30.5" cy="56.4" r="1.5" fill="#fbf0c4"/><circle cx="32.4" cy="51.9" r="1.5" fill="#fbf0c4"/><circle cx="34.9" cy="47.8" r="1.5" fill="#fbf0c4"/><circle cx="38.1" cy="44.1" r="1.5" fill="#fbf0c4"/><circle cx="41.8" cy="40.9" r="1.5" fill="#fbf0c4"/><circle cx="45.9" cy="38.4" r="1.5" fill="#fbf0c4"/><circle cx="50.4" cy="36.5" r="1.5" fill="#fbf0c4"/><circle cx="55.2" cy="35.4" r="1.5" fill="#fbf0c4"/><circle cx="60.0" cy="35.0" r="1.5" fill="#fbf0c4"/><circle cx="64.8" cy="35.4" r="1.5" fill="#fbf0c4"/><circle cx="69.6" cy="36.5" r="1.5" fill="#fbf0c4"/><circle cx="74.1" cy="38.4" r="1.5" fill="#fbf0c4"/><circle cx="78.2" cy="40.9" r="1.5" fill="#fbf0c4"/><circle cx="81.9" cy="44.1" r="1.5" fill="#fbf0c4"/><circle cx="85.1" cy="47.8" r="1.5" fill="#fbf0c4"/><circle cx="87.6" cy="51.9" r="1.5" fill="#fbf0c4"/><circle cx="89.5" cy="56.4" r="1.5" fill="#fbf0c4"/><circle cx="90.6" cy="61.2" r="1.5" fill="#fbf0c4"/>
+  <!-- 珐琅彩面 -->
+  <circle cx="60" cy="66" r="27" fill="url(#field-legendary)" stroke="#ef9f27" stroke-width="2.5"/>
+  <!-- 中央字（字体按门类） -->
+  <text x="60" y="66" font-family="'Songti SC','STSong','SimSun',serif" font-size="30" font-weight="800"
+        fill="#854f0b" text-anchor="middle" dominant-baseline="central">著</text>
+</svg></div><div class="badge-name">著作等身</div><div class="badge-desc">累计编校 100 万字</div><div class="badge-bar"><div class="badge-bar-fill" style="width:1%;background:#ef9f27"></div></div><div class="badge-meta">12,000 / 1,000,000</div></div>
+<div class="badge-card is-locked is-masked" data-cat="serendipity" data-unlocked="0"><div class="badge-medal"><svg class="medal-svg" viewBox="0 0 120 120" width="64" height="64" filter="grayscale(1)" opacity="0.55">
+  <defs>
+    <linearGradient id="rim-epic" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#e9ebef"/>
+      <stop offset="0.5" stop-color="#b9bcc2"/>
+      <stop offset="1" stop-color="#f2f4f6"/>
+    </linearGradient>
+    <radialGradient id="field-epic" cx="0.5" cy="0.42" r="0.7">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.55"/>
+      <stop offset="0.55" stop-color="#e7e7e7" stop-opacity="1"/>
+      <stop offset="1" stop-color="#e7e7e7" stop-opacity="1"/>
+    </radialGradient>
+  </defs>
+  <!-- 缎带（在奖章之后） -->
+  <polygon points="44,4 57,4 54,42 50,49 46,42" fill="#bcbcbc"/>
+  <polygon points="63,4 76,4 74,42 70,49 66,42" fill="#bcbcbc"/>
+  <polygon points="52,5 56,5 55,40 53.5,44 52,40" fill="#ffffff" opacity="0.35"/>
+  <polygon points="64,5 68,5 68,40 66.5,44 65,40" fill="#ffffff" opacity="0.35"/>
+  <!-- 金属外圈 -->
+  <circle cx="60" cy="66" r="38" fill="url(#rim-epic)" stroke="#9aa0a8" stroke-width="1.5"/>
+  <circle cx="91.0" cy="66.0" r="1.5" fill="#f2f4f6"/><circle cx="90.6" cy="70.8" r="1.5" fill="#f2f4f6"/><circle cx="89.5" cy="75.6" r="1.5" fill="#f2f4f6"/><circle cx="87.6" cy="80.1" r="1.5" fill="#f2f4f6"/><circle cx="85.1" cy="84.2" r="1.5" fill="#f2f4f6"/><circle cx="81.9" cy="87.9" r="1.5" fill="#f2f4f6"/><circle cx="78.2" cy="91.1" r="1.5" fill="#f2f4f6"/><circle cx="74.1" cy="93.6" r="1.5" fill="#f2f4f6"/><circle cx="69.6" cy="95.5" r="1.5" fill="#f2f4f6"/><circle cx="64.8" cy="96.6" r="1.5" fill="#f2f4f6"/><circle cx="60.0" cy="97.0" r="1.5" fill="#f2f4f6"/><circle cx="55.2" cy="96.6" r="1.5" fill="#f2f4f6"/><circle cx="50.4" cy="95.5" r="1.5" fill="#f2f4f6"/><circle cx="45.9" cy="93.6" r="1.5" fill="#f2f4f6"/><circle cx="41.8" cy="91.1" r="1.5" fill="#f2f4f6"/><circle cx="38.1" cy="87.9" r="1.5" fill="#f2f4f6"/><circle cx="34.9" cy="84.2" r="1.5" fill="#f2f4f6"/><circle cx="32.4" cy="80.1" r="1.5" fill="#f2f4f6"/><circle cx="30.5" cy="75.6" r="1.5" fill="#f2f4f6"/><circle cx="29.4" cy="70.8" r="1.5" fill="#f2f4f6"/><circle cx="29.0" cy="66.0" r="1.5" fill="#f2f4f6"/><circle cx="29.4" cy="61.2" r="1.5" fill="#f2f4f6"/><circle cx="30.5" cy="56.4" r="1.5" fill="#f2f4f6"/><circle cx="32.4" cy="51.9" r="1.5" fill="#f2f4f6"/><circle cx="34.9" cy="47.8" r="1.5" fill="#f2f4f6"/><circle cx="38.1" cy="44.1" r="1.5" fill="#f2f4f6"/><circle cx="41.8" cy="40.9" r="1.5" fill="#f2f4f6"/><circle cx="45.9" cy="38.4" r="1.5" fill="#f2f4f6"/><circle cx="50.4" cy="36.5" r="1.5" fill="#f2f4f6"/><circle cx="55.2" cy="35.4" r="1.5" fill="#f2f4f6"/><circle cx="60.0" cy="35.0" r="1.5" fill="#f2f4f6"/><circle cx="64.8" cy="35.4" r="1.5" fill="#f2f4f6"/><circle cx="69.6" cy="36.5" r="1.5" fill="#f2f4f6"/><circle cx="74.1" cy="38.4" r="1.5" fill="#f2f4f6"/><circle cx="78.2" cy="40.9" r="1.5" fill="#f2f4f6"/><circle cx="81.9" cy="44.1" r="1.5" fill="#f2f4f6"/><circle cx="85.1" cy="47.8" r="1.5" fill="#f2f4f6"/><circle cx="87.6" cy="51.9" r="1.5" fill="#f2f4f6"/><circle cx="89.5" cy="56.4" r="1.5" fill="#f2f4f6"/><circle cx="90.6" cy="61.2" r="1.5" fill="#f2f4f6"/>
+  <!-- 珐琅彩面 -->
+  <circle cx="60" cy="66" r="27" fill="url(#field-epic)" stroke="#bcbcbc" stroke-width="2.5"/>
+  <!-- 中央字（字体按门类） -->
+  <text x="60" y="66" font-family="'Xingkai SC','STXingkai','KaiTi',serif" font-size="30" font-weight="800"
+        fill="#9a9a9a" text-anchor="middle" dominant-baseline="central">?</text>
+</svg></div><div class="badge-name">未知奇遇</div><div class="badge-desc">条件待揭晓——做点特别的事，它自会出现。</div></div>
+<div class="badge-card is-locked is-masked" data-cat="serendipity" data-unlocked="0"><div class="badge-medal"><svg class="medal-svg" viewBox="0 0 120 120" width="64" height="64" filter="grayscale(1)" opacity="0.55">
+  <defs>
+    <linearGradient id="rim-epic" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#e9ebef"/>
+      <stop offset="0.5" stop-color="#b9bcc2"/>
+      <stop offset="1" stop-color="#f2f4f6"/>
+    </linearGradient>
+    <radialGradient id="field-epic" cx="0.5" cy="0.42" r="0.7">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.55"/>
+      <stop offset="0.55" stop-color="#e7e7e7" stop-opacity="1"/>
+      <stop offset="1" stop-color="#e7e7e7" stop-opacity="1"/>
+    </radialGradient>
+  </defs>
+  <!-- 缎带（在奖章之后） -->
+  <polygon points="44,4 57,4 54,42 50,49 46,42" fill="#bcbcbc"/>
+  <polygon points="63,4 76,4 74,42 70,49 66,42" fill="#bcbcbc"/>
+  <polygon points="52,5 56,5 55,40 53.5,44 52,40" fill="#ffffff" opacity="0.35"/>
+  <polygon points="64,5 68,5 68,40 66.5,44 65,40" fill="#ffffff" opacity="0.35"/>
+  <!-- 金属外圈 -->
+  <circle cx="60" cy="66" r="38" fill="url(#rim-epic)" stroke="#9aa0a8" stroke-width="1.5"/>
+  <circle cx="91.0" cy="66.0" r="1.5" fill="#f2f4f6"/><circle cx="90.6" cy="70.8" r="1.5" fill="#f2f4f6"/><circle cx="89.5" cy="75.6" r="1.5" fill="#f2f4f6"/><circle cx="87.6" cy="80.1" r="1.5" fill="#f2f4f6"/><circle cx="85.1" cy="84.2" r="1.5" fill="#f2f4f6"/><circle cx="81.9" cy="87.9" r="1.5" fill="#f2f4f6"/><circle cx="78.2" cy="91.1" r="1.5" fill="#f2f4f6"/><circle cx="74.1" cy="93.6" r="1.5" fill="#f2f4f6"/><circle cx="69.6" cy="95.5" r="1.5" fill="#f2f4f6"/><circle cx="64.8" cy="96.6" r="1.5" fill="#f2f4f6"/><circle cx="60.0" cy="97.0" r="1.5" fill="#f2f4f6"/><circle cx="55.2" cy="96.6" r="1.5" fill="#f2f4f6"/><circle cx="50.4" cy="95.5" r="1.5" fill="#f2f4f6"/><circle cx="45.9" cy="93.6" r="1.5" fill="#f2f4f6"/><circle cx="41.8" cy="91.1" r="1.5" fill="#f2f4f6"/><circle cx="38.1" cy="87.9" r="1.5" fill="#f2f4f6"/><circle cx="34.9" cy="84.2" r="1.5" fill="#f2f4f6"/><circle cx="32.4" cy="80.1" r="1.5" fill="#f2f4f6"/><circle cx="30.5" cy="75.6" r="1.5" fill="#f2f4f6"/><circle cx="29.4" cy="70.8" r="1.5" fill="#f2f4f6"/><circle cx="29.0" cy="66.0" r="1.5" fill="#f2f4f6"/><circle cx="29.4" cy="61.2" r="1.5" fill="#f2f4f6"/><circle cx="30.5" cy="56.4" r="1.5" fill="#f2f4f6"/><circle cx="32.4" cy="51.9" r="1.5" fill="#f2f4f6"/><circle cx="34.9" cy="47.8" r="1.5" fill="#f2f4f6"/><circle cx="38.1" cy="44.1" r="1.5" fill="#f2f4f6"/><circle cx="41.8" cy="40.9" r="1.5" fill="#f2f4f6"/><circle cx="45.9" cy="38.4" r="1.5" fill="#f2f4f6"/><circle cx="50.4" cy="36.5" r="1.5" fill="#f2f4f6"/><circle cx="55.2" cy="35.4" r="1.5" fill="#f2f4f6"/><circle cx="60.0" cy="35.0" r="1.5" fill="#f2f4f6"/><circle cx="64.8" cy="35.4" r="1.5" fill="#f2f4f6"/><circle cx="69.6" cy="36.5" r="1.5" fill="#f2f4f6"/><circle cx="74.1" cy="38.4" r="1.5" fill="#f2f4f6"/><circle cx="78.2" cy="40.9" r="1.5" fill="#f2f4f6"/><circle cx="81.9" cy="44.1" r="1.5" fill="#f2f4f6"/><circle cx="85.1" cy="47.8" r="1.5" fill="#f2f4f6"/><circle cx="87.6" cy="51.9" r="1.5" fill="#f2f4f6"/><circle cx="89.5" cy="56.4" r="1.5" fill="#f2f4f6"/><circle cx="90.6" cy="61.2" r="1.5" fill="#f2f4f6"/>
+  <!-- 珐琅彩面 -->
+  <circle cx="60" cy="66" r="27" fill="url(#field-epic)" stroke="#bcbcbc" stroke-width="2.5"/>
+  <!-- 中央字（字体按门类） -->
+  <text x="60" y="66" font-family="'Xingkai SC','STXingkai','KaiTi',serif" font-size="30" font-weight="800"
+        fill="#9a9a9a" text-anchor="middle" dominant-baseline="central">?</text>
+</svg></div><div class="badge-name">未知奇遇</div><div class="badge-desc">条件待揭晓——做点特别的事，它自会出现。</div></div>
+<div class="badge-card is-locked is-masked" data-cat="serendipity" data-unlocked="0"><div class="badge-medal"><svg class="medal-svg" viewBox="0 0 120 120" width="64" height="64" filter="grayscale(1)" opacity="0.55">
+  <defs>
+    <linearGradient id="rim-rare" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#e9ebef"/>
+      <stop offset="0.5" stop-color="#b9bcc2"/>
+      <stop offset="1" stop-color="#f2f4f6"/>
+    </linearGradient>
+    <radialGradient id="field-rare" cx="0.5" cy="0.42" r="0.7">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.55"/>
+      <stop offset="0.55" stop-color="#e7e7e7" stop-opacity="1"/>
+      <stop offset="1" stop-color="#e7e7e7" stop-opacity="1"/>
+    </radialGradient>
+  </defs>
+  <!-- 缎带（在奖章之后） -->
+  <polygon points="44,4 57,4 54,42 50,49 46,42" fill="#bcbcbc"/>
+  <polygon points="63,4 76,4 74,42 70,49 66,42" fill="#bcbcbc"/>
+  <polygon points="52,5 56,5 55,40 53.5,44 52,40" fill="#ffffff" opacity="0.35"/>
+  <polygon points="64,5 68,5 68,40 66.5,44 65,40" fill="#ffffff" opacity="0.35"/>
+  <!-- 金属外圈 -->
+  <circle cx="60" cy="66" r="38" fill="url(#rim-rare)" stroke="#9aa0a8" stroke-width="1.5"/>
+  <circle cx="91.0" cy="66.0" r="1.5" fill="#f2f4f6"/><circle cx="90.6" cy="70.8" r="1.5" fill="#f2f4f6"/><circle cx="89.5" cy="75.6" r="1.5" fill="#f2f4f6"/><circle cx="87.6" cy="80.1" r="1.5" fill="#f2f4f6"/><circle cx="85.1" cy="84.2" r="1.5" fill="#f2f4f6"/><circle cx="81.9" cy="87.9" r="1.5" fill="#f2f4f6"/><circle cx="78.2" cy="91.1" r="1.5" fill="#f2f4f6"/><circle cx="74.1" cy="93.6" r="1.5" fill="#f2f4f6"/><circle cx="69.6" cy="95.5" r="1.5" fill="#f2f4f6"/><circle cx="64.8" cy="96.6" r="1.5" fill="#f2f4f6"/><circle cx="60.0" cy="97.0" r="1.5" fill="#f2f4f6"/><circle cx="55.2" cy="96.6" r="1.5" fill="#f2f4f6"/><circle cx="50.4" cy="95.5" r="1.5" fill="#f2f4f6"/><circle cx="45.9" cy="93.6" r="1.5" fill="#f2f4f6"/><circle cx="41.8" cy="91.1" r="1.5" fill="#f2f4f6"/><circle cx="38.1" cy="87.9" r="1.5" fill="#f2f4f6"/><circle cx="34.9" cy="84.2" r="1.5" fill="#f2f4f6"/><circle cx="32.4" cy="80.1" r="1.5" fill="#f2f4f6"/><circle cx="30.5" cy="75.6" r="1.5" fill="#f2f4f6"/><circle cx="29.4" cy="70.8" r="1.5" fill="#f2f4f6"/><circle cx="29.0" cy="66.0" r="1.5" fill="#f2f4f6"/><circle cx="29.4" cy="61.2" r="1.5" fill="#f2f4f6"/><circle cx="30.5" cy="56.4" r="1.5" fill="#f2f4f6"/><circle cx="32.4" cy="51.9" r="1.5" fill="#f2f4f6"/><circle cx="34.9" cy="47.8" r="1.5" fill="#f2f4f6"/><circle cx="38.1" cy="44.1" r="1.5" fill="#f2f4f6"/><circle cx="41.8" cy="40.9" r="1.5" fill="#f2f4f6"/><circle cx="45.9" cy="38.4" r="1.5" fill="#f2f4f6"/><circle cx="50.4" cy="36.5" r="1.5" fill="#f2f4f6"/><circle cx="55.2" cy="35.4" r="1.5" fill="#f2f4f6"/><circle cx="60.0" cy="35.0" r="1.5" fill="#f2f4f6"/><circle cx="64.8" cy="35.4" r="1.5" fill="#f2f4f6"/><circle cx="69.6" cy="36.5" r="1.5" fill="#f2f4f6"/><circle cx="74.1" cy="38.4" r="1.5" fill="#f2f4f6"/><circle cx="78.2" cy="40.9" r="1.5" fill="#f2f4f6"/><circle cx="81.9" cy="44.1" r="1.5" fill="#f2f4f6"/><circle cx="85.1" cy="47.8" r="1.5" fill="#f2f4f6"/><circle cx="87.6" cy="51.9" r="1.5" fill="#f2f4f6"/><circle cx="89.5" cy="56.4" r="1.5" fill="#f2f4f6"/><circle cx="90.6" cy="61.2" r="1.5" fill="#f2f4f6"/>
+  <!-- 珐琅彩面 -->
+  <circle cx="60" cy="66" r="27" fill="url(#field-rare)" stroke="#bcbcbc" stroke-width="2.5"/>
+  <!-- 中央字（字体按门类） -->
+  <text x="60" y="66" font-family="'Xingkai SC','STXingkai','KaiTi',serif" font-size="30" font-weight="800"
+        fill="#9a9a9a" text-anchor="middle" dominant-baseline="central">?</text>
+</svg></div><div class="badge-name">未知奇遇</div><div class="badge-desc">条件待揭晓——做点特别的事，它自会出现。</div></div>
+<div class="badge-card is-locked is-masked" data-cat="serendipity" data-unlocked="0"><div class="badge-medal"><svg class="medal-svg" viewBox="0 0 120 120" width="64" height="64" filter="grayscale(1)" opacity="0.55">
+  <defs>
+    <linearGradient id="rim-rare" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#e9ebef"/>
+      <stop offset="0.5" stop-color="#b9bcc2"/>
+      <stop offset="1" stop-color="#f2f4f6"/>
+    </linearGradient>
+    <radialGradient id="field-rare" cx="0.5" cy="0.42" r="0.7">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.55"/>
+      <stop offset="0.55" stop-color="#e7e7e7" stop-opacity="1"/>
+      <stop offset="1" stop-color="#e7e7e7" stop-opacity="1"/>
+    </radialGradient>
+  </defs>
+  <!-- 缎带（在奖章之后） -->
+  <polygon points="44,4 57,4 54,42 50,49 46,42" fill="#bcbcbc"/>
+  <polygon points="63,4 76,4 74,42 70,49 66,42" fill="#bcbcbc"/>
+  <polygon points="52,5 56,5 55,40 53.5,44 52,40" fill="#ffffff" opacity="0.35"/>
+  <polygon points="64,5 68,5 68,40 66.5,44 65,40" fill="#ffffff" opacity="0.35"/>
+  <!-- 金属外圈 -->
+  <circle cx="60" cy="66" r="38" fill="url(#rim-rare)" stroke="#9aa0a8" stroke-width="1.5"/>
+  <circle cx="91.0" cy="66.0" r="1.5" fill="#f2f4f6"/><circle cx="90.6" cy="70.8" r="1.5" fill="#f2f4f6"/><circle cx="89.5" cy="75.6" r="1.5" fill="#f2f4f6"/><circle cx="87.6" cy="80.1" r="1.5" fill="#f2f4f6"/><circle cx="85.1" cy="84.2" r="1.5" fill="#f2f4f6"/><circle cx="81.9" cy="87.9" r="1.5" fill="#f2f4f6"/><circle cx="78.2" cy="91.1" r="1.5" fill="#f2f4f6"/><circle cx="74.1" cy="93.6" r="1.5" fill="#f2f4f6"/><circle cx="69.6" cy="95.5" r="1.5" fill="#f2f4f6"/><circle cx="64.8" cy="96.6" r="1.5" fill="#f2f4f6"/><circle cx="60.0" cy="97.0" r="1.5" fill="#f2f4f6"/><circle cx="55.2" cy="96.6" r="1.5" fill="#f2f4f6"/><circle cx="50.4" cy="95.5" r="1.5" fill="#f2f4f6"/><circle cx="45.9" cy="93.6" r="1.5" fill="#f2f4f6"/><circle cx="41.8" cy="91.1" r="1.5" fill="#f2f4f6"/><circle cx="38.1" cy="87.9" r="1.5" fill="#f2f4f6"/><circle cx="34.9" cy="84.2" r="1.5" fill="#f2f4f6"/><circle cx="32.4" cy="80.1" r="1.5" fill="#f2f4f6"/><circle cx="30.5" cy="75.6" r="1.5" fill="#f2f4f6"/><circle cx="29.4" cy="70.8" r="1.5" fill="#f2f4f6"/><circle cx="29.0" cy="66.0" r="1.5" fill="#f2f4f6"/><circle cx="29.4" cy="61.2" r="1.5" fill="#f2f4f6"/><circle cx="30.5" cy="56.4" r="1.5" fill="#f2f4f6"/><circle cx="32.4" cy="51.9" r="1.5" fill="#f2f4f6"/><circle cx="34.9" cy="47.8" r="1.5" fill="#f2f4f6"/><circle cx="38.1" cy="44.1" r="1.5" fill="#f2f4f6"/><circle cx="41.8" cy="40.9" r="1.5" fill="#f2f4f6"/><circle cx="45.9" cy="38.4" r="1.5" fill="#f2f4f6"/><circle cx="50.4" cy="36.5" r="1.5" fill="#f2f4f6"/><circle cx="55.2" cy="35.4" r="1.5" fill="#f2f4f6"/><circle cx="60.0" cy="35.0" r="1.5" fill="#f2f4f6"/><circle cx="64.8" cy="35.4" r="1.5" fill="#f2f4f6"/><circle cx="69.6" cy="36.5" r="1.5" fill="#f2f4f6"/><circle cx="74.1" cy="38.4" r="1.5" fill="#f2f4f6"/><circle cx="78.2" cy="40.9" r="1.5" fill="#f2f4f6"/><circle cx="81.9" cy="44.1" r="1.5" fill="#f2f4f6"/><circle cx="85.1" cy="47.8" r="1.5" fill="#f2f4f6"/><circle cx="87.6" cy="51.9" r="1.5" fill="#f2f4f6"/><circle cx="89.5" cy="56.4" r="1.5" fill="#f2f4f6"/><circle cx="90.6" cy="61.2" r="1.5" fill="#f2f4f6"/>
+  <!-- 珐琅彩面 -->
+  <circle cx="60" cy="66" r="27" fill="url(#field-rare)" stroke="#bcbcbc" stroke-width="2.5"/>
+  <!-- 中央字（字体按门类） -->
+  <text x="60" y="66" font-family="'Xingkai SC','STXingkai','KaiTi',serif" font-size="30" font-weight="800"
+        fill="#9a9a9a" text-anchor="middle" dominant-baseline="central">?</text>
+</svg></div><div class="badge-name">未知奇遇</div><div class="badge-desc">条件待揭晓——做点特别的事，它自会出现。</div></div>
+<div class="badge-card is-locked is-masked" data-cat="serendipity" data-unlocked="0"><div class="badge-medal"><svg class="medal-svg" viewBox="0 0 120 120" width="64" height="64" filter="grayscale(1)" opacity="0.55">
+  <defs>
+    <linearGradient id="rim-rare" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#e9ebef"/>
+      <stop offset="0.5" stop-color="#b9bcc2"/>
+      <stop offset="1" stop-color="#f2f4f6"/>
+    </linearGradient>
+    <radialGradient id="field-rare" cx="0.5" cy="0.42" r="0.7">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.55"/>
+      <stop offset="0.55" stop-color="#e7e7e7" stop-opacity="1"/>
+      <stop offset="1" stop-color="#e7e7e7" stop-opacity="1"/>
+    </radialGradient>
+  </defs>
+  <!-- 缎带（在奖章之后） -->
+  <polygon points="44,4 57,4 54,42 50,49 46,42" fill="#bcbcbc"/>
+  <polygon points="63,4 76,4 74,42 70,49 66,42" fill="#bcbcbc"/>
+  <polygon points="52,5 56,5 55,40 53.5,44 52,40" fill="#ffffff" opacity="0.35"/>
+  <polygon points="64,5 68,5 68,40 66.5,44 65,40" fill="#ffffff" opacity="0.35"/>
+  <!-- 金属外圈 -->
+  <circle cx="60" cy="66" r="38" fill="url(#rim-rare)" stroke="#9aa0a8" stroke-width="1.5"/>
+  <circle cx="91.0" cy="66.0" r="1.5" fill="#f2f4f6"/><circle cx="90.6" cy="70.8" r="1.5" fill="#f2f4f6"/><circle cx="89.5" cy="75.6" r="1.5" fill="#f2f4f6"/><circle cx="87.6" cy="80.1" r="1.5" fill="#f2f4f6"/><circle cx="85.1" cy="84.2" r="1.5" fill="#f2f4f6"/><circle cx="81.9" cy="87.9" r="1.5" fill="#f2f4f6"/><circle cx="78.2" cy="91.1" r="1.5" fill="#f2f4f6"/><circle cx="74.1" cy="93.6" r="1.5" fill="#f2f4f6"/><circle cx="69.6" cy="95.5" r="1.5" fill="#f2f4f6"/><circle cx="64.8" cy="96.6" r="1.5" fill="#f2f4f6"/><circle cx="60.0" cy="97.0" r="1.5" fill="#f2f4f6"/><circle cx="55.2" cy="96.6" r="1.5" fill="#f2f4f6"/><circle cx="50.4" cy="95.5" r="1.5" fill="#f2f4f6"/><circle cx="45.9" cy="93.6" r="1.5" fill="#f2f4f6"/><circle cx="41.8" cy="91.1" r="1.5" fill="#f2f4f6"/><circle cx="38.1" cy="87.9" r="1.5" fill="#f2f4f6"/><circle cx="34.9" cy="84.2" r="1.5" fill="#f2f4f6"/><circle cx="32.4" cy="80.1" r="1.5" fill="#f2f4f6"/><circle cx="30.5" cy="75.6" r="1.5" fill="#f2f4f6"/><circle cx="29.4" cy="70.8" r="1.5" fill="#f2f4f6"/><circle cx="29.0" cy="66.0" r="1.5" fill="#f2f4f6"/><circle cx="29.4" cy="61.2" r="1.5" fill="#f2f4f6"/><circle cx="30.5" cy="56.4" r="1.5" fill="#f2f4f6"/><circle cx="32.4" cy="51.9" r="1.5" fill="#f2f4f6"/><circle cx="34.9" cy="47.8" r="1.5" fill="#f2f4f6"/><circle cx="38.1" cy="44.1" r="1.5" fill="#f2f4f6"/><circle cx="41.8" cy="40.9" r="1.5" fill="#f2f4f6"/><circle cx="45.9" cy="38.4" r="1.5" fill="#f2f4f6"/><circle cx="50.4" cy="36.5" r="1.5" fill="#f2f4f6"/><circle cx="55.2" cy="35.4" r="1.5" fill="#f2f4f6"/><circle cx="60.0" cy="35.0" r="1.5" fill="#f2f4f6"/><circle cx="64.8" cy="35.4" r="1.5" fill="#f2f4f6"/><circle cx="69.6" cy="36.5" r="1.5" fill="#f2f4f6"/><circle cx="74.1" cy="38.4" r="1.5" fill="#f2f4f6"/><circle cx="78.2" cy="40.9" r="1.5" fill="#f2f4f6"/><circle cx="81.9" cy="44.1" r="1.5" fill="#f2f4f6"/><circle cx="85.1" cy="47.8" r="1.5" fill="#f2f4f6"/><circle cx="87.6" cy="51.9" r="1.5" fill="#f2f4f6"/><circle cx="89.5" cy="56.4" r="1.5" fill="#f2f4f6"/><circle cx="90.6" cy="61.2" r="1.5" fill="#f2f4f6"/>
+  <!-- 珐琅彩面 -->
+  <circle cx="60" cy="66" r="27" fill="url(#field-rare)" stroke="#bcbcbc" stroke-width="2.5"/>
+  <!-- 中央字（字体按门类） -->
+  <text x="60" y="66" font-family="'Xingkai SC','STXingkai','KaiTi',serif" font-size="30" font-weight="800"
+        fill="#9a9a9a" text-anchor="middle" dominant-baseline="central">?</text>
+</svg></div><div class="badge-name">未知奇遇</div><div class="badge-desc">条件待揭晓——做点特别的事，它自会出现。</div></div></div>
+    <div class="badge-legend"><span class="badge-legend-item"><i class="badge-legend-dot" style="background:#b4b2a9"></i>凡品<em class="badge-legend-count">11/11</em></span>
+<span class="badge-legend-item"><i class="badge-legend-dot" style="background:#378add"></i>珍品<em class="badge-legend-count">5/12</em></span>
+<span class="badge-legend-item"><i class="badge-legend-dot" style="background:#7f77dd"></i>秘宝<em class="badge-legend-count">0/10</em></span>
+<span class="badge-legend-item"><i class="badge-legend-dot" style="background:#ef9f27"></i>传世<em class="badge-legend-count">0/4</em></span></div>
+  </div>
+  <div class="note">示例账号视图：已得 16（含 2 枚早期补录）/ 未得 16 / 隐藏 5 已遮蔽。可点筛选、「仅看已得」交互。</div>
+
+  <div class="demo-speech">
+    <div class="mascot-wrap">
+      <div class="mascot-speech mascot-celebrate">
+        <div class="mascot-speech-glyph">校</div>
+        <div class="mascot-speech-body">
+          <div class="mascot-speech-kicker">获得新勋章</div>
+          <div class="mascot-speech-name">校书郎 · 珍品</div>
+          <div class="mascot-speech-text">头一回替你校稿，「校书郎」上任了。</div>
+        </div>
+      </div>
+      <div class="mascot-emoji">🐱</div>
+    </div>
+  </div>
+  <div class="note" style="text-align:center;padding-top:0">↑ 解锁瞬间：桌宠（墨灵）头顶冒出的报喜气泡（正式组件里这里会换成小号奖章）。</div>
+
+<script>
+  const chips=document.querySelectorAll('.badge-chip'),grid=document.getElementById('grid'),onlyUnlocked=document.getElementById('onlyUnlocked');
+  function apply(){const on=document.querySelector('.badge-chip.is-on').dataset.cat,only=onlyUnlocked.checked;
+    document.querySelectorAll('.badge-card').forEach(c=>{const okC=on==='__all__'||c.dataset.cat===on,okU=!only||c.dataset.unlocked==='1';c.style.display=(okC&&okU)?'':'';});}
+  chips.forEach(ch=>ch.addEventListener('click',()=>{chips.forEach(x=>x.classList.remove('is-on'));ch.classList.add('is-on');apply();}));
+  onlyUnlocked.addEventListener('change',apply);
+</script>
+</body></html>

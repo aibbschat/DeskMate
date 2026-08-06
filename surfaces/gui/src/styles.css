@@ -2339,25 +2339,17 @@ html[data-platform="linux"] ::-webkit-scrollbar-thumb:hover { background-color: 
   border-style: dashed;
   opacity: .92;
 }
-.badge-card.is-masked .badge-emblem,
+.badge-card.is-masked .badge-medal,
 .badge-card.is-masked .badge-name {
+  /* 灰化主要由 BadgeMedal 组件内联完成，这里兜底 */
   filter: grayscale(1);
   opacity: .55;
 }
-.badge-emblem {
-  width: 58px;
-  height: 58px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 50%;
-  border: 2px solid var(--line);
-  background: var(--panel-2, var(--panel));
-  font-size: 24px;
-  font-weight: 800;
-  color: var(--muted);
+.badge-medal {
+  width: 64px;
+  height: 64px;
+  display: block;
 }
-.badge-card.is-unlocked .badge-emblem { box-shadow: 0 2px 10px rgba(20, 24, 31, .08); }
 .badge-name {
   font-size: 14px;
   font-weight: 700;

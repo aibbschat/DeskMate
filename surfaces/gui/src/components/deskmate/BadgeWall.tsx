@@ -16,6 +16,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { authedFetch, httpBase } from "../../api";
 import { Icon } from "../Icon";
+import { BadgeMedal } from "./BadgeMedal";
 
 // ---------------------------------------------------------------------------
 // 类型（与后端 deskmate/growth/badges.py serialize() 一一对应）
@@ -266,16 +267,13 @@ function BadgeCard({ badge, t }: { badge: Badge; t: (k: string, o?: any) => stri
       }
       data-testid={`badge-${badge.id}`}
     >
-      <div
-        className="badge-emblem"
-        style={
-          badge.unlocked
-            ? { background: st.bg, borderColor: st.border, color: st.text }
-            : undefined
-        }
-      >
-        {badge.glyph}
-      </div>
+      <BadgeMedal
+        rarity={badge.rarity}
+        glyph={badge.glyph}
+        category={badge.category}
+        masked={badge.masked}
+        size={64}
+      />
 
       <div className="badge-name">{badge.name}</div>
 
