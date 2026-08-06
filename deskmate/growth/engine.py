@@ -278,10 +278,110 @@ class GrowthEngine:
         self.state.empathy = clamp(self.state.empathy + INTIMACY_MEMORY_LEARNED * count, 0, 100)
         self.state.intimacy = clamp(self.state.intimacy + INTIMACY_MEMORY_LEARNED * count, 0, 100)
         self.state.growth_value += XP_MEMORY_LEARNED * count
+        self.state.memories_learned += count
         self._add_event("memory_learned", count=count)
         self._apply_decay()
         self._recompute_level()
         self.save()
+
+    # ------------------------------------------------------------------
+    # 活跃度统计（对话计数 / 连续天数）
+    # ------------------------------------------------------------------
+
+    def record_chat(self) -> None:
+        """记录一次对话（累计总对话数 + 今日活跃日期，供连续天数统计）。
+
+        由对话入口（run_turn 的 turn_start）调用，是可视化面板
+        streakDays / totalChats 的真实数据源。
+        """
+        import datetime
+
+        today = datetime.date.today().isoformat()
+        if today not in self.state.active_dates:
+            self.state.active_dates.append(today)
+        self.state.total_chats += 1
+        self.save()
+
+    def _compute_streak_days(self) -> int:
+        """从 active_dates 计算当前连续活跃天数（含今天）。
+
+        若今天尚未对话，则从昨天起算，避免「今天还没聊就清零」。
+        """
+        import datetime
+
+        dates = set(self.state.active_dates)
+        if not dates:
+            return 0
+        today = datetime.date.today()
+        if today.isoformat() not in dates:
+            today = today - datetime.timedelta(days=1)
+        streak = 0
+        while today.isoformat() in dates:
+            streak += 1
+            today = today - datetime.timedelta(days=1)
+        return streak
+
+    def _derive_achievements(self) -> list[dict]:
+        """从真实成长数据派生成就列表（解锁状态与进度均基于真实数值）。
+
+        条件只依赖 GrowthState 中已存在的字段，无需新增存储。
+        """
+        st = self.state
+        n_skills = len(st.skill_proficiency)
+        skill_uses = sum(p.uses for p in st.skill_proficiency.values())
+        defs = [
+            ("first_chat", "初见", "👋", "完成第一次对话", "common",
+             st.total_chats >= 1, min(st.total_chats, 1), 1),
+            ("chat_100", "老友", "🤝", "累计对话 100 次", "rare",
+             st.total_chats >= 100, min(st.total_chats, 100), 100),
+            ("first_skill", "造物者", "🎨", "创建第一个技能", "common",
+             n_skills >= 1, min(n_skills, 1), 1),
+            ("intimacy_50", "亲密伙伴", "💕", "亲密度达到 50%", "rare",
+             st.intimacy >= 50, min(int(st.intimacy), 50), 50),
+            ("memory_50", "记忆宫殿", "🏛️", "积累 50 条记忆", "epic",
+             st.memories_learned >= 50, min(st.memories_learned, 50), 50),
+            ("level_10", "墨仙", "🌟", "达到 Lv.10", "epic",
+             st.level >= 10, min(st.level, 10), 10),
+            ("master", "登峰造极", "👑", "技能使用 100 次", "legendary",
+             skill_uses >= 100, min(skill_uses, 100), 100),
+        ]
+        out = []
+        for aid, name, icon, desc, rarity, unlocked, prog, mx in defs:
+            out.append({
+                "id": aid,
+                "name": name,
+                "icon": icon,
+                "description": desc,
+                "rarity": rarity,
+                "unlocked": bool(unlocked),
+                "progress": int(prog),
+                "maxProgress": int(mx),
+                "unlockedAt": None,
+            })
+        return out
+
+    def _derive_personality(self) -> dict:
+        """人格指纹四维（0-100），从真实行为状态派生：
+
+        - energy(活力型)     = 活力值 vitality
+        - empathy(共情型)    = 默契度 empathy（越用越懂你）
+        - logic(逻辑型)      = 技能平均成功率（越可靠越偏逻辑）
+        - creativity(创意型) = 技能创建/进化事件越多越偏创意
+        """
+        st = self.state
+        rates = [p.success_rate for p in st.skill_proficiency.values()]
+        logic = int(round(sum(rates) / len(rates) * 100)) if rates else 50
+        creative_events = sum(
+            1 for e in st.recent_events
+            if e.get("kind") in ("skill_created", "skill_evolved")
+        )
+        creativity = min(100, 40 + creative_events * 5 + len(st.skill_proficiency) * 4)
+        return {
+            "energy": int(st.vitality),
+            "logic": logic,
+            "creativity": int(creativity),
+            "empathy": int(st.empathy),
+        }
 
     # ------------------------------------------------------------------
     # 照顾循环：活力 / 心情衰减
@@ -350,4 +450,9 @@ class GrowthEngine:
             name: round(1.0 + (p.proficiency - 0.5) * MATCH_PROFICIENCY_WEIGHT, 3)
             for name, p in self.state.skill_proficiency.items()
         }
+        # 可视化面板补充字段（全部基于真实数据派生，非展示用空数字）
+        d["total_chats"] = self.state.total_chats
+        d["streak_days"] = self._compute_streak_days()
+        d["achievements"] = self._derive_achievements()
+        d["personality"] = self._derive_personality()
         return d

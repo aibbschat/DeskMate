@@ -121,6 +121,11 @@ export interface GrowthSnapshot {
   };
   skill_proficiency: Record<string, { uses: number; success_rate: number; last_used: string; proficiency: number }>;
   recent_events: Array<{ ts: string; kind: string; [k: string]: unknown }>;
+  // 可视化面板补充字段（均来自后端真实数据派生）
+  total_chats?: number;
+  streak_days?: number;
+  achievements?: Achievement[];
+  personality?: PersonalityProfile;
 }
 
 const PROFICIENCY_LABEL: Record<string, string> = {

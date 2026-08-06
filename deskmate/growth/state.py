@@ -67,6 +67,11 @@ class GrowthState:
     growth_value: int = 0
     skill_proficiency: dict[str, SkillProficiency] = field(default_factory=dict)
 
+    # 活跃度统计（供可视化面板的连续天数 / 总对话数）
+    total_chats: int = 0                      # 累计对话轮数
+    active_dates: list[str] = field(default_factory=list)  # 活跃日期 ISO (YYYY-MM-DD)
+    memories_learned: int = 0                # 累计已学事实条数（供成就）
+
     trust_controls_proactive: bool = True   # 信任感是否调制 proactive 阈值（可关闭）
     updated_at: str = ""
 
@@ -86,6 +91,9 @@ class GrowthState:
             "skill_proficiency": {
                 name: p.to_dict() for name, p in self.skill_proficiency.items()
             },
+            "total_chats": self.total_chats,
+            "active_dates": self.active_dates[-365:],  # 最多保留近一年
+            "memories_learned": self.memories_learned,
             "trust_controls_proactive": self.trust_controls_proactive,
             "updated_at": self.updated_at,
             "recent_events": self.recent_events[-50:],
@@ -108,6 +116,9 @@ def load_state(base_dir: Path | str | None = None) -> GrowthState:
                 growth_value=int(data.get("growth_value", 0)),
                 trust_controls_proactive=bool(data.get("trust_controls_proactive", True)),
                 updated_at=data.get("updated_at", ""),
+                total_chats=int(data.get("total_chats", 0)),
+                active_dates=list(data.get("active_dates", [])),
+                memories_learned=int(data.get("memories_learned", 0)),
                 recent_events=data.get("recent_events", []),
             )
             for name, p in (data.get("skill_proficiency") or {}).items():

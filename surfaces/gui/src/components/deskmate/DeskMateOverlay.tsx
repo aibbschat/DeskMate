@@ -384,25 +384,6 @@ export function DeskMateOverlay({ agent, sessionId, idle, activeExpert }: Props)
   // 将 mascotState 转换回 emotion 供 StatusPanel 使用
   const currentEmotion = mascotToEmotionName(mascotState);
 
-  // 模拟数据用于测试新功能 UI（后端未实现前的临时测试数据）
-  const mockAchievements = [
-    { id: "first_chat", name: "初见", icon: "👋", description: "完成第一次对话", rarity: "common" as const, unlocked: true, unlockedAt: "2026-08-01T10:00:00Z" },
-    { id: "chat_100", name: "老友", icon: "🤝", description: "累计对话 100 次", rarity: "rare" as const, unlocked: true, unlockedAt: "2026-08-05T15:30:00Z", progress: 100, maxProgress: 100 },
-    { id: "first_skill", name: "造物者", icon: "🎨", description: "创建第一个技能", rarity: "common" as const, unlocked: true, unlockedAt: "2026-08-02T09:00:00Z" },
-    { id: "intimacy_50", name: "亲密伙伴", icon: "💕", description: "亲密度达到 50%", rarity: "rare" as const, unlocked: true, unlockedAt: "2026-08-04T12:00:00Z" },
-    { id: "memory_50", name: "记忆宫殿", icon: "🏛️", description: "积累 50 条记忆", rarity: "epic" as const, unlocked: false, progress: 32, maxProgress: 50 },
-    { id: "level_10", name: "墨仙", icon: "🌟", description: "达到 Lv.10", rarity: "epic" as const, unlocked: false, progress: growth?.level ?? 1, maxProgress: 10 },
-  ];
-
-  const mockPersonality = {
-    energy: 75,
-    logic: 60,
-    creativity: 85,
-    empathy: 70,
-  };
-
-  const mockStreakDays = 12;
-  const mockTotalChats = 156;
 
   return (
     <>
@@ -447,10 +428,10 @@ export function DeskMateOverlay({ agent, sessionId, idle, activeExpert }: Props)
         onToggleProactive={handleToggleProactive}
         learned={learned}
         growth={growth}
-        achievements={mockAchievements}
-        personality={mockPersonality}
-        streakDays={mockStreakDays}
-        totalChats={mockTotalChats}
+        achievements={growth?.achievements ?? []}
+        personality={growth?.personality ?? { energy: 0, logic: 0, creativity: 0, empathy: 0 }}
+        streakDays={growth?.streak_days ?? 0}
+        totalChats={growth?.total_chats ?? 0}
       />
 
       {/* 建议弹窗 - 右上角 */}

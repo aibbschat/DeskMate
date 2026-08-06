@@ -2854,6 +2854,21 @@ def create_app(manager: SessionManager) -> FastAPI:
                         manager.save(session_id, engine)
                     if event.type.value == "turn_start":
                         await _push_deskmate_memory()
+                        # 累计对话数与活跃天数（可视化面板的 streakDays/totalChats 真实数据源）
+                        if agent == "deskmate":
+                            try:
+                                from pathlib import Path as _P
+
+                                from deskmate.growth.engine import GrowthEngine as _GE
+
+                                _ge_dir = _P(
+                                    os.environ.get(
+                                        "DESKMATE_DIR", os.path.expanduser("~/.deskmate")
+                                    )
+                                )
+                                await asyncio.to_thread(_GE(base_dir=_ge_dir).record_chat)
+                            except Exception:
+                                logging.exception("record chat growth failed")
             finally:
                 manager.mark_idle(session_id)
                 manager.save(session_id, engine)
