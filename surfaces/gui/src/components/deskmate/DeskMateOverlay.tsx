@@ -48,6 +48,16 @@ export interface StatusUpdate {
   emotion?: EmotionName;
 }
 
+/** 新解锁勋章的报喜数据（来自后端 growth/badges 快照的 newly_unlocked）。 */
+export interface CelebrationItem {
+  id: string;
+  name: string;
+  glyph: string;
+  icon: string;
+  rarity: string;
+  celebration: string;
+}
+
 /* ------------------------------------------------------------------ */
 /*  组件                                                               */
 /* ------------------------------------------------------------------ */
@@ -148,6 +158,27 @@ export function DeskMateOverlay({ agent, sessionId, idle, activeExpert }: Props)
   // 成长系统快照（等级/亲密度/信任感/默契度/技能熟练度），面板展开时拉取
   const [growth, setGrowth] = useState<GrowthSnapshot | null>(null);
 
+  // 勋章解锁报喜：队列 + 当前正在展示的一枚
+  const [celebrationQueue, setCelebrationQueue] = useState<CelebrationItem[]>([]);
+  const [activeCelebration, setActiveCelebration] = useState<CelebrationItem | null>(null);
+
+  // 统一拉取 growth：既刷新状态面板数据，也读取 newly_unlocked 触发报喜。
+  // check_badges 在服务端幂等（落盘后同一次解锁只报一次），前端无需去重。
+  const refreshGrowth = useCallback(async () => {
+    try {
+      const r = await authedFetch(`${httpBase()}/v1/deskmate/growth`);
+      if (!r.ok) return;
+      const d = await r.json();
+      if (d && typeof d.level === "number") {
+        setGrowth(d);
+        const neu = Array.isArray(d.newly_unlocked) ? d.newly_unlocked : [];
+        if (neu.length) {
+          setCelebrationQueue((q) => [...q, ...(neu as CelebrationItem[])]);
+        }
+      }
+    } catch { /* 静默降级 */ }
+  }, []);
+
   // 记忆注入低调提示（非模态、节流）
   const [contextHint, setContextHint] = useState<string | null>(null);
   const lastCtxRef = useRef(0);
@@ -179,24 +210,39 @@ export function DeskMateOverlay({ agent, sessionId, idle, activeExpert }: Props)
         if (d && d.items) setLearned(d);
       })
       .catch(() => {/* 静默降级 */});
-    // 拉取成长系统快照（等级/亲密度/信任感/默契度/技能熟练度）
-    authedFetch(`${httpBase()}/v1/deskmate/growth`)
-      .then((r) => (r.ok ? r.json() : null))
-      .then((d) => {
-        if (d && typeof d.level === "number") setGrowth(d);
-      })
-      .catch(() => {/* 静默降级 */});
+    // 拉取成长系统快照（等级/亲密度/信任感/默契度/技能熟练度）+ 检测新解锁勋章
+    void refreshGrowth();
   }, [panelOpen]);
 
-  // 挂载时拉取一次 growth 快照，供墨灵程序化动画使用（mood/vitality/level）
+  // 挂载时拉取一次 growth 快照（同时检测是否有新解锁勋章可报喜）
   useEffect(() => {
-    authedFetch(`${httpBase()}/v1/deskmate/growth`)
-      .then((r) => (r.ok ? r.json() : null))
-      .then((d) => {
-        if (d && typeof d.level === "number") setGrowth(d);
-      })
-      .catch(() => {/* 静默降级 */});
-  }, []);
+    void refreshGrowth();
+  }, [refreshGrowth]);
+
+  // 勋章解锁报喜：定时自检（覆盖聊天计数 / 圆桌等不经由面板的路径）+ 事件触发
+  useEffect(() => {
+    const onRefresh = () => { void refreshGrowth(); };
+    window.addEventListener("deskmate:badges-refresh", onRefresh);
+    const timer = window.setInterval(() => {
+      if (!document.hidden) void refreshGrowth();
+    }, 20_000);
+    return () => {
+      window.removeEventListener("deskmate:badges-refresh", onRefresh);
+      window.clearInterval(timer);
+    };
+  }, [refreshGrowth]);
+
+  // 报喜队列推进：一次只展示一枚，6 秒后切换到下一枚
+  useEffect(() => {
+    if (activeCelebration || celebrationQueue.length === 0) return;
+    const [next, ...rest] = celebrationQueue;
+    setActiveCelebration(next);
+    setCelebrationQueue(rest);
+    // 让桌宠切换到开心情绪，配合报喜
+    window.dispatchEvent(new CustomEvent("deskmate:emotion", { detail: { emotion: "happy" } }));
+    const t = window.setTimeout(() => setActiveCelebration(null), 6000);
+    return () => window.clearTimeout(t);
+  }, [activeCelebration, celebrationQueue]);
 
   // 挂载时读取主动模式状态
   useEffect(() => {
@@ -414,6 +460,16 @@ export function DeskMateOverlay({ agent, sessionId, idle, activeExpert }: Props)
               try { setMemoryOpen(true); } catch (e) { console.error("dblclick error", e); }
             }}
           />
+          {activeCelebration && (
+            <div className="mascot-speech mascot-celebrate" data-testid="badge-celebration">
+              <span className="mascot-speech-glyph">{activeCelebration.glyph}</span>
+              <div className="mascot-speech-body">
+                <div className="mascot-speech-kicker">获得新勋章</div>
+                <div className="mascot-speech-name">{activeCelebration.name}</div>
+                <div className="mascot-speech-text">{activeCelebration.celebration}</div>
+              </div>
+            </div>
+          )}
         </div>
       </div>
 

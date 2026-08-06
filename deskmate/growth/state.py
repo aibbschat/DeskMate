@@ -7,12 +7,18 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import threading
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
+
+
+# 勋章解锁时间的「不可考」标记：体系建立之前就已达成、无从查证确切日期的勋章，
+# 一律用它占位而不编造日期。前端据此显示「早期补录」。
+BACKFILLED_MARK = "backfilled"
 
 
 def _default_base_dir() -> Path:
@@ -72,6 +78,14 @@ class GrowthState:
     active_dates: list[str] = field(default_factory=list)  # 活跃日期 ISO (YYYY-MM-DD)
     memories_learned: int = 0                # 累计已学事实条数（供成就）
 
+    # 通用计数器（勋章体系的统计量：编校章节/字数、圆桌次数、深夜对话等）
+    # 键名统一由 badges.COUNTER_* 常量定义，禁止在业务代码里硬编码字符串。
+    # 用 dict 而非散字段，是为了新增指标时不必改动 dataclass 与读写逻辑。
+    counters: dict[str, int] = field(default_factory=dict)
+
+    # 勋章解锁记录：badge_id -> ISO 时间字符串，或 BACKFILLED_MARK（时间不可考）
+    badges_unlocked: dict[str, str] = field(default_factory=dict)
+
     trust_controls_proactive: bool = True   # 信任感是否调制 proactive 阈值（可关闭）
     updated_at: str = ""
 
@@ -94,48 +108,99 @@ class GrowthState:
             "total_chats": self.total_chats,
             "active_dates": self.active_dates[-365:],  # 最多保留近一年
             "memories_learned": self.memories_learned,
+            "counters": dict(self.counters),
+            # 勋章解锁记录必须完整保留，绝不截断——这是「长久化」的根本
+            "badges_unlocked": dict(self.badges_unlocked),
             "trust_controls_proactive": self.trust_controls_proactive,
             "updated_at": self.updated_at,
             "recent_events": self.recent_events[-50:],
         }
 
 
+def _num(data: dict, key: str, default, cast):
+    """逐字段安全取值：单个字段坏掉只影响它自己，不牵连整份状态。
+
+    这一点对勋章体系至关重要——旧实现里任何一个字段解析失败都会整体回退
+    默认值，等于把用户攒了很久的勋章记录一次性抹掉。
+    """
+    try:
+        v = data.get(key, default)
+        return cast(v) if v is not None else default
+    except (TypeError, ValueError):
+        return default
+
+
 def load_state(base_dir: Path | str | None = None) -> GrowthState:
     """加载成长状态；不存在或损坏时返回默认值（不抛异常）。"""
     path = _state_path(base_dir)
-    if path.is_file():
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-            st = GrowthState(
-                intimacy=float(data.get("intimacy", 0.0)),
-                trust=float(data.get("trust", 0.5)),
-                empathy=float(data.get("empathy", 0.0)),
-                mood=float(data.get("mood", 80.0)),
-                vitality=float(data.get("vitality", 100.0)),
-                level=int(data.get("level", 1)),
-                growth_value=int(data.get("growth_value", 0)),
-                trust_controls_proactive=bool(data.get("trust_controls_proactive", True)),
-                updated_at=data.get("updated_at", ""),
-                total_chats=int(data.get("total_chats", 0)),
-                active_dates=list(data.get("active_dates", [])),
-                memories_learned=int(data.get("memories_learned", 0)),
-                recent_events=data.get("recent_events", []),
+    if not path.is_file():
+        return GrowthState()
+
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, json.JSONDecodeError):
+        return GrowthState()
+    if not isinstance(data, dict):
+        return GrowthState()
+
+    st = GrowthState(
+        intimacy=_num(data, "intimacy", 0.0, float),
+        trust=_num(data, "trust", 0.5, float),
+        empathy=_num(data, "empathy", 0.0, float),
+        mood=_num(data, "mood", 80.0, float),
+        vitality=_num(data, "vitality", 100.0, float),
+        level=_num(data, "level", 1, int),
+        growth_value=_num(data, "growth_value", 0, int),
+        trust_controls_proactive=bool(data.get("trust_controls_proactive", True)),
+        updated_at=str(data.get("updated_at", "") or ""),
+        total_chats=_num(data, "total_chats", 0, int),
+        memories_learned=_num(data, "memories_learned", 0, int),
+    )
+
+    raw_dates = data.get("active_dates")
+    if isinstance(raw_dates, list):
+        st.active_dates = [str(d) for d in raw_dates if d]
+
+    raw_events = data.get("recent_events")
+    if isinstance(raw_events, list):
+        st.recent_events = [e for e in raw_events if isinstance(e, dict)]
+
+    # 计数器：逐键容错，坏值跳过而非整表丢弃
+    raw_counters = data.get("counters")
+    if isinstance(raw_counters, dict):
+        for k, v in raw_counters.items():
+            try:
+                st.counters[str(k)] = int(v)
+            except (TypeError, ValueError):
+                continue
+
+    # 勋章解锁记录：同上，逐条容错，尽最大努力保住每一枚
+    raw_badges = data.get("badges_unlocked")
+    if isinstance(raw_badges, dict):
+        for k, v in raw_badges.items():
+            if k and isinstance(v, str):
+                st.badges_unlocked[str(k)] = v
+
+    raw_skills = data.get("skill_proficiency")
+    if isinstance(raw_skills, dict):
+        for name, p in raw_skills.items():
+            if not isinstance(p, dict):
+                continue
+            st.skill_proficiency[str(name)] = SkillProficiency(
+                uses=_num(p, "uses", 0, int),
+                success_rate=_num(p, "success_rate", 0.0, float),
+                last_used=str(p.get("last_used", "") or ""),
+                proficiency=_num(p, "proficiency", 0.0, float),
             )
-            for name, p in (data.get("skill_proficiency") or {}).items():
-                st.skill_proficiency[name] = SkillProficiency(
-                    uses=int(p.get("uses", 0)),
-                    success_rate=float(p.get("success_rate", 0.0)),
-                    last_used=str(p.get("last_used", "")),
-                    proficiency=float(p.get("proficiency", 0.0)),
-                )
-            return st
-        except (ValueError, TypeError, json.JSONDecodeError):
-            pass
-    return GrowthState()
+    return st
 
 
 def save_state(state: GrowthState, base_dir: Path | str | None = None) -> None:
-    """保存成长状态。"""
+    """保存成长状态。
+
+    写盘失败不抛异常（成长统计不该让主流程崩），但会记一条 warning——
+    勋章解锁记录靠这一步落盘，静默失败等于丢勋章，必须留痕。
+    """
     path = _state_path(base_dir)
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -144,8 +209,8 @@ def save_state(state: GrowthState, base_dir: Path | str | None = None) -> None:
             json.dumps(state.to_dict(), ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
-    except OSError:
-        pass
+    except OSError as e:
+        logging.warning("growth state 写盘失败（勋章解锁可能未保存）: %s", e)
 
 
 def _state_path(base_dir: Path | str | None) -> Path:

@@ -11,10 +11,24 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Optional
 
-from .state import GrowthState, SkillProficiency, load_state, save_state
+from . import badges as badge_registry
+from .badges import BadgeContext, BadgeDef
+from .state import BACKFILLED_MARK, GrowthState, SkillProficiency, load_state, save_state
 
 # 等级阈值（成长值累积）
 LEVEL_THRESHOLDS = [0, 5, 15, 30, 50, 80, 120, 170, 230, 300, 400, 520]
+
+# recent_events 在 GrowthState.to_dict 里被截断到最后 50 条。
+# 只有当日志长度 < 该上限时，才能断定它是完整历史、可用于回溯推断解锁时间。
+EVENT_LOG_CAP = 50
+
+# 内部计数器键（不对外展示，仅用于跨天统计与一次性迁移标记）
+_C_WORDS_TODAY = "_words_today"
+_C_WORDS_TODAY_DATE = "_words_today_date"
+_C_BADGES_MIGRATED = "_badges_migrated"
+
+# 「破镜重圆」判定：中断超过这么多天后回归
+COMEBACK_GAP_DAYS = 30
 
 # 熟练度参数
 PROFICIENCY_USES_TARGET = 20        # 使用 20 次接近熟练上限
@@ -61,6 +75,13 @@ def clamp(v: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, v))
 
 
+def _now_iso() -> str:
+    """当前 UTC 时间（秒精度 ISO 串），用作勋章解锁时间戳。"""
+    import datetime
+
+    return datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
+
+
 def compute_proficiency(uses: int, success_rate: float, last_used: str = "") -> float:
     """技能熟练度：使用量 + 成功率 + 时效性。
 
@@ -101,6 +122,11 @@ class GrowthEngine:
     def __init__(self, base_dir: Path | str | None = None):
         self.base_dir = Path(base_dir) if base_dir else None
         self.state = load_state(self.base_dir)
+
+        # 全新状态（从未落过盘）没有任何历史可补，直接把迁移标记置位，
+        # 免得它的第一枚「初见」被误判成「早期补录」。
+        if not self.state.updated_at and not self.state.badges_unlocked:
+            self.state.counters.setdefault(_C_BADGES_MIGRATED, 1)
 
     # ------------------------------------------------------------------
     # 持久化
@@ -293,13 +319,113 @@ class GrowthEngine:
 
         由对话入口（run_turn 的 turn_start）调用，是可视化面板
         streakDays / totalChats 的真实数据源。
+
+        同时顺带采集「奇遇」类勋章所需的时间线索：深夜/清晨时段、
+        跨年守候、长期中断后归来。这些只在对话发生的当下才能观测到，
+        事后无从补算，所以必须在这里记。
         """
         import datetime
 
-        today = datetime.date.today().isoformat()
+        now = datetime.datetime.now()
+        today = now.date().isoformat()
+
+        # 长期中断后归来（在把今天加进 active_dates 之前判断）
+        if today not in self.state.active_dates and self.state.active_dates:
+            try:
+                last = max(
+                    datetime.date.fromisoformat(d)
+                    for d in self.state.active_dates
+                    if d
+                )
+                if (now.date() - last).days >= COMEBACK_GAP_DAYS:
+                    self._bump(badge_registry.COUNTER_COMEBACK)
+            except ValueError:
+                pass
+
         if today not in self.state.active_dates:
             self.state.active_dates.append(today)
         self.state.total_chats += 1
+
+        # 时段线索（用本地时间，符合作息直觉）
+        hour = now.hour
+        if 0 <= hour < 5:
+            self._bump(badge_registry.COUNTER_LATE_NIGHT)
+        elif 5 <= hour < 7:
+            self._bump(badge_registry.COUNTER_EARLY_BIRD)
+
+        # 跨年守候：公历 12/31 或 1/1 仍在动笔
+        if (now.month, now.day) in ((12, 31), (1, 1)):
+            self._bump(badge_registry.COUNTER_NEW_YEAR)
+
+        self.save()
+
+    # ------------------------------------------------------------------
+    # 通用计数器（勋章统计量）
+    # ------------------------------------------------------------------
+
+    def _bump(self, key: str, amount: int = 1) -> None:
+        """累加计数器（不落盘，由调用方统一 save）。"""
+        if amount == 0:
+            return
+        self.state.counters[key] = self.state.counters.get(key, 0) + amount
+
+    def get_counter(self, key: str) -> int:
+        try:
+            return int(self.state.counters.get(key, 0))
+        except (TypeError, ValueError):
+            return 0
+
+    def record_writing(self, chapters: int = 0, words: int = 0) -> None:
+        """记录一次文稿编校的产出量（章节数 + 字数）。
+
+        除累计值外还维护「单日字数峰值」，供「一日千言」这枚隐藏勋章判定。
+        跨天时自动清零当日累计。
+        """
+        import datetime
+
+        if chapters <= 0 and words <= 0:
+            return
+        if chapters > 0:
+            self._bump(badge_registry.COUNTER_CHAPTERS, chapters)
+        if words > 0:
+            self._bump(badge_registry.COUNTER_WORDS, words)
+
+            today_key = int(datetime.date.today().strftime("%Y%m%d"))
+            if self.get_counter(_C_WORDS_TODAY_DATE) != today_key:
+                self.state.counters[_C_WORDS_TODAY_DATE] = today_key
+                self.state.counters[_C_WORDS_TODAY] = 0
+            self._bump(_C_WORDS_TODAY, words)
+            today_total = self.get_counter(_C_WORDS_TODAY)
+            if today_total > self.get_counter(badge_registry.COUNTER_MAX_DAILY_WORDS):
+                self.state.counters[badge_registry.COUNTER_MAX_DAILY_WORDS] = today_total
+
+        self._add_event("writing_reviewed", chapters=chapters, words=words)
+        self.save()
+
+    def record_roundtable(self) -> None:
+        """记录一次创作圆桌召集。"""
+        self._bump(badge_registry.COUNTER_ROUNDTABLES)
+        self._add_event("roundtable_held")
+        self.save()
+
+    def record_report(self) -> None:
+        """记录一次审阅报告生成。"""
+        self._bump(badge_registry.COUNTER_REPORTS)
+        self._add_event("report_generated")
+        self.save()
+
+    def record_manuscript(self, total: Optional[int] = None) -> None:
+        """记录书稿入库。
+
+        Args:
+            total: 若调用方已知书稿总数，直接以该值为准（幂等，重复保存同一部
+                书稿不会虚增）；否则简单累加。
+        """
+        if total is not None and total >= 0:
+            self.state.counters[badge_registry.COUNTER_MANUSCRIPTS] = int(total)
+        else:
+            self._bump(badge_registry.COUNTER_MANUSCRIPTS)
+        self._add_event("manuscript_saved")
         self.save()
 
     def _compute_streak_days(self) -> int:
@@ -321,44 +447,177 @@ class GrowthEngine:
             today = today - datetime.timedelta(days=1)
         return streak
 
-    def _derive_achievements(self) -> list[dict]:
-        """从真实成长数据派生成就列表（解锁状态与进度均基于真实数值）。
+    # ------------------------------------------------------------------
+    # 勋章体系
+    # ------------------------------------------------------------------
 
-        条件只依赖 GrowthState 中已存在的字段，无需新增存储。
-        """
+    def _badge_context(self) -> BadgeContext:
+        """把判定所需的派生量算好一次，供全部勋章共用。"""
         st = self.state
-        n_skills = len(st.skill_proficiency)
-        skill_uses = sum(p.uses for p in st.skill_proficiency.values())
-        defs = [
-            ("first_chat", "初见", "👋", "完成第一次对话", "common",
-             st.total_chats >= 1, min(st.total_chats, 1), 1),
-            ("chat_100", "老友", "🤝", "累计对话 100 次", "rare",
-             st.total_chats >= 100, min(st.total_chats, 100), 100),
-            ("first_skill", "造物者", "🎨", "创建第一个技能", "common",
-             n_skills >= 1, min(n_skills, 1), 1),
-            ("intimacy_50", "亲密伙伴", "💕", "亲密度达到 50%", "rare",
-             st.intimacy >= 50, min(int(st.intimacy), 50), 50),
-            ("memory_50", "记忆宫殿", "🏛️", "积累 50 条记忆", "epic",
-             st.memories_learned >= 50, min(st.memories_learned, 50), 50),
-            ("level_10", "墨仙", "🌟", "达到 Lv.10", "epic",
-             st.level >= 10, min(st.level, 10), 10),
-            ("master", "登峰造极", "👑", "技能使用 100 次", "legendary",
-             skill_uses >= 100, min(skill_uses, 100), 100),
+        return BadgeContext(
+            state=st,
+            streak_days=self._compute_streak_days(),
+            active_days=len(set(st.active_dates)),
+            skill_count=len(st.skill_proficiency),
+            skill_uses=sum(p.uses for p in st.skill_proficiency.values()),
+            max_level=len(LEVEL_THRESHOLDS),
+        )
+
+    def _event_log_is_complete(self) -> bool:
+        """事件日志是否为完整历史。
+
+        recent_events 每次落盘都会截断到最后 EVENT_LOG_CAP 条。因此只有当
+        长度严格小于上限时，才能确定「一条都没丢」，进而据此回溯推断解锁时间。
+        一旦到达上限，历史就已经不可考了，此时宁可标补录也不臆测日期。
+        """
+        return len(self.state.recent_events) < EVENT_LOG_CAP
+
+    def _infer_unlock_times(self) -> dict[str, str]:
+        """回溯推断勋章的确切解锁时间（仅在证据充分时给出）。
+
+        做法是按时间顺序重放事件日志，累积记忆条数与技能数，找出各阈值
+        被跨过的那一刻。为防止「日志不全导致时间偏晚」，重放结束后会与
+        当前真实数值核对，对不上就整条线索作废。
+
+        Returns:
+            badge_id -> ISO 时间字符串；查不到确切时间的勋章不会出现在结果里。
+        """
+        if not self._event_log_is_complete():
+            return {}
+
+        events = [
+            e for e in self.state.recent_events
+            if isinstance(e, dict) and e.get("ts")
         ]
-        out = []
-        for aid, name, icon, desc, rarity, unlocked, prog, mx in defs:
-            out.append({
-                "id": aid,
-                "name": name,
-                "icon": icon,
-                "description": desc,
-                "rarity": rarity,
-                "unlocked": bool(unlocked),
-                "progress": int(prog),
-                "maxProgress": int(mx),
-                "unlockedAt": None,
-            })
-        return out
+        events.sort(key=lambda e: str(e.get("ts", "")))
+
+        found: dict[str, str] = {}
+        mem_cum = 0
+        skills: set[str] = set()
+        # 显式列出可回溯的勋章及其阈值。
+        # 之所以不从 BADGES 自动推导：metric 是闭包，无法内省它读的是哪个字段。
+        # 宁可在这里手写一份短名单，也不做不可靠的反射。
+        mem_targets = [("first_memory", 1), ("memory_50", 50),
+                       ("memory_200", 200), ("memory_500", 500)]
+        skill_targets = [("first_skill", 1)]
+
+        for e in events:
+            kind = e.get("kind")
+            ts = str(e.get("ts"))
+            if kind == "memory_learned":
+                try:
+                    mem_cum += int(e.get("count", 1))
+                except (TypeError, ValueError):
+                    mem_cum += 1
+                for bid, target in mem_targets:
+                    if bid not in found and mem_cum >= target:
+                        found[bid] = ts
+            elif kind in ("skill_created", "skill_used", "skill_evolved"):
+                name = e.get("skill_name")
+                if name:
+                    skills.add(str(name))
+                for bid, target in skill_targets:
+                    if bid not in found and len(skills) >= target:
+                        found[bid] = ts
+
+        # 核对：重放结果必须与当前真实状态吻合，否则日志不足采信
+        if mem_cum != self.state.memories_learned:
+            for bid, _ in mem_targets:
+                found.pop(bid, None)
+        if len(skills) != len(self.state.skill_proficiency):
+            for bid, _ in skill_targets:
+                found.pop(bid, None)
+        return found
+
+    def check_badges(self, save: bool = True) -> list[BadgeDef]:
+        """判定全部勋章，为新达成的记录解锁时间并落盘。
+
+        首次运行（体系上线后的第一次判定）走迁移分支：把此前就已达成的勋章
+        一次性登记入册，能回溯确切时间的用真实时间，其余标「补录」——
+        并且**不**作为新解锁上报，免得一上来就弹一屏报喜。
+
+        Args:
+            save: 有变化时是否立即落盘。
+
+        Returns:
+            本次新解锁的勋章定义列表（迁移时恒为空）。
+        """
+        ctx = self._badge_context()
+        record = self.state.badges_unlocked
+        migrating = self.get_counter(_C_BADGES_MIGRATED) != 1
+        inferred = self._infer_unlock_times() if migrating else {}
+
+        newly: list[BadgeDef] = []
+        changed = False
+
+        for badge in badge_registry.BADGES:
+            if badge.id in record:
+                continue
+            if not badge_registry.is_unlocked(badge, ctx):
+                continue
+            if migrating:
+                record[badge.id] = inferred.get(badge.id, BACKFILLED_MARK)
+            else:
+                record[badge.id] = _now_iso()
+                newly.append(badge)
+            changed = True
+
+        if migrating:
+            self.state.counters[_C_BADGES_MIGRATED] = 1
+            changed = True
+
+        if changed and save:
+            self.save()
+        return newly
+
+    def badge_items(self) -> list[dict]:
+        """全部勋章的展示态列表（已解锁在前，含进度与解锁时间）。"""
+        ctx = self._badge_context()
+        record = self.state.badges_unlocked
+        items = []
+        for badge in badge_registry.BADGES:
+            raw = record.get(badge.id)
+            backfilled = raw == BACKFILLED_MARK
+            items.append(
+                badge_registry.serialize(
+                    badge,
+                    ctx,
+                    unlocked_at=None if (raw is None or backfilled) else raw,
+                    backfilled=backfilled,
+                )
+            )
+        return badge_registry.sort_for_display(items)
+
+    def badge_snapshot(self) -> dict:
+        """勋章墙数据包：先判定落盘，再输出全量勋章 + 统计摘要。"""
+        newly = self.check_badges()
+        items = self.badge_items()
+        return {
+            "badges": items,
+            "summary": badge_registry.summarize(items),
+            "newlyUnlocked": [
+                {
+                    "id": b.id,
+                    "name": b.name,
+                    "glyph": b.glyph,
+                    "icon": b.icon,
+                    "rarity": b.rarity,
+                    "rarityLabel": badge_registry.RARITY_LABELS.get(b.rarity, b.rarity),
+                    "celebration": b.celebration,
+                }
+                for b in newly
+            ],
+            "companionDays": len(set(self.state.active_dates)),
+            "streakDays": self._compute_streak_days(),
+        }
+
+    def _derive_achievements(self) -> list[dict]:
+        """成就列表（旧状态面板沿用的字段结构）。
+
+        现已改为读取 badges.py 声明式注册表，与勋章墙同一份数据源，
+        不再各算各的。
+        """
+        return self.badge_items()
 
     def _derive_personality(self) -> dict:
         """人格指纹四维（0-100），从真实行为状态派生：
@@ -453,6 +712,19 @@ class GrowthEngine:
         # 可视化面板补充字段（全部基于真实数据派生，非展示用空数字）
         d["total_chats"] = self.state.total_chats
         d["streak_days"] = self._compute_streak_days()
-        d["achievements"] = self._derive_achievements()
+        # 先判定勋章（有新解锁会落盘），再取展示列表，保证两者一致
+        newly = self.check_badges()
+        d["achievements"] = self.badge_items()
+        d["newly_unlocked"] = [
+            {
+                "id": b.id,
+                "name": b.name,
+                "glyph": b.glyph,
+                "icon": b.icon,
+                "rarity": b.rarity,
+                "celebration": b.celebration,
+            }
+            for b in newly
+        ]
         d["personality"] = self._derive_personality()
         return d

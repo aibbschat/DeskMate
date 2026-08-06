@@ -69,6 +69,7 @@
     "automations": "Automations",
     "experts": "Experts",
     "roundtable": "Roundtable",
+    "badges": "Badges",
     "newSession": "New session",
     "startWithSpecificPersona": "Start with a specific persona",
     "choosePersona": "Choose a persona",
@@ -297,5 +298,20 @@
     "ready": "Ready",
     "active": "Active now",
     "back": "Back"
+  },
+  "badges": {
+    "title": "Badge Wall",
+    "subtitle": "Together {{days}} days · {{streak}}-day streak",
+    "subtitleLoading": "Loading your badges…",
+    "back": "Back",
+    "collected": "{{pct}}% collected",
+    "all": "All",
+    "onlyUnlocked": "Unlocked only",
+    "loading": "Loading…",
+    "error": "Failed to load: ",
+    "retry": "Retry",
+    "empty": "No badges here yet",
+    "backfilled": "Backfilled (early use)",
+    "gotAt": "Earned {{date}}"
   }
 }

@@ -73,6 +73,7 @@ import { ExpertAvatar } from "./components/deskmate/ExpertAvatar";
 import { ReportDialog } from "./components/deskmate/ReportDialog";
 
 import { ExpertsCenter } from "./components/deskmate/ExpertsCenter";
+import { BadgeWall } from "./components/deskmate/BadgeWall";
 
 class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | null }> {
   state = { error: null as Error | null };
@@ -290,7 +291,7 @@ export function App() {
   // load; corrected by loadSettings.
   const [modelReady, setModelReady] = useState(true);
   const [surface, setSurface] = useState<
-    "session" | "scheduled" | "integrations" | "audit" | "inbox" | "persona" | "settings" | "experts" | "roundtable"
+    "session" | "scheduled" | "integrations" | "audit" | "inbox" | "persona" | "settings" | "experts" | "roundtable" | "badges"
   >("session");
   // A remembered Scheduled-detail target must not outlive the surface (see the
   // scheduledOpenId comment above): nav re-entry lands on the list, never a
@@ -1504,6 +1505,8 @@ export function App() {
         onOpenExperts={() => setSurface("experts")}
         onOpenRoundtable={() => setSurface("roundtable")}
         roundtableActive={surface === "roundtable"}
+        onOpenBadges={() => setSurface("badges")}
+        badgesActive={surface === "badges"}
         scheduledActive={surface === "scheduled"}
         integrationsActive={surface === "integrations"}
         auditActive={surface === "audit"}
@@ -1550,6 +1553,8 @@ export function App() {
         <div className="roundtable-view">
           <iframe src={`${httpBase()}/roundtable/`} title="创作圆桌" />
         </div>
+      ) : surface === "badges" ? (
+        <BadgeWall onBack={() => setSurface("session")} />
       ) : (
       <div className={"main" + (surface === "session" && agent !== "chat" && !railHidden ? " rail-open" : "")}>
         <div className="main-topbar">

@@ -69,6 +69,7 @@
     "automations": "自动化",
     "experts": "专家",
     "roundtable": "创作圆桌",
+    "badges": "勋章",
     "newSession": "新建会话",
     "startWithSpecificPersona": "使用特定角色开始",
     "choosePersona": "选择角色",
@@ -297,5 +298,20 @@
     "ready": "已就绪",
     "active": "当前已激活",
     "back": "返回"
+  },
+  "badges": {
+    "title": "勋章墙",
+    "subtitle": "相伴 {{days}} 天 · 连续 {{streak}} 天",
+    "subtitleLoading": "正在加载你的勋章…",
+    "back": "返回",
+    "collected": "已收集 {{pct}}%",
+    "all": "全部",
+    "onlyUnlocked": "只看已获得",
+    "loading": "加载中…",
+    "error": "加载失败：",
+    "retry": "重试",
+    "empty": "这里还没有勋章",
+    "backfilled": "早期补录",
+    "gotAt": "{{date}} 获得"
   }
 }

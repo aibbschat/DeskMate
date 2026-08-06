@@ -148,6 +148,9 @@ interface Props {
   // 创作圆桌入口（独立页面，主区以 iframe 内嵌）。
   onOpenRoundtable?: () => void;
   roundtableActive?: boolean;
+  // 勋章墙入口（独立页面，展示已得/未得勋章与进度）。
+  onOpenBadges?: () => void;
+  badgesActive?: boolean;
   // Collapse controls (⌘B / hover-peek). `onCollapse` docks/undocks; `onPeekLeave` hides the
   // floating peek when the pointer leaves the panel.
   collapsed?: boolean;
@@ -1076,6 +1079,21 @@ export function Sidebar(props: Props) {
         >
           <Icon name="users" size={15} className="shrink-0" />
           <span className="flex-1">{t("sidebar.roundtable")}</span>
+        </button>
+      </div>
+
+      {/* 勋章墙：体系化勋章（五门四阶），独立页面，可回溯解锁时间。 */}
+      <div className="px-2.5 mt-1">
+        <button
+          className={
+            "w-full flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-[13px] text-left hover:bg-paper hover:text-ink " +
+            (props.badgesActive ? "text-ink bg-paper" : "text-muted")
+          }
+          data-testid="nav-badges"
+          onClick={props.onOpenBadges}
+        >
+          <Icon name="medal" size={15} className="shrink-0" />
+          <span className="flex-1">{t("sidebar.badges")}</span>
         </button>
       </div>
 

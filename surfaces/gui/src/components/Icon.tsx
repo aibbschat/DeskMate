@@ -42,7 +42,8 @@ export type IconName =
   | "mic"
   | "stop"
   | "x"
-  | "users";
+  | "users"
+  | "medal";
 
 export function Icon({
   name,
@@ -112,6 +113,15 @@ export function Icon({
           <path d="M3.6 19a5.4 5.4 0 0 1 10.8 0" />
           <circle cx="16.5" cy="10.5" r="2.4" />
           <path d="M14.2 19a4 4 0 0 1 6.4 0" />
+        </svg>
+      );
+    case "medal":
+      // 勋章：两条绶带 + 圆形奖章（Lucide 风，单线）。
+      return (
+        <svg {...s}>
+          <path d="M7.2 15 2.7 7.1a1 1 0 0 1 .13-1.2L4.5 3.5a1 1 0 0 1 1.2-.13L11 7.2" />
+          <path d="M11 7.2 16.5 3.4a1 1 0 0 1 1.2.13L19.3 5.9a1 1 0 0 1-.13 1.2L13.8 15" />
+          <circle cx="12" cy="16" r="5" />
         </svg>
       );
     case "folder":

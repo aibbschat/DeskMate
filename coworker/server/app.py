@@ -1755,6 +1755,29 @@ def create_app(manager: SessionManager) -> FastAPI:
             logging.exception("get deskmate growth failed")
             return JSONResponse({"error": "growth failed"}, status_code=500)
 
+    @app.get("/v1/deskmate/badges")
+    async def get_deskmate_badges() -> dict[str, Any]:
+        """获取勋章墙数据（全量勋章 + 获得状态 + 进度 + 解锁时间 + 统计摘要）。
+
+        本端点会顺带执行一次勋章判定：新达成的勋章在此刻被记录解锁时间并落盘，
+        并通过 newlyUnlocked 返回给前端做「桌宠报喜」。判定是幂等的，
+        没有新解锁就不写盘。
+
+        隐藏勋章（奇遇门）在未解锁时名称与条件均被遮蔽，只返回占位内容。
+        """
+        try:
+            from pathlib import Path as _P
+
+            from deskmate.growth.engine import GrowthEngine
+
+            desk_dir = _P(
+                os.environ.get("DESKMATE_DIR", os.path.expanduser("~/.deskmate"))
+            )
+            return GrowthEngine(base_dir=desk_dir).badge_snapshot()
+        except Exception:
+            logging.exception("get deskmate badges failed")
+            return JSONResponse({"error": "badges failed"}, status_code=500)
+
     @app.post("/v1/deskmate/growth/proactive")
     async def set_deskmate_growth_proactive(request: Request) -> dict[str, Any]:
         """设置信任感是否调制 proactive 主动打扰阈值。
@@ -2119,6 +2142,8 @@ def create_app(manager: SessionManager) -> FastAPI:
             # ---- 逐章流式：每章完成即落盘 + 推聊天 ----
             all_items: list[dict] = []
             per_chapter: list = []
+            done_chapters = 0   # 实际审完的章节数（跳过失败章），供勋章统计
+            done_words = 0      # 实际过手的字数
             now = int(_t.time())
 
             if session_id:
@@ -2137,6 +2162,8 @@ def create_app(manager: SessionManager) -> FastAPI:
                     block = format_chapter_block(ctitle, items)
                     all_items.extend(items)
                     per_chapter.append((ctitle, len(items)))
+                    done_chapters += 1
+                    done_words += len(ctext)
                     if session_id:
                         ts = int(_t.time())
                         manager.append_session_messages(
@@ -2174,6 +2201,18 @@ def create_app(manager: SessionManager) -> FastAPI:
                 )
                 await manager.broadcast_session(session_id, {"type": "turn_done", "data": {}})
 
+            # 勋章统计：记录本次编校产出（失败不影响审阅结果返回）
+            try:
+                from deskmate.growth.engine import GrowthEngine as _GEng
+
+                await asyncio.to_thread(
+                    _GEng(base_dir=desk_dir).record_writing,
+                    done_chapters,
+                    done_words,
+                )
+            except Exception as e:
+                logging.debug("record_writing 失败（不影响审阅）: %s", e)
+
             return {
                 "letter": letter,
                 "items": all_items,
@@ -2210,7 +2249,24 @@ def create_app(manager: SessionManager) -> FastAPI:
             if not isinstance(chapters, list) or not chapters:
                 return JSONResponse({"error": "missing chapters"}, status_code=400)
             safe = _re.sub(r"[\\/]", "_", name)
-            return save_manuscript(safe, chapters)
+            result = save_manuscript(safe, chapters)
+
+            # 勋章统计：以书稿总数为准（幂等，重存同一部不虚增）
+            try:
+                from pathlib import Path as _P
+
+                from deskmate.growth.engine import GrowthEngine as _GEng
+                from deskmate.writing import list_manuscripts as _lsm
+
+                _dd = _P(
+                    os.environ.get("DESKMATE_DIR", os.path.expanduser("~/.deskmate"))
+                )
+                await asyncio.to_thread(
+                    _GEng(base_dir=_dd).record_manuscript, len(_lsm())
+                )
+            except Exception as e:
+                logging.debug("record_manuscript 失败（不影响保存）: %s", e)
+            return result
         except Exception:
             logging.exception("save manuscript failed")
             return JSONResponse({"error": "保存书稿失败"}, status_code=500)
@@ -2352,6 +2408,14 @@ def create_app(manager: SessionManager) -> FastAPI:
                 json.dumps({"name": safe, "report": report}, ensure_ascii=False, indent=1),
                 encoding="utf-8",
             )
+
+            # 勋章统计：报告生成计数（失败不影响报告返回）
+            try:
+                from deskmate.growth.engine import GrowthEngine as _GEng
+
+                await asyncio.to_thread(_GEng(base_dir=desk_dir).record_report)
+            except Exception as e:
+                logging.debug("record_report 失败（不影响报告）: %s", e)
 
             return {"ok": True, "report": report, "report_name": safe}
         except FileNotFoundError as e:

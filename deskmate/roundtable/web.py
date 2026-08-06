@@ -252,6 +252,15 @@ def create_app(rt_port: int = 9920) -> FastAPI:
             chapter_range=chapter_range,
         )
 
+        # 勋章统计：记一次圆桌召集。_make_stream 是同步函数，这里直接同步写盘
+        # （一次小 JSON 落盘，与上面同步读取文稿同量级），失败不影响议事。
+        try:
+            from deskmate.growth.engine import GrowthEngine as _GEng
+
+            _GEng().record_roundtable()
+        except Exception as e:
+            logger.debug("record_roundtable 失败（不影响圆桌）: %s", e)
+
         async def gen():
             async for ev in rt.run_stream():
                 if await request.is_disconnected():

@@ -225,6 +225,8 @@ export function ProofreadPanel({ open, onClose, sessionId, initialFocus }: Props
       if (sessionId) opts.sessionId = sessionId;
       if (manuscriptName) opts.title = manuscriptName;
       await proofreadDraft(opts);
+      // 编校可能解锁勋章：通知桌宠自检并报喜（兜底仍有 20s 轮询）
+      window.dispatchEvent(new CustomEvent("deskmate:badges-refresh"));
       // 结果已由后端作为结构化消息写入当前会话聊天，关闭面板让用户在聊天中查看
       showToast("编校完成，结果已发到聊天 ✅");
       window.setTimeout(() => onClose(), 1400);

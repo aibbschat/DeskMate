@@ -2231,6 +2231,279 @@ html[data-platform="linux"] ::-webkit-scrollbar-thumb:hover { background-color: 
   font-size: 13.5px;
   color: var(--muted);
 }
+
+/* ----------------------------------------------------------------------------
+   勋章墙（BadgeWall）：复用 experts 面板的视觉变量，独立成块。
+---------------------------------------------------------------------------- */
+.badge-wall {
+  max-width: 1080px;
+  margin: 0 auto;
+  padding: 22px 24px 48px;
+}
+.badge-wall-head {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+.badge-wall-score {
+  margin-left: auto;
+  text-align: right;
+  line-height: 1.1;
+}
+.badge-wall-score-num {
+  font-size: 26px;
+  font-weight: 800;
+  color: var(--ink);
+  letter-spacing: -0.02em;
+}
+.badge-wall-score-total {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--muted);
+  margin-left: 2px;
+}
+.badge-wall-score-label {
+  margin-top: 2px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.badge-wall-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin: 20px 0 16px;
+}
+.badge-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.badge-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 12px;
+  border-radius: 999px;
+  font-size: 13px;
+  color: var(--muted);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  cursor: pointer;
+  transition: color .15s, background .15s, border-color .15s;
+}
+.badge-chip:hover { color: var(--ink); border-color: var(--line-strong); }
+.badge-chip.is-on {
+  color: var(--accent-ink, var(--ink));
+  background: var(--accent-soft, var(--accent));
+  border-color: var(--accent);
+}
+.badge-chip-count {
+  font-size: 11.5px;
+  font-weight: 600;
+  opacity: .72;
+}
+.badge-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 13px;
+  color: var(--muted);
+  cursor: pointer;
+  user-select: none;
+}
+.badge-toggle input { accent-color: var(--accent); }
+.badge-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(132px, 1fr));
+  gap: 14px;
+}
+.badge-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  text-align: center;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  padding: 18px 14px;
+  transition: border-color .15s, box-shadow .15s, transform .15s;
+}
+.badge-card.is-unlocked {
+  border-color: var(--line-strong);
+  box-shadow: 0 6px 20px rgba(20, 24, 31, .06);
+}
+.badge-card.is-locked {
+  border-style: dashed;
+  opacity: .92;
+}
+.badge-card.is-masked .badge-emblem,
+.badge-card.is-masked .badge-name {
+  filter: grayscale(1);
+  opacity: .55;
+}
+.badge-emblem {
+  width: 58px;
+  height: 58px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  border: 2px solid var(--line);
+  background: var(--panel-2, var(--panel));
+  font-size: 24px;
+  font-weight: 800;
+  color: var(--muted);
+}
+.badge-card.is-unlocked .badge-emblem { box-shadow: 0 2px 10px rgba(20, 24, 31, .08); }
+.badge-name {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--ink);
+}
+.badge-rarity {
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: .02em;
+}
+.badge-desc {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--muted);
+  min-height: 34px;
+}
+.badge-bar {
+  width: 100%;
+  height: 5px;
+  border-radius: 999px;
+  background: var(--line);
+  overflow: hidden;
+}
+.badge-bar-fill {
+  height: 100%;
+  border-radius: 999px;
+  transition: width .4s ease;
+}
+.badge-meta {
+  font-size: 11.5px;
+  color: var(--muted);
+}
+.badge-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px 18px;
+  margin-top: 26px;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+}
+.badge-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12.5px;
+  color: var(--ink);
+}
+.badge-legend-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  display: inline-block;
+}
+.badge-legend-count {
+  font-style: normal;
+  font-size: 11.5px;
+  color: var(--muted);
+  margin-left: 2px;
+}
+.badge-wall-msg {
+  padding: 40px 0;
+  text-align: center;
+  color: var(--muted);
+  font-size: 14px;
+}
+.badge-retry {
+  margin-left: 10px;
+  padding: 4px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--line-strong);
+  background: var(--panel);
+  color: var(--ink);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+/* ----------------------------------------------------------------------------
+   桌宠报喜气泡（勋章解锁瞬间）：贴着墨灵头顶的说话气泡。
+---------------------------------------------------------------------------- */
+.mascot-speech {
+  position: absolute;
+  left: 50%;
+  bottom: calc(100% + 10px);
+  transform: translateX(-50%);
+  width: max-content;
+  max-width: 260px;
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: 14px;
+  background: var(--panel);
+  border: 1px solid var(--line-strong);
+  box-shadow: 0 10px 30px rgba(20, 24, 31, .14);
+  z-index: 60;
+  pointer-events: none;
+}
+.mascot-speech::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 100%;
+  transform: translateX(-50%);
+  border: 8px solid transparent;
+  border-top-color: var(--panel);
+}
+.mascot-celebrate {
+  animation: mascot-pop .28s cubic-bezier(.2, .9, .3, 1.3);
+}
+@keyframes mascot-pop {
+  from { opacity: 0; transform: translateX(-50%) translateY(8px) scale(.92); }
+  to   { opacity: 1; transform: translateX(-50%) translateY(0) scale(1); }
+}
+.mascot-speech-glyph {
+  flex-shrink: 0;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 17px;
+  font-weight: 800;
+  color: var(--accent-ink, var(--ink));
+  background: var(--accent-soft, var(--accent));
+  border: 1.5px solid var(--accent);
+}
+.mascot-speech-body { min-width: 0; }
+.mascot-speech-kicker {
+  font-size: 10.5px;
+  letter-spacing: .04em;
+  color: var(--accent, var(--muted));
+  font-weight: 700;
+}
+.mascot-speech-name {
+  font-size: 13.5px;
+  font-weight: 700;
+  color: var(--ink);
+  margin-top: 1px;
+}
+.mascot-speech-text {
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--muted);
+  margin-top: 3px;
+}
 .experts-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
