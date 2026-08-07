@@ -178,7 +178,10 @@ class Roundtable:
             "（以下设定圣经由稿件正文自动抽取并逐条做过原文引证核验。"
             "请严格以此为准：标注【待确认】的条目不得当作既定事实；"
             "圣经与当前章原文中都没有出现的人物、关系、情节，一律视为不存在，"
-            "严禁脑补或据传闻发挥。）"
+            "严禁脑补或据传闻发挥。"
+            "另：圣经「人物（本作角色）」段才是本作出场角色；"
+            "「对话／典故中提及的历史人物」段仅为角色对白里的举例或引用，"
+            "并非本作人物，请勿将其作为本作角色展开分析或编造其情节。）"
         )
         return f"{guard}\n\n{text}"
 
@@ -189,6 +192,10 @@ class Roundtable:
     def _bible_character_names(self, n: int = 3) -> list[str]:
         """从圣经 CHARACTERS 段提取主角名，用于检索兜底：人物名必现于正文。
 
+        只从「人物（本作角色）」小节提取，**排除「对话／典故中提及的历史人物」小节**
+        ——后者（如嬴政、王安石）只是角色对白里的举例引用，并非本作角色，不能被当成
+        本作主角去做全书 FTS5 检索，否则会把对白里的典故片段误当成角色剧情上下文。
+
         兼容两种书稿格式：
         - 列表项「- 韩笑文：…」（最常见）
         - 行内 ``**韩笑文**`` 加粗
@@ -198,14 +205,20 @@ class Roundtable:
         if not chars:
             return []
         import re as _re
+        # 优先只取「本作角色」小节；旧格式/无分组标记时退回整段（向后兼容）
+        m = _re.search(
+            r"^###\s*人物（本作角色）\s*$(.*?)(?=^### |\Z)",
+            chars, _re.MULTILINE | _re.DOTALL,
+        )
+        block = m.group(1) if m else chars
         seen: set[str] = set()
         out: list[str] = []
-        for nm in _re.findall(r"\*\*([^*]+?)\*\*", chars):
+        for nm in _re.findall(r"\*\*([^*]+?)\*\*", block):
             nm = nm.strip()
             if nm and nm not in seen and len(nm) <= 8:
                 seen.add(nm)
                 out.append(nm)
-        for nm in _re.findall(r"^\s*-\s*([^\s：:]{1,8})\s*[：:]", chars, _re.MULTILINE):
+        for nm in _re.findall(r"^\s*-\s*([^\s：:]{1,8})\s*[：:]", block, _re.MULTILINE):
             nm = nm.strip()
             if nm and nm not in seen and len(nm) <= 8:
                 seen.add(nm)

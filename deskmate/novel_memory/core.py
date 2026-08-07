@@ -350,7 +350,8 @@ _EXTRACT_JSON_SYS = (
     "【输出格式】只输出一个 JSON 对象，不要任何解释或寒暄：\n"
     "{\n"
     '  "characters": [{"name":"人物本名", "aliases":["别名"], '
-    '"detail":"一句话身份（限30字）", "evidence":"原文连续片段"}],\n'
+    '"detail":"一句话身份（限30字）", "evidence":"原文连续片段", '
+    '"role":"narrative 或 allusion"}],\n'
     '  "relations": [{"subject":"甲", "object":"乙", '
     '"type":"敌|友|亲|暧昧|上下级|同门|其他", "detail":"关系说明（限30字）", '
     '"evidence":"原文连续片段"}],\n'
@@ -369,7 +370,16 @@ _EXTRACT_JSON_SYS = (
     "3. 不要输出对情节的推断、评价或概括性总结，只记录白纸黑字写了什么。\n"
     "4. **all_names 必须穷举本段每一个真实人名**，哪怕只出现一次、哪怕只是被提及或"
     "是配角/反派。漏列一个人名，他就会从圣经里彻底消失。已经写进 characters 的也要"
-    "再写进 all_names（两者可能不完全一致，以 all_names 为准做补全）。"
+    "再写进 all_names（两者可能不完全一致，以 all_names 为准做补全）。\n"
+    "5. **characters 的 role 字段必须如实填写**：\n"
+    "   - narrative（默认）：本作**虚构**的叙事角色，含主角、配角、亲属、受害者、"
+    "     只被他人转述出场的次要人物——只要他在本作里有独立身份或剧情功能，哪怕戏份少、"
+    "     主要通过对话提及，也填 narrative。\n"
+    "   - allusion：**仅**适用于「真实历史/现实人物被本作角色当作对话典故引用」的情形"
+    "     （如角色闲聊时举的例子：嬴政、王安石、范仲淹、苏秦、百里奚、秦穆公）。\n"
+    "   判别锚点：这个人名在真实历史上是存在的吗？是真实历史人物被拿来当典故说，才填"
+    "     allusion；否则（本作虚构的任何角色，哪怕只被提及）一律 narrative。"
+    "不确定默认 narrative。"
     )
 
 # 抽取失败重试次数：JSON 解析失败往往是模型偶发跑偏，重试一次即可救回
@@ -436,10 +446,13 @@ def _records_from_json(
         if not name:
             continue
         aliases = [_s(a) for a in (c.get("aliases") or []) if _s(a)]
+        raw_role = _s(c.get("role"))
+        role = raw_role if raw_role in (_ent.ROLE_NARRATIVE, _ent.ROLE_ALLUSION) \
+            else _ent.ROLE_NARRATIVE
         recs.append(_ent.Record(
             kind=_ent.KIND_CHARACTER, name=name, aliases=aliases,
             detail=_s(c.get("detail")), evidence=_s(c.get("evidence")),
-            source_file=source_file, source_seq=seq,
+            source_file=source_file, source_seq=seq, role_category=role,
         ))
     for r in data.get("relations") or []:
         if not isinstance(r, dict):
@@ -498,14 +511,17 @@ _GAPFILL_SYS = (
     "不得改写、不得拼接、不得加省略号、不得自己造句。**凡是你写不出原文引证的人名，"
     "就不要输出这一条。**\n"
     "【输出】只输出一个 JSON 对象，不要任何解释：\n"
-    '{"characters":[{"name":"人名","detail":"一句话身份（限30字）","evidence":"原文连续片段"}]}\n'
+    '{"characters":[{"name":"人名","detail":"一句话身份（限30字）","evidence":"原文连续片段","role":"narrative 或 allusion"}]}\n'
     "【硬约束】\n"
     "1. name 必须是下面「待补人名」名单里的，且是正文中原样出现过的真实人物名。\n"
     "2. 若某名字其实不是人物（是地名/机构/书名/泛指），不要输出它。\n"
     "3. 若某名字其实是另一人物的绰号/别名（如「董老弟」是董文正的昵称），把 detail 写成"
     "「X 的绰号/别名」并给出引证，不要当成独立人物另立完整条目。\n"
-    "4. 宁可少写、宁可空着，也绝不允许编造。"
-)
+    "4. role 字段：本作虚构的叙事角色（含次要/只被提及的配角、亲属、受害者）填"
+    " \"narrative\"（默认）；仅当此人是**真实历史/现实人物被本作角色当典故引用**"
+    "（如嬴政、王安石），才填 \"allusion\"。\n"
+    "5. 宁可少写、宁可空着，也绝不允许编造。"
+    )
 
 
 def _gapfill_batch(

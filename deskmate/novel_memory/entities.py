@@ -41,6 +41,8 @@ __all__ = [
     "KIND_RELATION",
     "KIND_EVENT",
     "KIND_SETTING",
+    "ROLE_NARRATIVE",
+    "ROLE_ALLUSION",
     "STATUS_CONFIRMED",
     "STATUS_PENDING",
     "STATUS_REJECTED",
@@ -67,6 +69,12 @@ KIND_CHARACTER = "character"
 KIND_RELATION = "relation"
 KIND_EVENT = "event"
 KIND_SETTING = "setting"
+
+# 角色类别：区分「本作叙事角色」与「仅在对白/旁白中被提及或引用的历史/典故人物」。
+# 后者（allusion）并非本作出场人物，只是角色聊天时举的例子（如嬴政、王安石），
+# 必须明确标注，避免被圆桌/编辑专家误当作本作角色展开讨论或编造其剧情。
+ROLE_NARRATIVE = "narrative"   # 本作出场/叙事角色（默认）
+ROLE_ALLUSION = "allusion"     # 对话/典故中提及引用，非本作角色
 
 _KINDS = (KIND_CHARACTER, KIND_RELATION, KIND_EVENT, KIND_SETTING)
 
@@ -111,6 +119,7 @@ CREATE TABLE IF NOT EXISTS entities (
     status       TEXT NOT NULL DEFAULT 'pending',
     confidence   REAL NOT NULL DEFAULT 0,
     aliases      TEXT NOT NULL DEFAULT '[]',
+    role_category TEXT NOT NULL DEFAULT 'narrative',
     history      TEXT NOT NULL DEFAULT '[]',
     first_seen   REAL NOT NULL DEFAULT 0,
     last_updated REAL NOT NULL DEFAULT 0
@@ -145,6 +154,7 @@ class Record:
     aliases: list[str] = field(default_factory=list)
     status: str = STATUS_PENDING
     confidence: float = 0.0
+    role_category: str = ROLE_NARRATIVE
     reject_reason: str = ""
 
     # -- 派生 ---------------------------------------------------------------
@@ -311,6 +321,13 @@ def connect(bible_dir: Path) -> sqlite3.Connection:
     conn = sqlite3.connect(str(p))
     conn.row_factory = sqlite3.Row
     conn.executescript(_SCHEMA)
+    # 存量库迁移：新增 role_category 列（SQLite 不支持 ADD COLUMN IF NOT EXISTS）
+    _cols = {r[1] for r in conn.execute("PRAGMA table_info(entities)").fetchall()}
+    if "role_category" not in _cols:
+        conn.execute(
+            "ALTER TABLE entities ADD COLUMN role_category TEXT NOT NULL "
+            "DEFAULT 'narrative'"
+        )
     conn.commit()
     return conn
 
@@ -379,14 +396,15 @@ def upsert_records(
             conn.execute(
                 """INSERT INTO entities
                    (id, kind, key, name, subject, object, rel_type, detail, evidence,
-                    source_file, source_seq, status, confidence, aliases, history,
-                    first_seen, last_updated)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    source_file, source_seq, status, confidence, aliases,
+                    role_category, history, first_seen, last_updated)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     rec.id, rec.kind, rec.key, rec.name, rec.subject, rec.object,
                     rec.rel_type, rec.detail, rec.evidence, rec.source_file,
                     rec.source_seq, rec.status, rec.confidence,
-                    json.dumps(rec.aliases or [], ensure_ascii=False), "[]",
+                    json.dumps(rec.aliases or [], ensure_ascii=False),
+                    rec.role_category or ROLE_NARRATIVE, "[]",
                     now, now,
                 ),
             )
@@ -415,6 +433,9 @@ def upsert_records(
                 "evidence": rec.evidence or row["evidence"],
                 "source_file": rec.source_file or row["source_file"],
                 "source_seq": max(rec.source_seq, int(row["source_seq"] or 0)),
+                # 角色类别是稳定属性：新批次给出则以新为准，否则保留旧值
+                "role_category": rec.role_category or row["role_category"]
+                or ROLE_NARRATIVE,
             }
         else:
             # 旧批次只补空缺，不得回退更新的事实
@@ -427,6 +448,8 @@ def upsert_records(
                 "evidence": row["evidence"] or rec.evidence,
                 "source_file": row["source_file"] or rec.source_file,
                 "source_seq": int(row["source_seq"] or 0),
+                "role_category": row["role_category"] or rec.role_category
+                or ROLE_NARRATIVE,
             }
 
         status = (
@@ -439,13 +462,15 @@ def upsert_records(
         conn.execute(
             """UPDATE entities SET name=?, subject=?, object=?, rel_type=?, detail=?,
                    evidence=?, source_file=?, source_seq=?, status=?, confidence=?,
-                   aliases=?, history=?, last_updated=?
+                   aliases=?, role_category=?, history=?, last_updated=?
                WHERE id=?""",
             (
                 merged["name"], merged["subject"], merged["object"], merged["rel_type"],
-                merged["detail"], merged["evidence"], merged["source_file"],
-                merged["source_seq"], status, max(rec.confidence, float(row["confidence"] or 0)),
+                merged["detail"], merged["evidence"], merged["source_seq"],
+                merged["source_file"], status,
+                max(rec.confidence, float(row["confidence"] or 0)),
                 json.dumps(aliases, ensure_ascii=False),
+                merged["role_category"],
                 json.dumps(history, ensure_ascii=False)[:8000],
                 now, rec.id,
             ),
@@ -561,9 +586,21 @@ def render_bible(conn: sqlite3.Connection) -> dict[str, str]:
     ]
 
     # ---- CHARACTERS ----
-    lines = [_BIBLE_BANNER, "## CHARACTERS", "", "### 人物"]
-    if chars:
-        for r in chars:
+    # 按角色类别分两组渲染：本作叙事角色（narrative）与对话/典故提及的历史人物
+    # （allusion，非本作角色）。后者明确标注，避免被圆桌/编辑专家误当作本作人物。
+    lines = [_BIBLE_BANNER, "## CHARACTERS", ""]
+    narrative = [
+        r for r in chars
+        if (r["role_category"] or ROLE_NARRATIVE) != ROLE_ALLUSION
+    ]
+    allusion = [
+        r for r in chars
+        if (r["role_category"] or ROLE_NARRATIVE) == ROLE_ALLUSION
+    ]
+
+    lines.append("### 人物（本作角色）")
+    if narrative:
+        for r in narrative:
             alias = json.loads(r["aliases"] or "[]")
             alias_s = f"（又称 {'、'.join(alias)}）" if alias else ""
             lines.append(f"- **{r['name']}**{alias_s}：{_clip(r['detail'], 80) or '—'}")
@@ -572,6 +609,23 @@ def render_bible(conn: sqlite3.Connection) -> dict[str, str]:
                 lines.append(f"  - {note}")
     else:
         lines.append("- （无已核验人物）")
+
+    lines.append("")
+    lines.append("### 对话／典故中提及的历史人物（非本作角色）")
+    if allusion:
+        lines.append(
+            "（以下仅为角色对白中举例或引用的历史人物，并非本作出场角色，"
+            "请勿将其作为本作人物展开分析或编造其情节。）"
+        )
+        for r in allusion:
+            alias = json.loads(r["aliases"] or "[]")
+            alias_s = f"（又称 {'、'.join(alias)}）" if alias else ""
+            lines.append(f"- **{r['name']}**{alias_s}：{_clip(r['detail'], 80) or '—'}")
+            note = _evidence_note(r)
+            if note:
+                lines.append(f"  - {note}")
+    else:
+        lines.append("- （无）")
 
     lines += ["", "### 关系"]
     if rels:

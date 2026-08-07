@@ -533,3 +533,60 @@ class TestBuildBibleEndToEnd:
         assert "- **陈冲**" not in blob
         assert "- **叶子询**" not in blob
         assert "- **叶知秋**" not in blob
+
+    def test_character_role_category_parsed(self):
+        """角色类别（narrative / allusion）必须如实解析；无效值或缺省回退 narrative。
+
+        这是根治「典故人物混入角色段、圆桌误当角色讨论」的关键：抽取模型给每个角色
+        打 role 标签，allusion（仅对白引用的历史人物）后续会被单独分组并标注。
+        """
+        data = {
+            "characters": [
+                {"name": "韩笑文", "detail": "主角", "evidence": "e", "role": "narrative"},
+                {"name": "嬴政", "detail": "对白举例", "evidence": "e", "role": "allusion"},
+                {"name": "王安石", "detail": "对白举例", "evidence": "e", "role": "garbage"},
+                {"name": "董文正", "detail": "配角", "evidence": "e"},  # 缺 role → narrative
+            ],
+            "relations": [], "events": [], "settings": [],
+        }
+        recs = _records_from_json(data, seq=1, source_file="f")
+        by = {r.name: r for r in recs}
+        assert by["韩笑文"].role_category == ent.ROLE_NARRATIVE
+        assert by["嬴政"].role_category == ent.ROLE_ALLUSION
+        # 无效值 / 缺省 → 回退 narrative（绝不误标 allusion）
+        assert by["王安石"].role_category == ent.ROLE_NARRATIVE
+        assert by["董文正"].role_category == ent.ROLE_NARRATIVE
+
+    def test_render_bible_splits_allusion_section(self, tmp_path: Path):
+        """render_bible 必须把 allusion 角色单独成段并标注，且不放进本作角色段。"""
+        import re as _re
+
+        conn = ent.connect(tmp_path)
+        recs = [
+            ent.Record(kind=ent.KIND_CHARACTER, name="韩笑文", detail="主角",
+                       evidence="e", source_seq=1, role_category=ent.ROLE_NARRATIVE),
+            ent.Record(kind=ent.KIND_CHARACTER, name="嬴政", detail="对白举例",
+                       evidence="e", source_seq=2, role_category=ent.ROLE_ALLUSION),
+            ent.Record(kind=ent.KIND_CHARACTER, name="董文正", detail="配角",
+                       evidence="e", source_seq=3, role_category=ent.ROLE_NARRATIVE),
+        ]
+        ent.upsert_records(conn, recs)
+        docs = ent.render_bible(conn)
+        chars = docs["CHARACTERS"]
+
+        # 本作角色段：含韩笑文/董文正，绝不含典故人物嬴政
+        m = _re.search(
+            r"^###\s*人物（本作角色）\s*$(.*?)(?=^### |\Z)",
+            chars, _re.MULTILINE | _re.DOTALL,
+        )
+        assert m, "缺少『本作角色』小节"
+        narrative_block = m.group(1)
+        assert "韩笑文" in narrative_block
+        assert "董文正" in narrative_block
+        assert "嬴政" not in narrative_block
+
+        # 典故段：含嬴政，且带明确「非本作角色」标注
+        assert "对话／典故中提及的历史人物（非本作角色）" in chars
+        assert "嬴政" in chars
+        assert "请勿将其作为本作人物展开分析" in chars
+        conn.close()
