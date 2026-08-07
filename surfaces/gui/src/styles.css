@@ -2458,6 +2458,34 @@ html[data-platform="linux"] ::-webkit-scrollbar-thumb:hover { background-color: 
 }
 .mascot-celebrate {
   animation: mascot-pop .28s cubic-bezier(.2, .9, .3, 1.3);
+  pointer-events: auto; /* 覆盖 .mascot-speech 的 none，让关闭按钮可点击 */
+}
+.mascot-celebrate .mascot-speech-body {
+  padding-right: 16px; /* 给右上角关闭按钮让位，避免文字压到 × */
+}
+.mascot-speech-close {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  width: 18px;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--muted);
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: .6;
+  transition: opacity .12s, background .12s;
+}
+.mascot-speech-close:hover {
+  opacity: 1;
+  background: var(--line);
 }
 @keyframes mascot-pop {
   from { opacity: 0; transform: translateX(-50%) translateY(8px) scale(.92); }

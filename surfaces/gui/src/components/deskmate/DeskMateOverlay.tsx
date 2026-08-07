@@ -164,6 +164,8 @@ export function DeskMateOverlay({ agent, sessionId, idle, activeExpert }: Props)
   // 勋章解锁报喜：队列 + 当前正在展示的一枚
   const [celebrationQueue, setCelebrationQueue] = useState<CelebrationItem[]>([]);
   const [activeCelebration, setActiveCelebration] = useState<CelebrationItem | null>(null);
+  // 已报喜过的勋章 id（组件生命周期内去重，防止后端若重复返回时反复弹出）
+  const celebratedIdsRef = useRef<Set<string>>(new Set());
 
   // 统一拉取 growth：既刷新状态面板数据，也读取 newly_unlocked 触发报喜。
   // check_badges 在服务端幂等（落盘后同一次解锁只报一次），前端无需去重。
@@ -174,9 +176,13 @@ export function DeskMateOverlay({ agent, sessionId, idle, activeExpert }: Props)
       const d = await r.json();
       if (d && typeof d.level === "number") {
         setGrowth(d);
-        const neu = Array.isArray(d.newly_unlocked) ? d.newly_unlocked : [];
-        if (neu.length) {
-          setCelebrationQueue((q) => [...q, ...(neu as CelebrationItem[])]);
+        const raw = Array.isArray(d.newly_unlocked) ? d.newly_unlocked : [];
+        const fresh = (raw as CelebrationItem[]).filter(
+          (b) => b?.id && !celebratedIdsRef.current.has(b.id),
+        );
+        if (fresh.length) {
+          fresh.forEach((b) => celebratedIdsRef.current.add(b.id));
+          setCelebrationQueue((q) => [...q, ...fresh]);
         }
       }
     } catch { /* 静默降级 */ }
@@ -235,7 +241,7 @@ export function DeskMateOverlay({ agent, sessionId, idle, activeExpert }: Props)
     };
   }, [refreshGrowth]);
 
-  // 报喜队列推进：一次只展示一枚，6 秒后切换到下一枚
+  // 报喜队列推进：一次只展示一枚（activeCelebration 为空且队列非空时取下一枚）
   useEffect(() => {
     if (activeCelebration || celebrationQueue.length === 0) return;
     const [next, ...rest] = celebrationQueue;
@@ -243,9 +249,15 @@ export function DeskMateOverlay({ agent, sessionId, idle, activeExpert }: Props)
     setCelebrationQueue(rest);
     // 让桌宠切换到开心情绪，配合报喜
     window.dispatchEvent(new CustomEvent("deskmate:emotion", { detail: { emotion: "happy" } }));
+  }, [activeCelebration, celebrationQueue]);
+
+  // 自动消失：当前这枚展示 6 秒后关闭。单独成 effect，避免被「队列推进」的
+  // setState 触发 cleanup 把定时器清掉（原实现因此导致弹窗永久不消失）。
+  useEffect(() => {
+    if (!activeCelebration) return;
     const t = window.setTimeout(() => setActiveCelebration(null), 6000);
     return () => window.clearTimeout(t);
-  }, [activeCelebration, celebrationQueue]);
+  }, [activeCelebration]);
 
   // 挂载时读取主动模式状态
   useEffect(() => {
@@ -391,6 +403,12 @@ export function DeskMateOverlay({ agent, sessionId, idle, activeExpert }: Props)
     setSuggestion(null);
   }, [persistActedTypes]);
 
+  // 手动关闭勋章报喜气泡：同时清空队列，避免立刻又弹下一枚
+  const handleCloseCelebration = useCallback(() => {
+    setActiveCelebration(null);
+    setCelebrationQueue([]);
+  }, []);
+
   const handleDismiss = useCallback((s: Suggestion) => {
     const sugType = s.type || "generic";
     actedTypesRef.current.add(sugType);
@@ -465,6 +483,14 @@ export function DeskMateOverlay({ agent, sessionId, idle, activeExpert }: Props)
           />
           {activeCelebration && (
             <div className="mascot-speech mascot-celebrate" data-testid="badge-celebration">
+              <button
+                type="button"
+                className="mascot-speech-close"
+                aria-label="关闭"
+                onClick={handleCloseCelebration}
+              >
+                ×
+              </button>
               <BadgeMedal
                 rarity={activeCelebration.rarity as BadgeRarity}
                 glyph={activeCelebration.glyph}
