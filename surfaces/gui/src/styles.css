@@ -369,10 +369,6 @@ body {
   background: var(--surface, var(--panel));
 }
 .dm-digest-tag svg { color: currentColor; }
-.dm-digest-tag-culture { color: #7c4dff; background: rgba(124,77,255,0.10); }
-.dm-digest-tag-webnovel { color: #00a8a8; background: rgba(0,168,168,0.10); }
-.dm-digest-tag-ai { color: #0084ff; background: rgba(0,132,255,0.10); }
-.dm-digest-tag-opensource { color: #4caf50; background: rgba(76,175,80,0.10); }
 .dm-digest-card-title {
   font-size: 14px; font-weight: 600; line-height: 1.35;
   color: var(--ink); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;

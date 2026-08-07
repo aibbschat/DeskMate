@@ -100,7 +100,7 @@ export function DeskDigest() {
               onClick={() => dispatchSendMessage(item.query)}
               title={item.summary}
             >
-              <span className={`dm-digest-tag dm-digest-tag-${item.category}`}>
+              <span className="dm-digest-tag">
                 <Icon name={meta.icon} size={11} />
                 {meta.label}
               </span>
@@ -126,7 +126,7 @@ export function DeskDigest() {
                     onClick={() => dispatchSendMessage(item.query)}
                     title={item.summary}
                   >
-                    <span className={`dm-digest-tag dm-digest-tag-${item.category}`}>
+                    <span className="dm-digest-tag">
                       <Icon name={meta.icon} size={11} />
                       {meta.label}
                     </span>
