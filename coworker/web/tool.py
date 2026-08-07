@@ -66,14 +66,14 @@ def make_web_search_tool(
 ) -> Callable[..., Any]:
     """Build the `web_search` tool. `provider` overrides resolution (used by tests)."""
 
-    def web_search(query: str, max_results: int = 5) -> dict[str, Any]:
+    def web_search(query: str, max_results: int = 5, timelimit: Optional[str] = None) -> dict[str, Any]:
         try:
             p = provider or resolve_provider(secrets)
         except ValueError as exc:
             return {"error": str(exc)}
         n = max_results if isinstance(max_results, int) else 5
         try:
-            results = p.search(query, max_results=max(1, min(n, 10)))
+            results = p.search(query, max_results=max(1, min(n, 10)), timelimit=timelimit)
         except Exception as exc:  # network / library / quota
             return {
                 "error": f"web search failed: {exc}",

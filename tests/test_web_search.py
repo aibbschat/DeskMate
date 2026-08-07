@@ -29,8 +29,8 @@ class FakeProvider(WebSearchProvider):
     def __init__(self):
         self.calls = []
 
-    def search(self, query, max_results=5):
-        self.calls.append((query, max_results))
+    def search(self, query, max_results=5, timelimit=None):
+        self.calls.append((query, max_results, timelimit))
         return [
             SearchResult(title=f"r{i}", url=f"https://x/{i}", snippet="s")
             for i in range(max_results)
@@ -43,7 +43,7 @@ def test_tool_returns_results():
     out = tool(query="anthropic", max_results=3)
     assert out["provider"] == "fake"
     assert [r["title"] for r in out["results"]] == ["r0", "r1", "r2"]
-    assert fake.calls == [("anthropic", 3)]
+    assert fake.calls == [("anthropic", 3, None)]
     # metadata + schema for the registry
     assert tool.__aisuite_tool_metadata__.category == "web"
     assert tool.__coworker_schema__["function"]["name"] == "web_search"
@@ -61,7 +61,7 @@ def test_tool_reports_search_errors():
     class Boom(WebSearchProvider):
         name = "boom"
 
-        def search(self, query, max_results=5):
+        def search(self, query, max_results=5, timelimit=None):
             raise RuntimeError("network down")
 
     out = make_web_search_tool(provider=Boom())(query="q")

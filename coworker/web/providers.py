@@ -29,7 +29,9 @@ class WebSearchProvider(ABC):
     requires_key: bool = False
 
     @abstractmethod
-    def search(self, query: str, max_results: int = 5) -> list[SearchResult]: ...
+    def search(
+        self, query: str, max_results: int = 5, timelimit: Optional[str] = None
+    ) -> list[SearchResult]: ...
 
 
 class DuckDuckGoProvider(WebSearchProvider):
@@ -38,10 +40,12 @@ class DuckDuckGoProvider(WebSearchProvider):
     name = "duckduckgo"
     requires_key = False
 
-    def search(self, query: str, max_results: int = 5) -> list[SearchResult]:
+    def search(
+        self, query: str, max_results: int = 5, timelimit: Optional[str] = None
+    ) -> list[SearchResult]:
         from ddgs import DDGS
 
-        rows = DDGS().text(query, max_results=max_results) or []
+        rows = DDGS().text(query, max_results=max_results, timelimit=timelimit) or []
         return [
             SearchResult(
                 title=r.get("title", ""),
@@ -59,7 +63,9 @@ class TavilyProvider(WebSearchProvider):
     def __init__(self, api_key: str) -> None:
         self.api_key = api_key
 
-    def search(self, query: str, max_results: int = 5) -> list[SearchResult]:
+    def search(
+        self, query: str, max_results: int = 5, timelimit: Optional[str] = None
+    ) -> list[SearchResult]:
         import httpx
 
         resp = httpx.post(
@@ -85,7 +91,9 @@ class BraveProvider(WebSearchProvider):
     def __init__(self, api_key: str) -> None:
         self.api_key = api_key
 
-    def search(self, query: str, max_results: int = 5) -> list[SearchResult]:
+    def search(
+        self, query: str, max_results: int = 5, timelimit: Optional[str] = None
+    ) -> list[SearchResult]:
         import httpx
 
         resp = httpx.get(

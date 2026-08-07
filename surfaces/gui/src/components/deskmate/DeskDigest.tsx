@@ -1,8 +1,8 @@
 /**
  * DeskDigest — 桌搭模式首页资讯卡片。
  *
- * 在 DeskHome 底部、Composer 上方展示文化 / 网文 / AI / 开源 四分类资讯胶囊。
- * 数据来自 /v1/deskmate/digest，由后端定时抓取并用 LLM 提炼；点击卡片不是跳外链，
+ * 在 DeskHome 底部、Composer 上方展示网文 / 影视短剧 / AI圈 / 开源 风向资讯胶囊。
+ * 数据来自 /v1/deskmate/digest，由后端定时抓取（近一周）并用 LLM 提炼；点击卡片不是跳外链，
  * 而是向当前会话发送一条消息触发 AI 搜索并总结该话题。
  */
 
@@ -98,7 +98,7 @@ export function DeskDigest() {
 
       {extraItems.length > 0 && (
         <div className="dm-digest-extra">
-          {expanded.extra ? (
+          {expanded.extra && (
             <div className="dm-digest-grid">
               {extraItems.map((item) => (
                 <button
@@ -112,15 +112,16 @@ export function DeskDigest() {
                 </button>
               ))}
             </div>
-          ) : (
-            <button
-              className="dm-digest-more"
-              type="button"
-              onClick={() => setExpanded((p) => ({ ...p, extra: true }))}
-            >
-              {t("deskmate.digestMore", "展开更多")}
-            </button>
           )}
+          <button
+            className="dm-digest-more"
+            type="button"
+            onClick={() => setExpanded((p) => ({ ...p, extra: !p.extra }))}
+          >
+            {expanded.extra
+              ? t("deskmate.digestLess", "收起")
+              : t("deskmate.digestMore", "展开更多")}
+          </button>
         </div>
       )}
     </div>
