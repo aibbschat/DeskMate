@@ -43,7 +43,11 @@ export type IconName =
   | "stop"
   | "x"
   | "users"
-  | "medal";
+  | "medal"
+  | "rss"
+  | "bookOpen"
+  | "penTool"
+  | "cpu";
 
 export function Icon({
   name,
@@ -368,6 +372,39 @@ export function Icon({
           <path d="M10 11v6M14 11v6" />
           <path d="M6.5 7l.9 12c.1.9.8 1.5 1.7 1.5h7.8c.9 0 1.6-.6 1.7-1.5l.9-12" />
           <path d="M9.2 7V4.9c0-.5.4-.9.9-.9h3.8c.5 0 .9.4.9.9V7" />
+        </svg>
+      );
+    case "rss":
+      return (
+        <svg {...s}>
+          <path d="M4 4.5a12 12 0 0 1 12 12" />
+          <path d="M4 11.5a5 5 0 0 1 5 5" />
+          <circle cx="5" cy="18" r="1.5" fill="currentColor" stroke="none" />
+        </svg>
+      );
+    case "bookOpen":
+      return (
+        <svg {...s}>
+          <path d="M2 6.5a3 3 0 0 1 3-3h5v13H5a3 3 0 0 1-3-3z" />
+          <path d="M22 6.5a3 3 0 0 0-3-3h-5v13h5a3 3 0 0 0 3-3z" />
+          <path d="M10 6.5v13" />
+        </svg>
+      );
+    case "penTool":
+      return (
+        <svg {...s}>
+          <path d="M12 19l7-7 2.5-5.5a1.5 1.5 0 0 0-2-2L14 7l-7 7" />
+          <path d="m18.5 4.5-4 4" />
+          <path d="M2 22l2.5-2.5" />
+          <circle cx="9" cy="15" r="2" />
+        </svg>
+      );
+    case "cpu":
+      return (
+        <svg {...s}>
+          <rect x="6" y="6" width="12" height="12" rx="2" />
+          <path d="M9 6V4M15 6V4M9 20v-2M15 20v-2M6 9H4M6 15H4M20 9h-2M20 15h-2" />
+          <rect x="9" y="9" width="6" height="6" rx="1" />
         </svg>
       );
   }

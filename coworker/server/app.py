@@ -1778,6 +1778,21 @@ def create_app(manager: SessionManager) -> FastAPI:
             logging.exception("get deskmate badges failed")
             return JSONResponse({"error": "badges failed"}, status_code=500)
 
+    @app.get("/v1/deskmate/digest")
+    async def get_deskmate_digest(force: bool = False) -> dict[str, Any]:
+        """获取 DeskMate 首页资讯卡片（文化 / 网文 / AI / 开源）。
+
+        数据通过 web_search 抓取并由 LLM 提炼成卡片；缓存 4 小时，过期自动刷新。
+        点击卡片后前端把 query 交给 AI 搜索总结，而不是跳转到源站。
+        """
+        try:
+            from deskmate.digest.engine import get_digest
+
+            return await get_digest(force=force)
+        except Exception:
+            logging.exception("get deskmate digest failed")
+            return {"items": [], "updated_at": 0, "fresh": False}
+
     @app.post("/v1/deskmate/growth/proactive")
     async def set_deskmate_growth_proactive(request: Request) -> dict[str, Any]:
         """设置信任感是否调制 proactive 主动打扰阈值。

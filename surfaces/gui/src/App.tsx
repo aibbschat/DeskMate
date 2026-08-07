@@ -1037,6 +1037,19 @@ export function App() {
     sessionRef.current?.userMessage(text, attachments, model);
     followLatest(); // sending always re-engages stream-following, wherever the user had scrolled
   };
+
+  // 桌搭首页资讯卡片点击后把 query 直接发成用户消息，触发 AI 搜索并总结。
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const detail = (e as CustomEvent).detail;
+      if (detail?.text && typeof detail.text === "string") {
+        send(detail.text);
+      }
+    };
+    window.addEventListener("deskmate:send-message", handler);
+    return () => window.removeEventListener("deskmate:send-message", handler);
+  }, [send]);
+
   // Resolving a LIVE prompt also resolves its parked Inbox mirror server-side, but the polled
   // `sessionInbox` copy stays "pending" for up to a poll cycle — long enough for the docked
   // answer-in-context card to flash the SAME request again right after the user answered it

@@ -15,6 +15,7 @@ import { useTranslation } from "react-i18next";
 import { Icon, type IconName } from "../Icon";
 import { authedFetch, httpBase } from "../../api";
 import { EXPERTS } from "./experts";
+import { DeskDigest } from "./DeskDigest";
 
 /** 当前可召唤的就绪专家（取第一个 ready 的，保证「召唤专家」chip 不写死具体 id）。 */
 const READY_EXPERT_ID = EXPERTS.find((e) => e.status !== "soon")?.id ?? "editor";
@@ -94,6 +95,7 @@ export function DeskHome() {
           </button>
         ))}
       </div>
+      <DeskDigest />
     </div>
   );
 }
