@@ -21,13 +21,6 @@ export interface DigestItem {
   freshness: string;
 }
 
-const CATEGORY_META: Record<string, { label: string; icon: Parameters<typeof Icon>[0]["name"] }> = {
-  culture: { label: "文化", icon: "bookOpen" },
-  webnovel: { label: "网文", icon: "penTool" },
-  ai: { label: "AI", icon: "cpu" },
-  opensource: { label: "开源", icon: "code" },
-};
-
 function dispatchSendMessage(text: string) {
   window.dispatchEvent(new CustomEvent("deskmate:send-message", { detail: { text } }));
 }
@@ -90,52 +83,34 @@ export function DeskDigest() {
       {error && <div className="dm-digest-error">{error}</div>}
 
       <div className="dm-digest-grid">
-        {visibleItems.map((item) => {
-          const meta = CATEGORY_META[item.category] ?? { label: item.category, icon: "file-text" as const };
-          return (
-            <button
-              key={item.id}
-              className="dm-digest-card"
-              type="button"
-              onClick={() => dispatchSendMessage(item.query)}
-              title={item.summary}
-            >
-              <span className="dm-digest-tag">
-                <Icon name={meta.icon} size={11} />
-                {meta.label}
-              </span>
-              <span className="dm-digest-card-title">{item.title}</span>
-              <span className="dm-digest-card-summary">{item.summary}</span>
-              <span className="dm-digest-card-meta">{item.freshness}</span>
-            </button>
-          );
-        })}
+        {visibleItems.map((item) => (
+          <button
+            key={item.id}
+            className="dm-digest-card"
+            type="button"
+            onClick={() => dispatchSendMessage(item.query)}
+            title={item.summary}
+          >
+            <span className="dm-digest-card-title">{item.title}</span>
+          </button>
+        ))}
       </div>
 
       {extraItems.length > 0 && (
         <div className="dm-digest-extra">
           {expanded.extra ? (
             <div className="dm-digest-grid">
-              {extraItems.map((item) => {
-                const meta = CATEGORY_META[item.category] ?? { label: item.category, icon: "file-text" as const };
-                return (
-                  <button
-                    key={item.id}
-                    className="dm-digest-card"
-                    type="button"
-                    onClick={() => dispatchSendMessage(item.query)}
-                    title={item.summary}
-                  >
-                    <span className="dm-digest-tag">
-                      <Icon name={meta.icon} size={11} />
-                      {meta.label}
-                    </span>
-                    <span className="dm-digest-card-title">{item.title}</span>
-                    <span className="dm-digest-card-summary">{item.summary}</span>
-                    <span className="dm-digest-card-meta">{item.freshness}</span>
-                  </button>
-                );
-              })}
+              {extraItems.map((item) => (
+                <button
+                  key={item.id}
+                  className="dm-digest-card"
+                  type="button"
+                  onClick={() => dispatchSendMessage(item.query)}
+                  title={item.summary}
+                >
+                  <span className="dm-digest-card-title">{item.title || item.query}</span>
+                </button>
+              ))}
             </div>
           ) : (
             <button
