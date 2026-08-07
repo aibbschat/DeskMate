@@ -483,3 +483,53 @@ class TestBuildBibleEndToEnd:
         assert "周砚" in blob
         # 后半部（> 400000 字符处）的人物也必须在 —— 这是本次修复要保住的不变量
         assert "终章人" in blob
+
+    def test_gap_fill_rescues_names_missed_by_rich_extraction(self, tmp_path: Path, monkeypatch):
+        """回归（种子驱动抽取 / 缺口补全）：
+
+        单次 rich 抽取常会漏掉同句、同段、甚至更靠前的次要人物——国子监全量重建时，
+        与已收录角色「叶子询」同句的「陈云远」就被漏掉了。本测试模拟这一事故：rich
+        只抽了董文正，但 all_names 穷举到了陈云远，gap-fill 必须把它补全进圣经；
+        而只列在 all_names、rich/gap 都没给出依据的人（陈冲/叶子询/叶知秋）不应凭空立条目。
+        """
+        import deskmate.novel_memory.core as core
+
+        novel = (
+            "第一章\n\n"
+            "国子监祭酒董文正把厚厚的一沓验尸记录扔给韩笑文。\n\n"
+            "陈冲是礼部侍郎陈云远的独子，叶子询是权知开封府事叶知秋之子。\n\n"
+        )
+        (tmp_path / "第一章.txt").write_text(novel, encoding="utf-8")
+
+        def fake_chat(system, user, **kw):
+            if system is core._GAPFILL_SYS:
+                chars = []
+                if "陈云远" in user:
+                    chars.append({
+                        "name": "陈云远", "aliases": [], "detail": "礼部侍郎",
+                        "evidence": "陈冲是礼部侍郎陈云远的独子",
+                    })
+                return json.dumps(
+                    {"characters": chars, "relations": [], "events": [], "settings": []},
+                    ensure_ascii=False,
+                )
+            # rich 阶段：只抽了董文正，但 all_names 穷举到了陈云远（模拟漏抽）
+            return json.dumps({
+                "characters": [{
+                    "name": "董文正", "aliases": [], "detail": "国子监祭酒",
+                    "evidence": "国子监祭酒董文正把厚厚的一沓验尸记录扔给韩笑文",
+                }],
+                "relations": [], "events": [], "settings": [],
+                "all_names": ["董文正", "陈云远", "陈冲", "叶子询", "叶知秋"],
+            }, ensure_ascii=False)
+
+        monkeypatch.setattr(core, "_chat", fake_chat)
+        docs = core.build_bible(str(tmp_path))
+        blob = "\n".join(docs.values())
+        assert "董文正" in blob          # rich 抽到的照常在
+        assert "- **陈云远**" in blob     # 被漏抽但 all_names 穷举到 → gap-fill 捞回
+        # 仅出现在 all_names、rich/gap 都没给依据的人不应凭空立独立角色条目
+        # （允许其作为他人引证文案出现，故校验「独立条目行」而非子串）
+        assert "- **陈冲**" not in blob
+        assert "- **叶子询**" not in blob
+        assert "- **叶知秋**" not in blob

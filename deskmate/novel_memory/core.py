@@ -20,6 +20,9 @@ from typing import Optional
 
 from . import entities as _ent
 
+# entities 里的文本归一化（剥标点空白，用于专名/引证匹配），core 抽取环节也要用。
+_norm = _ent._norm
+
 logger = logging.getLogger(__name__)
 
 # 稳定公开 API（圆桌等外部模块只应依赖以下名字，避免直连下划线私有函数/常量，
@@ -59,6 +62,22 @@ _TEXT_EXTS = {".txt", ".md", ".markdown", ".text", ".novel", ".docx"}
 
 # 需要专用解析器的二进制格式：不能直接 read_text，否则得到乱码
 _BINARY_EXTS = {".docx"}
+
+# 创作辅助文档的文件名标记：这些不是「小说叙事正文」，只是作者的世界观/大纲/人物
+# 设定/资料。若把它们和正文一起喂给圣经抽取，模型会抽出「王安石/范仲淹」等历史背景
+# 人物、或把人物小传当成圣经，污染"依据全来自正文"的承诺。全量/增量重建时从扫描
+# 集合里排除它们（FTS5 全文检索等其它用途仍保留全集，不受影响）。
+_AUX_FILE_MARKERS = (
+    "大纲", "人物小传", "人物设定", "设定集", "世界观", "背景设定", "资料",
+    "制度", "参考", "备考", "备忘", "梗概", "synopsis", "outline", "notes",
+    "character", "setting", "reference", "worldbuilding", "world", "background",
+)
+
+
+def _is_aux_file(p: "Path") -> bool:
+    """文件名是否命中创作辅助文档标记（见 ``_AUX_FILE_MARKERS``）。"""
+    stem = (p.stem or "").lower()
+    return any(m.lower() in stem for m in _AUX_FILE_MARKERS)
 
 # FTS5 索引数据库文件名（相对于 .deskmate 目录）
 _FTS5_DB = "fts5.db"
@@ -236,11 +255,15 @@ def _rel_name(p: Path, scan_root: Path) -> str:
 # ---------------------------------------------------------------------------
 
 
-def scan_novel(folder: str, max_chars: int = 400_000) -> tuple[str, list[str]]:
+def scan_novel(folder: str, max_chars: int = 400_000, *, exclude_aux: bool = False) -> tuple[str, list[str]]:
     """读取小说正文，返回 (合并正文, 文件名列表)。
 
     folder 可以是小说文件夹（递归扫描，跳过 .deskmate / .git / 隐藏目录），
     也可以是单个 .txt / .docx 稿件文件。超大则按比例截断到 max_chars。
+
+    exclude_aux：为 True 时剔除文件名命中 ``_AUX_FILE_MARKERS`` 的创作辅助文档
+    （大纲/人物小传/设定/资料等），只保留小说叙事正文。圣经重建必须置 True，
+    否则模型会从辅助文档里抽出背景人物、污染"依据全来自正文"的承诺。
     """
     scan_root, _ = _resolve_root(folder)
 
@@ -248,6 +271,8 @@ def scan_novel(folder: str, max_chars: int = 400_000) -> tuple[str, list[str]]:
     titles: list[str] = []
     total = 0
     files = _iter_text_files(scan_root)
+    if exclude_aux:
+        files = [p for p in files if not _is_aux_file(p)]
     for p in files:
         text = _read_file_text(p)
         if not text.strip():
@@ -332,13 +357,20 @@ _EXTRACT_JSON_SYS = (
     '  "events": [{"title":"事件短标题", "detail":"一句话经过（限40字）", '
     '"evidence":"原文连续片段"}],\n'
     '  "settings": [{"name":"势力/地点/制度名", "detail":"一句话说明（限30字）", '
-    '"evidence":"原文连续片段"}]\n'
+    '"evidence":"原文连续片段"}],\n'
+    '  "all_names": ["本段出现过的**每一个**真实人名（穷举）：含上面已列在 characters '
+    '里的，也含只被提及一次、配角、反派、绰号、被议论者；去重；只列真实人物，'
+    '不列地名/机构/书名；若某名字其实是另一人物的绰号（如「董老弟」是董文正的昵称），'
+    '也请列进来并标注「X的绰号」"]\n'
     "}\n"
     "【硬约束】\n"
     "1. name / subject / object 必须是正文中**原样出现过的专名**，一个字都不能改。\n"
     "2. 某类没有内容就给空数组 []。宁可少写、宁可空着，也绝不允许编造。\n"
-    "3. 不要输出对情节的推断、评价或概括性总结，只记录白纸黑字写了什么。"
-)
+    "3. 不要输出对情节的推断、评价或概括性总结，只记录白纸黑字写了什么。\n"
+    "4. **all_names 必须穷举本段每一个真实人名**，哪怕只出现一次、哪怕只是被提及或"
+    "是配角/反派。漏列一个人名，他就会从圣经里彻底消失。已经写进 characters 的也要"
+    "再写进 all_names（两者可能不完全一致，以 all_names 为准做补全）。"
+    )
 
 # 抽取失败重试次数：JSON 解析失败往往是模型偶发跑偏，重试一次即可救回
 _EXTRACT_RETRY = 1
@@ -382,6 +414,11 @@ def _loads_lenient(raw: str) -> dict:
         return {}
 
 
+def _as_str(v) -> str:
+    """把模型的字段值安全转成去空白字符串（None 视为空）。"""
+    return str(v).strip() if v is not None else ""
+
+
 def _records_from_json(
     data: dict, *, seq: int, source_file: str
 ) -> list["_ent.Record"]:
@@ -390,8 +427,7 @@ def _records_from_json(
     if not isinstance(data, dict):
         return recs
 
-    def _s(v) -> str:
-        return str(v).strip() if v is not None else ""
+    _s = _as_str
 
     for c in data.get("characters") or []:
         if not isinstance(c, dict):
@@ -439,6 +475,76 @@ def _records_from_json(
     return recs
 
 
+def _all_names_from_json(data: dict) -> list[str]:
+    """从抽取 JSON 里取出「本段出现过的人名穷举」（all_names 字段）。
+
+    这是**种子驱动抽取**的召回安全网：LLM 在一次性 JSON 抽取里往往会漏掉同句、
+    同段落、甚至更靠前的次要/配角人物（实测国子监重建时，与已收录角色同句的
+    「陈云远」都被漏掉）。穷举人名是远比「带引证抽全人物」简单的任务，召回率高，
+    用它当种子去补全被漏抽的角色，比单纯指望单次抽取穷举可靠得多。
+    """
+    if not isinstance(data, dict):
+        return []
+    return [_as_str(n) for n in (data.get("all_names") or []) if _as_str(n)]
+
+
+# 缺口补全提示词：针对「被穷举发现、却没被正式抽取成角色」的人名，单独补全身份与引证。
+# 比一次性抽全更可靠——任务被缩小到「只为这几个已知人名找依据」，模型不易漏。
+_GAPFILL_SYS = (
+    "你是长篇小说的事实抽取器。下面给出一段正文，以及其中出现、但还没被收录进人物"
+    "圣经的若干人名。请为每个人名补全：一句话身份（限30字）、以及正文里**一字不改**"
+    "的连续引证（10-40字）。\n"
+    "【最高原则】只补正文白纸黑字写了的。evidence 必须能在下方正文里原样检索到，"
+    "不得改写、不得拼接、不得加省略号、不得自己造句。**凡是你写不出原文引证的人名，"
+    "就不要输出这一条。**\n"
+    "【输出】只输出一个 JSON 对象，不要任何解释：\n"
+    '{"characters":[{"name":"人名","detail":"一句话身份（限30字）","evidence":"原文连续片段"}]}\n'
+    "【硬约束】\n"
+    "1. name 必须是下面「待补人名」名单里的，且是正文中原样出现过的真实人物名。\n"
+    "2. 若某名字其实不是人物（是地名/机构/书名/泛指），不要输出它。\n"
+    "3. 若某名字其实是另一人物的绰号/别名（如「董老弟」是董文正的昵称），把 detail 写成"
+    "「X 的绰号/别名」并给出引证，不要当成独立人物另立完整条目。\n"
+    "4. 宁可少写、宁可空着，也绝不允许编造。"
+)
+
+
+def _gapfill_batch(
+    batch: str, names: list[str], *, seq: int
+) -> list["_ent.Record"]:
+    """为一批「被发现但未被抽取」的人名补全角色条目（失败返回空，绝不伪造）。
+
+    names：来自同批 all_names 且尚未被正式角色收录的人名。补全时只在 names 内取，
+    避免补全环节顺手乱加新人物。evidence 必须出自本批正文，故核验 source_text 用本批。
+    """
+    name_set = {_norm(n) for n in names}
+    if not name_set:
+        return []
+    names_block = "\n".join(f"- {n}" for n in names)
+    user = f"=== 待补人名 ===\n{names_block}\n\n=== 正文 ===\n{batch}\n"
+    raw = ""
+    for attempt in range(_EXTRACT_RETRY + 1):
+        try:
+            raw = _chat(
+                _GAPFILL_SYS, user,
+                max_tokens=_EXTRACT_MAX_TOKENS,
+                temperature=0.0 if attempt == 0 else 0.1,
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning("缺口补全调用失败：%s", e)
+            continue
+        data = _loads_lenient(raw)
+        recs = _records_from_json(
+            data, seq=seq, source_file=_batch_source_file(batch)
+        )
+        # 只保留待补名单内的人名，过滤掉模型可能顺手多写的
+        recs = [r for r in recs if _norm(r.name) in name_set]
+        if recs:
+            return recs
+    if raw:
+        logger.warning("缺口补全未产出有效条目（模型返回无法解析或为空）")
+    return []
+
+
 def _batch_source_file(batch: str) -> str:
     """从批次文本里回捞它属于哪个正文文件（scan_novel 会写入「# 文件：xxx」标记）。"""
     m = re.search(r"^#\s*文件：(.+)$", batch, flags=re.MULTILINE)
@@ -447,8 +553,12 @@ def _batch_source_file(batch: str) -> str:
 
 def _extract_batch_records(
     idx: int, batch: str, *, seq_base: int
-) -> list["_ent.Record"]:
-    """抽取单批并转成 Record（失败返回空列表，绝不伪造）。"""
+) -> tuple[list["_ent.Record"], list[str]]:
+    """抽取单批并转成 Record（失败返回空列表，绝不伪造）。
+
+    返回 (recs, all_names)：recs 是带引证的正式条目；all_names 是本批穷举出的人名
+    （含被漏抽者），交回 _harvest 做缺口补全的种子。两者任一非空即算这批有产出。
+    """
     raw = ""
     for attempt in range(_EXTRACT_RETRY + 1):
         try:
@@ -464,11 +574,12 @@ def _extract_batch_records(
         recs = _records_from_json(
             data, seq=seq_base + idx, source_file=_batch_source_file(batch)
         )
-        if recs:
-            return recs
+        all_names = _all_names_from_json(data)
+        if recs or all_names:
+            return recs, all_names
     if raw:
         logger.warning("第 %d 批抽取未产出有效条目（模型返回无法解析或为空）", idx + 1)
-    return []
+    return [], []
 
 
 def _harvest(
@@ -478,14 +589,24 @@ def _harvest(
     full_text: str,
     progress_callback: callable = None,
 ) -> tuple[list["_ent.Record"], dict[str, int]]:
-    """并发抽取 + 逐批核验。返回 (通过闸门的条目, 统计)。
+    """并发抽取 + 逐批核验 + 缺口补全。返回 (通过闸门的条目, 统计)。
+
+    两阶段根治「LLM 单次抽取漏人」：
+
+    阶段一（rich）：每批正常抽取 characters/relations/events/settings 并核验。
+    阶段二（gap-fill）：用每批穷举出的 all_names 当种子，找出「被发现却没被正式
+    抽成角色」的人名，单独调一次补全，把同句/同段/靠前的次要人物捞回来。两者都过
+    同一道证据核验闸门，幻觉依旧进不来。
 
     核验的 source_text 是**该条目自己那一批的原文**——引证必须出自它声称的地方，
     不能拿全书当挡箭牌；专名核验才用全书正文（人物可能在别处首次登场）。
     """
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
-    results: list[list[_ent.Record]] = [[] for _ in batches]
+    # ---- 阶段一：rich 抽取（并发）-----------------------------------------
+    results: list[tuple[list[_ent.Record], list[str]]] = [
+        ([], []) for _ in batches
+    ]
     with ThreadPoolExecutor(max_workers=min(5, max(1, len(batches)))) as pool:
         futures = {
             pool.submit(_extract_batch_records, i, b, seq_base=seq_base): i
@@ -497,7 +618,7 @@ def _harvest(
                 results[i] = future.result()
             except Exception as e:  # noqa: BLE001
                 logger.warning("第 %d 批抽取异常：%s", i + 1, e)
-                results[i] = []
+                results[i] = ([], [])
             if progress_callback:
                 progress_callback(
                     "extract_progress", {"idx": i + 1, "total": len(batches)}
@@ -505,7 +626,10 @@ def _harvest(
 
     passed: list[_ent.Record] = []
     counts = {"raw": 0, "confirmed": 0, "pending": 0, "rejected": 0}
-    for i, recs in enumerate(results):
+    captured_char_norm: set[str] = set()
+    batch_all_names: list[list[str]] = []
+    for i, (recs, all_names) in enumerate(results):
+        batch_all_names.append(all_names)
         if not recs:
             continue
         counts["raw"] += len(recs)
@@ -516,6 +640,58 @@ def _harvest(
             counts[r.status] = counts.get(r.status, 0) + 1
             if r.status != _ent.STATUS_REJECTED:
                 passed.append(r)
+                if r.kind == _ent.KIND_CHARACTER:
+                    captured_char_norm.add(_norm(r.name))
+
+    # ---- 阶段二：缺口补全（并发）-----------------------------------------
+    # 把「被发现（all_names）却没被正式抽成角色」的人名按批次聚拢，逐批补一次。
+    gap_jobs: list[tuple[int, list[str]]] = []
+    for i, all_names in enumerate(batch_all_names):
+        missing = [
+            n for n in all_names
+            if _norm(n) and _norm(n) not in captured_char_norm
+        ]
+        if missing:
+            gap_jobs.append((i, missing))
+
+    if gap_jobs:
+        if progress_callback:
+            progress_callback(
+                "extracting_gap", {"total": len(gap_jobs), "folder": ""}
+            )
+        gap_results: list[list[_ent.Record]] = [[] for _ in gap_jobs]
+        with ThreadPoolExecutor(
+            max_workers=min(5, max(1, len(gap_jobs)))
+        ) as pool:
+            futures = {
+                pool.submit(
+                    _gapfill_batch, batches[i], names, seq=seq_base + i
+                ): j
+                for j, (i, names) in enumerate(gap_jobs)
+            }
+            for future in as_completed(futures):
+                j = futures[future]
+                try:
+                    gap_results[j] = future.result()
+                except Exception as e:  # noqa: BLE001
+                    logger.warning("缺口补全批次异常：%s", e)
+                    gap_results[j] = []
+                if progress_callback:
+                    progress_callback(
+                        "extract_progress_gap",
+                        {"idx": j + 1, "total": len(gap_jobs)},
+                    )
+        for (i, _names), recs in zip(gap_jobs, gap_results):
+            if not recs:
+                continue
+            counts["raw"] += len(recs)
+            verified = _ent.verify_records(
+                recs, source_text=batches[i], full_text=full_text
+            )
+            for r in verified:
+                counts[r.status] = counts.get(r.status, 0) + 1
+                if r.status != _ent.STATUS_REJECTED:
+                    passed.append(r)
     return passed, counts
 
 
@@ -532,7 +708,7 @@ def build_bible(folder: str, progress_callback: callable = None) -> dict[str, st
         progress_callback("scanning", {"folder": folder})
     # 一次读盘，两种用途：verify_text 尽量取全本（供专名核验），
     # text 截到抽取上限（控制 token）。两者分离可避免长篇后半部人物被误杀。
-    verify_text, titles = scan_novel(folder, max_chars=_VERIFY_MAX_CHARS)
+    verify_text, titles = scan_novel(folder, max_chars=_VERIFY_MAX_CHARS, exclude_aux=True)
     if not verify_text.strip():
         raise ValueError(
             f"在 {folder} 未找到可读的小说文本（支持 .txt / .md / .docx）。"
@@ -675,7 +851,7 @@ def incremental_bible_update(folder: str, progress_callback: callable = None) ->
 
         new_files = [
             p for p in _iter_text_files(scan_root)
-            if p.stat().st_mtime > bible_mtime
+            if p.stat().st_mtime > bible_mtime and not _is_aux_file(p)
         ]
 
         if not new_files:
@@ -712,7 +888,7 @@ def incremental_bible_update(folder: str, progress_callback: callable = None) ->
 
         # 专名核验必须以**全书**为准（人物可能在别的章节首次登场），
         # 因此这里单独取一份尽量完整的正文，而不是只用新章节。
-        verify_text, _ = scan_novel(folder, max_chars=_VERIFY_MAX_CHARS)
+        verify_text, _ = scan_novel(folder, max_chars=_VERIFY_MAX_CHARS, exclude_aux=True)
 
         seq_base = _ent.next_source_seq(conn)
         passed, counts = _harvest(
