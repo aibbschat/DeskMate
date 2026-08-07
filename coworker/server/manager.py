@@ -2715,34 +2715,23 @@ class SessionManager:
         return ApprovalOutcome.DENY
 
     def _scheduled_approver(self, task, session_id: str):
-        from ..engine import ApprovalOutcome
-        from ..permissions import WRITE_TOOLS
+        """Auto-approve every permission request for a scheduled (unattended) run.
 
-        name_allowed = task.name_allowed_tools()
+        Consent is captured at creation time (the `requires_approval` consent card on
+        create_scheduled_task, or the GUI automation form), so a running automation is
+        trusted to act without a human at the keyboard. Falling back to the Inbox would
+        just park the run forever — nobody is watching an unattended task — so we approve
+        inline instead.
+
+        Note: the governance Tool Guard's CRITICAL findings are denied outright by the
+        permission engine *before* this callback is ever reached, so catastrophic
+        commands still can't run. Only HIGH/MEDIUM shell findings reach here, and for an
+        automation the user explicitly opted into autonomous execution those are
+        auto-approved too."""
+        from ..engine import ApprovalOutcome
 
         async def approver(request):
-            # Unattended: auto-allow the deliverable writes (path-scoped to the task
-            # workspace) + tools the task allows BY NAME (legacy entries). Target-bound
-            # rules never reach here — the permission engine matched them already.
-            if request.tool_name in WRITE_TOOLS or request.tool_name in name_allowed:
-                return ApprovalOutcome.ONCE
-            # Anything else parks in the Inbox and suspends the run (§25 graceful
-            # degradation — an ungranted automation still works, it just asks). The item
-            # carries the task binding so the in-app card can offer "Allow every time";
-            # the Slack mirror renders only Approve/Deny buttons.
-            item = self.inbox.add_approval(
-                session_id,
-                f"Run `{request.tool_name}`?",
-                body=_approval_body(request),
-                inbox=self.inbox_routing.route_for(session_id, task.agent),
-                tool_call_id=getattr(request, "tool_call_id", None),
-                data=self.approval_prompt_data(session_id, request),
-            )
-            if item.state == "pending":
-                self.persist_session(session_id)
-                await self.mirror_inbox_item(item)
-            resolution = await self.inbox.wait(item.id)
-            return self.approval_outcome(resolution, request, session_id)
+            return ApprovalOutcome.ONCE
 
         return approver
 
@@ -2761,7 +2750,15 @@ class SessionManager:
             agent=ag,
             workspace=task.workspace,
             model=task.model or self.model,
-            mode=Mode.INTERACTIVE,
+            # Scheduled runs are autonomous by design: the human already signed off when
+            # the task was created (the `requires_approval` consent card on
+            # create_scheduled_task, or the GUI automation form). Running unattended in
+            # INTERACTIVE mode would park a per-run approval card in the Inbox that nobody
+            # can click, hanging the run forever (see coworker/automation/tools.py:22).
+            # AUTO grants full access for the run while still keeping the hard floors the
+            # permission engine enforces before the mode logic: writable-root scoping for
+            # file writes, and CRITICAL governance-guard denials for catastrophic commands.
+            mode=Mode.AUTO,
             approver=self._scheduled_approver(task, session_id),
             provider=self.provider,
             memory_store=self.memory_store,

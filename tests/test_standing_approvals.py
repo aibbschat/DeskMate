@@ -214,7 +214,7 @@ def test_task_for_run_session(tmp_path):
 # -- run-time: park in the Inbox, mint on "Allow every time" ----------------------
 
 
-async def test_scheduled_approver_parks_and_mints(tmp_path, monkeypatch):
+async def test_scheduled_approver_auto_approves(tmp_path, monkeypatch):
     from coworker.server.manager import SessionManager
 
     monkeypatch.setenv("COWORKER_STATE_DIR", str(tmp_path / "state"))
@@ -227,48 +227,39 @@ async def test_scheduled_approver_parks_and_mints(tmp_path, monkeypatch):
     manager.task_store.add_run(run)
 
     approver = manager._scheduled_approver(task, run.session_id)
-    request = PermissionRequest(
-        tool_name="send_message",
-        arguments={"target": "slack:T1/C1", "text": "digest"},
-        metadata=_Meta(),
-        reason="requires approval",
-        tool_call_id="tc1",
+    # An ungranted call that would have parked in the Inbox (and hung forever in
+    # INTERACTIVE, since nobody watches an unattended run) is now auto-approved
+    # inline — the scheduled run stays headless and completes.
+    outcome = await approver(
+        PermissionRequest(
+            "send_message",
+            {"target": "slack:T1/C1", "text": "digest"},
+            _Meta(),
+            "requires approval",
+            tool_call_id="tc1",
+        )
     )
-
-    async def click_allow_every_time():
-        for _ in range(500):
-            pending = manager.inbox.pending(run.session_id)
-            if pending:
-                # The parked item carries the task binding + the exact target — the
-                # in-app card's gate for offering "Allow every time".
-                assert pending[0].data["task_id"] == task.id
-                assert pending[0].data["standing_target"] == "slack:T1/C1"
-                await manager.resolve_inbox(pending[0].id, "always_task")
-                return
-            await asyncio.sleep(0.001)
-        raise AssertionError("approval never parked")
-
-    outcome, _ = await asyncio.gather(approver(request), click_allow_every_time())
     assert outcome is ApprovalOutcome.ONCE
-    # The rule persisted to the task record…
-    assert (
-        "send_message slack:T1/C1"
-        in manager.task_store.get(task.id).always_allowed_tools
+    # Nothing was parked in the Inbox — there is no human to click it.
+    assert not manager.inbox.pending(run.session_id)
+
+    # Pre-existing target-bound standing rules still ride along on a rebuilt engine
+    # (seeded via _seed_task_permissions), independent of the approver. In AUTO mode
+    # the engine grants full access anyway, so we assert the rule was seeded rather
+    # than that it gates the decision.
+    task2 = _task(
+        workspace=str(ws),
+        agent="cowork",
+        always_allowed_tools=["send_message slack:T1/C1"],
     )
-    # …and a rebuilt run engine auto-allows exactly that call, nothing else.
-    engine = manager._build_task_engine(
-        manager.task_store.get(task.id), session_id=run.session_id
-    )
-    hit = engine.permissions.evaluate(
-        "send_message", {"target": "slack:T1/C1"}, _Meta()
-    )
-    assert hit.allowed and hit.rule
-    assert not engine.permissions.evaluate(
-        "send_message", {"target": "slack:T1/C2"}, _Meta()
-    ).allowed
+    manager.task_store.save(task2)
+    run2 = TaskRun(task_id=task2.id)
+    manager.task_store.add_run(run2)
+    engine = manager._build_task_engine(task2, session_id=run2.session_id)
+    assert engine.permissions.task_rules == {"send_message": {"slack:T1/C1"}}
 
 
-async def test_scheduled_approver_name_allows_and_denies(tmp_path, monkeypatch):
+async def test_scheduled_approver_auto_approves_all(tmp_path, monkeypatch):
     from coworker.server.manager import SessionManager
 
     monkeypatch.setenv("COWORKER_STATE_DIR", str(tmp_path / "state"))
@@ -287,22 +278,14 @@ async def test_scheduled_approver_name_allows_and_denies(tmp_path, monkeypatch):
     )
     assert outcome is ApprovalOutcome.ONCE and not manager.inbox.pending(run.session_id)
 
-    # Ungranted call parks; a Deny resolves it as denied (graceful degradation).
-    request = PermissionRequest(
-        "send_message", {"target": "slack:T1/C1"}, _Meta(), "", tool_call_id="tc2"
+    # An ungranted call is also auto-approved — there is no Deny path and no hang.
+    # The task was consented at creation, so the run is trusted to act unattended.
+    outcome2 = await approver(
+        PermissionRequest(
+            "send_message", {"target": "slack:T1/C1"}, _Meta(), "", tool_call_id="tc2"
+        )
     )
-
-    async def deny():
-        for _ in range(500):
-            pending = manager.inbox.pending(run.session_id)
-            if pending:
-                await manager.resolve_inbox(pending[0].id, "deny")
-                return
-            await asyncio.sleep(0.001)
-
-    outcome, _ = await asyncio.gather(approver(request), deny())
-    assert outcome is ApprovalOutcome.DENY
-    assert manager.task_store.get(task.id).always_allowed_tools == ["web_search"]
+    assert outcome2 is ApprovalOutcome.ONCE and not manager.inbox.pending(run.session_id)
 
 
 def test_mint_task_rule_validates(tmp_path, monkeypatch):
