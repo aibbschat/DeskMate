@@ -296,12 +296,13 @@ def _split_batches(text: str, size: int = 12000, overlap: int = 400) -> list[str
 # max_tokens 是上限而非目标，模型用完即停，不会因此多耗 token。
 _EXTRACT_MAX_TOKENS = 8000
 
-# 送进 LLM 抽取的正文上限（与 v1 的 scan_novel 默认值一致，控制 token 成本）。
-_EXTRACT_MAX_CHARS = 400_000
-
-# 供**专名核验**使用的正文上限。必须远大于抽取上限：核验要回答"这个人名到底在
-# 全书里出现过没有"，若正文被截断，后半部登场的真实人物会被误判成幻觉而删掉。
-# 这一步只做字符串匹配、不花 token，放宽到 500 万字足以覆盖长篇全本。
+# 抽取与核验**都用全本** scan 结果（`scan_novel(folder, max_chars=_VERIFY_MAX_CHARS)`），
+# 不再对抽取正文做硬截断：全量重建必须覆盖全书，否则长篇后半部登场的人物/关系/事件
+# 会被漏抽，清空旧实体后圣经反而比增量累积的少（2026-08-07 修复的「全量重建内容变少」）。
+# 超大篇幅由 _split_batches 自然切成多批处理，成本随篇幅线性增长，属低频重操作可接受。
+# 专名核验仍需完整正文：核验要回答"这个人名到底在全书里出现过没有"，若正文被截断，
+# 后半部登场的真实人物会被误判成幻觉而删掉。这步只做字符串匹配、不花 token，
+# 放宽到 500 万字足以覆盖长篇全本。
 _VERIFY_MAX_CHARS = 5_000_000
 
 
@@ -536,7 +537,9 @@ def build_bible(folder: str, progress_callback: callable = None) -> dict[str, st
         raise ValueError(
             f"在 {folder} 未找到可读的小说文本（支持 .txt / .md / .docx）。"
         )
-    text = verify_text[:_EXTRACT_MAX_CHARS]
+    # 抽取正文用全本：不再 [: _EXTRACT_MAX_CHARS] 截断。全量重建必须覆盖全书，
+    # 否则长篇后半部登场的人物/关系/事件会被漏抽，清空旧实体后圣经反而比增量累积的少。
+    text = verify_text
 
     batches = _split_batches(text)
     if progress_callback:

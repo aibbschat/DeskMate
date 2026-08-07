@@ -440,3 +440,46 @@ class TestBuildBibleEndToEnd:
         assert "周砚" in blob        # 旧事实没被增量冲掉
         assert "沈砚秋" in blob      # 新的真事实进来了
         assert "李慕白" not in blob  # 新的假事实被拦住
+
+    def test_full_rebuild_covers_entire_book_not_truncated(self, tmp_path: Path, monkeypatch):
+        """回归（2026-08-07「全量重建内容变少」）：
+
+        build_bible 必须抽取**全书**，不能把送进 LLM 的正文截断到前 40 万字。
+        构造一个 > 40 万字的长篇：前半部有「周砚」、后半部（> 400000 字符处）有
+        「终章人」。mock 抽取模型按 user 批次文本里出现的专名回吐实体（证据直接从
+        该批次截取），因此只有被送入抽取的文本里的专名才会进圣经。
+
+        - 修复前：抽取文本 [:400000] 截断，终章人所在批次根本不会被创建 → 断言失败；
+        - 修复后：抽取全本，终章人出现在圣经 → 断言通过。
+        """
+        import deskmate.novel_memory.core as core
+
+        fill = "庭院深深落花满地仆从往来穿梭不息夜色渐沉烛影摇红。\n\n"
+        parts = ["第一章\n\n周砚站在阶下，不敢抬头。\n\n"]
+        while sum(len(p) for p in parts) < 420_000:
+            parts.append(fill)
+        parts.append("终章\n\n终章人推门而入，环视四周，眉间颇有威仪。\n\n")
+        text = "".join(parts)
+        (tmp_path / "长篇.txt").write_text(text, encoding="utf-8")
+
+        def fake_chat(system, user, **kw):
+            chars = []
+            for name, detail in (("周砚", "监生"), ("终章人", "终章角色")):
+                if name in user:
+                    idx = user.index(name)
+                    ev = user[idx:idx + 24]   # 从该批次原文截取，确保逐字命中 → confirmed
+                    chars.append(
+                        {"name": name, "aliases": [], "detail": detail, "evidence": ev}
+                    )
+            return json.dumps(
+                {"characters": chars, "relations": [], "events": [], "settings": []},
+                ensure_ascii=False,
+            )
+
+        monkeypatch.setattr(core, "_chat", fake_chat)
+        docs = core.build_bible(str(tmp_path))
+        blob = "\n".join(docs.values())
+        # 前半部人物必须在
+        assert "周砚" in blob
+        # 后半部（> 400000 字符处）的人物也必须在 —— 这是本次修复要保住的不变量
+        assert "终章人" in blob
