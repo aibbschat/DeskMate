@@ -1793,6 +1793,25 @@ def create_app(manager: SessionManager) -> FastAPI:
             logging.exception("get deskmate digest failed")
             return {"items": [], "updated_at": 0, "fresh": False}
 
+    @app.post("/v1/deskmate/emote-pack")
+    async def set_deskmate_emote_pack(request: Request) -> dict[str, Any]:
+        """前端切换激活表情包时上报，让桌搭（assistant）回复里的表情冻结到该包画风。"""
+        try:
+            data = await request.json()
+        except Exception:
+            return {"ok": False, "error": "bad json"}
+        pack = data.get("pack") if isinstance(data, dict) else None
+        from ..emotes import set_active_pack, get_active_pack
+
+        ok = set_active_pack(pack)
+        return {"ok": ok, "pack": get_active_pack()}
+
+    @app.get("/v1/deskmate/emote-pack")
+    async def get_deskmate_emote_pack() -> dict[str, Any]:
+        from ..emotes import get_active_pack, list_packs
+
+        return {"pack": get_active_pack(), "packs": list_packs()}
+
     @app.post("/v1/deskmate/growth/proactive")
     async def set_deskmate_growth_proactive(request: Request) -> dict[str, Any]:
         """设置信任感是否调制 proactive 主动打扰阈值。

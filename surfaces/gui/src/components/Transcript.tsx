@@ -3,7 +3,8 @@ import { useTranslation } from "react-i18next";
 import type { ApprovalDecision, Item } from "../types";
 import { shortArgs } from "./ApprovalCard";
 import { humanizeAsk, humanizeTool, type HumanLine } from "../humanize";
-import { Markdown } from "./Markdown";
+import { Markdown, stripEmote } from "./Markdown";
+import { renderEmoteInline } from "./deskmate/emotes/Emote";
 import { ConnectorMessageCard } from "./ConnectorMessageCard";
 import { ReportViewer } from "./deskmate/ReportViewer";
 import { Icon } from "./Icon";
@@ -14,12 +15,25 @@ import { type Expert } from "./deskmate/experts";
 // full text still drives copy (BubbleMeta) and is what the model received.
 const USER_CLAMP_CHARS = 1200;
 
+// 若硬切点在表情 token 中间（如切到 `![招手问好](emote:wa`），裸协议文本会漏出来。
+// 这个正则匹配「尾巴上未闭合的表情 token 起点」，clamp 时回退到该起点，保证表情整取或整弃。
+const EMOTE_PARTIAL_RE =
+  /(?:\[\[emote:[a-zA-Z0-9_-]*|!\[[^\]]*\]\(emote:[a-zA-Z0-9_-]*|!\[[^\]]*\(emote:[a-zA-Z0-9_-]*|!\[[^\]]*)$/;
+
+function clampUserText(text: string): string {
+  if (text.length <= USER_CLAMP_CHARS) return text;
+  let head = text.slice(0, USER_CLAMP_CHARS);
+  const pm = head.match(EMOTE_PARTIAL_RE);
+  if (pm && pm.index !== undefined) head = head.slice(0, pm.index);
+  return head.trimEnd() + "…";
+}
+
 function ClampedUserText({ text }: { text: string }) {
   const [open, setOpen] = useState(false);
-  if (text.length <= USER_CLAMP_CHARS) return <>{text}</>;
+  if (text.length <= USER_CLAMP_CHARS) return <>{renderEmoteInline(text)}</>;
   return (
     <>
-      {open ? text : text.slice(0, USER_CLAMP_CHARS).trimEnd() + "…"}
+      {open ? renderEmoteInline(text) : renderEmoteInline(clampUserText(text))}
       <button
         type="button"
         onClick={() => setOpen((o) => !o)}
@@ -42,8 +56,9 @@ function BubbleMeta({ text, ts, align }: { text: string; ts?: number; align: "le
   const copy = () => {
     // "Copied" only after the write actually lands — WebKit can reject outside a
     // trusted gesture, and claiming success on a silent no-op would gaslight the user.
+    // Strip the [[emote:NAME]] protocol markers so the copied plain text stays clean.
     navigator.clipboard
-      ?.writeText(text)
+      ?.writeText(stripEmote(text))
       .then(() => {
         setCopied(true);
         window.setTimeout(() => setCopied(false), 1200);

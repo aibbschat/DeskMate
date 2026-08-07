@@ -1,0 +1,166 @@
+{
+  "version": "1.0.0",
+  "defaultPack": "moling-default",
+  "description": "墨灵表情 · 接入标准（Emote Manifest）。前后端共用单一真相源：定义「有哪些表情、各自含义/触发场景/分类/情绪」，渲染实现由各端自行承载（前端为 SVG_REGISTRY）。新增表情只改本文件，无需改代码。",
+  "packs": {
+    "moling-default": {
+      "id": "moling-default",
+      "name": "墨灵默认表情",
+      "style": "yellow-face",
+      "license": "custom",
+      "emotes": [
+        {
+          "id": "wave",
+          "name_zh": "招手问好",
+          "name_en": "wave",
+          "category": "greeting",
+          "meaning": "用户主动打招呼、问好、引起注意",
+          "triggers": ["你好", "在吗", "打招呼", "hi"],
+          "emotion": "idle"
+        },
+        {
+          "id": "cheer",
+          "name_zh": "撒花庆祝",
+          "name_en": "cheer",
+          "category": "celebration",
+          "meaning": "开心庆祝、恭喜、为对方高兴",
+          "triggers": ["太棒了", "完成", "恭喜", "厉害"],
+          "emotion": "happy"
+        },
+        {
+          "id": "idea",
+          "name_zh": "灵感来了",
+          "name_en": "idea",
+          "category": "writing",
+          "meaning": "有了想法、灵感、点子、受到启发",
+          "triggers": ["灵感", "点子", "启发", "有了"],
+          "emotion": "thinking"
+        },
+        {
+          "id": "shy",
+          "name_zh": "害羞捂脸",
+          "name_en": "shy",
+          "category": "greeting",
+          "meaning": "不好意思、害羞、尴尬脸红",
+          "triggers": ["害羞", "尴尬", "脸红", "不好意思"],
+          "emotion": "idle"
+        },
+        {
+          "id": "v",
+          "name_zh": "嘚瑟比耶",
+          "name_en": "v",
+          "category": "celebration",
+          "meaning": "得意、胜利、搞定、嘚瑟",
+          "triggers": ["耶", "胜利", "666", "搞定"],
+          "emotion": "happy"
+        },
+        {
+          "id": "sleepy",
+          "name_zh": "困到睁不开",
+          "name_en": "sleepy",
+          "category": "greeting",
+          "meaning": "困倦、疲惫、想睡、熬夜",
+          "triggers": ["困", "累", "熬夜", "想睡"],
+          "emotion": "idle"
+        },
+        {
+          "id": "tea",
+          "name_zh": "摸鱼喝茶",
+          "name_en": "tea",
+          "category": "greeting",
+          "meaning": "摸鱼、休息、放松、划水",
+          "triggers": ["摸鱼", "休息", "放松", "划水"],
+          "emotion": "idle"
+        },
+        {
+          "id": "hug",
+          "name_zh": "安慰抱抱",
+          "name_en": "hug",
+          "category": "reaction",
+          "meaning": "想要安慰、抱抱、被安抚（难过/委屈时）",
+          "triggers": ["抱抱", "安慰", "难过", "委屈"],
+          "emotion": "concerned"
+        },
+        {
+          "id": "stuck",
+          "name_zh": "卡文抓狂",
+          "name_en": "stuck",
+          "category": "writing",
+          "meaning": "卡文、写不出、创作受阻、烦躁抓狂",
+          "triggers": ["卡文", "写不出", "崩溃", "卡住"],
+          "emotion": "concerned"
+        },
+        {
+          "id": "facepalm",
+          "name_zh": "扶额无语",
+          "name_en": "facepalm",
+          "category": "reaction",
+          "meaning": "无语、无奈、服了、叹气",
+          "triggers": ["无语", "服了", "无奈", "叹气"],
+          "emotion": "concerned"
+        },
+        {
+          "id": "peek",
+          "name_zh": "暗中观察",
+          "name_en": "peek",
+          "category": "greeting",
+          "meaning": "偷看、围观、默默观察",
+          "triggers": ["偷看", "围观", "暗中", "默默"],
+          "emotion": "idle"
+        },
+        {
+          "id": "clap",
+          "name_zh": "鼓掌",
+          "name_en": "clap",
+          "category": "celebration",
+          "meaning": "鼓掌、点赞、叫好",
+          "triggers": ["鼓掌", "赞", "棒", "好"],
+          "emotion": "happy"
+        },
+        {
+          "id": "check",
+          "name_zh": "查证无误",
+          "name_en": "check",
+          "category": "writing",
+          "meaning": "已查证、核实、确认无误",
+          "triggers": ["查证", "核实", "确认", "无误"],
+          "emotion": "focused"
+        },
+        {
+          "id": "shock",
+          "name_zh": "震惊",
+          "name_en": "shock",
+          "category": "reaction",
+          "meaning": "震惊、不敢相信",
+          "triggers": ["震惊", "天哪", "不敢信", "惊"],
+          "emotion": "concerned"
+        },
+        {
+          "id": "heart",
+          "name_zh": "比心",
+          "name_en": "heart",
+          "category": "celebration",
+          "meaning": "表达喜爱、比心、么么",
+          "triggers": ["爱你", "喜欢", "比心", "么么"],
+          "emotion": "happy"
+        },
+        {
+          "id": "inbox",
+          "name_zh": "资料到账",
+          "name_en": "inbox",
+          "category": "writing",
+          "meaning": "资料、文件、邮件收到、到账",
+          "triggers": ["资料", "收到", "到账", "文件"],
+          "emotion": "focused"
+        }
+      ]
+    },
+    "moling-mono": {
+      "id": "moling-mono",
+      "name": "墨灵线描",
+      "style": "mono-line",
+      "license": "custom",
+      "inherit": "moling-default"
+    }
+  }
+}

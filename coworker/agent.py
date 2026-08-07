@@ -450,6 +450,11 @@ def build_engine(
         dm_ctx = _deskmate_memory_context(messages)
         if dm_ctx:
             parts.append(dm_ctx)
+        # 墨灵表情词表 + 规则 + few-shot（每轮注入，保证新/恢复会话都可见）
+        if agent.name == "deskmate":
+            from .emotes import emote_system_block, get_active_pack
+
+            parts.append(emote_system_block(get_active_pack()))
         return "\n\n".join(parts)
 
     engine = TurnEngine(

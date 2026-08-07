@@ -9,6 +9,9 @@ import { Icon } from "./Icon";
 import { type Expert } from "./deskmate/experts";
 import { ExpertAvatar } from "./deskmate/ExpertAvatar";
 import { Toggle } from "./Toggle";
+import { EmotePicker } from "./deskmate/emotes/EmotePicker";
+import { emoteLabel } from "./deskmate/emotes/emoteManifest";
+import { getActivePack } from "./deskmate/emotes/emotePack";
 import {
   cancelDictation,
   getDictationLevel,
@@ -111,6 +114,8 @@ export function Composer(props: Props) {
   const fileInput = useRef<HTMLInputElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const noticeTimer = useRef<number | null>(null);
+  const [emoteOpen, setEmoteOpen] = useState(false);
+  const pendingCursor = useRef<number | null>(null);
 
   // Rejected-attachment notice: visible ~8s, then clears (or on ✕).
   const showAttachNotice = (message: string) => {
@@ -272,6 +277,37 @@ export function Composer(props: Props) {
   };
 
   const needsModel = props.modelReady === false;
+
+  // Insert an [[emote:NAME]] token at the caret (or append), then restore the caret just
+  // after it. pendingCursor is applied by the layout effect below once `text` re-renders.
+  const insertEmote = (name: string) => {
+    // 用标准 markdown 图片语法：alt 写中文表情名，既可读又能让 LLM 从 alt 直接读懂语义。
+    // 占位符烤进当前激活 pack（emote:PACK:NAME）——表情自此自带所属包，渲染冻结，
+    // 切换全局 pack 不会改写已发出的这条消息（多种表情可在同一对话共存）。
+    const label = emoteLabel(name);
+    const token = `![${label}](emote:${getActivePack()}:${name})`;
+    const el = textareaRef.current;
+    if (!el) {
+      setText((d) => (d.trim() ? `${d.trimEnd()} ${token}` : token));
+      setEmoteOpen(false);
+      return;
+    }
+    const start = el.selectionStart ?? text.length;
+    const end = el.selectionEnd ?? text.length;
+    const next = text.slice(0, start) + token + text.slice(end);
+    pendingCursor.current = start + token.length;
+    setText(next);
+    setEmoteOpen(false);
+  };
+
+  // Restore the caret after an emote insertion (text changed → re-render → here).
+  useLayoutEffect(() => {
+    if (pendingCursor.current === null || !textareaRef.current) return;
+    const pos = pendingCursor.current;
+    pendingCursor.current = null;
+    textareaRef.current.focus();
+    textareaRef.current.setSelectionRange(pos, pos);
+  }, [text]);
 
   const submit = () => {
     const t = text.trim();
@@ -470,6 +506,31 @@ export function Composer(props: Props) {
               </>
             )}
           </div>
+
+          {/* emote picker */}
+          <div className="relative">
+            <button
+              type="button"
+              className={iconBtn + (emoteOpen ? " bg-paper text-ink" : "")}
+              title="插入墨灵表情"
+              aria-label="插入墨灵表情"
+              onClick={() => setEmoteOpen((v) => !v)}
+            >
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <circle cx="12" cy="12" r="9" />
+                <path d="M8 14s1.5 2 4 2 4-2 4-2" />
+                <line x1="9" y1="9.5" x2="9.01" y2="9.5" />
+                <line x1="15" y1="9.5" x2="15.01" y2="9.5" />
+              </svg>
+            </button>
+            {emoteOpen && (
+              <>
+                <div className="fixed inset-0 z-30" onClick={() => setEmoteOpen(false)} />
+                <EmotePicker onPick={insertEmote} />
+              </>
+            )}
+          </div>
+
           <input
             ref={fileInput}
             type="file"
