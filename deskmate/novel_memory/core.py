@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
@@ -17,14 +18,18 @@ import time
 from pathlib import Path
 from typing import Optional
 
+from . import entities as _ent
+
 logger = logging.getLogger(__name__)
 
 # 稳定公开 API（圆桌等外部模块只应依赖以下名字，避免直连下划线私有函数/常量，
 # 否则 core.py 重构这些下划线符号时会静默失效）。
 __all__ = [
     "build_bible",
+    "incremental_bible_update",
     "inject_bible",
     "read_bible",
+    "bible_stats",
     "build_fts5_index",
     "novel_search_fts5",
     "resolve_root",
@@ -286,147 +291,295 @@ def _split_batches(text: str, size: int = 12000, overlap: int = 400) -> list[str
 # 人物圣经抽取
 # ---------------------------------------------------------------------------
 
-_EXTRACT_SYS = (
-    "你是长篇小说的关系分析师。用户会给你一段小说正文（可能只是一部分）。"
-    "请只基于【这段正文里明确写出的内容】抽取事实，严禁臆测或脑补。"
-    "输出 Markdown，分四节：\n"
-    "## 人物\n- 列出本段出现的新人物（姓名/别名），一句话身份。\n"
-    "## 关系\n- 逐条列出人物间关系，必须标注关系类型（敌 / 友 / 亲 / 暧昧 / 上下级 / 同门 / 其他）"
-    "并尽量注明依据（如「第X章 两人对峙」）。\n"
-    "## 事件\n- 本段关键情节节点（推动关系变化的事件）。\n"
-    "## 设定\n- 本段出现的世界观 / 势力 / 地点设定。\n"
-    "如果某节无内容就写「（无）」。只输出这四节，不要寒暄。"
-)
-
-_MERGE_SYS = (
-    "你是长篇小说的关系总编。下面是一本书各段落的分析片段（可能重复、冲突）。"
-    "请综合成一份【权威人物关系圣经】，作为后续所有人物讨论的唯一准绳。规则：\n"
-    "1. 合并同名人物，去重；关系冲突时以「更靠后章节的明确描写」为准，并注明分歧。\n"
-    "2. 关系必须带类型（敌/友/亲/暧昧/上下级/同门/其他）和关键依据（章节或情节）。\n"
-    "3. 禁止写入任何正文未明确支持的关系；存疑的放进「待确认」。\n"
-    "必须输出【四份】独立 Markdown 文档，用分隔符 ===== 隔开，顺序固定为：\n"
-    "=====\n## CHARACTERS\n（人物关系总表，核心）\n"
-    "=====\n## OUTLINE\n（情节主线与弧光）\n"
-    "=====\n## TIMELINE\n（关键事件时间线）\n"
-    "=====\n## NOTES\n（世界观/势力/伏笔/待确认）\n"
-    "每份文档【第一行必须是 ## CHARACTERS / ## OUTLINE / ## TIMELINE / ## NOTES 之一"
-    "（英文大写，严禁写中文标题）】。四份缺一不可，即使某份内容少也要保留其标题行。"
-    "只输出这四份内容，不要解释、不要寒暄。"
-)
-
-_DOC_TAGS = list(_BIBLE_FILES.keys())
-
-# 单次合并允许喂进去的抽取文本上限（字符）。超过则先分组预合并（两级 reduce）。
-# 依据：实测 DeepSeek 在输入 >12000 字且要求长输出时，返回空内容的概率显著上升。
-_MERGE_INPUT_LIMIT = 12000
-
-# 抽取单批摘要 / 合并长文档 的输出预算。
-# 推理模型（deepseek-v4-flash 等）的 reasoning_content 也计入 max_tokens，
-# 故留足余量：抽取批（输入 ~12K 字）给 8000，合并（可能含两级 reduce）给 16000，
-# 即便推理链占用数千 token，正文仍有空间。max_tokens 是上限而非目标，模型用完即停，
-# 不会因此多耗 token。
+# 单批抽取的输出预算。推理模型（deepseek-v4-flash 等）的 reasoning_content 也计入
+# max_tokens，故留足余量：抽取批输入约 12K 字，给 8000 足以容纳推理链 + JSON 正文。
+# max_tokens 是上限而非目标，模型用完即停，不会因此多耗 token。
 _EXTRACT_MAX_TOKENS = 8000
-_MERGE_MAX_TOKENS = 16000
+
+# 送进 LLM 抽取的正文上限（与 v1 的 scan_novel 默认值一致，控制 token 成本）。
+_EXTRACT_MAX_CHARS = 400_000
+
+# 供**专名核验**使用的正文上限。必须远大于抽取上限：核验要回答"这个人名到底在
+# 全书里出现过没有"，若正文被截断，后半部登场的真实人物会被误判成幻觉而删掉。
+# 这一步只做字符串匹配、不花 token，放宽到 500 万字足以覆盖长篇全本。
+_VERIFY_MAX_CHARS = 5_000_000
 
 
-def _merge_extracts(extracts: list[str], progress_callback: callable = None) -> str:
-    """把逐批抽取结果归并成一份圣经，输入过长时自动走两级 reduce。
+# ---------------------------------------------------------------------------
+# 结构化抽取（v2）：JSON 条目 + 强制原文引证
+#
+# v1 让 LLM 输出散文再由 LLM 整篇重写合并，全链路没有任何可核验点，模型脑补出的
+# 人物（如正文 0 命中的「李慕白/沈清音」）会被当作正典写进圣经且永远删不掉。
+# v2 要求每条事实都附「一字不改的正文引证」，入库前由 entities.verify_records
+# 做确定性核验，查无实据者直接丢弃。
+# ---------------------------------------------------------------------------
 
-    长篇（20 万字≈17 批）直接把所有抽取拼进一次调用会超过模型的稳定输入区间，
-    表现为「返回空内容」或「四份文档只剩一份」。这里先按 _MERGE_INPUT_LIMIT
-    分组预合并，再对预合并结果做最终合并。
+_EXTRACT_JSON_SYS = (
+    "你是长篇小说的事实抽取器，服务于「人物设定圣经」。用户会给你一段小说正文。\n"
+    "【最高原则】只抽取这段正文里**逐字写明**的事实。严禁推测、脑补、补全、演绎、"
+    "把暗示当作已发生的情节，更严禁发明正文里不存在的人名、地名或情节线。\n"
+    "【引证要求】每条事实都必须带 evidence 字段：从正文中**一字不改地复制**一段连续"
+    "原文（10-40 字），该片段必须能在正文里原样检索到。不得拼接、不得改写、不得加"
+    "省略号、不得自己造句。**凡是你写不出原文引证的事实，就不要输出这一条。**\n"
+    "【输出格式】只输出一个 JSON 对象，不要任何解释或寒暄：\n"
+    "{\n"
+    '  "characters": [{"name":"人物本名", "aliases":["别名"], '
+    '"detail":"一句话身份（限30字）", "evidence":"原文连续片段"}],\n'
+    '  "relations": [{"subject":"甲", "object":"乙", '
+    '"type":"敌|友|亲|暧昧|上下级|同门|其他", "detail":"关系说明（限30字）", '
+    '"evidence":"原文连续片段"}],\n'
+    '  "events": [{"title":"事件短标题", "detail":"一句话经过（限40字）", '
+    '"evidence":"原文连续片段"}],\n'
+    '  "settings": [{"name":"势力/地点/制度名", "detail":"一句话说明（限30字）", '
+    '"evidence":"原文连续片段"}]\n'
+    "}\n"
+    "【硬约束】\n"
+    "1. name / subject / object 必须是正文中**原样出现过的专名**，一个字都不能改。\n"
+    "2. 某类没有内容就给空数组 []。宁可少写、宁可空着，也绝不允许编造。\n"
+    "3. 不要输出对情节的推断、评价或概括性总结，只记录白纸黑字写了什么。"
+)
+
+# 抽取失败重试次数：JSON 解析失败往往是模型偶发跑偏，重试一次即可救回
+_EXTRACT_RETRY = 1
+
+
+def _loads_lenient(raw: str) -> dict:
+    """容错解析模型返回的 JSON。
+
+    模型常见跑偏：套 ```json 代码块、前后带寒暄、末尾被 max_tokens 截断。
+    这里逐级降级处理，任何情况下都不抛异常（返回空 dict 表示这批没抽到东西，
+    交由调用方决定重试——**绝不允许**用"猜测补全"的方式伪造数据）。
     """
-    joined = "\n\n".join(extracts)
-    if len(joined) <= _MERGE_INPUT_LIMIT:
-        return _chat(_MERGE_SYS, joined, timeout=120, max_tokens=_MERGE_MAX_TOKENS)
-
-    # 分组：按累计字符数切成若干组
-    groups: list[list[str]] = []
-    cur: list[str] = []
-    cur_len = 0
-    for ex in extracts:
-        if cur and cur_len + len(ex) > _MERGE_INPUT_LIMIT:
-            groups.append(cur)
-            cur, cur_len = [], 0
-        cur.append(ex)
-        cur_len += len(ex)
-    if cur:
-        groups.append(cur)
-
-    if progress_callback:
-        progress_callback("merging_partial", {"groups": len(groups)})
-
-    partials: list[str] = []
-    for i, g in enumerate(groups):
+    if not raw or not raw.strip():
+        return {}
+    s = raw.strip()
+    # 去 markdown 代码块围栏
+    fence = re.search(r"```(?:json)?\s*(.+?)```", s, flags=re.DOTALL)
+    if fence:
+        s = fence.group(1).strip()
+    # 截取最外层花括号
+    start = s.find("{")
+    if start < 0:
+        return {}
+    s = s[start:]
+    end = s.rfind("}")
+    if end > 0:
+        candidate = s[: end + 1]
         try:
-            part = _chat(
-                _MERGE_SYS, "\n\n".join(g), timeout=120, max_tokens=_MERGE_MAX_TOKENS
+            return json.loads(candidate)
+        except Exception:
+            pass
+    # 被截断：尝试逐个补齐右括号
+    for extra in ("]}", "\"}]}", "}]}", "]}]}"):
+        try:
+            return json.loads(s + extra)
+        except Exception:
+            continue
+    try:
+        return json.loads(s)
+    except Exception:
+        return {}
+
+
+def _records_from_json(
+    data: dict, *, seq: int, source_file: str
+) -> list["_ent.Record"]:
+    """把抽取到的 JSON 转成 Record 列表（此处不做任何核验，核验在闸门里做）。"""
+    recs: list[_ent.Record] = []
+    if not isinstance(data, dict):
+        return recs
+
+    def _s(v) -> str:
+        return str(v).strip() if v is not None else ""
+
+    for c in data.get("characters") or []:
+        if not isinstance(c, dict):
+            continue
+        name = _s(c.get("name"))
+        if not name:
+            continue
+        aliases = [_s(a) for a in (c.get("aliases") or []) if _s(a)]
+        recs.append(_ent.Record(
+            kind=_ent.KIND_CHARACTER, name=name, aliases=aliases,
+            detail=_s(c.get("detail")), evidence=_s(c.get("evidence")),
+            source_file=source_file, source_seq=seq,
+        ))
+    for r in data.get("relations") or []:
+        if not isinstance(r, dict):
+            continue
+        subj, obj = _s(r.get("subject")), _s(r.get("object"))
+        if not subj or not obj or subj == obj:
+            continue
+        recs.append(_ent.Record(
+            kind=_ent.KIND_RELATION, subject=subj, object=obj,
+            rel_type=_s(r.get("type")) or "其他", detail=_s(r.get("detail")),
+            evidence=_s(r.get("evidence")), source_file=source_file, source_seq=seq,
+        ))
+    for e in data.get("events") or []:
+        if not isinstance(e, dict):
+            continue
+        title = _s(e.get("title"))
+        if not title:
+            continue
+        recs.append(_ent.Record(
+            kind=_ent.KIND_EVENT, name=title, detail=_s(e.get("detail")),
+            evidence=_s(e.get("evidence")), source_file=source_file, source_seq=seq,
+        ))
+    for s in data.get("settings") or []:
+        if not isinstance(s, dict):
+            continue
+        name = _s(s.get("name"))
+        if not name:
+            continue
+        recs.append(_ent.Record(
+            kind=_ent.KIND_SETTING, name=name, detail=_s(s.get("detail")),
+            evidence=_s(s.get("evidence")), source_file=source_file, source_seq=seq,
+        ))
+    return recs
+
+
+def _batch_source_file(batch: str) -> str:
+    """从批次文本里回捞它属于哪个正文文件（scan_novel 会写入「# 文件：xxx」标记）。"""
+    m = re.search(r"^#\s*文件：(.+)$", batch, flags=re.MULTILINE)
+    return m.group(1).strip() if m else ""
+
+
+def _extract_batch_records(
+    idx: int, batch: str, *, seq_base: int
+) -> list["_ent.Record"]:
+    """抽取单批并转成 Record（失败返回空列表，绝不伪造）。"""
+    raw = ""
+    for attempt in range(_EXTRACT_RETRY + 1):
+        try:
+            raw = _chat(
+                _EXTRACT_JSON_SYS, batch,
+                max_tokens=_EXTRACT_MAX_TOKENS,
+                temperature=0.0 if attempt == 0 else 0.1,
             )
         except Exception as e:  # noqa: BLE001
-            part = f"（第 {i + 1} 组预合并失败：{e}）"
-        partials.append(f"===== 预合并 {i + 1}/{len(groups)} =====\n{part}")
-        if progress_callback:
-            progress_callback("merge_progress", {"idx": i + 1, "total": len(groups)})
+            logger.warning("第 %d 批抽取调用失败：%s", idx + 1, e)
+            continue
+        data = _loads_lenient(raw)
+        recs = _records_from_json(
+            data, seq=seq_base + idx, source_file=_batch_source_file(batch)
+        )
+        if recs:
+            return recs
+    if raw:
+        logger.warning("第 %d 批抽取未产出有效条目（模型返回无法解析或为空）", idx + 1)
+    return []
 
-    final_input = "\n\n".join(partials)
-    # 极端情况（书特别长）：预合并结果仍超限，做一次保守截断而非直接失败
-    if len(final_input) > _MERGE_INPUT_LIMIT * 2:
-        final_input = final_input[: _MERGE_INPUT_LIMIT * 2]
-    return _chat(_MERGE_SYS, final_input, timeout=180, max_tokens=_MERGE_MAX_TOKENS)
+
+def _harvest(
+    batches: list[str],
+    *,
+    seq_base: int,
+    full_text: str,
+    progress_callback: callable = None,
+) -> tuple[list["_ent.Record"], dict[str, int]]:
+    """并发抽取 + 逐批核验。返回 (通过闸门的条目, 统计)。
+
+    核验的 source_text 是**该条目自己那一批的原文**——引证必须出自它声称的地方，
+    不能拿全书当挡箭牌；专名核验才用全书正文（人物可能在别处首次登场）。
+    """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    results: list[list[_ent.Record]] = [[] for _ in batches]
+    with ThreadPoolExecutor(max_workers=min(5, max(1, len(batches)))) as pool:
+        futures = {
+            pool.submit(_extract_batch_records, i, b, seq_base=seq_base): i
+            for i, b in enumerate(batches)
+        }
+        for future in as_completed(futures):
+            i = futures[future]
+            try:
+                results[i] = future.result()
+            except Exception as e:  # noqa: BLE001
+                logger.warning("第 %d 批抽取异常：%s", i + 1, e)
+                results[i] = []
+            if progress_callback:
+                progress_callback(
+                    "extract_progress", {"idx": i + 1, "total": len(batches)}
+                )
+
+    passed: list[_ent.Record] = []
+    counts = {"raw": 0, "confirmed": 0, "pending": 0, "rejected": 0}
+    for i, recs in enumerate(results):
+        if not recs:
+            continue
+        counts["raw"] += len(recs)
+        verified = _ent.verify_records(
+            recs, source_text=batches[i], full_text=full_text
+        )
+        for r in verified:
+            counts[r.status] = counts.get(r.status, 0) + 1
+            if r.status != _ent.STATUS_REJECTED:
+                passed.append(r)
+    return passed, counts
 
 
 def build_bible(folder: str, progress_callback: callable = None) -> dict[str, str]:
-    """通读全书 -> 抽取 -> 合并成四份圣经文档。返回 {文档名: markdown}。
+    """通读全书 -> 结构化抽取 -> 证据核验 -> 确定性入库 -> 渲染四份圣经。
 
+    返回 {文档名: markdown}，接口与 v1 完全兼容（调用方无需改动）。
     folder 可为小说文件夹或单个 .txt / .docx 稿件文件。
+
+    与 v1 的关键差异：圣经内容**不再由 LLM 直接书写**，而是由已核验的结构化事实
+    渲染而成，因此 LLM 无法把幻觉塞进最终文档。
     """
     if progress_callback:
         progress_callback("scanning", {"folder": folder})
-    text, titles = scan_novel(folder)
-    if not text.strip():
+    # 一次读盘，两种用途：verify_text 尽量取全本（供专名核验），
+    # text 截到抽取上限（控制 token）。两者分离可避免长篇后半部人物被误杀。
+    verify_text, titles = scan_novel(folder, max_chars=_VERIFY_MAX_CHARS)
+    if not verify_text.strip():
         raise ValueError(
             f"在 {folder} 未找到可读的小说文本（支持 .txt / .md / .docx）。"
         )
+    text = verify_text[:_EXTRACT_MAX_CHARS]
 
-    # 1) 逐批抽取（并发，大幅缩短总耗时）
     batches = _split_batches(text)
-    extracts: list[str] = [""] * len(batches)
     if progress_callback:
         progress_callback("extracting", {"total": len(batches), "folder": folder})
 
-    from concurrent.futures import ThreadPoolExecutor, as_completed
-
-    def _extract_one(idx: int, batch: str) -> tuple[int, str]:
-        try:
-            part = _chat(_EXTRACT_SYS, batch, max_tokens=_EXTRACT_MAX_TOKENS)
-        except Exception as e:
-            part = f"（第 {idx + 1} 批抽取失败：{e}）"
-        return idx, part
-
-    with ThreadPoolExecutor(max_workers=min(5, len(batches))) as pool:
-        futures = {
-            pool.submit(_extract_one, i, batch): i
-            for i, batch in enumerate(batches)
-        }
-        for future in as_completed(futures):
-            idx, part = future.result()
-            extracts[idx] = f"===== 第 {idx + 1} 批 =====\n{part}"
-            if progress_callback:
-                progress_callback("extract_progress", {"idx": idx + 1, "total": len(batches)})
-
-    # 2) 合并成圣经（长篇自动走两级 reduce，见 _merge_extracts）
-    if progress_callback:
-        progress_callback("merging", {"total_batches": len(batches)})
-    merged = _merge_extracts(extracts, progress_callback)
-
-    # 3) 解析成四份文档
-    docs = _parse_bible_docs(merged)
-    # 兜底：若解析失败，整体存为 CHARACTERS
-    if not docs.get("CHARACTERS"):
-        docs["CHARACTERS"] = merged
+    passed, counts = _harvest(
+        batches, seq_base=1, full_text=verify_text,
+        progress_callback=progress_callback,
+    )
 
     if progress_callback:
-        progress_callback("completed", {"docs": list(docs.keys()), "folder": folder})
+        progress_callback("merging", {"total_batches": len(batches), **counts})
+
+    bible_dir = _bible_root(folder) / _BIBLE_DIR
+    bible_dir.mkdir(parents=True, exist_ok=True)
+    conn = _ent.connect(bible_dir)
+    try:
+        # 全量重建：先清空旧实体，避免上一轮（含 v1 迁移前）的错误事实残留
+        conn.execute("DELETE FROM entities")
+        conn.commit()
+        _ent.upsert_records(conn, passed)
+        _ent.set_meta(conn, "last_scan_ts", str(time.time()))
+        docs = _ent.render_bible(conn)
+        st = _ent.stats(conn)
+    finally:
+        conn.close()
+
+    if not passed:
+        raise ValueError(
+            "抽取未产出任何可核验的事实：模型可能未按 JSON 格式返回，"
+            "或正文过短。已保持圣经为空，而不是写入未经核验的内容。"
+        )
+
+    logger.info(
+        "圣经重建完成：抽取 %d 条，确认 %d 条，待确认 %d 条，拦截幻觉 %d 条",
+        counts.get("raw", 0), counts.get("confirmed", 0),
+        counts.get("pending", 0), counts.get("rejected", 0),
+    )
+    if progress_callback:
+        progress_callback(
+            "completed",
+            {"docs": list(docs.keys()), "folder": folder, "stats": st, **counts},
+        )
     return docs
 
 
@@ -461,22 +614,29 @@ def _parse_bible_docs(merged: str) -> dict[str, str]:
 
 
 def incremental_bible_update(folder: str, progress_callback: callable = None) -> dict[str, str] | None:
-    """增量更新圣经：只扫描修改过的文件，合并到现有圣经中。
+    """增量更新圣经：只扫描修改过的文件，把新事实并入实体库。
 
-    与 build_bible（全量重建）不同，本函数：
-    1. 读取现有圣经（.deskmate/CHARACTERS.md 等）
-    2. 只扫描新增/修改的文件（对比 .deskmate/ 文件的 mtime 和正文文件的 mtime）
-    3. 只将新内容抽取后合并到现有圣经
+    增量机制本身是对的（对标 Hermes 的「记住这次增补了什么」），v2 **完整保留**
+    它，只是把出错的那一环换掉：
+
+    - v1：把「现有圣经全文（还只截前一半）+ 新抽取」丢给 LLM 重写四份文档。
+      → 旧错误会被反复抄进新版本，且永远无法删除。
+    - v2：新章节抽取出的条目先过证据核验闸门，再按实体 key 做**确定性 upsert**。
+      → 只有涉及的实体被更新，其余原样不动；不存在"重写整篇"这一步，也就不存在
+        合并残留。冲突（如关系类型翻转）被显式记进 history 而非交给 LLM 裁决。
+
+    另外每次增量都会顺带做一次**全库复核**（revoke_unsupported）：正文里已查无
+    实据的专名会被撤销，让圣经能跟着稿件收缩，而不是只增不减。
 
     Args:
         folder: 小说文件夹绝对路径，或单个 .txt / .docx 稿件文件路径
         progress_callback: 可选进度回调
 
     Returns:
-        更新后的圣经 dict，或 None（无变化）
+        更新后的圣经 dict；None 表示尚无圣经（调用方应提示先做全量分析）
     """
-    scan_root, bible_root = _resolve_root(folder)
-    bible_dir = bible_root / _BIBLE_DIR
+    scan_root, bible_root_path = _resolve_root(folder)
+    bible_dir = bible_root_path / _BIBLE_DIR
 
     # 先落一次修订快照：用户"刷新圣经"时往往正是刚改完稿，这一步保证本次
     # 改动被 manuscript_revisions 记下来，否则等下次索引时只剩合并后的大 diff。
@@ -485,118 +645,107 @@ def incremental_bible_update(folder: str, progress_callback: callable = None) ->
     except Exception as e:
         logger.warning("增量圣经更新前置索引失败（不影响圣经更新）：%s", e)
 
-    # 读取现有圣经
-    existing = read_bible(folder)
-    if not existing:
-        # 没有现有圣经，退化到全量
-        if progress_callback:
-            progress_callback("no_existing_bible", {"folder": folder})
-        return None
-
-    # 找新增/修改过的文件
-    bible_mtime = 0.0
-    for tag, fname in _BIBLE_FILES.items():
-        fp = bible_dir / fname
-        if fp.is_file():
-            bible_mtime = max(bible_mtime, fp.stat().st_mtime)
-
-    new_files = []
-    text_files = _iter_text_files(scan_root)
-    for p in text_files:
-        if p.stat().st_mtime > bible_mtime:
-            new_files.append(p)
-
-    if not new_files:
-        if progress_callback:
-            progress_callback("no_new_content", {"folder": folder})
-        return existing  # 无新内容，返回现有圣经
-
-    # 读取新文件内容
-    if progress_callback:
-        progress_callback("scanning_new", {"count": len(new_files), "folder": folder})
-    new_text = ""
-    new_titles = []
-    for p in new_files:
-        text = _read_file_text(p)
-        if not text.strip():
-            continue
-        rel = _rel_name(p, scan_root)
-        new_titles.append(rel)
-        new_text += f"# 文件：{rel}\n\n{text}\n\n"
-
-    if not new_text.strip():
-        if progress_callback:
-            progress_callback("no_new_content", {"folder": folder})
-        return existing
-
-    # 抽取新内容
-    batches = _split_batches(new_text)
-    if not batches:
-        return existing
-
-    if progress_callback:
-        progress_callback("extracting_new", {"total": len(batches), "files": new_titles})
-
-    from concurrent.futures import ThreadPoolExecutor, as_completed
-
-    extracts: list[str] = [""] * len(batches)
-
-    def _extract_one(idx: int, batch: str) -> tuple[int, str]:
-        try:
-            part = _chat(_EXTRACT_SYS, batch, max_tokens=_EXTRACT_MAX_TOKENS)
-        except Exception as e:
-            part = f"（第 {idx + 1} 批抽取失败：{e}）"
-        return idx, part
-
-    with ThreadPoolExecutor(max_workers=min(5, len(batches))) as pool:
-        futures = {
-            pool.submit(_extract_one, i, batch): i
-            for i, batch in enumerate(batches)
-        }
-        for future in as_completed(futures):
-            idx, part = future.result()
-            extracts[idx] = f"===== 第 {idx + 1} 批 =====\n{part}"
+    # v1 → v2 迁移：有旧散文圣经但没有结构化实体库时，直接做一次全量结构化重建。
+    # 这既完成迁移，也顺手洗掉 v1 时期沉淀的未核验内容（无法逐条甄别，只能重来）。
+    if not _ent.has_data(bible_dir):
+        legacy = _read_legacy_bible(folder)
+        if not legacy:
             if progress_callback:
-                progress_callback("extract_progress", {"idx": idx + 1, "total": len(batches)})
+                progress_callback("no_existing_bible", {"folder": folder})
+            return None
+        logger.info("检测到 v1 散文圣经且无结构化实体库，自动全量重建为 v2：%s", folder)
+        if progress_callback:
+            progress_callback("migrating_v2", {"folder": folder})
+        return build_bible(folder, progress_callback)
 
-    # 合并到现有圣经（带已有内容上下文）
+    # ---- 找新增/修改过的文件（判据沿用 mtime，与 v1 一致）-------------------
+    conn = _ent.connect(bible_dir)
+    try:
+        last_scan = float(_ent.get_meta(conn, "last_scan_ts", "0") or 0)
+        bible_mtime = last_scan
+        # 兼容：老库没有 last_scan_ts 时退回四份 md 的 mtime
+        if not bible_mtime:
+            for _tag, fname in _BIBLE_FILES.items():
+                fp = bible_dir / fname
+                if fp.is_file():
+                    bible_mtime = max(bible_mtime, fp.stat().st_mtime)
+
+        new_files = [
+            p for p in _iter_text_files(scan_root)
+            if p.stat().st_mtime > bible_mtime
+        ]
+
+        if not new_files:
+            if progress_callback:
+                progress_callback("no_new_content", {"folder": folder})
+            return _ent.render_bible(conn)
+
+        if progress_callback:
+            progress_callback("scanning_new", {"count": len(new_files), "folder": folder})
+
+        new_text = ""
+        new_titles: list[str] = []
+        for p in new_files:
+            text = _read_file_text(p)
+            if not text.strip():
+                continue
+            rel = _rel_name(p, scan_root)
+            new_titles.append(rel)
+            new_text += f"# 文件：{rel}\n\n{text}\n\n"
+
+        if not new_text.strip():
+            if progress_callback:
+                progress_callback("no_new_content", {"folder": folder})
+            return _ent.render_bible(conn)
+
+        batches = _split_batches(new_text)
+        if not batches:
+            return _ent.render_bible(conn)
+
+        if progress_callback:
+            progress_callback(
+                "extracting_new", {"total": len(batches), "files": new_titles}
+            )
+
+        # 专名核验必须以**全书**为准（人物可能在别的章节首次登场），
+        # 因此这里单独取一份尽量完整的正文，而不是只用新章节。
+        verify_text, _ = scan_novel(folder, max_chars=_VERIFY_MAX_CHARS)
+
+        seq_base = _ent.next_source_seq(conn)
+        passed, counts = _harvest(
+            batches,
+            seq_base=seq_base,
+            full_text=verify_text,
+            progress_callback=progress_callback,
+        )
+
+        if progress_callback:
+            progress_callback("merging", {"total_batches": len(batches), **counts})
+
+        _ent.upsert_records(conn, passed)
+
+        # 全库复核：撤销正文里已查无实据的条目（解决 v1「幻影永不死」）。
+        # 仅在正文未触及扫描上限时执行，避免超长篇因截断而误杀真实人物。
+        if len(verify_text) < _VERIFY_MAX_CHARS:
+            revoked = _ent.revoke_unsupported(conn, verify_text)
+            if revoked:
+                logger.info("全库复核撤销 %d 条正文中已无实据的旧事实", len(revoked))
+                counts["revoked"] = len(revoked)
+
+        _ent.set_meta(conn, "last_scan_ts", str(time.time()))
+        docs = _ent.render_bible(conn)
+    finally:
+        conn.close()
+
+    logger.info(
+        "圣经增量更新：抽取 %d 条，确认 %d 条，待确认 %d 条，拦截幻觉 %d 条",
+        counts.get("raw", 0), counts.get("confirmed", 0),
+        counts.get("pending", 0), counts.get("rejected", 0),
+    )
     if progress_callback:
-        progress_callback("merging", {"total_batches": len(batches)})
-    existing_text = "\n\n".join(
-        f"## {tag}\n{content}" for tag, content in existing.items() if content
-    )
-    merge_prompt = (
-        "以下是一本小说的「现有圣经」和「新章节的抽取结果」。\n"
-        "请将新章节的信息合并到现有圣经中，更新人物关系、情节、时间线。\n"
-        "规则：新章节的明确描写优先级高于旧数据；如果新章节与旧数据冲突，"
-        "以新章节为准并注明。\n\n"
-        "必须输出【四份】独立 Markdown 文档，用分隔符 ===== 隔开，顺序固定为：\n"
-        "=====\n## CHARACTERS\n（人物关系总表，核心）\n"
-        "=====\n## OUTLINE\n（情节主线与弧光）\n"
-        "=====\n## TIMELINE\n（关键事件时间线）\n"
-        "=====\n## NOTES\n（世界观/势力/伏笔/待确认）\n"
-        "每份文档【第一行必须是 ## CHARACTERS / ## OUTLINE / ## TIMELINE / ## NOTES 之一"
-        "（英文大写，严禁写中文标题）】。四份缺一不可，即使某份内容少也要保留其标题行。"
-        "只输出这四份内容，不要解释、不要寒暄。"
-    )
-    extracts_joined = "\n\n".join(extracts)
-    # 输入双侧都限长：现有圣经 + 新抽取合计控制在 _MERGE_INPUT_LIMIT 内，
-    # 否则模型在「长输入 + 长输出」下容易直接返回空内容。
-    half = _MERGE_INPUT_LIMIT // 2
-    merged = _chat(
-        merge_prompt,
-        f"【现有圣经】\n{existing_text[:half]}\n\n"
-        f"【新章节抽取】\n{extracts_joined[:half]}",
-        timeout=120,
-        max_tokens=_MERGE_MAX_TOKENS,
-    )
-
-    docs = _parse_bible_docs(merged)
-    if not docs.get("CHARACTERS"):
-        docs = existing  # 合并失败，保底返回现有圣经
-
-    if progress_callback:
-        progress_callback("completed", {"docs": list(docs.keys()), "folder": folder})
+        progress_callback(
+            "completed", {"docs": list(docs.keys()), "folder": folder, **counts}
+        )
     return docs
 
 
@@ -667,8 +816,8 @@ def inject_bible(folder: str, docs: dict[str, str]) -> int:
 # ---------------------------------------------------------------------------
 
 
-def read_bible(folder: str) -> dict[str, str]:
-    """读取已生成的四份圣经。folder 可为小说目录或单个稿件文件。"""
+def _read_legacy_bible(folder: str) -> dict[str, str]:
+    """直接读四份 Markdown 文件（v1 散文圣经）。仅用于迁移判断与兜底。"""
     bible_dir = _bible_root(folder) / _BIBLE_DIR
     out: dict[str, str] = {}
     for tag, fname in _BIBLE_FILES.items():
@@ -676,6 +825,44 @@ def read_bible(folder: str) -> dict[str, str]:
         if p.is_file():
             out[tag] = p.read_text(encoding="utf-8")
     return out
+
+
+def read_bible(folder: str) -> dict[str, str]:
+    """读取四份圣经。folder 可为小说目录或单个稿件文件。
+
+    优先从**结构化实体库**确定性渲染（v2）：这样注入 prompt 的每条事实都是过了
+    证据核验的，圆桌/评析等下游拿不到未经核验的内容。实体库不存在时（尚未用新版
+    分析过）回退读旧的 Markdown 文件，保证老工作区不至于突然没有圣经可用。
+    """
+    bible_dir = _bible_root(folder) / _BIBLE_DIR
+    if _ent.has_data(bible_dir):
+        try:
+            conn = _ent.connect(bible_dir)
+            try:
+                return _ent.render_bible(conn)
+            finally:
+                conn.close()
+        except Exception as e:  # noqa: BLE001
+            logger.warning("实体库渲染失败，回退读取 Markdown 圣经：%s", e)
+    return _read_legacy_bible(folder)
+
+
+def bible_stats(folder: str) -> dict[str, int | str]:
+    """圣经的核验统计，用于界面/诊断：确认了多少条、还有多少待确认。
+
+    ``version`` 为 "v2" 表示已是结构化实体库（每条事实都过了证据核验），
+    "v1" 表示仍是旧散文圣经（内容未经核验，建议重新分析一次）。
+    """
+    bible_dir = _bible_root(folder) / _BIBLE_DIR
+    if not _ent.has_data(bible_dir):
+        return {"version": "v1" if _read_legacy_bible(folder) else "none", "total": 0}
+    conn = _ent.connect(bible_dir)
+    try:
+        st = _ent.stats(conn)
+    finally:
+        conn.close()
+    st["version"] = "v2"
+    return st
 
 
 # ---------------------------------------------------------------------------
