@@ -373,6 +373,55 @@ def test_scheduled_task_honors_declared_write_target(tmp_path, monkeypatch):
     assert decision.allowed, decision.reason
 
 
+def test_manual_run_task_writes_desktop_without_approval(tmp_path, monkeypatch):
+    """Regression: a manual "Run now" of an automation rides an INTERACTIVE live session
+    (not the AUTO scheduled path), yet it must still be able to drop its deliverable on the
+    Desktop without parking on a 'requires approval' card. The run session folds in the
+    task's deliverable folders as writable roots AND the write tools are granted at the
+    session level (paths still bounded by the writable-root gate)."""
+    from coworker.providers import (
+        AssistantTurn as _AT,
+        ModelCapabilities,
+        ProviderClient,
+    )
+    from coworker.server import SessionManager
+
+    class _Provider(ProviderClient):
+        def complete(self, *, model, messages, tools=None, **settings):
+            return _AT(text="ok", finish_reason="stop")
+
+        def capabilities(self, model):
+            return ModelCapabilities()
+
+    monkeypatch.setenv("COWORKER_STATE_DIR", str(tmp_path / "state"))
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    manager = SessionManager(data_dir=tmp_path / "data", provider=_Provider())
+    task = _task(workspace=str(ws), agent="cowork")
+    manager.task_store.save(task)
+
+    # GUI "Run now": creates a manual run + its __run__ session, then opens it live.
+    prepared = manager.prepare_manual_run(task.id)
+    session_id = prepared["session_id"]
+    engine = manager.get_engine(session_id, workspace=str(ws), agent="cowork")
+
+    # Manual runs are INTERACTIVE (a human is watching)…
+    assert engine.permissions.mode.value == "interactive"
+
+    # …yet the automation's deliverable folders are writable roots…
+    desktop = Path.home() / "Desktop"
+    if desktop.is_dir():
+        root_paths = {str(r.path): r.writable for r in engine.permissions.roots}
+        assert root_paths.get(str(desktop)) is True
+
+        # …and writing there does NOT require manual approval.
+        decision = engine.permissions.evaluate(
+            "write_file", {"path": str(desktop / "article.md")}
+        )
+        assert decision.allowed, decision.reason
+        assert decision.needs_user is False
+
+
 async def test_manual_run_prepare_and_finalize(tmp_path, monkeypatch):
     from coworker.providers import AssistantTurn, ModelCapabilities, ProviderClient
     from coworker.server.manager import SessionManager

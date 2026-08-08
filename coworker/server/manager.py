@@ -398,6 +398,12 @@ class SessionManager:
                 engine.question_asker = question_asker
             return engine
 
+        # Resolve the owning automation task (if this session is a run of one) up front, so the
+        # writable-root set below can fold in its deliverable folders (Desktop / Documents /
+        # Downloads + declared write targets) — the same set _build_task_engine grants the AUTO
+        # scheduled path. Without this, a manual "Run now" session only had the workspace as a
+        # writable root and could not drop its article on the Desktop.
+        owning_task = self.task_store.task_for_run_session(session_id)
         record = self.session_store.load(session_id)
         is_new_session = record is None
         agent_name = (record.agent if record else agent) or "code"
@@ -431,6 +437,23 @@ class SessionManager:
                 if Path(str(r.get("path", ""))).is_dir()
             ]
             roots = [{"path": ws, "writable": True, "label": "scratch"}, *extra]
+        # A task-run session (manual "Run now" over WS, or durable resume) folds in the task's
+        # deliverable folders as writable roots, exactly like the AUTO scheduled path in
+        # _build_task_engine. System folders outside the workspace stay out of the root set, so
+        # writes still can't escape to arbitrary locations — only to where the task is allowed.
+        if owning_task is not None:
+            task_roots = self._scheduled_write_roots(owning_task)
+            if roots is None:
+                roots = [{"path": str(ws), "writable": True, "label": "workspace"}] if ws else []
+            seen = {
+                str(r.get("path") if isinstance(r, dict) else getattr(r, "path", ""))
+                for r in roots
+            }
+            for r in task_roots:
+                key = str(getattr(r, "path", ""))
+                if key and key not in seen:
+                    seen.add(key)
+                    roots.append(r)
         engine = build_engine(
             agent=ag,
             workspace=ws,
@@ -467,7 +490,6 @@ class SessionManager:
         )
         # An automation run rebuilt here (manual "Run now" over WS, durable resume) still
         # carries its task's standing allowances — the rules live on the task record.
-        owning_task = self.task_store.task_for_run_session(session_id)
         if owning_task is not None:
             self._seed_task_permissions(engine, owning_task)
         # A mention-spawned session (§31) keeps its in-thread reply pre-approved across
@@ -2794,9 +2816,24 @@ class SessionManager:
     def _seed_task_permissions(self, engine: TurnEngine, task) -> None:
         """Apply a task's standing allowances to an engine: target-bound rules feed the
         permission engine's matcher (connector tools included — the target binding is the
-        safety); name-only legacy entries keep their session-allowlist behavior."""
+        safety); name-only legacy entries keep their session-allowlist behavior.
+
+        Write-file tools are also granted for the run session. Background: a task run
+        (whether AUTO-scheduled or a manual "Run now" over the WS) was already authorized
+        at creation, and its deliverable folders (Desktop / Documents / Downloads + any
+        declared write target) live in the writable roots. But a *manual* run rides an
+        INTERACTIVE engine, and `write_file` is WRITE_LOCAL risk — the standing-rule
+        matcher only covers EXTERNAL risk (standing_rule_candidate returns None for
+        write_local), so the call would otherwise park on a "requires approval" card that
+        the unattended/same-task flow shouldn't need. Granting the write tools at the
+        session level (paths still bounded by the writable-root gate) makes manual runs
+        behave like the AUTO path: authorized to write where the task is allowed to."""
         engine.permissions.task_rules = task.standing_rules()
         for tool in task.name_allowed_tools():
+            engine.permissions.allow_tool_for_session(tool)
+        from ..risk import WRITE_TOOLS
+
+        for tool in WRITE_TOOLS:
             engine.permissions.allow_tool_for_session(tool)
 
     def _build_task_engine(self, task, *, session_id: str) -> TurnEngine:
