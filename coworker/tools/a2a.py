@@ -18,7 +18,7 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_TIMEOUT = 120
+_DEFAULT_TIMEOUT = 300
 
 # ---------------------------------------------------------------------------
 # A2A JSON-RPC helpers
@@ -28,6 +28,7 @@ _DEFAULT_TIMEOUT = 120
 # 注意：规范 markdown 老写法 `message/send` 在官方 SDK 里已被归到 `a2a/compat/v0_3`
 # （老 v0.3 方言），v1.0 服务端（含官方 SDK 与我们这套）只认 `SendMessage` / `SendStreamingMessage`。
 _PRIMARY_METHOD = "SendMessage"
+_STREAM_METHOD = "SendStreamingMessage"
 _FALLBACK_METHOD = "message/send"
 
 _PROTOCOL_VERSION = "1.0"
@@ -124,6 +125,133 @@ def _send_message(url: str, message: str, context_id: str = "", timeout: int = _
         return json.loads(resp.read().decode("utf-8"))
 
 
+def _send_streaming(url: str, message: str, context_id: str = "",
+                    timeout: int = _DEFAULT_TIMEOUT, role: str = _ROLE_USER) -> dict:
+    """Send an A2A SendStreamingMessage and parse the SSE response.
+
+    Returns a synthetic JSON-RPC response dict with the final result, so the
+    caller can use the same _reply_text / _input_required helpers.
+
+    SSE format from Hermes:
+      data: {"jsonrpc":"2.0","id":...,"result":{StreamResponse}}\\n\\n
+      : keepalive\\n\\n          (every 5s, resets socket timeout)
+      : done\\n\\n               (stream closed = terminal state)
+    """
+    payload = {
+        "jsonrpc": "2.0",
+        "id": _new_id(),
+        "method": _STREAM_METHOD,
+        "params": {
+            "message": _text_message(message, role=role, context_id=context_id),
+        },
+    }
+    data = json.dumps(payload).encode("utf-8")
+    headers = {
+        "Content-Type": "application/json",
+        "Accept": "text/event-stream",
+        "A2A-Version": _PROTOCOL_VERSION,
+    }
+    post_url = url if url.endswith("/") else url + "/"
+
+    # Use a generous socket timeout — each SSE line (including keepalives)
+    # resets the timer, so this only fires if the server goes silent for
+    # `timeout` seconds straight.
+    req = urllib.request.Request(post_url, data=data, headers=headers, method="POST")
+    resp = urllib.request.urlopen(req, timeout=timeout)
+
+    # Parse SSE stream line by line
+    collected_text = ""
+    last_result: dict = {}
+    context_id_out = context_id
+    state = ""
+
+    try:
+        buf = ""
+        while True:
+            chunk = resp.read(4096)
+            if not chunk:
+                break
+            buf += chunk.decode("utf-8", errors="replace")
+
+            while "\n" in buf:
+                line, buf = buf.split("\n", 1)
+                line = line.rstrip("\r")
+
+                # Skip empty lines and SSE comments (keepalives, done marker)
+                if not line or line.startswith(":"):
+                    continue
+
+                # Parse SSE data frames
+                if line.startswith("data:"):
+                    payload_str = line[5:].strip()
+                    if not payload_str:
+                        continue
+                    try:
+                        frame = json.loads(payload_str)
+                    except json.JSONDecodeError:
+                        continue
+
+                    # Unwrap JSON-RPC envelope
+                    result = frame.get("result", frame)
+
+                    # Extract task status
+                    task = result.get("task", result)
+                    if isinstance(task, dict):
+                        ctx = (task.get("status") or {}).get("contextId", "")
+                        if ctx:
+                            context_id_out = ctx
+                        s = (task.get("status") or {}).get("state", "")
+                        if s:
+                            state = s
+
+                    # Extract artifact text (final output)
+                    for artifact in (task.get("artifacts") if isinstance(task, dict) else []) or []:
+                        for part in artifact.get("parts", []) or []:
+                            t = (part.get("text") or "").strip()
+                            if t:
+                                collected_text = t  # last artifact wins
+
+                    # Also check status message (interim / INPUT_REQUIRED)
+                    if not collected_text:
+                        status = (task.get("status") or {}) if isinstance(task, dict) else {}
+                        msg = status.get("message") or {}
+                        for part in msg.get("parts", []) or []:
+                            t = (part.get("text") or "").strip()
+                            if t:
+                                collected_text = t
+
+                    last_result = result
+    finally:
+        resp.close()
+
+    # Build a synthetic response that looks like a synchronous SendMessage reply
+    # so _reply_text / _input_required work unchanged.
+    if last_result:
+        task = last_result.get("task", last_result)
+        if isinstance(task, dict):
+            if collected_text and state == "TASK_STATE_COMPLETED":
+                # Put text in artifacts for _reply_text to find
+                task.setdefault("artifacts", [])
+                if not any(
+                    (p.get("text") or "").strip()
+                    for a in task.get("artifacts", [])
+                    for p in a.get("parts", [])
+                ):
+                    task["artifacts"] = [{"parts": [{"text": collected_text}]}]
+            elif collected_text:
+                # Put in status message for _reply_text
+                task.setdefault("status", {}).setdefault("message", {})
+                if not any(
+                    (p.get("text") or "").strip()
+                    for p in task["status"]["message"].get("parts", [])
+                ):
+                    task["status"]["message"] = {"parts": [{"text": collected_text}]}
+            # Ensure context_id is set
+            task.setdefault("status", {})["contextId"] = context_id_out
+
+    return {"result": last_result} if last_result else {}
+
+
 def _fetch_card(url: str, timeout: int = 30) -> dict:
     """Fetch an A2A Agent Card."""
     base = url.rstrip("/")
@@ -187,6 +315,7 @@ def a2a_call(
     url: str = "http://localhost:9900",
     message: str = "",
     context_id: str = "",
+    timeout: int = _DEFAULT_TIMEOUT,
 ) -> str:
     """Send a task to an A2A agent and return its reply.
 
@@ -194,24 +323,48 @@ def a2a_call(
     a local Hermes A2A server. Pass context_id from a previous reply to
     continue a multi-turn conversation.
 
+    Uses SSE streaming by default (SendStreamingMessage) so that long-running
+    tasks don't trigger socket timeouts — keepalive bytes from the server
+    reset the timer. Falls back to synchronous SendMessage if the peer
+    doesn't support streaming.
+
     Args:
         url: The A2A endpoint URL of the target agent (e.g. http://localhost:9900)
         message: The task or message to send, in natural language
         context_id: Optional context id from a prior reply, to continue the conversation
+        timeout: Seconds of server silence before giving up (default 300)
     """
     if not message:
         return "Error: 'message' is required."
 
+    # ── Try streaming first (preferred: keepalives prevent false timeouts) ──
     try:
-        resp = _send_message(url, message, context_id=context_id, method=_PRIMARY_METHOD)
+        resp = _send_streaming(url, message, context_id=context_id, timeout=timeout)
     except urllib.error.HTTPError as e:
         if e.code in (401, 403):
             return f"Error: peer at {url} rejected auth (HTTP {e.code})."
         if e.code == 429:
             return f"Error: peer at {url} rate limited us (HTTP 429)."
-        return f"Error: call to {url} failed — HTTP {e.code}."
-    except Exception as e:
-        return f"Error: call to {url} failed — {e}."
+        # Streaming not supported or other error — fall through to sync
+        resp = {}
+    except Exception:
+        # Streaming failed (e.g. server doesn't support it) — fall through
+        resp = {}
+
+    # ── Fallback: synchronous SendMessage ──
+    if not resp or "error" in resp:
+        err_code = (resp.get("error") or {}).get("code") if resp else None
+        try:
+            resp = _send_message(url, message, context_id=context_id,
+                                 method=_PRIMARY_METHOD, timeout=timeout)
+        except urllib.error.HTTPError as e:
+            if e.code in (401, 403):
+                return f"Error: peer at {url} rejected auth (HTTP {e.code})."
+            if e.code == 429:
+                return f"Error: peer at {url} rate limited us (HTTP 429)."
+            return f"Error: call to {url} failed — HTTP {e.code}."
+        except Exception as e:
+            return f"Error: call to {url} failed — {e}."
 
     if "error" in resp:
         err = resp["error"]
@@ -224,6 +377,7 @@ def a2a_call(
                     context_id=context_id,
                     method=_FALLBACK_METHOD,
                     role=_ROLE_USER_V03,
+                    timeout=timeout,
                 )
             except Exception as e:
                 return f"Error: call to {url} failed — {e}."
