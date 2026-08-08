@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 
 import pytest
 
@@ -285,6 +286,91 @@ def test_task_engine_has_no_scheduling_tools(tmp_path, monkeypatch):
     assert "create_scheduled_task" not in names
     assert "update_scheduled_task" not in names
     assert "write_file" in names  # the deliverable tools are still there
+
+
+def test_scheduled_task_can_write_to_desktop(tmp_path, monkeypatch):
+    """Regression: a scheduled (AUTO) task told to drop a deliverable on the Desktop must be
+    able to write there. The permission engine's write-path gate runs in ALL modes — including
+    AUTO — so without the user's drop folders in the writable roots even an AUTO run is denied
+    with 'path is not in a writable directory'."""
+    from coworker.providers import (
+        AssistantTurn as _AT,
+        ModelCapabilities,
+        ProviderClient,
+    )
+    from coworker.server import SessionManager
+
+    class _Provider(ProviderClient):
+        def complete(self, *, model, messages, tools=None, **settings):
+            return _AT(text="ok", finish_reason="stop")
+
+        def capabilities(self, model):
+            return ModelCapabilities()
+
+    monkeypatch.setenv("COWORKER_STATE_DIR", str(tmp_path / "state"))
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    manager = SessionManager(data_dir=tmp_path / "data", provider=_Provider())
+    task = _task(workspace=str(ws), agent="cowork")
+    manager.task_store.save(task)
+
+    engine = manager._build_task_engine(task, session_id="__run__test")
+
+    # The user's drop folders must be present as WRITABLE roots (when they exist here).
+    root_paths = {str(r.path): r.writable for r in engine.permissions.roots}
+    for drop in ("Desktop", "Documents", "Downloads"):
+        d = Path.home() / drop
+        if d.is_dir():
+            assert root_paths.get(str(d)) is True, f"{drop} must be a writable root"
+
+    # And the write-path gate must actually permit a Desktop deliverable.
+    desktop = Path.home() / "Desktop"
+    if desktop.is_dir():
+        decision = engine.permissions.evaluate(
+            "write_file", {"path": str(desktop / "article.md")}
+        )
+        assert decision.allowed, decision.reason
+        assert "writable directory" not in decision.reason
+
+
+def test_scheduled_task_honors_declared_write_target(tmp_path, monkeypatch):
+    """A write target the user declared on the task's consent card (e.g. write_file → a custom
+    folder) must also become a writable root, so the path gate honors the approved grant."""
+    from coworker.providers import (
+        AssistantTurn as _AT,
+        ModelCapabilities,
+        ProviderClient,
+    )
+    from coworker.server import SessionManager
+
+    class _Provider(ProviderClient):
+        def complete(self, *, model, messages, tools=None, **settings):
+            return _AT(text="ok", finish_reason="stop")
+
+        def capabilities(self, model):
+            return ModelCapabilities()
+
+    monkeypatch.setenv("COWORKER_STATE_DIR", str(tmp_path / "state"))
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    out_dir = tmp_path / "custom_out"
+    out_dir.mkdir()
+    manager = SessionManager(data_dir=tmp_path / "data", provider=_Provider())
+    task = _task(
+        workspace=str(ws),
+        agent="cowork",
+        always_allowed_tools=[f"write_file {out_dir}"],
+    )
+    manager.task_store.save(task)
+
+    engine = manager._build_task_engine(task, session_id="__run__test")
+    root_paths = {str(r.path): r.writable for r in engine.permissions.roots}
+    assert root_paths.get(str(out_dir)) is True
+
+    decision = engine.permissions.evaluate(
+        "write_file", {"path": str(out_dir / "chapter1.md")}
+    )
+    assert decision.allowed, decision.reason
 
 
 async def test_manual_run_prepare_and_finalize(tmp_path, monkeypatch):

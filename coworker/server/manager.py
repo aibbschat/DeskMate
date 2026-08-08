@@ -2735,6 +2735,62 @@ class SessionManager:
 
         return approver
 
+    def _scheduled_write_roots(self, task) -> list:
+        """Writable roots for a scheduled task's engine.
+
+        The permission engine's write-path gate (permissions.py) runs in EVERY mode,
+        including AUTO — a write is denied unless its path lands in a writable root.
+        `_build_task_engine` never passed `roots`, so the engine fell back to a single
+        writable root = the workspace. Any deliverable the user asked an automation to
+        drop on the Desktop (a common "so I can find it" target) was therefore blocked
+        with "path is not in a writable directory", even though the run was AUTO and
+        already approved at creation.
+
+        Fix: extend the writable set to (a) the user's standard drop folders
+        (Desktop / Documents / Downloads) and (b) any explicit write target the task's
+        consent card already surfaced + the human approved. All are the user's own local
+        folders, so this only aligns the file tools with what AUTO already permits for
+        shell redirection. Hard floors (CRITICAL governance denials) still apply.
+        """
+        from ..automation.models import rule_parts
+        from ..risk import WRITE_TOOLS
+
+        ws = Path(task.workspace).expanduser().resolve()
+        roots: list = [RootDir(path=ws, writable=True, label="workspace")]
+        # User-owned output folders a scheduled task may legitimately deliver into.
+        for d in (Path.home() / "Desktop", Path.home() / "Documents", Path.home() / "Downloads"):
+            try:
+                rd = d.expanduser().resolve()
+            except Exception:
+                continue
+            if rd.is_dir():
+                roots.append(RootDir(path=rd, writable=True, label=d.name))
+        # Honor explicit write grants declared on the task (e.g. write_file → ~/Desktop/x.md):
+        # the consent card already surfaced these exact targets and the human approved them.
+        for entry in task.always_allowed_tools or []:
+            tool, target = rule_parts(entry)
+            if tool in WRITE_TOOLS and target:
+                p = Path(target).expanduser()
+                if not p.is_absolute():
+                    p = ws / p
+                try:
+                    p = p.resolve()
+                except Exception:
+                    continue
+                parent = p if p.is_dir() else p.parent
+                if parent.is_dir() and parent != ws:
+                    roots.append(RootDir(path=parent, writable=True, label=parent.name))
+        # De-duplicate by resolved path (keep first), preserving the workspace as index 0.
+        seen: set[str] = set()
+        deduped: list = []
+        for r in roots:
+            key = str(r.path)
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(r)
+        return deduped
+
     def _seed_task_permissions(self, engine: TurnEngine, task) -> None:
         """Apply a task's standing allowances to an engine: target-bound rules feed the
         permission engine's matcher (connector tools included — the target binding is the
@@ -2746,6 +2802,12 @@ class SessionManager:
     def _build_task_engine(self, task, *, session_id: str) -> TurnEngine:
         ag = get_agent(task.agent)
         Path(task.workspace).mkdir(parents=True, exist_ok=True)
+        # Scheduled runs own the workspace as the primary writable root, plus the user's
+        # common drop folders (Desktop / Documents / Downloads) and any write target the task
+        # declared on its consent card — so an automation told to deliver an article to the
+        # Desktop can actually write there (the permission engine's write-path gate at
+        # permissions.py runs in ALL modes, including AUTO).
+        roots = self._scheduled_write_roots(task)
         engine = build_engine(
             agent=ag,
             workspace=task.workspace,
@@ -2767,6 +2829,7 @@ class SessionManager:
             # task, and instructions that mention timing ("every day at 5:32pm…") otherwise tempt
             # it to create another automation instead of running this one.
             task_store=None,
+            roots=roots,
             session_id=session_id,
             audit_sink=self.audit_store.append,
             # Scheduled runs respect the same per-session connection hierarchy as live sessions:
