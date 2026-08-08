@@ -147,14 +147,24 @@ def _run_read_book(mp: str, emit) -> None:
 
 
 def create_app(rt_port: int = 9920) -> FastAPI:
-    opencode_peer_url = f"http://localhost:{rt_port}/opencode-a2a"
+    # 挂入主 app 时 rt_port 默认 9920，但实际端口与挂载前缀均由 COWORKER_PORT 语境决定：
+    # - 主 app（run.py 起 sidecar）会设置 COWORKER_PORT，并把本 app 整块挂到 /roundtable 下，
+    #   此时 opencode-a2a 的完整路径是 /roundtable/opencode-a2a，Agent Card 的
+    #   supportedInterfaces 必须填真实可连地址，否则 A2A 客户端按 card 里的地址去连会撞上空端口。
+    # - 独立运行（python -m deskmate.roundtable.web）时 COWORKER_PORT 未设置，挂在根 /，
+    #   opencode-a2a 就在 /opencode-a2a，地址不带 /roundtable 前缀。
+    # - host 固定用 127.0.0.1：sidecar 只绑定 IPv4 回环，advertise localhost 会被解析成 ::1
+    #   导致 A2A 客户端（IPv6 优先）连不上。
+    actual_port = int(os.environ.get("COWORKER_PORT") or rt_port)
+    mount = "/roundtable" if os.environ.get("COWORKER_PORT") else ""
+    opencode_peer_url = f"http://127.0.0.1:{actual_port}{mount}/opencode-a2a"
     app = FastAPI(title="创作圆桌")
 
     # 把 opencode A2A 适配层挂到 /opencode-a2a：单进程即可让 OpenCode 成为 peer。
     try:
         from coworker.server.opencode_a2a_server import build_app as build_opencode_app
 
-        oc_app = build_opencode_app(f"http://localhost:{rt_port}/opencode-a2a")
+        oc_app = build_opencode_app(opencode_peer_url)
         app.mount("/opencode-a2a", oc_app)
         logger.info("opencode A2A 已挂载于 /opencode-a2a (peer=%s)", opencode_peer_url)
     except Exception as exc:  # noqa: BLE001
