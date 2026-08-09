@@ -187,14 +187,21 @@ def _build_ollama(profile: dict[str, Any], secrets: Any) -> ProviderClient:
 
 
 def _build_omniroute(profile: dict[str, Any], secrets: Any) -> ProviderClient:
-    # OmniRoute is a local OpenAI-compatible gateway (default localhost:20128). Its built-in
-    # keyless free providers answer with `model: "auto"` and no API key, so a fresh install
-    # works out of the box. The SDK still needs a non-empty key string, so we pass a harmless
-    # placeholder; if the user enabled OmniRoute's dashboard password they paste the real key,
-    # which we forward as Bearer. `base_url` comes from the stored profile (or the default).
-    base_url = _normalize_ollama_url((profile or {}).get("base_url")) or "http://localhost:20128/v1"
+    # OmniRoute is a local OpenAI-compatible gateway (default http://localhost:20128/v1). Its
+    # built-in keyless free providers answer with `model: "auto"` and no API key, so a fresh
+    # install works out of the box. The SDK still needs a non-empty key string, so we pass a
+    # harmless placeholder; if the user enabled OmniRoute's dashboard password they paste the
+    # real key, which we forward as Bearer.
+    base_url = ((profile or {}).get("base_url") or "").strip() or "http://localhost:20128/v1"
     api_key = ((profile or {}).get("api_key") or "").strip() or "omniroute"
-    return OpenAIProvider(api_key=api_key, base_url=base_url, secrets=secrets)
+    # CRITICAL: OmniRoute is a loopback service. Disable proxy env vars (HTTP_PROXY/HTTPS_PROXY)
+    # so a system proxy never hijacks the localhost connection — otherwise the desktop app gets
+    # "Connection error" whenever a proxy is configured in its environment.
+    import httpx
+    from openai import OpenAI
+
+    client = OpenAI(api_key=api_key, base_url=base_url, http_client=httpx.Client(trust_env=False))
+    return OpenAIProvider(client=client)
 
 
 def _openai_compat(vendor: str, default_base_url: str, env_key: Optional[str] = None):
@@ -892,14 +899,15 @@ def verify_provider_key(
                 resp = httpx.post(
                     base + "/chat/completions",
                     headers={"Authorization": f"Bearer {key}"} if key else {},
-                    json={
-                        "model": "auto",
-                        "messages": [{"role": "user", "content": "hi"}],
-                        "max_tokens": 2,
-                        "stream": False,
-                    },
-                    timeout=timeout,
-                )
+                json={
+                    "model": "auto",
+                    "messages": [{"role": "user", "content": "hi"}],
+                    "max_tokens": 2,
+                    "stream": False,
+                },
+                timeout=timeout,
+                trust_env=False,
+            )
             except Exception as exc:
                 return {
                     "ok": False,
