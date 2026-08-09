@@ -688,7 +688,13 @@
         st.body.textContent = "";
       }
       st.body.textContent = full;          // 以最终完整文本为准（覆盖重试/空失败片段）
+      // 核心修复：谁先完成谁移到底部，保证DOM顺序 = 完成顺序，先答复在上、后答复在下
+      // 符合真实聊天：谁先说出来谁排在前面，不会出现"先出答案还要往上划"
+      const chat = $("chat");
+      chat.removeChild(st.row);
+      chat.appendChild(st.row);
       delete streams[d.turn_id];
+      scroll();
     }
     // 累积讨论文本，供续聊回传（与 addTurn 保持一致）
     const t = d.round === 0 ? "开场" : ("第" + d.round + "轮");
