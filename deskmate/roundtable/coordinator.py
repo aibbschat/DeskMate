@@ -49,6 +49,20 @@ class Turn:
 
 
 @dataclass
+class StoryContext:
+    """圆桌每轮注入的全局理解上下文 + 可观测的检索轨迹。
+
+    对应 OpenViking 的 L0/L1/L2 分层加载思路，但为纯加法、不改动取数逻辑：
+    - L0：一句话总览（圣经统计量 + 主线首句），零 LLM，永远注入；
+    - L1：四份圣经结构化概览（即原 _bible_summary 行为，预算默认不变以保幻觉护栏）；
+    - L2：按需加载（仅议题/分歧点明确提及的实体深度上下文），不提及则不取。
+    trace 仅用于可观测（前端检索轨迹面板 / 调试），不影响 prompt 内容。
+    """
+    text: str = ""
+    trace: dict = field(default_factory=dict)
+
+
+@dataclass
 class PeerSpec:
     name: str
     url: str
@@ -67,6 +81,7 @@ class RoundtableResult:
     peers_online: list[str]
     peers_offline: list[str]
     rounds_held: int
+    traces: list[dict] = field(default_factory=list)
 
     def to_markdown(self) -> str:
         out: list[str] = [f"# 创作圆桌纪要：{self.topic}", ""]
@@ -82,6 +97,21 @@ class RoundtableResult:
             out.append("")
             out.append(t.text)
             out.append("")
+        if self.traces:
+            out.append("")
+            out.append("## 检索轨迹（可观测）")
+            for tr in self.traces:
+                layers = "+".join(l.get("layer", "") for l in tr.get("layers", [])) or "-"
+                l2 = "、".join(tr.get("l2_entities", []))
+                line = f"- R{tr.get('round')}：层级 {layers}"
+                if tr.get("fts5_query"):
+                    q = tr["fts5_query"]
+                    line += f"；FTS5「{q[:30]}{'…' if len(q) > 30 else ''}」"
+                if tr.get("fts5_fallback"):
+                    line += f"（兜底：{('、'.join(tr['fts5_fallback']))}）"
+                if l2:
+                    line += f"；按需 L2：{l2}"
+                out.append(line)
         return "\n".join(out)
 
 
@@ -116,6 +146,9 @@ class Roundtable:
         # 稿件来源路径（文件/目录/书稿名）：用于读取圣经与全书 FTS5 检索，不传则只注入正文
         self.manuscript_path = (manuscript_path or "").strip()
         self.chapter_range = (chapter_range or "").strip()
+        # L1 预算（即原 _bible_summary 截断长度，默认 4000 与旧行为一致，保幻觉护栏）。
+        # 想更激进省 token 可调小，但会削弱「全书前情概览」覆盖，属权衡项、非默认。
+        self.bible_l1_budget: int = 4000
         # 圣经懒加载缓存
         self._bible_cache: Optional[dict] = None
         self._bible_loaded: bool = False
@@ -225,7 +258,94 @@ class Roundtable:
                 out.append(nm)
         return out[:n]
 
-    async def _fts5_recall(self, query: str, max_results: int = 6, max_chars: int = 1800) -> str:
+    def _bible_l0_header(self) -> str:
+        """L0 层：一句话总览（结构化圣经统计量 + 主线首句）。零 LLM、永远注入。
+
+        作用：给人格一个「这本书大概讲什么、有哪些主要人物关系」的入场锚点，
+        比直接铺开四份圣经更易把握前情；同时不花 token 做生成。
+        """
+        bible = self._load_bible()
+        if not bible:
+            return ""
+        # 用实体库统计（已核验/待确认），不重新解析 markdown
+        try:
+            from deskmate.novel_memory.core import bible_stats
+            st = bible_stats(self.manuscript_path)
+        except Exception:
+            st = {}
+        nc = st.get("character.confirmed", 0) + st.get("character.pending", 0)
+        nr = st.get("relation.confirmed", 0) + st.get("relation.pending", 0)
+        outline = (bible.get("OUTLINE") or "").strip()
+        first = ""
+        for ln in outline.splitlines():
+            ln = ln.strip()
+            if ln and not ln.startswith("#") and not ln.startswith("<!--"):
+                first = ln.lstrip("- ").strip()
+                if first:
+                    break
+        head = f"📚 设定圣经（结构化·逐条引证核验）：本作角色 {nc} 人、关系 {nr} 条"
+        if first:
+            head += f"；主线：{first}"
+        return head + "。"
+
+    def _character_bible_entry(self, name: str) -> str:
+        """从圣经 CHARACTERS 段提取某角色的整条概要行（含引证子项），用于 L2 按需加载。"""
+        bible = self._load_bible()
+        if not bible:
+            return ""
+        chars = bible.get("CHARACTERS", "")
+        m = re.search(
+            r"^###\s*人物（本作角色）\s*$(.*?)(?=^### |\Z)",
+            chars, re.MULTILINE | re.DOTALL,
+        )
+        block = m.group(1) if m else chars
+        for ln in block.splitlines():
+            s = ln.strip()
+            if s.startswith(f"- **{name}**") or s.startswith(f"- {name}：") \
+                    or (f"**{name}**" in s and s.startswith("-")):
+                return s
+        return ""
+
+    async def _bible_l2_for(self, query: str) -> tuple[str, list[str]]:
+        """L2 层：按需加载——仅当议题/分歧点明确提及某个已知实体时，取其深度上下文。
+
+        返回 (l2_text, loaded_names)。不提及任何已知实体则返回 ("", [])，此时不取任何
+        深度内容（对应 OpenViking「不提及就不加载 L2」的省 token 思路）。
+
+        loaded_names 供检索轨迹观测。深度上下文 = 该角色在圣经里的整条概要 + 全书相关片段。
+        """
+        bible = self._load_bible()
+        if not bible or not query:
+            return "", []
+        names = self._bible_character_names(20)
+        hits = [n for n in names if n and n in query]
+        if not hits:
+            return "", []
+        parts: list[str] = []
+        loaded: list[str] = []
+        for n in hits[:3]:  # 至多 3 个实体，避免上下文膨胀
+            entry = self._character_bible_entry(n)
+            try:
+                frag, _ = await self._fts5_recall(n, max_results=3, max_chars=1200)
+            except Exception:
+                frag = ""
+            block_lines = []
+            if entry:
+                block_lines.append(entry)
+            if frag:
+                block_lines.append(f"【{n} 全书相关片段】\n{frag}")
+            if block_lines:
+                parts.append("\n".join(block_lines))
+                loaded.append(n)
+        if not parts:
+            return "", []
+        text = (
+            "【L2 深度上下文·按需加载】（仅议题/分歧点明确提及的实体，避免无差别铺开全书）\n"
+            + "\n\n".join(parts)
+        )
+        return text, loaded
+
+    async def _fts5_recall(self, query: str, max_results: int = 6, max_chars: int = 1800) -> tuple[str, list[str]]:
         """全书按需检索（P0-3）：按议题/分歧点召回全书相关片段，补充前情与伏笔呼应。
 
         实现用 novel_memory 的正则关键词检索（_keyword_recall）：对中文更可靠
@@ -234,10 +354,14 @@ class Roundtable:
 
         议题式查询（如「人物关系铺垫」）在原文里往往不是连续子串，会落空；
         此时自动改用人名（圣经主角，必现于正文）检索，保证真实返回正文片段。
+
+        Returns:
+            (recall_text, fallback_names)：recall_text 为正文片段（可能为空串）；
+            fallback_names 为「议题落空、改用主角名检索兜底」用到的名字列表（供检索轨迹观测）。
         """
         mp = self.manuscript_path
         if not mp or not Path(mp).expanduser().exists():
-            return ""
+            return "", []
 
         def _search(q: str) -> str:
             from deskmate.novel_memory.core import keyword_recall
@@ -252,9 +376,10 @@ class Roundtable:
             recall = _clean(await asyncio.to_thread(_search, query))
         except Exception as exc:
             logger.warning("FTS5 检索失败: %s", exc)
-            return ""
+            return "", []
         # 议题落空 -> 优先用「议题中出现过的圣经人物名」检索（文学讨论往往围绕某角色，
         # 且该角色名必现于正文）；否则退而求其次用前若干主角名逐个试，取首个有正文片段者。
+        fallback: list[str] = []
         if not recall:
             all_names = self._bible_character_names(20)
             topic_names = [n for n in all_names if n and n in query]
@@ -266,37 +391,87 @@ class Roundtable:
                     r = ""
                 if r:
                     recall = r
+                    fallback.append(nm)
                     break
         if not recall:
-            return ""
+            return "", []
         if len(recall) > max_chars:
             recall = recall[:max_chars] + "\n…（检索片段较长，已截断）"
-        return recall
+        return recall, fallback
 
-    async def _build_story_context(self, round_no: int, divergence_query: str = "") -> str:
-        """组装全局理解上下文：宏观摘要 + 当前章原文(不截断) + 全书检索片段(按需)。"""
+    async def _build_story_context(self, round_no: int, divergence_query: str = "") -> "StoryContext":
+        """组装全局理解上下文（L0/L1/L2 分层），并返回可观测的检索轨迹。
+
+        - L0：一句话总览（_bible_l0_header，零 LLM，永远注入）；
+        - L1：四份圣经结构化概览（即原 _bible_summary 行为，预算默认不变以保幻觉护栏）；
+        - 当前章原文（不截断）；
+        - 全书检索（按需）：第1轮按议题，后续轮按分歧点；
+        - L2：按需加载（仅议题/分歧点明确提及的实体深度上下文，_bible_l2_for）。
+        """
         parts: list[str] = []
-        bible = self._bible_summary()
+        trace_layers: list[dict] = []
+
+        # L0：一句话总览（结构化圣经统计量 + 主线首句），纯加法、零 LLM
+        l0 = self._bible_l0_header()
+        if l0:
+            parts.append(l0)
+            trace_layers.append({
+                "layer": "L0", "kind": "bible_header", "chars": len(l0),
+                "note": "一句话总览：本作角色数/关系数/主线",
+            })
+
+        # L1：四份圣经结构化概览（现有行为，默认截断预算不变，保幻觉护栏）
+        bible = self._bible_summary(self.bible_l1_budget)
         if bible:
             parts.append(
                 "【设定圣经·宏观摘要】（全书人物/情节/时间线/伏笔总览，帮助你把握前情，"
                 "不局限于当前章）\n" + bible
             )
+            trace_layers.append({
+                "layer": "L1", "kind": "bible_summary", "chars": len(bible),
+                "note": f"四份圣经概览（已截断至 {self.bible_l1_budget} 字，含防幻觉护栏声明）",
+            })
+
+        # 当前章原文（不截断）
         chapter = self._current_chapter_text()
         if chapter:
             parts.append(
                 "【当前评审章节原文】（完整，未截断，请严格基于真实文本发言，勿编造文中没有的内容）\n"
                 + chapter
             )
+
         # 全书检索（按需）：第1轮按议题，后续轮按分歧点
+        fts5_query = ""
+        fts5_chars = 0
+        fts5_fallback: list[str] = []
         if self.manuscript_path:
-            query = divergence_query or self.topic
-            recall = await self._fts5_recall(query)
+            fts5_query = divergence_query or self.topic
+            recall, fts5_fallback = await self._fts5_recall(fts5_query)
             if recall:
                 parts.append(
                     "【全书相关片段（按议题检索所得，补充前情与伏笔呼应）】\n" + recall
                 )
-        return "\n\n".join(parts)
+                fts5_chars = len(recall)
+
+        # L2：按需加载（仅议题/分歧点明确提及的实体，深度上下文）
+        l2_text, l2_names = await self._bible_l2_for(divergence_query or self.topic)
+        if l2_text:
+            parts.append(l2_text)
+            trace_layers.append({
+                "layer": "L2", "kind": "entity_deep", "chars": len(l2_text),
+                "note": "按需加载：议题/分歧点提及的实体深度上下文（圣经条目+全书片段）",
+            })
+
+        text = "\n\n".join(parts)
+        trace = {
+            "round": round_no,
+            "layers": trace_layers,
+            "fts5_query": fts5_query,
+            "fts5_chars": fts5_chars,
+            "fts5_fallback": fts5_fallback,
+            "l2_entities": l2_names,
+        }
+        return StoryContext(text=text, trace=trace)
 
     def _manuscript_block(self, max_chars: int = 24000) -> str:
         """兜底：无稿件路径时，直接把 manuscript_text 截断注入（保留旧行为）。"""
@@ -534,7 +709,9 @@ class Roundtable:
 
         # 开场（主持流式）
         await out_q.put({"type": "speaking", "round": 0, "speaker": "桌搭（主持）", "role": "host", "kind": "host"})
-        opening_ctx = await self._build_story_context(0, "")
+        sc0 = await self._build_story_context(0, "")
+        await out_q.put({"type": "context_trace", "round": 0, "trace": sc0.trace})
+        opening_ctx = sc0.text
         opening = await self._stream_turn(
             out_q, turn_id="host-open", round_no=0, speaker="桌搭（主持）", role="host", kind="host",
             gen_factory=lambda: self._stream_host(
@@ -553,7 +730,9 @@ class Roundtable:
             await out_q.put({"type": "round_start", "round": r})
             # 构造本轮全局理解上下文（宏观摘要 + 当前章全文 + 全书检索片段）
             div_query = "\n".join(divergences) if r > 1 else ""
-            story_block = await self._build_story_context(r, div_query)
+            sc = await self._build_story_context(r, div_query)
+            await out_q.put({"type": "context_trace", "round": r, "trace": sc.trace})
+            story_block = sc.text
 
             # 发言前先广播"思考中"
             for p in self.personas:
@@ -634,6 +813,7 @@ class Roundtable:
         rounds_held = 0
         divergences: list[str] = []
         synthesis = ""
+        traces: list[dict] = []
         async for ev in self.run_stream():
             t = ev["type"]
             if t == "turn":
@@ -649,6 +829,8 @@ class Roundtable:
             elif t == "peers":
                 online = [PeerSpec(n, "") for n in ev["online"]]
                 offline = ev["offline"]
+            elif t == "context_trace":
+                traces.append(ev["trace"])
             elif t == "done":
                 rounds_held = ev["rounds_held"]
                 divergences = ev["divergences"]
@@ -663,6 +845,7 @@ class Roundtable:
             peers_online=[p.name for p in online],
             peers_offline=offline,
             rounds_held=rounds_held,
+            traces=traces,
         )
 
 

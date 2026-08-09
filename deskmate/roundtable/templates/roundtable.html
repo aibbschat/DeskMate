@@ -107,6 +107,21 @@
   }
   .legend code { background: var(--border-subtle); padding: 1px 4px; border-radius: 3px; color: var(--ink-muted); font-size: 10px; }
 
+  /* ── 检索轨迹面板 ── */
+  .tracedl { margin-top: 12px; border-top: 1px solid var(--border-subtle); padding-top: 10px; }
+  .tracedl > summary {
+    font-size: 11px; color: var(--ink-secondary); cursor: pointer; font-weight: 600;
+    user-select: none; list-style: none; display: flex; align-items: center; gap: 6px;
+  }
+  .tracedl > summary::-webkit-details-marker { display: none; }
+  .tracedl > summary::before { content: "🔍"; }
+  .tracelog { margin-top: 8px; display: flex; flex-direction: column; gap: 6px; max-height: 220px; overflow-y: auto; }
+  .traceitem {
+    border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px;
+    background: var(--surface-dim); font-size: 10.5px; color: var(--ink-secondary); line-height: 1.5;
+  }
+  .traceitem b { color: var(--accent-hover); }
+
   /* 展开悬浮按钮 */
   .expand-fab {
     position: fixed; bottom: 78px; left: 16px; z-index: 30; display: none; align-items: center; gap: 6px;
@@ -375,6 +390,11 @@
       到达序发言 · 桌搭主持串场 · 收窄式有界多轮<br/>
       外部 peer 经 A2A 探活，离线自动跳过
     </div>
+
+    <details class="tracedl" id="traceDl">
+      <summary>检索轨迹</summary>
+      <div class="tracelog" id="traceLog"></div>
+    </details>
   </aside>
 
   <!-- 第二层 · A：人格设定 -->
@@ -501,6 +521,25 @@
   function esc(s) {
     return String(s == null ? "" : s)
       .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  }
+  // 检索轨迹：把每轮 context_trace 事件渲染成可折叠面板里的一行，便于核对
+  // "这轮到底喂了哪些上下文、走没走 FTS5 兜底、有没有按需拉 L2"，黑盒变白盒。
+  function addTrace(d) {
+    const log = $("traceLog");
+    if (!log) return;
+    const t = d.trace || {};
+    const layers = (t.layers || []).map(l => l.layer).join("+") || "-";
+    const l2 = (t.l2_entities || []).join("、");
+    const q = t.fts5_query || "";
+    let html = `<b>R${d.round}</b> 层级 ${esc(layers)}`;
+    if (q) html += ` ｜ FTS5「${esc(q.length > 36 ? q.slice(0, 36) + "…" : q)}」`;
+    if (t.fts5_chars) html += `（${t.fts5_chars}字）`;
+    if (t.fts5_fallback && t.fts5_fallback.length) html += ` ｜ 兜底：${esc(t.fts5_fallback.join("、"))}`;
+    if (l2) html += ` ｜ 按需L2：${esc(l2)}`;
+    const item = document.createElement("div");
+    item.className = "traceitem";
+    item.innerHTML = html;
+    log.prepend(item);
   }
   function styleFor(name) {
     const b = BASE.find(m => m.name === name);
@@ -653,6 +692,7 @@
       case "turn": addTurn(d); break;
       case "info": addSystem(d.text); break;
       case "done": finish(d); break;
+      case "context_trace": addTrace(d); break;
     }
   }
 
@@ -730,7 +770,7 @@
     $("liveDot").style.background = "var(--accent)";
     $("liveDot").style.boxShadow = "0 0 0 3px rgba(7,193,96,.18)";
 
-    if (opts.clear) { $("chat").innerHTML = ""; $("roster").innerHTML = ""; }
+    if (opts.clear) { $("chat").innerHTML = ""; $("roster").innerHTML = ""; const tl = $("traceLog"); if (tl) tl.innerHTML = ""; }
     if (opts.followupText) addDividerNote("用户追问：" + opts.followupText);
 
     const ctxParam = opts.followupText
