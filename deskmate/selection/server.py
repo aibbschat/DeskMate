@@ -1,7 +1,9 @@
 """划词适配器服务器：OpenAI 兼容代理 + 搜索动作注入。
 
-对外固定端口（默认 18795），CORS 放开（仅本地浏览器扩展调用），把请求转发到
-真实 sidecar 并补上 ``x-openworker-token``。搜索动作通过哨兵前缀识别后注入联网检索结果。
+对外固定端口（默认 18795），CORS 放开（仅本地浏览器扩展调用）。划词是偶发单轮任务，
+**默认走 OmniRoute 本机免费模型**（免密钥、不烧付费额度）；仅当用户显式指定
+``deepseek``/``mimo`` 等付费短名时才转发到 sidecar 付费模型。搜索动作通过哨兵前缀
+识别后注入联网检索结果。
 """
 from __future__ import annotations
 
@@ -19,10 +21,20 @@ from .discovery import resolve_sidecar
 # 客户端自定义 prompt 以该前缀开头时，视为「联网搜索」动作。
 SEARCH_SENTINEL = "【联网搜索】"
 
-# 模型名归一化：OpenAI Translator 等客户端只认 "gpt-4"/"deepseek-chat" 这类短名，
-# 而 sidecar 的 provider_complete 需要 "provider:model" 全名（或不填用默认）。
-# 这里做一层友好别名映射；未知短名直接丢弃，让 sidecar 回落到默认模型。
+# 模型路由：划词是偶发单轮任务，默认走 OmniRoute 本机免费模型（免密钥、不烧付费额度）。
+# 仅当用户显式指定 deepseek/mimo 等付费短名时才走 sidecar 付费模型。
+OMNIROUTE_BASE = os.environ.get(
+    "DESKMATE_OMNIROUTE_BASE", "http://127.0.0.1:20128/v1"
+)
+OMNIROUTE_KEY = "omniroute"  # OmniRoute 免密钥占位 key
+FREE_MODEL = "auto"  # OmniRoute 免费档 model
+
+# 短名别名 -> "provider:model" 全名（走 sidecar 付费）或 "omniroute:*" 标记（走免费网关）。
+# 未知短名（如 gpt-4）回落免费模型，避免误烧付费额度。
 _MODEL_ALIASES = {
+    "free": "omniroute:auto",
+    "auto": "omniroute:auto",
+    "omniroute": "omniroute:auto",
     "deepseek-chat": "deepseek:deepseek-v4-flash",
     "deepseek": "deepseek:deepseek-v4-flash",
     "deepseek-v4-flash": "deepseek:deepseek-v4-flash",
@@ -32,12 +44,26 @@ _MODEL_ALIASES = {
 }
 
 
-def _normalize_model(model) -> Optional[str]:
+def _resolve_target(model):
+    """返回 ``(target, model_name)``。
+
+    - ``target="free"``    -> 直连 OmniRoute 免费网关（model=auto，免密钥）
+    - ``target="sidecar"`` -> 转发到 sidecar（provider:model 全名或回落其默认模型）
+    """
     if not model:
-        return None
-    if ":" in str(model):  # 已是 provider:model 全名
-        return str(model)
-    return _MODEL_ALIASES.get(str(model).strip().lower())
+        return ("free", FREE_MODEL)
+    s = str(model).strip().lower()
+    if ":" in s:
+        prov, _, m = s.partition(":")
+        if prov == "omniroute":
+            return ("free", m or FREE_MODEL)
+        return ("sidecar", s)
+    full = _MODEL_ALIASES.get(s)
+    if full is None:
+        return ("free", FREE_MODEL)  # 未知短名 -> 免费兜底
+    if full.startswith("omniroute:"):
+        return ("free", full.split(":", 1)[1])
+    return ("sidecar", full)
 
 # 注入点：单元测试用 httpx.MockTransport 替换，避免依赖真实 sidecar。
 _client: Optional[httpx.AsyncClient] = None
@@ -97,9 +123,9 @@ def build_app() -> FastAPI:
             payload = {
                 "messages": _build_messages(action, text, target_lang),
             }
-        norm = _normalize_model(body.get("model"))
-        if norm:
-            payload["model"] = norm
+        norm = _resolve_target(body.get("model"))
+        if norm[0] != "free":
+            payload["model"] = norm[1]
         out = await _complete_text(payload)
         return {"action": action, "result": out}
 
@@ -119,18 +145,29 @@ async def _proxy_chat(req: Request) -> Response:
     if _detect_search_sentinel(payload):
         payload = await _inject_web_search(payload)
 
-    norm = _normalize_model(payload.get("model"))
-    if norm:
-        payload["model"] = norm
-    else:
-        payload.pop("model", None)  # 回落 sidecar 默认模型
+    target, model = _resolve_target(payload.get("model"))
+    payload["model"] = model
+    want_stream = bool(payload.get("stream"))
 
-    port, token = resolve_sidecar()
-    upstream = f"http://127.0.0.1:{port}/v1/chat/completions"
-    headers = {"x-openworker-token": token, "content-type": "application/json"}
+    if target == "free":
+        # OmniRoute 免费档不真正流式；适配器统一取全量再包标准 SSE 帧。
+        upstream = f"{OMNIROUTE_BASE}/chat/completions"
+        headers = {
+            "authorization": f"Bearer {OMNIROUTE_KEY}",
+            "content-type": "application/json",
+        }
+    else:
+        port, token = resolve_sidecar()
+        upstream = f"http://127.0.0.1:{port}/v1/chat/completions"
+        headers = {"x-openworker-token": token, "content-type": "application/json"}
+
+    # 免费档网关与 sidecar 都不真正流式（无论 stream 都回完整 JSON），而 OpenAI Translator
+    # 等客户端开启流式时期待 SSE 帧。这里统一取全量再包成标准 OpenAI SSE 帧（代价是失去
+    # 逐字增量显示），保证任何客户端都能解析。
+    payload["stream"] = False
     body = json.dumps(payload, ensure_ascii=False)
 
-    if not payload.get("stream"):
+    if not want_stream:
         r = await get_client().post(upstream, content=body, headers=headers)
         return Response(
             content=r.content,
@@ -138,9 +175,6 @@ async def _proxy_chat(req: Request) -> Response:
             media_type=r.headers.get("content-type", "application/json"),
         )
 
-    # sidecar 的 /v1/chat/completions 不真正流式（无论 stream 都回完整 JSON），
-    # 而 OpenAI Translator 等客户端开启流式时期待 SSE 帧。这里统一取全量再包成
-    # 标准 OpenAI SSE 帧，保证任何客户端都能解析（代价是失去逐字增量显示）。
     async def gen():
         r = await get_client().post(upstream, content=body, headers=headers)
         if r.status_code != 200:
@@ -164,11 +198,19 @@ async def _proxy_chat(req: Request) -> Response:
 
 
 async def _complete_text(payload: dict) -> str:
-    """非流式调用 sidecar，从 OpenAI 格式响应里抽出纯文本。"""
-    port, token = resolve_sidecar()
-    upstream = f"http://127.0.0.1:{port}/v1/chat/completions"
-    payload = {**payload, "stream": False}
-    headers = {"x-openworker-token": token, "content-type": "application/json"}
+    """非流式调用，从 OpenAI 格式响应里抽出纯文本。默认走免费模型。"""
+    target, model = _resolve_target(payload.get("model"))
+    payload = {**payload, "stream": False, "model": model}
+    if target == "free":
+        upstream = f"{OMNIROUTE_BASE}/chat/completions"
+        headers = {
+            "authorization": f"Bearer {OMNIROUTE_KEY}",
+            "content-type": "application/json",
+        }
+    else:
+        port, token = resolve_sidecar()
+        upstream = f"http://127.0.0.1:{port}/v1/chat/completions"
+        headers = {"x-openworker-token": token, "content-type": "application/json"}
     r = await get_client().post(
         upstream, content=json.dumps(payload, ensure_ascii=False), headers=headers
     )

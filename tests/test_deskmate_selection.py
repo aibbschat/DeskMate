@@ -86,6 +86,42 @@ def test_proxy_nonstream_explain(app):
         assert sent["messages"][-1]["content"] == "焚书坑儒是什么意思"
 
 
+def test_default_routes_to_free_model(app):
+    from fastapi.testclient import TestClient
+
+    application, capture = app
+    with TestClient(application) as c:
+        r = c.post(
+            "/v1/chat/completions",
+            json={
+                "stream": False,
+                "messages": [{"role": "user", "content": "焚书坑儒是什么意思"}],
+            },
+        )
+        assert r.status_code == 200
+        # 不填模型 -> 默认路由到 OmniRoute 免费模型（model=auto），不烧付费 DeepSeek
+        sent = json.loads(capture["body"])
+        assert sent["model"] == "auto"
+
+
+def test_explicit_omniroute_alias_routes_free(app):
+    from fastapi.testclient import TestClient
+
+    application, capture = app
+    with TestClient(application) as c:
+        r = c.post(
+            "/v1/chat/completions",
+            json={
+                "model": "omniroute",
+                "stream": False,
+                "messages": [{"role": "user", "content": "解释：垂帘听政"}],
+            },
+        )
+        assert r.status_code == 200
+        sent = json.loads(capture["body"])
+        assert sent["model"] == "auto"
+
+
 def test_proxy_stream_passthrough(app, monkeypatch):
     import asyncio
 
@@ -139,7 +175,10 @@ def test_proxy_stream_passthrough(app, monkeypatch):
 
     out = asyncio.run(run())
     assert "data: [DONE]" in out
-    assert json.loads(capture["body"])["stream"] is True
+    # 适配器始终以非流式请求上游（再包成 SSE），并归一化模型名为 provider:model 全名
+    sent = json.loads(capture["body"])
+    assert sent["stream"] is False
+    assert sent["model"] == "deepseek:deepseek-v4-flash"
 
 
 def test_selection_explain(app):
