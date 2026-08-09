@@ -9,6 +9,7 @@ import sys
 from pathlib import Path
 
 from ..config import load_config
+from ..orphan import _exit_when_orphaned
 from ..permissions import Mode
 from ..secrets import _load_dotenv, state_dir, write_private_text
 from .app import _WS_MAX_FRAME_BYTES, create_app
@@ -31,90 +32,6 @@ def _load_env_file() -> None:
                 os.environ[k] = v
     except Exception:
         pass  # never block startup on .env loading
-
-
-def _exit_when_orphaned() -> None:
-    """When launched as a desktop sidecar (`COWORKER_EXIT_WITH_PARENT=1`), exit if the parent
-    process dies — even on an abrupt kill (e.g. the Tauri dev watcher restarting the app, or a
-    crash) that skips the shell's graceful child-kill. Standalone `openworker-server` runs are
-    unaffected.
-
-    The GUI passes its own PID in `COWORKER_PARENT_PID`. Watching that explicit PID (not
-    getppid) is what makes this work under PyInstaller onefile, where this process is a
-    *grandchild* of the GUI — the bootloader sits in between, so getppid() points at the
-    bootloader and a re-parenting check never fires when the GUI dies (the bug that leaked
-    a server pair on every app quit).
-
-    POSIX: poll the PID with kill(pid, 0). Windows: no re-parenting semantics at all, so
-    block on a process handle and exit the moment it signals (i.e. the parent exited).
-    """
-    if os.environ.get("COWORKER_EXIT_WITH_PARENT") != "1":
-        return
-    import threading
-
-    try:
-        parent = int(os.environ.get("COWORKER_PARENT_PID") or 0)
-    except ValueError:
-        parent = 0
-    parent = parent or os.getppid()  # standalone fallback: our direct spawner
-
-    if sys.platform == "win32":
-        _watch_parent_windows(parent)
-        return
-
-    import time
-
-    original_ppid = os.getppid()
-
-    def watch() -> None:
-        while True:
-            time.sleep(1.5)
-            try:
-                os.kill(parent, 0)  # liveness probe only; signal 0 delivers nothing
-            except ProcessLookupError:
-                os._exit(0)
-            except PermissionError:
-                pass  # alive, but owned by someone else (shouldn't happen) — keep waiting
-            # Secondary signal: our direct parent died (covers PID-reuse edge cases).
-            if os.getppid() != original_ppid:
-                os._exit(0)
-
-    threading.Thread(target=watch, daemon=True).start()
-
-
-def _watch_parent_windows(parent: int) -> None:
-    """Block on a handle to the parent process; exit only when it actually terminates.
-
-    Best-effort — any failure leaves the parent's RunEvent::ExitRequested kill as the primary
-    cleanup path. Two correctness points that bit us before:
-      - `OpenProcess` returns a 64-bit HANDLE; ctypes defaults the return type to a 32-bit int,
-        which truncates the handle to garbage. Declare restype/argtypes so the handle is valid.
-      - Only `os._exit` on WAIT_OBJECT_0 (the parent genuinely died). A bad handle yields
-        WAIT_FAILED immediately — treating that as "parent died" would kill a perfectly healthy
-        server seconds after startup (exactly the freeze we saw)."""
-    import ctypes
-    import threading
-    from ctypes import wintypes
-
-    SYNCHRONIZE = 0x0010_0000
-    INFINITE = 0xFFFF_FFFF
-    WAIT_OBJECT_0 = 0x0000_0000
-
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    kernel32.OpenProcess.restype = wintypes.HANDLE
-    kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
-    kernel32.WaitForSingleObject.restype = wintypes.DWORD
-    kernel32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
-
-    handle = kernel32.OpenProcess(SYNCHRONIZE, False, parent)
-    if not handle:
-        return
-
-    def watch() -> None:
-        if kernel32.WaitForSingleObject(handle, INFINITE) == WAIT_OBJECT_0:
-            os._exit(0)
-
-    threading.Thread(target=watch, daemon=True).start()
 
 
 def build_app(workspace: str | None, model: str, mode: str):
@@ -154,6 +71,38 @@ def _ensure_api_token(port: int) -> Path | None:
     )
 
 
+def _spawn_selection_adapter(port: int) -> None:
+    """Auto-launch the DeskMate selection adapter as a child of this sidecar.
+
+    This is what makes the select-text popup (OpenAI Translator etc.) work the moment the
+    app opens — no manual ``python -m deskmate.selection`` needed. We hand the adapter our
+    live port + in-memory token via env (the discovery layer prefers env over the on-disk
+    token file), and tie its lifetime to ours so it exits together with the app.
+
+    Adapter startup failures are never fatal to the sidecar.
+    """
+    if os.environ.get("DESKMATE_SELECTION_DISABLE") == "1":
+        return
+    try:
+        import subprocess
+
+        env = dict(os.environ)
+        env["COWORKER_PORT"] = str(port)
+        env["COWORKER_API_TOKEN"] = os.environ.get("COWORKER_API_TOKEN", "")
+        # Tie the adapter's life to THIS sidecar: it watches our PID and exits when we do.
+        env["COWORKER_EXIT_WITH_PARENT"] = "1"
+        env["COWORKER_PARENT_PID"] = str(os.getpid())
+        subprocess.Popen(
+            [sys.executable, "-m", "deskmate.selection"],
+            env=env,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=False,
+        )
+    except Exception:
+        pass  # never block sidecar startup on adapter failure
+
+
 def main(argv=None) -> None:
     _load_env_file()
     _ensure_ca_bundle()
@@ -180,6 +129,8 @@ def main(argv=None) -> None:
         import uvicorn
 
         _exit_when_orphaned()
+        # Bring up the select-text popup adapter so it's ready the moment the app opens.
+        _spawn_selection_adapter(args.port)
         app = build_app(args.cwd, args.model, args.mode)
         uvicorn.run(
             app, host=args.host, port=args.port, ws_max_size=_WS_MAX_FRAME_BYTES
