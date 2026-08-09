@@ -26,6 +26,7 @@ from .base import ProviderClient
 from .bedrock_provider import BedrockProvider
 from .gemini_provider import GeminiProvider
 from .openai_provider import OpenAIProvider
+from .opencode_provider import OpenCodeProvider
 from .vertex_provider import VertexProvider
 
 # Lock for thread-safe os.environ mutation (shared with bedrock_provider)
@@ -574,6 +575,31 @@ DESCRIPTORS: list[ProviderDescriptor] = [
         # Reliable native tool-calling + strong coding quality (verified). Pull with
         # `ollama pull qwen3-coder:30b`.
         recommended_model="qwen3-coder:30b",
+    ),
+    ProviderDescriptor(
+        name="opencode",
+        title="OpenCode 免费模型",
+        needs_key=False,
+        fields=[
+            ProviderField(
+                key="model",
+                label="模型（OpenCode 免费档）",
+                secret=False,
+                required=False,
+                default="opencode/deepseek-v4-flash-free",
+                help=(
+                    "经本机 OpenCode CLI 调用的免费托管模型，默认 deepseek-v4-flash-free；"
+                    "也可用 OPENCODE_MODEL 环境变量覆盖。注意：免费档由 OpenCode 托管并鉴权，"
+                    "桌搭不持有其 key，调用经 OpenCode 完成。"
+                ),
+            ),
+        ],
+        build=lambda profile, secrets: OpenCodeProvider(
+            secrets=secrets,
+            model=(profile or {}).get("model") or None,
+        ),
+        recommended_model="opencode:deepseek-v4-flash-free",
+        blurb="OpenCode 自家托管的免费推理档（deepseek-v4-flash-free 等），经本机 OpenCode CLI 调用，桌搭不持有其 key。",
     ),
 ]
 

@@ -67,7 +67,7 @@ class OpenCodeDriver:
             return env
         return shutil.which("opencode")
 
-    def call(self, prompt: str, timeout: int = 120) -> str:
+    def call(self, prompt: str, timeout: int = 120, model: str | None = None) -> str:
         binpath = self.detect_binary()
         if not binpath:
             return (
@@ -77,7 +77,8 @@ class OpenCodeDriver:
                 "OPENCODE_BIN 指定其路径，本适配层即自动生效。"
             )
         # 默认用 opencode 免费模型（实测可用、无需 API key）；可用 OPENCODE_MODEL 覆盖。
-        model = os.environ.get("OPENCODE_MODEL", "opencode/deepseek-v4-flash-free")
+        # model 参数优先（由 OpenCodeProvider 透传，已规整为 opencode/xxx 形式），否则取环境变量。
+        model = model or os.environ.get("OPENCODE_MODEL", "opencode/deepseek-v4-flash-free")
         try:
             # opencode 是编码 agent，会在给定目录里读写文件；用临时目录沙箱，
             # 并明确要求「只回答、不要改动文件」，避免它去动用户工程。
@@ -90,6 +91,8 @@ class OpenCodeDriver:
             )
             # 无头调用：`opencode run` 为当前 CLI 的无头执行子命令；
             # `--pure` 关闭外部插件避免干扰；模型显式指定避免依赖用户默认 provider。
+            # 注意：继承父进程环境（含 HTTP(S)_PROXY）。本机 OpenCode 需经助手运行时注入的
+            # 本地代理出网，清掉代理反而连不上 api.opencode.ai（实测清代理后调用全空）。
             args = [binpath, "run", "--pure"]
             if model:
                 args += ["-m", model]
