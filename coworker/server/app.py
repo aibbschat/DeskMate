@@ -3226,7 +3226,13 @@ def create_app(manager: SessionManager) -> FastAPI:
         from deskmate.roundtable.web import create_app as _create_roundtable_app
         from starlette.routing import Mount as _Mount
 
-        _rt_mount = _Mount("/roundtable", _create_roundtable_app())
+        # 把主 app 的会话库 base 与当前 workspace 传给圆桌，使其落盘的纪要
+        # 复用同一份 coworker.db，并能在左侧历史对话栏（按当前 workspace）被看到。
+        _rt_base = str(getattr(manager.session_store, "base", "")) or None
+        _rt_mount = _Mount(
+            "/roundtable",
+            _create_roundtable_app(base_dir=_rt_base, workspace=manager.default_workspace),
+        )
         # 必须排在 /{tenant} 通配挂载之前，否则 /roundtable/ 会被 A2A 多租户路由抢匹配返回 404。
         _routes = app.router.routes
         _idx = next(

@@ -30,6 +30,9 @@ from pydantic import BaseModel
 from deskmate.roundtable.coordinator import PeerSpec, Roundtable
 from deskmate.roundtable.personas import PERSONAS
 
+from coworker.conversations import ConversationStore
+from coworker.sessions import SessionRecord
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_TOPIC = (
@@ -38,6 +41,57 @@ DEFAULT_TOPIC = (
 )
 
 TEMPLATE_PATH = os.path.join(os.path.dirname(__file__), "templates", "roundtable.html")
+
+
+def _resolve_store(base_dir: Optional[str]) -> Optional["ConversationStore"]:
+    """定位主 app 会话库。base_dir 由主 app 挂载时传入（manager.session_store.base），
+    保证读写与主 app 同一份 coworker.db；独立运行时回退 COWORKER_DATA_DIR 或默认 ~/.config/coworker。"""
+    base = (
+        base_dir
+        or os.environ.get("COWORKER_DATA_DIR")
+        or os.path.join(os.path.expanduser("~"), ".config", "coworker")
+    )
+    try:
+        return ConversationStore(base)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("圆桌会话库初始化失败（纪要不落盘）：%s", exc)
+        return None
+
+
+def _save_roundtable_session(store, workspace, topic, markdown, traces) -> Optional[str]:
+    """把一次圆桌的完整纪要写入主 app 会话库，使其出现在左侧历史对话栏。
+
+    落一条 session：user=议题配置，assistant=RoundtableResult.to_markdown() 完整纪要
+    （含各轮各人格/peer 发言 + 检索轨迹）。origin=roundtable 便于历史栏识别与将来回链还原。
+    失败静默（不影响圆桌本身）。
+    """
+    if store is None or not markdown:
+        return None
+    import uuid
+
+    sid = "rt-" + uuid.uuid4().hex[:12]
+    messages = [
+        {"role": "user", "content": f"【创作圆桌议题】\n{topic}"},
+        {"role": "assistant", "content": markdown},
+    ]
+    title = "🪑 圆桌：" + ((topic or "").strip()[:40] or "未命名议题")
+    rec = SessionRecord(
+        session_id=sid,
+        workspace=workspace or "",
+        model="deskmate-roundtable",
+        mode="interactive",
+        messages=messages,
+        title=title,
+        agent="deskmate-roundtable",
+        origin="roundtable",
+        origin_label="创作圆桌",
+    )
+    try:
+        store.save(rec)
+        return sid
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("圆桌纪要落盘失败（不影响圆桌）：%s", exc)
+        return None
 
 
 class StreamBody(BaseModel):
@@ -146,7 +200,7 @@ def _run_read_book(mp: str, emit) -> None:
     emit({"type": "done", "ok": True})
 
 
-def create_app(rt_port: int = 9920) -> FastAPI:
+def create_app(rt_port: int = 9920, base_dir: Optional[str] = None, workspace: Optional[str] = None) -> FastAPI:
     # 挂入主 app 时 rt_port 默认 9920，但实际端口与挂载前缀均由 COWORKER_PORT 语境决定：
     # - 主 app（run.py 起 sidecar）会设置 COWORKER_PORT，并把本 app 整块挂到 /roundtable 下，
     #   此时 opencode-a2a 的完整路径是 /roundtable/opencode-a2a，Agent Card 的
@@ -159,6 +213,10 @@ def create_app(rt_port: int = 9920) -> FastAPI:
     mount = "/roundtable" if os.environ.get("COWORKER_PORT") else ""
     opencode_peer_url = f"http://127.0.0.1:{actual_port}{mount}/opencode-a2a"
     app = FastAPI(title="创作圆桌")
+
+    # 复用主 app 会话库：圆桌结束后把纪要落盘，使其进入左侧历史对话栏。
+    _store = _resolve_store(base_dir)
+    _rt_workspace = workspace
 
     # 把 opencode A2A 适配层挂到 /opencode-a2a：单进程即可让 OpenCode 成为 peer。
     try:
@@ -271,12 +329,31 @@ def create_app(rt_port: int = 9920) -> FastAPI:
         except Exception as e:
             logger.debug("record_roundtable 失败（不影响圆桌）: %s", e)
 
+        _topic = topic
+        _markdown = None
+        _traces = None
+
         async def gen():
+            nonlocal _topic, _markdown, _traces
             async for ev in rt.run_stream():
                 if await request.is_disconnected():
                     logger.info("客户端断开，停止圆桌流")
                     break
+                et = ev.get("type")
+                if et == "meta":
+                    _topic = ev.get("topic") or _topic
+                elif et == "done":
+                    _markdown = ev.get("markdown")
+                    _traces = ev.get("traces")
                 yield f"data: {json.dumps(ev, ensure_ascii=False)}\n\n"
+            # 流正常结束（收到 done）：把圆桌纪要落盘进主 app 会话库。
+            # 中途断开（未收到 done）则不落盘——未完成的圆桌不入库。
+            if _markdown:
+                sid = await asyncio.to_thread(
+                    _save_roundtable_session, _store, _rt_workspace, _topic, _markdown, _traces
+                )
+                if sid:
+                    logger.info("圆桌纪要已存入历史对话栏 session=%s", sid)
 
         return StreamingResponse(
             gen(),

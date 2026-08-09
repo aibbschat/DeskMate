@@ -706,11 +706,13 @@ class Roundtable:
         await out_q.put({"type": "peers", "online": [p.name for p in online], "offline": offline})
 
         transcript: list[Turn] = []
+        traces: list[dict] = []  # 各轮 context_trace（L0/L1/L2 + FTS5 轨迹），用于纪要落盘与可观测
 
         # 开场（主持流式）
         await out_q.put({"type": "speaking", "round": 0, "speaker": "桌搭（主持）", "role": "host", "kind": "host"})
         sc0 = await self._build_story_context(0, "")
         await out_q.put({"type": "context_trace", "round": 0, "trace": sc0.trace})
+        traces.append(sc0.trace)
         opening_ctx = sc0.text
         opening = await self._stream_turn(
             out_q, turn_id="host-open", round_no=0, speaker="桌搭（主持）", role="host", kind="host",
@@ -732,6 +734,7 @@ class Roundtable:
             div_query = "\n".join(divergences) if r > 1 else ""
             sc = await self._build_story_context(r, div_query)
             await out_q.put({"type": "context_trace", "round": r, "trace": sc.trace})
+            traces.append(sc.trace)
             story_block = sc.text
 
             # 发言前先广播"思考中"
@@ -795,6 +798,18 @@ class Roundtable:
             fallback_text=synthesis_fallback,
         )
 
+        # 构造结构化结果：完整纪要（to_markdown）随 done 事件一并下发，
+        # 供 web 层落盘进主 app 会话库（进入左侧历史对话栏）。
+        result = RoundtableResult(
+            topic=self.topic,
+            turns=transcript,
+            synthesis=synthesis.text,
+            divergences=divergences,
+            peers_online=[p.name for p in online],
+            peers_offline=offline,
+            rounds_held=rounds_held,
+            traces=traces,
+        )
         await out_q.put({
             "type": "done",
             "rounds_held": rounds_held,
@@ -802,6 +817,9 @@ class Roundtable:
             "peers_online": [p.name for p in online],
             "peers_offline": offline,
             "synthesis": synthesis.text,
+            "topic": self.topic,
+            "markdown": result.to_markdown(),
+            "traces": traces,
         })
         await out_q.put(_STOP)
 

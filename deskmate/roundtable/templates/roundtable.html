@@ -714,7 +714,7 @@
   function finish(d) {
     done = true;
     if (evSource) evSource.close();
-    addSystem(`✅ 圆桌结束 · 实际 ${d.rounds_held} 轮` + (d.divergences && d.divergences.length ? ` · 收尾分歧 ${d.divergences.length} 条` : " · 已达成一致"));
+    addSystem(`✅ 圆桌结束 · 实际 ${d.rounds_held} 轮` + (d.divergences && d.divergences.length ? ` · 收尾分歧 ${d.divergences.length} 条` : " · 已达成一致") + `　｜　📂 已自动存入左侧历史对话，可随时找回`);
     const b = $("startBtn"); b.disabled = false; b.textContent = "重新开始";
     // 结束后不自动展开设定栏（续聊走底部追问框）；保持折叠让用户专注阅读
     $("liveDot").style.background = "#bbb";
