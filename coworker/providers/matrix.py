@@ -157,6 +157,13 @@ MATRIX: dict[str, ModelEntry] = {
     "openrouter:meta-llama/llama-4-maverick": ModelEntry(
         "Llama 4 Maverick · via OpenRouter", _AGENTIC, 1_000_000
     ),
+    # -- local AI gateway (OmniRoute) --------------------------------------------
+    # Keyless free combo. Marked streaming-only + no tools: free upstreams vary, and we use
+    # this for the roundtable's external peer / occasional drafting, never the main flow.
+    "omniroute:auto": ModelEntry(
+        "Auto · OmniRoute 免费",
+        ModelCapabilities(tools=False, vision=False, streaming=True),
+    ),
     # -- cloud accounts (models running in the user's own AWS/GCP) ----------------
     # Bedrock ids carry a family segment (claude/ → native Anthropic path, other/ →
     # Converse) plus AWS's own `-v<n>:<m>` version suffix. Some regions require the
