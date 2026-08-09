@@ -511,8 +511,10 @@
   let activePersonas = [];   // 当前参与圆桌的进程内成员（含主持），用于成员条
   let onlineNames = new Set();
 
-  let pending = {};   // speaker -> [rowEl]  （思考中气泡队列，FIFO）
+  let thinkingSet = new Set();  // 已收到 speaking 但尚未 turn_start/turn 的发言者，用于状态栏"思考中"
   let streams = {};   // turn_id -> { row, body, speaker, round }  （流式发言中气泡）
+  let peerOnline = [];
+  let peerOffline = [];
   let evSource = null;
   let done = false;
   let currentCfg = null;     // 当前圆桌配置（续聊时复用，免重新设置）
@@ -572,38 +574,38 @@
   }
 
   function setStatus(online, offline) {
-    const o = (online && online.length) ? online.join("、") : "无";
-    const f = (offline && offline.length) ? offline.join("、") : "无";
-    $("statusbar").innerHTML = `外部 peer 在线：<b>${esc(o)}</b>　|　离线跳过：<b>${esc(f)}</b>`;
+    peerOnline = online || [];
+    peerOffline = offline || [];
+    renderStatus();
   }
 
-  function updateThinking() {
-    let n = 0; for (const k in pending) n += pending[k].length;
-    const base = $("statusbar").innerHTML.split("　|　")[0];
-    if (n > 0) {
-      $("statusbar").innerHTML = `${base}　|　<span class="thinking">${n} 人思考中…</span>`;
-    } else {
-      $("statusbar").innerHTML = base + "　|　<span class=\"thinking\"></span>";
+  // 状态栏：peer 在线/离线 + 当前思考中的发言者（修复旧版"思考中"只数气泡、且会吞掉离线信息的缺陷）
+  function renderStatus() {
+    const o = peerOnline.length ? peerOnline.join("、") : "无";
+    const f = peerOffline.length ? peerOffline.join("、") : "无";
+    let html = `外部 peer 在线：<b>${esc(o)}</b>　|　离线跳过：<b>${esc(f)}</b>`;
+    const thinking = [...thinkingSet];
+    if (thinking.length) {
+      const label = thinking.length <= 3 ? thinking.join("、") : (thinking.slice(0, 3).join("、") + " 等 " + thinking.length + " 人");
+      html += `　|　<span class="thinking">💭 ${label} 思考中…</span>`;
     }
+    $("statusbar").innerHTML = html;
   }
 
-  function addTyping(d) {
-    const s = styleFor(d.speaker);
-    const row = document.createElement("div");
-    row.className = "row typing";
-    row.innerHTML = `<div class="avatar ${s.cls}">${s.emoji}</div>
-      <div class="bubble-wrap"><div class="name">${esc(d.speaker)} <span class="round">R${d.round}</span></div>
-      <div class="bubble"><span class="dot"></span><span class="dot"></span><span class="dot"></span></div></div>`;
-    $("chat").appendChild(row); scroll();
-    (pending[d.speaker] = pending[d.speaker] || []).push(row);
-    updateThinking();
+  // speaking 事件：仅登记"正在思考"，不预先占位气泡。
+  // 这样避免旧版把所有发言者的空气泡按声明顺序预先钉在高位，
+  // 导致后开口者被挤到视口上方、需要往上划才能看到的问题。
+  function markThinking(d) {
+    thinkingSet.add(d.speaker);
+    renderStatus();
   }
 
   function addTurn(d) {
+    // 外部 peer（整段返回 turn）：从思考集合移除，在底部追加气泡（按"谁先回谁在上"落位）
+    thinkingSet.delete(d.speaker);
+    renderStatus();
     const s = styleFor(d.speaker);
-    let row, q = pending[d.speaker];
-    if (q && q.length) { row = q.shift(); if (q.length === 0) delete pending[d.speaker]; }
-    else { row = document.createElement("div"); }
+    const row = document.createElement("div");
     let tag = "R" + d.round;
     if (d.round === 0) tag = "开场";
     else if (d.phase === "divergence") tag = "串场·分歧";
@@ -614,8 +616,8 @@
     row.innerHTML = `<div class="avatar ${s.cls}">${s.emoji}</div>
       <div class="bubble-wrap"><div class="name">${esc(d.speaker)} <span class="round">${tag}</span>${peerTag}</div>
       <div class="bubble">${esc(d.text)}</div></div>`;
-    if (!row.parentNode) $("chat").appendChild(row);
-    scroll(); updateThinking();
+    $("chat").appendChild(row);
+    scroll();
 
     // 累积讨论文本，供续聊回传
     const t = d.round === 0 ? "开场" : ("第" + d.round + "轮");
@@ -641,29 +643,38 @@
   }
 
   function startStream(d) {
-    // 把"思考中"气泡（若已存在）转化为可生长的发言气泡，否则新建
+    // 发言真正开始时，在底部追加气泡并先显示"打字中"动画；
+    // 首个 token 到达（appendStream）再替换为正文。
+    // 这样：① 还原打字动画（之前只在 speaking 占位气泡里、且被预先钉死在高位，几乎看不到）；
+    //      ② 每条消息按"谁先开口谁在上"的真实聊天顺序落位，后发言者永远在最新位置，
+    //         不会再被顶到视口上方而需要往上划。
+    thinkingSet.delete(d.speaker);
+    renderStatus();
     const s = styleFor(d.speaker);
-    let row, q = pending[d.speaker];
-    if (q && q.length) { row = q.shift(); if (q.length === 0) delete pending[d.speaker]; }
-    else { row = document.createElement("div"); }
+    const row = document.createElement("div");
     let tag = "R" + d.round;
     if (d.round === 0) tag = "开场";
     else if (d.phase === "divergence") tag = "串场·分歧";
     else if (d.phase === "synthesis") tag = "收尾·纪要";
     const peerTag = d.kind === "peer" ? `<span class="ext-tag">外部·A2A</span>` : "";
     const hostCls = d.kind === "host" ? " host" : "";
-    row.className = "row streaming" + hostCls;
+    row.className = "row typing" + hostCls;
     row.innerHTML = `<div class="avatar ${s.cls}">${s.emoji}</div>
       <div class="bubble-wrap"><div class="name">${esc(d.speaker)} <span class="round">${tag}</span>${peerTag}</div>
-      <div class="bubble"></div></div>`;
-    if (!row.parentNode) $("chat").appendChild(row);
+      <div class="bubble"><span class="dot"></span><span class="dot"></span><span class="dot"></span></div></div>`;
+    $("chat").appendChild(row);
     streams[d.turn_id] = { row, body: row.querySelector(".bubble"), speaker: d.speaker, round: d.round };
-    scroll(); updateThinking();
+    scroll();
   }
 
   function appendStream(d) {
     const st = streams[d.turn_id];
     if (!st) return;
+    // 首个 token 到达：打字动画 -> 正文
+    if (st.row.classList.contains("typing")) {
+      st.row.classList.remove("typing");
+      st.body.textContent = "";
+    }
     st.body.textContent += d.text;
     scroll();
   }
@@ -672,6 +683,10 @@
     const st = streams[d.turn_id];
     const full = d.text || "";
     if (st) {
+      if (st.row.classList.contains("typing")) {  // 无增量流（如空结果兜底）时也要清掉打字动画
+        st.row.classList.remove("typing");
+        st.body.textContent = "";
+      }
       st.body.textContent = full;          // 以最终完整文本为准（覆盖重试/空失败片段）
       delete streams[d.turn_id];
     }
@@ -685,7 +700,7 @@
       case "meta": setTopic(d.topic); break;
       case "peers": buildRoster(d.online, d.offline); setStatus(d.online, d.offline); break;
       case "round_start": addDivider(d.round); break;
-      case "speaking": addTyping(d); break;
+      case "speaking": markThinking(d); break;
       case "turn_start": startStream(d); break;
       case "turn_delta": appendStream(d); break;
       case "turn_end": endStream(d); break;
@@ -704,7 +719,10 @@
     // 结束后不自动展开设定栏（续聊走底部追问框）；保持折叠让用户专注阅读
     $("liveDot").style.background = "#bbb";
     $("liveDot").style.boxShadow = "none";
-    $("statusbar").innerHTML = `外部 peer 在线：<b>${esc((d.peers_online||[]).join("、")||"无")}</b>　|　离线跳过：<b>${esc((d.peers_offline||[]).join("、")||"无")}</b>`;
+    peerOnline = d.peers_online || [];
+    peerOffline = d.peers_offline || [];
+    thinkingSet = new Set();
+    renderStatus();
     setComposer(true);
   }
 
@@ -759,7 +777,7 @@
   function launch(opts) {
     opts = opts || {};
     if (evSource) evSource.close();
-    done = false; pending = {}; streams = {};
+    done = false; thinkingSet = new Set(); streams = {};
     const cfg = currentCfg || readConfig();
     currentCfg = cfg;
     updateChapterHint();
