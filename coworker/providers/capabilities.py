@@ -22,12 +22,6 @@ def capabilities_for(model: str) -> ModelCapabilities:
     provider = model.split(":", 1)[0].lower() if ":" in model else ""
     name = model.split(":", 1)[-1].lower()  # strip a provider prefix if present
 
-    # OpenCode 免费模型：经其 CLI 无头调用，只返回整段文本，无工具调用/流式/视觉能力。
-    if provider == "opencode":
-        return ModelCapabilities(
-            tools=False, vision=False, parallel_tool_calls=False, streaming=False
-        )
-
     # Ollama (local) models vary widely and many fake/mishandle parallel tool calls — assume
     # tools work (we only point at tool-capable models) but stay conservative otherwise.
     if provider == "ollama":
