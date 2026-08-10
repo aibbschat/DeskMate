@@ -20,12 +20,23 @@
   不擅自全量建（避免慢 + 避免往无关目录塞元数据）。
 
 调用方（app.py 报告流 / 对话钩子、manager.py 任务收尾）均已接好。
+
+记忆分层（对齐 Hermes 记忆漏斗，根治「日志越积越胀 / 全量注入」债）：
+
+- **journal.md = 情景滚动缓冲**：保留原始「发生了什么」流水，硬上限 2 万字符，
+  超出截断最旧。完整日志留在磁盘，经 ``manager._search_project_memory`` 按需检索，
+  **不每次全量注入**。
+- **longterm.md = 已蒸馏长期记忆（有界热记忆）**：把每轮 ``learned`` 习得要点去重固化，
+  上限 6 千字符、超出从最旧裁剪（LRU）。**完整常驻注入**，是跨会话不丢的真相源。
+- **注入窗口**：``format_project_memory`` 只注入 longterm（全量）+ journal 最近 N 条，
+  整体有总字符上限兜底，prompt 成本不随历史线性膨胀。
 """
 from __future__ import annotations
 
 import asyncio
 import logging
 import os
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, Sequence
@@ -43,6 +54,8 @@ _DEFAULT_BASE_DIR = Path(
 _MIN_EFFECTIVE_CHARS = 4
 # 项目日志最大保留长度，超出裁剪最旧内容
 _JOURNAL_MAX_CHARS = 20_000
+# 长期记忆（已蒸馏）上限：有界热记忆，超出从最旧裁剪（LRU）。对齐 Hermes L1 强制压缩。
+_LONGTERM_MAX_CHARS = 6_000
 _BIBLE_DIR = ".deskmate"
 
 
@@ -142,6 +155,56 @@ def _summarize_entry(
     return "\n".join(parts)
 
 
+def _norm(s: str) -> str:
+    """归一化要点文本，用于去重比较（折叠空白 + 去首尾空格 + 小写）。"""
+    return re.sub(r"\s+", " ", (s or "").strip()).lower()
+
+
+def _distill_to_longterm(
+    base_dir: Path, project: str, learned: Sequence[str]
+) -> None:
+    """把本轮习得要点蒸馏进长期记忆（longterm.md）：去重 + 有界裁剪。
+
+    对应 Hermes 的「结晶 / 蒸馏」：把高信噪比的习得事实从情景日志里固化出来，
+    持久化且常驻注入；journal.md 仍保留原始情景流水（滚动缓冲），但不再是
+    唯一真相源。longterm 超上限时从最旧要点裁剪（LRU），保证有界热记忆。
+
+    零额外 LLM 成本——``learned`` 已是上游（post_session_summary）抽取好的结构化事实，
+    这里只做去重固化，不再调一次 LLM。
+    """
+    if not learned:
+        return
+    existing = _pm.read_project_file(base_dir, project, "longterm.md")
+    bullets: list[str] = []
+    seen: set[str] = set()
+    for line in existing.splitlines():
+        s = line.strip()
+        if s.startswith("- "):
+            body = s[2:].strip()
+            bullets.append(body)
+            seen.add(_norm(body))
+    added: list[str] = []
+    for f in learned:
+        fn = _norm(f)
+        if fn and fn not in seen:
+            seen.add(fn)
+            added.append(f.strip())
+    if not added:
+        return
+    new_bullets = bullets + added
+    text = "# 长期记忆（已蒸馏）\n" + "\n".join(f"- {b}" for b in new_bullets)
+    # 有界：超出从最旧裁剪（LRU）
+    if len(text) > _LONGTERM_MAX_CHARS:
+        over = len(text) - _LONGTERM_MAX_CHARS
+        drop = 0
+        while over > 0 and drop < len(new_bullets):
+            over -= len(new_bullets[drop]) + 1
+            drop += 1
+        new_bullets = new_bullets[drop:]
+        text = "# 长期记忆（已蒸馏）\n" + "\n".join(f"- {b}" for b in new_bullets)
+    _pm.write_project_file(base_dir, project, "longterm.md", text)
+
+
 # ---------------------------------------------------------------------------
 # 主入口
 # ---------------------------------------------------------------------------
@@ -180,6 +243,11 @@ def reflect_and_persist(
             _append_journal(base_dir, project, entry)
         except Exception:
             logger.exception("after_action: 写项目日志失败")
+        # 蒸馏习得要点到长期记忆（有界热记忆，跨会话不丢）
+        try:
+            _distill_to_longterm(base_dir, project, learned or [])
+        except Exception:
+            logger.exception("after_action: 蒸馏长期记忆失败")
 
     # ---- 2. 刷新圣经（修读稿不更新记忆）----
     try:
