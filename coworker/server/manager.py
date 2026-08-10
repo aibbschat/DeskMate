@@ -3363,6 +3363,21 @@ class SessionManager:
             run.result_text = _last_assistant_text(engine.messages)
             run.artifacts = _recent_files(task.workspace, since=run.started_at)
             run.status = "ok"
+            # 全局 after-action：自动/定时任务完成也记一笔 + 刷新小说圣经
+            try:
+                import logging as _log
+                import threading as _th
+
+                from deskmate.memory.after_action import reflect_and_persist
+
+                _th.Thread(
+                    target=reflect_and_persist,
+                    args=(task.workspace, task.instructions, run.result_text or ""),
+                    kwargs={"artifacts": run.artifacts},
+                    daemon=True,
+                ).start()
+            except Exception:
+                _log.warning("after_action 任务收尾触发失败", exc_info=True)
             if task.notify_on_completion:
                 await self._notify_task_done(task, run)
         except Exception as exc:
@@ -3572,6 +3587,21 @@ class SessionManager:
             run.result_text = _last_assistant_text(record.messages) if record else None
             run.artifacts = _recent_files(task.workspace, since=run.started_at)
             run.status = "ok"
+            # 全局 after-action：手动运行完成也记一笔 + 刷新小说圣经
+            try:
+                import logging as _log
+                import threading as _th
+
+                from deskmate.memory.after_action import reflect_and_persist
+
+                _th.Thread(
+                    target=reflect_and_persist,
+                    args=(task.workspace, task.instructions, run.result_text or ""),
+                    kwargs={"artifacts": run.artifacts},
+                    daemon=True,
+                ).start()
+            except Exception:
+                _log.warning("after_action 手动收尾触发失败", exc_info=True)
             run.finished_at = _epoch()
             self.task_store.add_run(run)
             task.last_run, task.last_status = run.finished_at, "ok"

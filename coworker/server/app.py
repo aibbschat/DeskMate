@@ -2377,8 +2377,14 @@ def create_app(manager: SessionManager) -> FastAPI:
                 )
             elif path:
                 from deskmate.novel_memory.core import read_bible, scan_novel
+                from deskmate.memory.after_action import refresh_bible_if_novel
 
                 pp = _P(path).expanduser()
+                # 读稿前先增量刷新记忆（修"读稿不更新记忆"）：已建圣经的书会自动纠正陈旧实体
+                try:
+                    refresh_bible_if_novel(str(pp))
+                except Exception:
+                    logging.warning("报告流刷新圣经失败（不影响报告生成）：%s", pp)
                 if pp.is_dir():
                     try:
                         raw_text, _ = scan_novel(str(pp))
@@ -2909,6 +2915,25 @@ def create_app(manager: SessionManager) -> FastAPI:
                         )
                     except Exception:
                         logging.exception("broadcast deskmate memory learned failed")
+
+                # 全局 after-action 记忆钩子：每轮记一笔项目日志 + 刷新小说圣经
+                try:
+                    from deskmate.memory.after_action import reflect_and_persist_async
+
+                    ws = None
+                    try:
+                        ws = manager.engine_workspace(session_id)
+                    except Exception:
+                        logging.debug("engine_workspace 取不到，after_action 仅记项目日志")
+                    await reflect_and_persist_async(
+                        ws,
+                        last_user,
+                        last_asst,
+                        active_project=getattr(mm, "active_project", None),
+                        learned=learned,
+                    )
+                except Exception:
+                    logging.exception("after_action reflect failed")
 
                 # Context injection visibility: count injected memory blocks
                 from deskmate.memory.llm import llm_available as _llm_ok
