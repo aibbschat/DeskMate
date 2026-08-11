@@ -16,6 +16,10 @@ import asyncio
 from contextlib import AsyncExitStack
 from typing import Any, Optional
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 from mcp.client.streamable_http import streamablehttp_client
@@ -83,6 +87,53 @@ class MCPManager:
                 task.cancel()
         self._conns.clear()
         self._tasks.clear()
+
+    async def reload_server(self, server: MCPServerDef, *, interactive: bool = False) -> _Conn:
+        """Hot-swap a single server's live connection WITHOUT dropping others.
+
+        Build-before-swap: spin up the new connection first; only swap
+        ``_conns[name]`` and gracefully shut the old one down once the new is
+        healthy. If the new connection fails, the old one is left untouched —
+        the session keeps working on the previous config instead of going dark.
+        This is what makes "add an external server → it's usable in the running
+        roundtable without a restart" possible.
+        """
+        async with self._lock:
+            # Pull the live connection out of the slot (under the lock) so the
+            # throwaway task's `finally` pop is a no-op, and a failure can simply
+            # restore `old`. No other coroutine can `ensure` this name while we
+            # hold the lock, so the slot stays empty only for the build window.
+            old = self._conns.pop(server.name, None)
+            ready: asyncio.Future = asyncio.get_running_loop().create_future()
+            task = asyncio.create_task(
+                self._serve(server, ready, interactive=interactive)
+            )
+            self._tasks[server.name] = task
+            try:
+                new_conn = await ready  # propagates connection errors
+            except Exception:
+                # Restore the previous live connection — session keeps working.
+                if old is not None:
+                    self._conns[server.name] = old
+                raise
+            # Swap: the new connection takes the slot; signal the old to close.
+            self._conns[server.name] = new_conn
+            if old is not None:
+                old.shutdown.set()
+            return new_conn
+
+    async def reload_all(self, servers: list[MCPServerDef]) -> None:
+        """Hot-swap every known server at once (config changed on disk).
+
+        Build-before-swap per server; a server whose new connect fails keeps its
+        prior live connection (logged, not fatal) so one bad entry can't take
+        the whole tool surface offline.
+        """
+        for server in servers:
+            try:
+                await self.reload_server(server)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("MCP reload failed for %s (kept old): %s", server.name, exc)
 
     # -- per-server lifecycle (one task owns enter+exit) ------------------------
     async def _serve(

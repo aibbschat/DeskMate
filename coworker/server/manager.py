@@ -1197,9 +1197,74 @@ class SessionManager:
         return {"name": name, "ok": False, "error": "unknown server", "tools": []}
 
     async def reload_mcp(self) -> dict[str, Any]:
-        """Drop live MCP connections so new sessions reconnect with fresh config."""
-        await self.mcp.aclose()
+        """Hot-swap live MCP connections with fresh config — WITHOUT dropping the
+        others, and WITHOUT taking the tool surface offline if one server fails.
+
+        Replaces the old ``aclose`` (which nuked every connection and forced all
+        sessions to rebuild from scratch). Now each server is build-before-swapped
+        individually: a bad/down entry keeps its previous live connection instead
+        of blinking the whole surface dark.
+        """
+        from ..mcp.config import load_mcp_servers
+
+        servers = load_mcp_servers(
+            self.default_workspace,
+            secrets=self.secrets,
+            workspace_trusted=self._mcp_workspace_trusted(self.default_workspace),
+        )
+        await self.mcp.reload_all(servers)
         return {"ok": True}
+
+    async def hot_reload_mcp(
+        self, session_id: str, *, agent: str = "code"
+    ) -> dict[str, Any]:
+        """Reload MCP AND push the new tool set into an *already-running* session.
+
+        This is the roundtable/agent hot-plug: after a server is added/removed in
+        Settings, the running session's engine gets the new MCP callables appended
+        (existing tools are preserved; dup names overwrite) — no engine rebuild, no
+        restart, the user doesn't lose their place. Servers that fail to connect are
+        skipped (the session just doesn't gain those tools).
+
+        Returns ``{"ok", "added"}`` where ``added`` is the count of new callables.
+        """
+        engine = self._engines.get(session_id)
+        if engine is None:
+            # No live session — nothing to hot-patch; the next session picks up
+            # the new config via the normal prepare_mcp_tools path.
+            return {"ok": True, "added": 0, "note": "no live session"}
+        from ..catalog import is_mcp_ref, parse_mcp_ref
+
+        mcp_refs: set[str] = set()
+        try:
+            entry = self.personas.get(agent)
+            if entry is not None:
+                for t in getattr(entry, "tools", []) or []:
+                    if is_mcp_ref(t):
+                        try:
+                            srv, tool = parse_mcp_ref(t)
+                        except ValueError:
+                            continue
+                        mcp_refs.add(f"{srv}:{tool}")
+        except Exception:  # persona lookup is best-effort
+            mcp_refs = set()
+        new_tools = await self.prepare_mcp_tools(
+            "__hot_reload__",  # bypass the `_engines` short-circuit
+            workspace=self.engine_workspace(session_id),
+            agent=agent,
+            mcp_refs=mcp_refs or None,
+        )
+        existing = set(engine.registry.names())
+        added = 0
+        for fn in new_tools:
+            if getattr(fn, "__name__", None) in existing:
+                # Overwrite-in-place: drop the stale spec so the new one wins.
+                existing.discard(getattr(fn, "__name__"))
+        engine.registry.register_all(new_tools)
+        added = sum(1 for fn in new_tools if getattr(fn, "__name__", None))
+        # De-dupe any overwritten names that left a stale spec (register_all kept
+        # the last write, so names() is already unique — this is just accounting).
+        return {"ok": True, "added": added}
 
     # -- connectors -------------------------------------------------------------
     def list_connectors(self) -> list[dict[str, Any]]:

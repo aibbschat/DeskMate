@@ -133,12 +133,22 @@ class Roundtable:
         manuscript_text: str = "",
         manuscript_path: str = "",
         chapter_range: str = "",
+        # Spawn Subagent mode (§roundtable): each persona gets its OWN isolated
+        # dialogue history instead of the shared full transcript. Long roundtables
+        # (many turns, long manuscripts) stay readable per-persona; one verbose
+        # speaker can't blow out everyone else's context, and a persona's own
+        # thread is cleanly replayable / resumable without re-running the whole
+        # table. Off by default (faithful to the original arrival-order sharing).
+        per_persona_history: bool = False,
     ) -> None:
         self.topic = topic
         self.peers = peers or []
         self.personas = personas or PERSONAS
         # 有界：上限 1..3
         self.max_rounds = max(1, min(3, max_rounds))
+        # Per-persona isolated histories (subagent transcript) keyed by speaker name.
+        self.per_persona_history = per_persona_history
+        self._persona_histories: dict[str, list[Turn]] = {}
         # 续聊上下文：上一轮圆桌的讨论记录 + 用户追问，注入给主持与各方作为前情
         self.context = (context or "").strip()
         # 待评审的文稿正文（从文件加载或用户粘贴），注入 prompt 让人格基于真实文本发言
@@ -522,13 +532,20 @@ class Roundtable:
     # ---- 各类发言（原生流式：逐 token 产出，供 SSE 实时渲染）----
 
     async def _stream_persona_speak(
-        self, persona: Persona, ctx: str, round_no: int, divergences: list[str], story_block: str = ""
+        self, persona: Persona, ctx: str, round_no: int, divergences: list[str], story_block: str = "", history_ctx: str = ""
     ):
-        """进程内人格流式发言：async generator，逐块 yield 文本片段。"""
+        """进程内人格流式发言：async generator，逐块 yield 文本片段。
+
+        ``history_ctx`` (subagent mode): the persona's OWN prior turns only — when
+        set, it overrides the shared ``ctx`` so the speaker sees just its thread
+        plus the global story, not the entire table's transcript.
+        """
         if not llm_available():
             yield "（LLM 未就绪）"
             return
-        prompt = self._participant_prompt(ctx, round_no, divergences, story_block=story_block)
+        prompt = self._participant_prompt(
+            history_ctx or ctx, round_no, divergences, story_block=story_block
+        )
         # 市场化人格（publisher/adaptation/genre）注入「当前生效」的潮流简报，
         # 让它们拿到"今天的眼光"；其余人格不被潮流污染。无简报时安静跳过。
         system = persona.system_prompt
@@ -746,9 +763,18 @@ class Roundtable:
             # 并发提交：进程内人格走流式，外部 peer 走整段；统一 gather 收集
             tasks = []
             for i, p in enumerate(self.personas):
+                # Subagent mode: feed each persona only its own prior turns (plus
+                # the global story context that _participant_prompt already bakes
+                # in via `story_block`). Keeps long roundtables readable per-speaker.
+                hist_ctx = ""
+                if self.per_persona_history:
+                    hist = self._persona_histories.get(p.name, [])
+                    hist_ctx = self._fmt(hist)
                 tasks.append(asyncio.ensure_future(self._stream_turn(
                     out_q, turn_id=f"p{i}-r{r}", round_no=r, speaker=p.name, role=p.role, kind="persona",
-                    gen_factory=lambda p=p: self._stream_persona_speak(p, ctx, r, divergences, story_block),
+                    gen_factory=lambda p=p, h=hist_ctx: self._stream_persona_speak(
+                        p, ctx, r, divergences, story_block, history_ctx=h
+                    ),
                 )))
             for p in online:
                 tasks.append(asyncio.ensure_future(self._peer_turn(
@@ -756,6 +782,9 @@ class Roundtable:
                 )))
             for t in await asyncio.gather(*tasks):
                 transcript.append(t)
+                # Record into each persona's isolated thread (subagent transcript).
+                if self.per_persona_history and t.kind == "persona":
+                    self._persona_histories.setdefault(t.speaker, []).append(t)
 
             rounds_held = r
 

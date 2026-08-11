@@ -49,6 +49,8 @@ const relTime = (epoch?: number | null): string | null => {
 // McpTab → Integrations ▸ Connectors / MCP servers.
 const SEC_H = "text-[11px] uppercase tracking-[0.05em] text-faint font-semibold";
 const CARD = "rounded-xl2 border border-line bg-panel";
+const INPUT =
+  "w-full px-3 py-2 rounded-lg border border-line bg-paper text-[13px] text-ink outline-none focus:border-accent";
 const BTN_BORDERED =
   "text-[12.5px] px-3 py-1.5 rounded-lg border border-line bg-paper hover:border-lineStrong shrink-0";
 const BTN_ACCENT = "text-[12.5px] px-3 py-1.5 rounded-lg bg-accent text-white shrink-0 disabled:opacity-50";
@@ -61,14 +63,6 @@ function initials(name: string): string {
   if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
   return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
 }
-
-const EXAMPLE = `{
-  "filesystem": {
-    "command": "npx",
-    "args": ["-y", "@modelcontextprotocol/server-filesystem", "/path/to/dir"],
-    "enabled": true
-  }
-}`;
 
 // -- Configure Models tab (UX-021: the shared provider gallery + key form) ----
 // Settings ▸ Models reuses onboarding §39's ProviderCards/ProviderForm so the two
@@ -306,25 +300,38 @@ export function McpTab() {
         </div>
       )}
 
-      {/* One-click OAuth presets not yet configured. */}
-      {MCP_PRESETS.filter((p) => !servers.some((s) => s.name === p.name)).map((p) => (
-        <div key={p.name} className={CARD + " p-3.5 flex items-center gap-3"} data-testid={`mcp-preset-${p.name}`}>
-          <div className="flex-1 min-w-0">
-            <div className="text-[14px] font-medium">{p.label}</div>
-            <div className="text-[11.5px] text-faint">{p.blurb}</div>
+      {/* Curated marketplace presets (one-click OAuth). This is the thin edge of
+          the plugin-center: any Claude/Cursor/Codex-compatible MCP server drops in
+          via the Add form above — big-vendor plugins (通义/腾讯/字节/百度) and the
+          wider MCP.so / community catalog all "just work". */}
+      {MCP_PRESETS.filter((p) => !servers.some((s) => s.name === p.name)).length > 0 && (
+        <div className="space-y-2">
+          <div className={SEC_H + " flex items-center gap-2"}>
+            <span>From the marketplace</span>
+            <span className="text-[10.5px] normal-case tracking-normal text-faint">
+              · or paste any server below
+            </span>
           </div>
-          <button
-            className={BTN_ACCENT}
-            onClick={async () => {
-              await addMcpServer(p.name, p.config);
-              await connectMcp(p.name); // opens the browser sign-in right away
-              refresh();
-            }}
-          >
-            Connect
-          </button>
+          {MCP_PRESETS.filter((p) => !servers.some((s) => s.name === p.name)).map((p) => (
+            <div key={p.name} className={CARD + " p-3.5 flex items-center gap-3"} data-testid={`mcp-preset-${p.name}`}>
+              <div className="flex-1 min-w-0">
+                <div className="text-[14px] font-medium">{p.label}</div>
+                <div className="text-[11.5px] text-faint">{p.blurb}</div>
+              </div>
+              <button
+                className={BTN_ACCENT}
+                onClick={async () => {
+                  await addMcpServer(p.name, p.config);
+                  await connectMcp(p.name); // opens the browser sign-in right away
+                  refresh();
+                }}
+              >
+                Connect
+              </button>
+            </div>
+          ))}
         </div>
-      ))}
+      )}
 
       {adding ? (
         <AddForm
@@ -459,51 +466,162 @@ function AddForm({
   onAdded: () => void;
   onError: (e: string | null) => void;
 }) {
-  const [text, setText] = useState(EXAMPLE);
+  // Structured one-click connect form (replaces the old "paste JSON" box): two
+  // shapes — a local stdio command (npx -y @…/server, args, env) or a remote
+  // HTTP/streamable URL (with OAuth optional). After adding, we auto-connect and
+  // probe the tools so a broken command/url surfaces immediately, not on next
+  // session.
+  const [kind, setKind] = useState<"stdio" | "http">("stdio");
+  const [name, setName] = useState("");
+  const [command, setCommand] = useState("npx");
+  const [argsText, setArgsText] = useState("");
+  const [envText, setEnvText] = useState("");
+  const [url, setUrl] = useState("");
+  const [oauth, setOauth] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [probed, setProbed] = useState<number | null>(null);
 
   const save = async () => {
     onError(null);
-    let parsed: any;
+    const nm = name.trim();
+    if (!nm) {
+      onError("Give the server a name.");
+      return;
+    }
+    let config: Record<string, any>;
+    if (kind === "stdio") {
+      const args = argsText
+        .split("\n")
+        .map((s) => s.trim())
+        .filter(Boolean)
+        .map((line) => line.split(/\s+/).filter(Boolean))
+        .flat();
+      const env: Record<string, string> = {};
+      for (const ln of envText.split("\n")) {
+        const m = ln.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)\s*$/);
+        if (m) env[m[1]] = m[2];
+      }
+      config = { command: command.trim() || "npx", args, enabled: true };
+      if (Object.keys(env).length) config.env = env;
+    } else {
+      if (!url.trim()) {
+        onError("Enter the server URL.");
+        return;
+      }
+      config = { type: "http", url: url.trim(), enabled: true };
+      if (oauth) config.auth = "oauth";
+    }
+    setBusy(true);
     try {
-      parsed = JSON.parse(text);
+      const add = await addMcpServer(nm, config);
+      if (!add.ok) {
+        onError(add.error || "could not add");
+        return;
+      }
+      // Auto-connect + probe so the user sees tools (or the error) right away.
+      await connectMcp(nm);
+      const probe = await getMcpTools(nm);
+      setProbed(probe.ok ? probe.tools.length : 0);
+      if (!probe.ok) {
+        // Added but could not connect — keep it, but tell them why.
+        onError(probe.error || "added, but connection failed (fix or reconnect)");
+        setBusy(false);
+        return;
+      }
+      onAdded();
     } catch (e: any) {
-      onError("Invalid JSON: " + e.message);
-      return;
+      onError(String(e?.message || e));
+    } finally {
+      setBusy(false);
     }
-    // Accept either {mcpServers:{...}}, {name:{...}}, or a single bare config.
-    const map = parsed.mcpServers || parsed;
-    const entries =
-      map && typeof map === "object" && !map.command && !map.url
-        ? Object.entries(map)
-        : null;
-    if (!entries || entries.length === 0) {
-      onError('Paste a `{ "<name>": { … } }` object (or a full mcpServers block).');
-      return;
-    }
-    for (const [name, config] of entries) {
-      await addMcpServer(name, config as Record<string, any>);
-    }
-    onAdded();
   };
 
-  return (
-    <div className="space-y-2">
-      <div className="text-[12.5px] text-muted">Paste server JSON (name → config):</div>
-      <textarea
-        value={text}
-        onChange={(e) => setText(e.target.value)}
-        spellCheck={false}
-        rows={9}
-        className="w-full font-mono text-[12px] px-3 py-2.5 rounded-lg border border-line bg-paper text-ink outline-none focus:border-accent resize-y"
-      />
-      <div className="flex items-center gap-3">
-        <button className={BTN_ACCENT} onClick={save}>
-          Add
+  const KIND = (
+    <div className="inline-flex rounded-full p-0.5 bg-paper text-[12.5px] font-medium">
+      {(["stdio", "http"] as const).map((k) => (
+        <button
+          key={k}
+          className={
+            "px-3 py-1 rounded-full " +
+            (kind === k ? "bg-panel shadow-sm text-ink border border-line" : "text-muted")
+          }
+          onClick={() => setKind(k)}
+        >
+          {k === "stdio" ? "Local command" : "Remote URL"}
         </button>
-        <button className="text-[12.5px] text-muted hover:text-ink" onClick={onCancel}>
+      ))}
+    </div>
+  );
+
+  return (
+    <div className="space-y-2.5 rounded-xl2 border border-line bg-panel p-3.5">
+      <div className="flex items-center justify-between">
+        <div className="text-[12.5px] font-medium">Add an MCP server</div>
+        {KIND}
+      </div>
+      <input
+        className={INPUT}
+        placeholder="Server name (e.g. filesystem, gaode)"
+        value={name}
+        spellCheck={false}
+        onChange={(e) => setName(e.target.value)}
+      />
+      {kind === "stdio" ? (
+        <>
+          <input
+            className={INPUT}
+            placeholder="Command (e.g. npx, uvx, python)"
+            value={command}
+            spellCheck={false}
+            onChange={(e) => setCommand(e.target.value)}
+          />
+          <textarea
+            className={INPUT + " resize-y font-mono text-[12px]"}
+            rows={2}
+            placeholder={"Args, one per line:\n-y @modelcontextprotocol/server-filesystem /path"}
+            value={argsText}
+            spellCheck={false}
+            onChange={(e) => setArgsText(e.target.value)}
+          />
+          <textarea
+            className={INPUT + " resize-y font-mono text-[12px]"}
+            rows={2}
+            placeholder={"Env vars, one per line (optional):\nAPI_KEY=…"}
+            value={envText}
+            spellCheck={false}
+            onChange={(e) => setEnvText(e.target.value)}
+          />
+        </>
+      ) : (
+        <>
+          <input
+            className={INPUT}
+            placeholder="https://…/mcp (streamable HTTP)"
+            value={url}
+            spellCheck={false}
+            onChange={(e) => setUrl(e.target.value)}
+          />
+          <label className="flex items-center gap-2 text-[12.5px] text-muted cursor-pointer">
+            <input type="checkbox" checked={oauth} onChange={(e) => setOauth(e.target.checked)} />
+            OAuth sign-in (tokens stay on this computer)
+          </label>
+        </>
+      )}
+      <div className="flex items-center gap-3">
+        <button className={BTN_ACCENT} onClick={save} disabled={busy}>
+          {busy ? "Adding…" : "Add & connect"}
+        </button>
+        {probed != null && !busy && (
+          <span className="text-[12px] text-accent">connected · {probed} tools</span>
+        )}
+        <button className="text-[12.5px] text-muted hover:text-ink" onClick={onCancel} disabled={busy}>
           cancel
         </button>
       </div>
+      <p className="text-[11.5px] text-faint">
+        Any MCP server works — Claude / Cursor / Codex-compatible. Claude, OpenWorker, 通义, 混元…
+        same standard.
+      </p>
     </div>
   );
 }

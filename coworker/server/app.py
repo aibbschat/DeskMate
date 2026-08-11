@@ -914,7 +914,15 @@ def create_app(manager: SessionManager) -> FastAPI:
         )
 
     @app.post("/v1/mcp/reload")
-    async def mcp_reload() -> dict[str, Any]:
+    async def mcp_reload(body: dict | None = None) -> dict[str, Any]:
+        """Reload MCP connections. With ``session_id`` this hot-plugs the new tool
+        set into a *running* session (roundtable/agent) without a restart; without
+        it, all live connections are build-before-swapped for new sessions."""
+        body = body or {}
+        session_id = (body.get("session_id") or "").strip()
+        agent = (body.get("agent") or "code").strip()
+        if session_id:
+            return await manager.hot_reload_mcp(session_id, agent=agent)
         return await manager.reload_mcp()
 
     # -- connectors (Slack / Telegram / …) --------------------------------------

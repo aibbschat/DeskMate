@@ -572,8 +572,12 @@ export async function getMcpTools(
   return res.json();
 }
 
-export async function reloadMcp() {
-  const res = await authedFetch(`${httpBase()}/v1/mcp/reload`, { method: "POST" });
+export async function reloadMcp(sessionId?: string, agent?: string) {
+  const res = await authedFetch(`${httpBase()}/v1/mcp/reload`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(sessionId ? { session_id: sessionId, agent: agent ?? "code" } : {}),
+  });
   return res.json();
 }
 
