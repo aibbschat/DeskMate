@@ -48,6 +48,14 @@ for pkg in ("coworker", "aisuite", "mcp", "ddgs", "croniter", "docstring_parser"
     # live under deskmate.* — so they have to be importable from the bundle.
     hiddenimports += collect_submodules(pkg)
 
+# `collect_submodules` only grabs .py files, so the skill catalog JSON (a data
+# file under coworker/skills/) would be missing from the frozen bundle and
+# `_builtin_skills()` would raise FileNotFoundError, crashing the Skill Store
+# page. Stage it explicitly next to the coworker package in the bundle.
+_catalog_src = os.path.join(ROOT, "coworker", "skills", "catalog.json")
+if os.path.isfile(_catalog_src):
+    datas.append((_catalog_src, os.path.join("coworker", "skills")))
+
 if not INCLUDE_EXPERIMENTAL:
     hiddenimports = [
         m for m in hiddenimports if not m.startswith("coworker.connectors.experimental")

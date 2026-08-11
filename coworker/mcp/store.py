@@ -65,9 +65,46 @@ class SkillEntry:
 # Builtin catalog
 # ---------------------------------------------------------------------------
 
+def _clean_description(raw: str) -> str:
+    """Strip the YAML frontmatter noise that upstream community catalogs embed
+    in the ``description`` field, e.g.::
+
+        name: timeline-report
+        description: >
+          Generate a chronological report...
+
+    The frontend cards render the description verbatim, so this turns the raw
+    dump into a single clean paragraph without losing upstream content.
+    """
+    if not raw:
+        return ""
+    text = raw
+    # Drop the leading 'name: ...' line if present.
+    if text.startswith("name:"):
+        text = text.split("\n", 1)[-1]
+    # Drop the 'description:' prefix, including an optional YAML block-scalar
+    # indicator (``>`` or ``|``) and the whitespace/newline that follows it.
+    text = re.sub(r"^description:\s*(>|\|)?\s*", "", text, flags=re.MULTILINE)
+    text = text.strip()
+    # Unwrap a single surrounding double-quoted string.
+    if text.startswith('"') and text.endswith('"'):
+        text = text[1:-1]
+    # Collapse YAML block-scalar newlines + repeated whitespace into spaces.
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+
 def _builtin_skills() -> list[SkillEntry]:
     """Curated skills bundled with the software."""
-    return [
+    # Read from the builtin catalog JSON (contains merged MSApps open-source skills)
+    import json
+    from pathlib import Path
+    catalog_path = Path(__file__).parent / "../skills/catalog.json"
+    with open(catalog_path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    
+    # Base skills from Anthropic
+    base = [
         SkillEntry(
             id="brave-search",
             name="Brave 搜索",
@@ -174,6 +211,42 @@ def _builtin_skills() -> list[SkillEntry]:
             tags=["地图", "导航"],
         ),
     ]
+    # Merge with MSApps open-source community skills
+    for source in data["sources"]:
+        for item in source["skills"]:
+            # Convert catalog entry from JSON to SkillEntry dataclass.
+            # The catalog stores post-install config under a nested "config"
+            # object — read that, never the (non-existent) top-level
+            # config_type / config_env_key fields.
+            cfg = item.get("config") or {}
+            se = SkillConfig(
+                type=cfg.get("type") or "none",
+                key_name=cfg.get("key_name") or "",
+                key_hint=cfg.get("key_hint") or "",
+                env_key=cfg.get("env_key") or "",
+            )
+            si = SkillInstall(
+                type=item["install"]["type"],
+                command=item["install"].get("command"),
+                args=item["install"].get("args", []),
+                url=item["install"].get("url"),
+                env=item["install"].get("env", {}),
+                headers=item["install"].get("headers", {}),
+            )
+            base.append(SkillEntry(
+                id=item["id"],
+                name=item["name"],
+                description=_clean_description(item["description"]),
+                category=item["category"],
+                icon=item.get("icon") or "🔧",
+                version=item.get("version") or "1.0.0",
+                install=si,
+                config=se,
+                tags=item.get("tags") or [],
+                author=item.get("author"),
+                homepage=item.get("homepage"),
+            ))
+    return base
 
 
 # ---------------------------------------------------------------------------

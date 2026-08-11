@@ -66,7 +66,7 @@ where = ["."]
 include = ["coworker*", "deskmate*"]
 
 [tool.setuptools.package-data]
-coworker = ["personas/builtin/*.md"]
+coworker = ["personas/builtin/*.md", "skills/*.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
