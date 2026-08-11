@@ -58,6 +58,7 @@ import { UpdateBanner } from "./components/UpdateBanner";
 import { ScheduledView } from "./components/ScheduledView";
 import { RightRail } from "./components/RightRail";
 import { IntegrationsView } from "./components/IntegrationsView";
+import { SkillStore } from "./components/SkillStore";
 import { SettingsView } from "./components/SettingsView";
 import { PersonaView } from "./components/PersonaView";
 import { AuditView } from "./components/AuditView";
@@ -291,7 +292,7 @@ export function App() {
   // load; corrected by loadSettings.
   const [modelReady, setModelReady] = useState(true);
   const [surface, setSurface] = useState<
-    "session" | "scheduled" | "integrations" | "audit" | "inbox" | "persona" | "settings" | "experts" | "roundtable" | "badges"
+    "session" | "scheduled" | "integrations" | "skillstore" | "audit" | "inbox" | "persona" | "settings" | "experts" | "roundtable" | "badges"
   >("session");
   // A remembered Scheduled-detail target must not outlive the surface (see the
   // scheduledOpenId comment above): nav re-entry lands on the list, never a
@@ -1513,6 +1514,7 @@ export function App() {
           setSurface("scheduled");
         }}
         onOpenIntegrations={() => setSurface("integrations")}
+        onOpenSkillStore={() => setSurface("skillstore")}
         onOpenAudit={() => setSurface("audit")}
         onOpenInbox={() => setSurface("inbox")}
         onOpenExperts={() => setSurface("experts")}
@@ -1522,6 +1524,7 @@ export function App() {
         badgesActive={surface === "badges"}
         scheduledActive={surface === "scheduled"}
         integrationsActive={surface === "integrations"}
+        skillStoreActive={surface === "skillstore"}
         auditActive={surface === "audit"}
         inboxActive={surface === "inbox"}
         expertsActive={surface === "experts"}
@@ -1537,6 +1540,8 @@ export function App() {
         />
       ) : surface === "integrations" ? (
         <IntegrationsView />
+      ) : surface === "skillstore" ? (
+        <SkillStore />
       ) : surface === "settings" ? (
         <SettingsView
           key={settingsTab}

@@ -266,3 +266,32 @@ def test_parse_sse_transport():
     assert http.transport == "http"
     stdio = _parse("fs", {"command": "npx", "args": ["-y", "x"]}, s)
     assert stdio.transport == "stdio"
+
+
+def test_skill_store_secret_storage_and_workspace(tmp_path, monkeypatch):
+    """Secrets land in .env as ${VAR} refs (never plaintext in mcp.json); the
+    filesystem skill's literal ${workspace} token resolves to a real dir."""
+    monkeypatch.setenv("COWORKER_STATE_DIR", str(tmp_path))
+    from coworker.mcp.store import (
+        get_builtin_skills,
+        _resolve_workspace_tokens,
+        install_skill,
+        configure_skill,
+        get_skill_status,
+        global_mcp_path,
+    )
+
+    fs = next(s for s in get_builtin_skills() if s.id == "filesystem")
+    resolved = _resolve_workspace_tokens(fs.install.args)
+    assert "${workspace}" not in " ".join(resolved)
+
+    brave = next(s for s in get_builtin_skills() if s.id == "brave-search")
+    install_skill(brave)
+    configure_skill("brave-search", {"BRAVE_API_KEY": "sk-x"})
+    assert get_skill_status("brave-search") == "configured"
+
+    mcp = json.loads(global_mcp_path().read_text(encoding="utf-8"))
+    stored = mcp["mcpServers"]["brave-search"]["env"]["BRAVE_API_KEY"]
+    assert stored == "${BRAVE_API_KEY}", stored
+    dotenv = (tmp_path / ".env").read_text(encoding="utf-8")
+    assert "BRAVE_API_KEY=sk-x" in dotenv

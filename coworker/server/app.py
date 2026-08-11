@@ -925,6 +925,86 @@ def create_app(manager: SessionManager) -> FastAPI:
             return await manager.hot_reload_mcp(session_id, agent=agent)
         return await manager.reload_mcp()
 
+    # -- skill store (one-click MCP install) ------------------------------------
+    # NOTE: routes live under /v1/skill-store to avoid colliding with the
+    # plugin-skill catalog at GET /v1/skills (manager.list_skills).
+    @app.get("/v1/skill-store")
+    async def skill_list() -> dict[str, Any]:
+        """Return the skill catalog with install status for each skill."""
+        from ..mcp.store import get_builtin_skills, get_skill_status
+
+        skills = []
+        for s in get_builtin_skills():
+            skills.append({
+                "id": s.id,
+                "name": s.name,
+                "description": s.description,
+                "category": s.category,
+                "icon": s.icon,
+                "version": s.version,
+                "tags": s.tags,
+                "author": s.author,
+                "homepage": s.homepage,
+                "config_type": s.config.type,
+                "config_key_name": s.config.key_name,
+                "config_key_hint": s.config.key_hint,
+                "config_env_key": s.config.env_key,
+                "status": get_skill_status(s.id),
+            })
+        return {"skills": skills}
+
+    @app.post("/v1/skill-store/install")
+    async def skill_install(body: dict) -> dict[str, Any]:
+        """Install a skill by its ID. Writes config to mcp.json, then hot-reloads."""
+        from ..mcp.store import get_builtin_skills, install_skill
+
+        skill_id = body.get("skill_id", "").strip()
+        if not skill_id:
+            return {"ok": False, "error": "skill_id required"}
+
+        catalog = {s.id: s for s in get_builtin_skills()}
+        skill = catalog.get(skill_id)
+        if skill is None:
+            return {"ok": False, "error": f"unknown skill: {skill_id}"}
+
+        try:
+            install_skill(skill)
+            await manager.reload_mcp()
+            return {"ok": True}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    @app.post("/v1/skill-store/configure")
+    async def skill_configure(body: dict) -> dict[str, Any]:
+        """Configure an installed skill (set API key, etc.)."""
+        from ..mcp.store import configure_skill
+
+        skill_id = body.get("skill_id", "").strip()
+        config = body.get("config", {})
+        if not skill_id:
+            return {"ok": False, "error": "skill_id required"}
+        if not config:
+            return {"ok": False, "error": "config required"}
+
+        try:
+            configure_skill(skill_id, config)
+            await manager.reload_mcp()
+            return {"ok": True}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    @app.delete("/v1/skill-store/{skill_id}")
+    async def skill_uninstall(skill_id: str) -> dict[str, Any]:
+        """Uninstall a skill by removing it from mcp.json."""
+        from ..mcp.store import uninstall_skill
+
+        try:
+            uninstall_skill(skill_id)
+            await manager.reload_mcp()
+            return {"ok": True}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
     # -- connectors (Slack / Telegram / …) --------------------------------------
     @app.get("/v1/connectors")
     def connectors_list() -> dict[str, Any]:

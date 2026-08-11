@@ -598,6 +598,58 @@ export async function signoutMcp(name: string): Promise<{ ok: boolean }> {
   return res.json();
 }
 
+// -- skill store (one-click MCP install) --------------------------------------
+
+export interface SkillEntry {
+  id: string;
+  name: string;
+  description: string;
+  category: string;
+  icon: string;
+  version: string;
+  tags: string[];
+  author: string;
+  homepage: string;
+  config_type: string;
+  config_key_name: string;
+  config_key_hint: string;
+  config_env_key: string;
+  status: "not_installed" | "installed" | "configured";
+}
+
+export async function getSkills(): Promise<{ skills: SkillEntry[] }> {
+  const res = await authedFetch(`${httpBase()}/v1/skill-store`);
+  return res.json();
+}
+
+export async function installSkill(skillId: string): Promise<{ ok: boolean; error?: string }> {
+  const res = await authedFetch(`${httpBase()}/v1/skill-store/install`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ skill_id: skillId }),
+  });
+  return res.json();
+}
+
+export async function configureSkill(
+  skillId: string,
+  config: Record<string, string>,
+): Promise<{ ok: boolean; error?: string }> {
+  const res = await authedFetch(`${httpBase()}/v1/skill-store/configure`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ skill_id: skillId, config }),
+  });
+  return res.json();
+}
+
+export async function uninstallSkill(skillId: string): Promise<{ ok: boolean; error?: string }> {
+  const res = await authedFetch(`${httpBase()}/v1/skill-store/${encodeURIComponent(skillId)}`, {
+    method: "DELETE",
+  });
+  return res.json();
+}
+
 // -- plugin packages (server + persona bundles) --------------------------------
 export interface PluginValidateResult {
   ok: boolean;

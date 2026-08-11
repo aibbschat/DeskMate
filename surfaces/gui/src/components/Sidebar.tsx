@@ -136,10 +136,12 @@ interface Props {
   // Scheduled-band row click: open the Automations surface ON that automation (UX-023).
   onOpenAutomation: (id: string) => void;
   onOpenIntegrations: () => void;
+  onOpenSkillStore: () => void;
   onOpenAudit: () => void;
   onOpenInbox: () => void;
   scheduledActive: boolean;
   integrationsActive: boolean;
+  skillStoreActive: boolean;
   auditActive: boolean;
   inboxActive: boolean;
   // Expert Center nav (专家中心 UI): summon a domain expert into the conversation.
@@ -1233,6 +1235,7 @@ export function Sidebar(props: Props) {
                   <AttnBadge n={totalAttention} t={t} />,
                 )}
                 {appMenuItem("plug", t("sidebar.connectors"), props.onOpenIntegrations, props.integrationsActive)}
+                {appMenuItem("wrench", t("sidebar.skillStore", { defaultValue: "技能广场" }), props.onOpenSkillStore, props.skillStoreActive)}
                 <div className="h-px bg-line my-1 mx-2" />
                 {appMenuItem(
                   "gear",
