@@ -383,6 +383,14 @@
       </div>
       <input type="text" id="hermes-url" value="http://localhost:9900" placeholder="Hermes A2A URL" />
 
+      <label>MCP 插件（工具源）</label>
+      <div class="compact" style="margin-top:4px">
+        <span class="c-label">外部 server</span>
+        <span class="c-val" id="mcpSummary">未接入</span>
+        <button class="more-btn" id="mcpReloadBtn" onclick="reloadMcp()">🔌 热插拔</button>
+      </div>
+      <div id="mcpStat" style="font-size:10.5px;color:var(--ink-muted);margin-top:4px;line-height:1.4"></div>
+
       <button class="start" id="startBtn" onclick="startRoundtable()">开始圆桌</button>
       <div class="health" id="health"></div>
     </div>
@@ -1091,9 +1099,63 @@
     else el.textContent = names.slice(0, 3).join(" · ") + " 等 " + names.length + " 个";
   }
 
+  // ===== MCP 热插拔（插件中心装完外部 server 后，让圆桌重新接入，无需重启）=====
+  // 圆桌 iframe 与主应用同源：从父窗口取启动注入的鉴权 token（桌面壳经
+  // initialization_script 写入 window.__COWORKER_API_TOKEN__）。独立运行
+  // （python -m deskmate.roundtable.web）时无 token，按钮会给出友好提示。
+  function apiToken() {
+    try {
+      return window.__COWORKER_API_TOKEN__ ||
+        (window.parent && window.parent.__COWORKER_API_TOKEN__) || "";
+    } catch (_) { return ""; }
+  }
+  async function refreshMcpStatus() {
+    const token = apiToken();
+    const sum = $("mcpSummary");
+    if (!token) { sum.textContent = "需在主应用打开"; return; }
+    try {
+      const r = await fetch("/v1/mcp", { headers: { "X-OpenWorker-Token": token } });
+      const j = await r.json();
+      const servers = j.servers || [];
+      const online = servers.filter(x => x.status === "connected").length;
+      sum.textContent = online + "/" + servers.length + " 在线";
+    } catch (_) { sum.textContent = "状态获取失败"; }
+  }
+  async function reloadMcp() {
+    const token = apiToken();
+    const btn = $("mcpReloadBtn"), stat = $("mcpStat");
+    if (!token) {
+      stat.textContent = "未在主应用鉴权：请于插件中心操作后在主应用重启圆桌。";
+      return;
+    }
+    btn.disabled = true; btn.textContent = "🔌 接入中…";
+    stat.textContent = "正在重新接入所有 MCP server…";
+    try {
+      const r = await fetch("/v1/mcp/reload", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-OpenWorker-Token": token },
+        body: JSON.stringify({}),
+      });
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      const s = await fetch("/v1/mcp", { headers: { "X-OpenWorker-Token": token } });
+      const j = await s.json();
+      const servers = j.servers || [];
+      const online = servers.filter(x => x.status === "connected").length;
+      const tools = servers.reduce((a, x) => a + (x.tool_count || 0), 0);
+      $("mcpSummary").textContent = online + "/" + servers.length + " 在线";
+      stat.innerHTML = "✅ 已重新接入 " + online + "/" + servers.length +
+        " 个 MCP（共 " + tools + " 个工具）";
+    } catch (e) {
+      stat.textContent = "热插拔失败：" + e.message;
+    } finally {
+      btn.disabled = false; btn.textContent = "🔌 热插拔 / 重新接入";
+    }
+  }
+
   // 页面载入即拉取潮流简报列表
   loadTrends();
   updatePersonaSummary();
+  refreshMcpStatus();
 </script>
 </body>
 </html>

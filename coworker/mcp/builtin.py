@@ -43,9 +43,29 @@ BUILTIN_SERVERS: dict[str, dict[str, Any]] = {
 # apart from a user's same-named custom server when repairing path drift.
 _BUILTIN_MARKER = "_builtin"
 
+# Frozen-build dispatch token. When OpenWorker ships as a PyInstaller onedir
+# bundle (build_dmg.sh), `sys.executable` is the *frozen sidecar binary*, not a
+# python interpreter — so `python -m <module>` cannot work. Instead the builtin
+# entry relaunches THIS binary with `--mcp-run <module>`; `coworker.server.run`
+# intercepts it and routes to `runpy.run_module` (functionally identical to
+# `python -m`). See run.py::_MCP_RUN_FLAG.
+_MCP_RUN_FLAG = "--mcp-run"
+
+
+def _is_frozen() -> bool:
+    """True when running inside a PyInstaller-frozen bundle (the distributed
+    .app / .exe). In that world `sys.executable` is the sidecar binary and
+    `importlib.resources.files` cannot resolve a writable package root."""
+    return bool(getattr(sys, "frozen", False))
+
 
 def _package_root() -> Path:
-    """Directory the `-m` entries should use as cwd (the repo / install root)."""
+    """Directory the `-m` entries should use as cwd (the repo / install root).
+
+    Only meaningful in a normal (non-frozen) interpreter — the frozen bundle
+    passes ``cwd=None`` and relies on the modules being importable from the
+    bundle, so this is never called there.
+    """
     try:
         return Path(importlib.resources.files("deskmate")).parent
     except Exception:
@@ -54,14 +74,29 @@ def _package_root() -> Path:
 
 
 def render_builtin(name: str, cfg: dict[str, Any]) -> dict[str, Any]:
-    """Build the concrete mcp.json entry for a builtin server using the *current*
-    interpreter and package root — never a stale absolute path."""
+    """Build the concrete mcp.json entry for a builtin server.
+
+    In a normal interpreter this is ``<python> -m <module>`` with a derived cwd —
+    never a stale absolute path. In a PyInstaller-frozen bundle ``sys.executable``
+    is the sidecar binary (not a python), so we relaunch it with ``--mcp-run
+    <module>`` and let run.py route to runpy (see _MCP_RUN_FLAG).
+    """
+    requires_approval = bool(cfg.get("requires_approval", False))
+    if _is_frozen():
+        return {
+            "command": sys.executable,
+            "args": [_MCP_RUN_FLAG, cfg["module"]],
+            "cwd": None,
+            "enabled": True,
+            "requires_approval": requires_approval,
+            _BUILTIN_MARKER: True,
+        }
     return {
         "command": sys.executable,
         "args": ["-m", cfg["module"]],
         "cwd": str(_package_root()),
         "enabled": True,
-        "requires_approval": bool(cfg.get("requires_approval", False)),
+        "requires_approval": requires_approval,
         _BUILTIN_MARKER: True,
     }
 

@@ -76,8 +76,15 @@
 
 ### 风险
 - 用户可能已手改了某 server 的字段 → bootstrap 必须"缺失才写、存在不覆盖"，且保留 `patch` 语义。
-- `sys.executable` 在冻结的 DMG（build_dmg.sh）里指向打包解释器，需验证 `importlib.resources`
-  在 PyInstaller 冻结后能取到包根（记忆提示：只有 build_dmg.sh 冻结，本地 .app 走 venv 回退链）。
+- ⚠️ **`sys.executable` 冻结坑（已验证真实并已修复，2026-08-11）**：
+  冻结 DMG（`build_dmg.sh` / PyInstaller onedir）里 `sys.executable` 指向 `OpenWorker.app/Contents/Resources/sidecar/openworker-server`
+  这一**冻结二进制**，不是 python 解释器；PyInstaller 二进制不吃 `-m`，故原本的 `sys.executable -m deskmate.novel_memory.server`
+  会变成"再拉起一个 uvicorn 主服务"而彻底起不来。同时 spec 原先只 `collect_submodules` 了
+  `coworker/aisuite/mcp/ddgs/croniter/docstring_parser`，**不含 `deskmate`**，冻结包里根本没有这些 server 模块。
+  修复：`builtin.py` 检测 `sys.frozen` 后改为发射 `openworker-server --mcp-run <module>`，`run.py::main`
+  在 argparse 前拦截该标记走 `runpy.run_module`（等价 `python -m`）；spec 补收 `deskmate`。
+  → 本地 `.app`（build_local_app.sh 走 venv 回退链，`sys.executable`=venv python）仍走原 `-m` 分支，不受影响。
+  roadmap 原第 79-80 行"需验证"已闭环。
 
 ## 四、改造二：add_mcp / 一键连接成为标准安装路径
 

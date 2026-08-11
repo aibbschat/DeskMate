@@ -41,7 +41,11 @@ hiddenimports = []
 datas = []
 binaries = []
 
-for pkg in ("coworker", "aisuite", "mcp", "ddgs", "croniter", "docstring_parser"):
+for pkg in ("coworker", "aisuite", "mcp", "ddgs", "croniter", "docstring_parser", "deskmate"):
+    # `deskmate` must be fully collected: the frozen sidecar relaunches itself as
+    # `openworker-server --mcp-run <module>` to run the 5 builtin MCP servers
+    # (no `python -m` is possible inside a PyInstaller binary), and those modules
+    # live under deskmate.* — so they have to be importable from the bundle.
     hiddenimports += collect_submodules(pkg)
 
 if not INCLUDE_EXPERIMENTAL:

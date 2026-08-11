@@ -107,3 +107,45 @@ def test_legacy_real_mcpjson_migrates(state):
         assert raw[name]["_builtin"] is True
         assert raw[name]["command"] == sys.executable
         assert raw[name]["enabled"] is True and raw[name]["requires_approval"] is False
+
+
+def test_frozen_render_uses_mcp_run_flag(state, monkeypatch):
+    """PyInstaller-frozen sidecar: `sys.executable` is the frozen binary, not a
+    python interpreter, so `python -m` cannot work. render_builtin / ensure must
+    emit the `openworker-server --mcp-run <module>` form with cwd=None."""
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    from coworker.mcp.builtin import _MCP_RUN_FLAG, render_builtin
+
+    name = "novel-memory"
+    cfg = BUILTIN_SERVERS[name]
+    entry = render_builtin(name, cfg)
+    assert entry["args"] == [_MCP_RUN_FLAG, cfg["module"]]
+    assert entry["cwd"] is None
+    assert entry["command"] == sys.executable
+    assert entry["_builtin"] is True
+
+    # ensure_builtin_servers seeds the frozen form too.
+    touched = ensure_builtin_servers()
+    assert name in touched
+    raw = read_global()[name]
+    assert raw["args"] == [_MCP_RUN_FLAG, cfg["module"]]
+    assert raw["cwd"] is None
+
+
+def test_run_mcp_run_dispatch(monkeypatch, state):
+    """run.main intercepts `--mcp-run <module>` and routes it to runpy.run_module
+    (the frozen-build equivalent of `python -m`), never starting uvicorn."""
+    import runpy
+
+    import coworker.server.run as run_mod
+
+    captured = {}
+
+    def fake_run_module(module, run_name=None):
+        captured["module"] = module
+        captured["run_name"] = run_name
+
+    monkeypatch.setattr(runpy, "run_module", fake_run_module)
+    run_mod.main(["--mcp-run", "deskmate.novel_memory.server"])
+    assert captured.get("module") == "deskmate.novel_memory.server"
+    assert captured.get("run_name") == "__main__"

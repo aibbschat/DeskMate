@@ -17,6 +17,7 @@ from ..permissions import Mode
 from ..secrets import _load_dotenv, state_dir, write_private_text
 from .app import _WS_MAX_FRAME_BYTES, create_app
 from .manager import SessionManager
+from ..mcp.builtin import _MCP_RUN_FLAG
 
 
 def _load_env_file() -> None:
@@ -128,6 +129,24 @@ def _seed_builtin_mcp_servers() -> None:
 def main(argv=None) -> None:
     _load_env_file()
     _ensure_ca_bundle()
+
+    # Frozen-build MCP subprocess dispatch. PyInstaller bundles `openworker-server`
+    # as a single binary, so the builtin MCP servers (declared via `python -m
+    # <module>`) cannot spawn a fresh interpreter. Instead they relaunch THIS
+    # binary with `--mcp-run <module>`; we route that to runpy — exactly what
+    # `python -m <module>` does — and never reach the uvicorn server path below.
+    if argv is None:
+        argv = sys.argv[1:]
+    else:
+        argv = list(argv)
+    if argv and argv[0] == _MCP_RUN_FLAG:
+        module = argv[1] if len(argv) > 1 else ""
+        if module:
+            import runpy
+
+            runpy.run_module(module, run_name="__main__")
+        return
+
     _seed_builtin_mcp_servers()
     cfg = load_config()  # global config supplies defaults
     parser = argparse.ArgumentParser(prog="openworker-server")
