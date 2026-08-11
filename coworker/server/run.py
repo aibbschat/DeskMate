@@ -144,6 +144,11 @@ def main(argv=None) -> None:
         if module:
             import runpy
 
+            # runpy.run_module does NOT reset sys.argv: without this the child's argv
+            # still carries ["--mcp-run", <module>] and every builtin MCP server's
+            # `parser.parse_args()` dies with "unrecognized arguments". Stripping the
+            # dispatch token makes it behave exactly like `python -m <module>`.
+            sys.argv = [sys.argv[0], *argv[2:]]
             runpy.run_module(module, run_name="__main__")
         return
 

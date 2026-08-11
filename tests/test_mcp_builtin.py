@@ -144,8 +144,12 @@ def test_run_mcp_run_dispatch(monkeypatch, state):
     def fake_run_module(module, run_name=None):
         captured["module"] = module
         captured["run_name"] = run_name
+        captured["child_argv"] = sys.argv
 
     monkeypatch.setattr(runpy, "run_module", fake_run_module)
     run_mod.main(["--mcp-run", "deskmate.novel_memory.server"])
     assert captured.get("module") == "deskmate.novel_memory.server"
     assert captured.get("run_name") == "__main__"
+    # Regression: runpy.run_module does NOT reset sys.argv — the dispatch token must
+    # be stripped, or the child server's argparse dies on the leftover args.
+    assert captured["child_argv"] == [sys.argv[0]]
