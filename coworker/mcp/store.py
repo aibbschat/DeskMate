@@ -73,19 +73,32 @@ def _clean_description(raw: str) -> str:
         description: >
           Generate a chronological report...
 
+    or, on a single line (some upstream dumps inline the whole frontmatter)::
+
+        name: rtl-chat description: | Multi-language RTL formatting skill...
+
     The frontend cards render the description verbatim, so this turns the raw
     dump into a single clean paragraph without losing upstream content.
     """
     if not raw:
         return ""
-    text = raw
-    # Drop the leading 'name: ...' line if present.
-    if text.startswith("name:"):
-        text = text.split("\n", 1)[-1]
-    # Drop the 'description:' prefix, including an optional YAML block-scalar
-    # indicator (``>`` or ``|``) and the whitespace/newline that follows it.
-    text = re.sub(r"^description:\s*(>|\|)?\s*", "", text, flags=re.MULTILINE)
-    text = text.strip()
+    # Upstream community catalogs sometimes embed raw YAML frontmatter in the
+    # description field — potentially several ``name:`` / ``description:`` lines
+    # (some entries even repeat ``name:``). Walk line by line, drop every
+    # ``name:`` noise line and strip the ``description:`` prefix (with its
+    # optional ``>`` / ``|`` block-scalar marker), then flatten to one paragraph.
+    out = []
+    for ln in raw.split("\n"):
+        s = ln.strip()
+        if s.startswith("name:"):
+            continue
+        if s.startswith("description:"):
+            rest = re.sub(r"^description:\s*(>|\|)?\s*", "", s)
+            if rest:
+                out.append(rest)
+            continue
+        out.append(ln)
+    text = " ".join(x.strip() for x in out).strip()
     # Unwrap a single surrounding double-quoted string.
     if text.startswith('"') and text.endswith('"'):
         text = text[1:-1]

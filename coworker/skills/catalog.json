@@ -7,9 +7,9 @@
         {
           "id": "timeline-report",
           "name": "timeline-report",
-          "description": "name: timeline-report\ndescription: >\nGenerate a chronological report of what happened across sessions.\nUse when the user asks \"what have we done this week\", \"give me a history\",",
+          "description": "Generate a chronological report of what happened across sessions. Use when the user asks \"what have we done this week\", \"give me a history\",",
           "category": "productivity",
-          "icon": null,
+          "icon": "📅",
           "version": "1.0.0",
           "install": {
             "type": "stdio",
@@ -26,9 +26,9 @@
         {
           "id": "notion-memory",
           "name": "notion-memory",
-          "description": "name: notion-memory\ndescription: >\nPersistent long-term memory for Claude Cowork & Claude Code by storing and retrieving context from the user's Notion workspace. Use to remember facts, decisions, preferences, and project state across sessions.",
+          "description": "Persistent long-term memory for Claude Cowork & Claude Code by storing and retrieving context from the user's Notion workspace. Use to remember facts, decisions, preferences, and project state across sessions.",
           "category": "productivity",
-          "icon": null,
+          "icon": "📝",
           "version": "1.0.0",
           "install": {
             "type": "stdio",
@@ -45,9 +45,9 @@
         {
           "id": "token-efficiency-audit",
           "name": "token-efficiency-audit",
-          "description": "name: token-efficiency-audit\ndescription: >\nFind and fix token waste in CLAUDE.md and AGENTS.md files. Typical savings: 20-50% reduction in per-task token consumption.",
+          "description": "Find and fix token waste in CLAUDE.md and AGENTS.md files. Typical savings: 20-50% reduction in per-task token consumption.",
           "category": "development",
-          "icon": null,
+          "icon": "🪙",
           "version": "1.0.0",
           "install": {
             "type": "stdio",
@@ -64,9 +64,9 @@
         {
           "id": "kotlin-lsp",
           "name": "kotlin-lsp",
-          "description": "name: kotlin-lsp\ndescription: >\nReal-time Kotlin code intelligence via kotlin-language-server. Gives Claude\ninstant error detection, go-to-definition, find-references, and type info",
+          "description": "Real-time Kotlin code intelligence via kotlin-language-server. Gives Claude instant error detection, go-to-definition, find-references, and type info",
           "category": "other",
-          "icon": null,
+          "icon": "🤖",
           "version": "1.0.0",
           "install": {
             "type": "stdio",
@@ -83,9 +83,9 @@
         {
           "id": "daily-cowork-backup",
           "name": "daily-cowork-backup",
-          "description": "name: daily-cowork-backup\ndescription: גיבוי יומי של תיקיות הסקילס, המשימות המתוזמנות והקונפיגורציות לגוגל דרייב",
+          "description": "גיבוי יומי של תיקיות הסקילס, המשימות המתוזמנות והקונפיגורציות לגוגל דרייב",
           "category": "productivity",
-          "icon": null,
+          "icon": "💾",
           "version": "1.0.0",
           "install": {
             "type": "stdio",
@@ -102,9 +102,9 @@
         {
           "id": "vm-cleanup",
           "name": "vm-cleanup",
-          "description": "name: vm-cleanup\ndescription: >\nClean up disk space in the Claude working environment (Cowork session VM\nor Claude Code sandbox). Use this skill when the user says \"clean VM\",",
+          "description": "Clean up disk space in the Claude working environment (Cowork session VM or Claude Code sandbox). Use this skill when the user says \"clean VM\",",
           "category": "other",
-          "icon": null,
+          "icon": "🧹",
           "version": "1.0.0",
           "install": {
             "type": "stdio",
@@ -121,9 +121,9 @@
         {
           "id": "x-insights",
           "name": "x-insights",
-          "description": "name: x-insights\ndescription: >\nScrape and analyze X (Twitter) content for insights. Use this skill when the user asks to\n\"scrape X\", \"analyze tweets\", \"scan my X feed\", \"get X insights\", \"what's trending on X\",",
+          "description": "Scrape and analyze X (Twitter) content for insights. Use this skill when the user asks to \"scrape X\", \"analyze tweets\", \"scan my X feed\", \"get X insights\", \"what's trending on X\",",
           "category": "document",
-          "icon": null,
+          "icon": "🐦",
           "version": "1.0.0",
           "install": {
             "type": "stdio",
@@ -140,9 +140,9 @@
         {
           "id": "youtube-transcriber",
           "name": "youtube-transcriber",
-          "description": "name: youtube-transcriber\ndescription: >\nTranscribe YouTube videos and playlists by extracting auto-generated captions directly\nfrom the browser — no API key, no external service, completely free.",
+          "description": "Transcribe YouTube videos and playlists by extracting auto-generated captions directly from the browser — no API key, no external service, completely free.",
           "category": "document",
-          "icon": null,
+          "icon": "▶️",
           "version": "1.0.0",
           "install": {
             "type": "stdio",
@@ -159,9 +159,9 @@
         {
           "id": "prospect",
           "name": "prospect",
-          "description": "name: prospect\ndescription: \"Full ICP-to-leads pipeline for MSApps. Describe your ideal customer in plain English — or pick from MSApps' proven segments — and get a ranked table of enriched decision-maker leads with emails and phone numbers.\"\nuser-invocable: true\nargument-hint: \"[describe your ideal customer or pick a segment]\"",
+          "description": "Full ICP-to-leads pipeline for MSApps. Describe your ideal customer in plain English — or pick from MSApps' proven segments — and get a ranked table of enriched decision-maker leads with emails and phone numbers.\" user-invocable: true argument-hint: \"[describe your ideal customer or pick a segment]",
           "category": "other",
-          "icon": null,
+          "icon": "🎯",
           "version": "1.0.0",
           "install": {
             "type": "stdio",
@@ -178,9 +178,9 @@
         {
           "id": "sosa-audit",
           "name": "sosa-audit",
-          "description": "name: sosa-audit\ndescription: >\nAudit your entire plugin ecosystem against SOSA compliance levels. Catch hardcoded API keys, missing confirmation gates, unpinned packages, and prompt injection vulnerabilities in any plugin.",
+          "description": "Audit your entire plugin ecosystem against SOSA compliance levels. Catch hardcoded API keys, missing confirmation gates, unpinned packages, and prompt injection vulnerabilities in any plugin.",
           "category": "other",
-          "icon": null,
+          "icon": "🛡️",
           "version": "1.0.0",
           "install": {
             "type": "stdio",
@@ -197,9 +197,9 @@
         {
           "id": "bulk-scrape",
           "name": "bulk-scrape",
-          "description": "name: bulk-scrape\ndescription: Scrape multiple LinkedIn profiles or company pages in batch. Use when the user provides a list of LinkedIn URLs.",
+          "description": "Scrape multiple LinkedIn profiles or company pages in batch. Use when the user provides a list of LinkedIn URLs.",
           "category": "document",
-          "icon": null,
+          "icon": "🕷️",
           "version": "1.0.0",
           "install": {
             "type": "stdio",
@@ -216,9 +216,9 @@
         {
           "id": "do",
           "name": "do",
-          "description": "name: do\ndescription: >\nExecute a task using memory for context — the memory-aware task runner.\nUse when the user says \"do X\", \"implement Y\", \"fix Z\", \"build this\",",
+          "description": "Execute a task using memory for context — the memory-aware task runner. Use when the user says \"do X\", \"implement Y\", \"fix Z\", \"build this\",",
           "category": "other",
-          "icon": null,
+          "icon": "✅",
           "version": "1.0.0",
           "install": {
             "type": "stdio",
@@ -235,9 +235,9 @@
         {
           "id": "wp-woocommerce",
           "name": "wp-woocommerce",
-          "description": "name: wp-woocommerce\ndescription: >\nWooCommerce store management through the WordPress MCP Adapter. Use when the user\nasks about \"orders\", \"products\", \"customers\", \"sales\", \"inventory\", \"coupons\",",
+          "description": "WooCommerce store management through the WordPress MCP Adapter. Use when the user asks about \"orders\", \"products\", \"customers\", \"sales\", \"inventory\", \"coupons\",",
           "category": "other",
-          "icon": null,
+          "icon": "🛒",
           "version": "1.0.0",
           "install": {
             "type": "stdio",
@@ -254,9 +254,9 @@
         {
           "id": "digital-presence",
           "name": "digital-presence",
-          "description": "name: digital-presence\ndescription: >\nManage and optimize online presence across LinkedIn, Instagram, X (Twitter), Facebook, YouTube, GitHub, and personal website.\nUse when the user asks to: audit their online presence, create social media content, plan a content calendar,",
+          "description": "Manage and optimize online presence across LinkedIn, Instagram, X (Twitter), Facebook, YouTube, GitHub, and personal website. Use when the user asks to: audit their online presence, create social media content, plan a content calendar,",
           "category": "other",
-          "icon": null,
+          "icon": "🌐",
           "version": "1.0.0",
           "install": {
             "type": "stdio",
@@ -273,9 +273,9 @@
         {
           "id": "cowork-mem",
           "name": "cowork-mem",
-          "description": "name: cowork-mem\ndescription: >\nPersistent memory across Cowork sessions. Use this skill at the START of every\nsession to recall what happened before, and throughout any session to save",
+          "description": "Persistent memory across Cowork sessions. Use this skill at the START of every session to recall what happened before, and throughout any session to save",
           "category": "productivity",
-          "icon": null,
+          "icon": "🧠",
           "version": "1.0.0",
           "install": {
             "type": "stdio",
@@ -292,9 +292,9 @@
         {
           "id": "whatsapp-messages",
           "name": "whatsapp-messages",
-          "description": "name: whatsapp-messages\ndescription: >\nCRITICAL: For ANY request involving WhatsApp — searching, reading, checking messages, finding contacts,\nor ANY WhatsApp-related task — ALWAYS use this WhatsApp MCP skill. NEVER use Chrome, browser tools,",
+          "description": "CRITICAL: For ANY request involving WhatsApp — searching, reading, checking messages, finding contacts, or ANY WhatsApp-related task — ALWAYS use this WhatsApp MCP skill. NEVER use Chrome, browser tools,",
           "category": "other",
-          "icon": null,
+          "icon": "💬",
           "version": "1.0.0",
           "install": {
             "type": "stdio",
@@ -311,9 +311,9 @@
         {
           "id": "claude-md-composer",
           "name": "claude-md-composer",
-          "description": "name: claude-md-composer\ndescription: Audit, compose, and refactor CLAUDE.md files so they stay under the token budget. Use when the user says \"audit my CLAUDE.md\", \"my CLAUDE.md is too long\", \"compose a CLAUDE.md\", \"refactor CLAUDE.md\", \"CLAUDE.md is eating tokens\", \"flip negative rules\", \"extract bloat out of CLAUDE.md\", \"set up the CLAUDE.md hierarchy\", \"write a CLAUDE.md for this project\", or any request to create, shrink, or reorganize a CLAUDE.md file. Works on the root CLAUDE.md, feature-level CLAUDE.md (in subdirs), user-level ~/.claude/CLAUDE.md, and local CLAUDE.local.md.",
+          "description": "Audit, compose, and refactor CLAUDE.md files so they stay under the token budget. Use when the user says \"audit my CLAUDE.md\", \"my CLAUDE.md is too long\", \"compose a CLAUDE.md\", \"refactor CLAUDE.md\", \"CLAUDE.md is eating tokens\", \"flip negative rules\", \"extract bloat out of CLAUDE.md\", \"set up the CLAUDE.md hierarchy\", \"write a CLAUDE.md for this project\", or any request to create, shrink, or reorganize a CLAUDE.md file. Works on the root CLAUDE.md, feature-level CLAUDE.md (in subdirs), user-level ~/.claude/CLAUDE.md, and local CLAUDE.local.md.",
           "category": "development",
-          "icon": null,
+          "icon": "📄",
           "version": "1.0.0",
           "install": {
             "type": "stdio",
@@ -330,9 +330,9 @@
         {
           "id": "agents-md-optimizer",
           "name": "agents-md-optimizer",
-          "description": "name: agents-md-optimizer\ndescription: Audit bloated agent-instruction files (CLAUDE.md, AGENTS.md, and their local/user-level variants) and rewrite them lean, or author a new one from scratch following the 200-line \"recipe book\" principle. Use this skill whenever the user mentions CLAUDE.md, AGENTS.md, agent instruction file, project memory file, context file, token budget, context bloat, \"my CLAUDE.md is too big\", trimming CLAUDE.md, auditing AGENTS.md, writing AGENTS.md for a new project, or any discussion of what belongs in the agent-instruction-file hierarchy (enterprise, project, user-level, project-local). Also trigger when such a file is shown in context and is visibly long (over 200 lines) or contains anti-patterns like embedded API docs, negative \"Don't do X\" rules, step-by-step tutorials, or preemptive file-preload instructions — even if the user doesn't explicitly ask for optimization, proactively offer to use it.",
+          "description": "Audit bloated agent-instruction files (CLAUDE.md, AGENTS.md, and their local/user-level variants) and rewrite them lean, or author a new one from scratch following the 200-line \"recipe book\" principle. Use this skill whenever the user mentions CLAUDE.md, AGENTS.md, agent instruction file, project memory file, context file, token budget, context bloat, \"my CLAUDE.md is too big\", trimming CLAUDE.md, auditing AGENTS.md, writing AGENTS.md for a new project, or any discussion of what belongs in the agent-instruction-file hierarchy (enterprise, project, user-level, project-local). Also trigger when such a file is shown in context and is visibly long (over 200 lines) or contains anti-patterns like embedded API docs, negative \"Don't do X\" rules, step-by-step tutorials, or preemptive file-preload instructions — even if the user doesn't explicitly ask for optimization, proactively offer to use it.",
           "category": "development",
-          "icon": null,
+          "icon": "⚙️",
           "version": "1.0.0",
           "install": {
             "type": "stdio",
@@ -349,9 +349,9 @@
         {
           "id": "chrome-health-check",
           "name": "chrome-health-check",
-          "description": "name: chrome-health-check\ndescription: >\nQuickly checks whether the Chrome DevTools Protocol (CDP) connection is working and reports the\nstatus. Use when the user says \"is chrome connected?\", \"check chrome\", \"chrome status\", \"test",
+          "description": "Quickly checks whether the Chrome DevTools Protocol (CDP) connection is working and reports the status. Use when the user says \"is chrome connected?\", \"check chrome\", \"chrome status\", \"test",
           "category": "development",
-          "icon": null,
+          "icon": "🌐",
           "version": "1.0.0",
           "install": {
             "type": "stdio",
@@ -368,9 +368,9 @@
         {
           "id": "swift-lsp",
           "name": "swift-lsp",
-          "description": "name: swift-lsp\ndescription: >\nReal-time Swift code intelligence via SourceKit-LSP. Gives Claude instant\nerror detection, go-to-definition, find-references, and type info for .swift",
+          "description": "Real-time Swift code intelligence via SourceKit-LSP. Gives Claude instant error detection, go-to-definition, find-references, and type info for .swift",
           "category": "other",
-          "icon": null,
+          "icon": "🍎",
           "version": "1.0.0",
           "install": {
             "type": "stdio",
@@ -387,9 +387,9 @@
         {
           "id": "knowledge-agent",
           "name": "knowledge-agent",
-          "description": "name: knowledge-agent\ndescription: >\nAnswer questions using accumulated project memory as a knowledge base.\nUse when the user asks \"why did we choose X\", \"what's our approach to Y\",",
+          "description": "Answer questions using accumulated project memory as a knowledge base. Use when the user asks \"why did we choose X\", \"what's our approach to Y\",",
           "category": "development",
-          "icon": null,
+          "icon": "📚",
           "version": "1.0.0",
           "install": {
             "type": "stdio",
@@ -406,9 +406,9 @@
         {
           "id": "zoho-mail-health-check",
           "name": "zoho-mail-health-check",
-          "description": "name: zoho-mail-health-check\ndescription: >\nThis skill should be used when the user asks to \"run a Zoho Mail health check\",\n\"check if Zoho Mail is working\", \"test the mail accounts\", \"verify ${ACCOUNT1_EMAIL}",
+          "description": "This skill should be used when the user asks to \"run a Zoho Mail health check\", \"check if Zoho Mail is working\", \"test the mail accounts\", \"verify ${ACCOUNT1_EMAIL}",
           "category": "development",
-          "icon": null,
+          "icon": "📧",
           "version": "1.0.0",
           "install": {
             "type": "stdio",
@@ -425,9 +425,9 @@
         {
           "id": "sosa-governor",
           "name": "sosa-governor",
-          "description": "name: sosa-governor\ndescription: >\nSOSA Governor for on-demand governance audits, compliance checks, and reporting.\nUse this skill when the user says \"run SOSA audit\", \"check compliance\", \"show",
+          "description": "SOSA Governor for on-demand governance audits, compliance checks, and reporting. Use this skill when the user says \"run SOSA audit\", \"check compliance\", \"show",
           "category": "other",
-          "icon": null,
+          "icon": "🛡️",
           "version": "1.0.0",
           "install": {
             "type": "stdio",
@@ -444,9 +444,9 @@
         {
           "id": "rtl-chat-fixer",
           "name": "rtl-chat-fixer",
-          "description": "name: rtl-chat\nname: rtl-chat-fixer\ndescription: |\nMulti-language RTL formatting skill for Hebrew, Arabic, Persian (Farsi), Urdu, and other RTL languages. Like rtl-chat but supports ALL RTL scripts, not just Hebrew. Ensures clean bidirectional text formatting when mixing RTL languages with English/LTR text.",
+          "description": "Multi-language RTL formatting skill for Hebrew, Arabic, Persian (Farsi), Urdu, and other RTL languages. Like rtl-chat but supports ALL RTL scripts, not just Hebrew. Ensures clean bidirectional text formatting when mixing RTL languages with English/LTR text.",
           "category": "other",
-          "icon": null,
+          "icon": "🔠",
           "version": "1.0.0",
           "install": {
             "type": "stdio",
@@ -463,9 +463,9 @@
         {
           "id": "campfire",
           "name": "campfire",
-          "description": "name: campfire\ndescription: >\nThe Campfire — a social hangout where all of the user's installed skills come alive\nas distinct characters with personalities, voices, and relationships. Use this skill",
+          "description": "The Campfire — a social hangout where all of the user's installed skills come alive as distinct characters with personalities, voices, and relationships. Use this skill",
           "category": "other",
-          "icon": null,
+          "icon": "🔥",
           "version": "1.0.0",
           "install": {
             "type": "stdio",
@@ -482,9 +482,9 @@
         {
           "id": "sosa-orchestrator",
           "name": "sosa-orchestrator",
-          "description": "name: sosa-orchestrator\ndescription: >\nSOSA Orchestrator — the brain of your Claude session. Tracks token budgets in real time across Cowork, Claude Code, and scheduled tasks, then ranks every pending task by importance vs. token cost and decides what to run, defer, or pause. Use this skill whenever you say: \"orchestrate\", \"prioritize tasks\", \"token budget\", \"what should I run next\", \"how many tokens left\", \"rank my tasks\", \"stop low priority\", \"session budget\", \"am I running out of tokens\", \"what can I still afford\", \"triage tasks\", \"budget check\", or any mention of balancing work against remaining tokens. Also triggers automatically at session start (via hook) and whenever a task completes to re-evaluate priorities. Even if you just say \"what's the plan\" or \"what should I focus on\" in the context of multiple pending tasks, use this skill.\nmetadata:",
+          "description": "SOSA Orchestrator — the brain of your Claude session. Tracks token budgets in real time across Cowork, Claude Code, and scheduled tasks, then ranks every pending task by importance vs. token cost and decides what to run, defer, or pause. Use this skill whenever you say: \"orchestrate\", \"prioritize tasks\", \"token budget\", \"what should I run next\", \"how many tokens left\", \"rank my tasks\", \"stop low priority\", \"session budget\", \"am I running out of tokens\", \"what can I still afford\", \"triage tasks\", \"budget check\", or any mention of balancing work against remaining tokens. Also triggers automatically at session start (via hook) and whenever a task completes to re-evaluate priorities. Even if you just say \"what's the plan\" or \"what should I focus on\" in the context of multiple pending tasks, use this skill. metadata:",
           "category": "other",
-          "icon": null,
+          "icon": "🎭",
           "version": "1.0.0",
           "install": {
             "type": "stdio",
@@ -501,9 +501,9 @@
         {
           "id": "apify-scraping",
           "name": "apify-scraping",
-          "description": "name: apify-scraping\ndescription: |\nApify web scraping platform integration — run Actors, scrape websites, manage datasets, key-value stores, schedules, and webhooks.\nUse this skill whenever the user asks to: scrape a website, run an Apify Actor, get scraping results, check Actor runs,",
+          "description": "Apify web scraping platform integration — run Actors, scrape websites, manage datasets, key-value stores, schedules, and webhooks. Use this skill whenever the user asks to: scrape a website, run an Apify Actor, get scraping results, check Actor runs,",
           "category": "document",
-          "icon": null,
+          "icon": "🕸️",
           "version": "1.0.0",
           "install": {
             "type": "stdio",
@@ -520,9 +520,9 @@
         {
           "id": "disk-explorer",
           "name": "disk-explorer",
-          "description": "name: disk-explorer\ndescription: >\nExplore what's taking up space on the Mac and give the user actionable recommendations. Use when the user asks: what's taking up space, where is my disk space going, show me large files, what can I delete, why is my Mac full.",
+          "description": "Explore what's taking up space on the Mac and give the user actionable recommendations. Use when the user asks: what's taking up space, where is my disk space going, show me large files, what can I delete, why is my Mac full.",
           "category": "productivity",
-          "icon": null,
+          "icon": "💽",
           "version": "1.0.0",
           "install": {
             "type": "stdio",
@@ -539,9 +539,9 @@
         {
           "id": "gcloud-cli-health-check",
           "name": "gcloud-cli-health-check",
-          "description": "name: gcloud-cli-health-check\ndescription: >\nRun a Google Cloud CLI (gcloud) health check — verify installation, authentication, active\nproject, recommended region, enabled APIs (run, cloudbuild, artifactregistry, secretmanager,",
+          "description": "Run a Google Cloud CLI (gcloud) health check — verify installation, authentication, active project, recommended region, enabled APIs (run, cloudbuild, artifactregistry, secretmanager,",
           "category": "development",
-          "icon": null,
+          "icon": "☁️",
           "version": "1.0.0",
           "install": {
             "type": "stdio",
@@ -558,9 +558,9 @@
         {
           "id": "github-cli-health-check",
           "name": "github-cli-health-check",
-          "description": "name: github-cli-health-check\ndescription: >\nRun a GitHub CLI (gh) health check — verify installation, authentication,\nlist repos, and check API rate limit. Runtime-aware: on the cloud Routine",
+          "description": "Run a GitHub CLI (gh) health check — verify installation, authentication, list repos, and check API rate limit. Runtime-aware: on the cloud Routine",
           "category": "development",
-          "icon": null,
+          "icon": "🐙",
           "version": "1.0.0",
           "install": {
             "type": "stdio",
@@ -577,9 +577,9 @@
         {
           "id": "rtl-chat",
           "name": "rtl-chat",
-          "description": "name: rtl-chat\ndescription: |\nEnsures Claude's chat responses are properly formatted for Hebrew RTL (right-to-left) text, especially when mixing Hebrew and English. Use this skill ALWAYS — it should be active on every single response when the user writes in Hebrew, mentions Hebrew, or when the conversation includes any Hebrew text. This skill handles bidirectional text formatting so responses look clean and readable instead of jumbled. Trigger on ANY Hebrew content in the conversation, even a single Hebrew word.",
+          "description": "Ensures Claude's chat responses are properly formatted for Hebrew RTL (right-to-left) text, especially when mixing Hebrew and English. Use this skill ALWAYS — it should be active on every single response when the user writes in Hebrew, mentions Hebrew, or when the conversation includes any Hebrew text. This skill handles bidirectional text formatting so responses look clean and readable instead of jumbled. Trigger on ANY Hebrew content in the conversation, even a single Hebrew word.",
           "category": "other",
-          "icon": null,
+          "icon": "🔠",
           "version": "1.0.0",
           "install": {
             "type": "stdio",
@@ -596,9 +596,9 @@
         {
           "id": "smart-explore",
           "name": "smart-explore",
-          "description": "name: smart-explore\ndescription: >\nExplore a project or codebase using memory as a guide. Use when the user\nsays \"explore this project\", \"understand the codebase\", \"give me an overview\",",
+          "description": "Explore a project or codebase using memory as a guide. Use when the user says \"explore this project\", \"understand the codebase\", \"give me an overview\",",
           "category": "productivity",
-          "icon": null,
+          "icon": "🧭",
           "version": "1.0.0",
           "install": {
             "type": "stdio",
@@ -615,9 +615,9 @@
         {
           "id": "mem-search",
           "name": "mem-search",
-          "description": "name: mem-search\ndescription: >\nSearch persistent memory using keyword or semantic (TF-IDF) search.\nUse when the user asks \"do we have any notes on X\", \"what do we know about Y\",",
+          "description": "Search persistent memory using keyword or semantic (TF-IDF) search. Use when the user asks \"do we have any notes on X\", \"what do we know about Y\",",
           "category": "productivity",
-          "icon": null,
+          "icon": "🔎",
           "version": "1.0.0",
           "install": {
             "type": "stdio",
@@ -634,9 +634,9 @@
         {
           "id": "google-drive-upload",
           "name": "google-drive-upload",
-          "description": "name: google-drive-upload\ndescription: >\nUpload files from Claude directly to Google Drive.\nUse this skill whenever the user wants to upload, save, or send a file to Google Drive —",
+          "description": "Upload files from Claude directly to Google Drive. Use this skill whenever the user wants to upload, save, or send a file to Google Drive —",
           "category": "other",
-          "icon": null,
+          "icon": "☁️",
           "version": "1.0.0",
           "install": {
             "type": "stdio",
@@ -653,9 +653,9 @@
         {
           "id": "toggl",
           "name": "toggl",
-          "description": "name: toggl\ndescription: >\nTrack time and pull reports from Toggl Track.\nUse this skill whenever the user wants to start a timer, stop a timer, log time,",
+          "description": "Track time and pull reports from Toggl Track. Use this skill whenever the user wants to start a timer, stop a timer, log time,",
           "category": "other",
-          "icon": null,
+          "icon": "⏱️",
           "version": "1.0.0",
           "install": {
             "type": "stdio",
@@ -672,9 +672,9 @@
         {
           "id": "fix-stuck-session",
           "name": "fix-stuck-session",
-          "description": "name: fix-stuck-session\ndescription: >\nFixes the \"RPC error: process with name already running\" bug in Claude Cowork.\nUse this skill when the user reports: \"process already running\", \"RPC error\",",
+          "description": "Fixes the \"RPC error: process with name already running\" bug in Claude Cowork. Use this skill when the user reports: \"process already running\", \"RPC error\",",
           "category": "other",
-          "icon": null,
+          "icon": "🔧",
           "version": "1.0.0",
           "install": {
             "type": "stdio",
@@ -691,9 +691,9 @@
         {
           "id": "shopify-partner-marketing",
           "name": "shopify-partner-marketing",
-          "description": "name: shopify-partner-marketing\ndescription: Marketing playbook for Shopify Partners — how an agency or freelancer markets and sells their Shopify services. Captures the Shopify Academy course \"Marketing Your Shopify Services as a Partner\" plus public Partner Program guidance. Use this skill whenever the user is a Shopify Partner (agency, freelancer, dev, consultant) and wants to position their offering, define their ICP, run multi-touch or ABM campaigns, do digital marketing or SEO, market via events, measure marketing success, build a marketing plan, write proposals, prepare for or take the Shopify Academy \"Marketing Your Shopify Services as a Partner\" assessment, or generally grow merchant pipeline for their own services. Also trigger on \"Shopify Partner marketing\", \"market my agency\", \"Shopify agency growth\", \"partner academy\", \"verified skill badge\", \"partner ICP\", \"merchant outreach plan\", \"Shopify partner SEO\", \"agency pricing\", \"Shopify partner referrals\", \"Hebrew/English Shopify partner pitch\". Distinct from `shopify-sales-expert` (storefront CRO for merchants), `shopify-ai-expert` (building AI agents on stores), and `opsagent-bizdev` (general OpsAgent outreach) — this skill is specifically about how a Shopify Partner markets their services to merchants. If the user is asking how to *take the certification*, this skill drives the prep + answer-key reasoning.",
+          "description": "Marketing playbook for Shopify Partners — how an agency or freelancer markets and sells their Shopify services. Captures the Shopify Academy course \"Marketing Your Shopify Services as a Partner\" plus public Partner Program guidance. Use this skill whenever the user is a Shopify Partner (agency, freelancer, dev, consultant) and wants to position their offering, define their ICP, run multi-touch or ABM campaigns, do digital marketing or SEO, market via events, measure marketing success, build a marketing plan, write proposals, prepare for or take the Shopify Academy \"Marketing Your Shopify Services as a Partner\" assessment, or generally grow merchant pipeline for their own services. Also trigger on \"Shopify Partner marketing\", \"market my agency\", \"Shopify agency growth\", \"partner academy\", \"verified skill badge\", \"partner ICP\", \"merchant outreach plan\", \"Shopify partner SEO\", \"agency pricing\", \"Shopify partner referrals\", \"Hebrew/English Shopify partner pitch\". Distinct from `shopify-sales-expert` (storefront CRO for merchants), `shopify-ai-expert` (building AI agents on stores), and `opsagent-bizdev` (general OpsAgent outreach) — this skill is specifically about how a Shopify Partner markets their services to merchants. If the user is asking how to *take the certification*, this skill drives the prep + answer-key reasoning.",
           "category": "other",
-          "icon": null,
+          "icon": "🛍️",
           "version": "1.0.0",
           "install": {
             "type": "stdio",
@@ -710,9 +710,9 @@
         {
           "id": "make-plan",
           "name": "make-plan",
-          "description": "name: make-plan\ndescription: >\nCreate a work plan using memory context from past sessions. Use when the user\nsays \"make a plan\", \"what should we do next\", \"plan this out\", \"give me a",
+          "description": "Create a work plan using memory context from past sessions. Use when the user says \"make a plan\", \"what should we do next\", \"plan this out\", \"give me a",
           "category": "productivity",
-          "icon": null,
+          "icon": "📋",
           "version": "1.0.0",
           "install": {
             "type": "stdio",
