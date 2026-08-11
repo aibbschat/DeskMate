@@ -14,6 +14,7 @@ from .config import (
     put_global_server,
     read_global,
 )
+from .builtin import BUILTIN_SERVERS, ensure_builtin_servers, render_builtin
 from .tools import build_callables, tool_name
 
 __all__ = [
@@ -24,6 +25,9 @@ __all__ = [
     "put_global_server",
     "patch_global_server",
     "delete_global_server",
+    "BUILTIN_SERVERS",
+    "ensure_builtin_servers",
+    "render_builtin",
     "build_callables",
     "tool_name",
 ]

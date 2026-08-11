@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import argparse
+import logging
 import os
 import secrets
 import sys
 from pathlib import Path
+
+logger = logging.getLogger("coworker.server.run")
 
 from ..config import load_config
 from ..orphan import _exit_when_orphaned
@@ -103,9 +106,29 @@ def _spawn_selection_adapter(port: int) -> None:
         pass  # never block sidecar startup on adapter failure
 
 
+def _seed_builtin_mcp_servers() -> None:
+    """Bootstrap OpenWorker's preinstalled MCP servers into the global config.
+
+    Idempotent and non-destructive: missing builtins are added, path drift (e.g.
+    after a venv move / reinstall) is repaired, user-customized same-named
+    servers are left untouched. Lets the existing 5 deskmate servers become
+    "preinstalled plugins" instead of hand-edited mcp.json entries. Failures
+    never block startup.
+    """
+    try:
+        from ..mcp.builtin import ensure_builtin_servers
+
+        touched = ensure_builtin_servers()
+        if touched:
+            logger.info("seeded builtin MCP servers: %s", ", ".join(touched))
+    except Exception as exc:  # never block sidecar startup on bootstrap
+        logger.warning("builtin MCP seed skipped: %s", exc)
+
+
 def main(argv=None) -> None:
     _load_env_file()
     _ensure_ca_bundle()
+    _seed_builtin_mcp_servers()
     cfg = load_config()  # global config supplies defaults
     parser = argparse.ArgumentParser(prog="openworker-server")
     parser.add_argument("--cwd", default=None, help="optional seed/default workspace")

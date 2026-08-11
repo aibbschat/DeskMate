@@ -1117,6 +1117,15 @@ class SessionManager:
         return {"ok": True, "had_tokens": removed}
 
     def add_mcp(self, name: str, config: dict[str, Any]) -> dict[str, Any]:
+        """Register a server (one-click connect). Writes the global config.
+
+        Connection probing intentionally lives on the ASYNC path
+        (``connect_mcp`` / ``mcp_tools``), which run on the server's main event
+        loop — a synchronous probe here would spin a second loop and clash with
+        ``MCPManager``'s shared ``asyncio.Lock`` (cross-loop Future errors). The
+        UI wires add → connect, so a broken command/url surfaces at install time
+        via ``connect_mcp``'s error, not silently on the next session.
+        """
         put_global_server(name, config)
         return {"ok": True, "name": name}
 
