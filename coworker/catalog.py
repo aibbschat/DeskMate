@@ -170,13 +170,50 @@ def capability(cap_id: str) -> Capability:
     return cap
 
 
+# A persona may reference an *external* MCP tool directly via ``mcp:<server>:<tool>``.
+# These ids are NOT vetted catalog capabilities — they resolve at engine-build time to a
+# live MCP callable (see `SessionManager.prepare_mcp_tools`), so `expand` leaves them
+# untouched and `_validate_tools` whitelists them. This is the seam that lets a persona
+# "bring its own code" (or rather, borrow a third-party MCP server's tool) without us
+# having to hardcode the capability in this closed catalog.
+MCP_REF_PREFIX = "mcp:"
+
+
+def is_mcp_ref(tool_id: str) -> bool:
+    """True if ``tool_id`` is an MCP tool reference (``mcp:<server>:<tool>``)."""
+    return tool_id.startswith(MCP_REF_PREFIX)
+
+
+def parse_mcp_ref(tool_id: str) -> tuple[str, str]:
+    """Split ``mcp:<server>:<tool>`` → (server, tool). Raises ValueError if malformed."""
+    if not is_mcp_ref(tool_id):
+        raise ValueError(f"not an mcp ref: {tool_id!r}")
+    rest = tool_id[len(MCP_REF_PREFIX):]
+    if ":" not in rest:
+        raise ValueError(
+            f"mcp ref must be `mcp:<server>:<tool>`, got {tool_id!r}"
+        )
+    server, _, tool = rest.partition(":")
+    if not server or not tool:
+        raise ValueError(
+            f"mcp ref must be `mcp:<server>:<tool>`, got {tool_id!r}"
+        )
+    return server, tool
+
+
 def expand(ids: list[str], context: AgentContext) -> list:
     """Expand a persona's ``tools:`` id list into concrete tool callables for this context.
     Capabilities whose context prerequisites aren't met are skipped (no shell without an
     executor, no files without a workspace) — exactly like the old hand-written factories.
+
+    ``mcp:<server>:<tool>`` references are NOT expanded here — they are resolved to live
+    MCP callables by the session manager (which owns the MCP connections), not by this
+    closed, offline catalog.
     """
     tools: list = []
     for cap_id in ids:
+        if is_mcp_ref(cap_id):
+            continue  # resolved downstream (prepare_mcp_tools)
         cap = capability(cap_id)
         if cap.available(context):
             tools.extend(cap.build(context))
@@ -184,8 +221,15 @@ def expand(ids: list[str], context: AgentContext) -> list:
 
 
 def risk_summary(ids: list[str]) -> set[RiskClass]:
-    """The union of risk classes a tool list can produce — for the install-consent screen."""
+    """The union of risk classes a tool list can produce — for the install-consent screen.
+
+    ``mcp:<server>:<tool>`` references are external tools; their risk is governed by the
+    server's ``requires_approval`` gate at connect time, not by this catalog, so they
+    contribute no catalog risk class here (and must not raise on the catalog lookup).
+    """
     out: set[RiskClass] = set()
     for cap_id in ids:
+        if is_mcp_ref(cap_id):
+            continue
         out.update(capability(cap_id).risk)
     return out

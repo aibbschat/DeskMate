@@ -100,32 +100,39 @@
 - 大厂/社区 MCP 插件"填 endpoint/key 即用"，正是"接入即用"的可运行落地；
 - 复用 Claude/Cursor/Codex 兼容格式，用户甚至能把别人分享的 mcp.json 直接导入。
 
-## 五、改造三：装 server + 装 persona 打包安装
+## 五、改造三：catalog 开放 mcp 引用 + 插件包（server+persona 打包）
 
 ### 目标
-一个"插件包"= 一个 MCP server + 一个或多个 persona（角色 + 引用该 server 的能力）。
-装一个包 = 同时装 server 配置 + 写 persona 文件。
+- 改造三A：让 persona 的 `tools:` 能引用外接 MCP server 的工具（`mcp:<server>:<tool>`），
+  治"catalog 封闭 / persona 不能自带代码"（核对事实 #8/#9），且**不开放第三方改 Python 源码**。
+- 改造三B：一个"插件包"= 一个或多个 MCP server + 一个或多个 persona 的原子安装，
+  把"装能力"体验闭环。
 
-### 做法
-1. **persona 开放注册**：目前 persona 只能引用 `catalog.py` 的 id。改造：persona 的 `tools:`
-   同时支持 `mcp:<server>:<tool>` 形式引用外接 server 工具，并允许 persona 自带
-   `servers:` 段（声明它依赖哪个 MCP）。`catalog.expand()` 增加 mcp 分支解析。
-2. **插件包格式**：
-   ```json
-   {
-     "id": "aliyun-gaode",
-     "kind": "plugin",
-     "servers": { "gaode": { "url": "...", "requires_approval": true } },
-     "personas": [{ "name": "地图助手", "tools": ["mcp:gaode:geocode", "mcp:gaode:route"] }]
-   }
-   ```
-3. **安装 = 原子两写**：`install_plugin(pkg)` 同时 `put_global_server` + 写 persona 文件，
-   任一失败回滚。卸载同理双删。
-4. **UI**：插件中心卡片点"安装" → 弹 OAuth/key 录入（如需）→ 进度条 → 完成即出现在
-   圆桌/专家可用列表。
+### 改造三A：catalog 开放 mcp 引用分支（已实现）
+1. `catalog.py` 新增 `is_mcp_ref` / `parse_mcp_ref` / `MCP_REF_PREFIX`：
+   - `expand(ids, ctx)` 遇到 `mcp:` 引用**跳过**（MCP callable 由 session 层注入，不在离线 catalog 里展开）。
+   - `risk_summary` 同样跳过 mcp 引用（其风险由 server 的 `requires_approval` 闸门治理）。
+2. `personas/manifest.py::_validate_tools` 放行**格式合法**的 `mcp:<server>:<tool>` 引用
+   （畸形 ref 仍报错），不再把外接引用当"未知能力"拒绝。
+3. `SessionManager.prepare_mcp_tools` 新增 `mcp_refs` 参数：若 persona 声明了某 server 的工具，
+   该 server 的 callable 只暴露**被引用的那几个**（`_mcp_tool_local_name` 从 `mcp__<s>__<t>`
+   反解本地工具名后按白名单过滤）；未声明的 server 仍按原逻辑全量注入（行为不变）。
+4. `app.py` WS 会话入口计算 `_persona_mcp_refs(manager, agent)` 传入，打通"persona → 外接工具"。
+
+### 改造三B：插件包（已实现）
+1. **插件包格式**（两种都接受）：
+   - 单文件 `.json`/`.yaml`：`{"name", "servers":[{name, config}], "personas":[manifest文本 | {meta, body}]}`
+   - 目录：`mcp.json`（`mcpServers`）+ `personas/*.md`
+2. `coworker/mcp/package.py`：
+   - `validate_plugin_package(path)`：dry-run 预校验（server 需 command/url、persona 需能 parse），供 UI 预检。
+   - `install_plugin_package(path)`：**先写 server（全局 mcp.json 单次原子重写，便于回滚）→ 再装 persona
+     （复用 `PersonaRegistry.install_from_dir`，快照 + disabled 待用户同意）**；任一步失败回滚 server 集，
+     不留半装状态。persona 仍遵循治理红线（不自启、不提权）。
+3. `app.py` 新增 REST：`POST /v1/plugins/validate`（预检）、`POST /v1/plugins/install`（安装，
+   支持 `path` 或 inline `payload`），本地操作。
 
 ### 关键约束（来自核对事实 #9）
-persona 之前**不能自带代码**——这是 catalog 封闭的直接后果。本改造必须让 persona 能"指向"
+persona 之前**不能自带代码**——这是 catalog 封闭的直接后果。本改造让 persona 能"指向"
 外接 server（代码在 server 侧，不在 persona 侧），从而在**不开放改 Python 源码**的前提下
 兼容 catalog 封闭现状，又把能力边界从"只能引用内置"扩到"可引用外接 MCP"。
 
@@ -140,17 +147,30 @@ persona 之前**不能自带代码**——这是 catalog 封闭的直接后果�
 
 ## 七、落地排序（ROI 从高到低）
 
-| 顺序 | 改造 | 工作量 | 为什么先 | 依赖 |
-|---|---|---|---|---|
-| 1 | 改造一：内置 server 自举注册 | ~1 天 | 直接治"换机器就废"，5 个预装插件开箱即用 | 无 |
-| 2 | 改造二：add_mcp 一键连接 + 探活 | ~1-2 天 | 解锁大厂生态"接入即用"，最有说服力 | 无 |
-| 3 | 圆桌 MCP 热插拔（build-before-swap） | ~2 天 | 让改二装的 server 不重启即生效 | 改二 |
-| 4 | 改造三：插件包（server+persona 打包） | ~2-3 天 | 把"装能力"体验闭环 | 改二 |
-| 5 | catalog 开放 mcp 引用分支 | ~1 天 | 让 persona 引用外接工具，治封闭 | 改三 |
-| 6 | Spawn Subagent（隔离子代理） | ~2-3 天 | 治续聊重跑债、长任务隔离 | 圆桌现状 |
+| 顺序 | 改造 | 工作量 | 为什么先 | 依赖 | 状态 |
+|---|---|---|---|---|---|
+| 1 | 改造一：内置 server 自举注册 | ~1 天 | 直接治"换机器就废"，5 个预装插件开箱即用 | 无 | ✅ 已提交 `07b34b0` |
+| 2 | 改造二：add_mcp 一键连接 + 探活 | ~1-2 天 | 解锁大厂生态"接入即用"，最有说服力 | 无 | ⚠️ 后端 80% 已存在（`POST /v1/mcp`/`/connect`/`/reload`/`mcp_tools` 齐全）；缺前端"添加→连接→探活"串联 UI + 同步写入即探测护栏（探测须走异步 connect，同步会跨 loop 冲突） |
+| 3 | 圆桌 MCP 热插拔（build-before-swap） | ~2 天 | 让改二装的 server 不重启即生效 | 改二 | ⬜ 待做 |
+| 4 | 改造三：插件包（server+persona 打包） | ~2-3 天 | 把"装能力"体验闭环 | 改二 | ✅ 已落地（三A catalog 引用 + 三B 插件包，本回合） |
+| 5 | catalog 开放 mcp 引用分支 | ~1 天 | 让 persona 引用外接工具，治封闭 | 改三 | ✅ 并入改造三A |
+| 6 | Spawn Subagent（隔离子代理） | ~2-3 天 | 治续聊重跑债、长任务隔离 | 圆桌现状 | ⬜ 待做 |
 
 **建议起点**：先做改造一 + 改造二——前者把"预装插件"从概念变现实，后者把"大厂插件接入即用"
 从 PPT 变可跑。两项合起来即可在插件中心展示"5 个预装 + 一键加外部"，生态骨架就立起来了。
+
+## 七·五、本轮实施状态小结（2026-08-11 第二回合）
+
+- **改造一（自举注册）**：`coworker/mcp/builtin.py` + `run.py` 启动自举 + `ensure_builtin_servers`
+  幂等非破坏。`test_mcp_builtin.py` 5 passed。真实 `~/.config/coworker/mcp.json` 已迁移
+  （5 个 server command 改写为 `sys.executable`，并盖 `_builtin` 标记）。提交 `07b34b0`。
+- **改造三A（catalog mcp 引用）**：`catalog.py` 新增 `is_mcp_ref`/`parse_mcp_ref`，`expand`/`risk_summary`
+  跳过 mcp 引用；`manifest._validate_tools` 放行合法引用；`prepare_mcp_tools` 支持 persona 工具级
+  过滤；`app.py` 打通 `_persona_mcp_refs` 传入。
+- **改造三B（插件包）**：`coworker/mcp/package.py`（`validate`/`install` 原子+回滚）+ `app.py`
+  `POST /v1/plugins/validate|install`。`tests/test_plugin_center.py` 10 passed。
+- **测试现状**：MCP 回归 18 + persona 加载 + 插件中心 10 = 40 passed。
+- **下一步**：改造二前端串联（纯 UI）+ 圆桌 MCP 热插拔 + Spawn Subagent。
 
 ## 八、不做的（明确排除）
 

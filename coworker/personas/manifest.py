@@ -245,13 +245,26 @@ def parse_manifest(
 
 def _validate_tools(persona_id: str, tools: list[str]) -> None:
     # Imported here to avoid a module-load cycle (catalog imports agents.base).
-    from ..catalog import CATALOG
+    from ..catalog import CATALOG, is_mcp_ref, parse_mcp_ref
 
-    unknown = [t for t in tools if t not in CATALOG]
+    unknown = []
+    for t in tools:
+        if t in CATALOG:
+            continue
+        if is_mcp_ref(t):
+            # A persona may reference a third-party MCP server's tool directly
+            # (`mcp:<server>:<tool>`). We whitelist the *shape* here; the server/tool
+            # must actually exist at connect time (resolved in prepare_mcp_tools).
+            try:
+                parse_mcp_ref(t)
+            except ValueError as exc:
+                unknown.append(f"{t} ({exc})")
+            continue
+        unknown.append(t)
     if unknown:
         raise ManifestError(
             f"persona {persona_id!r} references unknown tool capabilities: {unknown}. "
-            f"Known: {sorted(CATALOG)}"
+            f"Known catalog ids: {sorted(CATALOG)}; external tools use `mcp:<server>:<tool>`."
         )
 
 

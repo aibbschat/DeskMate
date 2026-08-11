@@ -906,12 +906,23 @@ class SessionManager:
 
     # -- MCP --------------------------------------------------------------------
     async def prepare_mcp_tools(
-        self, session_id: str, *, workspace: Optional[str] = None, agent: str = "code"
+        self,
+        session_id: str,
+        *,
+        workspace: Optional[str] = None,
+        agent: str = "code",
+        mcp_refs: Optional[set[str]] = None,
     ) -> list[Any]:
         """Connect enabled MCP servers (global + workspace) and return their tool callables.
 
         Called from the async WS handler before `get_engine`; no-op if the engine is already
         built (its MCP tools are attached). Servers that fail to connect are skipped.
+
+        ``mcp_refs`` (optional) is the set of ``<server>:<tool>`` pairs a persona explicitly
+        references via ``tools: [mcp:<server>:<tool>, …]``. When provided, each server's
+        callable set is *restricted* to the referenced tools (a persona borrows only what it
+        declared) — otherwise the server's full tool surface is exposed (the default for
+        catalogs/personas that don't pin specific tools).
         """
         if session_id in self._engines:
             return []
@@ -991,8 +1002,34 @@ class SessionManager:
                     fn.__aisuite_tool_metadata__.requires_approval = approval_for_tool(
                         fn.__aisuite_tool_metadata__.name, default=True
                     )
+            # Persona-level tool pinning: if the persona declared specific
+            # `mcp:<server>:<tool>` refs, only those callables surface — the persona
+            # borrows exactly what it asked for, never the server's full toolset.
+            if mcp_refs is not None:
+                allowed = {
+                    ref.split(":", 1)[1]
+                    for ref in mcp_refs
+                    if ref.startswith(server.name + ":")
+                }
+                if allowed:  # persona pinned this server → restrict to declared tools
+                    callables = [
+                        fn
+                        for fn in callables
+                        if self._mcp_tool_local_name(fn) in allowed
+                    ]
             out.extend(callables)
         return out
+
+    @staticmethod
+    def _mcp_tool_local_name(fn: Any) -> str:
+        """The bare MCP tool name behind a callable, decoded from its registered
+        `mcp__<server>__<tool>` name (see ``mcp.tools.tool_name``)."""
+        name = getattr(fn, "__name__", "")
+        if name.startswith("mcp__"):
+            # last segment after the server part is the local tool name
+            parts = name.split("__")
+            return parts[-1] if len(parts) >= 3 else name
+        return name
 
     def list_mcp(self) -> list[dict[str, Any]]:
         """Servers from the global config + connection status (does not connect)."""

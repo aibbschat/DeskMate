@@ -15,6 +15,7 @@ from .config import (
     read_global,
 )
 from .builtin import BUILTIN_SERVERS, ensure_builtin_servers, render_builtin
+from .package import install_plugin_package, validate_plugin_package
 from .tools import build_callables, tool_name
 
 __all__ = [
@@ -28,6 +29,8 @@ __all__ = [
     "BUILTIN_SERVERS",
     "ensure_builtin_servers",
     "render_builtin",
+    "install_plugin_package",
+    "validate_plugin_package",
     "build_callables",
     "tool_name",
 ]

@@ -154,6 +154,59 @@ _CONNECT_FAILED_DETAIL = (
     "Close this tab and try again from OpenWorker."
 )
 
+
+def _persona_mcp_refs(manager: "SessionManager", persona_id: str) -> set[str]:
+    """The ``<server>:<tool>`` pairs a persona explicitly declares via
+    ``tools: [mcp:<server>:<tool>, …]``. Empty set ⇒ no pinning (servers expose
+    their full toolset). Returns ``set()`` for unknown personas (don't pin)."""
+    from ..catalog import is_mcp_ref, parse_mcp_ref
+
+    try:
+        entry = manager.personas.get(persona_id)
+    except Exception:
+        return set()
+    if entry is None:
+        return set()
+    refs: set[str] = set()
+    for t in getattr(entry, "tools", []) or []:
+        if not is_mcp_ref(t):
+            continue
+        try:
+            server, tool = parse_mcp_ref(t)
+        except ValueError:
+            continue
+        refs.add(f"{server}:{tool}")
+    return refs
+
+
+import contextlib
+from typing import Iterator
+
+
+@contextlib.contextmanager
+def _temp_plugin_file(payload: Any) -> Iterator[str]:
+    """Write an inline plugin payload to a temp file so the package loader (which
+    reads from disk) can consume it. Supports JSON text or an already-parsed dict."""
+    import tempfile
+
+    suffix = ".json"
+    if isinstance(payload, str):
+        text = payload
+    else:
+        text = json.dumps(payload, ensure_ascii=False)
+    with tempfile.NamedTemporaryFile(
+        "w", suffix=suffix, delete=False, encoding="utf-8"
+    ) as f:
+        f.write(text)
+        path = f.name
+    try:
+        yield path
+    finally:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+
 from ..attachments import (
     MAX_ATTACHMENTS as _MAX_ATTACHMENTS,
     MAX_IMAGE_CHARS,
@@ -614,6 +667,43 @@ def create_app(manager: SessionManager) -> FastAPI:
         if detail is None:
             return {"ok": False, "error": f"unknown persona: {persona_id}"}
         return detail
+
+    # -- plugin packages (server + persona bundles) ------------------------------
+    @app.post("/v1/plugins/validate")
+    def plugin_validate(body: dict) -> dict[str, Any]:
+        # Pre-check a plugin package (local path or inline payload) before install.
+        from ..mcp import validate_plugin_package
+
+        path = body.get("path")
+        payload = body.get("payload")
+        if path:
+            return validate_plugin_package(path)
+        if payload:
+            with _temp_plugin_file(payload) as tp:
+                return validate_plugin_package(tp)
+        return {"ok": False, "error": "need `path` or `payload`"}
+
+    @app.post("/v1/plugins/install")
+    def plugin_install(body: dict) -> dict[str, Any]:
+        # Install a plugin package: its MCP servers land in the global config and its
+        # personas are snapshotted (disabled pending consent). Local-only operation.
+        from ..mcp import install_plugin_package
+
+        path = body.get("path")
+        payload = body.get("payload")
+        try:
+            if path:
+                result = install_plugin_package(path)
+            elif payload:
+                with _temp_plugin_file(payload) as tp:
+                    result = install_plugin_package(tp)
+            else:
+                return {"ok": False, "error": "need `path` or `payload`"}
+        except Exception as exc:
+            return {"ok": False, "error": f"install failed: {exc}"}
+        if result.get("ok"):
+            result["personas"] = manager.personas.list_all()
+        return result
 
     @app.post("/v1/personas/{persona_id}/enable")
     def persona_enable(persona_id: str, body: dict) -> dict[str, Any]:
@@ -2742,7 +2832,10 @@ def create_app(manager: SessionManager) -> FastAPI:
 
         workspace = ws.query_params.get("workspace")
         mcp_tools = await manager.prepare_mcp_tools(
-            session_id, workspace=workspace, agent=agent
+            session_id,
+            workspace=workspace,
+            agent=agent,
+            mcp_refs=_persona_mcp_refs(manager, agent),
         )
         engine = manager.get_engine(
             session_id,
