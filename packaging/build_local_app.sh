@@ -97,17 +97,22 @@ if strings "$APP_OUT/Contents/MacOS/openworker-desktop" 2>/dev/null | grep -q "s
 else
   echo "⚠ 产物未检出 safety-card，请确认前端已编译开关代码" >&2
 fi
-# 校验内嵌前端为「当前 dist」（防止 tauri-build 缓存旧前端导致界面陈旧）
-if [ -f "$GUI/dist/index.html" ]; then
-  CUR=$(grep -oE 'assets/index-[A-Za-z0-9_-]+\.js' "$GUI/dist/index.html" | head -1 | sed 's#assets/##')
-  if [ -n "$CUR" ]; then
-    if strings "$APP_OUT/Contents/MacOS/openworker-desktop" 2>/dev/null | grep -q "$CUR"; then
-      echo "    ✓ 内嵌前端为当前 dist 主块（$CUR）"
-    else
-      echo "⚠ 内嵌前端未含当前 dist 主块 $CUR，疑似 tauri-build 缓存旧前端，请 clean 重建" >&2
+# 非阻断校验：确认内嵌前端含当前 dist 主块。注意 Tauri 把资源压缩进二进制，
+# `strings` 对压缩内容可能漏检，故本步仅作提示，绝不中断安装（包在子 shell + set +u 内，
+# 即使变量未绑定也不会触发父脚本的 set -euo pipefail 退出）。
+(
+  set +u
+  if [ -f "$GUI/dist/index.html" ]; then
+    _cur=$(grep -oE 'assets/index-[A-Za-z0-9_-]+\.js' "$GUI/dist/index.html" 2>/dev/null | head -1 | sed 's#assets/##')
+    if [ -n "$_cur" ]; then
+      if strings "$APP_OUT/Contents/MacOS/openworker-desktop" 2>/dev/null | grep -q "$_cur"; then
+        echo "    ✓ 内嵌前端为当前 dist 主块（$_cur）"
+      else
+        echo "    ⚠ 内嵌前端未直接命中 $_cur（Tauri 压缩资源，strings 可能漏检；若界面陈旧请 clean 重建）" >&2
+      fi
     fi
   fi
-fi
+)
 
 # ---- 可选：安装 ----
 if [ "$INSTALL" -eq 1 ]; then
