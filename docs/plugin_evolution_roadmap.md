@@ -184,7 +184,13 @@ persona 之前**不能自带代码**——这是 catalog 封闭的直接后果�
 - **改造二前端串联 + 圆桌热插拔 + Spawn Subagent**：已落地（commit 7f8374a）。ManageTabs AddForm 结构化（stdio/HTTP + args/env + OAuth），add→connect→探活回显「connected · N tools」；圆桌热插拔 build-before-swap + `hot_reload_mcp` 注入运行中 session；Spawn Subagent `per_persona_history` 隔离上下文。
 - **冻结 DMG 坑**：已验证真实并修复（f60227f + d013994），`runpy` 分发前重置 `sys.argv`。
 - **marketplace 预设区（MCP_PRESETS）已填充高使用度办公 server**：阿里百炼·联网搜索（HTTP+Bearer，`DASHSCOPE_API_KEY`）、腾讯元器·办公工具（HTTP+Bearer，yuanqi-tool：OCR/PDF/搜索/文生图/文档阅读/翻译/写作）、Fetch（uvx，无需密钥）、Brave 搜索（`BRAVE_API_KEY`）、Notion（`NOTION_TOKEN`）、Granola（OAuth）。预设卡支持 key 内联输入（HTTP 用 `header` 模板、stdio 注入 `env`），点击即 add+connect。字节扣子因精确插件 MCP URL 需按插件发凭证、未硬编码进预设（用户可经 Add 表单粘贴）。
-- **仍属增强项（未做）**：插件包安装前端入口；圆桌热插拔注入运行中 session 的 UI 接线（当前按钮走全局重载）。
+- **仍属增强项（未做）**：圆桌热插拔注入运行中 session 的 UI 接线——根因是圆桌 coordinator 未把自身注册成 `manager._engines` 里的 `TurnEngine`，且 persona 走纯文本 `chat_stream` 无 function calling，故 `hot_reload_mcp(session_id)` 注入的对象不存在、persona 也调不动工具。当前圆桌按钮走全局 `reload_mcp`（免重启重连，下次圆桌生效），已是实用热插拔；要做到「注入运行中 session」需另开「圆桌注册 engine + persona 工具调用」一块功能。
+
+## 七·七、插件包安装前端入口已落地（2026-08-11 第五回合）
+
+- **插件包安装 UI（McpTab → PluginInstallPanel）**：路径或粘贴 JSON → `validatePlugin`（POST /v1/plugins/validate 校验 servers/personas/errors）→ 通过后「安装」→ `installPlugin`（POST /v1/plugins/install，server 写全局配置 + persona 快照禁用待授权）。api.ts 补 `validatePlugin`/`installPlugin`。提交 `f5a4a46`。
+- **验证**：`npx tsc --noEmit` 通过；本地 App 已重建（build_local_app.sh）含新前端。
+- **原「仍属增强项」中插件包安装前端入口已划掉（本回合完成）**；圆桌注入运行中 session 仍属深层增强（见上）。
 
 ## 八、不做的（明确排除）
 
