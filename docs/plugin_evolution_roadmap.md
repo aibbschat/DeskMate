@@ -179,6 +179,13 @@ persona 之前**不能自带代码**——这是 catalog 封闭的直接后果�
 - **测试现状**：MCP 回归 18 + persona 加载 + 插件中心 10 = 40 passed。
 - **下一步**：改造二前端串联（纯 UI）+ 圆桌 MCP 热插拔 + Spawn Subagent。
 
+## 七·六、marketplace 预设区已填充（2026-08-11 第四回合）
+
+- **改造二前端串联 + 圆桌热插拔 + Spawn Subagent**：已落地（commit 7f8374a）。ManageTabs AddForm 结构化（stdio/HTTP + args/env + OAuth），add→connect→探活回显「connected · N tools」；圆桌热插拔 build-before-swap + `hot_reload_mcp` 注入运行中 session；Spawn Subagent `per_persona_history` 隔离上下文。
+- **冻结 DMG 坑**：已验证真实并修复（f60227f + d013994），`runpy` 分发前重置 `sys.argv`。
+- **marketplace 预设区（MCP_PRESETS）已填充高使用度办公 server**：阿里百炼·联网搜索（HTTP+Bearer，`DASHSCOPE_API_KEY`）、腾讯元器·办公工具（HTTP+Bearer，yuanqi-tool：OCR/PDF/搜索/文生图/文档阅读/翻译/写作）、Fetch（uvx，无需密钥）、Brave 搜索（`BRAVE_API_KEY`）、Notion（`NOTION_TOKEN`）、Granola（OAuth）。预设卡支持 key 内联输入（HTTP 用 `header` 模板、stdio 注入 `env`），点击即 add+connect。字节扣子因精确插件 MCP URL 需按插件发凭证、未硬编码进预设（用户可经 Add 表单粘贴）。
+- **仍属增强项（未做）**：插件包安装前端入口；圆桌热插拔注入运行中 session 的 UI 接线（当前按钮走全局重载）。
+
 ## 八、不做的（明确排除）
 
 - **不逐个对接腾讯/阿里私有 API**：统一走 MCP 这一层适配，一层 = 全部大厂，避免维护 N 套 SDK。

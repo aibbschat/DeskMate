@@ -226,14 +226,79 @@ function ComposerPickerCard({
   );
 }
 
-// Curated OAuth quick-adds: remote MCP servers with browser sign-in (OAuth 2.1 + DCR) —
-// no keys to paste, tokens stay in the local secret store. First: Granola.
-const MCP_PRESETS: { name: string; label: string; blurb: string; config: Record<string, any> }[] = [
+// Curated marketplace presets — high-usage, office-productivity MCP servers.
+// Domestic big-vendor (阿里百炼 / 腾讯元器) plus widely-used independents (Fetch /
+// Brave / Notion / Granola). Anything Claude/Cursor/Codex-compatible drops in via the
+// Add form above; these are the ones we pre-approve as "just works".
+//
+// `auth` drives the preset card UI:
+//   - "oauth" → one-click Connect opens browser sign-in (tokens in SecretStore)
+//   - "key"   → inline key field; for HTTP servers `header` carries the Authorization
+//               template (with `__KEY__`), for stdio servers `envKey` is injected into
+//               the process env. The key is written into the stored config at connect
+//               time (no `${VAR}` resolution needed).
+type PresetEntry = {
+  name: string;
+  label: string;
+  blurb: string;
+  auth?: "oauth" | "key";
+  envKey?: string;
+  header?: { name: string; value: string };
+  keyHint?: string;
+  config: Record<string, any>;
+};
+
+const MCP_PRESETS: PresetEntry[] = [
   {
     name: "granola",
     label: "Granola",
-    blurb: "Meeting notes & transcripts — sign in with your Granola account.",
+    blurb: "会议记录与转写 · 用 Granola 账号登录（OAuth，无需密钥）",
+    auth: "oauth",
     config: { type: "http", url: "https://mcp.granola.ai/mcp", auth: "oauth" },
+  },
+  {
+    name: "bailian-websearch",
+    label: "阿里百炼 · 联网搜索",
+    blurb: "百炼 MCP 广场 · 一个 Key 调全平台服务（搜索 / 地图 / 法律 / 金融…）",
+    auth: "key",
+    envKey: "DASHSCOPE_API_KEY",
+    keyHint: "阿里云百炼 API Key（dashscope.console.aliyun.com → API Key，格式 sk-xxx）",
+    header: { name: "Authorization", value: "Bearer __KEY__" },
+    config: { type: "http", url: "https://dashscope.aliyuncs.com/api/v1/mcps/WebSearch/mcp" },
+  },
+  {
+    name: "yuanqi-office",
+    label: "腾讯元器 · 办公工具",
+    blurb: "OCR · PDF解析 · 搜狗搜索 · 文生图 · 文档深度阅读 · 翻译 · 写作",
+    auth: "key",
+    envKey: "TENCENTCLOUD_API_KEY",
+    keyHint: "腾讯云开发 / 元器 API Key（需先在元器插件模板开通该 MCP Server）",
+    header: { name: "Authorization", value: "Bearer __KEY__" },
+    config: { type: "http", url: "https://tcb.cloud.tencent.com/mcp-server/yuanqi-tool" },
+  },
+  {
+    name: "fetch",
+    label: "Fetch · 网页抓取",
+    blurb: "抓取任意 URL 转为 Markdown · 无需密钥 · 读网页 / 文档",
+    config: { type: "stdio", command: "uvx", args: ["mcp-server-fetch"] },
+  },
+  {
+    name: "brave-search",
+    label: "Brave 搜索",
+    blurb: "联网搜索 · 免费额度友好",
+    auth: "key",
+    envKey: "BRAVE_API_KEY",
+    keyHint: "Brave Search API Key（brave.com/search/api）",
+    config: { type: "stdio", command: "npx", args: ["-y", "@modelcontextprotocol/server-brave-search"] },
+  },
+  {
+    name: "notion",
+    label: "Notion",
+    blurb: "Notion 页面 / 数据库读写 · 团队知识库",
+    auth: "key",
+    envKey: "NOTION_TOKEN",
+    keyHint: "Notion integration token（notion.so/my-integrations，格式 secret_xxx）",
+    config: { type: "stdio", command: "npx", args: ["-y", "@notionhq/notion-mcp-server"] },
   },
 ];
 
@@ -313,22 +378,7 @@ export function McpTab() {
             </span>
           </div>
           {MCP_PRESETS.filter((p) => !servers.some((s) => s.name === p.name)).map((p) => (
-            <div key={p.name} className={CARD + " p-3.5 flex items-center gap-3"} data-testid={`mcp-preset-${p.name}`}>
-              <div className="flex-1 min-w-0">
-                <div className="text-[14px] font-medium">{p.label}</div>
-                <div className="text-[11.5px] text-faint">{p.blurb}</div>
-              </div>
-              <button
-                className={BTN_ACCENT}
-                onClick={async () => {
-                  await addMcpServer(p.name, p.config);
-                  await connectMcp(p.name); // opens the browser sign-in right away
-                  refresh();
-                }}
-              >
-                Connect
-              </button>
-            </div>
+            <PresetCard key={p.name} preset={p} onAdded={refresh} />
           ))}
         </div>
       )}
@@ -451,6 +501,72 @@ function McpRow({
               {t.name}
             </span>
           ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function PresetCard({ preset, onAdded }: { preset: PresetEntry; onAdded: () => void }) {
+  const [key, setKey] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [keyErr, setKeyErr] = useState<string | null>(null);
+  const needsKey = preset.auth === "key";
+
+  const connect = async () => {
+    if (needsKey && !key.trim()) {
+      setKeyErr("请先填写密钥");
+      return;
+    }
+    setBusy(true);
+    setKeyErr(null);
+    try {
+      const config: Record<string, any> = { ...preset.config };
+      if (needsKey && key.trim()) {
+        const k = key.trim();
+        if (preset.header) {
+          config.headers = { ...(config.headers || {}), [preset.header.name]: preset.header.value.replace(/__KEY__/g, k) };
+        } else if (preset.envKey) {
+          config.env = { ...(config.env || {}), [preset.envKey]: k };
+        }
+      }
+      await addMcpServer(preset.name, config);
+      await connectMcp(preset.name);
+      onAdded();
+    } catch (e) {
+      setKeyErr(e instanceof Error ? e.message : "连接失败");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className={CARD + " p-3.5 flex flex-col gap-2"} data-testid={`mcp-preset-${preset.name}`}>
+      <div className="flex items-center gap-3">
+        <div className="flex-1 min-w-0">
+          <div className="text-[14px] font-medium">{preset.label}</div>
+          <div className="text-[11.5px] text-faint">{preset.blurb}</div>
+        </div>
+        <button className={BTN_ACCENT} onClick={connect} disabled={busy}>
+          {needsKey ? (busy ? "连接中…" : "添加并连接") : busy ? "连接中…" : "Connect"}
+        </button>
+      </div>
+      {needsKey && (
+        <div className="flex flex-col gap-1">
+          <input
+            type="password"
+            className={INPUT}
+            placeholder={preset.keyHint || `输入 ${preset.envKey ?? "密钥"}`}
+            value={key}
+            onChange={(e) => {
+              setKey(e.target.value);
+              if (keyErr) setKeyErr(null);
+            }}
+          />
+          {preset.keyHint && !keyErr && (
+            <div className="text-[10.5px] text-faint">{preset.keyHint}</div>
+          )}
+          {keyErr && <div className="text-[10.5px] text-danger">{keyErr}</div>}
         </div>
       )}
     </div>
