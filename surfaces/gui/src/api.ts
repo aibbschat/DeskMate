@@ -598,6 +598,45 @@ export async function signoutMcp(name: string): Promise<{ ok: boolean }> {
   return res.json();
 }
 
+// -- plugin packages (server + persona bundles) --------------------------------
+export interface PluginValidateResult {
+  ok: boolean;
+  name?: string;
+  servers?: string[];
+  personas?: string[];
+  errors?: string[];
+  error?: string;
+}
+export interface PluginInstallResult {
+  ok: boolean;
+  name?: string;
+  servers?: string[];
+  personas?: string[];
+  errors?: string[];
+  error?: string;
+}
+
+/** Dry-run a plugin package (local path or inline JSON payload) before installing. */
+export async function validatePlugin(body: { path?: string; payload?: string }): Promise<PluginValidateResult> {
+  const res = await authedFetch(`${httpBase()}/v1/plugins/validate`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  return res.json();
+}
+
+/** Install a plugin package: its MCP servers land in the global config and its
+ *  personas are snapshotted (disabled, pending consent). */
+export async function installPlugin(body: { path?: string; payload?: string }): Promise<PluginInstallResult> {
+  const res = await authedFetch(`${httpBase()}/v1/plugins/install`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  return res.json();
+}
+
 // -- connectors ---------------------------------------------------------------
 export interface ConnectorField {
   key: string;

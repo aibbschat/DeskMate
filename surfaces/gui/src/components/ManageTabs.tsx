@@ -11,6 +11,8 @@ import {
   getMcpServers,
   getMcpTools,
   signoutMcp,
+  validatePlugin,
+  installPlugin,
   getSettings,
   getSubscriptions,
   removeModel,
@@ -26,6 +28,8 @@ import {
   type McpServer,
   type ModelSettings,
   type ProviderInfo,
+  type PluginValidateResult,
+  type PluginInstallResult,
 } from "../api";
 import { CloudSignInInline, CloudStatusPending } from "./connectors/CloudSignIn";
 import { ModelChecklist } from "./ModelChecklist";
@@ -302,6 +306,136 @@ const MCP_PRESETS: PresetEntry[] = [
   },
 ];
 
+// Plugin package installer: validate a local path or inline JSON, then install its
+// MCP servers + persona snapshots in one shot (the backend is the source of truth).
+function PluginInstallPanel({ onInstalled }: { onInstalled: () => void }) {
+  const [path, setPath] = useState("");
+  const [payload, setPayload] = useState("");
+  const [showJson, setShowJson] = useState(false);
+  const [validating, setValidating] = useState(false);
+  const [installing, setInstalling] = useState(false);
+  const [result, setResult] = useState<PluginValidateResult | PluginInstallResult | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const canValidate = path.trim().length > 0 || payload.trim().length > 0;
+
+  const buildBody = (): { path?: string; payload?: string } => {
+    if (path.trim()) return { path: path.trim() };
+    return { payload };
+  };
+
+  const runValidate = async () => {
+    setError(null);
+    setValidating(true);
+    setResult(null);
+    try {
+      const r = await validatePlugin(buildBody());
+      setResult(r);
+    } catch (e: any) {
+      setError(String(e?.message || e));
+    } finally {
+      setValidating(false);
+    }
+  };
+
+  const runInstall = async () => {
+    setError(null);
+    setInstalling(true);
+    try {
+      const r = await installPlugin(buildBody());
+      setResult(r);
+      if (r.ok) {
+        onInstalled();
+        setPath("");
+        setPayload("");
+      } else {
+        setError(r.error || (r.errors && r.errors.join("; ")) || "安装失败");
+      }
+    } catch (e: any) {
+      setError(String(e?.message || e));
+    } finally {
+      setInstalling(false);
+    }
+  };
+
+  const ok = !!result && result.ok;
+
+  return (
+    <div className={CARD + " p-3.5 space-y-2.5"}>
+      <div className="flex items-center gap-2 flex-wrap">
+        <span className="text-[14px] font-medium">插件包安装</span>
+        <span className="text-[10.5px] normal-case tracking-normal text-faint">
+          · .json / .zip 本地包，一键装 server + 角色
+        </span>
+      </div>
+      <input
+        className={INPUT}
+        placeholder="插件包本地路径，例如 /Users/you/plugins/my-pack.json"
+        value={path}
+        onChange={(e) => setPath(e.target.value)}
+        data-testid="plugin-path"
+      />
+      <button className={BTN_BORDERED} onClick={() => setShowJson((v) => !v)}>
+        {showJson ? "收起 JSON" : "粘贴 JSON 代替路径"}
+      </button>
+      {showJson && (
+        <textarea
+          className={INPUT + " h-28 font-mono"}
+          placeholder='{ "name": "...", "servers": [...], "personas": [...] }'
+          value={payload}
+          onChange={(e) => setPayload(e.target.value)}
+          data-testid="plugin-payload"
+        />
+      )}
+      <div className="flex items-center gap-2">
+        <button
+          className={BTN_ACCENT}
+          disabled={!canValidate || validating}
+          onClick={runValidate}
+          data-testid="plugin-validate"
+        >
+          {validating ? "校验中…" : "校验"}
+        </button>
+        {ok && (
+          <button
+            className={BTN_ACCENT}
+            disabled={installing}
+            onClick={runInstall}
+            data-testid="plugin-install"
+          >
+            {installing ? "安装中…" : "安装"}
+          </button>
+        )}
+      </div>
+      {result && (
+        <div className="text-[11.5px] leading-relaxed space-y-1">
+          {ok ? (
+            <div className="text-emerald-600 dark:text-emerald-400">
+              ✅ {result.name || "插件包"}：{(result.servers || []).length} 个 server ·{" "}
+              {(result.personas || []).length} 个角色已就绪
+            </div>
+          ) : (
+            <div className="text-danger">⚠️ 校验未通过</div>
+          )}
+          {(result.servers || []).length > 0 && (
+            <div className="text-faint">servers: {(result.servers || []).join(", ")}</div>
+          )}
+          {(result.personas || []).length > 0 && (
+            <div className="text-faint">personas: {(result.personas || []).join(", ")}</div>
+          )}
+          {(result.errors || []).map((e, i) => (
+            <div key={i} className="text-danger/80">
+              · {e}
+            </div>
+          ))}
+          {result.error && <div className="text-danger/80">· {result.error}</div>}
+        </div>
+      )}
+      {error && <div className="text-[12.5px] text-danger">{error}</div>}
+    </div>
+  );
+}
+
 export function McpTab() {
   const [servers, setServers] = useState<McpServer[]>([]);
   const [adding, setAdding] = useState(false);
@@ -382,6 +516,8 @@ export function McpTab() {
           ))}
         </div>
       )}
+
+      <PluginInstallPanel onInstalled={refresh} />
 
       {adding ? (
         <AddForm
