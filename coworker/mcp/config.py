@@ -25,7 +25,7 @@ _HTTP_TYPES = {"http", "https", "sse", "streamable-http", "streamable_http"}
 @dataclass
 class MCPServerDef:
     name: str
-    transport: str  # "stdio" | "http"
+    transport: str  # "stdio" | "http" | "sse"
     command: Optional[str] = None
     args: list[str] = field(default_factory=list)
     env: dict[str, str] = field(default_factory=dict)
@@ -68,10 +68,15 @@ def _config_paths(
 def _parse(name: str, raw: dict[str, Any], secrets: SecretStore) -> MCPServerDef:
     raw = secrets.resolve(raw)  # resolve ${VAR} everywhere before building the def
     declared = str(raw.get("type", "")).lower()
-    is_http = declared in _HTTP_TYPES or bool(raw.get("url"))
+    if declared == "sse":
+        transport = "sse"
+    elif declared in _HTTP_TYPES or bool(raw.get("url")):
+        transport = "http"
+    else:
+        transport = "stdio"
     return MCPServerDef(
         name=name,
-        transport="http" if is_http else "stdio",
+        transport=transport,
         command=raw.get("command"),
         args=list(raw.get("args", []) or []),
         env={str(k): str(v) for k, v in (raw.get("env") or {}).items()},

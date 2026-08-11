@@ -271,14 +271,10 @@ const MCP_PRESETS: PresetEntry[] = [
     config: { type: "http", url: "https://dashscope.aliyuncs.com/api/v1/mcps/WebSearch/mcp" },
   },
   {
-    name: "yuanqi-office",
-    label: "腾讯元器 · 办公工具",
-    blurb: "OCR · PDF解析 · 搜狗搜索 · 文生图 · 文档深度阅读 · 翻译 · 写作",
-    auth: "key",
-    envKey: "TENCENTCLOUD_API_KEY",
-    keyHint: "腾讯云开发 / 元器 API Key（需先在元器插件模板开通该 MCP Server）",
-    header: { name: "Authorization", value: "Bearer __KEY__" },
-    config: { type: "http", url: "https://tcb.cloud.tencent.com/mcp-server/yuanqi-tool" },
+    name: "tencent-sse",
+    label: "腾讯云 · 托管 MCP (SSE)",
+    blurb: "联网搜索 / 元器智能体等。腾讯云 MCP 广场开通服务 → 复制「专属 SSE URL」粘贴下方 → 连接",
+    config: { type: "sse", url: "" },
   },
   {
     name: "fetch",
@@ -645,19 +641,26 @@ function McpRow({
 
 function PresetCard({ preset, onAdded }: { preset: PresetEntry; onAdded: () => void }) {
   const [key, setKey] = useState("");
+  const [url, setUrl] = useState(preset.config.url || "");
   const [busy, setBusy] = useState(false);
   const [keyErr, setKeyErr] = useState<string | null>(null);
   const needsKey = preset.auth === "key";
+  const isSse = preset.config.type === "sse";
 
   const connect = async () => {
     if (needsKey && !key.trim()) {
       setKeyErr("请先填写密钥");
       return;
     }
+    if (isSse && !url.trim()) {
+      setKeyErr("请粘贴专属 SSE URL");
+      return;
+    }
     setBusy(true);
     setKeyErr(null);
     try {
       const config: Record<string, any> = { ...preset.config };
+      if (isSse) config.url = url.trim();
       if (needsKey && key.trim()) {
         const k = key.trim();
         if (preset.header) {
@@ -684,9 +687,22 @@ function PresetCard({ preset, onAdded }: { preset: PresetEntry; onAdded: () => v
           <div className="text-[11.5px] text-faint">{preset.blurb}</div>
         </div>
         <button className={BTN_ACCENT} onClick={connect} disabled={busy}>
-          {needsKey ? (busy ? "连接中…" : "添加并连接") : busy ? "连接中…" : "Connect"}
+          {busy ? "连接中…" : "添加并连接"}
         </button>
       </div>
+      {isSse && (
+        <div className="flex flex-col gap-1">
+          <input
+            className={INPUT}
+            placeholder="粘贴专属 SSE URL（腾讯云 MCP 广场开通服务后复制）"
+            value={url}
+            onChange={(e) => {
+              setUrl(e.target.value);
+              if (keyErr) setKeyErr(null);
+            }}
+          />
+        </div>
+      )}
       {needsKey && (
         <div className="flex flex-col gap-1">
           <input
@@ -718,12 +734,12 @@ function AddForm({
   onAdded: () => void;
   onError: (e: string | null) => void;
 }) {
-  // Structured one-click connect form (replaces the old "paste JSON" box): two
-  // shapes — a local stdio command (npx -y @…/server, args, env) or a remote
-  // HTTP/streamable URL (with OAuth optional). After adding, we auto-connect and
-  // probe the tools so a broken command/url surfaces immediately, not on next
-  // session.
-  const [kind, setKind] = useState<"stdio" | "http">("stdio");
+  // Structured one-click connect form (replaces the old "paste JSON" box): three
+  // shapes — a local stdio command (npx -y @…/server, args, env), a remote
+  // streamable HTTP URL (with OAuth optional), or a remote SSE URL (Tencent Cloud
+  // hosted MCP, etc.). After adding, we auto-connect and probe the tools so a
+  // broken command/url surfaces immediately, not on next session.
+  const [kind, setKind] = useState<"stdio" | "http" | "sse">("stdio");
   const [name, setName] = useState("");
   const [command, setCommand] = useState("npx");
   const [argsText, setArgsText] = useState("");
@@ -755,6 +771,13 @@ function AddForm({
       }
       config = { command: command.trim() || "npx", args, enabled: true };
       if (Object.keys(env).length) config.env = env;
+    } else if (kind === "sse") {
+      if (!url.trim()) {
+        onError("Enter the SSE URL.");
+        return;
+      }
+      config = { type: "sse", url: url.trim(), enabled: true };
+      if (oauth) config.auth = "oauth";
     } else {
       if (!url.trim()) {
         onError("Enter the server URL.");
@@ -790,7 +813,7 @@ function AddForm({
 
   const KIND = (
     <div className="inline-flex rounded-full p-0.5 bg-paper text-[12.5px] font-medium">
-      {(["stdio", "http"] as const).map((k) => (
+      {(["stdio", "http", "sse"] as const).map((k) => (
         <button
           key={k}
           className={
@@ -799,7 +822,7 @@ function AddForm({
           }
           onClick={() => setKind(k)}
         >
-          {k === "stdio" ? "Local command" : "Remote URL"}
+          {k === "stdio" ? "Local command" : k === "http" ? "Remote URL" : "SSE URL"}
         </button>
       ))}
     </div>
@@ -848,7 +871,7 @@ function AddForm({
         <>
           <input
             className={INPUT}
-            placeholder="https://…/mcp (streamable HTTP)"
+            placeholder={kind === "sse" ? "https://…/sse (腾讯云 MCP 广场专属 SSE URL)" : "https://…/mcp (streamable HTTP)"}
             value={url}
             spellCheck={false}
             onChange={(e) => setUrl(e.target.value)}

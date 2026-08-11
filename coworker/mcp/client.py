@@ -23,6 +23,7 @@ logger = logging.getLogger(__name__)
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 from mcp.client.streamable_http import streamablehttp_client
+from mcp.client.sse import sse_client
 
 from .config import MCPServerDef
 
@@ -141,10 +142,10 @@ class MCPManager:
     ) -> None:
         try:
             async with AsyncExitStack() as stack:
-                if server.transport == "http":
+                if server.transport in ("http", "sse"):
                     if not server.url:
                         raise ValueError(
-                            f"MCP server '{server.name}' is http but has no url"
+                            f"MCP server '{server.name}' is {server.transport} but has no url"
                         )
                     auth = None
                     if server.auth == "oauth":
@@ -159,11 +160,19 @@ class MCPManager:
                             self._secrets,
                             interactive=interactive,
                         )
-                    read, write, *_ = await stack.enter_async_context(
-                        streamablehttp_client(
-                            server.url, headers=server.headers or None, auth=auth
+                    if server.transport == "http":
+                        read, write, *_ = await stack.enter_async_context(
+                            streamablehttp_client(
+                                server.url, headers=server.headers or None, auth=auth
+                            )
                         )
-                    )
+                    else:  # sse — Server-Sent Events transport (Tencent Cloud
+                        # hosted MCP, OpenAI/Anthropic SSE endpoints, etc.)
+                        read, write, *_ = await stack.enter_async_context(
+                            sse_client(
+                                server.url, headers=server.headers or None, auth=auth
+                            )
+                        )
                 else:
                     if not server.command:
                         raise ValueError(
@@ -187,8 +196,14 @@ class MCPManager:
             if not ready.done():
                 ready.set_exception(exc)
         finally:
-            self._conns.pop(server.name, None)
-            self._tasks.pop(server.name, None)
+            # Only the task that still OWNS the slot may vacate it. During a
+            # hot-swap (reload_server), a superseded task finishes its teardown
+            # *after* the new connection has already taken the slot — an
+            # unconditional pop here would orphan the brand-new connection and
+            # force a duplicate connect on next use.
+            if self._tasks.get(server.name) is asyncio.current_task():
+                self._tasks.pop(server.name, None)
+                self._conns.pop(server.name, None)
 
 
 def _result_payload(result: Any) -> Any:

@@ -14,7 +14,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from coworker.mcp import build_callables, load_mcp_servers, tool_name
-from coworker.mcp.config import MCPServerDef
+from coworker.mcp.config import MCPServerDef, _parse
 from coworker.secrets import SecretStore
 from coworker.server.app import create_app
 from coworker.server.manager import SessionManager
@@ -254,3 +254,15 @@ def test_rest_crud(tmp_path, monkeypatch):
     assert client.delete("/v1/mcp/fs").json()["ok"] is True
     assert client.get("/v1/mcp").json()["servers"] == []
     assert client.delete("/v1/mcp/fs").json()["ok"] is False
+
+
+def test_parse_sse_transport():
+    """SSE servers must resolve to transport="sse", not be collapsed into http."""
+    s = SecretStore()
+    sse = _parse("tencent", {"type": "sse", "url": "https://example.com/sse"}, s)
+    assert sse.transport == "sse"
+    assert sse.url == "https://example.com/sse"
+    http = _parse("ali", {"type": "http", "url": "https://example.com/mcp"}, s)
+    assert http.transport == "http"
+    stdio = _parse("fs", {"command": "npx", "args": ["-y", "x"]}, s)
+    assert stdio.transport == "stdio"

@@ -1061,12 +1061,11 @@ class SessionManager:
                     "name": name,
                     "enabled": bool(raw.get("enabled", True)),
                     "transport": (
-                        "http"
-                        if (
-                            raw.get("url")
-                            or str(raw.get("type", "")).lower()
-                            in {"http", "sse", "streamable-http"}
-                        )
+                        "sse"
+                        if str(raw.get("type", "")).lower()
+                        in {"sse", "streamable-http"}
+                        else "http"
+                        if (raw.get("url") or str(raw.get("type", "")).lower() == "http")
                         else "stdio"
                     ),
                     "requires_approval": bool(raw.get("requires_approval", True)),
