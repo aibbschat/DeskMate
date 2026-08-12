@@ -221,3 +221,68 @@ def test_build_skill_index_includes_imported_categories(tmp_path: Path):
     assert "humanizer" in idx
     assert "Siqi Chen" in idx
 
+
+def test_date_fields_serializable(tmp_path: Path):
+    """回归：frontmatter 里的裸日期(created/updated: 2026-08-04)会被 YAML 解析成
+    datetime.date 对象，list_skills 的 json.dumps 必须能序列化，不能抛
+    'Object of type date is not JSON serializable'。"""
+    import json
+
+    store = SkillStore(tmp_path)
+    flat_dir = tmp_path / "general"  # SkillStore.__init__ 已建好分类目录
+    (flat_dir / "plan-writing.md").write_text(
+        "---\n"
+        "name: plan-writing\n"
+        "description: 多步任务结构化规划\n"
+        "tags: [方案, 计划]\n"
+        "created: 2026-08-04\n"
+        "updated: 2026-08-04\n"
+        "last_used: 2026-08-04\n"
+        "---\n"
+        "# Plan Writing\n",
+        encoding="utf-8",
+    )
+    skills = store.list_skills()
+    assert any(s["name"] == "plan-writing" for s in skills)
+    # created/updated 必须是字符串（已转 isoformat），json.dumps 不崩
+    for s in skills:
+        if s["name"] == "plan-writing":
+            assert s["created"] == "2026-08-04"
+            assert s["updated"] == "2026-08-04"
+            assert isinstance(s["created"], str)
+            assert isinstance(s["updated"], str)
+    # 完整序列化不抛异常
+    json.dumps(skills, ensure_ascii=False)
+
+
+def test_imported_date_fields_serializable(tmp_path: Path):
+    """回归：导入的 agentskills.io 包若 frontmatter 含裸日期，list_skills 也应可 JSON 序列化。"""
+    import json
+
+    store = SkillStore(skills_dir=tmp_path)
+    pkg = tmp_path / "src" / "hermes-agent"
+    pkg.mkdir(parents=True)
+    (pkg / "SKILL.md").write_text(
+        "---\n"
+        "name: hermes-agent\n"
+        'description: "Use, configure, and extend Hermes Agent."\n'
+        "version: 3.1.0\n"
+        "created: 2026-08-12\n"
+        "updated: 2026-08-13\n"
+        "metadata:\n"
+        "  hermes:\n"
+        "    category: development\n"
+        "---\n"
+        "# Hermes Agent\n",
+        encoding="utf-8",
+    )
+    store.import_skill_dir(pkg)
+    skills = store.list_skills()
+    assert any(s["name"] == "hermes-agent" for s in skills)
+    for s in skills:
+        if s["name"] == "hermes-agent":
+            assert s["created"] == "2026-08-12"
+            assert s["updated"] == "2026-08-13"
+            assert isinstance(s["created"], str)
+    json.dumps(skills, ensure_ascii=False)
+

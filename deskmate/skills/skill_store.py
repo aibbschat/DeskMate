@@ -324,10 +324,11 @@ class SkillStore:
                 "allowed_tools": meta.get("allowed-tools", ""),
                 "author": meta.get("author", ""),
                 "version": meta.get("version", ""),
+                "created": meta.get("created", ""),
                 "uses": 0,
                 "success_rate": 0.0,
                 "last_used": "",
-                "updated": "",
+                "updated": meta.get("updated", ""),
                 "body": body[:2000],
             })
         return result
@@ -554,6 +555,7 @@ class SkillStore:
                             "uses": meta.get("uses", 0),
                             "success_rate": meta.get("success_rate", 0.0),
                             "last_used": meta.get("last_used", ""),
+                            "created": meta.get("created", ""),
                             "updated": meta.get("updated", ""),
                             "body": body[:2000],  # 截断避免过长，供搜索用
                         }
