@@ -28,6 +28,7 @@ CODE_TOOLS = {
     "git_diff",
     "git_log",
     "grep",
+    "search_text",  # descriptive alias for grep (search capability)
     "run_shell",
     "shell_task_output",
     "shell_task_kill",
@@ -42,6 +43,7 @@ COWORK_TOOLS = {
     "apply_patch",
     "replace_in_file",
     "grep",
+    "search_text",  # descriptive alias for grep (search capability)
     "run_shell",
     "shell_task_output",
     "shell_task_kill",

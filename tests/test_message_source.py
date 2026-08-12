@@ -168,7 +168,7 @@ def test_outbound_strips_source_with_and_without_context(tmp_path):
         registry=registry,
         permissions=permissions,
         model="gpt-5.5",
-        context_provider=lambda: "live ctx",
+        context_provider=lambda _: "live ctx",
     )
     engine2.messages.append({"role": "user", "content": "framed", "source": src})
     out2 = engine2._outbound_messages()

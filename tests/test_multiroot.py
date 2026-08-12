@@ -148,7 +148,7 @@ def test_outbound_messages_appends_context_to_last_user_message():
             {"role": "assistant", "content": "hi"},
             {"role": "user", "content": "do it"},
         ],
-        context_provider=lambda: "DIRS",
+        context_provider=lambda _: "DIRS",
     )
     out = eng._outbound_messages()
     # ephemeral: the persisted history is untouched

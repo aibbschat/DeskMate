@@ -99,6 +99,51 @@ async def test_ensure_then_reload_swaps_live_connection(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_reload_old_teardown_does_not_orphan_new_connection(monkeypatch):
+    """The superseded task's `finally` must NOT pop the swapped-in connection.
+
+    Real transports tear down slowly (stdio process exit, HTTP close). If the old
+    task's cleanup ran after the swap, it would evict the new connection from
+    ``_conns`` and the live session's MCP tools would go dark mid-use.
+    """
+    from coworker.mcp.client import MCPManager
+
+    release_old = asyncio.Event()
+
+    class SlowTransport(_Transport):
+        async def __aexit__(self, *exc):
+            await release_old.wait()  # old transport closes only after the swap
+            return False
+
+    session = _session_for(("alpha", "beta"))
+    transport = SlowTransport(session, fail=False)
+
+    def fake_stdio(params):
+        return transport
+
+    def fake_http(url, **kw):
+        return transport
+
+    monkeypatch.setattr("coworker.mcp.client.stdio_client", fake_stdio)
+    monkeypatch.setattr("coworker.mcp.client.streamablehttp_client", fake_http)
+    monkeypatch.setattr("coworker.mcp.client.ClientSession", lambda r, w: _SessionCtx(session))
+
+    mgr = MCPManager()
+    await mgr.ensure(_server("s1"))
+    swapped = await mgr.reload_server(_server("s1"))
+    assert {t.name for t in swapped.tools} == {"alpha", "beta"}
+
+    # Let the superseded task finish its teardown — the new connection must stay.
+    release_old.set()
+    await asyncio.sleep(0.05)
+    assert "s1" in mgr._conns
+    assert "s1" in mgr._tasks
+    # And it still serves tool calls (no "MCP server not connected").
+    assert {t.name for t in (await mgr.tools(_server("s1")))} == {"alpha", "beta"}
+    await mgr.aclose()
+
+
+@pytest.mark.asyncio
 async def test_reload_failure_keeps_old_connection(monkeypatch):
     _patch_transport(monkeypatch, connect_ok=True, tool_names=("live_a",))
     mgr = MCPManager()
