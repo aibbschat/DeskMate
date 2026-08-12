@@ -148,32 +148,70 @@ def _maybe_extract_skill(base_dir: Path, last_user: str, last_asst: str) -> None
 # ---------------------------------------------------------------------------
 # 闭环后主动识别关联未竟（对齐 Hermes 主动行为环 Task2）
 # ---------------------------------------------------------------------------
+
+# 零 LLM 成本的廉价预判信号词：本轮文本涉及任一信号，才值得跑完整调查链，
+# 否则直接跳过（省每轮 3~4 次工具调查 + 1 次决策的开销）。宁可错杀也不浪费 token；
+# 设 DESKMATE_CLOSE_LOOP_PREFILTER=0 可关闭此门控做全量调查。
+_CLOSE_LOOP_SIGNALS = (
+    "同步", "更新", "还没", "没有", "忘记", "漏", "遗漏", "版本", "配置",
+    "部署", "网站", "公众号", "一致", "不一致", "改了", "改完", "修改",
+    "改一下", "两处", "副本", "链接", "发布", "推送", "提交", "未提交",
+    "还没做", "没做", "待办", "todo", "doc", "文档", "文件", "代码",
+    "sync", "update", "deploy", "publish", "consistent", "config", "not done",
+)
+
+
+def _looks_like_close_loop_candidate(user_msg: str, asst_msg: str) -> bool:
+    """零 LLM 调用的廉价预判：本轮是否可能涉及关联/未竟动作。"""
+    if os.environ.get("DESKMATE_CLOSE_LOOP_PREFILTER", "1") == "0":
+        return True  # 显式关闭前置门控，做全量调查
+    text = (user_msg + " " + asst_msg).lower()
+    return any(sig in text for sig in _CLOSE_LOOP_SIGNALS)
+
+
 def _maybe_proactive_close_loop(
     base_dir: Path, workspace: Optional[str], last_user: str, last_asst: str
 ) -> None:
-    """本轮闭环后，主动反思是否有关联的未竟之事应主动闭环（Hermes 的「主动做事」核心）。
+    """本轮闭环后，主动调查真实环境并判断是否有关联未竟应闭环（对齐 Hermes 主动行为环）。
 
-    只做「识别」（LLM 决策）+ 通过执行桥决定「自动执行 or 提案」，任何异常都不阻断主流程。
-    高门槛（高置信度 + 可逆 + 低风险）才自动执行，否则降级为提案等待用户确认——
-    绝不静默替用户做高风险动作。
+    v2 改进：
+    1. 加载记忆传给决策器（用户偏好/纠正历史参与判断）。
+    2. 决策器内部会先用只读工具调查环境（read_file/search_files/git_status/read_memory），
+       再基于调查结果做判断--不再是只看对话文本猜。
+
+    高门槛（高置信度 + 可逆 + 低风险）才自动执行，否则降级为提案等待用户确认--
+    绝不静默替用户做高风险动作。任何异常都不阻断主流程。
     """
     try:
         from deskmate.proactivity.close_loop import decide_close_loop
         from deskmate.proactivity import executor
 
+        # 廉价前置门控：本轮文本无「关联/未竟」信号时，跳过完整调查链（省 LLM 成本）
+        if not _looks_like_close_loop_candidate(last_user or "", last_asst or ""):
+            return
+
+        # 加载相关记忆：全局 MEMORY.md + 当前项目 longterm.md
+        memory_context = _load_close_loop_memory(base_dir, workspace)
+
         decision = decide_close_loop(
-            last_user or "", last_asst or "", workspace=workspace
+            last_user or "",
+            last_asst or "",
+            memory_context=memory_context,
+            workspace=workspace,
+            base_dir=str(base_dir),
         )
         if not decision.should_close_loop:
             return
-        # 记一笔识别日志（透明可审计）
+        # 记一笔识别日志（透明可审计，含调查发现）
         project = _project_name_for(workspace)
+        investigation = decision.investigation_notes or "（无调查）"
         _append_journal(
             base_dir,
             project,
             f"**主动闭环识别**：{decision.action_summary}\n"
             f"- 理由：{decision.rationale}\n"
-            f"- 置信度：{decision.confidence:.0%}｜可逆：{decision.reversible}｜风险：{decision.risk_level}",
+            f"- 置信度：{decision.confidence:.0%}｜可逆：{decision.reversible}｜风险：{decision.risk_level}\n"
+            f"- 调查发现：{investigation[:500]}",
         )
         result = executor.try_execute_close_loop(decision, workspace)
         logger.info(
@@ -182,6 +220,45 @@ def _maybe_proactive_close_loop(
         )
     except Exception:
         logger.exception("after_action: 主动闭环识别失败")
+
+
+def _load_close_loop_memory(
+    base_dir: Path, workspace: Optional[str]
+) -> str:
+    """加载闭环决策用的记忆上下文：全局 MEMORY.md + 当前项目 longterm.md。
+
+    对齐 Hermes 的记忆注入：不是全量灌入，而是按相关性截取。
+    """
+    parts: list[str] = []
+
+    # 1. 全局记忆（MEMORY.md）--用户偏好/纠正历史
+    memory_path = base_dir / "MEMORY.md"
+    if memory_path.is_file():
+        try:
+            text = memory_path.read_text(encoding="utf-8", errors="replace")
+            if text.strip():
+                parts.append("## 全局记忆\n" + text[:2000])
+        except OSError:
+            pass
+
+    # 2. 用户画像（USER.md）
+    user_path = base_dir / "USER.md"
+    if user_path.is_file():
+        try:
+            user_text = user_path.read_text(encoding="utf-8", errors="replace")
+            if user_text.strip():
+                parts.append("## 用户画像\n" + user_text[:1000])
+        except OSError:
+            pass
+
+    # 3. 当前项目的长期记忆（longterm.md）
+    if workspace:
+        project = _project_name_for(workspace)
+        longterm = _pm.read_project_file(base_dir, project, "longterm.md")
+        if longterm.strip():
+            parts.append(f"## 项目记忆（{project}）\n" + longterm[:1500])
+
+    return "\n\n---\n\n".join(parts) if parts else ""
 
 
 def _maybe_evolve_on_correction(
