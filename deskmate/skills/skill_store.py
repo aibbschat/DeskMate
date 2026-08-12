@@ -114,7 +114,11 @@ def _parse_frontmatter(text: str) -> tuple[dict, str]:
               "category", "created", "updated", "uses", "success_rate",
               "last_used"):
         if k in raw and raw[k] is not None:
-            meta[k] = raw[k]
+            val = raw[k]
+            # YAML 把裸日期解析成 date/datetime 对象，需转 ISO 字符串否则 JSON 崩
+            if hasattr(val, 'isoformat'):
+                val = val.isoformat()
+            meta[k] = val
 
     # tags 归一化为 list
     tags = raw.get("tags")
