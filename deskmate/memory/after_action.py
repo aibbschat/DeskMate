@@ -121,6 +121,31 @@ def refresh_bible_if_novel(workspace: Optional[str]) -> None:
 
 
 # ---------------------------------------------------------------------------
+# 闭环后主动抽取技能（对齐 Hermes learning loop）
+# ---------------------------------------------------------------------------
+def _maybe_extract_skill(base_dir: Path, last_user: str, last_asst: str) -> None:
+    """本轮闭环后，主动把可复用的工作流沉淀为技能（Hermes 的「学完即用」核心）。
+
+    由 ``extract_skill_from_session`` 经 LLM 判断是否值得保存为新技能，
+    命中则写入技能库（默认 general 分类），供日后同类型任务匹配复用。
+    仅在「本轮有实质内容」时才会被调用（见 ``reflect_and_persist`` 的门槛），
+    避免对客套轮次空耗 LLM。任何异常都不阻断主流程。
+    """
+    try:
+        from deskmate.skills.manager import SkillManager
+
+        mgr = SkillManager(base_dir=base_dir)
+        created = mgr.extract_skill_from_session(last_user, last_asst)
+        if created:
+            logger.info(
+                "after_action: 主动沉淀技能 %s -> %s",
+                created.get("name"), created.get("status"),
+            )
+    except Exception:
+        logger.exception("after_action: 技能抽取失败")
+
+
+# ---------------------------------------------------------------------------
 # 项目日志（记一笔）
 # ---------------------------------------------------------------------------
 def _append_journal(base_dir: Path, project: str, entry: str) -> None:
@@ -248,6 +273,9 @@ def reflect_and_persist(
             _distill_to_longterm(base_dir, project, learned or [])
         except Exception:
             logger.exception("after_action: 蒸馏长期记忆失败")
+        # 闭环后主动抽取可复用技能（对齐 Hermes learning loop）
+        # 与日志同门槛：仅本轮有实质内容时才触发，避免客套轮次空耗 LLM
+        _maybe_extract_skill(base_dir, last_user, last_asst)
 
     # ---- 2. 刷新圣经（修读稿不更新记忆）----
     try:

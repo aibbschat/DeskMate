@@ -1,12 +1,19 @@
 """SkillStore — 可累积、可复用的技能库。
 
 设计原则：
-- 每个技能是一个独立 .md 文件，带 YAML frontmatter
-- 技能存储在 ~/.deskmate/skills/ 下，按分类子目录组织
-- 支持创建、搜索、匹配、更新（patch）、归档
-- 用户可随时在文件系统中查看和编辑
+- 两套技能共存，互不污染：
+  1) 自研扁平技能：~/.deskmate/skills/<category>/<name>.md，带自研 frontmatter
+     （tags/trigger/created/updated/uses/success_rate/last_used），由桌搭闭环后
+     自动沉淀（extract_skill_from_session）或用户手动创建。
+  2) 导入的社区技能包：~/.deskmate/skills/imported/<skill-name>/SKILL.md，
+     严格遵循 **agentskills.io 开放标准**（Anthropic 发起，Hermes/OpenClaw/
+     WorkBuddy/Claude Code 等 27+ agent 通用）。目录式结构，frontmatter 仅需
+     name + description，可选 license/compatibility/allowed-tools/metadata。
+     导入后只读，绝不改写第三方包——用量统计走全局 sidecar（use_history.jsonl）。
+- 支持创建、搜索、匹配、更新（patch）、归档、导入。
+- 用户可随时在文件系统中查看和编辑。
 
-文件格式（参考 Hermes SKILL.md）：
+自研技能文件格式：
   ---
   name: novel-review
   description: 审校萧盛的历史小说章节
@@ -16,8 +23,16 @@
   updated: 2026-07-31
   uses: 0
   ---
-  # 技能标题
-  具体步骤...
+
+agentskills.io 包格式（skill-name/ 目录下 SKILL.md）：
+  ---
+  name: pdf-processing
+  description: Extract text/tables from PDFs. Use when user mentions PDFs.
+  license: Apache-2.0
+  metadata:
+    author: example-org
+    version: "1.0"
+  ---
 """
 
 from __future__ import annotations
@@ -26,6 +41,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 from datetime import date, datetime
 from pathlib import Path
 from typing import Optional
@@ -34,8 +50,11 @@ from typing import Optional
 # 技能目录
 DEFAULT_SKILLS_DIR = Path(os.path.expanduser("~/.deskmate/skills"))
 
-# 技能分类
+# 技能分类（自研扁平技能的子目录）
 CATEGORIES = ["writing", "coding", "office", "general"]
+
+# 导入的社区技能包根目录（agentskills.io 标准：imported/<skill-name>/SKILL.md）
+IMPORTED_DIR = "imported"
 
 
 def _safe_filename(name: str) -> str:
@@ -45,16 +64,36 @@ def _safe_filename(name: str) -> str:
 
 
 def _parse_frontmatter(text: str) -> tuple[dict, str]:
-    """解析 YAML frontmatter，返回 (metadata, body)。"""
+    """解析 YAML frontmatter，返回 (metadata, body)。
+
+    兼容两种来源：
+    - 自研扁平技能：name/description/tags/trigger/created/updated/uses/...
+    - agentskills.io 社区包：name/description（必需）+ license/compatibility/
+      allowed-tools + ``metadata:`` 嵌套块（author/version 等任意 kv）。
+    """
     if not text.startswith("---\n"):
         return {}, text
     parts = text[4:].split("\n---\n", 1)
     if len(parts) != 2:
         return {}, text
-    meta = {}
-    for line in parts[0].split("\n"):
-        line = line.strip()
+    meta: dict = {}
+    in_metadata = False
+    for raw in parts[0].split("\n"):
+        line = raw.strip()
+        if in_metadata:
+            # 仍在 metadata 块内：遇到非缩进的顶层键即结束块
+            if line and not raw.startswith(" ") and ":" in line and not line.startswith("- "):
+                in_metadata = False
+            else:
+                if ":" in line:
+                    k, _, v = line.partition(":")
+                    meta.setdefault("metadata", {})[k.strip()] = v.strip()
+                continue
         if not line or line.startswith("#"):
+            continue
+        if line == "metadata:":
+            in_metadata = True
+            meta["metadata"] = {}
             continue
         if ":" not in line:
             continue
@@ -130,6 +169,8 @@ class SkillStore:
         self.skills_dir.mkdir(parents=True, exist_ok=True)
         for cat in CATEGORIES:
             (self.skills_dir / cat).mkdir(exist_ok=True)
+        # 导入的社区技能包根目录（只读，绝不改写第三方包）
+        (self.skills_dir / IMPORTED_DIR).mkdir(parents=True, exist_ok=True)
 
     # ------------------------------------------------------------------
     # 创建
@@ -178,6 +219,105 @@ class SkillStore:
         filepath.parent.mkdir(parents=True, exist_ok=True)
         filepath.write_text(content, encoding="utf-8")
         return {"path": str(filepath), "name": name, "status": "已创建"}
+
+    # ------------------------------------------------------------------
+    # 导入 agentskills.io 社区技能包（目录式，只读）
+    # ------------------------------------------------------------------
+
+    def import_skill_dir(self, pkg_dir: str | Path, *, overwrite: bool = False) -> dict:
+        """导入一个 agentskills.io 标准技能包（目录，含 SKILL.md）。
+
+        把整个包（含 scripts/references/assets）复制到
+        ``skills/imported/<safe-name>/`` 下，供桌搭直接消费 Hermes/OpenClaw/
+        WorkBuddy 等社区技能，无需自己造轮子。
+
+        关键约束：导入后包为只读——绝不改写第三方 SKILL.md（用量统计走
+        全局 use_history.jsonl sidecar），保证可幂等重导、可 diff 上游更新。
+
+        Args:
+            pkg_dir: 源技能包目录（必须含 SKILL.md）
+            overwrite: 已存在时是否覆盖重新导入
+
+        Returns:
+            {"status": str, "name": str, "path": str}
+        """
+        src = Path(pkg_dir)
+        skill_md = src / "SKILL.md"
+        if not skill_md.is_file():
+            return {"status": "error", "message": f"不是有效的技能包（缺少 SKILL.md）: {pkg_dir}"}
+        try:
+            raw = skill_md.read_text(encoding="utf-8")
+            meta, _ = _parse_frontmatter(raw)
+        except OSError:
+            return {"status": "error", "message": "读取 SKILL.md 失败"}
+
+        # agentskills.io 允许 name 与目录名不一致；落盘目录名用合规小写连字符
+        name = (meta.get("name") or src.name).strip()
+        safe = re.sub(r"[^a-z0-9-]", "-", name.lower())
+        safe = re.sub(r"-+", "-", safe).strip("-") or "skill"
+        dest = self.skills_dir / IMPORTED_DIR / safe
+        if dest.exists():
+            if not overwrite:
+                return {"status": "已存在，跳过导入", "name": name, "path": str(dest)}
+            shutil.rmtree(dest)
+
+        try:
+            shutil.copytree(src, dest)
+        except OSError as e:
+            return {"status": "error", "message": f"复制技能包失败: {e}"}
+        return {"status": "已导入", "name": name, "path": str(dest)}
+
+    def list_imported(self) -> list[dict]:
+        """发现并解析 imported/ 下的 agentskills.io 技能包。
+
+        Returns:
+            技能 dict 列表（category 统一归为 general，imported=True）。
+        """
+        result: list[dict] = []
+        imported_root = self.skills_dir / IMPORTED_DIR
+        if not imported_root.is_dir():
+            return result
+        for pkg in sorted(imported_root.iterdir()):
+            if not pkg.is_dir():
+                continue
+            skill_md = pkg / "SKILL.md"
+            if not skill_md.is_file():
+                continue
+            try:
+                text = skill_md.read_text(encoding="utf-8")
+                meta, body = _parse_frontmatter(text)
+            except OSError:
+                continue
+            md = meta.get("metadata") or {}
+            result.append({
+                "name": meta.get("name") or pkg.name,
+                "description": meta.get("description", ""),
+                "trigger": meta.get("trigger", ""),
+                "tags": meta.get("tags", []),
+                "category": "general",
+                "path": str(skill_md),
+                "pkg_dir": str(pkg),
+                "imported": True,
+                "license": meta.get("license", ""),
+                "compatibility": meta.get("compatibility", ""),
+                "allowed_tools": meta.get("allowed-tools", ""),
+                "author": md.get("author", ""),
+                "version": md.get("version", ""),
+                "uses": 0,
+                "success_rate": 0.0,
+                "last_used": "",
+                "updated": "",
+                "body": body[:2000],
+            })
+        return result
+
+    def _is_imported(self, path: str | Path) -> bool:
+        """判断路径是否属于 imported/ 只读包（用于 guard 改写操作）。"""
+        try:
+            rel = Path(path).resolve().relative_to(self.skills_dir.resolve())
+            return IMPORTED_DIR in rel.parts
+        except (ValueError, OSError):
+            return False
 
     # ------------------------------------------------------------------
     # 读取
@@ -307,11 +447,13 @@ class SkillStore:
     def patch_skill(self, name_or_path: str, old_string: str, new_string: str) -> dict:
         """在技能文件中精确替换一段文本。
 
-        用于踩坑后自动更新技能步骤。
+        用于踩坑后自动更新技能步骤。导入的社区技能包为只读，不支持自动修补。
         """
         filepath = self._resolve_path(name_or_path)
         if not filepath:
             return {"status": "error", "message": f"技能不存在: {name_or_path}"}
+        if self._is_imported(filepath):
+            return {"status": "error", "message": f"导入的技能包为只读，不支持自动修补: {name_or_path}"}
 
         try:
             text = filepath.read_text(encoding="utf-8")
@@ -331,10 +473,16 @@ class SkillStore:
         return {"status": "ok", "message": "技能已更新"}
 
     def increment_uses(self, name_or_path: str, success: bool = True) -> None:
-        """技能被使用后，递增 uses 计数，更新 success_rate 和 last_used。"""
+        """技能被使用后，递增 uses 计数，更新 success_rate 和 last_used。
+
+        导入的社区技能包（agentskills.io）为只读，绝不改写其 SKILL.md；
+        其用量追踪走全局 use_history.jsonl sidecar（见 record_use）。
+        """
         filepath = self._resolve_path(name_or_path)
         if not filepath:
             return
+        if self._is_imported(filepath):
+            return  # 只读包：不回写用量统计
         try:
             text = filepath.read_text(encoding="utf-8")
             meta, body = _parse_frontmatter(text)
@@ -364,7 +512,7 @@ class SkillStore:
         return skills[:limit]
 
     def _all_skills(self) -> list[dict]:
-        """扫描所有技能文件。"""
+        """扫描所有技能文件（自研扁平 .md + 导入的 agentskills.io 包）。"""
         skills = []
         for cat in CATEGORIES:
             cat_dir = self.skills_dir / cat
@@ -391,6 +539,8 @@ class SkillStore:
                     )
                 except OSError:
                     continue
+        # 导入的社区技能包（agentskills.io）
+        skills.extend(self.list_imported())
         return skills
 
     # ------------------------------------------------------------------
@@ -398,10 +548,12 @@ class SkillStore:
     # ------------------------------------------------------------------
 
     def archive_skill(self, name_or_path: str) -> dict:
-        """归档技能（移到 archive/ 子目录）。"""
+        """归档技能（移到 archive/ 子目录）。导入的社区技能包不支持归档。"""
         filepath = self._resolve_path(name_or_path)
         if not filepath:
             return {"status": "error", "message": f"技能不存在: {name_or_path}"}
+        if self._is_imported(filepath):
+            return {"status": "error", "message": f"导入的技能包不支持归档: {name_or_path}"}
 
         archive_dir = self.skills_dir / "archive"
         archive_dir.mkdir(exist_ok=True)
@@ -511,26 +663,51 @@ class SkillStore:
     # ------------------------------------------------------------------
 
     def _resolve_path(self, name_or_path: str) -> Path | None:
-        """根据技能名或路径解析文件。"""
+        """根据技能名或路径解析文件（支持自研扁平技能与导入的 agentskills.io 包）。"""
         p = Path(name_or_path)
         if p.is_absolute() and p.exists():
             return p
-        # 精确匹配（文件名）
+
+        imported_root = self.skills_dir / IMPORTED_DIR
+
+        # 精确匹配：imported/<name>/SKILL.md（按目录名或 frontmatter name）
+        if imported_root.is_dir():
+            cand = imported_root / name_or_path / "SKILL.md"
+            if cand.exists():
+                return cand
+            for pkg in imported_root.iterdir():
+                if pkg.is_dir() and (pkg / "SKILL.md").is_file():
+                    try:
+                        meta, _ = _parse_frontmatter((pkg / "SKILL.md").read_text(encoding="utf-8"))
+                    except OSError:
+                        continue
+                    if (meta.get("name") or pkg.name) == name_or_path:
+                        return pkg / "SKILL.md"
+
+        # 精确匹配（自研扁平文件名）
         filename = _safe_filename(name_or_path) + ".md"
         for cat in CATEGORIES:
             candidate = self.skills_dir / cat / filename
             if candidate.exists():
                 return candidate
-        # 评分模糊搜索
+
+        # 评分模糊搜索（自研扁平 + 导入包目录名/name）
         best_path: Path | None = None
         best_score = 0
         query = name_or_path.lower()
-        for cat in CATEGORIES:
-            cat_dir = self.skills_dir / cat
-            if not cat_dir.is_dir():
+        search_dirs: list[tuple[Path, str]] = [(self.skills_dir / c, "flat") for c in CATEGORIES]
+        if imported_root.is_dir():
+            for pkg in imported_root.iterdir():
+                if pkg.is_dir() and (pkg / "SKILL.md").is_file():
+                    search_dirs.append((pkg, "imported"))
+        for d, kind in search_dirs:
+            if not d.is_dir():
                 continue
-            for f in cat_dir.glob("*.md"):
-                stem = f.stem.lower()
+            files = [d / "SKILL.md"] if kind == "imported" else list(d.glob("*.md"))
+            for f in files:
+                if not f.is_file():
+                    continue
+                stem = (d.name if kind == "imported" else f.stem).lower()
                 score = 0
                 # 完全包含
                 if query in stem:
@@ -544,9 +721,8 @@ class SkillStore:
                     clean_query = query.replace("-", "").replace("_", "")
                     if clean_query in clean_stem:
                         score = 6
-                    # 编辑距离（对短名称有效）
+                    # 字符重叠度（对短名称有效）
                     elif len(query) >= 2 and len(stem) >= 2:
-                        # 简单的字符重叠度
                         common = sum(1 for c in query if c in stem)
                         if common >= len(query) * 0.6:
                             score = int(common / max(len(query), len(stem)) * 5)

@@ -76,6 +76,15 @@ class SkillManager:
                     entry += f"（{badge}）"
                 if trigger:
                     entry += f"（触发：{trigger}）"
+                # 导入的社区技能包：标注作者/版本，便于识别来源
+                if s.get("imported"):
+                    extra = []
+                    if s.get("author"):
+                        extra.append(f"作者 {s['author']}")
+                    if s.get("version"):
+                        extra.append(f"v{s['version']}")
+                    if extra:
+                        entry += f"（{'/'.join(extra)}）"
                 # 截断到 120 字符，保持索引紧凑
                 if len(entry) > 120:
                     entry = entry[:117] + "..."
