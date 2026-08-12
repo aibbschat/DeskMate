@@ -46,6 +46,11 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Optional
 
+try:
+    import yaml as _YAML
+except ImportError:  # 兜底：冻结包若未收集 yaml 也不应崩，仅降级解析能力
+    _YAML = None
+
 
 # 技能目录
 DEFAULT_SKILLS_DIR = Path(os.path.expanduser("~/.deskmate/skills"))
@@ -66,65 +71,78 @@ def _safe_filename(name: str) -> str:
 def _parse_frontmatter(text: str) -> tuple[dict, str]:
     """解析 YAML frontmatter，返回 (metadata, body)。
 
-    兼容两种来源：
+    兼容多种来源并归一化：
     - 自研扁平技能：name/description/tags/trigger/created/updated/uses/...
-    - agentskills.io 社区包：name/description（必需）+ license/compatibility/
-      allowed-tools + ``metadata:`` 嵌套块（author/version 等任意 kv）。
+    - agentskills.io 社区包（Hermes/OpenClaw/WorkBuddy 通用）：name/description
+      （必需）+ author/version/license/homepage/compatibility/allowed-tools +
+      嵌套 ``metadata:`` 块（Hermes 把 tags/category 放在 metadata.hermes.* 下）。
+
+    归一化规则：
+    - tags 统一为 list：优先顶层 tags，其次 metadata.hermes.tags，再 metadata.tags
+    - author/version/license 取顶层（Hermes 放在顶层，而非 metadata 下）
+    - category 顶层无则取 metadata.hermes.category
+    - 完整 metadata 原样保留进 meta["metadata"] 供来源溯源
     """
     if not text.startswith("---\n"):
         return {}, text
     parts = text[4:].split("\n---\n", 1)
     if len(parts) != 2:
         return {}, text
-    meta: dict = {}
-    in_metadata = False
-    for raw in parts[0].split("\n"):
-        line = raw.strip()
-        if in_metadata:
-            # 仍在 metadata 块内：遇到非缩进的顶层键即结束块
-            if line and not raw.startswith(" ") and ":" in line and not line.startswith("- "):
-                in_metadata = False
-            else:
-                if ":" in line:
-                    k, _, v = line.partition(":")
-                    meta.setdefault("metadata", {})[k.strip()] = v.strip()
+    fm_text, body = parts[0], parts[1].lstrip("\n")
+
+    raw: dict = {}
+    if _YAML is not None:
+        try:
+            loaded = _YAML.safe_load(fm_text)
+            if isinstance(loaded, dict):
+                raw = loaded
+        except _YAML.YAMLError:
+            raw = {}
+    if not raw:
+        # 兜底：极简行解析（无 yaml 依赖时也能不崩；tags 仅取顶层）
+        for line in fm_text.split("\n"):
+            line = line.strip()
+            if not line or line.startswith("#") or ":" not in line:
                 continue
-        if not line or line.startswith("#"):
-            continue
-        if line == "metadata:":
-            in_metadata = True
-            meta["metadata"] = {}
-            continue
-        if ":" not in line:
-            continue
-        key, _, val = line.partition(":")
-        key = key.strip()
-        val = val.strip()
-        if key == "tags":
-            if val.startswith("[") and val.endswith("]"):
-                items = [
-                    t.strip().strip("'\"")
-                    for t in val[1:-1].split(",")
-                    if t.strip()
-                ]
-                meta[key] = items
-            else:
-                meta[key] = [val] if val else []
-        elif key == "uses":
-            try:
-                meta[key] = int(val)
-            except ValueError:
-                meta[key] = 0
-        elif key == "success_rate":
-            try:
-                meta[key] = float(val)
-            except ValueError:
-                meta[key] = 0.0
-        elif key == "last_used":
-            meta[key] = val
-        else:
-            meta[key] = val
-    return meta, parts[1].lstrip("\n")
+            key, _, val = line.partition(":")
+            raw[key.strip()] = val.strip()
+
+    meta: dict = {}
+    # 顶层已知字段（含带连字符的 allowed-tools）
+    for k in ("name", "description", "author", "version", "license",
+              "homepage", "compatibility", "allowed-tools", "trigger",
+              "category", "created", "updated", "uses", "success_rate",
+              "last_used"):
+        if k in raw and raw[k] is not None:
+            meta[k] = raw[k]
+
+    # tags 归一化为 list
+    tags = raw.get("tags")
+    if tags is None:
+        md = raw.get("metadata") if isinstance(raw.get("metadata"), dict) else {}
+        hermes = md.get("hermes") if isinstance(md.get("hermes"), dict) else {}
+        tags = hermes.get("tags") if "tags" in hermes else md.get("tags")
+    if isinstance(tags, str):
+        inner = tags.strip()
+        if inner.startswith("[") and inner.endswith("]"):
+            inner = inner[1:-1]
+        tags = [t.strip().strip("'\"") for t in inner.split(",") if t.strip()]
+    elif not isinstance(tags, list):
+        tags = []
+    meta["tags"] = tags
+
+    # category 补充：顶层无则取 metadata.hermes.category
+    if not meta.get("category"):
+        md = raw.get("metadata") if isinstance(raw.get("metadata"), dict) else {}
+        hermes = md.get("hermes") if isinstance(md.get("hermes"), dict) else {}
+        if isinstance(hermes, dict) and hermes.get("category"):
+            meta["category"] = hermes["category"]
+
+    # 保留完整 metadata 供来源溯源
+    if isinstance(raw.get("metadata"), dict):
+        meta["metadata"] = raw["metadata"]
+
+    return meta, body
 
 
 def _build_frontmatter(meta: dict) -> str:
@@ -271,7 +289,7 @@ class SkillStore:
         """发现并解析 imported/ 下的 agentskills.io 技能包。
 
         Returns:
-            技能 dict 列表（category 统一归为 general，imported=True）。
+            技能 dict 列表（category 取包自带的分类，缺省 general，imported=True）。
         """
         result: list[dict] = []
         imported_root = self.skills_dir / IMPORTED_DIR
@@ -288,21 +306,20 @@ class SkillStore:
                 meta, body = _parse_frontmatter(text)
             except OSError:
                 continue
-            md = meta.get("metadata") or {}
             result.append({
                 "name": meta.get("name") or pkg.name,
                 "description": meta.get("description", ""),
                 "trigger": meta.get("trigger", ""),
                 "tags": meta.get("tags", []),
-                "category": "general",
+                "category": meta.get("category") or "general",
                 "path": str(skill_md),
                 "pkg_dir": str(pkg),
                 "imported": True,
                 "license": meta.get("license", ""),
                 "compatibility": meta.get("compatibility", ""),
                 "allowed_tools": meta.get("allowed-tools", ""),
-                "author": md.get("author", ""),
-                "version": md.get("version", ""),
+                "author": meta.get("author", ""),
+                "version": meta.get("version", ""),
                 "uses": 0,
                 "success_rate": 0.0,
                 "last_used": "",

@@ -56,6 +56,10 @@ _catalog_src = os.path.join(ROOT, "coworker", "skills", "catalog.json")
 if os.path.isfile(_catalog_src):
     datas.append((_catalog_src, os.path.join("coworker", "skills")))
 
+# skill_store.py 现依赖 PyYAML 稳健解析 agentskills.io 嵌套 frontmatter；
+# 显式列入以保证冻结 DMG 包含（缺失会触发兜底降级解析，Hermes 包 tags 会变字符串）。
+hiddenimports += ["yaml"]
+
 if not INCLUDE_EXPERIMENTAL:
     hiddenimports = [
         m for m in hiddenimports if not m.startswith("coworker.connectors.experimental")

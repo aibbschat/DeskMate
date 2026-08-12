@@ -29,9 +29,10 @@ def _write_pkg(root: Path, name: str, body: str, extra_front: str = "") -> Path:
         "license: Apache-2.0\n"
         "compatibility: Requires pdfplumber and network access\n"
         "allowed-tools: Bash(python:*) Read\n"
+        "author: example-org\n"
+        'version: "1.0"\n'
         "metadata:\n"
-        "  author: example-org\n"
-        '  version: "1.0"\n'
+        "  homepage: https://example.org\n"
         f"{extra_front}"
         "---\n"
     )
@@ -44,17 +45,21 @@ def test_parse_frontmatter_metadata_block():
         "---\n"
         "name: pdf-processing\n"
         "description: Extract PDF text.\n"
+        "author: example-org\n"
+        'version: "1.0"\n'
         "metadata:\n"
-        "  author: example-org\n"
-        '  version: "1.0"\n'
+        "  homepage: https://example.org\n"
         "---\n"
         "# body\n"
     )
     meta, body = _parse_frontmatter(text)
     assert meta["name"] == "pdf-processing"
     assert meta["description"] == "Extract PDF text."
-    assert meta["metadata"]["author"] == "example-org"
-    assert meta["metadata"]["version"] == '"1.0"'
+    # 顶层字段（agentskills.io 标准：author/version 在顶层）
+    assert meta["author"] == "example-org"
+    assert meta["version"] == "1.0"
+    # 嵌套 metadata 块仍原样保留（homepage 在 metadata 下）
+    assert meta["metadata"]["homepage"] == "https://example.org"
     assert body.strip() == "# body"
 
 
@@ -77,7 +82,7 @@ def test_import_skill_dir_and_discover(tmp_path: Path):
     assert s["name"] == "pdf-processing"
     assert "Extract text and tables from PDF files" in s["description"]
     assert s["author"] == "example-org"
-    assert s["version"] == '"1.0"'
+    assert s["version"] == "1.0"
     assert s["license"] == "Apache-2.0"
     assert s["compatibility"] == "Requires pdfplumber and network access"
     assert s["allowed_tools"] == "Bash(python:*) Read"
@@ -149,3 +154,70 @@ def test_flat_skill_backward_compat(tmp_path: Path):
 
     found = store.search("审校小说", limit=5)
     assert any(s["name"] == "小说审校" for s in found)
+
+
+def test_hermes_nested_metadata_tags():
+    """Hermes 包把 tags 放在 metadata.hermes.tags 嵌套块，author/version/license
+    在顶层。解析后 tags 必须是 list，分类取自 metadata.hermes.category。"""
+    text = (
+        "---\n"
+        "name: humanizer\n"
+        'description: "Humanize text: strip AI-isms and add real voice."\n'
+        "version: 2.5.1\n"
+        "author: Siqi Chen, ported by Hermes Agent\n"
+        "license: MIT\n"
+        "platforms: [linux, macos, windows]\n"
+        "metadata:\n"
+        "  hermes:\n"
+        "    tags: [writing, editing, humanize, anti-ai-slop, voice, prose, text]\n"
+        "    category: creative\n"
+        "    homepage: https://github.com/blader/humanizer\n"
+        "---\n"
+        "# Humanizer\n"
+    )
+    meta, _ = _parse_frontmatter(text)
+    assert meta["name"] == "humanizer"
+    # tags 必须是 list（不能是被压平的字符串）
+    assert isinstance(meta["tags"], list)
+    assert "writing" in meta["tags"]
+    assert "prose" in meta["tags"]
+    # author/version/license 在顶层（非 metadata 下）
+    assert meta["author"].startswith("Siqi Chen")
+    assert meta["version"] == "2.5.1"
+    assert meta["license"] == "MIT"
+    # category 取自 metadata.hermes.category
+    assert meta["category"] == "creative"
+
+
+def test_build_skill_index_includes_imported_categories(tmp_path: Path):
+    """回归：导入的社区包分类(creative/research…)此前被硬编码的
+    writing/coding/office/general 过滤掉，导致进不了系统 prompt 索引。"""
+    store = SkillStore(skills_dir=tmp_path)
+    # 写一个 Hermes 格式包（分类 creative）
+    pkg = tmp_path / "src" / "humanizer"
+    pkg.mkdir(parents=True)
+    (pkg / "SKILL.md").write_text(
+        "---\n"
+        "name: humanizer\n"
+        "description: Humanize text: strip AI-isms and add real voice.\n"
+        "version: 2.5.1\n"
+        "author: Siqi Chen\n"
+        "license: MIT\n"
+        "metadata:\n"
+        "  hermes:\n"
+        "    tags: [writing, editing]\n"
+        "    category: creative\n"
+        "---\n"
+        "# Humanizer\n",
+        encoding="utf-8",
+    )
+    store.import_skill_dir(pkg)
+
+    from deskmate.skills.manager import SkillManager
+    mgr = SkillManager(skills_dir=tmp_path)
+    idx = mgr.build_skill_index()
+    # creative 分类头 + humanizer 都应出现在索引中
+    assert "creative" in idx
+    assert "humanizer" in idx
+    assert "Siqi Chen" in idx
+

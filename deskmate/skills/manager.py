@@ -63,9 +63,13 @@ class SkillManager:
         prof_map = self._proficiency_map()
 
         lines = ["<available_skills>"]
-        for cat in ["writing", "coding", "office", "general"]:
-            if cat not in by_cat:
-                continue
+        # 已知自研分类优先排序，导入社区包的分类（creative/research/note-taking…）
+        # 也一并纳入，否则会被排除出系统 prompt 索引导致匹配不到。
+        known_order = ["writing", "coding", "office", "general"]
+        cats = [c for c in known_order if c in by_cat] + sorted(
+            k for k in by_cat if k not in known_order
+        )
+        for cat in cats:
             lines.append(f"  {cat}:")
             for s in by_cat[cat]:
                 desc = s.get("description", "")[:80]
