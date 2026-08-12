@@ -205,10 +205,13 @@ def save_state(state: GrowthState, base_dir: Path | str | None = None) -> None:
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         state.updated_at = _now()
-        path.write_text(
-            json.dumps(state.to_dict(), ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
+        data = json.dumps(state.to_dict(), ensure_ascii=False, indent=2)
+        # 临时文件 + 原子 rename：先写 *.tmp 再 os.replace 覆盖，避免并发读写时
+        # 另一个实例读到写了一半（被截断）的文件，从而误判为损坏、回退到全新默认
+        # 态、再把真实进度整体覆盖掉——这正是「桌宠莫名重置」的根因。
+        tmp = path.with_name(path.name + ".tmp")
+        tmp.write_text(data, encoding="utf-8")
+        os.replace(tmp, path)  # POSIX/NT 均保证不会让读取方看到半截文件
     except OSError as e:
         logging.warning("growth state 写盘失败（勋章解锁可能未保存）: %s", e)
 

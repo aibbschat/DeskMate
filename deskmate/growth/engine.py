@@ -67,6 +67,13 @@ MOOD_IGNORED = -3.0
 EMPATHY_BUDGET_MIN = 0.9
 EMPATHY_BUDGET_MAX = 1.3
 
+# 活力（照顾循环）：被使用消耗、随时间缓慢恢复。
+# 旧参数（消耗 1.0 / 每 tick 恢复 0.2）下，后台心跳每 ~5 分钟恢复一次、远快于
+# 偶发的消耗，导致活力几乎恒定顶在 100，看起来像「写死的常量」。新参数让消耗更
+# 明显、恢复更克制，活力才会随真实使用上下浮动。
+VITALITY_DECAY_PER_USE = 2.0       # 每次被使用（技能/建议/记忆）消耗
+VITALITY_RECOVER_PER_TICK = 0.1    # 每次 proactive tick（约 5 分钟）恢复
+
 # proactive 阈值调制：信任感 0-1 → 偏移 [-0.08, +0.08]
 TRUST_THRESHOLD_SPAN = 0.08
 
@@ -647,13 +654,13 @@ class GrowthEngine:
     # ------------------------------------------------------------------
 
     def _apply_decay(self) -> None:
-        """活力消耗：每次被使用（技能/建议），活力小幅下降。"""
-        self.state.vitality = clamp(self.state.vitality - 1.0, 0, 100)
+        """活力消耗：每次被使用（技能/建议），活力明显下降。"""
+        self.state.vitality = clamp(self.state.vitality - VITALITY_DECAY_PER_USE, 0, 100)
 
     def tick_decay(self) -> None:
         """时间衰减（proactive tick 可调用）：活力缓慢恢复，心情向 80 收敛。"""
-        # 活力随时间恢复（每次 tick 恢复 0.2）
-        self.state.vitality = clamp(self.state.vitality + 0.2, 0, 100)
+        # 活力随时间恢复（每次 tick 恢复 0.1，克制恢复避免长期顶在 100）
+        self.state.vitality = clamp(self.state.vitality + VITALITY_RECOVER_PER_TICK, 0, 100)
         # 心情向中性 80 缓慢收敛（避免长期低落或过高）
         if self.state.mood < 80:
             self.state.mood = clamp(self.state.mood + 0.1, 0, 100)
