@@ -146,6 +146,75 @@ def _maybe_extract_skill(base_dir: Path, last_user: str, last_asst: str) -> None
 
 
 # ---------------------------------------------------------------------------
+# 闭环后主动识别关联未竟（对齐 Hermes 主动行为环 Task2）
+# ---------------------------------------------------------------------------
+def _maybe_proactive_close_loop(
+    base_dir: Path, workspace: Optional[str], last_user: str, last_asst: str
+) -> None:
+    """本轮闭环后，主动反思是否有关联的未竟之事应主动闭环（Hermes 的「主动做事」核心）。
+
+    只做「识别」（LLM 决策）+ 通过执行桥决定「自动执行 or 提案」，任何异常都不阻断主流程。
+    高门槛（高置信度 + 可逆 + 低风险）才自动执行，否则降级为提案等待用户确认——
+    绝不静默替用户做高风险动作。
+    """
+    try:
+        from deskmate.proactivity.close_loop import decide_close_loop
+        from deskmate.proactivity import executor
+
+        decision = decide_close_loop(
+            last_user or "", last_asst or "", workspace=workspace
+        )
+        if not decision.should_close_loop:
+            return
+        # 记一笔识别日志（透明可审计）
+        project = _project_name_for(workspace)
+        _append_journal(
+            base_dir,
+            project,
+            f"**主动闭环识别**：{decision.action_summary}\n"
+            f"- 理由：{decision.rationale}\n"
+            f"- 置信度：{decision.confidence:.0%}｜可逆：{decision.reversible}｜风险：{decision.risk_level}",
+        )
+        result = executor.try_execute_close_loop(decision, workspace)
+        logger.info(
+            "after_action: 主动闭环 -> executed=%s proposed=%s skipped=%s (%s)",
+            result.executed, result.proposed, result.skipped, result.reason,
+        )
+    except Exception:
+        logger.exception("after_action: 主动闭环识别失败")
+
+
+def _maybe_evolve_on_correction(
+    base_dir: Path, last_user: str, last_asst: str
+) -> None:
+    """本轮用户疑似纠正了上一轮助手输出时，驱动相关技能自我进化（Hermes learning loop）。
+
+    启发式前置：仅当本轮 user 含明显纠正信号词时才触发 LLM，避免每次收尾都消耗 LLM。
+    内部 match_skills 命中不到技能时也会短路返回（零 LLM 成本）。任何异常不阻断主流程。
+    """
+    if not (last_user and last_asst):
+        return
+    _SIGNALS = (
+        "不对", "错了", "错误", "纠正", "应该是", "不是", "搞错",
+        "重新", "修正", "改一下", "你弄", "你搞", "记错", "弄反", "搞反",
+    )
+    if not any(sig in last_user for sig in _SIGNALS):
+        return
+    try:
+        from deskmate.skills.manager import SkillManager
+
+        mgr = SkillManager(base_dir=base_dir)
+        updated = mgr.evolve_skill_on_correction(last_user, last_user)
+        if updated:
+            logger.info(
+                "after_action: 纠正驱动技能进化 -> %s",
+                [u.get("name") for u in updated],
+            )
+    except Exception:
+        logger.exception("after_action: 技能进化失败")
+
+
+# ---------------------------------------------------------------------------
 # 项目日志（记一笔）
 # ---------------------------------------------------------------------------
 def _append_journal(base_dir: Path, project: str, entry: str) -> None:
@@ -276,6 +345,10 @@ def reflect_and_persist(
         # 闭环后主动抽取可复用技能（对齐 Hermes learning loop）
         # 与日志同门槛：仅本轮有实质内容时才触发，避免客套轮次空耗 LLM
         _maybe_extract_skill(base_dir, last_user, last_asst)
+        # 闭环后主动识别关联未竟（对齐 Hermes 主动行为环 Task2）
+        _maybe_proactive_close_loop(base_dir, workspace, last_user, last_asst)
+        # 用户纠正 → 驱动相关技能自我进化（Hermes learning loop 的闭环打磨）
+        _maybe_evolve_on_correction(base_dir, last_user, last_asst)
 
     # ---- 2. 刷新圣经（修读稿不更新记忆）----
     try:

@@ -235,6 +235,16 @@ class SessionManager:
         # Dead-letter: inbound messages with no destination + background-turn failures, so neither
         # vanishes silently (a debugging/visibility surface, not a redelivery queue).
         self.unrouted = UnroutedStore(base / "unrouted.json")
+        # 主动闭环执行器（Task2）：注册后，deskmate after_action 收尾时识别到的关联未竟
+        # 会以一次性 AUTO 任务落地执行（复用权限引擎的路径作用域 + CRITICAL 拒杀）。
+        try:
+            from deskmate.proactivity.executor import register_close_loop_executor
+
+            register_close_loop_executor(self._submit_close_loop_task)
+        except Exception as _e:
+            import logging as _lg
+
+            _lg.getLogger(__name__).warning("注册主动闭环执行器失败：%s", _e)
 
     # -- workspaces -------------------------------------------------------------
     def open_workspace(self, path: str, *, create: bool = False) -> dict[str, Any]:
@@ -3429,6 +3439,50 @@ class SessionManager:
         return (
             f"⏰ Wake — the timer you set has fired{note}. Continue where you left off."
         )
+
+    def _submit_close_loop_task(self, instruction: str, workspace: str) -> None:
+        """主动闭环执行：把 deskmate 识别到的关联未竟以一次性 AUTO 任务提交执行。
+
+        由 ``deskmate.proactivity.executor.register_close_loop_executor`` 注册为全局
+        执行器，在 after_action 收尾的 daemon 线程里被调用。本方法把协程提交到
+        scheduler 的事件循环异步执行，不阻塞调用线程。复用
+        ``_build_task_engine(mode=AUTO)`` —— 写入路径作用域 + CRITICAL 治理拒杀两道
+        硬防线仍然生效（High/Critical 命令仍被拦，文件写入仍限 workspace 内）。
+        """
+        import logging as _lg
+
+        try:
+            import asyncio
+
+            from coworker.automation.models import Schedule, ScheduledTask
+
+            task = ScheduledTask(
+                title="主动闭环（agent 自发）",
+                instructions=instruction,
+                schedule=Schedule(kind="once"),
+                workspace=workspace or self.default_workspace or "",
+                agent="cowork",
+                notify_on_completion=False,
+            )
+            loop = None
+            sched_task = getattr(self.scheduler, "_task", None)
+            if sched_task is not None:
+                loop = sched_task.get_loop()
+            if loop is None:
+                try:
+                    loop = asyncio.get_event_loop()
+                except RuntimeError:
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+            # 异步提交到 scheduler loop，后台执行，不阻塞 after_action 线程
+            asyncio.run_coroutine_threadsafe(
+                self._run_scheduled_task(task, "close_loop"), loop
+            )
+            _lg.getLogger(__name__).info(
+                "主动闭环任务已提交：%s", instruction[:80]
+            )
+        except Exception as e:
+            _lg.getLogger(__name__).warning("主动闭环任务提交失败：%s", e)
 
     async def _run_scheduled_task(self, task, trigger: str) -> TaskRun:
         run = TaskRun(
