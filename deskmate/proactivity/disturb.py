@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -144,7 +145,7 @@ class DisturbManager:
                 pass
 
     def _persist(self) -> None:
-        """保存到文件。"""
+        """保存到文件（原子写：临时文件 + os.replace，避免并发读到半截文件）。"""
         if not self.persist_path:
             return
         try:
@@ -161,9 +162,11 @@ class DisturbManager:
                     for r in self.records
                 ],
             }
-            self.persist_path.write_text(
-                json.dumps(data, ensure_ascii=False, indent=2),
-                encoding="utf-8",
+            payload = json.dumps(data, ensure_ascii=False, indent=2)
+            tmp = self.persist_path.with_suffix(
+                self.persist_path.suffix + ".tmp"
             )
+            tmp.write_text(payload, encoding="utf-8")
+            os.replace(tmp, self.persist_path)
         except OSError:
             pass
