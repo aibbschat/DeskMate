@@ -196,6 +196,18 @@ def _norm(s: str) -> str:
     return _NON_CONTENT.sub("", str(s))
 
 
+def _safe_int(v, default: int = 0) -> int:
+    """把可能是脏值（如被错位写入的文件名字符串）安全转成 int，避免单条坏数据
+    炸掉整库写入。无法解析时回退 default。"""
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        try:
+            return int(str(v).strip())
+        except (TypeError, ValueError):
+            return default
+
+
 def _fuzzy_hit_ratio(needle: str, haystack: str) -> float:
     """滑窗命中率：把 needle 切成定长片段，看多少比例能在 haystack 找到。
 
@@ -411,7 +423,7 @@ def upsert_records(
             counts["inserted"] += 1
             continue
 
-        newer = rec.source_seq >= int(row["source_seq"] or 0)
+        newer = rec.source_seq >= _safe_int(row["source_seq"])
         history = json.loads(row["history"] or "[]")
 
         if newer:
@@ -432,7 +444,7 @@ def upsert_records(
                 "detail": rec.detail or row["detail"],
                 "evidence": rec.evidence or row["evidence"],
                 "source_file": rec.source_file or row["source_file"],
-                "source_seq": max(rec.source_seq, int(row["source_seq"] or 0)),
+                "source_seq": max(rec.source_seq, _safe_int(row["source_seq"])),
                 # 角色类别是稳定属性：新批次给出则以新为准，否则保留旧值
                 "role_category": rec.role_category or row["role_category"]
                 or ROLE_NARRATIVE,
@@ -447,7 +459,7 @@ def upsert_records(
                 "detail": row["detail"] or rec.detail,
                 "evidence": row["evidence"] or rec.evidence,
                 "source_file": row["source_file"] or rec.source_file,
-                "source_seq": int(row["source_seq"] or 0),
+                "source_seq": _safe_int(row["source_seq"]),
                 "role_category": row["role_category"] or rec.role_category
                 or ROLE_NARRATIVE,
             }
@@ -466,8 +478,8 @@ def upsert_records(
                WHERE id=?""",
             (
                 merged["name"], merged["subject"], merged["object"], merged["rel_type"],
-                merged["detail"], merged["evidence"], merged["source_seq"],
-                merged["source_file"], status,
+                merged["detail"], merged["evidence"], merged["source_file"],
+                merged["source_seq"], status,
                 max(rec.confidence, float(row["confidence"] or 0)),
                 json.dumps(aliases, ensure_ascii=False),
                 merged["role_category"],
