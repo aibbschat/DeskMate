@@ -1206,6 +1206,23 @@ def build_fts5_index(folder: str, force: bool = False) -> int:
 
             indexed_count += 1
 
+        # 垃圾回收：清理已从磁盘删除的文件的旧索引（Bug B 修复）。
+        # 之前只增/改不删：作者删掉某章稿件后，FTS5 检索仍会返回「死章节」片段。
+        current_rel = {_rel_name(p, scan_root) for p in text_files}
+        if current_rel:
+            placeholders = ",".join("?" for _ in current_rel)
+            conn.execute(
+                f"DELETE FROM novels WHERE file_path NOT IN ({placeholders})",
+                tuple(sorted(current_rel)),
+            )
+            conn.execute(
+                f"DELETE FROM file_tracker WHERE file_path NOT IN ({placeholders})",
+                tuple(sorted(current_rel)),
+            )
+        else:
+            conn.execute("DELETE FROM novels")
+            conn.execute("DELETE FROM file_tracker")
+
         conn.commit()
         return indexed_count
     finally:
@@ -1500,6 +1517,68 @@ def fts5_index_status(folder: str) -> str:
         return f"FTS5 索引状态查询失败：{e}"
 
 
+# Bug A 修复：回退路径圣经摘要的 CHARACTERS 预算（保持原行为量级，单位：字符）
+_BIBLE_CHAR_BUDGET = 6000
+
+
+def _split_character_blocks(chars_text: str) -> list[str]:
+    """把 CHARACTERS 文本按角色条目切成完整块。
+
+    块起点：行首 ``- **``（v2 实体库渲染的角色条目）或 ``#### ``（v1 Markdown
+    角色段落）。其余行（分区标题、缩进的证据标注、关系区）累积进当前块。
+    """
+    lines = chars_text.splitlines()
+    blocks: list[str] = []
+    current: list[str] = []
+    for ln in lines:
+        if re.match(r"^(?:- \*\*|#### )", ln):
+            if current:
+                blocks.append("\n".join(current))
+            current = [ln]
+        else:
+            current.append(ln)
+    if current:
+        blocks.append("\n".join(current))
+    return blocks
+
+
+def _pick_character_blocks(chars_text: str, kws: list[str], budget: int) -> str:
+    """按查询关键词从 CHARACTERS 中选取角色块（完整块，绝不把角色切成两半）。
+
+    - 有关键词命中：优先取「包含关键词」的块，按命中数降序、原文序稳定，预算内尽量多；
+    - 无命中块 / 无关键词：按原文顺序取完整块，直到预算；
+    - 允许首个块单独超预算：宁可轻微超预算，也不把角色段落切半
+      （整段盲截把 6000 字符后的角色整段切没，正是 Bug A 的根源）。
+    """
+    blocks = _split_character_blocks(chars_text)
+    if not blocks:
+        return ""
+
+    def take(items: list[tuple[int, str]]) -> list[str]:
+        selected: list[str] = []
+        total = 0
+        for _i, b in items:
+            if total + len(b) <= budget or not selected:
+                selected.append(b)
+                total += len(b)
+            else:
+                break
+        return selected
+
+    if kws:
+        hits = [
+            (i, b, sum(1 for kw in kws if kw in b))
+            for i, b in enumerate(blocks)
+        ]
+        hit_items = [(i, b, n) for i, b, n in hits if n > 0]
+        if hit_items:
+            hit_items.sort(key=lambda x: (-x[2], x[0]))
+            selected = take([(i, b) for i, b, _n in hit_items])
+            if selected:
+                return "\n\n".join(selected)
+    return "\n\n".join(take([(i, b) for i, b in enumerate(blocks)]))
+
+
 def _keyword_recall(query: str, folder: str, max_snippets: int = 8) -> str:
     """纯关键词检索（原始实现）：逐文件扫描，正则匹配关键词提取片段。
 
@@ -1507,20 +1586,26 @@ def _keyword_recall(query: str, folder: str, max_snippets: int = 8) -> str:
     scan_root, _ = _resolve_root(folder)
     parts: list[str] = []
 
-    bible = read_bible(folder)
-    if bible:
-        parts.append("【人物圣经摘要】")
-        if bible.get("CHARACTERS"):
-            parts.append(bible["CHARACTERS"][:6000])
-        for tag in ("OUTLINE", "TIMELINE", "NOTES"):
-            if bible.get(tag):
-                parts.append(f"\n## {tag}\n{bible[tag][:2000]}")
-
-    # 提取所有关键词（≥2字），去重，最多8个
+    # 提取所有关键词（≥2字），去重，最多8个。提前到圣经摘要之前，
+    # 让摘要能按查询涉及的实体动态选取角色块（Bug A 修复）。
     kws = list(dict.fromkeys(
         w for w in re.split(r"[\s，。、？！,.?!；：“”‘’…—()\[\]【】-]+", query)
         if len(w) >= 2
     ))[:8]
+
+    bible = read_bible(folder)
+    if bible:
+        parts.append("【人物圣经摘要】")
+        if bible.get("CHARACTERS"):
+            chars_summary = _pick_character_blocks(
+                bible["CHARACTERS"], kws, budget=_BIBLE_CHAR_BUDGET
+            )
+            if chars_summary:
+                parts.append(chars_summary)
+        for tag in ("OUTLINE", "TIMELINE", "NOTES"):
+            if bible.get(tag):
+                parts.append(f"\n## {tag}\n{bible[tag][:2000]}")
+
     if not kws:
         if not parts:
             return "（尚未生成人物圣经，请先运行 analyze_novel）"

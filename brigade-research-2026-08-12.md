@@ -85,7 +85,7 @@
   }
   ```
   （`brigade` 需全局可用；当前我们只在 `/tmp/brigade-try` 装过，需先 `npm i -g @spinabot/brigade` 落到稳定位置。Brigade 需先 `onboard` 一次让其 `~/.brigade/` 存储就绪。）
-- 这条路给桌搭带来的：Brigade 的 **Tideline 长期记忆引擎**作为桌搭可用的 `add/search/context` 工具。桌搭保留自己的 GUI、persona、写作技能、Hermes 式学习闭环，**只把"记忆底座"换成 Brigade**。标准是 Brigade 自己宣传的用法，低风险。
+- 这条路给桌搭带来的：Brigade 的 **Tideline 长期记忆引擎**作为桌搭可用的 `memory_add`/`memory_search`/`memory_context` 工具（README 简称 add/search/context）。桌搭保留自己的 GUI、persona、写作技能、Hermes 式学习闭环，**只把"记忆底座"换成 Brigade**。标准是 Brigade 自己宣传的用法，低风险。
 
 ### 路 B（更重、真正的"聊天客户端"）：桌搭 GUI 直连 Brigade 网关（WebSocket）
 - Brigade 网关是常驻 WebSocket daemon（`brigade gateway run`，默认 `127.0.0.1:7777`）。`brigade tui` / `brigade connect` 本质就是连这个 WS 的瘦客户端。
@@ -104,14 +104,14 @@
 
 ### 总体架构（解耦的关键）
 - Brigade 作为**独立本地后端进程**运行，对外只暴露它自带的两个稳定接口：
-  - **MCP 接口**（`brigade mcp`，stdio）：提供 `add` / `search` / `context` 记忆工具。
+  - **MCP 接口**（`brigade mcp`，stdio）：提供 `memory_add` / `memory_search` / `memory_context` 记忆工具（README 简称 add/search/context）。
   - **WebSocket 网关**（`brigade gateway run`，127.0.0.1:7777）：提供聊天/crew 服务（内部协议）。
 - 桌搭作为**前端客户端 + 自身主脑**：通过现成的 MCP Host 连 Brigade 的 MCP；如需聊天，桌搭前端经一个**薄适配层**连 Brigade WS。桌搭**不复制任何 Brigade 代码**，只在边界处调用其服务。
 - 结果：Brigade 升级（换版本/实现）只影响它自己；桌搭升级也不碰 Brigade → 满足约束②。桌搭始终自己编排，Brigade 只是"被调用的后端服务/工具" → 满足约束①。
 
 ### Phase 1（核心、推荐先做）：MCP 记忆后端，纯增量、零侵入
 - 把 Brigade 注册为桌搭的 MCP server：在 `~/.config/coworker/mcp.json` 的 `mcpServers` 加 `brigade-memory`（`command:"brigade"`, `args:["mcp"]`, `type:"stdio"`）。
-- 桌搭 MCP Host 按需 spawn `brigade mcp`，自动获得 Tideline 的 `add/search/context` 工具。
+- 桌搭 MCP Host 按需 spawn `brigade mcp`，自动获得 Tideline 的 `memory_add`/`memory_search`/`memory_context` 工具（README 简称 add/search/context）。
 - **桌搭侧零代码改动**（复用现有 MCP 机制）；Brigade 侧零改动。
 - 约束①：agent/persona/圣经/圆桌/技能全部原样保留，Brigade 仅"额外多一组记忆工具"——能力只增不减。
 - 约束②：纯协议对接，无逻辑搬移；任一方升级互不影响。
@@ -131,5 +131,50 @@
 1. 全局安装 brigade 到稳定位置（`npm i -g @spinabot/brigade` 或托管 node 装后软链），确保 `brigade` 在 PATH。
 2. **用户本人**运行 `brigade onboard`（选存储/供应商/模型，可复用 Claude Code 登录）。涉及凭证，助手不代劳。
 3. 助手往 `~/.config/coworker/mcp.json` 写 `brigade-memory` 条目（纯新增，不改其他）。
-4. 验证：桌搭能加载该 MCP server、`add/search/context` 工具可见；写一条记忆 → 检索命中。
+4. 验证：桌搭能加载该 MCP server、`memory_add`/`memory_search`/`memory_context` 工具可见；写一条记忆 → 检索命中。
 5. （可选）Phase 2 另议。
+
+### 落地记录（2026-08-12 晚，Phase 1 已实施并验证）
+- **安装**：`npm i @spinabot/brigade` 装入托管 node workspace（`/Users/xiaocheng/.workbuddy/binaries/node/workspace/node_modules`），**未污染系统环境**；软链 `~/.local/bin/brigade` 便于手动调用。Brigade 1.30.0 跑通。
+- **配置**：`~/.config/coworker/mcp.json` **纯新增** `brigade-memory`（stdio，显式用托管 node 22.22.2 启动 `brigade.mjs mcp`，`enabled:true`、`requires_approval:false`）。**未改动任何已有 server**（novel-memory / perception / deskmate-* / fetch / granola / bailian-websearch）；JSON 校验通过。
+- **协议级验证（用桌搭将使用的同一条命令）**：`initialize` 成功 → `tools/list` 返回 `memory_add` / `memory_search` / `memory_context` → `memory_add` 写入成功（返回 `stored mem_...`）→ `memory_search` **英文查询命中**返回事实。**MCP 对接完全打通，桌搭侧零代码改动。**
+- **⚠️ 重要限制（中文召回弱）**：实测 `memory_search` 对**英文**查询可命中，但对**中文**查询（如"逍遥"）返回无结果。根因：Tideline 混合召回 = BM25 + 无模型 HRR，**BM25 按空白分词**，中文整句无空格→整句成一词→子串查不到；HRR 是无模型向量，也不补中文语义。README 提到"Plug in a learned embedder to upgrade"——需接中文 embedder 才能改善。
+  - **对用户的含义**：作为中文写作者，Brigade 的 Tideline 开箱对中文记忆**不如桌搭的「圣经」友好**。这进一步支持**方案 X（保留圣经 + 叠加 Brigade）**——圣经作中文主记忆，Brigade 的 Tideline 作辅助/英文/结构化事实库，或仅在你接入中文 embedder 后接管。不要因接了 Brigade 就退休圣经。
+- **待用户本人**：跑一次 `brigade onboard`（选存储/供应商/模型，可复用 Claude Code 登录）——涉及你的凭证，助手不代劳。注：记忆 MCP 实测**不依赖 onboard** 也能起（仅暴露记忆工具、不调 LLM）；但要让 Brigade 当完整后端、你想"试试它多神"时，必须 onboard。
+- **验证残留**：验证时往 `~/.brigade/` 写了 3 条测试事实（含 1 条中文）。MCP 只暴露 add/search/context、无删除工具，目前清不掉；不影响功能，如需干净可手动清 `~/.brigade/` 存储或忽略。
+
+## 九、最终决策（2026-08-12 深夜）：不集成，摘回
+
+### 推演（用户得出，经核确认成立）
+1. **Phase 1 只能用到记忆，且中文弱**（已实测：英文命中 / 中文无结果）→ 对一个中文写作者，增量价值为负（桌搭「圣经」对中文更友好）。
+2. **Phase 2 风险大**（WS 网关协议未文档化、随版本可能变）→ 不实施则桌搭**当不了 Brigade 的桌面端**（桌面端 = 连 WS 的聊天瘦客户端，而 `brigade mcp` 只暴露记忆工具、不是聊天前端，定义上即不成立）。
+3. 由 1+2 推得：**Brigade 不适合接入桌搭**；且**不做 Phase 2 就无法成为其桌面端**。
+
+### 关键区分
+- **试 Brigade ≠ 接 Brigade**。用户最初目的是"装来试试它多神"——那是独立试用（终端 `brigade tui`），与"集成进桌搭"无关，两件事分开判。
+- 技术可行性 ≠ 实用价值。Phase 1 零侵入、纯增量是真，但"干净"不等于"值得"。
+
+### 已执行动作
+- 从 `~/.config/coworker/mcp.json` **摘除 `brigade-memory`**，桌搭回到接入前 8 个 server 状态（JSON 校验通过）。
+- **保留 Brigade 安装**（`~/.local/bin/brigade`，1.30.0）供用户单独终端试用，不影响桌搭。
+- 桌搭维持自有的 `deskmate-memory`(圣经) + Tauri GUI + 写作技能 + 倾斜 Hermes 路线，未作任何耦合改动。
+
+### 对桌搭方向的启示（正向）
+- Brigade 处于 `hermes`/`openclaw`/`moltbot` 同一谱系，**验证了我们桌搭方向有共识、非野路子**；但它本身不是要拼进来的部件。
+- 若要"桌面端 Agent OS"：应**自研 Tauri+GUI**（桌搭已有），不绑 Brigade 未文档化的 WS；中文记忆「圣经」已强于 Tideline 开箱表现，无需退休或外迁。
+- Phase 2 暂不实施（用户保留再议权利）。
+
+## 十、独立试用进展（2026-08-13 凌晨，用户本人操作）
+- 用户自行完成 `brigade onboard`，选 **DeepSeek** 供应商，模型 `deepseek-v4-flash`；key 已写入 `~/.brigade/brigade.json`（非 credentials 文件）。配置自检 `logs/config-health.json` 记录到位。
+- 助手以 `brigade gateway run` 验证：网关正常启动，`agent model: deepseek/deepseek-v4-flash`、`listening on ws://127.0.0.1:7777`、`ready`；`/` 与 `/health` 返回 404/Not found 属正常（纯 WS 服务，不响应 HTTP GET）。
+- **拉起命令（用户在自有终端执行，交互界面助手无法代跑）**：
+  - 最简：`brigade tui` —— 自动拉起网关并进入终端聊天界面。
+  - 或分离：`brigade gateway run &` 后台常驻 + 另开终端 `brigade connect` 连入。
+- 注意：DeepSeek 调用走网络（`api.deepseek.com`）；若聊天时报模型/权限错误，多为该 key 对该模型不可用，可重跑 `brigade onboard` 换模型（目录另有 `deepseek-v4-pro`）。
+
+## 十一、Brigade 修复 Bug A/B 并质检通过（2026-08-13）
+- 用户让 Brigade（代号「拳头」）依 `brigade-fix-candidates.md` 修两条真 Bug。
+- **Bug A**（`_keyword_recall` 圣经摘要盲截）：改为按查询关键词从 CHARACTERS 切分完整角色块动态选取（新增 `_split_character_blocks` / `_pick_character_blocks`），绝不再以 `[:6000]` 整段切掉 6000 字符后的角色；无关键词时按原文顺序取完整块直到预算，且首个块允许轻微超预算而不拦腰截断。
+- **Bug B**（`build_fts5_index` 删章残留）：循环结束后按现存文件集合 `DELETE FROM novels / file_tracker WHERE file_path NOT IN (...)`，目录清空则清空两表，与存量 `rel_path` 格式一致（不会误删/漏删）。
+- **质检（逍遥，非轻信其报告）**：读 `git diff` 确认两处真实实现；运行 Brigade 新增 7 个测试（尾角色可被检索、角色块不切半、删章后独有词不再命中、两表同清、变更文件仍更新、空目录清空）+ 全文件 `31 passed`，零回归。
+- 余注：`core.py:1885/1890` 的 `chars_text[:4000]` / `new_text[:6000]` 是「一致性核验」LLM 输入截断，与圣经注入主路径及本次 Bug A 无关，不在本次范围，记此备查。
