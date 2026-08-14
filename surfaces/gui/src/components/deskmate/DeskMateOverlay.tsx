@@ -18,6 +18,7 @@ import { StatusPanelV2 } from "./StatusPanelV2";
 import type { GrowthSnapshot, LearnedHistory } from "./StatusPanel";
 import { SuggestionToast, type Suggestion } from "./SuggestionToast";
 import { MemoryViewer, type MemoryFile } from "./MemoryViewer";
+import { MemoryGraphPage } from "./MemoryGraphPage";
 import { BadgeMedal } from "./BadgeMedal";
 import type { BadgeRarity } from "./BadgeWall";
 import { MemoryLearnedToast } from "./MemoryLearnedToast";
@@ -79,6 +80,7 @@ interface Props {
 export function DeskMateOverlay({ agent, sessionId, idle, activeExpert }: Props) {
   const [panelOpen, setPanelOpen] = useState(false);
   const [memoryOpen, setMemoryOpen] = useState(false);
+  const [memoryGraphOpen, setMemoryGraphOpen] = useState(false);
   const [proofreadOpen, setProofreadOpen] = useState(false);
   // 首页 chip 触发：了解度轻量卡 / 批改台进入焦点
   const [understandingOpen, setUnderstandingOpen] = useState(false);
@@ -356,8 +358,8 @@ export function DeskMateOverlay({ agent, sessionId, idle, activeExpert }: Props)
       setProofreadFocus(focus === "manuscripts" || focus === "style" ? focus : "edit");
       setProofreadOpen(true);
     };
-    // 首页 chip 入口：我的记忆 → 打开记忆查看器
-    const onOpenMemory = () => setMemoryOpen(true);
+    // 首页 chip 入口：我的记忆 → 打开记忆图谱（全屏独立页）
+    const onOpenMemory = () => setMemoryGraphOpen(true);
     // 首页 chip 入口：了解度 → 打开轻量卡
     const onOpenUnderstanding = () => setUnderstandingOpen(true);
     // 首页 chip 入口：主动建议 → 切换开关
@@ -478,7 +480,7 @@ export function DeskMateOverlay({ agent, sessionId, idle, activeExpert }: Props)
               try { setPanelOpen((v) => !v); } catch (e) { console.error("click error", e); }
             }}
             onDoubleClick={() => {
-              try { setMemoryOpen(true); } catch (e) { console.error("dblclick error", e); }
+              try { setMemoryGraphOpen(true); } catch (e) { console.error("dblclick error", e); }
             }}
           />
           {activeCelebration && (
@@ -512,7 +514,7 @@ export function DeskMateOverlay({ agent, sessionId, idle, activeExpert }: Props)
         emotion={currentEmotion}
         open={panelOpen}
         onClose={() => setPanelOpen(false)}
-        onOpenMemory={() => setMemoryOpen(true)}
+        onOpenMemory={() => setMemoryGraphOpen(true)}
         onOpenProofread={() => setProofreadOpen(true)}
         proactiveEnabled={proactiveEnabled}
         onToggleProactive={handleToggleProactive}
@@ -555,12 +557,24 @@ export function DeskMateOverlay({ agent, sessionId, idle, activeExpert }: Props)
         </div>
       )}
 
-      {/* 记忆查看/编辑器 — 全屏模态 */}
+      {/* 记忆查看/编辑器 — 全屏模态（图谱页「列表视图」可达） */}
       {memoryOpen && (
         <MemoryViewer
           files={memoryFiles}
           onSave={handleSaveMemory}
           onClose={() => setMemoryOpen(false)}
+        />
+      )}
+
+      {/* 记忆图谱 — 全屏独立页（「查看记忆 / 我们的记忆」入口） */}
+      {memoryGraphOpen && (
+        <MemoryGraphPage
+          open={memoryGraphOpen}
+          onClose={() => setMemoryGraphOpen(false)}
+          onOpenList={() => {
+            setMemoryGraphOpen(false);
+            setMemoryOpen(true);
+          }}
         />
       )}
 

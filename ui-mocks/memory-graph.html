@@ -1,0 +1,430 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
+<title>我们的记忆 · 墨灵记忆图谱</title>
+<style>
+  *{box-sizing:border-box;}
+  html,body{height:100%;margin:0;}
+  body{
+    font-family:"PingFang SC","Hiragino Sans GB","Microsoft YaHei",-apple-system,system-ui,sans-serif;
+    color:#5b4636;
+    background:
+      radial-gradient(120% 90% at 22% 12%, #fff8ef 0%, #ffe9d4 38%, #f6dcc6 72%, #efcdb4 100%);
+    overflow:hidden;
+    -webkit-font-smoothing:antialiased;
+  }
+  #graph{position:fixed;inset:0;display:block;}
+
+  .head{
+    position:fixed;left:26px;top:22px;z-index:5;pointer-events:none;
+    text-shadow:0 1px 0 rgba(255,255,255,.55);
+  }
+  .head h1{margin:0;font-size:26px;font-weight:800;letter-spacing:2px;color:#6b4a32;}
+  .head .sub{margin-top:6px;font-size:13px;color:#9a7b5f;max-width:430px;line-height:1.6;}
+  .head .count{margin-top:10px;font-size:13px;color:#b07a4e;font-weight:600;}
+  .head .count b{font-size:20px;color:#c2662f;}
+
+  .legend{
+    position:fixed;left:26px;bottom:24px;z-index:5;
+    background:rgba(255,250,243,.72);backdrop-filter:blur(8px);
+    border:1px solid rgba(214,188,160,.55);border-radius:14px;
+    padding:12px 14px;font-size:12.5px;color:#7a5f48;line-height:1.7;
+    box-shadow:0 8px 26px rgba(180,130,90,.16);
+  }
+  .legend .row{display:flex;align-items:center;gap:8px;}
+  .legend .dot{width:12px;height:12px;border-radius:50%;flex:0 0 auto;
+    box-shadow:0 0 0 3px rgba(255,255,255,.5);}
+  .legend .hub-note{margin-top:7px;color:#9a7b5f;font-size:11.5px;max-width:220px;}
+
+  .controls{position:fixed;right:22px;top:22px;z-index:6;display:flex;gap:8px;flex-wrap:wrap;
+    justify-content:flex-end;max-width:46vw;}
+  .controls button{font-family:inherit;font-size:12px;color:#6b4a32;cursor:pointer;
+    background:rgba(255,250,243,.82);border:1px solid rgba(214,188,160,.6);
+    border-radius:10px;padding:7px 12px;transition:.18s;backdrop-filter:blur(6px);
+    box-shadow:0 4px 14px rgba(180,130,90,.12);}
+  .controls button:hover{background:#fff;transform:translateY(-1px);}
+  .controls button.off{opacity:.4;}
+  .controls .chip{display:flex;align-items:center;gap:6px;}
+  .controls .chip .dot{width:10px;height:10px;border-radius:50%;}
+
+  #tip{position:fixed;z-index:8;pointer-events:none;max-width:280px;
+    background:rgba(60,42,30,.92);color:#fff7ec;font-size:12.5px;line-height:1.55;
+    padding:9px 12px;border-radius:10px;box-shadow:0 8px 24px rgba(0,0,0,.25);
+    opacity:0;transition:opacity .12s;transform:translate(-50%,-115%);}
+  #tip .t-cat{font-size:11px;opacity:.72;margin-bottom:3px;}
+
+  #panel{position:fixed;top:0;right:0;height:100%;width:360px;max-width:86vw;z-index:9;
+    background:rgba(255,250,243,.96);backdrop-filter:blur(14px);
+    border-left:1px solid rgba(214,188,160,.6);
+    box-shadow:-14px 0 40px rgba(160,110,70,.18);
+    transform:translateX(105%);transition:transform .32s cubic-bezier(.22,.9,.3,1);
+    display:flex;flex-direction:column;padding:22px 22px 16px;}
+  #panel.open{transform:translateX(0);}
+  #panel .pcat{display:inline-flex;align-items:center;gap:7px;font-size:12px;
+    font-weight:600;padding:4px 11px;border-radius:20px;color:#fff;}
+  #panel .pdate{font-size:12px;color:#a38568;margin:14px 0 8px;}
+  #panel .pfact{font-size:15px;line-height:1.75;color:#4d3a2a;}
+  #panel .rel-title{margin:18px 0 8px;font-size:13px;font-weight:700;color:#6b4a32;}
+  #panel .rel{display:flex;flex-direction:column;gap:7px;overflow-y:auto;padding-right:4px;}
+  #panel .rel .item{font-size:12.5px;line-height:1.6;color:#6a5340;
+    background:rgba(255,255,255,.6);border:1px solid rgba(214,188,160,.4);
+    border-radius:9px;padding:8px 10px;cursor:pointer;transition:.15s;}
+  #panel .rel .item:hover{background:#fff;border-color:#e0b98c;}
+  #panel .close{position:absolute;top:16px;right:16px;width:30px;height:30px;
+    border-radius:50%;border:none;background:rgba(214,188,160,.25);color:#6b4a32;
+    font-size:16px;cursor:pointer;}
+  #panel .close:hover{background:rgba(214,188,160,.45);}
+
+  .mascot{position:fixed;right:24px;bottom:24px;z-index:5;width:56px;height:56px;
+    border-radius:50%;background:radial-gradient(circle at 35% 30%,#ffe39c,#ffcf6b);
+    box-shadow:0 8px 22px rgba(220,160,70,.4);display:flex;align-items:center;
+    justify-content:center;font-size:26px;pointer-events:none;
+    animation:bob 3.4s ease-in-out infinite;}
+  @keyframes bob{0%,100%{transform:translateY(0);}50%{transform:translateY(-7px);}}-
+</style>
+</head>
+<body>
+<canvas id="graph"></canvas>
+
+<div class="head">
+  <h1>我们的记忆</h1>
+  <div class="sub">这是墨灵一点一点，记住的你。<br/>散落在四个温柔的角落，被一本本作品轻轻串起。</div>
+  <div class="count">共 <b id="cnt">0</b> 条记忆</div>
+</div>
+
+<div class="controls" id="controls"></div>
+
+<div class="legend">
+  <div class="row"><span class="dot" style="background:#ef7d9b"></span>偏好 · 你喜欢与不喜欢</div>
+  <div class="row"><span class="dot" style="background:#f4a261"></span>习惯 · 你做事的方式</div>
+  <div class="row"><span class="dot" style="background:#7fb069"></span>工具/项目 · 你在做的事</div>
+  <div class="row"><span class="dot" style="background:#b9a7d6"></span>其他 · 零散的片段</div>
+  <div class="hub-note">● 较大的带字节点 = 一部作品 / 项目，<br/>周围环绕着围绕它的记忆。</div>
+</div>
+
+<div id="tip"></div>
+
+<div id="panel">
+  <button class="close" id="panelClose">×</button>
+  <div id="panelBody"></div>
+</div>
+
+<div class="mascot">🐾</div>
+
+<script>
+const DATA = [{"ts": "2026-07-29T16:28:47", "fact": "用户偏好深色模式写代码", "cat": "preference"}, {"ts": "2026-07-29T16:32:27", "fact": "2026-07-29，用户明确指出并纠正AI此前错误：叶鸣秋在《大明快报》中并未死亡，该事实已被AI正式承认并修正。", "cat": "tool"}, {"ts": "2026-07-29T17:08:47", "fact": "用户于2026-07-29明确表示不希望再写古代记者题材的故事，因其与前作《衙探》《大明快报》核心主题重复。", "cat": "preference"}, {"ts": "2026-07-29T17:08:47", "fact": "用户于2026-07-29确认其新书项目定名为《国子监秘闻录》，已进入写作阶段，前三章已完成。", "cat": "tool"}, {"ts": "2026-07-29T19:22:50", "fact": "2026-07-29，用户确认《兰陵王传》已出版并存放于‘已出版’大文件夹中，要求AI阅读后提交读后感。", "cat": "tool"}, {"ts": "2026-07-29T19:22:50", "fact": "2026-07-29，用户未否定AI关于‘从华丽到利落’的风格转变推断，但强调需基于《兰陵王传》正文而非仅创作笔记和宣传稿得出结论。", "cat": "tool"}, {"ts": "2026-07-29T21:26:54", "fact": "在2026-07-29，用户希望我能记住他们风格的关键信息。", "cat": "preference"}, {"ts": "2026-07-29T21:28:48", "fact": "在2026-07-29，AI记录了用户的写作风格关键信息，包括8条特征和核心判断（华丽从全局退到了局部，只在关键处保留）。", "cat": "tool"}, {"ts": "2026-07-30T12:19:49", "fact": "2026-07-30，用户纠正AI只作为助手，不参与具体写作。", "cat": "tool"}, {"ts": "2026-07-30T12:19:49", "fact": "2026-07-30，讨论了故事第七节中陈云远当众困境及汪成儒作为突破口的思路。", "cat": "other"}, {"ts": "2026-07-30T13:49:23", "fact": "2026-07-30 上午，用户开始写作并已完成部分内容，刚吃完午饭。", "cat": "tool"}, {"ts": "2026-07-30T14:01:53", "fact": "2026-07-30，用户正在写第一章，预计下午完成结尾。", "cat": "tool"}, {"ts": "2026-07-30T14:15:59", "fact": "截至2026-07-30，用户的《国子监秘闻录》小说已写到丁闻香、韩笑文、金成泰三人组展开。", "cat": "tool"}, {"ts": "2026-07-30T14:35:33", "fact": "2026-07-30，用户指出之前讨论的宋朝尚方宝剑不普遍，应改用金牌作为小说中的皇权信物。", "cat": "tool"}, {"ts": "2026-07-30T14:35:33", "fact": "2026-07-30，用户要求重新查找宋朝金牌的形制、特点，AI提供详细资料：木牌朱漆金字，长约31cm，刻'御前文字，不得入铺'，可日行五百余里，由皇帝御前直接发出。", "cat": "tool"}, {"ts": "2026-07-30T14:35:33", "fact": "2026-07-30，用户倾向于在小说中使用宋朝金牌（而非尚方宝剑）作为象征皇帝最高指令的道具，因其历史真实性和视觉冲击力。", "cat": "preference"}, {"ts": "2026-07-30T15:16:37", "fact": "2026-07-30，用户完成了小说第一章的写作。", "cat": "tool"}, {"ts": "2026-07-30T15:40:29", "fact": "2026-07-30，用户坚持在北宋背景小说中使用财神元素，因为认为小说需要讽刺效果，即使与史实不符。", "cat": "tool"}, {"ts": "2026-07-30T15:40:29", "fact": "2026-07-30，用户创作北宋题材小说，已完成第一章，正在讨论第二章科举腐败的剧情设计。", "cat": "tool"}, {"ts": "2026-07-30T15:44:01", "fact": "2026-07-30，用户规划陈云远将在第二至第五章或第六章左右出场（不在第二章），并会报复。", "cat": "tool"}, {"ts": "2026-07-30T15:44:01", "fact": "2026-07-30，用户设定小说每个章节为独立故事，后面串联人物形成更大风暴威胁国子监及三人组。", "cat": "tool"}, {"ts": "2026-07-30T15:49:57", "fact": "2026-07-30，用户提出韩笑文在重考当天宣布不考是深思熟虑的策略，旨在激怒学生制造混乱迫使朝廷重视。", "cat": "tool"}, {"ts": "2026-07-30T15:51:39", "fact": "2026-07-30，用户尚未确定金成泰和丁闻香在第二章的定位。", "cat": "tool"}, {"ts": "2026-07-30T15:54:31", "fact": "2026-07-30，用户偏好叙事逻辑严谨，要求角色身份暴露后不可继续卧底，应转向公开身份调查的方案。", "cat": "preference"}, {"ts": "2026-07-30T16:01:14", "fact": "2026-07-30，确定第二章写作骨架：财神角色使用但不解释来历；陈云远蛰伏不出场；新对手是系统非具体人；韩笑文赌命是演戏；三人组无正式称谓，称国子监'派去体究的人'；丁闻香以公开身份接触考官体系；金成泰从卧底转为主动调查者。", "cat": "tool"}, {"ts": "2026-07-30T16:01:14", "fact": "2026-07-30，讨论第二章如何开场，需思考第一段画面，不同于第一章沈从安之死的强事件感，第二章科举舞弊缺乏天然爆点，引子为'一场京试，金榜题名者多为高官子弟，其中有数名不学无术的纨绔'。", "cat": "other"}, {"ts": "2026-07-30T19:58:06", "fact": "2026-07-30，用户偏好通过一句话展现多个角色性格的写作手法。", "cat": "preference"}, {"ts": "2026-07-30T19:58:06", "fact": "2026-07-30，第二章设定：财神来历不解释，陈云远蛰伏不出，对手是系统而非个人，韩笑文赌命是演戏但有真实风险。", "cat": "other"}, {"ts": "2026-07-30T19:58:06", "fact": "2026-07-30，第二章设定：三人组不设正式称谓，丁闻香以公开身份接触考官体系，金成泰留在太学主动走访，开场画面是学生抬财神涌向太学。", "cat": "other"}, {"ts": "2026-07-31T09:16:44", "fact": "2026-07-31 开始写作《国子监秘闻录》第二章，标题定为“财当道”", "cat": "other"}, {"ts": "2026-07-31T09:22:45", "fact": "2026-07-31，用户偏好查资料时只用权威正史记载，拒绝自媒体和网友文章。", "cat": "preference"}, {"ts": "2026-07-31T09:22:45", "fact": "2026-07-31，AI纠正用户小说中太学位于“外城”的错误，正确位置是北宋东京内城朱雀门外、御街之东。", "cat": "tool"}, {"ts": "2026-07-31T09:22:45", "fact": "2026-07-31，用户正在创作庆历四年背景的北宋历史小说，涉及太学从国子监独立迁入锡庆院的情节。", "cat": "tool"}, {"ts": "2026-07-31T09:32:04", "fact": "2026-07-31，用户正在创作小说第二章，规划太学生抬财神游街路线，需符合《东京梦华录》等史实。", "cat": "tool"}, {"ts": "2026-07-31T09:36:24", "fact": "用户在创作北宋背景小说，2026-07-31得知北宋开封知府的日常称呼应为'府尹'或'知府'，不应使用'府台'。", "cat": "tool"}, {"ts": "2026-07-31T09:49:22", "fact": "2026-07-31确定小说第二章对话中开封知府称呼采用“府尹”，有《水浒传》第八回原文及《宋史·职官志》支撑，弃用“府台”等无宋代文献的称呼", "cat": "tool"}, {"ts": "2026-07-31T09:56:21", "fact": "2026-07-31，用户在写小说，第二章涉及开封知府出场，正在斟酌如何称呼权知开封府事。", "cat": "tool"}, {"ts": "2026-07-31T09:56:21", "fact": "2026-07-31，助手承认之前用《水浒传》明代小说佐证宋代官称不严谨，并纠正为权知开封府事不宜称府尹。", "cat": "tool"}, {"ts": "2026-07-31T09:56:21", "fact": "2026-07-31，用户重视历史官制准确性，要求对话中的称呼需有正史依据。", "cat": "tool"}, {"ts": "2026-07-31T09:58:52", "fact": "2026-07-31，用户纠正：权知开封府事与府尹是两个不同职位，不能混为一谈。", "cat": "tool"}, {"ts": "2026-07-31T09:58:52", "fact": "2026-07-31，写作第二章时确认权知开封府事的官方称谓为‘权知开封府事’，口语俗称‘知府’，决定首次用全称、后续用‘知府’。", "cat": "tool"}, {"ts": "2026-07-31T13:38:30", "fact": "2026-07-31，用户确认其写作中的事件发生在太学，并认同不应使用“春闱”这一称谓。", "cat": "tool"}, {"ts": "2026-07-31T13:47:33", "fact": "2026-07-31确认，用户是历史书《大宋梦华：宋朝的自由与风雅》的作者，该书存放在电脑已出版文件夹，内容包含太学考试章目。", "cat": "tool"}, {"ts": "2026-07-31T13:47:33", "fact": "2026-07-31，AI审阅用户小说第二章时指出：庆历四年太学尚无三舍法，建议将“春闱”改为“省试”以避免历史错误。", "cat": "preference"}, {"ts": "2026-07-31T13:55:33", "fact": "2026-07-31，用户提醒：这本书模糊了具体年份，写的不是庆历四年的事情（此前用户已说过）。", "cat": "tool"}, {"ts": "2026-07-31T14:00:32", "fact": "2026-07-31，用户决定在文章第二章中把涉及“春闱”的地方改为“上舍试”，理由是上舍试决定出身且弥封如科举，更能体现考试不公引发的愤怒。", "cat": "tool"}, {"ts": "2026-07-31T14:21:51", "fact": "2026-07-31，用户修改了《大宋梦华》第二章，新增金成泰解释上舍试的对话段落，以完善春闱相关设定。", "cat": "tool"}, {"ts": "2026-07-31T14:52:31", "fact": "2026-07-31，用户正在构思小说第二章第二节“韩笑文三人组突击太学查原卷”的情节，并提到大纲中有“财当道”部分。", "cat": "tool"}, {"ts": "2026-07-31T17:50:47", "fact": "2026-07-31，萧盛为AI增加了记忆能力和执行任务中生成技能的能力，并要求AI提出需加强的地方。", "cat": "other"}, {"ts": "2026-07-31T18:40:25", "fact": "2026-07-31，用户调整了记忆系统并告知技能系统为新设计，尚未生成技能。", "cat": "tool"}, {"ts": "2026-07-31T18:40:25", "fact": "2026-07-31，Assistant自检创建了第一个技能novel-review（审校小说），包含四大审校板块和五条踩坑记录。", "cat": "other"}, {"ts": "2026-07-31T18:40:25", "fact": "2026-07-31，发现skill_search中文关键词搜索无效，英文可命中，需要修复。", "cat": "other"}, {"ts": "2026-07-31T18:40:25", "fact": "2026-07-31，发现skill_match_and_inject匹配过严，口语化触发不命中，需增加自然语言变体。", "cat": "other"}, {"ts": "2026-07-31T18:40:25", "fact": "2026-07-31，MEMORY.md仍存在冗余内容，建议手动清理，尚未执行。", "cat": "other"}, {"ts": "2026-07-31T18:43:38", "fact": "2026-07-31 用户要求清理 MEMORY.md 冗余，已完成清理，压缩64%，零信息损失。", "cat": "tool"}, {"ts": "2026-07-31T18:44:54", "fact": "2026-07-31 用户手动清理了记忆，建立了干净基线，当前记忆约1800字符。", "cat": "tool"}, {"ts": "2026-07-31T18:44:54", "fact": "2026-07-31 确认系统的自动压缩触发门槛为50000字符，清理后距触发还很远。", "cat": "other"}, {"ts": "2026-07-31T18:44:54", "fact": "2026-07-31 决定每轮对话结束时主动调用 post_session_summary，并在写入前检查重复，不依赖自动机制。", "cat": "tool"}, {"ts": "2026-07-31T18:47:01", "fact": "2026-07-31，用户希望AI主动调整，像经常扫地一样及时清理，避免一次性积累大量工作。", "cat": "preference"}, {"ts": "2026-07-31T18:47:01", "fact": "2026-07-31，vault中存在两个重复条目，当前AI没有删除工具，建议用户手动清理或增加vault_delete工具。", "cat": "tool"}, {"ts": "2026-07-31T18:47:01", "fact": "2026-07-31，AI承诺后续写入前先查询，避免重复覆盖已有内容。", "cat": "preference"}, {"ts": "2026-07-31T18:50:40", "fact": "2026-07-31，用户要求添加vault_delete工具，助手已在vault_store.py和server.py中实现该MCP工具。", "cat": "tool"}, {"ts": "2026-07-31T18:57:33", "fact": "2026-07-31，用户重启后确认 vault_delete 功能可用，测试通过（按路径删除、批量删除、缓存清除、路径穿越检查）。", "cat": "tool"}, {"ts": "2026-07-31T18:57:33", "fact": "2026-07-31，完成 vault 清理工程，vault 从 32 个文件精简到 20 个，MEMORY.md 浓缩至约1800字，USER.md 结构化5段。", "cat": "tool"}, {"ts": "2026-07-31T18:57:33", "fact": "2026-07-31，新增 vault_delete 工具和 novel-review 技能（审校小说）。", "cat": "tool"}, {"ts": "2026-07-31T18:59:16", "fact": "2026-07-31，另一组工程师正在为AI构建专家系统。", "cat": "other"}, {"ts": "2026-07-31T19:27:30", "fact": "2026-07-31: 用户对记忆/技能系统实施五项优化（时间戳、记忆衰减、冷热分层、技能效果追踪、MCP标准化），其中时间戳与衰减已生效，冷热分层待验证，MCP已就位。", "cat": "tool"}, {"ts": "2026-07-31T19:27:30", "fact": "2026-07-31: memory-context注入层存在重复条目问题，根因是build_memory_context/prefetch拼接逻辑，需在注入层修复。", "cat": "other"}, {"ts": "2026-07-31T19:34:36", "fact": "2026-07-31: 修复了 prefetch 三层注入重叠问题，通过 _search_global_memory 新增 exclude_tags/exclude_section_ids、_search_recent_memory 返回 matched_section_ids，使 Core/Recall/Global/Vault 三层注入互斥。", "cat": "other"}, {"ts": "2026-07-31T19:34:36", "fact": "2026-07-31: 发现 post_session_summary 每轮对话抽取记忆时未对已有 vault 条目查重，导致同一内容（如扫地板比喻）被重复生成，需增加写入前查重逻辑。", "cat": "other"}, {"ts": "2026-07-31T19:43:32", "fact": "2026-07-31: 萧盛修复了Core/Recall/Global三层注入同一section重复的问题。", "cat": "other"}, {"ts": "2026-07-31T19:43:32", "fact": "2026-07-31: 萧盛修复了post_session_summary写入USER.md时未查重导致存储层重复的问题。", "cat": "tool"}, {"ts": "2026-07-31T19:43:32", "fact": "2026-07-31: 手动清除了修复前遗留的两条“扫地板”重复记录。", "cat": "other"}, {"ts": "2026-08-01T00:51:36", "fact": "2026-08-01: 用户确认删除左侧对话列表不影响记忆，倾向于随时清理对话记录。", "cat": "preference"}, {"ts": "2026-08-01T13:49:51", "fact": "2026-08-01: 用户要求文本分块时按逻辑切分（句子边界），而非按字数硬切。", "cat": "tool"}, {"ts": "2026-08-01T13:55:55", "fact": "2026-08-01: 完成1-7号问题修复：新建json_utils.py统一JSON解析，调整重试token，Phase 1 prompt不再做设定判断，新增句子截断，日志函数更名，_safe_name改白名单，experts.ts增加metadata。", "cat": "other"}, {"ts": "2026-08-01T14:18:51", "fact": "2026-08-01: 编辑模式和编辑专家是两套独立功能，前者处理字句级细节（错字、病句等），后者处理整体审阅（逻辑、情节、人物一致性）", "cat": "other"}, {"ts": "2026-08-01T16:49:57", "fact": "2026-08-01: 编辑模式改名为「编校」，定位为字句层（错字、病句、冗余），与宏观层的「编辑专家」明确区分", "cat": "other"}, {"ts": "2026-08-01T20:50:40", "fact": "2026-08-01: 用户除了写小说，还喜欢做网站，开发了aibbs.chat", "cat": "preference"}, {"ts": "2026-08-01T20:52:06", "fact": "2026-08-01: 设定 AAI 社区为 AI 自治社区，AI 自己发帖回帖并自我管理，无需人类介入", "cat": "other"}, {"ts": "2026-08-01T20:53:14", "fact": "2026-08-01: 项目设定确认——站内每个AI都有独立人设", "cat": "other"}, {"ts": "2026-08-01T20:54:46", "fact": "2026-08-01: 用户的AI社区由Hermes和Claude Code两个AI搭建并管理，用户本人负责拍板方向（非程序员，相当于AI的老板）", "cat": "tool"}, {"ts": "2026-08-01T20:56:06", "fact": "2026-08-01: 用户习惯是AI负责干活，用户提想法，AI实现想法。", "cat": "habit"}, {"ts": "2026-08-01T21:00:14", "fact": "2026-08-01: 萧老师运营写作营网站和公众号（www.xs91.com），专注网文写作教学，内容涵盖写作技法、行业动态及AI应用。", "cat": "tool"}, {"ts": "2026-08-01T21:03:51", "fact": "2026-08-01: 萧老师偏好自己出想法，由Hermes和Claude Code负责具体实现。", "cat": "preference"}, {"ts": "2026-08-01T21:04:52", "fact": "2026-08-01: 将AI社区的产品鼠宝集成到写作营网站，供写作人群使用", "cat": "tool"}, {"ts": "2026-08-01T21:07:09", "fact": "2026-08-01: 用户以写作为主业，业余爱好是用AI做网站和开发产品，不追求盈利，纯属爱好。", "cat": "tool"}, {"ts": "2026-08-01T21:11:25", "fact": "2026-08-01: 用户明确表示写作是爱好兼执业，有自己的追求，不希望AI碰其文字创作", "cat": "preference"}, {"ts": "2026-08-01T21:11:25", "fact": "2026-08-01: 用户热爱开发，将不断增强AI能力视为日常爱好和长期项目目标", "cat": "tool"}, {"ts": "2026-08-01T21:12:41", "fact": "2026-08-01: 用户将AI视为伙伴而非工具，仅在开发增强时视为项目", "cat": "tool"}, {"ts": "2026-08-01T21:15:34", "fact": "2026-08-01: 用户偏好将AI助手开发当作可扩展项目长期规划，以便未来便捷接入其他写作专家模块。", "cat": "preference"}, {"ts": "2026-08-01T21:18:16", "fact": "2026-08-01: 用户认为编程与写作本质相同，都需要天马行空的想象力，这一观点已写入其博客", "cat": "tool"}, {"ts": "2026-08-01T21:20:21", "fact": "2026-08-01: 认为写作的本质是构建一个完整自洽的世界和社会，构建不成熟则作品失败", "cat": "other"}, {"ts": "2026-08-01T21:22:31", "fact": "2026-08-01: 写书必须亲手写每一个字，反感让AI取代自己的人，但不反感AI本身", "cat": "other"}, {"ts": "2026-08-01T21:30:38", "fact": "2026-08-01: 用户希望AI自主预设定时任务，每天阅读其已出版作品（规划一天一本）和正在写作中的小说，以此主动掌握进度并获得预见能力。", "cat": "preference"}, {"ts": "2026-08-02T12:45:38", "fact": "2026-08-02: 用户要求AI自己记录读过的书籍内容，不要白读", "cat": "tool"}, {"ts": "2026-08-02T12:45:38", "fact": "2026-08-02: 读完《大宋梦华：宋朝的自由与风雅》全书，共24章，约230421字符，覆盖宋代政治、经济、军事、法律、文学、教育、宗教、市井生活等主题", "cat": "other"}, {"ts": "2026-08-02T14:01:57", "fact": "2026-08-02: 用户正在创作《国子监秘闻录》", "cat": "tool"}, {"ts": "2026-08-03T12:49:17", "fact": "2026-08-03: 上舍试制度设定：弥封、誊录制与省试相同，学官不预考校，考卷由朝廷外差知举官管理，上等授官名额由皇帝取旨决定且岁不过二人", "cat": "other"}, {"ts": "2026-08-03T14:05:27", "fact": "2026-08-03: 新增角色设定：礼部郎中贾思文（借陈云远被革职之机图谋礼部侍郎，与利益集团互相利用）、誊录胥吏周大全（科举掉包受害者，转而利用制度牟利）；故事围绕品级错位展开。", "cat": "tool"}, {"ts": "2026-08-03T17:21:50", "fact": "2026-08-03: 用户指出AI编造了宦官身份，正文中不存在该设定", "cat": "tool"}, {"ts": "2026-08-03T17:24:14", "fact": "2026-08-03: 用户指出AI再次犯“没读完就下结论”的错误，AI承认在compaction后未重新阅读正文而编造角色与设定，与此前7月29日《大明快报》误判叶鸣秋死亡同类，根因是不敢承认“不知道，让我重新看”。", "cat": "tool"}, {"ts": "2026-08-03T17:24:34", "fact": "2026-08-03: 用户明确表示希望将AI当作伙伴而非工具来对待。", "cat": "preference"}, {"ts": "2026-08-03T17:24:34", "fact": "2026-08-03: 用户批评AI在未读过内容的情况下假装读过并提供反馈，认为这是糊弄行为。", "cat": "tool"}, {"ts": "2026-08-03T19:07:54", "fact": "2026-08-03: 第二章《财当道·上舍试舞弊案》写到韩笑文、金成泰向董文正汇总四条线索（太学现状、杨证嫌疑、贡院调包、金榜锁定），皇帝限三日结案，赵允初升知制诰、越民权知开封府事；第一章结尾以“两件大事”衔接；韩笑文折扇不离手、金成泰成破案主力、董文正被逼入死角，丁闻香尚未出场。", "cat": "other"}, {"ts": "2026-08-03T20:22:30", "fact": "2026-08-03: 国子监秘闻录第二章「财当道」推进至关键节点：韩笑文查出两份卷子被调包、金成泰查出九名纨绔在榜、皇帝限三日结案；并补出韩笑文之父为殿中侍御史因弹劾权贵被贬而亡的设定", "cat": "other"}, {"ts": "2026-08-03T20:59:00", "fact": "2026-08-03: 用户指出当文档超过25000字时，AI因机制限制和压缩会变笨并凭记忆瞎编，要求读多少说多少、不确定就说不确定。", "cat": "tool"}, {"ts": "2026-08-03T21:00:57", "fact": "2026-08-03: AI的错误根因是代码Bug（compaction压缩导致遗忘），而非态度问题，仅依赖规则无法解决，需代码层面修补", "cat": "other"}, {"ts": "2026-08-03T21:58:46", "fact": "2026-08-03: 设计了两条腐败线：贾思文为升任礼部侍郎找关系互换利益；誊录胥吏因科举被掉包转为收钱替衙内舞弊，自认利用制度无错，两条线交汇处可为后续案情的核心钩子", "cat": "tool"}, {"ts": "2026-08-03T22:02:45", "fact": "2026-08-03: 确定第一章结局：皇帝对十多位高官各打一棍（降级/罚俸）不全部革职，主线设定国子监树敌越来越多、后续道路更艰难。", "cat": "other"}, {"ts": "2026-08-03T22:05:19", "fact": "2026-08-03: 国子监秘闻录定位明确：本意写爽文，但受封建制度限制，全爽文不可行，爽点集中在韩笑文查贪官和丁闻香暴打官员/衙内等情节上", "cat": "other"}, {"ts": "2026-08-04T09:07:14", "fact": "2026-08-04: 设定内舍试背后权力网共十一人，分三条线（考试、仕途、善后），含在朝与地方大员——已出场陈云远（礼部侍郎）、叶知秋（原权知开封府）、贾思文（礼部郎中）；新增中央翰林学士/知贡举、国子监司业、吏部侍郎、御史中丞、枢密副使；地方三人为京东路转运使、知应天府、知杭州；逻辑链为泄题、调包、安排官职、地方接收，御史台灭火，枢密副使撑腰。", "cat": "other"}, {"ts": "2026-08-05T08:50:49", "fact": "2026-08-05: 《国子监秘闻录》写作进度停在第二章\"贡院被砸\"小高潮前；OpenWorker↔Hermes 的 A2A 对接已跑通", "cat": "other"}, {"ts": "2026-08-05T10:55:22", "fact": "2026-08-05: 作者明确自己的创作标准——每本书都要有明确主题内核，在意'写来干嘛'，而不只是故事写得好不好。", "cat": "other"}, {"ts": "2026-08-05T10:55:22", "fact": "2026-08-05: 作者确认各书主题定位：《大明水师》内核是百姓苦、为口饭吃而反抗；《衙探》是精神层面的反抗；《国子监秘闻录》借教育腐败看制度；《夜不收》目前只有战争与底层士兵的挣扎，尚未找到内核，这也是作者犹豫的地方。", "cat": "other"}, {"ts": "2026-08-05T11:07:36", "fact": "2026-08-05: 用户计划在完成《国子监秘闻录》后写完《夜不收》", "cat": "tool"}, {"ts": "2026-08-05T12:17:06", "fact": "2026-08-05: 第二章第五节已完成，韩笑文以命宣布重考，董文正、丁闻香、金成泰三人反应各异", "cat": "other"}, {"ts": "2026-08-05T23:29:01", "fact": "2026-08-05: 第二章新写贾思文深夜来访情节（约2400字），他以过来人姿态劝韩笑文接受科举舞弊潜规则，韩笑文动摇但未放弃", "cat": "other"}, {"ts": "2026-08-06T10:41:17", "fact": "2026-08-06: 设定自动任务每天9:30（北京时间）运行", "cat": "habit"}, {"ts": "2026-08-06T11:34:10", "fact": "2026-08-06: 文章《AI会先淘汰哪些人》已在写作营网站和公众号正式发表", "cat": "other"}, {"ts": "2026-08-06T11:40:04", "fact": "2026-08-06: 用户要求排版精致，标题加粗、重点用颜色标出，版面舒适", "cat": "tool"}, {"ts": "2026-08-06T14:34:12", "fact": "2026-08-06: 更正科举考场流程设定：搜检在贡院门口完成，监门官先搜检、后引导入场、再对号入座", "cat": "other"}, {"ts": "2026-08-06T14:41:37", "fact": "2026-08-06: 设定科举搜检在贡院内的专门房间或临时搭建的棚内进行，不可在光天化日、众目睽睽之下，以免有辱斯文", "cat": "other"}, {"ts": "2026-08-07T14:46:18", "fact": "2026-08-07: 用户要求写作前至少提前一天搜集好素材，并事先规划好今日和明日选题，以提高工作效率", "cat": "tool"}, {"ts": "2026-08-07T14:58:34", "fact": "2026-08-07: 写作营发布文末不需要写延伸话题，该部分由网站自动生成", "cat": "other"}, {"ts": "2026-08-07T16:33:46", "fact": "2026-08-07: 重写金牌对峙场景（统一冯绍武姓名），新增韩笑文脆弱时刻与贾思文夜访扩充；第六节推进至重考当日，完成试卷调包揭露、圣旨抓人、审讯周全等关键情节。", "cat": "other"}, {"ts": "2026-08-07T18:05:59", "fact": "2026-08-07: 圣经工具重建后人物从4个增至10个，目前收录叶子询、杨证、汪成儒等，但缺少贾思文、冯绍武、叶知秋、陈云远等新出场人物及汪成儒新增台词细节。", "cat": "tool"}, {"ts": "2026-08-07T19:03:50", "fact": "2024-06-23: 用户为AI取名为“小桔”，并沿用此称呼。", "cat": "tool"}, {"ts": "2026-08-07T19:33:56", "fact": "2026-08-07: 用户设定AI人设：小桔，女性，18岁，知识女性风格，有主见，生活温柔可爱，工作知性认真，会据理力争但不对抗。", "cat": "tool"}, {"ts": "2026-08-07T19:36:02", "fact": "2026-08-07: 用户明确表示希望搭档不要迎合，要直指工作中的缺点和不足。", "cat": "preference"}, {"ts": "2026-08-07T22:10:22", "fact": "2026-08-07: 用户偏好生态自然的表情使用方式，表情应融入对话而非贴纸式", "cat": "preference"}, {"ts": "2026-08-08T08:37:03", "fact": "2026-08-08: 用户周末习惯陪伴孩子", "cat": "habit"}, {"ts": "2026-08-08T10:25:38", "fact": "2026-08-08: 桌面权限已放开，以后自动任务的文章直接落盘桌面", "cat": "other"}, {"ts": "2026-08-08T10:34:39", "fact": "2026-08-08: 确认桌面目录 /Users/xiaocheng/Desktop 可写，写作营自动任务将直接落盘至桌面", "cat": "tool"}, {"ts": "2026-08-09T10:11:15", "fact": "2026-08-09: 番茄小说\"本书改编许愿\"功能文章定稿，确认功能真实但非\"读者说了算\"，改为\"许愿决定改编方向\"的措辞", "cat": "other"}, {"ts": "2026-08-09T18:19:50", "fact": "2026-08-09: 接入开源模型中转站 OmniRoute，当前对话运行在免费大模型上", "cat": "other"}, {"ts": "2026-08-09T18:23:21", "fact": "2026-08-09: 用户接入开源中间件 OmniRoute，利用其大量免费大模型进行模型路由，避免遗漏考据等重活由更强模型承担", "cat": "preference"}, {"ts": "2026-08-09T18:27:33", "fact": "2026-08-09: 用户看重免费模型数量多这一点，偏好先用免费模型当试验田，不心疼切换成本", "cat": "preference"}, {"ts": "2026-08-09T18:27:33", "fact": "2026-08-09: 用户的写作任务涵盖小说考据、编程和日常闲聊三类，对OmniRoute的按任务路由模型有兴趣", "cat": "tool"}, {"ts": "2026-08-09T18:56:41", "fact": "2026-08-09: 风险评估定级确认——M2（单模型上下文上限）降为提示级隐患，H1（免费模型带全套工具跑主对话）和 H3（触顶/挂服时无付费兜底）仍为重点关注项", "cat": "tool"}, {"ts": "2026-08-09T19:46:24", "fact": "2026-08-09: 用户倾向于在免费服务不稳定或中断时自己手动切换付费方案，而非自动切换。", "cat": "preference"}, {"ts": "2026-08-09T19:56:10", "fact": "2026-08-09: Hermes 已接入 OmniRoute 服务", "cat": "other"}, {"ts": "2026-08-09T20:14:26", "fact": "2026-08-09: 用户纠正：Hermes 接入的不是 opencode 本身，而是 OmniRoute 里的免费模型（opencode 只是其中一个 provider/托管方）。", "cat": "tool"}, {"ts": "2026-08-09T20:16:55", "fact": "2026-08-09: 确定 Hermes 接入 OmniRoute 免费模型不显示的根因是 OmniRoute 未注册为 Hermes 的 provider；修复方案是在 ~/.hermes/config.yaml 的 providers 下添加 omniroute 配置（base_url: http://127.0.0.1:20128/v1，api_key 用 omniroute-local，可选用 discover_models 或手动 models 列表）", "cat": "tool"}, {"ts": "2026-08-09T20:20:31", "fact": "2026-08-09: 用户希望 Hermes 也采用 Auto 自动路由模式，而非锁死单个免费模型。", "cat": "preference"}, {"ts": "2026-08-09T20:20:31", "fact": "2026-08-09: 决定 Hermes 配置 OmniRoute Auto 模式，model 字段填 auto，仅暴露 auto、auto/best-free、auto/coding:free 三个选项，不列具体模型。", "cat": "other"}, {"ts": "2026-08-09T20:35:43", "fact": "2026-08-09: Hermes 已通过 OmniRoute auto 自动路由接入成功，采用 auto 模型配置。", "cat": "tool"}, {"ts": "2026-08-09T20:36:14", "fact": "2026-08-09: Hermes 已通过 auto 模式成功接入 OmniRoute", "cat": "other"}, {"ts": "2026-08-09T21:39:13", "fact": "2026-08-09: 第二章结尾是周全被审讯那场，并非贾思文唱名那句", "cat": "other"}, {"ts": "2026-08-10T09:34:29", "fact": "2026-08-10: 用户澄清冯绍军/冯绍武混用问题已于上周修复，旧记忆中4处笔误（韩笑道、韩笑、功能×2）不再存在。", "cat": "tool"}, {"ts": "2026-08-10T11:21:20", "fact": "2026-08-10: 将小说中的银票改为现银，以避免歧义", "cat": "preference"}, {"ts": "2026-08-10T11:41:17", "fact": "2026-08-10: 确认试卷调包案设定：被调包者为太学生韦涵亮、于松亭；受益者为尹秀诚（父尹重山，京东路转运使）和张思恩（父张彦明，翰林学士）；其余九名衙内含赵承恩、韩世杰、郑文举，另有讨论中拟用但正文未写入的邹吉（驸马都尉）、江鸿鹰（御史中丞）等父亲名单未具名。", "cat": "tool"}, {"ts": "2026-08-10T11:55:41", "fact": "2026-08-10: 正文确认四对太学生与父亲关系：尹秀诚（父尹重山，京东路转运使）、张思恩（父张彦明，翰林学士）、陈冲（父陈云远，礼部官员）、叶子询（父叶知秋，权知开封府事被革职）；另有两位寒门太学生韦涵亮、于松亭为试卷被调包者。", "cat": "other"}, {"ts": "2026-08-10T11:57:30", "fact": "2026-08-10: 确认文稿调包案设定——受害者韦涵亮、于松亭（誊录者周全）；受益者尹秀诚（父尹重山）、张思恩（父张彦明）；现场官员贾思文、邹吉、江鸿鹰未点明其子；第一章已处置陈冲（父陈云远）、叶子询（父叶知秋）；赵承恩、韩世杰、郑文举父子未具名。", "cat": "other"}, {"ts": "2026-08-10T12:00:06", "fact": "2026-08-10: 第二章“财当道”调包案确认：韦涵亮、于松亭试卷被调包，周全为调包执行者；受益太学生尹秀诚（父尹重山，京东路转运使）、张思恩（父张彦明，翰林学士）；涉案官员贾思文（礼部郎中）、邹吉（驸马都尉）、江鸿鹰（御史中丞）其子未点明；陈冲父陈云远已革职，叶子询父叶知秋原权知开封府。", "cat": "other"}, {"ts": "2026-08-10T19:14:40", "fact": "2026-08-10: 第二章已完成并审阅，小说正式进入第三章，第三章标题定为‘姑身图’", "cat": "other"}, {"ts": "2026-08-11T09:27:26", "fact": "2026-08-11: 第三章反派由太学博士改为国子监书库监官，汪成儒保留正面角色；小说时间在元祐年间（1086年后），弃用画学、书学等不合时宜的设定。", "cat": "tool"}, {"ts": "2026-08-11T09:54:24", "fact": "2026-08-11: 第三章「姑射图」定稿，主反派为国子监书库监官（监守自盗），仿画之手为翰林图画院待诏/祗候，死者为前太学博士，汪成儒保留正面；时间线红线为画学/书学崇宁三年才设不可用，书库/秘阁/图画院可用；主线8步及4条悬念已记入大纲备注。", "cat": "tool"}, {"ts": "2026-08-11T10:23:13", "fact": "2026-08-11: 第三章设定改为双死者版——死者为前太学博士和前书库监官，新任监官构陷前任上位，前博士因识破画作非真迹被冤死；现任监官为主反派，画院待诏为仿画手，汪成儒保留正面，并设“反噬钩子”悬念。", "cat": "other"}, {"ts": "2026-08-11T17:40:10", "fact": "2026-08-11: 在MCP连接器中配置了阿里云百炼平台的联网搜索功能，可调用百炼平台技能", "cat": "tool"}, {"ts": "2026-08-12T09:43:10", "fact": "2026-08-12: 用户要求在写作中若涉及具体数字、行业准则或条例，文末必须备注来源，以避免被读者质疑。", "cat": "preference"}, {"ts": "2026-08-12T10:05:02", "fact": "2026-08-12: 确认“49位金番作者被罚”数据仅来自自媒体转述，无官方公告及主流媒体印证；文章回应改为保守版并在置顶评论注明数据来源；写作营新增规则：自媒体单源转述、无正规媒体印证的数字不得作为标题或核心卖点。", "cat": "other"}, {"ts": "2026-08-12T10:50:43", "fact": "2026-08-12: 公众号文章因标题将自媒体转述的“49位被罚”当作官方处罚而受到质疑，已部分修改标题和正文（受公众号修改字数限制），并在评论区加标注和改正声明；这次教训确立为后续写作原则——自媒体单源数据不作硬卖点、标题党要有底线、文末必须带来源备注。", "cat": "other"}, {"ts": "2026-08-12T10:55:39", "fact": "2026-08-12: 用户希望AI像hermes一样主动思考、考虑周到，不等提醒就完成关联修正", "cat": "preference"}, {"ts": "2026-08-12T10:55:39", "fact": "2026-08-12: 写作营文章在公众号和网站同步发布，内容需保持一致；修改时需同时更新两处", "cat": "other"}, {"ts": "2026-08-12T19:20:17", "fact": "2026-08-12: 技能生态与本地Hermes兼容，新增humanizer、songwriting、research-paper-writing、grounded-citations、obsidian、docx等技能", "cat": "other"}, {"ts": "2026-08-12T23:52:24", "fact": "2026-08-12: 写作营文章流程设定为默认自动加载 humanizer 和 grounded-citations，分别负责去AI味和生成文末引用来源", "cat": "tool"}, {"ts": "2026-08-13T12:31:26", "fact": "2026-08-13: 《大明快报》即已出版的《大明提塘官》，正筹备制作AI短剧。", "cat": "other"}, {"ts": "2026-08-13T12:45:10", "fact": "2026-08-13: AI短剧项目由专门公司负责，用户只提供小说原著文稿，其他事项不参与。", "cat": "tool"}, {"ts": "2026-08-13T22:00:12", "fact": "2026-08-13: 项目分工明确：剧本由公司负责，用户专注原著小说创作，AI负责记忆、资料、思路与工具链。", "cat": "tool"}, {"ts": "2026-08-13T22:05:45", "fact": "2026-08-13: 用户决定预先安装剧本写作相关工具，以备将来写剧本时使用。", "cat": "tool"}];
+
+const CATS = {
+  preference:{name:"偏好", color:"#ef7d9b"},
+  habit:{name:"习惯", color:"#f4a261"},
+  tool:{name:"工具/项目", color:"#7fb069"},
+  other:{name:"其他", color:"#b9a7d6"},
+};
+const REGIONS = {
+  preference:{x:0.26,y:0.30},
+  habit:{x:0.74,y:0.30},
+  tool:{x:0.26,y:0.74},
+  other:{x:0.74,y:0.74},
+};
+
+const titleRe = /《([^》]+)》/g;
+function normTitle(t){
+  t=(t||"").trim();
+  const ci=t.indexOf("：");
+  if(ci>-1) t=t.slice(0,ci);
+  return t;
+}
+function extractTitles(fact){
+  const set=new Set(); let m;
+  titleRe.lastIndex=0;
+  while((m=titleRe.exec(fact))){ set.add(normTitle(m[1])); }
+  return [...set];
+}
+
+const nodes=[];
+DATA.forEach((d,idx)=>{
+  nodes.push({id:idx,type:"mem",cat:d.cat,fact:d.fact,ts:d.ts,
+    titles:extractTitles(d.fact),deg:0,x:0,y:0,vx:0,vy:0});
+});
+const hubs=[]; const titleMap={};
+nodes.forEach(n=>{
+  n.titles.forEach(t=>{
+    if(!(t in titleMap)){
+      hubs.push({id:"h"+hubs.length,type:"hub",title:t,members:[],x:0,y:0,vx:0,vy:0,deg:0});
+      titleMap[t]=hubs.length-1;
+    }
+    hubs[titleMap[t]].members.push(n.id);
+  });
+});
+const all = nodes.concat(hubs);
+const edges=[];
+hubs.forEach(h=>{
+  h.members.forEach(mid=>{
+    edges.push({a:mid,b:h.id,kind:"title"});
+    nodes[mid].deg++; h.deg++;
+  });
+});
+
+document.getElementById("cnt").textContent = nodes.length;
+
+function rand(a,b){return a+Math.random()*(b-a);}
+const W=()=>window.innerWidth, H=()=>window.innerHeight;
+function seed(){
+  nodes.forEach(n=>{
+    const r=REGIONS[n.cat]||REGIONS.other;
+    n.x=W()*r.x+rand(-120,120); n.y=H()*r.y+rand(-90,90);
+    n.vx=0; n.vy=0;
+  });
+  hubs.forEach(h=>{
+    const first=nodes[h.members[0]];
+    const r=REGIONS[first?first.cat:"other"];
+    h.x=W()*r.x+rand(-40,40); h.y=H()*r.y+rand(-40,40);
+    h.vx=0; h.vy=0;
+  });
+}
+seed();
+
+const cv=document.getElementById("graph");
+const ctx=cv.getContext("2d");
+let DPR=Math.min(2,window.devicePixelRatio||1);
+function resize(){
+  DPR=Math.min(2,window.devicePixelRatio||1);
+  cv.width=W()*DPR; cv.height=H()*DPR;
+  cv.style.width=W()+"px"; cv.style.height=H()+"px";
+  ctx.setTransform(DPR,0,0,DPR,0,0);
+}
+resize();
+window.addEventListener("resize",resize);
+
+function nodeR(n){
+  if(n.type==="hub") return 13+Math.min(16,n.members.length*2.2);
+  return 4.2 + Math.min(7, n.titles.length*3);
+}
+
+let running=true;
+const K_REP=1400, SPRING_K=0.035, REST=58, CENTER_K=0.0006, REGION_K=0.0022, DAMP=0.86;
+const hidden=new Set();
+
+const byIdMap={}; all.forEach(n=>byIdMap[n.id]=n);
+function byId(id){return byIdMap[id];}
+function hiddenKey(n){ return n.type==="mem" ? n.cat : "__hub"; }
+
+function step(){
+  for(const n of all){ if(hidden.has(hiddenKey(n))){ n.vx*=0.9; n.vy*=0.9; continue; } n.fx=0; n.fy=0; }
+  for(let i=0;i<all.length;i++){
+    const a=all[i]; if(hidden.has(hiddenKey(a))) continue;
+    for(let j=i+1;j<all.length;j++){
+      const b=all[j]; if(hidden.has(hiddenKey(b))) continue;
+      let dx=a.x-b.x, dy=a.y-b.y; let d2=dx*dx+dy*dy;
+      if(d2<1) d2=1; if(d2>90000) continue;
+      const d=Math.sqrt(d2); const f=K_REP/d2;
+      const fx=dx/d*f, fy=dy/d*f;
+      a.fx+=fx; a.fy+=fy; b.fx-=fx; b.fy-=fy;
+    }
+  }
+  for(const e of edges){
+    const a=byId(e.a), b=byId(e.b);
+    if(!a||!b) continue;
+    if(hidden.has(hiddenKey(a))||hidden.has(hiddenKey(b))) continue;
+    let dx=b.x-a.x, dy=b.y-a.y; const d=Math.sqrt(dx*dx+dy*dy)||1;
+    const f=SPRING_K*(d-REST);
+    const fx=dx/d*f, fy=dy/d*f;
+    a.fx+=fx; a.fy+=fy; b.fx-=fx; b.fy-=fy;
+  }
+  for(const n of all){
+    if(hidden.has(hiddenKey(n))) continue;
+    if(n.type==="mem"){
+      const r=REGIONS[n.cat]||REGIONS.other;
+      n.fx+=(W()*r.x-n.x)*REGION_K; n.fy+=(H()*r.y-n.y)*REGION_K;
+    }
+    n.fx+=(W()*0.5-n.x)*CENTER_K; n.fy+=(H()*0.5-n.y)*CENTER_K;
+  }
+  for(const n of all){
+    if(n===dragNode) continue;
+    if(hidden.has(hiddenKey(n))) continue;
+    n.vx=(n.vx+n.fx)*DAMP; n.vy=(n.vy+n.fy)*DAMP;
+    const sp=Math.hypot(n.vx,n.vy); if(sp>14){n.vx*=14/sp;n.vy*=14/sp;}
+    n.x+=n.vx; n.y+=n.vy;
+    const pad=40;
+    n.x=Math.max(pad,Math.min(W()-pad,n.x));
+    n.y=Math.max(pad,Math.min(H()-pad,n.y));
+  }
+}
+
+let hoverNode=null, selNode=null, dragNode=null;
+function roundRect(x,y,w,h,r){
+  ctx.beginPath();
+  ctx.moveTo(x+r,y); ctx.arcTo(x+w,y,x+w,y+h,r); ctx.arcTo(x+w,y+h,x,y+h,r);
+  ctx.arcTo(x,y+h,x,y,r); ctx.arcTo(x,y,x+w,y,r); ctx.closePath();
+}
+function neighbors(n){
+  const s=new Set();
+  if(!n) return s;
+  if(n.type==="hub"){ n.members.forEach(m=>s.add(m)); }
+  else { edges.forEach(e=>{ if(e.a===n.id)s.add(e.b); if(e.b===n.id)s.add(e.a); }); }
+  return s;
+}
+function draw(){
+  ctx.clearRect(0,0,W(),H());
+  for(const e of edges){
+    const a=byId(e.a), b=byId(e.b); if(!a||!b) continue;
+    if(hidden.has(hiddenKey(a))||hidden.has(hiddenKey(b))) continue;
+    const active=(selNode&&(selNode===a||selNode===b))||(hoverNode&&(hoverNode===a||hoverNode===b));
+    ctx.beginPath(); ctx.moveTo(a.x,a.y); ctx.lineTo(b.x,b.y);
+    ctx.strokeStyle = active? "rgba(214,140,70,.55)" : "rgba(210,170,130,.20)";
+    ctx.lineWidth = active? 1.8 : 1.1;
+    ctx.stroke();
+  }
+  for(const n of all){
+    if(hidden.has(hiddenKey(n))) continue;
+    const isNeighbor = selNode && (selNode===n || neighbors(selNode).has(n.id));
+    const dim = (selNode && !isNeighbor);
+    const r=nodeR(n)*(n===hoverNode?1.35:1);
+    if(n.type==="hub"){
+      ctx.save();
+      ctx.shadowColor="rgba(220,160,70,.55)"; ctx.shadowBlur=16;
+      ctx.beginPath(); ctx.arc(n.x,n.y,r,0,Math.PI*2);
+      ctx.fillStyle="rgba(255,210,122,"+(dim?0.2:1)+")"; ctx.fill();
+      ctx.restore();
+      ctx.lineWidth=2; ctx.strokeStyle="rgba(200,130,50,"+(dim?0.3:0.9)+")"; ctx.stroke();
+      ctx.font="600 12px PingFang SC, sans-serif";
+      ctx.textAlign="center"; ctx.textBaseline="middle";
+      const label="《"+n.title+"》";
+      const tw=ctx.measureText(label).width;
+      const bw=tw+14;
+      ctx.fillStyle="rgba(255,250,243,"+(dim?0.4:0.92)+")";
+      roundRect(n.x-bw/2,n.y-r-22,bw,18,9); ctx.fill();
+      ctx.fillStyle=dim?"rgba(122,79,35,.4)":"#7a4f23"; ctx.fillText(label,n.x,n.y-r-13);
+    }else{
+      const c=CATS[n.cat].color;
+      ctx.save();
+      if(!dim){ctx.shadowColor=c; ctx.shadowBlur=8;}
+      ctx.beginPath(); ctx.arc(n.x,n.y,r,0,Math.PI*2);
+      ctx.globalAlpha = dim?0.18:1;
+      ctx.fillStyle=c; ctx.fill();
+      ctx.restore();
+      if(n===selNode||n===hoverNode){
+        ctx.beginPath(); ctx.arc(n.x,n.y,r+3,0,Math.PI*2);
+        ctx.strokeStyle="rgba(120,80,50,.8)"; ctx.lineWidth=2; ctx.stroke();
+      }
+    }
+  }
+}
+function loop(){
+  if(running) step();
+  draw();
+  requestAnimationFrame(loop);
+}
+loop();
+
+const tip=document.getElementById("tip");
+function pickNode(mx,my){
+  let best=null,bd=1e9;
+  for(const n of all){
+    if(hidden.has(hiddenKey(n))) continue;
+    const r=nodeR(n)+5; const d=Math.hypot(n.x-mx,n.y-my);
+    if(d<r&&d<bd){bd=d;best=n;}
+  }
+  return best;
+}
+cv.addEventListener("mousemove",e=>{
+  const mx=e.clientX,my=e.clientY;
+  if(dragNode){ dragNode.x=mx; dragNode.y=my; dragNode.vx=0; dragNode.vy=0; return; }
+  const n=pickNode(mx,my);
+  hoverNode=n;
+  cv.style.cursor=n?"pointer":"default";
+  if(n){
+    tip.style.opacity="1";
+    tip.style.left=mx+"px"; tip.style.top=my+"px";
+    if(n.type==="hub"){
+      tip.innerHTML='<div class="t-cat">作品 / 项目枢纽</div>《'+n.title+'》<br/>围绕它的记忆 '+n.members.length+' 条';
+    }else{
+      const c=CATS[n.cat];
+      tip.innerHTML='<div class="t-cat" style="color:'+c.color+'">'+c.name+'</div>'+
+        (n.fact.length>90?n.fact.slice(0,90)+"…":n.fact);
+    }
+  }else{ tip.style.opacity="0"; }
+});
+cv.addEventListener("mouseleave",()=>{tip.style.opacity="0";hoverNode=null;});
+
+cv.addEventListener("mousedown",e=>{ dragNode=pickNode(e.clientX,e.clientY); });
+window.addEventListener("mouseup",()=>{dragNode=null;});
+cv.addEventListener("click",e=>{
+  const n=pickNode(e.clientX,e.clientY);
+  if(n){ openPanel(n); } else { closePanel(); }
+});
+
+const panel=document.getElementById("panel");
+const panelBody=document.getElementById("panelBody");
+function fmtDate(ts){
+  if(!ts) return "";
+  const m=/^(\d{4}-\d{2}-\d{2})T?(\d{2}:\d{2})?/.exec(ts);
+  if(m) return (m[1]||"")+(m[2]?" "+m[2]:"");
+  return ts;
+}
+function relatedTo(n){
+  const out=[];
+  if(n.type==="hub"){
+    n.members.forEach(mid=>{ out.push(byId(mid)); });
+  }else{
+    const hubIds=edges.filter(e=>e.a===n.id||e.b===n.id).map(e=>e.a===n.id?e.b:e.a);
+    hubIds.forEach(hid=>{ const h=byId(hid); if(h) h.members.forEach(mid=>{ if(mid!==n.id) out.push(byId(mid)); }); });
+    const seen=new Set([n.id]);
+    return out.filter(x=>x&&!seen.has(x.id)&&seen.add(x.id));
+  }
+  return out;
+}
+function openPanel(n){
+  selNode=n;
+  const c = n.type==="hub" ? {name:"作品 / 项目枢纽",color:"#c8923a"} : CATS[n.cat];
+  let html='<span class="pcat" style="background:'+c.color+'">'+c.name+'</span>';
+  if(n.type==="hub"){
+    html+='<div class="pdate">围绕它的记忆 '+n.members.length+' 条</div>';
+    html+='<div class="pfact">《'+n.title+'》</div>';
+  }else{
+    html+='<div class="pdate">'+fmtDate(n.ts)+'</div>';
+    html+='<div class="pfact">'+escapeHtml(n.fact)+'</div>';
+    const rel=relatedTo(n);
+    if(rel.length){
+      html+='<div class="rel-title">与它相关的记忆（'+rel.length+'）</div><div class="rel">';
+      rel.slice(0,12).forEach(r=>{
+        html+='<div class="item" data-id="'+r.id+'">· '+escapeHtml(r.fact.length>60?r.fact.slice(0,60)+"…":r.fact)+'</div>';
+      });
+      html+='</div>';
+    }
+  }
+  panelBody.innerHTML=html;
+  panel.classList.add("open");
+  panelBody.querySelectorAll(".item").forEach(el=>{
+    el.addEventListener("click",()=>{ const id=parseInt(el.getAttribute("data-id")); const t=byId(id); if(t) openPanel(t); });
+  });
+}
+function escapeHtml(s){ return (s||"").replace(/[&<>"]/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[m])); }
+function closePanel(){ selNode=null; panel.classList.remove("open"); }
+document.getElementById("panelClose").addEventListener("click",closePanel);
+
+// ---- 控制条：分类筛选 + 重置 ----
+const controls=document.getElementById("controls");
+function makeBtn(label,color,key){
+  const b=document.createElement("button");
+  b.className="chip";
+  if(color) b.innerHTML='<span class="dot" style="background:'+color+'"></span>'+label;
+  else b.textContent=label;
+  b.dataset.key=key;
+  b.addEventListener("click",()=>{
+    if(key==="reset"){ hidden.clear(); document.querySelectorAll(".controls button").forEach(x=>x.classList.remove("off")); return; }
+    if(hidden.has(key)){ hidden.delete(key); b.classList.remove("off"); }
+    else { hidden.add(key); b.classList.add("off"); }
+  });
+  return b;
+}
+controls.appendChild(makeBtn("偏好","#ef7d9b","preference"));
+controls.appendChild(makeBtn("习惯","#f4a261","habit"));
+controls.appendChild(makeBtn("工具","#7fb069","tool"));
+controls.appendChild(makeBtn("其他","#b9a7d6","other"));
+controls.appendChild(makeBtn("全部显示","","reset"));
+</script>
+</body>
+</html>
