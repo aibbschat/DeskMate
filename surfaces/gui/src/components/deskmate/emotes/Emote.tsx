@@ -34,11 +34,7 @@ export function Emote({ name, size, title, pack, live }: Props) {
   const packId = pack ?? (live ? active : EMOTE_MANIFEST.defaultPack);
   const registry = getPackRegistry(packId);
   const Face = registry[name.toLowerCase()];
-  if (!Face) return null;
-  const theme = PACK_THEMES[packId] ?? PACK_THEMES[EMOTE_MANIFEST.defaultPack];
-  const Bg = PACK_BGS[packId] ?? FaceBg;
   const label = emoteLabel(name);
-
   const dimension = size ?? "1.4em";
   const style: CSSProperties = {
     display: "inline-block",
@@ -47,6 +43,37 @@ export function Emote({ name, size, title, pack, live }: Props) {
     verticalAlign: "middle",
     lineHeight: 0,
   };
+  // 兜底：表情缺失（如旧构建未含该 id、或误传了不存在的表情名）时，显式渲染一个
+  // 带中文名的小徽章，而不是静默 return null——后者会让气泡里凭空少一块，看起来像
+  // "表情挂了"。新构建里正常表情不会走到这里。
+  if (!Face) {
+    return (
+      <span
+        className="deskmate-emote deskmate-emote-missing"
+        title={title ?? label}
+        role="img"
+        aria-label={label}
+        style={{ ...style, display: "inline-flex", alignItems: "center", justifyContent: "center" }}
+      >
+        <span
+          style={{
+            fontSize: "0.62em",
+            lineHeight: 1,
+            padding: "0.18em 0.32em",
+            borderRadius: "0.4em",
+            background: "var(--paper, #f3f0ea)",
+            border: "1px solid var(--line, #e3ddd2)",
+            color: "var(--muted, #8a8175)",
+            whiteSpace: "nowrap",
+          }}
+        >
+          {title ?? label}
+        </span>
+      </span>
+    );
+  }
+  const theme = PACK_THEMES[packId] ?? PACK_THEMES[EMOTE_MANIFEST.defaultPack];
+  const Bg = PACK_BGS[packId] ?? FaceBg;
 
   return (
     <span className="deskmate-emote" title={title ?? label} role="img" aria-label={label} style={style}>
