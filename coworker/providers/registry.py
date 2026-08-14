@@ -204,6 +204,37 @@ def _build_omniroute(profile: dict[str, Any], secrets: Any) -> ProviderClient:
     return OpenAIProvider(client=client)
 
 
+def _build_opencode(profile: dict[str, Any], secrets: Any) -> ProviderClient:
+    # OpenCode exposes a public OpenAI-compatible gateway at https://opencode.ai/zen/v1. Its
+    # *-free models (deepseek-v4-flash-free, mimo-v2.5-free, nemotron-3-ultra-free, …) are
+    # KEYLESS — they answer with no Authorization header at all (verified: 200, or 429
+    # FreeUsageLimitError when the free quota is exhausted). Paid models on the same gateway DO
+    # require a key. Two paths:
+    #   • key provided  → forward it (paid models)
+    #   • key empty     → strip the Authorization header entirely so the SDK sends a keyless
+    #                     request. (A dummy Bearer is rejected with 401, so we must send NONE.)
+    # We never fall back to OPENAI_API_KEY: that bogus env var must not be leaked to opencode.ai.
+    base_url = ((profile or {}).get("base_url") or "").strip() or "https://opencode.ai/zen/v1"
+    api_key = ((profile or {}).get("api_key") or "").strip()
+    import httpx
+    from openai import OpenAI
+
+    if api_key:
+        client = OpenAI(api_key=api_key, base_url=base_url, http_client=httpx.Client(trust_env=False))
+    else:
+        class _StripAuth(httpx.Auth):
+            def auth_flow(self, request):
+                request.headers.pop("Authorization", None)
+                yield request
+
+        client = OpenAI(
+            api_key="opencode-free",
+            base_url=base_url,
+            http_client=httpx.Client(trust_env=False, auth=_StripAuth()),
+        )
+    return OpenAIProvider(client=client)
+
+
 def _openai_compat(vendor: str, default_base_url: str, env_key: Optional[str] = None):
     """Builder factory for vendors reached through their OpenAI-compatible API (Z AI, DeepSeek,
     Kimi, MiniMax, Qwen, xAI, Mistral). The key is resolved from the vendor's OWN profile (or its
@@ -627,6 +658,37 @@ DESCRIPTORS: list[ProviderDescriptor] = [
         blurb="经本机 OmniRoute 网关调度 290+ 供应商，内置免密钥免费模型（model:auto）。"
         "建议仅用于圆桌外脑／偶发草稿，勿作主写作流量。",
     ),
+    # OpenCode 公共免费网关 (zen/v1)：*-free 模型免密钥即可用，仅免费额度限速；付费模型需自备
+    # key。与 OmniRoute 同源思路——把公开免密钥免费模型接进桌搭，专供圆桌外脑／偶发草稿，不作主写作。
+    ProviderDescriptor(
+        name="opencode",
+        title="OpenCode 免费模型",
+        needs_key=False,
+        fields=[
+            ProviderField(
+                "base_url",
+                "OpenCode 网关地址",
+                secret=False,
+                required=False,
+                default="https://opencode.ai/zen/v1",
+                placeholder="https://opencode.ai/zen/v1",
+                help="OpenCode 公共免费网关（zen/v1）。其 *-free 模型免密钥即可用，仅免费额度限速；"
+                "付费模型需自备 key。",
+            ),
+            ProviderField(
+                "api_key",
+                "API Key（可选）",
+                secret=True,
+                required=False,
+                placeholder="免费 *-free 模型留空；付费模型填 OpenCode key",
+                help="仅当使用 OpenCode 付费模型时才填；免费 *-free 模型留空即可。",
+            ),
+        ],
+        build=_build_opencode,
+        recommended_model="deepseek-v4-flash-free",
+        blurb="经 OpenCode 公共网关 zen/v1 的免密钥 *-free 模型（DeepSeek V4 Flash / Mimo V2.5 / "
+        "Nemotron 3 等），建议仅用于圆桌外脑／偶发草稿。",
+    ),
 ]
 
 _BY_NAME = {d.name: d for d in DESCRIPTORS}
@@ -921,6 +983,36 @@ def verify_provider_key(
                     "error": "OmniRoute 拒绝了 Key：若仪表板设了密码请填正确的 Key；否则留空用免密钥。",
                 }
             return {"ok": False, "error": f"OmniRoute 返回 HTTP {resp.status_code}。"}
+        elif name == "opencode":
+            # Public keyless gateway. Probe with a tiny completion to a free model and NO auth
+            # header; 200 = ok, 429 = free quota reached but endpoint reachable, 401/403 = auth
+            # issue (shouldn't happen for the keyless free tier).
+            base = ((base_url or "").strip().rstrip("/") or "https://opencode.ai/zen/v1").rstrip("/")
+            try:
+                resp = httpx.post(
+                    base + "/chat/completions",
+                    json={
+                        "model": "deepseek-v4-flash-free",
+                        "messages": [{"role": "user", "content": "hi"}],
+                        "max_tokens": 2,
+                        "stream": False,
+                    },
+                    timeout=timeout,
+                    trust_env=False,
+                )
+            except Exception as exc:
+                return {
+                    "ok": False,
+                    "error": f"连接 OpenCode 失败（{exc.__class__.__name__}）。请确认网关地址正确。",
+                }
+            if resp.status_code < 400:  # 200 ok; 429 = free tier reachable
+                return {"ok": True}
+            if resp.status_code in (401, 403):
+                return {
+                    "ok": False,
+                    "error": "OpenCode 拒绝了请求：免费 *-free 模型本应免密钥，若返回 401 请检查网关地址。",
+                }
+            return {"ok": False, "error": f"OpenCode 返回 HTTP {resp.status_code}。"}
         else:  # openai + any OpenAI-compatible endpoint (Azure, OpenRouter, vendors, vLLM…)
             default_base = next(
                 (f.default for f in d.fields if f.key == "base_url" and f.default), ""
