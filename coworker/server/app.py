@@ -1908,7 +1908,7 @@ def create_app(manager: SessionManager) -> FastAPI:
             desk_dir = _P(
                 os.environ.get("DESKMATE_DIR", os.path.expanduser("~/.deskmate"))
             )
-            return _read_learned_history(desk_dir, limit=max(1, min(limit, 200)))
+            return _read_learned_history(desk_dir, limit=max(1, min(limit, 5000)))
         except Exception:
             logging.exception("get deskmate learned history failed")
             return {"items": [], "stats": {"total": 0, "by_category": {}}}
