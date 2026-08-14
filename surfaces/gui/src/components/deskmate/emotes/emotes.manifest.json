@@ -1,11 +1,11 @@
 {
   "version": "1.0.0",
   "defaultPack": "moling-default",
-  "description": "墨灵表情 · 接入标准（Emote Manifest）。前后端共用单一真相源：定义「有哪些表情、各自含义/触发场景/分类/情绪」，渲染实现由各端自行承载（前端为 SVG_REGISTRY）。新增表情只改本文件，无需改代码。",
+  "description": "知了表情 · 接入标准（Emote Manifest）。前后端共用单一真相源：定义「有哪些表情、各自含义/触发场景/分类/情绪」，渲染实现由各端自行承载（前端为 SVG_REGISTRY）。新增表情只改本文件，无需改代码。",
   "packs": {
     "moling-default": {
       "id": "moling-default",
-      "name": "墨灵默认表情",
+      "name": "知了默认表情",
       "style": "yellow-face",
       "license": "custom",
       "emotes": [
@@ -157,7 +157,7 @@
     },
     "moling-mono": {
       "id": "moling-mono",
-      "name": "墨灵线描",
+      "name": "知了线描",
       "style": "mono-line",
       "license": "custom",
       "inherit": "moling-default"

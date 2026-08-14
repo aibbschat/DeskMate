@@ -462,7 +462,7 @@ function AppearanceSection() {
             {Math.round(petScale * 100)}%
           </span>
         </div>
-        <div className={FIELD_HELP}>调整桌面桌宠（墨灵）的显示大小，仅「桌搭 DeskMate」模式下可见。</div>
+        <div className={FIELD_HELP}>调整桌面桌宠（知了）的显示大小，仅「知了」模式下可见。</div>
       </div>
 
       <SidebarCard />

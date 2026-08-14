@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import type { Attachment, SessionUsage } from "../types";
 import { isPdfFile, readFile } from "../attach";
@@ -55,6 +55,8 @@ interface Props {
   model: string;
   models?: string[];
   modelLabels?: Record<string, string>; // curated display names (raw id when absent)
+  /** {full model id → "free" | "paid"} — splits the picker into 免费 / 付费 two tiers. */
+  modelTiers?: Record<string, string>;
   // The model is FIXED once the session has history (§17): the picker renders ONLY on a fresh
   // session; after the first turn the fact lives in the topbar subtitle (§22) — no
   // interactive-then-disabled control.
@@ -376,12 +378,29 @@ export function Composer(props: Props) {
   };
 
   const modelsLoaded = !!(props.models && props.models.length);
-  const modelOptions: Option[] = Array.from(
-    new Set([props.model, ...(props.models || [])]),
-  ).map((m) => ({
-    value: m,
-    label: props.modelLabels?.[m] || shortModel(m),
-  }));
+  // Group models into 免费 / 付费 tiers (owner ask 2026-08-14): keyless local/free
+  // gateways (Ollama/OmniRoute/OpenCode) are free; everything needing a billable key is paid.
+  const modelGroups = useMemo(() => {
+    const tiers = props.modelTiers;
+    const tierOf = (m: string): "free" | "paid" => {
+      const known = tiers?.[m];
+      if (known === "free" || known === "paid") return known;
+      return m.startsWith("omniroute:") || m.startsWith("opencode:") || m.startsWith("ollama:")
+        ? "free"
+        : "paid";
+    };
+    const all = Array.from(new Set([props.model, ...(props.models || [])]));
+    const free: Option[] = [];
+    const paid: Option[] = [];
+    for (const m of all) {
+      const opt: Option = { value: m, label: props.modelLabels?.[m] || shortModel(m) };
+      (tierOf(m) === "free" ? free : paid).push(opt);
+    }
+    const groups: { title: string; options: Option[] }[] = [];
+    if (free.length) groups.push({ title: t("composer.freeModels"), options: free });
+    if (paid.length) groups.push({ title: t("composer.paidModels"), options: paid });
+    return groups;
+  }, [props.model, props.models, props.modelLabels, props.modelTiers]);
 
   const iconBtn =
     "w-7 h-7 grid place-items-center rounded-md text-muted hover:text-ink hover:bg-paper shrink-0";
@@ -512,8 +531,8 @@ export function Composer(props: Props) {
             <button
               type="button"
               className={iconBtn + (emoteOpen ? " bg-paper text-ink" : "")}
-              title="插入墨灵表情"
-              aria-label="插入墨灵表情"
+              title="插入知了表情"
+              aria-label="插入知了表情"
               onClick={() => setEmoteOpen((v) => !v)}
             >
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -595,7 +614,7 @@ export function Composer(props: Props) {
               <span className="model-warn-ico" aria-hidden>⚠</span>
             </button>
           ) : modelsLoaded ? (
-            <Dropdown value={props.model} options={modelOptions} onChange={props.onModelChange} align="right" />
+            <Dropdown value={props.model} groups={modelGroups} onChange={props.onModelChange} align="right" />
           ) : (
             <button
               className="pill chip text-faint cursor-default"

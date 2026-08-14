@@ -172,6 +172,30 @@
   - 或分离：`brigade gateway run &` 后台常驻 + 另开终端 `brigade connect` 连入。
 - 注意：DeepSeek 调用走网络（`api.deepseek.com`）；若聊天时报模型/权限错误，多为该 key 对该模型不可用，可重跑 `brigade onboard` 换模型（目录另有 `deepseek-v4-pro`）。
 
+## 十二、Phase 2 改道「官方 extension SDK / channel 槽位」核验（2026-08-13 上午）
+Fist 提出走官方 `extension-sdk`（~1.30.0 自带 `channel-sdk.d.ts`，"public extension contract, versioned with the package, not shifting underneath" 原话存在）→ 比逆向 WS 稳。助手**逐条核源码**，结论分两层：
+
+### A. 「契约稳定、技术存在」属实（Fist 这次没编）
+- 稳定契约原话逐字存在：`dist/extension-sdk.d.ts:20-21`。
+- `brigade extensions` 子命令真实含 `init/add/list/doctor/remove`。
+- channel 契约方法全实证（`dist/agents/extensions/types.d.ts`）：`onInbound`、`sendText(返回 messageId)`、`sendMedia`、`react`、`setComposing`、`capabilities`、`approvalCapability` 等。
+- 架构流对：inbound → agent turn → `sendText` 回复。
+
+### B. 但 channel 槽位 = 「哑渠道」层级，呈现度 ≈ 30–40% 原生 UX（关键限制）
+**核验方法**：对比原生 WS 客户端（`dist/tui/client.js` + `dist/cli/commands/connect.js`）消费的协议事件 vs. `ChannelAdapter` 接口实际暴露的 outbound。
+- **原生协议（WS，tui/connect 消费）暴露**：`pi`(流式增量 token，且带 `subagentDepth` 可看多 agent 流式)、`approval-request`(工具需审批)、`system-event`(agent 轮次/交接/状态)。`dist/core/server.js` 在 2107/2219 广播 `pi`、1756 广播 `approval-request`、1826/1977/2021 广播 `system-event`。
+- **ChannelAdapter 接口（channel 槽位 outbound）仅暴露**：`sendText(text:string)` 最终成品文本、`sendMedia`、`react`、`setComposing`(正在输入)、`markRead`、`handleAction`(edit/delete/react 回链)、可选 `approvalCapability.sendApprovalPrompt`(把「审批某操作」渲染成原生按钮——是审批门，不是展示每次工具调用)。`OutboundSendOptions` 仅含 threadId/replyToId/silent/linkPreview 等**渠道路由元数据**，不带 agent id、不带流式标记、不带工具结果。
+
+### 逐条答「桌搭当客户端能呈现几成」
+1. **Brigade 功能是否全部体现？** 后端 100% 运行（crew/记忆/工具/编排全在网关跑），但 GUI 仅能看见「文本进出」这一层。channel 契约**不暴露** crew 编排可视化、记忆引擎、工具执行细节、agent 轮次。= 功能全在跑，但内部运作你看不到。
+2. **流式 / 工具调用是否全部显示？** 否。channel 只收到 `sendText` 最终文本（无 `pi` 流式）；`approval-request`(工具审批) 是 WS-only，仅当你实现 `approvalCapability` 才能把"审批"渲染成按钮，但普通工具调用的过程/参数/结果仍不可见；多 agent/交接/思考（`system-event`）同样 WS-only。
+3. **能否像原生客户端完美呈现？几成？** Brigade **只有两个客户端层级**：(a) 原生 WS 客户端(tui/connect，官方自带，全协议)；(b) channel 适配器(WhatsApp/Telegram/Slack/社交渠道，纯文本)。**没有"第三方富客户端"独立层级**——channel 槽位就是"哑渠道"层级本身。走 channel = 与 WhatsApp 同级：得到干净聊天（发消息→收回复文本+媒体、正在输入、表情、编辑/撤回、可选原生审批按钮）≈ **30–40%** 原生 UX；失去流式、实时工具/审批细节、多 agent 活动可视化、思考指示。若想要原生富体验，只能做 WS 客户端（即当初因协议未文档化/会漂移而搁置之路；channel 虽稳，原生 WS 协议仍无版本化承诺）。
+
+### 战略重判（最重要）
+- channel 槽位让 **Brigade 独占对话循环**，桌搭变成"给 Brigade 打工的终端"。这**正好违背用户红线①『不弱化桌搭』**——桌搭的 persona/圣经/圆桌/技能/GUI 编排全被旁路，你实际在跟 Brigade 的 crew 聊，桌搭只是壳。第八章"桌搭始终自己编排、Brigade 只是被调后端"的设想在 channel 路径下**不成立**。
+- 更契合两条红线的架构是**反向**：桌搭继续当大脑/编排者，Brigade 当被调用的后端能力（MCP 记忆，或可调用的 crew 后端），而非"桌搭是 Brigade 的前端"。
+- 结论：Fist 这次方向"技术存在且稳定"是真的，但它回避了根本矛盾——**「桌搭当 Brigade 客户端」这个提法本身，与「桌搭不弱化」冲突**。真正拼法不是"桌搭是 Brigade 的前端"，而是"桌搭用 Brigade 当后端部件"。Phase 2 若非要 GUI 化 Brigade，应走「桌搭编排 + 按需委派任务给 Brigade crew 后端」，而非让桌搭退化成 Brigade 的聊天壳。（本节为分析，尚未提交。）
+
 ## 十一、Brigade 修复 Bug A/B 并质检通过（2026-08-13）
 - 用户让 Brigade（代号「拳头」）依 `brigade-fix-candidates.md` 修两条真 Bug。
 - **Bug A**（`_keyword_recall` 圣经摘要盲截）：改为按查询关键词从 CHARACTERS 切分完整角色块动态选取（新增 `_split_character_blocks` / `_pick_character_blocks`），绝不再以 `[:6000]` 整段切掉 6000 字符后的角色；无关键词时按原文顺序取完整块直到预算，且首个块允许轻微超预算而不拦腰截断。

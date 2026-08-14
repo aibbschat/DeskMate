@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 _STOP = object()
 
 HOST_SYSTEM = (
-    "你是圆桌主持人「桌搭」，历史小说作家的 AI 搭档。\n"
+    "你是圆桌主持人「知了」，历史小说作家的 AI 搭档。\n"
     "你的职责：开场点题与定规则；每轮后归纳各方的共识与分歧；在收窄式多轮中只把"
     "『尚未达成一致的分歧点』抛回给各方答辩；最后写一份《圆桌纪要》（共识 / 尚存分歧 / 给作者的建议）。\n"
     "你保持中立、条理清晰、不替任何一方下结论。涉及史实须严谨，拿不准要存疑。\n"
@@ -84,7 +84,7 @@ class RoundtableResult:
     traces: list[dict] = field(default_factory=list)
 
     def to_markdown(self) -> str:
-        out: list[str] = [f"# 创作圆桌纪要：{self.topic}", ""]
+        out: list[str] = [f"# 创作圆桌 · 综合研判报告：{self.topic}", ""]
         out.append(f"- 实际轮次：{self.rounds_held} 轮（有界多轮）")
         out.append(f"- 外部 peer 在线：{', '.join(self.peers_online) or '无'}")
         if self.peers_offline:
@@ -726,13 +726,13 @@ class Roundtable:
         traces: list[dict] = []  # 各轮 context_trace（L0/L1/L2 + FTS5 轨迹），用于纪要落盘与可观测
 
         # 开场（主持流式）
-        await out_q.put({"type": "speaking", "round": 0, "speaker": "桌搭（主持）", "role": "host", "kind": "host"})
+        await out_q.put({"type": "speaking", "round": 0, "speaker": "知了（主持）", "role": "host", "kind": "host"})
         sc0 = await self._build_story_context(0, "")
         await out_q.put({"type": "context_trace", "round": 0, "trace": sc0.trace})
         traces.append(sc0.trace)
         opening_ctx = sc0.text
         opening = await self._stream_turn(
-            out_q, turn_id="host-open", round_no=0, speaker="桌搭（主持）", role="host", kind="host",
+            out_q, turn_id="host-open", round_no=0, speaker="知了（主持）", role="host", kind="host",
             gen_factory=lambda: self._stream_host(
                 "请为话题开场：首先直接复述用户的原始议题（原样引用，不要重新定义或缩小范围），"
                 "然后说明规则（有界多轮、到达序发言、最后由你做纪要），并抛出一个讨论引子。",
@@ -790,9 +790,9 @@ class Roundtable:
 
             # 收窄轮：归纳分歧；若已一致则提前收尾
             if r < self.max_rounds:
-                await out_q.put({"type": "speaking", "round": r, "speaker": "桌搭（主持）", "role": "host", "kind": "host"})
+                await out_q.put({"type": "speaking", "round": r, "speaker": "知了（主持）", "role": "host", "kind": "host"})
                 div_text = await self._stream_turn(
-                    out_q, turn_id=f"host-div-{r}", round_no=r, speaker="桌搭（主持）", role="host", kind="host",
+                    out_q, turn_id=f"host-div-{r}", round_no=r, speaker="知了（主持）", role="host", kind="host",
                     gen_factory=lambda r=r, ctx=ctx: self._stream_host(
                         "根据上面第 %d 轮讨论，提炼仍未达成一致的关键分歧点"
                         "（最多 3 条，每条一句话，用『- 』开头）。若已高度一致，请直接写『无重大分歧』。" % r,
@@ -806,7 +806,7 @@ class Roundtable:
                     break
 
         # 纪要（主持流式）；失败兜底由 fallback_text 注入
-        await out_q.put({"type": "speaking", "round": rounds_held + 1, "speaker": "桌搭（主持）", "role": "host", "kind": "host"})
+        await out_q.put({"type": "speaking", "round": rounds_held + 1, "speaker": "知了（主持）", "role": "host", "kind": "host"})
         synthesis_ctx = (self.context + "\n\n" + self._fmt(transcript)).strip()
         synthesis_fallback = (
             "（自动兜底纪要）以下为各轮发言概览，建议稍后重试以获得完整纪要：\n"
@@ -817,10 +817,14 @@ class Roundtable:
             )
         )
         synthesis = await self._stream_turn(
-            out_q, turn_id="host-synth", round_no=rounds_held + 1, speaker="桌搭（主持）", role="host", kind="host",
+            out_q, turn_id="host-synth", round_no=rounds_held + 1, speaker="知了（主持）", role="host", kind="host",
             gen_factory=lambda: self._stream_host(
-                "圆桌结束。请基于全部讨论写一份《圆桌纪要》：先列共识，再列尚存分歧，"
-                "最后给作者 3 条可执行的修改建议。",
+                "圆桌结束。请基于全部讨论写一份《综合研判报告》，严格用以下四个二级标题分段"
+                "（缺一不可、顺序固定，不要加其它标题）：\n"
+                "## 共识点\n（各方一致认可的结论，逐条列出）\n"
+                "## 分歧点\n（每条写明分歧内容，并附「支持方：…｜反对方：…｜理由：…」）\n"
+                "## 存疑项\n（史料考据标注【待确认】的、出处不明或证据不足的，逐条列出）\n"
+                "## 可执行建议\n（给作者 3 条按优先级排序的修改建议，格式「1. …」）",
                 synthesis_ctx, story_block,
             ),
             phase="synthesis",

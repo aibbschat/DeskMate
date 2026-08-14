@@ -85,14 +85,18 @@ _FTS5_DB = "fts5.db"
 
 def _client():
     from openai import OpenAI
-    from deskmate.memory.llm import _api_key, _base_url
+    from deskmate.memory.llm import _resolve_memory_provider
 
-    return OpenAI(api_key=_api_key(), base_url=_base_url())
+    # 圣经实体抽取走记忆专用 provider：默认即主对话付费模型（保中文一字不差，护史实严谨红线）。
+    # 仅当显式设 DESKMATE_MEMORY_PROVIDER=omniroute 才走本机免费网关；异常时自动降级回付费主模型。
+    ak, bu, _ = _resolve_memory_provider(reasoning=True)
+    return OpenAI(api_key=ak, base_url=bu)
 
 
 def _model() -> str:
-    from deskmate.memory.llm import _model as _llm_model
-    return _llm_model()
+    from deskmate.memory.llm import _resolve_memory_provider
+
+    return _resolve_memory_provider(reasoning=True)[2]
 
 
 # 已知会产出 reasoning_content 的推理模型（如 deepseek-v4-flash / deepseek-r1）。
@@ -128,6 +132,7 @@ def _chat(
     启发式判定）不会带这个参数，避免 provider 报不识别的字段。
     """
     from openai import BadRequestError
+    from deskmate.memory.llm import _resolve_provider, _memory_use_omniroute
 
     client = _client()
     messages = [
@@ -148,18 +153,34 @@ def _chat(
             **({"extra_body": extra} if extra else {}),
         )
 
+    def _fallback_create():
+        # OmniRoute 免费网关不可用 / 异常：回退主对话 provider，保证圣经不丢
+        from openai import OpenAI as _OC
+
+        lak, lbu, lmd = _resolve_provider()
+        return _OC(api_key=lak, base_url=lbu, timeout=timeout).chat.completions.create(
+            model=lmd,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            messages=messages,
+            timeout=timeout,
+            **({"extra_body": extra} if extra else {}),
+        )
+
     try:
         resp = _create()
+        if not getattr(resp, "choices", None):
+            raise ValueError("memory provider returned empty choices")
     except BadRequestError:
         # 个别 provider 不认 reasoning_effort，去掉重试一次
         if extra:
-            resp = client.chat.completions.create(
-                model=_model(),
-                temperature=temperature,
-                max_tokens=max_tokens,
-                messages=messages,
-                timeout=timeout,
-            )
+            resp = _create()
+        else:
+            raise
+    except Exception:
+        # OmniRoute 免费网关异常（空响应 / 网关报错等）：降级主 provider
+        if _memory_use_omniroute(bible=True):
+            resp = _fallback_create()
         else:
             raise
     return (resp.choices[0].message.content or "").strip()

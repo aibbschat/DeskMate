@@ -21,7 +21,7 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-from ..memory.llm import llm_available, chat
+from ..memory.llm import llm_available, chat, chat_memory, memory_llm_available
 from .skill_store import SkillStore, DEFAULT_SKILLS_DIR
 
 
@@ -312,7 +312,7 @@ class SkillManager:
         Returns:
             新创建的技能信息，或 None（无需创建）
         """
-        if not llm_available():
+        if not memory_llm_available():
             return None
 
         # 获取已有技能摘要，供 LLM 判断去重
@@ -350,7 +350,7 @@ class SkillManager:
             prompt += f"用户：{user_msg[:1500]}\n\n助手：{assistant_msg[:1500]}"
 
         try:
-            resp = chat(
+            resp = chat_memory(
                 "你是技能抽取器。只输出JSON，不要解释。",
                 prompt,
                 temperature=0.2,

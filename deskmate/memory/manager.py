@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 from .project_memory import format_project_memory, list_projects, load_project_memory
 from .soul import load_soul, save_soul, reset_soul, evolve_soul
 from .user_profile import load_user, save_user, reset_user
-from .llm import llm_available, chat
+from .llm import llm_available, chat, chat_memory, memory_llm_available
 from .vault_store import VaultStore
 
 # 记忆上下文最大字符数（参考 Hermes 的 6000）
@@ -1119,7 +1119,7 @@ class DeskMateMemoryManager:
 
         🛡️ 只写 MEMORY/USER，绝不写 SOUL。无 LLM 密钥或异常时静默跳过，不阻断主对话。
         """
-        if not llm_available():
+        if not memory_llm_available():
             return {"written": 0, "notes": "未配置 LLM provider，跳过会话抽取"}
 
         sessions_dir = self.base_dir / "sessions"
@@ -1150,7 +1150,7 @@ class DeskMateMemoryManager:
             f"（今天日期：{today}）。若没有值得记的，输出空数组 []。"
         )
         try:
-            resp = chat(system, text, temperature=0.2, max_tokens=1000)
+            resp = chat_memory(system, text, temperature=0.2, max_tokens=1000)
         except Exception as e:
             return {"written": 0, "notes": f"抽取失败（已跳过）：{e}"}
 
@@ -1187,7 +1187,7 @@ class DeskMateMemoryManager:
 
         避免 extract_session_facts(limit=N) 每轮都重抽最近 N 条导致的重复写入。
         """
-        if not llm_available():
+        if not memory_llm_available():
             return {"written": 0, "notes": "未配置 LLM provider，跳过会话抽取"}
         try:
             text = session_file.read_text(encoding="utf-8")
@@ -1218,7 +1218,7 @@ class DeskMateMemoryManager:
             "若没有值得记的持久事实，输出空数组 []。"
         )
         try:
-            resp = chat(system, text, temperature=0.2, max_tokens=1000)
+            resp = chat_memory(system, text, temperature=0.2, max_tokens=1000)
         except Exception as e:
             return {"written": 0, "notes": f"抽取失败（已跳过）：{e}"}
 
@@ -1321,7 +1321,7 @@ class DeskMateMemoryManager:
 
     def _llm_check_duplicate(self, new_entry: str, existing_context: str) -> bool:
         """用 LLM 判断新条目是否与已有内容重复。"""
-        if not llm_available():
+        if not memory_llm_available():
             return False
         system = (
             "你是记忆去重检查器。判断新记忆是否与已有记忆说的是同一件事。"
@@ -1329,7 +1329,7 @@ class DeskMateMemoryManager:
         )
         prompt = f"已有记忆：\n{existing_context[:1000]}\n\n新记忆：\n{new_entry[:300]}\n\n是否重复？"
         try:
-            resp = chat(system, prompt, temperature=0.0, max_tokens=5)
+            resp = chat_memory(system, prompt, temperature=0.0, max_tokens=5)
             return resp.strip().upper().startswith("Y")
         except Exception as e:
             logger.debug("LLM duplicate check failed: %s", e)
@@ -1344,7 +1344,7 @@ class DeskMateMemoryManager:
         注意：技能创建不在引擎层强制触发，而是由 LLM 自觉判断——
         完成复杂任务后主动提议调用 skill_create。
         """
-        if not llm_available():
+        if not memory_llm_available():
             return {"written": 0, "notes": "未配置 LLM provider，跳过会话抽取"}
         try:
             session_file = self._save_session_turn(user_msg or "", assistant_msg or "")

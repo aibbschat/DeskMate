@@ -408,7 +408,12 @@ class TurnEngine:
                 if self._steering:
                     self._inject_steering()
                     continue
-                # Post-turn hook: fire-and-forget memory/skill extraction
+                # Post-turn hook: fire-and-forget memory/skill extraction.
+                # ⚠️ MUST be non-blocking: the hook makes sync LLM calls
+                # (post_session_summary, evolve_skill_on_success) that take 2-5s.
+                # If called synchronously here, turn_done is delayed by that
+                # amount, freezing the UI ("reply appears but can't interact").
+                # Run it in a daemon thread so TURN_END fires immediately.
                 if self._post_turn_hook is not None:
                     try:
                         last_user = last_asst = ""
@@ -422,7 +427,12 @@ class TurnEngine:
                             if last_user and last_asst:
                                 break
                         if last_user or last_asst:
-                            self._post_turn_hook(last_user, last_asst)
+                            import threading
+                            threading.Thread(
+                                target=self._post_turn_hook,
+                                args=(last_user, last_asst),
+                                daemon=True,
+                            ).start()
                     except Exception:
                         pass  # best-effort, never block turn completion
                 yield Event(

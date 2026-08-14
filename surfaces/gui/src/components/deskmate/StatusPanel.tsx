@@ -456,7 +456,7 @@ export function StatusPanel({
               className="text-[12.5px] font-semibold"
               style={{ color: "var(--ink)" }}
             >
-              墨灵
+              知了
             </span>
             <span
               className="text-[10.5px] font-bold px-1.5 py-0.5 rounded"
@@ -530,7 +530,7 @@ export function StatusPanel({
             </div>
             {!maxed && (
               <div className="text-[10.5px] mt-1" style={{ color: "var(--faint)" }}>
-                再积累 {toNext} 点成长值，墨灵就能升到 Lv.{level + 1} 啦 ✨
+                再积累 {toNext} 点成长值，知了就能升到 Lv.{level + 1} 啦 ✨
               </div>
             )}
           </div>

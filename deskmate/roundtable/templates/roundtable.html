@@ -331,6 +331,64 @@
   .modal-sec > h3 { font-size: 12.5px; color: var(--ink-secondary); font-weight: 700; margin-bottom: 10px; }
   .modal .rowctl { flex-direction: column; align-items: flex-start; gap: 2px; }
   .modal .chk { padding: 4px 0; font-size: 12.5px; }
+
+  /* ── 任务看板（并发考证可视化）── */
+  .board {
+    display: flex; gap: 9px; padding: 9px 28px; background: var(--surface);
+    border-bottom: 1px solid var(--border-subtle); overflow-x: auto; align-items: center;
+  }
+  .board-label { font-size: 10.5px; color: var(--ink-muted); white-space: nowrap; font-weight: 600; flex-shrink: 0; }
+  .board::-webkit-scrollbar { height: 3px; }
+  .board::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+  .task {
+    display: flex; align-items: center; gap: 7px; border: 1px solid var(--border);
+    border-radius: 8px; padding: 4px 10px; background: var(--surface-dim); white-space: nowrap; flex-shrink: 0;
+    transition: border-color .2s, background .2s;
+  }
+  .task.verifying { border-color: #fde68a; background: #fffbeb; }
+  .task.done { border-color: var(--accent-border); background: var(--accent-soft); }
+  .task.error { border-color: #fecaca; background: #fef2f2; }
+  .task .t-avatar {
+    width: 23px; height: 23px; border-radius: 7px; display: flex; align-items: center;
+    justify-content: center; font-size: 12px; color: #fff; flex-shrink: 0;
+  }
+  .task .t-name { font-size: 11px; color: var(--ink-secondary); font-weight: 600; max-width: 84px; overflow: hidden; text-overflow: ellipsis; }
+  .task .t-status { font-size: 10px; display: flex; align-items: center; gap: 4px; }
+  .task .t-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+  .st-pending { background: #cbd5e1; }
+  .st-verifying { background: #f59e0b; animation: pulse 1.1s infinite; }
+  .st-done { background: var(--accent); }
+  .st-error { background: #ef4444; }
+  .t-status.pending { color: var(--ink-muted); }
+  .t-status.verifying { color: #b45309; }
+  .t-status.done { color: var(--accent-hover); }
+  .t-status.error { color: #ef4444; }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .3; } }
+
+  /* ── 综合研判报告 ── */
+  .report-btn {
+    border: 1px solid var(--accent-border); background: var(--accent-soft); color: var(--accent-hover);
+    border-radius: 6px; padding: 3px 10px; font-size: 11px; font-weight: 600; cursor: pointer;
+    white-space: nowrap; flex-shrink: 0; transition: .15s;
+  }
+  .report-btn:hover { background: var(--accent); color: #fff; border-color: var(--accent); }
+  .report-sec { margin-top: 16px; }
+  .report-sec + .report-sec { border-top: 1px solid var(--border-subtle); padding-top: 14px; }
+  .report-sec > h3 {
+    font-size: 12.5px; font-weight: 700; margin-bottom: 9px; display: flex; align-items: center; gap: 7px;
+  }
+  .report-sec > h3 .badge { font-size: 10px; color: #fff; border-radius: 5px; padding: 1px 7px; font-weight: 600; }
+  .b-consensus { background: #16a34a; }
+  .b-diverge { background: #d97706; }
+  .b-pending { background: #dc2626; }
+  .b-advice { background: #2563eb; }
+  .report-list { list-style: none; display: flex; flex-direction: column; gap: 7px; }
+  .report-list li {
+    font-size: 12.5px; line-height: 1.6; color: var(--ink); background: var(--surface-dim);
+    border: 1px solid var(--border); border-radius: 7px; padding: 8px 11px; white-space: pre-wrap; word-break: break-word;
+  }
+  .report-list li.pending { border-color: #fecaca; background: #fef2f2; }
+  .report-empty { font-size: 12px; color: var(--ink-muted); padding: 6px 0; }
 </style>
 </head>
 <body>
@@ -339,7 +397,7 @@
       <div class="brand"><span class="logo">🪑</span><h1>创作圆桌</h1></div>
       <button class="collapse-btn" onclick="toggleSidebar()" title="折叠设定栏">«</button>
     </div>
-    <p class="tag">有界多轮群聊 · 进程内人格 + 桌搭主持 · 发言按到达序实时冒出</p>
+    <p class="tag">有界多轮群聊 · 进程内人格 + 知了主持 · 发言按到达序实时冒出</p>
     <div class="sidebar-inner">
       <label for="topic">圆桌议题</label>
       <textarea id="topic" placeholder="描述想讨论的创作问题，例如：请评审第一章的开篇节奏与人物出场"></textarea>
@@ -362,7 +420,7 @@
         <button class="more-btn purple" onclick="openTrendLayer()">管理</button>
       </div>
 
-      <label>桌搭人格</label>
+      <label>知了人格</label>
       <div class="compact">
         <span class="c-label">已选</span>
         <span class="c-val" id="personaSummary">文学编辑 · 读者视角</span>
@@ -395,7 +453,7 @@
       <div class="health" id="health"></div>
     </div>
     <div class="legend">
-      到达序发言 · 桌搭主持串场 · 收窄式有界多轮<br/>
+      到达序发言 · 知了主持串场 · 收窄式有界多轮<br/>
       外部 peer 经 A2A 探活，离线自动跳过
     </div>
 
@@ -409,7 +467,7 @@
   <div class="modal-mask" id="modalPersona" onclick="if(event.target===this)closePersonaLayer()">
     <div class="modal">
       <div class="modal-head">
-        <h2>桌搭人格设定</h2>
+        <h2>知了人格设定</h2>
         <button class="modal-close" onclick="closePersonaLayer()" title="关闭">✕</button>
       </div>
       <div class="modal-body">
@@ -470,15 +528,30 @@
 
   <button class="expand-fab" onclick="toggleSidebar()" title="展开设定栏">⚙ 圆桌设定</button>
 
+  <!-- 第三层 · 综合研判报告 -->
+  <div class="modal-mask" id="modalReport" onclick="if(event.target===this)closeReport()">
+    <div class="modal">
+      <div class="modal-head">
+        <h2>📋 综合研判报告</h2>
+        <button class="modal-close" onclick="closeReport()" title="关闭">✕</button>
+      </div>
+      <div class="modal-body" id="reportBody">
+        <div class="report-empty">报告生成中…</div>
+      </div>
+    </div>
+  </div>
+
   <main class="main">
     <div class="room-header">
       <div class="room-title"><span class="live" id="liveDot"></span><span id="topicTitle">《待定》创作圆桌</span></div>
       <div class="room-meta">
-        <span class="room-sub" id="roomSub">桌搭主持 · 有界多轮 · 到达序</span>
+        <span class="room-sub" id="roomSub">知了主持 · 有界多轮 · 到达序</span>
         <span class="meta-pill" id="rosterCount">— 人</span>
+        <button class="report-btn" id="reportBtn" onclick="openReport()" style="display:none">📋 综合研判报告</button>
       </div>
     </div>
     <div class="roster" id="roster"></div>
+    <div class="board" id="board"><span class="board-label">🗂️ 考查进度</span></div>
     <div class="statusbar" id="statusbar">准备就绪 — 在左侧设置议题后点「开始圆桌」</div>
     <div class="chat" id="chat"></div>
     <div class="composer">
@@ -498,7 +571,7 @@
 
   // 基础成员（进程内人格 + 主持）
   const BASE = [
-    { name: "桌搭（主持）", role: "主持", kind: "host",   emoji: "🎙️", cls: "a-host" },
+    { name: "知了（主持）", role: "主持", kind: "host",   emoji: "🎙️", cls: "a-host" },
     { name: "史料考据",   role: "史实核验", kind: "persona", emoji: "📜", cls: "a-hist" },
     { name: "文学编辑",   role: "叙事技艺", kind: "persona", emoji: "✒️", cls: "a-edit" },
     { name: "文字校勘",   role: "字句打磨", kind: "persona", emoji: "🔍", cls: "a-proof" },
@@ -599,6 +672,93 @@
     }
     $("statusbar").innerHTML = html;
   }
+
+  // ── 任务看板：并发考证可视化（纯前端，复用现有 speaking/turn_end 事件）──
+  let boardMap = {};  // name -> { role, cls, emoji, status }
+  function statusText(s) { return ({ pending: "待命", verifying: "查证中", done: "已完成", error: "异常" })[s] || s; }
+
+  function buildBoard() {
+    const b = $("board");
+    b.innerHTML = '<span class="board-label">🗂️ 考查进度</span>';
+    boardMap = {};
+    const list = (activePersonas.length ? activePersonas : BASE);
+    list.forEach(m => addTask(b, m.name, m.role, m.cls, m.emoji, "pending"));
+    (peerOnline || []).forEach(n => {
+      const s = styleFor(n);
+      addTask(b, n, s.role || "外部·A2A", s.cls, s.emoji, "pending");
+    });
+  }
+  function addTask(b, name, role, cls, emoji, status) {
+    boardMap[name] = { role, cls, emoji, status };
+    const d = document.createElement("div");
+    d.className = "task"; d.dataset.name = name;
+    d.innerHTML =
+      `<div class="t-avatar ${cls}">${emoji}</div>` +
+      `<div class="t-name">${esc(name)}</div>` +
+      `<div class="t-status ${status}"><span class="t-dot st-${status}"></span>${statusText(status)}</div>`;
+    b.appendChild(d);
+  }
+  function setBoardStatus(name, status) {
+    if (!(name in boardMap)) return;          // 只更新已知与会者，忽略杂项发言
+    boardMap[name].status = status;
+    const el = document.querySelector('.task[data-name="' + name + '"]');
+    if (!el) return;
+    el.className = "task " + status;
+    const st = el.querySelector(".t-status");
+    st.className = "t-status " + status;
+    st.innerHTML = '<span class="t-dot st-' + status + '"></span>' + statusText(status);
+  }
+  function resetBoard() {
+    for (const n in boardMap) setBoardStatus(n, "pending");
+  }
+
+  // ── 综合研判报告：解析主持收尾的四段式结构并卡片化渲染 ──
+  let lastReportMd = "";
+  const REPORT_ORDER = ["共识点", "分歧点", "存疑项", "可执行建议"];
+  const REPORT_BADGE = { "共识点": "b-consensus", "分歧点": "b-diverge", "存疑项": "b-pending", "可执行建议": "b-advice" };
+
+  function parseReport(md) {
+    const secs = { "共识点": [], "分歧点": [], "存疑项": [], "可执行建议": [] };
+    let cur = null;
+    (md || "").split("\n").forEach(line => {
+      const m = line.match(/^##\s*(.+?)\s*$/);
+      if (m) { const t = m[1].trim(); cur = REPORT_ORDER.includes(t) ? t : null; return; }
+      if (cur && line.trim()) secs[cur].push(line.trim());
+    });
+    return secs;
+  }
+  function renderReport(md) {
+    const secs = parseReport(md);
+    const body = $("reportBody");
+    body.innerHTML = "";
+    REPORT_ORDER.forEach(title => {
+      const items = secs[title] || [];
+      const sec = document.createElement("div");
+      sec.className = "report-sec";
+      const badge = REPORT_BADGE[title];
+      sec.innerHTML = `<h3><span class="badge ${badge}">${title}</span></h3>`;
+      if (!items.length) {
+        sec.innerHTML += `<div class="report-empty">（无）</div>`;
+      } else {
+        const ul = document.createElement("ul");
+        ul.className = "report-list";
+        items.forEach(it => {
+          const li = document.createElement("li");
+          if (title === "存疑项" && /待确认|出处不明|存疑/.test(it)) li.className = "pending";
+          li.textContent = it;
+          ul.appendChild(li);
+        });
+        sec.appendChild(ul);
+      }
+      body.appendChild(sec);
+    });
+  }
+  function openReport() {
+    if (!lastReportMd) return;
+    renderReport(lastReportMd);
+    $("modalReport").classList.add("show");
+  }
+  function closeReport() { $("modalReport").classList.remove("show"); }
 
   // speaking 事件：仅登记"正在思考"，不预先占位气泡。
   // 这样避免旧版把所有发言者的空气泡按声明顺序预先钉在高位，
@@ -712,13 +872,13 @@
   function handle(d) {
     switch (d.type) {
       case "meta": setTopic(d.topic); break;
-      case "peers": buildRoster(d.online, d.offline); setStatus(d.online, d.offline); break;
-      case "round_start": addDivider(d.round); break;
-      case "speaking": markThinking(d); break;
+      case "peers": buildRoster(d.online, d.offline); setStatus(d.online, d.offline); buildBoard(); break;
+      case "round_start": addDivider(d.round); resetBoard(); break;
+      case "speaking": markThinking(d); setBoardStatus(d.speaker, "verifying"); break;
       case "turn_start": startStream(d); break;
       case "turn_delta": appendStream(d); break;
-      case "turn_end": endStream(d); break;
-      case "turn": addTurn(d); break;
+      case "turn_end": endStream(d); setBoardStatus(d.speaker, (d.text && d.text.startsWith("（")) ? "error" : "done"); break;
+      case "turn": addTurn(d); setBoardStatus(d.speaker, (d.text && d.text.startsWith("（")) ? "error" : "done"); break;
       case "info": addSystem(d.text); break;
       case "done": finish(d); break;
       case "context_trace": addTrace(d); break;
@@ -738,6 +898,13 @@
     thinkingSet = new Set();
     renderStatus();
     setComposer(true);
+    // 综合研判报告：解析主持收尾的四段式结构，开放报告入口
+    lastReportMd = d.synthesis || "";
+    if (lastReportMd) {
+      renderReport(lastReportMd);
+      $("reportBtn").style.display = "";
+      addSystem("📋 已生成《综合研判报告》（共识 / 分歧 / 存疑 / 建议），点右上角按钮查看");
+    }
   }
 
   function toggleSidebar() {
@@ -802,7 +969,7 @@
     $("liveDot").style.background = "var(--accent)";
     $("liveDot").style.boxShadow = "0 0 0 3px rgba(7,193,96,.18)";
 
-    if (opts.clear) { $("chat").innerHTML = ""; $("roster").innerHTML = ""; const tl = $("traceLog"); if (tl) tl.innerHTML = ""; }
+    if (opts.clear) { $("chat").innerHTML = ""; $("roster").innerHTML = ""; const tl = $("traceLog"); if (tl) tl.innerHTML = ""; $("reportBtn").style.display = "none"; lastReportMd = ""; }
     if (opts.followupText) addDividerNote("用户追问：" + opts.followupText);
 
     const ctxParam = opts.followupText

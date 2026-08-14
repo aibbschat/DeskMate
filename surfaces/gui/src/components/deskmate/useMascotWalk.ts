@@ -24,8 +24,8 @@ export interface UseMascotWalkOptions {
   bounds?: WalkBounds;
   /** 是否启用行走（默认 true）。 */
   enabled?: boolean;
-  /** 行走模式："free" 自由游走（默认）；"dock" 仅沿输入框上方横边左右走。 */
-  mode?: "free" | "dock";
+  /** 行走模式："free" 自由游走；"dock" 仅沿输入框上方横边左右走；"corner" 固定右下角不游走。 */
+  mode?: "free" | "dock" | "corner";
   /** 停留时间范围 [min, max] (ms)。 */
   idleDuration?: [number, number];
   /** 行走时间范围 [min, max] (ms)。 */
@@ -64,6 +64,18 @@ function randomPoint(bounds: WalkBounds): Position {
   };
 }
 
+/** 右下角固定坐标：根据桌宠实际渲染尺寸（200×220 等比于 size）留出边距。 */
+function cornerPosition(mascotSize: number): Position {
+  const pad = 16;
+  const scale = mascotSize / 180;
+  const w = 200 * scale;
+  const h = 220 * scale;
+  return {
+    x: Math.max(pad, window.innerWidth - w - pad),
+    y: Math.max(pad, window.innerHeight - h - pad),
+  };
+}
+
 function lerp(start: number, end: number, t: number): number {
   return start + (end - start) * t;
 }
@@ -73,7 +85,7 @@ function delay(ms: number): Promise<void> {
 }
 
 /** 计算行走边界（基于输入框位置）。 */
-function calculateDefaultBounds(mascotSize: number, mode: "free" | "dock" = "free"): WalkBounds {
+function calculateDefaultBounds(mascotSize: number, mode: "free" | "dock" | "corner" = "free"): WalkBounds {
   // 尝试找到聊天输入框
   const composer =
     document.querySelector('[data-testid="composer"]') ||
@@ -83,6 +95,11 @@ function calculateDefaultBounds(mascotSize: number, mode: "free" | "dock" = "fre
 
   const padding = 24;
   const mascotHeight = mascotSize * 1.2;
+
+  if (mode === "corner") {
+    const c = cornerPosition(mascotSize);
+    return { minX: c.x, maxX: c.x, minY: c.y, maxY: c.y };
+  }
 
   if (mode === "dock") {
     // 首页：桌宠只沿输入框上方那条横边左右走，不进输入框、不占屏幕中部。
@@ -136,6 +153,7 @@ export function useMascotWalk(options: UseMascotWalkOptions = {}): UseMascotWalk
 
   const [position, setPosition] = useState<Position>(
     initialPosition ?? (() => {
+      if (mode === "corner") return cornerPosition(size);
       if (mode === "dock") {
         const h = size * 1.2;
         return {
@@ -189,7 +207,7 @@ export function useMascotWalk(options: UseMascotWalkOptions = {}): UseMascotWalk
 
   // 行走循环 — 只依赖 enabled 和 bounds 的值（不是引用）
   useEffect(() => {
-    if (!enabled) return;
+    if (!enabled || mode === "corner") return;
 
     const walkId = ++walkAbortRef.current;
 
@@ -293,6 +311,10 @@ export function useMascotWalk(options: UseMascotWalkOptions = {}): UseMascotWalk
   useEffect(() => {
     const recompute = () => {
       if (!customBounds) {
+        if (mode === "corner") {
+          setPosition(cornerPosition(size));
+          return;
+        }
         const newBounds = calculateDefaultBounds(size, mode);
         // 确保当前位置仍在边界内
         setPosition((prev) => ({

@@ -11,7 +11,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { authedFetch, httpBase } from "../../api";
-import { Mascot } from "./Mascot";
+import { CicadaMascot } from "./CicadaMascot";
 import { useMascotWalk } from "./useMascotWalk";
 import { useProactiveTick } from "./useProactiveTick";
 import { StatusPanelV2 } from "./StatusPanelV2";
@@ -77,7 +77,7 @@ interface Props {
   activeExpert?: Expert | null;
 }
 
-export function DeskMateOverlay({ agent, sessionId, idle, activeExpert }: Props) {
+export function DeskMateOverlay({ agent, sessionId, activeExpert }: Props) {
   const [panelOpen, setPanelOpen] = useState(false);
   const [memoryOpen, setMemoryOpen] = useState(false);
   const [memoryGraphOpen, setMemoryGraphOpen] = useState(false);
@@ -88,8 +88,8 @@ export function DeskMateOverlay({ agent, sessionId, idle, activeExpert }: Props)
   // 主动模式开关（后台建议），需在 useProactiveTick 之前声明
   const [proactiveEnabled, setProactiveEnabled] = useState(true);
 
-  // 空会话首页（桌搭 + 无消息）：桌宠切到 dock 横走模式；其余保持自由游走。
-  const isHome = agent === "deskmate" && !!idle && !activeExpert;
+  // 桌宠固定右下角（不游走、不遮挡文字/操作）。首页与对话页统一停靠角落。
+  const mascotMode: "free" | "dock" | "corner" = "corner";
 
   // 主动感知 TICK（受主动模式开关控制）
   useProactiveTick({ agent, enabled: proactiveEnabled });
@@ -117,7 +117,7 @@ export function DeskMateOverlay({ agent, sessionId, idle, activeExpert }: Props)
   } = useMascotWalk({
     size: Math.round(180 * petScale),
     enabled: (agent === "deskmate" || !!activeExpert) && !panelOpen,
-    mode: isHome ? "dock" : "free",
+    mode: mascotMode,
     idleDuration: [5000, 12000],
     walkDuration: [4000, 8000],
   });
@@ -467,8 +467,8 @@ export function DeskMateOverlay({ agent, sessionId, idle, activeExpert }: Props)
         data-testid="deskmate-mascot"
       >
         <div className="relative">
-          {/* 墨灵桌宠 - 水墨形象 + 水墨动效，状态驱动情绪/朝向 */}
-          <Mascot
+          {/* 知了桌宠 - 分层 SVG 蝉 + 翅膀扇动 + 呼吸浮动 */}
+          <CicadaMascot
             emotion={currentEmotion}
             walkDirection={direction}
             isWalking={mascotState === "walking"}

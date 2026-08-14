@@ -99,7 +99,7 @@ export function MemoryGraphPage({ open, onClose, onOpenList }: Props) {
             我们的记忆
           </h1>
           <div style={{ marginTop: 6, fontSize: 13, color: "#9a7b5f", maxWidth: 460, lineHeight: 1.6 }}>
-            这是墨灵一点一点，记住的你。散落在四个温柔的角落，被一本本作品轻轻串起。
+            这是知了一点一点，记住的你。散落在四个温柔的角落，被一本本作品轻轻串起。
           </div>
           <div style={{ marginTop: 8, fontSize: 13, color: "#b07a4e", fontWeight: 600 }}>
             共 <b style={{ fontSize: 20, color: "#c2662f" }}>{shownCount}</b> 条记忆

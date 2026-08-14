@@ -16,7 +16,7 @@
     "runningSteps": "Running {{stepsLabel}}…",
     "declinedCount": "{{count}} declined",
     "hiddenByFilters": "{{count}} hidden by your filters",
-    "assistant": "assistant",
+    "assistant": "Zhiliao",
     "grantedFolderAccess": "Granted folder access",
     "declinedFolderAccess": "Declined folder access",
     "proposedPlan": "proposed plan",
@@ -139,7 +139,9 @@
     "pdfSkippedSize": "{{name}} skipped — {{actualSize}} MB is over your {{limit}} MB limit (Settings → Token savings)",
     "pdfSkippedPages": "{{name}} skipped — {{pages}} pages is over your {{limit}}-page limit (Settings → Token savings)",
     "pdfSkippedError": "{{name}} skipped — {{error}}",
-    "couldNotReadPdf": "could not read PDF"
+    "couldNotReadPdf": "could not read PDF",
+    "freeModels": "Free models",
+    "paidModels": "Paid models"
   },
   "settings": {
     "title": "Settings",
@@ -257,7 +259,7 @@
     "voiceInputErrorDefault": "Voice Input could not complete that action."
   },
   "deskmate": {
-    "homeTitle": "DeskMate · your writing partner",
+    "homeTitle": "Zhiliao · your writing partner",
     "editMode": "Manuscript editing",
     "manuscripts": "Manuscripts",
     "myMemory": "My memory",

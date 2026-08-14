@@ -9,6 +9,7 @@ import { ConnectorMessageCard } from "./ConnectorMessageCard";
 import { ReportViewer } from "./deskmate/ReportViewer";
 import { Icon } from "./Icon";
 import { type Expert } from "./deskmate/experts";
+import CicadaAvatar from "./CicadaAvatar";
 
 // Long user pastes swallow the transcript (owner ask 2026-07-30): clamp past a generous
 // threshold with a more…/less… toggle. Normal typed messages never see the control; the
@@ -460,7 +461,10 @@ export function Transcript({ items, running, streamingText, onRetry, expert }: P
               );
             return (
               <div className="group bubble-assistant" key={bi}>
-                <div className="who">{expert?.displayName ?? t("chat.assistant")}</div>
+                <div className="who">
+                  <CicadaAvatar className="who-avatar" />
+                  <span>{expert?.displayName ?? t("chat.assistant")}</span>
+                </div>
                 {item.reasoning && <ThinkingBlock text={item.reasoning} />}
                 <Markdown text={item.text} />
                 <BubbleMeta text={item.text} ts={item.ts} align="left" />
@@ -470,7 +474,10 @@ export function Transcript({ items, running, streamingText, onRetry, expert }: P
             // 编辑专家「生成审阅报告」产物：内嵌在会话中的报告卡片（重开软件后仍在）。
             return (
               <div className="group bubble-assistant" key={bi}>
-                <div className="who">{expert?.displayName ?? t("chat.assistant")}</div>
+                <div className="who">
+                  <CicadaAvatar className="who-avatar" />
+                  <span>{expert?.displayName ?? t("chat.assistant")}</span>
+                </div>
                 {item.caption && <p className="report-caption">{item.caption}</p>}
                 <ReportViewer report={item.report} name={item.name} />
                 <BubbleMeta

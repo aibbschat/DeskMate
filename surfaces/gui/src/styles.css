@@ -381,7 +381,8 @@ body {
    .main-scroll). The user bubble is restyled inline with Tailwind utilities on the element. */
 .transcript { max-width: 768px; margin: 0 auto; display: flex; flex-direction: column; gap: 20px; }
 .bubble-assistant { font-size: 15px; line-height: 1.55; white-space: pre-wrap; }
-.bubble-assistant .who { font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--faint); margin-bottom: 4px; }
+.bubble-assistant .who { display: flex; align-items: center; gap: 8px; font-size: 22px; letter-spacing: 0.02em; font-weight: 600; color: var(--ink); margin-bottom: 6px; }
+.bubble-assistant .who .who-avatar { width: 36px; height: 36px; flex: none; color: var(--accent); }
 
 /* markdown-rendered assistant content (the bubble's pre-wrap would double-space block output) */
 .md { white-space: normal; font-size: 15px; line-height: 1.68; color: var(--ink); }
@@ -1154,6 +1155,8 @@ button.btn.danger { color: var(--accent); }
 .dd-label { font-size: 13.5px; color: var(--ink); display: flex; justify-content: space-between; align-items: center; }
 .dd-item .chk { color: var(--accent); }
 .dd-desc { font-size: 12px; color: var(--faint); margin-top: 1px; }
+.dd-group-title { font-size: 11px; font-weight: 600; letter-spacing: 0.04em; color: var(--faint); padding: 7px 10px 3px; margin-top: 3px; }
+.dd-group-title:first-child { margin-top: 0; }
 .send { width: 34px; height: 34px; border-radius: 50%; border: none; background: var(--accent); color: #fff; cursor: pointer; font-size: 16px; }
 .send:disabled { opacity: 0.4; cursor: default; }
 .statusline { max-width: 760px; margin: 6px auto 0; font-size: 12px; color: var(--faint); display: flex; gap: 12px; }

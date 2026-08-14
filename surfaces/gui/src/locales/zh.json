@@ -16,7 +16,7 @@
     "runningSteps": "正在运行 {{stepsLabel}}…",
     "declinedCount": "{{count}} 个已拒绝",
     "hiddenByFilters": "{{count}} 个被过滤器隐藏",
-    "assistant": "助手",
+    "assistant": "知了",
     "grantedFolderAccess": "已授予文件夹访问",
     "declinedFolderAccess": "已拒绝文件夹访问",
     "proposedPlan": "提出的计划",
@@ -139,7 +139,9 @@
     "pdfSkippedSize": "{{name}} 已跳过 — {{actualSize}} MB 超过 {{limit}} MB 限制（设置 → Token 节省）",
     "pdfSkippedPages": "{{name}} 已跳过 — {{pages}} 页超过 {{limit}} 页限制（设置 → Token 节省）",
     "pdfSkippedError": "{{name}} 已跳过 — {{error}}",
-    "couldNotReadPdf": "无法读取 PDF"
+    "couldNotReadPdf": "无法读取 PDF",
+    "freeModels": "免费模型",
+    "paidModels": "付费模型"
   },
   "settings": {
     "title": "设置",
@@ -257,7 +259,7 @@
     "voiceInputErrorDefault": "语音输入无法完成该操作。"
   },
   "deskmate": {
-    "homeTitle": "桌搭 · 你的写作搭档",
+    "homeTitle": "知了 · 你的写作搭档",
     "editMode": "文稿编校",
     "manuscripts": "书稿库",
     "myMemory": "我的记忆",

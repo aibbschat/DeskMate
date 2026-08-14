@@ -1053,6 +1053,9 @@ export interface ModelSettings {
   context_bar?: boolean;
   // Curated-matrix display names ({full id → "GLM-5.2 · via Together"}); custom models absent.
   model_labels?: Record<string, string>;
+  // 模型分档（免费 / 付费）：后端按 provider 是否需要密钥判定（Ollama/OmniRoute/OpenCode
+  // 等免密钥网关为 free，其余需付费密钥为 paid）。前端据此把选择器拆成两档。
+  model_tiers?: Record<string, string>;
   // {full id → context window in tokens}, verified matrix entries only — drives the
   // composer's context-fill meter (absent id → the meter hides). Optional for older backends.
   model_context_windows?: Record<string, number>;

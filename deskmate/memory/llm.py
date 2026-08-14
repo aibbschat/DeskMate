@@ -209,3 +209,109 @@ async def chat_stream(
             break
         else:  # error
             raise payload
+
+
+# ---------------------------------------------------------------------------
+# 记忆抽取 provider 路由
+# ---------------------------------------------------------------------------
+# 默认全部走「主对话付费 provider」（_resolve_provider），保中文一字不差——
+# 免费海外模型中文易缺字，落盘记忆若吞字会写成永久错记忆并回灌未来上下文，
+# 对史料严谨型用户危害大，故默认不省钱、先保真。
+# 想省时显式开启：设 DESKMATE_MEMORY_PROVIDER=omniroute 走本机 OmniRoute 免费网关
+# （localhost:20128，免密钥）；异常时仍自动降级回付费主模型，绝不丢记忆。
+_OMNIROUTE_BASE_URL = "http://localhost:20128/v1"
+_OMNIROUTE_API_KEY = "omniroute"  # 占位免密钥：OmniRoute 网关接受任意非空 key，对齐 registry._build_omniroute
+_OMNIROUTE_MODEL = "auto"  # OmniRoute 通用免密钥组合模型
+_OMNIROUTE_REASONING_MODEL = "auto/best-reasoning"  # 免费推理模型，给史料核验等质量敏感任务
+
+
+def _memory_use_omniroute(bible: bool = False) -> bool:
+    """记忆抽取是否走 OmniRoute 免费网关。
+
+    默认 **不** 走免费（返回 False，全部走付费主模型）。仅当显式设置
+    ``DESKMATE_MEMORY_PROVIDER=omniroute`` 才启用免费。因免费海外模型中文易缺字，
+    记忆落盘后错字会永久留存并回灌上下文，故默认保护保真、不默认省钱。
+    """
+    return os.environ.get("DESKMATE_MEMORY_PROVIDER", "").lower() == "omniroute"
+
+
+def _omniroute_creds(model: str = _OMNIROUTE_MODEL) -> tuple[str, str, str]:
+    """解析 OmniRoute 凭证：优先读 secrets.json 的 ``provider:omniroute`` 配置，否则用本地默认（免密钥）。"""
+    state = _state_dir()
+    secrets_path = state / "secrets.json"
+    if secrets_path.is_file():
+        try:
+            data = json.loads(secrets_path.read_text(encoding="utf-8"))
+            prof = data.get("provider:omniroute")
+            if isinstance(prof, dict):
+                return (
+                    prof.get("api_key") or _OMNIROUTE_API_KEY,
+                    prof.get("base_url") or _OMNIROUTE_BASE_URL,
+                    prof.get("model") or model,
+                )
+        except (OSError, json.JSONDecodeError):
+            pass
+    return _OMNIROUTE_API_KEY, _OMNIROUTE_BASE_URL, model
+
+
+def _resolve_memory_provider(reasoning: bool = False) -> tuple[str, str, str]:
+    """记忆抽取专用 provider 解析：(api_key, base_url, model)。
+
+    优先 OmniRoute 免费；未启用 / 强制 main 时降级回主对话 provider（``_resolve_provider``）。
+    ``reasoning=True`` 走免费推理模型（``auto/best-reasoning``），适合史料核验等质量敏感抽取。
+    """
+    if _memory_use_omniroute(reasoning):
+        return _omniroute_creds(_OMNIROUTE_REASONING_MODEL if reasoning else _OMNIROUTE_MODEL)
+    return _resolve_provider()
+
+
+def memory_llm_available(reasoning: bool = False) -> bool:
+    """记忆抽取是否可用：OmniRoute 免密钥即算可用；未启用时看主 provider 是否有 key。"""
+    if _memory_use_omniroute(reasoning):
+        return True
+    return llm_available()
+
+
+def chat_memory(
+    system: str,
+    user: str,
+    *,
+    reasoning: bool = False,
+    temperature: float = 0.3,
+    max_tokens: int = 800,
+    timeout: float = 300.0,
+) -> str:
+    """记忆抽取专用 chat：默认走付费主对话 provider（保中文一字不差）。
+
+    与 ``chat()`` 同签名（少流式），调用方用于后台自动沉淀记忆。
+    仅当显式设 ``DESKMATE_MEMORY_PROVIDER=omniroute`` 时走本机免费网关；
+    免费网关异常时自动降级回付费主模型重试一次，保证记忆不丢（宁可走付费也不静默失败）。
+    """
+    ak, bu, md = _resolve_memory_provider(reasoning=reasoning)
+    from openai import OpenAI
+
+    def _do(api_key: str, base_url: str, model: str) -> str:
+        client = OpenAI(api_key=api_key, base_url=base_url, timeout=timeout)
+        resp = client.chat.completions.create(
+            model=model,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+        )
+        return (resp.choices[0].message.content or "").strip()
+
+    try:
+        return _do(ak, bu, md)
+    except Exception:
+        # OmniRoute 免费网关不可用 / 异常：降级回主对话 provider，保证记忆不丢
+        if _memory_use_omniroute(reasoning):
+            lak, lbu, lmd = _resolve_provider()
+            if (lak, lbu, lmd) != (ak, bu, md):
+                try:
+                    return _do(lak, lbu, lmd)
+                except Exception:
+                    pass
+        raise

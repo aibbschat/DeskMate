@@ -419,13 +419,14 @@ def reflect_and_persist(
             _distill_to_longterm(base_dir, project, learned or [])
         except Exception:
             logger.exception("after_action: 蒸馏长期记忆失败")
-        # 闭环后主动抽取可复用技能（对齐 Hermes learning loop）
-        # 与日志同门槛：仅本轮有实质内容时才触发，避免客套轮次空耗 LLM
-        _maybe_extract_skill(base_dir, last_user, last_asst)
-        # 闭环后主动识别关联未竟（对齐 Hermes 主动行为环 Task2）
-        _maybe_proactive_close_loop(base_dir, workspace, last_user, last_asst)
-        # 用户纠正 → 驱动相关技能自我进化（Hermes learning loop 的闭环打磨）
-        _maybe_evolve_on_correction(base_dir, last_user, last_asst)
+        # 闭环后主动抽取可复用技能 + 主动闭环识别 + 技能进化 —— 全部放到后台 daemon 线程
+        # ⚠️ 绝对不能等它们跑完才能返回响应，必须立刻回给前端，否则界面卡住
+        from threading import Thread
+        def _bg():
+            _maybe_extract_skill(base_dir, last_user, last_asst)
+            _maybe_proactive_close_loop(base_dir, workspace, last_user, last_asst)
+            _maybe_evolve_on_correction(base_dir, last_user, last_asst)
+        Thread(target=_bg, daemon=True).start()
 
     # ---- 2. 刷新圣经（修读稿不更新记忆）----
     try:

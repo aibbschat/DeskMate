@@ -1945,6 +1945,16 @@ class SessionManager:
         if self.model not in selectable:
             selectable.insert(0, self.model)
         from ..providers.matrix import model_context_windows, model_labels
+        from ..providers.registry import get_descriptor
+
+        # Free/paid tier per model id: keyless local/free gateways (Ollama, OmniRoute,
+        # OpenCode) are "free"; everything that needs a billable API key is "paid". Drives
+        # the composer picker's two-section (免费 / 付费) grouping.
+        tiers: dict[str, str] = {}
+        for _m in selectable:
+            _prov = _m.split(":", 1)[0] if ":" in _m else "openai"
+            _d = get_descriptor(_prov)
+            tiers[_m] = "free" if (_d is not None and not _d.needs_key) else "paid"
 
         return {
             "provider": "openai",
@@ -1953,6 +1963,8 @@ class SessionManager:
             # Curated-matrix display names ({full id → "GLM-5.2 · via Together"}) so every
             # picker shows human labels; custom models absent here render their raw id.
             "model_labels": model_labels(),
+            # {full id → "free" | "paid"}, so the GUI can split the picker into two tiers.
+            "model_tiers": tiers,
             # {full id → context window in tokens}, verified matrix entries only —
             # drives the composer's context-fill meter (absent id → meter hides).
             "model_context_windows": model_context_windows(),

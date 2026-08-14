@@ -75,6 +75,8 @@ import { ReportDialog } from "./components/deskmate/ReportDialog";
 
 import { ExpertsCenter } from "./components/deskmate/ExpertsCenter";
 import { BadgeWall } from "./components/deskmate/BadgeWall";
+import { useTranslation } from "react-i18next";
+import CicadaAvatar from "./components/CicadaAvatar";
 
 class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | null }> {
   state = { error: null as Error | null };
@@ -199,6 +201,7 @@ function fallbackWorkspace(current: string | null, projects: RecentWorkspace[]):
 }
 
 export function App() {
+  const { t } = useTranslation();
   const [workspace, setWorkspace] = useState<string | null>(null);
   const [branch, setBranch] = useState<string | null>(null);
   const [showGate, setShowGate] = useState(false);
@@ -228,6 +231,8 @@ export function App() {
   const [model, setModel] = useState("gpt-5.6-sol");
   const [models, setModels] = useState<string[]>([]);
   const [modelLabels, setModelLabels] = useState<Record<string, string>>({});
+  // {full model id → "free" | "paid"} (from the backend), drives the picker's two-tier split.
+  const [modelTiers, setModelTiers] = useState<Record<string, string>>({});
   // {full model id → context window in tokens} from the curated matrix (verified only);
   // drives the composer usage chip's context-fill meter.
   const [modelContextWindows, setModelContextWindows] = useState<Record<string, number>>({});
@@ -583,6 +588,7 @@ export function App() {
       .then((s) => {
         setModels(s.models || []);
         setModelLabels(s.model_labels || {});
+        setModelTiers(s.model_tiers || {});
         setModelContextWindows(s.model_context_windows || {});
         setContextBar(s.context_bar === true);
         setModelReady(s.model_ready);
@@ -1769,7 +1775,10 @@ export function App() {
                   {streaming && streamMode(streaming, items, running) === "answer" && (
                     <div className="transcript">
                       <div className="bubble-assistant">
-                        <div className="who">{currentExpert?.displayName ?? "assistant"}</div>
+                        <div className="who">
+                          <CicadaAvatar className="who-avatar" />
+                          <span>{currentExpert?.displayName ?? t("chat.assistant")}</span>
+                        </div>
                         <Markdown text={streaming} />
                         <span className="stream-cursor">▍</span>
                       </div>
@@ -1800,6 +1809,7 @@ export function App() {
               model={model}
               models={models}
               modelLabels={modelLabels}
+              modelTiers={modelTiers}
               running={running}
               connected={connected}
               modelReady={modelReady}
