@@ -14,7 +14,6 @@ import {
   getPersonas,
   getInbox,
   getUnattended,
-  setSessionPersona,
   PERSONAS_CHANGED,
   resolveInboxItem,
   deleteSession,
@@ -275,9 +274,6 @@ export function App() {
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
   const [projects, setProjects] = useState<RecentWorkspace[]>([]);
   const [sessionId, setSessionId] = useState<string>(newId());
-  // 桌搭「聊天角色」（默认声线）：本会话选中的 persona id；空串 = 会话 agent 默认声线。
-  // 切换会话即重置为默认（覆盖仅本进程有效，重载后由后端重新设置）。
-  const [chatRole, setChatRole] = useState<string>("");
   // Automation-run context (§ owner ask 2026-07-04): which task an open __run__ session belongs
   // to, driving the banner + "Back to runs". Best-effort — a run session without context still
   // shows a generic banner (detected by its __run__ id).
@@ -1047,17 +1043,6 @@ export function App() {
     // The visible model rides along with the message (single source of truth per turn).
     sessionRef.current?.userMessage(text, attachments, model);
     followLatest(); // sending always re-engages stream-following, wherever the user had scrolled
-  };
-
-  // 切换会话（含新建）：聊天角色覆盖重置为默认声线。覆盖仅本进程有效，重载后由后端重新设置。
-  useEffect(() => {
-    setChatRole("");
-  }, [sessionId]);
-
-  // 聊天角色（默认声线）切换：更新 UI 状态并通知后端本会话默认声线（空串 = 恢复默认）。
-  const handleChatRoleChange = (pid: string) => {
-    setChatRole(pid);
-    setSessionPersona(sessionId, pid || undefined).catch(() => {});
   };
 
   // 桌搭首页资讯卡片点击后把 query 直接发成用户消息，触发 AI 搜索并总结。
@@ -1856,9 +1841,6 @@ export function App() {
               usage={usage}
               contextWindow={modelContextWindows[model]}
               contextBar={contextBar}
-              personas={personas ?? undefined}
-              chatRole={chatRole}
-              onChatRoleChange={handleChatRoleChange}
               placeholder={
                 agent === "code"
                   ? "Ask the coder to build, fix, or explain…  (drop or paste files)"

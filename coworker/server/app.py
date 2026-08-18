@@ -552,26 +552,6 @@ def create_app(manager: SessionManager) -> FastAPI:
             "connections": manager.session_connections_view(session_id, persona),
         }
 
-    @app.post("/v1/sessions/{session_id}/persona")
-    def set_session_persona(session_id: str, body: dict) -> dict[str, Any]:
-        # 桌搭「聊天角色」选择器：设置本会话默认声线（persona_id）。clear=true 清空，恢复会话
-        # agent 默认声线。后端仅存进程内覆盖（mention_router.SESSION_DEFAULT_VOICE），由
-        # context_provider 每轮实时读取；进程重启由 UI 重新设置。fail-open：异常不阻断会话。
-        from deskmate.chat import mention_router as _mr
-
-        body = body or {}
-        try:
-            if body.get("clear"):
-                _mr.set_default_voice(session_id, None)
-                return {"ok": True, "session_id": session_id, "persona_id": None}
-            pid = str(body.get("persona_id", "")).strip()
-            if not pid:
-                return {"ok": False, "error": "persona_id required (or clear=true)"}
-            _mr.set_default_voice(session_id, pid)
-            return {"ok": True, "session_id": session_id, "persona_id": pid}
-        except Exception as exc:  # pragma: no cover - defensive
-            return {"ok": False, "error": str(exc)}
-
     @app.post("/v1/personas/install")
     def install_persona(body: dict) -> dict[str, Any]:
         # Returns a consent summary per persona; they land disabled pending the user's approval
