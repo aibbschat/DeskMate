@@ -38,7 +38,7 @@ import type {
   TodoItem,
   WsEvent,
 } from "./types";
-import { isProjectScoped } from "./personaScope";
+import { isProjectScoped, shortPersonaName } from "./personaScope";
 import { baseName } from "./paths";
 import { itemsFromMessages } from "./itemsFromMessages";
 import { addTurnUsage, emptyUsage, usageFromMessages } from "./usage";
@@ -46,6 +46,7 @@ import { streamMode } from "./streamGate";
 import { InboxItemCard } from "./components/InboxItemCard";
 import { isTauri, platformOS, startWindowDrag } from "./tauri";
 import { Icon } from "./components/Icon";
+import { PersonaGlyph } from "./components/personaIcon";
 import { Sidebar } from "./components/Sidebar";
 import { ThinkingBlock, Transcript } from "./components/Transcript";
 import { Composer } from "./components/Composer";
@@ -399,6 +400,11 @@ export function App() {
     getPersonas().then(setPersonas).catch(() => {});
   }, []);
   const personaOf = (a: string) => personas?.find((p) => p.id === a);
+  // 专家 persona 会话（好友栏点开 / NewSessionSplit 选中的非默认角色）：agent 已是该
+  // persona id。默认四件套（cowork/chat/code/deskmate）有各自的专用 hero，不走专家名片。
+  const BUILTIN_AGENT_IDS = new Set(["cowork", "chat", "code", "deskmate", "myhelper"]);
+  const expertPersona =
+    !BUILTIN_AGENT_IDS.has(agent) ? personaOf(agent) : undefined;
 
   // Pending Inbox items for the ACTIVE session — surfaced inline above the composer so an
   // unattended session's blocking question/approval can be answered in context (resolving the
@@ -1345,7 +1351,10 @@ export function App() {
     (model.includes(":") ? model.split(":").slice(1).join(":") : model);
   // Persona name dropped for this release (owner ask 2026-07-22): personas are hidden,
   // so "Coworker" read as noise. The model (+ project folder) are the real fixed facts.
+  // Exception: an EXPERT persona session (rail contacts / persona picker) — there the
+  // persona IS the session's defining fact, so it leads the facts line.
   const subtitleParts = [modelDisplay];
+  if (expertPersona) subtitleParts.unshift(shortPersonaName(expertPersona.name, expertPersona.id));
   if (isProjectScoped(personaOf(agent)) && workspace) subtitleParts.push(baseName(workspace));
   const activeInfo = sessions.find((s) => s.session_id === sessionId);
   const activeTitle = activeInfo?.title || "New session";
@@ -1716,6 +1725,21 @@ export function App() {
                         : "在下方输入框描述你的需求，开始与专家协作。"}
                     </div>
                   </div>
+                ) : expertPersona ? (
+                  // 专家 persona 会话的空态名片：头像 + 名字 + 一句话定位，让「点谁跟谁聊」
+                  // 立刻可见（此前落到通用 hero「Let's build something.」，看起来像默认模式）。
+                  <div className="expert-intro">
+                    <span className="persona-intro-glyph">
+                      <PersonaGlyph icon={expertPersona.icon} family={expertPersona.family} size={36} />
+                    </span>
+                    <h1 className="expert-intro-name">
+                      {shortPersonaName(expertPersona.name, expertPersona.id)}
+                    </h1>
+                    <p className="expert-intro-desc">{expertPersona.tagline}</p>
+                    <div className="expert-intro-hint">
+                      在下方输入框直接开聊；需要其他视角时 @名字 可临时请专家补位。
+                    </div>
+                  </div>
                 ) : agent === "cowork" ? (
                   <SessionIntro
                     sessionId={sessionId}
@@ -1902,7 +1926,7 @@ export function App() {
             openAccessKey={accessKey}
             onOpenIntegrations={() => setSurface("integrations")}
             personas={personas ?? undefined}
-            onOpenPersonaSession={(id) => newProject(id)}
+            onOpenPersonaSession={(id) => startNewSession(id)}
           />
         </div>
       </div>
