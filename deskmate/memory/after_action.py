@@ -34,6 +34,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import re
@@ -292,6 +293,162 @@ def _maybe_evolve_on_correction(
 
 
 # ---------------------------------------------------------------------------
+# 会话后后台记忆复盘（Hermes 记忆复盘半环：把「关于用户」蒸馏进 USER.md / MEMORY.md）
+# ---------------------------------------------------------------------------
+
+# 廉价前置信号：本轮文本涉及「关于人/偏好/约定」才值得跑记忆 LLM，否则跳过省 token。
+_MEMORY_REVIEW_SIGNALS = (
+    "喜欢", "习惯", "希望", "不要", "别", "总是", "从不", "偏好",
+    "我要", "我以为", "记住", "以后", "默认", "风格", "格式",
+    "你以后", "请", "必须", "不想", "宁可", "应该", "约定", "规则",
+    "如何", "怎么写", "prefer", "always", "never", "remember",
+    "want you to", "my style", "i like", "by default",
+)
+
+
+def _looks_like_memory_candidate(user_msg: str, asst_msg: str) -> bool:
+    """零 LLM 调用的廉价预判：本轮是否可能暴露了用户画像 / 偏好 / 持久约定。"""
+    if os.environ.get("DESKMATE_MEMORY_REVIEW_PREFILTER", "1") == "0":
+        return True
+    text = (user_msg + " " + asst_msg).lower()
+    return any(sig in text for sig in _MEMORY_REVIEW_SIGNALS)
+
+
+_MEMORY_REVIEW_PROMPT = """你是一段对话后的「记忆复盘器」。阅读以下最近一轮对话，判断是否有值得长期记住的「关于用户本人」的事实。\n\n只关注：\n1. 用户的身份、职业、背景、长期偏好（如写作领域、史料严谨要求、厌恶的格式/语气）。\n2. 用户对未来行为的期望（"以后默认用 X"、"别用 Y"、"记住 Z"）。\n3. 用户的工作流/协作约定（如"改了公众号要同步改网站"这类跨系统约定）。\n\n不要记：\n- 一次性任务的具体步骤（除非它反映了可复用的偏好）。\n- 会话内临时信息、闲聊。\n\n输出 JSON：\n{"updates": [{"target": "user", "text": "..."}, ...]}\ntarget 选 "user"（用户画像/偏好，写入 USER.md）或 "memory"（跨项目持久事实，写入 MEMORY.md）。\n若没有值得记的，输出 {"updates": []}。\n只输出 JSON，不要解释。\n\n对话：\n"""
+
+
+def _append_to_global_memory(base_dir: Path, filename: str, new_lines: list[str]) -> int:
+    """向全局记忆文件（USER.md / MEMORY.md）追加去重后的要点，原子写 + 有界裁剪。
+
+    返回实际新增条数。重复要点（归一化后相同）不重复追加；超长从最旧裁剪（保留尾部新增）。
+    """
+    if not new_lines:
+        return 0
+    path = base_dir / filename
+    existing = ""
+    try:
+        if path.is_file():
+            existing = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        existing = ""
+    seen = set()
+    for l in existing.splitlines():
+        ls = l.strip()
+        if not ls:
+            continue
+        ls = re.sub(r"^[-*]\s+", "", ls).strip()  # 去子弹前缀再归一化
+        seen.add(_norm(ls))
+    to_add: list[str] = []
+    for t in new_lines:
+        ts = t.strip()
+        if not ts or _norm(ts) in seen:
+            continue
+        seen.add(_norm(ts))
+        to_add.append(ts)
+    if not to_add:
+        return 0
+    stamp = datetime.now().strftime("%Y-%m-%d")
+    block = "\n\n## 自动复盘 · %s\n" % stamp + "\n".join("- %s" % t for t in to_add)
+    new_content = existing + block
+    _MAX = 20_000
+    if len(new_content) > _MAX:
+        new_content = new_content[-_MAX:]
+    tmp = path.with_name(path.name + ".tmp")
+    try:
+        tmp.write_text(new_content, encoding="utf-8")
+        os.replace(tmp, path)
+    except OSError:
+        logger.exception("after_action: 写全局记忆失败 %s", filename)
+        return 0
+    return len(to_add)
+
+
+def _maybe_review_memory(base_dir: Path, last_user: str, last_asst: str) -> None:
+    """会话后后台记忆复盘：把用户画像/偏好/持久约定蒸馏进 USER.md / MEMORY.md。
+
+    对标 Hermes background_review 的「记忆」半环。零前置 LLM 成本（信号门控）；
+    记忆 provider 不可用时跳过；任何异常都不阻断主流程（fail-open）。
+    """
+    try:
+        from deskmate.memory.llm import memory_llm_available, chat_memory
+
+        if not memory_llm_available():
+            return
+        if not _looks_like_memory_candidate(last_user or "", last_asst or ""):
+            return
+
+        prompt = (
+            _MEMORY_REVIEW_PROMPT
+            + f"用户：{last_user[:1500]}\n\n助手：{last_asst[:1500]}"
+        )
+        try:
+            resp = chat_memory(
+                "你是记忆复盘器。只输出 JSON，不要解释。",
+                prompt,
+                temperature=0.2,
+                max_tokens=1000,
+            )
+        except Exception as e:
+            logger.debug("after_action: 记忆复盘 LLM 失败: %s", e)
+            return
+        m = re.search(r"\{.*\}", resp, re.DOTALL)
+        if not m:
+            return
+        try:
+            data = json.loads(m.group(0))
+        except (json.JSONDecodeError, TypeError):
+            return
+        updates = data.get("updates") or []
+        if not isinstance(updates, list):
+            return
+        user_lines: list[str] = []
+        mem_lines: list[str] = []
+        for u in updates:
+            if not isinstance(u, dict):
+                continue
+            text = (u.get("text") or "").strip()
+            if not text:
+                continue
+            tgt = str(u.get("target") or "user").lower()
+            if tgt == "memory":
+                mem_lines.append(text)
+            else:
+                user_lines.append(text)
+        added_user = _append_to_global_memory(base_dir, "USER.md", user_lines)
+        added_mem = _append_to_global_memory(base_dir, "MEMORY.md", mem_lines)
+        if added_user or added_mem:
+            logger.info(
+                "after_action: 记忆复盘 -> USER.md +%d, MEMORY.md +%d",
+                added_user, added_mem,
+            )
+    except Exception:
+        logger.exception("after_action: 记忆复盘失败")
+
+
+def _maybe_curate_skills(base_dir: Path) -> None:
+    """后台定期巡检技能库（curator 自整理）。默认非破坏性：只出报告。
+
+    距上次巡检超过间隔才运行（见 curator._should_run），避免每轮都扫。
+    任何异常都不阻断主流程（fail-open）。
+    """
+    try:
+        from deskmate.skills import curator as _curator
+
+        if not _curator._should_run(base_dir):
+            return
+        result = _curator.curate_skills(base_dir, auto_archive=False)
+        logger.info(
+            "after_action: 技能巡检 -> 扫描 %d, 合并候选 %d, 归档候选 %d, 报告 %s",
+            result.get("total", 0),
+            len(result.get("merge_candidates") or []),
+            len(result.get("archive_candidates") or []),
+            result.get("report_path", ""),
+        )
+    except Exception:
+        logger.exception("after_action: 技能巡检失败")
+
+
+# ---------------------------------------------------------------------------
 # 项目日志（记一笔）
 # ---------------------------------------------------------------------------
 def _append_journal(base_dir: Path, project: str, entry: str) -> None:
@@ -426,6 +583,8 @@ def reflect_and_persist(
             _maybe_extract_skill(base_dir, last_user, last_asst)
             _maybe_proactive_close_loop(base_dir, workspace, last_user, last_asst)
             _maybe_evolve_on_correction(base_dir, last_user, last_asst)
+            _maybe_review_memory(base_dir, last_user, last_asst)
+            _maybe_curate_skills(base_dir)
         Thread(target=_bg, daemon=True).start()
 
     # ---- 2. 刷新圣经（修读稿不更新记忆）----
