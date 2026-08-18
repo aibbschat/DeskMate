@@ -1239,6 +1239,9 @@ export interface Persona {
   enabled: boolean;
   surfaced: boolean;
   default: boolean;
+  // DeskMate 圆桌标记（builtin 7 专家为 true）：右侧「圆桌」好友栏按此过滤。
+  roundtable?: boolean;
+  roundtable_role?: string;
 }
 
 export interface PersonaConsent {

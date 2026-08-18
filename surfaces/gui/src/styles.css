@@ -1245,6 +1245,26 @@ button.btn.danger { color: var(--accent); }
 .artifact-name { display: flex; flex-direction: column; gap: 1px; font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .artifact-row-meta { font-size: 11px; color: var(--faint); font-weight: 400; }
 .artifact-open { font-size: 11.5px; color: var(--faint); }
+
+/* DeskMate 圆桌好友栏（QQ 好友式联系人；行样式对齐 artifact-row 的设计语言）。 */
+.rail-contacts { display: flex; flex-direction: column; gap: 2px; }
+.rail-contact {
+  display: grid; grid-template-columns: 26px minmax(0, 1fr) auto; align-items: center; gap: 9px;
+  text-align: left; border: 1px solid transparent; background: transparent; color: var(--ink);
+  border-radius: 9px; padding: 6px 8px; cursor: pointer; font: inherit; min-width: 0;
+}
+.rail-contact:hover { border-color: var(--line); background: var(--panel); }
+.rail-contact.is-active { border-color: var(--line); background: var(--paper); }
+.rail-contact-avatar {
+  width: 26px; height: 26px; border-radius: 8px; background: var(--paper); border: 1px solid var(--line);
+  display: grid; place-items: center; color: var(--muted);
+}
+.rail-contact.is-active .rail-contact-avatar { background: var(--accent); color: #fff; border-color: transparent; }
+.rail-contact-meta { display: flex; flex-direction: column; gap: 1px; overflow: hidden; }
+.rail-contact-name { font-size: 12.5px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rail-contact-tagline { font-size: 11px; color: var(--faint); font-weight: 400; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rail-contact-live { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); }
+.rail-contact-hint { margin-top: 6px; }
 .artifact-viewer { display: flex; flex-direction: column; min-height: 0; height: 100%; }
 .artifact-head {
   flex: none; min-height: 58px; padding: 10px 18px; border-bottom: 1px solid var(--line);

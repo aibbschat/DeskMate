@@ -1901,6 +1901,8 @@ export function App() {
             scratchPrimary={agent === "cowork"}
             openAccessKey={accessKey}
             onOpenIntegrations={() => setSurface("integrations")}
+            personas={personas ?? undefined}
+            onOpenPersonaSession={(id) => newProject(id)}
           />
         </div>
       </div>

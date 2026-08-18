@@ -7,13 +7,15 @@ import {
   revealArtifact,
   type ArtifactContent,
   type ArtifactInfo,
+  type Persona,
 } from "../api";
 import type { TodoItem } from "../types";
 import { AccessSection } from "./AccessSection";
 import { Icon } from "./Icon";
 import { Markdown, OPEN_ARTIFACT_EVENT } from "./Markdown";
+import { RoundtableContacts } from "./RoundtableContacts";
 
-type Panel = "progress" | "artifacts";
+type Panel = "roundtable" | "progress" | "artifacts";
 
 // Quiet file-type icons for the artifact list (the colored kind pills read as noisy).
 function kindIcon(kind: string): "file" | "fileCode" | "image" | "table" {
@@ -57,6 +59,10 @@ interface Props {
   scratchPrimary?: boolean;
   openAccessKey?: number;
   onOpenIntegrations?: () => void;
+  // DeskMate 圆桌好友栏：全量 persona（内部过滤 roundtable），null/空则整栏隐藏。
+  personas?: Persona[];
+  // 点击联系人 = 以该 persona 开独立会话（同「召唤专家」逻辑）。
+  onOpenPersonaSession?: (personaId: string) => void;
 }
 
 export function RightRail({
@@ -75,11 +81,15 @@ export function RightRail({
   scratchPrimary,
   openAccessKey = 0,
   onOpenIntegrations,
+  personas,
+  onOpenPersonaSession,
 }: Props) {
   const [open, setOpen] = useState<Record<Panel, boolean>>({
+    roundtable: true,
     progress: true,
     artifacts: true,
   });
+  const roundtableCount = (personas || []).filter((p) => p.roundtable).length;
   const [artifacts, setArtifacts] = useState<ArtifactInfo[]>([]);
   const [selected, setSelected] = useState<ArtifactInfo | null>(null);
   const [content, setContent] = useState<ArtifactContent | null>(null);
@@ -162,6 +172,21 @@ export function RightRail({
         />
       ) : (
         <>
+          {/* DeskMate 圆桌好友栏：QQ 好友式联系人，点击开该专家独立会话。 */}
+          {roundtableCount > 0 && onOpenPersonaSession && (
+            <RailSection
+              title={`圆桌 (${roundtableCount})`}
+              open={open.roundtable}
+              onToggle={() => setOpen({ ...open, roundtable: !open.roundtable })}
+            >
+              <RoundtableContacts
+                personas={personas || []}
+                activePersonaId={personaId}
+                onOpenSession={onOpenPersonaSession}
+              />
+            </RailSection>
+          )}
+
           <RailSection title="Progress" open={open.progress} onToggle={() => setOpen({ ...open, progress: !open.progress })}>
             <ProgressSummary running={running} toolNames={toolNames} todo={todo} />
           </RailSection>
