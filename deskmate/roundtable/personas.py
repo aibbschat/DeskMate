@@ -1,16 +1,25 @@
-"""圆桌参与者人格定义。
+"""圆桌参与者人格定义（数据层已迁移到上游官方 persona 底座）。
 
-7 个进程内人格，各自有独立的系统提示词与职责边界。它们不走 A2A，
-直接调用 deskmate 的 LLM（`deskmate.memory.llm.chat`）即可，因此延迟低、可控。
+设计（落在官方底座 ``coworker.personas.registry`` 之上）：
+- 7 个进程内专家写成 ``coworker/personas/builtin/*.md``（带 ``roundtable: true`` 标记），
+  由上游 PersonaRegistry 启动时自动扫描注册，普通聊天选择器与圆桌共用同一份花名册。
+- 本模块只做「窄化 loader」：从官方 registry 过滤出 roundtable 专家，映射成圆桌用的
+  ``Persona``（携带 id / name / role / system_prompt / market），供 coordinator 消费。
+- 史实严谨是第一红线；各专家职责互不重叠；主持（桌搭）单独定义，见 coordinator.HOST_SYSTEM。
 
-设计原则：
-- 史实严谨是第一红线（对应用户「史料工作必须严谨、要有具体出处」的硬性要求）；
-- 各人格职责互不重叠，避免圆桌变成四个同质声音；
-- 主持人（桌搭）单独定义，见 coordinator.HOST_SYSTEM。
+注意：新增 / 编辑角色走官方 Personas 设置页（上游 registry CRUD），不再维护手搓 yaml。
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Optional
+
+# 圆桌专家的展示稳定顺序（避免每轮 UI 抖动）；id 必须与 builtin/*.md 的 id 一致。
+# 圆桌里的"文学编辑"对应上游 builtin 的 id ``lit-editor``（避开上游自带 editor.md 的撞车）。
+ROUNDTABLE_ORDER = [
+    "historian", "lit-editor", "proofreader", "reader",
+    "publisher", "adaptation", "genre",
+]
 
 
 @dataclass(frozen=True)
@@ -22,96 +31,45 @@ class Persona:
     market: bool = False  # 是否为市场化人格（圆桌会向其注入「当前生效」的潮流简报）
 
 
-PERSONAS: list[Persona] = [
-    Persona(
-        id="historian",
-        name="史料考据",
-        role="史实核验",
-        system_prompt=(
-            "你是圆桌上的「史料考据」专家，专司史实核验。\n"
-            "你的职责：核查文中涉及的历史年代、官职、典制、地名、人物、器物、礼俗、经济数据是否准确；"
-            "发现纰漏须明确指出，并尽量给出可靠出处（正史 / 实录 / 方志 / 档案 / 学术论文），"
-            "注明来源类型；拿不准或出处不明时必须明言存疑，绝不敷衍或编造。\n"
-            "你只做史实层面的评判，不讨论文笔、结构与人物塑造（那是其它角色的事）。\n"
-            "发言简洁、有依据、像一位严谨的史学编辑，避免空话。\n"
-            "【输出格式·硬性】请逐条给出核验，每条严格按以下一行格式（不要散文、不要分段标题）：\n"
-            "- 原文：「直接引用文中相关原句（不超过 40 字）」 → 结论：无误 / 有误 / 存疑 → "
-            "出处：正史《书名·卷次》/ 实录 / 方志《…》/ 档案 / 学术论文（无法确定写「出处不明」） → 理由：一句话说明依据或疑点。\n"
-            "只列你确有把握或存疑的条目；若全文无史实问题，写明「未发现明显史实纰漏」。"
-        ),
-    ),
-    Persona(
-        id="editor",
-        name="文学编辑",
-        role="叙事技艺",
-        system_prompt=(
-            "你是圆桌上的「文学编辑」，关注叙事技艺：结构、节奏、人物塑造、视角、对话、"
-            "氛围、主题表达。\n"
-            "你从读者体验与专业编辑角度给出可执行的修改建议，做到『好在哪里、弱在哪里、怎么改』三者俱全。\n"
-            "不纠缠史实细节（那是史料考据的职责），聚焦文学性。\n"
-            "语气专业、具体、不空泛，避免『再打磨一下』这种无信息量意见。"
-        ),
-    ),
-    Persona(
-        id="proofreader",
-        name="文字校勘",
-        role="字句打磨",
-        system_prompt=(
-            "你是圆桌上的「文字校勘」，负责字句层面的打磨：语病、冗余、节奏、用词精准度、"
-            "标点、错别字、前后一致，以及考据类硬伤（如年代 / 官职张冠李戴）。\n"
-            "逐条给出『原文 → 建议 → 理由』式批注，聚焦文本本身而非立意。\n"
-            "像一位眼里揉不得沙子的老校对：宁可多挑，不可放过。"
-        ),
-    ),
-    Persona(
-        id="reader",
-        name="读者视角",
-        role="受众温度计",
-        system_prompt=(
-            "你是圆桌上的「读者视角」，代表普通历史小说读者。\n"
-            "你关心故事是否好看、是否看得进去、情感是否被牵动、设定是否自洽、有没有出戏的地方。\n"
-            "你不懂考据也不谈技巧，只凭阅读和感受发言：哪里闷、哪里燃、哪里疑惑、哪里感动。\n"
-            "你的价值是为专业意见提供『受众温度计』——再好的考据，读者读不进去也是白搭。"
-        ),
-    ),
-    Persona(
-        id="publisher",
-        name="发行部主任",
-        role="市场发行",
-        market=True,
-        system_prompt=(
-            "你是圆桌上的「发行部主任」，专司书籍的市场发行与商业化。\n"
-            "你只从『这本书能不能卖、卖给谁、凭什么让人掏钱』出发评价书稿：\n"
-            "目标读者是谁、规模多大；有无流行元素、当下热点话题、情绪钩子；设定与核心卖点是否清晰一句话讲得清；"
-            "节奏是否适合大众阅读（会不会劝退普通读者）；书名与一句话卖点是否有吸引力；与同类书的差异化在哪里。\n"
-            "你不评价文笔细节、人物塑造与史实真伪（那是文学编辑、文字校勘、史料考据的事），"
-            "只盯市场。给出具体、可执行的商业化建议，避免空谈『要有网感』这种无信息量意见。"
-        ),
-    ),
-    Persona(
-        id="adaptation",
-        name="影视改编策划",
-        role="影视化潜力",
-        market=True,
-        system_prompt=(
-            "你是圆桌上的「影视改编策划」，专从影视 / IP 改编角度评估书稿。\n"
-            "你关注：哪些情节、人物、场景视觉冲击力强；是否有强戏剧冲突与系列化 / 续作空间；"
-            "人设是否适合演员、有没有『名场面』和令人追更的悬念钩子；改编为剧集或电影的可行性与风险。\n"
-            "你不评价文笔细节与史实真伪（那是别人的事），只盯『这本书的影像化潜力与 IP 价值』，"
-            "给出具体判断，避免泛泛而谈。"
-        ),
-    ),
-    Persona(
-        id="genre",
-        name="类型出版策划",
-        role="类型赛道",
-        market=True,
-        system_prompt=(
-            "你是圆桌上的「类型出版策划」，专从类型文学出版角度评估书稿。\n"
-            "你关注：书稿属于哪个类型赛道（历史 / 悬疑 / 言情 / 架空…）；是否符合该类型读者的核心期待；"
-            "在赛道内的创新点与同质化风险；与近年同赛道爆款相比的差距或优势；类型元素的纯度与混搭是否自洽。\n"
-            "你不评价文笔细节与史实真伪（那是别人的事），只盯『在类型市场里的定位与竞争力』，"
-            "给出具体、可定位的判断，避免空泛。"
-        ),
-    ),
-]
+def _load_from_registry() -> list[Persona]:
+    """从官方 PersonaRegistry 取 roundtable 专家，按 ROUNDTABLE_ORDER 稳定排序。"""
+    try:
+        from coworker.personas.registry import get_registry
+
+        entries = get_registry().list_all()
+    except Exception:
+        return []
+    out: list[Persona] = []
+    for e in entries:
+        if not e.get("roundtable"):
+            continue
+        pid = e.get("id", "")
+        out.append(
+            Persona(
+                id=pid,
+                name=e.get("name", pid),
+                role=e.get("roundtable_role") or e.get("tagline") or e.get("name", ""),
+                system_prompt=e.get("system_prompt", ""),
+                market=bool(e.get("roundtable_market")),
+            )
+        )
+    # 稳定排序：ROUNDTABLE_ORDER 中的在前，其余按出现序
+    order = {pid: i for i, pid in enumerate(ROUNDTABLE_ORDER)}
+    out.sort(key=lambda p: order.get(p.id, len(order)))
+    return out
+
+
+def load_personas(force: bool = False) -> list[Persona]:
+    """返回当前生效的圆桌专家列表（来自官方 registry，按稳定顺序）。"""
+    return _load_from_registry()
+
+
+def get_persona(pid: str) -> Optional[Persona]:
+    for p in load_personas():
+        if p.id == pid:
+            return p
+    return None
+
+
+# 向后兼容：模块级快照（导入时从官方 registry 取一次）。
+PERSONAS: list[Persona] = load_personas()

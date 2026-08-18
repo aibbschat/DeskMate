@@ -28,7 +28,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
 from deskmate.roundtable.coordinator import PeerSpec, Roundtable
-from deskmate.roundtable.personas import PERSONAS
+from deskmate.roundtable.personas import load_personas
 
 from coworker.conversations import ConversationStore
 from coworker.sessions import SessionRecord
@@ -238,6 +238,16 @@ def create_app(rt_port: int = 9920, base_dir: Optional[str] = None, workspace: O
 
         return JSONResponse({"llm": llm_available()})
 
+    @app.get("/api/personas")
+    async def api_personas() -> JSONResponse:
+        # 圆桌人格来自官方 persona registry（与普通聊天选择器共用同一份），动态返回。
+        return JSONResponse(
+            [
+                {"id": p.id, "name": p.name, "role": p.role, "market": p.market}
+                for p in load_personas()
+            ]
+        )
+
     def _make_stream(
         request: Request,
         topic: str,
@@ -306,7 +316,7 @@ def create_app(rt_port: int = 9920, base_dir: Optional[str] = None, workspace: O
         selected_personas = None
         ids = [p.strip() for p in (personas or "").split(",") if p.strip()]
         if ids:
-            by_id = {p.id: p for p in PERSONAS}
+            by_id = {p.id: p for p in load_personas()}
             selected_personas = [by_id[i] for i in ids if i in by_id] or None
 
         rt = Roundtable(

@@ -22,7 +22,7 @@ from typing import Optional
 
 from deskmate.memory.llm import chat_stream, llm_available
 from deskmate.roundtable import trends
-from deskmate.roundtable.personas import PERSONAS, Persona
+from deskmate.roundtable.personas import Persona, load_personas
 
 logger = logging.getLogger(__name__)
 
@@ -143,7 +143,7 @@ class Roundtable:
     ) -> None:
         self.topic = topic
         self.peers = peers or []
-        self.personas = personas or PERSONAS
+        self.personas = personas or load_personas()
         # 有界：上限 1..3
         self.max_rounds = max(1, min(3, max_rounds))
         # Per-persona isolated histories (subagent transcript) keyed by speaker name.

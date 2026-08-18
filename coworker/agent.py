@@ -205,6 +205,23 @@ def _deskmate_skill_index() -> str:
         return ""
 
 
+def _deskmate_mention_context(
+    messages: list | None = None, default_persona_id: Optional[str] = None
+) -> str:
+    """DeskMate @角色召唤（opt-in，DESKMATE_MENTION，默认开）。
+
+    解析最后一条 user 消息中的 @，命中「聊天角色」花名册则生成 handoff 协议注入当前轮，
+    让被 @ 角色以「默认声线 + @补位」语义临时参与。无 @ / 未命中返回空串，零副作用。
+    花名册 = 上游 coworker persona registry ∪ 圆桌专家（deskmate.chat.mention_router）。
+    """
+    try:
+        from deskmate.chat.mention_router import mention_context
+
+        return mention_context(messages, default_persona_id=default_persona_id)
+    except Exception:
+        return ""
+
+
 def build_engine(
     *,
     agent: Agent,
@@ -455,6 +472,11 @@ def build_engine(
             from .emotes import emote_system_block, get_active_pack
 
             parts.append(emote_system_block(get_active_pack()))
+        # DeskMate @角色召唤（opt-in，DESKMATE_MENTION，默认开）：解析最后一条 user 消息的 @，
+        # 命中花名册则注入 handoff 协议，让被 @ 角色临时参与本轮（默认声线 + @补位）。
+        dm_mention = _deskmate_mention_context(messages, default_persona_id=agent.name)
+        if dm_mention:
+            parts.append(dm_mention)
         return "\n\n".join(parts)
 
     engine = TurnEngine(

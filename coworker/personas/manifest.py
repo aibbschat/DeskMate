@@ -68,6 +68,10 @@ class PersonaManifest:
     source: Optional[str] = (
         None  # where it was loaded from (path / url), for provenance
     )
+    # 圆桌标记（仅桌搭二开使用，官方无关）：该 persona 是否为创作圆桌的内置专家。
+    roundtable: bool = False
+    roundtable_role: str = ""  # 圆桌 UI / 纪要用的短角色标签（如「史实核验」）
+    roundtable_market: bool = False  # 市场化人格：圆桌向其注入「当前生效」潮流简报
 
     @property
     def needs_workspace(self) -> bool:
@@ -240,6 +244,9 @@ def parse_manifest(
         recommends=_recommends(persona_id, meta),
         builtin=builtin,
         source=source,
+        roundtable=bool(meta.get("roundtable", False)),
+        roundtable_role=str(meta.get("roundtable_role", "")).strip(),
+        roundtable_market=bool(meta.get("roundtable_market", False)),
     )
 
 

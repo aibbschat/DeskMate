@@ -287,6 +287,10 @@ class PersonaRegistry:
                 "enabled": self.is_enabled(e.id),
                 "surfaced": self.is_surfaced(e.id),
                 "default": e.id == self.default_id(),
+                "system_prompt": e.manifest.system_prompt if e.manifest else "",
+                "roundtable": e.manifest.roundtable if e.manifest else False,
+                "roundtable_role": e.manifest.roundtable_role if e.manifest else "",
+                "roundtable_market": e.manifest.roundtable_market if e.manifest else False,
             }
             for e in self._entries.values()
         ]

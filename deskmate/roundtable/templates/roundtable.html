@@ -475,7 +475,7 @@
           <h3>🪑 选择参与人格（可多选）</h3>
           <div class="rowctl" id="personaChks">
             <label class="chk"><input type="checkbox" class="pc" value="historian" /> 史料考据</label>
-            <label class="chk"><input type="checkbox" class="pc" value="editor" checked /> 文学编辑</label>
+            <label class="chk"><input type="checkbox" class="pc" value="lit-editor" checked /> 文学编辑</label>
             <label class="chk"><input type="checkbox" class="pc" value="proofreader" /> 文字校勘</label>
             <label class="chk"><input type="checkbox" class="pc" value="reader" checked /> 读者视角</label>
             <label class="chk"><input type="checkbox" class="pc" value="publisher" /> 发行部主任</label>
@@ -569,9 +569,10 @@
   const API = BASE_DIR + "/api";                       // "/roundtable/api" 或 "/api"
   const OPENCODE_A2A = BASE_DIR + "/opencode-a2a/";   // "/roundtable/opencode-a2a/" 或 "/opencode-a2a/"
 
-  // 基础成员（进程内人格 + 主持）
-  const BASE = [
-    { name: "知了（主持）", role: "主持", kind: "host",   emoji: "🎙️", cls: "a-host" },
+  // 基础成员（进程内人格 + 主持）。初始为静态兜底；页面载入时由 /api/personas 动态覆盖。
+  const HOST = { name: "知了（主持）", role: "主持", kind: "host", emoji: "🎙️", cls: "a-host" };
+  let BASE = [
+    HOST,
     { name: "史料考据",   role: "史实核验", kind: "persona", emoji: "📜", cls: "a-hist" },
     { name: "文学编辑",   role: "叙事技艺", kind: "persona", emoji: "✒️", cls: "a-edit" },
     { name: "文字校勘",   role: "字句打磨", kind: "persona", emoji: "🔍", cls: "a-proof" },
@@ -584,11 +585,50 @@
     "OpenCode": { emoji: "🤖", cls: "a-oc" },
     "Hermes":   { emoji: "🌐", cls: "a-hermes" },
   };
-  // 进程内人格名 -> 后端 id（供勾选过滤）
-  const PERSONA_IDS = {
-    "史料考据": "historian", "文学编辑": "editor", "文字校勘": "proofreader", "读者视角": "reader",
+  // 进程内人格名 -> 后端 id（供勾选过滤）。初始为静态兜底；载入时由 /api/personas 动态覆盖。
+  let PERSONA_IDS = {
+    "史料考据": "historian", "文学编辑": "lit-editor", "文字校勘": "proofreader", "读者视角": "reader",
     "发行部主任": "publisher", "影视改编策划": "adaptation", "类型出版策划": "genre",
   };
+  // 人格 id -> 头像样式（兜底；动态加载时按 id 取）
+  const PERSONA_META = {
+    "historian": { emoji: "📜", cls: "a-hist" },
+    "lit-editor": { emoji: "✒️", cls: "a-edit" },
+    "proofreader": { emoji: "🔍", cls: "a-proof" },
+    "reader": { emoji: "👓", cls: "a-reader" },
+    "publisher": { emoji: "📣", cls: "a-pub" },
+    "adaptation": { emoji: "🎬", cls: "a-film" },
+    "genre": { emoji: "🏷️", cls: "a-genre" },
+  };
+  // 从官方 registry 动态拉取圆桌人格，覆盖静态兜底（新增角色无需改前端）
+  let roundtablePersonas = [];
+  async function loadPersonas() {
+    try {
+      const r = await fetch(API + "/personas");
+      const list = await r.json();
+      if (!Array.isArray(list) || !list.length) return;
+      roundtablePersonas = list;
+      PERSONA_IDS = {};
+      const chks = $("personaChks");
+      if (chks) chks.innerHTML = "";
+      BASE = [HOST];
+      list.forEach(p => {
+        PERSONA_IDS[p.name] = p.id;
+        const meta = PERSONA_META[p.id] || { emoji: "🧩", cls: "a-oc" };
+        BASE.push({ name: p.name, role: p.role, kind: "persona", emoji: meta.emoji, cls: meta.cls });
+        if (chks) {
+          const lab = document.createElement("label");
+          lab.className = "chk";
+          const def = (p.id === "lit-editor" || p.id === "reader");
+          lab.innerHTML = '<input type="checkbox" class="pc" value="' + esc(p.id) + '"' + (def ? " checked" : "") + " /> " + esc(p.name);
+          chks.appendChild(lab);
+        }
+      });
+      updatePersonaSummary();
+    } catch (e) {
+      // 网络失败：保留静态兜底
+    }
+  }
   let activePersonas = [];   // 当前参与圆桌的进程内成员（含主持），用于成员条
   let onlineNames = new Set();
 
@@ -1319,7 +1359,8 @@
     }
   }
 
-  // 页面载入即拉取潮流简报列表
+  // 页面载入即拉取人格列表与潮流简报
+  loadPersonas();
   loadTrends();
   updatePersonaSummary();
   refreshMcpStatus();

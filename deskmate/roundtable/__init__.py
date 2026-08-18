@@ -20,7 +20,7 @@ from deskmate.roundtable.coordinator import (
     run_roundtable,
     run_roundtable_sync,
 )
-from deskmate.roundtable.personas import PERSONAS, Persona
+from deskmate.roundtable.personas import PERSONAS, Persona, load_personas, get_persona
 
 __all__ = [
     "PeerSpec",
@@ -31,4 +31,6 @@ __all__ = [
     "run_roundtable_sync",
     "PERSONAS",
     "Persona",
+    "load_personas",
+    "get_persona",
 ]
