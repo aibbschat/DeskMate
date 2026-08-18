@@ -282,7 +282,11 @@ def _maybe_evolve_on_correction(
         from deskmate.skills.manager import SkillManager
 
         mgr = SkillManager(base_dir=base_dir)
-        updated = mgr.evolve_skill_on_correction(last_user, last_user)
+        # 证据流：correction_text=用户纠正；user_message=纠正原文（匹配技能用）；
+        # assistant_output=上一轮被纠正的助手输出（截断，供 LLM 判断「助手错在哪」）。
+        updated = mgr.evolve_skill_on_correction(
+            last_user, last_user, assistant_output=last_asst[:800]
+        )
         if updated:
             logger.info(
                 "after_action: 纠正驱动技能进化 -> %s",

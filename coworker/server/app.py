@@ -1976,6 +1976,28 @@ def create_app(manager: SessionManager) -> FastAPI:
             logging.exception("get deskmate badges failed")
             return JSONResponse({"error": "badges failed"}, status_code=500)
 
+    @app.get("/v1/deskmate/learning-graph")
+    async def get_deskmate_learning_graph() -> dict[str, Any]:
+        """「学习可视化」图数据（记忆↔技能连边，对标 Hermes learning_graph）。
+
+        纯文件扫描，零 LLM：技能节点（SkillStore 全量）+ 记忆卡片
+        （USER.md/MEMORY.md/longterm.md 按 ## 块切）+ 技能↔技能（共享 tags）
+        与记忆↔技能（id 命中强边 / 中文 bigram 重叠弱边）两类边。
+        前端「学习面板」展开时调用。
+        """
+        try:
+            from pathlib import Path as _P
+
+            from deskmate.memory.learning_graph import build_learning_graph
+
+            desk_dir = _P(
+                os.environ.get("DESKMATE_DIR", os.path.expanduser("~/.deskmate"))
+            )
+            return build_learning_graph(base_dir=desk_dir)
+        except Exception:
+            logging.exception("get deskmate learning graph failed")
+            return JSONResponse({"error": "learning graph failed"}, status_code=500)
+
     @app.get("/v1/deskmate/digest")
     async def get_deskmate_digest(force: bool = False) -> dict[str, Any]:
         """获取 DeskMate 首页资讯卡片（文化 / 网文 / AI / 开源）。

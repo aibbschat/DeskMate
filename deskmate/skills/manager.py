@@ -403,13 +403,19 @@ class SkillManager:
     # ------------------------------------------------------------------
 
     def evolve_skill_on_correction(
-        self, correction_text: str, user_message: str = ""
+        self,
+        correction_text: str,
+        user_message: str = "",
+        assistant_output: str = "",
     ) -> list[dict]:
         """当用户纠正某事时，检查是否涉及已有技能，自动更新。
 
         Args:
             correction_text: 用户的纠正内容
             user_message: 原始用户消息（用于匹配相关技能）
+            assistant_output: 上一轮助手输出（被纠正的对象）。提供后 LLM 能基于
+                「助手错了什么 + 用户怎么纠」的完整证据链判断是否更新技能，
+                而不是只看纠正文本凭空猜。
 
         Returns:
             被更新的技能列表
@@ -433,6 +439,13 @@ class SkillManager:
                 f"用户纠正了一个问题，可能与技能「{s['name']}」相关。\n\n"
                 f"技能内容：\n{body[:1000]}\n\n"
                 f"用户纠正：{correction_text}\n\n"
+            )
+            if assistant_output:
+                prompt += (
+                    "上一轮助手输出（被纠正的对象，看这里才能知道助手错在哪）：\n"
+                    f"{assistant_output[:800]}\n\n"
+                )
+            prompt += (
                 "判断：这个纠正是否应该更新到这个技能里？\n"
                 "如果是，输出 JSON：\n"
                 '{"should_update": true, "old_string": "技能中需要修改的原文（精确匹配）", '
