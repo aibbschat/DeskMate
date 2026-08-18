@@ -46,7 +46,23 @@ import { streamMode } from "./streamGate";
 import { InboxItemCard } from "./components/InboxItemCard";
 import { isTauri, platformOS, startWindowDrag } from "./tauri";
 import { Icon } from "./components/Icon";
-import { PersonaGlyph } from "./components/personaIcon";
+import historianImg from "./assets/avatars/historian.png";
+import litEditorImg from "./assets/avatars/lit-editor.png";
+import proofreaderImg from "./assets/avatars/proofreader.png";
+import readerImg from "./assets/avatars/reader.png";
+import publisherImg from "./assets/avatars/publisher.png";
+import adaptationImg from "./assets/avatars/adaptation.png";
+import genreImg from "./assets/avatars/genre.png";
+
+const PERSONA_AVATAR: Record<string, string> = {
+  historian: historianImg,
+  "lit-editor": litEditorImg,
+  proofreader: proofreaderImg,
+  reader: readerImg,
+  publisher: publisherImg,
+  adaptation: adaptationImg,
+  genre: genreImg,
+};
 import { Sidebar } from "./components/Sidebar";
 import { ThinkingBlock, Transcript } from "./components/Transcript";
 import { Composer } from "./components/Composer";
@@ -1729,9 +1745,11 @@ export function App() {
                   // 专家 persona 会话的空态名片：头像 + 名字 + 一句话定位，让「点谁跟谁聊」
                   // 立刻可见（此前落到通用 hero「Let's build something.」，看起来像默认模式）。
                   <div className="expert-intro">
-                    <span className="persona-intro-glyph">
-                      <PersonaGlyph icon={expertPersona.icon} family={expertPersona.family} size={36} />
-                    </span>
+                    <img
+                      className="persona-intro-avatar"
+                      src={PERSONA_AVATAR[agent] || ""}
+                      alt={expertPersona.name}
+                    />
                     <h1 className="expert-intro-name">
                       {shortPersonaName(expertPersona.name, expertPersona.id)}
                     </h1>

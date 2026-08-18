@@ -175,7 +175,7 @@ export function RightRail({
           {/* DeskMate 圆桌好友栏：QQ 好友式联系人，点击开该专家独立会话。 */}
           {roundtableCount > 0 && onOpenPersonaSession && (
             <RailSection
-              title={`圆桌 (${roundtableCount})`}
+              title={`Agent (${roundtableCount})`}
               open={open.roundtable}
               onToggle={() => setOpen({ ...open, roundtable: !open.roundtable })}
             >
