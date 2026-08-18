@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode }
 import { useTranslation } from "react-i18next";
 import type { Attachment, SessionUsage } from "../types";
 import { isPdfFile, readFile } from "../attach";
-import { getSettings, inspectPdf } from "../api";
+import { getSettings, inspectPdf, type Persona } from "../api";
 import { formatTokens, totalTokens } from "../usage";
 import { Dropdown, type Option } from "./Dropdown";
 import { Icon } from "./Icon";
@@ -100,6 +100,12 @@ interface Props {
   contextWindow?: number;
   // Settings toggle (default off): true shows the fill bar instead of the session total.
   contextBar?: boolean;
+  /** 聊天角色（默认声线）：上游 persona picker 数据（getPersonas）；选中即本会话默认声线。 */
+  personas?: Persona[];
+  /** 当前聊天角色 id；空串 = 会话默认声线。 */
+  chatRole?: string;
+  /** 切换聊天角色（空串 = 恢复默认）。 */
+  onChatRoleChange?: (personaId: string) => void;
 }
 
 export function Composer(props: Props) {
@@ -405,6 +411,17 @@ export function Composer(props: Props) {
   const iconBtn =
     "w-7 h-7 grid place-items-center rounded-md text-muted hover:text-ink hover:bg-paper shrink-0";
 
+  // 聊天角色（默认声线）选项：复用上游 persona picker 数据（getPersonas）。只列 enabled 角色
+  // + 默认角色；首项「默认声线」= 恢复会话 agent 默认。选中后每轮由后端注入默认声线说明。
+  const roleGroups = useMemo(() => {
+    const opts: Option[] = [{ value: "", label: "默认声线" }];
+    for (const p of props.personas || []) {
+      if (!p.enabled && !p.default) continue;
+      opts.push({ value: p.id, label: p.name, description: p.tagline });
+    }
+    return [{ title: "聊天角色", options: opts }];
+  }, [props.personas]);
+
   // The send button is accent only when there's something to send — subtle grey otherwise, so the
   // composer isn't carrying a constant blue dot.
   const hasContent = text.trim().length > 0 || attachments.length > 0;
@@ -563,6 +580,15 @@ export function Composer(props: Props) {
 
           {/* Listening replaces the quiet middle controls with a LIVE waveform (mic RMS,
               polled ~10Hz, scrolling left) + elapsed time (§37). */}
+          {!dictation?.recording && (props.personas?.length ?? 0) > 0 && (
+            <Dropdown
+              prefix="聊天角色"
+              value={props.chatRole ?? ""}
+              groups={roleGroups}
+              onChange={(v) => props.onChatRoleChange?.(v)}
+              align="left"
+            />
+          )}
           {dictation?.recording ? (
             <div className="voice-wave-row flex-1 flex items-center gap-2 ml-1" aria-hidden="true">
               <span className="voice-wave-line" />

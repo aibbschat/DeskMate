@@ -161,6 +161,58 @@ def unified_roster() -> list[Any]:
     return items
 
 
+# ---------------------------------------------------------------------------
+# 每会话「聊天角色」（默认声线）覆盖
+# ---------------------------------------------------------------------------
+# 普通聊天语义 = 默认声线 + @补位：用户在主聊天 composer 选中的「聊天角色」即本会话默认声线，
+# 写入此字典；context_provider 每轮实时读取，命中则常驻注入默认声线说明，并作为 @handoff 的
+# default_persona_id。UI 经 POST /v1/sessions/{id}/persona 设置（clear=true 清空）。
+# 进程内存存储：会话引擎按 session_id 缓存，本进程生命周期内有效；异常/重启由 UI 重新设置。
+SESSION_DEFAULT_VOICE: dict[str, str] = {}
+
+
+def set_default_voice(session_id: str, persona_id: Optional[str]) -> None:
+    """设置/清空本会话默认声线。persona_id 为空则清空（恢复会话 agent 默认）。"""
+    if persona_id:
+        SESSION_DEFAULT_VOICE[session_id] = str(persona_id)
+    else:
+        SESSION_DEFAULT_VOICE.pop(session_id, None)
+
+
+def get_default_voice(session_id: str) -> Optional[str]:
+    return SESSION_DEFAULT_VOICE.get(session_id)
+
+
+def default_voice_context(persona_id: Optional[str]) -> str:
+    """选中「聊天角色」后，每轮注入的常驻默认声线说明（默认声线 + @补位 的「默认声线」半环）。
+
+    只输出简短的角色定位指令（不整段搬运 system_prompt），避免每轮上下文膨胀、也不与基座
+    instructions 冲突；被 @ 其他角色时由 handoff 协议临时补位，本轮结束恢复本默认声线。
+    """
+    if not persona_id:
+        return ""
+    roster = unified_roster()
+    target: Optional[Any] = None
+    for p in roster:
+        if str(_get(p, "id", "")) == str(persona_id):
+            target = p
+            break
+    if target is None:
+        return ""
+    name = _name_of(target)
+    role = _role_of(target)
+    lines = ["[默认声线 · 聊天角色]"]
+    lines.append(f"本会话默认以「{name}」的视角、口吻与专长作答（id={persona_id}；角色：{role}）。")
+    lines.append(
+        "未显式 @ 其他角色时，请始终以该角色的身份 / 专长回应；"
+        "用户 @ 其他角色时，临时以被 @ 角色补位，本轮结束后恢复本默认声线。"
+    )
+    lines.append(
+        "史实 / 考据类回答须标注出处（正史 / 实录 / 方志 / 档案 / 学术论文）；存疑明示，绝不杜撰。"
+    )
+    return "\n".join(lines)
+
+
 def mention_context(messages: Optional[list[dict[str, Any]]], default_persona_id: Optional[str] = None) -> str:
     """每轮注入入口：取最后一条 user 消息，解析 @，命中则返回协议文本，否则返回空串。"""
     if not _mention_enabled():

@@ -1287,6 +1287,22 @@ export async function deletePersona(
   return out;
 }
 
+/** 桌搭「聊天角色」选择器：设置本会话默认声线（personaId）。空 / clear=true 恢复会话默认。 */
+export async function setSessionPersona(
+  sessionId: string,
+  personaId?: string,
+): Promise<{ ok: boolean; persona_id?: string | null; error?: string }> {
+  const res = await authedFetch(
+    `${httpBase()}/v1/sessions/${encodeURIComponent(sessionId)}/persona`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(personaId ? { persona_id: personaId } : { clear: true }),
+    },
+  );
+  return res.json();
+}
+
 // A curated persona card from the cloud gallery (metadata only — the manifest
 // is fetched server-side at install and runs through the normal consent flow).
 export interface GalleryPersona {
