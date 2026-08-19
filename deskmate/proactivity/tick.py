@@ -13,7 +13,12 @@ logger = logging.getLogger(__name__)
 from pathlib import Path
 from typing import Optional
 
-from .confidence import ActionDecision, ActionType, evaluate_action
+from .confidence import (
+    ActionDecision,
+    ActionType,
+    THRESHOLD_SUGGEST,
+    evaluate_action,
+)
 from .context_builder import (
     ProactiveContext,
     build_proactive_context,
