@@ -178,7 +178,26 @@ class LocalExecutor(Executor):
         if shell_path is None:
             shell_path = "powershell.exe" if self._is_windows else "/bin/bash"
         self._shell_path = shell_path
-        self._env = {**os.environ, **_NONINTERACTIVE_ENV, **(env or {})}
+        # GUI-launched backends receive a minimal PATH (e.g. just
+        # /usr/bin:/bin:/usr/sbin:/sbin), so user-installed CLIs in
+        # ~/.local/bin, /usr/local/bin, ~/bin are invisible to agent shell
+        # commands. Prepend those dirs so skills that shell out to a binary
+        # (e.g. officecli for .docx/.xlsx/.pptx) actually resolve.
+        _base_path = os.environ.get("PATH", "")
+        _user_bins = [
+            str(Path.home() / ".local" / "bin"),
+            "/usr/local/bin",
+            str(Path.home() / "bin"),
+        ]
+        _augmented_path = os.pathsep.join(
+            [*_user_bins, _base_path] if _base_path else _user_bins
+        )
+        self._env = {
+            **os.environ,
+            "PATH": _augmented_path,
+            **_NONINTERACTIVE_ENV,
+            **(env or {}),
+        }
         self._spawn()
 
     def _spawn(self) -> None:
