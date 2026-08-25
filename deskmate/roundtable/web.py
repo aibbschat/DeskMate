@@ -113,7 +113,11 @@ def _upsert_report_to_bible(mp: str, synthesis_md: str) -> None:
     try:
         from deskmate.novel_memory import core as nb
 
-        docs = nb.upsert_bible_from_text(mp, synthesis_md, source_label="圆桌综合研判报告")
+        docs = nb.upsert_bible_from_text(
+            mp, synthesis_md,
+            source_label="圆桌综合研判报告",
+            tier="roundtable",
+        )
         if docs:
             logger.info("圆桌《综合研判报告》已回流圣经：%s", mp)
         else:

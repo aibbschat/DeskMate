@@ -43,6 +43,10 @@ __all__ = [
     "KIND_SETTING",
     "ROLE_NARRATIVE",
     "ROLE_ALLUSION",
+    "TIER_MANUSCRIPT",
+    "TIER_EXTERNAL",
+    "TIER_ROUNDTABLE",
+    "TIER_DIALOGUE",
     "STATUS_CONFIRMED",
     "STATUS_PENDING",
     "STATUS_REJECTED",
@@ -54,6 +58,9 @@ __all__ = [
     "delete_record",
     "revoke_unsupported",
     "stats",
+    "list_needs_review",
+    "review_resolve",
+    "review_report",
     "render_bible",
     "next_source_seq",
     "get_meta",
@@ -88,6 +95,31 @@ STATUS_REJECTED = "rejected"
 
 _STATUS_RANK = {STATUS_REJECTED: 0, STATUS_PENDING: 1, STATUS_CONFIRMED: 2}
 
+# 信任分层（tier）：标明每条事实的「出身」，下游据此决定能否盲目采信。
+# manuscript ：来自书稿正文（build_bible 抽取），经 verify_records 闸口，最可信。
+# external   ：外部史料核验标注（预留，当前未启用自动写入）。
+# roundtable ：圆桌综合报告回流（经 upsert_bible_from_text，tier=roundtable）。
+# dialogue   ：对话 / 产出文本回流（A 闭环，经 upsert_bible_from_text，tier=dialogue）。
+# 信任排序由高到低：manuscript > external > roundtable > dialogue。
+# 非 manuscript 的条目一律 needs_review=1，需作者人工确认后才作确定事实，避免「一错全信」。
+TIER_MANUSCRIPT = "manuscript"
+TIER_EXTERNAL = "external"
+TIER_ROUNDTABLE = "roundtable"
+TIER_DIALOGUE = "dialogue"
+
+_TIER_RANK = {
+    TIER_MANUSCRIPT: 4,
+    TIER_EXTERNAL: 3,
+    TIER_ROUNDTABLE: 2,
+    TIER_DIALOGUE: 1,
+}
+_TIER_LABEL = {
+    TIER_MANUSCRIPT: "书稿直引",
+    TIER_EXTERNAL: "外部史料",
+    TIER_ROUNDTABLE: "圆桌共识",
+    TIER_DIALOGUE: "对话推断",
+}
+
 _DB_NAME = "entities.db"
 
 # 引文核验参数
@@ -121,6 +153,8 @@ CREATE TABLE IF NOT EXISTS entities (
     aliases      TEXT NOT NULL DEFAULT '[]',
     role_category TEXT NOT NULL DEFAULT 'narrative',
     history      TEXT NOT NULL DEFAULT '[]',
+    tier         TEXT NOT NULL DEFAULT 'manuscript',
+    needs_review INTEGER NOT NULL DEFAULT 0,
     first_seen   REAL NOT NULL DEFAULT 0,
     last_updated REAL NOT NULL DEFAULT 0
 );
@@ -155,6 +189,8 @@ class Record:
     status: str = STATUS_PENDING
     confidence: float = 0.0
     role_category: str = ROLE_NARRATIVE
+    tier: str = TIER_MANUSCRIPT
+    needs_review: bool = False
     reject_reason: str = ""
 
     # -- 派生 ---------------------------------------------------------------
@@ -446,18 +482,24 @@ def upsert_records(
         ).fetchone()
 
         if row is None:
+            nr = (
+                1
+                if (rec.tier != TIER_MANUSCRIPT or rec.status != STATUS_CONFIRMED or rec.needs_review)
+                else 0
+            )
             conn.execute(
                 """INSERT INTO entities
                    (id, kind, key, name, subject, object, rel_type, detail, evidence,
                     source_file, source_seq, status, confidence, aliases,
-                    role_category, history, first_seen, last_updated)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    role_category, history, tier, needs_review, first_seen, last_updated)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     rec.id, rec.kind, rec.key, rec.name, rec.subject, rec.object,
                     rec.rel_type, rec.detail, rec.evidence, rec.source_file,
                     rec.source_seq, rec.status, rec.confidence,
                     json.dumps(rec.aliases or [], ensure_ascii=False),
                     rec.role_category or ROLE_NARRATIVE, "[]",
+                    rec.tier, nr,
                     now, now,
                 ),
             )
@@ -512,10 +554,24 @@ def upsert_records(
         )
         aliases = sorted(set(json.loads(row["aliases"] or "[]")) | set(rec.aliases or []))
 
+        # 信任分层合并：保留较高信任的出身（manuscript > external > roundtable > dialogue）
+        merged_tier = (
+            rec.tier
+            if _TIER_RANK.get(rec.tier, 0) >= _TIER_RANK.get(row["tier"], 0)
+            else row["tier"]
+        )
+        # 需审阅 = 任一方标记 / 非书稿直引 / 未确认
+        merged_needs_review = (
+            1
+            if (rec.needs_review or bool(row["needs_review"])
+                or merged_tier != TIER_MANUSCRIPT or status != STATUS_CONFIRMED)
+            else 0
+        )
+
         conn.execute(
             """UPDATE entities SET name=?, subject=?, object=?, rel_type=?, detail=?,
                    evidence=?, source_file=?, source_seq=?, status=?, confidence=?,
-                   aliases=?, role_category=?, history=?, last_updated=?
+                   aliases=?, role_category=?, tier=?, needs_review=?, history=?, last_updated=?
                WHERE id=?""",
             (
                 merged["name"], merged["subject"], merged["object"], merged["rel_type"],
@@ -523,7 +579,7 @@ def upsert_records(
                 merged["source_seq"], status,
                 max(rec.confidence, float(row["confidence"] or 0)),
                 json.dumps(aliases, ensure_ascii=False),
-                merged["role_category"],
+                merged["role_category"], merged_tier, merged_needs_review,
                 json.dumps(history, ensure_ascii=False)[:8000],
                 now, rec.id,
             ),
@@ -602,6 +658,70 @@ def stats(conn: sqlite3.Connection) -> dict[str, int]:
 
 
 # --------------------------------------------------------------------------- #
+# 作者审阅回路（信任分层落地：非书稿直引的条目需人工确认）
+# --------------------------------------------------------------------------- #
+
+
+def list_needs_review(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    """列出所有需作者人工确认的条目（非书稿直引 或 未确认）。"""
+    return list(conn.execute(
+        "SELECT * FROM entities WHERE needs_review = 1 AND status != ? "
+        "ORDER BY tier, kind, id",
+        (STATUS_REJECTED,),
+    ).fetchall())
+
+
+def review_resolve(conn: sqlite3.Connection, rid: str, accept: bool) -> bool:
+    """作者审阅决议：accept=True 标记已确认（needs_review=0）；False 撤销该条（rejected）。
+
+    返回是否命中并更新。条目不存在时返回 False（fail-open，不拖累主流程）。
+    """
+    row = conn.execute("SELECT * FROM entities WHERE id = ?", (rid,)).fetchone()
+    if row is None:
+        return False
+    if accept:
+        conn.execute(
+            "UPDATE entities SET needs_review=0, last_updated=? WHERE id=?",
+            (time.time(), rid),
+        )
+    else:
+        conn.execute(
+            "UPDATE entities SET status=?, needs_review=0, last_updated=? WHERE id=?",
+            (STATUS_REJECTED, time.time(), rid),
+        )
+    conn.commit()
+    return True
+
+
+def review_report(conn: sqlite3.Connection) -> str:
+    """生成「圣经审阅」报告 Markdown，列出待作者确认的条目供人工批阅。"""
+    rows = list_needs_review(conn)
+    lines = [
+        "<!-- deskmate-bible-review: 由实体库确定性生成，列出需作者人工确认的条目 -->",
+        "## 圣经审阅（待作者确认）",
+        "",
+        f"共 {len(rows)} 条需确认。非「书稿直引」的条目来自对话 / 圆桌回流，"
+        "请核对史实后再标记确认或撤销。",
+        "",
+    ]
+    for r in rows:
+        tier = r["tier"] or TIER_MANUSCRIPT
+        label = _TIER_LABEL.get(tier, tier)
+        lines.append(
+            f"- **[{label}] {r['name'] or r['detail']}** "
+            f"（{r['kind']} · id=`{r['id']}`）"
+        )
+        if r["detail"]:
+            lines.append(f"  - {_clip(r['detail'], 120)}")
+        note = _evidence_note(r)
+        if note:
+            lines.append(f"  - {note}")
+    if not rows:
+        lines.append("- （无待确认条目，圣经均为书稿直引且已确认）")
+    return "\n".join(lines)
+
+
+# --------------------------------------------------------------------------- #
 # 渲染成四份圣经 Markdown（确定性，不经 LLM）
 # --------------------------------------------------------------------------- #
 
@@ -619,8 +739,14 @@ def _clip(s: str, n: int = 60) -> str:
 def _evidence_note(row: sqlite3.Row) -> str:
     ev = _clip(row["evidence"], 50)
     src = row["source_file"] or ""
-    mark = "" if row["status"] == STATUS_CONFIRMED else "【待确认】"
-    parts = [p for p in (mark, f"依据：「{ev}」" if ev else "", f"（{src}）" if src else "") if p]
+    tier = row["tier"] or TIER_MANUSCRIPT
+    needs = bool(row["needs_review"]) or row["status"] != STATUS_CONFIRMED
+    marks: list[str] = []
+    if tier != TIER_MANUSCRIPT:
+        marks.append(f"【{_TIER_LABEL.get(tier, tier)}】")
+    if needs:
+        marks.append("【待作者确认】")
+    parts = [p for p in (*marks, f"依据：「{ev}」" if ev else "", f"（{src}）" if src else "") if p]
     return " ".join(parts)
 
 

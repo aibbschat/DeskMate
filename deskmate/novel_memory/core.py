@@ -33,6 +33,7 @@ __all__ = [
     "inject_bible",
     "read_bible",
     "bible_stats",
+    "review_bible_report",
     "build_fts5_index",
     "novel_search_fts5",
     "resolve_root",
@@ -970,6 +971,7 @@ def upsert_bible_from_text(
     text: str,
     *,
     source_label: str = "产出文本",
+    tier: str = "dialogue",
     progress_callback: callable = None,
 ) -> dict[str, str] | None:
     """从一段已产出的文本（剧本 / 考据笔记 / 圆桌报告）增量抽取实体并 upsert 进圣经。
@@ -1029,6 +1031,9 @@ def upsert_bible_from_text(
             full_text=verify_text,
             progress_callback=progress_callback,
         )
+        # 信任分层：回流内容（对话/产出/圆桌报告）标注出身，非书稿直引一律待作者确认
+        for r in passed:
+            r.tier = tier
 
         if progress_callback:
             progress_callback("merging", {"total_batches": len(batches), **counts})
@@ -1182,6 +1187,25 @@ def read_bible(folder: str) -> dict[str, str]:
         except Exception as e:  # noqa: BLE001
             logger.warning("实体库渲染失败，回退读取 Markdown 圣经：%s", e)
     return _read_legacy_bible(folder)
+
+
+def review_bible_report(folder: str) -> str | None:
+    """生成该书「圣经审阅」报告（列出待作者确认的条目）；无圣经或失败返回 None。
+
+    fail-open：任何异常只记日志，绝不拖累主流程。
+    """
+    bible_dir = _bible_root(folder) / _BIBLE_DIR
+    if not _ent.has_data(bible_dir):
+        return None
+    try:
+        conn = _ent.connect(bible_dir)
+        try:
+            return _ent.review_report(conn)
+        finally:
+            conn.close()
+    except Exception as e:  # noqa: BLE001
+        logger.warning("圣经审阅报告生成失败：%s", e)
+        return None
 
 
 def bible_stats(folder: str) -> dict[str, int | str]:
