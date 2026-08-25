@@ -29,6 +29,10 @@ import logging
 import re
 import sqlite3
 import threading
+try:
+    import fcntl  # Unix 文件锁（跨进程串行）；Windows 下不可用，降级为仅进程内锁
+except ImportError:  # pragma: no cover - Windows 平台
+    fcntl = None
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -37,10 +41,72 @@ from typing import Iterable, Optional
 
 logger = logging.getLogger(__name__)
 
-# 进程级写锁：串行化所有圣经写路径（build 的 DELETE+upsert / incremental / 回流 /
-# 审阅决议 / 删除），避免并发任务交错造成「清完库又被旧批次 upsert 进空库」或
-# 并发 inject_bible 发布损坏的 md。读路径（read_bible / render_bible）不加锁。
-_WRITE_LOCK = threading.Lock()
+# 跨进程可重入写锁：串行化所有圣经写路径（build 的 DELETE+upsert / incremental /
+# 回流 / 审阅决议 / 删除），避免并发任务交错造成「清完库又被旧批次 upsert 进空库」
+# 或并发 inject_bible 发布损坏的 md。读路径（read_bible / render_bible）不加锁。
+#
+# 为什么是文件锁而非 threading.Lock：圣经写路径分布在多个 OS 进程——sidecar 主进程
+# （app.py 的 after_action 回流、build_bible）与 novel_memory MCP server（独立进程，
+# 有自己的写工具）。threading.Lock 只管进程内，两个进程同时写同一本 entities.db 时
+# 完全无效；SQLite 自身写锁能防物理损坏，但防不住「增量抽完 → build 清库 → 增量写进
+# 空库」这类逻辑交错。故用 fcntl.flock 锁 ~/.deskmate/write.lock 覆盖跨进程。
+# 进程内嵌套（build_bible 临界区里再调 upsert_records）由 threading.RLock 兜底。
+
+
+class _BibleWriteLock:
+    """跨进程可重入写锁：fcntl.flock（跨进程）+ threading.RLock（进程内嵌套）。
+
+    进程内用 RLock 串行，支持 build_bible 临界区内再调 upsert_records 的嵌套
+    （同一进程同一线程重复进入只计深度，不会自锁）；跨进程用 fcntl.flock 串行，
+    覆盖 sidecar 主进程与 novel_memory MCP server 两个独立进程对同一本
+    entities.db 的并发写。
+
+    锁文件不可用时（权限/磁盘故障/Windows 无 fcntl）降级为仅进程内 RLock，
+    fail-open——绝不因锁故障卡死圣经读写（任务执行时圣经读写必须 fail-open）。
+    """
+
+    def __init__(self, lock_file: Path):
+        self._file = Path(lock_file)
+        self._thread = threading.RLock()
+        self._fd = None
+        self._depth = 0
+
+    def __enter__(self):
+        self._thread.acquire()
+        try:
+            if self._depth == 0 and self._fd is None:
+                self._file.parent.mkdir(parents=True, exist_ok=True)
+                self._fd = open(self._file, "a+")
+                if fcntl is not None:
+                    fcntl.flock(self._fd.fileno(), fcntl.LOCK_EX)
+        except OSError:
+            # 锁文件不可用：降级为无文件锁（仅靠进程内 RLock），fail-open
+            if self._fd is not None:
+                try:
+                    self._fd.close()
+                except OSError:
+                    pass
+                self._fd = None
+            logger.warning("圣经写锁(%s)获取失败，降级为进程内锁", self._file)
+        self._depth += 1
+        return self
+
+    def __exit__(self, *exc):
+        self._depth -= 1
+        if self._depth == 0 and self._fd is not None:
+            try:
+                if fcntl is not None:
+                    fcntl.flock(self._fd.fileno(), fcntl.LOCK_UN)
+                self._fd.close()
+            except OSError:
+                pass
+            self._fd = None
+        self._thread.release()
+
+
+# 全局跨进程写锁实例：所有圣经写路径共享同一把锁文件 ~/.deskmate/write.lock，
+# 因此 sidecar 主进程与 novel_memory MCP server 两个独立进程天然串行化。
+_WRITE_LOCK = _BibleWriteLock(Path.home() / ".deskmate" / "write.lock")
 
 __all__ = [
     "Record",
@@ -539,6 +605,8 @@ def _upsert_records_locked(
         # P0-3：作者显式驳回的条目（status=rejected）不被后续回流复活。
         # 作者已否决的事实，除非重新被显式确认，否则保持 rejected——
         # 永不渲染、永不注入（与插入路径拦截幻觉的语义一致）。
+        # 设计取舍（Hermes 复检认可）：作者否决 > 一切，即使书稿正文后续真的重写
+        # 到该人物，upsert 也永远跳过；若驳回误判，目前只能手工改 DB 翻转 status。
         if row["status"] == STATUS_REJECTED:
             continue
 

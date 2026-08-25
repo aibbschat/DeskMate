@@ -781,8 +781,12 @@ def build_bible(folder: str, progress_callback: callable = None) -> dict[str, st
     conn = _ent.connect(bible_dir)
     try:
         # 全量重建：先清空旧实体，避免上一轮（含 v1 迁移前）的错误事实残留。
-        # P1-6：DELETE+upsert 临界区串行化（与 upsert_records 内部锁同一把），
-        # 防止并发增量/回流在「清完库、尚未 upsert」的窗口插进来把旧批次写进空库。
+        # P1-6：DELETE+upsert 临界区串行化（与 upsert_records 内部锁同一把，
+        # 现已升级为跨进程 flock 锁），防止并发增量/回流在「清完库、尚未 upsert」
+        # 的窗口插进来把旧批次写进空库。
+        # 设计取舍（Hermes 复检认可）：DELETE+commit 到 upsert 之间，无锁的读路径
+        # read_bible 可能看到半空库并回退到 md 兜底；因 P1-7 后 md 始终新鲜，该回退
+        # 现在安全、窗口极小，可不修。
             with _ent._WRITE_LOCK:
                 conn.execute("DELETE FROM entities")
                 conn.commit()
