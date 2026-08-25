@@ -2,10 +2,11 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode }
 import { useTranslation } from "react-i18next";
 import type { Attachment, SessionUsage } from "../types";
 import { isPdfFile, readFile } from "../attach";
-import { getSettings, inspectPdf } from "../api";
+import { getSettings, inspectPdf, sessionSkills, type SessionSkillRow } from "../api";
 import { formatTokens, totalTokens } from "../usage";
 import { Dropdown, type Option } from "./Dropdown";
 import { Icon } from "./Icon";
+import { ProjectBindMenu } from "./ProjectBindMenu";
 import { type Expert } from "./deskmate/experts";
 import { ExpertAvatar } from "./deskmate/ExpertAvatar";
 import { Toggle } from "./Toggle";
@@ -57,8 +58,8 @@ interface Props {
   modelLabels?: Record<string, string>; // curated display names (raw id when absent)
   /** {full model id → "free" | "paid"} — splits the picker into 免费 / 付费 two tiers. */
   modelTiers?: Record<string, string>;
-  /** 当前会话 id；官方 v0.2.0 用于门控 skill 弹窗（无会话不弹）。本 fork 保留该 prop 以便
-   *  官方 Composer.skills 测试通过类型检查；门控逻辑按需接入。 */
+  /** 当前会话 id；官方 v0.2.0 用于门控 slash skill 弹窗与 "This session" 绑定子菜单
+   *  （无会话不弹）。本 fork 已接官方门控逻辑（见 slash 状态机 + attach 菜单绑定行）。 */
   sessionId?: string;
   // The model is FIXED once the session has history (§17): the picker renders ONLY on a fresh
   // session; after the first turn the fact lives in the topbar subtitle (§22) — no
@@ -70,7 +71,9 @@ interface Props {
   modelReady?: boolean;
   onConnectModel?: () => void;
   onConfigureVoiceInput?: () => void;
-  onSend: (text: string, attachments?: Attachment[]) => void;
+  // UX-044: "View & edit…" in the Project memory submenu routes to the memory panel.
+  onOpenMemory?: () => void;
+  onSend: (text: string, attachments?: Attachment[], skill?: string) => void;
   onInterrupt: () => void;
   onModeChange: (mode: string) => void;
   onModelChange: (model: string) => void;
@@ -109,6 +112,63 @@ export function Composer(props: Props) {
   const { t } = useTranslation();
   const [text, setText] = useState("");
   const [attachments, setAttachments] = useState<Attachment[]>([]);
+  // "/" force-run popup (SKILLS-SPEC §4.1 #3). The popup derives from the draft: it is open while
+  // the text is a bare "/query" (no whitespace yet) and no skill is picked. Selecting a row
+  // inserts "/name " INLINE in the box (Claude-Code style — the slash text IS the state);
+  // the user keeps typing after it, and on send the prefix is stripped while the skill name
+  // rides the user_message as its own field. Editing the prefix away un-picks the skill.
+  const [pendingSkill, setPendingSkill] = useState<SessionSkillRow | null>(null);
+  const [slashSkills, setSlashSkills] = useState<SessionSkillRow[] | null>(null);
+  const [slashIndex, setSlashIndex] = useState(0);
+  const prefixIntact =
+    pendingSkill !== null &&
+    (text === `/${pendingSkill.name}` || text.startsWith(`/${pendingSkill.name} `));
+  useEffect(() => {
+    if (pendingSkill && !prefixIntact) setPendingSkill(null);
+  }, [pendingSkill, prefixIntact]);
+  const slashQuery =
+    !prefixIntact && props.sessionId && text.startsWith("/") && !/\s/.test(text.slice(1))
+      ? text.slice(1).toLowerCase()
+      : null;
+  const slashMatches = (slashSkills ?? []).filter((s) =>
+    s.name.toLowerCase().includes(slashQuery ?? ""),
+  );
+  useEffect(() => {
+    // Fetch on each popup open (fresh menu); drop when closed.
+    if (slashQuery === null) {
+      setSlashSkills(null);
+      setSlashIndex(0);
+      return;
+    }
+    if (slashSkills === null && props.sessionId) {
+      sessionSkills(props.sessionId, props.workspace)
+        .then((all) => setSlashSkills(all.filter((s) => s.enabled)))
+        .catch(() => setSlashSkills([]));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [slashQuery === null]);
+  const pickSkill = (s: SessionSkillRow) => {
+    setPendingSkill(s);
+    setText(`/${s.name} `);
+    textareaRef.current?.focus();
+  };
+  // UX-044: which "This session" submenu is open (bindings live server-side).
+  const [bindMenu, setBindMenu] = useState<"memory" | "board" | null>(null);
+  // Bindings need a session and a workspace surface (Chat has neither).
+  const sessionRows = Boolean(props.sessionId && props.workspace !== undefined);
+  const bindRow = (icon: "book" | "table", label: string, kind: "memory" | "board") => (
+    <button
+      className={
+        "w-full flex items-center gap-2.5 px-3 py-1.5 text-[13px] text-left hover:bg-paper" +
+        (bindMenu === kind ? " bg-paper" : "")
+      }
+      onClick={() => setBindMenu(bindMenu === kind ? null : kind)}
+    >
+      <Icon name={icon} size={15} className="shrink-0 text-muted" />
+      <span className="flex-1">{label}</span>
+      <Icon name="chevronRight" size={12} className="shrink-0 text-faint" />
+    </button>
+  );
   const [dragging, setDragging] = useState(false);
   const [attachMenuOpen, setAttachMenuOpen] = useState(false);
   const [dictation, setDictation] = useState<DictationStatus | null>(null);
@@ -139,6 +199,16 @@ export function Composer(props: Props) {
     el.style.overflowY = el.scrollHeight > max ? "auto" : "hidden";
   }, [text]);
 
+  // Clear the draft when the conversation changes, so a half-typed message / picked file doesn't
+  // bleed from one session into another. MUST run before the prefill effect below — a doorway
+  // that switches session (resetKey) and pushes a prefill in one render must clear first, then
+  // let the prefill win (otherwise the clear wipes the prefill — SKILLS-SPEC §5.2 regression).
+  useEffect(() => {
+    setText("");
+    setAttachments([]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [props.resetKey]);
+
   // Apply a prefill (text + attachments) pushed from outside, then focus the composer. Applied at
   // most once per nonce (a ref guards against StrictMode/re-render double-fires), and attachments
   // are de-duplicated so the same file never lands twice.
@@ -152,14 +222,6 @@ export function Composer(props: Props) {
     textareaRef.current?.focus();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [props.prefill?.nonce]);
-
-  // Clear the draft when the conversation changes, so a half-typed message / picked file doesn't
-  // bleed from one session into another.
-  useEffect(() => {
-    setText("");
-    setAttachments([]);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [props.resetKey]);
 
   // Dictation is intentionally native-only: the browser/dev build remains a local server client
   // and never turns on the browser microphone or ships audio anywhere.
@@ -315,19 +377,48 @@ export function Composer(props: Props) {
   }, [text]);
 
   const submit = () => {
-    const t = text.trim();
-    if ((!t && attachments.length === 0) || props.running || dictation?.recording || dictationBusy) return;
+    // While the "/" popup is open the draft is a query, not a message — never send it.
+    if (slashQuery !== null) return;
+    // The visible "/name " prefix is UI state, not message text — strip it for the send;
+    // the skill rides as its own field.
+    const skill = prefixIntact ? pendingSkill!.name : undefined;
+    const msg = (skill ? text.slice(skill.length + 1) : text).trim();
+    if ((!msg && attachments.length === 0 && !skill) || props.running || dictation?.recording || dictationBusy) return;
     // No model connected: keep the draft (don't drop it) and send the user to setup instead.
     if (needsModel) {
       props.onConnectModel?.();
       return;
     }
-    props.onSend(t, attachments);
+    props.onSend(msg, attachments, skill);
     setText("");
     setAttachments([]);
+    setPendingSkill(null);
   };
 
   const onKey = (e: React.KeyboardEvent) => {
+    if (slashQuery !== null) {
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        setSlashIndex((i) => Math.min(i + 1, Math.max(slashMatches.length - 1, 0)));
+        return;
+      }
+      if (e.key === "ArrowUp") {
+        e.preventDefault();
+        setSlashIndex((i) => Math.max(i - 1, 0));
+        return;
+      }
+      if (e.key === "Escape") {
+        e.preventDefault();
+        setText("");
+        return;
+      }
+      if (e.key === "Enter" && !e.shiftKey) {
+        e.preventDefault();
+        const chosen = slashMatches[slashIndex];
+        if (chosen) pickSkill(chosen);
+        return;
+      }
+    }
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       submit();
@@ -490,6 +581,37 @@ export function Composer(props: Props) {
           if (e.dataTransfer.files.length) addFiles(e.dataTransfer.files);
         }}
       >
+        {/* "/" force-run popup — in-flow above the textarea; rows are the session's
+            effective menu only (muted/disabled skills never appear). */}
+        {slashQuery !== null && (
+          <div className="px-2 pt-2" data-testid="skill-popup" role="listbox" aria-label="Skills">
+            {slashSkills === null ? (
+              <div className="px-2 py-1.5 text-[12px] text-faint">Loading skills…</div>
+            ) : slashMatches.length === 0 ? (
+              <div className="px-2 py-1.5 text-[12px] text-faint">No matching skills.</div>
+            ) : (
+              slashMatches.map((s, i) => (
+                <button
+                  key={s.name}
+                  role="option"
+                  aria-selected={i === slashIndex}
+                  className={
+                    "w-full text-left flex items-center gap-2 px-2 py-1.5 rounded-lg " +
+                    (i === slashIndex ? "bg-paper" : "hover:bg-paper")
+                  }
+                  onMouseEnter={() => setSlashIndex(i)}
+                  onClick={() => pickSkill(s)}
+                >
+                  <span className="text-[13px] font-medium text-accent shrink-0">/{s.name}</span>
+                  <span className="text-[12px] text-faint truncate flex-1">{s.description}</span>
+                  <span className="text-[11px] px-1.5 py-0.5 rounded-full border border-line text-faint shrink-0">
+                    {s.scope}
+                  </span>
+                </button>
+              ))
+            )}
+          </div>
+        )}
         <textarea
           ref={textareaRef}
           className="w-full block px-3.5 pt-3.5 pb-1.5 text-[14.5px]"
@@ -524,10 +646,32 @@ export function Composer(props: Props) {
                     t("composer.otherFiles"),
                     () => pickFiles("text/*,.md,.csv,.json,.yaml,.yml,.log,.py,.ts,.tsx,.js,.rs,.go,.toml"),
                   )}
+                  {sessionRows && (
+                    <>
+                      <div className="my-1 border-t border-line" />
+                      <div className="px-3 pt-0.5 pb-0.5 text-[10.5px] font-semibold tracking-wide uppercase text-faint">
+                        This session
+                      </div>
+                      {bindRow("book", "Project memory", "memory")}
+                      {bindRow("table", "Board", "board")}
+                    </>
+                  )}
                 </div>
               </>
             )}
           </div>
+
+          {bindMenu && props.sessionId && (
+            <ProjectBindMenu
+              sessionId={props.sessionId}
+              kind={bindMenu}
+              onClose={() => {
+                setBindMenu(null);
+                setAttachMenuOpen(false);
+              }}
+              onOpenMemory={props.onOpenMemory}
+            />
+          )}
 
           {/* emote picker */}
           <div className="relative">

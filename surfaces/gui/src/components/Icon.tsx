@@ -46,6 +46,7 @@ export type IconName =
   | "medal"
   | "rss"
   | "bookOpen"
+  | "book"
   | "penTool"
   | "cpu"
   | "warning";
@@ -389,6 +390,15 @@ export function Icon({
           <path d="M2 6.5a3 3 0 0 1 3-3h5v13H5a3 3 0 0 1-3-3z" />
           <path d="M22 6.5a3 3 0 0 0-3-3h-5v13h5a3 3 0 0 0 3-3z" />
           <path d="M10 6.5v13" />
+        </svg>
+      );
+    case "book":
+      // Closed book — Project memory binding (a saved memory set).
+      return (
+        <svg {...s}>
+          <path d="M5 4.5h11a3 3 0 0 1 3 3v12a3 3 0 0 0-3-3H5z" />
+          <path d="M5 4.5a3 3 0 0 0-3 3v12a3 3 0 0 1 3-3" />
+          <path d="M5 4.5v12" />
         </svg>
       );
     case "penTool":

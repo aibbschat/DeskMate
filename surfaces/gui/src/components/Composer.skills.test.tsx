@@ -39,7 +39,9 @@ const props = (extra: Partial<Parameters<typeof Composer>[0]> = {}) => ({
   ...extra,
 });
 
-const box = () => screen.getByPlaceholderText(/Ask the coworker/);
+// 本 fork 把 placeholder 做了 i18n（t("composer.placeholder")），测试环境无 i18n 实例时
+// 渲染出原始 key，与官方英文 "Ask the coworker…" 不匹配。改用与实现无关的稳定选择器。
+const box = () => screen.getByRole("textbox");
 
 afterEach(() => {
   cleanup();
