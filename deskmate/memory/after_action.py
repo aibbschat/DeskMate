@@ -83,6 +83,18 @@ def _is_book_with_bible(path: Path) -> bool:
     return (path / _BIBLE_DIR).is_dir()
 
 
+# 神圣稿件硬隔离：绝对禁止触碰（用户红线）。即便某天误建了 .deskmate，也跳过。
+_SACRED_MARKERS = ("国子监秘闻录",)
+
+
+def _safe_book(path: Path) -> bool:
+    """已建圣经且非神圣稿件。任何圣经刷新 / 回流都必须经此门，杜绝误伤红线书。"""
+    s = str(path)
+    if any(m in s for m in _SACRED_MARKERS):
+        return False
+    return _is_book_with_bible(path)
+
+
 def _refresh_one_book(folder: str) -> None:
     """增量刷新一本书的圣经；返回 None（未建过）时静默跳过，不擅自全量建。"""
     from deskmate.novel_memory import core as novel_core
@@ -112,13 +124,76 @@ def refresh_bible_if_novel(workspace: Optional[str]) -> None:
     root = Path(workspace).expanduser().resolve()
     if not root.is_dir():
         return
-    if _is_book_with_bible(root):
+    if _safe_book(root):
         _refresh_one_book(str(root))
         return
     # 疑似总目录：只刷新已建圣经的子书（零冗余、守红线）
     for child in sorted(root.iterdir()):
-        if child.is_dir() and not child.name.startswith(".") and _is_book_with_bible(child):
+        if child.is_dir() and not child.name.startswith(".") and _safe_book(child):
             _refresh_one_book(str(child))
+
+
+def _upsert_produced_to_bible(workspace: Optional[str], text: str) -> None:
+    """把一段产出文本增量回流进 workspace 内各书的圣经（内容侧自动闭环）。
+
+    与 ``refresh_bible_if_novel``（文件侧）互补：后者扫盘捡新文件，本函数直接吃
+    对话产出 / 圆桌报告等未落盘文本。复用 ``novel_core.upsert_bible_from_text``，
+    该书未建圣经时静默跳过（守红线）；神圣稿件经 ``_safe_book`` 硬隔离。任何异常
+    都不阻断主流程（fail-open）。
+    """
+    if not workspace or not text or not text.strip():
+        return
+    from deskmate.novel_memory import core as novel_core
+
+    root = Path(workspace).expanduser().resolve()
+    if not root.is_dir():
+        return
+    books: list[Path] = []
+    if _safe_book(root):
+        books.append(root)
+    else:
+        for child in sorted(root.iterdir()):
+            if child.is_dir() and not child.name.startswith(".") and _safe_book(child):
+                books.append(child)
+    for b in books:
+        try:
+            novel_core.upsert_bible_from_text(str(b), text, source_label="对话产出")
+        except Exception:
+            logger.exception("after_action: 产出文本回流圣经失败：%s", b)
+
+
+def _upsert_artifacts_to_bible(workspace: Optional[str], artifacts: Sequence[str]) -> None:
+    """把本轮产物文件内容（若有）回流进圣经——精确触发，仅当本轮有真实产物。"""
+    if not workspace or not artifacts:
+        return
+    chunks: list[str] = []
+    for p in artifacts:
+        try:
+            t = Path(p).expanduser().read_text(encoding="utf-8", errors="replace")
+            if t.strip():
+                chunks.append(t)
+        except OSError:
+            continue
+    if chunks:
+        _upsert_produced_to_bible(workspace, "\n\n".join(chunks))
+
+
+def _upsert_content_loop(workspace: Optional[str], last_asst: str, artifacts) -> None:
+    """内容侧闭环的门槛收敛：仅当 workspace 本身就是一本已建圣经的书时，才把对话产出
+    自动回流（避免总目录下对每本子书盲目跑抽取）；产物文件则精确触发。
+
+    放在后台守护线程调用（见 ``reflect_and_persist`` 的 ``_bg``），LLM 抽取再慢也不阻塞
+    响应；fail-open，任何异常不阻断主流程。
+    """
+    try:
+        root = Path(workspace).expanduser().resolve() if workspace else None
+        if root and root.is_dir() and _safe_book(root):
+            if last_asst and len(last_asst.strip()) >= 300:
+                _upsert_produced_to_bible(workspace, last_asst)
+        if artifacts:
+            _upsert_artifacts_to_bible(workspace, artifacts)
+    except Exception:
+        logger.exception("after_action: 产出回流圣经（内容侧）失败")
 
 
 # ---------------------------------------------------------------------------
@@ -589,13 +664,15 @@ def reflect_and_persist(
             _maybe_evolve_on_correction(base_dir, last_user, last_asst)
             _maybe_review_memory(base_dir, last_user, last_asst)
             _maybe_curate_skills(base_dir)
+            # A：内容侧闭环（产出文本 / 产物文件回流圣经），LLM 抽取较慢，放后台不阻塞响应
+            _upsert_content_loop(workspace, last_asst, artifacts)
         Thread(target=_bg, daemon=True).start()
 
-    # ---- 2. 刷新圣经（修读稿不更新记忆）----
+    # ---- 2. 刷新圣经（文件侧，快、同步）----
     try:
         refresh_bible_if_novel(workspace)
     except Exception:
-        logger.exception("after_action: 刷新圣经失败")
+        logger.exception("after_action: 刷新圣经（文件侧）失败")
 
 
 async def reflect_and_persist_async(

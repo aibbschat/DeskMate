@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>豆包工作（字节）深度研究与借鉴分析 · OpenWorker/墨灵</title>
+<style>
+  :root{
+    --bg:#fafafa; --panel:#ffffff; --ink:#1f2329; --sub:#5a6573;
+    --line:#e6e8eb; --blue:#3b6ea5; --blue-soft:rgba(59,110,165,.14);
+    --green:#4a7a5e; --green-soft:rgba(74,122,94,.16);
+    --amber:#b07d2b; --red:#a84b4b;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
+    line-height:1.7;font-size:15px;}
+  .wrap{max-width:980px;margin:0 auto;padding:40px 28px 64px;}
+  header{border-bottom:2px solid var(--ink);padding-bottom:18px;margin-bottom:8px;}
+  h1{font-size:26px;margin:0 0 6px;letter-spacing:.5px;}
+  .meta{color:var(--sub);font-size:13px;}
+  h2{font-size:19px;margin:38px 0 14px;padding-left:11px;border-left:4px solid var(--blue);}
+  h3{font-size:16px;margin:22px 0 8px;color:var(--blue);}
+  p{margin:8px 0;}
+  .takeaway{background:var(--blue-soft);border:1px solid #c9d8e8;border-radius:10px;
+    padding:16px 18px;margin:18px 0;font-size:15.5px;}
+  .takeaway b{color:var(--blue);}
+  table{width:100%;border-collapse:collapse;margin:14px 0;background:var(--panel);
+    border:1px solid var(--line);border-radius:8px;overflow:hidden;font-size:13.5px;}
+  th,td{border:1px solid var(--line);padding:9px 11px;text-align:left;vertical-align:top;}
+  th{background:#f0f2f5;color:var(--ink);font-weight:600;}
+  td .tag{display:inline-block;font-size:11.5px;padding:1px 7px;border-radius:10px;margin-right:4px;}
+  .t0{background:#fdecec;color:var(--red);}      /* P0 */
+  .t1{background:#fbf2e0;color:var(--amber);}    /* P1 */
+  .t2{background:#eef3ee;color:var(--green);}    /* P2/不抄 */
+  .ok{color:var(--green);font-weight:600;}
+  .gap{color:var(--amber);font-weight:600;}
+  .none{color:var(--sub);}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:18px;}
+  @media(max-width:760px){.grid2{grid-template-columns:1fr;}}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px 18px;}
+  .card h3{margin-top:0;}
+  ul{margin:8px 0;padding-left:20px;}
+  li{margin:5px 0;}
+  .legend{font-size:12.5px;color:var(--sub);margin:6px 0 0;}
+  .legend span{display:inline-block;width:11px;height:11px;border-radius:3px;margin:0 5px 0 14px;vertical-align:middle;}
+  code{background:#eef0f3;padding:1px 5px;border-radius:4px;font-size:12.5px;}
+  .foot{margin-top:40px;padding-top:16px;border-top:1px solid var(--line);color:var(--sub);font-size:12.5px;}
+  .pill{display:inline-block;background:var(--green-soft);color:var(--green);font-weight:600;
+    padding:2px 10px;border-radius:12px;font-size:12.5px;margin-left:6px;}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>豆包工作（字节跳动）深度研究与借鉴分析</h1>
+  <div class="meta">研究对象：豆包工作（2026-08-25 发布，企业级办公 Agent）　·　对标：OpenWorker / 墨灵桌搭（C 端创作者伴侣）<br>
+  研究日期：2026-08-25　·　资料来源：光明网、新京报、证券时报、广州日报、新华财经等公开报道（已交叉比对）</div>
+</header>
+
+<div class="takeaway">
+  <b>一句话结论：</b>豆包工作 = 「飞书企业上下文 + 通用办公 Agent + 多 Agent 工作小队 + 云端持久执行」的 <b>B 端办公范式</b>；
+  我们 OpenWorker/墨灵 = <b>C 端「创作者桌搭伴侣」</b>，赛道不同。<br>
+  可借鉴的是 <b>思想而非形态</b>——其中最值得抄的 3 条（指哪改哪局部编辑 / 创作回流知识沉淀 / 圆桌综合报告）与历史小说创作场景高度契合，且我们已有大半地基，投入产出比极高；
+  而「飞书打通 / 企业安全 / 云端持久」是字节的 B 端护城河，<b>不该抄</b>。
+</div>
+
+<!-- ============ 雷达对比 ============ -->
+<h2>一、能力雷达对比（10 维度）</h2>
+<div class="card">
+  <div id="radar"></div>
+  <div class="legend">
+    <span style="background:var(--blue)"></span>豆包工作（B 端办公）
+    <span style="background:var(--green)"></span>OpenWorker/墨灵（C 端创作桌搭）
+  </div>
+  <p style="font-size:13px;color:var(--sub);margin-top:10px;">
+  评分为本研究基于公开报道与项目现状的定性估算（1–5）。核心看点：我们在<b>知识沉淀闭环</b>、<b>情感陪伴/成长</b>、<b>多 Agent 协作</b>三项领先或持平；
+  豆包在<b>多模态生成</b>、<b>桌面操控</b>、<b>长任务云持久</b>、<b>企业安全</b>四项占优（后两项属 B 端诉求，非我们方向）。
+  </p>
+</div>
+
+<!-- ============ 豆包能力全景 ============ -->
+<h2>二、豆包工作能力全景（拆骨）</h2>
+<table>
+  <tr><th style="width:22%">能力域</th><th>具体能力</th><th style="width:34%">说明 / 差异化</th></tr>
+  <tr><td><b>任务引擎</b></td><td>围绕目标自主拆解任务、调用工具、持续推进复杂工作流</td><td>Agent 基础范式，同类产品标配</td></tr>
+  <tr><td><b>内容生成</b></td><td>文档 / 表格 / PPT / 图片 / 视频 / 网页 / 简易应用</td><td>覆盖类型在同类中居第一梯队</td></tr>
+  <tr><td><b>协作编辑 ★</b></td><td>「指哪改哪」：框选任意局部定点修改，不重生成整篇</td><td>降低算力、逼近成品交付——<b>关键 UX 范式</b></td></tr>
+  <tr><td><b>桌面操控</b></td><td>授权后操作浏览器/电脑，跨软件处理数据、填表单、比对资料</td><td>基于视觉的 computer-use</td></tr>
+  <tr><td><b>长任务持久</b></td><td>云电脑持续执行（关机不中断）+ 手机远程操控</td><td>B 端云端能力，强项</td></tr>
+  <tr><td><b>AI 生态</b></td><td>技能 / 连接器 / 工作伙伴 三类扩展</td><td>用户按任务扩展能力边界</td></tr>
+  <tr><td><b>多 Agent 小队</b></td><td>多个专业 Agent 分工协作（如数据+研究+设计并行）</td><td>对应我们的「圆桌」</td></tr>
+  <tr><td><b>上下文 ★</b></td><td>与飞书打通，继承企业权限内聊天/文档/纪要/日程</td><td>最大差异化；<b>企业级</b>上下文</td></tr>
+  <tr><td><b>知识沉淀</b></td><td>人机协同内容沉淀回飞书，可复用企业知识库</td><td>对应我们的「圣经/longterm」</td></tr>
+  <tr><td><b>企业安全</b></td><td>全链路防护、沿用飞书权限、个人/企业数据隔离、双项认证</td><td>B 端合规护城河</td></tr>
+</table>
+
+<!-- ============ 竞品格局 ============ -->
+<h2>三、竞品格局（办公 Agent 大战）</h2>
+<table>
+  <tr><th>玩家</th><th>产品</th><th>定位 / 进展</th></tr>
+  <tr><td><b>字节</b></td><td>豆包工作（本次）</td><td>飞书打通为差异化；TRAE+扣子并入豆包体系，资源聚焦</td></tr>
+  <tr><td><b>腾讯</b></td><td>WorkBuddy</td><td>桌面端访问量约 2000 万，暂居领先（注：本助手即 WorkBuddy 体系）</td></tr>
+  <tr><td><b>阿里</b></td><td>千问办公</td><td>8-3 公测，已接入钉钉/飞书/企业微信三大协同平台</td></tr>
+  <tr><td><b>百度</b></td><td>（办公 Agent）</td><td>已入局，具体形态报道较少</td></tr>
+</table>
+<p class="legend">业内共识：竞争从「能做什么」转向「<b>多懂用户</b>」——<b>上下文理解能力</b>成为新一轮关键变量。这恰好与我们「圣经/记忆闭环」的方向一致。</p>
+
+<!-- ============ 逐项对比 ============ -->
+<h2>四、逐项对比：豆包工作 vs OpenWorker/墨灵</h2>
+<table>
+  <tr><th style="width:16%">维度</th><th style="width:30%">豆包工作</th><th style="width:27%">我们现状</th><th style="width:27%">差距 / 借鉴点</th></tr>
+  <tr><td>内容生成</td><td>文档/表/PPT/图/视/网页/应用</td><td>文档/稿件为主，多模态弱</td><td class="gap">差距大，但非作家核心痛点</td></tr>
+  <tr><td>局部协作编辑</td><td><b>指哪改哪</b>（选区定点改）</td><td>manuscriptReview 有审稿标记，但整稿级</td><td class="gap"><b>P0：升级为选区级局部补丁</b></td></tr>
+  <tr><td>桌面操控</td><td>视觉 computer-use 跨软件</td><td>Node sidecar（nut-js）已验证 arm64</td><td class="gap">P1：补权限校验+场景化</td></tr>
+  <tr><td>多 Agent 协作</td><td>工作小队分工+综合报告</td><td>圆桌 7 专家 + @召唤</td><td class="ok">持平；<b>P0：加任务卡+综合报告</b></td></tr>
+  <tr><td>上下文理解</td><td>飞书企业权限内上下文</td><td>圣经+USER.md+longterm（创作脉络）</td><td class="ok">赛道不同，我们更贴个人创作</td></tr>
+  <tr><td>知识沉淀</td><td>内容沉淀回飞书复用</td><td>圣经/longterm/journal 已闭环</td><td class="ok">地基在；<b>P0：补创作→圣经自动回流</b></td></tr>
+  <tr><td>情感陪伴</td><td>无</td><td>墨灵 GrowthEngine 成长系统</td><td class="ok"><b>护城河</b>，豆包无</td></tr>
+  <tr><td>技能生态</td><td>技能/连接器/工作伙伴</td><td>SkillManager+38 MSApps+imported</td><td class="gap">P1：强化 marketplace 感</td></tr>
+  <tr><td>长任务持久</td><td>云电脑+手机远程</td><td>proactivity 后台 tick（感知弱）</td><td class="gap">P1：加后台任务可视化</td></tr>
+  <tr><td>企业安全</td><td>双项认证+权限隔离</td><td>个人本地，无此诉求</td><td class="none">不抄（B 端护城河）</td></tr>
+</table>
+
+<!-- ============ 可借鉴清单 ============ -->
+<h2>五、可借鉴清单（按优先级）</h2>
+
+<div class="card">
+  <h3><span class="tag t0">P0</span>优先做 · 场景高度契合、地基已具备</h3>
+  <ul>
+    <li><b>「指哪改哪」稿件局部协作编辑</b><br>
+    现状：manuscriptReview 已有审稿标记，但编辑仍是整段/整稿级。豆包做到「框选任意局部→定点改→不重生成整篇」，对历史小说逐句打磨<b>痛点精准</b>。<br>
+    落地：前端选区 → 后端局部补丁 API（diff 式替换，保留上下文）→ 升级 manuscriptReview 标记协议。投入小、差异化强。</li>
+    <li><b>创作产出回流「圣经」闭环（强化版）</b><br>
+    现状：圣经（可核验实体）+ longterm + journal + USER.md 已在，但「一次创作产出的设定/人物/史料是否自动 upsert 进圣经」链路不够顺。<br>
+    落地：after_action 加一条「稿件结构化抽取 → 圣经实体确定性 upsert」（复用 <code>entities.py</code> + <code>verify_records</code>）。下次调用直接命中，越写越懂你的书。</li>
+    <li><b>圆桌「工作小队」议题驱动分工 + 综合报告</b><br>
+    现状：圆桌 7 专家已具备，偏「议题群聊」，缺任务卡/进度/成品交付。<br>
+    落地：圆桌加任务/进度视图（对标 dsh）+ 输出升级《综合研判报告》（已列入规划）。复杂题材（如某段历史考据）并发考证后出一份汇总。</li>
+  </ul>
+</div>
+
+<div class="card">
+  <h3><span class="tag t1">P1</span>值得做 · 增强体验</h3>
+  <ul>
+    <li><b>长任务后台「不中断」可视化</b>：proactivity 引擎 + scheduler tick 已具备，但用户感知弱。借鉴豆包「状态可见 + 可挂起/恢复」，前端加后台任务面板（进度/日志/可取消）。无云也能做。</li>
+    <li><b>技能/连接器开放市场范式</b>：SkillManager 已有 38 MSApps + imported 包。强化「技能即 persona 能力包」的 marketplace 感（已对齐 agentskills.io 格式）；顺带补 learning_graph 前端面板（API 已就位）。</li>
+    <li><b>桌面「手」场景化</b>：nut-js sidecar 已验证。补 macOS 屏幕录制/辅助功能权限校验，把 computer-use 收敛到「稿件/资料」场景，而非通用操控。</li>
+  </ul>
+</div>
+
+<div class="card">
+  <h3><span class="tag t2">P2 / 不抄</span>赛道不同 · 字节的 B 端护城河</h3>
+  <ul>
+    <li><b>飞书/企业上下文打通</b>：我们是个人创作者，无企业权限体系。「上下文」应是个人创作脉络（圣经+USER.md+稿件），不是企业聊天记录。</li>
+    <li><b>企业级安全合规 / 双项认证</b>：C 端本地应用无此合规诉求。</li>
+    <li><b>云端持久执行 / 手机远程操控</b>：需云后端，与本地桌搭形态相悖。</li>
+  </ul>
+</div>
+
+<!-- ============ 护城河 ============ -->
+<h2>六、我们的差异化护城河（豆包没有的）</h2>
+<div class="grid2">
+  <div class="card">
+    <h3>情感与成长</h3>
+    <ul>
+      <li>墨灵（桌宠）GrowthEngine 成长系统——陪伴维度豆包为零</li>
+      <li>桌搭形态（桌面常驻、低打扰、主动关怀）</li>
+    </ul>
+  </div>
+  <div class="card">
+    <h3>严肃创作能力</h3>
+    <ul>
+      <li>历史考据「圣经」体系：可核验、可删除、纯 Python 核验，拒绝传言</li>
+      <li>圆桌 7 专家 + @召唤 的创作者协作范式</li>
+      <li>本地桌面「手」（操作本机文件/软件）</li>
+    </ul>
+  </div>
+</div>
+
+<!-- ============ 下一步 ============ -->
+<h2>七、给萧哥的决策建议</h2>
+<table>
+  <tr><th style="width:14%">优先级</th><th style="width:30%">动作</th><th style="width:56%">理由 / 投入</th></tr>
+  <tr><td><span class="tag t0">最该立刻做</span></td><td>「指哪改哪」局部编辑</td><td>最契合作家逐句打磨痛点；manuscriptReview 地基在，补选区→局部补丁管线即可，差异化最强</td></tr>
+  <tr><td><span class="tag t0">次优先</span></td><td>创作回流圣经闭环</td><td>已有大半地基（实体/核验/after_action），补一条抽取→upsert 管线，越用越懂你的书</td></tr>
+  <tr><td><span class="tag t1">第三</span></td><td>圆桌综合报告</td><td>已规划，加任务卡+进度视图，复杂考据出《综合研判报告》</td></tr>
+  <tr><td><span class="tag t1">增强</span></td><td>后台任务面板 / 技能市场感</td><td>提升「AI 在后台默默干活」的可见性与可控性</td></tr>
+</table>
+<p style="margin-top:16px;">需要我排期实现其中某一项（建议从 <b>P0-1 指哪改哪</b> 起步），告诉我一声即可——按咱们「先对齐再实施」的节奏，我可以先出设计方案你确认 tradeoff，再动手。</p>
+
+<div class="foot">
+  研究说明：本报告基于 2026-08-25 当日公开发布报道交叉比对整理，未涉及豆包工作内部技术细节（官方未披露）。
+  对标结论结合 OpenWorker/墨灵 项目现状（见项目长期备忘）得出。所有借鉴项均遵循 commit 推 <code>backup/fork/base</code> 红线、不碰 origin。
+</div>
+
+</div>
+
+<script>
+(function(){
+  var dims = ["办公内容生成","多模态生成","桌面操控","多Agent协作","上下文理解","知识沉淀闭环","情感陪伴/成长","技能生态","长任务持久","企业安全"];
+  var doubao = [5,5,5,4,5,4,1,4,5,5];
+  var ours   = [3,2,3,4,3,5,5,3,3,1];
+  var cx=340, cy=320, R=235, N=dims.length;
+  function pt(i, norm){
+    var a = -Math.PI/2 + i*2*Math.PI/N;
+    return [cx + R*norm*Math.cos(a), cy + R*norm*Math.sin(a)];
+  }
+  var svg = '<svg viewBox="0 0 680 640" width="100%" style="max-width:680px;display:block;margin:0 auto;">';
+  // grid rings
+  for(var g=1; g<=5; g++){
+    var norm=g/5, pts=[];
+    for(var i=0;i<N;i++){ var p=pt(i,norm); pts.push(p[0].toFixed(1)+","+p[1].toFixed(1)); }
+    svg += '<polygon points="'+pts.join(' ')+'" fill="none" stroke="#e6e8eb" stroke-width="1"/>';
+  }
+  // axes + labels
+  for(var i=0;i<N;i++){
+    var pv=pt(i,1), pl=pt(i,1.16);
+    svg += '<line x1="'+cx+'" y1="'+cy+'" x2="'+pv[0].toFixed(1)+'" y2="'+pv[1].toFixed(1)+'" stroke="#e6e8eb" stroke-width="1"/>';
+    var anchor = (pl[0]>cx+10)?'start':(pl[0]<cx-10?'end':'middle');
+    svg += '<text x="'+pl[0].toFixed(1)+'" y="'+(pl[1]+4).toFixed(1)+'" font-size="12" fill="#5a6573" text-anchor="'+anchor+'">'+dims[i]+'</text>';
+  }
+  // doubao polygon
+  var dPts=[]; for(var i=0;i<N;i++){var p=pt(i,doubao[i]/5);dPts.push(p[0].toFixed(1)+","+p[1].toFixed(1));}
+  svg += '<polygon points="'+dPts.join(' ')+'" fill="rgba(59,110,165,.18)" stroke="#3b6ea5" stroke-width="2"/>';
+  // ours polygon
+  var oPts=[]; for(var i=0;i<N;i++){var p=pt(i,ours[i]/5);oPts.push(p[0].toFixed(1)+","+p[1].toFixed(1));}
+  svg += '<polygon points="'+oPts.join(' ')+'" fill="rgba(74,122,94,.20)" stroke="#4a7a5e" stroke-width="2"/>';
+  // dots
+  for(var i=0;i<N;i++){var p=pt(i,doubao[i]/5);svg+='<circle cx="'+p[0].toFixed(1)+'" cy="'+p[1].toFixed(1)+'" r="2.6" fill="#3b6ea5"/>';}
+  for(var i=0;i<N;i++){var p=pt(i,ours[i]/5);svg+='<circle cx="'+p[0].toFixed(1)+'" cy="'+p[1].toFixed(1)+'" r="2.6" fill="#4a7a5e"/>';}
+  svg += '</svg>';
+  document.getElementById('radar').innerHTML = svg;
+})();
+</script>
+</body>
+</html>

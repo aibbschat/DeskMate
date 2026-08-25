@@ -965,6 +965,106 @@ def incremental_bible_update(folder: str, progress_callback: callable = None) ->
     return docs
 
 
+def upsert_bible_from_text(
+    folder: str,
+    text: str,
+    *,
+    source_label: str = "产出文本",
+    progress_callback: callable = None,
+) -> dict[str, str] | None:
+    """从一段已产出的文本（剧本 / 考据笔记 / 圆桌报告）增量抽取实体并 upsert 进圣经。
+
+    与 ``incremental_bible_update`` 的区别：后者按文件 mtime 扫盘；本函数直接吃
+    **任意文本**，是「创作 / 考据 → 自动 upsert 回圣经」闭环的内容侧入口。剧本、
+    史料考证、圆桌综合报告等产出，不必落盘即可回流进实体库，下次写稿直接命中。
+
+    复用同一道 ``verify_records`` 证据闸门（专名必须在全书正文出现、引文必须能在
+    本批产出里命中），因此幻觉进不来；复用 ``_harvest`` 的两阶段抽取 + 缺口补全，
+    因此漏抽水平与 ``build_bible`` 一致。
+
+    守红线：该书尚未建圣经（``.deskmate`` 无数据）时返回 ``None``，绝不擅自全量建
+    ——与 ``incremental_bible_update`` 一致。需要全量建请显式调 ``build_bible``。
+
+    Args:
+        folder: 小说文件夹绝对路径，或单个 .txt / .docx 稿件文件。
+        text: 已产出的文本（剧本 / 考据 / 报告等）。
+        source_label: 来源标签，写入实体的 source_file 字段，便于溯源。
+        progress_callback: 可选进度回调。
+
+    Returns:
+        更新后的四份圣经 dict；``None`` 表示该书尚未建圣经（调用方应提示先做全量）。
+    """
+    if not text or not text.strip():
+        return None
+
+    _scan_root, bible_root_path = _resolve_root(folder)
+    bible_dir = bible_root_path / _BIBLE_DIR
+
+    # 守红线：陌生目录不擅自全量建
+    if not _ent.has_data(bible_dir):
+        if progress_callback:
+            progress_callback("no_existing_bible", {"folder": folder})
+        return None
+
+    # 专名核验必须以全书为准（人物可能在别处首次登场）
+    verify_text, _ = scan_novel(folder, max_chars=_VERIFY_MAX_CHARS, exclude_aux=True)
+
+    conn = _ent.connect(bible_dir)
+    try:
+        # 打来源标记，让 _batch_source_file 能把本批归属到 source_label 便于溯源
+        prefixed = f"# 文件：{source_label}\n\n{text}\n\n"
+        batches = _split_batches(prefixed)
+        if not batches:
+            return _ent.render_bible(conn)
+
+        if progress_callback:
+            progress_callback(
+                "extracting_artifact", {"total": len(batches), "source": source_label}
+            )
+
+        seq_base = _ent.next_source_seq(conn)
+        passed, counts = _harvest(
+            batches,
+            seq_base=seq_base,
+            full_text=verify_text,
+            progress_callback=progress_callback,
+        )
+
+        if progress_callback:
+            progress_callback("merging", {"total_batches": len(batches), **counts})
+
+        _ent.upsert_records(conn, passed)
+
+        # 全库复核：正文里已查无实据的旧事实撤销（与增量更新一致），
+        # 仅在正文未触及扫描上限时执行，避免超长篇截断误杀。
+        if len(verify_text) < _VERIFY_MAX_CHARS:
+            revoked = _ent.revoke_unsupported(conn, verify_text)
+            if revoked:
+                counts["revoked"] = len(revoked)
+
+        _ent.set_meta(conn, "last_scan_ts", str(time.time()))
+        docs = _ent.render_bible(conn)
+    finally:
+        conn.close()
+
+    # 落盘四份圣经 + upsert 进 workspace 记忆（实体已入库，落盘失败不致命）
+    try:
+        inject_bible(folder, docs)
+    except Exception:
+        logger.exception("upsert_bible_from_text: 落盘失败（实体已入库）：%s", folder)
+
+    logger.info(
+        "圣经内容回流：抽取 %d 条，确认 %d 条，待确认 %d 条，拦截幻觉 %d 条（来源 %s）",
+        counts.get("raw", 0), counts.get("confirmed", 0),
+        counts.get("pending", 0), counts.get("rejected", 0), source_label,
+    )
+    if progress_callback:
+        progress_callback(
+            "completed", {"docs": list(docs.keys()), "folder": folder, **counts}
+        )
+    return docs
+
+
 # ---------------------------------------------------------------------------
 # 写入 OpenWorker workspace 记忆（自动注入）
 # ---------------------------------------------------------------------------
