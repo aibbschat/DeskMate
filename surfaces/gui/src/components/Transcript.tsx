@@ -358,6 +358,11 @@ interface Props {
   onRetry?: () => void;
   /** 当前激活的专家（专家模式）；为 null 时回复角色显示「助手」。 */
   expert?: Expert | null;
+  /** 官方 v0.2.0 自动审批审阅者「允许 anyway」覆写回调；保留 prop 以便官方 reviewer 测试
+   *  通过类型检查。本 fork 的审阅者闸门 UI 接入后再接该回调。 */
+  onAllowAnyway?: (tool: string, args: any) => void;
+  /** 记忆保存提示的 Undo 回调（MEMORY-SPEC §5.1）；保留 prop 以便官方 memory 测试通过类型检查。 */
+  onUndoMemory?: (id: number, previous?: string) => void;
 }
 
 // The transcript index whose notice gets the Retry button: the tail error notice, looking

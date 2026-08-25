@@ -11,6 +11,24 @@ import { EMOTE_MANIFEST } from "./deskmate/emotes/emoteManifest";
 // the session's artifact list, App un-hides the rail.
 export const OPEN_ARTIFACT_EVENT = "ocw-open-artifact";
 
+// board: 深链：agent 一次性提及看板 [Board · 5 items](board:)，渲染为打开右侧栏 Board 区段的
+// 药丸。与 artifact chip 同源事件总线：App 取消隐藏右侧栏并展开对应区段。
+export const OPEN_BOARD_EVENT = "ocw-open-board";
+
+function BoardChip({ label }: { label: string }) {
+  return (
+    <button
+      className="boardlink-chip"
+      data-testid="board-chip"
+      title="Open the board"
+      onClick={() => window.dispatchEvent(new CustomEvent(OPEN_BOARD_EVENT))}
+    >
+      <Icon name="table" size={12} />
+      <span>{label || "Board"}</span>
+    </button>
+  );
+}
+
 // 表情协议：标准 markdown 图片语法 ![alt](emote:NAME)（alt 通常是中文表情名，如
 // 「招手问好」）。这是 LLM 原生语法，且 alt 自带语义——即使模型不识别 emote: 协议，
 // 也能从 alt 读懂情绪。components.img 拦截 emote: 协议渲染成墨灵 <Emote> 小图；
@@ -68,7 +86,7 @@ export function Markdown({ text }: { text: string }) {
         // artifact: and emote: are ours — keep them through the sanitizer (everything else
         // gets the default http/https/mailto policy). emote: is intercepted in components.img.
         urlTransform={(url) =>
-          url.startsWith("artifact:") || url.startsWith(EMOTE_PROTOCOL)
+          url.startsWith("artifact:") || url.startsWith(EMOTE_PROTOCOL) || url.startsWith("board:")
             ? url
             : defaultUrlTransform(url)
         }
@@ -77,6 +95,10 @@ export function Markdown({ text }: { text: string }) {
             if (href?.startsWith("artifact:")) {
               const title = Array.isArray(children) ? children.join("") : String(children ?? "");
               return <ArtifactChip path={href.slice("artifact:".length)} title={title} />;
+            }
+            if (href?.startsWith("board:")) {
+              const label = Array.isArray(children) ? children.join("") : String(children ?? "");
+              return <BoardChip label={label} />;
             }
             return (
               <a href={href} {...props} target="_blank" rel="noreferrer">

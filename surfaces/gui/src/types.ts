@@ -38,7 +38,14 @@ import type { MessageSource } from "./api";
 
 // "always_task" persists to the owning automation's task record (standing scoped
 // approval, UX-DECISIONS §25) — offered only on automation-run approval cards, in-app.
-export type ApprovalDecision = "once" | "deny" | "always_tool" | "always_command" | "always_task";
+export type ApprovalDecision =
+  | "once"
+  | "deny"
+  | "always_tool"
+  | "always_command"
+  | "always_domain"
+  | "always_task"
+  | "readonly_session";
 
 export interface TodoItem {
   content: string;
@@ -113,7 +120,7 @@ export type Item =
   // `hidden` = results the user's privacy filters removed before the agent saw them
   // (from the tool message's `_display` sidecar; the agent-visible content has no trace).
   // `standingRule` = the task-scoped rule that auto-allowed this call ("tool → target").
-  | { kind: "tool"; id: string; name: string; args: any; status: string; preview?: string; hidden?: number; standingRule?: string } // eslint-disable-line @typescript-eslint/no-explicit-any -- args are tool-specific and consumed with runtime checks
+  | { kind: "tool"; id: string; name: string; args: any; status: string; preview?: string; hidden?: number; standingRule?: string; reviewerReason?: string; allowAnyway?: boolean; approvalOrigin?: string; approvalNote?: string; approvalGrant?: string } // eslint-disable-line @typescript-eslint/no-explicit-any -- args are tool-specific and consumed with runtime checks
   | {
       kind: "approval";
       name: string;
@@ -123,6 +130,14 @@ export type Item =
       // The exact target a standing rule could pin (server-computed) — with a run
       // context, the card offers "Allow every time" (§25).
       standingTarget?: string;
+      // web_search only: the LIVE configured provider name, resolved server-side.
+      searchProvider?: string;
+      // set when the action would run a file the agent itself created/downloaded this session.
+      provenance?: string;
+      // the Auto-Approve reviewer answered `unsure` and raised this card.
+      reviewerUnsure?: string;
+      // server-classified: this shell command only reads locally.
+      readonlyOk?: boolean;
       resolved?: ApprovalDecision;
     }
   | {
@@ -130,11 +145,20 @@ export type Item =
       reason: string;
       path?: string;
       writable?: boolean;
+      primary?: boolean;
       resolved?: "granted" | "denied";
     }
   | {
       kind: "planreq";
       plan: string;
+      resolved?: "approved" | "rejected";
+    }
+  | {
+      // The staffing gate (agent teams): a lead proposes its worker roster.
+      kind: "teamreq";
+      members: { persona: string; name?: string; model?: string; reason?: string }[];
+      enable_chat?: boolean;
+      note?: string;
       resolved?: "approved" | "rejected";
     }
   | {
@@ -146,4 +170,36 @@ export type Item =
       multi?: boolean;
       resolved?: string;
     }
-  | { kind: "notice"; tone: "info" | "warn"; text: string; retriable?: boolean };
+  | { kind: "notice"; tone: "info" | "warn"; text: string; retriable?: boolean; title?: string; server?: string; detail?: string }
+  // 工具安装请求（request_tool）：agent 找不到某 CLI 时向用户申请安装；declining 是正常结果。
+  | {
+      kind: "toolreq";
+      tool: string;
+      reason: string;
+      installable?: boolean;
+      version?: string;
+      summary?: string;
+      source?: string;
+      resolved?: "installed" | "skipped";
+    }
+  // 任务分解闸门（agent teams）：lead 提议工作项；approval 后在 board 上创建。
+  | {
+      kind: "itemsreq";
+      items: { title: string; criteria: string; description?: string }[];
+      note?: string;
+      resolved?: "approved" | "rejected";
+    }
+  // 记忆保存提示（MEMORY-SPEC §5.1）：内联在对话里，可 Undo。
+  | { kind: "memory"; id: number; text: string; previous?: string; undone?: boolean };
+
+export interface GroupedQuestion {
+  question: string;
+  header?: string;
+  options?: QuestionOption[];
+  allow_text?: boolean;
+  multi?: boolean;
+}
+
+export type QuestionOption =
+  | string
+  | { label: string; description?: string; recommended?: boolean; preview?: string };

@@ -47,7 +47,8 @@ export type IconName =
   | "rss"
   | "bookOpen"
   | "penTool"
-  | "cpu";
+  | "cpu"
+  | "warning";
 
 export function Icon({
   name,
@@ -405,6 +406,14 @@ export function Icon({
           <rect x="6" y="6" width="12" height="12" rx="2" />
           <path d="M9 6V4M15 6V4M9 20v-2M15 20v-2M6 9H4M6 15H4M20 9h-2M20 15h-2" />
           <rect x="9" y="9" width="6" height="6" rx="1" />
+        </svg>
+      );
+    case "warning":
+      return (
+        <svg {...s}>
+          <path d="M12 3 L22 20 H2 Z" />
+          <path d="M12 9v5" />
+          <path d="M12 17h.01" />
         </svg>
       );
   }

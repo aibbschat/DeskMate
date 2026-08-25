@@ -57,6 +57,9 @@ interface Props {
   modelLabels?: Record<string, string>; // curated display names (raw id when absent)
   /** {full model id → "free" | "paid"} — splits the picker into 免费 / 付费 two tiers. */
   modelTiers?: Record<string, string>;
+  /** 当前会话 id；官方 v0.2.0 用于门控 skill 弹窗（无会话不弹）。本 fork 保留该 prop 以便
+   *  官方 Composer.skills 测试通过类型检查；门控逻辑按需接入。 */
+  sessionId?: string;
   // The model is FIXED once the session has history (§17): the picker renders ONLY on a fresh
   // session; after the first turn the fact lives in the topbar subtitle (§22) — no
   // interactive-then-disabled control.

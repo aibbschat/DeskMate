@@ -198,6 +198,16 @@ class LocalExecutor(Executor):
             **_NONINTERACTIVE_ENV,
             **(env or {}),
         }
+        # Managed pinned tools (toolchain.install) land under one stable bin dir; putting
+        # it on PATH up front — even before anything is installed there — means a tool the
+        # user approves mid-session works in THIS shell immediately, by name, no respawn.
+        # Appended last: the user's own copies always win.
+        from .. import toolchain
+
+        path = self._env.get("PATH", "")
+        managed_bin = str(toolchain.bin_dir())
+        if managed_bin not in path.split(os.pathsep):
+            self._env["PATH"] = f"{path}{os.pathsep}{managed_bin}" if path else managed_bin
         self._spawn()
 
     def _spawn(self) -> None:

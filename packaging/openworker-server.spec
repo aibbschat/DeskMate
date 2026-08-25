@@ -23,7 +23,7 @@ hides the window while keeping stdio intact.
 import os
 import sys
 
-from PyInstaller.utils.hooks import collect_all, collect_submodules
+from PyInstaller.utils.hooks import collect_all, collect_data_files, collect_submodules
 
 # SPECPATH is injected by PyInstaller and points at this file's directory
 # (<repo>/packaging). Derive everything else from it — no hardcoded paths.
@@ -48,13 +48,13 @@ for pkg in ("coworker", "aisuite", "mcp", "ddgs", "croniter", "docstring_parser"
     # live under deskmate.* — so they have to be importable from the bundle.
     hiddenimports += collect_submodules(pkg)
 
-# `collect_submodules` only grabs .py files, so the skill catalog JSON (a data
-# file under coworker/skills/) would be missing from the frozen bundle and
-# `_builtin_skills()` would raise FileNotFoundError, crashing the Skill Store
-# page. Stage it explicitly next to the coworker package in the bundle.
-_catalog_src = os.path.join(ROOT, "coworker", "skills", "catalog.json")
-if os.path.isfile(_catalog_src):
-    datas.append((_catalog_src, os.path.join("coworker", "skills")))
+# Builtin personas ship as DATA, not code: personas/builtin/<id>/manifest.md plus their
+# skills/<name>/SKILL.md. collect_submodules only takes .py files, so without this the
+# packaged sidecar starts with NO builtin coworkers — the picker comes up empty and every
+# persona-scoped skill silently disappears. (pyproject's package-data covers pip installs;
+# PyInstaller needs its own instruction.) Keep this even if the persona set changes — it
+# collects whatever non-.py files the package carries.
+datas += collect_data_files("coworker")
 
 # skill_store.py 现依赖 PyYAML 稳健解析 agentskills.io 嵌套 frontmatter；
 # 显式列入以保证冻结 DMG 包含（缺失会触发兜底降级解析，Hermes 包 tags 会变字符串）。

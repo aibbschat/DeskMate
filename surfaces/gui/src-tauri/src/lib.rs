@@ -16,6 +16,7 @@
 
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
+#[cfg(target_os = "windows")]
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -29,110 +30,11 @@ use tauri::{
 use tauri_plugin_autostart::ManagerExt;
 use uuid::Uuid;
 
-/// The sidecar server child - killed on exit (orphaned servers have bitten us before).
-/// The watcher can replace it if the process dies silently. Shared via Arc so both
-/// the Tauri state and the watcher thread see the same child.
-struct ServerProcess(Arc<Mutex<Option<Child>>>);
-
-/// Configuration needed to (re)spawn the Python sidecar. Extracted from setup()
-/// so the watcher can reuse it without reconstructing the original Command.
-struct ServerSpawnConfig {
-    bin: PathBuf,
-    port: u16,
-    api_token: String,
-}
-
-/// Health-watch thread: pings /v1/health every 10s. If 3 consecutive attempts fail
-/// (connection refused / timeout), the sidecar is assumed dead and respawned.
-/// Stops watching when the app exits (checked via the running flag).
-struct SidecarWatcher {
-    config: ServerSpawnConfig,
-    server: Arc<Mutex<Option<Child>>>,
-    running: Arc<AtomicBool>,
-}
-
-impl SidecarWatcher {
-    fn spawn_once(&self) {
-        let mut cmd = Command::new(&self.config.bin);
-        cmd.args(["--host", "127.0.0.1", "--port", &self.config.port.to_string()])
-            .env("COWORKER_EXIT_WITH_PARENT", "1")
-            .env("COWORKER_PARENT_PID", std::process::id().to_string())
-            .env("COWORKER_API_TOKEN", &self.config.api_token)
-            .stdin(Stdio::null());
-        match server_log_file() {
-            Some(log) => {
-                if let Ok(err_clone) = log.try_clone() {
-                    cmd.stdout(Stdio::from(log)).stderr(Stdio::from(err_clone));
-                } else {
-                    cmd.stdout(Stdio::from(log)).stderr(Stdio::null());
-                }
-            }
-            None => {
-                cmd.stdout(Stdio::null()).stderr(Stdio::null());
-            }
-        }
-        #[cfg(windows)]
-        {
-            use std::os::windows::process::CommandExt;
-            cmd.creation_flags(0x0800_0000);
-        }
-        match cmd.spawn() {
-            Ok(child) => {
-                let mut guard = self.server.lock().unwrap();
-                // Kill any previous child (should already be dead, but just in case)
-                if let Some(mut old) = guard.take() {
-                    let _ = old.kill();
-                }
-                *guard = Some(child);
-                eprintln!("[coworker] sidecar respawned on port {}", self.config.port);
-            }
-            Err(e) => {
-                eprintln!("[coworker] failed to respawn sidecar: {e}");
-            }
-        }
-    }
-
-    fn check_health(&self) -> bool {
-        // Use a raw TCP connect instead of an HTTP client to avoid adding dependencies.
-        // If the port accepts a connection, the server is alive.
-        std::net::TcpStream::connect_timeout(
-            &std::net::SocketAddr::from(([127, 0, 0, 1], self.config.port)),
-            std::time::Duration::from_secs(3),
-        )
-        .is_ok()
-    }
-
-    fn run(self) {
-        // Give the server time to start before the first check.
-        std::thread::sleep(std::time::Duration::from_secs(5));
-        let mut failures = 0u32;
-        while self.running.load(Ordering::SeqCst) {
-            if self.check_health() {
-                failures = 0;
-            } else {
-                failures += 1;
-                eprintln!(
-                    "[coworker] sidecar health check failed ({}/3)",
-                    failures
-                );
-                if failures >= 3 {
-                    eprintln!("[coworker] sidecar appears dead, attempting respawn...");
-                    self.spawn_once();
-                    failures = 0;
-                    // Give the new process time to start before resuming checks.
-                    std::thread::sleep(std::time::Duration::from_secs(8));
-                }
-            }
-            std::thread::sleep(std::time::Duration::from_secs(10));
-        }
-    }
-}
+/// The sidecar server child — killed on exit (orphaned servers have bitten us before).
+struct ServerProcess(Mutex<Option<Child>>);
 /// The active keep-awake guard while keep-awake is on (None when off). Dropping the guard
 /// releases the hold (kills `caffeinate` on macOS, clears the execution state on Windows).
 struct KeepAwake(Mutex<Option<KeepAwakeGuard>>);
-
-/// Flag the watcher thread checks to know when to stop.
-struct SidecarRunningFlag(Arc<AtomicBool>);
 
 fn free_port() -> u16 {
     std::net::TcpListener::bind("127.0.0.1:0")
@@ -143,6 +45,126 @@ fn free_port() -> u16 {
 
 fn launch_token() -> String {
     format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple())
+}
+
+/// Directories where user-installed CLIs live but launchd's PATH never looks. Used to
+/// repair PATH when the login-shell probe can't run (broken profile, exotic shell).
+#[cfg(not(target_os = "windows"))]
+const KNOWN_TOOL_DIRS: &[&str] = &[
+    "/opt/homebrew/bin", // Apple Silicon Homebrew
+    "/opt/homebrew/sbin",
+    "/usr/local/bin", // Intel Homebrew, most installers
+    "/usr/local/sbin",
+    "/opt/local/bin", // MacPorts
+];
+
+/// The environment the sidecar should run with (OPE-83).
+///
+/// A Finder/Dock-launched app inherits launchd's minimal PATH — `/usr/bin:/bin:/usr/sbin:/sbin`
+/// — so every tool the user installed via Homebrew/nvm/pyenv/asdf is invisible to the agent:
+/// semgrep, gitleaks, gh, node, aws, kubectl, terraform. That silently guts the security
+/// coworkers (they drive those scanners) and every ops workflow. Fix, same as VS Code and
+/// friends: ask the user's login shell for its environment once at spawn and merge it in, so
+/// the coworker gets the user's REAL toolchain. Credentials follow for free — aws/kubectl read
+/// ~/.aws and ~/.kube via HOME, which a Finder launch already has.
+///
+/// Guards: `-i` (not just `-l`) because brew/nvm/pyenv init usually lives in .zshrc; markers so
+/// a chatty profile's own output can't be parsed as variables; a 5s timeout with the child
+/// killed, so a hanging profile can never block app launch; and a well-known-dirs PATH repair as
+/// the fallback. Skipped entirely when we were launched FROM a shell (SHLVL set) — we already
+/// inherit the real thing, and `npm run tauri dev` should behave exactly as before.
+#[cfg(not(target_os = "windows"))]
+fn sidecar_env() -> std::collections::HashMap<String, String> {
+    use std::collections::HashMap;
+    use std::io::Read;
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    const START: &str = "__OCW_ENV_START__";
+    const END: &str = "__OCW_ENV_END__";
+
+    let mut out: HashMap<String, String> = HashMap::new();
+
+    // Launched from a shell (dev run, `open` from a terminal): the env is already real.
+    if std::env::var_os("SHLVL").is_some() {
+        return out;
+    }
+
+    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
+    let script = format!("echo {START}; env; echo {END}");
+    let spawned = Command::new(&shell)
+        .args(["-ilc", &script])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn();
+
+    if let Ok(mut child) = spawned {
+        if let Some(mut stdout) = child.stdout.take() {
+            let (tx, rx) = mpsc::channel();
+            std::thread::spawn(move || {
+                let mut buf = String::new();
+                let _ = stdout.read_to_string(&mut buf);
+                let _ = tx.send(buf);
+            });
+            match rx.recv_timeout(Duration::from_secs(5)) {
+                Ok(text) => {
+                    let _ = child.wait();
+                    let mut inside = false;
+                    for line in text.lines() {
+                        if line.trim_end() == START {
+                            inside = true;
+                            continue;
+                        }
+                        if line.trim_end() == END {
+                            break;
+                        }
+                        if !inside {
+                            continue;
+                        }
+                        // `env` prints KEY=value; continuation lines of a multi-line value
+                        // have no '=' before whitespace and are skipped rather than guessed at.
+                        if let Some((k, v)) = line.split_once('=') {
+                            if !k.is_empty() && !k.contains(char::is_whitespace) {
+                                out.insert(k.to_string(), v.to_string());
+                            }
+                        }
+                    }
+                }
+                Err(_) => {
+                    // Hung profile — never let it hold up launch.
+                    let _ = child.kill();
+                    let _ = child.wait();
+                }
+            }
+        }
+    }
+
+    // These describe the probe shell, not the user's environment.
+    for k in ["SHLVL", "PWD", "OLDPWD", "_"] {
+        out.remove(k);
+    }
+
+    // Whether the probe worked or not, make sure the usual install dirs are reachable.
+    let base = out
+        .get("PATH")
+        .cloned()
+        .or_else(|| std::env::var("PATH").ok())
+        .unwrap_or_default();
+    let mut parts: Vec<String> = base.split(':').filter(|s| !s.is_empty()).map(String::from).collect();
+    for dir in KNOWN_TOOL_DIRS {
+        if !parts.iter().any(|p| p == dir) && std::path::Path::new(dir).is_dir() {
+            parts.push((*dir).to_string());
+        }
+    }
+    out.insert("PATH".to_string(), parts.join(":"));
+    out
+}
+
+/// Windows GUI apps inherit the user's full environment already.
+#[cfg(target_os = "windows")]
+fn sidecar_env() -> std::collections::HashMap<String, String> {
+    std::collections::HashMap::new()
 }
 
 /// 预热闸门：阻塞等待 sidecar 在指定端口就绪（最长 timeout 秒）。
@@ -240,7 +262,7 @@ fn sidecar_candidate_dirs() -> Vec<PathBuf> {
 ///      (next to the app exe) on Windows.
 ///   3. Legacy onefile slot: `openworker-server[.exe]` next to the app binary (pre-onedir
 ///      builds used Tauri externalBin).
-///   4. Dev fallback: the repo venv, relative to this crate (`src-tauri` → `platform/.venv`;
+///   4. Dev fallback: the repo venv, relative to this crate (`src-tauri` → repo-root `.venv`;
 ///      `bin/` on POSIX, `Scripts\` on Windows).
 fn server_bin() -> PathBuf {
     if let Ok(p) = std::env::var("COWORKER_SERVER_BIN") {
@@ -815,15 +837,14 @@ pub fn run() {
             ensure_sidecar_integrity();
 
             // 1. Start the Python server sidecar on the chosen port (inherits our env).
-            let spawn_config = ServerSpawnConfig {
-                bin: server_bin(),
-                port,
-                api_token: api_token.clone(),
-            };
-            let mut server_cmd = Command::new(&spawn_config.bin);
+            let mut server_cmd = Command::new(server_bin());
             server_cmd
                 .args(["--host", "127.0.0.1", "--port", &port.to_string()])
-                // The sidecar self-exits if we die abruptly (dev-watcher restart, crash) -
+                // The user's real shell environment (PATH to their tools, AWS_PROFILE,
+                // KUBECONFIG, …) — see sidecar_env(). Applied FIRST so the explicit COWORKER_*
+                // vars below always win over anything a profile happens to export.
+                .envs(sidecar_env())
+                // The sidecar self-exits if we die abruptly (dev-watcher restart, crash) —
                 // belt-and-suspenders alongside the RunEvent::ExitRequested kill below.
                 // The explicit PID matters: under PyInstaller onefile the python process is a
                 // *grandchild* (bootloader in between), so getppid() never points at us and a
@@ -831,6 +852,12 @@ pub fn run() {
                 .env("COWORKER_EXIT_WITH_PARENT", "1")
                 .env("COWORKER_PARENT_PID", std::process::id().to_string())
                 .env("COWORKER_API_TOKEN", &api_token)
+                // This GUI app has no console, so a console-subsystem child would inherit
+                // invalid std handles and crash a few seconds in when uvicorn writes its logs
+                // (the "Starting coworker…" freeze on Windows). Hand it real handles: the
+                // server's output goes to a log file so field issues are debuggable at all
+                // ("relay off, no messages" was undiagnosable with everything on /dev/null).
+                // One file per launch, previous run kept as .old.
                 .stdin(Stdio::null());
             match server_log_file() {
                 Some(log) => {
@@ -862,23 +889,7 @@ pub fn run() {
             };
             // 预热闸门：等后端真正监听端口再放行窗口，避免首条消息卡在冷启动
             wait_for_sidecar(port, 45);
-            // Shared state so the watcher can replace the child on respawn.
-            let server_state = Arc::new(Mutex::new(child));
-            app.manage(ServerProcess(server_state.clone()));
-
-            // 1b. Start the sidecar health watcher.
-            //     Every 10s: TCP-probe the sidecar port. 3 consecutive failures -> respawn.
-            //     This catches silent crashes (OOM, segfault, macOS jetsam) that leave the
-            //     Tauri shell running with a dead backend - the user sees "slow response" and
-            //     blank conversations because the frontend has no server to talk to.
-            let watcher_running = Arc::new(AtomicBool::new(true));
-            app.manage(SidecarRunningFlag(watcher_running.clone()));
-            let watcher = SidecarWatcher {
-                config: spawn_config,
-                server: server_state.clone(),
-                running: watcher_running,
-            };
-            std::thread::spawn(move || watcher.run());
+            app.manage(ServerProcess(Mutex::new(child)));
 
             // Restore keep-awake from the last session.
             let ka = if read_keep_awake_pref() {
@@ -964,10 +975,6 @@ pub fn run() {
             // Also on Exit: belt-and-suspenders in case a quit path reaches teardown without
             // a preceding ExitRequested (observed with macOS Cmd+Q under the tray setup).
             if matches!(event, RunEvent::ExitRequested { .. } | RunEvent::Exit) {
-                // Stop the health watcher first so it doesn't respawn mid-shutdown.
-                if let Some(state) = app.try_state::<SidecarRunningFlag>() {
-                    state.0.store(false, Ordering::SeqCst);
-                }
                 if let Some(state) = app.try_state::<ServerProcess>() {
                     if let Some(mut child) = state.0.lock().unwrap().take() {
                         let _ = child.kill();

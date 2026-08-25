@@ -46,6 +46,11 @@
 #     仓库源码。所以本地 .app 的后端是从源码即时加载的，**改 Python 即时生效、根本不需要重打**
 #     （重开 .app 即可），指纹机制在它身上也不触发。只有改了 Rust/Tauri 才需要 build_local_app.sh。
 #   一句话：本地改 Python → 重开 .app；要出可分发包 → 跑本脚本（且会自动用指纹跳过重冻）。
+#
+# VENV PREREQS (a fresh worktree's venv, discovered the hard way 2026-08-21):
+#   .venv/bin/pip install -e ".[dev,messaging,browser,bedrock]" pyinstaller typer
+# (`typer` because PyInstaller's submodule collection imports mcp.cli, which
+# sys.exit(1)s without it.)
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
