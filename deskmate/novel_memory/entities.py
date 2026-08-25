@@ -366,6 +366,46 @@ def next_source_seq(conn: sqlite3.Connection) -> int:
     return int((row["m"] or 0)) + 1
 
 
+def _db_file_of(conn: sqlite3.Connection) -> str | None:
+    """取主库文件路径（用于快照回滚）。"""
+    try:
+        for row in conn.execute("PRAGMA database_list"):
+            if row[1] == "main":
+                return row[2] or None
+    except Exception:  # noqa: BLE001
+        pass
+    return None
+
+
+def _snapshot_db(conn: sqlite3.Connection, keep: int = 5) -> None:
+    """upsert / revoke 前对实体库做一次安全快照（VACUUM INTO），出错可回滚。
+
+    加固的第一原则：加固动作本身不能成为新的崩溃源。任何异常只记日志，
+    绝不拖累主流程（任务执行时圣经读写必须 fail-open）。
+    """
+    try:
+        db_file = _db_file_of(conn)
+        if not db_file:
+            return
+        db_path = Path(db_file)
+        snap_dir = db_path.parent / "_snapshots"
+        snap_dir.mkdir(parents=True, exist_ok=True)
+        stamp = int(time.time() * 1000)
+        snap_path = snap_dir / f"{db_path.stem}-{stamp}.db"
+        conn.execute("VACUUM INTO ?", (str(snap_path),))
+        snaps = sorted(
+            snap_dir.glob(f"{db_path.stem}-*.db"),
+            key=lambda p: p.stat().st_mtime,
+        )
+        for old in snaps[:-keep]:
+            try:
+                old.unlink()
+            except OSError:
+                pass
+    except Exception:  # noqa: BLE001
+        logger.exception("圣经快照失败（不影响主流程）")
+
+
 def upsert_records(
     conn: sqlite3.Connection,
     records: Iterable[Record],
@@ -385,6 +425,7 @@ def upsert_records(
     Returns: {"inserted": n, "updated": n, "rejected": n}
     """
     now = time.time()
+    _snapshot_db(conn)
     counts = {"inserted": 0, "updated": 0, "rejected": 0}
 
     for rec in records:
@@ -528,6 +569,7 @@ def revoke_unsupported(conn: sqlite3.Connection, full_text: str) -> list[str]:
     2. 用户删改了正文（某人物被写没了）后，圣经能**跟着收缩**——v1 永远只增不减。
     """
     full = _norm(full_text)
+    _snapshot_db(conn)
     revoked: list[str] = []
     for row in conn.execute(
         "SELECT * FROM entities WHERE status != ?", (STATUS_REJECTED,)

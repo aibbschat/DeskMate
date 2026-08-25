@@ -1081,6 +1081,24 @@ def _workspace_key() -> str:
     return os.environ.get("COWORKER_WORKSPACE_KEY", "deskmate-novel")
 
 
+def _atomic_write_text(path: Path, content: str) -> None:
+    """原子写：先写 .tmp 临时文件再 os.replace 覆盖，避免任务中途崩溃截断圣经 md。
+
+    os.replace 在同卷上是原子的——下游读到的总是「完整旧版」或「完整新版」，不会是半截。
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    try:
+        tmp.write_text(content, encoding="utf-8")
+        os.replace(tmp, path)
+    finally:
+        if tmp.exists():
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+
+
 def inject_bible(folder: str, docs: dict[str, str]) -> int:
     """把四份圣经写入 <folder>/.deskmate/ 并 upsert 为 OpenWorker workspace 记忆。返回写入条数。
 
@@ -1093,7 +1111,7 @@ def inject_bible(folder: str, docs: dict[str, str]) -> int:
     for tag, fname in _BIBLE_FILES.items():
         content = docs.get(tag)
         if content:
-            (bible_dir / fname).write_text(content, encoding="utf-8")
+            _atomic_write_text(bible_dir / fname, content)
 
     ws = str(root)
     db = _db_path()
@@ -1139,7 +1157,10 @@ def _read_legacy_bible(folder: str) -> dict[str, str]:
     for tag, fname in _BIBLE_FILES.items():
         p = bible_dir / fname
         if p.is_file():
-            out[tag] = p.read_text(encoding="utf-8")
+            try:
+                out[tag] = p.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError) as e:
+                logger.warning("圣经 legacy 文件读取失败，跳过：%s (%s)", p, e)
     return out
 
 
