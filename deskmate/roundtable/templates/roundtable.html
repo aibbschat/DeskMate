@@ -427,6 +427,12 @@
         <button class="more-btn" onclick="openPersonaLayer()">更多</button>
       </div>
 
+      <button class="start" id="presetBtn" onclick="presetScriptReview()"
+        style="margin-top:10px;background:var(--host-accent);border-color:var(--host-border);color:#7c2d12">
+        🎬 一键：史料考据·文学编辑·影视改编 审剧本
+      </button>
+      <div id="presetHint" style="font-size:10.5px;color:var(--ink-muted);margin-top:4px;line-height:1.4"></div>
+
       <label>轮次</label>
       <select id="rounds">
         <option value="1">1 轮</option>
@@ -1304,6 +1310,22 @@
     if (!names.length) { el.textContent = "（未选，将仅主持）"; return; }
     if (names.length <= 4) el.textContent = names.join(" · ");
     else el.textContent = names.slice(0, 3).join(" · ") + " 等 " + names.length + " 个";
+  }
+
+  // ===== 一键「史考·文学编辑·影视改编」三角审剧本/史料预设 =====
+  // 把圆桌收敛为最常用于"审剧本 + 考据交叉验证"的三位专家，并默认 2 轮收窄。
+  // 仅改 UI 勾选状态，不擅自起圆桌；用户仍须填待评审文稿后点「开始圆桌」。
+  function presetScriptReview() {
+    const ids = ["historian", "lit-editor", "adaptation"];
+    document.querySelectorAll(".pc").forEach(c => { c.checked = ids.indexOf(c.value) >= 0; });
+    const rounds = $("rounds");
+    if (rounds) rounds.value = "2";
+    currentCfg = null;  // 强制下次 startRoundtable 重新读配置，使本预设生效
+    updatePersonaSummary();
+    const h = $("presetHint");
+    if (h) h.textContent = "已选：史料考据 · 文学编辑 · 影视改编（2 轮）。请在上方填「待评审文稿」后点「开始圆桌」。";
+    const mp = $("manuscript");
+    if (mp) { mp.focus(); mp.scrollIntoView({ block: "center" }); }
   }
 
   // ===== MCP 热插拔（插件中心装完外部 server 后，让圆桌重新接入，无需重启）=====

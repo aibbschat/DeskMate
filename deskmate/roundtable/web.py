@@ -20,6 +20,7 @@ import asyncio
 import json
 import logging
 import os
+import threading
 from pathlib import Path
 from typing import Optional
 
@@ -92,6 +93,33 @@ def _save_roundtable_session(store, workspace, topic, markdown, traces) -> Optio
     except Exception as exc:  # noqa: BLE001
         logger.warning("圆桌纪要落盘失败（不影响圆桌）：%s", exc)
         return None
+
+
+# 神圣稿件硬隔离：圆桌报告回流圣经时同样不得触碰（与 after_action._safe_book 同红线）
+_SACRED_MARKERS = ("国子监秘闻录",)
+
+
+def _upsert_report_to_bible(mp: str, synthesis_md: str) -> None:
+    """圆桌收尾后，把《综合研判报告》回流进稿件圣经（复用 A 的内容侧闭环 upsert_bible_from_text）。
+
+    仅在稿件已建圣经时生效（upsert_bible_from_text 自带 has_data 守门，绝不会擅自全量建圣经）；
+    神圣稿件被硬隔离；任何异常仅记日志，绝不阻断圆桌本身。本函数在后台守护线程调用。
+    """
+    if not mp or not synthesis_md or not synthesis_md.strip():
+        return
+    if any(m in mp for m in _SACRED_MARKERS):
+        logger.warning("圆桌报告回流跳过神圣稿件（硬隔离）：%s", mp)
+        return
+    try:
+        from deskmate.novel_memory import core as nb
+
+        docs = nb.upsert_bible_from_text(mp, synthesis_md, source_label="圆桌综合研判报告")
+        if docs:
+            logger.info("圆桌《综合研判报告》已回流圣经：%s", mp)
+        else:
+            logger.info("圆桌报告未回流（该书尚无关联网经/无新增事实）：%s", mp)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("圆桌报告回流圣经失败（不影响圆桌）：%s", exc)
 
 
 class StreamBody(BaseModel):
@@ -342,9 +370,10 @@ def create_app(rt_port: int = 9920, base_dir: Optional[str] = None, workspace: O
         _topic = topic
         _markdown = None
         _traces = None
+        _synthesis = None
 
         async def gen():
-            nonlocal _topic, _markdown, _traces
+            nonlocal _topic, _markdown, _traces, _synthesis
             async for ev in rt.run_stream():
                 if await request.is_disconnected():
                     logger.info("客户端断开，停止圆桌流")
@@ -355,6 +384,7 @@ def create_app(rt_port: int = 9920, base_dir: Optional[str] = None, workspace: O
                 elif et == "done":
                     _markdown = ev.get("markdown")
                     _traces = ev.get("traces")
+                    _synthesis = ev.get("synthesis")
                 yield f"data: {json.dumps(ev, ensure_ascii=False)}\n\n"
             # 流正常结束（收到 done）：把圆桌纪要落盘进主 app 会话库。
             # 中途断开（未收到 done）则不落盘——未完成的圆桌不入库。
@@ -364,6 +394,15 @@ def create_app(rt_port: int = 9920, base_dir: Optional[str] = None, workspace: O
                 )
                 if sid:
                     logger.info("圆桌纪要已存入历史对话栏 session=%s", sid)
+            # B：圆桌《综合研判报告》回流进稿件圣经（A 的内容侧闭环）。
+            # 后台守护线程跑，避免真实 LLM 抽取拖住 SSE 关闭；失败仅记日志。
+            if mp and _synthesis:
+                try:
+                    threading.Thread(
+                        target=_upsert_report_to_bible, args=(mp, _synthesis), daemon=True
+                    ).start()
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("启动圆桌报告回流线程失败：%s", exc)
 
         return StreamingResponse(
             gen(),
