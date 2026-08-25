@@ -60,6 +60,21 @@ export function ExpertsCenter({ experts, activeExpertId, onSummon, onBack }: Pro
                     </span>
                   </div>
                   <p className="expert-card-desc">{e.description}</p>
+                  {e.metadata?.skillId && (
+                    <p
+                      className="expert-card-skill"
+                      style={{
+                        margin: "6px 0 0",
+                        fontSize: 11,
+                        color: "var(--ink-muted)",
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 4,
+                      }}
+                    >
+                      🔧 关联技能：{e.metadata.skillId}
+                    </p>
+                  )}
                 </div>
               </div>
 
