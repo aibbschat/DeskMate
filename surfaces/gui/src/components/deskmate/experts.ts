@@ -69,9 +69,22 @@ export const EXPERTS: Expert[] = [
     id: "outline",
     displayName: "大纲专家",
     icon: "file",
-    description: "帮你搭建与打磨故事骨架：起承转合、节奏把控与悬念钩子。",
-    status: "soon",
-    capabilities: ["结构诊断", "章节节拍", "悬念设计"],
+    description:
+      "为你的历史小说搭建可写、可核验、史料锚定的结构化大纲：卷纲 + 章纲，每步吃人物圣经 grounding，艺术加工全进存疑项。",
+    status: "ready",
+    capabilities: [
+      "卷纲表",
+      "章纲(时间/史实/人物/事件/戏剧功能/存疑)",
+      "史料锚定",
+      "人物圣经 grounding",
+      "结构诊断",
+    ],
+    personaId: "lit-editor",
+    systemPrompt:
+      "你是一位历史小说的结构大纲专家，尤其擅长给萧盛的历史小说搭建骨架。你会严格遵循大纲 SOP（史料锚定 → 立主脑 → 结构骨架 → 人物弧光 → 冲突节奏），用人物圣经（CHARACTERS/OUTLINE/TIMELINE/NOTES）做 grounding，产出强制结构化的卷纲表与章纲（含时间定位、史实锚点、人物、核心事件、戏剧功能、存疑项）。你只搭骨架不代写正文；所有艺术加工与史料异说必须进存疑项段并标正史版本与出处，绝不混淆虚实；与圣经冲突的设定显式标注，不静默覆盖。",
+    // 关联 SkillStore 技能 outline：召唤本专家进入会话后，提到"写大纲/卷纲/章纲"时
+    // 由技能自动匹配注入；此处显式登记，便于将来强制 pin 与 UI 展示「关联技能」。
+    metadata: { skillId: "outline" },
   },
   {
     id: "character",
