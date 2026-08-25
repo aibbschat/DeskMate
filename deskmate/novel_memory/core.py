@@ -764,6 +764,15 @@ def build_bible(folder: str, progress_callback: callable = None) -> dict[str, st
         progress_callback=progress_callback,
     )
 
+    # 加固（P0-1）：抽空即失败，绝不能先清库再报错。
+    # 若所有批次 LLM 调用失败/超时（_harvest 对异常只 warning 不抛），passed 为空，
+    # 此时应**保留旧圣经**直接报错，而不是 DELETE 已提交后再 raise 让数据蒸发。
+    if not passed:
+        raise ValueError(
+            "抽取未产出任何可核验的事实：模型可能未按 JSON 格式返回，"
+            "或正文过短。已保留原有圣经不动，而不是写入未经核验的内容或清空它。"
+        )
+
     if progress_callback:
         progress_callback("merging", {"total_batches": len(batches), **counts})
 
@@ -771,21 +780,19 @@ def build_bible(folder: str, progress_callback: callable = None) -> dict[str, st
     bible_dir.mkdir(parents=True, exist_ok=True)
     conn = _ent.connect(bible_dir)
     try:
-        # 全量重建：先清空旧实体，避免上一轮（含 v1 迁移前）的错误事实残留
-        conn.execute("DELETE FROM entities")
-        conn.commit()
-        _ent.upsert_records(conn, passed)
-        _ent.set_meta(conn, "last_scan_ts", str(time.time()))
-        docs = _ent.render_bible(conn)
-        st = _ent.stats(conn)
+        # 全量重建：先清空旧实体，避免上一轮（含 v1 迁移前）的错误事实残留。
+        # P1-6：DELETE+upsert 临界区串行化（与 upsert_records 内部锁同一把），
+        # 防止并发增量/回流在「清完库、尚未 upsert」的窗口插进来把旧批次写进空库。
+            with _ent._WRITE_LOCK:
+                conn.execute("DELETE FROM entities")
+                conn.commit()
+                _ent._upsert_records_locked(conn, passed)
+            _ent.set_meta(conn, "last_scan_ts", str(time.time()))
+            _ent.set_meta(conn, "last_verify_chars", str(len(verify_text)))
+            docs = _ent.render_bible(conn)
+            st = _ent.stats(conn)
     finally:
         conn.close()
-
-    if not passed:
-        raise ValueError(
-            "抽取未产出任何可核验的事实：模型可能未按 JSON 格式返回，"
-            "或正文过短。已保持圣经为空，而不是写入未经核验的内容。"
-        )
 
     logger.info(
         "圣经重建完成：抽取 %d 条，确认 %d 条，待确认 %d 条，拦截幻觉 %d 条",
@@ -828,6 +835,23 @@ def _parse_bible_docs(merged: str) -> dict[str, str]:
             tag = m.group(1).upper()
             docs[tag] = b
     return docs
+
+
+def _guard_revoke(conn, verify_text: str) -> list[str]:
+    """P1-5：调 revoke_unsupported 前的安全闸门。
+
+    若本次 verify_text 长度相对上次记录骤降（< 50%），说明正文多半是「暂时性读不到」
+    （文件保存/锁定的瞬间被 _read_file_text 吞成空串），此时全库复核会把真实人物全
+    判为「正文查无实据」误杀为 rejected。骤降即跳过复核并返回空，避免不可逆误杀。
+    """
+    last = float(_ent.get_meta(conn, "last_verify_chars", "0") or 0)
+    if last > 0 and len(verify_text) < 0.5 * last:
+        logger.warning(
+            "verify_text 骤降（%d 字符 < 上次 %d 的 50%%），跳过全库复核以免误杀真实人物",
+            len(verify_text), int(last),
+        )
+        return []
+    return _ent.revoke_unsupported(conn, verify_text)
 
 
 def incremental_bible_update(folder: str, progress_callback: callable = None) -> dict[str, str] | None:
@@ -944,15 +968,23 @@ def incremental_bible_update(folder: str, progress_callback: callable = None) ->
         # 全库复核：撤销正文里已查无实据的条目（解决 v1「幻影永不死」）。
         # 仅在正文未触及扫描上限时执行，避免超长篇因截断而误杀真实人物。
         if len(verify_text) < _VERIFY_MAX_CHARS:
-            revoked = _ent.revoke_unsupported(conn, verify_text)
+            revoked = _guard_revoke(conn, verify_text)
             if revoked:
                 logger.info("全库复核撤销 %d 条正文中已无实据的旧事实", len(revoked))
                 counts["revoked"] = len(revoked)
 
         _ent.set_meta(conn, "last_scan_ts", str(time.time()))
+        _ent.set_meta(conn, "last_verify_chars", str(len(verify_text)))
         docs = _ent.render_bible(conn)
     finally:
         conn.close()
+
+    # P1-7：增量更新必须把渲染结果落盘四份 md，否则 proactivity/context_builder
+    # 与 roundtable 的 md-mtime 判新旧逻辑会拿到陈旧圣经（停在上次全量版本）。
+    try:
+        inject_bible(folder, docs)
+    except Exception:
+        logger.exception("incremental_bible_update: 落盘失败（实体已入库）：%s", folder)
 
     logger.info(
         "圣经增量更新：抽取 %d 条，确认 %d 条，待确认 %d 条，拦截幻觉 %d 条",
@@ -1041,13 +1073,10 @@ def upsert_bible_from_text(
         _ent.upsert_records(conn, passed)
 
         # 全库复核：正文里已查无实据的旧事实撤销（与增量更新一致），
-        # 仅在正文未触及扫描上限时执行，避免超长篇截断误杀。
+        # 仅在正文未触及扫描上限时执行全库复核（P1-5：骤短 verify_text 时跳过以免误杀）。
         if len(verify_text) < _VERIFY_MAX_CHARS:
-            revoked = _ent.revoke_unsupported(conn, verify_text)
-            if revoked:
-                counts["revoked"] = len(revoked)
-
-        _ent.set_meta(conn, "last_scan_ts", str(time.time()))
+            _guard_revoke(conn, verify_text)
+        _ent.set_meta(conn, "last_reflow_ts", str(time.time()))
         docs = _ent.render_bible(conn)
     finally:
         conn.close()
@@ -1090,9 +1119,13 @@ def _atomic_write_text(path: Path, content: str) -> None:
     """原子写：先写 .tmp 临时文件再 os.replace 覆盖，避免任务中途崩溃截断圣经 md。
 
     os.replace 在同卷上是原子的——下游读到的总是「完整旧版」或「完整新版」，不会是半截。
+    P1-6：临时文件名加 uuid 后缀，避免并发 inject_bible 多个任务抢同一个固定
+    `<name>.tmp` 互相覆盖、发布损坏文件。
     """
+    import uuid as _uuid
+
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + ".tmp")
+    tmp = path.with_name(f"{path.name}.{_uuid.uuid4().hex}.tmp")
     try:
         tmp.write_text(content, encoding="utf-8")
         os.replace(tmp, path)

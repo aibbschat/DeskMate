@@ -2582,7 +2582,9 @@ def create_app(manager: SessionManager) -> FastAPI:
                 pp = _P(path).expanduser()
                 # 读稿前先增量刷新记忆（修"读稿不更新记忆"）：已建圣经的书会自动纠正陈旧实体
                 try:
-                    refresh_bible_if_novel(str(pp))
+                    # P2-10：刷新圣经内含多批 LLM 抽取（秒到分钟级），若在 async 端点
+                    # 内同步调用会阻塞整个 sidecar。包进线程池，不挡其他请求。
+                    await asyncio.to_thread(refresh_bible_if_novel, str(pp))
                 except Exception:
                     logging.warning("报告流刷新圣经失败（不影响报告生成）：%s", pp)
                 if pp.is_dir():

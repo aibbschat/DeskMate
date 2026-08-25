@@ -28,12 +28,19 @@ import json
 import logging
 import re
 import sqlite3
+import threading
 import time
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable, Optional
 
 logger = logging.getLogger(__name__)
+
+# 进程级写锁：串行化所有圣经写路径（build 的 DELETE+upsert / incremental / 回流 /
+# 审阅决议 / 删除），避免并发任务交错造成「清完库又被旧批次 upsert 进空库」或
+# 并发 inject_bible 发布损坏的 md。读路径（read_bible / render_bible）不加锁。
+_WRITE_LOCK = threading.Lock()
 
 __all__ = [
     "Record",
@@ -155,6 +162,7 @@ CREATE TABLE IF NOT EXISTS entities (
     history      TEXT NOT NULL DEFAULT '[]',
     tier         TEXT NOT NULL DEFAULT 'manuscript',
     needs_review INTEGER NOT NULL DEFAULT 0,
+    author_confirmed INTEGER NOT NULL DEFAULT 0,
     first_seen   REAL NOT NULL DEFAULT 0,
     last_updated REAL NOT NULL DEFAULT 0
 );
@@ -191,6 +199,7 @@ class Record:
     role_category: str = ROLE_NARRATIVE
     tier: str = TIER_MANUSCRIPT
     needs_review: bool = False
+    author_confirmed: bool = False
     reject_reason: str = ""
 
     # -- 派生 ---------------------------------------------------------------
@@ -376,6 +385,11 @@ def connect(bible_dir: Path) -> sqlite3.Connection:
             "ALTER TABLE entities ADD COLUMN role_category TEXT NOT NULL "
             "DEFAULT 'narrative'"
         )
+    if "author_confirmed" not in _cols:
+        conn.execute(
+            "ALTER TABLE entities ADD COLUMN author_confirmed INTEGER NOT NULL "
+            "DEFAULT 0"
+        )
     conn.commit()
     return conn
 
@@ -427,7 +441,8 @@ def _snapshot_db(conn: sqlite3.Connection, keep: int = 5) -> None:
         snap_dir = db_path.parent / "_snapshots"
         snap_dir.mkdir(parents=True, exist_ok=True)
         stamp = int(time.time() * 1000)
-        snap_path = snap_dir / f"{db_path.stem}-{stamp}.db"
+        # 同毫秒内多次快照可能撞名 → 加 uuid 后缀防覆盖
+        snap_path = snap_dir / f"{db_path.stem}-{stamp}-{uuid.uuid4().hex[:8]}.db"
         conn.execute("VACUUM INTO ?", (str(snap_path),))
         snaps = sorted(
             snap_dir.glob(f"{db_path.stem}-*.db"),
@@ -443,6 +458,20 @@ def _snapshot_db(conn: sqlite3.Connection, keep: int = 5) -> None:
 
 
 def upsert_records(
+    conn: sqlite3.Connection,
+    records: Iterable[Record],
+    *,
+    keep_rejected: bool = False,
+) -> dict[str, int]:
+    """**确定性合并**：按实体 key upsert，冲突留痕，不调用任何 LLM。
+
+    进程级写锁串行化：避免并发的 build / 增量 / 回流交错写库。
+    """
+    with _WRITE_LOCK:
+        return _upsert_records_locked(conn, records, keep_rejected=keep_rejected)
+
+
+def _upsert_records_locked(
     conn: sqlite3.Connection,
     records: Iterable[Record],
     *,
@@ -491,19 +520,26 @@ def upsert_records(
                 """INSERT INTO entities
                    (id, kind, key, name, subject, object, rel_type, detail, evidence,
                     source_file, source_seq, status, confidence, aliases,
-                    role_category, history, tier, needs_review, first_seen, last_updated)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    role_category, history, tier, needs_review, author_confirmed,
+                    first_seen, last_updated)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     rec.id, rec.kind, rec.key, rec.name, rec.subject, rec.object,
                     rec.rel_type, rec.detail, rec.evidence, rec.source_file,
                     rec.source_seq, rec.status, rec.confidence,
                     json.dumps(rec.aliases or [], ensure_ascii=False),
                     rec.role_category or ROLE_NARRATIVE, "[]",
-                    rec.tier, nr,
+                    rec.tier, nr, 1 if rec.author_confirmed else 0,
                     now, now,
                 ),
             )
             counts["inserted"] += 1
+            continue
+
+        # P0-3：作者显式驳回的条目（status=rejected）不被后续回流复活。
+        # 作者已否决的事实，除非重新被显式确认，否则保持 rejected——
+        # 永不渲染、永不注入（与插入路径拦截幻觉的语义一致）。
+        if row["status"] == STATUS_REJECTED:
             continue
 
         newer = rec.source_seq >= _safe_int(row["source_seq"])
@@ -561,17 +597,23 @@ def upsert_records(
             else row["tier"]
         )
         # 需审阅 = 任一方标记 / 非书稿直引 / 未确认
+        # P0-2：作者已显式确认（author_confirmed）的条目，即使出身非书稿直引，
+        # 也不再被打回「待作者确认」队列——否则「批准 → 回流 → 又待审」无限循环。
         merged_needs_review = (
             1
             if (rec.needs_review or bool(row["needs_review"])
                 or merged_tier != TIER_MANUSCRIPT or status != STATUS_CONFIRMED)
             else 0
         )
+        if bool(row["author_confirmed"]):
+            # 作者确认优先：不被后续回流降级回 needs_review
+            merged_needs_review = 0
 
         conn.execute(
             """UPDATE entities SET name=?, subject=?, object=?, rel_type=?, detail=?,
                    evidence=?, source_file=?, source_seq=?, status=?, confidence=?,
-                   aliases=?, role_category=?, tier=?, needs_review=?, history=?, last_updated=?
+                   aliases=?, role_category=?, tier=?, needs_review=?, author_confirmed=?,
+                   history=?, last_updated=?
                WHERE id=?""",
             (
                 merged["name"], merged["subject"], merged["object"], merged["rel_type"],
@@ -580,6 +622,7 @@ def upsert_records(
                 max(rec.confidence, float(row["confidence"] or 0)),
                 json.dumps(aliases, ensure_ascii=False),
                 merged["role_category"], merged_tier, merged_needs_review,
+                bool(row["author_confirmed"]),
                 json.dumps(history, ensure_ascii=False)[:8000],
                 now, rec.id,
             ),
@@ -612,9 +655,10 @@ def list_records(
 
 def delete_record(conn: sqlite3.Connection, record_id: str) -> bool:
     """精确删除一条实体——这是 v1 散文圣经做不到的（只能整篇重写）。"""
-    cur = conn.execute("DELETE FROM entities WHERE id = ?", (record_id,))
-    conn.commit()
-    return cur.rowcount > 0
+    with _WRITE_LOCK:
+        cur = conn.execute("DELETE FROM entities WHERE id = ?", (record_id,))
+        conn.commit()
+        return cur.rowcount > 0
 
 
 def revoke_unsupported(conn: sqlite3.Connection, full_text: str) -> list[str]:
@@ -623,26 +667,30 @@ def revoke_unsupported(conn: sqlite3.Connection, full_text: str) -> list[str]:
     用途有二：
     1. 从 v1 散文圣经迁移过来的旧数据，用当前正文重新过一遍闸门；
     2. 用户删改了正文（某人物被写没了）后，圣经能**跟着收缩**——v1 永远只增不减。
+
+    P1-5 防护在调用侧（incremental / upsert）：verify_text 骤短（暂读不到正文）
+    时不调用本函数，避免把真实人物误杀为 rejected。
     """
-    full = _norm(full_text)
-    _snapshot_db(conn)
-    revoked: list[str] = []
-    for row in conn.execute(
-        "SELECT * FROM entities WHERE status != ?", (STATUS_REJECTED,)
-    ).fetchall():
-        names: list[str] = []
-        if row["kind"] == KIND_RELATION:
-            names = [row["subject"], row["object"]]
-        elif row["kind"] == KIND_CHARACTER:
-            names = [row["name"], *json.loads(row["aliases"] or "[]")]
-        bogus = [n for n in names if n and _norm(n) and _norm(n) not in full]
-        if bogus:
-            conn.execute(
-                "UPDATE entities SET status=?, last_updated=? WHERE id=?",
-                (STATUS_REJECTED, time.time(), row["id"]),
-            )
-            revoked.append(row["id"])
-    conn.commit()
+    with _WRITE_LOCK:
+        full = _norm(full_text)
+        _snapshot_db(conn)
+        revoked: list[str] = []
+        for row in conn.execute(
+            "SELECT * FROM entities WHERE status != ?", (STATUS_REJECTED,)
+        ).fetchall():
+            names: list[str] = []
+            if row["kind"] == KIND_RELATION:
+                names = [row["subject"], row["object"]]
+            elif row["kind"] == KIND_CHARACTER:
+                names = [row["name"], *json.loads(row["aliases"] or "[]")]
+            bogus = [n for n in names if n and _norm(n) and _norm(n) not in full]
+            if bogus:
+                conn.execute(
+                    "UPDATE entities SET status=?, last_updated=? WHERE id=?",
+                    (STATUS_REJECTED, time.time(), row["id"]),
+                )
+                revoked.append(row["id"])
+        conn.commit()
     return revoked
 
 
@@ -672,24 +720,33 @@ def list_needs_review(conn: sqlite3.Connection) -> list[sqlite3.Row]:
 
 
 def review_resolve(conn: sqlite3.Connection, rid: str, accept: bool) -> bool:
-    """作者审阅决议：accept=True 标记已确认（needs_review=0）；False 撤销该条（rejected）。
+    """作者审阅决议。
+
+    - accept=True：标记**已确认**（status=confirmed, needs_review=0,
+      author_confirmed=1）。author_confirmed 使后续回流不再把它打回「待作者确认」
+      队列，彻底收敛审阅（P0-2：原先只置 needs_review=0，下次回流因
+      status!=confirmed / tier!=manuscript 又被置回，无限循环）。
+    - accept=False：作者显式驳回（status=rejected）。rejected 条目不被后续回流
+      复活（P0-3，见 upsert 更新分支）。
 
     返回是否命中并更新。条目不存在时返回 False（fail-open，不拖累主流程）。
     """
-    row = conn.execute("SELECT * FROM entities WHERE id = ?", (rid,)).fetchone()
-    if row is None:
-        return False
-    if accept:
-        conn.execute(
-            "UPDATE entities SET needs_review=0, last_updated=? WHERE id=?",
-            (time.time(), rid),
-        )
-    else:
-        conn.execute(
-            "UPDATE entities SET status=?, needs_review=0, last_updated=? WHERE id=?",
-            (STATUS_REJECTED, time.time(), rid),
-        )
-    conn.commit()
+    with _WRITE_LOCK:
+        row = conn.execute("SELECT * FROM entities WHERE id = ?", (rid,)).fetchone()
+        if row is None:
+            return False
+        if accept:
+            conn.execute(
+                "UPDATE entities SET status=?, needs_review=0, author_confirmed=1, "
+                "last_updated=? WHERE id=?",
+                (STATUS_CONFIRMED, time.time(), rid),
+            )
+        else:
+            conn.execute(
+                "UPDATE entities SET status=?, needs_review=0, last_updated=? WHERE id=?",
+                (STATUS_REJECTED, time.time(), rid),
+            )
+        conn.commit()
     return True
 
 
@@ -740,7 +797,12 @@ def _evidence_note(row: sqlite3.Row) -> str:
     ev = _clip(row["evidence"], 50)
     src = row["source_file"] or ""
     tier = row["tier"] or TIER_MANUSCRIPT
-    needs = bool(row["needs_review"]) or row["status"] != STATUS_CONFIRMED
+    # P0-2：作者已确认的条目（author_confirmed），即使出身非书稿直引也不再标「待作者确认」。
+    needs = (
+        bool(row["needs_review"])
+        or row["status"] != STATUS_CONFIRMED
+        or (tier != TIER_MANUSCRIPT and not bool(row["author_confirmed"]))
+    )
     marks: list[str] = []
     if tier != TIER_MANUSCRIPT:
         marks.append(f"【{_TIER_LABEL.get(tier, tier)}】")
