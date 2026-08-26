@@ -6,12 +6,13 @@ and on a timer instead of hand-curating a static list that goes stale — the ol
 ``matrix.py`` approach let "declared-free but actually-billing" models linger in the
 免费 picker because nobody re-verified them.
 
-Design notes (owner call 2026-08-26):
-- Free = vendor-declared ``pricing`` 0 (prompt AND completion). We trust OpenRouter's
-  ``pricing`` field — the same signal the old static list used — so a model OpenRouter
-  still bills in practice will still surface as 免费 here. That is an accepted tradeoff
-  for "先用一段时间再说"; a later empirical probe / denylist can subtract known-bad
-  slugs without touching this fetch.
+Design notes (owner call 2026-08-26, revised same day):
+- Free = vendor-declared ``pricing`` 0 (prompt AND completion). We first trusted that
+  field outright ("先用一段时间再说"), but in practice most declared-free models are
+  unusable / heavily rate-limited and just clogged the picker. So the 免费 tier is now an
+  **allowlist** (``FREE_TIER_ALLOWLIST_*``): only models the owner has verified working
+  surface as 免费. Paid models still follow the live catalog untouched — you pay, they work.
+  To add a verified-working free model, drop its id into the allowlist; no fetch change needed.
 - Caching: results are written to ``<state_dir>/openrouter_catalog.json`` with a 6h TTL so
   a settings request never blocks on the network. A background thread refreshes every 6h;
   a cache miss kicks a one-shot background fetch so a cold start returns the seed at once
@@ -37,6 +38,31 @@ OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models"
 CACHE_TTL_SECONDS = 6 * 3600
 REFRESH_INTERVAL_SECONDS = 6 * 3600
 CACHE_FILENAME = "openrouter_catalog.json"
+
+# 免费档白名单（2026-08-26 起生效）。
+# 背景：OpenRouter 官方目录里声明 `pricing=0` 的免费模型很多实际不可用 / 频繁限流，
+# 纯对齐官方会让 picker 被占满且大部分用不了。故免费档改为【白名单制】——只展示
+# 经用户实测可用的免费模型；付费档仍完全跟随实时目录（你付费就能用，无此问题）。
+# 想新增可用的免费模型，把其完整 id（含 :free 后缀）加进 FREE_TIER_ALLOWLIST_EXACT，
+# 或按前缀加进 FREE_TIER_ALLOWLIST_PREFIXES 即可。
+FREE_TIER_ALLOWLIST_EXACT = {
+    "minimax/minimax-m3:free",
+    "minimax/minimax-m2.7:free",
+    "cohere/north-mini-code:free",
+    "nvidia/nemotron-3.5-lightning:free",
+    "nvidia/nemotron-3-ultra-550b-a55b:free",
+    "nvidia/nemotron-3-super-120b-a12b:free",
+    "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
+}
+# 不用前缀匹配：避免误放 nemotron-3.5-content-safety 这类「安全分类器」非对话模型
+# （原 matrix.py 即明确排除它）。新增可用免费模型时，把完整 id（含 :free）加进上集合。
+FREE_TIER_ALLOWLIST_PREFIXES: tuple = ()
+
+
+def _free_tier_allowed(model_id: str) -> bool:
+    if model_id in FREE_TIER_ALLOWLIST_EXACT:
+        return True
+    return any(model_id.startswith(p) for p in FREE_TIER_ALLOWLIST_PREFIXES)
 
 
 def _cache_path() -> str:
@@ -160,11 +186,16 @@ def get_openrouter_entries() -> Dict[str, ModelEntry]:
         _ensure_refresh_thread(oneshot=missing)
 
     source = cache["models"] if cache is not None else _seed()
-    return {
-        f"openrouter:{m['id']}": _model_entry(m)
-        for m in source
-        if m.get("id")
-    }
+    out: Dict[str, ModelEntry] = {}
+    for m in source:
+        mid = m.get("id")
+        if not mid:
+            continue
+        # 免费档仅放行白名单，避免一堆声明免费但实不可用/限流的模型占满 picker
+        if _is_free(m.get("pricing")) and not _free_tier_allowed(mid):
+            continue
+        out[f"openrouter:{mid}"] = _model_entry(m)
+    return out
 
 
 # --- background refresh -------------------------------------------------------

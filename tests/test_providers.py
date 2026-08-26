@@ -514,6 +514,37 @@ def test_matrix_answers_capabilities_for_reseller_ids():
             assert caps.tools and caps.parallel_tool_calls and caps.streaming
 
 
+def test_openrouter_free_tier_is_allowlisted():
+    """免费档只放白名单内实测可用的模型，杜绝一堆声明免费却用不了的占满 picker。"""
+    from coworker.providers.openrouter_catalog import (
+        get_openrouter_entries,
+        _free_tier_allowed,
+    )
+
+    entries = get_openrouter_entries()
+    free_ids = [k for k in entries if k.endswith(":free")]
+    # 免费档每一个都必须落在白名单内
+    for k in free_ids:
+        assert _free_tier_allowed(k[len("openrouter:"):]), f"免费档漏网非白名单: {k}"
+    # 实测不可用的必须消失（含 nemotron-3.5-content-safety 这个非对话分类器）
+    for bad in (
+        "openrouter:z-ai/glm-5.2:free",
+        "openrouter:google/gemma-4-31b-it:free",
+        "openrouter:thinkingmachines/inkling:free",
+        "openrouter:thinkingmachines/inkling-small:free",
+        "openrouter:nvidia/nemotron-3.5-content-safety:free",
+    ):
+        assert bad not in entries, f"应已排除却仍在: {bad}"
+    # 实测可用的必须在
+    for good in (
+        "openrouter:minimax/minimax-m3:free",
+        "openrouter:minimax/minimax-m2.7:free",
+        "openrouter:cohere/north-mini-code:free",
+        "openrouter:nvidia/nemotron-3.5-lightning:free",
+    ):
+        assert good in entries, f"实测可用却丢失: {good}"
+
+
 def test_matrix_labels_and_custom_model_fallback():
     from coworker.providers.matrix import MATRIX, model_labels
 
