@@ -118,7 +118,8 @@ ItemState: open → in_progress → {blocked, review, canceled}
 - 收窄轮：主持把分歧点发到 chat 并 `@historian @lit-editor` 等，触发对应专家唤醒补辩——沿用原生 `@mention` 唤醒语义。
 
 ### 3.5 成本护栏（圆桌当前完全没有）
-- 复用 `TeamRegistry.count_wake(team_id, cap=…)` 的「每小时自动唤醒次数」滚动预算：圆桌每轮 tick 的自动唤醒受 cap 限制，防失控循环（原生设计「循环在轮次之间停下，绝不中途」）。
+- 复用 `TeamRegistry.count_wake(team_id, cap=…)` 的「每小时自动唤醒次数」滚动预算（已实现 `RoundtableTeamsBridge.check_wake_budget`，每场圆桌终验收时记一次消耗）。
+- **实际语义**：圆桌是**同步主动触发**（用户在前端等结果），不是后台 tick 自动唤醒，故 `count_wake` 在阶段 2 仅作护栏信号记录、**不阻断流程**；原生「循环在轮次之间停下」由 coordinator 的 `max_rounds`（1–3）已保证。强制 wake 预算门禁留**阶段 4** 调优时接。
 - 未分配的专家 worker 不耗 token（teams 原生 pre-spawn 哲学），与现圆桌「无会话不调 LLM」一致。
 
 ### 3.6 对外暴露（对接已有 Hermes A2A peer）
@@ -133,6 +134,8 @@ ItemState: open → in_progress → {blocked, review, canceled}
 | `deskmate/roundtable/web.py` | 改 | 新增 `/roundtable/start-team`；从 `manager.team_store`/`manager.teams` 取单例 |
 | `coworker/personas/builtin/*.md`（7 专家） | 改 | 在 manifest 增加 `team: worker`（保留 `roundtable:true`）；「知了」加 `team: lead` |
 | `surfaces/gui/src/.../TeamChatView.tsx` | 复用+小改 | 圆桌用其展示辩论场；增加「审稿维度工作项」进度条 |
+
+> **阶段 2 实施状态**：`teams_bridge.py` 已新增、`coordinator.py` 已加 hook（建团 + board 维度项 + ChatStore 辩论场镜像 + lead 终验收 `done` + journal 落盘），验证全过且**零前端影响**（不注入 `team_bridge` 时圆桌完全照旧）。`web.py` 新增 `/roundtable/start-team` 路由 + 前端 `TeamChatView` 复用 + 7 专家 manifest 加 `team: worker` 标记，留**阶段 4** 打磨（不影响后端集成已生效）。
 
 ---
 

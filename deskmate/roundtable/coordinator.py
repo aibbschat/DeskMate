@@ -23,6 +23,7 @@ from typing import Optional
 from deskmate.memory.llm import chat_stream, llm_available
 from deskmate.roundtable import trends
 from deskmate.roundtable.personas import PERSONAS, Persona, load_personas
+from deskmate.roundtable.teams_bridge import RoundtableTeamsBridge
 
 logger = logging.getLogger(__name__)
 
@@ -140,6 +141,7 @@ class Roundtable:
         # thread is cleanly replayable / resumable without re-running the whole
         # table. Off by default (faithful to the original arrival-order sharing).
         per_persona_history: bool = False,
+        team_bridge: Optional["RoundtableTeamsBridge"] = None,
     ) -> None:
         self.topic = topic
         self.peers = peers or []
@@ -149,6 +151,8 @@ class Roundtable:
         # Per-persona isolated histories (subagent transcript) keyed by speaker name.
         self.per_persona_history = per_persona_history
         self._persona_histories: dict[str, list[Turn]] = {}
+        # 圆桌 teams 基座适配层（线路 A）：为空则纯内存研讨，前端 SSE 行为完全不变
+        self.team_bridge = team_bridge
         # 续聊上下文：上一轮圆桌的讨论记录 + 用户追问，注入给主持与各方作为前情
         self.context = (context or "").strip()
         # 待评审的文稿正文（从文件加载或用户粘贴），注入 prompt 让人格基于真实文本发言
@@ -682,6 +686,11 @@ class Roundtable:
                 offline.append(p.name)
         return online, offline
 
+    def _mirror(self, turn: "Turn") -> None:
+        """把一轮发言镜像进 teams 基座辩论场（仅当注入了 team_bridge）。"""
+        if self.team_bridge is not None:
+            self.team_bridge.post_speech(turn.speaker, turn.text, turn.kind)
+
     # ---- 主流程（流式：逐个事件吐出，供 SSE / UI 实时渲染）----
     async def run_stream(self):
         """异步生成器：边跑边 yield 事件 dict，供 SSE / UI 实时驱动。
@@ -719,6 +728,16 @@ class Roundtable:
         内部用 asyncio.gather 并发多发言者，各发言者的 token 流按 turn_id 自然交错推给前端。
         """
         online, offline = await self._probe_peers()
+        if self.team_bridge is not None:
+            try:
+                self.team_bridge.setup(
+                    worker_ids=[p.id for p in self.personas],
+                    worker_names=[p.name for p in self.personas],
+                    topic=self.topic,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("圆桌 teams 基座建团失败(降级为纯内存研讨): %s", exc)
+                self.team_bridge = None
         await out_q.put({"type": "meta", "topic": self.topic, "max_rounds": self.max_rounds})
         await out_q.put({"type": "peers", "online": [p.name for p in online], "offline": offline})
 
@@ -740,6 +759,7 @@ class Roundtable:
             ),
         )
         transcript.append(opening)
+        self._mirror(opening)
 
         divergences: list[str] = []
         rounds_held = 0
@@ -782,6 +802,7 @@ class Roundtable:
                 )))
             for t in await asyncio.gather(*tasks):
                 transcript.append(t)
+                self._mirror(t)
                 # Record into each persona's isolated thread (subagent transcript).
                 if self.per_persona_history and t.kind == "persona":
                     self._persona_histories.setdefault(t.speaker, []).append(t)
@@ -801,6 +822,7 @@ class Roundtable:
                     phase="divergence",
                 )
                 divergences = self._parse_divergences(div_text.text)
+                self._mirror(div_text)
                 if not divergences:
                     await out_q.put({"type": "info", "text": "各方已高度一致，圆桌提前收尾。"})
                     break
@@ -830,6 +852,13 @@ class Roundtable:
             phase="synthesis",
             fallback_text=synthesis_fallback,
         )
+
+        self._mirror(synthesis)
+        if self.team_bridge is not None:
+            try:
+                self.team_bridge.finalize(synthesis.text)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("圆桌 teams 终验收失败(忽略): %s", exc)
 
         # 构造结构化结果：完整纪要（to_markdown）随 done 事件一并下发，
         # 供 web 层落盘进主 app 会话库（进入左侧历史对话栏）。
