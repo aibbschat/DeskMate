@@ -155,12 +155,14 @@ ItemState: open → in_progress → {blocked, review, canceled}
 space = 改编项目（原创小说路径/项目 id）。主编（lead）经 `propose_team` → 用户批准 → **预生成** 编剧/大纲/审核 的 worker session（teams 原生 pre-spawn，未派活不耗 token）。
 ```
 item 大纲v1        (open→in_progress→review→[done | in_progress(打回)])
-   └─ item 大纲审核  (parent=大纲v1, criteria=史实/逻辑/市场/契合原著精神)
-item 全剧本/第N集  (open, blocked until 大纲 done；link "blocks" 或主编门禁)
-   └─ item 剧本审核  (parent=剧本, criteria=台词/节奏/可拍性/史实)
+   └─ item 大纲审核  (针对大纲v1，用 description 表达；**不传 parent**，否则触发门禁误拦审核项)
+item 全剧本/第N集  (open, blocked until 大纲 done；link(kind=parent) 建立依赖)
+   └─ item 剧本审核  (针对全剧本，用 description 表达；不传 parent)
 ```
-- 主编派活：`assign(大纲v1, "outline-writer")` → 大纲专家 `claim` → 写 → `transition(review)`。
-- 审核专家审：通过 → `transition(done)`；**不通过 → `transition(review→in_progress)` + `comment(审核意见)`**（原生打回！编剧收到 feed，改完再 `review`）。
+- 主编派活：`assign(大纲v1, "outline-writer")` → 大纲专家写 → `transition(review)` 交稿。
+- 审核专家审完：`transition(review)` 交结论（`comment` 写意见）。**验收/打回是主编(lead)的裁决权**——上游 authority 规定 worker 不能 `done`、不能打回别人 item（见 §1.3），故主编读审核结论后拍板：
+  - 通过 → `transition(done)` 验收（产出项 + 审核项均 done）；
+  - **不通过 → 产出项 `transition(review→in_progress)` + `comment(审核意见)`**（原生打回！审核项保持 `review` 留待复审，编剧收到 feed 改完再 `review`）。
 - 大纲 `done` 后，主编才 `assign(全剧本, "screenwriter")` —— 串行依赖见 §4.4 门禁。
 
 ### 4.3 大纲路线（概念→大纲，同样范式）
