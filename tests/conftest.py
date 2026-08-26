@@ -29,7 +29,21 @@ def _isolated_state_dir(tmp_path, monkeypatch):
 
 @pytest_asyncio.fixture
 async def fake_slack(monkeypatch):
-    """A running FakeSlack control object; `SLACK_API_URL` is set to it for the test's duration."""
+    """A running FakeSlack control object; `SLACK_API_URL` is set to it for the test's duration.
+
+    The harness is strictly in-process (loopback WebSocket, no network), so it must not inherit
+    the developer machine's HTTP(S)_PROXY — slack_sdk's Socket Mode client reads those from the
+    environment and would route the loopback WS through the proxy, which 404s the handshake.
+    """
+    for _v in (
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "ALL_PROXY",
+        "all_proxy",
+    ):
+        monkeypatch.delenv(_v, raising=False)
     fake = FakeSlack()
     await fake.start()
     monkeypatch.setenv("SLACK_API_URL", fake.api_url)

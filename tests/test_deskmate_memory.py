@@ -358,10 +358,10 @@ class TestPostSession:
         assert "跳过" in data["notes"]
 
     def test_post_session_extracts_and_routes(self, tmp_dir: Path, monkeypatch):
-        monkeypatch.setattr(mgr_mod, "llm_available", lambda: True)
+        monkeypatch.setattr(mgr_mod, "memory_llm_available", lambda: True)
         monkeypatch.setattr(
             mgr_mod,
-            "chat",
+            "chat_memory",
             lambda system, user, **kw: json.dumps(
                 [
                     {"category": "preference", "text": "用户喜欢喝咖啡"},
@@ -392,8 +392,8 @@ class TestPostSession:
         assert (tmp_dir / "SOUL.md").read_text(encoding="utf-8") == "SENTINEL-SOUL"
 
     def test_post_session_fail_safe_on_bad_llm(self, tmp_dir: Path, monkeypatch):
-        monkeypatch.setattr(mgr_mod, "llm_available", lambda: True)
-        monkeypatch.setattr(mgr_mod, "chat", lambda system, user, **kw: "不是合法JSON")
+        monkeypatch.setattr(mgr_mod, "memory_llm_available", lambda: True)
+        monkeypatch.setattr(mgr_mod, "chat_memory", lambda system, user, **kw: "不是合法JSON")
         mgr = DeskMateMemoryManager(tmp_dir)
         sessions = tmp_dir / "sessions"
         sessions.mkdir(exist_ok=True)

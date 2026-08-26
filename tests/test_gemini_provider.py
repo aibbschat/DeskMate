@@ -589,6 +589,13 @@ def test_convert_signature_parts_validate_as_sdk_types():
     """The dict parts we emit (base64-string signatures) must round-trip through the real
     SDK Part model — its base64 bytes-validation is what decodes them on send."""
     types_mod = pytest.importorskip("google.genai.types")
+    # thought_signature (Gemini 3 extended-thinking) is only on Part in newer SDKs; an SDK
+    # that lacks it can't validate the dict, so skip rather than red-fail on an old install.
+    if "thought_signature" not in types_mod.Part.model_fields:
+        pytest.skip(
+            "google-genai too old: Part.thought_signature unsupported "
+            "(Gemini 3 thought signatures need a newer SDK)"
+        )
     _, contents = convert_messages(
         [
             {"role": "user", "content": "go"},
