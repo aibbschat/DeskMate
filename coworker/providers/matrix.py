@@ -222,6 +222,47 @@ MATRIX: dict[str, ModelEntry] = {
     "openrouter:meta-llama/llama-4-maverick": ModelEntry(
         "Llama 4 Maverick · via OpenRouter", _AGENTIC, 1_000_000
     ),
+    # -- OpenRouter 免费档 (:free) ------------------------------------------------
+    # 实时目录(2026-08-26 /api/v1/models)确认：以下免费模型均支持 tools（supported_parameters
+    # 含 "tools"/"tool_choice"），故标 _AGENTIC 可作主 agent 流。$0 余额可用，限 50 次/天
+    # （充 ≥$10 永久升 1000/天）。slug 随官方目录滚动，失效时刷新此处。排除
+    # nemotron-3.5-content-safety（安全分类器，不支持 tools）与即将过期/极小模型。
+    "openrouter:thinkingmachines/inkling:free": ModelEntry(
+        "Inkling · via OpenRouter 免费", _AGENTIC, 1_048_576
+    ),
+    "openrouter:thinkingmachines/inkling-small:free": ModelEntry(
+        "Inkling Small · via OpenRouter 免费", _AGENTIC, 1_048_576
+    ),
+    "openrouter:minimax/minimax-m3:free": ModelEntry(
+        "MiniMax M3 · via OpenRouter 免费", _AGENTIC, 1_048_576
+    ),
+    "openrouter:nvidia/nemotron-3.5-lightning:free": ModelEntry(
+        "Nemotron 3.5 Lightning · via OpenRouter 免费", _AGENTIC, 1_000_000
+    ),
+    "openrouter:nvidia/nemotron-3-ultra-550b-a55b:free": ModelEntry(
+        "Nemotron 3 Ultra 550B · via OpenRouter 免费", _AGENTIC, 1_000_000
+    ),
+    "openrouter:google/gemma-4-31b-it:free": ModelEntry(
+        "Gemma 4 31B · via OpenRouter 免费", _AGENTIC, 262_144
+    ),
+    "openrouter:z-ai/glm-5.2:free": ModelEntry(
+        "GLM-5.2 免费 · via OpenRouter", _AGENTIC, 256_000
+    ),
+    "openrouter:cohere/north-mini-code:free": ModelEntry(
+        "North Mini Code · via OpenRouter 免费", _AGENTIC, 256_000
+    ),
+    "openrouter:poolside/laguna-s-2.1:free": ModelEntry(
+        "Laguna S 2.1 · via OpenRouter 免费", _AGENTIC, 262_144
+    ),
+    "openrouter:nvidia/nemotron-3-super-120b-a12b:free": ModelEntry(
+        "Nemotron 3 Super 120B · via OpenRouter 免费", _AGENTIC, 262_144
+    ),
+    "openrouter:nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free": ModelEntry(
+        "Nemotron 3 Nano Omni · via OpenRouter 免费", _AGENTIC, 256_000
+    ),
+    "openrouter:minimax/minimax-m2.7:free": ModelEntry(
+        "MiniMax M2.7 · via OpenRouter 免费", _AGENTIC, 196_608
+    ),
     # -- local AI gateway (OmniRoute) --------------------------------------------
     # Keyless free combo. Marked streaming-only + no tools: free upstreams vary, and we use
     # this for the roundtable's external peer / occasional drafting, never the main flow.

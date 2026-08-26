@@ -3443,7 +3443,13 @@ class SessionManager:
         for _m in selectable:
             _prov = _m.split(":", 1)[0] if ":" in _m else "openai"
             _d = get_descriptor(_prov)
-            tiers[_m] = "free" if (_d is not None and not _d.needs_key) else "paid"
+            # `:free` 后缀的模型（如 openrouter 免费档）无论所属 provider 是否需 key，
+            # 实际 $0 余额可用，故直接判为免费档，避免被归到「付费」区误导用户。
+            tiers[_m] = (
+                "free"
+                if (_m.endswith(":free") or (_d is not None and not _d.needs_key))
+                else "paid"
+            )
 
         return {
             "provider": "openai",
