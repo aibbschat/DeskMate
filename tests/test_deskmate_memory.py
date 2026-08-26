@@ -434,3 +434,15 @@ class TestPerTurnInjection:
         out = mgr.deskmate_auto_inject_context("Python")
         assert "<memory-context>" in out
         assert "Python" in out
+
+
+def test_extract_keywords_handles_book_title_marks_and_bigram():
+    """分词补丁回归：书名号《》应被切分、长中文词补 CJK bigram，使『《兰陵王传》』能命中记忆里的『兰陵王』。"""
+    kws = DeskMateMemoryManager._extract_keywords("《大秦宣太后》《兰陵王传》等")
+    joined = "".join(kws)
+    assert "兰陵" in kws, f"应补出 bigram 兰陵，实际: {kws}"
+    assert "兰陵王传" in kws or "兰陵王" in kws, f"长词应保留/拆解，实际: {kws}"
+    assert "《" not in joined and "》" not in joined, f"书名号不应残留成 token，实际: {kws}"
+    # 普通自然语言查询仍能产出关键词
+    kws2 = DeskMateMemoryManager._extract_keywords("我早期作品和现在作品的写作风格有什么区别")
+    assert any("早期" in k or "风格" in k for k in kws2), f"应保留语义词，实际: {kws2}"

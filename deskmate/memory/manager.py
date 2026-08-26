@@ -202,6 +202,28 @@ class DeskMateMemoryManager:
         parts = [f"§ {s['header_rest']}\n{s['body']}" for s in core_sections]
         return "\n\n---\n\n".join(parts)
 
+    @staticmethod
+    def _extract_keywords(query: str) -> list[str]:
+        """中文友好的关键词提取。
+
+        相比裸 re.split，额外识别《》【】""''：；等中文标点（书名号/括号/引号），
+        并对长度 > 2 的中文词补 CJK 2-gram，使「《兰陵王传》」这类整串查询也能
+        命中记忆正文里的「兰陵王」。与 vault_store.search 的 bigram 逻辑保持一致。
+        """
+        tokens = [
+            w
+            for w in re.split(r"[\s，。、？！,.?!\-《》【】“”‘’：；]+", query)
+            if len(w) >= 2
+        ][:6]
+        keywords = list(tokens)
+        for tok in tokens:
+            if len(tok) > 2 and re.search(r"[\u4e00-\u9fff]", tok):
+                for i in range(len(tok) - 1):
+                    bg = tok[i : i + 2]
+                    if bg not in keywords:
+                        keywords.append(bg)
+        return keywords[:10]
+
     def _search_recent_memory(self, query: str) -> tuple[str, set[str]]:
         """Recall 层：检索 7 天内的近期记忆，按关键词匹配。
 
@@ -215,7 +237,7 @@ class DeskMateMemoryManager:
 
         _, sections = self._parse_sections(memory)
         today = datetime.date.today()
-        keywords = [w for w in re.split(r"[\s，。、？！,.\?!\-]+", query) if len(w) >= 2][:6]
+        keywords = self._extract_keywords(query)
 
         recent_matches: list[str] = []
         matched_ids: set[str] = set()
@@ -1382,7 +1404,7 @@ class DeskMateMemoryManager:
 
         # 关键词匹配（向后兼容无标签分节）
         _, sections = self._parse_sections(memory)
-        keywords = [w for w in re.split(r"[\s，。、？！,.\?!\-]+", query) if len(w) >= 2][:6]
+        keywords = self._extract_keywords(query)
         if not keywords:
             # 无关键词，返回记忆摘要（前2000字），排除 Core tags
             filtered = [s for s in sections if not (exclude_tags and s["tags"] & exclude_tags)]
@@ -1467,7 +1489,7 @@ class DeskMateMemoryManager:
         memories = load_project_memory(self.base_dir, project_name)
         if not memories:
             return ""
-        keywords = [w for w in re.split(r"[\s，。、？！,.\?!\-]+", query) if len(w) >= 2][:6]
+        keywords = self._extract_keywords(query)
         if not keywords:
             return format_project_memory(self.base_dir, project_name)[:3000]
 
