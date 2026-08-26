@@ -13,7 +13,7 @@ import type { TodoItem } from "../types";
 import { AccessSection } from "./AccessSection";
 import { Icon } from "./Icon";
 import { Markdown, OPEN_ARTIFACT_EVENT } from "./Markdown";
-import { RoundtableContacts } from "./RoundtableContacts";
+import { RoundtableContacts, ENGINEERING_IDS } from "./RoundtableContacts";
 
 type Panel = "roundtable" | "progress" | "artifacts";
 
@@ -89,7 +89,9 @@ export function RightRail({
     progress: true,
     artifacts: true,
   });
-  const roundtableCount = (personas || []).filter((p) => p.roundtable).length;
+  const partnerCount = (personas || [])
+    .filter((p) => p.roundtable || ENGINEERING_IDS.includes(p.id))
+    .length;
   const [artifacts, setArtifacts] = useState<ArtifactInfo[]>([]);
   const [selected, setSelected] = useState<ArtifactInfo | null>(null);
   const [content, setContent] = useState<ArtifactContent | null>(null);
@@ -181,9 +183,9 @@ export function RightRail({
       ) : (
         <>
           {/* DeskMate 圆桌好友栏：QQ 好友式联系人，点击开该专家独立会话。 */}
-          {roundtableCount > 0 && onOpenPersonaSession && (
+          {partnerCount > 0 && onOpenPersonaSession && (
             <RailSection
-              title={`Agent (${roundtableCount})`}
+              title={"我的伙伴"}
               open={open.roundtable}
               onToggle={() => setOpen({ ...open, roundtable: !open.roundtable })}
             >
