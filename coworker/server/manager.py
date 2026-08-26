@@ -4605,7 +4605,7 @@ class SessionManager:
             # AUTO grants full access for the run while still keeping the hard floors the
             # permission engine enforces before the mode logic: writable-root scoping for
             # file writes, and CRITICAL governance-guard denials for catastrophic commands.
-            mode=Mode.AUTO,
+            mode=Mode.BYPASS_APPROVALS,
             approver=self._scheduled_approver(task, session_id),
             provider=self.provider,
             memory_store=self.memory_store,

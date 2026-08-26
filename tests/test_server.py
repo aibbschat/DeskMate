@@ -65,7 +65,11 @@ def test_agents_and_memory_rest(tmp_path):
     # ships:false personas (teams, ops, design) need OPENWORKER_UNSHIPPED=1.
     names = [a["name"] for a in agents]
     assert names[0] == "cowork"
-    assert set(names) == {"cowork", "security", "cloud-posture", "dep-audit"}
+    # Fork surfaces the DeskMate roundtable personas in the picker too (not just the
+    # OpenWorker + security lineup). Assert the original lineup is still present and
+    # the roundtable host joined, without pinning the exact full set.
+    assert {"cowork", "security", "cloud-posture", "dep-audit"} <= set(names)
+    assert "deskmate" in names  # 圆桌主持「知了」persona
     assert "skills" in client.get("/v1/skills").json()  # catalog (may be empty)
 
     added = client.post("/v1/memory", json={"content": "prefer pathlib"}).json()

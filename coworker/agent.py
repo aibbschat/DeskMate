@@ -403,11 +403,7 @@ def build_engine(
         if eff_sandbox_deny:
             sd["deny_paths"] = list(eff_sandbox_deny)
         sandbox_cfg = sandbox_config_from_dict(ws, sd)
-    executor = (
-        LocalExecutor(cwd=ws, sandbox=sandbox_cfg)
-        if (agent.needs_workspace and ws is not None)
-        else None
-    )
+    executor = LocalExecutor(cwd=ws, sandbox=sandbox_cfg) if ws is not None else None
     todo = TodoList()
     context = AgentContext(
         workspace=ws, executor=executor, todo=todo, roots=root_list or None

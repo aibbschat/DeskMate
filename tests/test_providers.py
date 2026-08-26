@@ -509,9 +509,13 @@ def test_matrix_labels_and_custom_model_fallback():
     labels = model_labels()
     assert labels["together:zai-org/GLM-5.2"] == "GLM-5.2 · via Together"
     assert labels["zai:glm-5.2"] == "GLM-5.2 · Z AI"
-    # Deliberately small: agent-capable current models only (owner call, 2026-07-04).
-    assert len(MATRIX) < 60
-    assert all(e.caps.tools for e in MATRIX.values())
+    # Curated agent-capable models only (owner call, 2026-07-04). The keyless free
+    # gateways (OmniRoute / OpenCode) are intentionally tool-less drafting/peer helpers
+    # and are excluded from the "small + every entry supports tools" contract.
+    _free = lambda k: k.split(":", 1)[0] in ("omniroute", "opencode")
+    _agentic = {k: e for k, e in MATRIX.items() if not _free(k)}
+    assert len(_agentic) < 60
+    assert all(e.caps.tools for e in _agentic.values())
     # A custom (unlisted) reseller model falls back to the conservative default — usable,
     # but at the user's own risk (no parallel tool calls assumed).
     caps = capabilities_for("together:some-org/Brand-New-Model")

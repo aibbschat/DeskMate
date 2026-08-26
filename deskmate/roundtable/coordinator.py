@@ -22,7 +22,7 @@ from typing import Optional
 
 from deskmate.memory.llm import chat_stream, llm_available
 from deskmate.roundtable import trends
-from deskmate.roundtable.personas import Persona, load_personas
+from deskmate.roundtable.personas import PERSONAS, Persona, load_personas
 
 logger = logging.getLogger(__name__)
 

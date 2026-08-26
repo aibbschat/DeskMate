@@ -65,7 +65,7 @@ def _patch_transport(monkeypatch, *, connect_ok=True, tool_names=("alpha", "beta
     session = _session_for(tool_names)
     transport = _Transport(session, fail=not connect_ok)
 
-    def fake_stdio(params):
+    def fake_stdio(params, errlog=None):
         return transport
 
     def fake_http(url, **kw):
@@ -118,7 +118,7 @@ async def test_reload_old_teardown_does_not_orphan_new_connection(monkeypatch):
     session = _session_for(("alpha", "beta"))
     transport = SlowTransport(session, fail=False)
 
-    def fake_stdio(params):
+    def fake_stdio(params, errlog=None):
         return transport
 
     def fake_http(url, **kw):

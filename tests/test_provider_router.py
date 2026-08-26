@@ -329,8 +329,13 @@ def test_manager_curated_models(tmp_path, monkeypatch):
     monkeypatch.setattr(SessionManager, "_ollama_alive", lambda self: True)
 
     mgr = SessionManager(data_dir=tmp_path)
-    # no provider keys → nothing but the always-selectable default
-    assert mgr.get_settings()["models"] == [mgr.model]
+    # No provider keys → the active default plus the keyless free gateways (OmniRoute /
+    # OpenCode) the fork always keeps selectable. Derive them from MATRIX so the
+    # assertion tracks the matrix instead of hard-coding ids.
+    from coworker.providers.matrix import MATRIX
+
+    _free = [k for k in MATRIX if k.split(":", 1)[0] in ("omniroute", "opencode")]
+    assert mgr.get_settings()["models"] == [mgr.model, *_free]
 
     # a provider key unlocks exactly that provider's matrix models
     mgr.set_provider("anthropic", {"api_key": "sk-ant-test"})
@@ -368,6 +373,9 @@ def test_set_provider_auto_adds_recommended_when_pulled(tmp_path, monkeypatch):
     monkeypatch.setenv("COWORKER_STATE_DIR", str(tmp_path / "state"))
     from coworker.server.manager import SessionManager
 
+    # The pulled model is selectable only while Ollama answers; pin the liveness
+    # probe so this test covers picker mechanics, not the local Ollama dependency.
+    monkeypatch.setattr(SessionManager, "_ollama_alive", lambda self: True)
     mgr = SessionManager(data_dir=tmp_path)
     monkeypatch.setattr(  # pretend the recommended model is pulled
         mgr,

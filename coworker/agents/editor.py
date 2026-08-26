@@ -56,9 +56,8 @@ def editor_agent() -> Agent:
         name="editor",
         title="编辑专家",
         system_prompt=EDITOR_INSTRUCTIONS,
-        needs_workspace=True,
+        requires_folder=True,
         tool_factory=editor_tool_factory,
-        family="knowledge",
         messaging=False,
         connectors=False,
     )
