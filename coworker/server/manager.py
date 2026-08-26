@@ -3367,19 +3367,19 @@ class SessionManager:
         fresh install offers nothing until a provider key exists, and then exactly that
         provider's matrix models appear. The active default is always kept selectable.
         """
-        from ..providers.matrix import MATRIX
+        from ..providers.matrix import all_model_ids
 
         user = self._prefs.get("models")
         user = user if isinstance(user, list) else []
         hidden = set(self._prefs.get("hidden_models") or [])
-        models = [m for m in [*MATRIX, *user] if m not in hidden]
+        models = [m for m in [*all_model_ids(), *user] if m not in hidden]
         return list(dict.fromkeys([self.model, *models]))
 
     def add_model(self, model: str) -> dict[str, Any]:
         """Add a model id (e.g. `gpt-4o`, `ollama:qwen2.5-coder:32b`) to the picker.
         Custom ids persist in prefs; a previously removed matrix model is just unhidden
         (storing it too would shadow future matrix updates)."""
-        from ..providers.matrix import MATRIX
+        from ..providers.matrix import is_derived_model
 
         model = (model or "").strip()
         if not model:
@@ -3391,7 +3391,7 @@ class SessionManager:
             self._prefs.pop("hidden_models", None)
         models = self._prefs.get("models")
         models = models if isinstance(models, list) else []
-        if model not in models and model not in MATRIX:
+        if model not in models and not is_derived_model(model):
             models.append(model)
         self._prefs["models"] = models
         self._save_prefs()
@@ -3401,12 +3401,12 @@ class SessionManager:
         """Remove a model id from the picker. Custom ids are dropped; matrix models are
         hidden by id (the matrix is derived, not stored, so a bare drop would resurrect
         them on the next read)."""
-        from ..providers.matrix import MATRIX
+        from ..providers.matrix import is_derived_model
 
         models = self._prefs.get("models")
         models = models if isinstance(models, list) else []
         self._prefs["models"] = [m for m in models if m != model]
-        if model in MATRIX:
+        if is_derived_model(model):
             hidden = self._prefs.get("hidden_models") or []
             if model not in hidden:
                 self._prefs["hidden_models"] = [*hidden, model]

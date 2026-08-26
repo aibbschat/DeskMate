@@ -231,6 +231,14 @@ def create_app(manager: SessionManager) -> FastAPI:
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
         try:
+            # Background mirror of the OpenRouter catalog (6h TTL) — keeps the picker's
+            # OpenRouter section fresh without blocking any request path.
+            from ..providers.openrouter_catalog import start_catalog_refresh
+
+            start_catalog_refresh()
+        except Exception:  # never let the catalog mirror block startup
+            pass
+        try:
             live = (
                 await manager.start_gateway()
             )  # start messaging listeners (if configured)

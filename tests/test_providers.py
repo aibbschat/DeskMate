@@ -491,16 +491,27 @@ def test_compat_recommended_models_are_in_the_suggested_lists():
 
 def test_matrix_answers_capabilities_for_reseller_ids():
     """Reseller ids ('together:zai-org/GLM-5.2') defeat the name-prefix heuristics — the
-    matrix must answer them exactly, with tool calling on."""
+    matrix must answer them exactly, with tool calling on.
+
+    OpenRouter rows now come from the live catalog; ``fetch_catalog`` falls back to the
+    offline seed when the network is unreachable, and the seed ships ``minimax-m3:free``,
+    so the assertion stays deterministic without network. The catalog honestly reports
+    ``parallel_tool_calls=False`` for most `:free` models (only ``tool_choice`` is
+    advertised), so the OpenRouter assertion checks tools+streaming, not parallelism."""
+    from coworker.providers.openrouter_catalog import fetch_catalog
+
+    fetch_catalog()
     for mid in (
         "together:zai-org/GLM-5.2",
         "together:meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8",
         "fireworks:accounts/fireworks/models/kimi-k2p6",
-        "openrouter:z-ai/glm-5.2",
-        "openrouter:meta-llama/llama-4-maverick",
+        "openrouter:minimax/minimax-m3:free",
     ):
         caps = capabilities_for(mid)
-        assert caps.tools and caps.parallel_tool_calls and caps.streaming
+        if mid.startswith("openrouter:"):
+            assert caps.tools and caps.streaming
+        else:
+            assert caps.tools and caps.parallel_tool_calls and caps.streaming
 
 
 def test_matrix_labels_and_custom_model_fallback():
