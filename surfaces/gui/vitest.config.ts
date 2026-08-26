@@ -8,5 +8,8 @@ export default defineConfig({
   test: {
     environment: "jsdom",
     include: ["src/**/*.test.{ts,tsx}"],
+    // Forces the `en` locale so official English-centric assertions resolve (see
+    // src/test/setup.ts). Without it, components render raw i18n keys in tests.
+    setupFiles: ["./src/test/setup.ts"],
   },
 });

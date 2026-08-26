@@ -570,6 +570,24 @@ export function Transcript({
               </div>
             );
           case "notice":
+            // A titled notice is prose (the Auto-Approve banner), not a status line —
+            // render the title plus one <p> per blank-line-separated paragraph.
+            if (item.title) {
+              return (
+                <div
+                  className={"notice notice-block " + (item.tone === "warn" ? "warn" : "")}
+                  key={bi}
+                  data-testid="mode-notice"
+                >
+                  <div className="notice-title">{item.title}</div>
+                  {String(item.text || "")
+                    .split("\n\n")
+                    .map((para, i) => (
+                      <p key={i}>{para}</p>
+                    ))}
+                </div>
+              );
+            }
             return (
               <div className={"notice " + (item.tone === "warn" ? "warn" : "")} key={bi}>
                 {item.text}
