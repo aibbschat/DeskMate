@@ -22,8 +22,9 @@ describe("TurnGroup (Transcript §33)", () => {
   it("groups the whole turn; answer stays outside; narration and humanized steps inside", () => {
     const { container } = render(<Transcript items={TURN} onApprove={vi.fn()} />);
 
-    // Collapsed at rest: "2 steps", NO approval count, and no step/narration content visible.
-    expect(screen.getByText("2 steps")).toBeTruthy();
+    // Collapsed at rest: "2 step" (en.json chat.steps = "{{nSteps}} step", singular form in
+    // this fork), NO approval count, and no step/narration content visible.
+    expect(screen.getByText("2 step")).toBeTruthy();
     expect(screen.queryByText(/approval/)).toBeNull();
     expect(screen.queryByTestId("turn-narration")).toBeNull();
     expect(screen.queryByText(/Sent a Slack message/)).toBeNull();
@@ -37,7 +38,7 @@ describe("TurnGroup (Transcript §33)", () => {
     expect(screen.getByTestId("turn-narration").textContent).toContain("Checking what merged");
     expect(screen.getByText("runbook.md")).toBeTruthy();
     expect(screen.getByText(/Sent a Slack message to/)).toBeTruthy();
-    expect(screen.getByText("✓ user-approved")).toBeTruthy();
+    expect(screen.getByText("✓ approved")).toBeTruthy();
     expect(screen.queryByText("send_message approval")).toBeNull();
 
     // Raw stays one click away: the row's raw toggle reveals args + result verbatim.

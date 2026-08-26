@@ -87,9 +87,10 @@ describe("Sidebar group/filter control", () => {
     // personas load drives the surfaces; the RECENT header's group/filter control is always present.
     const control = await screen.findByLabelText("Group and filter conversations");
 
-    // Open the popover and choose "Group by → Coworker".
+    // Open the popover and choose "Group by → Persona" (fork renamed the Coworker
+    // group to Persona; sidebar.persona → "Persona" in en.json).
     fireEvent.click(control);
-    fireEvent.click(await screen.findByText("Coworker"));
+    fireEvent.click(await screen.findByText("Persona"));
 
     // POSTs the new layout pref.
     await waitFor(() => {
@@ -211,7 +212,10 @@ describe("New session button", () => {
     render(<Sidebar {...baseProps} />);
     await screen.findByText("incident watch");
 
-    expect(screen.queryByLabelText("Choose a persona")).toBeNull();
+    // fork keeps the New-session split button — primary starts the last-used persona and the
+    // ▾ opens "Choose a persona". UX-029's move of the pick to the composer was NOT adopted
+    // in this fork, so the picker is present by design (not absent as the upstream test asserts).
+    expect(screen.getByLabelText("Choose a persona")).toBeTruthy();
     fireEvent.click(screen.getByText("New session"));
     expect(baseProps.onNewSession).toHaveBeenCalledWith("cowork");
   });
