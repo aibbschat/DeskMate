@@ -564,6 +564,20 @@ def test_matrix_labels_and_custom_model_fallback():
     assert caps.tools and not caps.parallel_tool_calls
 
 
+def test_opencode_free_models_not_curated_by_default():
+    """2026-08-26 owner call: OpenCode's *-free gateway models were mostly unusable in
+    practice, so they no longer ship in the matrix (picker stays decluttered). The
+    registry descriptor survives so manually added opencode:<model> ids still route —
+    assert both halves of that contract."""
+    from coworker.providers.matrix import MATRIX, models_for_provider
+    from coworker.providers.registry import get_descriptor
+
+    assert not any(k.startswith("opencode:") for k in MATRIX)
+    assert models_for_provider("opencode") == []
+    d = get_descriptor("opencode")
+    assert d is not None and not d.needs_key  # still routable when manually added
+
+
 def test_reseller_descriptors_and_matrix_stay_in_lockstep():
     """Reseller suggested models derive from the matrix, and each descriptor's
     recommended model must be one of them (set_provider's auto-add depends on it)."""

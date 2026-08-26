@@ -783,7 +783,9 @@ DESCRIPTORS: list[ProviderDescriptor] = [
         "建议仅用于圆桌外脑／偶发草稿，勿作主写作流量。",
     ),
     # OpenCode 公共免费网关 (zen/v1)：*-free 模型免密钥即可用，仅免费额度限速；付费模型需自备
-    # key。与 OmniRoute 同源思路——把公开免密钥免费模型接进桌搭，专供圆桌外脑／偶发草稿，不作主写作。
+    # key。2026-08-26 起不再默认铺货（实测大部分时间不可用，见 matrix.py 的移除说明），descriptor
+    # 保留以维持路由：手动添加的 opencode:<model> 仍可走此网关；recommended_model 仅作提示，
+    # set_provider 的自动添加因 matrix 无 opencode 条目而不再触发。
     ProviderDescriptor(
         name="opencode",
         title="OpenCode 免费模型",
@@ -811,7 +813,7 @@ DESCRIPTORS: list[ProviderDescriptor] = [
         build=_build_opencode,
         recommended_model="deepseek-v4-flash-free",
         blurb="经 OpenCode 公共网关 zen/v1 的免密钥 *-free 模型（DeepSeek V4 Flash / Mimo V2.5 / "
-        "Nemotron 3 等），建议仅用于圆桌外脑／偶发草稿。",
+        "Nemotron 3 等）。实测可用性不稳，默认不再铺货；如需使用请在模型设置中手动添加。",
     ),
 ]
 

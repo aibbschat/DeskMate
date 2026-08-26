@@ -224,33 +224,12 @@ MATRIX: dict[str, ModelEntry] = {
         ModelCapabilities(tools=False, vision=False, streaming=True),
     ),
     # -- OpenCode 公共免费网关 (zen/v1) ----------------------------------------
-    # 免密钥 *-free 模型，仅免费额度限速。免费上游质量/能力参差，按 omniroute 同源思路：
-    # 仅供圆桌外脑／偶发草稿，不作主写作流。能力保守标注（tools=False），以网关实际返回为准。
-    # 上下文窗口未核实，留 None（GUI 上下文表自动隐藏，不编造分母）。
-    "opencode:deepseek-v4-flash-free": ModelEntry(
-        "DeepSeek V4 Flash · OpenCode 免费",
-        ModelCapabilities(tools=False, vision=False, streaming=True),
-    ),
-    "opencode:mimo-v2.5-free": ModelEntry(
-        "Mimo V2.5 · OpenCode 免费（多模态）",
-        ModelCapabilities(tools=False, vision=True, streaming=True),
-    ),
-    "opencode:hy3-free": ModelEntry(
-        "Hunyuan 3 · OpenCode 免费",
-        ModelCapabilities(tools=False, vision=False, streaming=True),
-    ),
-    "opencode:nemotron-3-ultra-free": ModelEntry(
-        "Nemotron 3 Ultra · OpenCode 免费",
-        ModelCapabilities(tools=False, vision=False, streaming=True),
-    ),
-    "opencode:nemotron-3.5-lightning-free": ModelEntry(
-        "Nemotron 3.5 Lightning · OpenCode 免费",
-        ModelCapabilities(tools=False, vision=False, streaming=True),
-    ),
-    "opencode:laguna-s-2.1-free": ModelEntry(
-        "Laguna S 2.1 · OpenCode 免费",
-        ModelCapabilities(tools=False, vision=False, streaming=True),
-    ),
+    # 2026-08-26 owner call: the six curated `opencode:*-free` entries were removed —
+    # they were mostly unusable in practice (free-tier throttling/failures) and crowded
+    # the picker's 免费 section. The provider descriptor in registry.py stays, so the
+    # gateway remains routable: manually added `opencode:<model>` ids still work
+    # (tier detection via needs_key=False keeps them in the 免费 group), they just no
+    # longer ship by default and set_provider's recommended-model auto-add is inert.
     # -- cloud accounts (models running in the user's own AWS/GCP) ----------------
     # Bedrock ids carry a family segment (claude/ → native Anthropic path, other/ →
     # Converse) plus AWS's own `-v<n>:<m>` version suffix. Some regions require the
