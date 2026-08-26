@@ -272,6 +272,7 @@ item 全剧本/第N集  (open, blocked until 大纲 done；link "blocks" 或主�
 ```python
 # 建团（预生成 worker session，未派活 0 token）
 from coworker.teams.registry import TeamRegistry, TeamWorker
+from coworker.teams.model import Actor, Role  # board 动词的 actor 是 Actor 对象（id+role），非裸字符串
 team = reg.create(
     space="<稿件/项目路径>", lead_session="<会话id>", lead_actor="知了",
     workers=[TeamWorker(actor="historian", persona="historian", session_id="…", reason="…")],
@@ -279,7 +280,7 @@ team = reg.create(
 )
 
 # 建工作项（open, unassigned；criteria 必填=验收标准）
-store.create_item(space, actor_lead, title="史实核验",
+store.create_item(space, Actor(lead_actor, Role.LEAD), title="史实核验",
                   criteria="无史实硬伤；存疑处标【待确认】", parent=<议题item_id>)
 
 # 派活 / 认领
