@@ -91,6 +91,8 @@ import { ExpertAvatar } from "./components/deskmate/ExpertAvatar";
 import { ReportDialog } from "./components/deskmate/ReportDialog";
 
 import { ExpertsCenter } from "./components/deskmate/ExpertsCenter";
+import { CreationPipelineView } from "./components/CreationPipelineView";
+import { TeamChatView } from "./components/TeamChatView";
 import { BadgeWall } from "./components/deskmate/BadgeWall";
 import { useTranslation } from "react-i18next";
 import CicadaAvatar from "./components/CicadaAvatar";
@@ -314,8 +316,9 @@ export function App() {
   // load; corrected by loadSettings.
   const [modelReady, setModelReady] = useState(true);
   const [surface, setSurface] = useState<
-    "session" | "scheduled" | "integrations" | "skillstore" | "audit" | "inbox" | "persona" | "settings" | "experts" | "roundtable" | "badges"
+    "session" | "scheduled" | "integrations" | "skillstore" | "audit" | "inbox" | "persona" | "settings" | "experts" | "roundtable" | "badges" | "creation" | "teamchat"
   >("session");
+  const [teamId, setTeamId] = useState("");
   // A remembered Scheduled-detail target must not outlive the surface (see the
   // scheduledOpenId comment above): nav re-entry lands on the list, never a
   // possibly-deleted automation's dead detail.
@@ -1551,6 +1554,8 @@ export function App() {
         onOpenExperts={() => setSurface("experts")}
         onOpenRoundtable={() => setSurface("roundtable")}
         roundtableActive={surface === "roundtable"}
+        onOpenCreation={() => setSurface("creation")}
+        creationActive={surface === "creation"}
         onOpenBadges={() => setSurface("badges")}
         badgesActive={surface === "badges"}
         scheduledActive={surface === "scheduled"}
@@ -1602,6 +1607,10 @@ export function App() {
         <div className="roundtable-view">
           <iframe src={`${httpBase()}/roundtable/`} title="创作圆桌" />
         </div>
+      ) : surface === "creation" ? (
+        <CreationPipelineView onOpenTeamChat={(tid) => { setTeamId(tid); setSurface("teamchat"); }} onBack={() => setSurface("session")} />
+      ) : surface === "teamchat" ? (
+        <TeamChatView teamId={teamId} onClose={() => setSurface("creation")} />
       ) : surface === "badges" ? (
         <BadgeWall onBack={() => setSurface("session")} />
       ) : (

@@ -2866,3 +2866,153 @@ export async function setGovernance(patch: Partial<GovernanceSettings>): Promise
   });
   return res.json();
 }
+
+// ---- 创作流水线（线路 B 原生 teams 执行 + 线路 A 圆桌终审）----
+export interface CreationItem {
+  id: number;
+  title: string;
+  state: string;
+  criteria: string;
+  comments: number;
+}
+export interface CreationSnapshot {
+  pid: string;
+  kind: string;
+  concept: string;
+  team_id: string;
+  items: CreationItem[];
+  phase: string;
+  docx: Record<string, string>;
+}
+export interface FinalProposal {
+  item_kind: string;
+  topic: string;
+  manuscript_text: string;
+  criteria: string;
+  prior_review: string;
+  all_experts: { id: string; name: string; role?: string }[];
+  recommended: string[];
+}
+export interface FinalReviewEvent {
+  type: string;
+  [k: string]: any;
+}
+
+export async function createPipeline(
+  kind: "outline" | "screenplay",
+  concept: string,
+  executor: "stub" | "llm" = "stub",
+  novelRef = "",
+): Promise<{ pid: string; kind: string; team_id: string; ids: Record<string, number>; concept: string }> {
+  const res = await authedFetch(`${httpBase()}/api/creation/pipeline`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ kind, concept, executor, novel_ref: novelRef }),
+  });
+  return res.json();
+}
+
+export async function getPipeline(pid: string): Promise<CreationSnapshot> {
+  const res = await authedFetch(`${httpBase()}/api/creation/pipeline/${encodeURIComponent(pid)}`);
+  return res.json();
+}
+
+async function _postStep(pid: string, step: string): Promise<CreationSnapshot> {
+  const res = await authedFetch(`${httpBase()}/api/creation/${encodeURIComponent(pid)}/${step}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+  });
+  return res.json();
+}
+
+export const draftOutline = (pid: string) => _postStep(pid, "draft-outline");
+export const reviewOutline = (pid: string) => _postStep(pid, "review-outline");
+export const draftScreen = (pid: string) => _postStep(pid, "draft-screen");
+export const reviewScreen = (pid: string) => _postStep(pid, "review-screen");
+
+async function _postLead(pid: string, step: string, approved: boolean): Promise<CreationSnapshot> {
+  const res = await authedFetch(`${httpBase()}/api/creation/${encodeURIComponent(pid)}/${step}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ approved }),
+  });
+  return res.json();
+}
+
+export const leadOutline = (pid: string, approved: boolean) => _postLead(pid, "lead-outline", approved);
+export const leadScreen = (pid: string, approved: boolean) => _postLead(pid, "lead-screen", approved);
+
+export async function finalReviewProposal(
+  pid: string,
+  itemKind: "outline" | "screenplay",
+  genreHint?: string,
+): Promise<FinalProposal> {
+  const res = await authedFetch(`${httpBase()}/api/creation/${encodeURIComponent(pid)}/final-review-proposal`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ item_kind: itemKind, genre_hint: genreHint ?? null }),
+  });
+  return res.json();
+}
+
+export async function finalReviewApply(
+  pid: string,
+  itemKind: "outline" | "screenplay",
+  verdict: boolean,
+): Promise<{ status: string; docx: Record<string, string>; pid: string; item_kind: string }> {
+  const res = await authedFetch(`${httpBase()}/api/creation/${encodeURIComponent(pid)}/final-review-apply`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ item_kind: itemKind, verdict }),
+  });
+  return res.json();
+}
+
+export async function exportCreationDocx(
+  kind: "outline" | "screenplay",
+  title: string,
+  markdown: string,
+): Promise<{ ok: boolean; path?: string; degraded?: boolean; error?: string }> {
+  const res = await authedFetch(`${httpBase()}/api/creation/export-docx`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ kind, title, markdown }),
+  });
+  return res.json();
+}
+
+/** SSE 流式终审：POST /api/creation/{pid}/final-review，逐事件吐出圆桌研讨流。 */
+export async function* streamFinalReview(
+  pid: string,
+  itemKind: "outline" | "screenplay",
+  selectedExperts: string[],
+  genreHint?: string,
+): AsyncGenerator<FinalReviewEvent> {
+  const res = await authedFetch(`${httpBase()}/api/creation/${encodeURIComponent(pid)}/final-review`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ item_kind: itemKind, selected_experts: selectedExperts, genre_hint: genreHint ?? null }),
+  });
+  if (!res.body) return;
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = "";
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    let idx;
+    while ((idx = buf.indexOf("\n\n")) !== -1) {
+      const chunk = buf.slice(0, idx);
+      buf = buf.slice(idx + 2);
+      const line = chunk.split("\n").find((l) => l.startsWith("data:"));
+      if (line) {
+        try {
+          yield JSON.parse(line.slice(5).trim());
+        } catch {
+          /* ignore malformed */
+        }
+      }
+    }
+  }
+}
