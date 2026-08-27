@@ -603,6 +603,114 @@ def create_app(rt_port: int = 9920, base_dir: Optional[str] = None, workspace: O
             )
         return JSONResponse({"ok": True, "path": res.get("path"), "degraded": res.get("degraded")})
 
+    # ---- 创作流水线（线路 B 原生 teams 执行 + 线路 A 圆桌终审）----
+    try:
+        from deskmate.creation import service as _csvc
+
+        class CreatePipelineBody(BaseModel):
+            kind: str = "screenplay"   # "outline" | "screenplay"
+            concept: str = ""
+            novel_ref: str = ""
+            executor: str = "stub"     # "stub" | "llm"
+
+        @app.post("/api/creation/pipeline")
+        async def api_create_pipeline(body: CreatePipelineBody):
+            try:
+                return JSONResponse(_csvc.create_pipeline(
+                    body.kind, body.concept, executor_kind=body.executor, novel_ref=body.novel_ref))
+            except Exception as exc:  # noqa: BLE001
+                return JSONResponse({"error": str(exc)}, status_code=400)
+
+        @app.get("/api/creation/pipeline/{pid}")
+        async def api_get_pipeline(pid: str):
+            try:
+                return JSONResponse(_csvc.snapshot(pid))
+            except KeyError:
+                return JSONResponse({"error": "not found"}, status_code=404)
+
+        @app.post("/api/creation/{pid}/draft-outline")
+        async def api_draft_outline(pid: str):
+            try:
+                return JSONResponse(_csvc.draft_outline(pid))
+            except KeyError:
+                return JSONResponse({"error": "not found"}, status_code=404)
+
+        @app.post("/api/creation/{pid}/review-outline")
+        async def api_review_outline(pid: str):
+            try:
+                return JSONResponse(_csvc.review_outline(pid))
+            except KeyError:
+                return JSONResponse({"error": "not found"}, status_code=404)
+
+        class LeadBody(BaseModel):
+            approved: bool = True
+
+        @app.post("/api/creation/{pid}/lead-outline")
+        async def api_lead_outline(pid: str, body: LeadBody):
+            try:
+                return JSONResponse(_csvc.lead_outline(pid, body.approved))
+            except KeyError:
+                return JSONResponse({"error": "not found"}, status_code=404)
+
+        @app.post("/api/creation/{pid}/draft-screen")
+        async def api_draft_screen(pid: str):
+            try:
+                return JSONResponse(_csvc.draft_screen(pid))
+            except KeyError:
+                return JSONResponse({"error": "not found"}, status_code=404)
+
+        @app.post("/api/creation/{pid}/review-screen")
+        async def api_review_screen(pid: str):
+            try:
+                return JSONResponse(_csvc.review_screen(pid))
+            except KeyError:
+                return JSONResponse({"error": "not found"}, status_code=404)
+
+        @app.post("/api/creation/{pid}/lead-screen")
+        async def api_lead_screen(pid: str, body: LeadBody):
+            try:
+                return JSONResponse(_csvc.lead_screen(pid, body.approved))
+            except KeyError:
+                return JSONResponse({"error": "not found"}, status_code=404)
+
+        class FRProposalBody(BaseModel):
+            item_kind: str = "screenplay"
+            genre_hint: Optional[str] = None
+
+        @app.post("/api/creation/{pid}/final-review-proposal")
+        async def api_fr_proposal(pid: str, body: FRProposalBody):
+            try:
+                return JSONResponse(_csvc.final_review_proposal(pid, body.item_kind, genre_hint=body.genre_hint))
+            except KeyError:
+                return JSONResponse({"error": "not found"}, status_code=404)
+
+        class FRBody(BaseModel):
+            item_kind: str = "screenplay"
+            selected_experts: list[str] = []
+            genre_hint: Optional[str] = None
+
+        @app.post("/api/creation/{pid}/final-review")
+        async def api_final_review(pid: str, body: FRBody):
+            async def _gen():
+                async for chunk in _csvc.stream_final_review(
+                    pid, body.item_kind, body.selected_experts, genre_hint=body.genre_hint
+                ):
+                    yield chunk
+            return StreamingResponse(_gen(), media_type="text/event-stream")
+
+        class FRAapplyBody(BaseModel):
+            item_kind: str = "screenplay"
+            verdict: bool = True
+
+        @app.post("/api/creation/{pid}/final-review-apply")
+        async def api_fr_apply(pid: str, body: FRAapplyBody):
+            try:
+                return JSONResponse(_csvc.final_review_apply(pid, body.item_kind, body.verdict))
+            except (KeyError, ValueError) as exc:
+                return JSONResponse({"error": str(exc)}, status_code=400)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("创作流水线路由未挂载（模块加载失败，圆桌主体不受影响）: %s", exc)
+
     return app
 
 

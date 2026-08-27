@@ -58,6 +58,7 @@ class CreativePipeline:
         self.ids: dict[str, int] = {}
         self._team = None
         self._drafts: dict[int, str] = {}
+        self.last_docx: dict[str, str] = {}  # item_kind -> 上次定稿 docx 路径（供状态查询）
 
     # -- 建团 --------------------------------------------------------------
     def _staff(self):
@@ -161,6 +162,7 @@ class CreativePipeline:
         if res.get("ok"):
             label = "剧本" if item_kind == "screenplay" else "大纲"
             suffix = "" if not res.get("degraded") else "（md 降级）"
+            self.last_docx[item_kind] = res.get("path") or ""
             logger.info("%s定稿已导出%s: %s", label, suffix, res.get("path"))
         else:
             logger.warning("定稿 docx 导出失败（不影响定稿）: %s", res.get("error"))
