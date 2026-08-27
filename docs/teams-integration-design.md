@@ -342,7 +342,7 @@ mcpServers:
 
 ---
 
-# 阶段 5 · 长文本 I/O 架构（下一阶段主攻）
+# 阶段 5 · 长文本 I/O 架构（已落地 2026-08-27，提交 `5c9f5af..c3e5b75`）
 
 **决策（2026-08-27 萧哥拍板）**：当前创作流水线对原著/剧本存在硬性字数天花板——
 `_read_novel` 仅取前 6000 字、LLM 输出上限约 8k token（≈6000 中文字）。对长篇改编与
@@ -364,6 +364,27 @@ mcpServers:
 4. **docx 导出**：拼接后的完整剧本/大纲才导出（非截断片段）。
 5. **前端**：创建时显示「建立原著索引…」进度；进行中可指定本集关联章节。
 6. **依赖确认**：DeepSeek-V3 128k 输入够塞圣经+数章；输出仍受 8k 限 → 输出侧必须分段（不靠换模型）。
+
+## 落地摘要（2026-08-27）
+
+- **输入侧「摘要+分章混合」已通**：`novel_index.py` 读全文（复用 `file_reader`）→ LLM 生成
+  改编圣经（人物表/情节线/分章摘要）→ 缓存 `~/.deskmate/novels/<hash>/bible.md` + 章节索引。
+  缓存命中规则含降级/升级两档：`degrade=True` 强制降级圣经（零 LLM，stub 不烧 token）、
+  `degrade=False` 生成 LLM 精炼圣经；降级缓存仅在「本次也接受降级」或「LLM 不可用」时复用，
+  否则重建精炼版。
+- **pipeline 改造已落地**：创建时（`service.create_pipeline`）同步预建索引，失败降级不阻断；
+  `_novel_context` 改为「圣经摘要 + 目录」、`_novel_related` 按大纲 bigram 自动挑 3 章
+  （或用户 `set_related_chapters` 指定章节），按执行器类型自动选档（stub 强制降级，杜绝
+  「stub 模拟却烧真 LLM」）；`final_review.novel_excerpt` 语义升级为圣经摘要节选（对照改编）。
+- **输出侧「分段续写拼接」已落地**：`draft_screenplay` 拆场景 → 逐段 3800 token → 前情摘要
+  续写 → `---` 拼接，突破单次 max_tokens 上限。
+- **前端已适配**：创建时「正在建立原著索引…」进度；进行中视图新增「原著参考章节」面板
+  （novel-index / novel-pick / related-chapters 三接口 + 索引失败提示条）。
+- **顺带修复（HTTP 冒烟抓到）**：`web.py` 函数内定义的 Pydantic Body 类 + `from __future__
+  import annotations` 导致 FastAPI 按模块全局解析 ForwardRef 失败 → **所有创建/终审 POST 路由
+  实际 422 不可用**；7 个 Body 类（CreatePipelineBody/NovelPickBody/RelatedBody/LeadBody/
+  FRProposalBody/FRBody/FRApplyBody）已全部上移模块级修复。
+- 验证：service 层 27 项 + HTTP 冒烟 10 项 + 老回归 `verify_creation_web_stage4.py` ALL PASS。
 
 ## 验收
 - 百万字原著：AI 改编能引用中后段情节/人物（不再只看开头 6000 字）。
