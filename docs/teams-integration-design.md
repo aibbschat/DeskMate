@@ -1,6 +1,6 @@
 # 圆桌原生改造 + 创作流水线 + 圆桌终审 · 技术设计文档
 
-> 状态：阶段 0–3 已落地；阶段 4 后端 + 剧本/大纲定稿自动落地 docx（officecli）已落地，前端 UI、终审 web 触发、MCP 对接 Hermes 留后续（2026-08-27）。v1 草案 2026-08-26 由逍遥与萧哥对齐后落稿。
+> 状态：阶段 0–4 全部落地（2026-08-27）。含：① 创作流水线后端（teams 基座、派活→审核→打回→定稿）；② 圆桌终审桥接 + 知情批准四要素 + 定稿自动落地 docx（officecli）；③ 前端 `CreationPipelineView`/`TeamChatView` + 终审提案卡/专家勾选 UI（tsc + vite build 编译验证通过）；④ 终审 web SSE 流式触发（后端 `service.stream_final_review` + 前端 `streamFinalReview`）；⑤ 对外 MCP `deskmate/mcp/roundtable_server.py`（FastMCP，5 工具，可对接 Hermes A2A）。v1 草案 2026-08-26 由逍遥与萧哥对齐后落稿。
 > 目标：把上游官方 `coworker/teams/` 原生多 Agent 框架，落地为两套相互打通的系统——
 > ① **圆桌**（研讨型审稿）迁入 teams 基座；② **创作流水线**（剧本/大纲「派活→审核→打回→定稿」）；
 > 二者通过「圆桌终审」接成一条线：日常单点审核走流水线，重大节点拉圆桌多专家研判。
@@ -233,7 +233,7 @@ item 全剧本/第N集  (open, blocked until 大纲 done；link(kind=parent) 建
 | `deskmate/roundtable/teams_bridge.py` | 改（阶段 2） | 已提供 `RoundtableTeamsBridge` 供 final_review 复用（建团 + board 维度 + ChatStore 辩论场 + lead 终验收） |
 | `deskmate/creation/docx_export.py`（新增） | ✅ 已落地 | 终审定稿自动调本地 `officecli` 把定稿 Markdown 展开为 .docx（落 `output/`），officecli 缺失降级 .md |
 | `deskmate/roundtable/web.py` `POST /api/creation/export-docx` | ✅ 已落地 | docx 能力的 HTTP 入口（前端后续接入） |
-| `deskmate/roundtable/web.py` `POST /roundtable/from-pipeline` + `CreationPipelineView.tsx` | 预留（阶段 4 后续） | 终审研讨的 web 触发（SSE 流式）+ 提案卡/专家勾选 UI |
+| `deskmate/roundtable/web.py` `POST /api/creation/{pid}/final-review`(SSE) + `CreationPipelineView.tsx` + `ProposalCard.tsx` | ✅ 已落地 | 终审研讨的 web 触发（SSE 流式）+ 提案卡/专家勾选 UI（前端 `streamFinalReview` reader 解析 `data:` 事件） |
 
 ---
 
@@ -257,13 +257,13 @@ item 全剧本/第N集  (open, blocked until 大纲 done；link(kind=parent) 建
 - 流水线终审分支建圆桌 item + `@圆桌`；圆桌 `run_from_pipeline` 返回 verdict；回流 `done`/`in_progress`。
 - 验证：编剧被打回、圆桌终审报告作为审核意见回灌。
 
-**阶段 4 · 对外 & 打磨** 🟡 后端+docx 已落地，前端/MCP 留后续
+**阶段 4 · 对外 & 打磨** ✅ 全部落地（2026-08-27）
 - ✅ **剧本/大纲定稿自动落地 docx**（核心新增需求）：新增 `deskmate/creation/docx_export.py`，定稿分支（`lead_verdict_outline` / `lead_verdict_screenplay` / `apply_final_review` 三处 approved）自动调本地 `officecli` 把「剧名标题 + 正文」展开为规范 .docx，落 `output/`，文件名带时间戳防覆盖；officecli 缺失降级 .md；导出失败不阻断状态机。验证：stub 跑通全链路 + `officecli validate` 通过 + 首段为剧名 `Heading1`。
 - ✅ **web 路由 `POST /api/creation/export-docx`**：docx 能力的 HTTP 入口（请求体 markdown/title/kind）。
-- ⏳ 前端 `CreationPipelineView` + `TeamChatView` 复用 + 终审提案卡/专家勾选 UI：未做（需前端编译验证，留后续单独迭代）。
-- ⏳ 终审研讨 web 触发（`POST /roundtable/from-pipeline` + SSE 流式）：后端逻辑已就绪（`final_review.run_final_review`），web 触发留前端阶段。
-- ⏳ 圆桌团队经 `mcp_server` 暴露对接 Hermes A2A peer：跨系统协同，留独立后续；注 `officecli` 自身已带 `mcp` 子命令，可供外部 Agent（如 Hermes/Claude）编辑文档。
-- ⏳ wake budget 参数调优。
+- ✅ **前端 `CreationPipelineView` + `TeamChatView` 复用 + 终审提案卡/专家勾选 UI**：新增 `surfaces/gui/src/components/CreationPipelineView.tsx` 与 `ProposalCard.tsx`；阶段按钮按 `phase` 联动、四要素提案卡可勾选专家、SSE 事件流渲染（speaking/turn_end/synthesis）、确认定稿/打回、docx 路径展示；`Sidebar` 加「创作流水线」入口（`nav-creation`）、`App.tsx` 接入 `creation`/`teamchat` surface；`tsc --noEmit` + `vite build` 编译验证通过。
+- ✅ **终审研讨 web 触发（SSE 流式）**：后端 `deskmate/creation/service.py:stream_final_review` 异步转发 `Roundtable.run_stream` 事件（meta/turn_delta/final_review_ready），`done` 时暂存 synthesis 待用户拍板；web 路由 `POST /api/creation/{pid}/final-review` 返回 `StreamingResponse(text/event-stream)`；前端 `api.ts:streamFinalReview` 用 `fetch`+`ReadableStream` reader 解析 `data: {json}`。
+- ✅ **圆桌团队经 MCP 暴露对接 Hermes A2A peer**：新增 `deskmate/mcp/roundtable_server.py`（FastMCP `openworker-roundtable`，stdio），暴露 5 个高层 tool（`create_creation_pipeline`/`get_pipeline`/`final_review_proposal`/`export_docx`/`run_roundtable`）；验证脚本全过（initialize/tools/list/create/get/export_docx）。Hermes/Claude 可在 MCP 设置里加 stdio connector（command=`.venv/bin/python`, args=`["-m","deskmate.mcp.roundtable_server"]`）。另 `officecli mcp` 子命令可提供文档编辑 MCP 入口。
+- ⏳ wake budget 参数调优（留后续打磨）。
 - **7 专家 `team: worker` 标记跳过**（见阶段 2 状态说明）：避免 `default_surfaced=False` 副作用。
 
 ---
@@ -318,6 +318,23 @@ chat.unread_for(group_id, "historian")   # 仅 @提及 / user 发言才唤醒
 from coworker.teams.mcp_server import build
 mcp = build(dialect, space="<space>")    # 外部 Agent 经 ocw board mcp --token --space 拿到角色限定工具
 ```
+
+### 8.1 桌搭自带创作流水线 MCP（`deskmate/mcp/roundtable_server.py`）
+面向**外部 Agent（Hermes/Claude）**直接驱动创作流水线，stdio 传输，FastMCP 暴露 5 个高层 tool：
+- `create_creation_pipeline(kind, concept, executor, novel_ref)` → 返回 `{pid, team_id, ids}`
+- `get_pipeline(pid)` → 阶段/工作项快照
+- `final_review_proposal(pid, item_kind, genre_hint)` → 四要素提案（不烧 token）
+- `export_docx(kind, title, markdown)` → 调本地 `officecli` 落地 docx
+- `run_roundtable(topic, personas, context, manuscript)` → 拉圆桌多专家研判
+
+**Hermes 对接配置示例**（`~/.hermes/config.yaml` 或 MCP 设置里加 stdio connector）：
+```yaml
+mcpServers:
+  openworker-roundtable:
+    command: ".venv/bin/python"          # openworker 的 venv 解释器
+    args: ["-m", "deskmate.mcp.roundtable_server"]
+```
+> 注：此 server 复用进程内 `service` 注册表（sidecar 单进程足够）。若 Hermes 在另一进程/机器，需经 HTTP 网关转发（当前为本地 stdio 直连，留后续打磨）。
 
 ---
 *本设计遵循「先对齐再实施」原则；任何 §7 未决项在实现前需与萧哥再确认一次 tradeoff。*

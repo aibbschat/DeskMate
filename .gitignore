@@ -17,3 +17,5 @@ vite.config.ts.timestamp-*.mjs
 # Local secrets (live-smoke BYO keys) — never committed
 .env
 .claude/settings.local.json
+# Generated docx exports (docx_export.py → output/*.docx) — build artifacts, not source
+output/
