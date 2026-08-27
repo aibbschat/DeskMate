@@ -46,6 +46,17 @@ def build_server() -> FastMCP:
     )
 
     # ---- 创作流水线 ----------------------------------------------------
+    def _svc(fn, *args, **kwargs):
+        """收敛 service 调用错误处理：KeyError=not found，其余返回 error 字典。"""
+        from deskmate.creation import service as svc
+
+        try:
+            return fn(svc, *args, **kwargs)
+        except KeyError:
+            return {"error": "not found"}
+        except Exception as exc:  # noqa: BLE001
+            return {"error": str(exc)}
+
     @mcp.tool()
     def create_creation_pipeline(
         kind: str,
@@ -57,26 +68,55 @@ def build_server() -> FastMCP:
 
         kind: "outline"（仅大纲）| "screenplay"（含大纲+剧本）。
         executor: "stub"（演示·不烧 token）| "llm"（真实创作，需 provider 凭证）。
-        返回的 pid 用于后续 get_pipeline / final_review_proposal。
+        返回的 pid 用于后续 get_pipeline / 各推进工具 / final_review_proposal。
         """
-        from deskmate.creation import service as svc
-
-        try:
-            return svc.create_pipeline(kind, concept, executor_kind=executor, novel_ref=novel_ref)
-        except Exception as exc:  # noqa: BLE001
-            return {"error": str(exc)}
+        return _svc(
+            lambda svc: svc.create_pipeline(kind, concept, executor_kind=executor, novel_ref=novel_ref)
+        )
 
     @mcp.tool()
     def get_pipeline(pid: str) -> dict:
         """查询创作流水线当前状态：各 board 项 state、team_id、phase、docx 产物。"""
-        from deskmate.creation import service as svc
+        return _svc(lambda svc: svc.snapshot(pid))
 
-        try:
-            return svc.snapshot(pid)
-        except KeyError:
-            return {"error": "not found"}
-        except Exception as exc:  # noqa: BLE001
-            return {"error": str(exc)}
+    @mcp.tool()
+    def draft_outline(pid: str) -> dict:
+        """让大纲专家撰写大纲草稿（stub=占位不烧 token / llm=真实生成），返回最新快照。"""
+        return _svc(lambda svc: svc.draft_outline(pid))
+
+    @mcp.tool()
+    def review_outline(pid: str) -> dict:
+        """让审核专家评审大纲（结论写入审核项 comment），返回最新快照。"""
+        return _svc(lambda svc: svc.review_outline(pid))
+
+    @mcp.tool()
+    def lead_outline(pid: str, approved: bool) -> dict:
+        """主编对大纲拍板：approved=true 定稿（解锁剧本）/ false 打回重写。返回最新快照。"""
+        return _svc(lambda svc: svc.lead_outline(pid, approved))
+
+    @mcp.tool()
+    def draft_screen(pid: str) -> dict:
+        """让编剧撰写剧本（分段续写拼接，突破单次输出上限）。需大纲已定稿。返回最新快照。"""
+        return _svc(lambda svc: svc.draft_screen(pid))
+
+    @mcp.tool()
+    def review_screen(pid: str) -> dict:
+        """让审核专家评审剧本，返回最新快照。"""
+        return _svc(lambda svc: svc.review_screen(pid))
+
+    @mcp.tool()
+    def lead_screen(pid: str, approved: bool) -> dict:
+        """主编对剧本拍板：approved=true 定稿 / false 打回重写。返回最新快照。"""
+        return _svc(lambda svc: svc.lead_screen(pid, approved))
+
+    @mcp.tool()
+    def final_review_apply(pid: str, item_kind: str, verdict: bool) -> dict:
+        """用户知情确认后，把圆桌终审结论回灌创作项（approve=定稿 / 打回）。
+
+        须先跑 stream_final_review（SSE 终审）或同步 run_final_review 暂存 synthesis，
+        否则报「尚未运行终审研讨」。item_kind: "outline" | "screenplay"。
+        """
+        return _svc(lambda svc: svc.final_review_apply(pid, item_kind, verdict))
 
     @mcp.tool()
     def final_review_proposal(pid: str, item_kind: str, genre_hint: str = "") -> dict:
