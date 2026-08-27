@@ -16,19 +16,62 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import uuid
+from pathlib import Path
 from typing import AsyncGenerator, Optional
 
 from .pipeline import CreativePipeline
 from .personas_loader import validate_creative_personas
 from .executor import StubExecutor, LLMExecutor, ReviewResult
-from .final_review import build_final_review_proposal, apply_final_review
+from .final_review import build_final_review_proposal, apply_final_review, build_roundtable_context
 
 logger = logging.getLogger(__name__)
 
 
 # 进程内流水线注册表（sidecar 单进程，会话级缓存足够）
 _PIPELINES: dict[str, CreativePipeline] = {}
+
+# 注册表持久化路径（P1-4：sidecar 重启后流水线可恢复）。None=默认
+# ``resolve_base()/creation_pipelines.json``；测试可注入临时目录避免污染真实环境。
+_REGISTRY_PATH: Optional[Path] = None
+
+
+def _registry_file() -> Path:
+    if _REGISTRY_PATH is not None:
+        return Path(_REGISTRY_PATH)
+    from deskmate.teams_client import resolve_base
+
+    return resolve_base() / "creation_pipelines.json"
+
+
+def _load_registry() -> dict:
+    """读持久化注册表 {pid: 恢复元数据}。文件缺失/损坏返回空表（不阻断）。"""
+    try:
+        path = _registry_file()
+        if path.exists():
+            return json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("流水线注册表读取失败（按空表继续）: %s", exc)
+    return {}
+
+
+def _save_registry() -> None:
+    """把注册表元数据原子写盘（供重启后按 pid 恢复流水线）。"""
+    try:
+        path = _registry_file()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".json.tmp")
+        tmp.write_text(
+            json.dumps(_REGISTRY_META, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        os.replace(tmp, path)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("流水线注册表落盘失败（不影响本次运行）: %s", exc)
+
+
+# 注册表元数据：pid -> 恢复所需字段（草稿文本在 pipeline 自己的 drafts 文件，不入这里）
+_REGISTRY_META: dict = {}
 
 
 def create_pipeline(
@@ -62,6 +105,22 @@ def create_pipeline(
     else:
         ids = pl.start_outline_project(concept, novel_ref=novel_ref)
     _PIPELINES[pid] = pl
+    # 登记恢复元数据（P1-4）：sidecar 重启后按 pid 可从磁盘恢复流水线
+    _REGISTRY_META[pid] = {
+        "space": space,
+        "kind": kind,
+        "concept": concept,
+        "executor_kind": executor_kind,
+        "base_dir": str(base_dir) if base_dir else None,
+        "novel_ref": novel_ref,
+        "novel_cache_root": str(novel_cache_root) if novel_cache_root else None,
+        "ids": dict(ids),
+        "related_override": list(getattr(pl, "_related_override", []) or []),
+        "novel_index_failed": bool(getattr(pl, "_novel_index_failed", False)),
+        "last_docx": dict(getattr(pl, "last_docx", {}) or {}),
+        "created_at": uuid.uuid4().hex[:8],
+    }
+    _save_registry()
 
     # 预建原著索引（创建时同步，后续 draft 直接命中缓存；失败降级不阻断）
     novel_index = _build_index_for(pl, degrade=(executor_kind == "stub"))
@@ -96,10 +155,54 @@ def _build_index_for(pl: "CreativePipeline", *, degrade: bool = False) -> dict:
     }
 
 
+def _restore_pipeline(pid: str) -> Optional[CreativePipeline]:
+    """从持久化注册表重建流水线实例（board/草稿在磁盘，进程重启不丢）。
+
+    不重新 start_*_project（避免重复建团）；手工恢复业务字段，团队经
+    ``for_lead_session(f"{space}:lead")`` 从 teams 注册表找回。
+    """
+    meta = _load_registry().get(pid)
+    if not meta:
+        return None
+    from .executor import LLMExecutor, StubExecutor
+
+    executor = StubExecutor() if meta.get("executor_kind") == "stub" else LLMExecutor()
+    pl = CreativePipeline(
+        space=meta["space"],
+        executor=executor,
+        base_dir=meta.get("base_dir"),
+        novel_cache_root=meta.get("novel_cache_root"),
+    )
+    # 恢复业务字段
+    pl.concept = meta.get("concept", "")
+    pl.novel_ref = meta.get("novel_ref", "")
+    pl.ids = dict(meta.get("ids", {}) or {})
+    pl._related_override = list(meta.get("related_override", []) or [])
+    pl._novel_index_failed = bool(meta.get("novel_index_failed", False))
+    pl.last_docx = dict(meta.get("last_docx", {}) or {})
+    # 找回团队（board 数据在 teams.db，registry 按 lead_session 定位）
+    pl._team = pl.reg.for_lead_session(f"{pl.space}:lead")
+    # 重建原著索引句柄（bible 缓存文件仍在，懒加载直接命中）
+    if pl.novel_ref:
+        from .novel_index import NovelIndex
+
+        cache_root = pl._novel_cache_root
+        pl.novel_index = (
+            NovelIndex(pl.novel_ref, cache_root=Path(cache_root))
+            if cache_root
+            else NovelIndex(pl.novel_ref)
+        )
+    _PIPELINES[pid] = pl
+    logger.info("已从持久化注册表恢复流水线 %s（space=%s）", pid, pl.space)
+    return pl
+
+
 def get_pipeline(pid: str) -> CreativePipeline:
     pl = _PIPELINES.get(pid)
     if pl is None:
-        raise KeyError(pid)
+        pl = _restore_pipeline(pid)
+        if pl is None:
+            raise KeyError(pid)
     return pl
 
 
@@ -289,7 +392,9 @@ async def stream_final_review(
     from deskmate.roundtable.personas import get_persona
 
     proposal = build_final_review_proposal(pl, item_kind, genre_hint=genre_hint)
-    client = TeamsClient(base_dir=None)
+    # 用 pipeline 自身的 base（与 board 数据同根），避免自定义数据目录下 bridge 建团分家。
+    # 终审团队另起 space（final-review:…），只登记花名册不抢流水线 worker。
+    client = TeamsClient(base_dir=pl.client.base)
     team_id = f"final-review:{pl.space}:{proposal.item_id}"
     bridge = RoundtableTeamsBridge(client, team_id=team_id)
     worker_names = [get_persona(p).name if get_persona(p) else p for p in selected_experts]
@@ -305,7 +410,7 @@ async def stream_final_review(
         async for ev in Roundtable(
             topic=proposal.topic,
             personas=personas,
-            context=proposal.prior_review,
+            context=build_roundtable_context(proposal),
             manuscript_text=proposal.manuscript_text,
             team_bridge=bridge,
         ).run_stream():

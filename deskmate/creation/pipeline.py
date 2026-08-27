@@ -17,7 +17,9 @@
 """
 from __future__ import annotations
 
+import json
 import logging
+import os
 from pathlib import Path
 from typing import Optional
 
@@ -69,6 +71,35 @@ class CreativePipeline:
         self._novel_related_cache: str = ""  # 圣经 + 相关章节（一次性缓存）
         self._related_override: list[int] = []  # 用户指定创作参考章节（1..n）；空=自动 pick
         self._novel_cache_root = novel_cache_root  # 测试注入用；None=默认 ~/.deskmate/novels
+        self._load_drafts()  # 恢复上次的草稿文本（sidecar 重启后 board 状态仍在，草稿不再丢）
+
+    # -- 草稿持久化（P1-4：board 状态在 teams.db，草稿文本也须落盘） ------
+    def _drafts_file(self) -> Path:
+        """草稿落盘位置：与 board 同数据根（``<base>/creation/<space>.drafts.json``）。"""
+        return self.client.base / "creation" / f"{self.space}.drafts.json"
+
+    def _save_drafts(self) -> None:
+        """把内存草稿原子写盘（临时文件 + os.replace），供重启恢复。"""
+        try:
+            path = self._drafts_file()
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_suffix(".json.tmp")
+            tmp.write_text(
+                json.dumps(self._drafts, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+            os.replace(tmp, path)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("草稿落盘失败（不影响本次运行）: %s", exc)
+
+    def _load_drafts(self) -> None:
+        """启动/恢复时加载既有草稿（文件不存在则空表）。"""
+        try:
+            path = self._drafts_file()
+            if path.exists():
+                raw = json.loads(path.read_text(encoding="utf-8"))
+                self._drafts = {int(k): v for k, v in (raw or {}).items()}
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("草稿恢复失败（按空草稿继续）: %s", exc)
 
     # -- 原著上下文（阶段 5：摘要+分章混合，废除 6000 字硬截断） ----------
     @property
@@ -268,9 +299,12 @@ class CreativePipeline:
     def _export_docx(self, item_kind: str, text: str) -> None:
         """定稿文本导出 .docx（失败仅记日志，不阻断状态机）。
 
-        用本地 officecli 把「剧名标题 + 正文」展开为规范 Word 文档；
-        officecli 缺失时降级写 .md。详见 deskmate/creation/docx_export.py。
+        空文本直接跳过导出（LLM 未配置/不可用时 draft 可能为空串），
+        避免产出「只有标题的空 docx/md」（P2-7）。
         """
+        if not (text or "").strip():
+            logger.warning("定稿文本为空，跳过导出（请检查 LLM 是否可用，或先重写草稿）")
+            return
         try:
             from .docx_export import export_creation_docx
         except Exception as exc:  # noqa: BLE001
@@ -300,6 +334,7 @@ class CreativePipeline:
             self.guard.transition(self.space, w, outline_item_id, to="in_progress", comment="开始撰写大纲")
         text = self.executor.draft_outline(self.concept, novel_text=self.novel_text)
         self._drafts[outline_item_id] = text
+        self._save_drafts()  # 落盘：sidecar 重启后草稿可恢复
         self.guard.transition(self.space, w, outline_item_id, to="review", comment="大纲已成，请审")
         return text
 
@@ -343,6 +378,7 @@ class CreativePipeline:
         outline_text = self._outline_text()
         text = self.executor.draft_screenplay(outline_text, novel_text=self._novel_related())
         self._drafts[screen_item_id] = text
+        self._save_drafts()  # 落盘：sidecar 重启后草稿可恢复
         self.guard.transition(self.space, w, screen_item_id, to="review", comment="剧本已成，请审")
         return text
 

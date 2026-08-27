@@ -841,12 +841,16 @@ class Roundtable:
         synthesis = await self._stream_turn(
             out_q, turn_id="host-synth", round_no=rounds_held + 1, speaker="知了（主持）", role="host", kind="host",
             gen_factory=lambda: self._stream_host(
-                "圆桌结束。请基于全部讨论写一份《综合研判报告》，严格用以下四个二级标题分段"
+                "圆桌结束。请基于全部讨论写一份《综合研判报告》，严格用以下五个二级标题分段"
                 "（缺一不可、顺序固定，不要加其它标题）：\n"
                 "## 共识点\n（各方一致认可的结论，逐条列出）\n"
                 "## 分歧点\n（每条写明分歧内容，并附「支持方：…｜反对方：…｜理由：…」）\n"
                 "## 存疑项\n（史料考据标注【待确认】的、出处不明或证据不足的，逐条列出）\n"
-                "## 可执行建议\n（给作者 3 条按优先级排序的修改建议，格式「1. …」）",
+                "## 可执行建议\n（给作者 3 条按优先级排序的修改建议，格式「1. …」）\n"
+                "## 终审结论\n（首行必须输出结论标记行，二选一、全大写："
+                "VERDICT: APPROVE（同意定稿）或 VERDICT: REJECT（打回修改）；"
+                "随后一句话说明理由。此标记行供程序自动解析，务必准确。若是终审会，"
+                "评审对象为送审片段而非整部作品；建议修改但整体可定稿时仍应 APPROVE）",
                 synthesis_ctx, story_block,
             ),
             phase="synthesis",
