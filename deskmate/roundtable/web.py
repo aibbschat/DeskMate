@@ -160,6 +160,14 @@ class TrendActiveBody(BaseModel):
     id: str = ""
 
 
+class DocxExportBody(BaseModel):
+    """POST /api/creation/export-docx 的请求体：把 Markdown 定稿导出 .docx。"""
+
+    markdown: str = ""
+    title: str = ""
+    kind: str = "screenplay"
+
+
 def _read_html() -> str:
     try:
         with open(TEMPLATE_PATH, "r", encoding="utf-8") as f:
@@ -572,6 +580,28 @@ def create_app(rt_port: int = 9920, base_dir: Optional[str] = None, workspace: O
         if not _trends.delete_brief(bid):
             return JSONResponse({"error": "not found"}, status_code=404)
         return JSONResponse({"ok": True})
+
+    @app.post("/api/creation/export-docx")
+    async def export_docx(body: DocxExportBody):
+        """把给定 Markdown 定稿导出为 .docx（基于本地 officecli）。
+
+        请求体 {"markdown": "...", "title": "剧名", "kind": "screenplay"|"outline"}。
+        officecli 缺失时降级返回 .md 并在 degraded=true 中说明。
+        """
+        if not body.markdown.strip():
+            return JSONResponse({"error": "empty markdown"}, status_code=400)
+        try:
+            from deskmate.creation.docx_export import export_creation_docx
+        except Exception as exc:  # noqa: BLE001
+            return JSONResponse({"error": f"docx 模块加载失败: {exc}"}, status_code=500)
+        res = export_creation_docx(body.kind, body.title or "未命名", body.markdown)
+        if not res.get("ok"):
+            return JSONResponse(
+                {"ok": False, "error": res.get("error"),
+                 "path": res.get("path"), "degraded": res.get("degraded")},
+                status_code=500,
+            )
+        return JSONResponse({"ok": True, "path": res.get("path"), "degraded": res.get("degraded")})
 
     return app
 

@@ -149,6 +149,7 @@ def apply_final_review(
     if verdict:
         pipeline.guard.transition(space, lead, review_item_id, to="done", comment="圆桌终审通过")
         pipeline.guard.transition(space, lead, item_id, to="done", comment="圆桌终审定稿")
+        pipeline._export_docx(proposal.item_kind, proposal.manuscript_text)
         return "approved"
     # 打回：产出项 review→in_progress（worker 无权做，主编 lead 裁决）；审核项保持 review 留待再审
     pipeline.guard.transition(

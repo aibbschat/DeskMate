@@ -17,9 +17,12 @@
 """
 from __future__ import annotations
 
+import logging
 from typing import Optional
 
 from coworker.teams.model import Actor, Role
+
+logger = logging.getLogger(__name__)
 
 from .guard import PipelineGuard, PipelineGuardError
 from .personas_loader import (
@@ -136,6 +139,32 @@ class CreativePipeline:
                 return ReviewResult(approved=approved, opinion=body)
         return ReviewResult(approved=True, opinion="（无审核意见，默认通过）")
 
+    # -- 定稿导出（docx 落地，容错） -------------------------------------
+    def _export_docx(self, item_kind: str, text: str) -> None:
+        """定稿文本导出 .docx（失败仅记日志，不阻断状态机）。
+
+        用本地 officecli 把「剧名标题 + 正文」展开为规范 Word 文档；
+        officecli 缺失时降级写 .md。详见 deskmate/creation/docx_export.py。
+        """
+        try:
+            from .docx_export import export_creation_docx
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("docx 模块加载失败（跳过导出）: %s", exc)
+            return
+        title = (self.concept or "未命名剧本")[:20]
+        md = f"# {title}\n\n{text}"
+        try:
+            res = export_creation_docx(item_kind, title, md)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("docx 导出异常（不影响定稿）: %s", exc)
+            return
+        if res.get("ok"):
+            label = "剧本" if item_kind == "screenplay" else "大纲"
+            suffix = "" if not res.get("degraded") else "（md 降级）"
+            logger.info("%s定稿已导出%s: %s", label, suffix, res.get("path"))
+        else:
+            logger.warning("定稿 docx 导出失败（不影响定稿）: %s", res.get("error"))
+
     # -- 大纲路线 ----------------------------------------------------------
     def draft_outline(self, outline_item_id: Optional[int] = None) -> str:
         outline_item_id = outline_item_id or self.ids["outline_item"]
@@ -169,6 +198,7 @@ class CreativePipeline:
         if result.approved:
             self.guard.transition(self.space, self.lead, review_item_id, to="done", comment="验收通过")
             self.guard.transition(self.space, self.lead, outline_item_id, to="done", comment="大纲定稿")
+            self._export_docx("outline", self._drafts.get(outline_item_id, ""))
             return "approved"
         # 打回：审核项保持 review（留待复审），产出项 review→in_progress 打回改。
         # 主编以 lead 身份打回（worker 无权做）。
@@ -211,6 +241,7 @@ class CreativePipeline:
         if result.approved:
             self.guard.transition(self.space, self.lead, review_item_id, to="done", comment="验收通过")
             self.guard.transition(self.space, self.lead, screen_item_id, to="done", comment="剧本定稿")
+            self._export_docx("screenplay", self._drafts.get(screen_item_id, ""))
             return "approved"
         # 打回：审核项保持 review（留待复审），产出项 review→in_progress 打回改。
         self.guard.transition(self.space, self.lead, screen_item_id, to="in_progress",
