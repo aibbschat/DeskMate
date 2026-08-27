@@ -1,6 +1,6 @@
 # 圆桌原生改造 + 创作流水线 + 圆桌终审 · 技术设计文档
 
-> 状态：阶段 0–3 已落地（2026-08-27，自 commit 7153fa4 起 + 阶段3 收尾）；阶段 4（Web/前端/MCP 对外）预留。v1 草案 2026-08-26 由逍遥与萧哥对齐后落稿。
+> 状态：阶段 0–3 已落地；阶段 4 后端 + 剧本/大纲定稿自动落地 docx（officecli）已落地，前端 UI、终审 web 触发、MCP 对接 Hermes 留后续（2026-08-27）。v1 草案 2026-08-26 由逍遥与萧哥对齐后落稿。
 > 目标：把上游官方 `coworker/teams/` 原生多 Agent 框架，落地为两套相互打通的系统——
 > ① **圆桌**（研讨型审稿）迁入 teams 基座；② **创作流水线**（剧本/大纲「派活→审核→打回→定稿」）；
 > 二者通过「圆桌终审」接成一条线：日常单点审核走流水线，重大节点拉圆桌多专家研判。
@@ -135,7 +135,8 @@ ItemState: open → in_progress → {blocked, review, canceled}
 | `coworker/personas/builtin/*.md`（7 专家） | 改 | 在 manifest 增加 `team: worker`（保留 `roundtable:true`）；「知了」加 `team: lead` |
 | `surfaces/gui/src/.../TeamChatView.tsx` | 复用+小改 | 圆桌用其展示辩论场；增加「审稿维度工作项」进度条 |
 
-> **阶段 2 实施状态**：`teams_bridge.py` 已新增、`coordinator.py` 已加 hook（建团 + board 维度项 + ChatStore 辩论场镜像 + lead 终验收 `done` + journal 落盘），验证全过且**零前端影响**（不注入 `team_bridge` 时圆桌完全照旧）。`web.py` 新增 `/roundtable/start-team` 路由 + 前端 `TeamChatView` 复用 + 7 专家 manifest 加 `team: worker` 标记，留**阶段 4** 打磨（不影响后端集成已生效）。
+> **阶段 2 实施状态**：`teams_bridge.py` 已新增、`coordinator.py` 已加 hook（建团 + board 维度项 + ChatStore 辩论场镜像 + lead 终验收 `done` + journal 落盘），验证全过且**零前端影响**（不注入 `team_bridge` 时圆桌完全照旧）。`web.py` 新增 `/roundtable/start-team` 路由 + 前端 `TeamChatView` 复用留**阶段 4** 打磨。
+> **7 专家 `team: worker` 标记经评估跳过**：上游 `team: worker` 会自动 `default_surfaced=False`，可能使 7 专家从普通聊天 persona 选择器消失，且与圆桌「研讨型」语义不符（不应被当 teams 执行 worker）。圆桌仍走官方 `roundtable: true` 加载，不受影响（2026-08-27 与萧哥对齐）。
 
 ---
 
@@ -230,7 +231,9 @@ item 全剧本/第N集  (open, blocked until 大纲 done；link(kind=parent) 建
 | `deskmate/creation/pipeline.py` | 改 | 新增 `propose_final_review` / `finalize_final_review` 薄方法（状态机不变），主编在 review 分支生成并回灌提案 |
 | `deskmate/creation/__init__.py` | 改 | 导出 final_review 符号 |
 | `deskmate/roundtable/teams_bridge.py` | 改（阶段 2） | 已提供 `RoundtableTeamsBridge` 供 final_review 复用（建团 + board 维度 + ChatStore 辩论场 + lead 终验收） |
-| `deskmate/roundtable/web.py` / `CreationPipelineView.tsx` | 预留（阶段 4） | 提案卡渲染 + `POST /roundtable/from-pipeline` + 专家勾选 UI 留待阶段 4 |
+| `deskmate/creation/docx_export.py`（新增） | ✅ 已落地 | 终审定稿自动调本地 `officecli` 把定稿 Markdown 展开为 .docx（落 `output/`），officecli 缺失降级 .md |
+| `deskmate/roundtable/web.py` `POST /api/creation/export-docx` | ✅ 已落地 | docx 能力的 HTTP 入口（前端后续接入） |
+| `deskmate/roundtable/web.py` `POST /roundtable/from-pipeline` + `CreationPipelineView.tsx` | 预留（阶段 4 后续） | 终审研讨的 web 触发（SSE 流式）+ 提案卡/专家勾选 UI |
 
 ---
 
@@ -254,9 +257,14 @@ item 全剧本/第N集  (open, blocked until 大纲 done；link(kind=parent) 建
 - 流水线终审分支建圆桌 item + `@圆桌`；圆桌 `run_from_pipeline` 返回 verdict；回流 `done`/`in_progress`。
 - 验证：编剧被打回、圆桌终审报告作为审核意见回灌。
 
-**阶段 4 · 对外 & 打磨（1d）** ⏳ 预留
-- 圆桌团队经 `mcp_server` 暴露，对接 Hermes A2A peer。
-- wake budget 参数调优；UI 进度/审核意见展示打磨。
+**阶段 4 · 对外 & 打磨** 🟡 后端+docx 已落地，前端/MCP 留后续
+- ✅ **剧本/大纲定稿自动落地 docx**（核心新增需求）：新增 `deskmate/creation/docx_export.py`，定稿分支（`lead_verdict_outline` / `lead_verdict_screenplay` / `apply_final_review` 三处 approved）自动调本地 `officecli` 把「剧名标题 + 正文」展开为规范 .docx，落 `output/`，文件名带时间戳防覆盖；officecli 缺失降级 .md；导出失败不阻断状态机。验证：stub 跑通全链路 + `officecli validate` 通过 + 首段为剧名 `Heading1`。
+- ✅ **web 路由 `POST /api/creation/export-docx`**：docx 能力的 HTTP 入口（请求体 markdown/title/kind）。
+- ⏳ 前端 `CreationPipelineView` + `TeamChatView` 复用 + 终审提案卡/专家勾选 UI：未做（需前端编译验证，留后续单独迭代）。
+- ⏳ 终审研讨 web 触发（`POST /roundtable/from-pipeline` + SSE 流式）：后端逻辑已就绪（`final_review.run_final_review`），web 触发留前端阶段。
+- ⏳ 圆桌团队经 `mcp_server` 暴露对接 Hermes A2A peer：跨系统协同，留独立后续；注 `officecli` 自身已带 `mcp` 子命令，可供外部 Agent（如 Hermes/Claude）编辑文档。
+- ⏳ wake budget 参数调优。
+- **7 专家 `team: worker` 标记跳过**（见阶段 2 状态说明）：避免 `default_surfaced=False` 副作用。
 
 ---
 
