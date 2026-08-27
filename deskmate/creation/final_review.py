@@ -41,7 +41,7 @@ class FinalReviewProposal:
     prior_review: str  # 前序单点审核意见（四要素④）
     all_experts: list[dict] = field(default_factory=list)  # 7 专家 [{id,name,role}]
     recommended: list[str] = field(default_factory=list)  # 推荐子集 id（四要素②）
-    novel_excerpt: str = ""  # 原著节选（前 2000 字），供圆桌专家对照改编
+    novel_excerpt: str = ""  # 原著圣经摘要（novel_text 前 2000 字，pipeline 懒加载构建），供圆桌专家对照改编
 
 
 def recommend_experts(genre_hint: Optional[str], criteria: str = "") -> list[str]:
@@ -129,7 +129,7 @@ def run_final_review(
     if getattr(proposal, "novel_excerpt", ""):
         context = (
             f"{proposal.prior_review}\n\n"
-            f"【原著参考（节选，供对照改编）】\n{proposal.novel_excerpt}"
+            f"【原著参考（圣经摘要节选，供对照改编）】\n{proposal.novel_excerpt}"
         )
     result = asyncio.run(
         Roundtable(

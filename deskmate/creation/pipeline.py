@@ -18,6 +18,7 @@
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from typing import Optional
 
 from coworker.teams.model import Actor, Role
@@ -25,6 +26,7 @@ from coworker.teams.model import Actor, Role
 logger = logging.getLogger(__name__)
 
 from .guard import PipelineGuard, PipelineGuardError
+from .novel_index import NovelIndex, NovelIndexError
 from .personas_loader import (
     LEAD_ID,
     OUTLINE_WORKER,
@@ -45,6 +47,7 @@ class CreativePipeline:
         executor: Optional[CreativeExecutor] = None,
         base_dir: Optional[str] = None,
         lead_session: Optional[str] = None,
+        novel_cache_root: Optional[str] = None,
     ) -> None:
         self.space = space
         self.client = TeamsClient(base_dir=base_dir)
@@ -60,17 +63,99 @@ class CreativePipeline:
         self._drafts: dict[int, str] = {}
         self.last_docx: dict[str, str] = {}  # item_kind -> 上次定稿 docx 路径（供状态查询）
         self.novel_ref: str = ""            # 原著路径（txt/docx），前端创建时填写
-        self.novel_text: str = ""           # 读出的原著正文窗口（改编参考），空=仅凭概念创作
+        self.novel_index: NovelIndex | None = None  # 懒加载：首次取原著上下文时建索引
+        self._novel_index_failed: bool = False  # 索引构建失败标记（快照据此返回 failed）
+        self._novel_ctx: str = ""           # 改编圣经 + 章节目录（一次性缓存）
+        self._novel_related_cache: str = ""  # 圣经 + 相关章节（一次性缓存）
+        self._related_override: list[int] = []  # 用户指定创作参考章节（1..n）；空=自动 pick
+        self._novel_cache_root = novel_cache_root  # 测试注入用；None=默认 ~/.deskmate/novels
+
+    # -- 原著上下文（阶段 5：摘要+分章混合，废除 6000 字硬截断） ----------
+    @property
+    def novel_text(self) -> str:
+        """兼容字段：返回改编圣经上下文（全局）。首次访问触发建索引（一次性成本）。"""
+        return self._novel_ctx or self._novel_context("bible")
+
+    def _novel_context(self, what: str = "bible") -> str:
+        """取原著上下文（懒加载，缓存一次）：
+        bible    = 改编圣经 + 章节目录（全局把握，写大纲/审核/终审对照用）
+        related  = bible + 按大纲主题挑出的相关章节原文（写剧本用，细节靠分章补）
+        """
+        if not self.novel_index:
+            return ""
+        if self._novel_ctx:
+            return self._novel_ctx
+        idx = self.novel_index
+        try:
+            # stub 执行器强制降级圣经（零 LLM 不烧 token）；llm 执行器生成精炼版。
+            # 缓存为降级且本次 llm 可用时，build 内部会自动升级为精炼版。
+            from .executor import StubExecutor
+
+            degrade = isinstance(self.executor, StubExecutor)
+            meta = idx.build(degrade=degrade)
+        except NovelIndexError as exc:
+            logger.warning("原著索引失败（按无原著继续）: %s", exc)
+            return ""
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("原著索引异常（按无原著继续）: %s", exc)
+            return ""
+        toc = idx.chapter_toc()
+        self._novel_ctx = f"{meta['bible']}\n\n【章节目录】\n{toc}"
+        return self._novel_ctx
+
+    def _novel_related(self) -> str:
+        """bible + 相关章节原文（写剧本时按需喂细节）。
+
+        优先用户指定章节（set_related_chapters 的 _related_override），
+        未指定时按大纲主题 bigram 自动挑 3 章。
+        """
+        if not self.novel_index:
+            return ""
+        base = self._novel_context("bible")
+        if not base:
+            return ""
+        if self._novel_related_cache:
+            return self._novel_related_cache
+        idx = self.novel_index
+        try:
+            if self._related_override:
+                chapters = [
+                    ch for i in self._related_override if (ch := idx.get_chapter(i)) is not None
+                ]
+                label = "用户指定的相关章节原文"
+            else:
+                chapters = idx.pick_chapters(self._outline_text()[:800], k=3)
+                label = "与本次改编相关的原著章节原文"
+        except Exception:  # noqa: BLE001
+            chapters, label = [], ""
+        if chapters:
+            block = "\n\n".join(
+                f"{c['title']}\n{c['body'][:8000]}" for c in chapters
+            )
+            self._novel_related_cache = base + f"\n\n【{label}】\n{block}"
+        else:
+            self._novel_related_cache = base
+        return self._novel_related_cache
+
+    def set_related_chapters(self, indices: list[int]) -> None:
+        """指定后续创作引用的原著章节（1..n）；空列表恢复自动挑选。"""
+        n = 0
+        if self.novel_index is not None:
+            meta = self.novel_index.get_meta()
+            n = meta["n"] if meta else 0
+        cleaned = [i for i in indices if isinstance(i, int) and 1 <= i <= n]
+        self._related_override = sorted(set(cleaned))
+        self._novel_related_cache = ""  # 失效缓存，下次 _novel_related 重建
+        logger.info("创作参考章节已设定: %s", self._related_override or "（自动匹配）")
 
     # -- 建团 --------------------------------------------------------------
     def _staff(self):
         return build_team_workers(lambda pid: f"{self.space}:{pid}")
 
     def _read_novel(self, ref: str, max_chars: int = 6000) -> str:
-        """读原著路径（txt/docx）作为改编参考，返回前 max_chars 字正文窗口。
+        """（已退役，保留兼容）读原著前 max_chars 字窗口。
 
-        复用 deskmate.perception.file_reader.read_file_safe（安全只读、支持 docx）。
-        剥离其「未读完」警告头只留正文；坏路径/不支持类型返回空串（不污染 prompt）。
+        阶段 5 起由 novel_index（改编圣经 + 按需章节）取代，见 _novel_context。
         """
         if not ref or not ref.strip():
             return ""
@@ -80,7 +165,7 @@ class CreativePipeline:
             return ""
         raw = read_file_safe(ref.strip(), max_chars=max_chars)
         if not raw or (raw.startswith("（") and "\n" not in raw):
-            return ""  # 文件不存在/不支持/读取失败等错误提示，不当原著用
+            return ""
         marker = "—— 以下为本次读到的片段 ——\n"
         if marker in raw:
             body = raw.split(marker, 1)[1]
@@ -94,7 +179,11 @@ class CreativePipeline:
     def start_screenplay_project(self, concept: str, *, novel_ref: str = "") -> dict:
         self.concept = concept
         self.novel_ref = novel_ref
-        self.novel_text = self._read_novel(novel_ref) if novel_ref else ""
+        self.novel_index = (
+            NovelIndex(novel_ref, cache_root=Path(self._novel_cache_root))
+            if novel_ref and self._novel_cache_root
+            else NovelIndex(novel_ref) if novel_ref else None
+        )
         self._team = self.reg.create(
             space=self.space,
             lead_session=self.lead_session,
@@ -133,7 +222,11 @@ class CreativePipeline:
     def start_outline_project(self, concept: str, *, novel_ref: str = "") -> dict:
         self.concept = concept
         self.novel_ref = novel_ref
-        self.novel_text = self._read_novel(novel_ref) if novel_ref else ""
+        self.novel_index = (
+            NovelIndex(novel_ref, cache_root=Path(self._novel_cache_root))
+            if novel_ref and self._novel_cache_root
+            else NovelIndex(novel_ref) if novel_ref else None
+        )
         self._team = self.reg.create(
             space=self.space,
             lead_session=self.lead_session,
@@ -248,7 +341,7 @@ class CreativePipeline:
             # 门禁点：剧本 in_progress 前检查大纲是否 done；未定稿则抛 PipelineGuardError
             self.guard.transition(self.space, w, screen_item_id, to="in_progress", comment="开始撰写剧本")
         outline_text = self._outline_text()
-        text = self.executor.draft_screenplay(outline_text, novel_text=self.novel_text)
+        text = self.executor.draft_screenplay(outline_text, novel_text=self._novel_related())
         self._drafts[screen_item_id] = text
         self.guard.transition(self.space, w, screen_item_id, to="review", comment="剧本已成，请审")
         return text
