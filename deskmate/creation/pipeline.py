@@ -59,13 +59,42 @@ class CreativePipeline:
         self._team = None
         self._drafts: dict[int, str] = {}
         self.last_docx: dict[str, str] = {}  # item_kind -> 上次定稿 docx 路径（供状态查询）
+        self.novel_ref: str = ""            # 原著路径（txt/docx），前端创建时填写
+        self.novel_text: str = ""           # 读出的原著正文窗口（改编参考），空=仅凭概念创作
 
     # -- 建团 --------------------------------------------------------------
     def _staff(self):
         return build_team_workers(lambda pid: f"{self.space}:{pid}")
 
+    def _read_novel(self, ref: str, max_chars: int = 6000) -> str:
+        """读原著路径（txt/docx）作为改编参考，返回前 max_chars 字正文窗口。
+
+        复用 deskmate.perception.file_reader.read_file_safe（安全只读、支持 docx）。
+        剥离其「未读完」警告头只留正文；坏路径/不支持类型返回空串（不污染 prompt）。
+        """
+        if not ref or not ref.strip():
+            return ""
+        try:
+            from deskmate.perception.file_reader import read_file_safe
+        except Exception:
+            return ""
+        raw = read_file_safe(ref.strip(), max_chars=max_chars)
+        if not raw or (raw.startswith("（") and "\n" not in raw):
+            return ""  # 文件不存在/不支持/读取失败等错误提示，不当原著用
+        marker = "—— 以下为本次读到的片段 ——\n"
+        if marker in raw:
+            body = raw.split(marker, 1)[1]
+            note = (
+                f"（原著《{ref.strip().split('/')[-1]}》节选前 {max_chars} 字作为改编参考，"
+                f"完整稿见 {ref.strip()}）\n\n"
+            )
+            return note + body
+        return raw
+
     def start_screenplay_project(self, concept: str, *, novel_ref: str = "") -> dict:
         self.concept = concept
+        self.novel_ref = novel_ref
+        self.novel_text = self._read_novel(novel_ref) if novel_ref else ""
         self._team = self.reg.create(
             space=self.space,
             lead_session=self.lead_session,
@@ -101,8 +130,10 @@ class CreativePipeline:
         }
         return self.ids
 
-    def start_outline_project(self, concept: str) -> dict:
+    def start_outline_project(self, concept: str, *, novel_ref: str = "") -> dict:
         self.concept = concept
+        self.novel_ref = novel_ref
+        self.novel_text = self._read_novel(novel_ref) if novel_ref else ""
         self._team = self.reg.create(
             space=self.space,
             lead_session=self.lead_session,
@@ -174,7 +205,7 @@ class CreativePipeline:
         w = Actor(OUTLINE_WORKER, Role.WORKER)
         if self.store.get_item(self.space, outline_item_id)["state"] == "open":
             self.guard.transition(self.space, w, outline_item_id, to="in_progress", comment="开始撰写大纲")
-        text = self.executor.draft_outline(self.concept)
+        text = self.executor.draft_outline(self.concept, novel_text=self.novel_text)
         self._drafts[outline_item_id] = text
         self.guard.transition(self.space, w, outline_item_id, to="review", comment="大纲已成，请审")
         return text
@@ -184,7 +215,7 @@ class CreativePipeline:
         review_item_id = review_item_id or self.ids["outline_review_item"]
         self.store.assign(self.space, self.lead, review_item_id, assignee=REVIEW_WORKER)
         draft = self._drafts.get(outline_item_id, "")
-        result = self.executor.review(draft, criteria=self._criteria(review_item_id))
+        result = self.executor.review(draft, criteria=self._criteria(review_item_id), novel_text=self.novel_text)
         w = Actor(REVIEW_WORKER, Role.WORKER)
         self.guard.transition(self.space, w, review_item_id, to="in_progress", comment="开始审核大纲")
         self.guard.transition(self.space, w, review_item_id, to="review", comment=result.opinion)
@@ -217,7 +248,7 @@ class CreativePipeline:
             # 门禁点：剧本 in_progress 前检查大纲是否 done；未定稿则抛 PipelineGuardError
             self.guard.transition(self.space, w, screen_item_id, to="in_progress", comment="开始撰写剧本")
         outline_text = self._outline_text()
-        text = self.executor.draft_screenplay(outline_text)
+        text = self.executor.draft_screenplay(outline_text, novel_text=self.novel_text)
         self._drafts[screen_item_id] = text
         self.guard.transition(self.space, w, screen_item_id, to="review", comment="剧本已成，请审")
         return text
@@ -227,7 +258,7 @@ class CreativePipeline:
         review_item_id = review_item_id or self.ids["screen_review_item"]
         self.store.assign(self.space, self.lead, review_item_id, assignee=REVIEW_WORKER)
         draft = self._drafts.get(screen_item_id, "")
-        result = self.executor.review(draft, criteria=self._criteria(review_item_id))
+        result = self.executor.review(draft, criteria=self._criteria(review_item_id), novel_text=self.novel_text)
         w = Actor(REVIEW_WORKER, Role.WORKER)
         self.guard.transition(self.space, w, review_item_id, to="in_progress", comment="开始审核剧本")
         self.guard.transition(self.space, w, review_item_id, to="review", comment=result.opinion)

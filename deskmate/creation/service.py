@@ -52,7 +52,7 @@ def create_pipeline(
     if kind == "screenplay":
         ids = pl.start_screenplay_project(concept, novel_ref=novel_ref)
     else:
-        ids = pl.start_outline_project(concept)
+        ids = pl.start_outline_project(concept, novel_ref=novel_ref)
     _PIPELINES[pid] = pl
     return {
         "pid": pid,
@@ -114,6 +114,7 @@ def snapshot(pid: str) -> dict:
         "kind": kind,
         "concept": pl.concept,
         "team_id": pl._team.team_id,
+        "novel_ref": getattr(pl, "novel_ref", ""),
         "items": items,
         "phase": _phase_of(pl),
         "docx": dict(pl.last_docx),

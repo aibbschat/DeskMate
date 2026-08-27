@@ -41,6 +41,7 @@ class FinalReviewProposal:
     prior_review: str  # 前序单点审核意见（四要素④）
     all_experts: list[dict] = field(default_factory=list)  # 7 专家 [{id,name,role}]
     recommended: list[str] = field(default_factory=list)  # 推荐子集 id（四要素②）
+    novel_excerpt: str = ""  # 原著节选（前 2000 字），供圆桌专家对照改编
 
 
 def recommend_experts(genre_hint: Optional[str], criteria: str = "") -> list[str]:
@@ -86,7 +87,7 @@ def build_final_review_proposal(
         item_kind=item_kind, space=pipeline.space, item_id=item_id,
         review_item_id=review_item_id, topic=topic, manuscript_text=manuscript_text,
         criteria=criteria, prior_review=prior, all_experts=all_experts,
-        recommended=recommended,
+        recommended=recommended, novel_excerpt=getattr(pipeline, "novel_text", "")[:2000],
     )
 
 
@@ -124,11 +125,17 @@ def run_final_review(
     ]
     bridge.setup(worker_ids, worker_names, topic=proposal.topic)
     personas = [p for pid in worker_ids if (p := get_persona(pid)) is not None]
+    context = proposal.prior_review
+    if getattr(proposal, "novel_excerpt", ""):
+        context = (
+            f"{proposal.prior_review}\n\n"
+            f"【原著参考（节选，供对照改编）】\n{proposal.novel_excerpt}"
+        )
     result = asyncio.run(
         Roundtable(
             topic=proposal.topic,
             personas=personas,
-            context=proposal.prior_review,
+            context=context,
             manuscript_text=proposal.manuscript_text,
             team_bridge=bridge,
         ).run()
