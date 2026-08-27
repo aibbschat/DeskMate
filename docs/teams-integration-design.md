@@ -1,6 +1,6 @@
 # 圆桌原生改造 + 创作流水线 + 圆桌终审 · 技术设计文档
 
-> 状态：待实现蓝图（v1 草案，2026-08-26 由逍遥与萧哥对齐后落稿）
+> 状态：阶段 0–3 已落地（2026-08-27，自 commit 7153fa4 起 + 阶段3 收尾）；阶段 4（Web/前端/MCP 对外）预留。v1 草案 2026-08-26 由逍遥与萧哥对齐后落稿。
 > 目标：把上游官方 `coworker/teams/` 原生多 Agent 框架，落地为两套相互打通的系统——
 > ① **圆桌**（研讨型审稿）迁入 teams 基座；② **创作流水线**（剧本/大纲「派活→审核→打回→定稿」）；
 > 二者通过「圆桌终审」接成一条线：日常单点审核走流水线，重大节点拉圆桌多专家研判。
@@ -226,34 +226,35 @@ item 全剧本/第N集  (open, blocked until 大纲 done；link(kind=parent) 建
 ### 5.4 文件改动清单（桥接）
 | 文件 | 动作 | 说明 |
 |---|---|---|
-| `deskmate/creation/pipeline.py` | 改 | 终审分支：生成「终审提案」（含送审片段+推荐专家+验收标准+前序意见），**用户知情批准后才**建圆桌 item + `@圆桌` 触发 |
-| `deskmate/roundtable/teams_bridge.py` | 改 | 新增 `run_from_pipeline(manuscript, criteria)`：被流水线调用的研讨入口，返回 verdict |
-| `deskmate/roundtable/web.py` | 改 | 新增 `POST /roundtable/from-pipeline`（供流水线内部调用） |
-| `surfaces/gui/src/.../CreationPipelineView.tsx` | 改 | 渲染「终审提案卡」：复用上游 `TeamRequestCard` 载体，四要素展示 + 专家勾选增减 + 批准/驳回/手动改 |
+| `deskmate/creation/final_review.py` | **新增** | 桥接核心：`FinalReviewProposal` 四要素提案 / `build_final_review_proposal`（主编生成、不烧 token）/ `recommend_experts`（按主题预选）/ `run_final_review`（批准后驱动圆桌+TeamsBridge）/ `apply_final_review`（lead 回灌 done/in_progress）/ `parse_verdict` |
+| `deskmate/creation/pipeline.py` | 改 | 新增 `propose_final_review` / `finalize_final_review` 薄方法（状态机不变），主编在 review 分支生成并回灌提案 |
+| `deskmate/creation/__init__.py` | 改 | 导出 final_review 符号 |
+| `deskmate/roundtable/teams_bridge.py` | 改（阶段 2） | 已提供 `RoundtableTeamsBridge` 供 final_review 复用（建团 + board 维度 + ChatStore 辩论场 + lead 终验收） |
+| `deskmate/roundtable/web.py` / `CreationPipelineView.tsx` | 预留（阶段 4） | 提案卡渲染 + `POST /roundtable/from-pipeline` + 专家勾选 UI 留待阶段 4 |
 
 ---
 
 ## 6. 实施路线图（分阶段，先 B 后 A，终审最后接）
 
-**阶段 0 · 准备（0.5d）**
+**阶段 0 · 准备（0.5d）** ✅ 已落地
 - 确认 `manager.team_store` / `manager.teams` 对 `deskmate` 的可达封装（新增 `deskmate/teams_client.py` 薄壳取单例）。
 - 在 4 个创作 persona 的 manifest 加 `team:` trait，验证 `loading.py` 注入 `cap:team:*`。
 
-**阶段 1 · 创作流水线（线路 B，2–3d，优先）**
+**阶段 1 · 创作流水线（线路 B，2–3d，优先）** ✅ 已落地
 - 新增 4 persona + `pipeline.py` + `guard.py`。
 - 跑通：概念→大纲→审核→打回→定稿；大纲 done→剧本→审核→定稿。验证 `review→in_progress` 打回、`PipelineGuard` 串行门禁。
 - 前端 `CreationPipelineView` 复用 `TeamRequestCard`/`TeamChatView`。
 
-**阶段 2 · 圆桌接入 teams 基座（线路 A，2–3d）**
+**阶段 2 · 圆桌接入 teams 基座（线路 A，2–3d）** ✅ 已落地
 - `teams_bridge.py` 建团 + board 维度项 + ChatStore 辩论场；coordinator 发言出口改 `ChatStore.post`、终验收改 board `done` + journal。
 - 7 专家 manifest 加 `team: worker`，「知了」加 `team: lead`。
 - 保留 L0/L1/L2/FTS5 与到达序收窄编排；新增 `/roundtable/start-team`。
 
-**阶段 3 · 终审桥接（1–2d）**
+**阶段 3 · 终审桥接（1–2d）** ✅ 已落地
 - 流水线终审分支建圆桌 item + `@圆桌`；圆桌 `run_from_pipeline` 返回 verdict；回流 `done`/`in_progress`。
 - 验证：编剧被打回、圆桌终审报告作为审核意见回灌。
 
-**阶段 4 · 对外 & 打磨（1d）**
+**阶段 4 · 对外 & 打磨（1d）** ⏳ 预留
 - 圆桌团队经 `mcp_server` 暴露，对接 Hermes A2A peer。
 - wake budget 参数调优；UI 进度/审核意见展示打磨。
 
