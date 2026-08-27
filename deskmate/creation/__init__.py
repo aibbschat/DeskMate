@@ -14,6 +14,14 @@ from .personas_loader import (
     validate_creative_personas,
 )
 from .executor import CreativeExecutor, StubExecutor, LLMExecutor, ReviewResult
+from .final_review import (
+    FinalReviewProposal,
+    build_final_review_proposal,
+    run_final_review,
+    apply_final_review,
+    parse_verdict,
+    recommend_experts,
+)
 
 __all__ = [
     "CreativePipeline",
@@ -29,4 +37,10 @@ __all__ = [
     "StubExecutor",
     "LLMExecutor",
     "ReviewResult",
+    "FinalReviewProposal",
+    "build_final_review_proposal",
+    "run_final_review",
+    "apply_final_review",
+    "parse_verdict",
+    "recommend_experts",
 ]

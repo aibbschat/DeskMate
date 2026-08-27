@@ -31,6 +31,7 @@ from .personas_loader import (
 )
 from ..teams_client import TeamsClient
 from .executor import CreativeExecutor, StubExecutor, ReviewResult
+from .final_review import build_final_review_proposal, apply_final_review
 
 
 class CreativePipeline:
@@ -215,3 +216,16 @@ class CreativePipeline:
         self.guard.transition(self.space, self.lead, screen_item_id, to="in_progress",
                               comment=f"打回修改：{result.opinion}")
         return "rejected"
+
+    # -- 终审桥接（线路 B → 线路 A）----
+    def propose_final_review(self, item_kind: str, *, genre_hint: Optional[str] = None) -> "FinalReviewProposal":
+        """主编在 review 阶段生成「终审提案」（纯数据，不拉圆桌，待用户知情批准）。
+
+        返回对象含四要素：送审片段 / 推荐专家 / 验收标准 / 前序意见——前端须完整呈现
+        给用户看清后才能批准（设计铁律，见 docs §5.2）。
+        """
+        return build_final_review_proposal(self, item_kind, genre_hint=genre_hint)
+
+    def finalize_final_review(self, proposal: "FinalReviewProposal", synthesis: str, verdict: bool) -> str:
+        """用户知情批准后，把圆桌终审结论回灌创作项（approve=done / 打回=review→in_progress）。"""
+        return apply_final_review(self, proposal, synthesis, verdict)
