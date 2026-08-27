@@ -38,8 +38,14 @@ def create_pipeline(
     executor_kind: str = "stub",
     base_dir: Optional[str] = None,
     novel_ref: str = "",
+    novel_cache_root: Optional[str] = None,
 ) -> dict:
-    """校验创作 persona → 建团 → 起项目，返回 {pid, kind, team_id, ids, concept}。"""
+    """校验创作 persona → 建团 → 起项目 → 预建原著索引，返回摘要。
+
+    返回体含 novel_index 状态（ready/failed/none），供前端创建后直接展示
+    「建立原著索引…」的落点：stub 模式强制降级圣经（零 LLM 不烧 token），
+    llm 模式生成精炼圣经；索引失败不阻断创建（按无原著继续，与 pipeline 一致）。
+    """
     validate_creative_personas()
     if kind not in ("outline", "screenplay"):
         raise ValueError(f"未知 kind: {kind!r}（需 outline/screenplay）")
@@ -48,18 +54,45 @@ def create_pipeline(
     executor = StubExecutor() if executor_kind == "stub" else LLMExecutor()
     pid = uuid.uuid4().hex[:12]
     space = f"creation:{pid}"
-    pl = CreativePipeline(space=space, executor=executor, base_dir=base_dir)
+    pl = CreativePipeline(
+        space=space, executor=executor, base_dir=base_dir, novel_cache_root=novel_cache_root
+    )
     if kind == "screenplay":
         ids = pl.start_screenplay_project(concept, novel_ref=novel_ref)
     else:
         ids = pl.start_outline_project(concept, novel_ref=novel_ref)
     _PIPELINES[pid] = pl
+
+    # 预建原著索引（创建时同步，后续 draft 直接命中缓存；失败降级不阻断）
+    novel_index = _build_index_for(pl, degrade=(executor_kind == "stub"))
     return {
         "pid": pid,
         "kind": kind,
         "team_id": pl._team.team_id,
         "ids": ids,
         "concept": concept,
+        "novel_index": novel_index,
+    }
+
+
+def _build_index_for(pl: "CreativePipeline", *, degrade: bool = False) -> dict:
+    """为流水线预建原著索引。返回状态摘要；无原著/失败都返回可用摘要。"""
+    ni = getattr(pl, "novel_index", None)
+    if ni is None:
+        return {"status": "none", "novel_ref": getattr(pl, "novel_ref", "")}
+    try:
+        meta = ni.build(degrade=degrade)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("预建原著索引失败（按无原著继续）: %s", exc)
+        pl._novel_index_failed = True  # 快照据此返回 failed（而非 pending）
+        return {"status": "failed", "novel_ref": ni.ref, "error": str(exc)}
+    return {
+        "status": "ready",
+        "novel_ref": ni.ref,
+        "total_chars": meta["total_chars"],
+        "n": meta["n"],
+        "degraded": meta["degraded"],
+        "bible_chars": len(meta["bible"]),
     }
 
 
@@ -109,6 +142,8 @@ def snapshot(pid: str) -> dict:
             "comments": len(it.get("comments") or []),
         })
     kind = "screenplay" if "screen_item" in pl.ids else "outline"
+    idx_summary = novel_index_status(pid)
+    idx_summary.pop("chapters", None)  # 章节目录留给 GET novel-index 单独取，snapshot 只带轻量摘要
     return {
         "pid": pid,
         "kind": kind,
@@ -118,7 +153,62 @@ def snapshot(pid: str) -> dict:
         "items": items,
         "phase": _phase_of(pl),
         "docx": dict(pl.last_docx),
+        "novel_index": idx_summary,
+        "related_chapters": list(getattr(pl, "_related_override", []) or []),
     }
+
+
+# -- 原著索引（阶段 5：创建时预建 + 进行中可指定关联章节） -----------------
+def novel_index_status(pid: str) -> dict:
+    """查询原著索引状态：none（未关联）/ pending（未建）/ ready / failed。"""
+    pl = get_pipeline(pid)
+    ni = getattr(pl, "novel_index", None)
+    if ni is None:
+        return {"status": "none", "novel_ref": getattr(pl, "novel_ref", "")}
+    if getattr(pl, "_novel_index_failed", False):
+        return {"status": "failed", "novel_ref": ni.ref}
+    meta = ni.get_meta()
+    if not meta:
+        return {"status": "pending", "novel_ref": ni.ref}
+    return {
+        "status": "ready",
+        "novel_ref": ni.ref,
+        "total_chars": meta["total_chars"],
+        "n": meta["n"],
+        "degraded": meta["degraded"],
+        "bible_chars": len(meta["bible"]),
+        "chapters": [
+            {"idx": c["idx"], "title": c["title"], "chars": c["chars"]} for c in meta["chapters"]
+        ],
+    }
+
+
+def pick_novel_chapters(pid: str, topic: str = "", k: int = 3) -> dict:
+    """按主题挑候选相关章节（bigram 匹配，返回标题+开头预览供前端勾选）。"""
+    pl = get_pipeline(pid)
+    ni = getattr(pl, "novel_index", None)
+    if ni is None:
+        return {"chapters": [], "topic": topic, "error": "该流水线未关联原著"}
+    if ni.get_meta() is None:
+        _build_index_for(pl, degrade=True)  # 未建先建（零 LLM 索引兜底）
+    try:
+        picks = ni.pick_chapters(topic.strip() or (pl.concept or "")[:800], k=k)
+    except Exception as exc:  # noqa: BLE001
+        return {"chapters": [], "topic": topic, "error": str(exc)}
+    return {
+        "chapters": [
+            {"idx": c["idx"], "title": c["title"], "chars": c["chars"], "head": (c["body"] or "")[:120]}
+            for c in picks
+        ],
+        "topic": topic.strip() or pl.concept,
+    }
+
+
+def set_related_chapters(pid: str, indices: list[int]) -> dict:
+    """设定创作参考章节（1..n）；空列表恢复自动匹配。返回更新后的引用清单。"""
+    pl = get_pipeline(pid)
+    pl.set_related_chapters([int(i) for i in (indices or [])])
+    return {"related": list(pl._related_override)}
 
 
 # -- 逐步推进（包装异常，返回新快照） -------------------------------------

@@ -8,6 +8,9 @@ import { ProposalCard, type FinalProposal } from "./ProposalCard";
 import {
   createPipeline,
   getPipeline,
+  getNovelIndex,
+  pickNovelChapters,
+  setRelatedChapters,
   draftOutline,
   reviewOutline,
   leadOutline,
@@ -63,12 +66,28 @@ export function CreationPipelineView({
   const [finalizing, setFinalizing] = useState(false);
   const [docxPath, setDocxPath] = useState("");
 
-  const refresh = (id?: string) => {
+  // 原著索引（阶段 5）：章节目录缓存 + 主题匹配候选 + 已选参考章节
+  const [toc, setToc] = useState<Map<number, string>>(new Map());
+  const [pickTopic, setPickTopic] = useState("");
+  const [candidates, setCandidates] = useState<{ idx: number; title: string; chars: number; head: string }[]>([]);
+  const [picking, setPicking] = useState(false);
+  const [savingRelated, setSavingRelated] = useState(false);
+  const [selectedRelated, setSelectedRelated] = useState<number[]>([]);
+
+  const refresh = async (id?: string) => {
     const use = id ?? pid;
     if (!use) return;
-    getPipeline(use)
-      .then(setSnap)
-      .catch((e) => setError(String(e?.message ?? e)));
+    try {
+      const s = await getPipeline(use);
+      setSnap(s);
+      // 索引就绪时补拉章节目录（标题映射，仅首次）
+      if (s.novel_index?.status === "ready" && toc.size === 0) {
+        const idx = await getNovelIndex(use);
+        if (idx.chapters) setToc(new Map(idx.chapters.map((c) => [c.idx, c.title])));
+      }
+    } catch (e: any) {
+      setError(String(e?.message ?? e));
+    }
   };
 
   const start = async () => {
@@ -97,6 +116,39 @@ export function CreationPipelineView({
       setError(String(e?.message ?? e));
     } finally {
       setBusy(false);
+    }
+  };
+
+  const toggleRelated = (i: number) =>
+    setSelectedRelated((prev) => (prev.includes(i) ? prev.filter((x) => x !== i) : [...prev, i]));
+
+  const matchChapters = async () => {
+    if (!pid) return;
+    setPicking(true);
+    setError("");
+    try {
+      const r = await pickNovelChapters(pid, pickTopic.trim() || snap?.concept || "");
+      setCandidates(r.chapters);
+    } catch (e: any) {
+      setError(String(e?.message ?? e));
+    } finally {
+      setPicking(false);
+    }
+  };
+
+  const saveRelated = async (indices: number[]) => {
+    if (!pid) return;
+    setSavingRelated(true);
+    setError("");
+    try {
+      await setRelatedChapters(pid, indices);
+      setCandidates([]);
+      setSelectedRelated([]);
+      await refresh();
+    } catch (e: any) {
+      setError(String(e?.message ?? e));
+    } finally {
+      setSavingRelated(false);
     }
   };
 
@@ -229,8 +281,13 @@ export function CreationPipelineView({
               </select>
             </div>
             <button className="btn primary" disabled={busy || !concept.trim()} onClick={start}>
-              开始创作
+              {busy ? (novelRef.trim() ? "正在建立原著索引…" : "创建中…") : "开始创作"}
             </button>
+            {busy && novelRef.trim() && (
+              <div className="text-[12px] text-muted">
+                首次读取原著需建索引（读全文 → 切章 → 生成改编圣经）；stub 模式为降级索引、不烧 token，请稍候…
+              </div>
+            )}
           </div>
         )}
 
@@ -245,6 +302,77 @@ export function CreationPipelineView({
               <div className="text-[13px] text-ink">
                 <span className="text-muted">原著：</span>
                 <span className="font-mono text-[12px]">{snap.novel_ref}</span>
+              </div>
+            )}
+
+            {/* 原著索引失败提示（不阻断，按无原著继续） */}
+            {snap.novel_index?.status === "failed" && (
+              <div className="rounded-lg bg-amber-500/10 text-amber-700 text-[12px] px-3 py-2">
+                原著索引失败：{snap.novel_index.error ?? "未知原因"}（已按无原著继续，修正路径后需重建流水线）
+              </div>
+            )}
+
+            {/* 原著参考章节（阶段 5：创建时预建索引，进行中可指定创作参考章节） */}
+            {snap.novel_index?.status === "ready" && (
+              <div className="rounded-xl border border-black/10 dark:border-white/10 bg-paper p-3 space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-[13px] font-semibold text-ink">原著参考章节</span>
+                  <span className="text-[12px] text-muted">
+                    {snap.novel_index.total_chars?.toLocaleString()} 字 · {snap.novel_index.n} 章
+                    {snap.novel_index.degraded ? " · 降级索引" : " · LLM 精炼圣经"}
+                  </span>
+                </div>
+                <div className="text-[12px] text-muted">
+                  {snap.related_chapters?.length
+                    ? `当前引用：${snap.related_chapters
+                        .map((i) => `第${i}章${toc.get(i) ? `《${toc.get(i)}》` : ""}`)
+                        .join("、")}`
+                    : "当前引用：自动匹配（写剧本时按大纲主题挑 3 章）"}
+                </div>
+                <div className="flex items-center gap-2">
+                  <input
+                    className="flex-1 rounded-lg border border-black/10 dark:border-white/15 bg-transparent px-2.5 py-1.5 text-[12px] text-ink"
+                    placeholder={`匹配主题（默认：${(snap.concept || "").slice(0, 12)}…）`}
+                    value={pickTopic}
+                    onChange={(e) => setPickTopic(e.target.value)}
+                  />
+                  <button className="btn" disabled={picking} onClick={matchChapters}>
+                    {picking ? "匹配中…" : "重新匹配"}
+                  </button>
+                </div>
+                {candidates.length > 0 && (
+                  <div className="space-y-1.5 border-t border-black/5 dark:border-white/10 pt-2">
+                    {candidates.map((c) => (
+                      <label key={c.idx} className="flex items-start gap-2 text-[12px] text-ink cursor-pointer">
+                        <input
+                          type="checkbox"
+                          className="mt-0.5"
+                          checked={selectedRelated.includes(c.idx)}
+                          onChange={() => toggleRelated(c.idx)}
+                        />
+                        <span className="flex-1">
+                          <span className="font-medium">
+                            第{c.idx}章《{c.title}》
+                          </span>
+                          <span className="text-muted">（{c.chars.toLocaleString()} 字）</span>
+                          <div className="text-muted text-[11px] truncate">{c.head}</div>
+                        </span>
+                      </label>
+                    ))}
+                    <div className="flex gap-2 justify-end pt-1">
+                      <button className="btn" disabled={savingRelated} onClick={() => saveRelated([])}>
+                        恢复自动
+                      </button>
+                      <button
+                        className="btn primary"
+                        disabled={savingRelated || selectedRelated.length === 0}
+                        onClick={() => saveRelated(selectedRelated)}
+                      >
+                        设为创作参考
+                      </button>
+                    </div>
+                  </div>
+                )}
               </div>
             )}
 

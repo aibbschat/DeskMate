@@ -168,6 +168,44 @@ class DocxExportBody(BaseModel):
     kind: str = "screenplay"
 
 
+# 创作流水线请求体（模块级定义：本文件开了 from __future__ import annotations，
+# 函数内定义类的注解会变成 FastAPI 解析不到的 ForwardRef——必须放模块级）。
+class CreatePipelineBody(BaseModel):
+    kind: str = "screenplay"   # "outline" | "screenplay"
+    concept: str = ""
+    novel_ref: str = ""
+    executor: str = "stub"     # "stub" | "llm"
+
+
+class NovelPickBody(BaseModel):
+    topic: str = ""
+    k: int = 3
+
+
+class RelatedBody(BaseModel):
+    indices: list[int] = []
+
+
+class LeadBody(BaseModel):
+    approved: bool = True
+
+
+class FRProposalBody(BaseModel):
+    item_kind: str = "screenplay"
+    genre_hint: Optional[str] = None
+
+
+class FRBody(BaseModel):
+    item_kind: str = "screenplay"
+    selected_experts: list[str] = []
+    genre_hint: Optional[str] = None
+
+
+class FRApplyBody(BaseModel):
+    item_kind: str = "screenplay"
+    verdict: bool = True
+
+
 def _read_html() -> str:
     try:
         with open(TEMPLATE_PATH, "r", encoding="utf-8") as f:
@@ -607,12 +645,6 @@ def create_app(rt_port: int = 9920, base_dir: Optional[str] = None, workspace: O
     try:
         from deskmate.creation import service as _csvc
 
-        class CreatePipelineBody(BaseModel):
-            kind: str = "screenplay"   # "outline" | "screenplay"
-            concept: str = ""
-            novel_ref: str = ""
-            executor: str = "stub"     # "stub" | "llm"
-
         @app.post("/api/creation/pipeline")
         async def api_create_pipeline(body: CreatePipelineBody):
             try:
@@ -625,6 +657,28 @@ def create_app(rt_port: int = 9920, base_dir: Optional[str] = None, workspace: O
         async def api_get_pipeline(pid: str):
             try:
                 return JSONResponse(_csvc.snapshot(pid))
+            except KeyError:
+                return JSONResponse({"error": "not found"}, status_code=404)
+
+        # 原著索引（阶段 5）：状态查询 / 主题挑章 / 指定创作参考章节
+        @app.get("/api/creation/{pid}/novel-index")
+        async def api_novel_index(pid: str):
+            try:
+                return JSONResponse(_csvc.novel_index_status(pid))
+            except KeyError:
+                return JSONResponse({"error": "not found"}, status_code=404)
+
+        @app.post("/api/creation/{pid}/novel-pick")
+        async def api_novel_pick(pid: str, body: NovelPickBody):
+            try:
+                return JSONResponse(_csvc.pick_novel_chapters(pid, body.topic, max(1, min(body.k, 10))))
+            except KeyError:
+                return JSONResponse({"error": "not found"}, status_code=404)
+
+        @app.post("/api/creation/{pid}/related-chapters")
+        async def api_related_chapters(pid: str, body: RelatedBody):
+            try:
+                return JSONResponse(_csvc.set_related_chapters(pid, body.indices))
             except KeyError:
                 return JSONResponse({"error": "not found"}, status_code=404)
 
@@ -641,9 +695,6 @@ def create_app(rt_port: int = 9920, base_dir: Optional[str] = None, workspace: O
                 return JSONResponse(_csvc.review_outline(pid))
             except KeyError:
                 return JSONResponse({"error": "not found"}, status_code=404)
-
-        class LeadBody(BaseModel):
-            approved: bool = True
 
         @app.post("/api/creation/{pid}/lead-outline")
         async def api_lead_outline(pid: str, body: LeadBody):
@@ -673,21 +724,12 @@ def create_app(rt_port: int = 9920, base_dir: Optional[str] = None, workspace: O
             except KeyError:
                 return JSONResponse({"error": "not found"}, status_code=404)
 
-        class FRProposalBody(BaseModel):
-            item_kind: str = "screenplay"
-            genre_hint: Optional[str] = None
-
         @app.post("/api/creation/{pid}/final-review-proposal")
         async def api_fr_proposal(pid: str, body: FRProposalBody):
             try:
                 return JSONResponse(_csvc.final_review_proposal(pid, body.item_kind, genre_hint=body.genre_hint))
             except KeyError:
                 return JSONResponse({"error": "not found"}, status_code=404)
-
-        class FRBody(BaseModel):
-            item_kind: str = "screenplay"
-            selected_experts: list[str] = []
-            genre_hint: Optional[str] = None
 
         @app.post("/api/creation/{pid}/final-review")
         async def api_final_review(pid: str, body: FRBody):
@@ -698,12 +740,8 @@ def create_app(rt_port: int = 9920, base_dir: Optional[str] = None, workspace: O
                     yield chunk
             return StreamingResponse(_gen(), media_type="text/event-stream")
 
-        class FRAapplyBody(BaseModel):
-            item_kind: str = "screenplay"
-            verdict: bool = True
-
         @app.post("/api/creation/{pid}/final-review-apply")
-        async def api_fr_apply(pid: str, body: FRAapplyBody):
+        async def api_fr_apply(pid: str, body: FRApplyBody):
             try:
                 return JSONResponse(_csvc.final_review_apply(pid, body.item_kind, body.verdict))
             except (KeyError, ValueError) as exc:

@@ -2875,6 +2875,16 @@ export interface CreationItem {
   criteria: string;
   comments: number;
 }
+export interface NovelIndexStatus {
+  status: "none" | "pending" | "ready" | "failed";
+  novel_ref?: string;
+  total_chars?: number;
+  n?: number;
+  degraded?: boolean;
+  bible_chars?: number;
+  chapters?: { idx: number; title: string; chars: number }[];
+  error?: string;
+}
 export interface CreationSnapshot {
   pid: string;
   kind: string;
@@ -2884,6 +2894,8 @@ export interface CreationSnapshot {
   items: CreationItem[];
   phase: string;
   docx: Record<string, string>;
+  novel_index?: NovelIndexStatus;
+  related_chapters?: number[];
 }
 export interface FinalProposal {
   item_kind: string;
@@ -2904,7 +2916,14 @@ export async function createPipeline(
   concept: string,
   executor: "stub" | "llm" = "stub",
   novelRef = "",
-): Promise<{ pid: string; kind: string; team_id: string; ids: Record<string, number>; concept: string }> {
+): Promise<{
+  pid: string;
+  kind: string;
+  team_id: string;
+  ids: Record<string, number>;
+  concept: string;
+  novel_index: NovelIndexStatus;
+}> {
   const res = await authedFetch(`${httpBase()}/api/creation/pipeline`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -2915,6 +2934,36 @@ export async function createPipeline(
 
 export async function getPipeline(pid: string): Promise<CreationSnapshot> {
   const res = await authedFetch(`${httpBase()}/api/creation/pipeline/${encodeURIComponent(pid)}`);
+  return res.json();
+}
+
+/** 原著索引状态（章节目录完整版，独立接口避免每次快照携带大目录）。 */
+export async function getNovelIndex(pid: string): Promise<NovelIndexStatus> {
+  const res = await authedFetch(`${httpBase()}/api/creation/${encodeURIComponent(pid)}/novel-index`);
+  return res.json();
+}
+
+/** 按主题挑候选相关章节（bigram 匹配，返回标题+开头预览供勾选）。 */
+export async function pickNovelChapters(
+  pid: string,
+  topic = "",
+  k = 3,
+): Promise<{ chapters: { idx: number; title: string; chars: number; head: string }[]; topic: string }> {
+  const res = await authedFetch(`${httpBase()}/api/creation/${encodeURIComponent(pid)}/novel-pick`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ topic, k }),
+  });
+  return res.json();
+}
+
+/** 指定创作参考章节（1..n）；空数组恢复自动匹配。 */
+export async function setRelatedChapters(pid: string, indices: number[]): Promise<{ related: number[] }> {
+  const res = await authedFetch(`${httpBase()}/api/creation/${encodeURIComponent(pid)}/related-chapters`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ indices }),
+  });
   return res.json();
 }
 
