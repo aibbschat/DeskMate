@@ -2880,6 +2880,7 @@ export interface CreationSnapshot {
   kind: string;
   concept: string;
   team_id: string;
+  novel_ref: string;
   items: CreationItem[];
   phase: string;
   docx: Record<string, string>;

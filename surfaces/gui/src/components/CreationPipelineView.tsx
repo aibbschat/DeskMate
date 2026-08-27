@@ -51,6 +51,7 @@ export function CreationPipelineView({
   const [concept, setConcept] = useState("");
   const [kind, setKind] = useState<"outline" | "screenplay">("screenplay");
   const [executor, setExecutor] = useState<"stub" | "llm">("stub");
+  const [novelRef, setNovelRef] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
@@ -75,7 +76,7 @@ export function CreationPipelineView({
     setBusy(true);
     setError("");
     try {
-      const r = await createPipeline(kind, concept, executor);
+      const r = await createPipeline(kind, concept, executor, novelRef);
       setPid(r.pid);
       await refresh(r.pid);
     } catch (e: any) {
@@ -198,6 +199,16 @@ export function CreationPipelineView({
                 onChange={(e) => setConcept(e.target.value)}
               />
             </div>
+            <div>
+              <div className="text-[12px] text-muted mb-1">原著文件路径（可选）</div>
+              <input
+                type="text"
+                className="w-full rounded-lg border border-black/10 dark:border-white/15 bg-transparent px-2.5 py-2 text-[13px] text-ink"
+                placeholder="如 /Users/.../原著.docx 或 .txt；留空则仅凭概念创作"
+                value={novelRef}
+                onChange={(e) => setNovelRef(e.target.value)}
+              />
+            </div>
             <div className="flex gap-4">
               <label className="flex items-center gap-1.5 text-[13px] text-ink">
                 <input type="radio" checked={kind === "screenplay"} onChange={() => setKind("screenplay")} /> 剧本（含大纲）
@@ -230,6 +241,12 @@ export function CreationPipelineView({
               <span className="text-muted">概念：</span>
               {snap.concept}
             </div>
+            {snap.novel_ref && (
+              <div className="text-[13px] text-ink">
+                <span className="text-muted">原著：</span>
+                <span className="font-mono text-[12px]">{snap.novel_ref}</span>
+              </div>
+            )}
 
             {/* board 项状态 */}
             <div className="space-y-1.5">
