@@ -24,6 +24,12 @@ _DOCX_EXTS = {".docx"}
 # 最大读取大小（100KB）
 MAX_READ_SIZE = 100_000
 
+# 长稿定位类读取（read_chapter / list_chapters）的抽取大小上限。
+# 它们最终只输出一章 / 一个目录（输出天然受限，不会爆上下文），
+# 抽取全文只是为了切章定位——因此放宽到 64MB，容纳百万字级长篇小说。
+# 窗口模式 read_file_safe 仍保持 2MB（MAX_READ_SIZE*20）对话安全默认。
+_LONG_TEXT_BYTES = 64 * 1024 * 1024
+
 # 单次读取的默认返回上限。默认值刻意远小于 MAX_READ_SIZE：一次吞下整本长稿会把
 # 上下文顶过压缩触发线，压缩器随即清掉工具返回，模型「读完就忘」进而编造情节。
 # 借鉴 Hermes（tools/file_tools.py:745 read_file_tool 默认 limit=500 行）的思路 —
@@ -98,7 +104,28 @@ def read_file_safe(
     )
 
 
-def _extract_text(p: Path) -> str | None:
+def read_full_text(path: str, max_bytes: int | None = None) -> str:
+    """读取文件全文（不截断、不做 max_chars 窗口），供需要整本处理的上游使用。
+
+    与 read_file_safe 的区别：read_file_safe 默认只回一个窗口并如实告知超限；
+    read_full_text 一次性返回全文，适合「建索引 / 生成圣经」这类必须看全局的场景。
+    仍保留类型校验；大小上限默认沿用 MAX_READ_SIZE*20（2MB，对话安全默认），
+    批处理场景（如建原著索引）可显式传更大 max_bytes——那是离线一次性成本，不占上下文。
+    错误情况返回 （...） 包裹的说明文本，调用方按「以（ 开头且无换行」判定失败。
+    """
+    p = Path(path).expanduser().resolve()
+    if not p.exists():
+        return f"（文件不存在：{path}）"
+    if not p.is_file():
+        return f"（不是文件：{path}）"
+    text = _extract_text(p, max_bytes=max_bytes)
+    if text is None:
+        ext = p.suffix.lower()
+        return f"（不支持读取 {ext or '无扩展名'} 文件，仅支持文本文件与 .docx）"
+    return text
+
+
+def _extract_text(p: Path, max_bytes: int | None = None) -> str | None:
     """把文件抽成纯文本全文（不截断）。不支持的类型返回 None。"""
     ext = p.suffix.lower()
     name = p.name.lower()
@@ -111,8 +138,9 @@ def _extract_text(p: Path) -> str | None:
         return None
 
     try:
-        if p.stat().st_size > MAX_READ_SIZE * 20:
-            return f"（文件过大：{p.stat().st_size} 字节，请改用支持分段的工具）"
+        limit = max_bytes or (MAX_READ_SIZE * 20)
+        if p.stat().st_size > limit:
+            return f"（文件过大：{p.stat().st_size} 字节，超过上限 {limit}，请改用支持分段的工具）"
         return p.read_text(encoding="utf-8", errors="replace")
     except OSError as e:
         return f"（读取失败：{e}）"
@@ -169,12 +197,12 @@ def split_chapters(text: str) -> list[tuple[str, str]]:
     return out
 
 
-def list_chapters(path: str) -> str:
+def list_chapters(path: str, max_bytes: int | None = None) -> str:
     """列出稿件的章节目录与各章字数——先看目录，再决定读哪一章。"""
     p = Path(path).expanduser().resolve()
     if not p.is_file():
         return f"（文件不存在：{path}）"
-    text = _extract_text(p)
+    text = _extract_text(p, max_bytes=max_bytes or _LONG_TEXT_BYTES)
     if text is None:
         return f"（不支持的文件类型：{p.suffix or '无扩展名'}）"
     if text.startswith("（") and "\n" not in text:
@@ -189,15 +217,16 @@ def list_chapters(path: str) -> str:
     return "\n".join(lines)
 
 
-def read_chapter(path: str, chapter: str | int, max_chars: int = MAX_READ_SIZE) -> str:
+def read_chapter(path: str, chapter: str | int, max_chars: int = MAX_READ_SIZE, max_bytes: int | None = None) -> str:
     """只读取指定的一章——与全书长度无关，因此长稿也不会顶爆上下文。
 
     chapter 可以是序号（1 起）、完整标题，或标题片段（如「第二章」「财当道」）。
+    抽取全文用于切章定位，大小上限放宽到 _LONG_TEXT_BYTES（64MB，容纳长篇）。
     """
     p = Path(path).expanduser().resolve()
     if not p.is_file():
         return f"（文件不存在：{path}）"
-    text = _extract_text(p)
+    text = _extract_text(p, max_bytes=max_bytes or _LONG_TEXT_BYTES)
     if text is None:
         return f"（不支持的文件类型：{p.suffix or '无扩展名'}）"
     if text.startswith("（") and "\n" not in text:
