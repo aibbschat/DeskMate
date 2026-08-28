@@ -328,6 +328,8 @@ export function CreationPipelineView({
   const phase = snap?.phase ?? "";
   const isScreenplay = snap?.kind === "screenplay";
   const isEpisodic = (snap?.episodes ?? 1) > 1;
+  // outline-only 模式只走大纲三步，步骤条隐藏不存在的剧本阶段
+  const stepsToShow = snap?.kind === "outline" ? FLOW_STEPS.slice(0, 3) : FLOW_STEPS;
 
   /** 单集操作推导：根据该集产出/审核项状态给出可用按钮。 */
   const epActions = (ep: number, prod?: CreationItem, rev?: CreationItem) => {
@@ -347,7 +349,7 @@ export function CreationPipelineView({
     // 拍板只在「产出已待审 + 审核已出意见」时可用（打回重写中不显示，避免非法定稿）
     if (prod.state === "review" && rev.state === "review") {
       btns.push({
-        label: "通过定稿",
+        label: "直接定稿",
         primary: true,
         onClick: () => run(() => leadScreen(pid!, true, ep)),
       });
@@ -620,9 +622,11 @@ export function CreationPipelineView({
             {/* 流水线步骤条（六步状态可视化） */}
             <div className="rounded-xl border border-black/10 dark:border-white/10 bg-paper p-3">
               <div className="flex items-center gap-1 overflow-x-auto">
-                {FLOW_STEPS.map((s, i) => {
+                {stepsToShow.map((s, i) => {
                   const isDone = stepIdx > i || phase === "done";
-                  const isActive = stepIdx === i && phase !== "done";
+                  // 分集模式下剧本三阶段是「逐集在卡片操作」，步骤条仅作进度展示、不可点、不高亮成可点态
+                  const isEpisodicOngoing = isEpisodic && i >= 3 && !isDone && phase !== "done";
+                  const isActive = stepIdx === i && phase !== "done" && !isEpisodicOngoing;
                   // 当前步骤可点击触发对应动作（分集的剧本阶段由各集卡片承载，步骤条仅接大纲阶段）
                   const act = isActive
                     ? i === 0
@@ -644,7 +648,7 @@ export function CreationPipelineView({
                       key={s.label}
                       type="button"
                       disabled={!act || busy}
-                      title={act ? `点击开始：${s.label}` : undefined}
+                      title={act ? `点击开始：${s.label}` : isEpisodicOngoing ? "逐集在下方卡片操作" : undefined}
                       onClick={act ? () => act() : undefined}
                       className={
                         "flex items-center gap-1 shrink-0 " + (act ? "cursor-pointer hover:opacity-80" : "cursor-default")
@@ -656,19 +660,29 @@ export function CreationPipelineView({
                             "w-6 h-6 rounded-full flex items-center justify-center text-[11px] font-semibold " +
                             (isDone
                               ? "bg-emerald-500/15 text-emerald-600"
-                              : isActive
-                                ? "bg-accent/20 text-accent ring-1 ring-accent/50"
-                                : "bg-black/[0.04] dark:bg-white/[0.06] text-muted")
+                              : isEpisodicOngoing
+                                ? "bg-amber-500/15 text-amber-600 ring-1 ring-amber-500/40"
+                                : isActive
+                                  ? "bg-accent/20 text-accent ring-1 ring-accent/50"
+                                  : "bg-black/[0.04] dark:bg-white/[0.06] text-muted")
                           }
                         >
-                          {isDone ? "✓" : i + 1}
+                          {isDone ? "✓" : isEpisodicOngoing ? "✦" : i + 1}
                         </div>
-                        <span className={"text-[10px] mt-0.5 whitespace-nowrap " + (isActive ? "text-accent font-medium" : "text-muted")}>
+                        <span
+                          className={
+                            "text-[10px] mt-0.5 whitespace-nowrap " +
+                            (isActive ? "text-accent font-medium" : isEpisodicOngoing ? "text-amber-600" : "text-muted")
+                          }
+                        >
                           {s.label}
                         </span>
-                        <span className="text-[9px] text-muted whitespace-nowrap">{s.who}</span>
+                        <span className="text-[9px] text-muted whitespace-nowrap">
+                          {s.who}
+                          {isEpisodicOngoing ? " · 逐集" : ""}
+                        </span>
                       </div>
-                      {i < FLOW_STEPS.length - 1 && <span className="text-muted text-[11px] mb-4">→</span>}
+                      {i < stepsToShow.length - 1 && <span className="text-muted text-[11px] mb-4">→</span>}
                     </button>
                   );
                 })}
@@ -800,10 +814,15 @@ export function CreationPipelineView({
                   {epGroups.map(([ep, g]) => {
                     const btns = epActions(ep, g.prod, g.rev);
                     const prodState = g.prod?.state ?? "open";
+                    const revState = g.rev?.state ?? "open";
+                    const isLeading = prodState === "review" && revState === "review";
                     return (
                       <div
                         key={ep}
-                        className="rounded-xl border border-black/10 dark:border-white/10 bg-paper p-3 space-y-2"
+                        className={
+                          "rounded-xl border bg-paper p-3 space-y-2 " +
+                          (isLeading ? "border-accent/50 ring-1 ring-accent/30" : "border-black/10 dark:border-white/10")
+                        }
                       >
                         <div className="flex items-center justify-between">
                           <div className="flex items-center gap-2">
@@ -814,13 +833,18 @@ export function CreationPipelineView({
                               }
                             >
                               第{ep}集
+                              {isLeading && (
+                                <span className="ml-1.5 px-1.5 py-0.5 rounded bg-accent/15 text-accent text-[10px] font-medium align-middle">
+                                  待你拍板
+                                </span>
+                              )}
                             </span>
                             <span className={"text-[12px] " + (STATE_COLOR[prodState] ?? "text-muted")}>
                               {STATE_LABEL[prodState] ?? prodState}
                             </span>
                             {g.rev && (
-                              <span className={"text-[12px] " + (STATE_COLOR[g.rev.state] ?? "text-muted")}>
-                                · 审核{STATE_LABEL[g.rev.state] ?? g.rev.state}
+                              <span className={"text-[12px] " + (STATE_COLOR[revState] ?? "text-muted")}>
+                                · 审核{STATE_LABEL[revState] ?? revState}
                               </span>
                             )}
                           </div>
@@ -833,6 +857,20 @@ export function CreationPipelineView({
                             </button>
                           </div>
                         </div>
+                        {/* 审核意见：让用户看到审核专家写了什么（审/拍板/打回前可据此判断） */}
+                        {g.rev && revState !== "open" && (
+                          <div className="flex items-center justify-between text-[12px] rounded-lg bg-black/[0.02] dark:bg-white/[0.03] px-2.5 py-1.5">
+                            <span className={"font-medium " + (STATE_COLOR[revState] ?? "text-muted")}>
+                              审核意见 · {STATE_LABEL[revState] ?? revState}
+                            </span>
+                            <button
+                              className="text-[12px] text-muted hover:text-accent"
+                              onClick={() => g.rev && showPreview(g.rev.id)}
+                            >
+                              {loadingPreview === g.rev.id ? "加载中…" : preview?.itemId === g.rev.id ? "收起" : "看意见"}
+                            </button>
+                          </div>
+                        )}
                         {btns.length > 0 && (
                           <div className="flex flex-wrap gap-2">
                             {btns.map((b) => (
@@ -848,7 +886,7 @@ export function CreationPipelineView({
                             ))}
                           </div>
                         )}
-                        {preview && preview.itemId === g.prod?.id && (
+                        {preview && (preview.itemId === g.prod?.id || preview.itemId === g.rev?.id) && (
                           <div className="rounded-lg bg-black/[0.02] dark:bg-white/[0.03] p-2.5 max-h-64 overflow-auto">
                             <ReactMarkdown>{preview.content}</ReactMarkdown>
                           </div>
@@ -966,7 +1004,13 @@ export function CreationPipelineView({
 
             {/* board 项状态：两模式均渲染；分集模式仅显示大纲等无集号项（剧本预览见上方分集卡片，避免重复） */}
             <div className="space-y-1.5">
-              {isEpisodic && <div className="text-[13px] font-semibold text-ink">大纲内容（拍板前请点「预览」查看）</div>}
+              {isEpisodic && (
+                <div className="text-[13px] font-semibold text-ink">
+                  {phase === "lead_outline"
+                    ? "大纲内容（拍板前请点「预览」查看）"
+                    : "大纲（已定稿，点「预览」可回看）"}
+                </div>
+              )}
               {snap.items.filter((it) => !isEpisodic || it.episode == null).map((it) => (
                   <div
                     key={it.id}
@@ -1006,7 +1050,7 @@ export function CreationPipelineView({
               {phase === "lead_outline" && (
                 <>
                   <button className="btn" disabled={busy} onClick={() => run(() => leadOutline(pid, true))}>
-                    单点审核通过定稿
+                    主编直接定稿
                   </button>
                   <button className="btn primary" disabled={busy} onClick={() => openProposal("outline")}>
                     送圆桌终审
@@ -1031,7 +1075,7 @@ export function CreationPipelineView({
               {!isEpisodic && phase === "lead_screen" && (
                 <>
                   <button className="btn" disabled={busy} onClick={() => run(() => leadScreen(pid, true))}>
-                    单点审核通过定稿
+                    主编直接定稿
                   </button>
                   <button className="btn primary" disabled={busy} onClick={() => openProposal("screenplay")}>
                     送圆桌终审
