@@ -3040,12 +3040,31 @@ export async function setRelatedChapters(pid: string, indices: number[]): Promis
   return res.json();
 }
 
+/** 非 2xx 时从响应体提取后端可读错误（error/detail/message），抛给上层友好展示。 */
+async function _rejectIfNotOk(res: Response): Promise<void> {
+  if (res.ok) return;
+  let msg = `请求失败 (HTTP ${res.status})`;
+  try {
+    const text = await res.text();
+    try {
+      const j = JSON.parse(text);
+      msg = j.error || j.detail || j.message || text;
+    } catch {
+      msg = text || msg;
+    }
+  } catch {
+    /* 忽略读取失败，保留默认文案 */
+  }
+  throw new Error(msg);
+}
+
 async function _postStep(pid: string, step: string, body?: Record<string, unknown>): Promise<CreationSnapshot> {
   const res = await authedFetch(`${creationBase()}/api/creation/${encodeURIComponent(pid)}/${step}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: body ? JSON.stringify(body) : undefined,
   });
+  await _rejectIfNotOk(res);
   return res.json();
 }
 
@@ -3061,6 +3080,7 @@ async function _postLead(pid: string, step: string, approved: boolean, episode?:
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ approved, episode: episode ?? null }),
   });
+  await _rejectIfNotOk(res);
   return res.json();
 }
 

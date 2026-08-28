@@ -30,6 +30,7 @@ from pydantic import BaseModel
 
 from deskmate.roundtable.coordinator import PeerSpec, Roundtable
 from deskmate.roundtable.personas import load_personas
+from deskmate.creation.guard import PipelineGuardError
 
 from coworker.conversations import ConversationStore
 from coworker.sessions import SessionRecord
@@ -716,6 +717,8 @@ def create_app(rt_port: int = 9920, base_dir: Optional[str] = None, workspace: O
         async def api_draft_outline(pid: str):
             try:
                 return JSONResponse(_csvc.draft_outline(pid))
+            except (PipelineGuardError, ValueError) as exc:
+                return JSONResponse({"error": str(exc)}, status_code=400)
             except KeyError:
                 return JSONResponse({"error": "not found"}, status_code=404)
 
@@ -723,6 +726,8 @@ def create_app(rt_port: int = 9920, base_dir: Optional[str] = None, workspace: O
         async def api_review_outline(pid: str):
             try:
                 return JSONResponse(_csvc.review_outline(pid))
+            except (PipelineGuardError, ValueError) as exc:
+                return JSONResponse({"error": str(exc)}, status_code=400)
             except KeyError:
                 return JSONResponse({"error": "not found"}, status_code=404)
 
@@ -730,6 +735,8 @@ def create_app(rt_port: int = 9920, base_dir: Optional[str] = None, workspace: O
         async def api_lead_outline(pid: str, body: LeadBody):
             try:
                 return JSONResponse(_csvc.lead_outline(pid, body.approved))
+            except (PipelineGuardError, ValueError) as exc:
+                return JSONResponse({"error": str(exc)}, status_code=400)
             except KeyError:
                 return JSONResponse({"error": "not found"}, status_code=404)
 
@@ -738,6 +745,8 @@ def create_app(rt_port: int = 9920, base_dir: Optional[str] = None, workspace: O
             try:
                 ep = body.episode if body else None
                 return JSONResponse(_csvc.draft_screen(pid, ep))
+            except (PipelineGuardError, ValueError) as exc:
+                return JSONResponse({"error": str(exc)}, status_code=400)
             except KeyError:
                 return JSONResponse({"error": "not found"}, status_code=404)
 
@@ -746,6 +755,8 @@ def create_app(rt_port: int = 9920, base_dir: Optional[str] = None, workspace: O
             try:
                 ep = body.episode if body else None
                 return JSONResponse(_csvc.review_screen(pid, ep))
+            except (PipelineGuardError, ValueError) as exc:
+                return JSONResponse({"error": str(exc)}, status_code=400)
             except KeyError:
                 return JSONResponse({"error": "not found"}, status_code=404)
 
@@ -754,6 +765,8 @@ def create_app(rt_port: int = 9920, base_dir: Optional[str] = None, workspace: O
             try:
                 ep = body.episode if body else None
                 return JSONResponse(_csvc.lead_screen(pid, body.approved, ep))
+            except (PipelineGuardError, ValueError) as exc:
+                return JSONResponse({"error": str(exc)}, status_code=400)
             except KeyError:
                 return JSONResponse({"error": "not found"}, status_code=404)
 

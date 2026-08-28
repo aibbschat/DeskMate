@@ -331,8 +331,13 @@ export function CreationPipelineView({
 
   /** 单集操作推导：根据该集产出/审核项状态给出可用按钮。 */
   const epActions = (ep: number, prod?: CreationItem, rev?: CreationItem) => {
-    const btns: { label: string; primary?: boolean; disabled?: boolean; onClick: () => void }[] = [];
+    const btns: { label: string; primary?: boolean; disabled?: boolean; hint?: string; onClick: () => void }[] = [];
     if (!prod || !rev) return btns;
+    // 透明化门禁：剧本依赖大纲，大纲未定稿前不允许开写（避免后端门禁 400 打断流程）
+    if (!outlineDone) {
+      btns.push({ label: `写第${ep}集`, disabled: true, hint: "需先完成大纲定稿（点上方「写大纲」）", onClick: () => {} });
+      return btns;
+    }
     if (prod.state === "open" || prod.state === "in_progress") {
       btns.push({ label: `写第${ep}集`, primary: true, onClick: () => run(() => draftScreen(pid!, ep)) });
     }
@@ -805,6 +810,7 @@ export function CreationPipelineView({
                                 key={b.label}
                                 className={"btn " + (b.primary ? "primary" : "")}
                                 disabled={busy || b.disabled}
+                                title={b.hint}
                                 onClick={b.onClick}
                               >
                                 {b.label}
@@ -979,7 +985,12 @@ export function CreationPipelineView({
                     </>
                   )}
                   {phase === "draft_screen" && isScreenplay && (
-                    <button className="btn primary" disabled={busy} onClick={() => run(() => draftScreen(pid))}>
+                    <button
+                      className="btn primary"
+                      disabled={busy || !outlineDone}
+                      title={!outlineDone ? "需先完成大纲定稿（点上方「写大纲」）" : undefined}
+                      onClick={() => run(() => draftScreen(pid))}
+                    >
                       写剧本
                     </button>
                   )}
