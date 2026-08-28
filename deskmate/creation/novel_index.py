@@ -30,8 +30,7 @@ DEFAULT_CACHE_ROOT = Path.home() / ".deskmate" / "novels"
 
 # 圣经生成输入采样上限（每章「标题+开头」拼接后的总字符上限）
 BIBLE_SAMPLE_CHARS = 24_000
-# 每章开头采样上限（按章节数动态收缩，见 _sample_chapters）
-HEAD_MAX = 500
+# 每章三点采样每段下限（按章节数动态收缩，见 _sample_chapters）
 HEAD_MIN = 200
 # 降级圣经（无 LLM）的拼接上限
 FALLBACK_BIBLE_CHARS = 20_000
@@ -80,17 +79,40 @@ def _topic_grams(topic: str) -> set[str]:
     return grams
 
 
-def _sample_chapters(chapters: list[tuple[str, str]], limit: int = BIBLE_SAMPLE_CHARS) -> str:
-    """每章取「标题 + 开头」，动态收缩 head 长度使总采样不超过 limit。"""
+def _sample_chapters(
+    chapters: list[tuple[str, str]], limit: int = BIBLE_SAMPLE_CHARS
+) -> str:
+    """每章多点采样：开头 + 中段 + 结尾，短文本直接全量返回。
+
+    背景：人物动机、阴谋、冤案、弧光转折往往埋在章节中后段，旧逻辑只取
+    「标题+开头」会系统性丢信息（见《大明水师》圣经事故：通倭/越狱/栖凤村
+    血仇/灭口等核心动机全部被采样过滤）。故：
+      - 全文在预算内 → 直接全量喂，零信息损失；
+      - 长篇 → 每章按「开头 / 中段 / 结尾」三点各取一段，覆盖关键转折与真相。
+    """
     n = len(chapters)
     if not n:
         return ""
-    head = max(HEAD_MIN, min(HEAD_MAX, limit // max(n, 1)))
+    total = sum(len(body) for _, body in chapters)
+    # 短文本：全文在采样预算内，直接全量返回（信息最保真）
+    if total <= limit:
+        return "\n\n".join(f"【{title}】\n{body}" for title, body in chapters)
+    # 长文本：每章「开头 + 中段 + 结尾」三点采样
+    per = max(HEAD_MIN, limit // max(n, 1))  # 每章预算，动态收缩
+    seg = max(1, per // 3)  # 每段（头/中/尾）长度
     parts: list[str] = []
     budget = limit
     for title, body in chapters:
-        snip = body[:head].strip()
-        piece = f"【{title}】\n{snip}"
+        lenb = len(body)
+        if lenb <= per:
+            piece = f"【{title}】\n{body}"
+        else:
+            mid_start = lenb // 2 - seg // 2
+            piece = (
+                f"【{title}】（开头）\n{body[:seg]}\n\n"
+                f"（中段）\n{body[mid_start:mid_start + seg]}\n\n"
+                f"（结尾）\n{body[-seg:]}"
+            )
         if budget - len(piece) < 0 and parts:
             break
         parts.append(piece)
@@ -265,27 +287,45 @@ class NovelIndex:
         title = Path(self.ref).stem
         user = (
             f"原著《{title}》：全文 {len(full):,} 字，共 {len(chapters)} 章。\n"
-            f"以下为逐章「标题+开头」采样（节选，非全文）：\n\n{sample}\n\n"
+            f"以下为原著采样（全文 或 逐章「开头+中段+结尾」节选，非全文）：\n\n{sample}\n\n"
             f"请基于以上采样提炼《改编圣经》，输出 markdown，含：\n"
-            f"1. 人物表（姓名/身份/性格/立场/人物关系）\n"
-            f"2. 主线情节线（按幕/阶段划分，标注大致对应章节）\n"
+            f"1. 人物表：姓名/身份/性格/立场/人物关系；每名主要人物必须给出"
+            f"【核心目标】【内心动机】【性格弧光（起点→终点）】【关键冲突关系】\n"
+            f"2. 主线情节线：按幕/阶段划分，标注大致对应章节；说明每一阶段由"
+            f"【何种动机驱动人物行动】\n"
             f"3. 核心主题与母题\n"
-            f"4. 关键场景清单（标注所在章节）\n"
-            f"5. 改编注意事项（哪些是必须保留的原著骨架）"
+            f"4. 关键场景清单：标注所在章节，并说明各场景的【戏剧功能】"
+            f"（激励事件/转折/真相揭示/人物抉择）\n"
+            f"5. 悬念与暗线：伏笔、疑点、死亡/冤案/阴谋、未解之谜——"
+            f"凡是原著中后段才揭示的真相，必须在此捕捉，不得遗漏\n"
+            f"6. 改编注意事项：哪些是必须保留的原著骨架，尤其【人物动机与弧光】"
+            f"【核心悬念】不可改动"
         )
-        try:
-            bible = chat(
-                system="你是资深文学编辑与影视改编策划。基于原著采样提炼「改编圣经」，"
-                "供编剧团队改编参考。输出简洁、结构化、可执行，不要复述原文。",
-                user=user,
-                max_tokens=BIBLE_MAX_TOKENS,
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("圣经 LLM 生成失败，降级为章节索引: %s", exc)
-            return self._fallback_bible(chapters), True
-        if not bible or not bible.strip():
-            return self._fallback_bible(chapters), True
-        return f"# 《{title}》改编圣经\n\n{bible.strip()}\n", False
+        # 重试上限：LLM provider（如 mimo）会间歇性返回空 content 且 finish=stop，
+        # 若不加重试，圣经会静默降级为章节索引，人物动机/弧光全部丢失。
+        BIBLE_CHAT_RETRIES = 3
+        last_exc: Exception | None = None
+        for attempt in range(1, BIBLE_CHAT_RETRIES + 1):
+            try:
+                bible = chat(
+                    system="你是资深文学编辑与影视改编策划。基于原著采样提炼「改编圣经」，"
+                    "供编剧团队改编参考。提炼的重心是驱动改编的深层信息——人物动机、"
+                    "性格弧光、悬念暗线、真相疑点——而不是表层事件流水；"
+                    "宁可多记动机与悬念，也不要漏掉中后段揭示的关键设定。"
+                    "输出简洁、结构化、可执行，不要复述原文。",
+                    user=user,
+                    max_tokens=BIBLE_MAX_TOKENS,
+                )
+            except Exception as exc:  # noqa: BLE001
+                last_exc = exc
+                logger.warning("圣经 LLM 生成第 %d 次异常: %s", attempt, exc)
+                continue
+            if bible and bible.strip():
+                return f"# 《{title}》改编圣经\n\n{bible.strip()}\n", False
+            logger.warning("圣经 LLM 第 %d 次返回空，重试…", attempt)
+        logger.warning("圣经 LLM 生成失败（重试 %d 次后仍为空/异常），降级为章节索引: %s",
+                       BIBLE_CHAT_RETRIES, last_exc)
+        return self._fallback_bible(chapters), True
 
     def _fallback_bible(self, chapters: list[tuple[str, str]]) -> str:
         """LLM 未配置/失败时的降级圣经：章节目录 + 各章开头采样，至少给全局轮廓。"""
