@@ -148,7 +148,8 @@ class StubExecutor:
         req = f"·{','.join(style)}" if style else ""
         req += f"·{pacing}" if pacing else ""
         ep = f"·第{episode}/{episodes}集" if episodes and episodes > 1 else ""
-        return f"[剧本·stub{tag}{req}{ep}] {outline[:60]}"
+        prior = f"\n{prior_summaries}" if prior_summaries else ""
+        return f"[剧本·stub{tag}{req}{ep}] {outline[:60]}{prior}"
 
     def review(self, text: str, criteria: str, novel_text: str = "") -> ReviewResult:
         if self.reject_once and not self._rejected:

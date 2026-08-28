@@ -136,6 +136,8 @@ def create_pipeline(
         "pacing": pl.pacing or "",
         "episodes": int(pl.episodes or 1),
         "episode_range": list(pl.episode_range or []),
+        "prior_context": getattr(pl, "prior_context", "summary_recent"),
+        "include_review_notes": bool(getattr(pl, "include_review_notes", True)),
     }
     _save_registry()
 
@@ -197,11 +199,18 @@ def _restore_pipeline(pid: str) -> Optional[CreativePipeline]:
     # 恢复业务字段
     pl.concept = meta.get("concept", "")
     pl.novel_ref = meta.get("novel_ref", "")
-    pl.ids = dict(meta.get("ids", {}) or {})
+    raw_ids = dict(meta.get("ids", {}) or {})
+    # JSON 落盘会把分集 dict 的 int 集号键变字符串（{"1": 5}），恢复时归一化回 int
+    for _k in ("screen_items", "screen_review_items"):
+        if isinstance(raw_ids.get(_k), dict):
+            raw_ids[_k] = {int(k): v for k, v in raw_ids[_k].items()}
+    pl.ids = raw_ids
     pl.style = list(meta.get("style", []) or [])
     pl.pacing = meta.get("pacing", "") or ""
     pl.episodes = int(meta.get("episodes", 1) or 1)
-    pl.episode_range = list(meta.get("episode_range", []) or [])
+    pl.episode_range = [int(e) for e in (meta.get("episode_range", []) or [])]
+    pl.prior_context = meta.get("prior_context") or "summary_recent"
+    pl.include_review_notes = bool(meta.get("include_review_notes", True))
     pl._related_override = list(meta.get("related_override", []) or [])
     pl._novel_index_failed = bool(meta.get("novel_index_failed", False))
     pl.last_docx = dict(meta.get("last_docx", {}) or {})
@@ -314,7 +323,46 @@ def snapshot(pid: str) -> dict:
         "pacing": getattr(pl, "pacing", "") or "",
         "episodes": int(getattr(pl, "episodes", 1) or 1),
         "episode_range": list(getattr(pl, "episode_range", []) or []),
+        # 前情上下文档位（加集续写衔接）
+        "prior_context": getattr(pl, "prior_context", "summary_recent"),
+        "include_review_notes": bool(getattr(pl, "include_review_notes", True)),
     }
+
+
+# -- 加集续写（同一本书做完前 N 集，后续接着做） ---------------------------
+def extend_episodes(
+    pid: str,
+    episode_range: list[int],
+    *,
+    prior_context: Optional[str] = None,
+    include_review_notes: Optional[bool] = None,
+) -> dict:
+    """加集续写：为新增集号建项，风格/节奏/前情自动继承本流水线。
+
+    prior_context：None=不改（沿用当前档位）；"summary"=仅摘要；
+    "summary_recent"=摘要+紧邻上集定稿全文（默认档）。
+    注册表同步更新（ids/episodes/episode_range/档位），重启可恢复。
+    """
+    pl = get_pipeline(pid)
+    if prior_context in ("summary", "summary_recent"):
+        pl.prior_context = prior_context
+    if include_review_notes is not None:
+        pl.include_review_notes = bool(include_review_notes)
+    out = pl.extend_episodes(list(episode_range or []))
+    # 注册表元数据同步（进程重启后 _REGISTRY_META 可能为空，先从磁盘回填）
+    if pid not in _REGISTRY_META:
+        _REGISTRY_META[pid] = _load_registry().get(pid, {})
+    meta = _REGISTRY_META.get(pid)
+    if meta is not None:
+        meta["ids"] = dict(pl.ids)
+        meta["episodes"] = int(pl.episodes or 1)
+        meta["episode_range"] = list(pl.episode_range or [])
+        meta["prior_context"] = pl.prior_context
+        meta["include_review_notes"] = bool(pl.include_review_notes)
+        _save_registry()
+    pl._save_drafts()  # _cfg 档位随草稿落盘（双保险）
+    return {"pid": pid, **out, "prior_context": pl.prior_context,
+            "include_review_notes": pl.include_review_notes}
 
 
 # -- 产出预览（透明化：用户要看得见每个 item 产出的文本） -----------------

@@ -201,6 +201,13 @@ class ScreenStepBody(BaseModel):
     episode: Optional[int] = None
 
 
+class ExtendEpisodesBody(BaseModel):
+    """加集续写：新增集号列表 + 前情上下文档位（可选，None=沿用当前）。"""
+    episode_range: list[int] = []
+    prior_context: Optional[str] = None  # summary | summary_recent
+    include_review_notes: Optional[bool] = None
+
+
 class FRProposalBody(BaseModel):
     item_kind: str = "screenplay"
     genre_hint: Optional[str] = None
@@ -749,6 +756,20 @@ def create_app(rt_port: int = 9920, base_dir: Optional[str] = None, workspace: O
                 return JSONResponse(_csvc.lead_screen(pid, body.approved, ep))
             except KeyError:
                 return JSONResponse({"error": "not found"}, status_code=404)
+
+        @app.post("/api/creation/{pid}/extend-episodes")
+        async def api_extend_episodes(pid: str, body: ExtendEpisodesBody):
+            """加集续写：新增集建项，风格/节奏/前情自动继承（守卫：大纲须已定稿）。"""
+            try:
+                return JSONResponse(_csvc.extend_episodes(
+                    pid, body.episode_range,
+                    prior_context=body.prior_context,
+                    include_review_notes=body.include_review_notes,
+                ))
+            except KeyError:
+                return JSONResponse({"error": "not found"}, status_code=404)
+            except Exception as exc:  # noqa: BLE001
+                return JSONResponse({"error": str(exc)}, status_code=400)
 
         @app.post("/api/creation/{pid}/final-review-proposal")
         async def api_fr_proposal(pid: str, body: FRProposalBody):

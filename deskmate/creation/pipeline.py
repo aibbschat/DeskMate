@@ -71,6 +71,11 @@ class CreativePipeline:
         self.episodes: int = 1              # 剧本总集数（1=全本单文件）
         self.episode_range: list[int] = []  # 实际建项/产出的集号（空=1..episodes）
         self._episode_summaries: dict[int, str] = {}  # 每集前情摘要（跨集续写衔接，随草稿落盘）
+        # 前情上下文档位（加集续写衔接质量 vs token 成本）：
+        #   summary        = 仅前集摘要（每集约150字）
+        #   summary_recent = 摘要 + 紧邻上集定稿全文（默认，续写最平衡）
+        self.prior_context: str = "summary_recent"
+        self.include_review_notes: bool = True  # 注入前集历史审改意见（审核评语/打回理由）
         self.novel_index: NovelIndex | None = None  # 懒加载：首次取原著上下文时建索引
         self._novel_index_failed: bool = False  # 索引构建失败标记（快照据此返回 failed）
         self._novel_ctx: str = ""           # 改编圣经 + 章节目录（一次性缓存）
@@ -92,6 +97,10 @@ class CreativePipeline:
             tmp = path.with_suffix(".json.tmp")
             payload = dict(self._drafts)
             payload["_eps"] = self._episode_summaries  # 跨集前情摘要一并落盘
+            payload["_cfg"] = {  # 前情上下文档位（加集续写配置）
+                "prior_context": self.prior_context,
+                "include_review_notes": self.include_review_notes,
+            }
             tmp.write_text(
                 json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
             )
@@ -108,6 +117,10 @@ class CreativePipeline:
                 for k, v in (raw or {}).items():
                     if k == "_eps":
                         self._episode_summaries = {int(e): s for e, s in (v or {}).items()}
+                    elif k == "_cfg":
+                        cfg = v or {}
+                        self.prior_context = cfg.get("prior_context") or "summary_recent"
+                        self.include_review_notes = bool(cfg.get("include_review_notes", True))
                     elif str(k).lstrip("-").isdigit():
                         self._drafts[int(k)] = v
         except Exception as exc:  # noqa: BLE001
@@ -241,6 +254,50 @@ class CreativePipeline:
                 parts.append(f"第{ep}集：{self._episode_summaries[ep][:150]}")
         return "\n".join(parts)
 
+    def _prior_review_notes(self, episode: Optional[int]) -> str:
+        """前集最后一条审核意见（审改史注入，续写不重蹈覆辙）。"""
+        if not episode:
+            return ""
+        notes = []
+        for ep in sorted(self.ids.get("screen_review_items", {}) or {}):
+            if ep >= episode:
+                break
+            rid = self.ids["screen_review_items"][ep]
+            try:
+                item = self.store.get_item(self.space, rid)
+            except Exception:  # noqa: BLE001
+                continue
+            for c in reversed(item.get("comments", []) or []):
+                body = (c.get("body") or c.get("comment") or "").strip()
+                if body:
+                    notes.append(f"第{ep}集：{body[:300]}")
+                    break
+        return "\n".join(notes)
+
+    def _prior_context_block(self, episode: Optional[int]) -> str:
+        """前情上下文（跨集续写衔接）：
+
+        summary        = 全部前集摘要；
+        summary_recent = 摘要 + 紧邻上集定稿全文（默认，续写衔接基准）；
+        include_review_notes = 附前集历史审改意见。
+        """
+        if not episode or episode <= 1:
+            return ""
+        parts = []
+        s = self._prior_episode_summaries(episode)
+        if s:
+            parts.append(f"【前情摘要】\n{s}")
+        if self.prior_context == "summary_recent":
+            prev_id = (self.ids.get("screen_items", {}) or {}).get(episode - 1)
+            prev_text = self._drafts.get(prev_id, "") if prev_id else ""
+            if prev_text:
+                parts.append(f"【第{episode - 1}集定稿全文（续写衔接基准）】\n{prev_text}")
+        if self.include_review_notes:
+            notes = self._prior_review_notes(episode)
+            if notes:
+                parts.append(f"【历史审改意见（续写勿重蹈覆辙）】\n{notes}")
+        return "\n\n".join(parts)
+
     # -- 建团 --------------------------------------------------------------
     def _staff(self):
         return build_team_workers(lambda pid: f"{self.space}:{pid}")
@@ -354,6 +411,46 @@ class CreativePipeline:
             self.ids["screen_items"] = screen_items
             self.ids["screen_review_items"] = screen_review_items
         return self.ids
+
+    def extend_episodes(self, episode_range: list[int]) -> dict:
+        """加集续写：为新增集号建项（既有集原样保留），要求大纲已定稿。
+
+        前情自动衔接：新增集动笔时注入前集摘要（+紧邻上集定稿全文，
+        视 prior_context 档位）与历史审改意见；风格/节奏天然继承本流水线。
+        """
+        if not self._is_episodic():
+            raise PipelineGuardError("当前为全本模式（单文件剧本），不支持加集；请新建分集流水线")
+        outline_item = self.store.get_item(self.space, self.ids.get("outline_item", -1))
+        if outline_item.get("state") != "done":
+            raise PipelineGuardError("大纲尚未定稿，不能加集：请先完成大纲审核与拍板")
+        existing: dict = dict(self.ids.get("screen_items", {}) or {})
+        wanted = sorted({int(e) for e in (episode_range or []) if int(e) >= 1})
+        new_eps = [e for e in wanted if e not in existing]
+        if not new_eps:
+            return {"added": [], "episodes": self.episodes, "episode_range": sorted(existing)}
+        screen_items = dict(self.ids.get("screen_items", {}) or {})
+        review_items = dict(self.ids.get("screen_review_items", {}) or {})
+        total = max(self.episodes, max(new_eps))
+        for ep in new_eps:
+            s = self.store.create_item(
+                self.space, self.lead, title=f"第{ep}集",
+                criteria="可拍性、台词节奏、史实、单集完整起承转合",
+                description=f"{self.concept}（第{ep}/{total}集·续写加集）",
+            )
+            r = self.store.create_item(
+                self.space, self.lead, title=f"第{ep}集审核",
+                criteria="台词/节奏/可拍性/史实",
+                description=f"针对第{ep}集 #{s['id']}",
+            )
+            self.store.link(self.space, self.lead, src=s["id"], kind="parent", dst=self.ids["outline_item"])
+            screen_items[ep] = s["id"]
+            review_items[ep] = r["id"]
+        self.ids["screen_items"] = screen_items
+        self.ids["screen_review_items"] = review_items
+        self.episode_range = sorted(set(self.episode_range) | set(new_eps))
+        self.episodes = total
+        self._save_drafts()  # _cfg 档位随草稿落盘
+        return {"added": new_eps, "episodes": self.episodes, "episode_range": list(self.episode_range)}
 
     def start_outline_project(
         self,
@@ -519,7 +616,7 @@ class CreativePipeline:
             pacing=self.pacing,
             episode=episode,
             episodes=len(self.episode_range) or 1,
-            prior_summaries=self._prior_episode_summaries(episode),
+            prior_summaries=self._prior_context_block(episode),
         )
         self._drafts[screen_item_id] = text
         if episode:

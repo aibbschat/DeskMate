@@ -127,6 +127,30 @@ def build_server() -> FastMCP:
         return _svc(lambda svc: svc.lead_screen(pid, approved, episode or None))
 
     @mcp.tool()
+    def extend_episodes(
+        pid: str,
+        episode_range: str,
+        prior_context: str = "",
+        include_review_notes: bool = True,
+    ) -> dict:
+        """加集续写：做完前 N 集后接着做后续集（同一流水线，风格/节奏/前情自动继承）。
+
+        episode_range: 新增集号，逗号分隔（如 "3,4,5"）；守卫：大纲须已定稿、
+        仅分集模式可用（全本模式报错）。前情自动衔接：新集动笔时注入前集摘要
+        + 紧邻上集定稿全文（prior_context="summary_recent"，默认）或仅摘要
+        （"summary"）；include_review_notes=true 附前集历史审改意见。
+        prior_context 传空串=沿用流水线当前档位。
+        """
+        def _run(svc):
+            eps = [int(x) for x in episode_range.replace("，", ",").split(",") if x.strip()]
+            return svc.extend_episodes(
+                pid, eps,
+                prior_context=prior_context or None,
+                include_review_notes=include_review_notes,
+            )
+        return _svc(_run)
+
+    @mcp.tool()
     def final_review_apply(pid: str, item_kind: str, verdict: bool) -> dict:
         """用户知情确认后，把圆桌终审结论回灌创作项（approve=定稿 / 打回）。
 
