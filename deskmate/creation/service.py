@@ -575,28 +575,49 @@ async def stream_final_review(
 ) -> AsyncGenerator[str, None]:
     """SSE 生成器：用户选定专家后跑圆桌终审，转发协调器事件流。
 
+    开头立刻 yield 一个 ``info`` 事件，使 HTTP 响应头立即发出（SSE 响应头在首个
+    yield 时才推给客户端），避免前端在「初始化 + 邀请专家 + 探测在线状态」这一长串
+    同步/await 阶段里完全收不到任何反馈而误以为卡死。
+
     末尾发 ``final_review_ready``（带 synthesis）提示前端展示「确认定稿/打回」；
     synthesis 暂存到 pipeline._pending_final，待 ``final_review_apply`` 回灌。
     """
-    pl = get_pipeline(pid)
+    try:
+        pl = get_pipeline(pid)
+    except KeyError:
+        yield _sse({"type": "error", "message": "流水线不存在或已失效，请重新创建创作。"})
+        return
     from deskmate.teams_client import TeamsClient
     from deskmate.roundtable.teams_bridge import RoundtableTeamsBridge
     from deskmate.roundtable.coordinator import Roundtable
     from deskmate.roundtable.personas import get_persona
 
     proposal = build_final_review_proposal(pl, item_kind, genre_hint=genre_hint, episode=episode)
+    # 立刻发首个事件：SSE 响应头在首个 yield 时才推给客户端，这里先发一条 info，
+    # 让前端「进行中」面板立即出现，不再在后面「初始化 + 邀请专家 + 探测在线状态」
+    # 这一长串同步/await 阶段里死寂无反馈而误以为卡死。
+    yield _sse({"type": "info", "text": f"已就绪，正在组建圆桌终审（邀请 {len(selected_experts)} 位专家）…"})
+
     # 用 pipeline 自身的 base（与 board 数据同根），避免自定义数据目录下 bridge 建团分家。
     # 终审团队另起 space（final-review:…），只登记花名册不抢流水线 worker。
-    client = TeamsClient(base_dir=pl.client.base)
-    team_id = f"final-review:{pl.space}:{proposal.item_id}"
-    bridge = RoundtableTeamsBridge(client, team_id=team_id)
-    worker_names = [get_persona(p).name if get_persona(p) else p for p in selected_experts]
+    # 整段初始化套 wait_for 超时降级：TeamsClient 构造或建团若卡住/失败，不阻断纯内存研讨终审。
+    bridge = None
     try:
-        bridge.setup(selected_experts, worker_names, topic=proposal.topic)
+        client = await asyncio.wait_for(
+            asyncio.to_thread(TeamsClient, base_dir=pl.client.base), timeout=20
+        )
+        team_id = f"final-review:{pl.space}:{proposal.item_id}"
+        bridge = RoundtableTeamsBridge(client, team_id=team_id)
+        worker_names = [get_persona(p).name if get_persona(p) else p for p in selected_experts]
+        await asyncio.wait_for(
+            asyncio.to_thread(bridge.setup, selected_experts, worker_names, topic=proposal.topic),
+            timeout=25,
+        )
     except Exception as exc:  # noqa: BLE001
         logger.warning("终审 teams 基座建团失败(降级纯研讨): %s", exc)
         bridge = None
     personas = [p for pid2 in selected_experts if (p := get_persona(pid2)) is not None]
+    yield _sse({"type": "info", "text": f"圆桌已就位，{len(personas)} 位专家开始研讨…"})
 
     synthesis = ""
     try:

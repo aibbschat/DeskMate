@@ -106,7 +106,9 @@ export function CreationPipelineView({
 
   const [proposal, setProposal] = useState<FinalProposal | null>(null);
   const [selected, setSelected] = useState<string[]>([]);
+  const [proposalLoading, setProposalLoading] = useState(false);
   const [reviewing, setReviewing] = useState(false);
+  const [reviewElapsed, setReviewElapsed] = useState(0);
   const [events, setEvents] = useState<any[]>([]);
   const [synthesis, setSynthesis] = useState("");
   const [finalizing, setFinalizing] = useState(false);
@@ -346,6 +348,7 @@ export function CreationPipelineView({
 
   const openProposal = async (itemKind: "outline" | "screenplay", episode?: number) => {
     if (!pid) return;
+    setProposalLoading(true);
     setError("");
     try {
       const p = await finalReviewProposal(pid, itemKind, undefined, episode);
@@ -356,15 +359,19 @@ export function CreationPipelineView({
       setDocxPath("");
     } catch (e: any) {
       setError(String(e?.message ?? e));
+    } finally {
+      setProposalLoading(false);
     }
   };
 
   const runReview = async () => {
     if (!pid || !proposal) return;
     setReviewing(true);
+    setReviewElapsed(0);
     setError("");
     setEvents([]);
     setSynthesis("");
+    const timer = setInterval(() => setReviewElapsed((s) => s + 1), 1000);
     try {
       for await (const ev of streamFinalReview(
         pid,
@@ -379,6 +386,7 @@ export function CreationPipelineView({
     } catch (e: any) {
       setError(String(e?.message ?? e));
     } finally {
+      clearInterval(timer);
       setReviewing(false);
     }
   };
@@ -1265,8 +1273,21 @@ export function CreationPipelineView({
               {phase === "done" && <div className="text-[13px] text-emerald-600 font-medium">✅ 已定稿</div>}
             </div>
 
-            {/* 终审提案卡 */}
-            {proposal && !synthesis && (
+            {/* 终审提案生成中（openProposal 无进度，至少给个反馈） */}
+            {proposalLoading && (
+              <div className="rounded-xl border border-accent/30 bg-gradient-to-br from-accent/[0.08] via-paper to-emerald-500/[0.06] p-4 shadow-sm cre-panel-in">
+                <div className="flex items-center gap-2">
+                  <span className="cre-pulse-dot w-2.5 h-2.5 rounded-full bg-accent shrink-0" />
+                  <span className="text-[13px] font-semibold text-ink">正在生成终审方案…</span>
+                </div>
+                <div className="mt-2 text-[12px] text-muted">
+                  拉取送审片段、验收标准与前序审核意见，请稍候。
+                </div>
+              </div>
+            )}
+
+            {/* 终审提案卡（用户选专家、批准） */}
+            {proposal && !synthesis && !reviewing && !proposalLoading && (
               <ProposalCard
                 proposal={proposal}
                 selected={selected}
@@ -1278,8 +1299,28 @@ export function CreationPipelineView({
                 }}
               />
             )}
-            {proposal && reviewing && (
-              <div className="text-[12px] text-muted">圆桌研讨中…（{events.length} 事件）</div>
+
+            {/* 终审进行中面板：圆桌往返多轮，必须有可见进度，否则像卡死 */}
+            {reviewing && (
+              <div className="rounded-xl border border-accent/30 bg-gradient-to-br from-accent/[0.08] via-paper to-emerald-500/[0.06] p-4 shadow-sm cre-panel-in">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <span className="cre-pulse-dot w-2.5 h-2.5 rounded-full bg-accent shrink-0" />
+                    <span className="text-[13px] font-semibold text-ink truncate">圆桌终审进行中</span>
+                  </div>
+                  <span className="text-[12px] font-semibold text-accent shrink-0 tabular-nums">
+                    已等待 {reviewElapsed}s
+                  </span>
+                </div>
+                <div className="mt-2 text-[12px] text-ink/85">
+                  已接收 {events.length} 条研讨事件 · 圆桌需在各位专家间往返多轮，通常 1–3 分钟。
+                </div>
+                {reviewElapsed >= 120 && (
+                  <div className="mt-2 text-[12px] text-warnInk bg-warnSoft/70 border border-warnInk/15 rounded-lg px-2.5 py-1.5">
+                    耗时较长但仍在继续；若超过数分钟仍无新事件，可能是 LLM 服务拥堵，可关闭本页重试或稍后再审。
+                  </div>
+                )}
+              </div>
             )}
 
             {/* 终审 SSE 事件流（圆桌群聊） */}
