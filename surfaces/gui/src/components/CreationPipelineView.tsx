@@ -7,6 +7,7 @@ import { Fragment, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import { Icon } from "./Icon";
 import { ProposalCard, type FinalProposal } from "./ProposalCard";
+import { CreationPreviewModal } from "./CreationPreviewModal";
 import {
   createPipeline,
   getPipeline,
@@ -119,8 +120,8 @@ export function CreationPipelineView({
   const [savingRelated, setSavingRelated] = useState(false);
   const [selectedRelated, setSelectedRelated] = useState<number[]>([]);
 
-  // 产出预览（透明化：点开看草稿文本）
-  const [preview, setPreview] = useState<{ itemId: number; content: string } | null>(null);
+  // 产出预览（透明化：点开看弹窗阅读器看草稿文本）
+  const [preview, setPreview] = useState<{ itemId: number; title: string; content: string } | null>(null);
   const [loadingPreview, setLoadingPreview] = useState<number | null>(null);
 
   // 加集续写面板（同一本书做完前 N 集后接着做）
@@ -305,23 +306,20 @@ export function CreationPipelineView({
     }
   };
 
-  const showPreview = async (itemId: number) => {
+  const showPreview = async (itemId: number, title: string) => {
     if (!pid) return;
-    if (preview?.itemId === itemId) {
-      setPreview(null);
-      return;
-    }
     setLoadingPreview(itemId);
     setError("");
     try {
       const r = await getItemContent(pid, itemId);
-      setPreview({ itemId, content: r.content || "（暂无草稿内容）" });
+      setPreview({ itemId, title, content: r.content || "（暂无草稿内容）" });
     } catch (e: any) {
       setError(String(e?.message ?? e));
     } finally {
       setLoadingPreview(null);
     }
   };
+  const closePreview = () => setPreview(null);
 
   const doExtend = async () => {
     if (!pid || extBusy) return;
@@ -1031,9 +1029,9 @@ export function CreationPipelineView({
                           <div className="flex items-center gap-2">
                             <button
                               className="text-[12px] text-muted hover:text-accent"
-                              onClick={() => g.prod && showPreview(g.prod.id)}
+                              onClick={() => g.prod && showPreview(g.prod.id, g.prod.title)}
                             >
-                              {loadingPreview === g.prod?.id ? "加载中…" : preview?.itemId === g.prod?.id ? "收起预览" : "预览"}
+                              {loadingPreview === g.prod?.id ? "加载中…" : "预览"}
                             </button>
                           </div>
                         </div>
@@ -1045,9 +1043,9 @@ export function CreationPipelineView({
                             </span>
                             <button
                               className="text-[12px] text-muted hover:text-accent"
-                              onClick={() => g.rev && showPreview(g.rev.id)}
+                              onClick={() => g.rev && showPreview(g.rev.id, `审核意见 · ${g.rev.title}`)}
                             >
-                              {loadingPreview === g.rev.id ? "加载中…" : preview?.itemId === g.rev.id ? "收起" : "看意见"}
+                              {loadingPreview === g.rev.id ? "加载中…" : "看意见"}
                             </button>
                           </div>
                         )}
@@ -1064,11 +1062,6 @@ export function CreationPipelineView({
                                 {b.label}
                               </button>
                             ))}
-                          </div>
-                        )}
-                        {preview && (preview.itemId === g.prod?.id || preview.itemId === g.rev?.id) && (
-                          <div className="rounded-lg bg-black/[0.02] dark:bg-white/[0.03] p-2.5 max-h-64 overflow-auto">
-                            <ReactMarkdown>{preview.content}</ReactMarkdown>
                           </div>
                         )}
                       </div>
@@ -1202,17 +1195,12 @@ export function CreationPipelineView({
                     </span>
                     <button
                       className="text-[12px] text-muted hover:text-accent"
-                      onClick={() => showPreview(it.id)}
+                      onClick={() => showPreview(it.id, it.title)}
                     >
-                      {loadingPreview === it.id ? "加载中…" : preview?.itemId === it.id ? "收起预览" : "预览"}
+                      {loadingPreview === it.id ? "加载中…" : "预览"}
                     </button>
                   </div>
                 ))}
-                {preview && (
-                  <div className="rounded-lg bg-black/[0.02] dark:bg-white/[0.03] p-2.5 max-h-64 overflow-auto">
-                    <ReactMarkdown>{preview.content}</ReactMarkdown>
-                  </div>
-                )}
               </div>
 
             {/* 阶段推进按钮（快速路径）：大纲阶段两模式通用；剧本阶段仅非分集（分集由各集卡片承载） */}
@@ -1354,6 +1342,15 @@ export function CreationPipelineView({
           </div>
         )}
       </div>
+
+      {/* 产出阅读器弹窗：大纲/剧本/审核意见统一舒适阅读 */}
+      <CreationPreviewModal
+        open={!!preview}
+        title={preview?.title ?? ""}
+        content={preview?.content ?? ""}
+        loading={loadingPreview === preview?.itemId}
+        onClose={closePreview}
+      />
     </div>
   );
 }

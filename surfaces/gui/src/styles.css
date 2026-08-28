@@ -2935,3 +2935,192 @@ html[data-platform="linux"] ::-webkit-scrollbar-thumb:hover { background-color: 
   transform: translateY(-2px);
   box-shadow: 0 6px 20px rgba(0, 0, 0, 0.08);
 }
+
+/* ===================== 创作流水线预览阅读弹窗 ===================== */
+/* 比通用 modal 更宽、更像阅读器；内容区单独配色与排版，降低眼疲劳。 */
+.creation-preview-modal {
+  width: min(980px, calc(100vw - 48px));
+  max-height: calc(100vh - 48px);
+  border-radius: 18px;
+}
+.creation-preview-modal .modal-head {
+  padding: 14px 20px;
+  flex-shrink: 0;
+}
+.creation-preview-body {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  background: #fdfcfa; /* 暖白纸张感，比冷灰面板更适合长文阅读 */
+  padding: 40px 32px 56px;
+}
+html[data-theme="dark"] .creation-preview-body {
+  background: #181a1d; /* 暗色下保持略暖的深灰，避免纯白字在纯黑底上刺眼 */
+}
+@media (min-width: 768px) {
+  .creation-preview-body {
+    padding: 52px 48px 72px;
+  }
+}
+@media (min-width: 1024px) {
+  .creation-preview-body {
+    padding: 60px 64px 88px;
+  }
+}
+
+/* 文章容器：限制行长，居中，大号字，宽松行距 */
+.creation-preview-article {
+  max-width: 720px;
+  margin: 0 auto;
+  color: #2c2925;
+  font-size: 17px;
+  line-height: 1.85;
+  letter-spacing: 0.01em;
+}
+html[data-theme="dark"] .creation-preview-article {
+  color: #e8e5e0;
+}
+@media (min-width: 768px) {
+  .creation-preview-article {
+    font-size: 18px;
+  }
+}
+
+/* 标题层级：有呼吸感，但不抢正文 */
+.creation-preview-article h1,
+.creation-preview-article h2,
+.creation-preview-article h3,
+.creation-preview-article h4 {
+  font-weight: 650;
+  color: #1f1c19;
+  line-height: 1.35;
+  margin-top: 1.8em;
+  margin-bottom: 0.7em;
+  letter-spacing: -0.01em;
+}
+html[data-theme="dark"] .creation-preview-article h1,
+html[data-theme="dark"] .creation-preview-article h2,
+html[data-theme="dark"] .creation-preview-article h3,
+html[data-theme="dark"] .creation-preview-article h4 {
+  color: #f2efe9;
+}
+.creation-preview-article h1 {
+  font-size: 1.55em;
+  margin-top: 0;
+  padding-bottom: 0.4em;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.08);
+}
+.creation-preview-article h2 {
+  font-size: 1.35em;
+}
+.creation-preview-article h3 {
+  font-size: 1.18em;
+}
+.creation-preview-article h4 {
+  font-size: 1.05em;
+}
+
+/* 段落：宽松间距 */
+.creation-preview-article p {
+  margin: 0 0 1.25em;
+}
+
+/* 列表：舒适缩进与间距 */
+.creation-preview-article ul,
+.creation-preview-article ol {
+  margin: 0 0 1.4em;
+  padding-left: 1.6em;
+}
+.creation-preview-article li {
+  margin-bottom: 0.55em;
+}
+.creation-preview-article li > p {
+  margin-bottom: 0.4em;
+}
+
+/* 引用：左侧强调线 + 柔和背景 */
+.creation-preview-article blockquote {
+  margin: 1.4em 0;
+  padding: 0.8em 1.2em;
+  border-left: 3px solid #d4c8b8;
+  background: rgba(0, 0, 0, 0.025);
+  border-radius: 0 10px 10px 0;
+  color: #4a4540;
+  font-style: italic;
+}
+html[data-theme="dark"] .creation-preview-article blockquote {
+  border-left-color: #5e574d;
+  background: rgba(255, 255, 255, 0.04);
+  color: #c4beb4;
+}
+
+/* 代码与预格式化：不刺眼 */
+.creation-preview-article code {
+  font-family: var(--mono);
+  font-size: 0.88em;
+  background: rgba(0, 0, 0, 0.06);
+  padding: 0.15em 0.4em;
+  border-radius: 5px;
+  color: #5c3d2e;
+}
+html[data-theme="dark"] .creation-preview-article code {
+  background: rgba(255, 255, 255, 0.1);
+  color: #e6c6a8;
+}
+.creation-preview-article pre {
+  background: rgba(0, 0, 0, 0.045);
+  padding: 1em 1.2em;
+  border-radius: 10px;
+  overflow-x: auto;
+  margin: 1.2em 0;
+}
+html[data-theme="dark"] .creation-preview-article pre {
+  background: rgba(255, 255, 255, 0.06);
+}
+.creation-preview-article pre code {
+  background: transparent;
+  padding: 0;
+}
+
+/* 分隔线 */
+.creation-preview-article hr {
+  border: none;
+  border-top: 1px solid rgba(0, 0, 0, 0.1);
+  margin: 2em auto;
+  max-width: 120px;
+}
+html[data-theme="dark"] .creation-preview-article hr {
+  border-top-color: rgba(255, 255, 255, 0.12);
+}
+
+/* 表格：阅读友好 */
+.creation-preview-article table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 1.4em 0;
+  font-size: 0.95em;
+}
+.creation-preview-article th,
+.creation-preview-article td {
+  padding: 0.65em 0.85em;
+  border: 1px solid rgba(0, 0, 0, 0.1);
+  text-align: left;
+}
+html[data-theme="dark"] .creation-preview-article th,
+html[data-theme="dark"] .creation-preview-article td {
+  border-color: rgba(255, 255, 255, 0.12);
+}
+.creation-preview-article th {
+  background: rgba(0, 0, 0, 0.04);
+  font-weight: 600;
+}
+
+/* 链接 */
+.creation-preview-article a {
+  color: #2b6cb0;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+html[data-theme="dark"] .creation-preview-article a {
+  color: #79b8ff;
+}
