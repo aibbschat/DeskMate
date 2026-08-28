@@ -263,6 +263,8 @@ def _phase_of(pl: CreativePipeline) -> str:
         any_pending = any(s != "done" for s in states)
         if oi == "done" and not any_pending:
             return "done"  # 所有集定稿
+        if oi == "done" and any(s == "in_progress" for s in states):
+            return "draft_screen"  # 有集被打回重写中（或正在撰写），仍需"写"
         if oi == "done" and any(r == "review" for r in rev_states):
             return "lead_screen"  # 有集审核完成，待拍板
         if oi == "done" and any(s == "review" for s in states):
@@ -551,8 +553,10 @@ async def stream_final_review(
         ).run_stream():
             if ev.get("type") == "done":
                 synthesis = ev.get("synthesis", "")
-                # 暂存，待用户确认 verdict 后回灌
-                pl._pending_final = {"proposal": proposal, "synthesis": synthesis}
+                # 暂存，待用户确认 verdict 后回灌（按 (item_kind, episode) 分槽，避免多集连续终审互相覆盖）
+                if not isinstance(getattr(pl, "_pending_final", None), dict):
+                    pl._pending_final = {}
+                pl._pending_final[(item_kind, episode)] = {"proposal": proposal, "synthesis": synthesis}
                 yield _sse({
                     "type": "final_review_ready",
                     "item_kind": item_kind,
@@ -569,13 +573,22 @@ async def stream_final_review(
         yield _sse({"type": "error", "message": "圆桌未产出纪要"})
 
 
-def final_review_apply(pid: str, item_kind: str, verdict: bool) -> dict:
-    """用户知情确认后回灌创作项（approve=done / 打回=review→in_progress）。"""
+def final_review_apply(pid: str, item_kind: str, verdict: bool, episode: Optional[int] = None) -> dict:
+    """用户知情确认后回灌创作项（approve=done / 打回=review→in_progress）。
+
+    episode 用于从分槽的 _pending_final 中精确取回对应集的终审结果，
+    避免多集连续终审时后一次覆盖前一次（单槽竞态）。
+    """
     pl = get_pipeline(pid)
     pending = getattr(pl, "_pending_final", None)
-    if pending is None:
+    if not isinstance(pending, dict) or not pending:
         raise ValueError("尚未运行终审研讨，无法回灌")
-    proposal = pending["proposal"]
-    synthesis = pending["synthesis"]
+    entry = pending.get((item_kind, episode))
+    if entry is None:
+        raise ValueError(
+            f"未找到{'第'+str(episode)+'集' if episode else '该'}的终审结果，请先运行对应集的终审研讨"
+        )
+    proposal = entry["proposal"]
+    synthesis = entry["synthesis"]
     status = apply_final_review(pl, proposal, synthesis, verdict)
     return {"status": status, "docx": dict(pl.last_docx), "pid": pid, "item_kind": item_kind}

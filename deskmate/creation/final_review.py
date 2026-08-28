@@ -215,7 +215,9 @@ def apply_final_review(
     if verdict:
         pipeline.guard.transition(space, lead, review_item_id, to="done", comment="圆桌终审通过")
         pipeline.guard.transition(space, lead, item_id, to="done", comment="圆桌终审定稿")
-        pipeline._export_docx(proposal.item_kind, proposal.manuscript_text)
+        # 分集终审须带 label="第X集"，否则 docx 文件名/last_docx 键缺集号、多集互相覆盖
+        label = f"第{proposal.episode}集" if proposal.episode else None
+        pipeline._export_docx(proposal.item_kind, proposal.manuscript_text, label=label)
         return "approved"
     # 打回：产出项 review→in_progress（worker 无权做，主编 lead 裁决）；审核项保持 review 留待再审
     pipeline.guard.transition(

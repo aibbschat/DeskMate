@@ -2964,6 +2964,7 @@ export async function createPipeline(
       episode_range: opts.episodeRange ?? [],
     }),
   });
+  await _rejectIfNotOk(res);
   return res.json();
 }
 

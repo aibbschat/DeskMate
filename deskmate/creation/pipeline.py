@@ -615,7 +615,7 @@ class CreativePipeline:
             style=self.style,
             pacing=self.pacing,
             episode=episode,
-            episodes=len(self.episode_range) or 1,
+            episodes=self.episodes,
             prior_summaries=self._prior_context_block(episode),
         )
         self._drafts[screen_item_id] = text
@@ -654,7 +654,7 @@ class CreativePipeline:
         cur_state = self.store.get_item(self.space, screen_item_id)["state"]
         if result.approved and cur_state != "review":
             raise ValueError(
-                f"第{episode or ''}集当前处于「{cur_state}」状态，须先重新撰写（写剧本）进入待审，再定稿"
+                f"{('第'+str(episode)+'集') if episode else '剧本'}当前处于「{cur_state}」状态，须先重新撰写（写剧本）进入待审，再定稿"
             )
         if result.approved:
             self.guard.transition(self.space, self.lead, review_item_id, to="done", comment="验收通过")

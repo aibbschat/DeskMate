@@ -225,6 +225,7 @@ class FRBody(BaseModel):
 class FRApplyBody(BaseModel):
     item_kind: str = "screenplay"
     verdict: bool = True
+    episode: Optional[int] = None  # 分集模式：回灌针对的集号（与前端契约对齐，消单槽竞态）
 
 
 def _read_html() -> str:
@@ -805,7 +806,7 @@ def create_app(rt_port: int = 9920, base_dir: Optional[str] = None, workspace: O
         @app.post("/api/creation/{pid}/final-review-apply")
         async def api_fr_apply(pid: str, body: FRApplyBody):
             try:
-                return JSONResponse(_csvc.final_review_apply(pid, body.item_kind, body.verdict))
+                return JSONResponse(_csvc.final_review_apply(pid, body.item_kind, body.verdict, body.episode))
             except (KeyError, ValueError) as exc:
                 return JSONResponse({"error": str(exc)}, status_code=400)
     except Exception as exc:  # noqa: BLE001
