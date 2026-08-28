@@ -22,6 +22,30 @@ class ReviewResult:
     opinion: str
 
 
+def _requirement_block(
+    style: Optional[list[str]] = None,
+    pacing: str = "",
+    episode: Optional[int] = None,
+    episodes: int = 1,
+) -> str:
+    """把结构化制作要求（风格/节奏/集数）拼成强约束段，注入创作 prompt。
+
+    与 concept 的「软性剧情点子」不同，这一段是**硬性制作规范**：
+    prompt 明示「必须严格遵守，违者返工」，让 LLM 不再靠自觉跟随风格。
+    """
+    parts: list[str] = []
+    if style:
+        parts.append(f"- 风格基调：{'、'.join(str(s) for s in style)}")
+    if pacing:
+        parts.append(f"- 叙事节奏：{pacing}")
+    if episodes and episodes > 1:
+        ep = int(episode or 1)
+        parts.append(f"- 集数定位：第 {ep}/{episodes} 集（单集须有完整起承转合，结尾留钩子）")
+    if not parts:
+        return ""
+    return "\n\n【制作要求（必须严格遵守，违者返工）】\n" + "\n".join(parts)
+
+
 def _parse_scenes(plan: str) -> list[tuple[str, str]]:
     """解析场景清单行「1.场景名|一句话目标」→ [(场景名, 目标), ...]。
 
@@ -69,8 +93,25 @@ def _summarize_segment(seg: str) -> str:
 
 
 class CreativeExecutor:
-    def draft_outline(self, concept: str, novel_text: str = "") -> str: ...
-    def draft_screenplay(self, outline: str, novel_text: str = "") -> str: ...
+    def draft_outline(
+        self,
+        concept: str,
+        *,
+        novel_text: str = "",
+        style: Optional[list[str]] = None,
+        pacing: str = "",
+    ) -> str: ...
+    def draft_screenplay(
+        self,
+        outline: str,
+        *,
+        novel_text: str = "",
+        style: Optional[list[str]] = None,
+        pacing: str = "",
+        episode: Optional[int] = None,
+        episodes: int = 1,
+        prior_summaries: str = "",
+    ) -> str: ...
     def review(self, text: str, criteria: str, novel_text: str = "") -> ReviewResult: ...
 
 
@@ -79,13 +120,35 @@ class StubExecutor:
         self.reject_once = reject_once
         self._rejected = False
 
-    def draft_outline(self, concept: str, novel_text: str = "") -> str:
+    def draft_outline(
+        self,
+        concept: str,
+        *,
+        novel_text: str = "",
+        style: Optional[list[str]] = None,
+        pacing: str = "",
+    ) -> str:
         tag = f"·附原著{len(novel_text)}字" if novel_text else ""
-        return f"[大纲·stub{tag}] {concept[:60]}"
+        req = f"·{','.join(style)}" if style else ""
+        req += f"·{pacing}" if pacing else ""
+        return f"[大纲·stub{tag}{req}] {concept[:60]}"
 
-    def draft_screenplay(self, outline: str, novel_text: str = "") -> str:
+    def draft_screenplay(
+        self,
+        outline: str,
+        *,
+        novel_text: str = "",
+        style: Optional[list[str]] = None,
+        pacing: str = "",
+        episode: Optional[int] = None,
+        episodes: int = 1,
+        prior_summaries: str = "",
+    ) -> str:
         tag = f"·附原著{len(novel_text)}字" if novel_text else ""
-        return f"[剧本·stub{tag}] {outline[:60]}"
+        req = f"·{','.join(style)}" if style else ""
+        req += f"·{pacing}" if pacing else ""
+        ep = f"·第{episode}/{episodes}集" if episodes and episodes > 1 else ""
+        return f"[剧本·stub{tag}{req}{ep}] {outline[:60]}"
 
     def review(self, text: str, criteria: str, novel_text: str = "") -> ReviewResult:
         if self.reject_once and not self._rejected:
@@ -95,7 +158,14 @@ class StubExecutor:
 
 
 class LLMExecutor:
-    def draft_outline(self, concept: str, novel_text: str = "") -> str:
+    def draft_outline(
+        self,
+        concept: str,
+        *,
+        novel_text: str = "",
+        style: Optional[list[str]] = None,
+        pacing: str = "",
+    ) -> str:
         from deskmate.memory.llm import chat, llm_available
 
         if not llm_available():
@@ -104,20 +174,33 @@ class LLMExecutor:
             f"\n\n【原著参考（改编依据）】\n{novel_text}\n（请基于上述原著精神进行改编，"
             "尊重人物与核心情节，允许合理的影视化再创作。）" if novel_text else ""
         )
+        req = _requirement_block(style, pacing)
         return chat(
             system="你是资深大纲专家。把用户的概念/剧情点子写成结构完整、"
-            "有戏剧冲突的剧本大纲，标注主要人物与幕结构。若提供原著参考，须基于原著精神改编。",
-            user=concept + novel_block,
+            "有戏剧冲突的剧本大纲，标注主要人物与幕结构。若提供原著参考，须基于原著精神改编。"
+            "若给出制作要求，必须严格遵守并在大纲中体现（如节奏影响幕间密度、风格影响基调）。",
+            user=concept + novel_block + req,
             max_tokens=2000,
         )
 
-    def draft_screenplay(self, outline: str, novel_text: str = "") -> str:
+    def draft_screenplay(
+        self,
+        outline: str,
+        *,
+        novel_text: str = "",
+        style: Optional[list[str]] = None,
+        pacing: str = "",
+        episode: Optional[int] = None,
+        episodes: int = 1,
+        prior_summaries: str = "",
+    ) -> str:
         """分段续写拼接（阶段 5 输出侧）——单次 8k token 出不了长剧，工程拆：
 
-        1) LLM 把大纲拆成 3–6 个连续场景；
+        1) LLM 把（本集的）大纲拆成场景清单——分集模式下场景数限 1–3（单集容量），
+           全本模式 3–6；
         2) 逐段生成（每段限额内），段间用「前情摘要」保连贯（不塞全文，token 不
            随段数线性放大）；
-        3) 拼接完整稿返回，供 docx 落地 / 审核 / 圆桌终审。
+        3) 拼接返回，供 docx 落地 / 审核 / 圆桌终审。
         """
         from deskmate.memory.llm import chat, llm_available
 
@@ -127,11 +210,21 @@ class LLMExecutor:
             f"\n\n【原著参考（改编依据，含改编圣经+相关章节）】\n{novel_text}\n"
             "（请基于原著精神展开剧本，保持人物与核心情节一致。）" if novel_text else ""
         )
+        req = _requirement_block(style, pacing, episode, episodes)
+        prior_block = (
+            f"\n\n【前情摘要（前序集数已发生的故事，续写须衔接）】\n{prior_summaries}"
+            if prior_summaries.strip()
+            else ""
+        )
+        is_episodic = bool(episodes and episodes > 1)
         # 1) 拆场景（拆不动则整段写）
         plan = chat(
-            system="你是编剧统筹。把给定大纲拆成连续场景清单，每行严格格式："
-            "序号.场景名|一句话目标。只输出清单，不要其他内容。",
-            user=f"大纲：\n{outline}",
+            system=(
+                "你是编剧统筹。把给定大纲拆成连续场景清单，每行严格格式："
+                "序号.场景名|一句话目标。只输出清单，不要其他内容。"
+                + ("注意这是单集（约 2-4 幕），场景数控制在 1-3 个，容量要适配一集。" if is_episodic else "")
+            ),
+            user=f"大纲：\n{outline}" + (f"\n\n目标集数：第 {episode}/{episodes} 集" if is_episodic else ""),
             max_tokens=800,
         )
         scenes = _parse_scenes(plan)
@@ -140,7 +233,7 @@ class LLMExecutor:
         # 2) 逐段生成 + 前情摘要续写
         segments: list[str] = []
         prev_summary = "（这是第一段，尚未有前情）"
-        base_user = f"{outline}{novel_block}"
+        base_user = f"{outline}{novel_block}{req}{prior_block}"
         for i, (name, goal) in enumerate(scenes, 1):
             user = (
                 f"{base_user}\n\n"
@@ -149,10 +242,12 @@ class LLMExecutor:
                 f"【前情摘要】{prev_summary}\n\n"
                 f"请撰写本场景剧本正文：台词节奏、可拍性、人物行为与语气连贯，"
                 f"并与前情自然衔接。"
+                + (f"（这是第 {episode}/{episodes} 集，结尾须给下集留钩子。）" if is_episodic else "")
             )
             seg = chat(
                 system="你是编剧。依据大纲与原著参考撰写剧本正文，注意场景边界清晰、"
-                "人物台词个性鲜明、可拍性。每段只写当前场景，不要重复前情。",
+                "人物台词个性鲜明、可拍性。每段只写当前场景，不要重复前情。"
+                "若给出制作要求，必须严格遵守。",
                 user=user,
                 max_tokens=3800,
             )

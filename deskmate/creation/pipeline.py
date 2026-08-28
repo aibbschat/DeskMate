@@ -65,6 +65,12 @@ class CreativePipeline:
         self._drafts: dict[int, str] = {}
         self.last_docx: dict[str, str] = {}  # item_kind -> 上次定稿 docx 路径（供状态查询）
         self.novel_ref: str = ""            # 原著路径（txt/docx），前端创建时填写
+        # 结构化制作要求（透明化 · 可提要求）：风格/节奏/集数
+        self.style: list[str] = []          # 风格标签（如 ["权谋正剧", "悬疑"]）
+        self.pacing: str = ""               # 节奏（如 "紧凑快节奏"）
+        self.episodes: int = 1              # 剧本总集数（1=全本单文件）
+        self.episode_range: list[int] = []  # 实际建项/产出的集号（空=1..episodes）
+        self._episode_summaries: dict[int, str] = {}  # 每集前情摘要（跨集续写衔接，随草稿落盘）
         self.novel_index: NovelIndex | None = None  # 懒加载：首次取原著上下文时建索引
         self._novel_index_failed: bool = False  # 索引构建失败标记（快照据此返回 failed）
         self._novel_ctx: str = ""           # 改编圣经 + 章节目录（一次性缓存）
@@ -84,8 +90,10 @@ class CreativePipeline:
             path = self._drafts_file()
             path.parent.mkdir(parents=True, exist_ok=True)
             tmp = path.with_suffix(".json.tmp")
+            payload = dict(self._drafts)
+            payload["_eps"] = self._episode_summaries  # 跨集前情摘要一并落盘
             tmp.write_text(
-                json.dumps(self._drafts, ensure_ascii=False, indent=2), encoding="utf-8"
+                json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
             )
             os.replace(tmp, path)
         except Exception as exc:  # noqa: BLE001
@@ -97,7 +105,11 @@ class CreativePipeline:
             path = self._drafts_file()
             if path.exists():
                 raw = json.loads(path.read_text(encoding="utf-8"))
-                self._drafts = {int(k): v for k, v in (raw or {}).items()}
+                for k, v in (raw or {}).items():
+                    if k == "_eps":
+                        self._episode_summaries = {int(e): s for e, s in (v or {}).items()}
+                    elif str(k).lstrip("-").isdigit():
+                        self._drafts[int(k)] = v
         except Exception as exc:  # noqa: BLE001
             logger.warning("草稿恢复失败（按空草稿继续）: %s", exc)
 
@@ -179,6 +191,56 @@ class CreativePipeline:
         self._novel_related_cache = ""  # 失效缓存，下次 _novel_related 重建
         logger.info("创作参考章节已设定: %s", self._related_override or "（自动匹配）")
 
+    # -- 集号辅助（分集模式：ids["screen_items"] = {ep: item_id}） ----------
+    def _is_episodic(self) -> bool:
+        """分集模式：剧本拆成多集（每集独立 item）。episodes<=1 时走全本单文件。"""
+        return bool(self.ids.get("screen_items"))
+
+    def _screen_item_id(self, episode: Optional[int] = None) -> int:
+        """取剧本产出项 id：分集模式取指定集（默认下一未完成集），单集取全剧本。"""
+        items = self.ids.get("screen_items")
+        if items:
+            ep = episode or self._next_episode()
+            return items[ep]
+        return self.ids.get("screen_item", next(iter(self.ids.get("screen_items", {}).values()), -1))
+
+    def _screen_review_item_id(self, episode: Optional[int] = None) -> int:
+        """取剧本审核项 id：分集模式取对应集，单集取全剧本审核。"""
+        rev = self.ids.get("screen_review_items")
+        if rev:
+            ep = episode or self._next_episode()
+            return rev[ep]
+        return self.ids.get("screen_review_item", next(iter(self.ids.get("screen_review_items", {}).values()), -1))
+
+    def _next_episode(self) -> int:
+        """分集模式下默认推进的集号：最小的未定稿集。"""
+        items = self.ids.get("screen_items", {})
+        for ep in sorted(items):
+            st = self.store.get_item(self.space, items[ep]).get("state")
+            if st != "done":
+                return ep
+        return max(items) if items else 1
+
+    def _episode_of(self, item_id: int) -> Optional[int]:
+        """item_id -> 集号（分集模式反向查产出项与审核项；单集返回 None）。"""
+        for ep, sid in (self.ids.get("screen_items", {}) or {}).items():
+            if sid == item_id:
+                return ep
+        for ep, sid in (self.ids.get("screen_review_items", {}) or {}).items():
+            if sid == item_id:
+                return ep
+        return None
+
+    def _prior_episode_summaries(self, episode: Optional[int]) -> str:
+        """当前集之前已定稿/已写集的前情摘要（跨集续写衔接）。"""
+        if not episode or episode <= 1:
+            return ""
+        parts = []
+        for ep in sorted(self._episode_summaries):
+            if ep < episode:
+                parts.append(f"第{ep}集：{self._episode_summaries[ep][:150]}")
+        return "\n".join(parts)
+
     # -- 建团 --------------------------------------------------------------
     def _staff(self):
         return build_team_workers(lambda pid: f"{self.space}:{pid}")
@@ -207,9 +269,31 @@ class CreativePipeline:
             return note + body
         return raw
 
-    def start_screenplay_project(self, concept: str, *, novel_ref: str = "") -> dict:
+    def start_screenplay_project(
+        self,
+        concept: str,
+        *,
+        novel_ref: str = "",
+        episodes: int = 1,
+        episode_range: Optional[list[int]] = None,
+        style: Optional[list[str]] = None,
+        pacing: str = "",
+    ) -> dict:
+        """启动剧本流水线：大纲 v1 + 审核，剧本按集拆分（episodes>1 时逐集建项）。
+
+        episodes<=1：单「全剧本」+「剧本审核」两个 item（向后兼容既有全本流程）；
+        episodes>1：每集「第X集」+「第X集审核」，均依赖大纲定稿（门禁）。
+        episode_range：仅产出的集号（空=1..episodes）。
+        style/pacing：结构化制作要求，透传给 executor 强约束。
+        """
         self.concept = concept
         self.novel_ref = novel_ref
+        self.style = list(style or [])
+        self.pacing = pacing or ""
+        self.episodes = max(1, int(episodes or 1))
+        self.episode_range = sorted(
+            {int(e) for e in (episode_range or []) if 1 <= int(e) <= self.episodes}
+        ) or list(range(1, self.episodes + 1))
         self.novel_index = (
             NovelIndex(novel_ref, cache_root=Path(self._novel_cache_root))
             if novel_ref and self._novel_cache_root
@@ -230,29 +314,62 @@ class CreativePipeline:
             criteria="史实/逻辑/市场/契合原著精神",
             description=f"针对大纲v1 #{outline['id']}",
         )
-        screen = self.store.create_item(
-            self.space, self.lead, title="全剧本",
-            criteria="可拍性、台词节奏、史实",
-        )
-        screen_review = self.store.create_item(
-            self.space, self.lead, title="剧本审核",
-            criteria="台词/节奏/可拍性/史实",
-            description=f"针对全剧本 #{screen['id']}",
-        )
-        # 串行依赖（门禁据此拦截）：全剧本 依赖 大纲v1 定稿。
-        # 用 link(kind=parent, src=screen, dst=outline)，区别于 review 项的「针对」parent 字段。
-        self.store.link(self.space, self.lead, src=screen["id"], kind="parent", dst=outline["id"])
         self.ids = {
             "outline_item": outline["id"],
             "outline_review_item": outline_review["id"],
-            "screen_item": screen["id"],
-            "screen_review_item": screen_review["id"],
         }
+        if self.episodes <= 1:
+            # 全本模式（向后兼容）：单「全剧本」+「剧本审核」
+            screen = self.store.create_item(
+                self.space, self.lead, title="全剧本",
+                criteria="可拍性、台词节奏、史实",
+            )
+            screen_review = self.store.create_item(
+                self.space, self.lead, title="剧本审核",
+                criteria="台词/节奏/可拍性/史实",
+                description=f"针对全剧本 #{screen['id']}",
+            )
+            # 串行依赖：全剧本 依赖 大纲v1 定稿（link parent 区别于 review 项的「针对」）
+            self.store.link(self.space, self.lead, src=screen["id"], kind="parent", dst=outline["id"])
+            self.ids["screen_item"] = screen["id"]
+            self.ids["screen_review_item"] = screen_review["id"]
+        else:
+            # 分集模式：每集「第X集」产出 + 「第X集审核」，均依赖大纲定稿
+            screen_items: dict[int, int] = {}
+            screen_review_items: dict[int, int] = {}
+            for ep in self.episode_range:
+                s = self.store.create_item(
+                    self.space, self.lead, title=f"第{ep}集",
+                    criteria="可拍性、台词节奏、史实、单集完整起承转合",
+                    description=f"{concept}（第{ep}/{self.episodes}集）",
+                )
+                r = self.store.create_item(
+                    self.space, self.lead, title=f"第{ep}集审核",
+                    criteria="台词/节奏/可拍性/史实",
+                    description=f"针对第{ep}集 #{s['id']}",
+                )
+                self.store.link(self.space, self.lead, src=s["id"], kind="parent", dst=outline["id"])
+                screen_items[ep] = s["id"]
+                screen_review_items[ep] = r["id"]
+            self.ids["screen_items"] = screen_items
+            self.ids["screen_review_items"] = screen_review_items
         return self.ids
 
-    def start_outline_project(self, concept: str, *, novel_ref: str = "") -> dict:
+    def start_outline_project(
+        self,
+        concept: str,
+        *,
+        novel_ref: str = "",
+        style: Optional[list[str]] = None,
+        pacing: str = "",
+    ) -> dict:
+        """启动大纲流水线：大纲 v1 + 审核（不产剧本）。style/pacing 透传给大纲生成。"""
         self.concept = concept
         self.novel_ref = novel_ref
+        self.style = list(style or [])
+        self.pacing = pacing or ""
+        self.episodes = 1
+        self.episode_range = []
         self.novel_index = (
             NovelIndex(novel_ref, cache_root=Path(self._novel_cache_root))
             if novel_ref and self._novel_cache_root
@@ -296,11 +413,12 @@ class CreativePipeline:
         return ReviewResult(approved=True, opinion="（无审核意见，默认通过）")
 
     # -- 定稿导出（docx 落地，容错） -------------------------------------
-    def _export_docx(self, item_kind: str, text: str) -> None:
+    def _export_docx(self, item_kind: str, text: str, label: Optional[str] = None) -> None:
         """定稿文本导出 .docx（失败仅记日志，不阻断状态机）。
 
         空文本直接跳过导出（LLM 未配置/不可用时 draft 可能为空串），
         避免产出「只有标题的空 docx/md」（P2-7）。
+        label：分集导出标注（如"第3集"），落 last_docx 时用键 "第3集" 区分。
         """
         if not (text or "").strip():
             logger.warning("定稿文本为空，跳过导出（请检查 LLM 是否可用，或先重写草稿）")
@@ -311,6 +429,8 @@ class CreativePipeline:
             logger.warning("docx 模块加载失败（跳过导出）: %s", exc)
             return
         title = (self.concept or "未命名剧本")[:20]
+        if label:
+            title = f"{title} {label}"
         md = f"# {title}\n\n{text}"
         try:
             res = export_creation_docx(item_kind, title, md)
@@ -318,10 +438,11 @@ class CreativePipeline:
             logger.warning("docx 导出异常（不影响定稿）: %s", exc)
             return
         if res.get("ok"):
-            label = "剧本" if item_kind == "screenplay" else "大纲"
+            label2 = "剧本" if item_kind == "screenplay" else "大纲"
             suffix = "" if not res.get("degraded") else "（md 降级）"
-            self.last_docx[item_kind] = res.get("path") or ""
-            logger.info("%s定稿已导出%s: %s", label, suffix, res.get("path"))
+            key = label or item_kind
+            self.last_docx[key] = res.get("path") or ""
+            logger.info("%s定稿已导出%s: %s", label2, suffix, res.get("path"))
         else:
             logger.warning("定稿 docx 导出失败（不影响定稿）: %s", res.get("error"))
 
@@ -332,7 +453,12 @@ class CreativePipeline:
         w = Actor(OUTLINE_WORKER, Role.WORKER)
         if self.store.get_item(self.space, outline_item_id)["state"] == "open":
             self.guard.transition(self.space, w, outline_item_id, to="in_progress", comment="开始撰写大纲")
-        text = self.executor.draft_outline(self.concept, novel_text=self.novel_text)
+        text = self.executor.draft_outline(
+            self.concept,
+            novel_text=self.novel_text,
+            style=self.style,
+            pacing=self.pacing,
+        )
         self._drafts[outline_item_id] = text
         self._save_drafts()  # 落盘：sidecar 重启后草稿可恢复
         self.guard.transition(self.space, w, outline_item_id, to="review", comment="大纲已成，请审")
@@ -356,6 +482,12 @@ class CreativePipeline:
         review_item_id = review_item_id or self.ids["outline_review_item"]
         if result is None:
             result = self._last_review_result(review_item_id)
+        # 状态守卫（与剧本路线一致）：大纲须处于 review 才可定稿
+        cur_state = self.store.get_item(self.space, outline_item_id)["state"]
+        if result.approved and cur_state != "review":
+            raise ValueError(
+                f"大纲当前处于「{cur_state}」状态，须先重新撰写（写大纲）进入待审，再定稿"
+            )
         if result.approved:
             self.guard.transition(self.space, self.lead, review_item_id, to="done", comment="验收通过")
             self.guard.transition(self.space, self.lead, outline_item_id, to="done", comment="大纲定稿")
@@ -368,23 +500,41 @@ class CreativePipeline:
         return "rejected"
 
     # -- 剧本路线 ----------------------------------------------------------
-    def draft_screenplay(self, screen_item_id: Optional[int] = None) -> str:
-        screen_item_id = screen_item_id or self.ids["screen_item"]
+    def draft_screenplay(self, screen_item_id: Optional[int] = None, *, episode: Optional[int] = None) -> str:
+        """撰写剧本（分集模式按集写，episode 空则自动推进下一未定稿集）。"""
+        screen_item_id = screen_item_id or self._screen_item_id(episode)
+        review_item_id = self._screen_review_item_id(episode)
+        if episode is None:
+            episode = self._episode_of(screen_item_id)
         self.store.assign(self.space, self.lead, screen_item_id, assignee=SCREENPLAY_WORKER)
         w = Actor(SCREENPLAY_WORKER, Role.WORKER)
         if self.store.get_item(self.space, screen_item_id)["state"] == "open":
             # 门禁点：剧本 in_progress 前检查大纲是否 done；未定稿则抛 PipelineGuardError
             self.guard.transition(self.space, w, screen_item_id, to="in_progress", comment="开始撰写剧本")
         outline_text = self._outline_text()
-        text = self.executor.draft_screenplay(outline_text, novel_text=self._novel_related())
+        text = self.executor.draft_screenplay(
+            outline_text,
+            novel_text=self._novel_related(),
+            style=self.style,
+            pacing=self.pacing,
+            episode=episode,
+            episodes=len(self.episode_range) or 1,
+            prior_summaries=self._prior_episode_summaries(episode),
+        )
         self._drafts[screen_item_id] = text
+        if episode:
+            from .executor import _summarize_segment
+
+            self._episode_summaries[episode] = _summarize_segment(text)
         self._save_drafts()  # 落盘：sidecar 重启后草稿可恢复
         self.guard.transition(self.space, w, screen_item_id, to="review", comment="剧本已成，请审")
         return text
 
-    def review_screenplay(self, screen_item_id: Optional[int] = None, review_item_id: Optional[int] = None) -> ReviewResult:
-        screen_item_id = screen_item_id or self.ids["screen_item"]
-        review_item_id = review_item_id or self.ids["screen_review_item"]
+    def review_screenplay(self, screen_item_id: Optional[int] = None,
+                          review_item_id: Optional[int] = None,
+                          *, episode: Optional[int] = None) -> ReviewResult:
+        screen_item_id = screen_item_id or self._screen_item_id(episode)
+        review_item_id = review_item_id or self._screen_review_item_id(episode)
         self.store.assign(self.space, self.lead, review_item_id, assignee=REVIEW_WORKER)
         draft = self._drafts.get(screen_item_id, "")
         result = self.executor.review(draft, criteria=self._criteria(review_item_id), novel_text=self.novel_text)
@@ -395,15 +545,25 @@ class CreativePipeline:
 
     def lead_verdict_screenplay(self, screen_item_id: Optional[int] = None,
                                 review_item_id: Optional[int] = None,
-                                result: Optional[ReviewResult] = None) -> str:
-        screen_item_id = screen_item_id or self.ids["screen_item"]
-        review_item_id = review_item_id or self.ids["screen_review_item"]
+                                result: Optional[ReviewResult] = None,
+                                *, episode: Optional[int] = None) -> str:
+        screen_item_id = screen_item_id or self._screen_item_id(episode)
+        review_item_id = review_item_id or self._screen_review_item_id(episode)
         if result is None:
             result = self._last_review_result(review_item_id)
+        # 状态守卫：产出项须处于 review（已写稿待拍板）才可定稿。
+        # 打回后产出项为 in_progress（重写中），直接拍板会触发 board 底层
+        # `in_progress → done` 非法转移 —— 改为明确中文报错，让用户先重写。
+        cur_state = self.store.get_item(self.space, screen_item_id)["state"]
+        if result.approved and cur_state != "review":
+            raise ValueError(
+                f"第{episode or ''}集当前处于「{cur_state}」状态，须先重新撰写（写剧本）进入待审，再定稿"
+            )
         if result.approved:
             self.guard.transition(self.space, self.lead, review_item_id, to="done", comment="验收通过")
             self.guard.transition(self.space, self.lead, screen_item_id, to="done", comment="剧本定稿")
-            self._export_docx("screenplay", self._drafts.get(screen_item_id, ""))
+            label = f"第{episode}集" if episode else None
+            self._export_docx("screenplay", self._drafts.get(screen_item_id, ""), label=label)
             return "approved"
         # 打回：审核项保持 review（留待复审），产出项 review→in_progress 打回改。
         self.guard.transition(self.space, self.lead, screen_item_id, to="in_progress",

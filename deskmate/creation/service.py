@@ -82,9 +82,15 @@ def create_pipeline(
     base_dir: Optional[str] = None,
     novel_ref: str = "",
     novel_cache_root: Optional[str] = None,
+    style: Optional[list[str]] = None,
+    pacing: str = "",
+    episodes: int = 1,
+    episode_range: Optional[list[int]] = None,
 ) -> dict:
     """校验创作 persona → 建团 → 起项目 → 预建原著索引，返回摘要。
 
+    透明化 · 可提要求：style（风格标签）/ pacing（节奏）/ episodes（集数）/
+    episode_range（仅产出集号）为结构化制作要求，透传给 executor 强约束。
     返回体含 novel_index 状态（ready/failed/none），供前端创建后直接展示
     「建立原著索引…」的落点：stub 模式强制降级圣经（零 LLM 不烧 token），
     llm 模式生成精炼圣经；索引失败不阻断创建（按无原著继续，与 pipeline 一致）。
@@ -94,6 +100,9 @@ def create_pipeline(
         raise ValueError(f"未知 kind: {kind!r}（需 outline/screenplay）")
     if not concept.strip():
         raise ValueError("concept 不能为空")
+    episodes = max(1, int(episodes or 1))
+    if kind == "outline":
+        episodes = 1  # 大纲路线不产剧本，集数无意义
     executor = StubExecutor() if executor_kind == "stub" else LLMExecutor()
     pid = uuid.uuid4().hex[:12]
     space = f"creation:{pid}"
@@ -101,9 +110,12 @@ def create_pipeline(
         space=space, executor=executor, base_dir=base_dir, novel_cache_root=novel_cache_root
     )
     if kind == "screenplay":
-        ids = pl.start_screenplay_project(concept, novel_ref=novel_ref)
+        ids = pl.start_screenplay_project(
+            concept, novel_ref=novel_ref, episodes=episodes,
+            episode_range=episode_range, style=style, pacing=pacing,
+        )
     else:
-        ids = pl.start_outline_project(concept, novel_ref=novel_ref)
+        ids = pl.start_outline_project(concept, novel_ref=novel_ref, style=style, pacing=pacing)
     _PIPELINES[pid] = pl
     # 登记恢复元数据（P1-4）：sidecar 重启后按 pid 可从磁盘恢复流水线
     _REGISTRY_META[pid] = {
@@ -119,6 +131,11 @@ def create_pipeline(
         "novel_index_failed": bool(getattr(pl, "_novel_index_failed", False)),
         "last_docx": dict(getattr(pl, "last_docx", {}) or {}),
         "created_at": uuid.uuid4().hex[:8],
+        # 透明化 · 结构化制作要求（重启后恢复）
+        "style": list(pl.style or []),
+        "pacing": pl.pacing or "",
+        "episodes": int(pl.episodes or 1),
+        "episode_range": list(pl.episode_range or []),
     }
     _save_registry()
 
@@ -131,6 +148,10 @@ def create_pipeline(
         "ids": ids,
         "concept": concept,
         "novel_index": novel_index,
+        "style": list(pl.style or []),
+        "pacing": pl.pacing or "",
+        "episodes": int(pl.episodes or 1),
+        "episode_range": list(pl.episode_range or []),
     }
 
 
@@ -177,6 +198,10 @@ def _restore_pipeline(pid: str) -> Optional[CreativePipeline]:
     pl.concept = meta.get("concept", "")
     pl.novel_ref = meta.get("novel_ref", "")
     pl.ids = dict(meta.get("ids", {}) or {})
+    pl.style = list(meta.get("style", []) or [])
+    pl.pacing = meta.get("pacing", "") or ""
+    pl.episodes = int(meta.get("episodes", 1) or 1)
+    pl.episode_range = list(meta.get("episode_range", []) or [])
     pl._related_override = list(meta.get("related_override", []) or [])
     pl._novel_index_failed = bool(meta.get("novel_index_failed", False))
     pl.last_docx = dict(meta.get("last_docx", {}) or {})
@@ -207,22 +232,47 @@ def get_pipeline(pid: str) -> CreativePipeline:
 
 
 def _phase_of(pl: CreativePipeline) -> str:
-    """据 board 状态推导当前可推进阶段（前端据此启用按钮）。"""
+    """据 board 状态推导当前可推进阶段（前端据此启用按钮）。
+
+    分集模式（screen_items 存在）：剧本阶段聚合为「任一集可推进」——
+    未定稿的最小集处于 open→写；review→审；审核项 review→拍板。
+    """
     items = {it["id"]: it for it in pl.store.list_items(pl.space, pl.lead)}
     oi = items.get(pl.ids.get("outline_item", -1), {}).get("state")
     ori = items.get(pl.ids.get("outline_review_item", -1), {}).get("state")
-    si = items.get(pl.ids.get("screen_item", -1), {}).get("state") if "screen_item" in pl.ids else None
-    sri = items.get(pl.ids.get("screen_review_item", -1), {}).get("state") if "screen_review_item" in pl.ids else None
-    if oi == "done" and si is None:
-        return "done"  # 大纲路线定稿
-    if oi == "done" and si == "done":
-        return "done"  # 剧本路线定稿
-    if oi == "done" and sri == "review":
-        return "lead_screen"  # 剧本审核完成，待主编拍板
-    if oi == "done" and si == "open":
-        return "draft_screen"
-    if oi == "done" and si == "review":
-        return "review_screen"
+    episodic = bool(pl.ids.get("screen_items"))
+    if episodic:
+        # 分集：任一集未 done 即处于剧本推进期
+        states = [
+            items.get(sid, {}).get("state", "open")
+            for sid in pl.ids.get("screen_items", {}).values()
+        ]
+        rev_states = [
+            items.get(rid, {}).get("state", "open")
+            for rid in pl.ids.get("screen_review_items", {}).values()
+        ]
+        any_pending = any(s != "done" for s in states)
+        if oi == "done" and not any_pending:
+            return "done"  # 所有集定稿
+        if oi == "done" and any(r == "review" for r in rev_states):
+            return "lead_screen"  # 有集审核完成，待拍板
+        if oi == "done" and any(s == "review" for s in states):
+            return "review_screen"  # 有集待审核
+        if oi == "done":
+            return "draft_screen"  # 有集待写（open/in_progress）
+    else:
+        si = items.get(pl.ids.get("screen_item", -1), {}).get("state") if "screen_item" in pl.ids else None
+        sri = items.get(pl.ids.get("screen_review_item", -1), {}).get("state") if "screen_review_item" in pl.ids else None
+        if oi == "done" and si is None:
+            return "done"  # 大纲路线定稿
+        if oi == "done" and si == "done":
+            return "done"  # 剧本路线定稿
+        if oi == "done" and sri == "review":
+            return "lead_screen"  # 剧本审核完成，待主编拍板
+        if oi == "done" and si == "open":
+            return "draft_screen"
+        if oi == "done" and si == "review":
+            return "review_screen"
     if ori == "review":
         return "lead_outline"  # 可单点拍板 或 送终审
     if oi == "review":
@@ -243,8 +293,9 @@ def snapshot(pid: str) -> dict:
             "state": it.get("state", "open"),
             "criteria": it.get("criteria", ""),
             "comments": len(it.get("comments") or []),
+            "episode": pl._episode_of(it["id"]),  # 分集模式下为集号；单集/大纲为 None
         })
-    kind = "screenplay" if "screen_item" in pl.ids else "outline"
+    kind = "screenplay" if ("screen_item" in pl.ids or "screen_items" in pl.ids) else "outline"
     idx_summary = novel_index_status(pid)
     idx_summary.pop("chapters", None)  # 章节目录留给 GET novel-index 单独取，snapshot 只带轻量摘要
     return {
@@ -258,6 +309,23 @@ def snapshot(pid: str) -> dict:
         "docx": dict(pl.last_docx),
         "novel_index": idx_summary,
         "related_chapters": list(getattr(pl, "_related_override", []) or []),
+        # 透明化 · 结构化制作要求与分集信息
+        "style": list(getattr(pl, "style", []) or []),
+        "pacing": getattr(pl, "pacing", "") or "",
+        "episodes": int(getattr(pl, "episodes", 1) or 1),
+        "episode_range": list(getattr(pl, "episode_range", []) or []),
+    }
+
+
+# -- 产出预览（透明化：用户要看得见每个 item 产出的文本） -----------------
+def item_content(pid: str, item_id: int) -> dict:
+    """返回指定 item 的草稿内容（产出预览）。无草稿返回空串。"""
+    pl = get_pipeline(pid)
+    return {
+        "pid": pid,
+        "item_id": item_id,
+        "content": pl._drafts.get(int(item_id), ""),
+        "episode": pl._episode_of(int(item_id)),
     }
 
 
@@ -336,28 +404,45 @@ def lead_outline(pid: str, approved: bool) -> dict:
     return snapshot(pid)
 
 
-def draft_screen(pid: str) -> dict:
-    return _step(pid, "draft_screenplay")
+def draft_screen(pid: str, episode: Optional[int] = None) -> dict:
+    pl = get_pipeline(pid)
+    if episode is not None:
+        pl.draft_screenplay(episode=episode)
+    else:
+        pl.draft_screenplay()
+    return snapshot(pid)
 
 
-def review_screen(pid: str) -> dict:
-    return _step(pid, "review_screenplay")
+def review_screen(pid: str, episode: Optional[int] = None) -> dict:
+    pl = get_pipeline(pid)
+    if episode is not None:
+        pl.review_screenplay(episode=episode)
+    else:
+        pl.review_screenplay()
+    return snapshot(pid)
 
 
-def lead_screen(pid: str, approved: bool) -> dict:
+def lead_screen(pid: str, approved: bool, episode: Optional[int] = None) -> dict:
     pl = get_pipeline(pid)
     from .executor import ReviewResult
 
     result = ReviewResult(approved=approved, opinion="（主编手动拍板）" if approved else "（主编打回）")
-    pl.lead_verdict_screenplay(result=result)
+    if episode is not None:
+        pl.lead_verdict_screenplay(episode=episode, result=result)
+    else:
+        pl.lead_verdict_screenplay(result=result)
     return snapshot(pid)
 
 
 # -- 终审（知情批准）------------------------------------------------------
-def final_review_proposal(pid: str, item_kind: str, *, genre_hint: Optional[str] = None) -> dict:
-    """返回终审提案四要素（纯数据，不拉圆桌），供前端渲染提案卡。"""
+def final_review_proposal(pid: str, item_kind: str, *, genre_hint: Optional[str] = None,
+                          episode: Optional[int] = None) -> dict:
+    """返回终审提案四要素（纯数据，不拉圆桌），供前端渲染提案卡。
+
+    episode：分集模式下指定被终审的集号（剧本终审可针对某一集）。
+    """
     pl = get_pipeline(pid)
-    prop = build_final_review_proposal(pl, item_kind, genre_hint=genre_hint)
+    prop = build_final_review_proposal(pl, item_kind, genre_hint=genre_hint, episode=episode)
     return {
         "item_kind": prop.item_kind,
         "topic": prop.topic,
@@ -366,6 +451,7 @@ def final_review_proposal(pid: str, item_kind: str, *, genre_hint: Optional[str]
         "prior_review": prop.prior_review,
         "all_experts": prop.all_experts,
         "recommended": prop.recommended,
+        "episode": prop.episode,
     }
 
 
@@ -379,6 +465,7 @@ async def stream_final_review(
     selected_experts: list[str],
     *,
     genre_hint: Optional[str] = None,
+    episode: Optional[int] = None,
 ) -> AsyncGenerator[str, None]:
     """SSE 生成器：用户选定专家后跑圆桌终审，转发协调器事件流。
 
@@ -391,7 +478,7 @@ async def stream_final_review(
     from deskmate.roundtable.coordinator import Roundtable
     from deskmate.roundtable.personas import get_persona
 
-    proposal = build_final_review_proposal(pl, item_kind, genre_hint=genre_hint)
+    proposal = build_final_review_proposal(pl, item_kind, genre_hint=genre_hint, episode=episode)
     # 用 pipeline 自身的 base（与 board 数据同根），避免自定义数据目录下 bridge 建团分家。
     # 终审团队另起 space（final-review:…），只登记花名册不抢流水线 worker。
     client = TeamsClient(base_dir=pl.client.base)

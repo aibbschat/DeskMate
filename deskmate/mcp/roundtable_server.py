@@ -63,15 +63,29 @@ def build_server() -> FastMCP:
         concept: str,
         executor: str = "stub",
         novel_ref: str = "",
+        style: str = "",
+        pacing: str = "",
+        episodes: int = 1,
+        episode_range: str = "",
     ) -> dict:
-        """新建创作项目并返回 {pid, kind, team_id, ids}。
+        """新建创作项目并返回 {pid, kind, team_id, ids, style, episodes}。
 
         kind: "outline"（仅大纲）| "screenplay"（含大纲+剧本）。
         executor: "stub"（演示·不烧 token）| "llm"（真实创作，需 provider 凭证）。
+        style: 风格标签，逗号分隔（如 "权谋正剧,悬疑"），空=不指定。
+        pacing: 叙事节奏（如 "紧凑快节奏"），空=不指定。
+        episodes: 剧本总集数，>1 时分集产出（每集独立审核/拍板）；1=全本单文件。
+        episode_range: 仅产出的集号，逗号分隔（如 "3,4,5,6"），空=1..episodes。
         返回的 pid 用于后续 get_pipeline / 各推进工具 / final_review_proposal。
         """
+        styles = [s.strip() for s in (style or "").split(",") if s.strip()]
+        ranges = [int(x) for x in (episode_range or "").split(",") if x.strip().isdigit()]
         return _svc(
-            lambda svc: svc.create_pipeline(kind, concept, executor_kind=executor, novel_ref=novel_ref)
+            lambda svc: svc.create_pipeline(
+                kind, concept, executor_kind=executor, novel_ref=novel_ref,
+                style=styles or None, pacing=pacing or "",
+                episodes=int(episodes or 1), episode_range=ranges or None,
+            )
         )
 
     @mcp.tool()
@@ -95,19 +109,22 @@ def build_server() -> FastMCP:
         return _svc(lambda svc: svc.lead_outline(pid, approved))
 
     @mcp.tool()
-    def draft_screen(pid: str) -> dict:
-        """让编剧撰写剧本（分段续写拼接，突破单次输出上限）。需大纲已定稿。返回最新快照。"""
-        return _svc(lambda svc: svc.draft_screen(pid))
+    def draft_screen(pid: str, episode: int = 0) -> dict:
+        """让编剧撰写剧本（分段续写拼接，突破单次输出上限）。需大纲已定稿。返回最新快照。
+
+        episode: 分集模式下指定集号（0=自动推进下一未定稿集）。"""
+        return _svc(lambda svc: svc.draft_screen(pid, episode or None))
 
     @mcp.tool()
-    def review_screen(pid: str) -> dict:
-        """让审核专家评审剧本，返回最新快照。"""
-        return _svc(lambda svc: svc.review_screen(pid))
+    def review_screen(pid: str, episode: int = 0) -> dict:
+        """让审核专家评审剧本，返回最新快照。episode: 分集模式下指定集号（0=自动推进）。"""
+        return _svc(lambda svc: svc.review_screen(pid, episode or None))
 
     @mcp.tool()
-    def lead_screen(pid: str, approved: bool) -> dict:
-        """主编对剧本拍板：approved=true 定稿 / false 打回重写。返回最新快照。"""
-        return _svc(lambda svc: svc.lead_screen(pid, approved))
+    def lead_screen(pid: str, approved: bool, episode: int = 0) -> dict:
+        """主编对剧本拍板：approved=true 定稿 / false 打回重写。返回最新快照。
+        episode: 分集模式下指定集号（0=自动推进下一集）。"""
+        return _svc(lambda svc: svc.lead_screen(pid, approved, episode or None))
 
     @mcp.tool()
     def final_review_apply(pid: str, item_kind: str, verdict: bool) -> dict:
@@ -119,16 +136,17 @@ def build_server() -> FastMCP:
         return _svc(lambda svc: svc.final_review_apply(pid, item_kind, verdict))
 
     @mcp.tool()
-    def final_review_proposal(pid: str, item_kind: str, genre_hint: str = "") -> dict:
+    def final_review_proposal(pid: str, item_kind: str, genre_hint: str = "", episode: int = 0) -> dict:
         """生成终审提案四要素（送审片段 / 推荐专家 / 验收标准 / 前序意见）。
 
         不拉圆桌、不烧 token；Agent 把四要素呈现给用户知情批准，再调 run_roundtable。
         item_kind: "outline" | "screenplay"。
+        episode: 分集模式下指定被审集号（0=大纲/全本/自动推进到当前集）。
         """
         from deskmate.creation import service as svc
 
         try:
-            return svc.final_review_proposal(pid, item_kind, genre_hint=genre_hint or None)
+            return svc.final_review_proposal(pid, item_kind, genre_hint=genre_hint or None, episode=episode or None)
         except KeyError:
             return {"error": "not found"}
         except Exception as exc:  # noqa: BLE001

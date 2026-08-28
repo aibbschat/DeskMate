@@ -34,7 +34,7 @@ class FinalReviewProposal:
 
     item_kind: str  # "outline" | "screenplay"
     space: str
-    item_id: int  # 创作产出项（大纲v1 / 全剧本）
+    item_id: int  # 创作产出项（大纲v1 / 全剧本 / 第X集）
     review_item_id: int  # 单点审核项
     topic: str  # 圆桌议题标题
     manuscript_text: str  # 送审片段（四要素①）
@@ -43,6 +43,7 @@ class FinalReviewProposal:
     all_experts: list[dict] = field(default_factory=list)  # 7 专家 [{id,name,role}]
     recommended: list[str] = field(default_factory=list)  # 推荐子集 id（四要素②）
     novel_excerpt: str = ""  # 原著圣经摘要（novel_text 前 2000 字，pipeline 懒加载构建），供圆桌专家对照改编
+    episode: Optional[int] = None  # 分集模式下被终审的集号（None=全本/大纲）
 
 
 def recommend_experts(genre_hint: Optional[str], criteria: str = "") -> list[str]:
@@ -67,14 +68,20 @@ def recommend_experts(genre_hint: Optional[str], criteria: str = "") -> list[str
 
 def build_final_review_proposal(
     pipeline, item_kind: str, *, genre_hint: Optional[str] = None,
+    episode: Optional[int] = None,
 ) -> FinalReviewProposal:
-    """主编在 review 阶段生成「终审提案」（纯数据，不拉圆桌）。"""
+    """主编在 review 阶段生成「终审提案」（纯数据，不拉圆桌）。
+
+    episode：分集模式下的集号（剧本终审可针对某一集）；None=大纲/全本。
+    """
     if item_kind == "outline":
         item_id = pipeline.ids["outline_item"]
         review_item_id = pipeline.ids["outline_review_item"]
     elif item_kind == "screenplay":
-        item_id = pipeline.ids["screen_item"]
-        review_item_id = pipeline.ids["screen_review_item"]
+        item_id = pipeline._screen_item_id(episode)
+        review_item_id = pipeline._screen_review_item_id(episode)
+        if episode is None and pipeline._is_episodic():
+            episode = pipeline._episode_of(item_id)
     else:
         raise ValueError(f"未知 item_kind: {item_kind}")
     manuscript_text = pipeline._drafts.get(item_id, "")
@@ -83,12 +90,15 @@ def build_final_review_proposal(
     all_experts = [{"id": p.id, "name": p.name, "role": p.role} for p in load_personas()]
     recommended = recommend_experts(genre_hint, criteria)
     label = "剧本" if item_kind == "screenplay" else "大纲"
+    if episode:
+        label = f"第{episode}集"
     topic = f"《{pipeline.concept[:14]}…》{label}终审"
     return FinalReviewProposal(
         item_kind=item_kind, space=pipeline.space, item_id=item_id,
         review_item_id=review_item_id, topic=topic, manuscript_text=manuscript_text,
         criteria=criteria, prior_review=prior, all_experts=all_experts,
         recommended=recommended, novel_excerpt=getattr(pipeline, "novel_text", "")[:2000],
+        episode=episode,
     )
 
 

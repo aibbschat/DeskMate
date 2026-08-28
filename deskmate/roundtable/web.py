@@ -175,6 +175,11 @@ class CreatePipelineBody(BaseModel):
     concept: str = ""
     novel_ref: str = ""
     executor: str = "stub"     # "stub" | "llm"
+    # 透明化 · 结构化制作要求（可提要求）
+    style: list[str] = []      # 风格标签（如 ["权谋正剧", "悬疑"]）
+    pacing: str = ""           # 节奏（如 "紧凑快节奏"）
+    episodes: int = 1          # 剧本总集数（1=全本单文件）
+    episode_range: list[int] = []  # 仅产出的集号（空=1..episodes）
 
 
 class NovelPickBody(BaseModel):
@@ -188,17 +193,25 @@ class RelatedBody(BaseModel):
 
 class LeadBody(BaseModel):
     approved: bool = True
+    episode: Optional[int] = None  # 分集模式：拍板针对的集号
+
+
+class ScreenStepBody(BaseModel):
+    """draft-screen / review-screen 的可选 body：分集模式下指定集号。"""
+    episode: Optional[int] = None
 
 
 class FRProposalBody(BaseModel):
     item_kind: str = "screenplay"
     genre_hint: Optional[str] = None
+    episode: Optional[int] = None  # 分集模式：终审针对的集号
 
 
 class FRBody(BaseModel):
     item_kind: str = "screenplay"
     selected_experts: list[str] = []
     genre_hint: Optional[str] = None
+    episode: Optional[int] = None  # 分集模式：终审针对的集号
 
 
 class FRApplyBody(BaseModel):
@@ -649,7 +662,9 @@ def create_app(rt_port: int = 9920, base_dir: Optional[str] = None, workspace: O
         async def api_create_pipeline(body: CreatePipelineBody):
             try:
                 return JSONResponse(_csvc.create_pipeline(
-                    body.kind, body.concept, executor_kind=body.executor, novel_ref=body.novel_ref))
+                    body.kind, body.concept, executor_kind=body.executor, novel_ref=body.novel_ref,
+                    style=body.style, pacing=body.pacing,
+                    episodes=body.episodes, episode_range=body.episode_range))
             except Exception as exc:  # noqa: BLE001
                 return JSONResponse({"error": str(exc)}, status_code=400)
 
@@ -657,6 +672,14 @@ def create_app(rt_port: int = 9920, base_dir: Optional[str] = None, workspace: O
         async def api_get_pipeline(pid: str):
             try:
                 return JSONResponse(_csvc.snapshot(pid))
+            except KeyError:
+                return JSONResponse({"error": "not found"}, status_code=404)
+
+        # 产出预览（透明化：按 item 取草稿文本）
+        @app.get("/api/creation/{pid}/item/{item_id}")
+        async def api_item_content(pid: str, item_id: int):
+            try:
+                return JSONResponse(_csvc.item_content(pid, item_id))
             except KeyError:
                 return JSONResponse({"error": "not found"}, status_code=404)
 
@@ -704,30 +727,34 @@ def create_app(rt_port: int = 9920, base_dir: Optional[str] = None, workspace: O
                 return JSONResponse({"error": "not found"}, status_code=404)
 
         @app.post("/api/creation/{pid}/draft-screen")
-        async def api_draft_screen(pid: str):
+        async def api_draft_screen(pid: str, body: ScreenStepBody = None):
             try:
-                return JSONResponse(_csvc.draft_screen(pid))
+                ep = body.episode if body else None
+                return JSONResponse(_csvc.draft_screen(pid, ep))
             except KeyError:
                 return JSONResponse({"error": "not found"}, status_code=404)
 
         @app.post("/api/creation/{pid}/review-screen")
-        async def api_review_screen(pid: str):
+        async def api_review_screen(pid: str, body: ScreenStepBody = None):
             try:
-                return JSONResponse(_csvc.review_screen(pid))
+                ep = body.episode if body else None
+                return JSONResponse(_csvc.review_screen(pid, ep))
             except KeyError:
                 return JSONResponse({"error": "not found"}, status_code=404)
 
         @app.post("/api/creation/{pid}/lead-screen")
-        async def api_lead_screen(pid: str, body: LeadBody):
+        async def api_lead_screen(pid: str, body: LeadBody = None):
             try:
-                return JSONResponse(_csvc.lead_screen(pid, body.approved))
+                ep = body.episode if body else None
+                return JSONResponse(_csvc.lead_screen(pid, body.approved, ep))
             except KeyError:
                 return JSONResponse({"error": "not found"}, status_code=404)
 
         @app.post("/api/creation/{pid}/final-review-proposal")
         async def api_fr_proposal(pid: str, body: FRProposalBody):
             try:
-                return JSONResponse(_csvc.final_review_proposal(pid, body.item_kind, genre_hint=body.genre_hint))
+                return JSONResponse(_csvc.final_review_proposal(
+                    pid, body.item_kind, genre_hint=body.genre_hint, episode=body.episode))
             except KeyError:
                 return JSONResponse({"error": "not found"}, status_code=404)
 
@@ -735,7 +762,8 @@ def create_app(rt_port: int = 9920, base_dir: Optional[str] = None, workspace: O
         async def api_final_review(pid: str, body: FRBody):
             async def _gen():
                 async for chunk in _csvc.stream_final_review(
-                    pid, body.item_kind, body.selected_experts, genre_hint=body.genre_hint
+                    pid, body.item_kind, body.selected_experts, genre_hint=body.genre_hint,
+                    episode=body.episode,
                 ):
                     yield chunk
             return StreamingResponse(_gen(), media_type="text/event-stream")
