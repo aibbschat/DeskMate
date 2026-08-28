@@ -623,8 +623,33 @@ export function CreationPipelineView({
                 {FLOW_STEPS.map((s, i) => {
                   const isDone = stepIdx > i || phase === "done";
                   const isActive = stepIdx === i && phase !== "done";
+                  // 当前步骤可点击触发对应动作（分集的剧本阶段由各集卡片承载，步骤条仅接大纲阶段）
+                  const act = isActive
+                    ? i === 0
+                      ? () => run(() => draftOutline(pid))
+                      : i === 1
+                        ? () => run(() => reviewOutline(pid))
+                        : i === 2
+                          ? () => openProposal("outline")
+                          : !isEpisodic && i === 3
+                            ? () => run(() => draftScreen(pid))
+                            : !isEpisodic && i === 4
+                              ? () => run(() => reviewScreen(pid))
+                              : !isEpisodic && i === 5
+                                ? () => openProposal("screenplay")
+                                : null
+                    : null;
                   return (
-                    <div key={s.label} className="flex items-center gap-1 shrink-0">
+                    <button
+                      key={s.label}
+                      type="button"
+                      disabled={!act || busy}
+                      title={act ? `点击开始：${s.label}` : undefined}
+                      onClick={act ? () => act() : undefined}
+                      className={
+                        "flex items-center gap-1 shrink-0 " + (act ? "cursor-pointer hover:opacity-80" : "cursor-default")
+                      }
+                    >
                       <div className="flex flex-col items-center">
                         <div
                           className={
@@ -644,7 +669,7 @@ export function CreationPipelineView({
                         <span className="text-[9px] text-muted whitespace-nowrap">{s.who}</span>
                       </div>
                       {i < FLOW_STEPS.length - 1 && <span className="text-muted text-[11px] mb-4">→</span>}
-                    </div>
+                    </button>
                   );
                 })}
               </div>
@@ -762,7 +787,7 @@ export function CreationPipelineView({
               <div className="space-y-2">
                 {!outlineDone && (
                   <div className="rounded-lg bg-amber-500/10 border border-amber-500/20 text-amber-700 text-[12px] px-3 py-2">
-                    <span className="font-medium">当前需先完成大纲：</span>请点击上方步骤条的「写大纲」，待大纲定稿后，「写第 N 集」按钮会自动亮起。
+                    <span className="font-medium">当前需先完成大纲：</span>请点击下方「写大纲」按钮（或在步骤条点「① 写大纲」），待大纲定稿后，「写第 N 集」按钮会自动亮起。
                   </div>
                 )}
                 <div className="flex items-center justify-between">
@@ -939,85 +964,83 @@ export function CreationPipelineView({
               </div>
             )}
 
-            {/* 非分集：board 项状态 + 全局阶段按钮 */}
+            {/* 非分集：board 项状态 */}
             {!isEpisodic && (
-              <>
-                <div className="space-y-1.5">
-                  {snap.items.map((it) => (
-                    <div
-                      key={it.id}
-                      className="flex items-center gap-2 text-[13px] rounded-lg bg-black/[0.02] dark:bg-white/[0.03] px-3 py-2"
-                    >
-                      <span className="text-ink flex-1">{it.title}</span>
-                      <span className={"text-[12px] font-medium " + (STATE_COLOR[it.state] ?? "text-muted")}>
-                        {STATE_LABEL[it.state] ?? it.state}
-                      </span>
-                      <button
-                        className="text-[12px] text-muted hover:text-accent"
-                        onClick={() => showPreview(it.id)}
-                      >
-                        {loadingPreview === it.id ? "加载中…" : preview?.itemId === it.id ? "收起预览" : "预览"}
-                      </button>
-                    </div>
-                  ))}
-                  {preview && (
-                    <div className="rounded-lg bg-black/[0.02] dark:bg-white/[0.03] p-2.5 max-h-64 overflow-auto">
-                      <ReactMarkdown>{preview.content}</ReactMarkdown>
-                    </div>
-                  )}
-                </div>
-
-                {/* 阶段推进按钮（快速路径） */}
-                <div className="flex flex-wrap gap-2">
-                  {phase === "draft_outline" && (
-                    <button className="btn primary" disabled={busy} onClick={() => run(() => draftOutline(pid))}>
-                      写大纲
-                    </button>
-                  )}
-                  {phase === "review_outline" && (
-                    <button className="btn" disabled={busy} onClick={() => run(() => reviewOutline(pid))}>
-                      审大纲
-                    </button>
-                  )}
-                  {phase === "lead_outline" && (
-                    <>
-                      <button className="btn" disabled={busy} onClick={() => run(() => leadOutline(pid, true))}>
-                        单点审核通过定稿
-                      </button>
-                      <button className="btn primary" disabled={busy} onClick={() => openProposal("outline")}>
-                        送圆桌终审
-                      </button>
-                    </>
-                  )}
-                  {phase === "draft_screen" && isScreenplay && (
+              <div className="space-y-1.5">
+                {snap.items.map((it) => (
+                  <div
+                    key={it.id}
+                    className="flex items-center gap-2 text-[13px] rounded-lg bg-black/[0.02] dark:bg-white/[0.03] px-3 py-2"
+                  >
+                    <span className="text-ink flex-1">{it.title}</span>
+                    <span className={"text-[12px] font-medium " + (STATE_COLOR[it.state] ?? "text-muted")}>
+                      {STATE_LABEL[it.state] ?? it.state}
+                    </span>
                     <button
-                      className="btn primary"
-                      disabled={busy || !outlineDone}
-                      title={!outlineDone ? "需先完成大纲定稿（点上方「写大纲」）" : undefined}
-                      onClick={() => run(() => draftScreen(pid))}
+                      className="text-[12px] text-muted hover:text-accent"
+                      onClick={() => showPreview(it.id)}
                     >
-                      写剧本
+                      {loadingPreview === it.id ? "加载中…" : preview?.itemId === it.id ? "收起预览" : "预览"}
                     </button>
-                  )}
-                  {phase === "review_screen" && (
-                    <button className="btn" disabled={busy} onClick={() => run(() => reviewScreen(pid))}>
-                      审剧本
-                    </button>
-                  )}
-                  {phase === "lead_screen" && (
-                    <>
-                      <button className="btn" disabled={busy} onClick={() => run(() => leadScreen(pid, true))}>
-                        单点审核通过定稿
-                      </button>
-                      <button className="btn primary" disabled={busy} onClick={() => openProposal("screenplay")}>
-                        送圆桌终审
-                      </button>
-                    </>
-                  )}
-                  {phase === "done" && <div className="text-[13px] text-emerald-600 font-medium">✅ 已定稿</div>}
-                </div>
-              </>
+                  </div>
+                ))}
+                {preview && (
+                  <div className="rounded-lg bg-black/[0.02] dark:bg-white/[0.03] p-2.5 max-h-64 overflow-auto">
+                    <ReactMarkdown>{preview.content}</ReactMarkdown>
+                  </div>
+                )}
+              </div>
             )}
+
+            {/* 阶段推进按钮（快速路径）：大纲阶段两模式通用；剧本阶段仅非分集（分集由各集卡片承载） */}
+            <div className="flex flex-wrap gap-2">
+              {phase === "draft_outline" && (
+                <button className="btn primary" disabled={busy} onClick={() => run(() => draftOutline(pid))}>
+                  写大纲
+                </button>
+              )}
+              {phase === "review_outline" && (
+                <button className="btn" disabled={busy} onClick={() => run(() => reviewOutline(pid))}>
+                  审大纲
+                </button>
+              )}
+              {phase === "lead_outline" && (
+                <>
+                  <button className="btn" disabled={busy} onClick={() => run(() => leadOutline(pid, true))}>
+                    单点审核通过定稿
+                  </button>
+                  <button className="btn primary" disabled={busy} onClick={() => openProposal("outline")}>
+                    送圆桌终审
+                  </button>
+                </>
+              )}
+              {!isEpisodic && phase === "draft_screen" && isScreenplay && (
+                <button
+                  className="btn primary"
+                  disabled={busy || !outlineDone}
+                  title={!outlineDone ? "需先完成大纲定稿（点上方「写大纲」）" : undefined}
+                  onClick={() => run(() => draftScreen(pid))}
+                >
+                  写剧本
+                </button>
+              )}
+              {!isEpisodic && phase === "review_screen" && (
+                <button className="btn" disabled={busy} onClick={() => run(() => reviewScreen(pid))}>
+                  审剧本
+                </button>
+              )}
+              {!isEpisodic && phase === "lead_screen" && (
+                <>
+                  <button className="btn" disabled={busy} onClick={() => run(() => leadScreen(pid, true))}>
+                    单点审核通过定稿
+                  </button>
+                  <button className="btn primary" disabled={busy} onClick={() => openProposal("screenplay")}>
+                    送圆桌终审
+                  </button>
+                </>
+              )}
+              {phase === "done" && <div className="text-[13px] text-emerald-600 font-medium">✅ 已定稿</div>}
+            </div>
 
             {/* 终审提案卡 */}
             {proposal && !synthesis && (
