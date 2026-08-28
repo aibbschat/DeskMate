@@ -22,6 +22,20 @@ class ReviewResult:
     opinion: str
 
 
+def _emit(on_event, *, type: str, **kw) -> None:
+    """把一条进度事件上报给回调（SSE 流式的阶段/进度消息）。
+
+    on_event 为 None（老调用方/同步路径）时不发；回调自身异常一律吞掉，
+    绝不让进度上报中断生成主流程。
+    """
+    if not on_event:
+        return
+    try:
+        on_event({"type": type, **kw})
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def _requirement_block(
     style: Optional[list[str]] = None,
     pacing: str = "",
@@ -100,6 +114,7 @@ class CreativeExecutor:
         novel_text: str = "",
         style: Optional[list[str]] = None,
         pacing: str = "",
+        on_event=None,
     ) -> str: ...
     def draft_screenplay(
         self,
@@ -111,8 +126,9 @@ class CreativeExecutor:
         episode: Optional[int] = None,
         episodes: int = 1,
         prior_summaries: str = "",
+        on_event=None,
     ) -> str: ...
-    def review(self, text: str, criteria: str, novel_text: str = "") -> ReviewResult: ...
+    def review(self, text: str, criteria: str, novel_text: str = "", on_event=None) -> ReviewResult: ...
 
 
 class StubExecutor:
@@ -127,10 +143,13 @@ class StubExecutor:
         novel_text: str = "",
         style: Optional[list[str]] = None,
         pacing: str = "",
+        on_event=None,
     ) -> str:
+        _emit(on_event, type="note", message="正在撰写大纲（stub）…", progress=50)
         tag = f"·附原著{len(novel_text)}字" if novel_text else ""
         req = f"·{','.join(style)}" if style else ""
         req += f"·{pacing}" if pacing else ""
+        _emit(on_event, type="note", message="大纲初稿完成", progress=100)
         return f"[大纲·stub{tag}{req}] {concept[:60]}"
 
     def draft_screenplay(
@@ -143,18 +162,25 @@ class StubExecutor:
         episode: Optional[int] = None,
         episodes: int = 1,
         prior_summaries: str = "",
+        on_event=None,
     ) -> str:
+        _emit(on_event, type="note", message=f"正在拆解场景（stub）…", progress=10)
+        _emit(on_event, type="note", message=f"正在写场景 1/1（stub）…", progress=60)
         tag = f"·附原著{len(novel_text)}字" if novel_text else ""
         req = f"·{','.join(style)}" if style else ""
         req += f"·{pacing}" if pacing else ""
         ep = f"·第{episode}/{episodes}集" if episodes and episodes > 1 else ""
         prior = f"\n{prior_summaries}" if prior_summaries else ""
+        _emit(on_event, type="note", message="本集草稿完成", progress=100)
         return f"[剧本·stub{tag}{req}{ep}] {outline[:60]}{prior}"
 
-    def review(self, text: str, criteria: str, novel_text: str = "") -> ReviewResult:
+    def review(self, text: str, criteria: str, novel_text: str = "", on_event=None) -> ReviewResult:
+        _emit(on_event, type="note", message="审核专家正在逐项核验（stub）…", progress=60)
         if self.reject_once and not self._rejected:
             self._rejected = True
+            _emit(on_event, type="note", message="已给出审核意见：打回", progress=100)
             return ReviewResult(approved=False, opinion="第二幕逻辑断裂，建议重写")
+        _emit(on_event, type="note", message="已给出审核意见：通过", progress=100)
         return ReviewResult(approved=True, opinion="结构完整、无硬伤，通过")
 
 
@@ -166,6 +192,7 @@ class LLMExecutor:
         novel_text: str = "",
         style: Optional[list[str]] = None,
         pacing: str = "",
+        on_event=None,
     ) -> str:
         from deskmate.memory.llm import chat, llm_available
 
@@ -176,13 +203,16 @@ class LLMExecutor:
             "尊重人物与核心情节，允许合理的影视化再创作。）" if novel_text else ""
         )
         req = _requirement_block(style, pacing)
-        return chat(
+        _emit(on_event, type="note", message="正在撰写大纲…", progress=30)
+        text = chat(
             system="你是资深大纲专家。把用户的概念/剧情点子写成结构完整、"
             "有戏剧冲突的剧本大纲，标注主要人物与幕结构。若提供原著参考，须基于原著精神改编。"
             "若给出制作要求，必须严格遵守并在大纲中体现（如节奏影响幕间密度、风格影响基调）。",
             user=concept + novel_block + req,
             max_tokens=2000,
         )
+        _emit(on_event, type="note", message="大纲初稿完成", progress=100)
+        return text
 
     def draft_screenplay(
         self,
@@ -194,6 +224,7 @@ class LLMExecutor:
         episode: Optional[int] = None,
         episodes: int = 1,
         prior_summaries: str = "",
+        on_event=None,
     ) -> str:
         """分段续写拼接（阶段 5 输出侧）——单次 8k token 出不了长剧，工程拆：
 
@@ -202,6 +233,8 @@ class LLMExecutor:
         2) 逐段生成（每段限额内），段间用「前情摘要」保连贯（不塞全文，token 不
            随段数线性放大）；
         3) 拼接返回，供 docx 落地 / 审核 / 圆桌终审。
+
+        每个阶段切换点经 on_event 上报进度（SSE 流式：前端实时看到做到哪一步）。
         """
         from deskmate.memory.llm import chat, llm_available
 
@@ -219,6 +252,7 @@ class LLMExecutor:
         )
         is_episodic = bool(episodes and episodes > 1)
         # 1) 拆场景（拆不动则整段写）
+        _emit(on_event, type="note", message="正在拆解场景…", progress=5)
         plan = chat(
             system=(
                 "你是编剧统筹。把给定大纲拆成连续场景清单，每行严格格式："
@@ -235,10 +269,14 @@ class LLMExecutor:
         segments: list[str] = []
         prev_summary = "（这是第一段，尚未有前情）"
         base_user = f"{outline}{novel_block}{req}{prior_block}"
+        n = len(scenes)
         for i, (name, goal) in enumerate(scenes, 1):
+            progress = 10 + int(88 * i / n)
+            scene_label = (name or f"场景{i}")[:14]
+            _emit(on_event, type="note", message=f"正在写场景 {i}/{n}《{scene_label}》…", progress=progress)
             user = (
                 f"{base_user}\n\n"
-                f"【当前场景 {i}/{len(scenes)}】{name}\n"
+                f"【当前场景 {i}/{n}】{name}\n"
                 f"场景目标：{goal}\n"
                 f"【前情摘要】{prev_summary}\n\n"
                 f"请撰写本场景剧本正文：台词节奏、可拍性、人物行为与语气连贯，"
@@ -259,9 +297,10 @@ class LLMExecutor:
             prev_summary = _summarize_segment(seg)
         if not segments:
             return ""
+        _emit(on_event, type="note", message="全稿拼接完成", progress=100)
         return "\n\n---\n\n".join(segments)
 
-    def review(self, text: str, criteria: str, novel_text: str = "") -> ReviewResult:
+    def review(self, text: str, criteria: str, novel_text: str = "", on_event=None) -> ReviewResult:
         from deskmate.memory.llm import chat, llm_available
 
         if not llm_available():
@@ -270,6 +309,7 @@ class LLMExecutor:
             f"\n\n【原著参考（对照依据）】\n{novel_text}\n"
             "（请结合原著判断改编是否忠于核心人物与情节。）" if novel_text else ""
         )
+        _emit(on_event, type="note", message="审核专家正在逐项核验…", progress=50)
         raw = chat(
             system="你是剧本审核专家。依据验收标准评审文本，先给结论"
             "（通过/打回），再给可执行的修改意见。若提供原著参考，须对照原著评判改编适配度。",
@@ -277,4 +317,5 @@ class LLMExecutor:
             max_tokens=1200,
         )
         approved = "打回" not in raw and "不合格" not in raw
+        _emit(on_event, type="note", message="已给出审核意见", progress=100)
         return ReviewResult(approved=approved, opinion=raw)

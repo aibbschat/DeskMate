@@ -3076,6 +3076,45 @@ class SessionManager:
             return {"ok": False, "canceled": True}
         return {"ok": True, "path": path}
 
+    def pick_native_file(self, prompt: str = "选择原著文件") -> dict[str, Any]:
+        """Open the OS file picker FROM THE SIDECAR (single-file variant of
+        ``pick_native_folder``) — the browser GUI can't obtain absolute paths from web
+        file dialogs. Blocks until pick/cancel; callers run it off-thread.
+        """
+        import subprocess
+        import sys
+
+        if sys.platform == "darwin":
+            cmd = [
+                "osascript",
+                "-e",
+                'tell application "System Events" to activate',
+                "-e",
+                f'POSIX path of (choose file with prompt "{prompt}")',
+            ]
+        elif sys.platform == "win32":
+            # WinForms open-file dialog via PowerShell — no extra deps, -STA required.
+            ps = (
+                "Add-Type -AssemblyName System.Windows.Forms; "
+                "$f = New-Object System.Windows.Forms.OpenFileDialog; "
+                f"$f.Title = '{prompt}'; "
+                "$f.Filter = 'Novel files (*.txt;*.docx;*.md)|*.txt;*.docx;*.md|All files (*.*)|*.*'; "
+                "if ($f.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) "
+                "{ [Console]::Out.Write($f.FileName) }"
+            )
+            cmd = ["powershell.exe", "-NoProfile", "-STA", "-Command", ps]
+        else:
+            # Linux: zenity when present; otherwise the GUI's paste-a-path input remains.
+            cmd = ["zenity", "--file-selection"]
+        try:
+            out = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+        except (OSError, subprocess.TimeoutExpired):
+            return {"ok": False, "error": "no native file picker available"}
+        path = (out.stdout or "").strip()
+        if out.returncode != 0 or not path:
+            return {"ok": False, "canceled": True}
+        return {"ok": True, "path": path}
+
     def _note_provider_use(self, name: str) -> None:
         """Router on_use hook: remember when a provider last served a completion. Persisted
         THROTTLED (once per provider per minute) — this fires on every model call, from engine

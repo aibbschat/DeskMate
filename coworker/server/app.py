@@ -895,6 +895,11 @@ def create_app(manager: SessionManager) -> FastAPI:
         # paths from web file dialogs). Off the event loop: blocks until pick/cancel.
         return await asyncio.to_thread(manager.pick_native_folder)
 
+    @app.post("/v1/files/pick")
+    async def pick_file() -> dict[str, Any]:
+        # Native single-file picker (创作流水线「浏览…」选原著文件用)。
+        return await asyncio.to_thread(manager.pick_native_file)
+
     @app.get("/v1/sessions")
     def sessions(workspace: str | None = None) -> dict[str, Any]:
         return {"sessions": manager.list_sessions(workspace)}

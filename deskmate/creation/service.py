@@ -17,6 +17,7 @@ import asyncio
 import json
 import logging
 import os
+import queue
 import uuid
 from pathlib import Path
 from typing import AsyncGenerator, Optional
@@ -437,6 +438,61 @@ def _step(pid: str, fn_name: str, *args) -> dict:
     pl = get_pipeline(pid)
     getattr(pl, fn_name)(*args)
     return snapshot(pid)
+
+
+# -- SSE 流式推进（生成型 step：executor 阶段事件实时推给前端） ------------
+async def _stream_step(pid: str, fn_name: str, **kwargs) -> AsyncGenerator[str, None]:
+    """把同步 pipeline step 跑在独立线程，阶段事件经队列桥接为 SSE 流。
+
+    executor 在生成过程中经 on_event 回调上报 {type,message,progress} 事件；
+    done 时统一在事件循环线程取快照（避免线程并发读 store）。
+    """
+    pl = get_pipeline(pid)
+    q: queue.Queue = queue.Queue()
+
+    def on_event(ev: dict) -> None:
+        q.put(("ev", ev))
+
+    def run() -> None:
+        try:
+            getattr(pl, fn_name)(on_event=on_event, **kwargs)
+            q.put(("done", None))
+        except Exception as exc:  # noqa: BLE001
+            q.put(("error", str(exc)))
+
+    task = asyncio.create_task(asyncio.to_thread(run))
+    while True:
+        try:
+            kind, payload = q.get_nowait()
+        except queue.Empty:
+            if task.done():
+                break
+            await asyncio.sleep(0.03)
+            continue
+        if kind == "ev":
+            yield _sse(payload)
+        elif kind == "done":
+            yield _sse({"type": "done", "snapshot": snapshot(pid)})
+            break
+        elif kind == "error":
+            yield _sse({"type": "error", "message": payload})
+            break
+
+
+def stream_draft_outline(pid: str) -> AsyncGenerator[str, None]:
+    return _stream_step(pid, "draft_outline")
+
+
+def stream_draft_screen(pid: str, episode: Optional[int] = None) -> AsyncGenerator[str, None]:
+    return _stream_step(pid, "draft_screenplay", episode=episode)
+
+
+def stream_review_outline(pid: str) -> AsyncGenerator[str, None]:
+    return _stream_step(pid, "review_outline")
+
+
+def stream_review_screen(pid: str, episode: Optional[int] = None) -> AsyncGenerator[str, None]:
+    return _stream_step(pid, "review_screenplay", episode=episode)
 
 
 def draft_outline(pid: str) -> dict:

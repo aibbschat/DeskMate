@@ -716,21 +716,28 @@ def create_app(rt_port: int = 9920, base_dir: Optional[str] = None, workspace: O
 
         @app.post("/api/creation/{pid}/draft-outline")
         async def api_draft_outline(pid: str):
-            try:
-                return JSONResponse(_csvc.draft_outline(pid))
-            except (PipelineGuardError, ValueError) as exc:
-                return JSONResponse({"error": str(exc)}, status_code=400)
-            except KeyError:
-                return JSONResponse({"error": "not found"}, status_code=404)
+            """生成型 step 走 SSE 流式：executor 阶段事件实时推送，done 带快照。"""
+            async def _gen():
+                try:
+                    async for chunk in _csvc.stream_draft_outline(pid):
+                        yield chunk
+                except KeyError:
+                    yield _csvc._sse({"type": "error", "message": "not found"})
+                except Exception as exc:  # noqa: BLE001
+                    yield _csvc._sse({"type": "error", "message": str(exc)})
+            return StreamingResponse(_gen(), media_type="text/event-stream")
 
         @app.post("/api/creation/{pid}/review-outline")
         async def api_review_outline(pid: str):
-            try:
-                return JSONResponse(_csvc.review_outline(pid))
-            except (PipelineGuardError, ValueError) as exc:
-                return JSONResponse({"error": str(exc)}, status_code=400)
-            except KeyError:
-                return JSONResponse({"error": "not found"}, status_code=404)
+            async def _gen():
+                try:
+                    async for chunk in _csvc.stream_review_outline(pid):
+                        yield chunk
+                except KeyError:
+                    yield _csvc._sse({"type": "error", "message": "not found"})
+                except Exception as exc:  # noqa: BLE001
+                    yield _csvc._sse({"type": "error", "message": str(exc)})
+            return StreamingResponse(_gen(), media_type="text/event-stream")
 
         @app.post("/api/creation/{pid}/lead-outline")
         async def api_lead_outline(pid: str, body: LeadBody):
@@ -743,23 +750,29 @@ def create_app(rt_port: int = 9920, base_dir: Optional[str] = None, workspace: O
 
         @app.post("/api/creation/{pid}/draft-screen")
         async def api_draft_screen(pid: str, body: ScreenStepBody = None):
-            try:
-                ep = body.episode if body else None
-                return JSONResponse(_csvc.draft_screen(pid, ep))
-            except (PipelineGuardError, ValueError) as exc:
-                return JSONResponse({"error": str(exc)}, status_code=400)
-            except KeyError:
-                return JSONResponse({"error": "not found"}, status_code=404)
+            async def _gen():
+                try:
+                    ep = body.episode if body else None
+                    async for chunk in _csvc.stream_draft_screen(pid, ep):
+                        yield chunk
+                except KeyError:
+                    yield _csvc._sse({"type": "error", "message": "not found"})
+                except Exception as exc:  # noqa: BLE001
+                    yield _csvc._sse({"type": "error", "message": str(exc)})
+            return StreamingResponse(_gen(), media_type="text/event-stream")
 
         @app.post("/api/creation/{pid}/review-screen")
         async def api_review_screen(pid: str, body: ScreenStepBody = None):
-            try:
-                ep = body.episode if body else None
-                return JSONResponse(_csvc.review_screen(pid, ep))
-            except (PipelineGuardError, ValueError) as exc:
-                return JSONResponse({"error": str(exc)}, status_code=400)
-            except KeyError:
-                return JSONResponse({"error": "not found"}, status_code=404)
+            async def _gen():
+                try:
+                    ep = body.episode if body else None
+                    async for chunk in _csvc.stream_review_screen(pid, ep):
+                        yield chunk
+                except KeyError:
+                    yield _csvc._sse({"type": "error", "message": "not found"})
+                except Exception as exc:  # noqa: BLE001
+                    yield _csvc._sse({"type": "error", "message": str(exc)})
+            return StreamingResponse(_gen(), media_type="text/event-stream")
 
         @app.post("/api/creation/{pid}/lead-screen")
         async def api_lead_screen(pid: str, body: LeadBody = None):

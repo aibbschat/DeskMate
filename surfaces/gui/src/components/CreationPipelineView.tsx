@@ -3,7 +3,7 @@
 // 进行中页六步步骤条 + 分集卡片（每集独立操作） + 产出预览（草稿内容可见）。
 // 全程驱动后端 deskmate.creation.service：创建 → 写/审大纲 → 主编拍板 →
 // 写/审剧本（分集逐集） → 主编拍板/圆桌终审 → docx 落地。
-import { useState } from "react";
+import { Fragment, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import { Icon } from "./Icon";
 import { ProposalCard, type FinalProposal } from "./ProposalCard";
@@ -15,15 +15,13 @@ import {
   setRelatedChapters,
   getItemContent,
   extendEpisodes,
-  draftOutline,
-  reviewOutline,
+  pickNovelFileViaServer,
   leadOutline,
-  draftScreen,
-  reviewScreen,
   leadScreen,
   finalReviewProposal,
   streamFinalReview,
   finalReviewApply,
+  streamStep,
   type CreationSnapshot,
   type CreationItem,
   type FinalReviewEvent,
@@ -70,6 +68,13 @@ const STATE_LABEL: Record<string, string> = {
   review: "待审",
   done: "已定稿",
   blocked: "阻塞",
+};
+const STATE_PILL: Record<string, string> = {
+  open: "bg-black/[0.04] dark:bg-white/[0.06] text-muted",
+  in_progress: "bg-accent/10 text-accent",
+  review: "bg-amber-500/10 text-amber-700",
+  done: "bg-emerald-500/10 text-emerald-600",
+  blocked: "bg-rose-500/10 text-rose-600",
 };
 
 // 风格预设 chips（可选多个）与节奏 chips（单选）
@@ -125,6 +130,85 @@ export function CreationPipelineView({
   const [extPrior, setExtPrior] = useState<"summary" | "summary_recent">("summary_recent");
   const [extNotes, setExtNotes] = useState(true);
   const [extBusy, setExtBusy] = useState(false);
+
+  // SSE 流式进度：生成型 step 进行中面板（阶段/进度/实时文案/事件日志）
+  const [runState, setRunState] = useState<{
+    stage: string;
+    label: string;
+    message: string;
+    progress: number;
+    events: { message: string; progress: number }[];
+  } | null>(null);
+  const [pickingNovel, setPickingNovel] = useState(false);
+
+  /** 生成型 step 走 SSE 流式：点击立即弹出进行中面板，实时展示做到哪一步。 */
+  const runStream = async (
+    stage: string,
+    label: string,
+    step: "draft-outline" | "draft-screen" | "review-outline" | "review-screen",
+    opts: { episode?: number | null } = {},
+    onDone?: () => void,
+  ) => {
+    if (!pid || busy || runState) return;
+    setBusy(true);
+    setError("");
+    setRunState({ stage, label, message: "正在准备…", progress: 0, events: [] });
+    let settled = false;
+    try {
+      for await (const ev of streamStep(pid, step, opts)) {
+        if (ev.type === "note") {
+          setRunState((p) =>
+            p
+              ? {
+                  ...p,
+                  message: ev.message ?? p.message,
+                  progress: ev.progress ?? p.progress,
+                  events: [
+                    ...p.events,
+                    { message: ev.message ?? "", progress: ev.progress ?? p.progress },
+                  ].slice(-6),
+                }
+              : p,
+          );
+        } else if (ev.type === "done" && ev.snapshot) {
+          settled = true;
+          setSnap(ev.snapshot);
+          setRunState(null);
+          onDone?.();
+        } else if (ev.type === "error") {
+          settled = true;
+          setRunState(null);
+          // 后端 SSE 错误事件统一用 message 字段（与 stream_final_review 一致）
+          setError(ev.message ?? ev.error ?? "操作失败");
+        }
+      }
+      // 流自然结束但既没 done 也没 error（连接中断/服务端提前断开）
+      if (!settled) {
+        setRunState(null);
+        setError("连接中断，未能收到结果，请重试");
+      }
+    } catch (e: any) {
+      setRunState(null);
+      setError(String(e?.message ?? e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  /** 原著路径「浏览…」：调 sidecar 打开系统文件选择器，选中绝对路径回填输入框。 */
+  const browseNovel = async () => {
+    if (pickingNovel) return;
+    setPickingNovel(true);
+    setError("");
+    try {
+      const p = await pickNovelFileViaServer();
+      if (p) setNovelRef(p);
+    } catch (e: any) {
+      setError(String(e?.message ?? e));
+    } finally {
+      setPickingNovel(false);
+    }
+  };
 
   const refresh = async (id?: string) => {
     const use = id ?? pid;
@@ -341,10 +425,17 @@ export function CreationPipelineView({
       return btns;
     }
     if (prod.state === "open" || prod.state === "in_progress") {
-      btns.push({ label: `写第${ep}集`, primary: true, onClick: () => run(() => draftScreen(pid!, ep)) });
+      btns.push({
+        label: `写第${ep}集`,
+        primary: true,
+        onClick: () => runStream("draft_screen", `撰写剧本 · 第${ep}集`, "draft-screen", { episode: ep }),
+      });
     }
     if (prod.state === "review" && (rev.state === "open" || rev.state === "in_progress")) {
-      btns.push({ label: `审第${ep}集`, onClick: () => run(() => reviewScreen(pid!, ep)) });
+      btns.push({
+        label: `审第${ep}集`,
+        onClick: () => runStream("review_screen", `审核剧本 · 第${ep}集`, "review-screen", { episode: ep }),
+      });
     }
     // 拍板只在「产出已待审 + 审核已出意见」时可用（打回重写中不显示，避免非法定稿）
     if (prod.state === "review" && rev.state === "review") {
@@ -379,6 +470,16 @@ export function CreationPipelineView({
   const outlineDone = outlineItem?.state === "done";
 
   const stepIdx = PHASE_IDX[phase] ?? -1;
+
+  /** 步骤 i 对应的流式 stage（用于步骤条 running 高亮；拍板步返回 null）。 */
+  const actStageOf = (i: number): string | null => {
+    if (i === 0) return "draft_outline";
+    if (i === 1) return "review_outline";
+    if (i === 2) return null;
+    if (i === 3) return "draft_screen";
+    if (i === 4) return "review_screen";
+    return null;
+  };
 
   return (
     <div className="creation-view">
@@ -460,13 +561,27 @@ export function CreationPipelineView({
                 </div>
                 <div>
                   <div className="text-[12px] text-muted mb-1">原著文件路径（可选）</div>
-                  <input
-                    type="text"
-                    className="w-full rounded-lg border border-black/10 dark:border-white/15 bg-transparent px-2.5 py-2 text-[13px] text-ink"
-                    placeholder="如 /Users/.../原著.docx 或 .txt；留空则仅凭概念创作"
-                    value={novelRef}
-                    onChange={(e) => setNovelRef(e.target.value)}
-                  />
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      className="flex-1 min-w-0 rounded-lg border border-black/10 dark:border-white/15 bg-transparent px-2.5 py-2 text-[13px] text-ink"
+                      placeholder="如 /Users/.../原著.docx 或 .txt；留空则仅凭概念创作"
+                      value={novelRef}
+                      onChange={(e) => setNovelRef(e.target.value)}
+                    />
+                    <button
+                      type="button"
+                      className="btn shrink-0"
+                      disabled={pickingNovel}
+                      onClick={browseNovel}
+                      title="打开系统文件选择器，选中原著文件后自动填入路径"
+                    >
+                      {pickingNovel ? "打开中…" : "浏览…"}
+                    </button>
+                  </div>
+                  <div className="text-[10px] text-muted mt-0.5">
+                    点「浏览…」直接选文件（.txt/.docx/.md），无需手动复制路径
+                  </div>
                 </div>
                 <div className="flex gap-4">
                   <label className="flex items-center gap-1.5 text-[13px] text-ink">
@@ -619,71 +734,113 @@ export function CreationPipelineView({
         {/* 进行中：步骤条 + 制作要求 + board/分集卡片 + 产出预览 + 终审（加宽分层） */}
         {pid && snap && (
           <div className="space-y-3 max-w-4xl">
+            {/* SSE 流式进行中面板：点击生成型 step 立即出现，实时展示做到哪一步 */}
+            {runState && (
+              <div className="rounded-xl border border-accent/30 bg-gradient-to-br from-accent/[0.08] via-paper to-emerald-500/[0.06] p-4 shadow-sm cre-panel-in">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <span className="cre-pulse-dot w-2.5 h-2.5 rounded-full bg-accent shrink-0" />
+                    <span className="text-[13px] font-semibold text-ink truncate">{runState.label}</span>
+                  </div>
+                  <span className="text-[12px] font-semibold text-accent shrink-0 tabular-nums">
+                    {Math.round(runState.progress)}%
+                  </span>
+                </div>
+                <div className="mt-2.5 h-1.5 rounded-full bg-black/10 dark:bg-white/10 overflow-hidden">
+                  <div
+                    className="h-full rounded-full bg-gradient-to-r from-accent to-emerald-500 cre-progress-fill"
+                    style={{ width: `${Math.max(4, Math.min(100, runState.progress))}%` }}
+                  />
+                </div>
+                <div className="mt-2 text-[12px] text-ink/85">{runState.message}</div>
+                {runState.events.length > 0 && (
+                  <div className="mt-2 space-y-0.5">
+                    {runState.events.map((e, i) => (
+                      <div key={i} className="flex items-center gap-1.5 text-[11px] text-muted cre-rise">
+                        <span className="w-1 h-1 rounded-full bg-accent/50 shrink-0" />
+                        <span className="truncate">{e.message}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
             {/* 流水线步骤条（六步状态可视化） */}
-            <div className="rounded-xl border border-black/10 dark:border-white/10 bg-paper p-3">
-              <div className="flex items-center gap-1 overflow-x-auto">
+            <div className="rounded-xl border border-black/10 dark:border-white/10 bg-paper p-3.5 shadow-sm">
+              <div className="flex items-start gap-0 overflow-x-auto py-1">
                 {stepsToShow.map((s, i) => {
                   const isDone = stepIdx > i || phase === "done";
                   // 分集模式下剧本三阶段是「逐集在卡片操作」，步骤条仅作进度展示、不可点、不高亮成可点态
                   const isEpisodicOngoing = isEpisodic && i >= 3 && !isDone && phase !== "done";
                   const isActive = stepIdx === i && phase !== "done" && !isEpisodicOngoing;
+                  const isRunning = isActive && !!runState && runState.stage === actStageOf(i);
                   // 当前步骤可点击触发对应动作（分集的剧本阶段由各集卡片承载，步骤条仅接大纲阶段）
                   const act = isActive
                     ? i === 0
-                      ? () => run(() => draftOutline(pid))
+                      ? () => runStream("draft_outline", "撰写大纲", "draft-outline")
                       : i === 1
-                        ? () => run(() => reviewOutline(pid))
+                        ? () => runStream("review_outline", "审核大纲", "review-outline")
                         : i === 2
                           ? () => openProposal("outline")
                           : !isEpisodic && i === 3
-                            ? () => run(() => draftScreen(pid))
+                            ? () => runStream("draft_screen", "撰写剧本", "draft-screen")
                             : !isEpisodic && i === 4
-                              ? () => run(() => reviewScreen(pid))
+                              ? () => runStream("review_screen", "审核剧本", "review-screen")
                               : !isEpisodic && i === 5
                                 ? () => openProposal("screenplay")
                                 : null
                     : null;
+                  const badge =
+                    "w-8 h-8 rounded-full flex items-center justify-center text-[12px] font-semibold shrink-0 " +
+                    (isDone
+                      ? "bg-emerald-500/15 text-emerald-600 ring-1 ring-emerald-500/30 cre-pop"
+                      : isEpisodicOngoing
+                        ? "bg-amber-500/15 text-amber-600 ring-1 ring-amber-500/40"
+                        : isActive
+                          ? "bg-accent/20 text-accent ring-2 ring-accent/50 shadow-[0_0_14px_rgba(37,99,235,0.35)] cre-breathe"
+                          : "bg-black/[0.04] dark:bg-white/[0.06] text-muted");
+                  const labelCls =
+                    "text-[11px] mt-1.5 whitespace-nowrap " +
+                    (isActive
+                      ? "text-accent font-semibold"
+                      : isDone
+                        ? "text-emerald-600"
+                        : isEpisodicOngoing
+                          ? "text-amber-600"
+                          : "text-muted");
                   return (
-                    <button
-                      key={s.label}
-                      type="button"
-                      disabled={!act || busy}
-                      title={act ? `点击开始：${s.label}` : isEpisodicOngoing ? "逐集在下方卡片操作" : undefined}
-                      onClick={act ? () => act() : undefined}
-                      className={
-                        "flex items-center gap-1 shrink-0 " + (act ? "cursor-pointer hover:opacity-80" : "cursor-default")
-                      }
-                    >
-                      <div className="flex flex-col items-center">
-                        <div
-                          className={
-                            "w-6 h-6 rounded-full flex items-center justify-center text-[11px] font-semibold " +
-                            (isDone
-                              ? "bg-emerald-500/15 text-emerald-600"
-                              : isEpisodicOngoing
-                                ? "bg-amber-500/15 text-amber-600 ring-1 ring-amber-500/40"
-                                : isActive
-                                  ? "bg-accent/20 text-accent ring-1 ring-accent/50"
-                                  : "bg-black/[0.04] dark:bg-white/[0.06] text-muted")
-                          }
-                        >
-                          {isDone ? "✓" : isEpisodicOngoing ? "✦" : i + 1}
+                    <Fragment key={s.label}>
+                      <button
+                        type="button"
+                        disabled={!act || busy}
+                        title={act ? `点击开始：${s.label}` : isEpisodicOngoing ? "逐集在下方卡片操作" : undefined}
+                        onClick={act ? () => act() : undefined}
+                        className={
+                          "flex flex-col items-center shrink-0 px-1.5 " +
+                          (act ? "cursor-pointer hover:opacity-85 active:scale-95 transition-transform" : "cursor-default")
+                        }
+                      >
+                        <div className={badge}>
+                          {isDone ? "✓" : isEpisodicOngoing ? "✦" : isRunning ? "…" : i + 1}
                         </div>
-                        <span
-                          className={
-                            "text-[10px] mt-0.5 whitespace-nowrap " +
-                            (isActive ? "text-accent font-medium" : isEpisodicOngoing ? "text-amber-600" : "text-muted")
-                          }
-                        >
-                          {s.label}
-                        </span>
+                        <span className={labelCls}>{s.label}</span>
                         <span className="text-[9px] text-muted whitespace-nowrap">
                           {s.who}
                           {isEpisodicOngoing ? " · 逐集" : ""}
                         </span>
-                      </div>
-                      {i < stepsToShow.length - 1 && <span className="text-muted text-[11px] mb-4">→</span>}
-                    </button>
+                      </button>
+                      {i < stepsToShow.length - 1 && (
+                        <div className="flex flex-col items-center shrink-0 mt-4 px-0.5">
+                          <div
+                            className={
+                              "h-0.5 w-5 rounded-full " +
+                              (stepIdx > i ? "bg-emerald-500/50" : "bg-black/10 dark:bg-white/10")
+                            }
+                          />
+                        </div>
+                      )}
+                    </Fragment>
                   );
                 })}
               </div>
@@ -806,10 +963,22 @@ export function CreationPipelineView({
                 )}
                 <div className="flex items-center justify-between">
                   <div className="text-[13px] font-semibold text-ink">分集进度</div>
-                  <div className="text-[11px] text-muted">
+                  <div className="text-[11px] text-muted tabular-nums">
                     {epGroups.filter(([, g]) => g.prod?.state === "done").length}/{epGroups.length} 集已定稿
                   </div>
                 </div>
+                {(() => {
+                  const doneCnt = epGroups.filter(([, g]) => g.prod?.state === "done").length;
+                  const pct = epGroups.length ? Math.round((doneCnt / epGroups.length) * 100) : 0;
+                  return (
+                    <div className="h-1 rounded-full bg-black/10 dark:bg-white/10 overflow-hidden">
+                      <div
+                        className="h-full rounded-full bg-gradient-to-r from-accent to-emerald-500 transition-[width] duration-500 ease-out"
+                        style={{ width: `${pct}%` }}
+                      />
+                    </div>
+                  );
+                })()}
                 <div className="grid grid-cols-1 xl:grid-cols-2 gap-2 items-start">
                   {epGroups.map(([ep, g]) => {
                     const btns = epActions(ep, g.prod, g.rev);
@@ -820,12 +989,12 @@ export function CreationPipelineView({
                       <div
                         key={ep}
                         className={
-                          "rounded-xl border bg-paper p-3 space-y-2 " +
+                          "rounded-xl border bg-paper p-3 space-y-2 cre-ep-card " +
                           (isLeading ? "border-accent/50 ring-1 ring-accent/30" : "border-black/10 dark:border-white/10")
                         }
                       >
                         <div className="flex items-center justify-between">
-                          <div className="flex items-center gap-2">
+                          <div className="flex items-center gap-2 flex-wrap">
                             <span
                               className={
                                 "text-[13px] font-semibold " +
@@ -839,12 +1008,23 @@ export function CreationPipelineView({
                                 </span>
                               )}
                             </span>
-                            <span className={"text-[12px] " + (STATE_COLOR[prodState] ?? "text-muted")}>
+                            <span
+                              className={
+                                "px-2 py-0.5 rounded-full text-[11px] font-medium " +
+                                (STATE_PILL[prodState] ?? "bg-black/[0.04] text-muted")
+                              }
+                            >
+                              {prodState === "done" ? "✓ " : ""}
                               {STATE_LABEL[prodState] ?? prodState}
                             </span>
                             {g.rev && (
-                              <span className={"text-[12px] " + (STATE_COLOR[revState] ?? "text-muted")}>
-                                · 审核{STATE_LABEL[revState] ?? revState}
+                              <span
+                                className={
+                                  "px-2 py-0.5 rounded-full text-[11px] font-medium " +
+                                  (STATE_PILL[revState] ?? "bg-black/[0.04] text-muted")
+                                }
+                              >
+                                审 {STATE_LABEL[revState] ?? revState}
                               </span>
                             )}
                           </div>
@@ -1038,13 +1218,21 @@ export function CreationPipelineView({
             {/* 阶段推进按钮（快速路径）：大纲阶段两模式通用；剧本阶段仅非分集（分集由各集卡片承载） */}
             <div className="flex flex-wrap gap-2">
               {phase === "draft_outline" && (
-                <button className="btn primary" disabled={busy} onClick={() => run(() => draftOutline(pid))}>
-                  写大纲
+                <button
+                  className="btn primary"
+                  disabled={busy || !!runState}
+                  onClick={() => runStream("draft_outline", "撰写大纲", "draft-outline")}
+                >
+                  {runState?.stage === "draft_outline" ? "撰写中…" : "写大纲"}
                 </button>
               )}
               {phase === "review_outline" && (
-                <button className="btn" disabled={busy} onClick={() => run(() => reviewOutline(pid))}>
-                  审大纲
+                <button
+                  className="btn"
+                  disabled={busy || !!runState}
+                  onClick={() => runStream("review_outline", "审核大纲", "review-outline")}
+                >
+                  {runState?.stage === "review_outline" ? "审核中…" : "审大纲"}
                 </button>
               )}
               {phase === "lead_outline" && (
@@ -1060,16 +1248,20 @@ export function CreationPipelineView({
               {!isEpisodic && phase === "draft_screen" && isScreenplay && (
                 <button
                   className="btn primary"
-                  disabled={busy || !outlineDone}
+                  disabled={busy || !!runState || !outlineDone}
                   title={!outlineDone ? "需先完成大纲定稿（点上方「写大纲」）" : undefined}
-                  onClick={() => run(() => draftScreen(pid))}
+                  onClick={() => runStream("draft_screen", "撰写剧本", "draft-screen")}
                 >
-                  写剧本
+                  {runState?.stage === "draft_screen" ? "撰写中…" : "写剧本"}
                 </button>
               )}
               {!isEpisodic && phase === "review_screen" && (
-                <button className="btn" disabled={busy} onClick={() => run(() => reviewScreen(pid))}>
-                  审剧本
+                <button
+                  className="btn"
+                  disabled={busy || !!runState}
+                  onClick={() => runStream("review_screen", "审核剧本", "review-screen")}
+                >
+                  {runState?.stage === "review_screen" ? "审核中…" : "审剧本"}
                 </button>
               )}
               {!isEpisodic && phase === "lead_screen" && (

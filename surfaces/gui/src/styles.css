@@ -2875,3 +2875,63 @@ html[data-platform="linux"] ::-webkit-scrollbar-thumb:hover { background-color: 
   color: var(--muted);
   text-align: center;
 }
+
+/* ============ 创作流水线 · SSE 流式进度动效 ============ */
+/* 进行中面板浮现 */
+.cre-panel-in {
+  animation: cre-panel-in 0.28s cubic-bezier(0.16, 1, 0.3, 1);
+}
+@keyframes cre-panel-in {
+  from { opacity: 0; transform: translateY(-6px) scale(0.99); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+/* 步骤条 active 徽章呼吸光晕 */
+.cre-breathe {
+  animation: cre-breathe 1.8s ease-in-out infinite;
+}
+@keyframes cre-breathe {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(37, 99, 235, 0.45); }
+  50% { box-shadow: 0 0 0 7px rgba(37, 99, 235, 0); }
+}
+/* done 徽章弹簧出现 */
+.cre-pop {
+  animation: cre-pop 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+@keyframes cre-pop {
+  0% { transform: scale(0.4); }
+  70% { transform: scale(1.15); }
+  100% { transform: scale(1); }
+}
+/* 事件日志逐条淡入上滑 */
+.cre-rise {
+  animation: cre-rise 0.32s ease-out;
+}
+@keyframes cre-rise {
+  from { opacity: 0; transform: translateY(5px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+/* 进行中状态点脉冲 */
+.cre-pulse-dot {
+  animation: cre-pulse-dot 1.4s ease-in-out infinite;
+}
+@keyframes cre-pulse-dot {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.45; transform: scale(0.8); }
+}
+/* 进度条渐变流动 */
+.cre-progress-fill {
+  background-size: 200% 100%;
+  animation: cre-progress-flow 2.2s linear infinite;
+}
+@keyframes cre-progress-flow {
+  0% { background-position: 0% 0; }
+  100% { background-position: -200% 0; }
+}
+/* 分集卡片 hover 上浮 */
+.cre-ep-card {
+  transition: transform 0.18s ease, box-shadow 0.18s ease, border-color 0.18s ease;
+}
+.cre-ep-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.08);
+}

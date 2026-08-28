@@ -544,7 +544,7 @@ class CreativePipeline:
             logger.warning("定稿 docx 导出失败（不影响定稿）: %s", res.get("error"))
 
     # -- 大纲路线 ----------------------------------------------------------
-    def draft_outline(self, outline_item_id: Optional[int] = None) -> str:
+    def draft_outline(self, outline_item_id: Optional[int] = None, *, on_event=None) -> str:
         outline_item_id = outline_item_id or self.ids["outline_item"]
         self.store.assign(self.space, self.lead, outline_item_id, assignee=OUTLINE_WORKER)
         w = Actor(OUTLINE_WORKER, Role.WORKER)
@@ -555,18 +555,21 @@ class CreativePipeline:
             novel_text=self.novel_text,
             style=self.style,
             pacing=self.pacing,
+            on_event=on_event,
         )
         self._drafts[outline_item_id] = text
         self._save_drafts()  # 落盘：sidecar 重启后草稿可恢复
         self.guard.transition(self.space, w, outline_item_id, to="review", comment="大纲已成，请审")
         return text
 
-    def review_outline(self, outline_item_id: Optional[int] = None, review_item_id: Optional[int] = None) -> ReviewResult:
+    def review_outline(self, outline_item_id: Optional[int] = None,
+                       review_item_id: Optional[int] = None, *, on_event=None) -> ReviewResult:
         outline_item_id = outline_item_id or self.ids["outline_item"]
         review_item_id = review_item_id or self.ids["outline_review_item"]
         self.store.assign(self.space, self.lead, review_item_id, assignee=REVIEW_WORKER)
         draft = self._drafts.get(outline_item_id, "")
-        result = self.executor.review(draft, criteria=self._criteria(review_item_id), novel_text=self.novel_text)
+        result = self.executor.review(draft, criteria=self._criteria(review_item_id),
+                                      novel_text=self.novel_text, on_event=on_event)
         w = Actor(REVIEW_WORKER, Role.WORKER)
         self.guard.transition(self.space, w, review_item_id, to="in_progress", comment="开始审核大纲")
         self.guard.transition(self.space, w, review_item_id, to="review", comment=result.opinion)
@@ -597,7 +600,8 @@ class CreativePipeline:
         return "rejected"
 
     # -- 剧本路线 ----------------------------------------------------------
-    def draft_screenplay(self, screen_item_id: Optional[int] = None, *, episode: Optional[int] = None) -> str:
+    def draft_screenplay(self, screen_item_id: Optional[int] = None, *, episode: Optional[int] = None,
+                         on_event=None) -> str:
         """撰写剧本（分集模式按集写，episode 空则自动推进下一未定稿集）。"""
         screen_item_id = screen_item_id or self._screen_item_id(episode)
         review_item_id = self._screen_review_item_id(episode)
@@ -617,6 +621,7 @@ class CreativePipeline:
             episode=episode,
             episodes=self.episodes,
             prior_summaries=self._prior_context_block(episode),
+            on_event=on_event,
         )
         self._drafts[screen_item_id] = text
         if episode:
@@ -629,12 +634,13 @@ class CreativePipeline:
 
     def review_screenplay(self, screen_item_id: Optional[int] = None,
                           review_item_id: Optional[int] = None,
-                          *, episode: Optional[int] = None) -> ReviewResult:
+                          *, episode: Optional[int] = None, on_event=None) -> ReviewResult:
         screen_item_id = screen_item_id or self._screen_item_id(episode)
         review_item_id = review_item_id or self._screen_review_item_id(episode)
         self.store.assign(self.space, self.lead, review_item_id, assignee=REVIEW_WORKER)
         draft = self._drafts.get(screen_item_id, "")
-        result = self.executor.review(draft, criteria=self._criteria(review_item_id), novel_text=self.novel_text)
+        result = self.executor.review(draft, criteria=self._criteria(review_item_id),
+                                      novel_text=self.novel_text, on_event=on_event)
         w = Actor(REVIEW_WORKER, Role.WORKER)
         self.guard.transition(self.space, w, review_item_id, to="in_progress", comment="开始审核剧本")
         self.guard.transition(self.space, w, review_item_id, to="review", comment=result.opinion)

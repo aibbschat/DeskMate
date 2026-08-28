@@ -83,6 +83,18 @@ export async function pickFolderViaServer(): Promise<string | null> {
   }
 }
 
+/** Ask the LOCAL sidecar to open the OS file picker (single file — 创作流水线「浏览…」
+ * 选原著文件用)。浏览器 GUI 拿不到绝对路径，必须走 sidecar 原生对话框。 */
+export async function pickNovelFileViaServer(): Promise<string | null> {
+  try {
+    const res = await fetch(`${httpBase()}/v1/files/pick`, { method: "POST" });
+    const d = await res.json();
+    return d.ok && d.path ? d.path : null;
+  } catch {
+    return null;
+  }
+}
+
 export async function openWorkspace(
   path: string,
   create = false,
@@ -3059,21 +3071,28 @@ async function _rejectIfNotOk(res: Response): Promise<void> {
   throw new Error(msg);
 }
 
-async function _postStep(pid: string, step: string, body?: Record<string, unknown>): Promise<CreationSnapshot> {
-  const res = await authedFetch(`${creationBase()}/api/creation/${encodeURIComponent(pid)}/${step}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: body ? JSON.stringify(body) : undefined,
-  });
-  await _rejectIfNotOk(res);
-  return res.json();
+/** 生成型 step 的聚合版本：消费完整 SSE 流，返回最终快照（供非流式调用方复用）。
+ * 服务端这些 step 已是 text/event-stream，不再返回 JSON 快照。 */
+async function _runStepToSnapshot(
+  pid: string,
+  step: "draft-outline" | "draft-screen" | "review-outline" | "review-screen",
+  opts: { episode?: number | null } = {},
+): Promise<CreationSnapshot> {
+  let snap: CreationSnapshot | undefined;
+  for await (const ev of streamStep(pid, step, opts)) {
+    if (ev.type === "done" && ev.snapshot) snap = ev.snapshot;
+    else if (ev.type === "error") throw new Error(ev.error ?? "操作失败");
+  }
+  if (!snap) throw new Error("连接中断，未能收到结果");
+  return snap;
 }
 
-export const draftOutline = (pid: string) => _postStep(pid, "draft-outline");
-export const reviewOutline = (pid: string) => _postStep(pid, "review-outline");
-export const draftScreen = (pid: string, episode?: number) => _postStep(pid, "draft-screen", { episode: episode ?? null });
+export const draftOutline = (pid: string) => _runStepToSnapshot(pid, "draft-outline");
+export const reviewOutline = (pid: string) => _runStepToSnapshot(pid, "review-outline");
+export const draftScreen = (pid: string, episode?: number) =>
+  _runStepToSnapshot(pid, "draft-screen", { episode: episode ?? null });
 export const reviewScreen = (pid: string, episode?: number) =>
-  _postStep(pid, "review-screen", { episode: episode ?? null });
+  _runStepToSnapshot(pid, "review-screen", { episode: episode ?? null });
 
 async function _postLead(pid: string, step: string, approved: boolean, episode?: number): Promise<CreationSnapshot> {
   const res = await authedFetch(`${creationBase()}/api/creation/${encodeURIComponent(pid)}/${step}`, {
@@ -3147,6 +3166,55 @@ export async function* streamFinalReview(
       genre_hint: genreHint ?? null,
       episode: episode ?? null,
     }),
+  });
+  if (!res.body) return;
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = "";
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    let idx;
+    while ((idx = buf.indexOf("\n\n")) !== -1) {
+      const chunk = buf.slice(0, idx);
+      buf = buf.slice(idx + 2);
+      const line = chunk.split("\n").find((l) => l.startsWith("data:"));
+      if (line) {
+        try {
+          yield JSON.parse(line.slice(5).trim());
+        } catch {
+          /* ignore malformed */
+        }
+      }
+    }
+  }
+}
+
+/** 生成型 step 的 SSE 进度事件（写大纲/写剧本/审核）。 */
+export interface CreationStepEvent {
+  type: "stage" | "note" | "done" | "error";
+  stage?: string;
+  label?: string;
+  status?: string;
+  message?: string;
+  progress?: number;
+  snapshot?: CreationSnapshot;
+  error?: string;
+}
+
+/** SSE 流式推进生成型 step：POST /api/creation/{pid}/{step}，逐事件吐出进度。
+ * 事件：stage（阶段开始）→ note*（中间进度）→ done（带快照）| error。 */
+export async function* streamStep(
+  pid: string,
+  step: "draft-outline" | "draft-screen" | "review-outline" | "review-screen",
+  opts: { episode?: number | null } = {},
+): AsyncGenerator<CreationStepEvent> {
+  const isScreen = step === "draft-screen" || step === "review-screen";
+  const res = await authedFetch(`${creationBase()}/api/creation/${encodeURIComponent(pid)}/${step}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: isScreen ? JSON.stringify({ episode: opts.episode ?? null }) : undefined,
   });
   if (!res.body) return;
   const reader = res.body.getReader();
