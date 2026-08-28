@@ -9,6 +9,10 @@ export const httpBase = (): string =>
   (globalThis as any).__COWORKER_HTTP__ ||
   (import.meta as any).env?.VITE_COWORKER_HTTP ||
   "http://127.0.0.1:8765";
+// 创作圆桌（deskmate.creation）在真实 sidecar（主 coworker app）中以 /roundtable 前缀挂载
+// （coworker/server/app.py: app.mount("/roundtable", roundtable_app)）。所有创作接口必须带此前缀，
+// 否则在真实环境命中 404（返回 {error:"not found"} 而非抛异常，前端静默失败 → “点开始创作没反应”）。
+const creationBase = (): string => `${httpBase()}/roundtable`;
 const wsBase = (): string =>
   (globalThis as any).__COWORKER_WS__ ||
   (import.meta as any).env?.VITE_COWORKER_WS ||
@@ -2946,7 +2950,7 @@ export async function createPipeline(
   episodes?: number;
   episode_range?: number[];
 }> {
-  const res = await authedFetch(`${httpBase()}/api/creation/pipeline`, {
+  const res = await authedFetch(`${creationBase()}/api/creation/pipeline`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -2964,7 +2968,7 @@ export async function createPipeline(
 }
 
 export async function getPipeline(pid: string): Promise<CreationSnapshot> {
-  const res = await authedFetch(`${httpBase()}/api/creation/pipeline/${encodeURIComponent(pid)}`);
+  const res = await authedFetch(`${creationBase()}/api/creation/pipeline/${encodeURIComponent(pid)}`);
   return res.json();
 }
 
@@ -2981,7 +2985,7 @@ export async function extendEpisodes(
   prior_context: string;
   include_review_notes: boolean;
 }> {
-  const res = await authedFetch(`${httpBase()}/api/creation/${encodeURIComponent(pid)}/extend-episodes`, {
+  const res = await authedFetch(`${creationBase()}/api/creation/${encodeURIComponent(pid)}/extend-episodes`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -3002,13 +3006,13 @@ export async function getItemContent(
   pid: string,
   itemId: number,
 ): Promise<{ pid: string; item_id: number; content: string; episode?: number | null }> {
-  const res = await authedFetch(`${httpBase()}/api/creation/${encodeURIComponent(pid)}/item/${itemId}`);
+  const res = await authedFetch(`${creationBase()}/api/creation/${encodeURIComponent(pid)}/item/${itemId}`);
   return res.json();
 }
 
 /** 原著索引状态（章节目录完整版，独立接口避免每次快照携带大目录）。 */
 export async function getNovelIndex(pid: string): Promise<NovelIndexStatus> {
-  const res = await authedFetch(`${httpBase()}/api/creation/${encodeURIComponent(pid)}/novel-index`);
+  const res = await authedFetch(`${creationBase()}/api/creation/${encodeURIComponent(pid)}/novel-index`);
   return res.json();
 }
 
@@ -3018,7 +3022,7 @@ export async function pickNovelChapters(
   topic = "",
   k = 3,
 ): Promise<{ chapters: { idx: number; title: string; chars: number; head: string }[]; topic: string }> {
-  const res = await authedFetch(`${httpBase()}/api/creation/${encodeURIComponent(pid)}/novel-pick`, {
+  const res = await authedFetch(`${creationBase()}/api/creation/${encodeURIComponent(pid)}/novel-pick`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ topic, k }),
@@ -3028,7 +3032,7 @@ export async function pickNovelChapters(
 
 /** 指定创作参考章节（1..n）；空数组恢复自动匹配。 */
 export async function setRelatedChapters(pid: string, indices: number[]): Promise<{ related: number[] }> {
-  const res = await authedFetch(`${httpBase()}/api/creation/${encodeURIComponent(pid)}/related-chapters`, {
+  const res = await authedFetch(`${creationBase()}/api/creation/${encodeURIComponent(pid)}/related-chapters`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ indices }),
@@ -3037,7 +3041,7 @@ export async function setRelatedChapters(pid: string, indices: number[]): Promis
 }
 
 async function _postStep(pid: string, step: string, body?: Record<string, unknown>): Promise<CreationSnapshot> {
-  const res = await authedFetch(`${httpBase()}/api/creation/${encodeURIComponent(pid)}/${step}`, {
+  const res = await authedFetch(`${creationBase()}/api/creation/${encodeURIComponent(pid)}/${step}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: body ? JSON.stringify(body) : undefined,
@@ -3052,7 +3056,7 @@ export const reviewScreen = (pid: string, episode?: number) =>
   _postStep(pid, "review-screen", { episode: episode ?? null });
 
 async function _postLead(pid: string, step: string, approved: boolean, episode?: number): Promise<CreationSnapshot> {
-  const res = await authedFetch(`${httpBase()}/api/creation/${encodeURIComponent(pid)}/${step}`, {
+  const res = await authedFetch(`${creationBase()}/api/creation/${encodeURIComponent(pid)}/${step}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ approved, episode: episode ?? null }),
@@ -3070,7 +3074,7 @@ export async function finalReviewProposal(
   genreHint?: string,
   episode?: number,
 ): Promise<FinalProposal> {
-  const res = await authedFetch(`${httpBase()}/api/creation/${encodeURIComponent(pid)}/final-review-proposal`, {
+  const res = await authedFetch(`${creationBase()}/api/creation/${encodeURIComponent(pid)}/final-review-proposal`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ item_kind: itemKind, genre_hint: genreHint ?? null, episode: episode ?? null }),
@@ -3084,7 +3088,7 @@ export async function finalReviewApply(
   verdict: boolean,
   episode?: number,
 ): Promise<{ status: string; docx: Record<string, string>; pid: string; item_kind: string }> {
-  const res = await authedFetch(`${httpBase()}/api/creation/${encodeURIComponent(pid)}/final-review-apply`, {
+  const res = await authedFetch(`${creationBase()}/api/creation/${encodeURIComponent(pid)}/final-review-apply`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ item_kind: itemKind, verdict, episode: episode ?? null }),
@@ -3097,7 +3101,7 @@ export async function exportCreationDocx(
   title: string,
   markdown: string,
 ): Promise<{ ok: boolean; path?: string; degraded?: boolean; error?: string }> {
-  const res = await authedFetch(`${httpBase()}/api/creation/export-docx`, {
+  const res = await authedFetch(`${creationBase()}/api/creation/export-docx`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ kind, title, markdown }),
@@ -3113,7 +3117,7 @@ export async function* streamFinalReview(
   genreHint?: string,
   episode?: number,
 ): AsyncGenerator<FinalReviewEvent> {
-  const res = await authedFetch(`${httpBase()}/api/creation/${encodeURIComponent(pid)}/final-review`, {
+  const res = await authedFetch(`${creationBase()}/api/creation/${encodeURIComponent(pid)}/final-review`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
