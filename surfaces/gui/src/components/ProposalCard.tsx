@@ -11,6 +11,8 @@ export interface FinalProposal {
   prior_review: string;
   all_experts: { id: string; name: string; role?: string }[];
   recommended: string[];
+  /** 分集模式下被审集号。 */
+  episode?: number | null;
 }
 
 function Block({ label, body }: { label: string; body: string }) {

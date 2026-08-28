@@ -2874,6 +2874,8 @@ export interface CreationItem {
   state: string;
   criteria: string;
   comments: number;
+  /** 分集模式下该 item 所属集号（1..n）；单集/大纲为 null。 */
+  episode?: number | null;
 }
 export interface NovelIndexStatus {
   status: "none" | "pending" | "ready" | "failed";
@@ -2896,6 +2898,11 @@ export interface CreationSnapshot {
   docx: Record<string, string>;
   novel_index?: NovelIndexStatus;
   related_chapters?: number[];
+  /** 透明化 · 结构化制作要求与分集信息 */
+  style?: string[];
+  pacing?: string;
+  episodes?: number;
+  episode_range?: number[];
 }
 export interface FinalProposal {
   item_kind: string;
@@ -2905,6 +2912,8 @@ export interface FinalProposal {
   prior_review: string;
   all_experts: { id: string; name: string; role?: string }[];
   recommended: string[];
+  /** 分集模式下被审集号。 */
+  episode?: number | null;
 }
 export interface FinalReviewEvent {
   type: string;
@@ -2916,6 +2925,12 @@ export async function createPipeline(
   concept: string,
   executor: "stub" | "llm" = "stub",
   novelRef = "",
+  opts: {
+    style?: string[];
+    pacing?: string;
+    episodes?: number;
+    episodeRange?: number[];
+  } = {},
 ): Promise<{
   pid: string;
   kind: string;
@@ -2923,17 +2938,39 @@ export async function createPipeline(
   ids: Record<string, number>;
   concept: string;
   novel_index: NovelIndexStatus;
+  style?: string[];
+  pacing?: string;
+  episodes?: number;
+  episode_range?: number[];
 }> {
   const res = await authedFetch(`${httpBase()}/api/creation/pipeline`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ kind, concept, executor, novel_ref: novelRef }),
+    body: JSON.stringify({
+      kind,
+      concept,
+      executor,
+      novel_ref: novelRef,
+      style: opts.style ?? [],
+      pacing: opts.pacing ?? "",
+      episodes: opts.episodes ?? 1,
+      episode_range: opts.episodeRange ?? [],
+    }),
   });
   return res.json();
 }
 
 export async function getPipeline(pid: string): Promise<CreationSnapshot> {
   const res = await authedFetch(`${httpBase()}/api/creation/pipeline/${encodeURIComponent(pid)}`);
+  return res.json();
+}
+
+/** 产出预览：取指定 item 的草稿文本（透明化 · 看得见产出长什么样）。 */
+export async function getItemContent(
+  pid: string,
+  itemId: number,
+): Promise<{ pid: string; item_id: number; content: string; episode?: number | null }> {
+  const res = await authedFetch(`${httpBase()}/api/creation/${encodeURIComponent(pid)}/item/${itemId}`);
   return res.json();
 }
 
@@ -2967,40 +3004,44 @@ export async function setRelatedChapters(pid: string, indices: number[]): Promis
   return res.json();
 }
 
-async function _postStep(pid: string, step: string): Promise<CreationSnapshot> {
+async function _postStep(pid: string, step: string, body?: Record<string, unknown>): Promise<CreationSnapshot> {
   const res = await authedFetch(`${httpBase()}/api/creation/${encodeURIComponent(pid)}/${step}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
+    body: body ? JSON.stringify(body) : undefined,
   });
   return res.json();
 }
 
 export const draftOutline = (pid: string) => _postStep(pid, "draft-outline");
 export const reviewOutline = (pid: string) => _postStep(pid, "review-outline");
-export const draftScreen = (pid: string) => _postStep(pid, "draft-screen");
-export const reviewScreen = (pid: string) => _postStep(pid, "review-screen");
+export const draftScreen = (pid: string, episode?: number) => _postStep(pid, "draft-screen", { episode: episode ?? null });
+export const reviewScreen = (pid: string, episode?: number) =>
+  _postStep(pid, "review-screen", { episode: episode ?? null });
 
-async function _postLead(pid: string, step: string, approved: boolean): Promise<CreationSnapshot> {
+async function _postLead(pid: string, step: string, approved: boolean, episode?: number): Promise<CreationSnapshot> {
   const res = await authedFetch(`${httpBase()}/api/creation/${encodeURIComponent(pid)}/${step}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ approved }),
+    body: JSON.stringify({ approved, episode: episode ?? null }),
   });
   return res.json();
 }
 
 export const leadOutline = (pid: string, approved: boolean) => _postLead(pid, "lead-outline", approved);
-export const leadScreen = (pid: string, approved: boolean) => _postLead(pid, "lead-screen", approved);
+export const leadScreen = (pid: string, approved: boolean, episode?: number) =>
+  _postLead(pid, "lead-screen", approved, episode);
 
 export async function finalReviewProposal(
   pid: string,
   itemKind: "outline" | "screenplay",
   genreHint?: string,
+  episode?: number,
 ): Promise<FinalProposal> {
   const res = await authedFetch(`${httpBase()}/api/creation/${encodeURIComponent(pid)}/final-review-proposal`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ item_kind: itemKind, genre_hint: genreHint ?? null }),
+    body: JSON.stringify({ item_kind: itemKind, genre_hint: genreHint ?? null, episode: episode ?? null }),
   });
   return res.json();
 }
@@ -3009,11 +3050,12 @@ export async function finalReviewApply(
   pid: string,
   itemKind: "outline" | "screenplay",
   verdict: boolean,
+  episode?: number,
 ): Promise<{ status: string; docx: Record<string, string>; pid: string; item_kind: string }> {
   const res = await authedFetch(`${httpBase()}/api/creation/${encodeURIComponent(pid)}/final-review-apply`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ item_kind: itemKind, verdict }),
+    body: JSON.stringify({ item_kind: itemKind, verdict, episode: episode ?? null }),
   });
   return res.json();
 }
@@ -3037,11 +3079,17 @@ export async function* streamFinalReview(
   itemKind: "outline" | "screenplay",
   selectedExperts: string[],
   genreHint?: string,
+  episode?: number,
 ): AsyncGenerator<FinalReviewEvent> {
   const res = await authedFetch(`${httpBase()}/api/creation/${encodeURIComponent(pid)}/final-review`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ item_kind: itemKind, selected_experts: selectedExperts, genre_hint: genreHint ?? null }),
+    body: JSON.stringify({
+      item_kind: itemKind,
+      selected_experts: selectedExperts,
+      genre_hint: genreHint ?? null,
+      episode: episode ?? null,
+    }),
   });
   if (!res.body) return;
   const reader = res.body.getReader();
