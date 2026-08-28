@@ -573,6 +573,9 @@ class CreativePipeline:
         w = Actor(REVIEW_WORKER, Role.WORKER)
         self.guard.transition(self.space, w, review_item_id, to="in_progress", comment="开始审核大纲")
         self.guard.transition(self.space, w, review_item_id, to="review", comment=result.opinion)
+        # 审核意见落盘：经 item_content 供前端「看意见」预览（此前只写进状态机 comment，预览永远空白）
+        self._drafts[review_item_id] = result.opinion
+        self._save_drafts()
         return result
 
     def lead_verdict_outline(self, outline_item_id: Optional[int] = None,
@@ -644,6 +647,9 @@ class CreativePipeline:
         w = Actor(REVIEW_WORKER, Role.WORKER)
         self.guard.transition(self.space, w, review_item_id, to="in_progress", comment="开始审核剧本")
         self.guard.transition(self.space, w, review_item_id, to="review", comment=result.opinion)
+        # 审核意见落盘：经 item_content 供前端「看意见」预览
+        self._drafts[review_item_id] = result.opinion
+        self._save_drafts()
         return result
 
     def lead_verdict_screenplay(self, screen_item_id: Optional[int] = None,

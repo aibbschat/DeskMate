@@ -1233,6 +1233,9 @@ export function CreationPipelineView({
               )}
               {phase === "lead_outline" && (
                 <>
+                  <button className="btn" disabled={busy} onClick={() => run(() => leadOutline(pid, false))}>
+                    打回修改
+                  </button>
                   <button className="btn" disabled={busy} onClick={() => run(() => leadOutline(pid, true))}>
                     主编直接定稿
                   </button>
@@ -1262,6 +1265,9 @@ export function CreationPipelineView({
               )}
               {!isEpisodic && phase === "lead_screen" && (
                 <>
+                  <button className="btn" disabled={busy} onClick={() => run(() => leadScreen(pid, false))}>
+                    打回修改
+                  </button>
                   <button className="btn" disabled={busy} onClick={() => run(() => leadScreen(pid, true))}>
                     主编直接定稿
                   </button>
