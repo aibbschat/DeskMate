@@ -537,6 +537,7 @@ body {
 .approval-btns .spacer { flex: 1; }
 .approval .resolved { margin-top: 10px; font-size: 12.5px; color: var(--muted); }
 button.btn { font: inherit; font-size: 13px; padding: 7px 12px; border-radius: 8px; border: 1px solid var(--line-strong); background: var(--panel); cursor: pointer; }
+button.btn:disabled { opacity: 0.45; cursor: not-allowed; background: var(--line); color: var(--muted); }
 button.btn.icon-only { display: inline-flex; align-items: center; justify-content: center; padding: 7px 9px; flex: none; color: var(--muted); }
 button.btn.icon-only:hover { color: var(--ink); }
 button.btn:hover { background: var(--paper); }

@@ -335,7 +335,7 @@ export function CreationPipelineView({
     if (!prod || !rev) return btns;
     // 透明化门禁：剧本依赖大纲，大纲未定稿前不允许开写（避免后端门禁 400 打断流程）
     if (!outlineDone) {
-      btns.push({ label: `写第${ep}集`, disabled: true, hint: "需先完成大纲定稿（点上方「写大纲」）", onClick: () => {} });
+      btns.push({ label: "大纲未就绪", disabled: true, hint: "需先完成大纲定稿（点上方步骤条「写大纲」）", onClick: () => {} });
       return btns;
     }
     if (prod.state === "open" || prod.state === "in_progress") {
@@ -760,6 +760,11 @@ export function CreationPipelineView({
             {/* 分集卡片（每集独立状态 + 操作 + 预览；宽屏两列降密度） */}
             {isEpisodic && epGroups.length > 0 && (
               <div className="space-y-2">
+                {!outlineDone && (
+                  <div className="rounded-lg bg-amber-500/10 border border-amber-500/20 text-amber-700 text-[12px] px-3 py-2">
+                    <span className="font-medium">当前需先完成大纲：</span>请点击上方步骤条的「写大纲」，待大纲定稿后，「写第 N 集」按钮会自动亮起。
+                  </div>
+                )}
                 <div className="flex items-center justify-between">
                   <div className="text-[13px] font-semibold text-ink">分集进度</div>
                   <div className="text-[11px] text-muted">
