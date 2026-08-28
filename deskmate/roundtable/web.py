@@ -195,6 +195,7 @@ class RelatedBody(BaseModel):
 class LeadBody(BaseModel):
     approved: bool = True
     episode: Optional[int] = None  # 分集模式：拍板针对的集号
+    user_note: Optional[str] = None  # 用户打回时填写的修改意见（重写时注入 prompt）
 
 
 class ScreenStepBody(BaseModel):
@@ -742,7 +743,7 @@ def create_app(rt_port: int = 9920, base_dir: Optional[str] = None, workspace: O
         @app.post("/api/creation/{pid}/lead-outline")
         async def api_lead_outline(pid: str, body: LeadBody):
             try:
-                return JSONResponse(_csvc.lead_outline(pid, body.approved))
+                return JSONResponse(_csvc.lead_outline(pid, body.approved, user_note=body.user_note))
             except (PipelineGuardError, ValueError) as exc:
                 return JSONResponse({"error": str(exc)}, status_code=400)
             except KeyError:
@@ -778,7 +779,7 @@ def create_app(rt_port: int = 9920, base_dir: Optional[str] = None, workspace: O
         async def api_lead_screen(pid: str, body: LeadBody = None):
             try:
                 ep = body.episode if body else None
-                return JSONResponse(_csvc.lead_screen(pid, body.approved, ep))
+                return JSONResponse(_csvc.lead_screen(pid, body.approved, ep, user_note=body.user_note if body else None))
             except (PipelineGuardError, ValueError) as exc:
                 return JSONResponse({"error": str(exc)}, status_code=400)
             except KeyError:

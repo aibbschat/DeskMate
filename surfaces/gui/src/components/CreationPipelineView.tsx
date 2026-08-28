@@ -82,6 +82,41 @@ const STATE_PILL: Record<string, string> = {
 const STYLE_PRESETS = ["权谋正剧", "古装悬疑", "轻喜剧", "甜宠", "职场", "奇幻传奇"];
 const PACING_PRESETS = ["紧凑快节奏", "张弛有度", "舒缓慢节奏"];
 
+// 打回时填写修改意见的浮层：点「打回修改」就地展开，填完确认才真正打回。
+function RejectPanel({
+  note,
+  onNote,
+  onConfirm,
+  onCancel,
+  busy,
+}: {
+  note: string;
+  onNote: (v: string) => void;
+  onConfirm: () => void;
+  onCancel: () => void;
+  busy: boolean;
+}) {
+  return (
+    <div className="mt-1 w-full rounded-lg border border-warnSoft bg-warnSoft/30 p-2.5 space-y-2">
+      <textarea
+        autoFocus
+        value={note}
+        onChange={(e) => onNote(e.target.value)}
+        placeholder="填写你的修改意见（可选，将带入下一版重写）…"
+        className="w-full rounded-md border border-black/10 dark:border-white/10 bg-paper p-2 text-[13px] text-ink resize-y min-h-[64px]"
+      />
+      <div className="flex gap-2">
+        <button className="btn primary" disabled={busy} onClick={onConfirm}>
+          确认打回
+        </button>
+        <button className="btn" disabled={busy} onClick={onCancel}>
+          取消
+        </button>
+      </div>
+    </div>
+  );
+}
+
 export function CreationPipelineView({
   onOpenTeamChat,
   onBack,
@@ -113,6 +148,21 @@ export function CreationPipelineView({
   const [synthesis, setSynthesis] = useState("");
   const [finalizing, setFinalizing] = useState(false);
   const [docxPath, setDocxPath] = useState("");
+  // 打回时填写修改意见（重写时注入 prompt）
+  const [rejectOpen, setRejectOpen] = useState<null | string>(null);
+  const [rejectNote, setRejectNote] = useState("");
+
+  const doReject = async (kind: "outline" | "screen", ep?: number) => {
+    if (!pid) return;
+    const note = rejectNote.trim() || null;
+    setRejectOpen(null);
+    setRejectNote("");
+    if (kind === "outline") {
+      await run(() => leadOutline(pid, false, note));
+    } else {
+      await run(() => leadScreen(pid, false, ep, note));
+    }
+  };
 
   // 原著索引（阶段 5）：章节目录缓存 + 主题匹配候选 + 已选参考章节
   const [toc, setToc] = useState<Map<number, string>>(new Map());
@@ -450,7 +500,7 @@ export function CreationPipelineView({
         primary: true,
         onClick: () => run(() => leadScreen(pid!, true, ep)),
       });
-      btns.push({ label: "打回", onClick: () => run(() => leadScreen(pid!, false, ep)) });
+      btns.push({ label: "打回", onClick: () => { setRejectNote(""); setRejectOpen(`screen:${ep}`); } });
       btns.push({ label: "送圆桌终审", onClick: () => openProposal("screenplay", ep) });
     }
     if (prod.state === "done") btns.push({ label: "已定稿", disabled: true, onClick: () => {} });
@@ -1059,17 +1109,52 @@ export function CreationPipelineView({
                         )}
                         {btns.length > 0 && (
                           <div className="flex flex-wrap gap-2">
-                            {btns.map((b) => (
-                              <button
-                                key={b.label}
-                                className={"btn " + (b.primary ? "primary" : "")}
-                                disabled={busy || b.disabled}
-                                title={b.hint}
-                                onClick={b.onClick}
-                              >
-                                {b.label}
-                              </button>
-                            ))}
+                            {btns.map((b) => {
+                              if (b.label === "打回") {
+                                const key = `screen:${ep}`;
+                                if (rejectOpen === key) {
+                                  return (
+                                    <RejectPanel
+                                      key="reject"
+                                      note={rejectNote}
+                                      onNote={setRejectNote}
+                                      onConfirm={() => doReject("screen", ep)}
+                                      onCancel={() => {
+                                        setRejectOpen(null);
+                                        setRejectNote("");
+                                      }}
+                                      busy={busy}
+                                    />
+                                  );
+                                }
+                                return (
+                                  <span key={b.label} className="inline-flex items-center gap-1">
+                                    <button
+                                      className="btn"
+                                      disabled={busy || b.disabled}
+                                      title={b.hint}
+                                      onClick={b.onClick}
+                                    >
+                                      {b.label}
+                                    </button>
+                                    {!rejectOpen && snap?.user_notes?.[`screen:${ep}`] && (
+                                      <span className="text-[12px] text-warnInk">⚑ 已带修改意见</span>
+                                    )}
+                                  </span>
+                                );
+                              }
+                              return (
+                                <button
+                                  key={b.label}
+                                  className={"btn " + (b.primary ? "primary" : "")}
+                                  disabled={busy || b.disabled}
+                                  title={b.hint}
+                                  onClick={b.onClick}
+                                >
+                                  {b.label}
+                                </button>
+                              );
+                            })}
                           </div>
                         )}
                       </div>
@@ -1233,9 +1318,32 @@ export function CreationPipelineView({
               )}
               {phase === "lead_outline" && (
                 <>
-                  <button className="btn" disabled={busy} onClick={() => run(() => leadOutline(pid, false))}>
-                    打回修改
-                  </button>
+                  {rejectOpen === "outline" ? (
+                    <RejectPanel
+                      note={rejectNote}
+                      onNote={setRejectNote}
+                      onConfirm={() => doReject("outline")}
+                      onCancel={() => {
+                        setRejectOpen(null);
+                        setRejectNote("");
+                      }}
+                      busy={busy}
+                    />
+                  ) : (
+                    <button
+                      className="btn"
+                      disabled={busy}
+                      onClick={() => {
+                        setRejectNote("");
+                        setRejectOpen("outline");
+                      }}
+                    >
+                      打回修改
+                    </button>
+                  )}
+                  {!rejectOpen && snap?.user_notes?.["outline"] && (
+                    <span className="text-[12px] text-warnInk self-center">⚑ 已带修改意见</span>
+                  )}
                   <button className="btn" disabled={busy} onClick={() => run(() => leadOutline(pid, true))}>
                     主编直接定稿
                   </button>
@@ -1265,9 +1373,32 @@ export function CreationPipelineView({
               )}
               {!isEpisodic && phase === "lead_screen" && (
                 <>
-                  <button className="btn" disabled={busy} onClick={() => run(() => leadScreen(pid, false))}>
-                    打回修改
-                  </button>
+                  {rejectOpen === "screen" ? (
+                    <RejectPanel
+                      note={rejectNote}
+                      onNote={setRejectNote}
+                      onConfirm={() => doReject("screen")}
+                      onCancel={() => {
+                        setRejectOpen(null);
+                        setRejectNote("");
+                      }}
+                      busy={busy}
+                    />
+                  ) : (
+                    <button
+                      className="btn"
+                      disabled={busy}
+                      onClick={() => {
+                        setRejectNote("");
+                        setRejectOpen("screen");
+                      }}
+                    >
+                      打回修改
+                    </button>
+                  )}
+                  {!rejectOpen && snap?.user_notes?.["screen"] && (
+                    <span className="text-[12px] text-warnInk self-center">⚑ 已带修改意见</span>
+                  )}
                   <button className="btn" disabled={busy} onClick={() => run(() => leadScreen(pid, true))}>
                     主编直接定稿
                   </button>

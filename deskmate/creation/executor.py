@@ -60,6 +60,18 @@ def _requirement_block(
     return "\n\n【制作要求（必须严格遵守，违者返工）】\n" + "\n".join(parts)
 
 
+def _revision_block(notes: str) -> str:
+    """把用户对上一版的修改意见拼成强约束段，注入重写 prompt。
+
+    与 _requirement_block（风格/节奏硬规范）不同，这是**相对上版的增量
+    修订要求**——明确告诉 LLM「上一版哪里不行、这一版改什么」。空意见返回 ""。
+    """
+    notes = (notes or "").strip()
+    if not notes:
+        return ""
+    return "\n\n【修改要求（针对上一版的修订，必须满足）】\n" + notes
+
+
 def _parse_scenes(plan: str) -> list[tuple[str, str]]:
     """解析场景清单行「1.场景名|一句话目标」→ [(场景名, 目标), ...]。
 
@@ -114,6 +126,7 @@ class CreativeExecutor:
         novel_text: str = "",
         style: Optional[list[str]] = None,
         pacing: str = "",
+        revision_notes: str = "",
         on_event=None,
     ) -> str: ...
     def draft_screenplay(
@@ -126,6 +139,7 @@ class CreativeExecutor:
         episode: Optional[int] = None,
         episodes: int = 1,
         prior_summaries: str = "",
+        revision_notes: str = "",
         on_event=None,
     ) -> str: ...
     def review(self, text: str, criteria: str, novel_text: str = "", on_event=None) -> ReviewResult: ...
@@ -143,14 +157,16 @@ class StubExecutor:
         novel_text: str = "",
         style: Optional[list[str]] = None,
         pacing: str = "",
+        revision_notes: str = "",
         on_event=None,
     ) -> str:
         _emit(on_event, type="note", message="正在撰写大纲（stub）…", progress=50)
         tag = f"·附原著{len(novel_text)}字" if novel_text else ""
         req = f"·{','.join(style)}" if style else ""
         req += f"·{pacing}" if pacing else ""
+        rev = f"·改：{revision_notes[:40]}" if revision_notes else ""
         _emit(on_event, type="note", message="大纲初稿完成", progress=100)
-        return f"[大纲·stub{tag}{req}] {concept[:60]}"
+        return f"[大纲·stub{tag}{req}{rev}] {concept[:60]}"
 
     def draft_screenplay(
         self,
@@ -162,6 +178,7 @@ class StubExecutor:
         episode: Optional[int] = None,
         episodes: int = 1,
         prior_summaries: str = "",
+        revision_notes: str = "",
         on_event=None,
     ) -> str:
         _emit(on_event, type="note", message=f"正在拆解场景（stub）…", progress=10)
@@ -171,8 +188,9 @@ class StubExecutor:
         req += f"·{pacing}" if pacing else ""
         ep = f"·第{episode}/{episodes}集" if episodes and episodes > 1 else ""
         prior = f"\n{prior_summaries}" if prior_summaries else ""
+        rev = f"\n·改：{revision_notes[:40]}" if revision_notes else ""
         _emit(on_event, type="note", message="本集草稿完成", progress=100)
-        return f"[剧本·stub{tag}{req}{ep}] {outline[:60]}{prior}"
+        return f"[剧本·stub{tag}{req}{ep}] {outline[:60]}{prior}{rev}"
 
     def review(self, text: str, criteria: str, novel_text: str = "", on_event=None) -> ReviewResult:
         _emit(on_event, type="note", message="审核专家正在逐项核验（stub）…", progress=60)
@@ -192,6 +210,7 @@ class LLMExecutor:
         novel_text: str = "",
         style: Optional[list[str]] = None,
         pacing: str = "",
+        revision_notes: str = "",
         on_event=None,
     ) -> str:
         from deskmate.memory.llm import chat, llm_available
@@ -199,16 +218,23 @@ class LLMExecutor:
         if not llm_available():
             return ""
         novel_block = (
-            f"\n\n【原著参考（改编依据）】\n{novel_text}\n（请基于上述原著精神进行改编，"
-            "尊重人物与核心情节，允许合理的影视化再创作。）" if novel_text else ""
+            f"\n\n【原著参考（改编依据）】\n{novel_text}\n"
+            "（改编硬约束：①不得改动原著人物的核心动机与性格弧光；"
+            "②关键事件、真相与悬念（如死因疑点、冤案、血仇、阴谋）须保留原著设定；"
+            "③剧情推进须由原著动机驱动，禁止用与原著动机无关的桥段"
+            "（如偶遇、偷窃被抓、无端逃债）替换关键情节。）" if novel_text else ""
         )
         req = _requirement_block(style, pacing)
+        rev = _revision_block(revision_notes)
         _emit(on_event, type="note", message="正在撰写大纲…", progress=30)
         text = chat(
             system="你是资深大纲专家。把用户的概念/剧情点子写成结构完整、"
-            "有戏剧冲突的剧本大纲，标注主要人物与幕结构。若提供原著参考，须基于原著精神改编。"
-            "若给出制作要求，必须严格遵守并在大纲中体现（如节奏影响幕间密度、风格影响基调）。",
-            user=concept + novel_block + req,
+            "有戏剧冲突的剧本大纲，标注主要人物与幕结构。若提供原著参考，"
+            "人物的行为动机、性格弧光、关键悬念必须与原著一致——改编只能换叙事手法，"
+            "不能换人物内核；每个主要行为都应能在原著中找到动机支撑。"
+            "若给出制作要求，必须严格遵守并在大纲中体现（如节奏影响幕间密度、风格影响基调）。"
+            "若给出修改要求，须针对上一版的具体问题逐条修订，不得忽悠。",
+            user=concept + novel_block + req + rev,
             max_tokens=2000,
         )
         _emit(on_event, type="note", message="大纲初稿完成", progress=100)
@@ -224,6 +250,7 @@ class LLMExecutor:
         episode: Optional[int] = None,
         episodes: int = 1,
         prior_summaries: str = "",
+        revision_notes: str = "",
         on_event=None,
     ) -> str:
         """分段续写拼接（阶段 5 输出侧）——单次 8k token 出不了长剧，工程拆：
@@ -250,6 +277,7 @@ class LLMExecutor:
             if prior_summaries.strip()
             else ""
         )
+        rev = _revision_block(revision_notes)
         is_episodic = bool(episodes and episodes > 1)
         # 1) 拆场景（拆不动则整段写）
         _emit(on_event, type="note", message="正在拆解场景…", progress=5)
@@ -268,7 +296,7 @@ class LLMExecutor:
         # 2) 逐段生成 + 前情摘要续写
         segments: list[str] = []
         prev_summary = "（这是第一段，尚未有前情）"
-        base_user = f"{outline}{novel_block}{req}{prior_block}"
+        base_user = f"{outline}{novel_block}{req}{prior_block}{rev}"
         n = len(scenes)
         for i, (name, goal) in enumerate(scenes, 1):
             progress = 10 + int(88 * i / n)

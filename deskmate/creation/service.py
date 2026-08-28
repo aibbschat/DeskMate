@@ -329,6 +329,8 @@ def snapshot(pid: str) -> dict:
         # 前情上下文档位（加集续写衔接）
         "prior_context": getattr(pl, "prior_context", "summary_recent"),
         "include_review_notes": bool(getattr(pl, "include_review_notes", True)),
+        # 用户打回意见（重写时注入 prompt，前端展示「上次你提的修改要求」）
+        "user_notes": dict(getattr(pl, "_user_notes", {}) or {}),
     }
 
 
@@ -503,10 +505,10 @@ def review_outline(pid: str) -> dict:
     return _step(pid, "review_outline")
 
 
-def lead_outline(pid: str, approved: bool) -> dict:
+def lead_outline(pid: str, approved: bool, user_note: Optional[str] = None) -> dict:
     pl = get_pipeline(pid)
     result = ReviewResult(approved=approved, opinion="（主编手动拍板）" if approved else "（主编打回）")
-    pl.lead_verdict_outline(result=result)
+    pl.lead_verdict_outline(result=result, user_note=user_note)
     return snapshot(pid)
 
 
@@ -528,15 +530,16 @@ def review_screen(pid: str, episode: Optional[int] = None) -> dict:
     return snapshot(pid)
 
 
-def lead_screen(pid: str, approved: bool, episode: Optional[int] = None) -> dict:
+def lead_screen(pid: str, approved: bool, episode: Optional[int] = None,
+                user_note: Optional[str] = None) -> dict:
     pl = get_pipeline(pid)
     from .executor import ReviewResult
 
     result = ReviewResult(approved=approved, opinion="（主编手动拍板）" if approved else "（主编打回）")
     if episode is not None:
-        pl.lead_verdict_screenplay(episode=episode, result=result)
+        pl.lead_verdict_screenplay(episode=episode, result=result, user_note=user_note)
     else:
-        pl.lead_verdict_screenplay(result=result)
+        pl.lead_verdict_screenplay(result=result, user_note=user_note)
     return snapshot(pid)
 
 

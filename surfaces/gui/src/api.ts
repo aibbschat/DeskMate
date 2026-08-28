@@ -2922,6 +2922,8 @@ export interface CreationSnapshot {
   /** 前情上下文档位（加集续写衔接）："summary" | "summary_recent" */
   prior_context?: string;
   include_review_notes?: boolean;
+  /** 用户打回时填写的修改意见（按 stage 存：outline / screen / screen:N），重写时注入 prompt */
+  user_notes?: Record<string, string>;
 }
 export interface FinalProposal {
   item_kind: string;
@@ -3094,19 +3096,20 @@ export const draftScreen = (pid: string, episode?: number) =>
 export const reviewScreen = (pid: string, episode?: number) =>
   _runStepToSnapshot(pid, "review-screen", { episode: episode ?? null });
 
-async function _postLead(pid: string, step: string, approved: boolean, episode?: number): Promise<CreationSnapshot> {
+async function _postLead(pid: string, step: string, approved: boolean, episode?: number, userNote?: string | null): Promise<CreationSnapshot> {
   const res = await authedFetch(`${creationBase()}/api/creation/${encodeURIComponent(pid)}/${step}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ approved, episode: episode ?? null }),
+    body: JSON.stringify({ approved, episode: episode ?? null, user_note: userNote ?? null }),
   });
   await _rejectIfNotOk(res);
   return res.json();
 }
 
-export const leadOutline = (pid: string, approved: boolean) => _postLead(pid, "lead-outline", approved);
-export const leadScreen = (pid: string, approved: boolean, episode?: number) =>
-  _postLead(pid, "lead-screen", approved, episode);
+export const leadOutline = (pid: string, approved: boolean, userNote?: string | null) =>
+  _postLead(pid, "lead-outline", approved, undefined, userNote);
+export const leadScreen = (pid: string, approved: boolean, episode?: number, userNote?: string | null) =>
+  _postLead(pid, "lead-screen", approved, episode, userNote);
 
 export async function finalReviewProposal(
   pid: string,

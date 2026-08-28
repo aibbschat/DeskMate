@@ -63,6 +63,7 @@ class CreativePipeline:
         self.ids: dict[str, int] = {}
         self._team = None
         self._drafts: dict[int, str] = {}
+        self._user_notes: dict[str, str] = {}  # 用户打回时的修改意见（按 stage 存，重写时注入 prompt）
         self.last_docx: dict[str, str] = {}  # item_kind -> 上次定稿 docx 路径（供状态查询）
         self.novel_ref: str = ""            # 原著路径（txt/docx），前端创建时填写
         # 结构化制作要求（透明化 · 可提要求）：风格/节奏/集数
@@ -101,6 +102,7 @@ class CreativePipeline:
                 "prior_context": self.prior_context,
                 "include_review_notes": self.include_review_notes,
             }
+            payload["_user_notes"] = dict(self._user_notes)  # 用户打回意见持久化
             tmp.write_text(
                 json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
             )
@@ -121,6 +123,8 @@ class CreativePipeline:
                         cfg = v or {}
                         self.prior_context = cfg.get("prior_context") or "summary_recent"
                         self.include_review_notes = bool(cfg.get("include_review_notes", True))
+                    elif k == "_user_notes":
+                        self._user_notes = dict(v or {})
                     elif str(k).lstrip("-").isdigit():
                         self._drafts[int(k)] = v
         except Exception as exc:  # noqa: BLE001
@@ -550,11 +554,20 @@ class CreativePipeline:
         w = Actor(OUTLINE_WORKER, Role.WORKER)
         if self.store.get_item(self.space, outline_item_id)["state"] == "open":
             self.guard.transition(self.space, w, outline_item_id, to="in_progress", comment="开始撰写大纲")
+        # 重写注入：用户打回意见（_user_notes["outline"]）+ 最近一次审核打回意见，
+        # 一并拼进 prompt，让 LLM 真正按反馈改，而非原地重来。
+        revision = self._user_notes.get("outline", "")
+        rev_item = self.ids.get("outline_review_item")
+        if rev_item is not None:
+            rr = self._last_review_result(rev_item)
+            if rr.opinion and "通过" not in rr.opinion:
+                revision = (revision + "\n" + rr.opinion).strip() if revision else rr.opinion
         text = self.executor.draft_outline(
             self.concept,
             novel_text=self.novel_text,
             style=self.style,
             pacing=self.pacing,
+            revision_notes=revision,
             on_event=on_event,
         )
         self._drafts[outline_item_id] = text
@@ -580,7 +593,8 @@ class CreativePipeline:
 
     def lead_verdict_outline(self, outline_item_id: Optional[int] = None,
                              review_item_id: Optional[int] = None,
-                             result: Optional[ReviewResult] = None) -> str:
+                             result: Optional[ReviewResult] = None,
+                             *, user_note: Optional[str] = None) -> str:
         outline_item_id = outline_item_id or self.ids["outline_item"]
         review_item_id = review_item_id or self.ids["outline_review_item"]
         if result is None:
@@ -596,10 +610,14 @@ class CreativePipeline:
             self.guard.transition(self.space, self.lead, outline_item_id, to="done", comment="大纲定稿")
             self._export_docx("outline", self._drafts.get(outline_item_id, ""))
             return "approved"
-        # 打回：审核项保持 review（留待复审），产出项 review→in_progress 打回改。
+        # 打回：记录用户修改意见（重写时注入 prompt），产出项 review→in_progress 打回改。
         # 主编以 lead 身份打回（worker 无权做）。
+        if user_note:
+            self._user_notes["outline"] = user_note.strip()
+            self._save_drafts()
+        comment = f"打回修改：{user_note.strip()}" if user_note else f"打回修改：{result.opinion}"
         self.guard.transition(self.space, self.lead, outline_item_id, to="in_progress",
-                              comment=f"打回修改：{result.opinion}")
+                              comment=comment)
         return "rejected"
 
     # -- 剧本路线 ----------------------------------------------------------
@@ -616,6 +634,13 @@ class CreativePipeline:
             # 门禁点：剧本 in_progress 前检查大纲是否 done；未定稿则抛 PipelineGuardError
             self.guard.transition(self.space, w, screen_item_id, to="in_progress", comment="开始撰写剧本")
         outline_text = self._outline_text()
+        # 重写注入：用户打回意见（分集按集号存 key）+ 最近一次审核打回意见
+        stage_key = f"screen:{episode}" if episode else "screen"
+        revision = self._user_notes.get(stage_key, "")
+        rev_item = self._screen_review_item_id(episode)
+        rr = self._last_review_result(rev_item)
+        if rr.opinion and "通过" not in rr.opinion:
+            revision = (revision + "\n" + rr.opinion).strip() if revision else rr.opinion
         text = self.executor.draft_screenplay(
             outline_text,
             novel_text=self._novel_related(),
@@ -624,6 +649,7 @@ class CreativePipeline:
             episode=episode,
             episodes=self.episodes,
             prior_summaries=self._prior_context_block(episode),
+            revision_notes=revision,
             on_event=on_event,
         )
         self._drafts[screen_item_id] = text
@@ -655,7 +681,8 @@ class CreativePipeline:
     def lead_verdict_screenplay(self, screen_item_id: Optional[int] = None,
                                 review_item_id: Optional[int] = None,
                                 result: Optional[ReviewResult] = None,
-                                *, episode: Optional[int] = None) -> str:
+                                *, episode: Optional[int] = None,
+                                user_note: Optional[str] = None) -> str:
         screen_item_id = screen_item_id or self._screen_item_id(episode)
         review_item_id = review_item_id or self._screen_review_item_id(episode)
         if result is None:
@@ -674,9 +701,14 @@ class CreativePipeline:
             label = f"第{episode}集" if episode else None
             self._export_docx("screenplay", self._drafts.get(screen_item_id, ""), label=label)
             return "approved"
-        # 打回：审核项保持 review（留待复审），产出项 review→in_progress 打回改。
+        # 打回：记录用户修改意见（重写时注入 prompt），产出项 review→in_progress 打回改。
+        if user_note:
+            stage_key = f"screen:{episode}" if episode else "screen"
+            self._user_notes[stage_key] = user_note.strip()
+            self._save_drafts()
+        comment = f"打回修改：{user_note.strip()}" if user_note else f"打回修改：{result.opinion}"
         self.guard.transition(self.space, self.lead, screen_item_id, to="in_progress",
-                              comment=f"打回修改：{result.opinion}")
+                              comment=comment)
         return "rejected"
 
     # -- 终审桥接（线路 B → 线路 A）----
