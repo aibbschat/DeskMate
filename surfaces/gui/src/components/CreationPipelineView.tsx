@@ -964,10 +964,10 @@ export function CreationPipelineView({
               </div>
             )}
 
-            {/* 非分集：board 项状态 */}
-            {!isEpisodic && (
-              <div className="space-y-1.5">
-                {snap.items.map((it) => (
+            {/* board 项状态：两模式均渲染；分集模式仅显示大纲等无集号项（剧本预览见上方分集卡片，避免重复） */}
+            <div className="space-y-1.5">
+              {isEpisodic && <div className="text-[13px] font-semibold text-ink">大纲内容（拍板前请点「预览」查看）</div>}
+              {snap.items.filter((it) => !isEpisodic || it.episode == null).map((it) => (
                   <div
                     key={it.id}
                     className="flex items-center gap-2 text-[13px] rounded-lg bg-black/[0.02] dark:bg-white/[0.03] px-3 py-2"
@@ -990,7 +990,6 @@ export function CreationPipelineView({
                   </div>
                 )}
               </div>
-            )}
 
             {/* 阶段推进按钮（快速路径）：大纲阶段两模式通用；剧本阶段仅非分集（分集由各集卡片承载） */}
             <div className="flex flex-wrap gap-2">
