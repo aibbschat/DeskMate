@@ -2903,6 +2903,9 @@ export interface CreationSnapshot {
   pacing?: string;
   episodes?: number;
   episode_range?: number[];
+  /** 前情上下文档位（加集续写衔接）："summary" | "summary_recent" */
+  prior_context?: string;
+  include_review_notes?: boolean;
 }
 export interface FinalProposal {
   item_kind: string;
@@ -2962,6 +2965,35 @@ export async function createPipeline(
 
 export async function getPipeline(pid: string): Promise<CreationSnapshot> {
   const res = await authedFetch(`${httpBase()}/api/creation/pipeline/${encodeURIComponent(pid)}`);
+  return res.json();
+}
+
+/** 加集续写：做完前 N 集后接着做后续集（风格/节奏/前情自动继承，大纲须已定稿）。 */
+export async function extendEpisodes(
+  pid: string,
+  episodeRange: number[],
+  opts: { priorContext?: string; includeReviewNotes?: boolean } = {},
+): Promise<{
+  pid: string;
+  added: number[];
+  episodes: number;
+  episode_range: number[];
+  prior_context: string;
+  include_review_notes: boolean;
+}> {
+  const res = await authedFetch(`${httpBase()}/api/creation/${encodeURIComponent(pid)}/extend-episodes`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      episode_range: episodeRange,
+      prior_context: opts.priorContext ?? null,
+      include_review_notes: opts.includeReviewNotes ?? null,
+    }),
+  });
+  if (!res.ok) {
+    const j = await res.json().catch(() => ({}));
+    throw new Error(j.error || `extend-episodes failed: ${res.status}`);
+  }
   return res.json();
 }
 

@@ -14,6 +14,7 @@ import {
   pickNovelChapters,
   setRelatedChapters,
   getItemContent,
+  extendEpisodes,
   draftOutline,
   reviewOutline,
   leadOutline,
@@ -116,6 +117,14 @@ export function CreationPipelineView({
   // 产出预览（透明化：点开看草稿文本）
   const [preview, setPreview] = useState<{ itemId: number; content: string } | null>(null);
   const [loadingPreview, setLoadingPreview] = useState<number | null>(null);
+
+  // 加集续写面板（同一本书做完前 N 集后接着做）
+  const [extendOpen, setExtendOpen] = useState(false);
+  const [extFrom, setExtFrom] = useState(1);
+  const [extTo, setExtTo] = useState(2);
+  const [extPrior, setExtPrior] = useState<"summary" | "summary_recent">("summary_recent");
+  const [extNotes, setExtNotes] = useState(true);
+  const [extBusy, setExtBusy] = useState(false);
 
   const refresh = async (id?: string) => {
     const use = id ?? pid;
@@ -230,6 +239,29 @@ export function CreationPipelineView({
     }
   };
 
+  const doExtend = async () => {
+    if (!pid || extBusy) return;
+    const from = Math.max(1, extFrom);
+    const to = Math.max(from, extTo);
+    const range: number[] = [];
+    for (let i = from; i <= to; i++) range.push(i);
+    if (!range.length) return;
+    setExtBusy(true);
+    setError("");
+    try {
+      await extendEpisodes(pid, range, {
+        priorContext: extPrior,
+        includeReviewNotes: extNotes,
+      });
+      setExtendOpen(false);
+      await refresh();
+    } catch (e: any) {
+      setError(String(e?.message ?? e));
+    } finally {
+      setExtBusy(false);
+    }
+  };
+
   const openProposal = async (itemKind: "outline" | "screenplay", episode?: number) => {
     if (!pid) return;
     setError("");
@@ -335,6 +367,10 @@ export function CreationPipelineView({
     return [...map.entries()].sort((a, b) => a[0] - b[0]);
   })();
 
+  const maxEp = epGroups.length ? epGroups[epGroups.length - 1][0] : 0;
+  const outlineItem = snap?.items.find((it) => it.title.startsWith("大纲") && !it.title.includes("审核"));
+  const outlineDone = outlineItem?.state === "done";
+
   const stepIdx = PHASE_IDX[phase] ?? -1;
 
   return (
@@ -364,15 +400,15 @@ export function CreationPipelineView({
           <div className="rounded-lg bg-rose-500/10 text-rose-600 text-[13px] px-3 py-2 mb-3">{error}</div>
         )}
 
-        {/* 未开始：创建表单（流程总览 + 结构化制作要求） */}
+        {/* 未开始：创建表单（流程总览 + 结构化制作要求，宽屏两栏降密度） */}
         {!pid && (
-          <div className="rounded-xl border border-black/10 dark:border-white/10 bg-paper p-4 space-y-4 max-w-2xl">
-            {/* 流程总览：把整个流程摆出来 */}
+          <div className="rounded-xl border border-black/10 dark:border-white/10 bg-paper p-5 space-y-5 max-w-4xl">
+            {/* 流程总览：把整个流程摆出来（横贯全宽） */}
             <div>
-              <div className="text-[13px] font-semibold text-ink mb-2">创作流水线全貌</div>
-              <div className="flex items-center gap-1 overflow-x-auto pb-1">
+              <div className="text-[13px] font-semibold text-ink mb-2.5">创作流水线全貌</div>
+              <div className="flex items-center gap-1.5 overflow-x-auto pb-1">
                 {FLOW_STEPS.map((s, i) => (
-                  <div key={s.label} className="flex items-center gap-1 shrink-0">
+                  <div key={s.label} className="flex items-center gap-1.5 shrink-0">
                     <div className="flex flex-col items-center">
                       <div className="w-7 h-7 rounded-full bg-accent/15 text-accent flex items-center justify-center text-[12px] font-semibold">
                         {i + 1}
@@ -390,174 +426,192 @@ export function CreationPipelineView({
                   <span className="text-[11px] text-emerald-600 mt-1 whitespace-nowrap">定稿 docx</span>
                 </div>
               </div>
-              <div className="text-[11px] text-muted mt-1">
+              <div className="text-[11px] text-muted mt-1.5">
                 每位成员都是独立 Agent：编剧写稿、审核专家把关、主编拍板；剧本可在「拍板」处送圆桌 7 位专家终审。
               </div>
             </div>
 
-            <div>
+            <div className="border-t border-black/5 dark:border-white/10 pt-4">
               <div className="text-[13px] font-semibold text-ink">新建创作项目</div>
               <div className="text-[11px] text-muted mt-0.5">
-                填写概念后，可自定义风格 / 节奏 / 集数 —— 这些会成为强约束，写稿时严格执行。
+                左侧填基本盘，右侧提制作要求 —— 要求会成为强约束，写稿时严格执行。
               </div>
             </div>
 
-            <div>
-              <div className="text-[12px] text-muted mb-1">概念 / 剧情点子</div>
-              <textarea
-                className="w-full rounded-lg border border-black/10 dark:border-white/15 bg-transparent p-2.5 text-[13px] text-ink"
-                rows={3}
-                placeholder="例如：一部明代背景的历史剧，主角以锦衣卫身份周旋于东厂与文官之间"
-                value={concept}
-                onChange={(e) => setConcept(e.target.value)}
-              />
-            </div>
-            <div>
-              <div className="text-[12px] text-muted mb-1">原著文件路径（可选）</div>
-              <input
-                type="text"
-                className="w-full rounded-lg border border-black/10 dark:border-white/15 bg-transparent px-2.5 py-2 text-[13px] text-ink"
-                placeholder="如 /Users/.../原著.docx 或 .txt；留空则仅凭概念创作"
-                value={novelRef}
-                onChange={(e) => setNovelRef(e.target.value)}
-              />
-            </div>
-
-            {/* 风格 chips（多选） */}
-            <div>
-              <div className="text-[12px] text-muted mb-1.5">
-                风格（可多选）<span className="text-[10px]">· 将成为剧本的强制要求</span>
-              </div>
-              <div className="flex flex-wrap gap-1.5">
-                {STYLE_PRESETS.map((s) => (
-                  <button
-                    key={s}
-                    className={
-                      "px-2.5 py-1 rounded-full text-[12px] border " +
-                      (styles.includes(s)
-                        ? "bg-accent/15 border-accent/40 text-accent font-medium"
-                        : "border-black/10 dark:border-white/15 text-ink hover:border-accent/40")
-                    }
-                    onClick={() => toggleStyle(s)}
-                  >
-                    {s}
-                  </button>
-                ))}
-                {styleInput.trim() && (
-                  <button
-                    className={
-                      "px-2.5 py-1 rounded-full text-[12px] border " +
-                      (styles.includes(styleInput.trim())
-                        ? "bg-accent/15 border-accent/40 text-accent font-medium"
-                        : "border-black/10 dark:border-white/15 text-ink")
-                    }
-                    onClick={() => toggleStyle(styleInput.trim())}
-                  >
-                    {styleInput.trim()}
-                  </button>
-                )}
-                <input
-                  className="w-32 rounded-full border border-black/10 dark:border-white/15 bg-transparent px-2.5 py-1 text-[12px] text-ink"
-                  placeholder="自定义风格…"
-                  value={styleInput}
-                  onChange={(e) => setStyleInput(e.target.value)}
-                />
-              </div>
-            </div>
-
-            {/* 节奏 chips（单选） */}
-            <div>
-              <div className="text-[12px] text-muted mb-1.5">叙事节奏</div>
-              <div className="flex flex-wrap gap-1.5">
-                {PACING_PRESETS.map((p) => (
-                  <button
-                    key={p}
-                    className={
-                      "px-2.5 py-1 rounded-full text-[12px] border " +
-                      (pacing === p
-                        ? "bg-accent/15 border-accent/40 text-accent font-medium"
-                        : "border-black/10 dark:border-white/15 text-ink hover:border-accent/40")
-                    }
-                    onClick={() => setPacing(pacing === p ? "" : p)}
-                  >
-                    {p}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            {/* 集数 + 产出范围（仅剧本） */}
-            {kind === "screenplay" && (
-              <div className="flex items-center gap-5">
+            {/* 两栏：左=基本盘，右=制作要求 */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+              <div className="space-y-4">
                 <div>
-                  <div className="text-[12px] text-muted mb-1">剧本总集数</div>
-                  <div className="flex items-center gap-1">
-                    <input
-                      type="number"
-                      min={1}
-                      max={24}
-                      className="w-16 rounded-lg border border-black/10 dark:border-white/15 bg-transparent px-2 py-1 text-[13px] text-ink text-center"
-                      value={episodes}
-                      onChange={(e) => setEpisodes(Math.max(1, Math.min(24, parseInt(e.target.value || "1", 10) || 1)))}
-                    />
-                    <span className="text-[12px] text-muted">集</span>
-                  </div>
+                  <div className="text-[12px] text-muted mb-1">概念 / 剧情点子</div>
+                  <textarea
+                    className="w-full rounded-lg border border-black/10 dark:border-white/15 bg-transparent p-2.5 text-[13px] text-ink"
+                    rows={3}
+                    placeholder="例如：一部明代背景的历史剧，主角以锦衣卫身份周旋于东厂与文官之间"
+                    value={concept}
+                    onChange={(e) => setConcept(e.target.value)}
+                  />
                 </div>
-                {episodes > 1 && (
-                  <div className="flex-1">
-                    <div className="text-[12px] text-muted mb-1">
-                      本次只产出哪些集（可选，如 <span className="font-mono">1,3,5</span>；空=全部）
-                    </div>
-                    <input
-                      type="text"
-                      className="w-full rounded-lg border border-black/10 dark:border-white/15 bg-transparent px-2.5 py-1 text-[12px] text-ink"
-                      placeholder={`1-${episodes} 中的集号，逗号分隔`}
-                      value={episodeRange}
-                      onChange={(e) => setEpisodeRange(e.target.value)}
-                    />
+                <div>
+                  <div className="text-[12px] text-muted mb-1">原著文件路径（可选）</div>
+                  <input
+                    type="text"
+                    className="w-full rounded-lg border border-black/10 dark:border-white/15 bg-transparent px-2.5 py-2 text-[13px] text-ink"
+                    placeholder="如 /Users/.../原著.docx 或 .txt；留空则仅凭概念创作"
+                    value={novelRef}
+                    onChange={(e) => setNovelRef(e.target.value)}
+                  />
+                </div>
+                <div className="flex gap-4">
+                  <label className="flex items-center gap-1.5 text-[13px] text-ink">
+                    <input type="radio" checked={kind === "screenplay"} onChange={() => setKind("screenplay")} /> 剧本（含大纲）
+                  </label>
+                  <label className="flex items-center gap-1.5 text-[13px] text-ink">
+                    <input type="radio" checked={kind === "outline"} onChange={() => setKind("outline")} /> 仅大纲
+                  </label>
+                </div>
+                <div className="flex items-center gap-2 text-[12px] text-muted">
+                  执行器：
+                  <select
+                    className="rounded border border-black/10 dark:border-white/15 bg-transparent px-2 py-1 text-[12px] text-ink"
+                    value={executor}
+                    onChange={(e) => setExecutor(e.target.value as any)}
+                  >
+                    <option value="stub">stub（演示·不烧 token）</option>
+                    <option value="llm">llm（真实创作）</option>
+                  </select>
+                </div>
+                <button className="btn primary" disabled={busy || !concept.trim()} onClick={start}>
+                  {busy ? (novelRef.trim() ? "正在建立原著索引…" : "创建中…") : "开始创作"}
+                </button>
+                {busy && novelRef.trim() && (
+                  <div className="text-[12px] text-muted">
+                    首次读取原著需建索引（读全文 → 切章 → 生成改编圣经）；stub 模式为降级索引、不烧 token，请稍候…
                   </div>
                 )}
-                <div className="text-[11px] text-muted max-w-[140px]">
-                  {episodes > 1
-                    ? "分集模式：每集独立撰写、独立审核、独立拍板，可只产部分集"
-                    : "全本模式：整本剧本一个文件"}
-                </div>
               </div>
-            )}
 
-            <div className="flex gap-4">
-              <label className="flex items-center gap-1.5 text-[13px] text-ink">
-                <input type="radio" checked={kind === "screenplay"} onChange={() => setKind("screenplay")} /> 剧本（含大纲）
-              </label>
-              <label className="flex items-center gap-1.5 text-[13px] text-ink">
-                <input type="radio" checked={kind === "outline"} onChange={() => setKind("outline")} /> 仅大纲
-              </label>
-            </div>
-            <div className="flex items-center gap-2 text-[12px] text-muted">
-              执行器：
-              <select
-                className="rounded border border-black/10 dark:border-white/15 bg-transparent px-2 py-1 text-[12px] text-ink"
-                value={executor}
-                onChange={(e) => setExecutor(e.target.value as any)}
+              {/* 制作要求（右侧栏，整体一个视觉分组） */}
+              <div
+                className={
+                  "space-y-4 rounded-xl bg-black/[0.02] dark:bg-white/[0.03] p-3.5 " +
+                  (kind === "screenplay" ? "" : "opacity-60")
+                }
               >
-                <option value="stub">stub（演示·不烧 token）</option>
-                <option value="llm">llm（真实创作）</option>
-              </select>
-            </div>
-            <button className="btn primary" disabled={busy || !concept.trim()} onClick={start}>
-              {busy ? (novelRef.trim() ? "正在建立原著索引…" : "创建中…") : "开始创作"}
-            </button>
-            {busy && novelRef.trim() && (
-              <div className="text-[12px] text-muted">
-                首次读取原著需建索引（读全文 → 切章 → 生成改编圣经）；stub 模式为降级索引、不烧 token，请稍候…
+                <div className="text-[12px] font-semibold text-ink">
+                  制作要求<span className="text-[10px] font-normal text-muted"> · 可提要求，强约束</span>
+                </div>
+
+                {/* 风格 chips（多选） */}
+                <div>
+                  <div className="text-[12px] text-muted mb-1.5">
+                    风格（可多选）<span className="text-[10px]">· 将成为剧本的强制要求</span>
+                  </div>
+                  <div className="flex flex-wrap gap-1.5">
+                    {STYLE_PRESETS.map((s) => (
+                      <button
+                        key={s}
+                        className={
+                          "px-2.5 py-1 rounded-full text-[12px] border " +
+                          (styles.includes(s)
+                            ? "bg-accent/15 border-accent/40 text-accent font-medium"
+                            : "border-black/10 dark:border-white/15 text-ink hover:border-accent/40")
+                        }
+                        onClick={() => toggleStyle(s)}
+                      >
+                        {s}
+                      </button>
+                    ))}
+                    {styleInput.trim() && (
+                      <button
+                        className={
+                          "px-2.5 py-1 rounded-full text-[12px] border " +
+                          (styles.includes(styleInput.trim())
+                            ? "bg-accent/15 border-accent/40 text-accent font-medium"
+                            : "border-black/10 dark:border-white/15 text-ink")
+                        }
+                        onClick={() => toggleStyle(styleInput.trim())}
+                      >
+                        {styleInput.trim()}
+                      </button>
+                    )}
+                    <input
+                      className="w-32 rounded-full border border-black/10 dark:border-white/15 bg-transparent px-2.5 py-1 text-[12px] text-ink"
+                      placeholder="自定义风格…"
+                      value={styleInput}
+                      onChange={(e) => setStyleInput(e.target.value)}
+                    />
+                  </div>
+                </div>
+
+                {/* 节奏 chips（单选） */}
+                <div>
+                  <div className="text-[12px] text-muted mb-1.5">叙事节奏</div>
+                  <div className="flex flex-wrap gap-1.5">
+                    {PACING_PRESETS.map((p) => (
+                      <button
+                        key={p}
+                        className={
+                          "px-2.5 py-1 rounded-full text-[12px] border " +
+                          (pacing === p
+                            ? "bg-accent/15 border-accent/40 text-accent font-medium"
+                            : "border-black/10 dark:border-white/15 text-ink hover:border-accent/40")
+                        }
+                        onClick={() => setPacing(pacing === p ? "" : p)}
+                      >
+                        {p}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* 集数 + 产出范围（仅剧本） */}
+                {kind === "screenplay" && (
+                  <div className="space-y-2">
+                    <div className="flex items-center gap-4">
+                      <div>
+                        <div className="text-[12px] text-muted mb-1">剧本总集数</div>
+                        <div className="flex items-center gap-1">
+                          <input
+                            type="number"
+                            min={1}
+                            max={24}
+                            className="w-16 rounded-lg border border-black/10 dark:border-white/15 bg-transparent px-2 py-1 text-[13px] text-ink text-center"
+                            value={episodes}
+                            onChange={(e) => setEpisodes(Math.max(1, Math.min(24, parseInt(e.target.value || "1", 10) || 1)))}
+                          />
+                          <span className="text-[12px] text-muted">集</span>
+                        </div>
+                      </div>
+                      <div className="text-[11px] text-muted flex-1">
+                        {episodes > 1
+                          ? "分集模式：每集独立撰写、审核、拍板；做完后可随时「续写加集」接着做"
+                          : "全本模式：整本剧本一个文件"}
+                      </div>
+                    </div>
+                    {episodes > 1 && (
+                      <div>
+                        <div className="text-[12px] text-muted mb-1">
+                          本次只产出哪些集（可选，如 <span className="font-mono">1,3,5</span>；空=全部）
+                        </div>
+                        <input
+                          type="text"
+                          className="w-full rounded-lg border border-black/10 dark:border-white/15 bg-transparent px-2.5 py-1 text-[12px] text-ink"
+                          placeholder={`1-${episodes} 中的集号，逗号分隔`}
+                          value={episodeRange}
+                          onChange={(e) => setEpisodeRange(e.target.value)}
+                        />
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
-            )}
+            </div>
           </div>
         )}
 
-        {/* 进行中：步骤条 + 制作要求 + board/分集卡片 + 产出预览 + 终审 */}
+        {/* 进行中：步骤条 + 制作要求 + board/分集卡片 + 产出预览 + 终审（加宽分层） */}
         {pid && snap && (
-          <div className="space-y-3">
+          <div className="space-y-3 max-w-4xl">
             {/* 流水线步骤条（六步状态可视化） */}
             <div className="rounded-xl border border-black/10 dark:border-white/10 bg-paper p-3">
               <div className="flex items-center gap-1 overflow-x-auto">
@@ -698,67 +752,179 @@ export function CreationPipelineView({
               </div>
             )}
 
-            {/* 分集卡片（每集独立状态 + 操作 + 预览） */}
+            {/* 分集卡片（每集独立状态 + 操作 + 预览；宽屏两列降密度） */}
             {isEpisodic && epGroups.length > 0 && (
               <div className="space-y-2">
-                <div className="text-[13px] font-semibold text-ink">分集进度</div>
-                {epGroups.map(([ep, g]) => {
-                  const btns = epActions(ep, g.prod, g.rev);
-                  const prodState = g.prod?.state ?? "open";
-                  return (
-                    <div
-                      key={ep}
-                      className="rounded-xl border border-black/10 dark:border-white/10 bg-paper p-3 space-y-2"
-                    >
-                      <div className="flex items-center justify-between">
-                        <div className="flex items-center gap-2">
-                          <span
-                            className={
-                              "text-[13px] font-semibold " +
-                              (prodState === "done" ? "text-emerald-600" : "text-ink")
-                            }
-                          >
-                            第{ep}集
-                          </span>
-                          <span className={"text-[12px] " + (STATE_COLOR[prodState] ?? "text-muted")}>
-                            {STATE_LABEL[prodState] ?? prodState}
-                          </span>
-                          {g.rev && (
-                            <span className={"text-[12px] " + (STATE_COLOR[g.rev.state] ?? "text-muted")}>
-                              · 审核{STATE_LABEL[g.rev.state] ?? g.rev.state}
+                <div className="flex items-center justify-between">
+                  <div className="text-[13px] font-semibold text-ink">分集进度</div>
+                  <div className="text-[11px] text-muted">
+                    {epGroups.filter(([, g]) => g.prod?.state === "done").length}/{epGroups.length} 集已定稿
+                  </div>
+                </div>
+                <div className="grid grid-cols-1 xl:grid-cols-2 gap-2 items-start">
+                  {epGroups.map(([ep, g]) => {
+                    const btns = epActions(ep, g.prod, g.rev);
+                    const prodState = g.prod?.state ?? "open";
+                    return (
+                      <div
+                        key={ep}
+                        className="rounded-xl border border-black/10 dark:border-white/10 bg-paper p-3 space-y-2"
+                      >
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-2">
+                            <span
+                              className={
+                                "text-[13px] font-semibold " +
+                                (prodState === "done" ? "text-emerald-600" : "text-ink")
+                              }
+                            >
+                              第{ep}集
+                            </span>
+                            <span className={"text-[12px] " + (STATE_COLOR[prodState] ?? "text-muted")}>
+                              {STATE_LABEL[prodState] ?? prodState}
+                            </span>
+                            {g.rev && (
+                              <span className={"text-[12px] " + (STATE_COLOR[g.rev.state] ?? "text-muted")}>
+                                · 审核{STATE_LABEL[g.rev.state] ?? g.rev.state}
+                              </span>
+                            )}
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <button
+                              className="text-[12px] text-muted hover:text-accent"
+                              onClick={() => g.prod && showPreview(g.prod.id)}
+                            >
+                              {loadingPreview === g.prod?.id ? "加载中…" : preview?.itemId === g.prod?.id ? "收起预览" : "预览"}
+                            </button>
+                          </div>
+                        </div>
+                        {btns.length > 0 && (
+                          <div className="flex flex-wrap gap-2">
+                            {btns.map((b) => (
+                              <button
+                                key={b.label}
+                                className={"btn " + (b.primary ? "primary" : "")}
+                                disabled={busy || b.disabled}
+                                onClick={b.onClick}
+                              >
+                                {b.label}
+                              </button>
+                            ))}
+                          </div>
+                        )}
+                        {preview && preview.itemId === g.prod?.id && (
+                          <div className="rounded-lg bg-black/[0.02] dark:bg-white/[0.03] p-2.5 max-h-64 overflow-auto">
+                            <ReactMarkdown>{preview.content}</ReactMarkdown>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {/* 加集续写入口（做完前 N 集后接着做，风格/节奏/前情自动继承） */}
+                {outlineDone && (
+                  <div>
+                    {!extendOpen ? (
+                      <button
+                        className="w-full rounded-xl border border-dashed border-black/15 dark:border-white/20 py-2.5 text-[13px] text-muted hover:text-accent hover:border-accent/40"
+                        onClick={() => {
+                          setExtFrom(maxEp + 1);
+                          setExtTo(maxEp + 3);
+                          setExtPrior((snap?.prior_context as any) || "summary_recent");
+                          setExtNotes(snap?.include_review_notes ?? true);
+                          setExtendOpen(true);
+                        }}
+                      >
+                        ＋ 续写加集（接着已有剧集继续做）
+                      </button>
+                    ) : (
+                      <div className="rounded-xl border border-accent/30 bg-paper p-3.5 space-y-3">
+                        <div className="flex items-center justify-between">
+                          <span className="text-[13px] font-semibold text-ink">续写加集</span>
+                          <button className="text-[12px] text-muted hover:text-ink" onClick={() => setExtendOpen(false)}>
+                            收起
+                          </button>
+                        </div>
+                        {/* 继承制作要求（只读） */}
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <span className="text-[11px] text-muted">继承制作要求：</span>
+                          {(snap?.style ?? []).map((s) => (
+                            <span key={s} className="px-2 py-0.5 rounded-full bg-accent/10 text-accent text-[11px]">
+                              {s}
+                            </span>
+                          ))}
+                          {snap?.pacing && (
+                            <span className="px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-700 text-[11px]">
+                              节奏：{snap.pacing}
                             </span>
                           )}
+                          <span className="text-[11px] text-muted">（自动延续，无需重选）</span>
                         </div>
-                        <div className="flex items-center gap-2">
-                          <button
-                            className="text-[12px] text-muted hover:text-accent"
-                            onClick={() => g.prod && showPreview(g.prod.id)}
-                          >
-                            {loadingPreview === g.prod?.id ? "加载中…" : preview?.itemId === g.prod?.id ? "收起预览" : "预览"}
+                        {/* 续写范围 */}
+                        <div className="flex items-center gap-3">
+                          <span className="text-[12px] text-muted">续写范围</span>
+                          <div className="flex items-center gap-1">
+                            <span className="text-[12px] text-muted">第</span>
+                            <input
+                              type="number"
+                              min={maxEp + 1}
+                              max={99}
+                              className="w-16 rounded-lg border border-black/10 dark:border-white/15 bg-transparent px-2 py-1 text-[13px] text-ink text-center"
+                              value={extFrom}
+                              onChange={(e) => setExtFrom(Math.max(1, parseInt(e.target.value || "1", 10) || 1))}
+                            />
+                            <span className="text-[12px] text-muted">至</span>
+                            <input
+                              type="number"
+                              min={extFrom}
+                              max={99}
+                              className="w-16 rounded-lg border border-black/10 dark:border-white/15 bg-transparent px-2 py-1 text-[13px] text-ink text-center"
+                              value={extTo}
+                              onChange={(e) => setExtTo(Math.max(extFrom, parseInt(e.target.value || "1", 10) || 1))}
+                            />
+                            <span className="text-[12px] text-muted">集</span>
+                          </div>
+                        </div>
+                        {/* 前情上下文档位 */}
+                        <div className="space-y-1.5">
+                          <div className="text-[12px] text-muted">前情上下文（新集动笔时注入，续写衔接）</div>
+                          <label className="flex items-center gap-2 text-[12px] text-ink cursor-pointer">
+                            <input
+                              type="radio"
+                              checked={extPrior === "summary_recent"}
+                              onChange={() => setExtPrior("summary_recent")}
+                            />
+                            前集摘要 + 紧邻上集定稿全文
+                            <span className="text-[11px] text-muted">（推荐，衔接最准）</span>
+                          </label>
+                          <label className="flex items-center gap-2 text-[12px] text-ink cursor-pointer">
+                            <input
+                              type="radio"
+                              checked={extPrior === "summary"}
+                              onChange={() => setExtPrior("summary")}
+                            />
+                            仅前集摘要
+                            <span className="text-[11px] text-muted">（每集约150字，省 token）</span>
+                          </label>
+                          <label className="flex items-center gap-2 text-[12px] text-ink cursor-pointer">
+                            <input type="checkbox" checked={extNotes} onChange={(e) => setExtNotes(e.target.checked)} />
+                            附带历史审改意见
+                            <span className="text-[11px] text-muted">（审核评语/打回理由，续写不重蹈覆辙）</span>
+                          </label>
+                        </div>
+                        <div className="flex gap-2 justify-end">
+                          <button className="btn" onClick={() => setExtendOpen(false)}>
+                            取消
+                          </button>
+                          <button className="btn primary" disabled={extBusy} onClick={doExtend}>
+                            {extBusy ? "加集中…" : `确认加集（第${extFrom}-${extTo}集）`}
                           </button>
                         </div>
                       </div>
-                      {btns.length > 0 && (
-                        <div className="flex flex-wrap gap-2">
-                          {btns.map((b) => (
-                            <button
-                              key={b.label}
-                              className={"btn " + (b.primary ? "primary" : "")}
-                              disabled={busy || b.disabled}
-                              onClick={b.onClick}
-                            >
-                              {b.label}
-                            </button>
-                          ))}
-                        </div>
-                      )}
-                      {preview && preview.itemId === g.prod?.id && (
-                        <div className="rounded-lg bg-black/[0.02] dark:bg-white/[0.03] p-2.5 max-h-64 overflow-auto">
-                          <ReactMarkdown>{preview.content}</ReactMarkdown>
-                        </div>
-                      )}                    </div>
-                  );
-                })}
+                    )}
+                  </div>
+                )}
               </div>
             )}
 
