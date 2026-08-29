@@ -188,16 +188,32 @@ class ProactiveEngine:
             pref_ctx = PreferenceStore(base_dir=self.base_dir).to_context()
         except Exception:
             pref_ctx = ""
+        # P2-5：注入情感回顾（记得用户上周的状态）→ 连续情感关怀
+        emotion_ctx = ""
+        try:
+            from deskmate.growth.emotion_timeline import EmotionTimeline
+            from deskmate.growth.engine import GrowthEngine
+
+            et = EmotionTimeline(base_dir=self.base_dir)
+            et.record_today(GrowthEngine(base_dir=self.base_dir))
+            emotion_ctx = et.lookback(7)
+        except Exception:
+            emotion_ctx = ""
         ctx = build_proactive_context(
             workspace=self.workspace,
             memory_context=self._memory_context,
             user_activity=activity_desc,
             project_context=self._project_context,
         )
+        extra_ctx = ""
         if pref_ctx:
+            extra_ctx += f"\n## 用户行为偏好\n{pref_ctx}"
+        if emotion_ctx:
+            extra_ctx += f"\n## 情感回顾（连续关怀）\n{emotion_ctx}"
+        if extra_ctx:
             ctx = ProactiveContext(
                 perception=ctx.perception,
-                memory_context=ctx.memory_context + f"\n## 用户行为偏好\n{pref_ctx}",
+                memory_context=ctx.memory_context + extra_ctx,
                 user_activity=ctx.user_activity,
                 project_context=ctx.project_context,
                 bible=ctx.bible,
