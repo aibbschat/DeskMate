@@ -262,3 +262,65 @@ class TestEmpathyDomains:
         eng.save()
         eng2 = GrowthEngine(tmp_path)
         assert eng2.state.empathy_domains["memory"] == pytest.approx(1.0)
+
+
+# ============================================================
+# P0-3 反馈 → 信任/成长闭环（打回/定稿/纠正）
+# ============================================================
+
+
+class TestCreationFeedback:
+    def test_approved_raises_trust_and_creation_domain(self, tmp_growth):
+        eng = GrowthEngine(tmp_growth)
+        eng.state.trust = 0.5
+        eng.state.empathy = 50.0
+        eng.record_creation_feedback(True)
+        assert eng.state.trust == pytest.approx(0.5 + 0.02)
+        assert eng.state.empathy == pytest.approx(50.0 + 2.0)
+        # 创作默契子域增长（8.2 默契细分）
+        domains = eng.current_empathy_domains()["domains"]
+        assert domains.get("creation", 0) == pytest.approx(2.0)
+        # 事件：定稿/通过
+        assert any(e["kind"] == "creation_approved" for e in eng.state.recent_events)
+
+    def test_rework_lowers_trust_and_creation_domain(self, tmp_growth):
+        eng = GrowthEngine(tmp_growth)
+        eng.state.trust = 0.5
+        eng.state.empathy = 50.0
+        # 先让创作默契域有积累，打回应使其下降（域 clamp 到 [0,100]，不为负）
+        eng._gain_domain("creation", 5.0)
+        eng.record_creation_feedback(False)
+        assert eng.state.trust == pytest.approx(0.5 - 0.03)
+        assert eng.state.empathy == pytest.approx(50.0 - 2.0)
+        domains = eng.current_empathy_domains()["domains"]
+        assert domains.get("creation", 0) == pytest.approx(5.0 - 2.0)
+        # 事件：打回重做
+        assert any(e["kind"] == "creation_rework" for e in eng.state.recent_events)
+
+    def test_rework_hurts_trust_more_than_ignore(self, tmp_growth):
+        # 打回 = AI 没一次做对，trust 降幅应大于「忽略建议」
+        eng = GrowthEngine(tmp_growth)
+        eng.state.trust = 0.9
+        eng.record_creation_feedback(False)
+        after_rework = eng.state.trust
+
+        eng2 = GrowthEngine(tmp_growth)
+        eng2.state.trust = 0.9
+        eng2.record_suggestion_feedback(False)
+        assert after_rework < eng2.state.trust
+
+
+class TestCorrection:
+    def test_correction_lowers_trust_and_adds_event(self, tmp_growth):
+        eng = GrowthEngine(tmp_growth)
+        eng.state.trust = 0.5
+        eng.record_correction()
+        assert eng.state.trust == pytest.approx(0.5 - 0.02)
+        assert any(e["kind"] == "user_corrected" for e in eng.state.recent_events)
+
+    def test_correction_is_not_zero_trust_clamped(self, tmp_growth):
+        # 纠正不会把 trust 直接清零
+        eng = GrowthEngine(tmp_growth)
+        eng.state.trust = 0.05
+        eng.record_correction()
+        assert eng.state.trust > 0.0

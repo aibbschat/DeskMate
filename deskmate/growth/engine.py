@@ -80,13 +80,21 @@ INTIMACY_SUGGESTION_IGNORED = -1.0
 
 TRUST_ACCEPTED = 0.03
 TRUST_IGNORED = -0.02
+TRUST_APPROVED = 0.02     # 创作定稿/通过：认可 AI 产出
+TRUST_REWORK = -0.03      # 创作打回重做：AI 没一次做对
+TRUST_CORRECTED = -0.02   # 用户明确纠正：AI 理解有偏差
 TRUST_CLAMP = (0.0, 1.0)
 
 EMPATHY_ACCEPTED = 2.0
 EMPATHY_IGNORED = -1.0
+EMPATHY_APPROVED = 2.0
+EMPATHY_REWORK = -2.0
+EMPATHY_CORRECTED = -1.5
 
 MOOD_ACCEPTED = 4.0
 MOOD_IGNORED = -3.0
+
+XP_CREATION_APPROVED = 4
 
 # 记忆预算调制：默契度 0-100 → 倍率 [0.9, 1.3]
 EMPATHY_BUDGET_MIN = 0.9
@@ -409,6 +417,46 @@ class GrowthEngine:
             self._gain_relation("intimacy", INTIMACY_SUGGESTION_IGNORED)
             self._gain_domain(DOMAIN_PROACTIVE, EMPATHY_IGNORED)
             self._add_event("suggestion_ignored")
+        self._apply_decay()
+        self._recompute_level()
+        self.save()
+
+    # ------------------------------------------------------------------
+    # 创作反馈（P0-3：定稿/打回 → 信任/默契）
+    # ------------------------------------------------------------------
+
+    def record_creation_feedback(self, approved: bool) -> None:
+        """用户对创作产出的拍板反馈：定稿(True) → 信任↑ 默契↑；打回(False) → 信任↓ 默契↓。
+
+        打回重做 = 「AI 没一次做对」的负反馈（trust 降幅大于忽略建议）；
+        定稿/通过 = 认可产出（正反馈）。同时计入「创作」默契子域（8.2）。
+        """
+        if approved:
+            self._gain_relation("trust", TRUST_APPROVED, 0.0, 1.0)
+            self._gain_relation("empathy", EMPATHY_APPROVED)
+            self._gain_relation("mood", MOOD_ACCEPTED)
+            self._gain_domain(DOMAIN_CREATION, EMPATHY_APPROVED)
+            self.state.growth_value += XP_CREATION_APPROVED
+            self._add_event("creation_approved", note="创作定稿/通过")
+        else:
+            self._gain_relation("trust", TRUST_REWORK, 0.0, 1.0)
+            self._gain_relation("empathy", EMPATHY_REWORK)
+            self._gain_relation("mood", MOOD_IGNORED)
+            self._gain_domain(DOMAIN_CREATION, EMPATHY_REWORK)
+            self._add_event("creation_rework", note="创作被打回重做")
+        self._apply_decay()
+        self._recompute_level()
+        self.save()
+
+    def record_correction(self) -> None:
+        """用户明确纠正（「不对/别这样/记错了」）：信任微降 + 默契微调。
+
+        区别于「忽略建议」——这是主动纠错信号，AI 应校准理解而非只是降低好感。
+        """
+        self._gain_relation("trust", TRUST_CORRECTED, 0.0, 1.0)
+        self._gain_relation("empathy", EMPATHY_CORRECTED)
+        self._gain_relation("mood", MOOD_IGNORED)
+        self._add_event("user_corrected", note="用户明确纠正")
         self._apply_decay()
         self._recompute_level()
         self.save()

@@ -353,6 +353,13 @@ def _maybe_evolve_on_correction(
     )
     if not any(sig in last_user for sig in _SIGNALS):
         return
+    # P0-3：明确纠正 → 信任/默契微调（best-effort，不阻断技能进化）
+    try:
+        from deskmate.growth.engine import GrowthEngine
+
+        GrowthEngine(base_dir=base_dir).record_correction()
+    except Exception:
+        pass
     try:
         from deskmate.skills.manager import SkillManager
 

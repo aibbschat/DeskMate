@@ -150,6 +150,9 @@ const PROFICIENCY_LABEL: Record<string, string> = {
   suggestion_accepted: "采纳了我的建议",
   suggestion_ignored: "忽略了我的建议",
   memory_learned: "记住了新信息",
+  creation_approved: "创作定稿 / 通过",
+  creation_rework: "创作被打回",
+  user_corrected: "你纠正了我",
 };
 
 function proficiencyText(p: number): string {

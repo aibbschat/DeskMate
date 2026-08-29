@@ -169,6 +169,20 @@ class CreationChat:
         self.messages.append(msg)
         self._save()
 
+    # ---- 反馈 → 信任/成长（P0-3）----
+    def _record_creation_feedback(self, approved: bool) -> None:
+        """拍板反馈写入成长系统（best-effort，不阻塞创作流程）。
+
+        定稿/通过 → trust↑默契↑；打回重做 → trust↓默契↓（P0-3：反馈→信任/成长闭环）。
+        """
+        try:
+            from deskmate.growth.engine import GrowthEngine
+
+            base = getattr(self.pipeline, "base_dir", None) or Path.home() / ".deskmate"
+            GrowthEngine(base_dir=Path(base)).record_creation_feedback(approved)
+        except Exception as exc:
+            logger.debug("creation feedback -> growth 失败: %s", exc)
+
     # ---- 状态快照 ----
     def _state(self) -> dict:
         pl = self.pipeline
@@ -404,6 +418,8 @@ class CreationChat:
         except Exception as exc:
             yield _msg(MSG_ERROR, text=f"定稿失败：{exc}")
             return
+        # P0-3：拍板反馈 → 信任/成长闭环（best-effort）
+        self._record_creation_feedback(verdict == "approved")
         if verdict == "approved":
             yield _msg(MSG_MILESTONE, kind="outline", title="大纲已定稿",
                        text="你是主编，决策已记录。大纲 docx 已自动落地。")
@@ -473,6 +489,8 @@ class CreationChat:
         except Exception as exc:
             yield _msg(MSG_ERROR, text=f"定稿失败：{exc}")
             return
+        # P0-3：拍板反馈 → 信任/成长闭环（best-effort）
+        self._record_creation_feedback(verdict == "approved")
         title = f"第{episode}集" if episode else "剧本"
         if verdict == "approved":
             yield _msg(MSG_MILESTONE, kind="screenplay", title=f"{title}已定稿", episode=episode,
