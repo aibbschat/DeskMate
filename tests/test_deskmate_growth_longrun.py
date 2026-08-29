@@ -196,3 +196,69 @@ class TestBackwardCompat:
         eng.save()
         eng2 = GrowthEngine(tmp_path)
         assert eng2.state.bond_depth == pytest.approx(10.0)
+
+
+# ============================================================
+# 默契细分（8.2 深化：per-domain empathy）
+# ============================================================
+
+
+class TestEmpathyDomains:
+    def test_domain_growth_by_event_type(self, tmp_growth):
+        eng = GrowthEngine(tmp_growth)
+        eng.record_memory_learned(2)      # memory +1.0*2
+        eng.record_writing(chapters=1, words=100)  # creation +1
+        eng.record_suggestion_feedback(accepted=True)  # proactive +2
+        eng.record_chat()                  # companion +0.3
+        d = eng.state.empathy_domains
+        assert d["memory"] == pytest.approx(2.0)
+        assert d["creation"] == pytest.approx(1.0)
+        assert d["proactive"] == pytest.approx(2.0)
+        assert d["companion"] == pytest.approx(0.3)
+
+    def test_domain_ignored_decreases(self, tmp_growth):
+        eng = GrowthEngine(tmp_growth)
+        eng.state.empathy_domains["proactive"] = 5.0
+        eng.record_suggestion_feedback(accepted=False)
+        assert eng.state.empathy_domains["proactive"] == pytest.approx(4.0)  # -1
+        assert eng.state.bond_depth == 0.0  # 负数不转深度
+
+    def test_domain_cap_overflows_to_depth(self, tmp_growth):
+        eng = GrowthEngine(tmp_growth)
+        eng.state.empathy_domains["memory"] = 99.0
+        eng._gain_domain("memory", 2.0)
+        assert eng.state.empathy_domains["memory"] == pytest.approx(100.0)
+        assert eng.state.bond_depth == pytest.approx(1.0)  # 溢出 1 转深度
+
+    def test_current_empathy_domains_top(self, tmp_growth):
+        eng = GrowthEngine(tmp_growth)
+        eng.state.empathy_domains = {"creation": 60.0, "memory": 20.0}
+        out = eng.current_empathy_domains()
+        assert out["top"] == "创作"
+        assert out["top_value"] == pytest.approx(60.0)
+        assert out["domains"]["memory"] == pytest.approx(20.0)
+
+    def test_snapshot_includes_empathy_domains(self, tmp_growth):
+        eng = GrowthEngine(tmp_growth)
+        eng.record_writing(chapters=1, words=100)
+        snap = eng.snapshot()
+        assert "empathy_domains" in snap
+        assert snap["empathy_domains"]["domains"]["creation"] >= 1.0
+
+    def test_old_state_without_domains_loads_fine(self, tmp_path):
+        """旧 growth.json 无 empathy_domains → 加载为空 dict，不抛异常。"""
+        gpath = tmp_path / "growth.json"
+        gpath.write_text(
+            json.dumps({"intimacy": 80.0, "trust": 0.5}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        eng = GrowthEngine(tmp_path)
+        assert eng.state.empathy_domains == {}
+        assert eng.current_empathy_domains()["top"] == ""
+
+    def test_roundtrip_preserves_domains(self, tmp_path):
+        eng = GrowthEngine(tmp_path)
+        eng.record_memory_learned(1)
+        eng.save()
+        eng2 = GrowthEngine(tmp_path)
+        assert eng2.state.empathy_domains["memory"] == pytest.approx(1.0)

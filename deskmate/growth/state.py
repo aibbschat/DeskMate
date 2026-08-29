@@ -72,6 +72,10 @@ class GrowthState:
     # 由深度派生「关系阶段」（初识→熟络→默契→知己→灵魂伴侣）。
     # 让「数值满格」之后仍有可感知的进化，而不是死在数值上限。
     bond_depth: float = 0.0
+    # 默契细分子域（8.2 深化）：整体默契满格后，各子域继续深化，「懂你」更细、更可感。
+    # 键：creation/memory/proactive/companion（标签见 engine.EMPATHY_DOMAIN_LABELS）。
+    # 各子域同样 0-100，封顶溢出转 bond_depth。
+    empathy_domains: dict[str, float] = field(default_factory=dict)
 
     level: int = 1
     growth_value: int = 0
@@ -105,6 +109,7 @@ class GrowthState:
             "mood": round(self.mood, 1),
             "vitality": round(self.vitality, 1),
             "bond_depth": round(self.bond_depth, 1),
+            "empathy_domains": {k: round(v, 1) for k, v in self.empathy_domains.items()},
             "level": self.level,
             "growth_value": self.growth_value,
             "skill_proficiency": {
@@ -186,6 +191,14 @@ def load_state(base_dir: Path | str | None = None) -> GrowthState:
         for k, v in raw_badges.items():
             if k and isinstance(v, str):
                 st.badges_unlocked[str(k)] = v
+
+    raw_domains = data.get("empathy_domains")
+    if isinstance(raw_domains, dict):
+        for k, v in raw_domains.items():
+            try:
+                st.empathy_domains[str(k)] = float(v)
+            except (TypeError, ValueError):
+                continue
 
     raw_skills = data.get("skill_proficiency")
     if isinstance(raw_skills, dict):

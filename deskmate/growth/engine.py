@@ -30,6 +30,19 @@ BOND_STAGES = [
     (400, "灵魂伴侣"),
 ]
 
+# 默契细分子域（8.2 深化）：整体默契满格后，子域继续深化，「懂你」更细、更可感。
+# 各子域 0-100，封顶溢出同样转 bond_depth。
+DOMAIN_CREATION = "creation"      # 创作：编校 / 审稿 / 圆桌 / 书稿入库
+DOMAIN_MEMORY = "memory"          # 记忆：新事实被记住
+DOMAIN_PROACTIVE = "proactive"    # 主动：主动建议被接受 / 忽略
+DOMAIN_COMPANION = "companion"    # 陪伴：日常对话时长
+EMPATHY_DOMAIN_LABELS = {
+    DOMAIN_CREATION: "创作",
+    DOMAIN_MEMORY: "记忆",
+    DOMAIN_PROACTIVE: "主动",
+    DOMAIN_COMPANION: "陪伴",
+}
+
 # recent_events 在 GrowthState.to_dict 里被截断到最后 50 条。
 # 只有当日志长度 < 该上限时，才能断定它是完整历史、可用于回溯推断解锁时间。
 EVENT_LOG_CAP = 50
@@ -234,24 +247,48 @@ class GrowthEngine:
         """增长关系数值；到上限后的溢出转入 bond_depth（封顶不浪费）。
 
         返回值 = 实际生效的增长量（可为负）。
-        每次转入深度都会检查阶段是否升级（升级记录 bond_stage_up 事件）。
         """
         before = float(getattr(self.state, key))
         new = clamp(before + amount, lo, hi)
         setattr(self.state, key, new)
         actual = new - before
         if amount > 0 and actual < amount:
-            overflow = amount - actual
-            before_depth = self.state.bond_depth
-            self.state.bond_depth = round(self.state.bond_depth + overflow, 2)
-            if self.bond_stage_from_depth(self.state.bond_depth)[0] > self.bond_stage_from_depth(before_depth)[0]:
-                _, name = self.bond_stage_from_depth(self.state.bond_depth)
-                self._add_event(
-                    "bond_stage_up",
-                    stage=name,
-                    depth=round(self.state.bond_depth, 1),
-                )
+            self._deposit_depth(amount - actual)
         return actual
+
+    def _gain_domain(self, domain: str, amount: float) -> float:
+        """增长默契细分子域；到上限后的溢出同样转入 bond_depth。"""
+        before = float(self.state.empathy_domains.get(domain, 0.0))
+        new = clamp(before + amount, 0.0, 100.0)
+        self.state.empathy_domains[domain] = new
+        actual = new - before
+        if amount > 0 and actual < amount:
+            self._deposit_depth(amount - actual)
+        return actual
+
+    def _deposit_depth(self, overflow: float) -> None:
+        """把关系数值的封顶溢出存入 bond_depth，并检查阶段是否升级。"""
+        if overflow <= 0:
+            return
+        before_depth = self.state.bond_depth
+        self.state.bond_depth = round(self.state.bond_depth + overflow, 2)
+        if self.bond_stage_from_depth(self.state.bond_depth)[0] > self.bond_stage_from_depth(before_depth)[0]:
+            _, name = self.bond_stage_from_depth(self.state.bond_depth)
+            self._add_event(
+                "bond_stage_up",
+                stage=name,
+                depth=round(self.state.bond_depth, 1),
+            )
+
+    def current_empathy_domains(self) -> dict:
+        """默契细分子域概览（供前端展示「在哪方面更懂你」）。"""
+        domains = dict(self.state.empathy_domains)
+        top = max(domains.items(), key=lambda kv: kv[1], default=("", 0.0))
+        return {
+            "domains": {k: round(v, 1) for k, v in domains.items()},
+            "top": EMPATHY_DOMAIN_LABELS.get(top[0], "") if top[0] else "",
+            "top_value": round(top[1], 1) if top[0] else 0.0,
+        }
 
     def current_bond(self) -> dict:
         """当前关系阶段与进度（供前端展示 / snapshot）。"""
@@ -362,6 +399,7 @@ class GrowthEngine:
             self._gain_relation("empathy", EMPATHY_ACCEPTED)
             self._gain_relation("mood", MOOD_ACCEPTED)
             self._gain_relation("intimacy", INTIMACY_SUGGESTION_ACCEPTED)
+            self._gain_domain(DOMAIN_PROACTIVE, EMPATHY_ACCEPTED)
             self.state.growth_value += XP_SUGGESTION_ACCEPTED
             self._add_event("suggestion_accepted")
         else:
@@ -369,6 +407,7 @@ class GrowthEngine:
             self._gain_relation("empathy", EMPATHY_IGNORED)
             self._gain_relation("mood", MOOD_IGNORED)
             self._gain_relation("intimacy", INTIMACY_SUGGESTION_IGNORED)
+            self._gain_domain(DOMAIN_PROACTIVE, EMPATHY_IGNORED)
             self._add_event("suggestion_ignored")
         self._apply_decay()
         self._recompute_level()
@@ -386,6 +425,7 @@ class GrowthEngine:
         self._gain_relation("intimacy", INTIMACY_MEMORY_LEARNED * count)
         self.state.growth_value += XP_MEMORY_LEARNED * count
         self.state.memories_learned += count
+        self._gain_domain(DOMAIN_MEMORY, INTIMACY_MEMORY_LEARNED * count)
         self._add_event("memory_learned", count=count)
         self._apply_decay()
         self._recompute_level()
@@ -438,6 +478,9 @@ class GrowthEngine:
         if (now.month, now.day) in ((12, 31), (1, 1)):
             self._bump(badge_registry.COUNTER_NEW_YEAR)
 
+        # 陪伴子域：日常对话是细水长流的陪伴（每轮 +0.3，克制）
+        self._gain_domain(DOMAIN_COMPANION, 0.3)
+
         self.save()
 
     # ------------------------------------------------------------------
@@ -481,17 +524,20 @@ class GrowthEngine:
                 self.state.counters[badge_registry.COUNTER_MAX_DAILY_WORDS] = today_total
 
         self._add_event("writing_reviewed", chapters=chapters, words=words)
+        self._gain_domain(DOMAIN_CREATION, 1.0)
         self.save()
 
     def record_roundtable(self) -> None:
         """记录一次创作圆桌召集。"""
         self._bump(badge_registry.COUNTER_ROUNDTABLES)
+        self._gain_domain(DOMAIN_CREATION, 1.0)
         self._add_event("roundtable_held")
         self.save()
 
     def record_report(self) -> None:
         """记录一次审阅报告生成。"""
         self._bump(badge_registry.COUNTER_REPORTS)
+        self._gain_domain(DOMAIN_CREATION, 1.0)
         self._add_event("report_generated")
         self.save()
 
@@ -506,6 +552,7 @@ class GrowthEngine:
             self.state.counters[badge_registry.COUNTER_MANUSCRIPTS] = int(total)
         else:
             self._bump(badge_registry.COUNTER_MANUSCRIPTS)
+        self._gain_domain(DOMAIN_CREATION, 1.0)
         self._add_event("manuscript_saved")
         self.save()
 
@@ -787,6 +834,7 @@ class GrowthEngine:
         d = self.state.to_dict()
         d["level_progress"] = self.current_level_progress()
         d["bond"] = self.current_bond()
+        d["empathy_domains"] = self.current_empathy_domains()
         d["proficiency_ranking_factor"] = {
             name: round(1.0 + (p.proficiency - 0.5) * MATCH_PROFICIENCY_WEIGHT, 3)
             for name, p in self.state.skill_proficiency.items()
