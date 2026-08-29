@@ -263,6 +263,7 @@ class ProactiveEngine:
             reason=judgment.reasoning,
             suggest_threshold=suggest_thr,
             prepare_threshold=prepare_thr,
+            suggestion_type=judgment.suggestion_type,
         )
 
         if decision.action == ActionType.NO_ACTION:

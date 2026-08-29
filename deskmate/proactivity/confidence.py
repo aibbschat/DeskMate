@@ -27,12 +27,17 @@ THRESHOLD_SUGGEST = 0.8    # > 80% → 直接弹出
 THRESHOLD_PREPARE = 0.5    # 50%-80% → 静默准备
 # < 50% → 不行动
 
+# P2-5 情感关怀专属门槛：纯粹的关心不需要高把握（judge 引导 0.6-0.8 即可），
+# 用更低门槛让其更容易触发；且不走 PREPARE（关怀不需要「静默准备」）。
+THRESHOLD_SUGGEST_CARE = 0.6
+
 
 def evaluate_action(
     confidence: float,
     reason: str = "",
     suggest_threshold: float | None = None,
     prepare_threshold: float | None = None,
+    suggestion_type: str | None = None,
 ) -> ActionDecision:
     """根据置信度分数决定行动类型。
 
@@ -41,11 +46,29 @@ def evaluate_action(
         reason: 判断理由
         suggest_threshold: 可选，覆盖默认 SUGGEST 门槛（成长系统信任感调制）
         prepare_threshold: 可选，覆盖默认 PREPARE 门槛
+        suggestion_type: 可选，建议类型。当为 ``emotional_care`` 时启用关怀专属
+            低门槛（THRESHOLD_SUGGEST_CARE），且低于门槛直接 NO_ACTION（不进
+            PREPARE），避免关怀被静默积压弹不出。
 
     Returns:
         ActionDecision
     """
     confidence = max(0.0, min(1.0, confidence))
+
+    # P2-5 情感关怀：专属低门槛，且不做 PREPARE 过渡。
+    if suggestion_type == "emotional_care":
+        if confidence >= THRESHOLD_SUGGEST_CARE:
+            return ActionDecision(
+                action=ActionType.SUGGEST,
+                confidence=confidence,
+                reason=reason or f"情感关怀 ({confidence:.0%})，主动关心",
+            )
+        return ActionDecision(
+            action=ActionType.NO_ACTION,
+            confidence=confidence,
+            reason=reason or f"情感关怀置信度不足 ({confidence:.0%})，不主动打扰",
+        )
+
     thr_suggest = suggest_threshold if suggest_threshold is not None else THRESHOLD_SUGGEST
     thr_prepare = prepare_threshold if prepare_threshold is not None else THRESHOLD_PREPARE
 

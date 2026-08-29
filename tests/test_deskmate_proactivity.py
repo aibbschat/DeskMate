@@ -96,6 +96,34 @@ class TestConfidence:
         result = evaluate_action(0.9, reason="发现明显矛盾")
         assert result.reason == "发现明显矛盾"
 
+    # --- P2-5 情感关怀专属低门槛（修复「关怀弹不出」软断点） ---
+
+    def test_care_at_low_threshold_suggests(self):
+        # 关怀只需 0.6，普通建议 0.65 仍走 PREPARE，这里应直接 SUGGEST
+        result = evaluate_action(0.65, suggestion_type="emotional_care")
+        assert result.action == ActionType.SUGGEST
+
+    def test_care_at_exact_threshold_suggests(self):
+        result = evaluate_action(0.6, suggestion_type="emotional_care")
+        assert result.action == ActionType.SUGGEST
+
+    def test_care_below_threshold_no_action(self):
+        # 关怀低于 0.6 直接 NO_ACTION，绝不进 PREPARE（不被静默积压）
+        result = evaluate_action(0.59, suggestion_type="emotional_care")
+        assert result.action == ActionType.NO_ACTION
+
+    def test_care_very_low_no_action(self):
+        result = evaluate_action(0.3, suggestion_type="emotional_care")
+        assert result.action == ActionType.NO_ACTION
+
+    def test_care_skips_prepare_band(self):
+        # 普通建议 0.65 在 PREPARE 带；关怀同置信度必须跳过 PREPARE 直接弹
+        normal = evaluate_action(0.65)
+        care = evaluate_action(0.65, suggestion_type="emotional_care")
+        assert normal.action == ActionType.PREPARE
+        assert care.action == ActionType.SUGGEST
+
+
 
 # ============================================================
 # DISTURB MANAGER
