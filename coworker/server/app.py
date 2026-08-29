@@ -2532,6 +2532,52 @@ def create_app(manager: SessionManager) -> FastAPI:
             logging.exception("get deskmate memory layering failed")
             return JSONResponse({"error": "read memory layering failed"}, status_code=500)
 
+    @app.get("/v1/deskmate/memory/dream")
+    async def get_deskmate_memory_dream() -> dict[str, Any]:
+        """P2-1 后台自动提炼（Dreaming）：返回上次记忆提炼状态与是否到期可跑。
+
+        8.0 红线：让「记忆自我进化 / 矛盾消解 / 过时更新」在前端可感可看。
+        """
+        try:
+            from pathlib import Path as _P
+
+            from deskmate.memory import dream as _dream
+
+            desk_dir = _P(
+                os.environ.get("DESKMATE_DIR", os.path.expanduser("~/.deskmate"))
+            )
+            last = _dream.last_run(desk_dir)
+            due = _dream._should_run(desk_dir)
+            report_path = desk_dir / _dream._REPORT_FILE
+            merged = contradictions_resolved = stale_superseded = 0
+            files_touched: list[str] = []
+            if report_path.is_file():
+                for line in report_path.read_text(encoding="utf-8").splitlines():
+                    m = re.search(r"去重[:：]\s*(\d+)", line)
+                    if m:
+                        merged = int(m.group(1))
+                    m = re.search(r"矛盾消解[:：]\s*(\d+)", line)
+                    if m:
+                        contradictions_resolved = int(m.group(1))
+                    m = re.search(r"超龄迁 vault[（(]可恢复[)）][:：]\s*(\d+)", line)
+                    if m:
+                        stale_superseded = int(m.group(1))
+                    m = re.search(r"触及文件[:：]\s*(.+)", line)
+                    if m:
+                        files_touched = [f.strip() for f in m.group(1).split(",") if f.strip()]
+            return {
+                "last_run": last,
+                "due": due,
+                "merged": merged,
+                "contradictions_resolved": contradictions_resolved,
+                "stale_superseded": stale_superseded,
+                "files_touched": files_touched,
+                "report_path": str(report_path),
+            }
+        except Exception:
+            logging.exception("get deskmate memory dream failed")
+            return JSONResponse({"error": "read memory dream failed"}, status_code=500)
+
     @app.get("/v1/deskmate/skills/curator")
     async def get_deskmate_skills_curator() -> dict[str, Any]:
         """P0-7 curator 自控清理：返回自动归档开关状态与当前整理候选（非破坏性巡检）。

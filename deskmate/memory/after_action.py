@@ -537,6 +537,29 @@ def _maybe_curate_skills(base_dir: Path) -> None:
         logger.exception("after_action: 技能巡检失败")
 
 
+def _maybe_dream(base_dir: Path) -> None:
+    """后台空闲时对「你的记忆」做静默提炼（P2-1 对标 Dreaming）。
+
+    只动 USER.md / MEMORY.md（不碰书稿记忆），零 LLM、幂等、fail-open。
+    距上次提炼超过间隔才运行（decay/curator 同款间隔守卫）。
+    """
+    try:
+        from deskmate.memory import dream as _dream
+
+        if not _dream._should_run(base_dir):
+            return
+        result = _dream.run_dream(base_dir)
+        logger.info(
+            "after_action: 记忆提炼 -> 去重 %d, 矛盾消解 %d, 超龄迁vault %d, 文件 %s",
+            result.get("merged", 0),
+            result.get("contradictions_resolved", 0),
+            result.get("stale_superseded", 0),
+            result.get("files_touched", []),
+        )
+    except Exception:
+        logger.exception("after_action: 记忆提炼失败")
+
+
 # ---------------------------------------------------------------------------
 # 项目日志（记一笔）
 # ---------------------------------------------------------------------------
@@ -674,6 +697,7 @@ def reflect_and_persist(
             _maybe_evolve_on_correction(base_dir, last_user, last_asst)
             _maybe_review_memory(base_dir, last_user, last_asst)
             _maybe_curate_skills(base_dir)
+            _maybe_dream(base_dir)
             # A：内容侧闭环（产出文本 / 产物文件回流圣经），LLM 抽取较慢，放后台不阻塞响应
             _upsert_content_loop(workspace, last_asst, artifacts)
         Thread(target=_bg, daemon=True).start()
