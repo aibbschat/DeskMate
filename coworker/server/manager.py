@@ -4820,12 +4820,12 @@ class SessionManager:
         return resumed
 
     async def _combined_extra_tick(self) -> None:
-        """每次 scheduler tick 的扩展钩子：先恢复 self-wake，再（opt-in）触发 DeskMate 后台主动推理。
+        """每次 scheduler tick 的扩展钩子：先恢复 self-wake，再触发 DeskMate 后台主动推理。
 
-        默认只做 OpenWorker 原生 resume_due_wakes。仅当环境变量 DESKMATE_PROACTIVE_BACKGROUND=1
-        时，额外触发 DeskMate 主动推理 tick（通过 deskmate.proactivity.background 懒加载接入，
-        不 fork 引擎）。所有外部调用都包在 try/except 中：即使 deskmate 未安装或出错，也不影响
-        OpenWorker 原生调度行为。
+        默认只做 OpenWorker 原生 resume_due_wakes。DeskMate 后台主动推理**默认开启**（P0-2：
+        开箱即用、防睡死——scheduler 每 30s 常驻 tick，不依赖前端轮询）；仅当环境变量
+        DESKMATE_PROACTIVE_BACKGROUND=0 时显式关闭。所有外部调用都包在 try/except 中：
+        即使 deskmate 未安装或出错，也不影响 OpenWorker 原生调度行为。
         """
         # 官方 Teams 框架 tick（resume self-wake 会话 + 团队队列排空）作为统一入口，
         # 使合并进来的 Teams/Triage Lead 框架随调度器运行；底层仍走原生 resume 逻辑。
@@ -4834,7 +4834,10 @@ class SessionManager:
         except Exception:
             logging.exception("scheduler/team tick failed in combined extra_tick")
 
-        if os.environ.get("DESKMATE_PROACTIVE_BACKGROUND") == "1":
+        # P0-2：后台主动性默认开启。未显式设置或 =1 → 开；仅 DESKMATE_PROACTIVE_BACKGROUND=0 → 关。
+        # （run.py 启动期 _load_env_file 已把 ~/.config/coworker/.env 灌入 os.environ，
+        #   因此 .env 里的设置能真正生效——env 死结已解。）
+        if os.environ.get("DESKMATE_PROACTIVE_BACKGROUND", "1") != "0":
             try:
                 from pathlib import Path as _Path
 

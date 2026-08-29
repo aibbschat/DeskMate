@@ -5,8 +5,8 @@ make_extra_tick(engine, wrapped=None) 返回一个 async 协程：每次 schedul
 尊重静默模式与异常隔离：任何错误都不影响原生 scheduler 行为。
 
 注：deskmate-proactivity 引擎按进程隔离（感知 / 防打扰状态在各自进程内），后台 tick 使用的是
-主进程内新建的 ProactiveEngine 实例——这是「扩展而非 fork」原则下的最小接入，仅做 opt-in 的
-后台感知建议，不作强制。是否启用由环境变量 DESKMATE_PROACTIVE_BACKGROUND=1 控制（见 manager.py）。
+主进程内新建的 ProactiveEngine 实例——这是「扩展而非 fork」原则下的最小接入。**默认开启**（P0-2）：
+未显式设置或 =1 即启用；仅当环境变量 DESKMATE_PROACTIVE_BACKGROUND=0 时关闭（见 manager.py）。
 """
 
 from __future__ import annotations
