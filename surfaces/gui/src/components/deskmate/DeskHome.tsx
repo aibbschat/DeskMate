@@ -16,6 +16,8 @@ import { Icon, type IconName } from "../Icon";
 import { authedFetch, httpBase } from "../../api";
 import { EXPERTS } from "./experts";
 import { DeskDigest } from "./DeskDigest";
+import { BondPanel } from "./BondPanel";
+import type { GrowthSnapshot } from "./StatusPanel";
 
 /** 当前可召唤的就绪专家（取第一个 ready 的，保证「召唤专家」chip 不写死具体 id）。 */
 const READY_EXPERT_ID = EXPERTS.find((e) => e.status !== "soon")?.id ?? "editor";
@@ -35,6 +37,8 @@ function dispatchDeskmate(name: string, detail?: Record<string, unknown>) {
 export function DeskHome() {
   const { t, i18n } = useTranslation();
   const [learnedTotal, setLearnedTotal] = useState<number | null>(null);
+  // 关系阶段 + 默契细分（8.2 可视化）：从 growth snapshot 读取 bond / empathy_domains
+  const [growth, setGrowth] = useState<GrowthSnapshot | null>(null);
 
   // 每次回到首页（组件重新挂载）随机抽一条问候，制造新鲜感。
   const greeting = useMemo(() => {
@@ -49,6 +53,14 @@ export function DeskHome() {
       .then((r) => (r.ok ? r.json() : null))
       .then((d) => { if (d?.stats) setLearnedTotal(d.stats.total ?? 0); })
       .catch(() => {/* 静默降级，徽标不显示 */});
+  }, []);
+
+  // 拉取成长快照（bond 阶段 + 默契细分）。失败静默降级，不阻塞首页。
+  useEffect(() => {
+    authedFetch(`${httpBase()}/v1/deskmate/growth`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => { if (d && typeof d.level === "number") setGrowth(d); })
+      .catch(() => {/* 静默降级 */});
   }, []);
 
   const chips: ChipDef[] = [
@@ -94,6 +106,10 @@ export function DeskHome() {
             {c.badge && <span className="dm-chip-badge">{c.badge}</span>}
           </button>
         ))}
+      </div>
+      {/* 关系阶段 + 默契细分（8.2：让「越用越懂你」可感可看） */}
+      <div className="dm-bond-slot">
+        <BondPanel growth={growth} />
       </div>
       <DeskDigest />
     </div>

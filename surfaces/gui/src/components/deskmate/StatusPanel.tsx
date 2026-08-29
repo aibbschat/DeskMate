@@ -126,6 +126,21 @@ export interface GrowthSnapshot {
   streak_days?: number;
   achievements?: Achievement[];
   personality?: PersonalityProfile;
+  // 关系深度/阶段（8.2：封顶不浪费的第二曲线）
+  bond?: {
+    depth: number;
+    stage: string;
+    stage_index: number;
+    next_threshold: number | null;
+    progress: number;
+    maxed: boolean;
+  };
+  // 默契细分子域（8.2 深化：创作/记忆/主动/陪伴）
+  empathy_domains?: {
+    domains: Record<string, number>;
+    top: string;
+    top_value: number;
+  };
 }
 
 const PROFICIENCY_LABEL: Record<string, string> = {
