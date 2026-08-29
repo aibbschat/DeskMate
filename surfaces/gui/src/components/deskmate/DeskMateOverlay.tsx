@@ -10,7 +10,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { authedFetch, httpBase } from "../../api";
+import { authedFetch, httpBase, getMemorySettings, setMemorySettings } from "../../api";
 import { CicadaMascot } from "./CicadaMascot";
 import { useMascotWalk } from "./useMascotWalk";
 import { useProactiveTick } from "./useProactiveTick";
@@ -87,6 +87,8 @@ export function DeskMateOverlay({ agent, sessionId, activeExpert }: Props) {
   const [proofreadFocus, setProofreadFocus] = useState<"edit" | "manuscripts" | "style" | null>(null);
   // 主动模式开关（后台建议），需在 useProactiveTick 之前声明
   const [proactiveEnabled, setProactiveEnabled] = useState(true);
+  // 记忆自动注入开关（P0-1：默认开启）
+  const [injectEnabled, setInjectEnabled] = useState(true);
 
   // 桌宠固定右下角（不游走、不遮挡文字/操作）。首页与对话页统一停靠角落。
   const mascotMode: "free" | "dock" | "corner" = "corner";
@@ -273,6 +275,13 @@ export function DeskMateOverlay({ agent, sessionId, activeExpert }: Props) {
       .catch(() => {/* 静默降级 */});
   }, []);
 
+  // 挂载时读取记忆注入状态（P0-1）
+  useEffect(() => {
+    getMemorySettings()
+      .then((s) => setInjectEnabled(s.auto_inject !== false))
+      .catch(() => setInjectEnabled(true));
+  }, []);
+
   const handleToggleProactive = useCallback((enabled: boolean) => {
     setProactiveEnabled(enabled);
     authedFetch(`${httpBase()}/v1/deskmate/proactive`, {
@@ -283,6 +292,14 @@ export function DeskMateOverlay({ agent, sessionId, activeExpert }: Props) {
       console.error("deskmate proactive toggle failed", err);
       // 回滚 UI
       setProactiveEnabled(!enabled);
+    });
+  }, []);
+
+  const handleToggleInject = useCallback((enabled: boolean) => {
+    setInjectEnabled(enabled);
+    setMemorySettings({ auto_inject: enabled }).catch((err: unknown) => {
+      console.error("memory auto_inject toggle failed", err);
+      setInjectEnabled(!enabled); // 回滚 UI
     });
   }, []);
 
@@ -518,6 +535,8 @@ export function DeskMateOverlay({ agent, sessionId, activeExpert }: Props) {
         onOpenProofread={() => setProofreadOpen(true)}
         proactiveEnabled={proactiveEnabled}
         onToggleProactive={handleToggleProactive}
+        injectEnabled={injectEnabled}
+        onToggleInject={handleToggleInject}
         learned={learned}
         growth={growth}
         achievements={growth?.achievements ?? []}

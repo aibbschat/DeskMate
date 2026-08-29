@@ -13,6 +13,7 @@ Settings-level state, deliberately outside the memory table (MEMORY-SPEC §2, §
 from __future__ import annotations
 
 import json
+import os
 import threading
 from pathlib import Path
 from typing import Optional
@@ -44,12 +45,22 @@ class MemorySettingsStore:
         return bool(self._load().get("enabled", True))  # on by default (spec §5.4)
 
     @property
+    def auto_inject(self) -> bool:
+        # P0-1: 记忆每轮自动注入默认开启——"越用越懂你"的前提。
+        # 仅当用户在设置中关闭、或显式设 DESKMATE_AUTO_INJECT=0 时才关。
+        return bool(self._load().get("auto_inject", True))
+
+    @property
     def user_rules(self) -> str:
         rules = self._load().get("user_rules", "")
         return rules if isinstance(rules, str) else ""
 
     def set(
-        self, *, enabled: Optional[bool] = None, user_rules: Optional[str] = None
+        self,
+        *,
+        enabled: Optional[bool] = None,
+        user_rules: Optional[str] = None,
+        auto_inject: Optional[bool] = None,
     ) -> dict:
         with self._lock:
             data = self._load()
@@ -57,11 +68,25 @@ class MemorySettingsStore:
                 data["enabled"] = bool(enabled)
             if user_rules is not None:
                 data["user_rules"] = str(user_rules)[:MAX_USER_RULES_CHARS]
+            if auto_inject is not None:
+                data["auto_inject"] = bool(auto_inject)
             self._save(data)
-        return {"enabled": self.enabled, "user_rules": self.user_rules}
+        if auto_inject is not None:
+            # 仅当显式切换时才镜像到进程环境变量，避免无关的 settings 更新污染进程环境。
+            self.apply_auto_inject_env()
+        return self.snapshot()
+
+    def apply_auto_inject_env(self) -> None:
+        """Mirror persisted ``auto_inject`` into the process env so the per-turn
+        injection gate in ``coworker/agent.py`` reflects the default-on state."""
+        os.environ["DESKMATE_AUTO_INJECT"] = "1" if self.auto_inject else "0"
 
     def snapshot(self) -> dict:
-        return {"enabled": self.enabled, "user_rules": self.user_rules}
+        return {
+            "enabled": self.enabled,
+            "user_rules": self.user_rules,
+            "auto_inject": self.auto_inject,
+        }
 
 
 def format_user_rules(rules: str) -> str:

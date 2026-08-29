@@ -90,13 +90,32 @@ def test_toast_undo_journey(tmp_path):
 
 def test_settings_roundtrip_and_partial_updates(tmp_path):
     client, _ = _fixture(tmp_path)
-    assert client.get("/v1/memory/settings").json() == {"enabled": True, "user_rules": ""}
+    data = client.get("/v1/memory/settings").json()
+    assert data["enabled"] is True
+    assert data["user_rules"] == ""
+    assert data["auto_inject"] is True  # P0-1: 默认开启
 
     # rules-only update leaves the toggle alone, and vice versa
     out = client.put("/v1/memory/settings", json={"user_rules": "Reply in Hindi"}).json()
-    assert out == {"enabled": True, "user_rules": "Reply in Hindi"}
+    assert out["enabled"] is True
+    assert out["user_rules"] == "Reply in Hindi"
+    assert out["auto_inject"] is True
     out = client.put("/v1/memory/settings", json={"enabled": False}).json()
-    assert out == {"enabled": False, "user_rules": "Reply in Hindi"}
+    assert out["enabled"] is False
+    assert out["user_rules"] == "Reply in Hindi"
+    assert out["auto_inject"] is True
+
+
+def test_auto_inject_default_on_and_toggleable(tmp_path):
+    """P0-1: 记忆注入默认开启，且可在设置中关闭/重新开启。"""
+    client, _ = _fixture(tmp_path)
+    assert client.get("/v1/memory/settings").json()["auto_inject"] is True
+    out = client.put("/v1/memory/settings", json={"auto_inject": False}).json()
+    assert out["auto_inject"] is False
+    # 关闭不影响其它字段
+    assert out["enabled"] is True
+    out = client.put("/v1/memory/settings", json={"auto_inject": True}).json()
+    assert out["auto_inject"] is True
 
 
 def test_settings_path_never_parses_as_memory_id(tmp_path):

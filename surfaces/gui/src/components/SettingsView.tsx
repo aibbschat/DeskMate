@@ -3,6 +3,8 @@ import { useTranslation } from "react-i18next";
 import i18n from "../i18n";
 import {
   getSettings,
+  getMemorySettings,
+  setMemorySettings,
   getTrustedWorkspaces,
   setCompactionSettings,
   setContextBar,
@@ -468,6 +470,8 @@ function AppearanceSection() {
       <SidebarCard />
 
       <ContextBarCard />
+
+      <MemoryInjectionCard />
 
       <FilesCard />
 
@@ -988,6 +992,46 @@ function ContextBarCard() {
             A small meter showing how full the model&rsquo;s context window is. Turn it off
             to show this session&rsquo;s token total instead; either way the full breakdown
             is one click away.
+          </span>
+        </span>
+      </label>
+    </div>
+  );
+}
+
+// -- 记忆自动注入（P0-1：默认开启，可在设置中关闭） -----------------------
+function MemoryInjectionCard() {
+  const [on, setOn] = useState<boolean | null>(null);
+
+  useEffect(() => {
+    getMemorySettings()
+      .then((s) => setOn(s.auto_inject !== false))
+      .catch(() => setOn(true));
+  }, []);
+
+  const save = async (next: boolean) => {
+    setOn(next);
+    await setMemorySettings({ auto_inject: next });
+  };
+
+  if (on === null) return null;
+  return (
+    <div className={CARD + " p-4 mb-4"} data-testid="memory-injection-card">
+      <div className={FIELD_LABEL}>记忆自动注入</div>
+      <label className="flex items-start gap-3 py-2">
+        <input
+          type="checkbox"
+          className="mt-0.5"
+          data-testid="memory-injection-toggle"
+          checked={on}
+          onChange={(e) => save(e.target.checked)}
+        />
+        <span>
+          <span className="block text-[13px] text-ink">
+            每轮自动带上相关记忆
+          </span>
+          <span className="block text-[12px] text-muted">
+            开启后，墨灵会在每次对话时自动检索并注入与当前话题相关的记忆，越聊越懂你。关闭则保留记忆但不自动注入。
           </span>
         </span>
       </label>

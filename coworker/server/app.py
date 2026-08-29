@@ -1323,6 +1323,7 @@ def create_app(manager: SessionManager) -> FastAPI:
         return manager.set_memory_settings(
             enabled=bool(body["enabled"]) if "enabled" in body else None,
             user_rules=str(body["user_rules"]) if "user_rules" in body else None,
+            auto_inject=bool(body["auto_inject"]) if "auto_inject" in body else None,
         )
 
     @app.patch("/v1/memory/{item_id}")
@@ -3900,11 +3901,8 @@ def create_app(manager: SessionManager) -> FastAPI:
                 except Exception:
                     logging.exception("after_action reflect failed")
 
-                # Context injection visibility: count injected memory blocks
-                from deskmate.memory.llm import llm_available as _llm_ok
-                _auto_inject = (
-                    os.environ.get("DESKMATE_AUTO_INJECT") == "1" or _llm_ok()
-                )
+                # Context injection visibility: 仅当记忆注入开启时播报（P0-1 默认开启）
+                _auto_inject = os.environ.get("DESKMATE_AUTO_INJECT") == "1"
                 if _auto_inject:
                     try:
                         ctx = await asyncio.to_thread(

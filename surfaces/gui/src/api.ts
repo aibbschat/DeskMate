@@ -1773,6 +1773,7 @@ export interface MemoryEntry {
 export interface MemorySettings {
   enabled: boolean;
   user_rules: string;
+  auto_inject?: boolean;
 }
 
 // Fired whenever memory changes from OUTSIDE the memory screen — today the agent

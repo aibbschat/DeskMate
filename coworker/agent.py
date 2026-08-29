@@ -197,7 +197,7 @@ def _skill_dirs(workspace: Optional[Path]) -> list[Path]:
 
 
 def _deskmate_memory_context(messages: list | None = None) -> str:
-    """DeskMate 记忆每轮自动注入（opt-in，DESKMATE_AUTO_INJECT=1）。
+    """DeskMate 记忆每轮自动注入（默认开启；DESKMATE_AUTO_INJECT=0 可关闭）。
 
     接入 OpenWorker 官方每轮 context_provider 机制：返回的 <system-context> 块在
     引擎发送时附到最新 user message（不持久化）。未开启或异常时返回空串，绝不影响
@@ -206,7 +206,8 @@ def _deskmate_memory_context(messages: list | None = None) -> str:
     Args:
         messages: 当前对话的消息列表，用于提取最后一条用户消息做关键词搜索。
     """
-    if os.environ.get("DESKMATE_AUTO_INJECT") != "1":
+    # P0-1: 默认开启记忆注入；仅当用户在设置中关闭（DESKMATE_AUTO_INJECT=0）才跳过。
+    if os.environ.get("DESKMATE_AUTO_INJECT") == "0":
         return ""
     try:
         from deskmate.memory.manager import DeskMateMemoryManager
@@ -242,12 +243,12 @@ def _deskmate_memory_context(messages: list | None = None) -> str:
 
 
 def _deskmate_post_turn_hook(user_msg: str, assistant_msg: str) -> None:
-    """DeskMate 会话后自动抽取（opt-in，DESKMATE_AUTO_INJECT=1）。
+    """DeskMate 会话后自动抽取（默认开启；DESKMATE_AUTO_INJECT=0 可关闭）。
 
     在引擎每轮对话完成后自动调用，提取记忆和技能。
     火后即忘，绝不阻塞主循环。
     """
-    if os.environ.get("DESKMATE_AUTO_INJECT") != "1":
+    if os.environ.get("DESKMATE_AUTO_INJECT") == "0":
         return
     try:
         from deskmate.memory.manager import DeskMateMemoryManager
@@ -276,7 +277,7 @@ def _deskmate_skill_index() -> str:
     LLM 看到匹配任务时自觉调用 skill_view(name) 加载完整技能。
     无技能或异常时返回空串。
     """
-    if os.environ.get("DESKMATE_AUTO_INJECT") != "1":
+    if os.environ.get("DESKMATE_AUTO_INJECT") == "0":
         return ""
     try:
         from deskmate.skills.manager import SkillManager

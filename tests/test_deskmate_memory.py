@@ -422,18 +422,18 @@ class TestPerTurnInjection:
         assert "用户画像" in ctx
         assert "Python" in ctx
 
-    def test_auto_inject_off_by_default(self, tmp_dir: Path):
-        mgr = DeskMateMemoryManager(tmp_dir)
-        (tmp_dir / "MEMORY.md").write_text("§ 喜好\n用户喜欢Python", encoding="utf-8")
-        assert mgr.deskmate_auto_inject_context("Python") == ""
-
-    def test_auto_inject_on_with_env(self, tmp_dir: Path, monkeypatch):
-        monkeypatch.setenv("DESKMATE_AUTO_INJECT", "1")
+    def test_auto_inject_on_by_default(self, tmp_dir: Path):
         mgr = DeskMateMemoryManager(tmp_dir)
         (tmp_dir / "MEMORY.md").write_text("§ 喜好\n用户喜欢Python", encoding="utf-8")
         out = mgr.deskmate_auto_inject_context("Python")
         assert "<memory-context>" in out
         assert "Python" in out
+
+    def test_auto_inject_opt_out_via_env(self, tmp_dir: Path, monkeypatch):
+        monkeypatch.setenv("DESKMATE_AUTO_INJECT", "0")
+        mgr = DeskMateMemoryManager(tmp_dir)
+        (tmp_dir / "MEMORY.md").write_text("§ 喜好\n用户喜欢Python", encoding="utf-8")
+        assert mgr.deskmate_auto_inject_context("Python") == ""
 
 
 def test_extract_keywords_handles_book_title_marks_and_bigram():

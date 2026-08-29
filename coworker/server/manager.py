@@ -206,6 +206,8 @@ class SessionManager:
         # MEMORY-SPEC §4.3/§6: the on/off switch + the user's standing rules. Settings-
         # level, outside the memory table; read at engine build time.
         self.memory_settings = MemorySettingsStore(base / "memory-settings.json")
+        # P0-1: 启动即把持久化记忆注入开关镜像到环境变量（默认开启）。
+        self.memory_settings.apply_auto_inject_env()
         self.audit_store = AuditStore(base / "coworker.db")
         self.session_store = ConversationStore(base)
         self.session_store.canonicalize_workspaces()  # collapse /tmp vs /private/tmp etc.
@@ -6504,9 +6506,14 @@ class SessionManager:
         return self.memory_settings.snapshot()
 
     def set_memory_settings(
-        self, enabled: Optional[bool] = None, user_rules: Optional[str] = None
+        self,
+        enabled: Optional[bool] = None,
+        user_rules: Optional[str] = None,
+        auto_inject: Optional[bool] = None,
     ) -> dict[str, Any]:
-        return self.memory_settings.set(enabled=enabled, user_rules=user_rules)
+        return self.memory_settings.set(
+            enabled=enabled, user_rules=user_rules, auto_inject=auto_inject
+        )
 
 
 def _parse_inbox_json(s: str) -> dict[str, Any]:

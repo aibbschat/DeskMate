@@ -302,13 +302,12 @@ class DeskMateMemoryManager:
     def deskmate_auto_inject_context(self, user_message: str = "") -> str:
         """每轮自动注入记忆的集成点（引擎层组装 system prompt 时调用）。
 
-        当 DESKMATE_AUTO_INJECT=1 或已配置 LLM provider（SecretStore）时
+        默认开启（DESKMATE_AUTO_INJECT=0 才关闭）；纯本地检索，无需 LLM provider。
         返回完整记忆上下文；否则返回空串（不注入）。
         """
-        if os.environ.get("DESKMATE_AUTO_INJECT") != "1":
-            from deskmate.memory.llm import llm_available
-            if not llm_available():
-                return ""
+        # P0-1: 默认开启记忆注入（纯本地检索，无需 LLM）；仅 DESKMATE_AUTO_INJECT=0 关闭。
+        if os.environ.get("DESKMATE_AUTO_INJECT") == "0":
+            return ""
         return self.build_full_context_for_turn(user_message)
 
     # ------------------------------------------------------------------

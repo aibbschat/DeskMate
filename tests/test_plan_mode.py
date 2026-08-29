@@ -198,21 +198,25 @@ def test_build_engine_deskmate_auto_inject_wiring(tmp_path, monkeypatch):
     """
     from coworker.agent import _deskmate_memory_context
 
-    monkeypatch.delenv("DESKMATE_AUTO_INJECT", raising=False)
-    monkeypatch.delenv("DESKMATE_MEMORY_DIR", raising=False)
-
-    # 默认关闭：不注入
-    assert _deskmate_memory_context() == ""
-
-    # 开启开关 + 指定记忆目录：注入
     mem_dir = tmp_path / "deskmate_mem"
     mem_dir.mkdir()
     (mem_dir / "USER.md").write_text(
         "用户偏好标记-DESKMATE_INJECT_TEST", encoding="utf-8"
     )
-    monkeypatch.setenv("DESKMATE_AUTO_INJECT", "1")
     monkeypatch.setenv("DESKMATE_MEMORY_DIR", str(mem_dir))
+    monkeypatch.delenv("DESKMATE_AUTO_INJECT", raising=False)
 
+    # P0-1：默认开启——未设环境变量即注入（不再依赖 opt-in）
+    ctx_default = _deskmate_memory_context()
+    assert "DESKMATE_INJECT_TEST" in ctx_default
+    assert "<memory-context>" in ctx_default
+
+    # 显式关闭（DESKMATE_AUTO_INJECT=0）：不注入
+    monkeypatch.setenv("DESKMATE_AUTO_INJECT", "0")
+    assert _deskmate_memory_context() == ""
+
+    # 显式开启（=1）：注入
+    monkeypatch.setenv("DESKMATE_AUTO_INJECT", "1")
     ctx = _deskmate_memory_context()
     assert "DESKMATE_INJECT_TEST" in ctx
     assert "<memory-context>" in ctx

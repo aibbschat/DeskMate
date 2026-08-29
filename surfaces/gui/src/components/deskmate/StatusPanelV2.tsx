@@ -34,6 +34,8 @@ export interface StatusPanelV2Props {
   onOpenProofread?: () => void;
   proactiveEnabled?: boolean;
   onToggleProactive?: (enabled: boolean) => void;
+  injectEnabled?: boolean;
+  onToggleInject?: (enabled: boolean) => void;
   learned?: LearnedHistory | null;
   growth?: GrowthSnapshot | null;
   achievements?: Achievement[];
@@ -506,6 +508,8 @@ function Layer4Details({
   learned,
   proactiveEnabled,
   onToggleProactive,
+  injectEnabled,
+  onToggleInject,
   onOpenMemory,
   onOpenProofread,
 }: {
@@ -513,6 +517,8 @@ function Layer4Details({
   learned?: LearnedHistory | null;
   proactiveEnabled: boolean;
   onToggleProactive?: (enabled: boolean) => void;
+  injectEnabled: boolean;
+  onToggleInject?: (enabled: boolean) => void;
   onOpenMemory?: () => void;
   onOpenProofread?: () => void;
 }) {
@@ -553,6 +559,36 @@ function Layer4Details({
           </div>
         </CollapsibleSection>
       )}
+
+      {/* 记忆注入（P0-1：默认开启，可在此或设置中关闭） */}
+      <div
+        className="flex items-center justify-between p-2.5 rounded-lg"
+        style={{
+          background: "#fafafa",
+          border: "0.5px solid rgba(0, 0, 0, 0.05)",
+        }}
+      >
+        <div>
+          <div className="text-[11px] font-medium text-gray-900">记忆注入</div>
+          <div className="text-[10px] text-gray-500 mt-0.5">
+            {injectEnabled ? "已开启 · 每轮自动带上相关记忆" : "已关闭 · 记忆保留但不注入"}
+          </div>
+        </div>
+        <button
+          className="relative w-10 h-6 rounded-full transition-colors duration-200"
+          style={{
+            background: injectEnabled ? "#6366f1" : "#e5e7eb",
+          }}
+          onClick={() => onToggleInject?.(!injectEnabled)}
+        >
+          <div
+            className="absolute top-1 w-4 h-4 rounded-full bg-white shadow-sm transition-transform duration-200"
+            style={{
+              left: injectEnabled ? "calc(100% - 1.25rem)" : "0.25rem",
+            }}
+          />
+        </button>
+      </div>
 
       {/* 主动模式 */}
       <div
@@ -629,6 +665,8 @@ export function StatusPanelV2({
   onOpenProofread,
   proactiveEnabled = true,
   onToggleProactive,
+  injectEnabled = true,
+  onToggleInject,
   learned = null,
   growth = null,
   achievements = [],
@@ -738,6 +776,8 @@ export function StatusPanelV2({
             learned={learned}
             proactiveEnabled={proactiveEnabled}
             onToggleProactive={onToggleProactive}
+            injectEnabled={injectEnabled}
+            onToggleInject={onToggleInject}
             onOpenMemory={onOpenMemory}
             onOpenProofread={onOpenProofread}
           />
