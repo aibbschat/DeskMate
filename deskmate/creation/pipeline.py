@@ -53,6 +53,7 @@ class CreativePipeline:
     ) -> None:
         self.space = space
         self.client = TeamsClient(base_dir=base_dir)
+        self._profile_base = base_dir  # 8.5 全局画像注入用（None=默认 ~/.deskmate）
         self.store = self.client.team_store
         self.reg = self.client.teams
         self.guard = PipelineGuard(self.store)
@@ -160,7 +161,14 @@ class CreativePipeline:
             logger.warning("原著索引异常（按无原著继续）: %s", exc)
             return ""
         toc = idx.chapter_toc()
-        self._novel_ctx = f"{meta['bible']}\n\n【章节目录】\n{toc}"
+        raw_ctx = f"{meta['bible']}\n\n【章节目录】\n{toc}"
+        # 8.5 跨项目迁移：自动注入全局创作偏好（换新书也懂你），幂等、fail-open
+        try:
+            from .global_profile import load_and_inject
+
+            self._novel_ctx = load_and_inject(raw_ctx, base_dir=self._profile_base)
+        except Exception:  # noqa: BLE001
+            self._novel_ctx = raw_ctx
         return self._novel_ctx
 
     def _novel_related(self) -> str:
