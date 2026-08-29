@@ -175,6 +175,13 @@ class TestProfileStore:
         assert "整体画像" in prompt2
         assert data2["metrics"]["n"] == 1
 
-    def test_default_path_points_to_home_deskmate(self):
-        assert DEFAULT_PROFILE_PATH.name == "style_profile.json"
-        assert ".deskmate" in str(DEFAULT_PROFILE_PATH)
+    def test_default_path_points_to_home_deskmate(self, monkeypatch):
+        """默认画像路径落在 ~/.deskmate（自包含，不受其它测试 DESKMATE_DIR 污染影响）。"""
+        import importlib
+
+        import deskmate.style_profile_store as sps
+
+        monkeypatch.delenv("DESKMATE_DIR", raising=False)
+        sps = importlib.reload(sps)  # 清环境变量后重载，重新求值默认路径
+        assert sps.DEFAULT_PROFILE_PATH.name == "style_profile.json"
+        assert ".deskmate" in str(sps.DEFAULT_PROFILE_PATH)

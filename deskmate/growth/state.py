@@ -68,6 +68,10 @@ class GrowthState:
     empathy: float = 0.0
     mood: float = 80.0
     vitality: float = 100.0
+    # 关系深度（8.2 长跑设计）：关系数值封顶后，溢出转入这里累积，
+    # 由深度派生「关系阶段」（初识→熟络→默契→知己→灵魂伴侣）。
+    # 让「数值满格」之后仍有可感知的进化，而不是死在数值上限。
+    bond_depth: float = 0.0
 
     level: int = 1
     growth_value: int = 0
@@ -100,6 +104,7 @@ class GrowthState:
             "empathy": round(self.empathy, 1),
             "mood": round(self.mood, 1),
             "vitality": round(self.vitality, 1),
+            "bond_depth": round(self.bond_depth, 1),
             "level": self.level,
             "growth_value": self.growth_value,
             "skill_proficiency": {
@@ -149,6 +154,7 @@ def load_state(base_dir: Path | str | None = None) -> GrowthState:
         empathy=_num(data, "empathy", 0.0, float),
         mood=_num(data, "mood", 80.0, float),
         vitality=_num(data, "vitality", 100.0, float),
+        bond_depth=_num(data, "bond_depth", 0.0, float),
         level=_num(data, "level", 1, int),
         growth_value=_num(data, "growth_value", 0, int),
         trust_controls_proactive=bool(data.get("trust_controls_proactive", True)),

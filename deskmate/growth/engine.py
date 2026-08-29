@@ -18,6 +18,18 @@ from .state import BACKFILLED_MARK, GrowthState, SkillProficiency, load_state, s
 # 等级阈值（成长值累积）
 LEVEL_THRESHOLDS = [0, 5, 15, 30, 50, 80, 120, 170, 230, 300, 400, 520]
 
+# 关系阶段（8.2 长跑设计）：由 bond_depth 派生，是「数值封顶后」的成长第二曲线。
+# 亲密度/默契度满格后，溢出的增量转入 bond_depth，深度跨过阈值即进入下一阶段。
+# 阈值节奏：满格后每次 +3（如接受一条建议）全量转深度，
+#   熟络 ≈ 满格后 10 次 · 默契 ≈ 再 20 次 · 知己 ≈ 再 37 次 · 灵魂伴侣 ≈ 再 67 次。
+BOND_STAGES = [
+    (0, "初识"),
+    (30, "熟络"),
+    (90, "默契"),
+    (200, "知己"),
+    (400, "灵魂伴侣"),
+]
+
 # recent_events 在 GrowthState.to_dict 里被截断到最后 50 条。
 # 只有当日志长度 < 该上限时，才能断定它是完整历史、可用于回溯推断解锁时间。
 EVENT_LOG_CAP = 50
@@ -187,15 +199,77 @@ class GrowthEngine:
         """亲密度语气提示（注入 system prompt）。
 
         亲密度高 → 提示 AI 语气更亲切；低 → 保持礼貌克制。空串表示无需注入。
+        关系进入高阶段（知己及以上）后，追加一句更懂彼此的提示。
         """
         intimacy = self.state.intimacy
         if intimacy >= 60:
-            return "你们已经很熟悉了（亲密度高）。可以自然地用轻松亲切的语气，不必拘谨，像老朋友一样。"
+            base = "你们已经很熟悉了（亲密度高）。可以自然地用轻松亲切的语气，不必拘谨，像老朋友一样。"
+            idx, name = self.bond_stage_from_depth(self.state.bond_depth)
+            if idx >= 3:  # 知己及以上
+                return base + f" 你们的关系已到「{name}」阶段，语气可以更懂彼此、更自然，少一点客套。"
+            return base
         if intimacy >= 25:
             return "你们的关系正在升温（亲密度中）。语气可以逐渐自然，偶尔带一点亲近感。"
         if intimacy >= 10:
             return "你们刚认识不久（亲密度低）。保持礼貌友善，不要太自来熟。"
         return ""
+
+    # ------------------------------------------------------------------
+    # 关系深度 / 阶段（8.2 长跑设计：数值封顶后仍可进化）
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def bond_stage_from_depth(depth: float) -> tuple[int, str]:
+        """由关系深度派生 (阶段序号, 阶段名)。depth<0 视为 0。"""
+        d = max(0.0, depth)
+        idx, name = 0, BOND_STAGES[0][1]
+        for i, (th, nm) in enumerate(BOND_STAGES):
+            if d >= th:
+                idx, name = i, nm
+            else:
+                break
+        return idx, name
+
+    def _gain_relation(self, key: str, amount: float, lo: float = 0.0, hi: float = 100.0) -> float:
+        """增长关系数值；到上限后的溢出转入 bond_depth（封顶不浪费）。
+
+        返回值 = 实际生效的增长量（可为负）。
+        每次转入深度都会检查阶段是否升级（升级记录 bond_stage_up 事件）。
+        """
+        before = float(getattr(self.state, key))
+        new = clamp(before + amount, lo, hi)
+        setattr(self.state, key, new)
+        actual = new - before
+        if amount > 0 and actual < amount:
+            overflow = amount - actual
+            before_depth = self.state.bond_depth
+            self.state.bond_depth = round(self.state.bond_depth + overflow, 2)
+            if self.bond_stage_from_depth(self.state.bond_depth)[0] > self.bond_stage_from_depth(before_depth)[0]:
+                _, name = self.bond_stage_from_depth(self.state.bond_depth)
+                self._add_event(
+                    "bond_stage_up",
+                    stage=name,
+                    depth=round(self.state.bond_depth, 1),
+                )
+        return actual
+
+    def current_bond(self) -> dict:
+        """当前关系阶段与进度（供前端展示 / snapshot）。"""
+        idx, name = self.bond_stage_from_depth(self.state.bond_depth)
+        next_th = BOND_STAGES[idx + 1][0] if idx + 1 < len(BOND_STAGES) else None
+        if next_th is None:
+            progress = 1.0
+        else:
+            cur_th = BOND_STAGES[idx][0]
+            progress = clamp((self.state.bond_depth - cur_th) / max(1, next_th - cur_th), 0, 1)
+        return {
+            "depth": round(self.state.bond_depth, 1),
+            "stage": name,
+            "stage_index": idx,
+            "next_threshold": next_th,
+            "progress": round(progress, 3),
+            "maxed": next_th is None,
+        }
 
     # ------------------------------------------------------------------
     # 技能熟练度
@@ -233,7 +307,7 @@ class GrowthEngine:
         self.state.skill_proficiency[skill_name] = prof
 
         self.state.growth_value += XP_SKILL_USED
-        self.state.intimacy = clamp(self.state.intimacy + INTIMACY_SKILL_USED, 0, 100)
+        self._gain_relation("intimacy", INTIMACY_SKILL_USED)
         self._add_event("skill_used", skill_name=skill_name, success=success)
         self._apply_decay()
         self._recompute_level()
@@ -246,7 +320,7 @@ class GrowthEngine:
             SkillProficiency(uses=0, last_used=self._now_date()),
         )
         self.state.growth_value += XP_SKILL_CREATED
-        self.state.intimacy = clamp(self.state.intimacy + INTIMACY_SKILL_CREATED, 0, 100)
+        self._gain_relation("intimacy", INTIMACY_SKILL_CREATED)
         self._add_event("skill_created", skill_name=skill_name)
         self._recompute_level()
         self.save()
@@ -268,7 +342,7 @@ class GrowthEngine:
         self.state.skill_proficiency[skill_name] = prof
 
         self.state.growth_value += XP_SKILL_EVOLVED
-        self.state.intimacy = clamp(self.state.intimacy + INTIMACY_SKILL_USED, 0, 100)
+        self._gain_relation("intimacy", INTIMACY_SKILL_USED)
         self._add_event("skill_evolved", skill_name=skill_name)
         self._recompute_level()
         self.save()
@@ -284,17 +358,17 @@ class GrowthEngine:
         忽略 → 信任↓ 默契↓ 心情↓
         """
         if accepted:
-            self.state.trust = clamp(self.state.trust + TRUST_ACCEPTED, *TRUST_CLAMP)
-            self.state.empathy = clamp(self.state.empathy + EMPATHY_ACCEPTED, 0, 100)
-            self.state.mood = clamp(self.state.mood + MOOD_ACCEPTED, 0, 100)
-            self.state.intimacy = clamp(self.state.intimacy + INTIMACY_SUGGESTION_ACCEPTED, 0, 100)
+            self._gain_relation("trust", TRUST_ACCEPTED, 0.0, 1.0)
+            self._gain_relation("empathy", EMPATHY_ACCEPTED)
+            self._gain_relation("mood", MOOD_ACCEPTED)
+            self._gain_relation("intimacy", INTIMACY_SUGGESTION_ACCEPTED)
             self.state.growth_value += XP_SUGGESTION_ACCEPTED
             self._add_event("suggestion_accepted")
         else:
-            self.state.trust = clamp(self.state.trust + TRUST_IGNORED, *TRUST_CLAMP)
-            self.state.empathy = clamp(self.state.empathy + EMPATHY_IGNORED, 0, 100)
-            self.state.mood = clamp(self.state.mood + MOOD_IGNORED, 0, 100)
-            self.state.intimacy = clamp(self.state.intimacy + INTIMACY_SUGGESTION_IGNORED, 0, 100)
+            self._gain_relation("trust", TRUST_IGNORED, 0.0, 1.0)
+            self._gain_relation("empathy", EMPATHY_IGNORED)
+            self._gain_relation("mood", MOOD_IGNORED)
+            self._gain_relation("intimacy", INTIMACY_SUGGESTION_IGNORED)
             self._add_event("suggestion_ignored")
         self._apply_decay()
         self._recompute_level()
@@ -308,8 +382,8 @@ class GrowthEngine:
         """每次记住新事实，默契度微增（记忆匹配变准）。"""
         if count <= 0:
             return
-        self.state.empathy = clamp(self.state.empathy + INTIMACY_MEMORY_LEARNED * count, 0, 100)
-        self.state.intimacy = clamp(self.state.intimacy + INTIMACY_MEMORY_LEARNED * count, 0, 100)
+        self._gain_relation("empathy", INTIMACY_MEMORY_LEARNED * count)
+        self._gain_relation("intimacy", INTIMACY_MEMORY_LEARNED * count)
         self.state.growth_value += XP_MEMORY_LEARNED * count
         self.state.memories_learned += count
         self._add_event("memory_learned", count=count)
@@ -712,6 +786,7 @@ class GrowthEngine:
         """完整状态快照（供前端渲染）。"""
         d = self.state.to_dict()
         d["level_progress"] = self.current_level_progress()
+        d["bond"] = self.current_bond()
         d["proficiency_ranking_factor"] = {
             name: round(1.0 + (p.proficiency - 0.5) * MATCH_PROFICIENCY_WEIGHT, 3)
             for name, p in self.state.skill_proficiency.items()
