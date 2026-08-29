@@ -103,17 +103,28 @@ def build_final_review_proposal(
 
 
 def build_roundtable_context(proposal: "FinalReviewProposal") -> str:
-    """构造圆桌终审注入上下文：前序审核意见 + 原著圣经摘要（如有）。
+    """构造圆桌终审注入上下文：前序审核意见 + 原著圣经摘要（如有）+ 文风指纹。
 
     **唯一权威入口**——同步路径（``run_final_review``）与 SSE 路径
     （``service.stream_final_review``）必须都走这里，防止两处漂移
     （曾出现 SSE 路径漏传原著、专家对着空中楼阁讨论的回归）。
+
+    C 增强：追加 P1-5 量化文风指纹，让圆桌 7 专家在终审时也评判
+    「文本是否贴合萧哥声口」（句长节奏 / 四字格 / 文白比例 / 对话占比 / 标点节奏）。
     """
+    from deskmate.style_profile_store import format_style_fingerprint
+
     context = proposal.prior_review
     if getattr(proposal, "novel_excerpt", ""):
         context = (
             f"{proposal.prior_review}\n\n"
             f"【原著参考（圣经摘要节选，供对照改编）】\n{proposal.novel_excerpt}"
+        )
+    fp = format_style_fingerprint()
+    if fp:
+        context += (
+            f"\n\n【文风对齐（萧哥写作风格量化指纹）】终审须额外评判文本是否贴合以下声口特征"
+            f"（句长节奏、四字格密度、文白比例、对话占比、标点节奏）：\n{fp}"
         )
     return context
 

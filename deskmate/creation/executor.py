@@ -41,12 +41,20 @@ def _requirement_block(
     pacing: str = "",
     episode: Optional[int] = None,
     episodes: int = 1,
+    style_fingerprint: Optional[str] = None,
 ) -> str:
-    """把结构化制作要求（风格/节奏/集数）拼成强约束段，注入创作 prompt。
+    """把结构化制作要求（风格/节奏/集数/文风指纹）拼成强约束段，注入创作 prompt。
 
     与 concept 的「软性剧情点子」不同，这一段是**硬性制作规范**：
     prompt 明示「必须严格遵守，违者返工」，让 LLM 不再靠自觉跟随风格。
+
+    style_fingerprint：P1-5 量化风格指纹（萧哥声口的统计特征）。默认 None 时自动
+    从 ~/.deskmate/style_profile.json 加载（零配置：无画像则返回空串、不污染）。
     """
+    if style_fingerprint is None:
+        from deskmate.style_profile_store import format_style_fingerprint
+
+        style_fingerprint = format_style_fingerprint()
     parts: list[str] = []
     if style:
         parts.append(f"- 风格基调：{'、'.join(str(s) for s in style)}")
@@ -55,6 +63,9 @@ def _requirement_block(
     if episodes and episodes > 1:
         ep = int(episode or 1)
         parts.append(f"- 集数定位：第 {ep}/{episodes} 集（单集须有完整起承转合，结尾留钩子）")
+    if style_fingerprint:
+        indented = "\n  ".join(style_fingerprint.splitlines())
+        parts.append(f"- 文风指纹（萧哥写作风格量化特征，须贴合）：\n  {indented}")
     if not parts:
         return ""
     return "\n\n【制作要求（必须严格遵守，违者返工）】\n" + "\n".join(parts)
@@ -330,18 +341,29 @@ class LLMExecutor:
 
     def review(self, text: str, criteria: str, novel_text: str = "", on_event=None) -> ReviewResult:
         from deskmate.memory.llm import chat, llm_available
+        from deskmate.style_profile_store import format_style_fingerprint
 
         if not llm_available():
             return ReviewResult(approved=True, opinion="（LLM 未配置，默认通过）")
+        fp = format_style_fingerprint()
         novel_block = (
             f"\n\n【原著参考（对照依据）】\n{novel_text}\n"
             "（请结合原著判断改编是否忠于核心人物与情节。）" if novel_text else ""
         )
+        # C：文风对齐评判——把 P1-5 量化指纹作为审稿硬标准之一，
+        # 让「越写越懂你的文风」在审稿环节也被校验（偏离须指出并建议修正）。
+        style_section = ""
+        if fp:
+            style_section = (
+                f"\n\n【文风对齐评判】请对照以下萧哥写作风格量化指纹，评审文本是否贴合其声口"
+                f"（句长节奏、四字格密度、文白比例、对话占比、标点节奏）；"
+                f"明显偏离处须指出并给出修正建议：\n{fp}"
+            )
         _emit(on_event, type="note", message="审核专家正在逐项核验…", progress=50)
         raw = chat(
             system="你是剧本审核专家。依据验收标准评审文本，先给结论"
             "（通过/打回），再给可执行的修改意见。若提供原著参考，须对照原著评判改编适配度。",
-            user=f"验收标准：{criteria}\n\n文本：\n{text}{novel_block}",
+            user=f"验收标准：{criteria}{style_section}\n\n文本：\n{text}{novel_block}",
             max_tokens=6000,
         )
         # 统一 verdict 解析：复用 final_review.parse_verdict（含否定式清洗），

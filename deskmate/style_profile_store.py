@@ -162,6 +162,37 @@ def _format_metrics_for_human(metrics: dict) -> str:
     return "\n".join(lines)
 
 
+# 文风指纹缓存（按路径）：画像不会在单次进程内变化，避免每次生成都读盘。
+_STYLE_FP_CACHE: dict[str, str] = {}
+
+
+def clear_style_fingerprint_cache() -> None:
+    """清空文风指纹缓存（测试 / 画像刷新后重载用）。"""
+    _STYLE_FP_CACHE.clear()
+
+
+def format_style_fingerprint(
+    profile_path: Optional[Path] = None, *, use_cache: bool = True
+) -> str:
+    """把已量化的风格画像格式化为紧凑「文风指纹」字符串，供写作/审稿 prompt 注入。
+
+    - 返回 "" 表示无画像或尚无量化指标（零配置场景不注入、不污染 prompt）。
+    - 结果按路径缓存（画像在单次进程内不变），避免每次 LLM 生成都读盘。
+    - 供 C 任务「把 P1-5 风格信号接入写作/审稿流水线」统一调用：
+      写作侧（大纲/剧本强约束段）与审稿侧（executor.review / 圆桌终审上下文）共用。
+    """
+    path = profile_path or DEFAULT_PROFILE_PATH
+    key = str(path)
+    if use_cache and key in _STYLE_FP_CACHE:
+        return _STYLE_FP_CACHE[key]
+    data = load_profile(path)
+    metrics = data.get("metrics") if isinstance(data.get("metrics"), dict) else None
+    out = _format_metrics_for_human(metrics) if metrics else ""
+    if use_cache:
+        _STYLE_FP_CACHE[key] = out
+    return out
+
+
 def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(
         description="墨灵写作风格画像增量更新（P1-5）",
