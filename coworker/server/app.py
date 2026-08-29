@@ -2419,6 +2419,45 @@ def create_app(manager: SessionManager) -> FastAPI:
             logging.exception("get deskmate memory failed")
             return JSONResponse({"error": "read failed"}, status_code=500)
 
+    @app.get("/v1/deskmate/memory/trace")
+    async def get_deskmate_memory_trace(
+        kind: str = "both", limit: int = 10,
+    ) -> dict[str, Any]:
+        """溯源 + 遗忘可见（P0-4 + 8.3）：返回最近「注入了哪些记忆」与「忘了哪些记忆」。
+
+        - kind=inject → 每轮注入了哪些记忆（溯源：可查「这条回复基于哪条记忆」）
+        - kind=forgot → 归档/删除了哪些记忆（遗忘可见：遗忘与记忆一样透明）
+        - kind=both   → 两者都返回（默认）
+        """
+        try:
+            from pathlib import Path as _P
+
+            from deskmate.memory.manager import (
+                DeskMateMemoryManager,
+                FORGOT_TRACE_FILE,
+                INJECT_TRACE_FILE,
+            )
+
+            desk_dir = _P(
+                os.environ.get("DESKMATE_DIR", os.path.expanduser("~/.deskmate"))
+            )
+            global _deskmate_mm_rest
+            if "_deskmate_mm_rest" not in globals():
+                with _deskmate_mm_lock:
+                    if "_deskmate_mm_rest" not in globals():
+                        _deskmate_mm_rest = DeskMateMemoryManager(base_dir=desk_dir)
+            mm = _deskmate_mm_rest
+            n = max(1, min(int(limit), 50))
+            out: dict[str, Any] = {}
+            if kind in ("both", "inject"):
+                out["inject"] = mm.read_trace(INJECT_TRACE_FILE, n)
+            if kind in ("both", "forgot"):
+                out["forgot"] = mm.read_trace(FORGOT_TRACE_FILE, n)
+            return out
+        except Exception:
+            logging.exception("get deskmate memory trace failed")
+            return JSONResponse({"error": "read trace failed"}, status_code=500)
+
     @app.get("/v1/deskmate/vault")
     async def get_deskmate_vault() -> dict[str, Any]:
         """读取 DeskMate vault（Obsidian 长期记忆）的文件列表和统计。"""

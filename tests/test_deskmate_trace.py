@@ -113,3 +113,33 @@ class TestForgotTrace:
         forgot = mm.read_trace(FORGOT_TRACE_FILE, 5)
         # 只有工作条目被归档，偏好不衰减
         assert all(r["section"] == "工作" for r in forgot)
+
+
+class TestTraceHttpEndpoint:
+    def test_trace_endpoint_returns_records(self, tmp_path, monkeypatch):
+        from fastapi.testclient import TestClient
+
+        from coworker.server.app import create_app
+        from coworker.server.manager import SessionManager
+
+        # 先造 trace 数据：一次注入 + 一次衰减归档
+        _write_mem(tmp_path)
+        mm = DeskMateMemoryManager(base_dir=tmp_path)
+        mm.build_full_context_for_turn("正史")
+        mm.decay_memory()
+
+        monkeypatch.setenv("COWORKER_STATE_DIR", str(tmp_path / "state"))
+        monkeypatch.setenv("DESKMATE_DIR", str(tmp_path))
+        client = TestClient(create_app(SessionManager(data_dir=tmp_path / "data")))
+
+        r = client.get("/v1/deskmate/memory/trace")
+        assert r.status_code == 200
+        data = r.json()
+        assert len(data["inject"]) == 1
+        assert data["inject"][0]["n"] == 2
+        assert len(data["forgot"]) == 1
+        assert data["forgot"][0]["action"] == "archived"
+
+        # kind 过滤
+        only_forgot = client.get("/v1/deskmate/memory/trace", params={"kind": "forgot"}).json()
+        assert "forgot" in only_forgot and "inject" not in only_forgot

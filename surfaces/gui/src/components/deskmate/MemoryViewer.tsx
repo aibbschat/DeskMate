@@ -1,6 +1,7 @@
 import { useState, useCallback, useEffect, useRef } from "react";
 import { Icon } from "../Icon";
 import { Markdown } from "../Markdown";
+import { getDeskmateMemoryTrace, type TraceRecord } from "../../api";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -46,8 +47,33 @@ export function MemoryViewer({
   const [draft, setDraft] = useState("");
   const [saving, setSaving] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  // 溯源 + 遗忘可见（P0-4 + 8.3）：最近注入了哪些记忆 / 忘了哪些记忆
+  const [traces, setTraces] = useState<{ inject?: TraceRecord[]; forgot?: TraceRecord[] }>({});
+  const [traceOpen, setTraceOpen] = useState(false);
+
+  // 打开面板即拉取最近溯源/遗忘记录（静默降级）
+  useEffect(() => {
+    getDeskmateMemoryTrace("both", 8)
+      .then(setTraces)
+      .catch(() => {});
+  }, []);
 
   const current = files.find((f) => f.id === currentId) ?? files[0];
+
+  const handleExport = useCallback(() => {
+    if (!current) return;
+    const blob = new Blob([current.content || ""], {
+      type: "text/markdown;charset=utf-8",
+    });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = current.name || "memory.md";
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }, [current]);
 
   // Reset editing state when switching files
   useEffect(() => {
@@ -180,6 +206,15 @@ export function MemoryViewer({
                 </span>
               )}
               <div className="flex-1" />
+              <button
+                className="text-[12px] flex items-center gap-1 px-2 py-1 rounded-lg"
+                style={{ color: "var(--muted)" }}
+                onClick={handleExport}
+                title="导出当前记忆文件"
+              >
+                <Icon name="archive" size={12} />
+                导出
+              </button>
               {!editing ? (
                 <button
                   className="text-[12px] flex items-center gap-1 px-2 py-1 rounded-lg"
@@ -238,6 +273,53 @@ export function MemoryViewer({
                 <Markdown text={current.content || "*空文件*"} />
               </div>
             )}
+
+            {/* 溯源 + 遗忘可见（P0-4 + 8.3）：让「懂」与「忘」都可被看见 */}
+            <div
+              className="mt-4 pt-3"
+              style={{ borderTop: "1px solid var(--line)" }}
+            >
+              <button
+                className="flex items-center gap-1.5 text-[11.5px] font-medium"
+                style={{ color: "var(--muted)" }}
+                onClick={() => setTraceOpen((o) => !o)}
+              >
+                <Icon name="clock" size={12} />
+                记忆溯源 · 最近忘了什么
+                <span style={{ color: "var(--faint)" }}>{traceOpen ? "▾" : "▸"}</span>
+              </button>
+              {traceOpen && (
+                <div className="flex flex-col gap-1.5 mt-2">
+                  {(traces.forgot ?? []).length === 0 &&
+                    (traces.inject ?? []).length === 0 && (
+                      <div className="text-[11px]" style={{ color: "var(--faint)" }}>
+                        暂无溯源记录（对话后会逐渐积累）
+                      </div>
+                    )}
+                  {(traces.forgot ?? []).map((r, i) => (
+                    <div key={`f${i}`} className="text-[11px] leading-relaxed" style={{ color: "var(--muted)" }}>
+                      <span style={{ color: "var(--accent)" }}>
+                        {r.action === "archived" ? "已归档" : "已删除"}
+                      </span>
+                      {" · "}
+                      {r.section || "记忆"}
+                      {r.date ? ` · ${r.date}` : ""}
+                      {" · "}
+                      {r.summary || ""}
+                    </div>
+                  ))}
+                  {(traces.inject ?? []).slice(0, 3).map((r, i) => (
+                    <div key={`i${i}`} className="text-[11px] leading-relaxed" style={{ color: "var(--muted)" }}>
+                      <span style={{ color: "var(--accent)" }}>本轮注入</span>
+                      {" · "}
+                      {r.ts ? formatDate(new Date(r.ts).getTime()) : ""}
+                      {r.n != null ? ` · ${r.n} 条` : ""}
+                      {r.refs?.[0]?.summary ? ` · ${r.refs[0].summary.slice(0, 40)}` : ""}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
           </>
         )}
           </div>

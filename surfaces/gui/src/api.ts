@@ -2603,6 +2603,33 @@ export async function getWritingStyle(): Promise<{ profile: StyleProfile | null 
   return res.json();
 }
 
+/** 溯源 + 遗忘可见（P0-4 + 8.3）：拉取最近「注入了哪些记忆」与「忘了哪些记忆」。 */
+export async function getDeskmateMemoryTrace(
+  kind: "both" | "inject" | "forgot" = "both",
+  limit = 10,
+): Promise<{ inject?: TraceRecord[]; forgot?: TraceRecord[] }> {
+  try {
+    const res = await authedFetch(
+      `${httpBase()}/v1/deskmate/memory/trace?kind=${kind}&limit=${limit}`,
+    );
+    if (!res.ok) return {};
+    return res.json();
+  } catch {
+    return {}; // 静默降级：trace 展示是锦上添花，不阻塞记忆面板
+  }
+}
+
+export interface TraceRecord {
+  ts?: string;
+  query?: string;
+  n?: number;
+  refs?: Array<{ fp: string; section?: string; date?: string; summary?: string }>;
+  action?: "archived" | "deleted";
+  section?: string;
+  date?: string;
+  summary?: string;
+}
+
 export async function proofreadDraft(opts: {
   text?: string;
   path?: string;
