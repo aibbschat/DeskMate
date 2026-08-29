@@ -75,14 +75,33 @@ def _append_line(path: Path, record: dict) -> None:
         pass  # 行为日志失败绝不阻断主流程
 
 
+def _scrub(obj):
+    """递归对行为事件 payload 做脱敏（8.4：敏感原文不落行为日志）。"""
+    try:
+        from deskmate.memory.sensitivity import redact
+
+        if isinstance(obj, str):
+            return redact(obj)
+        if isinstance(obj, dict):
+            return {k: _scrub(v) for k, v in obj.items()}
+        if isinstance(obj, (list, tuple)):
+            return [_scrub(v) for v in obj]
+    except Exception:
+        pass
+    return obj
+
+
 def log_event(kind: str, payload: dict | None = None, ts: float | None = None,
               base_dir: str | Path | None = None) -> None:
-    """记录一条行为事件（追加写，幂等安全）。fail-open。"""
+    """记录一条行为事件（追加写，幂等安全）。fail-open。
+
+    8.4：payload 中的字符串会先经 redact 脱敏，避免敏感原文进入行为日志。
+    """
     try:
         ts = ts if ts is not None else time.time()
         _append_line(
             _log_path(base_dir),
-            {"ts": ts, "kind": str(kind), "payload": payload or {}},
+            {"ts": ts, "kind": str(kind), "payload": _scrub(payload or {})},
         )
     except Exception:
         pass

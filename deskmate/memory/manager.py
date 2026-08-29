@@ -32,6 +32,7 @@ from .soul import load_soul, save_soul, reset_soul, evolve_soul
 from .user_profile import load_user, save_user, reset_user
 from .llm import llm_available, chat, chat_memory, memory_llm_available
 from .vault_store import VaultStore
+from .sensitivity import classify, redact, SENSITIVE  # 8.4 敏感分级
 
 # 记忆上下文最大字符数（参考 Hermes 的 6000）
 MEMORY_CONTEXT_MAX_CHARS = 6_000
@@ -297,11 +298,16 @@ class DeskMateMemoryManager:
                     fp = self._entry_fingerprint(e)
                     m = re.match(r"(\d{4}-\d{1,2}-\d{1,2})", e)
                     date = m.group(1) if m else ""
+                    level, _ = classify(e)
+                    sensitive = level >= SENSITIVE
+                    # 8.4：敏感条目的溯源摘要脱敏，绝不把敏感原文写进日志
+                    summary = redact(e[:80]) if sensitive else e[:80]
                     refs.append({
                         "fp": fp,
                         "section": header[1:].strip(),
                         "date": date,
-                        "summary": e[:80],
+                        "summary": summary,
+                        "sensitive": sensitive,
                     })
                     marked.append(f"〔记忆#{fp}〕{e}")
                 out.append(header + ("\n" + "\n\n".join(marked) if marked else ""))
@@ -467,7 +473,7 @@ class DeskMateMemoryManager:
             # 8.3 溯源：记录本轮注入了哪些记忆 id
             self._append_trace(INJECT_TRACE_FILE, {
                 "ts": datetime.datetime.now().isoformat(timespec="seconds"),
-                "query": (user_message or "")[:100],
+                "query": redact((user_message or "")[:100]),  # 8.4：query 脱敏
                 "n": len(refs),
                 "refs": refs[:20],
             })
@@ -813,6 +819,13 @@ class DeskMateMemoryManager:
         return ""
 
     def _save_global_memory(self, content: str) -> None:
+        # 8.4 敏感分级：保存时自动为 § 分节打 #sensitive/#private tag（fail-open）
+        try:
+            from .sensitivity import mark_memory_text
+
+            content = mark_memory_text(content)[0]
+        except Exception as e:  # 分级异常绝不阻断记忆保存
+            logger.debug("sensitivity mark failed (skipped): %s", e)
         self.base_dir.mkdir(parents=True, exist_ok=True)
         self._global_memory_path().write_text(content, encoding="utf-8")
 

@@ -3277,6 +3277,55 @@ html[data-theme="dark"] .creation-preview-article a {
   font-style: italic; background: #fef3c7; border-radius: 0 6px 6px 0;
 }
 
+/* ============ PositioningCard 合规定位卡（P2-8）温暖样式 ============ */
+.dm-positioning-card {
+  margin-top: 14px;
+  padding: 16px 18px;
+  background: #fdfbf7;
+  border: 1px solid #ece3d2;
+  border-radius: 14px;
+  color: #44403c;
+}
+.dm-positioning-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: #d97706;
+}
+.dm-positioning-name { font-size: 16px; font-weight: 700; color: #92400e; }
+.dm-positioning-role { font-size: 12px; color: #a8a29e; }
+.dm-positioning-tagline {
+  margin: 8px 0 14px;
+  font-size: 14px;
+  font-weight: 600;
+  color: #b45309;
+}
+.dm-positioning-pillars {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+.dm-positioning-pillar {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 13px;
+}
+.dm-positioning-pillar svg { color: #d97706; margin-top: 2px; flex: none; }
+.dm-positioning-pillar-title { font-weight: 600; color: #78716c; }
+.dm-positioning-pillar-desc { color: #a8a29e; line-height: 1.5; }
+.dm-positioning-disclaimer {
+  margin: 0;
+  padding: 10px 12px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: #78716c;
+  background: #fef3c7;
+  border-left: 3px solid #d97706;
+  border-radius: 0 6px 6px 0;
+}
+
 /* ============ CareToast 情感关怀（P2-5）温暖样式 ============ */
 .care-toast {
   position: fixed;

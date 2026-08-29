@@ -3125,6 +3125,17 @@ def create_app(manager: SessionManager) -> FastAPI:
             logging.exception("get deskmate behavior patterns failed")
             return {"window_days": days, "event_count": 0, "patterns": [], "context": ""}
 
+    @app.get("/v1/deskmate/positioning")
+    async def get_deskmate_positioning() -> dict[str, Any]:
+        """P2-8：合规轻陪伴桌宠定位卡位——明确「工具属性 + 可爱外形 + 可控记忆」，非虚拟伴侣。"""
+        try:
+            from deskmate.compliance import get_positioning
+
+            return get_positioning()
+        except Exception:
+            logging.exception("get deskmate positioning failed")
+            return {}
+
     @app.post("/v1/deskmate/chapters")
     async def deskmate_chapters(request: Request) -> dict[str, Any]:
         """返回文稿章节列表（按 第X章/回/节 切分），供前端章节下拉。
