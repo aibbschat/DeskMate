@@ -26,7 +26,7 @@ from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
 
-from .manager import DeskMateMemoryManager
+from .manager import DeskMateMemoryManager, FORGOT_TRACE_FILE, INJECT_TRACE_FILE
 from ..diagnostics import diagnostics_health
 
 mcp = FastMCP("deskmate-memory")
@@ -449,6 +449,37 @@ def memory_stats() -> str:
         return json.dumps(stats, ensure_ascii=False, indent=2)
     except Exception as e:
         return f"获取统计失败：{e}"
+
+
+@mcp.tool()
+def memory_inject_trace(limit: int = 20) -> str:
+    """溯源：查询最近 N 轮「每轮注入了哪些记忆」（8.3 记忆全生命周期透明）。
+
+    返回注入记录列表，每条含时间、触发 query、注入的记忆条目（fp 溯源标识 + 所属分节 +
+    日期 + 摘要）。用于回答「这条回复基于哪条记忆」——信任建设的硬能力。
+    """
+    try:
+        import json
+        traces = _get_mgr().read_trace(INJECT_TRACE_FILE, max(1, min(limit, 200)))
+        return json.dumps({"count": len(traces), "traces": traces}, ensure_ascii=False, indent=2)
+    except Exception as e:
+        return f"读取注入溯源失败：{e}"
+
+
+@mcp.tool()
+def memory_forgot_trace(limit: int = 20) -> str:
+    """遗忘可见：查询最近 N 条「被遗忘的记忆」（8.3 记忆全生命周期透明）。
+
+    返回归档/删除记录（时间 + 去向 archived/deleted + 分节 + 日期 + 摘要）。
+    用户改掉偏好后 AI 还按旧的回时，可在此看到「那条旧偏好已于何时被遗忘」——
+    遗忘与记忆一样透明。
+    """
+    try:
+        import json
+        traces = _get_mgr().read_trace(FORGOT_TRACE_FILE, max(1, min(limit, 200)))
+        return json.dumps({"count": len(traces), "traces": traces}, ensure_ascii=False, indent=2)
+    except Exception as e:
+        return f"读取遗忘记录失败：{e}"
 
 
 @mcp.tool()

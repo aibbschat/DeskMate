@@ -9,6 +9,9 @@
 
 from __future__ import annotations
 
+import datetime
+import hashlib
+import json
 import logging
 import os
 import re
@@ -48,6 +51,13 @@ MEMORY_DECAY_TTL = {
 # 三层记忆分层常量
 CORE_TAGS = {"preference", "correction"}  # Core 层：每轮自动注入
 RECALL_WINDOW_DAYS = 7                    # Recall 层：7 天内的记忆优先注入
+
+# 溯源 / 遗忘 trace（P0-4 + 8.3）：让「懂」与「忘」都可被看见、可查证
+TRACE_DIR_NAME = "traces"
+INJECT_TRACE_FILE = "inject.jsonl"     # 每轮注入了哪些记忆（溯源）
+FORGOT_TRACE_FILE = "forgot.jsonl"     # 归档/删除了哪些记忆（遗忘可见）
+TRACE_MAX_LINES = 2_000                # 单文件行数上限，超出截断（保留最新）
+TRACE_MAX_BYTES = 512 * 1024           # 单文件字节上限
 
 # § 分节标题 ↔ #标签 的规范映射（用于自动归并）
 _TITLE_TO_TAG = {
@@ -190,6 +200,102 @@ class DeskMateMemoryManager:
 
         return f"<memory-context>\n{combined}\n</memory-context>"
 
+    # ------------------------------------------------------------------
+    # 溯源 / 遗忘 trace（P0-4 + 8.3）
+    # ------------------------------------------------------------------
+
+    def _trace_dir(self) -> Path:
+        d = self.base_dir / TRACE_DIR_NAME
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+
+    def _append_trace(self, filename: str, record: dict) -> None:
+        """追加一行 trace 记录；单文件超过字节上限时截断保留最新。"""
+        try:
+            path = self._trace_dir() / filename
+            with open(path, "a", encoding="utf-8") as f:
+                f.write(json.dumps(record, ensure_ascii=False) + "\n")
+            if path.stat().st_size > TRACE_MAX_BYTES:
+                lines = path.read_text(encoding="utf-8").splitlines()[-TRACE_MAX_LINES:]
+                path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        except Exception as e:
+            logger.debug("trace write failed (%s): %s", filename, e)
+
+    def read_trace(self, filename: str, limit: int = 20) -> list[dict]:
+        """读取最近 limit 条 trace 记录（供溯源 / 遗忘可见查询）。"""
+        try:
+            path = self._trace_dir() / filename
+            if not path.exists():
+                return []
+            lines = path.read_text(encoding="utf-8").splitlines()
+            out = []
+            for ln in lines[-limit:]:
+                try:
+                    out.append(json.loads(ln))
+                except json.JSONDecodeError:
+                    continue
+            return out
+        except Exception as e:
+            logger.debug("trace read failed (%s): %s", filename, e)
+            return []
+
+    @staticmethod
+    def _entry_fingerprint(entry: str) -> str:
+        """记忆条目稳定指纹：sha1(原文) 前 8 位，用于溯源定位。"""
+        return hashlib.sha1(entry.encode("utf-8")).hexdigest()[:8]
+
+    def _annotate_memory_blocks(self, text: str) -> tuple[str, list[dict]]:
+        """给注入文本里的记忆条目打 〔记忆#fp〕 溯源标注，并返回 refs 清单。
+
+        仅处理以 § 开头的分节块（USER 画像等非分节文本保持原样），条目按空行切分。
+        标注极短、附在条目开头，不改变条目标记内容；fp 供溯源 / 前端高亮。
+        """
+        if not text or "§" not in text:
+            return text, []
+        lines = text.splitlines()
+        out: list[str] = []
+        refs: list[dict] = []
+        current_block: list[str] = []
+
+        def flush() -> None:
+            if not current_block:
+                return
+            if current_block[0].startswith("§"):
+                header = current_block[0]
+                body = "\n".join(current_block[1:])
+                entries = [e.strip() for e in re.split(r"\n\s*\n", body) if e.strip()]
+                marked: list[str] = []
+                for e in entries:
+                    if not e.strip() or e.startswith("〔记忆#"):
+                        marked.append(e)
+                        continue
+                    fp = self._entry_fingerprint(e)
+                    m = re.match(r"(\d{4}-\d{1,2}-\d{1,2})", e)
+                    date = m.group(1) if m else ""
+                    refs.append({
+                        "fp": fp,
+                        "section": header[1:].strip(),
+                        "date": date,
+                        "summary": e[:80],
+                    })
+                    marked.append(f"〔记忆#{fp}〕{e}")
+                out.append(header + ("\n" + "\n\n".join(marked) if marked else ""))
+            else:
+                out.append("\n".join(current_block))
+            current_block.clear()
+
+        for ln in lines:
+            if ln.startswith("§"):
+                flush()
+                current_block = [ln]
+            elif ln.strip() == "---":
+                flush()
+                out.append("---")
+            else:
+                current_block.append(ln)
+        flush()
+        return "\n".join(out), refs
+
     def _get_core_memory(self) -> str:
         """提取 Core 层：preference 和 correction sections，每轮无条件注入。"""
         memory = self._load_global_memory()
@@ -278,6 +384,11 @@ class DeskMateMemoryManager:
         用于「每轮自动注入记忆」的 opt-in 能力（DESKMATE_AUTO_INJECT）。
         返回 <memory-context> 包裹内容；无记忆返回空串。
 
+        P0-4 / 8.3 增强（向后兼容）：
+        - 记忆条目加 〔记忆#fp〕 溯源标注（fp 稳定可回溯）
+        - 尾部附 <memory-references> 摘要块：指引 LLM 自然带出「因为你之前说过……」引用，
+          同时给出溯源标识；并把本轮注入了哪些记忆 id 追加到 traces/inject.jsonl。
+
         注意：技能加载不在引擎层强制注入，而是通过系统 prompt 中的技能索引，
         让 LLM 自觉判断何时调用 skill_view 加载。
         """
@@ -297,7 +408,39 @@ class DeskMateMemoryManager:
             parts.append(f"## 用户画像\n{user.strip()}")
         if not parts:
             return ""
-        return "<memory-context>\n" + "\n\n".join(parts) + "\n</memory-context>"
+
+        # P0-4/8.3：只标注 prefetch 记忆块（parts[0]），USER 画像不标注
+        refs: list[dict] = []
+        if parts:
+            marked, refs = self._annotate_memory_blocks(parts[0])
+            parts[0] = marked
+
+        body = "\n\n".join(parts)
+
+        if refs:
+            ref_lines: list[str] = []
+            for r in refs[:12]:
+                loc = r.get("section") or "记忆"
+                d = f" · {r['date']}" if r.get("date") else ""
+                ref_lines.append(f"- 〔记忆#{r['fp']}〕{loc}{d} · {r['summary']}")
+            ref_block = (
+                "\n<memory-references>\n"
+                "以下为本轮注入的关于用户的记忆条目（〔记忆#id〕为溯源标识）。\n"
+                "若回复中采用了某条，请自然带出「因为你之前说过……」式的引用，"
+                "让用户感受到你记住了它；不要输出 〔记忆#id〕 本身。\n"
+                + "\n".join(ref_lines)
+                + "\n</memory-references>"
+            )
+            body += ref_block
+            # 8.3 溯源：记录本轮注入了哪些记忆 id
+            self._append_trace(INJECT_TRACE_FILE, {
+                "ts": datetime.datetime.now().isoformat(timespec="seconds"),
+                "query": (user_message or "")[:100],
+                "n": len(refs),
+                "refs": refs[:20],
+            })
+
+        return "<memory-context>\n" + body + "\n</memory-context>"
 
     def deskmate_auto_inject_context(self, user_message: str = "") -> str:
         """每轮自动注入记忆的集成点（引擎层组装 system prompt 时调用）。
@@ -788,6 +931,7 @@ class DeskMateMemoryManager:
         archived = 0
         deleted = 0
         modified = False
+        forgot_records: list[dict] = []  # 8.3 遗忘可见：记录「忘了什么」
 
         for sec in sections:
             # 确定这个 section 的 TTL
@@ -827,10 +971,22 @@ class DeskMateMemoryManager:
                                 source="memory-decay",
                             )
                             archived += 1
+                            forgot_records.append({
+                                "action": "archived",
+                                "section": sec["title"],
+                                "date": m.group(1),
+                                "summary": entry[:80],
+                            })
                         except Exception as e:
                             logger.debug("vault archive on decay failed, keeping entry: %s", e)
                     else:
                         deleted += 1
+                        forgot_records.append({
+                            "action": "deleted",
+                            "section": sec["title"],
+                            "date": m.group(1),
+                            "summary": entry[:80],
+                        })
                     modified = True
                     continue
                 kept.append(entry)
@@ -841,10 +997,16 @@ class DeskMateMemoryManager:
         if modified:
             self._save_global_memory(self._render_sections("", sections))
 
+        # 8.3 遗忘可见：把「忘了什么」留痕，前端可展示（遗忘与记忆一样透明）
+        for rec in forgot_records:
+            rec["ts"] = datetime.datetime.now().isoformat(timespec="seconds")
+            self._append_trace(FORGOT_TRACE_FILE, rec)
+
         return {
             "decayed": archived + deleted,
             "archived": archived,
             "deleted": deleted,
+            "forgot_count": len(forgot_records),
             "notes": f"归档 {archived} 条，删除 {deleted} 条",
         }
 
