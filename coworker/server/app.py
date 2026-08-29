@@ -2483,6 +2483,55 @@ def create_app(manager: SessionManager) -> FastAPI:
             logging.exception("get deskmate user dedup failed")
             return JSONResponse({"error": "read user dedup failed"}, status_code=500)
 
+    @app.get("/v1/deskmate/memory/layering")
+    async def get_deskmate_memory_layering() -> dict[str, Any]:
+        """P0-6 记忆分层净化 + 时间感知：返回「书的记忆 vs 你的记忆」分离状态与陈旧率。
+
+        8.0 红线：让分层与时间感知在前端可感可看。
+        """
+        try:
+            from pathlib import Path as _P
+
+            from deskmate.memory import project_memory as _pm
+            from deskmate.memory.manager import DeskMateMemoryManager
+
+            desk_dir = _P(
+                os.environ.get("DESKMATE_DIR", os.path.expanduser("~/.deskmate"))
+            )
+            global _deskmate_mm_rest
+            if "_deskmate_mm_rest" not in globals():
+                with _deskmate_mm_lock:
+                    if "_deskmate_mm_rest" not in globals():
+                        _deskmate_mm_rest = DeskMateMemoryManager(base_dir=desk_dir)
+            mm = _deskmate_mm_rest
+
+            global_entries = mm._global_memory_entries()
+            # 全局是否仍残留书稿/项目分节（分层未净化的标志）
+            _, sections = mm._parse_sections(mm._load_global_memory())
+            book_sections_left = [s["id"] for s in sections
+                                  if s["id"].lower().startswith("project")]
+
+            projects = _pm.list_projects(desk_dir)
+            project_entries = 0
+            for p in projects:
+                for content in _pm.load_project_memory(desk_dir, p).values():
+                    project_entries += len([b for b in re.split(r"\n\n+", content) if b.strip()])
+
+            age = mm.memory_age_stats()
+            return {
+                "global_entries": len(global_entries),
+                "project_entries": project_entries,
+                "project_names": projects,
+                "book_sections_left": book_sections_left,
+                "layered": len(book_sections_left) == 0,
+                "stale_rate": age["stale_rate"],
+                "stale_days": age["stale_days"],
+                "stale_entries": age["stale"],
+            }
+        except Exception:
+            logging.exception("get deskmate memory layering failed")
+            return JSONResponse({"error": "read memory layering failed"}, status_code=500)
+
     @app.get("/v1/deskmate/vault")
     async def get_deskmate_vault() -> dict[str, Any]:
         """读取 DeskMate vault（Obsidian 长期记忆）的文件列表和统计。"""

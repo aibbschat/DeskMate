@@ -60,6 +60,11 @@ def evaluate(base_dir: Path) -> dict:
         user_dup_rate = mgr.user_dup_rate()
     except Exception:  # noqa: BLE001
         user_dup_rate = None
+    # P0-6 方向盘附加指标：全局记忆陈旧率（越低越「新鲜」；>_STALE_DAYS 视为历史事实）
+    try:
+        memory_stale_rate = mgr.memory_stale_rate()
+    except Exception:  # noqa: BLE001
+        memory_stale_rate = None
     data = json.loads(DATASET.read_text(encoding="utf-8"))
 
     details: list[dict] = []
@@ -110,6 +115,8 @@ def evaluate(base_dir: Path) -> dict:
                  f"召回率: {recall_rate:.1%}   (阈值 ≥ {RECALL_THRESHOLD:.0%})")
     if user_dup_rate is not None:
         lines.append(f"USER.md 近重复率: {user_dup_rate:.1%}   (P0-5 目标趋近 0)")
+    if memory_stale_rate is not None:
+        lines.append(f"全局记忆陈旧率: {memory_stale_rate:.1%}   (P0-6 时间感知：越低越新鲜)")
     lines.append("")
     lines.append("按类别:")
     for cat, stat in by_category.items():
@@ -130,6 +137,7 @@ def evaluate(base_dir: Path) -> dict:
     return {
         "recall_rate": recall_rate,
         "user_dup_rate": user_dup_rate,
+        "memory_stale_rate": memory_stale_rate,
         "total": total,
         "passed": passed_total,
         "by_category": by_category,

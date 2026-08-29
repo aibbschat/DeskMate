@@ -1,7 +1,7 @@
 import { useState, useCallback, useEffect, useRef } from "react";
 import { Icon } from "../Icon";
 import { Markdown } from "../Markdown";
-import { getDeskmateMemoryTrace, getDeskmateUserDedup, type TraceRecord } from "../../api";
+import { getDeskmateMemoryTrace, getDeskmateUserDedup, getDeskmateMemoryLayering, type TraceRecord, type DeskmateMemoryLayering } from "../../api";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -52,6 +52,8 @@ export function MemoryViewer({
   const [traceOpen, setTraceOpen] = useState(false);
   // P0-5 记忆去重：USER.md 近重复率（8.0 红线：前端可感可看）
   const [dedup, setDedup] = useState<{ dup_rate?: number; entries?: number }>({});
+  // P0-6 记忆分层净化 + 时间感知：书的记忆 vs 你的记忆 分离状态（8.0 红线）
+  const [layering, setLayering] = useState<DeskmateMemoryLayering>({});
 
   // 打开面板即拉取最近溯源/遗忘记录（静默降级）
   useEffect(() => {
@@ -60,6 +62,9 @@ export function MemoryViewer({
       .catch(() => {});
     getDeskmateUserDedup()
       .then(setDedup)
+      .catch(() => {});
+    getDeskmateMemoryLayering()
+      .then(setLayering)
       .catch(() => {});
   }, []);
 
@@ -305,6 +310,25 @@ export function MemoryViewer({
                 </span>
                 {" · "}
                 {dedup.entries ?? 0} 条
+              </div>
+              <div className="text-[11px] mt-1" style={{ color: "var(--faint)" }}>
+                记忆分层：
+                <span style={{ color: (layering.layered ?? true) ? "var(--muted)" : "var(--accent)", fontWeight: 600 }}>
+                  {layering.layered ?? true ? "已分离" : "待净化"}
+                </span>
+                {" · 你的记忆 "}
+                <b style={{ color: "var(--muted)" }}>{layering.global_entries ?? 0}</b>
+                {" 条 / 书稿记忆 "}
+                <b style={{ color: "var(--muted)" }}>{layering.project_entries ?? 0}</b>
+                {" 条"}
+                {(layering.project_names ?? []).length > 0 && (
+                  <span> （{(layering.project_names ?? []).join("、")}）</span>
+                )}
+                {" · 陈旧率 "}
+                <span style={{ color: ((layering.stale_rate ?? 0) > 0.3 ? "var(--accent)" : "var(--muted)"), fontWeight: 600 }}>
+                  {((layering.stale_rate ?? 0) * 100).toFixed(0)}%
+                </span>
+                <span style={{ color: "var(--faint)" }}>（{layering.stale_days ?? 180}天阈值）</span>
               </div>
               {traceOpen && (
                 <div className="flex flex-col gap-1.5 mt-2">

@@ -2633,6 +2633,27 @@ export async function getDeskmateUserDedup(): Promise<{
   }
 }
 
+export interface DeskmateMemoryLayering {
+  global_entries?: number;
+  project_entries?: number;
+  project_names?: string[];
+  book_sections_left?: string[];
+  layered?: boolean;
+  stale_rate?: number;
+  stale_days?: number;
+  stale_entries?: number;
+}
+
+export async function getDeskmateMemoryLayering(): Promise<DeskmateMemoryLayering> {
+  try {
+    const res = await authedFetch(`${httpBase()}/v1/deskmate/memory/layering`);
+    if (!res.ok) return {};
+    return res.json();
+  } catch {
+    return {};
+  }
+}
+
 export interface TraceRecord {
   ts?: string;
   query?: string;

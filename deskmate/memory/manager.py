@@ -21,7 +21,13 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-from .project_memory import format_project_memory, list_projects, load_project_memory
+from .project_memory import (
+    format_project_memory,
+    list_projects,
+    load_project_memory,
+    read_project_file,
+    write_project_file,
+)
 from .soul import load_soul, save_soul, reset_soul, evolve_soul
 from .user_profile import load_user, save_user, reset_user
 from .llm import llm_available, chat, chat_memory, memory_llm_available
@@ -62,6 +68,21 @@ TRACE_MAX_LINES = 2_000                # 单文件行数上限，超出截断（
 # 语义级近义重复靠 LLM 在线四操作兜底）。CJK 字符 unigram Jaccard。
 _USER_DUP_SIM = 0.85
 TRACE_MAX_BYTES = 512 * 1024           # 单文件字节上限
+
+# P0-6 记忆分层净化 + 时间感知
+# 书稿/项目内容关键词（保守匹配，命中才判定为「书的记忆」，避免误迁「关于你」的事实）。
+_BOOK_CONTENT_PATTERNS = (
+    r"《[^》]+》",                                   # 书名号包裹的作品名
+    r"第[一二三四五六七八九十百千\d]+章",               # 具体章节
+    r"大纲", r"人物设定", r"人物表", r"设定考证", r"世界观",
+    r"书稿", r"小说正文", r"章节", r"角色",
+    r"情节", r"叙事", r"暗线", r"单元剧", r"定稿",
+)
+_BOOK_CONTENT_RE = re.compile("|".join(_BOOK_CONTENT_PATTERNS))
+# 时间感知：全局记忆条目日期前缀超过该天数视为「陈旧」（历史事实而非当前状态）。
+_STALE_DAYS = 180
+# 未检测到具体书名、也无 active_project 时的兜底项目名（书稿记忆落地处）。
+_PROJECT_DEFAULT_NAME = "创作"
 
 # § 分节标题 ↔ #标签 的规范映射（用于自动归并）
 _TITLE_TO_TAG = {
@@ -1349,6 +1370,214 @@ class DeskMateMemoryManager:
             "notes": f"清洗前 {before} 条 → 清洗后 {after} 条（合并 {merged}、删除 {removed}）",
         }
 
+    # ------------------------------------------------------------------
+    # P0-6 记忆分层净化 + 时间感知
+    # ------------------------------------------------------------------
+
+    def append_project_fact(self, project_name: str, category: str, text: str) -> str:
+        """把一条书稿/项目事实写入项目记忆（projects/<name>/<category>.md）。
+
+        带日期前缀（时间感知），去重（避免同项目重复写入）。这是 P0-6 分层净化的
+        「写入端」——让书稿记忆从创作第一刻就落在独立项目存储，而非全局 MEMORY.md。
+        """
+        text = self._ensure_date_prefix(text.strip())
+        fname = f"{category}.md"
+        try:
+            existing = read_project_file(self.base_dir, project_name, fname)
+        except OSError:
+            existing = ""
+        if existing:
+            # 去重：去掉日期前缀后比较
+            if re.sub(r"^\d{4}-\d{1,2}-\d{1,2}[:：]\s*", "", text) in \
+               re.sub(r"^\d{4}-\d{1,2}-\d{1,2}[:：]\s*", "", existing):
+                return f"项目记忆「{project_name}」{category} 已存在相同条目，跳过"
+            content = existing.rstrip() + "\n\n" + text + "\n"
+        else:
+            content = text + "\n"
+        try:
+            write_project_file(self.base_dir, project_name, fname, content)
+        except OSError as e:
+            return f"项目记忆写入失败：{e}"
+        return f"已写入项目记忆「{project_name}」{category}"
+
+    def _is_book_content(self, text: str) -> bool:
+        """判断一条记忆是否为书稿/项目专属内容（应归入项目记忆，而非全局 MEMORY.md）。
+
+        保守匹配：仅当命中书名号 / 具体章节 / 大纲·人物设定·书稿 等明确书稿信号才判真，
+        避免把「关于你」的偏好/纠正误判为书稿。
+        """
+        return bool(_BOOK_CONTENT_RE.search(text or ""))
+
+    def _resolve_project_name(self, text: str = "") -> str | None:
+        """解析书稿应归属的项目名：优先从《书名》提取，其次用 active_project，最后 None。
+
+        取《书名》出现次数最多者（而非首个），避免「工作」分节因偶提《明朝简史》
+        这类研究书而误归——主写作品（如《衙探》）通常出现最频繁。
+        """
+        if text:
+            titles = re.findall(r"《([^》]+)》", text)
+            if titles:
+                from collections import Counter
+
+                return Counter(titles).most_common(1)[0][0].strip()
+        if getattr(self, "active_project", None):
+            return self.active_project
+        return None
+
+    def _global_memory_entries(self, content: str | None = None) -> list[str]:
+        """把全局 MEMORY.md 拆成「条目」列表（按空行分段，忽略 § 头行）。"""
+        mem = content if content is not None else self._load_global_memory()
+        if not mem.strip():
+            return []
+        _, sections = self._parse_sections(mem)
+        entries: list[str] = []
+        for s in sections:
+            body = s.get("body", "").strip()
+            if not body:
+                continue
+            for blk in re.split(r"\n\n+", body):
+                blk = blk.strip()
+                if blk:
+                    entries.append(blk)
+        return entries
+
+    # 全局记忆中「关于你」的语义分节：永不迁出（即便含个别书稿词也不动，避免误伤）。
+    _KEEP_GLOBAL_SECTIONS = {
+        "偏好", "preference", "纠正", "correction",
+        "系统", "system", "笔记", "note", "读书记录", "reading",
+    }
+
+    def clean_global_memory(self) -> dict:
+        """一次性分层净化 MEMORY.md：把「书的记忆」从「你的记忆」里分出来。
+
+        策略（保守、可逆、带 MEMORY.md.bak 备份）：
+        - 「关于你」的分节（偏好/纠正/系统/笔记/读书记录）原样保留；
+        - 其余分节（如 项目 / 国子监秘闻录 / 工作 等）做**条目级**过滤：
+          命中书稿信号的条目（含《书名》/章节/大纲/人物设定/书稿/角色…）迁入对应
+          项目记忆 projects/<书名>/<分节>.md；非书稿条目留在全局，绝不丢弃。
+
+        返回 {sections_touched, entries_migrated, project_names, notes}。
+        """
+        mem = self._load_global_memory()
+        if not mem.strip():
+            return {"sections_touched": 0, "entries_migrated": 0,
+                    "project_names": [], "notes": "MEMORY.md 为空，无需净化"}
+
+        preamble, sections = self._parse_sections(mem)
+        if not sections:
+            return {"sections_touched": 0, "entries_migrated": 0,
+                    "project_names": [], "notes": "MEMORY.md 无分节，无需净化"}
+
+        new_sections: list[dict] = []
+        migrated_entries = 0
+        sections_touched = 0
+        proj_names: set[str] = set()
+
+        for s in sections:
+            sid = s["id"]
+            if sid in self._KEEP_GLOBAL_SECTIONS:
+                new_sections.append(s)  # 关于你：整段保留
+                continue
+
+            body = s["body"].strip()
+            if not body:
+                new_sections.append(s)
+                continue
+
+            entries = [b.strip() for b in re.split(r"\n\n+", body) if b.strip()]
+            book_entries = [e for e in entries if self._is_book_content(e)]
+            keep_entries = [e for e in entries if e not in book_entries]
+
+            if not book_entries:
+                new_sections.append(s)  # 该分节无书稿内容，整段保留
+                continue
+
+            # 项目名：优先从本分节内容提取书名，否则 active_project / 兜底名
+            proj = (self._resolve_project_name(body)
+                    or getattr(self, "active_project", None)
+                    or _PROJECT_DEFAULT_NAME)
+            proj_names.add(proj)
+
+            # 干净文件名：取 header 中 #标签 之前的原名称（如 工作 / 国子监秘闻录）
+            header_rest = s.get("header_rest") or sid
+            clean_name = header_rest.split("#")[0].strip() or sid
+            fname = f"{clean_name}.md"
+            try:
+                existing = read_project_file(self.base_dir, proj, fname)
+                merged = (existing.rstrip() + "\n\n" + "\n\n".join(book_entries)) \
+                    if existing.strip() else "\n\n".join(book_entries)
+                write_project_file(self.base_dir, proj, fname, merged + "\n")
+                migrated_entries += len(book_entries)
+                sections_touched += 1
+            except OSError as e:
+                logger.debug("迁移分节 %s 失败: %s", fname, e)
+                keep_entries.extend(book_entries)  # 写失败则留在全局，不丢
+
+            if keep_entries:
+                s = dict(s)
+                s["body"] = "\n\n".join(keep_entries)
+                new_sections.append(s)
+
+        if migrated_entries == 0:
+            return {"sections_touched": 0, "entries_migrated": 0,
+                    "project_names": [], "notes": "未发现书稿/项目内容，全局记忆已分层干净"}
+
+        # 重排全局 MEMORY.md：前言 + 保留/过滤后的分节
+        new_parts = [preamble] if preamble else []
+        for s in new_sections:
+            head = s.get("header_rest") or s["id"]
+            new_parts.append(f"§ {head}\n{s['body'].strip()}")
+        new_mem = "\n\n".join(p for p in new_parts if p.strip()) + "\n"
+
+        # 写备份（可还原）→ 再覆盖
+        try:
+            (self.base_dir / "MEMORY.md.bak").write_text(mem, encoding="utf-8")
+        except OSError:
+            pass
+        self._save_global_memory(new_mem)
+
+        return {
+            "sections_touched": sections_touched,
+            "entries_migrated": migrated_entries,
+            "project_names": sorted(proj_names),
+            "notes": f"迁移 {migrated_entries} 条书稿记忆至项目记忆"
+                     f"{'「' + '、'.join(sorted(proj_names)) + '」' if proj_names else ''}；"
+                     f"全局 MEMORY.md 仅保留「关于你」的内容",
+        }
+
+    def memory_age_stats(self) -> dict:
+        """全局记忆时间感知统计：总条目 / 带日期前缀 / 陈旧(>_STALE_DAYS) 条目及陈旧率。"""
+        import datetime as _dt
+
+        entries = self._global_memory_entries()
+        total = len(entries)
+        dated = 0
+        stale = 0
+        today = _dt.date.today()
+        for e in entries:
+            m = re.match(r"^\s*(\d{4})-(\d{1,2})-(\d{1,2})[:：]", e)
+            if not m:
+                continue
+            dated += 1
+            try:
+                d = _dt.date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+                if (today - d).days > _STALE_DAYS:
+                    stale += 1
+            except ValueError:
+                continue
+        rate = (stale / total) if total else 0.0
+        return {
+            "total": total,
+            "dated": dated,
+            "stale": stale,
+            "stale_rate": rate,
+            "stale_days": _STALE_DAYS,
+        }
+
+    def memory_stale_rate(self) -> float:
+        """全局记忆陈旧率（0~1，越低越「新鲜」）。方向盘指标之一。"""
+        return self.memory_age_stats()["stale_rate"]
+
     def _llm_compress_memory(self, content: str) -> str | None:
         """LLM 压缩 MEMORY.md：合并同主题条目、淘汰过时记忆，保留所有关键事实。
 
@@ -1521,10 +1750,20 @@ class DeskMateMemoryManager:
             try:
                 if category == "preference":
                     self.append_to_section("user", fact_text)
+                elif category in ("work", "correction") and self._is_book_content(fact_text):
+                    # P0-6 分层：书稿/项目专属事实 → 项目记忆，不污染全局「关于你」的记忆
+                    proj = self._resolve_project_name(fact_text)
+                    if proj:
+                        self.append_project_fact(proj, category, fact_text)
+                        written += 1
+                    else:
+                        # 无项目可归属 → 回退全局（与旧行为一致，不回归）
+                        self.append_to_section("memory", f"#{category} {fact_text}")
+                        written += 1
                 else:
                     # correction / work → MEMORY.md 对应 §（带 #标签便于检索）
                     self.append_to_section("memory", f"#{category} {fact_text}")
-                written += 1
+                    written += 1
             except Exception as e:
                 logger.debug("memory fact write failed: %s", e)
                 continue

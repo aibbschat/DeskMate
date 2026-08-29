@@ -30,3 +30,6 @@ def test_memory_benchmark_recall_rate():
         f"记忆召回率 {rep['recall_rate']:.1%} 低于阈值 {RECALL_THRESHOLD:.0%}，"
         f"疑似记忆检索回归"
     )
+    # P0-6 方向盘：全局记忆陈旧率必须是合法比率（0~1）
+    assert rep["memory_stale_rate"] is not None, "memory_stale_rate 指标缺失"
+    assert 0.0 <= rep["memory_stale_rate"] <= 1.0, "memory_stale_rate 越界"
