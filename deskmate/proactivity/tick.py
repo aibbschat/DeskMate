@@ -180,12 +180,28 @@ class ProactiveEngine:
             activity_desc += (
                 f"; 专注度: {focus.level} ({focus.score:.2f}，{focus.reason})"
             )
+        # P1-2：注入行为偏好（用户反复接受的建议类型）→ judge 更懂该提什么
+        pref_ctx = ""
+        try:
+            from deskmate.proactivity.preferences import PreferenceStore
+
+            pref_ctx = PreferenceStore(base_dir=self.base_dir).to_context()
+        except Exception:
+            pref_ctx = ""
         ctx = build_proactive_context(
             workspace=self.workspace,
             memory_context=self._memory_context,
             user_activity=activity_desc,
             project_context=self._project_context,
         )
+        if pref_ctx:
+            ctx = ProactiveContext(
+                perception=ctx.perception,
+                memory_context=ctx.memory_context + f"\n## 用户行为偏好\n{pref_ctx}",
+                user_activity=ctx.user_activity,
+                project_context=ctx.project_context,
+                bible=ctx.bible,
+            )
 
         context_text = format_context_for_judge(ctx)
 
@@ -267,8 +283,25 @@ class ProactiveEngine:
         """记录用户反馈。
 
         同时上报成长系统：接受 → 信任/默契/心情上升；忽略 → 下降。
+        被接受的建议沉淀为「行为偏好」（P1-2：主动本身越用越懂）。
         """
         self.disturb.record_feedback(suggestion_key, accepted)
+        # P1-2：被接受 → 沉淀行为偏好（反查建议类型；不碰 memory manager）
+        if accepted:
+            try:
+                from deskmate.proactivity.preferences import PreferenceStore
+
+                typ = ""
+                for rec in reversed(self.disturb.records):
+                    if rec.suggestion_key == suggestion_key:
+                        typ = rec.suggestion_type
+                        break
+                if typ:
+                    PreferenceStore(base_dir=self.base_dir).record_accepted(
+                        typ, suggestion_key
+                    )
+            except Exception as e:
+                logger.debug("preference record failed: %s", e)
         try:
             from deskmate.growth.engine import GrowthEngine
 
