@@ -1,0 +1,256 @@
+[
+  {
+    "id": "U01", "category": "user_profile", "retrieval": "load_user",
+    "question": "萧哥的籍贯是哪里？",
+    "expect_in": ["浙江宁波"], "min_hit": 1
+  },
+  {
+    "id": "U02", "category": "user_profile", "retrieval": "load_user",
+    "question": "萧哥是哪个年代出生的？",
+    "expect_in": ["70 后"], "min_hit": 1
+  },
+  {
+    "id": "U03", "category": "user_profile", "retrieval": "load_user",
+    "question": "萧哥的职业是什么？",
+    "expect_in": ["历史小说作家"], "min_hit": 1
+  },
+  {
+    "id": "U04", "category": "user_profile", "retrieval": "load_user",
+    "question": "萧哥创办了什么网站？",
+    "expect_in": ["中国写手之家"], "min_hit": 1
+  },
+  {
+    "id": "U05", "category": "user_profile", "retrieval": "load_user",
+    "question": "萧哥的个人网站域名？",
+    "expect_in": ["xiaosheng.net"], "min_hit": 1
+  },
+  {
+    "id": "U06", "category": "user_profile", "retrieval": "load_user",
+    "question": "萧哥获得过什么荣誉？",
+    "expect_in": ["当当年度影响力作家"], "min_hit": 1
+  },
+  {
+    "id": "U07", "category": "user_profile", "retrieval": "load_user",
+    "question": "萧哥写作用史料来源有什么要求？",
+    "expect_in": ["正史", "实录", "方志"], "min_hit": 1
+  },
+  {
+    "id": "U08", "category": "user_profile", "retrieval": "load_user",
+    "question": "萧哥喜欢的回复风格？",
+    "expect_in": ["简洁直接", "表格"], "min_hit": 1
+  },
+  {
+    "id": "U09", "category": "user_profile", "retrieval": "load_user",
+    "question": "萧哥写作用什么叙事视角？",
+    "expect_in": ["第三人称"], "min_hit": 1
+  },
+  {
+    "id": "U10", "category": "user_profile", "retrieval": "load_user",
+    "question": "萧哥的语言风格？",
+    "expect_in": ["文白交融"], "min_hit": 1
+  },
+  {
+    "id": "U11", "category": "user_profile", "retrieval": "load_user",
+    "question": "萧哥要求 AI 避免什么？",
+    "expect_in": ["不要编造史料"], "min_hit": 1
+  },
+  {
+    "id": "U12", "category": "user_profile", "retrieval": "load_user",
+    "question": "萧哥对评判古人有什么要求？",
+    "expect_in": ["不要套用现代价值观"], "min_hit": 1
+  },
+  {
+    "id": "U13", "category": "user_profile", "retrieval": "load_user",
+    "question": "萧哥关注哪些朝代的历史？",
+    "expect_in": ["明", "宋", "唐"], "min_hit": 1
+  },
+  {
+    "id": "U14", "category": "user_profile", "retrieval": "load_user",
+    "question": "萧哥拿当当影响力作家的获奖作品？",
+    "expect_in": ["刺明：逃生游戏"], "min_hit": 1
+  },
+
+  {
+    "id": "G01", "category": "global_memory", "retrieval": "search_global",
+    "question": "写历史小说能用爽文节奏吗？",
+    "expect_in": ["爽文节奏"], "min_hit": 1
+  },
+  {
+    "id": "G02", "category": "global_memory", "retrieval": "search_global",
+    "question": "萧哥对用户史料断言有什么纠正？",
+    "expect_in": ["具体出处"], "min_hit": 1
+  },
+  {
+    "id": "G03", "category": "global_memory", "retrieval": "search_global",
+    "question": "萧哥的回复风格偏好？",
+    "expect_in": ["简洁直接"], "min_hit": 1
+  },
+  {
+    "id": "G04", "category": "global_memory", "retrieval": "search_global",
+    "question": "萧哥偏好正史来源吗？",
+    "expect_in": ["正史"], "min_hit": 1
+  },
+  {
+    "id": "G05", "category": "global_memory", "retrieval": "prefetch",
+    "question": "萧哥对史料来源有什么要求？",
+    "expect_in": ["正史", "实录", "方志"], "min_hit": 1
+  },
+  {
+    "id": "G06", "category": "global_memory", "retrieval": "prefetch",
+    "question": "国子监秘闻录现在进展如何？",
+    "expect_in": ["终审阶段"], "min_hit": 1
+  },
+  {
+    "id": "G07", "category": "global_memory", "retrieval": "prefetch",
+    "question": "萧哥最近在调研什么新题材？",
+    "expect_in": ["宋朝题材"], "min_hit": 1
+  },
+  {
+    "id": "G08", "category": "global_memory", "retrieval": "search_global",
+    "question": "tag:preference",
+    "expect_in": ["正史", "简洁直接"], "min_hit": 1
+  },
+  {
+    "id": "G09", "category": "global_memory", "retrieval": "search_global",
+    "question": "萧哥要求排除什么来源？",
+    "expect_in": ["自媒体"], "min_hit": 1
+  },
+  {
+    "id": "G10", "category": "global_memory", "retrieval": "search_global",
+    "question": "写历史小说能用爽文节奏吗？",
+    "expect_in": ["爽文节奏"], "min_hit": 1
+  },
+
+  {
+    "id": "P01", "category": "project_memory", "retrieval": "search_project", "project": "国子监秘闻录",
+    "question": "国子监秘闻录的主角叫什么？",
+    "expect_in": ["沈砚"], "min_hit": 1
+  },
+  {
+    "id": "P02", "category": "project_memory", "retrieval": "search_project", "project": "国子监秘闻录",
+    "question": "这本书的史料铁律是什么？",
+    "expect_in": ["明会典", "大明律"], "min_hit": 1
+  },
+  {
+    "id": "P03", "category": "project_memory", "retrieval": "search_project", "project": "国子监秘闻录",
+    "question": "国子监秘闻录现在到哪个阶段了？",
+    "expect_in": ["终审"], "min_hit": 1
+  },
+  {
+    "id": "P04", "category": "project_memory", "retrieval": "search_project", "project": "国子监秘闻录",
+    "question": "最近新增了哪个角色？",
+    "expect_in": ["王恕"], "min_hit": 1
+  },
+  {
+    "id": "P05", "category": "project_memory", "retrieval": "search_project", "project": "国子监秘闻录",
+    "question": "第三章修订是因为什么问题？",
+    "expect_in": ["服饰描写", "成化"], "min_hit": 1
+  },
+  {
+    "id": "P06", "category": "project_memory", "retrieval": "search_project", "project": "国子监秘闻录",
+    "question": "这本书是什么题材？",
+    "expect_in": ["明代国子监", "历史悬疑"], "min_hit": 1
+  },
+  {
+    "id": "P07", "category": "project_memory", "retrieval": "search_project", "project": "国子监秘闻录",
+    "question": "这本书的核心设定是什么？",
+    "expect_in": ["祭酒被毒杀"], "min_hit": 1
+  },
+  {
+    "id": "P08", "category": "project_memory", "retrieval": "search_project", "project": "国子监秘闻录",
+    "question": "故事发生在成化年间吗？",
+    "expect_in": ["成化"], "min_hit": 1
+  },
+
+  {
+    "id": "V01", "category": "vault", "retrieval": "search_vault",
+    "question": "明代国子监最初设在哪？",
+    "expect_in": ["南京", "北监"], "min_hit": 1
+  },
+  {
+    "id": "V02", "category": "vault", "retrieval": "search_vault",
+    "question": "萧哥偏好的回复方式？",
+    "expect_in": ["简洁直接", "表格"], "min_hit": 1
+  },
+  {
+    "id": "V03", "category": "vault", "retrieval": "search_vault",
+    "question": "萧哥对史料有什么纠正？",
+    "expect_in": ["不得编造"], "min_hit": 1
+  },
+  {
+    "id": "V04", "category": "vault", "retrieval": "search_vault",
+    "question": "国子监最初设立的城市？",
+    "expect_in": ["南京"], "min_hit": 1
+  },
+  {
+    "id": "V05", "category": "vault", "retrieval": "search_vault",
+    "question": "哪里的国子监是太学正统？",
+    "expect_in": ["太学正统"], "min_hit": 1
+  },
+  {
+    "id": "V06", "category": "vault", "retrieval": "search_vault",
+    "question": "明代国子监属于什么制度？",
+    "expect_in": ["官制"], "min_hit": 1
+  },
+  {
+    "id": "V07", "category": "vault", "retrieval": "search_vault",
+    "question": "明代南北国子监的关系？",
+    "expect_in": ["南监北监"], "min_hit": 1
+  },
+  {
+    "id": "V08", "category": "vault", "retrieval": "search_vault",
+    "question": "北监指什么？",
+    "expect_in": ["北监"], "min_hit": 1
+  },
+
+  {
+    "id": "B01", "category": "bible", "retrieval": "novel_recall", "project": "国子监秘闻录",
+    "question": "沈砚是谁？",
+    "expect_in": ["寒门举子", "主角"], "min_hit": 1
+  },
+  {
+    "id": "B02", "category": "bible", "retrieval": "novel_recall", "project": "国子监秘闻录",
+    "question": "王恕在书里是什么身份？",
+    "expect_in": ["司业"], "min_hit": 1
+  },
+  {
+    "id": "B03", "category": "bible", "retrieval": "novel_recall", "project": "国子监秘闻录",
+    "question": "祭酒遭遇了什么？",
+    "expect_in": ["祭酒", "毒杀"], "min_hit": 1
+  },
+  {
+    "id": "B04", "category": "bible", "retrieval": "novel_recall", "project": "国子监秘闻录",
+    "question": "成化元年发生了什么？",
+    "expect_in": ["入监"], "min_hit": 1
+  },
+  {
+    "id": "B05", "category": "bible", "retrieval": "novel_recall", "project": "国子监秘闻录",
+    "question": "国子监生员穿什么？",
+    "expect_in": ["襕衫"], "min_hit": 1
+  },
+  {
+    "id": "B06", "category": "bible", "retrieval": "novel_recall", "project": "国子监秘闻录",
+    "question": "沈砚查案牵出了什么？",
+    "expect_in": ["官制黑幕"], "min_hit": 1
+  },
+  {
+    "id": "B07", "category": "bible", "retrieval": "novel_recall", "project": "国子监秘闻录",
+    "question": "周洪谟的下场？",
+    "expect_in": ["毒杀"], "min_hit": 1
+  },
+  {
+    "id": "B08", "category": "bible", "retrieval": "novel_recall", "project": "国子监秘闻录",
+    "question": "明代国子监服饰制度？",
+    "expect_in": ["襕衫", "补子"], "min_hit": 1
+  },
+  {
+    "id": "B09", "category": "bible", "retrieval": "novel_recall", "project": "国子监秘闻录",
+    "question": "国子监最初设立于何时何地？",
+    "expect_in": ["南京", "洪武"], "min_hit": 1
+  },
+  {
+    "id": "B10", "category": "bible", "retrieval": "novel_recall", "project": "国子监秘闻录",
+    "question": "沈砚在书里做什么？",
+    "expect_in": ["沈砚查案"], "min_hit": 1
+  }
+]
