@@ -2619,6 +2619,20 @@ export async function getDeskmateMemoryTrace(
   }
 }
 
+/** P0-5 记忆去重：USER.md 近重复率与条目数（8.0 红线：前端可感可看）。 */
+export async function getDeskmateUserDedup(): Promise<{
+  dup_rate?: number;
+  entries?: number;
+}> {
+  try {
+    const res = await authedFetch(`${httpBase()}/v1/deskmate/memory/user-dedup`);
+    if (!res.ok) return {};
+    return res.json();
+  } catch {
+    return {};
+  }
+}
+
 export interface TraceRecord {
   ts?: string;
   query?: string;

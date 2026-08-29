@@ -57,6 +57,10 @@ TRACE_DIR_NAME = "traces"
 INJECT_TRACE_FILE = "inject.jsonl"     # 每轮注入了哪些记忆（溯源）
 FORGOT_TRACE_FILE = "forgot.jsonl"     # 归档/删除了哪些记忆（遗忘可见）
 TRACE_MAX_LINES = 2_000                # 单文件行数上限，超出截断（保留最新）
+
+# P0-5 记忆去重：离线近重复相似度阈值（保守，宁可漏判也不误删真实信息；
+# 语义级近义重复靠 LLM 在线四操作兜底）。CJK 字符 unigram Jaccard。
+_USER_DUP_SIM = 0.85
 TRACE_MAX_BYTES = 512 * 1024           # 单文件字节上限
 
 # § 分节标题 ↔ #标签 的规范映射（用于自动归并）
@@ -1034,18 +1038,34 @@ class DeskMateMemoryManager:
 
         if section == "user":
             current = load_user(self.base_dir)
-            # 去重：检查是否已包含相同内容
-            if entry in current:
-                return "USER.md 已存在相同条目，跳过"
-            # 语义去重：检查是否有相似条目
-            if current and llm_available():
-                merged = self._try_merge_similar(current, entry)
-                if merged is not None:
-                    save_user(self.base_dir, merged)
-                    return "USER.md 已合并相似条目"
+            entry_s = entry.strip()
+
+            # 离线近重复拦截（保守阈值，绝不误删真实信息）
+            dup = self._find_user_dup(entry_s)
+            if dup is not None:
+                if llm_available():
+                    # Mem0 四操作：在线 LLM 决定 合并更新 / 删旧立新 / 跳过
+                    rel = self._classify_user_relation(entry_s, [dup])
+                    if rel == "NOOP":
+                        return "USER.md 已覆盖该信息，跳过"
+                    if rel == "CONTRADICTORY":
+                        if self._replace_user_entry(dup, entry_s):
+                            return "USER.md 已用新信息替换旧条目"
+                    # EQUIVALENT 或 NEW（与离线冲突）→ 合并更新
+                    merged = self._try_merge_similar(dup, entry_s)
+                    if self._replace_user_entry(dup, merged or entry_s):
+                        return "USER.md 已合并相似条目"
+                else:
+                    # 离线近重复且无 LLM → 保守跳过（防 3+ 重复堆积）
+                    return "USER.md 已存在近重复条目，跳过"
+
+            # 注：明显无近重复的新条目直接追加，不为每次写入都调 LLM（避免成本/延迟）；
+            # LLM 四操作精判仅在「离线已怀疑重复」时触发（见上）。
+
+            # 无近重复 → 追加新条目
             if current and not current.endswith("\n"):
                 current = current.rstrip() + "\n"
-            updated = (current.rstrip() + "\n\n" + entry) if current.strip() else entry
+            updated = (current.rstrip() + "\n\n" + entry_s) if current.strip() else entry_s
             save_user(self.base_dir, updated)
             self._compress_if_needed("user")
             return "USER.md 已追加"
@@ -1183,6 +1203,151 @@ class DeskMateMemoryManager:
                 save_user(self.base_dir, compressed)
                 return True
         return False
+
+    # ------------------------------------------------------------------
+    # P0-5 记忆去重 / USER.md 清洗（按 Mem0 ADD/UPDATE/DELETE/NOOP 重构）
+    # ------------------------------------------------------------------
+    def _user_entries(self, content: str | None = None) -> list[str]:
+        """把 USER.md 切成条目列表（按空行分段，逐条 strip）。"""
+        if content is None:
+            content = load_user(self.base_dir)
+        return [p.strip() for p in re.split(r"\n\s*\n", content or "") if p.strip()]
+
+    @staticmethod
+    def _entry_sim(a: str, b: str) -> float:
+        """离线相似度：CJK 字符 + 拉丁词 的 unigram Jaccard（保守阈值见 _USER_DUP_SIM）。
+
+        同时纳入拉丁词（工具名/数字），避免「VS Code」「PyCharm」这类只差拉丁部分被误判为同一条。
+        """
+        def _tokens(s: str) -> set[str]:
+            s = re.sub(r"^\d{4}-\d{1,2}-\d{1,2}[:：]\s*", "", s or "")
+            toks = set(re.findall(r"[\u4e00-\u9fff]", s))
+            toks |= set(re.findall(r"[a-z0-9]+", s.lower()))
+            return toks
+        sa, sb = _tokens(a), _tokens(b)
+        if not sa or not sb:
+            return 0.0
+        union = sa | sb
+        return len(sa & sb) / len(union)
+
+    def _find_user_dup(self, new_entry: str) -> str | None:
+        """离线找 USER.md 中近重复条目（含逐字相同）；命中返回该条目原文。"""
+        new_entry = (new_entry or "").strip()
+        if not new_entry:
+            return None
+        for ex in self._user_entries():
+            if not ex:
+                continue
+            if ex == new_entry or self._entry_sim(ex, new_entry) >= _USER_DUP_SIM:
+                return ex
+        return None
+
+    def _most_relevant_entry(self, new_entry: str, entries: list[str]) -> str | None:
+        best, best_sim = None, -1.0
+        for e in entries:
+            s = self._entry_sim(e, new_entry)
+            if s > best_sim:
+                best, best_sim = e, s
+        return best
+
+    def _replace_user_entry(self, old: str, new: str) -> bool:
+        """在 USER.md 中把 old 条目替换为 new（按首次出现替换）。"""
+        if not old:
+            return False
+        current = load_user(self.base_dir)
+        if old in current:
+            save_user(self.base_dir, current.replace(old, new, 1))
+            return True
+        return False
+
+    def _classify_user_relation(self, new_entry: str, existing: list[str]) -> str:
+        """LLM 判定新条目与已有 USER.md 的关系（Mem0 四操作）：
+        EQUIVALENT（合并更新）/ CONTRADICTORY（删旧立新）/ NEW（新增）/ NOOP（已覆盖）。
+        仅 LLM 可用时调用；离线由调用方用 _find_user_dup 兜底。"""
+        if not llm_available():
+            return "NEW"
+        if not existing:
+            return "NEW"
+        context = "\n".join(f"- {e}" for e in existing[:15])
+        prompt = (
+            f"用户画像 USER.md 已有条目：\n{context}\n\n"
+            f"新条目：{new_entry}\n\n"
+            "判断关系，只回一个词：\n"
+            "EQUIVALENT=同一件事（措辞不同但信息等价，应合并更新）\n"
+            "CONTRADICTORY=新条目推翻/纠正了某条已有条目（应删旧立新）\n"
+            "NEW=全新信息（应新增）\n"
+            "NOOP=没价值或已被已有条目完全覆盖（不写）"
+        )
+        try:
+            resp = chat(
+                "你是记忆关系分类器。只回 EQUIVALENT/CONTRADICTORY/NEW/NOOP 之一，不要解释。",
+                prompt, temperature=0.0, max_tokens=10,
+            )
+            tag = (resp or "").strip().upper()
+            if tag in ("EQUIVALENT", "CONTRADICTORY", "NEW", "NOOP"):
+                return tag
+        except Exception as e:  # noqa: BLE001
+            logger.debug("user relation classify failed: %s", e)
+        return "NEW"
+
+    def user_dup_rate(self) -> float:
+        """USER.md 近重复率：存在近重复伙伴的条目数 / 总条目数（0~1，越低越好）。"""
+        entries = self._user_entries()
+        n = len(entries)
+        if n < 2:
+            return 0.0
+        involved: set[int] = set()
+        for i in range(n):
+            for j in range(i + 1, n):
+                if self._entry_sim(entries[i], entries[j]) >= _USER_DUP_SIM:
+                    involved.add(i)
+                    involved.add(j)
+        return (len(involved) / n) if n else 0.0
+
+    def clean_user_memory(self) -> dict:
+        """一次性清洗 USER.md：合并近重复、删除完全重复。带 .bak 备份，可还原。
+        返回 {entries_before, entries_after, merged, removed, notes}。"""
+        content = load_user(self.base_dir)
+        entries = self._user_entries(content)
+        before = len(entries)
+        kept: list[str] = []
+        merged = 0
+        removed = 0
+        for e in entries:
+            if e in kept:  # 完全重复
+                removed += 1
+                continue
+            hit = None
+            for s in kept:
+                if self._entry_sim(s, e) >= _USER_DUP_SIM:
+                    hit = s
+                    break
+            if hit is not None:
+                if llm_available():
+                    m = self._try_merge_similar(hit, e)
+                    if m and m.strip() and m.strip() != hit.strip():
+                        kept[kept.index(hit)] = m
+                        merged += 1
+                        continue
+                # 离线：保留已存在的（较旧），丢弃新重复
+                removed += 1
+                continue
+            kept.append(e)
+        after = len(kept)
+        new_content = "\n\n".join(kept).strip()
+        if new_content and new_content != content.strip():
+            try:
+                (self.base_dir / "USER.md.bak").write_text(content, encoding="utf-8")
+            except OSError:
+                pass
+            save_user(self.base_dir, new_content + "\n")
+        return {
+            "entries_before": before,
+            "entries_after": after,
+            "merged": merged,
+            "removed": removed,
+            "notes": f"清洗前 {before} 条 → 清洗后 {after} 条（合并 {merged}、删除 {removed}）",
+        }
 
     def _llm_compress_memory(self, content: str) -> str | None:
         """LLM 压缩 MEMORY.md：合并同主题条目、淘汰过时记忆，保留所有关键事实。
@@ -1489,6 +1654,13 @@ class DeskMateMemoryManager:
                         # 关键词高度重叠，进入 LLM 确认
                         if self._llm_check_duplicate(new_entry, s["body"]):
                             return True
+
+        # --- 阶段 1.5: USER.md 查重（P0-5 补全：全局查重须覆盖 USER.md）---
+        user_text = load_user(self.base_dir)
+        if user_text:
+            for ex in self._user_entries(user_text):
+                if self._entry_sim(ex, clean_entry) >= _USER_DUP_SIM:
+                    return True
 
         # --- 阶段 2: vault 关键词快速过滤 ---
         try:

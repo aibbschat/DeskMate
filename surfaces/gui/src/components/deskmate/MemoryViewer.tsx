@@ -1,7 +1,7 @@
 import { useState, useCallback, useEffect, useRef } from "react";
 import { Icon } from "../Icon";
 import { Markdown } from "../Markdown";
-import { getDeskmateMemoryTrace, type TraceRecord } from "../../api";
+import { getDeskmateMemoryTrace, getDeskmateUserDedup, type TraceRecord } from "../../api";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -50,11 +50,16 @@ export function MemoryViewer({
   // 溯源 + 遗忘可见（P0-4 + 8.3）：最近注入了哪些记忆 / 忘了哪些记忆
   const [traces, setTraces] = useState<{ inject?: TraceRecord[]; forgot?: TraceRecord[] }>({});
   const [traceOpen, setTraceOpen] = useState(false);
+  // P0-5 记忆去重：USER.md 近重复率（8.0 红线：前端可感可看）
+  const [dedup, setDedup] = useState<{ dup_rate?: number; entries?: number }>({});
 
   // 打开面板即拉取最近溯源/遗忘记录（静默降级）
   useEffect(() => {
     getDeskmateMemoryTrace("both", 8)
       .then(setTraces)
+      .catch(() => {});
+    getDeskmateUserDedup()
+      .then(setDedup)
       .catch(() => {});
   }, []);
 
@@ -288,6 +293,19 @@ export function MemoryViewer({
                 记忆溯源 · 最近忘了什么
                 <span style={{ color: "var(--faint)" }}>{traceOpen ? "▾" : "▸"}</span>
               </button>
+              <div className="text-[11px] mt-1.5" style={{ color: "var(--faint)" }}>
+                USER.md 重复率：
+                <span
+                  style={{
+                    color: (dedup.dup_rate ?? 0) > 0 ? "var(--accent)" : "var(--muted)",
+                    fontWeight: 600,
+                  }}
+                >
+                  {((dedup.dup_rate ?? 0) * 100).toFixed(0)}%
+                </span>
+                {" · "}
+                {dedup.entries ?? 0} 条
+              </div>
               {traceOpen && (
                 <div className="flex flex-col gap-1.5 mt-2">
                   {(traces.forgot ?? []).length === 0 &&

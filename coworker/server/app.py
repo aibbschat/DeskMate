@@ -2458,6 +2458,31 @@ def create_app(manager: SessionManager) -> FastAPI:
             logging.exception("get deskmate memory trace failed")
             return JSONResponse({"error": "read trace failed"}, status_code=500)
 
+    @app.get("/v1/deskmate/memory/user-dedup")
+    async def get_deskmate_user_dedup() -> dict[str, Any]:
+        """P0-5 记忆去重：返回 USER.md 近重复率与条目数（8.0 红线：前端可感可看）。"""
+        try:
+            from pathlib import Path as _P
+
+            from deskmate.memory.manager import DeskMateMemoryManager
+
+            desk_dir = _P(
+                os.environ.get("DESKMATE_DIR", os.path.expanduser("~/.deskmate"))
+            )
+            global _deskmate_mm_rest
+            if "_deskmate_mm_rest" not in globals():
+                with _deskmate_mm_lock:
+                    if "_deskmate_mm_rest" not in globals():
+                        _deskmate_mm_rest = DeskMateMemoryManager(base_dir=desk_dir)
+            mm = _deskmate_mm_rest
+            return {
+                "dup_rate": mm.user_dup_rate(),
+                "entries": len(mm._user_entries()),
+            }
+        except Exception:
+            logging.exception("get deskmate user dedup failed")
+            return JSONResponse({"error": "read user dedup failed"}, status_code=500)
+
     @app.get("/v1/deskmate/vault")
     async def get_deskmate_vault() -> dict[str, Any]:
         """读取 DeskMate vault（Obsidian 长期记忆）的文件列表和统计。"""
