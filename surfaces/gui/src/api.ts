@@ -3242,3 +3242,73 @@ export async function* streamStep(
     }
   }
 }
+
+// ---- 创作对话流（chat_flow：把流水线放入原生对话流） ----
+
+/** 创作对话消息（与后端 chat_flow.py 的 _msg 对应）。 */
+export interface CreationChatMessage {
+  id: string;
+  type: "user" | "system" | "progress" | "artifact" | "review" | "milestone" | "expert" | "expert_card" | "roundtable" | "help" | "error";
+  ts: string;
+  text?: string;
+  title?: string;
+  message?: string;
+  label?: string;
+  progress?: number;
+  kind?: "outline" | "screenplay" | "complete";
+  episode?: number;
+  approved?: boolean;
+  criteria?: string;
+  expert?: string;
+  tagline?: string;
+  events?: Array<{ message: string; progress?: number }>;
+}
+
+/** 获取创作对话历史。 */
+export async function getChatHistory(pid: string): Promise<CreationChatMessage[]> {
+  const res = await authedFetch(`${creationBase()}/api/creation/${encodeURIComponent(pid)}/chat`);
+  const data = await res.json();
+  return data.messages ?? [];
+}
+
+/** SSE 流式发消息：POST /api/creation/{pid}/chat，逐事件返回 chat_message。 */
+export async function* streamChat(pid: string, text: string): AsyncGenerator<CreationChatMessage> {
+  const res = await authedFetch(`${creationBase()}/api/creation/${encodeURIComponent(pid)}/chat`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ text }),
+  });
+  if (!res.body) return;
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = "";
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    let idx;
+    while ((idx = buf.indexOf("\n\n")) !== -1) {
+      const chunk = buf.slice(0, idx);
+      buf = buf.slice(idx + 2);
+      const line = chunk.split("\n").find((l) => l.startsWith("data:"));
+      if (line) {
+        try {
+          const ev = JSON.parse(line.slice(5).trim());
+          if (ev.type === "chat_message" && ev.message) {
+            yield ev.message as CreationChatMessage;
+          } else if (ev.type === "error") {
+            yield { id: "err", type: "error", ts: new Date().toISOString(), text: ev.message } as CreationChatMessage;
+          }
+        } catch {
+          /* ignore malformed */
+        }
+      }
+    }
+  }
+}
+
+/** 圆桌专家列表（GET /roundtable/api/personas），返回 roundtable: true 的 7 专家。 */
+export async function getRoundtablePersonas(): Promise<Persona[]> {
+  const res = await authedFetch(`${creationBase()}/api/personas`);
+  return res.json();
+}

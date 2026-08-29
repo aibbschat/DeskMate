@@ -91,7 +91,7 @@ import { ExpertAvatar } from "./components/deskmate/ExpertAvatar";
 import { ReportDialog } from "./components/deskmate/ReportDialog";
 
 import { ExpertsCenter } from "./components/deskmate/ExpertsCenter";
-import { CreationPipelineView } from "./components/CreationPipelineView";
+import { CreationChatView } from "./components/CreationChatView";
 import { TeamChatView } from "./components/TeamChatView";
 import { BadgeWall } from "./components/deskmate/BadgeWall";
 import { useTranslation } from "react-i18next";
@@ -318,7 +318,7 @@ export function App() {
   const [surface, setSurface] = useState<
     "session" | "scheduled" | "integrations" | "skillstore" | "audit" | "inbox" | "persona" | "settings" | "experts" | "roundtable" | "badges" | "creation" | "teamchat"
   >("session");
-  const [teamId, setTeamId] = useState("");
+  const [teamId] = useState("");
   // A remembered Scheduled-detail target must not outlive the surface (see the
   // scheduledOpenId comment above): nav re-entry lands on the list, never a
   // possibly-deleted automation's dead detail.
@@ -1608,7 +1608,7 @@ export function App() {
           <iframe src={`${httpBase()}/roundtable/`} title="创作圆桌" />
         </div>
       ) : surface === "creation" ? (
-        <CreationPipelineView onOpenTeamChat={(tid) => { setTeamId(tid); setSurface("teamchat"); }} onBack={() => setSurface("session")} />
+        <CreationChatView onBack={() => setSurface("session")} />
       ) : surface === "teamchat" ? (
         <TeamChatView teamId={teamId} onClose={() => setSurface("creation")} />
       ) : surface === "badges" ? (
