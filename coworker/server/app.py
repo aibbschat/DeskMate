@@ -2532,6 +2532,62 @@ def create_app(manager: SessionManager) -> FastAPI:
             logging.exception("get deskmate memory layering failed")
             return JSONResponse({"error": "read memory layering failed"}, status_code=500)
 
+    @app.get("/v1/deskmate/skills/curator")
+    async def get_deskmate_skills_curator() -> dict[str, Any]:
+        """P0-7 curator 自控清理：返回自动归档开关状态与当前整理候选（非破坏性巡检）。
+
+        8.0 红线：让「技能库自整理 / 归档」在前端可感可看。
+        """
+        try:
+            from pathlib import Path as _P
+
+            from deskmate.skills import curator as _curator
+            from deskmate.skills.manager import SkillManager
+
+            desk_dir = _P(
+                os.environ.get("DESKMATE_DIR", os.path.expanduser("~/.deskmate"))
+            )
+            store = SkillManager(base_dir=desk_dir).store
+            result = _curator.curate_skills(desk_dir, auto_archive=False)
+            # 当前 archive/ 已归档存量（还原前的状态，可感）
+            archive_dir = store.skills_dir / "archive"
+            archived_now = len(list(archive_dir.glob("*.md"))) if archive_dir.is_dir() else 0
+            return {
+                "auto_archive_enabled": _curator.auto_archive_enabled(),
+                "total": result.get("total", 0),
+                "merge_candidates": result.get("merge_candidates", []),
+                "archive_candidates": result.get("archive_candidates", []),
+                "auto_archive_candidates": result.get("auto_archive_candidates", []),
+                "archived_now": archived_now,
+                "report_path": result.get("report_path", ""),
+            }
+        except Exception:
+            logging.exception("get deskmate skills curator failed")
+            return JSONResponse({"error": "read skills curator failed"}, status_code=500)
+
+    @app.post("/v1/deskmate/skills/restore")
+    async def post_deskmate_skills_restore(request: Request) -> dict[str, Any]:
+        """P0-7 一键还原：把 archive/ 中的技能还原回技能库（归档不删除，可还原）。"""
+        try:
+            from pathlib import Path as _P
+
+            from deskmate.skills.manager import SkillManager
+
+            desk_dir = _P(
+                os.environ.get("DESKMATE_DIR", os.path.expanduser("~/.deskmate"))
+            )
+            body = await request.json()
+            name = (body or {}).get("name", "")
+            if not name:
+                return JSONResponse(
+                    {"status": "error", "message": "缺少 name"}, status_code=400
+                )
+            store = SkillManager(base_dir=desk_dir).store
+            return store.restore_skill(name)
+        except Exception:
+            logging.exception("post deskmate skills restore failed")
+            return JSONResponse({"status": "error", "message": "restore failed"}, status_code=500)
+
     @app.get("/v1/deskmate/vault")
     async def get_deskmate_vault() -> dict[str, Any]:
         """读取 DeskMate vault（Obsidian 长期记忆）的文件列表和统计。"""
@@ -2943,6 +2999,63 @@ def create_app(manager: SessionManager) -> FastAPI:
         except Exception:
             logging.exception("get deskmate style-profile failed")
             return {"profile": None}
+
+    @app.get("/v1/deskmate/diary")
+    async def get_deskmate_diary() -> dict[str, Any]:
+        """P1-3：墨灵日记——日期列表（DeskHome 可翻）。"""
+        try:
+            from deskmate.growth.diary import DiaryWriter
+
+            base = os.environ.get("DESKMATE_DIR", os.path.expanduser("~/.deskmate"))
+            w = DiaryWriter(base_dir=base)
+            return {"dates": w.list_diaries()}
+        except Exception:
+            logging.exception("get deskmate diary list failed")
+            return {"dates": []}
+
+    @app.get("/v1/deskmate/diary/recap")
+    async def get_deskmate_diary_recap(days: int = 7) -> dict[str, Any]:
+        """P1-3：每周/每月「我们的回忆」。"""
+        try:
+            from deskmate.growth.diary import DiaryWriter
+
+            base = os.environ.get("DESKMATE_DIR", os.path.expanduser("~/.deskmate"))
+            w = DiaryWriter(base_dir=base)
+            return {"days": max(1, min(days, 90)), "recap": w.weekly_recap(days)}
+        except Exception:
+            logging.exception("get deskmate diary recap failed")
+            return {"days": days, "recap": ""}
+
+    @app.post("/v1/deskmate/diary/today")
+    async def post_deskmate_diary_today() -> dict[str, Any]:
+        """P1-3：生成/刷新今日墨灵日记（幂等）。"""
+        try:
+            from deskmate.growth.diary import DiaryWriter
+
+            base = os.environ.get("DESKMATE_DIR", os.path.expanduser("~/.deskmate"))
+            w = DiaryWriter(base_dir=base)
+            path = w.ensure_today()
+            date = Path(str(path)).stem
+            return {"path": str(path), "content": w.read(date)}
+        except Exception:
+            logging.exception("post deskmate diary today failed")
+            return JSONResponse({"error": "生成日记失败"}, status_code=500)
+
+    @app.get("/v1/deskmate/diary/{date}")
+    async def get_deskmate_diary_date(date: str) -> dict[str, Any]:
+        """P1-3：读取某天墨灵日记。"""
+        try:
+            from deskmate.growth.diary import DiaryWriter
+
+            base = os.environ.get("DESKMATE_DIR", os.path.expanduser("~/.deskmate"))
+            w = DiaryWriter(base_dir=base)
+            content = w.read(date)
+            if content is None:
+                return JSONResponse({"error": "no diary"}, status_code=404)
+            return {"date": date, "content": content}
+        except Exception:
+            logging.exception("get deskmate diary date failed")
+            return JSONResponse({"error": "读取日记失败"}, status_code=500)
 
     @app.post("/v1/deskmate/chapters")
     async def deskmate_chapters(request: Request) -> dict[str, Any]:
