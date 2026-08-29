@@ -183,6 +183,38 @@ class CreationChat:
         except Exception as exc:
             logger.debug("creation feedback -> growth 失败: %s", exc)
 
+    # ---- 圣经回流（P1-6）----
+    def _record_bible_feedback(
+        self, item_id: int | None, episode: str | int | None = None, source: str = ""
+    ) -> dict:
+        """定稿后把该章产出回流进改编圣经（best-effort，不阻塞创作流程）。
+
+        读 pipeline 草稿正文 → 提取新出现关键词 → 追加 bible.md 创作回流区 + 写日志。
+        同一 novel+episode 幂等；无原著/无正文/圣经缺失时静默跳过。
+        Returns: record_bible_feedback 的结果 dict（供定稿消息展示回流提示）。
+        """
+        try:
+            pl = self.pipeline
+            ref = getattr(pl, "novel_ref", "") or ""
+            if not ref or item_id is None:
+                return {"ok": False, "skipped": True, "reason": "无原著或产出项"}
+            draft = (getattr(pl, "_drafts", {}) or {}).get(item_id)
+            if not draft:
+                return {"ok": False, "skipped": True, "reason": "无产出正文"}
+            cache_root = getattr(pl, "_novel_cache_root", None) or None
+            from deskmate.creation.bible_feedback import record_bible_feedback
+
+            return record_bible_feedback(
+                ref,
+                episode if episode is not None else str(item_id),
+                draft,
+                cache_root=cache_root,
+                source=source,
+            )
+        except Exception as exc:
+            logger.debug("bible feedback 失败: %s", exc)
+            return {"ok": False, "skipped": True, "reason": str(exc)}
+
     # ---- 状态快照 ----
     def _state(self) -> dict:
         pl = self.pipeline
@@ -421,8 +453,14 @@ class CreationChat:
         # P0-3：拍板反馈 → 信任/成长闭环（best-effort）
         self._record_creation_feedback(verdict == "approved")
         if verdict == "approved":
-            yield _msg(MSG_MILESTONE, kind="outline", title="大纲已定稿",
-                       text="你是主编，决策已记录。大纲 docx 已自动落地。")
+            # P1-6：大纲定稿 → 回流进圣经（best-effort）
+            bf = self._record_bible_feedback(
+                self.pipeline.ids.get("outline_item"), "大纲", "大纲定稿"
+            )
+            _text = "你是主编，决策已记录。大纲 docx 已自动落地。"
+            if bf.get("ok") and not bf.get("skipped") and bf.get("entities"):
+                _text += f" 圣经已回流：新增 {len(bf['entities'])} 条关键词。"
+            yield _msg(MSG_MILESTONE, kind="outline", title="大纲已定稿", text=_text)
             if self.pipeline._is_episodic() or self.pipeline.ids.get("screen_item"):
                 yield _msg(MSG_SYSTEM, text="大纲已定稿，剧本已解锁。可以说「写第1集」开始写剧本。")
         else:
@@ -493,8 +531,15 @@ class CreationChat:
         self._record_creation_feedback(verdict == "approved")
         title = f"第{episode}集" if episode else "剧本"
         if verdict == "approved":
+            # P1-6：剧本定稿 → 回流进圣经（best-effort；episode 去重）
+            bf = self._record_bible_feedback(
+                self.pipeline._screen_item_id(episode), episode, title
+            )
+            _text = f"你是主编，决策已记录。{title} docx 已自动落地。"
+            if bf.get("ok") and not bf.get("skipped") and bf.get("entities"):
+                _text += f" 圣经已回流：{title}新增 {len(bf['entities'])} 条关键词。"
             yield _msg(MSG_MILESTONE, kind="screenplay", title=f"{title}已定稿", episode=episode,
-                       text=f"你是主编，决策已记录。{title} docx 已自动落地。")
+                       text=_text)
             # 自动推进下一集提示
             if self.pipeline._is_episodic():
                 nxt = self.pipeline._next_episode()
