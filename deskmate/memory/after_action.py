@@ -514,6 +514,9 @@ def _maybe_review_memory(base_dir: Path, last_user: str, last_asst: str) -> None
 def _maybe_curate_skills(base_dir: Path) -> None:
     """后台定期巡检技能库（curator 自整理）。默认非破坏性：只出报告。
 
+    自动归档是否开启由 curator.auto_archive_enabled() 控制（env
+    DESKMATE_CURATOR_AUTO_ARCHIVE），开启后仅归档「从未使用 + 陈旧 + 高重叠」
+    的严格低价值技能，且支持 skill_restore 一键还原。
     距上次巡检超过间隔才运行（见 curator._should_run），避免每轮都扫。
     任何异常都不阻断主流程（fail-open）。
     """
@@ -522,7 +525,7 @@ def _maybe_curate_skills(base_dir: Path) -> None:
 
         if not _curator._should_run(base_dir):
             return
-        result = _curator.curate_skills(base_dir, auto_archive=False)
+        result = _curator.curate_skills(base_dir, auto_archive=_curator.auto_archive_enabled())
         logger.info(
             "after_action: 技能巡检 -> 扫描 %d, 合并候选 %d, 归档候选 %d, 报告 %s",
             result.get("total", 0),

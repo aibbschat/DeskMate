@@ -205,7 +205,20 @@ def skill_archive(name: str) -> str:
 
 
 @mcp.tool()
-def skill_stats() -> str:
+def skill_restore(name: str) -> str:
+    """从 archive/ 还原技能（一键还原，归档不会删除）。
+
+    Args:
+        name: 技能名称
+
+    Returns:
+        操作结果
+    """
+    try:
+        result = _get_mgr().store.restore_skill(name)
+        return json.dumps(result, ensure_ascii=False)
+    except Exception as e:
+        return json.dumps({"status": "error", "message": str(e)}, ensure_ascii=False)
     """技能统计信息。
 
     Returns:

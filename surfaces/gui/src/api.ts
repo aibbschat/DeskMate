@@ -1521,6 +1521,33 @@ export async function setSessionSkill(
   return res.json();
 }
 
+// -- DeskMate curator (P0-7: 自控清理 + 一键还原) ----------------------------
+export interface DeskmateCuratorStatus {
+  auto_archive_enabled: boolean;
+  total: number;
+  merge_candidates: { a: string; b: string; similarity: number }[];
+  archive_candidates: { name: string; uses: number; stale_days: number }[];
+  auto_archive_candidates: { name: string; uses: number; stale_days: number }[];
+  archived_now: number;
+  archived_names: string[];
+  report_path: string;
+}
+
+export async function getDeskmateSkillsCurator(): Promise<DeskmateCuratorStatus> {
+  const res = await fetch(`${httpBase()}/v1/deskmate/skills/curator`);
+  return res.json();
+}
+
+export async function restoreDeskmateSkill(
+  name: string,
+): Promise<{ status: string; message?: string }> {
+  const res = await fetch(
+    `${httpBase()}/v1/deskmate/skills/restore`,
+    jsonPost({ name }),
+  );
+  return res.json();
+}
+
 // -- Inbox + Unattended -------------------------------------------------------
 export interface InboxItem {
   id: string;

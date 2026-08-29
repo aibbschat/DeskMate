@@ -2551,7 +2551,9 @@ def create_app(manager: SessionManager) -> FastAPI:
             result = _curator.curate_skills(desk_dir, auto_archive=False)
             # 当前 archive/ 已归档存量（还原前的状态，可感）
             archive_dir = store.skills_dir / "archive"
-            archived_now = len(list(archive_dir.glob("*.md"))) if archive_dir.is_dir() else 0
+            archived_files = list(archive_dir.glob("*.md")) if archive_dir.is_dir() else []
+            archived_now = len(archived_files)
+            archived_names = [f.stem for f in archived_files]
             return {
                 "auto_archive_enabled": _curator.auto_archive_enabled(),
                 "total": result.get("total", 0),
@@ -2559,6 +2561,7 @@ def create_app(manager: SessionManager) -> FastAPI:
                 "archive_candidates": result.get("archive_candidates", []),
                 "auto_archive_candidates": result.get("auto_archive_candidates", []),
                 "archived_now": archived_now,
+                "archived_names": archived_names,
                 "report_path": result.get("report_path", ""),
             }
         except Exception:

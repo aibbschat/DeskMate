@@ -2,7 +2,7 @@
 
 周期性在后台运行：扫描技能库，发现重复/重叠候选 + 长期未用技能，
 主动把合并候选与归档候选写入报告（默认非破坏性，绝不自动合并/删除以免丢信息）；
-设 auto_archive=True 时仅归档「从未使用、陈旧、无关联」的低价值技能。
+设 auto_archive=True 时仅归档「从未使用、陈旧、且与别的技能高重叠（Jaccard≥阈值）」的严格低价值技能；其余仅出报告。开启方式见 auto_archive_enabled()。
 
 设计取舍（对齐 Hermes 的「受保护技能」原则）：
 - 合并是信息有损操作，默认只提案、不自动执行，留给人确认。
@@ -28,6 +28,17 @@ _CURATOR_INTERVAL_DAYS = int(os.environ.get("DESKMATE_CURATOR_INTERVAL_DAYS", "7
 _CURATOR_STALE_DAYS = int(os.environ.get("DESKMATE_CURATOR_STALE_DAYS", "30"))
 _OVERLAP_THRESHOLD = float(os.environ.get("DESKMATE_CURATOR_OVERLAP", "0.5"))
 _REPORT_FILE = "curator_report.md"
+
+
+def auto_archive_enabled() -> bool:
+    """curator 是否开启自动归档（可控开启，默认关）。
+
+    通过环境变量 DESKMATE_CURATOR_AUTO_ARCHIVE 控制（值 1/true/yes/on 开启）。
+    默认关闭，保持「只报告不清理」的非破坏性姿态；开启后仅归档严格低价值技能，
+    且支持 skill_restore 一键还原，不丢信息。
+    """
+    val = os.environ.get("DESKMATE_CURATOR_AUTO_ARCHIVE", "false")
+    return val.strip().lower() in ("1", "true", "yes", "on")
 
 
 def _is_imported(path: str) -> bool:
@@ -99,10 +110,10 @@ def curate_skills(base_dir: Path, *, auto_archive: bool = False) -> dict:
 
     Args:
         base_dir: 记忆根目录（默认 ~/.deskmate）。
-        auto_archive: True 时仅归档严格低价值技能（见模块说明）；默认 False 只出报告。
+        auto_archive: True 时仅归档「从未使用 + 陈旧 + 高重叠」的严格低价值技能；默认 False 只出报告。
 
     Returns:
-        {"ok", "total", "merge_candidates", "archive_candidates", "archived", "report_path"}
+        {"ok", "total", "merge_candidates", "archive_candidates", "auto_archive_candidates", "archived", "report_path"}
     """
     try:
         from deskmate.skills.manager import SkillManager
@@ -137,6 +148,12 @@ def curate_skills(base_dir: Path, *, auto_archive: bool = False) -> dict:
                     "a_path": skills[i]["path"], "b_path": skills[j]["path"],
                 })
 
+    # 出现在任意高重叠对中的技能名（即与别的技能功能高度重叠 → 冗余可归档）
+    overlapping_names: set[str] = set()
+    for m in merge_candidates:
+        overlapping_names.add(m["a"])
+        overlapping_names.add(m["b"])
+
     # ---- 陈旧 / 归档候选 ----
     archive_candidates: list[dict] = []
     now = time.time()
@@ -158,10 +175,13 @@ def curate_skills(base_dir: Path, *, auto_archive: bool = False) -> dict:
                 "stale_days": int(stale_days), "path": s["path"],
             })
 
-    # ---- 执行（默认非破坏性：仅归档严格低价值技能）----
+    # ---- 执行（可控开启时仅归档「严格低价值」技能：从未使用 + 陈旧 + 高重叠）----
+    # archive_candidates 是「从未使用且陈旧」的宽候选（仅供报告/人工确认）；
+    # 自动归档只针对其中还与别的技能高重叠的——才是真正冗余、可安全归档的。
+    auto_archive_candidates = [c for c in archive_candidates if c["name"] in overlapping_names]
     archived: list[str] = []
     if auto_archive:
-        for c in archive_candidates:
+        for c in auto_archive_candidates:
             try:
                 res = store.archive_skill(c["path"])
                 if res.get("status") == "ok":
@@ -170,13 +190,15 @@ def curate_skills(base_dir: Path, *, auto_archive: bool = False) -> dict:
                 logger.debug("curator: 归档 %s 失败: %s", c["name"], e)
 
     report_path = _write_report(
-        store.skills_dir, skills, merge_candidates, archive_candidates, archived, auto_archive
+        store.skills_dir, skills, merge_candidates, archive_candidates,
+        auto_archive_candidates, archived, auto_archive,
     )
     return {
         "ok": True,
         "total": n,
         "merge_candidates": merge_candidates,
         "archive_candidates": archive_candidates,
+        "auto_archive_candidates": auto_archive_candidates,
         "archived": archived,
         "report_path": str(report_path),
     }
@@ -187,6 +209,7 @@ def _write_report(
     skills: list[dict],
     merge_candidates: list[dict],
     archive_candidates: list[dict],
+    auto_archive_candidates: list[dict],
     archived: list[str],
     auto_archive: bool,
 ) -> Path:
@@ -207,9 +230,13 @@ def _write_report(
             lines.append("- `%s` ↔ `%s`（相似度 %.2f）" % (c["a"], c["b"], c["similarity"]))
         lines.append("")
     if archive_candidates:
+        strict = {c["name"] for c in auto_archive_candidates}
         lines.append("## 建议归档（从未使用且陈旧）")
         for c in archive_candidates:
-            mark = "✅ 已归档" if c["name"] in archived else "⏳ 待确认"
+            if c["name"] in strict:
+                mark = "✅ 已归档" if c["name"] in archived else "🔁 可自动归档（高重叠，冗余）"
+            else:
+                mark = "⏳ 待确认（唯一技能，不自动归档）"
             lines.append("- `%s`（%d 天未用）%s" % (c["name"], c["stale_days"], mark))
         lines.append("")
     if not merge_candidates and not archive_candidates:
@@ -220,6 +247,7 @@ def _write_report(
     lines.append(
         "合并需你确认后再执行（自动合并可能丢信息）；归档候选若为手写的低频技能，请勿自动归档。"
     )
+    lines.append("归档技能仅移入 archive/ 子目录、未删除，可用 skill_restore 一键还原。")
     content = "\n".join(lines)
     try:
         report.parent.mkdir(parents=True, exist_ok=True)

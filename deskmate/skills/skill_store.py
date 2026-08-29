@@ -587,6 +587,54 @@ class SkillStore:
         except OSError as e:
             return {"status": "error", "message": f"归档失败: {e}"}
 
+    def restore_skill(self, name_or_path: str) -> dict:
+        """从 archive/ 还原技能（一键还原，归档不会删除）。
+
+        归位到技能 frontmatter 记录的 category 目录（缺省 general）。
+        若目标已存在同名活跃技能，则不覆盖、返回 error。
+        """
+        archive_dir = self.skills_dir / "archive"
+        if not archive_dir.is_dir():
+            return {"status": "error", "message": "没有可还原的归档技能"}
+
+        filename = _safe_filename(name_or_path) + ".md"
+        src: Path | None = None
+        # 1) 文件名精确匹配（自研扁平技能归档后文件名不变）
+        cand = archive_dir / filename
+        if cand.is_file():
+            src = cand
+        else:
+            # 2) frontmatter name 模糊匹配
+            for f in archive_dir.glob("*.md"):
+                try:
+                    meta, _ = _parse_frontmatter(f.read_text(encoding="utf-8"))
+                except OSError:
+                    continue
+                if (meta.get("name") or f.stem) == name_or_path:
+                    src = f
+                    break
+        if src is None:
+            return {"status": "error", "message": f"归档中找不到技能: {name_or_path}"}
+
+        # 读取原 category 归位
+        try:
+            meta, _ = _parse_frontmatter(src.read_text(encoding="utf-8"))
+            category = meta.get("category") or "general"
+        except OSError:
+            category = "general"
+        if category not in CATEGORIES:
+            category = "general"
+        target_dir = self.skills_dir / category
+        target_dir.mkdir(parents=True, exist_ok=True)
+        target = target_dir / src.name
+        if target.exists():
+            return {"status": "error", "message": f"已存在同名活跃技能，未覆盖: {target.name}"}
+        try:
+            src.rename(target)
+            return {"status": "ok", "message": f"已还原: {target.name}（{category}）"}
+        except OSError as e:
+            return {"status": "error", "message": f"还原失败: {e}"}
+
     def stats(self) -> dict:
         """返回技能统计信息。"""
         skills = self._all_skills()
