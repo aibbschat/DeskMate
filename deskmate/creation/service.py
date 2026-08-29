@@ -20,7 +20,7 @@ import os
 import queue
 import uuid
 from pathlib import Path
-from typing import AsyncGenerator, Optional
+from typing import AsyncGenerator, Awaitable, Callable, Optional
 
 from .pipeline import CreativePipeline
 from .personas_loader import validate_creative_personas
@@ -217,6 +217,9 @@ def _restore_pipeline(pid: str) -> Optional[CreativePipeline]:
     pl.last_docx = dict(meta.get("last_docx", {}) or {})
     # 找回团队（board 数据在 teams.db，registry 按 lead_session 定位）
     pl._team = pl.reg.for_lead_session(f"{pl.space}:lead")
+    # 恢复跨集前情摘要（pipeline.__init__ 已调 _load_drafts 读草稿，但若用不同
+    # base_dir 构造，草稿路径可能与落盘路径不一致，此处强制重新加载确保摘要恢复）
+    pl._load_drafts()
     # 重建原著索引句柄（bible 缓存文件仍在，懒加载直接命中）
     if pl.novel_ref:
         from .novel_index import NovelIndex
@@ -264,10 +267,10 @@ def _phase_of(pl: CreativePipeline) -> str:
         any_pending = any(s != "done" for s in states)
         if oi == "done" and not any_pending:
             return "done"  # 所有集定稿
+        if oi == "done" and any(r == "review" for r in rev_states):
+            return "lead_screen"  # 有集审核完成，待拍板（优先于被打回集，用户可先拍板已审完的集）
         if oi == "done" and any(s == "in_progress" for s in states):
             return "draft_screen"  # 有集被打回重写中（或正在撰写），仍需"写"
-        if oi == "done" and any(r == "review" for r in rev_states):
-            return "lead_screen"  # 有集审核完成，待拍板
         if oi == "done" and any(s == "review" for s in states):
             return "review_screen"  # 有集待审核
         if oi == "done":
@@ -443,11 +446,16 @@ def _step(pid: str, fn_name: str, *args) -> dict:
 
 
 # -- SSE 流式推进（生成型 step：executor 阶段事件实时推给前端） ------------
-async def _stream_step(pid: str, fn_name: str, **kwargs) -> AsyncGenerator[str, None]:
+async def _stream_step(pid: str, fn_name: str, *, disconnect=None, **kwargs) -> AsyncGenerator[str, None]:
     """把同步 pipeline step 跑在独立线程，阶段事件经队列桥接为 SSE 流。
 
     executor 在生成过程中经 on_event 回调上报 {type,message,progress} 事件；
     done 时统一在事件循环线程取快照（避免线程并发读 store）。
+
+    disconnect: 可选的可等待 Callable（如 ``request.is_disconnected``），用于
+    检测 SSE 客户端是否已断开。若检测到断开，立即取消后台任务并结束流——
+    前端瞬间收尾，后端线程虽会跑完但不阻塞事件循环、结果被丢弃，避免
+    用户在关闭页面后还持续烧 token 生成无人接收的稿件。
     """
     pl = get_pipeline(pid)
     q: queue.Queue = queue.Queue()
@@ -464,6 +472,15 @@ async def _stream_step(pid: str, fn_name: str, **kwargs) -> AsyncGenerator[str, 
 
     task = asyncio.create_task(asyncio.to_thread(run))
     while True:
+        # 客户端断开检测：优先于队列轮询，断开即取消并退出
+        if disconnect is not None:
+            try:
+                if await disconnect():
+                    task.cancel()
+                    logger.info("SSE 客户端已断开，取消创作 step %s (pid=%s)", fn_name, pid)
+                    return
+            except Exception:  # noqa: BLE001
+                pass
         try:
             kind, payload = q.get_nowait()
         except queue.Empty:
@@ -481,20 +498,20 @@ async def _stream_step(pid: str, fn_name: str, **kwargs) -> AsyncGenerator[str, 
             break
 
 
-def stream_draft_outline(pid: str) -> AsyncGenerator[str, None]:
-    return _stream_step(pid, "draft_outline")
+def stream_draft_outline(pid: str, disconnect=None) -> AsyncGenerator[str, None]:
+    return _stream_step(pid, "draft_outline", disconnect=disconnect)
 
 
-def stream_draft_screen(pid: str, episode: Optional[int] = None) -> AsyncGenerator[str, None]:
-    return _stream_step(pid, "draft_screenplay", episode=episode)
+def stream_draft_screen(pid: str, episode: Optional[int] = None, disconnect=None) -> AsyncGenerator[str, None]:
+    return _stream_step(pid, "draft_screenplay", episode=episode, disconnect=disconnect)
 
 
-def stream_review_outline(pid: str) -> AsyncGenerator[str, None]:
-    return _stream_step(pid, "review_outline")
+def stream_review_outline(pid: str, disconnect=None) -> AsyncGenerator[str, None]:
+    return _stream_step(pid, "review_outline", disconnect=disconnect)
 
 
-def stream_review_screen(pid: str, episode: Optional[int] = None) -> AsyncGenerator[str, None]:
-    return _stream_step(pid, "review_screenplay", episode=episode)
+def stream_review_screen(pid: str, episode: Optional[int] = None, disconnect=None) -> AsyncGenerator[str, None]:
+    return _stream_step(pid, "review_screenplay", episode=episode, disconnect=disconnect)
 
 
 def draft_outline(pid: str) -> dict:
@@ -575,6 +592,7 @@ async def stream_final_review(
     *,
     genre_hint: Optional[str] = None,
     episode: Optional[int] = None,
+    disconnect: "Optional[Callable[[], Awaitable[bool]]]" = None,
 ) -> AsyncGenerator[str, None]:
     """SSE 生成器：用户选定专家后跑圆桌终审，转发协调器事件流。
 
@@ -584,6 +602,9 @@ async def stream_final_review(
 
     末尾发 ``final_review_ready``（带 synthesis）提示前端展示「确认定稿/打回」；
     synthesis 暂存到 pipeline._pending_final，待 ``final_review_apply`` 回灌。
+
+    disconnect: 可选可等待 Callable（如 ``request.is_disconnected``），客户端
+    断开时立即结束流，避免无人接收还继续烧 token 跑圆桌。
     """
     try:
         pl = get_pipeline(pid)
@@ -631,6 +652,14 @@ async def stream_final_review(
             manuscript_text=proposal.manuscript_text,
             team_bridge=bridge,
         ).run_stream():
+            # 客户端断开检测：断开即结束流（结果丢弃，不再烧 token 跑圆桌）
+            if disconnect is not None:
+                try:
+                    if await disconnect():
+                        logger.info("SSE 客户端已断开，取消终审研讨 (pid=%s)", pid)
+                        return
+                except Exception:  # noqa: BLE001
+                    pass
             if ev.get("type") == "done":
                 synthesis = ev.get("synthesis", "")
                 # 暂存，待用户确认 verdict 后回灌（按 (item_kind, episode) 分槽，避免多集连续终审互相覆盖）
@@ -672,3 +701,36 @@ def final_review_apply(pid: str, item_kind: str, verdict: bool, episode: Optiona
     synthesis = entry["synthesis"]
     status = apply_final_review(pl, proposal, synthesis, verdict)
     return {"status": status, "docx": dict(pl.last_docx), "pid": pid, "item_kind": item_kind}
+
+
+# -- 创作对话流（chat_flow：把流水线放入原生对话流） ----------------------
+def get_chat_messages(pid: str) -> list[dict]:
+    """获取创作对话历史（按时间顺序）。"""
+    pl = get_pipeline(pid)
+    from .chat_flow import get_chat
+    chat = get_chat(pid, pl)
+    return chat.messages
+
+
+async def stream_chat(pid: str, text: str, disconnect: "Optional[Callable[[], Awaitable[bool]]]" = None) -> AsyncGenerator[str, None]:
+    """用户在创作对话流里发一条消息 → 意图识别 → 执行动作 → SSE 逐消息返回。
+
+    返回的每条 SSE 事件为 {"type":"chat_message","message":{...}}，
+    message 含 type/user/system/progress/artifact/review/milestone/expert/help/error。
+    """
+    pl = get_pipeline(pid)
+    from .chat_flow import get_chat
+    chat = get_chat(pid, pl)
+    try:
+        async for msg in chat.post(text):
+            yield _sse({"type": "chat_message", "message": msg})
+            if disconnect is not None:
+                try:
+                    if await disconnect():
+                        logger.info("SSE 客户端已断开，结束创作对话流 (pid=%s)", pid)
+                        return
+                except Exception:  # noqa: BLE001
+                    pass
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("创作对话 SSE 异常")
+        yield _sse({"type": "error", "message": str(exc)})

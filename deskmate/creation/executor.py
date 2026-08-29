@@ -342,8 +342,12 @@ class LLMExecutor:
             system="你是剧本审核专家。依据验收标准评审文本，先给结论"
             "（通过/打回），再给可执行的修改意见。若提供原著参考，须对照原著评判改编适配度。",
             user=f"验收标准：{criteria}\n\n文本：\n{text}{novel_block}",
-            max_tokens=1200,
+            max_tokens=6000,
         )
-        approved = "打回" not in raw and "不合格" not in raw
+        # 统一 verdict 解析：复用 final_review.parse_verdict（含否定式清洗），
+        # 与终审裁决逻辑一致，避免两套判断对同份文本给出相反结论
+        from .final_review import parse_verdict
+
+        approved = parse_verdict(raw)
         _emit(on_event, type="note", message="已给出审核意见", progress=100)
         return ReviewResult(approved=approved, opinion=raw)

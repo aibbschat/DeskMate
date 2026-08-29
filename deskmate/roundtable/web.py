@@ -229,6 +229,11 @@ class FRApplyBody(BaseModel):
     episode: Optional[int] = None  # 分集模式：回灌针对的集号（与前端契约对齐，消单槽竞态）
 
 
+class ChatBody(BaseModel):
+    """创作对话流：用户发一条消息。"""
+    text: str = ""
+
+
 def _read_html() -> str:
     try:
         with open(TEMPLATE_PATH, "r", encoding="utf-8") as f:
@@ -716,11 +721,11 @@ def create_app(rt_port: int = 9920, base_dir: Optional[str] = None, workspace: O
                 return JSONResponse({"error": "not found"}, status_code=404)
 
         @app.post("/api/creation/{pid}/draft-outline")
-        async def api_draft_outline(pid: str):
+        async def api_draft_outline(pid: str, request: Request):
             """生成型 step 走 SSE 流式：executor 阶段事件实时推送，done 带快照。"""
             async def _gen():
                 try:
-                    async for chunk in _csvc.stream_draft_outline(pid):
+                    async for chunk in _csvc.stream_draft_outline(pid, disconnect=request.is_disconnected):
                         yield chunk
                 except KeyError:
                     yield _csvc._sse({"type": "error", "message": "not found"})
@@ -729,10 +734,10 @@ def create_app(rt_port: int = 9920, base_dir: Optional[str] = None, workspace: O
             return StreamingResponse(_gen(), media_type="text/event-stream")
 
         @app.post("/api/creation/{pid}/review-outline")
-        async def api_review_outline(pid: str):
+        async def api_review_outline(pid: str, request: Request):
             async def _gen():
                 try:
-                    async for chunk in _csvc.stream_review_outline(pid):
+                    async for chunk in _csvc.stream_review_outline(pid, disconnect=request.is_disconnected):
                         yield chunk
                 except KeyError:
                     yield _csvc._sse({"type": "error", "message": "not found"})
@@ -750,11 +755,12 @@ def create_app(rt_port: int = 9920, base_dir: Optional[str] = None, workspace: O
                 return JSONResponse({"error": "not found"}, status_code=404)
 
         @app.post("/api/creation/{pid}/draft-screen")
-        async def api_draft_screen(pid: str, body: ScreenStepBody = None):
+        async def api_draft_screen(pid: str, body: ScreenStepBody = None, request: Request = None):
             async def _gen():
                 try:
                     ep = body.episode if body else None
-                    async for chunk in _csvc.stream_draft_screen(pid, ep):
+                    disc = request.is_disconnected if request else None
+                    async for chunk in _csvc.stream_draft_screen(pid, ep, disconnect=disc):
                         yield chunk
                 except KeyError:
                     yield _csvc._sse({"type": "error", "message": "not found"})
@@ -763,11 +769,12 @@ def create_app(rt_port: int = 9920, base_dir: Optional[str] = None, workspace: O
             return StreamingResponse(_gen(), media_type="text/event-stream")
 
         @app.post("/api/creation/{pid}/review-screen")
-        async def api_review_screen(pid: str, body: ScreenStepBody = None):
+        async def api_review_screen(pid: str, body: ScreenStepBody = None, request: Request = None):
             async def _gen():
                 try:
                     ep = body.episode if body else None
-                    async for chunk in _csvc.stream_review_screen(pid, ep):
+                    disc = request.is_disconnected if request else None
+                    async for chunk in _csvc.stream_review_screen(pid, ep, disconnect=disc):
                         yield chunk
                 except KeyError:
                     yield _csvc._sse({"type": "error", "message": "not found"})
@@ -808,11 +815,11 @@ def create_app(rt_port: int = 9920, base_dir: Optional[str] = None, workspace: O
                 return JSONResponse({"error": "not found"}, status_code=404)
 
         @app.post("/api/creation/{pid}/final-review")
-        async def api_final_review(pid: str, body: FRBody):
+        async def api_final_review(pid: str, body: FRBody, request: Request):
             async def _gen():
                 async for chunk in _csvc.stream_final_review(
                     pid, body.item_kind, body.selected_experts, genre_hint=body.genre_hint,
-                    episode=body.episode,
+                    episode=body.episode, disconnect=request.is_disconnected,
                 ):
                     yield chunk
             return StreamingResponse(_gen(), media_type="text/event-stream")
@@ -823,6 +830,27 @@ def create_app(rt_port: int = 9920, base_dir: Optional[str] = None, workspace: O
                 return JSONResponse(_csvc.final_review_apply(pid, body.item_kind, body.verdict, body.episode))
             except (KeyError, ValueError) as exc:
                 return JSONResponse({"error": str(exc)}, status_code=400)
+
+        # ---- 创作对话流（chat_flow：把流水线放入原生对话流） ----
+        @app.get("/api/creation/{pid}/chat")
+        async def api_chat_history(pid: str):
+            try:
+                return JSONResponse({"messages": _csvc.get_chat_messages(pid)})
+            except KeyError:
+                return JSONResponse({"error": "not found"}, status_code=404)
+
+        @app.post("/api/creation/{pid}/chat")
+        async def api_chat_post(pid: str, body: ChatBody, request: Request):
+            """用户发一条消息 → 意图识别 → 执行动作 → SSE 逐消息返回。"""
+            async def _gen():
+                try:
+                    async for chunk in _csvc.stream_chat(pid, body.text, disconnect=request.is_disconnected):
+                        yield chunk
+                except KeyError:
+                    yield _csvc._sse({"type": "error", "message": "not found"})
+                except Exception as exc:  # noqa: BLE001
+                    yield _csvc._sse({"type": "error", "message": str(exc)})
+            return StreamingResponse(_gen(), media_type="text/event-stream")
     except Exception as exc:  # noqa: BLE001
         logger.warning("创作流水线路由未挂载（模块加载失败，圆桌主体不受影响）: %s", exc)
 
