@@ -142,6 +142,7 @@ class ProactiveEngine:
         # ===== 1. 感知（Perceive）=====
         # 先获取活动窗口信息，传给 detect_user_activity 做会议应用检测
         from deskmate.perception.window_monitor import get_active_window
+        _win = None
         try:
             _win = get_active_window()
             activity = detect_user_activity(
@@ -149,6 +150,16 @@ class ProactiveEngine:
             )
         except Exception:
             activity = detect_user_activity()
+
+        # P1-1：专注度合成（深专注时不打扰）——纯规则零 LLM，fail-open
+        focus = None
+        if _win is not None:
+            try:
+                from deskmate.perception.focus import get_focus_score
+
+                focus = get_focus_score(_win.app, _win.title, _win.url)
+            except Exception:
+                focus = None
 
         if not skip_activity_check:
             if activity.level == UserActivity.IDLE:
@@ -164,10 +175,15 @@ class ProactiveEngine:
             # 用户在会议中也可能需要提醒（如伏笔遗漏），只是防打扰阈值更严
 
         # 组装感知上下文
+        activity_desc = f"状态: {activity.level.value}, {activity.reason}"
+        if focus is not None:
+            activity_desc += (
+                f"; 专注度: {focus.level} ({focus.score:.2f}，{focus.reason})"
+            )
         ctx = build_proactive_context(
             workspace=self.workspace,
             memory_context=self._memory_context,
-            user_activity=f"状态: {activity.level.value}, {activity.reason}",
+            user_activity=activity_desc,
             project_context=self._project_context,
         )
 
@@ -207,6 +223,17 @@ class ProactiveEngine:
             )
 
         if decision.action == ActionType.SUGGEST:
+            # P1-1：深专注时不弹建议（只静默记录，打扰分寸升级）
+            if focus is not None and focus.level == "deep":
+                return TickResult(
+                    action=ActionType.NO_ACTION,
+                    judgment=judgment,
+                    activity=activity,
+                    decision=decision,
+                    skipped_reason=f"深专注（{focus.reason}）不打扰，静默记录",
+                    elapsed_ms=int((time.time() - start) * 1000),
+                    heartbeat_interval_ms=self._heartbeat_interval_ms,
+                )
             # 防打扰检查
             suggestion_key = judgment.suggestion_content[:100]
             if not self.disturb.should_allow(judgment.suggestion_type, suggestion_key):
