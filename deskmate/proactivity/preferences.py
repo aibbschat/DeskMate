@@ -106,6 +106,14 @@ class PreferenceStore:
             e.last_content = content[:200]
         self._prefs[t] = e
         self._save()
+        # P2-3：把「接受建议」当作行为事件记录，供长期模式学习推断偏好
+        try:
+            from deskmate.proactivity.behavior_patterns import log_event
+
+            log_event("suggestion_accepted", {"type": t, "content": content[:200]},
+                      base_dir=self.base_dir)
+        except Exception:
+            pass
 
     def active_preferences(self, now: float | None = None) -> list[dict]:
         """活跃行为偏好（接受≥阈值 且 30 天内仍活跃）。"""

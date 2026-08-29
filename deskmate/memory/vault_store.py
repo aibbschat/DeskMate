@@ -310,6 +310,13 @@ class VaultStore:
                     if bigram not in keywords:
                         keywords.append(bigram)
         keywords = keywords[:10]  # 限制总数
+        # P2-2：别名扩展（年号↔朝代桥接），封堵隐式查询缺口（文档 P08）
+        try:
+            from deskmate.memory.query_expand import expand_keywords
+
+            keywords = expand_keywords(keywords)
+        except Exception:
+            pass
         if not keywords:
             return ""
 

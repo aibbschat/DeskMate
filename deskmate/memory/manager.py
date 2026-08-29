@@ -353,7 +353,14 @@ class DeskMateMemoryManager:
                     bg = tok[i : i + 2]
                     if bg not in keywords:
                         keywords.append(bg)
-        return keywords[:10]
+        # P2-2：别名扩展（年号↔朝代桥接），封堵隐式查询缺口（文档 P08）
+        try:
+            from deskmate.memory.query_expand import expand_keywords
+
+            keywords = expand_keywords(keywords)
+        except Exception:
+            pass
+        return keywords[:20]
 
     def _search_recent_memory(self, query: str) -> tuple[str, set[str]]:
         """Recall 层：检索 7 天内的近期记忆，按关键词匹配。

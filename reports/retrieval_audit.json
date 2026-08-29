@@ -1,0 +1,42 @@
+{
+  "vector_usage": {
+    "vectors_json_found": [],
+    "vectors_json_exists": false,
+    "retrieval_code_refs": [],
+    "vault_search_is_substring_scan": true,
+    "verdict": "未落地：全仓无 vectors.json，检索路径为纯关键词/子串匹配，连 FTS5 都未启用。"
+  },
+  "explicit_recall": {
+    "recall_rate": 1.0,
+    "by_category": {
+      "user_profile": {
+        "total": 14,
+        "passed": 14
+      },
+      "global_memory": {
+        "total": 10,
+        "passed": 10
+      },
+      "project_memory": {
+        "total": 8,
+        "passed": 8
+      },
+      "vault": {
+        "total": 8,
+        "passed": 8
+      },
+      "bible": {
+        "total": 10,
+        "passed": 10
+      }
+    },
+    "user_dup_rate": 0.0,
+    "memory_stale_rate": 0.0
+  },
+  "implicit_probe": {
+    "query": "成化年间的制度",
+    "implicit_recalled": true,
+    "explicit_recalled": true,
+    "note": "未接入查询扩展前，纯关键词检索会因『成化』≠『明朝』而召回失败（文档 P08）。"
+  }
+}

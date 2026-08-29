@@ -438,12 +438,14 @@ class GrowthEngine:
             self._gain_domain(DOMAIN_CREATION, EMPATHY_APPROVED)
             self.state.growth_value += XP_CREATION_APPROVED
             self._add_event("creation_approved", note="创作定稿/通过")
+            self._log_behavior("creation_approved")
         else:
             self._gain_relation("trust", TRUST_REWORK, 0.0, 1.0)
             self._gain_relation("empathy", EMPATHY_REWORK)
             self._gain_relation("mood", MOOD_IGNORED)
             self._gain_domain(DOMAIN_CREATION, EMPATHY_REWORK)
             self._add_event("creation_rework", note="创作被打回重做")
+            self._log_behavior("creation_rejected")
         self._apply_decay()
         self._recompute_level()
         self.save()
@@ -457,6 +459,7 @@ class GrowthEngine:
         self._gain_relation("empathy", EMPATHY_CORRECTED)
         self._gain_relation("mood", MOOD_IGNORED)
         self._add_event("user_corrected", note="用户明确纠正")
+        self._log_behavior("correction")
         self._apply_decay()
         self._recompute_level()
         self.save()
@@ -876,6 +879,18 @@ class GrowthEngine:
                 **extra,
             }
         )
+
+    def _log_behavior(self, kind: str) -> None:
+        """P2-3：把成长/创作反馈当作行为事件记录，供长期模式学习推断偏好。
+
+        fail-open：任何异常静默，绝不阻断成长数值主流程。
+        """
+        try:
+            from deskmate.proactivity.behavior_patterns import log_event
+
+            log_event(kind, base_dir=self.base_dir)
+        except Exception:
+            pass
 
     def snapshot(self) -> dict:
         """完整状态快照（供前端渲染）。"""

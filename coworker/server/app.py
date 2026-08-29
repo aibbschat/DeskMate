@@ -3106,6 +3106,25 @@ def create_app(manager: SessionManager) -> FastAPI:
             logging.exception("get deskmate diary date failed")
             return JSONResponse({"error": "读取日记失败"}, status_code=500)
 
+    @app.get("/v1/deskmate/behavior-patterns")
+    async def get_deskmate_behavior_patterns(days: int = 120) -> dict[str, Any]:
+        """P2-3：从长期行为推断出的偏好模式（越用越懂你 最高阶，8.0 可感可看）。"""
+        try:
+            from deskmate.proactivity.behavior_patterns import mine_patterns
+
+            base = os.environ.get("DESKMATE_DIR", os.path.expanduser("~/.deskmate"))
+            res = mine_patterns(base_dir=base, days=max(7, min(days, 365)))
+            return {
+                "window_days": res["window_days"],
+                "event_count": res["event_count"],
+                "kinds": res.get("kinds", []),
+                "patterns": res["patterns"],
+                "context": res["context"],
+            }
+        except Exception:
+            logging.exception("get deskmate behavior patterns failed")
+            return {"window_days": days, "event_count": 0, "patterns": [], "context": ""}
+
     @app.post("/v1/deskmate/chapters")
     async def deskmate_chapters(request: Request) -> dict[str, Any]:
         """返回文稿章节列表（按 第X章/回/节 切分），供前端章节下拉。

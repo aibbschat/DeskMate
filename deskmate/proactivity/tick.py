@@ -180,6 +180,18 @@ class ProactiveEngine:
             activity_desc += (
                 f"; 专注度: {focus.level} ({focus.score:.2f}，{focus.reason})"
             )
+            # P2-3：深专注进入行为事件日志（30 分钟去重），供「常在周X/某时段深度工作」模式提炼
+            if focus.level == "deep":
+                try:
+                    from deskmate.proactivity.behavior_patterns import log_focus_deep
+
+                    log_focus_deep(
+                        app=(_win.app if _win else ""),
+                        title=(_win.title if _win else ""),
+                        base_dir=self.base_dir,
+                    )
+                except Exception:
+                    pass
         # P1-2：注入行为偏好（用户反复接受的建议类型）→ judge 更懂该提什么
         pref_ctx = ""
         try:
@@ -188,6 +200,14 @@ class ProactiveEngine:
             pref_ctx = PreferenceStore(base_dir=self.base_dir).to_context()
         except Exception:
             pref_ctx = ""
+        # P2-3：注入从长期行为推断出的规律（非用户明说，纯行为轨迹统计）→ judge 更「懂节奏」
+        behavior_ctx = ""
+        try:
+            from deskmate.proactivity.behavior_patterns import to_context
+
+            behavior_ctx = to_context(base_dir=self.base_dir)
+        except Exception:
+            behavior_ctx = ""
         # P2-5：注入情感回顾（记得用户上周的状态）→ 连续情感关怀
         emotion_ctx = ""
         try:
@@ -208,6 +228,8 @@ class ProactiveEngine:
         extra_ctx = ""
         if pref_ctx:
             extra_ctx += f"\n## 用户行为偏好\n{pref_ctx}"
+        if behavior_ctx:
+            extra_ctx += f"\n## 长期行为模式（从行为推断）\n{behavior_ctx}"
         if emotion_ctx:
             extra_ctx += f"\n## 情感回顾（连续关怀）\n{emotion_ctx}"
         if extra_ctx:
