@@ -17,6 +17,7 @@ import { useProactiveTick } from "./useProactiveTick";
 import { StatusPanelV2 } from "./StatusPanelV2";
 import type { GrowthSnapshot, LearnedHistory } from "./StatusPanel";
 import { SuggestionToast, type Suggestion } from "./SuggestionToast";
+import { CareToast, type CareMessage } from "./CareToast";
 import { MemoryViewer, type MemoryFile } from "./MemoryViewer";
 import { MemoryGraphPage } from "./MemoryGraphPage";
 import { BadgeMedal } from "./BadgeMedal";
@@ -131,6 +132,8 @@ export function DeskMateOverlay({ agent, sessionId, activeExpert }: Props) {
 
   // 建议弹窗
   const [suggestion, setSuggestion] = useState<Suggestion | null>(null);
+  // P2-5 连续情感关怀：温暖问候（与创作建议分开呈现）
+  const [careMessage, setCareMessage] = useState<CareMessage | null>(null);
 
   // 建议去重：已处理（接受/忽略）的 type 在冷却期内永不再弹；
   // 无操作最多展示 3 次。用 localStorage 持久化，防止组件重挂载后丢失。
@@ -311,6 +314,23 @@ export function DeskMateOverlay({ agent, sessionId, activeExpert }: Props) {
       if (!d?.suggestion_content) return;
       // 用 suggestion_type 做粗去重（LLM 每次生成的文本不同，精确 key 匹配无效）
       const sugType = d.suggestion_type || "generic";
+
+      // P2-5 情感关怀：走 CareToast 温暖呈现，7 天内不重复
+      if (sugType === "emotional_care") {
+        try {
+          const lastCare = localStorage.getItem("deskmate_last_care_ts");
+          if (lastCare && Date.now() - parseInt(lastCare, 10) < 7 * 86400 * 1000) return;
+          localStorage.setItem("deskmate_last_care_ts", String(Date.now()));
+        } catch { /* localStorage 不可用时跳过本地去重 */ }
+        setCareMessage({
+          id: d.id,
+          text: d.suggestion_content,
+          type: sugType,
+          confidence: d.confidence,
+        });
+        return;
+      }
+
       // 用户已接受/忽略过此类型 -> 30 分钟内不再弹
       if (actedTypesRef.current.has(sugType)) return;
       // 无操作已展示 3 次 -> 不再自动弹（等用户有动作或新内容）
@@ -555,6 +575,12 @@ export function DeskMateOverlay({ agent, sessionId, activeExpert }: Props) {
           // 不加入 actedTypes（用户没看到不代表忽略了）
           setSuggestion(null);
         }}
+      />
+
+      {/* P2-5 情感关怀 - 右上角温暖呈现（与创作建议分开） */}
+      <CareToast
+        message={careMessage}
+        onClose={() => setCareMessage(null)}
       />
 
       {/* 「我刚记住了」提示 — 左下角，数秒后自动消失 */}
