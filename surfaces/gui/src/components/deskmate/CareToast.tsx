@@ -103,7 +103,7 @@ export function CareToast({
     >
       <div className="care-toast-icon">{emoji}</div>
       <div className="care-toast-body">
-        <div className="care-toast-title">墨灵的关心</div>
+        <div className="care-toast-title">小桔的关心</div>
         <div className="care-toast-text">{message.text}</div>
       </div>
       <button

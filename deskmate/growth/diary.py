@@ -1,7 +1,7 @@
-"""P1-3 桌宠日记产品化——墨灵视角第一人称「今日小结」+ 每周回忆。
+"""P1-3 桌宠日记产品化——小桔视角第一人称「今日小结」+ 每周回忆。
 
 让「伙伴感」可感知：把每天 growth 信号（对话/创作/徽章/默契/偏好）转成
-墨灵第一人称的日记（``~/.deskmate/diary/YYYY-MM-DD.md``），并支持每周
+小桔第一人称的日记（``~/.deskmate/diary/YYYY-MM-DD.md``），并支持每周
 「我们的回忆」汇总（对话数/创作进度/解锁徽章/学到偏好/默契阶段）。
 
 - 独立于 memory 层（P0-6/P0-7 范围外）：写入 ``<base>/diary/``，不碰 memory manager。
@@ -64,7 +64,7 @@ def _weekday_cn(date_iso: str) -> str:
 
 
 class DiaryWriter:
-    """墨灵日记：第一人称今日小结 + 每周回忆。"""
+    """小桔日记：第一人称今日小结 + 每周回忆。"""
 
     def __init__(self, base_dir: Path | str | None = None) -> None:
         base = Path(base_dir) if base_dir else Path.home() / ".deskmate"
@@ -117,7 +117,7 @@ class DiaryWriter:
                       badges: list[dict], top: tuple[str, float] | None,
                       st: dict) -> str:
         lines: list[str] = []
-        lines.append(f"# {date} 周{_weekday_cn(date)} · 墨灵的日记\n")
+        lines.append(f"# {date} 周{_weekday_cn(date)} · 小桔的日记\n")
         if counts:
             lines.append("今天又陪了你一会儿。")
             # 事件描述（优先有含义的，前 5 条）
