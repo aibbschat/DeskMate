@@ -21,6 +21,17 @@ interface SelectInfo {
   related: MemItem[];
 }
 
+/** P1-8：成长关系快照（来自 /v1/deskmate/learning-graph 的 growth 块）。 */
+interface GrowthInfo {
+  trust: number;
+  intimacy: number;
+  empathy: number;
+  bond_stage: string;
+  bond_depth: number;
+  relation_factor: number;
+  empathy_domains: Record<string, number>;
+}
+
 function fmtDate(ts: string): string {
   if (!ts) return "";
   const m = /^(\d{4}-\d{2}-\d{2})T?(\d{2}:\d{2})?/.exec(ts);
@@ -30,6 +41,7 @@ function fmtDate(ts: string): string {
 
 export function MemoryGraphPage({ open, onClose, onOpenList }: Props) {
   const [items, setItems] = useState<MemItem[]>([]);
+  const [growth, setGrowth] = useState<GrowthInfo | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [hidden, setHidden] = useState<Set<string>>(new Set());
@@ -59,6 +71,15 @@ export function MemoryGraphPage({ open, onClose, onOpenList }: Props) {
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
+      });
+    // P1-8：并行拉成长关系快照（连接强度由默契驱动，越用越连）
+    authedFetch(`${httpBase()}/v1/deskmate/learning-graph`)
+      .then((r) => r.json())
+      .then((d) => {
+        if (!cancelled) setGrowth((d?.growth as GrowthInfo) ?? null);
+      })
+      .catch(() => {
+        /* 关系快照是锦上添花，失败不阻断图谱 */
       });
     return () => {
       cancelled = true;
@@ -106,7 +127,18 @@ export function MemoryGraphPage({ open, onClose, onOpenList }: Props) {
             {(hidden.size > 0 || shownCount !== items.length) && (
               <span style={{ color: "#a38568", fontWeight: 400 }}> / 总计 {items.length}</span>
             )}
+            {growth && growth.bond_stage && (
+              <span style={{ marginLeft: 14, color: "#a38568", fontWeight: 500 }}>
+                关系 · <b style={{ color: "#c2662f" }}>{growth.bond_stage}</b>
+                {"　"}信任 {growth.trust.toFixed(2)} · 亲密度 {growth.intimacy.toFixed(0)} · 默契 {growth.empathy.toFixed(0)}
+              </span>
+            )}
           </div>
+          {growth && (
+            <div style={{ marginTop: 6, fontSize: 12, color: "#b99a7d", fontWeight: 400 }}>
+              图谱连接随我们的默契加深 ×{growth.relation_factor.toFixed(2)} —— 你越用，它越懂你，我们的图越密。
+            </div>
+          )}
         </div>
         <div className="flex items-center gap-2">
           <button

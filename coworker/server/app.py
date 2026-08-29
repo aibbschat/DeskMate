@@ -2568,12 +2568,18 @@ def create_app(manager: SessionManager) -> FastAPI:
         try:
             from pathlib import Path as _P
 
-            from deskmate.memory.learning_graph import build_learning_graph
+            from deskmate.memory.learning_graph import (
+                _growth_snapshot,
+                build_learning_graph,
+            )
 
             desk_dir = _P(
                 os.environ.get("DESKMATE_DIR", os.path.expanduser("~/.deskmate"))
             )
-            return build_learning_graph(base_dir=desk_dir)
+            # P1-8：图随成长动态化——连接强度由信任/默契/亲密度调制（越用越连）
+            return build_learning_graph(
+                base_dir=desk_dir, growth=_growth_snapshot(desk_dir)
+            )
         except Exception:
             logging.exception("get deskmate learning graph failed")
             return JSONResponse({"error": "learning graph failed"}, status_code=500)

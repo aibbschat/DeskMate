@@ -103,31 +103,33 @@ def _bigrams(text: str) -> set[str]:
     return {chars[i] + chars[i + 1] for i in range(len(chars) - 1)}
 
 
-def _skill_skill_edges(skill_nodes: list[dict[str, Any]]) -> list[tuple[str, str]]:
-    """共享 tags 的两个技能连边（双向都存在、去重）。"""
-    edges: list[tuple[str, str]] = []
+def _skill_skill_edges(skill_nodes: list[dict[str, Any]]) -> list[tuple[str, str, int]]:
+    """共享 tags 的两个技能连边（双向都存在、去重）；weight=共享 tag 数。"""
+    edges: list[tuple[str, str, int]] = []
     seen: set[tuple[str, str]] = set()
     for i, a in enumerate(skill_nodes):
         a_tags = set(a.get("tags", []))
         if not a_tags:
             continue
         for b in skill_nodes[i + 1 :]:
-            if a_tags & set(b.get("tags", [])):
+            shared = a_tags & set(b.get("tags", []))
+            if shared:
                 key = tuple(sorted((a["id"], b["id"])))
                 if key not in seen:
                     seen.add(key)
-                    edges.append(key)
+                    edges.append((key[0], key[1], len(shared)))
     return edges
 
 
 def _memory_skill_edges(
     memory_cards: list[dict[str, Any]], skill_nodes: list[dict[str, Any]]
-) -> list[tuple[str, str]]:
+) -> list[tuple[str, str, float]]:
     """记忆↔技能边：技能 id 出现在记忆文本（强 +6）；中文 bigram 重叠 ≥2（弱）。
 
-    每张记忆卡最多连 4 条边（对齐 Hermes），避免图被弱关联刷爆。
+    每张记忆卡最多连 4 条边（对齐 Hermes），避免图被弱关联刷爆；
+    weight = 命中强度分（越强越醒目）。
     """
-    edges: list[tuple[str, str]] = []
+    edges: list[tuple[str, str, float]] = []
     for idx, card in enumerate(memory_cards):
         mem_id = f"memory:{card['source']}:{idx}"
         text = f"{card.get('title', '')}\n{card.get('body', '')}".lower()
@@ -144,16 +146,16 @@ def _memory_skill_edges(
             if score > 0:
                 scored.append((score, n["id"]))
         scored.sort(key=lambda x: (-x[0], x[1]))
-        for _, sid in scored[:4]:
-            edges.append((mem_id, sid))
+        for score, sid in scored[:4]:
+            edges.append((mem_id, sid, float(score)))
     return edges
 
 
 def _density_stats(
-    skill_nodes: list[dict[str, Any]], skill_edges: list[tuple[str, str]]
+    skill_nodes: list[dict[str, Any]], skill_edges: list[tuple[str, str, int]]
 ) -> dict[str, Any]:
     linked: set[str] = set()
-    for a, b in skill_edges:
+    for a, b, _w in skill_edges:
         linked.add(a)
         linked.add(b)
     cats: dict[str, int] = {}
@@ -174,12 +176,69 @@ def _density_stats(
 
 def build_learning_graph(base_dir: Path | None = None) -> dict[str, Any]:
     """完整图 payload（节点 / 边 / 簇 / 记忆卡 / 统计）。"""
+def _growth_snapshot(base_dir: Path) -> dict[str, Any] | None:
+    """从 GrowthEngine 读关系数值，算「越用越连」调制因子（fail-open）。
+
+    relation_factor ∈ [0.6, 2.0]：trust / 亲密度 / 默契越深，连接强度越高，
+    让图随「你们的关系」动态变化（P1-8：learning_graph 动态化）。
+    """
+    try:
+        from deskmate.growth.engine import GrowthEngine
+
+        eng = GrowthEngine(base_dir=base_dir)
+        s = eng.state
+        factor = (
+            0.6
+            + s.trust * 0.8
+            + (min(s.intimacy, 100.0) / 100.0) * 0.7
+            + (min(s.empathy, 100.0) / 100.0) * 0.5
+        )
+        factor = max(0.6, min(2.0, factor))
+        bond = eng.current_bond()
+        prof = {
+            name: round(p.proficiency, 3)
+            for name, p in (s.skill_proficiency or {}).items()
+        }
+        return {
+            "trust": round(s.trust, 3),
+            "intimacy": round(s.intimacy, 1),
+            "empathy": round(s.empathy, 1),
+            "bond_stage": bond.get("stage", ""),
+            "bond_depth": bond.get("depth", 0.0),
+            "relation_factor": round(factor, 3),
+            "empathy_domains": {
+                k: round(v, 1) for k, v in (s.empathy_domains or {}).items()
+            },
+            "skill_proficiency": prof,
+        }
+    except Exception:
+        return None
+
+
+def build_learning_graph(
+    base_dir: Path | None = None, growth: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    """完整图 payload（节点 / 边 / 簇 / 记忆卡 / 统计）。
+
+    growth: GrowthEngine 快照（见 _growth_snapshot）。传入时：
+    - 记忆↔技能边权重 × relation_factor（默契/信任越深，连接越强 =「越用越连」）；
+    - 技能节点附加 proficiency（熟练度越大节点越醒目）；
+    - 输出 growth 块供前端展示「连接强度由你们的关系驱动」。
+    不传时全向后兼容（weight 为基础值，无 growth 块）。
+    """
     base = base_dir or _default_base()
     skills = build_skill_nodes(base)
     skill_edges = _skill_skill_edges(skills)
     cards = _memory_cards(base)
     memory_edges = _memory_skill_edges(cards, skills)
-    edges = skill_edges + memory_edges
+    relation_factor = 1.0
+    prof_map: dict[str, float] = {}
+    if growth:
+        relation_factor = float(growth.get("relation_factor") or 1.0)
+        prof_map = growth.get("skill_proficiency") or {}
+    edges = skill_edges + [
+        (mem, sid, score * relation_factor) for mem, sid, score in memory_edges
+    ]
 
     clusters: dict[str, int] = {}
     for n in skills:
@@ -198,6 +257,7 @@ def build_learning_graph(base_dir: Path | None = None) -> dict[str, Any]:
             "lastUsed": n["lastUsed"],
             "description": n["description"],
             "tags": n["tags"],
+            "proficiency": round(float(prof_map.get(n["id"], 0.0)), 3),
         }
         for n in skills
     ]
@@ -214,12 +274,15 @@ def build_learning_graph(base_dir: Path | None = None) -> dict[str, Any]:
                 "lastUsed": "",
                 "description": card["body"],
                 "tags": [],
+                "proficiency": 0.0,
             }
         )
 
-    return {
+    payload: dict[str, Any] = {
         "nodes": nodes,
-        "edges": [{"source": a, "target": b} for a, b in edges],
+        "edges": [
+            {"source": a, "target": b, "weight": round(w, 3)} for a, b, w in edges
+        ],
         "clusters": [
             {"category": c, "count": n}
             for c, n in sorted(clusters.items(), key=lambda kv: -kv[1])
@@ -231,6 +294,21 @@ def build_learning_graph(base_dir: Path | None = None) -> dict[str, Any]:
             "memory_skill_edges": len(memory_edges),
         },
     }
+    if growth:
+        payload["growth"] = {
+            k: growth[k]
+            for k in (
+                "trust",
+                "intimacy",
+                "empathy",
+                "bond_stage",
+                "bond_depth",
+                "relation_factor",
+                "empathy_domains",
+            )
+            if k in growth
+        }
+    return payload
 
 
 if __name__ == "__main__":
@@ -238,3 +316,4 @@ if __name__ == "__main__":
 
     g = build_learning_graph()
     print(json.dumps(g.get("stats", {}), ensure_ascii=False, indent=2))
+    print(json.dumps(g.get("growth", {}), ensure_ascii=False, indent=2))
