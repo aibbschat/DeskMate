@@ -143,7 +143,8 @@ export interface GrowthSnapshot {
   };
 }
 
-const PROFICIENCY_LABEL: Record<string, string> = {
+// 导出供 BondPanel 复用：同一套中文标签只维护一处，避免改一处漏一处。
+export const PROFICIENCY_LABEL: Record<string, string> = {
   skill_created: "掌握了新技能",
   skill_used: "使用了技能",
   skill_evolved: "技能进化",
@@ -153,6 +154,9 @@ const PROFICIENCY_LABEL: Record<string, string> = {
   creation_approved: "创作定稿 / 通过",
   creation_rework: "创作被打回",
   user_corrected: "你纠正了我",
+  // P1-5（三维审计）：让「为什么涨」可见——深度折算与阶段提升同样是成长来源
+  depth_backfilled: "把历史积累折算进关系深度",
+  bond_stage_up: "关系阶段提升",
 };
 
 function proficiencyText(p: number): string {

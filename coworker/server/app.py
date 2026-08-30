@@ -4161,6 +4161,13 @@ def create_app(manager: SessionManager) -> FastAPI:
         # not at connect — empty never-used sessions shouldn't appear in Recents);
         # permission_required/directory_requested = parked indefinitely on the user;
         # iteration_end = a model response + its tool results completed.
+        # P0-1：创作流水线相关 agent → 走「创作」默契子域；其余 →「陪伴」子域。
+        #（此前只有 deskmate 会计数，创作场景的「被懂得」完全不进成长数值）
+        _CREATION_AGENTS = frozenset({
+            "editor", "lit-editor", "proofreader", "publisher", "reader",
+            "genre", "adaptation", "screenwriter", "outline-writer",
+            "script-reviewer", "editor-in-chief", "historian",
+        })
         _CHECKPOINTS = {
             "turn_start",
             "permission_required",
@@ -4346,20 +4353,34 @@ def create_app(manager: SessionManager) -> FastAPI:
                     if event.type.value == "turn_start":
                         await _push_deskmate_memory()
                         # 累计对话数与活跃天数（可视化面板的 streakDays/totalChats 真实数据源）
-                        if agent == "deskmate":
-                            try:
-                                from pathlib import Path as _P
+                        # P0-1：此前被 `if agent == "deskmate"` 挡住，导致**创作流水线**
+                        # （萧哥主场景）的「被懂得」完全不进成长数值——total_chats 长期
+                        # 卡在 155 不涨、默契子域恒空。现放开到所有 agent，并按场景归属
+                        # 到对应默契子域（创作类 → creation，其余 → companion）。
+                        try:
+                            from pathlib import Path as _P
 
-                                from deskmate.growth.engine import GrowthEngine as _GE
+                            from deskmate.growth.engine import (
+                                DOMAIN_COMPANION,
+                                DOMAIN_CREATION,
+                            )
+                            from deskmate.growth.engine import GrowthEngine as _GE
 
-                                _ge_dir = _P(
-                                    os.environ.get(
-                                        "DESKMATE_DIR", os.path.expanduser("~/.deskmate")
-                                    )
+                            _ge_dir = _P(
+                                os.environ.get(
+                                    "DESKMATE_DIR", os.path.expanduser("~/.deskmate")
                                 )
-                                await asyncio.to_thread(_GE(base_dir=_ge_dir).record_chat)
-                            except Exception:
-                                logging.exception("record chat growth failed")
+                            )
+                            _domain = (
+                                DOMAIN_CREATION
+                                if agent in _CREATION_AGENTS
+                                else DOMAIN_COMPANION
+                            )
+                            await asyncio.to_thread(
+                                _GE(base_dir=_ge_dir).record_chat, _domain
+                            )
+                        except Exception:
+                            logging.exception("record chat growth failed")
                         # Title on the user's words the moment they land — never behind
                         # a long agentic turn (owner catch 2026-08-24).
                         manager._maybe_autotitle(session_id)

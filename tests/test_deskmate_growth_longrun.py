@@ -175,7 +175,13 @@ class TestCurrentBond:
 
 class TestBackwardCompat:
     def test_old_state_without_depth_loads_fine(self, tmp_path):
-        """旧 growth.json 无 bond_depth 字段 → 加载为默认 0，不抛异常。"""
+        """旧 growth.json 无 bond_depth 字段 → 加载不抛异常，且被**一次性折算**补齐。
+
+        P0-2（2026-08-30 三维审计）：8.2 的深度轨道只对**增量**生效，老用户
+        （如此处的 intimacy 97.5 / empathy 91）在新轨道上恒为 0，前端 BondPanel
+        显示「🌱 初识」——与实际使用深度严重倒错。现于加载时按「亲密度 / 默契度 /
+        对话轮数」一次性折算，并用 version 守卫保证幂等。
+        """
         gpath = tmp_path / "growth.json"
         gpath.write_text(
             json.dumps(
@@ -185,9 +191,15 @@ class TestBackwardCompat:
             encoding="utf-8",
         )
         eng = GrowthEngine(tmp_path)
-        assert eng.state.bond_depth == 0.0
         assert eng.state.intimacy == 97.5
-        assert eng.current_bond()["stage"] == "初识"
+        # 折算：97.5*0.5 + 91.0*0.3 + 0（无对话数）= 76.05 → 越过「熟络」阈值 30
+        assert eng.state.bond_depth == 76.05
+        assert eng.current_bond()["stage"] == "熟络"
+        # 幂等：重新加载绝不重复折算（version 守卫）
+        # 注意：落盘时 bond_depth 按 1 位小数保存（to_dict 既定精度），故重载后为 76.0
+        eng2 = GrowthEngine(tmp_path)
+        assert eng2.state.bond_depth == 76.0
+        assert eng2.migrate_depth_once() is False
 
     def test_roundtrip_preserves_depth(self, tmp_path):
         eng = GrowthEngine(tmp_path)

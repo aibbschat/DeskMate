@@ -154,6 +154,7 @@ def load_state(base_dir: Path | str | None = None) -> GrowthState:
         return GrowthState()
 
     st = GrowthState(
+        version=_num(data, "version", 1, int),
         intimacy=_num(data, "intimacy", 0.0, float),
         trust=_num(data, "trust", 0.5, float),
         empathy=_num(data, "empathy", 0.0, float),

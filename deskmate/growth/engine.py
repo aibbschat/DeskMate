@@ -8,12 +8,15 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Optional
 
 from . import badges as badge_registry
 from .badges import BadgeContext, BadgeDef
 from .state import BACKFILLED_MARK, GrowthState, SkillProficiency, load_state, save_state
+
+logger = logging.getLogger(__name__)
 
 # 等级阈值（成长值累积）
 LEVEL_THRESHOLDS = [0, 5, 15, 30, 50, 80, 120, 170, 230, 300, 400, 520]
@@ -36,6 +39,18 @@ DOMAIN_CREATION = "creation"      # 创作：编校 / 审稿 / 圆桌 / 书稿�
 DOMAIN_MEMORY = "memory"          # 记忆：新事实被记住
 DOMAIN_PROACTIVE = "proactive"    # 主动：主动建议被接受 / 忽略
 DOMAIN_COMPANION = "companion"    # 陪伴：日常对话时长
+
+# --- P0 修正（2026-08-30 三维审计）：深度轨道对老用户「归零」的补偿 ---
+# 背景：8.2 新增 bond_depth / empathy_domains 时**只对增量生效**，老用户
+# （如 155 轮、intimacy 97.5）的历史积累在新轨道上显示为 0 → 前端 BondPanel
+# 显示「🌱 初识 · 深度 0」，与实际使用深度严重倒错。以下常量用于一次性折算
+# 与「未封顶也让轨道动起来」的每轮微量沉淀。
+MIGRATION_VERSION = 2       # 已完成存量折算的状态版本（幂等守卫，>= 则跳过）
+DEPTH_PER_INTIMACY = 0.5    # 折算：每 1 点亲密度 → 关系深度
+DEPTH_PER_EMPATHY = 0.3     # 折算：每 1 点默契度 → 关系深度
+DEPTH_PER_CHAT = 0.1        # 折算：每 1 轮对话 → 关系深度（对话数按 500 封顶）
+DEPTH_PER_ROUND = 0.05      # 每轮微量沉淀：未封顶时深度轨道也要「看得见地动」
+COMPANION_PER_CHAT = 0.3    # 陪伴子域每轮增量（与 record_chat 原逻辑一致）
 EMPATHY_DOMAIN_LABELS = {
     DOMAIN_CREATION: "创作",
     DOMAIN_MEMORY: "记忆",
@@ -168,12 +183,88 @@ class GrowthEngine:
         if not self.state.updated_at and not self.state.badges_unlocked:
             self.state.counters.setdefault(_C_BADGES_MIGRATED, 1)
 
+        # P0-2：一次性把历史存量折算进 8.2 的深度轨道（幂等，version 守卫）。
+        # fail-open：折算失败绝不影响成长引擎本身的可用性。
+        try:
+            self.migrate_depth_once()
+        except Exception:
+            logger.exception("bond_depth 存量折算失败（已跳过，不影响成长引擎）")
+
     # ------------------------------------------------------------------
     # 持久化
     # ------------------------------------------------------------------
 
     def save(self) -> None:
         save_state(self.state, self.base_dir)
+
+    def migrate_depth_once(self) -> bool:
+        """P0-2：一次性把「存量」折算进 8.2 的深度轨道（**幂等**，version 守卫）。
+
+        背景：8.2 新增 ``bond_depth`` / ``empathy_domains`` 时**只对增量生效**。
+        老用户（如 155 轮、intimacy 97.5）的历史积累在新轨道上恒为 0，前端
+        BondPanel 因此显示「🌱 初识 · 深度 0」，与实际使用深度严重倒错。
+
+        折算口径（**补录，不是虚构**）：严格沿用各 ``record_*`` 既定的增量规则
+        反推，只用真实累计量，绝不凭空造数——
+        - ``companion`` ← ``total_chats × COMPANION_PER_CHAT``（record_chat 既定每轮 +0.3）
+        - ``memory``    ← ``memories_learned × INTIMACY_MEMORY_LEARNED``（既定每条 +1.0）
+        - ``creation``  ← 圆桌 / 书稿等 counters 累计 × 1.0（既定每次 +1.0）
+        - ``bond_depth``← 亲密度 / 默契度 / 对话轮数加权（深度 = 长期关系的沉淀）
+
+        Returns:
+            是否执行了折算（False = 已是新版本，或纯新用户无存量可补）。
+        """
+        if self.state.version >= MIGRATION_VERSION:
+            return False
+
+        # 纯新用户：无任何存量可补，直接置位，避免无谓折算
+        has_history = (
+            self.state.intimacy > 0
+            or self.state.empathy > 0
+            or self.state.total_chats > 0
+            or self.state.memories_learned > 0
+        )
+        if not has_history:
+            self.state.version = MIGRATION_VERSION
+            self.save()
+            return False
+
+        # 1) 子域补录（按既定规则反推，clamp 到 0-100）
+        # 只在**确有存量**时写入——避免给零存量场景造出 0.0 的空键
+        #（空键会让「在哪方面更懂你」出现无意义的零值条目）。
+        if self.state.total_chats > 0 and not self.state.empathy_domains.get(DOMAIN_COMPANION):
+            self.state.empathy_domains[DOMAIN_COMPANION] = min(
+                100.0, self.state.total_chats * COMPANION_PER_CHAT
+            )
+        if self.state.memories_learned > 0 and not self.state.empathy_domains.get(DOMAIN_MEMORY):
+            self.state.empathy_domains[DOMAIN_MEMORY] = min(
+                100.0, self.state.memories_learned * INTIMACY_MEMORY_LEARNED
+            )
+        creation_events = self.state.counters.get(
+            badge_registry.COUNTER_ROUNDTABLES, 0
+        ) + self.state.counters.get(badge_registry.COUNTER_MANUSCRIPTS, 0)
+        if creation_events and not self.state.empathy_domains.get(DOMAIN_CREATION):
+            self.state.empathy_domains[DOMAIN_CREATION] = min(
+                100.0, float(creation_events)
+            )
+
+        # 2) 深度折算：亲密度 / 默契度 / 对话轮数加权（对话数封顶 500，防刷）
+        if self.state.bond_depth <= 0:
+            self.state.bond_depth = round(
+                self.state.intimacy * DEPTH_PER_INTIMACY
+                + self.state.empathy * DEPTH_PER_EMPATHY
+                + min(self.state.total_chats, 500) * DEPTH_PER_CHAT,
+                2,
+            )
+            self._add_event(
+                "depth_backfilled",
+                depth=self.state.bond_depth,
+                note="历史积累折算进关系深度（一次性补录，非新增互动）",
+            )
+
+        self.state.version = MIGRATION_VERSION
+        self.save()
+        return True
 
     def _now_date(self) -> str:
         import datetime
@@ -458,6 +549,11 @@ class GrowthEngine:
         self._gain_relation("trust", TRUST_CORRECTED, 0.0, 1.0)
         self._gain_relation("empathy", EMPATHY_CORRECTED)
         self._gain_relation("mood", MOOD_IGNORED)
+        # P0-4：纠正 = 理解校准信号，必须计入「记忆」默契子域。
+        # 此前只在总数上惩罚（trust / mood 降），用户感受不到「它因我的纠正而
+        # 改进」——只有惩罚、没有成长。取绝对值：纠正让 AI 多拿到一条校准信息，
+        # 对「懂你」是增量；而 trust / mood 的下降已表达「这次没做对」。
+        self._gain_domain(DOMAIN_MEMORY, abs(EMPATHY_CORRECTED))
         self._add_event("user_corrected", note="用户明确纠正")
         self._log_behavior("correction")
         self._apply_decay()
@@ -486,11 +582,17 @@ class GrowthEngine:
     # 活跃度统计（对话计数 / 连续天数）
     # ------------------------------------------------------------------
 
-    def record_chat(self) -> None:
+    def record_chat(self, domain: str = DOMAIN_COMPANION) -> None:
         """记录一次对话（累计总对话数 + 今日活跃日期，供连续天数统计）。
 
         由对话入口（run_turn 的 turn_start）调用，是可视化面板
         streakDays / totalChats 的真实数据源。
+
+        Args:
+            domain: 本轮归属的默契子域。创作流水线传 ``DOMAIN_CREATION``，
+                桌搭 / 通用助手传 ``DOMAIN_COMPANION``（默认）。
+                P0-1：此前只有 deskmate 模式会计数，导致创作场景（萧哥主场景）
+                的「被懂得」完全不进成长数值，故放开调用方并支持子域归属。
 
         同时顺带采集「奇遇」类勋章所需的时间线索：深夜/清晨时段、
         跨年守候、长期中断后归来。这些只在对话发生的当下才能观测到，
@@ -529,8 +631,14 @@ class GrowthEngine:
         if (now.month, now.day) in ((12, 31), (1, 1)):
             self._bump(badge_registry.COUNTER_NEW_YEAR)
 
-        # 陪伴子域：日常对话是细水长流的陪伴（每轮 +0.3，克制）
-        self._gain_domain(DOMAIN_COMPANION, 0.3)
+        # 陪伴 / 创作子域：日常对话与创作行为分别沉淀到对应默契子域（每轮 +0.3，克制）
+        self._gain_domain(domain, COMPANION_PER_CHAT)
+
+        # P0-3：每轮微量沉淀进关系深度。
+        # 原设计只有「关系数值被上限截断的溢出」才转 bond_depth，导致封顶前的
+        # 漫长区间里深度轨道恒定不动（用户长期看到「深度 0」）。这里让每轮对话
+        # 也沉淀极小一点，保证轨道在未封顶时同样「看得见地动」。
+        self._deposit_depth(DEPTH_PER_ROUND)
 
         self.save()
 

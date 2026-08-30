@@ -23,6 +23,7 @@ import { SyncCard } from "./SyncCard";
 import { AlterEgoCard } from "./AlterEgoCard";
 import { AlterEgoPage } from "./AlterEgoPage";
 import { VaultPanel } from "./VaultPanel";
+import { InsightPanel } from "./InsightPanel";
 import type { GrowthSnapshot } from "./StatusPanel";
 
 /** 当前可召唤的就绪专家（取第一个 ready 的，保证「召唤专家」chip 不写死具体 id）。 */
@@ -55,6 +56,8 @@ export function DeskHome() {
   const [showAlterEgo, setShowAlterEgo] = useState(false);
   const [showAlterEgoPage, setShowAlterEgoPage] = useState(false);
   const [showVault, setShowVault] = useState(false);
+  // P1-7 补漏：行为规律（P2-3）+ 后台整理（P2-1）此前前端 0 消费，用户看不见
+  const [showInsight, setShowInsight] = useState(false);
 
   // 每次回到首页（组件重新挂载）随机抽一条问候，制造新鲜感。
   const greeting = useMemo(() => {
@@ -136,6 +139,12 @@ export function DeskHome() {
       label: "长期知识",
       onClick: () => setShowVault((v) => !v),
     },
+    {
+      key: "insight",
+      icon: "sparkle",
+      label: "它在学什么",
+      onClick: () => setShowInsight((v) => !v),
+    },
   ];
 
   return (
@@ -169,6 +178,8 @@ export function DeskHome() {
       <AlterEgoPage open={showAlterEgoPage} onClose={() => setShowAlterEgoPage(false)} />
       {/* P1-7：长期知识库 */}
       {showVault && <VaultPanel />}
+      {/* P1-7 补漏：行为规律（P2-3）+ 后台整理（P2-1）此前前端 0 消费 */}
+      {showInsight && <InsightPanel />}
       <DeskDigest />
     </div>
   );
