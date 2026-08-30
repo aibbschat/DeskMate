@@ -185,3 +185,89 @@ class TestProfileStore:
         sps = importlib.reload(sps)  # 清环境变量后重载，重新求值默认路径
         assert sps.DEFAULT_PROFILE_PATH.name == "style_profile.json"
         assert ".deskmate" in str(sps.DEFAULT_PROFILE_PATH)
+
+
+# ============================================================
+# P1-5 收尾：风格信号每轮自动抽取（after_action 接线）
+# ============================================================
+
+
+class TestStyleAutoExtract:
+    """P1-5 收尾：`_maybe_update_style_profile` 接线（只抽**用户**消息）。
+
+    注意：style_profile_store.DEFAULT_PROFILE_PATH 是模块级常量（import 时即绑定
+    DESKMATE_DIR），测试里必须 monkeypatch.setattr 到 tmp，否则会写真实 ~/.deskmate。
+    """
+
+    LONG = "这是一段用于风格统计的较长中文文本，包含若干句子以支撑句长与段落统计。" * 8
+
+    def _patch(self, tmp_path: Path, monkeypatch):
+        import deskmate.style_profile_store as sps
+
+        p = tmp_path / "style_profile.json"
+        monkeypatch.setattr(sps, "DEFAULT_PROFILE_PATH", p)
+        return p
+
+    def test_long_user_msg_updates_profile(self, tmp_path: Path, monkeypatch):
+        from deskmate.memory.after_action import _maybe_update_style_profile
+
+        path = self._patch(tmp_path, monkeypatch)
+        _maybe_update_style_profile(self.LONG)
+
+        data = load_profile(path)
+        assert data["updates"] == 1
+        assert data["metrics"]["n"] == 1
+
+    def test_short_user_msg_skipped(self, tmp_path: Path, monkeypatch):
+        """短聊天消息不抽——每次抽取都 n+1 加权，口语会稀释文风画像。"""
+        from deskmate.memory.after_action import _maybe_update_style_profile
+
+        path = self._patch(tmp_path, monkeypatch)
+        _maybe_update_style_profile("好的，继续")
+
+        assert not path.exists()
+
+    def test_disabled_by_env(self, tmp_path: Path, monkeypatch):
+        from deskmate.memory.after_action import _maybe_update_style_profile
+
+        path = self._patch(tmp_path, monkeypatch)
+        monkeypatch.setenv("DESKMATE_STYLE_AUTO", "0")
+        _maybe_update_style_profile(self.LONG)
+
+        assert not path.exists()
+
+    def test_custom_min_chars(self, tmp_path: Path, monkeypatch):
+        from deskmate.memory.after_action import _maybe_update_style_profile
+
+        path = self._patch(tmp_path, monkeypatch)
+        monkeypatch.setenv("DESKMATE_STYLE_MIN_CHARS", "10")
+        _maybe_update_style_profile("这是一句够长的中文测试句子。")
+
+        assert load_profile(path)["updates"] == 1
+
+    def test_wired_into_reflect_and_persist(self):
+        """接线存在性：防止该函数变回死代码（P2-6 教训）。
+
+        只断言「reflect_and_persist 内部确实用用户消息调用了它」——
+        不实际跑 reflect_and_persist（它会起 daemon 线程、写日志、扫文件）。
+        """
+        import inspect
+
+        from deskmate.memory.after_action import reflect_and_persist
+
+        src = inspect.getsource(reflect_and_persist)
+        assert "_maybe_update_style_profile(last_user)" in src
+
+    def test_fail_open_on_error(self, tmp_path: Path, monkeypatch):
+        """画像写入抛异常时不冒泡，绝不阻塞 after_action 主流程。"""
+        import deskmate.style_profile_store as sps
+
+        from deskmate.memory.after_action import _maybe_update_style_profile
+
+        self._patch(tmp_path, monkeypatch)
+
+        def _boom(*_a, **_k):
+            raise RuntimeError("boom")
+
+        monkeypatch.setattr(sps, "update_style_profile", _boom)
+        _maybe_update_style_profile(self.LONG)  # 不应抛出

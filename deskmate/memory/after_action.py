@@ -561,6 +561,44 @@ def _maybe_dream(base_dir: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# P1-5 收尾：写作风格信号每轮自动抽取（零 LLM、纯统计）
+# ---------------------------------------------------------------------------
+
+# 保守阈值：过短的聊天消息不抽。每次抽取都会让 metrics.n +1 并参与加权平均，
+# 若把「好的 / 继续」这类口语也算一个样本，会稀释真实文风画像（反而害了 P1-5）。
+_STYLE_MIN_CHARS_DEFAULT = 200
+
+
+def _maybe_update_style_profile(last_user: str) -> None:
+    """P1-5 收尾：从**用户消息**增量更新写作风格画像（零 LLM、fail-open）。
+
+    ⚠️ 只抽取用户自己的话——助手输出是 AI 的文风，抽了就学反了
+    （「越写越懂你的文风」要懂的是**用户**的文风，不是 AI 的）。
+
+    环境变量：
+    - ``DESKMATE_STYLE_AUTO=0``       关闭自动抽取（默认开）
+    - ``DESKMATE_STYLE_MIN_CHARS=N``  调整最小抽取长度（默认 200 字）
+    """
+    try:
+        if os.environ.get("DESKMATE_STYLE_AUTO", "1") == "0":
+            return
+        text = (last_user or "").strip()
+        try:
+            min_chars = int(
+                os.environ.get("DESKMATE_STYLE_MIN_CHARS") or _STYLE_MIN_CHARS_DEFAULT
+            )
+        except ValueError:
+            min_chars = _STYLE_MIN_CHARS_DEFAULT
+        if len(text) < min_chars:
+            return
+        from deskmate.style_profile_store import update_style_profile
+
+        update_style_profile(text, source=f"对话-{datetime.now().strftime('%Y-%m-%d')}")
+    except Exception:
+        logger.debug("after_action: 风格画像增量更新跳过", exc_info=True)
+
+
+# ---------------------------------------------------------------------------
 # 项目日志（记一笔）
 # ---------------------------------------------------------------------------
 def _append_journal(base_dir: Path, project: str, entry: str) -> None:
@@ -698,6 +736,9 @@ def reflect_and_persist(
             _maybe_review_memory(base_dir, last_user, last_asst)
             _maybe_curate_skills(base_dir)
             _maybe_dream(base_dir)
+            # P1-5 收尾：从用户消息学文风（零 LLM 纯统计，快）。
+            # 只传 last_user —— 抽助手输出会学到 AI 的文风，正好学反。
+            _maybe_update_style_profile(last_user)
             # A：内容侧闭环（产出文本 / 产物文件回流圣经），LLM 抽取较慢，放后台不阻塞响应
             _upsert_content_loop(workspace, last_asst, artifacts)
         Thread(target=_bg, daemon=True).start()
