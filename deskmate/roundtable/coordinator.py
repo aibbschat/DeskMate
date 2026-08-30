@@ -864,6 +864,13 @@ class Roundtable:
             except Exception as exc:  # noqa: BLE001
                 logger.warning("圆桌 teams 终验收失败(忽略): %s", exc)
 
+        # P2-10：圆桌研讨完成 → 行为日志（供「常开哪些议题的圆桌」规律积累）
+        try:
+            from deskmate.proactivity.behavior_patterns import log_event
+            log_event("roundtable_done", {"topic": str(self.topic), "rounds": int(rounds_held)})
+        except Exception:
+            pass
+
         # 构造结构化结果：完整纪要（to_markdown）随 done 事件一并下发，
         # 供 web 层落盘进主 app 会话库（进入左侧历史对话栏）。
         result = RoundtableResult(

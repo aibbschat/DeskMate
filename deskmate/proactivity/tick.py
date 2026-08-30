@@ -323,6 +323,12 @@ class ProactiveEngine:
                 judgment.suggestion_type,
                 suggestion_key,
             )
+            # P2-10：主动建议推送 → 行为日志（供「常在何时被建议/哪类建议」规律积累）
+            try:
+                from deskmate.proactivity.behavior_patterns import log_event
+                log_event("suggestion_pushed", {"type": judgment.suggestion_type, "key": suggestion_key})
+            except Exception:
+                pass
 
         self.last_tick_time = time.time()
 

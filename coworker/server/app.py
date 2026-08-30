@@ -4463,6 +4463,9 @@ def create_app(manager: SessionManager) -> FastAPI:
                             await asyncio.to_thread(
                                 _GE(base_dir=_ge_dir).record_chat, _domain
                             )
+                            # P2-10：聊天每轮 → 行为日志（供「常在何时聊天/聊什么域」规律积累）
+                            from deskmate.proactivity.behavior_patterns import log_event
+                            log_event("chat_turn", {"agent": agent, "domain": _domain}, base_dir=_ge_dir)
                         except Exception:
                             logging.exception("record chat growth failed")
                         # Title on the user's words the moment they land — never behind

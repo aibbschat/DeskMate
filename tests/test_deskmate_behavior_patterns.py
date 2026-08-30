@@ -188,3 +188,65 @@ class TestP2ForgettingVisible:
         assert rec["action"] == "deleted"
         assert rec["section"] == "笔记"
 
+
+class TestP2BehaviorLoggingFiveScenarios:
+    """P2-10 五处高频场景补全（聊天每轮/圆桌/审稿/主动推送/@mention）。
+
+    此前行为日志仅「创作定稿」1 处（creation_approved/rejected）。这里验证其余 4 处可触发：
+    mention_collab / review_done 走真实代码路径（捕获 log_event 调用、不落盘）；
+    chat_turn / roundtable_done / suggestion_pushed 走 kind 契约——确保 InsightPanel 与
+    behavior-patterns 端点「有米下锅」。
+    """
+
+    def test_mention_collab_logged(self, tmp_path, monkeypatch):
+        from deskmate.chat import mention_router as MR
+
+        captured = {}
+        monkeypatch.setattr(MR, "_mention_enabled", lambda: True)
+        monkeypatch.setattr(MR, "unified_roster", lambda: [
+            {"id": "historian", "name": "史官", "role": "考据"},
+        ])
+        monkeypatch.setattr(
+            "deskmate.proactivity.behavior_patterns.log_event",
+            lambda kind, payload=None, ts=None, base_dir=None: captured.setdefault("kind", kind),
+        )
+        MR.mention_context(
+            [{"role": "user", "content": "请问 @historian 这处史实？"}],
+            default_persona_id=None,
+        )
+        assert captured.get("kind") == "mention_collab"
+
+    def test_review_done_logged(self, tmp_path, monkeypatch):
+        from deskmate.tools import review as RV
+        import json
+
+        canned = json.dumps({
+            "summary": "本章节奏紧凑",
+            "analysis": "人物塑造成功",
+            "issues": [{"type": "节奏", "excerpt": "中段略拖", "comment": "可压缩"}],
+        })
+        monkeypatch.setattr(RV, "chat", lambda *a, **k: canned)
+        monkeypatch.setattr(RV, "llm_available", lambda: True)
+        captured = {}
+        monkeypatch.setattr(
+            "deskmate.proactivity.behavior_patterns.log_event",
+            lambda kind, payload=None, ts=None, base_dir=None: captured.setdefault("kind", kind),
+        )
+        RV.review_chapter("第一章：测试", "正文内容足够长……")
+        assert captured.get("kind") == "review_done"
+
+    def test_five_new_kinds_counted_by_mine_patterns(self, tmp_path):
+        from deskmate.proactivity import behavior_patterns as BP
+
+        base = _weekday_ts(2026, 8, 3, 10)
+        kinds = ["chat_turn", "roundtable_done", "review_done", "suggestion_pushed", "mention_collab"]
+        for i, k in enumerate(kinds):
+            _write_event(tmp_path, k, base + i * 86400, {"x": i})
+        res = BP.mine_patterns(base_dir=tmp_path, days=120)
+        # 5 种新事件都应被计入 event_count（证明不会因「未知 kind」被丢弃）
+        assert res["event_count"] == 5
+        # 原始日志确实含全部 5 种 kind——behavior-patterns 端点「有米下锅」
+        logged = (tmp_path / "behavior_log.jsonl").read_text(encoding="utf-8")
+        for k in kinds:
+            assert k in logged
+

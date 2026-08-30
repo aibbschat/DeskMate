@@ -112,6 +112,13 @@ def review_chapter(
             "comment": _as_str(it.get("comment")),
         })
 
+    # P2-10：单章审稿完成 → 行为日志（供「常审哪些书/问题类型」规律积累）
+    try:
+        from deskmate.proactivity.behavior_patterns import log_event
+        log_event("review_done", {"title": chapter_title, "issues": len(issues)})
+    except Exception:
+        pass
+
     return {
         "title": chapter_title,
         "summary": _as_str(data.get("summary")),

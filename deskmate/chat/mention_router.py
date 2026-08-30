@@ -186,6 +186,12 @@ def mention_context(messages: Optional[list[dict[str, Any]]], default_persona_id
     hits = parse_mentions(last, roster)
     if not hits:
         return ""
+    # P2-10：@召唤协作 → 行为日志（供「常召唤哪些角色」规律积累）
+    try:
+        from deskmate.proactivity.behavior_patterns import log_event
+        log_event("mention_collab", {"count": len(hits), "roles": [h.name for h in hits]})
+    except Exception:
+        pass
     default_name = ""
     if default_persona_id:
         for p in roster:
