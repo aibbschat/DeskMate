@@ -44,6 +44,9 @@ const EVENT_META: Record<string, { icon: string; label: string; domain: string }
   report_generated: { icon: "📊", label: "生成了报告", domain: "创作" },
   manuscript_saved: { icon: "💾", label: "保存了文稿", domain: "创作" },
   bond_stage_up: { icon: "💫", label: "关系升级了", domain: "关系" },
+  // P0-2 存量折算（2026-08-30 三维审计）：老用户历史积累补录进深度轨道时记的事件。
+  // 之前表里没有它，事件会显示成英文 kind，故补上中文标签。
+  depth_backfilled: { icon: "📚", label: "把历史积累折算进关系深度", domain: "关系" },
 };
 
 function fmtEventTime(ts: string): string {
