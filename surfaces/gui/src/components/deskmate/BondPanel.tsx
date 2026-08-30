@@ -28,6 +28,33 @@ const STAGE_EMOJI: Record<string, string> = {
   灵魂伴侣: "💫",
 };
 
+/** recent_events kind → 可读的成长事件描述（含归因，让用户知道"为什么涨"）。 */
+const EVENT_META: Record<string, { icon: string; label: string; domain: string }> = {
+  suggestion_accepted: { icon: "✅", label: "你接受了建议", domain: "主动" },
+  suggestion_ignored: { icon: "🙈", label: "你忽略了建议", domain: "主动" },
+  creation_approved: { icon: "📝", label: "创作定稿/通过", domain: "创作" },
+  creation_rework: { icon: "🔄", label: "创作被打回", domain: "创作" },
+  user_corrected: { icon: "🎯", label: "你纠正了它", domain: "记忆" },
+  memory_learned: { icon: "🧠", label: "它新记住了一件事", domain: "记忆" },
+  skill_used: { icon: "🔧", label: "使用了技能", domain: "技能" },
+  skill_created: { icon: "✨", label: "学会了新技能", domain: "技能" },
+  skill_evolved: { icon: "⬆️", label: "技能进化了", domain: "技能" },
+  writing_reviewed: { icon: "✍️", label: "完成了文稿审阅", domain: "创作" },
+  roundtable_held: { icon: "🗣️", label: "开了圆桌讨论", domain: "创作" },
+  report_generated: { icon: "📊", label: "生成了报告", domain: "创作" },
+  manuscript_saved: { icon: "💾", label: "保存了文稿", domain: "创作" },
+  bond_stage_up: { icon: "💫", label: "关系升级了", domain: "关系" },
+};
+
+function fmtEventTime(ts: string): string {
+  if (!ts) return "";
+  const m = /^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2})/.exec(ts);
+  if (!m) return ts.slice(0, 16);
+  const today = new Date().toISOString().slice(0, 10);
+  if (m[1] === today) return `今天 ${m[2]}`;
+  return `${m[1].slice(5)} ${m[2]}`;
+}
+
 function DomainBar({ label, value, top }: { label: string; value: number; top: boolean }) {
   const pct = Math.max(0, Math.min(100, value));
   return (
@@ -112,6 +139,31 @@ export function BondPanel({ growth }: { growth?: GrowthSnapshot | null }) {
                 top={key === topDomain}
               />
             ))}
+        </div>
+      )}
+
+      {/* 最近成长（P1-5：让用户知道"为什么涨"） */}
+      {growth?.recent_events && growth.recent_events.length > 0 && (
+        <div className="mt-1 pt-2" style={{ borderTop: "0.5px solid rgba(99,102,241,0.1)" }}>
+          <div className="text-[10px] font-semibold text-gray-400 mb-1.5 tracking-wide">最近成长</div>
+          <div className="flex flex-col gap-1">
+            {[...growth.recent_events]
+              .reverse()
+              .slice(0, 4)
+              .map((ev, i) => {
+                const meta = EVENT_META[ev.kind] ?? { icon: "·", label: ev.kind, domain: "" };
+                return (
+                  <div key={i} className="flex items-center gap-1.5 text-[11px] leading-relaxed">
+                    <span style={{ flexShrink: 0 }}>{meta.icon}</span>
+                    <span className="text-gray-600 flex-1 truncate">
+                      {meta.label}
+                      {meta.domain && <span className="text-gray-400"> · {meta.domain}</span>}
+                    </span>
+                    <span className="text-gray-300 flex-shrink-0 tabular-nums">{fmtEventTime(ev.ts)}</span>
+                  </div>
+                );
+              })}
+          </div>
         </div>
       )}
     </div>

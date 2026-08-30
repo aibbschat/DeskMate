@@ -14,6 +14,8 @@ import {
   setSessionsPeek,
   setWorkspaceTrusted,
   setGovernance,
+  getDeskmateGrowth,
+  setDeskmateGrowthProactive,
   type CompactionSettings,
   type GovernanceSettings,
   type ModelSettings,
@@ -472,6 +474,8 @@ function AppearanceSection() {
       <ContextBarCard />
 
       <MemoryInjectionCard />
+
+      <TrustProactiveCard />
 
       <FilesCard />
 
@@ -1032,6 +1036,52 @@ function MemoryInjectionCard() {
           </span>
           <span className="block text-[12px] text-muted">
             开启后，墨灵会在每次对话时自动检索并注入与当前话题相关的记忆，越聊越懂你。关闭则保留记忆但不自动注入。
+          </span>
+        </span>
+      </label>
+    </div>
+  );
+}
+
+function TrustProactiveCard() {
+  const [on, setOn] = useState<boolean | null>(null);
+
+  useEffect(() => {
+    getDeskmateGrowth()
+      .then((d) => {
+        if (d && typeof d.trust_controls_proactive === "boolean") {
+          setOn(d.trust_controls_proactive);
+        } else {
+          setOn(true);
+        }
+      })
+      .catch(() => setOn(true));
+  }, []);
+
+  const save = async (next: boolean) => {
+    setOn(next);
+    const ok = await setDeskmateGrowthProactive(next);
+    if (!ok) setOn(!next);
+  };
+
+  if (on === null) return null;
+  return (
+    <div className={CARD + " p-4 mb-4"} data-testid="trust-proactive-card">
+      <div className={FIELD_LABEL}>信任调制主动打扰</div>
+      <label className="flex items-start gap-3 py-2">
+        <input
+          type="checkbox"
+          className="mt-0.5"
+          data-testid="trust-proactive-toggle"
+          checked={on}
+          onChange={(e) => save(e.target.checked)}
+        />
+        <span>
+          <span className="block text-x] text-ink">
+            信任感影响主动建议的频率
+          </span>
+          <span className="block text-x] text-muted">
+            开启后，墨灵对你的信任度越高，主动提供建议越积极；信任度低时会更保守、更少打扰。关闭则按固定阈值主动建议，不受信任度影响。
           </span>
         </span>
       </label>

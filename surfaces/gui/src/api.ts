@@ -2681,6 +2681,31 @@ export async function getDeskmateMemoryLayering(): Promise<DeskmateMemoryLayerin
   }
 }
 
+/** P1-8：读取 growth snapshot（含 trust_controls_proactive 状态）。 */
+export async function getDeskmateGrowth(): Promise<Record<string, unknown>> {
+  try {
+    const res = await authedFetch(`${httpBase()}/v1/deskmate/growth`);
+    if (!res.ok) return {};
+    return res.json();
+  } catch {
+    return {};
+  }
+}
+
+/** P1-8：设置信任感是否调制主动打扰阈值。 */
+export async function setDeskmateGrowthProactive(control: boolean): Promise<boolean> {
+  try {
+    const res = await authedFetch(`${httpBase()}/v1/deskmate/growth/proactive`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ control }),
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
 export interface TraceRecord {
   ts?: string;
   query?: string;

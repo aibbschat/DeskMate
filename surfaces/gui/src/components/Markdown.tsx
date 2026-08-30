@@ -77,10 +77,53 @@ function ArtifactChip({ path, title }: { path: string; title: string }) {
 // Assistant messages rendered as GitHub-flavored markdown (headings, lists, tables, code,
 // links). Links open externally — never navigate the app shell — except artifact: links,
 // which open the session's artifact viewer.
+
+/** P1-6：引用回显——检测 AI 回复中是否引用了用户记忆的句式。 */
+const MEMORY_REF_PATTERNS = [
+  /因为你说过/,
+  /记得你说过/,
+  /你之前说过/,
+  /你告诉过我/,
+  /你提到过/,
+  /根据你的/,
+  /按照你的/,
+  /正如你/,
+  /你之前提到/,
+  /你曾说/,
+  /你以前说/,
+  /你上次说/,
+  /还记得你/,
+  /就像你/,
+];
+
+function detectMemoryReference(text: string): boolean {
+  return MEMORY_REF_PATTERNS.some((p) => p.test(text));
+}
+
 export function Markdown({ text }: { text: string }) {
   const rendered = withEmoteSyntax(text);
+  const hasMemoryRef = detectMemoryReference(text || "");
   return (
     <div className="md">
+      {hasMemoryRef && (
+        <div
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            gap: 5,
+            fontSize: 11,
+            color: "#b45309",
+            background: "rgba(180,83,9,0.08)",
+            padding: "3px 9px",
+            borderRadius: 8,
+            marginBottom: 8,
+            fontWeight: 500,
+          }}
+          title="这条回复参考了你的记忆"
+        >
+          📌 基于你的记忆
+        </div>
+      )}
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         // artifact: and emote: are ours — keep them through the sanitizer (everything else

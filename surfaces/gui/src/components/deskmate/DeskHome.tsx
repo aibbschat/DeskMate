@@ -22,6 +22,7 @@ import { PositioningCard } from "./PositioningCard";
 import { SyncCard } from "./SyncCard";
 import { AlterEgoCard } from "./AlterEgoCard";
 import { AlterEgoPage } from "./AlterEgoPage";
+import { VaultPanel } from "./VaultPanel";
 import type { GrowthSnapshot } from "./StatusPanel";
 
 /** 当前可召唤的就绪专家（取第一个 ready 的，保证「召唤专家」chip 不写死具体 id）。 */
@@ -53,6 +54,7 @@ export function DeskHome() {
   // P2-6：个人 AI 分身卡内联展开
   const [showAlterEgo, setShowAlterEgo] = useState(false);
   const [showAlterEgoPage, setShowAlterEgoPage] = useState(false);
+  const [showVault, setShowVault] = useState(false);
 
   // 每次回到首页（组件重新挂载）随机抽一条问候，制造新鲜感。
   const greeting = useMemo(() => {
@@ -128,6 +130,12 @@ export function DeskHome() {
       label: "个人分身",
       onClick: () => setShowAlterEgo((v) => !v),
     },
+    {
+      key: "vault",
+      icon: "book",
+      label: "长期知识",
+      onClick: () => setShowVault((v) => !v),
+    },
   ];
 
   return (
@@ -159,6 +167,8 @@ export function DeskHome() {
       {showAlterEgo && <AlterEgoCard onOpenPage={() => setShowAlterEgoPage(true)} />}
       {/* P2-6：「它眼中的我」全屏页 */}
       <AlterEgoPage open={showAlterEgoPage} onClose={() => setShowAlterEgoPage(false)} />
+      {/* P1-7：长期知识库 */}
+      {showVault && <VaultPanel />}
       <DeskDigest />
     </div>
   );
