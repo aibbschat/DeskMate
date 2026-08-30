@@ -418,6 +418,14 @@ def proofread_chapter(title: str, text: str, profile_text: str = "", workspace: 
         auto = _auto_load_style_profile(workspace)
         if auto:
             profile_text = auto
+    # P2-6 分身模式：追加量化风格指纹（句长/文言/对话占比等），让润色更贴合用户声口
+    try:
+        from deskmate.alter_ego.persona import format_style_quantified, load_style_profile
+        quantified = format_style_quantified(load_style_profile())
+        if quantified:
+            profile_text = (profile_text or "") + "\n\n" + quantified
+    except Exception:
+        pass  # fail-open：分身画像缺失不影响润色
     # 如果仍然为空，使用默认提示
     if not profile_text:
         profile_text = "（暂无风格画像，按通用优秀中文写作标准润色，但尽量尊重作者原声口）"
