@@ -197,3 +197,65 @@ class TestAlterEgoPersona:
         monkeypatch.setattr(p, "load_style_profile", lambda: {})
         monkeypatch.setattr(p, "load_decision_profile", lambda: DecisionProfile())
         assert has_alter_ego_data() is False
+
+
+class TestAlterEgoWiring:
+    """P2-6 补完验收：学习闭环 + 注入闭环 + 开关，真接进主链路（非死代码）。
+
+    注意：deskmate.alter_ego.decision_profile / persona 的 DEFAULT_PROFILE_PATH /
+    DEFAULT_STYLE_PATH 是模块级常量，import 时即绑定 DESKMATE_DIR。测试里必须在
+    调用前 monkeypatch.setattr 到 tmp，否则无参 load/save 会落到真实 ~/.deskmate，
+    既污染用户数据又导致断言读错文件。
+    """
+
+    def _patch_paths(self, tmp_path, monkeypatch):
+        import deskmate.alter_ego.decision_profile as dp
+        import deskmate.alter_ego.persona as persona_mod
+
+        monkeypatch.setattr(dp, "DEFAULT_PROFILE_PATH", tmp_path / "decision_profile.json")
+        monkeypatch.setattr(persona_mod, "DEFAULT_STYLE_PATH", tmp_path / "style_profile.json")
+        return tmp_path / "decision_profile.json"
+
+    def test_inject_context_includes_alter_ego(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("DESKMATE_ALTER_EGO", "1")
+        prof_path = self._patch_paths(tmp_path, monkeypatch)
+        prof = DecisionProfile()
+        prof.risk = {"保守/稳健": {"count": 3, "last_ts": time.time(), "evidence": "求稳"}}
+        prof.total_signals = 1
+        save_profile(prof, prof_path)
+
+        from deskmate.memory.manager import DeskMateMemoryManager
+
+        mgr = DeskMateMemoryManager(tmp_path)
+        ctx = mgr.build_full_context_for_turn("你好，帮我看看这段")
+        assert "另一个我" in ctx
+        assert "决策偏好" in ctx
+
+    def test_inject_context_skipped_when_disabled(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("DESKMATE_ALTER_EGO", "0")
+        self._patch_paths(tmp_path, monkeypatch)
+        from deskmate.memory.manager import DeskMateMemoryManager
+
+        mgr = DeskMateMemoryManager(tmp_path)
+        ctx = mgr.build_full_context_for_turn("你好")
+        assert "另一个我" not in ctx
+
+    def test_post_session_learns_alter_ego(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("DESKMATE_ALTER_EGO", "1")
+        prof_path = self._patch_paths(tmp_path, monkeypatch)
+        from deskmate.memory.manager import DeskMateMemoryManager
+
+        mgr = DeskMateMemoryManager(tmp_path)
+        mgr.post_session_summary("我比较保守，先调研再决定，别太激进", "好的，我来帮你")
+        prof = load_profile(prof_path)
+        assert prof.total_signals >= 1
+
+    def test_post_session_no_learn_when_disabled(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("DESKMATE_ALTER_EGO", "0")
+        prof_path = self._patch_paths(tmp_path, monkeypatch)
+        from deskmate.memory.manager import DeskMateMemoryManager
+
+        mgr = DeskMateMemoryManager(tmp_path)
+        mgr.post_session_summary("先调研再决定，别太激进", "好的")
+        prof = load_profile(prof_path)
+        assert prof.total_signals == 0

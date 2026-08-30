@@ -20,6 +20,7 @@ import { BondPanel } from "./BondPanel";
 import { DiaryPanel } from "./DiaryPanel";
 import { PositioningCard } from "./PositioningCard";
 import { SyncCard } from "./SyncCard";
+import { AlterEgoCard } from "./AlterEgoCard";
 import type { GrowthSnapshot } from "./StatusPanel";
 
 /** 当前可召唤的就绪专家（取第一个 ready 的，保证「召唤专家」chip 不写死具体 id）。 */
@@ -48,6 +49,8 @@ export function DeskHome() {
   const [showPositioning, setShowPositioning] = useState(false);
   // P2-7：记忆同步卡内联展开
   const [showSync, setShowSync] = useState(false);
+  // P2-6：个人 AI 分身卡内联展开
+  const [showAlterEgo, setShowAlterEgo] = useState(false);
 
   // 每次回到首页（组件重新挂载）随机抽一条问候，制造新鲜感。
   const greeting = useMemo(() => {
@@ -117,6 +120,12 @@ export function DeskHome() {
       label: "记忆同步",
       onClick: () => setShowSync((v) => !v),
     },
+    {
+      key: "alter-ego",
+      icon: "sparkle",
+      label: "个人分身",
+      onClick: () => setShowAlterEgo((v) => !v),
+    },
   ];
 
   return (
@@ -144,6 +153,8 @@ export function DeskHome() {
       {showPositioning && <PositioningCard />}
       {/* P2-7：记忆同步卡（内联展开，chip 切换） */}
       {showSync && <SyncCard />}
+      {/* P2-6：个人 AI 分身卡（内联展开，chip 切换） */}
+      {showAlterEgo && <AlterEgoCard />}
       <DeskDigest />
     </div>
   );

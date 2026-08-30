@@ -3178,6 +3178,46 @@ def create_app(manager: SessionManager) -> FastAPI:
             logging.exception("get deskmate positioning failed")
             return {}
 
+    @app.get("/v1/deskmate/alter-ego")
+    async def get_deskmate_alter_ego() -> dict[str, Any]:
+        """P2-6 个人 AI 分身模式状态（可选开启，默认关）。"""
+        try:
+            from deskmate.alter_ego.config import is_enabled
+            from deskmate.alter_ego.decision_profile import load_profile
+            from deskmate.alter_ego.persona import has_alter_ego_data
+
+            enabled = is_enabled()
+            profile = load_profile()
+            return {
+                "enabled": enabled,
+                "has_data": has_alter_ego_data(),
+                "total_signals": profile.total_signals,
+                "mode": "full",
+            }
+        except Exception:
+            logging.exception("get deskmate alter-ego failed")
+            return {"enabled": False, "has_data": False, "total_signals": 0, "mode": "full"}
+
+    @app.post("/v1/deskmate/alter-ego")
+    async def post_deskmate_alter_ego(request: Request) -> dict[str, Any]:
+        """启用/禁用分身模式。Body: {"enabled": true/false}。
+
+        开启后：每轮对话学习决策偏好 + 注入「另一个我」画像。fail-open。
+        """
+        try:
+            data = await request.json()
+        except Exception:
+            return JSONResponse({"error": "invalid json"}, status_code=400)
+        enabled = bool(data.get("enabled")) if isinstance(data, dict) else False
+        try:
+            from deskmate.alter_ego.config import set_enabled
+
+            set_enabled(enabled)
+            return {"ok": True, "enabled": enabled}
+        except Exception:
+            logging.exception("set deskmate alter-ego failed")
+            return {"ok": False, "error": "set failed"}
+
     @app.post("/v1/deskmate/chapters")
     async def deskmate_chapters(request: Request) -> dict[str, Any]:
         """返回文稿章节列表（按 第X章/回/节 切分），供前端章节下拉。

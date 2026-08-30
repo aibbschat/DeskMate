@@ -444,6 +444,20 @@ class DeskMateMemoryManager:
         user = load_user(self.base_dir)
         if user and user.strip():
             parts.append(f"## 用户画像\n{user.strip()}")
+        # P2-6 分身模式（可选开启，默认关）：追加「另一个我」画像，
+        # 让 AI 以用户的写作风格与决策偏好输出，而非通用 AI 风格。
+        try:
+            from deskmate.alter_ego.config import is_enabled as alter_ego_enabled
+            from deskmate.alter_ego.persona import (
+                build_alter_ego_prompt,
+                has_alter_ego_data,
+            )
+            if alter_ego_enabled() and has_alter_ego_data():
+                ego = build_alter_ego_prompt(mode="full")
+                if ego:
+                    parts.append(ego)
+        except Exception:
+            pass  # fail-open：分身画像缺失不影响主记忆注入
         if not parts:
             return ""
 
@@ -1974,7 +1988,29 @@ class DeskMateMemoryManager:
             session_file = None
         if not session_file:
             return {"written": 0, "notes": "会话保存失败，跳过抽取"}
-        return self._extract_single_session(session_file)
+        # P2-6 学习闭环：每轮从用户消息学决策偏好（可选开启，默认关）。
+        # 仅当分身模式开启时触发；无决策信号时 extract_and_update 不写盘。
+        # 放在事实抽取之前，确保「学习」不依赖抽取是否成功。
+        if user_msg:
+            try:
+                from deskmate.alter_ego.config import is_enabled as alter_ego_enabled
+                if alter_ego_enabled():
+                    self._learn_alter_ego(user_msg)
+            except Exception:
+                pass
+        result = self._extract_single_session(session_file)
+        return result
+
+    def _learn_alter_ego(self, user_msg: str) -> None:
+        """P2-6 学习闭环：从用户消息抽取决策偏好，增量落盘（零 LLM、fail-open）。
+
+        仅当分身模式开启时由 post_session_summary 调用。无决策信号时不写盘。
+        """
+        try:
+            from deskmate.alter_ego.decision_profile import extract_and_update
+            extract_and_update(user_msg or "")
+        except Exception as e:  # noqa: BLE001
+            logger.debug("alter ego learn skipped: %s", e)
 
     def _search_global_memory(self, query: str, exclude_tags: set[str] | None = None, exclude_section_ids: set[str] | None = None) -> str:
         """在全局记忆中按关键词 / 标签检索。
