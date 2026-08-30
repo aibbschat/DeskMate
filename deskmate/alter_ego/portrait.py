@@ -543,10 +543,98 @@ def _privacy_cross_project_section() -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# 栏目 7：作品与创作（auto_tasks 统一框架——每日读书/进度跟踪/未来新任务）
+# ---------------------------------------------------------------------------
+def _auto_tasks_section() -> dict[str, Any]:
+    """从 auto_tasks 统一框架聚合「作品与创作」栏目。
+
+    涵盖：每日读书（已出版作品阅读心得）、进度跟踪（正在写的书的伏笔/人物状态）、
+    以及未来新设的任何与"我/写作/作品"相关的自动任务——自动落地、自动分类、自动展示。
+    """
+    try:
+        from deskmate.auto_tasks import get_recorder
+        recorder = get_recorder()
+        records = recorder.get_timeline(limit=30)
+        insights = recorder.get_insights(limit=20)
+    except Exception:
+        records = []
+        insights = []
+
+    articles: list[dict[str, Any]] = []
+
+    # 时间线记录 → 文章（朋友圈式）
+    for rec in records:
+        # 动作标签
+        action_labels = {
+            "start": "开始读",
+            "continue": "继续读",
+            "finish": "读完了",
+            "analyze": "跟踪检查",
+            "remind": "主动提醒",
+        }
+        action_label = action_labels.get(rec.action, rec.action)
+
+        # 组装内容
+        content_parts = []
+        if rec.summary:
+            content_parts.append(rec.summary)
+        if rec.insights:
+            insight_texts = [i.text for i in rec.insights[:3]]
+            if insight_texts:
+                content_parts.append("洞察：" + "；".join(insight_texts))
+
+        content = "\n".join(content_parts) if content_parts else f"{action_label} {rec.target}"
+
+        tags = [rec.task_name] + (rec.tags or [])
+        # 去重
+        tags = list(dict.fromkeys(tags))[:4]
+
+        articles.append({
+            "title": f"{action_label} {rec.target}",
+            "content": content,
+            "evidence": rec.date,
+            "tags": tags,
+        })
+
+    # 统计
+    stats = recorder.get_stats() if records else {}
+    by_type = stats.get("by_type", {})
+    unique_targets = stats.get("unique_targets", 0)
+    total_insights = len(insights)
+
+    # 计算持续天数
+    if records:
+        dates = sorted(set(r.date for r in records))
+        duration_days = len(dates)
+    else:
+        duration_days = 0
+
+    if articles:
+        status = "ready"
+        headline = f"已读 {by_type.get('daily_reading', 0)} 本 / 跟踪 {by_type.get('progress_tracking', 0)} 次 / 沉淀 {total_insights} 条洞察 / 持续 {duration_days} 天"
+    elif insights:
+        status = "learning"
+        headline = f"沉淀了 {total_insights} 条洞察，正在整理"
+    else:
+        status = "empty"
+        headline = "还没有作品阅读与跟踪记录。设定每日读书和进度跟踪后，小桔会持续学习你的作品。"
+
+    return {
+        "id": "auto_tasks",
+        "title": "作品与创作",
+        "icon": "📖",
+        "status": status,
+        "headline": headline,
+        "articles": articles,
+        "updated_at": _fmt_date(records[0].date if records else None),
+    }
+
+
+# ---------------------------------------------------------------------------
 # 聚合入口
 # ---------------------------------------------------------------------------
 def build_portrait() -> dict[str, Any]:
-    """构建「它眼中的我」完整画像（6 个栏目）。"""
+    """构建「它眼中的我」完整画像（7 个栏目）。"""
     sections = [
         _writing_style_section(),
         _decision_preference_section(),
@@ -554,6 +642,7 @@ def build_portrait() -> dict[str, Any]:
         _reminder_preferences_section(),
         _dream_activity_section(),
         _privacy_cross_project_section(),
+        _auto_tasks_section(),
     ]
 
     # 按学习深度排序：ready > learning > empty，同状态按文章数降序

@@ -2873,6 +2873,90 @@ def create_app(manager: SessionManager) -> FastAPI:
             logging.exception("deskmate growth proactive failed")
             return JSONResponse({"error": "set failed"}, status_code=500)
 
+    # ---- auto_tasks：统一自动任务沉淀框架（每日读书/进度跟踪/未来新任务）----
+
+    @app.get("/v1/deskmate/auto-tasks/stats")
+    async def get_deskmate_auto_tasks_stats() -> dict[str, Any]:
+        """获取自动任务沉淀的统计数据（总记录数/按类型/按分类/任务列表）。"""
+        try:
+            from deskmate.auto_tasks import get_recorder
+            return get_recorder().get_stats()
+        except Exception:
+            logging.exception("get auto_tasks stats failed")
+            return JSONResponse({"error": "stats failed"}, status_code=500)
+
+    @app.get("/v1/deskmate/auto-tasks/timeline")
+    async def get_deskmate_auto_tasks_timeline(
+        limit: int = 50, task_type: str | None = None
+    ) -> dict[str, Any]:
+        """获取自动任务的时间线（倒序）。
+
+        Query: limit（默认50）, task_type（可选过滤）
+        """
+        try:
+            from deskmate.auto_tasks import get_recorder
+            from dataclasses import asdict
+            records = get_recorder().get_timeline(limit=limit, task_type=task_type)
+            return {"records": [asdict(r) for r in records]}
+        except Exception:
+            logging.exception("get auto_tasks timeline failed")
+            return JSONResponse({"error": "timeline failed"}, status_code=500)
+
+    @app.get("/v1/deskmate/auto-tasks/insights")
+    async def get_deskmate_auto_tasks_insights(
+        task_type: str | None = None, limit: int = 50
+    ) -> dict[str, Any]:
+        """获取自动任务沉淀的结构化洞察。"""
+        try:
+            from deskmate.auto_tasks import get_recorder
+            insights = get_recorder().get_insights(task_type=task_type, limit=limit)
+            return {"insights": insights}
+        except Exception:
+            logging.exception("get auto_tasks insights failed")
+            return JSONResponse({"error": "insights failed"}, status_code=500)
+
+    @app.post("/v1/deskmate/auto-tasks/record")
+    async def post_deskmate_auto_tasks_record(request: Request) -> dict[str, Any]:
+        """记录一条自动任务的沉淀。供定时任务执行完后调用。
+
+        Body: {
+          "task_type": "daily_reading",
+          "target": "17-明朝的裂变",
+          "action": "finish",
+          "summary": "...",
+          "insights": [{"text": "...", "tags": ["风格"], "push_to_vault": true}],
+          "tags": ["..."],
+          "detail_content": "...",
+          "task_name": "每日读书"
+        }
+        """
+        try:
+            body = await request.json()
+        except Exception:
+            return JSONResponse({"error": "invalid json"}, status_code=400)
+        try:
+            from deskmate.auto_tasks import record_task_result
+            from deskmate.auto_tasks.models import Insight
+            insights = [
+                i if isinstance(i, Insight) else Insight(**i)
+                for i in body.get("insights", [])
+            ]
+            rec = record_task_result(
+                task_type=body["task_type"],
+                target=body.get("target", ""),
+                action=body.get("action", "finish"),
+                summary=body.get("summary", ""),
+                insights=insights,
+                tags=body.get("tags"),
+                detail_content=body.get("detail_content"),
+                task_name=body.get("task_name"),
+            )
+            from dataclasses import asdict
+            return {"ok": True, "record": asdict(rec)}
+        except Exception:
+            logging.exception("post auto_tasks record failed")
+            return JSONResponse({"error": "record failed"}, status_code=500)
+
     @app.post("/v1/deskmate/feedback")
     async def deskmate_feedback(request: Request) -> dict[str, Any]:
         """记录用户对主动建议的反馈（接受/忽略），写入防打扰持久化文件。
