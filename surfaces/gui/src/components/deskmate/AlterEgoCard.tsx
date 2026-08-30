@@ -28,7 +28,11 @@ const FALLBACK: AlterEgoState = {
   mode: "full",
 };
 
-export function AlterEgoCard() {
+interface Props {
+  onOpenPage?: () => void;
+}
+
+export function AlterEgoCard({ onOpenPage }: Props) {
   const [data, setData] = useState<AlterEgoState | null>(null);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
@@ -117,6 +121,16 @@ export function AlterEgoCard() {
             type="button"
           >
             开启分身模式
+          </button>
+        )}
+        {onOpenPage && (
+          <button
+            className="dm-alter-ego-btn"
+            onClick={onOpenPage}
+            type="button"
+            style={{ background: "rgba(194,102,47,0.08)", color: "#c2662f", border: "1px solid rgba(194,102,47,0.2)" }}
+          >
+            查看它眼中的我 →
           </button>
         )}
       </div>

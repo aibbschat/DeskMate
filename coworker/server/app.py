@@ -3180,7 +3180,7 @@ def create_app(manager: SessionManager) -> FastAPI:
 
     @app.get("/v1/deskmate/alter-ego")
     async def get_deskmate_alter_ego() -> dict[str, Any]:
-        """P2-6 个人 AI 分身模式状态（可选开启，默认关）。"""
+        """P2-6 个人 AI 分身模式状态 + 「它眼中的我」完整画像（6 栏目聚合）。"""
         try:
             from deskmate.alter_ego.config import is_enabled
             from deskmate.alter_ego.decision_profile import load_profile
@@ -3188,15 +3188,24 @@ def create_app(manager: SessionManager) -> FastAPI:
 
             enabled = is_enabled()
             profile = load_profile()
-            return {
+            result = {
                 "enabled": enabled,
                 "has_data": has_alter_ego_data(),
                 "total_signals": profile.total_signals,
                 "mode": "full",
             }
+            # 「它眼中的我」6 栏目聚合画像（fail-open，失败不阻断基础状态）
+            try:
+                from deskmate.alter_ego.portrait import build_portrait
+
+                result["portrait"] = build_portrait()
+            except Exception:
+                logging.exception("alter-ego portrait build failed")
+                result["portrait"] = None
+            return result
         except Exception:
             logging.exception("get deskmate alter-ego failed")
-            return {"enabled": False, "has_data": False, "total_signals": 0, "mode": "full"}
+            return {"enabled": False, "has_data": False, "total_signals": 0, "mode": "full", "portrait": None}
 
     @app.post("/v1/deskmate/alter-ego")
     async def post_deskmate_alter_ego(request: Request) -> dict[str, Any]:

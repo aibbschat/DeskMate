@@ -598,6 +598,33 @@ def _maybe_update_style_profile(last_user: str) -> None:
         logger.debug("after_action: 风格画像增量更新跳过", exc_info=True)
 
 
+def _maybe_update_decision_profile(last_user: str) -> None:
+    """P2-6 收尾：从**用户消息**提取决策偏好（零 LLM、fail-open）。
+
+    与写作风格画像并列——写作风格学"用户怎么写"，决策偏好
+    学"用户怎么选"（保守/激进、先A后B、重视X超过Y等）。
+
+    环境变量：
+    - ``DESKMATE_DECISION_AUTO=0``  关闭自动提取（默认开）
+    - ``DESKMATE_DECISION_MIN_CHARS=N``  最小长度（默认 8 字，短决策句也能捕获）
+    """
+    try:
+        if os.environ.get("DESKMATE_DECISION_AUTO", "1") == "0":
+            return
+        text = (last_user or "").strip()
+        try:
+            min_chars = int(os.environ.get("DESKMATE_DECISION_MIN_CHARS") or 8)
+        except ValueError:
+            min_chars = 8
+        if len(text) < min_chars:
+            return
+        from deskmate.alter_ego.decision_profile import extract_and_update
+
+        extract_and_update(text)
+    except Exception:
+        logger.debug("after_action: 决策偏好提取跳过", exc_info=True)
+
+
 # ---------------------------------------------------------------------------
 # 项目日志（记一笔）
 # ---------------------------------------------------------------------------
@@ -739,6 +766,9 @@ def reflect_and_persist(
             # P1-5 收尾：从用户消息学文风（零 LLM 纯统计，快）。
             # 只传 last_user —— 抽助手输出会学到 AI 的文风，正好学反。
             _maybe_update_style_profile(last_user)
+            # P2-6 收尾：从用户消息学决策偏好（零 LLM 纯规则，快）。
+            # 与文风并列——文风是"怎么写"，决策偏好是"怎么选"。
+            _maybe_update_decision_profile(last_user)
             # A：内容侧闭环（产出文本 / 产物文件回流圣经），LLM 抽取较慢，放后台不阻塞响应
             _upsert_content_loop(workspace, last_asst, artifacts)
         Thread(target=_bg, daemon=True).start()

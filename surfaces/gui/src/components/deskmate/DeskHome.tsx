@@ -21,6 +21,7 @@ import { DiaryPanel } from "./DiaryPanel";
 import { PositioningCard } from "./PositioningCard";
 import { SyncCard } from "./SyncCard";
 import { AlterEgoCard } from "./AlterEgoCard";
+import { AlterEgoPage } from "./AlterEgoPage";
 import type { GrowthSnapshot } from "./StatusPanel";
 
 /** 当前可召唤的就绪专家（取第一个 ready 的，保证「召唤专家」chip 不写死具体 id）。 */
@@ -51,6 +52,7 @@ export function DeskHome() {
   const [showSync, setShowSync] = useState(false);
   // P2-6：个人 AI 分身卡内联展开
   const [showAlterEgo, setShowAlterEgo] = useState(false);
+  const [showAlterEgoPage, setShowAlterEgoPage] = useState(false);
 
   // 每次回到首页（组件重新挂载）随机抽一条问候，制造新鲜感。
   const greeting = useMemo(() => {
@@ -154,7 +156,9 @@ export function DeskHome() {
       {/* P2-7：记忆同步卡（内联展开，chip 切换） */}
       {showSync && <SyncCard />}
       {/* P2-6：个人 AI 分身卡（内联展开，chip 切换） */}
-      {showAlterEgo && <AlterEgoCard />}
+      {showAlterEgo && <AlterEgoCard onOpenPage={() => setShowAlterEgoPage(true)} />}
+      {/* P2-6：「它眼中的我」全屏页 */}
+      <AlterEgoPage open={showAlterEgoPage} onClose={() => setShowAlterEgoPage(false)} />
       <DeskDigest />
     </div>
   );
