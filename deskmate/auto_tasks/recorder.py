@@ -39,6 +39,7 @@ class TaskRecorder:
         detail_filename: Optional[str] = None,
         extra: Optional[dict] = None,
         task_name: Optional[str] = None,
+        extract_cognitive: bool = False,
     ) -> TaskRecord:
         """
         记录一次任务执行的沉淀。自动做：
@@ -47,6 +48,10 @@ class TaskRecorder:
           3. 写 details/<type>/<filename>.md（如果有 detail_content）
           4. 更新注册表 run_count / last_run_at
           5. 标记 push_to_vault / push_to_style 的洞察（由后续记忆流程处理）
+          6. 如果 extract_cognitive=True 且有 detail_content，自动触发认知提取（从文本中提取立场/论证/价值观/思维框架，增量更新认知画像）
+
+        Args:
+            extract_cognitive: 是否自动触发认知提取。适用于每日读书、深度对话等包含用户思想的文本。
         """
         registry = get_registry(self.base_dir)
         entry = registry.get(task_type)
@@ -107,6 +112,19 @@ class TaskRecorder:
 
         # 5. 推入 vault / style_profile（标记，由记忆整理流程异步处理）
         self._mark_for_memory_push(insight_objs, task_type, target, today)
+
+        # 6. 自动触发认知提取（如果指定且有 detail_content）
+        if extract_cognitive and detail_content:
+            try:
+                from deskmate.cognitive import get_extractor
+                get_extractor().extract_from_text(
+                    text=detail_content,
+                    source_title=target,
+                    source_type=task_type,
+                    source_date=today,
+                )
+            except Exception as e:
+                logger.warning(f"Auto cognitive extraction failed: {e}")
 
         return record
 
@@ -210,6 +228,7 @@ def record_task_result(
     detail_filename: Optional[str] = None,
     extra: Optional[dict] = None,
     task_name: Optional[str] = None,
+    extract_cognitive: bool = False,
 ) -> TaskRecord:
     """便捷函数：记录一次任务执行的沉淀。"""
     return get_recorder().record(
@@ -223,4 +242,5 @@ def record_task_result(
         detail_filename=detail_filename,
         extra=extra,
         task_name=task_name,
+        extract_cognitive=extract_cognitive,
     )

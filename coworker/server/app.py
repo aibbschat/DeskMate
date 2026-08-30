@@ -2950,12 +2950,120 @@ def create_app(manager: SessionManager) -> FastAPI:
                 tags=body.get("tags"),
                 detail_content=body.get("detail_content"),
                 task_name=body.get("task_name"),
+                extract_cognitive=body.get("extract_cognitive", False),
             )
             from dataclasses import asdict
             return {"ok": True, "record": asdict(rec)}
         except Exception:
             logging.exception("post auto_tasks record failed")
             return JSONResponse({"error": "record failed"}, status_code=500)
+
+    # ---- cognitive：认知层（从"懂我"到"像我"的关键跃迁）----
+
+    @app.get("/v1/deskmate/cognitive/profile")
+    async def get_cognitive_profile() -> dict[str, Any]:
+        """获取认知画像（五个维度：立场/论证模式/价值观/思维框架/认知盲区）。"""
+        try:
+            from deskmate.cognitive import get_profile_manager
+            from dataclasses import asdict
+            profile = get_profile_manager().get()
+            return asdict(profile)
+        except Exception:
+            logging.exception("get cognitive profile failed")
+            return JSONResponse({"error": "profile failed"}, status_code=500)
+
+    @app.get("/v1/deskmate/cognitive/stats")
+    async def get_cognitive_stats() -> dict[str, Any]:
+        """获取认知画像统计摘要（用于前端栏目展示）。"""
+        try:
+            from deskmate.cognitive import get_profile_manager
+            return get_profile_manager().get().stats()
+        except Exception:
+            logging.exception("get cognitive stats failed")
+            return JSONResponse({"error": "stats failed"}, status_code=500)
+
+    @app.post("/v1/deskmate/cognitive/extract")
+    async def post_cognitive_extract(request: Request) -> dict[str, Any]:
+        """
+        从文本中提取认知特征，增量更新到认知画像。
+
+        Body: {"text": "...", "source_title": "书名/对话日期", "source_type": "book/conversation/article", "source_date": "2026-08-30"}
+        """
+        try:
+            body = await request.json()
+        except Exception:
+            return JSONResponse({"error": "invalid json"}, status_code=400)
+        try:
+            from deskmate.cognitive import get_extractor
+            result = get_extractor().extract_from_text(
+                text=body.get("text", ""),
+                source_title=body.get("source_title", "未知来源"),
+                source_type=body.get("source_type", "book"),
+                source_date=body.get("source_date", ""),
+            )
+            return result
+        except Exception:
+            logging.exception("cognitive extract failed")
+            return JSONResponse({"error": "extract failed"}, status_code=500)
+
+    @app.post("/v1/deskmate/cognitive/calibrate")
+    async def post_cognitive_calibrate(request: Request) -> dict[str, Any]:
+        """
+        用户校准——纠正认知画像中的错误。
+
+        Body: {"item_id": "stance_xxx", "corrected_content": "...", "feedback": "..."}
+        """
+        try:
+            body = await request.json()
+        except Exception:
+            return JSONResponse({"error": "invalid json"}, status_code=400)
+        try:
+            from deskmate.cognitive import get_profile_manager
+            get_profile_manager().calibrate(
+                item_id=body["item_id"],
+                corrected_content=body.get("corrected_content", ""),
+                feedback=body.get("feedback", ""),
+            )
+            return {"ok": True}
+        except KeyError as e:
+            return JSONResponse({"error": f"missing field: {e}"}, status_code=400)
+        except ValueError as e:
+            return JSONResponse({"error": str(e)}, status_code=404)
+        except Exception:
+            logging.exception("cognitive calibrate failed")
+            return JSONResponse({"error": "calibrate failed"}, status_code=500)
+
+    @app.get("/v1/deskmate/cognitive/gaps")
+    async def get_cognitive_gaps() -> dict[str, Any]:
+        """获取认知盲区/待澄清列表（供第二期深度访谈引擎使用）。"""
+        try:
+            from deskmate.cognitive import get_profile_manager
+            from dataclasses import asdict
+            gaps = get_profile_manager().get().open_gaps()
+            return {"gaps": [asdict(g) for g in gaps]}
+        except Exception:
+            logging.exception("get cognitive gaps failed")
+            return JSONResponse({"error": "gaps failed"}, status_code=500)
+
+    @app.post("/v1/deskmate/cognitive/cold-start")
+    async def post_cognitive_cold_start(request: Request) -> dict[str, Any]:
+        """
+        触发冷启动——从已有 vault/MEMORY/style_profile 中提取初始认知画像。
+
+        仅在画像为空时执行；已有数据时跳过。
+        Body: {"use_llm": false}（默认 false，用规则快速提取）
+        """
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        try:
+            from deskmate.cognitive import cold_start
+            result = cold_start(use_llm=body.get("use_llm", False))
+            return result
+        except Exception:
+            logging.exception("cognitive cold start failed")
+            return JSONResponse({"error": "cold start failed"}, status_code=500)
 
     @app.post("/v1/deskmate/feedback")
     async def deskmate_feedback(request: Request) -> dict[str, Any]:

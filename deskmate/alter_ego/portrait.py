@@ -631,10 +631,97 @@ def _auto_tasks_section() -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# 栏目 8：它理解的我（认知层——立场/论证模式/价值观/思维框架）
+# ---------------------------------------------------------------------------
+def _cognitive_section() -> dict[str, Any]:
+    """认知画像栏目——从认知层（cognitive_profile）聚合数据。"""
+    try:
+        from deskmate.cognitive import get_profile_manager
+        profile = get_profile_manager().get()
+    except Exception:
+        profile = None
+
+    articles: list[dict[str, Any]] = []
+
+    if profile:
+        for s in profile.active_stances():
+            source_names = [src.title for src in s.sources[:2]]
+            articles.append({
+                "title": f"立场：{s.topic or '未分类'}",
+                "content": s.content,
+                "evidence": f"置信度 {s.confidence:.0%} · 来源：{', '.join(source_names) if source_names else '未知'}",
+                "tags": ["立场"] + s.tags[:2],
+                "item_id": s.id,
+                "dimension": "stance",
+            })
+        for p in profile.active_patterns():
+            source_names = [src.title for src in p.sources[:2]]
+            articles.append({
+                "title": f"论证模式：{p.pattern_type or '未分类'}",
+                "content": p.content,
+                "evidence": f"置信度 {p.confidence:.0%} · 来源：{', '.join(source_names) if source_names else '未知'}",
+                "tags": ["论证"] + p.tags[:2],
+                "item_id": p.id,
+                "dimension": "argument",
+            })
+        for v in profile.active_values():
+            source_names = [src.title for src in v.sources[:2]]
+            ranking_str = " > ".join(v.ranking) if v.ranking else "未排序"
+            content = f"{v.content}\n\n优先级：{ranking_str}"
+            if v.tradeoff_notes:
+                content += f"\n\n权衡：{v.tradeoff_notes}"
+            articles.append({
+                "title": f"价值观：{v.domain or '未分类'}",
+                "content": content,
+                "evidence": f"置信度 {v.confidence:.0%} · 来源：{', '.join(source_names) if source_names else '未知'}",
+                "tags": ["价值观"] + v.tags[:2],
+                "item_id": v.id,
+                "dimension": "value",
+            })
+        for f in profile.active_frameworks():
+            source_names = [src.title for src in f.sources[:2]]
+            steps_str = " → ".join(f.steps) if f.steps else "未整理"
+            articles.append({
+                "title": f"思维框架：{f.domain or '未分类'}",
+                "content": f"{f.content}\n\n分析路径：{steps_str}",
+                "evidence": f"置信度 {f.confidence:.0%} · 来源：{', '.join(source_names) if source_names else '未知'}",
+                "tags": ["思维框架"] + f.tags[:2],
+                "item_id": f.id,
+                "dimension": "thinking",
+            })
+
+    if articles:
+        status = "ready"
+        dims: dict[str, int] = {}
+        for a in articles:
+            d = a.get("dimension", "other")
+            dims[d] = dims.get(d, 0) + 1
+        dim_labels = {"stance": "立场", "argument": "论证", "value": "价值观", "thinking": "思维框架"}
+        dim_str = "、".join(f"{dim_labels.get(k, k)}{v}条" for k, v in dims.items())
+        headline = f"已理解 {len(articles)} 条认知特征（{dim_str}），置信度待后续阅读和校准提高"
+    elif profile and profile.open_gaps():
+        status = "learning"
+        headline = f"有 {len(profile.open_gaps())} 个认知盲区待澄清，建议通过深度访谈补充"
+    else:
+        status = "empty"
+        headline = "还没有认知画像。触发冷启动或让它多读你的作品，它会逐步理解你的思想、立场和思维方式。"
+
+    return {
+        "id": "cognitive",
+        "title": "它理解的我",
+        "icon": "🧠",
+        "status": status,
+        "headline": headline,
+        "articles": articles,
+        "updated_at": _fmt_date(profile.last_updated if profile else None),
+    }
+
+
+# ---------------------------------------------------------------------------
 # 聚合入口
 # ---------------------------------------------------------------------------
 def build_portrait() -> dict[str, Any]:
-    """构建「它眼中的我」完整画像（7 个栏目）。"""
+    """构建「它眼中的我」完整画像（8 个栏目）。"""
     sections = [
         _writing_style_section(),
         _decision_preference_section(),
@@ -643,6 +730,7 @@ def build_portrait() -> dict[str, Any]:
         _dream_activity_section(),
         _privacy_cross_project_section(),
         _auto_tasks_section(),
+        _cognitive_section(),
     ]
 
     # 按学习深度排序：ready > learning > empty，同状态按文章数降序
