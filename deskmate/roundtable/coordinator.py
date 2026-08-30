@@ -27,6 +27,28 @@ from deskmate.roundtable.teams_bridge import RoundtableTeamsBridge
 
 logger = logging.getLogger(__name__)
 
+import threading
+import time as _time
+
+# 圆桌完成行为日志去重：同一 topic 在短时间窗内只记一次，
+# 避免 run_stream 并发/重入（SSE 重连、重复请求）把一次圆桌记成好几条。
+_ROUNDTABLE_LOG_LOCK = threading.Lock()
+_ROUNDTABLE_LOG_LAST: dict[str, float] = {}
+
+
+def _log_roundtable_done_once(topic: str, rounds: int) -> None:
+    """圆桌研讨完成 → 行为日志（按 topic + 30s 时间窗去重）。"""
+    from deskmate.proactivity.behavior_patterns import log_event
+
+    now = _time.time()
+    with _ROUNDTABLE_LOG_LOCK:
+        last = _ROUNDTABLE_LOG_LAST.get(topic)
+        if last is not None and now - last < 30:
+            return
+        _ROUNDTABLE_LOG_LAST[topic] = now
+    log_event("roundtable_done", {"topic": topic, "rounds": int(rounds)})
+
+
 # run_stream 内部驱动任务结束的哨兵（放到 out_q 末尾，消费者据此退出）
 _STOP = object()
 
@@ -866,8 +888,7 @@ class Roundtable:
 
         # P2-10：圆桌研讨完成 → 行为日志（供「常开哪些议题的圆桌」规律积累）
         try:
-            from deskmate.proactivity.behavior_patterns import log_event
-            log_event("roundtable_done", {"topic": str(self.topic), "rounds": int(rounds_held)})
+            _log_roundtable_done_once(str(self.topic), rounds_held)
         except Exception:
             pass
 

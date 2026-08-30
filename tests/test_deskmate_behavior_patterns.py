@@ -51,9 +51,9 @@ class TestLogEvent:
 
 class TestWeekdayCadence:
     def test_detects_dominant_weekday(self, tmp_path):
-        # 2026-08-03 是周一；连续 5 个周一都「接受提醒」
+        # 2026-08-03 是周一；连续 12 个周一都「接受提醒」（>=MIN_EVENTS 且跨多日）
         base = _weekday_ts(2026, 8, 3)  # 周一
-        for w in range(5):
+        for w in range(12):
             ts = base + w * 7 * 86400
             _write_event(tmp_path, "suggestion_accepted", ts, {"type": "plot"})
         res = BP.mine_patterns(base_dir=tmp_path, days=120)
@@ -73,8 +73,8 @@ class TestWeekdayCadence:
 class TestHourCadence:
     def test_detects_active_hour(self, tmp_path):
         base = _weekday_ts(2026, 8, 3, 9)  # 周一 09:00
-        for i in range(10):
-            ts = base + i * 86400  # 每天 09:00 接受提醒
+        for i in range(24):
+            ts = base + i * 86400  # 每天 09:00 接受提醒（>=MIN_EVENTS*2 且跨多日）
             _write_event(tmp_path, "suggestion_accepted", ts, {"type": "plot"})
         res = BP.mine_patterns(base_dir=tmp_path, days=120)
         assert any("09:00" in p for p in res["patterns"])
@@ -124,7 +124,7 @@ class TestToContext:
 
     def test_context_formats_patterns(self, tmp_path):
         base = _weekday_ts(2026, 8, 3, 10)
-        for w in range(5):
+        for w in range(12):
             _write_event(tmp_path, "suggestion_accepted", base + w * 7 * 86400, {"type": "plot"})
         ctx = BP.to_context(base_dir=tmp_path, days=120)
         assert "从你长期行为推断" in ctx
@@ -249,4 +249,44 @@ class TestP2BehaviorLoggingFiveScenarios:
         logged = (tmp_path / "behavior_log.jsonl").read_text(encoding="utf-8")
         for k in kinds:
             assert k in logged
+
+
+class TestPatternThresholds:
+    """方案A：避免小样本/单日数据被当成长期规律（P2-10 后续收口）。
+
+    - 某 kind 事件 < MIN_EVENTS(10) 不输出规律
+    - 即使 >=10，若只跨 1 个自然日（同天刷 N 次）也不输出「常在周X/HH:00」
+    - roundtable_done 同一 topic 30 秒内只记一次（防 run_stream 重入重复记）
+    """
+
+    def test_single_day_no_false_pattern(self):
+        # 单日12条全周日——此前会输出「常在周日」，现应被跨度保护拦截
+        base = _weekday_ts(2026, 8, 30, 14)
+        ev = [{"kind": "roundtable_done", "ts": base + i} for i in range(12)]
+        assert BP._detect_weekday_cadence(ev) == []
+        assert BP._detect_hour_cadence(ev) == []
+
+    def test_cross_week_pattern_emerges(self):
+        # 跨3个不同周日各4条=12条，且都周日 → 应输出「常在周日」
+        base = _weekday_ts(2026, 8, 30, 14)
+        ev = []
+        for d in (base, base - 7 * 86400, base - 14 * 86400):
+            for i in range(4):
+                ev.append({"kind": "roundtable_done", "ts": d + i * 60})
+        out = BP._detect_weekday_cadence(ev)
+        assert any("周日" in s for s in out)
+
+    def test_roundtable_dedup_same_topic(self):
+        from unittest import mock
+        import deskmate.roundtable.coordinator as coord
+
+        calls = []
+        with mock.patch.object(BP, "log_event", side_effect=lambda k, p=None: calls.append((k, p))):
+            coord._ROUNDTABLE_LOG_LAST.clear()
+            for _ in range(5):
+                coord._log_roundtable_done_once("议题X", 2)
+            # 超过去重窗口(30s)后再记应放行
+            coord._ROUNDTABLE_LOG_LAST["议题X"] = time.time() - 40
+            coord._log_roundtable_done_once("议题X", 2)
+        assert len(calls) == 2
 

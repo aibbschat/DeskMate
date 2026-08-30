@@ -42,7 +42,8 @@ _KIND_LABELS = {
 }
 
 # 模式检测阈值
-MIN_EVENTS = 3          # 某类事件至少出现这么多次才提炼
+MIN_EVENTS = 10         # 某类事件至少出现这么多次才提炼（避免小样本伪规律）
+MIN_DISTINCT_DAYS = 2    # weekday/hour 规律至少跨这么多不同自然日才成立（避免单日噪音当规律）
 WEEKDAY_DOMINANCE = 0.4 # 某星期几占该类事件 ≥40% 才算「常在周X」
 HOUR_DOMINANCE = 0.3    # 某小时占 ≥30% 才算「常在 HH:00」
 RECUR_MIN = 3           # 至少 3 次事件才判节奏
@@ -182,14 +183,20 @@ def _kind_label(kind: str) -> str:
 def _detect_weekday_cadence(events: list[dict]) -> list[str]:
     """每类事件按星期几分桶，提炼「常在周X做Y」。"""
     by_kind: dict[str, list[int]] = {}
+    by_kind_ts: dict[str, list[float]] = {}
     for e in events:
         wd = _weekday_of(e)
         if wd is None:
             continue
         by_kind.setdefault(e["kind"], []).append(wd)
+        by_kind_ts.setdefault(e["kind"], []).append(float(e.get("ts", 0) or 0.0))
     out: list[str] = []
     for kind, wds in by_kind.items():
         if len(wds) < MIN_EVENTS:
+            continue
+        # 跨度保护：至少跨 MIN_DISTINCT_DAYS 个自然日，避免「同一天刷 N 次」被当成长期习惯
+        days = {int(time.localtime(t).tm_yday) for t in by_kind_ts[kind] if t > 0}
+        if len(days) < MIN_DISTINCT_DAYS:
             continue
         counts = [0] * 7
         for w in wds:
@@ -206,14 +213,20 @@ def _detect_weekday_cadence(events: list[dict]) -> list[str]:
 def _detect_hour_cadence(events: list[dict]) -> list[str]:
     """按小时分桶，提炼活跃时段。"""
     by_kind: dict[str, list[int]] = {}
+    by_kind_ts: dict[str, list[float]] = {}
     for e in events:
         h = _hour_of(e)
         if h is None:
             continue
         by_kind.setdefault(e["kind"], []).append(h)
+        by_kind_ts.setdefault(e["kind"], []).append(float(e.get("ts", 0) or 0.0))
     out: list[str] = []
     for kind, hours in by_kind.items():
         if len(hours) < MIN_EVENTS * 2:  # 小时粒度更密，要求更多样本
+            continue
+        # 跨度保护：至少跨 MIN_DISTINCT_DAYS 个自然日，避免单日噪音当规律
+        days = {int(time.localtime(t).tm_yday) for t in by_kind_ts[kind] if t > 0}
+        if len(days) < MIN_DISTINCT_DAYS:
             continue
         counts = [0] * 24
         for h in hours:
