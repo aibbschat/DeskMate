@@ -2797,6 +2797,48 @@ def create_app(manager: SessionManager) -> FastAPI:
 
         return {"pack": get_active_pack(), "packs": list_packs()}
 
+    @app.get("/v1/deskmate/sync")
+    async def get_deskmate_sync_status() -> dict[str, Any]:
+        """P2-7 云端记忆同步状态（本地优先，默认关闭）。"""
+        try:
+            from deskmate.memory.sync import MemorySyncService
+
+            return MemorySyncService().status()
+        except Exception:
+            logging.exception("get deskmate sync status failed")
+            return {"enabled": False, "backend": "noop", "local_files": 0, "remote_files": 0}
+
+    @app.post("/v1/deskmate/sync/configure")
+    async def post_deskmate_sync_configure(request: Request) -> dict[str, Any]:
+        """启用/禁用同步，或指定同步目录（指向 iCloud/Dropbox/USB 即真实跨设备）。
+
+        Body: {"enabled": true/false, "dir": "/path/optional"}
+        """
+        try:
+            data = await request.json()
+        except Exception:
+            return {"ok": False, "error": "bad json"}
+        enabled = bool(data.get("enabled")) if isinstance(data, dict) else False
+        sync_dir = data.get("dir") if isinstance(data, dict) else None
+        try:
+            from deskmate.memory.sync import MemorySyncService
+
+            return {"ok": True, **MemorySyncService().configure(enabled, sync_dir)}
+        except Exception:
+            logging.exception("configure deskmate sync failed")
+            return {"ok": False, "error": "configure failed"}
+
+    @app.post("/v1/deskmate/sync/trigger")
+    async def post_deskmate_sync_trigger() -> dict[str, Any]:
+        """立即执行一次双向同步（push + pull）。fail-open。"""
+        try:
+            from deskmate.memory.sync import MemorySyncService
+
+            return {"ok": True, **MemorySyncService().sync()}
+        except Exception:
+            logging.exception("trigger deskmate sync failed")
+            return {"ok": False, "error": "sync failed"}
+
     @app.post("/v1/deskmate/growth/proactive")
     async def set_deskmate_growth_proactive(request: Request) -> dict[str, Any]:
         """设置信任感是否调制 proactive 主动打扰阈值。

@@ -19,6 +19,7 @@ import { DeskDigest } from "./DeskDigest";
 import { BondPanel } from "./BondPanel";
 import { DiaryPanel } from "./DiaryPanel";
 import { PositioningCard } from "./PositioningCard";
+import { SyncCard } from "./SyncCard";
 import type { GrowthSnapshot } from "./StatusPanel";
 
 /** 当前可召唤的就绪专家（取第一个 ready 的，保证「召唤专家」chip 不写死具体 id）。 */
@@ -45,6 +46,8 @@ export function DeskHome() {
   const [showDiary, setShowDiary] = useState(false);
   // P2-8：合规定位卡（关于墨灵）内联展开
   const [showPositioning, setShowPositioning] = useState(false);
+  // P2-7：记忆同步卡内联展开
+  const [showSync, setShowSync] = useState(false);
 
   // 每次回到首页（组件重新挂载）随机抽一条问候，制造新鲜感。
   const greeting = useMemo(() => {
@@ -108,6 +111,12 @@ export function DeskHome() {
       label: "墨灵是什么",
       onClick: () => setShowPositioning((v) => !v),
     },
+    {
+      key: "sync",
+      icon: "refresh",
+      label: "记忆同步",
+      onClick: () => setShowSync((v) => !v),
+    },
   ];
 
   return (
@@ -133,6 +142,8 @@ export function DeskHome() {
       {showDiary && <DiaryPanel />}
       {/* P2-8：合规定位卡（关于墨灵，内联展开，chip 切换） */}
       {showPositioning && <PositioningCard />}
+      {/* P2-7：记忆同步卡（内联展开，chip 切换） */}
+      {showSync && <SyncCard />}
       <DeskDigest />
     </div>
   );
