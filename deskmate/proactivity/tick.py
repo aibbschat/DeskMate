@@ -40,6 +40,9 @@ class TickResult:
     skipped_reason: str = ""
     elapsed_ms: int = 0
     heartbeat_interval_ms: int | None = None
+    # P2-4：「看见你在做什么」活动描述 + 长时间专注陪伴语
+    what_user_doing: str = ""
+    companion_message: str = ""
 
     @property
     def has_suggestion(self) -> bool:
@@ -74,6 +77,20 @@ class TickResult:
         # 心跳间隔（活力调制）：前端据此重新调度慢心跳
         if self.heartbeat_interval_ms:
             result["heartbeat_interval_ms"] = self.heartbeat_interval_ms
+
+        # P2-4：「看见你在做什么」活动描述（显式设置优先，否则从 activity 自动生成）
+        if self.what_user_doing:
+            result["what_user_doing"] = self.what_user_doing
+        elif self.activity:
+            try:
+                from .companion import describe_activity
+                result["what_user_doing"] = describe_activity(None, self.activity)
+            except Exception:
+                pass
+
+        # P2-4：长时间专注陪伴语（前端走 CareToast 温暖呈现）
+        if self.companion_message:
+            result["companion_message"] = self.companion_message
 
         return result
 
@@ -309,6 +326,18 @@ class ProactiveEngine:
 
         self.last_tick_time = time.time()
 
+        # P2-4：「看见你在做什么」活动描述 + 长时间专注陪伴语
+        what_doing = ""
+        companion_msg = ""
+        try:
+            from .companion import describe_activity, get_companion_tracker
+            what_doing = describe_activity(_win, activity)
+            # 仅当 judge 决定不介入时，才用陪伴语填补（不抢建议的风头）
+            if decision.action == ActionType.NO_ACTION:
+                companion_msg = get_companion_tracker().update(activity, _win) or ""
+        except Exception:
+            pass
+
         return TickResult(
             action=decision.action,
             judgment=judgment,
@@ -316,6 +345,8 @@ class ProactiveEngine:
             decision=decision,
             elapsed_ms=int((time.time() - start) * 1000),
             heartbeat_interval_ms=self._heartbeat_interval_ms,
+            what_user_doing=what_doing,
+            companion_message=companion_msg,
         )
 
     def record_feedback(self, suggestion_key: str, accepted: bool) -> None:

@@ -1714,10 +1714,9 @@ class DeskMateMemoryManager:
     def extract_session_facts(self, limit: int = 10) -> dict:
         """从 sessions/ 最近轮次抽取事实并归档（preferences→USER.md，correction/work→MEMORY.md）。
 
-        🛡️ 只写 MEMORY/USER，绝不写 SOUL。无 LLM 密钥或异常时静默跳过，不阻断主对话。
+        🛡️ 只写 MEMORY/USER，绝不写 SOUL。无 LLM 密钥时走 P1-7 本地规则抽取兜底（零 LLM），不再静默跳过。
         """
-        if not memory_llm_available():
-            return {"written": 0, "notes": "未配置 LLM provider，跳过会话抽取"}
+        use_local_extract = not memory_llm_available()
 
         sessions_dir = self.base_dir / "sessions"
         if not sessions_dir.is_dir():
@@ -1746,17 +1745,22 @@ class DeskMateMemoryManager:
             f"输出严格 JSON 数组，每个元素 {{category, text}}，text 格式为「YYYY-MM-DD: 一句话陈述」"
             f"（今天日期：{today}）。若没有值得记的，输出空数组 []。"
         )
-        try:
-            resp = chat_memory(system, text, temperature=0.2, max_tokens=1000)
-        except Exception as e:
-            return {"written": 0, "notes": f"抽取失败（已跳过）：{e}"}
+        if use_local_extract:
+            # P1-7 无密钥兜底：本地规则抽取（零 LLM，高精确率保守匹配）
+            from .local_extractor import extract_facts_local
+            facts = extract_facts_local(text, date=today)
+        else:
+            try:
+                resp = chat_memory(system, text, temperature=0.2, max_tokens=1000)
+            except Exception as e:
+                return {"written": 0, "notes": f"抽取失败（已跳过）：{e}"}
 
-        import json
-        try:
-            m = re.search(r"\[.*\]", resp, re.DOTALL)
-            facts = json.loads(m.group(0)) if m else []
-        except Exception:
-            return {"written": 0, "notes": "抽取结果解析失败（已跳过）"}
+            import json
+            try:
+                m = re.search(r"\[.*\]", resp, re.DOTALL)
+                facts = json.loads(m.group(0)) if m else []
+            except Exception:
+                return {"written": 0, "notes": "抽取结果解析失败（已跳过）"}
 
         written = 0
         for fact in facts:
@@ -1770,6 +1774,7 @@ class DeskMateMemoryManager:
             try:
                 if category == "preference":
                     self.append_to_section("user", fact_text)
+                    written += 1
                 elif category in ("work", "correction") and self._is_book_content(fact_text):
                     # P0-6 分层：书稿/项目专属事实 → 项目记忆，不污染全局「关于你」的记忆
                     proj = self._resolve_project_name(fact_text)
@@ -1794,8 +1799,7 @@ class DeskMateMemoryManager:
 
         避免 extract_session_facts(limit=N) 每轮都重抽最近 N 条导致的重复写入。
         """
-        if not memory_llm_available():
-            return {"written": 0, "notes": "未配置 LLM provider，跳过会话抽取"}
+        use_local_extract = not memory_llm_available()
         try:
             text = session_file.read_text(encoding="utf-8")
         except OSError:
@@ -1824,17 +1828,22 @@ class DeskMateMemoryManager:
             "work 类别同一天如果有多条，应合并为一条摘要（如「2026-07-31: 第二章定稿，标题为财当道」而非拆成三条）。\n"
             "若没有值得记的持久事实，输出空数组 []。"
         )
-        try:
-            resp = chat_memory(system, text, temperature=0.2, max_tokens=1000)
-        except Exception as e:
-            return {"written": 0, "notes": f"抽取失败（已跳过）：{e}"}
+        if use_local_extract:
+            # P1-7 无密钥兜底：本地规则抽取（零 LLM，高精确率保守匹配）
+            from .local_extractor import extract_facts_local
+            facts = extract_facts_local(text, date=today)
+        else:
+            try:
+                resp = chat_memory(system, text, temperature=0.2, max_tokens=1000)
+            except Exception as e:
+                return {"written": 0, "notes": f"抽取失败（已跳过）：{e}"}
 
-        import json
-        try:
-            m = re.search(r"\[.*\]", resp, re.DOTALL)
-            facts = json.loads(m.group(0)) if m else []
-        except Exception:
-            return {"written": 0, "notes": "抽取结果解析失败（已跳过）"}
+            import json
+            try:
+                m = re.search(r"\[.*\]", resp, re.DOTALL)
+                facts = json.loads(m.group(0)) if m else []
+            except Exception:
+                return {"written": 0, "notes": "抽取结果解析失败（已跳过）"}
 
         written = 0
         skipped = 0
@@ -1958,8 +1967,6 @@ class DeskMateMemoryManager:
         注意：技能创建不在引擎层强制触发，而是由 LLM 自觉判断——
         完成复杂任务后主动提议调用 skill_create。
         """
-        if not memory_llm_available():
-            return {"written": 0, "notes": "未配置 LLM provider，跳过会话抽取"}
         try:
             session_file = self._save_session_turn(user_msg or "", assistant_msg or "")
         except Exception as e:

@@ -127,6 +127,8 @@ export function DeskMateOverlay({ agent, sessionId, activeExpert }: Props) {
 
   // 状态面板数据（V2 精简版不再展示，保留供事件系统使用）
   const [_activity, setActivity] = useState("待机中");
+  // P2-4：「看见你在做什么」活动描述
+  const [activityDesc, setActivityDesc] = useState("");
   const [_confidence, setConfidence] = useState<number | undefined>();
   const [_memories, setMemories] = useState<string[]>([]);
 
@@ -385,6 +387,21 @@ export function DeskMateOverlay({ agent, sessionId, activeExpert }: Props) {
     window.addEventListener("deskmate:suggestion", onSuggestion);
     window.addEventListener("deskmate:emotion", onEmotion);
     window.addEventListener("deskmate:status", onStatus);
+
+    // P2-4：长时间专注陪伴语 → 复用 CareToast 温暖呈现
+    const onCompanion = (e: Event) => {
+      const d = (e as CustomEvent<{ id: string; text: string; type?: string }>).detail;
+      if (d?.text) {
+        setCareMessage({ id: d.id, text: d.text, type: d.type || "companion" });
+      }
+    };
+    // P2-4：「看见你在做什么」活动描述 → 状态面板
+    const onActivityDesc = (e: Event) => {
+      const d = (e as CustomEvent<{ text: string }>).detail;
+      if (d?.text) setActivityDesc(d.text);
+    };
+    window.addEventListener("deskmate:companion", onCompanion);
+    window.addEventListener("deskmate:activity-desc", onActivityDesc);
     window.addEventListener("deskmate:memory-update", onMemoryUpdate);
     window.addEventListener("deskmate:memory-learned", onMemoryLearned);
     window.addEventListener("deskmate:context-injected", onContextInjected);
@@ -410,6 +427,8 @@ export function DeskMateOverlay({ agent, sessionId, activeExpert }: Props) {
       window.removeEventListener("deskmate:suggestion", onSuggestion);
       window.removeEventListener("deskmate:emotion", onEmotion);
       window.removeEventListener("deskmate:status", onStatus);
+      window.removeEventListener("deskmate:companion", onCompanion);
+      window.removeEventListener("deskmate:activity-desc", onActivityDesc);
       window.removeEventListener("deskmate:memory-update", onMemoryUpdate);
       window.removeEventListener("deskmate:memory-learned", onMemoryLearned);
       window.removeEventListener("deskmate:context-injected", onContextInjected);
@@ -563,6 +582,7 @@ export function DeskMateOverlay({ agent, sessionId, activeExpert }: Props) {
         personality={growth?.personality ?? { energy: 0, logic: 0, creativity: 0, empathy: 0 }}
         streakDays={growth?.streak_days ?? 0}
         totalChats={growth?.total_chats ?? 0}
+        currentActivity={activityDesc}
       />
 
       {/* 建议弹窗 - 右上角 */}

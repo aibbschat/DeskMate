@@ -103,6 +103,28 @@ export function useProactiveTick({
             }),
           );
         }
+
+        // P2-4：长时间专注陪伴语 → 走 CareToast 温暖呈现
+        if (data.companion_message) {
+          window.dispatchEvent(
+            new CustomEvent("deskmate:companion", {
+              detail: {
+                id: `companion-${Date.now()}`,
+                text: data.companion_message,
+                type: "companion",
+              },
+            }),
+          );
+        }
+
+        // P2-4：「看见你在做什么」活动描述 → 状态面板展示
+        if (data.what_user_doing) {
+          window.dispatchEvent(
+            new CustomEvent("deskmate:activity-desc", {
+              detail: { text: data.what_user_doing },
+            }),
+          );
+        }
       } catch (err) {
         console.error("[DeskMate] tick error:", err);
       }

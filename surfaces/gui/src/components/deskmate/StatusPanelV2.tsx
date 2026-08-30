@@ -253,12 +253,14 @@ function Layer1Identity({
   emotion,
   streakDays,
   totalChats,
+  currentActivity,
 }: {
   level: number;
   stageName: string;
   emotion: EmotionName;
   streakDays: number;
   totalChats: number;
+  currentActivity?: string;
 }) {
   const params = getEmotionParams(emotion);
 
@@ -313,6 +315,21 @@ function Layer1Identity({
             {params.label}
           </span>
         </div>
+
+        {/* P2-4：「看见你在做什么」活动描述 */}
+        {currentActivity && (
+          <div
+            className="flex items-center gap-1.5 mb-2 px-2 py-1 rounded-md text-[10px]"
+            style={{
+              color: "#92400e",
+              background: "linear-gradient(90deg, #fffbeb, #fef3c7)",
+              border: "0.5px solid rgba(245, 158, 11, 0.2)",
+            }}
+          >
+            <span>👀</span>
+            <span className="truncate">{currentActivity}</span>
+          </div>
+        )}
 
         {/* 统计徽章 */}
         <div className="flex items-center gap-2">
@@ -673,6 +690,7 @@ export function StatusPanelV2({
   personality,
   streakDays = 0,
   totalChats = 0,
+  currentActivity,
 }: StatusPanelV2Props) {
   const [visible, setVisible] = useState(open);
 
@@ -752,6 +770,7 @@ export function StatusPanelV2({
             emotion={emotion}
             streakDays={streakDays}
             totalChats={totalChats}
+            currentActivity={currentActivity}
           />
 
           {/* Layer 2: 核心状态 */}
