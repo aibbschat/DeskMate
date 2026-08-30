@@ -329,6 +329,7 @@ export function DeskMateOverlay({ agent, sessionId, activeExpert }: Props) {
           text: d.suggestion_content,
           type: sugType,
           confidence: d.confidence,
+          kind: "care",
         });
         return;
       }
@@ -392,7 +393,7 @@ export function DeskMateOverlay({ agent, sessionId, activeExpert }: Props) {
     const onCompanion = (e: Event) => {
       const d = (e as CustomEvent<{ id: string; text: string; type?: string }>).detail;
       if (d?.text) {
-        setCareMessage({ id: d.id, text: d.text, type: d.type || "companion" });
+        setCareMessage({ id: d.id, text: d.text, type: d.type || "companion", kind: "companion" });
       }
     };
     // P2-4：「看见你在做什么」活动描述 → 状态面板

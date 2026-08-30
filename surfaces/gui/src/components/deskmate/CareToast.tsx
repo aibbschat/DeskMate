@@ -16,10 +16,12 @@ export interface CareMessage {
   id: string;
   /** 关怀文案 */
   text: string;
-  /** 建议类型（emotional_care） */
+  /** 建议类型（emotional_care / companion） */
   type?: string;
   /** 置信度 */
   confidence?: number;
+  /** 微区分：care=情感关怀（小桔的关心+情感emoji），companion=专注陪伴（小桔的陪伴+⏱️） */
+  kind?: "care" | "companion";
 }
 
 export interface CareToastProps {
@@ -85,7 +87,11 @@ export function CareToast({
 
   if (!message) return null;
 
-  const emoji = careEmoji(message.text);
+  const kind = message.kind || "care";
+  // 微区分：关怀用情感 emoji（按文案匹配），陪伴固定用 ⏱️（时间/专注）
+  const emoji = kind === "companion" ? "⏱️" : careEmoji(message.text);
+  // 微区分：关怀「小桔的关心」，陪伴「小桔的陪伴」
+  const title = kind === "companion" ? "小桔的陪伴" : "小桔的关心";
 
   return (
     <div
@@ -103,7 +109,7 @@ export function CareToast({
     >
       <div className="care-toast-icon">{emoji}</div>
       <div className="care-toast-body">
-        <div className="care-toast-title">小桔的关心</div>
+        <div className="care-toast-title">{title}</div>
         <div className="care-toast-text">{message.text}</div>
       </div>
       <button
