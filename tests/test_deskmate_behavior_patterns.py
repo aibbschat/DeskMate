@@ -136,3 +136,55 @@ class TestToContext:
         BP.log_focus_deep(app="Code", base_dir=tmp_path)  # 30s 内应被去重
         lines = (tmp_path / "behavior_log.jsonl").read_text(encoding="utf-8").splitlines()
         assert sum(1 for l in lines if json.loads(l)["kind"] == "focus_deep") == 1
+
+
+class TestP2CreationFeedbackLogging:
+    """P2-10：创作定稿/打回应进入行为日志，供长期模式学习。
+
+    验证 creation_approved / creation_rejected 两类事件可被 mine_patterns 识别，
+    且对应中文「行为规律」摘要能生成（与 AlterEgoPage 行为规律栏目打通）。
+    """
+
+    def test_creation_approved_mined(self, tmp_path):
+        base = _weekday_ts(2026, 8, 3, 10)
+        for i in range(5):
+            _write_event(tmp_path, "creation_approved", base + i * 7 * 86400, {"pipeline": "P1"})
+        res = BP.mine_patterns(base_dir=tmp_path, days=120)
+        joined = " ".join(res["patterns"])
+        assert "通过创作产出" in joined  # creation_approved 的中文映射
+
+    def test_creation_rejected_mined(self, tmp_path):
+        base = _weekday_ts(2026, 8, 3, 10)
+        for i in range(5):
+            _write_event(tmp_path, "creation_rejected", base + i * 7 * 86400, {"pipeline": "P1"})
+        res = BP.mine_patterns(base_dir=tmp_path, days=120)
+        joined = " ".join(res["patterns"])
+        assert "打回创作重做" in joined  # creation_rejected 的中文映射
+
+
+class TestP2ForgettingVisible:
+    """P2-11：记忆衰减应真实产生 traces/forgot.jsonl，让「遗忘可见」。
+
+    此前 decay_memory 从未进入每轮流程、traces/forgot.jsonl 永远为空。
+    这里验证 cleanup_redundancy（after_action 现每 N 轮调用）确实把超龄 #note 写入遗忘 trace。
+    """
+
+    def test_decay_writes_forgot_trace(self, tmp_path):
+        from deskmate.memory.manager import DeskMateMemoryManager
+        import datetime
+
+        old = (datetime.date.today() - datetime.timedelta(days=30)).isoformat()
+        mem = f"§ 笔记 #note\n{old}: 一条过期临时备忘，应被删除\n\n§ 喜好 #preference\n用户偏好安静\n"
+        (tmp_path / "MEMORY.md").write_text(mem, encoding="utf-8")
+
+        mgr = DeskMateMemoryManager(tmp_path)
+        res = mgr.cleanup_redundancy()
+        assert res["decay"]["deleted"] == 1
+        assert res["decay"]["forgot_count"] == 1
+
+        forgot = tmp_path / "traces" / "forgot.jsonl"
+        assert forgot.exists()
+        rec = json.loads(forgot.read_text(encoding="utf-8").splitlines()[0])
+        assert rec["action"] == "deleted"
+        assert rec["section"] == "笔记"
+

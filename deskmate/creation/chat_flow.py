@@ -174,6 +174,8 @@ class CreationChat:
         """拍板反馈写入成长系统（best-effort，不阻塞创作流程）。
 
         定稿/通过 → trust↑默契↑；打回重做 → trust↓默契↓（P0-3：反馈→信任/成长闭环）。
+        同时写行为日志（P2-3 长期模式学习）：让「创作定稿/打回」这类主场景事件进入
+        behavior_log.jsonl，供 mine_patterns 提炼用户的创作节奏规律。
         """
         try:
             from deskmate.growth.engine import GrowthEngine
@@ -182,6 +184,15 @@ class CreationChat:
             GrowthEngine(base_dir=Path(base)).record_creation_feedback(approved)
         except Exception as exc:
             logger.debug("creation feedback -> growth 失败: %s", exc)
+        # P2-3：行为事件落盘（零 LLM，fail-open）
+        try:
+            from deskmate.proactivity.behavior_patterns import log_event
+
+            base = getattr(self.pipeline, "base_dir", None) or Path.home() / ".deskmate"
+            kind = "creation_approved" if approved else "creation_rejected"
+            log_event(kind, {"pipeline": type(self.pipeline).__name__}, base_dir=Path(base))
+        except Exception as exc:
+            logger.debug("creation feedback -> behavior_log 失败: %s", exc)
 
     # ---- 圣经回流（P1-6）----
     def _record_bible_feedback(

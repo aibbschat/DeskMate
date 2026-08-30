@@ -71,6 +71,7 @@ export function AlterEgoPage({ open, onClose }: Props) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [activeSection, setActiveSection] = useState<Section | null>(null);
+  const [enabling, setEnabling] = useState(false);
 
   useEffect(() => {
     if (!open) return;
@@ -94,6 +95,33 @@ export function AlterEgoPage({ open, onClose }: Props) {
       cancelled = true;
     };
   }, [open]);
+
+  // P2-9：分身默认关 → 决策偏好栏永远空。首次进入且未开启时，给一次性引导 + 一键开启。
+  const needsGuide = !loading && !error && data != null && !data.enabled;
+
+  async function handleEnable() {
+    if (enabling) return;
+    setEnabling(true);
+    try {
+      const r = await authedFetch(`${httpBase()}/v1/deskmate/alter-ego`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled: true }),
+      });
+      if (r.ok) {
+        // 开关已开：更新本地 data.enabled，引导随之消失（画像此刻可能仍空，学习需后续对话）
+        const d2 = await r.clone().json().catch(() => null);
+        setData((prev) => (prev ? { ...prev, enabled: true } : prev));
+        if (d2) setData((prev) => ({ ...(prev as AlterEgoData), ...d2 }));
+      } else {
+        setError("开启失败，请稍后再试");
+      }
+    } catch (e) {
+      setError(String((e as Error)?.message ?? e));
+    } finally {
+      setEnabling(false);
+    }
+  }
 
   if (!open) return null;
 
@@ -147,6 +175,51 @@ export function AlterEgoPage({ open, onClose }: Props) {
           关闭
         </button>
       </div>
+
+      {/* P2-9：分身未开启 → 一次性引导 + 一键开启（决策偏好栏因此才不再永远空） */}
+      {needsGuide && (
+        <div style={{ maxWidth: 960, margin: "0 auto", padding: "0 20px" }}>
+          <div
+            style={{
+              marginTop: 18,
+              background: "rgba(255,255,255,0.72)",
+              borderRadius: 16,
+              padding: "18px 20px",
+              border: "1px solid rgba(194,102,47,0.35)",
+              boxShadow: "0 4px 16px rgba(180,130,90,0.1)",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              gap: 16,
+              flexWrap: "wrap",
+            }}
+          >
+            <div style={{ fontSize: 13.5, color: "#5b4636", lineHeight: 1.7, flex: "1 1 320px" }}>
+              <div style={{ fontWeight: 700, fontSize: 15, color: "#6b4a32", marginBottom: 4 }}>
+                🌟 开启「个人分身」，让它更懂你的选择
+              </div>
+              开启后，小桔会从你的对话中悄悄学习你的<strong>决策偏好</strong>（保守还是激进、先调研还是先动手……），
+              并在「它眼中的我 → 决策偏好」里呈现。这是默认关闭的高级功能，你随时可以关。
+            </div>
+            <button
+              onClick={handleEnable}
+              disabled={enabling}
+              className="px-4 py-2 rounded-lg text-[13px] font-semibold transition-colors"
+              style={{
+                background: enabling ? "#cbb39c" : "#c2662f",
+                color: "#fff",
+                border: "none",
+                boxShadow: "0 4px 14px rgba(180,110,60,0.3)",
+                opacity: enabling ? 0.7 : 1,
+                cursor: enabling ? "default" : "pointer",
+                whiteSpace: "nowrap",
+              }}
+            >
+              {enabling ? "开启中…" : "一键开启"}
+            </button>
+          </div>
+        </div>
+      )}
 
       <div style={{ maxWidth: 960, margin: "0 auto", padding: "24px 20px 60px" }}>
         {/* 加载态 */}

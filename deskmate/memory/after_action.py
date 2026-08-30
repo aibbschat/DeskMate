@@ -598,6 +598,31 @@ def _maybe_update_style_profile(last_user: str) -> None:
         logger.debug("after_action: 风格画像增量更新跳过", exc_info=True)
 
 
+def _maybe_decay_memory(base_dir: str, every_n: int = 25) -> None:
+    """P2-11：周期性触发记忆衰减，让「遗忘可见」(traces/forgot.jsonl) 真实发生。
+
+    decay_memory 只在被显式调用时跑（MCP 工具 / cleanup_redundancy），从未进入每轮
+    对话流程，导致 traces/forgot.jsonl 从未生成、遗忘对用户不可见。这里按轮数去抖，
+    每 every_n 轮跑一次 cleanup_redundancy（其第一步即 decay_memory）。
+
+    零 LLM、fail-open、计数器存于函数属性（进程生命周期内有效）。
+    """
+    try:
+        counter = getattr(_maybe_decay_memory, "_counter", 0) + 1
+        _maybe_decay_memory._counter = counter  # type: ignore[attr-defined]
+    except Exception:
+        counter = 0
+    if counter % every_n != 0:
+        return
+    try:
+        from deskmate.memory.manager import DeskMateMemoryManager
+
+        manager = DeskMateMemoryManager(Path(base_dir or str(Path.home() / ".deskmate")))
+        manager.cleanup_redundancy()
+    except Exception:
+        logger.debug("after_action: 记忆衰减跳过", exc_info=True)
+
+
 def _maybe_update_decision_profile(last_user: str) -> None:
     """P2-6 收尾：从**用户消息**提取决策偏好（零 LLM、fail-open）。
 
@@ -771,6 +796,11 @@ def reflect_and_persist(
             _maybe_update_decision_profile(last_user)
             # A：内容侧闭环（产出文本 / 产物文件回流圣经），LLM 抽取较慢，放后台不阻塞响应
             _upsert_content_loop(workspace, last_asst, artifacts)
+            # P2-11：定期记忆衰减 → 让「遗忘可见」(traces/forgot.jsonl) 真实产生。
+            # decay_memory 本身只在被显式调用时跑，此前从未进入每轮流程，导致遗忘 trace 永远为空。
+            # 每 N 轮（含本轮日志写入）跑一次 cleanup_redundancy（内部先调 decay_memory），
+            # 零 LLM、fail-open，漏跑不影响主流程。
+            _maybe_decay_memory(base_dir)
         Thread(target=_bg, daemon=True).start()
 
     # ---- 2. 刷新圣经（文件侧，快、同步）----
