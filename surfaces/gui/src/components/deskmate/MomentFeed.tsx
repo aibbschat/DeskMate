@@ -152,6 +152,7 @@ export function MomentFeed() {
                     at: `${date}T12:00:00`,
                     content: dd.content,
                     loved: false,
+                    archived: false,
                     comments: commentsMap[`xj-${date}`] || [],
                   });
                 }
@@ -296,6 +297,7 @@ export function MomentFeed() {
           at: post.createdAt,
           content: post.content,
           loved: false,
+          archived: false,
           comments: [reply],
         };
         setMoments((prev) => [me, ...prev]);
