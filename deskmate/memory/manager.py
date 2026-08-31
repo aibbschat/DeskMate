@@ -458,6 +458,20 @@ class DeskMateMemoryManager:
                     parts.append(ego)
         except Exception:
             pass  # fail-open：分身画像缺失不影响主记忆注入
+        # 「小桔」人格上线：认知画像 + 人格底座注入（随分身模式开启）。
+        # 与上面的 alter_ego（写作风格+决策偏好=腔调）叠加，构成完整人格（认知=心）。
+        try:
+            from deskmate.alter_ego.config import is_enabled as alter_ego_enabled
+            from deskmate.cognitive.memory_injector import (
+                build_cognitive_context,
+                has_cognitive_data,
+            )
+            if alter_ego_enabled() and has_cognitive_data():
+                ego_cog = build_cognitive_context()
+                if ego_cog:
+                    parts.append(ego_cog)
+        except Exception:
+            pass  # fail-open：认知人格缺失不影响主记忆注入
         if not parts:
             return ""
 

@@ -16,7 +16,7 @@
     "runningSteps": "正在运行 {{stepsLabel}}…",
     "declinedCount": "{{count}} 个已拒绝",
     "hiddenByFilters": "{{count}} 个被过滤器隐藏",
-    "assistant": "知了",
+    "assistant": "小桔",
     "grantedFolderAccess": "已授予文件夹访问",
     "declinedFolderAccess": "已拒绝文件夹访问",
     "proposedPlan": "提出的计划",

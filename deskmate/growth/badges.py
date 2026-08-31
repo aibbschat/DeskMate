@@ -47,7 +47,7 @@ COUNTER_COMEBACK = "comeback"                # 长期中断后归来次数
 CATEGORIES: list[tuple[str, str, str]] = [
     ("companionship", "相伴", "与你共度的时光"),
     ("writing", "笔耕", "稿纸上的积累"),
-    ("cultivation", "修行", "知了自身的成长"),
+    ("cultivation", "修行", "小桔自身的成长"),
     ("knowledge", "博闻", "关于你的记忆"),
     ("serendipity", "奇遇", "不期而遇的时刻"),
 ]
@@ -220,19 +220,19 @@ BADGES: list[BadgeDef] = [
     # 修行 · 桌搭自身的成长
     # ------------------------------------------------------------------
     _b("level_3", "登堂", "cultivation", "common", "登", "🚪",
-       "知了等级达到 Lv.3",
+       "小桔等级达到 Lv.3",
        "到 Lv.3 了，「登堂」——算是进门了。",
        lambda c: c.state.level, 3),
     _b("level_5", "入室", "cultivation", "rare", "室", "🏠",
-       "知了等级达到 Lv.5",
+       "小桔等级达到 Lv.5",
        "Lv.5，「入室」。往里走了一步。",
        lambda c: c.state.level, 5),
     _b("level_10", "墨仙", "cultivation", "epic", "仙", "🌟",
-       "知了等级达到 Lv.10",
+       "小桔等级达到 Lv.10",
        "Lv.10 到了，「墨仙」这名号我先领着。",
        lambda c: c.state.level, 10),
     _b("level_max", "登峰造极", "cultivation", "legendary", "峰", "👑",
-       "知了等级修满",
+       "小桔等级修满",
        "满级了。「登峰造极」——到顶了，可路还没完。",
        lambda c: c.state.level, 12),
     _b("intimacy_50", "亲密伙伴", "cultivation", "rare", "亲", "💕",

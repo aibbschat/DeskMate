@@ -95,7 +95,7 @@ import { CreationChatView } from "./components/CreationChatView";
 import { TeamChatView } from "./components/TeamChatView";
 import { BadgeWall } from "./components/deskmate/BadgeWall";
 import { useTranslation } from "react-i18next";
-import CicadaAvatar from "./components/CicadaAvatar";
+import XiaojuAvatar from "./components/XiaojuAvatar";
 
 class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | null }> {
   state = { error: null as Error | null };
@@ -1827,7 +1827,7 @@ export function App() {
                     <div className="transcript">
                       <div className="bubble-assistant">
                         <div className="who">
-                          <CicadaAvatar className="who-avatar" />
+                          <XiaojuAvatar className="who-avatar" />
                           <span>{currentExpert?.displayName ?? t("chat.assistant")}</span>
                         </div>
                         <Markdown text={streaming} />

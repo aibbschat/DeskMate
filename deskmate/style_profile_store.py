@@ -195,7 +195,7 @@ def format_style_fingerprint(
 
 def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(
-        description="墨灵写作风格画像增量更新（P1-5）",
+        description="小桔写作风格画像增量更新（P1-5）",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__.split("用法（CLI）：")[1].split("改为")[0] if "用法（CLI）：" in __doc__ else "",
     )

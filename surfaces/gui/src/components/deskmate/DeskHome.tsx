@@ -46,9 +46,9 @@ export function DeskHome() {
   const [learnedTotal, setLearnedTotal] = useState<number | null>(null);
   // 关系阶段 + 默契细分（8.2 可视化）：从 growth snapshot 读取 bond / empathy_domains
   const [growth, setGrowth] = useState<GrowthSnapshot | null>(null);
-  // P1-3：墨灵日记面板内联展开
+  // P1-3：小桔日记面板内联展开
   const [showDiary, setShowDiary] = useState(false);
-  // P2-8：合规定位卡（关于墨灵）内联展开
+  // P2-8：合规定位卡（关于小桔）内联展开
   const [showPositioning, setShowPositioning] = useState(false);
   // P2-7：记忆同步卡内联展开
   const [showSync, setShowSync] = useState(false);
@@ -112,13 +112,13 @@ export function DeskHome() {
     {
       key: "diary",
       icon: "book",
-      label: "墨灵日记",
+      label: "小桔日记",
       onClick: () => setShowDiary((v) => !v),
     },
     {
       key: "positioning",
       icon: "shield",
-      label: "墨灵是什么",
+      label: "小桔是什么",
       onClick: () => setShowPositioning((v) => !v),
     },
     {
@@ -166,9 +166,9 @@ export function DeskHome() {
       <div className="dm-bond-slot">
         <BondPanel growth={growth} />
       </div>
-      {/* P1-3：墨灵日记（内联展开，chip 切换） */}
+      {/* P1-3：小桔日记（内联展开，chip 切换） */}
       {showDiary && <DiaryPanel />}
-      {/* P2-8：合规定位卡（关于墨灵，内联展开，chip 切换） */}
+      {/* P2-8：合规定位卡（关于小桔，内联展开，chip 切换） */}
       {showPositioning && <PositioningCard />}
       {/* P2-7：记忆同步卡（内联展开，chip 切换） */}
       {showSync && <SyncCard />}

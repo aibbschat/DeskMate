@@ -1,5 +1,5 @@
 /**
- * DiaryPanel — 墨灵日记（P1-3 桌宠日记产品化的前端可视化）。
+ * DiaryPanel — 小桔日记（P1-3 桌宠日记产品化的前端可视化）。
  *
  * 两个视图：
  * - 今日：左侧当月日历（有日记的日期实心、今天高亮、可翻月），右侧第一人称日记全文
@@ -7,7 +7,7 @@
  *
  * 设计原则（8.0 红线「懂你 = 可感可看」）：
  * - 暖米白 + 暖橙配色，衬线字体，营造「翻日记本」的温度感
- * - 第一人称（我=墨灵，你=用户），不堆砌数据
+ * - 第一人称（我=小桔，你=用户），不堆砌数据
  * - 诚实：无日记显示空态引导，不编造；API 失败静默降级
  * - 后端 API：GET /v1/deskmate/diary、/diary/{date}、/diary/recap、POST /diary/today
  */
@@ -170,7 +170,7 @@ export function DiaryPanel() {
       <div className="dm-diary-header">
         <span className="dm-diary-title">
           <Icon name="book" size={16} />
-          墨灵的日记
+          小桔的日记
         </span>
         <div className="dm-diary-tabs">
           <button

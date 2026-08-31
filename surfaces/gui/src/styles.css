@@ -2528,7 +2528,7 @@ html[data-platform="linux"] ::-webkit-scrollbar-thumb:hover { background-color: 
 }
 
 /* ----------------------------------------------------------------------------
-   桌宠报喜气泡（勋章解锁瞬间）：贴着墨灵头顶的说话气泡。
+   桌宠报喜气泡（勋章解锁瞬间）：贴着小桔头顶的说话气泡。
 ---------------------------------------------------------------------------- */
 .mascot-speech {
   position: absolute;
@@ -2789,7 +2789,7 @@ html[data-platform="linux"] ::-webkit-scrollbar-thumb:hover { background-color: 
   border: 1px solid var(--line);
   cursor: not-allowed;
 }
-/* 墨灵表情：聊天气泡里 inline 渲染，视觉 1.4em 但不撑行距，hover 放大、轻微浮动 */
+/* 小桔表情：聊天气泡里 inline 渲染，视觉 1.4em 但不撑行距，hover 放大、轻微浮动 */
 .deskmate-emote {
   display: inline-block;
   width: 1.4em;
@@ -2817,7 +2817,7 @@ html[data-platform="linux"] ::-webkit-scrollbar-thumb:hover { background-color: 
   font-weight: 600;
   color: var(--accent);
 }
-/* 墨灵表情选择面板（Composer 输入框旁的表情栏） */
+/* 小桔表情选择面板（Composer 输入框旁的表情栏） */
 .emote-picker {
   width: 256px;
 }
@@ -3125,7 +3125,7 @@ html[data-theme="dark"] .creation-preview-article a {
   color: #79b8ff;
 }
 
-/* ============ 墨灵日记（P1-3）暖米白+暖橙 ============ */
+/* ============ 小桔日记（P1-3）暖米白+暖橙 ============ */
 .dm-diary-panel {
   background: #fdfbf7;
   border: 1px solid #e7e0d5;

@@ -1,5 +1,5 @@
 /**
- * emoteManifest — 前端读取「墨灵表情接入标准」(emotes.manifest.json) 的入口。
+ * emoteManifest — 前端读取「小桔表情接入标准」(emotes.manifest.json) 的入口。
  *
  * manifest 是前后端共用的单一真相源：定义有哪些表情、各自中文名/分类/含义/触发场景。
  * 本文件把它拍平成一个好用的列表，供表情栏(EmotePicker)、渲染(Emote)、输入框(Composer)消费。

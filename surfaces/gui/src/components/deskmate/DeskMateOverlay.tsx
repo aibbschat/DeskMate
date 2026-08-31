@@ -11,7 +11,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { authedFetch, httpBase, getMemorySettings, setMemorySettings } from "../../api";
-import { CicadaMascot } from "./CicadaMascot";
+import { XiaojuMascot } from "./XiaojuMascot";
 import { useMascotWalk } from "./useMascotWalk";
 import { useProactiveTick } from "./useProactiveTick";
 import { StatusPanelV2 } from "./StatusPanelV2";
@@ -91,8 +91,15 @@ export function DeskMateOverlay({ agent, sessionId, activeExpert }: Props) {
   // 记忆自动注入开关（P0-1：默认开启）
   const [injectEnabled, setInjectEnabled] = useState(true);
 
-  // 桌宠固定右下角（不游走、不遮挡文字/操作）。首页与对话页统一停靠角落。
-  const mascotMode: "free" | "dock" | "corner" = "corner";
+  // 桌宠沿输入框上方横边左右走动（闲时游走，工作时停下）。
+  // "corner"=固定右下角；"dock"=沿输入框上方横走；"free"=屏幕上半自由游走。
+  const mascotMode: "free" | "dock" | "corner" = "dock";
+
+  // 拖拽：按下桌宠拖动可移动位置，拖动时暂停行走，松开后恢复。
+  const [walkEnabled, setWalkEnabled] = useState(true);
+  const [isDragging, setIsDragging] = useState(false);
+  const isDraggingRef = useRef(false);
+  const mascotWrapRef = useRef<HTMLDivElement>(null);
 
   // 主动感知 TICK（受主动模式开关控制）
   useProactiveTick({ agent, enabled: proactiveEnabled });
@@ -117,13 +124,57 @@ export function DeskMateOverlay({ agent, sessionId, activeExpert }: Props) {
     state: mascotState,
     direction,
     setState: setMascotState,
+    teleportTo,
   } = useMascotWalk({
     size: Math.round(180 * petScale),
-    enabled: (agent === "deskmate" || !!activeExpert) && !panelOpen,
+    enabled: walkEnabled && (agent === "deskmate" || !!activeExpert) && !panelOpen,
     mode: mascotMode,
     idleDuration: [5000, 12000],
     walkDuration: [4000, 8000],
   });
+
+  // 拖拽桌宠：按下后移动超过 5px 视为拖拽，暂停行走并跟手移动；松开恢复。
+  const handleMascotMouseDown = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    const startX = e.clientX;
+    const startY = e.clientY;
+    let dragged = false;
+
+    const handleMove = (ev: MouseEvent) => {
+      const dx = ev.clientX - startX;
+      const dy = ev.clientY - startY;
+      if (!dragged && (Math.abs(dx) > 5 || Math.abs(dy) > 5)) {
+        dragged = true;
+        isDraggingRef.current = true;
+        setIsDragging(true);
+        setWalkEnabled(false);
+      }
+      if (dragged) {
+        const rect = mascotWrapRef.current?.getBoundingClientRect();
+        const w = rect?.width ?? 180;
+        const h = rect?.height ?? 180;
+        const x = Math.max(0, Math.min(window.innerWidth - w, ev.clientX - w / 2));
+        const y = Math.max(0, Math.min(window.innerHeight - h, ev.clientY - h / 2));
+        teleportTo({ x, y });
+      }
+    };
+
+    const handleUp = () => {
+      window.removeEventListener("mousemove", handleMove);
+      window.removeEventListener("mouseup", handleUp);
+      if (dragged) {
+        // 延迟恢复，避免 mouseup 紧接着触发 click
+        window.setTimeout(() => {
+          isDraggingRef.current = false;
+          setIsDragging(false);
+          setWalkEnabled(true);
+        }, 120);
+      }
+    };
+
+    window.addEventListener("mousemove", handleMove);
+    window.addEventListener("mouseup", handleUp);
+  }, [teleportTo]);
 
   // 状态面板数据（V2 精简版不再展示，保留供事件系统使用）
   const [_activity, setActivity] = useState("待机中");
@@ -513,19 +564,23 @@ export function DeskMateOverlay({ agent, sessionId, activeExpert }: Props) {
 
   return (
     <>
-      {/* 桌宠角色 — 可在聊天输入框上方区域行走 */}
+      {/* 桌宠角色 — 可在聊天输入框上方区域行走，鼠标可拖动 */}
       <div
         className="fixed z-40"
+        ref={mascotWrapRef}
+        onMouseDown={handleMascotMouseDown}
         style={{
           left: position.x,
           top: position.y,
-          transition: "left 0.1s linear, top 0.1s linear",
+          transition: isDragging ? "none" : "left 0.1s linear, top 0.1s linear",
+          cursor: isDragging ? "grabbing" : "grab",
+          touchAction: "none",
         }}
         data-testid="deskmate-mascot"
       >
         <div className="relative">
-          {/* 知了桌宠 - 分层 SVG 蝉 + 翅膀扇动 + 呼吸浮动 */}
-          <CicadaMascot
+          {/* 小桔桌宠 */}
+          <XiaojuMascot
             emotion={currentEmotion}
             walkDirection={direction}
             isWalking={mascotState === "walking"}
@@ -534,9 +589,11 @@ export function DeskMateOverlay({ agent, sessionId, activeExpert }: Props) {
             vitality={growth?.vitality ?? 100}
             level={growth?.level ?? 1}
             onClick={() => {
+              if (isDraggingRef.current) return;
               try { setPanelOpen((v) => !v); } catch (e) { console.error("click error", e); }
             }}
             onDoubleClick={() => {
+              if (isDraggingRef.current) return;
               try { setMemoryGraphOpen(true); } catch (e) { console.error("dblclick error", e); }
             }}
           />

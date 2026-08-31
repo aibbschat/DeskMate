@@ -466,7 +466,7 @@ function AppearanceSection() {
             {Math.round(petScale * 100)}%
           </span>
         </div>
-        <div className={FIELD_HELP}>调整桌面桌宠（知了）的显示大小，仅「知了」模式下可见。</div>
+        <div className={FIELD_HELP}>调整桌面桌宠（小桔）的显示大小，仅「小桔」模式下可见。</div>
       </div>
 
       <SidebarCard />
@@ -1035,7 +1035,7 @@ function MemoryInjectionCard() {
             每轮自动带上相关记忆
           </span>
           <span className="block text-[12px] text-muted">
-            开启后，墨灵会在每次对话时自动检索并注入与当前话题相关的记忆，越聊越懂你。关闭则保留记忆但不自动注入。
+            开启后，小桔会在每次对话时自动检索并注入与当前话题相关的记忆，越聊越懂你。关闭则保留记忆但不自动注入。
           </span>
         </span>
       </label>
@@ -1081,7 +1081,7 @@ function TrustProactiveCard() {
             信任感影响主动建议的频率
           </span>
           <span className="block text-x] text-muted">
-            开启后，墨灵对你的信任度越高，主动提供建议越积极；信任度低时会更保守、更少打扰。关闭则按固定阈值主动建议，不受信任度影响。
+            开启后，小桔对你的信任度越高，主动提供建议越积极；信任度低时会更保守、更少打扰。关闭则按固定阈值主动建议，不受信任度影响。
           </span>
         </span>
       </label>

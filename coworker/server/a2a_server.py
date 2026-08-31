@@ -58,7 +58,7 @@ from deskmate.writing import (
 logger = logging.getLogger(__name__)
 
 _ASK_SYSTEM = (
-    "你是「知了」，一位历史小说作家的专属 AI 搭档。回答要简洁、专业、"
+    "你是「小桔」，一位历史小说作家的专属 AI 搭档。回答要简洁、专业、"
     "带史料严谨性：涉及史实、官职、典制、年代时务必准确，拿不准要明说出处或存疑，"
     "不要编造。语气像一位靠谱的老搭档，不卑不亢。"
 )
@@ -106,7 +106,7 @@ def build_agent_card(base_url: str) -> AgentCard:
             name="文稿编校",
             description="逐章流式校改：语病、节奏、用词、史实一致性，输出【原文】/【建议】/【理由】。",
             tags=["writing", "proofread", "编辑"],
-            examples=["（粘贴一章小说正文，让知了校一遍）"],
+            examples=["（粘贴一章小说正文，让小桔校一遍）"],
             input_modes=["text/plain"],
             output_modes=["text/plain"],
         ),
@@ -122,7 +122,7 @@ def build_agent_card(base_url: str) -> AgentCard:
         AgentSkill(
             id="deskmate.ask",
             name="通用问答",
-            description="基于知了历史/写作知识回答作者的问题，史料严谨、带出处。",
+            description="基于小桔历史/写作知识回答作者的问题，史料严谨、带出处。",
             tags=["qa", "history", "writing"],
             examples=["明代卫所和营兵制有什么区别？"],
             input_modes=["text/plain"],
@@ -130,8 +130,8 @@ def build_agent_card(base_url: str) -> AgentCard:
         ),
     ]
     return AgentCard(
-        name="知了 Zhiliao",
-        description="openworker 知了 —— 历史小说作家的 AI 搭档，提供文稿编校、编辑专家评析与史料问答。",
+        name="小桔 Zhiliao",
+        description="openworker 小桔 —— 历史小说作家的 AI 搭档，提供文稿编校、编辑专家评析与史料问答。",
         version="1.0.0",
         capabilities=AgentCapabilities(
             streaming=True,
@@ -169,7 +169,7 @@ class DeskmateAgentExecutor(AgentExecutor):
             task_id=task.id,
             context_id=task.context_id or "",
         )
-        await updater.start_work(message=new_text_message("知了正在处理你的请求…"))
+        await updater.start_work(message=new_text_message("小桔正在处理你的请求…"))
 
         query = get_message_text(context.message) or ""
         try:
@@ -182,7 +182,7 @@ class DeskmateAgentExecutor(AgentExecutor):
         await updater.add_artifact(
             parts=[new_text_part(text=reply, media_type="text/plain")]
         )
-        await updater.complete(message=new_text_message("知了已完成"))
+        await updater.complete(message=new_text_message("小桔已完成"))
 
     async def cancel(self, context: RequestContext, event_queue: EventQueue) -> None:
         task = context.current_task
@@ -202,7 +202,7 @@ class DeskmateAgentExecutor(AgentExecutor):
         # LLM 未就绪时仍给出友好提示，证明通道已通（便于联调）
         if not llm_available():
             return (
-                "⚠️ 知了后端 LLM 未就绪（未在 OpenWorker 配置可用模型）。\n"
+                "⚠️ 小桔后端 LLM 未就绪（未在 OpenWorker 配置可用模型）。\n"
                 "A2A 通道已连通，配置模型后即可产出文稿编校 / 编辑专家 / 史料问答内容。"
             )
 

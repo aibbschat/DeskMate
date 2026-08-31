@@ -9,7 +9,7 @@ import { ConnectorMessageCard } from "./ConnectorMessageCard";
 import { ReportViewer } from "./deskmate/ReportViewer";
 import { Icon } from "./Icon";
 import { type Expert } from "./deskmate/experts";
-import CicadaAvatar from "./CicadaAvatar";
+import XiaojuAvatar from "./XiaojuAvatar";
 
 // Long user pastes swallow the transcript (owner ask 2026-07-30): clamp past a generous
 // threshold with a more…/less… toggle. Normal typed messages never see the control; the
@@ -519,7 +519,7 @@ export function Transcript({
             return (
               <div className="group bubble-assistant" key={bi}>
                 <div className="who">
-                  <CicadaAvatar className="who-avatar" />
+                  <XiaojuAvatar size={44} className="who-avatar" />
                   <span>{expert?.displayName ?? t("chat.assistant")}</span>
                 </div>
                 {item.reasoning && <ThinkingBlock text={item.reasoning} />}
@@ -532,7 +532,7 @@ export function Transcript({
             return (
               <div className="group bubble-assistant" key={bi}>
                 <div className="who">
-                  <CicadaAvatar className="who-avatar" />
+                  <XiaojuAvatar size={44} className="who-avatar" />
                   <span>{expert?.displayName ?? t("chat.assistant")}</span>
                 </div>
                 {item.caption && <p className="report-caption">{item.caption}</p>}

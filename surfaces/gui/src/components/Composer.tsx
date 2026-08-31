@@ -30,7 +30,7 @@ import {
 const PERMISSION_OPTIONS: (Option & { translationKey: string; descKey: string })[] = [
   { value: "discuss", label: "Discuss", description: "Chat and explore — no edits or commands", translationKey: "composer.discussLabel", descKey: "composer.discussDescription" },
   { value: "interactive", label: "Ask for approval", description: "Ask before edits and commands", translationKey: "composer.askForApprovalLabel", descKey: "composer.askForApprovalDescription" },
-  { value: "auto", label: "Full access", description: "Run everything without asking", translationKey: "composer.fullAccessLabel", descKey: "composer.fullAccessDescription" },
+  { value: "bypass-approvals", label: "Full access", description: "Run everything without asking", translationKey: "composer.fullAccessLabel", descKey: "composer.fullAccessDescription" },
 ];
 
 // No hardcoded model fallback: until the server supplies the list (a few seconds after a
@@ -678,8 +678,8 @@ export function Composer(props: Props) {
             <button
               type="button"
               className={iconBtn + (emoteOpen ? " bg-paper text-ink" : "")}
-              title="插入知了表情"
-              aria-label="插入知了表情"
+              title="插入小桔表情"
+              aria-label="插入小桔表情"
               onClick={() => setEmoteOpen((v) => !v)}
             >
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">

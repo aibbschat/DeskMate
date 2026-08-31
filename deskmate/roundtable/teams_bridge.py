@@ -6,7 +6,7 @@
   本层在关键点把结果镜像到 teams 的 ChatStore（辩论场）/ TeamStore（board 审稿维度）。
 - 7 专家是「逻辑映射」为 team worker（登记花名册，不预生成真实 agent session），
   以避免破坏研讨并发语义且不过重。
-- 所有 board 的 done 收口由主持「知了」(lead) 执行，符合上游 authority。
+- 所有 board 的 done 收口由主持「小桔」(lead) 执行，符合上游 authority。
 - 本层不依赖 coordinator 模块（避免重型 import 与循环依赖），发言以
   (speaker, text, kind) 入参，由 coordinator 在事件流里调用。
 """
@@ -37,7 +37,7 @@ class RoundtableTeamsBridge:
     """把一场圆桌研讨镜像进 teams 基座（建团 + board 维度 + 辩论场 + 终验收）。"""
 
     def __init__(
-        self, client: TeamsClient, *, team_id: str, lead_id: str = "知了",
+        self, client: TeamsClient, *, team_id: str, lead_id: str = "小桔",
     ) -> None:
         self.client = client
         self.team_id = team_id

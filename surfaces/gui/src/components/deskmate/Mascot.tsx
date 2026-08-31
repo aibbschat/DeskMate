@@ -1,5 +1,5 @@
 /**
- * Mascot — 墨灵桌宠（程序化水墨生物 V3 - 活泼增强版）。
+ * Mascot — 小桔桌宠（程序化水墨生物 V3 - 活泼增强版）。
  *
  * 完全用 Canvas 程序化绘制，超级活泼有趣的动画系统：
  *   - 随机行为状态机：张望、打哈欠、伸懒腰、做鬼脸、发呆、玩耍
@@ -833,7 +833,7 @@ export function Mascot({
         drawParticle(p, p.life / p.maxLife, moodAlphaMultiplier);
       }
 
-      // ── 绘制墨灵本体 ──
+      // ── 绘制小桔本体 ──
       ctx.save();
       ctx.translate(cx, cy + body.floatY + body.bounceY);
       ctx.rotate(body.tilt);

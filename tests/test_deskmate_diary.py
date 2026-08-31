@@ -1,6 +1,6 @@
 """Tests for P1-3 桌宠日记产品化（deskmate/growth/diary.py）。
 
-核心：把 growth 信号转成墨灵第一人称日记 + 每周回忆；幂等、诚实（不编造）、
+核心：把 growth 信号转成小桔第一人称日记 + 每周回忆；幂等、诚实（不编造）、
 独立于 memory 层（写入 <base>/diary/，不碰 P0-6/P0-7）。
 """
 

@@ -7,7 +7,7 @@
  * 白名单走 fork 侧常量 ENGINEERING_IDS，不修改 upstream builtin 文件。
  * 点击联系人 = 以该 persona 开独立会话；当前会话正对应某角色时该行高亮。
  * 折叠交互复用 RightRail 的 RailSection。
- * 注意：知了(deskmate) 仅出现在左侧新建会话，不在本栏（避免左右重复）。
+ * 注意：小桔(deskmate) 仅出现在左侧新建会话，不在本栏（避免左右重复）。
  */
 
 import type { Persona } from "../api";

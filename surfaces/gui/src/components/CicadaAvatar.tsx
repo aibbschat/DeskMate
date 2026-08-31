@@ -7,7 +7,7 @@ interface CicadaAvatarProps {
 }
 
 /**
- * 知了（蝉）头像 —— 水墨风极简剪影，用于聊天气泡的发言者标识。
+ * 小桔（蝉）头像 —— 水墨风极简剪影，用于聊天气泡的发言者标识。
  * 使用 currentColor，颜色由父级 .who-avatar 的 color 决定（默认取品牌色）。
  */
 export default function CicadaAvatar({ size = 18, className, style }: CicadaAvatarProps) {

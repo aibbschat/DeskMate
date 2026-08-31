@@ -1,5 +1,5 @@
 /**
- * StatusPanelV2 — 墨灵可视化面板（精致重设计版）。
+ * StatusPanelV2 — 小桔可视化面板（精致重设计版）。
  *
  * 4 层信息架构：
  *   Layer 1: 核心身份（桌宠形象 + 名称 + 等级 + 情绪）
@@ -17,6 +17,7 @@
 import { useState, useEffect, useRef, type ReactNode } from "react";
 import { type EmotionName, getEmotionParams } from "./EmotionState";
 import { Icon } from "../Icon";
+import XiaojuAvatar from "../XiaojuAvatar";
 import type { GrowthSnapshot, LearnedHistory, Achievement, PersonalityProfile } from "./StatusPanel";
 
 // ---------------------------------------------------------------------------
@@ -273,22 +274,22 @@ function Layer1Identity({
         boxShadow: "0 2px 8px rgba(99, 102, 241, 0.04)",
       }}
     >
-      {/* 左侧：桌宠微缩形象（占位） */}
+      {/* 左侧：桌宠微缩形象 */}
       <div
-        className="w-20 h-20 rounded-xl flex items-center justify-center flex-shrink-0"
+        className="w-20 h-20 rounded-xl flex items-center justify-center flex-shrink-0 overflow-hidden"
         style={{
           background: "rgba(0, 0, 0, 0.03)",
           border: "0.5px solid rgba(0, 0, 0, 0.06)",
         }}
       >
-        <div className="text-4xl">🦗</div>
+        <XiaojuAvatar size={64} />
       </div>
 
       {/* 右侧：信息 */}
       <div className="flex-1 min-w-0">
         {/* 名称和等级 */}
         <div className="flex items-center gap-2 mb-1.5">
-          <span className="text-base font-bold text-gray-900">知了</span>
+          <span className="text-base font-bold text-gray-900">小桔</span>
           <span
             className="text-[10px] font-bold px-2 py-0.5 rounded-md"
             style={{

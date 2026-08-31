@@ -1378,7 +1378,7 @@ function NewSessionSplit({
 }) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
-  // 新建会话 ▾ 仅保留：主 Coworker(cowork) 与 知了(deskmate)。其余角色（圆桌 7 专家、官方工程组）
+  // 新建会话 ▾ 仅保留：主 Coworker(cowork) 与 小桔(deskmate)。其余角色（圆桌 7 专家、官方工程组）
   // 只从右侧「我的伙伴」进入，避免左侧下拉冗长（owner ask 2026-08-26）。
   const ALLOWED_NEW_SESSION = new Set(["cowork", "deskmate"]);
   const enabled = (personas || []).filter((p) => p.enabled && ALLOWED_NEW_SESSION.has(p.id));

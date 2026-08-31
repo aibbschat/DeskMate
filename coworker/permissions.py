@@ -350,6 +350,39 @@ class PermissionEngine:
         is_egress = risk is RiskClass.EGRESS
         consequential = is_consequential(risk)
 
+        # ── Full access (bypass-approvals): user explicitly opted into "run
+        # everything without asking". Only the catastrophic floor applies:
+        # CRITICAL shell commands (rm -rf /, fork bombs, reverse shells) and
+        # self-protection (modifying OpenWorker's own settings) are still
+        # denied. Everything else is approved without prompting — including
+        # HIGH/MEDIUM governance findings, out-of-root writes, persistent-
+        # authority tools, and protected in-project files. The user has
+        # judged the risk acceptable; asking again defeats the mode. ──
+        if self.mode is Mode.BYPASS_APPROVALS:
+            if is_shell and self.tool_guard is not None and self.execution_level != "off":
+                findings = self.tool_guard.scan(tool_name, arguments)
+                if findings:
+                    worst = self.tool_guard.worst_severity(findings)
+                    if worst == "CRITICAL":
+                        label = "; ".join(
+                            f"{f.rule_id}:{f.severity}" for f in findings[:3]
+                        )
+                        return Decision(
+                            False,
+                            f"blocked by governance guard ({label})",
+                            needs_user=False,
+                            findings=findings,
+                        )
+            if is_write or is_shell:
+                hit = self._touches_protected(tool_name, arguments, is_shell)
+                if hit is not None:
+                    return Decision(
+                        False,
+                        f"refusing to modify OpenWorker's own settings: {hit}",
+                        needs_user=False,
+                    )
+            return Decision(True, "full access")
+
         # Governance Tool Guard: scan shell commands for destructive / evasive /
         # privilege-escalating patterns BEFORE the mode logic decides. CRITICAL
         # findings are denied outright (catastrophic: rm -rf /, reverse shells,

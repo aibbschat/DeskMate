@@ -475,7 +475,7 @@ export function ProofreadPanel({ open, onClose, sessionId, initialFocus }: Props
           <div className="flex-1 min-h-0 flex flex-col p-3 gap-2 overflow-y-auto">
             {running && (
               <div className="text-[13px] italic" style={{ color: "var(--muted)" }}>
-                知了正在逐句审读你的文稿… 完成后结果会发到聊天。
+                小桔正在逐句审读你的文稿… 完成后结果会发到聊天。
               </div>
             )}
             {!running && (

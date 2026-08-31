@@ -97,7 +97,7 @@ class TestSystemBlock:
 
     def test_contains_vocab_table(self):
         block = emotes.emote_system_block()
-        assert "知了表情词表" in block
+        assert "小桔表情词表" in block
         assert "| 表情名(emote) | 中文含义 |" in block
         # 每个表情都应在词表里
         for eid in ["wave", "stuck", "heart", "tea"]:

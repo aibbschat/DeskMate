@@ -14,7 +14,7 @@ from deskmate.compliance import get_positioning, POSITIONING
 
 def test_positioning_shape():
     p = get_positioning()
-    assert p["name"] == "墨灵"
+    assert p["name"] == "小桔"
     assert p["not_a_companion"] is True
     assert "disclaimer" in p and p["disclaimer"]
 

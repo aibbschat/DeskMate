@@ -53,7 +53,7 @@ def _log_roundtable_done_once(topic: str, rounds: int) -> None:
 _STOP = object()
 
 HOST_SYSTEM = (
-    "你是圆桌主持人「知了」，历史小说作家的 AI 搭档。\n"
+    "你是圆桌主持人「小桔」，历史小说作家的 AI 搭档。\n"
     "你的职责：开场点题与定规则；每轮后归纳各方的共识与分歧；在收窄式多轮中只把"
     "『尚未达成一致的分歧点』抛回给各方答辩；最后写一份《圆桌纪要》（共识 / 尚存分歧 / 给作者的建议）。\n"
     "你保持中立、条理清晰、不替任何一方下结论。涉及史实须严谨，拿不准要存疑。\n"
@@ -767,13 +767,13 @@ class Roundtable:
         traces: list[dict] = []  # 各轮 context_trace（L0/L1/L2 + FTS5 轨迹），用于纪要落盘与可观测
 
         # 开场（主持流式）
-        await out_q.put({"type": "speaking", "round": 0, "speaker": "知了（主持）", "role": "host", "kind": "host"})
+        await out_q.put({"type": "speaking", "round": 0, "speaker": "小桔（主持）", "role": "host", "kind": "host"})
         sc0 = await self._build_story_context(0, "")
         await out_q.put({"type": "context_trace", "round": 0, "trace": sc0.trace})
         traces.append(sc0.trace)
         opening_ctx = sc0.text
         opening = await self._stream_turn(
-            out_q, turn_id="host-open", round_no=0, speaker="知了（主持）", role="host", kind="host",
+            out_q, turn_id="host-open", round_no=0, speaker="小桔（主持）", role="host", kind="host",
             gen_factory=lambda: self._stream_host(
                 "请为话题开场：首先直接复述用户的原始议题（原样引用，不要重新定义或缩小范围），"
                 "然后说明规则（有界多轮、到达序发言、最后由你做纪要），并抛出一个讨论引子。",
@@ -833,9 +833,9 @@ class Roundtable:
 
             # 收窄轮：归纳分歧；若已一致则提前收尾
             if r < self.max_rounds:
-                await out_q.put({"type": "speaking", "round": r, "speaker": "知了（主持）", "role": "host", "kind": "host"})
+                await out_q.put({"type": "speaking", "round": r, "speaker": "小桔（主持）", "role": "host", "kind": "host"})
                 div_text = await self._stream_turn(
-                    out_q, turn_id=f"host-div-{r}", round_no=r, speaker="知了（主持）", role="host", kind="host",
+                    out_q, turn_id=f"host-div-{r}", round_no=r, speaker="小桔（主持）", role="host", kind="host",
                     gen_factory=lambda r=r, ctx=ctx: self._stream_host(
                         "根据上面第 %d 轮讨论，提炼仍未达成一致的关键分歧点"
                         "（最多 3 条，每条一句话，用『- 』开头）。若已高度一致，请直接写『无重大分歧』。" % r,
@@ -850,7 +850,7 @@ class Roundtable:
                     break
 
         # 纪要（主持流式）；失败兜底由 fallback_text 注入
-        await out_q.put({"type": "speaking", "round": rounds_held + 1, "speaker": "知了（主持）", "role": "host", "kind": "host"})
+        await out_q.put({"type": "speaking", "round": rounds_held + 1, "speaker": "小桔（主持）", "role": "host", "kind": "host"})
         synthesis_ctx = (self.context + "\n\n" + self._fmt(transcript)).strip()
         synthesis_fallback = (
             "（自动兜底纪要）以下为各轮发言概览，建议稍后重试以获得完整纪要：\n"
@@ -861,7 +861,7 @@ class Roundtable:
             )
         )
         synthesis = await self._stream_turn(
-            out_q, turn_id="host-synth", round_no=rounds_held + 1, speaker="知了（主持）", role="host", kind="host",
+            out_q, turn_id="host-synth", round_no=rounds_held + 1, speaker="小桔（主持）", role="host", kind="host",
             gen_factory=lambda: self._stream_host(
                 "圆桌结束。请基于全部讨论写一份《综合研判报告》，严格用以下五个二级标题分段"
                 "（缺一不可、顺序固定，不要加其它标题）：\n"

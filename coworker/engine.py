@@ -2001,7 +2001,7 @@ class TurnEngine:
                     for msg in out
                 ]
 
-        # 墨灵表情（仅 deskmate）：把用户消息里的 emote 标记在送进 LLM 前展开为
+        # 小桔表情（仅 deskmate）：把用户消息里的 emote 标记在送进 LLM 前展开为
         # 语义说明，让模型真正「理解」表情含义；不污染持久化消息，UI 仍按原始标记
         # 渲染水墨图。展开后的 `[用户表情：...]` 格式与下方 context_provider 注入的
         # 词表规则对应。
@@ -2041,7 +2041,7 @@ class TurnEngine:
 
 
 def _assistant_message(turn: AssistantTurn, model: Optional[str] = None) -> dict[str, Any]:
-    # 墨灵表情（仅 deskmate 会产出）：把助手输出里「裸」 emote:NAME 回填为 emote:PACK:NAME，
+    # 小桔表情（仅 deskmate 会产出）：把助手输出里「裸」 emote:NAME 回填为 emote:PACK:NAME，
     # 冻结到生成时的激活包画风，切换全局包不再改写历史。非表情文本/非 deskmate 内容不受影响
     # （正则只命中 emote 标记，且 _ACTIVE_PACK 未由前端上报时原样返回）。
     from .emotes import bake_assistant_emotes

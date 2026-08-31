@@ -59,7 +59,7 @@ export function PlanCard({
           <button className="btn" onClick={() => onRespond(true, "interactive")}>
             Approve — ask per step
           </button>
-          <button className="btn primary" onClick={() => onRespond(true, "auto")}>
+          <button className="btn primary" onClick={() => onRespond(true, "bypass-approvals")}>
             Approve & run
           </button>
         </div>

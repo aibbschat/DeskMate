@@ -31,7 +31,7 @@ function BoardChip({ label }: { label: string }) {
 
 // 表情协议：标准 markdown 图片语法 ![alt](emote:NAME)（alt 通常是中文表情名，如
 // 「招手问好」）。这是 LLM 原生语法，且 alt 自带语义——即使模型不识别 emote: 协议，
-// 也能从 alt 读懂情绪。components.img 拦截 emote: 协议渲染成墨灵 <Emote> 小图；
+// 也能从 alt 读懂情绪。components.img 拦截 emote: 协议渲染成小桔 <Emote> 小图；
 // withEmoteSyntax 仍保留，用于把历史遗留的 [[emote:NAME]] 写法兼容渲染。
 export const EMOTE_PROTOCOL = "emote:";
 const EMOTE_RE = /\[\[emote:([a-zA-Z0-9_-]+)\]\]/g;

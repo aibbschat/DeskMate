@@ -72,8 +72,8 @@ async def test_inprocess_uses_streaming_events():
     # 每个流式发言至少产出 1 个 delta，且 turn_end 文本含其全部片段
     for tid in start_ids:
         assert end_texts[tid].startswith("【") and end_texts[tid].endswith("。")
-    # 主持"思考中"已被广播（fork 将主持从「桌搭」改名为「知了」）
-    assert "知了（主持）" in speaking
+    # 主持"思考中"已被广播（fork 将主持从「桌搭」改名为「小桔」）
+    assert "小桔（主持）" in speaking
 
 
 async def test_streaming_interleaves_by_turn_id():

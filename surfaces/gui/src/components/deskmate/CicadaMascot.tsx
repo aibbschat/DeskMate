@@ -1,5 +1,5 @@
 /**
- * CicadaMascot — 知了桌宠（分层 SVG + CSS 动画）。
+ * CicadaMascot — 小桔桌宠（分层 SVG + CSS 动画）。
  *
  * 基于用户提供的水墨蝉参考图重绘：
  *   - 头 / 胸 / 腹 / 左右翅膀 / 眼 / 腮红 / 触须 / 腿 分层绘制
@@ -98,7 +98,7 @@ export function CicadaMascot({
       onDoubleClick={onDoubleClick}
       role="button"
       tabIndex={0}
-      aria-label="知了桌宠"
+      aria-label="小桔桌宠"
     >
       <style>{`
         @keyframes cicada-breathe {

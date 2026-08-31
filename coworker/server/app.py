@@ -3285,7 +3285,7 @@ def create_app(manager: SessionManager) -> FastAPI:
 
     @app.get("/v1/deskmate/diary")
     async def get_deskmate_diary() -> dict[str, Any]:
-        """P1-3：墨灵日记——日期列表（DeskHome 可翻）。"""
+        """P1-3：小桔日记——日期列表（DeskHome 可翻）。"""
         try:
             from deskmate.growth.diary import DiaryWriter
 
@@ -3311,7 +3311,7 @@ def create_app(manager: SessionManager) -> FastAPI:
 
     @app.post("/v1/deskmate/diary/today")
     async def post_deskmate_diary_today() -> dict[str, Any]:
-        """P1-3：生成/刷新今日墨灵日记（幂等）。"""
+        """P1-3：生成/刷新今日小桔日记（幂等）。"""
         try:
             from deskmate.growth.diary import DiaryWriter
 
@@ -3326,7 +3326,7 @@ def create_app(manager: SessionManager) -> FastAPI:
 
     @app.get("/v1/deskmate/diary/{date}")
     async def get_deskmate_diary_date(date: str) -> dict[str, Any]:
-        """P1-3：读取某天墨灵日记。"""
+        """P1-3：读取某天小桔日记。"""
         try:
             from deskmate.growth.diary import DiaryWriter
 
