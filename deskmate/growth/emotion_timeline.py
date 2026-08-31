@@ -3,21 +3,25 @@
 核心：「记得你上周赶稿压力大 → 今天主动问进度」，把亲密度变成连续情感智能。
 
 - 每日情感快照：从 growth state（mood/trust/intimacy + 当日事件）推断情感标签
-  （压力大/忙碌/顺利/低落/平静），存入 ``~/.deskmate/growth/emotion_timeline.json``。
+  （压力大/忙碌/顺利/低落/平静），存入统一库 ``deskmate.db``（``json_blobs`` 表，
+  ``emotion_timeline`` key；旧 ``~/.deskmate/growth/emotion_timeline.json`` 首次访问
+  自动幂等迁移并备份 ``.bak``，见 ``deskmate/persistence.BlobStore``）。
 - 情感回顾（lookback）：过去 N 天的情感趋势 + 关键事件，输出一段「情感记忆」文本，
   注入 proactive judge context，让 LLM 决定是否主动关怀 + 说什么。
-- 关怀去重：同一主题 7 天内不重复发起（care_log 记录）。
+- 关怀去重：同一主题 7 天内不重复发起（care_log 记录，同为 json_blobs key）。
 
 独立于 memory 层（不碰 memory manager，WorkBuddy P2-2/P2-3 在向量/长期模式层）。
-零 LLM、fail-open。
+零 LLM、fail-open。与 growth 同属「设备本地」数据：收进统一库仅物理统一，
+不随跨端同步（sync.py 只导出 style/decision 派生包）。
 """
 
 from __future__ import annotations
 
 import datetime
-import json
 from pathlib import Path
 from typing import Any
+
+from deskmate.persistence import BlobStore
 
 
 def _today_iso() -> str:
@@ -78,41 +82,27 @@ class EmotionTimeline:
 
     def __init__(self, base_dir: str | Path | None = None) -> None:
         base = Path(base_dir) if base_dir else Path.home() / ".deskmate"
+        self.base = base
+        # legacy 路径：仅用于首次访问时幂等迁移进统一库（见 BlobStore.get legacy_path）
         self.path = base / "growth" / "emotion_timeline.json"
         self.care_log_path = base / "growth" / "care_log.json"
+        # 统一库：与认知层/日记/成长画像同一物理文件（备份原子单元）
+        self._blob = BlobStore(db_path=base / "deskmate.db")
         self._data: dict[str, dict[str, Any]] = {}
         self._care_log: dict[str, str] = {}  # theme -> last_date
         self._load()
 
     def _load(self) -> None:
-        try:
-            if self.path.is_file():
-                self._data = json.loads(self.path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            self._data = {}
-        try:
-            if self.care_log_path.is_file():
-                self._care_log = json.loads(self.care_log_path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            self._care_log = {}
+        data = self._blob.get(BlobStore.KEY_EMOTION, legacy_path=self.path)
+        self._data = data if isinstance(data, dict) else {}
+        care = self._blob.get(BlobStore.KEY_CARE_LOG, legacy_path=self.care_log_path)
+        self._care_log = care if isinstance(care, dict) else {}
 
     def _save(self) -> None:
-        try:
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            self.path.write_text(
-                json.dumps(self._data, ensure_ascii=False, indent=1), encoding="utf-8"
-            )
-        except OSError:
-            pass
+        self._blob.set(BlobStore.KEY_EMOTION, self._data)
 
     def _save_care(self) -> None:
-        try:
-            self.care_log_path.parent.mkdir(parents=True, exist_ok=True)
-            self.care_log_path.write_text(
-                json.dumps(self._care_log, ensure_ascii=False, indent=1), encoding="utf-8"
-            )
-        except OSError:
-            pass
+        self._blob.set(BlobStore.KEY_CARE_LOG, self._care_log)
 
     def record_today(self, engine: Any) -> dict[str, Any]:
         """从 growth engine 生成当日情感快照（幂等：同一天更新覆盖）。

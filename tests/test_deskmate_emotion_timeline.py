@@ -126,6 +126,56 @@ class TestEmotionTimeline:
         assert tl.should_care("progress_check")
 
 
+class TestSqliteMigration:
+    """情感时间线已收口进统一库 deskmate.db（json_blobs）：legacy JSON 首访自动迁移+备份。"""
+
+    def _write_legacy(self, tmp_path: Path, data: dict, name: str = "emotion_timeline.json") -> Path:
+        g = tmp_path / "growth"
+        g.mkdir(exist_ok=True)
+        p = g / name
+        p.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+        return p
+
+    def test_legacy_json_auto_migrated_to_db(self, tmp_path):
+        legacy = {"2026-08-30": {"date": "2026-08-30", "mood": 80.0, "state": "压力大", "events": {}, "note": "3次不顺"}}
+        self._write_legacy(tmp_path, legacy)
+        tl = EmotionTimeline(base_dir=tmp_path)
+        # 数据已进统一库
+        assert tl._data == legacy
+        # 原 JSON 已备份为 .bak、不再以原文件名存在
+        assert not (tmp_path / "growth" / "emotion_timeline.json").exists()
+        baks = [p for p in (tmp_path / "growth").iterdir() if p.name.startswith("emotion_timeline.json.bak")]
+        assert len(baks) == 1
+        # DB json_blobs 里确有该 key
+        import sqlite3
+        conn = sqlite3.connect(tmp_path / "deskmate.db")
+        row = conn.execute("SELECT data FROM json_blobs WHERE key='emotion_timeline'").fetchone()
+        assert row and "2026-08-30" in row[0]
+
+    def test_roundtrip_from_db_and_idempotent(self, tmp_path):
+        legacy = {"2026-08-31": {"date": "2026-08-31", "mood": 80.0, "state": "压力大", "events": {}, "note": "5次不顺"}}
+        self._write_legacy(tmp_path, legacy)
+        EmotionTimeline(base_dir=tmp_path)  # 首次迁移
+        g = tmp_path / "growth"
+        before = sorted(p.name for p in g.iterdir())
+        # 重建对象：从 DB 读回，且不重复迁移/不重复备份
+        tl2 = EmotionTimeline(base_dir=tmp_path)
+        assert "2026-08-31" in tl2._data
+        assert sorted(p.name for p in g.iterdir()) == before
+
+    def test_new_data_written_to_db_not_legacy_file(self, tmp_path):
+        from deskmate.growth.engine import GrowthEngine
+        eng = _make_engine(tmp_path, mood=85.0, events=[_evt("creation_approved")])
+        tl = EmotionTimeline(base_dir=tmp_path)
+        tl.record_today(eng)
+        # 不再写 growth/emotion_timeline.json
+        assert not (tmp_path / "growth" / "emotion_timeline.json").exists()
+        # 重建后仍能读回（数据在统一库）
+        tl2 = EmotionTimeline(base_dir=tmp_path)
+        assert datetime.date.today().isoformat() in tl2._data
+        assert tl2._data[datetime.date.today().isoformat()]["state"] == "顺利"
+
+
 class TestTickIntegration:
     def test_emotion_injected_into_judge_context(self, tmp_path, monkeypatch):
         """proactive tick 的 judge 上下文应含情感回顾。"""

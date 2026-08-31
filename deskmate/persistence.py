@@ -34,6 +34,11 @@ class BlobStore:
     KEY_GROWTH = "growth"
     KEY_STYLE = "style_profile"
     KEY_DECISION = "decision_profile"
+    # 情感层雏形（P2-5 连续情感关怀）：情感时间线 + 关怀去重日志
+    # 与 growth 同属「设备本地」语义：收进统一库仅物理统一（备份原子单元），
+    # 跨端同步仍只走 style/decision 派生包（见 memory/sync.py），不改变同步行为。
+    KEY_EMOTION = "emotion_timeline"
+    KEY_CARE_LOG = "care_log"
 
     def __init__(self, db_path: Optional[str | Path] = None) -> None:
         self.db_path = Path(db_path) if db_path else _DB_DEFAULT
