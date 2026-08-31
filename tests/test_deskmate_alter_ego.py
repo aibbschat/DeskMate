@@ -245,9 +245,20 @@ class TestAlterEgoWiring:
         prof_path = self._patch_paths(tmp_path, monkeypatch)
         from deskmate.memory.manager import DeskMateMemoryManager
 
+        # decision_profile 默认已收口统一库 deskmate.db：把统一库指向临时库，隔离真实数据
+        import deskmate.alter_ego.decision_profile as _dp
+        from deskmate.persistence import BlobStore
+
+        class _TmpBlobStore(BlobStore):
+            def __init__(self, db_path=None):
+                super().__init__(db_path=tmp_path / "deskmate.db")
+
+        monkeypatch.setattr(_dp, "BlobStore", _TmpBlobStore)
+
         mgr = DeskMateMemoryManager(tmp_path)
         mgr.post_session_summary("我比较保守，先调研再决定，别太激进", "好的，我来帮你")
-        prof = load_profile(prof_path)
+        # 收口后默认走统一库（json_blobs），不从临时文件读
+        prof = load_profile()
         assert prof.total_signals >= 1
 
     def test_post_session_no_learn_when_disabled(self, tmp_path, monkeypatch):
