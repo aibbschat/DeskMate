@@ -4,8 +4,8 @@
  * 数据闭环（后端做实版）：
  * - 小桔日记 → GET /v1/deskmate/diary（真实 DiaryWriter 生成）
  * - 用户日记 / 留言 / 🩷 沉淀 → /v1/deskmate/moments*（MomentsStore 持久化）
- * - 🩷 落记忆 → POST /moments/{id}/love，后端把这条追加进 MEMORY.md（懂我持久化）
- * - 小桔真回复 → POST /moments/post 由 LLM（qwen）生成，失败回落规则
+ * - 🩷 落记忆 → POST /moments/{id}/love，后端落 SQLite（loved_entries）并导出 diary_memory.md 检索视图（懂我持久化，不再写 MEMORY.md）
+ * - 小桔真回复 → POST /moments/post 由 LLM 生成，失败回落规则
  *
  * 展示细节：用户昵称「萧盛」+ 本地头像；发帖可选表情（复用聊天 EmotePicker）。
  */
@@ -266,7 +266,7 @@ export function MomentFeed() {
     }
   };
 
-  /** 🩷 落记忆（后端追加进 MEMORY.md，懂我持久化） */
+  /** 🩷 落记忆（后端落 SQLite + 导出 diary_memory.md 检索视图，懂我持久化） */
   const toggleLove = async (id: string, content: string) => {
     try {
       const r = await authedFetch(`${httpBase()}/v1/deskmate/moments/${id}/love`, {
