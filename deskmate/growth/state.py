@@ -27,6 +27,24 @@ def _default_base_dir() -> Path:
     return Path(os.environ.get("DESKMATE_DIR", os.path.expanduser("~/.deskmate")))
 
 
+def _is_default_dir(base_dir: Path | str | None) -> bool:
+    """base_dir 为 None 或解析后等于默认目录（~/.deskmate）时返回 True。
+
+    收口语义：默认目录的成长状态统一存 deskmate.db；仅显式指定「非默认」目录
+    （测试隔离 / 独立项目）才落文件。解决 GrowthEngine 永远传 base_dir、生产环境
+    却把默认目录当成文件目录、不断写出 growth.json 的回归（本该只存在于 .bak）。
+    """
+    if base_dir is None:
+        return True
+    try:
+        return (
+            Path(base_dir).expanduser().resolve()
+            == _default_base_dir().expanduser().resolve()
+        )
+    except (OSError, RuntimeError):
+        return False
+
+
 @dataclass
 class SkillProficiency:
     """单个技能的熟练度状态。"""
@@ -155,8 +173,8 @@ def load_state(base_dir: Path | str | None = None) -> GrowthState:
 
 
 def _load_raw(base_dir: Path | str | None) -> dict | None:
-    """读取原始 dict：默认走 DB；显式 base_dir 走文件。"""
-    if base_dir is None:
+    """读取原始 dict：默认目录（None 或解析等于默认目录）走 DB；显式非默认目录走文件。"""
+    if _is_default_dir(base_dir):
         return BlobStore().get(BlobStore.KEY_GROWTH, legacy_path=_default_base_dir() / "growth.json")
     path = _state_path(base_dir)
     if not path.is_file():
@@ -234,11 +252,12 @@ def _build_state(data: dict) -> GrowthState:
 def save_state(state: GrowthState, base_dir: Path | str | None = None) -> None:
     """保存成长状态。
 
-    默认（base_dir=None）写入统一库 deskmate.db；显式 base_dir 走文件（原子 rename）。
+    收口：base_dir 为 None 或等于默认目录（~/.deskmate）时写入统一库 deskmate.db；
+    仅显式指定「非默认」目录（测试隔离 / 独立项目）才走文件（原子 rename）。
     写盘失败不抛异常（成长统计不该让主流程崩），但会记一条 warning——
     勋章解锁记录靠这一步落盘，静默失败等于丢勋章，必须留痕。
     """
-    if base_dir is None:
+    if _is_default_dir(base_dir):
         state.updated_at = _now()
         BlobStore().set(BlobStore.KEY_GROWTH, state.to_dict())
         return
