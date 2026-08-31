@@ -26,6 +26,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from deskmate.persistence import BlobStore
+
 
 def _base_dir() -> Path:
     return Path(os.environ.get("DESKMATE_DIR", str(Path.home() / ".deskmate")))
@@ -77,7 +79,8 @@ def _fmt_date(ts: str | float | None) -> str:
 # 栏目 1：写作风格
 # ---------------------------------------------------------------------------
 def _writing_style_section() -> dict[str, Any]:
-    style = _read_json(_base_dir() / "style_profile.json")
+    # style_profile 已收口统一库 deskmate.db（json_blobs）；首次访问自动从 legacy 迁移
+    style = BlobStore().get(BlobStore.KEY_STYLE, legacy_path=_base_dir() / "style_profile.json") or {}
     metrics = style.get("metrics") or {}
     n = metrics.get("n", 0)
     chars = metrics.get("chars", 0)
@@ -237,7 +240,7 @@ def _decision_preference_section() -> dict[str, Any]:
 
     # 风险偏好
     if profile.risk:
-        vals = [f"{v}（{c} 次）" for v, c in profile.risk.most_common()]
+        vals = [f"{v}（{m.get('count', 0)} 次）" for v, m in profile.risk.items()]
         articles.append({
             "title": "风险取舍",
             "content": "、".join(vals),
@@ -247,7 +250,7 @@ def _decision_preference_section() -> dict[str, Any]:
 
     # 先后顺序
     if profile.sequence:
-        vals = [f"{v}（{c} 次）" for v, c in profile.sequence.most_common()]
+        vals = [f"{e.get('value', '')}（{e.get('count', 0)} 次）" for e in profile.sequence]
         articles.append({
             "title": "做事顺序",
             "content": "、".join(vals),
@@ -257,7 +260,7 @@ def _decision_preference_section() -> dict[str, Any]:
 
     # 价值权衡
     if profile.tradeoff:
-        vals = [f"{v}（{c} 次）" for v, c in profile.tradeoff.most_common()]
+        vals = [f"{e.get('value', '')}（{e.get('count', 0)} 次）" for e in profile.tradeoff]
         articles.append({
             "title": "价值权衡",
             "content": "、".join(vals),
@@ -267,7 +270,7 @@ def _decision_preference_section() -> dict[str, Any]:
 
     # 改动倾向
     if profile.change:
-        vals = [f"{v}（{c} 次）" for v, c in profile.change.most_common()]
+        vals = [f"{v}（{m.get('count', 0)} 次）" for v, m in profile.change.items()]
         articles.append({
             "title": "改动倾向",
             "content": "、".join(vals),
@@ -277,7 +280,7 @@ def _decision_preference_section() -> dict[str, Any]:
 
     # 信息风格
     if profile.info_style:
-        vals = [f"{v}（{c} 次）" for v, c in profile.info_style.most_common()]
+        vals = [f"{v}（{m.get('count', 0)} 次）" for v, m in profile.info_style.items()]
         articles.append({
             "title": "信息偏好",
             "content": "、".join(vals),
@@ -486,7 +489,7 @@ def _privacy_cross_project_section() -> dict[str, Any]:
             pass
 
     # 跨项目：检查 global_profile 是否存在
-    global_profile_exists = (_base_dir() / "style_profile.json").is_file()
+    global_profile_exists = bool(BlobStore().get(BlobStore.KEY_STYLE, legacy_path=_base_dir() / "style_profile.json"))
 
     articles: list[dict[str, Any]] = []
 
