@@ -5,8 +5,8 @@
 - 🩷 沉淀塞进全局 ``MEMORY.md``（2 万字符尾部截断 + compress/purify 改写会丢/改）
   → 改落 ``loved_entries`` 表，有独立生命周期。
 
-表：
-- ``user_posts(id, author, content, created_at, loved)``     用户/小桔写的日记
+表（均在统一库 ``~/.deskmate/deskmate.db`` 内，与认知层/CognitiveStore 同库）：
+- ``user_posts(id, author, content, created_at, loved, archived)``  用户/小桔写的日记
 - ``comments(id, moment_id, author, text, created_at)``       双方留言
 - ``loved_entries(id, moment_id, content, day, created_at, tags)``  🩷 沉淀（去重、供检索）
 
@@ -32,7 +32,10 @@ from pathlib import Path
 from typing import Any
 
 _DEFAULT_DIR = Path.home() / ".deskmate"
-_DIARY_DB = "diary.db"
+# 2026-08-31：日记表并入统一库 deskmate.db（与认知层/CognitiveStore、profile 类 JSON 同库），
+# 收口成单一 SQLite，备份是同一原子单元。旧 diary.db 首次启动自动迁移并备份重命名。
+_DIARY_DB = "deskmate.db"
+_OLD_DIARY_DB = "diary.db"
 _DIARY_MEMORY_VIEW = "diary_memory.md"
 _MOMENTS_JSON = "moments.json"
 
@@ -66,6 +69,8 @@ class DiaryStore:
         self.base.mkdir(parents=True, exist_ok=True)
         self._connect().close()  # 触发建库 + 建表
         self._ensure_schema()
+        # 并入统一库：把旧 diary.db 的日记/留言/🩷 沉淀迁进来（幂等、备份）
+        self._migrate_from_old_diary_db()
 
     # ------------------------------------------------------------------
     # 连接 / schema
@@ -132,6 +137,74 @@ class DiaryStore:
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_loved_content ON loved_entries(content)"
             )
+
+    # ------------------------------------------------------------------
+    # 迁移：旧 diary.db → 统一库 deskmate.db
+    # ------------------------------------------------------------------
+    def _migrate_from_old_diary_db(self) -> None:
+        """把旧 ``diary.db`` 的 user_posts/comments/loved_entries 并入统一库。
+
+        - 幂等：若统一库已有 user_posts 数据（已并入），直接备份弃用旧库。
+        - 迁移后把旧库重命名为 ``diary.db.bak-<ts>``（绝不删除），留作安全网。
+        - fail-open：任何异常跳过，绝不影响新库使用。
+        """
+        old = self.base / _OLD_DIARY_DB
+        if not old.is_file():
+            return
+        try:
+            with self._connect() as conn:
+                already = conn.execute("SELECT 1 FROM user_posts LIMIT 1").fetchone()
+            if already:
+                # 已并入：旧库可弃
+                self._backup_old_diary(old)
+                return
+            src = sqlite3.connect(str(old))
+            try:
+                posts = src.execute(
+                    "SELECT id, author, content, created_at, loved, archived "
+                    "FROM user_posts"
+                ).fetchall()
+                comments = src.execute(
+                    "SELECT id, moment_id, author, text, created_at FROM comments"
+                ).fetchall()
+                loved = src.execute(
+                    "SELECT moment_id, content, day, created_at, tags FROM loved_entries"
+                ).fetchall()
+            finally:
+                src.close()
+            with self._connect() as conn:
+                conn.executemany(
+                    "INSERT OR IGNORE INTO user_posts"
+                    "(id, author, content, created_at, loved, archived) VALUES(?,?,?,?,?,?)",
+                    posts,
+                )
+                conn.executemany(
+                    "INSERT OR IGNORE INTO comments"
+                    "(id, moment_id, author, text, created_at) VALUES(?,?,?,?,?)",
+                    comments,
+                )
+                conn.executemany(
+                    "INSERT OR IGNORE INTO loved_entries"
+                    "(moment_id, content, day, created_at, tags) VALUES(?,?,?,?,?)",
+                    loved,
+                )
+            self.export_memory_view()
+            self._backup_old_diary(old)
+        except Exception:
+            return
+
+    @staticmethod
+    def _backup_old_diary(path: Path) -> None:
+        ts = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+        bak = path.with_name(f"{path.name}.bak-{ts}")
+        n = 0
+        while bak.exists():
+            n += 1
+            bak = path.with_name(f"{path.name}.bak-{ts}-{n}")
+        try:
+            path.rename(bak)
+        except Exception:
+            pass
 
     # ------------------------------------------------------------------
     # 写：用户/小桔日记
@@ -318,7 +391,7 @@ class DiaryStore:
     # 迁移（幂等）
     # ------------------------------------------------------------------
     def migrate_from_legacy(self, backup: bool = True) -> dict[str, Any]:
-        """从 moments.json + MEMORY.md 的 ##/§ 日记沉淀 块迁移到 diary.db。
+        """从 moments.json + MEMORY.md 的 ##/§ 日记沉淀 块迁移到统一库 deskmate.db。
 
         - 幂等：若 user_posts 非空，跳过（已迁移）。
         - 迁移前对 moments.json / MEMORY.md 做 .bak 备份（backup=True）。

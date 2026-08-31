@@ -35,18 +35,14 @@ DEFAULT_STYLE_PATH = (
 
 
 def load_style_profile(path: Path | None = None) -> dict[str, Any]:
-    """加载写作风格画像（沿用 P1-5 的 style_profile.json）。
+    """加载写作风格画像（统一库 deskmate.db 为真相源；legacy 文件自动迁移）。
 
-    返回空 dict 如果文件不存在或损坏。
+    委托 ``deskmate.style_profile_store.load_profile`` 保持单一来源，避免两套读取逻辑漂移。
+    返回空 dict 如果不存在或损坏。
     """
-    p = path or DEFAULT_STYLE_PATH
-    if not p.is_file():
-        return {}
-    try:
-        data = json.loads(p.read_text(encoding="utf-8"))
-        return data if isinstance(data, dict) else {}
-    except (OSError, ValueError, json.JSONDecodeError):
-        return {}
+    from deskmate.style_profile_store import load_profile as _load_style_profile
+
+    return _load_style_profile(path or DEFAULT_STYLE_PATH)
 
 
 def format_style_quantified(style: dict[str, Any]) -> str:

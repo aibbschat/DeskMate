@@ -36,16 +36,23 @@ def _strip_frontmatter(text: str) -> str:
 
 
 def _read_style_profile(desk: Path) -> dict:
-    """读全局风格画像，返回 {summary, features} 字典（缺失返回空）。"""
-    p = desk / "style_profile.json"
-    if not p.is_file():
-        return {}
-    try:
-        import json
+    """读全局风格画像，返回 {summary, features} 字典（缺失返回空）。
 
-        data = json.loads(p.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return {}
+    默认全局画像从统一库 deskmate.db 读；若 desk 下仍有 legacy 文件
+    （自定义 base_dir 场景），回退读文件，兼容尚未迁移的环境。
+    """
+    import json
+
+    if (desk / "style_profile.json").is_file():
+        # 自定义 base_dir 下的 legacy 项目级画像 → 读文件
+        try:
+            data = json.loads((desk / "style_profile.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            data = {}
+    else:
+        from deskmate.style_profile_store import DEFAULT_PROFILE_PATH, load_profile as _load_style
+
+        data = _load_style(DEFAULT_PROFILE_PATH) or {}
     summary = (
         data.get("summary")
         or (data.get("profile") or {}).get("summary")

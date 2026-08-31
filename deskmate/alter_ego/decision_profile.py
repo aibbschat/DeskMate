@@ -29,6 +29,8 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
+from deskmate.persistence import BlobStore
+
 DEFAULT_PROFILE_PATH = (
     Path(os.environ.get("DESKMATE_DIR", str(Path.home() / ".deskmate")))
     / "decision_profile.json"
@@ -308,8 +310,15 @@ def update_profile(profile: DecisionProfile, signals: list[DecisionSignal]) -> D
 
 
 def load_profile(path: Path | None = None) -> DecisionProfile:
-    """加载决策画像；不存在或损坏返回空画像。"""
-    p = path or DEFAULT_PROFILE_PATH
+    """加载决策画像；不存在或损坏返回空画像。
+
+    默认（path=None）从统一库 deskmate.db 读（首次自动从 legacy decision_profile.json 迁移）；
+    显式 path 仍走文件（测试 / 自定义路径兼容）。
+    """
+    if path is None:
+        data = BlobStore().get(BlobStore.KEY_DECISION, legacy_path=DEFAULT_PROFILE_PATH)
+        return DecisionProfile.from_dict(data) if isinstance(data, dict) else DecisionProfile()
+    p = path
     if not p.is_file():
         return DecisionProfile()
     try:
@@ -320,8 +329,11 @@ def load_profile(path: Path | None = None) -> DecisionProfile:
 
 
 def save_profile(profile: DecisionProfile, path: Path | None = None) -> None:
-    """原子写盘决策画像。"""
-    p = path or DEFAULT_PROFILE_PATH
+    """保存决策画像。默认（path=None）写入统一库 deskmate.db；显式 path 走文件（原子写）。"""
+    if path is None:
+        BlobStore().set(BlobStore.KEY_DECISION, profile.to_dict())
+        return
+    p = path
     p.parent.mkdir(parents=True, exist_ok=True)
     tmp = p.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(profile.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8")

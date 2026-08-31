@@ -30,9 +30,9 @@ def test_love_writes_sqlite_and_view():
     store, base = _store()
     r = store.love("m1", "今天终于把第三章改完了")
     assert r["memorized"] is True
-    # 落 SQLite
-    assert (base / "diary.db").is_file()
-    conn = __import__("sqlite3").connect(str(base / "diary.db"))
+    # 落 SQLite（统一库 deskmate.db）
+    assert (base / "deskmate.db").is_file()
+    conn = __import__("sqlite3").connect(str(base / "deskmate.db"))
     rows = conn.execute("SELECT content FROM loved_entries").fetchall()
     assert len(rows) == 1 and "第三章" in rows[0][0]
     # 导出检索视图（§ 分节）
@@ -47,7 +47,7 @@ def test_love_dedup_no_repeat():
     store.love("m1", "今天读了《兰陵王》")
     r2 = store.love("m2", "今天读了《兰陵王》")  # 不同 id、同内容
     assert r2["memorized"] is False
-    conn = __import__("sqlite3").connect(str(base / "diary.db"))
+    conn = __import__("sqlite3").connect(str(base / "deskmate.db"))
     n = conn.execute("SELECT COUNT(*) FROM loved_entries").fetchone()[0]
     assert n == 1, "重复沉淀未去重"
 
@@ -115,8 +115,8 @@ def test_migrate_from_legacy_json_and_memory(tmp_path):
     assert res["mem_cleaned"] is True
     assert res["backups"], "应生成备份"
 
-    # 验证 DB
-    conn = __import__("sqlite3").connect(str(tmp_path / "diary.db"))
+    # 验证 DB（统一库 deskmate.db）
+    conn = __import__("sqlite3").connect(str(tmp_path / "deskmate.db"))
     posts = conn.execute("SELECT id, loved FROM user_posts").fetchall()
     loved = conn.execute("SELECT content FROM loved_entries").fetchall()
     assert len(posts) == 2 and len(loved) == 4

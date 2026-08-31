@@ -33,6 +33,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+from deskmate.persistence import BlobStore
 from deskmate.style_metrics import compute_style_metrics, merge_metrics
 
 DEFAULT_PROFILE_PATH = (
@@ -41,12 +42,24 @@ DEFAULT_PROFILE_PATH = (
 )
 
 
+def _is_default_path(path: Path) -> bool:
+    """是否默认全局画像路径——是则走统一库，否则走显式文件（CLI/自定义路径）。"""
+    return Path(path) == DEFAULT_PROFILE_PATH
+
+
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
 def load_profile(path: Path) -> dict:
-    """读取现有画像；不存在或损坏返回空 dict。"""
+    """读取现有画像；不存在或损坏返回空 dict。
+
+    默认全局路径（~/.deskmate/style_profile.json）从统一库 deskmate.db 读
+    （首次自动从 legacy JSON 迁移）；显式路径仍走文件（CLI/自定义路径兼容）。
+    """
+    if _is_default_path(path):
+        data = BlobStore().get(BlobStore.KEY_STYLE, legacy_path=DEFAULT_PROFILE_PATH)
+        return data if isinstance(data, dict) else {}
     if not path.is_file():
         return {}
     try:
@@ -57,7 +70,10 @@ def load_profile(path: Path) -> dict:
 
 
 def save_profile(path: Path, data: dict) -> None:
-    """原子写盘（临时文件 + replace），避免并发读到半截文件。"""
+    """保存画像。默认全局路径写入统一库 deskmate.db；显式路径走文件（原子写）。"""
+    if _is_default_path(path):
+        BlobStore().set(BlobStore.KEY_STYLE, data)
+        return
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + ".tmp")
     tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")

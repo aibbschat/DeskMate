@@ -15,6 +15,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+from deskmate.persistence import BlobStore
+
 
 # 勋章解锁时间的「不可考」标记：体系建立之前就已达成、无从查证确切日期的勋章，
 # 一律用它占位而不编造日期。前端据此显示「早期补录」。
@@ -141,18 +143,32 @@ def _num(data: dict, key: str, default, cast):
 
 
 def load_state(base_dir: Path | str | None = None) -> GrowthState:
-    """加载成长状态；不存在或损坏时返回默认值（不抛异常）。"""
-    path = _state_path(base_dir)
-    if not path.is_file():
-        return GrowthState()
+    """加载成长状态；不存在或损坏时返回默认值（不抛异常）。
 
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError, json.JSONDecodeError):
-        return GrowthState()
+    默认（base_dir=None）从统一库 deskmate.db 读（首次自动从 legacy growth.json 迁移）；
+    显式 base_dir 仍走文件（测试 / 自定义目录兼容）。
+    """
+    data = _load_raw(base_dir)
     if not isinstance(data, dict):
         return GrowthState()
+    return _build_state(data)
 
+
+def _load_raw(base_dir: Path | str | None) -> dict | None:
+    """读取原始 dict：默认走 DB；显式 base_dir 走文件。"""
+    if base_dir is None:
+        return BlobStore().get(BlobStore.KEY_GROWTH, legacy_path=_default_base_dir() / "growth.json")
+    path = _state_path(base_dir)
+    if not path.is_file():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, json.JSONDecodeError):
+        return None
+
+
+def _build_state(data: dict) -> GrowthState:
+    """从 dict 逐字段容错构造 GrowthState（DB / 文件共用）。"""
     st = GrowthState(
         version=_num(data, "version", 1, int),
         intimacy=_num(data, "intimacy", 0.0, float),
@@ -218,9 +234,14 @@ def load_state(base_dir: Path | str | None = None) -> GrowthState:
 def save_state(state: GrowthState, base_dir: Path | str | None = None) -> None:
     """保存成长状态。
 
+    默认（base_dir=None）写入统一库 deskmate.db；显式 base_dir 走文件（原子 rename）。
     写盘失败不抛异常（成长统计不该让主流程崩），但会记一条 warning——
     勋章解锁记录靠这一步落盘，静默失败等于丢勋章，必须留痕。
     """
+    if base_dir is None:
+        state.updated_at = _now()
+        BlobStore().set(BlobStore.KEY_GROWTH, state.to_dict())
+        return
     path = _state_path(base_dir)
     try:
         path.parent.mkdir(parents=True, exist_ok=True)

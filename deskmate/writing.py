@@ -117,18 +117,30 @@ def _auto_load_style_profile(workspace: str | None = None) -> str:
         格式化的风格画像文本（用于注入 prompt），或空串（无画像）。
     """
     if workspace:
+        # 项目级风格画像：仍走文件（项目本地，不进全局统一库）
         candidates = [Path(workspace) / p for p in _DEFAULT_STYLE_PROFILE_PATHS]
-    else:
-        candidates = [Path(p) for p in _DEFAULT_STYLE_PROFILE_PATHS]
-        candidates.append(Path.home() / ".deskmate" / "style_profile.json")
-    for fp in candidates:
-        fp = fp.expanduser().resolve()
-        if fp.is_file():
-            try:
-                data = json.loads(fp.read_text(encoding="utf-8"))
-                return format_profile_for_prompt(data)
-            except (OSError, json.JSONDecodeError):
-                continue
+        for fp in candidates:
+            fp = fp.expanduser().resolve()
+            if fp.is_file():
+                try:
+                    data = json.loads(fp.read_text(encoding="utf-8"))
+                    return format_profile_for_prompt(data)
+                except (OSError, json.JSONDecodeError):
+                    continue
+        return ""
+    # 全局画像：优先统一库 deskmate.db（style_profile_store 内部自动迁移 legacy），
+    # 再回退扫描 ~/.deskmate/style_profile.json（兼容尚未迁移的自定义环境）。
+    from deskmate.style_profile_store import DEFAULT_PROFILE_PATH, load_profile as _load_style
+
+    data = _load_style(DEFAULT_PROFILE_PATH)
+    if data:
+        return format_profile_for_prompt(data)
+    fp = Path.home() / ".deskmate" / "style_profile.json"
+    if fp.is_file():
+        try:
+            return format_profile_for_prompt(json.loads(fp.read_text(encoding="utf-8")))
+        except (OSError, json.JSONDecodeError):
+            return ""
     return ""
 
 

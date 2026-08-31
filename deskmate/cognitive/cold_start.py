@@ -60,15 +60,10 @@ def _read_memory_md() -> str:
 
 
 def _read_style_profile() -> dict:
-    """读取 style_profile.json。"""
-    p = _base_dir() / "style_profile.json"
-    if p.exists():
-        import json
-        try:
-            return json.loads(p.read_text(encoding="utf-8"))
-        except Exception:
-            return {}
-    return {}
+    """读取全局写作风格画像（统一库 deskmate.db 为真相源；legacy 文件自动迁移）。"""
+    from deskmate.style_profile_store import DEFAULT_PROFILE_PATH, load_profile as _load_style
+
+    return _load_style(DEFAULT_PROFILE_PATH)
 
 
 def cold_start(

@@ -39,7 +39,13 @@ from .sensitivity import NOSYNC_TAG, should_sync
 _NOSYNC_MARK = "#" + NOSYNC_TAG
 
 # 参与同步的「知识记忆」根文件（相对 base_dir）
-_SYNC_ROOT_FILES = ["SOUL.md", "USER.md", "MEMORY.md", "style_profile.json"]
+# 注：style_profile.json 已于 2026-08-31 收进统一库 deskmate.db，不再以独立文件存在；
+# 其跨端同步改由派生包 deskmate_profiles.json（style + decision 画像）承载，见下方。
+_SYNC_ROOT_FILES = ["SOUL.md", "USER.md", "MEMORY.md"]
+
+# 跨端「懂你」派生包：从 deskmate.db 导出 style + decision 画像，供多端延续
+# （diary 私密、growth 设备本地，均不同步——与下方 _EXCLUDE 一致）。
+_PROFILE_BUNDLE_REL = "deskmate_profiles.json"
 
 # 参与同步的目录（递归 *.md）
 _SYNC_DIRS = ["vault", "projects", "preferences"]
@@ -330,6 +336,11 @@ class MemorySyncService:
                         result["conflicts"].append(rel)
                 backend.write(rel, content)
                 result["pushed"] += 1
+            # 跨端「懂你」派生包（style + decision 画像，从统一库导出）
+            bundle = self._export_profile_bundle()
+            if bundle is not None:
+                backend.write(_PROFILE_BUNDLE_REL, bundle)
+                result["pushed"] += 1
             self._touch(cfg)
         except Exception as e:  # fail-open
             result["errors"].append(str(e))
@@ -342,6 +353,11 @@ class MemorySyncService:
         result = {"pulled": 0, "skipped": 0, "conflicts": [], "errors": []}
         try:
             for rel in backend.list_relpaths():
+                if rel == _PROFILE_BUNDLE_REL:
+                    # 派生包：导入回统一库（不落本地文件）
+                    self._import_profile_bundle(backend.read(rel) or "")
+                    result["pulled"] += 1
+                    continue
                 remote_content = backend.read(rel) or ""
                 local_path = (self.base_dir / rel).resolve()
                 # 只拉回已知同步根内的文件
@@ -394,6 +410,43 @@ class MemorySyncService:
         except Exception:
             pass
         return raw
+
+    def _export_profile_bundle(self) -> str | None:
+        """从统一库导出跨端「懂你」派生包（style + decision 画像）。
+
+        无画像返回 None（不推送空包）。fail-open：异常返回 None。
+        """
+        try:
+            from deskmate.persistence import BlobStore
+
+            kb = BlobStore()
+            style = kb.get(kb.KEY_STYLE)
+            decision = kb.get(kb.KEY_DECISION)
+            if not style and not decision:
+                return None
+            return json.dumps(
+                {"style_profile": style or {}, "decision_profile": decision or {}},
+                ensure_ascii=False,
+                indent=2,
+            )
+        except Exception:
+            return None
+
+    def _import_profile_bundle(self, content: str) -> None:
+        """把拉回的派生包写回统一库（style + decision 画像）。fail-open。"""
+        try:
+            data = json.loads(content)
+            from deskmate.persistence import BlobStore
+
+            kb = BlobStore()
+            style = data.get("style_profile")
+            decision = data.get("decision_profile")
+            if isinstance(style, dict) and style:
+                kb.set(kb.KEY_STYLE, style)
+            if isinstance(decision, dict) and decision:
+                kb.set(kb.KEY_DECISION, decision)
+        except Exception:
+            pass
 
     def _touch(self, cfg: dict) -> None:
         cfg["last_sync"] = time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime())
