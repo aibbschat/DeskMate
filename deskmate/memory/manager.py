@@ -842,9 +842,16 @@ class DeskMateMemoryManager:
 
     def _load_global_memory(self) -> str:
         p = self._global_memory_path()
+        parts: list[str] = []
         if p.is_file():
-            return p.read_text(encoding="utf-8")
-        return ""
+            parts.append(p.read_text(encoding="utf-8"))
+        # 🩷 日记沉淀视图（来自 DiaryStore / SQLite，脱离全局 MEMORY.md 避免截断/改写）。
+        # 拼接后 prefetch 的 Core/Recall/全局三层检索自动覆盖「§ 日记沉淀 #moment #diary」分节，
+        # 使点🩷的日记在聊天中被检索到（零改 prefetch 核心逻辑）。
+        diary_view = self.base_dir / "diary_memory.md"
+        if diary_view.is_file():
+            parts.append(diary_view.read_text(encoding="utf-8"))
+        return "\n\n".join(parts)
 
     def _save_global_memory(self, content: str) -> None:
         # 8.4 敏感分级：保存时自动为 § 分节打 #sensitive/#private tag（fail-open）

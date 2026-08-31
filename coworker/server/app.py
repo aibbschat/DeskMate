@@ -2674,6 +2674,35 @@ def create_app(manager: SessionManager) -> FastAPI:
             logging.exception("import memory to vault failed")
             return JSONResponse({"error": "import failed"}, status_code=500)
 
+    @app.post("/v1/deskmate/vault/update")
+    async def update_vault_entry(request: Request) -> dict[str, Any]:
+        """更新 vault 中的单个文件内容（用于人生档案等条目的在线编辑/校准）。"""
+        try:
+            body = await request.json()
+            rel_path = str(body.get("path", "")).strip()
+            content = body.get("content")
+            if not rel_path or content is None:
+                return JSONResponse({"error": "path and content required"}, status_code=400)
+            # 防路径穿越：不允许 ..，必须是相对路径
+            if ".." in rel_path.split("/") or rel_path.startswith("/"):
+                return JSONResponse({"error": "invalid path"}, status_code=400)
+            from pathlib import Path as _P
+
+            desk_dir = _P(
+                os.environ.get("DESKMATE_DIR", os.path.expanduser("~/.deskmate"))
+            )
+            vault_dir = desk_dir / "vault"
+            target = (vault_dir / rel_path).resolve()
+            # 二次校验：解析后必须仍在 vault_dir 内
+            if not str(target).startswith(str(vault_dir.resolve())):
+                return JSONResponse({"error": "path outside vault"}, status_code=400)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(content, encoding="utf-8")
+            return {"ok": True, "path": rel_path, "bytes": len(content.encode("utf-8"))}
+        except Exception:
+            logging.exception("update vault entry failed")
+            return JSONResponse({"error": "write failed"}, status_code=500)
+
     @app.get("/v1/deskmate/learned-history")
     async def get_deskmate_learned_history(limit: int = 30) -> dict[str, Any]:
         """读取 DeskMate 学习历史（越用越懂你的时间线 + 了解度统计）。
@@ -3339,6 +3368,90 @@ def create_app(manager: SessionManager) -> FastAPI:
         except Exception:
             logging.exception("get deskmate diary date failed")
             return JSONResponse({"error": "读取日记失败"}, status_code=500)
+
+    # ---- MomentFeed：私密双人日记（用户侧数据 + 🩷 落记忆 + 小桔回复）----
+    @app.get("/v1/deskmate/moments")
+    async def get_deskmate_moments(cursor: str | None = None, limit: int = 50) -> dict[str, Any]:
+        """用户日记 / 留言 / 🩷 沉淀状态。小桔日记另走 /v1/deskmate/diary。
+        分页：传 cursor(上一页末条 createdAt) + limit 返回 {items, next_cursor}；
+        不传 cursor 时返回全量 snapshot（兼容旧前端，前端分页 UI 后续接入）。"""
+        try:
+            from deskmate.growth.moments import MomentsStore
+
+            base = os.environ.get("DESKMATE_DIR", os.path.expanduser("~/.deskmate"))
+            store = MomentsStore(base_dir=base)
+            if cursor:
+                page = store.get_posts(limit=max(1, min(limit, 200)), cursor=cursor)
+                return {"items": page["items"], "next_cursor": page["next_cursor"]}
+            return store.snapshot()
+        except Exception:
+            logging.exception("get deskmate moments failed")
+            return {"userPosts": [], "comments": {}, "loved": []}
+
+    @app.post("/v1/deskmate/moments/post")
+    async def post_deskmate_moment(request: Request) -> dict[str, Any]:
+        """用户发一条日记；后端顺带生成小桔的回复（LLM，失败回落规则）。"""
+        try:
+            body = await request.json()
+        except Exception:
+            return JSONResponse({"error": "invalid json"}, status_code=400)
+        content = (body or {}).get("content", "")
+        if not content or not content.strip():
+            return JSONResponse({"error": "内容为空"}, status_code=400)
+        try:
+            from deskmate.growth.moments import MomentsStore
+
+            base = os.environ.get("DESKMATE_DIR", os.path.expanduser("~/.deskmate"))
+            store = MomentsStore(base_dir=base)
+            post = store.add_user_post(content)
+            reply = store.generate_reply(content)
+            return {"post": post, "reply": reply}
+        except Exception:
+            logging.exception("post deskmate moment failed")
+            return JSONResponse({"error": "发布失败"}, status_code=500)
+
+    @app.post("/v1/deskmate/moments/comment")
+    async def post_deskmate_moment_comment(request: Request) -> dict[str, Any]:
+        """给任意一条日记留言（互动层，不落记忆）。"""
+        try:
+            body = await request.json()
+        except Exception:
+            return JSONResponse({"error": "invalid json"}, status_code=400)
+        moment_id = (body or {}).get("moment_id", "")
+        author = (body or {}).get("author", "me")
+        text = (body or {}).get("text", "")
+        if not moment_id or not text.strip():
+            return JSONResponse({"error": "参数缺失"}, status_code=400)
+        try:
+            from deskmate.growth.moments import MomentsStore
+
+            base = os.environ.get("DESKMATE_DIR", os.path.expanduser("~/.deskmate"))
+            store = MomentsStore(base_dir=base)
+            c = store.add_comment(moment_id, author, text)
+            return {"comment": c}
+        except Exception:
+            logging.exception("post deskmate moment comment failed")
+            return JSONResponse({"error": "留言失败"}, status_code=500)
+
+    @app.post("/v1/deskmate/moments/{moment_id}/love")
+    async def post_deskmate_moment_love(moment_id: str, request: Request) -> dict[str, Any]:
+        """🩷 沉淀：把这条日记落 SQLite（loved_entries），并导出检索视图供聊天 prefetch 检索。
+
+        不再写入全局 MEMORY.md（避免 2 万字符截断 + compress/purify 改写丢失）。见 diary_store.py。
+        """
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        content = (body or {}).get("content", "")
+        try:
+            from deskmate.growth.moments import MomentsStore
+
+            base = os.environ.get("DESKMATE_DIR", os.path.expanduser("~/.deskmate"))
+            return MomentsStore(base_dir=base).love(moment_id, content)
+        except Exception:
+            logging.exception("post deskmate moment love failed")
+            return JSONResponse({"error": "沉淀失败"}, status_code=500)
 
     @app.get("/v1/deskmate/behavior-patterns")
     async def get_deskmate_behavior_patterns(days: int = 120) -> dict[str, Any]:

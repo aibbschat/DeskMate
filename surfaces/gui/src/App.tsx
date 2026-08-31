@@ -89,6 +89,7 @@ import { DeskHome } from "./components/deskmate/DeskHome";
 import { EXPERTS, getExpert, type Expert } from "./components/deskmate/experts";
 import { ExpertAvatar } from "./components/deskmate/ExpertAvatar";
 import { ReportDialog } from "./components/deskmate/ReportDialog";
+import { ProfileCenter } from "./components/deskmate/ProfileCenter";
 
 import { ExpertsCenter } from "./components/deskmate/ExpertsCenter";
 import { CreationChatView } from "./components/CreationChatView";
@@ -316,7 +317,7 @@ export function App() {
   // load; corrected by loadSettings.
   const [modelReady, setModelReady] = useState(true);
   const [surface, setSurface] = useState<
-    "session" | "scheduled" | "integrations" | "skillstore" | "audit" | "inbox" | "persona" | "settings" | "experts" | "roundtable" | "badges" | "creation" | "teamchat"
+    "session" | "scheduled" | "integrations" | "skillstore" | "audit" | "inbox" | "persona" | "settings" | "experts" | "roundtable" | "badges" | "profile" | "creation" | "teamchat"
   >("session");
   const [teamId] = useState("");
   // A remembered Scheduled-detail target must not outlive the surface (see the
@@ -1613,6 +1614,8 @@ export function App() {
         <TeamChatView teamId={teamId} onClose={() => setSurface("creation")} />
       ) : surface === "badges" ? (
         <BadgeWall onBack={() => setSurface("session")} />
+      ) : surface === "profile" ? (
+        <ProfileCenter onBack={() => setSurface("session")} />
       ) : (
       <div className={"main" + (surface === "session" && agent !== "chat" && !railHidden ? " rail-open" : "")}>
         <div className="main-topbar">
@@ -1774,7 +1777,7 @@ export function App() {
                     onPrefill={prefillComposer}
                   />
                 ) : agent === "deskmate" ? (
-                  <DeskHome />
+                  <DeskHome onOpenProfile={() => setSurface("profile")} />
                 ) : (
                   <div className="hero">
                     <h1 className="greeting">

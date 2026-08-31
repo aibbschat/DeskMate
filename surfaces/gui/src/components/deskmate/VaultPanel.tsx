@@ -30,6 +30,7 @@ const CATEGORY_META: Record<string, { label: string; color: string; icon: string
   work: { label: "创作", color: "#f59e0b", icon: "✍️" },
   preferences: { label: "偏好", color: "#10b981", icon: "💚" },
   archive: { label: "归档", color: "#9ca3af", icon: "📦" },
+  life: { label: "人生档案", color: "#c2662f", icon: "📖" },
 };
 
 export function VaultPanel() {
@@ -37,6 +38,35 @@ export function VaultPanel() {
   const [stats, setStats] = useState<VaultStats | null>(null);
   const [loading, setLoading] = useState(true);
   const [expanded, setExpanded] = useState<string | null>(null);
+  const [editingPath, setEditingPath] = useState<string | null>(null);
+  const [draft, setDraft] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  async function handleSave(path: string) {
+    if (!path || saving) return;
+    setSaving(true);
+    try {
+      const r = await authedFetch(`${httpBase()}/v1/deskmate/vault/update`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path, content: draft }),
+      });
+      if (r.ok) {
+        // 更新本地条目内容
+        setEntries((prev) =>
+          prev.map((e) => (e.path === path ? { ...e, body: draft } : e))
+        );
+        setEditingPath(null);
+        setDraft("");
+      } else {
+        alert("保存失败：" + (await r.text()));
+      }
+    } catch (e) {
+      alert("保存失败：" + String(e));
+    } finally {
+      setSaving(false);
+    }
+  }
 
   useEffect(() => {
     authedFetch(`${httpBase()}/v1/deskmate/vault`)
@@ -185,7 +215,7 @@ export function VaultPanel() {
                           ))}
                         </div>
                       )}
-                      {isOpen && e.body && (
+                      {isOpen && e.body && editingPath !== e.path && (
                         <div
                           style={{
                             marginTop: 8,
@@ -199,7 +229,66 @@ export function VaultPanel() {
                             whiteSpace: "pre-wrap",
                           }}
                         >
-                          {e.body.length > 500 ? e.body.slice(0, 500) + "…" : e.body}
+                          {e.body}
+                        </div>
+                      )}
+                      {isOpen && editingPath === e.path && (
+                        <div style={{ marginTop: 8, paddingTop: 8, borderTop: "1px solid rgba(214,188,160,0.3)" }}>
+                          <textarea
+                            value={draft}
+                            onChange={(ev) => setDraft(ev.target.value)}
+                            style={{
+                              width: "100%",
+                              minHeight: 160,
+                              fontSize: 12,
+                              color: "#4d3a2a",
+                              lineHeight: 1.7,
+                              padding: "8px 10px",
+                              borderRadius: 8,
+                              border: "1px solid rgba(194,102,47,0.3)",
+                              background: "#fffdf8",
+                              fontFamily: "inherit",
+                              resize: "vertical",
+                              boxSizing: "border-box",
+                            }}
+                          />
+                          <div style={{ display: "flex", gap: 8, marginTop: 8, justifyContent: "flex-end" }}>
+                            <button
+                              onClick={() => { setEditingPath(null); setDraft(""); }}
+                              style={{
+                                fontSize: 11.5, padding: "4px 12px", borderRadius: 6,
+                                border: "1px solid rgba(214,188,160,0.5)", background: "#fff", color: "#6b5a48",
+                                cursor: "pointer",
+                              }}
+                            >
+                              取消
+                            </button>
+                            <button
+                              onClick={() => handleSave(e.path)}
+                              disabled={saving}
+                              style={{
+                                fontSize: 11.5, padding: "4px 12px", borderRadius: 6,
+                                border: "none", background: saving ? "#cbb39c" : "#c2662f", color: "#fff",
+                                cursor: saving ? "default" : "pointer", fontWeight: 600,
+                              }}
+                            >
+                              {saving ? "保存中…" : "保存"}
+                            </button>
+                          </div>
+                        </div>
+                      )}
+                      {isOpen && e.body && editingPath !== e.path && (
+                        <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 6 }}>
+                          <button
+                            onClick={(ev) => { ev.stopPropagation(); setEditingPath(e.path); setDraft(e.body || ""); }}
+                            style={{
+                              fontSize: 11, padding: "3px 10px", borderRadius: 6,
+                              border: "1px solid rgba(194,102,47,0.25)", background: "rgba(194,102,47,0.06)", color: "#c2662f",
+                              cursor: "pointer", fontWeight: 500,
+                            }}
+                          >
+                            ✎ 编辑
+                          </button>
                         </div>
                       )}
                     </div>

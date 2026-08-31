@@ -46,6 +46,7 @@ _CATEGORY_DIRS = {
     "work": "work",
     "note": "knowledge",
     "research": "knowledge",
+    "life": "life",
 }
 
 # vault 搜索结果最大字符数
@@ -492,7 +493,7 @@ class VaultStore:
                         "tags": meta.get("tags", []),
                         "created": meta.get("created", ""),
                         "title": md_file.stem,
-                        "body": body.strip()[:200],
+                        "body": body.strip(),
                     }
                 )
         return entries

@@ -1,0 +1,467 @@
+/**
+ * MomentFeed — 小桔日记的微博/朋友圈样式时间线（私密双人）。
+ *
+ * 数据闭环（后端做实版）：
+ * - 小桔日记 → GET /v1/deskmate/diary（真实 DiaryWriter 生成）
+ * - 用户日记 / 留言 / 🩷 沉淀 → /v1/deskmate/moments*（MomentsStore 持久化）
+ * - 🩷 落记忆 → POST /moments/{id}/love，后端把这条追加进 MEMORY.md（懂我持久化）
+ * - 小桔真回复 → POST /moments/post 由 LLM（qwen）生成，失败回落规则
+ *
+ * 展示细节：用户昵称「萧盛」+ 本地头像；发帖可选表情（复用聊天 EmotePicker）。
+ */
+
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { authedFetch, httpBase } from "../../api";
+import XiaojuAvatar from "../XiaojuAvatar";
+import { EmotePicker } from "./emotes/EmotePicker";
+import { emoteLabel } from "./emotes/emoteManifest";
+import { getActivePack } from "./emotes/emotePack";
+import { renderEmoteInline } from "./emotes/Emote";
+import userAvatar from "../../assets/user-avatar.jpg";
+
+const USER_NAME = "萧盛";
+
+type Author = "xiaoju" | "me";
+
+interface MomentComment {
+  id: string;
+  author: Author;
+  text: string;
+  at: string;
+}
+
+interface Moment {
+  id: string;
+  author: Author;
+  date: string;
+  at: string;
+  content: string;
+  loved: boolean;
+  comments: MomentComment[];
+}
+
+function uid(): string {
+  return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+/** 轻量 markdown 渲染（小桔日记用） */
+function renderText(text: string): React.ReactNode {
+  const lines = text.split("\n");
+  const blocks: React.ReactNode[] = [];
+  let listItems: string[] = [];
+  const flushList = () => {
+    if (listItems.length) {
+      blocks.push(
+        <ul key={`ul-${blocks.length}`}>
+          {listItems.map((it, i) => (
+            <li key={i}>{it}</li>
+          ))}
+        </ul>,
+      );
+      listItems = [];
+    }
+  };
+  lines.forEach((line, i) => {
+    const t = line.trim();
+    if (t.startsWith("# ")) {
+      flushList();
+      blocks.push(<h3 key={`h-${i}`}>{t.slice(2)}</h3>);
+    } else if (t.startsWith("- ")) {
+      listItems.push(t.slice(2));
+    } else if (t.startsWith("> ")) {
+      flushList();
+      blocks.push(<blockquote key={`q-${i}`}>{t.slice(2)}</blockquote>);
+    } else if (t === "") {
+      flushList();
+    } else {
+      flushList();
+      blocks.push(<p key={`p-${i}`}>{t}</p>);
+    }
+  });
+  flushList();
+  return <>{blocks}</>;
+}
+
+/** 用户日记正文：按行渲染，行内支持表情 token */
+function renderUserContent(text: string): React.ReactNode {
+  return text.split("\n").map((line, i) => (
+    <p key={i} style={{ margin: "4px 0" }}>
+      {line ? renderEmoteInline(line, 20) : "\u00A0"}
+    </p>
+  ));
+}
+
+/** 把后端小桔日记 markdown 拆成「展示标题 + 正文」 */
+function splitDiary(text: string): { dateLabel: string; body: string } {
+  const lines = text.split("\n");
+  const title = lines[0]?.startsWith("# ") ? lines[0].slice(2) : "";
+  return { dateLabel: title, body: lines.slice(1).join("\n") };
+}
+
+/** 中文日期展示 */
+function dateLabel(date: string): string {
+  try {
+    const d = new Date(`${date}T12:00:00`);
+    const week = "日一二三四五六"[d.getDay()];
+    return `${d.getMonth() + 1}月${d.getDate()}日 周${week}`;
+  } catch {
+    return date;
+  }
+}
+
+export function MomentFeed() {
+  const [moments, setMoments] = useState<Moment[]>([]);
+  const [loaded, setLoaded] = useState(false);
+  const [draft, setDraft] = useState("");
+  const [composerOpen, setComposerOpen] = useState(false);
+  const [emoteOpen, setEmoteOpen] = useState(false);
+  const [publishing, setPublishing] = useState(false);
+  const [notice, setNotice] = useState("");
+  const [commentDrafts, setCommentDrafts] = useState<Record<string, string>>({});
+  const [openComments, setOpenComments] = useState<Record<string, boolean>>({});
+
+  const flashNotice = (msg: string) => {
+    setNotice(msg);
+    window.setTimeout(() => setNotice(""), 2400);
+  };
+
+  /** 载入：小桔真实日记 + 用户 moments（后端） */
+  const loadAll = useCallback(async () => {
+    let mePosts: { id: string; content: string; createdAt: string }[] = [];
+    let comments: Record<string, MomentComment[]> = {};
+    let loved: string[] = [];
+    try {
+      const r = await authedFetch(`${httpBase()}/v1/deskmate/moments`);
+      if (r.ok) {
+        const d = await r.json();
+        mePosts = Array.isArray(d.userPosts) ? d.userPosts : [];
+        comments = d.comments || {};
+        loved = Array.isArray(d.loved) ? d.loved : [];
+      }
+    } catch {
+      /* 静默 */
+    }
+    // 小桔日记
+    const xj: Moment[] = [];
+    try {
+      const r = await authedFetch(`${httpBase()}/v1/deskmate/diary`);
+      if (r.ok) {
+        const d = await r.json();
+        const dates: string[] = Array.isArray(d.dates) ? d.dates : [];
+        for (const date of dates.slice(-14).reverse()) {
+          try {
+            const rr = await authedFetch(`${httpBase()}/v1/deskmate/diary/${date}`);
+            if (rr.ok) {
+              const dd = await rr.json();
+              if (dd.content) {
+                xj.push({
+                  id: `xj-${date}`,
+                  author: "xiaoju",
+                  date,
+                  at: `${date}T12:00:00`,
+                  content: dd.content,
+                  loved: false,
+                  comments: comments[`xj-${date}`] || [],
+                });
+              }
+            }
+          } catch {
+            /* 单篇失败跳过 */
+          }
+        }
+      }
+    } catch {
+      /* 静默 */
+    }
+    const me: Moment[] = mePosts.map((p) => ({
+      id: p.id,
+      author: "me",
+      date: (p.createdAt || "").slice(0, 10),
+      at: p.createdAt,
+      content: p.content,
+      loved: loved.includes(p.id),
+      comments: comments[p.id] || [],
+    }));
+    setMoments([...xj, ...me]);
+    setLoaded(true);
+  }, []);
+
+  useEffect(() => {
+    loadAll();
+  }, [loadAll]);
+
+  const sorted = useMemo(
+    () => [...moments].sort((a, b) => (a.at < b.at ? 1 : -1)),
+    [moments],
+  );
+
+  /** 用户发日记；后端返回 post + 小桔真回复（LLM） */
+  const publish = async () => {
+    const text = draft.trim();
+    if (!text || publishing) return;
+    setPublishing(true);
+    try {
+      const r = await authedFetch(`${httpBase()}/v1/deskmate/moments/post`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ content: text }),
+      });
+      if (r.ok) {
+        const d = await r.json();
+        const post = d.post;
+        const reply: MomentComment = {
+          id: uid(),
+          author: "xiaoju",
+          text: d.reply || "我记下了。",
+          at: new Date().toISOString(),
+        };
+        const me: Moment = {
+          id: post.id,
+          author: "me",
+          date: (post.createdAt || "").slice(0, 10),
+          at: post.createdAt,
+          content: post.content,
+          loved: false,
+          comments: [reply],
+        };
+        setMoments((prev) => [me, ...prev]);
+        setDraft("");
+        setComposerOpen(false);
+        flashNotice("小桔回复了你");
+      } else {
+        flashNotice("发布失败，请稍后再试");
+      }
+    } catch {
+      flashNotice("发布失败，请稍后再试");
+    } finally {
+      setPublishing(false);
+    }
+  };
+
+  /** 留言（互动层） */
+  const addComment = async (id: string) => {
+    const text = (commentDrafts[id] || "").trim();
+    if (!text) return;
+    try {
+      const r = await authedFetch(`${httpBase()}/v1/deskmate/moments/comment`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ moment_id: id, author: "me", text }),
+      });
+      if (r.ok) {
+        const d = await r.json();
+        const c: MomentComment = {
+          id: d.comment.id,
+          author: "me",
+          text: d.comment.text,
+          at: d.comment.createdAt,
+        };
+        setMoments((prev) =>
+          prev.map((m) => (m.id === id ? { ...m, comments: [...m.comments, c] } : m)),
+        );
+        setCommentDrafts((p) => ({ ...p, [id]: "" }));
+      }
+    } catch {
+      /* 静默 */
+    }
+  };
+
+  /** 🩷 落记忆（后端追加进 MEMORY.md，懂我持久化） */
+  const toggleLove = async (id: string, content: string) => {
+    try {
+      const r = await authedFetch(`${httpBase()}/v1/deskmate/moments/${id}/love`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ content }),
+      });
+      if (r.ok) {
+        const d = await r.json();
+        setMoments((prev) => prev.map((m) => (m.id === id ? { ...m, loved: !!d.loved } : m)));
+        flashNotice(d.message || "已悄悄记进记忆");
+      }
+    } catch {
+      flashNotice("沉淀失败，请稍后再试");
+    }
+  };
+
+  const toggleComments = (id: string) =>
+    setOpenComments((p) => ({ ...p, [id]: !p[id] }));
+
+  /** 插入表情 token（与聊天 Composer 一致：emote:PACK:NAME，渲染冻结） */
+  const insertEmote = (name: string) => {
+    const label = emoteLabel(name);
+    const token = `![${label}](emote:${getActivePack()}:${name})`;
+    setDraft((d) => (d.trim() ? `${d.trimEnd()} ${token}` : token));
+    setEmoteOpen(false);
+  };
+
+  return (
+    <div className="mom-feed">
+      <div className="mom-feed-header">
+        <div className="mom-feed-title">
+          <XiaojuAvatar size={22} />
+          <span>我们的日记</span>
+          <span className="mom-feed-sub">只有我们看得见</span>
+        </div>
+        <button
+          type="button"
+          className="mom-compose-btn"
+          onClick={() => setComposerOpen((v) => !v)}
+        >
+          ✎ 我也写一条
+        </button>
+      </div>
+
+      {notice && <div className="mom-notice">{notice}</div>}
+
+      {composerOpen && (
+        <div className="mom-composer">
+          <textarea
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            placeholder="写下今天发生的事，或想对小桔说的话…（可插表情）"
+            rows={3}
+          />
+          {emoteOpen && (
+            <div className="mom-emote-picker">
+              <EmotePicker onPick={insertEmote} />
+            </div>
+          )}
+          <div className="mom-composer-actions">
+            <button type="button" onClick={() => setEmoteOpen((v) => !v)} aria-label="表情">
+              <span style={{ fontSize: 15 }}>🙂</span>
+            </button>
+            <span className="mom-composer-spacer" />
+            <button type="button" onClick={() => setComposerOpen(false)}>
+              取消
+            </button>
+            <button
+              type="button"
+              className="mom-primary"
+              onClick={publish}
+              disabled={!draft.trim() || publishing}
+            >
+              {publishing ? "发布中…" : "发布"}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {!loaded ? (
+        <p className="mom-loading">翻开我们的日记…</p>
+      ) : sorted.length === 0 ? (
+        <div className="mom-empty">
+          <p>这里还没有日记。</p>
+          <p className="mom-empty-hint">写一条，或等小桔记下今天——回忆就从这里开始。</p>
+        </div>
+      ) : (
+        <div className="mom-timeline">
+          {sorted.map((m) => (
+            <MomentCard
+              key={m.id}
+              moment={m}
+              openComments={!!openComments[m.id]}
+              commentDraft={commentDrafts[m.id] || ""}
+              onToggleComments={() => toggleComments(m.id)}
+              onCommentDraft={(v) => setCommentDrafts((p) => ({ ...p, [m.id]: v }))}
+              onAddComment={() => addComment(m.id)}
+              onLove={() => toggleLove(m.id, m.content)}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function MomentCard({
+  moment,
+  openComments,
+  commentDraft,
+  onToggleComments,
+  onCommentDraft,
+  onAddComment,
+  onLove,
+}: {
+  moment: Moment;
+  openComments: boolean;
+  commentDraft: string;
+  onToggleComments: () => void;
+  onCommentDraft: (v: string) => void;
+  onAddComment: () => void;
+  onLove: () => void;
+}) {
+  const isXj = moment.author === "xiaoju";
+  const { dateLabel: xjTitle, body: xjBody } = isXj
+    ? splitDiary(moment.content)
+    : { dateLabel: "", body: moment.content };
+
+  return (
+    <div className={`mom-card ${isXj ? "mom-xj" : "mom-me"}`}>
+      <div className="mom-card-head">
+        {isXj ? (
+          <XiaojuAvatar size={36} />
+        ) : (
+          <img src={userAvatar} alt={USER_NAME} className="mom-me-avatar" />
+        )}
+        <div className="mom-card-meta">
+          <span className="mom-author">{isXj ? "小桔" : USER_NAME}</span>
+          <span className="mom-date">
+            {isXj ? xjTitle || dateLabel(moment.date) : dateLabel(moment.date)}
+          </span>
+        </div>
+      </div>
+
+      <div className="mom-card-body">
+        {isXj ? renderText(xjBody || moment.content) : renderUserContent(moment.content)}
+      </div>
+
+      <div className="mom-actions">
+        <button
+          type="button"
+          className={`mom-love ${moment.loved ? "loved" : ""}`}
+          onClick={onLove}
+          title={moment.loved ? "已记进记忆" : "记进记忆"}
+        >
+          <span className="mom-love-heart">{moment.loved ? "🩷" : "🤍"}</span>
+          <span>{moment.loved ? "已记进记忆" : "记进记忆"}</span>
+        </button>
+        <button type="button" className="mom-comment" onClick={onToggleComments}>
+          <span>💬</span>
+          <span>{moment.comments.length ? `${moment.comments.length} 条留言` : "留言"}</span>
+        </button>
+      </div>
+
+      {openComments && (
+        <div className="mom-comments">
+          {moment.comments.map((c) => (
+            <div key={c.id} className={`mom-comment-item ${c.author === "xiaoju" ? "xj" : "me"}`}>
+              {c.author === "xiaoju" ? (
+                <XiaojuAvatar size={20} />
+              ) : (
+                <img src={userAvatar} alt={USER_NAME} className="mom-me-avatar sm" />
+              )}
+              <div className="mom-comment-bubble">
+                <span className="mom-comment-author">{c.author === "xiaoju" ? "小桔" : USER_NAME}</span>
+                <span>{renderEmoteInline(c.text, 16)}</span>
+              </div>
+            </div>
+          ))}
+          <div className="mom-comment-input">
+            <input
+              value={commentDraft}
+              onChange={(e) => onCommentDraft(e.target.value)}
+              placeholder={isXj ? `给小桔留言…` : "回复…"}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") onAddComment();
+              }}
+            />
+            <button type="button" onClick={onAddComment} disabled={!commentDraft.trim()}>
+              发送
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
