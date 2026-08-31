@@ -36,12 +36,18 @@ def _dir() -> Path:
 
 
 def load_cognitive_profile() -> CognitiveProfile | None:
-    """加载认知画像；缺失 / 损坏返回 None（fail-open）。"""
-    p = _dir() / "cognitive_profile.json"
-    if not p.is_file():
-        return None
+    """加载认知画像（从 deskmate.db）；DB 缺失 / 空画像返回 None（fail-open）。"""
     try:
-        return CognitiveProfile.from_json(p.read_text(encoding="utf-8"))
+        from .store import CognitiveStore
+
+        profile = CognitiveStore().load_profile()
+        if not (
+            profile.stances or profile.argument_patterns
+            or profile.value_rankings or profile.thinking_frameworks
+            or profile.cognitive_gaps
+        ):
+            return None
+        return profile
     except Exception:
         return None
 

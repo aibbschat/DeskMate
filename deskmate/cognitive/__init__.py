@@ -41,6 +41,7 @@ from .models import (
     HistoryEntry,
 )
 from .profile import CognitiveProfileManager, get_profile_manager
+from .store import CognitiveStore
 from .extractor import CognitiveExtractor, get_extractor
 from .cold_start import cold_start
 from .interfaces import (
@@ -65,6 +66,7 @@ __all__ = [
     # 画像管理
     "CognitiveProfileManager",
     "get_profile_manager",
+    "CognitiveStore",
     # 提取管线
     "CognitiveExtractor",
     "get_extractor",

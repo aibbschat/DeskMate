@@ -26,34 +26,47 @@ from .models import (
     _now,
 )
 
+from .store import CognitiveStore
+
 
 def _default_profile_path() -> Path:
+    """兼容旧语义：返回 legacy JSON 路径（仅作为首次迁移源）。"""
     return Path(os.path.expanduser("~/.deskmate/cognitive_profile.json"))
 
 
+def _default_db_path() -> Path:
+    return Path(os.path.expanduser("~/.deskmate/deskmate.db"))
+
+
 class CognitiveProfileManager:
-    """认知画像管理器——负责加载、保存、增量更新。"""
+    """认知画像管理器——加载、保存、增量更新（SQLite 持久化，可拓展）。
+
+    profile_path 兼容两种语义：
+    - 以 .db 结尾 → 直接作为统一库路径
+    - 以 .json 结尾 / 省略 → 当作 legacy 迁移源，库落到默认 deskmate.db
+    """
 
     def __init__(self, profile_path: Optional[str | Path] = None):
-        self.profile_path = Path(profile_path) if profile_path else _default_profile_path()
+        if profile_path and str(profile_path).endswith(".db"):
+            db_path = profile_path
+            legacy = _default_profile_path()
+        else:
+            db_path = _default_db_path()
+            legacy = profile_path if (profile_path and str(profile_path).endswith(".json")) else _default_profile_path()
+        self.db_path = Path(db_path)
+        self.store = CognitiveStore(db_path=db_path, legacy_json=legacy)
+        # 仅对默认统一库自动迁移 legacy JSON（自定义库如测试库不自动迁）
+        if self.db_path.resolve() == _default_db_path().resolve():
+            self.store.migrate_from_legacy(legacy)
         self.profile: Optional[CognitiveProfile] = None
         self._load()
 
     def _load(self):
-        if self.profile_path.exists():
-            try:
-                self.profile = CognitiveProfile.from_json(
-                    self.profile_path.read_text(encoding="utf-8")
-                )
-            except Exception:
-                self.profile = CognitiveProfile()
-        else:
-            self.profile = CognitiveProfile()
+        self.profile = self.store.load_profile()
 
     def save(self):
-        self.profile_path.parent.mkdir(parents=True, exist_ok=True)
         self.profile.last_updated = _now()
-        self.profile_path.write_text(self.profile.to_json(), encoding="utf-8")
+        self.store.persist(self.profile)
 
     def get(self) -> CognitiveProfile:
         return self.profile
