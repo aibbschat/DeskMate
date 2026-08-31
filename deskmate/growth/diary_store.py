@@ -93,6 +93,13 @@ class DiaryStore:
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_posts_created ON user_posts(created_at DESC)"
             )
+            # 每条日记独立归档标记（与🩷、回复并列的卡片操作；仅影响时间线展示）
+            try:
+                conn.execute(
+                    "ALTER TABLE user_posts ADD COLUMN archived INTEGER NOT NULL DEFAULT 0"
+                )
+            except Exception:
+                pass  # 列已存在则跳过（幂等）
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS comments (
@@ -198,6 +205,21 @@ class DiaryStore:
         return {"loved": True, "memorized": memorized}
 
     # ------------------------------------------------------------------
+    # 写：每条日记独立归档（与🩷、回复并列的卡片操作）
+    # ------------------------------------------------------------------
+    def archive(self, moment_id: str, archived: bool = True) -> bool:
+        """把单条日记标记为已归档 / 未归档。仅影响时间线展示，不影响🩷记忆检索。
+
+        返回是否有行被更新（moment_id 不存在则返回 False）。
+        """
+        with self._connect() as conn:
+            cur = conn.execute(
+                "UPDATE user_posts SET archived = ? WHERE id = ?",
+                (1 if archived else 0, moment_id),
+            )
+            return cur.rowcount > 0
+
+    # ------------------------------------------------------------------
     # 读：分页
     # ------------------------------------------------------------------
     def get_posts(self, limit: int = 50, cursor: str | None = None) -> dict[str, Any]:
@@ -215,13 +237,13 @@ class DiaryStore:
         with self._connect() as conn:
             if cur_ca:
                 rows = conn.execute(
-                    "SELECT id, author, content, created_at, loved FROM user_posts "
+                    "SELECT id, author, content, created_at, loved, archived FROM user_posts "
                     "WHERE (created_at, id) < (?, ?) ORDER BY created_at DESC, id DESC LIMIT ?",
                     (cur_ca, cur_id, limit + 1),
                 ).fetchall()
             else:
                 rows = conn.execute(
-                    "SELECT id, author, content, created_at, loved FROM user_posts "
+                    "SELECT id, author, content, created_at, loved, archived FROM user_posts "
                     "ORDER BY created_at DESC, id DESC LIMIT ?",
                     (limit + 1,),
                 ).fetchall()
@@ -234,7 +256,7 @@ class DiaryStore:
                 {"id": cid, "author": cauthor, "text": ctext, "createdAt": cat}
             )
         items: list[dict] = []
-        for rid, rauthor, rcontent, rcreated, rloved in rows[:limit]:
+        for rid, rauthor, rcontent, rcreated, rloved, rarchived in rows[:limit]:
             items.append(
                 {
                     "id": rid,
@@ -242,6 +264,7 @@ class DiaryStore:
                     "content": rcontent,
                     "createdAt": rcreated,
                     "loved": bool(rloved),
+                    "archived": bool(rarchived),
                     "comments": by_moment.get(rid, []),
                 }
             )
@@ -262,7 +285,7 @@ class DiaryStore:
     def snapshot(self) -> dict[str, Any]:
         with self._connect() as conn:
             posts = conn.execute(
-                "SELECT id, author, content, created_at, loved FROM user_posts "
+                "SELECT id, author, content, created_at, loved, archived FROM user_posts "
                 "ORDER BY created_at DESC"
             ).fetchall()
             comments = conn.execute(
@@ -280,14 +303,15 @@ class DiaryStore:
                 "content": pcontent,
                 "createdAt": pcreated,
                 "loved": bool(ploved),
+                "archived": bool(parchived),
                 "comments": by_moment.get(pid, []),
             }
-            for pid, pauthor, pcontent, pcreated, ploved in posts
+            for pid, pauthor, pcontent, pcreated, ploved, parchived in posts
         ]
         return {
             "userPosts": user_posts,
             "comments": by_moment,
-            "loved": [pid for pid, _, _, _, ploved in posts if ploved],
+            "loved": [pid for pid, _, _, _, ploved, _ in posts if ploved],
         }
 
     # ------------------------------------------------------------------

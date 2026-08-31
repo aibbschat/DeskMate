@@ -42,6 +42,13 @@ function stubFetch() {
           json: async () => ({ loved: true, memorized: true, message: "已悄悄记进记忆" }),
         } as Response;
       }
+      if (method === "POST" && u.includes("/archive")) {
+        const body = JSON.parse(String(init?.body || "{}"));
+        return {
+          ok: true,
+          json: async () => ({ ok: true, archived: !!body.archived }),
+        } as Response;
+      }
       const hit = Object.entries(routes).find(([k]) => u.includes(k));
       return { ok: true, json: async () => (hit ? hit[1] : {}) } as Response;
     }),
@@ -138,5 +145,48 @@ describe("MomentFeed 微博时间线（后端版）", () => {
     fireEvent.click(screen.getByText("加载更多日记"));
     expect(await screen.findByText("第二页丙")).toBeTruthy();
     await waitFor(() => expect(screen.queryByText("加载更多日记")).toBeNull());
+  });
+
+  it("每条日记可独立归档：归档后离开时间线收进「已归档」区，可取消归档恢复", async () => {
+    const moments = {
+      items: [
+        { id: "p1", content: "要归档的这条", createdAt: "2026-08-31T12:00:00", loved: false, archived: false, comments: [] },
+        { id: "p2", content: "留在时间线的这条", createdAt: "2026-08-30T12:00:00", loved: false, archived: false, comments: [] },
+      ],
+      next_cursor: null,
+      comments: {},
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+        const u = String(url);
+        const method = (init?.method || "GET").toUpperCase();
+        if (method === "POST" && u.includes("/archive")) {
+          const body = JSON.parse(String(init?.body || "{}"));
+          return { ok: true, json: async () => ({ ok: true, archived: !!body.archived }) } as Response;
+        }
+        if (u.includes("/v1/deskmate/moments")) {
+          return { ok: true, json: async () => moments } as Response;
+        }
+        if (u.includes("/v1/deskmate/diary")) {
+          return { ok: true, json: async () => ({ dates: [] }) } as Response;
+        }
+        return { ok: true, json: async () => ({}) } as Response;
+      }),
+    );
+    render(<MomentFeed />);
+    expect(await screen.findByText("要归档的这条")).toBeTruthy();
+    expect(screen.getByText("留在时间线的这条")).toBeTruthy();
+    // 点第一条的「归档」（时间线按时间倒序，p1 在最前）
+    fireEvent.click(screen.getAllByTitle("归档这条")[0]);
+    await waitFor(() => expect(screen.queryByText("要归档的这条")).toBeNull());
+    expect(await screen.findByText(/已归档（1）/)).toBeTruthy();
+    // 展开已归档区
+    fireEvent.click(screen.getByText(/已归档（1）/));
+    expect(await screen.findByText("要归档的这条")).toBeTruthy();
+    // 取消归档 → 回到时间线，已归档区消失
+    fireEvent.click(screen.getByTitle("取消归档"));
+    await waitFor(() => expect(screen.queryByText(/已归档（/)).toBeNull());
+    expect(await screen.findByText("要归档的这条")).toBeTruthy();
   });
 });

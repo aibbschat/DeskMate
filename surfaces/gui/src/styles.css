@@ -3828,6 +3828,21 @@ html[data-theme="dark"] .creation-preview-article a {
 .mom-actions button:hover { background: #faf6ee; color: #92400e; }
 .mom-love.loved { color: #e11d48; background: #fff0f3; }
 .mom-love-heart { font-size: 15px; line-height: 1; }
+.mom-archive.archived { color: #6b7280; background: #f1f0ee; }
+
+/* 已归档区（底部折叠） */
+.mom-archived { margin-top: 18px; border-top: 1px dashed #ece3d3; padding-top: 12px; }
+.mom-archived-toggle {
+  display: inline-flex; align-items: center; gap: 6px;
+  border: none; background: transparent; color: #9a8f7c; cursor: pointer;
+  font-family: inherit; font-size: 13px; padding: 4px 8px; border-radius: 999px;
+}
+.mom-archived-toggle:hover { background: #faf6ee; color: #92400e; }
+
+/* 小桔日记切换栏说明 */
+.dm-diary-tabs-hint {
+  margin: 0 0 10px; font-size: 12px; color: #a99e88; line-height: 1.5;
+}
 
 /* 留言区 */
 .mom-comments {

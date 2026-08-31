@@ -99,6 +99,10 @@ class MomentsStore:
     def snapshot(self) -> dict[str, Any]:
         return self.store.snapshot()
 
+    def get_posts(self, limit: int = 50, cursor: str | None = None) -> dict[str, Any]:
+        """委托 DiaryStore.get_posts（cursor 分页：{items, next_cursor, comments}）。"""
+        return self.store.get_posts(limit=limit, cursor=cursor)
+
     # ------------------------------------------------------------------
     # 用户日记
     # ------------------------------------------------------------------
@@ -133,6 +137,13 @@ class MomentsStore:
             "memorized": memorized,
             "message": "已悄悄记进记忆" if memorized else "这条之前已记过",
         }
+
+    # ------------------------------------------------------------------
+    # 每条日记独立归档（与🩷、回复并列的卡片操作；仅影响时间线展示）
+    # ------------------------------------------------------------------
+    def archive(self, moment_id: str, archived: bool = True) -> bool:
+        """委托 DiaryStore.archive。返回是否有行被更新。"""
+        return self.store.archive(moment_id, archived=archived)
 
     # ------------------------------------------------------------------
     # 小桔真回复（LLM 降级链，不写死任何 provider，失败回落本地规则）

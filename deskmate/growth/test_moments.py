@@ -159,3 +159,28 @@ def test_pagination_no_loss_no_dup(tmp_path):
     seen_cts = [cts[ids.index(i)] for i in seen]
     assert seen_cts == sorted(seen_cts, reverse=True), "非时间倒序"
     assert seen[0] == ids[-1], "最新未排最前"
+
+
+def test_archive_independent_of_love():
+    """每条日记可独立归档；归档仅改 archived 标记，不影响🩷记忆检索维度。"""
+    store, base = _store()
+    p = store.add_user_post("要归档的日记")
+    pid = p["id"]
+    # 先🩷沉淀
+    store.love(pid, "要归档的日记")
+    # 归档
+    assert store.archive(pid, archived=True) is True
+    item = store.get_posts(limit=10)["items"][0]
+    assert item["archived"] is True
+    assert item["loved"] is True, "归档不应影响🩷记忆标记"
+    # 🩷 与 归档 是两个独立维度：归档后记忆检索仍能命中
+    from deskmate.memory.manager import DeskMateMemoryManager
+
+    mgr = DeskMateMemoryManager(base_dir=base)
+    assert "要归档的日记" in mgr.prefetch("要归档的日记"), "归档后🩷记忆仍应可检索"
+    # 取消归档
+    assert store.archive(pid, archived=False) is True
+    assert store.get_posts(limit=10)["items"][0]["archived"] is False
+    # 不存在的 id 返回 False
+    assert store.archive("nope", True) is False
+

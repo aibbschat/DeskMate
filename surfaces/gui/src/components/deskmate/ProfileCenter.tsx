@@ -330,8 +330,11 @@ export function ProfileCenter({ onBack }: { onBack: () => void }) {
                 className={diaryView === "archive" ? "active" : ""}
                 onClick={() => setDiaryView("archive")}
               >
-                归档
+                小桔的记录
               </button>
+            </div>
+            <div className="dm-diary-tabs-hint">
+              时间线＝你和小桔共写、可🩷可留言；小桔的记录＝小桔自己写的每日随笔（只读查阅）。
             </div>
             {diaryView === "timeline" ? <MomentFeed /> : <DiaryPanel />}
           </div>

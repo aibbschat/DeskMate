@@ -37,6 +37,7 @@ interface Moment {
   at: string;
   content: string;
   loved: boolean;
+  archived: boolean;
   comments: MomentComment[];
 }
 
@@ -122,6 +123,7 @@ export function MomentFeed() {
   const [cursor, setCursor] = useState<string | null>(null);
   const [hasMore, setHasMore] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
+  const [showArchived, setShowArchived] = useState(false);
 
   const flashNotice = (msg: string) => {
     setNotice(msg);
@@ -174,6 +176,7 @@ export function MomentFeed() {
       content: string;
       createdAt: string;
       loved: boolean;
+      archived?: boolean;
       comments?: MomentComment[];
     }[] = [];
     let comments: Record<string, MomentComment[]> = {};
@@ -190,15 +193,16 @@ export function MomentFeed() {
       /* 静默 */
     }
     const xj = await fetchXjMoments(comments);
-    const me: Moment[] = meItems.map((p) => ({
-      id: p.id,
-      author: "me",
-      date: (p.createdAt || "").slice(0, 10),
-      at: p.createdAt,
-      content: p.content,
-      loved: !!p.loved,
-      comments: p.comments || comments[p.id] || [],
-    }));
+      const me: Moment[] = meItems.map((p) => ({
+        id: p.id,
+        author: "me",
+        date: (p.createdAt || "").slice(0, 10),
+        at: p.createdAt,
+        content: p.content,
+        loved: !!p.loved,
+        archived: !!p.archived,
+        comments: p.comments || comments[p.id] || [],
+      }));
     setMoments([...xj, ...me]);
     setCursor(next);
     setHasMore(next !== null);
@@ -220,6 +224,7 @@ export function MomentFeed() {
           content: string;
           createdAt: string;
           loved: boolean;
+          archived?: boolean;
           comments?: MomentComment[];
         }[] = Array.isArray(d.items) ? d.items : [];
         const more: Moment[] = items.map((p) => ({
@@ -229,6 +234,7 @@ export function MomentFeed() {
           at: p.createdAt,
           content: p.content,
           loved: !!p.loved,
+          archived: !!p.archived,
           comments: p.comments || [],
         }));
         setMoments((prev) => [...prev, ...more]);
@@ -251,6 +257,16 @@ export function MomentFeed() {
   const sorted = useMemo(
     () => [...moments].sort((a, b) => (a.at < b.at ? 1 : -1)),
     [moments],
+  );
+
+  /** 时间线只显示未归档；已归档的收进底部「已归档」区（可取消归档恢复）。 */
+  const activeMoments = useMemo(
+    () => sorted.filter((m) => !m.archived),
+    [sorted],
+  );
+  const archivedMoments = useMemo(
+    () => sorted.filter((m) => m.archived),
+    [sorted],
   );
 
   /** 用户发日记；后端返回 post + 小桔真回复（LLM） */
@@ -342,6 +358,24 @@ export function MomentFeed() {
     }
   };
 
+  /** 每条日记独立归档 / 取消归档（仅影响时间线展示，不影响已🩷记忆检索） */
+  const toggleArchive = async (id: string, archived: boolean) => {
+    try {
+      const r = await authedFetch(`${httpBase()}/v1/deskmate/moments/${id}/archive`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ archived }),
+      });
+      if (r.ok) {
+        setMoments((prev) => prev.map((m) => (m.id === id ? { ...m, archived } : m)));
+      } else {
+        flashNotice("归档失败，请稍后再试");
+      }
+    } catch {
+      flashNotice("归档失败，请稍后再试");
+    }
+  };
+
   const toggleComments = (id: string) =>
     setOpenComments((p) => ({ ...p, [id]: !p[id] }));
 
@@ -415,7 +449,7 @@ export function MomentFeed() {
       ) : (
         <>
           <div className="mom-timeline">
-            {sorted.map((m) => (
+            {activeMoments.map((m) => (
               <MomentCard
                 key={m.id}
                 moment={m}
@@ -425,6 +459,7 @@ export function MomentFeed() {
                 onCommentDraft={(v) => setCommentDrafts((p) => ({ ...p, [m.id]: v }))}
                 onAddComment={() => addComment(m.id)}
                 onLove={() => toggleLove(m.id, m.content)}
+                onArchive={() => toggleArchive(m.id, !m.archived)}
               />
             ))}
           </div>
@@ -433,6 +468,34 @@ export function MomentFeed() {
               <button type="button" onClick={loadMore} disabled={loadingMore}>
                 {loadingMore ? "加载中…" : "加载更多日记"}
               </button>
+            </div>
+          )}
+          {archivedMoments.length > 0 && (
+            <div className="mom-archived">
+              <button
+                type="button"
+                className="mom-archived-toggle"
+                onClick={() => setShowArchived((v) => !v)}
+              >
+                📦 已归档（{archivedMoments.length}）{showArchived ? "▾" : "▸"}
+              </button>
+              {showArchived && (
+                <div className="mom-timeline">
+                  {archivedMoments.map((m) => (
+                    <MomentCard
+                      key={m.id}
+                      moment={m}
+                      openComments={!!openComments[m.id]}
+                      commentDraft={commentDrafts[m.id] || ""}
+                      onToggleComments={() => toggleComments(m.id)}
+                      onCommentDraft={(v) => setCommentDrafts((p) => ({ ...p, [m.id]: v }))}
+                      onAddComment={() => addComment(m.id)}
+                      onLove={() => toggleLove(m.id, m.content)}
+                      onArchive={() => toggleArchive(m.id, !m.archived)}
+                    />
+                  ))}
+                </div>
+              )}
             </div>
           )}
         </>
@@ -449,6 +512,7 @@ function MomentCard({
   onCommentDraft,
   onAddComment,
   onLove,
+  onArchive,
 }: {
   moment: Moment;
   openComments: boolean;
@@ -457,6 +521,7 @@ function MomentCard({
   onCommentDraft: (v: string) => void;
   onAddComment: () => void;
   onLove: () => void;
+  onArchive: () => void;
 }) {
   const isXj = moment.author === "xiaoju";
   const { dateLabel: xjTitle, body: xjBody } = isXj
@@ -497,6 +562,17 @@ function MomentCard({
           <span>💬</span>
           <span>{moment.comments.length ? `${moment.comments.length} 条留言` : "留言"}</span>
         </button>
+        {!isXj && (
+          <button
+            type="button"
+            className={`mom-archive ${moment.archived ? "archived" : ""}`}
+            onClick={onArchive}
+            title={moment.archived ? "取消归档" : "归档这条"}
+          >
+            <span>{moment.archived ? "📂" : "📦"}</span>
+            <span>{moment.archived ? "取消归档" : "归档"}</span>
+          </button>
+        )}
       </div>
 
       {openComments && (

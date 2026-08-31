@@ -3458,6 +3458,28 @@ def create_app(manager: SessionManager) -> FastAPI:
             logging.exception("post deskmate moment love failed")
             return JSONResponse({"error": "沉淀失败"}, status_code=500)
 
+    @app.post("/v1/deskmate/moments/{moment_id}/archive")
+    async def post_deskmate_moment_archive(moment_id: str, request: Request) -> dict[str, Any]:
+        """每条日记独立归档 / 取消归档（与🩷、回复并列的卡片操作）。
+
+        body: {"archived": true|false}（缺省 true）。归档仅影响时间线展示，
+        不影响已🩷的记忆检索（🩷 与 归档 是两个独立维度）。
+        """
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        archived = bool((body or {}).get("archived", True))
+        try:
+            from deskmate.growth.moments import MomentsStore
+
+            base = os.environ.get("DESKMATE_DIR", os.path.expanduser("~/.deskmate"))
+            ok = MomentsStore(base_dir=base).archive(moment_id, archived=archived)
+            return {"ok": ok, "archived": archived}
+        except Exception:
+            logging.exception("archive moment failed")
+            return JSONResponse({"error": "归档失败"}, status_code=500)
+
     @app.get("/v1/deskmate/behavior-patterns")
     async def get_deskmate_behavior_patterns(days: int = 120) -> dict[str, Any]:
         """P2-3：从长期行为推断出的偏好模式（越用越懂你 最高阶，8.0 可感可看）。"""
