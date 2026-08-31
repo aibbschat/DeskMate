@@ -9,7 +9,7 @@ import { MomentFeed } from "./MomentFeed";
 
 function stubFetch() {
   const routes: Record<string, unknown> = {
-    "/v1/deskmate/moments": { userPosts: [], comments: {}, loved: [] },
+    "/v1/deskmate/moments": { items: [], next_cursor: null, comments: {} },
     "/v1/deskmate/diary": { dates: [] },
   };
   vi.stubGlobal(
@@ -99,5 +99,44 @@ describe("MomentFeed 微博时间线（后端版）", () => {
     fireEvent.change(input, { target: { value: "明天见" } });
     fireEvent.click(screen.getByText("发送"));
     expect(await screen.findByText("明天见")).toBeTruthy();
+  });
+
+  it("cursor 分页：首屏渲染后点加载更多追加下一页，到底后按钮消失", async () => {
+    const page1 = {
+      items: [
+        { id: "p1", content: "第一页甲", createdAt: "2026-08-31T12:00:00", loved: false, comments: [] },
+        { id: "p2", content: "第一页乙", createdAt: "2026-08-30T12:00:00", loved: false, comments: [] },
+      ],
+      next_cursor: "2026-08-30T12:00:00|p2",
+      comments: {},
+    };
+    const page2 = {
+      items: [{ id: "p3", content: "第二页丙", createdAt: "2026-08-29T12:00:00", loved: false, comments: [] }],
+      next_cursor: null,
+      comments: {},
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: RequestInfo | URL) => {
+        const u = String(url);
+        if (u.includes("/moments?") && u.includes("cursor=")) {
+          return { ok: true, json: async () => page2 } as Response;
+        }
+        if (u.includes("/v1/deskmate/moments")) {
+          return { ok: true, json: async () => page1 } as Response;
+        }
+        if (u.includes("/v1/deskmate/diary")) {
+          return { ok: true, json: async () => ({ dates: [] }) } as Response;
+        }
+        return { ok: true, json: async () => ({}) } as Response;
+      }),
+    );
+    render(<MomentFeed />);
+    expect(await screen.findByText("第一页甲")).toBeTruthy();
+    expect(screen.getByText("第一页乙")).toBeTruthy();
+    expect(screen.getByText("加载更多日记")).toBeTruthy();
+    fireEvent.click(screen.getByText("加载更多日记"));
+    expect(await screen.findByText("第二页丙")).toBeTruthy();
+    await waitFor(() => expect(screen.queryByText("加载更多日记")).toBeNull());
   });
 });

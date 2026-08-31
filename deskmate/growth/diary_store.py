@@ -252,7 +252,9 @@ class DiaryStore:
             next_cursor = f"{last[3]}|{last[0]}"
         else:
             next_cursor = None
-        return {"items": items, "next_cursor": next_cursor}
+        # comments 全量映射（含 xj-* 小桔日记留言），供前端按 moment_id 查找；
+        # user_posts 自身的留言已在 items 内联，此映射主要为小桔日记（非 user_posts 行）服务。
+        return {"items": items, "next_cursor": next_cursor, "comments": by_moment}
 
     # ------------------------------------------------------------------
     # 读：快照（兼容旧 MomentsStore.snapshot 结构）

@@ -3373,20 +3373,25 @@ def create_app(manager: SessionManager) -> FastAPI:
     @app.get("/v1/deskmate/moments")
     async def get_deskmate_moments(cursor: str | None = None, limit: int = 50) -> dict[str, Any]:
         """用户日记 / 留言 / 🩷 沉淀状态。小桔日记另走 /v1/deskmate/diary。
-        分页：传 cursor(上一页末条 createdAt) + limit 返回 {items, next_cursor}；
-        不传 cursor 时返回全量 snapshot（兼容旧前端，前端分页 UI 后续接入）。"""
+        分页：cursor(上一页末条 createdAt|id) + limit → {items, next_cursor, comments}；
+        cursor 为 None 时返回第一页（同样的 {items, next_cursor, comments} 形态）。
+        items 为 user_posts（内联 comments、带 loved 标记），comments 为全量留言映射
+        （含 xj-* 小桔日记留言，供前端按 moment_id 查找）。next_cursor 为 None 表示到底。"""
         try:
             from deskmate.growth.moments import MomentsStore
 
             base = os.environ.get("DESKMATE_DIR", os.path.expanduser("~/.deskmate"))
-            store = MomentsStore(base_dir=base)
-            if cursor:
-                page = store.get_posts(limit=max(1, min(limit, 200)), cursor=cursor)
-                return {"items": page["items"], "next_cursor": page["next_cursor"]}
-            return store.snapshot()
+            page = MomentsStore(base_dir=base).get_posts(
+                limit=max(1, min(limit, 200)), cursor=cursor
+            )
+            return {
+                "items": page["items"],
+                "next_cursor": page["next_cursor"],
+                "comments": page.get("comments", {}),
+            }
         except Exception:
             logging.exception("get deskmate moments failed")
-            return {"userPosts": [], "comments": {}, "loved": []}
+            return {"items": [], "next_cursor": None, "comments": {}}
 
     @app.post("/v1/deskmate/moments/post")
     async def post_deskmate_moment(request: Request) -> dict[str, Any]:

@@ -119,72 +119,130 @@ export function MomentFeed() {
   const [notice, setNotice] = useState("");
   const [commentDrafts, setCommentDrafts] = useState<Record<string, string>>({});
   const [openComments, setOpenComments] = useState<Record<string, boolean>>({});
+  const [cursor, setCursor] = useState<string | null>(null);
+  const [hasMore, setHasMore] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
 
   const flashNotice = (msg: string) => {
     setNotice(msg);
     window.setTimeout(() => setNotice(""), 2400);
   };
 
-  /** 载入：小桔真实日记 + 用户 moments（后端） */
-  const loadAll = useCallback(async () => {
-    let mePosts: { id: string; content: string; createdAt: string }[] = [];
-    let comments: Record<string, MomentComment[]> = {};
-    let loved: string[] = [];
-    try {
-      const r = await authedFetch(`${httpBase()}/v1/deskmate/moments`);
-      if (r.ok) {
-        const d = await r.json();
-        mePosts = Array.isArray(d.userPosts) ? d.userPosts : [];
-        comments = d.comments || {};
-        loved = Array.isArray(d.loved) ? d.loved : [];
-      }
-    } catch {
-      /* 静默 */
-    }
-    // 小桔日记
-    const xj: Moment[] = [];
-    try {
-      const r = await authedFetch(`${httpBase()}/v1/deskmate/diary`);
-      if (r.ok) {
-        const d = await r.json();
-        const dates: string[] = Array.isArray(d.dates) ? d.dates : [];
-        for (const date of dates.slice(-14).reverse()) {
-          try {
-            const rr = await authedFetch(`${httpBase()}/v1/deskmate/diary/${date}`);
-            if (rr.ok) {
-              const dd = await rr.json();
-              if (dd.content) {
-                xj.push({
-                  id: `xj-${date}`,
-                  author: "xiaoju",
-                  date,
-                  at: `${date}T12:00:00`,
-                  content: dd.content,
-                  loved: false,
-                  comments: comments[`xj-${date}`] || [],
-                });
+  /** 拉取小桔真实日记（独立接口），用 commentsMap 给每条挂留言 */
+  const fetchXjMoments = useCallback(
+    async (commentsMap: Record<string, MomentComment[]>): Promise<Moment[]> => {
+      const xj: Moment[] = [];
+      try {
+        const r = await authedFetch(`${httpBase()}/v1/deskmate/diary`);
+        if (r.ok) {
+          const d = await r.json();
+          const dates: string[] = Array.isArray(d.dates) ? d.dates : [];
+          for (const date of dates.slice(-14).reverse()) {
+            try {
+              const rr = await authedFetch(`${httpBase()}/v1/deskmate/diary/${date}`);
+              if (rr.ok) {
+                const dd = await rr.json();
+                if (dd.content) {
+                  xj.push({
+                    id: `xj-${date}`,
+                    author: "xiaoju",
+                    date,
+                    at: `${date}T12:00:00`,
+                    content: dd.content,
+                    loved: false,
+                    comments: commentsMap[`xj-${date}`] || [],
+                  });
+                }
               }
+            } catch {
+              /* 单篇失败跳过 */
             }
-          } catch {
-            /* 单篇失败跳过 */
           }
         }
+      } catch {
+        /* 静默 */
+      }
+      return xj;
+    },
+    [],
+  );
+
+  /** 载入第一页 moments（后端 cursor 分页：/v1/deskmate/moments?limit=50） */
+  const loadAll = useCallback(async () => {
+    let meItems: {
+      id: string;
+      content: string;
+      createdAt: string;
+      loved: boolean;
+      comments?: MomentComment[];
+    }[] = [];
+    let comments: Record<string, MomentComment[]> = {};
+    let next: string | null = null;
+    try {
+      const r = await authedFetch(`${httpBase()}/v1/deskmate/moments?limit=50`);
+      if (r.ok) {
+        const d = await r.json();
+        meItems = Array.isArray(d.items) ? d.items : [];
+        comments = d.comments || {};
+        next = d.next_cursor ?? null;
       }
     } catch {
       /* 静默 */
     }
-    const me: Moment[] = mePosts.map((p) => ({
+    const xj = await fetchXjMoments(comments);
+    const me: Moment[] = meItems.map((p) => ({
       id: p.id,
       author: "me",
       date: (p.createdAt || "").slice(0, 10),
       at: p.createdAt,
       content: p.content,
-      loved: loved.includes(p.id),
-      comments: comments[p.id] || [],
+      loved: !!p.loved,
+      comments: p.comments || comments[p.id] || [],
     }));
     setMoments([...xj, ...me]);
+    setCursor(next);
+    setHasMore(next !== null);
     setLoaded(true);
-  }, []);
+  }, [fetchXjMoments]);
+
+  /** 加载下一页（cursor 翻页，追加更旧的日记） */
+  const loadMore = useCallback(async () => {
+    if (loadingMore || !hasMore || !cursor) return;
+    setLoadingMore(true);
+    try {
+      const r = await authedFetch(
+        `${httpBase()}/v1/deskmate/moments?limit=50&cursor=${encodeURIComponent(cursor)}`,
+      );
+      if (r.ok) {
+        const d = await r.json();
+        const items: {
+          id: string;
+          content: string;
+          createdAt: string;
+          loved: boolean;
+          comments?: MomentComment[];
+        }[] = Array.isArray(d.items) ? d.items : [];
+        const more: Moment[] = items.map((p) => ({
+          id: p.id,
+          author: "me",
+          date: (p.createdAt || "").slice(0, 10),
+          at: p.createdAt,
+          content: p.content,
+          loved: !!p.loved,
+          comments: p.comments || [],
+        }));
+        setMoments((prev) => [...prev, ...more]);
+        setCursor(d.next_cursor ?? null);
+        setHasMore(d.next_cursor != null);
+      } else {
+        setHasMore(false);
+      }
+    } catch {
+      setHasMore(false);
+    } finally {
+      setLoadingMore(false);
+    }
+  }, [cursor, hasMore, loadingMore]);
 
   useEffect(() => {
     loadAll();
@@ -355,20 +413,29 @@ export function MomentFeed() {
           <p className="mom-empty-hint">写一条，或等小桔记下今天——回忆就从这里开始。</p>
         </div>
       ) : (
-        <div className="mom-timeline">
-          {sorted.map((m) => (
-            <MomentCard
-              key={m.id}
-              moment={m}
-              openComments={!!openComments[m.id]}
-              commentDraft={commentDrafts[m.id] || ""}
-              onToggleComments={() => toggleComments(m.id)}
-              onCommentDraft={(v) => setCommentDrafts((p) => ({ ...p, [m.id]: v }))}
-              onAddComment={() => addComment(m.id)}
-              onLove={() => toggleLove(m.id, m.content)}
-            />
-          ))}
-        </div>
+        <>
+          <div className="mom-timeline">
+            {sorted.map((m) => (
+              <MomentCard
+                key={m.id}
+                moment={m}
+                openComments={!!openComments[m.id]}
+                commentDraft={commentDrafts[m.id] || ""}
+                onToggleComments={() => toggleComments(m.id)}
+                onCommentDraft={(v) => setCommentDrafts((p) => ({ ...p, [m.id]: v }))}
+                onAddComment={() => addComment(m.id)}
+                onLove={() => toggleLove(m.id, m.content)}
+              />
+            ))}
+          </div>
+          {hasMore && (
+            <div className="mom-loadmore">
+              <button type="button" onClick={loadMore} disabled={loadingMore}>
+                {loadingMore ? "加载中…" : "加载更多日记"}
+              </button>
+            </div>
+          )}
+        </>
       )}
     </div>
   );
