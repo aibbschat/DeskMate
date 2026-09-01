@@ -18,6 +18,7 @@ from coworker.history import (
     search_across_dbs,
     search_one_db,
 )
+from coworker.history.s2t import to_traditional, variants
 
 
 # ---------------------------------------------------------------- 建库 helper
@@ -116,13 +117,14 @@ def test_build_fts5_query_single_char():
 def test_build_fts5_query_two_char_bigram_only():
     q = build_fts5_query("项羽")
     assert q["trigram_query"] is None  # 2 字不足以构 trigram
-    assert q["bigram_query"] == '"项 羽"'
+    # 简繁两形各自成短语再 OR：语料简繁混排，只查原形会漏掉繁体原文
+    assert q["bigram_query"] == '"项 羽" OR "項 羽"'
 
 
 def test_build_fts5_query_three_char_trigram():
     q = build_fts5_query("鸿门宴")
-    assert q["trigram_query"] == '"鸿 门 宴"'
-    assert q["bigram_query"] == '"鸿 门" OR "门 宴"'
+    assert q["trigram_query"] == '"鸿 门 宴" OR "鴻 門 宴"'
+    assert q["bigram_query"] == '"鸿 门" OR "门 宴" OR "鴻 門" OR "門 宴"'
 
 
 def test_build_fts5_query_synonym_expansion():
@@ -132,14 +134,16 @@ def test_build_fts5_query_synonym_expansion():
     assert '"改 革"' in q["exact_query"]
     # trigram 只用原始查询字符，不再产出跨词边界的虚假组合
     assert "变 法 改" not in (q["trigram_query"] or "")
-    assert q["char_and_query"] == "变 法"
+    # char_and 是「变体内 AND、变体间 OR」——
+    # 若把所有变体的字符混在一起 AND，等于要求同一段里简繁并存，几乎不可能命中
+    assert q["char_and_query"] == "(变 AND 法) OR (變 AND 法)"
 
 
 def test_build_fts5_query_strips_fts_metachars():
     q = build_fts5_query('项羽"OR AND')
     # OR/AND 是 FTS5 布尔关键字，应被清洗掉；2 字查询走 bigram
     assert q["trigram_query"] is None
-    assert q["bigram_query"] == '"项 羽"'
+    assert q["bigram_query"] == '"项 羽" OR "項 羽"'
 
 
 # ---------------------------------------------------------------- search_one_db
@@ -273,8 +277,11 @@ def test_build_fts5_query_exact_is_full_phrase():
     # Exact 档：整个查询词作为一个连续短语，不被拆成 3-gram
     q = build_fts5_query("王安石变法")
     assert q["exact_query"].startswith('"王 安 石 变 法"')
-    # trigram 仍是原始查询的 3 字滑动窗口，作为精确档无命中时的补充
-    assert q["trigram_query"] == '"王 安 石" OR "安 石 变" OR "石 变 法"'
+    # trigram：变体内部滑动窗口，变体之间 OR，并去重
+    # （"王 安 石" 简繁同形，只保留一份）
+    assert q["trigram_query"] == (
+        '"王 安 石" OR "安 石 变" OR "石 变 法" OR "安 石 變" OR "石 變 法"'
+    )
 
 
 def test_build_fts5_query_synonyms_stay_separate_phrases():
@@ -478,6 +485,134 @@ def test_search_across_dbs_coverage_beats_source_priority(tmp_path):
     # 都不是连续四字词，走降级档；匹配更全的《明史》必须排最前
     assert rows[0]["title"] == "明史"
     assert rows[0]["sourceOrder"] > rows[-1]["sourceOrder"]  # 来源优先级确实更低
+
+
+# ---------------------------------------------------------------- 简繁变体
+#
+# 语料是简繁混排的：正史原文（《史記》《舊唐書》）多为繁体，现代整理本多为简体。
+# FTS5 按单字建索引，「项羽」与「項羽」是两组完全不同的 token，只查原形会漏掉
+# 另一种字形的全部史料（实测史部子集漏召近四成）。
+
+
+def _mem_db() -> sqlite3.Connection:
+    """正常模式（非 external-content）的内存史料库，与生产库结构一致。"""
+    con = sqlite3.connect(":memory:")
+    con.executescript(
+        "CREATE TABLE articles (id INTEGER PRIMARY KEY, source TEXT, source_file TEXT, "
+        "title TEXT, category TEXT, dynasty TEXT, author TEXT, content TEXT, "
+        "content_hash TEXT, file_path TEXT);"
+        "CREATE TABLE chunks (id INTEGER PRIMARY KEY, article_id INTEGER, chunk_index INTEGER, "
+        "heading TEXT, content TEXT, fts_content TEXT);"
+        "CREATE VIRTUAL TABLE chunks_fts USING fts5(content, heading, tokenize='unicode61');"
+    )
+    return con
+
+
+def _add_mem_chunk(
+    con: sqlite3.Connection,
+    cid: int,
+    *,
+    source: str,
+    title: str,
+    text: str,
+    dynasty: str = "",
+    author: str = "",
+) -> None:
+    con.execute(
+        "INSERT INTO articles (id, source, source_file, title, dynasty, author, content, "
+        "content_hash) VALUES (?,?,?,?,?,?,?,?)",
+        (cid, source, f"f{cid}", title, dynasty, author, text, f"h{cid}"),
+    )
+    con.execute(
+        "INSERT INTO chunks (id, article_id, chunk_index, content, fts_content) VALUES (?,?,0,?,?)",
+        (cid, cid, text, _tokenize_cjk(text)),
+    )
+    con.execute(
+        "INSERT INTO chunks_fts(rowid, content, heading) VALUES (?,?,'')",
+        (cid, _tokenize_cjk(text)),
+    )
+    con.commit()
+
+
+def test_variants_covers_both_scripts():
+    # 简体查询要能覆盖繁体原文，繁体查询同样要能覆盖简体整理本
+    assert variants("项羽") == ["项羽", "項羽"]
+    assert variants("項羽") == ["項羽", "项羽"]
+
+
+def test_variants_uses_phrase_dict_for_ambiguous_chars():
+    """一简对多繁的字必须靠词组字典定夺，按字转换会铸成大错。
+
+    「历」对应「歷」（经历）与「曆」（历法/年号）两个字。年号「万历」若按字
+    转换会变成「萬歷」，而史书里写作「萬曆」——差一个字就一条都查不到。
+    """
+    assert variants("万历") == ["万历", "萬曆"]
+    assert variants("历法") == ["历法", "曆法"]
+    # 「谷」在「山谷」里不简化，因此不该产出「山穀」这种变体
+    assert variants("山谷") == ["山谷"]
+    # 简繁同形的词没有变体
+    assert variants("史") == ["史"]
+    assert variants("秦始皇") == ["秦始皇"]
+
+
+def test_variants_never_concatenated_across_scripts():
+    """变体之间绝不串接 —— 串接会造出语料里根本不存在的词。"""
+    q = build_fts5_query("项羽")
+    for expr in (q["exact_query"], q["bigram_query"], q["char_and_query"]):
+        assert "项 羽 項" not in (expr or "")
+        assert "項 羽 项" not in (expr or "")
+
+
+def test_search_one_db_traditional_text_found_by_simplified_query():
+    """简体查询必须能命中繁体原文，并正确标记为精确命中。"""
+    con = _mem_db()
+    _add_mem_chunk(con, 1, source="chtxt", title="史記·項羽本紀", dynasty="西漢",
+                   author="司馬遷", text="項羽者，下相人也，字羽。力能扛鼎，才氣過人。")
+    rows = search_one_db(con, "项羽", limit=5)
+    con.close()
+    assert rows, "简体查询『项羽』应能命中繁体原文『項羽』"
+    assert rows[0]["exact"] is True
+    assert rows[0]["matchedForm"] == "項羽"  # 标明是以另一种字形命中
+    assert rows[0]["title"] == "史記·項羽本紀"
+
+
+def test_search_across_dbs_traditional_not_demoted_by_script():
+    """繁体条目不得因字形与查询词不同而一律排在简体条目之后。
+
+    若 exact 只按查询词原形判定，繁体史料的 exact 恒为 False，会被无条件
+    压到所有简体命中之下 —— 变体扩展就白做了。
+    """
+    con = _mem_db()
+    # 繁体、来源更权威（chtxt）
+    _add_mem_chunk(con, 1, source="chtxt", title="史記·項羽本紀",
+                   text="項羽引兵西屠咸陽，殺秦降王子嬰，燒秦宮室，火三月不滅。")
+    # 简体、来源优先级低（daizhigev20）
+    _add_mem_chunk(con, 2, source="daizhigev20", title="史记·项羽本纪（今译）",
+                   text="项羽领兵西进屠咸阳，杀秦降王子婴，烧秦宫室，大火三月不灭。")
+    rows = search_one_db(con, "项羽", limit=5)
+    con.close()
+    assert len(rows) == 2, f"简繁两条都应检索到，实际 {len(rows)} 条"
+    assert all(r["exact"] for r in rows), "两条都是完整命中，不应有降级"
+    # 来源更权威的繁体条目排第一
+    assert rows[0]["source"] == "chtxt"
+    assert rows[0]["matchedForm"] == "項羽"
+
+
+def test_variants_disabled_by_env(monkeypatch):
+    """``HISTORY_SCRIPT_VARIANTS=0`` 可关闭变体扩展（A/B 对比召回率时用）。"""
+    monkeypatch.setenv("HISTORY_SCRIPT_VARIANTS", "0")
+    assert variants("项羽") == ["项羽"]
+    q = build_fts5_query("项羽")
+    assert q["bigram_query"] == '"项 羽"'
+
+
+def test_conversion_failure_degrades_gracefully(monkeypatch):
+    """字典缺失/转换报错时退化为「只有原形」，绝不抛异常、绝不中断检索。"""
+    import coworker.history.s2t as s2t
+
+    monkeypatch.setattr(s2t, "converters", lambda: (None, None))
+    assert s2t.variants("项羽") == ["项羽"]
+    assert s2t.to_traditional("项羽") == "项羽"
 
 
 class _StubProvider:

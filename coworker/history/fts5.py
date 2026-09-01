@@ -19,6 +19,10 @@
 索引约定（由灌库侧保证，检索侧不重建）：``chunks.fts_content`` 是字间插空格的
 预处理文本（``tokenizeCJK``），FTS5 用 ``tokenize='unicode61'`` 按空格切成单字，
 因此 MATCH 短语写成 ``"字1 字2 字3"``。
+
+简繁变体：语料是简繁混排的，每个降级档都会把查询词的简/繁两形**各自成短语再 OR**
+（详见 :mod:`coworker.history.s2t`）。注意变体之间绝不串接 —— 串接会产生
+``"项 羽 項"`` 这类语料里根本不存在的词。
 """
 
 from __future__ import annotations
@@ -27,6 +31,8 @@ import re
 import sqlite3
 from pathlib import Path
 from typing import Any, Optional
+
+from .s2t import variants as _script_variants
 
 # CJK 统一码范围：常用中日韩统一表意文字 + 扩展A + 兼容表意文字
 _CJK_RE = re.compile(r"[\u4e00-\u9fff\u3400-\u4dbf\uf900-\ufaff]")
@@ -97,22 +103,51 @@ def _strip_fts_metachars(text: str) -> str:
     return re.sub(r"\s+", " ", cleaned).strip()
 
 
+def _phrase(chars: list[str]) -> str:
+    """CJK 字符序列 → FTS5 短语（字间插空格，与灌库侧 tokenizeCJK 对齐）。"""
+    return '"' + " ".join(chars) + '"'
+
+
+def _or_join(parts: list[str]) -> Optional[str]:
+    """OR 连接并去重（保序）；空列表返回 ``None`` 表示该档不参与检索。
+
+    简繁两形常常只是部分字不同（``王安石`` 转繁仍是 ``王安石``），不去重会让
+    同一短语在 MATCH 表达式里出现两遍。
+    """
+    seen: set[str] = set()
+    out: list[str] = []
+    for p in parts:
+        if p and p not in seen:
+            seen.add(p)
+            out.append(p)
+    return " OR ".join(out) if out else None
+
+
 def build_fts5_query(query: str) -> dict[str, Any]:
     """构建 FTS5 MATCH 表达式。
 
     返回 ``{"exact_query", "trigram_query", "bigram_query", "char_and_query",
-    "chars"}``；空查询返回 ``{"empty": True}``；非 CJK 查询各档都返回带引号词的 OR 串。
+    "chars", "variants"}``；空查询返回 ``{"empty": True}``；非 CJK 查询各档都返回
+    带引号词的 OR 串。
 
-    ``exact_query`` 用**原始查询**的字符（不做同义词扩展），否则同义词会污染
-    精确短语匹配。
+    三条不变量（都是踩过坑才定下来的，别改回去）：
+
+    1. **同义词不进 trigram/bigram**。同义词只以独立短语 OR 进精确档；拼到查询串
+       尾部会生成跨词边界的虚假组合（查"变法"会拼出"变 法 改"/"法 改 革"）。
+    2. **简繁变体各自成短语，绝不跨变体串接**。串接会造出语料里根本不存在的词
+       （如"项 羽 項"）。做法是：变体内部滑动窗口，变体之间 OR。
+    3. **char_and 档是「变体内 AND、变体间 OR」**。若把两个变体的字符混在一起
+       AND，等于要求同一段文字里简繁并存，几乎不可能命中。
     """
     expanded = _expand_query(query)
     cleaned = _strip_fts_metachars(expanded)
     if not cleaned:
         return {"empty": True}
 
+    orig = _strip_fts_metachars(query)
+
     if not _CJK_RE.search(cleaned):
-        # 英文/数字：按词加引号 OR
+        # 英文/数字：按词加引号 OR（无简繁变体）
         as_str = " OR ".join(f'"{w}"' for w in cleaned.split())
         return {
             "exact_query": as_str,
@@ -120,52 +155,69 @@ def build_fts5_query(query: str) -> dict[str, Any]:
             "bigram_query": None,
             "char_and_query": as_str,
             "chars": [],
+            "variants": [orig] if orig else [],
         }
 
     chars = _cjk_chars(cleaned)
     if not chars:
         return {"empty": True}
+
+    # 简繁变体的字符序列：原形排第一，其后依次是转繁/转简形式。
+    # 变体由**原始查询**生成，同义词不参与转换（避免表达式无谓膨胀）。
+    variants = _script_variants(orig) if orig else [orig]
+    var_seqs: list[list[str]] = []
+    seen_seq: set[str] = set()
+    for v in variants:
+        vc = _cjk_chars(v)
+        if not vc:
+            continue
+        key = "".join(vc)
+        if key in seen_seq:
+            continue
+        seen_seq.add(key)
+        var_seqs.append(vc)
+    if not var_seqs:
+        var_seqs = [chars]
+
     if len(chars) == 1:
-        one = f'"{chars[0]}"'
+        # 单字查询：各档同义，只需把简繁两形 OR 起来（如 项/項）
+        one = _or_join([_phrase(vc) for vc in var_seqs])
         return {
             "exact_query": one,
             "trigram_query": one,
             "bigram_query": None,
             "char_and_query": one,
             "chars": chars,
+            "variants": variants,
         }
 
-    # Exact 档：原始查询全部 CJK 字符组成的连续短语
-    orig = _strip_fts_metachars(query)
-    orig_chars = _cjk_chars(orig)
-    exact_chars = orig_chars if len(orig_chars) >= 2 else chars
-    exact_query = '"' + " ".join(exact_chars) + '"'
-    # 同义词**各自独立成短语**再 OR，而不是拼到查询串尾部——
-    # 拼接会让 trigram/bigram 生成跨词边界的虚假组合（查"变法"会拼出
-    # "变 法 改"/"法 改 革"/"改 革 新"，命中完全无关的段落）。
+    # Exact 档：每个变体整个词一个连续短语
+    exact_query = _or_join([_phrase(vc) for vc in var_seqs])
+    # 同义词**各自独立成短语**再 OR，而不是拼到查询串尾部
     syns = _synonyms_for(query)
     if syns:
-        syn_phrases = " OR ".join(
-            '"' + " ".join(_cjk_chars(s)) + '"' for s in syns if _cjk_chars(s)
-        )
+        syn_phrases = [_phrase(_cjk_chars(s)) for s in syns if _cjk_chars(s)]
         if syn_phrases:
-            exact_query += " OR " + syn_phrases
+            exact_query = _or_join([exact_query] + syn_phrases)
 
-    # trigram/bigram 只用**原始查询**字符，避免同义词串接污染
-    base = orig_chars if len(orig_chars) >= 2 else chars
-    trigrams = [f'"{base[i]} {base[i + 1]} {base[i + 2]}"' for i in range(len(base) - 2)]
-    trigram_query = " OR ".join(trigrams) if trigrams else None
+    # trigram / bigram：变体内部滑动窗口，变体之间 OR（不跨变体滑窗）
+    trigrams = [_phrase(vc[i:i + 3]) for vc in var_seqs for i in range(len(vc) - 2)]
+    trigram_query = _or_join(trigrams)
 
     bigram_query = None
-    if 2 <= len(base) < 5:
-        bigrams = [f'"{base[i]} {base[i + 1]}"' for i in range(len(base) - 1)]
-        bigram_query = " OR ".join(bigrams) if bigrams else None
+    if 2 <= len(var_seqs[0]) < 5:
+        bigrams = [_phrase(vc[i:i + 2]) for vc in var_seqs for i in range(len(vc) - 1)]
+        bigram_query = _or_join(bigrams)
 
-    # Char AND 用原始查询字符（不做同义词扩展），限前 5 个 CJK
-    orig = _strip_fts_metachars(query)
-    orig_chars = _cjk_chars(orig)
-    and_chars = (orig_chars if orig_chars else chars)[:5]
-    char_and_query = " ".join(and_chars) if len(and_chars) >= 2 else " ".join(chars[:5])
+    # char_and：变体内 AND、变体间 OR
+    and_parts: list[str] = []
+    for vc in var_seqs:
+        head = vc[:5]
+        if len(head) >= 2:
+            and_parts.append("(" + " AND ".join(head) + ")")
+        elif head:
+            and_parts.append(head[0])
+    char_and_query = _or_join(and_parts) or " ".join(chars[:5])
 
     return {
         "exact_query": exact_query,
@@ -173,6 +225,7 @@ def build_fts5_query(query: str) -> dict[str, Any]:
         "bigram_query": bigram_query,
         "char_and_query": char_and_query,
         "chars": chars,
+        "variants": variants,
     }
 
 
@@ -254,13 +307,19 @@ def search_one_db(
 
     # 逐档累加后 rows 已是「精确优先」顺序；跨库合并时也要保住这个顺序，
     # 因此给每条结果打上 exact 标记（完整查询词是否出现在该 chunk 正文中）。
+    #
+    # 注意必须**逐个变体**判：原文是繁体时，简体查询词 "项羽" 不会出现在
+    # "項羽…" 里，若只判原形，所有繁体史料的 exact 都会是 False，从而被
+    # 一律排到简体命中之后 —— 等于白做了变体扩展。
     cleaned_query = _strip_fts_metachars(query)
+    forms = [v for v in (q.get("variants") or [cleaned_query]) if v]
 
     out = []
     for r in selected:
         (chunk_id, chunk_content, heading, article_id, title, author,
          dynasty, source, category, url, source_file, _rank) = r
         body = chunk_content or ""
+        matched = next((v for v in forms if v in body), None)
         out.append({
             "articleId": article_id,
             "chunkId": chunk_id,
@@ -274,7 +333,10 @@ def search_one_db(
             "sourceFile": source_file or "",
             "snippet": (chunk_content or "")[:600],
             "sourceOrder": _source_order(source),
-            "exact": bool(cleaned_query and cleaned_query in body),
+            "exact": bool(matched),
+            # 实际命中的字形。与用户输入不同即为「以另一种字形命中」，
+            # 供引用时判断这条史料是原典繁体还是今译简体。
+            "matchedForm": matched or "",
             # 命中档位，供模型判断这条史料有多可靠
             "matchTier": _TIER_LABELS[_TIERS[tier_of.get(chunk_id, len(_TIERS) - 1)]],
         })
@@ -339,12 +401,21 @@ def search_across_dbs(
     # 同档位内的次级排序：命中了查询词多少个相邻二字片段。降级档里
     # "只匹配到一半关键词"的条目应让位给"匹配得更全"的条目，
     # 否则会出现来源更权威但内容其实无关的条目压过真正相关的条目。
-    q_chars = _cjk_chars(_strip_fts_metachars(query))
-    bigrams = [q_chars[i] + q_chars[i + 1] for i in range(len(q_chars) - 1)]
+    # 变体逐组算、取最大覆盖：繁体条目对简体查询词的覆盖度恒为 0，
+    # 不取最大就会被简体条目无条件压在下面。
+    variant_bigrams = []
+    for v in _script_variants(_strip_fts_metachars(query)):
+        vc = _cjk_chars(v)
+        bg = [vc[i] + vc[i + 1] for i in range(len(vc) - 1)]
+        if bg:
+            variant_bigrams.append(bg)
 
     def _coverage(row: dict[str, Any]) -> int:
         body = row.get("snippet", "")
-        return sum(1 for b in bigrams if b in body) if bigrams else 0
+        return max(
+            (sum(1 for b in bg if b in body) for bg in variant_bigrams),
+            default=0,
+        )
 
     all_rows.sort(
         key=lambda r: (

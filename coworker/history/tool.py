@@ -8,6 +8,8 @@
   ``HISTORY_DATA_DIR`` 环境变量 → ``DESKMATE_DIR``/``history`` → ``~/.deskmate/history``
 专家库默认**自动扫描数据目录下所有 ``*.db``**（丢一个库文件进目录即可用），
 也可用 ``HISTORY_EXPERTS`` 环境变量或调用参数显式指定。
+
+简繁变体：语料简繁混排，检索时查询词的简/繁两形都会查（详见 :mod:`.s2t`）。
 """
 
 from __future__ import annotations
@@ -64,13 +66,19 @@ _SCHEMA = {
             "标题/章节/作者/朝代/来源/原文片段。引用时必须附上 dynasty/author/title/source "
             "四要素；source=chtxt 为精校可直接引用，其他来源须标注存疑。检索无结果时禁止"
             "编造，应如实说明史料库未收录。"
+            "语料简繁混排（正史原文多繁体、现代整理本多简体），检索已自动覆盖简繁两形；"
+            "结果的 matchedForm 若与你的查询词字形不同，说明该条是以另一种字形命中，"
+            "**引用时请照录原文片段，不要自行转简或转繁**。"
         ),
         "parameters": {
             "type": "object",
             "properties": {
                 "query": {
                     "type": "string",
-                    "description": "检索关键词或短语（中文会做四级降级：全词精确 → trigram → bigram → char AND）",
+                    "description": (
+                        "检索关键词或短语。中文会做简繁变体扩展（语料简繁混排，"
+                        "简繁两形都会查）+ 四级降级（全词精确 → trigram → bigram → char AND）。"
+                    ),
                 },
                 "experts": {
                     "type": "array",

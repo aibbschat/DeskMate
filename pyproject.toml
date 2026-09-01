@@ -76,6 +76,11 @@ coworker = [
     "personas/builtin/*/manifest.md",
     "personas/builtin/*/skills/*/SKILL.md",
     "skills/*.json",
+    # 史料检索的简繁变体转换（vendored OpenCC，Apache-2.0）。字典是**数据**不是代码，
+    # 不声明就只装 .py —— 运行时找不到 STPhrases.txt 会静默退化为「不做变体扩展」，
+    # 检索照样能跑，但繁体原典整片检索不到（失败无报错，极难发现）。
+    "history/vendor/opencc/config/*.json",
+    "history/vendor/opencc/dictionary/*.txt",
 ]
 
 [tool.pytest.ini_options]
