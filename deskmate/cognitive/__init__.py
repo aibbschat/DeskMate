@@ -14,6 +14,7 @@
 - extractor.py   认知提取管线（从文本/对话中多层解析认知特征，LLM 驱动）
 - cold_start.py  冷启动（从已有 vault/MEMORY/style_profile 提取初始画像）
 - diary_extract.py 日记→认知提取（③a 焊点：把 MomentFeed 日记增量提取进画像，按 post id 幂等）
+- interview.py   深度访谈引擎（③b 闭环：SocraticInterviewEngine 基于薄弱点生成苏格拉底式问题，回收回答回灌画像消解 gap；start_interview/answer_interview/maybe_trigger_interview 高层驱动）
 - interfaces.py  扩展接口（第二期：深度访谈引擎/认知验证引擎/隐性知识提取器/记忆注入器）
 
 MVP 范围：
@@ -46,6 +47,12 @@ from .store import CognitiveStore
 from .extractor import CognitiveExtractor, get_extractor
 from .cold_start import cold_start
 from .diary_extract import extract_diary_into_cognitive
+from .interview import (
+    start_interview,
+    answer_interview,
+    maybe_trigger_interview,
+    get_interview_engine,
+)
 from .interfaces import (
     InterviewEngine,
     ValidationEngine,
@@ -76,6 +83,11 @@ __all__ = [
     "cold_start",
     # 日记→认知（③a 焊点）
     "extract_diary_into_cognitive",
+    # 深度访谈引擎（③b 闭环）
+    "start_interview",
+    "answer_interview",
+    "maybe_trigger_interview",
+    "get_interview_engine",
     # 扩展接口（第二期）
     "InterviewEngine",
     "ValidationEngine",
