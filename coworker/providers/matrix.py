@@ -145,10 +145,31 @@ MATRIX: dict[str, ModelEntry] = {
         "Dola Seed 2.1 Turbo · BytePlus Ark", context_window=256_000
     ),
     "ark-agent-plan-cn:doubao-seed-evolving": ModelEntry(
-        "Doubao Seed Evolving · Volcengine Agent Plan", context_window=256_000
+        "Doubao Seed Evolving · Volcengine Agent Plan", context_window=1_048_576
     ),
     "ark-agent-plan-cn:doubao-seed-2.1-turbo": ModelEntry(
         "Doubao Seed 2.1 Turbo · Volcengine Agent Plan", context_window=256_000
+    ),
+    # Volcengine Agent Plan 全量文本模型（verified 2026-09-01，实测全部可用）：
+    # doubao-seed-2.0-mini/lite / deepseek-v4-flash/pro / minimax-m3 / kimi-k2.7-code。
+    # glm-5.2 已下线、glm-5.3 默认开思考不可关，均不列入。
+    "ark-agent-plan-cn:doubao-seed-2.0-mini": ModelEntry(
+        "Doubao Seed 2.0 Mini · Volcengine Agent Plan", context_window=256_000
+    ),
+    "ark-agent-plan-cn:doubao-seed-2.0-lite": ModelEntry(
+        "Doubao Seed 2.0 Lite · Volcengine Agent Plan", context_window=256_000
+    ),
+    "ark-agent-plan-cn:deepseek-v4-flash": ModelEntry(
+        "DeepSeek V4 Flash · Volcengine Agent Plan", context_window=1_048_576
+    ),
+    "ark-agent-plan-cn:deepseek-v4-pro": ModelEntry(
+        "DeepSeek V4 Pro · Volcengine Agent Plan", context_window=1_048_576
+    ),
+    "ark-agent-plan-cn:minimax-m3": ModelEntry(
+        "MiniMax M3 · Volcengine Agent Plan", context_window=1_048_576
+    ),
+    "ark-agent-plan-cn:kimi-k2.7-code": ModelEntry(
+        "Kimi K2.7 Code · Volcengine Agent Plan", context_window=256_000
     ),
     # -- direct OpenAI-compatible vendors ----------------------------------------
     # Muse Spark (Meta Model API, public preview 2026-07-09): multimodal + tools via

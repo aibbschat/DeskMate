@@ -50,6 +50,19 @@ _REPLIES = [
     "这条我好好收着，往后你提起类似的事，我就能想起它。",
 ]
 
+# 火山 Agent 套餐内模型降级链（2026-09-01 实测全可用；按速度/质量排序，快者在前）。
+# doubao-seed-2.1-turbo 实测最慢（~20s）故放最后兜底；glm-5.2 已下线、glm-5.3 思考不可关，均排除。
+_ARK_PLAN_CHAIN = [
+    "doubao-seed-evolving",
+    "doubao-seed-2.0-lite",
+    "doubao-seed-2.0-mini",
+    "minimax-m3",
+    "deepseek-v4-flash",
+    "deepseek-v4-pro",
+    "kimi-k2.7-code",
+    "doubao-seed-2.1-turbo",
+]
+
 
 def _uid() -> str:
     return uuid.uuid4().hex[:12]
@@ -179,8 +192,10 @@ class MomentsStore:
     def _call_llm(system: str, user: str) -> str:
         """按降级链调用 LLM，不写死 provider：
         1) 默认 provider（跟随用户 default_model，mimo 额度恢复后自然走它）；
-        2) 默认失败时遍历 secrets.json 里其它已配置 provider（临时挂掉自动找可用）；
-        3) 全失败抛异常，由调用方回落本地规则。
+        2) 失败时依次降级到火山 Agent 套餐内其它模型（同 key/base，仅换 model，
+           max_retries=0 + 短超时快速失败，避免 25s×SDK重试 放大成 76s）；
+        3) 再失败则遍历 secrets.json 里其它已配置 provider（临时挂掉自动找可用）；
+        4) 全失败抛异常，由调用方回落本地规则。
         """
         # 1) 默认 provider（chat_memory 内部已含 OmniRoute→主模型降级）
         try:
@@ -191,12 +206,45 @@ class MomentsStore:
             )
         except Exception:
             pass
-        # 2) 其它已配置 provider（逐个体面尝试，首个成功即返回）
+        # 2) 火山 Agent 套餐内多模型降级（2026-09-01 实测全可用；2.1-turbo 最慢放最后）
         import json as _json
         import os as _os
 
         from openai import OpenAI
 
+        ark_key = ark_base = None
+        try:
+            _state = Path(
+                _os.environ.get("COWORKER_STATE_DIR")
+                or Path.home() / ".config" / "coworker"
+            )
+            _data = _json.loads((_state / "secrets.json").read_text(encoding="utf-8"))
+            _prof = _data.get("provider:ark-agent-plan-cn") or {}
+            ark_key = _prof.get("api_key") or None
+            ark_base = (_prof.get("base_url") or "").strip() or None
+        except Exception:
+            pass
+        if ark_key and ark_base:
+            for model in _ARK_PLAN_CHAIN:
+                try:
+                    client = OpenAI(
+                        api_key=ark_key, base_url=ark_base, timeout=12.0, max_retries=0
+                    )
+                    resp = client.chat.completions.create(
+                        model=model,
+                        messages=[
+                            {"role": "system", "content": system},
+                            {"role": "user", "content": user},
+                        ],
+                        temperature=0.7,
+                        max_tokens=120,
+                    )
+                    out = (resp.choices[0].message.content or "").strip()
+                    if out:
+                        return out
+                except Exception:
+                    continue
+        # 3) 其它已配置 provider（逐个体面尝试，首个成功即返回）
         state = Path(
             _os.environ.get("COWORKER_STATE_DIR") or Path.home() / ".config" / "coworker"
         )
