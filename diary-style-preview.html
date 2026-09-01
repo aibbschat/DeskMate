@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>小桔日记 · 两版样式对比</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: #f6f2ea; font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif; padding: 40px 24px; color: #3d3529; }
+  .wrap { max-width: 920px; margin: 0 auto; }
+  h1 { font-size: 22px; color: #92400e; margin-bottom: 4px; }
+  .sub { font-size: 13px; color: #a8a29e; margin-bottom: 28px; }
+  .section { margin-bottom: 44px; }
+  .section-label { display: flex; align-items: center; gap: 10px; margin-bottom: 16px; }
+  .section-label .tag { font-size: 12px; font-weight: 700; padding: 3px 10px; border-radius: 999px; }
+  .section-label h2 { font-size: 16px; color: #57534e; }
+  .section-label .note { font-size: 12px; color: #a8a29e; }
+
+  /* ========== A 版：MomentFeed 卡片（Georgia + 宋体衬线） ========== */
+  .panel-a { background: #fdfbf7; border: 1px solid #e7e0d5; border-radius: 16px; padding: 20px; }
+  .feed-title { display: flex; align-items: center; gap: 8px; font-size: 15px; font-weight: 600; color: #92400e; margin-bottom: 6px; }
+  .feed-sub { font-size: 12px; color: #b8ab98; background: #faf3e4; border: 1px solid #f0e2c6; padding: 1px 8px; border-radius: 999px; display: inline-block; margin-bottom: 16px; }
+  .mom-timeline { display: flex; flex-direction: column; gap: 14px; }
+  .mom-card { background: #fff; border: 1px solid #e9e2d5; border-radius: 14px; padding: 14px 16px; box-shadow: 0 2px 12px rgba(170,130,60,.05); }
+  .mom-card.mom-xj { background: linear-gradient(180deg, #fefaf2, #fff); }
+  .mom-card-head { display: flex; align-items: center; gap: 10px; }
+  .mom-avatar { width: 36px; height: 36px; border-radius: 50%; flex: none; object-fit: cover; border: 1px solid #f0e2c6; background: #fdf3e3; display:flex; align-items:center; justify-content:center; font-size: 14px; }
+  .mom-avatar.xj { background: linear-gradient(135deg, #fbbf24, #f97316); color: #fff; font-weight: 700; }
+  .mom-card-meta { display: flex; flex-direction: column; gap: 1px; }
+  .mom-author { font-size: 14px; font-weight: 700; color: #3d3529; }
+  .mom-xj .mom-author { color: #b45309; }
+  .mom-date { font-size: 12px; color: #b8ab98; }
+  .mom-card-body { margin-top: 10px; font-size: 14px; line-height: 1.85; color: #3d3529; font-family: Georgia, "Songti SC", "SimSun", serif; }
+  .mom-actions { display: flex; gap: 6px; margin-top: 12px; padding-top: 10px; border-top: 1px solid #f2ece0; }
+  .mom-action { display: inline-flex; align-items: center; gap: 5px; border: none; background: transparent; color: #9a8f7c; font-size: 13px; padding: 4px 10px; border-radius: 999px; }
+  .mom-love { color: #e11d48; background: #fff0f3; }
+
+  /* ========== B 版：个人中心时间线（无衬线） ========== */
+  .panel-b { background: #fff; border: 1px solid #ece5d8; border-radius: 16px; padding: 20px; }
+  .tl-title { font-size: 16px; font-weight: 700; color: #92400e; margin-bottom: 16px; }
+  .timeline { position: relative; padding-left: 30px; }
+  .timeline::before { content: ""; position: absolute; left: 7px; top: 6px; bottom: 6px; width: 2px; background: linear-gradient(180deg, #fbbf24, #fde68a); }
+  .tl-item { position: relative; margin-bottom: 14px; }
+  .tl-item::before { content: ""; position: absolute; left: -30px; top: 22px; width: 14px; height: 14px; border-radius: 50%; background: #fff; border: 3px solid #f97316; box-shadow: 0 0 0 4px #ffedd5; }
+  .diary-card { background: #fff; border: 1px solid #ece5d8; border-radius: 12px; padding: 16px 20px; box-shadow: 0 2px 10px rgba(120,80,20,.05); }
+  .diary-top { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+  .diary-date { font-size: 12px; font-weight: 700; color: #c2410c; background: #fff7ed; padding: 2px 10px; border-radius: 20px; }
+  .diary-title { font-size: 14px; font-weight: 600; flex: 1; color: #57534e; }
+  .diary-body { font-size: 14px; color: #57534e; line-height: 1.7; }
+  .diary-foot { display: flex; gap: 8px; margin-top: 10px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>小桔日记 · 两版样式对比</h1>
+  <p class="sub">用真实日记内容渲染 · 帮你回忆"那版随性好看的"是不是 A 版</p>
+
+  <!-- A 版 -->
+  <div class="section">
+    <div class="section-label">
+      <span class="tag" style="background:#fef3c7;color:#b45309;">A 版 · MomentFeed 卡片</span>
+      <h2>Georgia + 宋体衬线 · 白底圆角 · 暖橙点缀</h2>
+      <span class="note">（小桔日记最初那版，微博/朋友圈样式）</span>
+    </div>
+    <div class="panel-a">
+      <div class="feed-title">🍊 小桔日记</div>
+      <div class="feed-sub">只有我们看得见</div>
+      <div class="mom-timeline">
+        <div class="mom-card mom-xj">
+          <div class="mom-card-head">
+            <div class="mom-avatar xj">桔</div>
+            <div class="mom-card-meta">
+              <div class="mom-author">小桔</div>
+              <div class="mom-date">8月31日 · 晚上</div>
+            </div>
+          </div>
+          <div class="mom-card-body">今天又陪了你一会儿。<br>你调用了一项技能。<br>我学到了一些关于你的新事。<br>今天又记住了一些关于你的小事。<br>默契 97.5/100 · 信任 0.5 · 心情 80.0 · Lv.7</div>
+          <div class="mom-actions"><span class="mom-action mom-love">🩷 3</span><span class="mom-action">💬 留言</span></div>
+        </div>
+
+        <div class="mom-card">
+          <div class="mom-card-head">
+            <div class="mom-avatar" style="background:#e7f0ff;color:#1d4ed8;font-weight:700;">萧</div>
+            <div class="mom-card-meta">
+              <div class="mom-author">萧盛</div>
+              <div class="mom-date">9月1日 · 上午 8:21</div>
+            </div>
+          </div>
+          <div class="mom-card-body">今天是周二，也是 9 月 1 日开学的日子，两个儿子都上学去了，我又可以安安心心地写作啦。</div>
+          <div class="mom-actions"><span class="mom-action">🩷 1</span><span class="mom-action">💬 留言</span></div>
+        </div>
+
+        <div class="mom-card">
+          <div class="mom-card-head">
+            <div class="mom-avatar" style="background:#e7f0ff;color:#1d4ed8;font-weight:700;">萧</div>
+            <div class="mom-card-meta">
+              <div class="mom-author">萧盛</div>
+              <div class="mom-date">8月31日 · 下午 6:42</div>
+            </div>
+          </div>
+          <div class="mom-card-body">有一件事小桔不知道，很多人也不知道，我平时以写历史小说为主，但只有当心情郁闷，看到社会上出现很多奇怪的现象，或不平的事情，又无法可诉说时，我就会写纪实类的历史书，我会把心中的很多话写进去……</div>
+          <div class="mom-actions"><span class="mom-action">🩷 2</span><span class="mom-action">💬 留言</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- B 版 -->
+  <div class="section">
+    <div class="section-label">
+      <span class="tag" style="background:#f1f5f9;color:#475569;">B 版 · 个人中心时间线</span>
+      <h2>无衬线苹方 · 竖线时间轴 · 方正卡片</h2>
+      <span class="note">（现在个人中心日记页的样子，更"正规"）</span>
+    </div>
+    <div class="panel-b">
+      <div class="tl-title">🍊 小桔日记</div>
+      <div class="timeline">
+        <div class="tl-item">
+          <div class="diary-card">
+            <div class="diary-top"><span class="diary-date">9月1日</span><span class="diary-title">萧盛 · 开学日</span></div>
+            <div class="diary-body">今天是周二，也是 9 月 1 日开学的日子，两个儿子都上学去了，我又可以安安心心地写作啦。</div>
+            <div class="diary-foot"><span style="font-size:12px;color:#a8a29e;">🩷 1 · 2 条留言</span></div>
+          </div>
+        </div>
+        <div class="tl-item">
+          <div class="diary-card">
+            <div class="diary-top"><span class="diary-date">8月31日</span><span class="diary-title">萧盛 · 心里话</span></div>
+            <div class="diary-body">有一件事小桔不知道，很多人也不知道，我平时以写历史小说为主，但只有当心情郁闷……</div>
+            <div class="diary-foot"><span style="font-size:12px;color:#a8a29e;">🩷 2 · 留言</span></div>
+          </div>
+        </div>
+        <div class="tl-item">
+          <div class="diary-card">
+            <div class="diary-top"><span class="diary-date">8月31日</span><span class="diary-title">小桔 · 陪着你</span></div>
+            <div class="diary-body">今天又陪了你一会儿。我学到了一些关于你的新事。</div>
+            <div class="diary-foot"><span style="font-size:12px;color:#a8a29e;">🩷 3 · 留言</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+</body>
+</html>
