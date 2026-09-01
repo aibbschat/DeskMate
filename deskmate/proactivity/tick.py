@@ -43,6 +43,8 @@ class TickResult:
     # P2-4：「看见你在做什么」活动描述 + 长时间专注陪伴语
     what_user_doing: str = ""
     companion_message: str = ""
+    # ③b 深度访谈触发负载（session_id + questions）；前端收到后弹访谈 UI
+    interview: Optional[dict] = None
 
     @property
     def has_suggestion(self) -> bool:
@@ -91,6 +93,10 @@ class TickResult:
         # P2-4：长时间专注陪伴语（前端走 CareToast 温暖呈现）
         if self.companion_message:
             result["companion_message"] = self.companion_message
+
+        # ③b 深度访谈触发负载：前端 useProactiveTick 据此 dispatch 访谈事件
+        if self.interview:
+            result["interview"] = self.interview
 
         return result
 
@@ -190,6 +196,26 @@ class ProactiveEngine:
                 )
             # BUSY 状态（会议/通话）不跳过推理：
             # 用户在会议中也可能需要提醒（如伏笔遗漏），只是防打扰阈值更严
+
+        # ===== 1.5 深度访谈触发（③b 自动发起：纯规则，不占 LLM judge）=====
+        # 触发条件见 should_interview_now：open_gaps>=2 且距上次访谈>=3 天。
+        # idle 已在上方 return；busy（会议/通话）与深专注不弹——访谈需要用户专注回应。
+        try:
+            if activity.level != UserActivity.BUSY and not (focus is not None and focus.level == "deep"):
+                from deskmate.cognitive.interview import maybe_trigger_interview
+
+                iv = maybe_trigger_interview(limit=3)
+                if iv and iv.get("session_id") and iv.get("questions"):
+                    return TickResult(
+                        action=ActionType.SUGGEST,
+                        activity=activity,
+                        interview=iv,
+                        skipped_reason="深度访谈待回应（基于认知盲区积累）",
+                        elapsed_ms=int((time.time() - start) * 1000),
+                        heartbeat_interval_ms=self._heartbeat_interval_ms,
+                    )
+        except Exception:
+            pass  # 访谈触发失败不阻断主 tick 循环
 
         # 组装感知上下文
         activity_desc = f"状态: {activity.level.value}, {activity.reason}"

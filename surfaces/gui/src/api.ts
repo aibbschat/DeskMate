@@ -3427,3 +3427,67 @@ export async function getRoundtablePersonas(): Promise<Persona[]> {
   const res = await authedFetch(`${creationBase()}/api/personas`);
   return res.json();
 }
+
+/* ------------------------------------------------------------------ */
+/*  深度访谈（cognitive interview）—— ③b 闭环前端接入                    */
+/* ------------------------------------------------------------------ */
+
+export interface InterviewQuestion {
+  id: string;
+  topic: string;
+  question: string;
+  context: string;
+  related_item_id: string | null;
+  related_gap_id: string | null;
+  priority: number;
+  mode: "clarify" | "explore" | "deepen";
+}
+
+export interface InterviewStartResult {
+  session_id: string | null;
+  questions: InterviewQuestion[];
+  total: number;
+  note?: string;
+}
+
+export interface InterviewAnswerResult {
+  ok: boolean;
+  session_id: string;
+  answered: number;
+  total: number;
+  session_done: boolean;
+  open_gaps: number;
+}
+
+/** 发起一轮深度访谈（POST /v1/deskmate/cognitive/interview/start）。 */
+export async function startCognitiveInterview(limit = 3): Promise<InterviewStartResult> {
+  const res = await authedFetch(`${httpBase()}/v1/deskmate/cognitive/interview/start`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ limit }),
+  });
+  return res.json();
+}
+
+/** 提交一个访谈回答（POST /v1/deskmate/cognitive/interview/answer）。 */
+export async function answerCognitiveInterview(
+  sessionId: string,
+  questionId: string,
+  response: string,
+): Promise<InterviewAnswerResult> {
+  const res = await authedFetch(`${httpBase()}/v1/deskmate/cognitive/interview/answer`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ session_id: sessionId, question_id: questionId, response }),
+  });
+  return res.json();
+}
+
+/** 查询是否应主动发起访谈（GET /v1/deskmate/cognitive/interview/should）。 */
+export async function cognitiveInterviewShould(): Promise<{
+  should_interview: boolean;
+  open_gaps: number;
+}> {
+  const res = await authedFetch(`${httpBase()}/v1/deskmate/cognitive/interview/should`);
+  return res.json();
+}

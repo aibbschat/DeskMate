@@ -89,6 +89,21 @@ export function useProactiveTick({
           }),
         );
 
+        // ③b 深度访谈触发：tick 返回 interview 负载（session+questions）→ 推送访谈事件。
+        // 放在普通建议之前，访谈（主动理解用户）优先呈现。
+        if (data.interview && data.interview.session_id && data.interview.questions?.length) {
+          window.dispatchEvent(
+            new CustomEvent("deskmate:interview", {
+              detail: {
+                session_id: data.interview.session_id,
+                questions: data.interview.questions,
+                total: data.interview.total ?? data.interview.questions.length,
+                note: data.interview.note,
+              },
+            }),
+          );
+        }
+
         // 如果有建议，推送 suggestion 事件
         if (data.action === "suggest" && data.suggestion_content) {
           window.dispatchEvent(

@@ -17,7 +17,7 @@ import uuid
 from typing import Optional
 
 from .interfaces import InterviewEngine, register_engine
-from .models import CognitiveProfile, SourceRef, HistoryEntry, _now
+from .models import CognitiveProfile, SourceRef, HistoryEntry, Stance, _now
 from .profile import get_profile_manager
 from .store import CognitiveStore
 from .extractor import get_extractor
@@ -66,6 +66,31 @@ def _decode_question_id(qid: str) -> dict:
         elif seg.startswith("m="):
             d["mode"] = seg[2:]
     return d
+
+
+def _reconstruct_question_text(meta: dict, pm) -> str:
+    """从 qid 元数据 + 画像反解问题文本（模板重建，无状态）。
+
+    供 answer_interview 落库可追溯：访谈历史里能看到「问的什么 + 答的什么」，
+    而不是只有答案。qid 编码了 mode + 关联条目，纯函数重建，无需额外存库。
+    """
+    mode = meta.get("mode", "explore")
+    topic, content = "", ""
+    if meta.get("related_item_id"):
+        for it in (pm.profile.stances + pm.profile.value_rankings
+                   + pm.profile.thinking_frameworks + pm.profile.argument_patterns):
+            if getattr(it, "id", None) == meta["related_item_id"]:
+                topic = getattr(it, "topic", None) or getattr(it, "domain", "") or ""
+                content = it.content
+                break
+    elif meta.get("related_gap_id"):
+        for g in pm.profile.cognitive_gaps:
+            if g.id == meta["related_gap_id"]:
+                topic = g.topic
+                content = g.reason
+                break
+    tmpl = _Q_TEMPLATES.get(mode, _Q_TEMPLATES["explore"])
+    return tmpl.format(topic=topic or "这个话题", content=(content or "")[:60])
 
 
 class SocraticInterviewEngine(InterviewEngine):
@@ -172,14 +197,57 @@ class SocraticInterviewEngine(InterviewEngine):
         pm.save()
 
     @staticmethod
+    def _absorb_response(pm, gap_id, response):
+        """把访谈回答作为认知信号并入画像（规则优先，不依赖 LLM）。
+
+        explore（探索新领域）问题的核心价值：用户针对未知盲区的直接表达。
+        - 同 topic 已有 active 条目 → 补充 interview 来源 + 升置信；
+        - 新领域（无同 topic 条目）→ 新建 stance（source_type='interview'）。
+        直接操作条目，绕开 add_stance 矛盾检测，避免误 spawn 假 gap。
+        """
+        text = (response or "").strip()
+        if not text:
+            return
+        gap = next((g for g in pm.profile.cognitive_gaps if g.id == gap_id), None)
+        raw_topic = (gap.topic if gap else "") or "深度访谈"
+        # gap.topic 可能带"立场矛盾："/"认知盲区："等前缀，去掉前缀还原真实议题
+        topic = raw_topic.split("：", 1)[-1].strip() or "深度访谈"
+        src = SourceRef(
+            type="interview", title="深度访谈",
+            excerpt=text[:120], date=_now(), confidence=0.6)
+        # 已有同 topic active 条目 → 补充来源（升置信）
+        for s in pm.profile.stances:
+            if s.topic == topic and s.status == "active":
+                s.add_source(src)
+                s.history.append(HistoryEntry(
+                    action="updated", old_value=s.content, new_value=s.content,
+                    reason="访谈探索补充来源", source="深度访谈"))
+                s.last_updated = _now()
+                return
+        # 新领域 → 新建 stance
+        stance = Stance(
+            topic=topic, content=text[:200], category="访谈",
+            tags=["访谈", "认知"])
+        stance.add_source(src)
+        stance.history.append(HistoryEntry(
+            action="created", new_value=text[:200],
+            reason="访谈探索提取", source="深度访谈"))
+        pm.profile.stances.append(stance)
+        pm.profile.extraction_count += 1
+
+    @staticmethod
     def _extract_and_resolve_gap(pm, gap_id, response):
-        """从回答提取新认知（规则优先）并消解该 gap。"""
+        """从回答吸收新认知（规则优先）并消解该 gap。
+
+        修复③b 遗留断点：原实现给 extract_from_text 传了不存在的 use_llm 参数，
+        必然 TypeError 被 fail-open 吞掉 → explore 回答只消 gap 不进画像。
+        现改为规则吸收（必达、离线可跑、响应快），不再同步调 LLM——实测当前
+        chat() 需 ~9s，会阻塞回答接口；LLM 五维深度提取留给后续独立异步通道。
+        """
         try:
-            get_extractor().extract_from_text(
-                text=response, source_title="深度访谈", source_type="interview",
-                source_date=_now(), use_llm=False)
+            SocraticInterviewEngine._absorb_response(pm, gap_id, response)
         except Exception as e:
-            logger.warning("访谈回答认知提取失败（仍解 gap）: %s", e)
+            logger.warning("访谈回答认知吸收失败（仍解 gap）: %s", e)
         for g in pm.profile.cognitive_gaps:
             if g.id == gap_id and g.status == "open":
                 g.status = "resolved"
@@ -229,12 +297,14 @@ def start_interview(limit: int = 3, use_llm: bool = False) -> dict:
 
 
 def answer_interview(session_id: str, question_id: str, response: str, use_llm: bool = False) -> dict:
-    """提交一个访谈回答：回灌画像 + 落 qa + 判断是否问完。"""
+    """提交一个访谈回答：回灌画像 + 落 qa（含问题文本）+ 判断是否问完。"""
     pm = get_profile_manager()
     engine = get_interview_engine()
     engine.process_response(pm.profile, question_id, response)
     store = CognitiveStore()
-    store.add_qa(session_id=session_id, question_id=question_id, question="", answer=response)
+    # 反解问题文本落库（qid 无状态可恢复），访谈历史可追溯"问了什么+答了什么"
+    q_text = _reconstruct_question_text(_decode_question_id(question_id), pm)
+    store.add_qa(session_id=session_id, question_id=question_id, question=q_text, answer=response)
     # 判断是否问完：已答数 == 该 session 问题数
     sessions = [s for s in store.list_sessions() if s["id"] == session_id]
     total = len(sessions[0]["gap_ids"]) if sessions else 0

@@ -18,6 +18,7 @@ import { StatusPanelV2 } from "./StatusPanelV2";
 import type { GrowthSnapshot, LearnedHistory } from "./StatusPanel";
 import { SuggestionToast, type Suggestion } from "./SuggestionToast";
 import { CareToast, type CareMessage } from "./CareToast";
+import { InterviewCard, type InterviewPayload } from "./InterviewCard";
 import { MemoryViewer, type MemoryFile } from "./MemoryViewer";
 import { MemoryGraphPage } from "./MemoryGraphPage";
 import { BadgeMedal } from "./BadgeMedal";
@@ -187,6 +188,8 @@ export function DeskMateOverlay({ agent, sessionId, activeExpert }: Props) {
   const [suggestion, setSuggestion] = useState<Suggestion | null>(null);
   // P2-5 连续情感关怀：温暖问候（与创作建议分开呈现）
   const [careMessage, setCareMessage] = useState<CareMessage | null>(null);
+  // ③b 深度访谈：proactive tick 触发后进入问答流
+  const [interview, setInterview] = useState<InterviewPayload | null>(null);
 
   // 建议去重：已处理（接受/忽略）的 type 在冷却期内永不再弹；
   // 无操作最多展示 3 次。用 localStorage 持久化，防止组件重挂载后丢失。
@@ -454,6 +457,12 @@ export function DeskMateOverlay({ agent, sessionId, activeExpert }: Props) {
     };
     window.addEventListener("deskmate:companion", onCompanion);
     window.addEventListener("deskmate:activity-desc", onActivityDesc);
+    // ③b 深度访谈：tick 触发 → 进入访谈邀请 + 问答流
+    const onInterview = (e: Event) => {
+      const d = (e as CustomEvent<InterviewPayload>).detail;
+      if (d?.session_id && d?.questions?.length) setInterview(d);
+    };
+    window.addEventListener("deskmate:interview", onInterview);
     window.addEventListener("deskmate:memory-update", onMemoryUpdate);
     window.addEventListener("deskmate:memory-learned", onMemoryLearned);
     window.addEventListener("deskmate:context-injected", onContextInjected);
@@ -488,6 +497,7 @@ export function DeskMateOverlay({ agent, sessionId, activeExpert }: Props) {
       window.removeEventListener("deskmate:open-memory", onOpenMemory);
       window.removeEventListener("deskmate:open-understanding", onOpenUnderstanding);
       window.removeEventListener("deskmate:toggle-proactive", onToggleProactive);
+      window.removeEventListener("deskmate:interview", onInterview);
     };
   }, [setMascotState, handleToggleProactive, proactiveEnabled]);
 
@@ -659,6 +669,12 @@ export function DeskMateOverlay({ agent, sessionId, activeExpert }: Props) {
       <CareToast
         message={careMessage}
         onClose={() => setCareMessage(null)}
+      />
+
+      {/* ③b 深度访谈 - 邀请气泡 + 三模式问答流（tick 触发） */}
+      <InterviewCard
+        interview={interview}
+        onClose={() => setInterview(null)}
       />
 
       {/* 「我刚记住了」提示 — 左下角，数秒后自动消失 */}

@@ -135,7 +135,8 @@ class TestInterview(unittest.TestCase):
             ival.SocraticInterviewEngine().process_response(
                 pm.profile, qid, "我写作时特别在意人物动机是否合乎历史逻辑")
             pm2 = pmod.get_profile_manager()
-            self.assertTrue(any(st.topic == "访谈新知" for st in pm2.profile.stances))
+            # 规则吸收：回答并入画像（category=访谈），不再依赖 stub extractor
+            self.assertTrue(any(st.category == "访谈" for st in pm2.profile.stances))
             g2_now = [g for g in pm2.profile.cognitive_gaps if g.id == g2.id][0]
             self.assertEqual(g2_now.status, "resolved")
         finally:
@@ -192,6 +193,52 @@ class TestInterview(unittest.TestCase):
             sess = [s for s in storemod.CognitiveStore().list_sessions()
                     if s["id"] == started["session_id"]][0]
             self.assertEqual(sess["status"], "done")
+        finally:
+            _restore(saved)
+
+    def test_explore_rules_absorb_no_llm(self):
+        """真实 extractor 路径（不 stub）：explore 回答规则吸收进画像 + gap resolved。
+
+        回归 ③b 遗留断点：原实现给 extract_from_text 传不存在的 use_llm 参数，
+        必然 TypeError 被吞 → explore 回答只消 gap 不进画像。此用例锁定修复。
+        """
+        saved = _hermetic()
+        try:
+            ival.get_extractor = saved["ival_get_extractor"]  # 还原真实 extractor
+            p, s1, g1, g2, low = _make_profile()
+            pm = pmod.get_profile_manager()
+            pm.profile = p
+            pm.save()
+            before_gaps = len(pm.profile.cognitive_gaps)
+            qid = ival._encode_question_id(None, g2.id, "explore")
+            ival.SocraticInterviewEngine().process_response(
+                pm.profile, qid, "我写作时特别在意人物动机是否合乎历史逻辑")
+            pm2 = pmod.get_profile_manager()
+            # 规则吸收：回答以「访谈」category 进画像（不依赖 LLM / stub）
+            self.assertTrue(any(st.category == "访谈" for st in pm2.profile.stances))
+            g2_now = [g for g in pm2.profile.cognitive_gaps if g.id == g2.id][0]
+            self.assertEqual(g2_now.status, "resolved")
+            # 不 spawn 新假 gap
+            self.assertLessEqual(len(pm2.profile.cognitive_gaps), before_gaps)
+        finally:
+            _restore(saved)
+
+    def test_answer_persists_question_text(self):
+        """访谈 QA 落库应含问题文本（此前硬编码空串，历史不可追溯）。"""
+        saved = _hermetic()
+        try:
+            p, s1, g1, g2, low = _make_profile()
+            pm = pmod.get_profile_manager()
+            pm.profile = p
+            pm.save()
+            started = ival.start_interview(limit=3)
+            self.assertTrue(started["session_id"])
+            q = started["questions"][0]
+            ival.answer_interview(started["session_id"], q["id"], "我的回答")
+            qa = storemod.CognitiveStore().get_qa(started["session_id"])
+            self.assertTrue(qa)
+            self.assertNotEqual(qa[0]["question"], "")
+            self.assertTrue(qa[0]["answer"])
         finally:
             _restore(saved)
 

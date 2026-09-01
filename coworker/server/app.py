@@ -3472,6 +3472,13 @@ def create_app(manager: SessionManager) -> FastAPI:
             store = MomentsStore(base_dir=base)
             post = store.add_user_post(content)
             reply = store.generate_reply(content)
+            # ③a 焊点自动接线：新日记写入 → 增量提取进认知画像（幂等，fail-open）。
+            # 让"日记积累 → 认知盲区(gap) → 访谈发起"的弹药链真正自动运转。
+            try:
+                from deskmate.cognitive.diary_extract import extract_diary_into_cognitive
+                extract_diary_into_cognitive()
+            except Exception:
+                logging.warning("diary -> cognitive extract failed", exc_info=True)
             return {"post": post, "reply": reply}
         except Exception:
             logging.exception("post deskmate moment failed")
