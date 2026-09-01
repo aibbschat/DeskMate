@@ -28,6 +28,7 @@ import { PersonaGlyph, personaGlyph } from "./personaIcon";
 import { SearchModal } from "./SearchModal";
 import { baseName } from "../paths";
 import { showPersonas } from "../flags";
+import { parseTs } from "../time";
 
 // Session surfaces shown as accordions, in display order. The surfaced personas drive this list
 // (so third-party / Ops personas appear); the hardcoded set is the fallback before personas load.
@@ -166,8 +167,11 @@ interface Props {
 // Compact age for project session rows: "now" / "5m" / "6h" / "3d" / "2w" / "4mo" / "2y".
 const compactAge = (iso?: string | null): string => {
   if (!iso) return "";
-  const then = Date.parse(iso);
-  if (Number.isNaN(then)) return "";
+  // 必须走 parseTs：updated_at 是 **UTC** 的 "YYYY-MM-DD HH:MM:SS"，直接 Date.parse
+  // 会按本地时区解读，相对时间凭空多一个 UTC 偏移（东八区刚聊完就显示 "8h"，
+  // 看着像这个会话很久没动过；owner 反馈 2026-09-02）。
+  const then = parseTs(iso);
+  if (!then) return "";
   const secs = Math.max(0, Math.floor((Date.now() - then) / 1000));
   if (secs < 60) return "now";
   const mins = Math.floor(secs / 60);

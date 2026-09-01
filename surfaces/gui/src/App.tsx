@@ -43,6 +43,7 @@ import { baseName } from "./paths";
 import { itemsFromMessages } from "./itemsFromMessages";
 import { addTurnUsage, emptyUsage, usageFromMessages } from "./usage";
 import { streamMode } from "./streamGate";
+import { parseTs } from "./time";
 import { InboxItemCard } from "./components/InboxItemCard";
 import { isTauri, platformOS, startWindowDrag } from "./tauri";
 import { Icon } from "./components/Icon";
@@ -171,25 +172,6 @@ function rememberLastSession(agent: string, sessionId: string, workspace: string
   } catch {
     /* localStorage may be unavailable; session restore is best effort. */
   }
-}
-
-/**
- * 后端返回 updated_at 为 "YYYY-MM-DD HH:MM:SS"（空格分隔、无时区，UTC）。
- * Safari/WebKit 的 Date.parse 不认空格格式，会返回 NaN，导致所有会话 ts=0、
- * 启动恢复时排序失效、挑错会话（桌搭聊天"重启后消失"）。统一规范成 ISO 再解析。
- */
-function parseTs(s: string | number | undefined | null): number {
-  if (s == null) return 0;
-  if (typeof s === "number") return s;
-  const str = String(s).trim();
-  if (!str) return 0;
-  const iso = str.includes("T") ? str : str.replace(" ", "T");
-  const zoned =
-    /[zZ]$/.test(iso) || /[+-]\d{2}:?\d{2}$/.test(iso) ? iso : iso + "Z";
-  const parsed = Date.parse(zoned);
-  if (!Number.isNaN(parsed)) return parsed;
-  const fb = Date.parse(str); // 兜底：交给引擎自行解析
-  return Number.isNaN(fb) ? 0 : fb;
 }
 
 function sessionTs(s: SessionInfo): number {

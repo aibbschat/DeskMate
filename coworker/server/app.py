@@ -905,15 +905,26 @@ def create_app(manager: SessionManager) -> FastAPI:
         return {"sessions": manager.list_sessions(workspace)}
 
     @app.get("/v1/sessions/{session_id}/messages")
-    def session_messages(session_id: str, limit: int = 100, offset: int = 0) -> dict[str, Any]:
+    def session_messages(
+        session_id: str, limit: Optional[int] = None, offset: int = 0
+    ) -> dict[str, Any]:
         messages = manager.session_messages(session_id)
-        # 分页：返回 offset 到 offset+limit 的消息
-        paginated = messages[offset:offset + limit]
+        # Pagination is opt-in. It used to default to limit=100, which silently
+        # truncated long sessions — and since the window started at offset 0 it
+        # returned the OLDEST 100 messages and hid the entire tail (a 141-message
+        # session lost its last 41; 8 sessions in the local DB exceeded 100).
+        # Callers that genuinely want a window pass limit explicitly.
+        # (owner report 2026-09-01)
+        if limit is not None and limit >= 0:
+            paginated = messages[offset:offset + limit]
+        else:
+            paginated = messages
+            offset = 0
         return {
             "messages": paginated,
             "total": len(messages),
             "offset": offset,
-            "limit": limit
+            "limit": limit if limit is not None else len(paginated),
         }
 
     @app.patch("/v1/sessions/{session_id}")
