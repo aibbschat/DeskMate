@@ -3472,6 +3472,23 @@ def create_app(manager: SessionManager) -> FastAPI:
             store = MomentsStore(base_dir=base)
             post = store.add_user_post(content)
             reply = store.generate_reply(content)
+            # 关键修复：把小桔回复作为 comments（author=xiaoju）落库。
+            # 原实现只把 reply 塞进返回体、从未 add_comment → 重进日记页从 DB 读空，
+            # 回复消失（无论规则还是 LLM 留言都不留痕）。落库后 get_posts 自然读回。
+            reply_comment = None
+            try:
+                reply_comment = store.add_comment(post["id"], "xiaoju", reply)
+            except Exception:
+                logging.warning("persist xiaoju reply failed", exc_info=True)
+            post["comments"] = [reply_comment] if reply_comment else []
+            # A1：默认全开 —— 每篇日记自动进『聊天主动回忆』（loved_entries + 视图），
+            # 去掉 per-entry 点按摩擦。前端 🩷 按钮反转成『取消回忆/静音』toggle。
+            try:
+                store.love(post["id"], content)
+                post["loved"] = True
+            except Exception:
+                logging.warning("auto-love diary failed", exc_info=True)
+                post["loved"] = False
             # ③a 焊点自动接线：新日记写入 → 增量提取进认知画像（幂等，fail-open）。
             # 让"日记积累 → 认知盲区(gap) → 访谈发起"的弹药链真正自动运转。
             try:
@@ -3502,15 +3519,27 @@ def create_app(manager: SessionManager) -> FastAPI:
             base = os.environ.get("DESKMATE_DIR", os.path.expanduser("~/.deskmate"))
             store = MomentsStore(base_dir=base)
             c = store.add_comment(moment_id, author, text)
-            return {"comment": c}
+            # 双向闭环：用户在任意日记下留言 → 小桔自动回一条（companion 在场）。
+            # author 非 "me"（如小桔自己留言）不触发，避免自回复死循环。
+            reply_comment = None
+            if author == "me":
+                try:
+                    rtext = store.generate_reply(text)
+                    reply_comment = store.add_comment(moment_id, "xiaoju", rtext)
+                except Exception:
+                    logging.warning("xiaoju auto-reply failed", exc_info=True)
+            return {"comment": c, "reply": reply_comment}
         except Exception:
             logging.exception("post deskmate moment comment failed")
             return JSONResponse({"error": "留言失败"}, status_code=500)
 
     @app.post("/v1/deskmate/moments/{moment_id}/love")
     async def post_deskmate_moment_love(moment_id: str, request: Request) -> dict[str, Any]:
-        """🩷 沉淀：把这条日记落 SQLite（loved_entries），并导出检索视图供聊天 prefetch 检索。
+        """🩷『聊天主动回忆』开关（A1 默认全开后的 toggle）。
 
+        body.loved=true  → 沉淀进 loved_entries（懂我持久化，导出 diary_memory.md 检索视图）；
+        body.loved=false → 取消这条在聊天的主动回忆（静音，unlove）。
+        缺省（不传 loved）→ 按前端当前态取反，兼容旧调用。
         不再写入全局 MEMORY.md（避免 2 万字符截断 + compress/purify 改写丢失）。见 diary_store.py。
         """
         try:
@@ -3518,11 +3547,17 @@ def create_app(manager: SessionManager) -> FastAPI:
         except Exception:
             body = {}
         content = (body or {}).get("content", "")
+        desired = (body or {}).get("loved", None)
         try:
             from deskmate.growth.moments import MomentsStore
 
             base = os.environ.get("DESKMATE_DIR", os.path.expanduser("~/.deskmate"))
-            return MomentsStore(base_dir=base).love(moment_id, content)
+            store = MomentsStore(base_dir=base)
+            if desired is None:
+                return store.love(moment_id, content)
+            if desired:
+                return store.love(moment_id, content)
+            return store.unlove(moment_id)
         except Exception:
             logging.exception("post deskmate moment love failed")
             return JSONResponse({"error": "沉淀失败"}, status_code=500)

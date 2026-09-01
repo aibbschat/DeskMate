@@ -4,7 +4,7 @@
  * 数据闭环（后端做实版）：
  * - 小桔日记 → GET /v1/deskmate/diary（真实 DiaryWriter 生成）
  * - 用户日记 / 留言 / 🩷 沉淀 → /v1/deskmate/moments*（MomentsStore 持久化）
- * - 🩷 落记忆 → POST /moments/{id}/love，后端落 SQLite（loved_entries）并导出 diary_memory.md 检索视图（懂我持久化，不再写 MEMORY.md）
+ * - 🩷『聊天主动回忆』开关 → POST /moments/{id}/love（body.loved 控制沉淀/静音；A1 默认全开，发日记即自动进回忆，点按=静音 toggle），后端落 SQLite（loved_entries）并导出 diary_memory.md 检索视图（懂我持久化，不再写 MEMORY.md）
  * - 小桔真回复 → POST /moments/post 由 LLM 生成，失败回落规则
  *
  * 展示细节：用户昵称「萧盛」+ 本地头像；发帖可选表情（复用聊天 EmotePicker）。
@@ -284,21 +284,31 @@ export function MomentFeed() {
       if (r.ok) {
         const d = await r.json();
         const post = d.post;
-        const reply: MomentComment = {
-          id: uid(),
-          author: "xiaoju",
-          text: d.reply || "我记下了。",
-          at: new Date().toISOString(),
-        };
+        // 信任后端落库的评论：小桔回复已作为 comments[0] 持久化（author=xiaoju），
+        // 重载日记页从 DB 读回不丢。仅当后端未返回时本地兜底（防旧包/异常）。
+        const persistedReply: MomentComment =
+          post.comments && post.comments[0]
+            ? {
+                id: post.comments[0].id,
+                author: post.comments[0].author,
+                text: post.comments[0].text,
+                at: post.comments[0].createdAt,
+              }
+            : {
+                id: uid(),
+                author: "xiaoju",
+                text: d.reply || "我记下了。",
+                at: new Date().toISOString(),
+              };
         const me: Moment = {
           id: post.id,
           author: "me",
           date: (post.createdAt || "").slice(0, 10),
           at: post.createdAt,
           content: post.content,
-          loved: false,
+          loved: !!post.loved,
           archived: false,
-          comments: [reply],
+          comments: [persistedReply],
         };
         setMoments((prev) => [me, ...prev]);
         setDraft("");
@@ -332,8 +342,20 @@ export function MomentFeed() {
           text: d.comment.text,
           at: d.comment.createdAt,
         };
+        // 双向：用户留言后，后端可能返回小桔的自动回复（author=xiaoju），一并追加
+        const extra: MomentComment[] = [];
+        if (d.reply) {
+          extra.push({
+            id: d.reply.id,
+            author: d.reply.author,
+            text: d.reply.text,
+            at: d.reply.createdAt,
+          });
+        }
         setMoments((prev) =>
-          prev.map((m) => (m.id === id ? { ...m, comments: [...m.comments, c] } : m)),
+          prev.map((m) =>
+            m.id === id ? { ...m, comments: [...m.comments, c, ...extra] } : m,
+          ),
         );
         setCommentDrafts((p) => ({ ...p, [id]: "" }));
       }
@@ -342,21 +364,21 @@ export function MomentFeed() {
     }
   };
 
-  /** 🩷 落记忆（后端落 SQLite + 导出 diary_memory.md 检索视图，懂我持久化） */
-  const toggleLove = async (id: string, content: string) => {
+  /** 🩷『聊天主动回忆』开关（A1：默认全开，点按 = 静音/恢复 toggle） */
+  const toggleLove = async (id: string, content: string, currentlyLoved: boolean) => {
     try {
       const r = await authedFetch(`${httpBase()}/v1/deskmate/moments/${id}/love`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ content }),
+        body: JSON.stringify({ content, loved: !currentlyLoved }),
       });
       if (r.ok) {
         const d = await r.json();
         setMoments((prev) => prev.map((m) => (m.id === id ? { ...m, loved: !!d.loved } : m)));
-        flashNotice(d.message || "已悄悄记进记忆");
+        flashNotice(d.message || (d.loved ? "已记进记忆" : "已取消主动回忆"));
       }
     } catch {
-      flashNotice("沉淀失败，请稍后再试");
+      flashNotice("操作失败，请稍后再试");
     }
   };
 
@@ -460,7 +482,7 @@ export function MomentFeed() {
                 onToggleComments={() => toggleComments(m.id)}
                 onCommentDraft={(v) => setCommentDrafts((p) => ({ ...p, [m.id]: v }))}
                 onAddComment={() => addComment(m.id)}
-                onLove={() => toggleLove(m.id, m.content)}
+                onLove={() => toggleLove(m.id, m.content, m.loved)}
                 onArchive={() => toggleArchive(m.id, !m.archived)}
               />
             ))}
@@ -492,7 +514,7 @@ export function MomentFeed() {
                       onToggleComments={() => toggleComments(m.id)}
                       onCommentDraft={(v) => setCommentDrafts((p) => ({ ...p, [m.id]: v }))}
                       onAddComment={() => addComment(m.id)}
-                      onLove={() => toggleLove(m.id, m.content)}
+                      onLove={() => toggleLove(m.id, m.content, m.loved)}
                       onArchive={() => toggleArchive(m.id, !m.archived)}
                     />
                   ))}
@@ -555,10 +577,10 @@ function MomentCard({
           type="button"
           className={`mom-love ${moment.loved ? "loved" : ""}`}
           onClick={onLove}
-          title={moment.loved ? "已记进记忆" : "记进记忆"}
+          title={moment.loved ? "点按：取消这条在聊天的主动回忆" : "点按：恢复这条在聊天的主动回忆"}
         >
           <span className="mom-love-heart">{moment.loved ? "🩷" : "🤍"}</span>
-          <span>{moment.loved ? "已记进记忆" : "记进记忆"}</span>
+          <span>{moment.loved ? "可回忆" : "已静音"}</span>
         </button>
         <button type="button" className="mom-comment" onClick={onToggleComments}>
           <span>💬</span>

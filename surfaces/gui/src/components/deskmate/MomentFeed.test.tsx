@@ -22,7 +22,17 @@ function stubFetch() {
         return {
           ok: true,
           json: async () => ({
-            post: { id: "p1", content: body.content, createdAt: "2026-08-31T15:00:00" },
+            // A1：默认全开 —— 发日记即自动进『聊天主动回忆』
+            // 修复：小桔回复作为 comments[0] 落库返回（重载不丢）
+            post: {
+              id: "p1",
+              content: body.content,
+              createdAt: "2026-08-31T15:00:00",
+              loved: true,
+              comments: [
+                { id: "r1", author: "xiaoju", text: "这条我好好收着。", createdAt: "2026-08-31T15:00:05" },
+              ],
+            },
             reply: "这条我好好收着。",
           }),
         } as Response;
@@ -33,13 +43,22 @@ function stubFetch() {
           ok: true,
           json: async () => ({
             comment: { id: "c1", author: "me", text: body.text, createdAt: "2026-08-31T15:01:00" },
+            // 双向闭环：用户留言后小桔自动回一条
+            reply: { id: "r2", author: "xiaoju", text: "我也在听你说呢。", createdAt: "2026-08-31T15:01:30" },
           }),
         } as Response;
       }
       if (method === "POST" && u.includes("/love")) {
+        // A1：honor toggle —— 后端按 body.loved 决定沉淀/静音
+        const body = JSON.parse(String(init?.body || "{}"));
+        const loved = body.loved !== false;
         return {
           ok: true,
-          json: async () => ({ loved: true, memorized: true, message: "已悄悄记进记忆" }),
+          json: async () => ({
+            loved,
+            memorized: true,
+            message: loved ? "已悄悄记进记忆" : "已取消主动回忆",
+          }),
         } as Response;
       }
       if (method === "POST" && u.includes("/archive")) {
@@ -86,17 +105,20 @@ describe("MomentFeed 微博时间线（后端版）", () => {
     expect(await screen.findByText("这条我好好收着。")).toBeTruthy();
   });
 
-  it("🩷 落记忆：点击后变为已记进记忆", async () => {
+  it("🩷 默认全开：发日记即『可回忆』，点按=取消主动回忆（静音）", async () => {
     stubFetch();
     render(<MomentFeed />);
     await writeDiary("今天路过那棵桂花树。");
     await screen.findByText(/今天路过那棵桂花树/);
-    fireEvent.click(screen.getByTitle("记进记忆"));
-    expect(await screen.findByText("已记进记忆")).toBeTruthy();
-    expect(await screen.findByText("已悄悄记进记忆")).toBeTruthy();
+    // 新日记默认 loved（A1 自动沉淀）→ 按钮显示『可回忆』
+    expect(await screen.findByText("可回忆")).toBeTruthy();
+    // 点按取消主动回忆
+    fireEvent.click(screen.getByTitle("点按：取消这条在聊天的主动回忆"));
+    expect(await screen.findByText("已静音")).toBeTruthy();
+    expect(await screen.findByText("已取消主动回忆")).toBeTruthy();
   });
 
-  it("可在日记下留言并发送", async () => {
+  it("可在日记下留言并发送，且小桔自动回一条（双向闭环）", async () => {
     stubFetch();
     render(<MomentFeed />);
     await writeDiary("晚安，今天先睡了。");
@@ -106,6 +128,8 @@ describe("MomentFeed 微博时间线（后端版）", () => {
     fireEvent.change(input, { target: { value: "明天见" } });
     fireEvent.click(screen.getByText("发送"));
     expect(await screen.findByText("明天见")).toBeTruthy();
+    // 小桔自动回复随用户留言出现（后端落库，重载不丢）
+    expect(await screen.findByText("我也在听你说呢。")).toBeTruthy();
   });
 
   it("cursor 分页：首屏渲染后点加载更多追加下一页，到底后按钮消失", async () => {

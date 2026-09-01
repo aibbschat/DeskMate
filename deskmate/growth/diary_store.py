@@ -277,6 +277,20 @@ class DiaryStore:
         self.export_memory_view()
         return {"loved": True, "memorized": memorized}
 
+    def unlove(self, moment_id: str) -> bool:
+        """取消一条日记的『聊天主动回忆』（静音）。
+
+        从 loved_entries 移除该 moment 的沉淀、把 user_posts.loved 置 0、
+        并重导 diary_memory.md 视图。返回是否有行受影响。fail-open 由调用方兜底。
+        """
+        if not moment_id:
+            return False
+        with self._connect() as conn:
+            conn.execute("DELETE FROM loved_entries WHERE moment_id = ?", (moment_id,))
+            conn.execute("UPDATE user_posts SET loved = 0 WHERE id = ?", (moment_id,))
+        self.export_memory_view()
+        return True
+
     # ------------------------------------------------------------------
     # 写：每条日记独立归档（与🩷、回复并列的卡片操作）
     # ------------------------------------------------------------------
@@ -559,6 +573,13 @@ class DiaryStore:
                     (cutoff,),
                 ).fetchall()
             if not rows:
+                # 无沉淀时清空视图文件（否则磁盘上残留旧内容，unlove 后仍能检索到）
+                view_path = self.base / _DIARY_MEMORY_VIEW
+                try:
+                    if view_path.exists():
+                        view_path.unlink()
+                except Exception:
+                    pass
                 return ""
             view_path = self.base / _DIARY_MEMORY_VIEW
             blocks = ["§ 日记沉淀 #moment #diary"]

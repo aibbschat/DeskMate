@@ -139,6 +139,20 @@ class MomentsStore:
         }
 
     # ------------------------------------------------------------------
+    # 取消『聊天主动回忆』（静音；A1 默认全开后的反向开关）
+    # ------------------------------------------------------------------
+    def unlove(self, moment_id: str) -> dict[str, Any]:
+        """取消一条日记在聊天的主动回忆（从 loved_entries 移除 + 重导视图）。
+
+        fail-open：异常时返回 loved=False，由调用方不阻断主链路。
+        """
+        try:
+            self.store.unlove(moment_id)
+            return {"loved": False, "message": "已取消主动回忆"}
+        except Exception:
+            return {"loved": False, "message": "取消失败"}
+
+    # ------------------------------------------------------------------
     # 每条日记独立归档（与🩷、回复并列的卡片操作；仅影响时间线展示）
     # ------------------------------------------------------------------
     def archive(self, moment_id: str, archived: bool = True) -> bool:
