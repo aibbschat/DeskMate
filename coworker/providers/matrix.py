@@ -171,6 +171,14 @@ MATRIX: dict[str, ModelEntry] = {
     "ark-agent-plan-cn:kimi-k2.7-code": ModelEntry(
         "Kimi K2.7 Code · Volcengine Agent Plan", context_window=256_000
     ),
+    # Xiaomi 官方 token-plan 端点（provider:xiaomi，2026-09-01 实测模型 ID 服务端认可，
+    # 当前 429 额度用尽属暂时；OpenRouter 中转不稳定故注册官方端点备用）。
+    "xiaomi:mimo-v2.5-pro": ModelEntry(
+        "MiMo V2.5 Pro · Xiaomi token-plan", context_window=256_000
+    ),
+    "xiaomi:mimo-v2.5": ModelEntry(
+        "MiMo V2.5 · Xiaomi token-plan", context_window=256_000
+    ),
     # -- direct OpenAI-compatible vendors ----------------------------------------
     # Muse Spark (Meta Model API, public preview 2026-07-09): multimodal + tools via
     # their OpenAI-compat surface. Vision yes; PDFs unverified over compat — falls
