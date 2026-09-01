@@ -6,7 +6,8 @@
 
 数据目录解析优先级：
   ``HISTORY_DATA_DIR`` 环境变量 → ``DESKMATE_DIR``/``history`` → ``~/.deskmate/history``
-专家白名单默认 ``duan-dai-shi,dong-shi-gong``，可用 ``HISTORY_EXPERTS`` 覆盖。
+专家库默认**自动扫描数据目录下所有 ``*.db``**（丢一个库文件进目录即可用），
+也可用 ``HISTORY_EXPERTS`` 环境变量或调用参数显式指定。
 """
 
 from __future__ import annotations
@@ -22,19 +23,35 @@ from .fts5 import list_sources, search_across_dbs
 _DEFAULT_EXPERTS = ("duan-dai-shi", "dong-shi-gong")
 
 
+def _discover_experts(data_dir: Path) -> list[str]:
+    """扫描数据目录下所有 ``*.db`` 作为可检索库。
+
+    不沿用硬编码白名单：实测库文件名可能与白名单不一致（如史部子集命名为
+    ``shibu-shi.db``），硬编码会导致数据已就位却检索不到。扫目录可做到
+    「丢一个 .db 进目录即可用」。
+    """
+    if not data_dir.is_dir():
+        return list(_DEFAULT_EXPERTS)
+    found = sorted(p.stem for p in data_dir.glob("*.db") if p.is_file())
+    return found or list(_DEFAULT_EXPERTS)
+
+
+def _resolve_experts(data_dir: Path, experts: Optional[list[str]] = None) -> list[str]:
+    """专家列表解析优先级：显式传入 → ``HISTORY_EXPERTS`` → 扫描目录 → 兜底白名单。"""
+    if experts:
+        return list(experts)
+    env = os.environ.get("HISTORY_EXPERTS")
+    if env:
+        return [s.strip() for s in env.split(",") if s.strip()]
+    return _discover_experts(data_dir)
+
+
 def _default_history_dir() -> Path:
     env = os.environ.get("HISTORY_DATA_DIR")
     if env:
         return Path(env).expanduser()
     base = os.environ.get("DESKMATE_DIR", str(Path.home() / ".deskmate"))
     return Path(base).expanduser() / "history"
-
-
-def _default_experts() -> list[str]:
-    env = os.environ.get("HISTORY_EXPERTS")
-    if env:
-        return [s.strip() for s in env.split(",") if s.strip()]
-    return list(_DEFAULT_EXPERTS)
 
 
 _SCHEMA = {
@@ -53,14 +70,14 @@ _SCHEMA = {
             "properties": {
                 "query": {
                     "type": "string",
-                    "description": "检索关键词或短语（中文会做三级降级：trigram → bigram → char AND）",
+                    "description": "检索关键词或短语（中文会做四级降级：全词精确 → trigram → bigram → char AND）",
                 },
                 "experts": {
                     "type": "array",
                     "items": {"type": "string"},
                     "description": (
-                        "可选：限定专家库 id 列表（默认 duan-dai-shi, dong-shi-gong）。"
-                        "新增史料库时把 expertId 加进来即可，无需改代码。"
+                        "可选：限定专家库 id 列表。默认自动扫描数据目录下所有 .db，"
+                        "新增史料库直接放入目录即可，无需改代码。"
                     ),
                 },
                 "limit": {
@@ -81,7 +98,8 @@ def make_history_search_tool(
     """Build the ``search_history`` tool. ``data_dir``/``experts`` override resolution
     (used by tests)."""
     data_dir = data_dir or _default_history_dir()
-    experts = list(experts or _default_experts())
+    # 构造时解析一次；显式传入优先，其次是环境变量，最后扫目录
+    base_experts = _resolve_experts(data_dir, experts)
 
     def search_history(
         query: str,
@@ -92,7 +110,9 @@ def make_history_search_tool(
         if not query:
             return {"error": "query 不能为空"}
 
-        requested = list(experts) if experts else list(_default_experts())
+        # 用构造时解析的 base_experts，而不是重新读环境变量/扫目录，
+        # 否则测试或调用方显式传入的 experts 会被悄悄覆盖掉。
+        requested = list(experts) if experts else list(base_experts)
         n = min(20, max(1, int(limit or 8)))
         db_paths = [str(data_dir / f"{e}.db") for e in requested]
         db_paths = [p for p in db_paths if Path(p).is_file()]

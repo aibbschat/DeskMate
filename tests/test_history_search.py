@@ -127,8 +127,11 @@ def test_build_fts5_query_three_char_trigram():
 
 def test_build_fts5_query_synonym_expansion():
     q = build_fts5_query("变法")
-    # 同义词扩展进 trigram（扩展后字符集 ≥5 时只生成 trigram），char_and 用原始查询字符
-    assert '"变 法 改"' in q["trigram_query"]
+    # 同义词各自独立成短语，OR 进精确档（语义召回）
+    assert '"变 法"' in q["exact_query"]
+    assert '"改 革"' in q["exact_query"]
+    # trigram 只用原始查询字符，不再产出跨词边界的虚假组合
+    assert "变 法 改" not in (q["trigram_query"] or "")
     assert q["char_and_query"] == "变 法"
 
 
@@ -261,6 +264,220 @@ def test_engine_registers_search_history(tmp_path):
     )
     assert "search_history" in eng.registry.names()
     assert "web_search" in eng.registry.names()  # 二者并列
+
+
+# ---------------------------------------------------------------- Exact 精确档
+
+
+def test_build_fts5_query_exact_is_full_phrase():
+    # Exact 档：整个查询词作为一个连续短语，不被拆成 3-gram
+    q = build_fts5_query("王安石变法")
+    assert q["exact_query"].startswith('"王 安 石 变 法"')
+    # trigram 仍是原始查询的 3 字滑动窗口，作为精确档无命中时的补充
+    assert q["trigram_query"] == '"王 安 石" OR "安 石 变" OR "石 变 法"'
+
+
+def test_build_fts5_query_synonyms_stay_separate_phrases():
+    # 同义词独立成短语进精确档，但绝不与原词串接成虚假长词
+    # （旧行为把同义词拼在尾部，会生成"变 法 改"/"法 改 革"这类不存在的词）
+    q = build_fts5_query("变法")
+    assert q["exact_query"].startswith('"变 法"')  # 原词本身仍是第一个短语
+    assert '"改 革"' in q["exact_query"]
+    assert "变 法 改" not in q["exact_query"]
+    assert "法 改 革" not in q["exact_query"]
+
+
+def test_search_one_db_exact_ranks_above_partial():
+    """完整命中必须排在部分命中之前，即使部分命中来自更权威的来源。"""
+    con = sqlite3.connect(":memory:")
+    con.executescript(
+        "CREATE TABLE articles (id INTEGER PRIMARY KEY, source TEXT, source_file TEXT, "
+        "title TEXT, category TEXT, dynasty TEXT, author TEXT, content TEXT, "
+        "content_hash TEXT, file_path TEXT);"
+        "CREATE TABLE chunks (id INTEGER PRIMARY KEY, article_id INTEGER, chunk_index INTEGER, "
+        "heading TEXT, content TEXT, fts_content TEXT);"
+        "CREATE VIRTUAL TABLE chunks_fts USING fts5(content, heading, tokenize='unicode61');"
+    )
+    # A：daizhigev20（来源优先级低）但完整含"王安石变法"
+    con.execute(
+        "INSERT INTO articles (id, source, source_file, title, content, content_hash) "
+        "VALUES (1,'daizhigev20','a','宋史-精确','','h1')"
+    )
+    text_a = "熙宁二年，王安石变法始行，青苗免役诸法次第颁于天下。"
+    con.execute(
+        "INSERT INTO chunks (id, article_id, chunk_index, content, fts_content) VALUES (1,1,0,?,?)",
+        (text_a, _tokenize_cjk(text_a)),
+    )
+    con.execute(
+        "INSERT INTO chunks_fts(rowid, content, heading) VALUES (1,?,'')",
+        (_tokenize_cjk(text_a),),
+    )
+    # B：chtxt（来源优先级高）但只有"王安石"，无"变法"连写
+    con.execute(
+        "INSERT INTO articles (id, source, source_file, title, content, content_hash) "
+        "VALUES (2,'chtxt','b','元史-部分','','h2')"
+    )
+    text_b = "元初议政者尝举王安石之法，然未及施行而罢。"
+    con.execute(
+        "INSERT INTO chunks (id, article_id, chunk_index, content, fts_content) VALUES (2,2,0,?,?)",
+        (text_b, _tokenize_cjk(text_b)),
+    )
+    con.execute(
+        "INSERT INTO chunks_fts(rowid, content, heading) VALUES (2,?,'')",
+        (_tokenize_cjk(text_b),),
+    )
+    con.commit()
+
+    rows = search_one_db(con, "王安石变法", limit=5)
+    assert len(rows) >= 2
+    # 精确命中排第一，且带 exact 标记；部分命中不得抢前
+    assert rows[0]["exact"] is True
+    assert rows[0]["title"] == "宋史-精确"
+    assert rows[1]["exact"] is False
+    con.close()
+
+
+def test_search_one_db_dedups_identical_content():
+    """同一段文字被重复灌入不同 chunk 时只返回一条（实测《元史》有此情况）。"""
+    con = sqlite3.connect(":memory:")
+    con.executescript(
+        "CREATE TABLE articles (id INTEGER PRIMARY KEY, source TEXT, source_file TEXT, "
+        "title TEXT, category TEXT, dynasty TEXT, author TEXT, content TEXT, "
+        "content_hash TEXT, file_path TEXT);"
+        "CREATE TABLE chunks (id INTEGER PRIMARY KEY, article_id INTEGER, chunk_index INTEGER, "
+        "heading TEXT, content TEXT, fts_content TEXT);"
+        "CREATE VIRTUAL TABLE chunks_fts USING fts5(content, heading, tokenize='unicode61');"
+    )
+    dup = "至正二年正月，中書參議孛羅帖木兒建言開河，議者多以為不可。"
+    for i in (1, 2, 3):
+        con.execute(
+            "INSERT INTO articles (id, source, source_file, title, content, content_hash) "
+            f"VALUES ({i},'chtxt','f{i}','元史-{i}','','h{i}')"
+        )
+        con.execute(
+            "INSERT INTO chunks (id, article_id, chunk_index, content, fts_content) "
+            f"VALUES ({i},{i},0,?,?)",
+            (dup, _tokenize_cjk(dup)),
+        )
+        con.execute(
+            "INSERT INTO chunks_fts(rowid, content, heading) VALUES (?,?,'')",
+            (i, _tokenize_cjk(dup)),
+        )
+    con.commit()
+    rows = search_one_db(con, "孛羅帖木兒", limit=10)
+    assert len(rows) == 1, f"应去重为 1 条，实际 {len(rows)} 条"
+    con.close()
+
+
+def test_search_across_dbs_exact_beats_source_priority(tmp_path):
+    """跨库合并时，精确命中优先于来源优先级（chtxt 不再无条件压过 daizhigev20）。"""
+    # 库 1：chtxt（优先级高）但只有部分命中
+    p1 = tmp_path / "lib-a.db"
+    con = sqlite3.connect(str(p1))
+    con.executescript(
+        "CREATE TABLE articles (id INTEGER PRIMARY KEY, source TEXT, source_file TEXT, "
+        "title TEXT, category TEXT, dynasty TEXT, author TEXT, content TEXT, "
+        "content_hash TEXT, file_path TEXT);"
+        "CREATE TABLE chunks (id INTEGER PRIMARY KEY, article_id INTEGER, chunk_index INTEGER, "
+        "heading TEXT, content TEXT, fts_content TEXT);"
+        "CREATE VIRTUAL TABLE chunks_fts USING fts5(content, heading, tokenize='unicode61');"
+    )
+    con.execute(
+        "INSERT INTO articles (id, source, source_file, title, content, content_hash) "
+        "VALUES (1,'chtxt','a','元史','','h1')"
+    )
+    t1 = "至正二年正月議開河事，孛羅帖木兒與焉。"
+    con.execute(
+        "INSERT INTO chunks (id, article_id, chunk_index, content, fts_content) VALUES (1,1,0,?,?)",
+        (t1, _tokenize_cjk(t1)),
+    )
+    con.execute(
+        "INSERT INTO chunks_fts(rowid, content, heading) VALUES (1,?,'')", (_tokenize_cjk(t1),)
+    )
+    con.commit()
+    con.close()
+
+    # 库 2：daizhigev20（优先级低）但完整命中
+    p2 = tmp_path / "lib-b.db"
+    con = sqlite3.connect(str(p2))
+    con.executescript(
+        "CREATE TABLE articles (id INTEGER PRIMARY KEY, source TEXT, source_file TEXT, "
+        "title TEXT, category TEXT, dynasty TEXT, author TEXT, content TEXT, "
+        "content_hash TEXT, file_path TEXT);"
+        "CREATE TABLE chunks (id INTEGER PRIMARY KEY, article_id INTEGER, chunk_index INTEGER, "
+        "heading TEXT, content TEXT, fts_content TEXT);"
+        "CREATE VIRTUAL TABLE chunks_fts USING fts5(content, heading, tokenize='unicode61');"
+    )
+    con.execute(
+        "INSERT INTO articles (id, source, source_file, title, content, content_hash) "
+        "VALUES (1,'daizhigev20','b','宋史','','h2')"
+    )
+    t2 = "熙宁二年，王安石变法始行。"
+    con.execute(
+        "INSERT INTO chunks (id, article_id, chunk_index, content, fts_content) VALUES (1,1,0,?,?)",
+        (t2, _tokenize_cjk(t2)),
+    )
+    con.execute(
+        "INSERT INTO chunks_fts(rowid, content, heading) VALUES (1,?,'')", (_tokenize_cjk(t2),)
+    )
+    con.commit()
+    con.close()
+
+    rows = search_across_dbs([str(p1), str(p2)], "王安石变法", limit=5)
+    # 库 1 只有"王安"级别的部分匹配；精确命中的库 2 必须排最前
+    assert rows[0]["exact"] is True
+    assert rows[0]["expertId"] == "lib-b"
+
+
+def test_search_across_dbs_coverage_beats_source_priority(tmp_path):
+    """同档位内，匹配查询词更全的条目应排在只匹配一半的之前。
+
+    实测问题：查"嘉靖倭寇"时，只含"嘉靖"的《舊唐書》(chtxt) 会压过同时含
+    "嘉靖""倭寇"的《明史》(daizhigev20)，因为来源优先级排在了相关性前面。
+    """
+    p = tmp_path / "lib.db"
+    con = sqlite3.connect(str(p))
+    con.executescript(
+        "CREATE TABLE articles (id INTEGER PRIMARY KEY, source TEXT, source_file TEXT, "
+        "title TEXT, category TEXT, dynasty TEXT, author TEXT, content TEXT, "
+        "content_hash TEXT, file_path TEXT);"
+        "CREATE TABLE chunks (id INTEGER PRIMARY KEY, article_id INTEGER, chunk_index INTEGER, "
+        "heading TEXT, content TEXT, fts_content TEXT);"
+        "CREATE VIRTUAL TABLE chunks_fts USING fts5(content, heading, tokenize='unicode61');"
+    )
+    # A：来源优先级高(chtxt)，但只命中"嘉靖"一半
+    con.execute(
+        "INSERT INTO articles (id, source, source_file, title, content, content_hash) "
+        "VALUES (1,'chtxt','a','舊唐書','','h1')"
+    )
+    t1 = "嘉靖年間校勘二十一史，詮謬司文學，徧歷輔畿。"
+    con.execute(
+        "INSERT INTO chunks (id, article_id, chunk_index, content, fts_content) VALUES (1,1,0,?,?)",
+        (t1, _tokenize_cjk(t1)),
+    )
+    con.execute(
+        "INSERT INTO chunks_fts(rowid, content, heading) VALUES (1,?,'')", (_tokenize_cjk(t1),)
+    )
+    # B：来源优先级低(daizhigev20)，但"嘉靖""倭寇"都命中
+    con.execute(
+        "INSERT INTO articles (id, source, source_file, title, content, content_hash) "
+        "VALUES (2,'daizhigev20','b','明史','','h2')"
+    )
+    t2 = "嘉靖三十四年，倭寇犯浙直，官兵屡败。"
+    con.execute(
+        "INSERT INTO chunks (id, article_id, chunk_index, content, fts_content) VALUES (2,2,0,?,?)",
+        (t2, _tokenize_cjk(t2)),
+    )
+    con.execute(
+        "INSERT INTO chunks_fts(rowid, content, heading) VALUES (2,?,'')", (_tokenize_cjk(t2),)
+    )
+    con.commit()
+    con.close()
+
+    rows = search_across_dbs([str(p)], "嘉靖倭寇", limit=5)
+    # 都不是连续四字词，走降级档；匹配更全的《明史》必须排最前
+    assert rows[0]["title"] == "明史"
+    assert rows[0]["sourceOrder"] > rows[-1]["sourceOrder"]  # 来源优先级确实更低
 
 
 class _StubProvider:
