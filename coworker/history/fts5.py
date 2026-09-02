@@ -60,12 +60,22 @@ _SOURCE_ORDER_SQL = (
 
 # 降级档顺序（索引越小越精确），同时作为返回给模型的 ``matchTier`` 标签，
 # 让模型能判断每条史料命中的可靠程度。
-_TIERS = ("exact_query", "trigram_query", "bigram_query", "char_and_query")
+#
+# ``synonym_query`` 必须垫底：同义词是**相关概念**而非同一查询词，命中它不代表
+# 原文讨论过你查的那个东西（详见 build_fts5_query 的踩坑记录）。
+_TIERS = (
+    "exact_query",
+    "trigram_query",
+    "bigram_query",
+    "char_and_query",
+    "synonym_query",
+)
 _TIER_LABELS = {
     "exact_query": "exact",
     "trigram_query": "trigram",
     "bigram_query": "bigram",
     "char_and_query": "char_and",
+    "synonym_query": "synonym",
 }
 
 # SELECT 列（只取 DDL 确认存在的字段）。注意：articles 表没有 url 字段，
@@ -127,12 +137,19 @@ def build_fts5_query(query: str) -> dict[str, Any]:
     """构建 FTS5 MATCH 表达式。
 
     返回 ``{"exact_query", "trigram_query", "bigram_query", "char_and_query",
-    "chars", "variants"}``；空查询返回 ``{"empty": True}``；非 CJK 查询各档都返回
-    带引号词的 OR 串。
+    "synonym_query", "chars", "variants"}``；空查询返回 ``{"empty": True}``；
+    非 CJK 查询各档都返回带引号词的 OR 串。
 
-    三条不变量（都是踩过坑才定下来的，别改回去）：
+    四条不变量（都是踩过坑才定下来的，别改回去）：
 
-    1. **同义词不进 trigram/bigram**。同义词只以独立短语 OR 进精确档；拼到查询串
+    1. **同义词自成一档且垫底，绝不进 exact**。同义词是"相关概念"不是同一个词，
+       而 `_synonyms_for` 是**按子串匹配**的——查「王安石变法」会命中「变法」的
+       同义词表，扩展出 改革/新政/改制/维新。这些二字词在古籍里遍地都是，混进
+       exact 档后《隋書》讲礼服制度、《舊唐書》讲地名沿革的段落全被召回，还被
+       标成 ``exact``（"完整命中，可直接引用"）。**这是最危险的一类误命中**：
+       结果看着权威，实则与查询毫无关系。现在同义词只在前四档都没结果时才用，
+       且 matchTier 标为 ``synonym`` 提醒模型自行判断相关性。
+    2. **同义词不进 trigram/bigram**。同义词只以独立短语形式存在；拼到查询串
        尾部会生成跨词边界的虚假组合（查"变法"会拼出"变 法 改"/"法 改 革"）。
     2. **简繁变体各自成短语，绝不跨变体串接**。串接会造出语料里根本不存在的词
        （如"项 羽 項"）。做法是：变体内部滑动窗口，变体之间 OR。
@@ -154,6 +171,7 @@ def build_fts5_query(query: str) -> dict[str, Any]:
             "trigram_query": as_str,
             "bigram_query": None,
             "char_and_query": as_str,
+            "synonym_query": None,
             "chars": [],
             "variants": [orig] if orig else [],
         }
@@ -187,18 +205,22 @@ def build_fts5_query(query: str) -> dict[str, Any]:
             "trigram_query": one,
             "bigram_query": None,
             "char_and_query": one,
+            "synonym_query": None,
             "chars": chars,
             "variants": variants,
         }
 
-    # Exact 档：每个变体整个词一个连续短语
+    # Exact 档：每个变体整个词一个连续短语。**同义词绝不进这一档。**
     exact_query = _or_join([_phrase(vc) for vc in var_seqs])
-    # 同义词**各自独立成短语**再 OR，而不是拼到查询串尾部
     syns = _synonyms_for(query)
     if syns:
         syn_phrases = [_phrase(_cjk_chars(s)) for s in syns if _cjk_chars(s)]
         if syn_phrases:
-            exact_query = _or_join([exact_query] + syn_phrases)
+            synonym_query = _or_join(syn_phrases)
+        else:
+            synonym_query = None
+    else:
+        synonym_query = None
 
     # trigram / bigram：变体内部滑动窗口，变体之间 OR（不跨变体滑窗）
     trigrams = [_phrase(vc[i:i + 3]) for vc in var_seqs for i in range(len(vc) - 2)]
@@ -226,6 +248,7 @@ def build_fts5_query(query: str) -> dict[str, Any]:
         "trigram_query": trigram_query,
         "bigram_query": bigram_query,
         "char_and_query": char_and_query,
+        "synonym_query": synonym_query,
         "chars": chars,
         "variants": variants,
     }
@@ -551,8 +574,14 @@ def search_across_dbs(
     weak: list[dict[str, Any]] = []
     for r in deduped:
         tier = r.get("matchTier")
-        if tier in ("bigram", "char_and") and _coverage(r) < need:
+        # synonym 无条件算弱命中：它匹配的是"相关概念"不是查询词本身，
+        # 覆盖度对它是无意义的度量（命中「新政」时「王安石变法」的 bigram
+        # 自然一个都不出现），必须显式兜住而不是指望 _coverage 碰巧判低。
+        if tier == "synonym":
             r["_weak"] = True   # 内部标记，_facet_merge 用完后会剔除
+            weak.append(r)
+        elif tier in ("bigram", "char_and") and _coverage(r) < need:
+            r["_weak"] = True
             weak.append(r)
         else:
             strong.append(r)

@@ -130,14 +130,30 @@ def test_build_fts5_query_three_char_trigram():
 
 def test_build_fts5_query_synonym_expansion():
     q = build_fts5_query("变法")
-    # 同义词各自独立成短语，OR 进精确档（语义召回）
-    assert '"变 法"' in q["exact_query"]
-    assert '"改 革"' in q["exact_query"]
+    # 原词进 exact 档；**同义词不再混入 exact**，只在独立的 synonym 档
+    assert q["exact_query"] == '"变 法" OR "變 法"'
+    assert '"改 革"' in q["synonym_query"]
+    assert '"改 革"' not in q["exact_query"]
     # trigram 只用原始查询字符，不再产出跨词边界的虚假组合
     assert "变 法 改" not in (q["trigram_query"] or "")
     # char_and 是「变体内 AND、变体间 OR」——
     # 若把所有变体的字符混在一起 AND，等于要求同一段里简繁并存，几乎不可能命中
     assert q["char_and_query"] == "(变 AND 法) OR (變 AND 法)"
+
+
+def test_synonyms_never_contaminate_exact_tier():
+    """同义词绝不进 exact 档——这是最危险的一类误命中。
+
+    ``_synonyms_for`` 是**按子串匹配**的：查「王安石变法」会命中「变法」的同义词表，
+    扩展出 改革/新政/改制/维新。这些二字词在古籍里遍地都是，混进 exact 档后
+    《隋書》讲礼服制度、《舊唐書》讲地名沿革的段落全被召回，还被标成 ``exact``
+    （"完整命中，可直接引用"）。结果看着权威，实则与查询毫无关系。
+    """
+    q = build_fts5_query("王安石变法")
+    assert q["exact_query"] == '"王 安 石 变 法" OR "王 安 石 變 法"'
+    for syn in ("改 革", "新 政", "改 制", "维 新"):
+        assert syn not in q["exact_query"]
+        assert syn in q["synonym_query"]
 
 
 def test_build_fts5_query_strips_fts_metachars():
@@ -286,13 +302,13 @@ def test_build_fts5_query_exact_is_full_phrase():
 
 
 def test_build_fts5_query_synonyms_stay_separate_phrases():
-    # 同义词独立成短语进精确档，但绝不与原词串接成虚假长词
+    # 同义词独立成短语进 synonym 档，绝不与原词串接成虚假长词
     # （旧行为把同义词拼在尾部，会生成"变 法 改"/"法 改 革"这类不存在的词）
     q = build_fts5_query("变法")
-    assert q["exact_query"].startswith('"变 法"')  # 原词本身仍是第一个短语
-    assert '"改 革"' in q["exact_query"]
-    assert "变 法 改" not in q["exact_query"]
-    assert "法 改 革" not in q["exact_query"]
+    assert q["exact_query"] == '"变 法" OR "變 法"'
+    assert q["synonym_query"].startswith('"改 革"')  # 同义词各自独立
+    assert "变 法 改" not in (q["synonym_query"] or "")
+    assert "法 改 革" not in (q["synonym_query"] or "")
 
 
 def test_search_one_db_exact_ranks_above_partial():
@@ -845,6 +861,24 @@ def test_weak_primary_sinks_below_strong_scholar():
     ]
     out = _facet_merge(rows, limit=3)
     assert [r["title"] for r in out] == ["明史", "明朝的裂变", "隋書"]
+
+
+def test_synonym_tier_sinks_to_the_bottom():
+    """synonym 档无条件算弱命中，即使它的覆盖度数值看起来不低。
+
+    覆盖度衡量的是"查询词的 bigram 在片段里出现了几个"，而 synonym 档匹配的
+    根本不是查询词（查「王安石变法」命中「新政」），覆盖度对它无意义。
+    不显式判弱，它就可能混进前排冒充精确命中。
+    """
+    rows = [
+        # 生产里 synonym 行由 search_across_dbs 打上 _weak 再交给 _facet_merge
+        {"era": "primary", "title": "講新政的隋書", "matchTier": "synonym",
+         "exact": False, "snippet": "頒新政以變法制", "_weak": True},
+        {"era": "primary", "title": "續資治通鑑", "matchTier": "exact",
+         "exact": True, "snippet": "公弼以王安石變法，數勸其務安靜"},
+    ]
+    out = _facet_merge(rows, limit=2)
+    assert out[0]["title"] == "續資治通鑑"
 
 
 def test_facet_merge_strips_internal_marks():
