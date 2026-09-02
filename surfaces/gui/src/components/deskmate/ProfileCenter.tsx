@@ -75,7 +75,9 @@ export function ProfileCenter({ onBack }: { onBack: () => void }) {
       .catch(() => {
         /* 静默降级 */
       });
-    authedFetch(`${httpBase()}/v1/deskmate/learned-history`)
+    // 默认 30 条不够看：这是「长期记忆」的主视图，能翻到全部记录才有意义。
+    // 后端 clamp 到 5000；当前真机 200 余条，全量读取毫无压力。
+    authedFetch(`${httpBase()}/v1/deskmate/learned-history?limit=500`)
       .then((r) => (r.ok ? r.json() : null))
       .then((d) => {
         if (d && d.items) setLearned(d);
@@ -98,15 +100,22 @@ export function ProfileCenter({ onBack }: { onBack: () => void }) {
     return Object.keys(by);
   }, [learned]);
 
+  // 后端按时间**正序**返回（最老在前），个人中心一律按「最新在前」展示。
+  // 漏掉这一步的表现很隐蔽：概览「最近记住的事」slice(0,4) 会拿到最老的 4 条，
+  // 于是界面看起来"最近的记忆停在半个月前"，但文件里其实一直在写
+  // （owner 反馈 2026-09-02）。老组件 UnderstandingCard 是各自 reverse 的，
+  // 这里集中反转一次，下游（搜索/筛选/概览）全部复用。
+  const memoryItems = useMemo(() => [...(learned?.items ?? [])].reverse(), [learned]);
+
   const filteredMemories = useMemo(() => {
-    const items = learned?.items ?? [];
+    const items = memoryItems;
     const q = query.trim().toLowerCase();
     return items.filter(
       (it) =>
         (cat === "all" || it.category === cat) &&
         (q === "" || it.fact.toLowerCase().includes(q)),
     );
-  }, [learned, query, cat]);
+  }, [memoryItems, query, cat]);
 
   const badgeUnlocked =
     growth?.achievements?.filter((a) => a.unlocked).length ?? null;
@@ -190,9 +199,9 @@ export function ProfileCenter({ onBack }: { onBack: () => void }) {
             查看全部
           </button>
         </div>
-        {(learned?.items?.length ?? 0) > 0 ? (
+        {(memoryItems.length ?? 0) > 0 ? (
           <div className="profile-mem-list">
-            {learned!.items.slice(0, 4).map((it, i) => (
+            {memoryItems.slice(0, 4).map((it, i) => (
               <MemoryRow key={i} item={it} />
             ))}
           </div>

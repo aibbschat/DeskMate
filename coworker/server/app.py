@@ -349,7 +349,12 @@ def create_app(manager: SessionManager) -> FastAPI:
                 f.write(_json.dumps(rec, ensure_ascii=False) + "\n")
 
     def _read_learned_history(desk_dir: "Path", limit: int = 30) -> dict:
-        """读取 learned_history.jsonl，返回最近条目 + 统计（了解度）。"""
+        """读取 learned_history.jsonl，返回最近条目 + 统计（了解度）。
+
+        契约：`items` 是最近 limit 条，**按时间正序（最老在前）**——前端
+        UnderstandingCard 会自行 reverse 后展示；改这里的顺序必须同步改前端。
+        统计（total / by_category）基于**全量**文件，不受 limit 影响。
+        """
         import json as _json
         from pathlib import Path
         hist_path = Path(desk_dir) / "memory" / "learned_history.jsonl"
@@ -366,13 +371,23 @@ def create_app(manager: SessionManager) -> FastAPI:
                 if len(items) >= limit:
                     break
             items.reverse()
+        # 全量统计（一次遍历同时得到 total）：此前 by_category 只数了返回的
+        # limit 条，于是 total=208 而各分类之和只有 30，个人中心的分类计数
+        # 明显偏小。（owner 反馈 2026-09-02）
         by_category: dict = {}
-        for it in items:
-            c = it.get("category", "other")
-            by_category[c] = by_category.get(c, 0) + 1
         total = 0
         if hist_path.exists():
-            total = sum(1 for _ in hist_path.read_text(encoding="utf-8").splitlines() if _.strip())
+            for line in hist_path.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                total += 1
+                try:
+                    rec = _json.loads(line)
+                except Exception:
+                    continue
+                c = rec.get("category", "other") or "other"
+                by_category[c] = by_category.get(c, 0) + 1
         return {"items": items, "stats": {"total": total, "by_category": by_category}}
     # ---- end DeskMate 学习历史辅助函数 ----
 
