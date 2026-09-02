@@ -307,6 +307,8 @@ _ERA_BY_KEYWORD: tuple[tuple[str, str], ...] = (
     ("政书", _ERA_PRIMARY),
     ("史書", _ERA_PRIMARY),
     ("史书", _ERA_PRIMARY),
+    ("笔记", _ERA_PRIMARY),
+    ("会要", _ERA_PRIMARY),
     ("文评", _ERA_CONTEXT),
     ("文总集", _ERA_CONTEXT),
 )
