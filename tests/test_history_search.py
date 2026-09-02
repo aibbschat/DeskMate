@@ -798,3 +798,30 @@ def test_facet_merge_exact_scholar_interleaves_even_at_low_tier():
     ]
     out = _facet_merge(rows, limit=4)
     assert "专著准" in [r["title"] for r in out]
+
+
+def test_long_query_still_generates_bigram():
+    """5 字以上查询也要生成 bigram。
+
+    原先限制「>=5 字不生成 bigram」，理由是怕宽泛；实测恰恰相反——长查询跳过
+    bigram 后直接掉到单字 AND，区分度断崖式下跌（查「郑和下西洋」会命中含
+    「南郑」「西」「和」的《文献通考》段落）。bigram 远比单字 AND 精确。
+    """
+    q = build_fts5_query("郑和下西洋")
+    assert q["bigram_query"] is not None
+    assert '"郑 和"' in q["bigram_query"]
+    assert '"西 洋"' in q["bigram_query"]
+    # trigram 仍在，作为比 bigram 更精确的一档
+    assert '"下 西 洋"' in q["trigram_query"]
+
+
+def test_weak_bigram_matches_sink_to_the_bottom():
+    """只命中一两个 bigram 的结果要沉底，它们是字面巧合而非史实相关。"""
+    rows = [
+        {"era": "primary", "title": "真相关", "matchTier": "exact",
+         "snippet": "郑和下西洋的宝船", "exact": True},
+        {"era": "primary", "title": "字面巧合", "matchTier": "bigram",
+         "snippet": "南下西洋诸国", "exact": False},
+    ]
+    out = _facet_merge(rows, limit=2)
+    assert out[0]["title"] == "真相关"

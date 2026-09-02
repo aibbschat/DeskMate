@@ -204,10 +204,12 @@ def build_fts5_query(query: str) -> dict[str, Any]:
     trigrams = [_phrase(vc[i:i + 3]) for vc in var_seqs for i in range(len(vc) - 2)]
     trigram_query = _or_join(trigrams)
 
-    bigram_query = None
-    if 2 <= len(var_seqs[0]) < 5:
-        bigrams = [_phrase(vc[i:i + 2]) for vc in var_seqs for i in range(len(vc) - 1)]
-        bigram_query = _or_join(bigrams)
+    # bigram 不限长度。原先限制「5 字及以上不生成」，理由是怕太宽泛；但实测
+    # 恰恰相反——长查询跳过 bigram 后直接掉到单字 AND，区分度断崖式下跌
+    # （查「郑和下西洋」会命中《文献通考》里含「南郑」「西」「和」的段落）。
+    # bigram「郑和/和下/下西/西洋」远比单字 AND 精确，应当保留作为中间档。
+    bigrams = [_phrase(vc[i:i + 2]) for vc in var_seqs for i in range(len(vc) - 1)]
+    bigram_query = _or_join(bigrams)
 
     # char_and：变体内 AND、变体间 OR
     and_parts: list[str] = []
@@ -535,7 +537,26 @@ def search_across_dbs(
             seen.add(fingerprint)
         deduped.append(r)
 
-    return _facet_merge(deduped, limit)
+    # 覆盖度门槛：bigram/char_and 档命中的 bigram 数必须过半，否则沉到末尾。
+    #
+    # bigram 档是 OR 匹配（命中任一片段即算），长查询会因此混入大量偶然撞上
+    # 跨词边界组合的段落——查「郑和下西洋」时《舊唐書》靠「下西」、《陳書》靠
+    # 「和下」这类古文里极常见的二字组合就能进来，而它们与郑和毫无关系。
+    # exact/trigram 档本身已足够精确，不受此限。
+    need = 1
+    if variant_bigrams:
+        need = max(1, -(-len(variant_bigrams[0]) // 2))  # ceil(总数/2)
+
+    strong: list[dict[str, Any]] = []
+    weak: list[dict[str, Any]] = []
+    for r in deduped:
+        tier = r.get("matchTier")
+        if tier in ("bigram", "char_and") and _coverage(r) < need:
+            weak.append(r)
+        else:
+            strong.append(r)
+
+    return _facet_merge(strong + weak, limit)
 
 
 def _facet_merge(rows: list[dict[str, Any]], limit: int) -> list[dict[str, Any]]:
