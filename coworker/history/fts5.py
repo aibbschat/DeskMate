@@ -289,6 +289,21 @@ _ERA_BY_KEYWORD: tuple[tuple[str, str], ...] = (
 # 原典 : 研究著作 的交错比。原典是立论基础故占多数，但研究著作必须在前排出现。
 _PRIMARY_SCHOLAR_RATIO = (2, 1)
 
+# 研究著作参与交错的**入场门槛**：必须命中到 bigram 及以上。
+#
+# 背景：研究著作往往只覆盖某个断代（如目前只灌了明史专著），查其他朝代的人物时
+# 只能靠顺带提及的段落命中，落到 char_and 档。若让这些弱命中按固定比例硬挤进前
+# 排，反而会顶掉高度相关的原典 —— 实测查「诸葛亮」时，明代生活专著里一句顺带
+# 提及，挤掉了《三國志》。交叉比对的前提是"两边都言之有物"，不是硬凑名额。
+_INTERLEAVE_MIN_TIERS = ("exact", "trigram", "bigram")
+
+
+def _interleave_eligible(row: dict[str, Any]) -> bool:
+    """研究著作只有在匹配质量足够时才参与交错，否则让位给原典。"""
+    if row.get("era") != _ERA_SCHOLAR:
+        return True
+    return bool(row.get("exact")) or row.get("matchTier") in _INTERLEAVE_MIN_TIERS
+
 
 def _era_of(
     category: Optional[str] = None,
@@ -535,7 +550,10 @@ def _facet_merge(rows: list[dict[str, Any]], limit: int) -> list[dict[str, Any]]
         groups.setdefault(r.get("era", _ERA_CONTEXT), []).append(r)
 
     out: list[dict[str, Any]] = []
-    p, s = groups[_ERA_PRIMARY], groups[_ERA_SCHOLAR]
+    p = groups[_ERA_PRIMARY]
+    # 研究著作分两批：强命中参与交错，弱命中让位（避免顺带提及挤掉高度相关的原典）
+    s = [r for r in groups[_ERA_SCHOLAR] if _interleave_eligible(r)]
+    s_weak = [r for r in groups[_ERA_SCHOLAR] if not _interleave_eligible(r)]
     pi = si = 0
     rp, rs = _PRIMARY_SCHOLAR_RATIO
 
@@ -554,6 +572,13 @@ def _facet_merge(rows: list[dict[str, Any]], limit: int) -> list[dict[str, Any]]
             if si < len(s):
                 out.append(s[si])
                 si += 1
+
+    # 弱命中的研究著作：排在所有原典之后、旁证之前。它们是"顺带提及"级别的
+    # 佐证，不参与前排交错，但仍比文总集/文评更贴近史实讨论。
+    for r in s_weak:
+        if len(out) >= limit:
+            return out
+        out.append(r)
 
     # 旁证文献与演义依次垫后。演义垫底是硬约束：它不能挤掉任何一条真史料。
     for era in (_ERA_CONTEXT, _ERA_FICTION):

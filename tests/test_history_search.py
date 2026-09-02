@@ -670,10 +670,23 @@ def test_era_of_unknown_falls_back_to_context():
     assert _era_of(category="", title="某书") == "context"
 
 
-def _rows_with_eras(spec: list[tuple[str, str]]) -> list[dict]:
-    """按 (era, 书名) 造一批假结果行，供分面合并测试使用。"""
+def _rows_with_eras(
+    spec: list[tuple[str, str]],
+    tier: str = "exact",
+) -> list[dict]:
+    """按 (era, 书名) 造一批假结果行，供分面合并测试使用。
+
+    默认带 ``matchTier``：真实返回体总有这个字段，缺了会被入场门槛判成弱命中
+    而排除出交错，测出来的就是假象。
+    """
     return [
-        {"era": era, "title": title, "snippet": f"{title}片段{i}"}
+        {
+            "era": era,
+            "title": title,
+            "snippet": f"{title}片段{i}",
+            "matchTier": tier,
+            "exact": tier == "exact",
+        }
         for i, (era, title) in enumerate(spec)
     ]
 
@@ -741,3 +754,47 @@ def test_source_order_gives_scholar_same_rank_as_daizhigev20():
     assert _source_order("chtxt") == 0
     assert _source_order("scholar") == _source_order("daizhigev20")
     assert _source_order("scholar") < _source_order("unknown-source")
+
+
+def test_facet_merge_weak_scholar_yields_to_primary():
+    """弱命中（char_and 档）的研究著作不进前排，避免顺带提及挤掉高度相关的原典。
+
+    实测教训：查「诸葛亮」时，明代生活专著里一句顺带提及，按固定 2:1 硬挤进
+    第 3 位，把《三國志》顶掉了。交叉比对的前提是两边都言之有物，不是硬凑名额。
+    """
+    rows = [
+        {"era": "primary", "title": f"原典{i}", "matchTier": "exact", "snippet": ""}
+        for i in range(4)
+    ] + [
+        {"era": "scholar", "title": "专著弱", "matchTier": "char_and",
+         "exact": False, "snippet": ""}
+    ]
+    out = _facet_merge(rows, limit=4)
+    assert "专著弱" not in [r["title"] for r in out]
+
+
+def test_facet_merge_strong_scholar_still_interleaves():
+    """命中到 bigram 及以上的研究著作照常参与交错。"""
+    rows = [
+        {"era": "primary", "title": f"原典{i}", "matchTier": "exact", "snippet": ""}
+        for i in range(3)
+    ] + [
+        {"era": "scholar", "title": "专著强", "matchTier": "bigram",
+         "exact": False, "snippet": ""}
+    ]
+    out = _facet_merge(rows, limit=4)
+    titles = [r["title"] for r in out]
+    assert titles.index("专著强") <= 3
+
+
+def test_facet_merge_exact_scholar_interleaves_even_at_low_tier():
+    """完整命中查询词的，即使档位低也该进前排（档位是降级路径，不代表不相关）。"""
+    rows = [
+        {"era": "primary", "title": f"原典{i}", "matchTier": "exact", "snippet": ""}
+        for i in range(3)
+    ] + [
+        {"era": "scholar", "title": "专著准", "matchTier": "char_and",
+         "exact": True, "snippet": ""}
+    ]
+    out = _facet_merge(rows, limit=4)
+    assert "专著准" in [r["title"] for r in out]
