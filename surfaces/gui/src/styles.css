@@ -3210,6 +3210,33 @@ html[data-theme="dark"] .creation-preview-article a {
 }
 .dm-diary-cal-day.selected.today { box-shadow: inset 0 0 0 1.5px #92400e; }
 
+/* 今日灵感进度——日记不是定时任务，素材攒够才动笔；
+   这里让「攒素材」的过程本身可见，而不是只在写完那天才有反馈。 */
+.dm-diary-inspiration {
+  margin-top: 10px; padding-top: 9px;
+  border-top: 1px dashed #efe6d5;
+}
+.dm-diary-insp-head {
+  display: flex; align-items: baseline; justify-content: space-between;
+  margin-bottom: 5px;
+}
+.dm-diary-insp-label { font-size: 12px; color: #a8a29e; }
+.dm-diary-insp-score {
+  font-size: 12px; color: #92400e; font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.dm-diary-insp-track {
+  height: 4px; border-radius: 2px; background: #f0e8d8; overflow: hidden;
+}
+.dm-diary-insp-fill {
+  height: 100%; border-radius: 2px; background: #f0b357;
+  transition: width .4s ease;
+}
+.dm-diary-insp-fill.ready { background: #d97706; }
+.dm-diary-insp-hint {
+  margin: 6px 0 0; font-size: 11px; color: #b8b0a6; line-height: 1.5;
+}
+
 /* 右侧正文 */
 .dm-diary-content {
   flex: 1; overflow-y: auto; max-height: 360px;

@@ -18,6 +18,18 @@ import { Icon } from "../Icon";
 
 type View = "today" | "recap";
 
+/** 今日灵感进度：素材攒到什么程度了，够不够小桔动笔写一篇。 */
+type DiaryInspiration = {
+  date: string;
+  score: number;
+  threshold: number;
+  detail: Record<string, number>;
+  should_write: boolean;
+  is_refresh: boolean;
+  materials_count: number;
+  reason: string;
+};
+
 function pad2(n: number): string {
   return String(n).padStart(2, "0");
 }
@@ -81,6 +93,7 @@ export function DiaryPanel() {
   const [recapDays, setRecapDays] = useState<number>(7);
   const [loading, setLoading] = useState(false);
   const [generating, setGenerating] = useState(false);
+  const [inspiration, setInspiration] = useState<DiaryInspiration | null>(null);
   const [viewMonth, setViewMonth] = useState<Date>(() => {
     const n = new Date();
     return new Date(n.getFullYear(), n.getMonth(), 1);
@@ -127,6 +140,19 @@ export function DiaryPanel() {
     }
   };
 
+  /**
+   * 今日灵感进度。日记不是定时任务——素材攒够才动笔，没攒够就安静等着，
+   * 这里的进度条是让"攒素材"这件事本身变得可见（萧哥 2026-09-02 定调）。
+   */
+  const fetchInspiration = async () => {
+    try {
+      const r = await authedFetch(`${httpBase()}/v1/deskmate/diary/inspiration`);
+      if (r.ok) setInspiration(await r.json());
+    } catch {
+      /* 静默降级：拿不到就不显示进度 */
+    }
+  };
+
   const generateToday = async () => {
     setGenerating(true);
     try {
@@ -135,6 +161,7 @@ export function DiaryPanel() {
         const d = await r.json();
         setContent(d.content || null);
         await fetchDates();
+        await fetchInspiration();
         setSelected(todayISO());
       }
     } catch {
@@ -146,6 +173,7 @@ export function DiaryPanel() {
 
   useEffect(() => {
     fetchDates();
+    fetchInspiration();
   }, []);
 
   useEffect(() => {
@@ -232,6 +260,38 @@ export function DiaryPanel() {
                 );
               })}
             </div>
+
+            {/* 今日灵感进度：让「攒素材」这件事本身可见——
+                日记不是定时任务，攒够才动笔，没攒够就安静等着。 */}
+            {inspiration && (
+              <div className="dm-diary-inspiration" title={inspiration.reason}>
+                <div className="dm-diary-insp-head">
+                  <span className="dm-diary-insp-label">今日灵感</span>
+                  <span className="dm-diary-insp-score">
+                    {inspiration.score.toFixed(1)} / {inspiration.threshold}
+                  </span>
+                </div>
+                <div className="dm-diary-insp-track">
+                  <div
+                    className={
+                      "dm-diary-insp-fill" +
+                      (inspiration.score >= inspiration.threshold ? " ready" : "")
+                    }
+                    style={{
+                      width: `${Math.min(
+                        100,
+                        (inspiration.score / Math.max(0.1, inspiration.threshold)) * 100,
+                      )}%`,
+                    }}
+                  />
+                </div>
+                <p className="dm-diary-insp-hint">
+                  {inspiration.is_refresh
+                    ? "今天已经记下一笔了"
+                    : "还在攒素材，攒够了我才写"}
+                </p>
+              </div>
+            )}
           </div>
 
           {/* 右侧正文 */}
