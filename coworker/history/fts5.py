@@ -230,7 +230,82 @@ def build_fts5_query(query: str) -> dict[str, Any]:
 
 
 def _source_order(source: Optional[str]) -> int:
-    return 0 if source == "chtxt" else 1 if source == "daizhigev20" else 2
+    """来源可信度次序，仅在 era 分组内部生效（组间次序由 _ERA_RANK 决定）。
+
+    ``scholar`` 是近现代/当代研究专著的来源标记，与 ``daizhigev20`` 同级：
+    它虽非原典，但属于可直引的学术著作，不应落到"其他"那一档去。
+    """
+    if source == "chtxt":
+        return 0
+    if source in ("daizhigev20", "scholar"):
+        return 1
+    return 2
+
+
+# ---------------------------------------------------------------------------
+# 史料分层（era）
+#
+# 排序**不能**做成「正史永远第一」的线性权威链。官修史书受政治与权力影响，
+# 会讳饰、颠倒、删改（典型如《明史》对建文朝的书写、清修明史的立场问题），
+# 因此把原典恒定顶在首位，等于让使用者看不见后世的考异与辨伪。
+#
+# 正确做法是**分面并呈**：原典与研究著作按 2:1 交错，保证前排同时出现
+# 「古人怎么说」与「后人怎么考」，由使用者自行交叉比对下判断。
+# 演义小说一律沉底并打 fiction 标记，仅供参照，不得作为史料引用。
+# ---------------------------------------------------------------------------
+_ERA_PRIMARY = "primary"      # 原典：正史 / 编年 / 政书 / 史部
+_ERA_SCHOLAR = "scholar"      # 研究著作：近现代、当代学者专著
+_ERA_CONTEXT = "context"      # 旁证：文总集、文评等同时代文人著述
+_ERA_FICTION = "fiction"      # 演义小说：不可作史料
+
+_ERA_LABELS = {
+    _ERA_PRIMARY: "原典",
+    _ERA_SCHOLAR: "研究著作",
+    _ERA_CONTEXT: "旁证文献",
+    _ERA_FICTION: "演义小说",
+}
+
+# 组间次序（越小越靠前）。fiction 必须垫底。
+_ERA_RANK = {_ERA_PRIMARY: 0, _ERA_SCHOLAR: 1, _ERA_CONTEXT: 2, _ERA_FICTION: 3}
+
+# category/书名关键字 → era。按元组顺序子串匹配，先命中者胜；
+# 「演义」「小说」排在前面，避免被更宽泛的规则吃掉。
+_ERA_BY_KEYWORD: tuple[tuple[str, str], ...] = (
+    ("演义", _ERA_FICTION),
+    ("小説", _ERA_FICTION),
+    ("小说", _ERA_FICTION),
+    ("研究著作", _ERA_SCHOLAR),
+    ("当代研究", _ERA_SCHOLAR),
+    ("近代研究", _ERA_SCHOLAR),
+    ("正史", _ERA_PRIMARY),
+    ("编年", _ERA_PRIMARY),
+    ("政书", _ERA_PRIMARY),
+    ("史書", _ERA_PRIMARY),
+    ("史书", _ERA_PRIMARY),
+    ("文评", _ERA_CONTEXT),
+    ("文总集", _ERA_CONTEXT),
+)
+
+# 原典 : 研究著作 的交错比。原典是立论基础故占多数，但研究著作必须在前排出现。
+_PRIMARY_SCHOLAR_RATIO = (2, 1)
+
+
+def _era_of(
+    category: Optional[str] = None,
+    source: Optional[str] = None,
+    title: Optional[str] = None,
+    author: Optional[str] = None,
+) -> str:
+    """判定一条史料属于哪一层。category 优先，缺失时退到书名/作者兜底。"""
+    for field in (category, title):
+        text = field or ""
+        for key, era in _ERA_BY_KEYWORD:
+            if key in text:
+                return era
+    # 有明确作者且非史部书 → 大概率是后世研究专著（古籍常缺 author 字段）
+    if (author or "").strip() and not (category or "").strip():
+        return _ERA_SCHOLAR
+    return _ERA_CONTEXT
 
 
 def search_one_db(
@@ -320,6 +395,7 @@ def search_one_db(
          dynasty, source, category, url, source_file, _rank) = r
         body = chunk_content or ""
         matched = next((v for v in forms if v in body), None)
+        era = _era_of(category=category, source=source, title=title, author=author)
         out.append({
             "articleId": article_id,
             "chunkId": chunk_id,
@@ -334,6 +410,10 @@ def search_one_db(
             "snippet": (chunk_content or "")[:600],
             "sourceOrder": _source_order(source),
             "exact": bool(matched),
+            # 史料分层：原典 / 研究著作 / 旁证 / 演义小说。
+            # 演义一律打 fiction，模型不得当作史料引用。
+            "era": era,
+            "eraLabel": _ERA_LABELS.get(era, era),
             # 实际命中的字形。与用户输入不同即为「以另一种字形命中」，
             # 供引用时判断这条史料是原典繁体还是今译简体。
             "matchedForm": matched or "",
@@ -417,6 +497,8 @@ def search_across_dbs(
             default=0,
         )
 
+    # 组内排序键：完整命中 > 匹配档位 > 查询词覆盖度 > 来源优先级。
+    # 这一层与传统相关度排序一致，分面交错在下一步做。
     all_rows.sort(
         key=lambda r: (
             not r.get("exact", False),
@@ -437,4 +519,46 @@ def search_across_dbs(
         if fingerprint:
             seen.add(fingerprint)
         deduped.append(r)
-    return deduped[:limit]
+
+    return _facet_merge(deduped, limit)
+
+
+def _facet_merge(rows: list[dict[str, Any]], limit: int) -> list[dict[str, Any]]:
+    """分面交错合并：原典与研究著作按比例穿插，旁证与演义依次垫后。
+
+    为什么不是简单按 era 排个序就完事：官修正史有立场，若让原典恒定占满前排，
+    使用者根本看不到后世考异，交叉比对无从谈起。交错后，同一个问题能同时看到
+    「《明史》这样写」与「萧盛/孟森这样看」，判断权留在使用者手里。
+    """
+    groups: dict[str, list[dict[str, Any]]] = {e: [] for e in _ERA_RANK}
+    for r in rows:
+        groups.setdefault(r.get("era", _ERA_CONTEXT), []).append(r)
+
+    out: list[dict[str, Any]] = []
+    p, s = groups[_ERA_PRIMARY], groups[_ERA_SCHOLAR]
+    pi = si = 0
+    rp, rs = _PRIMARY_SCHOLAR_RATIO
+
+    # 原典 : 研究著作 = 2 : 1 穿插。任一方耗尽后由另一方自然补位，
+    # 因此「只有古籍」或「只有专著」时行为退化成普通相关度排序。
+    while len(out) < limit and (pi < len(p) or si < len(s)):
+        for _ in range(rp):
+            if len(out) >= limit:
+                break
+            if pi < len(p):
+                out.append(p[pi])
+                pi += 1
+        for _ in range(rs):
+            if len(out) >= limit:
+                break
+            if si < len(s):
+                out.append(s[si])
+                si += 1
+
+    # 旁证文献与演义依次垫后。演义垫底是硬约束：它不能挤掉任何一条真史料。
+    for era in (_ERA_CONTEXT, _ERA_FICTION):
+        for r in groups.get(era, []):
+            if len(out) >= limit:
+                return out
+            out.append(r)
+    return out

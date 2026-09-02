@@ -18,6 +18,7 @@ from coworker.history import (
     search_across_dbs,
     search_one_db,
 )
+from coworker.history.fts5 import _era_of, _facet_merge, _source_order
 from coworker.history.s2t import to_traditional, variants
 
 
@@ -517,11 +518,12 @@ def _add_mem_chunk(
     text: str,
     dynasty: str = "",
     author: str = "",
+    category: str = "",
 ) -> None:
     con.execute(
-        "INSERT INTO articles (id, source, source_file, title, dynasty, author, content, "
-        "content_hash) VALUES (?,?,?,?,?,?,?,?)",
-        (cid, source, f"f{cid}", title, dynasty, author, text, f"h{cid}"),
+        "INSERT INTO articles (id, source, source_file, title, category, dynasty, "
+        "author, content, content_hash) VALUES (?,?,?,?,?,?,?,?,?)",
+        (cid, source, f"f{cid}", title, category, dynasty, author, text, f"h{cid}"),
     )
     con.execute(
         "INSERT INTO chunks (id, article_id, chunk_index, content, fts_content) VALUES (?,?,0,?,?)",
@@ -630,3 +632,112 @@ class _StubProvider:
         from coworker.providers.base import StreamChunk
 
         yield StreamChunk(turn=self.complete())
+
+
+# ---------------------------------------------------------------------------
+# 史料分层（era）与分面交错排序
+#
+# 这些用例锁住一条容易被"优化"掉的设计：排序**不是**把原典恒顶在前的线性
+# 权威链。官修正史有立场，若让原典占满前排，使用者就看不见后世考异，
+# 交叉比对无从谈起。因此原典与研究著作按 2:1 交错，演义一律沉底。
+# ---------------------------------------------------------------------------
+
+
+def test_era_of_by_category():
+    assert _era_of(category="正史") == "primary"
+    assert _era_of(category="编年") == "primary"
+    assert _era_of(category="政书") == "primary"
+    assert _era_of(category="j.史書") == "primary"
+    assert _era_of(category="研究著作") == "scholar"
+    assert _era_of(category="文评") == "context"
+    assert _era_of(category="文总集") == "context"
+
+
+def test_era_of_fiction_wins_over_broader_rules():
+    """「演义」必须最先匹配，否则会被更宽泛的规则误判成旁证。"""
+    assert _era_of(category="演义") == "fiction"
+    assert _era_of(category="隋唐演义") == "fiction"
+    # 书名里带"演义"二字也要认出来（category 缺失时靠书名兜底）
+    assert _era_of(category="", title="东西汉演义") == "fiction"
+
+
+def test_era_of_scholar_fallback_by_author():
+    """无 category 但有明确作者 → 判为研究专著（古籍通常缺 author 字段）。"""
+    assert _era_of(category="", title="明朝的裂变", author="萧盛") == "scholar"
+
+
+def test_era_of_unknown_falls_back_to_context():
+    assert _era_of(category="", title="某书") == "context"
+
+
+def _rows_with_eras(spec: list[tuple[str, str]]) -> list[dict]:
+    """按 (era, 书名) 造一批假结果行，供分面合并测试使用。"""
+    return [
+        {"era": era, "title": title, "snippet": f"{title}片段{i}"}
+        for i, (era, title) in enumerate(spec)
+    ]
+
+
+def test_facet_merge_interleaves_primary_and_scholar():
+    """原典再多，研究著作也必须在前排出现——否则等于看不见异见。"""
+    rows = _rows_with_eras(
+        [("primary", f"原典{i}") for i in range(6)]
+        + [("scholar", f"专著{i}") for i in range(3)]
+    )
+    out = _facet_merge(rows, limit=6)
+    eras = [r["era"] for r in out]
+    # 2:1 交错：前三条里应含 2 条原典 + 1 条专著
+    assert eras[:3] == ["primary", "primary", "scholar"]
+    assert eras.count("scholar") == 2
+
+
+def test_facet_merge_pushes_fiction_to_the_bottom():
+    """演义只能占剩余名额，绝不能挤掉任何一条真史料。"""
+    rows = _rows_with_eras(
+        [("primary", f"原典{i}") for i in range(4)]
+        + [("scholar", "专著0")]
+        + [("fiction", f"演义{i}") for i in range(5)]
+    )
+    out = _facet_merge(rows, limit=8)
+    titles = [r["title"] for r in out]
+    # 演义排在所有原典/专著之后
+    first_fiction = min(i for i, t in enumerate(titles) if t.startswith("演义"))
+    last_real = max(i for i, t in enumerate(titles) if not t.startswith("演义"))
+    assert first_fiction > last_real
+
+
+def test_facet_merge_degrades_when_only_one_era_present():
+    """只有古籍（尚未灌入研究著作）时，行为退化成普通相关度排序。"""
+    rows = _rows_with_eras([("primary", f"原典{i}") for i in range(5)])
+    out = _facet_merge(rows, limit=3)
+    assert [r["title"] for r in out] == ["原典0", "原典1", "原典2"]
+
+
+def test_facet_merge_respects_limit():
+    rows = _rows_with_eras(
+        [("primary", f"原典{i}") for i in range(10)]
+        + [("scholar", f"专著{i}") for i in range(10)]
+    )
+    assert len(_facet_merge(rows, limit=7)) == 7
+
+
+def test_search_one_db_tags_era():
+    """era 必须出现在返回体里，模型才知道这条能不能当史料引。"""
+    con = _mem_db()
+    _add_mem_chunk(con, 1, source="chtxt", title="明史", category="正史",
+                   text="胡惟庸自杨宪被诛后，总中书之政。")
+    _add_mem_chunk(con, 2, source="scholar", title="明朝的裂变", category="研究著作",
+                   author="萧盛", dynasty="当代", text="胡惟庸案是皇权与相权的总清算。")
+    rows = search_one_db(con, "胡惟庸", limit=5)
+    by_title = {r["title"]: r for r in rows}
+    assert by_title["明史"]["era"] == "primary"
+    assert by_title["明史"]["eraLabel"] == "原典"
+    assert by_title["明朝的裂变"]["era"] == "scholar"
+    assert by_title["明朝的裂变"]["eraLabel"] == "研究著作"
+
+
+def test_source_order_gives_scholar_same_rank_as_daizhigev20():
+    """研究著作属可直引的学术著作，不该落到「其他」那一档。"""
+    assert _source_order("chtxt") == 0
+    assert _source_order("scholar") == _source_order("daizhigev20")
+    assert _source_order("scholar") < _source_order("unknown-source")
