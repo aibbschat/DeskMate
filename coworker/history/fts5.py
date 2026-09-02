@@ -552,6 +552,7 @@ def search_across_dbs(
     for r in deduped:
         tier = r.get("matchTier")
         if tier in ("bigram", "char_and") and _coverage(r) < need:
+            r["_weak"] = True   # 内部标记，_facet_merge 用完后会剔除
             weak.append(r)
         else:
             strong.append(r)
@@ -566,15 +567,28 @@ def _facet_merge(rows: list[dict[str, Any]], limit: int) -> list[dict[str, Any]]
     使用者根本看不到后世考异，交叉比对无从谈起。交错后，同一个问题能同时看到
     「《明史》这样写」与「萧盛/孟森这样看」，判断权留在使用者手里。
     """
-    groups: dict[str, list[dict[str, Any]]] = {e: [] for e in _ERA_RANK}
-    for r in rows:
-        groups.setdefault(r.get("era", _ERA_CONTEXT), []).append(r)
+    # 覆盖度不足的弱命中（``_weak``）**整体排在强命中之后**，不分 era。
+    #
+    # 这一点是踩过坑才定的：弱命中的原典（《隋書》靠「下西」撞上「郑和下西洋」）
+    # 与强命中的原典同属 primary 组，若只按 era 分批，它们照样会占满前排，
+    # 把真正相关的结果挤到后面。强/弱先二分，再在强命中内部按 era 交错，
+    # 才能保证「相关但弱」永远让位于「相关且强」。
+    strong = [r for r in rows if not r.get("_weak")]
+    weak = [r for r in rows if r.get("_weak")]
+
+    def bucket(seq: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+        g: dict[str, list[dict[str, Any]]] = {e: [] for e in _ERA_RANK}
+        for r in seq:
+            g.setdefault(r.get("era", _ERA_CONTEXT), []).append(r)
+        return g
+
+    gs, gw = bucket(strong), bucket(weak)
 
     out: list[dict[str, Any]] = []
-    p = groups[_ERA_PRIMARY]
+    p = gs[_ERA_PRIMARY]
     # 研究著作分两批：强命中参与交错，弱命中让位（避免顺带提及挤掉高度相关的原典）
-    s = [r for r in groups[_ERA_SCHOLAR] if _interleave_eligible(r)]
-    s_weak = [r for r in groups[_ERA_SCHOLAR] if not _interleave_eligible(r)]
+    s = [r for r in gs[_ERA_SCHOLAR] if _interleave_eligible(r)]
+    s_weak = [r for r in gs[_ERA_SCHOLAR] if not _interleave_eligible(r)]
     pi = si = 0
     rp, rs = _PRIMARY_SCHOLAR_RATIO
 
@@ -594,17 +608,34 @@ def _facet_merge(rows: list[dict[str, Any]], limit: int) -> list[dict[str, Any]]
                 out.append(s[si])
                 si += 1
 
-    # 弱命中的研究著作：排在所有原典之后、旁证之前。它们是"顺带提及"级别的
-    # 佐证，不参与前排交错，但仍比文总集/文评更贴近史实讨论。
+    # 弱命中的研究著作：排在所有原典之后、覆盖度不足者之前。它们是"顺带提及"
+    # 级别的佐证，不参与前排交错，但仍比文总集/文评更贴近史实讨论。
     for r in s_weak:
         if len(out) >= limit:
-            return out
+            return _strip_marks(rows, out)
         out.append(r)
+
+    # 覆盖度不足的弱命中垫在强命中之后
+    for era in (_ERA_PRIMARY, _ERA_SCHOLAR):
+        for r in gw.get(era, []):
+            if len(out) >= limit:
+                return _strip_marks(rows, out)
+            out.append(r)
 
     # 旁证文献与演义依次垫后。演义垫底是硬约束：它不能挤掉任何一条真史料。
     for era in (_ERA_CONTEXT, _ERA_FICTION):
-        for r in groups.get(era, []):
+        for r in gs.get(era, []) + gw.get(era, []):
             if len(out) >= limit:
-                return out
+                return _strip_marks(rows, out)
             out.append(r)
+    return _strip_marks(rows, out)
+
+
+def _strip_marks(
+    rows: list[dict[str, Any]],
+    out: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """剔除内部标记 ``_weak``，别让它漏进工具输出污染给模型看的字段。"""
+    for r in rows:
+        r.pop("_weak", None)
     return out

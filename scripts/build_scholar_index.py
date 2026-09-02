@@ -89,11 +89,46 @@ DEFAULT_BOOKS: tuple[tuple[str, str], ...] = (
     ("17.明朝的裂变：大明王朝的两张面孔/附录/明朝内阁成员名录.docx", "附录：明朝内阁成员名录"),
 )
 
-AUTHOR = "萧盛"
+# 萧哥本人的著作（当代）。dynasty 填"当代"是**成书年代**，不是研究对象朝代——
+# 若填"明"，模型引用时会写出"明代 萧盛《明朝的裂变》"这种把作者当成明代人的
+# 错误标注。研究著作的正确引用格式是「作者 + 书名」，不写朝代。
+AUTHOR_XIAO = "萧盛"
 SOURCE = "scholar"
 CATEGORY = "研究著作"
-# 成书年代，非研究对象朝代。详见模块 docstring。
-DYNASTY = "当代"
+
+# 从维基文库等渠道下载的公有领域著作：文件名（不含扩展名）→ (作者, 成书年代)。
+# 同样是成书年代而非研究对象朝代，理由同上。
+# 只收录作者去世满 50 年的公有领域作品，详见 scripts/fetch_wikisource.py。
+DOWNLOADED_BOOKS: dict[str, tuple[str, str]] = {
+    "清朝前纪": ("孟森", "近代"),
+    "唐代政治史述论稿": ("陈寅恪", "近代"),
+    "殷周制度论": ("王国维", "近代"),
+}
+
+# 已核实维基文库**没有**全文的近现代名著（留档，避免以后重复找）：
+#   孟森《明史讲义》《清史讲义》、吕思勉《白话本国史》《中国通史》、
+#   张荫麟《中国史纲》、梁启超《清代学术概论》、柳诒徵《中国文化史》、
+#   邓之诚《中华二千年史》、吴晗《朱元璋传》、陈寅恪《隋唐制度渊源略论稿》。
+# 另有钱穆《国史大纲》（2040 解禁）、黄仁宇《万历十五年》（2050 解禁）
+# 仍在版权期，任何渠道都不得入库。
+
+SOURCES_DIR = Path.home() / ".deskmate" / "history" / "sources"
+
+
+def collect_books() -> list[tuple[Path, str, str, str]]:
+    """汇总待灌书目：``(路径, 书名, 作者, 成书年代)``。
+
+    全量重建而非增量——库只有几十 MB，重建不到一秒，增量反而要处理去重。
+    """
+    books: list[tuple[Path, str, str, str]] = []
+    for rel, title in DEFAULT_BOOKS:
+        books.append((PUBLISHED / rel, title, AUTHOR_XIAO, "当代"))
+
+    if SOURCES_DIR.is_dir():
+        for p in sorted(SOURCES_DIR.glob("*.txt")):
+            author, era = DOWNLOADED_BOOKS.get(p.stem, ("未标注", "近代"))
+            books.append((p, p.stem, author, era))
+    return books
 
 
 def split_chunks(text: str, size: int = CHUNK_SIZE) -> list[tuple[str, str]]:
@@ -172,9 +207,23 @@ def init_db(db_path: Path) -> sqlite3.Connection:
     return con
 
 
-def ingest(con: sqlite3.Connection, book_path: Path, title: str) -> int:
-    text, n_paras = extract_docx(book_path)
-    if not text:
+def _read_book(book_path: Path) -> tuple[str, int]:
+    """按扩展名读取正文，返回 (文本, 段落数)。.txt 与 .docx 都支持。"""
+    if book_path.suffix.lower() == ".txt":
+        text = book_path.read_text(encoding="utf-8", errors="replace")
+        return text, text.count("\n") + 1
+    return extract_docx(book_path)
+
+
+def ingest(
+    con: sqlite3.Connection,
+    book_path: Path,
+    title: str,
+    author: str,
+    dynasty: str,
+) -> int:
+    text, n_paras = _read_book(book_path)
+    if not text or not text.strip():
         print(f"  [跳过] 无正文：{book_path.name}")
         return 0
 
@@ -188,8 +237,8 @@ def ingest(con: sqlite3.Connection, book_path: Path, title: str) -> int:
             str(book_path),
             title,
             CATEGORY,
-            DYNASTY,
-            AUTHOR,
+            dynasty,
+            author,
             text,
             hashlib.md5(text.encode("utf-8")).hexdigest(),
             str(book_path),
@@ -211,7 +260,8 @@ def ingest(con: sqlite3.Connection, book_path: Path, title: str) -> int:
     # 注意：这里不写 chunks_fts。FTS 内容表统一由 build_fts() 一次性灌入，
     # 因为它必须严格按 chunks.id 顺序插入才能保证 rowid == chunks.id。
     con.commit()
-    print(f"  ✓ {title:<32} {n_paras:>5} 段 → {len(chunks):>4} 块")
+    era_mark = f"{author}/{dynasty}"
+    print(f"  ✓ {title:<28} {era_mark:<14} {len(text):>8,} 字 → {len(chunks):>4} 块")
     return len(chunks)
 
 
@@ -246,9 +296,14 @@ def main(argv: list[str]) -> int:
     db_path.parent.mkdir(parents=True, exist_ok=True)
 
     if argv:
-        books = [(p, Path(p).stem) for p in argv]
+        # 临时灌单本：作者/年代从映射表查，查不到则标注为未标注
+        books = []
+        for a in argv:
+            p = Path(a).expanduser()
+            author, era = DOWNLOADED_BOOKS.get(p.stem, (AUTHOR_XIAO, "当代"))
+            books.append((p, p.stem, author, era))
     else:
-        books = [(str(PUBLISHED / rel), title) for rel, title in DEFAULT_BOOKS]
+        books = collect_books()
 
     print(f"目标库：{db_path}")
     print(f"待灌入 {len(books)} 部著作\n")
@@ -257,12 +312,12 @@ def main(argv: list[str]) -> int:
     t0 = time.time()
     total = 0
     try:
-        for path, title in books:
+        for path, title, author, era in books:
             p = Path(path).expanduser()
             if not p.is_file():
                 print(f"  [缺失] {p}")
                 continue
-            total += ingest(con, p, title)
+            total += ingest(con, p, title, author, era)
         print("\n构建 FTS5 索引…")
         build_fts(con)
     finally:

@@ -19,3 +19,6 @@ vite.config.ts.timestamp-*.mjs
 .claude/settings.local.json
 # Generated docx exports (docx_export.py → output/*.docx) — build artifacts, not source
 output/
+
+# 沙箱环境下 pytest 默认临时目录被拦截，改用仓库内目录
+.pytest_tmp/

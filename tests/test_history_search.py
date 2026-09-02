@@ -825,3 +825,34 @@ def test_weak_bigram_matches_sink_to_the_bottom():
     ]
     out = _facet_merge(rows, limit=2)
     assert out[0]["title"] == "真相关"
+
+
+def test_weak_primary_sinks_below_strong_scholar():
+    """弱命中的**原典**必须排在强命中的**研究著作**之后。
+
+    这是真实踩过的坑：查「一条鞭法」时《隋書》《魏書》靠「条鞭」这类常见二字
+    组合被召回，它们与原典强命中同属 primary 组。若只按 era 分批交错，这些
+    八竿子打不着的段落会占掉前排半壁江山，把萧盛《明朝的裂变》里真正讨论
+    一条鞭法的段落挤到看不见的地方。强/弱必须先于 era 二分。
+    """
+    rows = [
+        {"era": "primary", "title": "隋書", "matchTier": "bigram", "exact": False,
+         "snippet": "条鞭之刑", "_weak": True},
+        {"era": "scholar", "title": "明朝的裂变", "matchTier": "exact", "exact": True,
+         "snippet": "一条鞭法将赋役合并"},
+        {"era": "primary", "title": "明史", "matchTier": "exact", "exact": True,
+         "snippet": "一条鞭法者"},
+    ]
+    out = _facet_merge(rows, limit=3)
+    assert [r["title"] for r in out] == ["明史", "明朝的裂变", "隋書"]
+
+
+def test_facet_merge_strips_internal_marks():
+    """``_weak`` 只是内部分档标记，不能漏进给模型看的工具输出。"""
+    rows = [
+        {"era": "primary", "title": "明史", "matchTier": "bigram", "exact": False,
+         "snippet": "条鞭", "_weak": True},
+    ]
+    out = _facet_merge(rows, limit=1)
+    assert "_weak" not in out[0]
+    assert "_weak" not in rows[0]
