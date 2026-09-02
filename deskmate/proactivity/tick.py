@@ -45,6 +45,8 @@ class TickResult:
     companion_message: str = ""
     # ③b 深度访谈触发负载（session_id + questions）；前端收到后弹访谈 UI
     interview: Optional[dict] = None
+    # 日记灵感负载：素材攒够时小桔自己动笔（后台动作，不占 SUGGEST 通道）
+    diary: Optional[dict] = None
 
     @property
     def has_suggestion(self) -> bool:
@@ -97,6 +99,10 @@ class TickResult:
         # ③b 深度访谈触发负载：前端 useProactiveTick 据此 dispatch 访谈事件
         if self.interview:
             result["interview"] = self.interview
+
+        # 日记灵感：小桔自己动笔（不是打扰型弹窗，前端可轻声提示一句）
+        if self.diary:
+            result["diary"] = self.diary
 
         return result
 
@@ -162,6 +168,20 @@ class ProactiveEngine:
             prepare_thr = THRESHOLD_PREPARE
             self._growth_interval_ratio = 1.0
         self._heartbeat_interval_ms = int(5 * 60_000 * self._growth_interval_ratio)
+
+        # ===== 1.6 日记灵感（后台动作，不打扰、不占通道）=====
+        # 与深度访谈同一范式：纯规则、零 LLM、条件满足才发生。
+        # 差异在于日记**不需要用户在场**——她是自己动笔，不是来打断你。
+        # 所以放在 idle 判断之前：素材攒够了就安静写下来，返回里带一句轻提示。
+        # 没攒够则什么都不做（绝不为了「今天还没写」而凑一篇流水账）。
+        diary_payload = None
+        try:
+            from deskmate.growth.diary_inspiration import maybe_write_diary
+
+            diary_payload = maybe_write_diary(base_dir=self.base_dir)
+        except Exception:
+            diary_payload = None  # 日记失败绝不阻断主动推理主流程
+
         # ===== 1. 感知（Perceive）=====
         # 先获取活动窗口信息，传给 detect_user_activity 做会议应用检测
         from deskmate.perception.window_monitor import get_active_window
@@ -318,6 +338,7 @@ class ProactiveEngine:
                 skipped_reason=decision.reason,
                 elapsed_ms=int((time.time() - start) * 1000),
                 heartbeat_interval_ms=self._heartbeat_interval_ms,
+                diary=diary_payload,
             )
 
         if decision.action == ActionType.SUGGEST:
@@ -379,6 +400,7 @@ class ProactiveEngine:
             heartbeat_interval_ms=self._heartbeat_interval_ms,
             what_user_doing=what_doing,
             companion_message=companion_msg,
+            diary=diary_payload,
         )
 
     def record_feedback(self, suggestion_key: str, accepted: bool) -> None:

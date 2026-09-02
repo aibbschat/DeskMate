@@ -3426,6 +3426,26 @@ def create_app(manager: SessionManager) -> FastAPI:
             logging.exception("get deskmate diary recap failed")
             return {"days": days, "recap": ""}
 
+    @app.get("/v1/deskmate/diary/inspiration")
+    async def get_deskmate_diary_inspiration() -> dict[str, Any]:
+        """今日「灵感进度」——素材攒到什么程度了，够不够动笔。
+
+        日记不是定时任务：素材攒够才写，没攒够就安静等着，
+        绝不为了「今天还没写」而凑一篇流水账（萧哥 2026-09-02 定调）。
+        前端可据此显示「今日灵感 3.5 / 5」之类的进度。
+
+        注意：必须注册在 ``/v1/deskmate/diary/{date}`` 之前，
+        否则会被通配路由吃掉。
+        """
+        try:
+            from deskmate.growth.diary_inspiration import DiaryInspiration
+
+            base = os.environ.get("DESKMATE_DIR", os.path.expanduser("~/.deskmate"))
+            return DiaryInspiration(base_dir=base).should_write()
+        except Exception:
+            logging.exception("get deskmate diary inspiration failed")
+            return {"should_write": False, "score": 0.0, "reason": "灵感状态不可用"}
+
     @app.post("/v1/deskmate/diary/today")
     async def post_deskmate_diary_today() -> dict[str, Any]:
         """P1-3：生成/刷新今日小桔日记（幂等）。"""

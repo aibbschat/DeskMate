@@ -1,0 +1,367 @@
+"""小桔日记的「灵感」机制——素材攒够了才动笔。
+
+设计原则（萧哥 2026-09-02 定调）
+--------------------------------
+日记**不是**定时任务。定时触发会在没素材的日子产出流水账废话——
+「今天没有太多动静」写一百遍，不如不写。
+
+正确逻辑是：当天发生的事累积到一定程度，自然「产生灵感」，
+与主动建议按置信度阈值弹窗、深度访谈按 open gap 数触发同一范式——
+**条件满足才发生**，没攒够就安静等着。
+
+三个要点
+--------
+1. **素材账本**（``<base>/diary/materials/YYYY-MM-DD.jsonl``）
+
+   为什么不能直接读 ``GrowthState.recent_events``？因为它在落盘时会被
+   截断到最后 ``EVENT_LOG_CAP``(50) 条，是**易失窗口**。实测 09-01 一天
+   就产生 28 条事件，两天就能把前一天的素材整体挤出去——等到晚上再写，
+   素材早没了。账本在每次 sync 时增量落盘，持久保存，不受窗口挤压。
+
+2. **加权评分**：里程碑/反思类权重高，日常类权重低。
+   ``memory_learned`` 只有 0.5 分/条——学会一件小事不构成一篇日记。
+
+3. **单类封顶**（``_KIND_CAP``）：防批量刷分。
+   一次导入 15 条记忆、或 11 个技能同时进化，那是**一次批处理**的副产品，
+   不是 11 件值得写的事。不封顶的话，任何批量操作都会瞬间刷满灵感分。
+
+4. **可重写**：当天已写过、但又有新增素材达 ``_REFRESH_DELTA`` 分时重写。
+   原 ``ensure_today()`` 是死幂等——早上生成一篇，之后发生的事永远进不去，
+   于是日记里「累计对话 190 轮」在 203 轮时还挂着。
+
+零 LLM、fail-open：任何异常都静默，绝不影响主动推理主流程。
+"""
+
+from __future__ import annotations
+
+import datetime
+import json
+import os
+from pathlib import Path
+from typing import Optional
+
+from deskmate.growth.engine import GrowthEngine
+
+# ----------------------------------------------------------------------
+# 灵感权重表
+# ----------------------------------------------------------------------
+# 分档依据：
+#   4.0 里程碑 —— 值得单独记一笔的「第一次 / 拍板 / 新建」
+#   3.0 反思类 —— 有情感含量，值得写进心里（纠正、打回、圆桌）
+#   2.0 协作类 —— 一起做成了一件事
+#   1.0 日常类 —— 有互动，但分量轻
+#   0.5 痕迹类 —— 只是留下痕迹，不构成叙事
+#   0.0 不算素材 —— 系统补录，不是当天真实发生的事
+_EVENT_WEIGHTS: dict[str, float] = {
+    # 里程碑
+    "skill_created": 4.0,
+    "creation_approved": 4.0,
+    "badge_unlocked": 3.5,
+    # 反思
+    "user_corrected": 3.0,
+    "creation_rework": 3.0,
+    # 协作
+    "roundtable": 3.0,
+    "suggestion_accepted": 2.0,
+    "skill_evolved": 2.0,
+    "writing": 2.0,
+    "report": 2.0,
+    # 日常
+    "skill_used": 1.5,
+    "suggestion_ignored": 1.0,
+    # 痕迹
+    "chat": 0.5,
+    "memory_learned": 0.5,
+    # 非素材
+    "depth_backfilled": 0.0,
+}
+
+_DEFAULT_WEIGHT = 0.5          # 未知事件按「痕迹」计，不因不认识而漏记
+_KIND_CAP = 6.0                # 单一类型当天的灵感分封顶（防批量刷分）
+_INSPIRE_THRESHOLD = 5.0       # 动笔阈值
+_REFRESH_DELTA = 4.0           # 已写过之后，新增多少分才值得重写
+
+# 阈值 5.0 的标定依据（实测 ~/.deskmate 真实事件分布）：
+#   08-24 1 条 memory_learned        = 0.5  → 不写（确实没东西可写）
+#   08-26 8 条 memory_learned        = 4.0  → 不写（只是学了些小事）
+#   08-29 1 skill_used + 1 memory    = 2.0  → 不写
+#   08-30 3 次 user_corrected        = 6.0  → 写（"你纠正了我三次"值得一篇）
+#   08-31 5 次 user_corrected        = 6.0  → 写
+#   09-01 15 memory + 2 纠正 + 11 进化 = 18.0 → 写（素材爆棚）
+
+
+def _today_local() -> str:
+    return datetime.date.today().isoformat()
+
+
+def _evt_date(ts: str) -> str:
+    """ISO 时间 → 本地日期 YYYY-MM-DD。"""
+    try:
+        dt = datetime.datetime.fromisoformat(str(ts))
+        if dt.tzinfo is not None:
+            dt = dt.astimezone()
+        return dt.date().isoformat()
+    except (ValueError, TypeError):
+        return ""
+
+
+def _subject_of(e: dict) -> str:
+    """事件的「主体」——用于去重与指纹（同一技能反复进化不该重复计数）。"""
+    for key in ("skill_name", "note", "key", "title", "name"):
+        v = e.get(key)
+        if v:
+            return str(v)
+    return ""
+
+
+def _fingerprint(e: dict) -> str:
+    return f"{e.get('ts', '')}|{e.get('kind', '')}|{_subject_of(e)}"
+
+
+class MaterialLedger:
+    """日记素材账本：按天持久保存的事件流水。
+
+    存在的唯一理由：``GrowthState.recent_events`` 只有 50 条窗口，会丢素材。
+    """
+
+    def __init__(self, base_dir: Path | str | None = None) -> None:
+        base = Path(base_dir) if base_dir else Path.home() / ".deskmate"
+        self.dir = base / "diary" / "materials"
+
+    # ------------------------------------------------------------------
+    def _path(self, date: str) -> Path:
+        return self.dir / f"{date}.jsonl"
+
+    def load(self, date: str) -> list[dict]:
+        p = self._path(date)
+        if not p.is_file():
+            return []
+        out: list[dict] = []
+        try:
+            for line in p.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    out.append(json.loads(line))
+                except (ValueError, TypeError):
+                    continue
+        except OSError:
+            return []
+        return out
+
+    def sync(self, events: list[dict]) -> int:
+        """把最近的事件增量并入账本（按天分文件，指纹去重）。
+
+        Args:
+            events: ``GrowthState.recent_events``（或任何事件 dict 列表）
+
+        Returns:
+            本次新增的条数。
+        """
+        by_date: dict[str, list[dict]] = {}
+        for e in events:
+            if not isinstance(e, dict):
+                continue
+            d = _evt_date(str(e.get("ts", "")))
+            if not d:
+                continue
+            by_date.setdefault(d, []).append(e)
+
+        added = 0
+        for date, items in by_date.items():
+            existing = self.load(date)
+            seen = {_fingerprint(x) for x in existing}
+            fresh = [e for e in items if _fingerprint(e) not in seen]
+            if not fresh:
+                continue
+            # 同一指纹只留一条，再按时间排序，保证账本有序
+            merged = existing + fresh
+            merged.sort(key=lambda x: str(x.get("ts", "")))
+            self._atomic_write(date, merged)
+            added += len(fresh)
+        return added
+
+    def _atomic_write(self, date: str, items: list[dict]) -> None:
+        """临时文件 + os.replace 原子落盘（与项目其它持久化一致的约定）。"""
+        self.dir.mkdir(parents=True, exist_ok=True)
+        p = self._path(date)
+        tmp = p.with_name(p.name + ".tmp")
+        try:
+            tmp.write_text(
+                "\n".join(json.dumps(x, ensure_ascii=False) for x in items) + "\n",
+                encoding="utf-8",
+            )
+            os.replace(tmp, p)
+        except OSError:
+            try:
+                tmp.unlink(missing_ok=True)  # type: ignore[call-arg]
+            except OSError:
+                pass
+
+    # ------------------------------------------------------------------
+    # 落笔记录（供「已写过多少分」的重写判断）
+    # ------------------------------------------------------------------
+    def _meta_path(self, date: str) -> Path:
+        return self.dir / f"{date}.meta.json"
+
+    def mark_written(self, date: str, score: float) -> None:
+        self.dir.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "written_score": round(score, 2),
+            "written_at": datetime.datetime.now().isoformat(timespec="seconds"),
+        }
+        tmp = self._meta_path(date).with_suffix(".json.tmp")
+        try:
+            tmp.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+            os.replace(tmp, self._meta_path(date))
+        except OSError:
+            pass
+
+    def written_score(self, date: str) -> Optional[float]:
+        p = self._meta_path(date)
+        if not p.is_file():
+            return None
+        try:
+            return float(json.loads(p.read_text(encoding="utf-8")).get("written_score", 0))
+        except (OSError, ValueError, TypeError):
+            return None
+
+
+def score_items(items: list[dict]) -> tuple[float, dict[str, float]]:
+    """给一组事件打灵感分。
+
+    Returns:
+        ``(总分, 各类型封顶后得分)``
+    """
+    per_kind: dict[str, float] = {}
+    for it in items:
+        if not isinstance(it, dict):
+            continue
+        kind = str(it.get("kind", ""))
+        w = _EVENT_WEIGHTS.get(kind, _DEFAULT_WEIGHT)
+        if w <= 0:
+            continue
+        per_kind[kind] = per_kind.get(kind, 0.0) + w
+    capped = {k: min(v, _KIND_CAP) for k, v in per_kind.items()}
+    return sum(capped.values()), capped
+
+
+class DiaryInspiration:
+    """判断「今天值不值得写一篇日记」。"""
+
+    def __init__(self, base_dir: Path | str | None = None) -> None:
+        base = Path(base_dir) if base_dir else Path.home() / ".deskmate"
+        self.base = base
+        self.ledger = MaterialLedger(base)
+        self.engine = GrowthEngine(base_dir=None if base == Path.home() / ".deskmate" else base)
+
+    # ------------------------------------------------------------------
+    def sync_events(self) -> int:
+        """从成长事件增量同步到素材账本。返回新增条数。"""
+        try:
+            return self.ledger.sync(list(self.engine.state.recent_events))
+        except Exception:
+            return 0
+
+    def score(self, date: str | None = None) -> tuple[float, dict[str, float]]:
+        """当天灵感分（先同步，再评分）。"""
+        date = date or _today_local()
+        self.sync_events()
+        return score_items(self.ledger.load(date))
+
+    def materials(self, date: str | None = None) -> list[dict]:
+        date = date or _today_local()
+        return self.ledger.load(date)
+
+    # ------------------------------------------------------------------
+    def should_write(self, date: str | None = None) -> dict:
+        """判断今天是否该动笔。
+
+        Returns:
+            ``{date, score, threshold, detail, should_write, reason,
+                materials_count, is_refresh}``
+        """
+        date = date or _today_local()
+        self.sync_events()
+        items = self.ledger.load(date)
+        score, detail = score_items(items)
+        written = self.ledger.written_score(date)
+
+        if written is None:
+            ok = score >= _INSPIRE_THRESHOLD
+            reason = (
+                f"攒够了素材（{score:.1f} ≥ {_INSPIRE_THRESHOLD}）"
+                if ok
+                else f"素材还不够（{score:.1f} < {_INSPIRE_THRESHOLD}），今天先不写"
+            )
+            return {
+                "date": date,
+                "score": round(score, 2),
+                "threshold": _INSPIRE_THRESHOLD,
+                "detail": {k: round(v, 2) for k, v in detail.items()},
+                "should_write": ok,
+                "is_refresh": False,
+                "materials_count": len(items),
+                "reason": reason,
+            }
+
+        delta = score - written
+        ok = delta >= _REFRESH_DELTA
+        reason = (
+            f"又攒了 {delta:.1f} 分新素材，值得重写一篇"
+            if ok
+            else f"已写过，新增 {delta:.1f} 分不足 {_REFRESH_DELTA}，暂不重写"
+        )
+        return {
+            "date": date,
+            "score": round(score, 2),
+            "threshold": _INSPIRE_THRESHOLD,
+            "detail": {k: round(v, 2) for k, v in detail.items()},
+            "should_write": ok,
+            "is_refresh": True,
+            "materials_count": len(items),
+            "reason": reason,
+        }
+
+
+# ----------------------------------------------------------------------
+# 主动触发钩子（供 proactivity tick 调用）
+# ----------------------------------------------------------------------
+def maybe_write_diary(base_dir: Path | str | None = None) -> Optional[dict]:
+    """灵感驱动的日记写入钩子。
+
+    与 ``maybe_trigger_interview`` 同一范式：纯规则、零 LLM、满足条件才发生。
+    不同之处：日记是「她自己动笔」，不打断用户，所以**不需要用户在场**，
+    也不占用 SUGGEST 通道——攒够了就安静写下来。
+
+    Returns:
+        写了返回 payload（含 path/score/reason/is_refresh）；没写返回 None。
+    """
+    try:
+        from deskmate.growth.diary import DiaryWriter
+
+        insp = DiaryInspiration(base_dir=base_dir)
+        verdict = insp.should_write()
+        if not verdict.get("should_write"):
+            return None
+
+        writer = DiaryWriter(base_dir=insp.base)
+        # 日记正文直接来自账本（持久素材），不再依赖 50 条易失窗口
+        events = insp.materials(verdict["date"])
+        path = writer.write(
+            verdict["date"],
+            events=events,
+            badges=writer._badges_on(verdict["date"]),
+        )
+        insp.ledger.mark_written(verdict["date"], verdict["score"])
+        return {
+            "date": verdict["date"],
+            "path": path,
+            "score": verdict["score"],
+            "detail": verdict["detail"],
+            "is_refresh": verdict["is_refresh"],
+            "reason": verdict["reason"],
+        }
+    except Exception:
+        return None  # 日记失败绝不阻断主动推理主流程

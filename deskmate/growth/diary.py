@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import datetime
+import os
 import sys
 from pathlib import Path
 
@@ -239,20 +240,37 @@ class DiaryWriter:
     # ------------------------------------------------------------------
     # 对外入口
     # ------------------------------------------------------------------
+    def write(self, date: str, events: list[dict], badges: list[dict]) -> str:
+        """写入（或重写）指定日期的日记，返回路径。
+
+        与 ``ensure_today`` 的区别：不幂等，无条件重写。灵感机制用它做
+        「素材新增后重写一篇」，避免早上写完后当天的后续事件永远进不去。
+        """
+        top = self._top_domain()
+        st = self._state_summary()
+        self.diary_dir.mkdir(parents=True, exist_ok=True)
+        path = self.diary_dir / f"{date}.md"
+        content = self._render_diary(date, events, badges, top, st)
+        # 原子落盘：临时文件 + os.replace，避免读到写了一半的文件
+        tmp = path.with_name(path.name + ".tmp")
+        tmp.write_text(content, encoding="utf-8")
+        os.replace(tmp, path)
+        return str(path)
+
     def ensure_today(self) -> str:
-        """生成今日日记（幂等：当天已生成则不重写）。返回日记路径。"""
+        """生成今日日记（幂等：当天已生成则不重写）。返回日记路径。
+
+        仅供用户主动点击「生成今日日记」时调用——那是明确的用户意愿，
+        即使素材不多也照写。自动触发一律走
+        ``diary_inspiration.maybe_write_diary``（素材攒够才动笔）。
+        """
         today = _today_local()
         path = self.diary_dir / f"{today}.md"
         if path.is_file() and path.read_text(encoding="utf-8").strip():
             return str(path)
         events = self._events_on(today)
         badges = self._badges_on(today)
-        top = self._top_domain()
-        st = self._state_summary()
-        self.diary_dir.mkdir(parents=True, exist_ok=True)
-        path.write_text(self._render_diary(today, events, badges, top, st),
-                        encoding="utf-8")
-        return str(path)
+        return self.write(today, events, badges)
 
     def weekly_recap(self, days: int = 7) -> str:
         return self._render_recap(max(1, days))
