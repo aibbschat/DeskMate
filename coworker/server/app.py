@@ -320,75 +320,88 @@ def create_app(manager: SessionManager) -> FastAPI:
     app.state.manager = manager
 
     # ---- DeskMate 学习历史辅助函数（模块级，供 @app.get 路由和 ws_session 闭包共用）----
+    # 长期记忆走统一库 deskmate.db（LearnedStore），取代原 learned_history.jsonl
+    # 单文件全量解析。只增不减的数据（实测 211 条 / 25 天 ≈ 8.4 条/天），
+    # 收进 DB 后统计走 SQL 聚合、备份与日记/认知层同为一个原子单元。
+    _learned_stores: dict = {}
+
+    def _learned_store(desk_dir: "Path"):
+        """按目录缓存 LearnedStore（避免每次调用都跑一遍建表 DDL）。"""
+        key = str(desk_dir)
+        store = _learned_stores.get(key)
+        if store is None:
+            from deskmate.memory.learned_store import LearnedStore
+
+            store = LearnedStore(desk_dir)
+            _learned_stores[key] = store
+        return store
+
     def _classify_learned_fact(fact: str) -> str:
-        """启发式归类一条学到的记忆（用于「了解度」统计）。"""
-        t = (fact or "").lower()
-        if any(k in t for k in ("偏好", "喜欢", "倾向", "爱用", "常用", "希望", "想要", "期望", "不愿", "讨厌", "避免", "prefer", "like", "hate")):
-            return "preference"
-        if any(k in t for k in ("习惯", "通常", "一般", "每天", "每次", "经常", "往往", "固定", "habit", "usually", "always")):
-            return "habit"
-        if any(k in t for k in ("工具", "用", "使用", "命令", "快捷键", "软件", "编辑器", "ide", "tool", "use", "command")):
-            return "tool"
-        return "other"
+        """启发式归类一条学到的记忆（用于「了解度」统计）。
+
+        分类规则单一来源在 ``LearnedStore``，这里只是薄封装。
+        """
+        from deskmate.memory.learned_store import classify_fact
+
+        return classify_fact(fact)
 
     def _append_learned_history(desk_dir: "Path", facts: list) -> None:
-        """把本轮学到的记忆追加落盘到 learned_history.jsonl（带时间戳 + 分类）。"""
-        import json as _json
-        from datetime import datetime as _dt
+        """把本轮学到的记忆追加落盘（带时间戳 + 分类），写统一库 deskmate.db。"""
         from pathlib import Path
+
         hist_dir = Path(desk_dir) / "memory"
         hist_dir.mkdir(parents=True, exist_ok=True)
-        hist_path = hist_dir / "learned_history.jsonl"
-        ts = _dt.now().isoformat(timespec="seconds")
-        with hist_path.open("a", encoding="utf-8") as f:
-            for fact in facts:
-                fact = str(fact).strip() if fact else ""
-                if not fact:
-                    continue
-                rec = {"ts": ts, "fact": fact, "category": _classify_learned_fact(fact)}
-                f.write(_json.dumps(rec, ensure_ascii=False) + "\n")
+        try:
+            _learned_store(Path(desk_dir)).append(facts)
+        except Exception:
+            logging.exception("append learned history failed")
 
     def _read_learned_history(desk_dir: "Path", limit: int = 30) -> dict:
-        """读取 learned_history.jsonl，返回最近条目 + 统计（了解度）。
+        """读取长期记忆，返回最近条目 + 统计（了解度）。
 
         契约：`items` 是最近 limit 条，**按时间正序（最老在前）**——前端
         UnderstandingCard 会自行 reverse 后展示；改这里的顺序必须同步改前端。
-        统计（total / by_category）基于**全量**文件，不受 limit 影响。
+        统计（total / by_category）基于**全量**，不受 limit 影响。
+
+        数据源：统一库 ``deskmate.db`` 的 ``learned_history`` 表（SQL 聚合，
+        不再全量解析文件）。DB 异常时 fail-open 返回空结构，绝不拖垮主链路。
         """
-        import json as _json
         from pathlib import Path
-        hist_path = Path(desk_dir) / "memory" / "learned_history.jsonl"
-        items: list = []
-        if hist_path.exists():
-            for line in reversed(hist_path.read_text(encoding="utf-8").splitlines()):
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    items.append(_json.loads(line))
-                except Exception:
-                    continue
-                if len(items) >= limit:
-                    break
-            items.reverse()
-        # 全量统计（一次遍历同时得到 total）：此前 by_category 只数了返回的
-        # limit 条，于是 total=208 而各分类之和只有 30，个人中心的分类计数
-        # 明显偏小。（owner 反馈 2026-09-02）
-        by_category: dict = {}
-        total = 0
-        if hist_path.exists():
-            for line in hist_path.read_text(encoding="utf-8").splitlines():
-                line = line.strip()
-                if not line:
-                    continue
-                total += 1
-                try:
-                    rec = _json.loads(line)
-                except Exception:
-                    continue
-                c = rec.get("category", "other") or "other"
-                by_category[c] = by_category.get(c, 0) + 1
-        return {"items": items, "stats": {"total": total, "by_category": by_category}}
+
+        try:
+            return _learned_store(Path(desk_dir)).snapshot(limit)
+        except Exception:
+            logging.exception("read learned history failed")
+            return {"items": [], "stats": {"total": 0, "by_category": {}}}
+
+    def _migrate_learned_history_once() -> None:
+        """启动时把存量 ``learned_history.jsonl`` 幂等收进 DB。
+
+        放在启动时而不是手工执行，是因为本文件由每轮对话持续追加——
+        无论何时重启，重启那一刻的文件全量都会被收进来，不会漏掉
+        「改完代码到重启之间」新写的记忆。
+
+        导入后校验条数，通过才把原文件改名 ``.bak-<ts>`` 保留（绝不删除）。
+        """
+        from pathlib import Path as _Path
+
+        try:
+            desk_dir = _Path(
+                os.environ.get("DESKMATE_DIR", os.path.expanduser("~/.deskmate"))
+            )
+            res = _learned_store(desk_dir).migrate_from_legacy(archive=True)
+            if res.get("in_file"):
+                logging.getLogger(__name__).info(
+                    "长期记忆收拢：文件 %s 条 → DB %s 条，归档=%s（%s）",
+                    res.get("in_file"),
+                    res.get("in_db"),
+                    res.get("archived"),
+                    res.get("reason"),
+                )
+        except Exception:
+            logging.exception("migrate learned history failed（不影响主流程）")
+
+    _migrate_learned_history_once()
     # ---- end DeskMate 学习历史辅助函数 ----
 
     @app.get("/v1/health")

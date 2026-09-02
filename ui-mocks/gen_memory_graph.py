@@ -11,6 +11,7 @@
 输出：ui-mocks/memory-graph.html（自包含，可直接双击打开或嵌入 App）。
 """
 
+import glob
 import json
 import os
 import re
@@ -18,23 +19,59 @@ import re
 SRC = os.path.expanduser("~/.deskmate/memory/learned_history.jsonl")
 OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "memory-graph.html")
 
-items = []
-if os.path.exists(SRC):
-    with open(SRC, encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                d = json.loads(line)
-                if "fact" in d:
-                    items.append({
-                        "ts": d.get("ts", ""),
-                        "fact": d["fact"],
-                        "cat": d.get("category", "other"),
-                    })
-            except Exception:
-                pass
+def _load_items() -> list:
+    """读取全部长期记忆：优先统一库 deskmate.db，回退 legacy jsonl。
+
+    2026-09-02：长期记忆已从 ``memory/learned_history.jsonl`` 收进统一库
+    （``deskmate.db`` 的 ``learned_history`` 表），原文件改名 ``.bak-*``。
+    这里 DB 优先、文件兜底，保证迁移前后都能出图。
+    """
+    try:
+        import sys
+
+        sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        from deskmate.memory.learned_store import LearnedStore
+
+        rows = LearnedStore().all_items()
+        if rows:
+            return [
+                {
+                    "ts": r.get("ts", ""),
+                    "fact": r["fact"],
+                    "cat": r.get("category", "other"),
+                }
+                for r in rows
+            ]
+    except Exception:
+        pass  # DB 不可用则回退文件
+
+    # 回退：找最新的 jsonl（含归档的 .bak-*）
+    cands = [SRC] + sorted(glob.glob(SRC + ".bak-*"), reverse=True)
+    items = []
+    for path in cands:
+        if not os.path.exists(path):
+            continue
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    d = json.loads(line)
+                    if "fact" in d:
+                        items.append({
+                            "ts": d.get("ts", ""),
+                            "fact": d["fact"],
+                            "cat": d.get("category", "other"),
+                        })
+                except Exception:
+                    pass
+        if items:
+            break
+    return items
+
+
+items = _load_items()
 
 TEMPLATE = r"""<!DOCTYPE html>
 <html lang="zh-CN">
