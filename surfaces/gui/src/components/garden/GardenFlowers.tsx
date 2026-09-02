@@ -10,6 +10,7 @@
  */
 
 import { useState } from "react";
+import { GardenFlowerSVG } from "./GardenFlowerSVG";
 
 export interface GardenFlower {
   flower_id: string;
@@ -29,17 +30,17 @@ export interface GardenStats {
   by_kind?: Record<string, number>;
 }
 
-/** 花种 → emoji（与后端 FLOWER_INFO 语义一致）。 */
-const KIND_EMOJI: Record<string, string> = {
-  starflower: "✨",
-  sunflower: "🌻",
-  badge_flower: "🏅",
-  dandelion: "🌼",
-  bellflower: "🔔",
-  hyacinth: "💐",
-  sprout: "🌱",
-  iris: "🪻",
-  daisy: "🌼",
+/** 花种 → 花语短句（与后端 FLOWER_INFO.desc 语义一致，前端兜底）。 */
+const KIND_DESC: Record<string, string> = {
+  starflower: "第一次学会新东西，亮一颗星。",
+  sunflower: "你拍板做成一件事，它朝你开。",
+  badge_flower: "一枚勋章长成了一朵花。",
+  dandelion: "改过的路都算数，它替你记着。",
+  bellflower: "圆桌上敲定的，风铃草摇了摇。",
+  hyacinth: "我的建议被收下，开了一朵。",
+  sprout: "技能又长一截，冒个新芽。",
+  iris: "写下的字，开成了鸢尾。",
+  daisy: "一份报告的雏菊，安安静静。",
 };
 
 const BED_LABELS: Record<string, string> = {
@@ -114,12 +115,13 @@ export function GardenFlowers({
                   tabIndex={0}
                   title={f.title}
                 >
-                  <span className="garden-flower-emoji">{KIND_EMOJI[f.kind] ?? "🌷"}</span>
+                  <GardenFlowerSVG kind={f.kind} mood={f.mood_tint} size={40} lit={lit} />
                   {lit && <span className="garden-flower-lit" title="已被点亮">⭐</span>}
                   <span className="garden-flower-date">{fmtDate(f.date)}</span>
                   {openId === f.flower_id && (
                     <div className="garden-flower-tip">
                       <div className="garden-flower-tip-title">{f.title}</div>
+                      <div className="garden-flower-tip-kind">{KIND_DESC[f.kind] ?? "开在花园里的花。"}</div>
                       {f.quote && <div className="garden-flower-tip-quote">{f.quote}</div>}
                       {f.echo && (
                         <div className="garden-flower-tip-echo">

@@ -12,15 +12,9 @@
 
 import { useEffect, useState } from "react";
 import { authedFetch, httpBase } from "../../api";
+import { GardenTreeSVG } from "./GardenTreeSVG";
+import { seasonOf, type SeasonKey } from "./SeasonTheme";
 import type { GardenP2 } from "./useGarden";
-
-const TREE_EMOJI: Record<string, string> = {
-  seed: "🌱",
-  sprout: "🌿",
-  sapling: "🌳",
-  bloom: "🌸",
-  canopy: "💐",
-};
 
 export function GardenTree({ p2 }: { p2?: GardenP2 | null }) {
   const tree = p2?.tree;
@@ -28,6 +22,7 @@ export function GardenTree({ p2 }: { p2?: GardenP2 | null }) {
   const years = p2?.years ?? {};
   const yearFlowers = p2?.year_flowers ?? [];
   const archive = p2?.archive;
+  const seasonKey: SeasonKey = seasonOf();
   const [open, setOpen] = useState(false);
   const [detail, setDetail] = useState<Array<Record<string, unknown>> | null>(null);
 
@@ -50,7 +45,6 @@ export function GardenTree({ p2 }: { p2?: GardenP2 | null }) {
 
   if (!tree && !water && yearFlowers.length === 0 && !archive) return null;
 
-  const treeEmoji = TREE_EMOJI[tree?.key ?? ""] ?? "🌱";
   const progressText = tree?.next
     ? `再开 ${Math.max(0, (tree.next.threshold ?? 0) - (tree?.count ?? 0))} 朵，就长成「${tree.next.title}」`
     : "花满枝头，它就是花园的样子了";
@@ -60,9 +54,8 @@ export function GardenTree({ p2 }: { p2?: GardenP2 | null }) {
     <div className="garden-tree">
       <div className="garden-tree-card">
         <div className="garden-tree-emblem" aria-hidden>
-          <span className="garden-tree-emoji">{treeEmoji}</span>
-          {tree?.key === "bloom" && <span className="garden-tree-extra">🌼</span>}
-          {tree?.key === "canopy" && <span className="garden-tree-extra">🏵️</span>}
+          {/* 真实 SVG 树：随成长等级生长、随季节变色（替换进度条/emoji） */}
+          <GardenTreeSVG stage={tree?.key ?? "seed"} season={seasonKey} size={110} />
         </div>
         <div className="garden-tree-main">
           <div className="garden-tree-title">

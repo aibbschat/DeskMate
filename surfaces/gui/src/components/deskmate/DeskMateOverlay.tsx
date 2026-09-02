@@ -77,9 +77,11 @@ interface Props {
   idle?: boolean;
   /** 当前激活的专家（专家模式）；存在时强制隐藏首页，进入对话界面。 */
   activeExpert?: Expert | null;
+  /** 花园（个人中心）打开时隐藏桌宠/状态面板，避免遮住园里物件。 */
+  hidden?: boolean;
 }
 
-export function DeskMateOverlay({ agent, sessionId, activeExpert }: Props) {
+export function DeskMateOverlay({ agent, sessionId, activeExpert, hidden }: Props) {
   const [panelOpen, setPanelOpen] = useState(false);
   const [memoryOpen, setMemoryOpen] = useState(false);
   const [memoryGraphOpen, setMemoryGraphOpen] = useState(false);
@@ -567,6 +569,7 @@ export function DeskMateOverlay({ agent, sessionId, activeExpert }: Props) {
   if (agent !== "deskmate" && !activeExpert) return null;
 
   // 安全检查：确保位置有效
+  if (hidden) return null;
   if (!position || isNaN(position.x) || isNaN(position.y)) return null;
 
   // 将 mascotState 转换回 emotion 供 StatusPanel 使用

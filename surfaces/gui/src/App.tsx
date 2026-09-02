@@ -1980,7 +1980,7 @@ export function App() {
       )}
 
       {/* DeskMate 浮动覆盖层（粒子角色 + 状态面板 + 建议弹窗 + 记忆编辑器） */}
-      <DeskMateOverlay agent={agent} sessionId={sessionId} idle={idle} activeExpert={currentExpert} />
+      <DeskMateOverlay agent={agent} sessionId={sessionId} idle={idle} activeExpert={currentExpert} hidden={surface === "profile"} />
 
       {reportDialogOpen && (
         <ReportDialog
