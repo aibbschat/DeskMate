@@ -782,7 +782,7 @@ export function StatusPanel({
             <div>
               <SectionTitle>成长记录</SectionTitle>
               <div className="flex flex-col gap-1 max-h-28 overflow-y-auto">
-                {[...growth.recent_events].reverse().slice(-5).map((ev, i) => (
+                {[...growth.recent_events].slice(-5).reverse().map((ev, i) => (
                   <div
                     key={`${ev.ts}-${i}`}
                     className="text-[11px] px-2 py-1 rounded"

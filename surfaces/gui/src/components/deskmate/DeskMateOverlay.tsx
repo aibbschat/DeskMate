@@ -276,7 +276,8 @@ export function DeskMateOverlay({ agent, sessionId, activeExpert }: Props) {
   // 展开感知面板时拉取学习历史（了解度 + 时间线）
   useEffect(() => {
     if (!panelOpen) return;
-    authedFetch(`${httpBase()}/v1/deskmate/learned-history`)
+    // limit 默认只有 30 条，长期记忆会「看着停更」——显式取全量（同类坑见 ProfileCenter）
+    authedFetch(`${httpBase()}/v1/deskmate/learned-history?limit=500`)
       .then((r) => (r.ok ? r.json() : null))
       .then((d) => {
         if (d && d.items) setLearned(d);

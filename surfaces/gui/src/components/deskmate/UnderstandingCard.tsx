@@ -36,7 +36,8 @@ export function UnderstandingCard({ onClose }: { onClose: () => void }) {
 
   useEffect(() => {
     let alive = true;
-    authedFetch(`${httpBase()}/v1/deskmate/learned-history`)
+    // limit 默认只有 30 条 → 最近 30 条里「最老的」排最前，观感像停更。取全量。
+    authedFetch(`${httpBase()}/v1/deskmate/learned-history?limit=500`)
       .then((r) => (r.ok ? r.json() : null))
       .then((d) => { if (alive && d?.items) setData(d); })
       .catch(() => {/* 静默降级 */})
