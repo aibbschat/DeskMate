@@ -42,6 +42,9 @@ _EVENT_LABELS = {
 # 默认事件描述（兜底）
 _FALLBACK_LABEL = "今天发生了一点小事"
 
+# 同类事件多于等于这个数就合并成一句，不再逐条排开（详见 _render_entry）
+_MERGE_AT = 3
+
 
 def _evt_date(ts: str) -> str:
     """UTC ISO 时间 → 本地日期 YYYY-MM-DD。"""
@@ -207,10 +210,42 @@ class DiaryWriter:
                 for e in events if e.get("kind") == "memory_learned"
             )
             corrected = sum(1 for e in events if e.get("kind") == "user_corrected")
+
+            # 技能类事件一天里常常成串（进化/调用好几项）。逐条排开就成了
+            # 「「A」这项技能又精进了」×5 的流水账——素材是真的，读着却像报表。
+            # 3 条以上合并成一句列举；少于 3 条保留逐条，那时候细节更生动。
+            def _skill_names(kind: str) -> list[str]:
+                out: list[str] = []
+                for e in sorted(events, key=lambda x: str(x.get("ts", ""))):
+                    if e.get("kind") == kind:
+                        n = str(e.get("skill_name", "") or "").strip()
+                        if n and n not in out:
+                            out.append(n)
+                return out
+
+            evolved = _skill_names("skill_evolved")
+            used = _skill_names("skill_used")
+            merge_evolved = len(evolved) >= _MERGE_AT
+            merge_used = len(used) >= _MERGE_AT
+
             for e in sorted(events, key=lambda x: str(x.get("ts", ""))):
+                k = e.get("kind")
+                if (k == "skill_evolved" and merge_evolved) or (
+                    k == "skill_used" and merge_used
+                ):
+                    continue  # 交给下面的合并句，不重复列
                 desc = self._describe_event(e)
                 if desc and desc not in facts:
                     facts.append(desc)
+
+            if merge_evolved:
+                head = "、".join(f"「{n}」" for n in evolved[:3])
+                facts.append(f"{head}……今天一口气精进了 {len(evolved)} 项技能。")
+            if merge_used:
+                head = "、".join(f"「{n}」" for n in used[:3])
+                facts.append(
+                    f"你调用了 {head} 等 {len(used)} 项技能，我都跟上了。"
+                )
             if memory_cnt:
                 facts.append(f"我又记住了你 {memory_cnt} 件小事。")
             if corrected > 1:

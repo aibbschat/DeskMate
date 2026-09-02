@@ -333,8 +333,41 @@ class DiaryWriterMultiEntryTest(unittest.TestCase):
         self.writer.append_entry(day, [{"ts": f"{day}T20:00:00", "kind": "writing"}], [], at="20:30")
         text = self.writer.read(day)
         self.assertIn("今天我们一起做了些事", text)  # 旧正文保留
-        self.assertIn("## 20:30", text)
+        self.assertIn("## 20:30", text)              # 新一则追加在旧正文之后
         self.assertEqual(self.writer.entry_count(day), 2)
+
+    def test_skill_batch_merges_into_one_line(self):
+        """5 项技能精进 → 合并成一句，不是 5 行同句式流水账。
+
+        萧哥是作家，日记是「小桔第一人称」。素材再真，排成报表就没有人味了。
+        """
+        day = date.today().isoformat()
+        events = [
+            {"ts": f"{day}T0{i}:00:00", "kind": "skill_evolved", "skill_name": n}
+            for i, n in enumerate(["构思", "校对", "取材", "改写", "定稿"])
+        ]
+        self.writer.append_entry(day, events, [], at="09:10")
+        text = self.writer.read(day)
+        bullet = [ln for ln in text.splitlines() if "技能" in ln]
+        self.assertEqual(len(bullet), 1, f"技能类应只占一行，实际：{bullet}")
+        # 只列前 3 个名字 + 总数，避免一行里挤满书名号
+        self.assertIn("5 项技能", bullet[0])
+        self.assertIn("「构思」", bullet[0])
+        self.assertIn("「取材」", bullet[0])
+        self.assertNotIn("「定稿」", bullet[0])
+
+    def test_two_skills_stay_verbose(self):
+        """少于 3 条保留逐条——那时候具体名字比一句概括更有画面。"""
+        day = date.today().isoformat()
+        events = [
+            {"ts": f"{day}T0{i}:00:00", "kind": "skill_evolved", "skill_name": n}
+            for i, n in enumerate(["构思", "校对"])
+        ]
+        self.writer.append_entry(day, events, [], at="09:10")
+        text = self.writer.read(day)
+        self.assertIn("「构思」", text)
+        self.assertIn("「校对」", text)
+        self.assertNotIn("一口气精进了", text)
 
 
 if __name__ == "__main__":
