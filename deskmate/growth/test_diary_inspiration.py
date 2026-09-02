@@ -4,21 +4,26 @@
 1. 素材不够就**不写**——日记不是定时任务，不能产出流水账。
 2. 批量事件被单类封顶——一次导入 15 条记忆 ≠ 15 件值得写的事。
 3. 素材账本持久——recent_events 只有 50 条窗口，会丢素材。
-4. 已写过后，新增素材够多才重写（不是死幂等，也不是每次都重写）。
+4. **一天可以写多则**：写过的素材被消费掉，新素材攒够就再记一笔，
+   且第二则不重复第一则写过的素材（覆盖/复述都是退化）。
 """
 
 from __future__ import annotations
 
 import json
 import unittest
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest import mock
 
+from deskmate.growth import diary_inspiration as di
+from deskmate.growth.diary import DiaryWriter
 from deskmate.growth.diary_inspiration import (
     _INSPIRE_THRESHOLD,
     _KIND_CAP,
-    _REFRESH_DELTA,
+    _MIN_GAP_MINUTES,
+    _NEXT_ENTRY_DELTA,
     DiaryInspiration,
     MaterialLedger,
     score_items,
@@ -112,9 +117,26 @@ class LedgerTest(unittest.TestCase):
         led.sync(_evt("memory_learned", "2026-09-01", 30))
         self.assertEqual(len(led.load("2026-08-30")), 3)
 
+    def test_consume_marks_only_pending(self):
+        """素材被某一则采用后打上 entry，pending 立刻清空（不重复计分）。"""
+        led = MaterialLedger(self.base)
+        led.sync(_evt("user_corrected", "2026-09-02", 3))
+        led.sync(_evt("skill_created", "2026-09-02", 1, skill_name="新技能"))
+
+        pending = led.pending_items("2026-09-02")
+        self.assertEqual(len(pending), 4)
+        corrections = [x for x in pending if x.get("kind") == "user_corrected"]
+        self.assertEqual(led.consume("2026-09-02", corrections, 1), 3)
+
+        rest = led.pending_items("2026-09-02")
+        self.assertEqual(len(rest), 1)
+        self.assertEqual(rest[0].get("kind"), "skill_created")
+        # 消费只打标记，不删素材——账本仍是当天完整流水
+        self.assertEqual(len(led.load("2026-09-02")), 4)
+
 
 class ShouldWriteTest(unittest.TestCase):
-    """动笔判断：阈值 + 重写增量。"""
+    """动笔判断：阈值 + 一天多则（不是写完就锁死）。"""
 
     def setUp(self):
         self._tmp = TemporaryDirectory()
@@ -132,37 +154,133 @@ class ShouldWriteTest(unittest.TestCase):
     def tearDown(self):
         self._tmp.cleanup()
 
+    def _write_now(self):
+        """真的落笔一则（绕过冷却，测试里不关心间隔）。"""
+        with mock.patch.object(di, "_MIN_GAP_MINUTES", 0):
+            return di.maybe_write_diary(base_dir=self.base)
+
     def test_writes_when_enough(self):
         insp = DiaryInspiration(self.base)
         verdict = insp.should_write()
         self.assertTrue(verdict["should_write"])
         self.assertFalse(verdict["is_refresh"])
+        self.assertEqual(verdict["entries_today"], 0)
         self.assertGreaterEqual(verdict["score"], _INSPIRE_THRESHOLD)
 
-    def test_no_rewrite_without_new_material(self):
-        """刚写完、没有新素材 → 不重写。"""
-        insp = DiaryInspiration(self.base)
-        first = insp.should_write()
-        self.assertTrue(first["should_write"])
-        insp.ledger.mark_written(first["date"], first["score"])
+    def test_no_second_entry_without_new_material(self):
+        """刚写完、没有新素材 → 不再记（素材已消费，pending 归零）。"""
+        first = self._write_now()
+        self.assertIsNotNone(first)
+        self.assertEqual(first["entry"], 1)
 
-        again = insp.should_write()
+        again = DiaryInspiration(self.base).should_write()
         self.assertFalse(again["should_write"])
-        self.assertTrue(again["is_refresh"])
+        self.assertEqual(again["entries_today"], 1)
+        self.assertEqual(again["pending_count"], 0)
 
-    def test_rewrite_when_new_material_arrives(self):
-        """新素材够多 → 重写（避免早上写完后后续事件永远进不去）。"""
-        insp = DiaryInspiration(self.base)
-        first = insp.should_write()
-        insp.ledger.mark_written(first["date"], first["score"])
-
-        # 新来一个里程碑（4.0 分），达到重写增量
-        insp.ledger.sync(_evt("skill_created", first["date"], 1, skill_name="新技能"))
-        again = insp.should_write()
-        self.assertTrue(again["is_refresh"])
-        self.assertGreaterEqual(
-            again["score"] - first["score"], _REFRESH_DELTA - 1e-9
+    def test_second_entry_keeps_the_first(self):
+        """新素材攒够 → 再记一则；第一则的内容**不被覆盖**。"""
+        first = self._write_now()
+        MaterialLedger(self.base).sync(
+            _evt("skill_created", first["date"], 1, skill_name="新技能")
         )
+        second = self._write_now()
+        self.assertIsNotNone(second)
+        self.assertEqual(second["entry"], 2)
+
+        writer = DiaryWriter(self.base)
+        self.assertEqual(writer.entry_count(second["date"]), 2)
+        text = writer.read(second["date"])
+        self.assertIn("你纠正了我 3 次", text)   # 第一则原样保留
+        self.assertIn("建了个新技能", text)      # 第二则写进了新素材
+
+    def test_second_entry_does_not_repeat_first(self):
+        """第二则只写后来的事——不把第一则复述一遍（重复叙事比不写更伤）。"""
+        first = self._write_now()
+        MaterialLedger(self.base).sync(
+            _evt("skill_created", first["date"], 1, skill_name="新技能")
+        )
+        self.assertIsNotNone(self._write_now())
+
+        text = DiaryWriter(self.base).read(first["date"])
+        # 取最后一则（第二个 ## 之后）
+        parts = text.split("\n## ")
+        self.assertEqual(len(parts), 3)  # 标题行 + 两则
+        second_entry = parts[-1]
+        self.assertIn("建了个新技能", second_entry)
+        self.assertNotIn("纠正", second_entry)
+
+    def test_three_entries_when_material_keeps_coming(self):
+        """素材持续到位就持续记——一天几条由素材决定，不设上限。"""
+        first = self._write_now()
+        day = first["date"]
+        led = MaterialLedger(self.base)
+        for i in range(2):
+            # 每轮 2 次 writing = 4.0 分，刚好够「再记一笔」的门槛
+            led.sync([
+                {"ts": f"{day}T1{i}:00:00+00:00", "kind": "writing"},
+                {"ts": f"{day}T1{i}:30:00+00:00", "kind": "writing"},
+            ])
+            res = self._write_now()
+            self.assertIsNotNone(res, f"第 {i + 2} 则没写成")
+        self.assertEqual(DiaryWriter(self.base).entry_count(day), 3)
+
+    def test_manual_path_consumes_material(self):
+        """手动点「生成今日日记」后，素材必须被消费掉。
+
+        否则自动路径（maybe_write_diary）看这批素材还是「没写过」，
+        会把同一批素材再写一则——日记里出现两遍一模一样的话。
+        """
+        day = date.today().isoformat()
+        writer = DiaryWriter(self.base)
+        writer.ensure_today()
+
+        led = MaterialLedger(self.base)
+        self.assertEqual(led.pending_items(day), [], "手动写完后素材仍是未消费状态")
+        self.assertEqual(led.entries(day), 1)
+
+        # 没有新素材时，自动路径不该再动笔
+        with mock.patch.object(di, "_MIN_GAP_MINUTES", 0):
+            self.assertIsNone(di.maybe_write_diary(base_dir=self.base))
+        self.assertEqual(writer.entry_count(day), 1)
+
+    def test_manual_second_click_appends(self):
+        """已有日记 + 有未写素材 → 手动再点一次是「再记一笔」，不是覆盖。"""
+        day = date.today().isoformat()
+        writer = DiaryWriter(self.base)
+        writer.ensure_today()
+
+        MaterialLedger(self.base).sync([
+            {"ts": f"{day}T20:00:00", "kind": "writing"},
+            {"ts": f"{day}T20:10:00", "kind": "roundtable"},
+        ])
+        path = writer.ensure_today()
+        self.assertEqual(writer.entry_count(day), 2)
+        self.assertIn("圆桌讨论", writer.read(day))
+        self.assertTrue(Path(path).exists())
+
+    def test_cooling_blocks_back_to_back(self):
+        """素材集中涌入时，冷却期内不连着刷几则。"""
+        first = self._write_now()
+        MaterialLedger(self.base).sync(
+            _evt("skill_created", first["date"], 1, skill_name="新技能")
+        )
+        verdict = DiaryInspiration(self.base).should_write()
+        # 分数已够，但离上一则太近
+        self.assertGreaterEqual(verdict["score"], _NEXT_ENTRY_DELTA)
+        self.assertFalse(verdict["should_write"])
+        self.assertIn("沉淀", verdict["reason"])
+
+        # 把落笔时间往前挪过冷却期 → 可以再记了
+        led = MaterialLedger(self.base)
+        led._write_meta(first["date"], {
+            "entries": 1,
+            "written_score": 6.0,
+            "last_entry_at": (
+                datetime.now() - timedelta(minutes=_MIN_GAP_MINUTES + 5)
+            ).isoformat(timespec="seconds"),
+        })
+        self.assertTrue(DiaryInspiration(self.base).should_write()["should_write"])
 
     def test_silent_when_nothing_happened(self):
         """一整天没什么事 → 安静等着，绝不凑一篇。"""
@@ -173,6 +291,50 @@ class ShouldWriteTest(unittest.TestCase):
         verdict = insp.should_write()
         self.assertFalse(verdict["should_write"])
         self.assertIn("素材还不够", verdict["reason"])
+
+
+class DiaryWriterMultiEntryTest(unittest.TestCase):
+    """一天多则的落盘形态：追加、不覆盖、兼容旧格式。"""
+
+    def setUp(self):
+        self._tmp = TemporaryDirectory()
+        self.base = Path(self._tmp.name)
+        (self.base / "growth.json").write_text(
+            json.dumps({"version": 2, "intimacy": 50.0, "level": 5,
+                        "total_chats": 100, "recent_events": []}),
+            encoding="utf-8",
+        )
+        self.writer = DiaryWriter(self.base)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_append_two_entries(self):
+        day = date.today().isoformat()
+        self.writer.append_entry(day, [{"ts": f"{day}T09:00:00", "kind": "writing"}], [], at="09:10")
+        self.writer.append_entry(day, [{"ts": f"{day}T14:00:00", "kind": "roundtable"}], [], at="14:20")
+        text = self.writer.read(day)
+        self.assertEqual(self.writer.entry_count(day), 2)
+        self.assertIn("## 09:10", text)
+        self.assertIn("## 14:20", text)
+        self.assertIn("整理了文稿", text)      # 第一则在
+        self.assertIn("圆桌讨论", text)        # 第二则在
+        # 落款只在第一则，不重复
+        self.assertEqual(text.count("累计对话"), 1)
+
+    def test_legacy_file_counts_as_one_entry(self):
+        """改造前的整篇日记没有 ## 小节：算 1 则，追加时不破坏旧内容。"""
+        day = date.today().isoformat()
+        legacy = f"# {day} 周三 · 小桔的日记\n\n今天我们一起做了些事，我都记在心里。\n"
+        (self.base / "diary").mkdir(parents=True, exist_ok=True)
+        (self.base / "diary" / f"{day}.md").write_text(legacy, encoding="utf-8")
+
+        self.assertEqual(self.writer.entry_count(day), 1)
+        self.writer.append_entry(day, [{"ts": f"{day}T20:00:00", "kind": "writing"}], [], at="20:30")
+        text = self.writer.read(day)
+        self.assertIn("今天我们一起做了些事", text)  # 旧正文保留
+        self.assertIn("## 20:30", text)
+        self.assertEqual(self.writer.entry_count(day), 2)
 
 
 if __name__ == "__main__":

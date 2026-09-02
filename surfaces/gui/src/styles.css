@@ -3246,6 +3246,16 @@ html[data-theme="dark"] .creation-preview-article a {
   font-size: 16px; color: #92400e; margin: 0 0 10px;
   padding-bottom: 6px; border-bottom: 1px solid #f0e8d8;
 }
+/* 多则日记：每则一个「## HH:MM」时间小标题（一天可以记好几笔） */
+.dm-diary-content .dm-diary-entry-time {
+  font-size: 12px; font-weight: 600; letter-spacing: 0.06em;
+  color: #c2703a; margin: 16px 0 6px;
+  display: flex; align-items: center; gap: 8px;
+}
+.dm-diary-content .dm-diary-entry-time::after {
+  content: ""; flex: 1; height: 1px; background: #f0e8d8;
+}
+.dm-diary-content .dm-diary-entry-time:first-of-type { margin-top: 2px; }
 .dm-diary-content p { margin: 6px 0; }
 .dm-diary-content ul { margin: 6px 0; padding-left: 20px; }
 .dm-diary-content li { margin: 3px 0; }

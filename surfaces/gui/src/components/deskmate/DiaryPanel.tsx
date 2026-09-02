@@ -18,14 +18,19 @@ import { Icon } from "../Icon";
 
 type View = "today" | "recap";
 
-/** 今日灵感进度：素材攒到什么程度了，够不够小桔动笔写一篇。 */
+/** 今日灵感进度：素材攒到什么程度了，够不够小桔再记一笔。 */
 type DiaryInspiration = {
   date: string;
+  /** 未写进日记的新素材分（下一则的进度），不是当天总分 */
   score: number;
+  /** 下一则的门槛：第一则 5.0，之后每则 4.0 */
   threshold: number;
   detail: Record<string, number>;
   should_write: boolean;
+  /** 今天是否已经动过笔（兼容字段） */
   is_refresh: boolean;
+  /** 今天已经记了几则——一天可以写多则，不设上限 */
+  entries_today: number;
   materials_count: number;
   reason: string;
 };
@@ -47,7 +52,7 @@ function monthDayCount(year: number, month: number): number {
   return new Date(year, month + 1, 0).getDate();
 }
 
-/** 极简 markdown 渲染：# 标题 / - 列表 / > 引用 / 段落。日记内容结构简单，不引第三方库。 */
+/** 极简 markdown 渲染：# 标题 / ## 一则的时间 / - 列表 / > 引用 / 段落。日记内容结构简单，不引第三方库。 */
 function renderMarkdown(text: string): React.ReactNode {
   const lines = text.split("\n");
   const blocks: React.ReactNode[] = [];
@@ -68,6 +73,14 @@ function renderMarkdown(text: string): React.ReactNode {
     if (line.startsWith("# ")) {
       flushList();
       blocks.push(<h3 key={`h-${i}`}>{line.slice(2)}</h3>);
+    } else if (line.startsWith("## ")) {
+      // 多则日记：每则一个「## HH:MM」时间小标题
+      flushList();
+      blocks.push(
+        <h4 key={`h2-${i}`} className="dm-diary-entry-time">
+          {line.slice(3)}
+        </h4>,
+      );
     } else if (line.startsWith("- ")) {
       listItems.push(line.slice(2));
     } else if (line.startsWith("> ")) {
@@ -163,6 +176,9 @@ export function DiaryPanel() {
         await fetchDates();
         await fetchInspiration();
         setSelected(todayISO());
+        // 显式重拉正文：若 selected 本来就是今天，useEffect 不会触发，
+        // 「再记一笔」后右侧就看不到新追加的那一则。
+        await fetchContent(todayISO());
       }
     } catch {
       /* 静默降级 */
@@ -188,6 +204,18 @@ export function DiaryPanel() {
   const month = viewMonth.getMonth();
   const today = todayISO();
   const selectedIndex = dates.indexOf(selected);
+
+  // 一天可写多则：今天已经有日记时，只要还有没写进去的新素材就能「再记一笔」。
+  // 翻看往日日记时按钮回到「生成今日日记」——它写的始终是今天。
+  const isToday = selected === today;
+  const canWriteMore = isToday && (inspiration?.should_write ?? false);
+  const generateLabel = generating
+    ? "写日记中…"
+    : !isToday || !content
+      ? "✎ 生成今日日记"
+      : canWriteMore
+        ? "✎ 再记一笔"
+        : "今天先记到这儿";
 
   const prevMonth = () => setViewMonth(new Date(year, month - 1, 1));
   const nextMonth = () => setViewMonth(new Date(year, month + 1, 1));
@@ -286,8 +314,10 @@ export function DiaryPanel() {
                   />
                 </div>
                 <p className="dm-diary-insp-hint">
-                  {inspiration.is_refresh
-                    ? "今天已经记下一笔了"
+                  {inspiration.entries_today > 0
+                    ? inspiration.should_write
+                      ? `今天已记 ${inspiration.entries_today} 笔，又够再记一笔了`
+                      : `今天已记 ${inspiration.entries_today} 笔，还在攒下一笔`
                     : "还在攒素材，攒够了我才写"}
                 </p>
               </div>
@@ -342,16 +372,25 @@ export function DiaryPanel() {
       {/* 底部：生成按钮 + 分页 */}
       {view === "today" && (
         <div className="dm-diary-footer">
+          {/**
+           * 一天可以写多则：已经有日记时按钮仍可用（「再记一笔」），
+           * 只有当没有新素材可写时才置灰——写几条由素材决定，不锁死。
+           */}
           <button
             type="button"
             className="dm-diary-generate"
             onClick={generateToday}
-            disabled={generating || !!content}
+            disabled={generating || (isToday && !!content && !canWriteMore)}
+            title={inspiration?.reason}
           >
-            {generating ? "写日记中…" : content ? "今日已写" : "✎ 生成今日日记"}
+            {generateLabel}
           </button>
           <span className="dm-diary-pager">
-            {selectedIndex >= 0 ? `第 ${selectedIndex + 1} / ${dates.length} 篇` : `共 ${dates.length} 篇`}
+            {inspiration && inspiration.entries_today > 0
+              ? `今天已记 ${inspiration.entries_today} 笔`
+              : selectedIndex >= 0
+                ? `第 ${selectedIndex + 1} / ${dates.length} 篇`
+                : `共 ${dates.length} 篇`}
           </span>
         </div>
       )}

@@ -25,9 +25,15 @@
    一次导入 15 条记忆、或 11 个技能同时进化，那是**一次批处理**的副产品，
    不是 11 件值得写的事。不封顶的话，任何批量操作都会瞬间刷满灵感分。
 
-4. **可重写**：当天已写过、但又有新增素材达 ``_REFRESH_DELTA`` 分时重写。
-   原 ``ensure_today()`` 是死幂等——早上生成一篇，之后发生的事永远进不去，
-   于是日记里「累计对话 190 轮」在 203 轮时还挂着。
+4. **一天可以写多则**（萧哥 2026-09-02：不要限死每天一条）。
+   素材被写进某一则后就打上 ``entry`` 标记「消费掉」，只有**没写过的新素材**
+   才继续计分。攒够门槛就再追加一则（``DiaryWriter.append_entry``），
+   绝不覆盖当天已写的内容——覆盖会让「今天」永远停在第一则落笔的那一刻。
+   第二则只讲后来的事，不会把第一则复述一遍。
+
+   门槛：第一则 ``_INSPIRE_THRESHOLD``(5.0)，后续各则 ``_NEXT_ENTRY_DELTA``(4.0)。
+   后续略低，是因为追加一则的"成本"比开篇低——它只是接着往下记。
+   另设 ``_MIN_GAP_MINUTES`` 冷却，防止素材集中涌入时连着刷出好几则。
 
 零 LLM、fail-open：任何异常都静默，绝不影响主动推理主流程。
 """
@@ -78,8 +84,10 @@ _EVENT_WEIGHTS: dict[str, float] = {
 
 _DEFAULT_WEIGHT = 0.5          # 未知事件按「痕迹」计，不因不认识而漏记
 _KIND_CAP = 6.0                # 单一类型当天的灵感分封顶（防批量刷分）
-_INSPIRE_THRESHOLD = 5.0       # 动笔阈值
-_REFRESH_DELTA = 4.0           # 已写过之后，新增多少分才值得重写
+_INSPIRE_THRESHOLD = 5.0       # 第一则的动笔阈值
+_NEXT_ENTRY_DELTA = 4.0        # 后续各则的门槛（已写过之后，新素材攒够这么多就再记一笔）
+_REFRESH_DELTA = _NEXT_ENTRY_DELTA  # 旧名保留，语义同上
+_MIN_GAP_MINUTES = 60          # 两则之间的最小间隔：防素材集中涌入时连着刷好几则
 
 # 阈值 5.0 的标定依据（实测 ~/.deskmate 真实事件分布）：
 #   08-24 1 条 memory_learned        = 0.5  → 不写（确实没东西可写）
@@ -112,6 +120,17 @@ def _subject_of(e: dict) -> str:
         if v:
             return str(v)
     return ""
+
+
+def _minutes_since(iso: Optional[str]) -> Optional[float]:
+    """距某个 ISO 时刻过了多少分钟；无法解析返回 None（视为无需冷却）。"""
+    if not iso:
+        return None
+    try:
+        dt = datetime.datetime.fromisoformat(str(iso))
+    except (ValueError, TypeError):
+        return None
+    return (datetime.datetime.now() - dt).total_seconds() / 60.0
 
 
 def _fingerprint(e: dict) -> str:
@@ -149,6 +168,29 @@ class MaterialLedger:
         except OSError:
             return []
         return out
+
+    def pending_items(self, date: str) -> list[dict]:
+        """**还没写进日记**的素材（``entry`` 为空）。
+
+        素材一旦被某一则采用就打上 ``entry`` 序号，之后不再重复计分——
+        否则第二则会把第一则写过的事复述一遍，且分数永远降不下来。
+        """
+        return [x for x in self.load(date) if not x.get("entry")]
+
+    def consume(self, date: str, items: list[dict], seq: int) -> int:
+        """把一批素材标记为「已写进第 seq 则」，返回实际标记条数。"""
+        fps = {_fingerprint(x) for x in items if isinstance(x, dict)}
+        if not fps:
+            return 0
+        all_items = self.load(date)
+        n = 0
+        for it in all_items:
+            if not it.get("entry") and _fingerprint(it) in fps:
+                it["entry"] = int(seq)
+                n += 1
+        if n:
+            self._atomic_write(date, all_items)
+        return n
 
     def sync(self, events: list[dict]) -> int:
         """把最近的事件增量并入账本（按天分文件，指纹去重）。
@@ -200,17 +242,23 @@ class MaterialLedger:
                 pass
 
     # ------------------------------------------------------------------
-    # 落笔记录（供「已写过多少分」的重写判断）
+    # 落笔记录：今天写了几则、写掉了多少分、上一则什么时候落的笔
     # ------------------------------------------------------------------
     def _meta_path(self, date: str) -> Path:
         return self.dir / f"{date}.meta.json"
 
-    def mark_written(self, date: str, score: float) -> None:
+    def meta(self, date: str) -> dict:
+        p = self._meta_path(date)
+        if not p.is_file():
+            return {}
+        try:
+            d = json.loads(p.read_text(encoding="utf-8"))
+            return d if isinstance(d, dict) else {}
+        except (OSError, ValueError, TypeError):
+            return {}
+
+    def _write_meta(self, date: str, payload: dict) -> None:
         self.dir.mkdir(parents=True, exist_ok=True)
-        payload = {
-            "written_score": round(score, 2),
-            "written_at": datetime.datetime.now().isoformat(timespec="seconds"),
-        }
         tmp = self._meta_path(date).with_suffix(".json.tmp")
         try:
             tmp.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
@@ -218,13 +266,37 @@ class MaterialLedger:
         except OSError:
             pass
 
+    def mark_entry(self, date: str, seq: int, score: float) -> None:
+        """记下「第 seq 则已落笔」：则数、累计已写分、落笔时刻（供冷却判断）。"""
+        cur = self.meta(date)
+        self._write_meta(date, {
+            "entries": max(int(cur.get("entries", 0) or 0), int(seq)),
+            "written_score": round(
+                float(cur.get("written_score", 0) or 0) + float(score), 2
+            ),
+            "last_entry_at": datetime.datetime.now().isoformat(timespec="seconds"),
+        })
+
+    def mark_written(self, date: str, score: float) -> None:
+        """兼容旧调用：按「又记下一则」处理。"""
+        self.mark_entry(date, self.entries(date) + 1, score)
+
+    def entries(self, date: str) -> int:
+        """当天已写了几则。"""
+        return int(self.meta(date).get("entries", 0) or 0)
+
+    def last_entry_at(self, date: str) -> Optional[str]:
+        v = self.meta(date).get("last_entry_at")
+        return str(v) if v else None
+
     def written_score(self, date: str) -> Optional[float]:
-        p = self._meta_path(date)
-        if not p.is_file():
+        """当天累计已写掉的灵感分；没写过返回 None。"""
+        meta = self.meta(date)
+        if not meta:
             return None
         try:
-            return float(json.loads(p.read_text(encoding="utf-8")).get("written_score", 0))
-        except (OSError, ValueError, TypeError):
+            return float(meta.get("written_score", 0))
+        except (ValueError, TypeError):
             return None
 
 
@@ -274,52 +346,63 @@ class DiaryInspiration:
         date = date or _today_local()
         return self.ledger.load(date)
 
+    def pending(self, date: str | None = None) -> list[dict]:
+        """当天还没写进日记的素材。"""
+        date = date or _today_local()
+        self.sync_events()
+        return self.ledger.pending_items(date)
+
     # ------------------------------------------------------------------
     def should_write(self, date: str | None = None) -> dict:
-        """判断今天是否该动笔。
+        """判断今天**是否该再记一笔**（一天可多则，不是写完就锁死）。
+
+        计分只看**没写过**的新素材：写进某一则的素材会被打上 ``entry`` 消费掉。
 
         Returns:
-            ``{date, score, threshold, detail, should_write, reason,
-                materials_count, is_refresh}``
+            ``{date, score(=pending_score), threshold, detail, should_write,
+                is_refresh, entries_today, pending_count, materials_count,
+                total_score, reason}``
         """
         date = date or _today_local()
         self.sync_events()
         items = self.ledger.load(date)
-        score, detail = score_items(items)
-        written = self.ledger.written_score(date)
+        pending = [x for x in items if not x.get("entry")]
+        score, detail = score_items(pending)
+        total, _ = score_items(items)
 
-        if written is None:
-            ok = score >= _INSPIRE_THRESHOLD
+        entries = self.ledger.entries(date)
+        # 第一则门槛高一点；后续各则只是"接着记"，门槛略低
+        threshold = _INSPIRE_THRESHOLD if entries == 0 else _NEXT_ENTRY_DELTA
+        gap_min = _minutes_since(self.ledger.last_entry_at(date))
+        cooling = gap_min is not None and gap_min < _MIN_GAP_MINUTES
+
+        ok = bool(score >= threshold and not cooling)
+        if entries == 0:
             reason = (
-                f"攒够了素材（{score:.1f} ≥ {_INSPIRE_THRESHOLD}）"
-                if ok
-                else f"素材还不够（{score:.1f} < {_INSPIRE_THRESHOLD}），今天先不写"
+                f"攒够了素材（{score:.1f} ≥ {threshold}）"
+                if score >= threshold
+                else f"素材还不够（{score:.1f} < {threshold}），今天先不写"
             )
-            return {
-                "date": date,
-                "score": round(score, 2),
-                "threshold": _INSPIRE_THRESHOLD,
-                "detail": {k: round(v, 2) for k, v in detail.items()},
-                "should_write": ok,
-                "is_refresh": False,
-                "materials_count": len(items),
-                "reason": reason,
-            }
+        elif cooling:
+            reason = f"刚记下一笔（{gap_min:.0f} 分钟前），让它先沉淀一会儿"
+        elif ok:
+            reason = f"又攒了 {score:.1f} 分新素材，值得再记一笔"
+        else:
+            reason = (
+                f"今天已记 {entries} 笔，新素材 {score:.1f} 分还没攒够 {threshold}"
+            )
 
-        delta = score - written
-        ok = delta >= _REFRESH_DELTA
-        reason = (
-            f"又攒了 {delta:.1f} 分新素材，值得重写一篇"
-            if ok
-            else f"已写过，新增 {delta:.1f} 分不足 {_REFRESH_DELTA}，暂不重写"
-        )
         return {
             "date": date,
-            "score": round(score, 2),
-            "threshold": _INSPIRE_THRESHOLD,
+            "score": round(score, 2),          # 下一则的进度（未消费素材分）
+            "threshold": threshold,
             "detail": {k: round(v, 2) for k, v in detail.items()},
             "should_write": ok,
-            "is_refresh": True,
+            "is_refresh": entries > 0,         # 兼容旧字段：今天是否已经动过笔
+            "entries_today": entries,
+            "pending_score": round(score, 2),
+            "pending_count": len(pending),
+            "total_score": round(total, 2),
             "materials_count": len(items),
             "reason": reason,
         }
@@ -346,18 +429,28 @@ def maybe_write_diary(base_dir: Path | str | None = None) -> Optional[dict]:
         if not verdict.get("should_write"):
             return None
 
+        date = verdict["date"]
+        # 只写「还没写进日记」的素材——第二则若带上第一则用过的素材，
+        # 就会把早上那篇复述一遍（重复叙事比不写更伤）
+        fresh = insp.ledger.pending_items(date)
+        if not fresh:
+            return None
+
         writer = DiaryWriter(base_dir=insp.base)
-        # 日记正文直接来自账本（持久素材），不再依赖 50 条易失窗口
-        events = insp.materials(verdict["date"])
-        path = writer.write(
-            verdict["date"],
-            events=events,
-            badges=writer._badges_on(verdict["date"]),
-        )
-        insp.ledger.mark_written(verdict["date"], verdict["score"])
+        # 徽章只在第一则记：后续补记再列一遍「今天解锁徽章」是冗余
+        badges = writer._badges_on(date) if writer.entry_count(date) == 0 else []
+        res = writer.append_entry(date, events=fresh, badges=badges)
+
+        # 消费掉这批素材 + 记录这一则，让「下一则」从零开始重新攒
+        insp.ledger.consume(date, fresh, res["seq"])
+        insp.ledger.mark_entry(date, res["seq"], verdict["score"])
+
         return {
-            "date": verdict["date"],
-            "path": path,
+            "date": date,
+            "path": res["path"],
+            "entry": res["seq"],
+            "entries_today": res["seq"],
+            "at": res["at"],
             "score": verdict["score"],
             "detail": verdict["detail"],
             "is_refresh": verdict["is_refresh"],
