@@ -3920,3 +3920,306 @@ html[data-theme="dark"] .creation-preview-article a {
 }
 .mom-empty p { margin: 4px 0; }
 .mom-empty-hint { font-size: 13px; color: #c4b9a8; }
+
+/* ============================================================
+   私密花园 · 个人中心（garden-*）
+   由 GardenProfileCenter 注入 CSS 变量（gardenTheme）：
+   --garden-sky-1/2 天空渐变 · --garden-leaf 叶色 · --garden-soil 土色
+   --garden-lamp 灯色 · --garden-ink 场景文字 · --garden-tint-top/bottom 昼夜光照
+   ============================================================ */
+.garden-root {
+  position: relative; height: 100%; min-width: 0; overflow: hidden;
+  display: flex; flex-direction: column;
+  background: linear-gradient(180deg, var(--garden-sky-1) 0%, var(--garden-sky-2) 58%, #F3E9DA 100%);
+}
+.garden-root::before {
+  content: ""; position: absolute; inset: 0; pointer-events: none; z-index: 0;
+  background: linear-gradient(180deg, var(--garden-tint-top), var(--garden-tint-bottom));
+}
+
+/* --- 顶部场景条 --- */
+.garden-scene {
+  position: relative; z-index: 1; height: 172px; flex-shrink: 0; overflow: hidden;
+  display: flex; align-items: flex-end; justify-content: space-between;
+  padding: 18px 32px 8px;
+}
+.garden-hills { position: absolute; left: 0; right: 0; bottom: 0; width: 100%; height: 120px; pointer-events: none; }
+.garden-scene-info { position: relative; z-index: 2; color: var(--garden-ink); }
+.garden-season { display: flex; align-items: center; gap: 9px; font-size: 21px; font-weight: 800; font-family: var(--serif); letter-spacing: 1px; text-shadow: 0 1px 0 rgba(255,255,255,.45); }
+.garden-season-emoji { font-size: 25px; line-height: 1; }
+.garden-daypart {
+  font-size: 12.5px; font-weight: 600; opacity: .9; padding: 3px 10px; border-radius: 14px;
+  background: rgba(255,255,255,.5); border: 1px solid rgba(255,255,255,.6);
+}
+.garden-return { margin-top: 7px; font-size: 13px; opacity: .85; }
+.garden-scene-mascot { position: relative; z-index: 2; align-self: flex-end; }
+.garden-halo {
+  position: absolute; inset: -10px; border-radius: 50%;
+  background: radial-gradient(circle, var(--garden-lamp), transparent 70%); opacity: .5;
+}
+.garden-mascot-img { border: 3px solid rgba(255,255,255,.62); box-shadow: 0 12px 28px rgba(0,0,0,.18); position: relative; }
+
+/* --- 花开横幅 --- */
+.garden-flowers {
+  position: relative; z-index: 2; flex-shrink: 0; margin: 0 32px 0;
+  padding: 12px 16px; border-radius: 16px;
+  background: rgba(255,255,255,.74); backdrop-filter: blur(8px);
+  border: 1px solid rgba(255,255,255,.6); box-shadow: 0 8px 22px rgba(0,0,0,.08);
+}
+.garden-flowers-head {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 12px; flex-wrap: wrap; margin-bottom: 8px;
+}
+.garden-flowers-title { font-size: 14px; font-weight: 700; color: #5B4636; display: inline-flex; align-items: center; gap: 7px; }
+.garden-flowers-count {
+  background: linear-gradient(135deg, #FF8A3D, #E8551A); color: #fff; font-size: 12px;
+  padding: 1px 9px; border-radius: 12px; font-weight: 700;
+}
+.garden-beds { display: flex; gap: 12px; flex-wrap: wrap; }
+.garden-bed { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; color: #8a6a44; }
+.garden-bed-dot { width: 8px; height: 8px; border-radius: 50%; background: #E8551A; opacity: .55; }
+.garden-flower-row { display: flex; gap: 8px; flex-wrap: wrap; }
+.garden-flower {
+  position: relative; display: flex; flex-direction: column; align-items: center; gap: 2px;
+  padding: 6px 8px; border-radius: 12px; cursor: pointer; min-width: 0;
+  transition: background .15s, transform .15s;
+}
+.garden-flower:hover { background: #FFF3EA; transform: translateY(-2px); }
+.garden-flower-emoji { font-size: 22px; line-height: 1; }
+.garden-flower-date { font-size: 11px; color: #a0876c; white-space: nowrap; }
+.garden-flower-tip {
+  position: absolute; bottom: calc(100% + 6px); left: 50%; transform: translateX(-50%);
+  width: 232px; background: #fff; border: 1px solid var(--line); border-radius: 12px;
+  padding: 10px 12px; box-shadow: 0 12px 30px rgba(0,0,0,.16); z-index: 30;
+}
+.garden-flower-tip-title { font-size: 13px; font-weight: 700; color: #3B2A22; }
+.garden-flower-tip-quote { font-size: 12.5px; color: #6b5744; line-height: 1.55; margin: 5px 0; }
+.garden-flower-tip-meta { font-size: 11px; color: #a0876c; }
+.garden-empty { font-size: 13px; color: #8a6a44; padding: 4px 2px; }
+
+/* --- 主体（现有个人中心内容） --- */
+.garden-body {
+  position: relative; z-index: 1; flex: 1; min-height: 0; overflow: hidden;
+  margin-top: 12px; background: rgba(255,251,245,.72); backdrop-filter: blur(10px);
+  border-top: 1px solid rgba(255,255,255,.5); box-shadow: 0 -10px 30px rgba(0,0,0,.05);
+}
+
+/* --- 花园时钟轻问候 --- */
+.garden-clock-toast {
+  position: absolute; left: 50%; bottom: 24px; transform: translateX(-50%); z-index: 50;
+  display: flex; align-items: center; gap: 10px; padding: 12px 16px 12px 12px; border-radius: 16px;
+  background: rgba(255,255,255,.94); backdrop-filter: blur(10px);
+  border: 1px solid rgba(255,255,255,.72); box-shadow: 0 12px 32px rgba(0,0,0,.18);
+  max-width: min(480px, calc(100% - 48px));
+  animation: garden-toast-in .35s ease;
+}
+.garden-clock-toast-icon { font-size: 22px; line-height: 1; }
+.garden-clock-toast-text { font-size: 14px; color: #3B2A22; line-height: 1.5; }
+.garden-clock-toast-close {
+  margin-left: 4px; display: flex; padding: 4px; border-radius: 8px; color: #a0876c; cursor: pointer;
+}
+.garden-clock-toast-close:hover { background: #FFF3EA; color: #E8551A; }
+@keyframes garden-toast-in {
+  from { opacity: 0; transform: translate(-50%, 10px); }
+  to { opacity: 1; transform: translate(-50%, 0); }
+}
+
+/* --- 花园回响（P1）：花朵 tip 里的小桔短评 --- */
+.garden-flower-tip-echo {
+  font-size: 12.5px; color: #8a5a2b; line-height: 1.55; margin: 6px 0;
+  padding: 7px 9px; border-radius: 10px; background: #FFF6EC;
+  border: 1px dashed rgba(232, 85, 26, .28);
+}
+.garden-flower-tip-echo-by {
+  display: inline-block; font-size: 11px; font-weight: 700; color: #E8551A;
+  margin-right: 6px;
+}
+
+/* --- 花园图鉴（P1） --- */
+.garden-flora {
+  position: relative; z-index: 2; flex-shrink: 0; margin: 10px 32px 0;
+  border-radius: 16px; background: rgba(255,255,255,.72); backdrop-filter: blur(8px);
+  border: 1px solid rgba(255,255,255,.6); box-shadow: 0 8px 22px rgba(0,0,0,.08);
+  overflow: hidden;
+}
+.garden-flora-toggle {
+  width: 100%; display: flex; align-items: center; justify-content: space-between;
+  padding: 11px 16px; cursor: pointer; color: #5B4636; text-align: left;
+}
+.garden-flora-toggle:hover { background: rgba(255, 243, 234, .7); }
+.garden-flora-toggle-title { font-size: 14px; font-weight: 700; display: inline-flex; align-items: center; gap: 8px; }
+.garden-flora-toggle-meta { font-size: 12px; font-weight: 500; color: #a0876c; }
+.garden-flora-toggle-arrow { font-size: 13px; color: #a0876c; }
+.garden-flora-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 10px; padding: 4px 16px 16px;
+}
+.garden-flora-card {
+  display: flex; flex-direction: column; gap: 4px; padding: 11px 12px; border-radius: 12px;
+  background: #FBF4EC; border: 1px solid rgba(255,255,255,.7); opacity: .55;
+}
+.garden-flora-card.is-unlocked { opacity: 1; border-color: rgba(232, 85, 26, .25); box-shadow: 0 4px 12px rgba(232,85,26,.06); }
+.garden-flora-emoji { font-size: 24px; line-height: 1; }
+.garden-flora-name { font-size: 13px; font-weight: 700; color: #3B2A22; display: flex; align-items: center; gap: 6px; }
+.garden-flora-count {
+  background: linear-gradient(135deg, #FF8A3D, #E8551A); color: #fff; font-size: 11px;
+  padding: 0 7px; border-radius: 10px; font-weight: 700;
+}
+.garden-flora-desc { font-size: 12px; color: #8a6a44; line-height: 1.5; }
+
+/* --- 羁绊故事簿（P1） --- */
+.garden-storybook {
+  margin: 0; padding: 14px 18px; border-bottom: 1px solid rgba(255,255,255,.55);
+  background: linear-gradient(180deg, rgba(255,247,238,.9), rgba(255,251,245,.72));
+}
+.garden-storybook-head {
+  display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px;
+}
+.garden-storybook-title { font-size: 14px; font-weight: 700; color: #5B4636; }
+.garden-storybook-stage {
+  font-size: 12px; font-weight: 700; color: #fff; padding: 2px 10px; border-radius: 12px;
+  background: linear-gradient(135deg, #FF8A3D, #E8551A);
+}
+.garden-storybook-narrative { font-size: 13px; color: #6b5744; line-height: 1.7; }
+.garden-storybook-progress { display: flex; align-items: center; gap: 8px; margin: 8px 0 2px; }
+.garden-storybook-bar {
+  flex: 1; height: 6px; border-radius: 6px; background: rgba(232, 85, 26, .15); overflow: hidden;
+}
+.garden-storybook-bar-fill { height: 100%; border-radius: 6px; background: linear-gradient(90deg, #FFB27A, #E8551A); }
+.garden-storybook-bar-label { font-size: 11px; color: #a0876c; }
+.garden-storybook-stats {
+  display: flex; gap: 14px; flex-wrap: wrap; margin: 10px 0 2px;
+}
+.garden-storybook-stat {
+  display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; color: #8a6a44;
+}
+.garden-storybook-stat-icon { font-size: 14px; }
+.garden-storybook-stat-value { font-weight: 700; color: #5B4636; }
+.garden-storybook-stat-label { color: #a0876c; }
+.garden-storybook-portrait { margin-top: 10px; }
+.garden-storybook-portrait-head { font-size: 12.5px; font-weight: 700; color: #5B4636; margin-bottom: 6px; }
+.garden-storybook-portrait-list { display: flex; flex-direction: column; gap: 6px; }
+.garden-storybook-portrait-item {
+  padding: 8px 10px; border-radius: 10px; background: rgba(255,255,255,.6);
+  border: 1px solid rgba(255,255,255,.7);
+}
+.garden-storybook-portrait-name {
+  font-size: 12.5px; font-weight: 700; color: #3B2A22; display: flex; align-items: center;
+  gap: 8px; justify-content: space-between;
+}
+.garden-storybook-portrait-status { font-size: 11px; font-weight: 500; color: #a0876c; }
+.garden-storybook-portrait-item.status-learning .garden-storybook-portrait-status { color: #D98E2B; }
+.garden-storybook-portrait-item.status-empty .garden-storybook-portrait-status { color: #b9a78f; }
+.garden-storybook-portrait-summary {
+  font-size: 12px; color: #6b5744; line-height: 1.55; margin-top: 3px;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+}
+
+/* ============================================================
+   P2 · 沉淀与打磨：花园的树 / 季节粒子 / 分页 / 点亮
+   ============================================================ */
+
+/* ---- 季节粒子（场景条小桔周围，复用桌宠粒子表现语言） ---- */
+.garden-season-particles { position: absolute; inset: 0; pointer-events: none; overflow: hidden; border-radius: 16px; }
+.garden-season-particle { position: absolute; top: -10%; font-size: 15px; opacity: 0; will-change: transform, opacity; }
+.garden-season-petal { animation: garden-petal-fall 5.5s linear infinite; }
+.garden-season-light { animation: garden-light-drift 4.5s ease-in-out infinite; }
+.garden-season-leaf { animation: garden-leaf-fall 6s linear infinite; }
+.garden-season-snow { animation: garden-snow-fall 7s linear infinite; }
+@keyframes garden-petal-fall {
+  0%   { transform: translateY(-10%) translateX(0) rotate(0deg); opacity: 0; }
+  12%  { opacity: .85; }
+  100% { transform: translateY(140px) translateX(26px) rotate(120deg); opacity: 0; }
+}
+@keyframes garden-light-drift {
+  0%, 100% { transform: translateY(10px) scale(.9); opacity: 0; }
+  30% { opacity: .9; }
+  70% { opacity: .5; }
+  100% { transform: translateY(-16px) scale(1.25); opacity: 0; }
+}
+@keyframes garden-leaf-fall {
+  0%   { transform: translateY(-10%) translateX(0) rotate(0deg); opacity: 0; }
+  12%  { opacity: .9; }
+  100% { transform: translateY(150px) translateX(-22px) rotate(-160deg); opacity: 0; }
+}
+@keyframes garden-snow-fall {
+  0%   { transform: translateY(-10%) translateX(0); opacity: 0; }
+  15%  { opacity: .95; }
+  100% { transform: translateY(150px) translateX(14px); opacity: 0; }
+}
+
+/* ---- 场景条：花园的树等级徽章 ---- */
+.garden-scene-tree {
+  font-size: 11.5px; color: #fff; background: rgba(91,70,54,.55); border-radius: 20px;
+  padding: 2px 10px; margin-top: 4px; display: inline-flex; align-items: center; gap: 4px;
+  backdrop-filter: blur(4px);
+}
+
+/* ---- 花园的树（成长线 + 浇水 + 年花 + 年鉴） ---- */
+.garden-tree { padding: 0 16px; }
+.garden-tree-card {
+  display: flex; gap: 12px; align-items: flex-start;
+  background: linear-gradient(135deg, rgba(255,244,230,.92), rgba(255,232,208,.9));
+  border: 1px solid rgba(255,255,255,.8); border-radius: 16px; padding: 12px 14px;
+  box-shadow: 0 4px 14px rgba(190,140,80,.10);
+}
+.garden-tree-emblem {
+  position: relative; flex: 0 0 auto; width: 52px; height: 52px; border-radius: 50%;
+  background: rgba(255,255,255,.65); display: flex; align-items: center; justify-content: center;
+  font-size: 30px;
+}
+.garden-tree-extra { position: absolute; right: -2px; bottom: 2px; font-size: 15px; }
+.garden-tree-main { flex: 1; min-width: 0; }
+.garden-tree-title { font-size: 13.5px; font-weight: 700; color: #3B2A22; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.garden-tree-stage { color: #D98E2B; }
+.garden-tree-count { font-size: 11.5px; font-weight: 600; color: #a0876c; }
+.garden-tree-desc { font-size: 12px; color: #6b5744; margin-top: 3px; line-height: 1.5; }
+.garden-tree-progress { height: 6px; border-radius: 6px; background: rgba(190,140,80,.18); margin-top: 8px; overflow: hidden; }
+.garden-tree-progress-fill { height: 100%; border-radius: 6px; background: linear-gradient(90deg, #f2b47a, #D98E2B); transition: width .6s ease; }
+.garden-tree-progress-text { font-size: 11.5px; color: #a0876c; margin-top: 5px; }
+.garden-tree-water {
+  display: flex; align-items: center; gap: 6px; font-size: 12px; color: #5B4636;
+  margin-top: 9px; background: rgba(255,255,255,.55); border-radius: 20px; padding: 4px 10px;
+  width: fit-content;
+}
+.garden-tree-water-icon { font-size: 13px; }
+.garden-tree-water-streak { font-weight: 700; color: #5D9BC4; }
+.garden-tree-years { margin-top: 6px; font-size: 12px; color: #6b5744; line-height: 1.5; }
+.garden-tree-archive-toggle {
+  margin-top: 8px; background: rgba(255,255,255,.6); border: 1px solid rgba(217,142,43,.35);
+  color: #B3661A; font-size: 12px; font-weight: 600; border-radius: 20px; padding: 4px 12px;
+  cursor: pointer;
+}
+.garden-tree-archive { margin-top: 8px; background: rgba(255,255,255,.6); border-radius: 10px; padding: 8px 10px; }
+.garden-tree-archive-row { display: flex; align-items: baseline; gap: 8px; font-size: 12px; color: #5B4636; padding: 2px 0; }
+.garden-tree-archive-year { font-weight: 700; color: #B3661A; }
+.garden-tree-archive-count { font-weight: 600; }
+.garden-tree-archive-sample { color: #a0876c; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.garden-tree-archive-detail { display: flex; flex-wrap: wrap; gap: 4px 8px; margin-top: 6px; }
+.garden-tree-archive-flower {
+  font-size: 11px; color: #6b5744; background: rgba(217,142,43,.10); border-radius: 6px; padding: 2px 6px;
+}
+
+/* ---- 花开分页 ---- */
+.garden-flower-pager {
+  display: flex; align-items: center; justify-content: center; gap: 12px; margin-top: 10px;
+}
+.garden-flower-pager-btn {
+  background: rgba(255,255,255,.7); border: 1px solid rgba(217,142,43,.35); color: #B3661A;
+  font-size: 12px; font-weight: 600; border-radius: 18px; padding: 4px 12px; cursor: pointer;
+}
+.garden-flower-pager-btn:disabled { opacity: .4; cursor: default; }
+.garden-flower-pager-info { font-size: 11.5px; color: #a0876c; }
+
+/* ---- 点亮 ---- */
+.garden-flower.is-lit { box-shadow: 0 0 0 2px rgba(255,196,0,.55); }
+.garden-flower-lit {
+  position: absolute; top: -5px; right: -5px; font-size: 13px; z-index: 3;
+  filter: drop-shadow(0 0 4px rgba(255,196,0,.8));
+}
+.garden-flower-lit-btn {
+  margin-top: 8px; width: 100%; background: linear-gradient(135deg, #ffd97a, #f5b942);
+  border: none; color: #5B3A00; font-size: 12px; font-weight: 700; border-radius: 20px;
+  padding: 5px 0; cursor: pointer;
+}
+.garden-flower-lit-btn:hover { filter: brightness(1.05); }

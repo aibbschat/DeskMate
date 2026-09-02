@@ -39,6 +39,9 @@ class BlobStore:
     # 跨端同步仍只走 style/decision 派生包（见 memory/sync.py），不改变同步行为。
     KEY_EMOTION = "emotion_timeline"
     KEY_CARE_LOG = "care_log"
+    # 花园（P0 个人中心私密花园层）：花朵/痕迹/时钟幂等表，与 growth 同域物理库，
+    # 设备本地，不随跨端同步（见 memory/sync.py 的同步范围）。
+    KEY_GARDEN = "garden"
 
     def __init__(self, db_path: Optional[str | Path] = None) -> None:
         self.db_path = Path(db_path) if db_path else _DB_DEFAULT

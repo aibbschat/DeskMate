@@ -1,0 +1,346 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>「花园」落地实现技术方案 · OpenWorker 小桔</title>
+<style>
+  :root{
+    --orange-700:#D94A12; --orange-600:#E8551A; --orange-500:#FF7A2F;
+    --orange-400:#FF9E5E; --orange-300:#FFC08F; --orange-100:#FFE9D9;
+    --cream:#FFFBF6; --leaf-600:#5E9036; --leaf-500:#7FB54A; --leaf-100:#EFF5E6;
+    --sun-400:#FFC24B; --ink:#3B2A22; --ink-2:#8A7568; --ink-3:#C7B6A9;
+    --card:#FFFFFF; --line:#F4E4D7; --blue-ink:#33415C;
+    --shadow:0 10px 30px rgba(232,85,26,.10); --shadow-soft:0 4px 16px rgba(232,85,26,.08);
+    --radius-lg:24px; --radius-md:16px; --radius-sm:12px;
+    --mono:"SF Mono",Consolas,Menlo,monospace;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{font-family:"PingFang SC","Microsoft YaHei","Segoe UI",sans-serif;background:var(--cream);color:var(--ink);line-height:1.75;font-size:15px}
+  .wrap{max-width:1060px;margin:0 auto;padding:40px 28px 80px}
+  /* 头图 */
+  .cover{background:linear-gradient(150deg,var(--orange-100),var(--cream) 55%,var(--leaf-100));border:1px solid var(--line);border-radius:var(--radius-lg);padding:34px 36px;margin-bottom:28px}
+  .cover .kicker{font-size:13px;color:var(--orange-600);letter-spacing:.12em;font-weight:600}
+  .cover h1{font-size:30px;font-weight:800;margin:8px 0 6px;color:var(--ink)}
+  .cover .sub{font-size:15px;color:var(--ink-2)}
+  .cover .meta{margin-top:16px;display:flex;flex-wrap:wrap;gap:8px}
+  .cover .meta span{background:#fff;border:1px solid var(--line);border-radius:999px;padding:4px 12px;font-size:12px;color:var(--ink-2)}
+  /* 章节 */
+  section{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-lg);padding:28px 32px;margin-bottom:22px;box-shadow:var(--shadow-soft)}
+  h2{font-size:21px;font-weight:800;color:var(--orange-700);margin-bottom:4px;display:flex;align-items:center;gap:10px}
+  h2 .no{background:var(--orange-500);color:#fff;border-radius:8px;font-size:13px;min-width:26px;height:26px;display:inline-flex;align-items:center;justify-content:center;font-weight:700}
+  .sec-sub{color:var(--ink-2);font-size:13px;margin-bottom:18px}
+  h3{font-size:16px;font-weight:700;color:var(--ink);margin:22px 0 8px}
+  h4{font-size:14px;font-weight:700;color:var(--orange-600);margin:16px 0 6px}
+  p{margin:8px 0;color:var(--ink)}
+  .note{color:var(--ink-2);font-size:13.5px}
+  ul,ol{margin:8px 0 8px 22px}
+  li{margin:4px 0}
+  b.hl{color:var(--orange-600)}
+  /* 表格 */
+  table{width:100%;border-collapse:collapse;margin:12px 0;font-size:13.5px}
+  th{background:var(--orange-100);color:var(--orange-700);text-align:left;padding:8px 12px;font-weight:700;border:1px solid var(--line)}
+  td{padding:8px 12px;border:1px solid var(--line);vertical-align:top;color:var(--ink)}
+  tr:nth-child(even) td{background:#FFFDF9}
+  code{font-family:var(--mono);background:var(--orange-100);color:var(--orange-700);border-radius:5px;padding:1px 6px;font-size:12.5px}
+  pre{background:#2E2622;color:#F6E7DA;border-radius:12px;padding:16px 18px;overflow-x:auto;font-family:var(--mono);font-size:12.5px;line-height:1.7;margin:12px 0}
+  pre code{background:none;color:inherit;padding:0}
+  .tag{display:inline-block;background:var(--leaf-100);color:var(--leaf-600);border-radius:6px;padding:0 8px;font-size:12px;font-weight:600}
+  .tag.orange{background:var(--orange-100);color:var(--orange-600)}
+  .tag.blue{background:#EAF0FA;color:var(--blue-ink)}
+  .callout{border-left:4px solid var(--orange-500);background:#FFF7EF;border-radius:0 10px 10px 0;padding:12px 16px;margin:12px 0;font-size:14px}
+  .callout.warn{border-left-color:#E0A800;background:#FFFDF3}
+  .callout.good{border-left-color:var(--leaf-500);background:var(--leaf-100)}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  .flow{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:10px 0}
+  .flow .node{background:var(--orange-100);border:1px solid var(--orange-300);border-radius:10px;padding:6px 12px;font-size:13px;font-weight:600;color:var(--orange-700)}
+  .flow .node.dark{background:var(--orange-600);color:#fff;border-color:var(--orange-600)}
+  .flow .arr{color:var(--ink-3);font-weight:700}
+  .mini{font-size:12.5px;color:var(--ink-2)}
+  @media(max-width:720px){.grid2{grid-template-columns:1fr}.wrap{padding:24px 14px 60px}section{padding:20px 18px}}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="cover">
+    <div class="kicker">OPENWORKER × 小桔 · 落地实现技术方案</div>
+    <h1>「花园」私密花园 · 个人中心升级</h1>
+    <div class="sub">把个人中心升级成一块私密花园：四季流转、花开记录、花园时钟。方案基于现有 deskmate 体系真实代码结构撰写，可直接按阶段推进。</div>
+    <div class="meta"><span>2026-09-02</span><span>基于现有 ProfileCenter / BlobStore / tick / 日记 / 徽章体系</span><span>P0 可先行</span></div>
+  </div>
+
+  <!-- 01 定位与目标 -->
+  <section>
+    <h2><span class="no">1</span>定位与落地目标</h2>
+    <div class="sec-sub">花园不是新应用，是现有个人中心（ProfileCenter）的「视觉 + 互动」升级层</div>
+    <p>现有个人中心已是<b class="hl">暖橘色调、五 Tab（概览/长期记忆/小桔日记/勋章/设置）</b>，hero 文案已是「这是你的小桔园」。因此花园落地的正确姿势是<b class="hl">在现有骨架上叠加花园层</b>，不推倒重来：</p>
+    <ul>
+      <li><b class="hl">保留信息架构</b>：五 Tab 全部保留，花园只是让它们「长在花园里」——概览升级为花园全景，其余 Tab 保留但共享四季/昼夜主题皮肤。</li>
+      <li><b class="hl">三个可验证的落地目标</b>（每个都能被用户看见，呼应「细节要真正落地可见」）：
+        <ul>
+          <li><b class="hl">① 四季流转</b>：花园背景随本地季节/昼夜变化（春樱 / 夏茂 / 秋枫 / 冬雪 + 晨 / 昼 / 黄昏 / 深夜），是确定性、无需 LLM 的视觉层。</li>
+          <li><b class="hl">② 花开记录</b>：每次值得记的事（学到记忆、写下日记、解锁勋章、里程碑）在花园里开出一朵花，花圃按类别分格，花朵带日期与原文摘录。</li>
+          <li><b class="hl">③ 花园时钟</b>：把互动挂在<b class="hl">确定发生</b>的时刻上（晨间首进、黄昏入夜、深夜亮灯、间隔归来、节日），一切互动沉淀为可回看的痕迹，检测失败由确定性事件兜底。</li>
+        </ul>
+      </li>
+      <li><b class="hl">一条不打扰底线</b>：所有花园互动都是轻提示（toast 级），可一键关闭，复用现有防打扰语义（disturb / settings）。</li>
+    </ul>
+    <div class="callout good"><b>方案原则：</b>确定性 &gt; 检测。花园的一切都挂在「确定发生」的事件上（本地时间、进入花园、产生素材），不依赖任何场景识别的偶然性——这正是用户强调的「建起来不难，难的是真正落地可见」。</div>
+  </section>
+
+  <!-- 02 现状资产盘点 -->
+  <section>
+    <h2><span class="no">2</span>现状资产盘点：花园的地基已经有了</h2>
+    <div class="sec-sub">以下都是 openworker 现有代码里的真实模块，花园直接复用，不重复造轮子</div>
+    <table>
+      <tr><th>现有模块 / 文件</th><th>在花园中的用途</th></tr>
+      <tr><td><code>deskmate/persistence.py</code> · <code>BlobStore</code></td><td>统一库 <code>deskmate.db</code> 的 <code>json_blobs</code> 存储，已有 <code>KEY_GROWTH/STYLE/DECISION/EMOTION/CARE_LOG</code>。花园状态新增 <code>KEY_GARDEN</code> 同款落点，自动继承 legacy 迁移与原子写。</td></tr>
+      <tr><td><code>deskmate/growth/state.py</code> · <code>GrowthState</code></td><td>花园生长的数据源：<code>intimacy/bond_depth/mood/counters/badges_unlocked/recent_events</code>，全部已有真实行为后果。</td></tr>
+      <tr><td><code>deskmate/growth/badges.py</code></td><td>声明式徽章注册表（<code>BADGES</code> + <code>evaluate()</code>，五门四阶，进度即事实，<code>COUNTER_*</code> 常量）。<b class="hl">「花开判定」直接复刻这个模式</b>：新增一朵花 = 注册表加一行。</td></tr>
+      <tr><td><code>deskmate/growth/emotion_timeline.py</code></td><td>每日情绪快照 + 情感回顾 + 关怀去重（<code>care_log</code>）。花园「情绪定色」「花开颜色的情绪倾向」「关怀冷却」都有现成设施。</td></tr>
+      <tr><td><code>deskmate/growth/diary_inspiration.py</code></td><td>素材账本（<code>diary/materials/*.jsonl</code>，指纹 <code>ts|kind|subject</code> 去重）+ 加权评分 + 单类封顶。花园「花开事件」的素材来源与<b class="hl">幂等指纹</b>直接复用此范式。</td></tr>
+      <tr><td><code>deskmate/growth/diary.py</code> · <code>DiaryWriter</code></td><td>零 LLM 模板渲染（开场白按时段、落款、绝不覆盖）。花园「花开短句 / 花园便笺」用同款零 LLM 渲染，杜绝编造。</td></tr>
+      <tr><td><code>deskmate/proactivity/tick.py</code> · <code>ProactiveEngine</code></td><td>每 5 分钟心跳（<code>heartbeat_interval_ms</code>），已带 <code>diary / interview</code> 负载通道。<b class="hl">花园时钟后台动作挂这里</b>：花开结算、归来计算。</td></tr>
+      <tr><td><code>deskmate/alter_ego/portrait.py</code></td><td>「它眼中的我」六栏目画像聚合（写作风格/决策偏好/行为规律…）。花园「图鉴 / 羁绊故事簿」复用其栏目聚合结构。</td></tr>
+      <tr><td><code>deskmate/growth/moments.py</code> + <code>MomentFeed.tsx</code></td><td>「我们的日记」时间线（用户写、小桔留言、🩷落 <code>loved_entries</code>）。花园「留言回响」的地基。</td></tr>
+      <tr><td><code>surfaces/gui/src/components/deskmate/ProfileCenter.tsx</code></td><td>现有个人中心（五 Tab）。花园升级的核心改造对象。</td></tr>
+      <tr><td><code>surfaces/gui/src/components/deskmate/XiaojuMascot.tsx</code> + <code>emotes/*</code></td><td>官方小桔（橙子头套小女孩，透明 PNG + 情绪粒子）+ 表情体系。花园里的角色与互动载体。</td></tr>
+      <tr><td><code>xiaoju-profile-center/index.html</code> + <code>styles.css .profile-*</code></td><td>花园视觉 token 基底（<code>--orange-* / --cream / --leaf / --sun</code>），现有桔色主色调直接继承。</td></tr>
+      <tr><td><code>App.tsx</code> surface 机制 + <code>DeskHome.tsx</code></td><td>个人中心入口与页面挂载点，花园接入路径已存在。</td></tr>
+    </table>
+    <div class="callout"><b>结论：</b>花园不需要新基建，需要的是<b class="hl">一层「花园语义层」</b>（GardenState + GardenClock + 花开渲染）把上面这些既有能力编排起来。</div>
+  </section>
+
+  <!-- 03 总体架构 -->
+  <section>
+    <h2><span class="no">3</span>总体架构：三层，各自独立可验</h2>
+    <div class="sec-sub">数据层（后端 garden 模块）→ 时钟层（确定性事件调度）→ 视觉层（前端花园组件）</div>
+    <div class="flow">
+      <span class="node dark">前端 GardenProfileCenter</span><span class="arr">→</span>
+      <span class="node">GET/POST /v1/deskmate/garden/*</span><span class="arr">→</span>
+      <span class="node dark">deskmate/garden/（新模块）</span><span class="arr">→</span>
+      <span class="node">BlobStore KEY_GARDEN + 既有 growth/emotion/diary</span>
+    </div>
+    <div class="grid2">
+      <div>
+        <h4>数据层 <span class="tag orange">deskmate/garden/</span></h4>
+        <ul>
+          <li><code>state.py</code>：<code>GardenState</code> dataclass，<code>BlobStore</code> 持久化，字段级容错（复刻 growth 的 <code>_num</code> 安全取值）。</li>
+          <li><code>season.py</code>：四季/昼夜计算，纯本地时间，确定性无 LLM。</li>
+          <li><code>flowers.py</code>：花开记录（事件→花映射、幂等、零 LLM 短句）。</li>
+          <li><code>clock.py</code>：花园时钟事件调度（幂等键 + 痕迹库）。</li>
+        </ul>
+      </div>
+      <div>
+        <h4>时钟层 <span class="tag blue">确定性事件表</span></h4>
+        <ul>
+          <li>晨间首进 / 黄昏入夜 / 深夜亮灯 / 间隔归来 / 节日 / 花开。</li>
+          <li>每个事件带<b class="hl">幂等键</b>（如 <code>morning:2026-09-03</code>），同一天不重复触发。</li>
+          <li>触发以「进入花园 visit + 本地时间」为主，后台 tick 结算花开为兜底。</li>
+        </ul>
+      </div>
+    </div>
+    <div>
+      <h4>视觉层 <span class="tag orange">surfaces/gui/src/components/garden/</span></h4>
+      <ul>
+        <li><code>GardenProfileCenter.tsx</code>：升级版个人中心（花园全景 + 五 Tab 皮肤共享）。</li>
+        <li><code>GardenScene.tsx</code>：四季/昼夜 SVG 背景场景 + <code>SeasonTheme.ts</code> 主题变量。</li>
+        <li><code>GardenFlowers.tsx</code> + <code>GardenBeds.tsx</code>：花圃与花开渲染（tooltip 带日期/原文）。</li>
+        <li><code>GardenClockOverlay.tsx</code> + <code>useGardenClock.ts</code>：花园时钟轻提示 + visit 上报。</li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- 04 后端设计 -->
+  <section>
+    <h2><span class="no">4</span>后端设计：deskmate/garden/ 新模块</h2>
+    <div class="sec-sub">全部复刻既有模式（BlobStore 持久化 / 声明式注册表 / 零 LLM / 字段级容错 / fail-open）</div>
+
+    <h3>4.1 GardenState 数据模型</h3>
+    <p>存储：<code>BlobStore.KEY_GARDEN = "garden"</code>（与 growth 同域，物理同一 <code>deskmate.db</code>，<b class="hl">不随跨端同步</b>——隐私叙事护城河）。</p>
+<pre><code>@dataclass
+class GardenState:
+    version: int = 1
+    # —— 花园成长 ——
+    last_visit_date: str = ""              # YYYY-MM-DD（归来计算：距此 >=3 天）
+    visit_count: int = 0                   # 累计来访（花园「归园」统计）
+    season_started_at: str = ""            # 当前季节起始（前端也可本地算，后端存证据）
+    # —— 花开记录：flower_id -> FlowerRecord ——
+    flowers: dict[str, FlowerRecord] = field(default_factory=dict)
+    # —— 花园痕迹 / 时钟日志（可回看，最近 N 条）——
+    garden_log: list[dict] = field(default_factory=list)   # cap 200
+    # —— 花园时钟幂等表：event_key -> last_trigger_iso ——
+    clock_log: dict[str, str] = field(default_factory=dict)
+    updated_at: str = ""
+
+@dataclass
+class FlowerRecord:
+    flower_id: str        # f"{kind}:{fingerprint}"，指纹 ts|kind|subject 幂等
+    kind: str             # 花种 id（勿忘草/向日葵/蒲公英/铃兰…）
+    bed: str              # 花圃：memory/diary/badge/milestone
+    title: str            # 零 LLM 渲染的短标题
+    quote: str            # 事件原文摘录（真实数据，禁止编造）
+    date: str             # 开花日期 YYYY-MM-DD
+    source_ts: str        # 原始事件时间戳
+    mood_tint: str = ""   # 情绪倾向（从 emotion_timeline 派生，可选）</code></pre>
+
+    <h3>4.2 花园时钟：确定性事件表</h3>
+    <p>核心是<b class="hl">事件表 + 幂等键 + 痕迹库</b>。所有触发都是「进入花园（visit）时的本地时间判定」为主、后台 tick 结算为兜底：</p>
+    <table>
+      <tr><th>事件</th><th>触发条件（确定性）</th><th>动作（视觉层）</th><th>幂等键</th></tr>
+      <tr><td>晨间首进</td><td>进入花园且本地 05:00–10:00</td><td>晨间问候 toast + 花园晨光主题</td><td><code>morning:YYYY-MM-DD</code></td></tr>
+      <tr><td>黄昏入夜</td><td>进入花园且本地 17:00–19:00</td><td>黄昏氛围 + 「入夜了，点盏灯吧」</td><td><code>dusk:YYYY-MM-DD</code></td></tr>
+      <tr><td>深夜亮灯</td><td>进入花园且本地 23:00–04:00</td><td>树屋亮灯 + Goodnight toast（对应 UI 稿 03）</td><td><code>night:YYYY-MM-DD</code></td></tr>
+      <tr><td>间隔归来</td><td>距 <code>last_visit_date</code> ≥ 3 天</td><td>「好久不见」+ 归来花开（<code>COUNTER_COMEBACK</code> 已存在）</td><td><code>comeback:YYYY-MM-DD</code></td></tr>
+      <tr><td>节日</td><td>本地日期命中节日表（新年/中秋等）</td><td>节日氛围 + 专属祝福</td><td><code>festival:YYYY-{节日}</code></td></tr>
+      <tr><td>花开结算</td><td>后台 tick：新素材（记忆/日记/徽章/里程碑）</td><td>花园新增花朵 + 图鉴更新（不打扰，进园可见）</td><td><code>flower:{指纹}</code></td></tr>
+    </table>
+
+    <h3>4.3 tick 集成（后台兜底）</h3>
+    <p>在 <code>proactivity/tick.py</code> 的 <code>diary_payload</code> 同位置新增 <code>garden_payload</code>：</p>
+<pre><code># tick.py —— 与日记灵感同一范式：后台结算，不占 SUGGEST 通道
+garden_payload = None
+try:
+    from deskmate.garden.clock import maybe_settle_garden
+    garden_payload = maybe_settle_garden(base_dir=self.base_dir)
+except Exception:
+    garden_payload = None   # 失败绝不阻断主动推理主流程</code></pre>
+    <p><code>TickResult</code> 加 <code>garden</code> 字段并在 <code>to_dict()</code> 输出；前端 <code>useProactiveTick</code> 收到后仅作后台更新（不弹窗），真正的一次性互动由「进入花园 visit」触发。</p>
+
+    <h3>4.4 花开记录（记录开花）</h3>
+    <ul>
+      <li><b class="hl">事件源</b>：<code>GrowthState.recent_events</code> + 日记素材账本（<code>diary/materials/*.jsonl</code>）+ <code>badges_unlocked</code> + 认知画像更新。</li>
+      <li><b class="hl">映射表</b>（声明式，复刻 <code>badges.BADGES</code> 模式）：
+        <table>
+          <tr><th>事件 kind</th><th>花种</th><th>花圃</th><th>情绪倾向</th></tr>
+          <tr><td><code>memory_learned</code></td><td>勿忘草</td><td>memory 记忆圃</td><td>平静/温暖</td></tr>
+          <tr><td><code>diary_written</code></td><td>木槿</td><td>diary 日记圃</td><td>平静</td></tr>
+          <tr><td><code>badge_unlocked</code></td><td>勋章花（按稀有度变色）</td><td>badge 勋章圃</td><td>顺利</td></tr>
+          <tr><td><code>creation_approved</code></td><td>向日葵</td><td>milestone 里程碑圃</td><td>顺利</td></tr>
+          <tr><td><code>user_corrected</code></td><td>蒲公英</td><td>milestone</td><td>压力/成长</td></tr>
+          <tr><td><code>suggestion_accepted</code></td><td>风信子</td><td>milestone</td><td>顺利</td></tr>
+        </table>
+      </li>
+      <li><b class="hl">幂等</b>：<code>flower_id = f"{kind}:{ts|kind|subject 指纹}"</code>，重复事件只算一次。</li>
+      <li><b class="hl">零 LLM</b>：<code>title</code> 由模板渲染（如「记住：{subject 前 12 字}」），<code>quote</code> 直接摘真实原文，禁止模型编造。</li>
+    </ul>
+
+    <h3>4.5 API 端点（挂在 coworker/server/app.py，deskmate 段）</h3>
+    <table>
+      <tr><th>方法</th><th>路径</th><th>说明</th></tr>
+      <tr><td>GET</td><td><code>/v1/deskmate/garden</code></td><td>花园整体状态：season/beds/flowers/recent_log/visit_count。</td></tr>
+      <tr><td>POST</td><td><code>/v1/deskmate/garden/visit</code></td><td>前端上报进入花园；后端按本地时间判定晨间/黄昏/深夜/归来/节日，返回本次应触发的一次性互动。</td></tr>
+      <tr><td>GET</td><td><code>/v1/deskmate/garden/flowers</code></td><td>花开列表，支持 <code>?bed=&amp;limit=</code>（分页，防花朵无限增长拖垮前端）。</td></tr>
+      <tr><td>GET</td><td><code>/v1/deskmate/garden/log</code></td><td>花园痕迹/时钟日志（可回看的互动记录）。</td></tr>
+      <tr><td>POST</td><td><code>/v1/deskmate/garden/flowers/{id}/water</code></td><td>（P2）浇水/点亮一朵花的互动，沉淀回 garden_log。</td></tr>
+    </table>
+    <div class="callout warn"><b>坑（沿既有教训）：</b>具体路由（<code>/garden/flowers</code>、<code>/garden/log</code>）必须注册在通配路由之前；所有端点 fail-open，失败静默降级，不阻断个人中心显示。</div>
+  </section>
+
+  <!-- 05 前端设计 -->
+  <section>
+    <h2><span class="no">5</span>前端设计：花园化个人中心</h2>
+    <div class="sec-sub">在现有 ProfileCenter 骨架上叠加花园层，复用官方小桔形象与暖橙 token</div>
+
+    <h3>5.1 组件树</h3>
+<pre><code>GardenProfileCenter（= 升级版 ProfileCenter，App.tsx profile surface 指向它）
+├── GardenScene                     # 四季/昼夜 SVG 全景背景（对应 UI 稿 01）
+│   ├── SeasonThemeProvider         # 季节+昼夜 → CSS 变量（春樱/夏茂/秋枫/冬雪 × 晨/昼/黄昏/深夜）
+│   ├── GardenBeds                  # 四个花圃：记忆圃/日记圃/勋章圃/里程碑圃
+│   │   └── GardenFlowers           # 每朵花 = 一次值得记的事，hover/点击看日期+原文摘录
+│   └── XiaojuMascot                # 官方小桔（复用现组件），进园时出现
+├── 复用 Tab：overview(花园全景)/memory/diary/badges/settings   # 共享主题皮肤
+├── GardenClockOverlay              # 晨间问候/黄昏入夜/深夜亮灯/归来/节日 一次性轻提示
+└── useGardenClock                  # 进园 visit 上报 + 事件判定 + 可关闭开关</code></pre>
+
+    <h3>5.2 花园视觉：季节 × 昼夜主题</h3>
+    <p>主题变量放 <code>SeasonTheme.ts</code>，以 CSS 变量注入，四季与昼夜各自成组（共 4×4 主组合），切换只换变量不换组件：</p>
+    <table>
+      <tr><th>维度</th><th>变量</th><th>示例（秋·黄昏 = 现有暖橘基座）</th></tr>
+      <tr><td>天空</td><td><code>--garden-sky-1/2</code></td><td><code>#FFD9A8 → #FF9E5E</code>（橙粉黄昏）</td></tr>
+      <tr><td>树冠/叶</td><td><code>--garden-leaf</code></td><td>秋 <code>#D98A3D / #E8B04B</code></td></tr>
+      <tr><td>花圃底</td><td><code>--garden-soil</code></td><td><code>#7A5230</code> 暖土</td></tr>
+      <tr><td>灯光</td><td><code>--garden-lamp</code></td><td><code>#FFC24B</code>（树屋亮灯，UI 稿 03）</td></tr>
+      <tr><td>文字</td><td><code>--garden-ink</code></td><td><code>#3B2A22</code> 暖棕</td></tr>
+    </table>
+    <p>四季数据源：本地日期计算（<code>month ∈ [3,4,5]=春</code> 等），昼/夜按本地小时。<b class="hl">零后端依赖</b>，后端只存证据（<code>season_started_at</code>）用于统计。</p>
+
+    <h3>5.3 花园时钟互动（关键：落地可见）</h3>
+    <ul>
+      <li><b class="hl">进园 visit</b>：<code>useGardenClock</code> 在 <code>GardenProfileCenter</code> 挂载时 <code>POST /garden/visit</code>，后端按本地时间返回本次应触发事件（晨间/黄昏/深夜/归来/节日之一），前端以 <code>GardenClockOverlay</code> 轻提示呈现。</li>
+      <li><b class="hl">互动文案</b>：模板 + 少量真实变量（如归来「好久不见，你走了 N 天，花园里开了 X 朵花」——N 和 X 都是真实数据，不编造）。</li>
+      <li><b class="hl">可回看</b>：每次互动写入 <code>garden_log</code>，花园里提供「最近痕迹」小面板（对应「一切互动沉淀为可回看痕迹」）。</li>
+      <li><b class="hl">可关闭</b>：设置里新增「花园互动」开关（复用 settings 面板 + disturb 语义），关闭后 visit 只结算花开、不弹提示。</li>
+    </ul>
+
+    <h3>5.4 前端文件清单</h3>
+    <table>
+      <tr><th>文件</th><th>动作</th><th>说明</th></tr>
+      <tr><td><code>components/garden/GardenProfileCenter.tsx</code></td><td>新增</td><td>花园化个人中心（替换 ProfileCenter 挂载点）</td></tr>
+      <tr><td><code>components/garden/GardenScene.tsx</code></td><td>新增</td><td>四季/昼夜 SVG 场景</td></tr>
+      <tr><td><code>components/garden/SeasonTheme.ts</code></td><td>新增</td><td>主题变量定义与计算</td></tr>
+      <tr><td><code>components/garden/GardenFlowers.tsx</code> / <code>GardenBeds.tsx</code></td><td>新增</td><td>花圃与花开渲染</td></tr>
+      <tr><td><code>components/garden/GardenClockOverlay.tsx</code> / <code>useGardenClock.ts</code></td><td>新增</td><td>花园时钟互动 + visit 上报</td></tr>
+      <tr><td><code>components/deskmate/ProfileCenter.tsx</code></td><td>改造/委托</td><td>花园版接管，旧逻辑下沉为兜底或迁移</td></tr>
+      <tr><td><code>App.tsx</code></td><td>改 1 行</td><td>profile surface 指向 GardenProfileCenter</td></tr>
+      <tr><td><code>styles.css</code></td><td>追加</td><td><code>.garden-*</code> 样式（复用现有 token）</td></tr>
+    </table>
+  </section>
+
+  <!-- 06 落地路线图 -->
+  <section>
+    <h2><span class="no">6</span>落地路线图：三阶段，每阶段可独立验证</h2>
+    <div class="sec-sub">每阶段做完都是「能看见的东西」，符合用户「落地可见」要求</div>
+
+    <h3>P0 · 基础花园（先上，价值密度最高）</h3>
+    <ul>
+      <li>后端：<code>deskmate/garden/{state,season,flowers,clock}.py</code> + <code>KEY_GARDEN</code> + 4 个 API（garden/visit/flowers/log）+ tick 后台花开结算。</li>
+      <li>前端：<code>GardenProfileCenter</code>（花园全景包裹五 Tab）+ 四季×昼夜主题 + 花开渲染（四花圃）+ 进园 visit + 晨间/黄昏/深夜/归来四类确定性互动 + 「最近痕迹」面板。</li>
+      <li><b class="hl">验收</b>：进园看到四季背景；花开按真实事件生成（原文可溯源）；调整系统时间到 23:00 进园触发深夜亮灯；设置可关闭互动。</li>
+    </ul>
+
+    <h3>P1 · 花园时钟全量 <span class="done" style="color:#b3661a;font-weight:600;">✅ 已落地（2026-09-02）</span></h3>
+    <ul>
+      <li>节日事件（新年/中秋）+ 专属氛围；羁绊故事簿（聚合 <code>alter_ego</code> 六栏目 + bond 阶段叙事）；花园图鉴（花种图鉴 + 解锁进度）。</li>
+      <li>互动沉淀升级：花园「回响」——小桔在花开处留一句短评（复用 MomentFeed 留言机制）。</li>
+      <li>落地实现：后端 <code>deskmate/garden/</code> 新增 <code>storybook.py</code>；<code>clock.py</code> 加 <code>LUNAR_FESTIVALS</code> 逐年节日表 + 双节合并；<code>state.py</code> <code>FlowerRecord</code> 加 <code>echo</code>；<code>flowers.py</code> 加花语 <code>desc</code>、<code>ECHO_TEMPLATES</code>、<code>flora_snapshot</code>；<code>app.py</code> 新增 <code>GET /v1/deskmate/garden/storybook</code>。前端新增 <code>GardenStoryBook.tsx</code> / <code>GardenFlora.tsx</code>，<code>GardenClockOverlay</code> 加节日氛围，<code>GardenFlowers</code> 显示小桔回响。测试：后端 34 passed + 前端花园 15 passed，全量 686 通过（预存 7 失败除外）。真实浏览器验证：41 朵真实花 / 默契阶段故事簿（209 对话 / 41 花开 / 画像栏目真实数据）/ 图鉴 9 种解锁 3 / 花朵回响「技能又长了一截」。</li>
+    </ul>
+
+    <h3>P2 · 沉淀与打磨 <span class="done" style="color:#b3661a;font-weight:600;">✅ 已落地（2026-09-02）</span></h3>
+    <ul>
+      <li>四季轮回叙事（一年一朵「年花」）、浇水/点亮互动、花开成「树」的成长线。</li>
+      <li>与桌宠联动：花园里的 XiaojuMascot 增加季节专属姿态（复用情绪粒子体系）。</li>
+      <li>性能：花圃分页、花朵数封顶后的「花园年鉴」归档。</li>
+      <li>落地实现：后端 <code>flowers.py</code> 加成长树 <code>GARDEN_TREES/tree_stage</code>、<code>water_today</code>（每日浇水幂等）、<code>lit_flower</code>（点亮幂等）、<code>year_flower_ensure</code>（跨年年花）、<code>maybe_archive</code>（超 200 归档）与 <code>garden_snapshot</code>；<code>state.py</code> 加 <code>water_log/year_flowers/lit_flowers/archive</code>；<code>clock.py</code> visit 集成浇水+年花；<code>app.py</code> GET /garden 返回 p2 快照 + 新增 <code>POST /garden/lit</code>、<code>GET /garden/archive</code>。前端 <code>GardenScene</code> 换官方 <code>XiaojuMascot</code> + 季节粒子（春花瓣/夏光点/秋落叶/冬雪）；新增 <code>GardenTree.tsx</code>（树等级/浇水徽章/年花/年鉴折叠）；<code>GardenFlowers</code> 分页（每页 12）+ 点亮；<code>useGarden</code> 接 p2/lit/water。测试：后端 58 passed（+24）+ 前端花园 22 passed（+7），全量 710 通过（预存 7 失败除外）。真实浏览器验证：50 朵真花 / 一棵花树（下一档 60 还需 10 朵）/ 今日已浇水连续 1 天 / 年花「2026 第一次回园 09-02，今年已开 50 朵」/ 点亮 ⭐ 持久化 / 分页第 1/5 页 / 季节粒子 / 场景树徽章。</li>
+    </ul>
+
+    <div class="callout warn"><b>既有教训必须内建进实现：</b>
+      ① 路由注册顺序（具体 &gt; 通配）；② 一切幂等（同一天不重复触发、同素材不重复开花）；
+      ③ 零 LLM 文案不得编造事实；④ 字段级容错（<code>_num</code> 模式）；⑤ fail-open 不阻断主流程；
+      ⑥ 花园数据本地化，不随跨端同步；⑦ 先单跑相关 pytest + git stash 对比判定回归（参考现有测试基线方法论）。
+    </div>
+  </section>
+
+  <!-- 07 验证与验收 -->
+  <section>
+    <h2><span class="no">7</span>验证与验收清单</h2>
+    <div class="sec-sub">照单逐项打勾，防止「看着完成了实际没落地」</div>
+    <table>
+      <tr><th>#</th><th>验收项</th><th>验证方式</th></tr>
+      <tr><td>1</td><td>花园四季随日期变化（春/夏/秋/冬），昼夜随小时变化</td><td>前端改系统时间实测；组件测试覆盖 <code>SeasonTheme</code> 计算</td></tr>
+      <tr><td>2</td><td>花开记录与真实事件一一对应、原文可溯源、无编造</td><td>隔离目录跑真实素材回测 + 抽查花朵 <code>quote</code> 与事件原文一致</td></tr>
+      <tr><td>3</td><td>晨间/黄昏/深夜/归来四类互动：当天只触发一次（幂等）</td><td>连续 visit 两次验证幂等键；日志确认</td></tr>
+      <tr><td>4</td><td>归来计算：间隔 ≥3 天触发「好久不见」</td><td>改 <code>last_visit_date</code> 回测</td></tr>
+      <tr><td>5</td><td>互动可关闭：设置关闭后无 toast，但花开仍结算</td><td>手工验证 + 单测</td></tr>
+      <tr><td>6</td><td>花园所有互动沉淀为可回看痕迹</td><td><code>/garden/log</code> 返回最近记录</td></tr>
+      <tr><td>7</td><td>原有五 Tab 功能不回归（记忆/日记/勋章/设置）</td><td>vitest 相关用例 + 手工回归</td></tr>
+      <tr><td>8</td><td>后端 fail-open：garden 挂掉个人中心仍可用</td><td>注入异常验证降级路径</td></tr>
+      <tr><td>9</td><td>数据本地化：garden 不出现在跨端同步导出</td><td>检查 sync 排除清单</td></tr>
+    </table>
+  </section>
+
+  <div class="mini" style="margin-top:8px;text-align:center">「花园」落地实现技术方案 · 基于 openworker 现有 deskmate 体系 · 建议归档至 <code>docs/花园落地技术方案.md</code></div>
+</div>
+</body>
+</html>

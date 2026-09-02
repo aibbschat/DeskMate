@@ -3490,6 +3490,189 @@ def create_app(manager: SessionManager) -> FastAPI:
             logging.exception("get deskmate diary date failed")
             return JSONResponse({"error": "读取日记失败"}, status_code=500)
 
+    # ---- 花园（Garden）：个人中心的私密花园升级层 ----
+    # 数据设备本地（BlobStore KEY_GARDEN），不随跨端同步；全部 fail-open。
+    @app.get("/v1/deskmate/garden")
+    async def get_deskmate_garden() -> dict[str, Any]:
+        """花园快照：四季/昼夜 + 花开列表 + 痕迹 + 来访统计。
+
+        前端「花园」打开时调用。花开是真实事件的可视化沉淀（原文可溯源），
+        不随前端重绘而改变；后台 tick 负责结算新花。
+        """
+        try:
+            from pathlib import Path as _P
+
+            from deskmate.garden import season as _gseason
+            from deskmate.garden.flowers import (
+                flora_snapshot,
+                flower_stats,
+                garden_snapshot,
+                maybe_archive,
+                maybe_bloom,
+            )
+            from deskmate.garden.state import load_garden, save_garden
+
+            desk_dir = _P(
+                os.environ.get("DESKMATE_DIR", os.path.expanduser("~/.deskmate"))
+            )
+            # 打开花园即结算：新事件此刻开成花（幂等，不依赖 tick 时序）
+            try:
+                maybe_bloom(desk_dir)
+            except Exception:
+                pass
+            garden = load_garden(desk_dir)
+            # P2 · 花朵超封顶时归档最旧的到年鉴（幂等）
+            try:
+                if len(garden.flowers) > 200:
+                    maybe_archive(garden)
+                    save_garden(garden, desk_dir)
+            except Exception:
+                pass
+            flowers = sorted(
+                garden.flowers.values(),
+                key=lambda x: str(x.get("source_ts", "") or x.get("date", "")),
+                reverse=True,
+            )
+            return {
+                "season": _gseason.now_clock(),
+                "flowers": flowers,
+                "stats": flower_stats(garden),
+                "flora": flora_snapshot(garden),
+                "log": garden.garden_log[-50:],
+                "visit_count": garden.visit_count,
+                "last_visit_date": garden.last_visit_date,
+                "p2": garden_snapshot(garden),
+            }
+        except Exception:
+            logging.exception("get deskmate garden failed")
+            return {"season": {}, "flowers": [], "stats": {}, "flora": [], "log": [], "visit_count": 0, "last_visit_date": "", "p2": {}}
+
+    @app.post("/v1/deskmate/garden/visit")
+    async def post_deskmate_garden_visit() -> dict[str, Any]:
+        """前端进入花园时上报：更新来访 + 判定并触发（最多一个）确定性事件。
+
+        花园时钟：晨间 / 黄昏 / 深夜 / 归来 / 节日。幂等（同一天只触发一次），
+        克制（一次 visit 最多一个），沉淀可回看（写 garden_log）。
+        """
+        try:
+            from pathlib import Path as _P
+
+            from deskmate.garden.clock import maybe_visit
+
+            desk_dir = _P(
+                os.environ.get("DESKMATE_DIR", os.path.expanduser("~/.deskmate"))
+            )
+            return maybe_visit(desk_dir)
+        except Exception:
+            logging.exception("post deskmate garden visit failed")
+            return {"visit_count": 0, "last_visit_date": "", "season": {}, "daypart": {}, "triggered": None, "pending": []}
+
+    @app.get("/v1/deskmate/garden/flowers")
+    async def get_deskmate_garden_flowers(bed: str = "", limit: int = 200) -> dict[str, Any]:
+        """花开列表（可按花圃过滤 / 分页，防花朵无限增长拖垮前端）。"""
+        try:
+            from pathlib import Path as _P
+
+            from deskmate.garden.flowers import flower_stats
+            from deskmate.garden.state import load_garden
+
+            desk_dir = _P(
+                os.environ.get("DESKMATE_DIR", os.path.expanduser("~/.deskmate"))
+            )
+            garden = load_garden(desk_dir)
+            items = sorted(
+                garden.flowers.values(),
+                key=lambda x: str(x.get("source_ts", "") or x.get("date", "")),
+                reverse=True,
+            )
+            if bed:
+                items = [x for x in items if x.get("bed") == bed]
+            items = items[: max(1, min(int(limit), 1000))]
+            return {"flowers": items, "stats": flower_stats(garden), "total": len(garden.flowers)}
+        except Exception:
+            logging.exception("get deskmate garden flowers failed")
+            return {"flowers": [], "stats": {}, "total": 0}
+
+    @app.get("/v1/deskmate/garden/log")
+    async def get_deskmate_garden_log() -> dict[str, Any]:
+        """花园痕迹：互动与开花的可回看记录（cap 200）。"""
+        try:
+            from pathlib import Path as _P
+
+            from deskmate.garden.state import load_garden
+
+            desk_dir = _P(
+                os.environ.get("DESKMATE_DIR", os.path.expanduser("~/.deskmate"))
+            )
+            garden = load_garden(desk_dir)
+            return {"log": garden.garden_log[-200:]}
+        except Exception:
+            logging.exception("get deskmate garden log failed")
+            return {"log": []}
+
+    @app.get("/v1/deskmate/garden/storybook")
+    async def get_deskmate_garden_storybook() -> dict[str, Any]:
+        """羁绊故事簿（P1）：bond 阶段叙事 + 「它眼中的我」画像 + 一路走来的数字。
+
+        零 LLM：阶段叙事为静态模板，画像聚合自真实 portrait，数字全部真实。
+        fail-open：任一块失败不影响整体。
+        """
+        try:
+            from pathlib import Path as _P
+
+            from deskmate.garden.storybook import build_storybook
+
+            desk_dir = _P(
+                os.environ.get("DESKMATE_DIR", os.path.expanduser("~/.deskmate"))
+            )
+            return build_storybook(desk_dir)
+        except Exception:
+            logging.exception("get deskmate garden storybook failed")
+            return {"bond": {}, "numbers": {}, "portrait": [], "generated_at": ""}
+
+    @app.post("/v1/deskmate/garden/lit")
+    async def post_deskmate_garden_lit(body: dict[str, Any] | None = None) -> dict[str, Any]:
+        """点亮一朵花（P2）：用户主动互动，幂等，可回看。
+
+        确定性：用户点了就是点亮（同 id 不重复计数），不依赖任何检测。
+        """
+        try:
+            from pathlib import Path as _P
+
+            from deskmate.garden.flowers import lit_flower
+            from deskmate.garden.state import load_garden, save_garden
+
+            desk_dir = _P(
+                os.environ.get("DESKMATE_DIR", os.path.expanduser("~/.deskmate"))
+            )
+            flower_id = str((body or {}).get("flower_id", "") or "")
+            garden = load_garden(desk_dir)
+            result = lit_flower(garden, flower_id)
+            save_garden(garden, desk_dir)
+            return result
+        except Exception:
+            logging.exception("post deskmate garden lit failed")
+            return {"lit": False, "flower_id": "", "total": 0}
+
+    @app.get("/v1/deskmate/garden/archive")
+    async def get_deskmate_garden_archive(limit: int = 60) -> dict[str, Any]:
+        """花园年鉴（P2）：被归档的旧花，按年份分组回看（cap 500，只读）。"""
+        try:
+            from pathlib import Path as _P
+
+            from deskmate.garden.state import load_garden
+
+            desk_dir = _P(
+                os.environ.get("DESKMATE_DIR", os.path.expanduser("~/.deskmate"))
+            )
+            garden = load_garden(desk_dir)
+            items = list(garden.archive)[-max(1, min(int(limit), 500)):]
+            items.sort(key=lambda x: str(x.get("source_ts", "") or x.get("date", "")), reverse=True)
+            return {"flowers": items, "count": len(garden.archive)}
+        except Exception:
+            logging.exception("get deskmate garden archive failed")
+            return {"flowers": [], "count": 0}
+
     # ---- MomentFeed：私密双人日记（用户侧数据 + 🩷 落记忆 + 小桔回复）----
     @app.get("/v1/deskmate/moments")
     async def get_deskmate_moments(cursor: str | None = None, limit: int = 50) -> dict[str, Any]:

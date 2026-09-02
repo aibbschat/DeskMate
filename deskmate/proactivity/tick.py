@@ -47,6 +47,8 @@ class TickResult:
     interview: Optional[dict] = None
     # 日记灵感负载：素材攒够时小桔自己动笔（后台动作，不占 SUGGEST 通道）
     diary: Optional[dict] = None
+    # 花园花开结算负载：后台把新事件开成花（不打扰；前端可轻声提示一句）
+    garden: Optional[dict] = None
 
     @property
     def has_suggestion(self) -> bool:
@@ -103,6 +105,10 @@ class TickResult:
         # 日记灵感：小桔自己动笔（不是打扰型弹窗，前端可轻声提示一句）
         if self.diary:
             result["diary"] = self.diary
+
+        # 花园花开结算：后台动作（不打扰），前端可轻声提示一句
+        if self.garden:
+            result["garden"] = self.garden
 
         return result
 
@@ -181,6 +187,17 @@ class ProactiveEngine:
             diary_payload = maybe_write_diary(base_dir=self.base_dir)
         except Exception:
             diary_payload = None  # 日记失败绝不阻断主动推理主流程
+
+        # ===== 1.6.2 花园花开结算（后台动作，不打扰、不占通道）=====
+        # 与日记同一范式：纯规则、零 LLM、安静把新事件开成花。
+        # 结算结果直接写库即生效，前端进花园时自取（/garden、/garden/flowers）；
+        # 不通过 tick 返回值推送（前端不消费该字段，避免冗余传递）。
+        try:
+            from deskmate.garden.clock import maybe_settle_garden
+
+            maybe_settle_garden(base_dir=self.base_dir)
+        except Exception:
+            pass  # 花园失败绝不阻断主动推理主流程
 
         # ===== 1. 感知（Perceive）=====
         # 先获取活动窗口信息，传给 detect_user_activity 做会议应用检测
@@ -329,6 +346,20 @@ class ProactiveEngine:
             suggestion_type=judgment.suggestion_type,
         )
 
+        # P2-4：「看见你在做什么」活动描述 + 长时间专注陪伴语
+        # 必须在 NO_ACTION 提前 return 之前计算，否则 get_companion_tracker().update()
+        # 永不被调用：专注计时器无法推进，「工作累了来提醒」永远不触发（历史回归，已修）。
+        what_doing = ""
+        companion_msg = ""
+        try:
+            from .companion import describe_activity, get_companion_tracker
+            what_doing = describe_activity(_win, activity)
+            # 仅当 judge 决定不介入时，才用陪伴语填补（不抢建议的风头）
+            if decision.action == ActionType.NO_ACTION:
+                companion_msg = get_companion_tracker().update(activity, _win) or ""
+        except Exception:
+            pass
+
         if decision.action == ActionType.NO_ACTION:
             return TickResult(
                 action=ActionType.NO_ACTION,
@@ -338,6 +369,8 @@ class ProactiveEngine:
                 skipped_reason=decision.reason,
                 elapsed_ms=int((time.time() - start) * 1000),
                 heartbeat_interval_ms=self._heartbeat_interval_ms,
+                what_user_doing=what_doing,
+                companion_message=companion_msg,
                 diary=diary_payload,
             )
 

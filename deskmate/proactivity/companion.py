@@ -91,6 +91,19 @@ def _match_activity(app: str, bundle_id: str) -> str:
     return "用电脑"
 
 
+# 切到这些活动描述，视为「离开了工作流」，打断专注计时
+_DISTRACTION_DESCS = {"聊天", "听音乐", "看视频"}
+
+
+def _is_distraction(app: str, bundle_id: str) -> bool:
+    """判断当前应用是否属于娱乐/社交类（切过去即视为离开工作）。
+
+    用于专注计时：只有切到分心类应用才重置，工作类应用之间互切
+    （写稿 / 查资料 / 写代码）继续累计，符合「切换应用不代表没工作」。
+    """
+    return _match_activity(app, bundle_id) in _DISTRACTION_DESCS
+
+
 def _extract_title_hint(title: str) -> str:
     """从窗口标题中提取关键信息（文件名/项目名/网页标题）。"""
     if not title:
@@ -139,6 +152,7 @@ class FocusSession:
     last_ts: float
     app: str
     notified_minutes: set[int]  # 已触发陪伴语的分钟数（去重）
+    bundle_id: str = ""  # 起始应用 bundle（用于判断切到分心类时重置）
 
 
 class CompanionTracker:
@@ -201,21 +215,24 @@ class CompanionTracker:
             return None
 
         app = window.app if window else "unknown"
+        bundle = window.bundle_id if window else ""
+        distract = _is_distraction(app, bundle)
 
-        # 没有会话 → 开始新会话
-        if self._session is None:
+        # 切到娱乐/社交类应用（聊天/音乐/视频）→ 离开工作流，重置专注计时
+        if distract:
+            self._session = None
+            return None
+
+        # 没有会话，或从分心状态切回工作 → 开始新会话（重新锚定起点）
+        if self._session is None or _is_distraction(self._session.app, self._session.bundle_id):
             self._session = FocusSession(
-                start_ts=now, last_ts=now, app=app, notified_minutes=set()
+                start_ts=now, last_ts=now, app=app, bundle_id=bundle, notified_minutes=set()
             )
             return None
 
-        # 切换应用 → 重置会话（不同任务不算连续专注）
-        if self._session.app != app:
-            self._session = FocusSession(
-                start_ts=now, last_ts=now, app=app, notified_minutes=set()
-            )
-            return None
-
+        # 不同非分心应用之间切换（写稿 / 查资料 / 写代码）→ 继续累计，不重置
+        self._session.app = app
+        self._session.bundle_id = bundle
         self._session.last_ts = now
         duration_min = int((now - self._session.start_ts) / 60)
 

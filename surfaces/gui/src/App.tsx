@@ -87,10 +87,10 @@ import { PlanCard } from "./components/PlanCard";
 import { WorkspaceTrustPrompt } from "./components/WorkspaceTrustPrompt";
 import { DeskMateOverlay } from "./components/deskmate/DeskMateOverlay";
 import { DeskHome } from "./components/deskmate/DeskHome";
+import { GardenProfileCenter } from "./components/garden/GardenProfileCenter";
 import { EXPERTS, getExpert, type Expert } from "./components/deskmate/experts";
 import { ExpertAvatar } from "./components/deskmate/ExpertAvatar";
 import { ReportDialog } from "./components/deskmate/ReportDialog";
-import { ProfileCenter } from "./components/deskmate/ProfileCenter";
 
 import { ExpertsCenter } from "./components/deskmate/ExpertsCenter";
 import { CreationChatView } from "./components/CreationChatView";
@@ -1597,7 +1597,7 @@ export function App() {
       ) : surface === "badges" ? (
         <BadgeWall onBack={() => setSurface("session")} />
       ) : surface === "profile" ? (
-        <ProfileCenter onBack={() => setSurface("session")} />
+        <GardenProfileCenter onBack={() => setSurface("session")} />
       ) : (
       <div className={"main" + (surface === "session" && agent !== "chat" && !railHidden ? " rail-open" : "")}>
         <div className="main-topbar">
