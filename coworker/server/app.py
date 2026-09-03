@@ -359,9 +359,10 @@ def create_app(manager: SessionManager) -> FastAPI:
     def _read_learned_history(desk_dir: "Path", limit: int = 30) -> dict:
         """读取长期记忆，返回最近条目 + 统计（了解度）。
 
-        契约：`items` 是最近 limit 条，**按时间正序（最老在前）**——前端
-        UnderstandingCard 会自行 reverse 后展示；改这里的顺序必须同步改前端。
-        统计（total / by_category）基于**全量**，不受 limit 影响。
+        契约：`items` 是最近 limit 条活跃事实，**按时间正序（最老在前）**——
+        前端 UnderstandingCard 会自行 reverse 后展示；改这里的顺序必须同步改前端。
+        已被新事实取代（矛盾）的旧条不出现在 items，也不计入 stats（「了解度」
+        只数当前仍相信的有效事实）。
 
         数据源：统一库 ``deskmate.db`` 的 ``learned_history`` 表（SQL 聚合，
         不再全量解析文件）。DB 异常时 fail-open 返回空结构，绝不拖垮主链路。

@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import os
+import sqlite3
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -167,3 +168,127 @@ def make_history_search_tool(
     )
     search_history.__coworker_schema__ = _SCHEMA
     return search_history
+
+
+def make_library_check_tool(
+    data_dir: Optional[Path] = None,
+    experts: Optional[list[str]] = None,
+) -> Callable[..., Any]:
+    """Build the ``history_library_check`` tool.
+
+    与 ``search_history`` 互补：``search_history`` 按内容片段检索史料，
+    本工具按**书名/文献名**确定性核查「某部书是否被史料库收录」——
+    直接查 ``articles`` 表的 ``title``，返回 found + 命中书目。用于回答
+    「《X》在不在史料库」这类 yes/no 可验证问题，避免凭记忆断言。
+    """
+    data_dir = data_dir or _default_history_dir()
+    base_experts = _resolve_experts(data_dir, experts)
+
+    _SCHEMA = {
+        "type": "function",
+        "function": {
+            "name": "history_library_check",
+            "description": (
+                "确定性核查「某部书/某文献是否被本地史料库收录」（零网络）。\n"
+                "当用户问「《X》在不在史料库」「史料库里有没有《X》」「某书收没收录」时，"
+                "用本工具或 search_history 核实，**绝不凭记忆回答**。\n"
+                "返回 found(true/false) + 命中的书目(书名/作者/朝代/来源)。\n"
+                "found=false 即史料库未收录，如实相告，不要编造「有」或「没有」。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "title": {
+                        "type": "string",
+                        "description": "要核查的书名/文献名，可带《》或不带，如「东京梦华录」",
+                    },
+                    "experts": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "可选：限定专家库 id 列表，默认自动扫描目录下所有 .db",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "返回命中书目上限（默认 10，最大 50）",
+                    },
+                },
+                "required": ["title"],
+            },
+        },
+    }
+
+    def history_library_check(
+        title: str,
+        experts: Optional[list[str]] = None,
+        limit: int = 10,
+    ) -> dict[str, Any]:
+        title = (title or "").strip().strip("《》「」“”''（）()").strip()
+        if not title:
+            return {"error": "title 不能为空"}
+        requested = list(experts) if experts else list(base_experts)
+        # 简繁变体各自成查询（语料简繁混排）
+        try:
+            from .s2t import variants as _variants
+
+            forms = [v for v in _variants(title) if v] or [title]
+        except Exception:
+            forms = [title]
+        like_clauses = " OR ".join("title LIKE ?" for _ in forms)
+        params = [f"%{f}%" for f in forms]
+        n = min(50, max(1, int(limit or 10)))
+        matches: list[dict[str, Any]] = []
+        seen_titles: set[str] = set()
+        for e in requested:
+            p = data_dir / f"{e}.db"
+            if not p.is_file():
+                continue
+            try:
+                con = sqlite3.connect(f"file:{p}?mode=ro", uri=True)
+            except sqlite3.Error:
+                continue
+            try:
+                rows = con.execute(
+                    f"SELECT title, author, dynasty, source, category FROM articles "
+                    f"WHERE {like_clauses} LIMIT ?",
+                    params + [n],
+                ).fetchall()
+            except sqlite3.Error:
+                con.close()
+                continue
+            for r in rows:
+                t = r[0] or ""
+                if t in seen_titles:
+                    continue
+                seen_titles.add(t)
+                matches.append(
+                    {
+                        "expertId": e,
+                        "title": t,
+                        "author": r[1] or "",
+                        "dynasty": r[2] or "",
+                        "source": r[3] or "",
+                        "category": r[4] or "",
+                    }
+                )
+            con.close()
+        return {
+            "query": title,
+            "found": len(matches) > 0,
+            "count": len(matches),
+            "matches": matches[:n],
+        }
+
+    history_library_check.__name__ = "history_library_check"
+    history_library_check.__doc__ = _SCHEMA["function"]["description"]
+    try:
+        history_library_check.__aisuite_tool_metadata__ = ai.ToolMetadata(
+            name="history_library_check",
+            category="web",
+            risk_level="low",
+            capabilities=["search"],
+            requires_approval=False,
+        )
+    except Exception:
+        pass
+    history_library_check.__coworker_schema__ = _SCHEMA
+    return history_library_check

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from .fts5 import build_fts5_query, list_sources, search_across_dbs, search_one_db
-from .tool import make_history_search_tool
+from .tool import make_history_search_tool, make_library_check_tool
 
 __all__ = [
     "build_fts5_query",
@@ -11,4 +11,5 @@ __all__ = [
     "search_across_dbs",
     "search_one_db",
     "make_history_search_tool",
+    "make_library_check_tool",
 ]

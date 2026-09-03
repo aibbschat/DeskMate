@@ -54,7 +54,7 @@ from .tools.toolreq import request_tool_tool
 from .tools.subagent import explorer_tools
 from .tools import a2a as a2a_tools
 from .web import make_web_fetch_tool, make_web_search_tool
-from .history import make_history_search_tool
+from .history import make_history_search_tool, make_library_check_tool
 from .workspace_trust import WorkspaceTrustStore
 from .tools.shell import LocalExecutor
 from .tools.todo import TodoList
@@ -470,6 +470,9 @@ def build_engine(
     registry.register(make_web_fetch_tool())
     # 史料库检索（百家学院权威史料，本地 SQLite 零网络）：史料优先于通用 web_search。
     registry.register(make_history_search_tool())
+    # 史料库收录核查：确定性回答「某书在不在史料库」，与 search_history 互补，
+    # 专治「凭记忆断言某书收录/未收录」的幻觉（deskmate.md 已立先查证纪律）。
+    registry.register(make_library_check_tool())
     # A2A (Agent-to-Agent) protocol: call other A2A agents (e.g. Hermes).
     registry.register(a2a_tools.a2a_discover)
     registry.register(a2a_tools.a2a_call)

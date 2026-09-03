@@ -88,6 +88,37 @@ def classify_fact(fact: str) -> str:
     return "other"
 
 
+def _extract_entity(fact: str) -> str:
+    """抽取事实的主体（用于矛盾检测的「同实体」判定）。
+
+    只在**高置信**场景才返回实体，避免误判把不相关事实标成矛盾：
+    - 书名/文献：``《...》`` / ``「...」`` / ``"..."`` 括起来的 → ``书:书名``
+    - 其它（人名/泛指/无括实体）→ 返回空串，靠 fp 去重即可，不强做矛盾配对。
+
+    这是「《宋会要辑稿》在史料库」与「《宋会要辑稿》不在史料库」能被识别为
+    同一实体相反极性的关键；泛主体不抽，宁可漏判也不误判。
+    """
+    m = re.search(r"[《「『\"“](.+?)[》」』\"”]", fact or "")
+    if m:
+        inner = m.group(1).strip()
+        if inner:
+            return "书:" + inner
+    return ""
+
+
+# 否定标记：命中即视为「否认/不存在」类断言，与「断言/存在」类相反极性。
+# 只覆盖明确否定词，避免把「不在意细节」这类中性句误判（其 entity 为空也不做配对）。
+_DENY_RE = re.compile(
+    r"(不在|没(有|在|用)|未(必|曾|收录|在)|无|否(则|定|认|有)|并非|不是|"
+    r"没有|从不|绝不|别(说|提|用)|并未|没有收录)"
+)
+
+
+def _extract_polarity(fact: str) -> str:
+    """抽取事实的极性：``deny``（否认/不存在）或 ``assert``（断言/存在）。"""
+    return "deny" if _DENY_RE.search(fact or "") else "assert"
+
+
 class LearnedStore:
     """长期记忆的 SQLite 持久层。短连接 + 自动提交（WAL 支持并发读）。"""
 
@@ -107,6 +138,16 @@ class LearnedStore:
         conn.execute("PRAGMA synchronous=NORMAL")
         return conn
 
+    def _add_column(self, table: str, col: str, col_type: str) -> None:
+        """兼容已存在的库：缺失列才补（SQLite 无 ADD COLUMN IF NOT EXISTS）。"""
+        try:
+            with self._connect() as conn:
+                cols = {r[1] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+                if col not in cols:
+                    conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {col_type}")
+        except sqlite3.Error:
+            pass
+
     def _ensure_schema(self) -> None:
         with self._connect() as conn:
             conn.execute(
@@ -121,6 +162,13 @@ class LearnedStore:
                 )
                 """
             )
+            # 兼容已存在的库：补齐矛盾检测 / 时效失效所需列
+            # （SQLite 不支持 ADD COLUMN IF NOT EXISTS，逐个判断后补）
+            self._add_column("learned_history", "entity", "TEXT")
+            self._add_column("learned_history", "polarity", "TEXT")
+            self._add_column("learned_history", "status", "TEXT NOT NULL DEFAULT 'active'")
+            self._add_column("learned_history", "superseded_by", "INTEGER")
+            self._add_column("learned_history", "valid_until", "TEXT")
             # fp 唯一 → 重复学到的同一事实天然幂等（INSERT OR IGNORE 即可）
             conn.execute(
                 "CREATE UNIQUE INDEX IF NOT EXISTS idx_learned_fp "
@@ -136,29 +184,66 @@ class LearnedStore:
                 "CREATE INDEX IF NOT EXISTS idx_learned_cat "
                 "ON learned_history(category)"
             )
+            # 矛盾检测：按 (实体, 状态, 极性) 定位旧条
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_learned_entity "
+                "ON learned_history(entity, status, polarity)"
+            )
 
     # ------------------------------------------------------------------
     # 写
     # ------------------------------------------------------------------
     def append(self, facts: list[str], ts: str | None = None) -> int:
-        """追加若干条学到的事实，返回**实际新增**条数（重复的被 fp 挡掉）。"""
-        clean: list[tuple[str, str, str, str]] = []
+        """追加若干条学到的事实，返回**实际新增**条数（重复的被 fp 挡掉）。
+
+        矛盾检测（2026-09-03 补）：写入一条事实时，若库里已有一条**同实体、
+        相反极性**的活跃事实（如「《宋会要辑稿》在史料库」vs「《宋会要辑稿》
+        不在史料库」），把旧条标记 ``superseded``（记 ``valid_until`` + 指向新条
+        ``superseded_by``），而非让矛盾两条并存被一起相信。实体只在书名/引号等
+        **高置信**场景抽取，避免误判泛主体。
+        """
+        clean: list[tuple[str, str, str, str, str, str]] = []
         stamp = ts or _now_iso()
         for raw in facts:
             fact = str(raw).strip() if raw else ""
             if not fact:
                 continue
-            clean.append((stamp, fact, classify_fact(fact), _fingerprint(fact)))
+            entity = _extract_entity(fact)
+            clean.append(
+                (
+                    stamp,
+                    fact,
+                    classify_fact(fact),
+                    _fingerprint(fact),
+                    entity,
+                    _extract_polarity(fact),
+                )
+            )
         if not clean:
             return 0
         try:
             with self._connect() as conn:
-                cur = conn.executemany(
-                    "INSERT OR IGNORE INTO learned_history(ts, fact, category, fp, source) "
-                    "VALUES (?, ?, ?, ?, 'live')",
-                    clean,
-                )
-                return int(cur.rowcount or 0)
+                inserted = 0
+                for stamp_, fact_, cat_, fp_, entity_, polarity_ in clean:
+                    cur = conn.execute(
+                        "INSERT OR IGNORE INTO learned_history"
+                        "(ts, fact, category, fp, source, entity, polarity, status) "
+                        "VALUES (?, ?, ?, ?, 'live', ?, ?, 'active')",
+                        (stamp_, fact_, cat_, fp_, entity_, polarity_),
+                    )
+                    if not (cur.rowcount and cur.rowcount > 0):
+                        continue  # 重复（同 fp）→ 跳过，也不做矛盾处理
+                    inserted += 1
+                    rid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+                    if entity_:
+                        # 把同实体、相反极性的旧活跃事实标记为已被本条取代
+                        conn.execute(
+                            "UPDATE learned_history SET status='superseded', "
+                            "valid_until=?, superseded_by=? "
+                            "WHERE status='active' AND entity=? AND polarity!=? AND id!=?",
+                            (stamp_, rid, entity_, polarity_, rid),
+                        )
+                return inserted
         except sqlite3.Error:
             return 0
 
@@ -199,9 +284,113 @@ class LearnedStore:
             return {"total": 0, "by_category": {}}
         return {"total": int(total), "by_category": by_cat}
 
-    def snapshot(self, limit: int = 30) -> dict[str, Any]:
-        """一次返回 {items, stats}——路由直接吃这个。"""
-        return {"items": self.recent(limit), "stats": self.stats()}
+    def snapshot(self, limit: int = 30, order: str = "time") -> dict[str, Any]:
+        """一次返回 {items, stats}——路由直接吃这个。
+
+        - ``order="time"``（默认）：items 为**活跃**事实、时间正序（最老在前），
+          与前端 UnderstandingCard 的 reverse 契约一致；已被新事实取代的旧条
+          不出现，避免矛盾两条并存展示。
+        - ``order="relevance"``：items 按「新鲜度 × 频次」降序，带 ``score``
+          字段，供叙事/上下文注入使用（recency 加权，见 :meth:`relevant`）。
+        - stats 只计**当前有效(active)**事实，被取代的旧条不计入「了解度」。
+        """
+        if order == "relevance":
+            items = self.relevant(limit)
+        else:
+            items = self.active_recent(limit)
+        return {"items": items, "stats": self.active_stats()}
+
+    def active_recent(self, limit: int = 30) -> list[dict[str, Any]]:
+        """活跃事实，时间正序（最老在前），排除已失效/被取代的。供 UI 展示。"""
+        limit = max(1, min(int(limit), 5000))
+        try:
+            with self._connect() as conn:
+                rows = conn.execute(
+                    "SELECT ts, fact, category FROM learned_history "
+                    "WHERE status='active' AND (valid_until IS NULL OR valid_until >= ?) "
+                    "ORDER BY ts DESC, id DESC LIMIT ?",
+                    (_now_iso(), limit),
+                ).fetchall()
+        except sqlite3.Error:
+            return []
+        return [
+            {"ts": r[0], "fact": r[1], "category": r[2]} for r in reversed(rows)
+        ]
+
+    def active_stats(self) -> dict[str, Any]:
+        """当前有效(active)事实的总量与分类计数（「了解度」只数有效信念）。"""
+        try:
+            with self._connect() as conn:
+                total = conn.execute(
+                    "SELECT COUNT(*) FROM learned_history WHERE status='active'"
+                ).fetchone()[0]
+                by_cat = {
+                    r[0]: r[1]
+                    for r in conn.execute(
+                        "SELECT category, COUNT(*) FROM learned_history "
+                        "WHERE status='active' GROUP BY category"
+                    ).fetchall()
+                }
+        except sqlite3.Error:
+            return {"total": 0, "by_category": {}}
+        return {"total": int(total), "by_category": by_cat}
+
+    def relevant(self, limit: int = 30) -> list[dict[str, Any]]:
+        """按「新鲜度 × 频次」排序的活跃事实——供注入上下文/叙事用（recency 加权）。
+
+        新鲜度 = 1/(1+距今天数)；频次 = 同实体(无实体则同 fp)的事实条数
+        （同一件事被反复学到 → 越重要）。返回降序，每条带 ``score`` 字段。
+        """
+        try:
+            with self._connect() as conn:
+                rows = conn.execute(
+                    "SELECT id, ts, fact, category, entity, fp FROM learned_history "
+                    "WHERE status='active' AND (valid_until IS NULL OR valid_until >= ?) "
+                    "ORDER BY ts DESC, id DESC",
+                    (_now_iso(),),
+                ).fetchall()
+        except sqlite3.Error:
+            return []
+        now = datetime.datetime.now()
+        freq: dict[str, int] = {}
+        parsed: list[dict[str, Any]] = []
+        for r in rows:
+            rid, ts, fact, cat, entity, fp = r
+            key = (entity or fp) or f"#{rid}"
+            freq[key] = freq.get(key, 0) + 1
+            try:
+                dt = datetime.datetime.fromisoformat(ts)
+            except ValueError:
+                dt = now
+            age_days = max(0, (now - dt).days)
+            recency = 1.0 / (1.0 + age_days)
+            score = round(recency * (1.0 + 0.5 * (freq[key] - 1)), 4)
+            parsed.append(
+                {"ts": ts, "fact": fact, "category": cat, "score": score}
+            )
+        parsed.sort(key=lambda x: -x["score"])
+        return parsed[: max(1, min(int(limit), 5000))]
+
+    def conflicts_report(self) -> list[dict[str, Any]]:
+        """返回被取代（矛盾）的事实及其取代者——供 UI 标注「已更新」。"""
+        try:
+            with self._connect() as conn:
+                rows = conn.execute(
+                    "SELECT o.fact, o.ts, n.fact, n.ts FROM learned_history o "
+                    "JOIN learned_history n ON o.superseded_by = n.id "
+                    "WHERE o.status='superseded' ORDER BY n.ts DESC, n.id DESC"
+                ).fetchall()
+        except sqlite3.Error:
+            return []
+        return [
+            {
+                "superseded_fact": r[0],
+                "superseded_at": r[1],
+                "replaced_by_fact": r[2],
+                "replaced_at": r[3],
+            }
+            for r in rows
+        ]
 
     def all_items(self) -> list[dict[str, Any]]:
         """全量导出（时间正序）。供迁移校验 / 数据导出用。"""

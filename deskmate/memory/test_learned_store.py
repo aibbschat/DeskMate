@@ -206,5 +206,82 @@ class FailOpenTest(unittest.TestCase):
         self.assertEqual(store.stats()["total"], 0)
 
 
+class ContradictionTest(unittest.TestCase):
+    """矛盾检测：同实体相反极性 → 旧条失效，而非矛盾并存（2026-09-03 补）。"""
+
+    def setUp(self):
+        self._tmp = TemporaryDirectory()
+        self.base = Path(self._tmp.name)
+        self.store = LearnedStore(self.base)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_opposite_polarity_supersedes(self):
+        self.store.append(["《宋会要辑稿》在史料库里"], ts="2026-09-01T10:00:00")
+        self.store.append(["《宋会要辑稿》不在史料库里"], ts="2026-09-02T10:00:00")
+        # 活跃事实只剩最新的那条（否认）
+        active = self.store.active_recent(10)
+        self.assertEqual(len(active), 1)
+        self.assertIn("不在史料库", active[0]["fact"])
+        # 「了解度」只数活跃条
+        self.assertEqual(self.store.active_stats()["total"], 1)
+        # 矛盾报告能翻出被取代的旧条
+        report = self.store.conflicts_report()
+        self.assertEqual(len(report), 1)
+        self.assertIn("在史料库", report[0]["superseded_fact"])
+        self.assertIn("不在史料库", report[0]["replaced_by_fact"])
+
+    def test_same_polarity_no_supersede(self):
+        """同实体同极性：靠 fp 去重，不误标失效。"""
+        self.store.append(["《东京梦华录》史料库里有"], ts="2026-09-01T10:00:00")
+        n = self.store.append(["《东京梦华录》史料库里有"], ts="2026-09-02T10:00:00")
+        self.assertEqual(n, 0)
+        self.assertEqual(self.store.active_stats()["total"], 1)
+        self.assertEqual(len(self.store.conflicts_report()), 0)
+
+    def test_different_entity_no_supersede(self):
+        """不同书：互不干扰，不误判矛盾。"""
+        self.store.append(["《A》在史料库"], ts="2026-09-01T10:00:00")
+        self.store.append(["《B》不在史料库"], ts="2026-09-02T10:00:00")
+        self.assertEqual(self.store.active_stats()["total"], 2)
+        self.assertEqual(len(self.store.conflicts_report()), 0)
+
+    def test_superseded_hidden_from_snapshot(self):
+        """snapshot 默认只返回活跃事实，矛盾旧条不入 UI。"""
+        self.store.append(["《X》在史料库"], ts="2026-09-01T10:00:00")
+        self.store.append(["《X》不在史料库"], ts="2026-09-02T10:00:00")
+        snap = self.store.snapshot(limit=10)
+        self.assertEqual(snap["stats"]["total"], 1)
+        self.assertEqual(len(snap["items"]), 1)
+        self.assertIn("不在史料库", snap["items"][0]["fact"])
+
+
+class RelevanceTest(unittest.TestCase):
+    """recency 加权：relevant() 按新鲜度×频次降序。"""
+
+    def setUp(self):
+        self._tmp = TemporaryDirectory()
+        self.base = Path(self._tmp.name)
+        self.store = LearnedStore(self.base)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_relevant_orders_by_recency(self):
+        self.store.append(["旧事实一"], ts="2026-01-01T10:00:00")
+        self.store.append(["新事实二"], ts="2026-09-01T10:00:00")
+        rel = self.store.relevant(10)
+        self.assertEqual(rel[0]["fact"], "新事实二")
+        self.assertIn("score", rel[0])
+
+    def test_relevant_excludes_superseded(self):
+        self.store.append(["《X》在史料库"], ts="2026-09-01T10:00:00")
+        self.store.append(["《X》不在史料库"], ts="2026-09-02T10:00:00")
+        rel = self.store.relevant(10)
+        self.assertEqual(len(rel), 1)
+        self.assertIn("不在史料库", rel[0]["fact"])
+
+
 if __name__ == "__main__":
     unittest.main()
