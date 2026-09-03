@@ -43,6 +43,7 @@ from __future__ import annotations
 import datetime
 import json
 import os
+import re
 from pathlib import Path
 from typing import Optional
 
@@ -135,6 +136,85 @@ def _minutes_since(iso: Optional[str]) -> Optional[float]:
 
 def _fingerprint(e: dict) -> str:
     return f"{e.get('ts', '')}|{e.get('kind', '')}|{_subject_of(e)}"
+
+
+# ----------------------------------------------------------------------
+# 存量素材回补
+# ----------------------------------------------------------------------
+# 2026-09-03：L1（事件带原文）上线**之前**产生的 memory_learned 事件只有
+# count 没有 texts。但那些原文一直躺在 learned_history 表里——一次「记住」
+# 会同时留下两条痕迹（成长事件 + 记忆库记录），时间戳秒级对齐。
+# 不把它们搬回来，日记就还是「我又记住了你 4 件小事」，L1/L3 全白做。
+#
+# 这是**搬运**不是创作：不产生任何新内容，库里没有的就是没有。
+_LEARNED_MATCH_WINDOW = 8.0        # 秒：同一次动作两条痕迹的合理时间差
+_LEARNED_FACT_PREFIX = re.compile(r"^\d{4}-\d{2}-\d{2}[:：]\s*")
+
+
+def _local_naive(ts: object) -> Optional[datetime.datetime]:
+    """任意 ISO 时间戳 → 本地 naive datetime（可互相比较）。解析不了给 None。
+
+    事件 ts 带 ``+00:00``，learned_history 的 ts 是本地时间无时区；
+    统一成本地 naive 才能比对。
+    """
+    try:
+        dt = datetime.datetime.fromisoformat(str(ts or ""))
+    except (ValueError, TypeError):
+        return None
+    if dt.tzinfo is not None:
+        dt = dt.astimezone()
+    return dt.replace(tzinfo=None)
+
+
+def backfill_learned_texts(items: list[dict], base_dir: Path | str | None = None) -> int:
+    """给缺原文的 ``memory_learned`` 事件补上事实原文。返回补上的事件条数。
+
+    幂等：已有 ``texts`` 的跳过；查不到库就原样返回，绝不改坏素材。
+    """
+    need = [
+        x for x in items
+        if isinstance(x, dict)
+        and str(x.get("kind")) == "memory_learned"
+        and not x.get("texts")
+    ]
+    if not need:
+        return 0
+
+    try:
+        from deskmate.memory.learned_store import LearnedStore
+
+        rows = LearnedStore(base_dir=base_dir).recent(limit=500)
+    except Exception:
+        return 0
+
+    stamped: list[tuple[datetime.datetime, str]] = []
+    for r in rows or []:
+        t = _local_naive(r.get("ts", ""))
+        # fact 形如「2026-09-03: 太学三舍制设定确认…」，日期前缀是冗余的
+        fact = _LEARNED_FACT_PREFIX.sub("", str(r.get("fact", "") or "")).strip()
+        if t is not None and fact:
+            stamped.append((t, fact))
+    if not stamped:
+        return 0
+
+    filled = 0
+    used: set[str] = set()
+    for x in need:
+        t = _local_naive(x.get("ts", ""))
+        if t is None:
+            continue
+        # 一条事实只发一次：相邻两个事件的时间窗会重叠，
+        # 不排掉已被领走的，同一件事会在素材里出现两遍。
+        hits = [
+            f for (ft, f) in stamped
+            if f not in used
+            and abs((ft - t).total_seconds()) <= _LEARNED_MATCH_WINDOW
+        ]
+        if hits:
+            x["texts"] = hits
+            used.update(hits)
+            filled += 1
+    return filled
 
 
 class MaterialLedger:
@@ -330,11 +410,38 @@ class DiaryInspiration:
 
     # ------------------------------------------------------------------
     def sync_events(self) -> int:
-        """从成长事件增量同步到素材账本。返回新增条数。"""
+        """从成长事件增量同步到素材账本。返回新增条数。
+
+        同步后对最近几天的账本做一次**回补**：给缺原文的 ``memory_learned``
+        事件补上事实原文，补到了就持久化。这样即使 LLM 不可用，规则版
+        也能写出具体内容，而不是「我又记住了你 N 件小事」。
+
+        回补**不受 added 是否为 0 影响**——存量素材早就同步过了，
+        恰恰是它们缺内容。函数内部先判断有没有缺的，没有就立刻返回。
+        """
         try:
-            return self.ledger.sync(list(self.engine.state.recent_events))
+            added = self.ledger.sync(list(self.engine.state.recent_events))
         except Exception:
             return 0
+        self._backfill_recent()
+        return added
+
+    def _backfill_recent(self, days: int = 3) -> None:
+        """回补最近 ``days`` 天账本里缺原文的素材。幂等，失败静默。"""
+        try:
+            d0 = datetime.date.fromisoformat(_today_local())
+        except (ValueError, TypeError):
+            return
+        for back in range(days):
+            d = (d0 - datetime.timedelta(days=back)).isoformat()
+            try:
+                items = self.ledger.load(d)
+                if not items:
+                    continue
+                if backfill_learned_texts(items, base_dir=self.base):
+                    self.ledger._atomic_write(d, items)
+            except Exception:
+                continue
 
     def score(self, date: str | None = None) -> tuple[float, dict[str, float]]:
         """当天灵感分（先同步，再评分）。"""

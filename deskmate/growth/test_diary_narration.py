@@ -18,6 +18,7 @@ from unittest import mock
 
 from deskmate.growth import diary_narrator as dn
 from deskmate.growth.diary import DiaryWriter
+from deskmate.growth.diary_inspiration import backfill_learned_texts as backfill
 from deskmate.growth.engine import GrowthEngine, _clip, _clip_list
 
 # 一条合格润色结果的样本（长度在闸门内、无弃权语）
@@ -410,6 +411,92 @@ class TestNarrationEndToEnd(unittest.TestCase):
         text = self.writer.read("2026-09-03")
         self.assertIn("洪武十五年", text)   # 规则版照样写出具体内容
         self.assertIn("## 09:10", text)
+
+
+class TestBackfillLearnedTexts(unittest.TestCase):
+    """存量素材回补：库里有原文，账本里只有 count，靠时间戳搬回来。
+
+    契约：**这是搬运不是创作**。库里没有的必须留空（宁可写不出，
+    也不许回填任何推测内容），且整个过程幂等、失败不改坏素材。
+    """
+
+    def setUp(self):
+        self._tmp = TemporaryDirectory()
+        self.base = Path(self._tmp.name)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    @staticmethod
+    def _store(rows: list[dict]):
+        """造一个假 LearnedStore：recent() 返回给定记录。"""
+        return mock.MagicMock(recent=mock.MagicMock(return_value=rows))
+
+    def _patch_store(self, rows):
+        store_cls = mock.MagicMock(return_value=self._store(rows))
+        return mock.patch.dict(
+            "sys.modules",
+            {"deskmate.memory.learned_store": mock.MagicMock(LearnedStore=store_cls)},
+        )
+
+    def test_matches_within_window(self):
+        """事件 00:42:55Z ↔ 记忆库本地 08:42:55（同一时刻）→ 命中。"""
+        items = [{"ts": "2026-09-03T00:42:55+00:00", "kind": "memory_learned", "count": 1}]
+        rows = [{"ts": "2026-09-03T08:42:55", "fact": "2026-09-03: 太学三舍制设定确认"}]
+        with self._patch_store(rows):
+            n = backfill(items, base_dir=self.base)
+        self.assertEqual(n, 1)
+        # 日期前缀要剥掉，否则日记里会写「2026-09-03: 太学三舍制…」
+        self.assertEqual(items[0]["texts"], ["太学三舍制设定确认"])
+
+    def test_outside_window_no_match(self):
+        """差 10 分钟不认——那是两件事，硬凑会张冠李戴。"""
+        items = [{"ts": "2026-09-03T00:42:55+00:00", "kind": "memory_learned", "count": 1}]
+        rows = [{"ts": "2026-09-03T08:52:55", "fact": "另一件事"}]
+        with self._patch_store(rows):
+            n = backfill(items, base_dir=self.base)
+        self.assertEqual(n, 0)
+        self.assertNotIn("texts", items[0])
+
+    def test_one_fact_claimed_once(self):
+        """相邻两个事件时间窗重叠 → 同一条事实只发一次，不许重复计数。"""
+        items = [
+            {"ts": "2026-09-03T00:42:55+00:00", "kind": "memory_learned", "count": 1},
+            {"ts": "2026-09-03T00:43:00+00:00", "kind": "memory_learned", "count": 1},
+        ]
+        rows = [{"ts": "2026-09-03T08:42:57", "fact": "同一件事"}]
+        with self._patch_store(rows):
+            n = backfill(items, base_dir=self.base)
+        self.assertEqual(n, 1)
+        self.assertEqual(items[0]["texts"], ["同一件事"])
+        self.assertNotIn("texts", items[1])
+
+    def test_idempotent(self):
+        """已有 texts 的跳过；重复调用结果不变。"""
+        items = [{"ts": "2026-09-03T00:42:55+00:00", "kind": "memory_learned",
+                  "texts": ["早就有了"]}]
+        rows = [{"ts": "2026-09-03T08:42:55", "fact": "库里的"}]
+        with self._patch_store(rows):
+            self.assertEqual(backfill(items, base_dir=self.base), 0)
+            self.assertEqual(backfill(items, base_dir=self.base), 0)
+        self.assertEqual(items[0]["texts"], ["早就有了"])
+
+    def test_store_failure_leaves_items_intact(self):
+        """库查不动 / 记录为空 → 原样返回，绝不把素材改成空壳。"""
+        items = [{"ts": "2026-09-03T00:42:55+00:00", "kind": "memory_learned", "count": 3}]
+        with mock.patch.dict("sys.modules", {"deskmate.memory.learned_store": None}):
+            self.assertEqual(backfill(items, base_dir=self.base), 0)
+        self.assertNotIn("texts", items[0])
+        self.assertEqual(items[0]["count"], 3)
+
+    def test_non_memory_events_untouched(self):
+        """只补 memory_learned，别的事件类型一律不碰。"""
+        items = [{"ts": "2026-09-03T00:42:55+00:00", "kind": "skill_evolved",
+                  "skill_name": "outline"}]
+        rows = [{"ts": "2026-09-03T08:42:55", "fact": "无关事实"}]
+        with self._patch_store(rows):
+            self.assertEqual(backfill(items, base_dir=self.base), 0)
+        self.assertNotIn("texts", items[0])
 
 
 if __name__ == "__main__":
