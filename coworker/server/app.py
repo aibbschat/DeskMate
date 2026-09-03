@@ -3686,13 +3686,16 @@ def create_app(manager: SessionManager) -> FastAPI:
             from deskmate.growth.moments import MomentsStore
 
             base = os.environ.get("DESKMATE_DIR", os.path.expanduser("~/.deskmate"))
-            page = MomentsStore(base_dir=base).get_posts(
+            store = MomentsStore(base_dir=base)
+            page = store.get_posts(
                 limit=max(1, min(limit, 200)), cursor=cursor
             )
             return {
                 "items": page["items"],
                 "next_cursor": page["next_cursor"],
                 "comments": page.get("comments", {}),
+                # 已🩷 的 moment_id 集合（含小桔日记卡 xj-*），供前端按 id 回显🩷
+                "loved": sorted(store.get_loved_ids()),
             }
         except Exception:
             logging.exception("get deskmate moments failed")

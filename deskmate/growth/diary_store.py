@@ -291,6 +291,23 @@ class DiaryStore:
         self.export_memory_view()
         return True
 
+    def get_loved_ids(self) -> set[str]:
+        """所有已🩷 的 moment_id 集合（含小桔日记卡的 xj-* id）。
+
+        用于前端按 id 回显🩷 状态——之前小桔日记卡 loved 写死 false、
+        从不读回，导致🩷 刷新即丢。有了这个集合，前端就能按 eid 还原。
+        """
+        try:
+            with self._connect() as conn:
+                return {
+                    r[0]
+                    for r in conn.execute(
+                        "SELECT DISTINCT moment_id FROM loved_entries WHERE moment_id IS NOT NULL"
+                    )
+                }
+        except Exception:
+            return set()
+
     # ------------------------------------------------------------------
     # 写：每条日记独立归档（与🩷、回复并列的卡片操作）
     # ------------------------------------------------------------------

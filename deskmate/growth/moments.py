@@ -165,6 +165,13 @@ class MomentsStore:
         except Exception:
             return {"loved": False, "message": "取消失败"}
 
+    def get_loved_ids(self) -> set[str]:
+        """所有已🩷 的 moment_id（含小桔日记卡 xj-*），供前端回显🩷 状态。"""
+        try:
+            return self.store.get_loved_ids()
+        except Exception:
+            return set()
+
     # ------------------------------------------------------------------
     # 每条日记独立归档（与🩷、回复并列的卡片操作；仅影响时间线展示）
     # ------------------------------------------------------------------

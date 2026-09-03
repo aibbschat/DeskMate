@@ -168,9 +168,12 @@ export function MomentFeed() {
     window.setTimeout(() => setNotice(""), 2400);
   };
 
-  /** 拉取小桔真实日记（独立接口），用 commentsMap 给每条挂留言 */
+  /** 拉取小桔真实日记（独立接口），用 commentsMap 挂留言、lovedSet 回显🩷 */
   const fetchXjMoments = useCallback(
-    async (commentsMap: Record<string, MomentComment[]>): Promise<Moment[]> => {
+    async (
+      commentsMap: Record<string, MomentComment[]>,
+      lovedSet: Set<string>,
+    ): Promise<Moment[]> => {
       const xj: Moment[] = [];
       try {
         const r = await authedFetch(`${httpBase()}/v1/deskmate/diary`);
@@ -195,7 +198,8 @@ export function MomentFeed() {
                       date,
                       at: `${date}T${entry.time || "12:00"}:00`,
                       content: entry.body,
-                      loved: false,
+                      // 🩷 按 id 从后端回显（之前写死 false 导致刷新即丢）
+                      loved: lovedSet.has(id),
                       archived: false,
                       seq: entry.seq,
                       comments: commentsMap[id] || commentsMap[`xj-${date}`] || [],
@@ -227,6 +231,7 @@ export function MomentFeed() {
       comments?: MomentComment[];
     }[] = [];
     let comments: Record<string, MomentComment[]> = {};
+    let loved: string[] = [];
     let next: string | null = null;
     try {
       const r = await authedFetch(`${httpBase()}/v1/deskmate/moments?limit=50`);
@@ -234,12 +239,14 @@ export function MomentFeed() {
         const d = await r.json();
         meItems = Array.isArray(d.items) ? d.items : [];
         comments = d.comments || {};
+        loved = Array.isArray(d.loved) ? d.loved : [];
         next = d.next_cursor ?? null;
       }
     } catch {
       /* 静默 */
     }
-    const xj = await fetchXjMoments(comments);
+    const lovedSet = new Set<string>(loved);
+    const xj = await fetchXjMoments(comments, lovedSet);
       const me: Moment[] = meItems.map((p) => ({
         id: p.id,
         author: "me",
