@@ -130,7 +130,7 @@ def build_agent_card(base_url: str) -> AgentCard:
         ),
     ]
     return AgentCard(
-        name="小桔 Zhiliao",
+        name="小桔",
         description="openworker 小桔 —— 历史小说作家的 AI 搭档，提供文稿编校、编辑专家评析与史料问答。",
         version="1.0.0",
         capabilities=AgentCapabilities(

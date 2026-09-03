@@ -46,7 +46,7 @@ ItemState: open → in_progress → {blocked, review, canceled}
 - 现有圆桌 7 专家已是官方 persona：`coworker/personas/builtin/*.md`（historian / editor(lit-editor) / proofreader / reader / publisher / adaptation / genre），由 `deskmate/roundtable/personas.py` 过滤 `roundtable:true` 加载。
 
 ### 1.6 圆桌现有实现要点（来自 `deskmate/roundtable/coordinator.py`）
-- `Roundtable` 类：**到达序并发 + 有界收窄多轮**；主持「知了」开场/归纳分歧/写《综合研判报告》。
+- `Roundtable` 类：**到达序并发 + 有界收窄多轮**；主持「小桔」开场/归纳分歧/写《综合研判报告》。
 - 每轮 `asyncio.as_completed` 按「谁先想好谁先冒泡」收集发言；第 1 轮自由发言，之后只把未一致的分歧点抛回答辩。
 - 专家是**进程内 LLM 调用**（`deskmate.memory.llm.chat_stream`），**无持久 session、无成本护栏、无结构化追踪**——这正是要借 teams 补足的。
 - 圣经上下文 `L0/L1/L2` + FTS5 检索已成熟，改造时须原样保留。
@@ -69,7 +69,7 @@ ItemState: open → in_progress → {blocked, review, canceled}
    复用 teams 做「基座」                  用 teams 做「原生派活」
    ┌──────────────────────┐            ┌──────────────────────────────┐
    │ 团队: 圆桌终审委员会    │            │ 团队: 《XX小说》改编项目         │
-   │ lead = 知了(主持)      │            │ lead = 主编                   │
+   │ lead = 小桔(主持)      │            │ lead = 主编                   │
    │ workers = 7专家(进程内) │            │ workers = 编剧/大纲专家/审核专家 │
    │ board = 审稿维度工作项   │            │ board = 大纲v1→审核→剧本→审核   │
    │ chat  = 公开辩论场      │            │ chat  = 主编↔编剧指令通道       │
@@ -95,12 +95,12 @@ ItemState: open → in_progress → {blocked, review, canceled}
 ### 3.2 角色与团队映射
 | 圆桌概念 | teams 原生概念 | 实现 |
 |---|---|---|
-| 主持「知了」 | `lead`（`team: lead`） | 拥有 board、创建审稿维度工作项、做最终 synthesis 验收 |
+| 主持「小桔」 | `lead`（`team: lead`） | 拥有 board、创建审稿维度工作项、做最终 synthesis 验收 |
 | 7 专家（historian 等） | `worker`（`team: worker`） | 进程内执行，映射到 board actor / chat member，按名 `@` 唤醒 |
-| 议题 | 一个 team（space = 稿件路径/项目） | `TeamRegistry.create(space=…, lead_session=…, lead_actor="知了", workers=[…])` |
+| 议题 | 一个 team（space = 稿件路径/项目） | `TeamRegistry.create(space=…, lead_session=…, lead_actor="小桔", workers=[…])` |
 | 审稿维度（史实/文笔/结构/市场） | board item | 每项一个 `create_item(title, criteria, …)`，`criteria`=该维度「通过」的验收标准 |
 | 专家发言 | chat message | `ChatStore.post(group_id, author=专家名, text, mentions=…)` |
-| 综合研判报告 | board 顶层 item 的 `done` 验收 | 知了在 `review` 后 `transition(done)`，报告作为 `comment`/journal 落盘 |
+| 综合研判报告 | board 顶层 item 的 `done` 验收 | 小桔在 `review` 后 `transition(done)`，报告作为 `comment`/journal 落盘 |
 
 ### 3.3 board 设计（圆桌专用）
 - **1 个「研讨议题」顶层 item**（parent 根），`criteria` = 议题的完整定义。
@@ -110,7 +110,7 @@ ItemState: open → in_progress → {blocked, review, canceled}
   - `结构节奏`（reader 认领）：criteria=「章节钩子/信息密度达标」
   - `市场适配`（publisher/genre/adaptation 认领）：criteria=「符合品类读者预期」
 - 专家表示意见 → 在自己维度 item 上 `comment`（带 `refs` 指向稿件片段）；维度没过 → `transition(review→in_progress)`，过 → 等主持 `done`。
-- **主持「知了」做验收（保留 synthesis）**：coordinator 跑完收窄多轮、产出《综合研判报告》后，由 lead 把报告作为顶层 item 的 `done` 验收结论（`comment` + journal），圆桌结束。
+- **主持「小桔」做验收（保留 synthesis）**：coordinator 跑完收窄多轮、产出《综合研判报告》后，由 lead 把报告作为顶层 item 的 `done` 验收结论（`comment` + journal），圆桌结束。
 
 ### 3.4 ChatStore 当「辩论场」（保留到达序+@唤醒）
 - 圆桌团队 `enable_chat=True`，`TeamRegistry.create(..., chat_enabled=True, chat_group=<ChatStore.group_id>)`。
@@ -132,7 +132,7 @@ ItemState: open → in_progress → {blocked, review, canceled}
 | `deskmate/roundtable/teams_bridge.py`（新） | 新增 | 封装「圆桌→team」建团、board 维度建项、ChatStore 辩论场、保留 coordinator 编排的适配层 |
 | `deskmate/roundtable/coordinator.py` | 改 | 发言出口从内存 transcript 改为 `ChatStore.post`；终验收从纯文本改为 board `done` + journal；保留 L0/L1/L2/FTS5 |
 | `deskmate/roundtable/web.py` | 改 | 新增 `/roundtable/start-team`；从 `manager.team_store`/`manager.teams` 取单例 |
-| `coworker/personas/builtin/*.md`（7 专家） | 改 | 在 manifest 增加 `team: worker`（保留 `roundtable:true`）；「知了」加 `team: lead` |
+| `coworker/personas/builtin/*.md`（7 专家） | 改 | 在 manifest 增加 `team: worker`（保留 `roundtable:true`）；「小桔」加 `team: lead` |
 | `surfaces/gui/src/.../TeamChatView.tsx` | 复用+小改 | 圆桌用其展示辩论场；增加「审稿维度工作项」进度条 |
 
 > **阶段 2 实施状态**：`teams_bridge.py` 已新增、`coordinator.py` 已加 hook（建团 + board 维度项 + ChatStore 辩论场镜像 + lead 终验收 `done` + journal 落盘），验证全过且**零前端影响**（不注入 `team_bridge` 时圆桌完全照旧）。`web.py` 新增 `/roundtable/start-team` 路由 + 前端 `TeamChatView` 复用留**阶段 4** 打磨。
@@ -218,7 +218,7 @@ item 全剧本/第N集  (open, blocked until 大纲 done；link(kind=parent) 建
 **实现**：主编在 `pipeline.py` 终审分支生成「终审提案」，复用上游 `TeamRequestCard`（组队申请卡片，原生即「需用户批准」的 UI 载体，见 §4.6）渲染为提案卡；用户确认 → 才 `create_item` 建圆桌终审议题 + `@圆桌` 触发研讨。自动化优先、手动兜底不变。
 
 ### 5.3 终审回流（结论 → 创作项）
-圆桌跑完（coordinator 产出《综合研判报告》）→ 主持「知了」`done` 验收 → 报告作为：
+圆桌跑完（coordinator 产出《综合研判报告》）→ 主持「小桔」`done` 验收 → 报告作为：
 - **approve**：创作项 `transition(review→done)`（定稿）；
 - **打回**：创作项 `transition(review→in_progress)`，报告全文作为 `comment`（审核意见）回灌给编剧/大纲专家改。
 
@@ -250,7 +250,7 @@ item 全剧本/第N集  (open, blocked until 大纲 done；link(kind=parent) 建
 
 **阶段 2 · 圆桌接入 teams 基座（线路 A，2–3d）** ✅ 已落地
 - `teams_bridge.py` 建团 + board 维度项 + ChatStore 辩论场；coordinator 发言出口改 `ChatStore.post`、终验收改 board `done` + journal。
-- 7 专家 manifest 加 `team: worker`，「知了」加 `team: lead`。
+- 7 专家 manifest 加 `team: worker`，「小桔」加 `team: lead`。
 - 保留 L0/L1/L2/FTS5 与到达序收窄编排；新增 `/roundtable/start-team`。
 
 **阶段 3 · 终审桥接（1–2d）** ✅ 已落地
@@ -289,7 +289,7 @@ item 全剧本/第N集  (open, blocked until 大纲 done；link(kind=parent) 建
 from coworker.teams.registry import TeamRegistry, TeamWorker
 from coworker.teams.model import Actor, Role  # board 动词的 actor 是 Actor 对象（id+role），非裸字符串
 team = reg.create(
-    space="<稿件/项目路径>", lead_session="<会话id>", lead_actor="知了",
+    space="<稿件/项目路径>", lead_session="<会话id>", lead_actor="小桔",
     workers=[TeamWorker(actor="historian", persona="historian", session_id="…", reason="…")],
     chat_enabled=True, chat_group="<ChatStore.group_id>",
 )
@@ -312,7 +312,7 @@ store.transition(space, actor_lead, item_id, to="in_progress", comment="第3处�
 store.link(space, actor_lead, src=剧本item, kind="parent", dst=大纲item)
 
 # 群聊（@提及唤醒）
-chat.post(group_id, author="知了", text="请 @historian @lit-editor 就分歧点补辩")
+chat.post(group_id, author="小桔", text="请 @historian @lit-editor 就分歧点补辩")
 chat.unread_for(group_id, "historian")   # 仅 @提及 / user 发言才唤醒
 
 # 对外 MCP（Hermes 等接入）

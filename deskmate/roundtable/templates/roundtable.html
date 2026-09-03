@@ -397,7 +397,7 @@
       <div class="brand"><span class="logo">🪑</span><h1>创作圆桌</h1></div>
       <button class="collapse-btn" onclick="toggleSidebar()" title="折叠设定栏">«</button>
     </div>
-    <p class="tag">有界多轮群聊 · 进程内人格 + 知了主持 · 发言按到达序实时冒出</p>
+    <p class="tag">有界多轮群聊 · 进程内人格 + 小桔主持 · 发言按到达序实时冒出</p>
     <div class="sidebar-inner">
       <label for="topic">圆桌议题</label>
       <textarea id="topic" placeholder="描述想讨论的创作问题，例如：请评审第一章的开篇节奏与人物出场"></textarea>
@@ -420,7 +420,7 @@
         <button class="more-btn purple" onclick="openTrendLayer()">管理</button>
       </div>
 
-      <label>知了人格</label>
+      <label>小桔人格</label>
       <div class="compact">
         <span class="c-label">已选</span>
         <span class="c-val" id="personaSummary">文学编辑 · 读者视角</span>
@@ -459,7 +459,7 @@
       <div class="health" id="health"></div>
     </div>
     <div class="legend">
-      到达序发言 · 知了主持串场 · 收窄式有界多轮<br/>
+      到达序发言 · 小桔主持串场 · 收窄式有界多轮<br/>
       外部 peer 经 A2A 探活，离线自动跳过
     </div>
 
@@ -473,7 +473,7 @@
   <div class="modal-mask" id="modalPersona" onclick="if(event.target===this)closePersonaLayer()">
     <div class="modal">
       <div class="modal-head">
-        <h2>知了人格设定</h2>
+        <h2>小桔人格设定</h2>
         <button class="modal-close" onclick="closePersonaLayer()" title="关闭">✕</button>
       </div>
       <div class="modal-body">
@@ -551,7 +551,7 @@
     <div class="room-header">
       <div class="room-title"><span class="live" id="liveDot"></span><span id="topicTitle">《待定》创作圆桌</span></div>
       <div class="room-meta">
-        <span class="room-sub" id="roomSub">知了主持 · 有界多轮 · 到达序</span>
+        <span class="room-sub" id="roomSub">小桔主持 · 有界多轮 · 到达序</span>
         <span class="meta-pill" id="rosterCount">— 人</span>
         <button class="report-btn" id="reportBtn" onclick="openReport()" style="display:none">📋 综合研判报告</button>
       </div>
@@ -576,7 +576,7 @@
   const OPENCODE_A2A = BASE_DIR + "/opencode-a2a/";   // "/roundtable/opencode-a2a/" 或 "/opencode-a2a/"
 
   // 基础成员（进程内人格 + 主持）。初始为静态兜底；页面载入时由 /api/personas 动态覆盖。
-  const HOST = { name: "知了（主持）", role: "主持", kind: "host", emoji: "🎙️", cls: "a-host" };
+  const HOST = { name: "小桔（主持）", role: "主持", kind: "host", emoji: "🎙️", cls: "a-host" };
   let BASE = [
     HOST,
     { name: "史料考据",   role: "史实核验", kind: "persona", emoji: "📜", cls: "a-hist" },

@@ -1,7 +1,7 @@
 /**
  * GardenFriends — 常驻的朋友（蓝图第二层 · 常驻的朋友·你的 Agent 各有小窝）。
  *
- * 一直陪着你的小桔/知了在这里有自己的小窝；勋章也收在这里（从勋章 Tab 迁来）。
+ * 一直陪着你的小桔在这里有自己的小窝；勋章也收在这里（从勋章 Tab 迁来）。
  */
 
 import { BadgeWall } from "../deskmate/BadgeWall";

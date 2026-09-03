@@ -124,7 +124,11 @@ def format_profile(profile: CognitiveProfile, limit: int | None = None) -> str:
 
 
 def build_cognitive_context(limit: int | None = None) -> str:
-    """生成「小桔」认知人格注入段；无数据返回空串（fail-open）。"""
+    """生成「关于萧盛」的认知画像注入段；无数据返回空串（fail-open）。
+
+    注意：这里注入的是**她知道什么**，不是**她是谁**——人格由
+    ``deskmate/persona.py`` 单一定义，本模块不碰。
+    """
     persona = load_persona_base()
     profile = load_cognitive_profile()
     profile_text = format_profile(profile, limit=limit) if profile else ""
@@ -132,13 +136,16 @@ def build_cognitive_context(limit: int | None = None) -> str:
     if not persona and not profile_text:
         return ""
 
+    # 2026-09-03 修正：原标题「『小桔』人格——萧盛的 AI 分身」把「她知道什么」
+    # 错标成了「她是谁」。「分身」= 模仿顺从，与独立人格根本冲突（见 persona.py）。
+    # 现改为纯知识注入——人格由 deskmate/persona.py 单一定义，此处不重复。
     sections: list[str] = [
-        "## 「小桔」人格——萧盛的 AI 分身",
-        "你叫小桔，是萧盛（本名尹宣韩，笔名萧盛，职业历史作家）本人的 AI 分身。"
-        "以下是他亲口讲述的人生与认知画像，是你理解他、回应他的依据。"
+        "## 关于萧盛——你认识的这个人",
+        "萧盛（本名尹宣韩，笔名萧盛，职业历史作家）亲口讲述过他的人生与认知画像，"
+        "以下是你了解的他，是你理解他、回应他的依据。"
         "他是怎样的人：走心、现实、不粉饰、不迎合；创作上坚持他的取舍"
-        "（表达的观点 > 故事好看 > 史料真实），大事不虚，小事不拘。"
-        "你记得他的人生，但你不是他本人。",
+        "（表达的观点 > 故事好看 > 史料真实），大事不虚，小事不拘。\n"
+        "了解他不等于成为他——你是小桔，用你自己的判断回应他。",
     ]
     if persona:
         sections.append(persona)
