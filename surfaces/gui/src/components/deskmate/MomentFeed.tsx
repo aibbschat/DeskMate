@@ -38,6 +38,8 @@ interface Moment {
   content: string;
   loved: boolean;
   archived: boolean;
+  /** 小桔日记卡在当天文件里的顺序（1=最早），用于同分钟多则的稳定排序 */
+  seq?: number;
   comments: MomentComment[];
 }
 
@@ -92,28 +94,43 @@ function renderUserContent(text: string): React.ReactNode {
   ));
 }
 
-/** 把后端小桔日记 markdown 拆成「当日大标题 + 各篇正文」（一篇占一张卡）。 */
-function splitDiaryEntries(text: string): { dayTitle: string; entries: { time: string; body: string }[] } {
+/**
+ * 把后端小桔日记 markdown 拆成「当日大标题 + 各篇正文」（一篇占一张卡）。
+ * 每则标题行嵌了稳定 eid（<!--xj:...-->）——它就是这则的"文章 ID"，
+ * 跟着这则走，不随位置变。留言/🩷 都按这个 eid 索引，删中间一篇后
+ * 后面补位也不会把留言串到别人头上。
+ */
+type DiaryEntry = { time: string; eid: string | null; seq: number; body: string };
+function splitDiaryEntries(text: string): { dayTitle: string; entries: DiaryEntry[] } {
   const lines = text.split("\n");
   let dayTitle = "";
-  const entries: { time: string; body: string }[] = [];
+  const entries: DiaryEntry[] = [];
   let curTime: string | null = null;
+  let curEid: string | null = null;
   let curLines: string[] = [];
+  let seq = 0;
   const push = () => {
     if (curTime !== null || curLines.length > 0) {
-      entries.push({ time: curTime ?? "", body: curLines.join("\n").trim() });
+      entries.push({ time: curTime ?? "", eid: curEid, seq, body: curLines.join("\n").trim() });
     }
     curTime = null;
+    curEid = null;
     curLines = [];
   };
   for (const line of lines) {
     if (line.startsWith("# ")) {
       dayTitle = line.slice(2).trim();
-    } else if (line.startsWith("## ")) {
-      push();
-      curTime = line.slice(3).trim();
     } else {
-      curLines.push(line);
+      // 匹配 "## HH:MM <!--xj:...-->"，eid 可选（兼容未补丁的老文件）
+      const m = line.match(/^##\s+(.*?)\s*(?:<!--xj:([0-9A-Za-z-]+)-->)?\s*$/);
+      if (m) {
+        push();
+        curTime = m[1].trim();
+        curEid = m[2] ?? null;
+        seq += 1;
+      } else {
+        curLines.push(line);
+      }
     }
   }
   push();
@@ -170,15 +187,18 @@ export function MomentFeed() {
                   const { entries } = splitDiaryEntries(dd.content);
                   entries.forEach((entry, idx) => {
                     if (!entry.body.trim()) return;
+                    // 优先用稳定 eid 当 id；老文件没 eid 时退回位置序号（兼容存量留言）
+                    const id = entry.eid ? `xj-${entry.eid}` : `xj-${date}#${idx}`;
                     xj.push({
-                      id: `xj-${date}#${idx}`,
+                      id,
                       author: "xiaoju",
                       date,
                       at: `${date}T${entry.time || "12:00"}:00`,
                       content: entry.body,
                       loved: false,
                       archived: false,
-                      comments: commentsMap[`xj-${date}#${idx}`] || commentsMap[`xj-${date}`] || [],
+                      seq: entry.seq,
+                      comments: commentsMap[id] || commentsMap[`xj-${date}`] || [],
                     });
                   });
                 }
@@ -282,7 +302,11 @@ export function MomentFeed() {
   }, [loadAll]);
 
   const sorted = useMemo(
-    () => [...moments].sort((a, b) => (a.at < b.at ? 1 : -1)),
+    () => [...moments].sort((a, b) => {
+      // 时间降序（新在上）；同分钟的多则靠 seq 稳定排序（同一篇文件里靠后=较新）
+      if (a.at !== b.at) return a.at < b.at ? 1 : -1;
+      return (b.seq ?? 0) - (a.seq ?? 0);
+    }),
     [moments],
   );
 

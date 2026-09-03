@@ -33,9 +33,11 @@
 from __future__ import annotations
 
 import datetime
+import hashlib
 import os
 import re
 import sys
+import uuid
 from pathlib import Path
 from typing import Optional
 
@@ -98,6 +100,60 @@ def _now_hhmm() -> str:
 # 一则以 ``## HH:MM`` 开头——据此数当天写了几则
 _ENTRY_HEAD_RE = re.compile(r"^##\s", re.MULTILINE)
 
+# 每则日记的稳定身份（entry id）。写入时 embed 进 ``## HH:MM`` 标题行，
+# 形如 ``<!--xj:2026-09-03-163012-a1b2c3-->``。留言/🩷 都按这个 id 走，
+# 而不是按"当天第几则"的位置——否则删掉中间一则，后面补位后留言就串到
+# 别人头上（这是早期设计的结构性缺陷，2026-09-03 起根治）。
+_EID_RE = re.compile(r"<!--xj:([0-9A-Za-z-]+)-->")
+
+
+def _gen_eid(date: str, at: str) -> str:
+    """为新建的一则生成全局稳定 id（UUID，写入即固定，不随位置变）。"""
+    return f"{date}-{at.replace(':', '')}-{uuid.uuid4().hex[:6]}"
+
+
+def backfill_diary_eids(diary_dir: Path) -> int:
+    """给历史日记每则补上稳定 eid，幂等。新写入的则已由 append_entry 自带，
+    本函数只补改造前写的老文件。eid 用 ``日期-HHMM-同文件序号``，确定性、
+    可重复，跑多次结果一致。
+
+    为何要在后端落 eid 而非前端现造：日记唯一存储是单篇 markdown，没有
+    每则身份。把身份写进文件、跟着这则走，才是"文章 ID 跟着内容"的模型。
+    """
+    if not diary_dir.is_dir():
+        return 0
+    changed = 0
+    for md in sorted(diary_dir.glob("*.md")):
+        try:
+            text = md.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        lines = text.split("\n")
+        out: list[str] = []
+        idx = 0
+        modified = False
+        for line in lines:
+            m = re.match(r"^##\s+(.*)$", line)
+            if m and "<!--xj:" not in line:
+                idx += 1
+                head = m.group(1).strip()
+                tmatch = re.match(r"(\d{1,2}):(\d{2})", head)
+                hhmm = tmatch.group(0).replace(":", "") if tmatch else "0000"
+                eid = f"{md.stem}-{hhmm}-{idx:02d}"
+                out.append(f"## {head} <!--xj:{eid}-->")
+                modified = True
+                changed += 1
+            else:
+                out.append(line)
+        if modified:
+            tmp = md.with_suffix(md.suffix + ".tmp")
+            try:
+                tmp.write_text("\n".join(out), encoding="utf-8")
+                os.replace(tmp, md)
+            except OSError:
+                pass
+    return changed
+
 
 class DiaryWriter:
     """小桔日记：第一人称今日小结 + 每周回忆。"""
@@ -106,6 +162,11 @@ class DiaryWriter:
         base = Path(base_dir) if base_dir else Path.home() / ".deskmate"
         self.base = base
         self.diary_dir = base / "diary"
+        # 给历史日记每则补上稳定 eid（幂等，只补没有的）。新写入的则自带。
+        try:
+            backfill_diary_eids(self.diary_dir)
+        except Exception:
+            pass
         self.engine = GrowthEngine(base_dir=base)
 
     # ------------------------------------------------------------------
@@ -252,9 +313,12 @@ class DiaryWriter:
 
     def _render_entry(self, events: list[dict], badges: list[dict],
                       top: tuple[str, float] | None, st: dict,
-                      seq: int, at: str) -> str:
-        """渲染**一则**日记（不含文件级标题，由 _append_text 负责）。"""
-        lines: list[str] = [f"## {at}"]
+                      seq: int, at: str, eid: str = "") -> str:
+        """渲染**一则**日记（不含文件级标题，由 _append_text 负责）。
+
+        ``eid`` 是这则的稳定身份，写入标题行（``<!--xj:...-->``），跟着这则走。
+        """
+        lines: list[str] = [f"## {at} <!--xj:{eid}-->" if eid else f"## {at}"]
 
         if events:
             # 收集实事：具体事件逐条，重复类合并计数
@@ -453,7 +517,8 @@ class DiaryWriter:
         st = self._state_summary()
         seq = self.entry_count(date) + 1
         at = at or self._entry_time(events)
-        body = self._render_entry(events, badges, top, st, seq=seq, at=at)
+        eid = _gen_eid(date, at)
+        body = self._render_entry(events, badges, top, st, seq=seq, at=at, eid=eid)
         path = self._append_text(date, body)
         return {"date": date, "path": path, "seq": seq, "at": at}
 

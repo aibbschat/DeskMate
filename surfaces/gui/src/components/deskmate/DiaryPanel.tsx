@@ -83,8 +83,12 @@ function renderMarkdown(text: string): React.ReactNode {
       dayTitle = <h3 key={`h-${i}`}>{line.slice(2)}</h3>;
     } else if (line.startsWith("## ")) {
       // 每则一个「## HH:MM」时间小标题 → 起一张新卡
+      // 标题行里嵌了稳定 eid（<!--xj:...-->），显示时剥掉，只留时间
       pushEntry();
-      cur.time = line.slice(3);
+      cur.time = line
+        .slice(3)
+        .replace(/<!--xj:[0-9A-Za-z-]+-->/g, "")
+        .trim();
     } else if (line.startsWith("- ")) {
       cur.listItems.push(line.slice(2));
     } else if (line.startsWith("> ")) {
