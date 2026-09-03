@@ -5,10 +5,29 @@
 「我们的回忆」汇总（对话数/创作进度/解锁徽章/学到偏好/默契阶段）。
 
 - 独立于 memory 层（P0-6/P0-7 范围外）：写入 ``<base>/diary/``，不碰 memory manager。
-- 零 LLM、fail-open：有真实信号则如实记录；纯空转只写一句安静的陪伴，绝不编造。
+- fail-open：有真实信号则如实记录；纯空转只写一句安静的陪伴，绝不编造。
 - **一天可以写多则**（2026-09-02 萧哥定调：不要限死每天一条）。素材攒够了就
   ``append_entry`` 追加一则（``## HH:MM`` 小节），绝不覆盖当天已写的内容——
   覆盖会让「今天」永远停在第一则落笔的那一刻，后面的事永远进不来。
+
+## 关于「零 LLM」（2026-09-03 修订）
+
+本模块**渲染事实的部分仍然是零 LLM**：技能名、次数、时间戳、默契数值、
+徽章，全部由规则生成，模型一个字都不碰——这是「客观档案不许编」的底线。
+
+但**把这些事实讲成人话**是另一回事，交给 ``diary_narrator.py``（L3 可选层）。
+原因是萧哥点破的一点：
+
+> 「技能又精进了」这类话，技能日志里全都有，日记再说一遍是废话。
+> 日记该写的是**因为什么事**精进的。
+
+只有规则模板时，日记只能是台账（``- 「novel-review」这项技能又精进了``）。
+润色层拿到的是同样的事实，只是把它组织成有因果、有温度的叙述；
+**拿不到润色就照旧列清单**，降级是常态而非事故。润色层自带三道闸门
+（无 provider 不调 / 素材没内容不调 / 结果异常丢弃），且情绪表达必须有
+可观测的信号锚点，不许凭空抒情。
+
+关闭润色（退回纯规则）：环境变量 ``DESKMATE_DIARY_NARRATE=0``。
 """
 
 from __future__ import annotations
@@ -18,6 +37,7 @@ import os
 import re
 import sys
 from pathlib import Path
+from typing import Optional
 
 from deskmate.growth.engine import GrowthEngine
 
@@ -135,14 +155,28 @@ class DiaryWriter:
         kind = str(e.get("kind", ""))
         if kind in ("skill_used", "skill_evolved"):
             name = str(e.get("skill_name", "") or "").strip()
-            if name:
-                if kind == "skill_used":
+            # reason = 这次进化「因为什么」（调用方手里的用户原话）。
+            # 光有技能名只能写出台账——技能日志里早记过了，日记要讲因果。
+            reason = str(e.get("reason", "") or "").strip()
+            if kind == "skill_used":
+                if name and reason:
+                    return f"你调用了「{name}」技能（{reason}）。"
+                if name:
                     return f"你调用了「{name}」技能，我们配合了一把。"
+                return "你调用了一项技能，我们配合了一把。"
+            if name and reason:
+                return f"「{name}」这项技能因为「{reason}」又长进了一点。"
+            if name:
                 return f"「{name}」这项技能又精进了。"
-            return "你调用了一项技能，我们配合了一把。"
+            return "一项技能又精进了。"
         if kind == "memory_learned":
             return None  # 这类按天合并计数，由 _render_diary 统一处理
         if kind == "user_corrected":
+            note = str(e.get("note", "") or "").strip()
+            # note 现在是用户的纠正原话（engine.record_correction(note=last_user)）。
+            # 写原话才叫日记；写「你纠正了我一次」只是计数。
+            if note and note != "用户明确纠正":
+                return f"你纠正了我：「{note}」"
             return "你纠正了我一次——我会记着校准。"
         if kind == "creation_approved":
             note = str(e.get("note", "") or "").strip()
@@ -196,6 +230,26 @@ class DiaryWriter:
             return "下午又有了些新动静，我接着记。"
         return "入夜了又添了几笔，我接着记。"
 
+    @staticmethod
+    def _narrate(events: list[dict], seq: int, at: str) -> Optional[str]:
+        """叙事润色（L3 可选层），失败返回 None 由调用方回退规则渲染。
+
+        三道闸门与「情绪必须有锚点」的设计见 ``diary_narrator.py`` 模块文档。
+        这里只做一件事：给一个总开关，出问题能一键退回纯规则。
+        """
+        import os
+
+        if os.environ.get("DESKMATE_DIARY_NARRATE", "1").strip() in (
+            "0", "false", "no", "off",
+        ):
+            return None
+        try:
+            from deskmate.growth.diary_narrator import narrate
+
+            return narrate(events, seq=seq, at=at)
+        except Exception:
+            return None
+
     def _render_entry(self, events: list[dict], badges: list[dict],
                       top: tuple[str, float] | None, st: dict,
                       seq: int, at: str) -> str:
@@ -247,15 +301,41 @@ class DiaryWriter:
                     f"你调用了 {head} 等 {len(used)} 项技能，我都跟上了。"
                 )
             if memory_cnt:
-                facts.append(f"我又记住了你 {memory_cnt} 件小事。")
+                # texts = 这几次记住的事实原文（engine.record_memory_learned(texts=)）。
+                # 有原文就照实列出来；「又记住了你 4 件小事」这种只在没原文时兜底。
+                learned_texts: list[str] = []
+                for e in sorted(events, key=lambda x: str(x.get("ts", ""))):
+                    if e.get("kind") != "memory_learned":
+                        continue
+                    for t in (e.get("texts") or []):
+                        t = str(t or "").strip()
+                        if t and t not in learned_texts:
+                            learned_texts.append(t)
+                if learned_texts:
+                    shown = "；".join(learned_texts[:3])
+                    more = (
+                        f"（还有 {len(learned_texts) - 3} 条）"
+                        if len(learned_texts) > 3
+                        else ""
+                    )
+                    facts.append(f"我又记住了你的一些事：{shown}{more}。")
+                else:
+                    facts.append(f"我又记住了你 {memory_cnt} 件小事。")
             if corrected > 1:
                 facts = [f for f in facts if not f.startswith("你纠正了我")]
                 facts.append(f"你纠正了我 {corrected} 次——我会记着校准。")
 
-            # 补记（seq>1）不再重复"今天"，语气改为接续
-            lines.append(self._opening(seq, at))
-            for f in facts[:6]:
-                lines.append(f"- {f}")
+            # 叙事润色（L3，可选增强）：把上面这些实事讲成一段有人味的话。
+            # 拿到就用它，拿不到（无 provider / 素材没内容 / 模型认输 / 异常）
+            # 就照旧列清单——降级是常态，不是事故。
+            narrated = self._narrate(events, seq=seq, at=at)
+            if narrated:
+                lines.append(narrated)
+            else:
+                # 补记（seq>1）不再重复"今天"，语气改为接续
+                lines.append(self._opening(seq, at))
+                for f in facts[:6]:
+                    lines.append(f"- {f}")
         else:
             lines.append("这一阵没什么动静。我安静地待着，等你忙完。")
 

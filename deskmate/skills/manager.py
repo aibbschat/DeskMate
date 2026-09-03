@@ -282,8 +282,16 @@ class SkillManager:
         except Exception as e:
             logger.debug("growth engine skill_use record failed: %s", e)
 
-    def _record_growth_skill_evolved(self, name: str, path: str) -> None:
-        """向成长系统上报技能进化事件。"""
+    def _record_growth_skill_evolved(
+        self, name: str, path: str, reason: str = ""
+    ) -> None:
+        """向成长系统上报技能进化事件。
+
+        Args:
+            reason: 这次进化**因为什么**（用户的纠正原话 / 请求原文）。
+                不带就只有一个技能名，日记只能写「XX 又精进了」——
+                技能日志里早有完整记录，日记再说一遍是废话。
+        """
         try:
             from deskmate.growth.engine import GrowthEngine
 
@@ -291,7 +299,9 @@ class SkillManager:
             uses = full["meta"].get("uses", 0) if full else 1
             rate = full["meta"].get("success_rate", 0.0) if full else 0.0
             engine = GrowthEngine(base_dir=self.base_dir)
-            engine.record_skill_evolved(name, skill_store_uses=uses, skill_store_rate=rate)
+            engine.record_skill_evolved(
+                name, skill_store_uses=uses, skill_store_rate=rate, reason=reason
+            )
         except Exception as e:
             logger.debug("growth engine skill_evolved record failed: %s", e)
 
@@ -482,7 +492,9 @@ class SkillManager:
                 if patch_result.get("status") == "ok":
                     updated.append({"name": s["name"], "path": s["path"]})
                     # 成长系统：技能进化事件（用户纠正后打磨 → 熟练度提升）
-                    self._record_growth_skill_evolved(s["name"], s["path"])
+                    self._record_growth_skill_evolved(
+                        s["name"], s["path"], reason=correction_text
+                    )
 
         return updated
 
@@ -566,7 +578,9 @@ class SkillManager:
                     # 递增使用计数
                     self.store.increment_uses(s["path"])
                     # 成长系统：技能进化事件（成功执行后积累经验）
-                    self._record_growth_skill_evolved(s["name"], s["path"])
+                    self._record_growth_skill_evolved(
+                        s["name"], s["path"], reason=user_message
+                    )
                     return {"name": s["name"], "path": s["path"], "status": "已从成功执行中进化"}
 
         return None

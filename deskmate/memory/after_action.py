@@ -357,7 +357,8 @@ def _maybe_evolve_on_correction(
     try:
         from deskmate.growth.engine import GrowthEngine
 
-        GrowthEngine(base_dir=base_dir).record_correction()
+        # 带上纠正原话：日记要写得出「他说的是哪一句」，而不是「他纠正了我一次」。
+        GrowthEngine(base_dir=base_dir).record_correction(note=last_user)
     except Exception:
         pass
     try:

@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import json
+import os
 import unittest
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -294,7 +295,12 @@ class ShouldWriteTest(unittest.TestCase):
 
 
 class DiaryWriterMultiEntryTest(unittest.TestCase):
-    """一天多则的落盘形态：追加、不覆盖、兼容旧格式。"""
+    """一天多则的落盘形态：追加、不覆盖、兼容旧格式。
+
+    本类测的是**结构**（小节、落款、顺序），不是叙事润色，所以关掉 L3
+    润色层：既避免单测真烧 token，也让断言锁定在规则渲染的确定性文案上。
+    润色自身的行为由 ``TestDiaryNarration`` 用 mock 覆盖。
+    """
 
     def setUp(self):
         self._tmp = TemporaryDirectory()
@@ -305,8 +311,13 @@ class DiaryWriterMultiEntryTest(unittest.TestCase):
             encoding="utf-8",
         )
         self.writer = DiaryWriter(self.base)
+        self._narrate_off = mock.patch.dict(
+            os.environ, {"DESKMATE_DIARY_NARRATE": "0"}
+        )
+        self._narrate_off.start()
 
     def tearDown(self):
+        self._narrate_off.stop()
         self._tmp.cleanup()
 
     def test_append_two_entries(self):

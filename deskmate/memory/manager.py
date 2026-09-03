@@ -1922,7 +1922,9 @@ class DeskMateMemoryManager:
             try:
                 from deskmate.growth.engine import GrowthEngine
 
-                GrowthEngine(base_dir=self.base_dir).record_memory_learned(written)
+                GrowthEngine(base_dir=self.base_dir).record_memory_learned(
+                    written, texts=learned
+                )
             except Exception as e:
                 logger.debug("growth engine record_memory_learned failed: %s", e)
         return {"written": written, "skipped": skipped, "learned": learned, "notes": f"已归档 {written} 条（跳过 {skipped} 条重复）"}

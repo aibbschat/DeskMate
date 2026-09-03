@@ -48,6 +48,34 @@ DOMAIN_COMPANION = "companion"    # 陪伴：日常对话时长
 MIGRATION_VERSION = 2       # 已完成存量折算的状态版本（幂等守卫，>= 则跳过）
 DEPTH_PER_INTIMACY = 0.5    # 折算：每 1 点亲密度 → 关系深度
 DEPTH_PER_EMPATHY = 0.3     # 折算：每 1 点默契度 → 关系深度
+
+# --- 事件详情（日记叙事素材）的体积上限 ---
+# recent_events 常驻内存且落盘，详情只供日记「讲得出具体事」，不是仓库。
+# 超了就截——宁可少一句细节，也不能让 state 文件无限膨胀。
+_MAX_DETAIL_CHARS = 120     # 单条详情最长字符
+_MAX_DETAIL_ITEMS = 4       # 单事件最多带几条
+
+
+def _clip(text: Optional[str]) -> str:
+    """详情截断：去空白、限长、空值归零。存进事件前一律过一遍。"""
+    if not text:
+        return ""
+    s = " ".join(str(text).split())
+    return s[:_MAX_DETAIL_CHARS]
+
+
+def _clip_list(items: Optional[list]) -> list[str]:
+    """详情列表截断：逐条 _clip，去重，限量。"""
+    if not items:
+        return []
+    out: list[str] = []
+    for it in items:
+        c = _clip(it)
+        if c and c not in out:
+            out.append(c)
+        if len(out) >= _MAX_DETAIL_ITEMS:
+            break
+    return out
 DEPTH_PER_CHAT = 0.1        # 折算：每 1 轮对话 → 关系深度（对话数按 500 封顶）
 DEPTH_PER_ROUND = 0.05      # 每轮微量沉淀：未封顶时深度轨道也要「看得见地动」
 COMPANION_PER_CHAT = 0.3    # 陪伴子域每轮增量（与 record_chat 原逻辑一致）
@@ -467,8 +495,17 @@ class GrowthEngine:
         success: bool = True,
         skill_store_uses: Optional[int] = None,
         skill_store_rate: Optional[float] = None,
+        reason: Optional[str] = None,
     ) -> None:
-        """技能进化（成功执行 / 用户纠正后优化）：熟练度额外增长。"""
+        """技能进化（成功执行 / 用户纠正后优化）：熟练度额外增长。
+
+        Args:
+            reason: 这次进化**因为什么**（一句话，来自调用方手里的真实上下文）。
+                只记技能名的话，日记只能写「XX 又精进了」这种台账——技能日志里
+                已有完整记录，日记重复它毫无价值。带上原因，日记才讲得出
+                「因为你三次纠正洪武年份，这条考据技能长进了」。
+                超长会自动截断（见 ``_clip``），绝不撑爆 recent_events。
+        """
         prof = self.state.skill_proficiency.get(skill_name, SkillProficiency())
         prof.uses = (skill_store_uses if skill_store_uses is not None else prof.uses + 1)
         if skill_store_rate is not None:
@@ -479,7 +516,7 @@ class GrowthEngine:
 
         self.state.growth_value += XP_SKILL_EVOLVED
         self._gain_relation("intimacy", INTIMACY_SKILL_USED)
-        self._add_event("skill_evolved", skill_name=skill_name)
+        self._add_event("skill_evolved", skill_name=skill_name, reason=_clip(reason))
         self._recompute_level()
         self.save()
 
@@ -541,10 +578,14 @@ class GrowthEngine:
         self._recompute_level()
         self.save()
 
-    def record_correction(self) -> None:
+    def record_correction(self, note: Optional[str] = None) -> None:
         """用户明确纠正（「不对/别这样/记错了」）：信任微降 + 默契微调。
 
         区别于「忽略建议」——这是主动纠错信号，AI 应校准理解而非只是降低好感。
+
+        Args:
+            note: 用户纠正的**原话**（调用方手里有 last_user）。不传则沿用
+                硬编码的「用户明确纠正」，日记就只能写出一句没有内容的话。
         """
         self._gain_relation("trust", TRUST_CORRECTED, 0.0, 1.0)
         self._gain_relation("empathy", EMPATHY_CORRECTED)
@@ -554,7 +595,12 @@ class GrowthEngine:
         # 改进」——只有惩罚、没有成长。取绝对值：纠正让 AI 多拿到一条校准信息，
         # 对「懂你」是增量；而 trust / mood 的下降已表达「这次没做对」。
         self._gain_domain(DOMAIN_MEMORY, abs(EMPATHY_CORRECTED))
-        self._add_event("user_corrected", note="用户明确纠正")
+        # 纠正原话照实带出去——日记要写的不是「他纠正了我一次」，
+        # 而是「他说：不是洪武三年，是洪武十五年」。没原话就只能记账。
+        self._add_event(
+            "user_corrected",
+            note=_clip(note) or "用户明确纠正",
+        )
         self._log_behavior("correction")
         self._apply_decay()
         self._recompute_level()
@@ -564,16 +610,26 @@ class GrowthEngine:
     # 记忆学习（了解度 → 默契度微增）
     # ------------------------------------------------------------------
 
-    def record_memory_learned(self, count: int = 1) -> None:
-        """每次记住新事实，默契度微增（记忆匹配变准）。"""
+    def record_memory_learned(
+        self, count: int = 1, texts: Optional[list] = None
+    ) -> None:
+        """每次记住新事实，默契度微增（记忆匹配变准）。
+
+        Args:
+            texts: 这次**记住了什么**（事实原文列表）。此前只传 count，
+                日记便只能写「又记住了你 4 件小事」——数字谁都会记，
+                得把内容带上，日记才写得出「记住了你在写《国子监》第三章」。
+                最多留 _MAX_DETAIL_ITEMS 条、每条截断，防止撑爆 recent_events。
+        """
         if count <= 0:
             return
+        detail = _clip_list(texts)
         self._gain_relation("empathy", INTIMACY_MEMORY_LEARNED * count)
         self._gain_relation("intimacy", INTIMACY_MEMORY_LEARNED * count)
         self.state.growth_value += XP_MEMORY_LEARNED * count
         self.state.memories_learned += count
         self._gain_domain(DOMAIN_MEMORY, INTIMACY_MEMORY_LEARNED * count)
-        self._add_event("memory_learned", count=count)
+        self._add_event("memory_learned", count=count, texts=detail)
         self._apply_decay()
         self._recompute_level()
         self.save()
