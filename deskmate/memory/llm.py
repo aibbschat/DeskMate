@@ -19,6 +19,8 @@ import os
 from pathlib import Path
 from typing import Optional
 
+import httpx
+
 _DEFAULT_BASE_URL = "https://api.openai.com/v1"
 _DEFAULT_MODEL = "gpt-4o-mini"
 
@@ -120,6 +122,36 @@ def _model() -> str:
     return model
 
 
+def _proxy_is_loopback() -> bool:
+    """判断继承来的 HTTP(S)_PROXY 是否指向本机。
+
+    桌面侧车（sidecar）经 ``sidecar_env()`` 继承了登录 shell 的代理，
+    那往往是 WorkBuddy 之类的**本机开发代理**（如 ``127.0.0.1:65085``），
+    只在 WorkBuddy 会话期间存活。侧车自主写日记/抽记忆时不依赖它，
+    而本机代理一旦挂掉，provider LLM 调用会被拒绝、静默降级成台账。
+
+    所以：代理指向本机 → 忽略 env proxy，直连显式配置的 provider base_url；
+    代理是真实公司代理（非本机 host）→ 仍尊重它。
+    """
+    for key in ("HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy"):
+        v = os.environ.get(key, "")
+        if not v:
+            continue
+        host = v.split("://", 1)[-1].split(":")[0].split("/")[0].lower()
+        if host in ("127.0.0.1", "localhost", "::1", "0.0.0.0", "[::1]"):
+            return True
+    return False
+
+
+def _llm_http_client() -> "httpx.Client":
+    """给 OpenAI client 用的 httpx 客户端。
+
+    ``trust_env=False`` 仅在代理指向本机时生效（见 ``_proxy_is_loopback``），
+    避免被一个常常挂掉的本地代理劫持 provider 调用。
+    """
+    return httpx.Client(trust_env=not _proxy_is_loopback())
+
+
 def chat(
     system: str,
     user: str,
@@ -135,7 +167,8 @@ def chat(
     """
     from openai import OpenAI
 
-    client = OpenAI(api_key=_api_key(), base_url=_base_url(), timeout=timeout)
+    client = OpenAI(api_key=_api_key(), base_url=_base_url(), timeout=timeout,
+                   http_client=_llm_http_client())
     resp = client.chat.completions.create(
         model=_model(),
         temperature=temperature,
@@ -172,7 +205,8 @@ async def chat_stream(
         try:
             from openai import OpenAI
 
-            client = OpenAI(api_key=_api_key(), base_url=_base_url(), timeout=timeout)
+            client = OpenAI(api_key=_api_key(), base_url=_base_url(), timeout=timeout,
+                           http_client=_llm_http_client())
             stream = client.chat.completions.create(
                 model=_model(),
                 temperature=temperature,
@@ -291,7 +325,8 @@ def chat_memory(
     from openai import OpenAI
 
     def _do(api_key: str, base_url: str, model: str) -> str:
-        client = OpenAI(api_key=api_key, base_url=base_url, timeout=timeout)
+        client = OpenAI(api_key=api_key, base_url=base_url, timeout=timeout,
+                        http_client=_llm_http_client())
         resp = client.chat.completions.create(
             model=model,
             temperature=temperature,

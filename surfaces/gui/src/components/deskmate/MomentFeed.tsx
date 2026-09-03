@@ -92,11 +92,32 @@ function renderUserContent(text: string): React.ReactNode {
   ));
 }
 
-/** 把后端小桔日记 markdown 拆成「展示标题 + 正文」 */
-function splitDiary(text: string): { dateLabel: string; body: string } {
+/** 把后端小桔日记 markdown 拆成「当日大标题 + 各篇正文」（一篇占一张卡）。 */
+function splitDiaryEntries(text: string): { dayTitle: string; entries: { time: string; body: string }[] } {
   const lines = text.split("\n");
-  const title = lines[0]?.startsWith("# ") ? lines[0].slice(2) : "";
-  return { dateLabel: title, body: lines.slice(1).join("\n") };
+  let dayTitle = "";
+  const entries: { time: string; body: string }[] = [];
+  let curTime: string | null = null;
+  let curLines: string[] = [];
+  const push = () => {
+    if (curTime !== null || curLines.length > 0) {
+      entries.push({ time: curTime ?? "", body: curLines.join("\n").trim() });
+    }
+    curTime = null;
+    curLines = [];
+  };
+  for (const line of lines) {
+    if (line.startsWith("# ")) {
+      dayTitle = line.slice(2).trim();
+    } else if (line.startsWith("## ")) {
+      push();
+      curTime = line.slice(3).trim();
+    } else {
+      curLines.push(line);
+    }
+  }
+  push();
+  return { dayTitle, entries };
 }
 
 /** 中文日期展示 */
@@ -145,15 +166,20 @@ export function MomentFeed() {
               if (rr.ok) {
                 const dd = await rr.json();
                 if (dd.content) {
-                  xj.push({
-                    id: `xj-${date}`,
-                    author: "xiaoju",
-                    date,
-                    at: `${date}T12:00:00`,
-                    content: dd.content,
-                    loved: false,
-                    archived: false,
-                    comments: commentsMap[`xj-${date}`] || [],
+                  // 一天连着记几篇 → 每篇独立成一张卡（微博式），各自可🩷/留言/归档
+                  const { entries } = splitDiaryEntries(dd.content);
+                  entries.forEach((entry, idx) => {
+                    if (!entry.body.trim()) return;
+                    xj.push({
+                      id: `xj-${date}#${idx}`,
+                      author: "xiaoju",
+                      date,
+                      at: `${date}T${entry.time || "12:00"}:00`,
+                      content: entry.body,
+                      loved: false,
+                      archived: false,
+                      comments: commentsMap[`xj-${date}#${idx}`] || commentsMap[`xj-${date}`] || [],
+                    });
                   });
                 }
               }
@@ -548,9 +574,8 @@ function MomentCard({
   onArchive: () => void;
 }) {
   const isXj = moment.author === "xiaoju";
-  const { dateLabel: xjTitle, body: xjBody } = isXj
-    ? splitDiary(moment.content)
-    : { dateLabel: "", body: moment.content };
+  // 每篇独立成卡：时间取自该篇的 at（HH:MM），与当日日期拼成卡片头
+  const xjTime = isXj ? moment.at.slice(11, 16) : "";
 
   return (
     <div className={`mom-card ${isXj ? "mom-xj" : "mom-me"}`}>
@@ -563,13 +588,13 @@ function MomentCard({
         <div className="mom-card-meta">
           <span className="mom-author">{isXj ? "小桔" : USER_NAME}</span>
           <span className="mom-date">
-            {isXj ? xjTitle || dateLabel(moment.date) : dateLabel(moment.date)}
+            {isXj ? `${dateLabel(moment.date)} ${xjTime}`.trim() : dateLabel(moment.date)}
           </span>
         </div>
       </div>
 
       <div className="mom-card-body">
-        {isXj ? renderText(xjBody || moment.content) : renderUserContent(moment.content)}
+        {isXj ? renderText(moment.content) : renderUserContent(moment.content)}
       </div>
 
       <div className="mom-actions">

@@ -52,49 +52,66 @@ function monthDayCount(year: number, month: number): number {
   return new Date(year, month + 1, 0).getDate();
 }
 
-/** 极简 markdown 渲染：# 标题 / ## 一则的时间 / - 列表 / > 引用 / 段落。日记内容结构简单，不引第三方库。 */
+/** 极简 markdown 渲染：把一天的多篇日记拆成各自独立的卡片（微博式，一篇占一张卡）。
+ * 结构：# 当日大标题（渲染在卡片之上）→ 每个 ## HH:MM 起一则，独立成卡。 */
 function renderMarkdown(text: string): React.ReactNode {
   const lines = text.split("\n");
-  const blocks: React.ReactNode[] = [];
-  let listItems: string[] = [];
-  const flushList = () => {
-    if (listItems.length > 0) {
-      blocks.push(
-        <ul key={`ul-${blocks.length}`}>
-          {listItems.map((it, i) => (
+  type Entry = { time: string | null; blocks: React.ReactNode[]; listItems: string[] };
+  const entries: Entry[] = [];
+  let cur: Entry = { time: null, blocks: [], listItems: [] };
+  const flushList = (e: Entry) => {
+    if (e.listItems.length > 0) {
+      e.blocks.push(
+        <ul key={`ul-${e.blocks.length}`}>
+          {e.listItems.map((it, i) => (
             <li key={i}>{it}</li>
           ))}
         </ul>,
       );
-      listItems = [];
+      e.listItems = [];
     }
   };
+  const pushEntry = () => {
+    flushList(cur);
+    if (cur.time !== null || cur.blocks.length > 0) entries.push(cur);
+    cur = { time: null, blocks: [], listItems: [] };
+  };
+  let dayTitle: React.ReactNode = null;
   lines.forEach((line, i) => {
     if (line.startsWith("# ")) {
-      flushList();
-      blocks.push(<h3 key={`h-${i}`}>{line.slice(2)}</h3>);
+      // 日标题：放在所有卡片之上，不单独成卡
+      dayTitle = <h3 key={`h-${i}`}>{line.slice(2)}</h3>;
     } else if (line.startsWith("## ")) {
-      // 多则日记：每则一个「## HH:MM」时间小标题
-      flushList();
-      blocks.push(
-        <h4 key={`h2-${i}`} className="dm-diary-entry-time">
-          {line.slice(3)}
-        </h4>,
-      );
+      // 每则一个「## HH:MM」时间小标题 → 起一张新卡
+      pushEntry();
+      cur.time = line.slice(3);
     } else if (line.startsWith("- ")) {
-      listItems.push(line.slice(2));
+      cur.listItems.push(line.slice(2));
     } else if (line.startsWith("> ")) {
-      flushList();
-      blocks.push(<blockquote key={`q-${i}`}>{line.slice(2)}</blockquote>);
+      flushList(cur);
+      cur.blocks.push(<blockquote key={`q-${i}`}>{line.slice(2)}</blockquote>);
     } else if (line.trim() === "") {
-      flushList();
+      flushList(cur);
     } else {
-      flushList();
-      blocks.push(<p key={`p-${i}`}>{line}</p>);
+      flushList(cur);
+      cur.blocks.push(<p key={`p-${i}`}>{line}</p>);
     }
   });
-  flushList();
-  return <>{blocks}</>;
+  pushEntry();
+
+  const cards = entries.map((e, idx) => (
+    <div className="dm-diary-entry-card" key={`card-${idx}`}>
+      {e.time && <h4 className="dm-diary-entry-time">{e.time}</h4>}
+      <div className="dm-diary-entry-body">{e.blocks}</div>
+    </div>
+  ));
+
+  return (
+    <>
+      {dayTitle}
+      {cards}
+    </>
+  );
 }
 
 export function DiaryPanel() {

@@ -313,5 +313,5 @@ def narrate(events: list[dict], seq: int = 1, at: str = "") -> Optional[str]:
             return None
         return text
     except Exception as e:
-        logger.debug("diary narration failed, falling back to rule render: %s", e)
+        logger.warning("diary narration failed, silent ledger fallback: %s", e)
         return None
