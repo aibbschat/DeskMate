@@ -240,7 +240,9 @@ class ProactiveEngine:
         try:
             if activity.level != UserActivity.BUSY and not (focus is not None and focus.level == "deep"):
                 from deskmate.cognitive.interview import maybe_trigger_interview
+                from deskmate.cognitive.emotion_profile import ensure_emotional_gaps
 
+                # 认知访谈优先
                 iv = maybe_trigger_interview(limit=3)
                 if iv and iv.get("session_id") and iv.get("questions"):
                     return TickResult(
@@ -248,6 +250,18 @@ class ProactiveEngine:
                         activity=activity,
                         interview=iv,
                         skipped_reason="深度访谈待回应（基于认知盲区积累）",
+                        elapsed_ms=int((time.time() - start) * 1000),
+                        heartbeat_interval_ms=self._heartbeat_interval_ms,
+                    )
+                # 认知访谈无内容时，尝试情感访谈（情感画像缺口：关怀偏好/回血方式待澄清）
+                ensure_emotional_gaps()
+                iv_emo = maybe_trigger_interview(limit=3, layer="emotional")
+                if iv_emo and iv_emo.get("session_id") and iv_emo.get("questions"):
+                    return TickResult(
+                        action=ActionType.SUGGEST,
+                        activity=activity,
+                        interview=iv_emo,
+                        skipped_reason="情感访谈待回应（基于情感画像缺口）",
                         elapsed_ms=int((time.time() - start) * 1000),
                         heartbeat_interval_ms=self._heartbeat_interval_ms,
                     )
@@ -299,6 +313,14 @@ class ProactiveEngine:
             emotion_ctx = et.lookback(7)
         except Exception:
             emotion_ctx = ""
+        # 情感画像（layer='emotional'）：真实情绪触发点/回血方式/关怀偏好，供 judge 个性化关怀
+        emotion_profile_ctx = ""
+        try:
+            from deskmate.cognitive.emotion_profile import emotional_context
+
+            emotion_profile_ctx = emotional_context()
+        except Exception:
+            emotion_profile_ctx = ""
         ctx = build_proactive_context(
             workspace=self.workspace,
             memory_context=self._memory_context,
@@ -312,6 +334,8 @@ class ProactiveEngine:
             extra_ctx += f"\n## 长期行为模式（从行为推断）\n{behavior_ctx}"
         if emotion_ctx:
             extra_ctx += f"\n## 情感回顾（连续关怀）\n{emotion_ctx}"
+        if emotion_profile_ctx:
+            extra_ctx += f"\n## 情感画像（他亲口说过的情绪，关怀请贴合）\n{emotion_profile_ctx}"
         if extra_ctx:
             ctx = ProactiveContext(
                 perception=ctx.perception,

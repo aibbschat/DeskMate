@@ -46,7 +46,8 @@ class CognitiveProfileManager:
     - 以 .json 结尾 / 省略 → 当作 legacy 迁移源，库落到默认 deskmate.db
     """
 
-    def __init__(self, profile_path: Optional[str | Path] = None):
+    def __init__(self, profile_path: Optional[str | Path] = None, layer: str = "cognitive"):
+        self.layer = layer
         if profile_path and str(profile_path).endswith(".db"):
             db_path = profile_path
             legacy = _default_profile_path()
@@ -62,11 +63,11 @@ class CognitiveProfileManager:
         self._load()
 
     def _load(self):
-        self.profile = self.store.load_profile()
+        self.profile = self.store.load_profile(layer=self.layer)
 
     def save(self):
         self.profile.last_updated = _now()
-        self.store.persist(self.profile)
+        self.store.persist(self.profile, layer=self.layer)
 
     def get(self) -> CognitiveProfile:
         return self.profile
@@ -119,6 +120,25 @@ class CognitiveProfileManager:
 
         # 有已有立场，判断关系
         target = existing[0]  # 取第一个（同 topic 应该只有一个 active）
+
+        # 前置：文本高度相似（同模板/近重复重复提取）→ 直接补来源，不判矛盾/变化，
+        # 否则模板里自带否定词（如「不愿对外暴露心事」）会误生成伪 gap。
+        if self._texts_similar(target.content, content):
+            target.add_source(source)
+            if tags:
+                for t in tags:
+                    if t not in target.tags:
+                        target.tags.append(t)
+            target.history.append(HistoryEntry(
+                action="updated",
+                old_value=target.content,
+                new_value=target.content,
+                reason="重复提取（高度相似内容），补充来源，置信度提高",
+                source=source.title,
+            ))
+            self.profile.extraction_count += 1
+            self.save()
+            return target, "updated"
 
         # 简单矛盾检测：内容是否明显相反（包含"不"/"反对"/"拒绝"等否定词）
         is_contradiction = self._detect_contradiction(target.content, content)
@@ -409,9 +429,40 @@ class CognitiveProfileManager:
     # 辅助方法
     # ------------------------------------------------------------------
     @staticmethod
+    def _normalize_text(text: str) -> str:
+        """归一化：去空白与标点，只保留语义字符（用于相似度比较）。"""
+        import re
+
+        return re.sub(r"[\s\W]+", "", text or "").lower()
+
+    @staticmethod
+    def _texts_similar(a: str, b: str, ratio: float = 0.8) -> bool:
+        """两段文本是否高度相似（同模板/近重复）。高度相似绝不可能是矛盾。
+
+        解决「日记规则提取用固定模板 → 同模板重复提取被误判为矛盾」的伪 gap 问题：
+        模板文本本身含否定词（如「不愿对外暴露心事」），若只按否定词判矛盾，
+        同一条模板重复出现就会被误标 questioned + spawn 假 gap。
+        """
+        if not a or not b:
+            return False
+        na = CognitiveProfileManager._normalize_text(a)
+        nb = CognitiveProfileManager._normalize_text(b)
+        if not na or not nb:
+            return False
+        if na == nb:
+            return True
+        import difflib
+
+        return difflib.SequenceMatcher(None, na, nb).ratio() >= ratio
+
+    @staticmethod
     def _detect_contradiction(old: str, new: str) -> bool:
         """简单矛盾检测：新内容是否包含对旧内容的否定。"""
         negation_words = ["不", "反对", "拒绝", "并非", "不是", "而非", "不同于", "相反"]
+        # 前置拦截：新旧文本高度相似（同模板/近重复）→ 绝不判矛盾，
+        # 否则「不愿对外暴露心事」这类含否定词的模板文本重复提取会误生成伪 gap
+        if CognitiveProfileManager._texts_similar(old, new):
+            return False
         # 如果新内容包含否定词，且旧内容是肯定陈述，可能是矛盾
         # 这是简化版，真正的矛盾检测需要 LLM 辅助
         has_negation = any(w in new for w in negation_words)
@@ -433,13 +484,140 @@ class CognitiveProfileManager:
         similarity = overlap / union if union > 0 else 0
         return similarity < 0.5  # 相似度低于 50% 视为显著变化
 
+    # ------------------------------------------------------------------
+    # 存量清理：合并「同模板重复提取」产生的伪 gap / 重复 questioned 立场
+    # ------------------------------------------------------------------
+    def repair_fake_duplicate_gaps(self) -> dict:
+        """幂等清理历史伪矛盾数据（仅限内容高度相似的重复立场）。
 
-# 全局单例
-_default_manager: Optional[CognitiveProfileManager] = None
+        背景：旧版矛盾检测把「含否定词的模板文本」的重复提取误判为矛盾，
+        产生多条同内容 stance + 一个指向它们的僵尸 gap（真实案例：隐私与安全感，
+        3 条同款 stance + gap_c56a4090）。
+
+        本方法只合并**同 topic 且内容高度相似**（_texts_similar）的重复立场：
+        - 保留其中 active 的一条作为主条目，吸收其余重复条目的来源；
+        - 其余重复条目标记 superseded（保留历史，不删除）；
+        - 若某 open gap 的 related_items 全部指向已被合并/已 superseded 的重复条目
+          且同 topic 下已存在 active 主条目 → 将该 gap 标记 resolved。
+
+        幂等：重复执行不产生新副作用（已合并过则无变化）。
+        绝不触碰真实矛盾：内容差异大的 questioned 条目原样保留。
+        """
+        changes = {"merged_stances": [], "resolved_gaps": [], "note": ""}
+        profile = self.profile
+
+        # 按 topic 分组，找「同 topic 且内容高度相似」的 stance 簇
+        from collections import defaultdict
+
+        by_topic: dict[str, list] = defaultdict(list)
+        for s in profile.stances:
+            by_topic[s.topic].append(s)
+
+        for topic, items in by_topic.items():
+            if len(items) < 2:
+                continue
+            # 在簇内做两两相似判断，聚出「同一内容」的子簇
+            visited: set[str] = set()
+            for base in items:
+                if base.id in visited:
+                    continue
+                cluster = [base]
+                for other in items:
+                    if other.id == base.id or other.id in visited:
+                        continue
+                    if self._texts_similar(base.content, other.content):
+                        cluster.append(other)
+                if len(cluster) < 2:
+                    for c in cluster:
+                        visited.add(c.id)
+                    continue
+                # 簇内保留一条 active（无 active 则保留第一条），其余合并
+                primary = next((c for c in cluster if c.status == "active"), cluster[0])
+                for dup in cluster:
+                    if dup.id == primary.id:
+                        continue
+                    # 已合并过的 superseded 条目跳过（幂等：不重复合并）
+                    if dup.status == "superseded":
+                        continue
+                    if dup.status in ("questioned", "active"):
+                        # 合并来源到主条目（若主条目尚未含这些来源）
+                        for src in dup.sources:
+                            if src not in primary.sources:
+                                primary.sources.append(src)
+                        # 重算主条目置信度（复刻 add_source 逻辑）
+                        if primary.sources:
+                            avg_conf = sum(x.confidence for x in primary.sources) / len(primary.sources)
+                            primary.confidence = min(0.95, avg_conf + 0.05 * (len(primary.sources) - 1))
+                        primary.last_updated = _now()
+                        dup.mark_superseded(
+                            new_item_id=primary.id,
+                            reason=f"清理：与主条目内容高度相似（历史伪矛盾），合并来源",
+                        )
+                        changes["merged_stances"].append({
+                            "topic": topic, "dup_id": dup.id, "primary_id": primary.id,
+                            "dup_status": "superseded",
+                        })
+                    visited.add(dup.id)
+                visited.add(primary.id)
+                # 主条目恢复 active（若曾因伪矛盾被误标 questioned）
+                if primary.status == "questioned" and len(cluster) > 1:
+                    primary.status = "active"
+                    primary.history.append(HistoryEntry(
+                        action="restored",
+                        old_value="questioned", new_value="active",
+                        reason="清理：内容高度相似的重复立场，非真实矛盾", source="repair",
+                    ))
+                    primary.last_updated = _now()
+
+        # 消解指向「已无真实矛盾」的伪 gap：
+        # 若 gap 的 related 条目同 topic 下已有 active 主条目，且 related 内不存在
+        # 「内容不同的互相 questioned」真矛盾对 → 该 gap 是伪矛盾产物，可消解
+        for g in profile.cognitive_gaps:
+            if g.status != "open" or not g.related_items:
+                continue
+            related = [s for s in profile.stances if s.id in g.related_items]
+            if not related:
+                continue
+            topic = g.topic.split("：", 1)[-1].strip()
+            topic_items = [s for s in profile.stances if s.topic == topic]
+            has_active = any(s.status == "active" for s in topic_items)
+            # 真矛盾 = related 里存在两条 content 不同的 questioned 条目
+            real_conflict = any(
+                a.status == "questioned" and b.status == "questioned"
+                and not self._texts_similar(a.content, b.content)
+                for i, a in enumerate(related) for b in related[i + 1:]
+            )
+            if has_active and not real_conflict:
+                g.status = "resolved"
+                g.resolved_at = _now()
+                changes["resolved_gaps"].append({
+                    "gap_id": g.id, "topic": g.topic, "reason": "清理：related 均为同内容重复立场，非真实矛盾",
+                })
+
+        if changes["merged_stances"] or changes["resolved_gaps"]:
+            self.save()
+        else:
+            changes["note"] = "无需清理"
+        return changes
 
 
-def get_profile_manager(profile_path: Optional[str | Path] = None) -> CognitiveProfileManager:
-    global _default_manager
-    if _default_manager is None:
-        _default_manager = CognitiveProfileManager(profile_path)
-    return _default_manager
+# 全局单例（按 layer 隔离：认知层 / 情感层各自一个 manager）
+_default_managers: dict[str, CognitiveProfileManager] = {}
+
+
+def get_profile_manager(
+    profile_path: Optional[str | Path] = None,
+    layer: str = "cognitive",
+) -> CognitiveProfileManager:
+    """按 layer 获取画像管理器（全局缓存，同 layer 复用实例）。
+
+    兼容旧调用：get_profile_manager() → 认知层。
+    情感层：get_profile_manager(layer='emotional')。
+    测试库场景：传入 profile_path 时不缓存（每次新建，避免污染全局）。
+    """
+    if profile_path is not None:
+        return CognitiveProfileManager(profile_path, layer=layer)
+    key = layer or "cognitive"
+    if key not in _default_managers:
+        _default_managers[key] = CognitiveProfileManager(layer=key)
+    return _default_managers[key]

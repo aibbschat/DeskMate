@@ -30,7 +30,7 @@ def _hermetic():
     saved = {
         "store_CognitiveStore": storemod.CognitiveStore,
         "profile_CognitiveStore": pmod.CognitiveStore,
-        "profile_default_manager": pmod._default_manager,
+        "profile_default_managers": pmod._default_managers,
         "profile_gpm": pmod.get_profile_manager,
         "ival_CognitiveStore": ival.CognitiveStore,
         "ival_gpm": ival.get_profile_manager,
@@ -38,14 +38,17 @@ def _hermetic():
     }
     storemod.CognitiveStore = _TmpStore
     pmod.CognitiveStore = _TmpStore
-    pmod._default_manager = None
 
-    # 缓存单例：模拟真实环境的全局 _default_manager，确保 process_response 内的
-    # manager 与 stub extract 内的 manager 是同一实例（不会互相全量覆盖）
-    def _gpm():
-        if pmod._default_manager is None:
-            pmod._default_manager = pmod.CognitiveProfileManager()
-        return pmod._default_manager
+    # 缓存单例：模拟真实环境的全局 _default_managers（cognitive 层），确保
+    # process_response 内的 manager 与 stub extract 内的 manager 是同一实例
+    # （不会互相全量覆盖）
+    def _gpm(profile_path=None, layer="cognitive"):
+        if profile_path is not None:
+            return pmod.CognitiveProfileManager(profile_path, layer=layer)
+        key = layer or "cognitive"
+        if key not in pmod._default_managers:
+            pmod._default_managers[key] = pmod.CognitiveProfileManager(layer=key)
+        return pmod._default_managers[key]
 
     pmod.get_profile_manager = _gpm
     ival.CognitiveStore = _TmpStore
@@ -70,7 +73,7 @@ def _hermetic():
 def _restore(saved):
     storemod.CognitiveStore = saved["store_CognitiveStore"]
     pmod.CognitiveStore = saved["profile_CognitiveStore"]
-    pmod._default_manager = saved["profile_default_manager"]
+    pmod._default_managers = saved["profile_default_managers"]
     pmod.get_profile_manager = saved["profile_gpm"]
     ival.CognitiveStore = saved["ival_CognitiveStore"]
     ival.get_profile_manager = saved["ival_gpm"]

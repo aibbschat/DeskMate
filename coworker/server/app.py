@@ -3136,10 +3136,10 @@ def create_app(manager: SessionManager) -> FastAPI:
 
     @app.post("/v1/deskmate/cognitive/interview/start")
     async def post_cognitive_interview_start(request: Request) -> dict[str, Any]:
-        """发起一轮深度访谈：基于认知薄弱点生成苏格拉底式问题。
+        """发起一轮深度访谈：基于画像薄弱点生成苏格拉底式问题。
 
-        Body: {"limit": 3}（默认 3）。返回 {session_id, questions, total}；
-        暂无可问薄弱点时 session_id=null。
+        Body: {"limit": 3, "layer": "cognitive"}（默认 cognitive；layer='emotional' 为情感访谈）。
+        返回 {session_id, questions, total}；暂无可问薄弱点时 session_id=null。
         """
         try:
             body = await request.json()
@@ -3147,16 +3147,16 @@ def create_app(manager: SessionManager) -> FastAPI:
             body = {}
         try:
             from deskmate.cognitive import start_interview
-            return start_interview(limit=body.get("limit", 3))
+            return start_interview(limit=body.get("limit", 3), layer=body.get("layer", "cognitive"))
         except Exception:
             logging.exception("cognitive interview start failed")
             return JSONResponse({"error": "interview start failed"}, status_code=500)
 
     @app.post("/v1/deskmate/cognitive/interview/answer")
     async def post_cognitive_interview_answer(request: Request) -> dict[str, Any]:
-        """提交一个访谈回答：回灌认知画像、落库、判断是否问完。
+        """提交一个访谈回答：回灌画像、落库、判断是否问完。
 
-        Body: {"session_id": "...", "question_id": "...", "response": "..."}
+        Body: {"session_id": "...", "question_id": "...", "response": "...", "layer": "cognitive"}
         """
         try:
             body = await request.json()
@@ -3165,33 +3165,36 @@ def create_app(manager: SessionManager) -> FastAPI:
         sid = body.get("session_id", "")
         qid = body.get("question_id", "")
         resp = body.get("response", "")
+        layer = body.get("layer", "cognitive")
         if not sid or not qid:
             return JSONResponse({"error": "missing session_id/question_id"}, status_code=400)
         try:
             from deskmate.cognitive import answer_interview
-            return answer_interview(session_id=sid, question_id=qid, response=resp)
+            return answer_interview(session_id=sid, question_id=qid, response=resp, layer=layer)
         except Exception:
             logging.exception("cognitive interview answer failed")
             return JSONResponse({"error": "interview answer failed"}, status_code=500)
 
     @app.get("/v1/deskmate/cognitive/interview/should")
-    async def get_cognitive_interview_should() -> dict[str, Any]:
+    async def get_cognitive_interview_should(request: Request) -> dict[str, Any]:
         """是否应主动发起访谈（保守阈值：open gap>=2 且距上次>=3天）。供前端/调度判断。"""
         try:
+            layer = (request.query_params.get("layer") or "cognitive")
             from deskmate.cognitive import get_profile_manager, get_interview_engine
-            pm = get_profile_manager().get()
-            ok = get_interview_engine().should_interview_now(pm)
-            return {"should_interview": ok, "open_gaps": len(pm.open_gaps())}
+            pm = get_profile_manager(layer=layer).get()
+            ok = get_interview_engine().should_interview_now(pm, layer=layer)
+            return {"should_interview": ok, "open_gaps": len(pm.open_gaps()), "layer": layer}
         except Exception:
             logging.exception("cognitive interview should failed")
             return JSONResponse({"error": "interview should failed"}, status_code=500)
 
     @app.get("/v1/deskmate/cognitive/interview/sessions")
-    async def get_cognitive_interview_sessions() -> dict[str, Any]:
-        """历史访谈会话列表（含问题数、状态、摘要）。"""
+    async def get_cognitive_interview_sessions(request: Request) -> dict[str, Any]:
+        """历史访谈会话列表（含问题数、状态、摘要）。可传 layer 过滤。"""
         try:
+            layer = (request.query_params.get("layer") or "cognitive")
             from deskmate.cognitive.store import CognitiveStore
-            return {"sessions": CognitiveStore().list_sessions()}
+            return {"sessions": CognitiveStore().list_sessions(layer=layer), "layer": layer}
         except Exception:
             logging.exception("cognitive interview sessions failed")
             return JSONResponse({"error": "interview sessions failed"}, status_code=500)

@@ -146,12 +146,20 @@ def _candidate_flowers(growth) -> list[FlowerRecord]:
         spec = FLOWER_KINDS.get(kind)
         if not spec:
             continue
-        flower_kind, label, bed, mood = spec
+        flower_kind, label, bed, _default_mood = spec
         fp = _fingerprint(e)
         fid = f"{flower_kind}:{fp}"
         if fid in seen:
             continue
         seen.add(fid)
+        # 情绪定色：画像优先（事件类型兜底），见 emotion_profile.mood_tint_for_event
+        mood = _default_mood
+        try:
+            from deskmate.cognitive.emotion_profile import mood_tint_for_event
+
+            mood = mood_tint_for_event(kind) or _default_mood
+        except Exception:
+            pass  # fail-open：画像读取失败用默认
         out.append(FlowerRecord(
             flower_id=fid,
             kind=flower_kind,

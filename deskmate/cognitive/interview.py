@@ -151,14 +151,15 @@ class SocraticInterviewEngine(InterviewEngine):
         }
 
     def process_response(
-        self, profile: CognitiveProfile, question_id: str, response: str
+        self, profile: CognitiveProfile, question_id: str, response: str,
+        layer: str = "cognitive",
     ) -> CognitiveProfile:
         """处理用户对某访谈问题的回答，回灌认知画像。
 
         返回更新后的 profile（manager 已 save）。fail-open：异常只记 warning。
         """
         meta = _decode_question_id(question_id)
-        pm = get_profile_manager()
+        pm = get_profile_manager(layer=layer)
         response = (response or "").strip()
         if not response:
             logger.warning("访谈回答为空，跳过 q=%s", question_id)
@@ -172,7 +173,7 @@ class SocraticInterviewEngine(InterviewEngine):
                 self._deepen_item(pm, meta["related_item_id"], response)
             if meta["related_gap_id"]:
                 # 新领域：从回答提取认知 + 解该 gap
-                self._extract_and_resolve_gap(pm, meta["related_gap_id"], response)
+                self._extract_and_resolve_gap(pm, meta["related_gap_id"], response, layer=layer)
         except Exception as e:
             logger.warning("访谈回答处理失败（跳过）: %s", e)
         return pm.profile
@@ -197,13 +198,15 @@ class SocraticInterviewEngine(InterviewEngine):
         pm.save()
 
     @staticmethod
-    def _absorb_response(pm, gap_id, response):
+    def _absorb_response(pm, gap_id, response, layer="cognitive"):
         """把访谈回答作为认知信号并入画像（规则优先，不依赖 LLM）。
 
         explore（探索新领域）问题的核心价值：用户针对未知盲区的直接表达。
         - 同 topic 已有 active 条目 → 补充 interview 来源 + 升置信；
         - 新领域（无同 topic 条目）→ 新建 stance（source_type='interview'）。
         直接操作条目，绕开 add_stance 矛盾检测，避免误 spawn 假 gap。
+        layer='emotional' 时：按 gap topic 推断情感维度 tag（care_preference /
+        recovery_pattern / emotional_trigger），让访谈回灌能被子系统读为情感画像。
         """
         text = (response or "").strip()
         if not text:
@@ -215,9 +218,22 @@ class SocraticInterviewEngine(InterviewEngine):
         src = SourceRef(
             type="interview", title="深度访谈",
             excerpt=text[:120], date=_now(), confidence=0.6)
+        # 情感层：按 topic 推断维度 tag（供 care_preferences()/recovery_patterns() 读取）
+        emo_tags: list[str] = []
+        if layer == "emotional":
+            if "关怀" in topic:
+                emo_tags = ["情感层", "care_preference"]
+            elif "回血" in topic or "恢复" in topic:
+                emo_tags = ["情感层", "recovery_pattern"]
+            else:
+                emo_tags = ["情感层", "emotional_trigger"]
         # 已有同 topic active 条目 → 补充来源（升置信）
         for s in pm.profile.stances:
             if s.topic == topic and s.status == "active":
+                if emo_tags:
+                    for t in emo_tags:
+                        if t not in (s.tags or []):
+                            s.tags.append(t)
                 s.add_source(src)
                 s.history.append(HistoryEntry(
                     action="updated", old_value=s.content, new_value=s.content,
@@ -227,7 +243,7 @@ class SocraticInterviewEngine(InterviewEngine):
         # 新领域 → 新建 stance
         stance = Stance(
             topic=topic, content=text[:200], category="访谈",
-            tags=["访谈", "认知"])
+            tags=(["访谈", "认知"] if layer != "emotional" else ["访谈", "认知"] + emo_tags))
         stance.add_source(src)
         stance.history.append(HistoryEntry(
             action="created", new_value=text[:200],
@@ -236,7 +252,7 @@ class SocraticInterviewEngine(InterviewEngine):
         pm.profile.extraction_count += 1
 
     @staticmethod
-    def _extract_and_resolve_gap(pm, gap_id, response):
+    def _extract_and_resolve_gap(pm, gap_id, response, layer="cognitive"):
         """从回答吸收新认知（规则优先）并消解该 gap。
 
         修复③b 遗留断点：原实现给 extract_from_text 传了不存在的 use_llm 参数，
@@ -245,7 +261,7 @@ class SocraticInterviewEngine(InterviewEngine):
         chat() 需 ~9s，会阻塞回答接口；LLM 五维深度提取留给后续独立异步通道。
         """
         try:
-            SocraticInterviewEngine._absorb_response(pm, gap_id, response)
+            SocraticInterviewEngine._absorb_response(pm, gap_id, response, layer=layer)
         except Exception as e:
             logger.warning("访谈回答认知吸收失败（仍解 gap）: %s", e)
         for g in pm.profile.cognitive_gaps:
@@ -254,10 +270,11 @@ class SocraticInterviewEngine(InterviewEngine):
                 g.resolved_at = _now()
         pm.save()
 
-    def should_interview_now(self, profile: CognitiveProfile) -> bool:
+    def should_interview_now(self, profile: CognitiveProfile, layer: str = "cognitive") -> bool:
         """保守主动触发：open gap 数达阈值 且 距上次访谈足够久。"""
+        meta_key = f"last_interview_at:{layer}" if layer != "cognitive" else "last_interview_at"
         try:
-            last = CognitiveStore().get_meta("last_interview_at")
+            last = CognitiveStore().get_meta(meta_key)
         except Exception:
             last = None
         if last:
@@ -278,35 +295,37 @@ def get_interview_engine() -> SocraticInterviewEngine:
     return SocraticInterviewEngine()
 
 
-def start_interview(limit: int = 3, use_llm: bool = False) -> dict:
+def start_interview(limit: int = 3, use_llm: bool = False, layer: str = "cognitive") -> dict:
     """发起一轮访谈：生成问题 + 建 session。返回 {session_id, questions, total}。
 
     若暂无可问薄弱点，返回 session_id=None（不建空 session）。
+    layer='cognitive' 认知访谈；layer='emotional' 情感访谈（复用同一引擎/骨架）。
     """
-    pm = get_profile_manager()
+    pm = get_profile_manager(layer=layer)
     engine = get_interview_engine()
     questions = engine.generate_questions(pm.profile, limit=limit, use_llm=use_llm)
     if not questions:
         return {"session_id": None, "questions": [],
-                "note": "暂无可问的认知薄弱点（无 open gap / 无低置信条目）"}
+                "note": "暂无可问的薄弱点（无 open gap / 无低置信条目）"}
     qids = [q["id"] for q in questions]
     store = CognitiveStore()
     # 复用 gap_ids 列存本次问题 id 列表（session 层语义：本次访谈涉及的目标 id）
-    sid = store.create_session(gap_ids=qids)
+    sid = store.create_session(layer=layer, gap_ids=qids)
     return {"session_id": sid, "questions": questions, "total": len(questions)}
 
 
-def answer_interview(session_id: str, question_id: str, response: str, use_llm: bool = False) -> dict:
+def answer_interview(session_id: str, question_id: str, response: str,
+                     use_llm: bool = False, layer: str = "cognitive") -> dict:
     """提交一个访谈回答：回灌画像 + 落 qa（含问题文本）+ 判断是否问完。"""
-    pm = get_profile_manager()
+    pm = get_profile_manager(layer=layer)
     engine = get_interview_engine()
-    engine.process_response(pm.profile, question_id, response)
+    engine.process_response(pm.profile, question_id, response, layer=layer)
     store = CognitiveStore()
     # 反解问题文本落库（qid 无状态可恢复），访谈历史可追溯"问了什么+答了什么"
     q_text = _reconstruct_question_text(_decode_question_id(question_id), pm)
     store.add_qa(session_id=session_id, question_id=question_id, question=q_text, answer=response)
     # 判断是否问完：已答数 == 该 session 问题数
-    sessions = [s for s in store.list_sessions() if s["id"] == session_id]
+    sessions = [s for s in store.list_sessions(layer=layer) if s["id"] == session_id]
     total = len(sessions[0]["gap_ids"]) if sessions else 0
     answered = len(store.get_qa(session_id))
     done = (total > 0 and answered >= total)
@@ -318,15 +337,15 @@ def answer_interview(session_id: str, question_id: str, response: str, use_llm: 
     }
 
 
-def maybe_trigger_interview(limit: int = 3) -> Optional[dict]:
+def maybe_trigger_interview(limit: int = 3, layer: str = "cognitive") -> Optional[dict]:
     """保守主动触发钩子：满足 should_interview_now 才发起，否则返回 None。
 
     供 proactivity tick / 定时任务调用；本轮不自动挂 UI（避免唠叨，前端访谈页后续做）。
     """
-    pm = get_profile_manager()
-    if not get_interview_engine().should_interview_now(pm.profile):
+    pm = get_profile_manager(layer=layer)
+    if not get_interview_engine().should_interview_now(pm.profile, layer=layer):
         return None
-    return start_interview(limit=limit)
+    return start_interview(limit=limit, layer=layer)
 
 
 # 注册（导入即生效）——registry["interview_engine"] 不再是 None

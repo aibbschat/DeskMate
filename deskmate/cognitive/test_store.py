@@ -90,6 +90,99 @@ def test_contradiction_spawns_gap():
     print("OK test_contradiction_spawns_gap")
 
 
+def test_same_template_repeat_no_fake_gap():
+    """回归：同模板文本（含否定词）重复提取不得误判为矛盾、不得 spawn 假 gap。
+
+    真实案例：日记规则提取「隐私与安全感」用的是固定模板（含「不愿对外暴露心事」
+    的「不」字）。用户写多篇触发同一规则的日记 → 同模板重复 add_stance，
+    旧实现因模板带否定词 + 新旧关键词重合被误判 contradiction →
+    产生 3 条同款 stance + 1 个僵尸 gap。本用例锁定修复。
+    """
+    tmp = Path(tempfile.mkdtemp())
+    db = tmp / "deskmate.db"
+    pm = CognitiveProfileManager(db)
+    template = "把小桔日记视为与 AI 共享的私密花园，强调内容只有小桔可见、有安全感；" \
+               "重视私密表达空间，不愿对外暴露心事。"
+    # 三篇不同日记触发同一规则模板 → 三次 add_stance
+    for i in range(3):
+        s, op = pm.add_stance(
+            "隐私与安全感", template,
+            SourceRef(type="diary", title=f"diary/p{i}", excerpt=template[:50], date="2026-09-01"),
+            tags=["关系", "隐私", "安全感"],
+        )
+        assert op == "updated" if i > 0 else op == "created", (i, op)
+        assert s.status == "active", f"第 {i+1} 次提取不应被标 questioned"
+    # 不 spawn 假 gap
+    assert len(pm.get().cognitive_gaps) == 0, f"不应生成伪 gap，实际 {len(pm.get().cognitive_gaps)}"
+    # 只有一条 active stance（补充来源而非新增）
+    active = [s for s in pm.get().stances if s.status == "active" and s.topic == "隐私与安全感"]
+    assert len(active) == 1, f"应只有 1 条 active，实际 {len(active)}"
+    assert len(active[0].sources) == 3, "三次提取应累积 3 个来源"
+    import shutil
+
+    shutil.rmtree(tmp)
+    print("OK test_same_template_repeat_no_fake_gap：同模板重复提取不误判矛盾、不 spawn 伪 gap")
+
+
+def test_repair_fake_duplicate_gaps():
+    """存量清理：合并历史伪矛盾重复立场 + 消解僵尸 gap（幂等，不碰真实矛盾）。"""
+    tmp = Path(tempfile.mkdtemp())
+    db = tmp / "deskmate.db"
+    pm = CognitiveProfileManager(db)
+    template = "把小桔日记视为与 AI 共享的私密花园，强调内容只有小桔可见、有安全感；" \
+               "重视私密表达空间，不愿对外暴露心事。"
+
+    # 模拟旧版 bug 产生的脏数据：同 topic 三条同内容 stance（2 questioned + 1 active）
+    s1, _ = pm.add_stance("隐私与安全感", template,
+                          SourceRef(type="diary", title="diary/p1", excerpt=template[:50], date="2026-09-01"))
+    # 手动构造：第二条同内容被误判 questioned（复刻旧 bug 产物）
+    s2 = Stance(topic="隐私与安全感", content=template, category="立场",
+                tags=["关系", "隐私", "安全感"], status="questioned")
+    s2.add_source(SourceRef(type="diary", title="diary/p2", excerpt=template[:50], date="2026-09-02"))
+    pm.profile.stances.append(s2)
+    s3 = Stance(topic="隐私与安全感", content=template, category="立场",
+                tags=["关系", "隐私", "安全感"], status="questioned")
+    s3.add_source(SourceRef(type="diary", title="diary/p3", excerpt=template[:50], date="2026-09-03"))
+    pm.profile.stances.append(s3)
+    # 僵尸 gap 指向 s2/s3
+    pm.profile.cognitive_gaps.append(CognitiveGap(
+        topic="立场矛盾：隐私与安全感",
+        reason="伪矛盾", priority=0.8, related_items=[s2.id, s3.id], status="open",
+    ))
+    # 另加一条真实矛盾（不应被误清理）
+    pm.profile.stances.append(Stance(
+        topic="真实矛盾", content="AI 创作是工具", category="立场", status="questioned"))
+    pm.profile.stances.append(Stance(
+        topic="真实矛盾", content="AI 创作必须拒绝", category="立场", status="questioned"))
+    pm.profile.cognitive_gaps.append(CognitiveGap(
+        topic="立场矛盾：真实矛盾", reason="真矛盾", priority=0.8,
+        related_items=[pm.profile.stances[-2].id, pm.profile.stances[-1].id], status="open",
+    ))
+    pm.save()
+
+    res = pm.repair_fake_duplicate_gaps()
+    assert len(res["merged_stances"]) >= 2, res
+    assert len(res["resolved_gaps"]) == 1, res
+    # 隐私与安全感只剩一条 active 主条目
+    act = [s for s in pm.get().stances
+           if s.topic == "隐私与安全感" and s.status == "active"]
+    assert len(act) == 1, f"应只剩 1 条 active，实际 {len(act)}"
+    assert len(act[0].sources) == 3, "主条目应吸收 3 个来源"
+    # 僵尸 gap 已消解
+    g = [g for g in pm.get().cognitive_gaps if g.topic == "立场矛盾：隐私与安全感"][0]
+    assert g.status == "resolved"
+    # 真实矛盾原样保留
+    real = [g for g in pm.get().cognitive_gaps if g.topic == "立场矛盾：真实矛盾"][0]
+    assert real.status == "open", "真实矛盾不得被误清理"
+    # 幂等：再跑一次无副作用
+    res2 = pm.repair_fake_duplicate_gaps()
+    assert res2["merged_stances"] == [] and res2["resolved_gaps"] == [], res2
+    import shutil
+
+    shutil.rmtree(tmp)
+    print("OK test_repair_fake_duplicate_gaps：存量伪矛盾合并+消解，幂等，不碰真实矛盾")
+
+
 def test_calibrate_resolves_gap():
     tmp = Path(tempfile.mkdtemp())
     db = tmp / "deskmate.db"
