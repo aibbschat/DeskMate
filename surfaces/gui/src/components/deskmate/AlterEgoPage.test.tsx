@@ -7,7 +7,7 @@
  * - 栏目网格仍正常渲染（含情感栏目）
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { AlterEgoPage } from "./AlterEgoPage";
 
 function json(body: unknown): Response {
@@ -73,26 +73,36 @@ describe("AlterEgoPage 懂我中心头部", () => {
     render(<AlterEgoPage open onClose={() => {}} />);
     // 等数据加载
     expect(await screen.findByText("小桔有多懂我")).toBeTruthy();
-    expect(screen.getByText("73%")).toBeTruthy();
+    expect(screen.getAllByText("73%").length).toBeGreaterThanOrEqual(1);
     expect(screen.getByText("正在懂你")).toBeTruthy();
     expect(screen.getByText("54 条画像特征")).toBeTruthy();
   });
 
-  it("渲染待澄清问题列表（聚合 gaps）", async () => {
+  it("渲染待澄清去回答按钮（聚合 gaps）", async () => {
     stubFetch(ALTER_EGO);
     render(<AlterEgoPage open onClose={() => {}} />);
-    expect(await screen.findByText("想更懂你 · 待澄清问题")).toBeTruthy();
-    expect(screen.getByText("情感·关怀偏好")).toBeTruthy();
-    expect(screen.getByText("情感·回血方式")).toBeTruthy();
-    // 2 个待澄清角标
-    expect(screen.getAllByText("去回答 →").length).toBe(2);
+    expect(await screen.findByText(/去回答·关怀偏好/)).toBeTruthy();
+    expect(screen.getByText(/去回答·回血方式/)).toBeTruthy();
   });
 
-  it("栏目网格仍正常渲染（含情感栏目）", async () => {
+  it("三环绕按键正常渲染（认知/情感/侧写 + 计数）", async () => {
     stubFetch(ALTER_EGO);
     render(<AlterEgoPage open onClose={() => {}} />);
-    expect(await screen.findByText("它理解的我")).toBeTruthy();
-    expect(screen.getByText("它在乎的")).toBeTruthy();
+    expect(await screen.findByText(/它理解的我/)).toBeTruthy();
+    expect(screen.getByText(/它在乎的/)).toBeTruthy();
+    expect(screen.getByText(/它在学什么/)).toBeTruthy();
+    // 认知 1 条 / 情感 1 条 / 侧写聚合其余（0）
+    expect(screen.getByText("认知 · 1")).toBeTruthy();
+    expect(screen.getByText("情感 · 1")).toBeTruthy();
+  });
+
+  it("点认知按键弹出维度数字弹层", async () => {
+    stubFetch(ALTER_EGO);
+    render(<AlterEgoPage open onClose={() => {}} />);
+    // stub 里 cognitive.articles 只有一条且无 dimension → 归入 other 分组
+    fireEvent.click(await screen.findByText(/它理解的我/));
+    expect(screen.getByText("🧠 它理解的我 · 认知")).toBeTruthy();
+    expect(screen.getByText("点这里看详情 →")).toBeTruthy();
   });
 
   it("无 identity 时优雅降级（不崩溃）", async () => {
@@ -109,6 +119,6 @@ describe("AlterEgoPage 懂我中心头部", () => {
     render(<AlterEgoPage open onClose={() => {}} />);
     // 仍能渲染标题栏，无 identity 头部时 likeness 为 0 但页面不崩
     expect(await screen.findByText("它眼中的我")).toBeTruthy();
-    expect(screen.getByText("0%")).toBeTruthy();
+    expect(screen.getAllByText("0%").length).toBeGreaterThanOrEqual(1);
   });
 });
