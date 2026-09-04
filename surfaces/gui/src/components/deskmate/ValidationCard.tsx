@@ -32,6 +32,7 @@ export function ValidationCard({ validation, onClose }: ValidationCardProps) {
     dimension_scores: Record<string, number>;
     feedback: string;
     divergence_points: string[];
+    engine?: string;
   } | null>(null);
   const timerRef = useRef<ReturnType<typeof setTimeout>>();
 
@@ -88,6 +89,7 @@ export function ValidationCard({ validation, onClose }: ValidationCardProps) {
           dimension_scores: r.evaluation.dimension_scores || {},
           feedback: r.evaluation.feedback || "",
           divergence_points: r.evaluation.divergence_points || [],
+          engine: r.evaluation._engine,
         });
         setPhase("done");
       } else {
@@ -238,6 +240,27 @@ export function ValidationCard({ validation, onClose }: ValidationCardProps) {
             >
               {result.feedback}
             </div>
+            {result.engine && (
+              <div className="mt-1.5 text-center">
+                <span
+                  className="inline-block rounded-full px-2.5 py-0.5 text-[11px]"
+                  style={{
+                    background:
+                      result.engine === "llm"
+                        ? "rgba(255, 167, 38, 0.14)"
+                        : "rgba(108, 117, 125, 0.12)",
+                    color:
+                      result.engine === "llm"
+                        ? "var(--accent)"
+                        : "var(--muted)",
+                  }}
+                >
+                  {result.engine === "llm"
+                    ? "AI 语义评估"
+                    : "本地规则评估"}
+                </span>
+              </div>
+            )}
 
             {/* 像我度环 */}
             <div className="flex items-center justify-center my-4">

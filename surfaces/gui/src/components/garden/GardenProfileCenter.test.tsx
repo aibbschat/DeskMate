@@ -142,4 +142,25 @@ describe("GardenProfileCenter 沉浸式花园", () => {
     await vi.waitFor(() => expect(screen.getByText("花园的门")).toBeTruthy());
     expect(screen.queryByRole("status")).toBeNull();
   });
+
+  it("点「花园的门 → 它眼中的我」打开全屏懂我中心（AlterEgoPage）而非旧面板", async () => {
+    stubFetch();
+    render(<GardenProfileCenter onBack={() => {}} />);
+    await vi.waitFor(() => expect(screen.getByText("花园的门")).toBeTruthy());
+
+    // 打开门 → 菜单
+    fireEvent.click(screen.getByText("花园的门"));
+    await vi.waitFor(() => expect(screen.getByText("它眼中的我")).toBeTruthy());
+
+    // 点「它眼中的我」→ 应打开 AlterEgoPage（副标题「从你身上学到的」是其独有文案）
+    fireEvent.click(screen.getByText("它眼中的我"));
+    await vi.waitFor(() => {
+      expect(screen.getByText(/从你身上学到的/)).toBeTruthy();
+      // 全屏页有「关闭」按钮（旧面板用的是面板 ✕）
+      expect(screen.getByText("关闭")).toBeTruthy();
+    });
+
+    // 旧面板独有的 sub 文案不应出现
+    expect(screen.queryByText(/角落已就绪/)).toBeNull();
+  });
 });

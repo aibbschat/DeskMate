@@ -3511,6 +3511,7 @@ export interface ValidationResult {
     dimension_scores: Record<string, number>;
     divergence_points: string[];
     feedback: string;
+    _engine?: string;
   };
   applied?: boolean;
   note?: string;

@@ -17,6 +17,7 @@ ValidationEngine 实现 ——「认知 Turing test」。
 
 from __future__ import annotations
 
+import json
 import re
 import uuid
 from datetime import datetime
@@ -179,17 +180,13 @@ class TuringScenarioEngine(ValidationEngine):  # noqa: F821 (base 在 interfaces
         ai_response: str,
         user_response: str,
         related_items: Optional[list[str]] = None,
+        use_llm: bool = True,
     ) -> dict:
         """
-        评估 AI 回答和用户回答的相似度（四维度，规则驱动）。
+        评估 AI 回答和用户回答的相似度（四维度）。
 
-        逻辑：
-        - stance（立场一致性）：先判方向（坚守/妥协词），再叠加与画像关键词贴合度。
-        - argument（论证模式）：论证连接词 + 思维框架步骤。
-        - value（价值观排序）：排序优先项 + 价值观内容关键词。
-        - expression（表达习惯）：用词重合 + 作者风格词。
-
-        related_items：限定评估只针对场景引用的画像条目（默认全量，取前 6）。
+        优先用 LLM 做语义级对比（理解同义改写、论证路径），
+        LLM 不可用 / 超时 / 解析失败时自动降级到本地规则引擎（fail-open）。
 
         返回：{"overall_score", "dimension_scores", "divergence_points", "feedback"}
         """
@@ -201,6 +198,150 @@ class TuringScenarioEngine(ValidationEngine):  # noqa: F821 (base 在 interfaces
                 "feedback": "回答缺失，本次验证无效。",
             }
 
+        # LLM 优先：语义级评估（理解同义改写/论证路径），失败静默降级规则
+        if use_llm:
+            llm_ev = self._evaluate_with_llm(profile, ai_response, user_response, related_items)
+            if llm_ev is not None:
+                llm_ev["_engine"] = "llm"
+                return llm_ev
+
+        ev = self._evaluate_rules(profile, ai_response, user_response, related_items)
+        ev["_engine"] = "rules"
+        return ev
+
+    def _evaluate_with_llm(
+        self,
+        profile: CognitiveProfile,
+        ai_response: str,
+        user_response: str,
+        related_items: Optional[list[str]] = None,
+    ) -> Optional[dict]:
+        """调用 LLM 做语义级相似度评估。任何异常返回 None（调用方降级规则）。"""
+        try:
+            from deskmate.memory.llm import chat_memory, memory_llm_available
+        except Exception:
+            return None
+        if not memory_llm_available():
+            return None
+
+        # 收集画像条目（供 LLM 判断"像不像你"）
+        related: list[Any] = []
+        if related_items:
+            all_items = (
+                list(profile.active_stances())
+                + list(profile.active_values())
+                + list(profile.active_frameworks())
+                + list(profile.active_patterns())
+            )
+            related = [it for it in all_items if it.id in related_items]
+        if not related:
+            for s in profile.active_stances()[:6]:
+                related.append(s)
+
+        # 画像条目摘要（立场/价值观为主，最多 5 条）
+        item_lines: list[str] = []
+        for it in related[:5]:
+            tag = "立场" if getattr(it, "topic", "") else "价值观/框架"
+            title = getattr(it, "topic", "") or getattr(it, "domain", "") or "未分类"
+            content = _content_of_item(it)[:90]
+            conf = getattr(it, "confidence", 0.5)
+            item_lines.append(f"- [{tag}] {title}：{content}（置信度 {conf:.0%}）")
+
+        system = (
+            "你是一个严谨的「认知相似度评估器」。你会拿到用户的认知画像（已确认的立场/价值观/思维框架）、"
+            "一个验证情境、一段 AI 模拟用户身份的回答、一段用户的真实回答。\n"
+            "你的任务：判断 AI 的回答在多大程度上像『这个用户本人』会说的话。"
+            "要理解语义，而不是只对关键词。\n"
+            "评分维度（各 0-1 小数）：\n"
+            "- stance 立场一致性：核心观点方向是否一致，是否都贴合画像立场\n"
+            "- argument 论证模式：论证路径/依据是否相似（是否都引用史实、讲因果、讲代价、讲原则）\n"
+            "- value 价值观排序：涉及取舍时，优先级是否一致\n"
+            "- expression 表达习惯：用词、语气、书面化程度、严谨度是否相似\n"
+            "overall_score 是四维综合。divergence_points 列出 AI 与用户真实差异的具体点（无则空数组）。\n"
+            "只输出 JSON，不要任何其他文字。"
+        )
+        user = (
+            f"【用户认知画像】\n{chr(10).join(item_lines)}\n\n"
+            f"【AI 模拟回答】\n{ai_response}\n\n"
+            f"【用户真实回答】\n{user_response}\n\n"
+            f"输出 JSON：{{\"overall_score\": 0-1, \"dimension_scores\": "
+            f"{{\"stance\":0-1,\"argument\":0-1,\"value\":0-1,\"expression\":0-1}}, "
+            f"\"divergence_points\": [\"...\"], \"feedback\": \"一句话总结\"}}"
+        )
+
+        try:
+            raw = chat_memory(
+                system,
+                user,
+                temperature=0.2,
+                max_tokens=500,
+                timeout=60.0,
+            )
+        except Exception:
+            return None
+
+        if not raw:
+            return None
+        # 容错解析：剥离 ```json 包裹 / 提取第一个 { ... }
+        text = raw.strip()
+        if text.startswith("```"):
+            text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text)
+        m = re.search(r"\{.*\}", text, re.S)
+        if not m:
+            return None
+        try:
+            d = json.loads(m.group(0))
+        except Exception:
+            return None
+
+        # 校验字段
+        dims = d.get("dimension_scores") or {}
+        def _num(v: Any, default: float) -> float:
+            try:
+                f = float(v)
+                return min(1.0, max(0.0, f))
+            except Exception:
+                return default
+
+        dim_scores = {
+            "stance": _num(dims.get("stance"), 0.5),
+            "argument": _num(dims.get("argument"), 0.5),
+            "value": _num(dims.get("value"), 0.5),
+            "expression": _num(dims.get("expression"), 0.5),
+        }
+        overall = _num(d.get("overall_score"), sum(dim_scores.values()) / 4)
+        divergence = d.get("divergence_points") or []
+        if not isinstance(divergence, list):
+            divergence = []
+        feedback = str(d.get("feedback") or "")
+        if not feedback:
+            feedback = "AI 的回答与你的回答大体一致。" if overall >= 0.5 else "AI 的回答和你差别较大。"
+
+        return {
+            "overall_score": round(overall, 2),
+            "dimension_scores": {k: round(v, 2) for k, v in dim_scores.items()},
+            "divergence_points": divergence,
+            "feedback": feedback,
+        }
+
+    def _evaluate_rules(
+        self,
+        profile: CognitiveProfile,
+        ai_response: str,
+        user_response: str,
+        related_items: Optional[list[str]] = None,
+    ) -> dict:
+        """
+        规则驱动的相似度评估（LLM 不可用时的 fallback）。
+
+        逻辑：
+        - stance（立场一致性）：先判方向（坚守/妥协词），再叠加与画像关键词贴合度。
+        - argument（论证模式）：论证连接词 + 思维框架步骤。
+        - value（价值观排序）：排序优先项 + 价值观内容关键词。
+        - expression（表达习惯）：用词重合 + 作者风格词。
+
+        related_items：限定评估只针对场景引用的画像条目（默认全量，取前 6）。
+        """
         dim_scores: dict[str, float] = {}
         divergence: list[str] = []
 

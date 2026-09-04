@@ -11,6 +11,7 @@
 import os
 import sys
 import tempfile
+import json
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent.parent
@@ -103,6 +104,7 @@ def test_evaluate_direction_mismatch_low_stance():
         scenario["id"],
         "我会改。稿费翻倍为什么不改？商业价值第一。",       # AI 违背画像
         "不改。史料真实性是前提，不能为讨好读者扭曲结局。",   # 用户符合画像
+        use_llm=False,  # 规则引擎方向逻辑
     )
     assert ev["overall_score"] < 0.5
     assert ev["dimension_scores"]["stance"] < 0.3
@@ -119,6 +121,7 @@ def test_evaluate_direction_match_high():
         scenario["id"],
         "不改。史料就是史料，守住创作底线，不能为商业扭曲历史。",
         "不改。真实比稿费重要，尊重史实是我的底线。",
+        use_llm=False,
     )
     # 方向一致 → stance 不低
     assert ev["dimension_scores"]["stance"] >= 0.5
@@ -137,6 +140,7 @@ def test_apply_feedback_downgrade_and_gap():
         scenario["id"],
         "我会改。稿费翻倍为什么不改？商业价值第一。",
         "不改。史料真实性是前提。",
+        use_llm=False,
     )
     ev["related_items"] = scenario["related_items"]
     ev["scenario"] = scenario["scenario"]
@@ -186,3 +190,54 @@ def test_apply_feedback_upgrade_confidence():
 
     after = next(it for it in pm.get().stances if it.id == item_id).confidence
     assert after > before  # 置信度升了
+
+
+def test_evaluate_uses_llm_when_available(monkeypatch):
+    """LLM 可用且返回合法 JSON → 走 LLM 评估（_engine=llm）。"""
+    monkeypatch.setattr(
+        "deskmate.memory.llm.chat_memory",
+        lambda *a, **k: json.dumps({
+            "overall_score": 0.82,
+            "dimension_scores": {"stance": 0.85, "argument": 0.8, "value": 0.78, "expression": 0.75},
+            "divergence_points": [],
+            "feedback": "AI 的回答与你高度一致。",
+        }, ensure_ascii=False),
+    )
+    monkeypatch.setattr(
+        "deskmate.memory.llm.memory_llm_available",
+        lambda *a, **k: True,
+    )
+
+    pm, tmp = _fresh_manager()
+    engine = get_validation_engine()
+    scenario = engine.generate_scenario(pm.get())
+    ev = engine.evaluate_similarity(
+        pm.get(), scenario["id"],
+        "不改。史料是底线，不能为商业扭曲历史结局。",
+        "不改。真实比稿费重要，尊重史实。",
+        related_items=scenario["related_items"],
+    )
+    assert ev["_engine"] == "llm"
+    assert ev["overall_score"] == 0.82
+    assert ev["dimension_scores"]["stance"] == 0.85
+
+
+def test_evaluate_falls_back_to_rules_when_llm_fails(monkeypatch):
+    """LLM 不可用 / 抛异常 → 静默降级到规则引擎（_engine=rules）。"""
+    def boom(*a, **k):
+        raise RuntimeError("LLM 不可用")
+
+    monkeypatch.setattr("deskmate.memory.llm.chat_memory", boom)
+    monkeypatch.setattr("deskmate.memory.llm.memory_llm_available", lambda *a, **k: True)
+
+    pm, tmp = _fresh_manager()
+    engine = get_validation_engine()
+    scenario = engine.generate_scenario(pm.get())
+    ev = engine.evaluate_similarity(
+        pm.get(), scenario["id"],
+        "我会改。稿费翻倍为什么不改？商业价值第一。",
+        "不改。史料真实性是前提。",
+        related_items=scenario["related_items"],
+    )
+    assert ev["_engine"] == "rules"
+    assert ev["dimension_scores"]["stance"] < 0.3  # 规则仍能判方向相反

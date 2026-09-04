@@ -27,7 +27,6 @@ import {
   GardenFlowersPanel,
   GardenGateMenu,
   GardenMemoryPanel,
-  GardenPortraitPanel,
   GardenStatsPanel,
   GardenTreePanel,
 } from "./GardenPanels";
@@ -103,7 +102,13 @@ export function GardenProfileCenter({ onBack }: { onBack: () => void }) {
         {/* 花园的门 → 功能菜单 */}
         {panel === "gate" && (
           <GardenGateMenu
-            onOpen={(f) => setPanel(f === "portrait" ? "portrait" : f === "memory" ? "memory" : f === "stats" ? "stats" : "badges")}
+            onOpen={(f) => {
+              // 「它眼中的我」→ 直接打开全屏懂我中心（AlterEgoPage：像我度 + 画像栏目 + 待澄清）
+              if (f === "portrait") {
+                setPanel(null);
+                setAlterEgoOpen(true);
+              } else setPanel(f === "memory" ? "memory" : f === "stats" ? "stats" : "badges");
+            }}
             onClose={() => setPanel(null)}
             onToggleGuest={toggleGuest}
             guestMode={guestMode}
@@ -131,7 +136,6 @@ export function GardenProfileCenter({ onBack }: { onBack: () => void }) {
             onClose={() => setPanel(null)}
           />
         )}
-        {panel === "portrait" && <GardenPortraitPanel onClose={() => setPanel(null)} />}
         {panel === "memory" && <GardenMemoryPanel onClose={() => setPanel(null)} />}
         {panel === "stats" && <GardenStatsPanel onClose={() => setPanel(null)} />}
         {panel === "badges" && <GardenBadgesPanel onClose={() => setPanel(null)} onBackHome={() => setSpace("friends")} />}
