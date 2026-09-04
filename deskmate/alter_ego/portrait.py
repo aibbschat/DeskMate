@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -721,10 +722,83 @@ def _cognitive_section() -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# 栏目 9：它在乎的（情感层——触发点/回血方式/关怀偏好）
+# ---------------------------------------------------------------------------
+def _emotional_section() -> dict[str, Any]:
+    """情感画像栏目——从情感层（layer='emotional'）聚合数据。
+
+    数据来自真实日记亲口表达（emotion_extract.py 提取），三块：
+    - 情感触发点（正/负）：什么让他情绪变化
+    - 回血方式：他情绪低落时靠什么恢复
+    - 关怀偏好：他偏好的被关怀方式（通常为空 → 待访谈）
+    """
+    try:
+        from deskmate.cognitive.emotion_profile import (
+            triggers, recovery_patterns, care_preferences, ensure_emotional_gaps,
+        )
+    except Exception:
+        return {
+            "id": "emotional", "title": "它在乎的", "icon": "💛", "status": "empty",
+            "headline": "情感画像未就绪（情感层读取失败）", "articles": [], "updated_at": "",
+        }
+
+    articles: list[dict[str, Any]] = []
+    # 情感触发点（正/负）
+    for t in triggers():
+        polarity = "正向" if t["polarity"] == "positive" else "负向"
+        articles.append({
+            "title": f"{polarity}情绪触发：{t['topic']}",
+            "content": t["content"],
+            "evidence": f"置信度 {t['confidence']:.0%} · {t['source_count']} 个来源",
+            "tags": ["情感触发", polarity] + [t["topic"]],
+            "item_id": "",
+            "dimension": "emotional_trigger",
+        })
+    # 回血方式
+    for r in recovery_patterns():
+        articles.append({
+            "title": f"回血方式：{r['topic']}",
+            "content": r["content"],
+            "evidence": f"置信度 {r['confidence']:.0%} · {r['source_count']} 个来源",
+            "tags": ["回血"] + [r["topic"]],
+            "item_id": "",
+            "dimension": "recovery_pattern",
+        })
+    # 关怀偏好（通常为空 → 提示待访谈）
+    for c in care_preferences():
+        articles.append({
+            "title": f"关怀偏好：{c['topic']}",
+            "content": c["content"],
+            "evidence": f"置信度 {c['confidence']:.0%} · {c['source_count']} 个来源",
+            "tags": ["关怀偏好"] + [c["topic"]],
+            "item_id": "",
+            "dimension": "care_preference",
+        })
+
+    if articles:
+        status = "ready"
+        dims: dict[str, int] = {}
+        for a in articles:
+            d = a.get("dimension", "other")
+            dims[d] = dims.get(d, 0) + 1
+        dim_labels = {"emotional_trigger": "情绪触发", "recovery_pattern": "回血方式", "care_preference": "关怀偏好"}
+        dim_str = "、".join(f"{dim_labels.get(k, k)}{v}条" for k, v in dims.items())
+        headline = f"已捕捉 {len(articles)} 条情感特征（{dim_str}），来自你的真实日记表达"
+    else:
+        status = "empty"
+        headline = "还没有情感画像。让它读你的日记，它会慢慢懂什么让你开心、什么让你累。"
+
+    return {
+        "id": "emotional", "title": "它在乎的", "icon": "💛", "status": status,
+        "headline": headline, "articles": articles, "updated_at": "",
+    }
+
+
+# ---------------------------------------------------------------------------
 # 聚合入口
 # ---------------------------------------------------------------------------
 def build_portrait() -> dict[str, Any]:
-    """构建「它眼中的我」完整画像（8 个栏目）。"""
+    """构建「它眼中的我」完整画像（9 个栏目 + identity 汇总）。"""
     sections = [
         _writing_style_section(),
         _decision_preference_section(),
@@ -734,6 +808,7 @@ def build_portrait() -> dict[str, Any]:
         _privacy_cross_project_section(),
         _auto_tasks_section(),
         _cognitive_section(),
+        _emotional_section(),
     ]
 
     # 按学习深度排序：ready > learning > empty，同状态按文章数降序
@@ -744,6 +819,9 @@ def build_portrait() -> dict[str, Any]:
     learning_count = sum(1 for s in sections if s["status"] == "learning")
     total_articles = sum(len(s.get("articles", [])) for s in sections)
 
+    # identity：像我程度 + 了解进度 顶层汇总（供「懂我中心」页面原型用）
+    identity = _build_identity(sections, total_articles)
+
     return {
         "sections": sections,
         "summary": {
@@ -752,5 +830,87 @@ def build_portrait() -> dict[str, Any]:
             "empty_count": len(sections) - ready_count - learning_count,
             "total_articles": total_articles,
         },
+        "identity": identity,
         "generated_at": datetime.now().isoformat(),
     }
+
+
+def _build_identity(sections: list[dict[str, Any]], total_articles: int) -> dict[str, Any]:
+    """汇总「像我程度」——基于核心画像置信度 + 缺口惩罚估算。
+
+    诚实标注：这是基于数据覆盖度/置信度的估算分，不是严格 Turing test 分。
+    Turing test 精确分待 ValidationEngine 落地后并入。
+    核心画像 = 认知层（立场/论证/价值观/思维框架）+ 情感层（触发/回血/关怀）。
+    """
+    # 核心画像条目置信度（认知 + 情感 active 条目）
+    confs: list[float] = []
+    core_ready = 0
+    core_ids = {"cognitive", "emotional"}
+    for s in sections:
+        if s.get("id") in core_ids:
+            if s.get("status") == "ready":
+                core_ready += 1
+            for a in s.get("articles", []):
+                m = re.search(r"置信度 (\d+)%", a.get("evidence", ""))
+                if m:
+                    confs.append(int(m.group(1)) / 100.0)
+
+    # 像我度 = 核心画像置信度均值 × 覆盖度修正（核心栏目没就绪则打折）
+    avg_conf = sum(confs) / len(confs) if confs else 0.0
+    coverage = (core_ready / len(core_ids)) if core_ids else 0.0
+    likeness = round(avg_conf * (0.6 + 0.4 * coverage), 2)
+
+    # 了解进度：认知 + 情感画像条目数 / 基线（认知 31 + 情感 8 ≈ 39）
+    baseline = 39
+    progress = min(1.0, total_articles / baseline) if baseline else 0.0
+
+    # 待澄清缺口（认知 + 情感 open gap）→ 缺口越多，像我度再打折
+    gaps: list[dict[str, str]] = []
+    try:
+        from deskmate.cognitive import get_profile_manager
+        for g in get_profile_manager().get().open_gaps():
+            gaps.append({"layer": "cognitive", "topic": g.topic, "reason": g.reason, "gap_id": g.id})
+    except Exception:
+        pass
+    try:
+        from deskmate.cognitive.profile import get_profile_manager as gpm2
+        from deskmate.cognitive.emotion_profile import ensure_emotional_gaps
+        ensure_emotional_gaps()
+        for g in gpm2(layer="emotional").get().open_gaps():
+            gaps.append({"layer": "emotional", "topic": g.topic, "reason": g.reason, "gap_id": g.id})
+    except Exception:
+        pass
+    if gaps:
+        likeness = round(likeness * (1 - 0.08 * min(len(gaps), 5)), 2)
+
+    # 验证引擎状态：读最近一次认知验证记录（有则说明像我度经过 Turing test 校准）
+    validation_status = "未验证"
+    try:
+        from deskmate.cognitive.store import CognitiveStore
+        last_v = CognitiveStore().get_meta("last_validation_at")
+        if last_v:
+            validation_status = "已验证"
+    except Exception:
+        pass
+
+    return {
+        "likeness_score": likeness,
+        "likeness_label": _likeness_label(likeness),
+        "understanding_progress": round(progress, 2),
+        "understanding_detail": f"{total_articles} 条画像特征",
+        "core_ready": core_ready,
+        "core_total": len(core_ids),
+        "core_avg_confidence": round(avg_conf, 2),
+        "gaps": gaps,
+        "validation_status": validation_status,
+        "note": "像我度 = 核心画像置信度均值 × 覆盖度修正 × 缺口折扣；验证引擎（Turing test）已接入，验证盲区会生成 gap 并入缺口折扣。",
+    }
+
+
+def _likeness_label(score: float) -> str:
+    """把像我分转成小桔形象状态文案（供页面展示）。"""
+    if score >= 0.7:
+        return "很懂你"
+    if score >= 0.4:
+        return "正在懂你"
+    return "刚认识你"

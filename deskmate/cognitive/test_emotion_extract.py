@@ -11,6 +11,7 @@ from deskmate.cognitive.profile import CognitiveProfileManager
 from deskmate.cognitive.emotion_extract import (
     extract_diary_into_emotion,
     _emotion_rule_extract,
+    maybe_extract_on_tick,
 )
 from deskmate.cognitive.models import SourceRef
 
@@ -137,8 +138,39 @@ def test_emotion_layer_separate_from_cognitive():
     print("OK test_emotion_layer_separate_from_cognitive")
 
 
+def test_maybe_extract_on_tick_throttles():
+    """maybe_extract_on_tick 应首次提取、节流内二次跳过；且幂等不污染认知层。"""
+    tmp = Path(tempfile.mkdtemp())
+    db = tmp / "deskmate.db"
+    emo = CognitiveProfileManager(db, layer="emotional")
+    cog = CognitiveProfileManager(db)  # 认知层
+    posts = [
+        _diary("p1", "写作受阻，很烦，找不到感觉，卡住了。"),
+        _diary("p2", "下午写顺了，真好，安静独处让我放松舒服。"),
+    ]
+    store = _FakeDiaryStore(posts)
+
+    r1 = maybe_extract_on_tick(interval_hours=4, pm=emo, diary_store=store)
+    assert r1 is not None, "首次应执行提取"
+    assert r1["new_posts"] == 2, r1
+    assert r1["emotion_items"] >= 2, r1
+
+    # 节流未到 → 应返回 None（不重复扫库）
+    r2 = maybe_extract_on_tick(interval_hours=4, pm=emo, diary_store=store)
+    assert r2 is None, f"节流内应跳过，实际 {r2}"
+
+    # 认知层不受影响
+    assert len(cog.get().stances) == 0, "情感提取不应污染认知层"
+
+    import shutil
+
+    shutil.rmtree(tmp)
+    print("OK test_maybe_extract_on_tick_throttles")
+
+
 if __name__ == "__main__":
     test_emotion_rule_extract_writes_emotional_layer()
     test_emotion_extract_idempotent_and_isolated()
     test_emotion_layer_separate_from_cognitive()
+    test_maybe_extract_on_tick_throttles()
     print("全部情感提取测试通过")

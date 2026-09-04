@@ -310,30 +310,38 @@ def start_interview(limit: int = 3, use_llm: bool = False, layer: str = "cogniti
     qids = [q["id"] for q in questions]
     store = CognitiveStore()
     # 复用 gap_ids 列存本次问题 id 列表（session 层语义：本次访谈涉及的目标 id）
+    # create_session 内部已按 layer 写 last_interview_at:{layer} 抑制时间戳（防重复触发）
     sid = store.create_session(layer=layer, gap_ids=qids)
     return {"session_id": sid, "questions": questions, "total": len(questions)}
 
 
 def answer_interview(session_id: str, question_id: str, response: str,
                      use_llm: bool = False, layer: str = "cognitive") -> dict:
-    """提交一个访谈回答：回灌画像 + 落 qa（含问题文本）+ 判断是否问完。"""
-    pm = get_profile_manager(layer=layer)
-    engine = get_interview_engine()
-    engine.process_response(pm.profile, question_id, response, layer=layer)
+    """提交一个访谈回答：回灌画像 + 落 qa（含问题文本）+ 判断是否问完。
+
+    layer 解析优先级：session 记录里存的 layer 为准（session 创建时已定层，
+    是单一事实来源）。前端可能不带 layer（旧版 dist 只传 3 参）——若 session
+    能查到真实层，就按真实层回灌，避免情感访谈回答被错误写入认知层。
+    查不到 session（如测试直调）才回退到调用方传入的 layer。
+    """
     store = CognitiveStore()
+    sess = store.get_session(session_id)
+    real_layer = sess["layer"] if sess else (layer or "cognitive")
+    pm = get_profile_manager(layer=real_layer)
+    engine = get_interview_engine()
+    engine.process_response(pm.profile, question_id, response, layer=real_layer)
     # 反解问题文本落库（qid 无状态可恢复），访谈历史可追溯"问了什么+答了什么"
     q_text = _reconstruct_question_text(_decode_question_id(question_id), pm)
     store.add_qa(session_id=session_id, question_id=question_id, question=q_text, answer=response)
     # 判断是否问完：已答数 == 该 session 问题数
-    sessions = [s for s in store.list_sessions(layer=layer) if s["id"] == session_id]
-    total = len(sessions[0]["gap_ids"]) if sessions else 0
+    total = len(sess["gap_ids"]) if sess else 0
     answered = len(store.get_qa(session_id))
     done = (total > 0 and answered >= total)
     if done:
         store.finish_session(session_id, summary=f"访谈完成：{answered}/{total} 问答")
     return {
         "ok": True, "session_id": session_id, "answered": answered, "total": total,
-        "session_done": done, "open_gaps": len(pm.profile.open_gaps()),
+        "session_done": done, "open_gaps": len(pm.profile.open_gaps()), "layer": real_layer,
     }
 
 

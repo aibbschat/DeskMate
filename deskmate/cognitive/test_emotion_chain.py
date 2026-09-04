@@ -152,6 +152,7 @@ def test_emotional_answer_roundtrip_to_care_preference():
     storemod.CognitiveStore = _TmpStore
     pmod.CognitiveStore = _TmpStore
     ival.CognitiveStore = _TmpStore
+    pmod._default_managers = {}  # 替换为新 dict（不污染共享缓存）
 
     def _gpm(profile_path=None, layer="cognitive"):
         if profile_path is not None:
@@ -206,9 +207,161 @@ def test_emotional_answer_roundtrip_to_care_preference():
     print("OK test_emotional_answer_roundtrip_to_care_preference")
 
 
+def test_start_interview_writes_suppression_meta():
+    """防回归：start_interview 后写 last_interview_at:{layer}，should_interview_now 被抑制。
+
+    真实 bug：情感访谈启动后未写抑制时间戳 → tick 每心跳都重复触发（用户启动后
+    连弹 5 次）。本测试锁定该修复。
+    """
+    import deskmate.cognitive.store as storemod
+    import deskmate.cognitive.profile as pmod
+    import deskmate.cognitive.interview as ival
+
+    tmp = Path(tempfile.mkdtemp())
+    db = tmp / "deskmate.db"
+
+    class _TmpStore(storemod.CognitiveStore):
+        def __init__(self, *args, **kwargs):
+            kwargs["db_path"] = db
+            super().__init__(*args, **kwargs)
+
+    saved = {
+        "store_CognitiveStore": storemod.CognitiveStore,
+        "profile_CognitiveStore": pmod.CognitiveStore,
+        "profile_default_managers": pmod._default_managers,
+        "profile_gpm": pmod.get_profile_manager,
+        "ival_CognitiveStore": ival.CognitiveStore,
+        "ival_gpm": ival.get_profile_manager,
+    }
+    storemod.CognitiveStore = _TmpStore
+    pmod.CognitiveStore = _TmpStore
+    ival.CognitiveStore = _TmpStore
+    # 清空脏缓存，避免复用指向已删临时目录的 manager
+    pmod._default_managers = {}  # 替换为新 dict（不污染共享缓存）
+
+    def _gpm(profile_path=None, layer="cognitive"):
+        if profile_path is not None:
+            return pmod.CognitiveProfileManager(profile_path, layer=layer)
+        key = layer or "cognitive"
+        if key not in pmod._default_managers:
+            pmod._default_managers[key] = pmod.CognitiveProfileManager(layer=key)
+        return pmod._default_managers[key]
+
+    pmod.get_profile_manager = _gpm
+    ival.get_profile_manager = _gpm
+
+    try:
+        pm = pmod.get_profile_manager(layer="emotional")
+        _seed_emotional_profile(pm)
+        pm.save()
+        ensure_emotional_gaps(pm=pm)
+
+        engine = ival.get_interview_engine()
+        # 首次：应可触发
+        assert engine.should_interview_now(pm.profile, layer="emotional") is True
+        iv = ival.start_interview(limit=3, layer="emotional")
+        assert iv.get("session_id"), iv
+        # 抑制时间戳应已写入
+        meta = _TmpStore().get_meta("last_interview_at:emotional")
+        assert meta, "start_interview 应写 last_interview_at:emotional"
+        # 再次判断：3 天内被抑制
+        assert engine.should_interview_now(pm.profile, layer="emotional") is False
+    finally:
+        storemod.CognitiveStore = saved["store_CognitiveStore"]
+        pmod.CognitiveStore = saved["profile_CognitiveStore"]
+        pmod._default_managers = saved["profile_default_managers"]
+        pmod.get_profile_manager = saved["profile_gpm"]
+        ival.CognitiveStore = saved["ival_CognitiveStore"]
+        ival.get_profile_manager = saved["ival_gpm"]
+        import shutil
+        shutil.rmtree(tmp)
+    print("OK test_start_interview_writes_suppression_meta")
+
+
+def test_answer_no_layer_uses_session_layer():
+    """防回归：前端旧版 dist 只传 3 参（不带 layer），回答应仍回灌到 session 真实层。
+
+    真实 bug：情感访谈 session 是 emotional，但前端 answer 不带 layer → 后端默认
+    cognitive → 情感回答被错误写入认知层画像。修复：answer_interview 从 session
+    记录反查真实层。本测试锁定该修复。
+    """
+    import deskmate.cognitive.store as storemod
+    import deskmate.cognitive.profile as pmod
+    import deskmate.cognitive.interview as ival
+
+    tmp = Path(tempfile.mkdtemp())
+    db = tmp / "deskmate.db"
+
+    class _TmpStore(storemod.CognitiveStore):
+        def __init__(self, *args, **kwargs):
+            kwargs["db_path"] = db
+            super().__init__(*args, **kwargs)
+
+    saved = {
+        "store_CognitiveStore": storemod.CognitiveStore,
+        "profile_CognitiveStore": pmod.CognitiveStore,
+        "profile_default_managers": pmod._default_managers,
+        "profile_gpm": pmod.get_profile_manager,
+        "ival_CognitiveStore": ival.CognitiveStore,
+        "ival_gpm": ival.get_profile_manager,
+    }
+    storemod.CognitiveStore = _TmpStore
+    pmod.CognitiveStore = _TmpStore
+    ival.CognitiveStore = _TmpStore
+    pmod._default_managers = {}  # 替换为新 dict（不污染共享缓存）
+
+    def _gpm(profile_path=None, layer="cognitive"):
+        if profile_path is not None:
+            return pmod.CognitiveProfileManager(profile_path, layer=layer)
+        key = layer or "cognitive"
+        if key not in pmod._default_managers:
+            pmod._default_managers[key] = pmod.CognitiveProfileManager(layer=key)
+        return pmod._default_managers[key]
+
+    pmod.get_profile_manager = _gpm
+    ival.get_profile_manager = _gpm
+
+    try:
+        pm = pmod.get_profile_manager(layer="emotional")
+        _seed_emotional_profile(pm)
+        pm.save()
+        ensure_emotional_gaps(pm=pm)
+        iv = ival.start_interview(limit=3, layer="emotional")
+        sid = iv["session_id"]
+        care_q = next(q for q in iv["questions"] if "关怀" in q["topic"] and q["mode"] == "explore")
+
+        # 模拟前端旧版 dist：不带 layer 调用
+        r = ival.answer_interview(
+            session_id=sid, question_id=care_q["id"],
+            response="我其实更喜欢自己待着回血，不用总是来问我进度。",
+        )
+        assert r.get("layer") == "emotional", r
+        # gap 应 resolved
+        gap = next(g for g in pm.profile.cognitive_gaps if g.id == care_q["related_gap_id"])
+        assert gap.status == "resolved", gap.status
+        # 回答在情感层，认知层不污染
+        emo = pmod.get_profile_manager(layer="emotional").profile
+        assert any("care_preference" in (s.tags or []) for s in emo.stances), "情感层应有 care_preference 条目"
+        cog = pmod.get_profile_manager(layer="cognitive").profile
+        assert not any("待着回血" in (s.content or "") for s in cog.stances), "认知层不应被污染"
+    finally:
+        storemod.CognitiveStore = saved["store_CognitiveStore"]
+        pmod.CognitiveStore = saved["profile_CognitiveStore"]
+        pmod._default_managers = saved["profile_default_managers"]
+        pmod.get_profile_manager = saved["profile_gpm"]
+        ival.CognitiveStore = saved["ival_CognitiveStore"]
+        ival.get_profile_manager = saved["ival_gpm"]
+        import shutil
+        shutil.rmtree(tmp)
+    print("OK test_answer_no_layer_uses_session_layer")
+
+
 if __name__ == "__main__":
     test_garden_mood_tint_reads_profile()
     test_emotional_context_for_care()
     test_emotional_interview_gaps_and_layer()
     test_gaps_drive_interview_question()
+    test_emotional_answer_roundtrip_to_care_preference()
+    test_start_interview_writes_suppression_meta()
+    test_answer_no_layer_uses_session_layer()
     print("全部情感链路测试通过")

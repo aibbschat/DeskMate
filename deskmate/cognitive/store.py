@@ -445,8 +445,9 @@ class CognitiveStore:
                 "VALUES(?, ?, 'active', ?, ?)",
                 (sid, layer, _now(), json.dumps(gap_ids or [], ensure_ascii=False)),
             )
-        # 记录最近访谈时间（供 should_interview_now）
-        self.set_meta("last_interview_at", _now())
+        # 记录最近访谈时间（供 should_interview_now）——按层写，避免情感 session 污染认知 key
+        meta_key = f"last_interview_at:{layer}" if layer != _LAYER else "last_interview_at"
+        self.set_meta(meta_key, _now())
         return sid
 
     def finish_session(self, session_id: str, summary: str = ""):
@@ -486,6 +487,19 @@ class CognitiveStore:
              "ended_at": r[4], "gap_ids": json.loads(r[5] or "[]"), "summary": r[6]}
             for r in rows
         ]
+
+    def get_session(self, session_id: str) -> Optional[dict]:
+        """按 id 查单个 session（不过滤 layer）。用于回答时反查真实层。"""
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT id, layer, status, started_at, ended_at, gap_ids_json, summary "
+                "FROM interview_sessions WHERE id=?",
+                (session_id,),
+            ).fetchone()
+        if not row:
+            return None
+        return {"id": row[0], "layer": row[1], "status": row[2], "started_at": row[3],
+                "ended_at": row[4], "gap_ids": json.loads(row[5] or "[]"), "summary": row[6]}
 
     def get_qa(self, session_id: str) -> list[dict]:
         with self._connect() as conn:

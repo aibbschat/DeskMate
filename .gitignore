@@ -5,6 +5,7 @@ __pycache__/
 *.egg-info/
 build/
 dist/
+.preview/
 .coverage
 
 # --- Fork-local / OS / build artifacts (added when baselining the 二开 fork) ---
@@ -14,6 +15,7 @@ packaging/.pyinstaller-build-info.json
 .venv.bak/
 .workbuddy/
 vite.config.ts.timestamp-*.mjs
+vitest.config.ts.timestamp-*.mjs
 # Local secrets (live-smoke BYO keys) — never committed
 .env
 .claude/settings.local.json

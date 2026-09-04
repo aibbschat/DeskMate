@@ -104,6 +104,17 @@ export function useProactiveTick({
           );
         }
 
+        // 认知验证（Turing test）触发：tick 返回 validation 情境 → 推送验证事件。
+        if (data.validation && data.validation.id && data.validation.scenario) {
+          window.dispatchEvent(
+            new CustomEvent("deskmate:validation", {
+              detail: {
+                scenario: data.validation,
+              },
+            }),
+          );
+        }
+
         // 如果有建议，推送 suggestion 事件
         if (data.action === "suggest" && data.suggestion_content) {
           window.dispatchEvent(

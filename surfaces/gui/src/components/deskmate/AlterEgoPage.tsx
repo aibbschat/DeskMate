@@ -14,6 +14,7 @@
 
 import { useEffect, useState } from "react";
 import { authedFetch, httpBase } from "../../api";
+import { XiaojuMascot } from "./XiaojuMascot";
 
 interface Props {
   open: boolean;
@@ -37,6 +38,25 @@ interface Section {
   updated_at?: string;
 }
 
+interface Gap {
+  layer: string;
+  topic: string;
+  reason: string;
+  gap_id: string;
+}
+
+interface Identity {
+  likeness_score: number;
+  likeness_label: string;
+  understanding_progress: number;
+  understanding_detail: string;
+  core_ready: number;
+  core_total: number;
+  core_avg_confidence: number;
+  gaps: Gap[];
+  note: string;
+}
+
 interface Portrait {
   sections: Section[];
   summary: {
@@ -45,6 +65,7 @@ interface Portrait {
     empty_count: number;
     total_articles: number;
   };
+  identity?: Identity;
 }
 
 interface AlterEgoData {
@@ -128,6 +149,11 @@ export function AlterEgoPage({ open, onClose }: Props) {
   const portrait = data?.portrait;
   const sections = portrait?.sections ?? [];
   const summary = portrait?.summary;
+  const identity = portrait?.identity;
+  const likeness = identity?.likeness_score ?? 0;
+  const likenessPct = Math.round(likeness * 100);
+  const progressPct = Math.round((identity?.understanding_progress ?? 0) * 100);
+  const gaps = identity?.gaps ?? [];
 
   return (
     <div
@@ -164,7 +190,7 @@ export function AlterEgoPage({ open, onClose }: Props) {
           <div style={{ marginTop: 4, fontSize: 12.5, color: "#9a7b5f", maxWidth: 480, lineHeight: 1.6 }}>
             {activeSection
               ? `${activeSection.icon} ${activeSection.title} · 小桔从你身上学到的`
-              : "这是小桔一点一点，从你身上学到的。散落在六个角落，被时间轻轻串起。"}
+              : "这是小桔一点一点，从你身上学到的——你的想法、你的在乎、你的习惯，被它慢慢串起。"}
           </div>
         </div>
         <button
@@ -175,6 +201,149 @@ export function AlterEgoPage({ open, onClose }: Props) {
           关闭
         </button>
       </div>
+
+      {/* 像我度头部（小桔 + 了解进度，来自 portrait.identity） */}
+      {!loading && !error && !activeSection && (
+        <div style={{ maxWidth: 960, margin: "0 auto", padding: "20px 20px 0" }}>
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 20,
+              borderRadius: 20,
+              padding: "16px 20px",
+              background: "rgba(255,255,255,0.55)",
+              border: "1px solid rgba(214,188,160,0.3)",
+            }}
+          >
+            {/* 小桔形象（官方，呼吸浮动） */}
+            <div
+              style={{
+                position: "relative",
+                width: 108,
+                height: 108,
+                flex: "0 0 auto",
+                borderRadius: "50%",
+                background: "radial-gradient(circle, rgba(255,159,28,0.30), rgba(255,138,61,0.10) 60%, transparent 78%)",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+              }}
+            >
+              <XiaojuMascot scale={0.48} emotion="idle" mood={Math.round(likeness * 100)} />
+            </div>
+            {/* 像我度数字 */}
+            <div style={{ flex: "1 1 auto", minWidth: 0 }}>
+              <div style={{ fontSize: 13, fontWeight: 600, color: "#9a7b5f", letterSpacing: 1 }}>
+                小桔有多懂我
+              </div>
+              <div style={{ display: "flex", alignItems: "baseline", gap: 8, marginTop: 2 }}>
+                <span style={{ fontSize: 38, fontWeight: 800, color: "#c2662f", lineHeight: 1.1 }}>
+                  {likenessPct}%
+                </span>
+                <span
+                  style={{
+                    fontSize: 12.5,
+                    fontWeight: 700,
+                    color: "#b45309",
+                    background: "rgba(255,159,28,0.14)",
+                    borderRadius: 10,
+                    padding: "2px 8px",
+                  }}
+                >
+                  {identity?.likeness_label ?? "刚认识你"}
+                </span>
+              </div>
+              <div style={{ fontSize: 12, color: "#9a7b5f", marginTop: 6, lineHeight: 1.6 }}>
+                已了解 <b style={{ color: "#c2662f" }}>{identity?.understanding_detail ?? "—"}</b>
+                {identity?.core_avg_confidence ? (
+                  <span> · 置信度均值 {Math.round(identity.core_avg_confidence * 100)}%</span>
+                ) : null}
+              </div>
+              <div
+                style={{
+                  marginTop: 8,
+                  height: 6,
+                  borderRadius: 4,
+                  background: "rgba(194,102,47,0.15)",
+                  overflow: "hidden",
+                }}
+              >
+                <div
+                  style={{
+                    height: "100%",
+                    width: `${progressPct}%`,
+                    borderRadius: 4,
+                    background: "linear-gradient(90deg,#f5a97f,#c2662f)",
+                  }}
+                />
+              </div>
+              <div style={{ fontSize: 10.5, color: "#a38568", marginTop: 3 }}>
+                了解进度 {progressPct}% · 小桔对你的了解随问答与回忆慢慢加深
+              </div>
+            </div>
+            {/* 待澄清缺口角标 */}
+            <div
+              style={{
+                flex: "0 0 auto",
+                textAlign: "center",
+                padding: "8px 12px",
+                borderRadius: 14,
+                border: "1px dashed rgba(194,102,47,0.45)",
+              }}
+            >
+              <div style={{ fontSize: 24, fontWeight: 800, color: "#c2662f" }}>{gaps.length}</div>
+              <div style={{ fontSize: 11, color: "#9a7b5f" }}>待澄清问题</div>
+            </div>
+          </div>
+
+          {/* 待澄清问题列表（聚合访谈入口） */}
+          {gaps.length > 0 && (
+            <div style={{ marginTop: 16 }}>
+              <div style={{ fontSize: 13.5, fontWeight: 700, color: "#6b4a32", marginBottom: 8 }}>
+                想更懂你 · 待澄清问题
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                {gaps.map((g) => (
+                  <div
+                    key={g.gap_id}
+                    onClick={() => setActiveSection(null)}
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 10,
+                      padding: "10px 14px",
+                      borderRadius: 14,
+                      background: "rgba(255,255,255,0.55)",
+                      border: "1px solid rgba(214,188,160,0.3)",
+                      cursor: "pointer",
+                    }}
+                  >
+                    <span style={{ fontSize: 16 }}>{g.layer === "emotional" ? "💛" : "🧠"}</span>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: 13, fontWeight: 700, color: "#6b4a32" }}>{g.topic}</div>
+                      <div style={{ fontSize: 11.5, color: "#9a7b5f", marginTop: 1 }}>{g.reason}</div>
+                    </div>
+                    <span
+                      style={{
+                        flex: "0 0 auto",
+                        fontSize: 12,
+                        fontWeight: 600,
+                        background: "linear-gradient(135deg,#f5a97f,#c2662f)",
+                        color: "#fff",
+                        borderRadius: 12,
+                        padding: "5px 12px",
+                      }}
+                    >
+                      去回答 →
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* P2-9：分身未开启 → 一次性引导 + 一键开启（决策偏好栏因此才不再永远空） */}
       {needsGuide && (

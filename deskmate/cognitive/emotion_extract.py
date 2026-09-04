@@ -31,6 +31,7 @@ from __future__ import annotations
 import difflib
 import logging
 import re
+import time
 from typing import Iterable, Optional
 
 from .models import SourceRef
@@ -334,3 +335,38 @@ def extract_diary_into_emotion(
     stats["processed"] = len(processed)
     stats["note"] = "ok" if stats["new_posts"] else "no_new_posts"
     return stats
+
+
+def maybe_extract_on_tick(
+    interval_hours: float = 4.0,
+    pm: Optional["CognitiveProfileManager"] = None,
+    diary_store=None,
+) -> Optional[dict]:
+    """tick 周期调度入口：带节流、幂等、fail-open 的情感画像增量提取。
+
+    设计意图：让日记自然沉淀进情感画像（"越用越懂你"），不再依赖手动跑。
+
+    - 节流：profile_meta['emotion_extract_last_tick'] 记录上次运行（持久化，跨重启）；
+      间隔未到直接返回 None，避免每 tick 扫库。
+    - 幂等：extract_diary_into_emotion 按 post id 去重，重复运行无副作用。
+    - fail-open：任何异常静默返回 None，绝不阻塞 tick 主流程。
+    """
+    try:
+        pm = pm or CognitiveProfileManager(layer="emotional")
+        last = pm.store.get_meta("emotion_extract_last_tick")
+        now = time.time()
+        if last is not None:
+            try:
+                if (now - float(last)) < interval_hours * 3600:
+                    return None
+            except (TypeError, ValueError):
+                pass
+        res = extract_diary_into_emotion(pm=pm, diary_store=diary_store)
+        try:
+            pm.store.set_meta("emotion_extract_last_tick", now)
+        except Exception:
+            pass
+        return res
+    except Exception:
+        logger.warning("情感画像 tick 提取失败（fail-open）", exc_info=True)
+        return None

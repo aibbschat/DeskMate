@@ -3491,3 +3491,53 @@ export async function cognitiveInterviewShould(): Promise<{
   const res = await authedFetch(`${httpBase()}/v1/deskmate/cognitive/interview/should`);
   return res.json();
 }
+
+/* ------------------------------------------------------------------ */
+/*  认知验证（Turing test）—— ValidationEngine 前端接入                 */
+/* ------------------------------------------------------------------ */
+
+export interface ValidationScenario {
+  id: string;
+  domain: string;
+  scenario: string;
+  question: string;
+  related_items: string[];
+}
+
+export interface ValidationResult {
+  scenario: ValidationScenario;
+  evaluation?: {
+    overall_score: number;
+    dimension_scores: Record<string, number>;
+    divergence_points: string[];
+    feedback: string;
+  };
+  applied?: boolean;
+  note?: string;
+}
+
+/** 生成一个验证情境（POST /v1/deskmate/cognitive/validation/scenario）。 */
+export async function createValidationScenario(): Promise<{
+  scenario: ValidationScenario;
+  note?: string;
+}> {
+  const res = await authedFetch(`${httpBase()}/v1/deskmate/cognitive/validation/scenario`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({}),
+  });
+  return res.json();
+}
+
+/** 提交 AI 回答 + 用户回答，评估相似度并反哺画像（POST /v1/deskmate/cognitive/validation/evaluate）。 */
+export async function submitValidationEvaluation(
+  aiResponse: string,
+  userResponse: string,
+): Promise<ValidationResult> {
+  const res = await authedFetch(`${httpBase()}/v1/deskmate/cognitive/validation/evaluate`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ai_response: aiResponse, user_response: userResponse }),
+  });
+  return res.json();
+}

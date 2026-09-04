@@ -53,6 +53,10 @@ from .interview import (
     maybe_trigger_interview,
     get_interview_engine,
 )
+from .validation_engine import (
+    get_validation_engine,
+    run_validation,
+)
 from .interfaces import (
     InterviewEngine,
     ValidationEngine,
@@ -88,6 +92,9 @@ __all__ = [
     "answer_interview",
     "maybe_trigger_interview",
     "get_interview_engine",
+    # 认知验证引擎（Turing test）
+    "get_validation_engine",
+    "run_validation",
     # 扩展接口（第二期）
     "InterviewEngine",
     "ValidationEngine",

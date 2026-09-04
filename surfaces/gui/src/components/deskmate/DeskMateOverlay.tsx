@@ -19,6 +19,7 @@ import type { GrowthSnapshot, LearnedHistory } from "./StatusPanel";
 import { SuggestionToast, type Suggestion } from "./SuggestionToast";
 import { CareToast, type CareMessage } from "./CareToast";
 import { InterviewCard, type InterviewPayload } from "./InterviewCard";
+import { ValidationCard, type ValidationPayload } from "./ValidationCard";
 import { MemoryViewer, type MemoryFile } from "./MemoryViewer";
 import { MemoryGraphPage } from "./MemoryGraphPage";
 import { BadgeMedal } from "./BadgeMedal";
@@ -192,6 +193,8 @@ export function DeskMateOverlay({ agent, sessionId, activeExpert, hidden }: Prop
   const [careMessage, setCareMessage] = useState<CareMessage | null>(null);
   // ③b 深度访谈：proactive tick 触发后进入问答流
   const [interview, setInterview] = useState<InterviewPayload | null>(null);
+  // 认知验证（Turing test）：tick 触发后进入验证卡
+  const [validation, setValidation] = useState<ValidationPayload | null>(null);
 
   // 建议去重：已处理（接受/忽略）的 type 在冷却期内永不再弹；
   // 无操作最多展示 3 次。用 localStorage 持久化，防止组件重挂载后丢失。
@@ -466,6 +469,12 @@ export function DeskMateOverlay({ agent, sessionId, activeExpert, hidden }: Prop
       if (d?.session_id && d?.questions?.length) setInterview(d);
     };
     window.addEventListener("deskmate:interview", onInterview);
+    // 认知验证（Turing test）：tick 返回 validation 负载 → 进入验证卡
+    const onValidation = (e: Event) => {
+      const d = (e as CustomEvent<ValidationPayload>).detail;
+      if (d?.scenario?.id && d?.scenario?.scenario) setValidation(d);
+    };
+    window.addEventListener("deskmate:validation", onValidation);
     window.addEventListener("deskmate:memory-update", onMemoryUpdate);
     window.addEventListener("deskmate:memory-learned", onMemoryLearned);
     window.addEventListener("deskmate:context-injected", onContextInjected);
@@ -501,6 +510,7 @@ export function DeskMateOverlay({ agent, sessionId, activeExpert, hidden }: Prop
       window.removeEventListener("deskmate:open-understanding", onOpenUnderstanding);
       window.removeEventListener("deskmate:toggle-proactive", onToggleProactive);
       window.removeEventListener("deskmate:interview", onInterview);
+      window.removeEventListener("deskmate:validation", onValidation);
     };
   }, [setMascotState, handleToggleProactive, proactiveEnabled]);
 
@@ -679,6 +689,12 @@ export function DeskMateOverlay({ agent, sessionId, activeExpert, hidden }: Prop
       <InterviewCard
         interview={interview}
         onClose={() => setInterview(null)}
+      />
+
+      {/* 认知验证（Turing test）- 邀请气泡 + 情景问答 + 相似度结果（tick 触发） */}
+      <ValidationCard
+        validation={validation}
+        onClose={() => setValidation(null)}
       />
 
       {/* 「我刚记住了」提示 — 左下角，数秒后自动消失 */}

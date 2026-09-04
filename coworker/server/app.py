@@ -3199,6 +3199,62 @@ def create_app(manager: SessionManager) -> FastAPI:
             logging.exception("cognitive interview sessions failed")
             return JSONResponse({"error": "interview sessions failed"}, status_code=500)
 
+    @app.post("/v1/deskmate/cognitive/validation/scenario")
+    async def post_cognitive_validation_scenario(request: Request) -> dict[str, Any]:
+        """生成一个验证情境（认知 Turing test）。
+
+        Body: {"layer": "cognitive", "domain": null}
+        返回 {scenario: {id, domain, scenario, question, related_items, source_item}}。
+        画像条目不足时 scenario.id 为空，note 说明原因。
+        """
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        try:
+            from deskmate.cognitive.validation_engine import run_validation
+            r = run_validation(
+                layer=body.get("layer", "cognitive"),
+                domain=body.get("domain"),
+            )
+            return {"scenario": r["scenario"], "note": r["note"]}
+        except Exception:
+            logging.exception("validation scenario failed")
+            return JSONResponse({"error": "validation scenario failed"}, status_code=500)
+
+    @app.post("/v1/deskmate/cognitive/validation/evaluate")
+    async def post_cognitive_validation_evaluate(request: Request) -> dict[str, Any]:
+        """提交 AI 回答 + 用户回答，评估相似度并反哺画像。
+
+        Body: {"layer": "cognitive", "scenario_id": "...", "ai_response": "...", "user_response": "..."}
+        返回 {scenario, evaluation, applied, note}。
+        注意：本端点会真实修改画像（置信度升降 + 可能生成验证盲区 gap）。
+        """
+        try:
+            body = await request.json()
+        except Exception:
+            return JSONResponse({"error": "invalid json"}, status_code=400)
+        ai_resp = body.get("ai_response", "")
+        user_resp = body.get("user_response", "")
+        if not ai_resp or not user_resp:
+            return JSONResponse({"error": "missing ai_response/user_response"}, status_code=400)
+        try:
+            from deskmate.cognitive.validation_engine import run_validation
+            r = run_validation(
+                layer=body.get("layer", "cognitive"),
+                ai_response=ai_resp,
+                user_response=user_resp,
+            )
+            return {
+                "scenario": r["scenario"],
+                "evaluation": r["evaluation"],
+                "applied": r["applied"],
+                "note": r["note"],
+            }
+        except Exception:
+            logging.exception("validation evaluate failed")
+            return JSONResponse({"error": "validation evaluate failed"}, status_code=500)
+
     @app.post("/v1/deskmate/feedback")
     async def deskmate_feedback(request: Request) -> dict[str, Any]:
         """记录用户对主动建议的反馈（接受/忽略），写入防打扰持久化文件。

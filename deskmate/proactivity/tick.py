@@ -45,6 +45,8 @@ class TickResult:
     companion_message: str = ""
     # ③b 深度访谈触发负载（session_id + questions）；前端收到后弹访谈 UI
     interview: Optional[dict] = None
+    # 认知验证（Turing test）情境负载：前端收到后弹验证卡（AI 代答 vs 用户答）
+    validation: Optional[dict] = None
     # 日记灵感负载：素材攒够时小桔自己动笔（后台动作，不占 SUGGEST 通道）
     diary: Optional[dict] = None
     # 花园花开结算负载：后台把新事件开成花（不打扰；前端可轻声提示一句）
@@ -101,6 +103,10 @@ class TickResult:
         # ③b 深度访谈触发负载：前端 useProactiveTick 据此 dispatch 访谈事件
         if self.interview:
             result["interview"] = self.interview
+
+        # 认知验证（Turing test）情境负载：前端据此弹验证卡
+        if self.validation:
+            result["validation"] = self.validation
 
         # 日记灵感：小桔自己动笔（不是打扰型弹窗，前端可轻声提示一句）
         if self.diary:
@@ -253,6 +259,12 @@ class ProactiveEngine:
                         elapsed_ms=int((time.time() - start) * 1000),
                         heartbeat_interval_ms=self._heartbeat_interval_ms,
                     )
+                # 日记→情感画像增量提取（轻量规则，幂等；节流 ~4h，fail-open 不阻塞 tick）
+                try:
+                    from deskmate.cognitive.emotion_extract import maybe_extract_on_tick
+                    maybe_extract_on_tick(interval_hours=4)
+                except Exception:
+                    pass
                 # 认知访谈无内容时，尝试情感访谈（情感画像缺口：关怀偏好/回血方式待澄清）
                 ensure_emotional_gaps()
                 iv_emo = maybe_trigger_interview(limit=3, layer="emotional")
@@ -265,6 +277,38 @@ class ProactiveEngine:
                         elapsed_ms=int((time.time() - start) * 1000),
                         heartbeat_interval_ms=self._heartbeat_interval_ms,
                     )
+                # 认知验证（Turing test）：访谈都无内容时，生成一个验证情境，
+                # 让 AI 以用户身份回答 vs 用户回答，校准"像我度"。
+                # 节流 ~3 天（与访谈同节奏），只在能生成情境时触发。
+                try:
+                    from datetime import datetime, timedelta
+                    from deskmate.cognitive.validation_engine import run_validation
+                    from deskmate.cognitive.store import CognitiveStore
+                    store = CognitiveStore()
+                    last = store.get_meta("last_validation_at")
+                    due = True
+                    if last:
+                        try:
+                            last_dt = datetime.fromisoformat(str(last))
+                            due = (datetime.now() - last_dt) >= timedelta(days=3)
+                        except Exception:
+                            due = True
+                    if due:
+                        v = run_validation()
+                        if v["scenario"].get("id"):
+                            # 记录验证发起时间，避免每次心跳都弹
+                            store.set_meta("last_validation_at", datetime.now().isoformat())
+                            return TickResult(
+                                action=ActionType.SUGGEST,
+                                activity=activity,
+                                interview=None,
+                                validation=v["scenario"],
+                                skipped_reason="认知验证情境待回应（Turing test 校准像我度）",
+                                elapsed_ms=int((time.time() - start) * 1000),
+                                heartbeat_interval_ms=self._heartbeat_interval_ms,
+                            )
+                except Exception:
+                    pass  # 验证触发失败不阻断主 tick 循环
         except Exception:
             pass  # 访谈触发失败不阻断主 tick 循环
 
