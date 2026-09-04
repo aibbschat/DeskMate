@@ -161,6 +161,14 @@
       "style": "mono-line",
       "license": "custom",
       "inherit": "moling-default"
+    },
+    "xiaoju-orange": {
+      "id": "xiaoju-orange",
+      "name": "小桔桔子",
+      "style": "xiaoju-mascot",
+      "license": "custom",
+      "description": "以小桔吉祥物为原型的专属表情包——桔子帽（橙+绿叶）、棕色刘海、浅肤色圆脸。聊天与日记通用。",
+      "inherit": "moling-default"
     }
   }
 }
