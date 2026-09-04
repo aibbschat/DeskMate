@@ -14,6 +14,7 @@ from deskmate.cognitive.emotion_profile import (
     mood_tint_for_event,
     emotional_context,
     ensure_emotional_gaps,
+    care_preferences,
 )
 from deskmate.cognitive.interview import maybe_trigger_interview
 
@@ -123,19 +124,65 @@ def test_gaps_drive_interview_question():
 
 
 def test_emotional_answer_roundtrip_to_care_preference():
-    """闭环：情感访谈 explore 回答 → 回灌成 care_preference 维度条目 → 可被读取。"""
-    tmp, db, pm = _make_env_db()
-    try:
-        from deskmate.cognitive.interview import SocraticInterviewEngine
-        from deskmate.cognitive.emotion_profile import care_preferences
+    """闭环：情感访谈 explore 回答 → 回灌成 care_preference 维度条目 → 可被读取。
 
+    采用 hermetic 模式（mock 全局 store 到临时库），process_response 内部拿到的
+    manager 与测试是同一实例。
+    """
+    import deskmate.cognitive.store as storemod
+    import deskmate.cognitive.profile as pmod
+    import deskmate.cognitive.interview as ival
+
+    tmp = Path(tempfile.mkdtemp())
+    db = tmp / "deskmate.db"
+
+    class _TmpStore(storemod.CognitiveStore):
+        def __init__(self, *args, **kwargs):
+            kwargs["db_path"] = db
+            super().__init__(*args, **kwargs)
+
+    saved = {
+        "store_CognitiveStore": storemod.CognitiveStore,
+        "profile_CognitiveStore": pmod.CognitiveStore,
+        "profile_default_managers": pmod._default_managers,
+        "profile_gpm": pmod.get_profile_manager,
+        "ival_CognitiveStore": ival.CognitiveStore,
+        "ival_gpm": ival.get_profile_manager,
+    }
+    storemod.CognitiveStore = _TmpStore
+    pmod.CognitiveStore = _TmpStore
+    ival.CognitiveStore = _TmpStore
+
+    def _gpm(profile_path=None, layer="cognitive"):
+        if profile_path is not None:
+            return pmod.CognitiveProfileManager(profile_path, layer=layer)
+        key = layer or "cognitive"
+        if key not in pmod._default_managers:
+            pmod._default_managers[key] = pmod.CognitiveProfileManager(layer=key)
+        return pmod._default_managers[key]
+
+    pmod.get_profile_manager = _gpm
+    ival.get_profile_manager = _gpm
+
+    try:
+        pm = pmod.get_profile_manager(layer="emotional")
+        _seed_emotional_profile(pm)
+        pm.save()
+
+        # 初始化情感 gap
         ensure_emotional_gaps(pm=pm)
-        engine = SocraticInterviewEngine()
+        engine = ival.SocraticInterviewEngine()
         questions = engine.generate_questions(pm.profile, limit=5)
         # 找到「关怀偏好」的 explore 问题
         care_q = next(q for q in questions if "关怀" in q["topic"] and q["mode"] == "explore")
-        # 回答它（情感层）
-        engine.process_response(pm.profile, care_q["id"], "我其实更喜欢自己待着回血，不用总是来问我进度。", layer="emotional")
+
+        # 走真实入口 answer_interview（含 layer 回灌）
+        result = ival.answer_interview(
+            session_id="iv_test_dummy",
+            question_id=care_q["id"],
+            response="我其实更喜欢自己待着回血，不用总是来问我进度。",
+            layer="emotional",
+        )
 
         # 该 gap 应已 resolved
         gap = next(g for g in pm.profile.cognitive_gaps if g.id == care_q["related_gap_id"])
@@ -148,6 +195,12 @@ def test_emotional_answer_roundtrip_to_care_preference():
         assert any("独处" in c["content"] or "回血" in c["content"] for c in cps), cps
     finally:
         os.environ.pop("DESKMATE_EMOTION_PROFILE_PATH", None)
+        storemod.CognitiveStore = saved["store_CognitiveStore"]
+        pmod.CognitiveStore = saved["profile_CognitiveStore"]
+        pmod._default_managers = saved["profile_default_managers"]
+        pmod.get_profile_manager = saved["profile_gpm"]
+        ival.CognitiveStore = saved["ival_CognitiveStore"]
+        ival.get_profile_manager = saved["ival_gpm"]
         import shutil
         shutil.rmtree(tmp)
     print("OK test_emotional_answer_roundtrip_to_care_preference")
