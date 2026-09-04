@@ -265,6 +265,16 @@ class ProactiveEngine:
                     maybe_extract_on_tick(interval_hours=4)
                 except Exception:
                     pass
+                # 冲突驱动的 gap 再生（方案 C）：日记出现与既有画像**相反**的信号时才生 gap。
+                # 为什么需要：gap 是存量消耗品（ensure_emotional_gaps 只补一次），答完即枯竭
+                # → open_gaps()=0 → should_interview_now 恒 False → 小桔再也不提问（静默死亡）。
+                # 为什么放这里：必须在下面的 maybe_trigger_interview **之前**，
+                # 新生成的冲突 gap 当轮即可被情感访谈消费，形成闭环；节流 6h，fail-open。
+                try:
+                    from deskmate.cognitive.conflict_gap import maybe_scan_conflicts_on_tick
+                    maybe_scan_conflicts_on_tick(interval_hours=6)
+                except Exception:
+                    pass
                 # 认知访谈无内容时，尝试情感访谈（情感画像缺口：关怀偏好/回血方式待澄清）
                 ensure_emotional_gaps()
                 iv_emo = maybe_trigger_interview(limit=3, layer="emotional")

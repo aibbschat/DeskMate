@@ -42,6 +42,10 @@ _Q_TEMPLATES = {
 
 _TRIGGER_GAP_THRESHOLD = 2          # open gap >= 此数才考虑主动发起
 _TRIGGER_MIN_INTERVAL_DAYS = 3     # 距上次访谈至少 N 天才再主动
+# 高优先级 gap（真矛盾 / 画像冲突，priority >= 此值）：**一个就值得问**，不必凑数。
+# 探索型 gap（ensure_emotional_gaps 播的 0.7）仍需凑够 _TRIGGER_GAP_THRESHOLD 个——
+# 「想多了解你」可以攒着一起问，「你说的跟以前不一样了」必须立刻澄清。
+_HIGH_PRIORITY_GAP_PRIORITY = 0.8
 
 
 def _encode_question_id(related_item_id, related_gap_id, mode) -> str:
@@ -271,7 +275,13 @@ class SocraticInterviewEngine(InterviewEngine):
         pm.save()
 
     def should_interview_now(self, profile: CognitiveProfile, layer: str = "cognitive") -> bool:
-        """保守主动触发：open gap 数达阈值 且 距上次访谈足够久。"""
+        """保守主动触发：有值得问的东西 且 距上次访谈足够久。
+
+        两个触发口径（避免"gap 生成了却触发不了"的死代码）：
+        - 常规：open gap 数达 _TRIGGER_GAP_THRESHOLD（探索型问题攒够一起问）；
+        - 高优：**存在 priority >= 0.8 的 gap 即可**，一个就问——真矛盾/画像冲突
+          是高价值信号（"你说的跟以前不一样了"），不该为了凑数而搁置。
+        """
         meta_key = f"last_interview_at:{layer}" if layer != "cognitive" else "last_interview_at"
         try:
             last = CognitiveStore().get_meta(meta_key)
@@ -285,7 +295,10 @@ class SocraticInterviewEngine(InterviewEngine):
                     return False
             except Exception:
                 pass
-        return len(profile.open_gaps()) >= _TRIGGER_GAP_THRESHOLD
+        gaps = profile.open_gaps()
+        if len(gaps) >= _TRIGGER_GAP_THRESHOLD:
+            return True
+        return any(getattr(g, "priority", 0) >= _HIGH_PRIORITY_GAP_PRIORITY for g in gaps)
 
 
 # ----------------------------------------------------------------------
