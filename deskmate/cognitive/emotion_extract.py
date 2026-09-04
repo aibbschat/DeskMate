@@ -66,6 +66,17 @@ _CARE_PREFERENCE_WORDS = [
     "关心进度", "问进度", "帮忙", "搭把手", "提醒", "肯定", "认可",
     "别问", "不想说", "自己消化", "一个人静静", "别来烦", "一个人待着",
 ]
+# 对作品的珍视：书稿是心血而非商品（萧哥常写的中性/事务向日记里也常带此信号）
+_WORK_ATTACHMENT_WORDS = [
+    "我的书", "这本书", "我的稿", "稿子", "心血", "倾注", "打磨", "改了又改",
+    "认真写", "一字一句", "反复改", "舍不得", "成书", "我的作品", "写书",
+    "当作孩子", "像孩子",
+]
+# 与读者的连接：被看见/被理解带来的温暖（写作也是与人建立理解）
+_READER_BOND_WORDS = [
+    "读者", "粉丝", "有人看", "被理解", "留言", "评论", "陪伴", "有人读",
+    "读我的", "关注", "被看见", "有人懂", "催更", "等更", "读者的", "读友",
+]
 
 # ----------------------------------------------------------------------
 # 已处理 id 的读写（幂等依据，独立于认知层 meta key）
@@ -228,6 +239,38 @@ def _emotion_rule_extract(post: dict, pm: CognitiveProfileManager) -> int:
         )
         added += 1
         logger.debug("emotion rule → 关怀偏好 (%s)", op)
+
+    # ⑥ 对作品的珍视（高信号：书稿是心血，被认真对待/被读者看见格外满足）
+    if any(kw in content for kw in _WORK_ATTACHMENT_WORDS):
+        hits = [w for w in _WORK_ATTACHMENT_WORDS if w in content][:3]
+        _, op = pm.add_stance(
+            topic="情感触发·对作品的珍视",
+            content=(
+                "对写出来的作品有很强珍视感（" + "、".join(hits) + "），"
+                "书稿不是商品而是倾注心血的产物；被认真对待、被读者看见会让他格外满足。"
+            ),
+            source=src,
+            tags=["情感层", "emotional_trigger", "positive", "作品珍视"] + hits[:2],
+            category="情感触发点",
+        )
+        added += 1
+        logger.debug("emotion rule → 对作品的珍视 (%s)", op)
+
+    # ⑦ 与读者的连接（高信号：被看见/被理解带来的温暖，写作也是与人建立理解）
+    if any(kw in content for kw in _READER_BOND_WORDS):
+        hits = [w for w in _READER_BOND_WORDS if w in content][:3]
+        _, op = pm.add_stance(
+            topic="情感触发·读者连接",
+            content=(
+                "与读者的连接让他感到温暖、被看见（" + "、".join(hits) + "），"
+                "写作不只是自我表达，也是和人建立理解的过程。"
+            ),
+            source=src,
+            tags=["情感层", "emotional_trigger", "positive", "读者连接"] + hits[:2],
+            category="情感触发点",
+        )
+        added += 1
+        logger.debug("emotion rule → 读者连接 (%s)", op)
 
     return added
 
