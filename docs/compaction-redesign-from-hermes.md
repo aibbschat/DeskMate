@@ -96,7 +96,7 @@
   - 涉及：`engine.py` `_compact_now`。
   - 借鉴：Hermes `aux_failed` / `summary_failed` 文案（警告而非阻断式弹窗）。
 
-### P1 — 根治：消灭死亡螺旋
+### P1 — 根治：消灭死亡螺旋 ✅ 已实现
 
 - **P1-1 真实 token 有效性校验**
   压缩后对比 provider 真实 `prompt_tokens`；仍 `>= threshold` 记 ineffective；连续 2 次触发 anti-thrash
@@ -110,6 +110,20 @@
   - 涉及：`compaction.py` `build_state` / `summarize_span`；`engine.py`。
   - 借鉴：Hermes `_fallback_to_main_for_compression` `5131`。
 
+**实现要点（2026-09-05，commit 见 git log）**
+- **P1-2 已实现**（`coworker/engine.py` `_compact_now`）：优先用 `cfg["model"]`（prefs 的
+  `compaction_model` 独立压缩模型）；失败按候选列表 `candidates = [独立模型, 主模型]`（去重）逐个
+  尝试，每个候选最多重试一次应对瞬时错误；独立模型失败自动回退主模型；两者都失败才走 P0-2 的
+  token 兜底 trim。notice 措辞区分"已配独立模型但两者皆挂"与"未配独立模型"。
+- **P1-1 已实现**（`coworker/engine.py`）：主对话每轮拿到真实 `usage.context_tokens` 时调用新增的
+  `_check_compaction_effectiveness(post_tokens)`。压缩成功时把压缩前真实 token 数存入
+  `self._compaction_pre_tokens`；下一轮主对话用真实用量与之比较——若未下降（`post >= pre`）记一次
+  ineffective，连续 2 次触发 anti-thrash（`_compaction_throttled_until = now + 300s`，
+  `_compaction_due()` 返回 False 暂停自动压缩），`/compress force` 仍可读清冷却与节流立即重试。
+  无可信基线（首压 / provider 不报 usage）时跳过校验，不误判。
+- 测试：`tests/test_compaction_engine.py` 新增 4 个（failover 成功 / 两者皆挂降级 trim /
+  ineffective 触发 anti-thrash / 无基线跳过）；原有 11 个 compaction 测试 + engine 套件无回归。
+
 ### P2 — 健壮性（顺手做）
 
 - **P2-1** 摘要不传 `max_tokens`（或设大值），空/截断输出当失败处理（借鉴 `5511-5520` / `5589-5611`）。
@@ -120,16 +134,19 @@
 
 ## 5. 落地节奏建议
 
-1. **先做 P0**（3 个小改动）→ 直接止住最痛的两个现象（反复弹窗、越压越大），风险最低。
-2. **再做 P1**（真实 token 校验 + 回退）→ 彻底根治死亡螺旋。
-3. **P2** 顺手补健壮性。
+1. **P0 已完成**（2026-09-05，commit 见 git log）→ 止住反复弹窗 + 越压越大。
+2. **P1 已完成**（2026-09-05）→ 真实 token 校验 + 压缩模型回退，根治死亡螺旋。
+3. **P2 待做**（见下）。
 
 ---
 
-## 6. 待拍板问题
+## 6. 待拍板 / 后续
 
-1. **是否启用独立压缩模型**？启用则需指定备用端点（避免和主对话抢同一配额，否则回退也救不了）。
-   候选：DeepSeek 官方 API（deepseek-v4-pro）、OmniRoute 免费模型。
-2. **cooldown 默认值**？建议 60/300/900s 阶梯（与 Hermes 一致）。
-3. **是否接受「默认不丢消息（abort 优先）」**？代价是极端长会话可能涨到硬上限，需配合超上限 warning。
-4. **P0 是否足够**？还是直接 P0+P1 一次做到位（改动量更大但一劳永逸）。
+- **P0、P1 均已实现并测试通过。** 下一步是 P2（健壮性）。
+1. **是否启用独立压缩模型**？P1-2 已支持回退，但**启用需指定备用端点**（避免和主对话抢同一配额，
+   否则回退主模型也救不了延迟）。候选：DeepSeek 官方 API（deepseek-v4-pro）、OmniRoute 免费模型。
+   未配置时压缩用主模型（与现状一致）。
+2. **cooldown 默认值** 已定为 60/300/900s 阶梯（与 Hermes 一致），P0 落地。
+3. **是否接受「默认不丢消息（abort 优先）」**？P2 议题：极端长会话可能涨到硬上限，需配合超上限 warning。
+4. **P2 待做**：① 摘要不传 `max_tokens`（或设大值），空/截断输出当失败处理；② abort 优先于占位符
+   （默认不丢消息，除非显式配置）。

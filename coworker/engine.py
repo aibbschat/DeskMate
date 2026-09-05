@@ -36,6 +36,11 @@ _REVIEWER_TRIP = 5
 # Hermes' cooldown design. A failing summarizer (transient 429/timeout) waits an
 # escalating cooldown before retrying instead of popping a Retry prompt every turn.
 _COMPACTION_COOLDOWN_LADDER = (60, 300, 900)
+# P1-1: anti-thrash recovery window (seconds). After 2 consecutive ineffective
+# compactions (the real token count does not shrink), auto-compaction is paused for
+# this long instead of hammering a summarizer that can't win. A `/compress force`
+# still overrides (Hermes-style recovery probe).
+_COMPACTION_ANTI_THRASH_SECONDS = 300
 _REVIEWER_PAUSED_TEXT = (
     "Auto-approve is paused for the rest of this turn — the reviewer blocked "
     f"{_REVIEWER_TRIP} actions in a row, so approvals now come to you."
@@ -235,6 +240,14 @@ class TurnEngine:
         # Completed tool calls so far, so a fact can say how many steps back the write was.
         self._step = 0
         self._last_context_tokens: Optional[int] = None
+        # P1-1: cross-turn effectiveness tracking. After a compaction we remember the
+        # pre-compaction real token count; the next main-model round-trip reports the
+        # post-compaction real count, and we compare to detect a "growing candidate"
+        # (compaction that didn't actually shrink the context — the death spiral). Two
+        # ineffective compactions in a row pause auto-compaction (anti-thrash).
+        self._compaction_pre_tokens: Optional[int] = None
+        self._compaction_ineffective_streak: int = 0
+        self._compaction_throttled_until: float = 0.0
         self.audit_context: dict[str, Any] = {}
         if instructions and not (
             self.messages and self.messages[0].get("role") == "system"
@@ -540,6 +553,9 @@ class TurnEngine:
                 # The trigger signal: the prompt-side total that actually occupied the
                 # window on this round-trip (estimate fallback when never reported).
                 self._last_context_tokens = turn.usage.context_tokens
+                # P1-1: if a compaction happened last turn, verify it actually shrank the
+                # context using this now-available real token count.
+                self._check_compaction_effectiveness(turn.usage.context_tokens)
 
             self._turn_truncated = turn.finish_reason == "length"
             _sanitize_mangled_calls(turn)
@@ -630,6 +646,36 @@ class TurnEngine:
             cap_tokens=int(cfg["cap_tokens"]),
         )
 
+    def _check_compaction_effectiveness(self, post_tokens: int) -> None:
+        """P1-1: cross-turn real-token validation. Called after each main-model
+        round-trip with its real prompt-token count. If a compaction happened on the
+        previous turn, `self._compaction_pre_tokens` holds the pre-compaction real count;
+        if the post count is not smaller, the summary failed to shrink the context (a
+        growing candidate / death spiral) and we count it ineffective. Two ineffective
+        compactions in a row pause auto-compaction for _COMPACTION_ANTI_THRASH_SECONDS
+        (anti-thrash); a manual `/compress force` bypasses the pause."""
+        pre = self._compaction_pre_tokens
+        if pre is None:
+            return  # no trusted baseline this turn (e.g. first compaction, or usage never reported)
+        self._compaction_pre_tokens = None
+        if post_tokens >= pre:
+            self._compaction_ineffective_streak += 1
+            if self._compaction_ineffective_streak >= 2:
+                self._compaction_throttled_until = (
+                    time.time() + _COMPACTION_ANTI_THRASH_SECONDS
+                )
+                logger.warning(
+                    "compaction ineffective %d consecutive times (context did not shrink "
+                    "after compaction: pre=%d post=%d); pausing auto-compaction for %ds "
+                    "(use /compress force to retry now)",
+                    self._compaction_ineffective_streak,
+                    pre,
+                    post_tokens,
+                    _COMPACTION_ANTI_THRASH_SECONDS,
+                )
+        else:
+            self._compaction_ineffective_streak = 0
+
     async def _compact_now(self, *, force: bool = False) -> Optional[str]:
         """Run the compaction policy. Callers gate on `_compaction_due()` (or `force`,
         the overflow path). Returns the user-facing notice text when the outbound view
@@ -645,42 +691,70 @@ class TurnEngine:
             _compaction.KEEP_RECENT_FRACTION
             * _compaction.trigger_tokens(window, threshold_pct=pct, cap_tokens=cap)
         )
-        model = str(cfg.get("model") or "") or self.model
+        compression_model = str(cfg.get("model") or "")
+        main_model = self.model
 
         # P0-1: cooldown gate — a summarizer that's failing (transient 429/timeout)
         # must not pop a prompt on every turn. force=True (manual / overflow path)
-        # clears the cooldown and compacts regardless.
+        # clears the cooldown *and* any anti-thrash throttle, so a manual /compress
+        # force always gets a real attempt.
         now = time.time()
         if force:
             self._compaction_cooldown_until = 0.0
+            self._compaction_throttled_until = 0.0
         elif now < self._compaction_cooldown_until:
             return None
+        # P1-1: anti-thrash — never auto-compact while throttled (a recovery window
+        # after consecutive ineffective compactions). force bypasses this.
+        elif now < self._compaction_throttled_until:
+            return None
 
-        def _build() -> Optional[_compaction.CompactionState]:
-            return _compaction.build_state(
-                self.messages,
-                provider=self.provider,
-                model=model,
-                keep_tokens=keep,
-                prior=self.compaction_state,
-            )
+        # P1-2: candidate models for the summarizer. A dedicated compression model is
+        # tried first; on failure we fall back to the main model (Hermes
+        # `_fallback_to_main_for_compression`). Deduped so a model is never called twice.
+        candidates = []
+        if compression_model and compression_model != main_model:
+            candidates.append(compression_model)
+        candidates.append(main_model)
 
         state: Optional[_compaction.CompactionState] = None
         failed = False
         last_err: Optional[BaseException] = None
-        for _attempt in range(2):  # first try + the unconditional single retry
-            try:
-                state = await asyncio.to_thread(_build)
-                failed = False
+        used_model: Optional[str] = None
+        for m in candidates:
+            for _attempt in range(2):  # first try + one retry for transient errors
+                try:
+                    st = await asyncio.to_thread(
+                        _compaction.build_state,
+                        self.messages,
+                        provider=self.provider,
+                        model=m,
+                        keep_tokens=keep,
+                        prior=self.compaction_state,
+                    )
+                except Exception as exc:
+                    failed = True
+                    last_err = exc
+                    continue
+                # build_state returns None only when there is nothing to compact (the
+                # boundary is already at the tail) — not a failure, so don't retry/flip.
+                if st is not None:
+                    state = st
+                    used_model = m
                 break
-            except Exception as exc:
-                failed = True
-                last_err = exc
+            if state is not None:
+                break
 
         if state is not None:
-            # A successful summary clears any cooldown.
+            # A successful summary clears any cooldown and the ineffective streak.
             self._compaction_failure_streak = 0
             self._compaction_cooldown_until = 0.0
+            self._compaction_ineffective_streak = 0
+            # P1-1: remember the pre-compaction real token count so the next main-model
+            # round-trip can verify this summary actually shrank the context (rejects
+            # growing candidates / the death spiral). None → no trusted baseline; the
+            # cross-turn check is skipped that cycle.
+            self._compaction_pre_tokens = self._last_context_tokens
             self.compaction_state = state
             self._last_context_tokens = None  # stale once the outbound view shrank
             return "Context compacted — earlier turns were summarized"
@@ -692,9 +766,10 @@ class TurnEngine:
             idx = min(self._compaction_failure_streak - 1, len(_COMPACTION_COOLDOWN_LADDER) - 1)
             self._compaction_cooldown_until = time.time() + _COMPACTION_COOLDOWN_LADDER[idx]
             logger.warning(
-                "compaction summarizer failed (streak=%d, cooldown=%.0fs): %s",
+                "compaction summarizer failed (streak=%d, cooldown=%.0fs, dedicated=%s): %s",
                 self._compaction_failure_streak,
                 _COMPACTION_COOLDOWN_LADDER[idx],
+                bool(compression_model),
                 ((last_err.__class__.__name__ + ": " + str(last_err)) if last_err else "unknown"),
             )
 
@@ -712,6 +787,14 @@ class TurnEngine:
                 self.compaction_state = trimmed
                 self._last_context_tokens = None
                 if failed and self.question_asker is not None and self.is_attended and self.is_attended():
+                    # P1-2: if a dedicated compression model was also configured (and
+                    # failed), the "set one" hint is misleading — name both models.
+                    if compression_model:
+                        return (
+                            "Context trimmed — both the dedicated compression model and the "
+                            "main model were unavailable, so older turns were dropped without "
+                            "a summary (details in the log)."
+                        )
                     # P0-3: non-blocking notice instead of the old blocking Retry prompt.
                     return (
                         "Context trimmed — the summarizer was unavailable, so older turns "

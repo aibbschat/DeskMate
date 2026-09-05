@@ -52,6 +52,25 @@ class CompactingProvider(ProviderClient):
         return ModelCapabilities()
 
 
+class FailoverProvider(CompactingProvider):
+    """Like CompactingProvider, but a summarizing call on a model in `fail_models`
+    raises — used to exercise the dedicated-compression-model → main-model fallback."""
+
+    def __init__(self, turns, *, fail_models=None, summary=SUMMARY, summary_fails=0):
+        super().__init__(turns, summary=summary, summary_fails=summary_fails)
+        self.fail_models = set(fail_models or [])
+
+    def complete(self, *, model, messages, tools=None, **settings):
+        if messages and "compacting an AI coworker" in str(messages[0].get("content", "")):
+            # Record the attempt first (a real provider is still "called" before it
+            # fails), so the test can see which models were tried.
+            self.summary_calls.append({"model": model, "messages": messages})
+            if model in self.fail_models:
+                raise RuntimeError(f"dedicated model {model} down")
+            return AssistantTurn(text=self.summary, finish_reason="stop")
+        return super().complete(model=model, messages=messages, tools=tools, **settings)
+
+
 def long_history(turns=8, bulk=1500):
     msgs = [{"role": "system", "content": "be helpful"}]
     for i in range(turns):
@@ -314,3 +333,96 @@ async def test_cooldown_suppresses_repeat_compaction_within_window(tmp_path):
     assert n2 is None
     assert len(provider.summary_calls) == 2  # no extra summarizer calls
     assert asked == []  # no re-prompt
+
+
+async def test_compression_model_failover_to_main(tmp_path):
+    # P1-2: when a dedicated compression model is configured but fails, the engine
+    # falls back to the main model rather than dropping straight to a trim.
+    provider = FailoverProvider(
+        [AssistantTurn(text="done", finish_reason="stop")],
+        fail_models={"deepseek-v4-pro"},  # dedicated compression model fails
+    )
+    engine = make_engine(tmp_path, provider, messages=long_history(), cap=400)
+    engine.compaction_settings = lambda: {
+        "cap_tokens": 400,
+        "threshold_pct": 0.8,
+        "context_window": 100_000,
+        "model": "deepseek-v4-pro",  # dedicated compression model configured
+    }
+
+    n = await engine._compact_now()
+    # The summary succeeded via the main-model fallback — no trim.
+    assert n is not None and "compacted" in n.lower()
+    assert engine.compaction_state is not None and not engine.compaction_state.trimmed
+    assert engine.compaction_state.model_used == "gpt-5.5"  # fell back to main
+    # Both models were attempted: the dedicated one failed, the main one succeeded.
+    tried = [c["model"] for c in provider.summary_calls]
+    assert "deepseek-v4-pro" in tried and "gpt-5.5" in tried
+
+
+async def test_compression_model_failover_both_fail_trims(tmp_path):
+    # P1-2: if both the dedicated compression model AND the main model fail, the
+    # engine still falls back to a (non-blocking) token trim rather than looping.
+    provider = FailoverProvider(
+        [AssistantTurn(text="done", finish_reason="stop")],
+        fail_models={"deepseek-v4-pro", "gpt-5.5"},  # both fail
+    )
+    engine = make_engine(tmp_path, provider, messages=long_history(), cap=400)
+    engine.compaction_settings = lambda: {
+        "cap_tokens": 400,
+        "threshold_pct": 0.8,
+        "context_window": 100_000,
+        "model": "deepseek-v4-pro",
+    }
+    engine.is_attended = lambda: True
+    asked = []
+
+    async def asker(args, tool_call_id=None):
+        asked.append(args)
+        return {"answer": "Retry"}
+
+    engine.question_asker = asker
+
+    n = await engine._compact_now()
+    assert n is not None and "trimmed" in n.lower()
+    assert engine.compaction_state is not None and engine.compaction_state.trimmed
+    assert asked == []  # no blocking Retry prompt (P0-3)
+    # Both models were tried before the trim fallback.
+    tried = [c["model"] for c in provider.summary_calls]
+    assert tried.count("deepseek-v4-pro") >= 1 and "gpt-5.5" in tried
+
+
+def test_ineffective_compaction_triggers_antithrash(tmp_path):
+    # P1-1: if the context fails to shrink after compaction (real token count does not
+    # drop), two consecutive ineffective events pause auto-compaction (anti-thrash).
+    import time
+
+    engine = make_engine(tmp_path, CompactingProvider([AssistantTurn(text="done")]), cap=400)
+    # Simulate: a compaction recorded a pre-compaction real token count of 100k.
+    engine._compaction_pre_tokens = 100_000
+    # Next main turn reports 100k again (no shrink) → ineffective #1.
+    engine._check_compaction_effectiveness(100_000)
+    assert engine._compaction_ineffective_streak == 1
+    assert engine._compaction_throttled_until == 0.0
+    # Second ineffective → streak=2 → anti-thrash throttle engaged.
+    engine._compaction_pre_tokens = 100_000
+    engine._check_compaction_effectiveness(100_000)
+    assert engine._compaction_ineffective_streak == 2
+    assert engine._compaction_throttled_until > time.time()
+    # _compaction_due() must now return False (auto-compaction paused).
+    assert engine._compaction_due() is False
+    # A real shrink resets the streak.
+    engine._compaction_throttled_until = 0.0
+    engine._compaction_pre_tokens = 100_000
+    engine._check_compaction_effectiveness(40_000)
+    assert engine._compaction_ineffective_streak == 0
+
+
+def test_effectiveness_check_skips_without_baseline(tmp_path):
+    # P1-1: no trusted baseline (e.g. first compaction, or usage never reported) →
+    # the cross-turn check is a no-op, never counts as ineffective.
+    engine = make_engine(tmp_path, CompactingProvider([AssistantTurn(text="done")]), cap=400)
+    engine._compaction_pre_tokens = None
+    engine._check_compaction_effectiveness(50_000)
+    assert engine._compaction_ineffective_streak == 0
+    assert engine._compaction_throttled_until == 0.0
