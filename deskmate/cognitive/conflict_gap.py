@@ -8,9 +8,17 @@
 - 那批 gap 答完 → `open_gaps()=0` → `should_interview_now`（需 open gap ≥ 2）恒 False
   → 小桔再也不主动提问，且**静默失败**（无任何提示，用户只感觉"她不问了"）。
 
-本模块让好奇心**可再生**：仅当日记里出现**与既有画像真冲突**的信号时才生成 gap。
+本模块让好奇心**可再生**：仅当出现**与既有画像真冲突**的信号时才生成 gap。
 不是定时打卡式的"为了问而问"，而是「她真的困惑了才问」——人是会变的，
 三个月前的答案不等于现在的答案，这才是活的了解。
+
+⚠️ 2026-09-05（F3）：扫描范围从「只扫日记」扩到**他说过的所有话**
+------------------------------------------------------------------
+只扫日记时，再生机制形同虚设：他在访谈里答"低落时看电影、出去走走"，
+却从未写进日记，于是这条跟画像里"回血靠投入创作"的张力**永远发现不了**。
+访谈回答、聊天里的话同样能推翻画像，没理由只听日记本里的那一半。
+现在走 ``cognitive/expressions.py`` 的统一表达源（日记 + 访谈 + 长期记忆），
+显式注入 ``diary_store`` 时仍只扫它（兼容既有测试）。
 
 为什么不复用 add_stance 自带的 _detect_contradiction
 ---------------------------------------------------
@@ -127,6 +135,25 @@ def _dim_of(stance) -> Optional[str]:
     return None
 
 
+def _normalize_ids(ids) -> set[str]:
+    """已处理 id 归一化：给无前缀的旧记录补 ``d:``。
+
+    2026-09-05 起 id 带源前缀（d:/i:/l:），而此前存量的 13 条是裸日记 id。
+    不补前缀的话它们会被当成新内容重扫一遍——不是错误（gap 有 topic 去重），
+    但会白跑检测，且首轮就把旧日记重新判一遍。
+    """
+    out: set[str] = set()
+    for raw in ids or []:
+        s = str(raw or "").strip()
+        if not s:
+            continue
+        if s.startswith(("d:", "i:", "l:")):
+            out.add(s)
+        else:
+            out.add(f"d:{s}")
+    return out
+
+
 def _existing_by_dim(pm: CognitiveProfileManager) -> dict[str, list]:
     """既有 active 条目按维度归类。"""
     by_dim: dict[str, list] = {}
@@ -218,15 +245,63 @@ def _spawn_gaps(conflicts: list[dict], pm: CognitiveProfileManager) -> int:
 # ----------------------------------------------------------------------
 # 主入口
 # ----------------------------------------------------------------------
+def _rows_from_diary(diary_store, limit: int) -> tuple[list[dict], str]:
+    """（旧路径）只从日记取表达。显式注入 diary_store 时走这条。
+
+    Returns: (rows, err) —— err 非空表示读取失败，调用方据此填 note。
+    """
+    try:
+        page = diary_store.get_posts(limit=limit)
+        items = page.get("items", []) if isinstance(page, dict) else []
+    except Exception as e:
+        logger.warning("读取日记失败，跳过冲突扫描: %s", e)
+        return [], str(e)
+    rows = []
+    for p in items:
+        pid = str(p.get("id", "") or "")
+        if not pid:
+            continue
+        rows.append({"id": f"d:{pid}", "text": str(p.get("content", "") or "")})
+    return rows, ""
+
+
+def _rows_from_expressions(days: int, max_scan: int) -> list[dict]:
+    """（新路径）从**他说过的所有话**取表达——不只日记。
+
+    2026-09-05 修：此前只扫日记，于是访谈回答、聊天里说的那些推翻画像的话
+    永远进不了视野——他答"低落时看电影、出去走走"，却从没写进日记，
+    光扫日记就永远发现不了它跟"回血靠投入创作"的张力。
+    """
+    try:
+        from . import expressions
+
+        rows = expressions.collect(days=days)
+    except Exception as e:
+        logger.warning("表达源不可用，跳过冲突扫描: %s", e)
+        return []
+    # 只留近期、限条数：首跑面对 200+ 条存量时不至于一次爆量
+    rows = [r for r in rows if str(r.get("text", "")).strip()]
+    return rows[-max(1, int(max_scan)):]
+
+
 def scan_and_spawn_gaps(
     pm: Optional[CognitiveProfileManager] = None,
     diary_store=None,
     limit: int = 200,
+    days: int = 30,
+    max_scan: int = 40,
 ) -> dict:
-    """扫近期日记，检测与情感画像的真冲突并生成 gap。
+    """扫近期表达，检测与情感画像的真冲突并生成 gap。
 
-    增量幂等：已扫描的日记 id 记在 profile_meta['conflict_scan_processed_ids']，
-    历史日记不会重复触发（否则每次跑都会把旧日记翻出来当"新信号"）。
+    增量幂等：已扫描的表达 id 记在 profile_meta['conflict_scan_processed_ids']，
+    历史内容不会重复触发（否则每次跑都会把旧日记翻出来当"新信号"）。
+    id 带源前缀（``d:`` 日记 / ``i:`` 访谈 / ``l:`` 长期记忆）防碰撞。
+
+    Args:
+        diary_store: 显式注入时**只扫它**（兼容既有测试的假 store）；
+            不传则走统一表达源（日记 + 访谈 + 长期记忆）。
+        days: 不传 diary_store 时的回看天数。
+        max_scan: 单次最多处理多少条，防首跑爆量。
 
     Returns:
         {"scanned": int, "new_posts": int, "conflicts": int, "gaps_added": int,
@@ -238,42 +313,36 @@ def scan_and_spawn_gaps(
         "gaps_added": 0, "conflict_detail": [], "note": "",
     }
 
-    if diary_store is None:
-        try:
-            from deskmate.growth.diary_store import DiaryStore
-            diary_store = DiaryStore()
-        except Exception as e:
-            logger.warning("日记存储不可用，跳过冲突扫描: %s", e)
-            stats["note"] = f"diary_unavailable: {e}"
+    if diary_store is not None:
+        rows, err = _rows_from_diary(diary_store, limit)
+        if err:
+            stats["note"] = f"diary_read_failed: {err}"
+            return stats
+    else:
+        rows = _rows_from_expressions(days=days, max_scan=max_scan)
+        if not rows:
+            stats["note"] = "no_expressions"
             return stats
 
     try:
-        processed = set(pm.store.get_meta(_META_IDS, default=[]) or [])
+        processed = _normalize_ids(pm.store.get_meta(_META_IDS, default=[]) or [])
     except Exception:
         processed = set()
 
-    try:
-        page = diary_store.get_posts(limit=limit)
-        items = page.get("items", []) if isinstance(page, dict) else []
-    except Exception as e:
-        logger.warning("读取日记失败，跳过冲突扫描: %s", e)
-        stats["note"] = f"diary_read_failed: {e}"
-        return stats
-
     new_ids: list[str] = []
-    for post in items:
-        pid = post.get("id", "")
-        if not pid:
+    for row in rows:
+        rid = str(row.get("id", "") or "")
+        if not rid:
             continue
         stats["scanned"] += 1
-        if pid in processed:
+        if rid in processed:
             continue
-        new_ids.append(pid)
+        new_ids.append(rid)
         stats["new_posts"] += 1
         try:
-            found = detect_conflicts(post.get("content", "") or "", pm)
+            found = detect_conflicts(row.get("text", "") or "", pm)
         except Exception:
-            logger.warning("冲突检测失败（跳过该帖 %s）", pid, exc_info=True)
+            logger.warning("冲突检测失败（跳过 %s）", rid, exc_info=True)
             continue
         if found:
             stats["conflicts"] += len(found)
@@ -295,11 +364,16 @@ def maybe_scan_conflicts_on_tick(
     interval_hours: float = 6.0,
     pm: Optional[CognitiveProfileManager] = None,
     diary_store=None,
+    days: int = 30,
+    max_scan: int = 40,
 ) -> Optional[dict]:
     """tick 周期调度入口：带节流、幂等、fail-open 的冲突扫描。
 
     这是让好奇心「可再生」的关键接线——不挂 tick 就是死代码。
     节流间隔默认 6h（比情感提取 4h 更长：冲突是低频事件，不必频扫）。
+
+    diary_store 为 None 时扫**全部表达源**（日记+访谈+长期记忆）——
+    只扫日记会让好奇心再生形同虚设，见本模块顶部说明。
     """
     try:
         pm = pm or CognitiveProfileManager(layer="emotional")
@@ -311,7 +385,9 @@ def maybe_scan_conflicts_on_tick(
                     return None
             except (TypeError, ValueError):
                 pass
-        res = scan_and_spawn_gaps(pm=pm, diary_store=diary_store)
+        res = scan_and_spawn_gaps(
+            pm=pm, diary_store=diary_store, days=days, max_scan=max_scan
+        )
         try:
             pm.store.set_meta(_META_LAST, now)
         except Exception:

@@ -16,7 +16,7 @@ import logging
 import uuid
 from typing import Optional
 
-from .interfaces import InterviewEngine, register_engine
+from .interfaces import InterviewEngine
 from .models import CognitiveProfile, SourceRef, HistoryEntry, Stance, _now
 from .profile import get_profile_manager
 from .store import CognitiveStore
@@ -346,6 +346,18 @@ def answer_interview(session_id: str, question_id: str, response: str,
     # 反解问题文本落库（qid 无状态可恢复），访谈历史可追溯"问了什么+答了什么"
     q_text = _reconstruct_question_text(_decode_question_id(question_id), pm)
     store.add_qa(session_id=session_id, question_id=question_id, question=q_text, answer=response)
+    # F1：访谈回答**也是他亲口说的**，回流当日心情。
+    # 此前回答只进认知画像，情感时间线看不到——他说"情绪低落时我会…"，
+    # 系统只当那是条画像条目，并不知道他那天低落。画像回答"他是什么人"，
+    # 时间线回答"他今天怎么样"，两条腿缺一条就走不动。
+    # 纯认知表态（如"书稿出版后就是商品"）读不出情绪 → record_statement 自动
+    # 不表态，不会把认知回答硬判成心情。失败不影响上面的画像回灌。
+    try:
+        from deskmate.growth.emotion_timeline import EmotionTimeline
+
+        EmotionTimeline().record_statement(None, response)
+    except Exception as e:
+        logger.warning("访谈回答回流情感时间线失败（不影响画像回灌）: %s", e)
     # 判断是否问完：已答数 == 该 session 问题数
     total = len(sess["gap_ids"]) if sess else 0
     answered = len(store.get_qa(session_id))
@@ -367,7 +379,3 @@ def maybe_trigger_interview(limit: int = 3, layer: str = "cognitive") -> Optiona
     if not get_interview_engine().should_interview_now(pm.profile, layer=layer):
         return None
     return start_interview(limit=limit, layer=layer)
-
-
-# 注册（导入即生效）——registry["interview_engine"] 不再是 None
-register_engine("interview_engine", SocraticInterviewEngine)

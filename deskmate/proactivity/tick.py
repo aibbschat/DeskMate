@@ -203,7 +203,7 @@ class ProactiveEngine:
 
             maybe_settle_garden(base_dir=self.base_dir)
         except Exception:
-            pass  # 花园失败绝不阻断主动推理主流程
+            logger.debug("花园结算失败，跳过（不阻断主流程）", exc_info=True)
 
         # ===== 1. 感知（Perceive）=====
         # 先获取活动窗口信息，传给 detect_user_activity 做会议应用检测
@@ -264,17 +264,28 @@ class ProactiveEngine:
                     from deskmate.cognitive.emotion_extract import maybe_extract_on_tick
                     maybe_extract_on_tick(interval_hours=4)
                 except Exception:
-                    pass
-                # 冲突驱动的 gap 再生（方案 C）：日记出现与既有画像**相反**的信号时才生 gap。
+                    logger.debug("情感画像增量提取失败，跳过", exc_info=True)
+                # 表达源回灌（F2）：把访谈回答、聊天里说过的话接进情感层与认知层。
+                # 此前两层的唯一真实输入源都是那 15 篇日记，learned_history 227 条
+                # 一条没用上。放在冲突扫描之前：新进来的表达当轮就能参与检测。
+                # 节流 4h、幂等、fail-open。
+                try:
+                    from deskmate.cognitive.expression_ingest import maybe_ingest_on_tick
+                    maybe_ingest_on_tick(interval_hours=4, days=7, limit=5)
+                except Exception:
+                    logger.debug("表达源回灌失败，跳过", exc_info=True)
+                # 冲突驱动的 gap 再生（方案 C）：出现与既有画像**相反**的信号时才生 gap。
                 # 为什么需要：gap 是存量消耗品（ensure_emotional_gaps 只补一次），答完即枯竭
                 # → open_gaps()=0 → should_interview_now 恒 False → 小桔再也不提问（静默死亡）。
                 # 为什么放这里：必须在下面的 maybe_trigger_interview **之前**，
                 # 新生成的冲突 gap 当轮即可被情感访谈消费，形成闭环；节流 6h，fail-open。
+                # ⚠ 扫描范围已不止日记（F3）：只扫日记时再生形同虚设，
+                # 他访谈里答的、聊天里说的同样能推翻画像。
                 try:
                     from deskmate.cognitive.conflict_gap import maybe_scan_conflicts_on_tick
                     maybe_scan_conflicts_on_tick(interval_hours=6)
                 except Exception:
-                    pass
+                    logger.debug("冲突 gap 扫描失败，跳过", exc_info=True)
                 # 认知访谈无内容时，尝试情感访谈（情感画像缺口：关怀偏好/回血方式待澄清）
                 ensure_emotional_gaps()
                 iv_emo = maybe_trigger_interview(limit=3, layer="emotional")
@@ -318,9 +329,9 @@ class ProactiveEngine:
                                 heartbeat_interval_ms=self._heartbeat_interval_ms,
                             )
                 except Exception:
-                    pass  # 验证触发失败不阻断主 tick 循环
+                    logger.debug("认知验证情境生成失败，跳过", exc_info=True)
         except Exception:
-            pass  # 访谈触发失败不阻断主 tick 循环
+            logger.debug("访谈触发失败，跳过", exc_info=True)
 
         # 组装感知上下文
         activity_desc = f"状态: {activity.level.value}, {activity.reason}"
@@ -362,10 +373,20 @@ class ProactiveEngine:
             from deskmate.growth.emotion_timeline import EmotionTimeline
             from deskmate.growth.engine import GrowthEngine
 
+            eng = GrowthEngine(base_dir=self.base_dir)
             et = EmotionTimeline(base_dir=self.base_dir)
-            et.record_today(GrowthEngine(base_dir=self.base_dir))
+            # 先补记前几天：他会补写日记，历史快照里那些靠行为推断的标签
+            # 得让位给他自己写下的心情（只补没判过的，digest 相同不重复烧 token）
+            try:
+                et.backfill_from_diary(eng, days=14)
+            except Exception as e:
+                logger.debug("日记情感补记跳过: %s", e)
+            et.record_today(eng)
             emotion_ctx = et.lookback(7)
-        except Exception:
+        except Exception as e:
+            # 这里原本是裸 except（连日志都没有）：情感层整条链路静默失效时，
+            # 表面现象只是「小桔不再主动关怀」，无从查起。
+            logger.warning("情感时间线不可用（已跳过情感回顾注入）: %s", e, exc_info=True)
             emotion_ctx = ""
         # 情感画像（layer='emotional'）：真实情绪触发点/回血方式/关怀偏好，供 judge 个性化关怀
         emotion_profile_ctx = ""
