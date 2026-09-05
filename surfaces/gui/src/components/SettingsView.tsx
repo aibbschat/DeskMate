@@ -134,6 +134,7 @@ export function SettingsView({
               <div className="mt-6">
                 <TokenSavingsCard />
                 <CompactionCard />
+                <WillModulationCard />
               </div>
             </section>
           ) : tab === "voice" ? (
@@ -479,8 +480,6 @@ function AppearanceSection() {
       <MemoryInjectionCard />
 
       <TrustProactiveCard />
-
-      <WillModulationCard />
 
       <FilesCard />
 
@@ -1153,7 +1152,16 @@ function WillModulationCard() {
   return (
     <div className={CARD + " p-4 mb-4"} data-testid="will-modulation-card">
       <div className={FIELD_LABEL}>意志层 / 行为调制</div>
-      <label className="flex items-start gap-3 py-2">
+      <div className="text-[12px] text-muted mt-1 leading-relaxed">
+        这 5 个阈值决定意志层让「画像」覆盖到「行为」的杠杆长度。每条独立保存。
+        <span className="block mt-1">
+          <span className="text-accent">📎 联动关系</span>：4 与 5 共用同一条画像输入（你过去的高置信立场）——立场命中数增多时，这两条会自动一起涨。需要压制其中某一条，请直接手动覆盖。
+        </span>
+        <span className="block mt-1">
+          <span className="text-accent">⚠ 越线提示</span>：把 2/4/5 三个拉到上限会让小桔在表达上"很像你"——视角借用变强、可能在语气上替你做主张。这是「成为我」的设计本意，但强度由你手动踩。
+        </span>
+      </div>
+      <label className="flex items-start gap-3 py-2 mt-1">
         <input
           type="checkbox"
           className="mt-0.5"
@@ -1162,16 +1170,16 @@ function WillModulationCard() {
           onChange={(e) => update({ enabled: e.target.checked })}
         />
         <span>
-          <span className="block text-[13px] text-ink">让认知与情感影响行为</span>
+          <span className="block text-[13px] text-ink">让认知与情感影响行为（总开关）</span>
           <span className="block text-[12px] text-muted">
-            开启后：当日情绪压力大或低落时，小桔减少主动打扰；高置信立场多时会更敢主动；价值观有 tradeoff 时多灌一段记忆。关闭=按固定参数运行，不受画像影响。
+            关闭 = 按固定参数运行，下方 5 个阈值都不生效；开启 = 下方的值才是实际生效值。修改任何一条后请保持总开关开启，否则不生效。
           </span>
         </span>
       </label>
       <Row
         testid="will-thr-freq-max"
-        label="压力大/低落时打扰间隔上限（×）"
-        desc="情绪负面时拉长间隔，默认 1.4"
+        label="① 情绪负面时主动间隔倍率（×）"
+        desc="默认值 1.4，范围 1.0–2.5。读今日情绪层（recent_emotion）。调高=情绪负面时小桔拉长主动间隔更久（更沉默）；调低=趋近 ×1.0，情绪几乎不影响主动。**独立工作**，不与其他条联动。"
         min={1.0}
         max={2.5}
         step={0.05}
@@ -1180,8 +1188,8 @@ function WillModulationCard() {
       />
       <Row
         testid="will-thr-th-pos"
-        label="高置信立场 → 主动阈值下降"
-        desc="立场≥0.7 命中3条以上，proactive 阈值下调量"
+        label="② 高立场命中时主动阈值下降量"
+        desc="默认值 0.15，范围 0.0–0.4。读认知层 stance_count（≥0.7 高置信立场数量）。调高=小桔在你信任的话题上更主动/更敢接话；调低=立场多少几乎不影响主动。**注意**：靠近 0.4 上限是「最像你」档，此时小桔会表现出以你的判断标准替你想了一遍的态度。"
         min={0}
         max={0.4}
         step={0.01}
@@ -1190,8 +1198,8 @@ function WillModulationCard() {
       />
       <Row
         testid="will-thr-th-neg"
-        label="盲区 → 主动阈值上调"
-        desc="有 open gap 时主动阈值上调量"
+        label="③ 盲区多时主动阈值上调量"
+        desc="默认值 0.0，范围 0.0–0.4。读认知层 open_gap_count（未证伪/未知项）。调高=小桔在不确定的话题上更显著闭嘴；不动=沉默闸门不起作用（默认安全）。**独立工作**，不与其他条联动。**注意**：此条与②共用同一方法 modulate_proactive_threshold，但②+③=总阈值净变化（互为反向），可以分别踩。 "
         min={0}
         max={0.4}
         step={0.01}
@@ -1200,8 +1208,8 @@ function WillModulationCard() {
       />
       <Row
         testid="will-thr-budget"
-        label="价值观有 tradeoff → 记忆预算"
-        desc="给模型多灌的记忆比例，1.0=不变"
+        label="④ 价值观 tradeoff 时记忆预算倍率（×）"
+        desc="默认值 1.0（不放大），范围 1.0–1.5。读意志层 has_value_signal（你说过「权衡/妥协/优先级/冲突/不行/必须/绝不/底线/宁可/让位/排序/先后」等词）。调高=下次回应能引用的萧哥历史立场/价值排序更多；不动=1.0× 灌入（即不放大额外记忆上下文）。**联动**：与⑤共用同一条画像输入——立场命中增多时，④与⑤会自动一起涨。"
         min={1.0}
         max={1.5}
         step={0.05}
@@ -1210,8 +1218,8 @@ function WillModulationCard() {
       />
       <Row
         testid="will-thr-tone-len"
-        label="语气追加最大长度（字）"
-        desc="高置信立场命中时往语气里加的字数上限"
+        label="⑤ 高立场话题时语气追加最大长度（字）"
+        desc="默认值 60 字，范围 20–200。读意志层 top_stances（前 3 高置信立场）。调高=小桔在立场话题表达时会复述/援引你的判断（'按你之前的标准…''你曾表达过…'）；调低=立场只用来调行为模式，嘴上不复述。**联动**：立场命中增多时与④自动一起涨。"
         min={20}
         max={200}
         step={10}
