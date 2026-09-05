@@ -2407,6 +2407,108 @@ def create_app(manager: SessionManager) -> FastAPI:
             logging.exception("save deskmate memory failed")
             return JSONResponse({"error": "save failed"}, status_code=500)
 
+    # ------------------------------------------------------------------
+    # 意志层（成为我）：行为调制配置 + 可观测
+    # ------------------------------------------------------------------
+    @app.get("/v1/deskmate/will/settings")
+    async def get_will_settings() -> dict[str, Any]:
+        """读取意志层配置（阈值可在设置区调）。"""
+        try:
+            from deskmate.will.settings import load_will_settings
+
+            s = load_will_settings()
+            return {"ok": True, "settings": s.to_dict()}
+        except Exception:
+            logging.exception("get will settings failed")
+            return JSONResponse({"error": "get failed"}, status_code=500)
+
+    @app.post("/v1/deskmate/will/settings")
+    async def put_will_settings(request: Request) -> dict[str, Any]:
+        """更新意志层配置（enabled 开关 + 5 个阈值）。超出合法范围自动 clamp。"""
+        try:
+            body = await request.json()
+        except Exception:
+            return JSONResponse({"error": "invalid json"}, status_code=400)
+        try:
+            from deskmate.will.settings import load_will_settings, save_will_settings
+
+            cur = load_will_settings()
+            # 合并：只接受已知字段
+            if "enabled" in body and isinstance(body["enabled"], bool):
+                cur.enabled = body["enabled"]
+            if isinstance(body.get("thresholds"), dict):
+                for k, v in body["thresholds"].items():
+                    if k in cur.thresholds and isinstance(v, (int, float)):
+                        cur.thresholds[k] = float(v)
+            ok = save_will_settings(cur)
+            if not ok:
+                return JSONResponse({"error": "save failed"}, status_code=500)
+            return {"ok": True, "settings": cur.to_dict()}
+        except Exception:
+            logging.exception("put will settings failed")
+            return JSONResponse({"error": "put failed"}, status_code=500)
+
+    @app.get("/v1/deskmate/will/inspect")
+    async def inspect_will() -> dict[str, Any]:
+        """可观测：显示当前生效的调制参数 + 每条参数的来源。"""
+        try:
+            from deskmate.growth.engine import GrowthEngine
+            from deskmate.will.digest import get_digest
+            from deskmate.will.settings import load_will_settings
+
+            bd = os.environ.get("DESKMATE_DIR", os.path.expanduser("~/.deskmate"))
+            settings = load_will_settings(base_dir=bd)
+            d = get_digest(base_dir=bd)
+            engine = GrowthEngine(base_dir=bd)
+
+            # 逐参数来源
+            def _src(has_will: bool) -> str:
+                if not settings.enabled:
+                    return "disabled"
+                return "will" if has_will else "growth"
+
+            tone = engine.modulate_tone_prompt()
+            budget = engine.modulate_memory_budget(4096)
+            freq = engine.modulate_proactive_frequency(1.0)
+            thr = engine.modulate_proactive_threshold(0.5)
+
+            return {
+                "ok": True,
+                "enabled": settings.enabled,
+                "digest_available": d.available,
+                "recent_emotion": d.recent_emotion,
+                "stance_count": d.stance_count,
+                "open_gap_count": d.open_gap_count,
+                "has_value_signal": d.has_value_signal,
+                "top_stances": [
+                    {"topic": t, "content": c, "confidence": conf}
+                    for t, c, conf in d.top_stances
+                ],
+                "modulations": {
+                    "tone_prompt": {
+                        "value": tone,
+                        "source": _src(d.available and len(d.top_stances) >= 2),
+                    },
+                    "memory_budget": {
+                        "value": budget,
+                        "source": _src(d.available and d.has_value_signal),
+                    },
+                    "proactive_frequency": {
+                        "value": round(freq, 4),
+                        "source": _src(
+                            d.available and d.recent_emotion in ("压力大", "低落", "忙碌")
+                        ),
+                    },
+                    "proactive_threshold": {
+                        "value": round(thr, 4),
+                        "source": _src(d.available and (d.open_gap_count > 0 or d.stance_count >= 3)),
+                    },
+                },
+            }
+        except Exception:
+            logging.exception("inspect will failed")
+            return JSONResponse({"error": "inspect failed"}, status_code=500)
+
     @app.get("/v1/deskmate/memory")
     async def get_deskmate_memory() -> dict[str, Any]:
         """读取 DeskMate 记忆文件（SOUL/USER/MEMORY），供前端打开记忆查看器时即时填充。"""

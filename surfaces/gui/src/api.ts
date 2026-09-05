@@ -2706,6 +2706,54 @@ export async function setDeskmateGrowthProactive(control: boolean): Promise<bool
   }
 }
 
+/** v1.9.0 意志层：读取 will_settings（enabled + 5 个阈值）。 */
+export interface WillSettings {
+  enabled: boolean;
+  thresholds: {
+    emotional_proactive_frequency_max: number;
+    cognitive_threshold_delta_pos: number;
+    cognitive_threshold_delta_neg: number;
+    memory_budget_ratio: number;
+    tone_prompt_max_len: number;
+  };
+  source?: Record<string, string>;
+}
+
+export async function getDeskmateWillSettings(): Promise<WillSettings | null> {
+  try {
+    const res = await authedFetch(`${httpBase()}/v1/deskmate/will/settings`);
+    if (!res.ok) return null;
+    return res.json();
+  } catch {
+    return null;
+  }
+}
+
+/** v1.9.0 意志层：保存 will_settings（部分字段 PUT）。 */
+export async function setDeskmateWillSettings(patch: Partial<WillSettings>): Promise<boolean> {
+  try {
+    const res = await authedFetch(`${httpBase()}/v1/deskmate/will/settings`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(patch),
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+/** v1.9.0 意志层：查看每条调制参数来源（调试用）。 */
+export async function getDeskmateWillInspect(): Promise<Record<string, unknown>> {
+  try {
+    const res = await authedFetch(`${httpBase()}/v1/deskmate/will/inspect`);
+    if (!res.ok) return {};
+    return res.json();
+  } catch {
+    return {};
+  }
+}
+
 export interface TraceRecord {
   ts?: string;
   query?: string;

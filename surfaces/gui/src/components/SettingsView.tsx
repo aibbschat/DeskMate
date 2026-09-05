@@ -16,6 +16,9 @@ import {
   setGovernance,
   getDeskmateGrowth,
   setDeskmateGrowthProactive,
+  getDeskmateWillSettings,
+  setDeskmateWillSettings,
+  type WillSettings,
   type CompactionSettings,
   type GovernanceSettings,
   type ModelSettings,
@@ -476,6 +479,8 @@ function AppearanceSection() {
       <MemoryInjectionCard />
 
       <TrustProactiveCard />
+
+      <WillModulationCard />
 
       <FilesCard />
 
@@ -1085,6 +1090,134 @@ function TrustProactiveCard() {
           </span>
         </span>
       </label>
+    </div>
+  );
+}
+
+function WillModulationCard() {
+  const [s, setS] = useState<WillSettings | null>(null);
+
+  useEffect(() => {
+    getDeskmateWillSettings().then((v) => {
+      if (v && v.thresholds) setS(v);
+    });
+  }, []);
+
+  const update = async (patch: Partial<WillSettings>) => {
+    if (!s) return;
+    const next: WillSettings = {
+      ...s,
+      ...patch,
+      thresholds: { ...s.thresholds, ...(patch.thresholds || {}) },
+    };
+    setS(next);
+    const ok = await setDeskmateWillSettings(patch);
+    if (!ok) setS(s);
+  };
+
+  const updThreshold = (k: keyof WillSettings["thresholds"], v: number) =>
+    update({ thresholds: { ...(s?.thresholds || ({} as WillSettings["thresholds"])), [k]: v } });
+
+  if (!s) return null;
+
+  const Row = (props: {
+    label: string;
+    desc: string;
+    testid: string;
+    min: number;
+    max: number;
+    step: number;
+    value: number;
+    onChange: (n: number) => void;
+  }) => (
+    <div className="py-2 flex items-start gap-3" data-testid={props.testid}>
+      <div className="flex-1">
+        <div className="text-[13px] text-ink">{props.label}</div>
+        <div className="text-[12px] text-muted">{props.desc}</div>
+      </div>
+      <input
+        type="number"
+        min={props.min}
+        max={props.max}
+        step={props.step}
+        value={props.value}
+        onChange={(e) => {
+          const n = Number(e.target.value);
+          if (Number.isFinite(n)) props.onChange(n);
+        }}
+        className="w-20 px-2 py-1 rounded-lg border border-line bg-paper text-[13px] text-ink outline-none focus:border-accent"
+      />
+    </div>
+  );
+
+  return (
+    <div className={CARD + " p-4 mb-4"} data-testid="will-modulation-card">
+      <div className={FIELD_LABEL}>意志层 / 行为调制</div>
+      <label className="flex items-start gap-3 py-2">
+        <input
+          type="checkbox"
+          className="mt-0.5"
+          data-testid="will-enabled-toggle"
+          checked={s.enabled}
+          onChange={(e) => update({ enabled: e.target.checked })}
+        />
+        <span>
+          <span className="block text-[13px] text-ink">让认知与情感影响行为</span>
+          <span className="block text-[12px] text-muted">
+            开启后：当日情绪压力大或低落时，小桔减少主动打扰；高置信立场多时会更敢主动；价值观有 tradeoff 时多灌一段记忆。关闭=按固定参数运行，不受画像影响。
+          </span>
+        </span>
+      </label>
+      <Row
+        testid="will-thr-freq-max"
+        label="压力大/低落时打扰间隔上限（×）"
+        desc="情绪负面时拉长间隔，默认 1.4"
+        min={1.0}
+        max={2.5}
+        step={0.05}
+        value={s.thresholds.emotional_proactive_frequency_max}
+        onChange={(n) => updThreshold("emotional_proactive_frequency_max", n)}
+      />
+      <Row
+        testid="will-thr-th-pos"
+        label="高置信立场 → 主动阈值下降"
+        desc="立场≥0.7 命中3条以上，proactive 阈值下调量"
+        min={0}
+        max={0.4}
+        step={0.01}
+        value={s.thresholds.cognitive_threshold_delta_pos}
+        onChange={(n) => updThreshold("cognitive_threshold_delta_pos", n)}
+      />
+      <Row
+        testid="will-thr-th-neg"
+        label="盲区 → 主动阈值上调"
+        desc="有 open gap 时主动阈值上调量"
+        min={0}
+        max={0.4}
+        step={0.01}
+        value={s.thresholds.cognitive_threshold_delta_neg}
+        onChange={(n) => updThreshold("cognitive_threshold_delta_neg", n)}
+      />
+      <Row
+        testid="will-thr-budget"
+        label="价值观有 tradeoff → 记忆预算"
+        desc="给模型多灌的记忆比例，1.0=不变"
+        min={1.0}
+        max={1.5}
+        step={0.05}
+        value={s.thresholds.memory_budget_ratio}
+        onChange={(n) => updThreshold("memory_budget_ratio", n)}
+      />
+      <Row
+        testid="will-thr-tone-len"
+        label="语气追加最大长度（字）"
+        desc="高置信立场命中时往语气里加的字数上限"
+        min={20}
+        max={200}
+        step={10}
+        value={s.thresholds.tone_prompt_max_len}
+        onChange={(n) => updThreshold("tone_prompt_max_len", n)}
+      />
     </div>
   );
 }

@@ -320,42 +320,124 @@ class GrowthEngine:
 
         trust_controls_proactive=False 时返回原值（用户可关闭）。
         信任感 >0.5 → 阈值下调（更主动）；<0.5 → 阈值上调（更克制）。
+
+        意志层增量（W2b-1）：认知把握度叠加。
+        - 存在 open gap（盲区）→ 阈值上调，知道自己不知道就先别瞎主动
+        - 高置信立场（≥0.7 active）≥3 条 → 阈值下调，更敢主动
+        阈值来自 will_settings，可在设置区调。空画像 → 只看 trust（现状）。
         """
         if not self.state.trust_controls_proactive:
             return base_threshold
         offset = (self.state.trust - 0.5) * (2 * TRUST_THRESHOLD_SPAN)
-        return base_threshold - offset
+        result = base_threshold - offset
+        try:
+            from deskmate.will.digest import get_digest
+            from deskmate.will.settings import load_will_settings
+
+            bd = str(self.base_dir) if self.base_dir else None
+            settings = load_will_settings(base_dir=bd)
+            if settings.enabled:
+                d = get_digest(base_dir=bd)
+                if d.available:
+                    if d.open_gap_count > 0:
+                        result += settings.thresholds["cognitive_threshold_delta_neg"]
+                    if d.stance_count >= 3:
+                        result -= settings.thresholds["cognitive_threshold_delta_pos"]
+        except Exception:
+            pass  # fail-open
+        return clamp(result, 0.0, 1.0)
 
     def modulate_memory_budget(self, base_budget: int) -> int:
-        """记忆注入预算调制：默契度越高 → 注入越多（记忆匹配更准，AI 更懂你）。"""
+        """记忆注入预算调制：默契度越高 → 注入越多（记忆匹配更准，AI 更懂你）。
+
+        意志层增量（W2b-2）：认知有价值观权衡信号 → 预算 ×ratio，
+        给模型多一点"决断材料"。总数仍受 MEMORY_CONTEXT_MAX_CHARS 限制，
+        不挤占其它层。阈值来自 will_settings。空画像 → 只看 empathy（现状）。
+        """
         ratio = EMPATHY_BUDGET_MIN + (self.state.empathy / 100.0) * (EMPATHY_BUDGET_MAX - EMPATHY_BUDGET_MIN)
-        return int(base_budget * ratio)
+        result = int(base_budget * ratio)
+        try:
+            from deskmate.will.digest import get_digest
+            from deskmate.will.settings import load_will_settings
+
+            bd = str(self.base_dir) if self.base_dir else None
+            settings = load_will_settings(base_dir=bd)
+            if settings.enabled:
+                d = get_digest(base_dir=bd)
+                if d.available and d.has_value_signal:
+                    result = int(result * settings.thresholds["memory_budget_ratio"])
+        except Exception:
+            pass  # fail-open
+        return result
 
     def modulate_proactive_frequency(self, base_interval_sec: float) -> float:
-        """proactive 心跳间隔调制：活力低 → 间隔拉长（累了不打扰）。"""
+        """proactive 心跳间隔调制：活力低 → 间隔拉长（累了不打扰）。
+
+        意志层增量（W2a）：今日情绪为压力/低落/忙碌 → 进一步拉长间隔
+        （"我赶稿时她不烦我"）。阈值来自 will_settings，可在设置区调。
+        空画像 / kill switch / 异常 → 完全保持现状。
+        """
         vitality = self.state.vitality
         # 活力 100 → 间隔 *0.85；活力 0 → 间隔 *1.6
         ratio = 1.6 - (vitality / 100.0) * 0.75
-        return base_interval_sec * ratio
+        result = base_interval_sec * ratio
+        try:
+            from deskmate.will.digest import get_digest
+            from deskmate.will.settings import load_will_settings
+
+            bd = str(self.base_dir) if self.base_dir else None
+            settings = load_will_settings(base_dir=bd)
+            if settings.enabled:
+                d = get_digest(base_dir=bd)
+                if d.available and d.recent_emotion in ("压力大", "低落", "忙碌"):
+                    result *= settings.thresholds["emotional_proactive_frequency_max"]
+        except Exception:
+            pass  # fail-open：不影响原逻辑
+        return result
 
     def modulate_tone_prompt(self) -> str:
         """亲密度语气提示（注入 system prompt）。
 
         亲密度高 → 提示 AI 语气更亲切；低 → 保持礼貌克制。空串表示无需注入。
         关系进入高阶段（知己及以上）后，追加一句更懂彼此的提示。
+
+        意志层增量（W2b-3）：高置信立场（≥0.7 active）≥2 条 → 追加一句
+        "他表达过：…"，把用户亲口说过的偏好带进语气。严格长度截断
+        （tone_prompt_max_len，默认 80 字，可在设置区调），超限丢整段。
+        空画像 / kill switch / 异常 → 不追加，逐字等同现状。
         """
         intimacy = self.state.intimacy
         if intimacy >= 60:
             base = "你们已经很熟悉了（亲密度高）。可以自然地用轻松亲切的语气，不必拘谨，像老朋友一样。"
             idx, name = self.bond_stage_from_depth(self.state.bond_depth)
             if idx >= 3:  # 知己及以上
-                return base + f" 你们的关系已到「{name}」阶段，语气可以更懂彼此、更自然，少一点客套。"
-            return base
-        if intimacy >= 25:
-            return "你们的关系正在升温（亲密度中）。语气可以逐渐自然，偶尔带一点亲近感。"
-        if intimacy >= 10:
-            return "你们刚认识不久（亲密度低）。保持礼貌友善，不要太自来熟。"
-        return ""
+                base = base + f" 你们的关系已到「{name}」阶段，语气可以更懂彼此、更自然，少一点客套。"
+        elif intimacy >= 25:
+            base = "你们的关系正在升温（亲密度中）。语气可以逐渐自然，偶尔带一点亲近感。"
+        elif intimacy >= 10:
+            base = "你们刚认识不久（亲密度低）。保持礼貌友善，不要太自来熟。"
+        else:
+            return ""  # 亲密度太低，不注入任何语气提示
+
+        # 意志层增量：高置信立场 → 追加用户表达过的偏好
+        try:
+            from deskmate.will.digest import get_digest
+            from deskmate.will.settings import load_will_settings
+
+            bd = str(self.base_dir) if self.base_dir else None
+            settings = load_will_settings(base_dir=bd)
+            if settings.enabled:
+                d = get_digest(base_dir=bd)
+                if d.available and len(d.top_stances) >= 2:
+                    snippet = "；".join(c for _, c, _ in d.top_stances[:2])
+                    max_len = int(settings.thresholds["tone_prompt_max_len"])
+                    if len(snippet) > max_len:
+                        snippet = snippet[:max_len] + "…"
+                    if snippet:
+                        base = base + f" 他表达过：{snippet}。"
+        except Exception:
+            pass  # fail-open
+        return base
 
     # ------------------------------------------------------------------
     # 关系深度 / 阶段（8.2 长跑设计：数值封顶后仍可进化）
