@@ -19,7 +19,10 @@ from dataclasses import dataclass, replace
 from enum import Enum
 from typing import Any, AsyncIterator, Awaitable, Callable, Optional
 
+import logging
+
 from . import compaction as _compaction
+logger = logging.getLogger(__name__)
 from . import provenance
 from . import session_facts
 from . import toolchain as _toolchain
@@ -29,6 +32,10 @@ from .events import Event, EventType
 # IN A ROW (2→5 + streak semantics, owner ruling 2026-08-24 — a cumulative 2 silently
 # downgraded long agentic turns to hand-approval after one over-strict pair).
 _REVIEWER_TRIP = 5
+# P0-1: compaction summarizer failure cooldown ladder (seconds), borrowed from
+# Hermes' cooldown design. A failing summarizer (transient 429/timeout) waits an
+# escalating cooldown before retrying instead of popping a Retry prompt every turn.
+_COMPACTION_COOLDOWN_LADDER = (60, 300, 900)
 _REVIEWER_PAUSED_TEXT = (
     "Auto-approve is paused for the rest of this turn — the reviewer blocked "
     f"{_REVIEWER_TRIP} actions in a row, so approvals now come to you."
@@ -160,6 +167,10 @@ class TurnEngine:
         # treat as unattended: never park a background run on internal bookkeeping).
         self.compaction_state: Optional[_compaction.CompactionState] = None
         self.compaction_settings: Optional[Callable[[], dict[str, Any]]] = None
+        # P0-1: summarizer-failure cooldown state (in-process). Stops a failing
+        # summarizer from re-prompting every turn; force=True clears it.
+        self._compaction_cooldown_until: float = 0.0
+        self._compaction_failure_streak: int = 0
         self.is_attended: Optional[Callable[[], bool]] = None
         # Session facts (spec Part 0 / §2.4) — the known world frozen at session start, plus
         # the per-turn ingestion record. Set post-construction by the surface, same as
@@ -622,9 +633,10 @@ class TurnEngine:
     async def _compact_now(self, *, force: bool = False) -> Optional[str]:
         """Run the compaction policy. Callers gate on `_compaction_due()` (or `force`,
         the overflow path). Returns the user-facing notice text when the outbound view
-        changed, else None. Failure policy per spec: retry once (both modes); attended →
-        Retry / Trim prompt; unattended → auto-trim and continue (never park a run on
-        bookkeeping)."""
+        changed, else None. Failure policy: retry once; on summarizer failure apply a
+        cooldown ladder (no blocking Retry prompt — that re-pops every turn while the
+        summarizer is down) and fall back to a token-based trim; attended sessions get a
+        non-blocking notice explaining the degradation."""
         cfg = self._compaction_config()
         pct = float(cfg["threshold_pct"])
         cap = int(cfg["cap_tokens"])
@@ -634,6 +646,15 @@ class TurnEngine:
             * _compaction.trigger_tokens(window, threshold_pct=pct, cap_tokens=cap)
         )
         model = str(cfg.get("model") or "") or self.model
+
+        # P0-1: cooldown gate — a summarizer that's failing (transient 429/timeout)
+        # must not pop a prompt on every turn. force=True (manual / overflow path)
+        # clears the cooldown and compacts regardless.
+        now = time.time()
+        if force:
+            self._compaction_cooldown_until = 0.0
+        elif now < self._compaction_cooldown_until:
+            return None
 
         def _build() -> Optional[_compaction.CompactionState]:
             return _compaction.build_state(
@@ -646,47 +667,57 @@ class TurnEngine:
 
         state: Optional[_compaction.CompactionState] = None
         failed = False
+        last_err: Optional[BaseException] = None
         for _attempt in range(2):  # first try + the unconditional single retry
             try:
                 state = await asyncio.to_thread(_build)
                 failed = False
                 break
-            except Exception:
+            except Exception as exc:
                 failed = True
-        if failed and self.question_asker is not None and self.is_attended and self.is_attended():
-            while True:
-                answer = await self._interruptible(
-                    self.question_asker(
-                        {
-                            "question": (
-                                "Context compaction failed — the summarizer couldn't "
-                                "condense this session's history. How should I proceed?"
-                            ),
-                            "options": ["Retry", "Trim oldest 10%"],
-                            "allow_text": False,
-                            "header": "Compaction",
-                        },
-                        None,
-                    ),
-                    interrupted=None,
-                )
-                if not answer or answer.get("answer") != "Retry":
-                    break
-                try:
-                    state = await asyncio.to_thread(_build)
-                    failed = False
-                    break
-                except Exception:
-                    continue
+                last_err = exc
+
         if state is not None:
+            # A successful summary clears any cooldown.
+            self._compaction_failure_streak = 0
+            self._compaction_cooldown_until = 0.0
             self.compaction_state = state
             self._last_context_tokens = None  # stale once the outbound view shrank
             return "Context compacted — earlier turns were summarized"
+
+        if failed:
+            # P0-1: escalate a cooldown so we stop hammering a broken endpoint and stop
+            # re-prompting. The ladder grows with consecutive failures.
+            self._compaction_failure_streak += 1
+            idx = min(self._compaction_failure_streak - 1, len(_COMPACTION_COOLDOWN_LADDER) - 1)
+            self._compaction_cooldown_until = time.time() + _COMPACTION_COOLDOWN_LADDER[idx]
+            logger.warning(
+                "compaction summarizer failed (streak=%d, cooldown=%.0fs): %s",
+                self._compaction_failure_streak,
+                _COMPACTION_COOLDOWN_LADDER[idx],
+                ((last_err.__class__.__name__ + ": " + str(last_err)) if last_err else "unknown"),
+            )
+
         if failed or force:
-            trimmed = _compaction.trim_state(self.messages, prior=self.compaction_state)
+            # P0-2: token-based trim on the automatic path (not a message-count 10% that
+            # leaves giant tool results untouched and lets the context keep growing). The
+            # force/overflow path keeps the legacy message-count trim so it always makes
+            # progress and the existing hard-overflow retry contract still holds.
+            trimmed = _compaction.trim_state(
+                self.messages,
+                prior=self.compaction_state,
+                keep_tokens=None if force else keep,
+            )
             if trimmed is not None:
                 self.compaction_state = trimmed
                 self._last_context_tokens = None
+                if failed and self.question_asker is not None and self.is_attended and self.is_attended():
+                    # P0-3: non-blocking notice instead of the old blocking Retry prompt.
+                    return (
+                        "Context trimmed — the summarizer was unavailable, so older turns "
+                        "were dropped without a summary (details in the log). Set a "
+                        "dedicated compression model in settings to avoid this."
+                    )
                 return "Context trimmed — oldest turns dropped (summary unavailable)"
         return None
 

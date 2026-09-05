@@ -528,27 +528,69 @@ def build_state(
     )
 
 
+def _trim_boundary_by_tokens(
+    messages: list[dict[str, Any]], start: int, keep_tokens: int
+) -> Optional[int]:
+    """Pick the earliest user/assistant index >= start+1 whose retained suffix fits
+    `keep_tokens` (estimated). O(n): accumulate suffix tokens from the end and snap the
+    cut up to the next user/assistant boundary, so giant tool results get skipped rather
+    than stranding the boundary inside one. Falls back to a message-count step when even
+    the newest turns overflow the budget, so we always make progress."""
+    n = len(messages)
+    if n - start <= 2:
+        return None
+    cum = 0
+    cut = n  # keep messages[cut:] verbatim
+    for i in range(n - 1, start, -1):
+        cum += estimate_tokens([messages[i]])
+        if cum > keep_tokens:
+            cut = i + 1
+            break
+    if cut <= start + 1 or cut >= n:
+        # even the newest turns overflow the budget (or we'd keep everything and still
+        # overflow — e.g. a single message larger than the keep budget) — drop ~10% by
+        # count instead so we always make progress instead of returning None.
+        step = max(1, int((n - start) * _TRIM_FRACTION))
+        target = start + step
+        for j in range(target, n):
+            if messages[j].get("role") in ("user", "assistant"):
+                return j
+        return None
+    for j in range(cut, n):
+        if messages[j].get("role") in ("user", "assistant"):
+            return j
+    return None
+
+
 def trim_state(
     messages: list[dict[str, Any]],
     *,
     prior: Optional[CompactionState] = None,
     fraction: float = _TRIM_FRACTION,
+    keep_tokens: Optional[int] = None,
 ) -> Optional[CompactionState]:
-    """The no-LLM fallback: advance the boundary past ~`fraction` of the outbound
-    messages. No summary — but the mechanical block and the user-message list (never
-    trimmed away, per spec) are free, so the model still gets deterministic state."""
+    """The no-LLM fallback: advance the boundary so the retained suffix fits the token
+    budget (when `keep_tokens` is given) — skipping giant tool results instead of cutting
+    a fixed message fraction that leaves them in place and lets the context keep growing
+    (P0-2). Falls back to the legacy message-count fraction when no budget is supplied.
+    No summary — but the mechanical block and the user-message list (never trimmed away,
+    per spec) are free, so the model still gets deterministic state."""
     start = prior.boundary_index if prior is not None else 0
     remaining = len(messages) - start
     if remaining <= 2:
         return None
-    step = max(1, int(remaining * fraction))
-    target = start + step
-    # Land on a legal suffix head at or after the target (never a tool message).
-    boundary = None
-    for i in range(target, len(messages)):
-        if messages[i].get("role") in ("user", "assistant"):
-            boundary = i
-            break
+    if keep_tokens is not None:
+        # P0-2: token-based trim — advance the boundary until the suffix fits budget.
+        boundary = _trim_boundary_by_tokens(messages, start, keep_tokens)
+    else:
+        step = max(1, int(remaining * fraction))
+        target = start + step
+        # Land on a legal suffix head at or after the target (never a tool message).
+        boundary = None
+        for i in range(target, len(messages)):
+            if messages[i].get("role") in ("user", "assistant"):
+                boundary = i
+                break
     if boundary is None or boundary <= start or boundary >= len(messages):
         return None
     span = messages[start:boundary]

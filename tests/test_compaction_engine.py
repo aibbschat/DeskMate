@@ -143,11 +143,14 @@ def test_summarizer_failure_unattended_auto_trims(tmp_path):
     assert len(provider.summary_calls) == 2  # the one unconditional retry, then trim
 
 
-def test_summarizer_failure_attended_prompts_retry_then_succeeds(tmp_path):
+def test_summarizer_failure_attended_nonblocking_notice_and_cooldown(tmp_path):
+    # P0: a failing summarizer no longer pops a blocking Retry prompt every turn.
+    # Instead it logs, engages a cooldown, and emits a non-blocking COMPACTED notice
+    # while falling back to a token-based trim.
     provider = CompactingProvider(
-        [AssistantTurn(text="done", finish_reason="stop")], summary_fails=2
+        [AssistantTurn(text="done", finish_reason="stop")], summary_fails=99
     )
-    engine = make_engine(tmp_path,provider, messages=long_history(), cap=400)
+    engine = make_engine(tmp_path, provider, messages=long_history(), cap=400)
     engine.is_attended = lambda: True
     asked = []
 
@@ -156,10 +159,16 @@ def test_summarizer_failure_attended_prompts_retry_then_succeeds(tmp_path):
         return {"answer": "Retry"}
 
     engine.question_asker = asker
-    collect(engine)
+    events = collect(engine)
 
-    assert asked and asked[0]["options"] == ["Retry", "Trim oldest 10%"]
-    assert engine.compaction_state is not None and not engine.compaction_state.trimmed
+    # No blocking Retry prompt (P0-3): the question_asker is never invoked.
+    assert asked == []
+    # Failure is surfaced as a non-blocking COMPACTED notice, not a modal prompt.
+    compacted = [e for e in events if e.type == EventType.COMPACTED]
+    assert compacted and "summarizer was unavailable" in compacted[0].data["text"].lower()
+    assert engine.compaction_state is not None and engine.compaction_state.trimmed
+    # Cooldown engaged so we don't re-prompt (or re-hammer) on the next turn.
+    assert engine._compaction_cooldown_until > 0
 
 
 def test_summarizer_failure_attended_choose_trim(tmp_path):
@@ -273,3 +282,35 @@ def test_compacting_signal_precedes_the_compacted_marker(tmp_path):
         m.get("role") == "notice" and m.get("kind") == "compacting"
         for m in engine.messages
     )
+
+
+async def test_cooldown_suppresses_repeat_compaction_within_window(tmp_path):
+    # P0-1: once a summarizer failure engages the cooldown, a subsequent auto-compaction
+    # inside the window must NOT retry the summarizer or re-prompt — it bails out cleanly.
+    import time
+
+    provider = CompactingProvider(
+        [AssistantTurn(text="done", finish_reason="stop")], summary_fails=99
+    )
+    engine = make_engine(tmp_path, provider, messages=long_history(), cap=400)
+    engine.is_attended = lambda: True
+    asked = []
+
+    async def asker(args, tool_call_id=None):
+        asked.append(args)
+        return {"answer": "Retry"}
+
+    engine.question_asker = asker
+
+    n1 = await engine._compact_now()
+    # First call fails → token-based trim fallback + cooldown, no blocking prompt.
+    assert n1 is not None and "trimmed" in n1.lower()
+    assert asked == []
+    assert len(provider.summary_calls) == 2  # the two unconditional build attempts
+    assert engine._compaction_cooldown_until > time.time()
+
+    n2 = await engine._compact_now()  # still inside the cooldown window
+    # Bailed out before touching the summarizer or the prompt again.
+    assert n2 is None
+    assert len(provider.summary_calls) == 2  # no extra summarizer calls
+    assert asked == []  # no re-prompt
