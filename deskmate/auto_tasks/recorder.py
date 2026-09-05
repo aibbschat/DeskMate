@@ -11,6 +11,9 @@ from typing import Optional
 from .models import TaskRecord, Insight, TaskRegistryEntry
 from .registry import get_registry
 
+import logging
+logger = logging.getLogger(__name__)
+
 
 class TaskRecorder:
     """统一沉淀器。所有自动任务的结果都通过这里落地。"""
@@ -23,9 +26,9 @@ class TaskRecorder:
         self._ensure_dirs()
 
     def _ensure_dirs(self):
-        self.base_dir.mkdir(parents=True, exist_ok=True)
-        self.insights_dir.mkdir(exist_ok=True)
-        self.details_dir.mkdir(exist_ok=True)
+        os.makedirs(self.base_dir, exist_ok=True)
+        os.makedirs(self.insights_dir, exist_ok=True)
+        os.makedirs(self.details_dir, exist_ok=True)
 
     def record(
         self,
@@ -75,7 +78,7 @@ class TaskRecorder:
         detail_file = None
         if detail_content:
             type_details_dir = self.details_dir / task_type
-            type_details_dir.mkdir(exist_ok=True)
+            os.makedirs(type_details_dir, exist_ok=True)
             fname = detail_filename or f"{today}_{target[:30]}.md"
             fpath = type_details_dir / fname
             fpath.write_text(detail_content, encoding="utf-8")
@@ -101,7 +104,7 @@ class TaskRecorder:
         # 2. 写洞察文件
         if insight_objs:
             type_insights_dir = self.insights_dir / task_type
-            type_insights_dir.mkdir(exist_ok=True)
+            os.makedirs(type_insights_dir, exist_ok=True)
             insights_file = type_insights_dir / f"{today}.jsonl"
             with open(insights_file, "a", encoding="utf-8") as f:
                 for ins in insight_objs:
@@ -110,8 +113,13 @@ class TaskRecorder:
         # 4. 更新注册表
         registry.touch_run(task_type, today)
 
-        # 5. 推入 vault / style_profile（标记，由记忆整理流程异步处理）
+        # 5. 推入 vault / style_profile（标记后由记忆管道消费；见 consume_pending_memory_push）
         self._mark_for_memory_push(insight_objs, task_type, target, today)
+        # 5b. 立即把待推送洞察消费进长期记忆（修复死队列，fail-open）
+        try:
+            self.consume_pending_memory_push()
+        except Exception:
+            pass
 
         # 6. 自动触发认知提取（如果指定且有 detail_content）
         if extract_cognitive and detail_content:
@@ -142,6 +150,64 @@ class TaskRecorder:
                     "date": date,
                     "insight": ins.__dict__,
                 }, ensure_ascii=False) + "\n")
+
+    def _pretty_book(self, target: str) -> str:
+        """从 target（如 '6. 大明梦华' / '书17《明朝的裂变》'）还原可读书名。"""
+        import re
+        m = re.search(r"《([^》]+)》", target or "")
+        if m:
+            return m.group(1)
+        plain = re.sub(r"^\s*(?:书)?\d+\.?\s*", "", target or "").strip()
+        return plain.strip("《》").strip()
+
+    def consume_pending_memory_push(self) -> int:
+        """消费 pending_memory_push.jsonl：把标记 push_to_vault/push_to_style 的洞察
+        真正写入长期记忆（learned_history）。修复此前「死队列」——写入后无人消费。
+        返回成功写入的洞察条数；任何异常都 fail-open 吞掉，不影响主链路。"""
+        pending_file = self.base_dir / "pending_memory_push.jsonl"
+        if not pending_file.exists():
+            return 0
+        try:
+            raw_lines = pending_file.read_text(encoding="utf-8").splitlines()
+        except Exception:
+            return 0
+        entries = []
+        for line in raw_lines:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                entries.append(json.loads(line))
+            except Exception:
+                continue
+        facts: list[str] = []
+        for e in entries:
+            ins = e.get("insight") or {}
+            text = (ins.get("text") or "").strip()
+            if not text:
+                continue
+            book = self._pretty_book(e.get("target") or "")
+            date = e.get("date") or ""
+            fact = f"读《{book}》({date})：{text}" if book else text
+            facts.append(fact)
+        if not facts:
+            try:
+                pending_file.write_text("", encoding="utf-8")
+            except Exception:
+                pass
+            return 0
+        try:
+            from deskmate.memory.learned_store import LearnedStore
+            n = LearnedStore().append(facts)
+        except Exception as e:
+            logger.warning("consume_pending_memory_push failed: %s", e)
+            return 0
+        # 成功后清空队列（fp UNIQUE 保证幂等，清空避免无限增长）
+        try:
+            pending_file.write_text("", encoding="utf-8")
+        except Exception:
+            pass
+        return n
 
     def get_timeline(self, limit: int = 50, task_type: Optional[str] = None) -> list[TaskRecord]:
         """读取时间线，倒序返回。"""
@@ -244,3 +310,8 @@ def record_task_result(
         task_name=task_name,
         extract_cognitive=extract_cognitive,
     )
+
+
+def drain_pending_memory_push(base_dir: Optional[str | Path] = None) -> int:
+    """手动/启动期消费 pending_memory_push 队列（幂等）。"""
+    return get_recorder(base_dir).consume_pending_memory_push()

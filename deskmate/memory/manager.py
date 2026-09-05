@@ -472,6 +472,14 @@ class DeskMateMemoryManager:
                     parts.append(ego_cog)
         except Exception:
             pass  # fail-open：认知人格缺失不影响主记忆注入
+        # 「越用越懂你·每日读书」：把面板里的读书沉淀接回对话（修复死数据）
+        # —— auto_tasks 读书洞察此前只展示在「作品与创作」面板，聊天检索链路不消费。
+        try:
+            reading_ctx = self._search_auto_tasks_reading(user_message)
+            if reading_ctx:
+                parts.append(reading_ctx)
+        except Exception:
+            pass  # fail-open：读书沉淀缺失不影响主记忆注入
         if not parts:
             return ""
 
@@ -507,6 +515,55 @@ class DeskMateMemoryManager:
             })
 
         return "<memory-context>\n" + body + "\n</memory-context>"
+
+    def _search_auto_tasks_reading(self, user_message: str) -> str:
+        """检索『每日读书』沉淀里与被问及书籍相关的心得，注入对话上下文。
+        修复：auto_tasks 读书数据此前仅展示在「作品与创作」面板，聊天检索链路不消费（死数据）。"""
+        try:
+            from deskmate.auto_tasks.recorder import get_recorder
+            books = get_recorder().get_timeline(limit=10000, task_type="daily_reading")
+        except Exception as e:
+            logger.debug("auto_tasks reading search failed: %s", e)
+            return ""
+        if not books:
+            return ""
+        msg = user_message or ""
+        matches = []
+        for b in books:
+            target = b.target or ""
+            summary = b.summary or ""
+            candidates = self._book_title_candidates(target, summary)
+            hit = next((c for c in candidates if len(c) >= 2 and c in msg), None)
+            if hit:
+                matches.append((b, hit))
+        if not matches:
+            return ""
+        blocks = []
+        for b, hit in matches:
+            lines = [f"### 读书沉淀·《{hit}》"]
+            if b.summary:
+                lines.append(f"- 概要：{b.summary}")
+            ins = b.insights or []
+            if ins:
+                lines.append("- 小桔在读书中观察到的（可直接引用的洞察）：")
+                for it in ins:
+                    txt = it.get("text") if isinstance(it, dict) else getattr(it, "text", "")
+                    if txt:
+                        lines.append(f"  · {txt}")
+            blocks.append("\n".join(lines))
+        return "\n\n".join(blocks)
+
+    def _book_title_candidates(self, target: str, summary: str) -> list[str]:
+        """从 target/summary 抽取书名候选（用于与用户消息做匹配）。"""
+        cands = set()
+        for text in (target, summary):
+            for m in re.findall(r"《([^》]+)》", text or ""):
+                cands.add(m)
+        plain = re.sub(r"^\s*(?:书)?\d+\.?\s*", "", target or "").strip()
+        plain = plain.strip("《》").strip()
+        if plain:
+            cands.add(plain)
+        return [c for c in cands if c]
 
     def deskmate_auto_inject_context(self, user_message: str = "") -> str:
         """每轮自动注入记忆的集成点（引擎层组装 system prompt 时调用）。
