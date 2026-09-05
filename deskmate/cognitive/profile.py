@@ -66,8 +66,26 @@ class CognitiveProfileManager:
         self.profile = self.store.load_profile(layer=self.layer)
 
     def save(self):
+        """持久化画像。变更后顺手失效 will digest 缓存，让下游调制器下次重建。
+
+        接线说明（2026-09-05）：
+        - **必须 lazy import** —— `deskmate.will.digest` 反向导入 `cognitive.profile`，
+          在 profile.py 顶层 import will 会形成循环依赖。
+        - **try/except fail-open** —— will 未安装 / kill switch / 缓存层异常时
+          不影响画像保存主流程；意志层只是消费者，挂掉不能让出生产端。
+        - **覆盖全部 save 调用点**（diary_extract / emotion_extract / interview /
+          validation_engine / expression_ingest / repair_fake_duplicate_gaps 等），
+          等同于在唯一保存路径统一插桩，散点接不会漏。
+        """
         self.profile.last_updated = _now()
         self.store.persist(self.profile, layer=self.layer)
+        # 失效 will digest 模块级缓存（30min TTL，画像改了就别再吃旧数据）
+        try:
+            from deskmate.will.digest import invalidate_digest
+            invalidate_digest()
+        except Exception:
+            # will 未安装 / kill switch / 缓存模块异常 → 主流程不动
+            pass
 
     def get(self) -> CognitiveProfile:
         return self.profile
