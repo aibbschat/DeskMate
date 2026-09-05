@@ -3530,15 +3530,25 @@ export async function createValidationScenario(): Promise<{
   return res.json();
 }
 
-/** 提交 AI 回答 + 用户回答，评估相似度并反哺画像（POST /v1/deskmate/cognitive/validation/evaluate）。 */
+/** 提交 AI 回答 + 用户回答，评估相似度并反哺画像（POST /v1/deskmate/cognitive/validation/evaluate）。
+ *  必须回传作答时拿到的那个情境：后端靠 scenario_id / related_items 定位该改哪条画像，
+ *  否则会重新随机生成情境，把反馈写到另一条目上（反哺张冠李戴）。 */
 export async function submitValidationEvaluation(
   aiResponse: string,
   userResponse: string,
+  scenario?: ValidationScenario | null,
 ): Promise<ValidationResult> {
   const res = await authedFetch(`${httpBase()}/v1/deskmate/cognitive/validation/evaluate`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ ai_response: aiResponse, user_response: userResponse }),
+    body: JSON.stringify({
+      ai_response: aiResponse,
+      user_response: userResponse,
+      scenario_id: scenario?.id ?? "",
+      related_items: scenario?.related_items ?? [],
+      scenario: scenario?.scenario ?? "",
+      domain: scenario?.domain ?? "",
+    }),
   });
   return res.json();
 }

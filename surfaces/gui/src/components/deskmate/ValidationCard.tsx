@@ -82,7 +82,8 @@ export function ValidationCard({ validation, onClose }: ValidationCardProps) {
     setSubmitting(true);
     setError("");
     try {
-      const r = await submitValidationEvaluation(aiAnswer.trim(), userAnswer.trim());
+      // 回传作答时的情境：后端据此定位该改哪条画像，否则反哺会落到别的条目上
+      const r = await submitValidationEvaluation(aiAnswer.trim(), userAnswer.trim(), scenario);
       if (r.evaluation) {
         setResult({
           overall_score: r.evaluation.overall_score,
@@ -100,7 +101,7 @@ export function ValidationCard({ validation, onClose }: ValidationCardProps) {
     } finally {
       setSubmitting(false);
     }
-  }, [aiAnswer, userAnswer]);
+  }, [aiAnswer, userAnswer, scenario]);
 
   // 重新生成 AI 代答
   const handleRegen = useCallback(() => {

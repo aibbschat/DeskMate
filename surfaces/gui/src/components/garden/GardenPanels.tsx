@@ -14,6 +14,7 @@ import { BondPanel } from "../deskmate/BondPanel";
 import { BadgeWall } from "../deskmate/BadgeWall";
 import { GardenBed } from "./GardenBed";
 import type { GardenP2 } from "./useGarden";
+import { treeProgressPct } from "./useGarden";
 import type { GardenFloraItem } from "./GardenFlora";
 import type { StoryBook } from "./GardenStoryBook";
 import type { GardenFlower, GardenStats } from "./GardenFlowers";
@@ -156,6 +157,7 @@ interface TreePanelProps {
   onClose: () => void;
 }
 
+
 export function GardenTreePanel({ p2, water, flowerCount, onClose }: TreePanelProps) {
   const tree = p2?.tree;
   const w = water ?? p2?.water;
@@ -174,12 +176,14 @@ export function GardenTreePanel({ p2, water, flowerCount, onClose }: TreePanelPr
             <div className="garden-tree-panel-bar">
               <div
                 className="garden-tree-panel-fill"
-                style={{ width: `${Math.min(100, (tree.count / tree.threshold) * 100)}%` }}
+                style={{ width: `${treeProgressPct(tree)}%` }}
               />
             </div>
             <span className="garden-tree-panel-bar-label">
-              {tree.count} / {tree.threshold}
-              {tree.next ? ` · 下一级「${tree.next.title}」还要 ${tree.next.threshold}` : ""}
+              已开 {tree.count} 朵
+              {tree.next
+                ? ` · 再开 ${Math.max(0, tree.next.threshold - tree.count)} 朵，长成「${tree.next.title}」`
+                : " · 已是最成熟的模样"}
             </span>
           </div>
         )}

@@ -15,6 +15,7 @@ import { authedFetch, httpBase } from "../../api";
 import { GardenTreeSVG } from "./GardenTreeSVG";
 import { seasonOf, type SeasonKey } from "./SeasonTheme";
 import type { GardenP2 } from "./useGarden";
+import { treeProgressPct } from "./useGarden";
 
 export function GardenTree({ p2 }: { p2?: GardenP2 | null }) {
   const tree = p2?.tree;
@@ -63,14 +64,10 @@ export function GardenTree({ p2 }: { p2?: GardenP2 | null }) {
             <span className="garden-tree-count">{tree?.count ?? 0} 朵花</span>
           </div>
           <div className="garden-tree-desc">{tree?.desc ?? ""}</div>
-          <div className="garden-tree-progress" role="progressbar" aria-valuenow={tree?.count ?? 0} aria-valuemin={0} aria-valuemax={tree?.next?.threshold ?? (tree?.count ?? 1)}>
+          <div className="garden-tree-progress" role="progressbar" aria-valuenow={treeProgressPct(tree)} aria-valuemin={0} aria-valuemax={100}>
             <div
               className="garden-tree-progress-fill"
-              style={{
-                width: tree?.next
-                  ? `${Math.min(100, Math.round(((tree?.count ?? 0) / (tree?.next.threshold ?? 1)) * 100))}%`
-                  : "100%",
-              }}
+              style={{ width: `${treeProgressPct(tree)}%` }}
             />
           </div>
           <div className="garden-tree-progress-text">{progressText}</div>

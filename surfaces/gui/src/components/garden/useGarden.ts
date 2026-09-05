@@ -41,6 +41,19 @@ export interface GardenP2 {
   };
 }
 
+/** 树等级进度（0-100）：当前档到下一档之间的完成度。
+ *  首档 threshold 为 0，直接 count/threshold 会除零得到 Infinity（进度条满格），
+ *  所以用「(当前朵数 - 本档阈值) / 档间跨度」。
+ *  树的进度在 GardenTree 与 GardenPanels 两处都有展示，共用此函数避免口径打架。 */
+export function treeProgressPct(tree: GardenP2["tree"]): number {
+  if (!tree) return 0;
+  const count = tree.count ?? 0;
+  if (!tree.next) return 100;
+  const from = tree.threshold ?? 0;
+  const span = Math.max(1, tree.next.threshold - from);
+  return Math.min(100, Math.max(0, Math.round(((count - from) / span) * 100)));
+}
+
 export interface GardenSnapshot {
   season: GardenSeason;
   flowers: GardenFlower[];

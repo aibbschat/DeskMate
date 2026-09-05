@@ -85,13 +85,18 @@ function renderText(text: string): React.ReactNode {
   return <>{blocks}</>;
 }
 
-/** 用户日记正文：按行渲染，行内支持表情 token */
+/** 用户日记正文：按行渲染，保留换行分出的段落，行内支持表情 token。
+ *  空行只是段间距，做成矮间隔，不撑出一个带行高的空段落。 */
 function renderUserContent(text: string): React.ReactNode {
-  return text.split("\n").map((line, i) => (
-    <p key={i} style={{ margin: "4px 0" }}>
-      {line ? renderEmoteInline(line, 20) : "\u00A0"}
-    </p>
-  ));
+  return text.split("\n").map((line, i) =>
+    line.trim() === "" ? (
+      <div key={i} style={{ height: 6 }} aria-hidden="true" />
+    ) : (
+      <p key={i} style={{ margin: "4px 0" }}>
+        {renderEmoteInline(line, 20)}
+      </p>
+    ),
+  );
 }
 
 /**

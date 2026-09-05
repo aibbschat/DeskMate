@@ -29,12 +29,21 @@ interface FlowerSpec {
   stem: boolean;         // 是否画茎叶
 }
 
-/** 情绪词 → 主色偏移（花随心情变色）。 */
+/** 情绪词 → 主色偏移（花随心情变色）。
+ *
+ * 词表要覆盖后端 flowers.py 能写进 mood_tint 的全部取值：
+ * - 花种注册表默认（顺利/成长/平静/温暖）
+ * - 情感时间线经 _TIMELINE_MOOD 映射来的（压力/低落/忙碌/顺利/平静）
+ * 缺一个键前端就静默回落花种本色 —— 即「花随心情变色」对那天失效。
+ * 低饱和处理：暖色基座上，压力/低落走冷调，一眼能和「顺利」分开。 */
 const MOOD_TINT: Record<string, [string, string]> = {
   顺利: ["#FFB84D", "#FF8A3D"],
   成长: ["#F08A5D", "#E05D3A"],
   平静: ["#B8C8E8", "#8FA8D8"],
   温暖: ["#F5A97F", "#E88A5A"],
+  压力: ["#9FB3C8", "#6B85A3"],
+  低落: ["#B5A8C4", "#8878A0"],
+  忙碌: ["#E9A87C", "#D4834F"],
 };
 
 const SPECS: Record<string, FlowerSpec> = {
@@ -54,6 +63,9 @@ const MOOD_TEXT: Record<string, string> = {
   成长: "#B05E2C",
   平静: "#5B6C8C",
   温暖: "#A0552F",
+  压力: "#5A6B80",
+  低落: "#6B5C80",
+  忙碌: "#8A4A28",
 };
 
 function tintSpec(kind: string, mood?: string): FlowerSpec {
