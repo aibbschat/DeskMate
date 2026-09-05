@@ -2723,7 +2723,11 @@ export async function getDeskmateWillSettings(): Promise<WillSettings | null> {
   try {
     const res = await authedFetch(`${httpBase()}/v1/deskmate/will/settings`);
     if (!res.ok) return null;
-    return res.json();
+    // 后端返回 {ok: bool, settings: {...}} 包装层（app.py:2420/2446）；兼容裸 settings 对象。
+    const data = await res.json();
+    return data && typeof data === "object" && "settings" in data
+      ? (data.settings as WillSettings)
+      : (data as WillSettings);
   } catch {
     return null;
   }
