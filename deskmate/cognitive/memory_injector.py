@@ -23,7 +23,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-from .interfaces import MemoryInjector, register_engine
+from .interfaces import MemoryInjector
 from .models import CognitiveProfile
 
 _DEFAULT_DIR = Path(os.environ.get("DESKMATE_DIR", str(Path.home() / ".deskmate")))
@@ -172,7 +172,3 @@ class CognitiveMemoryInjector(MemoryInjector):
 
     def format_for_injection(self, items: list[dict]) -> str:
         return "\n".join(i.get("text", "") for i in items if i.get("text"))
-
-
-# 注册到认知层引擎注册表（第二期预留位启用）
-register_engine("memory_injector", CognitiveMemoryInjector)

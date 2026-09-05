@@ -1680,44 +1680,6 @@ def _extract_snippet(text: str, query: str, context_chars: int = 200) -> str:
     return snippet
 
 
-def fts5_index_status(folder: str) -> str:
-    """报告 FTS5 索引的状态。
-
-    返回：索引是否存在、文件数、最后更新时间。
-    """
-    db_path = _fts5_db_path(folder)
-    if not db_path.exists():
-        return "FTS5 索引不存在。请运行 build_fts5_index() 创建。"
-
-    try:
-        conn = sqlite3.connect(str(db_path))
-        try:
-            # 查询索引文件数
-            count = conn.execute("SELECT COUNT(*) FROM novels").fetchone()[0]
-
-            # 查询最后更新时间
-            last = conn.execute(
-                "SELECT MAX(indexed_at) FROM file_tracker"
-            ).fetchone()[0]
-
-            # 查询数据库文件信息
-            db_size = db_path.stat().st_size
-            db_mtime = db_path.stat().st_mtime
-        finally:
-            conn.close()
-
-        lines = [
-            f"FTS5 索引状态：",
-            f"  - 数据库：{db_path}",
-            f"  - 文件数：{count}",
-            f"  - 数据库大小：{db_size / 1024:.1f} KB",
-            f"  - 最后索引时间：{time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(last)) if last else '未知'}",
-            f"  - 数据库修改时间：{time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(db_mtime))}",
-        ]
-        return "\n".join(lines)
-
-    except Exception as e:
-        return f"FTS5 索引状态查询失败：{e}"
 
 
 # Bug A 修复：回退路径圣经摘要的 CHARACTERS 预算（保持原行为量级，单位：字符）

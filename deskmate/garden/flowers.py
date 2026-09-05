@@ -17,7 +17,9 @@ fail-open：任何异常静默，不影响个人中心与主动推理主流程�
 from __future__ import annotations
 
 import datetime
+import json
 import logging
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -121,6 +123,62 @@ def _today() -> str:
     return datetime.date.today().isoformat()
 
 
+def _local_date_from_ts(ts: str) -> str:
+    """把事件时间戳换算成**本地日期**；取不到返回空串。
+
+    事件的 ``ts`` 一律带 UTC 偏移（形如 ``2026-09-04T02:43:18+00:00``），而花的
+    ``date`` 是给人看的本地日期。若直接用 ``date.today()``，跨天时段开出的花会
+    系统性标错一天，且与按 ``source_ts`` 统计的 ``year_stats`` 口径打架。
+    """
+    raw = str(ts or "").strip()
+    if not raw:
+        return ""
+    try:
+        dt = datetime.datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return raw[:10] if len(raw) >= 10 else ""
+    if dt.tzinfo is not None:
+        dt = dt.astimezone()
+    return dt.date().isoformat()
+
+
+# 素材账本回溯上限：recent_events 只有 50 条易失窗口，滚出去的事件靠账本补回。
+# 花开本身幂等（flower_id = kind + 指纹），重复扫描不会重复开花。
+MATERIAL_LOOKBACK_FILES = 120
+MATERIAL_SCAN_CAP = 3000
+
+
+def _material_events(base_dir: Path | str | None) -> list[dict]:
+    """读取日记素材账本里的历史事件，补上滚出 recent_events 窗口的部分。
+
+    账本是 append-only 的全量事件流水（``diary/materials/YYYY-MM-DD.jsonl``），
+    不会像 ``recent_events`` 那样被截断。只读，任何异常返回已有结果。
+    """
+    try:
+        base = Path(base_dir) if base_dir else Path(os.path.expanduser("~/.deskmate"))
+        mdir = base / "diary" / "materials"
+        if not mdir.is_dir():
+            return []
+        out: list[dict] = []
+        for fp in sorted(mdir.glob("*.jsonl"), reverse=True)[:MATERIAL_LOOKBACK_FILES]:
+            try:
+                for line in fp.read_text(encoding="utf-8").splitlines():
+                    line = line.strip()
+                    if not line:
+                        continue
+                    rec = json.loads(line)
+                    if isinstance(rec, dict):
+                        out.append(rec)
+                        if len(out) >= MATERIAL_SCAN_CAP:
+                            return out
+            except Exception:
+                continue
+        return out
+    except Exception:
+        logger.debug("garden material ledger scan failed", exc_info=True)
+        return []
+
+
 def _title_for(kind: str, label: str, subject: str) -> str:
     """零 LLM 模板短标题。"""
     snippet = subject[:14] if subject else "记下一件事"
@@ -132,14 +190,20 @@ def _title_for(kind: str, label: str, subject: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _candidate_flowers(growth) -> list[FlowerRecord]:
-    """从 GrowthEngine.state 生成「应开但可能尚未开」的花（不查幂等）。"""
+def _candidate_flowers(growth, base_dir: Path | str | None = None) -> list[FlowerRecord]:
+    """从 GrowthEngine.state 生成「应开但可能尚未开」的花（不查幂等）。
+
+    数据源两路：``recent_events``（快，但只有 50 条易失窗口）＋ 日记素材账本
+    （append-only 全量流水，把滚出窗口的事件补回来）。花 id 幂等，重复不重复开。
+    """
     out: list[FlowerRecord] = []
     state = growth.state
     seen: set[str] = set()
 
-    # 1) recent_events 按 kind 映射
-    for e in list(getattr(state, "recent_events", None) or []):
+    # 1) recent_events 按 kind 映射（账本补回的历史事件一并参与）
+    events = list(getattr(state, "recent_events", None) or [])
+    events = events + _material_events(base_dir)
+    for e in events:
         if not isinstance(e, dict):
             continue
         kind = str(e.get("kind", ""))
@@ -152,21 +216,17 @@ def _candidate_flowers(growth) -> list[FlowerRecord]:
         if fid in seen:
             continue
         seen.add(fid)
-        # 情绪定色：画像优先（事件类型兜底），见 emotion_profile.mood_tint_for_event
-        mood = _default_mood
-        try:
-            from deskmate.cognitive.emotion_profile import mood_tint_for_event
-
-            mood = mood_tint_for_event(kind) or _default_mood
-        except Exception:
-            pass  # fail-open：画像读取失败用默认
+        # 发生日（本地时区），不是发现日 —— 补开的历史花才不会全挤在今天
+        date = _local_date_from_ts(e.get("ts", "")) or _today()
+        # 情绪定色：当日真实情感优先，其次情感画像按事件类型，最后花种默认
+        mood = _mood_for_event(base_dir, date, kind, _default_mood)
         out.append(FlowerRecord(
             flower_id=fid,
             kind=flower_kind,
             bed=bed,
             title=_title_for(kind, label, _subject_of(e)),
             quote=_quote_of(e),
-            date=_today(),
+            date=date,
             source_ts=str(e.get("ts", "") or ""),
             mood_tint=mood,
             echo=_echo_for(flower_kind, _subject_of(e)),
@@ -181,19 +241,109 @@ def _candidate_flowers(growth) -> list[FlowerRecord]:
         if fid in seen:
             continue
         seen.add(fid)
+        badge_date = str(unlocked_at)[:10] if unlocked_at else _today()
         out.append(FlowerRecord(
             flower_id=fid,
             kind="badge_flower",
             bed="badge",
             title=_title_for("badge_unlocked", "勋章花", badge_id),
             quote="",
-            date=str(unlocked_at)[:10] if unlocked_at else _today(),
+            date=badge_date,
             source_ts=str(unlocked_at or ""),
-            mood_tint="顺利",
+            mood_tint=_mood_for_event(base_dir, badge_date, "badge_unlocked", "顺利"),
             echo=_echo_for("badge_flower", badge_id),
         ))
 
     return out
+
+
+# ---------------------------------------------------------------------------
+# 情绪定色：接情感时间线（情感层 → 花园的接线）
+# ---------------------------------------------------------------------------
+# 花园是情感层的表达载体，但历史上花的 mood_tint 只从「事件类型」静态查表——
+# skill_evolved 恒为「顺利」，于是赶稿压力最大那几天开出的花也一片「顺利」，
+# 与 EmotionTimeline 记下的真实状态对不上（2026-09-05 实测 119 朵里 108 朵不符）。
+#
+# 情感时间线的状态词（EmotionTimeline._infer_emotion 产出）与花的 mood_tint
+# 是两套词表，这里显式对齐。前端 GardenFlowerSVG 的 MOOD_TINT 需同步覆盖。
+_TIMELINE_MOOD: dict[str, str] = {
+    "压力大": "压力",
+    "低落": "低落",
+    "忙碌": "忙碌",
+    "顺利": "顺利",
+    "平静": "平静",
+}
+
+
+def _mood_from_timeline(base_dir: Path | str | None, date: str) -> str:
+    """取某一天的真实情感状态（映射为花的 mood_tint），查不到返回空串。
+
+    情感时间线按天记快照，而花开的日期是「事件发生日」（见 _local_date_from_ts），
+    两边都是本地日期，可以直接对上——补开的历史花也能按当天真实心情定色。
+
+    fail-open：读不到 / 异常都返回 ""，由调用方回落到事件类型查表。
+    """
+    if not date:
+        return ""
+    try:
+        from deskmate.growth.emotion_timeline import EmotionTimeline
+
+        snap = EmotionTimeline(base_dir=base_dir)._data.get(date)
+        if not isinstance(snap, dict):
+            return ""
+        return _TIMELINE_MOOD.get(str(snap.get("state", "") or ""), "")
+    except Exception:
+        logger.debug("garden: read emotion timeline failed", exc_info=True)
+        return ""
+
+
+def _mood_for_event(base_dir: Path | str | None, date: str, kind: str, default: str) -> str:
+    """花的情绪定色，优先级：**当日真实情感 > 情感画像按事件类型 > 花种默认**。
+
+    真实情感来自 EmotionTimeline（按天快照，含 mood 与当日事件统计）；
+    情感画像的 mood_tint_for_event 只按事件类型静态查表，是次优解。
+    """
+    real = _mood_from_timeline(base_dir, date)
+    if real:
+        return real
+    try:
+        from deskmate.cognitive.emotion_profile import mood_tint_for_event
+
+        return mood_tint_for_event(kind) or default
+    except Exception:
+        return default  # fail-open：画像读取失败用默认
+
+
+def retint_flowers(garden: GardenState, base_dir: Path | str | None = None) -> int:
+    """按当日真实情感重算已有花的 mood_tint（幂等，只改有据可依的那些）。
+
+    存量花在接线前已按「事件类型」定色并落库，不重算的话旧花永远停在错误的
+    颜色上。只在情感时间线里**查得到当天快照且值与当前不同**时才改——
+    查不到（那天没跑 tick）保持原样，绝不把有颜色的花清成空白。
+
+    Returns: 本次被改色的花朵数；无改动返回 0。任何异常返回 0（fail-open）。
+    """
+    try:
+        from deskmate.growth.emotion_timeline import EmotionTimeline
+
+        data = EmotionTimeline(base_dir=base_dir)._data
+        if not isinstance(data, dict) or not data:
+            return 0
+        changed = 0
+        for f in garden.flowers.values():
+            if not isinstance(f, dict):
+                continue
+            snapshot = data.get(str(f.get("date", "") or ""))
+            if not isinstance(snapshot, dict):
+                continue
+            mood = _TIMELINE_MOOD.get(str(snapshot.get("state", "") or ""), "")
+            if mood and f.get("mood_tint") != mood:
+                f["mood_tint"] = mood
+                changed += 1
+        return changed
+    except Exception:
+        logger.debug("garden: retint flowers failed", exc_info=True)
+        return 0
 
 
 def maybe_bloom(base_dir: Path | str | None = None) -> list[dict]:
@@ -210,9 +360,12 @@ def maybe_bloom(base_dir: Path | str | None = None) -> list[dict]:
 
         growth = GrowthEngine(base_dir=base_dir)
         garden = load_garden(base_dir)
-        candidates = _candidate_flowers(growth)
+        candidates = _candidate_flowers(growth, base_dir)
         fresh = [f for f in candidates if f.flower_id not in garden.flowers]
-        if not fresh:
+        # 存量花按当日真实情感重新定色（幂等）。接线前落库的花是按事件类型
+        # 定色的，不重算就永远停在错误颜色上——只改情感时间线有据可依的那些。
+        retinted = retint_flowers(garden, base_dir)
+        if not fresh and not retinted:
             return []
         for f in fresh:
             garden.flowers[f.flower_id] = f.to_dict()
@@ -220,6 +373,7 @@ def maybe_bloom(base_dir: Path | str | None = None) -> list[dict]:
             "type": "bloom",
             "at": _today(),
             "count": len(fresh),
+            "retinted": retinted,
             "ids": [f.flower_id for f in fresh],
         })
         save_garden(garden, base_dir)
@@ -434,6 +588,31 @@ def maybe_archive(garden: GardenState) -> list[dict]:
     return overflow
 
 
+def _water_snapshot(garden: GardenState) -> dict:
+    """从 ``water_log`` 真实派生浇水状态（GET /garden 无副作用，故只读不写）。
+
+    此前恒返回 ``streak: 0 / today: ""``，靠前端拿 visit 的返回值回填；一旦
+    visit 请求慢或失败，「今天明明浇过水」也会显示成连续 0 天。
+    """
+    try:
+        today = _today()
+        streak = 0
+        cursor = datetime.date.today()
+        while garden.water_log.get(cursor.isoformat()) is not None:
+            streak += 1
+            cursor -= datetime.timedelta(days=1)
+        # watered 取「今天是否已浇」（= 展示语义），不是 visit 的「本次是否新浇」：
+        # 一天内第二次进园时后者为 False，但今天确实浇过了。
+        return {
+            "watered": bool(garden.water_log.get(today)),
+            "streak": streak,
+            "today": today if garden.water_log.get(today) else "",
+        }
+    except Exception:
+        logger.debug("garden water snapshot failed", exc_info=True)
+        return {"watered": False, "streak": 0, "today": ""}
+
+
 def garden_snapshot(garden: GardenState) -> dict:
     """花园快照（供 GET /garden 返回）：树等级 + 年花 + 浇水 + 点亮 + 年鉴摘要。
 
@@ -444,10 +623,7 @@ def garden_snapshot(garden: GardenState) -> dict:
         "tree": tree,
         "year_flowers": [dict(v) for v in sorted(garden.year_flowers.values(), key=lambda x: x.get("year", ""))],
         "years": year_stats(garden),
-        "water": {
-            "streak": 0,  # 今日是否已浇/连续天数由 visit 结算后回填（GET 无副作用）
-            "today": "",
-        },
+        "water": _water_snapshot(garden),
         "lit": {
             "count": len(garden.lit_flowers),
             "ids": sorted(garden.lit_flowers.keys()),

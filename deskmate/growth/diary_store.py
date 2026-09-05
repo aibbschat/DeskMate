@@ -57,7 +57,40 @@ def _today() -> str:
 
 
 def _norm(text: str) -> str:
+    """去全部空白，仅用于内容去重比对（不用于展示）。"""
     return re.sub(r"\s+", "", text or "")
+
+
+def _clean_body(text: str) -> str:
+    """清洗用户输入的正文：**保留段落换行**，只压行内空白与过量空行。
+
+    历史坑：这里曾用 ``re.sub(r"\\s+", " ", content)`` —— ``\\s`` 含 ``\\n``，
+    用户在输入框里敲的回车被整段压成一行，前端按 ``\\n`` 分行渲染时就只剩一个
+    段落（2026-09-05 萧哥反馈「写日记不能分段」）。换行是日记正文的结构，不能压。
+
+    规则：
+    - 统一换行符（CRLF/CR → LF）
+    - 每行内部连续空格/制表/全角空格压成一个，并去行首尾空白
+    - 连续空行最多保留一个（防止尾部一串空行刷屏）
+    - 去掉正文首尾的空行
+    """
+    raw = (text or "").replace("\r\n", "\n").replace("\r", "\n")
+    out: list[str] = []
+    blank = 0
+    for line in raw.split("\n"):
+        line = re.sub(r"[ \t\u3000]+", " ", line).strip()
+        if line:
+            blank = 0
+            out.append(line)
+        else:
+            blank += 1
+            if blank <= 1:
+                out.append("")
+    while out and not out[0]:
+        out.pop(0)
+    while out and not out[-1]:
+        out.pop()
+    return "\n".join(out)
 
 
 class DiaryStore:
@@ -213,7 +246,8 @@ class DiaryStore:
         post = {
             "id": _uid(),
             "author": author if author in ("me", "xiaoju") else "me",
-            "content": re.sub(r"\s+", " ", (content or "")).strip(),
+            # 保留段落换行（历史 bug：曾在此把 \s+ 压成单空格，回车被吃掉）
+            "content": _clean_body(content),
             "createdAt": _now_iso(),
         }
         with self._connect() as conn:
@@ -231,7 +265,7 @@ class DiaryStore:
             "id": _uid(),
             "moment_id": moment_id,
             "author": author if author in ("me", "xiaoju") else "me",
-            "text": re.sub(r"\s+", " ", (text or "")).strip(),
+            "text": _clean_body(text),
             "createdAt": _now_iso(),
         }
         with self._connect() as conn:

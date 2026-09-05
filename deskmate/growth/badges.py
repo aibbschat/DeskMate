@@ -39,6 +39,11 @@ COUNTER_LATE_NIGHT = "late_night_chats"      # 深夜(00:00-05:00)对话次数
 COUNTER_EARLY_BIRD = "early_bird_chats"      # 清晨(05:00-07:00)对话次数
 COUNTER_NEW_YEAR = "new_year_vigil"          # 跨年之际(12/31 或 01/01)相伴次数
 COUNTER_COMEBACK = "comeback"                # 长期中断后归来次数
+COUNTER_SKILL_CREATED = "skills_created"     # 累计创建技能数
+COUNTER_SKILL_EVOLVED = "skills_evolved"     # 累计技能进化次数
+
+# 注：技能计数存在这里而不是靠 recent_events 统计 —— 后者是 50 条易失窗口，
+# 老用户的早期事件会被挤出窗口，导致人格「创意型」维度无端倒退。
 
 # ---------------------------------------------------------------------------
 # 门类与稀有度

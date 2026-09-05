@@ -18,6 +18,7 @@ ValidationEngine 实现 ——「认知 Turing test」。
 from __future__ import annotations
 
 import json
+import logging
 import re
 import uuid
 from datetime import datetime
@@ -25,6 +26,8 @@ from typing import Any, Optional
 
 from deskmate.cognitive.interfaces import ValidationEngine
 from deskmate.cognitive.models import CognitiveProfile, SourceRef, HistoryEntry
+
+logger = logging.getLogger(__name__)
 
 # 维度定义（评估四维度）
 DIMENSIONS = ["stance", "argument", "value", "expression"]
@@ -591,15 +594,90 @@ def get_validation_engine() -> TuringScenarioEngine:
     return _engine_singleton
 
 
+def _all_profile_items(profile: CognitiveProfile) -> list:
+    """画像里可被验证引用的全部条目（顺序与 generate_scenario 的候选收集一致）。"""
+    if profile is None:
+        return []
+    return (
+        list(profile.stances)
+        + list(profile.argument_patterns)
+        + list(profile.value_rankings)
+        + list(profile.thinking_frameworks)
+    )
+
+
+def _restore_scenario(
+    profile: CognitiveProfile,
+    scenario_id: str,
+    related_items: Optional[list[str]],
+    scenario_text: str = "",
+    domain: Optional[str] = None,
+) -> Optional[dict]:
+    """还原用户实际作答所针对的那个情境。
+
+    评估阶段若重新走 ``generate_scenario``，会从当前画像里再挑一条高置信条目，
+    于是「用户答的是 A，反哺改的却是 B」—— 置信度朝错误方向调，还会凭空生出
+    「验证盲区」gap。所以前端把 generate 阶段拿到的情境回传，这里校验条目仍
+    存在于画像后再复用。
+
+    校验失败（条目已被清理 / 前端未回传）返回 None，由调用方回退到重新生成。
+    """
+    if not related_items:
+        return None
+    valid = {it.id: it for it in _all_profile_items(profile)}
+    hits = [i for i in related_items if i in valid]
+    if not hits:
+        logger.info("validation scenario %s 引用的条目已不在画像中，回退重新生成", scenario_id)
+        return None
+    first = valid[hits[0]]
+    topic = _topic_of_item(first)
+    return {
+        "id": scenario_id or uuid.uuid4().hex[:12],
+        "domain": domain or topic or "general",
+        "scenario": scenario_text or "",
+        "question": "",
+        "related_items": hits,
+        "source_item": {
+            "dim": "restored",
+            "topic": topic,
+            "content": _content_of_item(first),
+            "confidence": getattr(first, "confidence", 0.0),
+        },
+    }
+
+
+def _mark_validation_completed() -> None:
+    """标记「真正完成过一次认知验证」。
+
+    tick 弹出情境时写的是 ``last_validation_at``（用于三天节流），用户可能根本
+    没作答。像我度的「已验证」状态必须落在评估反哺之后，否则永远显示已验证。
+    """
+    try:
+        from deskmate.cognitive.store import CognitiveStore
+
+        CognitiveStore().set_meta(
+            "last_validation_completed_at", datetime.now().isoformat()
+        )
+    except Exception:
+        logger.debug("mark validation completed failed", exc_info=True)
+
+
 def run_validation(
     profile_path: Optional[str] = None,
     layer: str = "cognitive",
     domain: Optional[str] = None,
     ai_response: Optional[str] = None,
     user_response: Optional[str] = None,
+    scenario_id: Optional[str] = None,
+    related_items: Optional[list[str]] = None,
+    scenario_text: str = "",
 ) -> dict:
     """
     便捷入口：生成情境 →（可选）评估 →（可选）反哺。
+
+    ``scenario_id`` / ``related_items`` / ``scenario_text`` 由前端把 generate 阶段
+    拿到的情境原样回传，评估时优先复用，保证反哺落在用户真正作答的那条画像上；
+    缺失或失效时回退为重新生成（保持旧行为）。
 
     返回 {"scenario": {...}, "evaluation": {...}, "applied": bool, "note": str}
     """
@@ -609,7 +687,15 @@ def run_validation(
     profile = pm.get()
     engine = get_validation_engine()
 
-    scenario = engine.generate_scenario(profile, domain=domain)
+    if ai_response and user_response:
+        # 评估阶段：优先还原用户作答所针对的情境，避免反哺张冠李戴。
+        scenario = _restore_scenario(
+            profile, scenario_id or "", related_items, scenario_text, domain
+        )
+        if scenario is None:
+            scenario = engine.generate_scenario(profile, domain=domain)
+    else:
+        scenario = engine.generate_scenario(profile, domain=domain)
     if not scenario.get("id"):
         return {
             "scenario": {},
@@ -629,6 +715,7 @@ def run_validation(
         evaluation["scenario"] = scenario.get("scenario", "")
         engine.apply_feedback(profile, evaluation)
         pm.save()
+        _mark_validation_completed()
         result["evaluation"] = evaluation
         result["applied"] = True
         result["note"] = "验证完成，已反哺画像。"

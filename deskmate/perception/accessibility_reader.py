@@ -189,10 +189,4 @@ def _read_via_applescript(max_chars: int) -> str:
     return ""
 
 
-def check_accessibility_permission() -> bool:
-    """检查是否已授予辅助功能权限。"""
-    try:
-        import ApplicationServices as AS
-        return AS.AXIsProcessTrusted()
-    except Exception:
-        return False
+

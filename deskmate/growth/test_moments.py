@@ -285,3 +285,68 @@ def test_xiaoju_auto_reply_on_user_comment():
     authors = [c["author"] for c in item["comments"]]
     assert "me" in authors and "xiaoju" in authors
 
+
+
+# ---------------------------------------------------------------------------
+# 回归：日记正文必须保留段落换行
+# ---------------------------------------------------------------------------
+
+def test_add_user_post_preserves_paragraph_breaks():
+    """用户敲的回车必须真的存进去。
+
+    回归背景：落库前曾用 ``re.sub(r"\\s+", " ", content)`` —— ``\\s`` 含 ``\\n``，
+    写的时候分了三段，存进去变成一整行，前端按 ``\\n`` 分行渲染时就只剩一段
+    （2026-09-05 萧哥反馈「写日记不能分段」）。
+    """
+    store, _ = _store()
+    text = "今天把第三章改完了。\n\n中间卡了很久，后来发现是开头没立住。\n明天再顺一遍。"
+    post = store.add_user_post(text)
+
+    assert "\n" in post["content"], "换行被吃掉了，段落会挤成一段"
+    assert post["content"].split("\n") == [
+        "今天把第三章改完了。",
+        "",
+        "中间卡了很久，后来发现是开头没立住。",
+        "明天再顺一遍。",
+    ]
+
+
+def test_add_user_post_roundtrips_multiline():
+    """多行日记落库再读回，内容逐字一致（持久化层不能二次压平）。"""
+    store, _ = _store()
+    text = "第一段。\n第二段。\n第三段。"
+    post = store.add_user_post(text)
+
+    items = store.get_posts()["items"]
+    saved = next(p for p in items if p["id"] == post["id"])
+    assert saved["content"] == text
+
+
+def test_add_user_post_collapses_excess_blank_lines():
+    """连续空行最多留一个，首尾空行去掉（防止一列空行刷屏）。"""
+    store, _ = _store()
+    post = store.add_user_post("\n\n第一段。\n\n\n\n第二段。\n\n\n")
+    assert post["content"] == "第一段。\n\n第二段。"
+
+
+def test_add_user_post_squeezes_inline_spaces_only():
+    """行内多余空格仍然压平（清洗语义不变），但不影响换行。"""
+    store, _ = _store()
+    post = store.add_user_post("开头   挤了   很多空格\n\t制表符也压掉")
+    assert post["content"] == "开头 挤了 很多空格\n制表符也压掉"
+
+
+def test_add_user_post_handles_crlf():
+    """Windows 换行 CRLF 归一为 LF，不留游离的 \\r。"""
+    store, _ = _store()
+    post = store.add_user_post("第一段。\r\n第二段。")
+    assert "\r" not in post["content"]
+    assert post["content"] == "第一段。\n第二段。"
+
+
+def test_add_comment_preserves_line_breaks():
+    """留言同样保留换行（小桔的回复也走这条落库路径）。"""
+    store, _ = _store()
+    post = store.add_user_post("我的日记")
+    c = store.add_comment(post["id"], "xiaoju", "这句我记下了。\n下次你写到这里，我会接得上。")
+    assert c["text"] == "这句我记下了。\n下次你写到这里，我会接得上。"

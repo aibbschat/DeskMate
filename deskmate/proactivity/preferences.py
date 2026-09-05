@@ -148,8 +148,6 @@ class PreferenceStore:
         return "\n".join(lines)
 
 
-def default_store() -> PreferenceStore:
-    return PreferenceStore()
 
 
 if __name__ == "__main__":

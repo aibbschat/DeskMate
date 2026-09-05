@@ -143,6 +143,4 @@ def try_execute_close_loop(
     return ExecutionResult(False, True, False, "已记录为提案，等待用户确认")
 
 
-def record_close_loop_feedback(accepted: bool) -> None:
-    """用户对待闭环提案的反馈（接受 / 忽略），上报防打扰。"""
-    _disturb.record_feedback("close_loop", accepted)
+

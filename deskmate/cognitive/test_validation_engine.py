@@ -241,3 +241,77 @@ def test_evaluate_falls_back_to_rules_when_llm_fails(monkeypatch):
     )
     assert ev["_engine"] == "rules"
     assert ev["dimension_scores"]["stance"] < 0.3  # 规则仍能判方向相反
+
+
+# ---------------------------------------------------------------------------
+# 回归：反哺必须落在「用户真正作答」的那条画像上
+# ---------------------------------------------------------------------------
+
+def test_run_validation_feedback_targets_the_answered_scenario():
+    """评估阶段必须复用作答时的情境，不能重新随机挑一条。
+
+    回归背景：run_validation 曾在评估前重新 generate_scenario，用户答的是 A 条目、
+    反哺改的却是 B 条目 —— 置信度朝错误方向调，还会凭空生出「验证盲区」gap。
+    """
+    pm, tmp = _fresh_manager()
+    db = str(Path(tmp) / "test.db")
+    profile = pm.get()
+    engine = get_validation_engine()
+
+    # 默认情境会选中一条；刻意挑另一条作为「用户作答的那条」
+    default_scenario = engine.generate_scenario(profile)
+    target = next(s for s in profile.stances if s.id not in default_scenario["related_items"])
+    others = [s for s in profile.stances if s.id != target.id]
+    before_target = target.confidence
+    before_others = {s.id: s.confidence for s in others}
+
+    r = run_validation(
+        profile_path=db,
+        ai_response="我会改。稿费翻倍为什么不改？商业价值第一。",
+        user_response="不改。史料真实性是前提，不能为讨好读者扭曲结局。",
+        scenario_id="scenario-under-test",
+        related_items=[target.id],
+        scenario_text="假如有平台开出三倍稿费，要求改掉结局。",
+    )
+
+    assert r["applied"] is True
+    # 还原的是作答时的情境，不是重新生成的
+    assert r["scenario"]["id"] == "scenario-under-test"
+    assert r["scenario"]["related_items"] == [target.id]
+
+    after = CognitiveProfileManager(profile_path=db).get()
+    target_after = next(s for s in after.stances if s.id == target.id)
+    assert target_after.confidence < before_target, "被作答的那条应当降置信度（回答与画像不符）"
+    for s in after.stances:
+        if s.id in before_others:
+            assert s.confidence == before_others[s.id], f"未被作答的条目不应被改动：{s.topic}"
+
+
+def test_run_validation_falls_back_when_scenario_missing():
+    """前端未回传情境（旧客户端）时回退到重新生成，不崩溃。"""
+    pm, tmp = _fresh_manager()
+    db = str(Path(tmp) / "test.db")
+    r = run_validation(
+        profile_path=db,
+        ai_response="不改。史料是底线。",
+        user_response="不改。真实比稿费重要。",
+    )
+    assert r["applied"] is True
+    assert r["scenario"]["id"]
+
+
+def test_run_validation_falls_back_when_items_stale():
+    """回传的条目已不在画像中（被清理）时回退重新生成，不静默写坏数据。"""
+    pm, tmp = _fresh_manager()
+    db = str(Path(tmp) / "test.db")
+    r = run_validation(
+        profile_path=db,
+        ai_response="不改。史料是底线。",
+        user_response="不改。真实比稿费重要。",
+        scenario_id="stale-scenario",
+        related_items=["no-such-item-id"],
+        scenario_text="一个早已不存在的情境",
+    )
+    assert r["applied"] is True
+    # 已回退：重新生成的情境有自己的 id，不会沿用失效的那个
+    assert r["scenario"]["id"] != "stale-scenario"

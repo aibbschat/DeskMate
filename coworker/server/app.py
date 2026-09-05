@@ -3240,10 +3240,16 @@ def create_app(manager: SessionManager) -> FastAPI:
             return JSONResponse({"error": "missing ai_response/user_response"}, status_code=400)
         try:
             from deskmate.cognitive.validation_engine import run_validation
+
+            # 前端回传 generate 阶段拿到的情境，反哺才落在用户真正作答的那条画像上
             r = run_validation(
                 layer=body.get("layer", "cognitive"),
                 ai_response=ai_resp,
                 user_response=user_resp,
+                domain=body.get("domain"),
+                scenario_id=body.get("scenario_id"),
+                related_items=body.get("related_items"),
+                scenario_text=body.get("scenario") or "",
             )
             return {
                 "scenario": r["scenario"],
@@ -3726,8 +3732,14 @@ def create_app(manager: SessionManager) -> FastAPI:
                 os.environ.get("DESKMATE_DIR", os.path.expanduser("~/.deskmate"))
             )
             garden = load_garden(desk_dir)
-            items = list(garden.archive)[-max(1, min(int(limit), 500)):]
-            items.sort(key=lambda x: str(x.get("source_ts", "") or x.get("date", "")), reverse=True)
+            cap = max(1, min(int(limit), 500))
+            # 显式排序后再取前 N：archive 内部虽大致降序，但顺序不保证，
+            # 曾经写成 [-limit:] 导致年鉴永远显示「最旧」的一批花。
+            items = sorted(
+                garden.archive,
+                key=lambda x: str(x.get("source_ts", "") or x.get("date", "")),
+                reverse=True,
+            )[:cap]
             return {"flowers": items, "count": len(garden.archive)}
         except Exception:
             logging.exception("get deskmate garden archive failed")

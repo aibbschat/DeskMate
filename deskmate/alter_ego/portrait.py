@@ -883,12 +883,14 @@ def _build_identity(sections: list[dict[str, Any]], total_articles: int) -> dict
     if gaps:
         likeness = round(likeness * (1 - 0.08 * min(len(gaps), 5)), 2)
 
-    # 验证引擎状态：读最近一次认知验证记录（有则说明像我度经过 Turing test 校准）
+    # 验证引擎状态：只在**真正完成过**验证评估并反哺画像后才算「已验证」。
+    # 注意不能读 last_validation_at —— 那个是 tick 弹出情境时写的（三天节流用），
+    # 用户可能根本没作答，读它会让状态永远显示「已验证」。
     validation_status = "未验证"
     try:
         from deskmate.cognitive.store import CognitiveStore
-        last_v = CognitiveStore().get_meta("last_validation_at")
-        if last_v:
+        done = CognitiveStore().get_meta("last_validation_completed_at")
+        if done:
             validation_status = "已验证"
     except Exception:
         pass

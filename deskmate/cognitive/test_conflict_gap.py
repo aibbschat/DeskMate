@@ -395,3 +395,106 @@ if __name__ == "__main__":
     test_tick_throttle()
     test_conflict_gap_triggers_interview()
     print("\nALL conflict_gap TESTS PASSED")
+
+
+# ----------------------------------------------------------------------
+# 11. F3：扫描范围不止日记
+# ----------------------------------------------------------------------
+def test_expression_source_catches_what_diary_misses(monkeypatch):
+    """冲突信号在访谈里时，只扫日记**永远**发现不了。
+
+    真实场景：他在访谈里答"低落时看电影、出去走走"，却从没写进日记，
+    光扫日记就发现不了它跟"回血靠投入创作"的张力——再生机制形同虚设。
+    """
+    from deskmate.cognitive import expressions
+
+    tmp = tempfile.mkdtemp()
+    try:
+        # ① 日记路径：日记里没有冲突信号 → 不该生成 gap
+        pm_diary = _seed_care_support(_pm(tmp, "diary.db"))
+        calm = _FakeDiary([{"id": "p1", "content": "今天改了一版稿子，进度一般。"}])
+        res_diary = conflict_gap.scan_and_spawn_gaps(pm=pm_diary, diary_store=calm)
+        assert res_diary["gaps_added"] == 0, "日记里没有反向信号，不该生 gap"
+
+        # ② 多源路径：同样的画像，但冲突信号出现在访谈回答里
+        pm_multi = _seed_care_support(_pm(tmp, "multi.db"))
+        monkeypatch.setattr(
+            expressions,
+            "collect",
+            lambda **kw: [
+                {"id": "i:9", "day": "2026-09-05", "ts": "2026-09-05T10:00:00",
+                 "text": "别来烦我，我想一个人静静。", "source": "interview",
+                 "category": "访谈"},
+            ],
+        )
+        res_multi = conflict_gap.scan_and_spawn_gaps(pm=pm_multi)
+        assert res_multi["gaps_added"] == 1, (
+            f"访谈里的反向信号必须能生 gap，实际 {res_multi}"
+        )
+    finally:
+        shutil.rmtree(tmp)
+    print("OK test_expression_source_catches_what_diary_misses")
+
+
+def test_injected_diary_store_still_uses_old_path(monkeypatch):
+    """显式注入 diary_store 时只扫它（兼容既有测试与不想多源的场景）。"""
+    from deskmate.cognitive import expressions
+
+    tmp = tempfile.mkdtemp()
+    try:
+        pm = _seed_care_support(_pm(tmp))
+
+        def _boom(**kw):
+            raise AssertionError("注入 diary_store 时不该走 expressions")
+
+        monkeypatch.setattr(expressions, "collect", _boom)  # 若被调用即失败
+        res = conflict_gap.scan_and_spawn_gaps(
+            pm=pm,
+            diary_store=_FakeDiary([{"id": "p1", "content": "别来烦我，一个人静静。"}]),
+        )
+        assert res["gaps_added"] == 1
+    finally:
+        shutil.rmtree(tmp)
+    print("OK test_injected_diary_store_still_uses_old_path")
+
+
+def test_normalize_ids_backfills_legacy_prefix():
+    """存量的裸日记 id 要补 d:，否则会被当成新内容重扫一遍。"""
+    got = conflict_gap._normalize_ids(["abc123", "d:xyz", "i:1", "", None])
+    assert got == {"d:abc123", "d:xyz", "i:1"}, got
+
+
+def test_max_scan_caps_volume(monkeypatch):
+    """首跑面对 200+ 条存量时，一次只处理 max_scan 条，不爆量。"""
+    from deskmate.cognitive import expressions
+
+    tmp = tempfile.mkdtemp()
+    try:
+        pm = _seed_care_support(_pm(tmp))
+        rows = [
+            {"id": f"l:{i}", "day": "2026-09-05", "ts": f"2026-09-05T10:{i:02d}:00",
+             "text": "别来烦我，我想一个人静静。", "source": "learned",
+             "category": "preference"}
+            for i in range(100)
+        ]
+        monkeypatch.setattr(expressions, "collect", lambda **kw: rows)
+        res = conflict_gap.scan_and_spawn_gaps(pm=pm, max_scan=5)
+        assert res["scanned"] == 5, f"单次扫描应被 max_scan 截断，实际 {res['scanned']}"
+        assert res["gaps_added"] == 1, "同维度冲突只生成一个"
+    finally:
+        shutil.rmtree(tmp)
+    print("OK test_max_scan_caps_volume")
+
+
+if __name__ == "__main__":
+    import contextlib
+    import io
+    for fn in [
+        test_expression_source_catches_what_diary_misses,
+        test_injected_diary_store_still_uses_old_path,
+        test_normalize_ids_backfills_legacy_prefix,
+        test_max_scan_caps_volume,
+    ]:
+        with contextlib.redirect_stdout(io.StringIO()):
+            fn()
+        print("OK", fn.__name__)

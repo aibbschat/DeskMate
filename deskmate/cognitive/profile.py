@@ -231,9 +231,16 @@ class CognitiveProfileManager:
         evidence_preference: str = "",
         tags: Optional[list[str]] = None,
     ) -> tuple[ArgumentPattern, str]:
+        # pattern_type 为两边都空时不能算「同类」：LLM 提取常常不给这个字段，
+        # 一旦 "" == "" 成立，任何无类型的模式都会被并进第一条，内容直接丢失。
+        # 类型缺失时交给下面的内容前缀比对兜底（内容确实相同才合并）。
         existing = [
             p for p in self.profile.argument_patterns
-            if p.status == "active" and (p.pattern_type == pattern_type or p.content[:20] == content[:20])
+            if p.status == "active"
+            and (
+                (p.pattern_type and pattern_type and p.pattern_type == pattern_type)
+                or p.content[:20] == content[:20]
+            )
         ]
 
         if not existing:

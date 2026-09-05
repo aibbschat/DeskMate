@@ -24,7 +24,6 @@ SEASONS: list[dict] = [
     {"key": "autumn", "label": "秋", "emoji": "🍁", "months": (9, 10, 11)},
     {"key": "winter", "label": "冬", "emoji": "❄️", "months": (12, 1, 2)},
 ]
-_SEASON_BY_KEY: dict[str, dict] = {s["key"]: s for s in SEASONS}
 
 
 def season_of(date: Optional[datetime.date | str] = None) -> dict:
@@ -46,14 +45,6 @@ def season_of(date: Optional[datetime.date | str] = None) -> dict:
     return dict(SEASONS[2])  # 兜底：秋（现有暖橘基座）
 
 
-def season_label(key: str) -> str:
-    return _SEASON_BY_KEY.get(key, {}).get("label", "")
-
-
-def season_emoji(key: str) -> str:
-    return _SEASON_BY_KEY.get(key, {}).get("emoji", "")
-
-
 # ---------------------------------------------------------------------------
 # 昼夜
 # ---------------------------------------------------------------------------
@@ -63,7 +54,6 @@ DAYPARTS: list[dict] = [
     {"key": "dusk", "label": "黄昏", "emoji": "🌇", "hours": (17, 18, 19)},
     {"key": "night", "label": "深夜", "emoji": "🌙", "hours": (20, 21, 22, 23, 0, 1, 2, 3, 4)},
 ]
-_DAYPART_BY_KEY: dict[str, dict] = {d["key"]: d for d in DAYPARTS}
 
 
 def daypart_of(hour: Optional[int] = None) -> dict:
@@ -77,14 +67,6 @@ def daypart_of(hour: Optional[int] = None) -> dict:
         if hour in d["hours"]:
             return dict(d)
     return dict(DAYPARTS[0])  # 兜底：晨
-
-
-def daypart_label(key: str) -> str:
-    return _DAYPART_BY_KEY.get(key, {}).get("label", "")
-
-
-def daypart_emoji(key: str) -> str:
-    return _DAYPART_BY_KEY.get(key, {}).get("emoji", "")
 
 
 def now_clock(base_dir: Optional[str] = None) -> dict:

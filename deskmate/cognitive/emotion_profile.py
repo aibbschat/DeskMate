@@ -59,6 +59,19 @@ def _by_tag(profile, tag: str) -> list:
     ]
 
 
+def _by_confidence(items: list[dict]) -> list[dict]:
+    """按置信度降序（同分比来源数）。
+
+    底层 store 取条目是 ``ORDER BY id``（uuid，等价插入随机序），调用方直接
+    ``[:3]`` 等于随机抽三条 —— 注入 prompt 的触发点未必是画像里最确定的那些。
+    """
+    return sorted(
+        items,
+        key=lambda x: (float(x.get("confidence", 0.5)), int(x.get("source_count", 0))),
+        reverse=True,
+    )
+
+
 def triggers(positive_only: Optional[bool] = None) -> list[dict]:
     """情感触发点。positive_only=True 只返回正向，False 只返回负向，None 全量。"""
     items = _by_tag(_load_emotional_profile(), _TAG_TRIGGER)
@@ -77,12 +90,12 @@ def triggers(positive_only: Optional[bool] = None) -> list[dict]:
             "confidence": getattr(s, "confidence", 0.5),
             "source_count": len(getattr(s, "sources", []) or []),
         })
-    return out
+    return _by_confidence(out)
 
 
 def recovery_patterns() -> list[dict]:
     """回血方式。"""
-    return [
+    return _by_confidence([
         {
             "topic": getattr(s, "topic", ""),
             "content": getattr(s, "content", ""),
@@ -90,12 +103,12 @@ def recovery_patterns() -> list[dict]:
             "source_count": len(getattr(s, "sources", []) or []),
         }
         for s in _by_tag(_load_emotional_profile(), _TAG_RECOVERY)
-    ]
+    ])
 
 
 def care_preferences() -> list[dict]:
     """关怀偏好。"""
-    return [
+    return _by_confidence([
         {
             "topic": getattr(s, "topic", ""),
             "content": getattr(s, "content", ""),
@@ -103,7 +116,7 @@ def care_preferences() -> list[dict]:
             "source_count": len(getattr(s, "sources", []) or []),
         }
         for s in _by_tag(_load_emotional_profile(), _TAG_CARE)
-    ]
+    ])
 
 
 def has_emotional_data() -> bool:

@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import logging
+import math
 from pathlib import Path
 from typing import Optional
 
@@ -134,8 +135,10 @@ EMPATHY_APPROVED = 2.0
 EMPATHY_REWORK = -2.0
 EMPATHY_CORRECTED = -1.5
 
-MOOD_ACCEPTED = 4.0
-MOOD_IGNORED = -3.0
+# 2026-09-05（E1）：MOOD_ACCEPTED / MOOD_IGNORED 已随 mood 语义变更一并删除。
+# 它们曾在这里定义、却只被「忽略/打回/纠正」三处直接增减 mood——而 mood 本身
+# 没有任何可信来源（真实库里恒为 80.0），等于用行为猜情绪、还猜了个常量出来。
+# 现在 mood 由当日情绪结算派生（见 set_mood_from_emotion），业务代码不再碰它。
 
 XP_CREATION_APPROVED = 4
 
@@ -485,6 +488,7 @@ class GrowthEngine:
         )
         self.state.growth_value += XP_SKILL_CREATED
         self._gain_relation("intimacy", INTIMACY_SKILL_CREATED)
+        self._bump(badge_registry.COUNTER_SKILL_CREATED)
         self._add_event("skill_created", skill_name=skill_name)
         self._recompute_level()
         self.save()
@@ -516,6 +520,7 @@ class GrowthEngine:
 
         self.state.growth_value += XP_SKILL_EVOLVED
         self._gain_relation("intimacy", INTIMACY_SKILL_USED)
+        self._bump(badge_registry.COUNTER_SKILL_EVOLVED)
         self._add_event("skill_evolved", skill_name=skill_name, reason=_clip(reason))
         self._recompute_level()
         self.save()
@@ -533,7 +538,6 @@ class GrowthEngine:
         if accepted:
             self._gain_relation("trust", TRUST_ACCEPTED, 0.0, 1.0)
             self._gain_relation("empathy", EMPATHY_ACCEPTED)
-            self._gain_relation("mood", MOOD_ACCEPTED)
             self._gain_relation("intimacy", INTIMACY_SUGGESTION_ACCEPTED)
             self._gain_domain(DOMAIN_PROACTIVE, EMPATHY_ACCEPTED)
             self.state.growth_value += XP_SUGGESTION_ACCEPTED
@@ -541,7 +545,6 @@ class GrowthEngine:
         else:
             self._gain_relation("trust", TRUST_IGNORED, 0.0, 1.0)
             self._gain_relation("empathy", EMPATHY_IGNORED)
-            self._gain_relation("mood", MOOD_IGNORED)
             self._gain_relation("intimacy", INTIMACY_SUGGESTION_IGNORED)
             self._gain_domain(DOMAIN_PROACTIVE, EMPATHY_IGNORED)
             self._add_event("suggestion_ignored")
@@ -562,7 +565,6 @@ class GrowthEngine:
         if approved:
             self._gain_relation("trust", TRUST_APPROVED, 0.0, 1.0)
             self._gain_relation("empathy", EMPATHY_APPROVED)
-            self._gain_relation("mood", MOOD_ACCEPTED)
             self._gain_domain(DOMAIN_CREATION, EMPATHY_APPROVED)
             self.state.growth_value += XP_CREATION_APPROVED
             self._add_event("creation_approved", note="创作定稿/通过")
@@ -570,7 +572,6 @@ class GrowthEngine:
         else:
             self._gain_relation("trust", TRUST_REWORK, 0.0, 1.0)
             self._gain_relation("empathy", EMPATHY_REWORK)
-            self._gain_relation("mood", MOOD_IGNORED)
             self._gain_domain(DOMAIN_CREATION, EMPATHY_REWORK)
             self._add_event("creation_rework", note="创作被打回重做")
             self._log_behavior("creation_rejected")
@@ -589,11 +590,10 @@ class GrowthEngine:
         """
         self._gain_relation("trust", TRUST_CORRECTED, 0.0, 1.0)
         self._gain_relation("empathy", EMPATHY_CORRECTED)
-        self._gain_relation("mood", MOOD_IGNORED)
         # P0-4：纠正 = 理解校准信号，必须计入「记忆」默契子域。
-        # 此前只在总数上惩罚（trust / mood 降），用户感受不到「它因我的纠正而
+        # 此前只在总数上惩罚（trust 降），用户感受不到「它因我的纠正而
         # 改进」——只有惩罚、没有成长。取绝对值：纠正让 AI 多拿到一条校准信息，
-        # 对「懂你」是增量；而 trust / mood 的下降已表达「这次没做对」。
+        # 对「懂你」是增量；trust 的下降已表达「这次没做对」。
         self._gain_domain(DOMAIN_MEMORY, abs(EMPATHY_CORRECTED))
         # 纠正原话照实带出去——日记要写的不是「他纠正了我一次」，
         # 而是「他说：不是洪武三年，是洪武十五年」。没原话就只能记账。
@@ -973,11 +973,22 @@ class GrowthEngine:
         st = self.state
         rates = [p.success_rate for p in st.skill_proficiency.values()]
         logic = int(round(sum(rates) / len(rates) * 100)) if rates else 50
-        creative_events = sum(
-            1 for e in st.recent_events
-            if e.get("kind") in ("skill_created", "skill_evolved")
+        # 创造性读持久计数器，不读 recent_events —— 后者是 50 条易失窗口，
+        # 老用户的早期技能事件会被挤出窗口，人格维度会莫名其妙倒退。
+        # 计数器尚未累积到的存量用户退回窗口统计，避免升级瞬间归零。
+        creative_events = int(st.counters.get(badge_registry.COUNTER_SKILL_CREATED, 0)) + int(
+            st.counters.get(badge_registry.COUNTER_SKILL_EVOLVED, 0)
         )
-        creativity = min(100, 40 + creative_events * 5 + len(st.skill_proficiency) * 4)
+        if creative_events <= 0:
+            creative_events = sum(
+                1 for e in st.recent_events
+                if e.get("kind") in ("skill_created", "skill_evolved")
+            )
+        # 累计量用平方根压缩：前期涨得动、后期收敛，不会早早封顶失去区分度
+        creativity = min(
+            100,
+            40 + int(round(4 * math.sqrt(creative_events))) + len(st.skill_proficiency) * 4,
+        )
         return {
             "energy": int(st.vitality),
             "logic": logic,
@@ -994,15 +1005,39 @@ class GrowthEngine:
         self.state.vitality = clamp(self.state.vitality - VITALITY_DECAY_PER_USE, 0, 100)
 
     def tick_decay(self) -> None:
-        """时间衰减（proactive tick 可调用）：活力缓慢恢复，心情向 80 收敛。"""
-        # 活力随时间恢复（每次 tick 恢复 0.1，克制恢复避免长期顶在 100）
+        """时间衰减（proactive tick 可调用）：活力缓慢恢复。
+
+        2026-09-05（E1）：这里原本还有「心情向 80 收敛」的 ±0.1 微调——它是
+        mood 唯一的写入者，也就是那个假数值的全部来源：不管今天顺不顺，
+        mood 都只会一格一格爬回 80。删除后 mood 只由当日情绪结算写入。
+        """
         self.state.vitality = clamp(self.state.vitality + VITALITY_RECOVER_PER_TICK, 0, 100)
-        # 心情向中性 80 缓慢收敛（避免长期低落或过高）
-        if self.state.mood < 80:
-            self.state.mood = clamp(self.state.mood + 0.1, 0, 100)
-        elif self.state.mood > 80:
-            self.state.mood = clamp(self.state.mood - 0.1, 0, 100)
         self.save()
+
+    def set_mood_from_emotion(self, value: float, source: str, day: str) -> bool:
+        """由当日情绪结算写入 mood——**mood 唯一的写入口**（E1）。
+
+        业务代码（采纳/忽略/打回/纠正）一律不许再直接增减 mood：那是用行为
+        猜情绪，而猜出来的东西没有任何可信来源。mood 现在是情绪的**结果**。
+
+        Args:
+            value: 派生出的心情值 0-100。
+            source: "stated"（他自己写的日记）/ "inferred"（行为事件推断）。
+            day: 结算日 YYYY-MM-DD。早于已结算日的回填会被拒绝，
+                免得补记上周日记时把今天刚算出来的结果盖掉。
+
+        Returns:
+            是否真的写入。
+        """
+        if not day or not source:
+            return False
+        if self.state.mood_date and day < self.state.mood_date:
+            return False
+        self.state.mood = clamp(round(float(value), 1), 0, 100)
+        self.state.mood_source = str(source)
+        self.state.mood_date = str(day)
+        self.save()
+        return True
 
     # ------------------------------------------------------------------
     # 等级
@@ -1043,6 +1078,11 @@ class GrowthEngine:
                 **extra,
             }
         )
+        # 同步记一份按天的持久账。recent_events 落盘时只留最后 50 条，会滚走；
+        # 情感时间线要按天回看那天发生了什么，必须靠这份账而不是那个窗口。
+        day = datetime.datetime.now().astimezone().date().isoformat()
+        counts = self.state.daily_events.setdefault(day, {})
+        counts[kind] = int(counts.get(kind, 0)) + 1
 
     def _log_behavior(self, kind: str) -> None:
         """P2-3：把成长/创作反馈当作行为事件记录，供长期模式学习推断偏好。

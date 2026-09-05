@@ -1,10 +1,14 @@
 """
-认知层扩展接口——第二期功能的抽象基类，留好接入点。
+认知层扩展接口——各引擎的抽象基类与契约。
 
-当前 MVP 只实现：认知画像管理 + 认知提取管线 + 冷启动。
-第二期将实现：深度访谈引擎、认知验证引擎、隐性知识提取器。
+已实现（接入生产）：
+- 深度访谈引擎（``InterviewEngine`` → ``interview.SocraticInterviewEngine``，③b 闭环）
+- 认知验证引擎（``ValidationEngine`` → ``validation_engine.TuringScenarioEngine``，认知 Turing test）
+- 记忆注入器（``MemoryInjector`` → ``memory_injector.CognitiveMemoryInjector``）
 
-这些接口定义了第二期功能必须实现的契约，确保架构系统化、可扩展。
+这些基类定义了实现类必须遵守的契约，确保同一职责的不同实现可互换。
+具体实现的获取走各自模块的工厂函数（如 ``get_interview_engine()``、
+``get_validation_engine()``），不经过本模块。
 """
 
 from __future__ import annotations
@@ -111,42 +115,6 @@ class ValidationEngine(ABC):
         ...
 
 
-class TacitKnowledgeExtractor(ABC):
-    """
-    隐性知识提取器（第二期）。
-
-    认知画像提取的是显性知识（立场/论证/价值观——可以用语言表达的）。
-    但用户作为写了二十本书的作者，还有很多隐性知识：
-    - 语感（什么句子读起来顺、什么不顺）
-    - 叙事直觉（什么时候该转折、什么时候该留白）
-    - 节奏把控（情节的快慢、张弛）
-    - 人物塑造的微妙手法
-
-    这些东西在文字里，但很难用结构化的方式提取。
-    隐性知识提取器是另一条技术路径，和认知提取并行。
-    """
-
-    @abstractmethod
-    def extract_tacit(self, text: str, metadata: Optional[dict] = None) -> list[dict]:
-        """
-        从文本中提取隐性知识特征。
-
-        返回：[{"type", "description", "evidence", "confidence", "tags"}]
-        type 可以是：linguistic_feel / narrative_intuition / pacing / character_subtlety / ...
-        """
-        ...
-
-    @abstractmethod
-    def merge_tacit(self, profile: CognitiveProfile, tacit_features: list[dict]) -> CognitiveProfile:
-        """
-        将隐性知识特征合并到认知画像。
-
-        隐性知识可能需要单独的存储维度（tacit_knowledge 字段），
-        或者作为现有维度的补充（如论证模式的"语感偏好"子字段）。
-        """
-        ...
-
-
 class MemoryInjector(ABC):
     """
     认知画像注入器（第二期）。
@@ -180,22 +148,8 @@ class MemoryInjector(ABC):
         ...
 
 
-# 注册表——第二期实现后注册到这里，MVP 阶段为空
-_REGISTRY: dict[str, type] = {
-    "interview_engine": None,
-    "validation_engine": None,
-    "tacit_extractor": None,
-    "memory_injector": None,
-}
-
-
-def register_engine(name: str, cls: type):
-    """注册一个引擎实现（第二期用）。"""
-    if name not in _REGISTRY:
-        raise ValueError(f"Unknown engine name: {name}. Available: {list(_REGISTRY.keys())}")
-    _REGISTRY[name] = cls
-
-
-def get_engine(name: str):
-    """获取一个已注册的引擎实现。未注册返回 None。"""
-    return _REGISTRY.get(name)
+# 注（2026-09-05 清理）：原 ``_REGISTRY`` / ``register_engine()`` / ``get_engine()``
+# 注册表三件套已删除——它是「只写不读」的空转机制：interview.py 与
+# memory_injector.py 各注册一次，全仓却无任何 ``get_engine()`` 取值方，
+# 实际调用都直接走 ``SocraticInterviewEngine()`` / ``get_validation_engine()``
+# 等工厂函数。留着只会让人误以为存在可插拔引擎。需要时再按真实使用重建。

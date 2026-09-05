@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime
 from pathlib import Path
 
 from deskmate.growth.engine import (
@@ -66,8 +67,11 @@ class TestProficiency:
         assert abs(p1 - p2) < 0.01  # 超过 target 不再增长
 
     def test_recency_decay(self):
-        fresh = compute_proficiency(10, 0.8, "2026-08-01")
-        stale = compute_proficiency(10, 0.8, "2026-01-01")  # >30 天
+        # 日期相对今天取，不写死 —— 硬编码 "2026-08-01" 会随着时间推移
+        # 滑出 30 天衰减窗口，导致 fresh 与 stale 同值，测试凭空失败。
+        today = datetime.date.today()
+        fresh = compute_proficiency(10, 0.8, today.isoformat())
+        stale = compute_proficiency(10, 0.8, (today - datetime.timedelta(days=60)).isoformat())
         assert stale < fresh
 
 
@@ -133,6 +137,81 @@ class TestEngine:
         eng.record_skill_created("a")
         eng2 = GrowthEngine(tmp_path)
         assert "a" in eng2.state.skill_proficiency
+
+
+class TestDailyEventLedger:
+    """E2：按天的持久事件账。
+
+    recent_events 落盘时被截到最后 50 条，是个**会滚走的窗口**。跨天回看时
+    前几天的事件早被挤没了，拿它统计「那天发生了什么」必然漏。情感时间线
+    要按天推断情绪，只能靠这份不会滚走的账。
+    """
+
+    def test_add_event_writes_day_ledger(self, tmp_path: Path):
+        eng = GrowthEngine(base_dir=tmp_path)
+        eng.record_creation_feedback(True)
+        eng.record_creation_feedback(False)
+        day = datetime.date.today().isoformat()
+        assert eng.state.daily_events[day]["creation_approved"] == 1
+        assert eng.state.daily_events[day]["creation_rework"] == 1
+
+    def test_ledger_survives_reload(self, tmp_path: Path):
+        eng = GrowthEngine(base_dir=tmp_path)
+        eng.record_creation_feedback(True)
+        day = datetime.date.today().isoformat()
+        assert GrowthEngine(base_dir=tmp_path).state.daily_events[day]["creation_approved"] == 1
+
+    def test_ledger_keeps_days_that_fell_out_of_recent_events(self, tmp_path: Path):
+        """把 recent_events 撑爆之后，当天发生的事仍然查得到 —— 这正是它存在的理由。"""
+        eng = GrowthEngine(base_dir=tmp_path)
+        eng.record_creation_feedback(True)
+        day = datetime.date.today().isoformat()
+        for _ in range(80):
+            eng.state.recent_events.append(
+                {"ts": "2020-01-01T00:00:00+00:00", "kind": "noise"}
+            )
+        eng.save()
+        reloaded = GrowthEngine(base_dir=tmp_path)
+        assert len(reloaded.state.recent_events) <= 50       # 窗口滚走了
+        assert reloaded.state.daily_events[day]["creation_approved"] == 1
+
+    def test_events_for_prefers_ledger_over_window(self, tmp_path: Path):
+        from deskmate.growth.emotion_timeline import EmotionTimeline
+
+        eng = GrowthEngine(base_dir=tmp_path)
+        day = datetime.date.today().isoformat()
+        eng.state.daily_events[day] = {"creation_approved": 3}
+        eng.state.recent_events = []     # 窗口里一条都没有
+        assert EmotionTimeline._events_for(day, eng.state)["creation_approved"] == 3
+
+    def test_events_for_falls_back_to_window_on_legacy_state(self, tmp_path: Path):
+        """老状态没有 daily_events → 回落到 recent_events（结果可能不全，但总比没有强）。"""
+        from deskmate.growth.emotion_timeline import EmotionTimeline
+
+        eng = GrowthEngine(base_dir=tmp_path)
+        eng.state.daily_events = {}
+        eng.state.recent_events = [
+            {"ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+             "kind": "creation_approved"}
+        ]
+        assert EmotionTimeline._events_for(
+            datetime.date.today().isoformat(), eng.state
+        )["creation_approved"] == 1
+
+    def test_ledger_trimmed_to_recent_days(self):
+        st = GrowthState()
+        for i in range(40):
+            day = (datetime.date.today() - datetime.timedelta(days=i)).isoformat()
+            st.daily_events[day] = {"chat": 1}
+        st.daily_events["2020-01-01"] = {"chat": 1}
+        out = st.to_dict()["daily_events"]
+        assert len(out) <= 30
+        assert "2020-01-01" not in out
+
+    def test_dirty_ledger_entries_are_dropped(self):
+        st = GrowthState()
+        st.daily_events["2026-09-05"] = {"chat": 1, "bad": "x", "worse": None}
+        assert st.to_dict()["daily_events"]["2026-09-05"] == {"chat": 1}
 
 
 # ============================================================
@@ -215,10 +294,8 @@ class TestModulation:
         eng.state.vitality = 50.0
         eng.tick_decay()
         assert eng.state.vitality > 50.0
-        # 心情向 80 收敛
+        # 心情不再被 tick 改动：它现在是当日情绪的派生值（E1），
+        # 由 emotion_timeline 结算写入，不靠「向 80 收敛」这种无来源的微调。
         eng.state.mood = 90.0
         eng.tick_decay()
-        assert eng.state.mood < 90.0
-        eng.state.mood = 70.0
-        eng.tick_decay()
-        assert eng.state.mood > 70.0
+        assert eng.state.mood == 90.0

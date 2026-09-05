@@ -60,10 +60,7 @@ from .validation_engine import (
 from .interfaces import (
     InterviewEngine,
     ValidationEngine,
-    TacitKnowledgeExtractor,
     MemoryInjector,
-    register_engine,
-    get_engine,
 )
 
 __all__ = [
@@ -98,8 +95,5 @@ __all__ = [
     # 扩展接口（第二期）
     "InterviewEngine",
     "ValidationEngine",
-    "TacitKnowledgeExtractor",
     "MemoryInjector",
-    "register_engine",
-    "get_engine",
 ]

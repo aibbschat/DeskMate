@@ -56,6 +56,11 @@ _NEGATIVE_EMOTION_WORDS = [
     "累", "疲惫", "烦", "恼火", "不安", "担心", "卡住",
     "受阻", "瓶颈", "写不下去", "找不到感觉", "失联",
 ]
+
+# 公开别名：情感感知（growth/emotion_sense）判「他这一天心情如何」时复用同一份
+# 词库。两处口径必须一致——否则会出现「画像是长期郁闷、当天却判顺利」的打架。
+POSITIVE_EMOTION_WORDS = _POSITIVE_EMOTION_WORDS
+NEGATIVE_EMOTION_WORDS = _NEGATIVE_EMOTION_WORDS
 _ENERGY_SOURCE_WORDS = [
     "史料", "历史", "读书", "查阅", "整理", "写作", "重读", "翻看",
     "史料原文", "古籍", "笔记", "安静", "独处", "散步", "喝茶", "音乐",

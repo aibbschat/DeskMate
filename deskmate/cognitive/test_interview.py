@@ -199,6 +199,53 @@ class TestInterview(unittest.TestCase):
         finally:
             _restore(saved)
 
+    def test_answer_feeds_emotion_timeline(self):
+        """F1 闭环：访谈回答要回流**当日心情**，不能只进认知画像。
+
+        真实 bug：此前 ``answer_interview`` 只回灌画像，情感时间线完全看不到。
+        他说「情绪低落时我会看电影」，系统只当那是条画像条目（回答"他是什么人"），
+        并不知道他那天低落（回答"他今天怎么样"）——两条腿缺一条就走不动。
+
+        ⚠️ 只测 record_statement 本身锁不住这条接线，必须测到调用这一环。
+        """
+        saved = _hermetic()
+        try:
+            import deskmate.growth.emotion_timeline as tl_mod
+
+            captured = []
+            orig_cls = tl_mod.EmotionTimeline
+
+            class _SpyTimeline:
+                def __init__(self, base_dir=None):
+                    pass
+
+                def record_statement(self, engine, text, day=None):
+                    captured.append(text)
+                    return {}
+
+            tl_mod.EmotionTimeline = _SpyTimeline
+            try:
+                p, s1, g1, g2, low = _make_profile()
+                pm = pmod.get_profile_manager()
+                pm.profile = p
+                pm.save()
+                started = ival.start_interview(limit=3)
+                self.assertTrue(started["session_id"])
+                ival.answer_interview(
+                    started["session_id"],
+                    started["questions"][0]["id"],
+                    "情绪低落时，我会看电影。",
+                )
+            finally:
+                tl_mod.EmotionTimeline = orig_cls
+
+            self.assertEqual(
+                captured, ["情绪低落时，我会看电影。"],
+                "访谈回答必须回流情感时间线，否则他说过的话被当成没说过",
+            )
+        finally:
+            _restore(saved)
+
     def test_explore_rules_absorb_no_llm(self):
         """真实 extractor 路径（不 stub）：explore 回答规则吸收进画像 + gap resolved。
 

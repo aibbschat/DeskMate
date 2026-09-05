@@ -290,7 +290,7 @@ class CognitiveStore:
                 gap_rows.append((
                     g.id, layer, g.topic, g.reason, g.priority,
                     json.dumps(g.related_items, ensure_ascii=False), g.status,
-                    g.created_at, "",
+                    g.created_at, getattr(g, "resolved_at", "") or "",
                 ))
             if gap_rows:
                 conn.executemany(
@@ -381,14 +381,15 @@ class CognitiveStore:
 
             gaps = []
             for row in conn.execute(
-                "SELECT id, topic, reason, priority, related_items_json, status, created_at "
-                "FROM cognitive_gaps WHERE layer=?", (layer,)
+                "SELECT id, topic, reason, priority, related_items_json, status, created_at, "
+                "resolved_at FROM cognitive_gaps WHERE layer=?", (layer,)
             ):
-                (gid, topic, reason, priority, rel_json, status, created_at) = row
+                (gid, topic, reason, priority, rel_json, status, created_at,
+                 resolved_at) = row
                 gaps.append(CognitiveGap(
                     id=gid, topic=topic, reason=reason, priority=priority,
                     related_items=json.loads(rel_json or "[]"), status=status,
-                    created_at=created_at,
+                    created_at=created_at, resolved_at=resolved_at or "",
                 ))
             profile.cognitive_gaps = gaps
             return profile

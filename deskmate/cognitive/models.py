@@ -85,10 +85,11 @@ class CognitiveItem:
 
     def mark_questioned(self, reason: str = ""):
         """标记为存疑（检测到矛盾时），待访谈澄清。"""
+        old_status = self.status  # 必须先存旧值，否则历史会记成 questioned→questioned
         self.status = "questioned"
         self.history.append(HistoryEntry(
             action="questioned",
-            old_value=self.status,
+            old_value=old_status,
             new_value="questioned",
             reason=reason,
         ))
@@ -96,10 +97,11 @@ class CognitiveItem:
 
     def mark_superseded(self, new_item_id: str, reason: str = ""):
         """标记为被取代（立场变化时，旧条目保留历史）。"""
+        old_status = self.status  # 不能写死 "active"：被取代的也可能是存疑条目
         self.status = "superseded"
         self.history.append(HistoryEntry(
             action="superseded",
-            old_value="active",
+            old_value=old_status,
             new_value="superseded",
             reason=reason,
             source=f"superseded_by:{new_item_id}",
@@ -170,6 +172,7 @@ class CognitiveGap:
     related_items: list[str] = field(default_factory=list)  # 相关的已有认知条目ID
     created_at: str = field(default_factory=_now)
     status: str = "open"             # open / in_interview / resolved / dismissed
+    resolved_at: str = ""            # 澄清完成时间（status 转为 resolved 时写入）
 
     def to_dict(self) -> dict:
         return asdict(self)

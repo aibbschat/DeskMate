@@ -167,12 +167,6 @@ def _extract_docx(p: Path) -> str:
     return "\n".join(paragraphs)
 
 
-def _read_docx(p: Path, max_chars: int) -> str:
-    """兼容旧调用：抽取 .docx 并按 max_chars 截断。新代码请用 read_file_safe。"""
-    content = _extract_docx(p)
-    if len(content) > max_chars:
-        return content[:max_chars] + f"\n\n…（截断，共 {len(content)} 字符）"
-    return content
 
 
 def split_chapters(text: str) -> list[tuple[str, str]]:

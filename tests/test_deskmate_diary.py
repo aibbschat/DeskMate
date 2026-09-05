@@ -110,10 +110,13 @@ class TestWeeklyRecap:
 
 class TestTimeMatching:
     def test_evt_date_utc_to_local(self):
-        # UTC 早晨（北京时间当天）→ 本地日期同一天
-        ts = "2026-08-29T01:00:00+00:00"
-        local = _evt_date(ts)
-        assert local == datetime.date.today().isoformat()  # 本机即 UTC+8
+        # 取今天本地正午转成 UTC 串，转回本地日期仍应是今天。
+        # 不写死日期 —— 原测试硬编码 2026-08-29，过一天就必然失败。
+        noon_local = datetime.datetime.combine(
+            datetime.date.today(), datetime.time(12, 0)
+        ).astimezone()
+        ts = noon_local.astimezone(datetime.timezone.utc).isoformat()
+        assert _evt_date(ts) == datetime.date.today().isoformat()
 
     def test_diary_under_base_dir(self, tmp_path):
         """验证写的是 <base>/diary 而非全局 ~/.deskmate。"""

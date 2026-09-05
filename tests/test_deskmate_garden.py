@@ -10,6 +10,7 @@
 """
 
 import datetime
+from pathlib import Path
 
 import pytest
 
@@ -247,3 +248,308 @@ def test_clock_log_marks_triggered(tmp_path):
     g = load_garden(tmp_path)
     assert key in g.clock_log
     assert any(x.get("key") == key for x in g.garden_log)  # 沉淀可回看
+
+
+# ---------------------------------------------------------------------------
+# 回归：花的日期取「发生日」，花种源不被 50 条易失窗口截断
+# ---------------------------------------------------------------------------
+
+def test_flower_date_is_local_event_date_not_discovery_date():
+    """花的 date 取事件发生的本地日期，不是「被发现的那天」。
+
+    回归背景：曾恒用 ``date.today()``。事件的 ts 带 UTC 偏移，跨天时段开出的
+    花会系统性标错一天，且与按 source_ts 统计的 year_stats 口径打架。
+    """
+    # UTC 23:30 在东八区已是次日 07:30 —— 发现日与发生日不在同一天
+    ts_utc = "2026-09-02T23:30:00+00:00"
+    local = datetime.datetime.fromisoformat(ts_utc).astimezone()
+    assert local.date().isoformat() == "2026-09-03"
+
+    from deskmate.garden.flowers import _local_date_from_ts
+
+    assert _local_date_from_ts(ts_utc) == local.date().isoformat()
+    # 无时区标记的时间串按本地时间解释，取前 10 位
+    assert _local_date_from_ts("2026-09-02T10:00:00") == "2026-09-02"
+    # 取不到时返回空串，由调用方兜底为今天
+    assert _local_date_from_ts("") == ""
+
+
+def test_bloom_uses_event_date(tmp_path):
+    """补开的历史花，日期必须是事件发生日而非今天。"""
+    engine = GrowthEngine(base_dir=tmp_path)
+    engine.state.recent_events = [
+        {"ts": "2026-08-01T10:00:00", "kind": "creation_approved", "note": "旧稿定稿"},
+    ]
+    save_state(engine.state, tmp_path)
+
+    fresh = maybe_bloom(tmp_path)
+    assert len(fresh) == 1
+    assert fresh[0]["date"] == "2026-08-01", "花的日期应是发生日，不是今天"
+    assert fresh[0]["source_ts"] == "2026-08-01T10:00:00"
+
+
+def test_bloom_reads_material_ledger_beyond_event_window(tmp_path):
+    """滚出 recent_events 窗口的事件，靠日记素材账本也能补开成花。
+
+    回归背景：花种源只读 recent_events（50 条易失窗口，落盘即截断），
+    几天不进花园，之前的事就永远开不出花了。
+    """
+    # 账本写在 tmp 下，模拟 append-only 全量流水
+    materials = tmp_path / "diary" / "materials"
+    materials.mkdir(parents=True)
+    (materials / "2026-08-01.jsonl").write_text(
+        '{"ts": "2026-08-01T09:00:00", "kind": "creation_approved", "note": "账本里的旧稿定稿"}\n',
+        encoding="utf-8",
+    )
+
+    # recent_events 里已没有这条事件（被窗口挤掉）
+    engine = GrowthEngine(base_dir=tmp_path)
+    engine.state.recent_events = [
+        {"ts": "2026-09-04T10:00:00", "kind": "chat", "note": "日常对话"},
+    ]
+    save_state(engine.state, tmp_path)
+
+    fresh = maybe_bloom(tmp_path)
+    kinds = {f["kind"]: f for f in fresh}
+    assert "sunflower" in kinds, "账本里的历史事件应当补开成花"
+    assert kinds["sunflower"]["date"] == "2026-08-01"
+    assert kinds["sunflower"]["quote"] == "账本里的旧稿定稿"
+
+
+def test_garden_snapshot_water_reflects_real_log(tmp_path):
+    """浇水状态从 water_log 真实派生，不再硬编码 streak=0。
+
+    回归背景：garden_snapshot 曾恒返回 {"streak": 0, "today": ""} 且缺 watered
+    字段，前端拿它兜底时，今天明明浇过水也会显示「还没浇水 · 连续 0 天」。
+    """
+    from deskmate.garden.flowers import garden_snapshot
+
+    today = datetime.date.today()
+    yesterday = today - datetime.timedelta(days=1)
+
+    g = load_garden(tmp_path)
+    g.water_log = {
+        yesterday.isoformat(): "2026-09-04T08:00:00",
+        today.isoformat(): "2026-09-05T08:00:00",
+    }
+    snap = garden_snapshot(g)
+    assert snap["water"]["watered"] is True
+    assert snap["water"]["streak"] == 2
+    assert snap["water"]["today"] == today.isoformat()
+
+    # 今天没浇 → watered 为 False，但昨天的连续记录仍在
+    g2 = load_garden(tmp_path)
+    g2.water_log = {yesterday.isoformat(): "2026-09-04T08:00:00"}
+    snap2 = garden_snapshot(g2)
+    assert snap2["water"]["watered"] is False
+    assert snap2["water"]["today"] == ""
+
+
+# ---------------------------------------------------------------------------
+# 回归：花的日期取「发生日」，花种源不被 50 条易失窗口截断
+# ---------------------------------------------------------------------------
+
+def test_flower_date_is_local_event_date_not_discovery_date():
+    """花的 date 取事件发生的本地日期，不是「被发现的那天」。
+
+    回归背景：曾恒用 ``date.today()``。事件的 ts 带 UTC 偏移，跨天时段开出的
+    花会系统性标错一天，且与按 source_ts 统计的 year_stats 口径打架。
+    """
+    # UTC 23:30 在东八区已是次日 07:30 —— 发现日与发生日不在同一天
+    ts_utc = "2026-09-02T23:30:00+00:00"
+    local = datetime.datetime.fromisoformat(ts_utc).astimezone()
+    assert local.date().isoformat() == "2026-09-03"
+
+    from deskmate.garden.flowers import _local_date_from_ts
+
+    assert _local_date_from_ts(ts_utc) == local.date().isoformat()
+    # 无时区标记的时间串按本地时间解释，取前 10 位
+    assert _local_date_from_ts("2026-09-02T10:00:00") == "2026-09-02"
+    # 取不到时返回空串，由调用方兜底为今天
+    assert _local_date_from_ts("") == ""
+
+
+def test_bloom_uses_event_date(tmp_path):
+    """补开的历史花，日期必须是事件发生日而非今天。"""
+    engine = GrowthEngine(base_dir=tmp_path)
+    engine.state.recent_events = [
+        {"ts": "2026-08-01T10:00:00", "kind": "creation_approved", "note": "旧稿定稿"},
+    ]
+    save_state(engine.state, tmp_path)
+
+    fresh = maybe_bloom(tmp_path)
+    assert len(fresh) == 1
+    assert fresh[0]["date"] == "2026-08-01", "花的日期应是发生日，不是今天"
+    assert fresh[0]["source_ts"] == "2026-08-01T10:00:00"
+
+
+def test_bloom_reads_material_ledger_beyond_event_window(tmp_path):
+    """滚出 recent_events 窗口的事件，靠日记素材账本也能补开成花。
+
+    回归背景：花种源只读 recent_events（50 条易失窗口，落盘即截断），
+    几天不进花园，之前的事就永远开不出花了。
+    """
+    # 账本写在 tmp 下，模拟 append-only 全量流水
+    materials = tmp_path / "diary" / "materials"
+    materials.mkdir(parents=True)
+    (materials / "2026-08-01.jsonl").write_text(
+        '{"ts": "2026-08-01T09:00:00", "kind": "creation_approved", "note": "账本里的旧稿定稿"}\n',
+        encoding="utf-8",
+    )
+
+    # recent_events 里已没有这条事件（被窗口挤掉）
+    engine = GrowthEngine(base_dir=tmp_path)
+    engine.state.recent_events = [
+        {"ts": "2026-09-04T10:00:00", "kind": "chat", "note": "日常对话"},
+    ]
+    save_state(engine.state, tmp_path)
+
+    fresh = maybe_bloom(tmp_path)
+    kinds = {f["kind"]: f for f in fresh}
+    assert "sunflower" in kinds, "账本里的历史事件应当补开成花"
+    assert kinds["sunflower"]["date"] == "2026-08-01"
+    assert kinds["sunflower"]["quote"] == "账本里的旧稿定稿"
+
+
+def test_garden_snapshot_water_reflects_real_log(tmp_path):
+    """浇水状态从 water_log 真实派生，不再硬编码 streak=0。
+
+    回归背景：garden_snapshot 曾恒返回 {"streak": 0, "today": ""} 且缺 watered
+    字段，前端拿它兜底时，今天明明浇过水也会显示「还没浇水 · 连续 0 天」。
+    """
+    from deskmate.garden.flowers import garden_snapshot
+
+    today = datetime.date.today()
+    yesterday = today - datetime.timedelta(days=1)
+
+    g = load_garden(tmp_path)
+    g.water_log = {
+        yesterday.isoformat(): "2026-09-04T08:00:00",
+        today.isoformat(): "2026-09-05T08:00:00",
+    }
+    snap = garden_snapshot(g)
+    assert snap["water"]["watered"] is True
+    assert snap["water"]["streak"] == 2
+    assert snap["water"]["today"] == today.isoformat()
+
+    # 今天没浇 → watered 为 False，但昨天的连续记录仍在
+    g2 = load_garden(tmp_path)
+    g2.water_log = {yesterday.isoformat(): "2026-09-04T08:00:00"}
+    snap2 = garden_snapshot(g2)
+    assert snap2["water"]["watered"] is False
+    assert snap2["water"]["today"] == ""
+
+
+# ---------------------------------------------------------------------------
+# 回归（C2）：情感时间线 → 花园的接线
+# ---------------------------------------------------------------------------
+
+def _seed_emotion_timeline(base: Path, day: str, state: str, mood: float = 80.0) -> None:
+    """往情感时间线写一天快照（走 BlobStore，与生产同一条路径）。"""
+    from deskmate.growth.emotion_timeline import EmotionTimeline
+    from deskmate.persistence import BlobStore
+
+    tl = EmotionTimeline(base_dir=base)
+    tl._data[day] = {"date": day, "state": state, "mood": mood, "note": "测试用"}
+    BlobStore(db_path=base / "deskmate.db").set(BlobStore.KEY_EMOTION, tl._data)
+
+
+def test_flower_tint_follows_real_emotion_not_event_type(tmp_path):
+    """花的颜色跟当天真实心情走，不是跟事件类型走。
+
+    回归背景：mood_tint 只从花种注册表按事件 kind 取默认值，skill_evolved
+    恒为「顺利」——赶稿压力最大的那几天开出的花也一片「顺利」，与
+    EmotionTimeline 记下的真实状态对不上（实测 119 朵里 108 朵不符）。
+    """
+    # 9-02 真实情感是「压力大」，但事件类型是 skill_evolved（默认色「顺利」）
+    _seed_emotion_timeline(tmp_path, "2026-09-02", "压力大")
+
+    engine = GrowthEngine(base_dir=tmp_path)
+    engine.state.recent_events = [
+        {"ts": "2026-09-02T10:00:00", "kind": "skill_evolved", "note": "技能进化"},
+    ]
+    save_state(engine.state, tmp_path)
+
+    fresh = maybe_bloom(tmp_path)
+    assert len(fresh) == 1
+    assert fresh[0]["date"] == "2026-09-02"
+    assert fresh[0]["mood_tint"] == "压力", "应取当日真实情感，而非事件类型的默认色"
+
+
+def test_flower_tint_falls_back_when_no_snapshot(tmp_path):
+    """那天没有情感快照时回落到事件类型查表，不把花染成空白。"""
+    engine = GrowthEngine(base_dir=tmp_path)
+    engine.state.recent_events = [
+        {"ts": "2026-09-02T10:00:00", "kind": "skill_evolved", "note": "技能进化"},
+    ]
+    save_state(engine.state, tmp_path)
+
+    fresh = maybe_bloom(tmp_path)
+    assert fresh[0]["mood_tint"], "无情感数据时仍应有兜底色"
+
+
+def test_retint_flowers_fixes_existing_but_keeps_unknown_days(tmp_path):
+    """重算只改「情感时间线里有当天快照」的花，查不到的保持原样。"""
+    from deskmate.garden.flowers import retint_flowers
+
+    _seed_emotion_timeline(tmp_path, "2026-09-02", "压力大")
+
+    g = load_garden(tmp_path)
+    g.flowers = {
+        "f1": {"date": "2026-09-02", "kind": "sprout", "mood_tint": "顺利"},  # 应被改
+        "f2": {"date": "2026-07-01", "kind": "sprout", "mood_tint": "顺利"},  # 无快照，不动
+    }
+    changed = retint_flowers(g, tmp_path)
+    assert changed == 1
+    assert g.flowers["f1"]["mood_tint"] == "压力"
+    assert g.flowers["f2"]["mood_tint"] == "顺利", "无据可依的花不能被清空或误改"
+
+
+def test_retint_flowers_is_idempotent(tmp_path):
+    """重算跑第二次不应再改动任何花。"""
+    from deskmate.garden.flowers import retint_flowers
+
+    _seed_emotion_timeline(tmp_path, "2026-09-02", "低落")
+    g = load_garden(tmp_path)
+    g.flowers = {"f1": {"date": "2026-09-02", "kind": "sprout", "mood_tint": "顺利"}}
+
+    assert retint_flowers(g, tmp_path) == 1
+    assert retint_flowers(g, tmp_path) == 0, "第二次应无改动"
+
+
+def test_maybe_bloom_retints_stale_flowers(tmp_path):
+    """进花园时顺带把存量花的错色改回来（用户无感，不必手动迁移）。"""
+    _seed_emotion_timeline(tmp_path, "2026-09-02", "压力大")
+
+    g = load_garden(tmp_path)
+    g.flowers = {"sprout:old": {"date": "2026-09-02", "kind": "sprout", "mood_tint": "顺利"}}
+    save_garden(g, tmp_path)
+
+    engine = GrowthEngine(base_dir=tmp_path)
+    engine.state.recent_events = []
+    save_state(engine.state, tmp_path)
+
+    maybe_bloom(tmp_path)
+    after = load_garden(tmp_path)
+    assert after.flowers["sprout:old"]["mood_tint"] == "压力", "存量花应被重新定色"
+
+
+def test_timeline_mood_covers_all_emotion_states():
+    """情感时间线的每种状态都要有对应的花色，缺一个就静默失效。"""
+    from deskmate.garden.flowers import _TIMELINE_MOOD
+    from deskmate.growth.emotion_timeline import _infer_emotion
+
+    # 构造能触发全部状态分支的输入（2026-09-05 E2 后：不再吃 mood 参数，
+    # 「低落」改由「不顺 + 当天几乎没动静」判定，不再依赖那个恒为 80 的 mood）
+    cases = [
+        ({"user_corrected": 2}, "低落"),                          # 不顺 + 没动静
+        ({"user_corrected": 3, "writing": 2}, "压力大"),          # 不顺占优且还在忙
+        ({"creation_approved": 1}, "顺利"),                       # 有正反馈
+        ({"writing": 2}, "忙碌"),                                 # 创作量不小
+        ({}, "平静"),                                             # 什么都没有
+    ]
+    for events, expected in cases:
+        actual, _ = _infer_emotion(events)
+        assert actual == expected, f"输入 {events} 应得 {expected}，实得 {actual}"
+        assert actual in _TIMELINE_MOOD, f"情感状态「{actual}」没有对应的花色映射"
+        assert _TIMELINE_MOOD[actual], "映射值不能为空串"

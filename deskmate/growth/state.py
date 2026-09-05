@@ -22,6 +22,10 @@ from deskmate.persistence import BlobStore
 # 一律用它占位而不编造日期。前端据此显示「早期补录」。
 BACKFILLED_MARK = "backfilled"
 
+# daily_events 的保留天数：够情感时间线回看（lookback 默认 7 天）与花园补记，
+# 又不至于把状态文件撑大。每天一个 key，每 key 平均三五条计数。
+_DAILY_EVENTS_DAYS = 30
+
 
 def _default_base_dir() -> Path:
     return Path(os.environ.get("DESKMATE_DIR", os.path.expanduser("~/.deskmate")))
@@ -78,8 +82,19 @@ class GrowthState:
     - skill_proficiency: 技能熟练度表（反哺 match_skills 排序 + 索引徽标）
 
     状态轨（照顾循环）：
-    - mood:     心情 0-100（正反馈上升，忽略下降）
-    - vitality: 活力 0-100（被使用后消耗，随时间恢复）
+    - mood:       心情 0-100 —— **派生值，不是独立来源**（2026-09-05 改）
+    - vitality:   活力 0-100（被使用后消耗，随时间恢复）
+
+    ⚠️ mood 的语义变更（E1，2026-09-05）：
+    它原先被设计成「正反馈上升、忽略下降」，但那条规则从未接线——真实库里
+    mood 常年恒为 80.0，一天都没变过，是个**看起来有数据、实际是常量**的假数值。
+    更糟的是情感时间线拿它去判「低落」（mood<65），而它永远到不了 65，
+    于是「低落」这个状态从体系建立到今天**一次都没被触发过**。
+
+    现在 mood 反过来：不猜，只结算。每天由「当日情绪」（日记自述优先，
+    行为事件推断兜底）派生写入，见 ``emotion_timeline.record_today``
+    与 ``engine.set_mood_from_emotion``。字段保留是为了不破坏既有消费方
+    （日记档案行、快照），但**任何业务代码都不许再直接增减 mood**。
     """
 
     version: int = 1
@@ -88,6 +103,10 @@ class GrowthState:
     empathy: float = 0.0
     mood: float = 80.0
     vitality: float = 100.0
+    # mood 的溯源：值是谁给的、哪一天的。空 = 从未结算（仍是初始常量）。
+    # source ∈ {"stated"（他自己写的日记）, "inferred"（行为事件推断）, ""}
+    mood_source: str = ""
+    mood_date: str = ""
     # 关系深度（8.2 长跑设计）：关系数值封顶后，溢出转入这里累积，
     # 由深度派生「关系阶段」（初识→熟络→默契→知己→灵魂伴侣）。
     # 让「数值满格」之后仍有可感知的进化，而不是死在数值上限。
@@ -120,6 +139,13 @@ class GrowthState:
     # 最近事件（供前端时间线）
     recent_events: list[dict] = field(default_factory=list)
 
+    # 当日事件计数：date(YYYY-MM-DD, 本地) -> {kind: count}
+    # 为什么需要它：recent_events 落盘时被截到最后 50 条（见下方 to_dict），
+    # 是个会滚动的**易失窗口**——跨天回看时，前几天的事件早被挤出去，
+    # 拿它统计「那天发生了什么」必然漏。情感时间线要从事件推断情绪，
+    # 就必须有一份按天切分、不会滚走的持久账。保留最近 _DAILY_EVENTS_DAYS 天。
+    daily_events: dict[str, dict[str, int]] = field(default_factory=dict)
+
     def to_dict(self) -> dict:
         return {
             "version": self.version,
@@ -144,7 +170,32 @@ class GrowthState:
             "trust_controls_proactive": self.trust_controls_proactive,
             "updated_at": self.updated_at,
             "recent_events": self.recent_events[-50:],
+            "daily_events": self._trim_daily_events(self.daily_events),
+            "mood_source": self.mood_source,
+            "mood_date": self.mood_date,
         }
+
+    @staticmethod
+    def _trim_daily_events(raw: dict) -> dict:
+        """只留最近 N 天（按日期字典序，ISO 日期可直接排序）。
+
+        脏数据（非 dict 的值、非 int 的计数）在这里一并剔除，
+        免得一个坏键把下游的 sum() 直接带崩。
+        """
+        out: dict[str, dict[str, int]] = {}
+        for day in sorted((k for k in raw if isinstance(k, str)), reverse=True)[:_DAILY_EVENTS_DAYS]:
+            counts = raw.get(day)
+            if not isinstance(counts, dict):
+                continue
+            clean = {}
+            for kind, n in counts.items():
+                try:
+                    clean[str(kind)] = int(n)
+                except (TypeError, ValueError):
+                    continue
+            if clean:
+                out[day] = clean
+        return out
 
 
 def _num(data: dict, key: str, default, cast):
@@ -201,7 +252,13 @@ def _build_state(data: dict) -> GrowthState:
         updated_at=str(data.get("updated_at", "") or ""),
         total_chats=_num(data, "total_chats", 0, int),
         memories_learned=_num(data, "memories_learned", 0, int),
+        mood_source=str(data.get("mood_source", "") or ""),
+        mood_date=str(data.get("mood_date", "") or ""),
     )
+
+    raw_daily = data.get("daily_events")
+    if isinstance(raw_daily, dict):
+        st.daily_events = GrowthState._trim_daily_events(raw_daily)
 
     raw_dates = data.get("active_dates")
     if isinstance(raw_dates, list):

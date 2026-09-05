@@ -227,3 +227,126 @@ if __name__ == "__main__":
     test_calibrate_resolves_gap()
     test_interview_skeleton()
     print("\nALL PASSED")
+
+
+# ---------------------------------------------------------------------------
+# 回归：无类型论证模式不得被并进第一条
+# ---------------------------------------------------------------------------
+
+
+def test_add_argument_pattern_untyped_not_merged():
+    """pattern_type 两边都为空时不能算「同类」。
+
+    回归背景：曾写成 ``p.pattern_type == pattern_type``，两侧同为 "" 时短路为真，
+    任何无类型的新模式都会被并进第一条，新内容直接丢失（返回 updated 而非 created）。
+    LLM 提取常常不给 pattern_type，所以这条路径是常态。
+    """
+    tmp = Path(tempfile.mkdtemp())
+    pm = CognitiveProfileManager(profile_path=tmp / "deskmate.db")
+    src = SourceRef(type="vault", title="t1", excerpt="e1")
+
+    _, op1 = pm.add_argument_pattern(
+        "先摆史料，再讲结论，最后留一个开放问题。", source=src, pattern_type=""
+    )
+    _, op2 = pm.add_argument_pattern(
+        "遇到有争议的说法，先查原始出处再下判断。", source=src, pattern_type=""
+    )
+
+    assert op1 == "created"
+    assert op2 == "created", "第二条不同内容的无类型模式不应被合并进第一条"
+    patterns = pm.get().argument_patterns
+    assert len(patterns) == 2
+    saved = {p.content for p in patterns}
+    assert "先摆史料，再讲结论，最后留一个开放问题。" in saved
+    assert "遇到有争议的说法，先查原始出处再下判断。" in saved
+
+
+def test_add_argument_pattern_typed_still_merges():
+    """同类 pattern_type 仍然照旧合并（补来源而非新增条目），修复不能矫枉过正。"""
+    tmp = Path(tempfile.mkdtemp())
+    pm = CognitiveProfileManager(profile_path=tmp / "deskmate.db")
+    src = SourceRef(type="vault", title="t1", excerpt="e1")
+
+    _, op1 = pm.add_argument_pattern(
+        "先摆史料再讲结论。", source=src, pattern_type="史证优先"
+    )
+    _, op2 = pm.add_argument_pattern(
+        "结论必须能被史料反推回去。", source=src, pattern_type="史证优先"
+    )
+
+    assert op1 == "created"
+    assert op2 == "updated"
+    assert len(pm.get().argument_patterns) == 1
+
+
+def test_add_argument_pattern_same_content_merges():
+    """内容前 20 字一致的无类型模式仍然合并（去重语义不变）。"""
+    tmp = Path(tempfile.mkdtemp())
+    pm = CognitiveProfileManager(profile_path=tmp / "deskmate.db")
+    src = SourceRef(type="vault", title="t1", excerpt="e1")
+
+    content = "遇到有争议的说法，先查原始出处再下判断，不凭二手转述下结论。"
+    _, op1 = pm.add_argument_pattern(content, source=src, pattern_type="")
+    _, op2 = pm.add_argument_pattern(content, source=src, pattern_type="")
+
+    assert op1 == "created"
+    assert op2 == "updated"
+    assert len(pm.get().argument_patterns) == 1
+
+
+# ---------------------------------------------------------------------------
+# 回归：变更历史与 gap 澄清时间必须真实落库
+# ---------------------------------------------------------------------------
+
+
+def test_status_change_records_previous_status():
+    """历史必须记下变更**前**的状态。
+
+    回归背景：mark_questioned 曾先赋值 self.status 再取 old_value=self.status，
+    历史恒为 questioned→questioned，查不出条目原本是什么状态；mark_superseded
+    则把 old_value 写死成 "active"，被取代的存疑条目会记错。
+    """
+    s = Stance(content="史料真实性优先")
+    assert s.status == "active"
+    s.mark_questioned(reason="与另一条冲突")
+    assert s.history[-1].old_value == "active"
+    assert s.history[-1].new_value == "questioned"
+
+    s2 = Stance(content="另一条立场")
+    s2.mark_questioned(reason="存疑")
+    s2.mark_superseded("new-id", reason="立场更新")
+    assert s2.history[-1].old_value == "questioned", "被取代的也可能是存疑条目，不能写死 active"
+    assert s2.history[-1].new_value == "superseded"
+
+
+def test_gap_resolved_at_persists():
+    """gap 的 resolved_at 必须持久化。
+
+    回归背景：CognitiveGap 没有该字段、persist 硬编码写 ""、load 也不 SELECT，
+    调用方（访谈澄清 / 校准）赋值后重启即丢，澄清时间无从追溯。
+    """
+    tmp = Path(tempfile.mkdtemp())
+    db = tmp / "deskmate.db"
+    pm = CognitiveProfileManager(profile_path=db)
+    pm.add_gap("写不动的时候怎么回血", reason="从未提及", priority=0.8)
+
+    gap = pm.get().cognitive_gaps[0]
+    gap.status = "resolved"
+    gap.resolved_at = "2026-09-05T10:00:00"
+    pm.save()
+
+    reloaded = CognitiveProfileManager(profile_path=db).get().cognitive_gaps[0]
+    assert reloaded.status == "resolved"
+    assert reloaded.resolved_at == "2026-09-05T10:00:00", "澄清时间应真落库，而非空串"
+
+
+def test_gap_without_resolved_at_roundtrips():
+    """未澄清的 gap 往返后 resolved_at 仍为空串（不引入脏值）。"""
+    tmp = Path(tempfile.mkdtemp())
+    db = tmp / "deskmate.db"
+    pm = CognitiveProfileManager(profile_path=db)
+    pm.add_gap("深夜写作是否影响次日状态", reason="数据不足", priority=0.6)
+
+    reloaded = CognitiveProfileManager(profile_path=db).get().cognitive_gaps[0]
+    assert reloaded.status == "open"
+    assert reloaded.resolved_at == ""
