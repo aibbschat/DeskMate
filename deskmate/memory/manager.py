@@ -480,6 +480,17 @@ class DeskMateMemoryManager:
                 parts.append(reading_ctx)
         except Exception:
             pass  # fail-open：读书沉淀缺失不影响主记忆注入
+        # 「她观察到的世界」：把小桔主动摄入的外部观察（learned_history 带「（外部·」标）
+        # 回灌对话——修复「看世界」只落库、聊天不消费的断点（2026-09-06）。
+        # 与上面各块一致：fail-open，缺失/为空不影响主记忆注入。
+        try:
+            from deskmate.memory.world_context import build_world_context
+
+            world_ctx = build_world_context(self.base_dir)
+            if world_ctx:
+                parts.append(world_ctx)
+        except Exception:
+            pass
         if not parts:
             return ""
 

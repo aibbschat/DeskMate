@@ -396,9 +396,22 @@ class ProactiveEngine:
             emotion_profile_ctx = emotional_context()
         except Exception:
             emotion_profile_ctx = ""
+        # 「她观察到的世界」：把小桔主动摄入的外部观察回灌主动推理上下文，
+        # 让 L2 主动决策（judge）也能依据她看到的世界判断要不要介入（2026-09-06）。
+        # fail-open：取不到就当空，绝不拖累 tick。
+        world_ctx = ""
+        try:
+            from deskmate.memory.world_context import build_world_context
+
+            world_ctx = build_world_context(self.base_dir)
+        except Exception:
+            world_ctx = ""
+        mem_ctx = self._memory_context
+        if world_ctx:
+            mem_ctx = (mem_ctx + "\n\n" + world_ctx).strip() if mem_ctx else world_ctx
         ctx = build_proactive_context(
             workspace=self.workspace,
-            memory_context=self._memory_context,
+            memory_context=mem_ctx,
             user_activity=activity_desc,
             project_context=self._project_context,
         )
