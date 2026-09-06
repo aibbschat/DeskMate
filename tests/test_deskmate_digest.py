@@ -185,6 +185,80 @@ async def test_llm_drops_stale_recency():
                 assert all(it["title"] == "近期风向" for it in result["items"])
 
 
+@pytest.mark.asyncio
+async def test_digest_persists_to_learned_history_with_expiry(tmp_path: Path):
+    """AI 圈网文观察日记（digest）应直接升格进内部记忆：
+
+    - 带「外部·文化产业」溯源标；
+    - 写入 valid_until（过期机制），且重复刷新幂等、不刷新已存在条目的过期时间。
+    """
+    from deskmate.memory.learned_store import LearnedStore
+
+    search_results = [
+        {"title": "新标题", "snippet": "网文 短剧 AI 开源 风向", "url": "http://example.com"}
+    ]
+    llm_output = json.dumps(
+        [{"title": "升格标题", "summary": "升格摘要", "query": "升格查询"}],
+        ensure_ascii=False,
+    )
+
+    with patch("deskmate.digest.engine.make_web_search_tool", return_value=_make_search_tool(search_results)):
+        with patch("deskmate.memory.llm.llm_available", return_value=True):
+            with patch("deskmate.memory.llm.chat", return_value=llm_output):
+                result = await get_digest(force=True)
+                assert result["fresh"] is True
+                # 4 个分类各产 1 条，全部升格进记忆
+                assert len(result["items"]) == 4
+
+    store = LearnedStore(base_dir=tmp_path)
+    snap = store.active_recent(limit=100)
+    assert len(snap) == 4
+    # 溯源标 + 分类标签正确
+    joined = "\n".join(i["fact"] for i in snap)
+    assert "（外部·文化产业）" in joined
+    assert "网文风向" in joined and "AI圈风向" in joined
+
+    # 全部带有效过期时间（valid_until 非空且 >= 当前）
+    import datetime as _dt
+    rows = store._connect().execute(
+        "SELECT fact, valid_until FROM learned_history WHERE status='active'"
+    ).fetchall()
+    assert len(rows) == 4
+    now = _dt.datetime.now().isoformat(timespec="seconds")
+    for fact, valid_until in rows:
+        assert valid_until and valid_until >= now, f"缺少有效过期时间: {fact}"
+
+    # 重复刷新：相同 fact 命中 fp，INSERT OR IGNORE → 不新增、不刷新过期
+    before = store.active_stats()["total"]
+    with patch("deskmate.digest.engine.make_web_search_tool", return_value=_make_search_tool(search_results)):
+        with patch("deskmate.memory.llm.llm_available", return_value=True):
+            with patch("deskmate.memory.llm.chat", return_value=llm_output):
+                await get_digest(force=True)
+    after = store.active_stats()["total"]
+    assert after == before == 4
+
+
+@pytest.mark.asyncio
+async def test_digest_persist_fail_open_on_memory_error():
+    """记忆写入异常时 fail-open：资讯链路不崩，照常返回条目。"""
+    search_results = [
+        {"title": "新标题", "snippet": "网文 短剧 AI 开源 风向", "url": "http://example.com"}
+    ]
+    llm_output = json.dumps(
+        [{"title": "升格标题", "summary": "升格摘要", "query": "升格查询"}],
+        ensure_ascii=False,
+    )
+
+    with patch("deskmate.digest.engine.make_web_search_tool", return_value=_make_search_tool(search_results)):
+        with patch("deskmate.memory.llm.llm_available", return_value=True):
+            with patch("deskmate.memory.llm.chat", return_value=llm_output):
+                with patch("deskmate.digest.engine._persist_to_memory", side_effect=RuntimeError("db down")):
+                    # 即便落记忆抛异常，刷新本身仍成功
+                    result = await get_digest(force=True)
+                    assert result["fresh"] is True
+                    assert len(result["items"]) == 4
+
+
 def test_is_spam_detects_adult_and_garbage():
     """_is_spam 应识别成人/垃圾站结果，放过正常结果。"""
     assert _is_spam({"title": "七天探花", "snippet": "网红黑料", "url": "http://aydvjch.cc/category/mrds"}) is True

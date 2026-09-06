@@ -193,16 +193,29 @@ class LearnedStore:
     # ------------------------------------------------------------------
     # 写
     # ------------------------------------------------------------------
-    def append(self, facts: list[str], ts: str | None = None) -> int:
+    def append(
+        self,
+        facts: list[str],
+        ts: str | None = None,
+        valid_until: str | None = None,
+    ) -> int:
         """追加若干条学到的事实，返回**实际新增**条数（重复的被 fp 挡掉）。
+
+        Args:
+            valid_until: 可选过期时间（ISO 秒精度）。外部/趋势类信息带过期，
+                到点的条目在 ``active_recent`` / ``relevant`` 中自动失效剔除。
+                为 ``None`` 时永久有效（运行时新学的用户事实默认不过期）。
 
         矛盾检测（2026-09-03 补）：写入一条事实时，若库里已有一条**同实体、
         相反极性**的活跃事实（如「《宋会要辑稿》在史料库」vs「《宋会要辑稿》
         不在史料库」），把旧条标记 ``superseded``（记 ``valid_until`` + 指向新条
         ``superseded_by``），而非让矛盾两条并存被一起相信。实体只在书名/引号等
         **高置信**场景抽取，避免误判泛主体。
+
+        注意：冲突走 ``INSERT OR IGNORE``，已存在的 fp 不会被更新——因此重复
+        写入同一条事实不会刷新其 ``valid_until``，过期语义稳定。
         """
-        clean: list[tuple[str, str, str, str, str, str]] = []
+        clean: list[tuple[str, str, str, str, str, str, str | None]] = []
         stamp = ts or _now_iso()
         for raw in facts:
             fact = str(raw).strip() if raw else ""
@@ -217,6 +230,7 @@ class LearnedStore:
                     _fingerprint(fact),
                     entity,
                     _extract_polarity(fact),
+                    valid_until,
                 )
             )
         if not clean:
@@ -224,12 +238,12 @@ class LearnedStore:
         try:
             with self._connect() as conn:
                 inserted = 0
-                for stamp_, fact_, cat_, fp_, entity_, polarity_ in clean:
+                for stamp_, fact_, cat_, fp_, entity_, polarity_, valid_until_ in clean:
                     cur = conn.execute(
                         "INSERT OR IGNORE INTO learned_history"
-                        "(ts, fact, category, fp, source, entity, polarity, status) "
-                        "VALUES (?, ?, ?, ?, 'live', ?, ?, 'active')",
-                        (stamp_, fact_, cat_, fp_, entity_, polarity_),
+                        "(ts, fact, category, fp, source, entity, polarity, status, valid_until) "
+                        "VALUES (?, ?, ?, ?, 'live', ?, ?, 'active', ?)",
+                        (stamp_, fact_, cat_, fp_, entity_, polarity_, valid_until_),
                     )
                     if not (cur.rowcount and cur.rowcount > 0):
                         continue  # 重复（同 fp）→ 跳过，也不做矛盾处理

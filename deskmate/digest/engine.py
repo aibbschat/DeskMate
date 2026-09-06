@@ -143,6 +143,11 @@ def _is_spam(result: dict[str, Any]) -> bool:
 _DEFAULT_TTL_SECONDS = 4 * 60 * 60  # 4 小时
 _CACHE_VERSION = 2  # 分类与查询已重构，旧缓存不兼容
 
+# 资讯胶囊升格进长期记忆后的过期天数：趋势类信息会过时，带过期满足「外部信息要过期」红线。
+# 用户拍板：写作营不接，只接 digest（AI 圈网文观察日记），且**直接升格进内部记忆**，
+# 不走 L2 提议卡 / 不可信区候选队列。这里 7 天与 external_store 的 news/finance 档对齐。
+_DIGEST_MEMORY_TTL_DAYS = 7
+
 
 def _base_dir() -> Path:
     return Path(os.environ.get("DESKMATE_DIR", os.path.expanduser("~/.deskmate")))
@@ -166,6 +171,51 @@ def _relative_time(ts: float) -> str:
     if delta < 86400:
         return f"{int(delta // 3600)} 小时前"
     return f"{int(delta // 86400)} 天前"
+
+
+def _category_label(category_value: str) -> str:
+    """把分类值安全映射成展示标签（网文/影视短剧/AI圈/开源）。非法值回退原值。"""
+    try:
+        return _CATEGORY_LABELS.get(DigestCategory(category_value), category_value)
+    except ValueError:
+        return category_value
+
+
+def _persist_to_memory(items: list[DigestItem], base_dir: Path | None = None) -> int:
+    """把资讯胶囊**直接升格**写入长期记忆（learned_history），带「外部·文化产业」溯源标。
+
+    用户拍板（2026-09-06）：写作营不接，只接 digest（AI 圈网文观察日记），且直接升格进
+    内部记忆，不走 L2 提议卡 / 不可信区候选队列。
+
+    设计要点：
+    - 溯源标「（外部·文化产业）」与外部信息 intake 的 provenance 约定一致，检索/展示时
+      一眼能区分是小桔自己观察到的产业风向，而非用户口述事实；
+    - fact 由「分类标签 + 标题 + 摘要」构成，配合 ``LearnedStore.append`` 的
+      ``INSERT OR IGNORE``（按 fact 的 md5 指纹去重），保证同一条观察在多次刷新间
+      幂等，不会重复堆积；
+    - 带 ``valid_until`` 过期（默认 7 天）：趋势类信息会过时，满足「外部信息要过期」红线；
+      因冲突走 IGNORE，重复写入不会刷新已存在条目的过期时间，过期语义稳定；
+    - 任何异常 fail-open：记忆写入失败绝不拖累首页资讯链路。
+    """
+    if not items:
+        return 0
+    try:
+        import datetime as _dt
+
+        from deskmate.memory.learned_store import LearnedStore
+
+        bd = base_dir or _base_dir()
+        expiry = (
+            _dt.datetime.now() + _dt.timedelta(days=_DIGEST_MEMORY_TTL_DAYS)
+        ).isoformat(timespec="seconds")
+        facts: list[str] = []
+        for it in items:
+            label = _category_label(it.category)
+            facts.append(f"（外部·文化产业）{label}风向：{it.title}——{it.summary}")
+        return LearnedStore(base_dir=bd).append(facts, valid_until=expiry)
+    except Exception as e:  # fail-open
+        logger.warning("digest persist to memory failed: %s", e)
+        return 0
 
 
 def _read_cache() -> tuple[list[DigestItem], float] | None:
@@ -382,6 +432,7 @@ async def _refresh_digest() -> list[DigestItem]:
             _write_cache(all_items)
 
     any_fresh = False
+    fresh_items: list[DigestItem] = []  # 本轮成功新抓取的条目，用于落长期记忆
 
     async def _guarded(cat: DigestCategory) -> None:
         nonlocal any_fresh
@@ -395,11 +446,21 @@ async def _refresh_digest() -> list[DigestItem]:
                 # 增量合并：本类用新结果替换，其他类沿用缓存，立即写盘
                 merged_by_cat[cat.value] = items
                 any_fresh = True
+                fresh_items.extend(items)
                 _flush()
 
     await asyncio.gather(*[_guarded(cat) for cat in DigestCategory])
     _flush()
     all_items = [i for items in merged_by_cat.values() for i in items]
+
+    # 直接升格进内部记忆：只落本轮新抓取的条目（缓存条目已在过往轮次落过；
+    # append 的 INSERT OR IGNORE 保证重复写入不刷新已存在条目的过期时间）。
+    if fresh_items:
+        try:
+            _persist_to_memory(fresh_items)
+        except Exception:  # 兜底，绝不拖累资讯链路
+            pass
+
     return all_items, any_fresh
 
 
