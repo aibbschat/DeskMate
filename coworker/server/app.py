@@ -3400,6 +3400,109 @@ def create_app(manager: SessionManager) -> FastAPI:
             logging.exception("deskmate feedback failed")
             return JSONResponse({"error": "feedback failed"}, status_code=500)
 
+    @app.post("/v1/deskmate/agency/tick")
+    async def deskmate_agency_tick() -> dict[str, Any]:
+        """强制跑一次 L2 自主层 tick（低风险动作自主执行 / 高风险生成提议卡）。"""
+        try:
+            from pathlib import Path as _P
+
+            from deskmate.agency.engine import AgencyEngine
+
+            desk_dir = _P(
+                os.environ.get("DESKMATE_DIR", os.path.expanduser("~/.deskmate"))
+            )
+            return AgencyEngine(base_dir=desk_dir).run_now()
+        except Exception:
+            logging.exception("deskmate agency tick failed")
+            return JSONResponse({"error": "agency tick failed"}, status_code=500)
+
+    @app.get("/v1/deskmate/agency/status")
+    async def deskmate_agency_status() -> dict[str, Any]:
+        """L2 自主层状态：总控开关、白名单、最近任务、待裁决提议卡。"""
+        try:
+            from pathlib import Path as _P
+
+            from deskmate.agency.engine import AgencyEngine
+
+            desk_dir = _P(
+                os.environ.get("DESKMATE_DIR", os.path.expanduser("~/.deskmate"))
+            )
+            return AgencyEngine(base_dir=desk_dir).status()
+        except Exception:
+            logging.exception("deskmate agency status failed")
+            return JSONResponse({"error": "agency status failed"}, status_code=500)
+
+    @app.post("/v1/deskmate/agency/enabled")
+    async def deskmate_agency_set_enabled(request: Request) -> dict[str, Any]:
+        """开/关 L2 自主层总开关（写 l2_settings.json）。Body: {"enabled": true|false}"""
+        try:
+            body = await request.json()
+        except Exception:
+            return JSONResponse({"error": "invalid json"}, status_code=400)
+        enabled = bool(body.get("enabled", True))
+        try:
+            from pathlib import Path as _P
+
+            from deskmate.agency.settings import (
+                AgencySettings,
+                load_agency_settings,
+                save_agency_settings,
+            )
+
+            desk_dir = _P(
+                os.environ.get("DESKMATE_DIR", os.path.expanduser("~/.deskmate"))
+            )
+            s = load_agency_settings(str(desk_dir))
+            s.enabled = enabled
+            ok = save_agency_settings(s, base_dir=str(desk_dir))
+            return {"ok": ok, "enabled": enabled}
+        except Exception:
+            logging.exception("deskmate agency set enabled failed")
+            return JSONResponse({"error": "set enabled failed"}, status_code=500)
+
+    @app.get("/v1/deskmate/agency/tasks")
+    async def deskmate_agency_tasks(limit: int = 50) -> dict[str, Any]:
+        """L2 任务面板的任务列表（含 proposed 提议卡）。"""
+        try:
+            from pathlib import Path as _P
+
+            from deskmate.agency.task_log import TaskLog
+
+            desk_dir = _P(
+                os.environ.get("DESKMATE_DIR", os.path.expanduser("~/.deskmate"))
+            )
+            tasks = [r.to_dict() for r in TaskLog(desk_dir).list(limit=limit)]
+            proposals = [r.to_dict() for r in TaskLog(desk_dir).list(limit=limit, status="proposed")]
+            return {"tasks": tasks, "pending_proposals": proposals}
+        except Exception:
+            logging.exception("deskmate agency tasks failed")
+            return JSONResponse({"error": "agency tasks failed"}, status_code=500)
+
+    @app.post("/v1/deskmate/agency/propose/resolve")
+    async def deskmate_agency_propose_resolve(request: Request) -> dict[str, Any]:
+        """裁决高风险提议卡。Body: {"id": "...", "decision": "executed"|"rejected"|"never"}"""
+        try:
+            body = await request.json()
+        except Exception:
+            return JSONResponse({"error": "invalid json"}, status_code=400)
+        record_id = (body.get("id") or "").strip()
+        decision = (body.get("decision") or "").strip()
+        if not record_id or decision not in ("executed", "rejected", "never"):
+            return JSONResponse({"error": "need id + decision(executed|rejected|never)"}, status_code=400)
+        try:
+            from pathlib import Path as _P
+
+            from deskmate.agency.engine import AgencyEngine
+
+            desk_dir = _P(
+                os.environ.get("DESKMATE_DIR", os.path.expanduser("~/.deskmate"))
+            )
+            ok = AgencyEngine(base_dir=desk_dir).resolve_proposal(record_id, decision)
+            return {"ok": ok}
+        except Exception:
+            logging.exception("deskmate agency resolve failed")
+            return JSONResponse({"error": "resolve failed"}, status_code=500)
+
     @app.get("/v1/deskmate/proactive")
     async def get_deskmate_proactive_status() -> dict[str, Any]:
         """获取 DeskMate 主动推理状态（静默模式、统计）。"""

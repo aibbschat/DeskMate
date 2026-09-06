@@ -15,6 +15,7 @@ import { Icon } from "../Icon";
 import XiaojuAvatar from "../XiaojuAvatar";
 import { EXPERTS } from "./experts";
 import { DeskDigest } from "./DeskDigest";
+import { AgencyPanel } from "./AgencyPanel";
 
 /** 当前可召唤的就绪专家（取第一个 ready 的，保证「召唤专家」chip 不写死具体 id）。 */
 const READY_EXPERT_ID = EXPERTS.find((e) => e.status !== "soon")?.id ?? "editor";
@@ -74,6 +75,9 @@ export function DeskHome({ onOpenProfile }: DeskHomeProps) {
           <span>召唤专家</span>
         </button>
       </div>
+
+      {/* L2 自主层「小桔在忙」——常驻展示自主行为 + 高风险提议卡待裁决 */}
+      <AgencyPanel />
 
       <DeskDigest />
     </div>

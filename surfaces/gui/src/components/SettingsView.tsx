@@ -18,6 +18,10 @@ import {
   setDeskmateGrowthProactive,
   getDeskmateWillSettings,
   setDeskmateWillSettings,
+  getDeskmateAgencyStatus,
+  setDeskmateAgencyEnabled,
+  runDeskmateAgencyTick,
+  type AgencyStatus,
   type WillSettings,
   type CompactionSettings,
   type GovernanceSettings,
@@ -135,6 +139,7 @@ export function SettingsView({
                 <TokenSavingsCard />
                 <CompactionCard />
                 <WillModulationCard />
+                <AgencyCard />
               </div>
             </section>
           ) : tab === "voice" ? (
@@ -1226,6 +1231,122 @@ function WillModulationCard() {
         value={s.thresholds.tone_prompt_max_len}
         onChange={(n) => updThreshold("tone_prompt_max_len", n)}
       />
+    </div>
+  );
+}
+
+/**
+ * L2 自主层（替你行动）总控卡片。
+ *
+ * 与意志层（L1，让认知情感影响行为）是两件事：
+ * L1 决定「小桔怎么表达」，L2 决定「小桔能不能自己动手」。
+ * 所以这里只暴露三样东西：总开关、当前白名单（只读）、立刻跑一次。
+ */
+function AgencyCard() {
+  const [s, setS] = useState<AgencyStatus | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+
+  useEffect(() => {
+    getDeskmateAgencyStatus().then(setS).catch(() => setS(null));
+  }, []);
+
+  const toggle = async (enabled: boolean) => {
+    if (!s) return;
+    const prev = s;
+    setS({ ...s, enabled });
+    const ok = await setDeskmateAgencyEnabled(enabled);
+    if (!ok) setS(prev);
+  };
+
+  const tickOnce = async () => {
+    setBusy(true);
+    setMsg(null);
+    try {
+      const res = await runDeskmateAgencyTick();
+      if (!res) {
+        setMsg("执行失败");
+      } else if (res.skipped) {
+        setMsg("已关闭，未执行");
+      } else {
+        const n = Number(res.task_count || 0);
+        setMsg(n > 0 ? `完成 ${n} 项` : "本轮无可执行动作（多在冷却中）");
+      }
+      await getDeskmateAgencyStatus().then(setS);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (!s) return null;
+
+  const actions = s.whitelist_actions || [];
+  const topics = s.topics || [];
+
+  return (
+    <div className={CARD + " p-4 mb-4"} data-testid="agency-card">
+      <div className={FIELD_LABEL}>自主层 / 替你行动（L2）</div>
+      <div className="text-[12px] text-muted mt-1 leading-relaxed">
+        小桔可以<b>不等你开口</b>就去做的事。低风险动作（如主动信息摄入）自主执行并记进「小桔在忙」；
+        <span className="text-accent"> 高风险动作（写文件 / 发消息 / 删除）永远不会自动执行</span>，
+        只会生成提议卡等你裁决。
+      </div>
+
+      <label className="flex items-start gap-3 py-2 mt-1">
+        <input
+          type="checkbox"
+          className="mt-0.5"
+          data-testid="agency-enabled-toggle"
+          checked={s.enabled}
+          onChange={(e) => toggle(e.target.checked)}
+        />
+        <span>
+          <span className="block text-[13px] text-ink">允许小桔自主行动（总开关）</span>
+          <span className="block text-[12px] text-muted">
+            关闭 = 小桔只回应你，绝不主动做任何事。也可设环境变量 <code>DESKMATE_L2_ENABLED=0</code> 强制关闭。
+          </span>
+        </span>
+      </label>
+
+      <div className="py-2" data-testid="agency-whitelist">
+        <div className="text-[12.5px] font-medium text-ink">白名单动作</div>
+        <div className="text-[12px] text-muted mt-1">
+          {actions.length === 0 ? (
+            "（空）"
+          ) : (
+            <span className="flex flex-wrap gap-1.5 mt-1">
+              {actions.map((a) => (
+                <span
+                  key={a}
+                  className="px-2 py-0.5 rounded-md text-[11.5px] bg-accent/10 text-accent border border-accent/20"
+                >
+                  {a}
+                </span>
+              ))}
+            </span>
+          )}
+        </div>
+      </div>
+
+      {topics.length > 0 && (
+        <div className="py-2" data-testid="agency-topics">
+          <div className="text-[12.5px] font-medium text-ink">关注主题域</div>
+          <div className="text-[12px] text-muted mt-1">{topics.join(" · ")}</div>
+        </div>
+      )}
+
+      <div className="flex items-center gap-3 pt-2">
+        <button
+          type="button"
+          data-testid="agency-tick-btn"
+          disabled={busy || !s.enabled}
+          onClick={tickOnce}
+          className="px-3 py-1.5 rounded-lg border border-line bg-paper text-[12.5px] text-ink hover:border-accent hover:text-accent disabled:opacity-50 disabled:cursor-not-allowed"
+        >
+          {busy ? "执行中…" : "立刻跑一次"}
+        </button>
+        {msg && <span className="text-[12px] text-muted">{msg}</span>}
+      </div>
     </div>
   );
 }

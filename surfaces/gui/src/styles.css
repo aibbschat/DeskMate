@@ -4808,3 +4808,92 @@ html[data-theme="dark"] .creation-preview-article a {
 
 /* 房间场景：更高，像走进屋里 */
 .garden-scene.is-room { height: 46vh; min-height: 300px; }
+
+/* ============================================================
+   L2 自主层 —— 「小桔在忙」任务面板（DeskHome 常驻）
+   风格：与首页个人中心横幅一致（暖橙描边 + 白底），克制不抢戏
+   ============================================================ */
+.agency-panel {
+  width: 100%; max-width: 560px; margin: 0 0 20px;
+  background: #fff; border: 1px solid var(--line); border-radius: 14px;
+  padding: 12px 16px 14px;
+  box-shadow: 0 6px 20px rgba(232, 85, 26, .08);
+}
+
+.agency-panel-head {
+  display: flex; align-items: center; gap: 7px;
+  font-size: 13.5px; font-weight: 700; color: var(--ink);
+  padding-bottom: 9px; margin-bottom: 2px;
+  border-bottom: 1px dashed #ece2d4;
+}
+.agency-panel-head svg { color: #E8551A; }
+
+.agency-panel-sub {
+  font-size: 11px; font-weight: 500; color: #B45A24;
+  background: #FFF3E6; border: 1px solid #FAE0C4;
+  padding: 1px 8px; border-radius: 999px;
+}
+
+/* --- 高风险提议卡（待裁决） --- */
+.agency-proposals { display: flex; flex-direction: column; gap: 8px; margin: 10px 0; }
+
+.agency-proposal {
+  border: 1px solid #F3C89A; background: #FFFBf4;
+  border-radius: 11px; padding: 10px 12px;
+}
+.agency-proposal-title { font-size: 12.5px; font-weight: 700; color: #92400E; }
+.agency-proposal-desc {
+  font-size: 12px; color: #7A6248; line-height: 1.6; margin-top: 3px;
+  max-height: 4.8em; overflow: hidden;
+}
+.agency-proposal-actions { display: flex; gap: 7px; margin-top: 9px; }
+
+.agency-btn {
+  font-family: inherit; font-size: 12px; cursor: pointer;
+  padding: 4px 13px; border-radius: 999px;
+  border: 1px solid var(--line); background: #fff; color: var(--ink);
+  transition: border-color .15s, color .15s, background .15s;
+}
+.agency-btn:hover { border-color: #E8551A; color: #E8551A; }
+.agency-btn:disabled { opacity: .5; cursor: not-allowed; }
+
+.agency-btn-go { border-color: #E8551A; background: #E8551A; color: #fff; }
+.agency-btn-go:hover { background: #D2470F; color: #fff; }
+
+.agency-btn-never { color: var(--muted); }
+.agency-btn-never:hover { border-color: var(--muted); color: var(--muted); }
+
+/* --- 最近自主行为列表 --- */
+.agency-empty { font-size: 12.5px; color: #B0A08C; padding: 8px 0 2px; }
+
+.agency-list { list-style: none; margin: 8px 0 0; padding: 0; }
+
+.agency-item {
+  display: flex; align-items: flex-start; gap: 9px;
+  padding: 6px 0; border-bottom: 1px solid #F6F1E9;
+}
+.agency-item:last-child { border-bottom: none; }
+
+.agency-dot {
+  width: 6px; height: 6px; border-radius: 50%;
+  background: #E8551A; flex-shrink: 0; margin-top: 6px;
+}
+
+.agency-item-main {
+  flex: 1; min-width: 0;
+  display: flex; flex-wrap: wrap; align-items: baseline; gap: 7px;
+}
+.agency-item-label {
+  font-size: 12.5px; font-weight: 600; color: var(--ink); flex-shrink: 0;
+}
+.agency-item-topic {
+  font-size: 11px; color: #B45A24; background: #FFF3E6;
+  border: 1px solid #FAE0C4; padding: 0 7px; border-radius: 999px; flex-shrink: 0;
+}
+.agency-item-sum {
+  font-size: 12px; color: #8A7860; line-height: 1.5;
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.agency-item-ts {
+  font-size: 11px; color: #BCA98F; flex-shrink: 0; font-variant-numeric: tabular-nums;
+}

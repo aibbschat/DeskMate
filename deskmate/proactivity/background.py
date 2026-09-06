@@ -43,11 +43,21 @@ def make_extra_tick(
                 await wrapped()
             except Exception:
                 logger.exception("wrapped extra_tick failed")
+        # 1) 主动推理（感知→判断→决策：说话/关怀/日记/花园）
         try:
             # proactive_tick 内含感知 / LLM，放到后台线程避免阻塞 scheduler 事件循环
-            return await asyncio.to_thread(engine.tick)
+            result = await asyncio.to_thread(engine.tick)
         except Exception:
             logger.exception("deskmate proactive background tick failed")
-            return None
+            result = None
+        # 2) L2 自主层（替你行动）：kill switch 关则整块跳过，绝不相互影响
+        try:
+            from deskmate.agency.engine import AgencyEngine
+
+            agency = AgencyEngine(base_dir=engine.base_dir)
+            await asyncio.to_thread(agency.tick)
+        except Exception:
+            logger.exception("deskmate L2 agency tick failed")
+        return result
 
     return _tick

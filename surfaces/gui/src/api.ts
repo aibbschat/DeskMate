@@ -2758,6 +2758,97 @@ export async function getDeskmateWillInspect(): Promise<Record<string, unknown>>
   }
 }
 
+// -- L2 自主层（替你行动） ----------------------------------------------------------
+// 注意：后端 status()/tasks 返回**平铺结构**，无 {ok, settings} 包装层，前端直接取字段。
+
+export interface AgencyTask {
+  id: string;
+  ts: string;
+  action_type: string;
+  risk: string;
+  status: string;
+  topic: string;
+  summary: string;
+  detail: string;
+  count: number;
+}
+
+/** L2 自主层状态：enabled / 白名单动作 / 主题域 / 最近任务 / 待裁决提议卡。 */
+export interface AgencyStatus {
+  enabled: boolean;
+  kill_switch_env?: string;
+  whitelist_actions: string[];
+  topics: string[];
+  recent_tasks: AgencyTask[];
+  pending_proposals: AgencyTask[];
+}
+
+export async function getDeskmateAgencyStatus(): Promise<AgencyStatus | null> {
+  try {
+    const res = await authedFetch(`${httpBase()}/v1/deskmate/agency/status`);
+    if (!res.ok) return null;
+    return (await res.json()) as AgencyStatus;
+  } catch {
+    return null;
+  }
+}
+
+/** 开/关 L2 自主层总开关（写 l2_settings.json）。 */
+export async function setDeskmateAgencyEnabled(enabled: boolean): Promise<boolean> {
+  try {
+    const res = await authedFetch(`${httpBase()}/v1/deskmate/agency/enabled`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ enabled }),
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+/** 任务面板：最近任务 + 待裁决提议卡。 */
+export async function getDeskmateAgencyTasks(limit = 20): Promise<{
+  tasks: AgencyTask[];
+  pending_proposals: AgencyTask[];
+}> {
+  try {
+    const res = await authedFetch(`${httpBase()}/v1/deskmate/agency/tasks?limit=${limit}`);
+    if (!res.ok) return { tasks: [], pending_proposals: [] };
+    return (await res.json()) as { tasks: AgencyTask[]; pending_proposals: AgencyTask[] };
+  } catch {
+    return { tasks: [], pending_proposals: [] };
+  }
+}
+
+/** 裁决高风险提议卡。decision: executed | rejected | never */
+export async function resolveDeskmateAgencyProposal(
+  id: string,
+  decision: "executed" | "rejected" | "never",
+): Promise<boolean> {
+  try {
+    const res = await authedFetch(`${httpBase()}/v1/deskmate/agency/propose/resolve`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ id, decision }),
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+/** 立刻跑一次 L2 tick（不等后台周期）。 */
+export async function runDeskmateAgencyTick(): Promise<Record<string, unknown> | null> {
+  try {
+    const res = await authedFetch(`${httpBase()}/v1/deskmate/agency/tick`, { method: "POST" });
+    if (!res.ok) return null;
+    return (await res.json()) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
 export interface TraceRecord {
   ts?: string;
   query?: string;
