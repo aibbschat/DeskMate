@@ -1,9 +1,8 @@
 /**
- * AgencyPanel — L2 自主层「小桔在忙」任务面板。
+ * AgencyPanel — L2 自主层「小桔在忙」面板。
  *
- * 常驻展示小桔最近的自主行为（低风险已执行 / 高风险待你裁决的提议卡）。
- * 高风险提议卡提供 [执行][不用][以后别提] 三按钮，走 propose/resolve。
- *
+ * 左侧：小桔坐在桌前的两帧动画（打字 ↔ 思考，淡入淡出循环）。
+ * 右侧：半透明全息屏，实时展示自主行为记录 + 高风险提议卡（待裁决）。
  * 低频轮询（30s）即可——自主行为本就不频繁；失败静默，不阻断首页。
  */
 
@@ -13,7 +12,8 @@ import {
   resolveDeskmateAgencyProposal,
   type AgencyTask,
 } from "../../api";
-import { Icon } from "../Icon";
+import xiaojuTyping from "../../assets/xiaoju-busy-typing-transparent.png";
+import xiaojuThinking from "../../assets/xiaoju-busy-thinking-transparent.png";
 
 const RISK_LABEL: Record<string, string> = {
   world_search: "主动信息摄入",
@@ -67,67 +67,95 @@ export function AgencyPanel() {
 
   return (
     <div className="agency-panel" data-testid="agency-panel">
-      <div className="agency-panel-head">
-        <Icon name="sparkle" size={15} />
-        <span>小桔在忙</span>
-        <span className="agency-panel-sub">自主层</span>
+      {/* 左侧：小桔忙碌动画 */}
+      <div className="agency-xiaoju">
+        <div className="agency-xiaoju-stage">
+          <img
+            src={xiaojuTyping}
+            className="agency-xiaoju-frame agency-xiaoju-typing"
+            alt="小桔打字中"
+            draggable={false}
+          />
+          <img
+            src={xiaojuThinking}
+            className="agency-xiaoju-frame agency-xiaoju-thinking"
+            alt="小桔思考中"
+            draggable={false}
+          />
+        </div>
+        <div className="agency-xiaoju-label">
+          <span className="agency-xiaoju-label-dot" />
+          小桔在忙
+        </div>
       </div>
 
-      {/* 高风险提议卡（待裁决） */}
-      {pending.length > 0 && (
-        <div className="agency-proposals">
-          {pending.map((p) => (
-            <div key={p.id} className="agency-proposal" data-testid="agency-proposal">
-              <div className="agency-proposal-title">
-                {labelOf(p.action_type)} · 需你确认
-              </div>
-              <div className="agency-proposal-desc">{p.summary || p.detail}</div>
-              <div className="agency-proposal-actions">
-                <button
-                  className="agency-btn agency-btn-go"
-                  disabled={resolving === p.id}
-                  onClick={() => resolve(p.id, "executed")}
-                >
-                  执行
-                </button>
-                <button
-                  className="agency-btn"
-                  disabled={resolving === p.id}
-                  onClick={() => resolve(p.id, "rejected")}
-                >
-                  不用
-                </button>
-                <button
-                  className="agency-btn agency-btn-never"
-                  disabled={resolving === p.id}
-                  onClick={() => resolve(p.id, "never")}
-                >
-                  以后别提
-                </button>
-              </div>
-            </div>
-          ))}
+      {/* 右侧：全息屏 */}
+      <div className="agency-holoscreen">
+        <div className="holo-header">
+          <span className="holo-title">自主层 · 实时</span>
+          <span className="holo-live">
+            <span className="holo-live-dot" />
+            LIVE
+          </span>
         </div>
-      )}
 
-      {/* 最近自主行为（低风险已执行） */}
-      {recent.length === 0 && pending.length === 0 ? (
-        <div className="agency-empty">暂无自主行为记录</div>
-      ) : (
-        <ul className="agency-list">
-          {recent.map((t) => (
-            <li key={t.id} className="agency-item">
-              <span className="agency-dot" />
-              <span className="agency-item-main">
-                <span className="agency-item-label">{labelOf(t.action_type)}</span>
-                {t.topic && <span className="agency-item-topic">{t.topic}</span>}
-                <span className="agency-item-sum">{t.summary}</span>
-              </span>
-              <span className="agency-item-ts">{fmtTs(t.ts)}</span>
-            </li>
-          ))}
-        </ul>
-      )}
+        {/* 高风险提议卡（待裁决） */}
+        {pending.length > 0 && (
+          <div className="holo-proposals">
+            {pending.map((p) => (
+              <div key={p.id} className="holo-proposal" data-testid="agency-proposal">
+                <div className="holo-proposal-title">
+                  <span className="holo-proposal-icon">!</span>
+                  {labelOf(p.action_type)} · 需你确认
+                </div>
+                <div className="holo-proposal-desc">{p.summary || p.detail}</div>
+                <div className="holo-proposal-actions">
+                  <button
+                    className="holo-btn holo-btn-go"
+                    disabled={resolving === p.id}
+                    onClick={() => resolve(p.id, "executed")}
+                  >
+                    执行
+                  </button>
+                  <button
+                    className="holo-btn"
+                    disabled={resolving === p.id}
+                    onClick={() => resolve(p.id, "rejected")}
+                  >
+                    不用
+                  </button>
+                  <button
+                    className="holo-btn holo-btn-never"
+                    disabled={resolving === p.id}
+                    onClick={() => resolve(p.id, "never")}
+                  >
+                    以后别提
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* 最近自主行为 */}
+        {recent.length === 0 && pending.length === 0 ? (
+          <div className="holo-empty">小桔暂时在发呆……</div>
+        ) : (
+          <ul className="holo-list">
+            {recent.map((t) => (
+              <li key={t.id} className="holo-item">
+                <span className="holo-item-dot" />
+                <span className="holo-item-main">
+                  <span className="holo-item-label">{labelOf(t.action_type)}</span>
+                  {t.topic && <span className="holo-item-topic">{t.topic}</span>}
+                  <span className="holo-item-sum">{t.summary}</span>
+                </span>
+                <span className="holo-item-ts">{fmtTs(t.ts)}</span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
     </div>
   );
 }

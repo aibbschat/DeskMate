@@ -43,6 +43,7 @@ export type IconName =
   | "stop"
   | "x"
   | "users"
+  | "user"
   | "medal"
   | "rss"
   | "bookOpen"
@@ -128,6 +129,14 @@ export function Icon({
           <path d="M7.2 15 2.7 7.1a1 1 0 0 1 .13-1.2L4.5 3.5a1 1 0 0 1 1.2-.13L11 7.2" />
           <path d="M11 7.2 16.5 3.4a1 1 0 0 1 1.2.13L19.3 5.9a1 1 0 0 1-.13 1.2L13.8 15" />
           <circle cx="12" cy="16" r="5" />
+        </svg>
+      );
+    case "user":
+      // 个人中心：单人头肩轮廓（Lucide 风，单线）。
+      return (
+        <svg {...s}>
+          <circle cx="12" cy="8" r="3.6" />
+          <path d="M4.5 20a7.5 7.5 0 0 1 15 0" />
         </svg>
       );
     case "folder":

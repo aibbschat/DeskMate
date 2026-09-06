@@ -2320,6 +2320,61 @@ html[data-platform="linux"] ::-webkit-scrollbar-thumb:hover { background-color: 
 }
 .experts-back:hover { color: var(--ink); background: var(--paper); }
 .experts-head-text { min-width: 0; }
+
+/* 文稿编校工具入口（从首页移入专家中心） */
+.proofread-entry {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  max-width: 1000px;
+  margin: 0 auto 24px;
+  padding: 18px 22px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  transition: border-color .15s, box-shadow .15s;
+}
+.proofread-entry:hover {
+  border-color: var(--line-strong);
+  box-shadow: 0 6px 20px rgba(20, 24, 31, .06);
+}
+.proofread-entry-icon {
+  width: 44px;
+  height: 44px;
+  flex-shrink: 0;
+  border-radius: 12px;
+  background: var(--accent-soft, rgba(99, 102, 241, 0.12));
+  color: var(--accent);
+  display: grid;
+  place-items: center;
+}
+.proofread-entry-text { flex: 1; min-width: 0; }
+.proofread-entry-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--ink);
+}
+.proofread-entry-sub {
+  font-size: 12.5px;
+  color: var(--muted);
+  margin-top: 2px;
+}
+.proofread-entry-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 16px;
+  border-radius: 10px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 500;
+  border: none;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: opacity .15s;
+}
+.proofread-entry-btn:hover { opacity: .9; }
 .experts-title {
   margin: 0;
   font-size: 22px;
@@ -4813,87 +4868,297 @@ html[data-theme="dark"] .creation-preview-article a {
    L2 自主层 —— 「小桔在忙」任务面板（DeskHome 常驻）
    风格：与首页个人中心横幅一致（暖橙描边 + 白底），克制不抢戏
    ============================================================ */
+/* === 小桔在忙：左侧动画 + 右侧全息屏 === */
 .agency-panel {
-  width: 100%; max-width: 560px; margin: 0 0 20px;
-  background: #fff; border: 1px solid var(--line); border-radius: 14px;
-  padding: 12px 16px 14px;
-  box-shadow: 0 6px 20px rgba(232, 85, 26, .08);
+  width: 100%;
+  max-width: 680px;
+  margin: 0 0 20px;
+  display: flex;
+  align-items: stretch;
+  gap: 16px;
+  background: linear-gradient(135deg, rgba(18, 24, 42, 0.92), rgba(12, 18, 34, 0.88));
+  border: 1px solid rgba(80, 140, 200, 0.2);
+  border-radius: 18px;
+  padding: 16px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.18), inset 0 1px 0 rgba(255,255,255,0.04);
 }
 
-.agency-panel-head {
-  display: flex; align-items: center; gap: 7px;
-  font-size: 13.5px; font-weight: 700; color: var(--ink);
-  padding-bottom: 9px; margin-bottom: 2px;
-  border-bottom: 1px dashed #ece2d4;
+/* --- 左侧：小桔动画 --- */
+.agency-xiaoju {
+  flex-shrink: 0;
+  width: 220px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
 }
-.agency-panel-head svg { color: #E8551A; }
-
-.agency-panel-sub {
-  font-size: 11px; font-weight: 500; color: #B45A24;
-  background: #FFF3E6; border: 1px solid #FAE0C4;
-  padding: 1px 8px; border-radius: 999px;
+.agency-xiaoju-stage {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 1 / 1;
+}
+.agency-xiaoju-frame {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  pointer-events: none;
+  user-select: none;
+}
+/* 打字态：0-48% 显示，48-58% 淡出，58-100% 隐藏 */
+.agency-xiaoju-typing {
+  animation: xiaoju-typing 6.5s ease-in-out infinite;
+}
+/* 思考态：0-48% 隐藏，48-58% 淡入，58-100% 显示 */
+.agency-xiaoju-thinking {
+  animation: xiaoju-thinking 6.5s ease-in-out infinite;
+}
+@keyframes xiaoju-typing {
+  0%   { opacity: 1; }
+  48%  { opacity: 1; }
+  58%  { opacity: 0; }
+  100% { opacity: 0; }
+}
+@keyframes xiaoju-thinking {
+  0%   { opacity: 0; }
+  48%  { opacity: 0; }
+  58%  { opacity: 1; }
+  100% { opacity: 1; }
+}
+.agency-xiaoju-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: #b8d4f0;
+  letter-spacing: 0.03em;
+}
+.agency-xiaoju-label-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #4fd1ff;
+  box-shadow: 0 0 6px #4fd1ff;
+  animation: holo-pulse 1.8s ease-in-out infinite;
 }
 
-/* --- 高风险提议卡（待裁决） --- */
-.agency-proposals { display: flex; flex-direction: column; gap: 8px; margin: 10px 0; }
-
-.agency-proposal {
-  border: 1px solid #F3C89A; background: #FFFBf4;
-  border-radius: 11px; padding: 10px 12px;
+/* --- 右侧：全息屏 --- */
+.agency-holoscreen {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  background: rgba(6, 12, 26, 0.6);
+  border: 1px solid rgba(70, 160, 230, 0.28);
+  border-radius: 12px;
+  padding: 12px 14px;
+  box-shadow:
+    0 0 18px rgba(0, 160, 255, 0.08),
+    inset 0 0 24px rgba(0, 120, 220, 0.05);
+  background-image:
+    linear-gradient(rgba(0, 160, 255, 0.035) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(0, 160, 255, 0.035) 1px, transparent 1px);
+  background-size: 18px 18px;
+  position: relative;
+  overflow: hidden;
 }
-.agency-proposal-title { font-size: 12.5px; font-weight: 700; color: #92400E; }
-.agency-proposal-desc {
-  font-size: 12px; color: #7A6248; line-height: 1.6; margin-top: 3px;
-  max-height: 4.8em; overflow: hidden;
+/* 全息屏顶部扫描线 */
+.agency-holoscreen::before {
+  content: "";
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(80, 200, 255, 0.6), transparent);
+  animation: holo-scan 4s linear infinite;
 }
-.agency-proposal-actions { display: flex; gap: 7px; margin-top: 9px; }
+@keyframes holo-scan {
+  0%   { transform: translateY(0); opacity: 0; }
+  10%  { opacity: 1; }
+  90%  { opacity: 1; }
+  100% { transform: translateY(200px); opacity: 0; }
+}
+@keyframes holo-pulse {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.35; }
+}
 
-.agency-btn {
-  font-family: inherit; font-size: 12px; cursor: pointer;
-  padding: 4px 13px; border-radius: 999px;
-  border: 1px solid var(--line); background: #fff; color: var(--ink);
+.holo-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-bottom: 8px;
+  margin-bottom: 8px;
+  border-bottom: 1px solid rgba(70, 160, 230, 0.2);
+}
+.holo-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: #5fd4ff;
+  letter-spacing: 0.06em;
+  text-shadow: 0 0 8px rgba(95, 212, 255, 0.4);
+}
+.holo-live {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10px;
+  font-weight: 700;
+  color: #ff6b6b;
+  letter-spacing: 0.1em;
+}
+.holo-live-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: #ff5252;
+  animation: holo-pulse 1.2s ease-in-out infinite;
+}
+
+/* --- 高风险提议卡 --- */
+.holo-proposals {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.holo-proposal {
+  border: 1px solid rgba(255, 170, 60, 0.4);
+  background: rgba(255, 150, 40, 0.09);
+  border-radius: 9px;
+  padding: 9px 11px;
+}
+.holo-proposal-title {
+  font-size: 12.5px;
+  font-weight: 700;
+  color: #ffc97a;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.holo-proposal-icon {
+  display: inline-grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: rgba(255, 170, 60, 0.25);
+  color: #ffc97a;
+  font-size: 11px;
+  font-weight: 800;
+  flex-shrink: 0;
+}
+.holo-proposal-desc {
+  font-size: 12px;
+  color: #e0d5c0;
+  line-height: 1.6;
+  margin-top: 4px;
+  max-height: 4.8em;
+  overflow: hidden;
+}
+.holo-proposal-actions {
+  display: flex;
+  gap: 7px;
+  margin-top: 8px;
+}
+.holo-btn {
+  font-family: inherit;
+  font-size: 11.5px;
+  cursor: pointer;
+  padding: 4px 12px;
+  border-radius: 6px;
+  border: 1px solid rgba(120, 180, 230, 0.35);
+  background: rgba(20, 40, 70, 0.5);
+  color: #c8ddf0;
   transition: border-color .15s, color .15s, background .15s;
 }
-.agency-btn:hover { border-color: #E8551A; color: #E8551A; }
-.agency-btn:disabled { opacity: .5; cursor: not-allowed; }
-
-.agency-btn-go { border-color: #E8551A; background: #E8551A; color: #fff; }
-.agency-btn-go:hover { background: #D2470F; color: #fff; }
-
-.agency-btn-never { color: var(--muted); }
-.agency-btn-never:hover { border-color: var(--muted); color: var(--muted); }
-
-/* --- 最近自主行为列表 --- */
-.agency-empty { font-size: 12.5px; color: #B0A08C; padding: 8px 0 2px; }
-
-.agency-list { list-style: none; margin: 8px 0 0; padding: 0; }
-
-.agency-item {
-  display: flex; align-items: flex-start; gap: 9px;
-  padding: 6px 0; border-bottom: 1px solid #F6F1E9;
+.holo-btn:hover { border-color: #5fd4ff; color: #5fd4ff; }
+.holo-btn:disabled { opacity: .5; cursor: not-allowed; }
+.holo-btn-go {
+  border-color: rgba(80, 220, 140, 0.5);
+  background: rgba(40, 140, 80, 0.3);
+  color: #8effb8;
 }
-.agency-item:last-child { border-bottom: none; }
+.holo-btn-go:hover { background: rgba(50, 160, 90, 0.45); color: #b0ffd0; border-color: #8effb8; }
+.holo-btn-never { color: #8a9bb0; }
+.holo-btn-never:hover { border-color: #8a9bb0; color: #b0c0d0; }
 
-.agency-dot {
-  width: 6px; height: 6px; border-radius: 50%;
-  background: #E8551A; flex-shrink: 0; margin-top: 6px;
+/* --- 自主行为列表 --- */
+.holo-empty {
+  font-size: 12.5px;
+  color: #6a8299;
+  padding: 12px 0;
+  text-align: center;
+  font-style: italic;
 }
-
-.agency-item-main {
-  flex: 1; min-width: 0;
-  display: flex; flex-wrap: wrap; align-items: baseline; gap: 7px;
+.holo-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 220px;
+  overflow-y: auto;
 }
-.agency-item-label {
-  font-size: 12.5px; font-weight: 600; color: var(--ink); flex-shrink: 0;
+.holo-list::-webkit-scrollbar { width: 4px; }
+.holo-list::-webkit-scrollbar-thumb { background: rgba(95, 212, 255, 0.25); border-radius: 2px; }
+.holo-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 6px 4px;
+  border-bottom: 1px solid rgba(70, 140, 200, 0.1);
 }
-.agency-item-topic {
-  font-size: 11px; color: #B45A24; background: #FFF3E6;
-  border: 1px solid #FAE0C4; padding: 0 7px; border-radius: 999px; flex-shrink: 0;
+.holo-item:last-child { border-bottom: none; }
+.holo-item-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: #4fd1ff;
+  box-shadow: 0 0 4px rgba(79, 209, 255, 0.6);
+  flex-shrink: 0;
+  margin-top: 6px;
 }
-.agency-item-sum {
-  font-size: 12px; color: #8A7860; line-height: 1.5;
-  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+.holo-item-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px;
 }
-.agency-item-ts {
-  font-size: 11px; color: #BCA98F; flex-shrink: 0; font-variant-numeric: tabular-nums;
+.holo-item-label {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: #e0ecf8;
+  flex-shrink: 0;
+}
+.holo-item-topic {
+  font-size: 10.5px;
+  color: #5fd4ff;
+  background: rgba(95, 212, 255, 0.1);
+  border: 1px solid rgba(95, 212, 255, 0.25);
+  padding: 0 6px;
+  border-radius: 999px;
+  flex-shrink: 0;
+}
+.holo-item-sum {
+  font-size: 12px;
+  color: #a8bed4;
+  line-height: 1.5;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  width: 100%;
+}
+.holo-item-ts {
+  font-size: 11px;
+  color: #6a8aa8;
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+  margin-top: 1px;
 }

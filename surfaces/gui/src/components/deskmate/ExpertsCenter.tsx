@@ -21,6 +21,10 @@ interface Props {
   onBack: () => void;
 }
 
+function openProofread(focus: "edit" | "manuscripts" | "style") {
+  window.dispatchEvent(new CustomEvent("deskmate:open-proofread", { detail: { focus } }));
+}
+
 export function ExpertsCenter({ experts, activeExpertId, onSummon, onBack }: Props) {
   const { t } = useTranslation();
 
@@ -39,6 +43,25 @@ export function ExpertsCenter({ experts, activeExpertId, onSummon, onBack }: Pro
           <h1 className="experts-title">{t("experts.title")}</h1>
           <p className="experts-subtitle">{t("experts.subtitle")}</p>
         </div>
+      </div>
+
+      {/* 文稿编校工具入口（从首页移入） */}
+      <div className="proofread-entry">
+        <div className="proofread-entry-icon">
+          <Icon name="pencil" size={20} />
+        </div>
+        <div className="proofread-entry-text">
+          <div className="proofread-entry-title">文稿编校</div>
+          <div className="proofread-entry-sub">逐句校对 · 错别字与标点 · 风格一致性检查</div>
+        </div>
+        <button
+          className="proofread-entry-btn"
+          type="button"
+          onClick={() => openProofread("edit")}
+        >
+          <Icon name="pencil" size={14} />
+          开始编校
+        </button>
       </div>
 
       <div className="experts-grid">

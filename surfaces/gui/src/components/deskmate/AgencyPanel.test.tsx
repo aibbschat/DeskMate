@@ -82,7 +82,7 @@ describe("AgencyPanel", () => {
   it("无任务时展示空态", async () => {
     stubAgencyApi({ tasks: [], pending: [] });
     render(<AgencyPanel />);
-    await waitFor(() => expect(screen.getByText("暂无自主行为记录")).toBeTruthy());
+    await waitFor(() => expect(screen.getByText("小桔暂时在发呆……")).toBeTruthy());
     // 面板标题常驻
     expect(screen.getByText("小桔在忙")).toBeTruthy();
   });

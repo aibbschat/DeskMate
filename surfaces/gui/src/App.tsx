@@ -1550,8 +1550,8 @@ export function App() {
         roundtableActive={surface === "roundtable"}
         onOpenCreation={() => setSurface("creation")}
         creationActive={surface === "creation"}
-        onOpenBadges={() => setSurface("badges")}
-        badgesActive={surface === "badges"}
+        onOpenProfile={() => setSurface("profile")}
+        profileActive={surface === "profile"}
         scheduledActive={surface === "scheduled"}
         integrationsActive={surface === "integrations"}
         skillStoreActive={surface === "skillstore"}
@@ -1770,7 +1770,7 @@ export function App() {
                     onPrefill={prefillComposer}
                   />
                 ) : agent === "deskmate" ? (
-                  <DeskHome onOpenProfile={() => setSurface("profile")} />
+                  <DeskHome />
                 ) : (
                   <div className="hero">
                     <h1 className="greeting">
