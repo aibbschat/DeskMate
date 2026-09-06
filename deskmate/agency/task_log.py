@@ -144,6 +144,32 @@ class TaskLog:
                 return rec
         return None
 
+    # ---- 改写 ----
+    def update(self, record: TaskRecord) -> bool:
+        """按 id 就地改写一条记录（整文件重写）。找不到返回 False。
+
+        用于「合并待裁决列表」这类需要更新已存在记录的场景。
+        记录量很小，整文件重写足够，且保持原子性（临时文件 + os.replace）。
+        """
+        records = self.list(limit=10000)
+        found = False
+        for i, rec in enumerate(records):
+            if rec.id == record.id:
+                records[i] = record
+                found = True
+                break
+        if not found:
+            return False
+        try:
+            tmp = f"{self.file}.tmp.{os.getpid()}"
+            with open(tmp, "w", encoding="utf-8") as f:
+                for rec in records:
+                    f.write(json.dumps(rec.to_dict(), ensure_ascii=False) + "\n")
+            os.replace(tmp, self.file)
+            return True
+        except Exception:
+            return False
+
     # ---- 裁决（高风险提议卡）----
     def resolve(self, record_id: str, decision: str) -> bool:
         """把 proposed 记录裁决为 executed / rejected / never。返回是否找到并改写。"""
@@ -158,16 +184,7 @@ class TaskLog:
         if target is None or target.status != TaskStatus.PROPOSED:
             return False
         target.status = decision
-        # 整文件重写（记录量很小，足够；保持 append-only 的简洁性与原子性权衡）
-        try:
-            tmp = f"{self.file}.tmp.{os.getpid()}"
-            with open(tmp, "w", encoding="utf-8") as f:
-                for rec in records:
-                    f.write(json.dumps(rec.to_dict(), ensure_ascii=False) + "\n")
-            os.replace(tmp, self.file)
-            return True
-        except Exception:
-            return False
+        return self.update(target)
 
     def never_list(self) -> list[str]:
         """被用户「以后别提」的动作类型集合（engine 跳过）。"""

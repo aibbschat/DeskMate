@@ -49,6 +49,10 @@ class AgencyEngine:
         never = set(self.log.never_list())
         actions = [a for a in settings.whitelist_actions if a not in never]
 
+        # 过期归档：外部信息必须有过期机制，否则「去年的信息今年还用来决定」。
+        # 与白名单无关——只要自主层开着就该跑，且失败不影响后续。
+        archived = self._archive_expired_external()
+
         executed: list[dict[str, Any]] = []
         proposed: list[dict[str, Any]] = []
         skipped_unknown: list[str] = []
@@ -87,8 +91,20 @@ class AgencyEngine:
             "executed": executed,
             "proposed": proposed,
             "skipped_unknown": skipped_unknown,
+            "archived_expired": archived,
             "task_count": len(executed) + len(proposed),
         }
+
+    # ------------------------------------------------------------------
+    def _archive_expired_external(self) -> int:
+        """归档过期的外部信息（external_items）。fail-open，失败返回 0。"""
+        try:
+            from deskmate.memory.external_store import ExternalStore
+
+            return int(ExternalStore(base_dir=self.base_dir).archive_expired() or 0)
+        except Exception as e:
+            logger.debug("L2 外部信息过期归档失败: %s", e)
+            return 0
 
     # ------------------------------------------------------------------
     def _run_low_risk(self, action_type: str, settings: AgencySettings) -> Optional[Any]:
@@ -103,6 +119,11 @@ class AgencyEngine:
                 # 本轮没实际搜（都在冷却）→ 不写 done 记录，免得面板刷屏
                 if not res.get("searched"):
                     return None
+                # 可信度不足的外部信息：不自动内化，转成提议卡等萧哥裁决
+                pipe = res.get("pipeline") or {}
+                awaiting_ids = list(pipe.get("awaiting_ids") or [])
+                if awaiting_ids:
+                    self._propose_external_review(awaiting_ids, str(self.base_dir))
                 return self.log.add(
                     action_type=action_type,
                     risk="low",
@@ -111,12 +132,72 @@ class AgencyEngine:
                     summary=res.get("summary", ""),
                     detail="\n".join(res.get("facts", [])),
                     count=res.get("stored", 0),
+                    extra={"awaiting_review": len(awaiting_ids)},
                 )
+
+            if action_type == "external_digest":
+                # 消化不可信区：筛选/摘要 → 验证 → 达标者写入内部记忆
+                from deskmate.memory.ingestion_pipeline import run_ingestion_pipeline
+
+                pipe = run_ingestion_pipeline(str(self.base_dir))
+                promoted = int(pipe.get("promoted") or 0)
+                awaiting = int(pipe.get("awaiting_review") or 0)
+                if not promoted and not awaiting:
+                    return None  # 本轮没东西可消化，不刷屏
+                if awaiting:
+                    self._propose_external_review(
+                        list(pipe.get("awaiting_ids") or []), str(self.base_dir)
+                    )
+                return self.log.add(
+                    action_type=action_type,
+                    risk="low",
+                    status=TaskStatus.DONE,
+                    topic="",
+                    summary=pipe.get("summary", ""),
+                    detail="",
+                    count=promoted,
+                    extra={"awaiting_review": awaiting},
+                )
+
             # 未来低风险动作（rss_digest / note_organize）在此接上
             return None
         except Exception as e:
             logger.warning("L2 低风险动作 %s 执行失败: %s", action_type, e)
             return None
+
+    # ------------------------------------------------------------------
+    def _propose_external_review(self, item_ids: list[str], base_dir: str) -> None:
+        """把「可信度不足、待裁决」的外部信息转成一张提议卡。
+
+        同一时间只保留一张 pending 的 external_review 卡——攒批而不是每 tick 一张，
+        否则主动摄入一频繁就刷屏。已有一张时只更新待裁决列表。
+        """
+        if not item_ids:
+            return
+        try:
+            pending = self.log.list(limit=50, status=TaskStatus.PROPOSED)
+            for rec in pending:
+                if rec.action_type != "external_review":
+                    continue
+                # 已有一张：合并待裁决 id 后直接返回，不再新建
+                merged = list(dict.fromkeys(list(rec.extra.get("item_ids") or []) + item_ids))
+                rec.extra["item_ids"] = merged
+                rec.count = len(merged)
+                rec.summary = f"{len(merged)} 条外部信息可信度不足，要不要收进内部记忆？"
+                self.log.update(rec)
+                return
+            self.log.add(
+                action_type="external_review",
+                risk="high",
+                status=TaskStatus.PROPOSED,
+                topic="",
+                summary=f"{len(item_ids)} 条外部信息可信度不足，要不要收进内部记忆？",
+                detail="这些信息来自可信度较低的外部来源，未经人工确认不会写入内部记忆。",
+                count=len(item_ids),
+                extra={"item_ids": item_ids, "base_dir": base_dir},
+            )
+        except Exception as e:
+            logger.warning("L2 生成外部信息提议卡失败: %s", e)
 
     # ------------------------------------------------------------------
     def run_now(self) -> dict[str, Any]:
@@ -125,13 +206,34 @@ class AgencyEngine:
 
     def resolve_proposal(self, record_id: str, decision: str) -> bool:
         """裁决高风险提议卡。decision ∈ executed/rejected/never。"""
+        rec = self.log.get(record_id)
+        if rec is None or rec.status != TaskStatus.PROPOSED:
+            return False
         ok = self.log.resolve(record_id, decision)
-        if ok and decision == TaskStatus.EXECUTED:
-            # 用户同意执行：补跑该高风险动作（当前无高风险内置行为，留接缝）
-            rec = self.log.get(record_id)
-            if rec is not None and get_spec(rec.action_type) is not None:
-                # 未来：在此真实执行 write_file / send_message / delete
-                pass
+        if not ok or decision != TaskStatus.EXECUTED:
+            return ok
+
+        # 用户同意执行：按动作类型补跑
+        if rec.action_type == "external_review":
+            # 把待裁决的外部信息写入内部记忆——人工确认是唯一放行口
+            item_ids = list(rec.extra.get("item_ids") or [])
+            base_dir = rec.extra.get("base_dir") or str(self.base_dir)
+            if item_ids:
+                try:
+                    from deskmate.memory.ingestion_pipeline import promote_approved
+
+                    res = promote_approved(item_ids, base_dir=base_dir)
+                    logger.info(
+                        "L2 外部信息裁决：批准 %s 条，写入内部记忆 %s 条",
+                        res.get("approved", 0), res.get("written", 0),
+                    )
+                    # 回填结果，便于任务面板回溯
+                    rec.extra["approved"] = res.get("approved", 0)
+                    rec.extra["written"] = res.get("written", 0)
+                    self.log.update(rec)
+                except Exception as e:
+                    logger.warning("L2 外部信息裁决执行失败: %s", e)
+        # 未来：write_file / send_message / delete 在此接上真实执行
         return ok
 
     def status(self) -> dict[str, Any]:

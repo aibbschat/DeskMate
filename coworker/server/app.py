@@ -3503,6 +3503,57 @@ def create_app(manager: SessionManager) -> FastAPI:
             logging.exception("deskmate agency resolve failed")
             return JSONResponse({"error": "resolve failed"}, status_code=500)
 
+    @app.get("/v1/deskmate/external/status")
+    async def deskmate_external_status() -> dict[str, Any]:
+        """外部信息不可信区统计：总量、按状态/来源/分类、待裁决数。"""
+        try:
+            from pathlib import Path as _P
+
+            from deskmate.memory.external_store import ExternalStore
+
+            desk_dir = _P(
+                os.environ.get("DESKMATE_DIR", os.path.expanduser("~/.deskmate"))
+            )
+            store = ExternalStore(base_dir=desk_dir)
+            stats = store.stats()
+            stats["pending_review"] = len(store.list_items(status="summarized"))
+            stats["trusted_count"] = len(store.list_items(status="digested"))
+            return stats
+        except Exception:
+            logging.exception("deskmate external status failed")
+            return JSONResponse({"error": "external status failed"}, status_code=500)
+
+    @app.get("/v1/deskmate/external/items")
+    async def deskmate_external_items(
+        status: str = "",
+        category: str = "",
+        include_untrusted: bool = False,
+        limit: int = 50,
+    ) -> dict[str, Any]:
+        """列出外部信息条目。
+
+        include_untrusted=False（默认）时只返回已验证（digested）的——
+        与检索闸门保持一致；调试查看不可信区时才传 True。
+        """
+        try:
+            from pathlib import Path as _P
+
+            from deskmate.memory.external_store import STATUS_DIGESTED, ExternalStore
+
+            desk_dir = _P(
+                os.environ.get("DESKMATE_DIR", os.path.expanduser("~/.deskmate"))
+            )
+            store = ExternalStore(base_dir=desk_dir)
+            items = store.list_items(
+                status=(status or None) or (None if include_untrusted else STATUS_DIGESTED),
+                category=category or None,
+                limit=limit,
+            )
+            return {"items": items, "count": len(items)}
+        except Exception:
+            logging.exception("deskmate external items failed")
+            return JSONResponse({"error": "external items failed"}, status_code=500)
+
     @app.get("/v1/deskmate/proactive")
     async def get_deskmate_proactive_status() -> dict[str, Any]:
         """获取 DeskMate 主动推理状态（静默模式、统计）。"""

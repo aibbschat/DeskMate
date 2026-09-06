@@ -33,7 +33,13 @@ REGISTRY: dict[str, ActionSpec] = {
         action_type="world_search",
         risk="low",
         label="主动信息摄入",
-        description="按白名单主题域搜索近况，抽要点记入长期记忆（只读外部网络，写本地 learned_history）",
+        description="按白名单主题域搜索近况，落不可信区并过摄入流水线（只读外部网络，不自动写内部记忆）",
+    ),
+    "external_digest": ActionSpec(
+        action_type="external_digest",
+        risk="low",
+        label="外部信息消化",
+        description="跑摄入流水线：筛选/摘要 → 验证 → 达标者写入内部记忆；顺带归档过期条目",
     ),
     "rss_digest": ActionSpec(
         action_type="rss_digest",
@@ -67,6 +73,12 @@ REGISTRY: dict[str, ActionSpec] = {
         risk="high",
         label="删除",
         description="删除文件/记忆/数据——不可逆，必须经用户确认",
+    ),
+    "external_review": ActionSpec(
+        action_type="external_review",
+        risk="high",
+        label="外部信息裁决",
+        description="把可信度不足的外部信息写入内部记忆——污染内部记忆不可逆，必须经用户确认",
     ),
 }
 

@@ -17,6 +17,8 @@ import { Icon } from "../Icon";
 
 const RISK_LABEL: Record<string, string> = {
   world_search: "主动信息摄入",
+  external_digest: "外部信息消化",
+  external_review: "外部信息裁决",
   rss_digest: "RSS 简报",
   note_organize: "笔记整理",
   write_file: "写文件",
