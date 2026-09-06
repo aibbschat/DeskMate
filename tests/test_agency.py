@@ -273,3 +273,210 @@ def test_settings_roundtrip_and_cache(tmp_path):
     fallback = load_agency_settings(str(tmp_path))
     assert fallback.enabled is True
     assert "world_search" in fallback.whitelist_actions
+
+
+import pytest
+
+# ---------------------------------------------------------------------------
+# 豆包搜索：权威等级 → 可信度、查询模板、新鲜度、同事件去重
+# ---------------------------------------------------------------------------
+class TestDoubaoCredibility:
+    """AuthInfoLevel 是可信边界从「瞎猜」变「有据可依」的关键。"""
+
+    def test_auth_level_maps_to_credibility(self):
+        from deskmate.agency.behaviors.world_ingestion import (
+            credibility_from_auth_level,
+        )
+
+        assert credibility_from_auth_level(1) == 0.9    # 非常权威 → 自动过闸
+        assert credibility_from_auth_level(2) == 0.75   # 正常权威 → 刚好过 0.7
+        assert credibility_from_auth_level(3) == 0.45   # 一般 → 走提议卡
+        assert credibility_from_auth_level(4) == 0.2
+        assert credibility_from_auth_level(None) == 0.5  # 没等级 → 兜底
+        assert credibility_from_auth_level("x") == 0.5   # 脏数据不炸
+
+    def test_high_authority_auto_promotes(self, monkeypatch, tmp_path):
+        """L2 权威源应自动过闸进内部记忆，不再全部卡在提议卡。"""
+        monkeypatch.delenv("DESKMATE_L2_ENABLED", raising=False)
+        from datetime import datetime, timedelta, timezone
+
+        now = datetime.now(timezone.utc)
+        pub = (now - timedelta(hours=2)).isoformat()
+        fake = [{
+            "title": "权威媒体报道的某事件-新华网",
+            "snippet": "正文内容足够长以便通过噪声筛选",
+            "url": "https://www.news.cn/2026/c.html",
+            "auth_level": 2,
+            "site_name": "新华网",
+            "publish_time": pub,
+        }]
+        import deskmate.agency.behaviors.world_ingestion as wi
+
+        monkeypatch.setattr(
+            wi, "_search_once", lambda *a, **k: fake, raising=False
+        )
+        # 直接测落库 + 管线，不走网络
+        from deskmate.memory.external_store import ExternalStore
+        from deskmate.memory.ingestion_pipeline import run_ingestion_pipeline
+
+        st = ExternalStore(base_dir=str(tmp_path))
+        sid = st.add_source("网络搜索（自主摄入）", source_type="webpage",
+                            credibility=0.5, url="")
+        for f in fake:
+            st.add_item(
+                f"【天下要闻】{f['snippet']}",
+                source_id=sid, source_type="webpage", source_url=f["url"],
+                title=f["title"], category="news",
+                credibility=wi.credibility_from_auth_level(f["auth_level"]),
+                extra={"title_key": wi._dedup_key(f["title"])},
+            )
+        out = run_ingestion_pipeline(str(tmp_path), trust_threshold=0.7)
+        assert out["promoted"] >= 1, "L2 权威源应自动过闸（cred 0.75 ≥ 0.7）"
+        assert out["awaiting_review"] == 0
+
+    def test_low_authority_blocked(self, monkeypatch, tmp_path):
+        """L4 低可信来源必须卡在候选区，不能自动内化。"""
+        from deskmate.memory.external_store import ExternalStore
+        from deskmate.memory.ingestion_pipeline import run_ingestion_pipeline
+
+        st = ExternalStore(base_dir=str(tmp_path))
+        sid = st.add_source("网络搜索（自主摄入）", source_type="webpage",
+                            credibility=0.5, url="")
+        st.add_item(
+            "某野鸡自媒体说的惊人内幕内容足够长",
+            source_id=sid, source_type="webpage",
+            title="野鸡说法", category="news", credibility=0.2,
+        )
+        out = run_ingestion_pipeline(str(tmp_path), trust_threshold=0.7)
+        assert out["promoted"] == 0
+        assert out["awaiting_review"] >= 1
+
+
+class TestTopicQuery:
+    """查询句式决定摄入质量——泛词召回栏目页，日期锚点才召回事件。"""
+
+    def test_query_includes_year(self):
+        """日期必须带年份：『9月6日』会召回去年的同名日期。"""
+        from datetime import datetime
+
+        from deskmate.agency.settings import resolve_topic_query
+
+        q = resolve_topic_query(
+            "天下要闻", None, now=datetime(2026, 9, 6, 10, 0)
+        )
+        assert "2026年9月6日" in q
+        assert "9月6日" in q
+
+    def test_year_month_placeholder(self):
+        from datetime import datetime
+
+        from deskmate.agency.settings import resolve_topic_query
+
+        q = resolve_topic_query(
+            "科技前沿", None, now=datetime(2026, 9, 6, 10, 0)
+        )
+        assert "2026年9月" in q
+
+    def test_topics_are_present_facing(self):
+        """主题域必须是「世界正在发生什么」，不是「历史上有过什么」。"""
+        from deskmate.agency.settings import DEFAULT_TOPICS
+
+        assert "天下要闻" in DEFAULT_TOPICS
+        assert "国际观察" in DEFAULT_TOPICS
+        # 旧的史料视角主题域应已移除
+        for old in ("历史研究", "文学创作", "出版行业"):
+            assert old not in DEFAULT_TOPICS
+
+    def test_unknown_topic_falls_back(self):
+        from deskmate.agency.settings import resolve_topic_query
+
+        assert "最新动态" in resolve_topic_query("不存在的域")
+
+
+class TestFreshnessAndDedup:
+    def test_dedup_key_strips_site_suffix(self):
+        from deskmate.agency.behaviors.world_ingestion import _dedup_key
+
+        a = _dedup_key("伊朗革命卫队称打击了美航母和驱逐舰-新华网")
+        b = _dedup_key("伊朗革命卫队称打击了美航母和驱逐舰")
+        assert a == b and a, "同一事件不同媒体应归一到同一个 key"
+
+    def test_dedup_key_distinguishes_different_events(self):
+        from deskmate.agency.behaviors.world_ingestion import _dedup_key
+
+        assert _dedup_key("甲事件发生") != _dedup_key("乙事件发生")
+
+    def test_stale_news_dropped(self):
+        """去年的信息今年不能再用——这是萧哥最在意的过期机制。"""
+        from deskmate.agency.behaviors.world_ingestion import _is_fresh
+
+        assert _is_fresh("2026-09-06T10:00:00+08:00", 2) is True
+        assert _is_fresh("2025-09-06T10:00:00+08:00", 2) is False
+        assert _is_fresh("2020-01-01T00:00:00+08:00", 7) is False
+
+    def test_missing_publish_time_passes(self):
+        """没发布时间的 provider（duckduckgo）不该被一刀切饿死。"""
+        from deskmate.agency.behaviors.world_ingestion import _is_fresh
+
+        assert _is_fresh("", 2) is True
+
+
+class TestDoubaoProvider:
+    def test_registered(self):
+        from coworker.web.providers import provider_names
+
+        assert "doubao" in provider_names()
+
+    def test_requires_key(self, monkeypatch):
+        from coworker.web import providers
+
+        monkeypatch.delenv("DOUBAO_API_KEY", raising=False)
+        monkeypatch.setattr(providers, "_key_from_file", lambda name: None)
+        with pytest.raises(ValueError):
+            providers.build_provider("doubao")
+
+    def test_key_file_fallback(self, monkeypatch):
+        """后台 tick 没有交互式 env，key 得能从文件兜底读到。"""
+        from coworker.web import providers
+
+        monkeypatch.delenv("DOUBAO_API_KEY", raising=False)
+        monkeypatch.setattr(providers, "_key_from_file", lambda name: "ark-test")
+        p = providers.build_provider("doubao")
+        assert p.api_key == "ark-test"
+
+    def test_env_key_wins(self, monkeypatch):
+        from coworker.web import providers
+
+        monkeypatch.setenv("DOUBAO_API_KEY", "ark-from-env")
+        monkeypatch.setattr(providers, "_key_from_file", lambda name: "ark-from-file")
+        assert providers.build_provider("doubao").api_key == "ark-from-env"
+
+    def test_aggregation_page_detection(self):
+        """门户栏目页返回标题堆砌，必须挡掉。"""
+        from coworker.web.providers import _is_aggregation_page
+
+        # 栏目页：无发布时间 / epoch 0 / 目录 URL
+        assert _is_aggregation_page("http://www.news.cn", "") is True
+        assert _is_aggregation_page("https://www.chinanews.com.cn/china/?a.html",
+                                    "1970-01-01T00:00:00+08:00") is True
+        assert _is_aggregation_page("https://www.chinanews.com.cn/china/",
+                                    "2026-09-06T10:00:00+08:00") is True
+        # 具体文章页：有扩展名或数字 id
+        assert _is_aggregation_page(
+            "https://news.cctv.cn/2026/09/06/ARTIxx250906.shtml",
+            "2026-09-06T10:00:00+08:00") is False
+        assert _is_aggregation_page(
+            "http://www.xinhuanet.com/20260906/bac62c80/c.html",
+            "2026-09-06T10:00:00+08:00") is False
+
+    def test_result_carries_auth_level(self):
+        from coworker.web.providers import SearchResult
+
+        r = SearchResult("t", "u", "s", auth_level=2, site_name="新华网",
+                         publish_time="2026-09-06T10:00:00+08:00")
+        d = r.to_dict()
+        assert d["auth_level"] == 2
+        assert d["site_name"] == "新华网"
+        # 无权威等级时保持向后兼容，不多吐字段
+        plain = SearchResult("t", "u", "s").to_dict()
+        assert set(plain) == {"title", "url", "snippet"}

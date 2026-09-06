@@ -114,7 +114,10 @@ class AgencyEngine:
                 from .behaviors.world_ingestion import run_world_ingestion
 
                 res = run_world_ingestion(
-                    str(self.base_dir), settings.topics, settings.world_search
+                    str(self.base_dir),
+                    settings.topics,
+                    settings.world_search,
+                    topic_specs=settings.topic_specs,
                 )
                 # 本轮没实际搜（都在冷却）→ 不写 done 记录，免得面板刷屏
                 if not res.get("searched"):

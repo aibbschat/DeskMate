@@ -13,23 +13,80 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import os
 import threading
 import time
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any
 
 _KILL_SWITCH_ENV = "DESKMATE_L2_ENABLED"
 _CACHE_TTL_SEC = 30
 
-# 默认白名单主题域（萧哥的领域；可改 settings）。world_search 按这些域各搜一次。
+# 默认白名单主题域。
+#
+# ⚠ 2026-09-06 萧哥拍板重写：原来那套（历史研究/文学创作/出版行业/AI 技术动态）
+# 全是「过去发生过什么」，那是史料视角。要让小桔能替你判断，她得知道
+# **这个世界正在发生什么**。所以域改成了当下视角——前 4 个是世界脉搏，
+# 最后 1 个才是萧哥本行（但也是「最近新发现了什么」，不是「历史上有过什么」）。
 DEFAULT_TOPICS: list[str] = [
-    "历史研究",
-    "文学创作",
-    "出版行业",
-    "AI 技术动态",
+    "天下要闻",   # 国内重大事件
+    "国际观察",   # 国际局势
+    "科技前沿",   # AI / 科技突破
+    "财经脉动",   # 市场与产业
+    "人文现场",   # 考古新发现 / 文学出版 / 文化动态（萧哥本行）
 ]
+
+# 每个域「怎么搜」。
+#
+# 实测教训（2026-09-06）：
+# 1. 泛词 query（「今日国内重要新闻」）会召回门户栏目页，那是一堆标题堆砌，不是事件。
+#    带**日期锚点**的 query 才能召回具体事件。
+# 2. 日期必须带年份：「9月6日」会召回 2025-09-06 的同名日期，
+#    正中萧哥最担心的「去年的信息今年还用来决定」。所以占位符是 {date} = 2026年9月6日。
+#
+# 占位符：{date} → 2026年9月6日；{year_month} → 2026年9月
+# max_age_days：摄入时按 PublishTime 兜底校验（服务端 TimeRange 实测不可靠，
+#               放过过 2026-03 的旧闻），超过就丢。
+TOPIC_SPECS: dict[str, dict[str, Any]] = {
+    "天下要闻": {
+        "query": "{date} 国内外重要新闻事件",
+        "timelimit": "d",
+        "category": "news",
+        "cooldown_hours": 12,   # 最需要新鲜，一天两轮
+        "max_age_days": 2,
+    },
+    "国际观察": {
+        "query": "{date} 国际局势 重大事件",
+        "timelimit": "d",
+        "category": "news",
+        "cooldown_hours": 24,
+        "max_age_days": 3,
+    },
+    "科技前沿": {
+        "query": "{year_month} 人工智能 科技 重大进展",
+        "timelimit": "w",
+        "category": "tech",
+        "cooldown_hours": 24,
+        "max_age_days": 7,
+    },
+    "财经脉动": {
+        "query": "{date} 财经 市场 重要动向",
+        "timelimit": "d",
+        "category": "finance",
+        "cooldown_hours": 24,
+        "max_age_days": 2,
+    },
+    "人文现场": {
+        "query": "{year_month} 考古新发现 文学出版 文化动态",
+        "timelimit": "w",
+        "category": "other",
+        "cooldown_hours": 48,
+        "max_age_days": 14,
+    },
+}
 
 DEFAULTS: dict[str, Any] = {
     "enabled": True,
@@ -41,10 +98,11 @@ DEFAULTS: dict[str, Any] = {
     },
     # world_search 行为参数
     "world_search": {
-        "cooldown_hours": 24,   # 每个主题域两次搜索最小间隔
+        "cooldown_hours": 24,   # 每个主题域两次搜索最小间隔（未配 spec 的域用这个）
         "max_results": 5,       # 每次搜索返回条数
-        "timelimit": "w",       # 时间窗：近一周（coworker web tool 支持 d/w/m/y）
-        "per_tick_limit": 1,    # 每次 tick 最多实际搜几个域（摊薄负载）
+        "timelimit": "w",       # 时间窗兜底（topic_specs 里的优先）
+        "per_tick_limit": 2,    # 每次 tick 最多实际搜几个域（5 个域 → 约 2.5 天轮完）
+        "provider": "doubao",   # 豆包搜索：唯一能返回信源权威等级（AuthInfoLevel）的 provider
     },
 }
 
@@ -57,6 +115,7 @@ class AgencySettings:
     whitelist_actions: list[str] = field(default_factory=lambda: list(DEFAULTS["whitelist"]["actions"]))
     topics: list[str] = field(default_factory=lambda: list(DEFAULTS["whitelist"]["topics"]))
     world_search: dict[str, Any] = field(default_factory=lambda: dict(DEFAULTS["world_search"]))
+    topic_specs: dict[str, dict[str, Any]] = field(default_factory=lambda: copy.deepcopy(TOPIC_SPECS))
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -66,6 +125,7 @@ class AgencySettings:
                 "topics": list(self.topics),
             },
             "world_search": dict(self.world_search),
+            "topic_specs": copy.deepcopy(self.topic_specs),
         }
 
     @classmethod
@@ -81,10 +141,54 @@ class AgencySettings:
         ws = raw.get("world_search", {}) or {}
         world_search = dict(DEFAULTS["world_search"])
         world_search.update({k: v for k, v in ws.items() if k in DEFAULTS["world_search"]})
+        # topic_specs：内置规格为底，用户配置按域覆盖（未配的域保持内置）
+        specs = copy.deepcopy(TOPIC_SPECS)
+        user_specs = raw.get("topic_specs") or {}
+        if isinstance(user_specs, dict):
+            for name, spec in user_specs.items():
+                if isinstance(spec, dict):
+                    specs[str(name)] = spec
         enabled = raw.get("enabled", DEFAULTS["enabled"])
         if not isinstance(enabled, bool):
             enabled = DEFAULTS["enabled"]
-        return cls(enabled=enabled, whitelist_actions=list(actions), topics=list(topics), world_search=world_search)
+        return cls(
+            enabled=enabled,
+            whitelist_actions=list(actions),
+            topics=list(topics),
+            world_search=world_search,
+            topic_specs=specs,
+        )
+
+
+def resolve_topic_query(topic: str, specs: dict[str, dict[str, Any]] | None = None,
+                        now: datetime.datetime | None = None) -> str:
+    """把主题域解析成本轮实际用的 query（替换日期占位符）。
+
+    ``{date}`` → ``2026年9月6日``；``{year_month}`` → ``2026年9月``。
+    日期必须带年份——实测「9月6日」会召回 2025 年的同名日期。
+    """
+    specs = specs if specs is not None else TOPIC_SPECS
+    spec = (specs or {}).get(topic) or {}
+    tpl = str(spec.get("query") or "").strip()
+    if not tpl:
+        return f"{topic} 最新动态"
+    if "{" not in tpl:
+        return tpl
+    now = now or datetime.now()
+    return (
+        tpl.replace("{date}", f"{now.year}年{now.month}月{now.day}日")
+        .replace("{year_month}", f"{now.year}年{now.month}月")
+    )
+
+
+def topic_spec(topic: str, specs: dict[str, dict[str, Any]] | None = None) -> dict[str, Any]:
+    """取某个主题域的搜索规格（query 模板未展开）。缺则给保守默认。"""
+    specs = specs if specs is not None else TOPIC_SPECS
+    spec = (specs or {}).get(topic)
+    if isinstance(spec, dict):
+        return spec
+    return {"query": f"{topic} 最新动态", "timelimit": "w", "category": "news",
+            "cooldown_hours": 24, "max_age_days": 7}
 
 
 def _default_path(base_dir: str | None = None) -> str:

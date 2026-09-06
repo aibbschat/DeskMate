@@ -56,7 +56,11 @@ def _rule_summary(item: dict) -> str:
     title = (item.get("title") or "").strip()
     content = (item.get("content") or "").strip()
     if title and content and content != title:
-        text = f"{title}：{content}"
+        # 正文里已经带了标题（很多媒体的 snippet 以标题开头）→ 别再拼一遍
+        if title in content:
+            text = content
+        else:
+            text = f"{title}：{content}"
     else:
         text = title or content
     text = " ".join(text.split())
