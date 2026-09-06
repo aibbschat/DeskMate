@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import datetime
 import hashlib
+import logging
 import os
 import re
 import sys
@@ -42,6 +43,8 @@ from pathlib import Path
 from typing import Optional
 
 from deskmate.growth.engine import GrowthEngine
+
+logger = logging.getLogger(__name__)
 
 # 事件 kind → 第一人称描述（无匹配时 fallback 到 kind 本身）
 _EVENT_LABELS = {
@@ -546,6 +549,36 @@ class DiaryWriter:
     def write(self, date: str, events: list[dict], badges: list[dict]) -> str:
         """写入（追加）一则日记，返回路径。兼容入口，逻辑见 ``append_entry``。"""
         return self.append_entry(date, events, badges)["path"]
+
+    def append_observation(self, date: str, observations: list[str],
+                           at: str | None = None) -> dict:
+        """写一则「观察日记」（小桔留意到的世界动向），确定性渲染、不进叙事润色。
+
+        与 ``append_entry`` 的区别：观察是「小桔自己看到的世界在变」，不是和萧盛
+        一起做的事，不该被 ``diary_narrator``（聚焦「你们之间发生了什么」）改写或吞掉，
+        所以走独立、确定性的渲染路径。低风险自主动作（L2 ``observation_diary``）调用。
+
+        失败 fail-open：目录建不了 / 写盘异常时返回 ``written=0``，绝不抛。
+        """
+        clean = [o.strip() for o in (observations or []) if str(o or "").strip()]
+        if not clean:
+            return {"date": date, "path": "", "seq": 0, "written": 0}
+        try:
+            seq = self.entry_count(date) + 1
+            at = at or _now_hhmm()
+            eid = _gen_eid(date, at)
+            header = f"## {at} <!--xj:{eid}-->" if eid else f"## {at}"
+            bullets = "\n".join(f"- {o}" for o in clean)
+            body = (
+                f"{header}\n"
+                "今天我留意到世界上的一些新动静，记下来：\n"
+                f"{bullets}\n"
+            )
+            path = self._append_text(date, body)
+            return {"date": date, "path": path, "seq": seq, "written": len(clean)}
+        except Exception as e:  # fail-open
+            logger.warning("append_observation 失败: %s", e)
+            return {"date": date, "path": "", "seq": 0, "written": 0}
 
     def ensure_today(self) -> str:
         """用户主动点「生成今日日记」时的入口。返回日记路径。

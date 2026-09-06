@@ -93,7 +93,7 @@ DEFAULTS: dict[str, Any] = {
     # 任务白名单：当前允许小桔自主执行的「动作类型」。风险等级是动作内禀的
     # （见 registry.py），这里只决定「开没开」。
     "whitelist": {
-        "actions": ["world_search"],
+        "actions": ["world_search", "observation_diary"],
         "topics": list(DEFAULT_TOPICS),
     },
     # world_search 行为参数
@@ -103,6 +103,11 @@ DEFAULTS: dict[str, Any] = {
         "timelimit": "w",       # 时间窗兜底（topic_specs 里的优先）
         "per_tick_limit": 2,    # 每次 tick 最多实际搜几个域（5 个域 → 约 2.5 天轮完）
         "provider": "doubao",   # 豆包搜索：唯一能返回信源权威等级（AuthInfoLevel）的 provider
+    },
+    # observation_diary 行为参数（把世界观察写成小桔的观察日记）
+    "observation_diary": {
+        "cooldown_hours": 12,   # 两次写观察日记最小间隔（避免后台频繁 tick 刷屏）
+        "max_observations": 6,  # 一次最多写几条观察进日记
     },
 }
 
@@ -115,6 +120,7 @@ class AgencySettings:
     whitelist_actions: list[str] = field(default_factory=lambda: list(DEFAULTS["whitelist"]["actions"]))
     topics: list[str] = field(default_factory=lambda: list(DEFAULTS["whitelist"]["topics"]))
     world_search: dict[str, Any] = field(default_factory=lambda: dict(DEFAULTS["world_search"]))
+    observation_diary: dict[str, Any] = field(default_factory=lambda: dict(DEFAULTS["observation_diary"]))
     topic_specs: dict[str, dict[str, Any]] = field(default_factory=lambda: copy.deepcopy(TOPIC_SPECS))
 
     def to_dict(self) -> dict[str, Any]:
@@ -125,6 +131,7 @@ class AgencySettings:
                 "topics": list(self.topics),
             },
             "world_search": dict(self.world_search),
+            "observation_diary": dict(self.observation_diary),
             "topic_specs": copy.deepcopy(self.topic_specs),
         }
 
@@ -141,6 +148,11 @@ class AgencySettings:
         ws = raw.get("world_search", {}) or {}
         world_search = dict(DEFAULTS["world_search"])
         world_search.update({k: v for k, v in ws.items() if k in DEFAULTS["world_search"]})
+        # observation_diary 配置：内置为底，用户配置按 key 覆盖
+        od = raw.get("observation_diary", {}) or {}
+        observation_diary = dict(DEFAULTS["observation_diary"])
+        if isinstance(od, dict):
+            observation_diary.update({k: v for k, v in od.items() if k in DEFAULTS["observation_diary"]})
         # topic_specs：内置规格为底，用户配置按域覆盖（未配的域保持内置）
         specs = copy.deepcopy(TOPIC_SPECS)
         user_specs = raw.get("topic_specs") or {}
@@ -156,6 +168,7 @@ class AgencySettings:
             whitelist_actions=list(actions),
             topics=list(topics),
             world_search=world_search,
+            observation_diary=observation_diary,
             topic_specs=specs,
         )
 

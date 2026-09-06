@@ -41,6 +41,12 @@ REGISTRY: dict[str, ActionSpec] = {
         label="外部信息消化",
         description="跑摄入流水线：筛选/摘要 → 验证 → 达标者写入内部记忆；顺带归档过期条目",
     ),
+    "observation_diary": ActionSpec(
+        action_type="observation_diary",
+        risk="low",
+        label="观察日记",
+        description="把主动摄入的世界观察写成小桔的观察日记（落本地日记文件），不碰用户文件、不发消息、不删东西",
+    ),
     "rss_digest": ActionSpec(
         action_type="rss_digest",
         risk="low",

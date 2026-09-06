@@ -162,6 +162,23 @@ class AgencyEngine:
                     extra={"awaiting_review": awaiting},
                 )
 
+            if action_type == "observation_diary":
+                # 把世界观察写成小桔的观察日记（落本地日记，低风险自主）
+                from .behaviors.observation_diary import run_observation_diary
+
+                res = run_observation_diary(str(self.base_dir), settings.observation_diary)
+                if not res.get("written"):
+                    return None  # 冷却中 / 没新观察 → 不刷屏
+                return self.log.add(
+                    action_type=action_type,
+                    risk="low",
+                    status=TaskStatus.DONE,
+                    topic="",
+                    summary=res.get("summary", ""),
+                    detail="\n".join(res.get("observations", [])),
+                    count=res.get("written", 0),
+                )
+
             # 未来低风险动作（rss_digest / note_organize）在此接上
             return None
         except Exception as e:
