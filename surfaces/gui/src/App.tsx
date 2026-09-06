@@ -28,6 +28,7 @@ import {
   type RecentWorkspace,
   type SurfaceVisibility,
   type WorkspaceCommandTrust,
+  postInspire,
 } from "./api";
 import type {
   ApprovalDecision,
@@ -1051,6 +1052,16 @@ export function App() {
     // The visible model rides along with the message (single source of truth per turn).
     sessionRef.current?.userMessage(text, attachments, model);
     followLatest(); // sending always re-engages stream-following, wherever the user had scrolled
+    // 普通聊天里聊写作时，小桔基于认知库主动递一条灵感（不阻塞主对话；冷却/语境由后端控）。
+    void postInspire(text).then((insp) => {
+      const sug = insp?.suggestion;
+      if (insp?.triggered && sug) {
+        setItems((p) => [
+          ...p,
+          { kind: "inspire", text: sug, refs: insp.refs, ts: Date.now() / 1000 },
+        ]);
+      }
+    });
   };
 
   // 桌搭首页资讯卡片点击后把 query 直接发成用户消息，触发 AI 搜索并总结。

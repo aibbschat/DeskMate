@@ -106,3 +106,33 @@ def test_observation_diary_writes_cognition(tmp_path):
     hits = search_cognition(str(tmp_path), "丝路")
     assert len(hits) == 1
     assert "丝路" in hits[0]["understanding"]
+
+
+def test_try_inspire_skips_non_creative_context(tmp_path):
+    """端点编排：非创作语境不触发（不烧 LLM）。"""
+    from deskmate.agency.behaviors.creative_suggest import try_inspire
+
+    out = try_inspire(str(tmp_path), "今天天气真不错")
+    assert out["triggered"] is False
+    assert out["reason"] == "not_creative_context"
+
+
+def test_try_inspire_runs_when_due(tmp_path):
+    """端点编排：创作语境 + 冷却到点 + 有认知 → 触发并返回带溯源的灵感。"""
+    from deskmate.agency.behaviors.creative_suggest import try_inspire
+    from deskmate.agency.cognition_store import add_understanding
+
+    with patch("deskmate.memory.semantic_search.embed_text", _fake_embed):
+        add_understanding(str(tmp_path), date="d", fact_keys=["k1"],
+                          understanding="中东能源紧张影响丝路贸易。", facts=["（外部·财经）中东能源紧张"])
+
+    with patch("deskmate.creation.chat_flow._inspire_due", return_value=True), \
+         patch("deskmate.memory.llm.chat_memory",
+               return_value="这让我想到那天看到的中东能源紧张——真实的能源与地缘张力，"
+                            "也许能映到你笔下的丝路商队暗线，让权谋更有重量。"), \
+         patch("deskmate.memory.llm.memory_llm_available", return_value=True):
+        out = try_inspire(str(tmp_path), "我这本书里的世界观还没捋清", "大明丝路商队")
+
+    assert out["triggered"] is True
+    assert "丝路" in out["suggestion"]
+    assert out["refs"]  # 锚定真实世界观察

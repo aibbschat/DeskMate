@@ -632,6 +632,41 @@ export function Transcript({
                 )}
               </div>
             );
+          case "inspire":
+            return (
+              <div
+                className="group bubble-assistant"
+                key={bi}
+                style={{ background: "#fff8e8", border: "1px solid #f0d9a0" }}
+              >
+                <div className="who">
+                  <XiaojuAvatar size={44} className="who-avatar" />
+                  <span>💡 小桔的灵感</span>
+                </div>
+                <Markdown text={item.text} />
+                {item.refs && item.refs.length > 0 && (
+                  <div style={{ marginTop: 6, fontSize: 12, color: "#8a6d3b" }}>
+                    <span style={{ fontWeight: 600 }}>锚定她观察到的真实世界：</span>
+                    {item.refs.map((r, i) => (
+                      <span
+                        key={i}
+                        style={{
+                          display: "inline-block",
+                          margin: "2px 4px 0 0",
+                          padding: "1px 8px",
+                          borderRadius: 999,
+                          background: "#fdf2d6",
+                          border: "1px solid #f0d9a0",
+                        }}
+                      >
+                        {r}
+                      </span>
+                    ))}
+                  </div>
+                )}
+                <BubbleMeta text={item.text} ts={item.ts} align="left" />
+              </div>
+            );
           default:
             return null;
         }

@@ -190,7 +190,9 @@ export type Item =
       resolved?: "approved" | "rejected";
     }
   // 记忆保存提示（MEMORY-SPEC §5.1）：内联在对话里，可 Undo。
-  | { kind: "memory"; id: number; text: string; previous?: string; undone?: boolean };
+  | { kind: "memory"; id: number; text: string; previous?: string; undone?: boolean }
+  // 创作灵感卡片：普通聊天里聊写作时，小桔基于认知库主动递（不持久化进会话历史）。
+  | { kind: "inspire"; text: string; refs?: string[]; ts?: number };
 
 export interface GroupedQuestion {
   question: string;

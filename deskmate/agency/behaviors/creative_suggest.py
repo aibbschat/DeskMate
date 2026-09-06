@@ -20,6 +20,7 @@ from typing import Optional
 from deskmate.persona import for_scene
 
 from ..cognition_store import search as search_cognition
+from deskmate.creation.chat_flow import _inspire_due
 
 logger = logging.getLogger(__name__)
 
@@ -114,3 +115,37 @@ def generate(
     except Exception as exc:  # noqa: BLE001
         logger.warning("creative_suggest 失败（降级不展示）: %s", exc)
         return None
+
+
+# 创作语境关键词（普通聊天里判断是否「在聊写作」）。与 creation/chat_flow.py 的
+# inspire 意图共用同一语义，但这里是纯函数、无状态，供主聊天（session）端点复用。
+_CREATIVE_HINTS = (
+    "写书", "小说", "世界观", "角色", "人物", "情节", "大纲", "人设", "构思",
+    "创作", "灵感", "创意", "卡住", "没思路", "写不下去", "怎么写", "捋不清",
+    "故事", "叙事", "暗线", "伏笔", "起名", "书名",
+)
+
+
+def is_creative_context(text: str) -> bool:
+    """判断一段普通聊天是否在聊写作/创作。命中任一关键词即视为创作语境。"""
+    if not text:
+        return False
+    t = str(text)
+    return any(k in t for k in _CREATIVE_HINTS)
+
+
+def try_inspire(base_dir, text: str, concept: str = "", *, top_k: int = 5) -> dict:
+    """普通聊天（session）端点的编排：语境检测 → 冷却 → 生成灵感。
+
+    抽成独立函数便于单测；``coworker/server/app.py`` 的 ``/v1/deskmate/inspire``
+    端点直接调它（薄壳）。各子函数已 fail-open，任意异常由调用方兜为 triggered=False。
+    """
+    if not text or not is_creative_context(text):
+        return {"triggered": False, "reason": "not_creative_context"}
+    if not _inspire_due(str(base_dir)):
+        return {"triggered": False, "reason": "cooldown"}
+    out = generate(str(base_dir), concept or text, user_text=text, top_k=top_k)
+    if not out:
+        return {"triggered": False, "reason": "no_suggestion"}
+    refs = [f for grp in out.get("refs", []) for f in grp]
+    return {"triggered": True, "suggestion": out.get("suggestion", ""), "refs": refs}

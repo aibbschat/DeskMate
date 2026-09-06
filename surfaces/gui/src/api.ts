@@ -3522,6 +3522,28 @@ export interface CreationChatMessage {
   events?: Array<{ message: string; progress?: number }>;
 }
 
+export interface InspireResult {
+  triggered: boolean;
+  suggestion?: string;
+  refs?: string[];
+  reason?: string;
+}
+
+/** 普通聊天里聊写作时，小桔基于认知库主动递一条创作灵感（POST /v1/deskmate/inspire）。 */
+export async function postInspire(text: string, concept?: string): Promise<InspireResult | null> {
+  try {
+    const res = await authedFetch(`${httpBase()}/v1/deskmate/inspire`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text, concept: concept ?? "" }),
+    });
+    if (!res.ok) return null;
+    return (await res.json()) as InspireResult;
+  } catch {
+    return null;
+  }
+}
+
 /** 获取创作对话历史。 */
 export async function getChatHistory(pid: string): Promise<CreationChatMessage[]> {
   const res = await authedFetch(`${creationBase()}/api/creation/${encodeURIComponent(pid)}/chat`);

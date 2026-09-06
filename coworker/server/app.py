@@ -3503,6 +3503,33 @@ def create_app(manager: SessionManager) -> FastAPI:
             logging.exception("deskmate agency resolve failed")
             return JSONResponse({"error": "resolve failed"}, status_code=500)
 
+    @app.post("/v1/deskmate/inspire")
+    async def deskmate_inspire(request: Request) -> dict[str, Any]:
+        """普通聊天（主对话 session）里聊写作时，小桔基于认知库主动递一条创作灵感。
+
+        与创作空间（CreationChatView）共用 creative_suggest，但走独立 REST 端点，
+        不污染 WebSocket 对话流、不持久化进会话历史。fail-open：任何异常都返回
+        triggered=False，前端不展示、不阻断主对话。
+        """
+        try:
+            body = await request.json()
+        except Exception:
+            return JSONResponse({"error": "invalid json"}, status_code=400)
+        text = (body.get("text") or "").strip()
+        concept = (body.get("concept") or "").strip()
+        try:
+            from pathlib import Path as _P
+
+            from deskmate.agency.behaviors.creative_suggest import try_inspire
+
+            desk_dir = _P(
+                os.environ.get("DESKMATE_DIR", os.path.expanduser("~/.deskmate"))
+            )
+            return try_inspire(str(desk_dir), text, concept)
+        except Exception:
+            logging.exception("deskmate inspire failed")
+            return {"triggered": False, "reason": "error"}
+
     @app.get("/v1/deskmate/external/status")
     async def deskmate_external_status() -> dict[str, Any]:
         """外部信息不可信区统计：总量、按状态/来源/分类、待裁决数。"""
