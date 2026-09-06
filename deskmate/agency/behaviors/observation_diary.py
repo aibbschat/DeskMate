@@ -26,10 +26,15 @@ import os
 import time
 from typing import Any
 
+from deskmate.memory.world_context import is_world_fact
+
 logger = logging.getLogger(__name__)
 
-# 世界观察在 learned_history 里的统一溯源前缀（digest / world_ingestion 都用它）。
-# 只把带这个前缀的事实当成「小桔自己观察到的世界」，不碰用户口述事实。
+# 世界观察在 learned_history 里的统一溯源标记（digest / 外部信息流水线都用它）。
+# 只把带这个标记的事实当成「小桔自己观察到的世界」，不碰用户口述事实。
+# ⚠ 标记有**两种**位置：前缀式「（外部·文化产业）…」与后缀式「…（外部·news）」，
+# 判定统一走 deskmate.memory.world_context.is_world_fact（单一事实源）——
+# 2026-09-06 实测：真实库 24 条外部观察里 17 条是后缀式，只认前缀会整批漏掉。
 _PROVENANCE = "（外部·"
 
 
@@ -143,7 +148,7 @@ def run_observation_diary(
     fresh_items: list[dict] = []
     for it in items:
         fact = str(it.get("fact", "") or "").strip()
-        if _PROVENANCE not in fact:
+        if not is_world_fact(fact):
             continue
         k = _fact_key(fact)
         if k in written_keys:

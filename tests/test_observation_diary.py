@@ -206,3 +206,36 @@ def test_understand_observations_parses_domain_and_strips_prefix():
     clean2, domain2 = _parse_fact("（外部·tech）AI 新模型发布")
     assert clean2 == "AI 新模型发布"
     assert domain2 == "科技"
+
+
+def test_parse_fact_handles_suffix_marker():
+    """回归：后缀式溯源标「……（外部·news）」旧实现会把 clean 解析成**空串**。
+
+    旧逻辑按「第一个 ）」切，后缀式标记后面没有内容 → clean = ""，
+    理解层等于拿到空事实去消化。
+    """
+    from deskmate.agency.behaviors.understand_observations import _parse_fact
+
+    clean, domain = _parse_fact("伊朗革命卫队称打击了美航母（外部·news）")
+    assert clean == "伊朗革命卫队称打击了美航母"
+    assert domain == "要闻"
+
+    # 前缀式仍保持原行为（不回归）
+    clean2, domain2 = _parse_fact("（外部·文化产业）网文风向：番茄上线 AI 工具")
+    assert clean2 == "网文风向：番茄上线 AI 工具"
+    assert domain2 == "文化产业"
+
+
+def test_observation_diary_picks_up_suffix_marked_observations(tmp_path):
+    """回归：后缀式标记的世界观察也要能进观察日记（与 world_context 判定一致）。"""
+    from deskmate.agency.behaviors.observation_diary import run_observation_diary
+    from deskmate.memory.learned_store import LearnedStore
+
+    base = str(tmp_path)
+    LearnedStore(base_dir=base).append(["郑钦文晋级美网女单四强（外部·news）"])
+
+    res = run_observation_diary(base, {"cooldown_hours": 0, "max_observations": 6,
+                                       "understand": False})
+    assert res["written"] == 1
+    text = (list((tmp_path / "diary").glob("*.md"))[0]).read_text(encoding="utf-8")
+    assert "郑钦文晋级美网女单四强" in text

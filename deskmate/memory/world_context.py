@@ -23,28 +23,60 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
 from pathlib import Path
 from typing import Any
 
 _EXTERNAL_PREFIX = "（外部"
+# 后缀式溯源标：外部信息流水线（ingestion_pipeline._fact_for_internal）把标记加在**末尾**
+_SUFFIX_RE = re.compile(r"（外部·[^）]{0,20}）\s*$")
+
+
+def is_world_fact(fact: str) -> bool:
+    """判断一条 learned_history 事实是不是「小桔看到的世界」（外部观察）。
+
+    溯源标实际有**两种**写法，都必须认，否则会静默漏掉整批观察：
+
+    - 前缀式（digest 写入）：``（外部·文化产业）风向：……``
+    - 后缀式（外部信息流水线写入）：``……摘要（外部·news）``
+
+    2026-09-06 打包前全链体检实测：真实库 24 条外部观察里 **17 条是后缀式**
+    （豆包搜索摄入、external_items 状态已 digested，即已过可信闸门），
+    而旧判定只认前缀 → 这 17 条真世界新闻**一条都进不了**观察日记 / 认知库 /
+    对话回灌，链路在这儿静默断掉。故收敛为前缀、后缀都识别的单一判定点。
+
+    只认这两种位置（不认句中），避免把用户口述里偶然出现的字样误判成世界观察。
+    """
+    t = str(fact or "").strip()
+    if not t:
+        return False
+    if t.startswith(_EXTERNAL_PREFIX):
+        return True
+    return bool(_SUFFIX_RE.search(t))
 
 
 def build_world_context(
     base_dir: str | Path | None = None,
     limit: int = 25,
+    query: str | None = None,
 ) -> str:
     """取近期活跃的「世界观察」事实 + 小桔的理解，格式化为一段注入文本。
 
     Args:
         base_dir: 记忆库目录；None 走默认（~/.deskmate）。
         limit: 最多取多少条活跃事实做筛选（默认 25）。
+        query: 可选——当前对话/决策的查询文本。传了就用语义检索（hybrid_search）
+               从 external_items 取与 query 相关的 digested 条目，补充到事实段。
+               不传则保持现有行为（只从 learned_history 取近期活跃）。
+               语义检索走可信闸门（trusted_only=True），只返回已验证条目；
+               embedding 不可用时自动降级为纯关键词，再不行就只用 learned_history。
 
     Returns:
         形如「## 她观察到的世界……」+「## 她对世界的理解……」的多行文本；
         无任何世界观察返回空串。
     """
-    fact_block = _build_fact_block(base_dir, limit)
+    fact_block = _build_fact_block(base_dir, limit, query=query)
     understand_block = _build_understand_block(base_dir)
     parts = [p for p in (fact_block, understand_block) if p]
     if not parts:
@@ -52,23 +84,75 @@ def build_world_context(
     return "\n\n".join(parts)
 
 
-def _build_fact_block(base_dir: str | Path | None, limit: int) -> str:
+def _build_fact_block(base_dir: str | Path | None, limit: int, *, query: str | None = None) -> str:
+    """构建事实段：learned_history 近期活跃 +（可选）语义检索相关条目。
+
+    两路合并去重（按归一化后的 fact 文本）。语义检索失败不影响 learned_history。
+    """
+    import re
+
+    lines: list[str] = []
+    seen: set[str] = set()
+
+    def _norm(text: str) -> str:
+        return re.sub(r"\s+", "", text or "")
+
+    def _add(fact: str, ts: str) -> None:
+        key = _norm(fact)
+        if not key or key in seen:
+            return
+        seen.add(key)
+        lines.append(f"- [{ts}] {fact}")
+
+    # 路 1：learned_history 近期活跃（带「（外部·」溯源标）
     try:
         from .learned_store import LearnedStore
 
         items = LearnedStore(base_dir=base_dir).relevant(limit=limit)
+        for it in items:
+            fact = (it.get("fact") or "").strip()
+            if not is_world_fact(fact):
+                continue  # 只回灌世界观察（前缀/后缀溯源标都认），不碰用户事实
+            ts = (it.get("ts") or "")[:10]
+            _add(fact, ts)
     except Exception:
-        return ""
-    if not items:
-        return ""
+        pass
 
-    lines: list[str] = []
-    for it in items:
-        fact = (it.get("fact") or "").strip()
-        if not fact.startswith(_EXTERNAL_PREFIX):
-            continue  # 只回灌世界观察，不碰用户事实
-        ts = (it.get("ts") or "")[:10]
-        lines.append(f"- [{ts}] {fact}")
+    # 路 2：语义检索（传了 query 才走）——从 external_items 取与 query 相关的 digested 条目
+    if query and query.strip():
+        try:
+            from .external_store import ExternalStore
+            from .semantic_search import SemanticSearcher
+
+            store = ExternalStore(base_dir=base_dir)
+            searcher = SemanticSearcher(store=store)
+            result = searcher.hybrid_search(
+                query.strip(),
+                limit=min(limit, 15),
+                trusted_only=True,  # 可信闸门：只取已验证条目
+            )
+            for r in result.get("results", []):
+                # 格式化成带「（外部·」溯源标的事实，与 learned_history 风格一致
+                stype = (r.get("source_type") or "unknown").strip()
+                title = (r.get("title") or "").strip()
+                summary = (r.get("summary") or "").strip()
+                content = (r.get("content") or "").strip()
+                body = summary or content
+                if title and body and title not in body:
+                    fact = f"（外部·{stype}）{title}：{body}"
+                elif title:
+                    fact = f"（外部·{stype}）{title}"
+                else:
+                    fact = f"（外部·{stype}）{body}"
+                # 截断过长的事实
+                if len(fact) > 240:
+                    fact = fact[:240] + "…"
+                ts = (r.get("fetched_at") or "")[:10]
+                _add(fact, ts)
+        except Exception:
+            # 语义检索失败不影响 learned_history 的事实
+            pass
+
     if not lines:
         return ""
 

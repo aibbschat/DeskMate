@@ -19,6 +19,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any, Optional
 
 from deskmate.persona import for_scene
@@ -32,11 +33,14 @@ _MAX_CHARS = 600
 # 模型认输时回的话——出现即表示素材撑不起一篇，走降级
 _BAIL_OUT = "素材不足"
 
-# fact 里「（外部·xxx）」前缀的域标签 → 中文展示名
+# fact 里「（外部·xxx）」的域标签 → 中文展示名
 _DOMAIN_LABEL = {
     "news": "要闻", "tech": "科技", "finance": "财经", "other": "人文",
     "rss": "资讯", "api": "资讯", "email": "资讯", "文化产业": "文化产业",
 }
+
+# 后缀式溯源标（外部信息流水线把标记加在末尾）：「……摘要（外部·news）」
+_SUFFIX_RE = re.compile(r"（外部·([^）]{0,20})）\s*$")
 
 _UNDERSTAND_ROLE = """\
 现在你在写**自己对这个世界的观察**——把今天留意到的世界动向，化成你心里的话。
@@ -56,15 +60,25 @@ _SYSTEM = for_scene(_UNDERSTAND_ROLE)
 
 
 def _parse_fact(fact: str) -> tuple[str, str]:
-    """返回 (干净事实, 域标签)。从「（外部·xxx）」前缀解析域。"""
-    if "（外部·" in fact:
-        end = fact.find("）")
+    """返回 (干净事实, 域标签)。兼容溯源标的**两种**位置：
+
+    - 前缀式（digest 写入）：``（外部·文化产业）风向：……`` → 去前缀取后面
+    - 后缀式（外部信息流水线写入）：``……摘要（外部·news）`` → 去后缀取前面
+
+    ⚠ 旧实现按「第一个 ）」切，遇到后缀式会把 clean 解析成**空串**（标记后面
+    没有内容），理解层等于拿到空事实去消化。2026-09-06 打包前全链体检修复。
+    """
+    t = str(fact or "").strip()
+    if t.startswith("（外部·"):
+        end = t.find("）")
         if end != -1:
-            start = fact.find("（外部·") + len("（外部·")
-            tag = fact[start:end].strip()
-            clean = fact[end + 1:].strip()
-            return clean, _DOMAIN_LABEL.get(tag, tag)
-    return fact.strip(), "世界"
+            tag = t[len("（外部·"):end].strip()
+            return t[end + 1:].strip(), _DOMAIN_LABEL.get(tag, tag)
+    m = _SUFFIX_RE.search(t)
+    if m:
+        tag = m.group(1).strip()
+        return t[: m.start()].strip(), _DOMAIN_LABEL.get(tag, tag)
+    return t, "世界"
 
 
 def _build_prompt(facts: list[dict], at: str) -> str:

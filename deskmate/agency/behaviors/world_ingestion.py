@@ -394,6 +394,21 @@ def run_world_ingestion(
         except Exception as e:
             logger.warning("world_ingestion: 摄入流水线失败: %s", e)
 
+    # 批量向量化：为本轮新写入的条目生成 embedding，供语义检索使用。
+    # 失败不影响主流程（fail-open）——没有向量时检索自动降级为纯关键词。
+    if result["searched"]:
+        try:
+            from deskmate.memory.external_store import ExternalStore
+            from deskmate.memory.semantic_search import SemanticSearcher
+
+            emb = SemanticSearcher(store=ExternalStore(base_dir=base_dir)).embed_pending_items(
+                limit=max(stored_total, 10),
+            )
+            result["embedding"] = emb
+        except Exception as e:
+            logger.debug("world_ingestion: 批量向量化跳过（不影响主流程）: %s", e)
+            result["embedding"] = {"embedded": 0, "failed": 0, "reason": str(e)}
+
     if result["searched"]:
         pipe = result.get("pipeline") or {}
         promoted = int(pipe.get("promoted") or 0)
