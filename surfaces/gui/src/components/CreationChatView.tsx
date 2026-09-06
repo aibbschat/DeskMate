@@ -58,6 +58,9 @@ const Bubble: React.FC<{ msg: CreationChatMessage; onQuick: (text: string) => vo
 
   // 快捷回复（根据消息类型）
   const quickReplies: string[] = [];
+  if (msg.type === "inspire") {
+    quickReplies.push("再给我点灵感");
+  }
   if (msg.type === "system") {
     if (text.includes("写大纲")) quickReplies.push("写大纲");
     if (text.includes("审一下")) quickReplies.push("审一下");
@@ -90,6 +93,7 @@ const Bubble: React.FC<{ msg: CreationChatMessage; onQuick: (text: string) => vo
             {msg.type === "progress" && <span style={{ color: "#8b8b8b" }}>⏳ {msg.label}</span>}
             {msg.type === "help" && <span style={{ color: "#8b8b8b" }}>💡 帮助</span>}
             {msg.type === "error" && <span style={{ color: "#e85d5d", fontWeight: 600 }}>❌ 错误</span>}
+            {msg.type === "inspire" && <span style={{ color: "#d4a017", fontWeight: 600 }}>💡 小桔的灵感</span>}
             {(msg.type === "system" || msg.type === "roundtable" || msg.type === "expert_card") && <span style={{ color: "#8b8b8b" }}>系统</span>}
             <span style={{ opacity: 0.6 }}>{msg.ts?.slice(11, 16)}</span>
           </div>
@@ -97,9 +101,10 @@ const Bubble: React.FC<{ msg: CreationChatMessage; onQuick: (text: string) => vo
 
         {/* 气泡主体 */}
         <div style={{
-          background: isUser ? "#2d6cdf" : "#f5f5f7",
+          background: isUser ? "#2d6cdf" : (msg.type === "inspire" ? "#fff8e8" : "#f5f5f7"),
           color: isUser ? "#fff" : "#1d1d1f",
           borderRadius: isUser ? "14px 14px 4px 14px" : "14px 14px 14px 4px",
+          border: msg.type === "inspire" ? "1px solid #f0d9a0" : "none",
           padding: "10px 14px",
           fontSize: 14,
           lineHeight: 1.6,

@@ -192,6 +192,18 @@ def run_observation_diary(
                 _save_understanding(
                     base_dir, today, [_fact_key(f) for f in fresh], understanding,
                 )
+                # 认知库：把理解沉淀为可跨会话检索的长期认知（供创作建议消费）
+                try:
+                    from ..cognition_store import add_understanding as _add_cognition
+
+                    _add_cognition(
+                        base_dir, date=today,
+                        fact_keys=[_fact_key(f) for f in fresh],
+                        understanding=understanding,
+                        facts=list(fresh),
+                    )
+                except Exception as e:  # noqa: BLE001
+                    logger.warning("observation_diary: 写认知库失败（不影响日记）: %s", e)
         else:
             # 降级：确定性 bullet（事实原文），不进叙事润色
             res = writer.append_observation(today, fresh)

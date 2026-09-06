@@ -3506,7 +3506,7 @@ export async function* streamStep(
 /** 创作对话消息（与后端 chat_flow.py 的 _msg 对应）。 */
 export interface CreationChatMessage {
   id: string;
-  type: "user" | "system" | "progress" | "artifact" | "review" | "milestone" | "expert" | "expert_card" | "roundtable" | "help" | "error";
+  type: "user" | "system" | "progress" | "artifact" | "review" | "milestone" | "expert" | "expert_card" | "roundtable" | "help" | "error" | "inspire";
   ts: string;
   text?: string;
   title?: string;

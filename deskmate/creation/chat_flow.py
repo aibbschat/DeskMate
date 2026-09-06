@@ -36,6 +36,7 @@ MSG_EXPERT_CARD = "expert_card"
 MSG_ROUNDTABLE = "roundtable"
 MSG_HELP = "help"
 MSG_ERROR = "error"
+MSG_INSPIRE = "inspire"  # 小桔的创作灵感（基于认知库，带真实世界溯源）
 
 
 def _now() -> str:
@@ -46,6 +47,30 @@ def _msg(type_: str, **kw) -> dict:
     msg = {"id": uuid.uuid4().hex[:8], "type": type_, "ts": _now()}
     msg.update(kw)
     return msg
+
+
+# 灵感主动触发冷却（小时）：自由聊创作时，超过该间隔才主动递一条灵感，防刷屏
+_INSPIRE_COOLDOWN_HOURS = 6
+
+
+def _inspire_cooldown_path(base_dir) -> Path:
+    base = Path(base_dir) if base_dir else Path.home() / ".deskmate"
+    return base / "agency" / "last_inspire.json"
+
+
+def _inspire_due(base_dir) -> bool:
+    """语境主动灵感是否可触发。触发即刷冷却时间戳（无论是否真生成到内容）。"""
+    try:
+        path = _inspire_cooldown_path(base_dir)
+        if path.exists():
+            ts = json.loads(path.read_text(encoding="utf-8")).get("ts")
+            if ts and (time.time() - float(ts)) < _INSPIRE_COOLDOWN_HOURS * 3600:
+                return False
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"ts": time.time()}, ensure_ascii=False), encoding="utf-8")
+        return True
+    except Exception:  # noqa: BLE001
+        return True
 
 
 # ---- 意图识别 ----
@@ -130,6 +155,10 @@ def parse_intent(text: str, state: dict) -> Intent:
     # 帮助
     if re.search(r"帮助|help|怎么用|能做什么|指令", low):
         return Intent("help")
+
+    # 灵感 / 创作建议（主动给启发，基于她观察到的真实世界）
+    if re.search(r"灵感|给.*灵感|帮我想|缺创意|创作建议|没思路|卡住|写不下去|启发我|怎么找灵感", t):
+        return Intent("inspire")
 
     return Intent("unknown", raw=t)
 
@@ -321,6 +350,7 @@ class CreationChat:
             "auto_pilot": self._do_auto_pilot,
             "export": self._do_export,
             "help": self._do_help,
+            "inspire": self._do_inspire,
             "unknown": self._do_unknown,
         }.get(intent.type)
         if handler is None:
@@ -669,6 +699,11 @@ class CreationChat:
 
     async def _do_unknown(self, intent: Intent, state: dict) -> AsyncGenerator[dict, None]:
         raw = getattr(intent, "raw", "")
+        # 语境主动（B 主动发言）：自由聊创作且冷却允许时，主动递一条灵感
+        if _inspire_due(getattr(self.pipeline, "base_dir", None)):
+            async for msg in self._do_inspire(intent, state):
+                yield msg
+            return
         yield _msg(MSG_SYSTEM, text=(
             f"我理解你说的是「{raw[:40]}」，但不确定要做什么。\n\n"
             "你可以试试这些指令：\n"
@@ -678,6 +713,37 @@ class CreationChat:
             "· 「一键直通」自动跑完\n"
             "· 「帮助」查看全部指令"
         ))
+
+
+    # ---- 动作：创作灵感（基于认知库的真实世界启发） ----
+    async def _do_inspire(self, intent: Intent, state: dict) -> AsyncGenerator[dict, None]:
+        user_text = getattr(intent, "raw", "") or ""
+        base = getattr(self.pipeline, "base_dir", None) or Path.home() / ".deskmate"
+        concept = getattr(self.pipeline, "concept", "") or ""
+        try:
+            from deskmate.agency.behaviors.creative_suggest import generate as gen_suggest
+
+            out = gen_suggest(base, concept, user_text=user_text)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("灵感生成失败: %s", exc)
+            out = None
+        if not out or not out.get("suggestion"):
+            yield _msg(
+                MSG_SYSTEM,
+                text="我翻了翻最近观察到的世界，暂时没找到能照进这本书的素材——等我看得多一点，再跟你说。",
+            )
+            return
+        refs = out.get("refs") or []
+        ref_facts: list[str] = []
+        for r in refs:
+            if isinstance(r, list):
+                ref_facts.extend(str(x) for x in r)
+            elif r:
+                ref_facts.append(str(r))
+        ref_s = ""
+        if ref_facts:
+            ref_s = "\n\n（锚定她观察到的真实世界：" + "；".join(ref_facts[:3]) + "）"
+        yield _msg(MSG_INSPIRE, text=out.get("suggestion", "") + ref_s, refs=ref_facts)
 
 
 # ---- 全局注册表（与 service._PIPELINES 对应） ----
