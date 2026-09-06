@@ -556,7 +556,8 @@ class DiaryWriter:
 
         与 ``append_entry`` 的区别：观察是「小桔自己看到的世界在变」，不是和萧盛
         一起做的事，不该被 ``diary_narrator``（聚焦「你们之间发生了什么」）改写或吞掉，
-        所以走独立、确定性的渲染路径。低风险自主动作（L2 ``observation_diary``）调用。
+        所以走独立、确定性的渲染路径。低风险自主动作（L2 ``observation_diary``）的
+        **降级路径**调用（LLM 不可用 / 理解层异常时写原文 bullet）。
 
         失败 fail-open：目录建不了 / 写盘异常时返回 ``written=0``，绝不抛。
         """
@@ -578,6 +579,32 @@ class DiaryWriter:
             return {"date": date, "path": path, "seq": seq, "written": len(clean)}
         except Exception as e:  # fail-open
             logger.warning("append_observation 失败: %s", e)
+            return {"date": date, "path": "", "seq": 0, "written": 0}
+
+    def append_observation_natural(self, date: str, text: str,
+                                   at: str | None = None) -> dict:
+        """写一则「自然观察日记」（LLM 消化后的小桔视角，无格式、第一人称）。
+
+        与 ``append_observation`` 的区别：正文 ``text`` 已是理解层产出的**自然段落**
+        （事实由调用方保证已准确嵌入，不套 bullet、不套引导句）。本函数只负责落盘
+        与结构（``## HH:MM`` 小节 + 稳定 eid），不改变内容。L2 ``observation_diary``
+        的**主路径**（LLM 可用时）调用。
+
+        失败 fail-open：空文本 / 写盘异常时返回 ``written=0``，绝不抛。
+        """
+        text = (text or "").strip()
+        if not text:
+            return {"date": date, "path": "", "seq": 0, "written": 0}
+        try:
+            seq = self.entry_count(date) + 1
+            at = at or _now_hhmm()
+            eid = _gen_eid(date, at)
+            header = f"## {at} <!--xj:{eid}-->" if eid else f"## {at}"
+            body = f"{header}\n{text}\n"
+            path = self._append_text(date, body)
+            return {"date": date, "path": path, "seq": seq, "written": 1}
+        except Exception as e:  # fail-open
+            logger.warning("append_observation_natural 失败: %s", e)
             return {"date": date, "path": "", "seq": 0, "written": 0}
 
     def ensure_today(self) -> str:

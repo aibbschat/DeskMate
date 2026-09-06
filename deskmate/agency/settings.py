@@ -108,6 +108,7 @@ DEFAULTS: dict[str, Any] = {
     "observation_diary": {
         "cooldown_hours": 12,   # 两次写观察日记最小间隔（避免后台频繁 tick 刷屏）
         "max_observations": 6,  # 一次最多写几条观察进日记
+        "understand": True,     # 理解层：LLM 把观察消化成自然段落 + 回灌决策；关则降级原文 bullet
     },
 }
 
