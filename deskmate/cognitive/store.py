@@ -26,11 +26,14 @@ schema 不能把五维写死，必须"加一层不改表"。
 from __future__ import annotations
 
 import json
+import logging
 import os
 import shutil
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 from .models import (
     CognitiveProfile,
@@ -222,8 +225,40 @@ class CognitiveStore:
     # ------------------------------------------------------------------
     # 持久化（全量 upsert，规模小、简单且正确）
     # ------------------------------------------------------------------
-    def persist(self, profile: CognitiveProfile, layer: str = _LAYER):
+    def persist(self, profile: CognitiveProfile, layer: str = _LAYER,
+                force: bool = False):
+        """持久化某一层（全量覆盖）。
+
+        ⚠ 防清空护栏（2026-09-07 事故后加）：
+        ``persist`` 是 ``DELETE FROM profile_items WHERE layer=?`` 全量覆盖，
+        一旦调用方手里的 profile 不完整（典型事故：测试误用全局 manager、
+        load 失败返回空 profile），一次 save 就会**整层数据归零**——
+        09-07 就因为这条丢了 cognitive 层 37 条真实画像。
+
+        因此：库里本层有数据、而要写入的条目为 0 时，默认**拒绝写入**并抛错。
+        确有清空需求（如重置某层）请显式传 ``force=True``。
+        """
+        incoming = (
+            len(profile.stances)
+            + len(profile.argument_patterns)
+            + len(profile.value_rankings)
+            + len(profile.thinking_frameworks)
+        )
         with self._connect() as conn:
+            existing = conn.execute(
+                "SELECT COUNT(*) FROM profile_items WHERE layer=?", (layer,)
+            ).fetchone()[0]
+            if existing > 0 and incoming == 0 and not force:
+                logger.error(
+                    "cognitive.store: 拒绝整层清空 layer=%s（库里 %s 条，写入 0 条）。"
+                    "多半是调用方 profile 不完整（测试误用全局 manager？）。"
+                    "确需清空请显式 force=True。",
+                    layer, existing,
+                )
+                raise RuntimeError(
+                    f"refuse to wipe layer={layer}: {existing} existing items "
+                    f"but 0 incoming (use force=True if intended)"
+                )
             # meta
             meta = {
                 "version": profile.version,

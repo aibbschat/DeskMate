@@ -65,8 +65,12 @@ class CognitiveProfileManager:
     def _load(self):
         self.profile = self.store.load_profile(layer=self.layer)
 
-    def save(self):
+    def save(self, force: bool = False):
         """持久化画像。变更后顺手失效 will digest 缓存，让下游调制器下次重建。
+
+        force: 透传给 store.persist 的防清空开关。默认 False —— 库里本层有数据
+               而要写入空画像时会拒绝（见 store.persist 的护栏说明）。
+
 
         接线说明（2026-09-05）：
         - **必须 lazy import** —— `deskmate.will.digest` 反向导入 `cognitive.profile`，
@@ -78,7 +82,7 @@ class CognitiveProfileManager:
           等同于在唯一保存路径统一插桩，散点接不会漏。
         """
         self.profile.last_updated = _now()
-        self.store.persist(self.profile, layer=self.layer)
+        self.store.persist(self.profile, layer=self.layer, force=force)
         # 失效 will digest 模块级缓存（30min TTL，画像改了就别再吃旧数据）
         try:
             from deskmate.will.digest import invalidate_digest
