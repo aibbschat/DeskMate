@@ -188,7 +188,7 @@ def _build_understand_block(base_dir: str | Path | None) -> str:
                 ts = float(rec.get("ts") or 0)
                 if ts < cutoff:
                     continue
-                text = str(rec.get("understanding") or "").strip()
+                text = str(rec.get("body") or rec.get("understanding") or "").strip()
                 if text:
                     blocks.append(text)
         if not blocks:

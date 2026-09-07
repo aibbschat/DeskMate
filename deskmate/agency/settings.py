@@ -93,7 +93,7 @@ DEFAULTS: dict[str, Any] = {
     # 任务白名单：当前允许小桔自主执行的「动作类型」。风险等级是动作内禀的
     # （见 registry.py），这里只决定「开没开」。
     "whitelist": {
-        "actions": ["world_search", "observation_diary"],
+        "actions": ["world_search", "observation_diary", "worldview_reflection"],
         "topics": list(DEFAULT_TOPICS),
     },
     # world_search 行为参数
@@ -110,6 +110,14 @@ DEFAULTS: dict[str, Any] = {
         "max_observations": 6,  # 一次最多写几条观察进日记
         "understand": True,     # 理解层：LLM 把观察消化成自然段落 + 回灌决策；关则降级原文 bullet
     },
+    # worldview_reflection 行为参数（把攒下的理解沉淀成她自己的看法）
+    # 半自动：攒够 min_observations 条未消化理解才回望一次，且过冷却。
+    # 不每看一条就逼她表态——观点是回望时长出来的，不是当场总结出来的。
+    "worldview_reflection": {
+        "min_observations": 5,   # 攒够几条未消化的理解才回望（≈1-2 周一次）
+        "cooldown_hours": 168,   # 两次回望最小间隔 7 天
+        "max_observations": 20,  # 一次最多喂给模型多少条
+    },
 }
 
 
@@ -122,6 +130,7 @@ class AgencySettings:
     topics: list[str] = field(default_factory=lambda: list(DEFAULTS["whitelist"]["topics"]))
     world_search: dict[str, Any] = field(default_factory=lambda: dict(DEFAULTS["world_search"]))
     observation_diary: dict[str, Any] = field(default_factory=lambda: dict(DEFAULTS["observation_diary"]))
+    worldview_reflection: dict[str, Any] = field(default_factory=lambda: dict(DEFAULTS["worldview_reflection"]))
     topic_specs: dict[str, dict[str, Any]] = field(default_factory=lambda: copy.deepcopy(TOPIC_SPECS))
 
     def to_dict(self) -> dict[str, Any]:
@@ -133,6 +142,7 @@ class AgencySettings:
             },
             "world_search": dict(self.world_search),
             "observation_diary": dict(self.observation_diary),
+            "worldview_reflection": dict(self.worldview_reflection),
             "topic_specs": copy.deepcopy(self.topic_specs),
         }
 
@@ -154,6 +164,13 @@ class AgencySettings:
         observation_diary = dict(DEFAULTS["observation_diary"])
         if isinstance(od, dict):
             observation_diary.update({k: v for k, v in od.items() if k in DEFAULTS["observation_diary"]})
+        # worldview_reflection 配置：内置为底，用户配置按 key 覆盖
+        wv = raw.get("worldview_reflection", {}) or {}
+        worldview_reflection = dict(DEFAULTS["worldview_reflection"])
+        if isinstance(wv, dict):
+            worldview_reflection.update(
+                {k: v for k, v in wv.items() if k in DEFAULTS["worldview_reflection"]}
+            )
         # topic_specs：内置规格为底，用户配置按域覆盖（未配的域保持内置）
         specs = copy.deepcopy(TOPIC_SPECS)
         user_specs = raw.get("topic_specs") or {}
@@ -170,6 +187,7 @@ class AgencySettings:
             topics=list(topics),
             world_search=world_search,
             observation_diary=observation_diary,
+            worldview_reflection=worldview_reflection,
             topic_specs=specs,
         )
 

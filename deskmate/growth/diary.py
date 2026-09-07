@@ -295,11 +295,15 @@ class DiaryWriter:
         return "入夜了又添了几笔，我接着记。"
 
     @staticmethod
-    def _narrate(events: list[dict], seq: int, at: str) -> Optional[str]:
+    def _narrate(events: list[dict], seq: int, at: str,
+                 base_dir=None) -> Optional[str]:
         """叙事润色（L3 可选层），失败返回 None 由调用方回退规则渲染。
 
         三道闸门与「情绪必须有锚点」的设计见 ``diary_narrator.py`` 模块文档。
         这里只做一件事：给一个总开关，出问题能一键退回纯规则。
+
+        ``base_dir`` 传给 ``narrate``，让它额外喂入「最近记住他的事」作叙事
+        底色（2026-09-07 萧哥要的"理解我的她"）。不传则走旧行为。
         """
         import os
 
@@ -310,7 +314,7 @@ class DiaryWriter:
         try:
             from deskmate.growth.diary_narrator import narrate
 
-            return narrate(events, seq=seq, at=at)
+            return narrate(events, seq=seq, at=at, base_dir=base_dir)
         except Exception:
             return None
 
@@ -395,7 +399,7 @@ class DiaryWriter:
             # 叙事润色（L3，可选增强）：把上面这些实事讲成一段有人味的话。
             # 拿到就用它，拿不到（无 provider / 素材没内容 / 模型认输 / 异常）
             # 就照旧列清单——降级是常态，不是事故。
-            narrated = self._narrate(events, seq=seq, at=at)
+            narrated = self._narrate(events, seq=seq, at=at, base_dir=self.base)
             if narrated:
                 lines.append(narrated)
             else:

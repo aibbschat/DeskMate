@@ -3,18 +3,28 @@
 把小桔主动摄入的世界观察（落在 ``learned_history``、带「（外部·」溯源标）写成
 她自己的**观察日记**——落本地日记文件，不碰用户文件、不发消息、不删东西。
 
-这是「让她看世界」最后一跳的**低风险自主落地**（Plan B，2026-09-06 萧哥拍板）：
+这是「让她看世界」最后一跳的**低风险自主落地**（Plan B，2026-09-06 萧哥拍板）。
 
-- 她不只是看到了、存下了、聊天里能引用；
-- 还把自己的观察沉淀成日记，你能翻到（桌宠 → 查看日记）。
+## 选材与成文（2026-09-07 萧哥拍板）
 
-理解层（2026-09-06 萧哥追加）：事实原文不动，但呈现要**自然流出来**——
-LLM（小桔人格）把世界观察消化成她自己的观察段落，回灌到决策上下文
-（world_context），让 L2「据此决策」有真正的认知输入，而不只是标题堆。
-LLM 不可用 / 超时 / 异常 → 降级到确定性 bullet（事实原文），fail-open 不阻断。
+旧实现把所有素材**强制拼成一段**（"100-250 字"硬约束）。萧哥反馈：
+多条完全不同的新闻被迫挤在一段，每条都只能分到一两句话，没有"认真
+分析"的空间——更糟的是把无关的事件强行找联系，读起来是拼接感。
 
-去重：每条观察按 fact 文本记一次，重复 tick 不会把同一条观察写进日记多遍。
-冷却：按 ``cfg.cooldown_hours``（默认 12h）节流，避免后台每 30s 一轮狂写日记。
+新实现的处理（萧哥原话 "让她自己决定哪些值得记，哪些不值得"）：
+
+- **不分组、不预筛**：把全部新鲜观察交给她（默认 ``max_obs=20``，从旧 6 提上来）。
+- **她自己挑**：LLM 看完所有事实后，自己判断哪几条值得记、哪几条不值得。
+- **独立成段**：值得记的，每条独立一段；主题不同自然分开，不再硬挤。
+- **字数不限**：有分量的事件可以深写 300-500+ 字；一般就 100-200 字。
+  每段的字数由内容决定，不由 prompt 决定。
+- **每日篇数不限**：她觉得今天 3 条都值得，就 3 条独立成则；0 条就 0 条；
+  品质优先于数量——这是"宁缺毋滥"。
+
+降级路径（LLM 不可用 / 理解层异常 / LLM 显式认输）：走确定性 bullet（事实原文），
+fail-open 不阻断。每次 tick 至多触发一次（``cooldown_hours`` 默认 12h）。
+
+去重：每条观察按 fact 文本记一次，重复 tick 不会把同一段观察写进日记多遍。
 """
 
 from __future__ import annotations
@@ -33,8 +43,7 @@ logger = logging.getLogger(__name__)
 # 世界观察在 learned_history 里的统一溯源标记（digest / 外部信息流水线都用它）。
 # 只把带这个标记的事实当成「小桔自己观察到的世界」，不碰用户口述事实。
 # ⚠ 标记有**两种**位置：前缀式「（外部·文化产业）…」与后缀式「…（外部·news）」，
-# 判定统一走 deskmate.memory.world_context.is_world_fact（单一事实源）——
-# 2026-09-06 实测：真实库 24 条外部观察里 17 条是后缀式，只认前缀会整批漏掉。
+# 判定统一走 deskmate.memory.world_context.is_world_fact（单一事实源）。
 _PROVENANCE = "（外部·"
 
 
@@ -85,15 +94,22 @@ def _fact_key(fact: str) -> str:
     return hashlib.md5(fact.strip().encode("utf-8")).hexdigest()
 
 
-def _save_understanding(base_dir: str, date_iso: str, fact_keys: list[str],
-                        understanding: str) -> None:
-    """把小桔的理解落盘，供 world_context 回灌决策（独立 jsonl，不污染日记/事实）。"""
+def _save_understanding_line(base_dir: str, date_iso: str, fact_keys: list[str],
+                             body: str, entry_seq: int) -> None:
+    """把每段独立理解各落一行 jsonl，供 world_context 回灌决策。
+
+    分行：每段一段独立行（含 entry_seq 定位到日记里的第几则），便于后续按
+    "哪段对应哪些事实 keys" 检索。空 fact_keys 不写（兜底）。
+    """
+    if not body:
+        return
     path = _understanding_path(base_dir)
     try:
         os.makedirs(os.path.dirname(path), exist_ok=True)
         line = json.dumps(
             {"date": date_iso, "ts": time.time(),
-             "fact_keys": list(fact_keys), "understanding": understanding},
+             "entry_seq": entry_seq,
+             "fact_keys": list(fact_keys), "body": body},
             ensure_ascii=False,
         )
         with open(path, "a", encoding="utf-8") as f:
@@ -102,27 +118,53 @@ def _save_understanding(base_dir: str, date_iso: str, fact_keys: list[str],
         logger.warning("observation_diary: 存理解失败（不影响日记）: %s", e)
 
 
+def _add_understanding_cognition(base_dir: str, date_iso: str,
+                                 body: str, fact_keys: list[str]) -> None:
+    """把每段独立理解沉淀到认知库（供创作建议跨会话消费）。失败静默。
+
+    注意：``cognition_store.add_understanding`` 的真实签名是 keyword-only
+    (``understanding=`` / ``facts=``)，别再用 ``body=`` 瞎传。
+    """
+    try:
+        from ..cognition_store import add_understanding as _add_cognition
+
+        _add_cognition(
+            base_dir,
+            date=date_iso,
+            fact_keys=list(fact_keys),
+            understanding=body,
+            facts=[],  # LLM 挑出的具体事实原文，与 fact_keys 不是 1:1，传空
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.warning("observation_diary: 写认知库失败（不影响日记）: %s", e)
+
+
 def run_observation_diary(
     base_dir: str,
     cfg: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """把新鲜的世界观察写成小桔的观察日记（含理解层）。
+    """把新鲜的世界观察写成小桔的观察日记（含理解层、她自选的多段）。
 
     Args:
         base_dir: deskmate 根目录（~/.deskmate）
-        cfg: observation_diary 配置（cooldown_hours / max_observations / understand）
+        cfg: observation_diary 配置
+             （cooldown_hours / max_observations / understand）
 
     Returns:
-        {"written", "skipped", "summary", "observations", "due", "understood"}
+        ``{"written", "skipped", "summary", "observations", "due", "understood",
+            "segments": [{"body", "fact_keys", "entry_seq"}], "dropped_by_llm"}``
     """
     cfg = cfg or {}
     cooldown_hours = float(cfg.get("cooldown_hours", 12))
-    max_obs = int(cfg.get("max_observations", 6))
+    # 默认从 6 提到 20：让 LLM 看到足够样本自己判断，
+    # 而不是被样本量截断而被迫把无关的事塞进一段。
+    max_obs = int(cfg.get("max_observations", 20))
     do_understand = bool(cfg.get("understand", True))
 
     result: dict[str, Any] = {
         "written": 0, "skipped": 0, "summary": "", "observations": [],
-        "due": False, "understood": False,
+        "due": False, "understood": False, "segments": [],
+        "dropped_by_llm": 0,
     }
 
     # 冷却节流：未到点不跑（避免后台频繁 tick 刷屏日记）
@@ -136,7 +178,11 @@ def run_observation_diary(
     try:
         from deskmate.memory.learned_store import LearnedStore
 
-        items = LearnedStore(base_dir=base_dir).active_recent(limit=200)
+        # ⚠ active_recent 返回时间**正序**（最老在前）——而观察日记要的是
+        # **最新**的观察（"看世界→记当下"）。正序遍历 + break 取满 max_obs
+        # 会先取到库里最旧的积压旧闻，最新的排在最后、好几轮 tick 才轮得到。
+        # 故这里反序，让"最新的优先"。
+        items = list(reversed(LearnedStore(base_dir=base_dir).active_recent(limit=200)))
     except Exception as e:
         logger.warning("observation_diary: 读取记忆失败: %s", e)
         return result
@@ -165,7 +211,53 @@ def run_observation_diary(
         result["summary"] = "没有新的世界观察可记"
         return result
 
-    # 写进日记
+    # 主路径：让 LLM 自己挑 + 独立成段
+    segments: list[dict[str, Any]] = []
+    understood_flag = False
+    if do_understand:
+        try:
+            from .understand_observations import decide_and_digest
+
+            facts_arg = [
+                {"fact": f, "credibility": it.get("credibility")}
+                for f, it in zip(fresh, fresh_items)
+            ]
+            segments = decide_and_digest(facts_arg, at="")
+        except Exception as e:
+            logger.warning("observation_diary: 理解层异常，降级原文: %s", e)
+            segments = []
+
+    # 记录"被 LLM 丢掉的素材数"：让萧哥能看到实际被舍弃了多少
+    # （统计意义——不写进日记，只在 summary 里说）
+    if segments:
+        understood_flag = True
+    else:
+        # 走降级：把所有事实塞进一条单一 bullet（LLM 不可用时唯一可用路径）
+        try:
+            from datetime import date as _date
+
+            from deskmate.growth.diary import DiaryWriter
+
+            today = _date.today().isoformat()
+            writer = DiaryWriter(base_dir=base_dir)
+            res = writer.append_observation(today, fresh)
+            written_now = int(res.get("written", 0))
+            result["written"] = written_now
+            result["summary"] = f"把 {written_now} 条世界观察写进了观察日记（LLM 不可用或不可挑，原文 bullet）"
+            # 这些事实已"过手"，无论写没写进日记都标已记 + 刷冷却——
+            # 否则写盘失败时下一 tick 会重复提交、反复空转。
+            for f in fresh:
+                written_keys.add(_fact_key(f))
+            if len(written_keys) > 500:
+                written_keys = set(list(written_keys)[-500:])
+            _save_json(_state_path(base_dir), {"keys": list(written_keys)})
+            _save_json(cd_path, {"ts": time.time()})
+            return result
+        except Exception as e:
+            logger.warning("observation_diary: 降级 bullet 写盘失败: %s", e)
+            return result
+
+    # segments 不空：每段独立成则
     try:
         from datetime import date as _date
 
@@ -174,62 +266,64 @@ def run_observation_diary(
         today = _date.today().isoformat()
         writer = DiaryWriter(base_dir=base_dir)
 
-        understanding = None
-        if do_understand:
+        written_now = 0
+
+        for idx, seg in enumerate(segments):
             try:
-                from .understand_observations import understand_observations
-
-                facts_arg = [
-                    {"fact": f, "credibility": it.get("credibility")}
-                    for f, it in zip(fresh, fresh_items)
-                ]
-                understanding = understand_observations(facts_arg, at="")
-            except Exception as e:
-                logger.warning("observation_diary: 理解层异常，降级原文: %s", e)
-                understanding = None
-
-        if understanding:
-            # 自然段落：LLM 消化后的小桔视角（事实已准确嵌入，不套 bullet）
-            res = writer.append_observation_natural(today, understanding)
-            result["understood"] = bool(res.get("written"))
-            # 理解回灌决策：存独立 jsonl 供 world_context 读
-            if result["understood"]:
-                _save_understanding(
-                    base_dir, today, [_fact_key(f) for f in fresh], understanding,
+                body = str(seg.get("body", "") or "").strip()
+                fact_keys = list(seg.get("fact_keys", []) or [])
+                if not body:
+                    continue
+                res = writer.append_observation_natural(today, body)
+                seq = int(res.get("seq", 0) or 0)
+                if seq <= 0:
+                    continue
+                # 每段独立回灌决策 / 沉淀认知库
+                _save_understanding_line(
+                    base_dir, today, fact_keys, body, seq,
                 )
-                # 认知库：把理解沉淀为可跨会话检索的长期认知（供创作建议消费）
-                try:
-                    from ..cognition_store import add_understanding as _add_cognition
+                _add_understanding_cognition(
+                    base_dir, today, body, fact_keys,
+                )
+                written_now += 1
+                result["segments"].append({
+                    "body": body, "fact_keys": fact_keys, "entry_seq": seq,
+                })
+            except Exception as e:
+                logger.warning("observation_diary: 写则 %d 失败: %s", idx, e)
+                continue
 
-                    _add_cognition(
-                        base_dir, date=today,
-                        fact_keys=[_fact_key(f) for f in fresh],
-                        understanding=understanding,
-                        facts=list(fresh),
-                    )
-                except Exception as e:  # noqa: BLE001
-                    logger.warning("observation_diary: 写认知库失败（不影响日记）: %s", e)
-        else:
-            # 降级：确定性 bullet（事实原文），不进叙事润色
-            res = writer.append_observation(today, fresh)
+        result["written"] = written_now
+        result["understood"] = understood_flag
 
-        written = int(res.get("written", 0))
-    except Exception as e:
-        logger.warning("observation_diary: 写日记失败: %s", e)
-        return result
-
-    if written:
+        # 把这一批提交的事实都标为已记——下次相同 fact 不会再被提交给 LLM
+        # （无论 LLM 挑没挑，反正已知。这是按"事实是否过手观察日记"判定而非"是否
+        # 写入日记"，跟原行为一致。）
         for f in fresh:
             written_keys.add(_fact_key(f))
-        # 控制 state 体积：只保留最近 500 个 key
         if len(written_keys) > 500:
             written_keys = set(list(written_keys)[-500:])
+        # 事实已"过手"，无论写没写进日记都标已记 + 刷冷却——否则写盘失败时
+        # 下一 tick 会重复调 LLM、反复空转（P1 修复）。
         _save_json(_state_path(base_dir), {"keys": list(written_keys)})
         _save_json(cd_path, {"ts": time.time()})
-        result["written"] = written
-        result["observations"] = fresh
-        if result["understood"]:
-            result["summary"] = f"把 {written} 条世界观察消化成观察日记（含小桔的理解）"
-        else:
-            result["summary"] = f"把 {written} 条世界观察写进了观察日记（LLM 不可用，原文）"
+
+        # 统计：被 LLM 主动丢掉的素材条数。
+        # LLM 没返回"每段对应哪条事实"的映射，精确到条做不到——用段数近似：
+        # 交给她 N 条，她挑出 M 段，则 (N-M) 条她不记也罢（P0 修复：原来因
+        # fact_keys 整批关联到每段，kept 恒等于全集、dropped 永远 0）。
+        submitted = len(fresh)
+        kept = len(segments)
+        dropped = max(0, submitted - kept)
+        result["dropped_by_llm"] = dropped
+        result["summary"] = (
+            f"{submitted} 条世界观察交给她，她挑了 {kept} 段写进观察日记"
+            f"（实际落盘 {written_now} 则，{dropped} 条不记也罢）"
+            if dropped
+            else f"{submitted} 条世界观察，她全部写进了观察日记（{written_now} 则）"
+        )
+    except Exception as e:
+        logger.warning("observation_diary: 写日记异常: %s", e)
+        return result
+
     return result

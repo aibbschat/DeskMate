@@ -61,23 +61,55 @@ class TestNarrationGates(unittest.TestCase):
     def test_empty_events_returns_none(self):
         self.assertIsNone(dn.narrate([]))
 
-    def test_label_only_events_returns_none(self):
-        """只有标签、没有详情 → 不调模型（白烧一次调用换「素材不足」）。"""
-        events = [{"ts": "2026-09-03T10:00:00+00:00", "kind": "roundtable"}]
-        # chat_memory 是函数内 import 的，只能 patch 源头模块
+    def test_only_depth_backfilled_returns_none(self):
+        """只有系统补录 (depth_backfilled) → 不调（不是真实事件）。
+
+        2026-09-07：闸门从「必须带 reason/note」退到「events 非空 + 非补录」——
+        日常 chat/writing/roundtable 等纯标签事件**也让 narrator 跑**（具体
+        写不写由 LLM 自己用 prompt 里的"素材不足"弃权）。这是萧哥"narrator
+        大半时候根本没跑"的根因修复。
+        """
+        events = [{"ts": "2026-09-03T10:00:00+00:00", "kind": "depth_backfilled"}]
+        self.assertFalse(dn._has_substance(events))
         with mock.patch("deskmate.memory.llm.chat_memory") as m:
             self.assertIsNone(dn.narrate(events))
         m.assert_not_called()
 
-    def test_skill_name_without_reason_is_not_substance(self):
-        """「技能又精进了」没有原因 → 正是萧哥说的废话，不该进润色。"""
+    def test_chat_only_now_runs_narrator(self):
+        """chat-only 不再被门挡——这是 2026-09-07 修复。
+
+        旧版：chat-only 因 _has_substance 闸门失败，整日整日落 fallback 规则版。
+        新版：闸门通过，让 narrator 跑；LLM 自己用 prompt 的"素材不足"判定。
+        """
+        events = [{"ts": "2026-09-03T10:00:00+00:00", "kind": "chat"}]
+        self.assertTrue(dn._has_substance(events))
+        with mock.patch(
+            "deskmate.memory.llm.memory_llm_available", return_value=True
+        ), mock.patch(
+            "deskmate.memory.llm.chat_memory", return_value=_GOOD
+        ) as m:
+            self.assertEqual(dn.narrate(events), _GOOD)
+        m.assert_called_once()
+
+    def test_skill_name_without_reason_still_runs(self):
+        """「技能又精进了」没有原因 → 旧版不算素材；新版让 narrator 跑（旧设计意图废）。
+
+        旧版意图是「别让 LLM 把空壳扩写成废话」。新版让 LLM 自己看见"技能名没
+        reason"，由 prompt 决定写不写。测试只验 narrator 被调用、narrator 不
+        抛异常即可。
+        """
         events = [{
             "ts": "2026-09-03T10:00:00+00:00",
             "kind": "skill_evolved",
             "skill_name": "novel-review",
         }]
-        self.assertFalse(dn._has_substance(events))
-        self.assertIsNone(dn.narrate(events))
+        self.assertTrue(dn._has_substance(events))
+        with mock.patch(
+            "deskmate.memory.llm.memory_llm_available", return_value=True
+        ), mock.patch(
+            "deskmate.memory.llm.chat_memory", return_value=_GOOD
+        ):
+            self.assertEqual(dn.narrate(events), _GOOD)
 
     def test_no_provider_returns_none(self):
         """闸门 1：没配 provider 就不调。"""
@@ -184,14 +216,19 @@ class TestMaterialPacking(unittest.TestCase):
         facts = dn._facts(_rich_events())
         self.assertTrue(any("具体出处" in f for f in facts), facts)
 
-    def test_hardcoded_correction_placeholder_is_skipped(self):
-        """note 还是占位的「用户明确纠正」= 没拿到原话，不算素材。"""
+    def test_hardcoded_correction_placeholder_runs_narrator(self):
+        """用户纠正占位「用户明确纠正」= 没拿到原话。
+
+        旧版按 note 是否占位判素材——这导致"记到了 wrong_reason 但没原话"
+        的纠正事件被门挡。新规则（2026-09-07）：闸门只看是否有真实事件，
+        占位与否交给 prompt 自己处理（叙事时不必猜原因）。
+        """
         events = [{
             "ts": "2026-09-03T10:00:00+00:00",
             "kind": "user_corrected",
             "note": "用户明确纠正",
         }]
-        self.assertFalse(dn._has_substance(events))
+        self.assertTrue(dn._has_substance(events))
 
     def test_time_prefix_present(self):
         facts = dn._facts(_rich_events())
@@ -497,6 +534,60 @@ class TestBackfillLearnedTexts(unittest.TestCase):
         with self._patch_store(rows):
             self.assertEqual(backfill(items, base_dir=self.base), 0)
         self.assertNotIn("texts", items[0])
+
+
+class TestRecentMemories(unittest.TestCase):
+    """2026-09-07：narrator 喂「最近记住他的事」作叙事底色（萧哥"理解我的她"）。
+
+    契约：
+    - 只取用户口述事实，排除世界观察（「（外部·」前缀/后缀标）——那是她看到的
+      新闻，不是"他的事"，不该混进"懂他"的底色。
+    - fail-open：库查不到 / base_dir 空 → 返回 []，绝不阻断叙事。
+    - 背景块进 prompt，且明确禁止把"已有的了解"当今天新发生的事写。
+    """
+
+    def setUp(self):
+        self._tmp = TemporaryDirectory()
+        self.base = Path(self._tmp.name)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _seed(self, facts):
+        from deskmate.memory.learned_store import LearnedStore
+        return LearnedStore(base_dir=str(self.base)).append(facts)
+
+    def test_excludes_world_facts(self):
+        self._seed([
+            "萧盛正在写《国子监秘闻录》",
+            "他考据习惯要标具体出处",
+            "（外部·news）美伊在霍尔木兹海峡对峙升级",
+            "碳酸锂一周跌了15%摘要（外部·finance）",
+        ])
+        mems = dn._recent_memories(str(self.base))
+        joined = " ".join(mems)
+        self.assertIn("国子监", joined)          # 用户口述事实进底色
+        self.assertNotIn("霍尔木兹", joined)      # 前缀式世界观察排除
+        self.assertNotIn("碳酸锂", joined)        # 后缀式世界观察排除
+
+    def test_empty_without_base(self):
+        self.assertEqual(dn._recent_memories(None), [])
+
+    def test_empty_when_no_memories(self):
+        self.assertEqual(dn._recent_memories(str(self.base)), [])
+
+    def test_prompt_includes_memories_block(self):
+        p = dn._build_prompt(
+            ["09:10 你们聊了一阵"], [], 1, "09:10",
+            memories=["他在写《国子监秘闻录》"],
+        )
+        self.assertIn("【你对他已有的了解】", p)   # 背景块标题只在有 memories 时出现
+        self.assertIn("国子监", p)
+        self.assertIn("不许当成今天新发生的事写", p)
+
+    def test_prompt_without_memories_has_no_block(self):
+        p = dn._build_prompt(["09:10 你们聊了一阵"], [], 1, "09:10")
+        self.assertNotIn("【你对他已有的了解】", p)
 
 
 if __name__ == "__main__":

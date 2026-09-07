@@ -179,6 +179,27 @@ class AgencyEngine:
                     count=res.get("written", 0),
                 )
 
+            if action_type == "worldview_reflection":
+                # 把攒下的世界观察理解沉淀成她自己的看法（写认知库 worldview 层，低风险自主）
+                # 半自动：攒够 min_observations 条才回望一次，且过 7 天冷却。
+                # 她弃权（"我还说不好"）也算跑过一次——照样标记已消化，不反复问她。
+                from .behaviors.worldview_reflection import run_worldview_reflection
+
+                res = run_worldview_reflection(
+                    str(self.base_dir), settings.worldview_reflection
+                )
+                if not res.get("reflected"):
+                    return None  # 攒不够 / 冷却中 / 没 provider → 不刷屏
+                return self.log.add(
+                    action_type=action_type,
+                    risk="low",
+                    status=TaskStatus.DONE,
+                    topic="",
+                    summary=res.get("summary", ""),
+                    detail=res.get("essay", ""),
+                    count=res.get("written", 0),
+                )
+
             # 未来低风险动作（rss_digest / note_organize）在此接上
             return None
         except Exception as e:

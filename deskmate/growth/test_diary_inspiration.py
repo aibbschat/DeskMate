@@ -151,8 +151,17 @@ class ShouldWriteTest(unittest.TestCase):
             }),
             encoding="utf-8",
         )
+        # 本类关心「一天多则」的写入机制（不是 narrator 写得好不好），
+        # 关掉 narrator 让断言稳定在规则版措辞。
+        # 2026-09-07：narrator 闸门放宽后，纯 ``user_corrected`` 类事件也能
+        # 让 narrator 跑通出自然段；本测试不该被 narrator 写得漂不漂亮影响。
+        self._narrate_off = mock.patch.dict(
+            os.environ, {"DESKMATE_DIARY_NARRATE": "0"}
+        )
+        self._narrate_off.start()
 
     def tearDown(self):
+        self._narrate_off.stop()
         self._tmp.cleanup()
 
     def _write_now(self):
@@ -180,7 +189,10 @@ class ShouldWriteTest(unittest.TestCase):
         self.assertEqual(again["pending_count"], 0)
 
     def test_second_entry_keeps_the_first(self):
-        """新素材攒够 → 再记一则；第一则的内容**不被覆盖**。"""
+        """新素材攒够 → 再记一则；第一则的内容**不被覆盖**。
+
+        2026-09-07 备注：本类已在 setUp 关 narrator，断言按规则版措辞。
+        """
         first = self._write_now()
         MaterialLedger(self.base).sync(
             _evt("skill_created", first["date"], 1, skill_name="新技能")
@@ -192,7 +204,7 @@ class ShouldWriteTest(unittest.TestCase):
         writer = DiaryWriter(self.base)
         self.assertEqual(writer.entry_count(second["date"]), 2)
         text = writer.read(second["date"])
-        self.assertIn("你纠正了我 3 次", text)   # 第一则原样保留
+        self.assertIn("你纠正了我 3 次", text)   # 第一则原样保留（规则版）
         self.assertIn("建了个新技能", text)      # 第二则写进了新素材
 
     def test_second_entry_does_not_repeat_first(self):

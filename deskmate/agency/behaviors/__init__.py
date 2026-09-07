@@ -3,5 +3,6 @@
 from __future__ import annotations
 
 from .world_ingestion import run_world_ingestion
+from .worldview_reflection import run_worldview_reflection
 
-__all__ = ["run_world_ingestion"]
+__all__ = ["run_world_ingestion", "run_worldview_reflection"]

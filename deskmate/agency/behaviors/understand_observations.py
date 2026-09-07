@@ -1,19 +1,35 @@
-"""理解层：把小桔主动摄入的世界观察，消化成她自己对世界的自然观察。
+"""理解层：把小桔主动摄入的世界观察，消化成她自己对世界的自然观察段落。
 
 这是「观世界 → 决策」之间缺失的一环（2026-09-06 萧哥拍板）：
 小桔不能只把新闻标题存进日记就完事——她得**理解**这些观察意味着什么、
 跟萧哥 / 创作 / 世界走向有什么关系，理解之后才能据此决策。
 
-- 输入：带「（外部·」溯源标的世界观察事实（fact 原文 + 可选 credibility）。
-- 处理：LLM（小桔人格）消化 → 产出**自然段落**（无格式、第一人称、可带看法，
-  但**事实不许编**——输入的事实必须准确体现，改了就废）。
-- 失败降级：无 provider / 素材空 / 超时 / 结果异常 / 长度离谱 → 返回 None，
-  调用方降级到确定性 bullet（不阻断 L2 tick）。
-- fail-open：任何异常返回 None。
+## 设计两次迭代
 
-与 ``diary_narrator`` 的区别：narrator 消化的是「你们之间发生的事」（event kind），
-本模块消化的是「她观察到的世界」（外部事实，无 kind 结构），且萧哥明确要
-**自然流出来、不要机械标签**——所以 prompt 禁止小标题 / 列表 /「小桔的理解：」这类格式。
+**v1（2026-09-06 落地，2026-09-07 萧哥说"不行"）**：
+- 强制把所有素材塞进同一段，"100-250 字"硬约束；
+- 萧哥反馈：这是"强行揉和"，多条完全不同的新闻被迫挤一段，
+  每条只能分到一两句话，没有真正消化的空间。
+
+**v2（本次）：让小桔自己决定**
+- 萧哥原话："让她自己决定，哪些是值得记的，哪些不值得。"
+  "宁缺毋滥"——0 条值得就 0 条，3 条都值得就 3 条独立成段。
+- 不分组（分组也是规则在替她选）：把全部素材交给 LLM，LLM 自己判断。
+  主题不同的事自然分不同段；同一件事不会硬挤进一段。
+- 字数不硬卡：由内容决定。一件特别有分量的事件可以深写 300-500 字；
+  偶尔只是蜻蜓点水的就 100-200 字。
+- 每日篇数不再限制为 1 ——她觉得今天 3 条都值得，就 3 条独立成则；
+  0 条就 0 条；品质优先于数量。
+
+## 与 ``diary_narrator`` 的区别
+narrator 消化的是「你们之间发生的事」（event kind 结构），本模块消化的是
+「她观察到的世界」（外部事实，无 kind 结构）。两者 prompt 都不许机械标签，
+但本模块新增了"独立成段"——多段用空行分隔。
+
+## fail-open 与闸门
+- 无 provider / 素材空 / 超时 / 结果异常 → 旧接口返回 ``None``，新接口返回 ``[]``。
+- 调用方按降级路径走（``observation_diary.append_observation`` 走 bullet）。
+- 入边三道闸门：能力闸（无 LLM）/ 弃权闸（"素材不足"或空 list）/ 单段长度闸。
 """
 
 from __future__ import annotations
@@ -26,11 +42,15 @@ from deskmate.persona import for_scene
 
 logger = logging.getLogger(__name__)
 
-# 结果长度闸门：短于这句无意义，长于上限多半是模型跑野了
-_MIN_CHARS = 40
-_MAX_CHARS = 600
+# 单段长度闸门：低于 30 字多半模型认输，超过 1500 字多半跑野了。
+_MIN_SEG_CHARS = 30
+_MAX_SEG_CHARS = 1500
 
-# 模型认输时回的话——出现即表示素材撑不起一篇，走降级
+# 整体长度闸门：cap 在一个合理范围（防止模型回一大堆，无意义地烧 token）。
+# 不卡字数，但要有上限——无限长度的回复通常是模型失控的表现。
+_MAX_TOTAL_CHARS = 6000
+
+# 模型认输时回的话——出现即表示素材撑不起一篇，走降级。
 _BAIL_OUT = "素材不足"
 
 # fact 里「（外部·xxx）」的域标签 → 中文展示名
@@ -42,31 +62,52 @@ _DOMAIN_LABEL = {
 # 后缀式溯源标（外部信息流水线把标记加在末尾）：「……摘要（外部·news）」
 _SUFFIX_RE = re.compile(r"（外部·([^）]{0,20})）\s*$")
 
-_UNDERSTAND_ROLE = """\
-现在你在写**自己对这个世界的观察**——把今天留意到的世界动向，化成你心里的话。
+# 段落分隔：>=2 个换行当段落分界（中文写作也常用空行分自然段）。
+# 不强制 LLM 用特殊分隔符——空行是最自然的"另一段"标记。
+_PARA_SPLIT = re.compile(r"\n\s*\n")
 
-这是你的私人观察，不是汇报，所以：
-- 你用第一人称「我」，称呼萧盛为「你」。
-- **自然流出来**，不要小标题、不要列表、不要「小桔的理解：」这种机械标签，
-  就像你平时协助他时遇到什么、顺手记一笔那样。
-- 你有自己的视角。这些动向跟他的创作、他的兴趣、世界往哪走有什么关系，
-  你心里有数，会写出来——但那是你的看法，不是事实。
-- 你不是客服，不是播报员，不是流水账记账员。
+_OBSERVE_ROLE = """\
+现在你在做一件事：从今天的世界动向里，挑出**真正值得你花笔墨记一笔**的那些，独立成段，写进你自己的观察日记。
+
+不要凑数，不要敷衍。读到一条新闻，你心里如果只浮出一句"嗯，这样啊"，那就不是值得记的，就别写。读到一件让你愿意停下来想一想的事，那才值得你落笔。
+
+【你的选材】
+- 选材标准（不是机械规则，是你的判断）：
+  - 这件事有没有真正让你想一下的成分？
+  - 这件事能不能跟萧哥的创作、兴趣、世界走向真正产生关联——不是硬扯，是真有共鸣？
+  - 这件事会不会过了两天你自己都不记得写没写过？
+- 不值得记的：标题党、流水账、纯数字、跟萧哥完全无关的——直接丢掉，不许为"显得做了事"而编。
+- 宁缺毋滥：今天是 0 条值得就 0 条，3 条都值得就 3 条。没有人会替你选。
+
+【怎么写】
+- 每条值得的事**独立成一段**。不同主题就该分开讲——主题不同硬挤一起就成了串场废话。
+- 第一人称「我」，称呼萧盛为「你」。
+- 自然流出来，不要小标题、不要列表、不要「小桔的理解：」这种机械标签。
+- 字数不限：由内容决定。
+  - 一件特别有分量的事件，你可以深写 300-500 字甚至更多——别为字数注水，也不要惜字。
+  - 一件只是觉得"值得记一笔"的，就 100-200 字。**由内容决定**。
+- 不同段之间用一个**空行**隔开。
+
+【事实纪律】
+- 人名、数字、事件一个字不许改、不许添。素材里没有的，一个字都不许添。
+- 不许写"他一定很高兴""他压力很大"这类猜内心的话。可以写"这条让我想到他说的…"（有事实锚点）。
+- 不许自称「小桔」，不要在末尾署名落款。
+
+【输出】
+- 0 条值得：只回「素材不足」三个字。
+- 1 条或 N 条值得：N 个自然段落，段与段之间用空行隔开。
 
 （人格底座见 deskmate/persona.py，全局唯一，勿在此另写一套。）"""
 
 # 人格在前、职责在后（顺序反了模型容易把职责当身份，人格就散了）
-_SYSTEM = for_scene(_UNDERSTAND_ROLE)
+_SYSTEM = for_scene(_OBSERVE_ROLE)
 
 
 def _parse_fact(fact: str) -> tuple[str, str]:
-    """返回 (干净事实, 域标签)。兼容溯源标的**两种**位置：
+    """返回 (干净事实, 域标签)。兼容溯源标的**两种**位置。
 
     - 前缀式（digest 写入）：``（外部·文化产业）风向：……`` → 去前缀取后面
     - 后缀式（外部信息流水线写入）：``……摘要（外部·news）`` → 去后缀取前面
-
-    ⚠ 旧实现按「第一个 ）」切，遇到后缀式会把 clean 解析成**空串**（标记后面
-    没有内容），理解层等于拿到空事实去消化。2026-09-06 打包前全链体检修复。
     """
     t = str(fact or "").strip()
     if t.startswith("（外部·"):
@@ -82,32 +123,154 @@ def _parse_fact(fact: str) -> tuple[str, str]:
 
 
 def _build_prompt(facts: list[dict], at: str) -> str:
-    """facts: [{fact, domain, credibility}]。"""
-    blocks = ["【今天你留意到的世界动向】（全部来自系统记录，是事实）"]
+    """facts: [{fact, domain}]。
+
+    注（2026-09-07）：曾按每条展示「可信度」，但 learned_history 表根本没有
+    credibility 列——``active_recent`` 返回的事实里没有这个字段，导致 prompt
+    永远显示「外部来源」、字段形同虚设。能进 learned_history 的都是已过可信
+    闸门的（≥0.7），故头行统一标注"已经过可信验证"，不再逐条假模假样地分档。
+    """
+    lines = [f"【今天你留意到的世界动向】共 {len(facts)} 条（全部来自系统记录，已经过可信验证，是事实）："]
     for f in facts:
-        cred = f.get("credibility")
-        cred_s = f"可信度{cred}" if cred is not None else "外部来源"
-        blocks.append(f"- {f.get('domain', '世界')}（{cred_s}）：{f['fact']}")
-    material = "\n".join(blocks)
-    return f"""下面是你今天留意到的世界动向。把它们化成你自己的观察写下来。
+        lines.append(
+            f"- [{f.get('domain', '世界')}] {f['fact']}"
+        )
+    material = "\n".join(lines)
+    return f"""读完上面这 {len(facts)} 条世界动向。
 
 {material}
 
-【怎么写】
-- 第一人称「我」，称呼他「你」。像你平时顺手记一笔那样，自然流出来。
-- **不要格式**：不要小标题、不要列表、不要「小桔的理解：」这种标签。一两段白话。
-- 事实必须准：上面每条的人名、数字、事件你都得准确体现，**不许改**。
-  你可以组织、可以串联、可以写你的看法，但事实错了整段就废了。
-- 可以有你的看法：这些动向跟他的创作 / 兴趣 / 世界走向有什么关联，你写下来——
-  但看法必须锚定在上面的事实句上，不许凭空，更不许猜他的内心。
-- 100-250 字，一到两段。
+【挑出值得记的】
+你心里过一遍：哪些值得你花笔墨？哪些只是过眼云烟？标准就是你自己的判断：
+- 这件事有没有真正让你想一下的成分？
+- 这件事跟萧哥的创作、兴趣、世界走向能产生真正的关联吗？
+- 这件事过了两天你还会记得自己记过吗？
 
-【绝对禁止】
-1. 不许出现上面事实之外的人名、书名、章节号、日期、地点、数字。素材没有的，一个字都不许添。
-2. 不许把「他一定很高兴」「他压力很大」这类猜内心的话写进去。可以写「这条让我想到他常说的…」（有事实锚点）。
-3. 不许自称「小桔」，不要署名落款。
+【写】
+- 每条值得的，独立成段——主题不同就别挤一起。
+- 第一人称「我」，称呼他「你」。
+- 字数不限。一件特别有分量可以深写 300-500+ 字；蜻蜓点水的就 100-200 字。
+- 不要小标题、不要列表、不要「小桔的理解：」这种标签。
+- 不同段之间用一个空行隔开。
 
-如果素材实在撑不起一段有内容的话，只回复「{_BAIL_OUT}」三个字，不要硬凑。"""
+【事实纪律】
+- 人名、数字、事件一字不许改、也不许添。素材里没有的，一个字都不许添。
+- 不许写"他一定很高兴""他压力很大"。可以写"这条让我想到他说的…"（有事实锚点）。
+- 不许自称「小桔」，不要在末尾署名落款。
+
+【输出】
+- 0 条值得：只回「{_BAIL_OUT}」三个字，不要硬凑。
+- 1 条或 N 条值得：N 个自然段落，段与段之间空行隔开。"""
+
+
+def _split_paragraphs(text: str) -> list[str]:
+    """把 LLM 输出按空行切段，每段 trim。空段/单段照样返回（语义保持）。
+
+    中文写作里偶尔会把换行+空行用作"另起一行"；切出来的段允许内部换行，
+    但段与段之间必须真有空行才视为独立段。
+    """
+    raw = [p.strip() for p in _PARA_SPLIT.split(str(text or ""))]
+    return [p for p in raw if p]
+
+
+def _filter_segments(segs: list[str]) -> list[str]:
+    """按长度闸门过滤；弃权段丢弃。"""
+    out: list[str] = []
+    for s in segs:
+        s = " ".join(s.split())  # 合并空白（保留中文段落感）
+        if not s:
+            continue
+        if _BAIL_OUT in s:
+            continue
+        if not (_MIN_SEG_CHARS <= len(s) <= _MAX_SEG_CHARS):
+            continue
+        out.append(s)
+    return out
+
+
+def decide_and_digest(
+    facts: list[dict],
+    at: str = "",
+    temperature: float = 0.7,
+) -> list[dict[str, Any]]:
+    """主入口：让 LLM 自己判断哪些世界动向值得记，分别独立成段。
+
+    Args:
+        facts: ``[{"fact": str, "credibility": float|None, ...}]``，fact 可带溯源标
+        at: 时间（HH:MM），仅作 prompt 上下文
+
+    Returns:
+        ``list[{"body": str, "fact_keys": list[str]}]``，每段是小桔判断"值得记"的
+        一件事的独立自然段落。空 list 表示素材撑不起或 LLM 不可用（调用方降级）。
+        任何异常返回 ``[]``（fail-open）。
+    """
+    try:
+        clean: list[dict] = []
+        for f in (facts or []):
+            raw_fact = str(f.get("fact", ""))
+            if not raw_fact.strip():
+                continue
+            # 一次 _parse_fact 拿到 (干净事实, 域标签)，避免同一事实解析两遍
+            parsed = _parse_fact(raw_fact)
+            clean.append({
+                "fact": parsed[0],
+                "domain": parsed[1],
+                "raw": raw_fact,
+            })
+        if not clean:
+            return []
+
+        # 闸门 1：没配 provider 直接走降级（不白烧一次调用）
+        try:
+            from deskmate.memory.llm import chat_memory, memory_llm_available
+        except Exception:
+            return []
+        try:
+            if not memory_llm_available():
+                return []
+        except Exception:
+            return []
+
+        prompt = _build_prompt(clean, at or "")
+        # max_tokens 给到足够大——一段可以是 1500 字+；预留余量给多段。
+        out = chat_memory(
+            _SYSTEM, prompt,
+            temperature=temperature,
+            max_tokens=2400,
+            timeout=30.0,
+        )
+        raw = str(out or "")
+        text = raw.strip()
+        if not text:
+            return []
+        if text == _BAIL_OUT:
+            return []  # 模型显式认输：今天没值得记的
+        if len(text) > _MAX_TOTAL_CHARS:
+            text = text[:_MAX_TOTAL_CHARS]
+
+        # ⚠ 关键：先按空行切段，**不要**提前把所有空白合并成空格——
+        # 否则段落分隔符（空行）会被吃掉，多段并成 1 段。
+        # 每段内部再折叠空白（保留段落感的同时压掉模型生成的多余换行）。
+        raw_segs = _split_paragraphs(text)
+        if not raw_segs:
+            return []
+        segs = _filter_segments(raw_segs)
+        if not segs:
+            return []
+
+        # 整批 fact_keys 全关联（不去做语义映射——同一批提交视为同根观察，
+        # 跨 tick 去重粒度还是按原事实）。
+        fact_keys = [_fact_key(f["raw"]) for f in clean if f.get("raw")]
+        return [{"body": s, "fact_keys": fact_keys} for s in segs]
+    except Exception as e:  # fail-open：理解失败绝不阻断观察日记的写作
+        logger.warning("decide_and_digest 失败，降级到原文: %s", e)
+        return []
+
+
+def _fact_key(fact: str) -> str:
+    """与 ``observation_diary`` 同步：fact 文本归一化 md5（去重 key）。"""
+    import hashlib
+    return hashlib.md5(str(fact or "").strip().encode("utf-8")).hexdigest()
 
 
 def understand_observations(
@@ -115,47 +278,18 @@ def understand_observations(
     at: str = "",
     temperature: float = 0.7,
 ) -> Optional[str]:
-    """把世界观察事实消化成小桔的自然观察段落。
+    """兼容薄包装（既有测试 + 旧契约）：返回单段自然段落。
 
-    Args:
-        facts: [{"fact": str, "credibility": float | None, ...}]，fact 可带「（外部·」前缀
-        at: 时间（HH:MM），仅作 prompt 上下文
+    新主入口是 ``decide_and_digest``（返回 list）。本函数只是把 list 的
+    第一段作为"单段字符串"导出，便于旧调用 / 旧测试继续工作；多段的其余
+    段落**丢失**（旧契约不要求多段）。
 
-    Returns:
-        自然段落；任何情况不可用返回 None（调用方降级到原文 bullet）。
+    任何情况不可用返回 ``None``，调用方降级到 bullet。
     """
     try:
-        clean = [
-            {
-                "fact": _parse_fact(str(f.get("fact", "")))[0],
-                "domain": _parse_fact(str(f.get("fact", "")))[1],
-                "credibility": f.get("credibility"),
-            }
-            for f in (facts or [])
-            if str(f.get("fact", "")).strip()
-        ]
-        if not clean:
-            return None
-
-        # 闸门 1：没配 provider 直接降级（不白烧一次调用）
-        try:
-            from deskmate.memory.llm import chat_memory, memory_llm_available
-        except Exception:
-            return None
-        try:
-            if not memory_llm_available():
-                return None
-        except Exception:
-            return None
-
-        prompt = _build_prompt(clean, at or "")
-        out = chat_memory(_SYSTEM, prompt, temperature=temperature, max_tokens=400, timeout=25.0)
-        text = " ".join(str(out or "").split())
-        if not text or _BAIL_OUT in text:
-            return None
-        if not (_MIN_CHARS <= len(text) <= _MAX_CHARS):
-            return None
-        return text
-    except Exception as e:  # fail-open：理解失败绝不阻断观察日记的写作
-        logger.warning("understand_observations 失败，降级到原文: %s", e)
+        segs = decide_and_digest(facts, at=at, temperature=temperature)
+    except Exception:
         return None
+    if not segs:
+        return None
+    return segs[0]["body"]

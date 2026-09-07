@@ -47,6 +47,12 @@ REGISTRY: dict[str, ActionSpec] = {
         label="观察日记",
         description="把主动摄入的世界观察写成小桔的观察日记（落本地日记文件），不碰用户文件、不发消息、不删东西",
     ),
+    "worldview_reflection": ActionSpec(
+        action_type="worldview_reflection",
+        risk="low",
+        label="世界观回望",
+        description="攒够若干条世界观察后回头看一次，把理解沉淀成她自己的看法（写本地认知库 worldview 层），不碰用户文件、不发消息",
+    ),
     "rss_digest": ActionSpec(
         action_type="rss_digest",
         risk="low",
