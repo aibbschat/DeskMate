@@ -165,10 +165,12 @@ describe("MomentFeed 微博时间线（后端版）", () => {
     render(<MomentFeed />);
     expect(await screen.findByText("第一页甲")).toBeTruthy();
     expect(screen.getByText("第一页乙")).toBeTruthy();
-    expect(screen.getByText("加载更多日记")).toBeTruthy();
-    fireEvent.click(screen.getByText("加载更多日记"));
+    // 首屏 2 条 < 页大小，仍常驻显示分页器（第 1 / 1 页 + 下一页，hasMore 可续拉）
+    expect(screen.getByText("第 1 / 1 页")).toBeTruthy();
+    fireEvent.click(screen.getByText(/下一页/));
     expect(await screen.findByText("第二页丙")).toBeTruthy();
-    await waitFor(() => expect(screen.queryByText("加载更多日记")).toBeNull());
+    // 末页无更多：下一页禁用
+    await waitFor(() => expect((screen.getByText(/下一页/) as HTMLButtonElement).disabled).toBe(true));
   });
 
   it("每条日记可独立归档：归档后离开时间线收进「已归档」区，可取消归档恢复", async () => {

@@ -109,10 +109,12 @@ class SocraticInterviewEngine(InterviewEngine):
         """
         questions: list[dict] = []
 
-        # 1) questioned 条目（矛盾待澄清）
-        for s in profile.stances:
-            if s.status == "questioned":
-                questions.append(self._build(s.topic, s.content, "clarify", related_item_id=s.id))
+        # 1) questioned 条目（矛盾待澄清）——遍历五个维度（不只 stances）
+        for it in (profile.stances + profile.value_rankings
+                   + profile.thinking_frameworks + profile.argument_patterns):
+            if getattr(it, "status", "") == "questioned":
+                topic = getattr(it, "topic", None) or getattr(it, "domain", "") or ""
+                questions.append(self._build(topic, it.content, "clarify", related_item_id=it.id))
 
         # 2) open gaps（有 related_items → 澄清；否则 → 探索新领域）
         gaps = sorted(profile.open_gaps(), key=lambda g: -g.priority)
@@ -203,14 +205,13 @@ class SocraticInterviewEngine(InterviewEngine):
 
     @staticmethod
     def _absorb_response(pm, gap_id, response, layer="cognitive"):
-        """把访谈回答作为认知信号并入画像（规则优先，不依赖 LLM）。
+        """把访谈回答作为认知信号并入画像。
 
         explore（探索新领域）问题的核心价值：用户针对未知盲区的直接表达。
-        - 同 topic 已有 active 条目 → 补充 interview 来源 + 升置信；
-        - 新领域（无同 topic 条目）→ 新建 stance（source_type='interview'）。
+        - cognitive 层：优先用 LLM 抽取四维度结构化认知（带 contexts 情境标签），
+          LLM 不可用时降级为规则兜底（只落 stance）；
+        - emotional 层：维持原逻辑（按 gap topic 推断情感维度 tag）。
         直接操作条目，绕开 add_stance 矛盾检测，避免误 spawn 假 gap。
-        layer='emotional' 时：按 gap topic 推断情感维度 tag（care_preference /
-        recovery_pattern / emotional_trigger），让访谈回灌能被子系统读为情感画像。
         """
         text = (response or "").strip()
         if not text:
@@ -219,35 +220,77 @@ class SocraticInterviewEngine(InterviewEngine):
         raw_topic = (gap.topic if gap else "") or "深度访谈"
         # gap.topic 可能带"立场矛盾："/"认知盲区："等前缀，去掉前缀还原真实议题
         topic = raw_topic.split("：", 1)[-1].strip() or "深度访谈"
+
+        if layer == "emotional":
+            SocraticInterviewEngine._absorb_response_emotional(pm, topic, text)
+            return
+
+        # cognitive 层：LLM 抽取四维度（fail-open，仅 LLM 完全不可用才降级规则）
+        try:
+            from .extractor import extract_cognitive_items
+
+            dep = extract_cognitive_items(
+                text, source_type="interview", source_title="深度访谈",
+                source_date=_now(), context_hint=topic, pm=pm, mode="merge",
+            )
+        except Exception as e:
+            logger.warning("访谈 LLM 抽取失败（降级规则）: %s", e)
+            dep = {"error": "exception"}
+        if dep.get("error") == "llm_not_available":
+            SocraticInterviewEngine._absorb_response_rule(pm, topic, text)
+        # 其他情况（成功抽到 N 条 / 抽到 0 / 解析失败 / 调用异常）信任 LLM 路径，不重复落
+
+    @staticmethod
+    def _absorb_response_emotional(pm, topic, text):
+        """情感层回灌：按 topic 推断维度 tag，落 stance（供情感子系统读取）。"""
         src = SourceRef(
             type="interview", title="深度访谈",
             excerpt=text[:120], date=_now(), confidence=0.6)
-        # 情感层：按 topic 推断维度 tag（供 care_preferences()/recovery_patterns() 读取）
         emo_tags: list[str] = []
-        if layer == "emotional":
-            if "关怀" in topic:
-                emo_tags = ["情感层", "care_preference"]
-            elif "回血" in topic or "恢复" in topic:
-                emo_tags = ["情感层", "recovery_pattern"]
-            else:
-                emo_tags = ["情感层", "emotional_trigger"]
-        # 已有同 topic active 条目 → 补充来源（升置信）
+        if "关怀" in topic:
+            emo_tags = ["情感层", "care_preference"]
+        elif "回血" in topic or "恢复" in topic:
+            emo_tags = ["情感层", "recovery_pattern"]
+        else:
+            emo_tags = ["情感层", "emotional_trigger"]
         for s in pm.profile.stances:
             if s.topic == topic and s.status == "active":
-                if emo_tags:
-                    for t in emo_tags:
-                        if t not in (s.tags or []):
-                            s.tags.append(t)
+                for t in emo_tags:
+                    if t not in (s.tags or []):
+                        s.tags.append(t)
                 s.add_source(src)
                 s.history.append(HistoryEntry(
                     action="updated", old_value=s.content, new_value=s.content,
                     reason="访谈探索补充来源", source="深度访谈"))
                 s.last_updated = _now()
                 return
-        # 新领域 → 新建 stance
         stance = Stance(
             topic=topic, content=text[:200], category="访谈",
-            tags=(["访谈", "认知"] if layer != "emotional" else ["访谈", "认知"] + emo_tags))
+            tags=["访谈", "认知"] + emo_tags)
+        stance.add_source(src)
+        stance.history.append(HistoryEntry(
+            action="created", new_value=text[:200],
+            reason="访谈探索提取", source="深度访谈"))
+        pm.profile.stances.append(stance)
+        pm.profile.extraction_count += 1
+
+    @staticmethod
+    def _absorb_response_rule(pm, topic, text):
+        """规则兜底（LLM 不可用）：把回答落为 stance 或补充来源。"""
+        src = SourceRef(
+            type="interview", title="深度访谈",
+            excerpt=text[:120], date=_now(), confidence=0.6)
+        for s in pm.profile.stances:
+            if s.topic == topic and s.status == "active":
+                s.add_source(src)
+                s.history.append(HistoryEntry(
+                    action="updated", old_value=s.content, new_value=s.content,
+                    reason="访谈探索补充来源", source="深度访谈"))
+                s.last_updated = _now()
+                return
+        stance = Stance(
+            topic=topic, content=text[:200], category="访谈",
+            tags=["访谈", "认知"])
         stance.add_source(src)
         stance.history.append(HistoryEntry(
             action="created", new_value=text[:200],
@@ -379,3 +422,102 @@ def maybe_trigger_interview(limit: int = 3, layer: str = "cognitive") -> Optiona
     if not get_interview_engine().should_interview_now(pm.profile, layer=layer):
         return None
     return start_interview(limit=limit, layer=layer)
+
+
+def seed_missing_dimensions(layer: str = "cognitive", only_empty: bool = True, pm=None) -> dict:
+    """从现有立场推导空维度的候选认知（标 questioned 待用户确认，不逼不灌噪声）。
+
+    让 value / argument / thinking 三维也有内容起点；候选进访谈队列，
+    用户澄清（process_response clarify 模式）后转 active。符合「观点长出来，不靠规则逼」。
+    fail-open：LLM 不可用 / 解析失败 → 返回 {"seeded":0,"error":...}。
+
+    ``pm`` 为 None 时读写默认层画像（供 proactivity tick 调用）；测试可传入隔离库。
+    """
+    from deskmate.memory.llm import chat, llm_available
+    from .extractor import _extract_json
+
+    if pm is None:
+        pm = get_profile_manager(layer=layer)
+    profile = pm.get()
+    if only_empty:
+        empty = [
+            name for name, items in (
+                ("value", profile.active_values()),
+                ("thinking", profile.active_frameworks()),
+                ("argument", profile.active_patterns()),
+            ) if not items
+        ]
+    else:
+        empty = ["value", "thinking", "argument"]
+    if not empty:
+        return {"seeded": 0, "note": "维度已非空，无需 seed"}
+    if not llm_available():
+        return {"seeded": 0, "error": "llm_not_available"}
+
+    stance_lines = [f"- {s.topic}：{s.content[:80]}" for s in profile.active_stances()[:15]]
+    if not stance_lines:
+        return {"seeded": 0, "note": "无立场可推导"}
+
+    system = (
+        "你从一位作者的「立场图谱」推导他可能的其他认知维度特征。只做合理归纳，不编造无据内容。"
+        "每条必须带 contexts（适用情境；普适则给空数组）。输出严格 JSON："
+        '{"value_rankings":[{"domain":"","ranking":[],"content":"","tradeoff_notes":"","contexts":[]}],'
+        '"thinking_frameworks":[{"domain":"","steps":[],"content":"","contexts":[]}],'
+        '"argument_patterns":[{"content":"","pattern_type":"","evidence_preference":"","contexts":[]}]}'
+    )
+    user = "已有立场：\n" + "\n".join(stance_lines) + "\n\n请推导空维度候选（只输出 JSON）。"
+    try:
+        raw = chat(system=system, user=user, temperature=0.3, max_tokens=1200, timeout=120.0)
+    except Exception as e:
+        logger.warning("seed_missing_dimensions LLM 失败: %s", e)
+        return {"seeded": 0, "error": f"llm_call_failed: {e}"}
+    data = _extract_json(raw)
+    if not data:
+        return {"seeded": 0, "error": "json_parse_failed"}
+
+    seeded = 0
+
+    def _src():
+        return SourceRef(type="derived", title="立场推导", excerpt="由立场推导", date=_now(), confidence=0.55)
+
+    if "value" in empty:
+        for v in data.get("value_rankings", [])[:2]:
+            domain = (v.get("domain") or "").strip()
+            content = (v.get("content") or "").strip()
+            if not domain and not content:
+                continue
+            it, op = pm.add_value_ranking(
+                domain=domain, ranking=v.get("ranking", []), content=content,
+                source=_src(), tradeoff_notes=v.get("tradeoff_notes", ""),
+                tags=["推导候选"], contexts=v.get("contexts") or [])
+            if op == "created":
+                it.mark_questioned(reason="由立场推导候选，待你确认")
+                seeded += 1
+    if "thinking" in empty:
+        for f in data.get("thinking_frameworks", [])[:2]:
+            domain = (f.get("domain") or "").strip()
+            content = (f.get("content") or "").strip()
+            if not domain and not content:
+                continue
+            it, op = pm.add_thinking_framework(
+                domain=domain, steps=f.get("steps", []), content=content,
+                source=_src(), tags=["推导候选"], contexts=f.get("contexts") or [])
+            if op == "created":
+                it.mark_questioned(reason="由立场推导候选，待你确认")
+                seeded += 1
+    if "argument" in empty:
+        for p in data.get("argument_patterns", [])[:2]:
+            content = (p.get("content") or "").strip()
+            if not content:
+                continue
+            it, op = pm.add_argument_pattern(
+                content=content, source=_src(),
+                pattern_type=p.get("pattern_type", ""),
+                evidence_preference=p.get("evidence_preference", ""),
+                tags=["推导候选"], contexts=p.get("contexts") or [])
+            if op == "created":
+                it.mark_questioned(reason="由立场推导候选，待你确认")
+                seeded += 1
+    if seeded:
+        pm.save()
+    return {"seeded": seeded}

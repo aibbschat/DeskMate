@@ -21,6 +21,9 @@ import userAvatar from "../../assets/user-avatar.jpg";
 
 const USER_NAME = "萧盛";
 
+/** 时间线每页条数（客户端分页；后端 cursor 仅在超过首屏时按需续拉更旧的） */
+const PAGE_SIZE = 12;
+
 type Author = "xiaoju" | "me";
 
 interface MomentComment {
@@ -166,6 +169,7 @@ export function MomentFeed() {
   const [cursor, setCursor] = useState<string | null>(null);
   const [hasMore, setHasMore] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
+  const [page, setPage] = useState(1);
   const [showArchived, setShowArchived] = useState(false);
 
   const flashNotice = (msg: string) => {
@@ -265,6 +269,7 @@ export function MomentFeed() {
     setMoments([...xj, ...me]);
     setCursor(next);
     setHasMore(next !== null);
+    setPage(1);
     setLoaded(true);
   }, [fetchXjMoments]);
 
@@ -332,6 +337,11 @@ export function MomentFeed() {
     [sorted],
   );
 
+  /** 客户端分页：把已加载的时间线切成页（后端 cursor 仅在超过首屏时按需续拉更旧） */
+  const totalPages = Math.max(1, Math.ceil(activeMoments.length / PAGE_SIZE));
+  const safePage = Math.min(page, totalPages);
+  const pageItems = activeMoments.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE);
+
   /** 用户发日记；后端返回 post + 小桔真回复（LLM） */
   const publish = async () => {
     const text = draft.trim();
@@ -375,6 +385,7 @@ export function MomentFeed() {
         setMoments((prev) => [me, ...prev]);
         setDraft("");
         setComposerOpen(false);
+        setPage(1);
         flashNotice("小桔回复了你");
       } else {
         flashNotice("发布失败，请稍后再试");
@@ -535,7 +546,7 @@ export function MomentFeed() {
       ) : (
         <>
           <div className="mom-timeline">
-            {activeMoments.map((m) => (
+            {pageItems.map((m) => (
               <MomentCard
                 key={m.id}
                 moment={m}
@@ -549,10 +560,47 @@ export function MomentFeed() {
               />
             ))}
           </div>
-          {hasMore && (
-            <div className="mom-loadmore">
-              <button type="button" onClick={loadMore} disabled={loadingMore}>
-                {loadingMore ? "加载中…" : "加载更多日记"}
+          {activeMoments.length > 0 && (
+            <div className="mom-pager">
+              <button
+                type="button"
+                className="mom-pager-btn"
+                onClick={() => safePage > 1 && setPage(safePage - 1)}
+                disabled={safePage <= 1}
+              >
+                ‹ 上一页
+              </button>
+              {totalPages > 1 &&
+                totalPages <= 7 &&
+                Array.from({ length: totalPages }, (_, i) => i + 1).map((n) => (
+                  <button
+                    key={n}
+                    type="button"
+                    className={`mom-pager-num${n === safePage ? " active" : ""}`}
+                    onClick={() => setPage(n)}
+                  >
+                    {n}
+                  </button>
+                ))}
+              <span className="mom-pager-info">第 {safePage} / {totalPages} 页</span>
+              <button
+                type="button"
+                className="mom-pager-btn"
+                onClick={() => {
+                  if (safePage < totalPages) {
+                    setPage(safePage + 1);
+                  } else if (hasMore) {
+                    loadMore();
+                    setPage(Number.MAX_SAFE_INTEGER); // 续拉后由 safePage 收敛到新末页
+                  }
+                }}
+                disabled={safePage >= totalPages && !hasMore}
+              >
+                {safePage >= totalPages && hasMore
+                  ? loadingMore
+                    ? "加载中…"
+                    : "下一页 ›"
+                  : "下一页 ›"}
               </button>
             </div>
           )}

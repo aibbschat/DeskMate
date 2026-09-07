@@ -94,7 +94,10 @@ def _active(items: list) -> list:
 
 
 def _fmt_stance(s) -> str:
-    return f"- {s.content.strip()}"
+    base = f"- {s.content.strip()}"
+    if getattr(s, "contexts", []):
+        base += f"（适用：{', '.join(s.contexts)}）"
+    return base
 
 
 def _fmt_value(v) -> str:
@@ -102,17 +105,24 @@ def _fmt_value(v) -> str:
     head = f"- 【{v.domain}】{ranking}"
     if v.tradeoff_notes:
         head += f"（{v.tradeoff_notes}）"
+    if getattr(v, "contexts", []):
+        head += f"（适用：{', '.join(v.contexts)}）"
     return head
 
 
 def _fmt_argument(a) -> str:
-    return f"- {a.content.strip()}"
+    base = f"- {a.content.strip()}"
+    if getattr(a, "contexts", []):
+        base += f"（适用：{', '.join(a.contexts)}）"
+    return base
 
 
 def _fmt_thinking(t) -> str:
     head = f"- 【{t.domain}】{t.content.strip()}"
     if t.steps:
         head += f"（步骤：{' → '.join(t.steps)}）"
+    if getattr(t, "contexts", []):
+        head += f"（适用：{', '.join(t.contexts)}）"
     return head
 
 
@@ -228,7 +238,24 @@ class CognitiveMemoryInjector(MemoryInjector):
     """
 
     def select_for_context(self, profile: CognitiveProfile, context: str, limit: int = 5) -> list[dict]:
-        text = format_profile(profile, limit=limit)
+        """按对话情境裁剪注入条目：只保留 contexts 为空（全局适用）或含该情境的条目。
+
+        context 为空时退回全量格式化（全量 + 每条带「适用」标注，不丢立体的他）。
+        """
+        if context:
+            def keep(it) -> bool:
+                cs = list(getattr(it, "contexts", []) or [])
+                return not cs or context in cs
+            filtered = CognitiveProfile(
+                stances=[s for s in profile.stances if keep(s)],
+                argument_patterns=[a for a in profile.argument_patterns if keep(a)],
+                value_rankings=[v for v in profile.value_rankings if keep(v)],
+                thinking_frameworks=[t for t in profile.thinking_frameworks if keep(t)],
+                cognitive_gaps=profile.cognitive_gaps,
+            )
+            text = format_profile(filtered, limit=limit)
+        else:
+            text = format_profile(profile, limit=limit)
         return [{"type": "cognitive", "text": text, "source": "认知画像"}] if text else []
 
     def format_for_injection(self, items: list[dict]) -> str:

@@ -59,6 +59,7 @@ class CognitiveItem:
     sources: list[SourceRef] = field(default_factory=list)
     confidence: float = 0.5          # 置信度 0-1，多来源支持会提高
     tags: list[str] = field(default_factory=list)
+    contexts: list[str] = field(default_factory=list)  # 适用情境/触发条件（如"创作圈""学术圈"；空=全局适用，与任何情境相交）
     status: str = "active"           # active / superseded / questioned / merged
     first_extracted: str = field(default_factory=_now)
     last_updated: str = field(default_factory=_now)

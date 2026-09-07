@@ -292,3 +292,164 @@ def get_extractor(profile_manager: Optional[CognitiveProfileManager] = None) -> 
     if _default_extractor is None:
         _default_extractor = CognitiveExtractor(profile_manager)
     return _default_extractor
+
+
+def _all_dim_items(profile: "CognitiveProfile") -> list:
+    """画像四个维度的全部条目（供查重）。"""
+    return (
+        list(profile.stances)
+        + list(profile.argument_patterns)
+        + list(profile.value_rankings)
+        + list(profile.thinking_frameworks)
+    )
+
+
+# ---------------------------------------------------------------------------
+# 交互式认知提取（验证 / 访谈回答）——用户亲口说的，抽四维度带 contexts
+# ---------------------------------------------------------------------------
+RESPONSE_EXTRACTION_SYSTEM_PROMPT = """你是一个「认知特征提取器」，从用户亲口说的话里提取 ta 的认知特征。
+与作品分析不同：这里用户是直接表达，所以放心提取「用户本人相信什么」，不必推断。
+
+提取四个维度（有证据才提，没有就返回空数组）：
+- stances：明确立场（topic=议题, content=立场描述）
+- argument_patterns：论证习惯（content, pattern_type 如 历史类比/制度推演/反证/归纳/举例, evidence_preference 证据偏好）
+- value_rankings：价值观排序（domain=领域, ranking=优先级列表, content, tradeoff_notes=什么情况可妥协）
+- thinking_frameworks：思维框架（domain=领域, steps=分析步骤列表, content）
+
+关键要求——每条必须带 contexts（适用情境 / 触发条件）：
+- 如果用户的话显式或隐含了「在什么情况下 / 对什么人 / 什么利害关系下」才成立，写进 contexts
+  （如 ["创作圈"]、["学术圈"]、["面对家人"]、["出版取舍"]）
+- 如果看不出特定情境、属普适立场，contexts 给空数组 []
+- 容纳矛盾：用户在不同情境有不同取向是正常的，分别写不同条目、各带各自 contexts，不要强行统一
+
+只输出严格 JSON，不要其他文字：
+{
+  "stances": [{"topic":"","content":"","contexts":[],"confidence":0.6}],
+  "argument_patterns": [{"content":"","pattern_type":"","evidence_preference":"","contexts":[],"confidence":0.6}],
+  "value_rankings": [{"domain":"","ranking":[],"content":"","tradeoff_notes":"","contexts":[],"confidence":0.6}],
+  "thinking_frameworks": [{"domain":"","steps":[],"content":"","contexts":[],"confidence":0.6}]
+}"""
+
+
+def extract_cognitive_items(
+    text: str,
+    source_type: str = "validation",
+    source_title: str = "认知验证",
+    source_date: str = "",
+    context_hint: str = "",
+    pm: Optional[CognitiveProfileManager] = None,
+    mode: str = "new_only",
+    max_items: int = 4,
+) -> dict:
+    """从用户亲口表达的文字里抽取认知特征，增量落到四维度（带 contexts）。
+
+    - mode="new_only"：只落「画像里没有同 key 的」新条目（验证答对即沉淀用，避免重复灌噪声）
+    - mode="merge"：允许对已有同 key 条目补充来源 / 深化（访谈消化 gap 用）
+    - fail-open：LLM 不可用 / 解析失败 → 返回 {"deposited":0,"skipped":0,"error":...}
+    """
+    from deskmate.memory.llm import chat, llm_available
+
+    if pm is None:
+        pm = get_profile_manager()
+    if not text or not text.strip():
+        return {"deposited": 0, "skipped": 0, "error": "empty_text"}
+    if not llm_available():
+        return {"deposited": 0, "skipped": 0, "error": "llm_not_available"}
+
+    user_prompt = (
+        f"【情境提示】{context_hint}\n\n"
+        f"【用户亲口说的话】\n{text}\n\n"
+        "请提取该用户的认知特征，严格按系统提示的 JSON 格式输出。"
+    )
+    try:
+        response = chat(
+            system=RESPONSE_EXTRACTION_SYSTEM_PROMPT,
+            user=user_prompt,
+            temperature=0.2,
+            max_tokens=1500,
+            timeout=120.0,
+        )
+    except Exception as e:
+        logger.warning("extract_cognitive_items LLM 失败: %s", e)
+        return {"deposited": 0, "skipped": 0, "error": f"llm_call_failed: {e}"}
+
+    data = _extract_json(response)
+    if not data:
+        return {"deposited": 0, "skipped": 0, "error": "json_parse_failed"}
+
+    profile = pm.profile
+    deposited = skipped = 0
+
+    def _has_active(key_fn, key):
+        if mode != "new_only" or not key:
+            return False
+        for it in _all_dim_items(profile):
+            if getattr(it, "status", "active") == "active" and key_fn(it) == key:
+                return True
+        return False
+
+    # 立场
+    for s in data.get("stances", [])[:max_items]:
+        topic = (s.get("topic") or "").strip()
+        content = (s.get("content") or "").strip()
+        if not content:
+            continue
+        if _has_active(lambda it: getattr(it, "topic", ""), topic):
+            skipped += 1
+            continue
+        src = SourceRef(type=source_type, title=source_title, excerpt=content[:120],
+                        date=source_date, confidence=0.6)
+        pm.add_stance(topic=topic, content=content, source=src,
+                      tags=[source_type], contexts=s.get("contexts") or [])
+        deposited += 1
+
+    # 论证模式
+    for p in data.get("argument_patterns", [])[:max_items]:
+        content = (p.get("content") or "").strip()
+        if not content:
+            continue
+        if _has_active(lambda it: it.content[:20], content[:20]):
+            skipped += 1
+            continue
+        src = SourceRef(type=source_type, title=source_title, excerpt=content[:120],
+                        date=source_date, confidence=0.6)
+        pm.add_argument_pattern(content=content, source=src,
+                                pattern_type=p.get("pattern_type", ""),
+                                evidence_preference=p.get("evidence_preference", ""),
+                                tags=[source_type], contexts=p.get("contexts") or [])
+        deposited += 1
+
+    # 价值观排序
+    for v in data.get("value_rankings", [])[:max_items]:
+        domain = (v.get("domain") or "").strip()
+        content = (v.get("content") or "").strip()
+        if not domain and not content:
+            continue
+        if _has_active(lambda it: getattr(it, "domain", ""), domain):
+            skipped += 1
+            continue
+        src = SourceRef(type=source_type, title=source_title, excerpt=content[:120],
+                        date=source_date, confidence=0.6)
+        pm.add_value_ranking(domain=domain, ranking=v.get("ranking", []), content=content,
+                             source=src, tradeoff_notes=v.get("tradeoff_notes", ""),
+                             tags=[source_type], contexts=v.get("contexts") or [])
+        deposited += 1
+
+    # 思维框架
+    for f in data.get("thinking_frameworks", [])[:max_items]:
+        domain = (f.get("domain") or "").strip()
+        content = (f.get("content") or "").strip()
+        if not domain and not content:
+            continue
+        if _has_active(lambda it: getattr(it, "domain", ""), domain):
+            skipped += 1
+            continue
+        src = SourceRef(type=source_type, title=source_title, excerpt=content[:120],
+                        date=source_date, confidence=0.6)
+        pm.add_thinking_framework(domain=domain, steps=f.get("steps", []), content=content,
+                                  source=src, tags=[source_type], contexts=f.get("contexts") or [])
+        deposited += 1
+
+    if deposited:
+        pm.save()
+    return {"deposited": deposited, "skipped": skipped}

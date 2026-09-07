@@ -100,6 +100,7 @@ class CognitiveProfileManager:
         source: SourceRef,
         tags: Optional[list[str]] = None,
         category: str = "",
+        contexts: Optional[list[str]] = None,
     ) -> tuple[Stance, str]:
         """
         增量添加一个立场。自动判断：
@@ -123,6 +124,7 @@ class CognitiveProfileManager:
                 content=content,
                 category=category or "立场",
                 tags=tags or [],
+                contexts=contexts or [],
             )
             stance.add_source(source)
             stance.history.append(HistoryEntry(
@@ -162,13 +164,42 @@ class CognitiveProfileManager:
         is_contradiction = self._detect_contradiction(target.content, content)
 
         if is_contradiction:
-            # 矛盾：两者都标记 questioned，生成 cognitive_gap
+            # 矛盾分级：先看情境是否相交（容纳矛盾、标注条件）
+            if not self._contexts_conflict(target.contexts, contexts or []):
+                # 合法并存：不同情境下相反 → 小桔理解你的多面，不置疑、不堆 gap
+                if target.contexts:
+                    target.notes = (
+                        (target.notes + "；" if target.notes else "")
+                        + f"适用情境：{', '.join(target.contexts)}"
+                    )
+                new_stance = Stance(
+                    topic=topic,
+                    content=content,
+                    category=category or "立场",
+                    tags=tags or [],
+                    contexts=contexts or [],
+                    status="active",
+                )
+                new_stance.add_source(source)
+                new_stance.history.append(HistoryEntry(
+                    action="created",
+                    new_value=content,
+                    reason=f"与既有立场情境性并存（适用：{', '.join(contexts or [])}），未置疑",
+                    source=source.title,
+                ))
+                self.profile.stances.append(new_stance)
+                self.profile.extraction_count += 1
+                self.save()
+                return new_stance, "coexist"
+
+            # 真矛盾（同情境下相反）→ 两者都标记 questioned，生成 cognitive_gap
             target.mark_questioned(reason=f"与新提取的立场矛盾：{content[:50]}")
             new_stance = Stance(
                 topic=topic,
                 content=content,
                 category=category or "立场",
                 tags=tags or [],
+                contexts=contexts or [],
                 status="questioned",
             )
             new_stance.add_source(source)
@@ -207,6 +238,7 @@ class CognitiveProfileManager:
                 content=content,
                 category=category or "立场",
                 tags=tags or [],
+                contexts=contexts or [],
             )
             new_stance.add_source(source)
             new_stance.history.append(HistoryEntry(
@@ -248,6 +280,7 @@ class CognitiveProfileManager:
         pattern_type: str = "",
         evidence_preference: str = "",
         tags: Optional[list[str]] = None,
+        contexts: Optional[list[str]] = None,
     ) -> tuple[ArgumentPattern, str]:
         # pattern_type 为两边都空时不能算「同类」：LLM 提取常常不给这个字段，
         # 一旦 "" == "" 成立，任何无类型的模式都会被并进第一条，内容直接丢失。
@@ -267,6 +300,7 @@ class CognitiveProfileManager:
                 pattern_type=pattern_type,
                 evidence_preference=evidence_preference,
                 tags=tags or [],
+                contexts=contexts or [],
             )
             pattern.add_source(source)
             pattern.history.append(HistoryEntry(
@@ -283,6 +317,10 @@ class CognitiveProfileManager:
             target.pattern_type = pattern_type
         if evidence_preference and not target.evidence_preference:
             target.evidence_preference = evidence_preference
+        if contexts:
+            for c in contexts:
+                if c not in (target.contexts or []):
+                    target.contexts.append(c)
         target.history.append(HistoryEntry(
             action="updated", reason="补充来源", source=source.title,
         ))
@@ -301,6 +339,7 @@ class CognitiveProfileManager:
         source: SourceRef,
         tradeoff_notes: str = "",
         tags: Optional[list[str]] = None,
+        contexts: Optional[list[str]] = None,
     ) -> tuple[ValueRanking, str]:
         existing = [
             v for v in self.profile.value_rankings
@@ -314,6 +353,7 @@ class CognitiveProfileManager:
                 content=content,
                 tradeoff_notes=tradeoff_notes,
                 tags=tags or [],
+                contexts=contexts or [],
             )
             vr.add_source(source)
             vr.history.append(HistoryEntry(
@@ -337,6 +377,7 @@ class CognitiveProfileManager:
                 content=content,
                 tradeoff_notes=tradeoff_notes,
                 tags=tags or [],
+                contexts=contexts or [],
             )
             new_vr.add_source(source)
             new_vr.history.append(HistoryEntry(
@@ -350,6 +391,10 @@ class CognitiveProfileManager:
             return new_vr, "superseded"
 
         target.add_source(source)
+        if contexts:
+            for c in contexts:
+                if c not in (target.contexts or []):
+                    target.contexts.append(c)
         target.history.append(HistoryEntry(action="updated", reason="补充来源", source=source.title))
         self.profile.extraction_count += 1
         self.save()
@@ -365,6 +410,7 @@ class CognitiveProfileManager:
         content: str,
         source: SourceRef,
         tags: Optional[list[str]] = None,
+        contexts: Optional[list[str]] = None,
     ) -> tuple[ThinkingFramework, str]:
         existing = [
             f for f in self.profile.thinking_frameworks
@@ -377,6 +423,7 @@ class CognitiveProfileManager:
                 steps=steps,
                 content=content,
                 tags=tags or [],
+                contexts=contexts or [],
             )
             tf.add_source(source)
             tf.history.append(HistoryEntry(
@@ -389,6 +436,10 @@ class CognitiveProfileManager:
 
         target = existing[0]
         target.add_source(source)
+        if contexts:
+            for c in contexts:
+                if c not in (target.contexts or []):
+                    target.contexts.append(c)
         # 补充步骤
         for s in steps:
             if s not in target.steps:
@@ -495,6 +546,21 @@ class CognitiveProfileManager:
         old_keywords = set(old[:20].replace("，", " ").replace("。", " ").split())
         new_contains_old_keywords = any(kw in new for kw in old_keywords if len(kw) > 1)
         return has_negation and new_contains_old_keywords
+
+    @staticmethod
+    def _contexts_conflict(existing: list[str], new: list[str]) -> bool:
+        """两条内容相反时，判断是否「真矛盾」（需置疑）还是「情境性并存」。
+
+        容纳矛盾、标注条件：
+        - 任一方 contexts 为空（全局适用）→ 与任何情境相交 → 真矛盾，需置疑；
+        - 双方 contexts 都不空且有交集 → 同情境下相反 → 真矛盾，需置疑；
+        - 双方 contexts 都不空且无交集 → 不同情境下相反 → 合法并存，不置疑。
+        """
+        ex = set(existing or [])
+        nw = set(new or [])
+        if not ex or not nw:
+            return True
+        return bool(ex & nw)
 
     @staticmethod
     def _detect_significant_change(old: str, new: str) -> bool:

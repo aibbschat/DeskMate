@@ -302,7 +302,10 @@ class CognitiveStore:
 
     @staticmethod
     def _item_extra(dim: str, it) -> dict:
-        extra = {"tags": list(getattr(it, "tags", []))}
+        extra = {
+            "tags": list(getattr(it, "tags", [])),
+            "contexts": list(getattr(it, "contexts", [])),
+        }
         if dim == "argument_pattern":
             extra["pattern_type"] = getattr(it, "pattern_type", "")
             extra["evidence_preference"] = getattr(it, "evidence_preference", "")
@@ -347,6 +350,7 @@ class CognitiveStore:
                         status=status, confidence=confidence, first_extracted=first_extracted,
                         last_updated=last_updated, sources=sources, history=history,
                         tags=extra.get("tags", []),
+                        contexts=extra.get("contexts", []),
                     ))
                 elif dim == "argument_pattern":
                     args.append(ArgumentPattern(
@@ -354,6 +358,7 @@ class CognitiveStore:
                         confidence=confidence, first_extracted=first_extracted,
                         last_updated=last_updated, sources=sources, history=history,
                         tags=extra.get("tags", []),
+                        contexts=extra.get("contexts", []),
                         pattern_type=extra.get("pattern_type", ""),
                         evidence_preference=extra.get("evidence_preference", ""),
                     ))
@@ -363,6 +368,7 @@ class CognitiveStore:
                         status=status, confidence=confidence, first_extracted=first_extracted,
                         last_updated=last_updated, sources=sources, history=history,
                         tags=extra.get("tags", []),
+                        contexts=extra.get("contexts", []),
                         ranking=extra.get("ranking", []),
                         tradeoff_notes=extra.get("tradeoff_notes", ""),
                     ))
@@ -373,6 +379,7 @@ class CognitiveStore:
                         last_updated=last_updated, sources=sources, history=history,
                         tags=extra.get("tags", []),
                         steps=extra.get("steps", []),
+                        contexts=extra.get("contexts", []),
                     ))
             profile.stances = stances
             profile.argument_patterns = args

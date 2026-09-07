@@ -3995,6 +3995,28 @@ html[data-theme="dark"] .creation-preview-article a {
 .mom-empty p { margin: 4px 0; }
 .mom-empty-hint { font-size: 13px; color: #c4b9a8; }
 
+/* 时间线分页器 */
+.mom-pager {
+  display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: 6px;
+  margin: 14px 0 4px; padding-top: 12px; border-top: 1px dashed #ece3d3;
+}
+.mom-pager-btn,
+.mom-pager-num {
+  min-width: 34px; height: 30px; padding: 0 10px;
+  border: 1px solid #ece3d3; border-radius: 8px;
+  background: #fff; color: #92400e; font-size: 13px; cursor: pointer;
+  transition: background .15s, border-color .15s, color .15s;
+}
+.mom-pager-btn:hover:not(:disabled),
+.mom-pager-num:hover { background: #faf6ee; border-color: #d97706; }
+.mom-pager-btn:disabled { opacity: .4; cursor: not-allowed; }
+.mom-pager-num.active {
+  background: #fef3e2; border-color: #d97706; color: #b45309; font-weight: 700;
+}
+.mom-pager-info {
+  padding: 0 8px; font-size: 13px; color: #a8a29e; white-space: nowrap;
+}
+
 /* ============================================================
    私密花园 · 个人中心（garden-*）
    由 GardenProfileCenter 注入 CSS 变量（gardenTheme）：

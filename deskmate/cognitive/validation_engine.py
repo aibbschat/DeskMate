@@ -493,13 +493,23 @@ class TuringScenarioEngine(ValidationEngine):  # noqa: F821 (base 在 interfaces
     # ------------------------------------------------------------------
     # 3. 反哺画像
     # ------------------------------------------------------------------
-    def apply_feedback(self, profile: CognitiveProfile, evaluation: dict) -> CognitiveProfile:
+    def apply_feedback(
+        self,
+        profile: CognitiveProfile,
+        evaluation: dict,
+        user_response: Optional[str] = None,
+        pm=None,
+    ) -> CognitiveProfile:
         """
         将验证反馈应用到认知画像。
 
-        - overall >= 0.75（像）：提升相关条目置信度
+        - overall >= 0.75（像）：提升相关条目置信度 + 把用户作答里的新角度沉淀为新条目
         - overall < 0.5（不像）：降相关条目置信度 + 生成 cognitive_gap
         - 中段：微调，不生成 gap
+
+        ``user_response`` / ``pm`` 由 run_validation 传入：用于在「像你」时把作答中
+        画像没有的新角度落成新认知条目（带 contexts 情境标签，source=validation）。
+        pm 为 None 时不沉淀（仅走原置信度逻辑），保持调用兼容。
         """
         if profile is None:
             return profile
@@ -530,6 +540,25 @@ class TuringScenarioEngine(ValidationEngine):  # noqa: F821 (base 在 interfaces
                     reason="Turing test 验证一致（像你）",
                 ))
             note = f"验证一致：{len(targets)} 条画像置信度提升"
+            # 答对即沉淀：用户作答里出现画像没有的新角度 → 落成新条目（带 contexts）
+            if user_response and pm is not None:
+                try:
+                    from .extractor import extract_cognitive_items
+
+                    dep = extract_cognitive_items(
+                        user_response,
+                        source_type="validation",
+                        source_title="认知验证",
+                        source_date=datetime.now().isoformat()[:10],
+                        context_hint=scenario[:80],
+                        pm=pm,
+                        mode="new_only",
+                    )
+                    d = dep.get("deposited", 0)
+                    if d:
+                        note += f"；沉淀 {d} 条新认知（含情境标签）"
+                except Exception as e:
+                    logger.warning("验证答对沉淀失败（不影响原置信度逻辑）: %s", e)
         elif overall < 0.5:
             # 不像：降置信度 + 生成 gap
             if targets:
@@ -713,7 +742,7 @@ def run_validation(
         )
         evaluation["related_items"] = scenario.get("related_items", [])
         evaluation["scenario"] = scenario.get("scenario", "")
-        engine.apply_feedback(profile, evaluation)
+        engine.apply_feedback(profile, evaluation, user_response=user_response, pm=pm)
         pm.save()
         _mark_validation_completed()
         result["evaluation"] = evaluation
