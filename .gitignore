@@ -16,6 +16,8 @@ packaging/.pyinstaller-build-info.json
 .workbuddy/
 vite.config.ts.timestamp-*.mjs
 vitest.config.ts.timestamp-*.mjs
+# Vite / Vitest 缓存（pre-bundle 与测试结果，非源码）
+.vite/
 # Local secrets (live-smoke BYO keys) — never committed
 .env
 .claude/settings.local.json
