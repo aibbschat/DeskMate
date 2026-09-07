@@ -437,6 +437,75 @@ def entities_db_path(bible_dir: Path) -> Path:
     return Path(bible_dir) / _DB_NAME
 
 
+def _schema_columns(schema: str, table: str = "entities") -> dict[str, str]:
+    """从建表 DDL 里解析出 {列名: 列定义}，供存量库补齐。
+
+    只取 CREATE TABLE 内的顶层列定义（按括号深度切分，跳过嵌套），
+    返回顺序即 DDL 书写顺序。
+    """
+    m = re.search(
+        r"CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?%s\s*\((.*?)\)\s*;" % re.escape(table),
+        schema,
+        re.S | re.I,
+    )
+    if not m:
+        return {}
+    body = m.group(1)
+    parts: list[str] = []
+    depth = 0
+    buf: list[str] = []
+    for ch in body:
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+        if ch == "," and depth == 0:
+            parts.append("".join(buf))
+            buf = []
+        else:
+            buf.append(ch)
+    if buf:
+        parts.append("".join(buf))
+
+    cols: dict[str, str] = {}
+    for raw in parts:
+        s = " ".join(raw.split())
+        if not s:
+            continue
+        # 跳过表级约束（PRIMARY KEY(...)、UNIQUE(...) 等），它们不是列
+        head = s.split()[0].upper()
+        if head in ("PRIMARY", "UNIQUE", "CHECK", "FOREIGN", "CONSTRAINT"):
+            continue
+        name = s.split()[0].strip("`\"'")
+        cols[name] = s[len(s.split()[0]):].strip()
+    return cols
+
+
+def _ensure_columns(conn: sqlite3.Connection, table: str = "entities") -> list[str]:
+    """把 _SCHEMA 里声明的列全部补齐到存量库，返回本次新增的列名。
+
+    根治「迁移漏列」：以前每加一列都要手写一段 if，漏一个就炸
+    （本次事故：tier / needs_review 从未被补进老库）。
+    SQLite 无 ADD COLUMN IF NOT EXISTS，只能逐列比对 PRAGMA 后 ALTER。
+
+    约束：NOT NULL 列必须带非 NULL 默认值（_SCHEMA 里都是这么写的）；
+    主键 / UNIQUE 列跳过（SQLite 不允许 ALTER 追加），这类列老库本就有。
+    """
+    declared = _schema_columns(_SCHEMA, table)
+    if not declared:
+        return []
+    have = {r[1] for r in conn.execute("PRAGMA table_info(%s)" % table).fetchall()}
+    added: list[str] = []
+    for name, ddl in declared.items():
+        if name in have:
+            continue
+        if "PRIMARY KEY" in ddl.upper() or ddl.upper().startswith("UNIQUE"):
+            continue  # SQLite 不支持 ALTER 追加主键/唯一约束
+        conn.execute("ALTER TABLE %s ADD COLUMN %s %s" % (table, name, ddl))
+        added.append(name)
+    return added
+
+
 def connect(bible_dir: Path) -> sqlite3.Connection:
     """打开（必要时创建）实体库。调用方负责 close。"""
     p = entities_db_path(bible_dir)
@@ -444,19 +513,12 @@ def connect(bible_dir: Path) -> sqlite3.Connection:
     conn = sqlite3.connect(str(p))
     conn.row_factory = sqlite3.Row
     conn.executescript(_SCHEMA)
-    # 存量库迁移：新增 role_category 列（SQLite 不支持 ADD COLUMN IF NOT EXISTS）
-    _cols = {r[1] for r in conn.execute("PRAGMA table_info(entities)").fetchall()}
-    if "role_category" not in _cols:
-        conn.execute(
-            "ALTER TABLE entities ADD COLUMN role_category TEXT NOT NULL "
-            "DEFAULT 'narrative'"
-        )
-    if "author_confirmed" not in _cols:
-        conn.execute(
-            "ALTER TABLE entities ADD COLUMN author_confirmed INTEGER NOT NULL "
-            "DEFAULT 0"
-        )
-    conn.commit()
+    # 存量库迁移：把 _SCHEMA 声明的列全部补齐（tier / needs_review /
+    # role_category / author_confirmed 及以后新增的列都走这条通用路径）
+    added = _ensure_columns(conn, "entities")
+    if added:
+        conn.commit()
+        logger.info("entities 存量库补齐列: %s", ", ".join(added))
     return conn
 
 
