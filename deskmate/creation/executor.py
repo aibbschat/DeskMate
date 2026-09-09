@@ -83,6 +83,30 @@ def _revision_block(notes: str) -> str:
     return "\n\n【修改要求（针对上一版的修订，必须满足）】\n" + notes
 
 
+def _character_block(profiles: str, *, for_outline: bool = False) -> str:
+    """把「人物小传」拼成防漂移硬锚点段，注入创作 prompt。
+
+    每集创作时重注入，约束人物动机/性格/弧光/关系须一致，禁止 OOC（正派无端行恶、
+    凭空反转关系等）。空小传返回 ""。for_outline=True 时语义为「大纲人物设定须以
+    小传为准」；否则为「剧本创作须严格遵循」。
+    """
+    profiles = (profiles or "").strip()
+    if not profiles:
+        return ""
+    if for_outline:
+        tail = (
+            "（若提供人物小传，大纲中的人物设定须以人物小传为准，"
+            "不得擅自增减主要人物或改变其核心动机。）"
+        )
+    else:
+        tail = (
+            "（铁律：人物动机/性格/弧光/关系须与人物小传一致；禁止人物漂移——"
+            "不得擅自改变角色核心动机、让正派无端行恶、或写出与既定关系矛盾的互动；"
+            "若剧情需要发展人物，须在原著动机延伸线上，不可凭空反转。）"
+        )
+    return f"\n\n【人物小传（防漂移硬锚点，须严格遵循）】\n{profiles}\n{tail}"
+
+
 def _parse_scenes(plan: str) -> list[tuple[str, str]]:
     """解析场景清单行「1.场景名|一句话目标」→ [(场景名, 目标), ...]。
 
@@ -138,6 +162,7 @@ class CreativeExecutor:
         style: Optional[list[str]] = None,
         pacing: str = "",
         revision_notes: str = "",
+        character_profiles: str = "",
         on_event=None,
     ) -> str: ...
     def draft_screenplay(
@@ -151,6 +176,7 @@ class CreativeExecutor:
         episodes: int = 1,
         prior_summaries: str = "",
         revision_notes: str = "",
+        character_profiles: str = "",
         on_event=None,
     ) -> str: ...
     def review(self, text: str, criteria: str, novel_text: str = "", on_event=None) -> ReviewResult: ...
@@ -169,15 +195,17 @@ class StubExecutor:
         style: Optional[list[str]] = None,
         pacing: str = "",
         revision_notes: str = "",
+        character_profiles: str = "",
         on_event=None,
     ) -> str:
         _emit(on_event, type="note", message="正在撰写大纲（stub）…", progress=50)
         tag = f"·附原著{len(novel_text)}字" if novel_text else ""
         req = f"·{','.join(style)}" if style else ""
         req += f"·{pacing}" if pacing else ""
+        char = f"·人物小传{len(character_profiles)}字" if character_profiles else ""
         rev = f"·改：{revision_notes[:40]}" if revision_notes else ""
         _emit(on_event, type="note", message="大纲初稿完成", progress=100)
-        return f"[大纲·stub{tag}{req}{rev}] {concept[:60]}"
+        return f"[大纲·stub{tag}{req}{char}{rev}] {concept[:60]}"
 
     def draft_screenplay(
         self,
@@ -190,6 +218,7 @@ class StubExecutor:
         episodes: int = 1,
         prior_summaries: str = "",
         revision_notes: str = "",
+        character_profiles: str = "",
         on_event=None,
     ) -> str:
         _emit(on_event, type="note", message=f"正在拆解场景（stub）…", progress=10)
@@ -197,11 +226,12 @@ class StubExecutor:
         tag = f"·附原著{len(novel_text)}字" if novel_text else ""
         req = f"·{','.join(style)}" if style else ""
         req += f"·{pacing}" if pacing else ""
+        char = f"·人物小传{len(character_profiles)}字" if character_profiles else ""
         ep = f"·第{episode}/{episodes}集" if episodes and episodes > 1 else ""
         prior = f"\n{prior_summaries}" if prior_summaries else ""
         rev = f"\n·改：{revision_notes[:40]}" if revision_notes else ""
         _emit(on_event, type="note", message="本集草稿完成", progress=100)
-        return f"[剧本·stub{tag}{req}{ep}] {outline[:60]}{prior}{rev}"
+        return f"[剧本·stub{tag}{req}{char}{ep}] {outline[:60]}{prior}{rev}"
 
     def review(self, text: str, criteria: str, novel_text: str = "", on_event=None) -> ReviewResult:
         _emit(on_event, type="note", message="审核专家正在逐项核验（stub）…", progress=60)
@@ -222,6 +252,7 @@ class LLMExecutor:
         style: Optional[list[str]] = None,
         pacing: str = "",
         revision_notes: str = "",
+        character_profiles: str = "",
         on_event=None,
     ) -> str:
         from deskmate.memory.llm import chat, llm_available
@@ -237,6 +268,7 @@ class LLMExecutor:
         )
         req = _requirement_block(style, pacing)
         rev = _revision_block(revision_notes)
+        char_block = _character_block(character_profiles, for_outline=True)
         _emit(on_event, type="note", message="正在撰写大纲…", progress=30)
         text = chat(
             system="你是资深大纲专家。把用户的概念/剧情点子写成结构完整、"
@@ -245,7 +277,7 @@ class LLMExecutor:
             "不能换人物内核；每个主要行为都应能在原著中找到动机支撑。"
             "若给出制作要求，必须严格遵守并在大纲中体现（如节奏影响幕间密度、风格影响基调）。"
             "若给出修改要求，须针对上一版的具体问题逐条修订，不得忽悠。",
-            user=concept + novel_block + req + rev,
+            user=concept + novel_block + req + rev + char_block,
             max_tokens=2000,
         )
         _emit(on_event, type="note", message="大纲初稿完成", progress=100)
@@ -262,6 +294,7 @@ class LLMExecutor:
         episodes: int = 1,
         prior_summaries: str = "",
         revision_notes: str = "",
+        character_profiles: str = "",
         on_event=None,
     ) -> str:
         """分段续写拼接（阶段 5 输出侧）——单次 8k token 出不了长剧，工程拆：
@@ -289,6 +322,7 @@ class LLMExecutor:
             else ""
         )
         rev = _revision_block(revision_notes)
+        char_block = _character_block(character_profiles, for_outline=False)
         is_episodic = bool(episodes and episodes > 1)
         # 1) 拆场景（拆不动则整段写）
         _emit(on_event, type="note", message="正在拆解场景…", progress=5)
@@ -307,7 +341,7 @@ class LLMExecutor:
         # 2) 逐段生成 + 前情摘要续写
         segments: list[str] = []
         prev_summary = "（这是第一段，尚未有前情）"
-        base_user = f"{outline}{novel_block}{req}{prior_block}{rev}"
+        base_user = f"{outline}{novel_block}{req}{prior_block}{rev}{char_block}"
         n = len(scenes)
         for i, (name, goal) in enumerate(scenes, 1):
             progress = 10 + int(88 * i / n)

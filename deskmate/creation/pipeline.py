@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 from pathlib import Path
 from typing import Optional
 
@@ -84,6 +85,9 @@ class CreativePipeline:
         self._novel_related_cache: str = ""  # 圣经 + 相关章节（一次性缓存）
         self._related_override: list[int] = []  # 用户指定创作参考章节（1..n）；空=自动 pick
         self._novel_cache_root = novel_cache_root  # 测试注入用；None=默认 ~/.deskmate/novels
+        # 人物小传（防漂移硬锚点，独立持久化文档，类比圣经）：
+        # 含主要人物的 目标/动机/弧光/关系/红线，每次写剧本重注入，保证人物不漂移。
+        self._char_profiles: str = ""        # 人物小传 markdown（空=尚未生成）
         self._load_drafts()  # 恢复上次的草稿文本（sidecar 重启后 board 状态仍在，草稿不再丢）
 
     # -- 草稿持久化（P1-4：board 状态在 teams.db，草稿文本也须落盘） ------
@@ -104,6 +108,7 @@ class CreativePipeline:
                 "include_review_notes": self.include_review_notes,
             }
             payload["_user_notes"] = dict(self._user_notes)  # 用户打回意见持久化
+            payload["_chars"] = self._char_profiles  # 人物小传（防漂移锚点）落盘
             tmp.write_text(
                 json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
             )
@@ -126,6 +131,8 @@ class CreativePipeline:
                         self.include_review_notes = bool(cfg.get("include_review_notes", True))
                     elif k == "_user_notes":
                         self._user_notes = dict(v or {})
+                    elif k == "_chars":
+                        self._char_profiles = v or ""  # 人物小传（防漂移锚点）恢复
                     elif str(k).lstrip("-").isdigit():
                         self._drafts[int(k)] = v
         except Exception as exc:  # noqa: BLE001
@@ -215,6 +222,83 @@ class CreativePipeline:
         self._related_override = sorted(set(cleaned))
         self._novel_related_cache = ""  # 失效缓存，下次 _novel_related 重建
         logger.info("创作参考章节已设定: %s", self._related_override or "（自动匹配）")
+
+    # -- 人物小传（防漂移锚点：独立持久化文档，类比改编圣经） --------------
+    def extract_characters(self, *, force: bool = False) -> str:
+        """生成/刷新「人物小传」硬锚点（独立 markdown 文档，供每集剧本重注入）。
+
+        抽取源：有原著取改编圣经（最全的人物信息），否则取大纲文本。
+        - LLM 可用 → ``_extract_chars_llm`` 产出结构化小传；
+        - LLM 不可用 → ``_chars_from_bible_stub`` 从圣经 markdown 抽「人物」段降级。
+        幂等：已有小传且不 force 直接返回，不重复烧 token；结果落盘，重启/跨生成复用。
+        """
+        if self._char_profiles and not force:
+            return self._char_profiles
+        source = self._novel_context("bible") or self._outline_text()
+        if not source.strip():
+            self._char_profiles = (
+                "# 人物小传（暂无原著/大纲可提取）\n\n"
+                "请先提供原著或撰写大纲，再生成人物小传；也可手动在此填写主要人物设定。"
+            )
+            self._save_drafts()
+            return self._char_profiles
+        from deskmate.memory.llm import llm_available
+
+        try:
+            if llm_available():
+                self._char_profiles = self._extract_chars_llm(source)
+            else:
+                self._char_profiles = self._chars_from_bible_stub(source)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("人物小传生成失败（降级从圣经抽取）: %s", exc)
+            self._char_profiles = self._chars_from_bible_stub(source)
+        self._save_drafts()
+        return self._char_profiles
+
+    def _extract_chars_llm(self, source: str) -> str:
+        """LLM 路径：把圣经/大纲提炼为结构化人物小传（目标/动机/弧光/关系/红线）。"""
+        from deskmate.memory.llm import chat
+
+        src_label = "改编圣经" if self.novel_index else "大纲"
+        text = chat(
+            system=(
+                "你是资深影视改编角色策划。基于给定的{src}提炼主要人物的「人物小传」，"
+                "作为后续剧本创作防人物漂移的硬性锚点。每个主要人物给出：\n"
+                "- 身份与社会关系\n"
+                "- 核心目标（他在这本书里最想要什么）\n"
+                "- 内心动机（目标背后的深层驱动，须与{src}一致）\n"
+                "- 性格弧光（起点 → 终点，关键转变点）\n"
+                "- 关键关系与冲突（与谁对立/同盟，冲突根源）\n"
+                "- 人设红线（绝对不能 OOC 的行为/台词）\n"
+                "只输出 markdown，每人物一个二级标题（## 姓名），不要复述剧情。"
+            ).format(src=src_label),
+            user=f"【{src_label}】\n{source}",
+            max_tokens=3000,
+        )
+        return (text or "").strip() or self._chars_from_bible_stub(source)
+
+    def _chars_from_bible_stub(self, source: str) -> str:
+        """LLM 不可用时的降级：从圣经/大纲 markdown 抽「人物」相关段作小传底稿。"""
+        kept: list[str] = []
+        capture = False
+        for ln in source.splitlines():
+            head = ln.lstrip()
+            if re.search(r"人物", ln) and (head.startswith(("#", "1.", "一", "*", "-"))):
+                capture = True
+            if capture:
+                kept.append(ln)
+                # 段结束：遇到下一个非人物相关二级/三级标题则停
+                if kept and re.match(r"^#{2,3}\s", ln) and "人物" not in ln:
+                    break
+        if kept:
+            return (
+                "# 人物小传（降级：从圣经抽取人物段，建议配置 LLM 后点「生成人物小传」刷新）\n\n"
+                + "\n".join(kept)
+            )
+        return (
+            "# 人物小传（降级占位）\n\n"
+            "未从原著/大纲中识别到结构化人物信息；配置 LLM 后点击「生成人物小传」可自动提炼。"
+        )
 
     # -- 集号辅助（分集模式：ids["screen_items"] = {ep: item_id}） ----------
     def _is_episodic(self) -> bool:
@@ -576,6 +660,7 @@ class CreativePipeline:
             style=self.style,
             pacing=self.pacing,
             revision_notes=revision,
+            character_profiles=self._char_profiles,
             on_event=on_event,
         )
         self._drafts[outline_item_id] = text
@@ -641,6 +726,15 @@ class CreativePipeline:
         if self.store.get_item(self.space, screen_item_id)["state"] == "open":
             # 门禁点：剧本 in_progress 前检查大纲是否 done；未定稿则抛 PipelineGuardError
             self.guard.transition(self.space, w, screen_item_id, to="in_progress", comment="开始撰写剧本")
+        # 防漂移锚点：首次写剧本且无小传时，自动从圣经/大纲抽取人物小传（透明、幂等、落盘复用）。
+        # 有原著取圣经（最全）；无原著但有大纲则取大纲（绕过门禁时大纲必已定稿）。
+        if not self._char_profiles and (
+            self.novel_index is not None or self._outline_text().strip()
+        ):
+            try:
+                self.extract_characters()
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("首次写剧本自动生成人物小传失败（跳过，后续可手动生成）: %s", exc)
         outline_text = self._outline_text()
         # 重写注入：用户打回意见（分集按集号存 key）+ 最近一次审核打回意见
         stage_key = f"screen:{episode}" if episode else "screen"
@@ -658,6 +752,7 @@ class CreativePipeline:
             episodes=self.episodes,
             prior_summaries=self._prior_context_block(episode),
             revision_notes=revision,
+            character_profiles=self._char_profiles,
             on_event=on_event,
         )
         self._drafts[screen_item_id] = text

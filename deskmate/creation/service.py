@@ -334,6 +334,9 @@ def snapshot(pid: str) -> dict:
         "include_review_notes": bool(getattr(pl, "include_review_notes", True)),
         # 用户打回意见（重写时注入 prompt，前端展示「上次你提的修改要求」）
         "user_notes": dict(getattr(pl, "_user_notes", {}) or {}),
+        # 人物小传（防漂移锚点：前端可预览/编辑，每集剧本重注入）
+        "char_profiles": getattr(pl, "_char_profiles", "") or "",
+        "char_profiles_ready": bool(getattr(pl, "_char_profiles", "") or ""),
     }
 
 
@@ -436,6 +439,25 @@ def set_related_chapters(pid: str, indices: list[int]) -> dict:
     pl = get_pipeline(pid)
     pl.set_related_chapters([int(i) for i in (indices or [])])
     return {"related": list(pl._related_override)}
+
+
+# -- 人物小传（防漂移锚点：独立持久化文档，每集剧本重注入） -----------------
+def extract_characters(pid: str, *, force: bool = False) -> dict:
+    """生成/刷新「人物小传」锚点（从圣经或大纲抽取，幂等，落盘）。
+
+    返回 ``char_profiles``（markdown 文本）与 ``ready``（非空标记）。
+    """
+    pl = get_pipeline(pid)
+    doc = pl.extract_characters(force=force)
+    return {"pid": pid, "char_profiles": doc, "ready": bool(doc.strip())}
+
+
+def set_char_profiles(pid: str, text: str) -> dict:
+    """用户手改人物小传（全剧后续每集生效，因为是独立持久锚点）。落盘并返回。"""
+    pl = get_pipeline(pid)
+    pl._char_profiles = (text or "").strip()
+    pl._save_drafts()
+    return {"pid": pid, "char_profiles": pl._char_profiles, "ready": bool(pl._char_profiles)}
 
 
 # -- 逐步推进（包装异常，返回新快照） -------------------------------------
