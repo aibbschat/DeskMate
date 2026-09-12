@@ -7,32 +7,9 @@
 <link rel="stylesheet" href="https://miaoda.feishu.cn/fonts/css2?family=ZCOOL+KuaiLe&family=Noto+Sans+SC:wght@300;400;500;700&display=swap">
 <style>
 /* ============ 设计 Token ============ */
-:root{
-  --orange-700:#D94A12;
-  --orange-600:#E8551A;
-  --orange-500:#FF7A2F;
-  --orange-400:#FF9E5E;
-  --orange-300:#FFC08F;
-  --orange-100:#FFE9D9;
-  --orange-50:#FFF5ED;
-  --cream:#FFFBF6;
-  --leaf-600:#5E9036;
-  --leaf-500:#7FB54A;
-  --leaf-100:#EFF5E6;
-  --sun-400:#FFC24B;
-  --ink:#3B2A22;
-  --ink-2:#8A7568;
-  --ink-3:#C7B6A9;
-  --card:#FFFFFF;
-  --line:#F4E4D7;
-  --shadow:0 10px 30px rgba(232,85,26,.10);
-  --shadow-soft:0 4px 16px rgba(232,85,26,.08);
-  --radius-lg:24px;
-  --radius-md:16px;
-  --radius-sm:12px;
-  --font-disp:'ZCOOL KuaiLe','PingFang SC','Microsoft YaHei',sans-serif;
-  --font-body:'Noto Sans SC','PingFang SC','Microsoft YaHei',sans-serif;
-}
+/* 设计 Token 已迁移至皮肤包机制，由 skins/{skin-id}/skin.css 动态加载。
+   默认皮肤见 skins/default/skin.css。此处不再硬编码变量，
+   确保皮肤切换时所有组件统一响应。皮肤加载失败时由 JS 注入兜底变量。 */
 *{margin:0;padding:0;box-sizing:border-box}
 html,body{height:100%}
 body{
@@ -312,6 +289,33 @@ input{font-family:inherit}
   .grid-2{grid-template-columns:1fr}
   .set-grid{grid-template-columns:1fr}
 }
+
+/* ============ 皮肤选择器 ============ */
+.skin-picker{margin-top:4px}
+.skin-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:14px;margin-top:14px}
+.skin-card{
+  border:2px solid var(--line);border-radius:var(--radius-md);
+  padding:14px;cursor:pointer;transition:all .2s ease;background:var(--card);
+  position:relative;overflow:hidden;
+}
+.skin-card:hover{border-color:var(--orange-300);transform:translateY(-2px);box-shadow:var(--shadow-soft)}
+.skin-card.active{border-color:var(--orange-500);box-shadow:0 0 0 3px var(--orange-100)}
+.skin-card.active::after{
+  content:"使用中";position:absolute;top:10px;right:10px;
+  background:var(--orange-500);color:#fff;font-size:11px;font-weight:700;
+  padding:3px 10px;border-radius:20px;
+}
+.skin-preview{
+  height:80px;border-radius:var(--radius-sm);margin-bottom:12px;
+  display:flex;overflow:hidden;border:1px solid var(--line);
+}
+.skin-preview .sp-col{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;padding-bottom:8px}
+.skin-preview .sp-dot{width:24px;height:24px;border-radius:50%;border:2px solid rgba(255,255,255,.6);margin-bottom:6px}
+.skin-preview .sp-label{font-size:10px;color:rgba(255,255,255,.9);font-weight:600}
+.skin-name{font-size:15px;font-weight:700;color:var(--ink);margin-bottom:4px}
+.skin-desc{font-size:12px;color:var(--ink-2);line-height:1.5;min-height:32px}
+.skin-meta{display:flex;gap:8px;margin-top:10px;align-items:center}
+.skin-tag{font-size:10px;background:var(--orange-50);color:var(--orange-600);padding:2px 8px;border-radius:20px;font-weight:600}
 </style>
 </head>
 <body>
@@ -331,7 +335,7 @@ input{font-family:inherit}
     </div>
 
     <div class="user-chip">
-      <img src="https://aka.doubaocdn.com/s/UobfSvaVtu" alt="小桔形象">
+      <img src="assets/mascot.png" alt="小桔形象" data-skin-mascot>
       <div>
         <div class="uc-name">阿橙</div>
         <div class="uc-id">小桔的老朋友 · Lv.7</div>
@@ -386,7 +390,7 @@ input{font-family:inherit}
           </div>
           <div class="hero-img">
             <div class="halo"></div>
-            <img src="https://aka.doubaocdn.com/s/UobfSvaVtu" alt="小桔">
+            <img src="assets/mascot.png" alt="小桔" data-skin-mascot>
           </div>
         </div>
 
@@ -481,6 +485,17 @@ input{font-family:inherit}
           <div class="page-sub">管理你的账号、记忆同步与隐私——数据怎么用，由你说了算。</div>
         </div>
         <div class="set-grid">
+
+          <div class="set-panel wide">
+            <div class="set-title">
+              <svg viewBox="0 0 24 24"><circle cx="13.5" cy="6.5" r=".5" fill="currentColor"/><circle cx="17.5" cy="10.5" r=".5" fill="currentColor"/><circle cx="8.5" cy="7.5" r=".5" fill="currentColor"/><circle cx="6.5" cy="12.5" r=".5" fill="currentColor"/><path d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10c.926 0 1.648-.746 1.648-1.688 0-.437-.18-.835-.437-1.125-.29-.289-.438-.652-.438-1.125a1.64 1.64 0 0 1 1.668-1.668h1.996c3.051 0 5.555-2.503 5.555-5.554C21.965 6.012 17.461 2 12 2z"/></svg>
+              外观皮肤
+            </div>
+            <div class="set-desc">给小桔换件衣裳，样式随时切换，选择你喜欢的皮肤。</div>
+            <div class="skin-picker">
+              <div class="skin-grid" id="skin-grid"></div>
+            </div>
+          </div>
 
           <div class="set-panel">
             <div class="set-title">
@@ -583,6 +598,110 @@ input{font-family:inherit}
 <div class="toast" id="toast"></div>
 
 <script>
+/* ============ 皮肤包机制 ============ */
+/* 仿 WorkBuddy 皮肤包结构：skins/{id}/skin.css + skin.json + assets/
+   新增皮肤：① 在 skins/ 下建目录放 skin.css  ② 在此注册表追加一条  ③ 即可在设置页切换 */
+const SKIN_REGISTRY = [
+  {
+    id: "default",
+    name: "经典桔",
+    desc: "小桔默认皮肤，温暖桔黄搭配奶油米色，干净治愈。",
+    css: "skins/default/skin.css",
+    mascot: "assets/mascot.png",
+    preview: ["#E8551A", "#FF7A2F", "#FFC08F", "#FFFBF6"],
+    tag: "默认",
+    theme: "light"
+  },
+  {
+    id: "xiaoju-orange",
+    name: "小桔橙光",
+    desc: "小桔专属皮肤，桔皮帽小女孩主题，更饱满的橙黄渐变与吉祥物氛围。",
+    css: "skins/xiaoju-orange/skin.css",
+    mascot: "skins/xiaoju-orange/assets/mascot.png",
+    preview: ["#D94A12", "#FF8C1A", "#FFB347", "#FFF5E6"],
+    tag: "专属",
+    theme: "light"
+  }
+];
+
+const SkinManager = {
+  current: "default",
+  linkEl: null,
+
+  init() {
+    const saved = localStorage.getItem("xiaoju-skin");
+    this.current = saved && SKIN_REGISTRY.find(s => s.id === saved) ? saved : "default";
+    this.load(this.current);
+  },
+
+  load(skinId) {
+    const skin = SKIN_REGISTRY.find(s => s.id === skinId);
+    if (!skin) return;
+    if (this.linkEl && this.linkEl.parentNode) {
+      this.linkEl.parentNode.removeChild(this.linkEl);
+    }
+    this.linkEl = document.createElement("link");
+    this.linkEl.rel = "stylesheet";
+    this.linkEl.href = skin.css;
+    this.linkEl.id = "skin-stylesheet";
+    this.linkEl.dataset.skinId = skinId;
+    this.linkEl.onerror = () => {
+      console.warn("皮肤 CSS 加载失败，注入兜底变量:", skinId);
+      this.injectFallback();
+    };
+    document.head.appendChild(this.linkEl);
+    this.current = skinId;
+    this.updateMascot();
+  },
+
+  updateMascot() {
+    const skin = SKIN_REGISTRY.find(s => s.id === this.current);
+    if (!skin || !skin.mascot) return;
+    document.querySelectorAll("[data-skin-mascot]").forEach(img => {
+      img.src = skin.mascot;
+    });
+  },
+
+  switch(skinId) {
+    if (skinId === this.current) return;
+    this.load(skinId);
+    localStorage.setItem("xiaoju-skin", skinId);
+    this.renderPicker();
+    const skin = SKIN_REGISTRY.find(s => s.id === skinId);
+    showToast("已切换到「" + skin.name + "」皮肤");
+  },
+
+  injectFallback() {
+    if (document.getElementById("skin-fallback")) return;
+    const style = document.createElement("style");
+    style.id = "skin-fallback";
+    style.textContent = ":root{--orange-700:#D94A12;--orange-600:#E8551A;--orange-500:#FF7A2F;--orange-400:#FF9E5E;--orange-300:#FFC08F;--orange-100:#FFE9D9;--orange-50:#FFF5ED;--cream:#FFFBF6;--leaf-600:#5E9036;--leaf-500:#7FB54A;--leaf-100:#EFF5E6;--sun-400:#FFC24B;--ink:#3B2A22;--ink-2:#8A7568;--ink-3:#C7B6A9;--card:#FFFFFF;--line:#F4E4D7;--shadow:0 10px 30px rgba(232,85,26,.10);--shadow-soft:0 4px 16px rgba(232,85,26,.08);--radius-lg:24px;--radius-md:16px;--radius-sm:12px;--font-disp:'ZCOOL KuaiLe','PingFang SC','Microsoft YaHei',sans-serif;--font-body:'Noto Sans SC','PingFang SC','Microsoft YaHei',sans-serif;}";
+    document.head.appendChild(style);
+  },
+
+  renderPicker() {
+    const grid = document.getElementById("skin-grid");
+    if (!grid) return;
+    grid.innerHTML = SKIN_REGISTRY.map(skin => `
+      <div class="skin-card ${skin.id === this.current ? 'active' : ''}" data-skin="${skin.id}">
+        <div class="skin-preview">
+          ${skin.preview.map((c, i) => `
+            <div class="sp-col" style="background:${c}">
+              <div class="sp-dot" style="background:${skin.preview[Math.min(i + 1, skin.preview.length - 1)]}"></div>
+            </div>
+          `).join("")}
+        </div>
+        <div class="skin-name">${skin.name}</div>
+        <div class="skin-desc">${skin.desc}</div>
+        <div class="skin-meta"><span class="skin-tag">${skin.tag}</span></div>
+      </div>
+    `).join("");
+    grid.querySelectorAll(".skin-card").forEach(card => {
+      card.addEventListener("click", () => this.switch(card.dataset.skin));
+    });
+  }
+};
+
 /* ============ 数据 ============ */
 const MEMORIES = [
   {id:1,cat:"生活",imp:"hi",time:"8月30日",title:"阳台上的薄荷",
@@ -793,6 +912,8 @@ function showToast(msg){
 
 /* ============ 初始化 ============ */
 function init(){
+  SkinManager.init();
+  SkinManager.renderPicker();
   renderOverview();
   renderMemory();
   bindMemoryEvents();

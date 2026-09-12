@@ -52,6 +52,7 @@ import {
 } from "../tauri";
 import { useThemePref } from "../theme";
 import { Icon } from "./Icon";
+import { SkinPicker } from "./deskmate/skins/SkinPicker";
 import { PanelHead } from "./IntegrationsView";
 import { ModelsTab } from "./ManageTabs";
 import { GalleryModal } from "./GalleryModal";
@@ -477,6 +478,8 @@ function AppearanceSection() {
         </div>
         <div className={FIELD_HELP}>调整桌面桌宠（小桔）的显示大小，仅「小桔」模式下可见。</div>
       </div>
+
+      <SkinPicker />
 
       <SidebarCard />
 

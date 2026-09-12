@@ -8,7 +8,9 @@ interface XiaojuAvatarProps {
 }
 
 /**
- * 小桔头像 —— 圆形裁剪的透明 PNG，用于聊天气泡的发言者标识。
+ * 小桔头像 —— 固定用 src/assets/mascot-xiaoju.png（出厂立绘）。
+ * 换肤只改整站配色/装饰，不改小桔自己的形象 —— 桌宠/头像永远是"同一只桔皮帽小女孩"。
+ *
  * 接口与原 CicadaAvatar 兼容（size / className / style）。
  */
 export default function XiaojuAvatar({ size = 18, className, style }: XiaojuAvatarProps) {

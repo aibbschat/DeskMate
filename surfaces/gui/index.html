@@ -4,14 +4,23 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>OpenWorker</title>
-    <!-- Resolve the theme before first paint (no white flash for dark users).
-         Must match src/theme.ts: key "openwork-theme", absent/invalid = auto = follow macOS. -->
+    <!-- Resolve the theme + skin before first paint (no white flash for dark users or wrong
+         brand color after a skin switch). Must match:
+           - src/theme.ts                       key "openwork-theme"
+           - src/components/deskmate/skins/skinStore.ts   key "openwork-skin"
+         styles.css uses [data-skin-pre="<id>"] to bind CSS variables per skin. -->
     <script>
       try {
         var t = localStorage.getItem("openwork-theme");
         var dark = t === "dark" || (t !== "light" && window.matchMedia("(prefers-color-scheme: dark)").matches);
         document.documentElement.dataset.theme = dark ? "dark" : "light";
-      } catch (e) {}
+        var s = localStorage.getItem("openwork-skin");
+        // 非法 id 在 styles.css 里没匹配 → 视觉等同 default；store 启动时会再校验一次
+        document.documentElement.dataset.skinPre = s || "default";
+      } catch (e) {
+        document.documentElement.dataset.theme = "light";
+        document.documentElement.dataset.skinPre = "default";
+      }
     </script>
   </head>
   <body>

@@ -1,0 +1,54 @@
+/* ============================================================
+   小桔皮肤包 · 默认经典桔
+   skin id: default
+   说明：小桔初始默认配色，温暖桔黄 + 奶油米色。
+        本文件仅覆盖 :root CSS 变量，不包含组件样式。
+        组件样式统一在 index.html 内联 <style> 中维护。
+   ============================================================ */
+
+:root {
+  /* —— 主色阶（桔） —— */
+  --orange-700: #D94A12;
+  --orange-600: #E8551A;
+  --orange-500: #FF7A2F;
+  --orange-400: #FF9E5E;
+  --orange-300: #FFC08F;
+  --orange-100: #FFE9D9;
+  --orange-50:  #FFF5ED;
+
+  /* —— 页面底色 —— */
+  --cream: #FFFBF6;
+
+  /* —— 辅助色 —— */
+  --leaf-600: #5E9036;
+  --leaf-500: #7FB54A;
+  --leaf-100: #EFF5E6;
+  --sun-400:  #FFC24B;
+
+  /* —— 文字 —— */
+  --ink:   #3B2A22;
+  --ink-2: #8A7568;
+  --ink-3: #C7B6A9;
+
+  /* —— 卡片 / 边框 —— */
+  --card: #FFFFFF;
+  --line: #F4E4D7;
+
+  /* —— 阴影 —— */
+  --shadow:      0 10px 30px rgba(232, 85, 26, .10);
+  --shadow-soft: 0 4px 16px rgba(232, 85, 26, .08);
+
+  /* —— 圆角 —— */
+  --radius-lg: 24px;
+  --radius-md: 16px;
+  --radius-sm: 12px;
+
+  /* —— 字体 —— */
+  --font-disp: 'ZCOOL KuaiLe', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  --font-body: 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+
+  /* —— 皮肤扩展位（图片资源，默认无） —— */
+  --skin-hero-bg:      none;
+  --skin-mascot-img:   none;
+  --skin-welcome-bg:   none;
+}

@@ -1,0 +1,54 @@
+/* ============================================================
+   小桔皮肤包 · 小桔橙光（xiaoju-orange）
+   skin id: xiaoju-orange
+   主题：桔皮帽小女孩 · 桔黄色主基调
+   说明：小桔专属皮肤，在经典桔基础上调整为更暖更饱满的
+        橙黄金色调，搭配吉祥物形象。仅覆盖 :root CSS 变量。
+   ============================================================ */
+
+:root {
+  /* —— 主色阶（更暖更饱满的橙黄） —— */
+  --orange-700: #C43E0A;
+  --orange-600: #F26B1F;
+  --orange-500: #FF8C1A;
+  --orange-400: #FFA94D;
+  --orange-300: #FFC98A;
+  --orange-100: #FFF0DC;
+  --orange-50:  #FFF8F0;
+
+  /* —— 页面底色（偏杏色暖调） —— */
+  --cream: #FFF8F0;
+
+  /* —— 辅助色 —— */
+  --leaf-600: #4A8028;
+  --leaf-500: #6BA838;
+  --leaf-100: #EDF5E0;
+  --sun-400:  #F0B429;   /* 金色点缀 */
+
+  /* —— 文字（暖褐调） —— */
+  --ink:   #3D2817;
+  --ink-2: #8A6B52;
+  --ink-3: #C4A892;
+
+  /* —— 卡片 / 边框 —— */
+  --card: #FFFFFF;
+  --line: #F5E6D3;
+
+  /* —— 阴影（跟随主色偏暖） —— */
+  --shadow:      0 10px 30px rgba(242, 107, 31, .12);
+  --shadow-soft: 0 4px 16px rgba(242, 107, 31, .09);
+
+  /* —— 圆角 —— */
+  --radius-lg: 24px;
+  --radius-md: 16px;
+  --radius-sm: 12px;
+
+  /* —— 字体 —— */
+  --font-disp: 'ZCOOL KuaiLe', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  --font-body: 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+
+  /* —— 皮肤扩展位（图片资源） —— */
+  --skin-hero-bg:      none;
+  --skin-mascot-img:   url("assets/mascot.png");
+  --skin-welcome-bg:   none;
+}

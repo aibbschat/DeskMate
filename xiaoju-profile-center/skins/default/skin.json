@@ -1,0 +1,19 @@
+{
+  "id": "default",
+  "name": "经典桔",
+  "description": "小桔默认皮肤，温暖桔黄搭配奶油米色，干净治愈。",
+  "version": "1.0.0",
+  "author": "小桔",
+  "theme": "light",
+  "preview": "",
+  "assets": {
+    "mascot": "",
+    "heroBg": "",
+    "welcomeBg": ""
+  },
+  "variables": {
+    "primary": "#E8551A",
+    "background": "#FFFBF6",
+    "text": "#3B2A22"
+  }
+}

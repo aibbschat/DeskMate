@@ -1,0 +1,20 @@
+{
+  "id": "xiaoju-orange",
+  "name": "小桔橙光",
+  "description": "小桔专属皮肤，桔皮帽小女孩主题，更饱满的橙黄金色调与吉祥物氛围。",
+  "version": "1.0.0",
+  "author": "小桔",
+  "theme": "light",
+  "preview": "",
+  "assets": {
+    "mascot": "assets/mascot.png",
+    "heroBg": "",
+    "welcomeBg": ""
+  },
+  "variables": {
+    "primary": "#F26B1F",
+    "background": "#FFF8F0",
+    "text": "#3D2817",
+    "accent": "#F0B429"
+  }
+}

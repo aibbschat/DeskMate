@@ -160,6 +160,11 @@ export function XiaojuMascot({
   const [bouncing, setBouncing] = useState(false);
   const clickTimerRef = useRef<number>(0);
 
+  // 桌宠形象固定用打包内的高清默认图（src/assets/mascot-xiaoju.png）——
+  // 换肤只改整站配色/装饰，永远不替换小桔自己的形象。
+  // (Vite 处理 import 为带 hash 的 URL)
+  const mascotUrl = mascotImg;
+
   const m = Math.max(0, Math.min(100, mood)) / 100;
   const v = Math.max(0, Math.min(100, vitality)) / 100;
   const speedBase = 1 / (0.5 + v * 0.7);
@@ -360,7 +365,7 @@ export function XiaojuMascot({
       >
         <div className="xj-gesture" style={{ width: size, height: size }}>
           <div className="xj-facing">
-            <img src={mascotImg} alt="小桔" className="xj-img" draggable={false} />
+            <img src={mascotUrl} alt="小桔" className="xj-img" draggable={false} />
           </div>
         </div>
       </div>

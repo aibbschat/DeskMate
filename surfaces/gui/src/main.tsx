@@ -3,11 +3,15 @@ import ReactDOM from "react-dom/client";
 import { App } from "./App";
 // import "./i18n";
 import { initTheme } from "./theme";
+import { initSkin } from "./components/deskmate/skins/skinStore";
 import { platformOS } from "./tauri";
 import "./tailwind.css";
 import "./styles.css";
 
 initTheme();
+// Apply the saved skin's CSS variables to <html> pre-React. The store module also applies
+// itself on import, so this is belt-and-suspenders — keeps the boot path explicit & greppable.
+initSkin();
 // Platform hook for CSS (html[data-platform="windows"] scrollbar styling etc.).
 document.documentElement.dataset.platform = platformOS();
 

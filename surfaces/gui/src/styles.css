@@ -85,6 +85,69 @@ html[data-theme="dark"] {
   --check-b: #1c1e22;
 }
 
+/* ===== 皮肤（品牌色 + 装饰变量）=======================================
+   选中的皮肤通过 [data-skin-pre="<id>"] 选择器覆盖 --accent / --accent-soft
+   以及一组 --skin-* 装饰变量。data-skin-pre 在三处写入：
+   ① index.html pre-paint 脚本（首屏防闪）
+   ② src/components/deskmate/skins/skinStore.ts（运行时切肤）
+   ③ src/components/deskmate/skins/skinStore.ts 模块加载（boot）
+   新增皮肤 = 在 skinRegistry.ts 加一条 + 在此加对应选择器（仅需数据 + CSS）。 */
+:root[data-skin-pre="default"] {
+  --accent: #2563eb;
+  --accent-soft: #e9f0fd;
+  --skin-cream: #f5f6f7;
+  --skin-warm: #FFC24B;
+  --skin-glow: rgba(37, 99, 235, 0.35);
+  --skin-shadow: rgba(232, 85, 26, 0.10);
+}
+html[data-theme="dark"][data-skin-pre="default"] {
+  --accent: #4c8dff;
+  --accent-soft: #1c2a44;
+}
+
+:root[data-skin-pre="xiaoju-orange"] {
+  --accent: #F26B1F;
+  --accent-soft: #FFE7CC;
+  --skin-cream: #FFF8F0;
+  --skin-warm: #F0B429;
+  --skin-glow: rgba(242, 107, 31, 0.35);
+  --skin-shadow: rgba(242, 107, 31, 0.12);
+}
+/* 表面色必须带 data-theme 限定：`:root[data-skin-pre=...]` 的特异性高于
+   `html[data-theme="dark"]`，若不限定主题，dark 下浅色表面会把暗色界面洗白。 */
+:root[data-theme="light"][data-skin-pre="xiaoju-orange"] {
+  --paper: #FBF6EF;   /* 暖白纸底（出厂为冷灰 #f5f6f7） */
+  --panel: #FFFCF7;
+  --line: #F1E4D4;
+  --line-strong: #E4D2BC;
+  --ink: #2A211B;     /* 暖黑，对比度 ≥ 12:1 */
+  --muted: #7A6A5C;   /* 暖灰次要文字，约 4.6:1（AA） */
+  --faint: #A2907C;
+  --solid: #F6E9D9;
+  --on-solid: #33261B;
+  --glass: rgba(255, 252, 247, 0.92);
+  --glass-strong: rgba(255, 252, 247, 0.97);
+  --glass-soft: rgba(255, 252, 247, 0.80);
+}
+
+html[data-theme="dark"][data-skin-pre="xiaoju-orange"] {
+  --accent: #FFA94D;
+  --accent-soft: #3a2410;
+  --paper: #17130F;
+  --panel: #201A15;
+  --line: #33281F;
+  --line-strong: #453527;
+  --ink: #F2E9DF;
+  --muted: #A79483;
+  --faint: #7A6A5A;
+  --solid: #33281F;
+  --on-solid: #F2E9DF;
+  --glass: rgba(32, 26, 21, 0.92);
+  --glass-strong: rgba(32, 26, 21, 0.97);
+  --glass-soft: rgba(32, 26, 21, 0.80);
+}
+/* ===== /皮肤 ======================================================== */
+
 * { box-sizing: border-box; }
 html, body, #root { height: 100%; margin: 0; }
 body {

@@ -11,5 +11,9 @@ export default defineConfig({
     // Forces the `en` locale so official English-centric assertions resolve (see
     // src/test/setup.ts). Without it, components render raw i18n keys in tests.
     setupFiles: ["./src/test/setup.ts"],
+    // By default vitest stubs every CSS import to "" — including `?raw`, which the skin
+    // tests use to assert styles.css stays in sync with skinRegistry.ts. Whitelist just
+    // that file so `import stylesCss from ".../styles.css?raw"` yields real text.
+    css: { include: [/styles\.css/] },
   },
 });
