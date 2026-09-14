@@ -253,7 +253,7 @@ class TestMaterialPacking(unittest.TestCase):
 
     def test_prompt_forbids_fabrication(self):
         """prompt 必须明确禁止编造与台账句——这是红线的文字载体。"""
-        p = dn._build_prompt(["09:10 你记住了他的一件事：x"], [], 1, "09:10")
+        p = dn._build_prompt(["09:10 我记下了：x"], [], 1, "09:10")
         self.assertIn("不许出现上面素材之外", p)
         self.assertIn("台账", p)
         self.assertIn("素材不足", p)  # 允许弃权
@@ -581,13 +581,81 @@ class TestRecentMemories(unittest.TestCase):
             ["09:10 你们聊了一阵"], [], 1, "09:10",
             memories=["他在写《国子监秘闻录》"],
         )
-        self.assertIn("【你对他已有的了解】", p)   # 背景块标题只在有 memories 时出现
+        self.assertIn("【我早就知道的事】", p)   # 背景块标题只在有 memories 时出现
         self.assertIn("国子监", p)
         self.assertIn("不许当成今天新发生的事写", p)
 
     def test_prompt_without_memories_has_no_block(self):
-        p = dn._build_prompt(["09:10 你们聊了一阵"], [], 1, "09:10")
-        self.assertNotIn("【你对他已有的了解】", p)
+        p = dn._build_prompt(["09:10 我们聊了一阵"], [], 1, "09:10")
+        self.assertNotIn("【我早就知道的事】", p)
+
+
+class TestPronounSpaceContract(unittest.TestCase):
+    """素材与输出必须共用**一套**人称（我=小桔，你=萧盛），不得再做翻转。
+
+    回归 2026-09-14：旧版素材块用「你=小桔、他=萧盛」，输出规则却要求
+    「我=小桔、你=萧盛」——同一份 prompt 里「你」指两个人，模型每次都得先翻转。
+    素材一旦没主语（「《衙探》读到第7章末」）就翻车：她的每日读书被写成
+    「你（萧盛）安静地看着《衙探》」。
+
+    钉死的契约：
+    - 素材行（``_facts`` / ``_signals``）里**不出现第三人称「他」**，指代只用「我/你」；
+    - 指示性文字里提萧盛写**专名**「萧盛」，避免与"对模型说话的「你」"撞车；
+    - 素材块抬头声明人称已与日记对齐。
+    """
+
+    def _events(self) -> list[dict]:
+        return [
+            {"ts": "2026-09-14T02:26:47+00:00", "kind": "memory_learned",
+             "texts": ["2026-09-14: 《衙探》读到第7章末"]},
+            {"ts": "2026-09-14T02:27:30+00:00", "kind": "user_corrected",
+             "note": "流程要先读配置"},
+            {"ts": "2026-09-14T02:28:00+00:00", "kind": "skill_evolved",
+             "skill_name": "novel-review", "reason": "每日读书"},
+            {"ts": "2026-09-14T02:29:00+00:00", "kind": "skill_used",
+             "skill_name": "office", "reason": "出一份报告"},
+            {"ts": "2026-09-14T02:30:00+00:00", "kind": "creation_rework",
+             "note": "标题太平"},
+            {"ts": "2026-09-14T02:31:00+00:00", "kind": "creation_approved",
+             "note": "定稿"},
+            {"ts": "2026-09-14T02:32:00+00:00", "kind": "roundtable"},
+            {"ts": "2026-09-14T02:33:00+00:00", "kind": "writing"},
+            {"ts": "2026-09-14T02:34:00+00:00", "kind": "report"},
+            {"ts": "2026-09-14T02:35:00+00:00", "kind": "chat"},
+        ]
+
+    def test_material_has_no_third_person(self):
+        for line in dn._facts(self._events()) + dn._signals(self._events()):
+            self.assertNotIn("他", line, f"素材行混入第三人称：{line}")
+
+    def test_skill_use_is_her_own_action(self):
+        """技能库与熟练度都归她，技能被用是**她**做的——不能算到萧盛头上。"""
+        facts = dn._facts([
+            {"ts": "2026-09-14T02:27:30+00:00", "kind": "skill_used",
+             "skill_name": "novel-review"},
+        ])
+        self.assertTrue(facts)
+        self.assertIn("我用「novel-review」技能", facts[0])
+
+    def test_instructions_use_xiaosheng_by_name(self):
+        p = dn._build_prompt(["09:10 我记下了：x"], [], 1, "09:10")
+        self.assertIn("称萧盛为「你」", p)
+        self.assertNotIn("他", p.split("【怎么写】", 1)[1])
+
+    def test_material_header_declares_single_pronoun_space(self):
+        p = dn._build_prompt(["09:10 我记下了：x"], [], 1, "09:10")
+        self.assertIn("同一套", p)
+
+    def test_memory_fact_keeps_her_frame(self):
+        """记忆类素材不写「关于他的一件事」——无主语事实正是从这句被误读的。"""
+        facts = dn._facts([
+            {"ts": "2026-09-14T02:26:47+00:00", "kind": "memory_learned",
+             "texts": ["《衙探》读到第7章末"]},
+        ])
+        self.assertTrue(facts)
+        self.assertIn("我记下了：", facts[0])
+        self.assertIn("《衙探》读到第7章末", facts[0])
+        self.assertNotIn("他的一件事", facts[0])
 
 
 if __name__ == "__main__":

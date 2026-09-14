@@ -35,6 +35,33 @@
 「他今天有点着急」能写，因为前面有「打回了三次」；「他心情不错」不能写，
 因为没有任何素材支撑。
 
+## 人称（2026-09-14 定调，改这里前必读）
+
+**全篇只有一套人称：`我` = 小桔，`你` = 萧盛。素材块、背景块、日记正文，全部同一套。**
+
+为什么值得单写一节——曾经不是这样的。旧版**素材块**用「你 = 小桔、他 = 萧盛」，
+而**输出规则**要求「我 = 小桔、你 = 萧盛」。同一个「你」字在同一份 prompt 里
+指两个人，模型每次都得先做一次人称翻转。稳定句式没事，素材一旦含糊就翻车：
+
+- 真实事故（2026-09-14）：每日读书是她自己的任务，素材事实行是
+  「我记下了：《衙探》读到第7章末」（无主语），被框在「关于他的事」里，
+  模型把「读」安到萧盛头上，日记写成「**你**安静地看着《衙探》」——
+  同一分钟的上一则「**你**在《衙探》里的伏笔」里「你」是作者（对），
+  下一则「你」成了读者（错）。
+
+所以改成一套人称，**取消翻转**。配套两条纪律：
+
+1. **素材行不许丢掉主体。** 谁做的就写谁（写「我」或「你」），
+   别产出「《衙探》读到第7章末」这种没有主语的句子——那是把猜的活儿
+   推给了模型。上游记忆抽取同样要求带主语（见 ``memory/manager.py``
+   的抽取器 system prompt）。
+2. **指示性文字（【怎么写】/【绝对禁止】）里提到萧盛，一律写「萧盛」，不写「他」。**
+   那一段是"对模型说话"，里面的「你」是模型自己；若把那儿的「他」改成「你」，
+   又会变成一句里两个「你」。**指代靠专名，不靠人称代词。**
+
+代价是没法迁移已经入库的无主语旧事实（萧哥 2026-09-14 明确不迁）——
+旧条目仍可能被误读，但 50 条窗口滚过去就没了；新数据不会再无主语。
+
 ## 与「零 LLM」红线的关系
 
 ``diary.py`` 的零 LLM 约束管的是**客观档案不许模型编**——技能名、次数、
@@ -71,10 +98,10 @@ _BAIL_OUT = "素材不足"
 _DIARY_ROLE = """\
 现在你在写**自己的日记**——记下刚才这一段时间里，你和萧盛之间真实发生的事。
 
-这是你的私人记录，不是写给他的汇报，所以：
+这是你的私人记录，不是写给萧盛的汇报，所以：
 - 你写具体的事：什么时候、因为什么、结果如何。不写「又进步了」这种空话。
-- **你有自己的观察。** 他哪里做得好、哪里其实是在绕路，你心里有数，
-  也会如实记下来——但那是记在心里，不是说教。**别替他粉饰**。
+- **你有自己的观察。** 萧盛哪里做得好、哪里其实是在绕路，你心里有数，
+  也会如实记下来——但那是记在心里，不是说教。**别替萧盛粉饰**。
 - 这是你的生活面：温柔、真实、有一点温度。安静克制，不撒娇也不煽情。
 - 你不是客服，不是励志博主，更不是流水账记账员。
 
@@ -151,15 +178,15 @@ def _signals(events: list[dict]) -> list[str]:
     approved = sum(1 for e in events if e.get("kind") == "creation_approved")
 
     if rework >= 2:
-        out.append(f"他今天把稿子打回了 {rework} 次")
+        out.append(f"你今天把稿子打回了 {rework} 次")
     elif rework == 1:
-        out.append("他今天有一稿不满意，让你重做了")
+        out.append("你今天有一稿不满意，让我重做了")
     if corrected >= 2:
-        out.append(f"他纠正了你 {corrected} 次")
+        out.append(f"你纠正了我 {corrected} 次")
     elif corrected == 1:
-        out.append("他纠正了你一次")
+        out.append("你纠正了我一次")
     if approved:
-        out.append(f"他拍板定稿了 {approved} 份创作")
+        out.append(f"你拍板定稿了 {approved} 份创作")
 
     # 时段：写到深夜 / 一早开工，是最朴素也最可靠的情绪底色
     hours: list[int] = []
@@ -173,9 +200,9 @@ def _signals(events: list[dict]) -> list[str]:
     if hours:
         lo, hi = min(hours), max(hours)
         if hi >= 22:
-            out.append(f"他一直忙到夜里 {hi} 点")
+            out.append(f"你一直忙到夜里 {hi} 点")
         if lo <= 6:
-            out.append(f"他清早 {lo} 点就开工了")
+            out.append(f"你清早 {lo} 点就开工了")
         if hi - lo >= 4:
             out.append(f"这阵子跨度很长（{lo} 点到 {hi} 点）")
     return out
@@ -230,16 +257,16 @@ def _facts(events: list[dict]) -> list[str]:
             for txt in (e.get("texts") or []):
                 c = _clean(txt, 120)
                 if c:
-                    lines.append(f"{prefix}你记住了他的一件事：{c}")
+                    lines.append(f"{prefix}我记下了：{c}")
             continue
 
         if kind == "user_corrected":
             note = _clean(e.get("note", ""), 120)
             # 占位 note 不算"用户原话"——不写真原因进 prompt，让 LLM 别猜。
             if note and note != "用户明确纠正":
-                lines.append(f'{prefix}他纠正了你：「{note}」')
+                lines.append(f'{prefix}你纠正了我：「{note}」')
             else:
-                lines.append(f"{prefix}他纠正了你一次")
+                lines.append(f"{prefix}你纠正了我一次")
             continue
 
         if kind == "skill_evolved":
@@ -254,36 +281,39 @@ def _facts(events: list[dict]) -> list[str]:
             continue
 
         if kind == "skill_used":
+            # 技能库和熟练度都是**她**的（skills/manager 注入后由她执行），
+            # 所以这里的动作人是「我」，不是萧盛。旧版写「他用了技能」是同类误判：
+            # 2026-09-14 的每日读书事故里，她的活儿被记成了他做的。
             name = _clean(e.get("skill_name", ""), 40)
             reason = _clean(e.get("reason", ""), 150)
             if name and reason:
-                lines.append(f"{prefix}他用「{name}」技能做了：{reason}")
+                lines.append(f"{prefix}我用「{name}」技能做了：{reason}")
             elif name:
-                lines.append(f"{prefix}他用「{name}」技能做了一件事")
+                lines.append(f"{prefix}我用「{name}」技能做了一件事")
             else:
-                lines.append(f"{prefix}他用了一项技能")
+                lines.append(f"{prefix}我用了一项技能")
             continue
 
         if kind == "creation_rework":
             note = _clean(e.get("note", ""), 100)
             lines.append(
-                f"{prefix}有一稿被他打回重做{f'（{note}）' if note else ''}"
+                f"{prefix}有一稿被你打回重做{f'（{note}）' if note else ''}"
             )
             continue
 
         if kind == "creation_approved":
             note = _clean(e.get("note", ""), 100)
-            lines.append(f"{prefix}他拍板定稿了一份创作{f'（{note}）' if note else ''}")
+            lines.append(f"{prefix}你拍板定稿了一份创作{f'（{note}）' if note else ''}")
             continue
 
         if kind == "roundtable":
-            lines.append(f"{prefix}你们开了一次圆桌讨论")
+            lines.append(f"{prefix}我们开了一次圆桌讨论")
         elif kind == "writing":
-            lines.append(f"{prefix}你们一起整理了文稿")
+            lines.append(f"{prefix}我们一起整理了文稿")
         elif kind == "report":
-            lines.append(f"{prefix}他让你出了一份报告")
+            lines.append(f"{prefix}你让我出了一份报告")
         elif kind == "chat":
-            lines.append(f"{prefix}你们聊了一阵")
+            lines.append(f"{prefix}我们聊了一阵")
     return lines
 
 
@@ -300,7 +330,10 @@ def _build_prompt(facts: list[str], signals: list[str],
     懂他的人——但背景是"已有的了解"，不是"今天新发生的事"，两者要分开。
     """
     when = "补记" if seq > 1 else "第一则"
-    blocks = [f"【这一段时间真实发生的事】（全部素材，来自系统记录）"]
+    blocks = [
+        "【这一段时间真实发生的事】（全部素材，来自系统记录；"
+        "素材里的人称和你日记的人称是同一套：「我」是我自己，「你」是萧盛）"
+    ]
     blocks.extend(f"- {f}" for f in facts)
     if signals:
         blocks.append("")
@@ -309,8 +342,8 @@ def _build_prompt(facts: list[str], signals: list[str],
     if memories:
         blocks.append("")
         blocks.append(
-            "【你对他已有的了解】（背景——你早就知道的事，不是今天发生的。"
-            "它让你写得像懂他的那个你，但别把它当成今天的新鲜事记）"
+            "【我早就知道的事】（背景——早于今天的已知信息，不是今天发生的。"
+            "它让日记写得像那个懂萧盛的我，但别当成今天的新鲜事记）"
         )
         blocks.extend(f"- {m}" for m in memories)
 
@@ -320,16 +353,16 @@ def _build_prompt(facts: list[str], signals: list[str],
 {material}
 
 【怎么写】
-- 第一人称「我」，称呼他用「你」。是写给自己的日记，不是工作汇报。
+- 这是你自己的日记：写「我」，称萧盛为「你」。不是写给萧盛的汇报。
 - 挑 1-3 件真正有意思的事讲，**不要列清单**，不要小标题，不要破折号。
 - 可以带情绪，但情绪只能从上面的素材里长出来。举例：
-  有「打回了多次」→ 可以写「看得出他今天有点急」；
-  有「忙到夜里」→ 可以写「他今天熬得挺晚」。
-- 你对他已有的了解，可以**自然地顺带流露**（比如一句"他最近在忙的那本"），
+  有「打回了多次」→ 可以写「看得出你今天有点急」；
+  有「忙到夜里」→ 可以写「你今天熬得挺晚」。
+- 我早就知道的事，可以**自然地顺带流露**（比如一句"你最近在忙的那本"），
   让日记有"我懂你"的底色——但点到为止，别堆砌回忆。
 - **字数由内容决定**：一两段白话可以 100-200 字；今天真有分量的事你可以展开
   写到 300-400+ 字，写得自然就好，不要为凑字注水。
-- 今天只是跟他安安静静地待了一阵、没大事的——你可以写一两句"没什么动静，
+- 今天只是跟萧盛安安静静地待了一阵、没大事的——你可以写一两句"没什么动静，
   但这种一起待着的时刻也挺踏实"，别为显得"写到了事"而硬找事写。
 
 【绝对禁止】
@@ -338,11 +371,11 @@ def _build_prompt(facts: list[str], signals: list[str],
 2. 不许写「技能又精进了」「记住了你 N 件小事」这类台账句——
    技能日志和记忆面板里都有完整记录，日记抄一遍毫无价值。
    要写的是**因为什么事**长进的。
-3. 不许替他下结论（「他一定很高兴」「他压力很大」）。
+3. 不许替萧盛下结论（「你一定很高兴」「你压力很大」）。
    ⚠️ 分界线：**可以有看法**，**不许猜内心**。
-   可以写「这一稿比上回顺，是因为他先理了结构」——看法落在看得见的事上；
-   不许写「他心里其实没底」——那是猜。拿不准就只写事实。
-4. 「你对他已有的了解」只能作懂他的底色，**不许当成今天新发生的事写**——
+   可以写「这一稿比上回顺，是因为你先理了结构」——看法落在看得见的事上；
+   不许写「你心里其实没底」——那是猜。拿不准就只写事实。
+4. 「我早就知道的事」只能作懂萧盛的底色，**不许当成今天新发生的事写**——
    日记记的是【这一段时间真实发生的事】，不是回忆录。
 5. 不许自称「小桔」，也不要在末尾署名或加落款。
 
