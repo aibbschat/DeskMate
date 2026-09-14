@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import json
 import os
+import threading
+import time
 import unittest
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -391,6 +393,133 @@ class DiaryWriterMultiEntryTest(unittest.TestCase):
         self.assertIn("「构思」", text)
         self.assertIn("「校对」", text)
         self.assertNotIn("一口气精进了", text)
+
+
+class ConcurrentWriteIdempotentTest(unittest.TestCase):
+    """并发重入不许写出重复日记（2026-09-14 事故回归）。
+
+    事故形态：写一则日记是「读文件算 seq → 调 LLM（5~25 秒）→ 追加落盘」，
+    三个入口（后台 tick / GUI「生成今日日记」/ 独立 proactivity MCP 进程）
+    能在 LLM 那段窗口里重叠——各自读到同一份文件状态、算出**同一个 seq**、
+    拿着**同一批素材**，各写一条。当天撞了三对（10:04 / 10:48 / 18:31），
+    文件里 10 则而账本只记 9 则，读者得把两条拼起来才读得完整。
+    """
+
+    DAY = "2026-09-14"
+
+    def setUp(self):
+        self._tmp = TemporaryDirectory()
+        self.base = Path(self._tmp.name)
+        d = self.base / "diary" / "materials"
+        d.mkdir(parents=True, exist_ok=True)
+        events = [
+            {"ts": f"{self.DAY}T02:04:44+00:00", "kind": "user_corrected", "note": "身份纠正"},
+            {"ts": f"{self.DAY}T02:48:40+00:00", "kind": "memory_learned",
+             "count": 4, "texts": ["x"]},
+        ]
+        (d / f"{self.DAY}.jsonl").write_text(
+            "\n".join(json.dumps(e, ensure_ascii=False) for e in events) + "\n",
+            encoding="utf-8",
+        )
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    @staticmethod
+    def _narrate_with_delay(delay: float):
+        """冒充 narrate：真实现场调 LLM，耗时 5~25 秒且各次**不等长**。"""
+        def _narrate(events, seq, at, base_dir=None):  # noqa: ANN001
+            time.sleep(delay)
+            return "（正文）这一段时间真实发生的事，我记下来了。"
+        return _narrate
+
+    def _entries(self) -> int:
+        p = self.base / "diary" / f"{self.DAY}.md"
+        return p.read_text(encoding="utf-8").count("\n## ") if p.is_file() else 0
+
+    def test_three_triggers_land_one_entry(self):
+        """三个触发源并发：只有第一个落笔，其余被锁内校验拦下。"""
+        results: list[int | None] = []
+        guard = threading.Lock()
+
+        def worker(delay: float) -> None:
+            insp = DiaryInspiration(base_dir=self.base)
+            fresh = insp.ledger.pending_items(self.DAY)  # 锁外各取一次（竞态起点）
+            res = di.write_entry_once(
+                self.DAY, fresh, [], score=5.0, base_dir=self.base, insp=insp,
+            )
+            with guard:
+                results.append(res["seq"] if res else None)
+
+        with mock.patch.object(
+            DiaryWriter, "_narrate", staticmethod(self._narrate_with_delay(0.2)),
+        ):
+            threads = [
+                threading.Thread(target=worker, args=(d,)) for d in (0.2, 0.5, 0.8)
+            ]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+
+        self.assertEqual(self._entries(), 1, "同一批素材只该写出 1 则")
+        self.assertEqual(
+            len([r for r in results if r]), 1, f"只该有一个触发源落笔，实际：{results}",
+        )
+
+    def test_same_materials_second_time_returns_none(self):
+        """串行复现：A 写完之后 B 拿同一批素材再来 → 被幂等挡掉。"""
+        insp = DiaryInspiration(base_dir=self.base)
+        fresh = insp.ledger.pending_items(self.DAY)
+        with mock.patch.object(
+            DiaryWriter, "_narrate", staticmethod(self._narrate_with_delay(0.0)),
+        ):
+            first = di.write_entry_once(
+                self.DAY, fresh, [], score=5.0, base_dir=self.base, insp=insp,
+            )
+            second = di.write_entry_once(
+                self.DAY, fresh, [], score=5.0, base_dir=self.base, insp=insp,
+            )
+        self.assertIsNotNone(first)
+        self.assertIsNone(second, "已被写过的素材不该再写出第二则")
+        self.assertEqual(self._entries(), 1)
+
+
+class UniqueTmpTest(unittest.TestCase):
+    """临时文件名必须按写入者隔离。
+
+    固定名 ``path.name + ".tmp"`` 在多写入者下互踩：一方 ``os.replace`` 之后
+    另一方的 tmp 已不存在，直接 ``FileNotFoundError``，**整次写入静默丢失**。
+    """
+
+    def test_distinct_per_live_thread(self):
+        """同时存活的两个写入者必须拿到不同的 tmp。
+
+        ⚠ 用 Barrier 强制三个线程**同时在场**才取名：线程结束后 ident 会被
+        系统复用，若让它们串行取名，后一个可能拿到前面已死线程的 ident，
+        测出来的"重名"是假象。
+        """
+        from deskmate.growth._atomic import unique_tmp
+
+        target = Path("/tmp/deskmate-test/2026-09-14.md")
+        barrier = threading.Barrier(3)
+        seen: list[Path] = []
+        guard = threading.Lock()
+
+        def collect() -> None:
+            barrier.wait()  # 三个线程同时存活，再各自取名（模拟真并发）
+            p = unique_tmp(target)
+            with guard:
+                seen.append(p)
+
+        threads = [threading.Thread(target=collect) for _ in range(3)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        self.assertEqual(len(set(seen)), 3, f"三个并发写入者应得三个不同 tmp：{seen}")
+        self.assertTrue(all(p.name.endswith(".tmp") for p in seen))
 
 
 if __name__ == "__main__":

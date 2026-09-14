@@ -47,6 +47,8 @@ import re
 from pathlib import Path
 from typing import Optional
 
+from deskmate.growth._atomic import unique_tmp
+from deskmate.growth.diary import _fingerprint, diary_write_lock
 from deskmate.growth.engine import GrowthEngine
 
 # ----------------------------------------------------------------------
@@ -114,15 +116,6 @@ def _evt_date(ts: str) -> str:
         return ""
 
 
-def _subject_of(e: dict) -> str:
-    """事件的「主体」——用于去重与指纹（同一技能反复进化不该重复计数）。"""
-    for key in ("skill_name", "note", "key", "title", "name"):
-        v = e.get(key)
-        if v:
-            return str(v)
-    return ""
-
-
 def _minutes_since(iso: Optional[str]) -> Optional[float]:
     """距某个 ISO 时刻过了多少分钟；无法解析返回 None（视为无需冷却）。"""
     if not iso:
@@ -132,10 +125,6 @@ def _minutes_since(iso: Optional[str]) -> Optional[float]:
     except (ValueError, TypeError):
         return None
     return (datetime.datetime.now() - dt).total_seconds() / 60.0
-
-
-def _fingerprint(e: dict) -> str:
-    return f"{e.get('ts', '')}|{e.get('kind', '')}|{_subject_of(e)}"
 
 
 # ----------------------------------------------------------------------
@@ -305,10 +294,15 @@ class MaterialLedger:
         return added
 
     def _atomic_write(self, date: str, items: list[dict]) -> None:
-        """临时文件 + os.replace 原子落盘（与项目其它持久化一致的约定）。"""
+        """临时文件 + os.replace 原子落盘（与项目其它持久化一致的约定）。
+
+        临时文件名必须**唯一**（pid + 线程号）：账本会被 tick 线程、GUI 请求
+        线程和独立 MCP 进程同时写，固定名互踩会让一方 ``os.replace`` 报
+        ``FileNotFoundError``、整次写入静默丢失（见 ``diary.unique_tmp``）。
+        """
         self.dir.mkdir(parents=True, exist_ok=True)
         p = self._path(date)
-        tmp = p.with_name(p.name + ".tmp")
+        tmp = unique_tmp(p)
         try:
             tmp.write_text(
                 "\n".join(json.dumps(x, ensure_ascii=False) for x in items) + "\n",
@@ -339,7 +333,7 @@ class MaterialLedger:
 
     def _write_meta(self, date: str, payload: dict) -> None:
         self.dir.mkdir(parents=True, exist_ok=True)
-        tmp = self._meta_path(date).with_suffix(".json.tmp")
+        tmp = unique_tmp(self._meta_path(date))
         try:
             tmp.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
             os.replace(tmp, self._meta_path(date))
@@ -518,12 +512,63 @@ class DiaryInspiration:
 # ----------------------------------------------------------------------
 # 主动触发钩子（供 proactivity tick 调用）
 # ----------------------------------------------------------------------
+def write_entry_once(
+    date: str,
+    fresh: list[dict],
+    badges: list[dict] | None = None,
+    score: float = 0.0,
+    base_dir: Path | str | None = None,
+    insp: DiaryInspiration | None = None,
+) -> Optional[dict]:
+    """幂等写入一则日记；这批素材已被写过则返回 None。
+
+    ## 为什么需要「进锁后再校验一次」
+
+    三个调用方（后台 tick / GUI 按钮 / 独立 MCP 进程）都是在**锁外**先取一次
+    pending 才进来的。第一个进锁的写完并 ``consume`` 之后，第二个手里那批素材
+    其实已经进了日记——不做二次校验，就会写出**第二条重复的日记**。这正是
+    萧哥 2026-09-14 报的「一条日记写成前后两条，得拼起来读」：一天里
+    10:04 / 10:48 / 18:31 各撞了一对，文件 10 则而账本只记 9 则。
+
+    所以本函数把「算 seq → LLM 渲染 → 落盘 → 消费素材」整段放进跨进程锁，
+    并在锁内重新取 pending、与传入的 ``fresh`` 取交集：交集为空即说明已被别的
+    触发源写掉，直接返回 None（调用方据此知道自己这一笔被"抢"了）。
+
+    Returns:
+        写了返回 ``{date, path, seq, at}``；没写（已被写好 / 写盘失败）返回 None。
+    """
+    try:
+        from deskmate.growth.diary import DiaryWriter
+    except Exception:  # pragma: no cover - 理论不可达
+        return None
+    try:
+        insp = insp or DiaryInspiration(base_dir=base_dir)
+        with diary_write_lock(insp.base):
+            still = {_fingerprint(x) for x in insp.ledger.pending_items(date)}
+            todo = [x for x in fresh if _fingerprint(x) in still]
+            if not todo:
+                return None  # 已被别的触发源写进日记
+
+            writer = DiaryWriter(base_dir=insp.base)
+            res = writer.append_entry(date, events=todo, badges=badges or [])
+
+            # 消费掉这批素材 + 记录这一则，让「下一则」从零开始重新攒
+            insp.ledger.consume(date, todo, res["seq"])
+            insp.ledger.mark_entry(date, res["seq"], score)
+            return res
+    except Exception:
+        return None  # 日记失败绝不阻断主动推理主流程
+
+
 def maybe_write_diary(base_dir: Path | str | None = None) -> Optional[dict]:
     """灵感驱动的日记写入钩子。
 
     与 ``maybe_trigger_interview`` 同一范式：纯规则、零 LLM、满足条件才发生。
     不同之处：日记是「她自己动笔」，不打断用户，所以**不需要用户在场**，
     也不占用 SUGGEST 通道——攒够了就安静写下来。
+
+    真正落笔交给 ``write_entry_once``（跨进程锁 + 幂等）——因为除本入口外，
+    GUI 的「生成今日日记」按钮与独立的 proactivity MCP 进程也会写日记。
 
     Returns:
         写了返回 payload（含 path/score/reason/is_refresh）；没写返回 None。
@@ -546,11 +591,11 @@ def maybe_write_diary(base_dir: Path | str | None = None) -> Optional[dict]:
         writer = DiaryWriter(base_dir=insp.base)
         # 徽章只在第一则记：后续补记再列一遍「今天解锁徽章」是冗余
         badges = writer._badges_on(date) if writer.entry_count(date) == 0 else []
-        res = writer.append_entry(date, events=fresh, badges=badges)
-
-        # 消费掉这批素材 + 记录这一则，让「下一则」从零开始重新攒
-        insp.ledger.consume(date, fresh, res["seq"])
-        insp.ledger.mark_entry(date, res["seq"], verdict["score"])
+        res = write_entry_once(
+            date, fresh, badges, score=verdict["score"], base_dir=insp.base, insp=insp,
+        )
+        if not res:
+            return None  # 已被别的触发源写掉（锁内校验拦下）
 
         return {
             "date": date,

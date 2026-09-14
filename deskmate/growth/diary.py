@@ -32,16 +32,24 @@
 
 from __future__ import annotations
 
+import contextlib
 import datetime
 import hashlib
 import logging
 import os
 import re
 import sys
+import threading
 import uuid
 from pathlib import Path
-from typing import Optional
+from typing import Iterator, Optional
 
+try:  # POSIX 跨进程文件锁；Windows 无 fcntl，退化为进程内线程锁
+    import fcntl
+except ImportError:  # pragma: no cover - 仅 Windows
+    fcntl = None  # type: ignore[assignment]
+
+from deskmate.growth._atomic import unique_tmp
 from deskmate.growth.engine import GrowthEngine
 
 logger = logging.getLogger(__name__)
@@ -100,6 +108,81 @@ def _now_hhmm() -> str:
     return datetime.datetime.now().strftime("%H:%M")
 
 
+# 无 fcntl 的平台（Windows）退化成进程内锁——至少挡住同进程的两个入口
+_THREAD_LOCK = threading.Lock()
+
+
+@contextlib.contextmanager
+def diary_write_lock(base_dir=None) -> Iterator[None]:
+    """写日记的**跨进程**互斥区。
+
+    ## 为什么需要它
+
+    写一则日记是一段**无锁的「读-改-写」**：
+
+        seq = 数文件小节 + 1  （读）
+        narrate() 调 LLM       （耗时 5~25 秒 ← 致命的窗口）
+        追加落盘               （写）
+
+    三个入口能在那段窗口里重叠：
+
+    1. 后台自动 tick（``proactivity/tick.py`` → ``maybe_write_diary``，独立线程）
+    2. GUI「生成今日日记」按钮（``POST /v1/deskmate/diary/today`` → ``ensure_today``）
+    3. **独立进程** ``deskmate/proactivity/server.py`` 的 MCP ``proactive_tick``
+
+    重叠时两方各自读到同一份文件状态、算出**同一个 seq**、拿着**同一批素材**，
+    各写一条 —— 这就是萧哥 2026-09-14 报的「一条日记写成前后两条」。
+
+    ## 为什么是文件锁而不是线程锁
+
+    入口 1、2 同进程，线程锁够用；入口 3 是另一个进程，只有 ``fcntl.flock``
+    能拦住它。flock 随文件描述符关闭释放，进程崩溃也不会留下死锁。
+
+    ## 用法
+
+    临界区应当尽量短，但**必须把 LLM 渲染包在里面**——窗口就在那。
+    写日记本就是低频动作，让第二个触发源排队等待才是正确行为。
+    """
+    base = Path(base_dir) if base_dir else Path.home() / ".deskmate"
+    lock_path = base / "diary" / ".diary-write.lock"
+    try:
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        pass  # 建不了目录（只读挂载等）——退化成无锁，绝不让日记写不出去
+        yield
+        return
+    with open(lock_path, "a+", encoding="utf-8") as fh:
+        if fcntl is not None:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+        else:  # pragma: no cover - 仅 Windows
+            _THREAD_LOCK.acquire()
+        try:
+            yield
+        finally:
+            if fcntl is not None:
+                fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+            else:  # pragma: no cover - 仅 Windows
+                _THREAD_LOCK.release()
+
+
+def _subject_of(e: dict) -> str:
+    """事件的「主体」——用于指纹（同一技能反复进化不该重复计数）。"""
+    for key in ("skill_name", "note", "key", "title", "name"):
+        v = e.get(key)
+        if v:
+            return str(v)
+    return ""
+
+
+def _fingerprint(e: dict) -> str:
+    """一条素材的身份：时间 + 类型 + 主体。
+
+    ``diary_inspiration`` 的账本去重与这里的幂等校验**共用同一函数**——
+    两边各写一份必然漂移，那会让「锁内重校验」形同虚设。
+    """
+    return f"{e.get('ts', '')}|{e.get('kind', '')}|{_subject_of(e)}"
+
+
 # 一则以 ``## HH:MM`` 开头——据此数当天写了几则
 _ENTRY_HEAD_RE = re.compile(r"^##\s", re.MULTILINE)
 
@@ -149,7 +232,7 @@ def backfill_diary_eids(diary_dir: Path) -> int:
             else:
                 out.append(line)
         if modified:
-            tmp = md.with_suffix(md.suffix + ".tmp")
+            tmp = unique_tmp(md)
             try:
                 tmp.write_text("\n".join(out), encoding="utf-8")
                 os.replace(tmp, md)
@@ -545,7 +628,7 @@ class DiaryWriter:
             content = f"{old}\n\n{body}\n"
         else:
             content = f"{header}\n\n{body}\n"
-        tmp = path.with_name(path.name + ".tmp")
+        tmp = unique_tmp(path)
         tmp.write_text(content, encoding="utf-8")
         os.replace(tmp, path)
         return str(path)
@@ -618,9 +701,10 @@ class DiaryWriter:
         当天已经有日记时，若还有**没写进去**的新素材，就再补一则——
         一天写几则由素材决定，不设上限。
 
-        ⚠ 手动写完必须把素材标记成「已写进第 N 则」（consume + mark_entry）。
-        否则自动路径（``maybe_write_diary``）看这些素材还是未消费，会把同一批
-        素材再写一则，日记里出现两遍一模一样的话。
+        ⚠ 本入口与自动路径（``maybe_write_diary``）是**两个独立调用方**，
+        可以同时发生（GUI 按钮 + 后台 tick + 独立 MCP 进程）。所以写入统一
+        走 ``write_entry_once``：它在跨进程锁内**重新校验**这批素材是否还
+        没人写过，已写过就跳过（幂等）。手动/自动都写、但同一批素材只写一次。
 
         自动触发一律走 ``diary_inspiration.maybe_write_diary``（素材攒够才动笔）。
         """
@@ -629,6 +713,7 @@ class DiaryWriter:
             from deskmate.growth.diary_inspiration import (
                 DiaryInspiration,
                 score_items,
+                write_entry_once,
             )
 
             insp = DiaryInspiration(base_dir=self.base)
@@ -636,19 +721,23 @@ class DiaryWriter:
             if fresh:
                 # 徽章只在第一则记，补记不再重复
                 badges = self._badges_on(today) if self.entry_count(today) == 0 else []
-                res = self.append_entry(today, fresh, badges)
-                insp.ledger.consume(today, fresh, res["seq"])
-                insp.ledger.mark_entry(today, res["seq"], score_items(fresh)[0])
-                return res["path"]
+                # 幂等写入：进锁后再校一次这批素材是否已被别的触发源写掉
+                wrote = write_entry_once(
+                    today, fresh, badges,
+                    score=score_items(fresh)[0], base_dir=self.base, insp=insp,
+                )
+                if wrote:
+                    return wrote["path"]
         except Exception:
             pass  # 拿不到素材账本就走兜底，绝不因为补记失败而不写日记
 
         path = self.diary_dir / f"{today}.md"
-        if path.is_file() and path.read_text(encoding="utf-8").strip():
-            return str(path)  # 已经写过、又没有新素材可补——不重复写
-        events = self._events_on(today)
-        badges = self._badges_on(today)
-        return self.write(today, events, badges)
+        with diary_write_lock(self.base):
+            if path.is_file() and path.read_text(encoding="utf-8").strip():
+                return str(path)  # 已经写过、又没有新素材可补——不重复写
+            events = self._events_on(today)
+            badges = self._badges_on(today)
+            return self.write(today, events, badges)
 
     def weekly_recap(self, days: int = 7) -> str:
         return self._render_recap(max(1, days))

@@ -300,6 +300,43 @@ def test_understand_filter_drops_baillout_and_short():
     assert _filter_segments(["啊" * 3000]) == []
 
 
+def test_understand_filter_merges_standalone_lead_in():
+    """总起句不再单独立成一则（2026-09-14 萧哥反馈）。
+
+    事故：理解层先来一句总起（约 40 字）再逐条展开，按空行切段后那句总起
+    成了**一则没头没尾的日记**，要拼着后面几则才读得完整。
+    判据是「明显短于同批其他段」（相对长度），不是绝对长度。
+    """
+    from deskmate.agency.behaviors.understand_observations import _filter_segments
+
+    lead = "今天几条新闻里，真正让我停下来想了一会儿的，是关于算力和 AI 硬件的两件事。"
+    body_a = (
+        "中国算力平台的用户数据和雄安调度中心的运行，听起来像枯燥的产业新闻，"
+        "但拼在一起看感觉完全不一样。上万家注册企业、两百多家算力服务商，"
+        "算力正从稀缺资源变成货架上的商品。"
+    ) * 2
+    body_b = (
+        "更让我觉得有意思的是外滩大会上关于 AI 终端的数据和展望，"
+        "AI 正试图从云端流下来，变成戴在耳朵上、手指上的实体。"
+    ) * 2
+
+    segs = _filter_segments([lead, body_a, body_b])
+    assert len(segs) == 2, f"总起句该并入相邻段，实际切出 {len(segs)} 段"
+    assert segs[0].startswith(lead[:12]), "总起应并到第一段正文之前"
+
+
+def test_understand_filter_keeps_uniform_short_segments():
+    """整批都短是正常写法——不许被「碎段合并」误伤。"""
+    from deskmate.agency.behaviors.understand_observations import _filter_segments
+
+    segs = _filter_segments([
+        "今天看到美伊在霍尔木兹海峡的对峙升级，让我想到边界感这件事其实很脆弱。",
+        "碳酸锂一周跌了百分之十五，市场情绪在变凉，这跟历史上的某些周期很像。",
+        "深圳的 3D 打印占了全球九成市场，制造的门槛又往下走了一截。",
+    ])
+    assert len(segs) == 3, f"长度均匀的短段不该被合并，实际 {len(segs)} 段"
+
+
 def test_decide_and_digest_returns_segments(tmp_path, monkeypatch):
     """新主接口：LLM 自选 → 多段 → list[dict] 返回。
 

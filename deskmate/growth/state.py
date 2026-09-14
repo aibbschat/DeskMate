@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+from deskmate.growth._atomic import unique_tmp
 from deskmate.persistence import BlobStore
 
 
@@ -326,7 +327,10 @@ def save_state(state: GrowthState, base_dir: Path | str | None = None) -> None:
         # 临时文件 + 原子 rename：先写 *.tmp 再 os.replace 覆盖，避免并发读写时
         # 另一个实例读到写了一半（被截断）的文件，从而误判为损坏、回退到全新默认
         # 态、再把真实进度整体覆盖掉——这正是「桌宠莫名重置」的根因。
-        tmp = path.with_name(path.name + ".tmp")
+        # 临时文件名必须**唯一**（见 ``_atomic.unique_tmp``）：tick 线程与 GUI
+        # 请求线程会同时保存 state，固定名互踩会让一方 os.replace 报
+        # FileNotFoundError、整次保存静默丢失（勋章解锁也跟着丢）。
+        tmp = unique_tmp(path)
         tmp.write_text(data, encoding="utf-8")
         os.replace(tmp, path)  # POSIX/NT 均保证不会让读取方看到半截文件
     except OSError as e:

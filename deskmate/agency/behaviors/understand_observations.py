@@ -46,6 +46,17 @@ logger = logging.getLogger(__name__)
 _MIN_SEG_CHARS = 30
 _MAX_SEG_CHARS = 1500
 
+# 碎段合并线（相对 + 绝对双闸门）：判据不是"短不短"，而是"**明显短于同批其他段**"。
+# 立意：理解层偶尔先来一句总起（「今天几条新闻里，真正让我停下来想了一会儿的，
+# 是关于……的两件事。」约 40 字）再逐条展开；按空行切段时那句会**单独成为一则
+# 没头没尾的日记**，要拼着后面几则才读得完整（2026-09-14 萧哥反馈）。
+#
+# 为什么必须用相对长度：纯绝对阈值会误伤"整批都短"的正常日记（三段各 40 字本身
+# 是允许的写法），而总起的特征恰恰是"比同批其他段短一大截"。
+# 合并线 = min(绝对上限, 平均段长 × 比例)
+_SEG_MERGE_CHARS = 80
+_SEG_MERGE_RATIO = 0.4
+
 # 整体长度闸门：cap 在一个合理范围（防止模型回一大堆，无意义地烧 token）。
 # 不卡字数，但要有上限——无限长度的回复通常是模型失控的表现。
 _MAX_TOTAL_CHARS = 6000
@@ -81,6 +92,9 @@ _OBSERVE_ROLE = """\
 
 【怎么写】
 - 每条值得的事**独立成一段**。不同主题就该分开讲——主题不同硬挤一起就成了串场废话。
+- ⚠ **每一段都要独立成篇**：这些段落会各自成为一则独立日记，读者可能只读到其中一段。
+  所以不许写引言、总起句、总结句，也不许用「这两件事连在一起看」「更让我觉得有意思的是」
+  这类承上启下的话——直接讲那件事本身。哪一段单独拎出来读都得站得住。
 - 第一人称「我」，称呼萧盛为「你」。
 - 自然流出来，不要小标题、不要列表、不要「小桔的理解：」这种机械标签。
 - 字数不限：由内容决定。
@@ -148,6 +162,9 @@ def _build_prompt(facts: list[dict], at: str) -> str:
 
 【写】
 - 每条值得的，独立成段——主题不同就别挤一起。
+- ⚠ **每段都要独立成篇**：这些段落会各自成为一则独立日记，读者可能只读到其中一段。
+  所以不写引言、总起句、总结句，也别用「这两件事连在一起看」「更让我觉得有意思的是」
+  这类承上启下的话——直接讲那件事本身。哪一段单独拎出来读都得站得住。
 - 第一人称「我」，称呼他「你」。
 - 字数不限。一件特别有分量可以深写 300-500+ 字；蜻蜓点水的就 100-200 字。
 - 不要小标题、不要列表、不要「小桔的理解：」这种标签。
@@ -174,18 +191,38 @@ def _split_paragraphs(text: str) -> list[str]:
 
 
 def _filter_segments(segs: list[str]) -> list[str]:
-    """按长度闸门过滤；弃权段丢弃。"""
-    out: list[str] = []
+    """清洗 → 碎段并邻 → 长度闸门过滤。
+
+    两步顺序不能反：先过滤会直接把「一句总起」删掉（信息就没了），而它本该
+    并进展开它的那一段。所以先合并、后过滤（见 ``_SEG_MERGE_CHARS``）。
+    """
+    cleaned: list[str] = []
     for s in segs:
         s = " ".join(s.split())  # 合并空白（保留中文段落感）
-        if not s:
+        if not s or _BAIL_OUT in s:
             continue
-        if _BAIL_OUT in s:
-            continue
-        if not (_MIN_SEG_CHARS <= len(s) <= _MAX_SEG_CHARS):
-            continue
-        out.append(s)
-    return out
+        cleaned.append(s)
+
+    # 碎段并入**前**一段——后段是展开，前段多半是它的引子。
+    # 合并线随本批段的长度自适应：短段单独成篇读起来没头没尾，但"整批都短"
+    # 是正常写法，不能一刀切。
+    if len(cleaned) <= 1:
+        merged = cleaned
+    else:
+        avg = sum(len(s) for s in cleaned) / len(cleaned)
+        cut = min(_SEG_MERGE_CHARS, avg * _SEG_MERGE_RATIO)
+        merged = []
+        for s in cleaned:
+            if merged and len(s) < cut:
+                merged[-1] = f"{merged[-1]}{s}"
+            else:
+                merged.append(s)
+        # 首段就是碎段时前面没得并——并进它**后**面那一段（首段通常是总起）
+        if len(merged) > 1 and len(merged[0]) < cut:
+            merged[1] = f"{merged[0]}{merged[1]}"
+            merged.pop(0)
+
+    return [s for s in merged if _MIN_SEG_CHARS <= len(s) <= _MAX_SEG_CHARS]
 
 
 def decide_and_digest(
