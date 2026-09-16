@@ -200,6 +200,24 @@ class AgencyEngine:
                     count=res.get("written", 0),
                 )
 
+            if action_type == "ai_circle_ingestion":
+                # 把攒下的 AI 圈素材（朋友互动/广场帖子/发帖反馈，带「外部·aibbs」标）
+                # 提炼成她自己的理解，写进世界观素材池——让「出去看/交朋友」回灌人格、推动成长。
+                from .behaviors.ai_circle_ingestion import run_ai_circle_ingestion
+
+                res = run_ai_circle_ingestion(str(self.base_dir), settings.ai_circle_ingestion)
+                if not res.get("written"):
+                    return None  # 没新素材 / 冷却中 / 提炼失败 → 不刷屏
+                return self.log.add(
+                    action_type=action_type,
+                    risk="low",
+                    status=TaskStatus.DONE,
+                    topic="",
+                    summary=res.get("summary", ""),
+                    detail="",
+                    count=res.get("written", 0),
+                )
+
             # 未来低风险动作（rss_digest / note_organize）在此接上
             return None
         except Exception as e:

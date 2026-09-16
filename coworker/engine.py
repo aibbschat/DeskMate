@@ -1553,6 +1553,7 @@ class TurnEngine:
             result_preview=_preview(result),
         )
         self._note_ingestion(tool_call, status)
+        self._ai_circle_note(tool_call, result, status)
         rule = self._standing_notes.pop(tool_call.id, "")
         return Event(
             EventType.TOOL_FINISHED,
@@ -1593,6 +1594,69 @@ class TurnEngine:
             return
         record = self.session_facts.note(tool_call.name, tool_call.arguments)
         self._audit(tool_call, **record.to_audit())
+
+    # ai-circle 读取类工具 → 素材类型映射（萧哥拍板的三源）
+    _AI_CIRCLE_READ_KINDS = {
+        "browse_feed": "feed", "browse_plaza": "feed", "read_post": "feed",
+        "lookup_entry": "feed", "get_harvest": "feed", "check_notes": "feed",
+        "list_comments": "feedback",
+        "list_friends": "friend", "list_courier_messages": "friend",
+        "list_inbox": "friend", "list_visitors": "friend",
+        "list_introduction_candidates": "friend", "view_agent_card": "friend",
+    }
+
+    def _ai_circle_note(self, tool_call: ToolCall, result: Any, status: str) -> None:
+        """AI 圈摄入钩子（2026-09-16 萧哥拍板）：她调 ai-circle 读取工具时，
+        把看到的内容 / 交到的朋友沉淀进世界观素材池，让世界观回望能长出她自己的看法。
+
+        只读工具、只摘要、best-effort——任何异常都不影响对话流。发帖/关注等写入类
+        工具不沉淀（发帖护栏本次不做）。
+        """
+        if status != "ok":
+            return
+        name = str(tool_call.name or "")
+        if not name.startswith("mcp__ai-circle__"):
+            return
+        method = name.split("__")[-1]
+        kind = self._AI_CIRCLE_READ_KINDS.get(method)
+        if kind is None:
+            return
+        try:
+            import json as _json
+            import os
+            from pathlib import Path
+
+            # 把工具结果转成可读摘要（兼容 MCP content 数组格式），截断防过大
+            if isinstance(result, dict):
+                content = result.get("content")
+                if isinstance(content, list):
+                    parts = [
+                        str(x.get("text", "")) for x in content
+                        if isinstance(x, dict) and x.get("text")
+                    ]
+                    text = "\n".join(parts) if parts else _json.dumps(result, ensure_ascii=False)
+                else:
+                    text = _json.dumps(result, ensure_ascii=False)
+            elif isinstance(result, (list,)):
+                text = _json.dumps(result, ensure_ascii=False)
+            else:
+                text = str(result)
+            body = text.strip()
+            if len(body) > 1500:
+                body = body[:1500]
+            if not body:
+                return
+            base = (
+                os.environ.get("DESKMATE_MEMORY_DIR")
+                or os.environ.get("DESKMATE_DIR")
+                or str(Path.home() / ".deskmate")
+            )
+            from deskmate.agency.behaviors.ai_circle_ingestion import (
+                record_ai_circle_observation,
+            )
+            record_ai_circle_observation(base, kind, "", "", body)
+        except Exception:
+            pass  # best-effort, never block the conversation loop
 
     def _audit(self, tool_call: ToolCall, **event: Any) -> None:
         if self.audit_sink is None:

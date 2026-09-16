@@ -53,6 +53,12 @@ REGISTRY: dict[str, ActionSpec] = {
         label="世界观回望",
         description="攒够若干条世界观察后回头看一次，把理解沉淀成她自己的看法（写本地认知库 worldview 层），不碰用户文件、不发消息",
     ),
+    "ai_circle_ingestion": ActionSpec(
+        action_type="ai_circle_ingestion",
+        risk="low",
+        label="AI 圈摄入",
+        description="把她逛 AI 圈看到的、交到的朋友（带「外部·aibbs」溯源标）提炼成理解写进世界观素材池，让世界观回望能长出她自己的看法；不碰用户文件、不发消息",
+    ),
     "rss_digest": ActionSpec(
         action_type="rss_digest",
         risk="low",

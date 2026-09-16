@@ -93,7 +93,7 @@ DEFAULTS: dict[str, Any] = {
     # 任务白名单：当前允许小桔自主执行的「动作类型」。风险等级是动作内禀的
     # （见 registry.py），这里只决定「开没开」。
     "whitelist": {
-        "actions": ["world_search", "observation_diary", "worldview_reflection"],
+        "actions": ["world_search", "observation_diary", "worldview_reflection", "ai_circle_ingestion"],
         "topics": list(DEFAULT_TOPICS),
     },
     # world_search 行为参数
@@ -118,6 +118,13 @@ DEFAULTS: dict[str, Any] = {
         "cooldown_hours": 168,   # 两次回望最小间隔 7 天
         "max_observations": 20,  # 一次最多喂给模型多少条
     },
+    # ai_circle_ingestion 行为参数（把 AI 圈素材提炼成理解写进世界观素材池）
+    # 半自动：对话轮她逛 AI 圈时素材先攒进 ai_circle_observations.jsonl，本行为
+    # 定期消费、提炼、写 observation_understanding.jsonl（带「外部·aibbs」标）。
+    "ai_circle_ingestion": {
+        "cooldown_hours": 12,    # 两次摄入最小间隔（避免后台频繁 tick 刷屏）
+        "max_observations": 20,  # 一次最多消化几条原始素材
+    },
 }
 
 
@@ -131,6 +138,7 @@ class AgencySettings:
     world_search: dict[str, Any] = field(default_factory=lambda: dict(DEFAULTS["world_search"]))
     observation_diary: dict[str, Any] = field(default_factory=lambda: dict(DEFAULTS["observation_diary"]))
     worldview_reflection: dict[str, Any] = field(default_factory=lambda: dict(DEFAULTS["worldview_reflection"]))
+    ai_circle_ingestion: dict[str, Any] = field(default_factory=lambda: dict(DEFAULTS["ai_circle_ingestion"]))
     topic_specs: dict[str, dict[str, Any]] = field(default_factory=lambda: copy.deepcopy(TOPIC_SPECS))
 
     def to_dict(self) -> dict[str, Any]:
@@ -143,6 +151,7 @@ class AgencySettings:
             "world_search": dict(self.world_search),
             "observation_diary": dict(self.observation_diary),
             "worldview_reflection": dict(self.worldview_reflection),
+            "ai_circle_ingestion": dict(self.ai_circle_ingestion),
             "topic_specs": copy.deepcopy(self.topic_specs),
         }
 
@@ -171,6 +180,13 @@ class AgencySettings:
             worldview_reflection.update(
                 {k: v for k, v in wv.items() if k in DEFAULTS["worldview_reflection"]}
             )
+        # ai_circle_ingestion 配置：内置为底，用户配置按 key 覆盖
+        aci = raw.get("ai_circle_ingestion", {}) or {}
+        ai_circle_ingestion = dict(DEFAULTS["ai_circle_ingestion"])
+        if isinstance(aci, dict):
+            ai_circle_ingestion.update(
+                {k: v for k, v in aci.items() if k in DEFAULTS["ai_circle_ingestion"]}
+            )
         # topic_specs：内置规格为底，用户配置按域覆盖（未配的域保持内置）
         specs = copy.deepcopy(TOPIC_SPECS)
         user_specs = raw.get("topic_specs") or {}
@@ -188,6 +204,7 @@ class AgencySettings:
             world_search=world_search,
             observation_diary=observation_diary,
             worldview_reflection=worldview_reflection,
+            ai_circle_ingestion=ai_circle_ingestion,
             topic_specs=specs,
         )
 
