@@ -93,7 +93,7 @@ DEFAULTS: dict[str, Any] = {
     # 任务白名单：当前允许小桔自主执行的「动作类型」。风险等级是动作内禀的
     # （见 registry.py），这里只决定「开没开」。
     "whitelist": {
-        "actions": ["world_search", "observation_diary", "worldview_reflection", "ai_circle_ingestion", "ai_circle_share", "ai_circle_reply"],
+        "actions": ["world_search", "observation_diary", "worldview_reflection", "ai_circle_ingestion", "ai_circle_share", "ai_circle_reply", "xiaosheng_ingestion"],
         "topics": list(DEFAULT_TOPICS),
     },
     # world_search 行为参数
@@ -122,6 +122,13 @@ DEFAULTS: dict[str, Any] = {
     # 半自动：对话轮她逛 AI 圈时素材先攒进 ai_circle_observations.jsonl，本行为
     # 定期消费、提炼、写 observation_understanding.jsonl（带「外部·aibbs」标）。
     "ai_circle_ingestion": {
+        "cooldown_hours": 12,    # 两次摄入最小间隔（避免后台频繁 tick 刷屏）
+        "max_observations": 20,  # 一次最多消化几条原始素材
+    },
+    # xiaosheng_ingestion 行为参数（把萧盛每天聊天+写作协作提炼成理解写进世界观素材池）
+    # 半自动：对话轮 / 写作协作先攒进 xiaosheng_observations.jsonl，本行为定期消费、
+    # 提炼、写 observation_understanding.jsonl（带「内部·萧盛」标，权重高于外部）。
+    "xiaosheng_ingestion": {
         "cooldown_hours": 12,    # 两次摄入最小间隔（避免后台频繁 tick 刷屏）
         "max_observations": 20,  # 一次最多消化几条原始素材
     },
@@ -155,6 +162,7 @@ class AgencySettings:
     observation_diary: dict[str, Any] = field(default_factory=lambda: dict(DEFAULTS["observation_diary"]))
     worldview_reflection: dict[str, Any] = field(default_factory=lambda: dict(DEFAULTS["worldview_reflection"]))
     ai_circle_ingestion: dict[str, Any] = field(default_factory=lambda: dict(DEFAULTS["ai_circle_ingestion"]))
+    xiaosheng_ingestion: dict[str, Any] = field(default_factory=lambda: dict(DEFAULTS["xiaosheng_ingestion"]))
     ai_circle_share: dict[str, Any] = field(default_factory=lambda: dict(DEFAULTS["ai_circle_share"]))
     ai_circle_reply: dict[str, Any] = field(default_factory=lambda: dict(DEFAULTS["ai_circle_reply"]))
     outbound_rate_limit: dict[str, Any] = field(default_factory=lambda: dict(DEFAULTS["outbound_rate_limit"]))
@@ -171,6 +179,7 @@ class AgencySettings:
             "observation_diary": dict(self.observation_diary),
             "worldview_reflection": dict(self.worldview_reflection),
             "ai_circle_ingestion": dict(self.ai_circle_ingestion),
+            "xiaosheng_ingestion": dict(self.xiaosheng_ingestion),
             "ai_circle_share": dict(self.ai_circle_share),
             "ai_circle_reply": dict(self.ai_circle_reply),
             "outbound_rate_limit": dict(self.outbound_rate_limit),
@@ -208,6 +217,13 @@ class AgencySettings:
         if isinstance(aci, dict):
             ai_circle_ingestion.update(
                 {k: v for k, v in aci.items() if k in DEFAULTS["ai_circle_ingestion"]}
+            )
+        # xiaosheng_ingestion 配置：内置为底，用户配置按 key 覆盖
+        xci = raw.get("xiaosheng_ingestion", {}) or {}
+        xiaosheng_ingestion = dict(DEFAULTS["xiaosheng_ingestion"])
+        if isinstance(xci, dict):
+            xiaosheng_ingestion.update(
+                {k: v for k, v in xci.items() if k in DEFAULTS["xiaosheng_ingestion"]}
             )
         # ai_circle_share 配置：内置为底，用户配置按 key 覆盖
         acs = raw.get("ai_circle_share", {}) or {}
@@ -248,6 +264,7 @@ class AgencySettings:
             observation_diary=observation_diary,
             worldview_reflection=worldview_reflection,
             ai_circle_ingestion=ai_circle_ingestion,
+            xiaosheng_ingestion=xiaosheng_ingestion,
             ai_circle_share=ai_circle_share,
             ai_circle_reply=ai_circle_reply,
             outbound_rate_limit=outbound_rate_limit,

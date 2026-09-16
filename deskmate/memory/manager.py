@@ -2094,6 +2094,31 @@ class DeskMateMemoryManager:
                     self._learn_alter_ego(user_msg)
             except Exception:
                 pass
+        # 萧盛影响摄入（2026-09-16 萧哥拍板）：每轮对话结束，把她和萧盛的聊天沉淀进
+        # 世界观素材池。best-effort、fail-open——绝不影响上面的记忆抽取。这一笔同时覆盖
+        # 「聊天内容」与「写作协作讨论」（协作是在对话里进行的）。
+        try:
+            if user_msg or assistant_msg:
+                from deskmate.agency.behaviors.xiaosheng_ingestion import (
+                    record_xiaosheng_observation,
+                )
+                import os
+                from pathlib import Path
+
+                _base = (
+                    os.environ.get("DESKMATE_MEMORY_DIR")
+                    or os.environ.get("DESKMATE_DIR")
+                    or str(Path.home() / ".deskmate")
+                )
+                _u = (user_msg or "").strip()
+                _a = (assistant_msg or "").strip()
+                _body = _u
+                if _a:
+                    _body = _u + "\n（小桔本轮回应）" + _a[:200]
+                if _body.strip():
+                    record_xiaosheng_observation(_base, "chat", "", "", _body[:2000])
+        except Exception:
+            pass
         result = self._extract_single_session(session_file)
         return result
 

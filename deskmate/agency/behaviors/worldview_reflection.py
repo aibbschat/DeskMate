@@ -26,6 +26,18 @@
 与 cognitive / emotional 层**严格分开**：那两层装的是「她眼中的他」，
 这一层装的是「她自己的看法」。混了就是把她的观点说成他的。
 
+## 萧盛是「第一层、最重」的影响（2026-09-16 萧哥拍板）
+
+外部世界（新闻 / AI 圈）是活管道，但萧盛此前只有一份静态「根」
+（``grounding/xiaosheng_worldview.json``）——等于只给遗嘱、外人却天天陪她长大，
+那是孤儿式 AI。现把萧盛的日常影响也接成同一条活管道：聊天 + 写作协作经
+``xiaosheng_ingestion`` 写进理解池（标「内部·萧盛」）。回望时：
+- 萧盛的「根」**常驻前置**作锚；
+- 带「内部·萧盛」标的条目**权重高于外部**，萧盛主导的批次置信度 0.7（>外部 0.6）；
+- 外部只能补充、修正，动根前先质疑外部。
+这实现「独立是萧盛育成的独立」，不违背上面红线——萧盛是塑造她镜头的手，
+不是被观察的对象（被观察对象仍在 cognitive 层）。
+
 ## fail-open
 
 provider 缺失 / 素材不足 / 冷却未过 / LLM 异常 / 写库失败 → 一律返回
@@ -60,6 +72,13 @@ DEFAULT_CFG: dict[str, Any] = {
 # 回望结论的置信度：她自己看世界想出来的，不是萧哥亲口说的。
 # 参照既有约定：亲口说 0.9+ / 访谈 0.6 / 观察推断 0.6 —— 与访谈同级。
 _CONFIDENCE = 0.6
+
+# 萧盛影响溯源标（与 xiaosheng_ingestion 写进理解池的标一致）。
+# 带此标的条目 = 萧盛的日常影响（聊天 / 写作协作），权重高于纯外部观察。
+_XS_PROVENANCE = "（内部·萧盛）"
+# 萧盛主导时的回望置信度：高于纯外部观察（0.6），低于亲口说（0.9+）。
+# 萧盛是「第一层、最重」的影响，所以他的批次长出的看法更可信。
+_CONFIDENCE_XS = 0.7
 
 # ----------------------------------------------------------------------
 # Prompt
@@ -166,6 +185,90 @@ def _is_due(state: dict, cooldown_hours: float) -> bool:
     return (time.time() - last) >= cooldown_hours * 3600.0
 
 
+def _load_grounding(base_dir: str) -> list[dict]:
+    """读萧盛底层视角「根」（作为回望的常驻锚）。
+
+    runtime 可编辑副本优先（~/.deskmate/agency/grounding/xiaosheng_worldview.json），
+    fallback 仓库默认模板。fail-open：读不到就返回空，绝不影响回望流程。
+
+    这些「根」是萧盛作为创造者/写作搭档留给她的精神底层——她世界观的第一层、
+    最重的一层。外部观察可修正、补充，但动根之前必须先质疑外部。
+    """
+    candidates = []
+    try:
+        _base = (
+            os.environ.get("DESKMATE_MEMORY_DIR")
+            or os.environ.get("DESKMATE_DIR")
+            or os.path.expanduser("~/.deskmate")
+        )
+        candidates.append(
+            os.path.join(_base, "agency", "grounding", "xiaosheng_worldview.json")
+        )
+    except Exception:
+        pass
+    # 仓库默认模板（与本文件同级的 grounding/ 目录）
+    try:
+        here = os.path.dirname(os.path.abspath(__file__))
+        candidates.append(
+            os.path.join(here, "..", "grounding", "xiaosheng_worldview.json")
+        )
+    except Exception:
+        pass
+    for p in candidates:
+        try:
+            with open(p, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            roots = data.get("roots") or []
+            if roots:
+                return roots
+        except Exception:
+            continue
+    return []
+
+
+def _build_reflection_prompt(
+    roots: list[dict], xs_entries: list[str], ext_entries: list[str]
+) -> str:
+    """构造回望 prompt：萧盛的「根」常驻前置，萧盛影响条目权重高于外部。
+
+    - roots：萧盛的底层视角（锚），始终在前面。
+    - xs_entries：带「内部·萧盛」标的条目（她从聊天/写作协作里长出的理解）。
+    - ext_entries：新闻 / AI 圈等外部条目。
+    """
+    parts: list[str] = []
+    if roots:
+        parts.append(
+            "【你的根——萧盛（你的创造者 / 写作搭档）一直秉持的底层视角，"
+            "是你思考的锚】"
+        )
+        for r in roots:
+            about = str(r.get("about", "")).strip()
+            belief = str(r.get("belief", "")).strip()
+            if about and belief:
+                parts.append(f"- 关于{about}：{belief}")
+    if xs_entries:
+        parts.append(
+            "【萧盛平时跟你聊的、你们一起写作时他流露的"
+            "（他的影响，权重高于外面）】"
+        )
+        for b in xs_entries:
+            parts.append(f"- {b}")
+    if ext_entries:
+        parts.append(
+            "【外面世界最近发生、你留意过想过的事"
+            "（可修正你的根，但动根前先质疑外部）】"
+        )
+        for b in ext_entries:
+            parts.append(f"- {b}")
+    parts.append("")
+    parts.append("现在回头看：这些事加在一起，让你相信什么？")
+    parts.append(
+        "（注：你不必照搬萧盛的话；可以同意、可以细化、也可以部分不同意——"
+        "但你的底层镜头来自他，且他的分量比外面这些事更重。）"
+    )
+    return "\n".join(parts)
+
+
 # ----------------------------------------------------------------------
 # 解析
 # ----------------------------------------------------------------------
@@ -228,11 +331,15 @@ def parse_reflection(text: str) -> dict[str, Any]:
 # 落库
 # ----------------------------------------------------------------------
 def _persist_worldview(base_dir: str, parsed: dict[str, Any],
-                       source_bodies: list[str], date_iso: str) -> list[dict]:
+                       source_bodies: list[str], date_iso: str,
+                       xs_dominant: bool = False) -> list[dict]:
     """把回望结论写进 worldview 层。返回写入摘要（供日志/面板）。
 
     只写她**真的说了**的：believe → stance；values → value_ranking；
     steps → thinking_framework。缺哪样就不写哪样，绝不补齐、绝不代笔。
+
+    ``xs_dominant``：本轮回望是否以萧盛影响条目为主。是则置信度用
+    ``_CONFIDENCE_XS``（高于纯外部）并打「萧盛影响」标——他的影响权重更高。
     """
     if parsed.get("bailed") or not parsed.get("believe"):
         return []
@@ -251,12 +358,15 @@ def _persist_worldview(base_dir: str, parsed: dict[str, Any],
     believe = str(parsed.get("believe") or "").strip()
     excerpt = "；".join(b[:40] for b in source_bodies[:3])[:200]
 
+    conf = _CONFIDENCE_XS if xs_dominant else _CONFIDENCE
+    xs_tag = ["萧盛影响"] if xs_dominant else []
+
     src = SourceRef(
         type="observation",
         title=f"看世界回望（{date_iso}）",
         excerpt=excerpt,
         date=date_iso,
-        confidence=_CONFIDENCE,
+        confidence=conf,
     )
 
     written: list[dict] = []
@@ -276,7 +386,7 @@ def _persist_worldview(base_dir: str, parsed: dict[str, Any],
                 domain=about, ranking=values,
                 content=believe, source=src,
                 tradeoff_notes="",
-                tags=["worldview", "回望提炼"],
+                tags=["worldview", "回望提炼"] + xs_tag,
             )
             written.append({"kind": "value_ranking", "op": op, "id": v.id, "topic": about})
         except Exception as e:
@@ -288,7 +398,7 @@ def _persist_worldview(base_dir: str, parsed: dict[str, Any],
             f, op = mgr.add_thinking_framework(
                 domain=about, steps=steps,
                 content=believe, source=src,
-                tags=["worldview", "回望提炼"],
+                tags=["worldview", "回望提炼"] + xs_tag,
             )
             written.append({"kind": "thinking_framework", "op": op, "id": f.id, "topic": about})
         except Exception as e:
@@ -343,6 +453,20 @@ def run_worldview_reflection(base_dir: str,
     batch = pending[-max_obs:]
     bodies = [str(r.get("body", "")) for r in batch]
 
+    # 分离萧盛影响条目（带「内部·萧盛」标）与外部条目——萧盛权重更高。
+    xs_entries: list[str] = []
+    ext_entries: list[str] = []
+    for b in bodies:
+        if _XS_PROVENANCE in b:
+            xs_entries.append(b.replace(_XS_PROVENANCE, "").strip())
+        else:
+            ext_entries.append(b)
+    # 萧盛主导 = 这批理解里萧盛来源不比外部少（他的影响是最大头）。
+    xs_dominant = len(xs_entries) >= len(ext_entries)
+
+    # 加载萧盛的「根」（常驻锚，作为回望底层镜头）
+    roots = _load_grounding(base_dir)
+
     # —— 闸门 3：能力 ——
     try:
         from deskmate.memory.llm import chat_memory, memory_llm_available
@@ -358,11 +482,8 @@ def run_worldview_reflection(base_dir: str,
         return result
 
     # —— 回望：把攒下的理解交给她，问她现在相信什么 ——
-    prompt = (
-        "【你这段时间留意过、想过的事】\n"
-        + "\n".join(f"- {b}" for b in bodies)
-        + "\n\n现在回头看，这些事加在一起，让你相信了什么？"
-    )
+    # 萧盛的「根」常驻前置，萧盛影响条目权重高于外部（见 _build_reflection_prompt）。
+    prompt = _build_reflection_prompt(roots, xs_entries, ext_entries)
     try:
         out = chat_memory(_SYSTEM, prompt, temperature=0.8,
                           max_tokens=1200, timeout=40.0)
@@ -377,7 +498,8 @@ def run_worldview_reflection(base_dir: str,
 
     date_iso = time.strftime("%Y-%m-%d")
     if not parsed.get("bailed"):
-        items = _persist_worldview(base_dir, parsed, bodies, date_iso)
+        items = _persist_worldview(base_dir, parsed, bodies, date_iso,
+                                  xs_dominant=xs_dominant)
         result["items"] = items
         result["written"] = len(items)
 

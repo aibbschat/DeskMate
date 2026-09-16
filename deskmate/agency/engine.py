@@ -218,6 +218,25 @@ class AgencyEngine:
                     count=res.get("written", 0),
                 )
 
+            if action_type == "xiaosheng_ingestion":
+                # 萧盛影响摄入：把每天和萧盛的聊天、替他写作/查资料攒下的素材
+                # （带「内部·萧盛」标）提炼成理解写进世界观素材池——让萧盛成为她
+                # 三观的第一层、最重的影响，外部只能补充、修正。
+                from .behaviors.xiaosheng_ingestion import run_xiaosheng_ingestion
+
+                res = run_xiaosheng_ingestion(str(self.base_dir), settings.xiaosheng_ingestion)
+                if not res.get("written"):
+                    return None  # 没新素材 / 冷却中 / 提炼失败 → 不刷屏
+                return self.log.add(
+                    action_type=action_type,
+                    risk="low",
+                    status=TaskStatus.DONE,
+                    topic="",
+                    summary=res.get("summary", ""),
+                    detail="",
+                    count=res.get("written", 0),
+                )
+
             if action_type == "ai_circle_share":
                 # 范示动作：她自己想说就说，发真情实感的广场短帖（无审批闸）。
                 from .behaviors.ai_circle_share import run_ai_circle_share
