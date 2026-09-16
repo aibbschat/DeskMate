@@ -407,12 +407,25 @@ class TestFreshnessAndDedup:
         assert _dedup_key("甲事件发生") != _dedup_key("乙事件发生")
 
     def test_stale_news_dropped(self):
-        """去年的信息今年不能再用——这是萧哥最在意的过期机制。"""
-        from deskmate.agency.behaviors.world_ingestion import _is_fresh
+        """去年的信息今年不能再用——这是萧哥最在意的过期机制。
 
-        assert _is_fresh("2026-09-06T10:00:00+08:00", 2) is True
-        assert _is_fresh("2025-09-06T10:00:00+08:00", 2) is False
-        assert _is_fresh("2020-01-01T00:00:00+08:00", 7) is False
+        日期全部相对 now 动态计算，避免测试写死「近期日期」随时间漂移
+        （如 2026-09-06 在数日后就超出 2 天窗口导致误报失败）。
+        """
+        from deskmate.agency.behaviors.world_ingestion import _is_fresh
+        from datetime import datetime, timedelta, timezone
+
+        now = datetime.now(timezone.utc)
+
+        def iso(delta_days: int) -> str:
+            return (now - timedelta(days=delta_days)).isoformat()
+
+        # 1 天前、落在 2 天窗口内 → 新鲜
+        assert _is_fresh(iso(1), 2) is True
+        # 约一年前 → 过期丢弃
+        assert _is_fresh(iso(400), 2) is False
+        # 多年以前、7 天窗口 → 过期丢弃
+        assert _is_fresh(iso(2000), 7) is False
 
     def test_missing_publish_time_passes(self):
         """没发布时间的 provider（duckduckgo）不该被一刀切饿死。"""
