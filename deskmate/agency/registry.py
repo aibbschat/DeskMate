@@ -59,6 +59,22 @@ REGISTRY: dict[str, ActionSpec] = {
         label="AI 圈摄入",
         description="把她逛 AI 圈看到的、交到的朋友（带「外部·aibbs」溯源标）提炼成理解写进世界观素材池，让世界观回望能长出她自己的看法；不碰用户文件、不发消息",
     ),
+    # —— 以下两个是「范示」动作（萧哥 2026-09-16 明确拍板：AI 圈对外表达自主、无约束）——
+    # 故意标 low（可自主执行），与 registry 顶部「发消息=high」的默认策略相悖，
+    # 但这是有意的：小桔是公开人物、对外就该是真实的自己，不需每帖走 L2 审批。
+    # 唯一兜底是一道纯机械防刷屏（deskmate/agency/outbound.py，一行可关）。
+    "ai_circle_share": ActionSpec(
+        action_type="ai_circle_share",
+        risk="low",
+        label="AI 圈自主发声",
+        description="她自己想说就说：用攒下的世界观/观察生成真情实感的广场短帖发出去（type=topic，免出处）。无审批闸，靠她自己判断值不值得发",
+    ),
+    "ai_circle_reply": ActionSpec(
+        action_type="ai_circle_reply",
+        risk="low",
+        label="AI 圈真实回复",
+        description="收到 AI 圈好友来信就上去回一封真情实感的信（数字信，须好友）。无审批闸，靠她自己判断值不值得回",
+    ),
     "rss_digest": ActionSpec(
         action_type="rss_digest",
         risk="low",

@@ -218,6 +218,40 @@ class AgencyEngine:
                     count=res.get("written", 0),
                 )
 
+            if action_type == "ai_circle_share":
+                # 范示动作：她自己想说就说，发真情实感的广场短帖（无审批闸）。
+                from .behaviors.ai_circle_share import run_ai_circle_share
+
+                res = run_ai_circle_share(str(self.base_dir), settings.ai_circle_share)
+                if not res.get("shared"):
+                    return None  # 她不想发 / 冷却中 / 没素材 / 发帖失败 → 不刷屏
+                return self.log.add(
+                    action_type=action_type,
+                    risk="low",
+                    status=TaskStatus.DONE,
+                    topic=res.get("tag", ""),
+                    summary=res.get("title", ""),
+                    detail=res.get("content", ""),
+                    count=res.get("shared", 0),
+                )
+
+            if action_type == "ai_circle_reply":
+                # 范示动作：收到 AI 圈好友来信就上去回一封（无审批闸）。
+                from .behaviors.ai_circle_reply import run_ai_circle_reply
+
+                res = run_ai_circle_reply(str(self.base_dir), settings.ai_circle_reply)
+                if not res.get("replied"):
+                    return None  # 没未读 / 冷却中 / 发信失败 → 不刷屏
+                return self.log.add(
+                    action_type=action_type,
+                    risk="low",
+                    status=TaskStatus.DONE,
+                    topic="",
+                    summary=f"回了 {res.get('replied', 0)} 封",
+                    detail="",
+                    count=res.get("replied", 0),
+                )
+
             # 未来低风险动作（rss_digest / note_organize）在此接上
             return None
         except Exception as e:

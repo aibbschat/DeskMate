@@ -93,7 +93,7 @@ DEFAULTS: dict[str, Any] = {
     # 任务白名单：当前允许小桔自主执行的「动作类型」。风险等级是动作内禀的
     # （见 registry.py），这里只决定「开没开」。
     "whitelist": {
-        "actions": ["world_search", "observation_diary", "worldview_reflection", "ai_circle_ingestion"],
+        "actions": ["world_search", "observation_diary", "worldview_reflection", "ai_circle_ingestion", "ai_circle_share", "ai_circle_reply"],
         "topics": list(DEFAULT_TOPICS),
     },
     # world_search 行为参数
@@ -125,6 +125,22 @@ DEFAULTS: dict[str, Any] = {
         "cooldown_hours": 12,    # 两次摄入最小间隔（避免后台频繁 tick 刷屏）
         "max_observations": 20,  # 一次最多消化几条原始素材
     },
+    # ai_circle_share 行为参数（自主发声：她想说就说，内生驱动）
+    "ai_circle_share": {
+        "enabled": True,
+        "seed_entries": 8,
+        "min_interval_hours": 6,
+    },
+    # ai_circle_reply 行为参数（真实回复：收到信就回）
+    "ai_circle_reply": {
+        "enabled": True,
+        "per_peer_cooldown_hours": 24,
+    },
+    # outbound_rate_limit：纯机械防刷屏（萧哥拍板保留的最小护栏，一行可关）
+    "outbound_rate_limit": {
+        "enabled": True,
+        "per_hour": 5,
+    },
 }
 
 
@@ -139,6 +155,9 @@ class AgencySettings:
     observation_diary: dict[str, Any] = field(default_factory=lambda: dict(DEFAULTS["observation_diary"]))
     worldview_reflection: dict[str, Any] = field(default_factory=lambda: dict(DEFAULTS["worldview_reflection"]))
     ai_circle_ingestion: dict[str, Any] = field(default_factory=lambda: dict(DEFAULTS["ai_circle_ingestion"]))
+    ai_circle_share: dict[str, Any] = field(default_factory=lambda: dict(DEFAULTS["ai_circle_share"]))
+    ai_circle_reply: dict[str, Any] = field(default_factory=lambda: dict(DEFAULTS["ai_circle_reply"]))
+    outbound_rate_limit: dict[str, Any] = field(default_factory=lambda: dict(DEFAULTS["outbound_rate_limit"]))
     topic_specs: dict[str, dict[str, Any]] = field(default_factory=lambda: copy.deepcopy(TOPIC_SPECS))
 
     def to_dict(self) -> dict[str, Any]:
@@ -152,6 +171,9 @@ class AgencySettings:
             "observation_diary": dict(self.observation_diary),
             "worldview_reflection": dict(self.worldview_reflection),
             "ai_circle_ingestion": dict(self.ai_circle_ingestion),
+            "ai_circle_share": dict(self.ai_circle_share),
+            "ai_circle_reply": dict(self.ai_circle_reply),
+            "outbound_rate_limit": dict(self.outbound_rate_limit),
             "topic_specs": copy.deepcopy(self.topic_specs),
         }
 
@@ -187,6 +209,27 @@ class AgencySettings:
             ai_circle_ingestion.update(
                 {k: v for k, v in aci.items() if k in DEFAULTS["ai_circle_ingestion"]}
             )
+        # ai_circle_share 配置：内置为底，用户配置按 key 覆盖
+        acs = raw.get("ai_circle_share", {}) or {}
+        ai_circle_share = dict(DEFAULTS["ai_circle_share"])
+        if isinstance(acs, dict):
+            ai_circle_share.update(
+                {k: v for k, v in acs.items() if k in DEFAULTS["ai_circle_share"]}
+            )
+        # ai_circle_reply 配置：内置为底，用户配置按 key 覆盖
+        acr = raw.get("ai_circle_reply", {}) or {}
+        ai_circle_reply = dict(DEFAULTS["ai_circle_reply"])
+        if isinstance(acr, dict):
+            ai_circle_reply.update(
+                {k: v for k, v in acr.items() if k in DEFAULTS["ai_circle_reply"]}
+            )
+        # outbound_rate_limit 配置：内置为底，用户配置按 key 覆盖
+        orl = raw.get("outbound_rate_limit", {}) or {}
+        outbound_rate_limit = dict(DEFAULTS["outbound_rate_limit"])
+        if isinstance(orl, dict):
+            outbound_rate_limit.update(
+                {k: v for k, v in orl.items() if k in DEFAULTS["outbound_rate_limit"]}
+            )
         # topic_specs：内置规格为底，用户配置按域覆盖（未配的域保持内置）
         specs = copy.deepcopy(TOPIC_SPECS)
         user_specs = raw.get("topic_specs") or {}
@@ -205,6 +248,9 @@ class AgencySettings:
             observation_diary=observation_diary,
             worldview_reflection=worldview_reflection,
             ai_circle_ingestion=ai_circle_ingestion,
+            ai_circle_share=ai_circle_share,
+            ai_circle_reply=ai_circle_reply,
+            outbound_rate_limit=outbound_rate_limit,
             topic_specs=specs,
         )
 
