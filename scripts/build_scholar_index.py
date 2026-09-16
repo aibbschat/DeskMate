@@ -119,6 +119,8 @@ DOWNLOADED_BOOKS: dict[str, tuple[str, str]] = {
     "清朝前纪": ("孟森", "近代"),
     "唐代政治史述论稿": ("陈寅恪", "近代"),
     "殷周制度论": ("王国维", "近代"),
+    "中国史纲": ("张荫麟", "近代"),
+    "两宋史纲": ("张荫麟", "近代"),
 }
 
 # 已核实维基文库**没有**全文的近现代名著（留档，避免以后重复找）：
@@ -141,9 +143,14 @@ def collect_books() -> list[tuple[Path, str, str, str]]:
         books.append((PUBLISHED / rel, title, AUTHOR_XIAO, "当代"))
 
     if SOURCES_DIR.is_dir():
-        for p in sorted(SOURCES_DIR.glob("*.txt")):
-            author, era = DOWNLOADED_BOOKS.get(p.stem, ("未标注", "近代"))
-            books.append((p, p.stem, author, era))
+        # 只灌入 DOWNLOADED_BOOKS 明确列出的研究著作，避免把 sources/ 里的
+        # 古籍原典（shiliao-shi.db 已收录）重复灌进 scholar 库。
+        for stem, (author, era) in DOWNLOADED_BOOKS.items():
+            p = SOURCES_DIR / f"{stem}.txt"
+            if p.is_file():
+                books.append((p, stem, author, era))
+            else:
+                print(f"[警告] DOWNLOADED_BOOKS 列出但文件缺失：{p.name}")
     return books
 
 

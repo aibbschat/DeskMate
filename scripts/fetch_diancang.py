@@ -29,6 +29,8 @@ BOOKS: dict[str, tuple[str, str]] = {
     "三朝北盟会编": ("https://www.diancang.xyz/lishizhuanji/sanchaobeimenghuibian/", "徐梦莘"),
     "东华录": ("https://www.diancang.xyz/lishizhuanji/donghualu/", "蒋良骐"),
     "新元史": ("https://www.diancang.xyz/lishizhuanji/xinyuanshi/", "柯劭忞"),
+    "中国史纲": ("https://www.diancang.xyz/lishizhuanji/14100/", "张荫麟"),
+    "两宋史纲": ("https://www.diancang.xyz/lishizhuanji/18058/", "张荫麟"),
 }
 
 
