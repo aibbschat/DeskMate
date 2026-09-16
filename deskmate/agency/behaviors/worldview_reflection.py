@@ -226,6 +226,33 @@ def _load_grounding(base_dir: str) -> list[dict]:
     return []
 
 
+def load_worldview_beliefs(base_dir: str | None = None) -> str:
+    """把 worldview 层（她想通透的立场）渲染成一段可读文本，供发帖/回信/聊天上下文消费。
+
+    这是 2026-09-16 补的「缺口」：worldview 层此前只有写入点 + 一个被 AlterEgo
+    门控的读取点（build_cognitive_context），等于写进库没人读。本函数让这层真正
+    驱动输出端——发帖、回信、聊天上下文都复用它。
+
+    复用 memory_injector.format_profile（与 build_cognitive_context 同款渲染），
+    fail-open：任何异常返回空串，绝不阻断调用方主流程。
+    """
+    try:
+        from deskmate.cognitive.memory_injector import (
+            load_cognitive_profile,
+            format_profile,
+        )
+    except Exception:
+        return ""
+    try:
+        wv = load_cognitive_profile("worldview")
+        if not wv:
+            return ""
+        text = format_profile(wv, limit=None, subject="你") or ""
+        return text.strip()
+    except Exception:
+        return ""
+
+
 def _build_reflection_prompt(
     roots: list[dict], xs_entries: list[str], ext_entries: list[str]
 ) -> str:

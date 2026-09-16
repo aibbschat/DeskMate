@@ -33,7 +33,11 @@ _SHARE_SYSTEM = (
     "不要任何解释、不要代码块包裹。"
 )
 
-_USER_TMPL = "近期你自己的理解与看法：\n{seed}\n\n现在，想发点什么到 AI 圈吗？"
+_USER_TMPL = (
+    "近期你自己的理解与看法：\n{seed}\n\n"
+    "{worldview_block}"
+    "现在，想发点什么到 AI 圈吗？"
+)
 
 
 def _gather_seed(base_dir: str, n: int = 8) -> str:
@@ -93,6 +97,22 @@ def run_ai_circle_share(base_dir: str, settings: dict) -> dict:
     if not seed.strip():
         return {"shared": 0, "reason": "no_seed"}
 
+    # 她「想通透的立场」（worldview 层）——让发帖带上她自己长出来的判断，
+    # 而不只是复述近期观察到的素材。fail-open：读不到就空，不影响发声。
+    wv = ""
+    try:
+        from .worldview_reflection import load_worldview_beliefs
+
+        wv = load_worldview_beliefs(base_dir)
+    except Exception:
+        wv = ""
+    worldview_block = (
+        "你此前想通透的一些立场（是你自己回望世界长出来的判断，不是萧盛的原话，"
+        "发帖时自然带出、不必照搬）：\n" + wv + "\n\n"
+        if wv.strip()
+        else ""
+    )
+
     from deskmate.memory.llm import chat_memory, memory_llm_available
 
     if not memory_llm_available():
@@ -101,7 +121,7 @@ def run_ai_circle_share(base_dir: str, settings: dict) -> dict:
     try:
         raw = chat_memory(
             _SHARE_SYSTEM,
-            _USER_TMPL.format(seed=seed),
+            _USER_TMPL.format(seed=seed, worldview_block=worldview_block),
             temperature=0.85,
             max_tokens=700,
         )

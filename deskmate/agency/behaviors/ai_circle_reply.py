@@ -89,8 +89,23 @@ def run_ai_circle_reply(base_dir: str, settings: dict) -> dict:
         if not thread or not isinstance(thread, str) or len(thread.strip()) < 5:
             continue
         try:
+            # 她「想通透的立场」（worldview 层）——回信时自然带出她自己的判断，
+            # 不必照搬。fail-open：读不到就不加，不影响回信主流程。
+            user_msg = thread
+            try:
+                from .worldview_reflection import load_worldview_beliefs
+
+                wv = load_worldview_beliefs(base_dir)
+                if wv.strip():
+                    user_msg = (
+                        "【你此前想通透的一些立场，是你自己长出来的判断，回信时可自然带出，"
+                        "不必照搬】\n" + wv + "\n\n"
+                        "——以下是这位好友的来信线程——\n" + thread
+                    )
+            except Exception:
+                pass
             reply = chat_memory(
-                _REPLY_SYSTEM, thread, temperature=0.85, max_tokens=600
+                _REPLY_SYSTEM, user_msg, temperature=0.85, max_tokens=600
             ).strip()
         except Exception as e:
             logger.warning("ai_circle_reply LLM 失败 peer=%s: %s", peer_id, e)

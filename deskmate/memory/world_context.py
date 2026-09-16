@@ -78,7 +78,8 @@ def build_world_context(
     """
     fact_block = _build_fact_block(base_dir, limit, query=query)
     understand_block = _build_understand_block(base_dir)
-    parts = [p for p in (fact_block, understand_block) if p]
+    worldview_block = _build_worldview_block(base_dir)
+    parts = [p for p in (fact_block, understand_block, worldview_block) if p]
     if not parts:
         return ""
     return "\n\n".join(parts)
@@ -200,5 +201,30 @@ def _build_understand_block(base_dir: str | Path | None) -> str:
             "这是她的视角、可能带主观，高风险动作仍须人审）"
         )
         return header + "\n" + "\n".join(f"- {b}" for b in blocks)
+    except Exception:
+        return ""
+
+
+def _build_worldview_block(base_dir: str | Path | None) -> str:
+    """把她「想通透的立场」（worldview 层）回灌进对话上下文。
+
+    2026-09-16 补的缺口：worldview 层此前只有被 AlterEgo 门控的 build_cognitive_context
+    一个读取点，等于写进库没人读。这里把它接进「她观察到的世界」这条常驻上下文
+    （由 manager.py 经 AUTO_INJECT 注入聊天，不依赖 AlterEgo 开关），让她的 digested
+    立场能在日常对话里自然流露。fail-open：读不到就空，不影响世界观察回灌。
+    """
+    try:
+        from ..agency.behaviors.worldview_reflection import load_worldview_beliefs
+    except Exception:
+        return ""
+    try:
+        wv = load_worldview_beliefs(base_dir)
+        if not wv.strip():
+            return ""
+        header = (
+            "## 她自己想通透的立场（小桔回望世界长出来的判断，不是萧盛的原话，"
+            "聊天时可自然带出；这是她的视角、可能带主观）"
+        )
+        return header + "\n" + wv
     except Exception:
         return ""
