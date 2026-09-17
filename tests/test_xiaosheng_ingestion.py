@@ -140,5 +140,33 @@ class ReflectionPromptTest(unittest.TestCase):
         self.assertTrue(any(r.get("id") == "historiography" for r in roots))
 
 
+class SummarizeSearchTest(unittest.TestCase):
+    def test_strips_duckduckgo_json(self):
+        raw = {"provider": "duckduckgo", "results": [
+            {"title": "网文灵感挖掘", "url": "https://x", "snippet": "一键激发创意"},
+            {"title": "创作谈", "url": "https://y", "body": "虚构的人生札记"},
+        ]}
+        out = xs_mod._summarize_web_search(raw)
+        self.assertNotIn("duckduckgo", out)
+        self.assertNotIn('"provider"', out)
+        self.assertNotIn('"results"', out)
+        self.assertIn("网文灵感挖掘", out)
+        self.assertIn("一键激发创意", out)
+        self.assertIn("检索到以下资料", out)
+
+    def test_standard_content_format(self):
+        raw = {"content": [{"type": "text", "text": "查到明朝藩王分封的记载"}]}
+        out = xs_mod._summarize_web_search(raw)
+        self.assertIn("明朝藩王分封", out)
+
+    def test_plain_string_passthrough(self):
+        out = xs_mod._summarize_web_search("萧盛让我查了某史料出处")
+        self.assertEqual(out, "萧盛让我查了某史料出处")
+
+    def test_fallback_json(self):
+        out = xs_mod._summarize_web_search({"foo": "bar"})
+        self.assertIn("foo", out)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1671,25 +1671,14 @@ class TurnEngine:
         if name != "web_search" and not name.endswith("__web_search"):
             return
         try:
-            import json as _json
             import os
             from pathlib import Path
 
-            if isinstance(result, dict):
-                content = result.get("content")
-                if isinstance(content, list):
-                    parts = [
-                        str(x.get("text", "")) for x in content
-                        if isinstance(x, dict) and x.get("text")
-                    ]
-                    text = "\n".join(parts) if parts else _json.dumps(result, ensure_ascii=False)
-                else:
-                    text = _json.dumps(result, ensure_ascii=False)
-            elif isinstance(result, (list,)):
-                text = _json.dumps(result, ensure_ascii=False)
-            else:
-                text = str(result)
-            body = text.strip()
+            from deskmate.agency.behaviors.xiaosheng_ingestion import (
+                record_xiaosheng_observation,
+                _summarize_web_search,
+            )
+            body = _summarize_web_search(result).strip()
             if len(body) > 1500:
                 body = body[:1500]
             if not body:
@@ -1698,9 +1687,6 @@ class TurnEngine:
                 os.environ.get("DESKMATE_MEMORY_DIR")
                 or os.environ.get("DESKMATE_DIR")
                 or str(Path.home() / ".deskmate")
-            )
-            from deskmate.agency.behaviors.xiaosheng_ingestion import (
-                record_xiaosheng_observation,
             )
             record_xiaosheng_observation(
                 base, "work", "", str(tool_call.arguments or ""), body

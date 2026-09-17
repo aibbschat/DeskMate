@@ -41,6 +41,49 @@ _KINDS = ("chat", "work")
 _BODY_CAP = 2000
 
 
+def _summarize_web_search(result: Any) -> str:
+    """把 web_search 工具返回的原始结构提取成可读文本摘要。
+
+    萧盛写作协作时她替他调 web_search，工具返回可能是：
+    - 标准工具格式 ``{content: [{type:"text", text:"..."}]}`` → 直接取文本
+    - 检索原始结构 ``{provider, results:[{title, url, snippet/body/...}]}``（如 duckduckgo）
+      → 提取每条 title + snippet 拼成可读列表
+    避免把整段检索 JSON 写进素材池 / 理解池当噪音（实测理解池曾涌入 20+ 条
+    ``{"provider":"duckduckgo","results":[...]}`` 原始 JSON，喂进公开手记/发帖）。
+    """
+    if isinstance(result, dict):
+        # 1) 标准工具内容格式
+        content = result.get("content")
+        if isinstance(content, list):
+            texts = [str(x.get("text", "")) for x in content if isinstance(x, dict) and x.get("text")]
+            if texts:
+                return "\n".join(texts)
+        # 2) 检索原始结构（duckduckgo 等）
+        results = result.get("results")
+        if isinstance(results, list) and results:
+            items = []
+            for r in results[:8]:
+                if not isinstance(r, dict):
+                    continue
+                title = (r.get("title") or "").strip()
+                snippet = (
+                    r.get("snippet") or r.get("body")
+                    or r.get("content") or r.get("description") or ""
+                )
+                snippet = str(snippet).strip()
+                line = f"- {title}".rstrip()
+                if snippet:
+                    line += f"：{snippet}"
+                items.append(line)
+            if items:
+                return "检索到以下资料：\n" + "\n".join(items)
+        # 3) 兜底：整段 JSON（仍尽量可读）
+        return json.dumps(result, ensure_ascii=False)
+    if isinstance(result, (list,)):
+        return json.dumps(result, ensure_ascii=False)
+    return str(result)
+
+
 # ---------------------------------------------------------------------------
 # 路径
 # ---------------------------------------------------------------------------
