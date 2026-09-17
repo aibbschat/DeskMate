@@ -167,6 +167,44 @@ class ColumnTest(unittest.TestCase):
         self.assertNotIn("尹遥", user_prompt)                   # 词表命中被挡
         self.assertNotIn("剪贴板", user_prompt)                 # 感知来源被挡
 
+    def test_diary_well_connected_and_gated(self):
+        # 接本地日记井：萧盛纠正她的痕迹应打「萧盛纠正了我」标进 prompt
+        # （且过可公开性闸门：命中词表的私密纠正应被挡，不进公开手记）
+        from datetime import date
+
+        d = self.base / "diary" / "materials"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / f"{date.today().isoformat()}.jsonl").write_text(
+            "\n".join([
+                json.dumps({"ts": "2026-09-17T01:45:24+00:00", "kind": "user_corrected",
+                            "note": "萧盛纠正我：别把没核实的史料直接写进书里。"}, ensure_ascii=False),
+                # 命中 blocklist 的私密纠正：应被可公开性闸门挡掉，不进 prompt
+                json.dumps({"ts": "2026-09-17T02:00:00+00:00", "kind": "user_corrected",
+                            "note": "萧盛的妹妹尹遥说……"}, ensure_ascii=False),
+            ]) + "\n",
+            encoding="utf-8",
+        )
+        m = self._chat(json.dumps({"want": True, "title": "被纠正之后",
+                                   "body": "今天想写写被萧盛纠正的事，慢慢来，这条正文够长用来通过最短长度检查。"}, ensure_ascii=False))
+        col.run_ai_circle_column(str(self.base), self.settings)
+        user_prompt = m.call_args.args[1]
+        self.assertIn("萧盛纠正了我", user_prompt)                       # 公开纠正进了
+        self.assertIn("别把没核实的史料直接写进书里", user_prompt)
+        self.assertNotIn("尹遥", user_prompt)                            # 私密纠正被闸门挡掉
+
+    def test_understanding_tagged_by_source(self):
+        # 理解池里带「内部·萧盛」标的条目，应被打「［萧盛相关］」源标进 prompt
+        p = self.base / "agency" / "observation_understanding.jsonl"
+        with open(p, "a", encoding="utf-8") as f:
+            f.write(json.dumps({"date": "2026-09-17", "ts": 500, "entry_seq": 0, "fact_keys": [],
+                                "body": "萧盛说写东西要慢一点。（内部·萧盛）"}, ensure_ascii=False) + "\n")
+        m = self._chat(json.dumps({"want": True, "title": "t",
+                                   "body": "今天想写点东西，这条正文够长用来通过最短长度检查以及验证理解池打标逻辑是否生效。"}, ensure_ascii=False))
+        col.run_ai_circle_column(str(self.base), self.settings)
+        user_prompt = m.call_args.args[1]
+        self.assertIn("［萧盛相关］", user_prompt)
+        self.assertIn("萧盛说写东西要慢一点", user_prompt)
+
 
 if __name__ == "__main__":
     unittest.main()

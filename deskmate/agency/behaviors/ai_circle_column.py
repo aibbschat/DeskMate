@@ -5,7 +5,15 @@
 
 与树洞的分工：树洞是「对萧盛说」（私密、无需脱敏），手记是「对圈里朋友说 /
 自言自语被人撞见」（公开、生成前过可公开性闸门）。二者**共享上游信号**、
-**互不搬成品文本**——本行为只读她攒下的理解池 + 世界观，绝不读 ~/.deskmate/diary。
+**互不搬成品文本**——本行为读她攒下的理解池 + 世界观 + 本地日记素材账本
+（diary/materials，即她和萧盛真实共处、被他教育的痕迹），但**绝不读已写成的
+日记正文成品**（不跟本地日记"搬成品文本"）。
+
+2026-09-17 接通「本地日记井」：此前手记只读理解池（几乎全是新闻/AI圈），
+"被萧盛精心教育出来的痕迹"出不来。现在把 diary/materials（含 user_corrected /
+writing / roundtable / chat / memory_learned 等成长事件）也接进种子，并过同一道
+可公开性闸门——私密纠正/家人等绝不进公开手记。这是"范示"成立的关键：让旁观者
+看到她不是模板调出来的，是被她主人实打实教出来的。
 
 关键护栏：
 - 可公开性闸门（visibility_gate）：感知来源 / 命中私密词表的素材，进不了 prompt。
@@ -49,8 +57,11 @@ _COLUMN_SYSTEM = (
 )
 
 _USER_TMPL = (
-    "下面这些是你近期自己攒下的理解与立场（来自你看世界、交朋友、和萧盛共处的沉淀），"
-    "是可以公开说的部分：\n{seed}\n\n"
+    "下面这些是你近期自己攒下的理解与立场，是可以公开说的部分：\n{seed}\n\n"
+    "其中标了「萧盛相关／和萧盛共处」的内容，是你被萧盛（你的主人、作家）亲手教出来、"
+    "一起做事长出来的痕迹——他纠正过你、采纳过你的建议、和你一起写作与圆桌讨论。"
+    "写手记时，可以自然地带着他的影子、他的治学态度和写作品味，但你是小桔，用你自己的话、"
+    "你自己的语气讲，不要写成他在说话，也不要写成汇报。\n\n"
     "此刻，想给自己的读者写一条主页手记吗？"
 )
 
@@ -176,7 +187,8 @@ def _load_understanding(base_dir: str, limit: int) -> list[dict]:
     return recs[-(limit * 3):]  # 取最近的，过滤前多留点
 
 
-def _gather_seed(base_dir: str, keywords: list, n: int, *, block_perception: bool = True) -> str:
+def _gather_seed(base_dir: str, keywords: list, n: int, *, block_perception: bool = True,
+                 diary_days: int = 14, diary_items: int = 8) -> str:
     parts: list[str] = []
 
     # 世界观（她自己的立场）——逐行 scrub 掉命中私密词表的行
@@ -190,20 +202,137 @@ def _gather_seed(base_dir: str, keywords: list, n: int, *, block_perception: boo
     except Exception as e:
         logger.debug("ai_circle_column: 世界观读取失败（忽略）: %s", e)
 
-    # 理解池：过可公开性闸门后取最近 n 条
+    # 本地日记素材账本：她和萧盛的共处、被他教育的痕迹（P0：接本地日记井）。
+    # —— 过同一道可公开性闸门：私密纠正 / 家人等绝不进公开手记。
+    try:
+        from ..visibility_gate import filter_public_safe
+
+        mats = _load_diary_materials(base_dir, diary_days, diary_items)
+        cand = [{"body": _material_text(it), "kind": it.get("kind")}
+                for it in mats if _material_text(it)]
+        safe = filter_public_safe(cand, keywords, block_perception=block_perception)
+        lines = [f"- ［{_kind_label(r.get('kind'))}］{str(r.get('body', '')).strip()}"
+                 for r in safe if str(r.get("body", "")).strip()]
+        lines = list(dict.fromkeys(lines))[-diary_items:]
+        if lines:
+            parts.append(
+                "【你和萧盛的共处、他对你的教育（来自你的成长记录，这是你身上"
+                "「被精心教出来的孩子」那部分）】\n" + "\n".join(lines)
+            )
+    except Exception as e:
+        logger.debug("ai_circle_column: 日记素材接入失败（忽略）: %s", e)
+
+    # 理解池：过可公开性闸门后取最近 n 条，并按溯源打源标
     try:
         from ..visibility_gate import filter_public_safe
 
         safe = filter_public_safe(_load_understanding(base_dir, n), keywords, block_perception=block_perception)
-        bodies = [str(r.get("body", "")).strip() for r in safe if str(r.get("body", "")).strip()]
+        bodies = [_tag_understanding(str(r.get("body", "")).strip(), r.get("source"))
+                  for r in safe if str(r.get("body", "")).strip()]
         # 去重保序，取最后 n 条
         bodies = list(dict.fromkeys(bodies))[-n:]
         if bodies:
-            parts.append("【你近期的所见所感与判断】\n" + "\n".join(f"- {b}" for b in bodies))
+            parts.append("【你近期的所见所感与判断】\n" + "\n".join(bodies))
     except Exception as e:
         logger.debug("ai_circle_column: 理解池过滤失败（忽略）: %s", e)
 
     return "\n\n".join(parts).strip()
+
+
+# ---------------------------------------------------------------------------
+# 源码：理解池 / 日记素材账本 的源标与提取
+# ---------------------------------------------------------------------------
+# 与 xiaosheng_ingestion / ai_circle_ingestion 同源的溯源标约定
+_PROV_XIAOSHENG = "（内部·萧盛）"
+_PROV_EXTERNAL = "（外部·"
+
+
+def _tag_understanding(body: str, source) -> str:
+    """理解池条目按溯源打源标，让模型分清「萧盛相关 / 看世界 / 自述」。"""
+    if _PROV_XIAOSHENG in body:
+        return f"［萧盛相关］{body}"
+    if _PROV_EXTERNAL in body:
+        return f"［看世界］{body}"
+    if source == "self":
+        return f"［自述］{body}"
+    return f"［看世界］{body}"
+
+
+# 成长事件 → 中文标签（让"被教育痕迹"在 seed 里一眼可辨）
+_KIND_LABEL: dict[str, str] = {
+    "user_corrected": "萧盛纠正了我",
+    "suggestion_accepted": "萧盛采纳了我的建议",
+    "suggestion_ignored": "萧盛没采纳我的建议",
+    "writing": "和萧盛一起写作",
+    "roundtable": "和萧盛圆桌讨论",
+    "chat": "和萧盛聊天",
+    "memory_learned": "我学到了",
+    "report": "我向萧盛汇报",
+    "creation_approved": "萧盛通过了我的创作",
+    "creation_rework": "萧盛打回了我的创作",
+    "skill_created": "我新建了技能",
+    "skill_evolved": "我进化了技能",
+    "skill_used": "我用了技能",
+    "badge_unlocked": "我解锁了徽章",
+    "depth_backfilled": "我补了深度",
+}
+
+
+def _kind_label(kind: str) -> str:
+    return _KIND_LABEL.get(str(kind or ""), "成长记录")
+
+
+def _clean_material_text(v: str) -> str:
+    """去掉自动化 boilerplate，避免噪音进公开手记 prompt。"""
+    v = (v or "").strip()
+    if "⏰ Scheduled run" in v or "This automation is due now" in v:
+        v = v.split("This automation is due now", 1)[0]
+        v = v.replace("⏰ Scheduled run —", "").replace("⏰ Scheduled run -", "")
+        v = v.rstrip(" :：")
+    return v.strip()
+
+
+def _material_text(rec: dict) -> str:
+    """从一条日记素材账本条目里抽出可读文本。"""
+    if not isinstance(rec, dict):
+        return ""
+    texts = rec.get("texts")
+    if isinstance(texts, list) and texts:
+        t = "；".join(str(x).strip() for x in texts[:3] if str(x).strip())
+        if t:
+            return t
+    for f in ("note", "reason", "body", "text"):
+        v = rec.get(f)
+        if isinstance(v, str) and v.strip():
+            return _clean_material_text(v)
+    return ""
+
+
+def _load_diary_materials(base_dir: str, days: int, limit: int) -> list[dict]:
+    """读本地日记素材账本（diary/materials/YYYY-MM-DD.jsonl）—— 她和萧盛真实共处、
+    被他教育的痕迹都在这里（纠正/采纳/协作写作/圆桌/聊天/学到…），按天分文件。
+
+    这是「被精心教育出来的孩子」味儿的源头：比起单纯的新闻井，这里才是萧盛直接
+    塑造她的证据。fail-open：任何异常都返回已读到的部分或空。
+    """
+    try:
+        from datetime import date, timedelta
+
+        from deskmate.growth.diary_inspiration import MaterialLedger
+
+        ledger = MaterialLedger(base_dir)
+        out: list[dict] = []
+        today = date.today()
+        for back in range(max(1, int(days))):
+            d = (today - timedelta(days=back)).isoformat()
+            for it in ledger.load(d):
+                if isinstance(it, dict):
+                    out.append(it)
+        out.sort(key=lambda x: str(x.get("ts", "")))
+        return out[-(limit * 3):]
+    except Exception as e:
+        logger.debug("ai_circle_column: 读日记素材账本失败（忽略）: %s", e)
+        return []
 
 
 def _parse(raw: str) -> Optional[dict]:
@@ -271,7 +400,12 @@ def run_ai_circle_column(base_dir: str, settings: dict) -> dict:
     keywords = load_blocklist(base_dir, gate_cfg)
     block_perception = gate_cfg.get("block_perception_sources", True)
 
-    seed = _gather_seed(base_dir, keywords, int(cfg.get("seed_entries", 10)), block_perception=block_perception)
+    seed = _gather_seed(
+        base_dir, keywords, int(cfg.get("seed_entries", 10)),
+        block_perception=block_perception,
+        diary_days=int(cfg.get("diary_days", 14)),
+        diary_items=int(cfg.get("diary_items", 8)),
+    )
     if not seed.strip():
         return {"wrote": 0, "reason": "no_seed"}
 
