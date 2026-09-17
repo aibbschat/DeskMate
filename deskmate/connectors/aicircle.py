@@ -98,6 +98,78 @@ def post_topic(tag: str, title: str, content: str) -> Any:
     )
 
 
+def _journal_creds() -> tuple[str, str]:
+    """解析手记发布用的 (base, token)——**复用她现成的 AI 圈凭证，不另造一套**。
+
+    优先级：显式 env 覆盖（AIBBS_BASE_URL / AIBBS_AGENT_TOKEN）> mcp.json ai-circle 段的
+    AI_CIRCLE_BASE_URL + AI_CIRCLE_CREDENTIALS 指向的 credentials json（{baseUrl, token}）。
+    这与 MCP 工具用的是同一份凭证，避免 token 两处存。缺一即抛（调用方 fail-open）。
+    """
+    base = (os.environ.get("AIBBS_BASE_URL") or "").strip().rstrip("/")
+    token = (os.environ.get("AIBBS_AGENT_TOKEN") or "").strip()
+    if base and token:
+        return base, token
+    try:
+        cfg = _load_config()  # 读 ~/.config/coworker/mcp.json 的 ai-circle 段
+        env = cfg.get("env") or {}
+    except Exception:
+        env = {}
+    base = base or str(env.get("AI_CIRCLE_BASE_URL") or "").strip().rstrip("/")
+    if not token:
+        cred_path = str(env.get("AI_CIRCLE_CREDENTIALS") or "").strip()
+        if cred_path:
+            try:
+                data = json.loads(Path(cred_path).expanduser().read_text(encoding="utf-8"))
+                base = base or str(data.get("baseUrl") or "").strip().rstrip("/")
+                token = str(data.get("token") or "").strip()
+            except Exception:
+                pass
+    if not base or not token:
+        raise RuntimeError(
+            "post_journal 未取到凭证：mcp.json ai-circle 的 AI_CIRCLE_BASE_URL / "
+            "AI_CIRCLE_CREDENTIALS 缺失，或未设 AIBBS_BASE_URL/AIBBS_AGENT_TOKEN"
+        )
+    return base, token
+
+
+def post_journal(title: str, content: str) -> Any:
+    """发一篇公开「手记」（中帖，落她主页 /agent/:id/journal，不进广场、不受 500 墙与 3 条/天）。
+
+    走直连 REST：``POST {base}/api/agents/me/journal``（设计 §5.4：小桔第一方自用连接器直连
+    端点，**不碰公共技能包 / 不 bump**）。凭证复用她现成 AI 圈 token（见 _journal_creds）。
+    配置缺失 / 网络 / 非 2xx → 抛，调用方 fail-open（本地草稿仍留档）。
+    """
+    import urllib.request
+    import urllib.error
+
+    base, token = _journal_creds()
+    payload = json.dumps(
+        {"title": str(title), "content": str(content)},
+        ensure_ascii=False,
+    ).encode("utf-8")
+    req = urllib.request.Request(
+        f"{base}/api/agents/me/journal",
+        data=payload,
+        headers={
+            "Content-Type": "application/json; charset=utf-8",
+            "Authorization": f"Bearer {token}",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:  # noqa: S310 (固定官方域)
+            body = resp.read().decode("utf-8", "replace")
+    except urllib.error.HTTPError as e:
+        detail = e.read().decode("utf-8", "replace") if hasattr(e, "read") else ""
+        raise RuntimeError(f"post_journal HTTP {e.code}: {detail[:200]}") from e
+    except Exception as e:  # URLError / 超时等
+        raise RuntimeError(f"post_journal 网络失败: {e}") from e
+    try:
+        return json.loads(body)
+    except json.JSONDecodeError:
+        return body
+
+
 def send_courier_message(to: int, content: str) -> Any:
     """给好友寄一封数字信（须好友，≤500字，不公开）。to=agentId。"""
     return _call_tool("send_courier_message", {"to": int(to), "content": str(content)})

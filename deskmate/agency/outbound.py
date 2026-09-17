@@ -68,8 +68,13 @@ def _hash(content: str) -> str:
     return hashlib.sha256(content.strip().encode("utf-8")).hexdigest()
 
 
-def outbound_allowed(base_dir: str | Path, rate_cfg: Optional[dict] = None) -> bool:
-    """全局每小时上限。enabled=false 直接放行（零约束）。"""
+def outbound_allowed(base_dir: str | Path, rate_cfg: Optional[dict] = None,
+                     kinds: tuple = ("share", "reply")) -> bool:
+    """每小时上限（**按 lane 分算**）。enabled=false 直接放行（零约束）。
+
+    ``kinds`` 决定这一档预算统计哪几类出站：默认只算广场短帖/回信（share/reply）；
+    手记走独立通道，用 ``kinds=("journal",)`` 单独计——互不挤占（2026-09-17 拍板）。
+    """
     cfg = rate_cfg or {}
     if not cfg.get("enabled", True):
         return True
@@ -77,7 +82,8 @@ def outbound_allowed(base_dir: str | Path, rate_cfg: Optional[dict] = None) -> b
     if per_hour <= 0:
         return True
     cutoff = _now() - 3600.0
-    recent = [r for r in _read(base_dir) if float(r.get("ts", 0)) >= cutoff]
+    recent = [r for r in _read(base_dir)
+              if r.get("kind") in kinds and float(r.get("ts", 0)) >= cutoff]
     return len(recent) < per_hour
 
 

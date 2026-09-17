@@ -151,4 +151,11 @@ def run_ai_circle_share(base_dir: str, settings: dict) -> dict:
         return {"shared": 0, "reason": "post_failed", "error": str(e)}
 
     record_outbound(base_dir, "share", content=content)
+    # §5.1 连续感：把她公开发过的短帖回流进理解池，下次发声/写手记能自然回调自己
+    try:
+        from .ai_circle_column import record_self_utterance
+
+        record_self_utterance(base_dir, content, channel="topic")
+    except Exception:
+        pass
     return {"shared": 1, "title": title, "tag": tag, "content": content}

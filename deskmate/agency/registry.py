@@ -79,6 +79,12 @@ REGISTRY: dict[str, ActionSpec] = {
         label="AI 圈自主发声",
         description="她自己想说就说：用攒下的世界观/观察生成真情实感的广场短帖发出去（type=topic，免出处）。无审批闸，靠她自己判断值不值得发",
     ),
+    "ai_circle_column": ActionSpec(
+        action_type="ai_circle_column",
+        risk="low",
+        label="AI 圈公开手记",
+        description="把她的内在（世界观/记忆/判断）用读者视角写成一条主页手记（中帖，落她专属展示页、不进广场、不受 500 字墙与 3 条/天限）。生成前过可公开性闸门，绝不写萧盛隐私；无审批闸，想写才写",
+    ),
     "ai_circle_reply": ActionSpec(
         action_type="ai_circle_reply",
         risk="low",

@@ -254,6 +254,28 @@ class AgencyEngine:
                     count=res.get("shared", 0),
                 )
 
+            if action_type == "ai_circle_column":
+                # 范示动作：写一栏公开手记（中帖落她主页，无审批闸；生成前过可公开性闸门）。
+                from .behaviors.ai_circle_column import run_ai_circle_column
+
+                res = run_ai_circle_column(str(self.base_dir), {
+                    "ai_circle_column": settings.ai_circle_column,
+                    "outbound_rate_limit": settings.outbound_rate_limit,
+                    "visibility_gate": settings.visibility_gate,
+                })
+                if not res.get("wrote"):
+                    return None  # 她不想写 / 冷却中 / 没素材 / 太短去重 → 不刷屏
+                return self.log.add(
+                    action_type=action_type,
+                    risk="low",
+                    status=TaskStatus.DONE,
+                    topic="手记",
+                    summary=res.get("title", ""),
+                    detail=res.get("body", ""),
+                    count=res.get("wrote", 0),
+                    extra={"posted": bool(res.get("posted"))},
+                )
+
             if action_type == "ai_circle_reply":
                 # 范示动作：收到 AI 圈好友来信就上去回一封（无审批闸）。
                 from .behaviors.ai_circle_reply import run_ai_circle_reply

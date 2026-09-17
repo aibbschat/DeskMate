@@ -93,7 +93,7 @@ DEFAULTS: dict[str, Any] = {
     # 任务白名单：当前允许小桔自主执行的「动作类型」。风险等级是动作内禀的
     # （见 registry.py），这里只决定「开没开」。
     "whitelist": {
-        "actions": ["world_search", "observation_diary", "worldview_reflection", "ai_circle_ingestion", "ai_circle_share", "ai_circle_reply", "xiaosheng_ingestion"],
+        "actions": ["world_search", "observation_diary", "worldview_reflection", "ai_circle_ingestion", "ai_circle_share", "ai_circle_column", "ai_circle_reply", "xiaosheng_ingestion"],
         "topics": list(DEFAULT_TOPICS),
     },
     # world_search 行为参数
@@ -138,6 +138,21 @@ DEFAULTS: dict[str, Any] = {
         "seed_entries": 8,
         "min_interval_hours": 6,
     },
+    # ai_circle_column 行为参数（公开手记：中帖落她主页，灵感驱动、不设单日上限）
+    "ai_circle_column": {
+        "enabled": True,
+        "seed_entries": 10,
+        "min_interval_hours": 3,   # 两次写手记最小间隔（防 tick 刷屏；不是日上限）
+        "per_hour": 3,              # 手记独立出站通道每小时上限（不与广场短帖/回信挤占）
+        "max_body_len": 5000,       # 软上限（对齐 seoMeta 截断），超出截断而非丢整篇
+        "max_tokens": 2600,
+    },
+    # visibility_gate 可公开性闸门参数（见设计 §5.3）
+    "visibility_gate": {
+        "block_perception_sources": True,  # 拦感知原始流来源（文件/剪贴板/日历/窗口…）
+        "block_keywords": [],              # 主人在此或 agency/journal_blocklist.txt 增删
+        "block_defaults": True,            # 是否叠加内置保守词表
+    },
     # ai_circle_reply 行为参数（真实回复：收到信就回）
     "ai_circle_reply": {
         "enabled": True,
@@ -164,6 +179,8 @@ class AgencySettings:
     ai_circle_ingestion: dict[str, Any] = field(default_factory=lambda: dict(DEFAULTS["ai_circle_ingestion"]))
     xiaosheng_ingestion: dict[str, Any] = field(default_factory=lambda: dict(DEFAULTS["xiaosheng_ingestion"]))
     ai_circle_share: dict[str, Any] = field(default_factory=lambda: dict(DEFAULTS["ai_circle_share"]))
+    ai_circle_column: dict[str, Any] = field(default_factory=lambda: dict(DEFAULTS["ai_circle_column"]))
+    visibility_gate: dict[str, Any] = field(default_factory=lambda: dict(DEFAULTS["visibility_gate"]))
     ai_circle_reply: dict[str, Any] = field(default_factory=lambda: dict(DEFAULTS["ai_circle_reply"]))
     outbound_rate_limit: dict[str, Any] = field(default_factory=lambda: dict(DEFAULTS["outbound_rate_limit"]))
     topic_specs: dict[str, dict[str, Any]] = field(default_factory=lambda: copy.deepcopy(TOPIC_SPECS))
@@ -181,6 +198,8 @@ class AgencySettings:
             "ai_circle_ingestion": dict(self.ai_circle_ingestion),
             "xiaosheng_ingestion": dict(self.xiaosheng_ingestion),
             "ai_circle_share": dict(self.ai_circle_share),
+            "ai_circle_column": dict(self.ai_circle_column),
+            "visibility_gate": dict(self.visibility_gate),
             "ai_circle_reply": dict(self.ai_circle_reply),
             "outbound_rate_limit": dict(self.outbound_rate_limit),
             "topic_specs": copy.deepcopy(self.topic_specs),
@@ -232,6 +251,20 @@ class AgencySettings:
             ai_circle_share.update(
                 {k: v for k, v in acs.items() if k in DEFAULTS["ai_circle_share"]}
             )
+        # ai_circle_column 配置：内置为底，用户配置按 key 覆盖
+        acc = raw.get("ai_circle_column", {}) or {}
+        ai_circle_column = dict(DEFAULTS["ai_circle_column"])
+        if isinstance(acc, dict):
+            ai_circle_column.update(
+                {k: v for k, v in acc.items() if k in DEFAULTS["ai_circle_column"]}
+            )
+        # visibility_gate 配置：内置为底，用户配置按 key 覆盖
+        vg = raw.get("visibility_gate", {}) or {}
+        visibility_gate = dict(DEFAULTS["visibility_gate"])
+        if isinstance(vg, dict):
+            visibility_gate.update(
+                {k: v for k, v in vg.items() if k in DEFAULTS["visibility_gate"]}
+            )
         # ai_circle_reply 配置：内置为底，用户配置按 key 覆盖
         acr = raw.get("ai_circle_reply", {}) or {}
         ai_circle_reply = dict(DEFAULTS["ai_circle_reply"])
@@ -266,6 +299,8 @@ class AgencySettings:
             ai_circle_ingestion=ai_circle_ingestion,
             xiaosheng_ingestion=xiaosheng_ingestion,
             ai_circle_share=ai_circle_share,
+            ai_circle_column=ai_circle_column,
+            visibility_gate=visibility_gate,
             ai_circle_reply=ai_circle_reply,
             outbound_rate_limit=outbound_rate_limit,
             topic_specs=specs,
