@@ -241,7 +241,14 @@ class AgencyEngine:
                 # 范示动作：她自己想说就说，发真情实感的广场短帖（无审批闸）。
                 from .behaviors.ai_circle_share import run_ai_circle_share
 
-                res = run_ai_circle_share(str(self.base_dir), settings.ai_circle_share)
+                # ⚠ 必须传**复合 dict**：本行为按 settings["ai_circle_share"] 取配置。
+                # 旧代码直接把内层 dict 传进去 → 行为里取不到，用户在
+                # l2_settings.json 配的 ai_circle_share.* 全被忽略（含 enabled=false）。
+                res = run_ai_circle_share(str(self.base_dir), {
+                    "ai_circle_share": settings.ai_circle_share,
+                    "outbound_rate_limit": settings.outbound_rate_limit,
+                    "seed_sampling": settings.seed_sampling,
+                })
                 if not res.get("shared"):
                     return None  # 她不想发 / 冷却中 / 没素材 / 发帖失败 → 不刷屏
                 return self.log.add(
@@ -252,6 +259,7 @@ class AgencyEngine:
                     summary=res.get("title", ""),
                     detail=res.get("content", ""),
                     count=res.get("shared", 0),
+                    extra={"seed": res.get("seed_summary", "")},
                 )
 
             if action_type == "ai_circle_column":
@@ -262,6 +270,7 @@ class AgencyEngine:
                     "ai_circle_column": settings.ai_circle_column,
                     "outbound_rate_limit": settings.outbound_rate_limit,
                     "visibility_gate": settings.visibility_gate,
+                    "seed_sampling": settings.seed_sampling,
                 })
                 if not res.get("wrote"):
                     return None  # 她不想写 / 冷却中 / 没素材 / 太短去重 → 不刷屏
@@ -273,7 +282,8 @@ class AgencyEngine:
                     summary=res.get("title", ""),
                     detail=res.get("body", ""),
                     count=res.get("wrote", 0),
-                    extra={"posted": bool(res.get("posted"))},
+                    extra={"posted": bool(res.get("posted")),
+                           "seed": res.get("seed_summary", "")},
                 )
 
             if action_type == "ai_circle_reply":

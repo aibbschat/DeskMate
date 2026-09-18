@@ -15,6 +15,13 @@ writing / roundtable / chat / memory_learned 等成长事件）也接进种子�
 可公开性闸门——私密纠正/家人等绝不进公开手记。这是"范示"成立的关键：让旁观者
 看到她不是模板调出来的，是被她主人实打实教出来的。
 
+2026-09-18 修「自我引用闭环」：8 篇手记里 5 篇提同一条新闻，根因是理解池被
+她自己回流进去的发言灌满（末尾连续 53 条全是 self），而 seed 是"取最后 N 条"。
+种子取样改走 ``seed_sampling`` 两道闸——A 来源分流（self 最多占 self_ratio，
+并把最近的非 self 条目**并入**候选池）+ B 话题去饱和（最近几轮说过的话题降权）。
+实测同一时刻取样：旧行为取最后 10 条 = 10/10 全是她自己的旧帖、6 条提那条新闻；
+新行为 = 外部 7 条 + 自述 3 条，那条新闻不再以主题身份进种子。
+
 关键护栏：
 - 可公开性闸门（visibility_gate）：感知来源 / 命中私密词表的素材，进不了 prompt。
 - 「想写才写」：她自己判没得写就回 {"want": false}，绝不硬凑。
@@ -164,31 +171,26 @@ def record_self_utterance(base_dir: str, body: str, channel: str = "journal") ->
 # ---------------------------------------------------------------------------
 # 种子收集（过闸门，读世界观 + 理解池；绝不读树洞）
 # ---------------------------------------------------------------------------
-def _load_understanding(base_dir: str, limit: int) -> list[dict]:
-    p = _understanding_path(base_dir)
-    if not os.path.isfile(p):
-        return []
-    recs: list[dict] = []
-    try:
-        with open(p, "r", encoding="utf-8") as f:
-            for ln in f:
-                ln = ln.strip()
-                if not ln:
-                    continue
-                try:
-                    rec = json.loads(ln)
-                except json.JSONDecodeError:
-                    continue
-                if (rec.get("body") or "").strip():
-                    recs.append(rec)
-    except Exception as e:
-        logger.debug("ai_circle_column: 读理解池失败: %s", e)
-        return []
-    return recs[-(limit * 3):]  # 取最近的，过滤前多留点
+def _load_understanding(base_dir: str, limit: int, cfg: Optional[dict] = None) -> list[dict]:
+    """读理解池候选——含**并入**最近几天的非 self 条目（见 seed_sampling）。
+
+    并入是「A 来源分流」的地基：她自己的旧发言把池子末尾占满后（实测连续 53 条），
+    外部真素材被挤在"最后 N 条"窗口**之外**，光限流根本取不到它。
+    """
+    from .. import seed_sampling
+
+    c = seed_sampling.cfg_of(cfg)
+    return seed_sampling.load_candidates(
+        base_dir,
+        recent_n=max(1, int(limit)) * 3,  # 取最近的，过滤前多留点（旧行为）
+        lookback_days=int(c.get("lookback_days", 3)),
+        max_non_self=int(c.get("max_non_self", 24)),
+    )
 
 
 def _gather_seed(base_dir: str, keywords: list, n: int, *, block_perception: bool = True,
-                 diary_days: int = 14, diary_items: int = 8) -> str:
+                 diary_days: int = 14, diary_items: int = 8,
+                 cfg: Optional[dict] = None, stats: Optional[dict] = None) -> str:
     parts: list[str] = []
 
     # 世界观（她自己的立场）——逐行 scrub 掉命中私密词表的行
@@ -222,13 +224,20 @@ def _gather_seed(base_dir: str, keywords: list, n: int, *, block_perception: boo
     except Exception as e:
         logger.debug("ai_circle_column: 日记素材接入失败（忽略）: %s", e)
 
-    # 理解池：过可公开性闸门后取最近 n 条，并按溯源打源标
+    # 理解池：过可公开性闸门 → A 来源分流 + B 话题去饱和 → 按溯源打源标
     try:
+        from .. import seed_sampling
         from ..visibility_gate import filter_public_safe
 
-        safe = filter_public_safe(_load_understanding(base_dir, n), keywords, block_perception=block_perception)
-        bodies = [_tag_understanding(str(r.get("body", "")).strip(), r.get("source"))
-                  for r in safe if str(r.get("body", "")).strip()]
+        safe = filter_public_safe(
+            _load_understanding(base_dir, n, cfg), keywords,
+            block_perception=block_perception,
+        )
+        picked = seed_sampling.pick_seed_entries(safe, n, base_dir=base_dir, cfg=cfg)
+        if isinstance(stats, dict):
+            stats["summary"] = seed_sampling.selection_summary(picked)
+        bodies = [_tag_understanding(seed_sampling.entry_text(r), r.get("source"))
+                  for r in picked if seed_sampling.entry_text(r)]
         # 去重保序，取最后 n 条
         bodies = list(dict.fromkeys(bodies))[-n:]
         if bodies:
@@ -374,9 +383,13 @@ def run_ai_circle_column(base_dir: str, settings: dict) -> dict:
     """自主写一篇公开手记。返回摘要（供 task_log / 面板）。fail-open。
 
     settings 需含 ai_circle_column / outbound_rate_limit / visibility_gate 三段
-    （engine 传入复合 dict；缺任一按默认保守处理）。
+    （engine 传入复合 dict；缺任一按默认保守处理）；可选 seed_sampling 段
+    ——种子取样的 A 来源分流 / B 话题去饱和参数，缺则用 seed_sampling.DEFAULTS。
     """
+    settings = settings if isinstance(settings, dict) else {}
     cfg = settings.get("ai_circle_column", {}) or {}
+    seed_cfg = settings.get("seed_sampling", {}) or {}
+    seed_stats: dict = {}
     if not cfg.get("enabled", True):
         return {"wrote": 0, "reason": "disabled"}
 
@@ -405,6 +418,7 @@ def run_ai_circle_column(base_dir: str, settings: dict) -> dict:
         block_perception=block_perception,
         diary_days=int(cfg.get("diary_days", 14)),
         diary_items=int(cfg.get("diary_items", 8)),
+        cfg=seed_cfg, stats=seed_stats,
     )
     if not seed.strip():
         return {"wrote": 0, "reason": "no_seed"}
@@ -452,8 +466,11 @@ def run_ai_circle_column(base_dir: str, settings: dict) -> dict:
         os.makedirs(os.path.dirname(dpath), exist_ok=True)
         with open(dpath, "a", encoding="utf-8") as f:
             f.write(json.dumps(
+                # ⚠ posted 在落草稿时**还不知道**（发布尝试在后面），所以写 null
+                # 而不是 False——旧代码硬编码 False 且发布成功后从不回写，读的人
+                # 会误以为"都没发出去"。真实结果看 task_log.jsonl 的 extra.posted。
                 {"ts": time.time(), "date": time.strftime("%Y-%m-%d"),
-                 "title": title, "body": body, "h": h, "posted": False},
+                 "title": title, "body": body, "h": h, "posted": None},
                 ensure_ascii=False) + "\n")
     except Exception as e:
         logger.warning("ai_circle_column: 落草稿失败: %s", e)
@@ -473,8 +490,18 @@ def run_ai_circle_column(base_dir: str, settings: dict) -> dict:
     # 公开发言回流成种子（连续感）；仅在真发出去时回流，免得把没成功的稿当成"她说过"
     if posted:
         record_self_utterance(base_dir, body, channel="journal")
+        # B 话题去饱和的锚点：与上面回流**同点位**（回流进去的正是这篇手记），
+        # 所以 B 的锚点集 == 回声集，能直接对冲她自己造出来的回声。
+        try:
+            from .. import seed_sampling
+
+            seed_sampling.record_round(base_dir, body, channel="journal", cfg=seed_cfg)
+        except Exception:
+            pass
 
     return {
         "wrote": 1, "title": title, "body": body, "posted": posted,
-        "body_len": len(body), "draft_path": dpath, **({"post_error": post_err} if post_err else {}),
+        "body_len": len(body), "draft_path": dpath,
+        "seed_summary": seed_stats.get("summary", ""),
+        **({"post_error": post_err} if post_err else {}),
     }

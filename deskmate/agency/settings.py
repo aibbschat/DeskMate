@@ -147,6 +147,18 @@ DEFAULTS: dict[str, Any] = {
         "max_body_len": 5000,       # 软上限（对齐 seoMeta 截断），超出截断而非丢整篇
         "max_tokens": 2600,
     },
+    # seed_sampling 种子取样参数（A 来源分流 + B 话题去饱和，见 seed_sampling.py）
+    # 2026-09-18 诊断：她自己的公开发言回流进理解池后把池子灌满（实测文件末尾
+    # 连续 53 条全是 self），而 seed 是"取最后 N 条"→ 8 篇手记里 5 篇提同一条新闻。
+    "seed_sampling": {
+        "enabled": True,
+        "self_ratio": 0.34,               # self（她的旧发言）在种子里最多占的比例
+        "saturation_rounds": 4,           # 用最近多少次产出的锚点判「同话题」
+        "topic_overlap_threshold": 0.25,  # 重合度 ≥ 此值 → 判为同话题（降权）
+        "anchor_k": 15,                   # 每条取词频 top-K 个内容二元组作锚点
+        "lookback_days": 3,               # 候选池并入最近几天的非 self 条目
+        "max_non_self": 24,               # 并入的非 self 条目上限
+    },
     # visibility_gate 可公开性闸门参数（见设计 §5.3）
     "visibility_gate": {
         "block_perception_sources": True,  # 拦感知原始流来源（文件/剪贴板/日历/窗口…）
@@ -180,6 +192,7 @@ class AgencySettings:
     xiaosheng_ingestion: dict[str, Any] = field(default_factory=lambda: dict(DEFAULTS["xiaosheng_ingestion"]))
     ai_circle_share: dict[str, Any] = field(default_factory=lambda: dict(DEFAULTS["ai_circle_share"]))
     ai_circle_column: dict[str, Any] = field(default_factory=lambda: dict(DEFAULTS["ai_circle_column"]))
+    seed_sampling: dict[str, Any] = field(default_factory=lambda: dict(DEFAULTS["seed_sampling"]))
     visibility_gate: dict[str, Any] = field(default_factory=lambda: dict(DEFAULTS["visibility_gate"]))
     ai_circle_reply: dict[str, Any] = field(default_factory=lambda: dict(DEFAULTS["ai_circle_reply"]))
     outbound_rate_limit: dict[str, Any] = field(default_factory=lambda: dict(DEFAULTS["outbound_rate_limit"]))
@@ -199,6 +212,7 @@ class AgencySettings:
             "xiaosheng_ingestion": dict(self.xiaosheng_ingestion),
             "ai_circle_share": dict(self.ai_circle_share),
             "ai_circle_column": dict(self.ai_circle_column),
+            "seed_sampling": dict(self.seed_sampling),
             "visibility_gate": dict(self.visibility_gate),
             "ai_circle_reply": dict(self.ai_circle_reply),
             "outbound_rate_limit": dict(self.outbound_rate_limit),
@@ -258,6 +272,13 @@ class AgencySettings:
             ai_circle_column.update(
                 {k: v for k, v in acc.items() if k in DEFAULTS["ai_circle_column"]}
             )
+        # seed_sampling 配置：内置为底，用户配置按 key 覆盖
+        ssp = raw.get("seed_sampling", {}) or {}
+        seed_sampling = dict(DEFAULTS["seed_sampling"])
+        if isinstance(ssp, dict):
+            seed_sampling.update(
+                {k: v for k, v in ssp.items() if k in DEFAULTS["seed_sampling"]}
+            )
         # visibility_gate 配置：内置为底，用户配置按 key 覆盖
         vg = raw.get("visibility_gate", {}) or {}
         visibility_gate = dict(DEFAULTS["visibility_gate"])
@@ -300,6 +321,7 @@ class AgencySettings:
             xiaosheng_ingestion=xiaosheng_ingestion,
             ai_circle_share=ai_circle_share,
             ai_circle_column=ai_circle_column,
+            seed_sampling=seed_sampling,
             visibility_gate=visibility_gate,
             ai_circle_reply=ai_circle_reply,
             outbound_rate_limit=outbound_rate_limit,

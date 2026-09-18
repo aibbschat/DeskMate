@@ -5,6 +5,9 @@
 chat_memory 生成真情实感的一段广场短帖。她自己判断「此刻没啥想说的」就驳回，
 绝不硬发。过最小护栏（频率+去重）后调 ai-circle post_topic 发出。
 
+种子取样走 ``seed_sampling`` 的两道闸（A 来源分流 / B 话题去饱和），见该模块
+与 2026-09-18 的自我引用闭环诊断。
+
 这是「观点长出来不靠规则逼」的延伸：发什么、怎么发，全由她自己定，
 代码只负责把她的声音安全送到 AI 圈。fail-open。
 """
@@ -14,7 +17,6 @@ from __future__ import annotations
 import json
 import logging
 import re
-from pathlib import Path
 from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
@@ -40,27 +42,56 @@ _USER_TMPL = (
 )
 
 
-def _gather_seed(base_dir: str, n: int = 8) -> str:
-    """读她近期攒下的理解（新闻 + AI 圈素材同池），作为发声种子。"""
-    p = Path(base_dir) / "agency" / "observation_understanding.jsonl"
-    if not p.is_file():
-        return ""
-    try:
-        lines = [ln for ln in p.read_text(encoding="utf-8").splitlines() if ln.strip()]
-    except OSError:
-        return ""
-    bodies: list[str] = []
-    for ln in lines[-(n * 3):]:
-        try:
-            rec = json.loads(ln)
-        except json.JSONDecodeError:
-            continue
-        body = (rec.get("body") or "").strip()
-        if body:
-            bodies.append(body)
-        if len(bodies) >= n:
-            break
-    return "\n".join(f"- {b}" for b in bodies[-n:])
+def _gather_seed(base_dir: str, n: int = 8, *, cfg: Optional[dict] = None,
+                 stats: Optional[dict] = None) -> str:
+    """读她近期攒下的理解（新闻 + AI 圈素材同池），作为发声种子。
+
+    取样过 ``seed_sampling`` 的两道闸：A 来源分流（她的旧发言最多占 self_ratio）
+    + B 话题去饱和（最近几轮说过的话题降权）。不过闸时她读到的主要是自己刚发过的
+    旧帖，会反复写同一条新闻——见该模块与 2026-09-18 的诊断。
+    """
+    from .. import seed_sampling
+
+    c = seed_sampling.cfg_of(cfg)
+    picked = _pick_seed(base_dir, n, c)
+    if isinstance(stats, dict):
+        stats["summary"] = seed_sampling.selection_summary(picked)
+    bodies = [b for b in (seed_sampling.entry_text(r) for r in picked) if b]
+    return "\n".join(f"- {b}" for b in bodies)
+
+
+def _pick_seed(base_dir: str, n: int, c: dict) -> list:
+    """候选池（并入最近非 self）+ A/B 取样。fail-open → []。"""
+    from .. import seed_sampling
+
+    cands = seed_sampling.load_candidates(
+        base_dir,
+        recent_n=max(1, int(n)) * 3,
+        lookback_days=int(c.get("lookback_days", 3)),
+        max_non_self=int(c.get("max_non_self", 24)),
+    )
+    if not cands:
+        return []
+    return seed_sampling.pick_seed_entries(cands, int(n), base_dir=base_dir, cfg=c)
+
+
+def _resolve_cfg(settings: dict) -> tuple[dict, dict]:
+    """兼容两种入参：复合 dict（``{"ai_circle_share": {...}, "seed_sampling": {...}}``）
+    或直接给本行为的内层 dict。
+
+    ⚠ 历史坑：engine 把**内层** dict 直接传进来，而本模块按复合 key 取
+    → ``cfg`` 恒为 ``{}``，用户在 l2_settings.json 里配的
+    ``ai_circle_share.enabled: false`` 之类的配置**整段被忽略**。现在两种都认。
+    """
+    settings = settings if isinstance(settings, dict) else {}
+    inner = settings.get("ai_circle_share")
+    if isinstance(inner, dict):
+        cfg = inner
+    else:
+        cfg = {k: v for k, v in settings.items() if not isinstance(v, dict)}
+    seed_cfg = settings.get("seed_sampling")
+    return cfg, (seed_cfg if isinstance(seed_cfg, dict) else {})
+
 
 
 def _parse(raw: str) -> Optional[dict]:
@@ -83,17 +114,20 @@ def _parse(raw: str) -> Optional[dict]:
 
 def run_ai_circle_share(base_dir: str, settings: dict) -> dict:
     """自主发声一轮。返回摘要（供 task_log / 面板）。fail-open。"""
-    cfg = settings.get("ai_circle_share", {}) or {}
+    cfg, seed_cfg = _resolve_cfg(settings)
     if not cfg.get("enabled", True):
         return {"shared": 0, "reason": "disabled"}
 
     # 频率护栏（全局每小时上限，一行可关）
     from ..outbound import outbound_allowed, record_outbound, dedupe_content
 
-    if not outbound_allowed(base_dir, settings.get("outbound_rate_limit", {})):
+    rate_cfg = settings.get("outbound_rate_limit") if isinstance(settings, dict) else None
+    if not outbound_allowed(base_dir, rate_cfg if isinstance(rate_cfg, dict) else {}):
         return {"shared": 0, "reason": "rate_limited"}
 
-    seed = _gather_seed(base_dir, int(cfg.get("seed_entries", 8)))
+    seed_stats: dict = {}
+    seed = _gather_seed(base_dir, int(cfg.get("seed_entries", 8)), cfg=seed_cfg,
+                        stats=seed_stats)
     if not seed.strip():
         return {"shared": 0, "reason": "no_seed"}
 
@@ -158,4 +192,13 @@ def run_ai_circle_share(base_dir: str, settings: dict) -> dict:
         record_self_utterance(base_dir, content, channel="topic")
     except Exception:
         pass
-    return {"shared": 1, "title": title, "tag": tag, "content": content}
+    # B 话题去饱和的锚点：与上面回流**同点位**（回流进去的正是这条发言），
+    # 所以 B 的锚点集 == 回声集，能直接对冲她自己造出来的回声。
+    try:
+        from .. import seed_sampling
+
+        seed_sampling.record_round(base_dir, content, channel="topic", cfg=seed_cfg)
+    except Exception:
+        pass
+    return {"shared": 1, "title": title, "tag": tag, "content": content,
+            "seed_summary": seed_stats.get("summary", "")}
