@@ -66,6 +66,15 @@ def _delta_reasoning(obj: Any) -> Optional[str]:
     return value if isinstance(value, str) and value else None
 
 
+def _without_reasoning_hint(settings: dict[str, Any]) -> dict[str, Any]:
+    """Drop the provider-agnostic `reasoning="none"` hint (see compaction.summarize_span).
+    Chat completions has no such request param — thinking arrives via `reasoning_content`
+    and can't be disabled request-side — and strict compat servers 400 on unknown keys."""
+    if "reasoning" in settings:
+        return {k: v for k, v in settings.items() if k != "reasoning"}
+    return settings
+
+
 def _strip_foreign_sidecars(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Drop provider-private message sidecars (underscore-prefixed keys, e.g. `_gemini`
     thought signatures — see providers/base.py): they belong to other providers, and the
@@ -189,7 +198,7 @@ class OpenAIProvider(ProviderClient):
         kwargs: dict[str, Any] = {
             "model": model,
             "messages": _strip_foreign_sidecars(messages),
-            **settings,
+            **_without_reasoning_hint(settings),
         }
         if tools:
             kwargs["tools"] = tools
@@ -239,7 +248,7 @@ class OpenAIProvider(ProviderClient):
             # Usage on the final chunk (empty `choices`). Compat servers that reject
             # the option get a one-shot retry without it (_param_fix_retry).
             "stream_options": {"include_usage": True},
-            **settings,
+            **_without_reasoning_hint(settings),
         }
         if tools:
             kwargs["tools"] = tools

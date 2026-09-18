@@ -27,8 +27,10 @@ DEFAULT_CONTEXT_WINDOW = 128_000
 # The newest slice kept verbatim, as a fraction of the trigger (a token budget, not a
 # turn count — one huge tool loop shouldn't starve the working set).
 KEEP_RECENT_FRACTION = 0.25
-# The summarizer call itself: tools off, modest ceiling.
-SUMMARY_MAX_TOKENS = 3_000
+# The summarizer call itself: tools off, modest ceiling. Raised from 3k (2026-09-18):
+# thinking models burn output tokens on reasoning before any text — at 3k ark
+# deepseek-v4-flash returned incomplete(max_output_tokens) with no message at all.
+SUMMARY_MAX_TOKENS = 8_000
 # Per-message clip when rendering the span for the summarizer; tool results are the
 # first casualty (huge and mostly stale — a file read 40 turns ago is better re-read).
 _SPAN_TOOL_RESULT_CLIP = 400
@@ -480,9 +482,20 @@ def summarize_span(
         messages=summarizer_messages(span, prior_summary=prior_summary),
         tools=None,
         max_tokens=max_tokens,
+        # "none" is a provider-agnostic hint meaning "skip thinking": a summary is
+        # mechanical distillation, and reasoning burned the whole output budget on
+        # ark deepseek-v4-flash (2026-09-18) — HTTP 200, zero text, trim fallback.
+        # The Responses providers honor it; chat-completions strips it; whitelist-based
+        # providers (Anthropic/Gemini) drop unknown keys on the floor.
+        reasoning="none",
     )
     text = (getattr(turn, "text", None) or "").strip()
     if not text:
+        if getattr(turn, "finish_reason", None) == "length":
+            raise RuntimeError(
+                f"summarizer hit the {max_tokens}-token cap before producing any text "
+                "(thinking likely consumed the budget)"
+            )
         raise RuntimeError("summarizer returned an empty summary")
     return text
 

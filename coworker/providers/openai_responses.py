@@ -62,6 +62,10 @@ _SETTINGS_WHITELIST = {
 # server names exactly one offender per error, so each retry drops exactly that.
 _UNSUPPORTED_PARAM = re.compile(r"unsupported (?:parameter|value)s?:?\s*'([^']+)'")
 
+# Sentinel for "the caller didn't pass a per-call reasoning hint" (a real override may
+# legitimately be None, so a default object is needed, not `None`).
+_REASONING_DEFAULT = object()
+
 
 def _param_fix_retry(kwargs: dict[str, Any], exc: Exception) -> dict[str, Any]:
     """Kwargs for the one retry an unsupported-parameter error earns, or re-raise.
@@ -351,6 +355,12 @@ class OpenAIResponsesProvider(ProviderClient):
         tools: Optional[list[dict[str, Any]]],
         settings: dict[str, Any],
     ) -> dict[str, Any]:
+        settings = dict(settings)
+        # Per-call reasoning hint (convention: `reasoning="none"` → omit the param
+        # entirely so thinking models don't burn the output budget; e.g. compaction's
+        # summarizer). Absent → the instance default (reasoning_summary flag). Any other
+        # value rides through verbatim as the `reasoning` request param.
+        reasoning_hint = settings.pop("reasoning", _REASONING_DEFAULT)
         instructions, items = convert_messages(messages)
         if "max_tokens" in settings and "max_output_tokens" not in settings:
             settings = {**settings, "max_output_tokens": settings["max_tokens"]}
@@ -363,8 +373,11 @@ class OpenAIResponsesProvider(ProviderClient):
             "include": ["reasoning.encrypted_content"],
             **{k: v for k, v in settings.items() if k in _SETTINGS_WHITELIST},
         }
-        if self._reasoning_summary:
-            kwargs["reasoning"] = {"summary": "auto"}
+        if reasoning_hint is _REASONING_DEFAULT:
+            if self._reasoning_summary:
+                kwargs["reasoning"] = {"summary": "auto"}
+        elif reasoning_hint not in (None, "none"):
+            kwargs["reasoning"] = reasoning_hint
         if instructions:
             kwargs["instructions"] = instructions
         if tools:

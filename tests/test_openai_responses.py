@@ -352,6 +352,30 @@ def test_complete_can_omit_reasoning_summary_but_keep_encrypted_content():
     assert fake.kwargs["include"] == ["reasoning.encrypted_content"]
 
 
+def test_complete_reasoning_none_hint_omits_reasoning_param():
+    """compaction.summarize_span passes reasoning="none" — thinking models must not burn
+    the output budget (2026-09-18: ark deepseek-v4-flash returned 200 with zero text)."""
+    fake = _FakeClient(response=_response([_message_item("hello")]))
+    provider = OpenAIResponsesProvider(client=fake)
+    provider.complete(
+        model="m", messages=[{"role": "user", "content": "hi"}], reasoning="none"
+    )
+    assert "reasoning" not in fake.kwargs
+    assert fake.kwargs["include"] == ["reasoning.encrypted_content"]  # untouched
+
+
+def test_complete_reasoning_override_rides_through():
+    """A real reasoning hint (dict) replaces the instance default verbatim."""
+    fake = _FakeClient(response=_response([_message_item("hello")]))
+    provider = OpenAIResponsesProvider(client=fake)
+    provider.complete(
+        model="m",
+        messages=[{"role": "user", "content": "hi"}],
+        reasoning={"effort": "low"},
+    )
+    assert fake.kwargs["reasoning"] == {"effort": "low"}
+
+
 def test_reasoning_summary_capability_rejects_unknown_mode():
     with pytest.raises(TypeError, match="reasoning_summary must be a bool"):
         OpenAIResponsesProvider(client=SimpleNamespace(), reasoning_summary="auto")

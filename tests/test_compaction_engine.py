@@ -4,6 +4,9 @@ session persistence round-trip. Scripted providers, tiny forced windows, no netw
 
 import asyncio
 
+import pytest
+
+from coworker import compaction
 from coworker.engine import TurnEngine
 from coworker.events import EventType
 from coworker.permissions import PermissionEngine
@@ -35,7 +38,9 @@ class CompactingProvider(ProviderClient):
         if messages and "compacting an AI coworker" in str(
             messages[0].get("content", "")
         ):
-            self.summary_calls.append({"model": model, "messages": messages})
+            self.summary_calls.append(
+                {"model": model, "messages": messages, "settings": settings}
+            )
             if self.summary_fails > 0:
                 self.summary_fails -= 1
                 raise RuntimeError("summarizer down")
@@ -64,7 +69,9 @@ class FailoverProvider(CompactingProvider):
         if messages and "compacting an AI coworker" in str(messages[0].get("content", "")):
             # Record the attempt first (a real provider is still "called" before it
             # fails), so the test can see which models were tried.
-            self.summary_calls.append({"model": model, "messages": messages})
+            self.summary_calls.append(
+                {"model": model, "messages": messages, "settings": settings}
+            )
             if model in self.fail_models:
                 raise RuntimeError(f"dedicated model {model} down")
             return AssistantTurn(text=self.summary, finish_reason="stop")
@@ -426,3 +433,31 @@ def test_effectiveness_check_skips_without_baseline(tmp_path):
     engine._check_compaction_effectiveness(50_000)
     assert engine._compaction_ineffective_streak == 0
     assert engine._compaction_throttled_until == 0.0
+
+
+def test_summarizer_passes_reasoning_none_hint(tmp_path):
+    # 2026-09-18: thinking models burn the output budget on reasoning — ark
+    # deepseek-v4-flash returned HTTP 200 with zero text. The summarizer hint tells
+    # the provider to skip thinking entirely.
+    provider = CompactingProvider([AssistantTurn(text="done", finish_reason="stop")])
+    engine = make_engine(tmp_path, provider, messages=long_history(), cap=400)
+    collect(engine)
+    assert provider.summary_calls
+    assert all(
+        call["settings"].get("reasoning") == "none" for call in provider.summary_calls
+    )
+
+
+def test_summarizer_length_cap_error_names_the_budget():
+    # An empty summary is ambiguous; when the turn was cut by the token cap, say so.
+    class LengthProvider(ProviderClient):
+        def complete(self, *, model, messages, tools=None, **settings):
+            return AssistantTurn(text=None, finish_reason="length")
+
+        def capabilities(self, model):
+            return ModelCapabilities()
+
+    with pytest.raises(RuntimeError, match="token cap before producing any text"):
+        compaction.summarize_span(
+            LengthProvider(), "m", [{"role": "user", "content": "hi"}]
+        )
