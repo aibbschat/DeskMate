@@ -27,8 +27,16 @@ from .tools.search import search_tools
 from .tools.shell import shell_tools
 from .tools.todo import todo_tools
 
-# Editor expert tools (deskmate package, sibling to coworker)
-from deskmate.tools.review import review_chapter, generate_report, load_manuscript_file
+# Editor expert tools (deskmate package, sibling to coworker).
+# fail-open：缺 deskmate 时 review 能力优雅降级为空工具集，不拖垮整个 catalog 模块导入。
+try:
+    from deskmate.tools.review import (
+        review_chapter,
+        generate_report,
+        load_manuscript_file,
+    )
+except Exception:  # pragma: no cover - deskmate 缺失属于部署形态问题
+    review_chapter = generate_report = load_manuscript_file = None
 
 # Context prerequisites a capability may require, mapped to a predicate over AgentContext.
 _REQUIREMENTS: dict[str, Callable[[AgentContext], bool]] = {
@@ -163,7 +171,11 @@ _CAPS: list[Capability] = [
         id="review",
         name="Manuscript review",
         description="Deep chapter-by-chapter literary review + overall report generation.",
-        build=lambda _ctx: [review_chapter, generate_report, load_manuscript_file],
+        build=lambda _ctx: [
+            t
+            for t in (review_chapter, generate_report, load_manuscript_file)
+            if t is not None
+        ],
         requires=(),
         risk=(RiskClass.READ,),
     ),

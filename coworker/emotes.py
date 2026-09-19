@@ -19,9 +19,12 @@ manifest 存放位置（与前端共用同一文件）：
 from __future__ import annotations
 
 import json
+import logging
 import re
 from pathlib import Path
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 _MANIFEST_CANDIDATES = [
     # 标准位置：前端 src 树里的同一份文件（editable 后端可直接读源码树）
@@ -39,14 +42,21 @@ _MANIFEST_CANDIDATES = [
 
 
 def _load_manifest() -> dict:
+    """加载表情 manifest（emotes.manifest.json）作为单一真相源。
+
+    fail-open：在无 GUI / 前端文件缺失的部署（CLI、纯后端服务、打包后部分路径）
+    下找不到 manifest 时返回空 dict，保证本模块仍可正常 import，表情查询 API 退化为
+    返回空/默认、不影响后端主流程，而非让整个模块 import 崩溃（A8 修复）。
+    """
     for cand in _MANIFEST_CANDIDATES:
         if cand.is_file():
             with open(cand, "r", encoding="utf-8") as f:
                 return json.load(f)
-    raise FileNotFoundError(
-        "找不到 emotes.manifest.json，候选路径："
-        + "；".join(str(c) for c in _MANIFEST_CANDIDATES)
+    logger.debug(
+        "emotes manifest 未找到，退化为空表情表；候选路径：%s",
+        "；".join(str(c) for c in _MANIFEST_CANDIDATES),
     )
+    return {}
 
 
 _MANIFEST = _load_manifest()

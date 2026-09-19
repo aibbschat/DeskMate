@@ -147,18 +147,34 @@ def _local_date_from_ts(ts: str) -> str:
 MATERIAL_LOOKBACK_FILES = 120
 MATERIAL_SCAN_CAP = 3000
 
+# 进程内缓存：按账本目录 mtime 失效，避免花园频繁刷新时反复扫描最多 120 个账本文件
+# （A11 性能优化）。花开幂等，重复扫描仅浪费 IO、不影响正确性；目录 append 新事件改
+# 变 mtime 即自动失效重扫。
+_MATERIAL_CACHE: dict[str, tuple[float, list[dict]]] = {}
+
 
 def _material_events(base_dir: Path | str | None) -> list[dict]:
     """读取日记素材账本里的历史事件，补上滚出 recent_events 窗口的部分。
 
     账本是 append-only 的全量事件流水（``diary/materials/YYYY-MM-DD.jsonl``），
     不会像 ``recent_events`` 那样被截断。只读，任何异常返回已有结果。
+
+    进程内按账本目录 mtime 缓存扫描结果（A11）：花园刷新频繁，但花开幂等，重复扫描
+    只是 IO 浪费；目录（append 新事件会改 mtime）不变即直接命中缓存。
     """
     try:
         base = Path(base_dir) if base_dir else Path(os.path.expanduser("~/.deskmate"))
         mdir = base / "diary" / "materials"
         if not mdir.is_dir():
             return []
+        key = str(mdir)
+        try:
+            mtime = os.path.getmtime(mdir)
+        except OSError:
+            mtime = -1.0
+        cached = _MATERIAL_CACHE.get(key)
+        if cached is not None and cached[0] == mtime:
+            return cached[1]
         out: list[dict] = []
         for fp in sorted(mdir.glob("*.jsonl"), reverse=True)[:MATERIAL_LOOKBACK_FILES]:
             try:
@@ -170,9 +186,12 @@ def _material_events(base_dir: Path | str | None) -> list[dict]:
                     if isinstance(rec, dict):
                         out.append(rec)
                         if len(out) >= MATERIAL_SCAN_CAP:
-                            return out
+                            break
             except Exception:
                 continue
+            if len(out) >= MATERIAL_SCAN_CAP:
+                break
+        _MATERIAL_CACHE[key] = (mtime, out)
         return out
     except Exception:
         logger.debug("garden material ledger scan failed", exc_info=True)

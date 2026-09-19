@@ -2,23 +2,51 @@
 #   ~/.config/coworker/config.toml          (global)
 #   <your-project>/.coworker/config.toml    (per-workspace, overrides global)
 #
-# All keys are optional; unset keys fall back to built-in defaults.
+# All keys are optional; unset keys fall back to the built-in defaults below
+# (kept in sync with coworker/config.py). Values shown here ARE the built-in defaults.
 
-model = "gpt-5.5"            # default model id (override per session in the UI/CLI)
-mode = "interactive"         # plan | interactive | auto | custom
-max_iterations = 12          # max model<->tool iterations per turn before stopping
+# --- model / mode / iterations ---------------------------------------------
+model = "gpt-5.6-sol"      # default model id (override per session in the UI/CLI)
+mode = "interactive"       # plan | interactive | auto | custom
+max_iterations = 150       # built-in default; lower it to bound token spend per turn
 
-# Commands auto-allowed without an approval prompt (prefix match).
+# --- command auto-approval --------------------------------------------------
+# SECURITY: the built-in default for `allowed_commands` is an EMPTY list — the
+# safest setting. Nominally read-only programs can still read secrets outside the
+# workspace, expand env vars, load project-controlled config/plugins, or run helpers
+# (e.g. `find -exec`, pytest collection). Only opt into specific prefixes in YOUR
+# user-owned global config, accepting that authority.
+#
+# The entries below are an EXAMPLE of how to widen the list — add them deliberately,
+# do NOT copy blindly. Leave the list empty (default) unless you have a reason.
 allowed_commands = [
-  "ls", "cat", "pwd", "grep", "find",
-  "git status", "git diff", "git log",
-  "python3", "pytest", "node", "npm",
+  # "ls", "cat", "pwd", "grep", "find",
+  # "git status", "git diff", "git log",
+  # "python3", "pytest", "node", "npm",
 ]
 
 # In "custom" permission mode, these tools are auto-approved (everything else still
 # asks). e.g. auto-accept file edits but keep asking before running shell commands.
 auto_allow = ["write_file", "replace_in_file", "apply_patch", "apply_unified_diff"]
 
-# Server (openworker-server) bind address.
+# --- server (openworker-server) ---------------------------------------------
 host = "127.0.0.1"
 port = 8765
+
+# --- governance / sandbox (built-in defaults shown) --------------------------
+# Tool Guard execution level: "off" | "auto" | "strict".
+#   auto = HIGH findings ask, CRITICAL denies; strict = any finding asks.
+execution_level = "auto"
+
+# Confine the agent's shell to a native OS policy (Seatbelt on macOS).
+# Reads broadly, writes confined to the workspace + /tmp, secrets + OS dirs always
+# denied. Set sandbox_enabled=false to run unsandboxed.
+sandbox_enabled = true
+
+# Allow the sandboxed shell outbound network.
+sandbox_network = true
+
+# Egress destinations `web_fetch` may reach WITHOUT an approval prompt (exact host
+# or subdomain). Empty by default — the first fetch to any host asks. A power-user
+# opt-in, like `allowed_commands`; user-global only, so a repo can't widen reach.
+allowed_domains = []
