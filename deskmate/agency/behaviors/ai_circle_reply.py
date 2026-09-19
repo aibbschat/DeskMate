@@ -47,14 +47,10 @@ def run_ai_circle_reply(base_dir: str, settings: dict) -> dict:
 
     from ..outbound import (
         outbound_allowed,
-        record_outbound,
-        dedupe_content,
+        claim_outbound,
         peer_cooldown_ok,
         mark_peer_replied,
     )
-
-    if not outbound_allowed(base_dir, settings.get("outbound_rate_limit", {})):
-        return {"replied": 0, "reason": "rate_limited"}
 
     try:
         from deskmate.connectors.aicircle import list_courier_messages
@@ -75,6 +71,10 @@ def run_ai_circle_reply(base_dir: str, settings: dict) -> dict:
 
     if not memory_llm_available():
         return {"replied": 0, "reason": "no_llm"}
+
+    # 全局频率预筛（省 LLM）：权威判定 + 额度预留见循环内各 peer 的 claim_outbound
+    if not outbound_allowed(base_dir, settings.get("outbound_rate_limit", {})):
+        return {"replied": 0, "reason": "rate_limited"}
 
     per_peer_hours = float(cfg.get("per_peer_cooldown_hours", 24))
     replied = 0
@@ -114,7 +114,14 @@ def run_ai_circle_reply(base_dir: str, settings: dict) -> dict:
             # 她判断没啥好回 —— 仍记一笔冷却，避免每 tick 都来问一次
             mark_peer_replied(base_dir, peer_id)
             continue
-        if dedupe_content(base_dir, reply):
+        # 原子「判→预留」：锁内复核去重 + 每-peer 冷却并记额度；未过则不放行
+        # （杜绝并发两轮对同一 peer 重复回信 / 突破全局频率，A9 修复）。发信在锁外，
+        # 但额度已预留，并发第二轮必被拒。
+        ok, reason = claim_outbound(
+            base_dir, "reply", content=reply, peer=peer_id,
+            dedupe=True, peer_cooldown_hours=per_peer_hours,
+        )
+        if not ok:
             mark_peer_replied(base_dir, peer_id)
             continue
         try:
@@ -130,7 +137,7 @@ def run_ai_circle_reply(base_dir: str, settings: dict) -> dict:
             list_courier_messages(peer_id=peer_id, mark_read=True)
         except Exception:
             pass
-        record_outbound(base_dir, "reply", content=reply, peer=peer_id)
+        # record_outbound 已由 claim_outbound 预留额度，此处只需补记冷却
         mark_peer_replied(base_dir, peer_id)
         replied += 1
 

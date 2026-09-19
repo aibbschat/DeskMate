@@ -24,6 +24,11 @@ def _isolated_state_dir(tmp_path, monkeypatch):
     # Universal scratch provisions a per-session dir for EVERY session — without this,
     # tests would mkdir under the developer's real ~/OpenWorker.
     monkeypatch.setenv("COWORKER_SCRATCH_BASE", str(tmp_path / "coworker-scratch"))
+    # 隔离 deskmate 全局数据目录：各业务模块硬编码 ``Path.home()/".deskmate"`` 兜底，
+    # 不隔离会污染开发者真机 ~/.deskmate（含神圣稿件、真实认知层/成长/意志数据）。
+    # 多数模块按调用时取值读 DESKMATE_DIR，此处设为 tmp 即可兜住；少数在 import 时
+    # 绑定模块级常量的，由各测试单独 setenv（见 test_deskmate_will 等）。
+    monkeypatch.setenv("DESKMATE_DIR", str(tmp_path / "deskmate"))
     monkeypatch.delenv("COWORKER_API_TOKEN", raising=False)
 
 

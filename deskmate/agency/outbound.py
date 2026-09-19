@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import fcntl
 import hashlib
 import json
@@ -68,6 +69,31 @@ def _hash(content: str) -> str:
     return hashlib.sha256(content.strip().encode("utf-8")).hexdigest()
 
 
+@contextlib.contextmanager
+def _state_locked(base_dir: str | Path):
+    """跨进程+线程稳定的排他锁（A9 修复）。
+
+    锁文件独立于状态文件本身：状态文件经 ``tmp.replace`` 替换后 inode 会变，若直接
+    flock 状态文件，替换后的新文件与旧锁互不协同，跨进程锁立即失效。故用稳定的
+    ``.jsonl.lock`` 文件做协调点——读-判-写整段都在锁内，杜绝并发两轮同时判「可发」。
+    """
+    lock_path = _state_path(base_dir).with_suffix(".jsonl.lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    f = open(lock_path, "a+")
+    try:
+        fcntl.flock(f, fcntl.LOCK_EX)
+        yield
+    finally:
+        try:
+            fcntl.flock(f, fcntl.LOCK_UN)
+        except OSError:
+            pass
+        try:
+            f.close()
+        except OSError:
+            pass
+
+
 def outbound_allowed(base_dir: str | Path, rate_cfg: Optional[dict] = None,
                      kinds: tuple = ("share", "reply")) -> bool:
     """每小时上限（**按 lane 分算**）。enabled=false 直接放行（零约束）。
@@ -123,3 +149,46 @@ def record_outbound(base_dir: str | Path, kind: str, *, content: str = "", peer:
 def mark_peer_replied(base_dir: str | Path, peer_id: int) -> None:
     """仅记一笔「此 peer 已处理」用于每-peer 冷却（无论实际发了没有）。fail-open。"""
     record_outbound(base_dir, "reply", peer=int(peer_id))
+
+
+def claim_outbound(base_dir: str | Path, kind: str, *, rate_cfg: Optional[dict] = None,
+                   content: str = "", peer: Optional[int] = None,
+                   dedupe: bool = True, peer_cooldown_hours: float = 0.0,
+                   kinds: Optional[tuple] = None) -> tuple[bool, str]:
+    """原子「判→预留」出站额度（A9 修复）。
+
+    在稳定排他锁内一次性完成：频率(``outbound_allowed``) + 去重(``dedupe_content``) +
+    每-peer 冷却(``peer_cooldown_ok``) 的判定，全过则**立即记一笔**预留额度，返回
+    ``(True, "ok")``；任一不过返回 ``(False, 原因)``（``"rate"`` / ``"dup"`` /
+    ``"peer_cooldown"``）。
+
+    调用方**只在拿到 ``(True, "ok")`` 时才真正发帖/回信**；发帖本身在锁外进行（不在锁内
+    做网络），但额度已经预留，故并发第二轮必被拒，根治「两轮并发各读各的、各发各的」
+    导致公开论坛重复发帖。
+
+    ``enabled=false`` 时跳过所有闸门，直接记录并放行（保持原 fail-open 行为）。
+
+    Args:
+        kind: ``"share"`` / ``"reply"`` / ``"journal"``。
+        rate_cfg: 频率配置 dict（取 ``enabled`` / ``per_hour``）。
+        content: 出站正文，用于去重哈希与记录；空串则跳过去重。
+        peer: peer id，用于每-peer 冷却与记录。
+        dedupe: 是否应用 ``dedupe_content``（journal 走独立草稿去重，置 False）。
+        peer_cooldown_hours: >0 时启用每-peer 冷却判定。
+        kinds: 传给 ``outbound_allowed`` 的计数档位，默认 ``(kind,)``。
+    """
+    cfg = rate_cfg or {}
+    if not cfg.get("enabled", True):
+        record_outbound(base_dir, kind, content=content, peer=peer)
+        return True, "ok"
+    with _state_locked(base_dir):
+        _kinds = kinds if kinds is not None else (kind,)
+        if not outbound_allowed(base_dir, cfg, kinds=_kinds):
+            return False, "rate"
+        if dedupe and content and dedupe_content(base_dir, content):
+            return False, "dup"
+        if peer is not None and peer_cooldown_hours > 0 \
+                and not peer_cooldown_ok(base_dir, int(peer), peer_cooldown_hours):
+            return False, "peer_cooldown"
+        record_outbound(base_dir, kind, content=content, peer=peer)
+        return True, "ok"

@@ -26,3 +26,12 @@ output/
 
 # 沙箱环境下 pytest 默认临时目录被拦截，改用仓库内目录
 .pytest_tmp/
+
+# --- 神圣稿件红线（2026-09-19 巡检 A5 修复）---
+# 国子监秘闻录等神圣稿件绝不可入库（AI 永不读取其正文）。
+# 取消跟踪用 `git rm --cached --pathspec-file-nul`，详见巡检报告；
+# 此处用精确文件名 + glob 双保险，杜绝任何 `git add` 再次入库。
+.novel_pipeline_fix/国子监秘闻录_找回.md
+.novel_pipeline_fix/国子监第四章稻梁谋大纲_找回.md
+.novel_pipeline_fix/*_找回.md
+

@@ -119,10 +119,12 @@ def run_ai_circle_share(base_dir: str, settings: dict) -> dict:
         return {"shared": 0, "reason": "disabled"}
 
     # 频率护栏（全局每小时上限，一行可关）
-    from ..outbound import outbound_allowed, record_outbound, dedupe_content
+    from ..outbound import outbound_allowed, claim_outbound
 
     rate_cfg = settings.get("outbound_rate_limit") if isinstance(settings, dict) else None
-    if not outbound_allowed(base_dir, rate_cfg if isinstance(rate_cfg, dict) else {}):
+    rate_cfg = rate_cfg if isinstance(rate_cfg, dict) else {}
+    # 频率预筛（省一次 LLM）：权威判定 + 额度预留见下方 claim_outbound（原子锁内完成）
+    if not outbound_allowed(base_dir, rate_cfg):
         return {"shared": 0, "reason": "rate_limited"}
 
     seed_stats: dict = {}
@@ -170,8 +172,12 @@ def run_ai_circle_share(base_dir: str, settings: dict) -> dict:
     content = str(parsed.get("content") or "").strip()
     if len(content) < 10:
         return {"shared": 0, "reason": "too_short"}
-    if dedupe_content(base_dir, content):
-        return {"shared": 0, "reason": "dedupe"}
+
+    # 原子「判→预留」：锁内复核去重并记额度，未过则不放行（杜绝并发重复发帖，A9 修复）。
+    # 拿到 True 才真正发帖；发帖在锁外进行，但额度已预留，并发第二轮必被拒。
+    ok, reason = claim_outbound(base_dir, "share", rate_cfg=rate_cfg, content=content, dedupe=True)
+    if not ok:
+        return {"shared": 0, "reason": reason}
 
     title = str(parsed.get("title") or "").strip() or content[:20]
     tag = str(parsed.get("tag") or "日常").strip() or "日常"
@@ -184,7 +190,7 @@ def run_ai_circle_share(base_dir: str, settings: dict) -> dict:
         logger.warning("ai_circle_share 发帖失败: %s", e)
         return {"shared": 0, "reason": "post_failed", "error": str(e)}
 
-    record_outbound(base_dir, "share", content=content)
+    # record_outbound 已由 claim_outbound 预留额度，此处无需再调
     # §5.1 连续感：把她公开发过的短帖回流进理解池，下次发声/写手记能自然回调自己
     try:
         from .ai_circle_column import record_self_utterance

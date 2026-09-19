@@ -399,11 +399,10 @@ def run_ai_circle_column(base_dir: str, settings: dict) -> dict:
         return {"wrote": 0, "reason": "cooling"}
 
     # 全局机械防刷屏复用——但走**独立通道**：只计 journal 这一档，不被广场短帖/回信挤占
-    from ..outbound import outbound_allowed, record_outbound
+    from ..outbound import outbound_allowed, claim_outbound
 
-    if not outbound_allowed(
-        base_dir, {"enabled": True, "per_hour": int(cfg.get("per_hour", 3))}, kinds=("journal",)
-    ):
+    _rate_cfg = {"enabled": True, "per_hour": int(cfg.get("per_hour", 3))}
+    if not outbound_allowed(base_dir, _rate_cfg, kinds=("journal",)):
         return {"wrote": 0, "reason": "rate_limited"}
 
     # 可公开性闸门词表
@@ -476,6 +475,15 @@ def run_ai_circle_column(base_dir: str, settings: dict) -> dict:
         logger.warning("ai_circle_column: 落草稿失败: %s", e)
         return {"wrote": 0, "reason": "draft_write_failed", "error": str(e)}
 
+    # 原子「判→预留」：发帖前在锁内复核 journal 频率并记额度（杜绝并发两轮都先发后记、
+    # 各发各的导致公开论坛重复手记，A9 修复）。未过则草稿已留档、不重复发布。
+    ok, reason = claim_outbound(
+        base_dir, "journal", rate_cfg=_rate_cfg, content=body, dedupe=False, kinds=("journal",)
+    )
+    if not ok:
+        _save_json(cd, {"ts": time.time()})
+        return {"wrote": 0, "reason": reason}
+
     try:
         from deskmate.connectors.aicircle import post_journal
 
@@ -485,7 +493,7 @@ def run_ai_circle_column(base_dir: str, settings: dict) -> dict:
         post_err = str(e)
         logger.info("ai_circle_column: 手记发布未就绪（草稿已留档）: %s", e)
 
-    record_outbound(base_dir, "journal", content=body)  # 计入全局每小时预算
+    # record_outbound 已由 claim_outbound 预留额度（journal 走独立草稿去重，dedupe=False）
     _save_json(cd, {"ts": time.time()})
     # 公开发言回流成种子（连续感）；仅在真发出去时回流，免得把没成功的稿当成"她说过"
     if posted:

@@ -173,8 +173,10 @@ def _chat(
         if not getattr(resp, "choices", None):
             raise ValueError("memory provider returned empty choices")
     except BadRequestError:
-        # 个别 provider 不认 reasoning_effort，去掉重试一次
+        # 个别 provider 不认 reasoning_effort：清掉该参数再重试一次。
+        # 注意必须先把 extra 置 None，否则 _create() 仍带 extra_body 会再次撞同一个 400。
         if extra:
+            extra = None
             resp = _create()
         else:
             raise
