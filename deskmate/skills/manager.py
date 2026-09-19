@@ -251,11 +251,11 @@ class SkillManager:
                         content_lines.append(line)
                 body = (header + "\n" if header else "") + "\n".join(content_lines)[:500] + "\n…"
 
-            # 记录技能被使用
-            self.store.record_use(s["name"], context=user_message[:100], success=True)
-            self.store.increment_uses(s["path"])
-            # 成长系统：技能使用事件（熟练度 + XP + 亲密度）
-            self._record_growth_skill_use(s["name"], s["path"])
+            # 注意：此处只是把技能文本注入上下文（context hint），并不等于技能被
+            # 真正使用。真正的「使用」由 skill_record_use MCP 工具显式上报。因此
+            # 这里不再 record_use / increment_uses / 触发成长事件，避免把「被匹配
+            # 注入」算作成功使用（A2 修复：否则每个含匹配技能的对话都会把
+            # success_rate 顶到 1.0、把成长 XP 灌满）。
 
             parts.append(
                 f"### 技能：{s['name']}\n"

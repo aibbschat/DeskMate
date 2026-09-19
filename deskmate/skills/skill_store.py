@@ -112,7 +112,7 @@ def _parse_frontmatter(text: str) -> tuple[dict, str]:
     for k in ("name", "description", "author", "version", "license",
               "homepage", "compatibility", "allowed-tools", "trigger",
               "category", "created", "updated", "uses", "success_rate",
-              "last_used"):
+              "last_used", "views"):
         if k in raw and raw[k] is not None:
             val = raw[k]
             # YAML 把裸日期解析成 date/datetime 对象，需转 ISO 字符串否则 JSON 崩
@@ -152,15 +152,15 @@ def _parse_frontmatter(text: str) -> tuple[dict, str]:
 def _build_frontmatter(meta: dict) -> str:
     """从 dict 构建 YAML frontmatter。"""
     lines = ["---"]
-    for key in ("name", "description", "tags", "trigger", "created", "updated", "uses", "success_rate", "last_used"):
+    for key in ("name", "description", "tags", "trigger", "created", "updated", "uses", "success_rate", "last_used", "views"):
         if key not in meta:
             continue
         val = meta[key]
         if key == "tags" and isinstance(val, list):
             if val:
                 lines.append(f"tags: [{', '.join(val)}]")
-        elif key in ("uses",):
-            lines.append(f"uses: {val}")
+        elif key in ("uses", "views"):
+            lines.append(f"{key}: {val}")
         elif key == "success_rate":
             lines.append(f"success_rate: {val:.2f}")
         elif key == "last_used":
@@ -516,6 +516,29 @@ class SkillStore:
             meta["uses"] = new_uses
             meta["success_rate"] = round(new_rate, 2)
             meta["last_used"] = date.today().isoformat()
+            meta["updated"] = date.today().isoformat()
+            new_text = _build_frontmatter(meta) + "\n\n" + body.strip() + "\n"
+            filepath.write_text(new_text, encoding="utf-8")
+        except OSError:
+            pass
+
+    def bump_view(self, name_or_path: str) -> None:
+        """技能被查看时递增 views 计数（仅 engagement，不计入成功/失败）。
+
+        与 increment_uses 解耦：查看 ≠ 「成功使用」，避免把浏览量算进
+        success_rate 与成长系统 XP（A2 修复：原 skill_view 把浏览当成功使用，
+        导致 success_rate 恒为 1.0、成长 XP 被浏览量灌满）。导入的只读社区包
+        同样跳过回写。
+        """
+        filepath = self._resolve_path(name_or_path)
+        if not filepath:
+            return
+        if self._is_imported(filepath):
+            return
+        try:
+            text = filepath.read_text(encoding="utf-8")
+            meta, body = _parse_frontmatter(text)
+            meta["views"] = int(meta.get("views", 0)) + 1
             meta["updated"] = date.today().isoformat()
             new_text = _build_frontmatter(meta) + "\n\n" + body.strip() + "\n"
             filepath.write_text(new_text, encoding="utf-8")

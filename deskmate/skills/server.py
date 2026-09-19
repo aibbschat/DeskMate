@@ -71,22 +71,10 @@ def skill_view(name: str) -> str:
         skill = _get_mgr().store.read_skill(name)
         if not skill:
             return f"技能不存在：{name}"
-        # 标记使用
-        _get_mgr().store.increment_uses(name)
-        # 成长系统：技能查看 = 使用事件（increment 后再读 meta，避免 uses 滞后）
-        try:
-            from deskmate.growth.engine import GrowthEngine
-
-            fresh = _get_mgr().store.read_skill(name)
-            meta = (fresh or skill).get("meta", {})
-            GrowthEngine(base_dir=_base_dir).record_skill_use(
-                name,
-                success=True,
-                skill_store_uses=meta.get("uses", 1),
-                skill_store_rate=meta.get("success_rate", 0.0),
-            )
-        except Exception:
-            pass  # 成长系统异常不阻断技能查看
+        # 仅记录查看量（engagement），不算「成功使用」：浏览 ≠ 技能被真正应用，
+        # 不计入 success_rate 与成长系统 XP（A2 修复：原实现把浏览当成功使用，
+        # 导致 success_rate 恒为 1.0、成长 XP 被浏览量灌满）。
+        _get_mgr().store.bump_view(name)
         # 返回完整内容
         meta_lines = [f"# {skill['meta'].get('name', name)}"]
         if skill["meta"].get("description"):

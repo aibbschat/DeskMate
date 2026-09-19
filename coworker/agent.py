@@ -248,25 +248,40 @@ def _deskmate_post_turn_hook(user_msg: str, assistant_msg: str) -> None:
 
     在引擎每轮对话完成后自动调用，提取记忆和技能。
     火后即忘，绝不阻塞主循环。
+
+    复用模块级单例（与 _deskmate_memory_context 共享同一个 DeskMateMemoryManager
+    实例，并为 SkillManager 新增单例），避免每轮重建 Manager ——
+    DeskMateMemoryManager 构造会建 ThreadPoolExecutor，SkillManager 同理，高频
+    对话下每轮重建的开销会累积（A10 修复）。
     """
     if os.environ.get("DESKMATE_AUTO_INJECT") == "0":
         return
+
+    base = os.environ.get("DESKMATE_MEMORY_DIR") or str(Path.home() / ".deskmate")
+
+    # 记忆抽取：复用 DeskMateMemoryManager 单例（与 _deskmate_memory_context 共享）
     try:
         from deskmate.memory.manager import DeskMateMemoryManager
 
-        base = os.environ.get("DESKMATE_MEMORY_DIR") or str(Path.home() / ".deskmate")
-        mgr = DeskMateMemoryManager(Path(base))
-        mgr.post_session_summary(user_msg, assistant_msg)
+        global _deskmate_mgr_singleton
+        if "_deskmate_mgr_singleton" not in globals():
+            with _deskmate_mgr_lock:
+                if "_deskmate_mgr_singleton" not in globals():
+                    _deskmate_mgr_singleton = DeskMateMemoryManager(Path(base))
+        _deskmate_mgr_singleton.post_session_summary(user_msg, assistant_msg)
     except Exception:
         pass  # best-effort, never block
 
-    # 技能进化闭环：成功执行后尝试优化相关技能
+    # 技能进化闭环：成功执行后尝试优化相关技能（复用 SkillManager 单例）
     try:
         from deskmate.skills.manager import SkillManager
 
-        base = os.environ.get("DESKMATE_MEMORY_DIR") or str(Path.home() / ".deskmate")
-        skill_mgr = SkillManager(base_dir=Path(base))
-        skill_mgr.evolve_skill_on_success(user_msg, assistant_msg)
+        global _deskmate_skill_mgr_singleton
+        if "_deskmate_skill_mgr_singleton" not in globals():
+            with _deskmate_mgr_lock:
+                if "_deskmate_skill_mgr_singleton" not in globals():
+                    _deskmate_skill_mgr_singleton = SkillManager(base_dir=Path(base))
+        _deskmate_skill_mgr_singleton.evolve_skill_on_success(user_msg, assistant_msg)
     except Exception:
         pass  # best-effort, never block
 

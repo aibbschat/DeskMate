@@ -11,6 +11,7 @@
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -360,15 +361,20 @@ class CreationChat:
             yield msg
 
     # ---- 进度事件桥：on_event → progress 消息 ----
-    def _progress_stream(self, label: str, fn, *args, **kwargs):
-        """同步执行 fn，on_event 回调累积事件，返回 (progress_msg_or_None, result)。"""
+    async def _progress_stream(self, label: str, fn, *args, **kwargs):
+        """在线程池执行同步 LLM 管线 fn，避免阻塞 asyncio 事件循环。
+
+        on_event 回调在 worker 线程内累积事件；fn 完成后才返回
+        (progress_msg_or_None, result)。原本是同步 def，会在 async 生成器里
+        直接跑同步 LLM 调用，阻塞整个事件循环（A3 修复）。
+        """
         events: list[dict] = []
 
         def on_event(ev: dict):
             events.append(ev)
 
         kwargs["on_event"] = on_event
-        result = fn(*args, **kwargs)
+        result = await asyncio.to_thread(fn, *args, **kwargs)
         progress_msg = None
         if events:
             last = events[-1]
@@ -382,7 +388,7 @@ class CreationChat:
         if state.get("outline_state") == "done":
             yield _msg(MSG_SYSTEM, text="大纲已定稿，如需修改请说「重写大纲」。")
             return
-        progress_msg, result = self._progress_stream("撰写大纲", self.pipeline.draft_outline)
+        progress_msg, result = await self._progress_stream("撰写大纲", self.pipeline.draft_outline)
         if progress_msg:
             yield progress_msg
         if result:
@@ -463,11 +469,11 @@ class CreationChat:
             result = self._review_with_persona(expert_name, kind="outline")
             if result is None:
                 yield _msg(MSG_SYSTEM, text=f"没有找到「{expert_name}」专家，回退到通用审核。")
-                _, result = self._progress_stream("审核大纲", self.pipeline.review_outline)
+                _, result = await self._progress_stream("审核大纲", self.pipeline.review_outline)
             else:
                 yield _msg(MSG_PROGRESS, label=f"{expert_name} 审核", message=f"{expert_name} 已完成审核", progress=100)
         else:
-            progress_msg, result = self._progress_stream("审核大纲", self.pipeline.review_outline)
+            progress_msg, result = await self._progress_stream("审核大纲", self.pipeline.review_outline)
             if progress_msg:
                 yield progress_msg
         if result:
@@ -519,7 +525,7 @@ class CreationChat:
             yield _msg(MSG_SYSTEM, text=f"只有 {self.pipeline.episodes} 集，第{episode}集不存在。")
             return
         kw = {"episode": episode} if episode else {}
-        progress_msg, result = self._progress_stream(f"撰写第{episode or ''}集剧本", self.pipeline.draft_screenplay, **kw)
+        progress_msg, result = await self._progress_stream(f"撰写第{episode or ''}集剧本", self.pipeline.draft_screenplay, **kw)
         if progress_msg:
             yield progress_msg
         if result:
@@ -537,12 +543,12 @@ class CreationChat:
             if result is None:
                 yield _msg(MSG_SYSTEM, text=f"没有找到「{expert_name}」专家，回退到通用审核。")
                 kw = {"episode": episode} if episode else {}
-                _, result = self._progress_stream(f"审核第{episode or ''}集剧本", self.pipeline.review_screenplay, **kw)
+                _, result = await self._progress_stream(f"审核第{episode or ''}集剧本", self.pipeline.review_screenplay, **kw)
             else:
                 yield _msg(MSG_PROGRESS, label=f"{expert_name} 审核", message=f"{expert_name} 已完成审核", progress=100)
         else:
             kw = {"episode": episode} if episode else {}
-            progress_msg, result = self._progress_stream(f"审核第{episode or ''}集剧本", self.pipeline.review_screenplay, **kw)
+            progress_msg, result = await self._progress_stream(f"审核第{episode or ''}集剧本", self.pipeline.review_screenplay, **kw)
             if progress_msg:
                 yield progress_msg
         if result:
