@@ -21,16 +21,18 @@ from typing import Optional
 
 import httpx
 
+# B9 修复：provider 凭证统一走 canonical 的 SecretStore，不再手写解析 secrets.json。
+# SecretStore.state_dir() 即 OpenWorker 状态目录的唯一真相源（COWORKER_STATE_DIR ->
+# ~/.config/coworker），复用它避免「两套目录解析逻辑」分叉。
+from coworker.secrets import SecretStore, state_dir as _coworker_state_dir
+
 _DEFAULT_BASE_URL = "https://api.openai.com/v1"
 _DEFAULT_MODEL = "gpt-4o-mini"
 
 
 def _state_dir() -> Path:
-    """OpenWorker 的状态目录，与 SecretStore.state_dir() 一致。"""
-    base = os.environ.get("COWORKER_STATE_DIR")
-    if base:
-        return Path(base).expanduser()
-    return Path.home() / ".config" / "coworker"
+    """OpenWorker 的状态目录 —— 直接复用 canonical ``SecretStore.state_dir()``，避免两套解析分叉（B9）。"""
+    return _coworker_state_dir()
 
 
 def _resolve_provider() -> tuple[str, str, str]:
@@ -40,7 +42,6 @@ def _resolve_provider() -> tuple[str, str, str]:
     model_name 是去掉了 provider 前缀的裸模型名（如 "mimo-v2.5-pro"）。
     """
     state = _state_dir()
-    secrets_path = state / "secrets.json"
     prefs_path = state / "prefs.json"
 
     # 1. 读 prefs.json 获取 default_model（决定用哪个 provider）
@@ -63,35 +64,28 @@ def _resolve_provider() -> tuple[str, str, str]:
             provider_name = prefix
             bare_model = rest
 
-    # 3. 从 SecretStore 读 provider profile
+    # 3. 从 canonical SecretStore 读 provider profile（B9：不再手写解析 secrets.json，
+    #    复用 SecretStore 获得 ${VAR} 解析 + 单一真相源）。
     api_key = ""
     base_url = ""
-    if provider_name and secrets_path.is_file():
-        try:
-            data = json.loads(secrets_path.read_text(encoding="utf-8"))
-            profile = data.get(f"provider:{provider_name}")
-            if isinstance(profile, dict):
-                api_key = profile.get("api_key", "")
-                base_url = profile.get("base_url", "")
-        except (OSError, json.JSONDecodeError):
-            pass
+    if provider_name:
+        profile = SecretStore().get(f"provider:{provider_name}")
+        if isinstance(profile, dict):
+            api_key = profile.get("api_key", "")
+            base_url = profile.get("base_url", "")
 
     # 4. Fallback: 如果 default_model 没配但有 provider:xiaomi，用它（历史兼容）
-    if not api_key and not provider_name and secrets_path.is_file():
-        try:
-            data = json.loads(secrets_path.read_text(encoding="utf-8"))
-            # 按优先级试已知 provider
-            for pname in ("xiaomi", "deepseek", "qwen", "openai"):
-                profile = data.get(f"provider:{pname}")
-                if isinstance(profile, dict) and profile.get("api_key"):
-                    api_key = profile["api_key"]
-                    base_url = profile.get("base_url", "")
-                    provider_name = pname
-                    if not bare_model:
-                        bare_model = _DEFAULT_MODEL
-                    break
-        except (OSError, json.JSONDecodeError):
-            pass
+    if not api_key and not provider_name:
+        # 按优先级试已知 provider
+        for pname in ("xiaomi", "deepseek", "qwen", "openai"):
+            profile = SecretStore().get(f"provider:{pname}")
+            if isinstance(profile, dict) and profile.get("api_key"):
+                api_key = profile["api_key"]
+                base_url = profile.get("base_url", "")
+                provider_name = pname
+                if not bare_model:
+                    bare_model = _DEFAULT_MODEL
+                break
 
     return api_key, base_url or _DEFAULT_BASE_URL, bare_model or _DEFAULT_MODEL
 
@@ -270,21 +264,14 @@ def _memory_use_omniroute(bible: bool = False) -> bool:
 
 
 def _omniroute_creds(model: str = _OMNIROUTE_MODEL) -> tuple[str, str, str]:
-    """解析 OmniRoute 凭证：优先读 secrets.json 的 ``provider:omniroute`` 配置，否则用本地默认（免密钥）。"""
-    state = _state_dir()
-    secrets_path = state / "secrets.json"
-    if secrets_path.is_file():
-        try:
-            data = json.loads(secrets_path.read_text(encoding="utf-8"))
-            prof = data.get("provider:omniroute")
-            if isinstance(prof, dict):
-                return (
-                    prof.get("api_key") or _OMNIROUTE_API_KEY,
-                    prof.get("base_url") or _OMNIROUTE_BASE_URL,
-                    prof.get("model") or model,
-                )
-        except (OSError, json.JSONDecodeError):
-            pass
+    """解析 OmniRoute 凭证：优先读 canonical SecretStore 的 ``provider:omniroute`` 配置，否则用本地默认（免密钥）。"""
+    prof = SecretStore().get("provider:omniroute")
+    if isinstance(prof, dict):
+        return (
+            prof.get("api_key") or _OMNIROUTE_API_KEY,
+            prof.get("base_url") or _OMNIROUTE_BASE_URL,
+            prof.get("model") or model,
+        )
     return _OMNIROUTE_API_KEY, _OMNIROUTE_BASE_URL, model
 
 
