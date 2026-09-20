@@ -197,6 +197,63 @@ def max_overlap(anchors: set, recent: list[set]) -> float:
 
 
 # ---------------------------------------------------------------------------
+# 话题词（B 的升维）：从「同一条新闻」升到「同一个话题」
+# —— 设计意图（萧哥 2026-09-20 拍板）：回流让她「记得自己写过什么、能连上」是
+#    故意保留的；要治的是「记得却重复写」。所以这里只降权「同话题词」，不删回流。
+# ---------------------------------------------------------------------------
+# 永远在场的人称/自称/通用词，不当话题词（否则会误伤「萧盛」「自己」等常态词）。
+_THEME_STOP = {
+    "萧盛", "萧哥", "主人", "小桔", "手记", "读者", "圈里", "自己", "我们", "他们",
+    "你们", "今天", "昨天", "明天", "现在", "最近", "一篇", "这条", "那条", "一个",
+    "这种", "那种", "时候", "看到", "听到", "觉得", "好像", "其实", "结果", "发现",
+    "新闻", "标准", "模型", "数据", "平台", "算法", "内容", "故事", "小说", "历史",
+    "记忆", "未来", "世界", "生活", "真的", "还是", "已经", "可以", "知道",
+}
+
+
+# 她的贯穿隐喻词（线/底座/边界/看），不当话题词——否则每篇都含 → 全量降权。
+_SIGNATURE = set("线底座边界看")
+
+
+def theme_tokens(text: str, max_tokens: int = 30) -> set:
+    """抽「话题词」（2 字滑动窗，与 topic_anchors 同源性，但用「集合相交」判同话题）。
+
+    topic_anchors 用比例重叠认「同一条新闻」；这里用相交认「同一类事」——
+    红果短剧日活 / AI微短剧12.2万部 / 全行业3.3万部 都含二元组「短剧」，相交即命中，
+    把话题级复读（短剧/脑机接口/国子监…）统一降权。通用词与她的招牌隐喻词进停用集，
+    避免误伤或全量降权。fail-open：抽不到返回空。
+    """
+    t = (text or "")
+    out: set[str] = set()
+    for i in range(len(t) - 1):
+        a, b = t[i], t[i + 1]
+        if "\u4e00" <= a <= "\u9fff" and "\u4e00" <= b <= "\u9fff":
+            g = a + b
+            if (
+                any(ch in _SIGNATURE for ch in g)
+                or a in _FUNC_CHARS or b in _FUNC_CHARS
+                or g in _GENERIC_GRAMS or g in _THEME_STOP
+            ):
+                continue
+            out.add(g)
+    return set(list(out)[:max_tokens])
+
+
+def recent_theme_tokens(base_dir: str, rounds: int) -> set:
+    """最近 rounds 次产出里出现过的「话题词」并集（供话题级去饱和）。fail-open → set()。"""
+    n = max(1, int(rounds))
+    out: set[str] = set()
+    try:
+        for rec in load_rounds(base_dir, limit=n):
+            th = rec.get("themes")
+            if isinstance(th, list):
+                out.update(str(x) for x in th)
+    except Exception as e:  # pragma: no cover - 防御性
+        logger.debug("seed_sampling: 读话题词失败（忽略）: %s", e)
+    return out
+
+
+# ---------------------------------------------------------------------------
 # 锚点历史（跨进程串行；不同入口：L2 tick / GUI POST / MCP）
 # ---------------------------------------------------------------------------
 @contextmanager
@@ -283,7 +340,8 @@ def record_round(base_dir: str, text: str, channel: str = "",
         return False
     c = cfg_of(cfg)
     anchors = sorted(topic_anchors(body, int(c.get("anchor_k", 15))))
-    if not anchors:
+    themes = sorted(theme_tokens(body))
+    if not anchors and not themes:
         return False
     p = _history_path(base_dir)
     keep = max(2, int(c.get("_max_history", 64)))
@@ -294,7 +352,8 @@ def record_round(base_dir: str, text: str, channel: str = "",
                 with open(p, "r", encoding="utf-8") as f:
                     old = [ln.strip() for ln in f if ln.strip()]
             line = json.dumps(
-                {"ts": time.time(), "channel": str(channel or ""), "anchors": anchors},
+                {"ts": time.time(), "channel": str(channel or ""),
+                 "anchors": anchors, "themes": themes},
                 ensure_ascii=False,
             )
             lines = (old + [line])[-keep:]
@@ -372,8 +431,9 @@ def pick_seed_entries(candidates: list[dict], n: int, *, base_dir: str,
 
     选择优先级（桶内都按"越近越优先"）：
       先给外部素材留 ``n - max_self`` 席；self 只吃剩下的、且不超过 ``max_self``；
-      还没满就继续从外部加，仍然不满才让 self 超出上限（**宁可让她多说一句，
-      也不空种**）。输出按时间正序（prompt 里读起来是"最近发生了什么"）。
+    还没满就继续从外部加，仍然不满才让 self 超出上限（**宁可让她多说一句，
+    也不空种**）。输出按「新鲜话题在前、刚写过的话题沉尾」：同话题候选整体排在
+    非重复候选之后（降权但不硬丢，观点长出来不靠规则逼），两组内各自时间正序。
     """
     n = int(n)
     if n <= 0 or not candidates:
@@ -385,10 +445,15 @@ def pick_seed_entries(candidates: list[dict], n: int, *, base_dir: str,
 
     try:
         recent = recent_anchor_sets(base_dir, c.get("saturation_rounds", 4))
+        # 话题级去饱和（升维）：最近几轮写过的「话题词」并集——同话题词直接降权，
+        # 堵住「同一类事换不同事实」的复读（红果短剧/AI微短剧/全行业短剧 都含「短剧」）。
+        # 不碰 record_self_utterance：她仍「记得自己写过什么、能连上」，只是不再重写。
+        recent_themes = recent_theme_tokens(base_dir, c.get("saturation_rounds", 4))
         thr = float(c.get("topic_overlap_threshold", 0.25))
         k = int(c.get("anchor_k", 15))
         saturated = [
-            max_overlap(topic_anchors(entry_text(r), k), recent) >= thr
+            (max_overlap(topic_anchors(entry_text(r), k), recent) >= thr)
+            or bool(theme_tokens(entry_text(r)) & recent_themes)
             for r in candidates
         ]
 
@@ -419,9 +484,15 @@ def pick_seed_entries(candidates: list[dict], n: int, *, base_dir: str,
             picked += [i for i in range(len(candidates))
                        if i not in chosen][: n - len(picked)]
 
-        # ⚠ 先按**优先级**截断，再排序还原时间序——反过来会挑中最旧的 n 条
+        # ⚠ 输出序：把候选切成「非重复(新鲜) / 同话题(刚写过)」两组，新鲜组在前、
+        # 重复组整体沉到末尾——**所有**刚写过的话题都排在新鲜话题之后（降权、不硬丢）；
+        # 每组内各自按时间正序（旧→新），整体读起来是「最近的、没写过的事先讲，
+        # 写过的话题收尾」。之前这里写成 `sorted(picked)` 按索引重排，会把上面的
+        # 沉尾打回原样、去饱和完全失效（单候选看不出，多候选才暴露）。
         picked = list(dict.fromkeys(picked))[:n]
-        return [candidates[i] for i in sorted(picked)]
+        non_sat = [i for i in picked if not saturated[i]]
+        sat = [i for i in picked if saturated[i]]
+        return [candidates[i] for i in sorted(non_sat) + sorted(sat)]
     except Exception as e:
         logger.warning("seed_sampling: 取样异常（退回取最后 n 条）: %s", e)
         return list(candidates[-n:])

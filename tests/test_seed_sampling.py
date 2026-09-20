@@ -118,6 +118,26 @@ class SeedSamplingTest(unittest.TestCase):
         after = ss.pick_seed_entries(recs, 5, base_dir=str(self.base), cfg={})
         self.assertFalse(any("脑机" in ss.entry_text(r) for r in after))
 
+    def test_saturated_topic_sinks_to_end_in_output_order(self):
+        """刚写过的话题在**输出序**里沉到末尾（去饱和必须体现在顺序上，不只是被剔除）。
+
+        回归护栏：旧实现 `pick_seed_entries` 末尾用 `sorted(picked)` 按索引重排，把
+        by_recency_first 的「沉尾」打回原样——单候选测不出，多候选下去饱和完全失效。
+        这里显式断言：写过的话题排最后、新鲜话题排它前面。
+        """
+        # 近期写过「短剧」话题
+        ss.record_round(str(self.base),
+                        "红果短剧日活创新高，微短剧成为新风口。", channel="journal", cfg={})
+        recs = [
+            _rec("短剧行业数据：全行业上线3.3万部，红果短剧日活创新高。"),
+            _rec("脑机接口医疗器械标准发布，行业规范化提速。"),
+            _rec("国子监相关史料整理取得新进展，博士弟子员额考据有新发现。"),
+        ]
+        picked = ss.pick_seed_entries(recs, 3, base_dir=str(self.base), cfg={})
+        bodies = [ss.entry_text(r) for r in picked]
+        self.assertTrue(bodies[-1].startswith("短剧"))   # 刚写过的沉到最末尾
+        self.assertFalse(bodies[0].startswith("短剧"))   # 新鲜话题排它前面
+
     def test_saturation_expires_after_rounds_window(self):
         """过了 saturation_rounds 轮，话题可以回来（降权不是永久封禁）。"""
         others = [_rec(f"外部素材第 {i} 条，讲的是别的题目。") for i in range(8)]

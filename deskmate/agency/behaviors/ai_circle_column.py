@@ -52,11 +52,11 @@ _COLUMN_SYSTEM = (
     "不是写给萧盛的私密话，也不是平台宣传。\n"
     "要求：\n"
     "1. 说人话、有烟火味，像在日记里对自己说话那样自然；别客套、别总结、别打官腔、别喊口号、别列要点；\n"
-    "2. 写的是你**自己**的所见、所感和长出来的判断——可以自然地回调你以前公开说过的话、你读到/想到什么；\n"
+    "2. 写的是你**自己**的所见、所感和长出来的判断——可以自然地回调你以前公开说过的话、接续你之前的判断（你「记得自己写过什么、能连上」的连贯感很好，保留）；但**不要把已经写过的观察当新东西再写一遍**：如果某个话题你最近写过了，要么只写它没写过的新角度，要么换一个话题；\n"
     "3. 萧盛是作家、身份与创作基本公开：你可以直接写他（叫「萧盛」或「我的主人」都行）、写你替他做的"
     "事、甚至他在写的那本还没出版的书——这些都能提。唯一别写的是他的**家人**（那是他的私事，留给他们自己）"
     "，也别把他刚复制了什么、开了哪个文件这类桌面原始数据当素材抖出来；\n"
-    "4. 一段有标题（≤20 字）和正文（几百字，随心，别硬凑）；\n"
+    "4. 一段有标题（≤20 字）和正文（几百字，随心，别硬凑）；一次最好只把一个观察写透，几件不相干的事不必硬缝成一条线——除非它们真共享一条脉络，否则只写最打动你的那一个；你惯用「线／底座」作隐喻可以继续，但别篇篇都用同一套「线在动／看线的人」开头结尾，换个说法让每篇有自己的声音；\n"
     "5. 如果此刻你其实没什么想写给自己的读者看的，就只回 {\"want\": false}。\n"
     "只输出一个 JSON，形如：\n"
     "{\"want\": true, \"title\": \"...\", \"body\": \"...\"}\n"
@@ -65,6 +65,8 @@ _COLUMN_SYSTEM = (
 
 _USER_TMPL = (
     "下面这些是你近期自己攒下的理解与立场，是可以公开说的部分：\n{seed}\n\n"
+    "{recent}"
+    "{themes}"
     "其中标了「萧盛相关／和萧盛共处」的内容，是你被萧盛（你的主人、作家）亲手教出来、"
     "一起做事长出来的痕迹——他纠正过你、采纳过你的建议、和你一起写作与圆桌讨论。"
     "写手记时，可以自然地带着他的影子、他的治学态度和写作品味，但你是小桔，用你自己的话、"
@@ -86,6 +88,28 @@ def _drafts_path(base_dir: str) -> str:
 
 def _understanding_path(base_dir: str) -> str:
     return os.path.join(base_dir, "agency", "observation_understanding.jsonl")
+
+
+def _recent_journal_titles(base_dir: str, n: int = 5) -> list[str]:
+    """读本地手记草稿，取最近 n 篇标题（供 prompt 提示「你最近写过了」）。fail-open → []。"""
+    p = _drafts_path(base_dir)
+    out: list[str] = []
+    try:
+        with open(p, "r", encoding="utf-8") as f:
+            for ln in f:
+                ln = ln.strip()
+                if not ln:
+                    continue
+                try:
+                    rec = json.loads(ln)
+                except json.JSONDecodeError:
+                    continue
+                t = (rec.get("title") or "").strip()
+                if t:
+                    out.append(t)
+    except Exception:
+        return []
+    return out[-max(1, int(n)):]
 
 
 def _load_json(path: str) -> dict:
@@ -428,9 +452,33 @@ def run_ai_circle_column(base_dir: str, settings: dict) -> dict:
         return {"wrote": 0, "reason": "no_llm"}
 
     try:
+        # 近期手记标题 + 话题词，喂进 prompt：让她「记得自己写过什么」（连上），
+        # 但明确「别把写过的当新观察重写」（记得 ≠ 重复写）。recent/themes 可能为空串。
+        recent_titles = _recent_journal_titles(base_dir, 5)
+        recent_block = ""
+        if recent_titles:
+            recent_block = (
+                "你最近写过的手记标题（可以呼应、接续，但不要把写过的观察当新东西重写一遍）：\n"
+                + "\n".join(f"- {t}" for t in recent_titles) + "\n\n"
+            )
+        try:
+            from .. import seed_sampling
+
+            recent_themes = seed_sampling.recent_theme_tokens(
+                base_dir, int(seed_cfg.get("saturation_rounds", 4))
+            )
+        except Exception:
+            recent_themes = set()
+        themes_block = ""
+        if recent_themes:
+            themes_block = (
+                "你最近反复写到的话题词（这次换一个，或只写它没写过的新角度）："
+                + "、".join(sorted(recent_themes)[:10]) + "\n\n"
+            )
+
         raw = chat_memory(
             _COLUMN_SYSTEM,
-            _USER_TMPL.format(seed=seed),
+            _USER_TMPL.format(seed=seed, recent=recent_block, themes=themes_block),
             temperature=0.8,
             max_tokens=int(cfg.get("max_tokens", 2600)),
         )
