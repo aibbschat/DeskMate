@@ -224,7 +224,11 @@ def theme_tokens(text: str, max_tokens: int = 30) -> set:
     避免误伤或全量降权。fail-open：抽不到返回空。
     """
     t = (text or "")
-    out: set[str] = set()
+    # ⚠ 必须**有序去重**（保留文本首次出现顺序）再截断：用 set 会随机丢词，
+    # 长正文（300+ 二元组）里「短剧」常落在前 30 却被随机截断吃掉 → 去饱和锚点
+    # 永远收不到「短剧」，闸形同虚设（这是「短剧复读」治不好的第二层根因）。
+    seen: set[str] = set()
+    ordered: list[str] = []
     for i in range(len(t) - 1):
         a, b = t[i], t[i + 1]
         if "\u4e00" <= a <= "\u9fff" and "\u4e00" <= b <= "\u9fff":
@@ -235,8 +239,10 @@ def theme_tokens(text: str, max_tokens: int = 30) -> set:
                 or g in _GENERIC_GRAMS or g in _THEME_STOP
             ):
                 continue
-            out.add(g)
-    return set(list(out)[:max_tokens])
+            if g not in seen:
+                seen.add(g)
+                ordered.append(g)
+    return set(ordered[:max_tokens])
 
 
 def recent_theme_tokens(base_dir: str, rounds: int) -> set:

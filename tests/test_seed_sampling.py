@@ -233,6 +233,20 @@ class SeedSamplingTest(unittest.TestCase):
         summary = ss.selection_summary([_rec("a"), _rec("b", source="self")])
         self.assertEqual(summary, "2条(外部1/自述1)")
 
+    def test_theme_tokens_preserves_text_order_not_set_random(self):
+        """长正文里靠前的话题词必须稳定进入前 max_tokens，不能被 set 随机截断吃掉。
+
+        回归护栏：旧实现 `return set(list(out)[:max_tokens])` —— set 无序，长正文
+        （300+ 二元组）里「短剧」虽靠前却常被随机截断丢掉，导致 recent_theme_tokens
+        永远收不到「短剧」，去饱和闸对短剧完全失效（「短剧复读」治不好的第二层根因）。
+        改为有序去重后，「短剧」稳定入选。
+        """
+        # 前面塞一个真实话题词，后面用大量无关二元组把池子撑到远超 max_tokens
+        long_body = ("红果短剧日活1.68亿，人均每天看125分钟。"
+                     + "甲乙丙丁戊己庚辛壬癸子丑寅卯辰巳午未申酉戌亥" * 60)
+        toks = ss.theme_tokens(long_body, max_tokens=30)
+        self.assertIn("短剧", toks)   # 靠前话题词必须保住
+
 
 class BehaviorWiringTest(unittest.TestCase):
     """行为层：配置解析 + 只在真发出去时记锚点。"""
