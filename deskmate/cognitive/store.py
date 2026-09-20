@@ -35,6 +35,7 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
+from deskmate.paths import deskmate_db_path, deskmate_legacy_profile_path
 from .models import (
     CognitiveProfile,
     Stance,
@@ -58,11 +59,11 @@ _LAYER = "cognitive"
 
 
 def _default_db_path() -> Path:
-    return Path(os.path.expanduser("~/.deskmate/deskmate.db"))
+    return deskmate_db_path()
 
 
 def _default_legacy_json() -> Path:
-    return Path(os.path.expanduser("~/.deskmate/cognitive_profile.json"))
+    return deskmate_legacy_profile_path()
 
 
 class CognitiveStore:

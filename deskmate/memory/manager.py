@@ -33,6 +33,7 @@ from .user_profile import load_user, save_user, reset_user
 from .llm import llm_available, chat, chat_memory, memory_llm_available
 from .vault_store import VaultStore
 from .sensitivity import classify, redact, SENSITIVE  # 8.4 敏感分级
+from deskmate.paths import deskmate_base_dir
 
 # 记忆上下文最大字符数（参考 Hermes 的 6000）
 MEMORY_CONTEXT_MAX_CHARS = 6_000
@@ -96,8 +97,8 @@ _TAG_TO_TITLE = {v: k for k, v in _TITLE_TO_TAG.items()}
 
 
 def _default_base_dir() -> Path:
-    """默认记忆目录：~/.deskmate"""
-    return Path(os.path.expanduser("~/.deskmate"))
+    """默认记忆目录：~/.deskmate（尊重 DESKMATE_DIR / DESKMATE_MEMORY_DIR）"""
+    return deskmate_base_dir()
 
 
 class DeskMateMemoryManager:

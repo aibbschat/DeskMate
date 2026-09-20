@@ -14,6 +14,7 @@ import os
 from pathlib import Path
 from typing import Optional
 
+from deskmate.paths import deskmate_db_path, deskmate_legacy_profile_path
 from .models import (
     CognitiveProfile,
     Stance,
@@ -31,11 +32,11 @@ from .store import CognitiveStore
 
 def _default_profile_path() -> Path:
     """兼容旧语义：返回 legacy JSON 路径（仅作为首次迁移源）。"""
-    return Path(os.path.expanduser("~/.deskmate/cognitive_profile.json"))
+    return deskmate_legacy_profile_path()
 
 
 def _default_db_path() -> Path:
-    return Path(os.path.expanduser("~/.deskmate/deskmate.db"))
+    return deskmate_db_path()
 
 
 class CognitiveProfileManager:

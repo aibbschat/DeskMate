@@ -18,12 +18,13 @@ import re
 from pathlib import Path
 from typing import Optional
 
+from deskmate.paths import deskmate_base_dir
 from .models import SourceRef, _now
 from .profile import CognitiveProfileManager, get_profile_manager
 
 
 def _base_dir() -> Path:
-    return Path(os.path.expanduser("~/.deskmate"))
+    return deskmate_base_dir()
 
 
 def _read_vault_entries() -> list[dict]:
