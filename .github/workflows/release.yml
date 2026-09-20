@@ -81,8 +81,11 @@ jobs:
           python -m venv .venv
           if [ "$RUNNER_OS" = "Windows" ]; then VPY=.venv/Scripts/python; else VPY=.venv/bin/python; fi
           "$VPY" -m pip install --upgrade pip
-          "$VPY" -m pip install -e ".[bedrock]" pyinstaller typer tzdata
-          "$VPY" -c "import aisuite, coworker"  # fail fast if either import breaks
+          # B12 修复：与 ci.yml 的依赖集对齐（ci.yml 装 .[messaging,dev,bedrock]）。
+          # release 不需要测试专用的 dev extra，但必须含 messaging（slack-bolt/aiohttp/
+          # python-telegram-bot）——否则发布的 DMG 静默缺 inbound 消息依赖，与 CI 不一致。
+          "$VPY" -m pip install -e ".[bedrock,messaging]" pyinstaller typer tzdata
+          "$VPY" -c "import aisuite, coworker, slack_bolt, telegram"  # fail fast if any import breaks
 
       - name: npm ci
         working-directory: surfaces/gui
