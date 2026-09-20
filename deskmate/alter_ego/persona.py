@@ -87,15 +87,15 @@ def format_style_quantified(style: dict[str, Any]) -> str:
         if parts:
             lines.append(f"- 语体：{'，'.join(parts)}")
 
-    # 四字格
+    # 四字格（键名与 style_metrics.compute_style_metrics 输出一致：pct_of_chunks）
     four = metrics.get("four_char") or {}
-    if four and four.get("pct_of_chunk") is not None:
-        lines.append(f"- 四字格：{four['pct_of_chunk']:.1f}% 的词块为四字格")
+    if four and four.get("pct_of_chunks") is not None:
+        lines.append(f"- 四字格：{four['pct_of_chunks']:.1f}% 的词块为四字格")
 
-    # 对话占比
-    dialogue = metrics.get("dialogue") or {}
-    if dialogue and dialogue.get("pct") is not None:
-        lines.append(f"- 对话：{dialogue['pct']:.0f}% 文字为对话")
+    # 对话占比（顶层数值字段 dialogue_pct，非 dialogue 字典）
+    dialogue_pct = metrics.get("dialogue_pct")
+    if dialogue_pct is not None:
+        lines.append(f"- 对话：{dialogue_pct:.0f}% 文字为对话")
 
     # 段落
     para = metrics.get("paragraphs") or {}

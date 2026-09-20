@@ -134,10 +134,10 @@ def _writing_style_section() -> dict[str, Any]:
             "evidence": "四字格多 = 文风简练、有节奏感",
             "tags": ["量化"],
         })
-    elif isinstance(four_raw, dict) and four_raw.get("pct_of_chunk") is not None:
+    elif isinstance(four_raw, dict) and four_raw.get("pct_of_chunks") is not None:
         articles.append({
             "title": "四字格倾向",
-            "content": f"{four_raw['pct_of_chunk']:.1f}% 的词块为四字格",
+            "content": f"{four_raw['pct_of_chunks']:.1f}% 的词块为四字格",
             "evidence": "四字格多 = 文风简练、有节奏感",
             "tags": ["量化"],
         })

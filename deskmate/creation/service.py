@@ -19,6 +19,7 @@ import logging
 import os
 import queue
 import uuid
+import time
 from pathlib import Path
 from typing import AsyncGenerator, Awaitable, Callable, Optional
 
@@ -131,7 +132,7 @@ def create_pipeline(
         "related_override": list(getattr(pl, "_related_override", []) or []),
         "novel_index_failed": bool(getattr(pl, "_novel_index_failed", False)),
         "last_docx": dict(getattr(pl, "last_docx", {}) or {}),
-        "created_at": uuid.uuid4().hex[:8],
+        "created_at": time.time(),
         # 透明化 · 结构化制作要求（重启后恢复）
         "style": list(pl.style or []),
         "pacing": pl.pacing or "",

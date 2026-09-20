@@ -154,6 +154,8 @@ def update_style_profile(
         "updated_at": _now_iso(),
     }
     save_profile(path, new_data)
+    # 画像已更新，清掉文风指纹缓存（否则写作/审稿会一直用首次生成的旧指纹）
+    clear_style_fingerprint_cache()
     return new_data
 
 

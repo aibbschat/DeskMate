@@ -58,15 +58,14 @@ class WillDigest:
         return WillDigest()
 
 
-_cache: dict[str, Any] = {"data": None, "ts": 0.0}
+_cache: dict[str, dict] = {}
 _cache_lock = threading.Lock()
 
 
 def invalidate_digest() -> None:
     """today 情绪或画像更新后调用，强制下次重建。"""
     with _cache_lock:
-        _cache["data"] = None
-        _cache["ts"] = 0.0
+        _cache.clear()
 
 
 def _reset_cache_for_test() -> None:
@@ -146,12 +145,13 @@ def _build(base_dir: Optional[str]) -> WillDigest:
 
 def get_digest(base_dir: Optional[str] = None) -> WillDigest:
     """读摘要（带 TTL 缓存）。"""
+    key = base_dir or ""
     now = time.time()
     with _cache_lock:
-        if _cache["data"] is not None and now - _cache["ts"] < _CACHE_TTL_SEC:
-            return _cache["data"]
+        entry = _cache.get(key)
+        if entry is not None and now - entry["ts"] < _CACHE_TTL_SEC:
+            return entry["data"]
     d = _build(base_dir)
     with _cache_lock:
-        _cache["data"] = d
-        _cache["ts"] = now
+        _cache[key] = {"data": d, "ts": now}
     return d

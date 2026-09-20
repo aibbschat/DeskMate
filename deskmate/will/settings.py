@@ -90,14 +90,13 @@ def _kill_switch_off() -> bool:
     return val is not None and val.strip() == "0"
 
 
-_cache: dict[str, Any] = {"data": None, "ts": 0.0}
+_cache: dict[str, dict] = {}
 _cache_lock = threading.Lock()
 
 
 def _clear_cache() -> None:
     with _cache_lock:
-        _cache["data"] = None
-        _cache["ts"] = 0.0
+        _cache.clear()
 
 
 def _reset_cache_for_test() -> None:
@@ -110,10 +109,12 @@ def load_will_settings(base_dir: str | None = None) -> WillSettings:
     if _kill_switch_off():
         # kill switch 优先：强制关闭整个意志层
         return WillSettings(enabled=False)
+    key = base_dir or ""
     now = time.time()
     with _cache_lock:
-        if _cache["data"] is not None and now - _cache["ts"] < _CACHE_TTL_SEC:
-            return _cache["data"]
+        entry = _cache.get(key)
+        if entry is not None and now - entry["ts"] < _CACHE_TTL_SEC:
+            return entry["data"]
     try:
         path = _default_path(base_dir)
         with open(path, "r", encoding="utf-8") as f:
@@ -125,8 +126,7 @@ def load_will_settings(base_dir: str | None = None) -> WillSettings:
         # JSON 损坏 / 权限问题 → 默认开启但阈值全默认
         settings = WillSettings.from_dict({})
     with _cache_lock:
-        _cache["data"] = settings
-        _cache["ts"] = now
+        _cache[key] = {"data": settings, "ts": now}
     return settings
 
 
@@ -139,7 +139,7 @@ def save_will_settings(settings: WillSettings, base_dir: str | None = None) -> b
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(settings.to_dict(), f, ensure_ascii=False, indent=2)
         os.replace(tmp, path)
-        _clear_cache()
+        _cache.pop(base_dir or "", None)
         return True
     except Exception:
         return False

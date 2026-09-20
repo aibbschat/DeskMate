@@ -20,15 +20,15 @@ from pathlib import Path
 
 UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36"
 OUT_DIR = Path.home() / ".deskmate" / "history" / "sources"
-BASE = "http://ab.newdu.com"
+BASE = "https://ab.newdu.com"
 
 # 书名 → (目录页URL, 作者, 模式)
 BOOKS: dict[str, tuple[str, str, str]] = {
-    "宋史全文": ("http://ab.newdu.com/book/b839.html", "不著撰人", "catalog"),
-    "宋大诏令集": ("http://ab.newdu.com/book/s108733.html", "宋绶子孙辑", "chain"),
-    "续资治通鉴长编": ("http://ab.newdu.com/book/book.php?bid=842", "李焘", "catalog"),
-    "明通鉴": ("http://ab.newdu.com/book/ms121611.html", "夏燮", "chain"),
-    "太平广记": ("http://ab.newdu.com/book/mb248.html", "李昉等", "catalog"),
+    "宋史全文": ("https://ab.newdu.com/book/b839.html", "不著撰人", "catalog"),
+    "宋大诏令集": ("https://ab.newdu.com/book/s108733.html", "宋绶子孙辑", "chain"),
+    "续资治通鉴长编": ("https://ab.newdu.com/book/book.php?bid=842", "李焘", "catalog"),
+    "明通鉴": ("https://ab.newdu.com/book/ms121611.html", "夏燮", "chain"),
+    "太平广记": ("https://ab.newdu.com/book/mb248.html", "李昉等", "catalog"),
 }
 
 

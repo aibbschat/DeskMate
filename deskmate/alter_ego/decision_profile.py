@@ -133,6 +133,18 @@ def _match_any(patterns: list[str], text: str) -> str | None:
     return None
 
 
+def _first_hit(patterns: list[str], text: str) -> tuple[str, int] | None:
+    """匹配任一正则，返回 (命中片段, 起始位置)；多个命中取最靠前的。"""
+    best: tuple[str, int] | None = None
+    for pat in patterns:
+        m = re.search(pat, text)
+        if m:
+            pos = m.start()
+            if best is None or pos < best[1]:
+                best = (m.group(0).strip(), pos)
+    return best
+
+
 def extract_signals(user_text: str) -> list[DecisionSignal]:
     """从用户文本中提取决策信号。
 
@@ -147,17 +159,19 @@ def extract_signals(user_text: str) -> list[DecisionSignal]:
 
     signals: list[DecisionSignal] = []
 
-    # 1. 风险偏好
-    conservative = _match_any(_RISK_CONSERVATIVE, user_text)
-    if conservative:
-        signals.append(DecisionSignal(
-            dimension="risk", value="保守/稳健", evidence=conservative
-        ))
-    aggressive = _match_any(_RISK_AGGRESSIVE, user_text)
-    if aggressive:
-        signals.append(DecisionSignal(
-            dimension="risk", value="激进/大胆", evidence=aggressive
-        ))
+    # 1. 风险偏好（同一 risk 维度互斥：保守/激进不可同时成立，取更靠后出现的表态）
+    cons = _first_hit(_RISK_CONSERVATIVE, user_text)
+    agg = _first_hit(_RISK_AGGRESSIVE, user_text)
+    if cons and agg:
+        # 文本同时出现两种相反表态 → 自相矛盾，保留更靠后出现的（更代表当前意图）
+        if agg[1] >= cons[1]:
+            signals.append(DecisionSignal(dimension="risk", value="激进/大胆", evidence=agg[0]))
+        else:
+            signals.append(DecisionSignal(dimension="risk", value="保守/稳健", evidence=cons[0]))
+    elif cons:
+        signals.append(DecisionSignal(dimension="risk", value="保守/稳健", evidence=cons[0]))
+    elif agg:
+        signals.append(DecisionSignal(dimension="risk", value="激进/大胆", evidence=agg[0]))
 
     # 2. 决策顺序
     for pat in _SEQUENCE_PATTERNS:

@@ -271,16 +271,17 @@ class TaskRecorder:
         return result[:limit]
 
 
-# 全局单例
-_default_recorder: Optional[TaskRecorder] = None
+# 按 base_dir 分实例（多工作区/多用户服务时不串数据）
+_recorders: dict[str, TaskRecorder] = {}
 
 
 def get_recorder(base_dir: Optional[str | Path] = None) -> TaskRecorder:
-    global _default_recorder
-    if _default_recorder is None:
-        base_dir = base_dir or os.path.join(os.path.expanduser("~"), ".deskmate", "auto_tasks")
-        _default_recorder = TaskRecorder(base_dir)
-    return _default_recorder
+    key = str(base_dir) if base_dir else os.path.join(os.path.expanduser("~"), ".deskmate", "auto_tasks")
+    rec = _recorders.get(key)
+    if rec is None:
+        rec = TaskRecorder(key)
+        _recorders[key] = rec
+    return rec
 
 
 def record_task_result(

@@ -83,7 +83,14 @@ def _hits(text: str, keywords: Iterable[str]) -> bool:
 def _is_perception_source(rec: dict) -> bool:
     src = str(rec.get("source") or rec.get("kind") or rec.get("origin") or "")
     low = src.lower()
-    return any(ps in low or ps in src for ps in _PERCEPTION_SOURCES)
+    for ps in _PERCEPTION_SOURCES:
+        if ps == low or ps == src:
+            return True
+        # token-aware 边界：source 形如 perception_file / _file_ / file_reader，
+        # 避免 "file" 子串误命中 "profile"（误把非感知源当感知源拦掉）
+        if low.startswith(ps + "_") or low.endswith("_" + ps) or ("_" + ps + "_") in low:
+            return True
+    return False
 
 
 def is_public_safe(rec: dict, keywords: list, *, block_perception: bool = True) -> bool:

@@ -2264,9 +2264,9 @@ class DeskMateMemoryManager:
         """暂存对话轮次到 sessions/ 目录，返回写入的文件路径。"""
         sessions_dir = self.base_dir / "sessions"
         sessions_dir.mkdir(parents=True, exist_ok=True)
-        # 用时间戳命名
+        # 用纳秒时间戳命名，避免同一秒两条对话互相覆盖丢记录
         import time
-        ts = int(time.time())
+        ts = time.time_ns()
         p = sessions_dir / f"{ts}.md"
         content = f"## User\n{user_msg}\n\n## Assistant\n{assistant_msg}\n"
         p.write_text(content, encoding="utf-8")

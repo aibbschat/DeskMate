@@ -1627,6 +1627,16 @@ class TurnEngine:
             import os
             from pathlib import Path
 
+            # 性能：超大结果先保护性截断再序列化，避免主循环卡顿（web_search 等大结果）
+            if isinstance(result, str) and len(result) > 20000:
+                result = result[:20000]
+            elif isinstance(result, list) and len(result) > 200:
+                result = result[:200]
+            elif isinstance(result, dict):
+                _c = result.get("content")
+                if isinstance(_c, list) and len(_c) > 200:
+                    result = {**result, "content": _c[:200]}
+
             # 把工具结果转成可读摘要（兼容 MCP content 数组格式），截断防过大
             if isinstance(result, dict):
                 content = result.get("content")
