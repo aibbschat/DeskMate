@@ -18,8 +18,10 @@ import json
 import logging
 import os
 import queue
+import threading
 import uuid
 import time
+from collections import OrderedDict
 from pathlib import Path
 from typing import AsyncGenerator, Awaitable, Callable, Optional
 
@@ -31,8 +33,20 @@ from .final_review import build_final_review_proposal, apply_final_review, build
 logger = logging.getLogger(__name__)
 
 
-# 进程内流水线注册表（sidecar 单进程，会话级缓存足够）
-_PIPELINES: dict[str, CreativePipeline] = {}
+# 进程内流水线注册表（sidecar 单进程，会话级缓存足够）。
+# 用 OrderedDict 做 LRU：超出上限淘汰最久未访问者；访问/创建都 move_to_end，
+# 淘汰后下次 get_pipeline 会按持久化注册表懒恢复（board/草稿在磁盘，不丢）。
+# 修复 B4①：原先无界 dict，长进程无限增长泄漏内存。
+_PIPELINES: "OrderedDict[str, CreativePipeline]" = OrderedDict()
+_PIPELINES_CAP = 128
+
+
+def _cache_pipeline(pid: str, pl: "CreativePipeline") -> None:
+    """放入注册表并维持 LRU 上限，避免长进程无限增长泄漏内存（B4①）。"""
+    _PIPELINES[pid] = pl
+    _PIPELINES.move_to_end(pid)
+    while len(_PIPELINES) > _PIPELINES_CAP:
+        _PIPELINES.popitem(last=False)
 
 # 注册表持久化路径（P1-4：sidecar 重启后流水线可恢复）。None=默认
 # ``resolve_base()/creation_pipelines.json``；测试可注入临时目录避免污染真实环境。
@@ -118,7 +132,7 @@ def create_pipeline(
         )
     else:
         ids = pl.start_outline_project(concept, novel_ref=novel_ref, style=style, pacing=pacing)
-    _PIPELINES[pid] = pl
+    _cache_pipeline(pid, pl)
     # 登记恢复元数据（P1-4）：sidecar 重启后按 pid 可从磁盘恢复流水线
     _REGISTRY_META[pid] = {
         "space": space,
@@ -231,7 +245,7 @@ def _restore_pipeline(pid: str) -> Optional[CreativePipeline]:
             if cache_root
             else NovelIndex(pl.novel_ref)
         )
-    _PIPELINES[pid] = pl
+    _cache_pipeline(pid, pl)
     logger.info("已从持久化注册表恢复流水线 %s（space=%s）", pid, pl.space)
     return pl
 
@@ -242,6 +256,8 @@ def get_pipeline(pid: str) -> CreativePipeline:
         pl = _restore_pipeline(pid)
         if pl is None:
             raise KeyError(pid)
+    else:
+        _PIPELINES.move_to_end(pid)  # LRU 命中刷新
     return pl
 
 
@@ -476,31 +492,35 @@ async def _stream_step(pid: str, fn_name: str, *, disconnect=None, **kwargs) -> 
     done 时统一在事件循环线程取快照（避免线程并发读 store）。
 
     disconnect: 可选的可等待 Callable（如 ``request.is_disconnected``），用于
-    检测 SSE 客户端是否已断开。若检测到断开，立即取消后台任务并结束流——
-    前端瞬间收尾，后端线程虽会跑完但不阻塞事件循环、结果被丢弃，避免
-    用户在关闭页面后还持续烧 token 生成无人接收的稿件。
+    检测 SSE 客户端是否已断开。若检测到断开，置 ``abort`` 事件并取消后台任务——
+    底层生成循环（executor 分段写剧本）会在当前场景返回后停止后续场景，不再
+    烧 token；已发出的事件被丢弃，前端瞬间收尾（修复 B4②：原先 task.cancel 只
+    取消 asyncio 包装任务，底层 LLM 线程照跑完，断开后仍持续烧 token）。
     """
     pl = get_pipeline(pid)
     q: queue.Queue = queue.Queue()
+    # 中止信号：断开时置位，executor 分段循环在场景间检查并提前结束
+    abort = threading.Event()
 
     def on_event(ev: dict) -> None:
         q.put(("ev", ev))
 
     def run() -> None:
         try:
-            getattr(pl, fn_name)(on_event=on_event, **kwargs)
+            getattr(pl, fn_name)(on_event=on_event, abort=abort, **kwargs)
             q.put(("done", None))
         except Exception as exc:  # noqa: BLE001
             q.put(("error", str(exc)))
 
     task = asyncio.create_task(asyncio.to_thread(run))
     while True:
-        # 客户端断开检测：优先于队列轮询，断开即取消并退出
+        # 客户端断开检测：优先于队列轮询，断开即中止生成并退出
         if disconnect is not None:
             try:
                 if await disconnect():
-                    task.cancel()
-                    logger.info("SSE 客户端已断开，取消创作 step %s (pid=%s)", fn_name, pid)
+                    abort.set()  # 通知生成循环停止后续阶段（省 token）
+                    task.cancel()  # 取消 asyncio 包装任务
+                    logger.info("SSE 客户端已断开，中止创作 step %s (pid=%s)", fn_name, pid)
                     return
             except Exception:  # noqa: BLE001
                 pass
@@ -689,6 +709,13 @@ async def stream_final_review(
                 if not isinstance(getattr(pl, "_pending_final", None), dict):
                     pl._pending_final = {}
                 pl._pending_final[(item_kind, episode)] = {"proposal": proposal, "synthesis": synthesis}
+                # 落盘（B4③）：synthesis 是圆桌产出，原先只存内存，进程重启/流水线
+                # 被 LRU 淘汰再恢复后会丢失，导致 final_review_apply 报「尚未运行终审研讨」。
+                # 随草稿原子写盘，恢复时一并读回。
+                try:
+                    pl._save_drafts()
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("终审结果暂存落盘失败（仅内存态，重启可能丢）: %s", exc)
                 yield _sse({
                     "type": "final_review_ready",
                     "item_kind": item_kind,

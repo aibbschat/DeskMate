@@ -17,7 +17,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, asdict, field
 from typing import Optional
 
 from deskmate.teams_client import TeamsClient
@@ -44,6 +44,32 @@ class FinalReviewProposal:
     recommended: list[str] = field(default_factory=list)  # 推荐子集 id（四要素②）
     novel_excerpt: str = ""  # 原著圣经摘要（novel_text 前 2000 字，pipeline 懒加载构建），供圆桌专家对照改编
     episode: Optional[int] = None  # 分集模式下被终审的集号（None=全本/大纲）
+
+
+def serialize_pending_final(pf: dict) -> dict:
+    """把内存里的 ``_pending_final``（键 (item_kind, episode) → {proposal, synthesis}）
+    序列化成 JSON 友好结构，供随草稿落盘（B4③：解决重启/淘汰后丢失）。"""
+    out: dict = {}
+    for (ik, ep), entry in pf.items():
+        key = f"{ik}|{ep if ep is not None else ''}"
+        out[key] = {
+            "proposal": asdict(entry["proposal"]),
+            "synthesis": entry["synthesis"],
+        }
+    return out
+
+
+def deserialize_pending_final(d: dict) -> dict:
+    """``serialize_pending_final`` 的逆操作：还原回 (item_kind, episode) 分槽结构。"""
+    out: dict = {}
+    for k, entry in (d or {}).items():
+        ik, eps = k.split("|", 1)
+        ep = int(eps) if eps != "" else None
+        out[(ik, ep)] = {
+            "proposal": FinalReviewProposal(**entry["proposal"]),
+            "synthesis": entry["synthesis"],
+        }
+    return out
 
 
 def recommend_experts(genre_hint: Optional[str], criteria: str = "") -> list[str]:

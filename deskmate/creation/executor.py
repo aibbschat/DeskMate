@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import re
+import threading
 from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
@@ -164,6 +165,7 @@ class CreativeExecutor:
         revision_notes: str = "",
         character_profiles: str = "",
         on_event=None,
+        abort: "Optional[threading.Event]" = None,
     ) -> str: ...
     def draft_screenplay(
         self,
@@ -178,8 +180,10 @@ class CreativeExecutor:
         revision_notes: str = "",
         character_profiles: str = "",
         on_event=None,
+        abort: "Optional[threading.Event]" = None,
     ) -> str: ...
-    def review(self, text: str, criteria: str, novel_text: str = "", on_event=None) -> ReviewResult: ...
+    def review(self, text: str, criteria: str, novel_text: str = "", on_event=None,
+                abort: "Optional[threading.Event]" = None) -> ReviewResult: ...
 
 
 class StubExecutor:
@@ -197,6 +201,7 @@ class StubExecutor:
         revision_notes: str = "",
         character_profiles: str = "",
         on_event=None,
+        abort: "Optional[threading.Event]" = None,
     ) -> str:
         _emit(on_event, type="note", message="正在撰写大纲（stub）…", progress=50)
         tag = f"·附原著{len(novel_text)}字" if novel_text else ""
@@ -220,6 +225,7 @@ class StubExecutor:
         revision_notes: str = "",
         character_profiles: str = "",
         on_event=None,
+        abort: "Optional[threading.Event]" = None,
     ) -> str:
         _emit(on_event, type="note", message=f"正在拆解场景（stub）…", progress=10)
         _emit(on_event, type="note", message=f"正在写场景 1/1（stub）…", progress=60)
@@ -233,7 +239,8 @@ class StubExecutor:
         _emit(on_event, type="note", message="本集草稿完成", progress=100)
         return f"[剧本·stub{tag}{req}{char}{ep}] {outline[:60]}{prior}{rev}"
 
-    def review(self, text: str, criteria: str, novel_text: str = "", on_event=None) -> ReviewResult:
+    def review(self, text: str, criteria: str, novel_text: str = "", on_event=None,
+                abort: "Optional[threading.Event]" = None) -> ReviewResult:
         _emit(on_event, type="note", message="审核专家正在逐项核验（stub）…", progress=60)
         if self.reject_once and not self._rejected:
             self._rejected = True
@@ -254,10 +261,14 @@ class LLMExecutor:
         revision_notes: str = "",
         character_profiles: str = "",
         on_event=None,
+        abort: "Optional[threading.Event]" = None,
     ) -> str:
         from deskmate.memory.llm import chat, llm_available
 
         if not llm_available():
+            return ""
+        # 中止检查（B4②）：客户端已断开则不启动生成，省 token
+        if abort is not None and abort.is_set():
             return ""
         novel_block = (
             f"\n\n【原著参考（改编依据）】\n{novel_text}\n"
@@ -296,6 +307,7 @@ class LLMExecutor:
         revision_notes: str = "",
         character_profiles: str = "",
         on_event=None,
+        abort: "Optional[threading.Event]" = None,
     ) -> str:
         """分段续写拼接（阶段 5 输出侧）——单次 8k token 出不了长剧，工程拆：
 
@@ -325,6 +337,9 @@ class LLMExecutor:
         char_block = _character_block(character_profiles, for_outline=False)
         is_episodic = bool(episodes and episodes > 1)
         # 1) 拆场景（拆不动则整段写）
+        # 中止检查（B4②）：客户端断开则不拆场景、不生成，省 token
+        if abort is not None and abort.is_set():
+            return ""
         _emit(on_event, type="note", message="正在拆解场景…", progress=5)
         plan = chat(
             system=(
@@ -368,17 +383,27 @@ class LLMExecutor:
                 continue
             segments.append(seg.strip())
             prev_summary = _summarize_segment(seg)
+            # 中止检查（B4②）：当前场景已写完，但后续场景不再生成，省 token。
+            # 注意：单个在飞的 chat HTTP 请求无法中断（chat 层不暴露连接关闭），
+            # 故只能在上一个场景返回后停下；这是 best-effort 止血。
+            if abort is not None and abort.is_set():
+                logger.info("创作被中止：已保留前 %d 个场景，停止后续生成", len(segments))
+                break
         if not segments:
             return ""
         _emit(on_event, type="note", message="全稿拼接完成", progress=100)
         return "\n\n---\n\n".join(segments)
 
-    def review(self, text: str, criteria: str, novel_text: str = "", on_event=None) -> ReviewResult:
+    def review(self, text: str, criteria: str, novel_text: str = "", on_event=None,
+                abort: "Optional[threading.Event]" = None) -> ReviewResult:
         from deskmate.memory.llm import chat, llm_available
         from deskmate.style_profile_store import format_style_fingerprint
 
         if not llm_available():
             return ReviewResult(approved=True, opinion="（LLM 未配置，默认通过）")
+        # 中止检查（B4②）：客户端断开则不启动审核
+        if abort is not None and abort.is_set():
+            return ReviewResult(approved=True, opinion="（审核已中止）")
         fp = format_style_fingerprint()
         novel_block = (
             f"\n\n【原著参考（对照依据）】\n{novel_text}\n"

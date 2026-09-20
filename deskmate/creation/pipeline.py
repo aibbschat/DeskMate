@@ -21,6 +21,7 @@ import json
 import logging
 import os
 import re
+import threading
 from pathlib import Path
 from typing import Optional
 
@@ -39,7 +40,12 @@ from .personas_loader import (
 )
 from ..teams_client import TeamsClient
 from .executor import CreativeExecutor, StubExecutor, ReviewResult
-from .final_review import build_final_review_proposal, apply_final_review
+from .final_review import (
+    build_final_review_proposal,
+    apply_final_review,
+    serialize_pending_final,
+    deserialize_pending_final,
+)
 
 
 class CreativePipeline:
@@ -88,6 +94,10 @@ class CreativePipeline:
         # 人物小传（防漂移硬锚点，独立持久化文档，类比圣经）：
         # 含主要人物的 目标/动机/弧光/关系/红线，每次写剧本重注入，保证人物不漂移。
         self._char_profiles: str = ""        # 人物小传 markdown（空=尚未生成）
+        # 终审结果暂存（B4③）：圆桌 synthesis 按 (item_kind, episode) 分槽，
+        # 原先只存内存，重启/被 LRU 淘汰后 final_review_apply 会报「尚未运行终审研讨」。
+        # 随草稿落盘，恢复时一并读回。
+        self._pending_final: dict = {}
         self._load_drafts()  # 恢复上次的草稿文本（sidecar 重启后 board 状态仍在，草稿不再丢）
 
     # -- 草稿持久化（P1-4：board 状态在 teams.db，草稿文本也须落盘） ------
@@ -109,6 +119,7 @@ class CreativePipeline:
             }
             payload["_user_notes"] = dict(self._user_notes)  # 用户打回意见持久化
             payload["_chars"] = self._char_profiles  # 人物小传（防漂移锚点）落盘
+            payload["_pf"] = serialize_pending_final(self._pending_final)  # 终审结果暂存（B4③）
             tmp.write_text(
                 json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
             )
@@ -133,6 +144,13 @@ class CreativePipeline:
                         self._user_notes = dict(v or {})
                     elif k == "_chars":
                         self._char_profiles = v or ""  # 人物小传（防漂移锚点）恢复
+                    elif k == "_pf":
+                        # 终审结果暂存恢复（B4③）：失败按空表继续，不影响草稿
+                        try:
+                            self._pending_final = deserialize_pending_final(v)
+                        except Exception as exc:  # noqa: BLE001
+                            logger.warning("终审结果恢复失败（按空表继续）: %s", exc)
+                            self._pending_final = {}
                     elif str(k).lstrip("-").isdigit():
                         self._drafts[int(k)] = v
         except Exception as exc:  # noqa: BLE001
@@ -640,7 +658,8 @@ class CreativePipeline:
             logger.warning("定稿 docx 导出失败（不影响定稿）: %s", res.get("error"))
 
     # -- 大纲路线 ----------------------------------------------------------
-    def draft_outline(self, outline_item_id: Optional[int] = None, *, on_event=None) -> str:
+    def draft_outline(self, outline_item_id: Optional[int] = None, *, on_event=None,
+                       abort: "Optional[threading.Event]" = None) -> str:
         outline_item_id = outline_item_id or self.ids["outline_item"]
         self.store.assign(self.space, self.lead, outline_item_id, assignee=OUTLINE_WORKER)
         w = Actor(OUTLINE_WORKER, Role.WORKER)
@@ -662,6 +681,7 @@ class CreativePipeline:
             revision_notes=revision,
             character_profiles=self._char_profiles,
             on_event=on_event,
+            abort=abort,
         )
         self._drafts[outline_item_id] = text
         self._save_drafts()  # 落盘：sidecar 重启后草稿可恢复
@@ -669,13 +689,15 @@ class CreativePipeline:
         return text
 
     def review_outline(self, outline_item_id: Optional[int] = None,
-                       review_item_id: Optional[int] = None, *, on_event=None) -> ReviewResult:
+                       review_item_id: Optional[int] = None, *, on_event=None,
+                       abort: "Optional[threading.Event]" = None) -> ReviewResult:
         outline_item_id = outline_item_id or self.ids["outline_item"]
         review_item_id = review_item_id or self.ids["outline_review_item"]
         self.store.assign(self.space, self.lead, review_item_id, assignee=REVIEW_WORKER)
         draft = self._drafts.get(outline_item_id, "")
         result = self.executor.review(draft, criteria=self._criteria(review_item_id),
-                                      novel_text=self.novel_text, on_event=on_event)
+                                      novel_text=self.novel_text, on_event=on_event,
+                                      abort=abort)
         w = Actor(REVIEW_WORKER, Role.WORKER)
         self.guard.transition(self.space, w, review_item_id, to="in_progress", comment="开始审核大纲")
         self.guard.transition(self.space, w, review_item_id, to="review", comment=result.opinion)
@@ -715,7 +737,7 @@ class CreativePipeline:
 
     # -- 剧本路线 ----------------------------------------------------------
     def draft_screenplay(self, screen_item_id: Optional[int] = None, *, episode: Optional[int] = None,
-                         on_event=None) -> str:
+                         on_event=None, abort: "Optional[threading.Event]" = None) -> str:
         """撰写剧本（分集模式按集写，episode 空则自动推进下一未定稿集）。"""
         screen_item_id = screen_item_id or self._screen_item_id(episode)
         review_item_id = self._screen_review_item_id(episode)
@@ -754,6 +776,7 @@ class CreativePipeline:
             revision_notes=revision,
             character_profiles=self._char_profiles,
             on_event=on_event,
+            abort=abort,
         )
         self._drafts[screen_item_id] = text
         if episode:
@@ -766,13 +789,15 @@ class CreativePipeline:
 
     def review_screenplay(self, screen_item_id: Optional[int] = None,
                           review_item_id: Optional[int] = None,
-                          *, episode: Optional[int] = None, on_event=None) -> ReviewResult:
+                          *, episode: Optional[int] = None, on_event=None,
+                          abort: "Optional[threading.Event]" = None) -> ReviewResult:
         screen_item_id = screen_item_id or self._screen_item_id(episode)
         review_item_id = review_item_id or self._screen_review_item_id(episode)
         self.store.assign(self.space, self.lead, review_item_id, assignee=REVIEW_WORKER)
         draft = self._drafts.get(screen_item_id, "")
         result = self.executor.review(draft, criteria=self._criteria(review_item_id),
-                                      novel_text=self.novel_text, on_event=on_event)
+                                      novel_text=self.novel_text, on_event=on_event,
+                                      abort=abort)
         w = Actor(REVIEW_WORKER, Role.WORKER)
         self.guard.transition(self.space, w, review_item_id, to="in_progress", comment="开始审核剧本")
         self.guard.transition(self.space, w, review_item_id, to="review", comment=result.opinion)
