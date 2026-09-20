@@ -9,6 +9,8 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import pytest
+
 from deskmate.compliance import get_positioning, POSITIONING
 
 
@@ -29,9 +31,10 @@ def test_positioning_endpoint():
         from fastapi.testclient import TestClient
         from coworker.server.app import create_app
         from coworker.server.manager import SessionManager
-    except Exception:
-        # 后端未在当前环境装配时跳过（不视为失败）
-        return
+    except Exception as exc:
+        # B13 修复：后端未在当前环境装配时**显式跳过**，而非静默 return 伪装通过
+        # （否则缺依赖环境下该测试恒绿却啥也没测，掩盖真实装配问题）。
+        pytest.skip(f"backend not importable in this env: {exc}")
     app = create_app(SessionManager(data_dir="/tmp/deskmate_test_positioning"))
     client = TestClient(app)
     resp = client.get("/v1/deskmate/positioning")
