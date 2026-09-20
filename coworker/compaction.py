@@ -168,6 +168,29 @@ def _turn_starts(messages: list[dict[str, Any]], *, start: int) -> tuple[list[in
     return users, assistants
 
 
+def _suffix_token_estimates(messages: list[dict[str, Any]]):
+    """返回闭包 ``suff(i) == estimate_tokens(messages[i:])``，但整体 O(n)。
+
+    修复 B7：原先 ``pick_boundary`` 对每个候选 ``i`` 调 ``estimate_tokens(messages[i:])``，
+    而该函数对 suffix 整体 ``json.dumps`` 再 ``//4``，单次 O(suffix 长度)；候选从最早到
+    最晚逐个试直到命中，最坏 O(n^2)。这里用后缀和只累加逐元素长度（原 ``estimate_tokens``
+    本就逐元素求和、不含列表括号/逗号，故等价），每个候选 O(1) 查表。
+    """
+    n = len(messages)
+    suf = [0] * (n + 1)
+    for i in range(n - 1, -1, -1):
+        try:
+            el = len(json.dumps(messages[i], default=str))
+        except (TypeError, ValueError):
+            el = len(str(messages[i]))
+        suf[i] = suf[i + 1] + el
+
+    def suff(i: int) -> int:
+        return suf[i] // 4
+
+    return suff
+
+
 def pick_boundary(messages: list[dict[str, Any]], *, keep_tokens: int) -> Optional[int]:
     """The canonical index where the verbatim tail begins: the earliest turn start whose
     suffix fits the keep budget. Prefers user-message boundaries; falls back to iteration
@@ -176,9 +199,13 @@ def pick_boundary(messages: list[dict[str, Any]], *, keep_tokens: int) -> Option
     start = 1 if messages and messages[0].get("role") == "system" else 0
     users, assistants = _turn_starts(messages, start=start)
 
+    # B7 修复：一次性算好后缀 token 估计（O(n)），供 _fit 对每个候选 O(1) 查表，
+    # 避免原先对每个候选都 estimate_tokens(messages[i:]) 的最坏 O(n^2)。
+    suffix = _suffix_token_estimates(messages)
+
     def _fit(candidates: list[int]) -> Optional[int]:
         for i in candidates:  # earliest-first: keep as much verbatim as fits
-            if estimate_tokens(messages[i:]) <= keep_tokens:
+            if suffix(i) <= keep_tokens:
                 return i
         return None
 
