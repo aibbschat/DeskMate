@@ -149,3 +149,62 @@ class TestCompressObservability:
         _write(tmp_path, "§ 工作 #work\n- 短内容\n")
         assert mgr._compress_if_needed("memory") is False
         assert not getattr(mgr, "_compress_stall_state", {})
+
+
+class TestStableLongTermSection:
+    """「长期事实 #stable」：给长效条目一个**永不衰减**的显式归属。
+
+    背景（2026-09-21 实测）：``MEMORY_DECAY_TTL`` 只把 ``work`` 定为 30 天，而真实
+    的「§ 工作」分节里堆着运维配置 / 协作模式 / 项目位置 / 硬规则 / 创作设定——
+    全都在 30 天后被归档或删除。当天 dry-run 显示 **28 条长效条目即将被 TTL 误杀**，
+    其中包含「串书禁令（最高优先级）」这类丢失即事故的红线。
+
+    归属为何是全局层而非项目记忆：项目记忆的注入依赖 ``active_project``，而
+    应用层从未调用 ``set_active_project``（只有 MCP memory server 能手动设），
+    迁到 ``projects/<名>/`` 等于永久不可达。
+    """
+
+    def test_stable_section_never_decays(self, mgr, tmp_path):
+        _write(tmp_path,
+            "§ 长期事实 #stable #sensitive\n"
+            f"- {_days_ago(500)}: 串书禁令：不得把读书书目内容写进 .deskmate/\n"
+            f"- {_days_ago(400)}: 托管站点配置 /Users/xiaocheng/OpenWorker/d8d7c4ac-b7d/\n"
+        )
+        assert mgr.decay_memory()["decayed"] == 0
+        content = (tmp_path / "MEMORY.md").read_text(encoding="utf-8")
+        assert "串书禁令" in content, "红线条目绝不能被 TTL 吃掉"
+        assert "托管站点配置" in content
+
+    def test_stable_not_registered_in_ttl(self):
+        """#stable 一旦被登记进 TTL 表，长期事实又会开始被悄悄淘汰——锁死。"""
+        import deskmate.memory.manager as M
+
+        assert "stable" not in M.MEMORY_DECAY_TTL
+        assert "长期事实" not in M.MEMORY_DECAY_TTL
+        assert M._TITLE_TO_TAG["长期事实"] == "stable"
+
+    def test_section_header_is_canonical(self, mgr):
+        """标题与标签两种写法必须渲染成同一规范头（自动归并的前提）。"""
+        assert mgr._section_header("长期事实") == "§ 长期事实 #stable"
+        assert mgr._section_header("stable") == "§ 长期事实 #stable"
+
+    def test_clean_global_memory_keeps_stable(self, mgr, tmp_path):
+        """分层净化不得把长期事实迁进项目记忆（迁出即不可达）。"""
+        _write(tmp_path,
+            "§ 长期事实 #stable\n"
+            "- 《国子监秘闻录》人物圣经已合并，含姜阿大、陈哥儿\n"
+        )
+        res = mgr.clean_global_memory()
+        assert res["entries_migrated"] == 0
+        assert "人物圣经已合并" in (tmp_path / "MEMORY.md").read_text(encoding="utf-8")
+
+    def test_append_routes_into_stable_section(self, mgr, tmp_path, monkeypatch):
+        """写入端用 target_section='长期事实' 应落进 #stable 分节。"""
+        import deskmate.memory.manager as M
+
+        monkeypatch.setattr(M, "llm_available", lambda: False)
+        _write(tmp_path, "§ 工作 #work\n- 2026-09-01: 一条工作进展\n")
+        mgr.append_to_section("memory", "托管站点 ai.xs91.com 的发布配置", target_section="长期事实")
+        content = (tmp_path / "MEMORY.md").read_text(encoding="utf-8")
+        assert "§ 长期事实 #stable" in content
+        assert "托管站点" in content

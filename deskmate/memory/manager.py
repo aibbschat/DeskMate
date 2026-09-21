@@ -49,11 +49,16 @@ USER_FILE_MAX_CHARS = 15_000  # 从 30K 降到 15K
 # 记忆路由规则：超过此长度的内容自动存 vault，MEMORY.md 只保留摘要
 MEMORY_ROUTING_THRESHOLD = 200  # 字符数
 
-# 记忆衰减 TTL（天数）：超过此天数的条目自动归档或删除
+# 记忆衰减 TTL（天数）：超过此天数的条目自动归档或删除。
+#
+# ⚠ 契约：**只有登记在本表的标签才会衰减**；其余标签（preference / correction /
+#   system / stable / moment …）天然永不衰减。新增标签若希望条目会过期，
+#   必须显式登记到这里——否则就是「隐性永久」。
 MEMORY_DECAY_TTL = {
     "work": 30,       # 工作进展：30 天后归档到 vault
     "note": 7,        # 笔记：7 天后删除（一次性信息）
     # preference / correction：永不衰减（用户偏好和纠正永久保留）
+    # stable：永不衰减（长期事实——运维配置 / 协作模式 / 项目位置 / 硬规则 / 创作设定）
 }
 
 # 记忆条目日期前缀正则：兼容 "- " / "* " 列表前缀，中文或英文冒号均可。
@@ -100,6 +105,9 @@ _TITLE_TO_TAG = {
     "纠正": "correction",
     "工作": "work",
     "笔记": "note",
+    # 长期事实（永不衰减）：给「项目位置 / 运维配置 / 协作模式 / 硬规则 / 创作设定」
+    # 一个显式归属。此前这类内容只能挤在「工作 #work」里，被 30 天 TTL 误淘汰。
+    "长期事实": "stable",
 }
 _TAG_TO_TITLE = {v: k for k, v in _TITLE_TO_TAG.items()}
 
@@ -1645,9 +1653,15 @@ class DeskMateMemoryManager:
         return entries
 
     # 全局记忆中「关于你」的语义分节：永不迁出（即便含个别书稿词也不动，避免误伤）。
+    #
+    # ⚠ 「长期事实 #stable」也必须留在这里。项目记忆的注入依赖 active_project，
+    #   而应用层从未调用 set_active_project（只有 MCP memory server 能手动设），
+    #   所以长期事实一旦被迁进 projects/<名>/，在正常对话里就是**永久不可达**——
+    #   比在全局层多占几行更糟。
     _KEEP_GLOBAL_SECTIONS = {
         "偏好", "preference", "纠正", "correction",
         "系统", "system", "笔记", "note", "读书记录", "reading",
+        "长期事实", "stable",
     }
 
     def clean_global_memory(self) -> dict:
