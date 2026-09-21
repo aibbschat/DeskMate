@@ -69,6 +69,31 @@ MEMORY_DECAY_TTL = {
 # ``_ensure_date_prefix`` 用同一套正则，避免再叠加出 ``日期: - 日期: 内容``。
 _ENTRY_DATE_RE = re.compile(r"^\s*[-*]?\s*(\d{4}-\d{1,2}-\d{1,2})[:：]")
 
+# 「§ 日记沉淀」分节正则（与 DiaryStore._strip_diary_blocks 的 § 规则同源）。
+#
+# ⚠ 踩过的坑（2026-09-21）：日记的承载是 DiaryStore（SQLite ``loved_entries``
+#   + ``diary_memory.md`` 检索视图），MEMORY.md 本不参与。但
+#   ``_load_global_memory()`` 会把 MEMORY.md **拼接**上视图供检索，而
+#   ``_save_global_memory()`` 只写 MEMORY.md —— 于是任何
+#   load→解析→渲染→保存 的路径（dream 每天跑、append_to_section、衰减、压缩）
+#   都会把视图内容**固化**进 MEMORY.md：实测日记块从 1 份长到 3 份，占文件 52%，
+#   且 dream 会顺手把日记当普通事实合并（19→18 条）。
+#   故在写回前剥离：日记只活在 DiaryStore 与视图里，全局记忆不留副本。
+#   （分节头若不叫「日记沉淀」——如摘要块改名后的「日记主题」——不受此影响。）
+_DIARY_SECTION_RE = re.compile(r"\n*§\s*日记沉淀\b.*$(?:\n(?!§ ).*)*", re.MULTILINE)
+
+
+def _strip_diary_sections(content: str) -> str:
+    """剥离全局记忆文本里的「§ 日记沉淀」分节，其余内容原样保留。
+
+    无日记分节时**逐字节原样返回**（快路径）——避免在正常保存路径上引入格式漂移。
+    """
+    if "日记沉淀" not in content:
+        return content
+    cleaned = _DIARY_SECTION_RE.sub("", content)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    return cleaned.strip() + "\n" if cleaned.strip() else cleaned
+
 # 三层记忆分层常量
 CORE_TAGS = {"preference", "correction"}  # Core 层：每轮自动注入
 RECALL_WINDOW_DAYS = 7                    # Recall 层：7 天内的记忆优先注入
@@ -941,6 +966,17 @@ class DeskMateMemoryManager:
         return "\n\n".join(parts)
 
     def _save_global_memory(self, content: str) -> None:
+        # 写回前剥离「§ 日记沉淀」：内容源自 diary_memory.md 视图，写回即自我复制
+        # （load 读 2 文件 / save 写 1 文件的不对称，见 _strip_diary_sections 注释）。
+        stripped = _strip_diary_sections(content)
+        if stripped != content:
+            logger.warning(
+                "MEMORY.md 写回时剥离「§ 日记沉淀」分节（%d → %d 字符）："
+                "日记由 DiaryStore/diary_memory.md 承载，不应固化进全局记忆",
+                len(content),
+                len(stripped),
+            )
+        content = stripped
         # 8.4 敏感分级：保存时自动为 § 分节打 #sensitive/#private tag（fail-open）
         try:
             from .sensitivity import mark_memory_text
@@ -1662,6 +1698,9 @@ class DeskMateMemoryManager:
         "偏好", "preference", "纠正", "correction",
         "系统", "system", "笔记", "note", "读书记录", "reading",
         "长期事实", "stable",
+        # 日记相关：日记**原文**由 DiaryStore 承载（不在此），此处的「日记主题」
+        # 是小桔对日记的归纳（认知），属于「关于你/关于她的理解」，分层净化不得迁出。
+        "日记主题", "日记沉淀", "moment", "diary", "diary-summary",
     }
 
     def clean_global_memory(self) -> dict:

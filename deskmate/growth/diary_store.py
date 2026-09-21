@@ -458,20 +458,33 @@ class DiaryStore:
     def migrate_from_legacy(self, backup: bool = True) -> dict[str, Any]:
         """从 moments.json + MEMORY.md 的 ##/§ 日记沉淀 块迁移到统一库 deskmate.db。
 
-        - 幂等：若 user_posts 非空，跳过（已迁移）。
+        - 幂等：**两个来源各自独立判断**——
+          moments.json 按 ``user_posts`` 非空跳过（避免重复计数）；
+          MEMORY.md 清理按「是否仍有沉淀块」判断。两者都无需处理才整体 skipped。
         - 迁移前对 moments.json / MEMORY.md 做 .bak 备份（backup=True）。
         - 从 MEMORY.md 删除沉淀块（只删日记沉淀，不动其它内容）。
-        返回 {migrated_posts, migrated_loved, mem_cleaned, backup}。
+        返回 {migrated_posts, migrated_loved, mem_cleaned, backups}。
+
+        ⚠ 2026-09-21 修：早期幂等键只看 ``user_posts``，一旦有帖子就直接 return，
+        于是「从 MEMORY.md 删除沉淀块」这段**从未执行过**（真实库里 user_posts
+        已有 21 条）——沉淀块于是靠 load/save 不对称不断自我复制，长到 3 份。
         """
         with self._connect() as conn:
-            already = conn.execute("SELECT 1 FROM user_posts LIMIT 1").fetchone()
-        if already:
+            already = bool(conn.execute("SELECT 1 FROM user_posts LIMIT 1").fetchone())
+
+        # MEMORY.md 是否仍有沉淀块：独立于 user_posts 的幂等键
+        mem_path = self.base / "MEMORY.md"
+        mem = mem_path.read_text(encoding="utf-8") if mem_path.is_file() else ""
+        has_mem_blocks = bool(mem and self._extract_diary_blocks(mem))
+
+        if already and not has_mem_blocks:
             return {
                 "skipped": True,
-                "reason": "user_posts 非空，已迁移",
+                "reason": "user_posts 非空且 MEMORY.md 无沉淀块，无需迁移",
                 "migrated_posts": 0,
                 "migrated_loved": 0,
                 "mem_cleaned": False,
+                "backups": [],
             }
 
         result: dict[str, Any] = {
@@ -481,9 +494,9 @@ class DiaryStore:
             "backups": [],
         }
 
-        # 1) moments.json
-        moments_path = self.base / _MOMENTS_JSON
-        if moments_path.is_file():
+        # 1) moments.json（user_posts 非空 → 已导入过，跳过以免重复计数）
+        moments_path = None if already else self.base / _MOMENTS_JSON
+        if moments_path and moments_path.is_file():
             if backup:
                 result["backups"].append(self._backup(moments_path))
             try:
@@ -524,9 +537,9 @@ class DiaryStore:
                     )
 
         # 2) MEMORY.md 里的 ##/§ 日记沉淀 块
-        mem_path = self.base / "MEMORY.md"
-        if mem_path.is_file():
-            mem = mem_path.read_text(encoding="utf-8")
+        # 2) MEMORY.md 里的 ##/§ 日记沉淀 块（独立于 user_posts 的幂等键——
+        #    即便日记本体早已入库，只要文件里还留着沉淀块就要清理）
+        if has_mem_blocks:
             extracted = self._extract_diary_blocks(mem)
             if extracted:
                 if backup:

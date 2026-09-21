@@ -37,7 +37,17 @@ _REPORT_FILE = "dream_report.md"
 DREAM_TRACE_FILE = "dream.jsonl"
 
 # 不被提炼动到的分节（偏好 / 纠正永保真，等价于 decay 的永不衰减规则）
-_PROTECTED_SECTIONS = {"preference", "correction", "偏好", "纠正"}
+#
+# 2026-09-21：加入 moment / diary —— 日记是私人记述，不是可交易的事实断言。
+# 提炼（近重复合并 + 值翻转矛盾检测）对日记是**类别错误**：仿真实测会把两条日记
+# 合并成一条（19→18）、并对同一件事的不同记述做矛盾消解。而 dream 每天运行
+# （DREAM_INTERVAL_DAYS=1），damage 是累积的。
+# 日记的承载是 DiaryStore（SQLite loved_entries → diary_memory.md 视图），
+# 视图分节头为「§ 日记沉淀 #moment #diary」，故保护标签按视图实际标签登记。
+_PROTECTED_SECTIONS = {
+    "preference", "correction", "偏好", "纠正",
+    "moment", "diary", "日记",
+}
 
 
 # ---------------------------------------------------------------------------
