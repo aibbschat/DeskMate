@@ -230,7 +230,7 @@ def run_ai_circle_ingestion(
     try:
         from .understand_observations import decide_and_digest
 
-        segs = decide_and_digest([{"fact": b} for b in bodies], at="")
+        segs = decide_and_digest([{"fact": b} for b in bodies], at="", base_dir=base_dir)
     except Exception as e:
         logger.warning("ai_circle_ingestion: 提炼异常降级: %s", e)
         segs = []

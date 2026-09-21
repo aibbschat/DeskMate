@@ -242,13 +242,71 @@ def load_worldview_beliefs(base_dir: str | None = None) -> str:
             format_profile,
         )
     except Exception:
-        return ""
+        return load_works_facts(base_dir)
     try:
         wv = load_cognitive_profile("worldview")
-        if not wv:
-            return ""
-        text = format_profile(wv, limit=None, subject="你") or ""
+        text = ""
+        if wv:
+            text = format_profile(wv, limit=None, subject="你") or ""
+        # 追加「萧盛真实作品」硬事实锚（always 注入，不依赖 worldview 层是否为空）。
+        # 这是 2026-09-21 补的缺口：发声/聊天提及萧盛作品时必须先核对清单。
+        wf = load_works_facts(base_dir)
+        if wf:
+            text = ((text + "\n\n" + wf).strip()) if text.strip() else wf
         return text.strip()
+    except Exception:
+        return load_works_facts(base_dir)
+
+
+def load_works_facts(base_dir: str | None = None) -> str:
+    """萧盛真实作品清单 + 硬约束，渲染成可读文本，供所有生成链路（看世界日记 /
+    发声 / 聊天上下文）在提及萧盛作品时核对。
+
+    fail-open：任何异常返回空串，绝不阻断调用方主流程。
+
+    2026-09-21 补：填补「萧盛真实作品」事实锚缺失——此前生成链路无核对闸门，
+    导致手记 / AI 圈帖虚构《北渊》《服务器峡谷》《沙漠之眼》当事实陈述。
+    """
+    try:
+        candidates = []
+        try:
+            _base = (
+                os.environ.get("DESKMATE_MEMORY_DIR")
+                or os.environ.get("DESKMATE_DIR")
+                or os.path.expanduser("~/.deskmate")
+            )
+            candidates.append(
+                os.path.join(_base, "agency", "grounding", "xiaosheng_worldview.json")
+            )
+        except Exception:
+            pass
+        here = os.path.dirname(os.path.abspath(__file__))
+        candidates.append(os.path.join(here, "..", "grounding", "xiaosheng_worldview.json"))
+        data: dict = {}
+        for p in candidates:
+            try:
+                with open(p, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                break
+            except Exception:
+                continue
+        inv = data.get("works_inventory") or {}
+        published = list(inv.get("published") or [])
+        in_progress = list(inv.get("in_progress_known") or [])
+        if not published and not in_progress:
+            return ""
+        parts = ["【萧盛真实作品事实（硬锚｜凡提及萧盛作品须先核对本清单）】"]
+        if published:
+            parts.append("· 已出版/确知作品：" + "、".join(published))
+        if in_progress:
+            parts.append("· 已知在写：" + "、".join(in_progress))
+        parts.append(
+            "· 规则：凡在表达里提及『萧盛写过/在写/整理过《X》』或引用其作品设定，"
+            "必须先核对以上清单。清单外书名一律不得作为事实陈述，不得自创书名或虚构"
+            "设定当真事；不确定时只能以弱断言（如『如果我没记错』）或直接写『这点我得"
+            "问你确认』，绝不可把未核实的内容写成确凿事实。"
+        )
+        return "\n".join(parts).strip()
     except Exception:
         return ""
 

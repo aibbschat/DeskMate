@@ -127,10 +127,10 @@ def test_understanding_writes_natural_diary(tmp_path, monkeypatch):
     # ``understand_observations`` 以确保旧薄包装仍工作（向后兼容）。
     monkeypatch.setattr(
         uo, "decide_and_digest",
-        lambda facts, at="", temperature=0.7: [{"body": para, "fact_keys": ["k"]}],
+        lambda facts, at="", temperature=0.7, base_dir=None: [{"body": para, "fact_keys": ["k"]}],
     )
     monkeypatch.setattr(uo, "understand_observations",
-                        lambda facts, at="", temperature=0.7: para)
+                        lambda facts, at="", temperature=0.7, base_dir=None: para)
 
     from deskmate.agency.behaviors.observation_diary import run_observation_diary
 
@@ -171,7 +171,7 @@ def test_understanding_saved_for_world_context(tmp_path, monkeypatch):
 
     para = "今天看到白酒板块跌了，让我想到你前阵说消费疲弱。市场情绪还是紧。"
     monkeypatch.setattr(uo, "decide_and_digest",
-                        lambda facts, at="", temperature=0.7: [{"body": para, "fact_keys": ["k1"]}])
+                        lambda facts, at="", temperature=0.7, base_dir=None: [{"body": para, "fact_keys": ["k1"]}])
 
     from deskmate.agency.behaviors.observation_diary import run_observation_diary
     from deskmate.memory.world_context import build_world_context
@@ -193,7 +193,7 @@ def test_understanding_jsonl_dedup_keys(tmp_path, monkeypatch):
 
     monkeypatch.setattr(
         uo, "decide_and_digest",
-        lambda facts, at="", temperature=0.7: [
+        lambda facts, at="", temperature=0.7, base_dir=None: [
             {"body": "白酒跌了，想到你说的消费。", "fact_keys": ["kk"]},
         ],
     )
@@ -417,7 +417,7 @@ def test_observation_diary_writes_multiple_entries_when_llm_picks_several(tmp_pa
         "（外部·科技）GPT6 宣传片打码设备是中国造",
     ])
     # LLM 决定挑前两条分别消化
-    monkeypatch.setattr(uo, "decide_and_digest", lambda facts, at="", temperature=0.7: [
+    monkeypatch.setattr(uo, "decide_and_digest", lambda facts, at="", temperature=0.7, base_dir=None: [
         {"body": "今天看到美伊对峙的事，我想到你说的边界感。", "fact_keys": ["k1", "k2", "k3"]},
         {"body": "碳酸锂跌了，让我想到你说的消费疲弱那段。", "fact_keys": ["k1", "k2", "k3"]},
     ])

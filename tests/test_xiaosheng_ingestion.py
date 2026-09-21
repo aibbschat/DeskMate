@@ -134,10 +134,12 @@ class ReflectionPromptTest(unittest.TestCase):
         self.assertNotIn(wv_mod._XS_PROVENANCE, prompt)
 
     def test_grounding_fallback(self):
-        # runtime 不存在 → 应 fallback 到仓库默认模板（6 条根）
+        # runtime 不存在 → 应 fallback 到仓库默认模板（7 条根：6 条价值观根 + 1 条作品事实锚）
         roots = wv_mod._load_grounding("/nonexistent_base_dir_xyz")
-        self.assertEqual(len(roots), 6)
+        self.assertEqual(len(roots), 7)
         self.assertTrue(any(r.get("id") == "historiography" for r in roots))
+        # 2026-09-21 新增「萧盛真实作品」事实锚（治《北渊》类虚构书名幻觉）
+        self.assertTrue(any(r.get("id") == "works_facts" for r in roots))
 
 
 class SummarizeSearchTest(unittest.TestCase):

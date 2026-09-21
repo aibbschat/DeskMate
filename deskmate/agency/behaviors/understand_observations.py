@@ -106,6 +106,7 @@ _OBSERVE_ROLE = """\
 - 人名、数字、事件一个字不许改、不许添。素材里没有的，一个字都不许添。
 - 不许写"他一定很高兴""他压力很大"这类猜内心的话。可以写"这条让我想到他说的…"（有事实锚点）。
 - 不许自称「小桔」，不要在末尾署名落款。
+- 关于萧盛的作品或创作项目：材料末尾附有一份「萧盛真实作品」硬事实清单，凡提及「萧盛写过/在写《X》」或引用其设定，必须先核对该清单；清单外书名一律不得作为事实陈述，不得自创书名或虚构设定当真事。不确定时只能写「如果我没记错」或直接说「这点我得问你确认」。
 
 【输出】
 - 0 条值得：只回「素材不足」三个字。
@@ -136,7 +137,7 @@ def _parse_fact(fact: str) -> tuple[str, str]:
     return t, "世界"
 
 
-def _build_prompt(facts: list[dict], at: str) -> str:
+def _build_prompt(facts: list[dict], at: str, base_dir: str | None = None) -> str:
     """facts: [{fact, domain}]。
 
     注（2026-09-07）：曾按每条展示「可信度」，但 learned_history 表根本没有
@@ -150,9 +151,22 @@ def _build_prompt(facts: list[dict], at: str) -> str:
             f"- [{f.get('domain', '世界')}] {f['fact']}"
         )
     material = "\n".join(lines)
+
+    # 萧盛真实作品「硬事实锚」：随材料附在末尾，凡提及萧盛作品须先核对。
+    # 这是 2026-09-21 补的缺口——此前看世界日记不吃 grounding，导致虚构《北渊》等书。
+    wf_block = ""
+    try:
+        from .worldview_reflection import load_works_facts
+
+        _wf = load_works_facts(base_dir)
+        if _wf.strip():
+            wf_block = "\n\n" + _wf
+    except Exception:
+        wf_block = ""
+
     return f"""读完上面这 {len(facts)} 条世界动向。
 
-{material}
+{material}{wf_block}
 
 【挑出值得记的】
 你心里过一遍：哪些值得你花笔墨？哪些只是过眼云烟？标准就是你自己的判断：
@@ -229,6 +243,7 @@ def decide_and_digest(
     facts: list[dict],
     at: str = "",
     temperature: float = 0.7,
+    base_dir: str | None = None,
 ) -> list[dict[str, Any]]:
     """主入口：让 LLM 自己判断哪些世界动向值得记，分别独立成段。
 
@@ -268,7 +283,7 @@ def decide_and_digest(
         except Exception:
             return []
 
-        prompt = _build_prompt(clean, at or "")
+        prompt = _build_prompt(clean, at or "", base_dir)
         # max_tokens 给到足够大——一段可以是 1500 字+；预留余量给多段。
         out = chat_memory(
             _SYSTEM, prompt,
@@ -314,6 +329,7 @@ def understand_observations(
     facts: list[dict],
     at: str = "",
     temperature: float = 0.7,
+    base_dir: str | None = None,
 ) -> Optional[str]:
     """兼容薄包装（既有测试 + 旧契约）：返回单段自然段落。
 
@@ -324,7 +340,7 @@ def understand_observations(
     任何情况不可用返回 ``None``，调用方降级到 bullet。
     """
     try:
-        segs = decide_and_digest(facts, at=at, temperature=temperature)
+        segs = decide_and_digest(facts, at=at, temperature=temperature, base_dir=base_dir)
     except Exception:
         return None
     if not segs:

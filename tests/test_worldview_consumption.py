@@ -64,7 +64,9 @@ class LoadWorldviewBeliefsTest(unittest.TestCase):
             return_value=None,
         ):
             out = wv_mod.load_worldview_beliefs("/tmp/x")
-        self.assertEqual(out, "")
+        # worldview 层为空时，「萧盛真实作品」硬事实锚（独立 grounding 锚）仍须在场，
+        # 不依赖 worldview 动态层——这是 2026-09-21 补的「凡提及萧盛作品须先核对」闸门。
+        self.assertIn("萧盛真实作品事实", out)
 
     def test_fail_open_on_exception(self):
         with mock.patch(
@@ -72,7 +74,8 @@ class LoadWorldviewBeliefsTest(unittest.TestCase):
             side_effect=RuntimeError("boom"),
         ):
             out = wv_mod.load_worldview_beliefs("/tmp/x")
-        self.assertEqual(out, "")
+        # 异常时仍 fail-open：不崩溃，且仍返回「萧盛真实作品」硬锚（不依赖 worldview 层）。
+        self.assertIn("萧盛真实作品事实", out)
 
 
 class WorldContextConsumptionTest(unittest.TestCase):

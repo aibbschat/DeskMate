@@ -222,7 +222,7 @@ def run_observation_diary(
                 {"fact": f, "credibility": it.get("credibility")}
                 for f, it in zip(fresh, fresh_items)
             ]
-            segments = decide_and_digest(facts_arg, at="")
+            segments = decide_and_digest(facts_arg, at="", base_dir=base_dir)
         except Exception as e:
             logger.warning("observation_diary: 理解层异常，降级原文: %s", e)
             segments = []
