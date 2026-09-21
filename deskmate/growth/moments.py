@@ -27,7 +27,16 @@ from typing import Any
 
 from .diary_store import DiaryStore
 
-_DEFAULT_DIR = Path.home() / ".deskmate"
+def _default_base_dir() -> Path:
+    """默认根目录——**调用时**解析 ``DESKMATE_DIR``。
+
+    ⚠ 历史坑（2026-09-21）：这里曾是模块级常量 ``Path.home()/".deskmate"``，
+    完全不认环境变量 → conftest 的 autouse 隔离对 MomentFeed 全线失效，
+    测试会写进开发者**真实库**。同族修复见 ``memory/persistence.py``。
+    """
+    from deskmate.paths import deskmate_base_dir
+
+    return deskmate_base_dir()
 
 # 内容展示上限（防超长日记刷屏记忆）
 _CONTENT_MAX = 120
@@ -103,7 +112,7 @@ class MomentsStore:
     """用户日记 / 留言 / 🩷 沉淀的持久化与记忆写入。"""
 
     def __init__(self, base_dir: Path | str | None = None) -> None:
-        self.base = Path(base_dir) if base_dir else _DEFAULT_DIR
+        self.base = Path(base_dir) if base_dir else _default_base_dir()
         self.store = DiaryStore(self.base)
 
     # ------------------------------------------------------------------

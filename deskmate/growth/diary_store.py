@@ -31,7 +31,18 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-_DEFAULT_DIR = Path.home() / ".deskmate"
+from deskmate.text_clean import strip_reasoning_artifacts
+
+def _default_base_dir() -> Path:
+    """默认根目录——**调用时**解析 ``DESKMATE_DIR``。
+
+    ⚠ 历史坑（2026-09-21）：这里曾是模块级常量 ``Path.home()/".deskmate"``，
+    完全不认环境变量 → conftest 的 autouse 隔离对 DiaryStore 全线失效，
+    测试会写进开发者**真实日记目录**。同族修复见 ``memory/persistence.py``。
+    """
+    from deskmate.paths import deskmate_base_dir
+
+    return deskmate_base_dir()
 # 2026-08-31：日记表并入统一库 deskmate.db（与认知层/CognitiveStore、profile 类 JSON 同库），
 # 收口成单一 SQLite，备份是同一原子单元。旧 diary.db 首次启动自动迁移并备份重命名。
 _DIARY_DB = "deskmate.db"
@@ -69,12 +80,16 @@ def _clean_body(text: str) -> str:
     段落（2026-09-05 萧哥反馈「写日记不能分段」）。换行是日记正文的结构，不能压。
 
     规则：
+    - 剥离推理残留（``</think>`` 等同族标签、``<|im_start|>`` 等特殊 token）
     - 统一换行符（CRLF/CR → LF）
     - 每行内部连续空格/制表/全角空格压成一个，并去行首尾空白
     - 连续空行最多保留一个（防止尾部一串空行刷屏）
     - 去掉正文首尾的空行
     """
     raw = (text or "").replace("\r\n", "\n").replace("\r", "\n")
+    # 推理残留（``</think>`` / ``<|im_start|>`` 等）不进日记：这是私密记述，
+    # 混进模型的草稿纸是质量事故（2026-09-21，同日 diary.py._strip_reasoning）。
+    raw, _ = strip_reasoning_artifacts(raw)
     out: list[str] = []
     blank = 0
     for line in raw.split("\n"):
@@ -97,7 +112,7 @@ class DiaryStore:
     """SQLite 持久层。所有写操作短连接 + 自动提交（WAL 支持并发读）。"""
 
     def __init__(self, base_dir: Path | str | None = None) -> None:
-        self.base = Path(base_dir) if base_dir else _DEFAULT_DIR
+        self.base = Path(base_dir) if base_dir else _default_base_dir()
         self.db_path = self.base / _DIARY_DB
         self.base.mkdir(parents=True, exist_ok=True)
         self._connect().close()  # 触发建库 + 建表

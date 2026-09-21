@@ -32,7 +32,18 @@ import uuid
 from pathlib import Path
 from typing import Any, Optional
 
-_DEFAULT_DIR = Path.home() / ".deskmate"
+from deskmate.coerce import as_float
+
+def _default_base_dir() -> Path:
+    """默认根目录——**调用时**解析 ``DESKMATE_DIR``。
+
+    ⚠ 历史坑（2026-09-21）：这里曾是模块级常量 ``Path.home()/".deskmate"``，
+    完全不认环境变量 → conftest 的 autouse 隔离对 ExternalItemStore 全线失效，
+    测试会写进开发者**真实库**。同族修复见 ``memory/persistence.py``。
+    """
+    from deskmate.paths import deskmate_base_dir
+
+    return deskmate_base_dir()
 _DB_NAME = "deskmate.db"
 
 # ingestion_status 状态机：raw（原始）→ summarized（已摘要）→ embedded（已向量化）
@@ -140,7 +151,7 @@ class ExternalStore:
     """外部信息摄入存储层。短连接 + WAL（与 LearnedStore / BlobStore 同模式）。"""
 
     def __init__(self, base_dir: Path | str | None = None) -> None:
-        self.base = Path(base_dir) if base_dir else _DEFAULT_DIR
+        self.base = Path(base_dir) if base_dir else _default_base_dir()
         self.db_path = self.base / _DB_NAME
         self.base.mkdir(parents=True, exist_ok=True)
         self._ensure_schema()
@@ -740,7 +751,8 @@ class ExternalStore:
                 "content": content or "",
                 "summary": summary or "",
                 "embedding": vec,
-                "credibility": float(cred or 0.5),
+                # ⚠ credibility=0.0 是"完全不可信"，不能用 `or 0.5` 抬成 0.5
+                "credibility": as_float(cred, 0.5),
                 "fetched_at": fetched or "",
                 "category": cat or "other",
                 "source_type": stype or "",

@@ -45,7 +45,17 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
-_DEFAULT_DIR = Path.home() / ".deskmate"
+def _default_base_dir() -> Path:
+    """默认根目录——**调用时**解析 ``DESKMATE_DIR``。
+
+    ⚠ 历史坑（2026-09-21）：这里曾是模块级常量 ``Path.home()/".deskmate"``，
+    完全不认环境变量，于是 conftest 的 autouse 隔离对 LearnerStore 全线失效
+    —— 测试里任何一次不带 base_dir 的实例化都会写进开发者**真实库**。
+    同族修复见 ``memory/persistence.py``、``growth/diary_store.py``。
+    """
+    from deskmate.paths import deskmate_base_dir
+
+    return deskmate_base_dir()
 _DB_NAME = "deskmate.db"
 _LEGACY_REL = Path("memory") / "learned_history.jsonl"
 
@@ -123,7 +133,7 @@ class LearnedStore:
     """长期记忆的 SQLite 持久层。短连接 + 自动提交（WAL 支持并发读）。"""
 
     def __init__(self, base_dir: Path | str | None = None) -> None:
-        self.base = Path(base_dir) if base_dir else _DEFAULT_DIR
+        self.base = Path(base_dir) if base_dir else _default_base_dir()
         self.db_path = self.base / _DB_NAME
         self.legacy_path = self.base / _LEGACY_REL
         self.base.mkdir(parents=True, exist_ok=True)

@@ -20,8 +20,26 @@ import sqlite3
 from pathlib import Path
 from typing import Any, Optional
 
-# 与 CognitiveStore._default_db_path() 保持一致的同一物理文件
-_DB_DEFAULT = Path.home() / ".deskmate" / "deskmate.db"
+def _default_db_path() -> Path:
+    """默认库路径——**调用时**解析，与 ``CognitiveStore._default_db_path()`` 同源。
+
+    ⚠ 历史坑（2026-09-21 现场）：这里曾经是模块级常量
+    ``_DB_DEFAULT = Path.home() / ".deskmate" / "deskmate.db"``，**完全不认
+    ``DESKMATE_DIR``**。后果是 conftest 的 autouse 隔离对 BlobStore 全线失效：
+    跑一次 pytest，``growth`` / ``style_profile`` / ``decision_profile`` /
+    ``emotion_timeline`` 就会被写进开发者真实库。
+
+    而且**极难察觉**——``json_blobs`` 是 upsert，表行数一条不变，只悄悄刷新
+    ``updated_at``；只有「对着 mtime 与 updated_at 反查窗口」才抓得到。
+
+    所以这里必须走 :func:`deskmate.paths.deskmate_db_path`，别再退回常量。
+    """
+    try:
+        from deskmate.paths import deskmate_db_path
+
+        return deskmate_db_path()
+    except Exception:  # pragma: no cover - paths 不可用时退回字面量
+        return Path.home() / ".deskmate" / "deskmate.db"
 
 
 def _now_iso() -> str:
@@ -44,7 +62,7 @@ class BlobStore:
     KEY_GARDEN = "garden"
 
     def __init__(self, db_path: Optional[str | Path] = None) -> None:
-        self.db_path = Path(db_path) if db_path else _DB_DEFAULT
+        self.db_path = Path(db_path) if db_path else _default_db_path()
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._connect().close()
         self._ensure()

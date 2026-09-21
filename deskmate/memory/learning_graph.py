@@ -20,6 +20,8 @@ import re
 from pathlib import Path
 from typing import Any
 
+from deskmate.coerce import as_float
+
 # 记忆文件 -> 来源标签（顺序即展示优先级）
 _MEMORY_FILES = (
     ("USER.md", "profile"),
@@ -234,7 +236,7 @@ def build_learning_graph(
     relation_factor = 1.0
     prof_map: dict[str, float] = {}
     if growth:
-        relation_factor = float(growth.get("relation_factor") or 1.0)
+        relation_factor = as_float(growth.get("relation_factor"), 1.0)
         prof_map = growth.get("skill_proficiency") or {}
     edges = skill_edges + [
         (mem, sid, score * relation_factor) for mem, sid, score in memory_edges

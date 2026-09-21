@@ -29,7 +29,10 @@ from typing import Any
 from .interfaces import MemoryInjector
 from .models import CognitiveProfile
 
-_DEFAULT_DIR = Path(os.environ.get("DESKMATE_DIR", str(Path.home() / ".deskmate")))
+# ⚠ 这里曾有模块级 `_DEFAULT_DIR = Path(os.environ.get("DESKMATE_DIR", ...))`。
+# 它在 import 期就求值，而 conftest 是 import **之后**才 setenv DESKMATE_DIR
+# —— 模块级求值等于没隔离，测试会读/写真实库。一律走下面的 `_dir()` 在调用时解析。
+# （2026-09-21 清理；且该常量当时已无引用，属死变量。）
 _PERSONA_FILE = "小桔眼中的萧盛.md"  # 人格底座，位于 vault/ 下
 
 
@@ -162,6 +165,38 @@ def format_profile(profile: CognitiveProfile, limit: int | None = None,
         sections.append("\n".join(_fmt_thinking(t) for t in thinks))
 
     return "\n\n".join(sections)
+
+
+def build_emotional_context(limit: int | None = None) -> str:
+    """只生成「他的情绪画像」注入段（emotional 层），无数据返回空串（fail-open）。
+
+    为什么要单独有它（2026-09-21）：``build_cognitive_context()`` 整段挂在
+    ``alter_ego``（分身模式）开关后面，而分身默认关 —— 于是**情感层从没进过对话**。
+    可「记得他什么时候低落、靠什么缓过来」是"懂你"的地基，不是"用他的腔调写作"
+    的附属品：它不该因为没开分身就整块消失。
+
+    manager.prefetch 的接法：分身开 → 用 ``build_cognitive_context()``（已含本层，
+    不重复注入）；分身关 → 只注入本段。
+
+    注意与 ``build_cognitive_context()`` 的区别：这里**不含**人格底座、不含认知层、
+    不含她自己的世界观 —— 那些仍归分身/世界管道管，不在本次放行范围内。
+    """
+    try:
+        p = load_cognitive_profile("emotional")
+        if not p:
+            return ""
+        body = format_profile(p, limit=limit, subject="他")
+        if not body:
+            return ""
+        return "\n\n".join([
+            "## 关于萧盛的情绪——你记着的",
+            "下面这些是你观察他、读他的日记之后记下的**情绪规律**（什么让他低落、"
+            "他靠什么缓过来、他珍视什么）。它们用来判断此刻他的状态、决定你要不要说、"
+            "怎么说——**不是给他贴标签，也不要在回复里直白复述**。",
+            body,
+        ])
+    except Exception:
+        return ""  # fail-open：情绪画像缺失不影响主记忆注入
 
 
 def build_cognitive_context(limit: int | None = None) -> str:

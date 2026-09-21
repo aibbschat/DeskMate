@@ -49,10 +49,34 @@ try:  # POSIX 跨进程文件锁；Windows 无 fcntl，退化为进程内线程�
 except ImportError:  # pragma: no cover - 仅 Windows
     fcntl = None  # type: ignore[assignment]
 
+from deskmate.coerce import as_float, as_int
 from deskmate.growth._atomic import unique_tmp
 from deskmate.growth.engine import GrowthEngine
+from deskmate.text_clean import strip_reasoning_artifacts
 
 logger = logging.getLogger(__name__)
+
+
+def _strip_reasoning(text: str | None) -> str:
+    """落盘前的文本卫生：剥掉推理残留（``</think>`` / ``<|im_start|>`` 等）。
+
+    2026-09-21：``2026-09-21.md`` 的 ``10:32`` 则正文前混进了 700 余字的"预述"
+    （把同一件事先讲了一遍）并以孤立的 ``</think>`` 收尾——上游只吐了闭合标签。
+    日记是**给他的私密记述**，混进模型的草稿纸是质量事故。
+
+    **字段级调用**：每段叙事 / 每条观察各自过一遍，绝不在整篇文档上做
+    （文档级剥离会连带删掉本则之前的全部正常内容）。
+    剥离为空则返回空串，由调用方走降级路径（规则渲染 / 不写入）。
+    """
+    s = "" if text is None else str(text)
+    if not s:
+        return ""
+    cleaned, changed = strip_reasoning_artifacts(s)
+    if changed:
+        logger.warning(
+            "日记正文含推理残留，已剥离：%d → %d 字符", len(s), len(cleaned)
+        )
+    return cleaned
 
 # 事件 kind → 第一人称描述（无匹配时 fallback 到 kind 本身）
 _EVENT_LABELS = {
@@ -283,11 +307,13 @@ class DiaryWriter:
     def _state_summary(self) -> dict:
         st = self.engine.state
         return {
-            "intimacy": round(float(getattr(st, "intimacy", 0.0) or 0.0), 1),
-            "trust": round(float(getattr(st, "trust", 0.5) or 0.5), 2),
-            "mood": round(float(getattr(st, "mood", 80.0) or 80.0), 1),
-            "level": int(getattr(st, "level", 1) or 1),
-            "total_chats": int(getattr(st, "total_chats", 0) or 0),
+            "intimacy": round(as_float(getattr(st, "intimacy", None), 0.0), 1),
+            # ⚠ 同 emotion_timeline：``float(x or 0.5)`` 会把 trust=0.0 写成 0.5
+            "trust": round(as_float(getattr(st, "trust", None), 0.5), 2),
+            # ⚠ mood=0.0 是合法值（"低落到谷底"），`or 80.0` 会把它抬成"心情不错"
+            "mood": round(as_float(getattr(st, "mood", None), 80.0), 1),
+            "level": as_int(getattr(st, "level", None), 1),
+            "total_chats": as_int(getattr(st, "total_chats", None), 0),
         }
 
     # ------------------------------------------------------------------
@@ -397,7 +423,7 @@ class DiaryWriter:
         try:
             from deskmate.growth.diary_narrator import narrate
 
-            return narrate(events, seq=seq, at=at, base_dir=base_dir)
+            return _strip_reasoning(narrate(events, seq=seq, at=at, base_dir=base_dir))
         except Exception:
             return None
 
@@ -648,7 +674,8 @@ class DiaryWriter:
 
         失败 fail-open：目录建不了 / 写盘异常时返回 ``written=0``，绝不抛。
         """
-        clean = [o.strip() for o in (observations or []) if str(o or "").strip()]
+        clean = [_strip_reasoning(o).strip() for o in (observations or [])]
+        clean = [o for o in clean if o]
         if not clean:
             return {"date": date, "path": "", "seq": 0, "written": 0}
         try:
@@ -679,7 +706,7 @@ class DiaryWriter:
 
         失败 fail-open：空文本 / 写盘异常时返回 ``written=0``，绝不抛。
         """
-        text = (text or "").strip()
+        text = _strip_reasoning(text).strip()
         if not text:
             return {"date": date, "path": "", "seq": 0, "written": 0}
         try:

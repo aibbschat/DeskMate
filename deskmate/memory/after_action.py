@@ -46,9 +46,18 @@ from . import project_memory as _pm
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_BASE_DIR = Path(
-    os.environ.get("DESKMATE_DIR", os.path.expanduser("~/.deskmate"))
-)
+def _default_base_dir() -> Path:
+    """默认根目录——**调用时**解析 ``DESKMATE_DIR``。
+
+    ⚠ 历史坑（2026-09-21）：这里曾是模块级常量
+    ``Path(os.environ.get("DESKMATE_DIR", expanduser("~/.deskmate")))``。
+    它在 import 期求值，而 conftest 是 import **之后**才 setenv DESKMATE_DIR
+    —— 模块级求值等于没隔离，``_append_to_global_memory`` 的默认落点会指向
+    开发者**真实 USER.md / MEMORY.md**。同族修复见 ``memory/persistence.py``。
+    """
+    from deskmate.paths import deskmate_base_dir
+
+    return deskmate_base_dir()
 
 # 防刷屏门槛：用户 / 助手任意一方有效长度低于此（字符）且无产物 / 习得，视为纯客套，不写日志。
 # 阈值偏低（偏向「记」）：误记只是日志多几行（有裁剪），漏记才是违背「全局记忆习惯」的 bug。
@@ -401,13 +410,316 @@ def _looks_like_memory_candidate(user_msg: str, asst_msg: str) -> bool:
     return any(sig in text for sig in _MEMORY_REVIEW_SIGNALS)
 
 
-_MEMORY_REVIEW_PROMPT = """你是一段对话后的「记忆复盘器」。阅读以下最近一轮对话，判断是否有值得长期记住的「关于用户本人」的事实。\n\n只关注：\n1. 用户的身份、职业、背景、长期偏好（如写作领域、史料严谨要求、厌恶的格式/语气）。\n2. 用户对未来行为的期望（"以后默认用 X"、"别用 Y"、"记住 Z"）。\n3. 用户的工作流/协作约定（如"改了公众号要同步改网站"这类跨系统约定）。\n\n不要记：\n- 一次性任务的具体步骤（除非它反映了可复用的偏好）。\n- 会话内临时信息、闲聊。\n\n输出 JSON：\n{"updates": [{"target": "user", "text": "..."}, ...]}\ntarget 选 "user"（用户画像/偏好，写入 USER.md）或 "memory"（跨项目持久事实，写入 MEMORY.md）。\n若没有值得记的，输出 {"updates": []}。\n只输出 JSON，不要解释。\n\n对话：\n"""
+_MEMORY_REVIEW_PROMPT = """你是一段对话后的「记忆复盘器」。阅读以下最近一轮对话，判断是否有值得长期记住的「关于用户本人」的事实。\n\n只关注：\n1. 用户的身份、职业、背景、长期偏好（如写作领域、史料严谨要求、厌恶的格式/语气）。\n2. 用户对未来行为的期望（"以后默认用 X"、"别用 Y"、"记住 Z"）。\n3. 用户的工作流/协作约定（如"改了公众号要同步改网站"这类跨系统约定）。\n\n不要记：\n- 一次性任务的具体步骤（除非它反映了可复用的偏好）。\n- 会话内临时信息、闲聊。\n\n**去重（最重要的一条）**：下面会给你一份「已记录」清单。凡是意思相同或相近的——**换了说法也算**——一律不要输出。\n只有两种情形值得输出：\n1. **真正新增**的事实、偏好、约定；\n2. **数值 / 规则发生变化的修订**：这时**只输出新的说法**，并在句末附「（更新：旧值 X）」，\n   千万不要再单独输出一条"旧值保留备查"——旧值由系统自己留证据，不用你重写一遍。\n宁可少写一条，也不要重复一条：这些条目每条都会被注入下一次对话，重复即噪声。\n\n输出 JSON：\n{"updates": [{"target": "user", "text": "..."}, ...]}\ntarget 选 "user"（用户画像/偏好，写入 USER.md）或 "memory"（跨项目持久事实，写入 MEMORY.md）。\n若没有值得记的（包括"这些都已经记过了"），输出 {"updates": []}。\n只输出 JSON，不要解释。\n"""
+
+# 现有记忆喂给复盘器的字符预算（每文件）。给多了抬成本，给少了还会重复，
+# 2000 字符 ≈ 手写画像条目 + 最近的复盘条目。
+_REVIEW_DIGEST_BUDGET = 2000
+
+
+def _memory_digest_for_review(base_dir: Path, filename: str,
+                              budget: int = _REVIEW_DIGEST_BUDGET) -> str:
+    """抽出某记忆文件里"已经记了什么"，喂给复盘器做去重（**不是喂全文**）。
+
+    为什么需要（2026-09-21 定因）：原实现的 prompt 只有本轮对话，
+    复盘器**看不到已经记过什么**，于是每天的复述都当新事实再写一遍——
+    实测同一条「写作营格式要求」在三天里被写了三遍（措辞各不相同）。
+    与其事后合并，不如从源头不产生。
+
+    顺序：先给**手写分节的条目**（画像本体、约束最强），再给**复盘条目**（新→旧）。
+    越靠前越不会被预算截掉。
+    """
+    path = base_dir / filename
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace") if path.is_file() else ""
+    except OSError:
+        return ""
+    if not text:
+        return ""
+    # 1) 手写分节（非复盘）的条目行，按文件顺序
+    handwritten = text
+    for start, end in reversed(_recap_spans(text)):
+        handwritten = handwritten[:start] + handwritten[end:]
+    bullets: list[str] = [
+        ls for ls in (l.strip() for l in handwritten.splitlines())
+        if ls.startswith(("- ", "* "))
+    ]
+    # 2) 复盘条目，从新到旧
+    for _date, entry in sorted(
+        _recap_entries(text), key=lambda e: e[0], reverse=True
+    ):
+        bullets.append("- " + entry)
+    out: list[str] = []
+    used = 0
+    for b in bullets:
+        if used + len(b) + 1 > budget:
+            break
+        out.append(b)
+        used += len(b) + 1
+    return "\n".join(out)
+
+
+# ---------------------------------------------------------------------------
+# 复盘节的「一天一节 + 近重复合并」工具（2026-09-21）
+#
+# 设计约束（都是踩出来的）：
+# 1. **手写分节必须逐字节不动**：``## 基本信息`` / ``## 查资料铁律`` 等是画像本体，
+#    任何重排都是事故。所以重建时只切"复盘节所在的连续区间"，
+#    区间之外的 prefix / suffix **原样拷贝**。
+# 2. **不许用标题当 dict key**：重复节头（正是本 bug 的产物）会互相覆盖，
+#    自校验就会漏检。一律按下标逐块处理。
+# 3. **相似度只在"剥掉标记"后算**：``（已被更新覆盖，旧值保留备查）`` 这类
+#    尾巴是**同一句模板**，留着算会让两条毫不相干的事实在它上面"撞高分"
+#    （实测：伪造相似度 0.60，真近重复反而只有 0.30）。
+# ---------------------------------------------------------------------------
+
+# ``## 自动复盘 · 2026-09-21``（也容忍 ``## 自动复盘：2026-09-21`` 等写法）
+_RECAP_HEAD_RE = re.compile(r"(?m)^##(?!#)[^\n]*自动复盘[^\n]*")
+_RECAP_DATE_RE = re.compile(r"(\d{4}-\d{1,2}-\d{1,2})")
+_RECAP_HEADING = "自动复盘"
+# 「（已被更新覆盖，旧值保留备查）」等各种变体：标记，不是内容
+_RECAP_MARK_RE = re.compile(r"[（(][^（()）]*被更新覆盖[^（()）]*[)）]")
+# 相似度阈值：2-gram Jaccard。实测真近重复落在 0.30–0.60，
+# 不同事实（哪怕同为"用户的写作要求"）落在 0.25 以下。
+_RECAP_DUP_SIM = 0.30
+# 相似度到这个高度 = "就是同一句话的两种写法"，长短无所谓，直接顶替。
+_RECAP_DUP_SIM_HIGH = 0.50
+# 中间地带（0.30–0.50）加一道"新说法不许更短"的闸：
+# 实测 0.31 一档里混着"同题材但携带不同操作细节"的对子
+# （如「每日发布任务 + 完整工作流」被「运营文化观察员角色」这种概括句顶掉，
+# 48 小时新闻窗口这类规则就没了）。**丢一条规则不可逆，留一条重复只是不整齐。**
+_RECAP_SUPERSEDE_MIN_RATIO = 0.6
+# 归一化后短于这个长度就不做"近重复"判定，只认完全相同。
+# 理由：2-gram 在短文本上噪声极大 —— "旧的一条" vs "新的一条" 能算出 0.5，
+# 而它们毫无关系。真实条目都远长于这个长度，这条护栏不会误伤正常合并。
+_RECAP_MIN_DUP_CHARS = 12
+_MAX = 20_000
+
+
+def _recap_norm(text: str) -> str:
+    """相似度用归一化：去列表前缀、去「旧值保留备查」标记、去空白与标点。"""
+    s = re.sub(r"^[-*]\s+", "", (text or "").strip())
+    s = _RECAP_MARK_RE.sub("", s)
+    return re.sub(r"[\s，。、；：:;,.\-—～~（）()「」『』“”\"'\[\]【】<>《》…！？!?/|·]+", "", s)
+
+
+def _recap_sim(a: str, b: str) -> float:
+    """离线相似度：去掉标点后的 **中文 2-gram Jaccard**。
+
+    为什么不用 ``manager._entry_sim``（单字 Jaccard）：中文单字重合度天然虚高，
+    「同一件事换种说法」和「两件不同的事」拉不开差距（实测都在 0.3–0.7）。
+    2-gram 抓的是"词的搭配"，同一事实换个说法仍然共享大量搭配。
+    """
+    na, nb = _recap_norm(a), _recap_norm(b)
+    if len(na) < _RECAP_MIN_DUP_CHARS or len(nb) < _RECAP_MIN_DUP_CHARS:
+        return 1.0 if na == nb and na else 0.0
+    if len(na) < 2 or len(nb) < 2:
+        return 0.0
+    ga = {na[i: i + 2] for i in range(len(na) - 1)}
+    gb = {nb[i: i + 2] for i in range(len(nb) - 1)}
+    return len(ga & gb) / len(ga | gb)
+
+
+def _recap_supersedes(old: str, new: str) -> bool:
+    """``new``（较新的说法）能否把 ``old`` 顶掉。
+
+    三道条件，全部为真才算"同一件事的更新说法"：
+
+    1. 相似度 ≥ ``_RECAP_DUP_SIM``（否则是两件事）；
+    2. 若相似度已达 ``_RECAP_DUP_SIM_HIGH`` → 同一句话的两种写法，直接顶；
+    3. 中间地带要求 **新说法不更短**（归一化长度 ≥ 旧 × ``_RECAP_SUPERSEDE_MIN_RATIO``）
+       —— 挡住"一句概括吃掉一条带细节的规则"。丢一条规则不可逆，留一条重复不整齐。
+    """
+    sim = _recap_sim(old, new)
+    if sim < _RECAP_DUP_SIM:
+        return False
+    if sim >= _RECAP_DUP_SIM_HIGH:
+        return True
+    return len(_recap_norm(new)) >= _RECAP_SUPERSEDE_MIN_RATIO * len(_recap_norm(old))
+
+
+def _recap_spans(text: str) -> list[tuple[int, int]]:
+    """所有复盘节的 ``[start, end)`` 区间（按出现顺序）。
+
+    ``end`` 取下一个任意 ``^##`` 标题的起点，或文末。
+    """
+    heads = list(re.finditer(r"(?m)^##(?!#)[^\n]*", text))
+    spans: list[tuple[int, int]] = []
+    for i, m in enumerate(heads):
+        if _RECAP_HEADING not in m.group(0):
+            continue
+        end = heads[i + 1].start() if i + 1 < len(heads) else len(text)
+        spans.append((m.start(), end))
+    return spans
+
+
+def _recap_entries(text: str) -> list[tuple[str, str]]:
+    """按文件顺序取出 ``(日期, 条目原文)``；日期取节头里的第一个 ISO 日期。"""
+    out: list[tuple[str, str]] = []
+    for start, end in _recap_spans(text):
+        block = text[start:end]
+        head, _, body = block.partition("\n")
+        m = _RECAP_DATE_RE.search(head)
+        date = m.group(1) if m else ""
+        for line in body.splitlines():
+            ls = line.strip()
+            if not ls:
+                continue
+            out.append((date, re.sub(r"^[-*]\s+", "", ls).strip()))
+    return out
+
+
+def _render_recap(groups: dict[str, list[str]]) -> str:
+    """把 ``{日期: [条目]}`` 渲染回 ``## 自动复盘 · 日期`` 分节（日期升序）。"""
+    blocks: list[str] = []
+    for date in sorted(groups):
+        entries = groups[date]
+        if not entries:
+            continue
+        blocks.append(
+            "## %s · %s\n" % (_RECAP_HEADING, date or "未知日期")
+            + "\n".join("- %s" % e for e in entries)
+        )
+    return "\n\n".join(blocks)
+
+
+def _rebuild_recap(text: str, groups: dict[str, list[str]]) -> str:
+    """用 ``groups`` 替换文本里的全部复盘节；其余部分**原样拷贝**。
+
+    逐块走 ``^##`` 下标（不用标题当 key——重复节头正是本 bug 的产物，
+    拿标题建 dict 会互相覆盖、漏检）。第一个复盘节的位置渲染一次新内容，
+    后面的复盘节整块跳过；非复盘节连同其间的空行逐字节照搬。
+    """
+    heads = list(re.finditer(r"(?m)^##(?!#)[^\n]*", text))
+    if not any(_RECAP_HEADING in m.group(0) for m in heads):
+        return text
+    out: list[str] = []
+    cursor = 0
+    rendered = False
+    for i, m in enumerate(heads):
+        end = heads[i + 1].start() if i + 1 < len(heads) else len(text)
+        if _RECAP_HEADING in m.group(0):
+            if not rendered:
+                out.append(text[cursor: m.start()])
+                out.append(_render_recap(groups) + "\n\n")
+                rendered = True
+        else:
+            out.append(text[cursor:end])
+        cursor = end
+    out.append(text[cursor:])
+    return "".join(out).rstrip() + "\n"
+
+
+def _compact_recap(
+    text: str, *, new_lines: Sequence[str] = (), date: str = "",
+) -> tuple[str, dict[str, int]]:
+    """复盘节归一：**一天一个节 + 跨日语义近重复合并（新者胜）**。
+
+    返回 ``(新文本, 统计)``；文本里没有复盘节、且没有新行时原样返回。
+
+    合并在"整篇复盘"范围内做，条目按 (日期, 原顺序) 排列后**从新到旧**扫描，
+    新条目先占位；旧条目若与任何已占位条目近重复，就整条丢弃——它要表达的
+    东西已经被更新的说法覆盖了（``（已被更新覆盖，旧值保留备查）`` 那种
+    "留旧值备查"恰恰是缺了这一步的现场）。
+    """
+    entries = _recap_entries(text)
+    entries.extend((date, t.strip()) for t in new_lines if str(t or "").strip())
+    if not entries:
+        return text, {}
+
+    # 从新到旧占位（稳定排序 → 同日期内保持原文件顺序）
+    order = sorted(range(len(entries)), key=lambda i: (entries[i][0], i), reverse=True)
+    kept_idx: list[int] = []
+    merged = 0
+    for i in order:
+        text_i = entries[i][1]
+        dup = False
+        for j in kept_idx:
+            # 已占位的 j 比 i 新；问"新的能不能顶掉这条旧的"
+            if _recap_supersedes(text_i, entries[j][1]):
+                dup = True
+                break
+        if dup:
+            merged += 1
+            continue
+        kept_idx.append(i)
+    kept_idx.sort()
+
+    groups: dict[str, list[str]] = {}
+    for i in kept_idx:
+        d, t = entries[i]
+        groups.setdefault(d, []).append(t)
+
+    new_text = _rebuild_recap(text, groups)
+    stats = {
+        "sections_before": len(_recap_spans(text)),
+        "sections_after": len([d for d, v in groups.items() if v]),
+        "entries_before": len(entries) - len(new_lines),
+        "entries_after": len(kept_idx),
+        "merged": merged,
+    }
+    return new_text, stats
+
+
+def _trim_global_memory(text: str, limit: int = _MAX, filename: str = "") -> str:
+    """超限时的**分节感知**裁剪：先删最旧的复盘条目，绝不切手写正文。
+
+    原实现是 ``new_content[-_MAX:]``——按字符从**头部**无差别切，可能切在句中。
+    而 USER.md 的头部正是 ``## 基本信息 / ## 写作观 / ## 查资料铁律``：
+    **最先被切掉的恰是最该留的**（现状 8 089 字符未触发，属潜伏事故）。
+
+    现在的顺序：① 删最旧的复盘条目（机器生成、价值随时间递减）
+    → ② 仍超限就记 warning 并**保留全文**（宁可超一点，也不能吃掉画像本体）。
+    """
+    if len(text) <= limit:
+        return text
+    entries = _recap_entries(text)
+    if not entries:
+        logger.warning(
+            "after_action: %s 超限（%d > %d）且无复盘节可删——保留全文，不切画像",
+            filename or "全局记忆", len(text), limit,
+        )
+        return text
+    dropped = 0
+    while len(text) > limit and entries:
+        # 每轮删一条**最旧**的（日期最小；同日期删最靠前的）
+        i = min(range(len(entries)), key=lambda k: (entries[k][0], k))
+        d, t = entries.pop(i)
+        groups: dict[str, list[str]] = {}
+        for dd, tt in entries:
+            groups.setdefault(dd, []).append(tt)
+        text = _rebuild_recap(text, groups)
+        dropped += 1
+        if not _recap_spans(text):
+            break
+    logger.info(
+        "after_action: %s 超限，裁掉最旧复盘条目 %d 条（现 %d 字符）",
+        filename or "全局记忆", dropped, len(text),
+    )
+    if len(text) > limit:
+        logger.warning(
+            "after_action: %s 裁完复盘仍超限（%d > %d）——保留全文，不切画像",
+            filename or "全局记忆", len(text), limit,
+        )
+    return text
 
 
 def _append_to_global_memory(base_dir: Path, filename: str, new_lines: list[str]) -> int:
     """向全局记忆文件（USER.md / MEMORY.md）追加去重后的要点，原子写 + 有界裁剪。
 
     返回实际新增条数。重复要点（归一化后相同）不重复追加；超长从最旧裁剪（保留尾部新增）。
+
+    2026-09-21 重写（原实现有两个病）：
+
+    1. **每次都新建节头**。原来无条件 ``existing + "\\n\\n## 自动复盘 · 今天\\n" + 行``，
+       同一天多轮复盘就留下多个同名节 —— 实测 3 天攒出 **17 个节**（09-19×6 /
+       09-20×6 / 09-21×4），只有 1 行的节比比皆是。
+    2. **只做逐字去重**，抓不住"同一件事换个说法"—— ``_norm`` 是字符级归一化，
+       措辞一变就当成新事实。于是同一批规则在三天里被写了三遍。
+
+    现在改成：**按日期 upsert（一天一个节）+ 语义近重复合并（新者胜）**。
+    合并发生在"整篇复盘节"范围内，跨日期生效——这正是"信念修订"该有的样子：
+    新的说法覆盖旧的说法，而不是两条并排留着互相打架。
     """
     if not new_lines:
         return 0
@@ -435,11 +747,17 @@ def _append_to_global_memory(base_dir: Path, filename: str, new_lines: list[str]
     if not to_add:
         return 0
     stamp = datetime.now().strftime("%Y-%m-%d")
-    block = "\n\n## 自动复盘 · %s\n" % stamp + "\n".join("- %s" % t for t in to_add)
-    new_content = existing + block
-    _MAX = 20_000
-    if len(new_content) > _MAX:
-        new_content = new_content[-_MAX:]
+    if _RECAP_HEAD_RE.search(existing):
+        # 已有复盘节：按日期 upsert + 语义近重复合并（一天只留一个节头）
+        new_content, stats = _compact_recap(existing, new_lines=to_add, date=stamp)
+        if stats.get("merged"):
+            logger.info(
+                "after_action: 复盘节合并 %d 条近重复（保留较新说法）", stats["merged"]
+            )
+    else:
+        block = "\n\n## 自动复盘 · %s\n" % stamp + "\n".join("- %s" % t for t in to_add)
+        new_content = existing + block
+    new_content = _trim_global_memory(new_content, filename=filename)
     tmp = path.with_name(path.name + ".tmp")
     try:
         tmp.write_text(new_content, encoding="utf-8")
@@ -464,9 +782,20 @@ def _maybe_review_memory(base_dir: Path, last_user: str, last_asst: str) -> None
         if not _looks_like_memory_candidate(last_user or "", last_asst or ""):
             return
 
+        digest_parts = [
+            d for d in (
+                _memory_digest_for_review(base_dir, "USER.md"),
+                _memory_digest_for_review(base_dir, "MEMORY.md"),
+            ) if d
+        ]
+        existing_block = (
+            "\n已记录（**这些不要重复输出**，换种说法也算重复）：\n"
+            + "\n".join(digest_parts) + "\n"
+        ) if digest_parts else ""
         prompt = (
             _MEMORY_REVIEW_PROMPT
-            + f"用户：{last_user[:1500]}\n\n助手：{last_asst[:1500]}"
+            + existing_block
+            + f"\n对话：\n用户：{last_user[:1500]}\n\n助手：{last_asst[:1500]}"
         )
         try:
             resp = chat_memory(
@@ -759,7 +1088,7 @@ def reflect_and_persist(
         artifacts: 本轮产物文件路径列表（有产物视为有实质产出）。
         base_dir: 记忆根目录，默认 ~/.deskmate。
     """
-    base_dir = base_dir or _DEFAULT_BASE_DIR
+    base_dir = base_dir or _default_base_dir()
 
     # ---- 1. 项目日志（记一笔）----
     effective_len = max(

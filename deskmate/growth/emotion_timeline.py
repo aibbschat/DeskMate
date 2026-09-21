@@ -38,6 +38,7 @@ import logging
 from pathlib import Path
 from typing import Any, Optional
 
+from deskmate.coerce import as_float
 from deskmate.growth import emotion_sense
 from deskmate.persistence import BlobStore
 
@@ -162,8 +163,11 @@ class EmotionTimeline:
         if st is None:
             return self._data.get(today, {})
 
-        trust = float(getattr(st, "trust", 0.5) or 0.5)
-        intimacy = float(getattr(st, "intimacy", 0.0) or 0.0)
+        # ⚠ 必须用 as_float 而不是 ``float(x or 0.5)``：trust 的合法下限就是 0.0，
+        # 被 `or` 吞掉后快照里会写成 0.5 —— 实测让情感时间线凭空"冻结 17 天"
+        # （2026-09-21 定位：真实值一直是 0.0）。
+        trust = as_float(getattr(st, "trust", None), 0.5)
+        intimacy = as_float(getattr(st, "intimacy", None), 0.0)
         events = self._events_for(today, st)
         # 一次性取好今天的日记再传进去，免得 _resolve 里又读一遍库
         diary_texts = self._diary_texts_by_day(days=1).get(today)

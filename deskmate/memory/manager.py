@@ -506,12 +506,20 @@ class DeskMateMemoryManager:
             from deskmate.alter_ego.config import is_enabled as alter_ego_enabled
             from deskmate.cognitive.memory_injector import (
                 build_cognitive_context,
+                build_emotional_context,
                 has_cognitive_data,
             )
             if alter_ego_enabled() and has_cognitive_data():
                 ego_cog = build_cognitive_context()
-                if ego_cog:
-                    parts.append(ego_cog)
+            else:
+                # 2026-09-21：分身关着时，仍然注入**情感画像**。
+                # 原来两件事绑在一个开关上，导致「她记着的他的情绪规律」从来没进过
+                # 对话（分身默认关）——那是"懂你"的地基，不该是分身模式的附属品。
+                # 放行范围**只有 emotional 层**：人格底座 / 认知层 / 世界观仍按原样
+                # 归分身与世界管道管，不在本次扩权内。
+                ego_cog = build_emotional_context()
+            if ego_cog:
+                parts.append(ego_cog)
         except Exception:
             pass  # fail-open：认知人格缺失不影响主记忆注入
         # 「越用越懂你·每日读书」：把面板里的读书沉淀接回对话（修复死数据）

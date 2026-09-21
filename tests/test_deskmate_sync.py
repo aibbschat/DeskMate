@@ -16,6 +16,29 @@ from deskmate.memory.sync import (
 )
 
 
+def _seed_profile_bundle_source(base: Path) -> None:
+    """在统一库里放 style + decision 画像——``deskmate_profiles.json`` bundle 的来源。
+
+    为什么必须显式造（2026-09-21 修）
+    --------------------------------
+    ``style_profile.json`` / ``decision_profile.json`` 这两个 legacy 文件**早已不是
+    同步项**（``_SYNC_ROOT_FILES`` 只有 SOUL/USER/MEMORY.md）：画像迁进统一库后，
+    跨端只走 ``_export_profile_bundle()`` 导出的 ``deskmate_profiles.json``。
+
+    而 ``_export_profile_bundle`` 里是裸的 ``BlobStore()``。历史 bug 下它不认
+    ``DESKMATE_DIR``（模块级常量）→ 读的是**开发机真实库** → 恰好有画像 → bundle
+    非 None → ``pushed`` 凑够 5，测试"通过"。这是假通过：换台干净机器必失败。
+
+    BlobStore 认环境变量之后，隔离库里没有画像，bundle 为空，``pushed`` 才现出真身
+    （4 个文件）。所以这里显式写入本测试的库，让断言测的是代码而不是开发机。
+    """
+    from deskmate.persistence import BlobStore
+
+    kb = BlobStore(base / "deskmate.db")
+    kb.set(kb.KEY_STYLE, {"summary": "历史悬疑，半文半白"})
+    kb.set(kb.KEY_DECISION, {"risk": {"保守/稳健": {"count": 3}}})
+
+
 def _make_base(tmp: Path) -> Path:
     base = tmp / "deskmate"
     base.mkdir()
@@ -41,6 +64,8 @@ def _make_base(tmp: Path) -> Path:
     (base / "emotion_timeline.json").write_text("{}", encoding="utf-8")
     (base / "traces").mkdir()
     (base / "traces" / "x.jsonl").write_text("{}", encoding="utf-8")
+    # 「懂你」派生包（deskmate_profiles.json）的来源画像——不造就会去读开发机真实库
+    _seed_profile_bundle_source(base)
     return base
 
 
@@ -65,7 +90,6 @@ def test_iter_syncable_excludes_device_local(tmp_path):
     # 知识记忆在
     assert "USER.md" in files
     assert "MEMORY.md" in files
-    assert "style_profile.json" in files
     assert "a.md" in files
     assert "note.md" in files
     # 设备本地状态不在
@@ -73,6 +97,10 @@ def test_iter_syncable_excludes_device_local(tmp_path):
     assert "growth_state.json" not in files
     assert "emotion_timeline.json" not in files
     assert "x.jsonl" not in files
+    # legacy 画像 json 也不在：_SYNC_ROOT_FILES 只有 SOUL/USER/MEMORY.md。
+    # 画像已收进统一库，跨端改走 _export_profile_bundle() 的 deskmate_profiles.json。
+    assert "style_profile.json" not in files
+    assert "decision_profile.json" not in files
 
 
 def test_localdir_push_pull_roundtrip(tmp_path):

@@ -15,6 +15,7 @@ import logging
 from pathlib import Path
 from typing import Any, Optional
 
+from deskmate.coerce import as_float
 from deskmate.garden.state import GardenState, load_garden
 
 logger = logging.getLogger(__name__)
@@ -59,9 +60,9 @@ def _growth_numbers(base_dir: Path | None) -> dict[str, Any]:
             "total_chats": int(snap.get("total_chats", 0) or 0),
             "streak_days": int(snap.get("streak_days", 0) or 0),
             "badge_count": unlocked_badges,
-            "bond_depth": float(bond.get("depth", 0.0) or 0.0),
+            "bond_depth": as_float(bond.get("depth"), 0.0),
             "bond_stage": str(bond.get("stage", "初识") or "初识"),
-            "bond_progress": float(bond.get("progress", 0.0) or 0.0),
+            "bond_progress": as_float(bond.get("progress"), 0.0),
             "bond_maxed": bool(bond.get("maxed", False)),
         }
     except Exception:
