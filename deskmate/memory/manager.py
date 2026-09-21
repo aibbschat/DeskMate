@@ -56,6 +56,14 @@ MEMORY_DECAY_TTL = {
     # preference / correction：永不衰减（用户偏好和纠正永久保留）
 }
 
+# 记忆条目日期前缀正则：兼容 "- " / "* " 列表前缀，中文或英文冒号均可。
+#
+# ⚠ 踩过的坑：早期只认「紧贴行首」的日期（``^\d{4}-...``），而实际落盘的条目
+# 写成 ``- 2026-08-13: ...``（带列表前缀）。于是匹配失败 → 走「无日期，安全
+# 起见保留」分支 → **衰减永远不触发**、forgot.jsonl 永不生成。写入端
+# ``_ensure_date_prefix`` 用同一套正则，避免再叠加出 ``日期: - 日期: 内容``。
+_ENTRY_DATE_RE = re.compile(r"^\s*[-*]?\s*(\d{4}-\d{1,2}-\d{1,2})[:：]")
+
 # 三层记忆分层常量
 CORE_TAGS = {"preference", "correction"}  # Core 层：每轮自动注入
 RECALL_WINDOW_DAYS = 7                    # Recall 层：7 天内的记忆优先注入
@@ -1053,8 +1061,9 @@ class DeskMateMemoryManager:
         text = text.strip()
         if not text:
             return text
-        # 已有日期前缀：2026-07-31: ... 或 2026-7-31: ...
-        if re.match(r"^\d{4}-\d{1,2}-\d{1,2}[:：]", text):
+        # 已有日期前缀：2026-07-31: ... / - 2026-7-31: ... 等（含列表前缀）
+        # 用与 decay_memory 同一套正则，否则会叠加成「2026-09-21: - 2026-08-13: …」
+        if _ENTRY_DATE_RE.match(text):
             return text
         today = datetime.date.today().isoformat()
         return f"{today}: {text}"
@@ -1094,11 +1103,15 @@ class DeskMateMemoryManager:
             if sec_ttl is None:
                 continue  # 无 TTL 的 section（preference/correction）不衰减
 
-            entries = [e.strip() for e in re.split(r"\n\s*\n", sec["body"]) if e.strip()]
-            kept = []
+            # ⚠ 按**行**逐条判定，不按空行切块。
+            # 早期按 ``\n\s*\n`` 切块会把连续多行条目并成一块，再用首条日期判定整块
+            # ——超龄条目漏判、未超龄条目被连带。现在一条一行各判各的。
+            entries = [ln.strip() for ln in sec["body"].splitlines() if ln.strip()]
+            kept: list[str] = []
+            sec_modified = False
             for entry in entries:
-                # 提取日期前缀
-                m = re.match(r"(\d{4}-\d{1,2}-\d{1,2})[:：]", entry)
+                # 提取日期前缀（兼容 "- " / "* " 列表前缀）
+                m = _ENTRY_DATE_RE.match(entry)
                 if not m:
                     kept.append(entry)  # 无日期的条目保留（安全起见）
                     continue
@@ -1116,8 +1129,12 @@ class DeskMateMemoryManager:
                         try:
                             self.vault.write_entry(
                                 content=entry,
-                                category=sec["tags"].intersection({"work", "note", "preference", "correction"}).pop()
-                                if sec["tags"] else "note",
+                                category=next(
+                                    iter(sec["tags"].intersection(
+                                        {"work", "note", "preference", "correction"}
+                                    )),
+                                    "note",
+                                ),
                                 tags=list(sec["tags"]),
                                 source="memory-decay",
                             )
@@ -1128,6 +1145,7 @@ class DeskMateMemoryManager:
                                 "date": m.group(1),
                                 "summary": entry[:80],
                             })
+                            sec_modified = True
                         except Exception as e:
                             logger.debug("vault archive on decay failed, keeping entry: %s", e)
                     else:
@@ -1138,12 +1156,16 @@ class DeskMateMemoryManager:
                             "date": m.group(1),
                             "summary": entry[:80],
                         })
-                    modified = True
+                        sec_modified = True
+                    if sec_modified:
+                        modified = True
                     continue
                 kept.append(entry)
 
-            if modified:
-                sec["body"] = "\n\n".join(kept)
+            # 只重写真正改动过的分节：未改动的不碰正文，
+            # 避免把原本空行分隔的格式压成单行（无谓的格式漂移）。
+            if sec_modified:
+                sec["body"] = "\n".join(kept)
 
         if modified:
             self._save_global_memory(self._render_sections("", sections))
@@ -1319,37 +1341,92 @@ class DeskMateMemoryManager:
     # 自动压缩（参考 Hermes 的 memory_char_limit + 自动增减）
     # ------------------------------------------------------------------
 
+    def _note_compress_stalled(
+        self, section: str, size: int, limit: int, reason: str | None
+    ) -> None:
+        """记录「文件超限但压缩没生效」。
+
+        此前三条路径（缺 API Key / LLM 返回空 / 压缩结果没变短）全是静默
+        ``return False``，于是 MEMORY.md / USER.md 可以长期超限而无人察觉。
+        这里补上 warning 并留实例状态，供诊断与测试断言。
+
+        reason 传 None 表示压缩已恢复正常，清除停滞记录。
+        去抖：同一 section 长度没明显增长且 1 小时内已告警过 → 不重复刷日志。
+        """
+        import time
+
+        state = getattr(self, "_compress_stall_state", None)
+        if state is None:
+            state = {}
+            self._compress_stall_state = state
+
+        if reason is None:
+            state.pop(section, None)
+            return
+
+        now = time.time()
+        prev = state.get(section)
+        if prev is not None:
+            prev_size, prev_at = prev
+            if size < prev_size * 1.1 and (now - prev_at) < 3600:
+                return  # 去抖：没长多少、刚告警过
+
+        state[section] = (size, now)
+        logger.warning(
+            "记忆压缩未生效：%s 内容 %d 字符（上限 %d），原因：%s —— "
+            "文件将持续超限，仅靠注入时截断兜底",
+            section, size, limit, reason,
+        )
+
     def _compress_if_needed(self, section: str) -> bool:
         """写入后检查文件是否超限，超限则 LLM 压缩合并。
 
         Returns:
             True 如果触发了压缩
-        """
-        if not llm_available():
-            return False  # 无 API Key 时不压缩，只靠截断兜底
 
+        顺序说明：先判超限、再看是否有 LLM。这样「超限但压不下去」能被观测到，
+        而不是在缺 Key 时连超限这个事实都不可见。
+        """
         if section == "memory":
             content = self._load_global_memory()
-            if len(content) <= MEMORY_FILE_MAX_CHARS:
-                return False
-            compressed = self._llm_compress_memory(content)
-            if compressed and len(compressed) < len(content):
-                # 压缩淘汰的条目归档到 vault（不丢，可恢复）
-                try:
-                    self._archive_compressed_entries(content, compressed)
-                except Exception as e:
-                    logger.debug("archive before compression failed: %s", e)
-                self._save_global_memory(compressed)
-                return True
+            limit = MEMORY_FILE_MAX_CHARS
         elif section == "user":
             content = load_user(self.base_dir)
-            if len(content) <= USER_FILE_MAX_CHARS:
-                return False
+            limit = USER_FILE_MAX_CHARS
+        else:
+            return False
+
+        if len(content) <= limit:
+            return False
+
+        if not llm_available():
+            self._note_compress_stalled(section, len(content), limit, "无可用 LLM（缺 API Key）")
+            return False
+
+        if section == "memory":
+            compressed = self._llm_compress_memory(content)
+        else:
             compressed = self._llm_compress_user(content)
-            if compressed and len(compressed) < len(content):
-                save_user(self.base_dir, compressed)
-                return True
-        return False
+
+        if not compressed:
+            self._note_compress_stalled(section, len(content), limit, "LLM 未返回结果")
+            return False
+        if len(compressed) >= len(content):
+            self._note_compress_stalled(section, len(content), limit, "压缩结果未变短")
+            return False
+
+        if section == "memory":
+            # 压缩淘汰的条目归档到 vault（不丢，可恢复）
+            try:
+                self._archive_compressed_entries(content, compressed)
+            except Exception as e:
+                logger.debug("archive before compression failed: %s", e)
+            self._save_global_memory(compressed)
+        else:
+            save_user(self.base_dir, compressed)
+
+        self._note_compress_stalled(section, len(compressed), limit, None)
+        return True
 
     # ------------------------------------------------------------------
     # P0-5 记忆去重 / USER.md 清洗（按 Mem0 ADD/UPDATE/DELETE/NOOP 重构）

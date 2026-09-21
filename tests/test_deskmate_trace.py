@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import json
+import datetime
 from pathlib import Path
 
 import pytest
@@ -29,26 +30,52 @@ def tmp_dir(tmp_path: Path) -> Path:
     return tmp_path
 
 
-def _write_mem(base: Path) -> None:
-    (base / "MEMORY.md").write_text(
-        """§ 偏好 #preference
-2026-08-01: 只查正史，排除自媒体来源
+def _write_mem(base: Path) -> dict[str, str]:
+    """写入测试用记忆，并返回各条目原文（供指纹断言动态推导，避免硬编码失效）。
 
-2026-08-10: 喜欢精炼简洁的书面语
+    ⚠ 日期一律相对「今天」计算。早期这里写死 2026-08-05 / 2026-06-01 等绝对日期，
+    随着真实时间推移，本以为「未超龄」的条目也会越过 30 天 TTL，于是
+    ``archived == 1`` 无端失败（时间炸弹，2026-09-21 已实测复现）。
+    """
+    today = datetime.date.today()
+    recent = (today - datetime.timedelta(days=5)).isoformat()     # 未超龄（work TTL=30）
+    stale = (today - datetime.timedelta(days=110)).isoformat()    # 超龄 → 归档
+    old_pref = (today - datetime.timedelta(days=60)).isoformat()  # 偏好永不衰减
+    mid_pref = (today - datetime.timedelta(days=20)).isoformat()
 
-§ 工作 #work
-2026-08-05: 正在写《兰陵王传》第三章
+    entries = {
+        "old_pref": f"{old_pref}: 只查正史，排除自媒体来源",
+        "mid_pref": f"{mid_pref}: 喜欢精炼简洁的书面语",
+        "recent_work": f"{recent}: 正在写《兰陵王传》第三章",
+        "stale_work": f"{stale}: 旧的过时工作条目",
+    }
 
-2026-06-01: 旧的过时工作条目
-""",
-        encoding="utf-8",
+    mem = (
+        "§ 偏好 #preference\n"
+        f"{entries['old_pref']}\n\n"
+        f"{entries['mid_pref']}\n\n"
+        "§ 工作 #work\n"
+        f"{entries['recent_work']}\n\n"
+        f"{entries['stale_work']}\n"
     )
+    (base / "MEMORY.md").write_text(mem, encoding="utf-8")
     (base / "USER.md").write_text("用户是历史题材创作者", encoding="utf-8")
+    return entries
+
+
+def _expected_fp(entry: str) -> str:
+    """按契约独立重算指纹：sha1(条目原文) 前 8 位。
+
+    刻意不调用被测的 ``_entry_fingerprint``——用独立实现才能在算法漂移时报警。
+    """
+    import hashlib
+
+    return hashlib.sha1(entry.encode("utf-8")).hexdigest()[:8]
 
 
 class TestInjectAnnotationAndTrace:
     def test_context_annotates_entries_and_adds_references(self, tmp_dir):
-        _write_mem(tmp_dir)
+        entries = _write_mem(tmp_dir)
         mm = DeskMateMemoryManager(base_dir=tmp_dir)
         ctx = mm.build_full_context_for_turn("正史")
 
@@ -58,10 +85,10 @@ class TestInjectAnnotationAndTrace:
         # references 摘要块 + 引用指引
         assert "<memory-references>" in ctx
         assert "因为你之前说过" in ctx
-        assert "〔记忆#7c02007b〕" in ctx  # 稳定指纹
+        assert f"〔记忆#{_expected_fp(entries['old_pref'])}〕" in ctx  # 稳定指纹
 
     def test_inject_trace_written_and_readable(self, tmp_dir):
-        _write_mem(tmp_dir)
+        entries = _write_mem(tmp_dir)
         mm = DeskMateMemoryManager(base_dir=tmp_dir)
         mm.build_full_context_for_turn("正史")
 
@@ -70,7 +97,7 @@ class TestInjectAnnotationAndTrace:
         records = mm.read_trace(INJECT_TRACE_FILE, 5)
         assert len(records) == 1
         assert records[0]["n"] == 2
-        assert records[0]["refs"][0]["fp"] == "7c02007b"
+        assert records[0]["refs"][0]["fp"] == _expected_fp(entries["old_pref"])
         assert records[0]["refs"][0]["section"] == "偏好 #preference"
 
     def test_no_memory_no_trace(self, tmp_dir):
