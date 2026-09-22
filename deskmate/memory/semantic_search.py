@@ -76,7 +76,10 @@ _last_error_logged_at: float = 0.0
 # embedding 后端链（2026-09-22）
 # ---------------------------------------------------------------------------
 #: 后端选择：auto（默认，本地可用就本地优先）/ local（只试本地）/ api（只试 API）
+#: / off（一个都不试，显式关闭语义通道）
 _ENV_BACKEND = "DESKMATE_EMBEDDING_BACKEND"
+#: 显式关闭的写法（大小写/空白不敏感，见 _backend_mode）
+_OFF_MODES = ("off", "none", "disabled")
 
 # 最近一次**成功**产出向量的后端与模型名。写入侧据此填 external_items.embedding_model，
 # 诊断侧据此回答「小桔现在的语义检索到底跑在哪个模型上」。
@@ -95,8 +98,11 @@ def _backend_mode() -> str:
 
 
 def _backend_order() -> list[str]:
-    """本次调用按什么顺序试后端。
+    """本次调用按什么顺序试后端；返回 ``[]`` = 显式关闭（立即 fail-open）。
 
+    - ``off`` / ``none`` / ``disabled``：**一个后端都不试**。用途：①测试要 hermetic
+      ——「本机恰好装了 fastembed」不该让每个用例都去下 100MB 模型；
+      ②临时关掉语义通道做排查。
     - ``local`` / ``api``：只试这一个（显式指定即用户意图，不再偷偷兜底到另一个，
       否则「我明明设了 api 怎么走的本地」会变成新的不可观测问题）。
     - ``auto``（默认）：本地可用 → ``["local", "api"]``；本地没装 → ``["api"]``。
@@ -104,6 +110,8 @@ def _backend_order() -> list[str]:
     ⚠ 本地优先的理由见模块 docstring（API 在本机是「必然失败 + 可能 60s 超时」）。
     """
     mode = _backend_mode()
+    if mode in _OFF_MODES:
+        return []
     if mode in ("local", "api"):
         return [mode]
     if local_embed.available():
@@ -251,8 +259,16 @@ def _embed_with_backend(texts: list[str]) -> Optional[dict]:
     if not texts:
         return {"vectors": [], "backend": _last_backend or "", "model": _last_model}
 
+    order = _backend_order()
+    if not order:
+        # 显式关闭：立刻 fail-open，不加载模型、不打网络（测试 hermetic 靠这条）
+        _note_embed_failure(
+            f"embedding 后端已显式关闭（{_ENV_BACKEND}={_backend_mode()}）→ 语义检索降级为纯关键词"
+        )
+        return None
+
     reasons: list[str] = []
-    for backend in _backend_order():
+    for backend in order:
         if backend == "local":
             vectors = local_embed.embed(texts)
             if vectors:

@@ -15,6 +15,8 @@
 
 from __future__ import annotations
 
+import os
+
 import pytest
 
 
@@ -57,6 +59,31 @@ class TestBackendOrder:
         monkeypatch.setenv("DESKMATE_EMBEDDING_BACKEND", "  BOGUS ")
         monkeypatch.setattr(ss.local_embed, "available", lambda: False)
         assert ss._backend_order() == ["api"]
+
+    @pytest.mark.parametrize("mode", ["off", "none", "disabled", " OFF "])
+    def test_off_mode_disables_every_backend(self, ss, monkeypatch, mode):
+        """显式关闭：后端链为空 → 立刻 fail-open，**既不加载模型也不打网络**。"""
+        monkeypatch.setenv("DESKMATE_EMBEDDING_BACKEND", mode)
+        monkeypatch.setattr(ss.local_embed, "available", lambda: True)  # 装了本地也不许用
+        assert ss._backend_order() == []
+
+        def _boom(*a, **k):
+            raise AssertionError("关闭状态下不该碰任何后端")
+
+        monkeypatch.setattr(ss.local_embed, "embed", _boom)
+        monkeypatch.setattr(ss, "_call_embedding_api_openai", _boom)
+
+        assert ss._call_embedding_api(["甲"]) is None
+        assert "已显式关闭" in (ss.last_embed_error() or "")
+
+    def test_test_env_disables_embedding_by_default(self):
+        """回归锁：测试环境必须关掉 embedding 后端。
+
+        否则在「本机装了 fastembed」的机器上，`auto` 会走本地 BGE，而每个用例的
+        DESKMATE_DIR 都是全新 tmp → 各下 ~102MB 模型再推理（实测 7 个用例 × 102MB，
+        全量耗时 110s → 4 分钟+，且测试变成依赖外网与代理）。见 tests/conftest.py。
+        """
+        assert os.environ.get("DESKMATE_EMBEDDING_BACKEND") == "off"
 
 
 # =====================================================================
@@ -108,6 +135,8 @@ class TestBackendChain:
         assert ss._call_embedding_api([]) == []
 
     def test_backend_status_shape(self, ss, monkeypatch):
+        # 先恢复 auto：conftest 为保证测试 hermetic 把后端钉成了 off
+        monkeypatch.delenv("DESKMATE_EMBEDDING_BACKEND", raising=False)
         monkeypatch.setattr(ss.local_embed, "available", lambda: False)
         st = ss.backend_status()
         for key in (

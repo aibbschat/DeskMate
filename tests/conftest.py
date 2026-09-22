@@ -29,6 +29,13 @@ def _isolated_state_dir(tmp_path, monkeypatch):
     # 多数模块按调用时取值读 DESKMATE_DIR，此处设为 tmp 即可兜住；少数在 import 时
     # 绑定模块级常量的，由各测试单独 setenv（见 test_deskmate_will 等）。
     monkeypatch.setenv("DESKMATE_DIR", str(tmp_path / "deskmate"))
+    # 语义检索后端链：测试一律**显式关闭**（`_backend_order()` 返回 [] → 立即 fail-open）。
+    # 为什么必须钉死：fastembed 是 optional 依赖，一旦本机装了它，`auto` 就会走本地 BGE，
+    # 而每个用例的 DESKMATE_DIR 都是全新的 tmp → 各自去下 ~102MB 模型再跑推理
+    # （实测 7 个用例 × 102MB，全量耗时从 110s 涨到 4 分钟+，且测试变成依赖外网）。
+    # 测试结果不该取决于「本机恰好装没装某个 optional 依赖」。要测后端链/护栏的用例，
+    # 自己在用例里 patch `local_embed.available` / `embed` / `_call_embedding_api`。
+    monkeypatch.setenv("DESKMATE_EMBEDDING_BACKEND", "off")
     monkeypatch.delenv("COWORKER_API_TOKEN", raising=False)
 
 
