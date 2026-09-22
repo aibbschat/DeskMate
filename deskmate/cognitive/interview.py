@@ -604,6 +604,14 @@ def redeliver_pending_interview(layer: str = "cognitive", base_dir=None, pm=None
 
         questions = rebuild_questions_from_qids(sess.get("gap_ids"), pm)
         if not questions:
+            # 问题里的关联对象（gap / 立场）已全部消失或结案 → 这轮问题再也重建不出来。
+            # 留着它只会白占 48h（等着时长兜底），把这一层**新的**邀请全挡在门外
+            # （maybe_trigger_interview 见到挂起就只补送）。这种僵尸不必等，立刻收敛。
+            try:
+                store.expire_active_sessions(layer=layer)
+                logger.info("访谈邀请 %s 的关联对象已失效、问题无法重建，收敛为 expired", sid)
+            except Exception:
+                logger.debug("收敛失效访谈邀请失败（不影响主流程）", exc_info=True)
             return None
 
         store.set_meta(f"last_interview_redeliver_at:{layer}", _now())
@@ -642,7 +650,15 @@ def maybe_trigger_interview(
     store = pm.store
     pending = store.latest_active_session(layer)
     if pending and not store.get_qa(pending["id"]):
-        return redeliver_pending_interview(layer=layer, pm=pm)
+        redelivered = redeliver_pending_interview(layer=layer, pm=pm)
+        if redelivered:
+            return redelivered
+        # 补送没产出：区分两种情形——
+        # ①那条挂起邀请已被判「问题不可重建」而收敛（挂起已消失）→ 本次继续走正常发起路径，
+        #   不让这一层白等 48 小时；
+        # ②仍在挂起（节流窗口内 / 次数上限 / 还没到时长兜底）→ 什么都不做，下次 tick 再试。
+        if store.latest_active_session(layer):
+            return None
     if not get_interview_engine().should_interview_now(pm.profile, layer=layer, store=store):
         return None
     return start_interview(limit=limit, layer=layer, pm=pm)

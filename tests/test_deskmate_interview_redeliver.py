@@ -29,7 +29,7 @@ _create_session → 立刻写 last_interview_at（3 天冷却当场扣掉）
 **他压根没看见**。所以补送是一次**重放**：不新建会话、不刷新冷却，因此不受
 冷却约束。用户切回窗口 → focus → 前端 tick → 命中补送 → 气泡再次出现。
 
-## 本文件锁住六件事
+## 本文件锁住七件事
 
 1. 冷却被吃掉后，补送仍能把那张已发出的邀请送出来（**核心用例**）
 2. 答过至少一题就不再补送（他见过它了）
@@ -37,6 +37,8 @@ _create_session → 立刻写 last_interview_at（3 天冷却当场扣掉）
 4. 次数上限：单个会话最多补送若干次，避免无限重放
 5. 时长兜底：挂满 48 小时无人回应 → 收敛为 expired
 6. 有挂起邀请时**不另开新会话**（否则继续堆僵尸，同一批 gap 被反复问）
+7. 关联对象全失效、问题再也重建不出来的挂起邀请 → **立刻收敛**，
+   不许白占 48h 把这一层的新邀请挡在门外
 """
 
 from __future__ import annotations
@@ -333,6 +335,49 @@ class TestPendingBlocksNewSession:
         assert again["session_id"] == sid, "应补送挂起的那张，而不是另开一轮"
         assert again.get("redelivered") is True
         assert len(_sessions(tmp_path)) == 1, "不该多出一个会话"
+
+
+# ----------------------------------------------------------------------
+# 7：挂起邀请「问不出来」时不能白占 48 小时（僵尸收敛）
+# ----------------------------------------------------------------------
+class TestUnrebuildablePendingIsConverged:
+    def _make_unrebuildable_zombie(self, tmp_path) -> str:
+        """先正常发起一次，再把它的问题对象全部结案 → 这轮问题再也重建不出来。"""
+        gid = _seed_gap(tmp_path)
+        first = _trigger(tmp_path)
+        assert first, "前提：先要有一次正常发起"
+        pm = _pm(tmp_path)
+        for g in pm.profile.cognitive_gaps:
+            if g.id == gid:
+                g.status = "resolved"
+        pm.save()
+        return first["session_id"]
+
+    def test_zombie_is_converged_immediately(self, tmp_path):
+        """问题不可重建 → 立刻收敛，而不是静静挂到 48h 时长兜底。
+
+        真实库教训（09-22）：夹具 gap 清理后 cognitive 层还挂着 ``iv_a03eeaec9e``，
+        它引用的 gap 都已 resolved → 每次 tick 只走补送、补送又无产出，
+        这一层等于被一张「问不出来的邀请」挡住 48 小时。
+        """
+        sid = self._make_unrebuildable_zombie(tmp_path)
+        assert _trigger(tmp_path) is None, "关联对象已失效 → 不编问题，不补送"
+        sess = {s["id"]: s for s in _sessions(tmp_path)}
+        assert sess[sid]["status"] == "expired", "失效的邀请应立刻收敛"
+
+    def test_layer_recovers_once_cooldown_expires(self, tmp_path):
+        """收敛后，冷却一到就能重新发起——不会被僵尸一直挡到 48h 后。"""
+        self._make_unrebuildable_zombie(tmp_path)
+        _trigger(tmp_path)                      # 这一趟把僵尸收敛掉
+        pm = _pm(tmp_path)
+        pm.store.set_meta(
+            f"last_interview_at:{LAYER}",
+            (datetime.now() - timedelta(days=4)).isoformat(),
+        )
+        _seed_gap(tmp_path)                     # 重新备好燃料
+        out = _trigger(tmp_path)
+        assert out is not None and out.get("redelivered") is not True, "应变回正常发起"
+        assert len(_sessions(tmp_path)) == 2, "应新建第二轮会话"
 
 
 # ----------------------------------------------------------------------
