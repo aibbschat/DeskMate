@@ -533,6 +533,27 @@ class CognitiveStore:
                 )
             return cur.rowcount or 0
 
+    def latest_active_session(self, layer: str = _LAYER) -> Optional[dict]:
+        """该层最近一个仍 active 的会话（无则 None）。
+
+        用途（2026-09-22）：访谈「补送」。邀请是否送达此前没有任何凭证——
+        `create_session` 一落库就吃满 3 天冷却，而前端邀请气泡只存在 60 秒；
+        用户当时不在窗口前，气泡无声消失，冷却却已消耗，下次 tick 又把
+        这个 session 标 expired。结果「发起过很多次，用户一次没见过」。
+        补送需要知道「上一轮邀请还挂着没回音」，这是它的查询入口。
+        """
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT id, layer, status, started_at, ended_at, gap_ids_json, summary "
+                "FROM interview_sessions WHERE layer=? AND status='active' "
+                "ORDER BY started_at DESC LIMIT 1",
+                (layer,),
+            ).fetchone()
+        if not row:
+            return None
+        return {"id": row[0], "layer": row[1], "status": row[2], "started_at": row[3],
+                "ended_at": row[4], "gap_ids": json.loads(row[5] or "[]"), "summary": row[6]}
+
     def add_qa(self, session_id: str, question: str, answer: str,
                question_id: str = "", item_updates: Optional[list[str]] = None) -> str:
         import uuid

@@ -3677,7 +3677,35 @@ def create_app(manager: SessionManager) -> FastAPI:
                 user_message=body.get("user_message", ""),
                 skip_activity_check=bool(body.get("skip_activity_check", False)),
             )
-            return result.to_dict()
+            payload = result.to_dict()
+            # 送达诊断：这次前端 tick 有没有拿到「要在浮层里呈现」的负载。
+            # 排查 2026-09-22「邀请了但用户看不到」时，链条上有三个黑盒——
+            # 前端有没有打过来 / 后端有没有产出 interview / 是新建还是补送。
+            # 记一行 JSONL 就能一次问清，不必再靠 session 时间戳倒推（此前正是
+            # 靠时间戳才误判过一轮）。写失败绝不影响 tick 返回。
+            try:
+                import json as _json
+                import time as _time
+
+                _iv = payload.get("interview") or {}
+                _va = payload.get("validation") or {}
+                with (desk_dir / "behavior_log.jsonl").open("a", encoding="utf-8") as _f:
+                    _f.write(_json.dumps({
+                        "ts": _time.time(),
+                        "kind": "proactive_tick_http",
+                        "payload": {
+                            "action": payload.get("action"),
+                            "user_activity": payload.get("user_activity"),
+                            "has_interview": bool(_iv),
+                            "interview_session": _iv.get("session_id"),
+                            "interview_redelivered": bool(_iv.get("redelivered")),
+                            "has_validation": bool(_va),
+                            "reason": str(payload.get("reason") or "")[:120],
+                        },
+                    }, ensure_ascii=False) + "\n")
+            except Exception:
+                logging.debug("tick delivery diagnostic failed", exc_info=True)
+            return payload
         except Exception:
             logging.exception("deskmate proactive tick failed")
             return JSONResponse({"error": "tick failed"}, status_code=500)

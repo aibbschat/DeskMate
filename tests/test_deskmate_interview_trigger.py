@@ -199,11 +199,15 @@ class TestAllowInteractive:
         assert front.interview is not None, "后台跑过多次后，前端仍应拿到访谈邀请"
         assert front.interview["session_id"]
 
-    def test_old_background_behavior_would_starve_frontend(self, tmp_path, monkeypatch):
-        """根因复现（对照）：后台若"照常发起"，前端就再也拿不到邀请。
+    def test_redeliver_rescues_invite_lost_to_background(self, tmp_path, monkeypatch):
+        """根因复现（对照）：后台「照常发起」会把 3 天冷却白吃——补送负责救回来。
 
         这条不是在测产品行为，而是把 bug 的**机制**钉进测试：谁将来想把
         allow_interactive 去掉、或让后台恢复默认 True，这里会明确告诉他代价。
+
+        2026-09-22 二次修正：修复前，第 3 步（前端到达）返回 None，用户永远
+        见不到邀请——那正是「遇上过一两次，后面就没了」的成因。加了补送之后，
+        被后台白吃的这张邀请会被重放出来，所以断言从 None 改成「拿到同一张」。
         """
         _pin_environment(monkeypatch)
         _seed_emotional_gap(tmp_path)
@@ -214,9 +218,12 @@ class TestAllowInteractive:
         old_bg = engine.tick(skip_activity_check=True)
         assert old_bg.interview is not None, "旧行为：后台会建会话（但广播时被丢弃）"
 
-        # 前端随后到达 → 撞上刚被消耗的 3 天冷却 → 永远拿不到
+        # 前端随后到达：3 天冷却已被白吃。补送必须把这张邀请送到他眼前，
+        # 否则用户什么都收不到（这正是本 bug 的用户可见症状）。
         front = engine.tick(skip_activity_check=True)
-        assert front.interview is None, "这正是「再也见不到访谈」的机制"
+        assert front.interview is not None, "补送必须救回被后台白吃的邀请"
+        assert front.interview["session_id"] == old_bg.interview["session_id"]
+        assert front.interview.get("redelivered") is True
 
 
 # ----------------------------------------------------------------------
@@ -297,8 +304,14 @@ class TestInterviewIsolation:
         assert _real_db_gap_topics() == before, "隔离调用污染了真实库"
 
     def test_cooldown_is_isolated_per_base_dir(self, tmp_path):
-        """冷却时间戳按 base_dir 读写：A 库发起过，不该压制 B 库。"""
+        """冷却时间戳按 base_dir 读写：A 库发起过，不该压制 B 库。
+
+        2026-09-22 修正：补送只针对「已发起但没人回应」的邀请，所以第二次调用
+        A 库会被补送命中（非 None）。要测冷却隔离，得先把 A 库这轮邀请标记为
+        「已回应」——那之后才轮到冷却说话。
+        """
         from deskmate.cognitive.interview import maybe_trigger_interview
+        from deskmate.cognitive.profile import resolve_profile_manager
 
         base_a = tmp_path / "a"
         base_b = tmp_path / "b"
@@ -309,6 +322,10 @@ class TestInterviewIsolation:
 
         first = maybe_trigger_interview(layer="emotional", base_dir=base_a)
         assert first and first["session_id"]
+        resolve_profile_manager(layer="emotional", base_dir=base_a).store.add_qa(
+            session_id=first["session_id"], question="q", answer="a",
+            question_id=first["questions"][0]["id"],
+        )
 
         # A 库在冷却内 → 不再发起
         assert maybe_trigger_interview(layer="emotional", base_dir=base_a) is None
@@ -322,11 +339,31 @@ class TestInterviewIsolation:
 # ----------------------------------------------------------------------
 class TestCooldown:
     def test_retrigger_blocked_within_window(self, tmp_path):
+        """3 天窗口内不**重复发起**：第二次只会补送同一张邀请，绝不新建会话。
+
+        2026-09-22 修正：原断言是「返回 None」。补送上线后，冷却期内的第二次
+        调用会重放那张还没被看见的邀请（这是修 bug，不是回归），所以真正要
+        锁住的价值是——**窗口内不会出现第二个会话**。
+        """
+        from datetime import datetime, timedelta
+
         from deskmate.cognitive.interview import maybe_trigger_interview
+        from deskmate.cognitive.profile import resolve_profile_manager
 
         _seed_emotional_gap(tmp_path)
-        assert maybe_trigger_interview(layer="emotional", base_dir=tmp_path)
-        assert maybe_trigger_interview(layer="emotional", base_dir=tmp_path) is None
+        first = maybe_trigger_interview(layer="emotional", base_dir=tmp_path)
+        assert first and first["session_id"]
+
+        # 把补送节流推远，确保这次拿到的一定是「补送」而不是节流后的 None
+        resolve_profile_manager(layer="emotional", base_dir=tmp_path).store.set_meta(
+            "last_interview_redeliver_at:emotional",
+            (datetime.now() - timedelta(hours=2)).isoformat(),
+        )
+        second = maybe_trigger_interview(layer="emotional", base_dir=tmp_path)
+        assert second is not None
+        assert second["session_id"] == first["session_id"], "应是补送同一张，不是新建"
+        assert second.get("redelivered") is True
+        assert len(_sessions(tmp_path)) == 1, "冷却窗口内不该新建第二个会话"
 
     def test_retrigger_allowed_after_window(self, tmp_path):
         """冷却到期（>3 天）后可以再发起。"""

@@ -47,6 +47,15 @@ _TRIGGER_MIN_INTERVAL_DAYS = 3     # 距上次访谈至少 N 天才再主动
 # 「想多了解你」可以攒着一起问，「你说的跟以前不一样了」必须立刻澄清。
 _HIGH_PRIORITY_GAP_PRIORITY = 0.8
 
+# ---- 补送（重放「发起过但没被看见」的邀请）参数 -------------------------------
+# 为什么需要（2026-09-22 二次定位，是「访谈永不出现」剩下一半的根因）：
+# 冷却在 create_session 时就被扣掉，但「送达」没有任何凭证——前端邀请气泡只存在
+# 60 秒，用户当时不在窗口前（他常在 Word 里写作）就无声消失；冷却却已经消耗，
+# 之后每次 tick 只会被冷却挡住。补送把这张已发出的邀请重放出来，不受冷却约束。
+_REDELIVER_MIN_INTERVAL_MINUTES = 30   # 同层两次补送的最小间隔（别每 15 秒顶一次气泡）
+_REDELIVER_MAX_TIMES = 8               # 单个会话最多补送次数，超过即放弃
+_REDELIVER_MAX_AGE_HOURS = 48          # 会话建立超过此时长仍无人回应 → 放弃并收敛
+
 
 def _encode_question_id(related_item_id, related_gap_id, mode) -> str:
     """把问题元数据编码进 question_id，便于 process_response 无状态回查。"""
@@ -117,8 +126,13 @@ class SocraticInterviewEngine(InterviewEngine):
                 questions.append(self._build(topic, it.content, "clarify", related_item_id=it.id))
 
         # 2) open gaps（有 related_items → 澄清；否则 → 探索新领域）
+        # 先过 _gap_is_askable：关联条目已消失 / 内容为空的 gap 不问——
+        # 真实库那两个 pytest 夹具 gap 就是这么被问出去的（见其 docstring）。
         gaps = sorted(profile.open_gaps(), key=lambda g: -g.priority)
         for g in gaps:
+            if not _gap_is_askable(g, profile):
+                logger.debug("跳过无据的 open gap（不提问）: %s / %s", g.id, g.topic)
+                continue
             if g.related_items:
                 questions.append(self._build(
                     g.topic, g.reason, "clarify",
@@ -438,6 +452,174 @@ def answer_interview(session_id: str, question_id: str, response: str,
     }
 
 
+def _known_item_ids(profile) -> set:
+    """画像里现存的条目 id 集合（立场/价值/思维/论证四类）。"""
+    return {
+        getattr(it, "id", None)
+        for it in (profile.stances + profile.value_rankings
+                   + profile.thinking_frameworks + profile.argument_patterns)
+    }
+
+
+def _gap_is_askable(gap, profile) -> bool:
+    """这个 gap 值不值得拿来提问——挡住「无据的空话」。
+
+    真实库教训（2026-09-22）：库里长期躺着两个 **pytest 夹具 gap**
+    （``test_interview.py`` 里的 ``topic="矛盾待澄清"/"新领域"``），其中一个的
+    ``related_items`` 指向只存在于测试进程的 stance。``generate_questions``
+    照单全收，于是访谈从 09-17 起反复问出「关于『矛盾待澄清』…（矛盾）」——
+    用户看到只会觉得功能坏了，而根因是数据是测试残留。
+
+    判定（保守，只挡确定无据的）：有 related_items 就必须**全都存在**，
+    且 topic/reason 不能同时为空；另外**已经结案的 gap 不再问**——
+    重建路径是按 id 反查的，qid 仍指向它，但 status 已经说明这件事
+    澄清过（resolved）或被放弃（dismissed）了。
+    """
+    if getattr(gap, "status", "open") not in ("open", "in_interview"):
+        return False
+    if not (getattr(gap, "topic", "") or getattr(gap, "reason", "")):
+        return False
+    refs = getattr(gap, "related_items", None) or []
+    known = _known_item_ids(profile)
+    return all(r in known for r in refs)
+
+
+def _profile_item_by_id(item_id, pm):
+    """按 id 在五维里找条目（找不到返回 None）。"""
+    for it in (pm.profile.stances + pm.profile.value_rankings
+               + pm.profile.thinking_frameworks + pm.profile.argument_patterns):
+        if getattr(it, "id", None) == item_id:
+            return it
+    return None
+
+
+def _lookup_question_subject(meta: dict, pm) -> tuple:
+    """从 qid 元数据反查 (topic, content)；无据可依时返回 ("", "")。
+
+    顺序与 ``generate_questions`` 的 gap 分支一致：**先 gap，后条目**——
+    gap 型问题（无论 clarify 还是 explore）首次的正文都取自 gap 自身的
+    ``topic``/``reason``，qid 里的 ``i=`` 只是「关联条目」（供 clarify 回灌用），
+    所以顺序反了会重建出与首次不同的问题。
+
+    ``_gap_is_askable`` 是下游兜底：关联条目已消失（悬空引用）或内容为空时
+    宁可不问，也不编一句空话。
+    """
+    gid = meta.get("related_gap_id")
+    if gid:
+        for g in pm.profile.cognitive_gaps:
+            if getattr(g, "id", None) == gid:
+                if not _gap_is_askable(g, pm.profile):
+                    return "", ""
+                return g.topic, g.reason
+    iid = meta.get("related_item_id")
+    if iid:
+        it = _profile_item_by_id(iid, pm)
+        if it is not None:
+            topic = getattr(it, "topic", None) or getattr(it, "domain", "") or ""
+            if topic or it.content:
+                return topic, it.content
+    return "", ""
+
+
+def rebuild_questions_from_qids(qids, pm) -> list:
+    """从 session 里的 qid 列表重建问题对象（纯函数、无状态）。
+
+    为什么能重建：``_encode_question_id`` 把 mode 与关联条目/盲区 id 全编进了 qid，
+    ``_decode_question_id`` 可反解，再套同一份 ``_Q_TEMPLATES`` 即得原文，
+    因此不需要另存一份问题正文。关联对象已被清理（gap 消解、条目被删）的问题
+    **直接跳过**——宁可不问，也不编一个无据的问题。
+    重建出的 qid 覆盖回原值：同一 session 重放时问题 id 稳定（幂等）。
+    """
+    out: list = []
+    for qid in qids or []:
+        try:
+            meta = _decode_question_id(qid)
+            topic, content = _lookup_question_subject(meta, pm)
+            if not topic and not content:
+                continue
+            q = SocraticInterviewEngine._build(
+                topic, content, meta.get("mode", "explore"),
+                related_item_id=meta.get("related_item_id"),
+                related_gap_id=meta.get("related_gap_id"),
+            )
+            q["id"] = qid
+            out.append(q)
+        except Exception:
+            logger.debug("重建访谈问题失败，跳过 q=%s", qid, exc_info=True)
+    return out
+
+
+def redeliver_pending_interview(layer: str = "cognitive", base_dir=None, pm=None) -> Optional[dict]:
+    """补送「已发起、但用户从未回应过」的访谈邀请；没有挂起的邀请则返回 None。
+
+    这是一次**重放**：不新建会话、不刷新 ``last_interview_at``，所以不受 3 天冷却
+    约束——那 3 天是「问过他这件事」的节流，而这里的事他压根没看见。
+
+    触发链路：用户切回 OpenWorker 窗口 → focus 事件 → 前端 tick →
+    本函数命中 → 气泡重新出现。因此只要他没答，邀请就不会丢。
+    """
+    try:
+        if pm is None:
+            pm = resolve_profile_manager(layer=layer, base_dir=base_dir)
+        store = pm.store
+        sess = store.latest_active_session(layer)
+        if not sess:
+            return None
+        sid = sess["id"]
+        # 已答过至少一题 → 他见过这轮邀请，不再补送（剩下的题由问答流自己推进）
+        if store.get_qa(sid):
+            return None
+
+        from datetime import datetime, timedelta
+
+        # 时长兜底：挂太久的邀请不再补送，否则会变成「她永远在问同一件事」
+        try:
+            started = datetime.fromisoformat(str(sess.get("started_at") or ""))
+            if datetime.now() - started > timedelta(hours=_REDELIVER_MAX_AGE_HOURS):
+                store.expire_active_sessions(layer=layer)
+                logger.info("访谈邀请 %s 已挂满 %d 小时无回应，收敛为 expired", sid, _REDELIVER_MAX_AGE_HOURS)
+                return None
+        except Exception:
+            pass
+
+        # 次数上限：避免无限重放
+        cnt_key = f"interview_redeliver_count:{sid}"
+        try:
+            count = int(store.get_meta(cnt_key, 0) or 0)
+        except Exception:
+            count = 0
+        if count >= _REDELIVER_MAX_TIMES:
+            return None
+
+        # 节流：前端 tick 最快 15s 一次，不节流会把气泡反复顶出来
+        try:
+            last = store.get_meta(f"last_interview_redeliver_at:{layer}")
+            if last:
+                if datetime.now() - datetime.fromisoformat(str(last)) < timedelta(
+                    minutes=_REDELIVER_MIN_INTERVAL_MINUTES
+                ):
+                    return None
+        except Exception:
+            pass
+
+        questions = rebuild_questions_from_qids(sess.get("gap_ids"), pm)
+        if not questions:
+            return None
+
+        store.set_meta(f"last_interview_redeliver_at:{layer}", _now())
+        store.set_meta(cnt_key, count + 1)
+        logger.info("补送访谈邀请 %s（第 %d 次，layer=%s）", sid, count + 1, layer)
+        return {
+            "session_id": sid,
+            "questions": questions,
+            "total": len(questions),
+            "redelivered": True,
+        }
+    except Exception as e:
+        logger.debug("补送访谈邀请失败（不影响主流程）: %s", e, exc_info=True)
+        return None
+
+
 def maybe_trigger_interview(
     limit: int = 3,
     layer: str = "cognitive",
@@ -451,9 +633,17 @@ def maybe_trigger_interview(
     后台 scheduler tick 不要调：它的产物只有一条只认 suggestion 的 WS 广播，
     interview 送不到用户眼前，却已把 3 天冷却消耗掉——那会让前端永远收不到邀请
     （2026-09-22 定位的死循环）。后台请用 ``ProactiveEngine.tick(allow_interactive=False)``。
+
+    顺序说明：先看有没有**挂起未回应**的邀请，有就只补送。既不能先过
+    ``should_interview_now``（冷却会直接把补送挡死，用户永远等不到那张已发出的邀请），
+    也不能绕过补送另开新会话（会继续堆僵尸 active，同一批 gap 被反复问）。
     """
     pm = resolve_profile_manager(layer=layer, base_dir=base_dir)
-    if not get_interview_engine().should_interview_now(pm.profile, layer=layer, store=pm.store):
+    store = pm.store
+    pending = store.latest_active_session(layer)
+    if pending and not store.get_qa(pending["id"]):
+        return redeliver_pending_interview(layer=layer, pm=pm)
+    if not get_interview_engine().should_interview_now(pm.profile, layer=layer, store=store):
         return None
     return start_interview(limit=limit, layer=layer, pm=pm)
 
