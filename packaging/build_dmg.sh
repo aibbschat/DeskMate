@@ -17,6 +17,12 @@
 #     `mcp.cli` calls sys.exit() at import if typer is absent, which aborts the freeze.
 #     (aisuite installs like any other dependency — git-pinned in pyproject.toml.)
 #
+# 语义检索（可选，`.[deskmate-embed]` = fastembed + BGE-small-zh，跑在本地、不出网）：
+#   `.venv/bin/pip install -e '.[deskmate-embed]'` —— 装了它，spec 才会收集
+#   onnxruntime / tokenizers / PIL 等原生件；**没装也不报错，只是冻结产物里没有语义通道**
+#   （spec 会打印一行 ⚠ 提示，别让它悄悄溜过构建日志）。代价约 **+148MB**。
+#   模型（~102MB）不在 bundle 里，缓存在 `<deskmate 数据目录>/models`，首次用时下载。
+#
 # SIGNING: set APPLE_SIGNING_IDENTITY to a "Developer ID Application: … (TEAMID)" identity and
 # `tauri build` signs the .app + the bundled sidecar with it. Left unset → UNSIGNED (first launch
 # needs right-click → Open).
@@ -48,7 +54,7 @@
 #   一句话：本地改 Python → 重开 .app；要出可分发包 → 跑本脚本（且会自动用指纹跳过重冻）。
 #
 # VENV PREREQS (a fresh worktree's venv, discovered the hard way 2026-08-21):
-#   .venv/bin/pip install -e ".[dev,messaging,browser,bedrock]" pyinstaller typer
+#   .venv/bin/pip install -e ".[dev,messaging,browser,bedrock,deskmate-embed]" pyinstaller typer
 # (`typer` because PyInstaller's submodule collection imports mcp.cli, which
 # sys.exit(1)s without it.)
 set -euo pipefail

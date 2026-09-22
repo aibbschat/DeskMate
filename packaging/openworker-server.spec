@@ -20,6 +20,7 @@ spawns this sidecar with the Windows CREATE_NO_WINDOW flag (see src-tauri/src/li
 hides the window while keeping stdio intact.
 """
 
+import importlib.util
 import os
 import sys
 
@@ -103,6 +104,44 @@ for pkg in ("slack_bolt", "telegram"):  # [messaging] extra — optional
     except Exception:
         pass
 
+# ---------------------------------------------------------------------------
+# [deskmate-embed] extra — fastembed + BGE 本地向量（deskmate/memory/local_embed.py）。
+# 这三条都是**实测**踩出来的，缺任何一条，打包版的语义检索都会静默降级成纯关键词：
+#   1. onnxruntime / tokenizers / py-rust-stemmers 是**原生扩展**，PyInstaller 的静态分析
+#      看不到它们的 .so 与 libonnxruntime.*.dylib → 必须 collect_all，否则 bundle 里只留
+#      一个 import 就会炸的空壳。
+#   2. `fastembed/__init__.py` 顶层就 `from fastembed.image import ImageEmbedding`，而
+#      `fastembed/common/types.py` 顶层 `from PIL import Image` —— 这条链**同时也在文本
+#      嵌入的依赖路径上**，所以下面 excludes 里的 `PIL` 必须按需摘掉。
+#      实测法（把 PIL 变成不可导入以模拟冻结环境）：
+#          sys.meta_path.insert(0, <blocker for "PIL">) → local_embed.embed(...)
+#      结果：ImportError → fail-open 返回 None → **语义检索静默失效、只剩关键词、不报错**，
+#      正是最难查的那种坏法（本项目专门为它加了 _note_embed_failure 告警，见 semantic_search）。
+#   3. 装没装都安全：未安装 → 整块跳过（与 boto3 / slack_bolt 同款 optional 语义）。
+# 体积代价（macOS arm64 **实测**，未压缩）：冻结产物 **92MB → 253MB（+161MB）**
+# （onnxruntime 75MB / PIL 11MB / tokenizers 9.4MB / hf_xet 7.4MB / numpy 6.8MB …）。
+# 模型（~102MB）**不打进 bundle**：缓存在 `<deskmate 数据目录>/models`，首次用时下载，
+# 好处是应用升级不重下、且不必把 102MB 塞进 app 包（离线分发可另行预置该目录）。
+_EMBED_IMPORTABLE = importlib.util.find_spec("fastembed") is not None
+if _EMBED_IMPORTABLE:
+    for pkg in ("fastembed", "onnxruntime", "tokenizers", "huggingface_hub",
+                "py_rust_stemmers", "hf_xet"):
+        try:
+            d, b, h = collect_all(pkg)
+            datas += d
+            binaries += b
+            hiddenimports += h
+        except Exception:
+            pass
+else:
+    # **不要让跳过变成静默事件**——静默正是本项目反复踩的坑。少收集就是「打包版语义检索
+    # 消失、只剩关键词」，而日志里什么都不说，回头只能靠猜。所以这里显式吭一声。
+    print(
+        "[openworker-server.spec] ⚠ 未安装可选依赖 fastembed → 本次冻结**不含**本地语义检索，"
+        "打包版会退回关键词通道。\n"
+        "   要带上它：.venv/bin/pip install -e '.[deskmate-embed]'（实测 +161MB），然后重跑本构建。"
+    )
+
 a = Analysis(
     [os.path.join(PACKAGING, "server_entry.py")],
     pathex=[ROOT],
@@ -111,7 +150,10 @@ a = Analysis(
     hiddenimports=hiddenimports,
     hookspath=[],
     runtime_hooks=[],
-    excludes=["tkinter", "matplotlib", "PIL", "PyQt5", "PySide6"]
+    excludes=["tkinter", "matplotlib", "PyQt5", "PySide6"]
+    # fastembed 顶层 `from PIL import Image`（见上面 [deskmate-embed] 第 2 条）——
+    # 只有装了该 extra 时才把 PIL 放回来，否则维持原样（不多占 ~15MB）。
+    + ([] if _EMBED_IMPORTABLE else ["PIL"])
     + ([] if INCLUDE_EXPERIMENTAL else ["coworker.connectors.experimental"]),
     noarchive=False,
 )
