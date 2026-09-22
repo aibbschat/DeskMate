@@ -689,6 +689,18 @@ def redeliver_pending_interview(layer: str = "cognitive", base_dir=None, pm=None
         except Exception:
             count = 0
         if count >= _REDELIVER_MAX_TIMES:
+            # 次数耗尽同样是「无产出」的**终态**，必须收敛——不能只 return None 把它挂着：
+            # maybe_trigger_interview 见到「仍有挂起」就不走正常发起路径，于是这一层
+            # 会静默到 48h 时长兜底才放行（8 次 × 30min ≈ 4h 送完，之后约 44h 完全无声）。
+            # 收敛后挂起消失 → 本次继续走正常路径（仍受 3 天冷却约束，不会立刻骚扰）。
+            try:
+                store.expire_active_sessions(layer=layer)
+                logger.info(
+                    "访谈邀请 %s 补送已达上限 %d 次仍无回应，收敛为 expired",
+                    sid, _REDELIVER_MAX_TIMES,
+                )
+            except Exception:
+                logger.debug("收敛补送耗尽的邀请失败（不影响主流程）", exc_info=True)
             return None
 
         # 节流：前端 tick 最快 15s 一次，不节流会把气泡反复顶出来

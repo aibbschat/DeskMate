@@ -34,7 +34,7 @@ _create_session → 立刻写 last_interview_at（3 天冷却当场扣掉）
 1. 冷却被吃掉后，补送仍能把那张已发出的邀请送出来（**核心用例**）
 2. 答过至少一题就不再补送（他见过它了）
 3. 节流：同层 30 分钟内不重复补送（前端 tick 最快 15s 一次）
-4. 次数上限：单个会话最多补送若干次，避免无限重放
+4. 次数上限：单个会话最多补送若干次，避免无限重放；**耗尽即收敛**（同上，不留僵尸挡层）
 5. 时长兜底：挂满 48 小时无人回应 → 收敛为 expired
 6. 有挂起邀请时**不另开新会话**（否则继续堆僵尸，同一批 gap 被反复问）
 7. 关联对象全失效、问题再也重建不出来的挂起邀请 → **立刻收敛**，
@@ -270,7 +270,7 @@ class TestRedeliverGuards:
         assert _trigger(tmp_path) is None
 
     def test_gives_up_after_max_times(self, tmp_path):
-        """达到补送上限后不再重放（避免变成无限骚扰）。"""
+        """达到补送上限后不再重放（避免无限骚扰）——**并立刻收敛，不留僵尸挡层**。"""
         from deskmate.cognitive.interview import _REDELIVER_MAX_TIMES
 
         _seed_gap(tmp_path)
@@ -284,6 +284,12 @@ class TestRedeliverGuards:
         )
 
         assert _trigger(tmp_path) is None
+        sess = {s["id"]: s for s in _sessions(tmp_path)}
+        assert sess[first["session_id"]]["status"] == "expired", (
+            "补送次数耗尽也要立刻收敛——否则这张邀请会一直挂着，而 "
+            "maybe_trigger_interview 见到挂起就不再走正常发起路径，"
+            "整层要静默到 48h 时长兜底（8 次×30min≈4h 送完，之后约 44h 无声）"
+        )
 
     def test_expires_when_too_old(self, tmp_path):
         """挂满 48 小时仍无人回应 → 收敛为 expired，不再补送。"""
