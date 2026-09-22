@@ -45,8 +45,13 @@ def make_extra_tick(
                 logger.exception("wrapped extra_tick failed")
         # 1) 主动推理（感知→判断→决策：说话/关怀/日记/花园）
         try:
-            # proactive_tick 内含感知 / LLM，放到后台线程避免阻塞 scheduler 事件循环
-            result = await asyncio.to_thread(engine.tick)
+            # proactive_tick 内含感知 / LLM，放到后台线程避免阻塞 scheduler 事件循环。
+            # allow_interactive=False：本通道的产物只有下面 caller 的 WS 广播
+            # （_broadcast_deskmate_suggestion 只认 judgment），深度访谈 / 认知验证
+            # 这两种「要用户在前端浮层点/答」的负载在这里没有出口。若照建 session，
+            # 只会消耗 3 天冷却并把邀请吞掉——用户永远看不到，前端 tick 也永远撞冷却
+            # （2026-09-22 定位）。发起权归前端 proactive/tick。
+            result = await asyncio.to_thread(engine.tick, allow_interactive=False)
         except Exception:
             logger.exception("deskmate proactive background tick failed")
             result = None

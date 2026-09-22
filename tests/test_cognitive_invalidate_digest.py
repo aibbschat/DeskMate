@@ -64,12 +64,11 @@ class TestSaveInvalidatesDigest:
         """加载/修改/再 save → 缓存被清。"""
         pm = _make_profile(tmp_path)
         _prime_cache(str(tmp_path))
-        assert _cache["data"] is not None, "前置：缓存应已填充"
+        assert _cache[str(tmp_path)]["data"] is not None, "前置：缓存应已填充"
 
         pm.save()
 
-        assert _cache["data"] is None
-        assert _cache["ts"] == 0.0
+        assert _cache == {}, "invalidate_digest() 清空所有桶（不只当前 key）"
 
     def test_add_stance_save_clears_cache(self, tmp_path):
         """add_stance 内部调 self.save() → 缓存被清。这是真实业务路径。"""
@@ -82,7 +81,7 @@ class TestSaveInvalidatesDigest:
             source=SourceRef(type="diary", title="测试日记", date=_now(), confidence=0.9),
         )
 
-        assert _cache["data"] is None
+        assert _cache == {}, "invalidate_digest() 清空所有桶"
 
     def test_cache_invalidation_propagates_to_rebuild(self, tmp_path):
         """save 后再 get_digest → 读到的画像含新加立场（端到端验证）。"""
@@ -113,7 +112,7 @@ class TestSaveInvalidatesDigest:
 
         pm.calibrate(item_id=stance.id, corrected_content="宁可延期也不要勉强", feedback="用户校准")
 
-        assert _cache["data"] is None
+        assert _cache == {}, "invalidate_digest() 清空所有桶"
 
     def test_repair_fake_duplicate_gaps_also_invalidates(self, tmp_path):
         """repair_fake_duplicate_gaps() 内部 save → 也清缓存。"""
@@ -129,7 +128,7 @@ class TestSaveInvalidatesDigest:
         )
         # 重填缓存
         _prime_cache(str(tmp_path))
-        assert _cache["data"] is not None
+        assert _cache[str(tmp_path)]["data"] is not None
 
         # repair 无变化时不会 save（实现里 if changes ... else self.save()）
         # 所以应仍 hit 缓存
@@ -188,4 +187,4 @@ class TestInvalidateIsExplicit:
         """invalidate_digest 仍是公开 API，可手动调（不仅 save 触发）。"""
         assert callable(invalidate_digest)
         invalidate_digest()  # 应不抛
-        assert _cache["data"] is None
+        assert _cache == {}, "invalidate_digest() 清空所有桶"

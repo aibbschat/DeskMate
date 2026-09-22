@@ -50,6 +50,7 @@ from typing import Optional
 from deskmate.growth._atomic import unique_tmp
 from deskmate.growth.diary import _fingerprint, diary_write_lock
 from deskmate.growth.engine import GrowthEngine
+from deskmate.paths import deskmate_base_dir
 
 # ----------------------------------------------------------------------
 # 灵感权重表
@@ -213,7 +214,7 @@ class MaterialLedger:
     """
 
     def __init__(self, base_dir: Path | str | None = None) -> None:
-        base = Path(base_dir) if base_dir else Path.home() / ".deskmate"
+        base = Path(base_dir) if base_dir else deskmate_base_dir()
         self.dir = base / "diary" / "materials"
 
     # ------------------------------------------------------------------
@@ -397,10 +398,10 @@ class DiaryInspiration:
     """判断「今天值不值得写一篇日记」。"""
 
     def __init__(self, base_dir: Path | str | None = None) -> None:
-        base = Path(base_dir) if base_dir else Path.home() / ".deskmate"
+        base = Path(base_dir) if base_dir else deskmate_base_dir()
         self.base = base
         self.ledger = MaterialLedger(base)
-        self.engine = GrowthEngine(base_dir=None if base == Path.home() / ".deskmate" else base)
+        self.engine = GrowthEngine(base_dir=None if base == deskmate_base_dir() else base)
 
     # ------------------------------------------------------------------
     def sync_events(self) -> int:

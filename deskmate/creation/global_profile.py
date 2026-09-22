@@ -18,12 +18,13 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
+from deskmate.paths import deskmate_base_dir
 
 PROFILE_MARK = "<!-- global-profile:v1 -->"
 
 
 def _desk_dir(base_dir: str | Path | None) -> Path:
-    return Path(base_dir) if base_dir else Path.home() / ".deskmate"
+    return Path(base_dir) if base_dir else deskmate_base_dir()
 
 
 def _strip_frontmatter(text: str) -> str:

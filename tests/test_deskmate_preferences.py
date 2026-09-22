@@ -121,6 +121,10 @@ class TestTickPreferenceIntegration:
         monkeypatch.setattr(wm, "get_active_window", lambda: _Win())
         monkeypatch.setattr(tick_mod, "judge_proactive_action", _spy_judge)
         engine = ProactiveEngine(base_dir=tmp_path)
-        engine.tick(user_message="", skip_activity_check=True)
+        # allow_interactive=False：同 test_emotion_timeline 的那条——本用例只验
+        # judge 拿到的上下文里有没有「用户行为偏好」。默认 True 时 (b) 段
+        # ensure_emotional_gaps 往隔离库补 2 个 gap，(c) 段情感访谈抢先 return，
+        # judge 不被调用 → captured["text"] 恒空（该用例长期红的根因）。
+        engine.tick(user_message="", skip_activity_check=True, allow_interactive=False)
         assert "用户行为偏好" in captured.get("text", "")
         assert "伏笔遗漏提醒" in captured.get("text", "")

@@ -13,6 +13,7 @@ import json
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
+from deskmate.paths import deskmate_base_dir
 
 # 沉淀阈值：同一类型建议被接受达到该次数即视为「行为偏好」
 ACCEPT_THRESHOLD = 2
@@ -53,7 +54,7 @@ class PreferenceStore:
     """被接受建议 → 行为偏好的沉淀与读取。"""
 
     def __init__(self, base_dir: Path | str | None = None) -> None:
-        base = Path(base_dir) if base_dir else Path.home() / ".deskmate"
+        base = Path(base_dir) if base_dir else deskmate_base_dir()
         self.path = base / "proactivity" / "preferences.json"
         self._prefs: dict[str, PreferenceEntry] = {}
         self._load()

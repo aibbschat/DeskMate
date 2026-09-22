@@ -104,9 +104,20 @@ class _BibleWriteLock:
         self._thread.release()
 
 
-# 全局跨进程写锁实例：所有圣经写路径共享同一把锁文件 ~/.deskmate/write.lock，
+# 全局跨进程写锁实例：所有圣经写路径共享同一把锁文件 <base_dir>/write.lock，
 # 因此 sidecar 主进程与 novel_memory MCP server 两个独立进程天然串行化。
-_WRITE_LOCK = _BibleWriteLock(Path.home() / ".deskmate" / "write.lock")
+# 惰性单例（2026-09-22 收口）：避免只 import 就在真实目录建锁文件；
+# 路径**调用时**解析，否则测试隔离对锁文件无效。
+_write_lock: _BibleWriteLock | None = None
+
+
+def _get_write_lock() -> _BibleWriteLock:
+    global _write_lock
+    if _write_lock is None:
+        from deskmate.paths import deskmate_base_dir
+
+        _write_lock = _BibleWriteLock(deskmate_base_dir() / "write.lock")
+    return _write_lock
 
 __all__ = [
     "Record",
@@ -595,7 +606,7 @@ def upsert_records(
 
     进程级写锁串行化：避免并发的 build / 增量 / 回流交错写库。
     """
-    with _WRITE_LOCK:
+    with _get_write_lock():
         return _upsert_records_locked(conn, records, keep_rejected=keep_rejected)
 
 
@@ -785,7 +796,7 @@ def list_records(
 
 def delete_record(conn: sqlite3.Connection, record_id: str) -> bool:
     """精确删除一条实体——这是 v1 散文圣经做不到的（只能整篇重写）。"""
-    with _WRITE_LOCK:
+    with _get_write_lock():
         cur = conn.execute("DELETE FROM entities WHERE id = ?", (record_id,))
         conn.commit()
         return cur.rowcount > 0
@@ -801,7 +812,7 @@ def revoke_unsupported(conn: sqlite3.Connection, full_text: str) -> list[str]:
     P1-5 防护在调用侧（incremental / upsert）：verify_text 骤短（暂读不到正文）
     时不调用本函数，避免把真实人物误杀为 rejected。
     """
-    with _WRITE_LOCK:
+    with _get_write_lock():
         full = _norm(full_text)
         _snapshot_db(conn)
         revoked: list[str] = []
@@ -861,7 +872,7 @@ def review_resolve(conn: sqlite3.Connection, rid: str, accept: bool) -> bool:
 
     返回是否命中并更新。条目不存在时返回 False（fail-open，不拖累主流程）。
     """
-    with _WRITE_LOCK:
+    with _get_write_lock():
         row = conn.execute("SELECT * FROM entities WHERE id = ?", (rid,)).fetchone()
         if row is None:
             return False

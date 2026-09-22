@@ -141,11 +141,18 @@ class TestWillDigestEmpty:
         d = get_digest(base_dir=str(tmp_path))
         assert d.available is False
 
-    def test_cache_hit_does_not_rebuild(self, tmp_path):
+    def test_cache_is_scoped_per_base_dir(self, tmp_path):
+        """缓存**按 base_dir 分桶**——不同 workspace 绝不共用一份 digest。
+
+        ⚠️ 2026-09-22 改：本用例此前断言 `d2 is d1`（把 base_dir 换成
+        `/does/not/exist` 仍命中同一份缓存）。那等于把「跨 workspace 串味」这个 bug
+        钉成了契约——小桔在 A 项目读到的摘要会出现在 B 项目。缓存实现已改成
+        `_cache[base_dir] = {...}` 分桶，故此处改断言**分桶隔离**。
+        """
         d1 = get_digest(base_dir=str(tmp_path))
-        # 第二次命中缓存（即便 base_dir 改成不存在的也不会重读）
-        d2 = get_digest(base_dir="/does/not/exist")
-        assert d2 is d1
+        d2 = get_digest(base_dir=str(tmp_path / "other"))
+        assert d2 is not d1, "不同 base_dir 不该共用同一份 digest（跨 workspace 串味）"
+        assert get_digest(base_dir=str(tmp_path)) is d1, "同一 base_dir 仍应命中缓存"
 
     def test_cache_hit_returns_same_object(self, tmp_path):
         # 显式 once-per-cache: 即便碰 file_no_profile_returns_empty, 然后环境变,
@@ -155,10 +162,11 @@ class TestWillDigestEmpty:
         assert d2 is d1
 
     def test_invalidate_forces_rebuild(self):
-        invalidate_digest()
         from deskmate.will.digest import _cache
 
-        assert _cache["data"] is None
+        _cache["some-key"] = {"data": object(), "ts": 1.0}
+        invalidate_digest()  # 清空所有桶（不只当前 key）
+        assert _cache == {}
 
 
 # ===========================
@@ -232,8 +240,8 @@ class TestModulateProactiveFrequency:
         fake = WillDigest(available=True, recent_emotion="压力大")
 
         monkeypatch.setattr(dm, "_build", lambda base_dir=None: fake)
-        # 重置缓存强制重读
-        dm._cache["data"] = None
+        # 重置缓存强制重读（缓存已按 base_dir 分桶，必须整体清）
+        dm._cache.clear()
 
         from deskmate.growth.engine import GrowthEngine
 

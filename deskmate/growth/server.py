@@ -20,7 +20,11 @@ from .engine import GrowthEngine
 
 mcp = FastMCP("deskmate-growth")
 
-_base_dir = Path(os.environ.get("DESKMATE_DIR", os.path.expanduser("~/.deskmate")))
+def _base_dir() -> Path:
+    """**调用时**解析数据目录（禁模块级常量：import 期绑定会让隔离失效）。"""
+    from deskmate.paths import deskmate_base_dir
+
+    return deskmate_base_dir()
 
 
 @mcp.tool()
@@ -32,7 +36,7 @@ def growth_stats() -> str:
     try:
         import json
 
-        engine = GrowthEngine(base_dir=_base_dir)
+        engine = GrowthEngine(base_dir=_base_dir())
         return json.dumps(engine.snapshot(), ensure_ascii=False, indent=2)
     except Exception as e:
         return f"获取成长状态失败：{e}"
@@ -49,7 +53,7 @@ def growth_set_proactive(control: bool) -> str:
         操作结果
     """
     try:
-        engine = GrowthEngine(base_dir=_base_dir)
+        engine = GrowthEngine(base_dir=_base_dir())
         engine.state.trust_controls_proactive = bool(control)
         engine.save()
         status = "开启" if control else "关闭"
@@ -71,7 +75,7 @@ def growth_skill_proficiency(skill_name: str = "") -> str:
     try:
         import json
 
-        engine = GrowthEngine(base_dir=_base_dir)
+        engine = GrowthEngine(base_dir=_base_dir())
         profs = engine.state.skill_proficiency
         if skill_name:
             p = profs.get(skill_name)

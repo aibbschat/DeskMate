@@ -454,7 +454,12 @@ class TestTickIntegration:
         monkeypatch.setattr(wm, "get_active_window", lambda: _Win())
         monkeypatch.setattr(tick_mod, "judge_proactive_action", _spy_judge)
         engine = ProactiveEngine(base_dir=tmp_path)
-        engine.tick(user_message="", skip_activity_check=True)
+        # allow_interactive=False：本用例只验「judge 拿到的上下文里有没有情感回顾」。
+        # 用默认 True 时 tick 会先走访谈分支：(b) 段 ensure_emotional_gaps 往隔离库
+        # 补 2 个 gap（达 _TRIGGER_GAP_THRESHOLD）→ (c) 段情感访谈立刻 return，
+        # judge 根本不被调用 → captured["text"] 恒为空串。这就是该用例长期红的根因
+        # （与产品行为无关：访谈优先本身是对的，是这条测试的路径选错了）。
+        engine.tick(user_message="", skip_activity_check=True, allow_interactive=False)
         text = captured.get("text", "")
         assert "情感回顾" in text
         assert "压力大" in text
@@ -580,4 +585,119 @@ class TestStatementIngest:
         tl = EmotionTimeline(base_dir=tmp_path)
         assert tl.record_statement(_make_engine(tmp_path), "") is None
         assert tl.record_statements(_make_engine(tmp_path), ["", "  "]) is None
+
+
+# ---------------------------------------------------------------------------
+# trust 脏数据窗口标注（2026-09-05 ~ 2026-09-21）
+#
+# 那 17 天的 trust=0.5 是 ``float(x or 0.5)`` 吞掉合法下限 0.0 写出的假值，
+# 真实每日值未留存、不可回填 → 只能在读路径标注。这里锁住标注行为。
+# ---------------------------------------------------------------------------
+
+
+def _seed_snap(tl, day: str, trust: float, state: str = "平静") -> None:
+    """直接往时间线里塞一天的快照（绕过 record_today 的今天约束）。"""
+    tl._data[day] = {
+        "date": day,
+        "trust": trust,
+        "state": state,
+        "mood": 78.0,
+        "source": "inferred",
+        "events": {},
+        "event_count": 0,
+        "note": "种进去的",
+    }
+    tl._save()
+
+
+def _span_to(day: str) -> int:
+    """从 ``day`` 到今天的天数（含两端）——让快照必然落在 snapshots() 窗口里。
+
+    不写死天数：否则过几天窗口就滑出去了，测试会随日历变红。
+    """
+    return (datetime.date.today() - datetime.date.fromisoformat(day)).days + 1
+
+
+class TestTrustSuspectWindow:
+    def test_boundaries_are_inclusive(self):
+        from deskmate.growth.emotion_timeline import (
+            _TRUST_BUG_FROM,
+            _TRUST_BUG_TO,
+            trust_is_suspect,
+        )
+
+        assert _TRUST_BUG_FROM == "2026-09-05"
+        assert _TRUST_BUG_TO == "2026-09-21"
+        assert trust_is_suspect(_TRUST_BUG_FROM) is True
+        assert trust_is_suspect(_TRUST_BUG_TO) is True  # 09-21 同为 0.5，仍在窗口内
+        assert trust_is_suspect("2026-09-22") is False  # 重启后是真值
+        assert trust_is_suspect("2026-09-04") is False
+        assert trust_is_suspect("") is False
+
+    def test_window_is_matched_by_date_not_by_value(self):
+        """窗口内某天哪怕真值本来就是 0.5，也照标——判据是日期不是值。"""
+        from deskmate.growth.emotion_timeline import trust_is_suspect
+
+        assert trust_is_suspect("2026-09-21") is True    # 值 0.5
+        assert trust_is_suspect("2026-09-22") is False   # 值 0.0
+        assert trust_is_suspect("2026-09-10") is True    # 值 0.5
+
+    def test_snapshots_marks_window_days_only(self, tmp_path):
+        from deskmate.growth.emotion_timeline import _TRUST_BUG_FROM, _TRUST_BUG_TO
+
+        tl = EmotionTimeline(base_dir=tmp_path)
+        _seed_snap(tl, _TRUST_BUG_FROM, 0.5)
+        _seed_snap(tl, _TRUST_BUG_TO, 0.5)
+        _seed_snap(tl, "2026-09-22", 0.0)
+
+        by_day = {s["date"]: s for s in tl.snapshots(_span_to(_TRUST_BUG_FROM))}
+        assert by_day[_TRUST_BUG_FROM]["trust_suspect"] is True
+        assert by_day[_TRUST_BUG_TO]["trust_suspect"] is True
+        assert "trust_suspect" not in by_day["2026-09-22"]
+
+    def test_value_is_not_rewritten(self, tmp_path):
+        """标注只加键，绝不改数值——历史真值没留存，改数就是伪造。"""
+        from deskmate.growth.emotion_timeline import _TRUST_BUG_FROM
+
+        tl = EmotionTimeline(base_dir=tmp_path)
+        _seed_snap(tl, _TRUST_BUG_FROM, 0.5)
+        for s in tl.snapshots(_span_to(_TRUST_BUG_FROM)):
+            assert s["trust"] == 0.5
+
+    def test_marker_is_not_persisted(self, tmp_path):
+        """标注是读路径产物，不落库（否则就成了第二次「数据污染」）。"""
+        from deskmate.growth.emotion_timeline import _TRUST_BUG_FROM
+
+        tl = EmotionTimeline(base_dir=tmp_path)
+        _seed_snap(tl, _TRUST_BUG_FROM, 0.5)
+        tl.snapshots(_span_to(_TRUST_BUG_FROM))
+        assert "trust_suspect" not in tl._data[_TRUST_BUG_FROM]
+        # 重新开一个实例（=重读库），存储里依然没有该键
+        assert "trust_suspect" not in EmotionTimeline(base_dir=tmp_path)._data[_TRUST_BUG_FROM]
+
+    def test_snapshots_mutating_result_does_not_leak(self, tmp_path):
+        """返回副本：下游往快照里塞东西不该写回库。"""
+        from deskmate.growth.emotion_timeline import _TRUST_BUG_FROM
+
+        tl = EmotionTimeline(base_dir=tmp_path)
+        _seed_snap(tl, _TRUST_BUG_FROM, 0.5)
+        got = tl.snapshots(_span_to(_TRUST_BUG_FROM))
+        got[0]["injected_by_test"] = True
+        assert "injected_by_test" not in tl._data[_TRUST_BUG_FROM]
+
+    def test_lookback_warns_on_suspect_days(self, tmp_path):
+        """lookback 文本里必须说清那几天不可比——否则 judge 会读成「信任崩了」。"""
+        from deskmate.growth.emotion_timeline import _TRUST_BUG_FROM
+
+        tl = EmotionTimeline(base_dir=tmp_path)
+        _seed_snap(tl, _TRUST_BUG_FROM, 0.5, state="顺利")
+        text = tl.lookback(_span_to(_TRUST_BUG_FROM))
+        assert "假值" in text
+        assert _TRUST_BUG_FROM in text
+
+    def test_lookback_silent_when_no_suspect_days(self, tmp_path):
+        tl = EmotionTimeline(base_dir=tmp_path)
+        _seed_snap(tl, "2026-09-22", 0.0, state="平静")
+        text = tl.lookback(_span_to("2026-09-22"))
+        assert "假值" not in text
 

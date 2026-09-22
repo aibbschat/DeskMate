@@ -24,7 +24,16 @@ from typing import Any, Callable, Optional
 # Constants
 # ---------------------------------------------------------------------------
 
-_DEFAULT_DB = Path.home() / ".deskmate" / "diagnostics.db"
+def _default_db() -> Path:
+    """**调用时**解析诊断库路径。
+
+    禁模块级常量 / 默认参数（2026-09-22 收口）：两者都在 import 期求值，
+    会把真实 ``~/.deskmate`` 绑死，而 conftest 的 autouse fixture 在 import
+    之后才 setenv —— 隔离对它完全无效。
+    """
+    from deskmate.paths import deskmate_base_dir
+
+    return deskmate_base_dir() / "diagnostics.db"
 
 # ---------------------------------------------------------------------------
 # Diagnostics class
@@ -38,8 +47,8 @@ class Diagnostics:
     context. Supports recent queries, stats aggregation, and health checks.
     """
 
-    def __init__(self, db_path: str | Path = _DEFAULT_DB) -> None:
-        self._db_path = Path(db_path).expanduser()
+    def __init__(self, db_path: str | Path | None = None) -> None:
+        self._db_path = Path(db_path).expanduser() if db_path else _default_db()
         self._lock = threading.RLock()
         self._conn = sqlite3.connect(str(self._db_path), check_same_thread=False)
         self._conn.row_factory = sqlite3.Row

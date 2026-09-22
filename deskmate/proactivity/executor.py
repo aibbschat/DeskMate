@@ -30,14 +30,34 @@ logger = logging.getLogger(__name__)
 _AUTO_CONFIDENCE_MIN = 0.85
 _AUTO_RISK_ALLOWED = ("low", "medium")
 
-# 防打扰：复用 proactivity 的 DisturbManager（持久化到 ~/.deskmate/memory/disturb_state.json）
-_BASE_DIR = Path(os.environ.get("DESKMATE_DIR", os.path.expanduser("~/.deskmate")))
-_DISTURB_PATH = _BASE_DIR / "memory" / "disturb_state.json"
-_disturb = DisturbManager()
-_disturb.persist(_DISTURB_PATH)
+def _base_dir() -> Path:
+    """**调用时**解析数据目录。
 
-# 提案落盘（供 GUI 呈现 / 审计）
-_PENDING_PATH = _BASE_DIR / "memory" / "close_loop_pending.jsonl"
+    禁模块级常量（2026-09-22 收口）：import 期求值会把真实 ``~/.deskmate``
+    绑死（conftest 的 autouse fixture 在 import 之后才 setenv），
+    且只 import 就产生「构造 DisturbManager + 读盘」的副作用。
+    """
+    from deskmate.paths import deskmate_base_dir
+
+    return deskmate_base_dir()
+
+
+# 防打扰：复用 proactivity 的 DisturbManager（持久化到 <base_dir>/memory/disturb_state.json）
+# 惰性单例——避免 import 期就碰真实数据目录。
+_disturb: DisturbManager | None = None
+
+
+def _get_disturb() -> DisturbManager:
+    global _disturb
+    if _disturb is None:
+        _disturb = DisturbManager()
+        _disturb.persist(_base_dir() / "memory" / "disturb_state.json")
+    return _disturb
+
+
+def _pending_path() -> Path:
+    """提案落盘路径（供 GUI 呈现 / 审计）——调用时解析。"""
+    return _base_dir() / "memory" / "close_loop_pending.jsonl"
 
 # 全局执行器（coworker 启动时注册）
 _executor_fn: Optional[Callable[[str, str], None]] = None
@@ -83,7 +103,8 @@ def _is_auto_eligible(d: CloseLoopDecision) -> bool:
 def _record_pending(d: CloseLoopDecision, workspace: str | None) -> None:
     """降级为提案：追加到 pending 文件（原子写），供 GUI 呈现。"""
     try:
-        _PENDING_PATH.parent.mkdir(parents=True, exist_ok=True)
+        pending = _pending_path()
+        pending.parent.mkdir(parents=True, exist_ok=True)
         entry = {
             "ts": time.time(),
             "action_summary": d.action_summary,
@@ -95,14 +116,14 @@ def _record_pending(d: CloseLoopDecision, workspace: str | None) -> None:
             "workspace": workspace or "",
             "status": "proposed",
         }
-        tmp = _PENDING_PATH.with_suffix(".jsonl.tmp")
+        tmp = pending.with_suffix(".jsonl.tmp")
         # 简单追加：先读现有再写回（pending 文件很小，且只在收尾时写，并发极低）
         lines = []
-        if _PENDING_PATH.is_file():
-            lines = _PENDING_PATH.read_text(encoding="utf-8").splitlines()
+        if pending.is_file():
+            lines = pending.read_text(encoding="utf-8").splitlines()
         lines.append(json.dumps(entry, ensure_ascii=False))
         tmp.write_text("\n".join(lines) + "\n", encoding="utf-8")
-        os.replace(tmp, _PENDING_PATH)
+        os.replace(tmp, pending)
     except OSError as e:
         logger.warning("close_loop: 写 pending 失败 %s", e)
 
@@ -123,14 +144,15 @@ def try_execute_close_loop(
 
     # 1. 防打扰：用 "close_loop" 作为建议类型，key 用动作摘要去重
     key = decision.action_summary[:100]
-    if not _disturb.should_allow("close_loop", key):
+    disturb = _get_disturb()
+    if not disturb.should_allow("close_loop", key):
         return ExecutionResult(False, False, True, "防打扰机制拦截")
 
     # 2. 自动执行门槛
     if _is_auto_eligible(decision) and _executor_fn is not None and _auto_mode:
         try:
             _executor_fn(decision.action_summary, workspace or "")
-            _disturb.record_suggestion("close_loop", key, accepted=None)
+            disturb.record_suggestion("close_loop", key, accepted=None)
             logger.info("close_loop: 已自动提交执行 -> %s", decision.action_summary)
             return ExecutionResult(True, False, False, "已自动提交执行")
         except Exception as e:  # 执行器异常不致命，降级为提案
@@ -138,7 +160,7 @@ def try_execute_close_loop(
 
     # 3. 降级为提案
     _record_pending(decision, workspace)
-    _disturb.record_suggestion("close_loop", key, accepted=None)
+    disturb.record_suggestion("close_loop", key, accepted=None)
     logger.info("close_loop: 降级为提案 -> %s", decision.action_summary)
     return ExecutionResult(False, True, False, "已记录为提案，等待用户确认")
 

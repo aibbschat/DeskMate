@@ -25,8 +25,15 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-# 缓存根目录（可被测试注入 cache_root 覆盖）
-DEFAULT_CACHE_ROOT = Path.home() / ".deskmate" / "novels"
+def default_cache_root() -> Path:
+    """缓存根目录默认值——**调用时**解析（可被参数 ``cache_root`` 覆盖）。
+
+    禁模块级常量（2026-09-22 收口）：import 期绑定会让隔离失效——测试会读到
+    真实 ``~/.deskmate/novels`` 下的索引，造成假通过 / 假失败。
+    """
+    from deskmate.paths import deskmate_base_dir
+
+    return deskmate_base_dir() / "novels"
 
 # 圣经生成输入采样上限（每章「标题+开头」拼接后的总字符上限）
 BIBLE_SAMPLE_CHARS = 24_000
@@ -127,7 +134,7 @@ class NovelIndex:
         self.ref = str(ref).strip()
         if not self.ref:
             raise NovelIndexError("原著路径为空")
-        self.cache_root = Path(cache_root) if cache_root else DEFAULT_CACHE_ROOT
+        self.cache_root = Path(cache_root) if cache_root else default_cache_root()
         self.cache_dir = self.cache_root / _cache_key(self.ref)
         self.bible_path = self.cache_dir / "bible.md"
         self.chapters_path = self.cache_dir / "chapters.json"

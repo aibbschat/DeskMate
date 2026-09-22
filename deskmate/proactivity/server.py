@@ -21,16 +21,29 @@ from .tick import ProactiveEngine
 
 mcp = FastMCP("deskmate-proactivity")
 
-# 全局引擎实例
-_base_dir = Path(os.environ.get("DESKMATE_DIR", os.path.expanduser("~/.deskmate")))
-_engine = ProactiveEngine(base_dir=_base_dir)
+def _base_dir() -> Path:
+    """**调用时**解析数据目录。
 
-# 加载防打扰持久化数据
-_disturb_path = _base_dir / "memory" / "disturb_state.json"
-_engine.disturb.persist(_disturb_path)
+    禁模块级常量（2026-09-22 收口）：import 期求值有两个害处——
+    (a) 把真实 ``~/.deskmate`` 绑死，而 conftest 的 autouse fixture 在
+        import **之后**才 setenv，隔离全线失效；
+    (b) 只 import 本模块就产生「构造引擎 + 读盘」的副作用。
+    """
+    from deskmate.paths import deskmate_base_dir
+
+    return deskmate_base_dir()
+
+
+# 全局引擎单例（惰性：首次调用才构造并加载防打扰状态）
+_engine: ProactiveEngine | None = None
 
 
 def _get_engine() -> ProactiveEngine:
+    global _engine
+    if _engine is None:
+        _engine = ProactiveEngine(base_dir=_base_dir())
+        # 加载防打扰持久化数据
+        _engine.disturb.persist(_base_dir() / "memory" / "disturb_state.json")
     return _engine
 
 

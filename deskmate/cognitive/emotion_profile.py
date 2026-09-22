@@ -200,7 +200,7 @@ _EMOTIONAL_GAP_TOPICS = [
 ]
 
 
-def ensure_emotional_gaps(pm=None) -> list[dict]:
+def ensure_emotional_gaps(pm=None, base_dir=None) -> list[dict]:
     """确保情感层存在可访谈的 open gap（幂等，只补一次）。
 
     情感画像刚起步，触发点/回血方式已有真实数据，但「关怀偏好」等仍空；
@@ -208,11 +208,12 @@ def ensure_emotional_gaps(pm=None) -> list[dict]:
     补上这些 explore 型 gap，让情感访谈有可问的东西。
     幂等：meta 标记后不再重复补。fail-open。
     pm：测试可注入 CognitiveProfileManager(layer='emotional')；默认全局。
+    base_dir：多 workspace 隔离入口——此前 tick 无参调用，gap 永远播进真实库。
     """
     try:
-        from deskmate.cognitive.profile import get_profile_manager
         if pm is None:
-            pm = get_profile_manager(layer="emotional")
+            from deskmate.cognitive.profile import resolve_profile_manager
+            pm = resolve_profile_manager(layer="emotional", base_dir=base_dir)
         store = pm.store
         if store.get_meta(_EMOTIONAL_GAP_META_KEY, default=False):
             return []

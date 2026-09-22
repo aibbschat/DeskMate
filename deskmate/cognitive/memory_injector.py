@@ -59,17 +59,24 @@ _HIS_LAYERS = ("cognitive", "emotional")
 _HER_LAYER = "worldview"
 
 
-def load_cognitive_profile(layer: str = "cognitive") -> CognitiveProfile | None:
+def load_cognitive_profile(
+    layer: str = "cognitive", base_dir: str | Path | None = None
+) -> CognitiveProfile | None:
     """加载某一层的认知画像（从 deskmate.db）；空 / 失败返回 None（fail-open）。
 
     层的语义（**别混**，混了就是把她的观点当成他的）：
     - ``cognitive`` / ``emotional`` → 她眼中的**他**
     - ``worldview``                → **她自己**看世界看出来的判断
+
+    ``base_dir``：多 workspace / 测试隔离场景下**必须**传，否则会读到全局库
+    （2026-09-22 收口：此前签名里没有它，调用方只能靠 ``DESKMATE_DIR`` 环境变量，
+    传了 base_dir 的调用方实际读的是另一个库——``worldview_reflection`` 就踩过）。
     """
     try:
         from .store import CognitiveStore
 
-        profile = CognitiveStore(db_path=_db_path()).load_profile(layer=layer)
+        db = (Path(base_dir) / "deskmate.db") if base_dir else _db_path()
+        profile = CognitiveStore(db_path=db).load_profile(layer=layer)
         if not (
             profile.stances or profile.argument_patterns
             or profile.value_rankings or profile.thinking_frameworks

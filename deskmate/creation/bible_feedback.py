@@ -21,8 +21,14 @@ import time
 from pathlib import Path
 from typing import Any
 
-# 默认缓存根（与 NovelIndex.DEFAULT_CACHE_ROOT 一致）
-DEFAULT_CACHE_ROOT = Path.home() / ".deskmate" / "novels"
+def default_cache_root() -> Path:
+    """默认缓存根（与 NovelIndex.default_cache_root() 同源）——**调用时**解析。
+
+    禁模块级常量（2026-09-22 收口）：import 期绑定会让隔离失效。
+    """
+    from deskmate.paths import deskmate_base_dir
+
+    return deskmate_base_dir() / "novels"
 
 _CJK_RUN = re.compile(r"[\u4e00-\u9fff]+")
 
@@ -53,12 +59,12 @@ def bible_path_for(
     """定位一部原著的改编圣经路径；找不到（未建索引）返回 None。"""
     if not novel_ref:
         return None
-    root = Path(cache_root) if cache_root else DEFAULT_CACHE_ROOT
+    root = Path(cache_root) if cache_root else default_cache_root()
     return root / _cache_key(novel_ref) / "bible.md"
 
 
 def _feedback_log_path(novel_ref: str, cache_root: Path | None = None) -> Path:
-    root = cache_root or DEFAULT_CACHE_ROOT
+    root = cache_root or default_cache_root()
     return root / _cache_key(novel_ref) / "bible_feedback.json"
 
 
@@ -131,7 +137,7 @@ def record_bible_feedback(
         {"ok": bool, "skipped": bool, "novel": str, "episode": str,
          "entities": [...], "bible_path": str|None, "reason": str}
     """
-    root = Path(cache_root) if cache_root else DEFAULT_CACHE_ROOT
+    root = Path(cache_root) if cache_root else default_cache_root()
     if not novel_ref or not content:
         return {"ok": False, "skipped": True, "reason": "缺少 novel_ref 或产出文本"}
     ep = str(episode)
@@ -204,7 +210,7 @@ def list_feedback(
     novel_ref: str, cache_root: Path | str | None = None
 ) -> list[dict]:
     """读取一部原著的回流日志（前端展示用；空列表表示尚无回流）。"""
-    root = Path(cache_root) if cache_root else DEFAULT_CACHE_ROOT
+    root = Path(cache_root) if cache_root else default_cache_root()
     return _load_log(novel_ref, root)
 
 

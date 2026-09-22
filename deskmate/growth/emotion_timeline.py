@@ -41,6 +41,7 @@ from typing import Any, Optional
 from deskmate.coerce import as_float
 from deskmate.growth import emotion_sense
 from deskmate.persistence import BlobStore
+from deskmate.paths import deskmate_base_dir
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +68,30 @@ def _days_back(day: str) -> int:
     except (ValueError, TypeError):
         return 1
     return max(1, (datetime.date.today() - d).days + 1)
+
+
+# ---------------------------------------------------------------------------
+# 已知 trust 脏数据窗口（**只标注，不回填**）
+#
+# 2026-09-05 ~ 2026-09-21：每日快照的 trust 一律落 0.5。根因是旧写法
+# ``float(getattr(st, "trust", 0.5) or 0.5)`` —— ``0.0`` 被 `or` 当成缺省值吞掉，
+# 而当时真实 trust 一直是 0.0。修复见 ``record_today`` 用 ``as_float``。
+#
+# 真实每日值**没有留存、不可回填**（序列里那 17 天的真值已永久丢失），
+# 所以这里只做标注：让下游与人能一眼区分「真值」和「bug 假值」。
+# 端点均**含**：09-21 也是 0.5 且属窗口内；09-22 起（应用重启后）才是真值。
+# ---------------------------------------------------------------------------
+_TRUST_BUG_FROM = "2026-09-05"
+_TRUST_BUG_TO = "2026-09-21"
+
+
+def trust_is_suspect(day: str) -> bool:
+    """该日期的 trust 是否落在已知 bug 窗口内（假值，不可采信）。
+
+    按**日期区间**判，不按值判——窗口内也可能出现本来就等于 0.5 的真值。
+    """
+    d = str(day or "")[:10]
+    return bool(d) and _TRUST_BUG_FROM <= d <= _TRUST_BUG_TO
 
 
 # 事件类型 → 情感信号
@@ -127,7 +152,7 @@ class EmotionTimeline:
     """情感时间线：每日快照 + 回顾 + 关怀去重。"""
 
     def __init__(self, base_dir: str | Path | None = None) -> None:
-        base = Path(base_dir) if base_dir else Path.home() / ".deskmate"
+        base = Path(base_dir) if base_dir else deskmate_base_dir()
         self.base = base
         # legacy 路径：仅用于首次访问时幂等迁移进统一库（见 BlobStore.get legacy_path）
         self.path = base / "growth" / "emotion_timeline.json"
@@ -527,13 +552,22 @@ class EmotionTimeline:
         return n
 
     def snapshots(self, days: int = 7) -> list[dict[str, Any]]:
-        """返回最近 N 天的快照（按日期升序）。"""
+        """返回最近 N 天的快照（按日期升序）。
+
+        落在已知 trust bug 窗口内的快照会**额外**带上 ``trust_suspect=True``
+        （**只标记、不改数值**，见 ``trust_is_suspect``）；其余天的快照不带该键。
+        返回的是**副本**——调用方改它不会写回库。
+        """
         today = datetime.date.today()
         out: list[dict[str, Any]] = []
         for i in range(days - 1, -1, -1):
             d = (today - datetime.timedelta(days=i)).isoformat()
-            if d in self._data:
-                out.append(self._data[d])
+            snap = self._data.get(d)
+            if not isinstance(snap, dict):
+                continue
+            if trust_is_suspect(d):
+                snap = {**snap, "trust_suspect": True}
+            out.append(snap)
         return out
 
     def lookback(self, days: int = 7) -> str:
@@ -599,6 +633,14 @@ class EmotionTimeline:
             lines.append("- 关怀提示：用户节奏平稳，可按正常节奏互动，不必过度打扰。")
         if not stated:
             lines.append("- ⚠️ 近期没有他本人写的日记，上述状态全部来自行为推断，关怀时不要说得像他知道你了解他。")
+        # 若回顾区间落在 trust 脏窗口内，明确说清——否则 judge 会把 0.5→0.0 读成
+        # 「信任崩了」（窗口内是假值、窗口外才是真值，两者不可比）。
+        suspect_days = [s["date"] for s in snaps if s.get("trust_suspect")]
+        if suspect_days:
+            lines.append(
+                f"- ⚠️ 其中 {'、'.join(suspect_days)} 的信任度是历史 bug 写出的假值，"
+                "**不要据此判断信任变化**（那几天真实值未留存，与之后的日子不可比）。"
+            )
 
         return "\n".join(lines)
 

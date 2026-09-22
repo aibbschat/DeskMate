@@ -36,6 +36,7 @@ import logging
 import sqlite3
 from pathlib import Path
 from typing import Any, Iterable, Optional
+from deskmate.paths import deskmate_base_dir
 
 logger = logging.getLogger(__name__)
 
@@ -233,7 +234,7 @@ def collect(
     Returns:
         [{"id", "day", "ts", "text", "source", "category"}, ...] 时间正序。
     """
-    base = Path(base_dir) if base_dir else Path.home() / ".deskmate"
+    base = Path(base_dir) if base_dir else deskmate_base_dir()
     want = tuple(sources) or ALL_SOURCES
 
     # 每个源单独兜底：一路读挂了只少一路，绝不连累另外两路，

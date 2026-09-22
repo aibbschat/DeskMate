@@ -31,12 +31,21 @@ from ..diagnostics import diagnostics_health
 
 mcp = FastMCP("deskmate-memory")
 
-# 全局单例
-_base_dir = Path(os.environ.get("DESKMATE_DIR", os.path.expanduser("~/.deskmate")))
-_mgr = DeskMateMemoryManager(base_dir=_base_dir)
+def _base_dir() -> Path:
+    """**调用时**解析数据目录（禁模块级常量：import 期绑定会让隔离失效）。"""
+    from deskmate.paths import deskmate_base_dir
+
+    return deskmate_base_dir()
+
+
+# 全局单例（惰性：首次调用才构造，避免 import 期就碰真实数据目录）
+_mgr: DeskMateMemoryManager | None = None
 
 
 def _get_mgr() -> DeskMateMemoryManager:
+    global _mgr
+    if _mgr is None:
+        _mgr = DeskMateMemoryManager(base_dir=_base_dir())
     return _mgr
 
 

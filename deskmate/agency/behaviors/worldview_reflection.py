@@ -244,7 +244,9 @@ def load_worldview_beliefs(base_dir: str | None = None) -> str:
     except Exception:
         return load_works_facts(base_dir)
     try:
-        wv = load_cognitive_profile("worldview")
+        # ⚠ 必须把 base_dir 透下去：此前漏传，任何非默认 workspace 的调用方
+        # 读到的都是全局库的 worldview（2026-09-22 收口，与 tick 访谈分支同族）。
+        wv = load_cognitive_profile("worldview", base_dir=base_dir)
         text = ""
         if wv:
             text = format_profile(wv, limit=None, subject="你") or ""

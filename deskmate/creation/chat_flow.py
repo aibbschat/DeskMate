@@ -22,6 +22,7 @@ from typing import AsyncGenerator, Optional
 
 from .pipeline import CreativePipeline
 from .executor import ReviewResult
+from deskmate.paths import deskmate_base_dir
 
 logger = logging.getLogger(__name__)
 
@@ -55,7 +56,7 @@ _INSPIRE_COOLDOWN_HOURS = 6
 
 
 def _inspire_cooldown_path(base_dir) -> Path:
-    base = Path(base_dir) if base_dir else Path.home() / ".deskmate"
+    base = Path(base_dir) if base_dir else deskmate_base_dir()
     return base / "agency" / "last_inspire.json"
 
 
@@ -177,7 +178,7 @@ class CreationChat:
     # ---- 持久化 ----
     @property
     def _persist_path(self) -> Path:
-        base = getattr(self.pipeline, "base_dir", None) or Path.home() / ".deskmate" / "creation_chat"
+        base = getattr(self.pipeline, "base_dir", None) or deskmate_base_dir() / "creation_chat"
         return Path(base) / f"chat_{self.pid}.json"
 
     def _save(self) -> None:
@@ -210,7 +211,7 @@ class CreationChat:
         try:
             from deskmate.growth.engine import GrowthEngine
 
-            base = getattr(self.pipeline, "base_dir", None) or Path.home() / ".deskmate"
+            base = getattr(self.pipeline, "base_dir", None) or deskmate_base_dir()
             GrowthEngine(base_dir=Path(base)).record_creation_feedback(approved)
         except Exception as exc:
             logger.debug("creation feedback -> growth 失败: %s", exc)
@@ -218,7 +219,7 @@ class CreationChat:
         try:
             from deskmate.proactivity.behavior_patterns import log_event
 
-            base = getattr(self.pipeline, "base_dir", None) or Path.home() / ".deskmate"
+            base = getattr(self.pipeline, "base_dir", None) or deskmate_base_dir()
             kind = "creation_approved" if approved else "creation_rejected"
             log_event(kind, {"pipeline": type(self.pipeline).__name__}, base_dir=Path(base))
         except Exception as exc:
@@ -724,7 +725,7 @@ class CreationChat:
     # ---- 动作：创作灵感（基于认知库的真实世界启发） ----
     async def _do_inspire(self, intent: Intent, state: dict) -> AsyncGenerator[dict, None]:
         user_text = getattr(intent, "raw", "") or ""
-        base = getattr(self.pipeline, "base_dir", None) or Path.home() / ".deskmate"
+        base = getattr(self.pipeline, "base_dir", None) or deskmate_base_dir()
         concept = getattr(self.pipeline, "concept", "") or ""
         try:
             from deskmate.agency.behaviors.creative_suggest import generate as gen_suggest

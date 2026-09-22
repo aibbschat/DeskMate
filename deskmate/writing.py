@@ -136,7 +136,9 @@ def _auto_load_style_profile(workspace: str | None = None) -> str:
     data = _load_style(DEFAULT_PROFILE_PATH)
     if data:
         return format_profile_for_prompt(data)
-    fp = Path.home() / ".deskmate" / "style_profile.json"
+    from deskmate.paths import deskmate_base_dir
+
+    fp = deskmate_base_dir() / "style_profile.json"
     if fp.is_file():
         try:
             return format_profile_for_prompt(json.loads(fp.read_text(encoding="utf-8")))

@@ -47,7 +47,9 @@ def test_build_world_context_excludes_expired(tmp_path: Path):
         ["（外部·天下要闻）某旧闻"],
         valid_until=(datetime.now() - timedelta(days=1)).isoformat(timespec="seconds"),
     )
-    assert build_world_context(base_dir=tmp_path) == ""
+    ctx = build_world_context(base_dir=tmp_path)
+    assert "某旧闻" not in ctx
+    assert "她观察到的世界" not in ctx
 
 
 def test_build_world_context_empty_when_no_world_facts(tmp_path: Path):
@@ -56,7 +58,27 @@ def test_build_world_context_empty_when_no_world_facts(tmp_path: Path):
 
     store = LearnedStore(base_dir=tmp_path)
     store.append(["一条纯用户事实"])
-    assert build_world_context(base_dir=tmp_path) == ""
+    ctx = build_world_context(base_dir=tmp_path)
+    assert "一条纯用户事实" not in ctx
+    assert "她观察到的世界" not in ctx
+
+
+def test_build_world_context_always_carries_works_anchor(tmp_path: Path):
+    """无世界观察时**整串不再为空**——这是 2026-09-21 的有意改动。
+
+    那天给 ``_build_worldview_block`` 加了「萧盛真实作品事实（硬锚）」，
+    目的是让每条生成链路（看世界日记 / 发声 / 聊天）提及萧盛作品前都能核对清单，
+    起因是手记/AI 圈帖把《北渊》《服务器峡谷》当事实陈述（虚构作品名）。
+
+    锚来自仓库内置的 ``agency/grounding/xiaosheng_worldview.json``（**与 base_dir 无关**），
+    所以「无世界观察 → 返回空串」这两个断言不再成立，改为断言**观察段缺席**。
+    本用例锁住「锚必须在」——否则等于把防虚构闸门悄悄摘了。
+    """
+    from deskmate.memory.world_context import build_world_context
+
+    ctx = build_world_context(base_dir=tmp_path)
+    assert "萧盛真实作品事实" in ctx
+    assert "她观察到的世界" not in ctx  # 观察段仍然缺席（它才是「无观察就空」的那段）
 
 
 def test_is_world_fact_recognizes_both_marker_positions():

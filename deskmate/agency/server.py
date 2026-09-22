@@ -23,11 +23,21 @@ from .task_log import TaskStatus
 
 mcp = FastMCP("deskmate-agency")
 
-_base_dir = Path(os.environ.get("DESKMATE_DIR", os.path.expanduser("~/.deskmate")))
-_engine = AgencyEngine(base_dir=_base_dir)
+def _base_dir() -> Path:
+    """**调用时**解析数据目录（禁模块级常量：import 期绑定会让隔离失效）。"""
+    from deskmate.paths import deskmate_base_dir
+
+    return deskmate_base_dir()
+
+
+# 惰性单例：避免只 import 就构造引擎（那会碰真实数据目录）
+_engine: AgencyEngine | None = None
 
 
 def _get_engine() -> AgencyEngine:
+    global _engine
+    if _engine is None:
+        _engine = AgencyEngine(base_dir=_base_dir())
     return _engine
 
 
@@ -52,9 +62,9 @@ def agency_set_enabled(enabled: bool) -> str:
         操作结果
     """
     try:
-        settings = load_agency_settings(str(_base_dir))
+        settings = load_agency_settings(str(_base_dir()))
         settings.enabled = bool(enabled)
-        ok = save_agency_settings(settings, base_dir=str(_base_dir))
+        ok = save_agency_settings(settings, base_dir=str(_base_dir()))
         return "已开启 L2 自主层" if enabled and ok else ("已关闭 L2 自主层" if ok else "保存失败")
     except Exception as e:
         return f"设置失败：{e}"

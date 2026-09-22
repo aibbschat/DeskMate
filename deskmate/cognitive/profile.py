@@ -717,3 +717,24 @@ def get_profile_manager(
     if key not in _default_managers:
         _default_managers[key] = CognitiveProfileManager(layer=key)
     return _default_managers[key]
+
+
+def resolve_profile_manager(
+    layer: str = "cognitive",
+    base_dir: Optional[str | Path] = None,
+) -> CognitiveProfileManager:
+    """按 base_dir 解析某层画像管理器——**调用时**解析，保证多 workspace 不串库。
+
+    与 ``get_profile_manager`` 的唯一区别：``base_dir`` 非空时按
+    ``<base_dir>/deskmate.db`` 打开，且**不进全局缓存**（与
+    ``get_profile_manager(profile_path=...)`` 同一契约——自定义库不缓存）。
+
+    为什么需要它（2026-09-22）：``proactivity/tick`` 的访谈分支原先无参调用
+    ``get_profile_manager()``，于是**永远落到全局库**——tick 明明持有
+    ``self.base_dir``（可能是测试库 / 别的 workspace），访谈却读写真实库。
+    多 workspace 场景会互相串库；测试里表现为「时红时绿」。
+    """
+    if base_dir is None:
+        return get_profile_manager(layer=layer)
+    db_path = Path(base_dir) / "deskmate.db"
+    return get_profile_manager(profile_path=str(db_path), layer=layer)

@@ -789,7 +789,7 @@ def build_bible(folder: str, progress_callback: callable = None) -> dict[str, st
         # 设计取舍（Hermes 复检认可）：DELETE+commit 到 upsert 之间，无锁的读路径
         # read_bible 可能看到半空库并回退到 md 兜底；因 P1-7 后 md 始终新鲜，该回退
         # 现在安全、窗口极小，可不修。
-            with _ent._WRITE_LOCK:
+            with _ent._get_write_lock():
                 conn.execute("DELETE FROM entities")
                 conn.commit()
                 _ent._upsert_records_locked(conn, passed)

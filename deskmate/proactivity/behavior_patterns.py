@@ -28,6 +28,7 @@ import json
 import os
 import time
 from pathlib import Path
+from deskmate.paths import deskmate_base_dir
 
 WEEKDAYS = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
 
@@ -52,7 +53,7 @@ FOCUS_DEDUP_SEC = 1800  # 深专注事件 30 分钟内只记一次，避免刷�
 
 
 def _desk_dir(base_dir: str | Path | None) -> Path:
-    return Path(base_dir) if base_dir else Path.home() / ".deskmate"
+    return Path(base_dir) if base_dir else deskmate_base_dir()
 
 
 def _log_path(base_dir: str | Path | None) -> Path:

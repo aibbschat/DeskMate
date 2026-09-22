@@ -503,6 +503,36 @@ class CognitiveStore:
                 (_now(), summary, session_id),
             )
 
+    def expire_active_sessions(self, layer: str = _LAYER, keep: str = "") -> int:
+        """把该层**除 keep 之外**的 active 会话标记为 expired，返回清理条数。
+
+        为什么需要（2026-09-22 定位）：访谈会话此前只进不出——
+        ``start_interview`` 建一个新的，旧的 active 没人管；而每次发起都刷新
+        ``last_interview_at``，用户没答就永远不会再被邀请，于是会话无限堆积
+        （真实库曾有 12 个僵尸 active）。发起新一轮前先结掉旧的，语义是
+        「上一轮问过但没回音，就不留着占位了」——新会话会重新带着当前
+        open gap 去问，不丢信息。
+
+        保留 ``expired`` 而非删除：访谈历史可追溯（谁问过什么、有没有回音），
+        且与 done 区分开——「没答完」和「答完了」在回看时不是一回事。
+        """
+        from .models import _now
+
+        with self._connect() as conn:
+            if keep:
+                cur = conn.execute(
+                    "UPDATE interview_sessions SET status='expired', ended_at=? "
+                    "WHERE layer=? AND status='active' AND id<>?",
+                    (_now(), layer, keep),
+                )
+            else:
+                cur = conn.execute(
+                    "UPDATE interview_sessions SET status='expired', ended_at=? "
+                    "WHERE layer=? AND status='active'",
+                    (_now(), layer),
+                )
+            return cur.rowcount or 0
+
     def add_qa(self, session_id: str, question: str, answer: str,
                question_id: str = "", item_updates: Optional[list[str]] = None) -> str:
         import uuid

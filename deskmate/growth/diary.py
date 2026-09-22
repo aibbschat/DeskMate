@@ -53,6 +53,7 @@ from deskmate.coerce import as_float, as_int
 from deskmate.growth._atomic import unique_tmp
 from deskmate.growth.engine import GrowthEngine
 from deskmate.text_clean import strip_reasoning_artifacts
+from deskmate.paths import deskmate_base_dir
 
 logger = logging.getLogger(__name__)
 
@@ -167,7 +168,7 @@ def diary_write_lock(base_dir=None) -> Iterator[None]:
     临界区应当尽量短，但**必须把 LLM 渲染包在里面**——窗口就在那。
     写日记本就是低频动作，让第二个触发源排队等待才是正确行为。
     """
-    base = Path(base_dir) if base_dir else Path.home() / ".deskmate"
+    base = Path(base_dir) if base_dir else deskmate_base_dir()
     lock_path = base / "diary" / ".diary-write.lock"
     try:
         lock_path.parent.mkdir(parents=True, exist_ok=True)
@@ -269,7 +270,7 @@ class DiaryWriter:
     """小桔日记：第一人称今日小结 + 每周回忆。"""
 
     def __init__(self, base_dir: Path | str | None = None) -> None:
-        base = Path(base_dir) if base_dir else Path.home() / ".deskmate"
+        base = Path(base_dir) if base_dir else deskmate_base_dir()
         self.base = base
         self.diary_dir = base / "diary"
         # 给历史日记每则补上稳定 eid（幂等，只补没有的）。新写入的则自带。

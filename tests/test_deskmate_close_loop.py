@@ -88,10 +88,10 @@ def test_auto_eligible_blocked(d):
 def _reset_executor_state():
     executor._executor_fn = None
     executor._auto_mode = True
-    executor._disturb.silent_mode = False
-    executor._disturb.records = []
+    executor._get_disturb().silent_mode = False
+    executor._get_disturb().records = []
     yield
-    executor._disturb.records = []
+    executor._get_disturb().records = []
 
 
 def _eligible_decision():
@@ -106,7 +106,7 @@ def test_try_execute_falls_back_to_proposal_without_executor():
     res = executor.try_execute_close_loop(_eligible_decision(), "/tmp/ws")
     assert res.executed is False
     assert res.proposed is True
-    pending = executor._PENDING_PATH.read_text(encoding="utf-8")
+    pending = executor._pending_path().read_text(encoding="utf-8")
     assert "把公众号的修改同步到网站" in pending
 
 
@@ -123,7 +123,7 @@ def test_try_execute_runs_executor_when_registered():
 
 def test_try_execute_blocked_by_silent_mode():
     """防打扰静默模式 -> 拦截，不做也不提案。"""
-    executor._disturb.set_silent_mode(True)
+    executor._get_disturb().set_silent_mode(True)
     res = executor.try_execute_close_loop(_eligible_decision(), "/tmp/ws")
     assert res.skipped is True
     assert res.executed is False

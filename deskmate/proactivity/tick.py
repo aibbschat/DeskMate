@@ -153,12 +153,19 @@ class ProactiveEngine:
         self,
         user_message: str = "",
         skip_activity_check: bool = False,
+        allow_interactive: bool = True,
     ) -> TickResult:
         """执行一次 TICK。
 
         Args:
             user_message: 当前用户消息（如有）
             skip_activity_check: 跳过用户活跃度检查（调试用）
+            allow_interactive: 是否允许发起「需要用户在前端浮层回应」的交互
+                （深度访谈 / 认知验证卡）。**后台 scheduler tick 必须传 False**：
+                它的产物只有一条只认 suggestion 的 WS 广播，这两类负载没有出口，
+                建了 session 却送不到用户眼前，还会把 3 天冷却白吃掉 → 前端永远
+                收不到邀请（2026-09-22 定位的静默死循环）。默认 True 供前端路由
+                （HTTP 响应能直达 useProactiveTick）与手动入口使用。
 
         Returns:
             TickResult
@@ -240,25 +247,37 @@ class ProactiveEngine:
             # BUSY 状态（会议/通话）不跳过推理：
             # 用户在会议中也可能需要提醒（如伏笔遗漏），只是防打扰阈值更严
 
-        # ===== 1.5 深度访谈触发（③b 自动发起：纯规则，不占 LLM judge）=====
+        # ===== 1.5 深度访谈 / 认知验证触发（③b 自动发起：纯规则，不占 LLM judge）=====
         # 触发条件见 should_interview_now：open_gaps>=2 且距上次访谈>=3 天。
         # idle 已在上方 return；busy（会议/通话）与深专注不弹——访谈需要用户专注回应。
+        #
+        # ⚠ allow_interactive（2026-09-22 修）：访谈与验证卡都是「要在浮层里点/答」
+        # 的交互，只有**有 UI 呈现能力的通道**才该发起。后台 scheduler tick 的产物
+        # 只有一条 WS 广播，而 _broadcast_deskmate_suggestion 只认 judgment——
+        # interview / validation 根本没有出口。它建了 session、消耗了 3 天冷却，
+        # 用户却什么都看不到；前端 tick 随后永远撞冷却 → 邀请再也送不出去
+        # （真实库曾积压 12 个无人见过的 active 会话）。
+        # 故后台传 allow_interactive=False（不建、不吃冷却），把发起权留给前端。
+        # 维护类工作（情感增量 / 表达回灌 / 冲突扫描 / gap 播种）不需要交互，
+        # 后台照做——所以不能把整块一起跳过。
         try:
             if activity.level != UserActivity.BUSY and not (focus is not None and focus.level == "deep"):
                 from deskmate.cognitive.interview import maybe_trigger_interview
                 from deskmate.cognitive.emotion_profile import ensure_emotional_gaps
 
-                # 认知访谈优先
-                iv = maybe_trigger_interview(limit=3)
-                if iv and iv.get("session_id") and iv.get("questions"):
-                    return TickResult(
-                        action=ActionType.SUGGEST,
-                        activity=activity,
-                        interview=iv,
-                        skipped_reason="深度访谈待回应（基于认知盲区积累）",
-                        elapsed_ms=int((time.time() - start) * 1000),
-                        heartbeat_interval_ms=self._heartbeat_interval_ms,
-                    )
+                # (a) 认知访谈优先（需前端弹卡）
+                if allow_interactive:
+                    iv = maybe_trigger_interview(limit=3, base_dir=self.base_dir)
+                    if iv and iv.get("session_id") and iv.get("questions"):
+                        return TickResult(
+                            action=ActionType.SUGGEST,
+                            activity=activity,
+                            interview=iv,
+                            skipped_reason="深度访谈待回应（基于认知盲区积累）",
+                            elapsed_ms=int((time.time() - start) * 1000),
+                            heartbeat_interval_ms=self._heartbeat_interval_ms,
+                        )
+                # (b) 维护类：无需用户交互，后台也照做
                 # 日记→情感画像增量提取（轻量规则，幂等；节流 ~4h，fail-open 不阻塞 tick）
                 try:
                     from deskmate.cognitive.emotion_extract import maybe_extract_on_tick
@@ -287,49 +306,55 @@ class ProactiveEngine:
                 except Exception:
                     logger.debug("冲突 gap 扫描失败，跳过", exc_info=True)
                 # 认知访谈无内容时，尝试情感访谈（情感画像缺口：关怀偏好/回血方式待澄清）
-                ensure_emotional_gaps()
-                iv_emo = maybe_trigger_interview(limit=3, layer="emotional")
-                if iv_emo and iv_emo.get("session_id") and iv_emo.get("questions"):
-                    return TickResult(
-                        action=ActionType.SUGGEST,
-                        activity=activity,
-                        interview=iv_emo,
-                        skipped_reason="情感访谈待回应（基于情感画像缺口）",
-                        elapsed_ms=int((time.time() - start) * 1000),
-                        heartbeat_interval_ms=self._heartbeat_interval_ms,
-                    )
-                # 认知验证（Turing test）：访谈都无内容时，生成一个验证情境，
-                # 让 AI 以用户身份回答 vs 用户回答，校准"像我度"。
-                # 节流 ~3 天（与访谈同节奏），只在能生成情境时触发。
-                try:
-                    from datetime import datetime, timedelta
-                    from deskmate.cognitive.validation_engine import run_validation
-                    from deskmate.cognitive.store import CognitiveStore
-                    store = CognitiveStore()
-                    last = store.get_meta("last_validation_at")
-                    due = True
-                    if last:
-                        try:
-                            last_dt = datetime.fromisoformat(str(last))
-                            due = (datetime.now() - last_dt) >= timedelta(days=3)
-                        except Exception:
-                            due = True
-                    if due:
-                        v = run_validation()
-                        if v["scenario"].get("id"):
-                            # 记录验证发起时间，避免每次心跳都弹
-                            store.set_meta("last_validation_at", datetime.now().isoformat())
-                            return TickResult(
-                                action=ActionType.SUGGEST,
-                                activity=activity,
-                                interview=None,
-                                validation=v["scenario"],
-                                skipped_reason="认知验证情境待回应（Turing test 校准像我度）",
-                                elapsed_ms=int((time.time() - start) * 1000),
-                                heartbeat_interval_ms=self._heartbeat_interval_ms,
-                            )
-                except Exception:
-                    logger.debug("认知验证情境生成失败，跳过", exc_info=True)
+                ensure_emotional_gaps(base_dir=self.base_dir)
+                # (c) 情感访谈 + 认知验证：同样要前端弹卡，后台不发起
+                if allow_interactive:
+                    iv_emo = maybe_trigger_interview(limit=3, layer="emotional", base_dir=self.base_dir)
+                    if iv_emo and iv_emo.get("session_id") and iv_emo.get("questions"):
+                        return TickResult(
+                            action=ActionType.SUGGEST,
+                            activity=activity,
+                            interview=iv_emo,
+                            skipped_reason="情感访谈待回应（基于情感画像缺口）",
+                            elapsed_ms=int((time.time() - start) * 1000),
+                            heartbeat_interval_ms=self._heartbeat_interval_ms,
+                        )
+                    # 认知验证（Turing test）：访谈都无内容时，生成一个验证情境，
+                    # 让 AI 以用户身份回答 vs 用户回答，校准"像我度"。
+                    # 节流 ~3 天（与访谈同节奏），只在能生成情境时触发。
+                    try:
+                        from datetime import datetime, timedelta
+                        from pathlib import Path as _Path
+
+                        from deskmate.cognitive.store import CognitiveStore
+                        from deskmate.cognitive.validation_engine import run_validation
+                        # 按 base_dir 解析库（与 resolve_profile_manager 同口径）：
+                        # 否则节流时间戳落全局库，多 workspace 会互相压制。
+                        store = CognitiveStore(db_path=_Path(self.base_dir) / "deskmate.db")
+                        last = store.get_meta("last_validation_at")
+                        due = True
+                        if last:
+                            try:
+                                last_dt = datetime.fromisoformat(str(last))
+                                due = (datetime.now() - last_dt) >= timedelta(days=3)
+                            except Exception:
+                                due = True
+                        if due:
+                            v = run_validation()
+                            if v["scenario"].get("id"):
+                                # 记录验证发起时间，避免每次心跳都弹
+                                store.set_meta("last_validation_at", datetime.now().isoformat())
+                                return TickResult(
+                                    action=ActionType.SUGGEST,
+                                    activity=activity,
+                                    interview=None,
+                                    validation=v["scenario"],
+                                    skipped_reason="认知验证情境待回应（Turing test 校准像我度）",
+                                    elapsed_ms=int((time.time() - start) * 1000),
+                                    heartbeat_interval_ms=self._heartbeat_interval_ms,
+                                )
+                    except Exception:
+                        logger.debug("认知验证情境生成失败，跳过", exc_info=True)
         except Exception:
             logger.debug("访谈触发失败，跳过", exc_info=True)
 

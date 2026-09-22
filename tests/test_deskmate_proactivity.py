@@ -373,8 +373,11 @@ class _FakeEngine:
     def __init__(self):
         self.tick_calls = 0
         self.boom = False
+        self.base_dir = None  # make_extra_tick 用它构造 AgencyEngine
 
-    def tick(self):
+    def tick(self, user_message="", skip_activity_check=False, allow_interactive=True):
+        # 签名与 ProactiveEngine.tick 对齐：后台通道会显式传
+        # allow_interactive=False（2026-09-22：后台不发起需 UI 呈现的交互）。
         self.tick_calls += 1
         if self.boom:
             raise RuntimeError("perception exploded")
@@ -382,6 +385,40 @@ class _FakeEngine:
 
 
 class TestBackgroundTick:
+    """后台 tick 有**两个**副作用，测试里必须分别隔离。
+
+    1. `engine.tick` → 用 `_FakeEngine`（已隔离）
+    2. **L2 自主层 `AgencyEngine.tick`** → 必须打桩
+
+    ⚠ 2026-09-22 复盘：这几例此前是**假通过**。`_FakeEngine` 当初**没有** `base_dir`
+    属性，`make_extra_tick` 里 `AgencyEngine(base_dir=engine.base_dir)` 直接抛
+    `AttributeError`，被那个 `except Exception` 吞掉 → **L2 段从未真正执行过**。
+    给 `_FakeEngine` 补上 `base_dir` 之后，真实 `AgencyEngine.tick()` 开始跑
+    （会走 LLM / 网络，实测单例 >240s 未完成）→ 全量测试卡在这里。
+    本组测的是「异常隔离」，不是 AgencyEngine 本身，故显式打桩。
+    """
+
+    @pytest.fixture(autouse=True)
+    def _stub_agency(self, monkeypatch):
+        import deskmate.agency.engine as agency_mod
+
+        class _StubAgency:
+            instances: list = []
+            ticks = 0
+
+            def __init__(self, base_dir=None):
+                self.base_dir = base_dir
+                _StubAgency.instances.append(self)
+
+            def tick(self):
+                _StubAgency.ticks += 1
+                return None
+
+        monkeypatch.setattr(agency_mod, "AgencyEngine", _StubAgency)
+        # 让用例能断言「L2 段确实被走到了」（而不是又被异常吞掉）
+        monkeypatch.setattr(self, "_stub", _StubAgency, raising=False)
+        return _StubAgency
+
     def test_make_extra_tick_runs_engine(self):
         engine = _FakeEngine()
         tick = make_extra_tick(engine)
@@ -389,6 +426,7 @@ class TestBackgroundTick:
 
         asyncio.run(tick())
         assert engine.tick_calls == 1
+        assert self._stub.ticks == 1, "L2 自主层应被走到（回归：曾因 AttributeError 被静默跳过）"
 
     def test_make_extra_tick_runs_wrapped_first(self):
         engine = _FakeEngine()

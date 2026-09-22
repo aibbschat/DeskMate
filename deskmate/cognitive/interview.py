@@ -18,7 +18,7 @@ from typing import Optional
 
 from .interfaces import InterviewEngine
 from .models import CognitiveProfile, SourceRef, HistoryEntry, Stance, _now
-from .profile import get_profile_manager
+from .profile import get_profile_manager, resolve_profile_manager
 from .store import CognitiveStore
 from .extractor import get_extractor
 
@@ -317,24 +317,35 @@ class SocraticInterviewEngine(InterviewEngine):
                 g.resolved_at = _now()
         pm.save()
 
-    def should_interview_now(self, profile: CognitiveProfile, layer: str = "cognitive") -> bool:
+    def should_interview_now(
+        self,
+        profile: CognitiveProfile,
+        layer: str = "cognitive",
+        store: Optional[CognitiveStore] = None,
+    ) -> bool:
         """保守主动触发：有值得问的东西 且 距上次访谈足够久。
 
         两个触发口径（避免"gap 生成了却触发不了"的死代码）：
         - 常规：open gap 数达 _TRIGGER_GAP_THRESHOLD（探索型问题攒够一起问）；
         - 高优：**存在 priority >= 0.8 的 gap 即可**，一个就问——真矛盾/画像冲突
           是高价值信号（"你说的跟以前不一样了"），不该为了凑数而搁置。
+
+        store：注入隔离库（多 workspace / 测试）。此前无参 ``CognitiveStore()``
+        永远读全局库——tick 明明持有 base_dir，冷却判定却看的是真实库时间戳
+        （2026-09-22 收口）。
+        冷却改按**秒**比较：原 `(now - last).days < 3` 靠整数截断，虽结果等价，
+        但把「至少隔 3 天」写成了「日历天差 < 3」，语义含糊且易被未来改动踩错。
         """
         meta_key = f"last_interview_at:{layer}" if layer != "cognitive" else "last_interview_at"
         try:
-            last = CognitiveStore().get_meta(meta_key)
+            last = (store or CognitiveStore()).get_meta(meta_key)
         except Exception:
             last = None
         if last:
             try:
                 from datetime import datetime
-                days = (datetime.now() - datetime.fromisoformat(last)).days
-                if days < _TRIGGER_MIN_INTERVAL_DAYS:
+                elapsed = datetime.now() - datetime.fromisoformat(str(last))
+                if elapsed.total_seconds() < _TRIGGER_MIN_INTERVAL_DAYS * 86_400:
                     return False
             except Exception:
                 pass
@@ -351,20 +362,34 @@ def get_interview_engine() -> SocraticInterviewEngine:
     return SocraticInterviewEngine()
 
 
-def start_interview(limit: int = 3, use_llm: bool = False, layer: str = "cognitive") -> dict:
+def start_interview(
+    limit: int = 3,
+    use_llm: bool = False,
+    layer: str = "cognitive",
+    base_dir=None,
+    pm=None,
+) -> dict:
     """发起一轮访谈：生成问题 + 建 session。返回 {session_id, questions, total}。
 
     若暂无可问薄弱点，返回 session_id=None（不建空 session）。
     layer='cognitive' 认知访谈；layer='emotional' 情感访谈（复用同一引擎/骨架）。
+    base_dir：多 workspace / 测试隔离入口，按 <base_dir>/deskmate.db 解析。
     """
-    pm = get_profile_manager(layer=layer)
+    if pm is None:
+        pm = resolve_profile_manager(layer=layer, base_dir=base_dir)
+    store = pm.store
     engine = get_interview_engine()
     questions = engine.generate_questions(pm.profile, limit=limit, use_llm=use_llm)
     if not questions:
         return {"session_id": None, "questions": [],
                 "note": "暂无可问的薄弱点（无 open gap / 无低置信条目）"}
     qids = [q["id"] for q in questions]
-    store = CognitiveStore()
+    # 新一轮发起前先结掉同层旧的 active 会话：防僵尸堆积（真实库曾积 12 个）。
+    # 放在 create_session **之前**——顺序反了就成「建完立刻把自己也 expire 掉」。
+    try:
+        store.expire_active_sessions(layer=layer)
+    except Exception:
+        logger.debug("清理旧访谈会话失败（不影响发起）", exc_info=True)
     # 复用 gap_ids 列存本次问题 id 列表（session 层语义：本次访谈涉及的目标 id）
     # create_session 内部已按 layer 写 last_interview_at:{layer} 抑制时间戳（防重复触发）
     sid = store.create_session(layer=layer, gap_ids=qids)
@@ -413,15 +438,24 @@ def answer_interview(session_id: str, question_id: str, response: str,
     }
 
 
-def maybe_trigger_interview(limit: int = 3, layer: str = "cognitive") -> Optional[dict]:
+def maybe_trigger_interview(
+    limit: int = 3,
+    layer: str = "cognitive",
+    base_dir=None,
+) -> Optional[dict]:
     """保守主动触发钩子：满足 should_interview_now 才发起，否则返回 None。
 
-    供 proactivity tick / 定时任务调用；本轮不自动挂 UI（避免唠叨，前端访谈页后续做）。
+    供 proactivity tick / 定时任务调用。
+
+    ⚠ 调用方必须在**有 UI 呈现能力**的通道里调用（前端 proactive/tick、手动入口）。
+    后台 scheduler tick 不要调：它的产物只有一条只认 suggestion 的 WS 广播，
+    interview 送不到用户眼前，却已把 3 天冷却消耗掉——那会让前端永远收不到邀请
+    （2026-09-22 定位的死循环）。后台请用 ``ProactiveEngine.tick(allow_interactive=False)``。
     """
-    pm = get_profile_manager(layer=layer)
-    if not get_interview_engine().should_interview_now(pm.profile, layer=layer):
+    pm = resolve_profile_manager(layer=layer, base_dir=base_dir)
+    if not get_interview_engine().should_interview_now(pm.profile, layer=layer, store=pm.store):
         return None
-    return start_interview(limit=limit, layer=layer)
+    return start_interview(limit=limit, layer=layer, pm=pm)
 
 
 def seed_missing_dimensions(layer: str = "cognitive", only_empty: bool = True, pm=None) -> dict:

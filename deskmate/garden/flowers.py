@@ -30,6 +30,7 @@ from deskmate.garden.state import (
     load_garden,
     save_garden,
 )
+from deskmate.paths import deskmate_base_dir
 
 logger = logging.getLogger(__name__)
 
@@ -163,7 +164,7 @@ def _material_events(base_dir: Path | str | None) -> list[dict]:
     只是 IO 浪费；目录（append 新事件会改 mtime）不变即直接命中缓存。
     """
     try:
-        base = Path(base_dir) if base_dir else Path(os.path.expanduser("~/.deskmate"))
+        base = Path(base_dir) if base_dir else deskmate_base_dir()
         mdir = base / "diary" / "materials"
         if not mdir.is_dir():
             return []

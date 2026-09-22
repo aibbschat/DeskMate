@@ -947,7 +947,7 @@ def _maybe_decay_memory(base_dir: str, every_n: int = 25) -> None:
     try:
         from deskmate.memory.manager import DeskMateMemoryManager
 
-        manager = DeskMateMemoryManager(Path(base_dir or str(Path.home() / ".deskmate")))
+        manager = DeskMateMemoryManager(Path(base_dir or str(deskmate_base_dir())))
         manager.cleanup_redundancy()
     except Exception:
         logger.debug("after_action: 记忆衰减跳过", exc_info=True)
