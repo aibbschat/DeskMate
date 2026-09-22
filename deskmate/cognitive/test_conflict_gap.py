@@ -9,6 +9,7 @@
 
 import os
 import shutil
+import sqlite3
 import sys
 import tempfile
 from pathlib import Path
@@ -79,7 +80,11 @@ def test_reverse_polarity_spawns_gap():
         gaps = [g for g in pm.get().cognitive_gaps if g.status == "open"]
         assert len(gaps) == 1
         assert gaps[0].topic == "画像冲突·关怀偏好"
-        assert "想法变了" in gaps[0].reason, gaps[0].reason
+        # ⚠ reason 会被 interview._build 原样说给萧哥听，所以锁的是「第二人称」这条
+        # 硬要求，而不是某句具体措辞（2026-09-22 由「既有画像说他偏…」改成「我记的是
+        # 你偏…」——旧版对着他说话却用「他」，他读起来像系统自检）。
+        assert "你" in gaps[0].reason, gaps[0].reason
+        assert "他" not in gaps[0].reason.replace("其他", ""), f"不该出现第三人称：{gaps[0].reason}"
         assert gaps[0].priority == 0.8, "冲突是高优 gap：一个即触发访谈"
         assert gaps[0].related_items, "应关联被质疑的既有条目"
     finally:
@@ -350,6 +355,7 @@ def test_conflict_gap_triggers_interview():
 
     tmp = tempfile.mkdtemp()
     saved_store, saved_gpm = iv_mod.CognitiveStore, iv_mod.get_profile_manager
+    saved_rpm = iv_mod.resolve_profile_manager
     try:
         pm = _seed_care_support(_pm(tmp))
         diary = _FakeDiary([
@@ -358,13 +364,18 @@ def test_conflict_gap_triggers_interview():
         res = conflict_gap.scan_and_spawn_gaps(pm=pm, diary_store=diary)
         assert res["gaps_added"] == 1
 
-        # 隔离：让访谈引擎用临时库（否则读到真实库的冷却与画像）
+        # 隔离：让访谈引擎用临时库（否则读到真实库的冷却与画像）。
+        # ⚠ 2026-09-22 修正：`maybe_trigger_interview` 走的是 **resolve_profile_manager**
+        # （不是 get_profile_manager），旧版只 patch 了后者与 CognitiveStore →
+        # **实际全程读写真实库**：既可能因为真实库的冷却/挂起会话让本用例飘红，
+        # 也会往真实库里塞会话（测试污染真实数据的一类典型来源）。
         class _TmpStore(_RealStore):
             def __init__(self, *a, **kw):
                 super().__init__(db_path=str(Path(tmp) / "t.db"), legacy_json=None)
 
         iv_mod.CognitiveStore = _TmpStore
         iv_mod.get_profile_manager = lambda layer="cognitive": pm
+        iv_mod.resolve_profile_manager = lambda layer="cognitive", base_dir=None, **kw: pm
 
         gaps = pm.get().open_gaps()
         assert len(gaps) == 1, "只有 1 个 gap，靠数量门槛(<2)是过不了的"
@@ -375,9 +386,16 @@ def test_conflict_gap_triggers_interview():
         iv = maybe_trigger_interview(limit=3, layer="emotional")
         assert iv and iv.get("session_id"), f"访谈未触发：{iv}"
         assert iv.get("questions"), "触发了但没生成问题"
+        # 锁住隔离本身：会话必须落在临时库，真实库不该被写
+        with sqlite3.connect(str(Path(tmp) / "t.db")) as con:
+            n = con.execute(
+                "SELECT COUNT(*) FROM interview_sessions WHERE id=?", (iv["session_id"],)
+            ).fetchone()[0]
+        assert n == 1, "访谈会话没写进临时库——说明隔离失效、又写到真实库去了"
     finally:
         iv_mod.CognitiveStore = saved_store
         iv_mod.get_profile_manager = saved_gpm
+        iv_mod.resolve_profile_manager = saved_rpm
         shutil.rmtree(tmp)
     print("OK test_conflict_gap_triggers_interview")
 

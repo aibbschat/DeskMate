@@ -125,6 +125,28 @@ def _polarity_of(text: str, dim: str) -> dict[str, list[str]]:
     return out
 
 
+# 证据门槛：单字命中不算证据（2026-09-22）。
+# 「约」是 social 侧的命中词，可它会命中「条约／大约／约束／预约」——萧哥写历史
+# 小说，「条约」在稿子里遍地都是，于是稿子里的一个「约」被当成了「他最近想找人
+# 社交」，凭空造出一条画像冲突。真实库实例 gap_d0959211 的"相反信号"就只有这一个
+# 字，而它关联的画像明明是「独处、走走、吹吹风」（09-04 他自己答的）。
+# 原则：**宁可少问一次，也不要拿一个字去质疑他变了。**
+_MIN_HIT_CHARS = 2
+
+
+def _strong_polarity(pol: dict[str, list[str]]) -> tuple[Optional[str], list[str]]:
+    """滤掉单字命中后的**唯一**可信极性及其证据词；不唯一就返回 (None, [])。"""
+    strong = {
+        p: [h for h in hs if len(str(h)) >= _MIN_HIT_CHARS]
+        for p, hs in (pol or {}).items()
+    }
+    strong = {p: hs for p, hs in strong.items() if hs}
+    if len(strong) != 1:
+        return None, []
+    side = next(iter(strong))
+    return side, strong[side][:3]
+
+
 def _dim_of(stance) -> Optional[str]:
     """条目属于哪个偏好维度（按 tags 判定，取首个命中的维度标签）。"""
     tags = list(getattr(stance, "tags", []) or [])
@@ -185,16 +207,16 @@ def detect_conflicts(text: str, pm: CognitiveProfileManager) -> list[dict]:
     conflicts: list[dict] = []
 
     for dim, stances in by_dim.items():
-        new_pol = _polarity_of(text, dim)
-        if len(new_pol) != 1:
-            continue  # 无信号，或文本自相矛盾（噪声，不值得问）
-        new_side = next(iter(new_pol))
+        # 只用**可信证据**判方向：单字命中（「约」）不做数，见 _strong_polarity
+        new_side, new_hits = _strong_polarity(_polarity_of(text, dim))
+        if not new_side:
+            continue
 
         for s in stances:
-            old_pol = _polarity_of(getattr(s, "content", ""), dim)
-            if len(old_pol) != 1:
+            old_side, old_hits = _strong_polarity(
+                _polarity_of(getattr(s, "content", ""), dim))
+            if not old_side:
                 continue  # 既有条目本身方向不明，不做判断
-            old_side = next(iter(old_pol))
             if old_side == new_side:
                 continue  # 同极性 = 补充证据，非冲突
 
@@ -210,8 +232,8 @@ def detect_conflicts(text: str, pm: CognitiveProfileManager) -> list[dict]:
                 "new_side": new_side,
                 "old_item": s.id,
                 "old_content": (getattr(s, "content", "") or "")[:60],
-                "old_hits": old_pol[old_side][:3],
-                "new_hits": new_pol[new_side][:3],
+                "old_hits": old_hits,
+                "new_hits": new_hits,
             })
     return conflicts
 
@@ -220,10 +242,20 @@ def _spawn_gaps(conflicts: list[dict], pm: CognitiveProfileManager) -> int:
     """把冲突落成 open gap。返回生成数。"""
     n = 0
     for c in conflicts:
+        # ⚠ reason 会被 `interview._build` 当作 {content} **原样说给萧哥听**
+        # （走 _speakable 洗一遍），所以必须是**第二人称、对他说的话**。
+        # 旧版写的是「既有画像说他偏…是他想法变了」——对着他说话却用「他」，
+        # 他读到的就是一份系统自检记录（2026-09-22 反馈）。
+        old_label = _POLARITY_LABEL.get(c["old_side"], c["old_side"])
+        new_label = _POLARITY_LABEL.get(c["new_side"], c["new_side"])
+        old_ev = "、".join(c.get("old_hits") or [])
+        new_ev = "、".join(c.get("new_hits") or [])
         reason = (
-            f"既有画像说他偏「{_POLARITY_LABEL.get(c['old_side'], c['old_side'])}」"
-            f"（{'、'.join(c['old_hits'])}），但近期的表达出现了相反的信号"
-            f"（{'、'.join(c['new_hits'])}）——是他想法变了，还是不同情境下不一样？"
+            f"我之前记的是你偏「{old_label}」"
+            + (f"（{old_ev}）" if old_ev else "")
+            + f"，但最近的话让我觉得更像「{new_label}」"
+            + (f"（{new_ev}）" if new_ev else "")
+            + "——是你变了，还是分不同情境？"
         )
         try:
             pm.add_gap(

@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import uuid
 from typing import Optional
 
@@ -24,19 +25,109 @@ from .extractor import get_extractor
 
 logger = logging.getLogger(__name__)
 
+# ----------------------------------------------------------------------
+# 呈现层：内部术语 → 对他说的话
+# ----------------------------------------------------------------------
+# 为什么需要（2026-09-22，萧哥反馈「访谈内容可能是你测试的问题，与我关系不大，
+# 所以我点退出了」之后定位）：
+#
+# 素材**全是真的**（两条来自他日记、一条来自他 09-04 的访谈回答），但呈现层把
+# 内部术语原样端了出去，读起来就像系统自检：
+#   ① ``topic`` 是代码里的分类键——`emotion_extract` 的「情感触发·xxx」、
+#      `conflict_gap` 的「画像冲突·xxx」、`emotion_profile` 的「情感·xxx」。
+#      而气泡第一句就是 `想跟你聊聊「{questions[0].topic}」`（InterviewCard.tsx:48）
+#      → 他第一眼看到的是「想跟你聊聊『画像冲突·回血方式』」。
+#   ② ``gap.reason`` 是**第三人称**写的内部描述（源头见 conflict_gap._spawn_gaps
+#      的「既有画像说他偏…是他想法变了」），却被原样贴进对着他说的问句里
+#      → 对着他说话却用「他」，人称错位。
+#   ③ ``content`` 是整段原文硬截 60 字（``content[:60]``）→ 留下「怎么…」这种半截话。
+#
+# 原则：**内部键照旧存**（去重/回灌/排查都靠它），**只洗呈现层**。
+# `_display_topic` 洗标签，`_speakable` 洗正文；两者对存量数据同样生效，
+# 所以不需要做数据迁移。
+_TOPIC_PREFIX_RE = re.compile(r"^\s*(?:情感触发|情感|认知|写作|世界观|画像冲突)\s*[·・:：]\s*")
+_UNCLOSED_TAIL_RE = re.compile(r"[（(][^（()）]{0,8}[）)]?\s*$")
+_SENT_TAIL_RE = re.compile(r"[。！？!?…、，,；;：:\s]+$")
+_SENT_BREAK = "。！？；，、!?;,：:"
+# 旧版把**命中词**塞进括号当证据，于是出现「（约）」这种一个字的"证据"——
+# 读者看不懂，也正是「像系统自检」的观感来源之一。≤2 字的括号一律清掉
+# （「（如爽文）」这种 3 字的是有意义的补充，保留）。
+_TINY_PAREN_RE = re.compile(r"[（(][^（()）]{1,2}[）)]")
+# 提取器截断留下的省略号尾巴（「…怎么…」），连同它前面那个短分句一起剪掉，
+# 免得句子读起来像坏数据。
+_ELLIPSIS_TAIL_RE = re.compile(r"[，,、]?[^，,、。！？]{1,8}$")
+# 旧的「画像冲突」reason 模板的存量兜底：那几个词是写给系统看的，不该出现在对他说
+# 的句子里。源头（conflict_gap._spawn_gaps）已改成第二人称，这里只兜历史数据。
+# ⚠ 不要图省事做**全局**「他→你」替换：正文里的「他」未必指萧盛（如日记里的
+# 「尹逍青春期…对**他**又恨又无奈」指的是尹逍），一换就语义反转（2026-09-22 踩过）。
+_PHRASE_FIXES = (
+    ("既有画像说他偏", "我之前记的是你偏"),
+    ("既有画像说他", "我之前记的是你偏"),
+    ("既有画像说", "我之前记的是"),
+    ("既有画像", "我之前记的"),
+    # 旧模板这句的后半截是「（约）」这种单字命中，_TINY_PAREN_RE 清掉后会在
+    # 「更像是」处留个断口，所以整体换成人话（别再拼「更像是」）。
+    ("但近期的表达出现了相反的信号", "但最近的话让我觉得不太一样"),
+    ("——是他想法变了，还是不同情境下不一样？", "——是你变了，还是分不同情境？"),
+    ("——是他想法变了", "——是你变了"),
+)
+
+
+def _tidy(text: str) -> str:
+    """文本卫生：压平空白 → 清掉旧模板的系统措辞、单字"证据"、截断尾巴。"""
+    t = re.sub(r"\s+", "", str(text or ""))
+    for bad, good in _PHRASE_FIXES:
+        t = t.replace(bad, good)
+    t = _TINY_PAREN_RE.sub("", t)
+    if "…" in t:
+        t = t[: t.rindex("…")]
+        t = _ELLIPSIS_TAIL_RE.sub("", t)
+    t = _UNCLOSED_TAIL_RE.sub("", t)
+    # 截断可能砍掉后半截括号，补上闭合符（「烦（…又恨又无奈」→「…无奈）」），
+    # 免得引用看起来像坏数据。
+    for op, cl in (("（", "）"), ("(", ")")):
+        gap = t.count(op) - t.count(cl)
+        if gap > 0:
+            t += cl * gap
+    return t.strip("「」“”\"' 　")
+
+
+def _display_topic(topic, fallback="") -> str:
+    """把内部标签洗成人话短语（前端气泡/卡片直接显示它）。"""
+    t = _TOPIC_PREFIX_RE.sub("", str(topic or "").strip()).strip(" ·・:：")
+    if not t:
+        # 标签全是前缀（或为空）时，退而用正文开头当话题名
+        t = _SENT_TAIL_RE.sub("", _tidy(fallback))[:18]
+    return t or "这件事"
+
+
+def _speakable(text, limit: int = 64) -> str:
+    """把内部描述洗成可以**直接说给萧盛听**的一句话（必要时截到完整句）。"""
+    t = _tidy(text)
+    if not t:
+        return ""
+    if len(t) > limit:
+        cut = t[:limit]
+        pos = max(cut.rfind(p) for p in _SENT_BREAK)
+        t = cut[:pos] if pos >= limit // 2 else cut
+    return _SENT_TAIL_RE.sub("", t)
+
+
 # 苏格拉底式问题模板（按 mode）
+# ⚠ 模板里**禁止**出现内部术语与第三人称：topic 只当自然指代，content 必须先过
+# `_speakable`（见上）。气泡/卡片会把这两段直接显示给萧哥。
 _Q_TEMPLATES = {
     "clarify": (
-        "关于「{topic}」，你之前留下过有点矛盾的说法（{content}）。"
-        "能跟我说说你真正的立场是什么吗？什么情况下会有不同？"
+        "有件事我没对上：{content}。"
+        "你实际是怎么想的？什么情况下会不一样？"
     ),
     "deepen": (
-        "你提到「{topic}」时写了「{content}」。这背后更底层的判断是什么？"
-        "为什么这对你这么重要？"
+        "你之前说过：{content}。"
+        "这背后更底层的判断是什么？为什么这对你这么重要？"
     ),
     "explore": (
-        "我想更懂你在「{topic}」上的想法。能不能讲一个具体的例子，"
-        "说明你实际会怎么看、怎么做？"
+        "关于「{topic}」，我想多懂你一点。"
+        "能不能讲个具体的例子，说说你实际会怎么看、怎么做？"
     ),
 }
 
@@ -147,23 +238,32 @@ class SocraticInterviewEngine(InterviewEngine):
                 topic = getattr(it, "topic", None) or getattr(it, "domain", "") or ""
                 questions.append(self._build(topic, it.content, "deepen", related_item_id=it.id))
 
-        # 去重（同 topic 只留一条）+ 截断
+        # 去重：按**内部键**（topic_key）而不是呈现用的 topic——两个不同的标签
+        # 洗成人话后可能同名（如「情感·回血方式」与「画像冲突·回血方式」都变
+        # 「回血方式」），拿呈现值去重会把真问题悄悄吃掉。
         seen, uniq = set(), []
         for q in questions:
-            if q["topic"] not in seen:
-                seen.add(q["topic"])
+            key = q.get("topic_key") or q["topic"]
+            if key not in seen:
+                seen.add(key)
                 uniq.append(q)
         return uniq[:limit]
 
     @staticmethod
     def _build(topic, content, mode, related_item_id=None, related_gap_id=None) -> dict:
         tmpl = _Q_TEMPLATES.get(mode, _Q_TEMPLATES["explore"])
-        q_text = tmpl.format(topic=topic or "这个话题", content=(content or "")[:60])
+        # 呈现层清洗：标签不露面、正文成人话（存量数据也照样洗，见文件头说明）
+        disp = _display_topic(topic, content)
+        quote = _speakable(content)
+        q_text = tmpl.format(topic=disp, content=quote)
         return {
             "id": _encode_question_id(related_item_id, related_gap_id, mode),
-            "topic": topic,
+            # ⚠ topic 是**给用户看的**（气泡首句、卡片标题都直接显示它），
+            # 所以这里放洗过的人话版；内部原始标签走 topic_key（去重/排查用）。
+            "topic": disp,
+            "topic_key": topic or "",
             "question": q_text,
-            "context": content,
+            "context": _speakable(content, limit=140),
             "related_item_id": related_item_id,
             "related_gap_id": related_gap_id,
             "priority": 0.8 if mode == "clarify" else 0.5,
