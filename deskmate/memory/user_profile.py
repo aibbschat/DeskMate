@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from ._fs_lock import atomic_write_locked
+
 _DEFAULT_USER = """\
 # 用户画像
 
@@ -37,10 +39,15 @@ def load_user(base_dir: Path) -> str:
 
 
 def save_user(base_dir: Path, content: str) -> None:
-    """保存 USER.md。"""
+    """保存 USER.md。
+
+    ⚠ 加锁原子写（2026-09-23 补）：USER.md 被对话轮管理器方法、后台守护线程
+    ``reflect_and_persist``、定时 ``run_dream`` 三入口并发写，历史上无互斥保护，
+    是「同一件事被重复写成两条」（并发重入）的根因之一。改用项目约定的
+    fcntl 锁 + 原子写（见 ``_fs_lock``）。
+    """
     p = get_user_path(base_dir)
-    p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(content, encoding="utf-8")
+    atomic_write_locked(p, content)
 
 
 def reset_user(base_dir: Path) -> str:

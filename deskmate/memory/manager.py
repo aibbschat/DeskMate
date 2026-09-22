@@ -300,26 +300,32 @@ class DeskMateMemoryManager:
         单行自身就超限时至少保留该行（不写空文件）。
         """
         try:
+            from ._fs_lock import file_write_lock
+
             path = self._trace_dir() / filename
-            with open(path, "a", encoding="utf-8") as f:
-                f.write(json.dumps(record, ensure_ascii=False) + "\n")
-            if path.stat().st_size <= TRACE_MAX_BYTES * TRACE_TRUNCATE_FACTOR:
-                return
-            lines = path.read_text(encoding="utf-8").splitlines()
-            # ① 行数粗剪：只保留最新 TRACE_MAX_LINES 行
-            if len(lines) > TRACE_MAX_LINES:
-                lines = lines[-TRACE_MAX_LINES:]
-            # ② 字节精剪：从尾部（最新）往前累积，超限即止
-            kept: list[str] = []
-            size = 0
-            for ln in reversed(lines):
-                ln_bytes = len(ln.encode("utf-8")) + 1  # +1 = 换行符
-                if kept and size + ln_bytes > TRACE_MAX_BYTES:
-                    break
-                kept.append(ln)
-                size += ln_bytes
-            kept.reverse()
-            path.write_text("\n".join(kept) + "\n", encoding="utf-8")
+            # ⚠ 整段持锁（2026-09-23 补）：append 与「超限截断」是同一文件的
+            # 读-改-写，若不互斥，两个入口可能交错（一行被拆成两半）或截断时
+            # 读到对方刚 append 的行导致计数错位。锁文件与数据同目录（见 _fs_lock）。
+            with file_write_lock(path):
+                with open(path, "a", encoding="utf-8") as f:
+                    f.write(json.dumps(record, ensure_ascii=False) + "\n")
+                if path.stat().st_size <= TRACE_MAX_BYTES * TRACE_TRUNCATE_FACTOR:
+                    return
+                lines = path.read_text(encoding="utf-8").splitlines()
+                # ① 行数粗剪：只保留最新 TRACE_MAX_LINES 行
+                if len(lines) > TRACE_MAX_LINES:
+                    lines = lines[-TRACE_MAX_LINES:]
+                # ② 字节精剪：从尾部（最新）往前累积，超限即止
+                kept: list[str] = []
+                size = 0
+                for ln in reversed(lines):
+                    ln_bytes = len(ln.encode("utf-8")) + 1  # +1 = 换行符
+                    if kept and size + ln_bytes > TRACE_MAX_BYTES:
+                        break
+                    kept.append(ln)
+                    size += ln_bytes
+                kept.reverse()
+                path.write_text("\n".join(kept) + "\n", encoding="utf-8")
         except Exception as e:
             logger.debug("trace write failed (%s): %s", filename, e)
 
@@ -1050,8 +1056,13 @@ class DeskMateMemoryManager:
             content = mark_memory_text(content)[0]
         except Exception as e:  # 分级异常绝不阻断记忆保存
             logger.debug("sensitivity mark failed (skipped): %s", e)
-        self.base_dir.mkdir(parents=True, exist_ok=True)
-        self._global_memory_path().write_text(content, encoding="utf-8")
+        # ⚠ 加锁原子写（2026-09-23 补）：MEMORY.md 被对话轮管理器方法、后台守护
+        # 线程 reflect_and_persist、定时 run_dream 三入口并发写，历史上无互斥保护，
+        # 是「同一件事被重复写成两条」（并发重入）的根因之一。改用项目约定的
+        # fcntl 锁 + 原子写（见 _fs_lock）。
+        from ._fs_lock import atomic_write_locked
+
+        atomic_write_locked(self._global_memory_path(), content)
 
     def _parse_sections(self, memory: str) -> tuple[str, list[dict]]:
         """把 MEMORY.md 解析为 (前言, [分节])。
