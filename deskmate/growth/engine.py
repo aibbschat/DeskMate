@@ -318,7 +318,9 @@ class GrowthEngine:
     def modulate_proactive_threshold(self, base_threshold: float) -> float:
         """proactive 置信度阈值调制：信任感越高 → 阈值越低 → 更敢主动。
 
-        trust_controls_proactive=False 时返回原值（用户可关闭）。
+        trust_controls_proactive=False 时**只关掉 trust 这一项偏移**，
+        意志层（认知缺口 / 高置信立场）的调制仍然生效。
+
         信任感 >0.5 → 阈值下调（更主动）；<0.5 → 阈值上调（更克制）。
 
         意志层增量（W2b-1）：认知把握度叠加。
@@ -326,9 +328,14 @@ class GrowthEngine:
         - 高置信立场（≥0.7 active）≥3 条 → 阈值下调，更敢主动
         阈值来自 will_settings，可在设置区调。空画像 → 只看 trust（现状）。
         """
-        if not self.state.trust_controls_proactive:
-            return base_threshold
-        offset = (self.state.trust - 0.5) * (2 * TRUST_THRESHOLD_SPAN)
+        # ⚠ 2026-09-22：门控只该关掉 **trust 那一项**偏移，不能短路整个函数。
+        # 原写法是 `if not ...: return base_threshold` —— 会把下面的意志层调制
+        # 一起跳过，于是「关掉信任调制」实际变成「关掉全部阈值调制」，
+        # 与该开关的字面语义（信任感是否调制阈值）不符。
+        if self.state.trust_controls_proactive:
+            offset = (self.state.trust - 0.5) * (2 * TRUST_THRESHOLD_SPAN)
+        else:
+            offset = 0.0
         result = base_threshold - offset
         try:
             from deskmate.will.digest import get_digest

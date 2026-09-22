@@ -33,6 +33,12 @@ from deskmate.paths import deskmate_base_dir
 WEEKDAYS = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
 
 # 行为事件 → 人类可读标签
+# kind → 人类可读标签。**这张表同时是「能不能进模式提炼」的白名单**：
+# 凡是出现在喂给 judge 的上下文里的，一律取这里的文案，绝不允许内部键原样上屏
+# （2026-09-22 实测输出过「你常在周一做『roundtable_done』」——同 interview 的
+#  topic_key 教训：**内部键 ≠ 呈现文案**）。
+# ⚠ 因此**技术诊断类事件刻意不登记**：`proactive_tick_http`（排查「访谈没弹」
+#   用的打点）没有人类语义，不登记即自动不参与模式提炼。
 _KIND_LABELS = {
     "suggestion_accepted": "接受我的提醒",
     "creation_approved": "通过创作产出",
@@ -40,6 +46,13 @@ _KIND_LABELS = {
     "correction": "纠正我",
     "focus_deep": "进入深度工作",
     "reschedule": "推迟排期任务",
+    # 2026-09-22 补登记：以下 kind 一直在写、却漏了标签 → 会被 _kind_label 回退成
+    # 内部键直接上屏。它们都有明确的人类语义，登记后既能参与提炼、又输出人话。
+    "roundtable_done": "开圆桌讨论",
+    "chat_turn": "和我聊天",
+    "review_done": "让我审稿",
+    "mention_collab": "点名我协作",
+    "suggestion_pushed": "我提醒了你",
 }
 
 # 模式检测阈值
@@ -50,6 +63,10 @@ HOUR_DOMINANCE = 0.3    # 某小时占 ≥30% 才算「常在 HH:00」
 RECUR_MIN = 3           # 至少 3 次事件才判节奏
 RECUR_TOLERANCE = 0.4   # 间隔方差容忍（±40% 视为稳定）
 FOCUS_DEDUP_SEC = 1800  # 深专注事件 30 分钟内只记一次，避免刷屏
+
+# 每 (base_dir, kind) 最近一次记录落在的「小时桶」（YYYY-MM-DDTHH）。
+# 仅供 log_event(dedup_per_hour=True) 的高频噪声抽样用，见其 docstring。
+_HOURLY_DEDUP: dict[str, str] = {}
 
 
 def _desk_dir(base_dir: str | Path | None) -> Path:
@@ -94,13 +111,27 @@ def _scrub(obj):
 
 
 def log_event(kind: str, payload: dict | None = None, ts: float | None = None,
-              base_dir: str | Path | None = None) -> None:
+              base_dir: str | Path | None = None, *, dedup_per_hour: bool = False) -> None:
     """记录一条行为事件（追加写，幂等安全）。fail-open。
 
     8.4：payload 中的字符串会先经 redact 脱敏，避免敏感原文进入行为日志。
+
+    dedup_per_hour=True：同一 (base_dir, kind) 在同一自然小时内最多落一行。
+    供**高频噪声事件**使用——`suggestion_pushed` 曾占行为日志 94%
+    （13197 / 14069 条），而实测它因推送时段分散**提炼不出任何模式**
+    （`mine_patterns()` 对它零输出）⇒ 纯粹是存储噪声。
+    抽样只保留分布形状：`_detect_weekday/hour_cadence` 判的是"某桶占比是否超阈值"，
+    同小时内多条对占比没有额外信息，所以降噪后仍能提炼「常在何时/周几」。
+    内存态去重，进程重启后同一小时可能多记 1-2 条（可接受，不会失控）。
     """
     try:
         ts = ts if ts is not None else time.time()
+        if dedup_per_hour:
+            key = f"{_desk_dir(base_dir)}|{kind}"
+            bucket = time.strftime("%Y-%m-%dT%H", time.localtime(ts))
+            if _HOURLY_DEDUP.get(key) == bucket:
+                return
+            _HOURLY_DEDUP[key] = bucket
         _append_line(
             _log_path(base_dir),
             {"ts": ts, "kind": str(kind), "payload": _scrub(payload or {})},
@@ -314,16 +345,23 @@ def _hour_of(e: dict) -> int | None:
 
 
 def mine_patterns(base_dir: str | Path | None = None, days: int = 120) -> dict:
-    """提炼近期行为模式。返回结构化 dict，供端点/上下文注入消费。"""
+    """提炼近期行为模式。返回结构化 dict，供端点/上下文注入消费。
+
+    ⚠ 只有 ``_KIND_LABELS`` 登记过的 kind 才参与提炼（**人话白名单**，见该表注释）：
+    未登记者不会把内部键拼进 judge 上下文。``event_count`` / ``kinds`` 仍按
+    **全量**统计（它们是「日志里有什么」的事实，不是分析结论），另给
+    ``patterned_kinds`` 说明实际参与了哪些。
+    """
     since = time.time() - days * 86400
-    events = _load_events(base_dir, since)
-    if not events:
+    all_events = _load_events(base_dir, since)
+    if not all_events:
         return {
             "window_days": days,
             "event_count": 0,
             "patterns": [],
             "context": "",
         }
+    events = [e for e in all_events if str(e.get("kind")) in _KIND_LABELS]
     patterns = (
         _detect_weekday_cadence(events)
         + _detect_hour_cadence(events)
@@ -332,8 +370,9 @@ def mine_patterns(base_dir: str | Path | None = None, days: int = 120) -> dict:
     )
     return {
         "window_days": days,
-        "event_count": len(events),
-        "kinds": sorted({e["kind"] for e in events}),
+        "event_count": len(all_events),
+        "kinds": sorted({e["kind"] for e in all_events}),
+        "patterned_kinds": sorted({str(e.get("kind")) for e in events}),
         "patterns": patterns,
         "context": _format_context(patterns),
     }

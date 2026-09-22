@@ -251,6 +251,61 @@ class TestP2BehaviorLoggingFiveScenarios:
             assert k in logged
 
 
+class TestNoiseControl:
+    """2026-09-22：降噪 + 「内部键不上屏」白名单。
+
+    实测暴露的两个问题：
+    - `suggestion_pushed` 占行为日志 94%（13197/14069 条），却提炼不出任何模式
+      （推送时段分散，过不了 dominance 阈值）→ 纯存储噪声；
+    - 未登记标签的 kind 会被 `_kind_label` 原样回退成内部键，直接拼进喂给 judge
+      的上下文（实测输出过「你常在周一做『roundtable_done』」）。
+    """
+
+    def test_hourly_dedup_collapses_burst(self, tmp_path):
+        """同小时内同类事件只落一行；跨小时照记（保留分布形状）。"""
+        base = _weekday_ts(2026, 8, 3, 9)  # 周一 09:00
+        for i in range(50):                # 同一小时内 50 次推送
+            BP.log_event("suggestion_pushed", {"type": "t", "key": f"k{i}"},
+                         ts=base + i * 30, base_dir=tmp_path, dedup_per_hour=True)
+        for h in range(1, 4):              # 之后 3 个不同小时各 1 次
+            BP.log_event("suggestion_pushed", {"type": "t", "key": "k"},
+                         ts=base + h * 3600, base_dir=tmp_path, dedup_per_hour=True)
+        lines = (tmp_path / "behavior_log.jsonl").read_text(encoding="utf-8").splitlines()
+        assert len(lines) == 4, f"50 条应压成 1 条 + 3 个新小时，实际 {len(lines)}"
+
+    def test_hourly_dedup_off_by_default(self, tmp_path):
+        """默认不去重——correction / focus_deep 等逐条记，行为完全不变。"""
+        base = _weekday_ts(2026, 8, 3, 9)
+        for i in range(5):
+            BP.log_event("correction", {"n": i}, ts=base + i * 30, base_dir=tmp_path)
+        lines = (tmp_path / "behavior_log.jsonl").read_text(encoding="utf-8").splitlines()
+        assert len(lines) == 5
+
+    def test_unlabeled_kind_never_enters_context(self, tmp_path):
+        """未登记标签的 kind（技术诊断）不参与提炼 → 内部键不上屏。"""
+        base = _weekday_ts(2026, 8, 3, 10)  # 周一
+        for i in range(12):
+            _write_event(tmp_path, "proactive_tick_http", base + i * 3600, {})
+        res = BP.mine_patterns(base_dir=tmp_path, days=120)
+        assert res["event_count"] == 12            # 全量统计不受影响
+        assert res["kinds"] == ["proactive_tick_http"]
+        assert res["patterned_kinds"] == []        # 但没有任何事件参与提炼
+        assert res["patterns"] == []
+        assert "proactive_tick_http" not in res["context"]
+
+    def test_labeled_kind_renders_human_text(self, tmp_path):
+        """登记过的 kind 输出人话，绝不出现内部键。"""
+        mon = _weekday_ts(2026, 8, 3, 9)
+        ts_list = [mon + i * 3600 for i in range(7)]                # 周一 7 条
+        ts_list += [mon + 86400 * i + 7200 for i in range(1, 7)]    # 周二..周日各 1 条
+        for t in ts_list:
+            _write_event(tmp_path, "roundtable_done", t, {})
+        res = BP.mine_patterns(base_dir=tmp_path, days=120)
+        assert res["patterns"], "应提炼出「常在周一做圆桌讨论」"
+        assert "roundtable_done" not in res["context"], "内部键不许上屏"
+        assert "开圆桌讨论" in res["context"]
+
+
 class TestPatternThresholds:
     """方案A：避免小样本/单日数据被当成长期规律（P2-10 后续收口）。
 

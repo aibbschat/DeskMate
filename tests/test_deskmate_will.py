@@ -299,17 +299,27 @@ class TestModulateProactiveThreshold:
         # trust=0.5 → offset=0；stance_count=4 ≥ 3 → -0.15
         assert out == pytest.approx(0.35)
 
-    def test_trust_off_returns_original_unchanged(self, tmp_path, monkeypatch):
-        """trust_controls_proactive=False 时不调（无论 digest）。"""
+    def test_trust_off_disables_only_trust_offset(self, tmp_path, monkeypatch):
+        """trust_controls_proactive=False **只关 trust 偏移**，意志层调制仍生效。
+
+        2026-09-22 修正语义：原实现是 `if not flag: return base_threshold` 整体短路，
+        「关掉信任调制」实际变成「关掉全部阈值调制」，与开关字面语义不符。
+        ⚠ 原用例（`assert ... == 0.5`）**区分不了新旧行为**——它同时设了
+        open_gap(10) 与 stance(5)，两个 delta 数值相等、互相抵消，于是无论 digest
+        有没有被调用都返回 0.5。这里改成**只加不减**（仅 open gap）+ trust 取 0.9，
+        使新旧实现给出不同结果，真正锁住新语义。
+        """
         from deskmate.growth.engine import GrowthEngine
         from deskmate.will.digest import WillDigest
 
-        d = WillDigest(available=True, stance_count=5, open_gap_count=10)
+        d = WillDigest(available=True, open_gap_count=10)
         self._engage_will(monkeypatch, d, enabled=True)
         e = GrowthEngine(base_dir=str(tmp_path))
-        e.state.trust = 0.5
+        e.state.trust = 0.9          # 若不关，trust 偏移会把阈值往下拉 0.064
         e.state.trust_controls_proactive = False
-        assert e.modulate_proactive_threshold(0.5) == pytest.approx(0.5)
+        out = e.modulate_proactive_threshold(0.5)
+        # trust=0.9 → offset 应为 0（已关）；open gap 仍生效 → +0.15
+        assert out == pytest.approx(0.65)
 
 
 class TestModulateMemoryBudget:

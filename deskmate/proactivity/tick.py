@@ -541,9 +541,13 @@ class ProactiveEngine:
                 suggestion_key,
             )
             # P2-10：主动建议推送 → 行为日志（供「常在何时被建议/哪类建议」规律积累）
+            # 2026-09-22：按小时抽样（同小时同类只留一条）。它曾占日志 94%
+            # （13197/14069 条）却提炼不出任何模式 → 纯存储噪声，见 log_event docstring。
             try:
                 from deskmate.proactivity.behavior_patterns import log_event
-                log_event("suggestion_pushed", {"type": judgment.suggestion_type, "key": suggestion_key})
+                log_event("suggestion_pushed",
+                          {"type": judgment.suggestion_type, "key": suggestion_key},
+                          dedup_per_hour=True)
             except Exception:
                 pass
 
