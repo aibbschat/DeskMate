@@ -3545,6 +3545,16 @@ def create_app(manager: SessionManager) -> FastAPI:
             stats = store.stats()
             stats["pending_review"] = len(store.list_items(status="summarized"))
             stats["trusted_count"] = len(store.list_items(status="digested"))
+            # 语义检索后端快照（2026-09-22）：本机主对话 provider 不覆盖 /embeddings，
+            # 语义通道一度「接线完整但永远返回空」，而失败只落在日志里、看不见。
+            # 把后端/模型/最近失败原因一并暴露，让「语义检索跑在哪个模型上」可查而非靠猜。
+            # ⚠ 该调用只查包是否存在，不加载模型（不会把 100MB 的 onnxruntime 拉进进程）。
+            try:
+                from deskmate.memory.semantic_search import backend_status
+
+                stats["embedding_backend"] = backend_status()
+            except Exception:
+                stats["embedding_backend"] = {"error": "unavailable"}
             return stats
         except Exception:
             logging.exception("deskmate external status failed")

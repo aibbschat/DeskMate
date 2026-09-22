@@ -57,6 +57,13 @@ messaging = ["python-telegram-bot>=21", "slack-bolt>=1.18", "aiohttp>=3.9"]
 browser = ["playwright>=1.44"]
 # AWS Bedrock provider (lazy-imported; desktop builds bundle it, pip users opt in).
 bedrock = ["boto3>=1.34"]
+# 本地语义检索（deskmate/memory/local_embed.py）：fastembed + BGE-small-zh。
+# 为什么走本地：embedding 凭证来自主对话 provider，而本机 provider（火山 Agent Plan
+# 实测不覆盖 /embeddings / 小米 / 通义）都不适合；且关键词兜底对中文自然语言查询
+# 实测 0 命中（中文长句会被整串 LIKE）。可选依赖 → 不装即自动回落，行为不变。
+# 体积：依赖约 185MB（onnxruntime 80MB 是大头）+ 模型约 102MB（首次下载或随包分发）。
+# 许可：fastembed Apache-2.0 / onnxruntime MIT / BGE 模型 MIT ⇒ DMG-safe。
+deskmate-embed = ["fastembed>=0.4"]
 
 [project.scripts]
 openworker = "coworker.cli:main"

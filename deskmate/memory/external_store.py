@@ -639,9 +639,17 @@ class ExternalStore:
             return False
 
     def update_embedding(self, item_id: str, embedding: list[float], model: str = "") -> bool:
-        """写入向量（BLOB），并推进状态到 embedded。
+        """写入向量（BLOB），并**单调**推进状态到 embedded。
 
         embedding 是 float 列表，序列化为 array.array('f') 的二进制。
+
+        ⚠ 状态只能前进不能后退（2026-09-22 修）：状态机是
+        raw → summarized → embedded → digested → archived，
+        而 ``ingestion_pipeline`` / ``promote_approved`` 会**直接**把 summarized
+        标成 digested（不经过 embedded）。若这里无条件写 ``embedded``，那么给一条
+        **已 digested 但没向量**的条目补向量，就会把它**降级**回 embedded ——
+        而检索闸门只放行 digested，等于「补了向量反而搜不到了」，同时状态统计也失真。
+        故用 SQL 里的 CASE 原地保留 digested / archived（单条语句，无读改写竞态）。
         """
         if not embedding:
             return False
@@ -651,8 +659,14 @@ class ExternalStore:
             with self._connect() as conn:
                 cur = conn.execute(
                     "UPDATE external_items SET embedding=?, embedding_model=?, embedding_dim=?, "
-                    "ingestion_status=?, updated_at=? WHERE id=?",
-                    (blob, model, len(embedding), STATUS_EMBEDDED, _now_iso(), item_id),
+                    "ingestion_status=CASE WHEN ingestion_status IN (?, ?) "
+                    " THEN ingestion_status ELSE ? END, "
+                    "updated_at=? WHERE id=?",
+                    (
+                        blob, model, len(embedding),
+                        STATUS_DIGESTED, STATUS_ARCHIVED, STATUS_EMBEDDED,
+                        _now_iso(), item_id,
+                    ),
                 )
             return cur.rowcount > 0
         except sqlite3.Error:

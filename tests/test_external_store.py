@@ -578,3 +578,59 @@ class TestCacheFieldIntegrity:
         assert searcher.semantic_search("未验证", trusted_only=True) == []
         # 闸门关：查得到（缓存档位不同，必须重查而不是复用）
         assert len(searcher.semantic_search("未验证", trusted_only=False)) == 1
+
+
+# =====================================================================
+# 「digested 但没向量」的孤儿条目（2026-09-22 修）
+# =====================================================================
+class TestDigestedOrphanBackfill:
+    """digested 条目必须**既能补向量、又不会因补向量被降级**。
+
+    真实背景：入库流水线（``ingestion_pipeline`` 的自动升格 / ``promote_approved``
+    的人工裁决）把 summarized **直接**标成 digested，从不经过 embedded；而老版
+    ``embed_pending_items`` 只挑 raw/summarized，老版 ``update_embedding`` 又无条件
+    写 embedded —— 两头夹击，一条 digested 且没向量的条目**既搜不到也补不上**
+    （真实库 112 条 digested 全躺在这列）。健康检查时「digested 数 > 0 但向量数 = 0」
+    就是本缺陷的指纹。
+    """
+
+    def test_update_embedding_does_not_demote_digested(self, store):
+        it = store.add_item("已验证但没向量", title="已验证但没向量")
+        store.mark_digested(it["id"])
+        assert store.get_item(it["id"])["ingestion_status"] == "digested"
+
+        assert store.update_embedding(it["id"], [0.9, 0.1, 0.0], model="m") is True
+
+        # 补向量后仍是 digested；降级成 embedded 会被检索闸门踢出去（「补了反而搜不到」）
+        assert store.get_item(it["id"])["ingestion_status"] == "digested"
+        assert len(store.load_embeddable_items()) == 1
+
+    def test_update_embedding_still_advances_raw_to_embedded(self, store):
+        """单调 ≠ 不动：raw / summarized 仍要推进到 embedded（未验证不得进检索）。"""
+        it = store.add_item("原始条目")
+        store.update_embedding(it["id"], [0.9, 0.1, 0.0], model="m")
+        assert store.get_item(it["id"])["ingestion_status"] == "embedded"
+        assert store.load_embeddable_items() == []
+
+    def test_embed_pending_picks_up_digested_without_vector(self, store, monkeypatch):
+        """孤儿条目必须能被批量管道捡起来补向量，补完即可被语义检索到。"""
+        import deskmate.memory.semantic_search as ss
+
+        it = store.add_item("孤儿条目", title="孤儿条目")
+        store.mark_digested(it["id"])  # 先进 digested，且此时没有向量
+        monkeypatch.setattr(
+            ss, "_call_embedding_api", lambda texts: [[0.9, 0.1, 0.0] for _ in texts]
+        )
+
+        searcher = ss.SemanticSearcher(store=store)
+        result = searcher.embed_pending_items(limit=5)
+
+        assert result["processed"] == 1
+        assert result["embedded"] == 1
+        assert store.get_item(it["id"])["ingestion_status"] == "digested"
+
+        # 端到端：补完就能被语义检索命中（这正是「修改前永远搜不到」的那一步）
+        monkeypatch.setattr(ss, "embed_text", lambda text: [0.9, 0.1, 0.0])
+        searcher.invalidate_cache()
+        hits = searcher.semantic_search("孤儿", limit=5)
+        assert [h["id"] for h in hits] == [it["id"]]
