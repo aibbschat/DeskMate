@@ -7,6 +7,7 @@ stub 掉真实 CognitiveExtractor（explore 模式提取新认知时写临时库
 
 from __future__ import annotations
 
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -18,7 +19,7 @@ from deskmate.cognitive.models import CognitiveProfile, Stance, CognitiveGap, So
 
 
 def _hermetic():
-    """把认知层全部默认指向临时库，返回 saved 供还原。"""
+    """把认知层**与统一根目录**全部指向临时库，返回 saved 供还原。"""
     tmp = Path(tempfile.mkdtemp())
     db = tmp / "deskmate.db"
 
@@ -35,7 +36,19 @@ def _hermetic():
         "ival_CognitiveStore": ival.CognitiveStore,
         "ival_gpm": ival.get_profile_manager,
         "ival_get_extractor": ival.get_extractor,
+        "env_DESKMATE_DIR": os.environ.get("DESKMATE_DIR"),
     }
+
+    # ⚠ 只 patch 认知层**不够**（2026-09-22 实测）：
+    # ``answer_interview`` 末段还会调 ``EmotionTimeline().record_statement()``，它走
+    # ``deskmate.paths.deskmate_base_dir()`` 读 ``DESKMATE_DIR``——认知层被 _TmpStore
+    # 挡住了，情感层却**落进真实库**。指纹很好认：真实库 ``json_blobs.emotion_timeline``
+    # 的 statements 里躺着测试字面量「访谈回答内容」「我的回答」，而 ``interview_qa``
+    # 是干净的（它走被隔离的 CognitiveStore）。
+    # 走 pytest 时 conftest 已设 DESKMATE_DIR 兜住了；但本文件末尾有 ``unittest.main()``
+    # 直跑入口，直跑时 conftest **完全不参与** → 只能靠这里兜住。
+    os.environ["DESKMATE_DIR"] = str(tmp)
+
     storemod.CognitiveStore = _TmpStore
     pmod.CognitiveStore = _TmpStore
 
@@ -78,6 +91,11 @@ def _restore(saved):
     ival.CognitiveStore = saved["ival_CognitiveStore"]
     ival.get_profile_manager = saved["ival_gpm"]
     ival.get_extractor = saved["ival_get_extractor"]
+    _old_dir = saved.get("env_DESKMATE_DIR")
+    if _old_dir is None:
+        os.environ.pop("DESKMATE_DIR", None)
+    else:
+        os.environ["DESKMATE_DIR"] = _old_dir
 
 
 def _make_profile():
@@ -294,4 +312,8 @@ class TestInterview(unittest.TestCase):
 
 
 if __name__ == "__main__":
+    # 直跑时 conftest 不参与：先自己把统一根目录挪到临时目录，兜住 _hermetic() 之外
+    # 的一切（模块级代码 / 将来忘了包隔离的用例），避免写进真实 ~/.deskmate。
+    if not os.environ.get("DESKMATE_DIR"):
+        os.environ["DESKMATE_DIR"] = tempfile.mkdtemp(prefix="deskmate-selftest-")
     unittest.main(verbosity=2)
