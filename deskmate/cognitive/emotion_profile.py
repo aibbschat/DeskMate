@@ -201,15 +201,31 @@ _EMOTIONAL_GAP_TOPICS = [
     ("情感·关怀偏好", "你喜欢被关心的方式我还不清楚——是希望我多问几句进度，还是更想一个人待着？"),
     ("情感·回血方式", "你说低落时会靠看片、读书、出去走走回血，除此之外还有别的吗？"),
 ]
+# topic → 它对应的情感维度 tag。用于判断「这一维度是否已经填实」——
+# 已填实就不要再问（已知的事不必重问）。tag 与 emotion_extract 写入一致。
+_GAP_TOPIC_TO_TAG = {
+    "情感·关怀偏好": _TAG_CARE,
+    "情感·回血方式": _TAG_RECOVERY,
+}
 
 
 def ensure_emotional_gaps(pm=None, base_dir=None) -> list[dict]:
-    """确保情感层存在可访谈的 open gap（幂等，只补一次）。
+    """确保情感层「仍空白」的维度都有可访谈的 open gap（按维度幂等，可再补种）。
 
-    情感画像刚起步，触发点/回血方式已有真实数据，但「关怀偏好」等仍空；
-    没有 open gap，InterviewEngine 就不会主动提问。本函数在首次启用时
-    补上这些 explore 型 gap，让情感访谈有可问的东西。
-    幂等：meta 标记后不再重复补。fail-open。
+    为什么不能只播一次（2026-09-22 修）：旧实现靠 meta 标记 ``emotional_gaps_initialized``
+    一次性短路——只要播过一次，**此后任何新增的 topic 都再也播不进来**，
+    连「某维度后来变空了」也补不回。那是把「初始化」误当成了「永久完成」。
+    现在改为按**两条独立判据**决定是否播：
+      · 该 topic 已存在于 cognitive_gaps（不论 open/resolved）→ 不重播同一句话；
+      · 该维度已有 active 条目（tag 命中）→ 不问已知的事。
+    于是本函数幂等且**可补种**：清空的维度、新增的 topic 都会在下一 tick 自动补齐；
+    已答完的维度则静默不动（当前情感层三个维度均已有实证数据 → 行为与修复前一致，
+    这是**语义修正**而非新增题源）。
+
+    ⚠ 不新增/不臆造题面：``_EMOTIONAL_GAP_TOPICS`` 里每一条都必须有真实依据，
+    否则就变成「无据的 gap」，违反 ``interview._gap_is_askable`` 的前提。
+
+    fail-open：任何异常都不影响 tick 主流程。
     pm：测试可注入 CognitiveProfileManager(layer='emotional')；默认全局。
     base_dir：多 workspace 隔离入口——此前 tick 无参调用，gap 永远播进真实库。
     """
@@ -218,15 +234,23 @@ def ensure_emotional_gaps(pm=None, base_dir=None) -> list[dict]:
             from deskmate.cognitive.profile import resolve_profile_manager
             pm = resolve_profile_manager(layer="emotional", base_dir=base_dir)
         store = pm.store
-        if store.get_meta(_EMOTIONAL_GAP_META_KEY, default=False):
-            return []
+        profile = pm.profile
+        existing_topics = {g.topic for g in profile.cognitive_gaps}
+        filled_tags: set[str] = set()
+        for s in getattr(profile, "stances", []) or []:
+            if getattr(s, "status", "active") != "active":
+                continue
+            filled_tags |= set(getattr(s, "tags", []) or [])
         added = []
-        existing_topics = {g.topic for g in pm.profile.cognitive_gaps}
         for topic, reason in _EMOTIONAL_GAP_TOPICS:
             if topic in existing_topics:
                 continue
+            tag = _GAP_TOPIC_TO_TAG.get(topic)
+            if tag and tag in filled_tags:
+                continue  # 维度已有实证数据，不必再问
             g = pm.add_gap(topic, reason, priority=0.7)
             added.append({"gap_id": g.id, "topic": topic})
+        # meta 仅作「初始化跑过」的留痕，不再作为短路条件
         store.set_meta(_EMOTIONAL_GAP_META_KEY, True)
         return added
     except Exception:

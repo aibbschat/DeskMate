@@ -107,7 +107,13 @@ TRACE_MAX_LINES = 2_000                # 单文件行数上限，超出截断（
 # P0-5 记忆去重：离线近重复相似度阈值（保守，宁可漏判也不误删真实信息；
 # 语义级近义重复靠 LLM 在线四操作兜底）。CJK 字符 unigram Jaccard。
 _USER_DUP_SIM = 0.85
-TRACE_MAX_BYTES = 512 * 1024           # 单文件字节上限
+TRACE_MAX_BYTES = 512 * 1024           # 截断**目标**：截断后必须落回该字节以内
+# ⚠ 触发阈值必须与截断目标分离（2026-09-22）：若「超上限即截断、截到刚好不超」，
+# 文件会长期贴着上限，于是**几乎每次追加都触发一次全量重写**（滑动窗口的固有毛病）。
+# 改成「涨到上限 ×2 才截断、截回上限以内」后，每次重写 512KB 换取 512KB 新数据，
+# 摊销比 1:1（最优），且文件体积仍有硬边界。语义：TRACE_MAX_BYTES 是截断目标，
+# 文件实际大小在 [上限, 2×上限) 之间浮动。
+TRACE_TRUNCATE_FACTOR = 2
 
 # P0-6 记忆分层净化 + 时间感知
 # 书稿/项目内容关键词（保守匹配，命中才判定为「书的记忆」，避免误迁「关于你」的事实）。
@@ -278,14 +284,42 @@ class DeskMateMemoryManager:
         return d
 
     def _append_trace(self, filename: str, record: dict) -> None:
-        """追加一行 trace 记录；单文件超过字节上限时截断保留最新。"""
+        """追加一行 trace 记录；超出上限时截断保留最新。
+
+        ⚠ 双阈值口径（2026-09-22 修）：原实现的条件按**字节**判
+        （``size > TRACE_MAX_BYTES``），截断却只保留最后 ``TRACE_MAX_LINES`` **行**——
+        两个口径打架。当单行平均长度 > 512KB / 2000（inject.jsonl 实测
+        2.72MB / 2000 行 ≈ 1.4KB 每行）时，截断完仍远超字节上限 → 条件
+        **每次都为真** → 每次 append 都全量读 + 全量重写 2.72MB
+        （写放大 ~1900 倍，纯白烧磁盘 IO，而且是在每轮对话的热路径上）。
+
+        修法：以**字节**为截断目标，从头部按整行丢弃直到落进目标以内
+        （行数上限只作辅助约束，先粗剪再按字节精剪）。并且**触发阈值 ≠ 截断目标**
+        ——超出 ``TRACE_MAX_BYTES × TRACE_TRUNCATE_FACTOR`` 才截断，截回目标以内，
+        否则文件会贴着上限导致每次追加都全量重写（摊销比退化为 1:N）。
+        单行自身就超限时至少保留该行（不写空文件）。
+        """
         try:
             path = self._trace_dir() / filename
             with open(path, "a", encoding="utf-8") as f:
                 f.write(json.dumps(record, ensure_ascii=False) + "\n")
-            if path.stat().st_size > TRACE_MAX_BYTES:
-                lines = path.read_text(encoding="utf-8").splitlines()[-TRACE_MAX_LINES:]
-                path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+            if path.stat().st_size <= TRACE_MAX_BYTES * TRACE_TRUNCATE_FACTOR:
+                return
+            lines = path.read_text(encoding="utf-8").splitlines()
+            # ① 行数粗剪：只保留最新 TRACE_MAX_LINES 行
+            if len(lines) > TRACE_MAX_LINES:
+                lines = lines[-TRACE_MAX_LINES:]
+            # ② 字节精剪：从尾部（最新）往前累积，超限即止
+            kept: list[str] = []
+            size = 0
+            for ln in reversed(lines):
+                ln_bytes = len(ln.encode("utf-8")) + 1  # +1 = 换行符
+                if kept and size + ln_bytes > TRACE_MAX_BYTES:
+                    break
+                kept.append(ln)
+                size += ln_bytes
+            kept.reverse()
+            path.write_text("\n".join(kept) + "\n", encoding="utf-8")
         except Exception as e:
             logger.debug("trace write failed (%s): %s", filename, e)
 
@@ -961,8 +995,29 @@ class DeskMateMemoryManager:
         return self.base_dir / "MEMORY.md"
 
     def _load_global_memory(self) -> str:
-        p = self._global_memory_path()
+        """读「全局记忆」= MEMORY.md + 日记视图（diary_memory.md）拼接。
+
+        ⚠ 轮内重复读（2026-09-22 加缓存）：一轮对话里本函数会被 prefetch 的三层
+        各调一次（``_get_core_memory`` / ``_search_recent_memory`` /
+        ``_search_global_memory``），再外加 system prompt 组装 —— 同一份文件被
+        重复读盘 3–4 次并重复拼接。这里加一层**按文件指纹自失效**的 memo：
+        指纹 = (路径, mtime_ns, size)，文件没变就复用，**任何写入都会立刻改指纹
+        → 自动重读**。因此不需要人工判断「何时该失效」，也不存在读到陈旧记忆的窗口。
+        """
+        sources = (self._global_memory_path(), self.base_dir / "diary_memory.md")
+        fingerprint: list[tuple] = []
+        for sp in sources:
+            try:
+                st = sp.stat()
+                fingerprint.append((str(sp), st.st_mtime_ns, st.st_size))
+            except OSError:
+                fingerprint.append((str(sp), None, None))
+        key = tuple(fingerprint)
+        if getattr(self, "_gm_cache_key", None) == key and hasattr(self, "_gm_cache_val"):
+            return self._gm_cache_val
+
         parts: list[str] = []
+        p = self._global_memory_path()
         if p.is_file():
             parts.append(p.read_text(encoding="utf-8"))
         # 🩷 日记沉淀视图（来自 DiaryStore / SQLite，脱离全局 MEMORY.md 避免截断/改写）。
@@ -971,7 +1026,10 @@ class DeskMateMemoryManager:
         diary_view = self.base_dir / "diary_memory.md"
         if diary_view.is_file():
             parts.append(diary_view.read_text(encoding="utf-8"))
-        return "\n\n".join(parts)
+        value = "\n\n".join(parts)
+        self._gm_cache_key = key
+        self._gm_cache_val = value
+        return value
 
     def _save_global_memory(self, content: str) -> None:
         # 写回前剥离「§ 日记沉淀」：内容源自 diary_memory.md 视图，写回即自我复制

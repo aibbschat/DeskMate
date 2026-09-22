@@ -39,8 +39,40 @@ _EMBED_BATCH_SIZE = 64
 _EMBED_MAX_CHARS = 8000
 # 混合检索中语义检索的权重（0=纯关键词，1=纯语义）
 _DEFAULT_ALPHA = 0.7
-# 语义检索候选集上限（从全量向量条目中取 top-N，避免排序开销过大）
-_SEMANTIC_CANDIDATE_LIMIT = 200
+# ⚠ 此处原有 `_SEMANTIC_CANDIDATE_LIMIT = 200`（「取 top-N 避免排序开销」），
+# 但全仓库零引用：`semantic_search()` 实际遍历**全部**已向量化条目算余弦，
+# 无任何候选截断。该常量既没生效又误导人以为有 top-200 优化，2026-09-22 删除。
+# 若将来 external_items 量级涨到万级、纯 Python 余弦变慢，再引入真正的
+# 候选预筛（或向量索引），而不是留一个不接线的数字。
+
+# embedding 失败的可观测性（2026-09-22）：失败**是设计内的** fail-open，
+# 但「静默」不是——此前只打 logger.debug，默认级别下等于无人知晓，
+# 于是「195 条外部信息 0 条有向量、语义检索永远退化为关键词」这个事实
+# 长期不可见。同一类错误节流打点，并保留最近一次原因供诊断查询。
+_EMBED_ERR_LOG_INTERVAL = 600.0  # 秒；同一类失败最多每 10 分钟刷一条 warning
+_last_error: Optional[str] = None
+_last_error_logged_at: float = 0.0
+
+
+def _note_embed_failure(reason: str) -> None:
+    """记录一次 embedding 失败并**节流告警**（不再是静默的 debug）。"""
+    global _last_error, _last_error_logged_at
+    _last_error = reason
+    now = time.time()
+    if now - _last_error_logged_at >= _EMBED_ERR_LOG_INTERVAL:
+        _last_error_logged_at = now
+        logger.warning(
+            "semantic_search: embedding 不可用 → 语义检索降级为纯关键词（原因：%s）。"
+            "当前模型名=%s；若需语义通道，请确认 provider 支持 /embeddings 且该模型可用"
+            "（可用 DESKMATE_EMBEDDING_MODEL 覆盖）。",
+            reason,
+            _embedding_model(),
+        )
+
+
+def last_embed_error() -> Optional[str]:
+    """最近一次 embedding 失败原因（None = 尚未失败过）。供诊断 / MCP 查询。"""
+    return _last_error
 
 
 def _embedding_model() -> str:
@@ -72,7 +104,7 @@ def _call_embedding_api(texts: list[str]) -> Optional[list[list[float]]]:
 
         api_key, base_url, _ = _resolve_provider()
         if not api_key:
-            logger.debug("semantic_search: 无 LLM provider API key，跳过 embedding")
+            _note_embed_failure("无 LLM provider API key")
             return None
 
         client = OpenAI(api_key=api_key, base_url=base_url, timeout=60.0)
@@ -90,7 +122,9 @@ def _call_embedding_api(texts: list[str]) -> Optional[list[list[float]]]:
             )
         return vectors
     except Exception as exc:
-        logger.debug("semantic_search: embedding 调用失败：%s", exc)
+        # 不再静默：fail-open 是设计（不阻断主流程），但**失败必须可见**，
+        # 否则「语义通道其实一直没开」会永远无人知晓（见 _note_embed_failure）。
+        _note_embed_failure(f"{type(exc).__name__}: {exc}")
         return None
 
 

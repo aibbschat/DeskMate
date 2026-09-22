@@ -356,9 +356,18 @@ def _maybe_evolve_on_correction(
     """
     if not (last_user and last_asst):
         return
+    # ⚠ 信号词表（2026-09-22 收紧）：此表是「本轮用户在纠正 AI 吗」的**唯一**
+    # 判据，而判中的后果之一是 `GrowthEngine.record_correction()` 扣信任感
+    # （trust -0.02，且是**自动、单向**的——正向反馈要用户显式点「接受/定稿」）。
+    # 旧表含「不是 / 应该是 / 重新 / 改一下 / 错误」这类中文高频歧义词：
+    #   · 「不是明天，是后天」——他在说自己的安排，不是 AI 出错
+    #   · 「改一下标题」「重新生成一版」——普通指令，不是纠错
+    # 结果信任感被误扣至归零（真实库实测 trust=0.0；behavior_log 里 correction
+    # 触发 85 次，而 suggestion_accepted / creation_approved 为 0 次）。
+    # 现在只保留**明确指向对方输出**的强信号词。
     _SIGNALS = (
-        "不对", "错了", "错误", "纠正", "应该是", "不是", "搞错",
-        "重新", "修正", "改一下", "你弄", "你搞", "记错", "弄反", "搞反",
+        "不对", "错了", "搞错", "记错", "弄反", "搞反", "纠正",
+        "你弄", "你搞", "你写错",
     )
     if not any(sig in last_user for sig in _SIGNALS):
         return

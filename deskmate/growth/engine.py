@@ -670,7 +670,17 @@ class GrowthEngine:
             note: 用户纠正的**原话**（调用方手里有 last_user）。不传则沿用
                 硬编码的「用户明确纠正」，日记就只能写出一句没有内容的话。
         """
-        self._gain_relation("trust", TRUST_CORRECTED, 0.0, 1.0)
+        # ⚠ 同日去抖（2026-09-22）：纠正检测是 after_action 每轮跑的启发式，
+        # 一次长会话里同一件事可能连续多轮命中信号词 → 信任感被反复扣减
+        # （每次 -0.02，25 次即归零，而正向回升要用户显式点「接受/定稿」）。
+        # 信任受损是「今天发生了一件事」级别的事件，一天记一次就够；
+        # 默契/子域/事件计数**不**去抖——每次纠正都是一条独立的校准信息。
+        day = self._now_date()
+        already_corrected_today = int(
+            (self.state.daily_events.get(day) or {}).get("user_corrected", 0)
+        )
+        if already_corrected_today == 0:
+            self._gain_relation("trust", TRUST_CORRECTED, 0.0, 1.0)
         self._gain_relation("empathy", EMPATHY_CORRECTED)
         # P0-4：纠正 = 理解校准信号，必须计入「记忆」默契子域。
         # 此前只在总数上惩罚（trust 降），用户感受不到「它因我的纠正而
