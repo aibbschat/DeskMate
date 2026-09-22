@@ -4564,10 +4564,11 @@ class SessionManager:
         already approved at creation.
 
         Fix: extend the writable set to (a) the user's standard drop folders
-        (Desktop / Documents / Downloads) and (b) any explicit write target the task's
-        consent card already surfaced + the human approved. All are the user's own local
-        folders, so this only aligns the file tools with what AUTO already permits for
-        shell redirection. Hard floors (CRITICAL governance denials) still apply.
+        (Desktop / Documents / Downloads), (b) any explicit write target the task's
+        consent card already surfaced + the human approved, and (c) ~/.deskmate/auto_tasks
+        for the local assistant's own ledger. All are the user's own local folders, so
+        this only aligns the file tools with what AUTO already permits for shell
+        redirection. Hard floors (CRITICAL governance denials) still apply.
         """
         from ..automation.models import rule_parts
         from ..risk import WRITE_TOOLS
@@ -4597,6 +4598,18 @@ class SessionManager:
                 parent = p if p.is_dir() else p.parent
                 if parent.is_dir() and parent != ws:
                     roots.append(RootDir(path=parent, writable=True, label=parent.name))
+        # (c) The local assistant's own ledger lives outside any workspace. Its scheduled
+        # tasks legitimately append to it (daily reading → ~/.deskmate/auto_tasks/
+        # timeline.jsonl) and used to fail with "Operation not permitted", handing the
+        # user a .sh to run by hand instead. Scope: only that subdirectory — ~/.deskmate
+        # itself holds settings files, and no other agent needs the ledger.
+        if getattr(task, "agent", None) == "deskmate":
+            try:
+                ledger = (Path.home() / ".deskmate" / "auto_tasks").expanduser().resolve()
+            except Exception:
+                ledger = None
+            if ledger is not None and ledger.is_dir():
+                roots.append(RootDir(path=ledger, writable=True, label="auto_tasks"))
         # De-duplicate by resolved path (keep first), preserving the workspace as index 0.
         seen: set[str] = set()
         deduped: list = []

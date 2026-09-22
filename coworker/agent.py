@@ -414,11 +414,19 @@ def build_engine(
     # Build the sandbox config (None when disabled or unsupported → unsandboxed).
     sandbox_cfg = None
     if eff_sandbox_enabled and ws is not None:
-        from .sandbox import sandbox_config_from_dict
+        from .sandbox import mounts_from_write_roots, sandbox_config_from_dict
 
         sd: dict[str, object] = {"network_allow": eff_sandbox_network}
         if eff_sandbox_deny:
             sd["deny_paths"] = list(eff_sandbox_deny)
+        # Roots already scope the file tools and the permission engine; the shell has to
+        # see the SAME write scope, or a read-write root is a promise the sandbox breaks
+        # the moment a *command* (not a file tool) writes into it — a scheduled task
+        # delivering into ~/Documents died with "Operation not permitted" while
+        # write_file into that very same folder succeeded. Mounting roots grants no new
+        # authority (each was already granted write access), and deny_paths still
+        # outranks any mount, so secrets stay sealed.
+        sd["mounts"] = mounts_from_write_roots(root_list)
         sandbox_cfg = sandbox_config_from_dict(ws, sd)
     executor = LocalExecutor(cwd=ws, sandbox=sandbox_cfg) if ws is not None else None
     todo = TodoList()

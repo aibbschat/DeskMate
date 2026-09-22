@@ -25,6 +25,8 @@ from .config import (
     Mount,
     SandboxConfig,
     default_sandbox_config,
+    mounts_from_write_roots,
+    parse_mounts,
     sandbox_config_from_dict,
 )
 from .macos_sandbox import MacOSSandbox
@@ -36,6 +38,8 @@ __all__ = [
     "Mount",
     "ExecutionResult",
     "default_sandbox_config",
+    "mounts_from_write_roots",
+    "parse_mounts",
     "sandbox_config_from_dict",
     "build_sandbox",
     "MacOSSandbox",

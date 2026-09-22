@@ -18,10 +18,12 @@ sandbox-exec available.
 from __future__ import annotations
 
 import os
+import re
 import shutil
 
 import pytest
 
+from coworker.roots import RootDir
 from coworker.sandbox import (
     ExecutionResult,
     Mount,
@@ -29,6 +31,7 @@ from coworker.sandbox import (
     SandboxConfig,
     build_sandbox,
     default_sandbox_config,
+    mounts_from_write_roots,
     sandbox_config_from_dict,
 )
 
@@ -149,3 +152,74 @@ def test_execution_result_dataclass():
 )
 def test_build_sandbox_returns_backend_on_macos():
     assert isinstance(build_sandbox(default_sandbox_config("/tmp/ow")), MacOSSandbox)
+
+
+# ---------------------------------------------------------------------------
+# Roots → mounts: a read-write root must reach the shell's write allow-list.
+# ---------------------------------------------------------------------------
+
+
+def test_mounts_from_write_roots_takes_only_writable_roots(tmp_path):
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    ro = tmp_path / "ro"
+    ro.mkdir()
+
+    mounts = mounts_from_write_roots(
+        [
+            RootDir(path=ws, writable=True, label="workspace"),
+            RootDir(path=docs, writable=True, label="docs"),
+            RootDir(path=ro, writable=False, label="ro"),
+        ]
+    )
+    assert [m.path for m in mounts] == [str(ws.resolve()), str(docs.resolve())]
+    assert all(m.writable for m in mounts)
+
+
+def test_mounts_from_write_roots_is_tolerant_and_dedupes(tmp_path):
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    assert mounts_from_write_roots(None) == []
+    assert mounts_from_write_roots([]) == []
+    # Bare strings/dicts without write access, and junk objects, are all skipped.
+    assert mounts_from_write_roots(["plain/path", object(), {"path": "/x"}]) == []
+    dupes = mounts_from_write_roots(
+        [RootDir(path=docs, writable=True), RootDir(path=docs, writable=True)]
+    )
+    assert len(dupes) == 1
+
+
+def test_write_roots_reach_the_profile_write_allowlist(tmp_path):
+    """The root must land in the `allow file-write*` block — not merely appear
+    somewhere in the profile (it would also match a read/deny rule)."""
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    docs = tmp_path / "docs"
+    docs.mkdir()
+
+    cfg = sandbox_config_from_dict(
+        ws, {"mounts": mounts_from_write_roots([RootDir(path=docs, writable=True)])}
+    )
+    profile = MacOSSandbox(cfg).compile_profile()
+    write_allow = set(
+        re.findall(r'\(allow file-write\*\s*\(subpath "([^"]+)"\)', profile)
+    )
+    assert str(docs.resolve()) in write_allow
+
+
+def test_config_accepts_mount_instances_and_dicts(tmp_path):
+    cfg = sandbox_config_from_dict(
+        tmp_path,
+        {
+            "mounts": [
+                Mount(path="/data", writable=True),
+                {"path": "/other", "writable": False},
+            ]
+        },
+    )
+    assert cfg.mounts == [
+        Mount(path="/data", writable=True, executable=True),
+        Mount(path="/other", writable=False, executable=True),
+    ]

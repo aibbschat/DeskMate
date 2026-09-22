@@ -19,7 +19,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Iterable, Optional
 
 
 @dataclass
@@ -84,6 +84,51 @@ def default_sandbox_config(workspace_dir: str | Path) -> SandboxConfig:
     )
 
 
+def mounts_from_write_roots(roots: Iterable[Any] | None) -> list[Mount]:
+    """Turn session roots that grant write access into writable sandbox mounts.
+
+    A ``RootDir(writable=True)`` is a promise made to the agent *and to the user*:
+    the permission engine and the file tools both honour it. The shell has to as
+    well, or a read-write root works for ``write_file`` and dies with "Operation
+    not permitted" the moment a *command* writes into it (observed: a scheduled
+    task delivering into ``~/Documents`` failing while ``write_file`` into that
+    very same folder succeeded).
+
+    Read-only roots are skipped on purpose — the sandbox's read scope is already
+    broad (``allow_read_all``), so listing them would only pad the profile.
+    Mounting grants no new authority: each path here was already writable for the
+    file tools, and ``deny_paths`` still outranks any mount.
+    """
+    out: list[Mount] = []
+    seen: set[str] = set()
+    for r in roots or []:
+        if not getattr(r, "writable", False):
+            continue
+        path = str(getattr(r, "path", "") or "")
+        if not path or path in seen:
+            continue
+        seen.add(path)
+        out.append(Mount(path=path, writable=True))
+    return out
+
+
+def parse_mounts(mounts: Any) -> list[Mount]:
+    """Coerce a config ``mounts`` value (dicts and/or ``Mount`` instances)."""
+    out: list[Mount] = []
+    for m in mounts if isinstance(mounts, list) else []:
+        if isinstance(m, Mount):
+            out.append(m)
+        elif isinstance(m, dict) and m.get("path"):
+            out.append(
+                Mount(
+                    path=str(m["path"]),
+                    writable=bool(m.get("writable", False)),
+                    executable=bool(m.get("executable", True)),
+                )
+            )
+    return out
+
+
 def sandbox_config_from_dict(
     workspace_dir: str | Path, data: dict[str, Any]
 ) -> SandboxConfig:
@@ -102,13 +147,5 @@ def sandbox_config_from_dict(
         cfg.deny_paths = list(dict.fromkeys([*_DEFAULT_DENY_PATHS, *extra_deny]))
     mounts = data.get("mounts")
     if isinstance(mounts, list):
-        cfg.mounts = [
-            Mount(
-                path=str(m["path"]),
-                writable=bool(m.get("writable", False)),
-                executable=bool(m.get("executable", True)),
-            )
-            for m in mounts
-            if isinstance(m, dict) and m.get("path")
-        ]
+        cfg.mounts = parse_mounts(mounts)
     return cfg
