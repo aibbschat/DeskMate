@@ -278,12 +278,18 @@ class LearnedStore:
     # 读
     # ------------------------------------------------------------------
     def recent(self, limit: int = 30) -> list[dict[str, Any]]:
-        """最近 limit 条，**时间正序（最老在前）**——前端会 reverse 后展示。"""
+        """最近 limit 条，**时间正序（最老在前）**——前端会 reverse 后展示。
+
+        2026-09-23 修复：此前不带 ``status`` 过滤 → 已遗忘（``forgotten``）/
+        已被取代（``superseded``）的事实仍会被日记素材回填、 compromising
+        「遗忘即刻生效」的承诺。这里只看 ``active``。
+        """
         limit = max(1, min(int(limit), 5000))
         try:
             with self._connect() as conn:
                 rows = conn.execute(
                     "SELECT ts, fact, category FROM learned_history "
+                    "WHERE status='active' "
                     "ORDER BY ts DESC, id DESC LIMIT ?",
                     (limit,),
                 ).fetchall()

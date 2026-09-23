@@ -327,7 +327,10 @@ class CognitiveProfileManager:
                 if c not in (target.contexts or []):
                     target.contexts.append(c)
         target.history.append(HistoryEntry(
-            action="updated", reason="补充来源", source=source.title,
+            # 补 generate_id/content：as-of 回放要靠 new_value 还原「当时的正文」，
+            # 早期这里只写 action 不写值 → 回放成空串（2026-09-23 巡检发现）。
+            action="updated", old_value=target.content, new_value=target.content,
+            reason="补充来源", source=source.title,
         ))
         self.profile.extraction_count += 1
         self.save()
@@ -400,7 +403,11 @@ class CognitiveProfileManager:
             for c in contexts:
                 if c not in (target.contexts or []):
                     target.contexts.append(c)
-        target.history.append(HistoryEntry(action="updated", reason="补充来源", source=source.title))
+        # 补 new_value：as-of 回放靠它还原当时正文（2026-09-23 巡检发现此前漏写）
+        target.history.append(HistoryEntry(
+            action="updated", old_value=target.content, new_value=target.content,
+            reason="补充来源", source=source.title,
+        ))
         self.profile.extraction_count += 1
         self.save()
         return target, "updated"
@@ -449,7 +456,11 @@ class CognitiveProfileManager:
         for s in steps:
             if s not in target.steps:
                 target.steps.append(s)
-        target.history.append(HistoryEntry(action="updated", reason="补充来源和步骤", source=source.title))
+        # 补 new_value：as-of 回放靠它还原当时正文（2026-09-23 巡检发现此前漏写）
+        target.history.append(HistoryEntry(
+            action="updated", old_value=target.content, new_value=target.content,
+            reason="补充来源和步骤", source=source.title,
+        ))
         self.profile.extraction_count += 1
         self.save()
         return target, "updated"
@@ -659,7 +670,11 @@ class CognitiveProfileManager:
                 if primary.status == "questioned" and len(cluster) > 1:
                     primary.status = "active"
                     primary.history.append(HistoryEntry(
-                        action="restored",
+                        # 2026-09-23：这里改的是**状态**（questioned→active），不是正文。
+                        # 原名 action="restored" 属于内容变更白名单，as-of 回放会把正文
+                        # 错当成 "active"（new_value 写的是状态字面量）；改用具名动作，
+                        # 让「状态变更」与「内容变更」在语义上彻底分开。
+                        action="status_restored",
                         old_value="questioned", new_value="active",
                         reason="清理：内容高度相似的重复立场，非真实矛盾", source="repair",
                     ))

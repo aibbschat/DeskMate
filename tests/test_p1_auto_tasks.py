@@ -18,7 +18,10 @@ from deskmate.auto_tasks.registry import TaskRegistry
 class TestP1AutoTasks:
     def setup_method(self):
         # 重置全局单例，避免跨测试串数据（get_registry/get_recorder 按 base_dir 缓存）
+        # 2026-09-23：registry 单例改为按 base_dir 分桶（对标 recorder 的 _recorders），
+        # 旧的单实例 _default_registry 不再被读取；两处都重置以防污染。
         _reg_mod._default_registry = None
+        _reg_mod._registries = {}
         _rec_mod._recorders = {}
         self.tmp = Path(tempfile.mkdtemp())
         self.registry = TaskRegistry(self.tmp)

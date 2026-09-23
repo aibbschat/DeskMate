@@ -34,8 +34,9 @@ _INVALID_FN = re.compile(r'[/\\:*?"<>|]')
 _CJK_RE = re.compile(r"([\u4e00-\u9fff\u3400-\u4dbf\uf900-\ufaff])")
 _MULTI_SPACE_RE = re.compile(r"\s+")
 
-# 神圣稿件：任何路径片段含这些字符串 → 跳过
-_SACRED_FRAGMENTS = ("国子监秘闻录",)
+# 神圣稿件清单 —— **只此一处引用**，真身在 deskmate/sacred_paths.py。
+# 两份副本必然漂移（2026-09-23 巡检：两份都已漏防），故这里再导出而非重定义。
+from deskmate.sacred_paths import SACRED_FRAGMENTS as _SACRED_FRAGMENTS  # noqa: E402
 
 # 扫描时跳过的隐藏 / 系统目录
 _SKIP_DIRS = {
@@ -90,7 +91,18 @@ def _db_path(category: str, history_dir: str | Path | None = None) -> Path:
 
 
 def _is_sacred(path: Path) -> bool:
-    return any(frag in part for part in path.parts for frag in _SACRED_FRAGMENTS)
+    """判定统一委托 :func:`deskmate.sacred_paths.is_sacred`（**含符号链接解析**）。
+
+    2026-09-23 巡检修复：原本地实现只查字面路径的 ``parts``——配置目录里放一个
+    ``dirlink -> ~/国子监秘闻录``，遍历/直传时路径分段里没有任何敏感词，
+    于是被静默读走（已实测复现）。改为委托后，``_walk`` / ``scan_sources`` /
+    ``ingest_files`` 三个调用点同时获得真实路径防护。
+
+    新代码请直接用 ``deskmate.sacred_paths.guarded_file``（连扩展名白名单一起校验）。
+    """
+    from deskmate.sacred_paths import is_sacred as _canonical_is_sacred
+
+    return _canonical_is_sacred(path)
 
 
 # ---------------------------------------------------------------------------

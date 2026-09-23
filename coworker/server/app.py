@@ -3316,7 +3316,13 @@ def create_app(manager: SessionManager) -> FastAPI:
                 extract_cognitive=body.get("extract_cognitive", False),
             )
             from dataclasses import asdict
-            return {"ok": True, "record": asdict(rec)}
+            # P1-3 修复：任务被用户暂停时 record() 走短路返回 None（不沉淀），
+            # 此前 ``asdict(None)`` 直接 TypeError → 500（并非用户操作错误）。
+            return {
+                "ok": True,
+                "record": asdict(rec) if rec is not None else None,
+                "skipped": rec is None,
+            }
         except Exception:
             logging.exception("post auto_tasks record failed")
             return JSONResponse({"error": "record failed"}, status_code=500)
@@ -3329,6 +3335,10 @@ def create_app(manager: SessionManager) -> FastAPI:
         """
         try:
             from deskmate.auto_tasks import get_recorder
+            # ⚠ 保持与写入侧一致：record_task_result / 各脚本均用 get_recorder() 默认路径
+            # （writes 走 ~/.deskmate/auto_tasks）。若只把读端点改成解析 DESKMATE_DIR，
+            # 读写会落到不同目录 → 面板空白。这条是整个子系统的既有债，需单独一轮
+            # 连同写入侧一起改，详见 reports/小桔巡检核实与修复_2026-09-23-第二轮.md §5。
             return {"tasks": get_recorder().list_tasks_with_recent(recent_limit=limit)}
         except Exception:
             logging.exception("get auto_tasks list failed")
@@ -3348,6 +3358,7 @@ def create_app(manager: SessionManager) -> FastAPI:
         enabled = bool(body.get("enabled", True))
         try:
             from deskmate.auto_tasks import get_registry
+            # 同上：与写入侧保持一致用默认单例，避免读写落到不同目录。
             ok = get_registry().set_enabled(task_type, enabled)
             return {"ok": bool(ok), "enabled": enabled}
         except Exception:

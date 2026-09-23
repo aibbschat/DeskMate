@@ -64,7 +64,48 @@ def _parse_iso(s: str | None) -> datetime.datetime | None:
 
 # 双时态回放时，哪些 history 动作携带真实内容变更（其余如 questioned/superseded
 # 只改状态/置信度，不改 content 取值）。
-_CONTENT_ACTIONS = frozenset({"created", "updated", "deepened", "restored"})
+# 2026-09-23 巡检修复：补 ``calibrated``——用户校准会替换正文
+# （profile.py 里 new_value=corrected_content 是真实内容），缺它会导致
+# 回放把「已被用户纠正过的话」退回到纠正前的版本。
+_CONTENT_ACTIONS = frozenset(
+    {"created", "updated", "deepened", "restored", "calibrated"}
+)
+
+# 状态字面量：部分 history 行的 new_value 写的是**状态**而非内容
+# （典型： repair 流程 ``action="restored", new_value="active"``）。
+# 回放时必须忽略这类值，否则会把正文污染成 "active"。
+_STATUS_LITERALS = frozenset(
+    {"active", "questioned", "superseded", "archived", "forgotten", "draft", "pending"}
+)
+
+# 已走到终态的认知（被取代/被遗忘等）：其有效性区间应视为「已闭合」。
+_TERMINAL_STATUSES = frozenset({"superseded", "archived", "forgotten"})
+
+
+def _replay_value(action: str, new_value: str | None) -> str | None:
+    """该 history 行的 new_value 能否当作「当时的正文」。
+
+    返回 None 表示不能（纯状态变更 / 空的误写 / 状态字面量），回放应保留上一个内容。
+    """
+    if action not in _CONTENT_ACTIONS:
+        return None
+    val = (new_value or "").strip()
+    if not val:
+        return None  # profile.py 有 3 处 updated 漏写 new_value → 不可当空内容
+    if val.lower() in _STATUS_LITERALS:
+        return None  # 状态字面量（restored 那一处），不是正文
+    return new_value
+
+
+def _derived_valid_until(status: str | None, last_updated: str | None) -> str | None:
+    """生产写入时 valid_until 恒为 NULL（开放区间），但已走到终态的条目
+    其实已经「不再有效」——这里按 last_updated 推导出闭合时间，供 UI / 回放展示。
+
+    活跃条目返回 None（= 至今有效），不做任何猜测。
+    """
+    if (status or "").lower() in _TERMINAL_STATUSES and last_updated:
+        return last_updated
+    return None
 
 from deskmate.paths import deskmate_db_path, deskmate_legacy_profile_path
 from .models import (
@@ -350,6 +391,18 @@ class CognitiveStore:
                             it.id, j, h.action, h.old_value, h.new_value,
                             h.reason, h.source, h.timestamp,
                         ))
+            # 遗忘墓碑（P1-1）：用户主动遗忘过的条目，任何全量覆盖写都不许再写回。
+            # 注意：上面的「防整层清空」护栏统计的是**未过滤**的 incoming 条目数，
+            # 因此这里过滤不会让用户「忘光一层后下一次 save 被护栏误判为异常」。
+            try:
+                dead = {r[0] for r in conn.execute("SELECT item_id FROM forgotten_items")}
+            except sqlite3.Error:
+                dead = set()  # 表尚未创建（从未遗忘过）→ 无墓碑
+            if dead:
+                rows = [r for r in rows if r[0] not in dead]
+                src_rows = [r for r in src_rows if r[0] not in dead]
+                hist_rows = [r for r in hist_rows if r[0] not in dead]
+
             if rows:
                 conn.executemany(
                     "INSERT OR REPLACE INTO profile_items"
@@ -493,12 +546,30 @@ class CognitiveStore:
         """
         try:
             with self._connect() as conn:
+                # 遗忘墓碑（P1-1「缓存复活」修复）：
+                # persist() 的语义是「整层 DELETE + 全量 INSERT」，任何持有旧 profile
+                # 的缓存 manager（如全局单例 get_profile_manager()）再 save() 一次，
+                # 刚被删除的条目就会原样写回 —— 「遗忘即刻生效」形同虚设。
+                # 因此物理删除之外还要落墓碑：persist() 据此拒绝写回，
+                # 与「谁在写、缓存多陈旧」无关，从持久化边界上根治。
+                conn.execute(
+                    "CREATE TABLE IF NOT EXISTS forgotten_items ("
+                    "  item_id TEXT PRIMARY KEY,"
+                    "  layer   TEXT DEFAULT '',"
+                    "  ts      TEXT"
+                    ")"
+                )
                 conn.execute(
                     "INSERT OR REPLACE INTO item_history "
                     "(item_id, seq, action, old_value, new_value, reason, source, ts) "
                     "VALUES(?, (SELECT COALESCE(MAX(seq), -1) + 1 FROM item_history "
                     "WHERE item_id=?), 'forgotten', '', '', 'user', ?, ?)",
                     (item_id, item_id, "user", _now_iso()),
+                )
+                conn.execute(
+                    "INSERT OR REPLACE INTO forgotten_items(item_id, layer, ts) "
+                    "VALUES(?,?,?)",
+                    (item_id, _LAYER, _now_iso()),
                 )
                 cur = conn.execute("DELETE FROM profile_items WHERE id=?", (item_id,))
                 return bool(cur.rowcount and cur.rowcount > 0)
@@ -526,7 +597,10 @@ class CognitiveStore:
             {
                 "id": r[0], "layer": r[1], "dimension": r[2], "topic": r[3],
                 "content": (r[4] or "")[:200], "status": r[5], "last_updated": r[6],
-                "valid_from": r[7], "valid_until": r[8],
+                # 表里 valid_until 恒为 NULL（开放区间）；已走到终态的条目按
+                # last_updated 推导出闭合时间，UI 才能显示「有效到 X」。
+                "valid_from": r[7],
+                "valid_until": r[8] or _derived_valid_until(r[5], r[6]),
             }
             for r in rows
         ]
@@ -547,14 +621,14 @@ class CognitiveStore:
             with self._connect() as conn:
                 rows = conn.execute(
                     "SELECT id, layer, dimension, topic, content, category, status, "
-                    "first_extracted, COALESCE(valid_from, first_extracted) "
+                    "first_extracted, COALESCE(valid_from, first_extracted), last_updated "
                     "FROM profile_items WHERE layer=? ORDER BY id",
                     (layer,),
                 ).fetchall()
                 items: list[dict[str, Any]] = []
                 for r in rows:
                     (rid, ly, dim, topic, content, cat, status,
-                     first_extracted, valid_from) = r
+                     first_extracted, valid_from, last_updated) = r
                     fe = _parse_iso(first_extracted) if first_extracted else None
                     if fe is not None and at < fe:
                         continue  # 该时点此认知尚未形成
@@ -566,18 +640,25 @@ class CognitiveStore:
                     content_at = content  # 无变更记录时退化为当前内容
                     best_ts: datetime.datetime | None = None
                     for action, new_value, ts in hist:
-                        if action not in _CONTENT_ACTIONS:
+                        # 2026-09-23 巡检三处 bug 的读取侧收口：
+                        #  ① calibrated 曾不在内容白名单 → 用户纠正被回退；
+                        #  ② restored 的 new_value 是状态字面量 "active" → 污染正文；
+                        #  ③ profile.py 有 3 处 updated 漏写 new_value → 回放成空串。
+                        val = _replay_value(action, new_value)
+                        if val is None:
                             continue
                         pt = _parse_iso(ts) if ts else None
                         if pt is None or pt > at:
                             continue
                         if best_ts is None or pt >= best_ts:
                             best_ts = pt
-                            content_at = new_value
+                            content_at = val
                     items.append({
                         "id": rid, "layer": ly, "dimension": dim, "topic": topic,
                         "content": content_at, "category": cat, "status": status,
                         "valid_from": valid_from,
+                        # 已走到终态（被取代 / 遗忘）的条目，有效性区间视为已闭合
+                        "valid_until": _derived_valid_until(status, last_updated),
                     })
                 return {"ok": True, "at": at_iso, "items": items}
         except sqlite3.Error:

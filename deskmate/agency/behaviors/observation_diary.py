@@ -232,7 +232,11 @@ def run_observation_diary(
     if segments:
         understood_flag = True
     else:
-        # 走降级：把所有事实塞进一条单一 bullet（LLM 不可用时唯一可用路径）
+        # 走降级：LLM 不可用时写原文 bullet。
+        # 2026-09-23 修复（P0-1 降级路径）：原先把全部 fresh **一次性**丢给
+        # append_observation，多条新闻被压成「一则」——这正是 P0-1 要治的
+        # 「9→1 合并」，主路径改了、降级路径没改。改为每条独立成则，
+        # 与 LLM 正常时的 semantic（每段一则）保持一致。
         try:
             from datetime import date as _date
 
@@ -240,8 +244,10 @@ def run_observation_diary(
 
             today = _date.today().isoformat()
             writer = DiaryWriter(base_dir=base_dir)
-            res = writer.append_observation(today, fresh)
-            written_now = int(res.get("written", 0))
+            written_now = 0
+            for one in fresh:
+                res = writer.append_observation(today, [one])
+                written_now += int(res.get("written", 0))
             result["written"] = written_now
             result["summary"] = f"把 {written_now} 条世界观察写进了观察日记（LLM 不可用或不可挑，原文 bullet）"
             # 这些事实已"过手"，无论写没写进日记都标已记 + 刷冷却——

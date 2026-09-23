@@ -37,12 +37,19 @@ class TaskRegistry:
         )
 
     def register(self, entry: TaskRegistryEntry) -> TaskRegistryEntry:
-        """登记一个新任务。如果已存在则更新（不覆盖 run_count/last_run_at）。"""
+        """登记一个新任务。如果已存在则更新（不覆盖用户的暂停状态 / 运行计数）。
+
+        2026-09-23 修复：此前只保护了 run_count / last_run_at / created_at，
+        唯独漏了 ``enabled`` —— 代码里每次启动都会重新 register 一遍任务定义，
+        于是**用户刚刚手动暂停的任务被悄悄恢复**（enabled 默认 True）。
+        """
         existing = self._entries.get(entry.task_type)
         if existing:
             entry.run_count = existing.run_count
             entry.last_run_at = existing.last_run_at
             entry.created_at = existing.created_at or entry.created_at
+            # 用户偏好优先：暂停/启用属于用户决定，重新登记不改它
+            entry.enabled = existing.enabled
         self._entries[entry.task_type] = entry
         self._save()
         return entry
@@ -83,16 +90,21 @@ class TaskRegistry:
         return {k: v.__dict__ for k, v in self._entries.items()}
 
 
-# 全局单例
-_default_registry: Optional[TaskRegistry] = None
+# 按 base_dir 分实例（与 recorder.py 的 ``_recorders`` 同款）
+# 2026-09-23 修复：原实现是**单实例**且首次创建后**忽略后续传入的 base_dir**——
+# 永远返回第一个实例，多工作区 / 测试隔离场景会静默串数据。
+_registries: dict[str, TaskRegistry] = {}
 
 
 def get_registry(base_dir: Optional[str | Path] = None) -> TaskRegistry:
-    global _default_registry
-    if _default_registry is None:
-        base_dir = base_dir or os.path.join(os.path.expanduser("~"), ".deskmate", "auto_tasks")
-        _default_registry = TaskRegistry(base_dir)
-    return _default_registry
+    key = str(base_dir) if base_dir else os.path.join(
+        os.path.expanduser("~"), ".deskmate", "auto_tasks"
+    )
+    reg = _registries.get(key)
+    if reg is None:
+        reg = TaskRegistry(key)
+        _registries[key] = reg
+    return reg
 
 
 def register_task(

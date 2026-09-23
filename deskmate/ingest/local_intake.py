@@ -4,11 +4,20 @@
 压缩成小桔的「事实记忆」（learned_history），让她更懂萧哥的项目与思路。
 
 红线（贯穿全程）：
-- **严守神圣稿件**：任何路径片段含「国子监秘闻录」的目录 / 文件一律跳过，绝不读取。
+- **严守神圣稿件**：任何路径（含经符号链接解析后的真实路径）片段含「国子监秘闻录」
+  的目录 / 文件一律跳过，绝不读取。守卫的唯一实现在 :mod:`deskmate.sacred_paths`
+  ——**不要在本模块另抄一份**，两份副本必然漂移。
 - **不引入新存储策略**：直接复用 learned_history（与对话 / 观察学到的记忆同库），来源以
   ``source`` 列标记（``local_intake:<path>``），用户可在「学到的记忆」里看到并主动遗忘。
 - **保守路径**：扫描只产出**预览候选**，沉淀（写入记忆）必须由用户在 UI 确认后才发生，
   后端绝不自动写入——把存储保留的决定权交还用户。
+
+2026-09-23 巡检修复（两处漏防，均为实测可复现）：
+1. ``ingest_files`` / ``build_facts`` 此前零守卫，端点又收任意 ``paths`` →
+   直传神圣路径即可灌进记忆库。现在读取前一律过 ``sacred_paths.guarded_file``
+   （强制 resolve + 扩展名白名单）。
+2. 遍历只看字面路径，配置目录里放 ``dirlink -> 神圣目录`` 即可绕过。
+   现在每条条目过 ``sacred_paths.guarded_dir_entry``（基于解析后的真实路径判定）。
 
 设计取向：纯规则摘要，**零 LLM**（与外部信息摄入流水线 ``memory/ingestion_pipeline.py`` 同构）；
 fail-open：任何一步炸了都不向上抛，主聊天链路不受影响。
@@ -23,11 +32,17 @@ from typing import Any
 
 from deskmate.memory.learned_store import LearnedStore, _fingerprint
 from deskmate.paths import deskmate_base_dir
+from deskmate.sacred_paths import (
+    SACRED_FRAGMENTS as _SACRED_FRAGMENTS,
+)
+from deskmate.sacred_paths import (
+    guarded_dir_entry,
+    guarded_file,
+    is_sacred as _sacred_paths_is_sacred,
+)
 
 logger = logging.getLogger(__name__)
 
-# 神圣稿件：任何路径片段含这些字符串 → 跳过（不依赖具体路径，稳健）
-_SACRED_FRAGMENTS = ("国子监秘闻录",)
 # 系统 / 依赖目录：跳过，避免扫进仓库、node_modules、构建产物、系统库等
 _SYSTEM_DIRS = {
     ".git", "node_modules", "__pycache__", ".venv", "venv", "env",
@@ -45,6 +60,11 @@ _DIGEST_MAX = 240
 _MAX_CANDIDATES = 200
 
 _CONFIG_NAME = "ingest_dirs.json"
+
+
+def _is_sacred(path: Path) -> bool:
+    """本地兼容包装：判定统一走 ``deskmate.sacred_paths``（含符号链接解析）。"""
+    return _sacred_paths_is_sacred(path)
 
 
 # ---------------------------------------------------------------------------
@@ -88,7 +108,7 @@ def save_dirs(dirs: list[str]) -> list[str]:
         out.append(ap)
     try:
         _config_path().write_text(
-            json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8"
+            json.dumps(out, ensure_ascii=False), encoding="utf-8"
         )
     except OSError:
         logger.warning("save ingest dirs failed (read-only?)")
@@ -98,25 +118,25 @@ def save_dirs(dirs: list[str]) -> list[str]:
 # ---------------------------------------------------------------------------
 # 扫描：只产出预览候选，不写入记忆
 # ---------------------------------------------------------------------------
-def _is_sacred(path: Path) -> bool:
-    return any(frag in part for part in path.parts for frag in _SACRED_FRAGMENTS)
-
-
 def _walk(base: Path):
-    """递归遍历 base，产出命中的纯文本笔记文件（已跳过神圣稿件 / 系统 / 隐藏目录）。"""
+    """递归遍历 base，产出命中的纯文本笔记文件（已跳过神圣稿件 / 系统 / 隐藏目录）。
+
+    神圣判定对**每条条目**做（含目录），且基于解析后的真实路径——否则配置目录下
+    一个指向神圣目录的符号链接就能被静默 follow 进去。
+    """
     try:
         entries = list(base.iterdir())
     except OSError:
         return
     for entry in entries:
+        if not guarded_dir_entry(entry):
+            continue
         if entry.is_dir():
             name = entry.name
-            if name in _SYSTEM_DIRS or _is_sacred(entry) or name.startswith("."):
+            if name in _SYSTEM_DIRS or name.startswith("."):
                 continue
             yield from _walk(entry)
         elif entry.is_file():
-            if _is_sacred(entry):
-                continue
             if entry.suffix.lower() not in _TEXT_EXTS:
                 continue
             yield entry
@@ -154,15 +174,19 @@ def scan_directories(dirs: list[str], max_candidates: int = _MAX_CANDIDATES) -> 
         for path in _walk(base):
             if len(candidates) >= max_candidates:
                 break
+            # 命中后再过一次完整守卫：解析真实路径 + 扩展名白名单
+            real = guarded_file(path, _TEXT_EXTS)
+            if real is None:
+                continue
             try:
-                st = path.stat()
-                excerpt = _excerpt(path)
+                st = real.stat()
+                excerpt = _excerpt(real)
                 if excerpt is None:
                     continue
                 candidates.append(
                     {
-                        "path": str(path),
-                        "name": path.name,
+                        "path": str(real),
+                        "name": real.name,
                         "size": int(st.st_size),
                         "mtime": int(st.st_mtime),
                         "excerpt": excerpt,
@@ -183,10 +207,15 @@ def build_facts(path: str) -> list[str]:
 
     用 ``[本地笔记] 文件名：摘要`` 形态——**不用《》括文件名**，避免被
     LearnedStore 的实体抽取误判成「书」，从而错误触发与真实书稿事实的矛盾取代。
+
+    读取前必须过 ``sacred_paths.guarded_file``：本函数是外部可控路径（端点 ``paths``）
+    抵达文件内容的最后一道门，此前这里没有任何守卫。
     """
-    p = Path(path)
-    name = p.stem or p.name
-    excerpt = _excerpt(p)
+    real = guarded_file(path, _TEXT_EXTS)
+    if real is None:
+        return []
+    name = real.stem or real.name
+    excerpt = _excerpt(real)
     if not excerpt:
         return []
     return [f"[本地笔记] {name}：{excerpt}"]
@@ -203,11 +232,16 @@ def ingest_files(paths: list[str], base_dir=None) -> dict[str, Any]:
     result: dict[str, Any] = {"ingested": 0, "updated": 0, "skipped": 0, "errors": []}
     for path in paths or []:
         try:
-            facts = build_facts(path)
+            # 先取真实路径：既做守卫，也让 source 标记对同一文件的不同软链路径稳定
+            real = guarded_file(path, _TEXT_EXTS)
+            if real is None:
+                result["skipped"] += 1
+                continue
+            facts = build_facts(str(real))
             if not facts:
                 result["skipped"] += 1
                 continue
-            src = f"local_intake:{path}"
+            src = f"local_intake:{real}"
             existing = {r["fp"] for r in store.find_active_by_source(src)}
             new_fps = {_fingerprint(f) for f in facts}
             if existing and existing == new_fps:
