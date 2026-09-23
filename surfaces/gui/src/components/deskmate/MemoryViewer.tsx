@@ -9,6 +9,7 @@ import {
   forgetDeskmateLearnedMemory,
   getDeskmateProfileItems,
   deleteDeskmateProfileItem,
+  getDeskmateProfileItemsAsOf,
   type TraceRecord,
   type DeskmateMemoryLayering,
   type LearnedMemoryItem,
@@ -120,6 +121,25 @@ export function MemoryViewer({
       setConfirm(null);
     }
   }, []);
+
+  // P1-2 双时态：回溯到某时点，查看当时的认知画像快照
+  const [asOfDate, setAsOfDate] = useState<string>("");
+  const [asOfResult, setAsOfResult] = useState<{
+    ok: boolean;
+    at: string;
+    items: ProfileMemoryItem[];
+  } | null>(null);
+  const [asOfLoading, setAsOfLoading] = useState<boolean>(false);
+  const handleAsOf = useCallback(async () => {
+    if (!asOfDate) return;
+    setAsOfLoading(true);
+    try {
+      const r = await getDeskmateProfileItemsAsOf(asOfDate);
+      setAsOfResult(r);
+    } finally {
+      setAsOfLoading(false);
+    }
+  }, [asOfDate]);
 
   const handleExport = useCallback(() => {
     if (!current) return;
@@ -459,17 +479,91 @@ export function MemoryViewer({
         )}
         {/* P1-1 条目级可控记忆：认知条目（profile_items） */}
         {mode === "profile" && (
-          <StructuredMemoryList
-            kind="profile"
-            items={profile as unknown as StructuredRow[]}
-            confirm={confirm}
-            deleting={deleting}
-            onRequestForget={(id) => setConfirm({ kind: "profile", id })}
-            onCancel={() => setConfirm(null)}
-            onConfirm={() => {
-              if (confirm && confirm.kind === "profile") void handleDeleteProfile(confirm.id as string);
-            }}
-          />
+          <div className="flex flex-col gap-2">
+            {/* P1-2 双时态：回溯到某时点查看当时画像 */}
+            <div
+              className="rounded-xl p-3"
+              style={{ border: "1px solid var(--line)", background: "var(--paper)" }}
+            >
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="text-[12px]" style={{ color: "var(--muted)" }}>
+                  🕰 回溯到
+                </span>
+                <input
+                  type="date"
+                  value={asOfDate}
+                  onChange={(e) => setAsOfDate(e.target.value)}
+                  className="text-[12px] px-2 py-1 rounded-lg"
+                  style={{ border: "1px solid var(--line)", background: "var(--paper)", color: "var(--ink)" }}
+                />
+                <button
+                  onClick={() => void handleAsOf()}
+                  disabled={!asOfDate || asOfLoading}
+                  className="text-[12px] px-2.5 py-1 rounded-lg"
+                  style={{
+                    background: "var(--accent)",
+                    color: "#fff",
+                    opacity: !asOfDate || asOfLoading ? 0.5 : 1,
+                  }}
+                >
+                  {asOfLoading ? "查询中…" : "查看当时画像"}
+                </button>
+                {asOfResult && (
+                  <button
+                    onClick={() => {
+                      setAsOfResult(null);
+                      setAsOfDate("");
+                    }}
+                    className="text-[12px] px-2 py-1 rounded-lg"
+                    style={{ border: "1px solid var(--line)", color: "var(--muted)" }}
+                  >
+                    返回当前
+                  </button>
+                )}
+              </div>
+              {asOfResult && (
+                <div className="mt-2 flex flex-col gap-1.5">
+                  <div className="text-[11.5px]" style={{ color: "var(--faint)" }}>
+                    {asOfResult.ok
+                      ? `${fmtTs(asOfResult.at)} 时的认知画像（快照 · 共 ${asOfResult.items.length} 条）`
+                      : "该时点解析失败或无数据"}
+                  </div>
+                  {asOfResult.items.map((it) => (
+                    <div
+                      key={it.id}
+                      className="rounded-lg p-2"
+                      style={{ border: "1px solid var(--line)", background: "var(--paper)" }}
+                    >
+                      <div
+                        className="text-[12px] leading-relaxed whitespace-pre-wrap break-words"
+                        style={{ color: "var(--ink)" }}
+                      >
+                        {it.content || "（空）"}
+                      </div>
+                      <div
+                        className="text-[11px] mt-0.5"
+                        style={{ color: "var(--faint)", fontFamily: "var(--mono)" }}
+                      >
+                        {[it.dimension, it.topic].filter(Boolean).join(" · ")}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <StructuredMemoryList
+              kind="profile"
+              items={profile as unknown as StructuredRow[]}
+              confirm={confirm}
+              deleting={deleting}
+              onRequestForget={(id) => setConfirm({ kind: "profile", id })}
+              onCancel={() => setConfirm(null)}
+              onConfirm={() => {
+                if (confirm && confirm.kind === "profile") void handleDeleteProfile(confirm.id as string);
+              }}
+            />
+          </div>
         )}
           </div>
         </div>
@@ -492,6 +586,7 @@ interface StructuredRow {
   category?: string;
   ts?: string | null;
   valid_until?: string | null;
+  valid_from?: string | null; // P1-2 双时态
   // profile_items
   layer?: string;
   dimension?: string;
@@ -588,6 +683,12 @@ function StructuredMemoryList({
                     style={{ color: "var(--faint)", fontFamily: "var(--mono)" }}
                   >
                     {meta}
+                  </div>
+                )}
+                {!isLearned && (it.valid_from || it.valid_until) && (
+                  <div className="text-[11px] mt-0.5" style={{ color: "var(--faint)" }}>
+                    有效期：自 {fmtTs(it.valid_from)} ·{" "}
+                    {it.valid_until ? `至 ${fmtTs(it.valid_until)}` : "至今有效"}
                   </div>
                 )}
               </div>

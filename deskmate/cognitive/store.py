@@ -41,6 +41,31 @@ logger = logging.getLogger(__name__)
 def _now_iso() -> str:
     return datetime.datetime.now().isoformat(timespec="seconds")
 
+
+def _parse_iso(s: str | None) -> datetime.datetime | None:
+    """宽容解析 ISO 时间（支持带/不带 Z、偏移、纯日期），统一返回无时区 datetime。
+
+    用于双时态 as-of 比较（所有时间戳同机同格式，去时区后直接比对）。
+    """
+    if not s:
+        return None
+    s = str(s).strip().replace("Z", "+00:00")
+    try:
+        dt = datetime.datetime.fromisoformat(s)
+    except ValueError:
+        try:
+            dt = datetime.datetime.fromisoformat(s + "T00:00:00")
+        except ValueError:
+            return None
+    if dt.tzinfo is not None:
+        dt = dt.replace(tzinfo=None)
+    return dt
+
+
+# 双时态回放时，哪些 history 动作携带真实内容变更（其余如 questioned/superseded
+# 只改状态/置信度，不改 content 取值）。
+_CONTENT_ACTIONS = frozenset({"created", "updated", "deepened", "restored"})
+
 from deskmate.paths import deskmate_db_path, deskmate_legacy_profile_path
 from .models import (
     CognitiveProfile,
@@ -96,6 +121,16 @@ class CognitiveStore:
             conn.commit()
         finally:
             conn.close()
+
+    def _add_column(self, table: str, col: str, col_type: str) -> None:
+        """兼容已存在的库：缺失列才补（SQLite 无 ADD COLUMN IF NOT EXISTS）。"""
+        try:
+            with self._connect() as conn:
+                cols = {r[1] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+                if col not in cols:
+                    conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {col_type}")
+        except sqlite3.Error:
+            pass
 
     def _init_schema(self):
         with self._connect() as conn:
@@ -184,6 +219,11 @@ class CognitiveStore:
                     ON interview_qa(session_id, created_at);
                 """
             )
+        # 双时态（P1-2）：profile_items 显式有效性区间。
+        # valid_from = 该认知自何时持有（写入时取 first_extracted）；
+        # valid_until = NULL 表示「至今有效」（开放区间）。
+        self._add_column("profile_items", "valid_from", "TEXT")
+        self._add_column("profile_items", "valid_until", "TEXT")
 
     # ------------------------------------------------------------------
     # 迁移（幂等）
@@ -301,6 +341,7 @@ class CognitiveStore:
                         it.id, layer, dim, topic, it.content, it.category,
                         it.status, it.confidence, json.dumps(extra, ensure_ascii=False),
                         it.first_extracted, it.last_updated,
+                        it.first_extracted, None,  # 双时态：valid_from=首次提取，valid_until=开放
                     ))
                     for i, s in enumerate(it.sources):
                         src_rows.append((it.id, i, s.type, s.title, s.excerpt, s.date, s.confidence))
@@ -312,8 +353,8 @@ class CognitiveStore:
             if rows:
                 conn.executemany(
                     "INSERT OR REPLACE INTO profile_items"
-                    "(id, layer, dimension, topic, content, category, status, confidence, extra_json, first_extracted, last_updated) "
-                    "VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "(id, layer, dimension, topic, content, category, status, confidence, extra_json, first_extracted, last_updated, valid_from, valid_until) "
+                    "VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     rows,
                 )
             if src_rows:
@@ -465,12 +506,16 @@ class CognitiveStore:
             return False
 
     def list_for_ui(self, limit: int = 200) -> list[dict[str, Any]]:
-        """供 MemoryViewer 条目级可控：返回认知条目（含 id/layer/dimension/status）。"""
+        """供 MemoryViewer 条目级可控：返回认知条目（含 id/layer/dimension/status）。
+
+        双时态（P1-2）：附 ``valid_from`` / ``valid_until`` 展示「自何时持有 / 至今有效」。
+        """
         limit = max(1, min(int(limit), 5000))
         try:
             with self._connect() as conn:
                 rows = conn.execute(
-                    "SELECT id, layer, dimension, topic, content, status, last_updated "
+                    "SELECT id, layer, dimension, topic, content, status, last_updated, "
+                    "COALESCE(valid_from, first_extracted), valid_until "
                     "FROM profile_items "
                     "ORDER BY (status='active') DESC, last_updated DESC, id DESC LIMIT ?",
                     (limit,),
@@ -481,9 +526,62 @@ class CognitiveStore:
             {
                 "id": r[0], "layer": r[1], "dimension": r[2], "topic": r[3],
                 "content": (r[4] or "")[:200], "status": r[5], "last_updated": r[6],
+                "valid_from": r[7], "valid_until": r[8],
             }
             for r in rows
         ]
+
+    def profile_as_of(self, at_iso: str, layer: str = _LAYER) -> dict[str, Any]:
+        """双时态（P1-2）：返回 ``at_iso`` 时点**有效**的认知画像快照。
+
+        实现要点（不改动 upsert 语义）：
+        - 每条当前 item 的 ``first_extracted`` 决定它何时「出生」，``at < 出生`` 则当时不存在；
+        - 其 ``item_history`` 是完整时序账本（created→updated→…），回放得到 at 时点的内容；
+        - 仅采纳携带真实内容变更的动作（created/updated/deepened/restored），
+          过滤 questioned/superseded 等纯状态变更。
+        """
+        at = _parse_iso(at_iso)
+        if at is None:
+            return {"ok": False, "error": "bad_time", "at": at_iso, "items": []}
+        try:
+            with self._connect() as conn:
+                rows = conn.execute(
+                    "SELECT id, layer, dimension, topic, content, category, status, "
+                    "first_extracted, COALESCE(valid_from, first_extracted) "
+                    "FROM profile_items WHERE layer=? ORDER BY id",
+                    (layer,),
+                ).fetchall()
+                items: list[dict[str, Any]] = []
+                for r in rows:
+                    (rid, ly, dim, topic, content, cat, status,
+                     first_extracted, valid_from) = r
+                    fe = _parse_iso(first_extracted) if first_extracted else None
+                    if fe is not None and at < fe:
+                        continue  # 该时点此认知尚未形成
+                    hist = conn.execute(
+                        "SELECT action, new_value, ts FROM item_history "
+                        "WHERE item_id=? ORDER BY seq",
+                        (rid,),
+                    ).fetchall()
+                    content_at = content  # 无变更记录时退化为当前内容
+                    best_ts: datetime.datetime | None = None
+                    for action, new_value, ts in hist:
+                        if action not in _CONTENT_ACTIONS:
+                            continue
+                        pt = _parse_iso(ts) if ts else None
+                        if pt is None or pt > at:
+                            continue
+                        if best_ts is None or pt >= best_ts:
+                            best_ts = pt
+                            content_at = new_value
+                    items.append({
+                        "id": rid, "layer": ly, "dimension": dim, "topic": topic,
+                        "content": content_at, "category": cat, "status": status,
+                        "valid_from": valid_from,
+                    })
+                return {"ok": True, "at": at_iso, "items": items}
+        except sqlite3.Error:
+            return {"ok": False, "error": "db", "at": at_iso, "items": []}
 
     @staticmethod
     def _load_sources(conn, item_id) -> list[SourceRef]:

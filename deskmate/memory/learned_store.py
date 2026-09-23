@@ -179,6 +179,8 @@ class LearnedStore:
             self._add_column("learned_history", "status", "TEXT NOT NULL DEFAULT 'active'")
             self._add_column("learned_history", "superseded_by", "INTEGER")
             self._add_column("learned_history", "valid_until", "TEXT")
+            # 双时态（P1-2）：valid_from = 事实生效起点（学到即生效，默认=记录时间 ts）
+            self._add_column("learned_history", "valid_from", "TEXT")
             # fp 唯一 → 重复学到的同一事实天然幂等（INSERT OR IGNORE 即可）
             conn.execute(
                 "CREATE UNIQUE INDEX IF NOT EXISTS idx_learned_fp "
@@ -251,9 +253,9 @@ class LearnedStore:
                 for stamp_, fact_, cat_, fp_, entity_, polarity_, valid_until_ in clean:
                     cur = conn.execute(
                         "INSERT OR IGNORE INTO learned_history"
-                        "(ts, fact, category, fp, source, entity, polarity, status, valid_until) "
-                        "VALUES (?, ?, ?, ?, 'live', ?, ?, 'active', ?)",
-                        (stamp_, fact_, cat_, fp_, entity_, polarity_, valid_until_),
+                        "(ts, fact, category, fp, source, entity, polarity, status, valid_until, valid_from) "
+                        "VALUES (?, ?, ?, ?, 'live', ?, ?, 'active', ?, ?)",
+                        (stamp_, fact_, cat_, fp_, entity_, polarity_, valid_until_, stamp_),
                     )
                     if not (cur.rowcount and cur.rowcount > 0):
                         continue  # 重复（同 fp）→ 跳过，也不做矛盾处理
@@ -453,7 +455,8 @@ class LearnedStore:
         try:
             with self._connect() as conn:
                 rows = conn.execute(
-                    "SELECT id, ts, fact, category, status, valid_until "
+                    "SELECT id, ts, fact, category, status, valid_until, "
+                    "COALESCE(valid_from, ts) "
                     "FROM learned_history "
                     "ORDER BY (status='active') DESC, ts DESC, id DESC LIMIT ?",
                     (limit,),
@@ -463,7 +466,7 @@ class LearnedStore:
         return [
             {
                 "id": r[0], "ts": r[1], "fact": r[2], "category": r[3],
-                "status": r[4], "valid_until": r[5],
+                "status": r[4], "valid_until": r[5], "valid_from": r[6],
             }
             for r in rows
         ]

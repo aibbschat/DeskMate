@@ -2710,7 +2710,7 @@ def create_app(manager: SessionManager) -> FastAPI:
             from deskmate.cognitive.store import CognitiveStore
 
             desk_dir = _P(os.environ.get("DESKMATE_DIR", os.path.expanduser("~/.deskmate")))
-            store = CognitiveStore(base_dir=desk_dir)
+            store = CognitiveStore(db_path=str(desk_dir / "deskmate.db"))
             return {"items": store.list_for_ui(limit)}
         except Exception:
             logging.exception("get profile items failed")
@@ -2724,11 +2724,28 @@ def create_app(manager: SessionManager) -> FastAPI:
             from deskmate.cognitive.store import CognitiveStore
 
             desk_dir = _P(os.environ.get("DESKMATE_DIR", os.path.expanduser("~/.deskmate")))
-            store = CognitiveStore(base_dir=desk_dir)
+            store = CognitiveStore(db_path=str(desk_dir / "deskmate.db"))
             return {"ok": store.delete_item(item_id)}
         except Exception:
             logging.exception("delete profile item failed")
             return JSONResponse({"error": "delete failed"}, status_code=500)
+
+    @app.get("/v1/deskmate/memory/profile-items/at")
+    async def get_deskmate_memory_profile_items_at(at: str) -> dict[str, Any]:
+        """P1-2 双时态：返回 at 时点有效的认知画像快照（解决「上月偏好」类问题）。
+
+        at 为 ISO 时间（支持纯日期，如 2026-08-01）；只读回放 item_history，不改写。
+        """
+        try:
+            from pathlib import Path as _P
+            from deskmate.cognitive.store import CognitiveStore
+
+            desk_dir = _P(os.environ.get("DESKMATE_DIR", os.path.expanduser("~/.deskmate")))
+            store = CognitiveStore(db_path=str(desk_dir / "deskmate.db"))
+            return store.profile_as_of(at)
+        except Exception:
+            logging.exception("profile as-of failed")
+            return JSONResponse({"error": "as-of failed"}, status_code=500)
 
     @app.get("/v1/deskmate/memory/dream")
     async def get_deskmate_memory_dream() -> dict[str, Any]:

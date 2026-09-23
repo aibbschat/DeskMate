@@ -2689,6 +2689,7 @@ export interface LearnedMemoryItem {
   category: string;
   status: string; // "active" | "forgotten" | …
   valid_until: string | null;
+  valid_from: string | null; // P1-2 双时态：事实生效起点
 }
 
 export interface ProfileMemoryItem {
@@ -2699,6 +2700,24 @@ export interface ProfileMemoryItem {
   content: string;
   status: string; // "active" | "forgotten" | …
   last_updated: string | null;
+  valid_from: string | null; // P1-2 双时态：自何时持有
+  valid_until: string | null; // NULL = 至今有效
+}
+
+/** P1-2 双时态：拉取某 ISO 时点有效的认知画像快照。 */
+export async function getDeskmateProfileItemsAsOf(
+  at: string,
+): Promise<{ ok: boolean; at: string; items: ProfileMemoryItem[] }> {
+  try {
+    const res = await authedFetch(
+      `${httpBase()}/v1/deskmate/memory/profile-items/at?at=${encodeURIComponent(at)}`,
+    );
+    if (!res.ok) return { ok: false, at, items: [] };
+    const d = await res.json();
+    return { ok: !!d.ok, at: d.at ?? at, items: d.items ?? [] };
+  } catch {
+    return { ok: false, at, items: [] };
+  }
 }
 
 /** 拉取小桔「学到的记忆」条目（learned_history），含 id/status。 */
