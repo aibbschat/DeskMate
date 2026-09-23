@@ -42,21 +42,24 @@ def _default_base_dir() -> Path:
 _CONTENT_MAX = 120
 
 # 小桔身份（LLM 生成留言用，第一人称、有记性、不说套话）
+# 2026-09-23 放宽：原 15~40 字偏短、活人感不足（萧哥实测常仅 10~20 字）。
+# 改为 40~80 字，允许一两句、带一点记性，更像朋友看完日记的真实反应。
 _XIAOJU_SYSTEM = (
     "你是小桔，萧盛的桌面伙伴——会陪着他、记得他、懂他的那个人。"
     "你正在给萧盛刚写的一条日记留言。"
-    "用第一人称（「我」），自然地说一句像朋友看完日记后的真实反应，"
-    "15~40 字，温暖、具体、有一点点记性（能接住他写的事）。"
+    "用第一人称（「我」），自然地说一两句像朋友看完日记后的真实反应，"
+    "40~80 字，温暖、具体、有一点点记性（能接住他写的事、偶尔回扣你们之间发生过的事）。"
     "不要评价式空话（如「真好」「加油」），不要口癖，不要说你在生成或回复。"
-    "直接输出这一句话。"
+    "直接输出，不用标题、不用落款。"
 )
 
 # LLM 不可用时的本地规则回落（按内容情绪给不同回应，保证回复永远有）
+# 2026-09-23 同步放宽：与 LLM 路径对齐到更舒展的长度，避免回落时突然变短。
 _REPLIES = [
-    "我记下了。这条我先放在心里，改天聊到它时我会接得上。",
-    "嗯，我懂。谢谢你愿意把这一天告诉我。",
-    "看到你写这个，我好像又更懂你一点了。",
-    "这条我好好收着，往后你提起类似的事，我就能想起它。",
+    "我记下了。这条我先放在心里，改天聊到它的时候，我一定能接得上。",
+    "嗯，我懂。谢谢你愿意把这一天告诉我，这份信任我替你收着了。",
+    "看到你写这些，我好像又比昨天多懂你一点了。",
+    "这条我好好收着，往后你再提起类似的事，我就能想起它来。",
 ]
 
 # 火山 Agent 套餐内模型降级链（2026-09-01 实测全可用；按速度/质量排序，快者在前）。
@@ -98,13 +101,13 @@ def _trim(text: str, n: int = _CONTENT_MAX) -> str:
 def _fallback_reply(content: str) -> str:
     c = content or ""
     if re.search(r"难过|累|烦|压力|焦虑|崩溃", c):
-        return "今天不太容易吧。我陪着你，想说什么都可以慢慢说。"
+        return "今天不太容易吧。我陪着你，想说什么都可以慢慢说，不用硬撑着。"
     if re.search(r"开心|高兴|棒|成功|搞定|完成|顺利", c):
-        return "真替你高兴。这件事你值得被好好夸一句。"
+        return "真替你高兴。这件事你值得被好好夸一句，我替你记着这份欢喜。"
     if re.search(r"加班|工作|开会|项目|赶|出差", c):
-        return "工作辛苦了。记下这一天，下次你累了我会提醒你休息。"
+        return "工作辛苦了。这一天我替你记着，下次你累了，我会提醒你歇一歇。"
     if re.search(r"读|书|文章|稿|写|创作|小说", c):
-        return "又在打磨文字呀。你把心思花在哪，我大概记着。"
+        return "又在打磨文字呀。你把心思花在哪儿，我大概都记着，慢慢来。"
     return _REPLIES[hash(c) % len(_REPLIES)]
 
 
@@ -218,7 +221,7 @@ class MomentsStore:
             from deskmate.memory.llm import chat_memory
 
             return chat_memory(
-                system, user, temperature=0.7, max_tokens=120, timeout=25.0
+                system, user, temperature=0.7, max_tokens=200, timeout=25.0
             )
         except Exception:
             pass
@@ -253,7 +256,7 @@ class MomentsStore:
                             {"role": "user", "content": user},
                         ],
                         temperature=0.7,
-                        max_tokens=120,
+                        max_tokens=200,
                     )
                     out = (resp.choices[0].message.content or "").strip()
                     if out:
@@ -284,7 +287,7 @@ class MomentsStore:
                             {"role": "user", "content": user},
                         ],
                         temperature=0.7,
-                        max_tokens=120,
+                        max_tokens=200,
                     )
                     out = (resp.choices[0].message.content or "").strip()
                     if out:
