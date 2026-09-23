@@ -587,6 +587,7 @@ interface StructuredRow {
   ts?: string | null;
   valid_until?: string | null;
   valid_from?: string | null; // P1-2 双时态
+  source?: string; // 来源标记（"live" / "legacy" / "local_intake:<path>" 等）
   // profile_items
   layer?: string;
   dimension?: string;
@@ -656,7 +657,13 @@ function StructuredMemoryList({
         const forgotten = it.status !== "active";
         const title = isLearned ? it.fact ?? "" : it.content ?? "";
         const meta = isLearned
-          ? [it.category, it.ts ? fmtTs(it.ts) : null].filter(Boolean).join(" · ")
+          ? [
+              it.category,
+              it.ts ? fmtTs(it.ts) : null,
+              it.source?.startsWith("local_intake:") ? "本地摄入" : null,
+            ]
+              .filter(Boolean)
+              .join(" · ")
           : [it.layer, it.dimension, it.topic].filter(Boolean).join(" · ");
 
         return (

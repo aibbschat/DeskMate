@@ -210,6 +210,7 @@ class LearnedStore:
         facts: list[str],
         ts: str | None = None,
         valid_until: str | None = None,
+        source: str = "live",
     ) -> int:
         """追加若干条学到的事实，返回**实际新增**条数（重复的被 fp 挡掉）。
 
@@ -254,8 +255,8 @@ class LearnedStore:
                     cur = conn.execute(
                         "INSERT OR IGNORE INTO learned_history"
                         "(ts, fact, category, fp, source, entity, polarity, status, valid_until, valid_from) "
-                        "VALUES (?, ?, ?, ?, 'live', ?, ?, 'active', ?, ?)",
-                        (stamp_, fact_, cat_, fp_, entity_, polarity_, valid_until_, stamp_),
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)",
+                        (stamp_, fact_, cat_, fp_, source, entity_, polarity_, valid_until_, stamp_),
                     )
                     if not (cur.rowcount and cur.rowcount > 0):
                         continue  # 重复（同 fp）→ 跳过，也不做矛盾处理
@@ -448,7 +449,7 @@ class LearnedStore:
             return False
 
     def list_for_ui(self, limit: int = 200) -> list[dict[str, Any]]:
-        """供 MemoryViewer 条目级可控：返回学到的记忆条目（含 id/status），
+        """供 MemoryViewer 条目级可控：返回学到的记忆条目（含 id/status/source），
         按「活跃优先、时间倒序」排列，便于前端分区展示 active / forgotten。
         """
         limit = max(1, min(int(limit), 5000))
@@ -456,7 +457,7 @@ class LearnedStore:
             with self._connect() as conn:
                 rows = conn.execute(
                     "SELECT id, ts, fact, category, status, valid_until, "
-                    "COALESCE(valid_from, ts) "
+                    "COALESCE(valid_from, ts), source "
                     "FROM learned_history "
                     "ORDER BY (status='active') DESC, ts DESC, id DESC LIMIT ?",
                     (limit,),
@@ -467,9 +468,43 @@ class LearnedStore:
             {
                 "id": r[0], "ts": r[1], "fact": r[2], "category": r[3],
                 "status": r[4], "valid_until": r[5], "valid_from": r[6],
+                "source": r[7],
             }
             for r in rows
         ]
+
+    def find_active_by_source(self, source: str) -> list[dict[str, Any]]:
+        """返回某来源（如 ``local_intake:<path>``）当前活跃的事实 fp 列表。
+
+        供摄入管线做「同文件内容是否变化」的幂等判断。
+        """
+        try:
+            with self._connect() as conn:
+                rows = conn.execute(
+                    "SELECT fp FROM learned_history "
+                    "WHERE status='active' AND source=?",
+                    (source,),
+                ).fetchall()
+            return [{"fp": r[0]} for r in rows]
+        except sqlite3.Error:
+            return []
+
+    def retire_by_source(self, source: str) -> int:
+        """把某来源的活跃条目标 ``superseded``（不再参与回忆），用于「内容变了重新沉淀」。
+
+        Returns:
+            实际被取代的条数。
+        """
+        try:
+            with self._connect() as conn:
+                cur = conn.execute(
+                    "UPDATE learned_history SET status='superseded', valid_until=? "
+                    "WHERE status='active' AND source=?",
+                    (_now_iso(), source),
+                )
+                return int(cur.rowcount or 0)
+        except sqlite3.Error:
+            return 0
 
     # ------------------------------------------------------------------
     # 迁移：learned_history.jsonl → DB

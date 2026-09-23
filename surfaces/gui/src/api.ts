@@ -2690,6 +2690,7 @@ export interface LearnedMemoryItem {
   status: string; // "active" | "forgotten" | …
   valid_until: string | null;
   valid_from: string | null; // P1-2 双时态：事实生效起点
+  source?: string; // 来源标记（"live" / "legacy" / "local_intake:<path>" 等）
 }
 
 export interface ProfileMemoryItem {
@@ -2846,6 +2847,81 @@ export async function toggleDeskmateAutoTask(
     return d.enabled === undefined ? enabled : !!d.enabled;
   } catch {
     return null;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// P2-3：本地文件 / 笔记摄入管线（对标 Khoj）—— 用户主动指定目录，扫描预览，
+// 勾选确认后沉淀进小桔的「学到的记忆」（learned_history）。国子监秘闻录等神圣
+// 稿件由后端在扫描时强制排除。
+// ---------------------------------------------------------------------------
+
+export interface IngestCandidate {
+  path: string;
+  name: string;
+  size: number;
+  mtime: number;
+  excerpt: string;
+}
+
+/** 读取已配置的摄入目录列表。 */
+export async function getIngestDirs(): Promise<string[]> {
+  try {
+    const res = await authedFetch(`${httpBase()}/v1/deskmate/ingest/dirs`);
+    if (!res.ok) return [];
+    const d = await res.json();
+    return d.dirs ?? [];
+  } catch {
+    return [];
+  }
+}
+
+/** 保存摄入目录列表（后端去重 + 取绝对路径）。 */
+export async function saveIngestDirs(dirs: string[]): Promise<string[]> {
+  try {
+    const res = await authedFetch(`${httpBase()}/v1/deskmate/ingest/dirs`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ dirs }),
+    });
+    if (!res.ok) return dirs;
+    const d = await res.json();
+    return d.dirs ?? dirs;
+  } catch {
+    return dirs;
+  }
+}
+
+/** 扫描给定目录，返回候选笔记预览（不写入记忆）。 */
+export async function scanIngestDirs(dirs: string[]): Promise<IngestCandidate[]> {
+  try {
+    const res = await authedFetch(`${httpBase()}/v1/deskmate/ingest/scan`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ dirs }),
+    });
+    if (!res.ok) return [];
+    const d = await res.json();
+    return d.candidates ?? [];
+  } catch {
+    return [];
+  }
+}
+
+/** 把勾选的笔记文件沉淀进记忆（用户已在 UI 确认）。 */
+export async function ingestFiles(
+  paths: string[],
+): Promise<{ ingested: number; updated: number; skipped: number; errors: any[] }> {
+  try {
+    const res = await authedFetch(`${httpBase()}/v1/deskmate/ingest`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ paths }),
+    });
+    if (!res.ok) return { ingested: 0, updated: 0, skipped: 0, errors: [] };
+    return await res.json();
+  } catch {
+    return { ingested: 0, updated: 0, skipped: 0, errors: [] };
   }
 }
 

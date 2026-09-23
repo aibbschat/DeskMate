@@ -2747,6 +2747,67 @@ def create_app(manager: SessionManager) -> FastAPI:
             logging.exception("profile as-of failed")
             return JSONResponse({"error": "as-of failed"}, status_code=500)
 
+    # ------------------------------------------------------------------
+    # P2-3 本地文件 / 笔记摄入管线（对标 Khoj）
+    #   扫描只返回预览候选；沉淀（写入 learned_history）需用户在 UI 确认。
+    #   严守神圣稿件（国子监秘闻录）与本地优先边界。
+    # ------------------------------------------------------------------
+    @app.get("/v1/deskmate/ingest/dirs")
+    async def get_deskmate_ingest_dirs() -> dict[str, Any]:
+        """读取已配置的摄入目录列表。"""
+        try:
+            from deskmate.ingest.local_intake import load_dirs
+
+            return {"dirs": load_dirs()}
+        except Exception:
+            logging.exception("get ingest dirs failed")
+            return {"dirs": []}
+
+    @app.post("/v1/deskmate/ingest/dirs")
+    async def post_deskmate_ingest_dirs(request: Request) -> dict[str, Any]:
+        """保存摄入目录列表（去重 / 取绝对路径）。"""
+        try:
+            from deskmate.ingest.local_intake import save_dirs
+
+            body = await request.json()
+            dirs = body.get("dirs", []) if isinstance(body, dict) else []
+            saved = save_dirs([str(d) for d in dirs])
+            return {"ok": True, "dirs": saved}
+        except Exception:
+            logging.exception("save ingest dirs failed")
+            return JSONResponse({"error": "save dirs failed"}, status_code=500)
+
+    @app.post("/v1/deskmate/ingest/scan")
+    async def post_deskmate_ingest_scan(request: Request) -> dict[str, Any]:
+        """扫描给定目录，返回候选笔记预览（不写入记忆）。"""
+        try:
+            from deskmate.ingest.local_intake import load_dirs, scan_directories
+
+            body = await request.json()
+            dirs = body.get("dirs") if isinstance(body, dict) else None
+            if not dirs:
+                dirs = load_dirs()
+            return {"candidates": scan_directories([str(d) for d in dirs])}
+        except Exception:
+            logging.exception("ingest scan failed")
+            return JSONResponse({"error": "scan failed"}, status_code=500)
+
+    @app.post("/v1/deskmate/ingest")
+    async def post_deskmate_ingest(request: Request) -> dict[str, Any]:
+        """把选中的笔记文件沉淀进 learned_history（用户已在 UI 勾选确认）。"""
+        try:
+            from pathlib import Path as _P
+
+            from deskmate.ingest.local_intake import ingest_files
+
+            body = await request.json()
+            paths = body.get("paths", []) if isinstance(body, dict) else []
+            desk_dir = _P(os.environ.get("DESKMATE_DIR", os.path.expanduser("~/.deskmate")))
+            return ingest_files([str(p) for p in paths], base_dir=desk_dir)
+        except Exception:
+            logging.exception("ingest failed")
+            return JSONResponse({"error": "ingest failed"}, status_code=500)
+
     @app.get("/v1/deskmate/memory/dream")
     async def get_deskmate_memory_dream() -> dict[str, Any]:
         """P2-1 后台自动提炼（Dreaming）：返回上次记忆提炼状态与是否到期可跑。

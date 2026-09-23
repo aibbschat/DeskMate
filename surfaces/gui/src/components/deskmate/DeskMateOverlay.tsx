@@ -28,6 +28,7 @@ import { MemoryLearnedToast } from "./MemoryLearnedToast";
 import { ProofreadPanel } from "./ProofreadPanel";
 import { UnderstandingCard } from "./UnderstandingCard";
 import { AutoTasks } from "./AutoTasks";
+import { LocalIntake } from "./LocalIntake";
 import {
   type EmotionName,
   type EmotionParams,
@@ -90,6 +91,7 @@ export function DeskMateOverlay({ agent, sessionId, activeExpert, hidden }: Prop
   const [proofreadOpen, setProofreadOpen] = useState(false);
   // P1-3 计划任务面板
   const [autoTasksOpen, setAutoTasksOpen] = useState(false);
+  const [localIntakeOpen, setLocalIntakeOpen] = useState(false);
   // 首页 chip 触发：了解度轻量卡 / 批改台进入焦点
   const [understandingOpen, setUnderstandingOpen] = useState(false);
   const [proofreadFocus, setProofreadFocus] = useState<"edit" | "manuscripts" | "style" | null>(null);
@@ -658,6 +660,7 @@ export function DeskMateOverlay({ agent, sessionId, activeExpert, hidden }: Prop
         onOpenMemory={() => setMemoryGraphOpen(true)}
         onOpenProofread={() => setProofreadOpen(true)}
         onOpenAutoTasks={() => setAutoTasksOpen(true)}
+        onOpenLocalIntake={() => setLocalIntakeOpen(true)}
         proactiveEnabled={proactiveEnabled}
         onToggleProactive={handleToggleProactive}
         injectEnabled={injectEnabled}
@@ -761,6 +764,7 @@ export function DeskMateOverlay({ agent, sessionId, activeExpert, hidden }: Prop
 
       {/* 计划任务面板 — P1-3（状态面板「计划任务」入口） */}
       <AutoTasks open={autoTasksOpen} onClose={() => setAutoTasksOpen(false)} />
+      <LocalIntake open={localIntakeOpen} onClose={() => setLocalIntakeOpen(false)} />
     </>
   );
 }
