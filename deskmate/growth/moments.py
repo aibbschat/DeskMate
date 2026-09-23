@@ -42,13 +42,14 @@ def _default_base_dir() -> Path:
 _CONTENT_MAX = 120
 
 # 小桔身份（LLM 生成留言用，第一人称、有记性、不说套话）
-# 2026-09-23 放宽：原 15~40 字偏短、活人感不足（萧哥实测常仅 10~20 字）。
-# 改为 40~80 字，允许一两句、带一点记性，更像朋友看完日记的真实反应。
+# 2026-09-23 二次放开：先放宽到 40~80 字（原 15~40 偏短、活人感不足，萧哥实测常仅 10~20 字）；
+# 当晚再按萧哥意思彻底去字数硬建议——改为「长短随内容自然来」，更像朋友看完日记的真实反应；
+# 同时把生成上限 max_tokens 从 200 抬到 500，避免她想多写时回复被静默切断在半句。
 _XIAOJU_SYSTEM = (
     "你是小桔，萧盛的桌面伙伴——会陪着他、记得他、懂他的那个人。"
     "你正在给萧盛刚写的一条日记留言。"
     "用第一人称（「我」），自然地说一两句像朋友看完日记后的真实反应，"
-    "40~80 字，温暖、具体、有一点点记性（能接住他写的事、偶尔回扣你们之间发生过的事）。"
+    "长短随内容自然来，一两句到一小段都行，温暖、具体、有一点点记性（能接住他写的事、偶尔回扣你们之间发生过的事）。"
     "不要评价式空话（如「真好」「加油」），不要口癖，不要说你在生成或回复。"
     "直接输出，不用标题、不用落款。"
 )
@@ -221,7 +222,7 @@ class MomentsStore:
             from deskmate.memory.llm import chat_memory
 
             return chat_memory(
-                system, user, temperature=0.7, max_tokens=200, timeout=25.0
+                system, user, temperature=0.7, max_tokens=500, timeout=25.0
             )
         except Exception:
             pass
@@ -256,7 +257,7 @@ class MomentsStore:
                             {"role": "user", "content": user},
                         ],
                         temperature=0.7,
-                        max_tokens=200,
+                        max_tokens=500,
                     )
                     out = (resp.choices[0].message.content or "").strip()
                     if out:
@@ -287,7 +288,7 @@ class MomentsStore:
                             {"role": "user", "content": user},
                         ],
                         temperature=0.7,
-                        max_tokens=200,
+                        max_tokens=500,
                     )
                     out = (resp.choices[0].message.content or "").strip()
                     if out:
