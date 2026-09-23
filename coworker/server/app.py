@@ -3550,6 +3550,35 @@ def create_app(manager: SessionManager) -> FastAPI:
             logging.exception("deskmate inspire failed")
             return {"triggered": False, "reason": "error"}
 
+    @app.post("/v1/deskmate/cognitive/writing-advisor")
+    async def deskmate_writing_advisor(request: Request) -> dict[str, Any]:
+        """写作顾问（P1-5）：用她 worldview 层的看法，评萧哥的情节/框架/书评。
+
+        与 inspire / proofread 严格区分定位：inspire 是「递灵感素材」、proofread 是「文学编辑
+        批改」，本端点是「搭档的视角」——她用自己的世界观读萧哥的写作给看法，不替写不改稿。
+        纯只读消费 worldview + 一次 LLM 推理，fail-open：任何异常都返回 ok=False，前端优雅降级。
+        """
+        try:
+            body = await request.json()
+        except Exception:
+            return JSONResponse({"error": "invalid json"}, status_code=400)
+        draft = (body.get("draft") or "").strip()
+        kind = (body.get("kind") or "general").strip()
+        if kind not in ("plot", "framework", "review", "general"):
+            kind = "general"
+        try:
+            from pathlib import Path as _P
+
+            from deskmate.cognitive.writing_advisor import advise
+
+            desk_dir = _P(
+                os.environ.get("DESKMATE_DIR", os.path.expanduser("~/.deskmate"))
+            )
+            return advise(str(desk_dir), draft, kind)
+        except Exception:
+            logging.exception("deskmate writing_advisor failed")
+            return {"ok": False, "kind": kind, "advice": "", "worldview_used": False, "reason": "error"}
+
     @app.get("/v1/deskmate/external/status")
     async def deskmate_external_status() -> dict[str, Any]:
         """外部信息不可信区统计：总量、按状态/来源/分类、待裁决数。"""

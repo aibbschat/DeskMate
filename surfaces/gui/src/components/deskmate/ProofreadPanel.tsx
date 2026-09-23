@@ -7,6 +7,7 @@ import {
   loadManuscript,
   proofreadDraft,
   saveManuscript,
+  writingAdvisor,
   type ManuscriptChapter,
   type ManuscriptInfo,
   type StyleProfile,
@@ -69,6 +70,13 @@ export function ProofreadPanel({ open, onClose, sessionId, initialFocus }: Props
   const toastTimer = useRef<number | null>(null);
   const draftInputRef = useRef<HTMLInputElement>(null);
   const sampleInputRef = useRef<HTMLInputElement>(null);
+
+  // —— P1-5 写作顾问模式：与「批改」共用左栏草稿，右侧改为展示小桔的世界观视角 ——
+  const [mode, setMode] = useState<"proofread" | "advisor">("proofread");
+  const [adviceKind, setAdviceKind] = useState<"plot" | "framework" | "review" | "general">("plot");
+  const [adviceText, setAdviceText] = useState<string | null>(null);
+  const [adviceLoading, setAdviceLoading] = useState(false);
+  const [adviceError, setAdviceError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!open) return;
@@ -256,6 +264,40 @@ export function ProofreadPanel({ open, onClose, sessionId, initialFocus }: Props
     }
   };
 
+  const onAdvisor = async () => {
+    setAdviceError(null);
+    if (!draft.trim() || draft.startsWith("（已载入")) {
+      setAdviceError("请先粘贴或打开要拿给她看的文稿（情节 / 框架 / 书评）");
+      return;
+    }
+    setAdviceLoading(true);
+    setAdviceText(null);
+    emitEmotion("thinking");
+    try {
+      const res = await writingAdvisor(draft, adviceKind);
+      if (!res) {
+        setAdviceError("小桔暂时没法给看法（接口无响应），稍后再试");
+      } else if (!res.ok) {
+        // 后端优雅降级：no_worldview / no_provider / error —— 把她的真实状态讲清楚
+        setAdviceText(res.advice || "小桔暂时给不出看法");
+      } else {
+        setAdviceText(res.advice);
+      }
+    } catch (e) {
+      setAdviceError((e as Error).message);
+    } finally {
+      setAdviceLoading(false);
+      emitEmotion("happy");
+    }
+  };
+
+  const switchMode = (next: "proofread" | "advisor") => {
+    if (next === mode) return;
+    setMode(next);
+    setAdviceText(null);
+    setAdviceError(null);
+  };
+
   const exportName = () => {
     if (selectedChapter !== null) {
       const ch = chapters.find((c) => c.idx === selectedChapter);
@@ -281,7 +323,9 @@ export function ProofreadPanel({ open, onClose, sessionId, initialFocus }: Props
   };
 
   const scopeLabel =
-    selectedChapter !== null ? `审：第 ${selectedChapter} 章` : "审：整篇 / 全部";
+    selectedChapter !== null
+      ? `${mode === "advisor" ? "顾问" : "审"}：第 ${selectedChapter} 章`
+      : `${mode === "advisor" ? "顾问" : "审"}：整篇 / 全部`;
   const canPickChapter = chapters.length > 1;
 
   return (
@@ -346,6 +390,23 @@ export function ProofreadPanel({ open, onClose, sessionId, initialFocus }: Props
             style={{ borderRight: "1px solid var(--line)" }}
           >
             <div className="flex flex-wrap items-center gap-2">
+              {/* P1-5 模式切换：批改 / 写作顾问 */}
+              <div className="inline-flex rounded-lg border" style={{ borderColor: "var(--line)" }}>
+                {(["proofread", "advisor"] as const).map((m) => (
+                  <button
+                    key={m}
+                    className="text-[12px] px-3 py-1.5 rounded-lg"
+                    style={{
+                      color: mode === m ? "#fff" : "var(--muted)",
+                      background: mode === m ? "var(--accent)" : "transparent",
+                      fontWeight: mode === m ? 600 : 400,
+                    }}
+                    onClick={() => switchMode(m)}
+                  >
+                    {m === "proofread" ? "批改" : "写作顾问"}
+                  </button>
+                ))}
+              </div>
               <button
                 className="inline-flex items-center gap-1.5 text-[12px] px-2.5 py-1.5 rounded border"
                 style={{ borderColor: "var(--line)", color: "var(--ink)" }}
@@ -354,14 +415,16 @@ export function ProofreadPanel({ open, onClose, sessionId, initialFocus }: Props
                 <Icon name="folder" size={13} />
                 打开文件
               </button>
-              <button
-                className="inline-flex items-center gap-1.5 text-[12px] px-2.5 py-1.5 rounded border"
-                style={{ borderColor: "var(--line)", color: "var(--ink)" }}
-                onClick={() => sampleInputRef.current?.click()}
-              >
-                <Icon name="refresh" size={13} />
-                校准我的风格
-              </button>
+              {mode === "proofread" && (
+                <button
+                  className="inline-flex items-center gap-1.5 text-[12px] px-2.5 py-1.5 rounded border"
+                  style={{ borderColor: "var(--line)", color: "var(--ink)" }}
+                  onClick={() => sampleInputRef.current?.click()}
+                >
+                  <Icon name="refresh" size={13} />
+                  校准我的风格
+                </button>
+              )}
               {savedManuscripts.length > 0 && (
                 <select
                   className="text-[12px] px-2 py-1.5 rounded border"
@@ -400,14 +463,39 @@ export function ProofreadPanel({ open, onClose, sessionId, initialFocus }: Props
                   ))}
                 </select>
               )}
-              <button
-                className="text-[12px] px-3 py-1.5 rounded font-medium"
-                style={{ background: "var(--accent)", color: "#fff" }}
-                onClick={onProofread}
-                disabled={running}
-              >
-                {running ? "批改中…" : "开始批改"}
-              </button>
+              {mode === "proofread" ? (
+                <button
+                  className="text-[12px] px-3 py-1.5 rounded font-medium"
+                  style={{ background: "var(--accent)", color: "#fff" }}
+                  onClick={onProofread}
+                  disabled={running}
+                >
+                  {running ? "批改中…" : "开始批改"}
+                </button>
+              ) : (
+                <>
+                  <select
+                    className="text-[12px] px-2 py-1.5 rounded border"
+                    style={{ borderColor: "var(--line)", color: "var(--ink)", background: "var(--paper)" }}
+                    value={adviceKind}
+                    onChange={(e) => setAdviceKind(e.target.value as typeof adviceKind)}
+                    title="你要拿给她看的是什么"
+                  >
+                    <option value="plot">情节</option>
+                    <option value="framework">框架</option>
+                    <option value="review">书评</option>
+                    <option value="general">想法</option>
+                  </select>
+                  <button
+                    className="text-[12px] px-3 py-1.5 rounded font-medium"
+                    style={{ background: "var(--accent)", color: "#fff" }}
+                    onClick={onAdvisor}
+                    disabled={adviceLoading}
+                  >
+                    {adviceLoading ? "她在读…" : "让小桔看看"}
+                  </button>
+                </>
+              )}
               <button
                 className="inline-flex items-center gap-1.5 text-[12px] px-2.5 py-1.5 rounded border"
                 style={{ borderColor: "var(--line)", color: "var(--muted)" }}
@@ -438,7 +526,7 @@ export function ProofreadPanel({ open, onClose, sessionId, initialFocus }: Props
             <textarea
               className="flex-1 min-h-0 w-full rounded-lg border p-3 text-[13px] leading-relaxed resize-none"
               style={{ borderColor: "var(--line)", background: "var(--paper)", color: "var(--ink)" }}
-              placeholder="把要批改的文稿粘贴到这里，或点「打开文件」选择 .txt / .docx…"
+              placeholder={mode === "advisor" ? "把要拿给小桔看的情节 / 框架 / 书评粘贴到这里，或点「打开文件」选择 .txt / .docx…" : "把要批改的文稿粘贴到这里，或点「打开文件」选择 .txt / .docx…"}
               value={draft}
               onChange={(e) => {
                 const v = e.target.value;
@@ -471,18 +559,58 @@ export function ProofreadPanel({ open, onClose, sessionId, initialFocus }: Props
             />
           </div>
 
-          {/* 右：说明（结果已发到聊天，不再内置采纳面板） */}
+          {/* 右：说明 / 写作顾问视角卡 */}
           <div className="flex-1 min-h-0 flex flex-col p-3 gap-2 overflow-y-auto">
-            {running && (
-              <div className="text-[13px] italic" style={{ color: "var(--muted)" }}>
-                小桔正在逐句审读你的文稿… 完成后结果会发到聊天。
-              </div>
-            )}
-            {!running && (
-              <div className="text-[13px] italic leading-relaxed" style={{ color: "var(--faint)" }}>
-                校对完成后，结果会以结构化消息发到聊天（【原文】/【建议】/【理由】按章分组）。
-                你可以在聊天里直接阅读，回到原稿手动修改你认可的条目。
-              </div>
+            {mode === "proofread" ? (
+              <>
+                {running && (
+                  <div className="text-[13px] italic" style={{ color: "var(--muted)" }}>
+                    小桔正在逐句审读你的文稿… 完成后结果会发到聊天。
+                  </div>
+                )}
+                {!running && (
+                  <div className="text-[13px] italic leading-relaxed" style={{ color: "var(--faint)" }}>
+                    校对完成后，结果会以结构化消息发到聊天（【原文】/【建议】/【理由】按章分组）。
+                    你可以在聊天里直接阅读，回到原稿手动修改你认可的条目。
+                  </div>
+                )}
+              </>
+            ) : (
+              <>
+                {adviceLoading && (
+                  <div className="text-[13px] italic" style={{ color: "var(--muted)" }}>
+                    小桔正在用她自己的镜头读你的文字… 她不是审字，是聊看法。
+                  </div>
+                )}
+                {!adviceLoading && !adviceText && !adviceError && (
+                  <div className="text-[13px] italic leading-relaxed" style={{ color: "var(--faint)" }}>
+                    这是「写作顾问」——不是编辑、不是代笔，是小桔用她看世界长出来的世界观，
+                    读你的情节 / 框架 / 书评，给你她的看法。粘贴好文稿、选好类型，点「让小桔看看」。
+                    <br /><br />
+                    她只有真的形成了自己的看法才会开口；还在长的时候，她会老实说「我还没想透」。
+                  </div>
+                )}
+                {adviceError && (
+                  <div
+                    className="text-[12px] px-2 py-1.5 rounded"
+                    style={{ color: "#b00020", background: "rgba(176,0,32,0.08)" }}
+                  >
+                    {adviceError}
+                  </div>
+                )}
+                {adviceText && (
+                  <div
+                    className="rounded-xl border p-3 text-[13px] leading-relaxed"
+                    style={{ borderColor: "var(--line)", background: "var(--paper)", color: "var(--ink)", whiteSpace: "pre-wrap" }}
+                  >
+                    <div className="flex items-center gap-1.5 mb-1.5" style={{ color: "var(--accent)" }}>
+                      <Icon name="sparkle" size={13} />
+                      小桔的视角（{adviceKind === "review" ? "书评" : adviceKind === "framework" ? "框架" : adviceKind === "plot" ? "情节" : "想法"}）
+                    </div>
+                    {adviceText}
+                  </div>
+                )}
+              </>
             )}
           </div>
         </div>

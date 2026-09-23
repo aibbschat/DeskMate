@@ -3544,6 +3544,33 @@ export async function postInspire(text: string, concept?: string): Promise<Inspi
   }
 }
 
+/** 写作顾问（P1-5）：用她 worldview 层的看法，评用户的情节/框架/书评。 */
+export interface WritingAdvisorResult {
+  ok: boolean;
+  kind: string;
+  advice: string;
+  worldview_used: boolean;
+  reason?: string;
+}
+
+/** 把草稿交给小桔，让她用「自己的世界观镜头」读后给看法（POST /v1/deskmate/cognitive/writing-advisor）。 */
+export async function writingAdvisor(
+  draft: string,
+  kind: "plot" | "framework" | "review" | "general" = "general",
+): Promise<WritingAdvisorResult | null> {
+  try {
+    const res = await authedFetch(`${httpBase()}/v1/deskmate/cognitive/writing-advisor`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ draft, kind }),
+    });
+    if (!res.ok) return null;
+    return (await res.json()) as WritingAdvisorResult;
+  } catch {
+    return null;
+  }
+}
+
 /** 获取创作对话历史。 */
 export async function getChatHistory(pid: string): Promise<CreationChatMessage[]> {
   const res = await authedFetch(`${creationBase()}/api/creation/${encodeURIComponent(pid)}/chat`);
