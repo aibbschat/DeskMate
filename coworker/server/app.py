@@ -2674,6 +2674,62 @@ def create_app(manager: SessionManager) -> FastAPI:
             logging.exception("get deskmate memory layering failed")
             return JSONResponse({"error": "read memory layering failed"}, status_code=500)
 
+    @app.get("/v1/deskmate/memory/learned")
+    async def get_deskmate_memory_learned(limit: int = 200) -> dict[str, Any]:
+        """P1-1 条目级可控记忆：返回小桔学到的记忆条目（learned_history），含 id/status。"""
+        try:
+            from pathlib import Path as _P
+            from deskmate.memory.learned_store import LearnedStore
+
+            desk_dir = _P(os.environ.get("DESKMATE_DIR", os.path.expanduser("~/.deskmate")))
+            store = LearnedStore(base_dir=desk_dir)
+            return {"items": store.list_for_ui(limit)}
+        except Exception:
+            logging.exception("get deskmate memory learned failed")
+            return JSONResponse({"error": "read learned failed"}, status_code=500)
+
+    @app.delete("/v1/deskmate/memory/learned/{item_id}")
+    async def delete_deskmate_memory_learned(item_id: int) -> dict[str, Any]:
+        """P1-1 用户主动遗忘某条学到的记忆（Replika 式可控）。标记 forgotten，检索自动剔除。"""
+        try:
+            from pathlib import Path as _P
+            from deskmate.memory.learned_store import LearnedStore
+
+            desk_dir = _P(os.environ.get("DESKMATE_DIR", os.path.expanduser("~/.deskmate")))
+            store = LearnedStore(base_dir=desk_dir)
+            return {"ok": store.forget(item_id)}
+        except Exception:
+            logging.exception("forget learned failed")
+            return JSONResponse({"error": "forget failed"}, status_code=500)
+
+    @app.get("/v1/deskmate/memory/profile-items")
+    async def get_deskmate_memory_profile_items(limit: int = 200) -> dict[str, Any]:
+        """P1-1 条目级可控记忆：返回认知条目（profile_items），含 id/layer/dimension/status。"""
+        try:
+            from pathlib import Path as _P
+            from deskmate.cognitive.store import CognitiveStore
+
+            desk_dir = _P(os.environ.get("DESKMATE_DIR", os.path.expanduser("~/.deskmate")))
+            store = CognitiveStore(base_dir=desk_dir)
+            return {"items": store.list_for_ui(limit)}
+        except Exception:
+            logging.exception("get profile items failed")
+            return JSONResponse({"error": "read profile items failed"}, status_code=500)
+
+    @app.delete("/v1/deskmate/memory/profile-item/{item_id}")
+    async def delete_deskmate_memory_profile_item(item_id: str) -> dict[str, Any]:
+        """P1-1 用户主动遗忘某条认知条目（偏好/价值观/世界观等）。物理删使遗忘生效 + 留痕。"""
+        try:
+            from pathlib import Path as _P
+            from deskmate.cognitive.store import CognitiveStore
+
+            desk_dir = _P(os.environ.get("DESKMATE_DIR", os.path.expanduser("~/.deskmate")))
+            store = CognitiveStore(base_dir=desk_dir)
+            return {"ok": store.delete_item(item_id)}
+        except Exception:
+            logging.exception("delete profile item failed")
+            return JSONResponse({"error": "delete failed"}, status_code=500)
+
     @app.get("/v1/deskmate/memory/dream")
     async def get_deskmate_memory_dream() -> dict[str, Any]:
         """P2-1 后台自动提炼（Dreaming）：返回上次记忆提炼状态与是否到期可跑。

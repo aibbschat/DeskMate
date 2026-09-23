@@ -25,15 +25,21 @@ schema 不能把五维写死，必须"加一层不改表"。
 
 from __future__ import annotations
 
+import datetime
 import json
 import logging
 import os
 import shutil
+import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Optional
 
 logger = logging.getLogger(__name__)
+
+
+def _now_iso() -> str:
+    return datetime.datetime.now().isoformat(timespec="seconds")
 
 from deskmate.paths import deskmate_db_path, deskmate_legacy_profile_path
 from .models import (
@@ -436,6 +442,48 @@ class CognitiveStore:
                 ))
             profile.cognitive_gaps = gaps
             return profile
+
+    def delete_item(self, item_id: str) -> bool:
+        """用户主动遗忘某条认知条目（Replika 式可控记忆）。
+
+        认知层读取（load_cognitive_profile）不过滤 status，故采用物理删使遗忘
+        真正生效；删前在 item_history 留痕 action='forgotten' 以便追溯。
+        返回是否命中并删除。
+        """
+        try:
+            with self._connect() as conn:
+                conn.execute(
+                    "INSERT OR REPLACE INTO item_history "
+                    "(item_id, seq, action, old_value, new_value, reason, source, ts) "
+                    "VALUES(?, (SELECT COALESCE(MAX(seq), -1) + 1 FROM item_history "
+                    "WHERE item_id=?), 'forgotten', '', '', 'user', ?, ?)",
+                    (item_id, item_id, "user", _now_iso()),
+                )
+                cur = conn.execute("DELETE FROM profile_items WHERE id=?", (item_id,))
+                return bool(cur.rowcount and cur.rowcount > 0)
+        except sqlite3.Error:
+            return False
+
+    def list_for_ui(self, limit: int = 200) -> list[dict[str, Any]]:
+        """供 MemoryViewer 条目级可控：返回认知条目（含 id/layer/dimension/status）。"""
+        limit = max(1, min(int(limit), 5000))
+        try:
+            with self._connect() as conn:
+                rows = conn.execute(
+                    "SELECT id, layer, dimension, topic, content, status, last_updated "
+                    "FROM profile_items "
+                    "ORDER BY (status='active') DESC, last_updated DESC, id DESC LIMIT ?",
+                    (limit,),
+                ).fetchall()
+        except sqlite3.Error:
+            return []
+        return [
+            {
+                "id": r[0], "layer": r[1], "dimension": r[2], "topic": r[3],
+                "content": (r[4] or "")[:200], "status": r[5], "last_updated": r[6],
+            }
+            for r in rows
+        ]
 
     @staticmethod
     def _load_sources(conn, item_id) -> list[SourceRef]:

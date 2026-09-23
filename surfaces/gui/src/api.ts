@@ -2681,6 +2681,84 @@ export async function getDeskmateMemoryLayering(): Promise<DeskmateMemoryLayerin
   }
 }
 
+// -- P1-1 条目级可控记忆（Replika 式：用户可查看 / 逐条遗忘小桔的结构化记忆）--
+export interface LearnedMemoryItem {
+  id: number;
+  ts: string | null;
+  fact: string;
+  category: string;
+  status: string; // "active" | "forgotten" | …
+  valid_until: string | null;
+}
+
+export interface ProfileMemoryItem {
+  id: string;
+  layer: string;
+  dimension: string;
+  topic: string;
+  content: string;
+  status: string; // "active" | "forgotten" | …
+  last_updated: string | null;
+}
+
+/** 拉取小桔「学到的记忆」条目（learned_history），含 id/status。 */
+export async function getDeskmateLearnedMemories(
+  limit = 300,
+): Promise<LearnedMemoryItem[]> {
+  try {
+    const res = await authedFetch(`${httpBase()}/v1/deskmate/memory/learned?limit=${limit}`);
+    if (!res.ok) return [];
+    const d = await res.json();
+    return d.items ?? [];
+  } catch {
+    return [];
+  }
+}
+
+/** 用户主动遗忘某条学到的记忆（标记 forgotten，检索自动剔除）。 */
+export async function forgetDeskmateLearnedMemory(itemId: number): Promise<boolean> {
+  try {
+    const res = await authedFetch(
+      `${httpBase()}/v1/deskmate/memory/learned/${itemId}`,
+      { method: "DELETE" },
+    );
+    if (!res.ok) return false;
+    const d = await res.json();
+    return !!d.ok;
+  } catch {
+    return false;
+  }
+}
+
+/** 拉取小桔「认知条目」（profile_items：偏好/价值观/世界观等），含 id/layer/status。 */
+export async function getDeskmateProfileItems(
+  limit = 300,
+): Promise<ProfileMemoryItem[]> {
+  try {
+    const res = await authedFetch(`${httpBase()}/v1/deskmate/memory/profile-items?limit=${limit}`);
+    if (!res.ok) return [];
+    const d = await res.json();
+    return d.items ?? [];
+  } catch {
+    return [];
+  }
+}
+
+/** 用户主动遗忘某条认知条目（物理删除使遗忘生效 + 留痕）。 */
+export async function deleteDeskmateProfileItem(itemId: string): Promise<boolean> {
+  try {
+    const res = await authedFetch(
+      `${httpBase()}/v1/deskmate/memory/profile-item/${encodeURIComponent(itemId)}`,
+      { method: "DELETE" },
+    );
+    if (!res.ok) return false;
+    const d = await res.json();
+    return !!d.ok;
+  } catch {
+    return false;
+  }
+}
+
 /** P1-8：读取 growth snapshot（含 trust_controls_proactive 状态）。 */
 export async function getDeskmateGrowth(): Promise<Record<string, unknown>> {
   try {

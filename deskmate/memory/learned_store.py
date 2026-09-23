@@ -427,6 +427,47 @@ class LearnedStore:
             return []
         return [{"ts": r[0], "fact": r[1], "category": r[2]} for r in rows]
 
+    def forget(self, item_id: int) -> bool:
+        """用户主动遗忘某条学到的记忆（Replika 式可控记忆）。
+
+        标记 ``status='forgotten'``，使其从 ``active_recent`` / ``relevant`` 等
+        活跃检索中自动剔除（这些检索都过滤 ``status='active'``）。不物理删除、
+        不动 fp 幂等，保留遗忘痕迹可追溯。返回是否命中并变更。
+        """
+        try:
+            with self._connect() as conn:
+                cur = conn.execute(
+                    "UPDATE learned_history SET status='forgotten' "
+                    "WHERE id=? AND status='active'",
+                    (item_id,),
+                )
+                return bool(cur.rowcount and cur.rowcount > 0)
+        except sqlite3.Error:
+            return False
+
+    def list_for_ui(self, limit: int = 200) -> list[dict[str, Any]]:
+        """供 MemoryViewer 条目级可控：返回学到的记忆条目（含 id/status），
+        按「活跃优先、时间倒序」排列，便于前端分区展示 active / forgotten。
+        """
+        limit = max(1, min(int(limit), 5000))
+        try:
+            with self._connect() as conn:
+                rows = conn.execute(
+                    "SELECT id, ts, fact, category, status, valid_until "
+                    "FROM learned_history "
+                    "ORDER BY (status='active') DESC, ts DESC, id DESC LIMIT ?",
+                    (limit,),
+                ).fetchall()
+        except sqlite3.Error:
+            return []
+        return [
+            {
+                "id": r[0], "ts": r[1], "fact": r[2], "category": r[3],
+                "status": r[4], "valid_until": r[5],
+            }
+            for r in rows
+        ]
+
     # ------------------------------------------------------------------
     # 迁移：learned_history.jsonl → DB
     # ------------------------------------------------------------------

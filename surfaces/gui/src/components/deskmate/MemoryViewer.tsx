@@ -1,7 +1,19 @@
 import { useState, useCallback, useEffect, useRef } from "react";
 import { Icon } from "../Icon";
 import { Markdown } from "../Markdown";
-import { getDeskmateMemoryTrace, getDeskmateUserDedup, getDeskmateMemoryLayering, type TraceRecord, type DeskmateMemoryLayering } from "../../api";
+import {
+  getDeskmateMemoryTrace,
+  getDeskmateUserDedup,
+  getDeskmateMemoryLayering,
+  getDeskmateLearnedMemories,
+  forgetDeskmateLearnedMemory,
+  getDeskmateProfileItems,
+  deleteDeskmateProfileItem,
+  type TraceRecord,
+  type DeskmateMemoryLayering,
+  type LearnedMemoryItem,
+  type ProfileMemoryItem,
+} from "../../api";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -54,6 +66,12 @@ export function MemoryViewer({
   const [dedup, setDedup] = useState<{ dup_rate?: number; entries?: number }>({});
   // P0-6 记忆分层净化 + 时间感知：书的记忆 vs 你的记忆 分离状态（8.0 红线）
   const [layering, setLayering] = useState<DeskmateMemoryLayering>({});
+  // P1-1 条目级可控记忆：小桔学到的结构化记忆条目（learned_history / profile_items）
+  const [learned, setLearned] = useState<LearnedMemoryItem[]>([]);
+  const [profile, setProfile] = useState<ProfileMemoryItem[]>([]);
+  // 待确认遗忘的目标（二次确认，避免误删）+ 正在删除的条目 id
+  const [confirm, setConfirm] = useState<{ kind: "learned" | "profile"; id: number | string } | null>(null);
+  const [deleting, setDeleting] = useState<string | null>(null);
 
   // 打开面板即拉取最近溯源/遗忘记录（静默降级）
   useEffect(() => {
@@ -66,9 +84,42 @@ export function MemoryViewer({
     getDeskmateMemoryLayering()
       .then(setLayering)
       .catch(() => {});
+    getDeskmateLearnedMemories()
+      .then(setLearned)
+      .catch(() => {});
+    getDeskmateProfileItems()
+      .then(setProfile)
+      .catch(() => {});
   }, []);
 
   const current = files.find((f) => f.id === currentId) ?? files[0];
+  // 当前视图模式：文件（.md）/ 学到的记忆（learned_history）/ 认知条目（profile_items）
+  const mode: "file" | "learned" | "profile" =
+    currentId === "__learned" ? "learned" : currentId === "__profile" ? "profile" : "file";
+
+  // 用户主动遗忘一条「学到的记忆」：标记 forgotten（检索自动剔除），本地即时置灰
+  const handleForgetLearned = useCallback(async (id: number) => {
+    setDeleting(String(id));
+    try {
+      const ok = await forgetDeskmateLearnedMemory(id);
+      if (ok) setLearned((prev) => prev.map((it) => (it.id === id ? { ...it, status: "forgotten" } : it)));
+    } finally {
+      setDeleting(null);
+      setConfirm(null);
+    }
+  }, []);
+
+  // 用户主动遗忘一条「认知条目」：物理删除使遗忘生效，本地即时移除
+  const handleDeleteProfile = useCallback(async (id: string) => {
+    setDeleting(id);
+    try {
+      const ok = await deleteDeskmateProfileItem(id);
+      if (ok) setProfile((prev) => prev.filter((it) => it.id !== id));
+    } finally {
+      setDeleting(null);
+      setConfirm(null);
+    }
+  }, []);
 
   const handleExport = useCallback(() => {
     if (!current) return;
@@ -193,6 +244,34 @@ export function MemoryViewer({
             {f.name}
           </button>
         ))}
+        <button
+          className="text-[12.5px] px-3 py-1.5 rounded-lg whitespace-nowrap transition-colors"
+          style={{
+            color: currentId === "__learned" ? "var(--ink)" : "var(--muted)",
+            background: currentId === "__learned" ? "var(--accent-soft)" : "transparent",
+            fontWeight: currentId === "__learned" ? 600 : 400,
+          }}
+          onClick={() => setCurrentId("__learned")}
+        >
+          学到的记忆
+          {learned.length > 0 && (
+            <span className="ml-1 opacity-60">{learned.length}</span>
+          )}
+        </button>
+        <button
+          className="text-[12.5px] px-3 py-1.5 rounded-lg whitespace-nowrap transition-colors"
+          style={{
+            color: currentId === "__profile" ? "var(--ink)" : "var(--muted)",
+            background: currentId === "__profile" ? "var(--accent-soft)" : "transparent",
+            fontWeight: currentId === "__profile" ? 600 : 400,
+          }}
+          onClick={() => setCurrentId("__profile")}
+        >
+          认知条目
+          {profile.length > 0 && (
+            <span className="ml-1 opacity-60">{profile.length}</span>
+          )}
+        </button>
       </div>
 
       {/* Content area */}
@@ -364,6 +443,34 @@ export function MemoryViewer({
             </div>
           </>
         )}
+        {/* P1-1 条目级可控记忆：学到的记忆（learned_history） */}
+        {mode === "learned" && (
+          <StructuredMemoryList
+            kind="learned"
+            items={learned as unknown as StructuredRow[]}
+            confirm={confirm}
+            deleting={deleting}
+            onRequestForget={(id) => setConfirm({ kind: "learned", id })}
+            onCancel={() => setConfirm(null)}
+            onConfirm={() => {
+              if (confirm && confirm.kind === "learned") void handleForgetLearned(confirm.id as number);
+            }}
+          />
+        )}
+        {/* P1-1 条目级可控记忆：认知条目（profile_items） */}
+        {mode === "profile" && (
+          <StructuredMemoryList
+            kind="profile"
+            items={profile as unknown as StructuredRow[]}
+            confirm={confirm}
+            deleting={deleting}
+            onRequestForget={(id) => setConfirm({ kind: "profile", id })}
+            onCancel={() => setConfirm(null)}
+            onConfirm={() => {
+              if (confirm && confirm.kind === "profile") void handleDeleteProfile(confirm.id as string);
+            }}
+          />
+        )}
           </div>
         </div>
       )}
@@ -375,6 +482,167 @@ export function MemoryViewer({
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/** 结构化记忆条目的最小形状（learned_history 与 profile_items 的并集视图）。 */
+interface StructuredRow {
+  id: number | string;
+  status: string;
+  // learned_history
+  fact?: string;
+  category?: string;
+  ts?: string | null;
+  valid_until?: string | null;
+  // profile_items
+  layer?: string;
+  dimension?: string;
+  topic?: string;
+  content?: string;
+  last_updated?: string | null;
+}
+
+/** 统一时间戳展示：ISO 字符串 → 本地日期；解析失败回退原值。 */
+function fmtTs(value: string | null | undefined): string {
+  if (!value) return "";
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return value;
+  return d.toLocaleString([], {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+// ---------------------------------------------------------------------------
+// P1-1 条目级可控记忆：结构化记忆列表（学到的记忆 / 认知条目共用）
+// Replika 式：用户可逐条查看并主动「遗忘」，二次确认防误删。
+// ---------------------------------------------------------------------------
+
+function StructuredMemoryList({
+  kind,
+  items,
+  confirm,
+  deleting,
+  onRequestForget,
+  onCancel,
+  onConfirm,
+}: {
+  kind: "learned" | "profile";
+  items: StructuredRow[];
+  confirm: { kind: "learned" | "profile"; id: number | string } | null;
+  deleting: string | null;
+  onRequestForget: (id: number | string) => void;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  const isLearned = kind === "learned";
+  const activeCount = items.filter((it) => it.status === "active").length;
+
+  return (
+    <div className="flex flex-col gap-2">
+      <div className="text-[11.5px] leading-relaxed" style={{ color: "var(--faint)" }}>
+        {isLearned
+          ? "小桔从对话 / 观察中自动学到的「事实记忆」。你可以逐条让她「遗忘」——遗忘后不再参与回忆，但保留痕迹。"
+          : "小桔对你的认知（偏好 / 价值观 / 世界观等）。你可以逐条删除——删除后即刻生效并留痕。"}
+        {" "}
+        当前活跃 <b style={{ color: "var(--muted)" }}>{activeCount}</b> / 共 {items.length} 条。
+      </div>
+
+      {items.length === 0 && (
+        <div className="text-[12px] py-10 text-center" style={{ color: "var(--faint)" }}>
+          暂无条目（对话或观察后会逐渐积累）
+        </div>
+      )}
+
+      {items.map((it) => {
+        const idStr = String(it.id);
+        const confirming = confirm?.kind === kind && confirm.id === it.id;
+        const busy = deleting === idStr;
+        const forgotten = it.status !== "active";
+        const title = isLearned ? it.fact ?? "" : it.content ?? "";
+        const meta = isLearned
+          ? [it.category, it.ts ? fmtTs(it.ts) : null].filter(Boolean).join(" · ")
+          : [it.layer, it.dimension, it.topic].filter(Boolean).join(" · ");
+
+        return (
+          <div
+            key={idStr}
+            className="rounded-xl p-3"
+            style={{
+              border: "1px solid var(--line)",
+              background: "var(--paper)",
+              opacity: forgotten ? 0.55 : 1,
+            }}
+          >
+            <div className="flex items-start gap-2">
+              <div className="flex-1 min-w-0">
+                <div
+                  className="text-[12.5px] leading-relaxed whitespace-pre-wrap break-words"
+                  style={{ color: "var(--ink)" }}
+                >
+                  {title || "（空）"}
+                </div>
+                {meta && (
+                  <div
+                    className="text-[11px] mt-1"
+                    style={{ color: "var(--faint)", fontFamily: "var(--mono)" }}
+                  >
+                    {meta}
+                  </div>
+                )}
+              </div>
+
+              {!forgotten ? (
+                <div className="flex-shrink-0 flex items-center gap-1.5">
+                  {confirming ? (
+                    <>
+                      <button
+                        className="text-[12px] px-2 py-1 rounded-lg"
+                        style={{
+                          background: "var(--accent)",
+                          color: "#fff",
+                          opacity: busy ? 0.6 : 1,
+                        }}
+                        onClick={onConfirm}
+                        disabled={busy}
+                      >
+                        {busy ? "处理中…" : "确认遗忘"}
+                      </button>
+                      <button
+                        className="text-[12px] px-2 py-1 rounded-lg"
+                        style={{ color: "var(--muted)" }}
+                        onClick={onCancel}
+                        disabled={busy}
+                      >
+                        取消
+                      </button>
+                    </>
+                  ) : (
+                    <button
+                      className="text-[12px] flex items-center gap-1 px-2 py-1 rounded-lg"
+                      style={{ color: "var(--accent)" }}
+                      onClick={() => onRequestForget(it.id)}
+                    >
+                      <Icon name="trash" size={12} />
+                      遗忘
+                    </button>
+                  )}
+                </div>
+              ) : (
+                <span
+                  className="flex-shrink-0 text-[11px] px-2 py-1 rounded-lg"
+                  style={{ color: "var(--faint)", background: "var(--line)" }}
+                >
+                  已遗忘
+                </span>
+              )}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
 
 function formatDate(ts: number): string {
   const d = new Date(ts);
