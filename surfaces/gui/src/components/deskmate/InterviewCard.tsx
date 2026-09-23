@@ -14,6 +14,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   answerCognitiveInterview,
+  dismissCognitiveInterview,
   type InterviewQuestion,
 } from "../../api";
 
@@ -22,6 +23,8 @@ export interface InterviewPayload {
   questions: InterviewQuestion[];
   total: number;
   note?: string;
+  /** 访谈层（cognitive / emotional），后端 redeliver 按层隔离；前端 dismiss 回传用。 */
+  layer?: string;
 }
 
 export interface InterviewCardProps {
@@ -96,6 +99,14 @@ export function InterviewCard({ interview, onClose }: InterviewCardProps) {
     setTimeout(onClose, 200);
   }, [onClose]);
 
+  // 显式忽略（点 ✕ 或「稍后再说」）：fire-and-forget 回传后端，让补送暂停 24h，再关窗。
+  // 与「用户不在窗口前、邀请无声消失」的补送是两回事——既然他看见了却 defer，就不再骚扰。
+  const handleDismissNow = useCallback(() => {
+    const layer = interview?.layer ?? "cognitive";
+    dismissCognitiveInterview(layer).catch(() => {});
+    handleCloseNow();
+  }, [interview, handleCloseNow]);
+
   const handleSubmit = useCallback(async () => {
     const text = answer.trim();
     if (!text || !sessionId || !q) return;
@@ -162,7 +173,7 @@ export function InterviewCard({ interview, onClose }: InterviewCardProps) {
             <button
               className="flex-shrink-0 w-6 h-6 rounded flex items-center justify-center"
               style={{ color: "var(--faint)" }}
-              onClick={handleCloseNow}
+              onClick={handleDismissNow}
               aria-label="关闭"
             >
               ✕
@@ -193,7 +204,7 @@ export function InterviewCard({ interview, onClose }: InterviewCardProps) {
                 borderColor: "var(--line)",
                 color: "var(--muted)",
               }}
-              onClick={handleCloseNow}
+              onClick={handleDismissNow}
             >
               稍后再说
             </button>

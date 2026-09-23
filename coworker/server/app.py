@@ -3301,6 +3301,26 @@ def create_app(manager: SessionManager) -> FastAPI:
             logging.exception("cognitive interview sessions failed")
             return JSONResponse({"error": "interview sessions failed"}, status_code=500)
 
+    @app.post("/v1/deskmate/cognitive/interview/dismiss")
+    async def post_cognitive_interview_dismiss(request: Request) -> dict[str, Any]:
+        """用户在前端点「稍后再说」→ 显式忽略当前挂起访谈，暂停该层补送一段时间。
+
+        Body: {"layer": "cognitive"}（默认 cognitive；情感访谈传 "emotional"）。
+        返回 {"ok", "dismissed", "layer"}。失败也不阻断前端关闭（前端只关心关窗）。
+        """
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        layer = (body.get("layer") or "cognitive")
+        try:
+            from deskmate.cognitive import dismiss_pending_interview
+            dismissed = dismiss_pending_interview(layer=layer)
+            return {"ok": True, "dismissed": dismissed, "layer": layer}
+        except Exception:
+            logging.exception("cognitive interview dismiss failed")
+            return JSONResponse({"error": "interview dismiss failed"}, status_code=500)
+
     @app.post("/v1/deskmate/cognitive/validation/scenario")
     async def post_cognitive_validation_scenario(request: Request) -> dict[str, Any]:
         """生成一个验证情境（认知 Turing test）。

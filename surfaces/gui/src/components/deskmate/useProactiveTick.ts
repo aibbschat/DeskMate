@@ -99,6 +99,7 @@ export function useProactiveTick({
                 questions: data.interview.questions,
                 total: data.interview.total ?? data.interview.questions.length,
                 note: data.interview.note,
+                layer: data.interview.layer ?? "cognitive",
               },
             }),
           );

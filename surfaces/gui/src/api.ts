@@ -3648,6 +3648,18 @@ export async function answerCognitiveInterview(
   return res.json();
 }
 
+/** 用户点「稍后再说」→ 显式忽略当前挂起访谈，后端暂停该层补送一段时间。 */
+export async function dismissCognitiveInterview(
+  layer = "cognitive",
+): Promise<{ ok: boolean; dismissed: boolean; layer: string }> {
+  const res = await authedFetch(`${httpBase()}/v1/deskmate/cognitive/interview/dismiss`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ layer }),
+  });
+  return res.json();
+}
+
 /** 查询是否应主动发起访谈（GET /v1/deskmate/cognitive/interview/should）。 */
 export async function cognitiveInterviewShould(): Promise<{
   should_interview: boolean;

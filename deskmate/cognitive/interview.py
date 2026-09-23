@@ -146,6 +146,9 @@ _HIGH_PRIORITY_GAP_PRIORITY = 0.8
 _REDELIVER_MIN_INTERVAL_MINUTES = 30   # 同层两次补送的最小间隔（别每 15 秒顶一次气泡）
 _REDELIVER_MAX_TIMES = 8               # 单个会话最多补送次数，超过即放弃
 _REDELIVER_MAX_AGE_HOURS = 48          # 会话建立超过此时长仍无人回应 → 放弃并收敛
+# 用户在前端点「稍后再说」的尊重式停顿：显式忽略后，该层补送暂停这么久，
+# 不再每 30 分钟顶一次气泡。窗口过后若仍挂起未答，恢复正常补送（仍受 48h/8 次收敛）。
+_REDELIVER_DISMISS_PAUSE_HOURS = 24
 
 
 def _encode_question_id(related_item_id, related_gap_id, mode) -> str:
@@ -504,10 +507,16 @@ def start_interview(
         store.expire_active_sessions(layer=layer)
     except Exception:
         logger.debug("清理旧访谈会话失败（不影响发起）", exc_info=True)
+    # 新一轮发起 = 用户新的「想更懂你」邀请；清掉此前「稍后再说」的忽略时间戳，
+    # 避免残留的 24h 停顿窗口误伤这条新邀请（见 dismiss_pending_interview）。
+    try:
+        store.set_meta(f"interview_dismissed_at:{layer}", "")
+    except Exception:
+        pass
     # 复用 gap_ids 列存本次问题 id 列表（session 层语义：本次访谈涉及的目标 id）
     # create_session 内部已按 layer 写 last_interview_at:{layer} 抑制时间戳（防重复触发）
     sid = store.create_session(layer=layer, gap_ids=qids)
-    return {"session_id": sid, "questions": questions, "total": len(questions)}
+    return {"session_id": sid, "questions": questions, "total": len(questions), "layer": layer}
 
 
 def answer_interview(session_id: str, question_id: str, response: str,
@@ -666,6 +675,18 @@ def redeliver_pending_interview(layer: str = "cognitive", base_dir=None, pm=None
         if not sess:
             return None
         sid = sess["id"]
+        # 显式忽略窗口内不重放：用户点过「稍后再说」，给尊重式停顿，
+        # 不再每 30 分钟把气泡顶出来（redeliver 是为「用户不在窗口前」补送，
+        # 与显式忽略是两回事，见 dismiss_pending_interview）。
+        try:
+            dismissed = store.get_meta(f"interview_dismissed_at:{layer}")
+            if dismissed:
+                from datetime import datetime, timedelta
+                dt = datetime.fromisoformat(str(dismissed))
+                if datetime.now() - dt < timedelta(hours=_REDELIVER_DISMISS_PAUSE_HOURS):
+                    return None
+        except Exception:
+            pass
         # 已答过至少一题 → 他见过这轮邀请，不再补送（剩下的题由问答流自己推进）
         if store.get_qa(sid):
             return None
@@ -734,10 +755,41 @@ def redeliver_pending_interview(layer: str = "cognitive", base_dir=None, pm=None
             "questions": questions,
             "total": len(questions),
             "redelivered": True,
+            "layer": layer,
         }
     except Exception as e:
         logger.debug("补送访谈邀请失败（不影响主流程）: %s", e, exc_info=True)
         return None
+
+
+def dismiss_pending_interview(layer: str = "cognitive", base_dir=None) -> bool:
+    """用户在前端点「稍后再说」→ 记录一次显式忽略，暂停该层补送一段时间。
+
+    与 redeliver 的区别（关键）：redeliver 是「用户当时可能不在窗口前、邀请无声消失」
+    的补救，仍应反复温柔提醒；而这里用户**明确看见了**邀请却选择 defer，不应再
+    每 30 分钟把气泡顶出来骚扰他。记录 ``interview_dismissed_at:{layer}`` 后，
+    ``redeliver_pending_interview`` 在该窗口内（默认 24h）不再重放，给尊重式停顿。
+
+    它**不消除**挂起的 active 会话——停顿过后若用户仍没答，邀请会恢复补送
+    （仍受 48h / 8 次收敛护栏），不会变成「永久消失」。语义上等价于
+    「我看见了，晚点再说」。这是「稍后只关窗不上报」那处前端欠账的后端落点
+    （此前点「稍后」只关窗、后端无凭证，等于白吃冷却且无尊重停顿）。
+    """
+    try:
+        pm = resolve_profile_manager(layer=layer, base_dir=base_dir)
+        store = pm.store
+        sess = store.latest_active_session(layer)
+        if not sess:
+            return False
+        store.set_meta(f"interview_dismissed_at:{layer}", _now())
+        logger.info(
+            "访谈邀请 %s 被用户显式忽略（layer=%s），暂停补送 %dh",
+            sess["id"], layer, _REDELIVER_DISMISS_PAUSE_HOURS,
+        )
+        return True
+    except Exception as e:
+        logger.debug("记录访谈忽略失败（不影响前端关闭）: %s", e, exc_info=True)
+        return False
 
 
 def maybe_trigger_interview(
