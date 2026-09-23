@@ -3202,6 +3202,39 @@ def create_app(manager: SessionManager) -> FastAPI:
             logging.exception("post auto_tasks record failed")
             return JSONResponse({"error": "record failed"}, status_code=500)
 
+    @app.get("/v1/deskmate/auto-tasks")
+    async def get_deskmate_auto_tasks(limit: int = 3) -> dict[str, Any]:
+        """P1-3 前端「计划任务」面板：列出所有已登记任务 + 每条最近执行摘要。
+
+        Query: limit（每条最近 N 条，默认 3）
+        """
+        try:
+            from deskmate.auto_tasks import get_recorder
+            return {"tasks": get_recorder().list_tasks_with_recent(recent_limit=limit)}
+        except Exception:
+            logging.exception("get auto_tasks list failed")
+            return JSONResponse({"error": "list failed"}, status_code=500)
+
+    @app.post("/v1/deskmate/auto-tasks/{task_type}/toggle")
+    async def toggle_deskmate_auto_task(task_type: str, request: Request) -> dict[str, Any]:
+        """P1-3 用户可配置：切换某计划任务的启用/暂停状态。
+
+        Body: {"enabled": true | false}
+        返回: {"ok": true, "enabled": <bool>}；任务不存在时 {"ok": false}
+        """
+        try:
+            body = await request.json()
+        except Exception:
+            return JSONResponse({"error": "invalid json"}, status_code=400)
+        enabled = bool(body.get("enabled", True))
+        try:
+            from deskmate.auto_tasks import get_registry
+            ok = get_registry().set_enabled(task_type, enabled)
+            return {"ok": bool(ok), "enabled": enabled}
+        except Exception:
+            logging.exception("toggle auto_task failed")
+            return JSONResponse({"error": "toggle failed"}, status_code=500)
+
     # ---- cognitive：认知层（从"懂我"到"像我"的关键跃迁）----
 
     @app.get("/v1/deskmate/cognitive/profile")

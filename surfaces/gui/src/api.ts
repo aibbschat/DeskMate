@@ -2789,6 +2789,66 @@ export async function getDeskmateGrowth(): Promise<Record<string, unknown>> {
   }
 }
 
+// ---------------------------------------------------------------------------
+// P1-3：计划任务（auto-task）用户可配置面板（对标 Spark Skills / Replika「你在忙什么」）
+// ---------------------------------------------------------------------------
+
+export interface AutoTaskRecentEntry {
+  date: string;
+  target: string;
+  summary: string;
+  action: string;
+}
+
+export interface AutoTaskItem {
+  task_type: string;
+  task_name: string;
+  category: string;
+  description: string;
+  enabled: boolean;
+  created_at: string;
+  last_run_at: string;
+  run_count: number;
+  recent: AutoTaskRecentEntry[];
+}
+
+/** 拉取小桔的「计划任务」列表（含每条最近执行摘要）。 */
+export async function getDeskmateAutoTasks(
+  limit = 3,
+): Promise<AutoTaskItem[]> {
+  try {
+    const res = await authedFetch(`${httpBase()}/v1/deskmate/auto-tasks?limit=${limit}`);
+    if (!res.ok) return [];
+    const d = await res.json();
+    return d.tasks ?? [];
+  } catch {
+    return [];
+  }
+}
+
+/** 切换某计划任务的启用/暂停状态。返回最新的 enabled 值；任务不存在返回 null。 */
+export async function toggleDeskmateAutoTask(
+  taskType: string,
+  enabled: boolean,
+): Promise<boolean | null> {
+  try {
+    const res = await authedFetch(
+      `${httpBase()}/v1/deskmate/auto-tasks/${encodeURIComponent(taskType)}/toggle`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled }),
+      },
+    );
+    if (!res.ok) return null;
+    const d = await res.json();
+    if (d.ok === false) return null;
+    return d.enabled === undefined ? enabled : !!d.enabled;
+  } catch {
+    return null;
+  }
+}
+
 /** P1-8：设置信任感是否调制主动打扰阈值。 */
 export async function setDeskmateGrowthProactive(control: boolean): Promise<boolean> {
   try {

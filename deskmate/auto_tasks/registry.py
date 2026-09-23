@@ -50,6 +50,18 @@ class TaskRegistry:
     def get(self, task_type: str) -> Optional[TaskRegistryEntry]:
         return self._entries.get(task_type)
 
+    def set_enabled(self, task_type: str, enabled: bool) -> bool:
+        """P1-3 用户可配置：切换任务启用/暂停状态，持久化到 registry.json。
+
+        返回 False 表示任务不存在（未登记），调用方应提示用户。
+        """
+        entry = self._entries.get(task_type)
+        if entry is None:
+            return False
+        entry.enabled = bool(enabled)
+        self._save()
+        return True
+
     def all(self) -> list[TaskRegistryEntry]:
         return list(self._entries.values())
 

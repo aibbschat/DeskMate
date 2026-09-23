@@ -33,6 +33,7 @@ export interface StatusPanelV2Props {
   onClose: () => void;
   onOpenMemory?: () => void;
   onOpenProofread?: () => void;
+  onOpenAutoTasks?: () => void;
   proactiveEnabled?: boolean;
   onToggleProactive?: (enabled: boolean) => void;
   injectEnabled?: boolean;
@@ -530,6 +531,7 @@ function Layer4Details({
   onToggleInject,
   onOpenMemory,
   onOpenProofread,
+  onOpenAutoTasks,
 }: {
   growth?: GrowthSnapshot | null;
   learned?: LearnedHistory | null;
@@ -539,6 +541,7 @@ function Layer4Details({
   onToggleInject?: (enabled: boolean) => void;
   onOpenMemory?: () => void;
   onOpenProofread?: () => void;
+  onOpenAutoTasks?: () => void;
 }) {
   const skillCount = growth ? Object.keys(growth.skill_proficiency).length : 0;
   const memoryCount = learned?.stats.total ?? 0;
@@ -640,6 +643,19 @@ function Layer4Details({
 
       {/* 操作按钮 */}
       <div className="flex gap-2 mt-1">
+        {onOpenAutoTasks && (
+          <button
+            className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg text-[11px] font-medium text-gray-700 transition-all duration-100 hover:bg-gray-100 active:scale-[0.98]"
+            style={{
+              background: "#f9fafb",
+              border: "0.5px solid rgba(0, 0, 0, 0.06)",
+            }}
+            onClick={onOpenAutoTasks}
+          >
+            <Icon name="clock" size={13} />
+            计划任务
+          </button>
+        )}
         {onOpenMemory && (
           <button
             className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg text-[11px] font-medium text-gray-700 transition-all duration-100 hover:bg-gray-100 active:scale-[0.98]"
@@ -681,6 +697,7 @@ export function StatusPanelV2({
   onClose,
   onOpenMemory,
   onOpenProofread,
+  onOpenAutoTasks,
   proactiveEnabled = true,
   onToggleProactive,
   injectEnabled = true,
@@ -800,6 +817,7 @@ export function StatusPanelV2({
             onToggleInject={onToggleInject}
             onOpenMemory={onOpenMemory}
             onOpenProofread={onOpenProofread}
+            onOpenAutoTasks={onOpenAutoTasks}
           />
         </div>
       </div>

@@ -58,6 +58,11 @@ class TaskRecorder:
         """
         registry = get_registry(self.base_dir)
         entry = registry.get(task_type)
+        # P1-3：用户已暂停（enabled=False）的任务，fail-open 跳过沉淀。
+        # 默认任务从没被用户关过，enabled 恒为 True，此处不触发 —— 既有行为完全不变。
+        if entry is not None and not entry.enabled:
+            logger.info("auto-task %s 已被用户暂停，跳过本次沉淀", task_type)
+            return None
         if entry is None:
             # 未登记的任务，自动登记到 other 分类
             entry = registry.register(TaskRegistryEntry(
@@ -269,6 +274,33 @@ class TaskRecorder:
                 if len(result) >= limit:
                     return result[:limit]
         return result[:limit]
+
+    def list_tasks_with_recent(self, recent_limit: int = 3) -> list[dict]:
+        """P1-3 前端「计划任务」面板用：列出所有已登记任务 + 每条最近 N 条执行摘要。
+
+        返回顺序：先按分类、再按最近运行倒序。默认任务（enabled=True）与用户暂停（False）
+        一并展示，由前端呈现开关状态。
+        """
+        registry = get_registry(self.base_dir)
+        tasks = [dict(e.__dict__) for e in registry.all()]
+        for t in tasks:
+            recs = self.get_timeline(limit=recent_limit, task_type=t["task_type"])
+            t["recent"] = [
+                {
+                    "date": r.date,
+                    "target": r.target,
+                    "summary": (r.summary or "")[:120],
+                    "action": r.action,
+                }
+                for r in recs
+            ]
+        tasks.sort(
+            key=lambda x: (x.get("category", ""), x.get("last_run_at", "") or "", x.get("task_name", "")),
+            reverse=False,
+        )
+        # 最近运行倒序（空值排末尾）
+        tasks.sort(key=lambda x: (x.get("last_run_at", "") or ""), reverse=True)
+        return tasks
 
 
 # 按 base_dir 分实例（多工作区/多用户服务时不串数据）
