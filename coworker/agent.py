@@ -54,7 +54,7 @@ from .tools.toolreq import request_tool_tool
 from .tools.subagent import explorer_tools
 from .tools import a2a as a2a_tools
 from .web import make_web_fetch_tool, make_web_search_tool
-from .history import make_history_search_tool, make_library_check_tool
+from .history import make_history_search_tool, make_library_check_tool, make_private_search_tool
 from .workspace_trust import WorkspaceTrustStore
 from .tools.shell import LocalExecutor
 from .tools.todo import TodoList
@@ -496,6 +496,10 @@ def build_engine(
     # 史料库收录核查：确定性回答「某书在不在史料库」，与 search_history 互补，
     # 专治「凭记忆断言某书收录/未收录」的幻觉（deskmate.md 已立先查证纪律）。
     registry.register(make_library_check_tool())
+    # 私人资料检索（P2-3 演化）：萧哥的私人资料（写作教程/随笔/非史料书），
+    # 明确逻辑隔离——不是史料，引用标注「私人资料」而非史料规范。按需触发，
+    # 不每轮自动查（避免污染上下文）。
+    registry.register(make_private_search_tool())
     # A2A (Agent-to-Agent) protocol: call other A2A agents (e.g. Hermes).
     registry.register(a2a_tools.a2a_discover)
     registry.register(a2a_tools.a2a_call)

@@ -2808,6 +2808,64 @@ def create_app(manager: SessionManager) -> FastAPI:
             logging.exception("ingest failed")
             return JSONResponse({"error": "ingest failed"}, status_code=500)
 
+    # ---- 私人资料通道（P2-3 演化）：本地资料按分类灌库，复用史料 FTS 引擎 ----
+    @app.get("/v1/deskmate/private/categories")
+    async def get_private_categories() -> dict[str, Any]:
+        """列出已有私人资料分类（private-*.db 的去前缀名）。"""
+        try:
+            from coworker.history.private_store import list_categories
+
+            return {"categories": list_categories()}
+        except Exception:
+            logging.exception("list private categories failed")
+            return {"categories": []}
+
+    @app.post("/v1/deskmate/private/scan")
+    async def post_private_scan(request: Request) -> dict[str, Any]:
+        """轻量扫描目录（只列文件，不读内容），返回候选。"""
+        try:
+            from coworker.history.private_store import scan_sources
+
+            body = await request.json()
+            dirs = body.get("dirs", []) if isinstance(body, dict) else []
+            return {"candidates": scan_sources([str(d) for d in dirs])}
+        except Exception:
+            logging.exception("private scan failed")
+            return JSONResponse({"error": "scan failed"}, status_code=500)
+
+    @app.post("/v1/deskmate/private/ingest")
+    async def post_private_ingest(request: Request) -> dict[str, Any]:
+        """把选中的文件按分类灌库到 private-<category>.db（用户已在 UI 勾选确认）。"""
+        try:
+            from pathlib import Path as _P
+
+            from coworker.history.private_store import ingest_files
+
+            body = await request.json()
+            paths = body.get("paths", []) if isinstance(body, dict) else []
+            category = (body.get("category") or "") if isinstance(body, dict) else ""
+            desk_dir = _P(os.environ.get("DESKMATE_DIR", os.path.expanduser("~/.deskmate")))
+            return ingest_files([str(p) for p in paths], category, history_dir=desk_dir)
+        except Exception:
+            logging.exception("private ingest failed")
+            return JSONResponse({"error": "ingest failed"}, status_code=500)
+
+    @app.post("/v1/deskmate/private/clean")
+    async def post_private_clean(request: Request) -> dict[str, Any]:
+        """策略 B：清理某分类下已删源文件的向量。"""
+        try:
+            from pathlib import Path as _P
+
+            from coworker.history.private_store import clean_missing
+
+            body = await request.json()
+            category = (body.get("category") or "") if isinstance(body, dict) else ""
+            desk_dir = _P(os.environ.get("DESKMATE_DIR", os.path.expanduser("~/.deskmate")))
+            return {"removed": clean_missing(category, history_dir=desk_dir)}
+        except Exception:
+            logging.exception("private clean failed")
+            return JSONResponse({"error": "clean failed"}, status_code=500)
+
     @app.get("/v1/deskmate/memory/dream")
     async def get_deskmate_memory_dream() -> dict[str, Any]:
         """P2-1 后台自动提炼（Dreaming）：返回上次记忆提炼状态与是否到期可跑。

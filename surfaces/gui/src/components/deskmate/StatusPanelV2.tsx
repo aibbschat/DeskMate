@@ -669,7 +669,7 @@ function Layer4Details({
             onClick={onOpenLocalIntake}
           >
             <Icon name="file" size={13} />
-            本地摄入
+            本地资料
           </button>
         )}
         {onOpenMemory && (

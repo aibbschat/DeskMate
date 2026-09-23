@@ -2925,6 +2925,83 @@ export async function ingestFiles(
   }
 }
 
+// ---------------------------------------------------------------------------
+// 私人资料通道（P2-3 演化）：本地资料按分类灌库，复用史料 FTS 引擎。
+// 与史料通道逻辑隔离——这是萧哥的私人资料，不当史料引用。分类=库
+// （private-<分类名>.db），丢进 history 目录即被自动扫到，随时加分类零代码。
+// 扫描为轻量预览（只列文件，不读内容），内容读取推迟到勾选灌库时。
+// ---------------------------------------------------------------------------
+
+export interface PrivateCandidate {
+  path: string;
+  name: string;
+  size: number;
+  mtime: number;
+  ext: string;
+}
+
+/** 列出已有私人资料分类（private-*.db 的去前缀名）。 */
+export async function getPrivateCategories(): Promise<string[]> {
+  try {
+    const res = await authedFetch(`${httpBase()}/v1/deskmate/private/categories`);
+    if (!res.ok) return [];
+    const d = await res.json();
+    return d.categories ?? [];
+  } catch {
+    return [];
+  }
+}
+
+/** 轻量扫描给定目录，返回候选文件（不读内容，不写入库）。 */
+export async function scanPrivateDirs(dirs: string[]): Promise<PrivateCandidate[]> {
+  try {
+    const res = await authedFetch(`${httpBase()}/v1/deskmate/private/scan`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ dirs }),
+    });
+    if (!res.ok) return [];
+    const d = await res.json();
+    return d.candidates ?? [];
+  } catch {
+    return [];
+  }
+}
+
+/** 把勾选的文件按分类灌库到 private-<category>.db（用户已在 UI 勾选确认）。 */
+export async function ingestPrivate(
+  paths: string[],
+  category: string,
+): Promise<{ ingested: number; updated: number; skipped: number; errors: any[] }> {
+  try {
+    const res = await authedFetch(`${httpBase()}/v1/deskmate/private/ingest`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ paths, category }),
+    });
+    if (!res.ok) return { ingested: 0, updated: 0, skipped: 0, errors: [] };
+    return await res.json();
+  } catch {
+    return { ingested: 0, updated: 0, skipped: 0, errors: [] };
+  }
+}
+
+/** 清理某分类下已删源文件的向量（策略 B：懒惰清理，下次调用时触发）。 */
+export async function cleanPrivate(category: string): Promise<number> {
+  try {
+    const res = await authedFetch(`${httpBase()}/v1/deskmate/private/clean`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ category }),
+    });
+    if (!res.ok) return 0;
+    const d = await res.json();
+    return d.removed ?? 0;
+  } catch {
+    return 0;
+  }
+}
+
 /** P1-8：设置信任感是否调制主动打扰阈值。 */
 export async function setDeskmateGrowthProactive(control: boolean): Promise<boolean> {
   try {
