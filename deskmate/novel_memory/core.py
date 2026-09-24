@@ -198,16 +198,17 @@ def _read_file_text(p: Path) -> str:
     """读取单个正文文件为纯文本。.docx 走 python-docx 解析，其余按 UTF-8 读。
 
     任何失败都返回空串，由调用方跳过——扫描全书时不该因一个坏文件整体失败。
-    """
-    try:
-        if p.suffix.lower() in _BINARY_EXTS:
-            from deskmate.writing import read_text_from_path
 
-            # max_chars 给足：writing 层默认 20 万字，长篇会被静默腰斩
-            return read_text_from_path(str(p), max_chars=10_000_000)
-        return p.read_text(encoding="utf-8", errors="ignore")
-    except Exception:
-        return ""
+    ⚠️ 这是**读稿协助通道**（建人物圣经 / 看进度 / 查一致性），属用户授权的在界行为，
+    走 :func:`deskmate.sacred_paths.guarded_assistance_read`——作者稿可读、可讨论。
+    切勿在此处加装 ``guarded_file`` / ``is_author_manuscript`` 之类的摄入层守卫，否则会
+    重新把「小桔读你自己的稿子」误判成禁区（2026-09-24 萧哥明确拍板：读稿协助是红线之内）。
+    唯一的硬红线是原稿正文绝不直接改写/删除，由 :func:`deskmate.sacred_paths.guarded_write` 守住。
+    """
+    from deskmate.sacred_paths import guarded_assistance_read
+
+    text = guarded_assistance_read(p, max_chars=10_000_000)
+    return text or ""
 
 
 def _resolve_root(path: str) -> tuple[Path, Path]:

@@ -1,7 +1,8 @@
 """P2-3 本地摄入管线 hermetic 测试。
 
 不依赖真实库 / 真实文件系统外的任何状态：base_dir 全部指向 tmp_path。
-覆盖：神圣稿件排除、系统目录跳过、摘要格式、沉淀幂等 / 更新语义、来源标记。
+覆盖：作者稿可读可摄入、系统目录跳过、摘要格式、沉淀幂等 / 更新语义、来源标记。
+（原稿文件绝不直接改写由 guarded_write 守，不在扫描层排除。）
 """
 
 from __future__ import annotations
@@ -18,11 +19,11 @@ def _write(p: Path, text: str) -> None:
     p.write_text(text, encoding="utf-8")
 
 
-def test_scan_excludes_sacred_and_system_dirs(tmp_path: Path):
+def test_scan_includes_author_manuscript_skips_system_dirs(tmp_path: Path):
     # 顶层笔记（应被扫到）
     _write(tmp_path / "notes" / "idea.md", "# 明朝内阁\n这是关于张居正的想法。")
-    # 神圣稿件目录（国子监秘闻录）里的笔记 —— 必须排除
-    _write(tmp_path / "国子监秘闻录" / "draft.md", "# 国子监\n绝密草稿。")
+    # 作者稿（国子监秘闻录）里的笔记 —— 可读可摄入，必须扫到
+    _write(tmp_path / "国子监秘闻录" / "draft.md", "# 国子监\n草稿。")
     # 系统 / 依赖目录（必须跳过）
     _write(tmp_path / "repo" / ".git" / "log.md", "git stuff")
     _write(tmp_path / "repo" / "node_modules" / "x.md", "dep note")
@@ -31,7 +32,9 @@ def test_scan_excludes_sacred_and_system_dirs(tmp_path: Path):
     cands = li.scan_directories([str(tmp_path)])
     paths = {c["path"] for c in cands}
     assert any("idea.md" in p for p in paths), f"应扫到顶层笔记，实际：{paths}"
-    assert all("国子监秘闻录" not in p for p in paths), "神圣稿件被扫到"
+    # 作者稿现在允许被扫到（红线只禁写原稿，不禁读）
+    assert any("国子监秘闻录" in p for p in paths), f"应扫到作者稿，实际：{paths}"
+    # 但系统目录仍须跳过
     assert all(".git" not in p and "node_modules" not in p for p in paths), "系统目录被扫到"
     assert all(p.endswith((".md", ".markdown", ".txt", ".text", ".org", ".rst")) for p in paths)
 

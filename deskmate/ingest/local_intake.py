@@ -4,9 +4,12 @@
 压缩成小桔的「事实记忆」（learned_history），让她更懂萧哥的项目与思路。
 
 红线（贯穿全程）：
-- **严守神圣稿件**：任何路径（含经符号链接解析后的真实路径）片段含「国子监秘闻录」
-  的目录 / 文件一律跳过，绝不读取。守卫的唯一实现在 :mod:`deskmate.sacred_paths`
-  ——**不要在本模块另抄一份**，两份副本必然漂移。
+- **作者稿可辅助、原稿绝不动**：萧哥 2026-09-24 拍板——自己的稿子（如《国子监秘闻录》）
+  是写作助理的核心工作对象，**读 / 讨论 / 灌进通用记忆** 都是红线之内、用户授权的正常行为。
+  ``sacred_paths.guarded_file`` 只做通用安全校验（resolve + 扩展名白名单），不再对作者稿设防；
+  目录层 ``guarded_dir_entry`` 允许发现/列出。唯一的硬红线是**原稿正文绝不直接改写/删除**，
+  由 ``sacred_paths.guarded_write`` 守住（读稿**协助**——建人物圣经 / 看进度 / 查一致性——
+  走 ``novel_memory`` 专用通道的 ``guarded_assistance_read``，本来就不受摄入层约束）。
 - **不引入新存储策略**：直接复用 learned_history（与对话 / 观察学到的记忆同库），来源以
   ``source`` 列标记（``local_intake:<path>``），用户可在「学到的记忆」里看到并主动遗忘。
 - **保守路径**：扫描只产出**预览候选**，沉淀（写入记忆）必须由用户在 UI 确认后才发生，
@@ -14,9 +17,9 @@
 
 2026-09-23 巡检修复（两处漏防，均为实测可复现）：
 1. ``ingest_files`` / ``build_facts`` 此前零守卫，端点又收任意 ``paths`` →
-   直传神圣路径即可灌进记忆库。现在读取前一律过 ``sacred_paths.guarded_file``
+   直传任意路径即可灌进记忆库。现在读取前一律过 ``sacred_paths.guarded_file``
    （强制 resolve + 扩展名白名单）。
-2. 遍历只看字面路径，配置目录里放 ``dirlink -> 神圣目录`` 即可绕过。
+2. 遍历只看字面路径，配置目录里放 ``dirlink -> 某目录`` 即可绕过。
    现在每条条目过 ``sacred_paths.guarded_dir_entry``（基于解析后的真实路径判定）。
 
 设计取向：纯规则摘要，**零 LLM**（与外部信息摄入流水线 ``memory/ingestion_pipeline.py`` 同构）；
@@ -32,14 +35,7 @@ from typing import Any
 
 from deskmate.memory.learned_store import LearnedStore, _fingerprint
 from deskmate.paths import deskmate_base_dir
-from deskmate.sacred_paths import (
-    SACRED_FRAGMENTS as _SACRED_FRAGMENTS,
-)
-from deskmate.sacred_paths import (
-    guarded_dir_entry,
-    guarded_file,
-    is_sacred as _sacred_paths_is_sacred,
-)
+from deskmate.sacred_paths import guarded_dir_entry, guarded_file
 
 logger = logging.getLogger(__name__)
 
@@ -60,11 +56,6 @@ _DIGEST_MAX = 240
 _MAX_CANDIDATES = 200
 
 _CONFIG_NAME = "ingest_dirs.json"
-
-
-def _is_sacred(path: Path) -> bool:
-    """本地兼容包装：判定统一走 ``deskmate.sacred_paths``（含符号链接解析）。"""
-    return _sacred_paths_is_sacred(path)
 
 
 # ---------------------------------------------------------------------------
@@ -119,17 +110,18 @@ def save_dirs(dirs: list[str]) -> list[str]:
 # 扫描：只产出预览候选，不写入记忆
 # ---------------------------------------------------------------------------
 def _walk(base: Path):
-    """递归遍历 base，产出命中的纯文本笔记文件（已跳过神圣稿件 / 系统 / 隐藏目录）。
+    """递归遍历 base，产出命中的纯文本笔记文件（跳过系统 / 隐藏目录）。
 
-    神圣判定对**每条条目**做（含目录），且基于解析后的真实路径——否则配置目录下
-    一个指向神圣目录的符号链接就能被静默 follow 进去。
+    作者稿（如《国子监秘闻录》）可读、可摄入，不再跳过——读稿协助是红线之内的
+    正常行为。仅基础可遍历性由 ``guarded_dir_entry`` 把关，再由 ``guarded_file``
+    做扩展名白名单校验。
     """
     try:
         entries = list(base.iterdir())
     except OSError:
         return
     for entry in entries:
-        if not guarded_dir_entry(entry):
+        if not guarded_dir_entry(entry, allow_discovery=True):
             continue
         if entry.is_dir():
             name = entry.name
@@ -163,7 +155,7 @@ def scan_directories(dirs: list[str], max_candidates: int = _MAX_CANDIDATES) -> 
     """扫描给定目录，返回候选笔记文件预览（不写入记忆）。
 
     Returns:
-        ``[{"path","name","size","mtime","excerpt"}]``，已跳过神圣稿件与系统目录。
+        ``[{"path","name","size","mtime","excerpt"}]``，已跳过系统目录与不支持的扩展名。
         达到 ``max_candidates`` 即停止（preview 阶段不追求全量）。
     """
     candidates: list[dict[str, Any]] = []

@@ -59,14 +59,15 @@ def test_idempotent_and_update(tmp_path: Path):
     assert n_chunks == n_fts, (n_chunks, n_fts)
 
 
-def test_sacred_excluded(tmp_path: Path):
+def test_author_manuscript_ingested(tmp_path: Path):
     hist = tmp_path / "history"
     sacred = tmp_path / "国子监秘闻录"
     sacred.mkdir()
-    f = _mk_file(sacred, "secret.md", "绝密内容不许摄入。")
+    f = _mk_file(sacred, "secret.md", "草稿内容，小桔可读可辅助。")
     r = ingest_files([str(f)], "史料", history_dir=hist)
-    assert r["skipped"] == 1
-    assert not _db_path("史料", history_dir=hist).is_file()
+    # 作者稿允许摄入（红线只禁直接改写原稿，不禁读/摄入）
+    assert r["ingested"] == 1, r
+    assert _db_path("史料", history_dir=hist).is_file()
 
 
 def test_supported_exts_only(tmp_path: Path):
@@ -135,16 +136,18 @@ def test_search_private_tool(tmp_path: Path):
     assert out2["count"] == 0
 
 
-def test_private_scan_skips_non_supported_and_sacred(tmp_path: Path):
+def test_private_scan_skips_non_supported_keeps_author_manuscript(tmp_path: Path):
     src = tmp_path / "notes"
     src.mkdir()
     _mk_file(src, "a.md", "资料一")
     _mk_file(src, "b.png", "图片")
     sacred = tmp_path / "国子监秘闻录"
     sacred.mkdir()
-    _mk_file(sacred, "s.md", "神圣")
+    _mk_file(sacred, "s.md", "作者稿")
     cands = scan_sources([str(src), str(sacred)], history_dir=tmp_path / "history")
-    assert {c["ext"] for c in cands} == {".md"}  # 只收 md，跳过 png 与神圣目录
+    # 只收 md（跳过 png），但作者稿目录里的 md 也扫到（不再排除）
+    assert {c["ext"] for c in cands} == {".md"}
+    assert any("国子监秘闻录" in c["path"] for c in cands), cands
 
 
 def test_pdf_docx_graceful_skip(tmp_path: Path):

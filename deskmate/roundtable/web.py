@@ -96,20 +96,16 @@ def _save_roundtable_session(store, workspace, topic, markdown, traces) -> Optio
         return None
 
 
-# 神圣稿件硬隔离：圆桌报告回流圣经时同样不得触碰（与 after_action._safe_book 同红线）
-_SACRED_MARKERS = ("国子监秘闻录",)
-
-
 def _upsert_report_to_bible(mp: str, synthesis_md: str) -> None:
     """圆桌收尾后，把《综合研判报告》回流进稿件圣经（复用 A 的内容侧闭环 upsert_bible_from_text）。
 
-    仅在稿件已建圣经时生效（upsert_bible_from_text 自带 has_data 守门，绝不会擅自全量建圣经）；
-    神圣稿件被硬隔离；任何异常仅记日志，绝不阻断圆桌本身。本函数在后台守护线程调用。
+    仅在稿件已建圣经时生效（upsert_bible_from_text 自带 has_data 守门，绝不会擅自全量建圣经）。
+    任何异常仅记日志，绝不阻断圆桌本身。本函数在后台守护线程调用。
+
+    2026-09-24 萧哥拍板：自己的稿子（如《国子监秘闻录》）是写作助理的核心工作对象，
+    读稿 / 自动刷新 / 回流讨论都是红线之内、用户授权的正常行为，不再排除。
     """
     if not mp or not synthesis_md or not synthesis_md.strip():
-        return
-    if any(m in mp for m in _SACRED_MARKERS):
-        logger.warning("圆桌报告回流跳过神圣稿件（硬隔离）：%s", mp)
         return
     try:
         from deskmate.novel_memory import core as nb
