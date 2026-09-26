@@ -3996,6 +3996,33 @@ export async function dismissCognitiveInterview(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ layer }),
   });
+    return res.json();
+}
+
+/** 跳过单题（POST /v1/deskmate/cognitive/interview/skip）。 */
+export async function skipCognitiveInterviewQuestion(
+  sessionId: string,
+  questionId: string,
+  layer = "cognitive",
+): Promise<{ ok: boolean; session_done: boolean; handled: number; total: number }> {
+  const res = await authedFetch(`${httpBase()}/v1/deskmate/cognitive/interview/skip`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ session_id: sessionId, question_id: questionId, layer }),
+  });
+  return res.json();
+}
+
+/** 拒答整轮（POST /v1/deskmate/cognitive/interview/decline）。 */
+export async function declineCognitiveInterview(
+  sessionId: string,
+  layer = "cognitive",
+): Promise<{ ok: boolean; session_id: string; layer: string }> {
+  const res = await authedFetch(`${httpBase()}/v1/deskmate/cognitive/interview/decline`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ session_id: sessionId, layer }),
+  });
   return res.json();
 }
 

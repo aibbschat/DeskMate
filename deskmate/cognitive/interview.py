@@ -314,6 +314,14 @@ class SocraticInterviewEngine(InterviewEngine):
             return
         src = SourceRef(type="interview", title="深度访谈", excerpt=response[:120], date=_now())
         item.add_source(src)  # 自动升置信（avg + 0.05*(n-1)，上限 0.95）
+        # ⚠ 保底过线（2026-09-25 萧哥实证教训）：deepen 的入选条件是 confidence<0.6，
+        # 但 add_source 的升幅太弱（来源均值 + 0.05*(n-1)）——他 09-22 认真答了
+        # 「创作理想落差/负面情绪来源」两道深化题（QA 落库、来源挂上），置信度却只爬到
+        # 0.565，3 天冷却一过同一批题 09-25 原样再问一遍 =「答了等于白答」。
+        # 访谈亲答是最强证据：他亲口深化过这条立场，置信度理应直接越过低置信线，
+        # 从此退出 deepen 候选池。保底 0.7；已有更高值不降。
+        if item.confidence < 0.7:
+            item.confidence = 0.7
         item.history.append(HistoryEntry(
             action="deepened", old_value=item.content, new_value=item.content,
             reason="访谈深化，补充来源", source="深度访谈"))
@@ -557,8 +565,71 @@ def answer_interview(session_id: str, question_id: str, response: str,
         store.finish_session(session_id, summary=f"访谈完成：{answered}/{total} 问答")
     return {
         "ok": True, "session_id": session_id, "answered": answered, "total": total,
-        "session_done": done, "open_gaps": len(pm.profile.open_gaps()), "layer": real_layer,
+        "session_done": done,         "open_gaps": len(pm.profile.open_gaps()), "layer": real_layer,
     }
+
+
+def skip_interview_question(
+    session_id: str, question_id: str, layer: str = "cognitive"
+) -> dict:
+    """跳过单题：记一条 skipped 问答 + 把该问题关联的 gap 标记为「暂不追问」。
+
+    用于访谈问卷流里的「跳过此题」——用户这题不想答，但不想中断整轮。
+    落 skipped QA 使会话在后端看来「已处理」（redeliver 见到 QA 即不再补送），
+    关联 gap 标记 dismissed 使其不再被 ``generate_questions`` 选中
+    （``_gap_is_askable`` 对 status≠open/in_interview 返回 False），从而下一轮
+    也不会再问同一题。整轮所有题都答/跳完时 finish 会话。
+    """
+    store = CognitiveStore()
+    sess = store.get_session(session_id)
+    real_layer = sess["layer"] if sess else (layer or "cognitive")
+    pm = get_profile_manager(layer=real_layer)
+    meta = _decode_question_id(question_id)
+    q_text = _reconstruct_question_text(meta, pm)
+    store.add_qa(
+        session_id=session_id, question=q_text, answer="__skipped__",
+        question_id=question_id, item_updates=["skipped"],
+    )
+    gid = meta.get("related_gap_id")
+    if gid:
+        for g in pm.profile.cognitive_gaps:
+            if g.id == gid and getattr(g, "status", "open") in ("open", "in_interview"):
+                g.status = "dismissed"
+                g.resolved_at = _now()
+        pm.save()
+    total = len(sess.get("gap_ids", [])) if sess else 0
+    handled = len(store.get_qa(session_id))
+    done = (total > 0 and handled >= total)
+    if done:
+        store.finish_session(session_id, summary=f"访谈结束（含跳过）：{handled}/{total}")
+    return {
+        "ok": True, "session_id": session_id, "skipped": True,
+        "handled": handled, "total": total, "session_done": done, "layer": real_layer,
+    }
+
+
+def decline_interview(session_id: str, layer: str = "cognitive") -> dict:
+    """拒答整轮：把所有关联 gap 标记「暂不追问」并 finish 会话。
+
+    用于问卷流的「退出」/「不想答」——用户明确不想答这轮。与 skip 同理，
+    既结束当前会话（不再补送），又让这批问题不再被重复问起。注意：被
+    标记 dismissed 的 gap 不会再次生成问题，除非后续冲突扫描重新 open。
+    """
+    store = CognitiveStore()
+    sess = store.get_session(session_id)
+    real_layer = sess["layer"] if sess else (layer or "cognitive")
+    pm = get_profile_manager(layer=real_layer)
+    for qid in (sess.get("gap_ids", []) if sess else []):
+        gid = _decode_question_id(qid).get("related_gap_id")
+        if not gid:
+            continue
+        for g in pm.profile.cognitive_gaps:
+            if g.id == gid and getattr(g, "status", "open") in ("open", "in_interview"):
+                g.status = "dismissed"
+                g.resolved_at = _now()
+    pm.save()
+    store.finish_session(session_id, summary="用户拒答（暂不追问）")
+    return {"ok": True, "session_id": session_id, "layer": real_layer}
 
 
 def _known_item_ids(profile) -> set:

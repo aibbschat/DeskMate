@@ -3557,6 +3557,43 @@ def create_app(manager: SessionManager) -> FastAPI:
             logging.exception("cognitive interview dismiss failed")
             return JSONResponse({"error": "interview dismiss failed"}, status_code=500)
 
+    @app.post("/v1/deskmate/cognitive/interview/skip")
+    async def post_cognitive_interview_skip(request: Request) -> dict[str, Any]:
+        """跳过单题：记 skipped 并标记关联 gap 暂不追问；整轮答/跳完则结束会话。"""
+        try:
+            body = await request.json()
+        except Exception:
+            return JSONResponse({"error": "invalid json"}, status_code=400)
+        sid = body.get("session_id", "")
+        qid = body.get("question_id", "")
+        layer = body.get("layer", "cognitive")
+        if not sid or not qid:
+            return JSONResponse({"error": "missing session_id/question_id"}, status_code=400)
+        try:
+            from deskmate.cognitive import skip_interview_question
+            return skip_interview_question(session_id=sid, question_id=qid, layer=layer)
+        except Exception:
+            logging.exception("cognitive interview skip failed")
+            return JSONResponse({"error": "interview skip failed"}, status_code=500)
+
+    @app.post("/v1/deskmate/cognitive/interview/decline")
+    async def post_cognitive_interview_decline(request: Request) -> dict[str, Any]:
+        """拒答整轮访谈：关联 gap 标记暂不追问并结束会话（不再补送）。"""
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        sid = body.get("session_id", "")
+        layer = body.get("layer", "cognitive")
+        if not sid:
+            return JSONResponse({"error": "missing session_id"}, status_code=400)
+        try:
+            from deskmate.cognitive import decline_interview
+            return decline_interview(session_id=sid, layer=layer)
+        except Exception:
+            logging.exception("cognitive interview decline failed")
+            return JSONResponse({"error": "interview decline failed"}, status_code=500)
+
     @app.post("/v1/deskmate/cognitive/validation/scenario")
     async def post_cognitive_validation_scenario(request: Request) -> dict[str, Any]:
         """生成一个验证情境（认知 Turing test）。

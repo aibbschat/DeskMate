@@ -52,6 +52,8 @@ from .interview import (
     answer_interview,
     maybe_trigger_interview,
     get_interview_engine,
+    skip_interview_question,
+    decline_interview,
 )
 from .validation_engine import (
     get_validation_engine,

@@ -7,6 +7,13 @@
  * 2. 问答流（居中弹窗）：逐题展示苏格拉底问题，三模式带标签
  *    （澄清 / 探索 / 深化），提交后回灌认知画像，全部答完给感谢收尾。
  *
+ * 收敛设计（修复「翻来覆去同一题」）：
+ * - 任何关闭路径都必须让后端知道，否则补送机制会反复重放同一轮邀请：
+ *   · 邀请气泡 60 秒自动收起 → 上报 dismiss（暂停补送 24h）；
+ *   · 问卷流「退出」→ 上报 decline（关联 gap 标记暂不追问 + 结束整轮）；
+ *   · 问卷流「跳过此题」→ 上报 skip（该题关联 gap 标记暂不追问，整轮答/跳完即结束）。
+ * - 只有「开始回答 / 提交回答」才推进访谈；其余都是「不答」语义，必须收敛。
+ *
  * 数据源：DeskMateOverlay 监听 `deskmate:interview` 事件传入
  * { session_id, questions, total }（由 tick 的 interview 负载或手动 start 产生）。
  */
@@ -15,6 +22,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   answerCognitiveInterview,
   dismissCognitiveInterview,
+  skipCognitiveInterviewQuestion,
+  declineCognitiveInterview,
   type InterviewQuestion,
 } from "../../api";
 
@@ -23,7 +32,7 @@ export interface InterviewPayload {
   questions: InterviewQuestion[];
   total: number;
   note?: string;
-  /** 访谈层（cognitive / emotional），后端 redeliver 按层隔离；前端 dismiss 回传用。 */
+  /** 访谈层（cognitive / emotional），后端 redeliver 按层隔离；前端 dismiss/decline 回传用。 */
   layer?: string;
 }
 
@@ -65,8 +74,9 @@ export function InterviewCard({ interview, onClose }: InterviewCardProps) {
   const questions = interview?.questions ?? [];
   const sessionId = interview?.session_id ?? "";
   const q = questions[idx];
+  const layer = interview?.layer ?? "cognitive";
 
-  // 新负载到达 → 重置到邀请阶段；邀请气泡 60s 自动收起（不打断，稍后可再触发）
+  // 新负载到达 → 重置到邀请阶段；邀请气泡 60s 自动收起（上报 dismiss 暂停补送，不打扰，稍后可再触发）
   useEffect(() => {
     if (interview) {
       setPhase("invite");
@@ -77,6 +87,8 @@ export function InterviewCard({ interview, onClose }: InterviewCardProps) {
       setTotal(interview.total || interview.questions.length || 0);
       if (timerRef.current) clearTimeout(timerRef.current);
       timerRef.current = setTimeout(() => {
+        // 60s 未操作视作「这次不答」→ 上报 dismiss，让后端暂停补送，避免无限重放同一题
+        dismissCognitiveInterview(layer).catch(() => {});
         setPhase((p) => (p === "invite" ? "exit" : p));
         setTimeout(() => onClose(), 300);
       }, 60_000);
@@ -99,13 +111,37 @@ export function InterviewCard({ interview, onClose }: InterviewCardProps) {
     setTimeout(onClose, 200);
   }, [onClose]);
 
+  // 跳过单题：该题关联 gap 标记「暂不追问」，整轮答/跳完即结束（不再补送）
+  const handleSkip = useCallback(async () => {
+    if (!sessionId || !q) return;
+    try {
+      const r = await skipCognitiveInterviewQuestion(sessionId, q.id, layer);
+      if (r.session_done) {
+        handleCloseNow();
+      } else {
+        setIdx((i) => i + 1);
+        setAnswer("");
+      }
+    } catch (e) {
+      console.error("[Interview] skip failed", e);
+      // 跳过失败也允许用户继续：直接跳到下一题
+      setIdx((i) => i + 1);
+      setAnswer("");
+    }
+  }, [sessionId, q, layer, handleCloseNow]);
+
+  // 拒答整轮：关联 gap 标记「暂不追问」并结束会话（不再反复问同一批问题）
+  const handleDecline = useCallback(() => {
+    if (sessionId) declineCognitiveInterview(sessionId, layer).catch(() => {});
+    handleCloseNow();
+  }, [sessionId, layer, handleCloseNow]);
+
   // 显式忽略（点 ✕ 或「稍后再说」）：fire-and-forget 回传后端，让补送暂停 24h，再关窗。
   // 与「用户不在窗口前、邀请无声消失」的补送是两回事——既然他看见了却 defer，就不再骚扰。
   const handleDismissNow = useCallback(() => {
-    const layer = interview?.layer ?? "cognitive";
     dismissCognitiveInterview(layer).catch(() => {});
     handleCloseNow();
-  }, [interview, handleCloseNow]);
+  }, [layer, handleCloseNow]);
 
   const handleSubmit = useCallback(async () => {
     const text = answer.trim();
@@ -257,7 +293,7 @@ export function InterviewCard({ interview, onClose }: InterviewCardProps) {
             <button
               className="flex-shrink-0 w-7 h-7 rounded flex items-center justify-center text-[12px]"
               style={{ color: "var(--faint)" }}
-              onClick={handleCloseNow}
+              onClick={handleDecline}
               aria-label="退出访谈"
             >
               退出
@@ -345,18 +381,31 @@ export function InterviewCard({ interview, onClose }: InterviewCardProps) {
               <span className="text-[11px]" style={{ color: "var(--faint)" }}>
                 {answered} / {total} 已答
               </span>
-              <button
-                className="text-[12.5px] font-semibold px-4 py-1.5 rounded-lg border transition-colors disabled:opacity-50"
-                style={{
-                  background: "var(--accent)",
-                  borderColor: "var(--accent)",
-                  color: "#fff",
-                }}
-                disabled={!answer.trim() || submitting}
-                onClick={handleSubmit}
-              >
-                {submitting ? "提交中…" : idx + 1 >= total ? "完成" : "下一题"}
-              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  className="text-[12.5px] px-3 py-1.5 rounded-lg border transition-colors"
+                  style={{
+                    background: "transparent",
+                    borderColor: "var(--line)",
+                    color: "var(--muted)",
+                  }}
+                  onClick={handleSkip}
+                >
+                  跳过此题
+                </button>
+                <button
+                  className="text-[12.5px] font-semibold px-4 py-1.5 rounded-lg border transition-colors disabled:opacity-50"
+                  style={{
+                    background: "var(--accent)",
+                    borderColor: "var(--accent)",
+                    color: "#fff",
+                  }}
+                  disabled={!answer.trim() || submitting}
+                  onClick={handleSubmit}
+                >
+                  {submitting ? "提交中…" : idx + 1 >= total ? "完成" : "下一题"}
+                </button>
+              </div>
             </div>
           </div>
         ) : (
