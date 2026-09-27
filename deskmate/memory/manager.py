@@ -125,6 +125,54 @@ _BOOK_CONTENT_PATTERNS = (
     r"情节", r"叙事", r"暗线", r"单元剧", r"定稿",
 )
 _BOOK_CONTENT_RE = re.compile("|".join(_BOOK_CONTENT_PATTERNS))
+
+# 「创作信号」= 上表**去掉「仅出现书名号」那一条**。
+#
+# ⚠ 为什么不直接复用 `_BOOK_CONTENT_RE`（宽口径）：宽口径里有一条「出现书名号即算」，
+#   而《…》在日常记忆里俯拾皆是——读书记录（读完《兰陵王》）、被书名号包住的
+#   文章标题（《第一章顺顺当当，第二章直接卡死？…》）。把它们卷进创作归属，
+#   等于把「读别人的书」污染进「写自己的书」的档案，正是串书禁令要拦的事。
+_MANUSCRIPT_SIGNAL_RE = re.compile(
+    "|".join(p for p in _BOOK_CONTENT_PATTERNS if p != r"《[^》]+》")
+)
+
+# 「读书」信号：**读**字贴着书名号（前后皆可）→ 这条讲的是「读别人的书」。
+#
+# ⚠ 要求「贴着书名号」而不是见到「读」就拦：创作侧同样会说
+#   「读完第五章，开始写第六章」——那种不该拦。贴着书名号才区分得开。
+_READING_SIGNAL_RE = re.compile(r"读[完了过]?\s*《|《[^》]{1,20}》\s*读[完了过]")
+
+# 「运营」信号：小桔的日常运营/开发事项（AI圈发帖敲钟、擂台辩题、写作营文章、
+# 网文观察日报、技能包版本、知识库接口…）。
+#
+# ⚠ 这些才是 `#work` 本该管的「一时工作进展」。它们句子里常夹着「第一章」
+#   「章纲」「定稿」之类字样，不加这道闸就会被创作规则误收进 §创作，
+#   于是「运营流水账」永久占据常驻记忆——修一个坑挖另一个坑。
+_OPERATION_SIGNAL_RE = re.compile(
+    r"写作营|日报|文章|广场|敲钟|技能包|擂台|辩题|发帖|选题|知识库|目录树|MCP|AI圈"
+)
+
+# 创作内容的归属分节：**永不衰减**（挂 `#stable`）。
+#
+# ⚠ 为什么是「一个 § 创作」，而不是按书名一册一节（原方案，2026-09-26 实测否掉）：
+#   按书名分节要求**可靠的书名**，而真实语料里做不到——
+#     · 「《国子监秘闻录》第五章《屯田策》…」按出现次数取书名会取到「屯田策」
+#       （章节名比书名出现频繁），整批归错书；
+#     · 当时 §工作 里 39 条书稿记忆中 **33 条压根没写书名**（「章太聪革职被捕」
+#       这类纯散文），任何内容判据都抓不住。
+#   猜错书的代价比不分组大得多（跨书混住 = 串书禁令那类事故），故退成单节：
+#   先把「不丢、不衰减」坐实；精确到哪本书留给丙——等 app 层接线后能
+#   **被告知**当前作品，而不是靠猜。
+CREATION_SECTION = "创作"
+
+# 无法判定归属时的兜底分节：**必须是不衰减的分节**。
+#
+# ⚠ 旧兜底是「笔记 #note」= 7 天后**直接删除且不落 vault**（不可恢复）。
+#   而这条兜底恰恰在 LLM 不可用 / 超时 / 返回格式跑偏时生效——即
+#   「最不确定的环境下做了最不可逆的动作」。改为落「长期事实 #stable」，
+#   与「无日期条目一律保留」同一原则：宁留不误删；体量由 _compress_if_needed 兜。
+_FALLBACK_SECTION = "长期事实"
+
 # 时间感知：全局记忆条目日期前缀超过该天数视为「陈旧」（历史事实而非当前状态）。
 _STALE_DAYS = 180
 # 未检测到具体书名、也无 active_project 时的兜底项目名（书稿记忆落地处）。
@@ -550,14 +598,17 @@ class DeskMateMemoryManager:
                 has_cognitive_data,
             )
             if alter_ego_enabled() and has_cognitive_data():
-                ego_cog = build_cognitive_context()
+                # P1-2：传当轮 user_message 当 query——认知/情感层走
+                # 两级注入（核心层 + 长尾按 query 召回）；空 query/异常
+                # 内部自动退全量，行为与历史版本一致。
+                ego_cog = build_cognitive_context(query=user_message)
             else:
                 # 2026-09-21：分身关着时，仍然注入**情感画像**。
                 # 原来两件事绑在一个开关上，导致「她记着的他的情绪规律」从来没进过
                 # 对话（分身默认关）——那是"懂你"的地基，不该是分身模式的附属品。
                 # 放行范围**只有 emotional 层**：人格底座 / 认知层 / 世界观仍按原样
                 # 归分身与世界管道管，不在本次扩权内。
-                ego_cog = build_emotional_context()
+                ego_cog = build_emotional_context(query=user_message)
             if ego_cog:
                 parts.append(ego_cog)
         except Exception:
@@ -1096,8 +1147,12 @@ class DeskMateMemoryManager:
         return preamble, sections
 
     def _section_header(self, identifier: str) -> str:
-        """根据 id（中文标题或英文标签）生成 § 头行，附带规范 #标签。"""
+        """根据 id（中文标题 / 英文标签）生成 § 头行，附带规范 #标签。"""
         base = identifier.strip().lstrip("#")
+        # 创作分节：必须显式挂 `#stable`——那是它不被 30 天 TTL 吃掉、
+        # 也不被分层净化迁出全局的**唯一凭据**（见 `_is_kept_section`）。
+        if base == CREATION_SECTION:
+            return f"§ {CREATION_SECTION} #stable"
         if base in _TITLE_TO_TAG:
             return f"§ {base} #{_TITLE_TO_TAG[base]}"
         if base in _TAG_TO_TITLE:
@@ -1117,6 +1172,23 @@ class DeskMateMemoryManager:
             return True
         return False
 
+    def _make_section(self, identifier: str, body: str = "") -> dict:
+        """按规范头行构造一个新分节。
+
+        title / tags 一律**从渲染出的头行反解**，不另起一套规则——否则
+        「`_section_header` 渲染出 `#stable`、tags 里却没有」这类不一致会让
+        分节逃过衰减（或反过来被误衰减），且很难查。原 `append_to_section`
+        内联了三次 `_section_header()` 调用，收敛到这里。
+        """
+        header_rest = self._section_header(identifier).replace("§ ", "", 1)
+        return {
+            "id": identifier.strip().lstrip("#"),
+            "header_rest": header_rest,
+            "title": re.sub(r"#\w+", "", header_rest).strip(),
+            "tags": set(re.findall(r"#(\w+)", header_rest)),
+            "body": body,
+        }
+
     def _render_sections(self, preamble: str, sections: list[dict]) -> str:
         blocks: list[str] = []
         if preamble:
@@ -1127,20 +1199,78 @@ class DeskMateMemoryManager:
             blocks.append(f"{header}\n{body}" if body else header)
         return "\n\n".join(blocks)
 
+    @staticmethod
+    def _is_creation_note(entry: str) -> bool:
+        """确定性规则：这条记忆是否属于「正在写的作品」的内容（章节/人物/伏笔/设定）。
+
+        三道判据，缺一不可（宁漏不误——判错只是换个分节，判混才是事故）：
+          ① **不含**读书信号：读字贴着书名号 = 读别人的书（`_READING_SIGNAL_RE`）；
+          ② **不含**运营信号：AI圈/写作营/日报/敲钟… = 真·一时工作进展
+             （`_OPERATION_SIGNAL_RE`），那是 `#work` 该管的；
+          ③ **含**创作信号：章节 / 大纲 / 人物设定 / 伏笔 / 正文 / 定稿…
+             （`_MANUSCRIPT_SIGNAL_RE`）。
+
+        纯规则、无 LLM、可单测、**不需要书名**——这是「换本书不再复发」的关键：
+        任何作品、任何一天写下的书稿记忆都自动落进 §创作，不需要人手写标签，
+        也不需要再写第二个 09-21 那样的硬编码搬运脚本。
+
+        ⚠ 已知边界（2026-09-26 用真实语料定标）：本规则抓不住**纯散文式**的
+          书稿记忆（如「章太聪革职被捕」「越民授权狱中逼供」——没有章节号也
+          没有结构词）。当时 §工作 39 条里能自动识别 8 条。所以它只是
+          **减少**人工，不是「全自动」。要彻底闭环得靠**写入端**——小桔落笔时
+          自己知道这是书稿：约定写在 persona 的「§ 分节 + #标签 约定」
+          （`coworker/personas/builtin/deskmate.md`）与 `memory_append` 的工具说明里。
+        """
+        text = entry or ""
+        if _READING_SIGNAL_RE.search(text):
+            return False
+        if _OPERATION_SIGNAL_RE.search(text):
+            return False
+        return bool(_MANUSCRIPT_SIGNAL_RE.search(text))
+
     def _route_memory_section(self, entry: str, target_section: str | None = None) -> str:
         """为一条记忆决定归属的 § 分节 id。
 
-        优先级：显式 target_section > entry 首行 #标签 > LLM 分类(失败回退) > 关键词匹配现有标题 > 默认「笔记」。
+        优先级（自上而下，先命中先返回）：
+          1. 显式 `target_section`（调用方强制）
+          2. entry 首行 `#标签`，但 `work` / `note` **让位给创作内容**（理由见下）
+          3. 创作内容 → `§ 创作 #stable`
+          4. LLM 分类（fail-safe：异常 / 不可用则落到 5）
+          5. 关键词匹配既有分节标题
+          6. 兜底 `长期事实 #stable`（**不再兜到会删除的「笔记」**）
+
+        ⚠ 第 2 条这个例外是本次修复的**关键**。2026-09-26 查真实数据发现，
+          §工作 里那 39 条书稿记忆是小桔**自己写的 `#work`**
+          （「#work 国子监秘闻录进度 09-25…」）——因为她的工具说明里
+          `work` =「项目/工作进展」，她是照说明办事。
+          所以只加内容规则、不处理显式标签，等于白改：每一条都会被显式标签
+          提前带走。故 `work` / `note` 不再对**已识别的创作内容**有优先权；
+          `preference` / `correction` / `stable` 仍绝对优先（那是「关于萧哥」
+          的事实与用户明示的长期事实）。
+
+        ⚠ 第 3 条必须在第 4 条**之前**：分类器选项里有 `work（项目/工作进展）`，
+          书稿进度天然被它判成 30 天过期的进展快照——这正是「国子监进度要人肉搬、
+          换本新书又复发」的根因。用确定性规则把这类内容从 LLM 手里拿回来，
+          LLM 只负责剩下的。
         """
         if target_section:
             return target_section.strip().lstrip("#")
 
-        # 1) entry 首行显式 #标签
+        creation = self._is_creation_note(entry)
+
+        # 2) entry 首行显式 #标签（work / note 让位给创作内容）
         m = re.match(r"^\s*#(\w+)", entry)
         if m:
-            return m.group(1)
+            tag = m.group(1).lower()
+            if tag not in ("work", "note") or not creation:
+                return m.group(1)
+            logger.debug("记忆自带 #%s 但识别为创作内容，改归 §%s", tag, CREATION_SECTION)
 
-        # 2) LLM 分类（fail-safe：任何异常都回退）
+        # 3) 创作内容（确定性，先于 LLM）
+        if creation:
+            return CREATION_SECTION
+
+        # 4) LLM 分类（fail-safe：任何异常都回退）
         if llm_available():
             try:
                 tag = self._llm_route_section(entry)
@@ -1148,6 +1278,8 @@ class DeskMateMemoryManager:
                     return tag
             except Exception as e:
                 logger.debug("LLM section routing failed, falling back to keyword match: %s", e)
+
+        # 5) 关键词匹配既有分节标题
         memory = self._load_global_memory()
         if memory:
             _, sections = self._parse_sections(memory)
@@ -1156,19 +1288,27 @@ class DeskMateMemoryManager:
                     if len(kw) >= 2 and kw in s["title"]:
                         return s["id"]
 
-        # 4) 默认
-        return "笔记"
+        # 6) 兜底：不衰减的分节（见 _FALLBACK_SECTION 注释）
+        return _FALLBACK_SECTION
 
     def _llm_route_section(self, entry: str) -> str | None:
-        """用 LLM 把记忆分到 preference/correction/work/note 之一。失败返回 None。"""
+        """用 LLM 把记忆分到 5 个分节之一。失败返回 None。
+
+        ⚠ `stable` 必须在白名单里。此前白名单只有 4 个标签、且提示词把
+          `work` 写成「项目/工作进展」，于是「长期事实」成了**自动路径
+          到不了的孤岛**——只有「显式 target_section」或「条目首行手写
+          #stable」才能进去。09-21 那次 27 条硬编码搬运脚本就是被这个
+          缺口逼出来的。改词表时请连同 `_FALLBACK_SECTION` 一起看。
+        """
         system = (
             "你是记忆分类器。判断这条记忆应归入哪个 § 分节，只回复一个小写英文标签："
             "preference（用户偏好/习惯）、correction（用户纠正/否定我）、"
-            "work（项目/工作进展）、note（其他）。只输出标签本身，不要解释。"
+            "stable（长期事实：设定/规则/配置/路径/作品设定，不会过期）、"
+            "work（一时的工作进展快照）、note（其他）。只输出标签本身，不要解释。"
         )
         resp = chat(system, entry, temperature=0.0, max_tokens=20)
         tag = resp.strip().lower()
-        if tag in ("preference", "correction", "work", "note"):
+        if tag in ("preference", "correction", "stable", "work", "note"):
             return tag
         return None
 
@@ -1396,14 +1536,7 @@ class DeskMateMemoryManager:
                 else:
                     found["body"] = (found["body"].rstrip() + "\n\n" + entry).strip()
             else:
-                new_sec = {
-                    "id": identifier,
-                    "header_rest": self._section_header(identifier).replace("§ ", "", 1),
-                    "title": re.sub(r"#\w+", "", self._section_header(identifier).replace("§ ", "", 1)).strip(),
-                    "tags": set(re.findall(r"#(\w+)", self._section_header(identifier))),
-                    "body": entry,
-                }
-                sections.append(new_sec)
+                sections.append(self._make_section(identifier, body=entry))
             self._save_global_memory(self._render_sections(preamble, sections))
             self._compress_if_needed("memory")
             return f"MEMORY.md 已写入 § {identifier}"
@@ -1775,17 +1908,42 @@ class DeskMateMemoryManager:
         "偏好", "preference", "纠正", "correction",
         "系统", "system", "笔记", "note", "读书记录", "reading",
         "长期事实", "stable",
+        # 连载项目：萧盛在广场连载的「我眼中的萧盛」系列，属**授权 + 长期设定**，
+        # 不是某本书的稿件内容。此前不在保留集里，一旦跑分层净化就会被
+        # _is_book_content（命中「叙事」二字）判成书稿迁进 projects/创作/ →
+        # 迁出即不可达（见下）。补进来。
+        "连载项目",
         # 日记相关：日记**原文**由 DiaryStore 承载（不在此），此处的「日记主题」
         # 是小桔对日记的归纳（认知），属于「关于你/关于她的理解」，分层净化不得迁出。
         "日记主题", "日记沉淀", "moment", "diary", "diary-summary",
     }
 
+    @staticmethod
+    def _is_kept_section(sec: dict) -> bool:
+        """分层净化时整段保留该分节？
+
+        两条判据（命中任一即保留）：
+          ① id 在 `_KEEP_GLOBAL_SECTIONS`（人工登记的「关于你」分节）；
+          ② 分节带 `#stable` 标签 —— 这是**按作品名自动建的 `§ <书名> #stable`**
+             的唯一保护伞。
+
+        ⚠ 为什么必须按标签兜住 ②，不能只靠 ①：路由层按书名自动建的分节
+          id 是**书名**（《明州盐引案》…），不可能提前登记进白名单。而这类
+          分节的条目必然命中 `_is_book_content`（章节/人物设定/伏笔…）——
+          只认 ① 的旧实现会把刚建好的作品分节整段迁进 `projects/<书名>/`，
+          而项目记忆的注入依赖 `active_project`、应用层从未调用
+          `set_active_project` → **迁出即永久不可达**，比在全局层多占几行糟得多。
+        """
+        return sec.get("id") in DeskMateMemoryManager._KEEP_GLOBAL_SECTIONS or \
+            "stable" in (sec.get("tags") or set())
+
     def clean_global_memory(self) -> dict:
         """一次性分层净化 MEMORY.md：把「书的记忆」从「你的记忆」里分出来。
 
         策略（保守、可逆、带 MEMORY.md.bak 备份）：
-        - 「关于你」的分节（偏好/纠正/系统/笔记/读书记录）原样保留；
-        - 其余分节（如 项目 / 国子监秘闻录 / 工作 等）做**条目级**过滤：
+        - 「关于你」的分节 + **带 `#stable` 的分节**（含按作品名自动建的
+          `§ <书名> #stable`）整段原样保留，见 `_is_kept_section`；
+        - 其余分节（如 项目 / 工作 等）做**条目级**过滤：
           命中书稿信号的条目（含《书名》/章节/大纲/人物设定/书稿/角色…）迁入对应
           项目记忆 projects/<书名>/<分节>.md；非书稿条目留在全局，绝不丢弃。
 
@@ -1808,8 +1966,8 @@ class DeskMateMemoryManager:
 
         for s in sections:
             sid = s["id"]
-            if sid in self._KEEP_GLOBAL_SECTIONS:
-                new_sections.append(s)  # 关于你：整段保留
+            if self._is_kept_section(s):
+                new_sections.append(s)  # 关于你 / 永不衰减（#stable）分节：整段保留
                 continue
 
             body = s["body"].strip()

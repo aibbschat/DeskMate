@@ -179,6 +179,21 @@ def restore(db: Path, dry_run: bool = False) -> dict:
             known.add(_norm(content))
             stats["from_wal"] += 1
 
+        # 同步 profile_items_fts（P1-2 范围化注入依赖，2026-09-26 质检补）。
+        # 本脚本绕过 CognitiveStore.persist 直插 profile_items——不重建则新恢复
+        # 的条目**搜不到**（范围化注入的长尾召回静默失效，只剩核心层）。
+        # 表不存在则跳过：下次开 store 会建表并按数量不符自愈。
+        try:
+            from deskmate.cognitive.store import CognitiveStore
+
+            has_fts = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='profile_items_fts'"
+            ).fetchone()
+            if has_fts:
+                CognitiveStore._rebuild_fts(conn)
+        except Exception:
+            pass  # fail-open：FTS 失步不影响恢复本身
+
         conn.commit()
 
         # ---- 4) 结果 ----

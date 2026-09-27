@@ -890,3 +890,91 @@ def test_facet_merge_strips_internal_marks():
     out = _facet_merge(rows, limit=1)
     assert "_weak" not in out[0]
     assert "_weak" not in rows[0]
+
+
+# ---------------------------------------------------------------- 2026-09-26 改述问句修复
+#
+# 当日 recall 基准（改述式自然问法）暴露三个合并层缺陷，修复后在此锁定：
+
+
+def test_function_bigram_flood_sinks(tmp_path):
+    """虚词 bigram（说的话/的说）命中的条目必须沉底——它们没有判别力。
+
+    背景：改述式自然问句的 bigram 一半是虚词组合，古文答案不可能包含；
+    覆盖度按**实义** bigram 计（_FUNCTION_CHARS 剔除）+ cov<2 沉底后，
+    靠「说的话」撞进来的泛匹配不再压过真答案。
+    """
+    p = tmp_path / "duan-dai-shi.db"
+    con = _build_db(p)
+    # 泛匹配：来源更权威（chtxt），但只含虚词组合「说的话」
+    _add_article(con, source="chtxt", title="舊唐書",
+                 content="太祖嘗與之言話甚歡說的話皆合帝意遂加賞賜焉")
+    # 真答案：含两个实义片段「张三」「李四」，来源较低
+    _add_article(con, source="daizhigev20", title="宋史",
+                 content="张三與李四俱仕於朝同時登第鄉人榮之")
+    con.close()
+    rows = search_across_dbs([str(p)], "张三李四说的话", limit=5)
+    assert rows[0]["title"] == "宋史"
+
+
+def test_per_article_best_coverage_pick(tmp_path):
+    """同篇文章取 chunk 时按覆盖度择优，而不是按 bm25 首现顺序。
+
+    背景（淳于髡 case）：同篇概览 chunk 靠高 tf 拿到更高 bm25，占走文章
+    席位，把真正回答问题的正文 chunk（覆盖度更高）挤出候选。
+    """
+    p = tmp_path / "duan-dai-shi.db"
+    con = _build_db(p)
+    # 同一篇文章两块 chunk：概览块「张三」高 tf（bm25 高、cov 1）；
+    # 正文块「张三…李四」（cov 2）——它才是答案。
+    _add_article(con, source="daizhigev20", title="古文辞类纂",
+                 content="张三往见张三张三问张三答张三退而告其友曰张三殆哉")
+    aid = con.execute("SELECT id FROM articles").fetchone()[0]
+    body = "於是张三與李四相見論天下事李四曰善"
+    con.execute(
+        "INSERT INTO chunks (article_id, chunk_index, heading, content, fts_content) "
+        "VALUES (?,?,?,?,?)",
+        (aid, 1, "", body, _tokenize_cjk(body)),
+    )
+    con.execute(
+        "INSERT INTO chunks_fts(rowid, content, heading) VALUES (?,?,?)",
+        (aid + 100000, _tokenize_cjk(body), ""),
+    )
+    con.commit()
+    con.close()
+    rows = search_across_dbs([str(p)], "张三李四说了什么", limit=5)
+    # 同文章只出一条时，必须是覆盖度更高的正文块（含李四）
+    art_rows = [r for r in rows if r["title"] == "古文辞类纂"]
+    assert art_rows and "李四" in art_rows[0]["snippet"]
+
+
+# ---------------------------------------------------------------------------
+# 单库逐篇择优：实义覆盖度优先于档位（2026-09-26 质检）
+# ---------------------------------------------------------------------------
+
+
+def test_search_one_db_prefers_coverage_over_tier(tmp_path):
+    """质检补：单库层排序须「实义覆盖度优先于档位」，与合并层同口径。
+
+    原实现档位优先 → trigram 档命中先把 per_db_limit 名额吃满，命中多个实义
+    bigram 的强命中（bigram 档）一条都进不来。实测：查「韩愈给宰相上书的经过」，
+    per_db_limit=15 时单库返回 15 条**全为 trigram**，而正确答案在 bigram 档
+    排第 11 —— 单库层就被截断，跨库合并无论怎么排都救不回（该 case 长期 miss 的真因）。
+
+    构造：P 只含 query 的一个三连窗 → 进 trigram 档、cov=2；Q 含 query 的三个
+    **不连续**二字片段 → 只进 bigram 档、cov=3。覆盖度优先后 Q 必须排在 P 之前
+    （改为档位优先则 P 在前——故本断言能区分新旧实现）。
+    """
+    db = tmp_path / "h.db"
+    con = _build_db(db)
+    q = "甲乙丙丁戊己"
+    _add_article(con, source="daizhigev20", title="P", content="前文甲乙丙后文")
+    _add_article(con, source="daizhigev20", title="Q", content="甲乙方丙丁方戊己")
+    con.close()
+    con2 = sqlite3.connect(str(db))
+    rows = search_one_db(con2, q, limit=5)
+    con2.close()
+    titles = [r["title"] for r in rows]
+    assert "P" in titles and "Q" in titles, titles
+    assert titles.index("Q") < titles.index("P"), titles
+

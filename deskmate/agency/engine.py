@@ -354,7 +354,34 @@ class AgencyEngine:
         if rec is None or rec.status != TaskStatus.PROPOSED:
             return False
         ok = self.log.resolve(record_id, decision)
-        if not ok or decision != TaskStatus.EXECUTED:
+        if not ok:
+            return ok
+
+        # 记忆主体冲突裁决（P1-1，2026-09-26）：必须在通用「非 executed
+        # 提前返回」**之前**处理——rejected/never 也要落地（新条作废），
+        # 否则 questioned 条目永远悬置。executed=以新条为准，其余=保留旧条。
+        if rec.action_type == "memory_subject_conflict":
+            # 涉及「谁做的」归因，机器不自行判对错，只按用户裁决落地。
+            try:
+                new_id = int(rec.extra.get("new_id") or 0)
+                old_id = rec.extra.get("old_id")
+                base_dir = rec.extra.get("base_dir") or str(self.base_dir)
+                if new_id:
+                    from deskmate.memory.learned_store import LearnedStore
+
+                    store = LearnedStore(base_dir=base_dir)
+                    ok2 = store.resolve_subject_conflict(
+                        new_id,
+                        keep_new=(decision == TaskStatus.EXECUTED),
+                        old_id=int(old_id) if old_id else None,
+                    )
+                    rec.extra["resolved"] = ok2
+                    self.log.update(rec)
+            except Exception as e:
+                logger.warning("记忆主体冲突裁决执行失败: %s", e)
+            return ok
+
+        if decision != TaskStatus.EXECUTED:
             return ok
 
         # 用户同意执行：按动作类型补跑

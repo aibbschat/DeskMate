@@ -59,6 +59,110 @@ _HIS_LAYERS = ("cognitive", "emotional")
 _HER_LAYER = "worldview"
 
 
+# ---------------------------------------------------------------------------
+# P1-2 范围化注入（2026-09-26）：核心层全保 + 长尾按 query 召回
+#
+# profile_items 只增不减，条目涨到几百条后全量注入会撑爆预算、稀释关键
+# 条目。两级策略：
+#   1. 核心层 = 置信度 top-N（N 按字符预算自适应）——「她是谁」永远在场；
+#   2. 长尾 = 其余条目按当轮 user_message 走 FTS 召回 top-K，命中才注入。
+# 兜底：query 为空 / FTS 不可用 / 任何异常 → 退回**现全量行为**（fail-open，
+# 与历史版本完全一致）。开关：``DESKMATE_PROFILE_SCOPE=0`` 整体关闭。
+# ---------------------------------------------------------------------------
+
+#: 核心层字符预算（各「关于他」的层共享口径；条目总 cost 低于预算时
+#: 全部保留 = 与今天的全量行为一致，不折腾排序）
+_SCOPE_BUDGET_CHARS = 2400
+#: 长尾召回条数上限
+_LONGTAIL_TOP_K = 8
+#: 每条计入预算的基础开销（格式化引导符 + 长度）
+_SCOPE_ITEM_OVERHEAD = 40
+
+
+def _scope_enabled() -> bool:
+    """范围化注入开关（``DESKMATE_PROFILE_SCOPE=0`` 关闭，默认开）。"""
+    return os.environ.get("DESKMATE_PROFILE_SCOPE", "1") != "0"
+
+
+def _active_items(profile: CognitiveProfile) -> list:
+    return [
+        it
+        for it in (
+            *profile.stances,
+            *profile.argument_patterns,
+            *profile.value_rankings,
+            *profile.thinking_frameworks,
+        )
+        if getattr(it, "status", "active") == "active"
+    ]
+
+
+def _core_ids_by_budget(profile: CognitiveProfile, budget: int) -> set[str]:
+    """置信度降序吃到预算为止的核心条目 id 集合。"""
+    items = sorted(
+        _active_items(profile),
+        key=lambda it: -(getattr(it, "confidence", 0.5) or 0.5),
+    )
+    keep: set[str] = set()
+    used = 0
+    for it in items:
+        cost = len(getattr(it, "content", "") or "") + _SCOPE_ITEM_OVERHEAD
+        if keep and used + cost > budget:
+            break
+        keep.add(it.id)
+        used += cost
+    return keep
+
+
+def _filter_profile(profile: CognitiveProfile, keep_ids: set[str]) -> CognitiveProfile:
+    return CognitiveProfile(
+        version=profile.version,
+        created_at=profile.created_at,
+        last_updated=profile.last_updated,
+        extraction_count=profile.extraction_count,
+        calibration_count=profile.calibration_count,
+        summary=profile.summary,
+        stances=[s for s in profile.stances if s.id in keep_ids],
+        argument_patterns=[a for a in profile.argument_patterns if a.id in keep_ids],
+        value_rankings=[v for v in profile.value_rankings if v.id in keep_ids],
+        thinking_frameworks=[t for t in profile.thinking_frameworks if t.id in keep_ids],
+        cognitive_gaps=profile.cognitive_gaps,
+    )
+
+
+def _scoped_layer_text(
+    profile: CognitiveProfile,
+    layer: str,
+    subject: str,
+    limit: int | None,
+    query: str,
+) -> str:
+    """单层注入文本：全量（现状）或 两级（核心 + 长尾召回）。
+
+    任何一步出问题都退回 ``format_profile`` 全量路径——注入绝不能因为
+    新策略挂掉（fail-open 与历史版本一致）。
+    """
+    full = lambda: format_profile(profile, limit=limit, subject=subject)  # noqa: E731
+    if not _scope_enabled() or not (query or "").strip():
+        return full()
+    try:
+        from .store import CognitiveStore
+
+        core = _core_ids_by_budget(profile, _SCOPE_BUDGET_CHARS)
+        if len(core) >= len(_active_items(profile)):
+            return full()  # 预算装得下全部 → 行为与今天完全一致
+        store = CognitiveStore(db_path=_db_path())
+        recalled = store.recall_items(
+            query, layers=(layer,), top_k=_LONGTAIL_TOP_K, exclude_ids=core
+        )
+        keep = core | {r["id"] for r in recalled}
+        if not keep:
+            return full()
+        return format_profile(_filter_profile(profile, keep), subject=subject)
+    except Exception:
+        return full()
+
+
 def load_cognitive_profile(
     layer: str = "cognitive", base_dir: str | Path | None = None
 ) -> CognitiveProfile | None:
@@ -174,7 +278,7 @@ def format_profile(profile: CognitiveProfile, limit: int | None = None,
     return "\n\n".join(sections)
 
 
-def build_emotional_context(limit: int | None = None) -> str:
+def build_emotional_context(limit: int | None = None, query: str = "") -> str:
     """只生成「他的情绪画像」注入段（emotional 层），无数据返回空串（fail-open）。
 
     为什么要单独有它（2026-09-21）：``build_cognitive_context()`` 整段挂在
@@ -185,6 +289,9 @@ def build_emotional_context(limit: int | None = None) -> str:
     manager.prefetch 的接法：分身开 → 用 ``build_cognitive_context()``（已含本层，
     不重复注入）；分身关 → 只注入本段。
 
+    P1-2（2026-09-26）：传 ``query``（当轮 user_message）时走两级注入
+    （核心层 + 长尾按 query 召回）；不传/异常退全量，行为与历史版本一致。
+
     注意与 ``build_cognitive_context()`` 的区别：这里**不含**人格底座、不含认知层、
     不含她自己的世界观 —— 那些仍归分身/世界管道管，不在本次放行范围内。
     """
@@ -192,7 +299,7 @@ def build_emotional_context(limit: int | None = None) -> str:
         p = load_cognitive_profile("emotional")
         if not p:
             return ""
-        body = format_profile(p, limit=limit, subject="他")
+        body = _scoped_layer_text(p, "emotional", subject="他", limit=limit, query=query)
         if not body:
             return ""
         return "\n\n".join([
@@ -206,13 +313,17 @@ def build_emotional_context(limit: int | None = None) -> str:
         return ""  # fail-open：情绪画像缺失不影响主记忆注入
 
 
-def build_cognitive_context(limit: int | None = None) -> str:
+def build_cognitive_context(limit: int | None = None, query: str = "") -> str:
     """生成认知注入段（含「关于他」与「关于她」两部分）；无数据返回空串（fail-open）。
 
     两段**必须分开且措辞不同**——这是 2026-09-07 修的核心问题：
 
     - 「关于萧盛」= 她**知道什么**（cognitive + emotional 层，她眼中的他）
     - 「你自己的看法」= **她是谁**（worldview 层，她自己长出来的判断）
+
+    P1-2（2026-09-26）：cognitive/emotional 层传 ``query``（当轮 user_message）
+    时走两级注入（核心层 + 长尾召回）；worldview 层条目少，**恒全量**——
+    「她是谁」不允许因召回缺席。不传/异常退全量，行为与历史版本一致。
 
     注意：即便这里注入了世界观，人格仍由 ``deskmate/persona.py`` 单一定义，
     本模块不碰人格，只提供"她信什么"的知识。
@@ -224,7 +335,7 @@ def build_cognitive_context(limit: int | None = None) -> str:
     for layer in _HIS_LAYERS:
         p = load_cognitive_profile(layer)
         if p:
-            t = format_profile(p, limit=limit, subject="他")
+            t = _scoped_layer_text(p, layer, subject="他", limit=limit, query=query)
             if t:
                 him_blocks.append(t)
 

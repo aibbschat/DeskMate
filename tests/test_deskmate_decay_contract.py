@@ -208,3 +208,178 @@ class TestStableLongTermSection:
         content = (tmp_path / "MEMORY.md").read_text(encoding="utf-8")
         assert "§ 长期事实 #stable" in content
         assert "托管站点" in content
+
+
+def _sections(path: Path) -> dict[str, dict]:
+    """把落盘的 MEMORY.md 解析成 {title: section}（按真实文件读，不信任内存态）。"""
+    return {
+        s["title"]: s
+        for s in DeskMateMemoryManager(path)._parse_sections(
+            (path / "MEMORY.md").read_text(encoding="utf-8")
+        )[1]
+    }
+
+
+class TestCreationSectionRouting:
+    """书稿记忆自动落 `§ 创作 #stable`：**换一本新书不再复发**。
+
+    背景（2026-09-26 实证）：决定记忆会不会过期的是分节标签（`MEMORY_DECAY_TTL`），
+    而自动路由能产出的标签只有 `preference/correction/work/note` 四个——`stable`
+    是**自动路径到不了的孤岛**：
+
+    - LLM 正常 → 分类器提示词写着 `work（项目/工作进展）` → 书稿进度必然判成
+      `#work` → 30 天后归档；
+    - LLM 不可用 / 超时 / 返回跑偏 → 关键词兜底落空 → 默认「笔记」`#note`
+      → **7 天后直接删除且不落 vault**。
+
+    更关键的是：§工作 里那 39 条书稿记忆**是小桔自己写的 `#work`**
+    （「#work 国子监秘闻录进度 09-25…」）——她照工具说明办事。所以修复必须
+    同时处理「内容判据」和「显式标签让位」两件事，否则显式标签会把每条内容
+    提前带走，等于白改。
+
+    ⚠ 已实测否掉「按书名一册一节」：真实语料里 39 条有 33 条压根没写书名，
+    按《》出现次数取书名还会取到章节名（屯田策/忘川帖）。故退成单一 `§ 创作`，
+    先把「不丢、不衰减」坐实，精确到哪本书留给丙。
+    """
+
+    def test_creation_note_gets_stable_section_and_never_decays(
+        self, mgr, tmp_path, monkeypatch
+    ):
+        """书稿记忆 → §创作 #stable，且 500 天前的条目也不衰减。"""
+        import deskmate.memory.manager as M
+
+        monkeypatch.setattr(M, "llm_available", lambda: False)
+        _write(tmp_path, f"§ 工作 #work\n- {_days_ago(1)}: 一条无关的工作进展\n")
+        mgr.append_to_section(
+            "memory", f"{_days_ago(500)}: 第五章《忘川帖》推进至第四节，武成川死于医官局"
+        )
+
+        sec = _sections(tmp_path)
+        assert "创作" in sec, "书稿记忆必须落 §创作"
+        assert "stable" in sec["创作"]["tags"], (
+            "必须挂 #stable；不挂就会被 30 天 TTL 吃掉，等于没修"
+        )
+        assert "医官局" in sec["创作"]["body"]
+        assert mgr.decay_memory()["decayed"] == 0, "500 天前的书稿记忆也不得被衰减"
+
+    def test_explicit_work_tag_yields_to_creation(self, mgr):
+        """⚠ 本次修复的核心回归：小桔亲手写的 `#work` 不得把书稿内容带走。
+
+        真实的失败形态就长这样：`#work 国子监秘闻录进度 09-25（…）：第五章《忘川帖》
+        正式完结`。若显式标签仍绝对优先，规则再好也救不了——每一条都会被
+        30 天 TTL 收走。
+        """
+        entry = "#work 国子监秘闻录进度 09-25：第五章《忘川帖》正式完结"
+        assert mgr._route_memory_section(entry) == "创作"
+
+    def test_preference_and_correction_still_win(self, mgr):
+        """「关于萧哥」的事实与用户明示的长期事实仍绝对优先，不被创作规则抢走。"""
+        assert mgr._route_memory_section("#correction 用户纠正我：第五章笔误要逐条核对") == "correction"
+        assert mgr._route_memory_section("#preference 用户喜欢在章节定稿后先睡一觉") == "preference"
+        assert mgr._route_memory_section("#stable 人物设定核对规则") == "stable"
+
+    def test_operation_notes_not_swept_into_creation(self, mgr, tmp_path, monkeypatch):
+        """反例①：AI圈/写作营的运营流水账是真·一时工作进展，不得被创作规则收编。
+
+        否则「运营流水账永久占据常驻记忆」——修一个坑挖另一个坑。
+        """
+        import deskmate.memory.manager as M
+
+        monkeypatch.setattr(M, "llm_available", lambda: False)
+        _write(tmp_path, f"§ 工作 #work\n- {_days_ago(1)}: 一条无关的工作进展\n")
+        ops = [
+            "#work 敲钟人踩坑：bell_submit 也占用每日 3 条广场发帖额度",
+            "擂台 #2 辩题「唱反调是『另一面』还是『反张嘴』？」继续运行",
+            "小桔定稿写作营09-25文章《第一章顺顺当当，第二章直接卡死？八成是视角没选对》",
+        ]
+        for e in ops:
+            assert mgr._route_memory_section(e) != "创作", f"运营内容被误收编：{e[:40]}"
+            mgr.append_to_section("memory", e)
+        assert "创作" not in _sections(tmp_path)
+
+    def test_reading_a_book_is_not_writing_a_book(self, mgr, tmp_path, monkeypatch):
+        """反例②：读别人的书（读字贴着书名号）不得归进创作分节。
+
+        串书禁令是最高优先级红线；把「读完《兰陵王》第18章」判成创作内容，
+        等于给串书开一条自动通道。
+        """
+        import deskmate.memory.manager as M
+
+        monkeypatch.setattr(M, "llm_available", lambda: False)
+        _write(tmp_path, f"§ 工作 #work\n- {_days_ago(1)}: 一条无关的工作进展\n")
+        mgr.append_to_section("memory", "读完《兰陵王》第18章，记风格观察：谶谣式死亡预告")
+
+        assert "创作" not in _sections(tmp_path)
+        assert mgr._is_creation_note("《兰陵王》读完18章") is False
+
+    def test_creation_note_without_book_marks_still_counts(self, mgr):
+        """创作侧的正常说法（无书名号）仍要认——这正是 33 条没写书名的现实。"""
+        assert mgr._is_creation_note("读完第五章，开始写第六章") is True
+        assert mgr._is_creation_note("第六章《投名状》分镜拆解完成") is True
+        # 无任何创作信号 → 不认
+        assert mgr._is_creation_note("托管站点 ai.xs91.com 的发布配置") is False
+
+    def test_second_write_reuses_creation_section(self, mgr, tmp_path, monkeypatch):
+        """第二次写入必须复用 §创作，不得新建重复分节。"""
+        import deskmate.memory.manager as M
+
+        monkeypatch.setattr(M, "llm_available", lambda: False)
+        _write(tmp_path, f"§ 工作 #work\n- {_days_ago(1)}: 一条无关的工作进展\n")
+        mgr.append_to_section("memory", f"{_days_ago(2)}: 第五章进展：章太聪革职被捕")
+        mgr.append_to_section("memory", f"{_days_ago(1)}: 第六章人物设定已定")
+
+        titles = [s["title"] for s in mgr._parse_sections(
+            (tmp_path / "MEMORY.md").read_text(encoding="utf-8"))[1]]
+        assert titles.count("创作") == 1, f"分节重复：{titles}"
+
+    def test_creation_section_header_is_canonical(self, mgr):
+        """`§ 创作 #stable` 的渲染必须带 #stable——那是它不被 TTL 吃掉的唯一凭据。
+
+        同时锁死：`创作` 不得混进 `_TITLE_TO_TAG`。那个表是 `_TAG_TO_TITLE` 的
+        反向唯一来源，一旦加进去，`_section_header("stable")` 会渲染成
+        `§ 创作 #stable`，把「长期事实」这一节整个劫持掉。
+        """
+        import deskmate.memory.manager as M
+
+        assert mgr._section_header("创作") == "§ 创作 #stable"
+        assert mgr._section_header("stable") == "§ 长期事实 #stable"
+        assert "创作" not in M._TITLE_TO_TAG
+
+    def test_llm_classifier_can_actually_return_stable(self, mgr, monkeypatch):
+        """分类器必须能吐出 stable——锁行为，不是锁源码文本。
+
+        此前白名单只有 4 个标签，`stable` 是自动路径到不了的孤岛；
+        这条用例注入 LLM 返回 "stable" 并要求路由接得住。
+        """
+        import deskmate.memory.manager as M
+
+        monkeypatch.setattr(M, "chat", lambda *a, **k: "stable")
+        assert mgr._llm_route_section("托管站点 ai.xs91.com 的发布配置") == "stable"
+        monkeypatch.setattr(M, "chat", lambda *a, **k: "manuscript")
+        assert mgr._llm_route_section("随便一条") is None, "未登记标签必须被拒，防越权分节"
+
+    def test_fallback_section_never_decays(self, mgr):
+        """兜底分节必须是不衰减的：旧兜底「笔记」= 7 天后删除且不落 vault。"""
+        import deskmate.memory.manager as M
+
+        ident = mgr._route_memory_section("今天空气不错")  # 无 LLM、无关键词命中
+        assert ident == "长期事实"
+        assert M._TITLE_TO_TAG[ident] not in M.MEMORY_DECAY_TTL
+
+    def test_cleanup_keeps_creation_section(self, mgr, tmp_path):
+        """分层净化不得把 `§ 创作 #stable` 迁进项目记忆（迁出即不可达）。"""
+        _write(tmp_path,
+            "§ 创作 #stable\n"
+            f"- {_days_ago(3)}: 第五章《忘川帖》推进至第四节\n"
+        )
+        res = mgr.clean_global_memory()
+        assert res["entries_migrated"] == 0
+        assert "推进至第四节" in (tmp_path / "MEMORY.md").read_text(encoding="utf-8")
+
+    def test_cleanup_keeps_serial_project_section(self, mgr, tmp_path):
+        """「§ 连载项目」属授权+长期设定，含「叙事」二字但不得被判成书稿迁出。"""
+        _write(tmp_path,
+            "§ 连载项目 #我眼中的萧盛\n"
+            "- 2026-09-14: 萧盛授权用长篇叙事文学手法写人物纪实，每天一篇\n"
+        )
+        assert mgr.clean_global_memory()["entries_migrated"] == 0

@@ -38,6 +38,19 @@ const PROPOSED_TASK = {
   count: 0,
 };
 
+/** P1-1 记忆主体冲突卡（2026-09-26 新增 action_type）。 */
+const SUBJECT_CONFLICT_TASK = {
+  id: "t_prop_subj",
+  ts: "2026-09-26T10:00:00",
+  action_type: "memory_subject_conflict",
+  risk: "high",
+  status: "proposed",
+  topic: "记忆主体冲突",
+  summary: "两条记忆把同一件事记在不同主体名下，需要你裁决",
+  detail: "新条：小桔整理了史料库\n旧条：萧盛整理了史料库",
+  count: 0,
+};
+
 /** 按 URL 路由的 fetch stub；resolveCalls 记录决议请求体，供断言。 */
 function stubAgencyApi(opts: {
   tasks?: unknown[];
@@ -125,5 +138,15 @@ describe("AgencyPanel", () => {
     expect(screen.getByText("摄入 3 条新事实")).toBeTruthy();
     // 2026-09-06T11:41:08 → 09-06 11:41
     expect(screen.getByText("09-06 11:41")).toBeTruthy();
+  });
+
+  it("记忆主体冲突卡显示中文动作名，内部键不得漏给用户", async () => {
+    // 质检补（2026-09-26）：新增 action_type 若忘登记 RISK_LABEL，labelOf 会
+    // 回退成内部英文键直接展示给用户。此用例锁住「记忆主体冲突」这条。
+    stubAgencyApi({ tasks: [], pending: [SUBJECT_CONFLICT_TASK] });
+    render(<AgencyPanel />);
+    await waitFor(() => expect(screen.getByTestId("agency-proposal")).toBeTruthy());
+    expect(screen.getByText(/记忆主体冲突 · 需你确认/)).toBeTruthy();
+    expect(screen.queryByText(/memory_subject_conflict/)).toBeNull();
   });
 });

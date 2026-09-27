@@ -26,6 +26,7 @@ const RISK_LABEL: Record<string, string> = {
   ai_circle_column: "AI 圈公开手记",
   ai_circle_reply: "AI 圈真实回复",
   external_review: "外部信息裁决",
+  memory_subject_conflict: "记忆主体冲突",
   rss_digest: "RSS 简报",
   note_organize: "笔记整理",
   write_file: "写文件",

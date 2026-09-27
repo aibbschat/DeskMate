@@ -129,6 +129,72 @@ def _extract_polarity(fact: str) -> str:
     return "deny" if _DENY_RE.search(fact or "") else "assert"
 
 
+# ---------------------------------------------------------------------------
+# 主体一致性检测（P1-1，2026-09-26）：人称/主体颠倒检测
+#
+# 对应真实踩过的坑：把小桔的活儿记成萧盛做的（「主体错记/人称颠倒」）。
+# 现有矛盾检测只认书名实体（_extract_entity），抓不到这类归因错误。
+#
+# 检测模式：**主体颠倒对** —— 同一谓词内容 X 被记在两个对立主体名下
+# （「小桔整理了史料」 vs 「萧盛整理了史料」）。这属于「谁做的」归因
+# 冲突，机器不判谁对：新条标 ``questioned``（不内化、不进活跃检索），
+# 同时发 L2 提议卡由用户裁决（见 agency/engine.resolve_proposal）。
+# 与书名冲突走 supersede 的差别：书名在/不在史料库是客观事实，后到
+# 的算更新；归因错误不能由机器单方面判旧条错。
+#
+# 灰度开关：``DESKMATE_SUBJECT_GUARD=0`` 关闭（默认开）。
+# ---------------------------------------------------------------------------
+
+#: 主体消解规则表——**唯一**主体判定来源，别在别处再写人称判断。
+#: 只收「高置信专名」：小桔侧 / 萧盛侧。泛指与代词（他/她/我/自己）
+#: 一律不收——「我」在学到的记忆里多是被引述的用户原话，「他/她」
+#: 无法指认 → 宁可漏判不误判（≥2 字才算证据，同红线口径）。
+_SUBJECT_RULES: tuple[tuple[str, "re.Pattern[str]"], ...] = (
+    ("xiaoju", re.compile(r"小桔|小橘")),
+    ("user", re.compile(r"萧盛|萧哥|用户|你")),
+)
+
+#: 主体互为颠倒的配对（同谓词 X 挂到两个不同主体 = 归因冲突）
+_SUBJECT_OPPOSITE = {("xiaoju", "user"), ("user", "xiaoju")}
+
+#: 谓词指纹剥离：主体词 + 引语标记 + 时间戳 + 标点空白。
+#: 剥完剩余 ≥2 字才参与配对——「小桔赢了」「用户赢了」这类剩单字的
+#: 谓词没有判别力，宁漏勿误。
+_SUBJECT_STRIP_RE = re.compile(
+    r"小桔|小橘|萧盛|萧哥|用户|你|我"
+    r"|\d{4}-\d{1,2}-\d{1,2}([ T]\d{1,2}:\d{2}(:\d{2})?)?"
+    r"|[《「『\"“」』”》:：，,。！!？?；;、\s\-—·()（）\"]"
+)
+
+
+def _subject_guard_enabled() -> bool:
+    """主体错记检测开关（``DESKMATE_SUBJECT_GUARD=0`` 关闭，默认开）。"""
+    import os
+
+    return os.environ.get("DESKMATE_SUBJECT_GUARD", "1") != "0"
+
+
+def _extract_subject(fact: str) -> tuple[str, str]:
+    """抽取 ``(主体 canonical, 谓词指纹)``；低置信场景返回 ``("", "")``。
+
+    - 事实里同时出现两侧主体（「萧盛让小桔整理史料」）→ 引述/协作关系，
+      不是单一归属 → 不配对；
+    - 两侧都不出现 → 无主体信息 → 不配对；
+    - 谓词剥完 < 2 字 → 无判别力 → 不配对。
+    """
+    text = (fact or "").strip()
+    if not text:
+        return "", ""
+    hits = {canon for canon, pat in _SUBJECT_RULES if pat.search(text)}
+    if len(hits) != 1:
+        return "", ""
+    subject = hits.pop()
+    x = _SUBJECT_STRIP_RE.sub("", text)
+    if len(x) < 2:
+        return "", ""
+    return subject, x
+
+
 class LearnedStore:
     """长期记忆的 SQLite 持久层。短连接 + 自动提交（WAL 支持并发读）。"""
 
@@ -270,9 +336,144 @@ class LearnedStore:
                             "WHERE status='active' AND entity=? AND polarity!=? AND id!=?",
                             (stamp_, rid, entity_, polarity_, rid),
                         )
+                    if _subject_guard_enabled():
+                        # P1-1 主体颠倒检测：同谓词挂在对立主体名下 → 新条
+                        # 不内化（questioned）+ 发提议卡由用户裁决。
+                        self._detect_subject_conflict(conn, rid, fact_)
                 return inserted
         except sqlite3.Error:
             return 0
+
+    def _detect_subject_conflict(
+        self, conn: sqlite3.Connection, new_id: int, new_fact: str
+    ) -> None:
+        """主体颠倒对检测（fail-open：任何异常只记日志，不影响写入主链路）。
+
+        扫描活跃事实里与新条**同谓词、对立主体**的旧条；命中则把新条标
+        ``questioned``（从 active_recent/relevant 等活跃检索自动剔除），
+        并向 L2 TaskLog 发一条 ``memory_subject_conflict`` 提议卡。旧条
+        保持 active——它此前已被相信，机器不单方面翻案。
+        """
+        try:
+            subj_new, x_new = _extract_subject(new_fact)
+            if not subj_new or len(x_new) < 2:
+                return
+            rows = conn.execute(
+                "SELECT id, fact FROM learned_history "
+                "WHERE status='active' AND id != ?",
+                (new_id,),
+            ).fetchall()
+            for old_id, old_fact in rows:
+                subj_old, x_old = _extract_subject(str(old_fact))
+                if not subj_old or x_old != x_new:
+                    continue
+                if (subj_old, subj_new) not in _SUBJECT_OPPOSITE:
+                    continue
+                # 命中：新条降级为 questioned（不内化），旧条不动
+                conn.execute(
+                    "UPDATE learned_history SET status='questioned' WHERE id=?",
+                    (new_id,),
+                )
+                self._queue_subject_proposal(new_id, new_fact, int(old_id), str(old_fact))
+                return  # 一条新条最多挂一张卡
+        except Exception:  # noqa: BLE001 —— fail-open，绝不拖垮写入
+            return
+
+    def _queue_subject_proposal(
+        self, new_id: int, new_fact: str, old_id: int, old_fact: str
+    ) -> None:
+        """给主体冲突发 L2 提议卡（同一旧条不重复发卡）。"""
+        try:
+            from deskmate.agency.task_log import TaskLog, TaskStatus
+
+            log = TaskLog(self.base)
+            for rec in log.list(limit=200, status=TaskStatus.PROPOSED):
+                if rec.action_type == "memory_subject_conflict" and (
+                    rec.extra.get("old_id") == old_id
+                ):
+                    return  # 同一旧条已有待裁决卡，不刷屏
+            log.add(
+                action_type="memory_subject_conflict",
+                risk="high",
+                status=TaskStatus.PROPOSED,
+                topic="记忆主体冲突",
+                summary="两条记忆把同一件事记在不同主体名下，需要你裁决",
+                detail=f"新条：{new_fact}\n旧条：{old_fact}\n"
+                f"（新条暂不生效；选「执行」= 以新条为准，旧条标记被取代；"
+                f"选「不用」= 保留旧条，新条作废）",
+                extra={
+                    "new_id": new_id,
+                    "old_id": old_id,
+                    "new_fact": new_fact,
+                    "old_fact": old_fact,
+                    "base_dir": str(self.base),
+                },
+            )
+        except Exception:  # noqa: BLE001 —— fail-open
+            return
+
+    def resolve_subject_conflict(
+        self, new_id: int, keep_new: bool, old_id: int | None = None
+    ) -> bool:
+        """裁决一条 questioned 记忆（由 L2 提议卡 ``memory_subject_conflict`` 调用）。
+
+        Args:
+            keep_new: True = 以新条为准（新条转 active、旧条 superseded）；
+                False = 保留旧条（新条 forgotten 作废）。
+            old_id: 配对的旧条 id（提议卡 extra 里带）；缺省时自动按
+                同谓词 + 对立主体重找。
+        """
+        try:
+            with self._connect() as conn:
+                row = conn.execute(
+                    "SELECT fact FROM learned_history WHERE id=? AND status='questioned'",
+                    (new_id,),
+                ).fetchone()
+                if not row:
+                    return False
+                if not keep_new:
+                    conn.execute(
+                        "UPDATE learned_history SET status='forgotten' WHERE id=?",
+                        (new_id,),
+                    )
+                    return True
+                conn.execute(
+                    "UPDATE learned_history SET status='active' WHERE id=?",
+                    (new_id,),
+                )
+                # 只取代配对的那条旧条（机器不扩大化翻案）
+                if old_id is not None:
+                    conn.execute(
+                        "UPDATE learned_history SET status='superseded', "
+                        "valid_until=?, superseded_by=? "
+                        "WHERE id=? AND status='active'",
+                        (_now_iso(), new_id, old_id),
+                    )
+                    return True
+                # 未带 old_id：按同谓词 + 对立主体重找（保守，最多处理一条）
+                subj_new, x_new = _extract_subject(str(row[0]))
+                if not subj_new or len(x_new) < 2:
+                    return True
+                for oid, ofact in conn.execute(
+                    "SELECT id, fact FROM learned_history "
+                    "WHERE status='active' AND id != ?",
+                    (new_id,),
+                ).fetchall():
+                    subj_old, x_old = _extract_subject(str(ofact))
+                    if (
+                        subj_old
+                        and x_old == x_new
+                        and (subj_old, subj_new) in _SUBJECT_OPPOSITE
+                    ):
+                        conn.execute(
+                            "UPDATE learned_history SET status='superseded', "
+                            "valid_until=?, superseded_by=? WHERE id=?",
+                            (_now_iso(), new_id, oid),
+                        )
+                        break
+                return True
+        except sqlite3.Error:
+            return False
 
     # ------------------------------------------------------------------
     # 读

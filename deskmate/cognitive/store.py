@@ -29,6 +29,7 @@ import datetime
 import json
 import logging
 import os
+import re
 import shutil
 import sqlite3
 from contextlib import contextmanager
@@ -128,6 +129,54 @@ _DIM_MAP = {
 }
 
 _LAYER = "cognitive"
+
+
+# ---------------------------------------------------------------------------
+# P1-2 范围化注入（2026-09-26）：profile_items 的 FTS5 索引与召回
+#
+# 与 coworker/history/fts5.py 同一套约定（别发明第二套）：
+# 索引侧 content 预处理 = CJK 字符间插空格（unicode61 按空格切单字）；
+# 查询侧 = 每段连续 CJK 串 → 引号短语。同步必须与条目写入**同一事务**
+# —— 防「记了查不到」（P2-3 的历史坑）。
+# ---------------------------------------------------------------------------
+
+_CJK_RE = re.compile(r"([\u4e00-\u9fff\u3400-\u4dbf\uf900-\ufaff])")
+_MULTI_SPACE_RE = re.compile(r"\s+")
+_FTS_META_RE = re.compile(r'["*^()]')
+
+
+def tokenize_cjk(text: str) -> str:
+    """在 CJK 字符间插空格（与 fts5.js ``tokenizeCJK`` / build_history_index 等价）。"""
+    return _MULTI_SPACE_RE.sub(" ", _CJK_RE.sub(r" \1 ", text or "")).strip()
+
+
+def _fts_match(query: str, max_parts: int = 40) -> str:
+    """把自然语言 query 转成 profile_items_fts 的 MATCH 表达式。
+
+    单字索引上**长短语几乎匹配不到**（整句要求逐字相邻），故长 CJK 串
+    拆成滑动二元短语（bigram）OR 连接——与 history 通道的「bigram 档」
+    同一思路。纯英文词直接引号；去 FTS5 语法元字符防查询注入。
+    无可匹配内容返回空串。
+    """
+    cleaned = _FTS_META_RE.sub(" ", query or "")
+    runs = [r for r in re.split(r"[^0-9A-Za-z\u4e00-\u9fff\u3400-\u4dbf\uf900-\ufaff]+", cleaned) if r]
+    parts: list[str] = []
+    for run in runs:
+        if _CJK_RE.search(run):
+            chars = "".join(_CJK_RE.findall(run))
+            if len(chars) <= 2:
+                parts.append('"' + " ".join(chars) + '"')
+            else:
+                for i in range(len(chars) - 1):
+                    parts.append(f'"{chars[i]} {chars[i + 1]}"')
+        elif len(run) >= 2:
+            parts.append(f'"{run}"')
+        if len(parts) >= max_parts:
+            break
+    # 去重保序
+    seen: set[str] = set()
+    uniq = [p for p in parts if not (p in seen or seen.add(p))]
+    return " OR ".join(uniq[:max_parts])
 
 
 def _default_db_path() -> Path:
@@ -265,6 +314,46 @@ class CognitiveStore:
         # valid_until = NULL 表示「至今有效」（开放区间）。
         self._add_column("profile_items", "valid_from", "TEXT")
         self._add_column("profile_items", "valid_until", "TEXT")
+        # P1-2 范围化注入：profile_items 的 FTS 索引（unicode61 + 字间空格，
+        # 与 coworker/history/fts5.py 同一套约定）。
+        try:
+            with self._connect() as conn:
+                conn.execute(
+                    "CREATE VIRTUAL TABLE IF NOT EXISTS profile_items_fts "
+                    "USING fts5(item_id UNINDEXED, layer UNINDEXED, content, "
+                    "tokenize='unicode61')"
+                )
+                # 自愈回填：FTS 与条目**数量不符**即重建。
+                # （正常写入走 persist/delete_item 的同事务同步，不会落到这。）
+                #
+                # 2026-09-26 质检修正：原判据是「FTS 为空才算失步」（n_fts == 0），
+                # 漏掉两类真实失步——① 外部脚本直接 INSERT profile_items 绕过
+                # persist（如 scripts/restore_cognitive_layer.py）；② 某次 persist
+                # 的 _rebuild_fts 抛错被 catch。这两类下 FTS 非空 → 旧判据不重建
+                # → 新条目**永久搜不到**（范围化注入静默失效，只剩核心层）。
+                # 改为数量比对：多、少、空三种失步都自愈。表很小，重建成本可忽略。
+                n_fts = conn.execute("SELECT COUNT(*) FROM profile_items_fts").fetchone()[0]
+                n_items = conn.execute("SELECT COUNT(*) FROM profile_items").fetchone()[0]
+                if n_items > 0 and n_fts != n_items:
+                    self._rebuild_fts(conn)
+        except sqlite3.Error:
+            pass  # FTS 建表/回填失败不阻断初始化（fail-open：召回退全量）
+
+    @staticmethod
+    def _rebuild_fts(conn: sqlite3.Connection) -> None:
+        """全量重建 profile_items_fts（须在**同一事务**内随条目写入调用）。"""
+        conn.execute("DELETE FROM profile_items_fts")
+        rows = conn.execute(
+            "SELECT id, layer, COALESCE(topic,''), COALESCE(content,'') "
+            "FROM profile_items"
+        ).fetchall()
+        conn.executemany(
+            "INSERT INTO profile_items_fts(item_id, layer, content) VALUES(?, ?, ?)",
+            [
+                (rid, layer, tokenize_cjk(f"{topic} {content}"))
+                for rid, layer, topic, content in rows
+            ],
+        )
 
     # ------------------------------------------------------------------
     # 迁移（幂等）
@@ -435,6 +524,12 @@ class CognitiveStore:
                     "VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     gap_rows,
                 )
+            # P1-2：FTS 与条目**同一事务**同步（防「记了查不到」）。
+            # persist 是整层覆盖写，直接全量重建最简单也最不易漂移（表很小）。
+            try:
+                self._rebuild_fts(conn)
+            except sqlite3.Error as e:
+                logger.warning("profile_items_fts 同步失败（召回将退回全量注入）: %s", e)
 
     @staticmethod
     def _item_extra(dim: str, it) -> dict:
@@ -572,6 +667,12 @@ class CognitiveStore:
                     (item_id, _LAYER, _now_iso()),
                 )
                 cur = conn.execute("DELETE FROM profile_items WHERE id=?", (item_id,))
+                try:
+                    conn.execute(
+                        "DELETE FROM profile_items_fts WHERE item_id=?", (item_id,)
+                    )
+                except sqlite3.Error:
+                    pass  # FTS 同步失败不阻断遗忘（召回退全量，不会复活条目）
                 return bool(cur.rowcount and cur.rowcount > 0)
         except sqlite3.Error:
             return False
@@ -679,6 +780,50 @@ class CognitiveStore:
             "WHERE item_id=? ORDER BY seq", (item_id,)
         ).fetchall()
         return [HistoryEntry(action=r[0], old_value=r[1], new_value=r[2], reason=r[3], source=r[4], timestamp=r[5]) for r in rows]
+
+    def recall_items(
+        self,
+        query: str,
+        layers: tuple[str, ...] = (),
+        top_k: int = 8,
+        exclude_ids: Optional[set[str]] = None,
+    ) -> list[dict[str, Any]]:
+        """按 query 召回 active 认知条目（FTS5，bm25 排序）。
+
+        P1-2 范围化注入的长尾召回入口。fail-open：FTS 不可用 / 空 query /
+        任何异常都返回 []（调用方据此退回全量注入，行为与历史版本一致）。
+
+        Args:
+            layers: 限定层（如 ("cognitive",)）；空 = 跨全部层。
+            exclude_ids: 排除的条目 id（核心层已注入的）。
+            top_k: 最多返回条数。
+        """
+        match = _fts_match(query)
+        if not match:
+            return []
+        sql = (
+            "SELECT p.id, p.layer, p.dimension, p.topic, p.content, p.confidence "
+            "FROM profile_items_fts f JOIN profile_items p ON p.id = f.item_id "
+            "WHERE profile_items_fts MATCH ? AND p.status='active'"
+        )
+        params: list[Any] = [match]
+        if layers:
+            sql += f" AND p.layer IN ({','.join('?' * len(layers))})"
+            params.extend(layers)
+        sql += " ORDER BY bm25(profile_items_fts) LIMIT ?"
+        params.append(max(1, min(int(top_k), 50)))
+        try:
+            with self._connect() as conn:
+                rows = conn.execute(sql, params).fetchall()
+        except sqlite3.Error:
+            return []
+        excl = exclude_ids or set()
+        return [
+            {"id": r[0], "layer": r[1], "dimension": r[2], "topic": r[3],
+             "content": r[4], "confidence": r[5]}
+            for r in rows
+            if r[0] not in excl
+        ][:top_k]
 
     # ------------------------------------------------------------------
     # meta KV（last_interview_at 等）

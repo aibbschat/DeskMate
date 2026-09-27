@@ -99,6 +99,11 @@ def memory_append(section: str, new_entry: str, target_section: str = "") -> str
     Returns:
         操作结果
 
+    ⚠ 正在写的作品（章节 / 人物设定 / 伏笔 / 大纲 / 定稿 / 考据）**不要写 `#work`**：
+      这类内容会自动归入 `§ 创作 #stable`（永不衰减）。`#work` 的 TTL 是 30 天——
+      过期即归档进 vault、不再进常驻上下文，等于过一阵就「想不起来」书里的事。
+      （2026-09-26 实测：§工作 曾有 39 条书稿记忆被判成 #work，全部在倒计时。）
+
     注意：自动写入只动 MEMORY/USER，绝不写 SOUL。
     """
     try:

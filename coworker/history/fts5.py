@@ -254,6 +254,34 @@ def build_fts5_query(query: str) -> dict[str, Any]:
     }
 
 
+# ---------------------------------------------------------------------------
+# 实义 bigram（2026-09-26）：覆盖度统计专用
+#
+# 改述式自然问句（「金世宗即位初对宰执说的话」）的 bigram 里虚词组合
+# （的话/的说/说哪）占比过半——正确答案 chunk 是古文，永远不可能包含
+# 它们。覆盖度门槛若按**原始** bigram「过半」计，正确答案永远够不着
+# （当日基准 6 个 miss 中 5 个死于此）。覆盖度只数**实义** bigram：
+# 两个字都不属于虚字集的组合。虚字集刻意保持最小（不收 于/以/即 等
+# 半实义字）——「淳于髡」「即位」这类专名/史词不能被误伤。
+# ---------------------------------------------------------------------------
+_FUNCTION_CHARS = frozenset("的了是的这那和与在对其怎么说哪为什么如何吗呢吧啊么之乎者也")
+
+
+def _content_bigrams(query: str) -> list[list[str]]:
+    """按简繁变体分组的内容 bigram（剔除含虚字的组合），供覆盖度统计。"""
+    out: list[list[str]] = []
+    for v in _script_variants(_strip_fts_metachars(query)):
+        vc = _cjk_chars(v)
+        bg = [
+            vc[i] + vc[i + 1]
+            for i in range(len(vc) - 1)
+            if vc[i] not in _FUNCTION_CHARS and vc[i + 1] not in _FUNCTION_CHARS
+        ]
+        if bg:
+            out.append(bg)
+    return out
+
+
 def _source_order(source: Optional[str]) -> int:
     """来源可信度次序，仅在 era 分组内部生效（组间次序由 _ERA_RANK 决定）。
 
@@ -382,19 +410,32 @@ def search_one_db(
     seen_chunks: set[Any] = set()
     seen_content: set[str] = set()
     tier_of: dict[Any, int] = {}
+    # 每档独立预算（2026-09-26 修复）：原实现全局共享 fetch_limit，一个
+    # 「高频三字窗」档（查「金世宗即位初…」时「宗即位」在编年史里命中
+    # 200+）就能把预算吃光，后续档一次都进不来——金史世宗本纪的强覆盖
+    # chunk 被**预算饿死**，而不是排不上。改为每档至多 fetch_limit 行。
+    #
+    # 总量上限用 ``len(_TIERS) * fetch_limit``（**不是硬编码 4**）：档位有
+    # 5 个（exact/trigram/bigram/char_and/synonym）。写死 4 会让垫底的
+    # synonym_query 档在前 4 档各填满 fetch_limit 时被 break 跳过——同义词
+    # 扩展（「变法」↔「新政」）静默失效，而它正是为「查不到原词」准备的兜底。
+    # 用 len(_TIERS) 自适应：以后加档也不会再犯。
+    tier_budget = fetch_limit
+    global_cap = len(_TIERS) * fetch_limit
     for tier_idx, tier in enumerate(_TIERS):
-        if len(rows) >= fetch_limit:
-            break
         match_expr = q.get(tier)
         if not match_expr:
             continue
+        if len(rows) >= global_cap:
+            break
         try:
             tier_rows = con.execute(sql, (match_expr, fetch_limit)).fetchall()
         except sqlite3.Error:
             # 某档 FTS 语法不兼容时静默跳过，继续下一档
             continue
+        tier_count = 0
         for r in tier_rows:
-            if len(rows) >= fetch_limit:
+            if tier_count >= tier_budget or len(rows) >= global_cap:
                 break
             chunk_id, content = r[0], (r[1] or "")
             # 内容指纹去重：同一段文字可能被重复灌入不同 chunk（实测《元史》有）
@@ -406,24 +447,58 @@ def search_one_db(
                 seen_content.add(fingerprint)
             tier_of[chunk_id] = tier_idx
             rows.append(r)
+            tier_count += 1
 
     if not rows:
         return []
 
-    # 每篇文章只取 rank 最高的 chunk；不足 limit 再补其他 chunk
+    # 每篇文章只取**最相关**的一个 chunk；不足 limit 再补其他 chunk。
+    # 「最相关」= 实义覆盖度更大 → 档位更高 → 原 bm25 序（**与合并层同口径**）。
+    #
+    # 2026-09-26 修复：原实现按 bm25 首现顺序取，同一篇文章的概览/总序
+    # chunk 常以更高 bm25 占走文章席位，把真正回答问题的正文 chunk 挤出
+    # 候选（基准实测：查「淳于髡怎么劝齐王停止伐魏」，正确 chunk 覆盖度
+    # 5 vs 同篇概览 3、该档 bm25 排名第 1，却因概览 chunk 在前整条落榜）。
+    cbg = _content_bigrams(query)
+
+    def _cov_of(r: tuple) -> int:
+        if not cbg:
+            return 0
+        body = r[1] or ""
+        return max((sum(1 for b in bg if b in body) for bg in cbg), default=0)
+
+    # 排序键（2026-09-26 质检修正）：**实义覆盖度优先于档位**，与合并层
+    # ``search_across_dbs`` 的排序口径保持一致。
+    #
+    # 原实现档位优先 → 每档独立预算后 rows 最多 4×fetch_limit，trigram 档的
+    # 50 行会先把 ``per_db_limit`` 名额吃满，bigram 档的强命中一条都进不来。
+    # 实测：查「韩愈给宰相上书的经过」，``per_db_limit=15`` 时单库返回的 15 条
+    # **全为 trigram**，而正确答案所在的 bigram 档排名第 11 —— 在单库层就被
+    # 截断，跨库合并无论怎么排都救不回（这是该 case 长期 miss 的真因）。
+    # 覆盖度优先后，命中多个实义 bigram 的条目先占名额：噪声不可能同时命中
+    # 多个实义片段，故不会引入泛匹配上位。
+    order = sorted(
+        range(len(rows)),
+        key=lambda i: (
+            -_cov_of(rows[i]),
+            tier_of.get(rows[i][0], len(_TIERS)),
+            i,
+        ),
+    )
     selected: list[tuple] = []
     seen_articles: set[Any] = set()
-    for r in rows:
+    for i in order:
         if len(selected) >= limit:
             break
+        r = rows[i]
         if r[3] not in seen_articles:  # article_id 在 _COLUMNS 中第 4 列
             selected.append(r)
             seen_articles.add(r[3])
-    for r in rows:
+    for i in order:
         if len(selected) >= limit:
             break
-        if r not in selected:
-            selected.append(r)
+        if rows[i] not in selected:
+            selected.append(rows[i])
 
     # 逐档累加后 rows 已是「精确优先」顺序；跨库合并时也要保住这个顺序，
     # 因此给每条结果打上 exact 标记（完整查询词是否出现在该 chunk 正文中）。
@@ -507,7 +582,10 @@ def search_across_dbs(
     其余按匹配档位（trigram > bigram > char AND）排序，**档位优先于来源优先级**
     ——避免出现"来源更权威但内容其实无关"的条目压过真正相关的条目。
     """
-    per_db_limit = max(1, int(limit * 1.5))
+    # 3×（2026-09-26，原 1.5×）：候选池太小会把「库内排名靠前但略高于
+    # 截断线」的正确答案挡在合并层之外（实测韩愈 case：正确 chunk 库内
+    # bigram 档排第 11，1.5×=7 时根本进不了合并排序）。
+    per_db_limit = max(1, int(limit * 3))
     all_rows: list[dict[str, Any]] = []
     for p in db_paths:
         try:
@@ -523,17 +601,15 @@ def search_across_dbs(
         finally:
             con.close()
     _TIER_RANK = {"exact": 0, "trigram": 1, "bigram": 2, "char_and": 3}
-    # 同档位内的次级排序：命中了查询词多少个相邻二字片段。降级档里
+    # 同档位内的次级排序：命中了查询词多少个**实义**相邻二字片段。降级档里
     # "只匹配到一半关键词"的条目应让位给"匹配得更全"的条目，
     # 否则会出现来源更权威但内容其实无关的条目压过真正相关的条目。
     # 变体逐组算、取最大覆盖：繁体条目对简体查询词的覆盖度恒为 0，
     # 不取最大就会被简体条目无条件压在下面。
-    variant_bigrams = []
-    for v in _script_variants(_strip_fts_metachars(query)):
-        vc = _cjk_chars(v)
-        bg = [vc[i] + vc[i + 1] for i in range(len(vc) - 1)]
-        if bg:
-            variant_bigrams.append(bg)
+    #
+    # 2026-09-26：由原始 bigram 改为实义 bigram（剔除虚字组合）——
+    # 见 _content_bigrams 处注释。
+    variant_bigrams = _content_bigrams(query)
 
     def _coverage(row: dict[str, Any]) -> int:
         body = row.get("snippet", "")
@@ -542,13 +618,21 @@ def search_across_dbs(
             default=0,
         )
 
-    # 组内排序键：完整命中 > 匹配档位 > 查询词覆盖度 > 来源优先级。
+    # 组内排序键：完整命中 > **实义覆盖度** > 匹配档位 > 来源优先级。
     # 这一层与传统相关度排序一致，分面交错在下一步做。
+    #
+    # 2026-09-26：覆盖度提到档位**之前**。原「档位优先」在关键词式查询下
+    # 是对的（trigram 精确于 bigram），但改述式自然问句的正确答案几乎总在
+    # bigram 档（古文不会复述问句原词），而 trigram 档混着大量「单个高频
+    # 三字窗」（宗即位/宰相上）的原典泛匹配——档位优先=洪水常驻前排。
+    # 实测改述问句组：trigram 泛匹配 cov 0-4 vs 正确答案 cov 2-5，按覆盖度
+    # 排正好把答案顶上来。档位信息不丢：matchTier 标签仍随结果给模型，
+    # 供判断引用可靠性；exact 仍无条件最优先。
     all_rows.sort(
         key=lambda r: (
             not r.get("exact", False),
-            _TIER_RANK.get(r.get("matchTier", "char_and"), 3),
             -_coverage(r),
+            _TIER_RANK.get(r.get("matchTier", "char_and"), 3),
             r["sourceOrder"],
         )
     )
@@ -565,16 +649,18 @@ def search_across_dbs(
             seen.add(fingerprint)
         deduped.append(r)
 
-    # 覆盖度门槛：bigram/char_and 档命中的 bigram 数必须过半，否则沉到末尾。
+    # 覆盖度门槛（2026-09-26 重定）：trigram/bigram/char_and 档**实义**
+    # bigram 命中 < 2 沉底；exact 档不受此限。
     #
-    # bigram 档是 OR 匹配（命中任一片段即算），长查询会因此混入大量偶然撞上
-    # 跨词边界组合的段落——查「郑和下西洋」时《舊唐書》靠「下西」、《陳書》靠
-    # 「和下」这类古文里极常见的二字组合就能进来，而它们与郑和毫无关系。
-    # exact/trigram 档本身已足够精确，不受此限。
-    need = 1
-    if variant_bigrams:
-        need = max(1, -(-len(variant_bigrams[0]) // 2))  # ceil(总数/2)
-
+    # 原门槛 = 原始 bigram「过半」（ceil(总数/2)）且只管 bigram 及以下——
+    # 对关键词式查询（郑和下西洋）是对的，但对改述式自然问句是天文数字：
+    # 正确答案 chunk 是古文，不可能包含「怎么/的话/的说」这类虚词组合，
+    # 当日基准 6 个 miss 中 5 个死于此。
+    #
+    # trigram 同样纳入门槛是实测教训：自然问句的高频三字窗（宗即位/宰相上，
+    # 编年史里遍地都是）会以「档位优先」压过 bigram 强命中——魏書/元史靠
+    # 一个「X即位」三字窗就把金世宗的正确答案挤出前排。实义覆盖度 <2 的
+    # trigram 命中与「靠下西撞上郑和」同级，都是弱命中。
     strong: list[dict[str, Any]] = []
     weak: list[dict[str, Any]] = []
     for r in deduped:
@@ -585,7 +671,7 @@ def search_across_dbs(
         if tier == "synonym":
             r["_weak"] = True   # 内部标记，_facet_merge 用完后会剔除
             weak.append(r)
-        elif tier in ("bigram", "char_and") and _coverage(r) < need:
+        elif tier in ("trigram", "bigram", "char_and") and _coverage(r) < 2:
             r["_weak"] = True
             weak.append(r)
         else:

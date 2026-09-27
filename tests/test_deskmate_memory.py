@@ -322,12 +322,21 @@ class TestSmartAppend:
         assert mem.count("#correction") == 1
 
     def test_append_creates_new_section_when_unknown(self, tmp_dir: Path):
+        """无标签、无 LLM、无匹配标题 → 落到**兜底分节**（不报错、内容不丢）。
+
+        ⚠ 断言在 2026-09-26 改过：旧值锁的是「默认 § 笔记」。但 `#note` 的 TTL
+        是 7 天**直接删除且不落 vault**——而这条兜底恰恰只在 LLM 不可用 / 超时 /
+        返回跑偏时生效，等于「最不确定的环境做最不可逆的动作」。
+        现在锁新价值：兜底必须落**不衰减**的分节（宁留不误删）。
+        """
+        import deskmate.memory.manager as M
+
         mgr = DeskMateMemoryManager(tmp_dir)
-        # 无标签、无 LLM、无匹配标题 → 默认 § 笔记
         mgr.append_to_section("memory", "一条零散笔记")
         mem = (tmp_dir / "MEMORY.md").read_text(encoding="utf-8")
-        assert "§ 笔记" in mem
+        assert "§ 长期事实 #stable" in mem, "兜底分节必须是不衰减的（旧的 § 笔记 7 天即删）"
         assert "一条零散笔记" in mem
+        assert M.MEMORY_DECAY_TTL.get("stable") is None, "兜底所在分节绝不能被登记进 TTL"
 
     def test_append_to_user_profile(self, tmp_dir: Path):
         mgr = DeskMateMemoryManager(tmp_dir)
