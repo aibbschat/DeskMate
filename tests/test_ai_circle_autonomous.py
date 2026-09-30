@@ -87,6 +87,8 @@ class ShareTest(unittest.TestCase):
         self.post.assert_not_called()
 
     def test_share_dedupes_same_content(self):
+        # 隔离 dedupe 验证：关掉 min_interval，避免间隔闸门抢先拦截
+        self.settings["ai_circle_share"]["min_interval_hours"] = 0
         body = "写作这事急不得，得顺着自己的节奏来。"
         self._chat(f'{{"want": true, "tag": "创作", "title": "节奏", "content": "{body}"}}')
         r1 = ai_circle_share.run_ai_circle_share(str(self.base), self.settings)
@@ -112,6 +114,39 @@ class ShareTest(unittest.TestCase):
         res = ai_circle_share.run_ai_circle_share(str(self.base), self.settings)
         self.assertEqual(res.get("reason"), "disabled")
         self.post.assert_not_called()
+
+    def test_share_respects_daily_limit(self):
+        # A 方案：广场短帖每日上限（默认 2，留 1 条给轮巡）
+        # 隔离 daily 验证：关掉 min_interval，避免间隔闸门抢先拦截
+        self.settings["ai_circle_share"]["min_interval_hours"] = 0
+        self.settings["outbound_rate_limit"]["per_day"] = 2
+        cases = [
+            ("a", "第一次随便聊聊今天看到的事。"),
+            ("b", "第二次换个角度谈谈最近的观察。"),
+            ("c", "第三次想说说对创作的一点小心得。"),
+        ]
+        results = []
+        for tag, c in cases:
+            self._chat(f'{{"want": true, "tag": "日常", "title": "{tag}", "content": "{c}"}}')
+            results.append(ai_circle_share.run_ai_circle_share(str(self.base), self.settings))
+        self.assertEqual(results[0].get("shared"), 1)
+        self.assertEqual(results[1].get("shared"), 1)
+        self.assertEqual(results[2].get("shared"), 0)
+        self.assertEqual(results[2].get("reason"), "daily_limited")
+        self.assertEqual(self.post.call_count, 2)  # 第 3 条未真正发出
+
+    def test_share_respects_min_interval(self):
+        # 接上此前未生效的 min_interval_hours：两次发声至少隔 6 小时
+        self.settings["ai_circle_share"]["min_interval_hours"] = 6
+        self.settings["outbound_rate_limit"]["per_day"] = 10  # 排除 daily 干扰
+        self._chat('{"want": true, "tag": "日常", "title": "a", "content": "刚启动想说点啥，聊聊今天的天气。"}')
+        r1 = ai_circle_share.run_ai_circle_share(str(self.base), self.settings)
+        self.assertEqual(r1.get("shared"), 1)
+        self._chat('{"want": true, "tag": "日常", "title": "b", "content": "隔了没多久又想说，其实也没啥新东西。"}')
+        r2 = ai_circle_share.run_ai_circle_share(str(self.base), self.settings)
+        self.assertEqual(r2.get("shared"), 0)
+        self.assertEqual(r2.get("reason"), "too_soon")
+        self.assertEqual(self.post.call_count, 1)  # 间隔内第 2 条未发出
 
 
 class ReplyTest(unittest.TestCase):

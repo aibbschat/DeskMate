@@ -20,6 +20,12 @@ _DEDUPE_DAYS = 7
 _DEFAULT_PER_HOUR = 5
 
 
+def _local_day_key(ts: float) -> str:
+    """本地自然日 key（年-月-日），用于按自然日计每日上限（与 AI圈 3条/天 对齐）。"""
+    lt = time.localtime(ts)
+    return f"{lt.tm_year:04d}-{lt.tm_mon:02d}-{lt.tm_mday:02d}"
+
+
 def _state_path(base_dir: str | Path) -> Path:
     return Path(base_dir) / "agency" / "outbound_state.jsonl"
 
@@ -94,6 +100,37 @@ def _state_locked(base_dir: str | Path):
             pass
 
 
+def outbound_daily_ok(base_dir: str | Path, kinds: tuple, per_day: int) -> bool:
+    """True=该档位今天（本地自然日）发送数未超 ``per_day``。``per_day<=0`` 恒 True。
+
+    按本地自然日计数，与 AI圈服务端「广场帖 3 条/天」语义对齐；状态落盘持久化，
+    故 app 重启后当天已发条数仍计入，根治「启动即把日额度刷光」。
+    """
+    if per_day <= 0:
+        return True
+    today = _local_day_key(_now())
+    count = sum(
+        1 for r in _read(base_dir)
+        if r.get("kind") in kinds and _local_day_key(float(r.get("ts", 0))) == today
+    )
+    return count < per_day
+
+
+def outbound_interval_ok(base_dir: str | Path, kind: str, min_interval_hours: float) -> bool:
+    """True=``kind`` 距上次发送已超过最小间隔（可再发）。``<=0`` 恒 True。
+
+    接上 ``ai_circle_share`` 配置里一直存在但此前未生效的 ``min_interval_hours``，
+    让广场短帖两次发声至少间隔 N 小时，平滑后台频繁 tick 导致的连发。
+    """
+    if min_interval_hours <= 0:
+        return True
+    cutoff = _now() - float(min_interval_hours) * 3600.0
+    return not any(
+        r.get("kind") == kind and float(r.get("ts", 0)) >= cutoff
+        for r in _read(base_dir)
+    )
+
+
 def outbound_allowed(base_dir: str | Path, rate_cfg: Optional[dict] = None,
                      kinds: tuple = ("share", "reply")) -> bool:
     """每小时上限（**按 lane 分算**）。enabled=false 直接放行（零约束）。
@@ -154,7 +191,8 @@ def mark_peer_replied(base_dir: str | Path, peer_id: int) -> None:
 def claim_outbound(base_dir: str | Path, kind: str, *, rate_cfg: Optional[dict] = None,
                    content: str = "", peer: Optional[int] = None,
                    dedupe: bool = True, peer_cooldown_hours: float = 0.0,
-                   kinds: Optional[tuple] = None) -> tuple[bool, str]:
+                   kinds: Optional[tuple] = None,
+                   max_per_day: int = 0, min_interval_hours: float = 0.0) -> tuple[bool, str]:
     """原子「判→预留」出站额度（A9 修复）。
 
     在稳定排他锁内一次性完成：频率(``outbound_allowed``) + 去重(``dedupe_content``) +
@@ -183,10 +221,18 @@ def claim_outbound(base_dir: str | Path, kind: str, *, rate_cfg: Optional[dict] 
         return True, "ok"
     with _state_locked(base_dir):
         _kinds = kinds if kinds is not None else (kind,)
+        # 广场短帖（share）专属护栏：每日上限 + 最小间隔。
+        # 仅对 share 生效（对齐 AI圈「广场帖 3 条/天」），journal/reply 各自独立通道不受影响。
+        if kind == "share":
+            pd = max_per_day or int(cfg.get("per_day", 0) or 0)
+            if pd > 0 and not outbound_daily_ok(base_dir, ("share",), pd):
+                return False, "daily"
+            if min_interval_hours > 0 and not outbound_interval_ok(base_dir, "share", min_interval_hours):
+                return False, "interval"
         if not outbound_allowed(base_dir, cfg, kinds=_kinds):
             return False, "rate"
         if dedupe and content and dedupe_content(base_dir, content):
-            return False, "dup"
+            return False, "dedupe"
         if peer is not None and peer_cooldown_hours > 0 \
                 and not peer_cooldown_ok(base_dir, int(peer), peer_cooldown_hours):
             return False, "peer_cooldown"

@@ -174,6 +174,7 @@ DEFAULTS: dict[str, Any] = {
     "outbound_rate_limit": {
         "enabled": True,
         "per_hour": 5,
+        "per_day": 2,    # 广场短帖每日上限（仅 share）：对齐 AI圈 3 条/天，留 1 条余量给轮巡/其它来源
     },
 }
 

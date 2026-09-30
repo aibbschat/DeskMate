@@ -119,13 +119,22 @@ def run_ai_circle_share(base_dir: str, settings: dict) -> dict:
         return {"shared": 0, "reason": "disabled"}
 
     # 频率护栏（全局每小时上限，一行可关）
-    from ..outbound import outbound_allowed, claim_outbound
+    from ..outbound import (outbound_allowed, claim_outbound,
+                           outbound_daily_ok, outbound_interval_ok)
 
     rate_cfg = settings.get("outbound_rate_limit") if isinstance(settings, dict) else None
     rate_cfg = rate_cfg if isinstance(rate_cfg, dict) else {}
     # 频率预筛（省一次 LLM）：权威判定 + 额度预留见下方 claim_outbound（原子锁内完成）
     if not outbound_allowed(base_dir, rate_cfg):
         return {"shared": 0, "reason": "rate_limited"}
+    # 每日上限预筛（仅广场短帖 share，对齐 AI圈 3 条/天，留余量给轮巡）
+    per_day = int((rate_cfg or {}).get("per_day", 0) or 0)
+    if per_day > 0 and not outbound_daily_ok(base_dir, ("share",), per_day):
+        return {"shared": 0, "reason": "daily_limited"}
+    # 最小间隔预筛（接上 settings 里一直存在但此前未生效的 min_interval_hours）
+    min_iv = int(cfg.get("min_interval_hours", 0) or 0)
+    if min_iv > 0 and not outbound_interval_ok(base_dir, "share", min_iv):
+        return {"shared": 0, "reason": "too_soon"}
 
     seed_stats: dict = {}
     seed = _gather_seed(base_dir, int(cfg.get("seed_entries", 8)), cfg=seed_cfg,
@@ -175,7 +184,11 @@ def run_ai_circle_share(base_dir: str, settings: dict) -> dict:
 
     # 原子「判→预留」：锁内复核去重并记额度，未过则不放行（杜绝并发重复发帖，A9 修复）。
     # 拿到 True 才真正发帖；发帖在锁外进行，但额度已预留，并发第二轮必被拒。
-    ok, reason = claim_outbound(base_dir, "share", rate_cfg=rate_cfg, content=content, dedupe=True)
+    ok, reason = claim_outbound(
+        base_dir, "share", rate_cfg=rate_cfg, content=content, dedupe=True,
+        max_per_day=int((rate_cfg or {}).get("per_day", 0) or 0),
+        min_interval_hours=int(cfg.get("min_interval_hours", 0) or 0),
+    )
     if not ok:
         return {"shared": 0, "reason": reason}
 
