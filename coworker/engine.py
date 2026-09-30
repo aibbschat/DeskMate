@@ -182,6 +182,10 @@ class TurnEngine:
         # compaction above, so the constructor footprint stays put. None ⇒ nothing recorded
         # and behaviour is byte-identical; NOTHING consumes it in v1 either way.
         self.session_facts: Optional[session_facts.SessionFacts] = None
+        # 自动化运行标记（由 surface/manager 在构造后打上）。为 True 时本引擎在执行
+        # 定时/手动运行的自动化任务，而非与萧盛的实时对话——萧盛专属摄入钩子
+        #（_xiaosheng_note）不得把它的工具结果算作萧盛影响。未设置时默认 False（实时对话）。
+        self.is_automation: bool = False
         # Auto-Approve reviewer (spec Part 8). Set post-construction; None ⇒ Mode.AUTO_APPROVE
         # behaves exactly like INTERACTIVE. Consulted only on decisions the gate marked
         # needs_user, only in AUTO_APPROVE mode, only when the session is attended (an
@@ -1673,9 +1677,16 @@ class TurnEngine:
         """萧盛写作协作摄入钩子（2026-09-16 萧哥拍板）：她替萧盛调 web_search 查资料时，
         把检索到的内容沉淀进世界观素材池，让「协助写作 / 查资料」也回灌她的三观。
 
-        本应用里 web_search 即为萧盛服务。best-effort——任何异常都不影响对话流。
+        仅限与萧盛的实时对话 / 写作协作会话——自动化任务（写作营 / AI圈日报 / 每日读书 /
+        AI圈巡检…）跑的 web_search 不是萧盛本人在查资料，绝不能算作他的影响，否则检索
+        转储会冒充满「内部·萧盛」标、污染世界观回望与对话上下文。best-effort——任何异常
+        都不影响对话流。
         """
         if status != "ok":
+            return
+        # 自动化任务跑的 web_search 不算萧盛影响：is_automation 由 surface/manager 在构造时
+        # 打上（定时/手动运行的任务 = True，实时对话 = False）。
+        if getattr(self, "is_automation", False):
             return
         name = str(tool_call.name or "")
         if name != "web_search" and not name.endswith("__web_search"):

@@ -771,6 +771,10 @@ class SessionManager:
             engine.compaction_state = CompactionState.from_dict(record.compaction)
         engine.compaction_settings = self.compaction_settings
         self._engines[session_id] = engine
+        # 自动化运行标记：本会话若是某个定时/手动任务的运行实例，它跑出的 web_search 等
+        # 工具结果不能算作萧盛影响（否则检索转储会冒充满「内部·萧盛」标）。owning_task 在
+        # get_engine 开头已解析（task_for_run_session）。实时对话会话 owning_task 为 None。
+        engine.is_automation = owning_task is not None
         if is_new_session:
             self._emit_session_created(session_id, agent_name)
         return engine
@@ -4696,6 +4700,9 @@ class SessionManager:
                 [d] if (d := self.persona_skill_scope(task.agent)[0]) is not None else None
             ),        )
         self._seed_task_permissions(engine, task)
+        # 定时/手动运行的任务引擎：跑出的 web_search 等工具结果不是萧盛影响，
+        # 必须打上自动化标记，否则检索转储会冒充满「内部·萧盛」标。
+        engine.is_automation = True
         return engine
 
     # -- mirroring inbox items to a bound channel -------------------------------

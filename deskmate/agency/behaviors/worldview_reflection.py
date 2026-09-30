@@ -80,6 +80,24 @@ _XS_PROVENANCE = "（内部·萧盛）"
 # 萧盛是「第一层、最重」的影响，所以他的批次长出的看法更可信。
 _CONFIDENCE_XS = 0.7
 
+
+def _is_automation_noise(body: str) -> bool:
+    """判定一条「内部·萧盛」理解是否为冒牌（自动化检索转储 / 定时任务提示词）。
+
+    2026-09-30 修复：写入侧曾把自动化跑的 web_search 与自动化会话摘要也顶着
+    「内部·萧盛」标记进来（见 engine.py _xiaosheng_note / manager.py post_session_summary
+    的止血）。这类噪音若算作萧盛影响，会撑大主导判定、把垃圾长成的结论盖上「萧盛影响」章。
+    回溯时它们既不进萧盛桶、也不参与主导判定。
+    """
+    b = (body or "").strip()
+    if b.startswith("检索到以下资料"):
+        return True
+    if "⏰ Scheduled run" in b:
+        return True
+    if "This automation is due now" in b:
+        return True
+    return False
+
 # ----------------------------------------------------------------------
 # Prompt
 # ----------------------------------------------------------------------
@@ -543,12 +561,20 @@ def run_worldview_reflection(base_dir: str,
     # 分离萧盛影响条目（带「内部·萧盛」标）与外部条目——萧盛权重更高。
     xs_entries: list[str] = []
     ext_entries: list[str] = []
+    xs_noise = 0
     for b in bodies:
         if _XS_PROVENANCE in b:
-            xs_entries.append(b.replace(_XS_PROVENANCE, "").strip())
+            _body = b.replace(_XS_PROVENANCE, "").strip()
+            # 冒牌「萧盛影响」（自动化检索转储 / 定时任务提示词）不算真·萧盛：
+            # 既不进萧盛桶、也不让它撑大主导判定（2026-09-30 修复）。
+            if _is_automation_noise(_body):
+                xs_noise += 1
+                continue
+            xs_entries.append(_body)
         else:
             ext_entries.append(b)
-    # 萧盛主导 = 这批理解里萧盛来源不比外部少（他的影响是最大头）。
+    # 萧盛主导 = 这批理解里「真·萧盛」来源不比外部少（他的影响是最大头）。
+    # 用剔除冒牌后的真实计数，避免垃圾撑大 xs 误判 dominant。
     xs_dominant = len(xs_entries) >= len(ext_entries)
 
     # 加载萧盛的「根」（常驻锚，作为回望底层镜头）

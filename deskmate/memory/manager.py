@@ -2464,7 +2464,12 @@ class DeskMateMemoryManager:
         # 世界观素材池。best-effort、fail-open——绝不影响上面的记忆抽取。这一笔同时覆盖
         # 「聊天内容」与「写作协作讨论」（协作是在对话里进行的）。
         try:
-            if user_msg or assistant_msg:
+            # 自动化会话（首条 user_msg 以「⏰ Scheduled run」开头）不是和萧盛的聊天，
+            # 其会话摘要绝不能记成「萧盛影响」——否则自动化提示词会冒充满「内部·萧盛」标，
+            # 污染世界观回望与对话上下文。萧盛影响只来自他本人的实时对话/写作协作。
+            if (user_msg or "").strip().startswith("⏰ Scheduled run"):
+                pass
+            elif user_msg or assistant_msg:
                 from deskmate.agency.behaviors.xiaosheng_ingestion import (
                     record_xiaosheng_observation,
                 )
