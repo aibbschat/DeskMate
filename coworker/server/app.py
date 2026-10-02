@@ -41,9 +41,23 @@ _ALLOWED_ORIGIN_RE = re.compile(
 )
 
 
+# 云端部署扩展：允许经隧道访问的额外浏览器源（如腾讯"安全访问 WebUI"域名）。
+# 通过 COWORKER_EXTRA_ORIGINS 注入（逗号分隔，仅 scheme://host，无路径/结尾斜杠）。
+# 本地不设该 env 时为空，行为与原版完全一致；改 env 后需重启服务生效。
+_EXTRA_ORIGINS = [
+    o.strip()
+    for o in os.environ.get("COWORKER_EXTRA_ORIGINS", "").split(",")
+    if o.strip()
+]
+
+
 def _origin_allowed(origin: str | None) -> bool:
     """True if a browser Origin may use the API. Missing Origin (non-browser) passes."""
-    return origin is None or bool(_ALLOWED_ORIGIN_RE.match(origin))
+    if origin is None:
+        return True
+    if _ALLOWED_ORIGIN_RE.match(origin):
+        return True
+    return origin in _EXTRA_ORIGINS
 
 
 # Caps on inbound WebSocket traffic. The loopback socket is unauthenticated (any local

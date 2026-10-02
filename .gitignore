@@ -20,6 +20,8 @@ vitest.config.ts.timestamp-*.mjs
 .vite/
 # Local secrets (live-smoke BYO keys) — never committed
 .env
+# 服务器运维凭据/手册（aibbs = 小桔云主机，含登录密码）—— 永不入库
+.workbuddy/server/
 .claude/settings.local.json
 # Generated docx exports (docx_export.py → output/*.docx) — build artifacts, not source
 output/
