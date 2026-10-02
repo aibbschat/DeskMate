@@ -4545,10 +4545,12 @@ class SessionManager:
         inline instead.
 
         Note: the governance Tool Guard's CRITICAL findings are denied outright by the
-        permission engine *before* this callback is ever reached, so catastrophic
-        commands still can't run. Only HIGH/MEDIUM shell findings reach here, and for an
-        automation the user explicitly opted into autonomous execution those are
-        auto-approved too."""
+        permission engine *before* this callback is ever reached. That floor is narrow,
+        though: only findings graded exactly CRITICAL are denied, and the classic
+        data-loss commands (`rm -rf`, `find -delete`, `mv`, `chmod 777`) grade HIGH, so
+        they do NOT stop a scheduled run. HIGH/MEDIUM shell findings never become a
+        prompt for an unattended run either — the user opted into autonomous execution
+        when the task was created."""
         from ..engine import ApprovalOutcome
 
         async def approver(request):
@@ -4559,20 +4561,26 @@ class SessionManager:
     def _scheduled_write_roots(self, task) -> list:
         """Writable roots for a scheduled task's engine.
 
-        The permission engine's write-path gate (permissions.py) runs in EVERY mode,
-        including AUTO — a write is denied unless its path lands in a writable root.
-        `_build_task_engine` never passed `roots`, so the engine fell back to a single
-        writable root = the workspace. Any deliverable the user asked an automation to
-        drop on the Desktop (a common "so I can find it" target) was therefore blocked
-        with "path is not in a writable directory", even though the run was AUTO and
-        already approved at creation.
+        History: this exists because write-path scoping once blocked scheduled
+        deliverables — `_build_task_engine` never passed `roots`, so the engine fell back
+        to a single writable root = the workspace, and anything the user asked an
+        automation to drop on the Desktop (a common "so I can find it" target) came back
+        "path is not in a writable directory".
 
-        Fix: extend the writable set to (a) the user's standard drop folders
-        (Desktop / Documents / Downloads), (b) any explicit write target the task's
-        consent card already surfaced + the human approved, and (c) ~/.deskmate/auto_tasks
-        for the local assistant's own ledger. All are the user's own local folders, so
-        this only aligns the file tools with what AUTO already permits for shell
-        redirection. Hard floors (CRITICAL governance denials) still apply.
+        What these roots still do (re-measured 2026-10-02): scheduled runs execute in
+        BYPASS_APPROVALS, whose early return skips the permission engine's write-path
+        gate — so `roots` no longer gates the FILE TOOLS for a scheduled run. They are
+        still load-bearing, so do not delete this as dead code:
+          * they are the write scope the macOS sandbox hands a run's SHELL
+            (agent.py `mounts_from_write_roots`) — that shell-side check does still fire;
+          * they are the `save_skill` file-gathering allowlist;
+          * they resume governing the file tools the moment a run is not in bypass
+            (interactive / delegated runs, or any future restore of the floors).
+
+        The set is (a) the user's standard drop folders (Desktop / Documents /
+        Downloads), (b) any explicit write target the task's consent card already
+        surfaced + the human approved, and (c) ~/.deskmate/auto_tasks for the local
+        assistant's own ledger. All are the user's own local folders.
         """
         from ..automation.models import rule_parts
         from ..risk import WRITE_TOOLS
@@ -4654,8 +4662,12 @@ class SessionManager:
         # Scheduled runs own the workspace as the primary writable root, plus the user's
         # common drop folders (Desktop / Documents / Downloads) and any write target the task
         # declared on its consent card — so an automation told to deliver an article to the
-        # Desktop can actually write there (the permission engine's write-path gate at
-        # permissions.py runs in ALL modes, including AUTO).
+        # Desktop can actually write there. NOTE: this comment used to claim the permission
+        # engine's write-path gate "runs in ALL modes, including AUTO" — it does NOT.
+        # Under BYPASS_APPROVALS the gate is skipped (evaluate() short-circuits before it),
+        # so the roots no longer gate the file tools for a scheduled run; they are still
+        # passed because they scope the run's SHELL through the macOS sandbox. Details and
+        # the full list of what survives: _scheduled_write_roots.
         roots = self._scheduled_write_roots(task)
         engine = build_engine(
             agent=ag,
@@ -4666,9 +4678,12 @@ class SessionManager:
             # create_scheduled_task, or the GUI automation form). Running unattended in
             # INTERACTIVE mode would park a per-run approval card in the Inbox that nobody
             # can click, hanging the run forever (see coworker/automation/tools.py:22).
-            # AUTO grants full access for the run while still keeping the hard floors the
-            # permission engine enforces before the mode logic: writable-root scoping for
-            # file writes, and CRITICAL governance-guard denials for catastrophic commands.
+            # BYPASS_APPROVALS grants full access for the run. The "hard floors" this
+            # comment used to promise are NOT all there: writable-root scoping sits BELOW
+            # the mode short-circuit in evaluate(), so it is skipped. What actually
+            # survives is self-protection and — while the Tool Guard is loaded — shell
+            # commands graded exactly CRITICAL (data-loss commands like `rm -rf` grade
+            # HIGH and pass). See the block at the top of permissions.evaluate().
             mode=Mode.BYPASS_APPROVALS,
             approver=self._scheduled_approver(task, session_id),
             provider=self.provider,
@@ -5183,13 +5198,19 @@ class SessionManager:
         )
 
     def _submit_close_loop_task(self, instruction: str, workspace: str) -> None:
-        """主动闭环执行：把 deskmate 识别到的关联未竟以一次性 AUTO 任务提交执行。
+        """主动闭环执行：把 deskmate 识别到的关联未竟以一次性任务提交执行。
 
         由 ``deskmate.proactivity.executor.register_close_loop_executor`` 注册为全局
         执行器，在 after_action 收尾的 daemon 线程里被调用。本方法把协程提交到
-        scheduler 的事件循环异步执行，不阻塞调用线程。复用
-        ``_build_task_engine(mode=AUTO)`` —— 写入路径作用域 + CRITICAL 治理拒杀两道
-        硬防线仍然生效（High/Critical 命令仍被拦，文件写入仍限 workspace 内）。
+        scheduler 的事件循环异步执行，不阻塞调用线程。复用 ``_build_task_engine``
+        （即 ``Mode.BYPASS_APPROVALS``，下文旧称 mode=AUTO）。
+
+        ⚠ 2026-10-02 实测更正：本 docstring 原写「写入路径作用域 + CRITICAL 治理拒杀
+        两道硬防线仍然生效（High/Critical 命令仍被拦，文件写入仍限 workspace 内）」，
+        其中前一道**不成立**。bypass 的短路块跑在全部权限地板**之前**，写入路径作用域
+        被整体跳过：文件可写到 workspace 之外，``.git/hooks``、``save_skill``、
+        定时任务增删改同样放行。真正还在的只有自保护，以及严重度恰为 CRITICAL 的 shell
+        命令（``rm -rf`` 属 HIGH 级，不在其列）。详见 permissions.evaluate() 顶部注释。
         """
         import logging as _lg
 

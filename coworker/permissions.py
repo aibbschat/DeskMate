@@ -217,10 +217,15 @@ class Mode(str, Enum):
     )
     INTERACTIVE = "interactive"  # ask for approval (default)
     # Renamed from "auto" (spec §1.5, 2026-08-12): "bypass" names the action — switching a
-    # safety system off — and can't be confused with AUTO_APPROVE in a picker. Deliberately
-    # NOT "bypass-ALL-approvals": Phase 1's floors (settings files, out-of-root writes,
-    # `.git/hooks`) still hold in this mode, so "all" would be a false promise.
-    BYPASS_APPROVALS = "bypass-approvals"  # full access (minus the hard floors)
+    # safety system off — and can't be confused with AUTO_APPROVE in a picker.
+    # NOT called "bypass-ALL-approvals", but NOT for the reason this comment used to give.
+    # It previously claimed Phase 1's floors (settings files, out-of-root writes,
+    # `.git/hooks`) "still hold in this mode". They do NOT: evaluate() short-circuits on
+    # this mode BEFORE any of those floors (see the block below), so the only things it
+    # keeps are self-protection and CRITICAL governance findings. The old text was true
+    # only up to 56bef881 (2026-08-31) moved the block to the top of evaluate(); re-measured
+    # 2026-10-02 — out-of-root writes and `.git/hooks` writes both come back "full access".
+    BYPASS_APPROVALS = "bypass-approvals"  # full access (minus self-protection + CRITICAL guard)
     # Interactive, but an LLM reviewer judges each would-be approval card first: clear
     # allows run without a prompt, everything else still reaches the human. The reviewer
     # can only turn "ask" into "allow", never "blocked" into "allow" (spec §1.2). With no
@@ -351,13 +356,19 @@ class PermissionEngine:
         consequential = is_consequential(risk)
 
         # ── Full access (bypass-approvals): user explicitly opted into "run
-        # everything without asking". Only the catastrophic floor applies:
-        # CRITICAL shell commands (rm -rf /, fork bombs, reverse shells) and
-        # self-protection (modifying OpenWorker's own settings) are still
-        # denied. Everything else is approved without prompting — including
+        # everything without asking". Two floors survive here, and only because
+        # both live INSIDE this block: self-protection (modifying OpenWorker's
+        # own settings) and — only while the governance Tool Guard is loaded,
+        # i.e. execution_level != "off" — shell commands whose worst finding is
+        # exactly CRITICAL (fork bombs, reverse shells, curl|bash, disk wipers,
+        # sudo/su, reboot). Everything else is approved without prompting:
         # HIGH/MEDIUM governance findings, out-of-root writes, persistent-
-        # authority tools, and protected in-project files. The user has
-        # judged the risk acceptable; asking again defeats the mode. ──
+        # authority tools (save_skill, create/update/delete_scheduled_task), and
+        # protected in-project files (.git/hooks, CI configs) — the floors for
+        # those sit BELOW this block, so the early return never reaches them.
+        # In particular the guard is NOT a data-loss net: `rm -rf` / `find
+        # -delete` / `mv` grade HIGH, not CRITICAL, so they are approved here.
+        # The user has judged the risk acceptable; asking again defeats the mode. ──
         if self.mode is Mode.BYPASS_APPROVALS:
             if is_shell and self.tool_guard is not None and self.execution_level != "off":
                 findings = self.tool_guard.scan(tool_name, arguments)

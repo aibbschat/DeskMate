@@ -333,10 +333,16 @@ def test_task_engine_has_no_scheduling_tools(tmp_path, monkeypatch):
 
 
 def test_scheduled_task_can_write_to_desktop(tmp_path, monkeypatch):
-    """Regression: a scheduled (AUTO) task told to drop a deliverable on the Desktop must be
-    able to write there. The permission engine's write-path gate runs in ALL modes — including
-    AUTO — so without the user's drop folders in the writable roots even an AUTO run is denied
-    with 'path is not in a writable directory'."""
+    """Regression: a scheduled task told to drop a deliverable on the Desktop must be able
+    to write there.
+
+    ⚠ 2026-10-02: the original reasoning here was "the permission engine's write-path gate
+    runs in ALL modes — including AUTO". That is not true — the gate sits BELOW the
+    BYPASS_APPROVALS short-circuit in evaluate() and is skipped for a scheduled run. The
+    first assertion below (drop folders registered as WRITABLE roots) is still a real
+    contract. The `evaluate` one is now vacuous for a scheduled run: in bypass every path
+    is allowed, roots or not. Kept because it becomes meaningful again if the floors are
+    ever restored."""
     from coworker.providers import (
         AssistantTurn as _AT,
         ModelCapabilities,
@@ -368,6 +374,9 @@ def test_scheduled_task_can_write_to_desktop(tmp_path, monkeypatch):
             assert root_paths.get(str(d)) is True, f"{drop} must be a writable root"
 
     # And the write-path gate must actually permit a Desktop deliverable.
+    # NOTE (2026-10-02): for a BYPASS_APPROVALS run this one is vacuous — the gate is
+    # skipped and every path is allowed, roots or not. It only discriminates for
+    # non-bypass runs.
     desktop = Path.home() / "Desktop"
     if desktop.is_dir():
         decision = engine.permissions.evaluate(
@@ -379,7 +388,11 @@ def test_scheduled_task_can_write_to_desktop(tmp_path, monkeypatch):
 
 def test_scheduled_task_honors_declared_write_target(tmp_path, monkeypatch):
     """A write target the user declared on the task's consent card (e.g. write_file → a custom
-    folder) must also become a writable root, so the path gate honors the approved grant."""
+    folder) must also become a writable root, so the path gate honors the approved grant.
+
+    Same caveat as test_scheduled_task_can_write_to_desktop (see its docstring, 2026-10-02):
+    the roots assertion is a real contract; the `evaluate` assertion is vacuous while the
+    engine runs in BYPASS_APPROVALS, where the write-path gate is skipped."""
     from coworker.providers import (
         AssistantTurn as _AT,
         ModelCapabilities,
@@ -411,6 +424,7 @@ def test_scheduled_task_honors_declared_write_target(tmp_path, monkeypatch):
     root_paths = {str(r.path): r.writable for r in engine.permissions.roots}
     assert root_paths.get(str(out_dir)) is True
 
+    # Vacuous under BYPASS_APPROVALS (see docstring) — kept for the non-bypass path.
     decision = engine.permissions.evaluate(
         "write_file", {"path": str(out_dir / "chapter1.md")}
     )
