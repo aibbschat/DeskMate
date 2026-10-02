@@ -179,6 +179,16 @@ MATRIX: dict[str, ModelEntry] = {
     "xiaomi:mimo-v2.5": ModelEntry(
         "MiMo V2.5 · Xiaomi token-plan", context_window=256_000
     ),
+    # Tencent TokenHub Token Plan（provider:tencent-tokenplan，2026-10-02 对 Hy 套餐实测：
+    # hy3 与 hy3-preview 均 HTTP 200，建议 ID 全小写）。Hy 套餐为纯文本线——官方「可用模型」
+    # 明确写「暂不支持图片、视频等多模态能力」，故 caps 用 _AGENTIC（tools=True/vision=False），
+    # 不要指望它承担看图；看图仍归 vision_overrides 里声明的视觉模型。
+    "tencent-tokenplan:hy3": ModelEntry(
+        "Hy3 · Tencent Token Plan", context_window=256_000
+    ),
+    "tencent-tokenplan:hy3-preview": ModelEntry(
+        "Hy3 Preview · Tencent Token Plan", context_window=256_000
+    ),
     # -- direct OpenAI-compatible vendors ----------------------------------------
     # Muse Spark (Meta Model API, public preview 2026-07-09): multimodal + tools via
     # their OpenAI-compat surface. Vision yes; PDFs unverified over compat — falls

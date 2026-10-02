@@ -682,6 +682,22 @@ DESCRIPTORS: list[ProviderDescriptor] = [
         env_key="XIAOMI_API_KEY",
         endpoint_help="Xiaomi Token Plan API (xiaomimimo.com). Text models: claude-sonnet-5, mimo-v2.5.",
     ),
+    # Tencent Cloud TokenHub ▸ Token Plan. One provider id covers BOTH plans: 通用 Token Plan
+    # and Hy Token Plan share a single API key and a single base URL, and the serving plan is
+    # picked server-side from the model id (per Tencent's docs). Chat Completions, not
+    # Responses — Tencent's Codex guide pins `wire_api = "chat"` for this endpoint.
+    _compat(
+        "tencent-tokenplan",
+        "Tencent Token Plan",
+        base_url="https://api.lkeap.cloud.tencent.com/plan/v3",
+        recommended_model="hy3",
+        env_key="TENCENT_TOKEN_PLAN_API_KEY",
+        endpoint_help=(
+            "Tencent Cloud TokenHub Token Plan (key looks like sk-tp-…). 通用 and Hy plans "
+            "share this endpoint and key; the plan is chosen by the model id. Hy plan models: "
+            "hy3, hy3-preview."
+        ),
+    ),
     _compat(
         "xai",
         "xAI (Grok)",
