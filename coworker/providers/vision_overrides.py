@@ -28,7 +28,20 @@ import threading
 import time
 from pathlib import Path
 
-_SETTINGS_PATH = Path.home() / ".deskmate" / "settings.json"
+def _settings_path() -> Path:
+    """``settings.json`` 的路径 —— **调用时**解析 ``DESKMATE_DIR``。
+
+    ⚠ 历史坑（2026-10-02）：这里曾是模块级常量 ``Path.home()/".deskmate"``，完全不认
+    环境变量 ⇒ ``tests/conftest.py`` 的 autouse 隔离（把 ``DESKMATE_DIR`` 指到 tmp）
+    对本模块全线失效，单测会读**开发者真机**的 settings.json —— ``test_providers`` 里
+    ``doubao-seed-2.1-turbo`` 因此被判成视觉模型，断言 ``not caps.vision`` 恒红。
+    同族修复见 ``deskmate/memory/external_store.py``（那里也是先踩后修）。
+    """
+    from deskmate.paths import deskmate_base_dir
+
+    return deskmate_base_dir() / "settings.json"
+
+
 _LOCK = threading.Lock()
 _TTL = 30.0
 _cache: "tuple[float, frozenset]" | None = None
@@ -37,7 +50,7 @@ _cache: "tuple[float, frozenset]" | None = None
 def load_settings() -> dict:
     """Read ``~/.deskmate/settings.json``; return {} on any failure (missing/corrupt)."""
     try:
-        return json.loads(_SETTINGS_PATH.read_text(encoding="utf-8"))
+        return json.loads(_settings_path().read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return {}
 

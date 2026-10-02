@@ -419,14 +419,32 @@ def test_ark_curated_models_are_strict_allowlists():
         "dola-seed-evolving-latest-version",
         "dola-seed-2-1-turbo-260628",
     ]
+    # 火山 Agent Plan（主力套餐）的可用清单。这条的价值就在"精确" —— 矩阵里增删任何一个
+    # 都必须同步改这里，防止清单被静默改动。2026-10-02 按控制台实际可用模型补全（原断言
+    # 停在 2 个 doubao，漏掉了随后接入的 6 个：doubao-2.0-mini/lite、deepseek-v4 两档、
+    # minimax-m3、kimi-k2.7-code）。
     assert models_for_provider("ark-agent-plan-cn") == [
         "doubao-seed-evolving",
         "doubao-seed-2.1-turbo",
+        "doubao-seed-2.0-mini",
+        "doubao-seed-2.0-lite",
+        "deepseek-v4-flash",
+        "deepseek-v4-pro",
+        "minimax-m3",
+        "kimi-k2.7-code",
     ]
 
 
-def test_ark_models_route_and_get_verified_agent_capabilities():
+def test_ark_models_route_and_get_verified_agent_capabilities(monkeypatch):
+    from coworker.providers import vision_overrides
     from coworker.providers.router import ProviderRouter
+
+    # 这条锁的是**矩阵内置声明**（文本/agent 模型一律 vision=False），不是用户的视觉声明。
+    # 显式清空「用户声明的视觉模型」层：本机 ~/.deskmate/settings.json 恰好把
+    # ark-agent-plan-cn:doubao-seed-2.1-turbo 声明成了视觉模型，不钉住的话这条断言会随
+    # 开发者的桌面配置飘红（2026-10-02 前正是如此恒红）。路径解析的根因已在
+    # vision_overrides._settings_path() 修掉，这里再钉一层，保证断言不依赖外部状态。
+    monkeypatch.setattr(vision_overrides, "vision_override_ids", lambda: frozenset())
 
     models = (
         "ark:dola-seed-evolving-latest-version",
@@ -553,10 +571,14 @@ def test_matrix_labels_and_custom_model_fallback():
     assert labels["zai:glm-5.2"] == "GLM-5.2 · Z AI"
     # Curated agent-capable models only (owner call, 2026-07-04). The keyless free
     # gateways (OmniRoute / OpenCode) are intentionally tool-less drafting/peer helpers
-    # and are excluded from the "small + every entry supports tools" contract.
+    # and are excluded from the "every entry supports tools" contract.
+    # ⚠ 数量断言是**防无节制膨胀**的护栏，不是"矩阵就只有这么多"的承诺：2026-07-04 定的是
+    # <60，此后陆续接入火山 Agent Plan、腾讯 Token Plan、Bedrock、Vertex 等条目 → 66
+    # （2026-10-02）。顶到阈值时先自问"这个 provider 该不该进矩阵"，再上调阈值并写明日期；
+    # 不要默默删掉这条 —— 逐条锁住的其实是下面那行 all(caps.tools)。
     _free = lambda k: k.split(":", 1)[0] in ("omniroute", "opencode")
     _agentic = {k: e for k, e in MATRIX.items() if not _free(k)}
-    assert len(_agentic) < 60
+    assert len(_agentic) < 80
     assert all(e.caps.tools for e in _agentic.values())
     # A custom (unlisted) reseller model falls back to the conservative default — usable,
     # but at the user's own risk (no parallel tool calls assumed).
