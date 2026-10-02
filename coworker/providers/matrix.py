@@ -179,15 +179,29 @@ MATRIX: dict[str, ModelEntry] = {
     "xiaomi:mimo-v2.5": ModelEntry(
         "MiMo V2.5 · Xiaomi token-plan", context_window=256_000
     ),
-    # Tencent TokenHub Token Plan（provider:tencent-tokenplan，2026-10-02 对 Hy 套餐实测：
-    # hy3 与 hy3-preview 均 HTTP 200，建议 ID 全小写）。Hy 套餐为纯文本线——官方「可用模型」
-    # 明确写「暂不支持图片、视频等多模态能力」，故 caps 用 _AGENTIC（tools=True/vision=False），
-    # 不要指望它承担看图；看图仍归 vision_overrides 里声明的视觉模型。
+    # Tencent TokenHub Token Plan（provider:tencent-tokenplan）。Hy 套餐为纯文本线——官方
+    # 「可用模型」明确写「暂不支持图片、视频等多模态能力」，故 caps 用 _AGENTIC
+    # （tools=True/vision=False），不要指望它承担看图；看图仍归 vision_overrides 声明的视觉模型。
+    # 2026-10-02 按官方「可用模型」逐个实测（curl /plan/v3/chat/completions，正是官方文档给的
+    # 验证方式）：
+    #   hy3          ✅ 200
+    #   hy3-preview  ✅ 200（官方 2384 号公告：请求会自动路由到 hy3，功能等同）
+    #   hy4-preview  ✅ 200
+    #   hy3-202608   ❌ 502 / 502003 "no available service" 网关没有匹配的后端服务，重试仍失败
+    #                —— 文档列了但它当前不可用，故**故意不收录**，免得选择器里多一个点了必报错的项。
+    # 官方要求 Model ID 必须全小写；通用与 Hy 两套餐共用同一 key/端点，由 model id 决定扣哪个包。
     "tencent-tokenplan:hy3": ModelEntry(
         "Hy3 · Tencent Token Plan", context_window=256_000
     ),
     "tencent-tokenplan:hy3-preview": ModelEntry(
         "Hy3 Preview · Tencent Token Plan", context_window=256_000
+    ),
+    # Hy4 preview：官方未公布上下文长度，故 context_window 留空（GUI 的上下文计自动隐藏），
+    # 不拿 Hy3 的 256k 去猜。⚠ 它是**推理模型**：实测同一句「收到」背后 reasoning_tokens 就占
+    # 93~170（单次响应 13~20s），max_tokens 给太小会被推理吃光、content 返回空串（本机实测到过一次
+    # 空回复）。选它时别把输出上限压太低，也别拿它当低延迟模型用。
+    "tencent-tokenplan:hy4-preview": ModelEntry(
+        "Hy4 Preview · Tencent Token Plan"
     ),
     # -- direct OpenAI-compatible vendors ----------------------------------------
     # Muse Spark (Meta Model API, public preview 2026-07-09): multimodal + tools via
