@@ -358,6 +358,110 @@ html[data-theme="dark"][data-skin-pre="summer-beach"] body {
   background: transparent !important;
 }
 /* ===== /海边夏日 ====================================================== */
+
+/* ===== 星空夜晚皮肤 =================================================== */
+:root[data-skin-pre="starry-night"] {
+  --accent: #6366F1;
+  --accent-soft: #E0E7FF;
+  --skin-cream: #EEF2FF;
+  --skin-warm: #818CF8;
+  --skin-glow: rgba(99, 102, 241, 0.30);
+  --skin-shadow: rgba(99, 102, 241, 0.12);
+}
+:root[data-theme="light"][data-skin-pre="starry-night"] {
+  --paper: #EEF2FF;
+  --panel: #FFFFFF;
+  --line: #C7D2FE;
+  --line-strong: #A5B4FC;
+  --ink: #1E1B4B;
+  --muted: #4338CA;
+  --faint: #4F46E5;
+  --solid: #E0E7FF;
+  --on-solid: #1E1B4B;
+  --glass: rgba(238, 242, 255, 0.92);
+  --glass-strong: rgba(238, 242, 255, 0.97);
+  --glass-soft: rgba(238, 242, 255, 0.80);
+}
+html[data-theme="dark"][data-skin-pre="starry-night"] {
+  --accent: #818CF8;
+  --accent-soft: #1E1B4B;
+  --paper: #0F0E24;
+  --panel: #1E1B4B;
+  --line: #312E81;
+  --line-strong: #3730A3;
+  --ink: #C7D2FE;
+  --muted: #6366F1;
+  --faint: #4F46E5;
+  --solid: #312E81;
+  --on-solid: #C7D2FE;
+  --glass: rgba(30, 27, 75, 0.92);
+  --glass-strong: rgba(30, 27, 75, 0.97);
+  --glass-soft: rgba(30, 27, 75, 0.80);
+}
+/* 星空夜晚背景 */
+:root[data-skin-pre="starry-night"] body {
+  background: url("./assets/skins/starry-night/hero.png") bottom center / cover no-repeat fixed !important;
+}
+/* 暗色模式：纯色背景 */
+html[data-theme="dark"][data-skin-pre="starry-night"] body {
+  background: #0F0E24 !important;
+}
+:root[data-skin-pre="starry-night"] .main {
+  background: transparent !important;
+}
+/* ===== /星空夜晚 ====================================================== */
+
+/* ===== 咖啡时光皮肤 =================================================== */
+:root[data-skin-pre="coffee-time"] {
+  --accent: #92400E;
+  --accent-soft: #FEF3C7;
+  --skin-cream: #FFFBEB;
+  --skin-warm: #B45309;
+  --skin-glow: rgba(146, 64, 14, 0.30);
+  --skin-shadow: rgba(146, 64, 14, 0.12);
+}
+:root[data-theme="light"][data-skin-pre="coffee-time"] {
+  --paper: #FFFBEB;
+  --panel: #FFFFFF;
+  --line: #FDE68A;
+  --line-strong: #FCD34D;
+  --ink: #451A03;
+  --muted: #92400E;
+  --faint: #B45309;
+  --solid: #FEF3C7;
+  --on-solid: #451A03;
+  --glass: rgba(255, 251, 235, 0.92);
+  --glass-strong: rgba(255, 251, 235, 0.97);
+  --glass-soft: rgba(255, 251, 235, 0.80);
+}
+html[data-theme="dark"][data-skin-pre="coffee-time"] {
+  --accent: #B45309;
+  --accent-soft: #451A03;
+  --paper: #1C1005;
+  --panel: #291809;
+  --line: #452A12;
+  --line-strong: #78350F;
+  --ink: #FDE68A;
+  --muted: #B45309;
+  --faint: #92400E;
+  --solid: #452A12;
+  --on-solid: #FDE68A;
+  --glass: rgba(41, 24, 9, 0.92);
+  --glass-strong: rgba(41, 24, 9, 0.97);
+  --glass-soft: rgba(41, 24, 9, 0.80);
+}
+/* 咖啡时光背景 */
+:root[data-skin-pre="coffee-time"] body {
+  background: url("./assets/skins/coffee-time/hero.png") bottom center / cover no-repeat fixed !important;
+}
+/* 暗色模式：纯色背景 */
+html[data-theme="dark"][data-skin-pre="coffee-time"] body {
+  background: #1C1005 !important;
+}
+:root[data-skin-pre="coffee-time"] .main {
+  background: transparent !important;
+}
+/* ===== /咖啡时光 ====================================================== */
 /* ===== /皮肤 ======================================================== */
 
 * { box-sizing: border-box; }
