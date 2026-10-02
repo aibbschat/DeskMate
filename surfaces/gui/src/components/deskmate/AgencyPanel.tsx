@@ -9,8 +9,11 @@
 import { useEffect, useState } from "react";
 import {
   getDeskmateAgencyTasks,
+  getScreenObservations,
+  observeCurrentScreen,
   resolveDeskmateAgencyProposal,
   type AgencyTask,
+  type ScreenObservation,
 } from "../../api";
 import xiaojuTyping from "../../assets/xiaoju-busy-typing-transparent.png";
 import xiaojuThinking from "../../assets/xiaoju-busy-thinking-transparent.png";
@@ -47,11 +50,18 @@ export function AgencyPanel() {
   const [tasks, setTasks] = useState<AgencyTask[]>([]);
   const [pending, setPending] = useState<AgencyTask[]>([]);
   const [resolving, setResolving] = useState<string | null>(null);
+  const [screenObservations, setScreenObservations] = useState<ScreenObservation[]>([]);
+  const [observing, setObserving] = useState(false);
+  const [screenError, setScreenError] = useState("");
 
   const load = async () => {
-    const data = await getDeskmateAgencyTasks(20);
+    const [data, observations] = await Promise.all([
+      getDeskmateAgencyTasks(20),
+      getScreenObservations(5),
+    ]);
     setTasks(data.tasks || []);
     setPending(data.pending_proposals || []);
+    setScreenObservations(observations);
   };
 
   useEffect(() => {
@@ -70,7 +80,23 @@ export function AgencyPanel() {
     }
   };
 
+  const observeScreen = async () => {
+    setObserving(true);
+    setScreenError("");
+    try {
+      const result = await observeCurrentScreen();
+      if (result.ok) {
+        setScreenObservations((current) => [result.observation, ...current].slice(0, 5));
+      } else {
+        setScreenError(result.error);
+      }
+    } finally {
+      setObserving(false);
+    }
+  };
+
   const recent = tasks.filter((t) => t.status === "done").slice(0, 6);
+  const hasContent = recent.length > 0 || pending.length > 0 || screenObservations.length > 0;
 
   return (
     <div className="agency-panel" data-testid="agency-panel">
@@ -100,11 +126,23 @@ export function AgencyPanel() {
       <div className="agency-holoscreen">
         <div className="holo-header">
           <span className="holo-title">自主层 · 实时</span>
-          <span className="holo-live">
-            <span className="holo-live-dot" />
-            LIVE
+          <span className="holo-actions">
+            <button
+              type="button"
+              className="holo-btn holo-btn-eye"
+              onClick={() => void observeScreen()}
+              disabled={observing}
+            >
+              {observing ? "正在看…" : "看一眼屏幕"}
+            </button>
+            <span className="holo-live">
+              <span className="holo-live-dot" />
+              LIVE
+            </span>
           </span>
         </div>
+
+        {screenError && <div className="holo-error">{screenError}</div>}
 
         {/* 高风险提议卡（待裁决） */}
         {pending.length > 0 && (
@@ -144,23 +182,44 @@ export function AgencyPanel() {
           </div>
         )}
 
+        {screenObservations.length > 0 && (
+          <section className="holo-screen-feed" data-testid="screen-feed">
+            <h2>她刚看到的屏幕</h2>
+            <ul className="holo-list">
+              {screenObservations.map((obs, idx) => (
+                <li key={`${obs.ts}-${idx}`} className="holo-item holo-item-screen">
+                  <span className="holo-item-dot" />
+                  <span className="holo-item-main">
+                    <span className="holo-item-label">{obs.scene}</span>
+                    {obs.app && <span className="holo-item-topic">{obs.app}</span>}
+                    <span className="holo-item-sum">{obs.activity || obs.attention}</span>
+                  </span>
+                  <span className="holo-item-ts">{fmtTs(obs.ts)}</span>
+                </li>
+              ))}
+            </ul>
+          </section>
+        )}
+
         {/* 最近自主行为 */}
-        {recent.length === 0 && pending.length === 0 ? (
+        {!hasContent ? (
           <div className="holo-empty">小桔暂时在发呆……</div>
         ) : (
-          <ul className="holo-list">
-            {recent.map((t) => (
-              <li key={t.id} className="holo-item">
-                <span className="holo-item-dot" />
-                <span className="holo-item-main">
-                  <span className="holo-item-label">{labelOf(t.action_type)}</span>
-                  {t.topic && <span className="holo-item-topic">{t.topic}</span>}
-                  <span className="holo-item-sum">{t.summary}</span>
-                </span>
-                <span className="holo-item-ts">{fmtTs(t.ts)}</span>
-              </li>
-            ))}
-          </ul>
+          recent.length > 0 && (
+            <ul className="holo-list">
+              {recent.map((t) => (
+                <li key={t.id} className="holo-item">
+                  <span className="holo-item-dot" />
+                  <span className="holo-item-main">
+                    <span className="holo-item-label">{labelOf(t.action_type)}</span>
+                    {t.topic && <span className="holo-item-topic">{t.topic}</span>}
+                    <span className="holo-item-sum">{t.summary}</span>
+                  </span>
+                  <span className="holo-item-ts">{fmtTs(t.ts)}</span>
+                </li>
+              ))}
+            </ul>
+          )
         )}
       </div>
     </div>

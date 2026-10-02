@@ -3133,6 +3133,43 @@ export async function getDeskmateAgencyTasks(limit = 20): Promise<{
   }
 }
 
+export interface ScreenObservation {
+  ts: string;
+  scene: string;
+  app: string;
+  activity: string;
+  attention: string;
+  mood: string;
+  confidence: number;
+  persisted?: boolean;
+}
+
+export async function getScreenObservations(limit = 10): Promise<ScreenObservation[]> {
+  try {
+    const res = await authedFetch(`${httpBase()}/v1/deskmate/perception/screen?limit=${limit}`);
+    if (!res.ok) return [];
+    const data = (await res.json()) as { observations?: ScreenObservation[] };
+    return Array.isArray(data.observations) ? data.observations : [];
+  } catch {
+    return [];
+  }
+}
+
+export async function observeCurrentScreen(): Promise<
+  { ok: true; observation: ScreenObservation } | { ok: false; error: string }
+> {
+  try {
+    const res = await authedFetch(`${httpBase()}/v1/deskmate/perception/screen/observe`, {
+      method: "POST",
+    });
+    const data = await res.json().catch(() => ({ error: "屏幕观察无响应" }));
+    if (!res.ok) return { ok: false, error: data.error || `请求失败（${res.status}）` };
+    return data as { ok: true; observation: ScreenObservation };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : "屏幕观察失败" };
+  }
+}
+
 /** 裁决高风险提议卡。decision: executed | rejected | never */
 export async function resolveDeskmateAgencyProposal(
   id: string,

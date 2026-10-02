@@ -58,9 +58,13 @@ function stubAgencyApi(opts: {
   resolveCalls?: Array<{ id: string; decision: string }>;
   /** resolve 之后下一轮 tasks 返回什么（默认：清空提议卡） */
   afterResolve?: { tasks: unknown[]; pending: unknown[] };
+  observations?: unknown[];
+  observeCalls?: number[];
 }) {
   const tasks = opts.tasks ?? [];
   const pending = opts.pending ?? [];
+  const observations = opts.observations ?? [];
+  const observeCalls = opts.observeCalls ?? [];
   const resolveCalls = opts.resolveCalls ?? [];
   let resolved = false;
 
@@ -73,6 +77,22 @@ function stubAgencyApi(opts: {
           ? { tasks: opts.afterResolve.tasks, pending_proposals: opts.afterResolve.pending }
           : { tasks, pending_proposals: pending };
         return { ok: true, json: async () => body } as Response;
+      }
+      if (u.includes("/perception/screen/observe")) {
+        observeCalls.push(1);
+        const observation = {
+          ts: "2026-10-02T12:00:00",
+          scene: "代码编辑",
+          app: "OpenCode",
+          activity: "正在修改自主层代码",
+          attention: "AgencyPanel",
+          mood: "work",
+          confidence: 0.9,
+        };
+        return { ok: true, json: async () => ({ ok: true, observation }) } as Response;
+      }
+      if (u.includes("/perception/screen")) {
+        return { ok: true, json: async () => ({ observations }) } as Response;
       }
       if (u.includes("/agency/propose/resolve")) {
         const body = JSON.parse(String(init?.body || "{}"));
@@ -138,6 +158,19 @@ describe("AgencyPanel", () => {
     expect(screen.getByText("摄入 3 条新事实")).toBeTruthy();
     // 2026-09-06T11:41:08 → 09-06 11:41
     expect(screen.getByText("09-06 11:41")).toBeTruthy();
+  });
+
+  it("点击看一眼屏幕后展示结构化屏幕观察", async () => {
+    const observeCalls: number[] = [];
+    stubAgencyApi({ observeCalls });
+    render(<AgencyPanel />);
+
+    fireEvent.click(screen.getByRole("button", { name: "看一眼屏幕" }));
+
+    await waitFor(() => expect(observeCalls.length).toBe(1));
+    expect(screen.getByTestId("screen-feed")).toBeTruthy();
+    expect(screen.getByText("代码编辑")).toBeTruthy();
+    expect(screen.getByText("正在修改自主层代码")).toBeTruthy();
   });
 
   it("记忆主体冲突卡显示中文动作名，内部键不得漏给用户", async () => {
