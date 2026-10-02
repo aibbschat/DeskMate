@@ -419,7 +419,13 @@ def test_switch_model_warns_when_images_meet_text_only_model(tmp_path):
     assert "images" in text  # degradation is called out in the marker
 
 
-def test_outbound_replaces_images_for_non_vision_models(tmp_path):
+def test_outbound_replaces_images_for_non_vision_models(tmp_path, monkeypatch):
+    # No vision model configured → composition fallback is unavailable → original
+    # placeholder behavior is preserved (no regression).
+    import coworker.vision_caption as vc
+
+    monkeypatch.setattr(vc, "resolve_vision_provider", lambda: None)
+
     class NoVisionProvider(ScriptedProvider):
         def capabilities(self, model):
             return ModelCapabilities(vision=False)
@@ -438,4 +444,34 @@ def test_outbound_replaces_images_for_non_vision_models(tmp_path):
     parts = engine._outbound_messages()[-1]["content"]
     assert all(p["type"] != "image_url" for p in parts)
     assert "not viewable" in parts[-1]["text"]
+    assert engine.messages[-1]["content"][1]["type"] == "image_url"  # history untouched
+
+
+def test_outbound_captions_images_when_vision_model_configured(tmp_path, monkeypatch):
+    # A vision model IS configured → the non-vision chat model still "sees" the picture
+    # via an injected caption, instead of losing the image.
+    import coworker.vision_caption as vc
+
+    monkeypatch.setattr(vc, "resolve_vision_provider", lambda: ("k", "https://x", "qwen-vl-plus"))
+    monkeypatch.setattr(vc, "_caption_threaded", lambda url, **kw: "一只橘猫趴在草地上")
+
+    class NoVisionProvider(ScriptedProvider):
+        def capabilities(self, model):
+            return ModelCapabilities(vision=False)
+
+    engine, _ = _engine(tmp_path, [_text_turn("ok")])
+    engine.provider = NoVisionProvider([_text_turn("ok")])
+    engine.messages.append(
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "看这张"},
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64,AA=="}},
+            ],
+        }
+    )
+    parts = engine._outbound_messages()[-1]["content"]
+    assert all(p["type"] != "image_url" for p in parts)
+    assert any("附图描述：一只橘猫趴在草地上" in p.get("text", "") for p in parts)
+    assert "not viewable" not in "".join(p.get("text", "") for p in parts)
     assert engine.messages[-1]["content"][1]["type"] == "image_url"  # history untouched

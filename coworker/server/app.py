@@ -3785,6 +3785,40 @@ def create_app(manager: SessionManager) -> FastAPI:
             logging.exception("deskmate agency tasks failed")
             return JSONResponse({"error": "agency tasks failed"}, status_code=500)
 
+    @app.get("/v1/deskmate/perception/screen")
+    async def deskmate_screen_observations(limit: int = 10) -> dict[str, Any]:
+        """最近的屏幕结构化观察（不包含截图本身）。"""
+        import asyncio
+        from pathlib import Path as _P
+
+        from deskmate.perception.screen_vision import list_screen_observations
+
+        desk_dir = _P(
+            os.environ.get("DESKMATE_DIR", os.path.expanduser("~/.deskmate"))
+        )
+        observations = await asyncio.to_thread(
+            lambda: list_screen_observations(desk_dir, limit=max(1, min(50, limit)))
+        )
+        return {"observations": observations}
+
+    @app.post("/v1/deskmate/perception/screen/observe")
+    async def deskmate_observe_screen():
+        """按需捕获当前屏幕并让视觉模型理解；不静默、不保留截图。"""
+        import asyncio
+        from pathlib import Path as _P
+
+        from deskmate.perception.screen_vision import observe_screen
+
+        desk_dir = _P(
+            os.environ.get("DESKMATE_DIR", os.path.expanduser("~/.deskmate"))
+        )
+        try:
+            observation = await asyncio.to_thread(observe_screen, desk_dir)
+            return {"ok": True, "observation": observation}
+        except Exception as e:
+            logging.warning("deskmate screen observation failed: %s", e)
+            return JSONResponse({"ok": False, "error": str(e)}, status_code=422)
+
     @app.post("/v1/deskmate/agency/propose/resolve")
     async def deskmate_agency_propose_resolve(request: Request) -> dict[str, Any]:
         """裁决高风险提议卡。Body: {"id": "...", "decision": "executed"|"rejected"|"never"}"""

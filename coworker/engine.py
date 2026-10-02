@@ -2212,29 +2212,55 @@ class TurnEngine:
         ):
             caps = self.provider.capabilities(self.model)
             if not getattr(caps, "vision", False):
-                placeholder = {
-                    "type": "text",
-                    "text": "[image attachment — not viewable by this model]",
-                }
-                out = [
-                    (
-                        {
-                            **msg,
-                            "content": [
-                                (
-                                    placeholder
-                                    if isinstance(p, dict)
-                                    and p.get("type") == "image_url"
-                                    else p
-                                )
-                                for p in msg["content"]
-                            ],
-                        }
-                        if isinstance(msg.get("content"), list)
-                        else msg
-                    )
-                    for msg in out
-                ]
+                # Composition fallback: if a vision model is configured, route each image
+                # through it and inject a one-line caption, so the (non-vision) chat model
+                # still "sees" the picture via description. Never bound to a specific model —
+                # which vision model is used comes from settings (visionModels / visionModel).
+                from . import vision_caption
+
+                captioned_msgs = []
+                captioned_any = False
+                for msg in out:
+                    if (
+                        isinstance(msg.get("content"), list)
+                        and any(
+                            isinstance(p, dict) and p.get("type") == "image_url"
+                            for p in msg["content"]
+                        )
+                    ):
+                        repl = vision_caption.caption_content(msg["content"])
+                        if repl is not None:
+                            captioned_msgs.append({**msg, "content": repl})
+                            captioned_any = True
+                            continue
+                    captioned_msgs.append(msg)
+
+                if captioned_any:
+                    out = captioned_msgs
+                else:
+                    placeholder = {
+                        "type": "text",
+                        "text": "[image attachment — not viewable by this model]",
+                    }
+                    out = [
+                        (
+                            {
+                                **msg,
+                                "content": [
+                                    (
+                                        placeholder
+                                        if isinstance(p, dict)
+                                        and p.get("type") == "image_url"
+                                        else p
+                                    )
+                                    for p in msg["content"]
+                                ],
+                            }
+                            if isinstance(msg.get("content"), list)
+                            else msg
+                        )
+                        for msg in out
+                    ]
 
         # 小桔表情（仅 deskmate）：把用户消息里的 emote 标记在送进 LLM 前展开为
         # 语义说明，让模型真正「理解」表情含义；不污染持久化消息，UI 仍按原始标记

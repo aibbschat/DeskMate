@@ -6,6 +6,8 @@ either bare model names (`gpt-5.5`) or provider-qualified ones (`openai:gpt-5.5`
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 from .base import ModelCapabilities
 
 
@@ -14,9 +16,15 @@ def capabilities_for(model: str) -> ModelCapabilities:
     # like `together:zai-org/GLM-5.2`, whose names defeat the prefix heuristics below).
     # Custom user-added models fall through to the heuristics, at their own risk.
     from .matrix import entry_for
+    from . import vision_overrides
 
     entry = entry_for(model)
     if entry is not None:
+        # User-declared vision models: promote from the hardcoded False to True, keeping
+        # the curated tools/pdf/parallel flags intact. This is the general "switch to any
+        # vision model → it just works" fix — not bound to any specific provider/model.
+        if model in vision_overrides.vision_override_ids():
+            return replace(entry.caps, vision=True)
         return entry.caps
 
     provider = model.split(":", 1)[0].lower() if ":" in model else ""
@@ -76,6 +84,10 @@ def capabilities_for(model: str) -> ModelCapabilities:
         )
 
     # Conservative default for unknown models.
+    if model in vision_overrides.vision_override_ids():
+        return ModelCapabilities(
+            tools=True, vision=True, parallel_tool_calls=True, streaming=True
+        )
     return ModelCapabilities(
         tools=True, vision=False, parallel_tool_calls=False, streaming=True
     )
