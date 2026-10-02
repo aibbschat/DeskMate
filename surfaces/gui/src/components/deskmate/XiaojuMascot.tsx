@@ -270,12 +270,6 @@ export function XiaojuMascot({
           15% { opacity: 1; }
           100% { opacity: 0; transform: translate(var(--dx), var(--dy)) scale(1.3) rotate(200deg); }
         }
-        /* 雨滴落下 */
-        @keyframes xj-rain-fall {
-          0% { opacity: 0; transform: translateY(-8px) scale(0.8); }
-          20% { opacity: 0.85; }
-          100% { opacity: 0; transform: translateY(36px) scale(1); }
-        }
         /* 火花闪烁 */
         @keyframes xj-spark-flash {
           0%, 100% { opacity: 0; transform: scale(0.4) rotate(0deg); }
@@ -337,11 +331,6 @@ export function XiaojuMascot({
           color: #888;
           line-height: 1;
           animation: xj-dot-blink 1.2s ease-in-out infinite;
-        }
-        .xj-rain-drop {
-          font-size: 12px;
-          animation: xj-rain-fall 1.2s ease-in infinite;
-          opacity: 0.7;
         }
         .xj-spark {
           font-size: 14px;
