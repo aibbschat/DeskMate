@@ -175,6 +175,8 @@ def _build_understand_block(base_dir: str | Path | None) -> str:
     if not path.is_file():
         return ""
     try:
+        from ..agency.behaviors.worldview_reflection import _is_automation_noise
+
         cutoff = time.time() - 7 * 86400  # 只取近 7 天
         blocks: list[str] = []
         with open(path, "r", encoding="utf-8") as f:
@@ -190,7 +192,7 @@ def _build_understand_block(base_dir: str | Path | None) -> str:
                 if ts < cutoff:
                     continue
                 text = str(rec.get("body") or rec.get("understanding") or "").strip()
-                if text:
+                if text and not _is_automation_noise(text):
                     blocks.append(text)
         if not blocks:
             return ""

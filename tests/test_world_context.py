@@ -114,3 +114,30 @@ def test_build_world_context_includes_suffix_marked_observations(tmp_path: Path)
     assert "她观察到的世界" in ctx
     assert "郑钦文晋级美网女单四强" in ctx
     assert "白酒板块今日集体下挫" in ctx
+
+
+def test_build_world_context_filters_automation_dumps_from_understanding(tmp_path: Path):
+    """理解段只回灌她的判断；自动化检索转储不能伪装成世界观材料。"""
+    import json
+    import time
+
+    from deskmate.memory.world_context import build_world_context
+
+    agency = tmp_path / "agency"
+    agency.mkdir(parents=True)
+    now = time.time()
+    records = [
+        {"ts": now - 60, "body": "检索到以下资料：\n- 这是搜索工具转储，不是她的判断。"},
+        {"ts": now - 30, "body": "⏰ Scheduled run — 自主巡检\nThis automation is due now."},
+        {"ts": now - 10, "body": "真正的理解：新闻里的冲突也在暴露人对安全感的需要。"},
+    ]
+    (agency / "observation_understanding.jsonl").write_text(
+        "\n".join(json.dumps(record, ensure_ascii=False) for record in records),
+        encoding="utf-8",
+    )
+
+    ctx = build_world_context(base_dir=tmp_path)
+    assert "她对世界的理解" in ctx
+    assert "真正的理解" in ctx
+    assert "检索到以下资料" not in ctx
+    assert "Scheduled run" not in ctx

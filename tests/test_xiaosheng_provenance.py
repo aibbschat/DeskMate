@@ -37,6 +37,11 @@ def test_is_automation_noise_scheduled_run():
     assert _is_automation_noise("⏰ Scheduled run — AI圈·小桔每日自主巡检\nThis automation is due now") is True
 
 
+def test_is_automation_noise_serialized_search_error():
+    body = '{"error": "web search failed: error sending request for url (https://search.yahoo.com/)"}'
+    assert _is_automation_noise(body) is True
+
+
 def test_is_automation_noise_real_xiaosheng_not_flagged():
     assert _is_automation_noise("萧盛说写东西要慢一点。（内部·萧盛）") is False
     assert _is_automation_noise("小沃那条删不掉的评论出来那天，我正好又翻回萧盛审讯那章的草稿。") is False

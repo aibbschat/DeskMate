@@ -46,6 +46,7 @@ provider 缺失 / 素材不足 / 冷却未过 / LLM 异常 / 写库失败 → �
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -95,6 +96,8 @@ def _is_automation_noise(body: str) -> bool:
     if "⏰ Scheduled run" in b:
         return True
     if "This automation is due now" in b:
+        return True
+    if b.startswith('{"error":') and "web search failed" in b:
         return True
     return False
 
@@ -161,13 +164,26 @@ def _save_json(path: str, data: dict) -> None:
 
 
 def _rec_key(rec: dict) -> str:
-    """一条理解的稳定标识（用于「已消化」去重）。"""
-    date = str(rec.get("date", ""))
+    """一条理解的稳定标识（用于「已消化」去重）。
+
+    旧实现对缺少 date 的记录退回进程内 hash()：自动摄入记录常常没有 date，
+    且 Python hash 每次重启变化，导致 reflected 状态无法跨进程去重。
+    这里统一用内容 sha256；有 ts 时把本地日期并入 key，保留历史 date#seq。
+    """
+    date = str(rec.get("date", "")).strip()
     seq = rec.get("entry_seq")
-    if seq is not None:
+    if date and seq is not None:
         return f"{date}#{seq}"
+
     body = str(rec.get("body") or rec.get("understanding") or "")
-    return f"{date}#{abs(hash(body))}"
+    digest = hashlib.sha256(body.encode("utf-8", errors="ignore")).hexdigest()[:12]
+    if not date:
+        ts_raw = rec.get("ts") or rec.get("timestamp")
+        try:
+            date = time.strftime("%Y-%m-%d", time.localtime(float(ts_raw)))
+        except Exception:
+            date = ""
+    return f"{date}#{digest}" if date else f"nodate#{digest}"
 
 
 def _load_understanding(base_dir: str) -> list[dict]:
@@ -544,7 +560,11 @@ def run_worldview_reflection(base_dir: str,
 
     state = _load_json(_state_path(base_dir))
     reflected_keys = set(state.get("reflected") or [])
-    pending = [r for r in all_recs if _rec_key(r) not in reflected_keys]
+    pending = [
+        r for r in all_recs
+        if _rec_key(r) not in reflected_keys
+        and not _is_automation_noise(str(r.get("body") or r.get("understanding") or ""))
+    ]
 
     if len(pending) < min_obs:
         result["reason"] = f"not_enough:{len(pending)}/{min_obs}"
@@ -563,6 +583,10 @@ def run_worldview_reflection(base_dir: str,
     ext_entries: list[str] = []
     xs_noise = 0
     for b in bodies:
+        # 外部检索转储同样不是她的理解；前面虽已过滤，批次拆分处再守一道。
+        if _is_automation_noise(b):
+            xs_noise += 1
+            continue
         if _XS_PROVENANCE in b:
             _body = b.replace(_XS_PROVENANCE, "").strip()
             # 冒牌「萧盛影响」（自动化检索转储 / 定时任务提示词）不算真·萧盛：

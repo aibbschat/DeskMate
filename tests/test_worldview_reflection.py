@@ -126,6 +126,34 @@ def test_cooldown_blocks_second_reflection(tmp_path, monkeypatch):
     assert second["reason"] == "cooling"
 
 
+def test_rec_key_for_ts_record_is_stable_across_processes():
+    """无 date/seq 的自动摄入记录也必须有跨进程稳定 key。
+
+    旧实现使用 Python 内置 hash()，进程重启后变化，真实 reflected 状态因此
+    无法压住同一批理解，会让 worldview 反复在冷却后被旧素材触发。
+    """
+    rec = {"ts": 1790903578.0, "body": "这是她自己想明白的一件事。"}
+    assert wr._rec_key(rec) == wr._rec_key(dict(rec))
+    assert wr._rec_key(rec).startswith("2026-10-02#")
+
+
+def test_automation_noise_does_not_count_toward_reflection(tmp_path):
+    """检索转储不是她的理解，不能凑够回望素材。"""
+    base = str(tmp_path)
+    path = Path(base) / "agency" / "observation_understanding.jsonl"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    records = [
+        {"ts": time.time(), "body": "检索到以下资料：\n- 自动搜索结果一"},
+        {"ts": time.time() + 1, "body": "⏰ Scheduled run\nThis automation is due now"},
+        {"ts": time.time() + 2, "body": "真正的理解：我开始明白工具和表达之间的边界。"},
+    ]
+    path.write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in records), encoding="utf-8")
+
+    res = wr.run_worldview_reflection(base, {"cooldown_hours": 0})
+    assert res["reflected"] is False
+    assert res["reason"] == "not_enough:1/5"
+
+
 def test_already_digested_not_repeated(tmp_path, monkeypatch):
     """回望过的那批不再被问第二次（免得反复拿同一批事去烦她）。"""
     base = str(tmp_path)
