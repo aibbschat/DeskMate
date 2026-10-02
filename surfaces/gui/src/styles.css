@@ -146,6 +146,218 @@ html[data-theme="dark"][data-skin-pre="xiaoju-orange"] {
   --glass-strong: rgba(32, 26, 21, 0.97);
   --glass-soft: rgba(32, 26, 21, 0.80);
 }
+
+/* ===== 春日草地皮肤（自然治愈系）======================================= */
+:root[data-skin-pre="spring-grass"] {
+  --accent: #6A994E;
+  --accent-soft: #E8F0E0;
+  --skin-cream: #F0F5E8;
+  --skin-warm: #A7C957;
+  --skin-glow: rgba(106, 153, 78, 0.30);
+  --skin-shadow: rgba(106, 153, 78, 0.12);
+}
+
+:root[data-theme="light"][data-skin-pre="spring-grass"] {
+  --paper: #F5F8F0;
+  --panel: #FFFFFF;
+  --line: #E0E8D4;
+  --line-strong: #D0DAC0;
+  --ink: #2D3428;
+  --muted: #5A6352;
+  --faint: #8A9182;
+  --solid: #E8F0E0;
+  --on-solid: #2D3428;
+  --glass: rgba(255, 255, 255, 0.92);
+  --glass-strong: rgba(255, 255, 255, 0.97);
+  --glass-soft: rgba(255, 255, 255, 0.80);
+}
+
+html[data-theme="dark"][data-skin-pre="spring-grass"] {
+  --accent: #8AB86E;
+  --accent-soft: #2A3A20;
+  --paper: #1A1F15;
+  --panel: #242A1C;
+  --line: #353D28;
+  --line-strong: #454F38;
+  --ink: #E0E8D4;
+  --muted: #9AA88A;
+  --faint: #6A7560;
+  --solid: #353D28;
+  --on-solid: #E0E8D4;
+  --glass: rgba(36, 42, 28, 0.92);
+  --glass-strong: rgba(36, 42, 28, 0.97);
+  --glass-soft: rgba(36, 42, 28, 0.80);
+}
+
+/* 春日草地：全窗口背景装饰（主内容区透明，装饰在边缘不挡字） */
+:root[data-skin-pre="spring-grass"] body {
+  background: url("./assets/skins/spring-grass/hero.png") bottom center / cover no-repeat fixed !important;
+}
+/* 暗色模式：纯色背景，不用图片，保证文字清晰 */
+html[data-theme="dark"][data-skin-pre="spring-grass"] body {
+  background: #1A1F15 !important;
+}
+/* 主内容区先完全透明，看完整背景效果 */
+:root[data-skin-pre="spring-grass"] .main {
+  background: transparent !important;
+}
+/* ===== /春日草地 ====================================================== */
+
+/* ===== 秋日枫林皮肤 =================================================== */
+:root[data-skin-pre="autumn-maple"] {
+  --accent: #D97706;
+  --accent-soft: #FED7AA;
+  --skin-cream: #FFF7ED;
+  --skin-warm: #EA580C;
+  --skin-glow: rgba(217, 119, 6, 0.30);
+  --skin-shadow: rgba(217, 119, 6, 0.12);
+}
+:root[data-theme="light"][data-skin-pre="autumn-maple"] {
+  --paper: #FFF7ED;
+  --panel: #FFFFFF;
+  --line: #FED7AA;
+  --line-strong: #FDBA74;
+  --ink: #431407;
+  --muted: #9A3412;
+  --faint: #C2410C;
+  --solid: #FFEDD5;
+  --on-solid: #431407;
+  --glass: rgba(255, 247, 237, 0.92);
+  --glass-strong: rgba(255, 247, 237, 0.97);
+  --glass-soft: rgba(255, 247, 237, 0.80);
+}
+html[data-theme="dark"][data-skin-pre="autumn-maple"] {
+  --accent: #F59E0B;
+  --accent-soft: #431407;
+  --paper: #1C1006;
+  --panel: #291809;
+  --line: #452A12;
+  --line-strong: #7C2D12;
+  --ink: #FED7AA;
+  --muted: #B45309;
+  --faint: #92400E;
+  --solid: #452A12;
+  --on-solid: #FED7AA;
+  --glass: rgba(41, 24, 9, 0.92);
+  --glass-strong: rgba(41, 24, 9, 0.97);
+  --glass-soft: rgba(41, 24, 9, 0.80);
+}
+/* 秋日枫林背景 */
+:root[data-skin-pre="autumn-maple"] body {
+  background: url("./assets/skins/autumn-maple/hero.png") bottom center / cover no-repeat fixed !important;
+}
+/* 暗色模式：纯色背景 */
+html[data-theme="dark"][data-skin-pre="autumn-maple"] body {
+  background: #1C1006 !important;
+}
+:root[data-skin-pre="autumn-maple"] .main {
+  background: transparent !important;
+}
+/* ===== /秋日枫林 ====================================================== */
+
+/* ===== 樱花春日皮肤 =================================================== */
+:root[data-skin-pre="cherry-blossom"] {
+  --accent: #EC4899;
+  --accent-soft: #FCE7F3;
+  --skin-cream: #FDF2F8;
+  --skin-warm: #F472B6;
+  --skin-glow: rgba(236, 72, 153, 0.30);
+  --skin-shadow: rgba(236, 72, 153, 0.12);
+}
+:root[data-theme="light"][data-skin-pre="cherry-blossom"] {
+  --paper: #FDF2F8;
+  --panel: #FFFFFF;
+  --line: #FBCFE8;
+  --line-strong: #F9A8D4;
+  --ink: #500724;
+  --muted: #BE185D;
+  --faint: #DB2777;
+  --solid: #FCE7F3;
+  --on-solid: #500724;
+  --glass: rgba(253, 242, 248, 0.92);
+  --glass-strong: rgba(253, 242, 248, 0.97);
+  --glass-soft: rgba(253, 242, 248, 0.80);
+}
+html[data-theme="dark"][data-skin-pre="cherry-blossom"] {
+  --accent: #F472B6;
+  --accent-soft: #500724;
+  --paper: #1F0A14;
+  --panel: #2E1020;
+  --line: #4A1932;
+  --line-strong: #831843;
+  --ink: #FBCFE8;
+  --muted: #EC4899;
+  --faint: #DB2777;
+  --solid: #4A1932;
+  --on-solid: #FBCFE8;
+  --glass: rgba(46, 16, 32, 0.92);
+  --glass-strong: rgba(46, 16, 32, 0.97);
+  --glass-soft: rgba(46, 16, 32, 0.80);
+}
+/* 樱花春日背景 */
+:root[data-skin-pre="cherry-blossom"] body {
+  background: url("./assets/skins/cherry-blossom/hero.png") bottom center / cover no-repeat fixed !important;
+}
+/* 暗色模式：纯色背景 */
+html[data-theme="dark"][data-skin-pre="cherry-blossom"] body {
+  background: #1F0A14 !important;
+}
+:root[data-skin-pre="cherry-blossom"] .main {
+  background: transparent !important;
+}
+/* ===== /樱花春日 ====================================================== */
+
+/* ===== 海边夏日皮肤 =================================================== */
+:root[data-skin-pre="summer-beach"] {
+  --accent: #0EA5E9;
+  --accent-soft: #E0F2FE;
+  --skin-cream: #F0F9FF;
+  --skin-warm: #38BDF8;
+  --skin-glow: rgba(14, 165, 233, 0.30);
+  --skin-shadow: rgba(14, 165, 233, 0.12);
+}
+:root[data-theme="light"][data-skin-pre="summer-beach"] {
+  --paper: #F0F9FF;
+  --panel: #FFFFFF;
+  --line: #BAE6FD;
+  --line-strong: #7DD3FC;
+  --ink: #082F49;
+  --muted: #0369A1;
+  --faint: #0284C7;
+  --solid: #E0F2FE;
+  --on-solid: #082F49;
+  --glass: rgba(240, 249, 255, 0.92);
+  --glass-strong: rgba(240, 249, 255, 0.97);
+  --glass-soft: rgba(240, 249, 255, 0.80);
+}
+html[data-theme="dark"][data-skin-pre="summer-beach"] {
+  --accent: #38BDF8;
+  --accent-soft: #082F49;
+  --paper: #04141F;
+  --panel: #0A2538;
+  --line: #0C4A6E;
+  --line-strong: #075985;
+  --ink: #BAE6FD;
+  --muted: #0EA5E9;
+  --faint: #0284C7;
+  --solid: #0C4A6E;
+  --on-solid: #BAE6FD;
+  --glass: rgba(10, 37, 56, 0.92);
+  --glass-strong: rgba(10, 37, 56, 0.97);
+  --glass-soft: rgba(10, 37, 56, 0.80);
+}
+/* 海边夏日背景 */
+:root[data-skin-pre="summer-beach"] body {
+  background: url("./assets/skins/summer-beach/hero.png") bottom center / cover no-repeat fixed !important;
+}
+/* 暗色模式：纯色背景 */
+html[data-theme="dark"][data-skin-pre="summer-beach"] body {
+  background: #04141F !important;
+}
+:root[data-skin-pre="summer-beach"] .main {
+  background: transparent !important;
+}
+/* ===== /海边夏日 ====================================================== */
 /* ===== /皮肤 ======================================================== */
 
 * { box-sizing: border-box; }
@@ -5085,6 +5297,57 @@ html[data-theme="dark"] .creation-preview-article a {
   letter-spacing: 0.06em;
   text-shadow: 0 0 8px rgba(95, 212, 255, 0.4);
 }
+.holo-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.holo-btn-eye {
+  color: #8ee8ff;
+  border-color: rgba(95, 212, 255, 0.42);
+  background: rgba(30, 90, 130, 0.22);
+}
+
+.holo-btn-eye:hover {
+  background: rgba(45, 135, 190, 0.32);
+}
+
+.holo-error {
+  margin: 0 0 8px;
+  padding: 7px 9px;
+  border: 1px solid rgba(255, 107, 107, 0.35);
+  border-radius: 7px;
+  background: rgba(255, 90, 90, 0.08);
+  color: #ff9a9a;
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+
+.holo-screen-feed {
+  margin: 0 0 8px;
+  padding: 8px 9px;
+  border: 1px solid rgba(95, 212, 255, 0.22);
+  border-radius: 9px;
+  background: rgba(40, 120, 170, 0.08);
+}
+
+.holo-screen-feed h2 {
+  margin: 0 0 5px;
+  color: #9ee8ff;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+}
+
+.holo-screen-feed .holo-list {
+  max-height: 128px;
+}
+
+.holo-item-screen .holo-item-dot {
+  background: #8effff;
+  box-shadow: 0 0 5px rgba(142, 255, 255, 0.65);
+}
+
 .holo-live {
   display: flex;
   align-items: center;
