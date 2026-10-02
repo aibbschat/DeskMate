@@ -368,19 +368,40 @@ html[data-theme="dark"][data-skin-pre="summer-beach"] body {
   --skin-glow: rgba(99, 102, 241, 0.30);
   --skin-shadow: rgba(99, 102, 241, 0.12);
 }
+/* 这套皮肤的底图是一整张深色夜空，所以**浅色主题下也用深色表面**：
+   若沿用浅色调色板（--paper #EEF2FF / --ink #1E1B4B），聊天区的正文就是深藏青压在
+   深蓝底图上 —— 实测对比度只有 1.7:1（正文几乎看不见，背景图一深就毁）。
+   注意：只把文字改浅不够用 —— 聊天区里的工具输出块(.bg-paper)、审批卡(.bg-panel)
+   底仍是浅色，浅字压浅底会变成另一种看不见。故整档表面色一并转深。
+   深色一档（html[data-theme="dark"]…，见下）保持不变。 */
 :root[data-theme="light"][data-skin-pre="starry-night"] {
-  --paper: #EEF2FF;
-  --panel: #FFFFFF;
-  --line: #C7D2FE;
-  --line-strong: #A5B4FC;
-  --ink: #1E1B4B;
-  --muted: #4338CA;
-  --faint: #4F46E5;
-  --solid: #E0E7FF;
-  --on-solid: #1E1B4B;
-  --glass: rgba(238, 242, 255, 0.92);
-  --glass-strong: rgba(238, 242, 255, 0.97);
-  --glass-soft: rgba(238, 242, 255, 0.80);
+  --accent: #ADB7FF;
+  --accent-soft: #262B5C;
+  --paper: #12132C;
+  --panel: #1C1E42;
+  --line: #303466;
+  --line-strong: #424884;
+  --ink: #E6EAFF;
+  --muted: #B8C1F2;
+  --faint: #AAB3E8;
+  --solid: #2B3169;
+  --on-solid: #E6EAFF;
+  --glass: rgba(18, 19, 44, 0.90);
+  --glass-strong: rgba(18, 19, 44, 0.96);
+  --glass-soft: rgba(18, 19, 44, 0.80);
+  /* 语义色同样要转深底浅字：浅色主题下的 --ok/--danger/--teal-ink/--warn-ink 都是
+     深色（#2f7d57/#b91c1c/#0f766e/#b45309），画在深色底图上一样读不出。 */
+  --ok: #6FD3A0;
+  --ok-soft: #16301F;
+  --ok-line: #2C4736;
+  --ok-dot: #4DAC72;
+  --danger: #F79C95;
+  --danger-soft: #3A1F1E;
+  --teal-ink: #5FD3C4;
+  --teal-soft: #123A36;
+  --teal-line: #245049;
+  --warn-ink: #F2C36B;
+  --warn-soft: #3A2A0C;
 }
 html[data-theme="dark"][data-skin-pre="starry-night"] {
   --accent: #818CF8;
