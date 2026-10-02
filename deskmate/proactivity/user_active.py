@@ -28,11 +28,29 @@ class ActivityState:
 # 空闲阈值（秒）
 _IDLE_THRESHOLD_SECONDS = 300  # 5 分钟
 
-# 忙碌应用关键词（会议、通话类）
-_BUSY_APP_KEYWORDS = {
-    "zoom", "teams", "meet", "slack call", "discord",
-    "facetime", "skype", "webex", "ringcentral",
-    "腾讯会议", "飞书会议", "钉钉",
+# 忙碌判定（会议/通话类）—— 收紧，避免普通网页标题误伤。
+# 1) 原生会议/通话 App：按「前端应用名」精确匹配（最可靠）。
+#    注意：Slack / Discord 是即时通讯（不总是会议），从本集合移除，
+#    仅当标题出现明确通话特征时才判忙碌（见下方标题特征），避免「只是看消息」就被判忙碌。
+_MEETING_APP_NAMES = {
+    "zoom", "zoom.us", "microsoft teams", "teams",
+    "google meet", "facetime", "skype", "webex", "ringcentral",
+    "腾讯会议", "飞书", "钉钉",
+}
+
+# 2) 浏览器内的会议网页：仅当窗口标题命中「较完整的会议特征短语」才判忙碌，
+#    不再用 "meet"/"teams" 这种短词子串匹配（普通页面标题很容易带这些词）。
+_MEETING_TITLE_MARKERS = (
+    "google meet", "腾讯会议", "zoom meeting", "zoom 会议",
+    "· microsoft teams", "microsoft teams meeting",
+    "| teams", "- teams", " · meet", "meet ·",
+    "语音通话", "视频会议", "slack huddle", "discord |",
+)
+
+# 常见浏览器（仅这些 App 才用上面的标题特征判定，普通 App 不按标题判）
+_BROWSER_APP_NAMES = {
+    "google chrome", "safari", "microsoft edge", "firefox",
+    "arc", "brave browser", "opera",
 }
 
 
@@ -54,9 +72,27 @@ def get_system_idle_seconds() -> int:
 
 
 def _is_meeting_app(app_name: str, window_title: str) -> bool:
-    """检测当前是否在会议/通话应用中。"""
-    combined = f"{app_name} {window_title}".lower()
-    return any(kw in combined for kw in _BUSY_APP_KEYWORDS)
+    """检测当前是否在会议/通话应用中（收紧，减少误判）。
+
+    判定优先级：
+    1. 前端应用本身就是已知会议/通话 App（按应用名精确匹配）→ 直接判忙碌，最可靠。
+    2. 前端是浏览器，且窗口标题命中较完整的会议特征短语 → 判忙碌
+       （避免普通网页标题里碰巧带 "meet"/"teams" 等短词而误判）。
+    3. 其余（普通 App、普通网页/文档）→ 不判忙碌。
+    """
+    app = (app_name or "").strip().lower()
+    title = (window_title or "").strip().lower()
+
+    # 1) 原生会议 App
+    if app in _MEETING_APP_NAMES:
+        return True
+
+    # 2) 浏览器内的会议网页：仅当标题命中完整会议特征短语
+    if app in _BROWSER_APP_NAMES:
+        return any(marker in title for marker in _MEETING_TITLE_MARKERS)
+
+    # 非浏览器、又不是已知会议 App → 不算忙碌
+    return False
 
 
 def detect_user_activity(

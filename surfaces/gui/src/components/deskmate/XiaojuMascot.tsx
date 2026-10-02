@@ -87,28 +87,27 @@ function ThinkingBubble({ size }: { size: number }) {
   );
 }
 
-/** 沮丧：头顶雨滴 */
-function SadRain({ size }: { size: number }) {
-  const drops = [
-    { left: 0.38, delay: 0, dur: 1.2 },
-    { left: 0.48, delay: 0.3, dur: 1.4 },
-    { left: 0.58, delay: 0.6, dur: 1.1 },
-    { left: 0.44, delay: 0.9, dur: 1.3 },
+/** 关注（你忙碌时）：轻柔上浮的小爱心，安静陪伴、不打扰 */
+function CareHearts({ size }: { size: number }) {
+  const items = [
+    { left: 0.40, top: 0.30, delay: 0, dur: 2.6 },
+    { left: 0.55, top: 0.22, delay: 0.7, dur: 3.0 },
+    { left: 0.48, top: 0.38, delay: 1.3, dur: 2.8 },
   ];
   return (
     <>
-      {drops.map((d, i) => (
+      {items.map((p, i) => (
         <span
           key={i}
-          className="xj-particle xj-rain-drop"
+          className="xj-particle xj-care-heart"
           style={{
-            left: `${size * d.left}px`,
-            top: `${size * 0.05}px`,
-            animationDelay: `${d.delay}s`,
-            animationDuration: `${d.dur}s`,
+            left: `${size * p.left}px`,
+            top: `${size * p.top}px`,
+            animationDelay: `${p.delay}s`,
+            animationDuration: `${p.dur}s`,
           }}
         >
-          💧
+          ♡
         </span>
       ))}
     </>
@@ -249,10 +248,10 @@ export function XiaojuMascot({
           65% { transform: translateY(-8px) scale(1.03) rotate(-3deg); }
           80% { transform: translateY(0) scale(1) rotate(2deg); }
         }
-        /* 沮丧：低头 + 垂肩（压缩Y） */
+        /* 关注：轻轻微倾、柔和陪伴（不再低头垂肩显得丧气） */
         @keyframes xj-sad {
-          0%, 100% { transform: translateY(5px) scale(0.95, 1.04) rotate(-4deg); }
-          50% { transform: translateY(7px) scale(0.93, 1.06) rotate(-5deg); }
+          0%, 100% { transform: translateY(2px) scale(0.99, 1.01) rotate(-1.5deg); }
+          50% { transform: translateY(3px) scale(0.98, 1.02) rotate(-2.5deg); }
         }
         /* 专注：前倾 + 小点头 */
         @keyframes xj-focused {
@@ -350,12 +349,24 @@ export function XiaojuMascot({
           text-shadow: 0 0 8px rgba(255, 184, 77, 0.8);
           animation: xj-spark-flash 0.9s ease-in-out infinite;
         }
+        /* 关注：轻柔上浮的小爱心（暖色、缓慢、幅度小，表达安静陪伴） */
+        @keyframes xj-care-float {
+          0% { opacity: 0; transform: translate(0, 4px) scale(0.5); }
+          25% { opacity: 0.9; }
+          100% { opacity: 0; transform: translate(-3px, -22px) scale(1.1); }
+        }
+        .xj-care-heart {
+          font-size: 13px;
+          color: #ff8fa3;
+          text-shadow: 0 0 8px rgba(255, 143, 163, 0.5);
+          animation: xj-care-float 2.8s ease-out infinite;
+        }
       `}</style>
 
       {/* 情绪粒子层 */}
       {emotion === "happy" && <HappyParticles size={size} />}
       {emotion === "thinking" && <ThinkingBubble size={size} />}
-      {emotion === "concerned" && <SadRain size={size} />}
+      {emotion === "concerned" && <CareHearts size={size} />}
       {emotion === "focused" && <FocusedSparks size={size} />}
 
       {/* 角色层 */}
