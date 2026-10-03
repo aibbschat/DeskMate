@@ -293,7 +293,12 @@ class SQLiteOplogStore(_ShortConnMixin):
                 ),
             )
             c.commit()
-            return cur.lastrowid
+            seq = cur.lastrowid
+            # 回填真实 seq，使调用方在 append 后直接读 op.seq 与内存版/对端 apply 行为一致。
+            # 二蛋 2026-10-03 指出：原未回填 → append 后读 op.seq 出现
+            # SQLite→None / 内存→本端 seq / 远端 apply→对端 seq 三态不一致。
+            op.seq = seq
+            return seq
 
     def since(self, after_seq: int) -> list:
         with self._connect() as c:

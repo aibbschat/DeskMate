@@ -334,3 +334,32 @@ def test_sqlite_oplog_since_carries_seq_and_cursor_uses_max(pair):
     assert res2["pulled"] == 1, res2
     assert res2["pull_after_seq"] == 7, res2
     c.close()
+
+
+def test_sqlite_oplog_append_backfills_seq():
+    """二蛋 2026-10-03 一致性缺陷：SQLiteOplogStore.append 原未回填 op.seq，
+    导致「append 后直接读 op.seq」出现 SQLite→None / 内存→本端seq / 远端apply→对端seq
+    三态不一致。修复后 append 须回填真实 seq，与内存 OplogStore.append 行为对齐。"""
+    d = tempfile.mkdtemp(prefix="pt_sync_append_seq_")
+    db = os.path.join(d, "a.db")
+    c = sqlite3.connect(db)
+    c.execute(CREATE)
+    c.commit()
+    migrate(c, "mac")
+    oplog = SQLiteOplogStore(c)
+
+    op1 = Op("profile_items", new_uuid(), "upsert", HLC(1000, 0, "mac"), {"v": 1})
+    assert op1.seq is None, "前置：未落库前 seq 应为 None"
+    ret1 = oplog.append(op1)
+    # 回填：调用方在 append 后直接读 op.seq 应得到与内存版一致的本端真实 seq
+    assert op1.seq == ret1, f"append 应回填 op.seq={ret1}，实得 {op1.seq}"
+    assert isinstance(op1.seq, int) and op1.seq > 0
+
+    op2 = Op("profile_items", new_uuid(), "upsert", HLC(1001, 0, "mac"), {"v": 2})
+    ret2 = oplog.append(op2)
+    assert op2.seq == ret2
+    assert op2.seq > op1.seq, "第二条 seq 应严格大于第一条"
+    # 旧 op 对象的 seq 不应被后续 append 污染
+    assert op1.seq < op2.seq
+    c.close()
+
