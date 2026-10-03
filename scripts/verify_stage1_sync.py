@@ -14,7 +14,7 @@
   - Mac 活库 profile_items: 92 / null_uuid=0 / distinct=92 / null_hlc=0 / tomb=0
   - 云端真库 profile_items: 同上（双独立终验已证）
   - 两端 sync_uuid 集合差集为空
-  - 同步单测 30/30 绿
+  - 同步单测 35/35 绿
   - origin/main 未碰（仍为 074ad3f）
   - 冷备 deskmate.db.pre_sync_20261003_184453 存在可回滚
 """
@@ -35,6 +35,7 @@ COLD_BACKUP = "/var/lib/openworker/.deskmate/deskmate.db.pre_sync_20261003_18445
 ORIGIN_EXPECT = "074ad3f7165cde3fcc2dcbfb8c5a2a0b20116b3f"
 
 TEST_FILES = [
+    "tests/test_sync_daemon_runner.py",
     "tests/test_sync_store_threaded.py",
     "tests/test_sync_transport.py",
     "tests/test_sync_daemon.py",
