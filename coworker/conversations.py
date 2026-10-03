@@ -12,12 +12,26 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sqlite3
 import threading
 from pathlib import Path
 from typing import Optional
 
 from .sessions import SessionRecord
+
+# A session id becomes a filename (`<id>.jsonl`) and a scratch dir name, so it must be a
+# single, benign path component. Every legitimate id is hex (uuid4().hex or its prefix)
+# or a `__run__`/`__task__`-prefixed hex string, so this charset is a superset of what we
+# generate; it excludes the path separators and dots (`/`, `\`, `..`) a client-supplied id
+# would need to escape the store. Session ids arrive from client-controlled surfaces (the
+# /ws/session/{id} route, REST paths), so without this an id like `../../evil` writes
+# `<base>/evil.jsonl` outside `conversations/`.
+_SAFE_SESSION_ID = re.compile(r"\A[A-Za-z0-9_-]{1,128}\Z")
+
+
+def is_safe_session_id(sid: str) -> bool:
+    return bool(isinstance(sid, str) and _SAFE_SESSION_ID.match(sid))
 
 
 def _load_roots(raw: Optional[str]) -> list[dict]:
@@ -111,7 +125,15 @@ class ConversationStore:
 
     # -- file helpers -----------------------------------------------------------
     def _file(self, sid: str) -> Path:
-        return self.conv_dir / f"{sid}.jsonl"
+        # Single chokepoint for every conversation-file path. Reject ids that aren't a
+        # safe path component, then confirm the resolved path stays inside conv_dir — so
+        # a crafted id can never read or clobber a file outside the store.
+        if not is_safe_session_id(sid):
+            raise ValueError(f"unsafe session id: {sid!r}")
+        path = (self.conv_dir / f"{sid}.jsonl").resolve()
+        if path.parent != self.conv_dir.resolve():
+            raise ValueError(f"unsafe session id: {sid!r}")
+        return path
 
     def _read_jsonl(self, sid: str) -> Optional[list[dict]]:
         path = self._file(sid)
@@ -143,6 +165,95 @@ class ConversationStore:
         # 更新缓存
         self._message_cache[sid] = (mtime, out)
         return out
+
+    # -- tool-call/result pairing repair ---------------------------------------
+    @staticmethod
+    def _repair_tool_pairing(messages: list[dict]) -> list[dict]:
+        """Reorder messages so every tool result immediately follows its call.
+
+        Append-only persistence means an interrupted turn can leave a user
+        message between an assistant ``tool_calls`` block and the matching
+        ``tool`` result. Providers reject this ordering (Anthropic 400/2013,
+        OpenAI "tool_call_ids did not have response messages"), making the
+        session permanently unrecoverable.
+
+        This pass:
+        * Moves a real ``tool`` result found later in the thread to sit right
+          after its call.
+        * Synthesises a placeholder result for a call with no matching tool
+          message, so the replay is well-formed.
+        * Is idempotent — a well-formed thread passes through unchanged.
+        """
+        if not messages:
+            return messages
+
+        # Collect tool_call ids from assistant messages.
+        pending_calls: dict[str, int] = {}  # call_id → index of the assistant msg
+        for i, m in enumerate(messages):
+            if m.get("role") == "assistant" and m.get("tool_calls"):
+                for tc in m["tool_calls"]:
+                    call_id = tc.get("id")
+                    if call_id:
+                        pending_calls[call_id] = i
+
+        if not pending_calls:
+            return messages  # no tool calls at all
+
+        # Find tool results and where they sit relative to their calls.
+        # call_id → index of the tool result message (if found)
+        found_results: dict[str, int] = {}
+        for i, m in enumerate(messages):
+            if m.get("role") == "tool":
+                call_id = m.get("tool_call_id")
+                if call_id and call_id in pending_calls:
+                    # Only keep the first result for each call.
+                    if call_id not in found_results:
+                        found_results[call_id] = i
+
+        # A result that already immediately follows the assistant message is
+        # fine. We only act when a result is missing or out of order.
+        needs_repair = False
+        for call_id, call_idx in pending_calls.items():
+            if call_id in found_results:
+                if found_results[call_id] != call_idx + 1:
+                    needs_repair = True  # result exists but not immediately after
+            else:
+                needs_repair = True  # no result at all
+        if not needs_repair:
+            return messages  # already well-formed
+
+        # Build the repaired list. After each assistant message we emit its
+        # tool results (moved from their original position, or synthesised when
+        # missing); the moved messages are skipped at their old position.
+        consumed_result_indices: set[int] = set()
+        repaired: list[dict] = []
+
+        for i, m in enumerate(messages):
+            if m.get("role") == "assistant" and m.get("tool_calls"):
+                repaired.append(m)
+                # Emit a result for each tool call in this block, in order.
+                for tc in m["tool_calls"]:
+                    call_id = tc.get("id")
+                    if not call_id:
+                        continue
+                    if call_id in found_results:
+                        result_idx = found_results[call_id]
+                        if result_idx not in consumed_result_indices:
+                            repaired.append(messages[result_idx])
+                            consumed_result_indices.add(result_idx)
+                    else:
+                        # Synthesise a placeholder so the thread is well-formed.
+                        repaired.append({
+                            "role": "tool",
+                            "tool_call_id": call_id,
+                            "content": '{"error": "tool result was lost during an interrupted turn"}',
+                        })
+            elif i in consumed_result_indices:
+                continue  # already moved this tool result up
+            else:
+                repaired.append(m)
+
+        return repaired
 
     def _count(self, sid: str) -> int:
         path = self._file(sid)
@@ -274,6 +385,10 @@ class ConversationStore:
                 messages = json.loads(row["messages"] or "[]")
             except json.JSONDecodeError:
                 messages = []
+        # Self-heal: ensure every tool result immediately follows its call. An
+        # interrupted turn can persist a user message between an assistant
+        # tool_calls block and its tool result, which providers reject (400).
+        messages = self._repair_tool_pairing(messages)
         return SessionRecord(
             session_id=session_id,
             workspace=row["workspace"],
