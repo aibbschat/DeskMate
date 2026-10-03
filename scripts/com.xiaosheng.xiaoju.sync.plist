@@ -8,7 +8,7 @@
 
     <key>ProgramArguments</key>
     <array>
-        <string>/usr/bin/python3</string>
+        <string>/Users/xiaocheng/workspace/openworker/.venv/bin/python</string>
         <string>/Users/xiaocheng/workspace/openworker/scripts/sync_daemon_runner.py</string>
         <string>--side</string>
         <string>mac</string>
