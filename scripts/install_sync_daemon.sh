@@ -126,7 +126,16 @@ sudo systemctl daemon-reload
 # 绝不与 openworker-server 同跑
 sudo systemctl stop openworker-server.service 2>/dev/null || true
 sudo systemctl disable openworker-server.service 2>/dev/null || true
-sudo systemctl enable --now xiaoju-sync.service
+# enable 保证开机自启；注意 enable --now 对已 active 的服务是 no-op、不会重启，
+# 故必须显式 restart（或首次 start）才能让新部署的 sync 包代码真正生效。
+sudo systemctl enable xiaoju-sync.service
+if systemctl is-active --quiet xiaoju-sync.service; then
+    sudo systemctl restart xiaoju-sync.service
+    echo "↻ 已运行服务已重启以加载新代码"
+else
+    sudo systemctl start xiaoju-sync.service
+    echo "▶ 首次启动服务"
+fi
 sleep 2
 if systemctl is-active --quiet xiaoju-sync.service; then
     echo "✅ 云端常驻同步 daemon 已启用并运行"

@@ -183,7 +183,9 @@ class SshTunnel:
         remote_bind: str = "127.0.0.1",  # 安全红线：远端绑定地址只绑回环，绝不 0.0.0.0
         remote_bind_port: int = 8765,  # 反隧道在云端绑定的回环端口；runner 显式设 18765 以避开云端 server 已占的 8765
         identity_file: Optional[str] = None,
-        server_alive_interval: int = 30,
+        # 保活间隔必须短于中间网络/NAT 的空闲超时（实测萧哥侧约 15s 即踢空闲连接），
+        # 故默认 10s 发保活、3 次无响应(30s)才判定断链，避免隧道反复秒断重拨。
+        server_alive_interval: int = 10,
         server_alive_count_max: int = 3,
     ) -> None:
         self.host = host

@@ -114,7 +114,10 @@ def test_ssh_tunnel_args_are_secure_and_dial_out_only():
     # 出网会话属性：只拨出、断线即退、需鉴权目标
     assert "-N" in args
     assert "ExitOnForwardFailure=yes" in line
-    assert "ServerAliveInterval=30" in line
+    # 保活间隔须短于中间 NAT/网络的空闲超时（萧哥侧约 15s 即踢空闲连接），
+    # 故默认 10s 发保活、3 次无响应(30s)才判定断链，避免隧道反复秒断重拨。
+    assert "ServerAliveInterval=10" in line
+    assert "ServerAliveCountMax=3" in line
     assert args[-1] == "xiaoju@81.69.163.170"
 
 
