@@ -12,8 +12,9 @@
 本骨架只实现「同步协议核心 + 可测逻辑」，**不碰任何生产库**：
 - 不 import 真实 ``~/.deskmate`` / ``deskmate.db`` / ``BlobStore``；
 - 用内存 dict 模拟本地 store、用 ``InMemoryTransport`` 模拟对端；
-- 真实 DB adapter（接 B 类表、补 ``uuid``/``hlc``/``tombstone`` 列后）与 SSH
-  隧道 transport 留 TODO，待阶段 1 在 `.backup()` 冷备前提下落地。
+- 真实 DB adapter 已在 ``sync_store_sqlite.py`` 落地（阶段 1）；
+- SSH 反隧道 transport / HTTP oplog 端点 / 游标持久化已在 ``sync_transport.py``
+  落地（阶段 1 第②项 + 第③项配套），``SyncDaemon`` 经 ``cursor`` 参数接入。
 
 核心零件（对应草案 §6）：
 1. 全局身份：每个记录一个 ``record_id``（UUIDv7 或确定性 uuid）
@@ -101,6 +102,7 @@ class Op:
     hlc: HLC
     payload: dict = field(default_factory=dict)  # 明文业务字段
     tombstone: bool = False  # delete 时为 True
+    origin: Optional[str] = None  # 产生该变更的节点 id（消除回声，见 SyncEngine/SyncDaemon）
 
     def to_json(self) -> str:
         return json.dumps(
@@ -111,14 +113,14 @@ class Op:
                 "hlc": self.hlc.to_str(),
                 "payload": self.payload,
                 "tombstone": self.tombstone,
+                "origin": self.origin,
             },
             ensure_ascii=False,
             sort_keys=True,
         )
 
     @classmethod
-    def from_json(cls, s: str) -> "Op":
-        d = json.loads(s)
+    def from_obj(cls, d: dict) -> "Op":
         return cls(
             table=d["table"],
             record_id=d["record_id"],
@@ -126,7 +128,14 @@ class Op:
             hlc=HLC.from_str(d["hlc"]),
             payload=d.get("payload", {}) or {},
             tombstone=bool(d.get("tombstone", False)),
+            origin=d.get("origin"),
         )
+
+    @classmethod
+    def from_json(cls, s) -> "Op":
+        """兼容字符串（旧调用）与已解析 dict（HTTP 数组元素是对象，非字符串）。"""
+        d = json.loads(s) if isinstance(s, (str, bytes, bytearray)) else s
+        return cls.from_obj(d)
 
 
 # ---------------------------------------------------------------------------
@@ -238,14 +247,14 @@ class SyncEngine:
         hlc = HLC.now(self.node, self._last)
         self._last = hlc
         self.store.upsert(record_id, data, hlc, valid_until)
-        self.oplog.append(Op(table, record_id, "upsert", hlc, dict(data)))
+        self.oplog.append(Op(table, record_id, "upsert", hlc, dict(data), origin=self.node))
         return hlc
 
     def local_delete(self, table: str, record_id: str) -> HLC:
         hlc = HLC.now(self.node, self._last)
         self._last = hlc
         self.store.delete(record_id, hlc)
-        self.oplog.append(Op(table, record_id, "delete", hlc, tombstone=True))
+        self.oplog.append(Op(table, record_id, "delete", hlc, tombstone=True, origin=self.node))
         return hlc
 
     # ---- 远端事件应用（LWW 收敛） ----
@@ -254,6 +263,10 @@ class SyncEngine:
             self._apply_one(op)
 
     def _apply_one(self, op: Op) -> None:
+        # 回声防护：本节点产生的事件经对端转发回来，直接跳过（自己本来就有）。
+        # origin 为 None 的旧/存量事件不拦截，保持兼容。
+        if op.origin is not None and op.origin == self.node:
+            return
         existing = self.store.get(op.record_id)
         # 幂等：本端已有同 HLC 的该记录 → 跳过
         if existing is not None and existing.hlc == op.hlc:
@@ -293,7 +306,7 @@ class SyncEngine:
 
 
 # ---------------------------------------------------------------------------
-# 6. 传输层抽象（拓扑无关；SSH 反隧道实现留 TODO）
+# 6. 传输层抽象（拓扑无关；SSH 反隧道实现见 sync_transport.py）
 # ---------------------------------------------------------------------------
 
 
@@ -331,34 +344,72 @@ class InMemoryTransport(Transport):
 
 
 class SyncDaemon:
-    """一轮同步：拉对端增量 → 应用；推本端增量 → 对端。更新游标。"""
+    """一轮同步：拉对端增量 → 应用；推本端增量 → 对端。更新游标。
 
-    def __init__(self, engine: SyncEngine, transport: Transport) -> None:
+    ``cursor``（可选，如 ``sync_transport.CursorStore``）提供整数 seq 游标持久化：
+    重拨/重启后从落盘位置继续，不重拉、不重推。游标loads 失败则 fail-open 归零。
+    """
+
+    def __init__(
+        self, engine: SyncEngine, transport: Transport, cursor: object = None
+    ) -> None:
         self.engine = engine
         self.transport = transport
+        self.cursor = cursor
         # 两个独立的 **整数 seq 游标**，方向分开，绝不混用：
         # - pull_after_seq：对端 oplog 已拉到的 seq（只被实际拉到的远端事件推进）；
         # - push_after_seq：本端 oplog 已推完的 seq。
         # 用 HLC 当拉取起点会在时钟偏差时漏掉远端事件（见 OplogStore 文档）。
-        self.pull_after_seq = 0
-        self.push_after_seq = 0
+        if cursor is not None:
+            self.pull_after_seq = int(getattr(cursor, "pull_after_seq", 0) or 0)
+            self.push_after_seq = int(getattr(cursor, "push_after_seq", 0) or 0)
+        else:
+            self.pull_after_seq = 0
+            self.push_after_seq = 0
 
     def tick(self) -> dict:
         # 1) 拉对端增量（按对端 seq），应用到本端，再推进【拉取】游标
         remote_ops = self.transport.pull_since(self.pull_after_seq)
         self.engine.apply_remote(remote_ops)
         self.pull_after_seq += len(remote_ops)  # 对端 oplog append-only 且保序
-        # 2) 把本端新事件（按本端 seq）推过去，推进【推送】游标
-        local_new = self.engine.oplog.since(self.push_after_seq)
+        # 2) 把本端新事件（按本端 seq）推过去，推进【推送】游标。
+        #    回声防护：只推 origin==本节点 的事件；对端转发进来的（origin=对端）
+        #    也在本端 oplog 里（HTTP POST 追加），但绝不能再推回去，否则两端 oplog
+        #    会无限往返膨胀。游标仍按 oplog 水位推进（不漏 seq）。
+        recent = self.engine.oplog.since(self.push_after_seq)
+        local_new = [
+            op for op in recent if op.origin is None or op.origin == self.engine.node
+        ]
         if local_new:
             self.transport.push(local_new)
         self.push_after_seq = self.engine.oplog.watermark()
+        if self.cursor is not None:
+            self.cursor.pull_after_seq = self.pull_after_seq
+            self.cursor.push_after_seq = self.push_after_seq
+            self.cursor.save()
         return {
             "pulled": len(remote_ops),
             "pushed": len(local_new),
             "pull_after_seq": self.pull_after_seq,
             "push_after_seq": self.push_after_seq,
         }
+
+    def tick_safe(self) -> dict:
+        """fail-open 封装：同步异常（隧道断、对端宕）绝不应拖垮主进程。
+
+        返回 ``{"ok": False, "error": ...}`` 而非 raise；守护层据 ``ok`` 决定是否重拨。
+        """
+        try:
+            return {**self.tick(), "ok": True, "error": None}
+        except Exception as exc:  # noqa: BLE001  (守门：任何同步失败都归为可恢复)
+            return {
+                "ok": False,
+                "error": repr(exc),
+                "pulled": 0,
+                "pushed": 0,
+                "pull_after_seq": self.pull_after_seq,
+                "push_after_seq": self.push_after_seq,
+            }
 
     def reconcile_baseline(self, remote_store: "MemoryStore") -> dict:
         """首连前置：对端 item 快照已就位时，做一次性全量对账。

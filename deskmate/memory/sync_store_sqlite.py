@@ -250,12 +250,12 @@ class SQLiteOplogStore:
 
     def since(self, after_seq: int) -> list:
         rows = self.conn.execute(
-            f"SELECT record_id, op, hlc, payload_json, tombstone, table_name "
+            f"SELECT record_id, op, hlc, payload_json, tombstone, table_name, node "
             f"FROM {_OPLOG_TABLE} WHERE seq>?",
             (after_seq,),
         ).fetchall()
         out = []
-        for record_id, op, hlc_s, payload, tomb, table_name in rows:
+        for record_id, op, hlc_s, payload, tomb, table_name, node in rows:
             out.append(
                 Op(
                     table=table_name,
@@ -264,6 +264,7 @@ class SQLiteOplogStore:
                     hlc=HLC.from_str(hlc_s),
                     payload=json.loads(payload or "{}"),
                     tombstone=bool(tomb),
+                    origin=node,
                 )
             )
         return out

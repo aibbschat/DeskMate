@@ -22,6 +22,13 @@
 - **正确做法**：Basic Auth 哈希一律用 `printf '%s\n' <密码> | caddy hash-password` 生成，不要走 python bcrypt。
 - **关联**：后端只认 `x-openworker-token` 请求头（前端发 `X-OpenWorker-Token`，HTTP 头大小写不敏感），不是 `Authorization: Bearer`；验收时别用错头导致误判 401。
 
+## §P3 — 记忆同步隧道：SSH 反隧道远端绑定必须 127.0.0.1，绝不 0.0.0.0
+
+- **场景**：B 类记忆走「自建 oplog over SSH 反隧道」（`deskmate/memory/sync_transport.py`）。Mac 拨出 `ssh -R <remote>:8765:127.0.0.1:8765 user@cloud` 让云端回环达 Mac。
+- **坑（公网暴露事故）**：`ssh -R 8765:...` 省略绑定地址时，远端按 `GatewayPorts` 默认可能绑 `0.0.0.0` → 云端 8765 **公网可听**，同步端口（含明文记忆流）外泄。
+- **红线**：`SshTunnel.build_args()` 远端转发强制写成 `127.0.0.1:8765:127.0.0.1:8765`（显式回环）；本地转发同理 `127.0.0.1:8766:…`。单测 `test_ssh_tunnel_args_are_secure_and_dial_out_only` 断言命令行含 `127.0.0.1` 且**不含 `0.0.0.0`**。
+- **HTTP oplog 端点** `HttpOplogServer` 也只绑 `127.0.0.1`（不同步端口绝不绑 `0.0.0.0`）。隧道断用 `tick_safe()` fail-open 返回 `{"ok":False}` 而非 raise。
+
 ## §十五 — 权限/自理保护：14 例红已定性 + bypass 实跑事实
 
 - **14 例红定位(10-02)**：`permissions.py:361-384` 本地提交 `56bef881`(08-31) 的 bypass 前置短路，跳过 path scope / 持久权威 / 延迟执行文件三道地板。上游立场相反：bypass 是"日常不弹卡"**不是**"没有地板"。⚠ `Mode("auto")→BYPASS_APPROVALS` 别名坑（auto 与 bypass 在代码里同义，别被字面骗）。**改它=改安全策略，仍须萧哥拍板**。

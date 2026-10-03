@@ -278,3 +278,15 @@ def test_sqlite_delete_missing_record_creates_tombstone(pair):
     ).fetchone()
     assert row is not None and row[0] == 1, "删除不存在的记录必须插入墓碑"
     c.close()
+
+def test_sqlite_oplog_preserves_origin(pair):
+    """回归：op 经 SQLite oplog 落盘再 since() 读回，origin（存于 node 列）
+    不得丢失——否则真实存储上回声防护失效。"""
+    ca, _ = pair
+    c = sqlite3.connect(ca)
+    oplog = SQLiteOplogStore(c)
+    op = Op("profile_items", "x1", "upsert", HLC.now("mac"), {"v": 1}, origin="mac")
+    oplog.append(op)
+    back = oplog.since(0)
+    assert len(back) == 1 and back[0].origin == "mac", back
+    c.close()
