@@ -17,8 +17,11 @@ from deskmate.memory.sync_daemon import (
     SyncEngine,
     SyncDaemon,
     InMemoryTransport,
+    MemoryStore,
+    OplogStore,
     Op,
     HLC,
+    Transport,
     new_uuid,
     reconcile_baseline,
 )
@@ -289,4 +292,45 @@ def test_sqlite_oplog_preserves_origin(pair):
     oplog.append(op)
     back = oplog.since(0)
     assert len(back) == 1 and back[0].origin == "mac", back
+    c.close()
+
+
+def test_sqlite_oplog_since_carries_seq_and_cursor_uses_max(pair):
+    """回归（二蛋 2026-10-03 游标缺陷）：SQLiteOplogStore.since 必须透传真实 seq，
+    且 SyncDaemon 按返回 op 的【最大 seq】推进游标，而非 += len(remote_ops)。
+    对端 oplog 经 GC 产生空洞/高位 seq 时，旧逻辑会反复重拉同一批、甚至漏同步。"""
+    ca, _ = pair
+    c = sqlite3.connect(ca)
+    oplog = SQLiteOplogStore(c)
+    # 模拟 GC：先写 5 条（seq 1..5），删低 seq 制造空洞，再写高位新事件
+    for i in range(5):
+        oplog.append(Op("profile_items", f"old{i}", "upsert", HLC(1000 + i, 0, "cloud"), {"v": i}))
+    c.execute("DELETE FROM _sync_oplog WHERE seq <= 3")
+    c.commit()
+    oplog.append(Op("profile_items", "new1", "upsert", HLC(2000, 0, "cloud"), {"v": 99}))
+
+    ops = oplog.since(0)
+    assert ops, "since(0) 应返回剩余 oplog"
+    assert all(o.seq is not None for o in ops), "since 必须透传 seq"
+    assert sorted(o.seq for o in ops) == [4, 5, 6], "剩余 seq 应为 4/5/6（6=新事件）"
+
+    class _SqlTransport(Transport):
+        def pull_since(self, after_seq):
+            return oplog.since(after_seq)
+
+        def push(self, ops):
+            pass
+
+    store = MemoryStore()
+    eng = SyncEngine(store, OplogStore(), "mac")
+    d = SyncDaemon(eng, _SqlTransport())
+    res = d.tick()
+    # 关键：一轮直接到 max seq=6，而非 +=len(3)=3（旧 bug 会让游标停在低位、永久漏同步高风险）
+    assert res["pulled"] == 3, res
+    assert res["pull_after_seq"] == 6, res
+    # 之后新事件 seq=7 立即拉到，不再重拉 4/5/6
+    oplog.append(Op("profile_items", "new2", "upsert", HLC(2001, 0, "cloud"), {"v": 100}))
+    res2 = d.tick()
+    assert res2["pulled"] == 1, res2
+    assert res2["pull_after_seq"] == 7, res2
     c.close()

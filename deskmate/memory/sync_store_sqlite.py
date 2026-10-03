@@ -298,12 +298,12 @@ class SQLiteOplogStore(_ShortConnMixin):
     def since(self, after_seq: int) -> list:
         with self._connect() as c:
             rows = c.execute(
-                f"SELECT record_id, op, hlc, payload_json, tombstone, table_name, node "
+                f"SELECT seq, record_id, op, hlc, payload_json, tombstone, table_name, node "
                 f"FROM {_OPLOG_TABLE} WHERE seq>?",
                 (after_seq,),
             ).fetchall()
         out = []
-        for record_id, op, hlc_s, payload, tomb, table_name, node in rows:
+        for seq, record_id, op, hlc_s, payload, tomb, table_name, node in rows:
             out.append(
                 Op(
                     table=table_name,
@@ -313,6 +313,7 @@ class SQLiteOplogStore(_ShortConnMixin):
                     payload=json.loads(payload or "{}"),
                     tombstone=bool(tomb),
                     origin=node,
+                    seq=seq,  # 透传真实 seq，供客户端按 max(seq) 推进游标（二蛋 2026-10-03 缺陷）
                 )
             )
         return out

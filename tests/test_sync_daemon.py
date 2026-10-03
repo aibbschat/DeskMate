@@ -22,6 +22,7 @@ from deskmate.memory.sync_daemon import (
     Op,
     SyncDaemon,
     SyncEngine,
+    Transport,
 )
 
 
@@ -196,4 +197,38 @@ def test_clock_skew_remote_event_not_skipped():
     assert eng_m.store.get("c1").data["v"] == 2
     # 第二轮拉到：上一轮推过去的 m1 + 新补的 c1（共 2 条），c1 未被漏
     assert d_m.pull_after_seq == 2
+
+
+def test_pull_cursor_uses_max_seq_not_len_on_gap():
+    """回归（二蛋 2026-10-03 游标缺陷）：对端 oplog 经 GC 后 seq 不连续/高位，
+    pull_after_seq 必须按返回 op 的【最大 seq】推进，而非 += len(remote_ops)。
+    否则 seq 有空洞时反复重拉同一批（浪费），seq 整体回退时 pull_after_seq 越过
+    新事件 seq → 永久漏同步且不报错。"""
+    # 对端 oplog 经 GC 后只剩 seq 100/200/300（大空洞、高位）
+    remote_ops = [
+        Op("profile_items", "r100", "upsert", HLC(100, 0, "cloud"), seq=100),
+        Op("profile_items", "r200", "upsert", HLC(200, 0, "cloud"), seq=200),
+        Op("profile_items", "r300", "upsert", HLC(300, 0, "cloud"), seq=300),
+    ]
+
+    class _GapTransport(Transport):
+        def pull_since(self, after_seq):
+            return [o for o in remote_ops if (o.seq or 0) > after_seq]
+
+        def push(self, ops):
+            pass
+
+    store_m, oplog_m = MemoryStore(), OplogStore()
+    eng_m = SyncEngine(store_m, oplog_m, "mac")
+    d_m = SyncDaemon(eng_m, _GapTransport())
+
+    res = d_m.tick()
+    # 关键：一轮直接到 max seq=300，而非 +=len(3)=3（旧 bug 会让游标停在低位）
+    assert res["pulled"] == 3
+    assert res["pull_after_seq"] == 300, res
+    # 之后新事件 seq=301 立即被拉到，且不再重拉 100/200/300
+    remote_ops.append(Op("profile_items", "r301", "upsert", HLC(301, 0, "cloud"), seq=301))
+    res2 = d_m.tick()
+    assert res2["pulled"] == 1, res2
+    assert res2["pull_after_seq"] == 301, res2
 

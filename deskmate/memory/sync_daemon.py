@@ -103,6 +103,7 @@ class Op:
     payload: dict = field(default_factory=dict)  # 明文业务字段
     tombstone: bool = False  # delete 时为 True
     origin: Optional[str] = None  # 产生该变更的节点 id（消除回声，见 SyncEngine/SyncDaemon）
+    seq: Optional[int] = None  # 落库后的稳定 seq（增量游标）；None=尚未落库/传输中
 
     def to_json(self) -> str:
         return json.dumps(
@@ -114,6 +115,7 @@ class Op:
                 "payload": self.payload,
                 "tombstone": self.tombstone,
                 "origin": self.origin,
+                "seq": self.seq,
             },
             ensure_ascii=False,
             sort_keys=True,
@@ -129,6 +131,7 @@ class Op:
             payload=d.get("payload", {}) or {},
             tombstone=bool(d.get("tombstone", False)),
             origin=d.get("origin"),
+            seq=d.get("seq"),
         )
 
     @classmethod
@@ -212,7 +215,8 @@ class OplogStore:
 
     def append(self, op: Op) -> int:
         self._ops.append(op)
-        return len(self._ops)  # 1-based seq
+        op.seq = len(self._ops)  # 1-based seq（落库即固化，since 返回时已带 seq）
+        return len(self._ops)
 
     def since(self, after_seq: int) -> list[Op]:
         """返回 seq 严格大于 ``after_seq`` 的事件（保序）。0 = 从头。"""
@@ -371,7 +375,18 @@ class SyncDaemon:
         # 1) 拉对端增量（按对端 seq），应用到本端，再推进【拉取】游标
         remote_ops = self.transport.pull_since(self.pull_after_seq)
         self.engine.apply_remote(remote_ops)
-        self.pull_after_seq += len(remote_ops)  # 对端 oplog append-only 且保序
+        # 推进【拉取】游标：按对端返回的【最大 seq】推进，而非 += len(remote_ops)。
+        # 对端 oplog 在 GC/截断后 seq 可能不连续甚至整体回退（二蛋 2026-10-03 实测
+        # 两端 seq 已有空洞、首连需 3–4 轮才收敛；更危险的是 seq 回退后 += len 会令
+        # pull_after_seq 越过新事件 seq → 永久漏同步且不报错）。按 max seq 推进：
+        # ① 非连续 seq 一轮即收敛（不再反复重拉同一批）；② seq 高位/空洞时不会漏。
+        if remote_ops:
+            seqs = [op.seq for op in remote_ops if op.seq is not None]
+            if seqs:
+                self.pull_after_seq = max(self.pull_after_seq, max(seqs))
+            else:
+                # 兜底（理论不会触发：真实 store 的 since 必带 seq）：退回原行为
+                self.pull_after_seq += len(remote_ops)
         # 2) 把本端新事件（按本端 seq）推过去，推进【推送】游标。
         #    回声防护：只推 origin==本节点 的事件；对端转发进来的（origin=对端）
         #    也在本端 oplog 里（HTTP POST 追加），但绝不能再推回去，否则两端 oplog
