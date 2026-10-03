@@ -1,21 +1,27 @@
 """小桔记忆 · B 类记录级同步 · 真实 SQLite 存储适配器（阶段 1 落地）。
 
 把 ``sync_daemon`` 协议核心的鸭子类型 store 接口接到 ``deskmate.db`` 内 B 类表
-（首批 ``profile_items``）。只**新增** ``sync_*`` 三列与一个 ``_sync_oplog`` 表，
+（首批 ``profile_items``）。只**新增** ``sync_uuid`` 三列与一个 ``_sync_oplog`` 表，
 **不删除、不修改既有列**；存量幂等回填（重跑安全）。
 
 安全约束（红线）：
 - 任何 ALTER / 回填前，调用方必须先 ``sqlite3 .backup`` 冷备活库（禁 cp 活库）；
 - 本模块不 import 真实 base_dir，连接由上层传入；测试一律用 /tmp 副本。
 
-接口对齐 ``sync_daemon``：
-- ``SQLiteSyncStore`` 实现 ``MemoryStore`` 的 get / live_items / upsert / delete / items；
-- ``SQLiteOplogStore`` 实现 ``OplogStore`` 的 append / since / watermark / all。
+线程安全（2026-10-03 发现并修复）：
+- ``HttpOplogServer`` 在独立守护线程里 serve，会跨线程使用本模块持有的 sqlite 连接；
+  持有长连接跨线程使用会抛 ``SQLite objects created in a thread...`` 并导致对端连接被关闭。
+- 修复：store 不跨线程持有长连接，而是**每次操作开一个指向同文件的新短连接**
+  （``check_same_thread=False``，连接仅在调用线程内存活）。无论 daemon 主线程还是
+  HTTP server 守护线程调用，都在各自线程内用独立连接，SQLite 文件锁串行化写、WAL
+  保证读可见，彻底规避跨线程崩溃。内存库（``:memory:``）无文件、短连接无意义，则回退
+  持有原连接（仅单线程测试使用，不跨线程）。
 """
 
 from __future__ import annotations
 
 import json
+import sqlite3
 import time
 import uuid as _uuid
 from typing import Any, Optional
@@ -98,20 +104,49 @@ def migrate(conn: Any, node: str, table: str = "profile_items") -> dict:
     return {"backfilled": len(rows)}
 
 
-class SQLiteSyncStore:
-    """接 profile_items 的 B 类记录存储；接口对齐 MemoryStore。"""
+class _ShortConnMixin:
+    """从传入连接提取 db 路径；文件库每次操作开短连接，内存库回退原连接。"""
+
+    def _init_conn(self, conn: Any) -> None:
+        # 用 PRAGMA database_list 取 'main' 库文件路径（内存库 file 为 ''），
+        # 不依赖 Connection.database 属性（部分 Python 构建无此属性，getattr 会得 None
+        # 从而误判为内存库、回退持有主线程长连接，导致 HTTP server 子线程跨线程崩溃）。
+        path = None
+        try:
+            for _seq, name, file in conn.execute("PRAGMA database_list").fetchall():
+                if name == "main":
+                    path = file or None
+        except Exception:
+            path = None
+        if path is None:
+            # 内存库：短连接无意义，持有原连接（仅单线程测试用，不跨线程）
+            self._db_path = None
+            self._fixed_conn = conn
+        else:
+            self._db_path = path
+            self._fixed_conn = None
+
+    def _connect(self) -> Any:
+        if self._db_path is None:
+            return self._fixed_conn
+        return sqlite3.connect(self._db_path, check_same_thread=False)
+
+
+class SQLiteSyncStore(_ShortConnMixin):
+    """接 profile_items 的 B 类记录存储；接口对齐 MemoryStore。跨线程安全（短连接）。"""
 
     def __init__(self, conn: Any, table: str = "profile_items") -> None:
-        self.conn = conn
         self.table = table
+        self._init_conn(conn)
 
     def get(self, record_id: str) -> Optional[Record]:
         cols = ",".join(_BUSINESS_COLS)
-        row = self.conn.execute(
-            f"SELECT sync_uuid, sync_hlc, sync_tombstone, {cols} "
-            f"FROM {self.table} WHERE sync_uuid=?",
-            (record_id,),
-        ).fetchone()
+        with self._connect() as c:
+            row = c.execute(
+                f"SELECT sync_uuid, sync_hlc, sync_tombstone, {cols} "
+                f"FROM {self.table} WHERE sync_uuid=?",
+                (record_id,),
+            ).fetchone()
         if row is None:
             return None
         sync_uuid, hlc_s, tomb, *biz = row
@@ -127,10 +162,11 @@ class SQLiteSyncStore:
     def live_items(self) -> list:
         cols = ",".join(_BUSINESS_COLS)
         now = time.time_ns() // 1_000_000
-        rows = self.conn.execute(
-            f"SELECT sync_uuid, sync_hlc, sync_tombstone, {cols} "
-            f"FROM {self.table} WHERE sync_tombstone=0"
-        ).fetchall()
+        with self._connect() as c:
+            rows = c.execute(
+                f"SELECT sync_uuid, sync_hlc, sync_tombstone, {cols} "
+                f"FROM {self.table} WHERE sync_tombstone=0"
+            ).fetchall()
         out = []
         for row in rows:
             sync_uuid, hlc_s, tomb, *biz = row
@@ -151,9 +187,10 @@ class SQLiteSyncStore:
 
     def items(self) -> list:
         cols = ",".join(_BUSINESS_COLS)
-        rows = self.conn.execute(
-            f"SELECT sync_uuid, sync_hlc, sync_tombstone, {cols} FROM {self.table}"
-        ).fetchall()
+        with self._connect() as c:
+            rows = c.execute(
+                f"SELECT sync_uuid, sync_hlc, sync_tombstone, {cols} FROM {self.table}"
+            ).fetchall()
         out = []
         for row in rows:
             sync_uuid, hlc_s, tomb, *biz = row
@@ -180,80 +217,84 @@ class SQLiteSyncStore:
         if valid_until is not None:
             data["valid_until"] = str(valid_until)
         cols = _BUSINESS_COLS
-        existing = self.conn.execute(
-            f"SELECT 1 FROM {self.table} WHERE sync_uuid=?", (record_id,)
-        ).fetchone()
-        if existing:
-            sets = ", ".join(f"{c}=?" for c in cols)
-            vals = [data.get(c) for c in cols]
-            vals.append(hlc.to_str())
-            vals.append(record_id)
-            self.conn.execute(
-                f"UPDATE {self.table} SET {sets}, sync_hlc=? WHERE sync_uuid=?",
-                vals,
-            )
-        else:
-            all_cols = ["id", "sync_uuid", "sync_hlc", "sync_tombstone"] + list(cols)
-            placeholders = ", ".join("?" for _ in all_cols)
-            vals = [record_id, record_id, hlc.to_str(), 0] + [
-                data.get(c) for c in cols
-            ]
-            self.conn.execute(
-                f"INSERT INTO {self.table} ({', '.join(all_cols)}) "
-                f"VALUES ({placeholders})",
-                vals,
-            )
-        self.conn.commit()
+        with self._connect() as c:
+            existing = c.execute(
+                f"SELECT 1 FROM {self.table} WHERE sync_uuid=?", (record_id,)
+            ).fetchone()
+            if existing:
+                sets = ", ".join(f"{c2}=?" for c2 in cols)
+                vals = [data.get(c2) for c2 in cols]
+                vals.append(hlc.to_str())
+                vals.append(record_id)
+                c.execute(
+                    f"UPDATE {self.table} SET {sets}, sync_hlc=? WHERE sync_uuid=?",
+                    vals,
+                )
+            else:
+                all_cols = ["id", "sync_uuid", "sync_hlc", "sync_tombstone"] + list(cols)
+                placeholders = ", ".join("?" for _ in all_cols)
+                vals = [record_id, record_id, hlc.to_str(), 0] + [
+                    data.get(c2) for c2 in cols
+                ]
+                c.execute(
+                    f"INSERT INTO {self.table} ({', '.join(all_cols)}) "
+                    f"VALUES ({placeholders})",
+                    vals,
+                )
+            c.commit()
 
     def delete(self, record_id: str, hlc: HLC) -> None:
         # 已有行：打墓碑。
-        cur = self.conn.execute(
-            f"UPDATE {self.table} SET sync_tombstone=1, sync_hlc=? "
-            f"WHERE sync_uuid=?",
-            (hlc.to_str(), record_id),
-        )
-        if cur.rowcount == 0:
-            # 行不存在（对账时收到一条本端从未有过的删除墓碑）：必须**插入墓碑**，
-            # 与 MemoryStore.delete 行为对齐——否则陈旧副本日后重放该记录的旧
-            # upsert 时本端无墓碑可挡，被删记录可能被重新引入。
-            self.conn.execute(
-            f"INSERT INTO {self.table} (id, sync_uuid, sync_hlc, sync_tombstone) "
-            f"VALUES (?, ?, ?, 1)",
-                (record_id, record_id, hlc.to_str()),
+        with self._connect() as c:
+            cur = c.execute(
+                f"UPDATE {self.table} SET sync_tombstone=1, sync_hlc=? "
+                f"WHERE sync_uuid=?",
+                (hlc.to_str(), record_id),
             )
-        self.conn.commit()
+            if cur.rowcount == 0:
+                # 行不存在（对账时收到一条本端从未有过的删除墓碑）：必须**插入墓碑**，
+                # 与 MemoryStore.delete 行为对齐——否则陈旧副本日后重放该记录的旧
+                # upsert 时本端无墓碑可挡，被删记录可能被重新引入。
+                c.execute(
+                    f"INSERT INTO {self.table} (id, sync_uuid, sync_hlc, sync_tombstone) "
+                    f"VALUES (?, ?, ?, 1)",
+                    (record_id, record_id, hlc.to_str()),
+                )
+            c.commit()
 
 
-class SQLiteOplogStore:
-    """接 _sync_oplog 的 append-only 日志；接口对齐 OplogStore（seq 游标）。"""
+class SQLiteOplogStore(_ShortConnMixin):
+    """接 _sync_oplog 的 append-only 日志；接口对齐 OplogStore（seq 游标）。跨线程安全。"""
 
     def __init__(self, conn: Any) -> None:
-        self.conn = conn
+        self._init_conn(conn)
 
     def append(self, op: Op) -> int:
-        cur = self.conn.execute(
-            f"INSERT INTO {_OPLOG_TABLE}"
-            f"(table_name, record_id, op, hlc, payload_json, tombstone, node) "
-            f"VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (
-                op.table,
-                op.record_id,
-                op.op,
-                op.hlc.to_str(),
-                json.dumps(op.payload, ensure_ascii=False),
-                1 if op.tombstone else 0,
-                op.hlc.node,
-            ),
-        )
-        self.conn.commit()
-        return cur.lastrowid
+        with self._connect() as c:
+            cur = c.execute(
+                f"INSERT INTO {_OPLOG_TABLE}"
+                f"(table_name, record_id, op, hlc, payload_json, tombstone, node) "
+                f"VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    op.table,
+                    op.record_id,
+                    op.op,
+                    op.hlc.to_str(),
+                    json.dumps(op.payload, ensure_ascii=False),
+                    1 if op.tombstone else 0,
+                    op.hlc.node,
+                ),
+            )
+            c.commit()
+            return cur.lastrowid
 
     def since(self, after_seq: int) -> list:
-        rows = self.conn.execute(
-            f"SELECT record_id, op, hlc, payload_json, tombstone, table_name, node "
-            f"FROM {_OPLOG_TABLE} WHERE seq>?",
-            (after_seq,),
-        ).fetchall()
+        with self._connect() as c:
+            rows = c.execute(
+                f"SELECT record_id, op, hlc, payload_json, tombstone, table_name, node "
+                f"FROM {_OPLOG_TABLE} WHERE seq>?",
+                (after_seq,),
+            ).fetchall()
         out = []
         for record_id, op, hlc_s, payload, tomb, table_name, node in rows:
             out.append(
@@ -270,9 +311,10 @@ class SQLiteOplogStore:
         return out
 
     def watermark(self) -> int:
-        return self.conn.execute(
-            f"SELECT COALESCE(MAX(seq), 0) FROM {_OPLOG_TABLE}"
-        ).fetchone()[0]
+        with self._connect() as c:
+            return c.execute(
+                f"SELECT COALESCE(MAX(seq), 0) FROM {_OPLOG_TABLE}"
+            ).fetchone()[0]
 
     def all(self) -> list:
         return self.since(0)
