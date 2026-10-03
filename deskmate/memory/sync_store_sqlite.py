@@ -129,7 +129,14 @@ class _ShortConnMixin:
     def _connect(self) -> Any:
         if self._db_path is None:
             return self._fixed_conn
-        return sqlite3.connect(self._db_path, check_same_thread=False)
+        conn = sqlite3.connect(self._db_path, check_same_thread=False)
+        # 防御性硬化：WAL 下 daemon 写与主应用/HTTP server 写可能撞锁，给 5s 等待
+        # 而非默认 0（撞锁即抛 database is locked）。不改变库的 journal_mode。
+        try:
+            conn.execute("PRAGMA busy_timeout=5000")
+        except sqlite3.Error:
+            pass
+        return conn
 
 
 class SQLiteSyncStore(_ShortConnMixin):

@@ -105,3 +105,18 @@ def test_sqlite_http_cross_thread_no_crash_and_converges(tmp_path):
     cloud_srv.stop()
     mc.close()
     cc.close()
+
+
+def test_short_conn_sets_busy_timeout(tmp_path):
+    """硬化核验：文件库短连接带 busy_timeout=5000（撞锁等待而非立即抛错）。"""
+    import sqlite3
+    f = str(tmp_path / "b.db")
+    c = sqlite3.connect(f)
+    c.execute("CREATE TABLE profile_items (id TEXT PRIMARY KEY, layer TEXT, dimension TEXT, topic TEXT, content TEXT, category TEXT, status TEXT, confidence REAL, extra_json TEXT, first_extracted TEXT, last_updated TEXT, valid_from TEXT, valid_until TEXT)")
+    c.commit()
+    ss.migrate(c, "mac")
+    store = ss.SQLiteSyncStore(c)
+    with store._connect() as sc:
+        assert sc.execute("PRAGMA busy_timeout").fetchone()[0] == 5000
+    c.close()
+
