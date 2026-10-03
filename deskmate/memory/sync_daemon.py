@@ -360,6 +360,67 @@ class SyncDaemon:
             "push_after_seq": self.push_after_seq,
         }
 
+    def reconcile_baseline(self, remote_store: "MemoryStore") -> dict:
+        """首连前置：对端 item 快照已就位时，做一次性全量对账。
+
+        见模块级 ``reconcile_baseline``。本方法只是把本端 store 与对端 store
+        对接的薄封装；生产环境由 SSH 反隧道把对端 item 快照拉到本端后调用。
+        """
+        return reconcile_baseline(self.engine.store, remote_store, self.engine.node)
+
+
+# ---------------------------------------------------------------------------
+# 7. 首连基线全量对账（草案方案 A：一次性、store-to-store、不污染 oplog）
+# ---------------------------------------------------------------------------
+
+
+def _write_record(target: "MemoryStore", rec: "Record") -> None:
+    """把一条记录写进 target：墓碑则 delete、活则 upsert，保留原 HLC。"""
+    if rec.tombstone:
+        target.delete(rec.record_id, rec.hlc)
+    else:
+        target.upsert(rec.record_id, rec.data, rec.hlc, rec.valid_until)
+
+
+def reconcile_baseline(local: "MemoryStore", remote: "MemoryStore", node: str) -> dict:
+    """一次性全量对账（首连前置，草案方案 A）。
+
+    背景（二蛋 2026-10-03 实测边界）：存量迁移只回填了 uuid、没有把存量写进
+    ``_sync_oplog``（oplog=0 行），因此若两端存量本身不一致，后续纯 oplog 增量
+    不会收敛——A 独有的存量记录永远到不了 B。本函数在「首连」时补一次全量对账，
+    之后才切回纯 oplog 增量。
+
+    做法（按 sync_uuid 逐条比两端 ``items()``，含墓碑，覆盖「本端删了远端还在」）：
+    - 缺失侧：把记录写进缺失端（墓碑则 delete、活则 upsert，保留原 HLC）；
+    - 共存在但 HLC 不同的：按 LWW 把胜者写回两端；
+    - 幂等可重跑；不污染 oplog（直接写 store，不经 ``engine.local_*``）。
+
+    验收按 sync_uuid 逐条比（集合差集 + 冲突 uuid 的 HLC 实测），不只比 COUNT。
+    """
+    L = {r.record_id: r for r in local.items()}
+    R = {r.record_id: r for r in remote.items()}
+    report = {"local_only": [], "remote_only": [], "conflicts": [], "resolved": 0}
+    # 缺失：本端有远端无 -> 推远端；远端有本端无 -> 拉本端
+    for rid, rec in L.items():
+        if rid not in R:
+            _write_record(remote, rec)
+            report["local_only"].append(rid)
+    for rid, rec in R.items():
+        if rid not in L:
+            _write_record(local, rec)
+            report["remote_only"].append(rid)
+    # 冲突：两边都有的按 HLC LWW，胜者写回两端
+    for rid in set(L) & set(R):
+        a, b = L[rid], R[rid]
+        if a.hlc == b.hlc:
+            continue
+        winner = a if a.hlc >= b.hlc else b
+        _write_record(local, winner)
+        _write_record(remote, winner)
+        report["conflicts"].append(rid)
+        report["resolved"] += 1
+    return report
+
 
 def new_uuid() -> str:
     """记录全局身份（UUIDv7 优先；无第三方时用 uuid4 占位，真实落地换 uuid7 库）。"""

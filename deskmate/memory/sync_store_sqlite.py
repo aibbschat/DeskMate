@@ -206,11 +206,21 @@ class SQLiteSyncStore:
         self.conn.commit()
 
     def delete(self, record_id: str, hlc: HLC) -> None:
-        self.conn.execute(
+        # 已有行：打墓碑。
+        cur = self.conn.execute(
             f"UPDATE {self.table} SET sync_tombstone=1, sync_hlc=? "
             f"WHERE sync_uuid=?",
             (hlc.to_str(), record_id),
         )
+        if cur.rowcount == 0:
+            # 行不存在（对账时收到一条本端从未有过的删除墓碑）：必须**插入墓碑**，
+            # 与 MemoryStore.delete 行为对齐——否则陈旧副本日后重放该记录的旧
+            # upsert 时本端无墓碑可挡，被删记录可能被重新引入。
+            self.conn.execute(
+            f"INSERT INTO {self.table} (id, sync_uuid, sync_hlc, sync_tombstone) "
+            f"VALUES (?, ?, ?, 1)",
+                (record_id, record_id, hlc.to_str()),
+            )
         self.conn.commit()
 
 
