@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.xiaosheng.xiaoju.sync</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/bin/python3</string>
+        <string>/Users/xiaocheng/workspace/openworker/scripts/sync_daemon_runner.py</string>
+        <string>--side</string>
+        <string>mac</string>
+        <string>--db-path</string>
+        <string>/Users/xiaocheng/.deskmate/deskmate.db</string>
+        <string>--repo-path</string>
+        <string>/Users/xiaocheng/workspace/openworker</string>
+        <string>--ssh-host</string>
+        <string>81.69.163.170</string>
+        <string>--ssh-user</string>
+        <string>ubuntu</string>
+        <string>--identity-file</string>
+        <string>/Users/xiaocheng/workspace/openworker/.workbuddy/server/aibbs.pem</string>
+        <string>--log-path</string>
+        <string>/Users/xiaocheng/.deskmate/sync_daemon.log</string>
+    </array>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <!-- 崩溃/异常退出自动重启；KeepAlive 自带节流，避免死循环刷屏 -->
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>ThrottleInterval</key>
+    <integer>30</integer>
+
+    <!-- 网络未就绪时不强求立即起；网络起来后 KeepAlive 会拉起 -->
+    <key>AbandonProcessGroup</key>
+    <true/>
+
+    <key>StandardErrorPath</key>
+    <string>/Users/xiaocheng/.deskmate/sync_daemon.err</string>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/xiaocheng/workspace/openworker</string>
+</dict>
+</plist>

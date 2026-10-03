@@ -26,7 +26,7 @@
 
 - **场景**：B 类记忆走「自建 oplog over SSH 反隧道」（`deskmate/memory/sync_transport.py`）。Mac 拨出 `ssh -R <remote>:8765:127.0.0.1:8765 user@cloud` 让云端回环达 Mac。
 - **坑（公网暴露事故）**：`ssh -R 8765:...` 省略绑定地址时，远端按 `GatewayPorts` 默认可能绑 `0.0.0.0` → 云端 8765 **公网可听**，同步端口（含明文记忆流）外泄。
-- **红线**：`SshTunnel.build_args()` 远端转发强制写成 `127.0.0.1:8765:127.0.0.1:8765`（显式回环）；本地转发同理 `127.0.0.1:8766:…`。单测 `test_ssh_tunnel_args_are_secure_and_dial_out_only` 断言命令行含 `127.0.0.1` 且**不含 `0.0.0.0`**。
+- **红线**：`SshTunnel` 远端绑定强制 `127.0.0.1`、绝不 `0.0.0.0`（单测 `test_ssh_tunnel_args_are_secure_and_dial_out_only` 断言命令行含 `127.0.0.1` 且不含 `0.0.0.0`）。反隧道在云端绑定的端口 = `remote_bind_port`（默认 8765，单测示例 `-R 127.0.0.1:8765:127.0.0.1:8765`）；**常驻运行器 `sync_daemon_runner.py` 显式设 `remote_bind_port=18765` 以避开云端 oplog server 已占的 8765**（两端 server 各监听 8765，故 Mac 反隧道在云端绑 18765、本地转发 `-L 127.0.0.1:18766:127.0.0.1:8765` 达云端）。`remote_bind_port` 与 `remote_port`（本地转发远端目标）是**两个不同端口**，别混。
 - **HTTP oplog 端点** `HttpOplogServer` 也只绑 `127.0.0.1`（不同步端口绝不绑 `0.0.0.0`）。隧道断用 `tick_safe()` fail-open 返回 `{"ok":False}` 而非 raise。
 
 ## §十五 — 权限/自理保护：14 例红已定性 + bypass 实跑事实

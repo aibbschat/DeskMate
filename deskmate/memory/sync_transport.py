@@ -180,7 +180,8 @@ class SshTunnel:
         local_port: int = 8765,
         remote_port: int = 8765,
         local_forward_port: int = 8766,
-        remote_bind: str = "127.0.0.1",  # 安全红线：远端只绑回环，绝不 0.0.0.0
+        remote_bind: str = "127.0.0.1",  # 安全红线：远端绑定地址只绑回环，绝不 0.0.0.0
+        remote_bind_port: int = 8765,  # 反隧道在云端绑定的回环端口；runner 显式设 18765 以避开云端 server 已占的 8765
         identity_file: Optional[str] = None,
         server_alive_interval: int = 30,
         server_alive_count_max: int = 3,
@@ -192,6 +193,7 @@ class SshTunnel:
         self.remote_port = remote_port
         self.local_forward_port = local_forward_port
         self.remote_bind = remote_bind
+        self.remote_bind_port = remote_bind_port
         self.identity_file = identity_file
         self.server_alive_interval = server_alive_interval
         self.server_alive_count_max = server_alive_count_max
@@ -213,8 +215,8 @@ class SshTunnel:
             args += ["-p", str(self.ssh_port)]
         if self.identity_file:
             args += ["-i", self.identity_file]
-        # 反隧道：远端 remote_bind:remote_port -> 本端 127.0.0.1:local_port
-        args += ["-R", f"{self.remote_bind}:{self.remote_port}:127.0.0.1:{self.local_port}"]
+        # 反隧道：远端 remote_bind:remote_bind_port -> 本端 127.0.0.1:local_port
+        args += ["-R", f"{self.remote_bind}:{self.remote_bind_port}:127.0.0.1:{self.local_port}"]
         # 本地转发：本端 127.0.0.1:local_forward_port -> 远端 127.0.0.1:remote_port
         args += ["-L", f"127.0.0.1:{self.local_forward_port}:127.0.0.1:{self.remote_port}"]
         args += [f"{self.user}@{self.host}"]

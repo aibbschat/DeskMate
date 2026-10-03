@@ -1,0 +1,30 @@
+[Unit]
+Description=小桔 B 类记忆常驻同步 daemon（云端侧，仅本地 oplog server + 拉 Mac 经 SSH 反隧道）
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# 以 openworker 用户运行，与大脑 db 属主一致；绝不启动 openworker-server（避免双写抢锁）
+User=openworker
+Group=openworker
+WorkingDirectory=/var/lib/openworker/.deskmate
+
+# 运行器在云端以 sync 包形式部署：/var/lib/openworker/.deskmate/sync_runner.py
+ExecStart=/usr/bin/python3 /var/lib/openworker/.deskmate/sync_runner.py \
+    --side cloud \
+    --db-path /var/lib/openworker/.deskmate/deskmate.db \
+    --cloud-pkg-path /var/lib/openworker/.deskmate \
+    --log-path /var/lib/openworker/.deskmate/sync_daemon.log
+
+# fail-open：同步异常只重拨/退避，不崩；进程退出即重启
+Restart=on-failure
+RestartSec=10
+
+# 禁止与 openworker-server 同时运行（双写保护）；若被依赖链误拉起 server 则本服务失败
+Conflicts=openworker-server.service
+
+# 资源隔离（轻量常驻）
+MemoryMax=256M
+
+[Install]
+WantedBy=multi-user.target
