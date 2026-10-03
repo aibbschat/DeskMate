@@ -1,0 +1,118 @@
+/* ============================================
+ * WorkBuddy 皮肤 - 「春日草地」自然治愈系
+ * 设计原则：装饰元素在边缘，中间工作区干净
+ * ============================================ */
+
+/* ---------- 1. 整体背景：装饰图固定在窗口 ---------- */
+/* 背景图放在底部，元素全在边缘，中间干净 */
+html, body {
+  background: url('file:///Users/xiaocheng/workspace/openworker/workbuddy-skin/spring-grass-bg.png') 
+              bottom center / cover no-repeat fixed !important;
+}
+
+/* ---------- 2. 调整全局配色变量 ---------- */
+:root, [data-skin="spring-grass"] {
+  /* 主背景色 - 极浅的豆绿色调 */
+  --wb-bg-primary: #ffffff;
+  --wb-bg-secondary: #f5f7f2;
+  --wb-bg-card: #f8f9f5;
+  --wb-bg-card-strong: #eef2e6;
+  
+  /* 侧边栏背景 - 稍深一点的浅绿 */
+  --wb-sidebar-bg: #e8efe0;
+  --wb-sidebar-hover: #dfe8d4;
+  --wb-sidebar-active: #d4e0c5;
+  
+  /* 文字颜色 - 保持深灰，保证可读性 */
+  --wb-text-strong: #2d3428;
+  --wb-text-medium: #5a6352;
+  --wb-text-weak: #8a9182;
+  
+  /* 边框颜色 - 带点绿调 */
+  --wb-border-default: #d8dfcf;
+  --wb-border-light: #e8ede0;
+  
+  /* 强调色 - 草木绿 */
+  --wb-color-primary: #7a9e6e;
+  --wb-color-primary-hover: #6a8e5e;
+}
+
+/* ---------- 3. 左侧导航栏：浅绿背景 ---------- */
+/* 用属性选择器匹配侧边栏容器 */
+[class*="sidebar"], [class*="Sidebar"], [class*="left-panel"], [class*="LeftPanel"] {
+  background-color: var(--wb-sidebar-bg) !important;
+  border-right: 1px solid var(--wb-border-light) !important;
+}
+
+/* 导航栏里的任务列表、空间列表等 */
+[class*="task-list"], [class*="TaskList"], [class*="space-list"], [class*="SpaceList"] {
+  background: transparent !important;
+}
+
+/* ---------- 4. 主内容区：白色不透明，盖住背景图 ---------- */
+/* 对话区和内容区保持纯白，保证阅读清晰 */
+[class*="main-content"], [class*="MainContent"], 
+[class*="chat-content"], [class*="ChatContent"],
+[class*="conversation"], [class*="Conversation"],
+[class*="setting-panel"], [class*="SettingPanel"] {
+  background-color: #ffffff !important;
+}
+
+/* ---------- 5. 顶部标题栏：半透明白色 ---------- */
+[class*="title-bar"], [class*="TitleBar"], [class*="header"], [class*="Header"] {
+  background-color: rgba(255, 255, 255, 0.8) !important;
+  backdrop-filter: blur(10px);
+}
+
+/* ---------- 6. 首页欢迎区：稍微透出背景 ---------- */
+/* 首页的欢迎区域可以稍微透明，透出底部装饰 */
+[class*="welcome"], [class*="Welcome"], 
+[class*="home-page"], [class*="HomePage"],
+[class*="landing"], [class*="Landing"] {
+  background-color: rgba(255, 255, 255, 0.3) !important;
+}
+
+/* ---------- 7. 输入框：柔和的浅绿色调 ---------- */
+[class*="chat-input"], [class*="ChatInput"], 
+[class*="input-box"], [class*="InputBox"] {
+  background-color: #f8f9f5 !important;
+  border: 1px solid var(--wb-border-light) !important;
+  border-radius: 12px !important;
+}
+
+/* ---------- 8. 滚动条：细一点，带绿调 ---------- */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #c8d4b8;
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #b8c4a8;
+}
+
+/* ---------- 9. 卡片和按钮：柔和风格 ---------- */
+[class*="card"], [class*="Card"] {
+  background: #ffffff !important;
+  border: 1px solid var(--wb-border-light) !important;
+  border-radius: 10px !important;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04) !important;
+}
+
+button[class*="primary"], [class*="btn-primary"] {
+  background: var(--wb-color-primary) !important;
+  border: none !important;
+  border-radius: 8px !important;
+}
+
+/* ---------- 10. 右下角小机器人角色：稍微调整下位置 ---------- */
+/* 让它和右下角的小猫装饰和谐一点 */
+[class*="mascot"], [class*="Mascot"], [class*="robot"] {
+  /* 保持原有位置，只是调整下不透明度让它和背景融合 */
+  opacity: 0.9;
+}

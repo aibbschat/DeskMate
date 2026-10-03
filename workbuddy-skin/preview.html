@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>春日草地皮肤预览</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif;
+    background: #F5F8F0;
+    color: #2D3428;
+    height: 100vh;
+    overflow: hidden;
+    position: relative;
+  }
+
+  /* ===== 春日草地皮肤变量 ===== */
+  :root {
+    --paper: #F5F8F0;
+    --panel: #FFFFFF;
+    --ink: #2D3428;
+    --muted: #5A6352;
+    --line: #E0E8D4;
+    --accent: #6A994E;
+    --accent-soft: #E8F0E0;
+  }
+
+  /* ===== 布局 ===== */
+  .app {
+    display: grid;
+    grid-template-columns: 240px 1fr;
+    height: 100vh;
+  }
+
+  /* 左侧边栏 */
+  .sidebar {
+    background: #EDF2E4;
+    border-right: 1px solid var(--line);
+    padding: 20px 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .sidebar .brand {
+    font-weight: 700;
+    font-size: 16px;
+    padding: 0 8px 20px;
+    color: var(--ink);
+  }
+  .sidebar-item {
+    padding: 8px 12px;
+    border-radius: 8px;
+    font-size: 13px;
+    color: var(--muted);
+    cursor: pointer;
+  }
+  .sidebar-item:hover { background: rgba(106, 153, 78, 0.08); }
+  .sidebar-item.active {
+    background: var(--accent-soft);
+    color: var(--accent);
+    font-weight: 500;
+  }
+
+  /* 主内容区 - 完全透明，看完整背景 */
+  .main {
+    background: transparent;
+    position: relative;
+    display: flex;
+    flex-direction: column;
+  }
+
+  /* 整个页面背景装饰图 */
+  body {
+    background: url('https://aka.doubaocdn.com/s/69BbwPS2OQ') bottom center / cover no-repeat fixed;
+  }
+
+  /* 顶部问候 */
+  .hero {
+    max-width: 720px;
+    margin: 6vh auto 0;
+    text-align: center;
+  }
+  .hero h1 {
+    font-size: 28px;
+    font-weight: 600;
+    color: var(--ink);
+    margin-bottom: 24px;
+  }
+  .hero h1 .mark { color: var(--accent); margin-right: 8px; }
+
+  /* 中间卡片 */
+  .card {
+    background: #1e293b;
+    border-radius: 16px;
+    padding: 24px;
+    color: #e2e8f0;
+    max-width: 720px;
+    margin: 0 auto;
+    box-shadow: 0 10px 40px rgba(0,0,0,0.15);
+  }
+  .card-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 16px;
+    font-size: 14px;
+  }
+  .card-item {
+    padding: 10px 0;
+    border-bottom: 1px solid rgba(255,255,255,0.1);
+    font-size: 13px;
+  }
+
+  /* 底部输入框 */
+  .composer {
+    position: absolute;
+    bottom: 20px;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 70%;
+    background: white;
+    border: 1px solid var(--line);
+    border-radius: 16px;
+    padding: 16px 20px;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.08);
+  }
+  .composer input {
+    border: none;
+    outline: none;
+    font-size: 14px;
+    width: 100%;
+    color: var(--ink);
+  }
+
+
+  /* 标签 */
+  .label {
+    position: fixed;
+    top: 20px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: var(--accent);
+    color: white;
+    padding: 6px 16px;
+    border-radius: 20px;
+    font-size: 12px;
+    z-index: 100;
+  }
+</style>
+</head>
+<body>
+  <div class="label">🌿 春日草地皮肤预览</div>
+
+  <div class="app">
+    <!-- 左侧边栏 -->
+    <div class="sidebar">
+      <div class="brand">🌱 OpenWorker</div>
+      <div class="sidebar-item active">💬 对话</div>
+      <div class="sidebar-item">📁 项目</div>
+      <div class="sidebar-item">🤖 专家</div>
+      <div class="sidebar-item">⚙️ 设置</div>
+    </div>
+
+    <!-- 主内容区 -->
+    <div class="main">
+      <div class="hero">
+        <h1><span class="mark">✦</span>新章节在路上了吗？小板凳都搬好了。</h1>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <span>自主层 · 实时</span>
+          <span style="font-size: 12px; opacity: 0.7;">● LIVE</span>
+        </div>
+        <div class="card-item">● AI 圈公开手记 · 10-02 12:01</div>
+        <div class="card-item">● AI 圈自主发声 · 10-02 09:12</div>
+        <div class="card-item">● 萧盛影响摄入 · 10-02 09:11</div>
+      </div>
+
+      <div class="composer">
+        <input type="text" placeholder="Ask the coworker... (drop or paste files)">
+      </div>
+    </div>
+  </div>
+</body>
+</html>
