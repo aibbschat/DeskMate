@@ -64,7 +64,9 @@ def test_sqlite_http_cross_thread_no_crash_and_converges(tmp_path):
     assert len(rep["conflicts"]) == 7  # r0..r6 两端都有，LWW 解决
 
     # 增量：Mac 新增 / 云端新增 / Mac 删除一条存量
-    tmpl = dict(mac_store.live_items()[0].data)
+    # 注意：profile_items 的 id 是业务主键（已纳入 business_cols），新增记录不能带存量 id
+    # 否则会撞 PK；这里去掉 tmpl 的 id，让 upsert 把 id 列设为新的 record_id。
+    tmpl = {k: v for k, v in mac_store.live_items()[0].data.items() if k != "id"}
     mac_eng.local_upsert("profile_items", "new-mac-1", {**tmpl, "content": "mac added", "topic": "tm"})
     cloud_eng.local_upsert("profile_items", "new-cloud-1", {**tmpl, "content": "cloud added", "topic": "tc"})
     del_target = sorted(r.record_id for r in mac_store.live_items())[0]

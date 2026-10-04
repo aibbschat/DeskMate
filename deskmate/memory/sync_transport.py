@@ -46,7 +46,8 @@ from .sync_daemon import OplogStore, Op, Transport
 
 
 class _OplogHandler(BaseHTTPRequestHandler):
-    """GET /oplog?after=<seq> 拉增量；POST /oplog 推一批 Op（JSON 数组）。"""
+    """GET /oplog?after=<seq> 拉增量；GET /snapshot?table=X 拉某表存量快照；
+    POST /oplog 推一批 Op（JSON 数组）。"""
 
     server_version = "XiaoJuOplog/1.0"
 
@@ -60,15 +61,50 @@ class _OplogHandler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:  # noqa: N802  (stdlib 命名约定)
         parsed = urllib.parse.urlparse(self.path)
-        if parsed.path != "/oplog":
+        if parsed.path == "/oplog":
+            self._get_oplog(parsed)
+        elif parsed.path == "/snapshot":
+            self._get_snapshot(parsed)
+        else:
             self.send_error(404)
-            return
+
+    def _get_oplog(self, parsed) -> None:
         try:
             after = int(urllib.parse.parse_qs(parsed.query).get("after", ["0"])[0])
         except (TypeError, ValueError):
             after = 0
         ops = self.server.oplog.since(after)  # type: ignore[attr-defined]
         body = ("[" + ",".join(o.to_json() for o in ops) + "]").encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _get_snapshot(self, parsed) -> None:
+        """首连基线对账用：返回某同步表全部**活**记录的快照（过滤已删/已过期）。
+
+        与 SyncEngine.reconcile_baseline_oplog 的消费端（live_items 语义）保持一致：
+        不把已过期（valid_until 早于现在）或已删记录当活记录推给对端，避免首连基线
+        把过期记录当活记录传播、对账口径对不上。
+        """
+        table = urllib.parse.parse_qs(parsed.query).get("table", [""])[0]
+        stores = getattr(self.server, "stores", None)  # type: ignore[attr-defined]
+        if not stores or table not in stores:
+            self.send_error(404)
+            return
+        recs = []
+        for r in stores[table].live_items():
+            recs.append(
+                {
+                    "record_id": r.record_id,
+                    "data": r.data,
+                    "hlc": r.hlc.to_str(),
+                    "tombstone": r.tombstone,
+                    "valid_until": r.valid_until,
+                }
+            )
+        body = json.dumps(recs, ensure_ascii=False).encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
@@ -98,12 +134,23 @@ class _OplogHandler(BaseHTTPRequestHandler):
 
 
 class HttpOplogServer:
-    """把本端 ``OplogStore`` 暴露成回环 HTTP 端点。"""
+    """把本端 ``OplogStore`` 暴露成回环 HTTP 端点。
 
-    def __init__(self, oplog: OplogStore, host: str = "127.0.0.1", port: int = 8765) -> None:
+    ``stores``（可选）：``{表名: store}``，供 ``/snapshot?table=X`` 首连基线对账拉
+    本端某表存量快照。不传则 ``/snapshot`` 返回 404。
+    """
+
+    def __init__(
+        self,
+        oplog: OplogStore,
+        host: str = "127.0.0.1",
+        port: int = 8765,
+        stores: Optional[dict] = None,
+    ) -> None:
         self.oplog = oplog
         self.host = host
         self.port = port
+        self.stores = stores
         self._httpd: Optional[ThreadingHTTPServer] = None
         self._thread: Optional[threading.Thread] = None
 
@@ -111,6 +158,7 @@ class HttpOplogServer:
         """启动；返回实际监听端口（port=0 时由系统分配）。"""
         self._httpd = ThreadingHTTPServer((self.host, self.port), _OplogHandler)
         self._httpd.oplog = self.oplog  # type: ignore[attr-defined]
+        self._httpd.stores = self.stores  # type: ignore[attr-defined]
         self._thread = threading.Thread(target=self._httpd.serve_forever, daemon=True)
         self._thread.start()
         self.port = self._httpd.server_address[1]
@@ -157,6 +205,13 @@ class HttpOplogTransport(Transport):
         )
         with urllib.request.urlopen(req, timeout=self.timeout) as resp:  # noqa: S310
             resp.read()
+
+    def pull_snapshot(self, table: str) -> list:
+        """首连基线对账：拉对端某同步表的存量快照（记录 dict 列表）。"""
+        url = f"{self.base_url}/snapshot?table={urllib.parse.quote(table)}"
+        req = urllib.request.Request(url)
+        with urllib.request.urlopen(req, timeout=self.timeout) as resp:  # noqa: S310
+            return json.loads(resp.read())
 
 
 # ---------------------------------------------------------------------------

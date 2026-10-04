@@ -56,6 +56,19 @@ def local_stats():
     ).fetchone()
 
 
+def table_stats(table):
+    """阶段2 扩展：任意表同步健康度 (COUNT,null_uuid,distinct,null_hlc,tomb)。
+    表或同步列尚未迁移（部署前）则返 None → 调用方 SKIP，避免假 FAIL。"""
+    c = sqlite3.connect(LOCAL_DB)
+    try:
+        return c.execute(
+            f"SELECT COUNT(*), SUM(sync_uuid IS NULL), COUNT(DISTINCT sync_uuid),"
+            f" SUM(sync_hlc IS NULL), SUM(sync_tombstone) FROM {table}"
+        ).fetchone()
+    except Exception:
+        return None
+
+
 def local_uuids():
     c = sqlite3.connect(LOCAL_DB)
     return [r[0] for r in c.execute("SELECT sync_uuid FROM profile_items ORDER BY sync_uuid")]
@@ -210,6 +223,17 @@ def main():
     rc, out = run_tests()
     print(f"\n[同步单测] {out.strip()}")
     check("同步单测全绿", rc == 0, "pytest 退出码 0" if rc == 0 else "有失败")
+
+    # 3b) 阶段2 扩展：learned_history / loved_entries 同步健康度（二蛋 review 点名）。
+    #     未迁移（部署前）则 SKIP，不污染阶段1 验收结论；部署后自动转为硬判据。
+    for t in ("learned_history", "loved_entries"):
+        ts = table_stats(t)
+        if ts is None:
+            print(f"[SKIP] 阶段2[{t}] 同步健康度: 表或同步列尚未迁移（部署阶段2 后验收）")
+            continue
+        print(f"\n[本地 Mac 活库] {t} 统计 = {tuple(ts)}")
+        check(f"阶段2[{t}] 无同步身份缺失", ts[1] == 0,
+              f"sync_uuid NULL={ts[1]} COUNT={ts[0]} distinct={ts[2]}")
 
     # 4) origin 红线
     try:

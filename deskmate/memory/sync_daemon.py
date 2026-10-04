@@ -238,40 +238,71 @@ class OplogStore:
 class SyncEngine:
     """B 类记录级同步引擎：本地变更 → oplog；远端 oplog → 应用（LWW 收敛）。"""
 
-    def __init__(self, store: MemoryStore, oplog: OplogStore, node: str) -> None:
-        self.store = store
+    def __init__(
+        self, store, oplog: OplogStore, node: str, table: str = "profile_items"
+    ) -> None:
         self.oplog = oplog
         self.node = node
         self._last: Optional[HLC] = None  # 仅用于本节点 HLC 单调；与同步游标无关
+        if isinstance(store, dict):
+            # 多表引擎：{table: store}
+            self._stores = store
+            self.store = None  # 多表不暴露单一 store；逐表用 self.stores
+        else:
+            self.store = store
+            self._stores = {table: store}
+        self.stores = self._stores  # 公开别名，运行器/基线对账用
 
     # ---- 本地写（生成 oplog 事件） ----
     def local_upsert(
         self, table: str, record_id: str, data: dict, valid_until: Optional[int] = None
     ) -> HLC:
+        st = self._store_for(table)
         hlc = HLC.now(self.node, self._last)
         self._last = hlc
-        self.store.upsert(record_id, data, hlc, valid_until)
+        st.upsert(record_id, data, hlc, valid_until)
         self.oplog.append(Op(table, record_id, "upsert", hlc, dict(data), origin=self.node))
         return hlc
 
     def local_delete(self, table: str, record_id: str) -> HLC:
+        st = self._store_for(table)
         hlc = HLC.now(self.node, self._last)
         self._last = hlc
-        self.store.delete(record_id, hlc)
+        st.delete(record_id, hlc)
         self.oplog.append(Op(table, record_id, "delete", hlc, tombstone=True, origin=self.node))
         return hlc
 
-    # ---- 远端事件应用（LWW 收敛） ----
-    def apply_remote(self, ops: list[Op]) -> None:
-        for op in ops:
-            self._apply_one(op)
+    def _store_for(self, table: str):
+        if self.store is not None:
+            # 单表引擎（向后兼容单表测试）：忽略 table 参数，统一写唯一 store
+            return self.store
+        st = self._stores.get(table)
+        if st is None:
+            raise KeyError(
+                f"同步引擎未注册表 {table!r} 的 store（已注册：{list(self._stores)}）"
+            )
+        return st
 
-    def _apply_one(self, op: Op) -> None:
+    # ---- 远端事件应用（LWW 收敛；按 op.table 路由） ----
+    def apply_remote(self, ops: list[Op]) -> None:
+        if self.store is not None:
+            # 单表引擎（向后兼容）：所有 op 应用到唯一 store，忽略 op.table
+            for op in ops:
+                self._apply_one_to(self.store, op)
+            return
+        for op in ops:
+            st = self._stores.get(op.table)
+            if st is None:
+                # 不在本引擎同步范围内的表（如尚未纳入的访谈/日记）——静默跳过，fail-safe
+                continue
+            self._apply_one_to(st, op)
+
+    def _apply_one_to(self, store, op: Op) -> None:
         # 回声防护：本节点产生的事件经对端转发回来，直接跳过（自己本来就有）。
         # origin 为 None 的旧/存量事件不拦截，保持兼容。
         if op.origin is not None and op.origin == self.node:
             return
-        existing = self.store.get(op.record_id)
+        existing = store.get(op.record_id)
         # 幂等：本端已有同 HLC 的该记录 → 跳过
         if existing is not None and existing.hlc == op.hlc:
             return
@@ -281,15 +312,29 @@ class SyncEngine:
         # 本端有更新的记录（HLC 更晚）→ 远端更旧，跳过（LWW 后者胜）
         if existing is not None and op.hlc < existing.hlc:
             return
-        # 远端更新（或本端无记录）→ 应用
+        # 业务表无此记录（已删除或从未见过）→ 查墓碑侧表：若已删且删除不比该 upsert 旧，
+        # 跳过（防陈旧/迟到 upsert 复活已删记录）。MemoryStore 无侧表，getattr 返回 None 即跳过。
+        ht = getattr(store, "has_tombstone", None)
+        if (
+            ht is not None
+            and existing is None
+            and not (op.tombstone or op.op == "delete")
+            and ht(op.record_id, op.hlc)
+        ):
+            return
+        # 远端更新（或本端无记录）→ 应用（用路由到的 store 参数，勿用 self.store）
         if op.tombstone or op.op == "delete":
-            self.store.delete(op.record_id, op.hlc)
+            store.delete(op.record_id, op.hlc)
         else:
-            self.store.upsert(op.record_id, op.payload, op.hlc)
+            store.upsert(op.record_id, op.payload, op.hlc)
 
-    # ---- 按 uuid 逐条对账（防假绿验收口径） ----
+    # ---- 按 uuid 逐条对账（防假绿验收口径；单表引擎用） ----
     def reconcile(self, other: "MemoryStore") -> dict:
         """逐 uuid 对比本端与对端（仅活记录），返回缺失/分歧报告。"""
+        if self.store is None:
+            raise RuntimeError(
+                "多表引擎请用 reconcile_baseline({table: store}) 逐表对账；reconcile() 仅单表"
+            )
         local = {r.record_id: r for r in self.store.live_items()}
         remote = {r.record_id: r for r in other.live_items()}
         missing_local = [rid for rid in remote if rid not in local]
@@ -483,6 +528,70 @@ def reconcile_baseline(local: "MemoryStore", remote: "MemoryStore", node: str) -
         winner = a if a.hlc >= b.hlc else b
         _write_record(local, winner)
         _write_record(remote, winner)
+        report["conflicts"].append(rid)
+        report["resolved"] += 1
+    return report
+
+
+def reconcile_baseline_oplog(
+    local_store: "MemoryStore",
+    remote_snapshot: "MemoryStore",
+    engine: "SyncEngine",
+    table: str,
+    node: str,
+) -> dict:
+    """首连基线对账（含存量 a_only / b_only）+ 经本地 oplog 把增量推给对端。
+
+    用于运行器：本端只有 ``local_store``（真实 SQLite），对端只有经 HTTP 拉来的
+    只读 ``remote_snapshot``（MemoryStore）。本函数同时让「本端独有 / 本端胜出」的
+    记录经 ``engine.oplog`` 追加（origin=本端），由随后 tick 推给对端，从而双向收敛；
+    「对端独有 / 对端胜出」的则直接写本端 store（触发 DB 触发器→进 oplog→推回对端，
+    对端幂等）。
+
+    与 ``reconcile_baseline``（双向 store 直写）的区别：本函数只持有一端真实 store +
+    一端只读快照，故用 oplog 把「本端应外发」的记录推给对端，避免对端不可达时写丢。
+    幂等可重跑；不污染后续纯增量同步。
+    """
+    L = {r.record_id: r for r in local_store.items()}
+    R = {r.record_id: r for r in remote_snapshot.items()}
+    report = {"local_only": [], "remote_only": [], "conflicts": [], "resolved": 0}
+    # 对端独有 → 写本端 store（suppress 触发器、不回声）：仅在本端物化该记录；
+    # 对端本就持有它，无需回推（回推会撞 echo 防护被对端跳过，无副作用）。
+    for rid, rec in R.items():
+        if rid not in L:
+            _write_record(local_store, rec)
+            report["remote_only"].append(rid)
+    # 本端独有 → 经 oplog 追加（origin=本端），由随后 tick 推给对端（保留原 HLC）。
+    # 墓碑（已删）则外发 delete op，而非空数据 upsert。
+    for rid, rec in L.items():
+        if rid not in R:
+            if rec.tombstone:
+                engine.oplog.append(
+                    Op(table, rid, "delete", rec.hlc, {}, tombstone=True, origin=node)
+                )
+            else:
+                engine.oplog.append(
+                    Op(table, rid, "upsert", rec.hlc, dict(rec.data), origin=node)
+                )
+            report["local_only"].append(rid)
+    # 冲突：按 HLC LWW，胜者外发/写入（胜者若为墓碑则外发 delete op）
+    for rid in set(L) & set(R):
+        a, b = L[rid], R[rid]
+        if a.hlc == b.hlc:
+            continue
+        if a.hlc >= b.hlc:
+            # 本端胜 → 经 oplog 推给对端（墓碑则 delete op）
+            if a.tombstone:
+                engine.oplog.append(
+                    Op(table, rid, "delete", a.hlc, {}, tombstone=True, origin=node)
+                )
+            else:
+                engine.oplog.append(
+                    Op(table, rid, "upsert", a.hlc, dict(a.data), origin=node)
+                )
+        else:
+            # 对端胜 → 写本端 store（suppress、不回声）；对端本就持有，无需回推
+            _write_record(local_store, b)
         report["conflicts"].append(rid)
         report["resolved"] += 1
     return report

@@ -24,6 +24,7 @@ from deskmate.memory.sync_daemon import (
     Transport,
     new_uuid,
     reconcile_baseline,
+    reconcile_baseline_oplog,
 )
 from deskmate.memory.sync_store_sqlite import (
     migrate,
@@ -144,10 +145,15 @@ def test_no_resurrection_after_delete(pair):
     n["dB"].tick()
     n["dA"].tick()  # A 拿到 X
     # A 删除 X（HLC 晚于 B 的写）
-    n["eA"].local_delete("profile_items", x)
+    del_hlc = n["eA"].local_delete("profile_items", x)
     n["dA"].tick()
     n["dB"].tick()  # B 也删 X
-    assert n["sA"].get(x).tombstone, "A 应已删除 X"
+    # 阶段 2 P0 修复后：业务行物理删除（get 返回墓碑，非活记录），墓碑落独立侧表
+    ax = n["sA"].get(x)
+    assert ax is not None and ax.tombstone, "A 应已删除 X（get 返回墓碑）"
+    assert n["sA"].has_tombstone(x, del_hlc), "A 应记墓碑侧表"
+    bx = n["sB"].get(x)
+    assert bx is not None and bx.tombstone, "B 端也应已删除 X"
 
     # 模拟 B 把 X 的旧 upsert 事件重推（断网/重发场景）
     old_ops = [
@@ -155,7 +161,7 @@ def test_no_resurrection_after_delete(pair):
         if op.record_id == x and not op.tombstone
     ]
     n["eA"].apply_remote(old_ops)
-    assert n["sA"].get(x).tombstone, "遗忘不应被旧副本复活"
+    assert n["sA"].get(x) is not None and n["sA"].get(x).tombstone, "遗忘不应被旧副本复活"
 
 
 def test_backfill_idempotent(pair):
@@ -164,7 +170,7 @@ def test_backfill_idempotent(pair):
     c = sqlite3.connect(ca)
     r = migrate(c, "mac")
     c.close()
-    assert r["backfilled"] == 0, "二次 migrate 不应再回填"
+    assert r["backfilled"] == {"profile_items": 0}, "二次 migrate 不应再回填"
     cA = sqlite3.connect(ca)
     n_sync = cA.execute(
         "SELECT COUNT(*) FROM profile_items WHERE sync_uuid IS NULL"
@@ -269,17 +275,24 @@ def test_baseline_idempotent(divergent_pair):
     ), r2
 
 def test_sqlite_delete_missing_record_creates_tombstone(pair):
-    """回归（review 基线对账发现）：对 SQLite 从未存在过的 record 调 delete，
-    必须落墓碑，与 MemoryStore.delete 行为对齐，防止陈旧副本日后重放旧 upsert。"""
+    """回归（二蛋 review P0）：对 SQLite 从未存在过的 record 调 delete，必须落墓碑
+    侧表，**且业务表不插 sync_tombstone=1 占位行**——否则生产 NOT NULL 列会崩，且
+    app 直读 learned_history/loved_entries 不感知该列会读到幽灵行。"""
     ca, _ = pair
     c = sqlite3.connect(ca)
     s = SQLiteSyncStore(c)
     missing = new_uuid()
     s.delete(missing, HLC(9_999_999_999_999, 0, "cloud"))
-    row = c.execute(
-        "SELECT sync_tombstone FROM profile_items WHERE sync_uuid=?", (missing,)
+    biz = c.execute(
+        "SELECT COUNT(*) FROM profile_items WHERE sync_uuid=?", (missing,)
+    ).fetchone()[0]
+    assert biz == 0, "删除不存在的记录不应在业务表留占位行"
+    tomb = c.execute(
+        "SELECT hlc FROM _sync_tombstones "
+        "WHERE table_name='profile_items' AND record_id=?",
+        (missing,),
     ).fetchone()
-    assert row is not None and row[0] == 1, "删除不存在的记录必须插入墓碑"
+    assert tomb is not None, "删除不存在的记录必须落墓碑侧表"
     c.close()
 
 def test_sqlite_oplog_preserves_origin(pair):
@@ -362,4 +375,493 @@ def test_sqlite_oplog_append_backfills_seq():
     # 旧 op 对象的 seq 不应被后续 append 污染
     assert op1.seq < op2.seq
     c.close()
+
+
+# ===========================================================================
+# 阶段 2：多表（learned_history / loved_entries）+ DB 触发器捕获
+# ===========================================================================
+
+CREATE_LEARNED = """CREATE TABLE learned_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts TEXT, fact TEXT, category TEXT, fp TEXT UNIQUE,
+    source TEXT, entity TEXT, polarity TEXT, status TEXT,
+    superseded_by TEXT, valid_until TEXT, valid_from TEXT
+)"""
+
+CREATE_LOVED = """CREATE TABLE loved_entries (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    moment_id TEXT, content TEXT, day TEXT, created_at TEXT, tags TEXT
+)"""
+
+SYNCED_TABLES = ("profile_items", "learned_history", "loved_entries")
+
+
+def _snapshot_from_store(store):
+    """把某表 store 的 items() 还原成只读 MemoryStore 快照（供基线对账）。"""
+    ms = MemoryStore()
+    for r in store.items():
+        ms.upsert(r.record_id, dict(r.data), r.hlc, r.valid_until)
+        if r.tombstone:
+            ms.delete(r.record_id, r.hlc)
+    return ms
+
+
+def _build_triple():
+    """造一对三表齐全的 DB（A=mac / B=cloud），存量经 migrate 回填（不进 oplog）。
+
+    返回 ``(ca, cb, res_a)``，``res_a`` 为 A 侧首次 migrate 的回填报告（断言用）。
+    """
+    d = tempfile.mkdtemp(prefix="pt_sync_triple_")
+    ca, cb = os.path.join(d, "a.db"), os.path.join(d, "b.db")
+    # A 侧存量：profile p0/p1/pA；learned fpA1/fpA2；loved 暂无
+    cA = sqlite3.connect(ca)
+    cA.execute(CREATE)
+    cA.execute(CREATE_LEARNED)
+    cA.execute(CREATE_LOVED)
+    cA.executemany(
+        "INSERT INTO profile_items(id,topic,content) VALUES(?,?,?)",
+        [("p0", "tp0", "cp0"), ("p1", "tp1", "cp1"), ("pA", "tpA", "cpA")],
+    )
+    cA.executemany(
+        "INSERT INTO learned_history(fact,category,fp) VALUES(?,?,?)",
+        [("A fact1", "hist", "fpA1"), ("A fact2", "hist", "fpA2")],
+    )
+    cA.commit()
+    cA.close()
+    # B 侧存量：profile p0/p1/pB；learned fpB1；loved mB
+    cB = sqlite3.connect(cb)
+    cB.execute(CREATE)
+    cB.execute(CREATE_LEARNED)
+    cB.execute(CREATE_LOVED)
+    cB.executemany(
+        "INSERT INTO profile_items(id,topic,content) VALUES(?,?,?)",
+        [("p0", "tp0", "cp0"), ("p1", "tp1", "cp1"), ("pB", "tpB", "cpB")],
+    )
+    cB.execute(
+        "INSERT INTO learned_history(fact,category,fp) VALUES(?,?,?)",
+        ("B fact1", "hist", "fpB1"),
+    )
+    cB.execute(
+        "INSERT INTO loved_entries(moment_id,content,day) VALUES(?,?,?)",
+        ("mB", "B love", "2026-02-02"),
+    )
+    cB.commit()
+    cB.close()
+    res_a = None
+    for p, node in ((ca, "mac"), (cb, "cloud")):
+        c = sqlite3.connect(p)
+        r = migrate(c, node)
+        c.close()
+        if node == "mac":
+            res_a = r
+    return ca, cb, res_a
+
+
+def _side_engines(path, node, other_oplog):
+    """构造一侧引擎（多表 store）+ 指向对端 oplog 的 daemon。"""
+    c = sqlite3.connect(path)
+    oplog = SQLiteOplogStore(c)
+    stores = {t: SQLiteSyncStore(c, t) for t in SYNCED_TABLES}
+    eng = SyncEngine(stores, oplog, node)
+    daemon = SyncDaemon(eng, InMemoryTransport(other_oplog))
+    return c, oplog, stores, eng, daemon
+
+
+def test_multi_table_migrate_backfill():
+    """三表一并迁移 + 确定性回填（两端同源主键 → 同 sync_uuid）。"""
+    ca, _, res_a = _build_triple()  # res_a = A 侧首次 migrate 回填报告
+    assert res_a["backfilled"] == {
+        "profile_items": 3,
+        "learned_history": 2,
+        "loved_entries": 0,
+    }, res_a
+    assert res_a["skipped"] == [], "三表都在，不应跳过"
+    cA = sqlite3.connect(ca)
+    for t in SYNCED_TABLES:
+        n = cA.execute(
+            f"SELECT COUNT(*) FROM {t} WHERE sync_uuid IS NULL"
+        ).fetchone()[0]
+        assert n == 0, f"{t} 不应有 sync_uuid 为空的行"
+    cA.close()
+
+
+def test_app_direct_write_captured_by_trigger():
+    """阶段 2 核心价值：真实 app 直写（绕过 SQLiteSyncStore）经 DB 触发器进 oplog。
+
+    这补上阶段 1 的边界缺口——app 直写 profile_items 之前不进 oplog，现在自动进。
+    """
+    d = tempfile.mkdtemp(prefix="pt_sync_trig_")
+    db = os.path.join(d, "t.db")
+    c = sqlite3.connect(db)
+    c.execute(CREATE)
+    c.execute(CREATE_LEARNED)
+    c.commit()
+    migrate(c, "mac")
+    c.close()
+
+    c = sqlite3.connect(db)
+    oplog = SQLiteOplogStore(c)
+    # app 直写 learned_history（绕过 store）
+    c.execute(
+        "INSERT INTO learned_history(fact,category,fp) VALUES(?,?,?)",
+        ("f1", "hist", "fp1"),
+    )
+    suid = c.execute(
+        "SELECT sync_uuid FROM learned_history WHERE fp='fp1'"
+    ).fetchone()[0]
+    c.execute("UPDATE learned_history SET fact='f1edit' WHERE fp='fp1'")
+    c.execute("DELETE FROM learned_history WHERE fp='fp1'")
+    c.commit()
+    ops = oplog.all()
+    rec_ops = [o for o in ops if o.record_id == suid]
+    # 应有：insert→upsert、update→upsert、delete→delete，共 3 条，且都进 oplog
+    assert [o.op for o in rec_ops] == ["upsert", "upsert", "delete"], rec_ops
+    assert all(o.table == "learned_history" for o in rec_ops)
+    assert all(o.origin == "mac" for o in rec_ops)
+    assert rec_ops[-1].tombstone is True
+    c.close()
+
+
+def test_engine_write_not_duplicated_by_trigger():
+    """回归：引擎经 store.upsert/delete 写入时 suppress 触发器，oplog 不会重复落 op。"""
+    ca, _, _ = _build_triple()
+    c = sqlite3.connect(ca)
+    oplog = SQLiteOplogStore(c)
+    eng = SyncEngine({t: SQLiteSyncStore(c, t) for t in SYNCED_TABLES}, oplog, "mac")
+    rid = new_uuid()
+    eng.local_upsert("learned_history", rid, {"fact": "x", "category": "hist", "fp": "fpx"})
+    rid_ops = [o for o in oplog.all() if o.record_id == rid]
+    assert len(rid_ops) == 1, f"引擎 upsert 只应产生 1 条 op，实得 {rid_ops}"
+    assert rid_ops[0].op == "upsert"
+    # 删除同样只产生 1 条 delete op（不应有同 hlc 的 upsert 回声）
+    eng.local_delete("learned_history", rid)
+    rid_ops2 = [o for o in oplog.all() if o.record_id == rid]
+    assert len(rid_ops2) == 2, f"upsert+delete 应共 2 条，实得 {rid_ops2}"
+    assert [o.op for o in rid_ops2] == ["upsert", "delete"]
+    c.close()
+
+
+def test_learned_history_fp_conflict_merge():
+    """learned_history 的 fp 唯一：双端独立学到同一事实（fp 相同）撞 UNIQUE → 按 fp merge。"""
+    ca, _, _ = _build_triple()
+    c = sqlite3.connect(ca)
+    store = SQLiteSyncStore(c, "learned_history")
+    s1, s3 = new_uuid(), new_uuid()
+    store.upsert(s1, {"fact": "A", "category": "hist", "fp": "fpX"}, HLC(1000, 0, "mac"))
+    # 不同 sync_uuid 但同 fp → INSERT 分支撞 UNIQUE(fp) → 触发 conflict_col merge
+    store.upsert(s3, {"fact": "B", "category": "hist", "fp": "fpX"}, HLC(2000, 0, "mac"))
+    n = c.execute("SELECT COUNT(*) FROM learned_history WHERE fp='fpX'").fetchone()[0]
+    assert n == 1, "同 fp 应 merge 为 1 行，不应重复"
+    fact = c.execute("SELECT fact FROM learned_history WHERE fp='fpX'").fetchone()[0]
+    assert fact == "B", "merge 后应为后写的 B"
+    c.close()
+
+
+def test_pk_heterogeneity_remote_insert():
+    """远端 insert：int 自增表省略业务 pk（sqlite 自派 id）；text pk 表显式置 id=record_id。"""
+    ca, _, _ = _build_triple()
+    c = sqlite3.connect(ca)
+    stores = {t: SQLiteSyncStore(c, t) for t in SYNCED_TABLES}
+    eng = SyncEngine(stores, SQLiteOplogStore(c), "mac")
+
+    # learned_history = int 自增：远端 insert 不应设业务 id（让它自派）
+    rid_l = new_uuid()
+    eng.apply_remote([Op("learned_history", rid_l, "upsert", HLC(1000, 0, "mac"),
+                         {"fact": "rl", "category": "hist", "fp": "fpRL"})])
+    row_l = c.execute(
+        "SELECT id, sync_uuid FROM learned_history WHERE sync_uuid=?", (rid_l,)
+    ).fetchone()
+    assert row_l is not None, "远端 insert 应落库"
+    assert isinstance(row_l[0], int) and row_l[0] != rid_l, "int 表 id 应自派、非 sync_uuid"
+    assert row_l[1] == rid_l
+
+    # profile_items = text pk，业务 id 在 data['id']：远端 insert 后 id 列=业务值（非 sync_uuid）
+    rid_p = new_uuid()
+    eng.apply_remote([Op("profile_items", rid_p, "upsert", HLC(1001, 0, "mac"),
+                         {"id": "pX", "topic": "tp", "content": "cp"})])
+    row_p = c.execute(
+        "SELECT id, sync_uuid FROM profile_items WHERE sync_uuid=?", (rid_p,)
+    ).fetchone()
+    assert row_p is not None, "远端 insert 应落库"
+    assert row_p[0] == "pX", f"text pk 表 id 列应=业务主键 data['id']='pX'，实得 {row_p[0]!r}"
+    assert row_p[1] == rid_p, "sync_uuid 列应=record_id"
+    c.close()
+
+
+def test_multi_table_apply_remote_routing():
+    """多表引擎按 op.table 路由，互不串表；且回声防护（origin==本端）跳过。"""
+    ca, _, _ = _build_triple()
+    c = sqlite3.connect(ca)
+    stores = {t: SQLiteSyncStore(c, t) for t in SYNCED_TABLES}
+    eng = SyncEngine(stores, SQLiteOplogStore(c), "mac")
+
+    # 跨表两条 op：互不串
+    eng.apply_remote([
+        Op("profile_items", new_uuid(), "upsert", HLC(1000, 0, "mac"),
+           {"topic": "pt", "content": "pc"}),
+        Op("learned_history", new_uuid(), "upsert", HLC(1001, 0, "mac"),
+           {"fact": "lf", "category": "hist", "fp": "fpRoute"}),
+    ])
+    # 回声：origin==mac 的 op（模拟对端转发回本端）不应被本端应用
+    echo_rid = new_uuid()
+    eng.apply_remote([Op("loved_entries", echo_rid, "upsert", HLC(1002, 0, "mac"),
+                         {"moment_id": "m", "content": "c", "day": "d"}, origin="mac")])
+    # loved_entries 处应有 fpRoute? 不——loved 那条 origin==mac 被回声防护跳过
+    assert stores["loved_entries"].get(echo_rid) is None, "回声 op 不应落本端"
+    # profile / learned 各 1 条，loved 0 条
+    assert len(stores["profile_items"].items()) == 1 + 3  # +3 存量迁移回填
+    assert len([r for r in stores["learned_history"].items() if r.data.get("fp") == "fpRoute"]) == 1
+    c.close()
+
+
+def test_baseline_oplog_bidirectional_convergence():
+    """首连基线（多表）：两端游标归零时，逐表拉对端快照一次性全量对账 + 增量 tick → 双端收敛。"""
+    ca, cb, _ = _build_triple()
+    cA = sqlite3.connect(ca)
+    oplogA = SQLiteOplogStore(cA)
+    cB = sqlite3.connect(cb)
+    oplogB = SQLiteOplogStore(cB)
+    # 先各造引擎（自持 oplog），基线对账用
+    storesA = {t: SQLiteSyncStore(cA, t) for t in SYNCED_TABLES}
+    storesB = {t: SQLiteSyncStore(cB, t) for t in SYNCED_TABLES}
+    engA = SyncEngine(storesA, oplogA, "mac")
+    engB = SyncEngine(storesB, oplogB, "cloud")
+
+    # 两端各自跑基线（模拟首连：两端游标都=0 都会触发）
+    for t in SYNCED_TABLES:
+        reconcile_baseline_oplog(storesA[t], _snapshot_from_store(storesB[t]), engA, t, "mac")
+        reconcile_baseline_oplog(storesB[t], _snapshot_from_store(storesA[t]), engB, t, "cloud")
+
+    # 增量 tick（A↔B 交叉传输）
+    dA = SyncDaemon(engA, InMemoryTransport(oplogB))
+    dB = SyncDaemon(engB, InMemoryTransport(oplogA))
+    for _ in range(4):
+        dA.tick()
+        dB.tick()
+
+    for t in SYNCED_TABLES:
+        la = {r.record_id: r.data for r in storesA[t].live_items()}
+        lb = {r.record_id: r.data for r in storesB[t].live_items()}
+        assert set(la) == set(lb), f"[{t}] 两端活记录集合应一致: A={set(la)} B={set(lb)}"
+
+    # 具体核对（store.record_id 是确定性 sync_uuid，不是业务 id，故查底层 DB 业务键）：
+    # A 独有 pA、B 独有 pB；learned 双端 fpA1/fpA2/fpB1；loved 双端 mB
+    a_prof = {r[0] for r in cA.execute("SELECT id FROM profile_items WHERE sync_tombstone=0")}
+    b_prof = {r[0] for r in cB.execute("SELECT id FROM profile_items WHERE sync_tombstone=0")}
+    assert {"pA", "pB"}.issubset(a_prof) and {"pA", "pB"}.issubset(b_prof)
+    a_fp = {r[0] for r in cA.execute("SELECT fp FROM learned_history WHERE sync_tombstone=0")}
+    b_fp = {r[0] for r in cB.execute("SELECT fp FROM learned_history WHERE sync_tombstone=0")}
+    assert {"fpA1", "fpA2", "fpB1"}.issubset(a_fp) and {"fpA1", "fpA2", "fpB1"}.issubset(b_fp)
+    a_loved = {r[0] for r in cA.execute("SELECT moment_id FROM loved_entries WHERE sync_tombstone=0")}
+    b_loved = {r[0] for r in cB.execute("SELECT moment_id FROM loved_entries WHERE sync_tombstone=0")}
+    assert "mB" in a_loved and "mB" in b_loved, "A/B 应经基线互拿对方 loved"
+    cA.close()
+    cB.close()
+
+
+# ---------------------------------------------------------------------------
+# 生产真 DDL 对齐测试（二蛋 review P0：测试库 schema 必须与生产逐字一致，否则假绿）
+# ---------------------------------------------------------------------------
+
+_FIXTURE = os.path.join(os.path.dirname(__file__), "fixtures", "real_schema.sql")
+
+
+def _real_schema_db():
+    """用生产真 DDL 建库（含 NOT NULL 约束），返回临时 db 路径。"""
+    d = tempfile.mkdtemp(prefix="pt_real_schema_")
+    db = os.path.join(d, "real.db")
+    c = sqlite3.connect(db)
+    with open(_FIXTURE, encoding="utf-8") as f:
+        c.executescript(f.read())
+    c.commit()
+    c.close()
+    return db
+
+
+def test_p0_unseen_delete_no_crash_with_real_schema():
+    """P0 回归：生产真 DDL（NOT NULL）下，删除本端从未见过的记录不得崩，
+    业务表不留占位行，墓碑落独立侧表。三表全验。"""
+    db = _real_schema_db()
+    c = sqlite3.connect(db)
+    migrate(c, "mac")
+    c.close()
+    for t in SYNCED_TABLES:
+        c = sqlite3.connect(db)
+        st = SQLiteSyncStore(c, t)
+        ghost = "deskmate:" + t + ":ghost"
+        try:
+            st.delete(ghost, HLC(2000, 0, "cloud"))
+        except Exception as e:  # noqa: BLE001
+            c.close()
+            raise AssertionError(f"{t} 生产 DDL 下删除未见过记录应不崩，却: {e!r}")
+        # 业务表无占位行
+        n = c.execute(
+            f"SELECT COUNT(*) FROM {t} WHERE sync_uuid=?", (ghost,)
+        ).fetchone()[0]
+        assert n == 0, f"{t} 不应在业务表留占位行"
+        # 侧表有墓碑
+        tb = c.execute(
+            "SELECT hlc FROM _sync_tombstones WHERE table_name=? AND record_id=?",
+            (t, ghost),
+        ).fetchone()
+        assert tb is not None, f"{t} 应落墓碑侧表"
+        c.close()
+
+
+def test_p0_real_schema_full_converge_with_unseen_delete():
+    """P0 端到端：两套生产真 DDL 库，A 删除一条 B 从未有过的记录，
+    同步须收敛且不崩、不卡死（验证 apply_remote 无 per-op try 时也不传播异常）。"""
+    da, db = _real_schema_db(), _real_schema_db()
+    # 各自种子：profile 用 p0/p1；learned 用 fpA/fpB（fp UNIQUE）
+    for p, node, prows, frows in (
+        (da, "mac", [("p0", "dimA"), ("p1", "dimA")],
+         [("2026-01-01", "mac fact", "fpA"), ("2026-01-02", "mac fact2", "fpB")]),
+        (db, "cloud", [("p0", "dimA"), ("p1", "dimA")],
+         [("2026-01-01", "cloud fact", "fpA"), ("2026-01-03", "cloud fact3", "fpC")]),
+    ):
+        c = sqlite3.connect(p)
+        for pid, dim in prows:
+            c.execute(
+                "INSERT INTO profile_items(id, dimension, topic, content) VALUES(?,?,?,?)",
+                (pid, dim, "t", "c"),
+            )
+        for ts, fact, fp in frows:
+            c.execute(
+                "INSERT INTO learned_history(ts, fact, category, fp, source, status) "
+                "VALUES(?,?,?,?,?,?)",
+                (ts, fact, "hist", fp, "live", "active"),
+            )
+        c.commit()
+        c.close()
+        c = sqlite3.connect(p)
+        migrate(c, node)
+        c.close()
+
+    # 构造两端引擎（内存 oplog + 内存 transport 互连）
+    def _build(p, node):
+        c = sqlite3.connect(p)
+        stores = {t: SQLiteSyncStore(c, t) for t in SYNCED_TABLES}
+        oplog = SQLiteOplogStore(c)
+        eng = SyncEngine(stores, oplog, node)
+        return c, stores, eng
+
+    cA, sA, eA = _build(da, "mac")
+    cB, sB, eB = _build(db, "cloud")
+    # 内存 transport 互连两端 oplog
+    oA, oB = eA.oplog, eB.oplog
+    dA = SyncDaemon(eA, InMemoryTransport(oB))
+    dB = SyncDaemon(eB, InMemoryTransport(oA))
+
+    # 首轮收敛
+    for _ in range(3):
+        dA.tick()
+        dB.tick()
+
+    # 先抓 uuid（删除后业务行物理消失，无法再查）
+    fpB_uuid = _uuid_of_real(da, "fpB")
+    fpA_uuid = _uuid_of_real(da, "fpA")
+    # A 删除一条 B 从未有过的 learned 记录 fpB（mac 独有）
+    del_hlc = eA.local_delete("learned_history", fpB_uuid)
+    # A 也删除一条 B 有过的 fpA（seen delete on B 侧）
+    eA.local_delete("learned_history", fpA_uuid)
+
+    # 关键：同步不得崩、不得卡死
+    for _ in range(3):
+        dA.tick()
+        dB.tick()
+
+    # P0 断言（不是全集收敛——B 独有的 fpC 是基线前种子、未进 oplog，不会跨端传播；
+    # 这点与「删除不崩不卡」无关，故只验删除语义）：
+    # ① 被删记录两端业务表都不应残留（无占位行、无幽灵行）
+    ca2 = sqlite3.connect(da)
+    n_fpB_A = ca2.execute("SELECT COUNT(*) FROM learned_history WHERE fp='fpB'").fetchone()[0]
+    n_fpA_A = ca2.execute("SELECT COUNT(*) FROM learned_history WHERE fp='fpA'").fetchone()[0]
+    ca2.close()
+    cb2 = sqlite3.connect(db)
+    n_fpA_B = cb2.execute("SELECT COUNT(*) FROM learned_history WHERE fp='fpA'").fetchone()[0]
+    cb2.close()
+    assert n_fpB_A == 0, "A 端 fpB（unseen delete）应物理删除，无占位行"
+    assert n_fpA_A == 0, "A 端 fpA 应物理删除"
+    assert n_fpA_B == 0, "B 端 fpA 经同步应物理删除（unseen→侧表，不崩不卡）"
+    # ② 墓碑侧表确有记录（防复活依据）
+    ca3 = sqlite3.connect(da)
+    n_tomb = ca3.execute(
+        "SELECT COUNT(*) FROM _sync_tombstones "
+        "WHERE table_name='learned_history' AND record_id=?",
+        (fpB_uuid,),
+    ).fetchone()[0]
+    ca3.close()
+    assert n_tomb == 1, "A 端 fpB 应落墓碑侧表"
+    # ③ 同步未卡死：删除后再新增一条，应能跨端传播（游标正常推进）
+    new_uuid_r = "deskmate:learned_history:newAfterDel"
+    eA.local_upsert(
+        "learned_history", new_uuid_r,
+        {"ts": "2026-02-01", "fact": "after-delete", "category": "hist",
+         "fp": "fpNEW", "source": "live", "status": "active"},
+    )
+    for _ in range(3):
+        dA.tick()
+        dB.tick()
+    cc = sqlite3.connect(db)
+    n_new = cc.execute(
+        "SELECT COUNT(*) FROM learned_history WHERE fp='fpNEW'"
+    ).fetchone()[0]
+    cc.close()
+    assert n_new == 1, "删除后新增记录仍应跨端传播（证明未卡死）"
+    cA.close(); cB.close()
+
+
+def test_app_direct_delete_writes_tombstone_side_table():
+    """二蛋复验缺口回归：app 直写删除（AFTER DELETE 触发器路径）必须也落墓碑侧表，
+    否则 has_tombstone() 查不到 → 迟到旧 upsert 可把行复活。
+
+    引擎路径（store.delete）已在 Python 内直写侧表；本测试验证触发器路径补齐后
+    两路语义一致——这正是 P0「删除不防复活」要根治的那一类。
+    """
+    db = _real_schema_db()
+    c = sqlite3.connect(db)
+    c.execute(
+        "INSERT INTO loved_entries(moment_id, content, day, created_at) "
+        "VALUES(?,?,?,?)",
+        ("mX", "love X", "2026-03-03", "2026-03-03"),
+    )
+    c.commit()
+    c.close()
+    c = sqlite3.connect(db)
+    migrate(c, "mac")
+    c.close()
+
+    # app 直写删除（绕过 store.delete，触发器中 suppress=0 照常捕获）
+    c = sqlite3.connect(db)
+    rid = c.execute(
+        "SELECT sync_uuid FROM loved_entries WHERE moment_id='mX'"
+    ).fetchone()[0]
+    c.execute("DELETE FROM loved_entries WHERE sync_uuid=?", (rid,))
+    c.commit()
+    tb = c.execute(
+        "SELECT hlc FROM _sync_tombstones "
+        "WHERE table_name='loved_entries' AND record_id=?",
+        (rid,),
+    ).fetchone()
+    c.close()
+    assert tb is not None, "app 直写删除须落墓碑侧表（二蛋复验缺口已补）"
+    tomb_hlc = HLC.from_str(tb[0])
+
+    st = SQLiteSyncStore(sqlite3.connect(db), "loved_entries")
+    # ① 迟到旧 upsert（hlc 远早于墓碑）→ 应判有墓碑、拦下复活
+    late = HLC(1000, 0, "cloud")  # 远早于墙钟
+    assert st.has_tombstone(rid, late), "墓碑 hlc 晚于迟到 upsert → 应拦下复活"
+    # ② 更新版 upsert（hlc 远晚于墓碑）→ 应放行（LWW 正确语义，不误伤新写入）
+    future = HLC(10**15, 0, "cloud")
+    assert not st.has_tombstone(rid, future), "更新版 upsert（hlc 晚于墓碑）应放行复活"
+
+
+def _uuid_of_real(db, fp):
+    """从生产真 DDL 库读某 fp 的 sync_uuid（learned_history 经 migrate 回填）。"""
+    c = sqlite3.connect(db)
+    row = c.execute(
+        "SELECT sync_uuid FROM learned_history WHERE fp=?", (fp,)
+    ).fetchone()
+    c.close()
+    return row[0]
 

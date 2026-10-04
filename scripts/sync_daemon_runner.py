@@ -17,12 +17,21 @@
 - fail-open：隧道/对端宕仅记日志、不崩主进程；游标持久化、重启续传。
 - **绝不启动 openworker-server**（避免与同步 daemon 双写抢锁）；云端若检测到
   openworker-server 在跑，直接拒绝启动并退出。
-- 阶段 1 只动 ``profile_items`` 一张 B 类表；不改其他表、不碰上游代码。
+- 阶段 1 只动 ``profile_items`` 一张 B 类表；阶段 2 扩展为**按表注册**（SYNC_TABLES，
+默认迁移全部已注册表：profile_items / learned_history / loved_entries），不改其他表、不碰上游代码。
+
+捕获机制（阶段 2 关键）：真实 app 写这些表（LearnedStore / DiaryStore / cognitive 等）
+经**数据库触发器**自动进 ``_sync_oplog``，运行器不必改 app。触发器写入前把 ``_sync_meta.suppress``
+置 1，避免引擎回写远端 op 时回声互弹。
+
+首连基线（阶段 2 关键）：存量迁移只回填 sync_uuid、不进 oplog（与阶段 1 一致），故两端存量
+若不一致，纯增量 tick 不会收敛（二蛋 2026-10-03 实测边界）。运行器在**两端游标都还是 0** 时
+（即首次启动 / 全新部署）逐表拉对端 ``/snapshot`` 快照，做 ``reconcile_baseline_oplog``
+一次性全量对账，使存量双向收敛；之后切回纯增量。幂等可重跑。
 
 已知边界（不藏着）：
-- 当前只传播经 ``SyncEngine.local_*`` 产生的 oplog 事件。遗留 OpenWorker 桌面端若直接写
-  ``profile_items``（不经引擎），不会自动进 oplog，需后续阶段给 app / 加 DB 触发器补这个缺口。
-  本运行器仅保证「机制常驻、oplog 事件实时双向收敛」，不假称已捕获全部业务写。
+- oplog GC / 墓碑业务过滤不在本批（按萧哥决策「先聚焦扩大覆盖」）；遗忘复活防护由引擎 LWW
+  + 墓碑逻辑承担，逻辑层不主动 GC 墓碑行。
 
 用法：
   # Mac（控制端，拨隧道）
@@ -120,7 +129,7 @@ class SyncNode:
         *,
         db_path: str,
         node: str,
-        table: str = "profile_items",
+        table: str = "",
         local_port: int = 8765,
         remote_port: int = 8765,
         fwd_port: int = 18766,
@@ -149,22 +158,29 @@ class SyncNode:
         self._stop = False
         self._consecutive_fail = 0
 
-        # 1) 迁移（幂等，加同步列 + uuid5 回填）。短连接，用完即关。
+        # 1) 迁移（默认全部已注册表；库中不存在的表自动跳过，向前兼容最小化库）。
+        #    阶段 2：profile_items + learned_history + loved_entries 一并上线。
         conn = sqlite3.connect(db_path)
         try:
-            sync_sql.migrate(conn, node, table)
+            res = sync_sql.migrate(conn, node, table or None)
             conn.commit()
         finally:
             conn.close()
+        self.migrated = res["tables"]
+        if res.get("skipped"):
+            LOG.warning("以下已注册表不在库中、已跳过：%s", res["skipped"])
 
-        # 2) 存储 / 引擎（短连接适配器，跨线程安全）
+        # 2) 存储 / 引擎（短连接适配器，跨线程安全）。
+        #    多表引擎：{表: SQLiteSyncStore}，共享一个 oplog（按 op.table 路由）。
         conn = sqlite3.connect(db_path, check_same_thread=False)
-        store = sync_sql.SQLiteSyncStore(conn, table)
         oplog = sync_sql.SQLiteOplogStore(conn)
-        engine = sd.SyncEngine(store, oplog, node)
+        stores = {t: sync_sql.SQLiteSyncStore(conn, t) for t in self.migrated}
+        engine = sd.SyncEngine(stores, oplog, node)
 
-        # 3) 本机 oplog HTTP 端点（仅回环）
-        self.server = st.HttpOplogServer(oplog, host="127.0.0.1", port=local_port)
+        # 3) 本机 oplog HTTP 端点（仅回环），附带 stores 供 /snapshot 首连基线对账
+        self.server = st.HttpOplogServer(
+            oplog, host="127.0.0.1", port=local_port, stores=stores
+        )
 
         # 4) 传输：Mac 达云端（-L 转发），云端达 Mac（-R 转发）
         if side == "mac":
@@ -185,6 +201,13 @@ class SyncNode:
 
         self.cursor = st.CursorStore(self.cursor_path)
         self.daemon = sd.SyncDaemon(engine, self.transport, self.cursor)
+        self.engine = engine
+
+        # 首连基线：两端游标都还是 0 → 需要一次存量全量对账（防二蛋边界）。
+        # 基线成功后置 False，之后只跑纯增量；隧道/对端不可达时保持 True 重试。
+        self._need_baseline = (
+            self.cursor.pull_after_seq == 0 and self.cursor.push_after_seq == 0
+        )
 
     # ---- 生命周期 ----
 
@@ -204,6 +227,11 @@ class SyncNode:
 
     def _tick_once(self) -> dict:
         self._ensure_tunnel()
+        # 首连基线对账（游标归零时）：逐表拉对端快照，写本端 + 经 oplog 推对端。
+        # fail-open：对端不可达则本次跳过，下轮重试，不影响增量同步。
+        if self._need_baseline:
+            if self._run_baseline():
+                self._need_baseline = False
         res = self.daemon.tick_safe()
         if res.get("ok"):
             self._consecutive_fail = 0
@@ -211,6 +239,41 @@ class SyncNode:
             self._consecutive_fail += 1
             LOG.warning("tick 失败(第%d次): %s", self._consecutive_fail, res.get("error"))
         return res
+
+    def _run_baseline(self) -> bool:
+        """首连基线：逐表拉对端快照，reconcile_baseline_oplog 双向收敛。全部成功返 True。"""
+        ok = True
+        for t in self.migrated:
+            try:
+                snap = self.transport.pull_snapshot(t)
+            except Exception as exc:  # noqa: BLE001  (对端不可达 fail-open)
+                LOG.warning("基线对账拉表 %s 快照失败（下轮重试）: %r", t, exc)
+                ok = False
+                continue
+            remote_ms = self._snapshot_to_memory_store(snap)
+            try:
+                rep = self.sd.reconcile_baseline_oplog(
+                    self.engine.stores[t], remote_ms, self.engine, t, self.node
+                )
+                LOG.info(
+                    "基线对账[%s]: remote_only=%d local_only=%d conflicts=%d",
+                    t, len(rep["remote_only"]), len(rep["local_only"]),
+                    len(rep["conflicts"]),
+                )
+            except Exception as exc:  # noqa: BLE001
+                LOG.error("基线对账[%s] 失败: %r", t, exc)
+                ok = False
+        return ok
+
+    def _snapshot_to_memory_store(self, snap: list):
+        """把 /snapshot 拉来的记录 dict 列表还原成 MemoryStore（只读快照）。"""
+        ms = self.sd.MemoryStore()
+        for r in snap:
+            hlc = self.sd.HLC.from_str(r["hlc"])
+            ms.upsert(r["record_id"], r.get("data", {}), hlc, valid_until=r.get("valid_until"))
+            if r.get("tombstone"):
+                ms.delete(r["record_id"], hlc)
+        return ms
 
     def serve_forever(self) -> None:
         self.server.start()
@@ -262,7 +325,11 @@ def _build_argparser() -> argparse.ArgumentParser:
     p.add_argument("--side", choices=["mac", "cloud"], required=True)
     p.add_argument("--db-path", required=True, help="deskmate.db 绝对路径")
     p.add_argument("--node", default="", help="节点名（默认取 side）")
-    p.add_argument("--table", default="profile_items")
+    p.add_argument(
+        "--table",
+        default="",
+        help="只同步单张表（调试用）；留空=迁移并同步全部已注册 B 类表",
+    )
     p.add_argument("--repo-path", default="", help="Mac 侧：openworker 仓库根（导入 deskmate 包）")
     p.add_argument("--cloud-pkg-path", default="", help="云端侧：含 sync/ 包的父目录")
     p.add_argument("--ssh-host", default="81.69.163.170")
