@@ -1,6 +1,6 @@
 # 小桔逻辑脑多副本同步 · 阶段 2 生产部署方案
 
-> 状态：代码完成、**60 个同步测试全绿（含生产真 DDL 对齐的 P0 回归 + 二蛋复验追出的触发器补侧表回归）**。**云端部署需萧哥明确批准后方可执行**；本文仅为方案，未做任何 commit / push / 远端变更。
+> 状态：代码完成、**60 个同步测试全绿（含生产真 DDL 对齐的 P0 回归 + 二蛋复验追出的触发器补侧表回归）**；**已于 2026-10-04 经萧哥批准完成云端实际部署**（冷备两端→commit/push backup→停两端 daemon→推码+归零游标→重启→verify 9/9 全绿；详 `.workbuddy/memory/2026-10-04.md`）。**唯一残留：Mac 端 daemon 常驻需萧哥在本机终端 `launchctl load` 接管**（Bash 沙箱管不了 GUI launchd，部署时后台实例已主动停掉释放 8765 端口）。
 > 红线提醒：origin 绝不 push；只推 backup/fork/base 分支；改动目前全在本地工作树，待审查。
 
 ## 1. 阶段 2 范围
@@ -83,7 +83,20 @@
 - **新增硬门禁**：`tests/fixtures/real_schema.sql` 对齐生产真 DDL 的 P0 测试必须全绿（删除不崩、不卡死、可收敛）；
   每次改动后用 `scripts/verify_stage1_sync.py` 复核（阶段2 表未迁移时自动 SKIP，不假绿）。
 
-## 6. 未决 / 待萧哥拍板
-- 云端地址与 deskmate.db 实际路径（当前记录 81.69.163.170，但需确认）。
-- 是否现在推 backup/fork/base 分支（代码留工作树，未 commit）。
-- SQLite 触发器路径目前仅覆盖 B 类表；C 类（不同步）与 A 类（Mac-only）不受影响；神圣稿件 `.deskmate/` 圣经子目录不在同步范围。
+## 6. 部署状态（2026-10-04 已执行）
+- 云端地址/deskmate.db 路径：确认 `ubuntu@81.69.163.170:/var/lib/openworker/.deskmate/deskmate.db`（WAL，属主 openworker，`/var/lib/openworker` 700，ubuntu 须 `sudo -u openworker`）。
+- 已推 `backup/fork/base` 分支：`96f4ac3`（阶段2 落地+P0 修复）、`22115ab`（验收脚本基线修正）；**origin 未碰**。
+- 两端冷备已生成：本地 `/tmp/deskmate_local_stage2_20261004_134150.db`；云端 `deskmate.db.stage2_pre_20261004_134221`。
+- 三表 sync_uuid 集合两端严格一致，本地 `verify_stage1_sync.py` → **ALL PASS 9/9**。
+- **残留（待萧哥本机操作）**：Mac 端 daemon 目前未由 launchd 托管。请在本机终端执行：
+  `launchctl load ~/Library/LaunchAgents/com.xiaosheng.xiaoju.sync.plist`
+  （若报已加载先 `launchctl unload` 再 load；沙箱内无法管理 GUI launchd，故部署时后台实例已停，避免双实例抢 8765 端口）。
+- SQLite 触发器路径仅覆盖 B 类表；C 类（不同步）与 A 类（Mac-only）不受影响；神圣稿件 `.deskmate/` 圣经子目录不在同步范围（不变）。
+
+## 7. 已知 asymmetry（非缺陷，已二蛋复验确认）
+
+- **`_sync_tombstones` 两端不对称**：云端 1 行 `(profile_items, e2e-probe-20261003-2007, ...mac)`、Mac 侧表为空（0 行）。
+- **来源**：游标归零后两端重放历史 oplog 时，云端 apply 了昨天 e2e 测试 Mac 侧删 `e2e-probe-20261003-2007` 的 delete op → 写侧表；Mac 因 `origin=mac` 回声防护跳过该 op，且阶段 1 时代该删除早于侧表存在。故仅在云端留痕。
+- **影响评估**：该探针在两端三张业务表里均不存在（已查 `profile_items/learned_history/loved_entries` 三表 has probe? = 0/0/0）；复活不变量成立（`has_tombstone` 会拦远旧 upsert）；**当前无业务风险，不动它**。
+- **复现条件**：未来若重置游标全量重放 oplog，此不对称会复现，但同样只影响这条探针记录。
+- 另：`e2e-probe-cloud-20261003-2011` 这条 `sync_uuid` 直等于 id（无 `deskmate:` 前缀），是昨天 e2e 直插残留，两端一致、正常同步，非缺陷，不动。
