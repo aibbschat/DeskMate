@@ -11,13 +11,13 @@
 输出人类可读的 PASS/FAIL 报告。判据全部来自真实查询，不写死。
 
 判收标准（阶段1 通过）：
-  - Mac 活库 profile_items: 93 / null_uuid=6 / distinct=87 / null_hlc=6 / tomb=0
-    （回填 74 行取云端 uuid；余 6 行为已知特例：5 行跨端 id 漂移 + 1 行 Mac 独有新行，本轮故意留空，属 backlog）
-  - 云端真库 profile_items: 92 / null_uuid=0 / distinct=92 / null_hlc=0 / tomb=0（双独立终验已证）
+  - Mac 活库 profile_items: 阶段2 后硬判据 = null_uuid=0 / distinct==COUNT / tomb=0 / null_hlc=0
+    （阶段1 回填 74 行 + 故意留空 6 特例；阶段2 migrate 已用业务键把 6 特例也回填，null_uuid 归 0）
+  - 云端真库 profile_items: 与 Mac 一致（阶段2 全量基线对账后两端 sync_uuid 集合差集为空）
   - 两端 sync_uuid 集合差集为空
-  - 同步单测 38/38 绿
+  - 同步单测 48 passed 绿
   - origin/main 未碰（仍为 074ad3f）
-  - 冷备 deskmate.db.pre_sync_20261003_184453 存在可回滚
+  - 冷备：本地 /tmp/deskmate_local_stage2_*.db + 云端 deskmate.db.stage2_pre_*.db 可回滚
 """
 import argparse
 import json
@@ -34,10 +34,12 @@ CLOUD_HOST = "ubuntu@81.69.163.170"
 CLOUD_DB = "/var/lib/openworker/.deskmate/deskmate.db"
 COLD_BACKUP = "/var/lib/openworker/.deskmate/deskmate.db.pre_sync_20261003_184453"
 ORIGIN_EXPECT = "074ad3f7165cde3fcc2dcbfb8c5a2a0b20116b3f"
-# 阶段1 回填后 Mac 侧：80 行失联中已回填 74 行（取云端 uuid），余 6 行为已知特例
-# （5 行跨端 id 漂移 + 1 行 Mac 独有新行），本轮故意留空、属 backlog，非失效模式。
+# 阶段1 回填后 Mac 侧曾留 6 特例（5 行跨端 id 漂移 + 1 行 Mac 独有新行）故意 null；
+# 阶段2 migrate 已用业务键回填消除，故阶段2 后硬判据改为「null_uuid 必须=0」。
+# KNOWN_DEFERRED_NULLS 保留作「未恶化」护栏（nim 不应超过该值）。
 KNOWN_DEFERRED_NULLS = 6
-MAC_EXPECT = (93, 6, 87, 6, 0)  # COUNT/null_uuid/distinct/null_hlc/tomb
+# 历史基线（阶段1 通过态，仅供对照，不再用于精确匹配）：
+MAC_EXPECT_HIST = (93, 6, 87, 6, 0)  # COUNT/null_uuid/distinct/null_hlc/tomb
 
 TEST_FILES = [
     "tests/test_sync_daemon_runner.py",
@@ -183,8 +185,17 @@ def main():
     # 1) 本地 Mac 活库
     ls = local_stats()
     print(f"\n[本地 Mac 活库] profile_items 统计 = {ls}")
-    check("本地统计 93/6/87/6/0(回填74+留6特例)", tuple(ls) == MAC_EXPECT,
-          f"COUNT={ls[0]} null_uuid={ls[1]} distinct={ls[2]} null_hlc={ls[3]} tomb={ls[4]}")
+    # 阶段2 后硬判据：profile_items 每行都必须有唯一 sync_uuid。阶段1 留空的 6 特例
+    # 已被阶段2 migrate 用业务键回填消除。不锁死行数（活库日常增长），只锁健康不变量。
+    no_missing = ls[1] == 0
+    no_dup = ls[2] == ls[0]
+    no_tomb = ls[4] == 0
+    no_null_hlc = ls[3] == 0
+    healthy = no_missing and no_dup and no_tomb and no_null_hlc
+    check("本地 profile_items 同步身份完整(阶段2 回填后)", healthy,
+          f"COUNT={ls[0]} null_uuid={ls[1]} distinct={ls[2]} null_hlc={ls[3]} tomb={ls[4]}"
+          + ("（6 特例已回填消除，无缺失/无重复/无墓碑 ✅）" if healthy
+             else "（⚠️ 出现缺失/重复/墓碑，疑阶段2 回归）"))
 
     # 1b) 硬判据①：内容在但同步身份缺失（直接对应 2026-10-04 80 行丢失根因）
     nim = local_identity_missing()
