@@ -56,6 +56,43 @@ def local_uuids():
     return [r[0] for r in c.execute("SELECT sync_uuid FROM profile_items ORDER BY sync_uuid")]
 
 
+def local_identity_missing():
+    """硬判据①：内容在但同步身份缺失（= 2026-10-04 80 行丢失失效模式）。"""
+    c = sqlite3.connect(LOCAL_DB)
+    try:
+        return c.execute(
+            "SELECT COUNT(*) FROM profile_items WHERE sync_uuid IS NULL"
+        ).fetchone()[0]
+    except Exception:
+        return None
+
+
+def local_identity_drift():
+    """硬判据②：同一 sync_uuid 对应多份不同 content = 真实冲突/漂移。"""
+    c = sqlite3.connect(LOCAL_DB)
+    try:
+        return c.execute(
+            "SELECT COUNT(*) FROM ("
+            "SELECT sync_uuid FROM profile_items WHERE sync_uuid IS NOT NULL "
+            "GROUP BY sync_uuid HAVING COUNT(DISTINCT content) > 1)"
+        ).fetchone()[0]
+    except Exception:
+        return None
+
+
+def local_delete_no_tombstone():
+    """硬判据③：oplog 已标删(tombstone)但记录仍在 profile_items 且未标记 tombstone。"""
+    c = sqlite3.connect(LOCAL_DB)
+    try:
+        return c.execute(
+            "SELECT COUNT(*) FROM _sync_oplog o "
+            "WHERE o.op='DELETE' AND o.tombstone=1 "
+            "AND o.record_id IN (SELECT id FROM profile_items WHERE sync_tombstone=0)"
+        ).fetchone()[0]
+    except Exception:
+        return None
+
+
 def oplog_rows():
     c = sqlite3.connect(LOCAL_DB)
     try:
@@ -130,6 +167,28 @@ def main():
     print(f"\n[本地 Mac 活库] profile_items 统计 = {ls}")
     check("本地统计 92/0/92/0/0", tuple(ls) == (92, 0, 92, 0, 0),
           f"COUNT={ls[0]} null_uuid={ls[1]} distinct={ls[2]} null_hlc={ls[3]} tomb={ls[4]}")
+
+    # 1b) 硬判据①：内容在但同步身份缺失（直接对应 2026-10-04 80 行丢失根因）
+    nim = local_identity_missing()
+    if nim is None:
+        check("① 身份缺失判据可读", False, "profile_items 无法访问（表/列缺失）")
+    else:
+        check("① 无身份缺失行(sync_uuid NULL=0)", nim == 0,
+              f"sync_uuid NULL 行数={nim}" + ("（⚠️ 即昨晚失效模式，须回填）" if nim else " ✅"))
+
+    # 1c) 硬判据②：身份漂移（同一 sync_uuid 多份不同 content）
+    ndr = local_identity_drift()
+    if ndr is None:
+        check("② 身份漂移判据可读", False, "无法计算（表/列缺失）")
+    else:
+        check("② 无身份漂移", ndr == 0, f"漂移组数={ndr}")
+
+    # 1d) 硬判据③：删除无墓碑（oplog 标删但记录仍在且未标 tombstone）
+    ndt = local_delete_no_tombstone()
+    if ndt is None:
+        check("③ 删除无墓碑判据可读", False, "oplog 表不可访问")
+    else:
+        check("③ 无删除无墓碑", ndt == 0, f"可疑条数={ndt}")
 
     # 2) oplog 健康度：首连【前】为 0；首连【后】正常会随真实变更累积（≠ 污染）。
     #    真正的护栏是防「回声循环导致的无限膨胀」（曾实测每轮 +1 不收敛），

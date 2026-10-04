@@ -88,6 +88,23 @@ def _cloud_server_running(db_path: str) -> bool:
         return False
 
 
+def _last_persist_source_best_effort() -> str:
+    """尽力读取 cognitive.store 记录的最近一次 persist 调用方。
+
+    persist 通常由 OpenWorker 主进程调用，与同步 daemon 不同进程，daemon 侧
+    读不到时如实返回 n/a，避免误导排查。
+    """
+    try:
+        if "deskmate.cognitive.store" in sys.modules:
+            st = sys.modules["deskmate.cognitive.store"]
+            s = getattr(st, "_LAST_PERSIST_SOURCE", None)
+            if s:
+                return f"{s.get('module')}:{s.get('func')}:{s.get('line')}"
+    except Exception:
+        pass
+    return "n/a（persist 在其他进程）"
+
+
 class SyncNode:
     """一侧常驻同步节点：server +（可选）隧道 + daemon 循环。
 
@@ -205,8 +222,18 @@ class SyncNode:
             except Exception as exc:  # noqa: BLE001
                 LOG.error("SSH 隧道启动失败，将周期重拨: %r", exc)
         LOG.info("进入常驻 tick 循环（间隔 %.0fs）", self.interval)
+        _tick_count = 0
+        _heartbeat_every = 10
         while not self._stop:
-            self._tick_once()
+            res = self._tick_once()
+            _tick_count += 1
+            if _tick_count % _heartbeat_every == 0:
+                _ok = res.get("ok")
+                _src = _last_persist_source_best_effort()
+                LOG.info(
+                    "心跳#%d 同步状态: ok=%s 连续失败=%d 间隔=%.0fs 最近一次 persist 来源=%s",
+                    _tick_count, _ok, self._consecutive_fail, self.interval, _src,
+                )
             # 失败后指数退避（封顶 16×），成功后恢复正常间隔
             backoff = self.interval * (2 ** min(self._consecutive_fail, 4)) if self._consecutive_fail else self.interval
             # 可中断的睡眠（便于 SIGTERM 快速退出）

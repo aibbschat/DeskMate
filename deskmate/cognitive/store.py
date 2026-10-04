@@ -32,11 +32,23 @@ import os
 import re
 import shutil
 import sqlite3
+import sys
+import time
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Optional
 
 logger = logging.getLogger(__name__)
+
+# 写库来源追踪（D 项心跳 / 定位绕过引擎的直写）：记录最近一次 persist() 调用方。
+# 注意：persist 通常由 OpenWorker 主进程调用，与本同步 daemon 不同进程；
+# daemon 心跳读不到时返回 n/a（见 sync_daemon_runner._last_persist_source_best_effort）。
+_LAST_PERSIST_SOURCE = {"module": "?", "func": "?", "line": 0, "ts": 0.0}
+
+
+def get_last_persist_source() -> dict:
+    """返回最近一次 persist() 调用方信息（只读，供心跳/排查使用）。"""
+    return dict(_LAST_PERSIST_SOURCE)
 
 
 def _now_iso() -> str:
@@ -415,6 +427,20 @@ class CognitiveStore:
         因此：库里本层有数据、而要写入的条目为 0 时，默认**拒绝写入**并抛错。
         确有清空需求（如重置某层）请显式传 ``force=True``。
         """
+        # D 项：记录最近一次 persist 调用方（定位谁在写认知层）
+        try:
+            _fr = sys._getframe(1)
+            _LAST_PERSIST_SOURCE["module"] = os.path.basename(_fr.f_code.co_filename)
+            _LAST_PERSIST_SOURCE["func"] = _fr.f_code.co_name
+            _LAST_PERSIST_SOURCE["line"] = _fr.f_lineno
+            _LAST_PERSIST_SOURCE["ts"] = time.time()
+            logger.debug(
+                "persist() 调用方: %s:%s:%d layer=%s",
+                _LAST_PERSIST_SOURCE["module"], _LAST_PERSIST_SOURCE["func"],
+                _LAST_PERSIST_SOURCE["line"], layer,
+            )
+        except Exception:
+            pass
         incoming = (
             len(profile.stances)
             + len(profile.argument_patterns)
@@ -451,6 +477,20 @@ class CognitiveStore:
                 [(k, json.dumps(v, ensure_ascii=False)) for k, v in meta.items()],
             )
 
+            # 方案1（止血 · 2026-10-04）：persist() 全量 DELETE+重插会抹掉同步身份列
+            # （sync_uuid/sync_hlc/sync_tombstone）。重插前先按 id 暂存本层现有同步身份，
+            # 重插时原样带回，否则每次 save() 都会把已同步条目的身份清零
+            # —— 即 2026-10-04 夜间 80 行丢失同一根因。
+            _existing_sync = {}
+            try:
+                for _r in conn.execute(
+                    "SELECT id, sync_uuid, sync_hlc, sync_tombstone "
+                    "FROM profile_items WHERE layer=?", (layer,)
+                ):
+                    _existing_sync[_r[0]] = (_r[1], _r[2], _r[3])
+            except sqlite3.Error:
+                _existing_sync = {}
+
             # 清空本层旧数据再写（规模小，简单可靠）
             conn.execute("DELETE FROM profile_items WHERE layer=?", (layer,))
             conn.execute("DELETE FROM item_sources WHERE item_id NOT IN (SELECT id FROM profile_items)")
@@ -467,11 +507,15 @@ class CognitiveStore:
                 for it in items:
                     topic = getattr(it, _DIM_MAP[dim][1] or "", "") if _DIM_MAP[dim][1] else ""
                     extra = self._item_extra(dim, it)
+                    # 带回同步身份：已存在条目用旧身份（不退出同步协议）；
+                    # 新条目留 NULL，由 SyncEngine/SyncNode.migrate 的 uuid5(id) 确定性回填。
+                    _su, _sh, _st = _existing_sync.get(it.id, (None, None, None))
                     rows.append((
                         it.id, layer, dim, topic, it.content, it.category,
                         it.status, it.confidence, json.dumps(extra, ensure_ascii=False),
                         it.first_extracted, it.last_updated,
                         it.first_extracted, None,  # 双时态：valid_from=首次提取，valid_until=开放
+                        _su, _sh, _st,
                     ))
                     for i, s in enumerate(it.sources):
                         src_rows.append((it.id, i, s.type, s.title, s.excerpt, s.date, s.confidence))
@@ -495,8 +539,8 @@ class CognitiveStore:
             if rows:
                 conn.executemany(
                     "INSERT OR REPLACE INTO profile_items"
-                    "(id, layer, dimension, topic, content, category, status, confidence, extra_json, first_extracted, last_updated, valid_from, valid_until) "
-                    "VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "(id, layer, dimension, topic, content, category, status, confidence, extra_json, first_extracted, last_updated, valid_from, valid_until, sync_uuid, sync_hlc, sync_tombstone) "
+                    "VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     rows,
                 )
             if src_rows:
