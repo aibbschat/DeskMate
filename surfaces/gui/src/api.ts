@@ -3170,6 +3170,29 @@ export async function observeCurrentScreen(): Promise<
   }
 }
 
+/**
+ * 看一眼屏幕（修复版）：优先走 Tauri 原生命令 `peek_screen`。该命令会先把小桔窗口隐藏、
+ * 等焦点回到你正在用的软件（如 Word）再截图，彻底修复「点按钮时屏幕已切到小桔、截到的
+ * 永远是小桔自己」的逻辑缺陷。无 Tauri 环境（浏览器 / 测试）回退到直连 HTTP 端点。
+ */
+export async function peekScreen(): Promise<
+  { ok: true; observation: ScreenObservation } | { ok: false; error: string }
+> {
+  const tauri = (globalThis as any).__TAURI__;
+  if (tauri?.core?.invoke) {
+    try {
+      const data = await tauri.core.invoke("peek_screen");
+      if (data && data.ok) {
+        return { ok: true, observation: data.observation as ScreenObservation };
+      }
+      return { ok: false, error: (data && data.error) || "屏幕观察无响应" };
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : "屏幕观察失败" };
+    }
+  }
+  return observeCurrentScreen();
+}
+
 /** 裁决高风险提议卡。decision: executed | rejected | never */
 export async function resolveDeskmateAgencyProposal(
   id: string,

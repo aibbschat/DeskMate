@@ -10,7 +10,7 @@ import { useEffect, useState } from "react";
 import {
   getDeskmateAgencyTasks,
   getScreenObservations,
-  observeCurrentScreen,
+  peekScreen,
   resolveDeskmateAgencyProposal,
   type AgencyTask,
   type ScreenObservation,
@@ -84,7 +84,7 @@ export function AgencyPanel() {
     setObserving(true);
     setScreenError("");
     try {
-      const result = await observeCurrentScreen();
+      const result = await peekScreen();
       if (result.ok) {
         setScreenObservations((current) => [result.observation, ...current].slice(0, 5));
       } else {

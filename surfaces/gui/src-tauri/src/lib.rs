@@ -36,6 +36,14 @@ struct ServerProcess(Mutex<Option<Child>>);
 /// releases the hold (kills `caffeinate` on macOS, clears the execution state on Windows).
 struct KeepAwake(Mutex<Option<KeepAwakeGuard>>);
 
+/// 小桔窗口隐藏后，Rust 端需要知道 sidecar 的 HTTP 地址与启动令牌，才能替前端
+/// 直接触发截图（而不是让前端去抓“小桔自己”那屏）。
+#[derive(Clone)]
+struct Sidecar {
+    http: String,
+    token: String,
+}
+
 fn free_port() -> u16 {
     std::net::TcpListener::bind("127.0.0.1:0")
         .and_then(|l| l.local_addr())
@@ -484,6 +492,59 @@ fn start_window_drag(window: tauri::WebviewWindow) -> bool {
     window.start_dragging().is_ok()
 }
 
+/// “看一眼屏幕”的修复版触发：先把小桔窗口隐藏，让 macOS 把焦点交还上一个前台应用
+/// （例如 Word），等系统重绘后再调后端截图——否则用户为了点这个按钮切到小桔，截到的
+/// 永远是小桔自己。截图完成（无论成败）都把小桔窗口恢复。
+#[tauri::command]
+async fn peek_screen(
+    app: tauri::AppHandle,
+    sidecar: tauri::State<'_, Sidecar>,
+) -> Result<serde_json::Value, String> {
+    let handle = app.clone();
+    let http = sidecar.http.clone();
+    let token = sidecar.token.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        // 1. 隐藏小桔窗口：macOS 会把焦点交还上一个前台应用（Word）。
+        if let Some(w) = handle.get_webview_window("main") {
+            let _ = w.hide();
+        }
+        // 2. 等系统把焦点切回 + 重绘。450ms 足够，且此刻截到的不再是小桔自身。
+        std::thread::sleep(std::time::Duration::from_millis(450));
+        // 3. 让后端抓“当前屏幕”（此时已是用户正在用的软件）。
+        let url = format!("{http}/v1/deskmate/perception/screen/observe");
+        let out = std::process::Command::new("/usr/bin/curl")
+            .args([
+                "-sS",
+                "-X",
+                "POST",
+                &url,
+                "-H",
+                &format!("X-OpenWorker-Token: {token}"),
+                "-H",
+                "Content-Type: application/json",
+            ])
+            .output();
+        // 4. 不管成功失败都把小桔窗口恢复，并把焦点还给用户。
+        if let Some(w) = handle.get_webview_window("main") {
+            let _ = w.show();
+            let _ = w.set_focus();
+        }
+        match out {
+            Ok(o) if o.status.success() => {
+                let s = String::from_utf8_lossy(&o.stdout);
+                serde_json::from_str(&s).map_err(|e| format!("解析屏幕观察结果失败: {e}"))
+            }
+            Ok(o) => Err(format!(
+                "屏幕观察请求失败: {}",
+                String::from_utf8_lossy(&o.stderr).trim()
+            )),
+            Err(e) => Err(format!("无法发起屏幕观察: {e}")),
+        }
+    })
+    .await
+    .map_err(|e| format!("屏幕观察任务失败: {e}"))?
+}
+
 // -- local dictation ---------------------------------------------------------------------------
 // The actual microphone/model code lives in the Tauri-free `ocw-stt` crate. This shell owns the
 // macOS permission prompt and translates the reusable API into React-friendly Tauri commands.
@@ -817,6 +878,7 @@ pub fn run() {
             get_keep_awake,
             set_keep_awake,
             start_window_drag,
+            peek_screen,
             get_dictation_status,
             start_dictation,
             stop_dictation,
@@ -899,6 +961,11 @@ pub fn run() {
             };
             app.manage(KeepAwake(Mutex::new(ka)));
             app.manage(PendingUpdate(Mutex::new(None)));
+            // 让 peek_screen 命令知道 sidecar 地址与启动令牌。
+            app.manage(Sidecar {
+                http: http.clone(),
+                token: api_token.clone(),
+            });
             // Voice recordings are transient; only the explicitly installed local Whisper model
             // lives in the existing application state directory.
             app.manage(Arc::new(Dictation::new(state_dir().join("models"))));

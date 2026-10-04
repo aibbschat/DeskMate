@@ -173,6 +173,32 @@ describe("AgencyPanel", () => {
     expect(screen.getByText("正在修改自主层代码")).toBeTruthy();
   });
 
+  it("看一眼屏幕走 Tauri 原生命令（不直连 HTTP），修复截到小桔自己的缺陷", async () => {
+    const observeCalls: number[] = [];
+    const invoke = vi.fn(async () => ({
+      ok: true,
+      observation: {
+        ts: "2026-10-04T12:00:00",
+        scene: "文稿写作",
+        app: "Microsoft Word",
+        activity: "正在写小说稿",
+        attention: "当前章节",
+        mood: "writing",
+        confidence: 0.95,
+      },
+    }));
+    // 模拟 Tauri 全局 API 存在，验证前端改走原生命令而非直连 HTTP。
+    vi.stubGlobal("__TAURI__", { core: { invoke } });
+    stubAgencyApi({ observeCalls });
+    render(<AgencyPanel />);
+
+    fireEvent.click(screen.getByRole("button", { name: "看一眼屏幕" }));
+
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("peek_screen"));
+    // 不应再直连 HTTP 的 /perception/screen/observe（旧逻辑才走这条）
+    expect(observeCalls.length).toBe(0);
+  });
+
   it("记忆主体冲突卡显示中文动作名，内部键不得漏给用户", async () => {
     // 质检补（2026-09-26）：新增 action_type 若忘登记 RISK_LABEL，labelOf 会
     // 回退成内部英文键直接展示给用户。此用例锁住「记忆主体冲突」这条。
