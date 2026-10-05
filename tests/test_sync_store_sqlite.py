@@ -30,6 +30,8 @@ from deskmate.memory.sync_store_sqlite import (
     migrate,
     SQLiteSyncStore,
     SQLiteOplogStore,
+    SYNC_TABLES,
+    _validate_sync_tables_no_vectors,
 )
 
 CREATE = """CREATE TABLE profile_items (
@@ -871,3 +873,26 @@ def _uuid_of_real(db, fp):
     c.close()
     return row[0]
 
+
+
+def test_sync_tables_exclude_embedding_columns():
+    """策略①代码保障（架构文档 §6.6）：跨端只同步明文事实，向量各端本地重算。
+
+    守卫 `_validate_sync_tables_no_vectors` 在模块加载时即校验 SYNC_TABLES：
+    - 任一表名含 embed/vector → 启动报错；
+    - 任一 business_cols 含 embedding/vector 列 → 启动报错。
+    此测试双保险：即使有人绕过加载路径直接改 SYNC_TABLES，也能在单测中断言失败，
+    防止把向量塞进 oplog 跨端搬运（会触发 _vector_fingerprint 整批拒 / 余弦静默 0.0）。
+    """
+    # 守卫本身不应抛错（当前 5 表均无向量列）
+    _validate_sync_tables_no_vectors()
+    embed_re = __import__("re").compile(r"(?:^|[_])embed(?:ding)?\b|(?:^|[_])vector\b", __import__("re").IGNORECASE)
+    for table, spec in SYNC_TABLES.items():
+        assert "embed" not in table.lower() and "vector" not in table.lower(), (
+            f"SYNC_TABLES 不应含向量表 {table!r}"
+        )
+        for col in spec.get("business_cols", ()):
+            assert not embed_re.search(col), (
+                f"同步表 {table!r} 的 business_cols 含向量列 {col!r}："
+                f"违反「向量各端重算」策略①"
+            )

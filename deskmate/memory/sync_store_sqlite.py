@@ -43,6 +43,7 @@ cognitive 等都不必改）。这同时补上阶段 1 的边界缺口——app 
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 import time
 import uuid as _uuid
@@ -146,6 +147,31 @@ SYNC_TABLES: dict[str, dict] = {
         "conflict_col": None,
     },
 }
+
+# ---- 策略①护栏：跨端只同步明文事实、向量各端本地重算 ----
+# 小桔语义检索向量由各端本地 BGE/API 重算（见架构文档 §6.6 策略①），**禁止经 oplog 跨端搬运**：
+# 否则两端 embedding 后端/维度不一致会触发 _vector_fingerprint 整批拒或余弦静默 0.0。
+# 此守卫在模块加载即生效，任何把 embedding/vector 列塞进同步表或 business_cols 的改动都会启动即报错，
+# 把「策略①」从文字约定升级为代码不变量。
+_EMBED_OR_VECTOR_RE = re.compile(r"(?:^|[_])embed(?:ding)?\b|(?:^|[_])vector\b", re.IGNORECASE)
+
+
+def _validate_sync_tables_no_vectors() -> None:
+    for _t, _spec in SYNC_TABLES.items():
+        if "embed" in _t.lower() or "vector" in _t.lower():
+            raise RuntimeError(
+                f"[sync] SYNC_TABLES 含向量表 {_t!r}：违反「向量各端重算」策略①，"
+                f"向量必须各端本地重算、禁止跨端同步"
+            )
+        for _col in _spec.get("business_cols", ()):
+            if _EMBED_OR_VECTOR_RE.search(_col):
+                raise RuntimeError(
+                    f"[sync] 同步表 {_t!r} 的 business_cols 含向量列 {_col!r}："
+                    f"违反「向量各端重算」策略①，向量必须各端本地重算、禁止跨端同步"
+                )
+
+
+_validate_sync_tables_no_vectors()
 
 _OPLOG_TABLE = "_sync_oplog"
 _META_TABLE = "_sync_meta"
