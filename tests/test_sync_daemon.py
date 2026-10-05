@@ -20,9 +20,13 @@ from deskmate.memory.sync_daemon import (
     MemoryStore,
     OplogStore,
     Op,
+    Record,
     SyncDaemon,
     SyncEngine,
     Transport,
+    _lww_winner,
+    reconcile_baseline,
+    reconcile_baseline_oplog,
 )
 
 
@@ -263,3 +267,65 @@ def test_pull_cursor_uses_max_seq_not_len_on_gap():
     assert res2["pulled"] == 1, res2
     assert res2["pull_after_seq"] == 301, res2
 
+
+
+# ---------------------------------------------------------------------------
+# 基线对账的同 hlc 决胜（2026-10-05 存量补齐时发现）
+# ---------------------------------------------------------------------------
+
+
+def test_lww_winner_same_hlc_live_beats_tombstone():
+    """同 hlc 的「墓碑 vs 活记录」→ 活记录胜（不得让墓碑压过同刻的存在）。
+
+    真实库病灶：触发器 hlc 仅毫秒精度+ counter 曾不自增，同一毫秒的 delete→upsert
+    产出同 hlc 的墓碑/活记录组合（两端 physical/counter/node 三段完全相同），
+    共 65 条 emotional 记录在Mac 侧停留于墓碑态、云端持有活数据。
+    """
+    h = HLC(1000, 0, "cloud")
+    tomb = Record(record_id="x", data={}, hlc=h, tombstone=True)
+    live = Record(record_id="x", data={"layer": "emotional"}, hlc=h, tombstone=False)
+    assert _lww_winner(tomb, live) is live, "本端墓碑 vs 远端活 → 远端活应胜"
+    assert _lww_winner(live, tomb) is live, "本端活 vs 远端墓碑 → 本端活应胜"
+
+
+def test_lww_winner_strictly_later_hlc_wins_regardless_of_type():
+    """hlc 不同时仍是「晚者胜」（墓碑晚于活记录 → 墓碑胜，防遗忘复活不被削弱）。"""
+    h_old, h_new = HLC(1000, 0, "cloud"), HLC(2000, 0, "cloud")
+    old_live = Record(record_id="x", data={"v": 1}, hlc=h_old, tombstone=False)
+    new_tomb = Record(record_id="x", data={}, hlc=h_new, tombstone=True)
+    assert _lww_winner(old_live, new_tomb) is new_tomb, "更晚的墓碑应胜（真删除）"
+    assert _lww_winner(new_tomb, old_live) is new_tomb
+    new_live = Record(record_id="x", data={"v": 2}, hlc=h_new, tombstone=False)
+    assert _lww_winner(new_tomb, new_live) is new_live, "更晚的活记录应胜"
+
+
+def test_reconcile_baseline_lww_same_hlc_revives_local():
+    """端到端：基线对账遇到「本端墓碑 /远端同hlc 活记录」应把本端复活。"""
+    h = HLC(1000, 0, "cloud")
+    local = MemoryStore()
+    local.delete("emo", h)  # 本端墓碑
+    remote = MemoryStore()
+    remote.upsert("emo", {"layer": "emotional", "content": "云端情感数据"}, h)
+    rep = reconcile_baseline(local, remote, "mac")
+    rec = local.get("emo")
+    assert rec is not None and rec.tombstone is False, f"本端应被同hlc 活记录复活：{rec}"
+    assert rec.data["content"] == "云端情感数据"
+    assert rep["resolved"] == 1, rep
+
+
+def test_reconcile_baseline_oplog_lww_same_hlc_revives_local():
+    """同 hlc 决胜在 oplog 版基线对账同样生效（真实库 65 条走的就是这条路径）。"""
+    h = HLC(1000, 0, "cloud")
+    local = MemoryStore()
+    local.delete("emo", h)
+    remote = MemoryStore()
+    remote.upsert("emo", {"layer": "emotional", "content": "云端情感数据"}, h)
+    oplog = OplogStore()
+    eng = SyncEngine(local, oplog, "mac")
+    rep = reconcile_baseline_oplog(local, remote, eng, "profile_items", "mac")
+    rec = local.get("emo")
+    assert rec is not None and rec.tombstone is False, f"本端应被复活：{rec}"
+    assert rec.data["content"] == "云端情感数据"
+    assert rep["resolved"] == 1, rep
+    # 远端本就持有该活记录，无需回推 → oplog 不应产生该 record 的 op
+    assert not [o for o in oplog.since(0) if o.record_id == "emo"], "远端胜不应回推"

@@ -508,6 +508,27 @@ def _write_record(target: "MemoryStore", rec: "Record") -> None:
         target.upsert(rec.record_id, rec.data, rec.hlc, rec.valid_until)
 
 
+def _lww_winner(a: "Record", b: "Record") -> "Record":
+    """同 uuid 双端冲突的胜者（**基线对账专用**，与 `_apply_one_to` 同规则）。
+
+    与 `SyncEngine._apply_one_to` 的同hlc 决胜规则保持一致（2026-10-05 修）：
+
+    - hlc 不同：晚者胜（LWW 本意）。
+    - **hlc 相同**：不能一律「本端胜」或跳过。SQLite 触发器 hlc 只有毫秒精度，
+      历史上 `hlc_counter` 从不自增，同一毫秒的 delete→upsert 配对会产出**同 hlc**
+      的「墓碑 vs 活记录」组合。真实库实证：两端 65 条 emotional 记录正是这种形态
+      （physical/counter/node 三段完全相同），按旧的「本端 hlc>=远端即本端胜」会把
+      远端活记录判死→ Mac 侧永久缺该维度数据。
+      故同 hlc 时**活记录胜墓碑**（upsert 决胜，与 apply 侧对称）。
+    """
+    if a.hlc == b.hlc:
+        # 同 hlc：活记录优先（墓碑是"删除"，不应压过同刻的"存在"）
+        if a.tombstone != b.tombstone:
+            return b if a.tombstone else a
+        return a  # 同hlc 同形态（都是活或都是墓碑）→ 保持本端，无需覆盖
+    return a if a.hlc >= b.hlc else b
+
+
 def reconcile_baseline(local: "MemoryStore", remote: "MemoryStore", node: str) -> dict:
     """一次性全量对账（首连前置，草案方案 A）。
 
@@ -535,12 +556,13 @@ def reconcile_baseline(local: "MemoryStore", remote: "MemoryStore", node: str) -
         if rid not in L:
             _write_record(local, rec)
             report["remote_only"].append(rid)
-    # 冲突：两边都有的按 HLC LWW，胜者写回两端
+    # 冲突：两边都有的按 HLC LWW（同 hlc 由 _lww_winner 按类型决胜），胜者写回两端
     for rid in set(L) & set(R):
         a, b = L[rid], R[rid]
-        if a.hlc == b.hlc:
+        winner = _lww_winner(a, b)
+        if winner is a and a.hlc == b.hlc and a.tombstone == b.tombstone:
+            # 同 hlc 同形态：本端即胜者且两端一致，无需写回（省一次无谓覆写）
             continue
-        winner = a if a.hlc >= b.hlc else b
         _write_record(local, winner)
         _write_record(remote, winner)
         report["conflicts"].append(rid)
@@ -589,13 +611,13 @@ def reconcile_baseline_oplog(
                     Op(table, rid, "upsert", rec.hlc, dict(rec.data), origin=node)
                 )
             report["local_only"].append(rid)
-    # 冲突：按 HLC LWW，胜者外发/写入（胜者若为墓碑则外发 delete op）
+    # 冲突：按 HLC LWW 决胜（同 hlc 由 _lww_winner 按类型决胜：活记录胜墓碑）。
+    # 胜者本端胜 → 经 oplog 推给远端；远端胜 → 写本端 store（远端本就持有，无需回推）。
     for rid in set(L) & set(R):
         a, b = L[rid], R[rid]
-        if a.hlc == b.hlc:
-            continue
-        if a.hlc >= b.hlc:
-            # 本端胜 → 经 oplog 推给对端（墓碑则 delete op）
+        winner = _lww_winner(a, b)
+        if winner is b and a.hlc == b.hlc and a.tombstone == b.tombstone:
+            # 同 hlc 同形态且判定为本端胜 → 推给远端（远端可能还没有）
             if a.tombstone:
                 engine.oplog.append(
                     Op(table, rid, "delete", a.hlc, {}, tombstone=True, origin=node)
@@ -604,9 +626,19 @@ def reconcile_baseline_oplog(
                 engine.oplog.append(
                     Op(table, rid, "upsert", a.hlc, dict(a.data), origin=node)
                 )
-        else:
-            # 对端胜 → 写本端 store（suppress、不回声）；对端本就持有，无需回推
+        elif winner is b:
+            # 远端胜（含同hlc 远端为活记录/本端为墓碑）→ 写本端 store（suppress、不回声）
             _write_record(local_store, b)
+        else:
+            # 本端胜 → 经 oplog 推给远端（墓碑则 delete op）
+            if a.tombstone:
+                engine.oplog.append(
+                    Op(table, rid, "delete", a.hlc, {}, tombstone=True, origin=node)
+                )
+            else:
+                engine.oplog.append(
+                    Op(table, rid, "upsert", a.hlc, dict(a.data), origin=node)
+                )
         report["conflicts"].append(rid)
         report["resolved"] += 1
     return report
