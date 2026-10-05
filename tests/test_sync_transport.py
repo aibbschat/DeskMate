@@ -4,10 +4,13 @@
 """
 
 import time
+import urllib.request
 
 from deskmate.memory.sync_daemon import (
+    HLC,
     MemoryStore,
     OplogStore,
+    Op,
     SyncDaemon,
     SyncEngine,
     Transport,
@@ -186,3 +189,78 @@ def test_no_oplog_echo_loop_over_loopback():
     finally:
         mac_srv.stop()
         cloud_srv.stop()
+
+
+def test_peer_push_applies_immediately_when_engine_bound():
+    """回归（2026-10-05 根治「push 即落地」）：HttpOplogServer 收到 engine 时，
+    对端 POST 的 op 须立即 apply 进业务表，不依赖 Mac 在同步窗口内成功 pull。
+    同时回声防护仍在：origin==本节点的 op 被跳过，不覆盖/新增本端记录。"""
+    store, oplog = MemoryStore(), OplogStore()
+    engine = SyncEngine(store, oplog, "mac")
+    srv = HttpOplogServer(oplog, port=0, engine=engine)
+    port = srv.start()
+    try:
+        # 对端(cloud)产出的 op，POST 给 mac 端点
+        peer_op = Op(
+            table="mem", record_id="r_push", op="upsert",
+            hlc=HLC.now("cloud"), payload={"v": 42}, origin="cloud",
+        )
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{port}/oplog",
+            data=("[" + peer_op.to_json() + "]").encode("utf-8"),
+            method="POST", headers={"Content-Type": "application/json"},
+        )
+        resp = urllib.request.urlopen(req, timeout=5)
+        assert resp.status == 200
+        # 关键：未经任何 tick，业务表已落地
+        rec = engine.store.get("r_push")
+        assert rec is not None, "peer push must apply immediately (no tick needed)"
+        assert rec.data == {"v": 42}
+
+        # 回声防护仍在：把 mac 自己 origin 的 op 推回来，不应覆盖/新增
+        echo_op = Op(
+            table="mem", record_id="r_push", op="upsert",
+            hlc=HLC.now("mac"), payload={"v": 999}, origin="mac",
+        )
+        req2 = urllib.request.Request(
+            f"http://127.0.0.1:{port}/oplog",
+            data=("[" + echo_op.to_json() + "]").encode("utf-8"),
+            method="POST", headers={"Content-Type": "application/json"},
+        )
+        resp2 = urllib.request.urlopen(req2, timeout=5)
+        assert resp2.status == 200
+        assert engine.store.get("r_push").data == {"v": 42}  # 回声被跳，仍是 {"v": 42}
+    finally:
+        srv.stop()
+
+
+class _BoomEngine:
+    """apply_remote 必抛，验证 do_POST 的 fail-open（异常不影响收 ops / 回 200）。"""
+
+    node = "mac"
+
+    def apply_remote(self, ops):
+        raise RuntimeError("boom")
+
+
+def test_peer_push_apply_is_fail_open():
+    """回归（2026-10-05）：apply 抛错时，do_POST 仍回 200 且 ops 照常落 oplog，
+    不因 apply 异常丢失对端事件、也不把异常透传给对端。"""
+    oplog = OplogStore()
+    srv = HttpOplogServer(oplog, port=0, engine=_BoomEngine())
+    port = srv.start()
+    try:
+        op = Op(
+            table="mem", record_id="r_boom", op="upsert",
+            hlc=HLC.now("cloud"), payload={"v": 1}, origin="cloud",
+        )
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{port}/oplog",
+            data=("[" + op.to_json() + "]").encode("utf-8"),
+            method="POST", headers={"Content-Type": "application/json"},
+        )
+        resp = urllib.request.urlopen(req, timeout=5)
+        assert resp.status == 200
+        assert oplog.watermark() >= 1  # ops 仍被收下
+    finally:
+        srv.stop()

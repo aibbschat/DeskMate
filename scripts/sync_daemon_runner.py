@@ -177,9 +177,10 @@ class SyncNode:
         stores = {t: sync_sql.SQLiteSyncStore(conn, t) for t in self.migrated}
         engine = sd.SyncEngine(stores, oplog, node)
 
-        # 3) 本机 oplog HTTP 端点（仅回环），附带 stores 供 /snapshot 首连基线对账
+        # 3) 本机 oplog HTTP 端点（仅回环），附带 stores 供 /snapshot 首连基线对账；
+        #    engine 在收到对端 push 后立即 apply（「push 即落地」，解耦 apply 与 pull 周期）。
         self.server = st.HttpOplogServer(
-            oplog, host="127.0.0.1", port=local_port, stores=stores
+            oplog, host="127.0.0.1", port=local_port, stores=stores, engine=engine
         )
 
         # 4) 传输：Mac 达云端（-L 转发），云端达 Mac（-R 转发）

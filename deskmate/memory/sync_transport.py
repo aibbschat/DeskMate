@@ -124,6 +124,18 @@ class _OplogHandler(BaseHTTPRequestHandler):
         oplog: OplogStore = self.server.oplog  # type: ignore[attr-defined]
         for op in ops:
             oplog.append(op)
+        # 根治（2026-10-05）：收到对端 push 立即 apply 进业务表，解耦 apply 与 pull 周期。
+        # 背景：Mac 常驻 daemon 连败后指数退避封顶 240s，会完美错过云端每小时 :02 的
+        # 20s 同步窗口；而 apply 原本只耦合在 tick 的 pull 上，导致云端 push 进来的事件
+        # 堆在 oplog 不落地。改为「收到即 apply」，云端→Mac 收敛不再依赖 Mac 在窗口内
+        # 成功 pull。echo 防护由 SyncEngine.apply_remote 按 origin 处理；幂等（同
+        # sync_uuid+HLC 覆盖）；fail-open（apply 异常不影响收 ops / 回 200）。
+        engine = getattr(self.server, "engine", None)
+        if engine is not None and ops:
+            try:
+                engine.apply_remote(ops)
+            except Exception:  # noqa: BLE001
+                pass
         self.send_response(200)
         self.send_header("Content-Length", "2")
         self.end_headers()
@@ -146,11 +158,13 @@ class HttpOplogServer:
         host: str = "127.0.0.1",
         port: int = 8765,
         stores: Optional[dict] = None,
+        engine: object = None,
     ) -> None:
         self.oplog = oplog
         self.host = host
         self.port = port
         self.stores = stores
+        self.engine = engine
         self._httpd: Optional[ThreadingHTTPServer] = None
         self._thread: Optional[threading.Thread] = None
 
@@ -159,6 +173,7 @@ class HttpOplogServer:
         self._httpd = ThreadingHTTPServer((self.host, self.port), _OplogHandler)
         self._httpd.oplog = self.oplog  # type: ignore[attr-defined]
         self._httpd.stores = self.stores  # type: ignore[attr-defined]
+        self._httpd.engine = self.engine  # type: ignore[attr-defined]
         self._thread = threading.Thread(target=self._httpd.serve_forever, daemon=True)
         self._thread.start()
         self.port = self._httpd.server_address[1]
