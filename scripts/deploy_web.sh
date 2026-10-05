@@ -46,12 +46,22 @@ echo "==> ensuring cloud ~/Documents/已出版 symlink (reading code resolves ~/
 ssh "${SSH_OPTS[@]}" "$SSH_USER@$HOST" \
   "sudo -n bash -c 'mkdir -p /var/lib/openworker/写作/原稿 && ln -sfn /var/lib/openworker/写作/原稿 /var/lib/openworker/Documents/已出版 && ls -ld /var/lib/openworker/Documents/已出版'"
 
+# A tar made on macOS carries AppleDouble sidecars (._<name>, one per file) as real archive
+# members. They are never referenced by index.html but they DO land in the served root and
+# inflate the upload (~40% of the entries on a dist this size). Strip them after unpack.
+echo "==> stripping macOS AppleDouble sidecars (._*) from the deployed bundle"
+ssh "${SSH_OPTS[@]}" "$SSH_USER@$HOST" \
+  "sudo -n find $FRONTEND_DIR -name '._*' -type f -delete; \
+   echo -n '  sidecars left: '; sudo -n find $FRONTEND_DIR -name '._*' -type f | wc -l"
+
 echo "==> post-deploy checks on $HOST"
 ssh "${SSH_OPTS[@]}" "$SSH_USER@$HOST" \
   "echo -n '  token occurrences in JS assets (must be 0): '; \
    sudo -n grep -rl '$TOKEN' $FRONTEND_DIR/assets/ 2>/dev/null | wc -l; \
    echo -n '  runtime-config.json present: '; \
    test -f $FRONTEND_DIR/runtime-config.json && echo yes || echo NO; \
+   echo -n '  runtime-config.json NON-EMPTY (empty ⇒ token lost ⇒全息屏/受限接口静默401): '; \
+   test -s $FRONTEND_DIR/runtime-config.json && echo yes || echo 'NO -- BROKEN'; \
    echo -n '  index.html loads config: '; \
    sudo -n grep -q 'runtime-config.json' $FRONTEND_DIR/index.html && echo yes || echo NO"
 
