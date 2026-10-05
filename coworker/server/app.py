@@ -6150,6 +6150,11 @@ def create_app(manager: SessionManager) -> FastAPI:
                     if text or attachments:
                         content = build_user_content(text, attachments)
                         await claim_turn(content=content, display=display)
+                elif kind == "ping":
+                    # 应用层保活（2026-10-05）：web 端每 25s 发一个空 ping，防止中间的
+                    # Caddy/代理把空闲长连接回收掉。静默应答即可 —— 回一个 pong 既能确认
+                    # 链路活着，也让客户端的 onopen 心跳有回声可依。
+                    await ws.send_json({"type": "pong", "data": {}})
                 else:
                     await reject_input(f"Unknown WebSocket message type: {kind}.")
         except WebSocketDisconnect:
