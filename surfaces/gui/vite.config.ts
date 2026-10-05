@@ -44,6 +44,10 @@ export default defineConfig(({ command }) => {
     plugins: [react()],
     server: { port: 1420, strictPort: true },
     define: {
+      // Never bake environment values (token/URL/port) into a deployed bundle: local and cloud
+      // must ship the same artifact, so anything environment-specific is resolved at RUNTIME
+      // (window.__COWORKER_* globals, or same-origin paths behind the reverse proxy).
+      // See docs/DEPLOY-PARITY.md.
       __COWORKER_DEV_TOKEN__: JSON.stringify(devToken),
       "import.meta.env.VITE_APP_VERSION": JSON.stringify(APP_VERSION),
     },

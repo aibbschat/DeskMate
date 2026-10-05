@@ -22,9 +22,9 @@ from mcp.server.fastmcp import FastMCP
 from .calendar_reader import get_calendar_events
 from .clipboard_monitor import clipboard_has_image, read_clipboard
 from .diff_changes import diff_files
-from .file_reader import list_dir, read_chapter, list_chapters, read_file_safe
+from .file_reader import list_dir, read_chapter as _read_chapter, list_chapters as _list_chapters, read_file_safe
 from .filesystem_watcher import FilesystemWatcher
-from .window_monitor import get_active_window
+from .window_monitor import get_active_window as _get_active_window
 
 mcp = FastMCP("perception")
 
@@ -52,7 +52,7 @@ def get_active_window() -> str:
         格式化的窗口信息字符串
     """
     try:
-        w = get_active_window()
+        w = _get_active_window()
         lines = [
             f"应用：{w.app}",
             f"标题：{w.title or '（无标题）'}",
@@ -186,7 +186,7 @@ def list_chapters(path: str) -> str:
         章节目录（含每章字数）与读取建议；文件不存在/不支持时返回错误
     """
     try:
-        return list_chapters(path)
+        return _list_chapters(path)
     except Exception as e:
         return f"（读取章节目录失败：{e}）"
 
@@ -209,7 +209,7 @@ def read_chapter(path: str, chapter: str, max_chars: int = 100000) -> str:
         以【章节标题】（字数，本章完整）开头的正文；未找到/不支持时返回错误
     """
     try:
-        return read_chapter(path, chapter, max_chars=max_chars)
+        return _read_chapter(path, chapter, max_chars=max_chars)
     except Exception as e:
         return f"（读取章节失败：{e}）"
 

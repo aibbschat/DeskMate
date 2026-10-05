@@ -25,6 +25,38 @@
   </head>
   <body>
     <div id="root"></div>
+    <!-- Runtime environment resolution (see docs/DEPLOY-PARITY.md).
+         The sidecar token and endpoint are RUNTIME values, never build-time constants:
+         baking them in would make the local and cloud bundles irreproducible and force a
+         rebuild for every token rotation. Two hosts inject __COWORKER_* globals:
+           - desktop shell (Tauri): webview initialization_script
+           - hosted deployment: this block, reading a sibling runtime-config.json served
+             by the same origin (the reverse proxy forwards the API paths to the sidecar).
+         Absent a config file the globals stay unset and api.ts falls back to its own
+         defaults, which is correct for plain `npm run dev`. -->
+    <script>
+      (function () {
+        try {
+          window.__COWORKER_RUNTIME_CONFIG__ = window.__COWORKER_RUNTIME_CONFIG__ || null;
+          fetch("runtime-config.json", { cache: "no-store" })
+            .then(function (r) { return r.ok ? r.json() : null; })
+            .then(function (cfg) {
+              if (!cfg) return;
+              window.__COWORKER_RUNTIME_CONFIG__ = cfg;
+              // Only fill in what the host has not already provided, so an explicit
+              // injection (desktop shell) always wins over a stale config file.
+              ["__COWORKER_HTTP__", "__COWORKER_WS__", "__COWORKER_API_TOKEN__"].forEach(
+                function (k) {
+                  if (!window[k] && cfg[k]) window[k] = cfg[k];
+                }
+              );
+            })
+            .catch(function () { /* no runtime config: keep defaults */ });
+        } catch (e) {
+          /* never block the app on config resolution */
+        }
+      })();
+    </script>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

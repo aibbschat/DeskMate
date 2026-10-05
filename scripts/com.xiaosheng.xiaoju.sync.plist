@@ -12,6 +12,12 @@
         <string>/Users/xiaocheng/workspace/openworker/scripts/sync_daemon_runner.py</string>
         <string>--side</string>
         <string>mac</string>
+        <string>--local-port</string>
+        <string>18767</string>
+        <string>--fwd-port</string>
+        <string>18768</string>
+        <string>--remote-port</string>
+        <string>18767</string>
         <string>--db-path</string>
         <string>/Users/xiaocheng/.deskmate/deskmate.db</string>
         <string>--repo-path</string>

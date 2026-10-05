@@ -2,24 +2,61 @@ import type { GroupedQuestion, QuestionOption, SessionInfo, WsEvent } from "./ty
 
 declare const __COWORKER_DEV_TOKEN__: string;
 
-// Endpoint resolution order: runtime-injected globals (Tauri sets `window.__COWORKER_HTTP__`
-// for its dynamically-chosen sidecar port) → Vite env → the 127.0.0.1:8765 dev default. This
-// keeps a single codebase: browser `npm run dev` hits 8765; the desktop shell hits its sidecar.
+// Endpoint resolution order: runtime-injected globals (Tauri sets window.__COWORKER_HTTP__
+// for its dynamically-chosen sidecar port) → Vite env → an environment-appropriate default.
+//
+// The default must NOT be a hardcoded http://127.0.0.1:8765 for hosted builds. A web build
+// served over http(s) (e.g. xj.aibbs.chat behind Caddy/nginx, which reverse-proxies /v1, /ws,
+// /roundtable, /tasks, /message:* to the sidecar on 127.0.0.1:8765) injects neither global nor
+// Vite env, so the old default made the browser dial the *visitor's own* 127.0.0.1:8765 —
+// every request failed (personal center empty, no model list, chat stuck on "模型加载中"),
+// and no amount of hard-refreshing could recover it. Same-origin ("") is the correct default
+// for a hosted page because it is exactly what the reverse proxy is there to serve.
+const isBrowserPage = (): boolean =>
+  typeof window !== "undefined" && typeof document !== "undefined";
+
+// Empty string = same origin. The Tauri shell always injects __COWORKER_HTTP__, and browser
+// "npm run dev" sets VITE_COWORKER_HTTP, so this only affects hosted builds that want the
+// reverse proxy in front of them.
 export const httpBase = (): string =>
   (globalThis as any).__COWORKER_HTTP__ ||
   (import.meta as any).env?.VITE_COWORKER_HTTP ||
-  "http://127.0.0.1:8765";
+  (isBrowserPage() ? "" : "http://127.0.0.1:8765");
 // 创作圆桌（deskmate.creation）在真实 sidecar（主 coworker app）中以 /roundtable 前缀挂载
 // （coworker/server/app.py: app.mount("/roundtable", roundtable_app)）。所有创作接口必须带此前缀，
 // 否则在真实环境命中 404（返回 {error:"not found"} 而非抛异常，前端静默失败 → “点开始创作没反应”）。
 const creationBase = (): string => `${httpBase()}/roundtable`;
-const wsBase = (): string =>
-  (globalThis as any).__COWORKER_WS__ ||
-  (import.meta as any).env?.VITE_COWORKER_WS ||
-  "ws://127.0.0.1:8765";
+// Same origin-derived reasoning as httpBase: on a hosted page the socket must go to the
+// page's own host (the proxy forwards /ws), never to the visitor's 127.0.0.1.
+const wsBase = (): string => {
+  const injected =
+    (globalThis as any).__COWORKER_WS__ ||
+    (import.meta as any).env?.VITE_COWORKER_WS;
+  if (injected) return injected;
+  if (isBrowserPage() && typeof window !== "undefined" && window.location) {
+    const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
+    return proto + "//" + window.location.host;
+  }
+  return "ws://127.0.0.1:8765";
+};
+// Token resolution order: runtime-injected global → runtime-config.json (hosted deploy) →
+// the dev token file (browser dev only).
+//
+// The sidecar requires X-OpenWorker-Token on every call. It is a RUNTIME value, never a build
+// parameter: local and cloud must ship the same bundle, so the token is supplied by whichever
+// host serves the app — the desktop shell sets window.__COWORKER_API_TOKEN__ via the webview
+// initialization script, a hosted deployment serves runtime-config.json next to index.html.
+// Baking it in at build time would make local and cloud artifacts irreproducible and force a
+// rebuild for every token rotation. See docs/DEPLOY-PARITY.md.
+//
+// Reading the already-fetched config object keeps this synchronous, so the very first request
+// (which can fire before index.html's async fetch resolves) still authenticates.
+const runtimeConfig = (): Record<string, string> =>
+  (globalThis as any).__COWORKER_RUNTIME_CONFIG__ || {};
+
 const apiToken = (): string =>
   (globalThis as any).__COWORKER_API_TOKEN__ ||
-  (import.meta as any).env?.VITE_COWORKER_API_TOKEN ||
+  runtimeConfig().__COWORKER_API_TOKEN__ ||
   (typeof __COWORKER_DEV_TOKEN__ === "string" ? __COWORKER_DEV_TOKEN__ : "");
 
 // All local REST calls pass through this module, so a module-local wrapper applies launch
