@@ -82,17 +82,21 @@ for f in "${ALL_FILES[@]}"; do
 done
 
 # ---- 3. scp 经 /tmp 中转 + sudo -u openworker cp ----
+# 注意：scp 把 /tmp 中转文件建成登录用户（ubuntu）所有，故清理用登录用户直接 rm；
+# 落到云端的 cp 必须 sudo -u openworker（目标文件属 openworker）。两步分开，互不牵连。
 echo "==> 推送模块文件到云端 $CLOUD_SYNC_DIR"
 for f in "${LOCAL_MODULES[@]}"; do
   base="$(basename "$f")"
   scp -q -o ConnectTimeout=15 "$f" "$SSH_HOST:/tmp/sync_deploy_$base"
-  ssh -o ConnectTimeout=15 "$SSH_HOST" "sudo -n -u openworker cp '/tmp/sync_deploy_$base' '$CLOUD_SYNC_DIR/$base' && sudo -n -u openworker rm -f '/tmp/sync_deploy_$base'"
+  ssh -o ConnectTimeout=15 "$SSH_HOST" "sudo -n -u openworker cp '/tmp/sync_deploy_$base' '$CLOUD_SYNC_DIR/$base'"
+  ssh -o ConnectTimeout=15 "$SSH_HOST" "rm -f '/tmp/sync_deploy_$base'" || true
   echo "    ✓ $base"
 done
 
 echo "==> 推送 runner 到云端 $CLOUD_RUNNER"
 scp -q -o ConnectTimeout=15 "$LOCAL_RUNNER" "$SSH_HOST:/tmp/sync_deploy_runner.py"
-ssh -o ConnectTimeout=15 "$SSH_HOST" "sudo -n -u openworker cp '/tmp/sync_deploy_runner.py' '$CLOUD_RUNNER' && sudo -n -u openworker rm -f '/tmp/sync_deploy_runner.py'"
+ssh -o ConnectTimeout=15 "$SSH_HOST" "sudo -n -u openworker cp '/tmp/sync_deploy_runner.py' '$CLOUD_RUNNER'"
+ssh -o ConnectTimeout=15 "$SSH_HOST" "rm -f '/tmp/sync_deploy_runner.py'" || true
 echo "    ✓ sync_runner.py"
 
 # ---- 4. 清云端 __pycache__（强制下次窗口重编译新码）----
