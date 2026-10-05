@@ -2433,27 +2433,98 @@ export type Handlers = {
   onClose?: () => void;
 };
 
+/**
+ * 会话 WebSocket 的保活与重连参数。
+ *
+ * 2026-10-05：web端「浏览器一直开着 → 过一段时间 → 发送键变灰、小桔不回复」，
+ * 刷新浏览器即好。根因是 Session 只建一次 socket、断开后无任何恢复：服务端
+ * `/ws/session/{id}` 是 `while True: receive_json()` 无限等待，不会主动断，但中间的
+ * Caddy/代理空闲超时、云端服务重启、笔记本休眠/换网都会把这条长连接掐掉。
+ * 一旦断开，`onclose` 把 `connected` 置回 false 而永不恢复 → Composer's send button
+ * 永久 `disabled={!props.connected}`；快捷键虽能调`userMessage`，但 `send()` 遇 CLOSED
+ * 既不发也不入队 → 消息静默丢弃（这正是"按快捷键也没反应"的原因）。
+ *
+ * 修法：周期性 ping 保活（防中间层空闲回收）+ 指数退避自动重连（覆盖代理超时/重启），
+ * 并让断线期间的用户消息进 outbox 排队，重连成功后由 `flush()` 补发。
+ */
+const WS_PING_INTERVAL_MS = 25_000;
+const WS_RECONNECT_BASE_MS = 500;
+const WS_RECONNECT_MAX_MS = 15_000;
+
 export class Session {
-  private ws: WebSocket;
+  // Assigned inside connect() (constructor delegates to it) → `!` because TS can't see
+  // through the indirection and would otherwise demand an initializer here.
+  private ws!: WebSocket;
   // Payloads sent before the socket finished opening, replayed on `onopen`. Belt-and-suspenders
   // against the first message being dropped if the user sends in the connect window.
   private outbox: object[] = [];
+  // --- 保活/重连 state (2026-10-05) ---
+  private closedByUs = false;
+  private pingTimer: ReturnType<typeof setInterval> | null = null;
+  private retryTimer: ReturnType<typeof setTimeout> | null = null;
+  private retryAttempt = 0;
 
   constructor(sessionId: string, workspace: string, agent: string, handlers: Handlers) {
     const q = `?workspace=${encodeURIComponent(workspace)}&agent=${encodeURIComponent(agent)}`;
-    this.ws = openWebSocket(`${wsBase()}/ws/session/${sessionId}${q}`);
+    this.url = `${wsBase()}/ws/session/${sessionId}${q}`;
+    this.handlers = handlers;
+    this.connect();
+
+    // 保活 ping：应用层无消息时每 25s 发一个空 ping（服务端对未知 type 静默忽略），
+    // 让中间的 Caddy/代理不会因空闲把这条长连接回收掉。socket 一断就停，重连后重启。
+    this.pingTimer = setInterval(() => {
+      if (this.ws.readyState === WebSocket.OPEN) {
+        try {
+          this.ws.send(JSON.stringify({ type: "ping" }));
+        } catch {
+          /* 发送失败交给 onclose → 重连路径处理 */
+        }
+      }
+    }, WS_PING_INTERVAL_MS);
+  }
+
+  private url!: string;
+  private handlers!: Handlers;
+
+  /** 建（重）连。每次重连都重新绑定全部 handler，outbox 保留待补发。 */
+  private connect() {
+    this.ws = openWebSocket(this.url);
     this.ws.onmessage = (e) => {
       try {
-        handlers.onEvent(JSON.parse(e.data));
+        this.handlers.onEvent(JSON.parse(e.data));
       } catch {
         /* malformed frame — ignore */
       }
     };
     this.ws.onopen = () => {
+      this.retryAttempt = 0; // 连上即重置退避，下一次断线从base 重新爬
       this.flush();
-      handlers.onOpen?.();
+      this.handlers.onOpen?.();
     };
-    this.ws.onclose = () => handlers.onClose?.();
+    this.ws.onclose = () => {
+      this.handlers.onClose?.();
+      // 主动 close()（切会话/卸载）不重连，否则会泄漏一条幽灵 socket。
+      if (!this.closedByUs) this.scheduleReconnect();
+    };
+  }
+
+  /** 指数退避重连，封顶 WS_RECONNECT_MAX_MS，持续尝试直到成功或被 close()。 */
+  private scheduleReconnect() {
+    if (this.retryTimer) return; // 已有重连在排队
+    const delay = Math.min(
+      WS_RECONNECT_BASE_MS * 2 ** this.retryAttempt,
+      WS_RECONNECT_MAX_MS,
+    );
+    this.retryAttempt += 1;
+    this.retryTimer = setTimeout(() => {
+      this.retryTimer = null;
+      if (this.closedByUs) return;
+      try {
+        this.connect();
+      } catch {
+        this.scheduleReconnect(); // 建连即抛（如 URL 非法/无网络）→ 继续排下一轮
+      }
+    }, delay);
   }
 
   private flush() {
@@ -2467,6 +2538,10 @@ export class Session {
     if (this.ws.readyState === WebSocket.OPEN) this.ws.send(JSON.stringify(payload));
     // Still connecting: queue and flush on open rather than silently dropping.
     else if (this.ws.readyState === WebSocket.CONNECTING) this.outbox.push(payload);
+    // CLOSED/CLOSING（2026-10-05 修）：断线后的用户消息**必须入队**。旧实现直接落空，
+    // 于是「刷新前按快捷键发送」静默丢失（发送键已灰、消息进黑洞）。重连成功后
+    // flush() 会补发；同时 scheduleReconnect() 正在把 socket 拉回来。
+    else this.outbox.push(payload);
   }
 
   /** `model` = the composer's CURRENT selection, carried on every message so the turn uses
@@ -2556,6 +2631,17 @@ export class Session {
   }
 
   close() {
+    // 2026-10-05：置位 closedByUs 并清掉保活/重连定时器 —— 否则本会话被 close() 后，
+    // 仍在排队的 retryTimer 会把一条幽灵 socket 拉起来（切会话/卸载时泄漏）。
+    this.closedByUs = true;
+    if (this.pingTimer) {
+      clearInterval(this.pingTimer);
+      this.pingTimer = null;
+    }
+    if (this.retryTimer) {
+      clearTimeout(this.retryTimer);
+      this.retryTimer = null;
+    }
     // Detach before closing: this socket's async `close` event may land AFTER the
     // successor session's `open` (observed when switching into an automation-run
     // session), and a torn-down socket must not clobber the new one's connected state.
