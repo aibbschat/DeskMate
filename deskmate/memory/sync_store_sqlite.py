@@ -2,7 +2,9 @@
 
 把 ``sync_daemon`` 协议核心的鸭子类型 store 接口接到 ``deskmate.db`` 内 B 类表。
 阶段 1 只接 ``profile_items``；阶段 2 扩展为**按表注册**，新增 ``learned_history`` /
-``loved_entries``（访谈 ``interview_sessions``、日记 ``user_posts`` 留待后续批次）。
+``loved_entries``；阶段 6（2026-10-05）新增个人中心日记 ``user_posts`` 与留言 ``comments``。
+访谈 ``interview_sessions`` 经萧哥 10-05 拍板**不同步**；主聊天 ``chat.db`` 是独立库、
+本期不动（见 reports/2026-10-05_会话日记同步范围扩大_设计方案.md）。
 
 所有 B 类表共用一个 append-only ``_sync_oplog``（带 ``table_name`` 列区分来源），
 每张表额外加 ``sync_uuid`` / ``sync_hlc`` / ``sync_tombstone`` 三列 + 确定性存量回填。
@@ -108,6 +110,38 @@ SYNC_TABLES: dict[str, dict] = {
             "day",
             "created_at",
             "tags",
+        ),
+        "conflict_col": None,
+    },
+    # ---- 阶段 6（2026-10-05）：个人中心日记 + 留言纳入同步范围 ----
+    # 依据 reports/2026-10-05_会话日记同步范围扩大_设计方案.md §2（萧哥 10-05 拍板：
+    # 日记进云端、interview_sessions 不同步、chat.db 本期不动）。
+    "user_posts": {
+        "pk": "id",
+        "pk_type": "text",  # 真实 schema：id TEXT PRIMARY KEY（非自增），双端同 id → 可直接作 sync_key
+        "sync_key": "id",  # 与 profile_items 同构：text pk 本身即唯一
+        "sync_uuid_kind": "string",  # 与触发器 _trigger_sql 的 COALESCE 表达式同格式
+        "business_cols": (
+            "id",
+            "author",
+            "content",
+            "created_at",
+            "loved",
+            "archived",  # 归档标记；不同步会导致对端丢失归档态
+        ),
+        "conflict_col": None,
+    },
+    "comments": {
+        "pk": "id",
+        "pk_type": "text",
+        "sync_key": "id",
+        "sync_uuid_kind": "string",  # 同 user_posts，与触发器表达式一致
+        "business_cols": (
+            "id",
+            "moment_id",  # → user_posts.id；实测 schema 只有普通索引，无外键约束
+            "author",
+            "text",
+            "created_at",
         ),
         "conflict_col": None,
     },
@@ -275,13 +309,13 @@ def migrate(conn: Any, node: str, table: Optional[str] = None) -> dict:
             f"ON {t}(sync_uuid)"
         )
 
-        # 存量回填：sync_uuid IS NULL 的行生成确定性 uuid + 单调 HLC。
-        # 两端同源快照 → 同一条存量必得同一 sync_uuid（uuid5 派生，非随机）。
+        # 存量回填：sync_uuid 缺失的行生成确定性 uuid，并补齐 sync_hlc。
+        # 两端同源快照 → 同一条存量必得同一 sync_uuid（派生而非随机）。
         ns = _uuid.uuid5(_uuid.NAMESPACE_URL, f"deskmate:{t}")
         sync_key = spec.get("sync_key", spec["pk"])
         kind = spec.get("sync_uuid_kind", "uuid5")
         rows = cur.execute(
-            f"SELECT {spec['pk']} FROM {t} WHERE sync_uuid IS NULL"
+            f"SELECT {spec['pk']} FROM {t} WHERE sync_uuid IS NULL OR sync_hlc IS NULL"
         ).fetchall()
         base = time.time_ns() // 1_000_000
         for i, (rid,) in enumerate(rows):

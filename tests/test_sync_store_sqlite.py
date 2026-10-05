@@ -393,7 +393,11 @@ CREATE_LOVED = """CREATE TABLE loved_entries (
     moment_id TEXT, content TEXT, day TEXT, created_at TEXT, tags TEXT
 )"""
 
+# 本文件的三表夹具不含日记表（user_posts/comments），故 migrate 会把它们报 skipped。
+# 阶段 6 起日记表也进注册表，但此处断言只针对本夹具实际存在的三张表。
 SYNCED_TABLES = ("profile_items", "learned_history", "loved_entries")
+# 阶段 6（2026-10-05）：注册表里新增、但本夹具无对应建表语句的表（应被跳过而非崩）
+TABLES_ABSENT_IN_FIXTURE = ("user_posts", "comments")
 
 
 def _snapshot_from_store(store):
@@ -475,7 +479,9 @@ def test_multi_table_migrate_backfill():
         "learned_history": 2,
         "loved_entries": 0,
     }, res_a
-    assert res_a["skipped"] == [], "三表都在，不应跳过"
+    assert res_a["skipped"] == list(TABLES_ABSENT_IN_FIXTURE), (
+        "本夹具只建了三表，日记表应被跳过而非崩或静默处理"
+    )
     cA = sqlite3.connect(ca)
     for t in SYNCED_TABLES:
         n = cA.execute(

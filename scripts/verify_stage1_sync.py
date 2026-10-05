@@ -47,7 +47,13 @@ TEST_FILES = [
     "tests/test_sync_transport.py",
     "tests/test_sync_daemon.py",
     "tests/test_sync_store_sqlite.py",
+    "tests/test_sync_store_sqlite_diary.py",  # 阶段6：日记/留言
 ]
+
+# 阶段6（2026-10-05）纳入同步范围的表；interview_sessions 经萧哥拍板不同步。
+STAGE6_TABLES = ("user_posts", "comments")
+# 本期不应被同步的表——用于「未误纳入」护栏（两端行数应保持不变）。
+NOT_SYNCED_TABLES = ("interview_sessions",)
 
 
 def local_stats():
@@ -69,6 +75,30 @@ def table_stats(table):
         ).fetchone()
     except Exception:
         return None
+
+
+def local_table_ids(table):
+    """阶段6：按业务主键 id 取全量清单（逐条对账，防「行数相同内容不同」的假绿）。"""
+    c = sqlite3.connect(LOCAL_DB)
+    try:
+        return [r[0] for r in c.execute(f"SELECT id FROM {table} ORDER BY id")]
+    except Exception:
+        return None
+    finally:
+        c.close()
+
+
+def table_trigger_count(table):
+    c = sqlite3.connect(LOCAL_DB)
+    try:
+        return c.execute(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' AND name LIKE ?",
+            (f"trg_{table}_%",),
+        ).fetchone()[0]
+    except Exception:
+        return None
+    finally:
+        c.close()
 
 
 def local_uuids():
@@ -132,17 +162,35 @@ def run_tests():
 
 def cloud_verify():
     """SSH 只读：scp 独立只读脚本到云端执行，回收 JSON。"""
+    # 阶段6：云端侧一并取两表（+ 反向护栏表）的逐 id 清单，供本地做集合差。
+    # 只读；表缺失则该表返回 None，调用方 SKIP 而非假 FAIL。
     ro = (
         "import sqlite3, json\n"
         "c = sqlite3.connect(%r)\n"
+        "T = %r\n"
         "out = {\n"
         "  'stats': list(c.execute(\n"
         "    'SELECT COUNT(*), SUM(sync_uuid IS NULL), COUNT(DISTINCT sync_uuid),"
         " SUM(sync_hlc IS NULL), SUM(sync_tombstone) FROM profile_items').fetchone()),\n"
         "  'uuids': [r[0] for r in c.execute('SELECT sync_uuid FROM profile_items ORDER BY sync_uuid')],\n"
+        "  'tables': {},\n"
+        "}\n"
+        "for t in T:\n"
+        "    try:\n"
+        "        out['tables'][t] = {\n"
+        "            'ids': [r[0] for r in c.execute('SELECT id FROM ' + t + ' ORDER BY id')],\n"
+        "            'stats': list(c.execute(\n"
+        "                'SELECT COUNT(*), SUM(sync_uuid IS NULL), COUNT(DISTINCT sync_uuid),"
+        " SUM(sync_hlc IS NULL) FROM ' + t).fetchone()),\n"
+        "            'triggers': c.execute(\n"
+        "                \"SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' AND name LIKE 'trg_' || ? || '_%'\",\n"
+        "                (t,)).fetchone()[0],\n"
+        "        }\n"
+        "    except Exception as e:\n"
+        "        out['tables'][t] = None\n"
         "}\n"
         "print(json.dumps(out))\n"
-    ) % CLOUD_DB
+    ) % (CLOUD_DB, list(STAGE6_TABLES) + list(NOT_SYNCED_TABLES))
     ro_path = "/tmp/_stage1_cloud_ro.py"
     with open(ro_path, "w") as f:
         f.write(ro)
@@ -246,6 +294,37 @@ def main():
         check(f"阶段2[{t}] 无同步身份缺失", ts[1] == 0,
               f"sync_uuid NULL={ts[1]} COUNT={ts[0]} distinct={ts[2]}")
 
+    # 3c) 阶段6（2026-10-05）：个人中心日记 + 留言同步健康度。
+    #     判据比阶段2 更严：除身份完整外，还要求 null_hlc=0 与触发器齐备——
+    #     「有 sync_uuid 但 sync_hlc 为 NULL」的半回填行会让 daemon 启动即崩
+    #     （HLC.from_str(None)），是本批实测存在的真实行态。
+    for t in STAGE6_TABLES:
+        ts = table_stats(t)
+        if ts is None:
+            print(f"[SKIP] 阶段6[{t}]: 表或同步列尚未迁移（部署阶段6 后验收）")
+            continue
+        print(f"\n[本地 Mac 活库] 阶段6[{t}] 统计 = {tuple(ts)}")
+        check(
+            f"阶段6[{t}] 同步身份完整(含 sync_hlc)",
+            ts[1] == 0 and ts[3] == 0 and ts[2] == ts[0],
+            f"COUNT={ts[0]} null_uuid={ts[1]} distinct={ts[2]} null_hlc={ts[3]} tomb={ts[4]}",
+        )
+        nt = table_trigger_count(t)
+        check(
+            f"阶段6[{t}] 捕获触发器齐备",
+            nt == 3,
+            f"trg_{t}_* 数量={nt}（应为 3：ai/au/ad，缺则 app 直写不会被捕获）",
+        )
+
+    # 3d) 阶段6 反向护栏：本期不同步的表不得被误纳入。
+    for t in NOT_SYNCED_TABLES:
+        nt = table_trigger_count(t)
+        check(
+            f"未误纳入[{t}]",
+            nt == 0,
+            f"trg_{t}_* 数量={nt}（萧哥 10-05 拍板不同步，应为 0）",
+        )
+
     # 4) origin 红线
     try:
         origin = subprocess.run(
@@ -273,6 +352,48 @@ def main():
             print(f"[两端 sync_uuid 集合差] = {len(diff)} (空=对齐)")
             check("两端 uuid 集合相等", len(diff) == 0,
                   "差集为空 ✅" if len(diff) == 0 else f"差集 {len(diff)} 条")
+
+            # 阶段6：日记/留言逐 id 集合差（PITFALLS §P1——只比行数会假绿）
+            ct = cs.get("tables") or {}
+            for t in STAGE6_TABLES:
+                info = ct.get(t)
+                if not info:
+                    print(f"[SKIP] 云端阶段6[{t}]：表不可读")
+                    continue
+                mac_ids = set(local_table_ids(t) or [])
+                cloud_ids = set(info["ids"])
+                only_mac = mac_ids - cloud_ids
+                only_cloud = cloud_ids - mac_ids
+                print(
+                    f"\n[云端阶段6 {t}] Mac={len(mac_ids)} 云端={len(cloud_ids)} "
+                    f"仅Mac={len(only_mac)} 仅云端={len(only_cloud)}"
+                )
+                check(
+                    f"云端阶段6[{t}] 逐 id 对齐",
+                    len(only_mac) == 0 and len(only_cloud) == 0,
+                    "双向差集为空 ✅"
+                    if not (only_mac or only_cloud)
+                    else f"仅Mac={sorted(only_mac)[:5]} 仅云端={sorted(only_cloud)[:5]}",
+                )
+                check(
+                    f"云端阶段6[{t}] 身份完整",
+                    info["stats"][1] == 0 and info["stats"][3] == 0,
+                    f"null_uuid={info['stats'][1]} null_hlc={info['stats'][3]}",
+                )
+                check(
+                    f"云端阶段6[{t}] 触发器齐备",
+                    info["triggers"] == 3,
+                    f"trg_{t}_*={info['triggers']}",
+                )
+            for t in NOT_SYNCED_TABLES:
+                info = ct.get(t)
+                if not info:
+                    continue
+                check(
+                    f"云端未误纳入[{t}]",
+                    info["triggers"] == 0,
+                    f"trg_{t}_*={info['triggers']}（应 0）",
+                )
     else:
         print("\n[云端] 未选 --cloud，跳过；参考二蛋+逍遥双独立终验(92/0/92/0/0, 差集空)")
 
