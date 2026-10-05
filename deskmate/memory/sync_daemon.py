@@ -303,14 +303,29 @@ class SyncEngine:
         if op.origin is not None and op.origin == self.node:
             return
         existing = store.get(op.record_id)
-        # 幂等：本端已有同 HLC 的该记录 → 跳过
+        is_delete = bool(op.tombstone or op.op == "delete")
         if existing is not None and existing.hlc == op.hlc:
-            return
+            # 同 HLC 幂等去重，但**不能一刀切**：SQLite 触发器生成的 hlc 只有毫秒精度
+            # （`strftime('%s','now')*1000 + hlc_counter + node`），同一毫秒内发生的
+            # delete→upsert 配对会拿到完全相同的 hlc（历史缺陷：hlc_counter 从不自增）。
+            # 若此时一律跳过，delete 先落地后同 hlc 的 upsert 会被永久丢弃，记录永久卡在
+            # 墓碑态（2026-10-05 生产实证：云端 emotional 层持续增长、Mac侧 0 条）。
+            # 决胜规则：**同 hlc 时按 op 类型定胜负** —— upsert 可复活墓碑（同值 upsert
+            # 仍是幂等的，因它只会覆盖同一行）；delete 对同 hlc 活记录仍是幂等的。
+            if is_delete:
+                # 同 hlc 的重复 delete：幂等跳过（墓碑已在位，无需重复物理删除）。
+                return
+            # 同 hlc 的 upsert：若本端是墓碑 → 复活（继续走下面 upsert 分支）；
+            # 若本端已是活记录 → 同值重放，直接跳过。
+            if not existing.tombstone:
+                return
+            # 墓碑态且同 hlc：交给墓碑侧表判定（见下has_tombstone 块），避免旧副本复活。
         # 防遗忘复活：本端已是墓碑（删除），且远端 op 的 HLC 更早或相等 → 不覆盖
-        if existing is not None and existing.tombstone and op.hlc <= existing.hlc:
+        # （同 hlc 的 upsert 已在上面决胜放行走复活路径，此处只拦严格更早）。
+        if existing is not None and existing.tombstone and op.hlc < existing.hlc:
             return
         # 本端有更新的记录（HLC 更晚）→ 远端更旧，跳过（LWW 后者胜）
-        if existing is not None and op.hlc < existing.hlc:
+        if existing is not None and not existing.tombstone and op.hlc < existing.hlc:
             return
         # 业务表无此记录（已删除或从未见过）→ 查墓碑侧表：若已删且删除不比该 upsert 旧，
         # 跳过（防陈旧/迟到 upsert 复活已删记录）。MemoryStore 无侧表，getattr 返回 None 即跳过。
@@ -318,12 +333,12 @@ class SyncEngine:
         if (
             ht is not None
             and existing is None
-            and not (op.tombstone or op.op == "delete")
+            and not is_delete
             and ht(op.record_id, op.hlc)
         ):
             return
         # 远端更新（或本端无记录）→ 应用（用路由到的 store 参数，勿用 self.store）
-        if op.tombstone or op.op == "delete":
+        if is_delete:
             store.delete(op.record_id, op.hlc)
         else:
             store.upsert(op.record_id, op.payload, op.hlc)

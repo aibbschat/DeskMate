@@ -297,6 +297,128 @@ def test_sqlite_delete_missing_record_creates_tombstone(pair):
     assert tomb is not None, "删除不存在的记录必须落墓碑侧表"
     c.close()
 
+def test_sqlite_same_hlc_delete_then_upsert_revives(pair):
+    """【生产 bug 回归锁】同hlc 的 delete→upsert 配对必须让 upsert 落地。
+
+    背景（2026-10-05 确诊，真实库实证）：SQLite 触发器的 hlc 形如
+    ``printf('%016x.%08x.%s', strftime('%s','now')*1000, hlc_counter, node)``，
+    而 ``_sync_meta.hlc_counter`` **从不自增**（实测恒为 0）→ 同一毫秒内发生的
+    delete 与 upsert 会拿到**完全相同**的 hlc。本表delete 是**物理删除** + 墓碑落侧表，
+    对端 apply 顺序为 delete 先、upsert 后；原实现「同 HLC 一律幂等跳过」会把那条
+    upsert 当重复丢弃 → 记录永久卡在墓碑态，业务表永不复活。
+
+    真实后果：云端 profile_items 的 emotional 层（自主 tick 每轮删后重插）持续增长，
+    oplog 里 op 条条齐全，但 Mac侧 profile_items 中该维度0 条（传输通、apply 断）。
+    """
+    ca, _cb = pair
+    c = sqlite3.connect(ca)
+    e = SyncEngine(SQLiteSyncStore(c), SQLiteOplogStore(c), "mac")
+    rid = "u-revive"
+    h = HLC(1000, 0, "cloud")
+
+    # 云端同一毫秒内先删后插：两条 op 的 hlc 完全相同
+    e.apply_remote([Op("profile_items", rid, "delete", h, {}, tombstone=True, origin="cloud")])
+    s = SQLiteSyncStore(c)
+    assert s.get(rid) is None or s.get(rid).tombstone is True, "前置：delete 后应为墓碑态"
+    assert s.has_tombstone(rid, h), "前置：墓碑应落侧表"
+
+    # 同hlc 的 upsert 随后到达 → 必须复活（这正是被丢掉的那一条）
+    payload = {"topic": "回血方式", "content": "情绪恢复靠投入创作", "dimension": "stance"}
+    e.apply_remote([Op("profile_items", rid, "upsert", h, payload, origin="cloud")])
+
+    rec = s.get(rid)
+    assert rec is not None, "同hlc 的 upsert 必须能复活被同hlc delete 掉的记录"
+    assert rec.tombstone is False, "复活后不应仍是墓碑"
+    assert rec.data["content"] == "情绪恢复靠投入创作", rec.data
+    c.close()
+
+
+def test_sqlite_same_hlc_upsert_replay_idempotent(pair):
+    """同hlc 的**纯 upsert** 重复重放仍须幂等（A 改动不得破坏既有幂等语义）。"""
+    ca, _cb = pair
+    c = sqlite3.connect(ca)
+    e = SyncEngine(SQLiteSyncStore(c), SQLiteOplogStore(c), "mac")
+    s = SQLiteSyncStore(c)
+    rid = "u-idem"
+    h = HLC(2000, 0, "cloud")
+    payload = {"topic": "t", "content": "v", "dimension": "stance"}
+    for _ in range(3):
+        e.apply_remote([Op("profile_items", rid, "upsert", h, payload, origin="cloud")])
+    row = c.execute("SELECT COUNT(*) FROM profile_items WHERE sync_uuid=?", (rid,)).fetchone()[0]
+    assert row == 1, f"同hlc upsert 重复重放必须幂等，实际 {row} 行"
+    assert s.get(rid).data["content"] == "v"
+    c.close()
+
+
+def test_sqlite_strictly_older_upsert_still_blocked(pair):
+    """严格更早 hlc 的 upsert 仍被墓碑拦住（防遗忘复活不得被 A 削弱）。"""
+    ca, _cb = pair
+    c = sqlite3.connect(ca)
+    e = SyncEngine(SQLiteSyncStore(c), SQLiteOplogStore(c), "mac")
+    s = SQLiteSyncStore(c)
+    rid = "u-stale"
+    h_new = HLC(3000, 0, "cloud")
+    e.apply_remote([Op("profile_items", rid, "delete", h_new, {}, tombstone=True, origin="cloud")])
+    e.apply_remote(
+        [Op("profile_items", rid, "upsert", HLC(2000, 0, "cloud"),
+            {"topic": "old", "content": "old", "dimension": "stance"}, origin="cloud")]
+    )
+    rec = s.get(rid)
+    assert rec is None or rec.tombstone is True, "严格更早的 upsert 不得复活已删记录"
+    assert s.has_tombstone(rid, h_new), "墓碑应仍在"
+    c.close()
+
+
+def test_sqlite_trigger_hlc_is_strictly_monotonic(pair):
+    """【B 方案·根因】触发器生成的 hlc 必须严格单调，不再出现同毫秒撞车。
+
+    修前：``hlc_counter`` 从不自增（恒0），delete 与 upsert 在同一毫秒内会拿到
+    完全相同的 hlc → 对端 apply时同hlc 决胜失效、数据卡墓碑。
+    修后：每次触发都推进 counter，保证 (physical, counter) 组合全局单调。
+    """
+    ca, _cb = pair
+    c = sqlite3.connect(ca)
+    # 同一毫秒内连做 delete + upsert（模拟云端 emotional 层删后重插）
+    c.execute("UPDATE _sync_meta SET hlc_counter=0 WHERE id=1")
+    for i in range(5):
+        c.execute("INSERT INTO profile_items(id, topic, content) VALUES(?,?,?)",
+                  (f"mono{i}", f"t{i}", f"c{i}"))
+    hlcs = [r[0] for r in c.execute(
+        "SELECT hlc FROM _sync_oplog WHERE table_name='profile_items' ORDER BY seq"
+    )]
+    c.commit()
+    assert len(hlcs) == 5, hlcs
+    assert len(set(hlcs)) == 5, f"5 次触发必须产出 5 个不同 hlc，实得 {hlcs}"
+    assert hlcs == sorted(hlcs), f"oplog 的 hlc 应严格递增：{hlcs}"
+    c.close()
+
+
+def test_sqlite_trigger_hlc_delete_then_upsert_differ(pair):
+    """【B 方案·根因】删后重插的两条 op（delete/upsert）必须拿到不同 hlc。
+
+    这是生产 bug 的直接成因：同hlc 时对端无法决胜。修后 delete 与随后的 upsert
+    严格递增，即使 A 侧决胜逻辑再出问题也不会重现"永久卡墓碑"。
+    """
+    ca, _cb = pair
+    c = sqlite3.connect(ca)
+    c.execute("INSERT INTO profile_items(id, topic, content) VALUES('dd','t','v')")
+    uuid = c.execute("SELECT sync_uuid FROM profile_items WHERE id='dd'").fetchone()[0]
+    c.execute("DELETE FROM profile_items WHERE id='dd'")
+    c.execute("INSERT INTO profile_items(id, topic, content) VALUES('dd','t2','v2')")
+    c.commit()
+    rows = list(c.execute(
+        "SELECT op, hlc FROM _sync_oplog WHERE table_name='profile_items' "
+        "AND record_id=? ORDER BY seq", (uuid,)
+    ))
+    c.close()
+    assert len(rows) == 3, rows  # insert + delete + re-insert
+    del_hlc = [h for op, h in rows if op == "delete"]
+    assert len(del_hlc) == 1, rows
+    # delete 之后的 upsert 必须比 delete 的 hlc 更大
+    ups_after = [h for op, h in rows if op == "upsert" and h > del_hlc[0]]
+    assert ups_after, f"删后重插的 upsert 必须拿到比 delete 更新的 hlc：{rows}"
+
+
 def test_sqlite_oplog_preserves_origin(pair):
     """回归：op 经 SQLite oplog 落盘再 since() 读回，origin（存于 node 列）
     不得丢失——否则真实存储上回声防护失效。"""

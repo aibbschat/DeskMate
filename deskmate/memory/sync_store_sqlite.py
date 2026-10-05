@@ -206,23 +206,40 @@ def _trigger_sql(table: str, cols: tuple, sync_key: str = "id") -> list[str]:
     HLC 用 SQLite 原生 ``strftime('%s')*1000``（ms）+ ``_sync_meta`` 的 node，
     不依赖任何 Python UDF，所有连接（含 app 连接）都能触发。
 
+    **hlc 必须严格单调（2026-10-05 修）**：counter 不是只读的 ``(SELECT hlc_counter
+    FROM _sync_meta)``，而是**每次触发先自增再取值**::
+
+        UPDATE _sync_meta SET hlc_counter = hlc_counter + 1;
+        printf(..., CAST(strftime('%s','now')*1000 AS INTEGER),
+               (SELECT hlc_counter FROM _sync_meta), (SELECT node FROM _sync_meta))
+
+    修前 counter 恒为 0（从不被写），同一毫秒内发生的 delete→upsert 会拿到**完全相同**
+    的 hlc；对端 apply 因"同 HLC 幂等跳过"把后到的 upsert 永久丢弃，记录卡死在墓碑态
+    （生产实证：云端 profile_items 的 emotional 层持续增长、Mac 侧 0 条）。
+    修后 (physical, counter) 组合严格递增，删后重插必得不同 hlc，从根上消除撞车。
+    注意：UPDATE counter 必须放在 ``suppress=1`` 区间内（只改元表、不碰业务表，
+    不会递归），但**不可**给 hlc_expr 整体加 suppress 语义——每次触发都要推进。
+
     为什么不用 BEFORE INSERT 触发器补 sync_uuid：本机 SQLite（3.50.x）实测
     ``SELECT NEW.col = expr`` 形式的 BEFORE 触发器赋值**完全不生效**（被当作比较式，
     列仍为 NULL），且 ``ALTER TABLE ADD COLUMN ... DEFAULT(randomblob)`` 被拒
     （非恒定默认）。故改为 AFTER 触发器内 suppress 包裹的 UPDATE 补列，可靠且零递归。
     """
+    # 严格单调 hlc：counter 每次触发自增（修前为只读 → 恒 0 → 同毫秒撞车）
     hlc_expr = (
         "printf('%016x.%08x.%s',"
         " CAST(strftime('%s','now')*1000 AS INTEGER),"
         " (SELECT hlc_counter FROM _sync_meta),"
         " (SELECT node FROM _sync_meta))"
     )
+    bump = f"UPDATE {_META_TABLE} SET hlc_counter = hlc_counter + 1;\n  "
     payload = _json_obj_expr(cols)
     ai = (
         f"CREATE TRIGGER IF NOT EXISTS trg_{table}_ai AFTER INSERT ON {table}\n"
         f"WHEN (SELECT suppress FROM _sync_meta) = 0\n"
         f"BEGIN\n"
         f"  UPDATE {_META_TABLE} SET suppress=1;\n"
+        f"  {bump}"
         f"  UPDATE {table} SET sync_uuid = COALESCE(sync_uuid,"
         f" 'deskmate:' || '{table}' || ':' || COALESCE({sync_key}, 'row' || NEW.rowid)),"
         f" sync_hlc = {hlc_expr}, sync_tombstone = 0 WHERE rowid = NEW.rowid;\n"
@@ -237,6 +254,7 @@ def _trigger_sql(table: str, cols: tuple, sync_key: str = "id") -> list[str]:
         f"WHEN (SELECT suppress FROM _sync_meta) = 0\n"
         f"BEGIN\n"
         f"  UPDATE {_META_TABLE} SET suppress=1;\n"
+        f"  {bump}"
         f"  UPDATE {table} SET sync_hlc = {hlc_expr} WHERE rowid = NEW.rowid;\n"
         f"  UPDATE {_META_TABLE} SET suppress=0;\n"
         f"  INSERT INTO {_OPLOG_TABLE}(table_name, record_id, op, hlc, payload_json, tombstone, node)\n"
@@ -248,6 +266,7 @@ def _trigger_sql(table: str, cols: tuple, sync_key: str = "id") -> list[str]:
         f"CREATE TRIGGER IF NOT EXISTS trg_{table}_ad AFTER DELETE ON {table}\n"
         f"WHEN (SELECT suppress FROM _sync_meta) = 0\n"
         f"BEGIN\n"
+        f"  {bump}"
         f"  INSERT INTO {_OPLOG_TABLE}(table_name, record_id, op, hlc, payload_json, tombstone, node)\n"
         f"  VALUES ('{table}', OLD.sync_uuid, 'delete', {hlc_expr}, '{{}}', 1, (SELECT node FROM _sync_meta));\n"
         # app 直写删除也必须落墓碑侧表，否则 has_tombstone() 查不到 → 迟到 upsert 复活

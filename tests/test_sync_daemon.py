@@ -126,8 +126,39 @@ def test_idempotent_replay():
     assert eng_a.store.get(rid).data["k"] == "v"
 
 
+def test_same_hlc_upsert_still_idempotent():
+    """同hlc 的**纯 upsert** 重复重放仍须幂等（不得因A 改动而破坏既有语义）。
+
+    与同hlc delete→upsert 复活用例互补：本条锁住"同hlc 同类型重复不翻倍"
+    （MemoryStore 语义：同hlc 同 op 重放必须幂等）。
+    """
+    eng_a, _eng_b, _d_a, _d_b = _make_pair()
+    rid = "u-idem"
+    h = HLC(2000, 0, "cloud")
+    payload = {"k": "v"}
+    for _ in range(3):
+        eng_a.apply_remote([Op("profile_items", rid, "upsert", h, payload, origin="cloud")])
+    # 幂等判据：3 次同hlc 重放后仍只有 1 条，且内容为最后一次的值
+    assert len(eng_a.store.items()) == 1, "同hlc upsert 重复重放必须幂等"
+    assert eng_a.store.get(rid).data["k"] == "v"
+
+
+def test_strictly_older_upsert_still_blocked_by_tombstone():
+    """严格更早 hlc 的 upsert 仍被墓碑拦住（防遗忘复活不得被A 削弱）。"""
+    eng_a, _eng_b, _d_a, _d_b = _make_pair()
+    rid = "u-stale"
+    h_new = HLC(3000, 0, "cloud")
+    eng_a.apply_remote([Op("profile_items", rid, "delete", h_new, {}, tombstone=True, origin="cloud")])
+    # 更早 hlc 的 upsert → 必须仍被拒（记录仍为墓碑态）
+    eng_a.apply_remote(
+        [Op("profile_items", rid, "upsert", HLC(2000, 0, "cloud"), {"k": "old"}, origin="cloud")]
+    )
+    rec = eng_a.store.get(rid)
+    assert rec.tombstone is True, "严格更早的 upsert 不得复活已删记录"
+    assert rec.data.get("k") != "old", "墓碑态不得被更早的 upsert 写入内容"
+
+
 def test_reconcile_by_uuid():
-    """按 uuid 逐条对账，能发现缺失与分歧。"""
     store_a, store_b = MemoryStore(), MemoryStore()
     oplog_a, oplog_b = OplogStore(), OplogStore()
     eng_a = SyncEngine(store_a, oplog_a, "mac")
