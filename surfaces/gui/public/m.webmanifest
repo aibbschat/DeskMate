@@ -1,0 +1,16 @@
+{
+  "name": "小桔",
+  "short_name": "小桔",
+  "description": "小桔的手机端：跟她说话、看她的花园",
+  "start_url": "/mobile.html",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#FBF6EF",
+  "theme_color": "#F26B1F",
+  "icons": [
+    { "src": "/m-icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/m-icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/m-icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}

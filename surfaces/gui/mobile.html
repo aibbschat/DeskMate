@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="zh">
+  <head>
+    <meta charset="UTF-8" />
+    <!-- 手机端入口（设计稿 reports/小桔_手机端设计_2026-10-05.md）。
+         viewport-fit=cover 让 safe-area 变量有意义（刘海/底部手势条）。
+         有意**不加** user-scalable=no（D5 已拍：可访问性优先，锁缩放只换来输入体验的
+         一点稳定，不值；输入框字号 ≥16px 已能防 iOS 聚焦强制放大）。 -->
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#F26B1F" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <meta name="apple-mobile-web-app-title" content="小桔" />
+    <link rel="apple-touch-icon" href="/m-icon-180.png" />
+    <link rel="manifest" href="/m.webmanifest" />
+    <title>小桔</title>
+    <!-- 首屏防闪：主题 + 皮肤在 React 之前落到 <html>。与 index.html 同一段逻辑，
+         键名必须一致（openwork-theme / openwork-skin），见 styles.css 的 [data-skin-pre]。 -->
+    <script>
+      try {
+        var t = localStorage.getItem("openwork-theme");
+        var dark = t === "dark" || (t !== "light" && window.matchMedia("(prefers-color-scheme: dark)").matches);
+        document.documentElement.dataset.theme = dark ? "dark" : "light";
+        var s = localStorage.getItem("openwork-skin");
+        document.documentElement.dataset.skinPre = s || "default";
+      } catch (e) {
+        document.documentElement.dataset.theme = "light";
+        document.documentElement.dataset.skinPre = "default";
+      }
+    </script>
+    <style>
+      /* 首帧占位：在 JS 起来之前给一个不闪白的底（跟随主题的 --paper 由脚本先行设定）。 */
+      html, body { margin: 0; height: 100%; background: #FBF6EF; }
+      html[data-theme="dark"] body { background: #17130F; }
+      #boot { position: fixed; inset: 0; display: grid; place-items: center;
+              font: 15px/1.5 -apple-system, system-ui, sans-serif; color: #A2907C; }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <div id="boot">正在连上她…</div>
+    <!-- 运行时环境解析（docs/DEPLOY-PARITY.md）：token 与端点是 RUNTIME 值，绝不烤进构建。
+         与 index.html 共用同一份同源 runtime-config.json —— 手机端零新增密钥。 -->
+    <script>
+      (function () {
+        try {
+          window.__COWORKER_RUNTIME_CONFIG__ = window.__COWORKER_RUNTIME_CONFIG__ || null;
+          fetch("runtime-config.json", { cache: "no-store" })
+            .then(function (r) { return r.ok ? r.json() : null; })
+            .then(function (cfg) {
+              if (!cfg) return;
+              window.__COWORKER_RUNTIME_CONFIG__ = cfg;
+              ["__COWORKER_HTTP__", "__COWORKER_WS__", "__COWORKER_API_TOKEN__"].forEach(function (k) {
+                if (!window[k] && cfg[k]) window[k] = cfg[k];
+              });
+            })
+            .catch(function () { /* 无 runtime config：保持 api.ts 自身默认（本地 dev） */ });
+        } catch (e) { /* 配置解析绝不阻塞应用启动 */ }
+      })();
+    </script>
+    <script type="module" src="/src/mobile/main.tsx"></script>
+  </body>
+</html>

@@ -34,13 +34,20 @@ fi
 echo "==> uploading $TARBALL to $HOST"
 scp "${SSH_OPTS[@]}" "$TARBALL" "$SSH_USER@$HOST:/tmp/fe-deploy.tgz"
 
-echo "==> unpacking + writing runtime-config.json (token never enters the bundle)"
+echo "==> unpacking the bundle"
 ssh "${SSH_OPTS[@]}" "$SSH_USER@$HOST" \
   "sudo -n bash -c 'rm -rf $FRONTEND_DIR && mkdir -p $FRONTEND_DIR && \
    tar -xzf /tmp/fe-deploy.tgz -C $FRONTEND_DIR --strip-components=1 && \
-   printf %s > $FRONTEND_DIR/runtime-config.json && \
-   chown -R openworker:openworker $FRONTEND_DIR && rm -f /tmp/fe-deploy.tgz' \
-  \"{\\\"__COWORKER_API_TOKEN__\\\": \\\"$TOKEN\\\"}\""
+   chown -R openworker:openworker $FRONTEND_DIR && rm -f /tmp/fe-deploy.tgz'"
+
+# runtime-config.json 走 stdin 写，绝不拼进远端命令行。
+# ⚠ 旧写法 `ssh "sudo bash -c '… printf %s > runtime-config.json' \"{json}\""` 会**静默写出空文件**：
+#   那段 JSON 是 bash -c 的 $0（脚本名位），printf 拿不到参数 → 云端 token 丢失 → 前端所有
+#   受限接口 401（2026-10-05 部署手机端时实测踩到，正是下面那条 NON-EMPTY 断言抓出来的）。
+#   走 stdin 还顺带让 token 不出现在远端进程参数里。
+echo "==> writing runtime-config.json (token via stdin, never in the bundle nor in argv)"
+printf '{"__COWORKER_API_TOKEN__": "%s"}' "$TOKEN" | ssh "${SSH_OPTS[@]}" "$SSH_USER@$HOST" \
+  "sudo -n tee $FRONTEND_DIR/runtime-config.json >/dev/null && sudo -n chown openworker:openworker $FRONTEND_DIR/runtime-config.json"
 
 echo "==> ensuring cloud ~/Documents/已出版 symlink (reading code resolves ~/Documents/已出版)"
 ssh "${SSH_OPTS[@]}" "$SSH_USER@$HOST" \
@@ -56,13 +63,17 @@ ssh "${SSH_OPTS[@]}" "$SSH_USER@$HOST" \
 
 echo "==> post-deploy checks on $HOST"
 ssh "${SSH_OPTS[@]}" "$SSH_USER@$HOST" \
-  "echo -n '  token occurrences in JS assets (must be 0): '; \
-   sudo -n grep -rl '$TOKEN' $FRONTEND_DIR/assets/ 2>/dev/null | wc -l; \
+  "echo -n '  token occurrences in the served bundle (must be 0): '; \
+   sudo -n grep -rl '$TOKEN' $FRONTEND_DIR --exclude=runtime-config.json 2>/dev/null | wc -l; \
    echo -n '  runtime-config.json present: '; \
    test -f $FRONTEND_DIR/runtime-config.json && echo yes || echo NO; \
    echo -n '  runtime-config.json NON-EMPTY (empty ⇒ token lost ⇒全息屏/受限接口静默401): '; \
    test -s $FRONTEND_DIR/runtime-config.json && echo yes || echo 'NO -- BROKEN'; \
    echo -n '  index.html loads config: '; \
-   sudo -n grep -q 'runtime-config.json' $FRONTEND_DIR/index.html && echo yes || echo NO"
+   sudo -n grep -q 'runtime-config.json' $FRONTEND_DIR/index.html && echo yes || echo NO; \
+   echo -n '  mobile.html shipped + loads config (手机端入口): '; \
+   test -f $FRONTEND_DIR/mobile.html && sudo -n grep -q 'runtime-config.json' $FRONTEND_DIR/mobile.html && echo yes || echo 'NO -- 手机端没随包上去'; \
+   echo -n '  mobile assets reachable (图标/manifest): '; \
+   test -f $FRONTEND_DIR/m.webmanifest && test -f $FRONTEND_DIR/m-icon-192.png && echo yes || echo NO"
 
 echo "==> done. Cloud now serves the same bytes as local dist/."

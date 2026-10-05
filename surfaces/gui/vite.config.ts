@@ -42,6 +42,21 @@ export default defineConfig(({ command }) => {
   return {
     base: "./",
     plugins: [react()],
+    // 双入口：桌面 index.html + 手机端 mobile.html。
+    // 一次 `npm run build` 同时产出两端，dist/ 仍是一个目录 —— 守住 docs/DEPLOY-PARITY.md
+    // 的铁律（只构建一次、本地与云端同一份字节），scripts/deploy_web.sh 一行都不用改。
+    // ⚠ mobile.html 必须留在 dist **根**（产物即 dist/mobile.html）：`base:"./"` 让资源走
+    // 相对路径，若塞进 /m/ 子目录，页面里的 ./assets/x.js 会解析成 /m/assets/x.js → 404。
+    // 想要短 URL 就在 Caddy 里 `redir /m /mobile.html`——用 redir 不用 rewrite，
+    // rewrite 会保留 /m/ 地址，从而踩同一个相对路径坑。
+    build: {
+      rollupOptions: {
+        input: {
+          main: path.resolve(__dirname, "index.html"),
+          mobile: path.resolve(__dirname, "mobile.html"),
+        },
+      },
+    },
     server: { port: 1420, strictPort: true },
     define: {
       // Never bake environment values (token/URL/port) into a deployed bundle: local and cloud

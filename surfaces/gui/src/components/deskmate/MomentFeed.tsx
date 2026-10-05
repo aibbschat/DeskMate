@@ -17,6 +17,7 @@ import { EmotePicker } from "./emotes/EmotePicker";
 import { emoteLabel } from "./emotes/emoteManifest";
 import { getActivePack } from "./emotes/emotePack";
 import { renderEmoteInline } from "./emotes/Emote";
+import { splitDiaryEntries } from "../../diaryEntries";
 import userAvatar from "../../assets/user-avatar.jpg";
 
 const USER_NAME = "萧盛";
@@ -107,43 +108,10 @@ function renderUserContent(text: string): React.ReactNode {
  * 每则标题行嵌了稳定 eid（<!--xj:...-->）——它就是这则的"文章 ID"，
  * 跟着这则走，不随位置变。留言/🩷 都按这个 eid 索引，删中间一篇后
  * 后面补位也不会把留言串到别人头上。
+ *
+ * 实现已提到 `src/diaryEntries.ts`（2026-10-05 手机端 M3 复用）——两端必须共用一份，
+ * 否则同一条日记在桌面分成 3 篇、手机分成 2 篇，按 entry id 挂的留言/🩷 会串。
  */
-type DiaryEntry = { time: string; eid: string | null; seq: number; body: string };
-function splitDiaryEntries(text: string): { dayTitle: string; entries: DiaryEntry[] } {
-  const lines = text.split("\n");
-  let dayTitle = "";
-  const entries: DiaryEntry[] = [];
-  let curTime: string | null = null;
-  let curEid: string | null = null;
-  let curLines: string[] = [];
-  let seq = 0;
-  const push = () => {
-    if (curTime !== null || curLines.length > 0) {
-      entries.push({ time: curTime ?? "", eid: curEid, seq, body: curLines.join("\n").trim() });
-    }
-    curTime = null;
-    curEid = null;
-    curLines = [];
-  };
-  for (const line of lines) {
-    if (line.startsWith("# ")) {
-      dayTitle = line.slice(2).trim();
-    } else {
-      // 匹配 "## HH:MM <!--xj:...-->"，eid 可选（兼容未补丁的老文件）
-      const m = line.match(/^##\s+(.*?)\s*(?:<!--xj:([0-9A-Za-z-]+)-->)?\s*$/);
-      if (m) {
-        push();
-        curTime = m[1].trim();
-        curEid = m[2] ?? null;
-        seq += 1;
-      } else {
-        curLines.push(line);
-      }
-    }
-  }
-  push();
-  return { dayTitle, entries };
-}
 
 /** 中文日期展示 */
 function dateLabel(date: string): string {
