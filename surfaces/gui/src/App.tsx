@@ -210,7 +210,10 @@ export function App() {
   const [showGate, setShowGate] = useState(false);
   const [workspaceTrustRequest, setWorkspaceTrustRequest] =
     useState<WorkspaceCommandTrust | null>(null);
-  const [agent, setAgent] = useState("cowork");
+  // Web 部署（xj.aibbs.chat）无桌面壳、且云端 chat.db 未同步（会话无法跨端恢复），
+  // 每次刷新都会落到默认 agent 而丢失小桔。故 web 端首屏默认进小桔（桌宠常驻），
+  // 桌面端（Tauri）维持原 cowork 默认不变。
+  const [agent, setAgent] = useState(isTauri() ? "cowork" : "deskmate");
   // 当前激活的专家（专家模式）。null = 普通模式，回复角色显示「助手」。
   const [currentExpert, setCurrentExpert] = useState<Expert | null>(null);
   // 编辑专家：打开文稿选择弹窗
