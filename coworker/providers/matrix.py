@@ -276,13 +276,37 @@ MATRIX: dict[str, ModelEntry] = {
         "Auto · OmniRoute 免费",
         ModelCapabilities(tools=False, vision=False, streaming=True),
     ),
-    # -- OpenCode 公共免费网关 (zen/v1) ----------------------------------------
-    # 2026-08-26 owner call: the six curated `opencode:*-free` entries were removed —
-    # they were mostly unusable in practice (free-tier throttling/failures) and crowded
-    # the picker's 免费 section. The provider descriptor in registry.py stays, so the
-    # gateway remains routable: manually added `opencode:<model>` ids still work
-    # (tier detection via needs_key=False keeps them in the 免费 group), they just no
-    # longer ship by default and set_provider's recommended-model auto-add is inert.
+    # -- OpenCode Zen 免费通道 (zen/v1) ----------------------------------------
+    # 2026-10-06 重新铺货：按 DSH 的 opencode2dsh/dsh-plugin 移植线协议后重测（匿名
+    # Bearer public + CLI 伪装头 + bash/read 门面工具、仅流式，见 opencode_provider.py；
+    # 上一次 2026-08-26 因"裸 OpenAI 形状的请求大多被拒"撤货，根因即缺这套伪装）。
+    # 入选为当日从本机（CN 出口）实测可用/限流的 8 个 *-free 模型；区域封锁
+    # （muse-spark-*-contributor）与上游已下架（deepseek-v4-flash-free、jev-1.13）未入选。
+    # context 262_144 为 zen 网关默认窗口。免费额度限速，仍只建议轻量草稿用。
+    "opencode:space-bunny-free": ModelEntry(
+        "Space Bunny · OpenCode 免费", _AGENTIC, 262_144
+    ),
+    "opencode:fledge-alpha-free": ModelEntry(
+        "Fledge Alpha · OpenCode 免费", _AGENTIC, 262_144
+    ),
+    "opencode:nemotron-3.5-lightning-free": ModelEntry(
+        "Nemotron 3.5 Lightning · OpenCode 免费", _AGENTIC, 262_144
+    ),
+    "opencode:nemotron-3-ultra-free": ModelEntry(
+        "Nemotron 3 Ultra · OpenCode 免费", _AGENTIC, 262_144
+    ),
+    "opencode:mimo-v2.5-free": ModelEntry(
+        "MiMo v2.5 · OpenCode 免费", _AGENTIC, 262_144
+    ),
+    "opencode:mimo-v2.6-flash-free": ModelEntry(
+        "MiMo v2.6 Flash · OpenCode 免费", _AGENTIC, 262_144
+    ),
+    "opencode:longcat-2.5-preview-free": ModelEntry(
+        "Longcat 2.5 Preview · OpenCode 免费", _AGENTIC, 262_144
+    ),
+    "opencode:ling-3.1-flash-free": ModelEntry(
+        "Ling 3.1 Flash · OpenCode 免费", _AGENTIC, 262_144
+    ),
     # -- cloud accounts (models running in the user's own AWS/GCP) ----------------
     # Bedrock ids carry a family segment (claude/ → native Anthropic path, other/ →
     # Converse) plus AWS's own `-v<n>:<m>` version suffix. Some regions require the

@@ -586,18 +586,128 @@ def test_matrix_labels_and_custom_model_fallback():
     assert caps.tools and not caps.parallel_tool_calls
 
 
-def test_opencode_free_models_not_curated_by_default():
-    """2026-08-26 owner call: OpenCode's *-free gateway models were mostly unusable in
-    practice, so they no longer ship in the matrix (picker stays decluttered). The
-    registry descriptor survives so manually added opencode:<model> ids still route —
-    assert both halves of that contract."""
+def test_opencode_free_models_curated_after_protocol_port():
+    """2026-10-06：按 opencode2dsh/dsh-plugin 移植线协议后重新铺货（2026-08-26 曾因裸
+    OpenAI 请求被网关拒绝而撤货，根因是缺 CLI 伪装 + bash/read 门面）。契约：curated
+    集合非空、全部 *-free、descriptor 的 recommended_model 在其中（set_provider 自动
+    添加依赖它）、descriptor 免密钥可路由。"""
     from coworker.providers.matrix import MATRIX, models_for_provider
     from coworker.providers.registry import get_descriptor
 
-    assert not any(k.startswith("opencode:") for k in MATRIX)
-    assert models_for_provider("opencode") == []
+    entries = models_for_provider("opencode")
+    assert entries, "opencode 重新铺货后 curated 集合不应为空"
+    assert all(e.endswith("-free") for e in entries)
+    assert set(entries) == {k[len("opencode:"):] for k in MATRIX if k.startswith("opencode:")}
     d = get_descriptor("opencode")
-    assert d is not None and not d.needs_key  # still routable when manually added
+    assert d is not None and not d.needs_key
+    assert d.recommended_model in entries
+    # 铺的每个条目都声明支持工具调用（免费通道过门面后与普通 agent 流量同形）。
+    from coworker.providers.matrix import entry_for
+
+    assert all(entry_for(f"opencode:{e}").caps.tools for e in entries)
+
+
+def test_opencode_session_and_project_ids_match_plugin():
+    """与 opencode2dsh 插件 lib/catalog.js 逐字节平价（2026-10-06 用 node 复算核对过）。
+    网关按 session id 形状做匿名记账，形状错 → 403 FreeTierError。"""
+    from coworker.providers.opencode_provider import (
+        _canonical_session_id,
+        _PROJECT_ID,
+        _stable_id,
+    )
+
+    assert _canonical_session_id('"hi"') == "ses_48486505dd980W9sJsFf6G4ZmD"
+    assert _stable_id("prj", "opencode2dsh:default-project") == _PROJECT_ID
+    assert _PROJECT_ID == "prj_275aad355251f5cec22671d1"
+
+
+def test_opencode_gate_tools_and_tool_choice():
+    """免费通道的请求体门：tools 必须含 bash/read 门面桩；仅当调用方没有真实工具时才
+    置 tool_choice=none（有真实工具时保持网关默认，绝不覆盖引擎的选择）。"""
+    from coworker.providers.opencode_provider import _apply_free_lane_gate
+
+    tools, choice = _apply_free_lane_gate(None)
+    assert [t["function"]["name"] for t in tools] == ["bash", "read"]
+    assert choice == "none"
+
+    real = [{"type": "function", "function": {"name": "read_file", "parameters": {}}}]
+    tools, choice = _apply_free_lane_gate(real)
+    assert [t["function"]["name"] for t in tools] == ["read_file", "bash", "read"]
+    assert choice is None
+
+    # 已带 bash 的场景只补 read，不重复。
+    covered = [{"type": "function", "function": {"name": "bash", "parameters": {}}}]
+    tools, choice = _apply_free_lane_gate(covered)
+    assert [t["function"]["name"] for t in tools] == ["bash", "read"]
+    assert choice is None
+
+
+def test_opencode_stream_injects_disguise_and_gate(monkeypatch):
+    """stream() 注入 CLI 伪装头 + 门面工具 + 空工具时的 tool_choice，全部透传给底层
+    OpenAIProvider（extra_headers/tool_choice 是 SDK 的合法 create 参数）。"""
+    from coworker.providers import openai_provider
+    from coworker.providers.opencode_provider import OpencodeProvider
+
+    captured: dict = {}
+
+    def fake_stream(self, *, model, messages, tools=None, **settings):
+        captured["model"] = model
+        captured["tool_names"] = [t["function"]["name"] for t in tools or []]
+        captured["settings"] = settings
+        return iter(())
+
+    monkeypatch.setattr(openai_provider.OpenAIProvider, "stream", fake_stream)
+    p = OpencodeProvider()
+    list(
+        p.stream(
+            model="opencode:space-bunny-free",
+            messages=[{"role": "user", "content": "hi"}],
+        )
+    )
+    assert captured["tool_names"] == ["bash", "read"]
+    assert captured["settings"]["tool_choice"] == "none"
+    headers = captured["settings"]["extra_headers"]
+    assert headers["x-opencode-client"] == "cli"
+    assert headers["x-opencode-session"] == "ses_48486505dd980W9sJsFf6G4ZmD"
+    assert headers["x-opencode-request"].startswith("req_") and len(headers["x-opencode-request"]) == 36
+    assert headers["user-agent"].startswith("opencode/")
+    # 有真实工具时不设 tool_choice，门面桩照补。
+    captured.clear()
+    real = [{"type": "function", "function": {"name": "write_file", "parameters": {}}}]
+    list(
+        p.stream(
+            model="opencode:space-bunny-free",
+            messages=[{"role": "user", "content": "hi"}],
+            tools=real,
+        )
+    )
+    assert captured["tool_names"] == ["write_file", "bash", "read"]
+    assert "tool_choice" not in captured["settings"]
+    # 默认匿名 key 与网关地址就位；显式 api_key 获得更高优先（付费模型）。
+    assert p._api_key == "public"
+    assert p._base_url == "https://opencode.ai/zen/v1"
+    assert OpencodeProvider(api_key=" paid-key ")._api_key == "paid-key"
+
+
+def test_opencode_complete_aggregates_stream(monkeypatch):
+    """免费通道只收流式：complete() 必须聚合 stream() 的最终 turn（对引擎透明）。"""
+    from coworker.providers import openai_provider
+    from coworker.providers.base import AssistantTurn, StreamChunk
+    from coworker.providers.opencode_provider import OpencodeProvider
+
+    def fake_stream(self, *, model, messages, tools=None, **settings):
+        yield StreamChunk(text_delta="你")
+        yield StreamChunk(text_delta="好")
+        yield StreamChunk(turn=AssistantTurn(text="你好", finish_reason="stop"))
+
+    monkeypatch.setattr(openai_provider.OpenAIProvider, "stream", fake_stream)
+    p = OpencodeProvider()
+    turn = p.complete(
+        model="opencode:space-bunny-free",
+        messages=[{"role": "user", "content": "hi"}],
+    )
+    assert turn.text == "你好"
+    assert turn.finish_reason == "stop"
 
 
 def test_reseller_descriptors_and_matrix_stay_in_lockstep():
