@@ -659,6 +659,68 @@ def test_backfill_source_adaptive_prompt():
     assert pending_items(base)[0]["understanding"] == "这个点子可以往世界观上延伸。"
 
 
+def test_backfill_uses_grounding_context():
+    """§5.2：理解加工把 worldview/记忆/圣经 接进 prompt（反凭空编）。
+
+    模拟三路上下文（mock _gather_grounding），断言它们进了发给 LLM 的 user prompt，
+    同时原事项/证据仍在。fail-open：mock 掉即不碰活库/不真搜。
+    """
+    base = _fresh_base("mac")
+    record_proactive(
+        base_dir=base, source="cloud_audit", kind="missing_foreshadow",
+        content="康得宝线 9-17 章无复现", evidence="第9-17章", confidence=0.9,
+    )
+    captured = {}
+
+    def fake_chat(**kw):
+        captured.update(kw)
+        return "结合她看重事实准确的世界观，这条线得收。"
+
+    with unittest.mock.patch("deskmate.memory.llm.llm_available", return_value=True), \
+         unittest.mock.patch("deskmate.memory.llm.chat", side_effect=fake_chat), \
+         unittest.mock.patch(
+            "deskmate.proactivity.understanding._gather_grounding",
+            return_value=(
+                "### 她的世界观\n看清谁在争比站队重要。\n"
+                "### 相关记忆\n萧哥强调伏笔必收。"
+            ),
+        ):
+        from deskmate.proactivity.understanding import maybe_backfill_understanding
+
+        assert maybe_backfill_understanding(base) == 1
+    user_prompt = captured.get("user", "")
+    assert "康得宝" in user_prompt            # 原事项仍在
+    assert "看清谁在争" in user_prompt        # worldview 进了 prompt
+    assert "伏笔必收" in user_prompt          # 相关记忆进了 prompt
+    assert pending_items(base)[0]["understanding"] == "结合她看重事实准确的世界观，这条线得收。"
+
+
+def test_backfill_no_grounding_when_empty():
+    """§5.2：三路上下文全空时仍正常加工（fail-open，不阻断）。"""
+    base = _fresh_base("mac")
+    record_proactive(
+        base_dir=base, source="cloud_audit", kind="timeline_error",
+        content="时间线矛盾", evidence="第3章", confidence=0.9,
+    )
+    captured = {}
+
+    def fake_chat(**kw):
+        captured.update(kw)
+        return "时间线得对一下。"
+
+    with unittest.mock.patch("deskmate.memory.llm.llm_available", return_value=True), \
+         unittest.mock.patch("deskmate.memory.llm.chat", side_effect=fake_chat), \
+         unittest.mock.patch(
+            "deskmate.proactivity.understanding._gather_grounding", return_value=""
+        ):
+        from deskmate.proactivity.understanding import maybe_backfill_understanding
+
+        assert maybe_backfill_understanding(base) == 1
+    user_prompt = captured.get("user", "")
+    assert "时间线矛盾" in user_prompt
+    assert "你已有的上下文" not in user_prompt  # 空上下文不附加段落
+
+
 def test_failed_retry_after_cooldown():
     from deskmate.proactivity.ledger import UNDERSTANDING_FAILED_MARKER
 
