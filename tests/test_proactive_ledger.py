@@ -107,6 +107,9 @@ def test_record_and_handoff():
     items = pending_items(base)
     assert len(items) == 1
     assert items[0]["status"] == "pending"
+    # P0.5：pending_items 投影须带 source_node（§六展示「哪端产出」、§七跨端日上限计数）
+    assert "source_node" in items[0]
+    assert items[0]["source_node"] == "mac"
     opening = build_handoff_opening(base)
     assert opening is not None
     assert "伏笔X悬了9节" in opening["text"]
@@ -114,6 +117,34 @@ def test_record_and_handoff():
     rid = items[0]["id"]
     assert acknowledge_ledger(base, rid=rid, new_status="actioned")
     assert pending_items(base) == []
+
+
+def test_no_anchor_distinct_content_distinct_rows():
+    """P0.5：tick 不再传 anchor → 同 (source,kind) 下不同 content 各成一行（不过合并）。
+
+    直接修复「anchor=suggestion_type 致同类型恒为单行、新发现被旧 status 吞掉」。
+    同 content 仍合并（保 48 分裂防护，对应确定性 id 血泪教训）。
+    """
+    base = _fresh_base("mac")
+    record_proactive(
+        base_dir=base, source="cloud_audit", kind="plot_contradiction",
+        content="伏笔A 悬了9节", evidence="第七章",
+    )
+    record_proactive(
+        base_dir=base, source="cloud_audit", kind="plot_contradiction",
+        content="伏笔B 人物动机矛盾", evidence="第九章",
+    )
+    items = pending_items(base)
+    assert len(items) == 2  # 不过合并，两条独立 #id
+    # 相同 content 二次写入 → 合并为一行（保 48 分裂防护）
+    record_proactive(
+        base_dir=base, source="cloud_audit", kind="plot_contradiction",
+        content="伏笔A 悬了9节", evidence="第七章（复核）",
+    )
+    items2 = pending_items(base)
+    assert len(items2) == 2
+    a = [i for i in items2 if i["content"] == "伏笔A 悬了9节"][0]
+    assert "复核" in a["evidence"]  # 合并行 evidence 被刷新
 
 
 def test_acknowledge_no_downgrade():

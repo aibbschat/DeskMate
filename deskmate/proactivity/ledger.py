@@ -143,12 +143,12 @@ def pending_items(base_dir: Optional[Path] = None) -> list[dict]:
         try:
             rows = c.execute(
                 f"SELECT id, source, kind, content, evidence, understanding, status,"
-                f" confidence, created_at FROM {LEDGER_TABLE}"
+                f" confidence, created_at, source_node FROM {LEDGER_TABLE}"
                 f" WHERE status='pending' ORDER BY created_at DESC"
             ).fetchall()
         except sqlite3.OperationalError:
             return []  # 表尚未建（首次运行前）→ 无 pending
-    keys = ("id", "source", "kind", "content", "evidence", "understanding", "status", "confidence", "created_at")
+    keys = ("id", "source", "kind", "content", "evidence", "understanding", "status", "confidence", "created_at", "source_node")
     return [dict(zip(keys, r)) for r in rows]
 
 

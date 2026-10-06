@@ -551,7 +551,10 @@ class ProactiveEngine:
                     kind=judgment.suggestion_type,
                     content=judgment.suggestion_content,
                     evidence=judgment.reasoning[:500] if judgment.reasoning else "",
-                    anchor=judgment.suggestion_type,  # 同类型合并（桌面建议锚点不稳定，按类型去重）
+                    # P0.5（2026-10-06）：不传 anchor → 走 content-hash 兜底，每条实际发现
+                    # 独立成行、独立 #id（同内容跨端/跨时间自动合并，保住 48 分裂防护）；
+                    # 同 (source,kind) 不再恒为单行，避免新发现被旧 status(actioned) 吞掉。
+                    # 章节/人物语义锚点留 P1（需 JudgmentResult 加 finding_key + 改 prompt）。
                     confidence=judgment.confidence,
                 )
             except Exception as e:
