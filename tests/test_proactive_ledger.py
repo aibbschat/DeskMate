@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import sqlite3
 import tempfile
+import time
 import unittest.mock
 from pathlib import Path
 
@@ -105,6 +106,7 @@ def test_record_and_handoff():
         evidence="第七章",
         understanding="这条线不收，读者会以为你忘了前面的铺垫。",
         anchor="ch7",
+        confidence=0.9,
     )
     items = pending_items(base)
     assert len(items) == 1
@@ -128,7 +130,7 @@ def test_handoff_skips_ununderstood():
     base = _fresh_base("mac")
     record_proactive(
         base_dir=base, source="cloud_audit", kind="timeline_error",
-        content="时间线Y春秋对不上", evidence="第3章",  # 不传 understanding → 空
+        content="时间线Y春秋对不上", evidence="第3章", confidence=0.9,  # 不传 understanding → 空
     )
     assert build_handoff_opening(base) is None  # 守卫：未理解不递
 
@@ -138,7 +140,7 @@ def test_handoff_degrades_failed_marker():
     base = _fresh_base("mac")
     rid = record_proactive(
         base_dir=base, source="cloud_audit", kind="timeline_error",
-        content="时间线Y春秋对不上", evidence="第3章",
+        content="时间线Y春秋对不上", evidence="第3章", confidence=0.9,
     )
     from deskmate.proactivity.ledger import UNDERSTANDING_FAILED_MARKER
     with sqlite3.connect(str(base / "deskmate.db"), check_same_thread=False) as c:
@@ -157,7 +159,7 @@ def test_backfill_fills_understanding():
     base = _fresh_base("mac")
     record_proactive(
         base_dir=base, source="cloud_audit", kind="missing_foreshadow",
-        content="康得宝线 9-17 章无复现", evidence="第9-17章",
+        content="康得宝线 9-17 章无复现", evidence="第9-17章", confidence=0.9,
     )
     assert pending_items(base)[0]["understanding"] == ""
     with unittest.mock.patch("deskmate.memory.llm.llm_available", return_value=True), \
@@ -178,7 +180,7 @@ def test_backfill_no_llm_leaves_empty():
     base = _fresh_base("mac")
     record_proactive(
         base_dir=base, source="cloud_audit", kind="timeline_error",
-        content="时间线矛盾", evidence="第3章",
+        content="时间线矛盾", evidence="第3章", confidence=0.9,
     )
     with unittest.mock.patch("deskmate.memory.llm.llm_available", return_value=False):
         from deskmate.proactivity.understanding import maybe_backfill_understanding
@@ -193,7 +195,7 @@ def test_backfill_marks_failed_on_error():
     base = _fresh_base("mac")
     record_proactive(
         base_dir=base, source="cloud_audit", kind="timeline_error",
-        content="时间线矛盾", evidence="第3章",
+        content="时间线矛盾", evidence="第3章", confidence=0.9,
     )
     with unittest.mock.patch("deskmate.memory.llm.llm_available", return_value=True), \
          unittest.mock.patch("deskmate.memory.llm.chat", return_value=None):
@@ -214,18 +216,18 @@ def test_no_anchor_distinct_content_distinct_rows():
     base = _fresh_base("mac")
     record_proactive(
         base_dir=base, source="cloud_audit", kind="plot_contradiction",
-        content="伏笔A 悬了9节", evidence="第七章",
+        content="伏笔A 悬了9节", evidence="第七章", confidence=0.9,
     )
     record_proactive(
         base_dir=base, source="cloud_audit", kind="plot_contradiction",
-        content="伏笔B 人物动机矛盾", evidence="第九章",
+        content="伏笔B 人物动机矛盾", evidence="第九章", confidence=0.9,
     )
     items = pending_items(base)
     assert len(items) == 2  # 不过合并，两条独立 #id
     # 相同 content 二次写入 → 合并为一行（保 48 分裂防护）
     record_proactive(
         base_dir=base, source="cloud_audit", kind="plot_contradiction",
-        content="伏笔A 悬了9节", evidence="第七章（复核）",
+        content="伏笔A 悬了9节", evidence="第七章（复核）", confidence=0.9,
     )
     items2 = pending_items(base)
     assert len(items2) == 2
@@ -237,7 +239,7 @@ def test_acknowledge_no_downgrade():
     base = _fresh_base("mac")
     rid = record_proactive(
         base_dir=base, source="cloud_audit", kind="timeline_error",
-        content="时间线Y春秋对不上", anchor="tlY",
+        content="时间线Y春秋对不上", evidence="第3章", anchor="tlY", confidence=0.9,
     )
     # 先 actioned，再尝试 dismiss→ 允许（同终态）；尝试回 pending → 拒绝
     acknowledge_ledger(base, rid=rid, new_status="actioned")
@@ -387,3 +389,300 @@ def test_ensure_table_recreates_after_table_dropped():
             assert c.execute(
                 "SELECT 1 FROM sqlite_master WHERE type='table' AND name='proactive_ledger'"
             ).fetchone() is not None, "表被删后必须重建，不能凭 _ensured 标志跳过"
+
+
+# ---------------------------------------------------------------------------
+# 5. 修①：去重合并不清空 understanding / 不刷 created_at（§11.11 缺陷1）
+# ---------------------------------------------------------------------------
+def test_rereemit_preserves_understanding_and_created_at():
+    base = _fresh_base("mac")
+    rid = record_proactive(
+        base_dir=base, source="cloud_audit", kind="missing_foreshadow",
+        content="康得宝线 9-17 章无复现", evidence="第9-17章", confidence=0.9,
+    )
+    # 模拟后处理补上的理解
+    with sqlite3.connect(str(base / "deskmate.db"), check_same_thread=False) as c:
+        c.execute(
+            "UPDATE proactive_ledger SET understanding=? WHERE id=?",
+            ("这条线要收一下。", rid),
+        )
+        c.commit()
+        before = c.execute(
+            "SELECT created_at FROM proactive_ledger WHERE id=?", (rid,)
+        ).fetchone()[0]
+    # 同内容再产出（§11.2① 双端同结论双写是必然事件）：不传 understanding
+    record_proactive(
+        base_dir=base, source="cloud_audit", kind="missing_foreshadow",
+        content="康得宝线 9-17 章无复现", evidence="第9-17章（复核）", confidence=0.9,
+    )
+    with sqlite3.connect(str(base / "deskmate.db"), check_same_thread=False) as c:
+        row = c.execute(
+            "SELECT understanding, evidence, created_at FROM proactive_ledger WHERE id=?",
+            (rid,),
+        ).fetchone()
+    assert row[0] == "这条线要收一下。"  # 理解保留（不再被 "" 清空、不再同步抹掉对端）
+    assert "复核" in row[1]  # evidence 仍刷新（合并更新非 status 字段）
+    assert row[2] == before  # created_at 不刷新（日上限计数/排序不被重置）
+    # 显式提供新理解 → 覆盖（生产者自带理解的通路）
+    record_proactive(
+        base_dir=base, source="cloud_audit", kind="missing_foreshadow",
+        content="康得宝线 9-17 章无复现", evidence="第9-17章",
+        understanding="新理解", confidence=0.9,
+    )
+    with sqlite3.connect(str(base / "deskmate.db"), check_same_thread=False) as c:
+        assert (
+            c.execute("SELECT understanding FROM proactive_ledger WHERE id=?", (rid,)).fetchone()[0]
+            == "新理解"
+        )
+    opening = build_handoff_opening(base)
+    assert opening is not None and "我的理解" in opening["text"]
+
+
+# ---------------------------------------------------------------------------
+# 6. 修④：写入门槛 + 证据截断（§七/§11.7③）
+# ---------------------------------------------------------------------------
+def test_write_gate_blocks_low_confidence_and_empty_evidence():
+    base = _fresh_base("mac")
+    rid1 = record_proactive(
+        base_dir=base, source="cloud_audit", kind="timeline_error",
+        content="低置信发现", evidence="第3章", confidence=0.5,
+    )
+    assert rid1 == ""  # 低置信不落台账（只进 prepare）
+    rid2 = record_proactive(
+        base_dir=base, source="cloud_audit", kind="timeline_error",
+        content="无依据发现", evidence=" ", confidence=0.9,
+    )
+    assert rid2 == ""  # evidence 不明确不落台账
+    assert pending_items(base) == []
+    rid3 = record_proactive(
+        base_dir=base, source="cloud_audit", kind="timeline_error",
+        content="过门槛发现", evidence="第3章", confidence=0.75,
+    )
+    assert rid3 != ""
+    assert len(pending_items(base)) == 1
+
+
+def test_evidence_truncated_at_500():
+    base = _fresh_base("mac")
+    record_proactive(
+        base_dir=base, source="mobile_voice", kind="idea_capture",
+        content="灵感", evidence="长" * 2000, confidence=0.9,
+    )
+    with sqlite3.connect(str(base / "deskmate.db"), check_same_thread=False) as c:
+        ev = c.execute("SELECT evidence FROM proactive_ledger").fetchone()[0]
+    assert len(ev) == 500  # §11.6：oplog payload 每份复制，必须截断
+
+
+# ---------------------------------------------------------------------------
+# 7. 修④：每日交付上限 + 幂等重现 + 次日补位（§七/§11.2③）
+# ---------------------------------------------------------------------------
+def test_daily_cap_reshow_and_tomorrow_refill():
+    base = _fresh_base("mac")
+    for i in range(5):
+        record_proactive(
+            base_dir=base, source="cloud_audit", kind="timeline_error",
+            content=f"发现{i}", evidence=f"第{i}章", confidence=0.9,
+            understanding=f"第{i}条的理解。",
+        )
+    op1 = build_handoff_opening(base)
+    assert op1 is not None and len(op1["items"]) == 3  # 日上限
+    assert "#" in op1["text"]  # #id 句柄在开场白里
+    ids1 = {it["id"] for it in op1["items"]}
+    with sqlite3.connect(str(base / "deskmate.db"), check_same_thread=False) as c:
+        marked = {
+            r[0]
+            for r in c.execute(
+                "SELECT id FROM proactive_ledger"
+                " WHERE delivered_at IS NOT NULL AND delivered_at <> ''"
+            )
+        }
+    assert marked == ids1  # 交付标记已写（跨端共享的日上限计数凭证）
+    # 同日重开首页：幂等呈现同样 3 条，不追加（不追弹）
+    op2 = build_handoff_opening(base)
+    assert op2 is not None and {it["id"] for it in op2["items"]} == ids1
+    # 处理掉这 3 条 → 剩余 2 条今天没额度（超额安静攒到次日）
+    for rid in ids1:
+        assert acknowledge_ledger(base, rid=rid, new_status="actioned")
+    assert build_handoff_opening(base) is None
+    # 模拟次日：交付标记拨回过去 → 额度重置，剩余条目递出
+    with sqlite3.connect(str(base / "deskmate.db"), check_same_thread=False) as c:
+        c.execute(
+            "UPDATE proactive_ledger SET delivered_at=? WHERE delivered_at IS NOT NULL",
+            ("2000-01-01T00:00:00",),
+        )
+        c.commit()
+    op4 = build_handoff_opening(base)
+    assert op4 is not None and len(op4["items"]) == 2
+    assert not (ids1 & {it["id"] for it in op4["items"]})
+
+
+# ---------------------------------------------------------------------------
+# 8. 修⑥：snoozed 轨道（稍后 → 退避 → 到期复活 → 可流转）
+# ---------------------------------------------------------------------------
+def test_snoozed_lifecycle():
+    base = _fresh_base("mac")
+    rid = record_proactive(
+        base_dir=base, source="cloud_audit", kind="timeline_error",
+        content="稍后再说的发现", evidence="第3章", confidence=0.9,
+        understanding="这条可以缓缓。",
+    )
+    assert build_handoff_opening(base) is not None
+    assert acknowledge_ledger(base, rid=rid, new_status="snoozed")
+    with sqlite3.connect(str(base / "deskmate.db"), check_same_thread=False) as c:
+        st, until = c.execute(
+            "SELECT status, snoozed_until FROM proactive_ledger WHERE id=?", (rid,)
+        ).fetchone()
+    assert st == "snoozed" and until and until > time.strftime("%Y-%m-%dT%H:%M:%S")
+    assert build_handoff_opening(base) is None  # 退避期内不递
+    # 到期复活（读路径判定，status 保持 snoozed 可审计）
+    with sqlite3.connect(str(base / "deskmate.db"), check_same_thread=False) as c:
+        c.execute(
+            "UPDATE proactive_ledger SET snoozed_until=? WHERE id=?",
+            ("2000-01-01T00:00:00", rid),
+        )
+        c.commit()
+    op = build_handoff_opening(base)
+    assert op is not None and op["items"][0]["id"] == rid
+    # 复活后正常流转：snoozed → acknowledged → actioned；不可降回 pending/被终态翻案
+    assert acknowledge_ledger(base, rid=rid, new_status="acknowledged")
+    assert not acknowledge_ledger(base, rid=rid, new_status="pending")
+    assert acknowledge_ledger(base, rid=rid, new_status="actioned")
+    assert not acknowledge_ledger(base, rid=rid, new_status="snoozed")
+
+
+def test_lww_snoozed_beats_pending():
+    """修⑥：远端迟到的 pending 不得覆盖已 snoozed 的条目（反 nag）。"""
+    a = _rec("snoozed", "0000000000000001.00000000.mac")
+    b = _rec("pending", "0000000000000002.00000000.cloud")
+    assert _lww_winner(a, b, STATUS_ORDER) is a
+    # 用户处理结果压过「稍后」：acknowledged 胜 snoozed（跨端 ack 不被别端稍后锁死）
+    c2 = _rec("acknowledged", "0000000000000001.00000000.mac")
+    assert _lww_winner(c2, a, STATUS_ORDER) is c2
+
+
+# ---------------------------------------------------------------------------
+# 9. 修⑤：基线对账带 ordered_status（§11.2② 补账）
+# ---------------------------------------------------------------------------
+def test_baseline_reconcile_ordered_status():
+    from deskmate.memory.sync_daemon import reconcile_baseline
+
+    base_mac = _fresh_base("mac")
+    base_cloud = _fresh_base("cloud")
+    st_mac = _store(str(base_mac / "deskmate.db"))
+    st_cloud = _store(str(base_cloud / "deskmate.db"))
+    # mac：actioned（hlc 旧）；cloud：pending（hlc 新）——纯 LWW 会翻车，ordered 必须 actioned 胜
+    st_mac.upsert("rid1", _payload("actioned"), HLC.from_str("0000000000000001.00000000.mac"))
+    st_cloud.upsert("rid1", _payload("pending"), HLC.from_str("0000000000000002.00000000.cloud"))
+    rep = reconcile_baseline(st_mac, st_cloud, "mac", STATUS_ORDER)
+    assert rep["resolved"] >= 1
+    assert _status_of(str(base_mac / "deskmate.db"), "rid1") == "actioned"
+    assert _status_of(str(base_cloud / "deskmate.db"), "rid1") == "actioned"
+
+
+# ---------------------------------------------------------------------------
+# 10. 修⑨：相关性三档分流（§11.4）
+# ---------------------------------------------------------------------------
+def test_relevance_tiers():
+    base = _fresh_base("mac")
+    record_proactive(
+        base_dir=base, source="cloud_audit", kind="missing_foreshadow",
+        content="康得宝线 9-17 章无复现", evidence="第9-17章 康得宝", confidence=0.9,
+        understanding="这条线要收。",
+    )
+    record_proactive(
+        base_dir=base, source="cloud_audit", kind="timeline_error",
+        content="春秋历法换算错", evidence="第3章 历法", confidence=0.9,
+        understanding="时间线对不上。",
+    )
+    record_proactive(
+        base_dir=base, source="sync_health", kind="drift",
+        content="云端 oplog 漂移超阈值", evidence="窗口 17:02 NOT_ALIGNED", confidence=0.9,
+        understanding="同步坏了得看。",
+    )
+    op = build_handoff_opening(base, session_context="我想接着写康得宝中毒那条线")
+    assert op is not None
+    contents = [it["content"] for it in op["items"]]
+    assert any("康得宝" in c for c in contents)  # 相关型：命中上下文
+    assert any("漂移" in c for c in contents)  # 时效型：即时递
+    assert not any("春秋" in c for c in contents)  # 无关的攒着（等被聊到再递）
+
+
+# ---------------------------------------------------------------------------
+# 11. 修⑧：生产者注册表（§四/§九）
+# ---------------------------------------------------------------------------
+def test_producer_registry():
+    base = _fresh_base("mac")
+    from deskmate.memory.sync_store_sqlite import SYNC_TABLES
+    from deskmate.proactivity.ledger import PRODUCERS, register_producer, run_producer
+
+    spec = SYNC_TABLES["proactive_ledger"]
+    assert "delivered_at" in spec["business_cols"] and "snoozed_until" in spec["business_cols"]
+    assert "snoozed" in spec["ordered_status"]
+
+    @register_producer("test_src")
+    def _p(kind="k", content="c", evidence="e", confidence=0.9):
+        return [{"kind": kind, "content": content, "evidence": evidence, "confidence": confidence}]
+
+    assert "test_src" in PRODUCERS
+    n = run_producer(
+        "test_src", ctx={"content": "注册表产出", "evidence": "依据"}, base_dir=base
+    )
+    assert n == 1
+    items = pending_items(base)
+    assert items and items[0]["source"] == "test_src"
+    assert run_producer("no_such_source") == 0  # 未登记来源 → 0，不炸
+    PRODUCERS.pop("test_src", None)
+
+
+# ---------------------------------------------------------------------------
+# 12. 修⑦：understanding 按来源自适应 prompt + failed 重试窗
+# ---------------------------------------------------------------------------
+def test_backfill_source_adaptive_prompt():
+    base = _fresh_base("mac")
+    record_proactive(
+        base_dir=base, source="mobile_voice", kind="idea_capture",
+        content="想写一个在沙漠开咖啡馆的故事", evidence="手机端 2026-10-06 15:30", confidence=0.9,
+    )
+    captured = {}
+
+    def fake_chat(**kw):
+        captured.update(kw)
+        return "这个点子可以往世界观上延伸。"
+
+    with unittest.mock.patch("deskmate.memory.llm.llm_available", return_value=True), \
+         unittest.mock.patch("deskmate.memory.llm.chat", side_effect=fake_chat):
+        from deskmate.proactivity.understanding import maybe_backfill_understanding
+
+        assert maybe_backfill_understanding(base) == 1
+    sys_prompt = captured.get("system", "")
+    assert "【来源说明】" in sys_prompt and "灵感" in sys_prompt  # 按来源换了口吻
+    assert pending_items(base)[0]["understanding"] == "这个点子可以往世界观上延伸。"
+
+
+def test_failed_retry_after_cooldown():
+    from deskmate.proactivity.ledger import UNDERSTANDING_FAILED_MARKER
+
+    base = _fresh_base("mac")
+    rid = record_proactive(
+        base_dir=base, source="cloud_audit", kind="timeline_error",
+        content="时间线矛盾", evidence="第3章", confidence=0.9,
+    )
+    with sqlite3.connect(str(base / "deskmate.db"), check_same_thread=False) as c:
+        c.execute(
+            "UPDATE proactive_ledger SET understanding=? WHERE id=?",
+            (UNDERSTANDING_FAILED_MARKER, rid),
+        )
+        c.execute(
+            "CREATE TABLE IF NOT EXISTS proactivity_meta (key TEXT PRIMARY KEY, value TEXT)"
+        )
+        c.execute(
+            "INSERT OR REPLACE INTO proactivity_meta VALUES ('last_failed_retry_at', ?)",
+            (str(time.time() - 2 * 86400),),  # 冷却已过（2 天前）
+        )
+        c.commit()
+    with unittest.mock.patch("deskmate.memory.llm.llm_available", return_value=True), \
+         unittest.mock.patch("deskmate.memory.llm.chat", return_value="重试成功了。"):
+        from deskmate.proactivity.understanding import maybe_backfill_understanding
+
+        assert maybe_backfill_understanding(base) == 1
+    assert pending_items(base)[0]["understanding"] == "重试成功了。"  # 不再永久钉在降级文案

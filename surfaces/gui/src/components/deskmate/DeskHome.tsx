@@ -54,7 +54,10 @@ export function DeskHome({ onPrefill }: { onPrefill?: (text: string) => void }) 
           <ul className="dm-handoff-list">
             {visibleItems.map((it) => (
               <li key={it.id} className="dm-handoff-item">
-                <div className="dm-handoff-content">{it.content}</div>
+                <div className="dm-handoff-content">
+                  <span className="dm-handoff-id">#{it.id.split(":").pop()?.slice(0, 6)}</span>
+                  {it.content}
+                </div>
                 {it.evidence ? (
                   <div className="dm-handoff-evidence">依据：{it.evidence}</div>
                 ) : null}
@@ -77,7 +80,9 @@ export function DeskHome({ onPrefill }: { onPrefill?: (text: string) => void }) 
                     type="button"
                     className="dm-handoff-later"
                     onClick={async () => {
-                      await ackDeskmateHandoff(it.id, "acknowledged");
+                      // 修⑥：「稍后」→ snoozed（3 天退避后自动复活轻递），
+                      // 不再用 acknowledged 承接（那等于永久拉黑）。
+                      await ackDeskmateHandoff(it.id, "snoozed");
                       setDismissed((s) => new Set(s).add(it.id));
                     }}
                   >

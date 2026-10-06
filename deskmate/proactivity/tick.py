@@ -27,7 +27,26 @@ from .context_builder import (
 )
 from .disturb import DisturbManager
 from .judge import JudgmentResult, judge_proactive_action
+from .ledger import register_producer
 from .user_active import ActivityState, UserActivity, detect_user_activity
+
+
+@register_producer("cloud_audit")
+def _cloud_audit_producer(judgment) -> list:
+    """cloud_audit 生产者（§四 注册式，修⑧）：一条 judge 结论 → 一条台账业务字段。
+
+    sync_uuid/status/门槛/截断等由管道统一补（§九不变量：生产者不碰同步、浮层、递送）。
+    不传 anchor → content-hash 兜底，每条实际发现独立成行、独立 #id（同内容跨端/跨
+    时间自动合并，保 48 分裂防护）；章节/人物语义锚点待 JudgmentResult 加 finding_key。
+    """
+    return [
+        {
+            "kind": judgment.suggestion_type,
+            "content": judgment.suggestion_content,
+            "evidence": judgment.reasoning[:500] if judgment.reasoning else "",
+            "confidence": judgment.confidence,
+        }
+    ]
 
 
 @dataclass
@@ -551,21 +570,14 @@ class ProactiveEngine:
                 suggestion_key,
             )
             # P0（2026-10-06）：主动建议落主动产出台账（proactive_ledger），进 SYNC_TABLES
-            # 跨端同步 → 本地开聊时对话式对接（非浮层）。失败 fail-open，绝不阻断主动推理主流程。
+            # 跨端同步 → 本地开聊时对话式对接（非浮层）。修⑧改为经注册表跑 producer
+            #（§四/§九：新增来源=登记+产出函数，此处不再硬编码来源；base_dir 经环境解析）。
+            # 失败 fail-open，绝不阻断主动推理主流程。
             try:
-                from deskmate.proactivity.ledger import record_proactive
+                from deskmate.proactivity.ledger import run_producer
 
-                record_proactive(
-                    base_dir=self.base_dir,
-                    source="cloud_audit",
-                    kind=judgment.suggestion_type,
-                    content=judgment.suggestion_content,
-                    evidence=judgment.reasoning[:500] if judgment.reasoning else "",
-                    # P0.5（2026-10-06）：不传 anchor → 走 content-hash 兜底，每条实际发现
-                    # 独立成行、独立 #id（同内容跨端/跨时间自动合并，保住 48 分裂防护）；
-                    # 同 (source,kind) 不再恒为单行，避免新发现被旧 status(actioned) 吞掉。
-                    # 章节/人物语义锚点留 P1（需 JudgmentResult 加 finding_key + 改 prompt）。
-                    confidence=judgment.confidence,
+                run_producer(
+                    "cloud_audit", ctx={"judgment": judgment}, base_dir=self.base_dir
                 )
             except Exception as e:
                 logger.debug("主动台账落库失败（不阻断 tick）: %s", e)

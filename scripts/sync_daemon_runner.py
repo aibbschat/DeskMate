@@ -253,8 +253,13 @@ class SyncNode:
                 continue
             remote_ms = self._snapshot_to_memory_store(snap)
             try:
+                # 修⑤（§11.2② 补账）：基线对账必须带 ordered_status——否则首连/游标归零
+                # 时是纯 HLC LWW，actioned 可被更晚的 pending 盖回（反 nag 失效）。
+                # ordered_status 从表注册表取（SQLiteSyncStore._spec；替身无 _spec 视为无序）。
+                _spec = getattr(self.engine.stores[t], "_spec", None) or {}
+                ordered = _spec.get("ordered_status")
                 rep = self.sd.reconcile_baseline_oplog(
-                    self.engine.stores[t], remote_ms, self.engine, t, self.node
+                    self.engine.stores[t], remote_ms, self.engine, t, self.node, ordered
                 )
                 LOG.info(
                     "基线对账[%s]: remote_only=%d local_only=%d conflicts=%d",

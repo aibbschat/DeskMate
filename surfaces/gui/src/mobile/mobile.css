@@ -94,6 +94,8 @@
 
 /* 复用桌面 Transcript/Markdown，只改窄屏的量 */
 .m-app .transcript { max-width: 100%; gap: 16px; }
+/* 触屏无 hover：消息操作条（复制/记住这个）常显（修⑧），否则手机上不可见 */
+.m-app .bubble-meta { opacity: 1; }
 .m-app .bubble-assistant { font-size: 15px; line-height: 1.6; }
 .m-app .bubble-assistant .who { font-size: 15px; margin-bottom: 4px; }
 .m-app .bubble-assistant .who .who-avatar { width: 26px; height: 26px; }

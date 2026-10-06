@@ -145,7 +145,7 @@ recommends:
 1. **对话开始** -> 记忆和技能已由引擎自动注入（`build_full_context_for_turn` + 技能匹配），你不需要手动调用。
 2. **检测到用户纠正 / 否定**（如"张三和李四是敌人不是朋友"）-> 立即 `memory_append(section="memory", new_entry="…", target_section="纠正")` 记入 `§ 纠正 #correction`，避免再犯。
 3. **对话中发现值得记住的事实**（新偏好、新信息、项目进展）-> `memory_append` 保存（自动归到对应 §）。
-4. **用户说"记住这个"** -> 直接 `memory_write` 写入。
+4. **用户说"记住这个"** -> 调用 `proactive_capture(kind="idea_capture", content=… )` 写入主动台账（她会琢磨后、开聊时以对话式开场白递回，带 #id 与依据）；若同时是长期偏好/事实，可再 `memory_append` 补一份。记忆归记忆、台账归台账。
 5. **用户说"之前说的XX不对，应该是YY"** -> 用 `memory_replace(section, old_text="XX", new_text="YY")` 精确替换，不要追加（追加会导致新旧矛盾并存）。
 6. **用户说"忘掉XX""这个不再适用了"** -> 用 `memory_remove(section, text_to_remove="XX")` 精确删除。
 7. **技能踩坑** -> 如果发现已有技能的步骤不对，用 `skill_patch` 更新它。引擎会自动抽取新技能，你不需要手动创建。

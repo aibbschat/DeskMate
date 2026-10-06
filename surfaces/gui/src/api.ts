@@ -4053,16 +4053,37 @@ export async function getDeskmateHandoff(): Promise<HandoffOpening | null> {
     return null;
   }
 }
-/** 标记某条主动产出已读/稍后（状态只前进不后退），避免回到空会话首页时重复呈现。 */
+/** 标记某条主动产出的处理状态（只前进不后退）。
+ * snoozed＝「稍后」：3 天退避后自动复活轻递（修⑥），不再用 acknowledged 承接
+ *（那等于永久拉黑，与按钮字面义相悖）。 */
 export async function ackDeskmateHandoff(
   id: string,
-  status: "acknowledged" | "dismissed" = "acknowledged",
+  status: "acknowledged" | "dismissed" | "snoozed" = "acknowledged",
 ): Promise<boolean> {
   try {
     const res = await authedFetch(`${httpBase()}/v1/deskmate/proactive/handoff/ack`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ id, status }),
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+/** 「记住这个」→ 写主动产出台账（source=mobile_voice，修⑧/P1）。
+ * 手机 PWA 与桌面 GUI 同走 app.py 的 /v1/deskmate/proactive/capture；true=已落台账。 */
+export async function captureProactive(
+  kind: string,
+  content: string,
+  evidence?: string,
+): Promise<boolean> {
+  try {
+    const res = await authedFetch(`${httpBase()}/v1/deskmate/proactive/capture`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ kind, content, evidence: evidence ?? "" }),
     });
     return res.ok;
   } catch {

@@ -169,11 +169,22 @@ SYNC_TABLES: dict[str, dict] = {
             "confidence",
             "created_at",
             "acknowledged_at",
+            # 修④：delivered_at 进业务列 → 交付标记经 oplog 跨端共享，日上限两端同计数
+            #（§11.2③：计数查 ledger、不落进程内 DisturbManager）。
+            "delivered_at",
+            # 修⑥：snoozed_until 进业务列 →「稍后」的退避到期时间跨端一致，
+            # 到期复活由各端读路径按该列判定（status 保持 snoozed 可审计，§11.2②）。
+            "snoozed_until",
         ),
         "conflict_col": None,
-        # status 优先级（高→低）：actioned/dismissed 是不可被 pending 覆盖的终态（防反 nag 失效）。
-        # 同步层 _lww_winner / _apply_one_to 据此决胜；snoozed 暂不纳入（P0 不实现自动复活）。
-        "ordered_status": ("actioned", "dismissed", "in_progress", "acknowledged", "pending"),
+        # status 优先级（高→低）：actioned/dismissed/in_progress/acknowledged 都不可被
+        # 「稍后」翻案；snoozed（修⑥）只压过 pending——远端迟到的 pending 不得覆盖已搁置
+        # 条目（反 nag 失效防护），而用户在任一端的处理（acknowledged 起）跨端生效。
+        # 到期复活走读路径（pending_items 按 snoozed_until 判定），status 字段保持
+        # snoozed 可审计，这就是 §11.2②「独立轨道」的落地形态。
+        "ordered_status": (
+            "actioned", "dismissed", "in_progress", "acknowledged", "snoozed", "pending",
+        ),
     },
 }
 

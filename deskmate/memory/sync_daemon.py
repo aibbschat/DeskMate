@@ -503,7 +503,11 @@ class SyncDaemon:
         见模块级 ``reconcile_baseline``。本方法只是把本端 store 与对端 store
         对接的薄封装；生产环境由 SSH 反隧道把对端 item 快照拉到本端后调用。
         """
-        return reconcile_baseline(self.engine.store, remote_store, self.engine.node)
+        # 修⑤（§11.2② 补账）：方法壳同样要传 ordered_status（与模块级函数同参）。
+        ordered = getattr(self.engine.store, "_spec", {}).get("ordered_status")
+        return reconcile_baseline(
+            self.engine.store, remote_store, self.engine.node, ordered
+        )
 
 
 # ---------------------------------------------------------------------------

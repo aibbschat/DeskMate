@@ -29,15 +29,28 @@ logger = logging.getLogger(__name__)
 # 10 分钟内最多跑一次（LLM 成本）；单次最多加工条数（避免长阻塞 tick）。
 _BACKFILL_COOLDOWN_S = 10 * 60
 _BACKFILL_BATCH = 3
+# failed 标记的重试窗（修⑦）：超过此时长才允许再烧一轮 LLM（火山限额等瞬时失败
+# 不该把一条永久钉在降级文案上；§11.5 降级是一等公民，但不该永不翻身）。
+_FAILED_RETRY_COOLDOWN_S = 24 * 3600
 
 _SYSTEM_PROMPT = """你是小桔，萧哥（历史小说作家）的创作搭档与桌面 AI 助手。
-萧哥正在写历史小说，你负责帮他盯稿子里的隐患。
-下面是一条你主动发现、还没跟他说的「问题」。请用你自己的口吻，产出「我的理解」：
-- 这条问题对创作意味着什么（为什么值得他注意）；
+下面是一条你主动发现/记下、还没跟他说的事。请用你自己的口吻，产出「我的理解」：
+- 这条事对他意味着什么（为什么值得他注意）；
 - 如果要处理，可以往哪个方向走（但不替他下结论）；
 - 控制在 120 字以内，口语、像你平时跟他说话；
 - 必须基于他给的证据来说，不要编造；拿不准就说拿不准。
 """
+
+# 修⑦：按来源补一段说明——加工口吻随来源走（mobile_voice 是灵感不是问题）。
+_SOURCE_GUIDE = {
+    "cloud_audit": "这条是你替他盯稿子时发现的隐患（伏笔/人物/时间线/史实）。",
+    "mobile_voice": "这条是他在手机上随手丢的灵感或话题（他自己的原话，不是问题）——"
+    "理解要往「这个灵感可以怎么延伸、和他正在写的东西怎么对上」走。",
+    "automation": "这条是定时任务/系统自己报告的异常（没跑成、没产出）。",
+    "sync_health": "这条是跨端同步的健康异常（漂移/窗口失败）。",
+    "observation": "这条是你观察世界记录下的信号/趋势。",
+    "reading": "这条是你读书/史料消化后的结论。",
+}
 
 
 def _llm_available() -> bool:
@@ -50,15 +63,15 @@ def _llm_available() -> bool:
         return False
 
 
-def _call_llm(user_prompt: str) -> Optional[str]:
-    """调 LLM 产出理解；无 key / 调用失败返回 ``None``。复用 ``deskmate.memory.llm.chat``。"""
+def _call_llm(user_prompt: str, system: str = _SYSTEM_PROMPT) -> Optional[str]:
+    """调 LLM 产出理解；无 key / 调用失败返回 None。复用 deskmate.memory.llm.chat。"""
     try:
         from deskmate.memory.llm import chat, llm_available
 
         if not llm_available():
             return None
         out = chat(
-            system=_SYSTEM_PROMPT,
+            system=system,
             user=user_prompt,
             temperature=0.4,
             max_tokens=400,
@@ -115,12 +128,23 @@ def maybe_backfill_understanding(
         if last and (now - float(last)) < _BACKFILL_COOLDOWN_S:
             return 0
         rows = conn.execute(
-            f"SELECT id, kind, content, evidence FROM {LEDGER_TABLE} "
+            f"SELECT id, kind, content, evidence, source FROM {LEDGER_TABLE} "
             f"WHERE status='pending' AND (understanding IS NULL OR understanding='') "
-            f"AND understanding <> ? "
             f"ORDER BY created_at ASC LIMIT ?",
-            (UNDERSTANDING_FAILED_MARKER, limit),
+            (limit,),
         ).fetchall()
+        if not rows:
+            # failed 重试窗（修⑦，见 _FAILED_RETRY_COOLDOWN_S 注释）
+            last_fail = _meta_get(conn, "last_failed_retry_at")
+            if not last_fail or (now - float(last_fail)) >= _FAILED_RETRY_COOLDOWN_S:
+                rows = conn.execute(
+                    f"SELECT id, kind, content, evidence, source FROM {LEDGER_TABLE} "
+                    f"WHERE status='pending' AND understanding = ? "
+                    f"ORDER BY created_at ASC LIMIT ?",
+                    (UNDERSTANDING_FAILED_MARKER, limit),
+                ).fetchall()
+                if rows:
+                    _meta_set(conn, "last_failed_retry_at", str(now))
         if not rows:
             _meta_set(conn, "last_understanding_backfill_at", str(now))
             conn.commit()
@@ -129,12 +153,14 @@ def maybe_backfill_understanding(
         if not _llm_available():
             return 0
         done = 0
-        for rid, kind, content, evidence in rows:
-            prompt = f"【发现类型】{kind}\n【问题】{content}\n"
+        for rid, kind, content, evidence, source in rows:
+            prompt = f"【发现类型】{kind}\n【事项】{content}\n"
             if evidence:
                 prompt += f"【证据】{evidence}\n"
             prompt += "请产出你的理解（120 字以内）："
-            understanding = _call_llm(prompt)
+            guide = _SOURCE_GUIDE.get(source or "", "")
+            system = _SYSTEM_PROMPT + (f"\n【来源说明】{guide}\n" if guide else "")
+            understanding = _call_llm(prompt, system=system)
             if understanding:
                 conn.execute(
                     f"UPDATE {LEDGER_TABLE} SET understanding=? WHERE id=?",

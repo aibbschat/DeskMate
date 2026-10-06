@@ -810,6 +810,8 @@ body {
   white-space: pre-wrap;   /* 开场白与台账正文都可能含换行 */
 }
 /* 证据随行（反编造红线）：低饱和斜体边注，不抢正文的戏 */
+.dm-handoff-id { display: inline-block; margin-right: 8px; padding: 1px 6px; border-radius: 6px; background: var(--line); color: var(--faint, #888); font-size: 11px; font-family: ui-monospace, SFMono-Regular, monospace; }
+/* 证据随行（反编造红线）：低饱和斜体边注，不抢正文的戏 */
 .dm-handoff-evidence {
   margin-top: 6px;
   padding-left: 9px;

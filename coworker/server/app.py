@@ -4107,6 +4107,19 @@ def create_app(manager: SessionManager) -> FastAPI:
             desk_dir = _P(
                 os.environ.get("DESKMATE_DIR", os.path.expanduser("~/.deskmate"))
             )
+            # 修③：取件前先补一次理解（冷却 10min、无 key/失败 fail-open）——消「第一屏
+            # pending 有货但 understanding 空 → 守卫返回 None → 卡片空、前端不再重查」
+            # 的竞态（DeskHome 挂载 GET 一次即止；补齐本发生在用户落座后的 tick 里）。
+            try:
+                from deskmate.proactivity.understanding import (
+                    maybe_backfill_understanding,
+                )
+
+                maybe_backfill_understanding(base_dir=desk_dir)
+            except Exception:
+                logging.debug(
+                    "handoff 取件前 understanding 补齐失败（跳过）", exc_info=True
+                )
             opening = build_handoff_opening(base_dir=desk_dir)
             if not opening or not opening.get("items"):
                 return {"text": "", "items": []}
@@ -4117,11 +4130,13 @@ def create_app(manager: SessionManager) -> FastAPI:
 
     @app.post("/v1/deskmate/proactive/handoff/ack")
     async def ack_deskmate_proactive_handoff(request: Request) -> dict[str, Any]:
-        """标记某条主动产出已读/稍后（状态只前进不后退）。
+        """标记某条主动产出的处理状态（状态只前进不后退）。
 
-        Body: {"id": "<ledger id>", "status": "acknowledged" | "dismissed"}
-        前端「稍后」按钮调用，避免每次回到空会话首页都重复呈现同一条；
-        acknowledge_ledger 内置降级守卫，不会把 actioned 退回 pending。
+        Body: {"id": "<ledger id>", "status": "acknowledged" | "dismissed" | "snoozed"}
+        - snoozed（修⑥）＝前端「稍后」：3 天退避后读路径自动复活轻递（§七），
+          不再用 acknowledged 承接「稍后」（那等于永久拉黑，与按钮字面义相悖）。
+        - acknowledged/dismissed 语义不变；acknowledge_ledger 内置降级守卫，
+          不会把 actioned 退回 pending。
         """
         try:
             body = await request.json()
@@ -4129,7 +4144,7 @@ def create_app(manager: SessionManager) -> FastAPI:
             return JSONResponse({"error": "invalid json"}, status_code=400)
         rid = body.get("id")
         new_status = body.get("status")
-        if not rid or new_status not in ("acknowledged", "dismissed"):
+        if not rid or new_status not in ("acknowledged", "dismissed", "snoozed"):
             return JSONResponse(
                 {"error": "missing or invalid 'id'/'status'"}, status_code=400
             )
@@ -4146,6 +4161,61 @@ def create_app(manager: SessionManager) -> FastAPI:
         except Exception:
             logging.exception("deskmate proactive handoff ack failed")
             return JSONResponse({"error": "ack failed"}, status_code=500)
+
+    @app.post("/v1/deskmate/proactive/capture")
+    async def capture_deskmate_proactive(request: Request) -> dict[str, Any]:
+        """手机端/桌面端「记住这个」→ 写主动产出台账（source=mobile_voice，修⑧/P1）。
+
+        Body: {"kind": "idea_capture"|"topic_note", "content": str,
+               "evidence"?: str, "confidence"?: float}
+        写入云端库后由理解管道统一补 understanding（§5.2），经 SYNC_TABLES 跨端同步
+        回 Mac，开聊时 LocalHandoff 递出（#id 句柄 + 证据随行）。与 memory_write
+        互补：记忆归记忆、台账归台账。手机 PWA 与桌面 GUI 同走本端点（同源 app.py）。
+        """
+        try:
+            body = await request.json()
+        except Exception:
+            return JSONResponse({"error": "invalid json"}, status_code=400)
+        content = (body.get("content") or "").strip() if isinstance(body, dict) else ""
+        if not content:
+            return JSONResponse({"error": "missing 'content'"}, status_code=400)
+        kind = ((body.get("kind") or "idea_capture").strip() or "idea_capture")
+        evidence = (body.get("evidence") or "").strip()
+        try:
+            confidence = float(body.get("confidence", 0.9) or 0.9)
+        except Exception:
+            confidence = 0.9
+        try:
+            import time as _t
+            from pathlib import Path as _P
+
+            from deskmate.proactivity.ledger import record_proactive
+
+            desk_dir = _P(
+                os.environ.get("DESKMATE_DIR", os.path.expanduser("~/.deskmate"))
+            )
+            if not evidence:
+                evidence = (
+                    f"用户亲口要求记住（{_t.strftime('%Y-%m-%d %H:%M', _t.localtime())}）"
+                )
+            rid = record_proactive(
+                base_dir=desk_dir,
+                source="mobile_voice",
+                kind=kind,
+                content=content,
+                evidence=evidence,
+                understanding=None,  # 理解管道统一加工（§5.2）；source_node 按本端自动标注
+                confidence=confidence,
+            )
+            if not rid:
+                return JSONResponse(
+                    {"error": "未过写入门槛（需 confidence≥0.75 且 evidence 明确）"},
+                    status_code=422,
+                )
+            return {"id": rid, "ok": True}
+        except Exception:
+            logging.exception("deskmate proactive capture failed")
+            return JSONResponse({"error": "capture failed"}, status_code=500)
 
     @app.post("/v1/deskmate/style-profile")
     async def deskmate_style_profile(request: Request) -> dict[str, Any]:

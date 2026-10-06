@@ -92,6 +92,52 @@ def proactive_tick(
 
 
 @mcp.tool()
+def proactive_capture(
+    kind: str, content: str, evidence: str = "", confidence: float = 0.9
+) -> str:
+    """把用户说「记住这个」的原始内容写入主动产出台账（proactive_ledger）。
+
+    手机端/桌面端用户明确要求记住一个灵感、话题或备忘时调用。写入后由理解管道统一
+    加工（understanding 后处理），经 SYNC_TABLES 跨端同步，开聊时以对话式开场白递出
+    （带 #id 句柄与证据）。与 memory_write 互补：记忆归记忆、台账归台账。
+
+    Args:
+        kind: 台账类型——灵感用 idea_capture，话题/备忘用 topic_note
+        content: 用户原话/要记住的内容（尽量保留原文）
+        evidence: 来源锚点（如「手机端 2026-10-06 15:30」）；缺省自动补当前时间
+        confidence: 置信度（用户亲口要求=高置信，默认 0.9；写入门槛 0.75）
+
+    Returns:
+        成功返回台账 id（如 mobile_voice:idea_capture:xxxx）；被门槛拒绝/失败返回错误说明
+    """
+    try:
+        import time as _t
+
+        from .ledger import record_proactive
+
+        if not (content or "").strip():
+            return "失败：content 不能为空"
+        if not (evidence or "").strip():
+            evidence = f"用户亲口要求记住（{_t.strftime('%Y-%m-%d %H:%M', _t.localtime())}）"
+        rid = record_proactive(
+            source="mobile_voice",
+            kind=(kind or "idea_capture").strip(),
+            content=content.strip(),
+            evidence=evidence,
+            understanding=None,  # 留空 → 理解管道统一加工（§5.2）
+            # source_node 不传：按本端 _sync_meta 自动标注（云端 server 调用=cloud，
+            # Mac 调用=mac）。「来自手机」语义由 source=mobile_voice 承载；source_node
+            # 按设计语义是「谁产出的」即哪个节点写的库，错标会污染 §六「哪端产出」展示。
+            confidence=confidence,
+        )
+        if not rid:
+            return "失败：未过写入门槛（需 confidence≥0.75 且 evidence 明确）"
+        return f"已记入主动台账：{rid}（琢磨完开聊时我递给你）"
+    except Exception as e:
+        return f"记入台账失败：{e}"
+
+
+@mcp.tool()
 def proactive_feedback(suggestion_key: str, accepted: bool) -> str:
     """记录用户对主动建议的反馈。
 

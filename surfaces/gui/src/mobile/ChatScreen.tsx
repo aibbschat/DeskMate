@@ -11,6 +11,7 @@
  */
 import { useEffect, useRef, useState } from "react";
 import { Transcript } from "../components/Transcript";
+import { captureProactive } from "../api";
 import { OPEN_ARTIFACT_EVENT, OPEN_BOARD_EVENT } from "../components/Markdown";
 import { connFaultLabel, faultCopy } from "./session";
 import { pendingInteractive } from "./reducer";
@@ -50,6 +51,16 @@ export function ChatScreen({ chat, onOpenSheet }: Props) {
       window.removeEventListener(OPEN_BOARD_EVENT, flash);
     };
   }, []);
+
+  // 「记住这个」→ 写主动产出台账（source=mobile_voice，修⑧/P1）：落云端库、理解管道
+  // 后处理、跨端同步回 Mac，开聊时以对话式开场白递回（#id 句柄 + 证据随行）。
+  const rememberItem = (text: string) => {
+    void captureProactive("idea_capture", text)
+      .then((ok: boolean) =>
+        setToast(ok ? "记下了，琢磨完开聊时递给你" : "没记上（可能没过写入门槛），稍后再试"),
+      )
+      .catch(() => setToast("没记上，稍后再试"));
+  };
 
   const pending = pendingInteractive(state.items);
 
@@ -122,6 +133,7 @@ export function ChatScreen({ chat, onOpenSheet }: Props) {
             streamingText={state.streaming}
             onApprove={(d) => chat.approve(d as "once" | "deny" | "always_task" | "always_tool")}
             onRetry={chat.retry}
+            onRememberItem={rememberItem}
           />
         )}
         {state.running && !state.streaming && (

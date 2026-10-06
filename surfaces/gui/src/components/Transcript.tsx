@@ -50,7 +50,17 @@ function ClampedUserText({ text }: { text: string }) {
 // Lives in a ZERO-HEIGHT strip under the bubble (absolute, inside the transcript's 20px gap)
 // so revealing it on group-hover never shifts the layout. `ts` is unix seconds — canonical
 // messages carry it, pre-stamp history doesn't, so the time simply omits itself when absent.
-function BubbleMeta({ text, ts, align }: { text: string; ts?: number; align: "left" | "right" }) {
+function BubbleMeta({
+  text,
+  ts,
+  align,
+  onRemember,
+}: {
+  text: string;
+  ts?: number;
+  align: "left" | "right";
+  onRemember?: () => void;
+}) {
   const { t } = useTranslation();
   const [copied, setCopied] = useState(false);
   const when = typeof ts === "number" ? new Date(ts * 1000) : null;
@@ -70,7 +80,7 @@ function BubbleMeta({ text, ts, align }: { text: string; ts?: number; align: "le
     <div className="relative h-0 select-none">
       <div
         className={
-          "absolute top-1 flex items-center gap-1.5 text-[10.5px] leading-none text-faint whitespace-nowrap opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity " +
+          "bubble-meta absolute top-1 flex items-center gap-1.5 text-[10.5px] leading-none text-faint whitespace-nowrap opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity " +
           (align === "right" ? "right-0" : "left-0")
         }
       >
@@ -82,6 +92,16 @@ function BubbleMeta({ text, ts, align }: { text: string; ts?: number; align: "le
         >
           {copied ? t("chat.copied") : <Icon name="copy" size={11} />}
         </button>
+        {onRemember && (
+          <button
+            className="flex items-center cursor-pointer hover:text-muted"
+            data-testid="bubble-remember"
+            title="记住这个（写入主动台账，琢磨完开聊时递回）"
+            onClick={onRemember}
+          >
+            记住这个
+          </button>
+        )}
         {when && (
           <span data-testid="bubble-ts" title={when.toLocaleString()}>
             {when.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}
@@ -406,6 +426,8 @@ interface Props {
   onAllowAnyway?: (tool: string, args: any) => void;
   /** 记忆保存提示的 Undo 回调（MEMORY-SPEC §5.1）；保留 prop 以便官方 memory 测试通过类型检查。 */
   onUndoMemory?: (id: number, previous?: string) => void;
+  /** 「记住这个」→ 写主动产出台账（mobile_voice，修⑧）；不传则不渲染按钮（桌面零变化）。 */
+  onRememberItem?: (text: string) => void;
 }
 
 // The transcript index whose notice gets the Retry button: the tail error notice, looking
@@ -428,6 +450,7 @@ export function Transcript({
   onRetry,
   onAllowAnyway,
   onUndoMemory,
+  onRememberItem,
   expert,
 }: Props) {
   // §33 grouping: a turn = the maximal run of assistant/tool/resolved-approval items between
@@ -505,7 +528,14 @@ export function Transcript({
                   )}
                   <ClampedUserText text={item.text} />
                 </div>
-                <BubbleMeta text={item.text} ts={item.ts} align="right" />
+                <BubbleMeta
+                  text={item.text}
+                  ts={item.ts}
+                  align="right"
+                  onRemember={
+                    onRememberItem ? () => onRememberItem(stripEmote(item.text)) : undefined
+                  }
+                />
               </div>
             );
           case "assistant":
@@ -524,7 +554,14 @@ export function Transcript({
                 </div>
                 {item.reasoning && <ThinkingBlock text={item.reasoning} />}
                 <Markdown text={item.text} />
-                <BubbleMeta text={item.text} ts={item.ts} align="left" />
+                <BubbleMeta
+                  text={item.text}
+                  ts={item.ts}
+                  align="left"
+                  onRemember={
+                    onRememberItem ? () => onRememberItem(stripEmote(item.text)) : undefined
+                  }
+                />
               </div>
             );
           case "report":
@@ -664,7 +701,14 @@ export function Transcript({
                     ))}
                   </div>
                 )}
-                <BubbleMeta text={item.text} ts={item.ts} align="left" />
+                <BubbleMeta
+                  text={item.text}
+                  ts={item.ts}
+                  align="left"
+                  onRemember={
+                    onRememberItem ? () => onRememberItem(stripEmote(item.text)) : undefined
+                  }
+                />
               </div>
             );
           default:
