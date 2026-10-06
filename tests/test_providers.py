@@ -807,3 +807,122 @@ def test_over_limit_max_tokens_is_dropped_and_retried():
     calls = client.chat.completions.calls
     assert turn.text == "ok" and len(calls) == 2
     assert "max_tokens" not in calls[1]
+
+
+# --------------------------------------------------------------------------- #
+# zen_catalog：OpenCode Zen 免费模型动态清单（2026-10-06 移植 harness 动态侦探）
+# --------------------------------------------------------------------------- #
+
+def test_zen_catalog_fetches_free_models_only(monkeypatch):
+    """远端清单只保留 *-free，其余（付费/已下架的非 free 形态）不入池。"""
+    from coworker.providers import zen_catalog as Z
+
+    payload = {
+        "object": "list",
+        "data": [
+            {"id": "space-bunny-free"},
+            {"id": "deepseek-v4-flash-free"},
+            {"id": "claude-fable-5"},          # 付费，不该进免费池
+            {"id": "some-preview"},            # 非 free，不该进
+            {"owned_by": "x"},                 # 缺 id，容错跳过
+        ],
+    }
+
+    class _Resp:
+        status_code = 200
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return payload
+
+    monkeypatch.setattr(Z, "_load_cache", lambda: None)
+    monkeypatch.setattr(Z, "_save_cache", lambda models: None)
+    monkeypatch.setattr(Z.httpx, "get", lambda *a, **k: _Resp())
+
+    got = [m["id"] for m in Z.fetch_catalog(force=True)]
+    assert got == ["space-bunny-free", "deepseek-v4-flash-free"]
+    # 付费与非 free 形态都不该出现
+    assert "claude-fable-5" not in got and "some-preview" not in got
+
+
+def test_zen_catalog_cache_hit_does_not_hit_network(monkeypatch):
+    """缓存新鲜时不走网络（请求路径永不阻塞）。"""
+    from coworker.providers import zen_catalog as Z
+
+    monkeypatch.setattr(
+        Z, "_load_cache",
+        lambda: {"fetched_at": __import__("time").time(), "models": [{"id": "x-free"}]},
+    )
+
+    def _boom(*a, **k):
+        raise AssertionError("缓存新鲜时不该打网络")
+
+    monkeypatch.setattr(Z.httpx, "get", _boom)
+    assert Z.fetch_catalog() == [{"id": "x-free"}]
+
+
+def test_zen_catalog_network_failure_falls_back(monkeypatch):
+    """网络不可达：有缓存用缓存、无缓存用 seed（picker 永不空）。"""
+    import httpx as _httpx
+    from coworker.providers import zen_catalog as Z
+
+    def _fail(*a, **k):
+        raise _httpx.HTTPError("down")
+
+    # 有缓存 → 用缓存（不用 seed）
+    monkeypatch.setattr(
+        Z, "_load_cache",
+        lambda: {"fetched_at": __import__("time").time() - 10 * 3600,
+                 "models": [{"id": "cached-free"}]},
+    )
+    monkeypatch.setattr(Z.httpx, "get", _fail)
+    assert [m["id"] for m in Z.fetch_catalog()] == ["cached-free"]
+
+    # 无缓存 → 用 seed（非空即可，seed 是离线兜底）
+    monkeypatch.setattr(Z, "_load_cache", lambda: None)
+    seed = Z.fetch_catalog()
+    assert seed and all(m["id"].endswith("-free") for m in seed)
+
+
+def test_zen_catalog_stale_models_detects_delisted(monkeypatch):
+    """下架检测：previous_ids 中不在当前缓存清单里的即下架（供熔断表清理）。"""
+    from coworker.providers import zen_catalog as Z
+
+    monkeypatch.setattr(
+        Z, "_load_cache",
+        lambda: {"fetched_at": __import__("time").time(),
+                 "models": [{"id": "a-free"}, {"id": "b-free"}]},
+    )
+    assert Z.stale_models({"a-free", "b-free", "gone1-free", "gone2-free"}) == [
+        "gone1-free", "gone2-free"
+    ]
+
+
+def test_zen_catalog_stale_models_guesses_nothing_without_cache(monkeypatch):
+    """无缓存时不做判断（网络故障 ≠ 模型下架，宁可不清理也不误删）。"""
+    from coworker.providers import zen_catalog as Z
+
+    monkeypatch.setattr(Z, "_load_cache", lambda: None)
+    assert Z.stale_models({"anything-free"}) == []
+
+
+def test_zen_catalog_entries_and_reasoning_flag(monkeypatch):
+    """entries 键为 opencode:<id>；推理模型登记可供按速度排序（caps 无此字段）。"""
+    from coworker.providers import zen_catalog as Z
+
+    now = __import__("time").time()
+    monkeypatch.setattr(
+        Z, "_load_cache",
+        lambda: {"fetched_at": now, "models": [
+            {"id": "fledge-alpha-free"}, {"id": "space-bunny-free"}]},
+    )
+    entries = Z.get_zen_entries()
+    assert set(entries) == {"opencode:fledge-alpha-free", "opencode:space-bunny-free"}
+    assert entries["opencode:space-bunny-free"].label == "Space Bunny · OpenCode 免费"
+    # 推理标记：fledge 是推理模型，space-bunny 不是
+    assert Z.is_reasoning("fledge-alpha-free") is True
+    assert Z.is_reasoning("space-bunny-free") is False
+    # caps 里没有「是否推理」这一格 → 这是模块级补的
+    assert not hasattr(entries["opencode:fledge-alpha-free"].caps, "reasoning")

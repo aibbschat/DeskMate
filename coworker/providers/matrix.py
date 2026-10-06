@@ -369,13 +369,42 @@ def _live_openrouter() -> Dict[str, ModelEntry]:
         return {}
 
 
+def _live_zen() -> Dict[str, ModelEntry]:
+    """Live OpenCode Zen **免费** models (``opencode:<id>`` → ModelEntry), mirrored from the
+    vendor's ``/zen/v1/models``（2026-10-06 移植深证 harness 的动态侦探）。
+
+    与 ``_live_openrouter`` 同构：远端清单为准，静态 ``MATRIX`` 里那 8 个手铺模型
+    保留为**离线兜底**（zen_catalog 的 seed 也用同一批）。
+
+    为什么必须动态（设计 §1.5）：Zen 免费模型会下架/新上架，手工铺货保鲜期只有几天——
+    实测当天就已漂 5个，其中 ``deepseek-v4-flash-free`` / ``jev-1.13-free``
+    正是matrix.py 注释里写「已下架」的那两个。
+
+    失败返回 {}，静态 MATRIX 兜底（不因catalog 故障让 picker 空掉）。
+    """
+    from .zen_catalog import get_zen_entries
+
+    try:
+        return get_zen_entries()
+    except Exception:
+        return {}
+
+
+def _live_catalogs() -> Dict[str, ModelEntry]:
+    """所有动态清单的并集（OpenRouter 付费/免费 + Zen 免费）。"""
+    merged: Dict[str, ModelEntry] = {}
+    for source in (_live_openrouter(), _live_zen()):
+        merged.update(source)
+    return merged
+
+
 def entry_for(model: str) -> ModelEntry | None:
-    return MATRIX.get(model) or _live_openrouter().get(model)
+    return MATRIX.get(model) or _live_catalogs().get(model)
 
 
 def model_labels() -> dict[str, str]:
     """Full-id → display-label map, shipped to the GUI so every picker shows human names."""
-    live = _live_openrouter()
+    live = _live_catalogs()
     labels = {mid: e.label for mid, e in MATRIX.items()}
     labels.update({mid: e.label for mid, e in live.items()})
     return labels
@@ -383,7 +412,7 @@ def model_labels() -> dict[str, str]:
 
 def model_context_windows() -> dict[str, int]:
     """Full-id → context-window map (verified entries only), for the GUI's fill meter."""
-    live = _live_openrouter()
+    live = _live_catalogs()
     windows = {mid: e.context_window for mid, e in MATRIX.items() if e.context_window}
     windows.update(
         {mid: e.context_window for mid, e in live.items() if e.context_window}
@@ -392,14 +421,15 @@ def model_context_windows() -> dict[str, int]:
 
 
 def all_model_ids() -> list[str]:
-    """Every curated id (static matrix + live OpenRouter). Drives the composer picker."""
-    return [*MATRIX, *_live_openrouter().keys()]
+    """Every curated id (static matrix + live catalogs). Drives the composer picker."""
+    return [*MATRIX, *_live_catalogs().keys()]
 
 
 def is_derived_model(model: str) -> bool:
-    """True if ``model`` comes from curation (static matrix OR the live OpenRouter catalog),
-    as opposed to a user-added custom string. Used to decide hide-vs-drop on removal."""
-    return model in MATRIX or model in _live_openrouter()
+    """True if ``model`` comes from curation (static matrix OR a live catalog),
+    i.e. NOT a derived/synthetic id, as opposed to a user-added custom string.
+    Used to decide hide-vs-drop on removal."""
+    return model in MATRIX or model in _live_catalogs()
 
 
 def models_for_provider(provider: str) -> list[str]:
