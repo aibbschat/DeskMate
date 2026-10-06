@@ -40,6 +40,7 @@ LOCAL_RUNNER="scripts/sync_daemon_runner.py"
 PROACTIVITY_MODULES=(
   "deskmate/proactivity/ledger.py"
   "deskmate/proactivity/tick.py"
+  "deskmate/proactivity/understanding.py"
 )
 CLOUD_PROACTIVITY_DIR="/opt/openworker/deskmate/proactivity"
 
@@ -77,7 +78,7 @@ if [[ "$FORCE" -eq 0 ]]; then
     printf "%b" "$DIRTY" >&2
     exit 1
   fi
-  echo "==> 预检通过：4 个同步文件均为已提交状态"
+  echo "==> 预检通过：4 个 sync 模块 + runner + 2 个 proactivity 模块均为已提交状态"
 else
   echo "==> --force：跳过「必须已提交」校验（仅在你明确知道在做什么时用）"
 fi
@@ -160,7 +161,7 @@ for f in "${PROACTIVITY_MODULES[@]}"; do
 done
 
 echo ""
-echo "✅ 本地→云端代码已对齐（4 个 sync 文件 + 2 个 proactivity 模块，共 6 文件 md5 一致）。"
+echo "✅ 本地→云端代码已对齐（4 个 sync 文件 + 3 个 proactivity 模块，共 7 文件 md5 一致）。"
 echo "   同步平铺包仅每小时 :02 窗口加载；主程序包（proactivity）需重启 openworker-server 才生效。"
 echo "   云端同步 daemon 仅在每小时 :02 错峰窗口启动，下次窗口即加载新码；无需手动重启。"
 echo "   如需立即生效，可手动跑一次：sudo /usr/local/sbin/xiaoju-sync-window.sh"

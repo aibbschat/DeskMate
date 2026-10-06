@@ -103,6 +103,7 @@ def test_record_and_handoff():
         kind="plot_contradiction",
         content="伏笔X悬了9节",
         evidence="第七章",
+        understanding="这条线不收，读者会以为你忘了前面的铺垫。",
         anchor="ch7",
     )
     items = pending_items(base)
@@ -114,10 +115,94 @@ def test_record_and_handoff():
     opening = build_handoff_opening(base)
     assert opening is not None
     assert "伏笔X悬了9节" in opening["text"]
+    # P1 守卫：已理解项正常递出（含「我的理解」行）
+    assert "我的理解" in opening["text"]
     # ack 后不再 pending（不重复递）
     rid = items[0]["id"]
     assert acknowledge_ledger(base, rid=rid, new_status="actioned")
     assert pending_items(base) == []
+
+
+def test_handoff_skips_ununderstood():
+    """P1 守卫（§11.5）：understanding 仍为空（加工未完成）的 pending 暂不递，避免退化念原文。"""
+    base = _fresh_base("mac")
+    record_proactive(
+        base_dir=base, source="cloud_audit", kind="timeline_error",
+        content="时间线Y春秋对不上", evidence="第3章",  # 不传 understanding → 空
+    )
+    assert build_handoff_opening(base) is None  # 守卫：未理解不递
+
+
+def test_handoff_degrades_failed_marker():
+    """P1 守卫（§11.5）：understanding_failed 标记降级递，并转友好文案。"""
+    base = _fresh_base("mac")
+    rid = record_proactive(
+        base_dir=base, source="cloud_audit", kind="timeline_error",
+        content="时间线Y春秋对不上", evidence="第3章",
+    )
+    from deskmate.proactivity.ledger import UNDERSTANDING_FAILED_MARKER
+    with sqlite3.connect(str(base / "deskmate.db"), check_same_thread=False) as c:
+        c.execute(
+            "UPDATE proactive_ledger SET understanding=? WHERE id=?",
+            (UNDERSTANDING_FAILED_MARKER, rid),
+        )
+    opening = build_handoff_opening(base)
+    assert opening is not None  # 降级递（不当异常丢件）
+    assert "时间线Y春秋对不上" in opening["text"]
+    assert "理解加工未完成" in opening["text"]  # 标记转友好文案
+
+
+def test_backfill_fills_understanding():
+    """P1：maybe_backfill_understanding 调 LLM 把空 understanding 填上，handoff 随后能递出。"""
+    base = _fresh_base("mac")
+    record_proactive(
+        base_dir=base, source="cloud_audit", kind="missing_foreshadow",
+        content="康得宝线 9-17 章无复现", evidence="第9-17章",
+    )
+    assert pending_items(base)[0]["understanding"] == ""
+    with unittest.mock.patch("deskmate.memory.llm.llm_available", return_value=True), \
+         unittest.mock.patch(
+             "deskmate.memory.llm.chat",
+             return_value="这条线要收一下，否则读者以为你忘了前面的伏笔。",
+         ):
+        from deskmate.proactivity.understanding import maybe_backfill_understanding
+        n = maybe_backfill_understanding(base)
+    assert n == 1
+    assert pending_items(base)[0]["understanding"] == "这条线要收一下，否则读者以为你忘了前面的伏笔。"
+    opening = build_handoff_opening(base)
+    assert opening is not None and "康得宝线" in opening["text"]
+
+
+def test_backfill_no_llm_leaves_empty():
+    """P1：无 LLM key 时不标 failed、留空等下轮（避免永久失败）。"""
+    base = _fresh_base("mac")
+    record_proactive(
+        base_dir=base, source="cloud_audit", kind="timeline_error",
+        content="时间线矛盾", evidence="第3章",
+    )
+    with unittest.mock.patch("deskmate.memory.llm.llm_available", return_value=False):
+        from deskmate.proactivity.understanding import maybe_backfill_understanding
+        n = maybe_backfill_understanding(base)
+    assert n == 0
+    assert pending_items(base)[0]["understanding"] == ""  # 留空等下轮，不标 failed
+    assert build_handoff_opening(base) is None  # 守卫：未理解不递
+
+
+def test_backfill_marks_failed_on_error():
+    """P1：有 key 但 LLM 调用失败 → 标 understanding_failed 降级递。"""
+    base = _fresh_base("mac")
+    record_proactive(
+        base_dir=base, source="cloud_audit", kind="timeline_error",
+        content="时间线矛盾", evidence="第3章",
+    )
+    with unittest.mock.patch("deskmate.memory.llm.llm_available", return_value=True), \
+         unittest.mock.patch("deskmate.memory.llm.chat", return_value=None):
+        from deskmate.proactivity.understanding import maybe_backfill_understanding
+        n = maybe_backfill_understanding(base)
+    assert n == 0
+    assert pending_items(base)[0]["understanding"] == "[understanding_failed]"
+    opening = build_handoff_opening(base)
+    assert opening is not None and "理解加工未完成" in opening["text"]
 
 
 def test_no_anchor_distinct_content_distinct_rows():

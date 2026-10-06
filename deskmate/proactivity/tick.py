@@ -247,6 +247,16 @@ class ProactiveEngine:
             # BUSY 状态（会议/通话）不跳过推理：
             # 用户在会议中也可能需要提醒（如伏笔遗漏），只是防打扰阈值更严
 
+        # ===== P1：understanding 后处理（统一加工主动台账项的理解）=====
+        # 在 IDLE 之后、活跃分支里跑：冷却(10min) + 仅在有「空 understanding 的 pending」时才调 LLM；
+        # fail-open，绝不阻断主动推理主流程（与日记/花园同一范式）。
+        try:
+            from deskmate.proactivity.understanding import maybe_backfill_understanding
+
+            maybe_backfill_understanding(base_dir=self.base_dir)
+        except Exception:
+            logger.debug("understanding 后处理调用失败（不阻断 tick）", exc_info=True)
+
         # ===== 1.5 深度访谈 / 认知验证触发（③b 自动发起：纯规则，不占 LLM judge）=====
         # 触发条件见 should_interview_now：open_gaps>=2 且距上次访谈>=3 天。
         # idle 已在上方 return；busy（会议/通话）与深专注不弹——访谈需要用户专注回应。

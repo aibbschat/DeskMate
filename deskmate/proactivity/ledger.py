@@ -27,6 +27,10 @@ LEDGER_TABLE = "proactive_ledger"
 # 同步层（sync_daemon LWW）据此强制只前进；应用层 acknowledge_ledger 也兜底。
 STATUS_ORDER = ("actioned", "dismissed", "in_progress", "acknowledged", "pending")
 
+# understanding 加工失败标记（P1 §11.5）：有 LLM key 但调用失败时写回，handoff 降级递。
+# 与空字符串区分：空 = 加工未完成（守卫跳过不递）；该标记 = 加工失败（降级递并提示）。
+UNDERSTANDING_FAILED_MARKER = "[understanding_failed]"
+
 # ---- 建表一次性标志（按 base_dir 分桶，进程内）----
 # migrate() 每次都会 DROP 三触发器再重建 + commit（sync_store_sqlite 的幂等策略）。
 # record_proactive 是逐条调用、云端审计循环每小时跑 —— 每条都重建触发器是纯浪费，
@@ -189,12 +193,30 @@ def build_handoff_opening(base_dir: Optional[Path] = None) -> Optional[dict]:
     返回 ``{"text": 开场白, "items": [完整项…]}``；无 pending 返回 None。
     三件套：注入上下文（items 含 evidence+understanding）、稳定 id 句柄（回查用 items[i].id）、
     证据随行（防编造）。
+
+    守卫（P1 §11.5「understanding 也要有据，反现编」）：
+    - ``understanding`` 仍为空（加工未完成）→ **暂不递**，避免退化成念原文；
+      后处理（``understanding.maybe_backfill_understanding``）补上后再递。
+    - ``understanding == UNDERSTANDING_FAILED_MARKER``（加工失败）→ **降级递** content+evidence，
+      并把标记转成友好提示「（理解加工未完成，仅呈现依据）」，不当一等公民异常。
     """
     items = pending_items(base_dir)
     if not items:
         return None
+    shown = []
+    for it in items:
+        und = it.get("understanding") or ""
+        if und == UNDERSTANDING_FAILED_MARKER:
+            und = "（理解加工未完成，仅呈现依据）"
+        if not und:  # 加工未完成 → 按 §11.5 不递，等后处理补上再递
+            continue
+        it = dict(it)
+        it["understanding"] = und
+        shown.append(it)
+    if not shown:
+        return None
     lines = []
-    for i, it in enumerate(items, 1):
+    for i, it in enumerate(shown, 1):
         ev = f"（依据：{it['evidence']}）" if it.get("evidence") else ""
         un = f"\n    我的理解：{it['understanding']}" if it.get("understanding") else ""
         lines.append(f"{i}. {it['content']}{ev}{un}")
@@ -203,7 +225,7 @@ def build_handoff_opening(base_dir: Optional[Path] = None) -> Optional[dict]:
         + "\n".join(lines)
         + "\n你要先处理哪个？（回复序号或点开即可）"
     )
-    return {"text": text, "items": items}
+    return {"text": text, "items": shown}
 
 
 def acknowledge_ledger(
