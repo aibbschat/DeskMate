@@ -146,6 +146,35 @@ SYNC_TABLES: dict[str, dict] = {
         ),
         "conflict_col": None,
     },
+    # ---- P0（2026-10-06）：主动产出统一台账（「主动产出管道」）----
+    # 所有主动产出（云端内容审计 / 手机灵感 / 日后来源）的统一载体，进 SYNC_TABLES 自动跨端收敛。
+    # 确定性 id（text pk）由生产者生成（<source>:<kind>:<指纹>），双端同 id → 同 sync_uuid → 自动合并
+    # （对应 2026-10-06 48 条 profile_items 身份分裂教训：禁用随机 uuid）。
+    # ordered_status：status 只前进不后退（防 nag 失效，见 sync_daemon._lww_winner / _apply_one_to）。
+    "proactive_ledger": {
+        "pk": "id",
+        "pk_type": "text",  # 真实 schema：id TEXT PRIMARY KEY（非自增），双端同 id → 可直接作 sync_key
+        "sync_key": "id",  # 与 profile_items 同构：text pk 本身即唯一
+        "sync_uuid_kind": "string",  # 与触发器 _trigger_sql 的 COALESCE 表达式同格式
+        "business_cols": (
+            "id",
+            "source",
+            "kind",
+            "content",
+            "evidence",
+            "understanding",
+            "payload",
+            "source_node",
+            "status",
+            "confidence",
+            "created_at",
+            "acknowledged_at",
+        ),
+        "conflict_col": None,
+        # status 优先级（高→低）：actioned/dismissed 是不可被 pending 覆盖的终态（防反 nag 失效）。
+        # 同步层 _lww_winner / _apply_one_to 据此决胜；snoozed 暂不纳入（P0 不实现自动复活）。
+        "ordered_status": ("actioned", "dismissed", "in_progress", "acknowledged", "pending"),
+    },
 }
 
 # ---- 策略①护栏：跨端只同步明文事实、向量各端本地重算 ----

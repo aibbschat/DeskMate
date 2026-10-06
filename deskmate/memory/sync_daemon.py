@@ -320,13 +320,18 @@ class SyncEngine:
             if not existing.tombstone:
                 return
             # 墓碑态且同 hlc：交给墓碑侧表判定（见下has_tombstone 块），避免旧副本复活。
+        # ordered_status 来自注册表（SQLiteSyncStore._spec）；MemoryStore 等测试替身
+        # 无 _spec → 视为无 ordered（退回纯 HLC LWW），保证既有测试契约不被破坏。
+        ordered = getattr(store, "_spec", {}).get("ordered_status")
         # 防遗忘复活：本端已是墓碑（删除），且远端 op 的 HLC 更早或相等 → 不覆盖
         # （同 hlc 的 upsert 已在上面决胜放行走复活路径，此处只拦严格更早）。
         if existing is not None and existing.tombstone and op.hlc < existing.hlc:
             return
-        # 本端有更新的记录（HLC 更晚）→ 远端更旧，跳过（LWW 后者胜）
+        # 本端有更新的记录（HLC 更晚）→ 远端更旧，跳过（LWW 后者胜）。
+        # 例外：ordered_status 且远端 status 严格前进 → 仍应用（status 只前进优先于时间）。
         if existing is not None and not existing.tombstone and op.hlc < existing.hlc:
-            return
+            if not (ordered and _status_advances(existing.data.get("status"), op.payload.get("status"), ordered)):
+                return
         # 业务表无此记录（已删除或从未见过）→ 查墓碑侧表：若已删且删除不比该 upsert 旧，
         # 跳过（防陈旧/迟到 upsert 复活已删记录）。MemoryStore 无侧表，getattr 返回 None 即跳过。
         ht = getattr(store, "has_tombstone", None)
@@ -341,7 +346,13 @@ class SyncEngine:
         if is_delete:
             store.delete(op.record_id, op.hlc)
         else:
-            store.upsert(op.record_id, op.payload, op.hlc)
+            payload = dict(op.payload)
+            if ordered and existing is not None and not existing.tombstone:
+                ls, rs = existing.data.get("status"), payload.get("status")
+                # 本端 status 优先级更高 → 保留本端，不降级（远端迟到/更旧的低 status 不覆盖）
+                if ls in ordered and rs in ordered and ordered.index(ls) < ordered.index(rs):
+                    payload["status"] = ls
+            store.upsert(op.record_id, payload, op.hlc)
 
     # ---- 按 uuid 逐条对账（防假绿验收口径；单表引擎用） ----
     def reconcile(self, other: "MemoryStore") -> dict:
@@ -508,7 +519,18 @@ def _write_record(target: "MemoryStore", rec: "Record") -> None:
         target.upsert(rec.record_id, rec.data, rec.hlc, rec.valid_until)
 
 
-def _lww_winner(a: "Record", b: "Record") -> "Record":
+def _status_advances(local_status: "Optional[str]", remote_status: "Optional[str]", ordered: "tuple") -> bool:
+    """远端 status 是否相对本端严格前进（优先级更高）。
+
+    仅当两端 status 都在 ``ordered`` 序列内时判定（不在序列内视为不参与只前进）。
+    ``ordered`` 按优先级从高到低排列（索引越小越高）。
+    """
+    if local_status in ordered and remote_status in ordered:
+        return ordered.index(remote_status) < ordered.index(local_status)
+    return False
+
+
+def _lww_winner(a: "Record", b: "Record", ordered_status: "Optional[tuple]" = None) -> "Record":
     """同 uuid 双端冲突的胜者（**基线对账专用**，与 `_apply_one_to` 同规则）。
 
     与 `SyncEngine._apply_one_to` 的同hlc 决胜规则保持一致（2026-10-05 修）：
@@ -520,7 +542,17 @@ def _lww_winner(a: "Record", b: "Record") -> "Record":
       （physical/counter/node 三段完全相同），按旧的「本端 hlc>=远端即本端胜」会把
       远端活记录判死→ Mac 侧永久缺该维度数据。
       故同 hlc 时**活记录胜墓碑**（upsert 决胜，与 apply 侧对称）。
+
+    - **ordered_status（2026-10-06 P0）**：当两端 status 优先级不同，高优先级胜
+      （忽略 HLC）——否则已被用户处理的记录会被对端迟到的 pending 覆盖、重复递，
+      反 nag 直接失效。status 相同或任一缺 status 时退回常规 HLC LWW。
     """
+    if ordered_status is not None:
+        sa, sb = a.data.get("status"), b.data.get("status")
+        if sa in ordered_status and sb in ordered_status:
+            ra, rb = ordered_status.index(sa), ordered_status.index(sb)
+            if ra != rb:
+                return a if ra < rb else b
     if a.hlc == b.hlc:
         # 同 hlc：活记录优先（墓碑是"删除"，不应压过同刻的"存在"）
         if a.tombstone != b.tombstone:
@@ -529,7 +561,7 @@ def _lww_winner(a: "Record", b: "Record") -> "Record":
     return a if a.hlc >= b.hlc else b
 
 
-def reconcile_baseline(local: "MemoryStore", remote: "MemoryStore", node: str) -> dict:
+def reconcile_baseline(local: "MemoryStore", remote: "MemoryStore", node: str, ordered_status: "Optional[tuple]" = None) -> dict:
     """一次性全量对账（首连前置，草案方案 A）。
 
     背景（二蛋 2026-10-03 实测边界）：存量迁移只回填了 uuid、没有把存量写进
@@ -559,7 +591,7 @@ def reconcile_baseline(local: "MemoryStore", remote: "MemoryStore", node: str) -
     # 冲突：两边都有的按 HLC LWW（同 hlc 由 _lww_winner 按类型决胜），胜者写回两端
     for rid in set(L) & set(R):
         a, b = L[rid], R[rid]
-        winner = _lww_winner(a, b)
+        winner = _lww_winner(a, b, ordered_status)
         if winner is a and a.hlc == b.hlc and a.tombstone == b.tombstone:
             # 同 hlc 同形态：本端即胜者且两端一致，无需写回（省一次无谓覆写）
             continue
@@ -576,6 +608,7 @@ def reconcile_baseline_oplog(
     engine: "SyncEngine",
     table: str,
     node: str,
+    ordered_status: "Optional[tuple]" = None,
 ) -> dict:
     """首连基线对账（含存量 a_only / b_only）+ 经本地 oplog 把增量推给对端。
 
@@ -615,7 +648,7 @@ def reconcile_baseline_oplog(
     # 胜者本端胜 → 经 oplog 推给远端；远端胜 → 写本端 store（远端本就持有，无需回推）。
     for rid in set(L) & set(R):
         a, b = L[rid], R[rid]
-        winner = _lww_winner(a, b)
+        winner = _lww_winner(a, b, ordered_status)
         if winner is b and a.hlc == b.hlc and a.tombstone == b.tombstone:
             # 同 hlc 同形态且判定为本端胜 → 推给远端（远端可能还没有）
             if a.tombstone:

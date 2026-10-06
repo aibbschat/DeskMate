@@ -540,6 +540,22 @@ class ProactiveEngine:
                 judgment.suggestion_type,
                 suggestion_key,
             )
+            # P0（2026-10-06）：主动建议落主动产出台账（proactive_ledger），进 SYNC_TABLES
+            # 跨端同步 → 本地开聊时对话式对接（非浮层）。失败 fail-open，绝不阻断主动推理主流程。
+            try:
+                from deskmate.proactivity.ledger import record_proactive
+
+                record_proactive(
+                    base_dir=self.base_dir,
+                    source="cloud_audit",
+                    kind=judgment.suggestion_type,
+                    content=judgment.suggestion_content,
+                    evidence=judgment.reasoning[:500] if judgment.reasoning else "",
+                    anchor=judgment.suggestion_type,  # 同类型合并（桌面建议锚点不稳定，按类型去重）
+                    confidence=judgment.confidence,
+                )
+            except Exception as e:
+                logger.debug("主动台账落库失败（不阻断 tick）: %s", e)
             # P2-10：主动建议推送 → 行为日志（供「常在何时被建议/哪类建议」规律积累）
             # 2026-09-22：按小时抽样（同小时同类只留一条）。它曾占日志 94%
             # （13197/14069 条）却提炼不出任何模式 → 纯存储噪声，见 log_event docstring。
