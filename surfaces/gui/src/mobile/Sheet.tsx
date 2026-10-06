@@ -5,10 +5,13 @@
  */
 import { useEffect, useState } from "react";
 import { getSessions, httpBase } from "../api";
+import { hasRuntimeToken } from "../runtimeReady";
 import type { InboxItem } from "../api";
 import type { SessionInfo } from "../types";
 import { actionsFor, resolutionFor } from "./inboxResolve";
 import { inboxTitleZh } from "./askPhrase";
+import { INSTALL_STATE_LABEL } from "./install";
+import { useInstall } from "./useInstall";
 import { pickSession } from "./session";
 import type { BootFault } from "./useChat";
 
@@ -175,6 +178,8 @@ export function DebugPanel({
   inbox: number;
 }) {
   const [probe, setProbe] = useState("…");
+  const install = useInstall();
+  const wait = (globalThis as any).__COWORKER_CFG_WAIT__ as string | undefined;
   useEffect(() => {
     let alive = true;
     fetch(`${httpBase()}/v1/health`)
@@ -184,17 +189,23 @@ export function DebugPanel({
       alive = false;
     };
   }, []);
-  const token = !!(window as any).__COWORKER_API_TOKEN__ || !!(window as any).__COWORKER_RUNTIME_CONFIG__?.__COWORKER_API_TOKEN__;
   return (
     <div className="m-card">
       <KV k="接口地址" v={httpBase()} />
-      <KV k="同源 token" v={token ? "已取到（不进构建产物）" : "没有 —— 部署缺 runtime-config.json"} />
+      <KV k="同源 token" v={hasRuntimeToken() ? "已取到（不进构建产物）" : "没有 —— 部署缺 runtime-config.json"} />
+      {/* 首屏为什么可能先红一下：花园的请求必须等这一句有结论才放行（见 src/runtimeReady.ts） */}
+      <KV k="配置落地" v={wait === "timeout" ? "超时先放行（网络慢，可能首屏读晚一次）" : wait === "settled" ? "在请求之前" : wait === "no-gate" ? "本地/桌面壳直注入" : "…"} />
       <KV k="GET /v1/health" v={probe} />
       <KV k="会话 socket" v={connected ? "已连（含 25s 保活 + 自动重连）" : "未连（会自动重试）"} />
       <KV k="当前会话" v={sessionId || "—"} />
       <KV k="本轮" v={running ? "她还在跑" : "待机"} />
       <KV k="消息条数" v={String(items)} />
       <KV k="待答" v={String(inbox)} />
+      <KV k="装到主屏" v={INSTALL_STATE_LABEL[install.state] || install.state} />
+      <KV k="manifest" v={install.probe ? `${install.probe.ok ? "✓" : "✗"} ${install.probe.note}` : "在读…"} />
+      {install.probe && !install.probe.ok && (
+        <div className="m-note">安卓不会出现「安装应用」就是这一行的问题：Chromium 只认 JSON 类的 Content-Type</div>
+      )}
       {fault === "site" && <div className="m-note">站点口令没过：在浏览器里输一次 xj.aibbs.chat 的账号密码，再点上面的重试</div>}
       {fault === "token" && <div className="m-note">应用 token 不对：服务器 runtime-config.json 与 /etc/openworker/env 不一致，需重新部署前端</div>}
       {fault === "net" && <div className="m-note">连不上服务器：检查云端与隧道</div>}

@@ -314,6 +314,12 @@ html[data-theme="dark"] .mc-send { color: #1b1207; }
 .m-stat-k { font-size: 13px; color: var(--muted); flex: 1 1 auto; }
 .m-stat-v { font-size: 14px; font-weight: 620; font-variant-numeric: tabular-nums; }
 
+/* ---------- 装到主屏（设备侧设置，不是一次操作，所以给足解释空间） ---------- */
+.m-inst-h { padding: 13px; }
+.m-inst-t { font-size: 15px; font-weight: 640; line-height: 1.4; }
+.m-inst-p { font-size: 12.5px; line-height: 1.65; color: var(--muted); margin-top: 5px; }
+.m-inst-btn { padding: 0 13px 13px; display: flex; }
+
 /* ---------- 抽屉 ---------- */
 .m-scrim {
   position: fixed; inset: 0; z-index: 30; background: var(--scrim);

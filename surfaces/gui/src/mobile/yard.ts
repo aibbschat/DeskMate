@@ -10,6 +10,7 @@
  */
 import { authedFetch, httpBase } from "../api";
 import { splitDiaryEntries, diaryEntryId } from "../diaryEntries";
+import { classify401, faultCopy, type AuthFault } from "./session";
 
 export type Author = "xiaoju" | "me";
 
@@ -40,6 +41,10 @@ export interface Res<T> {
   data: T;
   /** 失败原因（网络/非 200），只用于自检页，不进正文文案 */
   error?: string;
+  /** HTTP 状态码（网络异常时没有） */
+  status?: number;
+  /** 401/403 到底是哪一种：站点口令 / 应用 token / 网络。文案必须分开（见 session.ts） */
+  fault?: AuthFault;
 }
 
 const J = (r: Response) => r.json().catch(() => ({}));
@@ -61,13 +66,38 @@ export function atMs(m: { at?: string; date?: string }): number {
 
 export const byNewest = (a: Moment, b: Moment): number => atMs(b) - atMs(a);
 
+/** 把一次失败翻译成给用户看的话。绝不把「站点口令没过」说成「要重新部署」。 */
+export function faultText(r: { error?: string; fault?: AuthFault; status?: number }): {
+  title: string;
+  hint: string;
+} {
+  const copy = faultCopy(r.fault || null);
+  if (copy) return copy;
+  return {
+    title: "读不到日记",
+    hint: r.status ? `接口回 HTTP ${r.status}${r.error ? `（${r.error}）` : ""}，会自动重试` : "网络没通，会自动重试",
+  };
+}
+
+function failFrom(r: Response, note?: string): Res<any> {
+  const status = r.status;
+  const isAuth = status === 401 || status === 403;
+  return {
+    ok: false,
+    data: null,
+    status,
+    error: note || `HTTP ${status}`,
+    fault: isAuth ? classify401(r) : null,
+  };
+}
+
 async function get(path: string): Promise<Res<any>> {
   try {
     const r = await authedFetch(`${httpBase()}/v1/deskmate${path}`);
-    if (!r.ok) return { ok: false, data: null, error: `HTTP ${r.status}` };
+    if (!r.ok) return failFrom(r);
     return { ok: true, data: await J(r) };
   } catch (e: any) {
-    return { ok: false, data: null, error: String(e?.message || e) };
+    return { ok: false, data: null, error: String(e?.message || e), fault: "net" };
   }
 }
 
@@ -78,24 +108,40 @@ async function post(path: string, body: unknown): Promise<Res<any>> {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     });
-    if (!r.ok) return { ok: false, data: null, error: `HTTP ${r.status}` };
+    if (!r.ok) return failFrom(r);
     return { ok: true, data: await J(r) };
   } catch (e: any) {
-    return { ok: false, data: null, error: String(e?.message || e) };
+    return { ok: false, data: null, error: String(e?.message || e), fault: "net" };
   }
 }
 
 /** 手机端回看天数（桌面 14，这里 5：每多一天多一次请求） */
 const DIARY_LOOKBACK = 5;
 
+export interface Timeline {
+  moments: Moment[];
+  next: string | null;
+  /** 部分读成功时对「没读到的那一半」的说明；全成功时是空串 */
+  degraded: string;
+}
+
 /**
  * 时间线 = 我写的日记（user_posts，后端已内联留言）+ 她写的日记（文件）。
  * 两端合并后按时间倒序；同一天她可能连记几篇 → 每篇独立成卡（共用 splitDiaryEntries）。
+ *
+ * **fail-open（2026-10-06 改）**：旧实现把两个读口绑成一荣俱荣 —— `/moments` 一挂（真机上
+ * 是冷启动抢在 runtime-config 之前发出去、被后端 401），整屏就只剩「读不到日记」，
+ * 哪怕她的日记其实读得到。现在：两路并排发，谁活着谁上屏，另一路失败只降级成一行说明；
+ * 两路都失败才算真故障（`ok:false`，交给 UI 分类文案 + 重试）。
  */
-export async function loadTimeline(limit = 30): Promise<Res<{ moments: Moment[]; next: string | null }>> {
-  const mine = await get(`/moments?limit=${limit}`);
-  if (!mine.ok) return { ok: false, data: { moments: [], next: null }, error: mine.error };
-  const d = mine.data || {};
+export async function loadTimeline(limit = 30): Promise<Res<Timeline>> {
+  const [mine, dates] = await Promise.all([get(`/moments?limit=${limit}`), get(`/diary`)]);
+  if (!mine.ok && !dates.ok) {
+    // 主口（我自己的条目）的错误更能说明问题，取它的分类
+    return { ok: false, data: { moments: [], next: null, degraded: "" }, error: mine.error, status: mine.status, fault: mine.fault };
+  }
+
+  const d = mine.ok ? mine.data || {} : {};
   const commentsMap: Record<string, MomentComment[]> = d.comments || {};
   const lovedSet = new Set<string>(Array.isArray(d.loved) ? d.loved : []);
 
@@ -110,13 +156,20 @@ export async function loadTimeline(limit = 30): Promise<Res<{ moments: Moment[];
     comments: Array.isArray(p.comments) ? p.comments : commentsMap[String(p.id)] || [],
   }));
 
-  // 她的日记：先拿有记录的日期，再逐日取正文
-  const dates = await get(`/diary`);
+  // 她的日记：先拿有记录的日期，再逐日取正文（并排取，手机上串行要等 5 个来回）
+  let failedDays = 0;
   if (dates.ok) {
     const list: string[] = Array.isArray(dates.data?.dates) ? dates.data.dates : [];
-    for (const date of list.slice(-DIARY_LOOKBACK).reverse()) {
-      const one = await get(`/diary/${encodeURIComponent(date)}`);
-      if (!one.ok || !one.data?.content) continue;
+    const days = list.slice(-DIARY_LOOKBACK).reverse();
+    const texts = await Promise.all(
+      days.map(async (date) => ({ date, one: await get(`/diary/${encodeURIComponent(date)}`) })),
+    );
+    for (const { date, one } of texts) {
+      if (!one.ok) {
+        failedDays += 1;
+        continue;
+      }
+      if (!one.data?.content) continue;
       const { entries } = splitDiaryEntries(String(one.data.content));
       entries.forEach((entry, idx) => {
         if (!entry.body.trim()) return;
@@ -136,8 +189,14 @@ export async function loadTimeline(limit = 30): Promise<Res<{ moments: Moment[];
     }
   }
 
+  const degraded = !mine.ok
+    ? "你写的那部分这次没读到，她的记录在；下拉或点重试再取一次"
+    : !dates.ok || failedDays
+      ? "她最近那几天的记录这次没读到（不影响你写新的）"
+      : "";
+
   out.sort(byNewest);
-  return { ok: true, data: { moments: out, next: d.next_cursor ?? null } };
+  return { ok: true, data: { moments: out, next: mine.ok ? d.next_cursor ?? null : null, degraded } };
 }
 
 /** 我记一笔；后端会落 user_posts 并让小桔回一条留言（她的回复已在 comments[0] 持久化） */

@@ -10,12 +10,15 @@
  *
  * D3：长期记忆默认对可疑条目做展示层折叠（可点开）。这是展示层启发式，界面上明说不后端判定。
  */
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { authedFetch, httpBase } from "../api";
 import { Markdown } from "../components/Markdown";
 import { FOLD_LABEL, shouldFold } from "./sensitive";
+import { useInstall } from "./useInstall";
+import { INSTALL_STATE_LABEL, type InstallState } from "./install";
 import {
   commentMoment,
+  faultText,
   loadFacts,
   loadGrowth,
   loadPortrait,
@@ -33,18 +36,26 @@ import {
   type PortraitSection,
 } from "./yard";
 
-type Sub = null | "facts" | "portrait" | "diary" | "stats";
+type Sub = null | "facts" | "portrait" | "diary" | "stats" | "install";
 
 interface Props {
   /** 顶栏齿轮 → 让 App 打开连接自检抽屉 */
   onOpenDebug: () => void;
 }
 
+/** 读失败时的有界自动重试：1.5s 起指数退避，最多 6 次（约 95 秒），之后交给手动按钮。
+ *  与 useChat 的保活重试同一套路数——手机上「过一会儿自己好了」比「一直红着要人刷」重要。 */
+const AUTO_RETRY_MAX = 6;
+const AUTO_RETRY_BASE_MS = 1500;
+
 export function YardScreen({ onOpenDebug }: Props) {
   const [sub, setSub] = useState<Sub>(null);
   const [moments, setMoments] = useState<Moment[]>([]);
   const [loaded, setLoaded] = useState(false);
-  const [loadErr, setLoadErr] = useState("");
+  /** 真故障（两路都没读到）才非空；文案按 站点口令 / 应用 token / 网络 分开，绝不混着说 */
+  const [fault, setFault] = useState<{ title: string; hint: string } | null>(null);
+  /** 部分成功（她的在、你的没读到）时的软提示 */
+  const [degraded, setDegraded] = useState("");
   const [draft, setDraft] = useState("");
   const [notice, setNotice] = useState("");
   const [openComments, setOpenComments] = useState<Record<string, boolean>>({});
@@ -55,6 +66,11 @@ export function YardScreen({ onOpenDebug }: Props) {
   const [dates, setDates] = useState<string[]>([]);
   const [dayText, setDayText] = useState<Record<string, string>>({});
   const [unfolded, setUnfolded] = useState<Record<string, boolean>>({});
+  const tries = useRef(0);
+  /** 「日记 → 就在下面」滚的是花园自己的容器：两屏同时挂载，
+   *  `document.querySelector(".m-scroll")` 会抓到对话屏那个（点一下没反应）。 */
+  const feedRef = useRef<HTMLDivElement>(null);
+  const install = useInstall();
 
   const flash = (m: string) => {
     setNotice(m);
@@ -66,15 +82,40 @@ export function YardScreen({ onOpenDebug }: Props) {
     if (r.ok) {
       // 不能整表覆盖：本地还在 pending/failed、或刚发出 15 秒内的条目要保住
       setMoments((prev) => mergeRefresh(r.data.moments, prev));
-      setLoadErr("");
+      setFault(null);
+      setDegraded(r.data.degraded || "");
+      tries.current = 0;
     } else {
-      setLoadErr(r.error || "读不到");
+      setFault(faultText(r));
+      setDegraded("");
     }
     setLoaded(true);
   }, []);
 
   useEffect(() => {
     void refresh();
+  }, [refresh]);
+
+  // 失败了先自己再试几次（首屏抢跑这种一次性抖动不该让人去手动刷新）
+  useEffect(() => {
+    if (!fault || tries.current >= AUTO_RETRY_MAX) return;
+    const wait = AUTO_RETRY_BASE_MS * 2 ** tries.current;
+    const t = window.setTimeout(() => {
+      tries.current += 1;
+      void refresh();
+    }, wait);
+    return () => window.clearTimeout(t);
+  }, [fault, refresh]);
+
+  // 切回前台立刻补一次：她这会儿多半已经多记了几条
+  useEffect(() => {
+    const onVis = () => {
+      if (document.visibilityState !== "visible") return;
+      tries.current = 0;
+      void refresh();
+    };
+    document.addEventListener("visibilitychange", onVis);
+    return () => document.removeEventListener("visibilitychange", onVis);
   }, [refresh]);
 
   // 子页按需加载（不一次把 676 条记忆拖进首屏）
@@ -260,6 +301,47 @@ export function YardScreen({ onOpenDebug }: Props) {
               <div className="m-note">只读。这些数在桌面端能点开看明细，手机上不重复一遍</div>
             </div>
           )}
+
+          {sub === "install" && (
+            <div className="m-card">
+              <div className="m-inst-h">
+                <div className="m-inst-t">{install.copy.title}</div>
+                <div className="m-inst-p">{install.copy.hint}</div>
+              </div>
+              {install.copy.action === "prompt" && (
+                <div className="m-inst-btn">
+                  <button
+                    type="button"
+                    className="btn pri wide"
+                    disabled={install.busy}
+                    onClick={() =>
+                      void install.install().then((r) =>
+                        flash(
+                          r === "accepted"
+                            ? "在装了，回桌面看她"
+                            : r === "dismissed"
+                              ? "这次没装，随时可以再来"
+                              : "这台设备的浏览器没给安装弹窗，按上面的手动路径来",
+                        ),
+                      )
+                    }
+                  >
+                    {install.busy ? "在问浏览器…" : "装到主屏"}
+                  </button>
+                </div>
+              )}
+              <Line k="浏览器判定" v={INSTALL_STATE_LABEL[install.state]} />
+              <Line k="manifest" v={install.probe ? `${install.probe.ok ? "✓" : "✗"} ${install.probe.note}` : "在读…"} />
+              <div className="m-inst-btn">
+                <button type="button" className="btn opt wide" onClick={install.recheck}>
+                  重新查一次
+                </button>
+              </div>
+              <div className="m-note">
+                装一次就够：她跟着这个浏览器走，换浏览器要再装一次。装完她不会自己冒出来找你——第一批没做推送，切回前台时她会把落下的补给你
+              </div>
+            </div>
+          )}
         </div>
         {notice && <div className="m-toast">{notice}</div>}
       </>
@@ -282,7 +364,7 @@ export function YardScreen({ onOpenDebug }: Props) {
         </button>
       </div>
 
-      <div className="m-scroll">
+      <div className="m-scroll" ref={feedRef}>
         {/* 门楣带：桌面全景的等比压缩版，in-flow（不做负偏移，所以不会飘） */}
         <div className="m-lintel">
           <div className="m-lintel-in">
@@ -294,11 +376,12 @@ export function YardScreen({ onOpenDebug }: Props) {
         </div>
 
         <div className="m-card m-list">
-          <Row icon="📖" name="日记" sub={`你写的 ${mine} · 她写的 ${hers}`} foot="就在下面" onClick={() => scrollFeed()} />
+          <Row icon="📖" name="日记" sub={`你写的 ${mine} · 她写的 ${hers}`} foot="就在下面" onClick={() => scrollFeed(feedRef.current)} />
           <Row icon="👁" name="它眼中的我" sub="她对你的画像" onClick={() => setSub("portrait")} />
           <Row icon="⌗" name="长期记忆" sub="只增不改的事实" onClick={() => setSub("facts")} />
           <Row icon="✎" name="她自己的记录" sub="她的日记原文，只读" onClick={() => setSub("diary")} />
           <Row icon="▦" name="统计与默契" sub="等级 / 默契 / 里程碑" onClick={() => setSub("stats")} />
+          <Row icon="⌂" name="装到主屏" sub={installRowSub(install.state, install.probe?.ok)} onClick={() => setSub("install")} />
         </div>
 
         <div className="m-feed-h">
@@ -306,8 +389,33 @@ export function YardScreen({ onOpenDebug }: Props) {
           <span>按天倒序</span>
         </div>
 
-        {loadErr && <div className="m-fault"><b>读不到日记</b><span>{loadErr}</span></div>}
-        {loaded && !moments.length && !loadErr && (
+        {fault && (
+          <div className="m-fault bad">
+            <div className="m-fault-row">
+              <div>
+                <b>{fault.title}</b>
+                <span>{fault.hint}</span>
+              </div>
+              <button
+                type="button"
+                className="m-retry"
+                onClick={() => {
+                  tries.current = 0;
+                  void refresh();
+                }}
+              >
+                重试
+              </button>
+            </div>
+          </div>
+        )}
+        {!fault && degraded && (
+          <div className="m-fault">
+            <b>有一部分没读到</b>
+            <span>{degraded}</span>
+          </div>
+        )}
+        {loaded && !moments.length && !fault && (
           <div className="m-empty-in">还没有日记。下面记第一句，她会回你。</div>
         )}
 
@@ -392,13 +500,32 @@ const SUB_TITLE: Record<Exclude<Sub, null>, string> = {
   portrait: "它眼中的我",
   diary: "她自己的记录",
   stats: "统计与默契",
+  install: "装到主屏",
 };
 const SUB_SUB: Record<Exclude<Sub, null>, string> = {
   facts: "只增不改的事实",
   portrait: "她对你的画像",
   diary: "她的日记原文 · 只读",
   stats: "只读",
+  install: "这台设备 · 与她的账号无关",
 };
+
+/** 门口那一行就要能看出问题，不用点进去（安卓装不上时这里直接见分晓）。 */
+function installRowSub(state: InstallState, probeOk: boolean | undefined): string {
+  if (state === "installed") return "已经在这台设备上";
+  if (probeOk === false) return "装不上：manifest 被判无效";
+  if (state === "prompt") return "可以装，点一下";
+  return INSTALL_STATE_LABEL[state] || "看这里";
+}
+
+function Line({ k, v }: { k: string; v: string }) {
+  return (
+    <div className="m-kv">
+      <span className="m-kv-k">{k}</span>
+      <span className="m-kv-v">{v}</span>
+    </div>
+  );
+}
 
 function Row({
   icon,
@@ -459,9 +586,11 @@ function fmt(iso: string): string {
   return t ? `${d} ${t}` : d || s;
 }
 
-/** 「日记」那行不跳子页，就是滚到下面的时间线 */
-function scrollFeed() {
-  const el = document.querySelector(".m-scroll");
-  const target = document.querySelector(".m-feed-h");
-  if (el && target) el.scrollTop = (target as HTMLElement).offsetTop - 12;
+/** 「日记」那行不跳子页，就是滚到下面的时间线（滚自己那一屏，不抓对话屏的容器）。
+ *  用 getBoundingClientRect 算距离：offsetTop 是相对 offsetParent 的，门楣带一进来就会偏。 */
+function scrollFeed(pane: HTMLElement | null) {
+  const target = pane?.querySelector(".m-feed-h") as HTMLElement | null;
+  if (!pane || !target) return;
+  const delta = target.getBoundingClientRect().top - pane.getBoundingClientRect().top;
+  pane.scrollTo({ top: Math.max(0, pane.scrollTop + delta - 12), behavior: "smooth" });
 }
