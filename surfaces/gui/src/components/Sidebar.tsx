@@ -1,21 +1,14 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import {
-  announceCloudChanged,
   AUTOMATIONS_CHANGED,
-  CLOUD_CHANGED,
-  cloudLogin,
-  cloudLogout,
   getAutomations,
-  getCloudStatus,
   getPersonas,
   getSettings,
   INBOX_UNLOCK,
   PERSONAS_CHANGED,
   setNavLayout,
-  waitForCloudSignIn,
   type Automation,
-  type CloudStatus,
   type Persona,
   type RecentWorkspace,
   type SurfaceVisibility,
@@ -193,28 +186,20 @@ export function Sidebar(props: Props) {
   const { t } = useTranslation();
   const [searchModalOpen, setSearchModalOpen] = useState(false);
   const [appMenuOpen, setAppMenuOpen] = useState(false);
-  // The account row (§26): cloud sign-in status drives the avatar/name/dot; refreshed on
-  // focus and whenever the menu opens (sign-in completes out-of-band in the browser).
-  const [cloud, setCloud] = useState<CloudStatus | null>(null);
+  // The account row reflects our own XiaoJu Cloud (deployment-token authenticated), not the
+  // upstream OpenWorker Cloud sign-in — this fork doesn't use the official cloud (see §26).
   // Inbox chip sticky unlock (§26): absent until the product first parks an item (or a
   // session first goes Unattended), then permanent. Per-device, like nav collapse.
   const [inboxUnlocked, setInboxUnlocked] = useState(
     () => localStorage.getItem("ocw:inbox-unlocked") === "1",
   );
-  const refreshCloud = () => getCloudStatus().then(setCloud).catch(() => {});
   useEffect(() => {
-    refreshCloud();
-    const onFocus = () => refreshCloud();
-    window.addEventListener("focus", onFocus);
-    window.addEventListener(CLOUD_CHANGED, onFocus);
     const unlock = () => {
       localStorage.setItem("ocw:inbox-unlocked", "1");
       setInboxUnlocked(true);
     };
     window.addEventListener(INBOX_UNLOCK, unlock);
     return () => {
-      window.removeEventListener("focus", onFocus);
-      window.removeEventListener(CLOUD_CHANGED, onFocus);
       window.removeEventListener(INBOX_UNLOCK, unlock);
     };
   }, []);
@@ -388,12 +373,8 @@ export function Sidebar(props: Props) {
     </button>
   );
 
-  // Display identity for the account row: the cloud profile only carries the email, so the
-  // row shows the capitalized local part ("rohit@…" → "Rohit"); the menu header shows it all.
-  const accountEmail = cloud?.signed_in ? cloud.account : "";
-  const accountName = accountEmail
-    ? accountEmail.split("@")[0].replace(/^./, (c) => c.toUpperCase())
-    : "";
+  // Account identity is now our own XiaoJu Cloud — always "connected" via the deployment
+  // token, so no per-user email is surfaced in the account row.
 
   // Roll the per-session attention/liveness up to the persona header and the footer Inbox: the
   // accent count bubbles (sum), the liveness dot aggregates (working wins over sleeping).
@@ -1217,38 +1198,22 @@ export function Sidebar(props: Props) {
                 data-testid="account-menu"
                 role="menu"
               >
-                {cloud?.signed_in ? (
-                  <div
-                    className="px-3 py-1.5 mb-1 text-[11px] text-faint truncate border-b border-line"
-                    title={`${accountEmail} · OpenWorker Cloud`}
-                  >
-                    {accountEmail} · OpenWorker Cloud
-                  </div>
-                ) : (
-                  <>
-                    <div className="px-3 py-1.5 text-[11px] text-faint border-b border-line">
-                      {t("sidebar.notSignedInMessage")}
-                    </div>
-                    <button
-                      className="w-full flex items-center gap-2.5 px-3 py-1.5 mb-1 text-[13px] text-left text-accent hover:bg-paper"
-                      data-testid="account-sign-in"
-                      onClick={async () => {
-                        setAppMenuOpen(false);
-                        // Opens the system browser server-side; completion lands out-of-band,
-                        // so poll until it flips (refocusing the window also refetches).
-                        await cloudLogin().catch(() => {});
-                        waitForCloudSignIn((s) => {
-                          if (s) setCloud(s);
-                          // Other always-mounted consumers (Settings' telemetry card,
-                          // connector panes) refetch on this.
-                          if (s?.signed_in) announceCloudChanged();
-                        });
-                      }}
-                    >
-                      <Icon name="plug" size={15} className="shrink-0" /> {t("sidebar.signInToOpenWorker")}
-                    </button>
-                  </>
-                )}
+                <div
+                  className="px-3 py-1.5 mb-1 text-[11px] text-faint truncate border-b border-line"
+                  title={t("sidebar.cloudConnected")}
+                >
+                  {t("sidebar.cloudConnected")}
+                </div>
+                <button
+                  className="w-full flex items-center gap-2.5 px-3 py-1.5 mb-1 text-[13px] text-left text-accent hover:bg-paper"
+                  data-testid="open-cloud"
+                  onClick={() => {
+                    setAppMenuOpen(false);
+                    window.open("https://xj.aibbs.chat", "_blank", "noopener");
+                  }}
+                >
+                  <Icon name="plug" size={15} className="shrink-0" /> {t("sidebar.openCloud")}
+                </button>
                 {appMenuItem(
                   "inbox",
                   t("sidebar.inbox"),
@@ -1268,15 +1233,6 @@ export function Sidebar(props: Props) {
                 )}
                 {appMenuItem("clock", t("sidebar.automations"), props.onOpenScheduled, props.scheduledActive)}
                 {appMenuItem("audit", t("sidebar.activity"), props.onOpenAudit, props.auditActive)}
-                {cloud?.signed_in && (
-                  <>
-                    <div className="h-px bg-line my-1 mx-2" />
-                    {appMenuItem("signOut", t("sidebar.signOut"), async () => {
-                      await cloudLogout().catch(() => {});
-                      announceCloudChanged();
-                    })}
-                  </>
-                )}
               </div>
             </>
           )}
@@ -1287,35 +1243,26 @@ export function Sidebar(props: Props) {
               (appMenuOpen ? "bg-paper text-ink" : "hover:bg-paper")
             }
             data-testid="account-row"
-            onClick={() => {
-              if (!appMenuOpen) refreshCloud();
-              setAppMenuOpen((v) => !v);
-            }}
+            onClick={() => setAppMenuOpen((v) => !v)}
             aria-haspopup="menu"
             aria-expanded={appMenuOpen}
-            aria-label={cloud?.signed_in ? t("sidebar.accountSignedIn", { email: accountEmail }) : t("sidebar.accountNotSignedIn")}
+            aria-label={t("sidebar.cloudConnected")}
           >
             <span
               className={
                 "w-6 h-6 rounded-full grid place-items-center text-[10.5px] font-semibold shrink-0 " +
-                (cloud?.signed_in
-                  ? "bg-accentSoft text-accent"
-                  : "bg-paper text-faint border border-line")
+                "bg-accentSoft text-accent"
               }
               aria-hidden
             >
-              {cloud?.signed_in ? accountName.slice(0, 1).toUpperCase() : "?"}
+              桔
             </span>
-            <span className={"truncate " + (cloud?.signed_in ? "" : "text-muted")}>
-              {cloud?.signed_in ? accountName : t("sidebar.notSignedIn")}
-            </span>
-            {cloud?.signed_in && (
-              <span
-                className="w-[7px] h-[7px] rounded-full bg-ok shrink-0"
-                title={t("sidebar.signedInToCloud")}
-                aria-hidden
-              />
-            )}
+            <span className="truncate">{t("sidebar.cloudConnected")}</span>
+            <span
+              className="w-[7px] h-[7px] rounded-full bg-ok shrink-0"
+              title={t("sidebar.cloudConnected")}
+              aria-hidden
+            />
             <span className="flex-1" />
             {inboxUnlocked && (
               <span

@@ -1,4 +1,5 @@
 {
+  "id": "/mobile.html",
   "name": "小桔",
   "short_name": "小桔",
   "description": "小桔的手机端：跟她说话、看她的花园",
@@ -12,5 +13,19 @@
     { "src": "/m-icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
     { "src": "/m-icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
     { "src": "/m-icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ],
+  "shortcuts": [
+    {
+      "name": "花园日记",
+      "short_name": "花园",
+      "url": "/mobile.html#yard",
+      "icons": [{ "src": "/m-icon-192.png", "sizes": "192x192", "type": "image/png" }]
+    },
+    {
+      "name": "跟她说一句",
+      "short_name": "说话",
+      "url": "/mobile.html",
+      "icons": [{ "src": "/m-icon-192.png", "sizes": "192x192", "type": "image/png" }]
+    }
   ]
 }

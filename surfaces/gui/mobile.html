@@ -13,6 +13,15 @@
     <meta name="apple-mobile-web-app-status-bar-style" content="default" />
     <meta name="apple-mobile-web-app-title" content="小桔" />
     <link rel="apple-touch-icon" href="/m-icon-180.png" />
+    <!-- 规范要 manifest 以 application/manifest+json 下发。云端原本**整个没有 Content-Type**
+         （Caddy 的 mime 表里没 .webmanifest），2026-10-06 已在 /etc/caddy/Caddyfile 补
+         `header @manifest Content-Type "application/manifest+json"`，并由 scripts/deploy_web.sh
+         每次部署复测这条公网响应头。
+         因果已定案（同一天真机回读）：补头之前萧哥安卓浏览器仍然没有安装入口，补头之后
+         花园那一行报「可以装」→ 病灶就是这个缺失的响应头。归因方式：昨天只做过 basicauth
+         豁免（manifest 已 200）而入口依旧没有，今天唯一的判据级改动就是这条头
+         （同批加的 id / shortcuts 不是可安装判据）。iOS 从来不看 manifest，它只认
+         apple-touch-icon + apple-mobile-web-app-capable——所以这类坏法只有安卓露馅。 -->
     <link rel="manifest" href="/m.webmanifest" />
     <title>小桔</title>
     <!-- 首屏防闪：主题 + 皮肤在 React 之前落到 <html>。与 index.html 同一段逻辑，
@@ -41,22 +50,47 @@
     <div id="root"></div>
     <div id="boot">正在连上她…</div>
     <!-- 运行时环境解析（docs/DEPLOY-PARITY.md）：token 与端点是 RUNTIME 值，绝不烤进构建。
-         与 index.html 共用同一份同源 runtime-config.json —— 手机端零新增密钥。 -->
+         与 index.html 共用同一份同源 runtime-config.json —— 手机端零新增密钥。
+
+         __COWORKER_CFG_READY__ 是给 src/runtimeReady.ts 的门：这个 fetch 是异步的，而手机端
+         两屏同时挂载、花园一挂载就发 /v1/deskmate/moments —— 抢在 token 落地之前就会拿到 401，
+         整块时间线显示「读不到日记」（2026-10-06 安卓真机就是这样）。所以现在无论 fetch
+         成功、404 还是抛错，都必须 resolve（结论一到就放行，main.tsx 另有 1.5s 兜底超时）。 -->
     <script>
       (function () {
+        var settle;
+        window.__COWORKER_CFG_READY__ = new Promise(function (r) { settle = r; });
         try {
           window.__COWORKER_RUNTIME_CONFIG__ = window.__COWORKER_RUNTIME_CONFIG__ || null;
           fetch("runtime-config.json", { cache: "no-store" })
             .then(function (r) { return r.ok ? r.json() : null; })
             .then(function (cfg) {
-              if (!cfg) return;
-              window.__COWORKER_RUNTIME_CONFIG__ = cfg;
-              ["__COWORKER_HTTP__", "__COWORKER_WS__", "__COWORKER_API_TOKEN__"].forEach(function (k) {
-                if (!window[k] && cfg[k]) window[k] = cfg[k];
-              });
+              if (cfg) {
+                window.__COWORKER_RUNTIME_CONFIG__ = cfg;
+                ["__COWORKER_HTTP__", "__COWORKER_WS__", "__COWORKER_API_TOKEN__"].forEach(function (k) {
+                  if (!window[k] && cfg[k]) window[k] = cfg[k];
+                });
+              }
             })
-            .catch(function () { /* 无 runtime config：保持 api.ts 自身默认（本地 dev） */ });
-        } catch (e) { /* 配置解析绝不阻塞应用启动 */ }
+            .catch(function () { /* 无 runtime config：保持 api.ts 自身默认（本地 dev） */ })
+            .then(function () { settle(); });
+        } catch (e) {
+          /* 配置解析绝不阻塞应用启动：门一定要开 */
+          settle();
+        }
+      })();
+    </script>
+    <!-- 安装到主屏：beforeinstallprompt 只在页面还挂着监听时才发一次，错过不补发。
+         React 起来之前就可能触发（尤其我们刚给首屏加了一道 1.5s 内的等待门），
+         所以监听必须写在这里、preventDefault 必须同步做，事件本体存到 window 给应用内按钮用。 -->
+    <script>
+      (function () {
+        try {
+          window.addEventListener("beforeinstallprompt", function (e) {
+            e.preventDefault();
+            window.__COWORKER_BIP__ = e;
+          });
+        } catch (e) { /* 不支持就是没有安装提示，不影响使用 */ }
       })();
     </script>
     <script type="module" src="/src/mobile/main.tsx"></script>

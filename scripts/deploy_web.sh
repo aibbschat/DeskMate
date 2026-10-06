@@ -76,4 +76,25 @@ ssh "${SSH_OPTS[@]}" "$SSH_USER@$HOST" \
    echo -n '  mobile assets reachable (图标/manifest): '; \
    test -f $FRONTEND_DIR/m.webmanifest && test -f $FRONTEND_DIR/m-icon-192.png && echo yes || echo NO"
 
+# 文件在位不代表安卓装得上：Chromium 只在 manifest 的 Content-Type 是 JSON 类时才认它。
+# Caddy 的 mime 表里没有 .webmanifest → 整个响应没有 Content-Type → iOS 照装、安卓连安装入口
+# 都不生成（2026-10-06 就是这个坑，云端 Caddyfile 补了 header @manifest Content-Type 才通）。
+# 这一条从部署机走公网查，验的是**真·线上响应头**，不是目录里的文件。
+PUBLIC_URL="${PUBLIC_URL:-https://xj.aibbs.chat}"
+echo "==> PWA reachability from the public internet ($PUBLIC_URL)"
+MCT="$(curl -s -o /dev/null -m 20 -w '%{content_type}' "$PUBLIC_URL/m.webmanifest" || true)"
+MST="$(curl -s -o /dev/null -m 20 -w '%{http_code}' "$PUBLIC_URL/m.webmanifest" || true)"
+echo -n "  manifest HTTP $MST, Content-Type '${MCT:-（空）}': "
+if [ "$MST" = "200" ] && printf '%s' "$MCT" | grep -qi json; then
+  echo "OK (安卓 Chromium 会认)"
+else
+  echo "FAIL -- 安卓装不上：Content-Type 必须是 application/manifest+json 或 application/json"
+  echo "       去云端 /etc/caddy/Caddyfile 补：@manifest path /m.webmanifest + header @manifest Content-Type \"application/manifest+json\""
+  echo "       （注意 admin off，reload 必失败，只能 systemctl restart caddy）"
+  FAILED=1
+fi
+ICT="$(curl -s -o /dev/null -m 20 -w '%{http_code}' "$PUBLIC_URL/m-icon-192.png" || true)"
+echo "  icon 192 HTTP $ICT (must be 200 without credentials: 安装弹窗拿不到口令)"
+[ "${FAILED:-0}" = "1" ] && exit 1 || true
+
 echo "==> done. Cloud now serves the same bytes as local dist/."
