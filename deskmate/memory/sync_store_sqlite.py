@@ -186,6 +186,32 @@ SYNC_TABLES: dict[str, dict] = {
             "actioned", "dismissed", "in_progress", "acknowledged", "snoozed", "pending",
         ),
     },
+    # ---- 2026-10-06：LLM 通道熔断表（设计文档 §3.3）----
+    # 为什么必须跨端共享：记忆里「48 条身份分裂」就是两套状态不一致的产物。
+    # 熔断同理——本地熔断了、云端还在撞，是同一类事故的另一种形态。
+    # **两端必须看到同一份「哪条通道此刻不可用」**，否则云端会重演那 28 次同路重试。
+    "llm_circuit_breaker": {
+        "pk": "channel_key",
+        "pk_type": "text",  # channel_key = '<provider>:<model>'，双端算出同一个字符串→同sync_uuid
+        "sync_key": "channel_key",
+        "sync_uuid_kind": "string",
+        "business_cols": (
+            "channel_key",
+            "state",              # closed | open（到期后读路径视作 half_open，允许试一次）
+            "kind",               # quota_exhausted | rate_limited | unavailable | transient
+            "opened_at",
+            "cooldown_until",     # 冷却到期（epoch 秒字符串）：火山可解析精确重置时间
+            "last_error_detail",
+            "strike_count",
+            "source_node",
+            "updated_at",
+        ),
+        "conflict_col": None,
+        # ⚠️ **不设 ordered_status**（与 proactive_ledger 不同，故意的）：
+        # 熔断是「此刻的事实」，不是「只应前进的状态」——冷却到期后必须**能自动恢复**。
+        # 若套用只前进语义，cooldown_until 过期后远端的旧 closed 记录会把它永久钉死。
+        # 正确语义是「两端取更新的那份」，交给 HLC LWW + cooldown_until 读路径判定。
+    },
 }
 
 # ---- 策略①护栏：跨端只同步明文事实、向量各端本地重算 ----
