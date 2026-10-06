@@ -338,7 +338,10 @@ def pending_items(base_dir: Optional[Path] = None) -> list[dict]:
 
 
 def build_handoff_opening(
-    base_dir: Optional[Path] = None, *, session_context: str = ""
+    base_dir: Optional[Path] = None,
+    *,
+    session_context: str = "",
+    contextual: bool = False,
 ) -> Optional[dict]:
     """本地对接：生成开新会话时的对话式开场白（非浮层硬弹）。
 
@@ -363,6 +366,11 @@ def build_handoff_opening(
     - 无上下文（DeskHome 空会话首页）：时效型 + 按 created_at 倒序取剩余日额度
       （轻递，§六「开新会话递」原语义，量被日上限封顶）；
     - 其余攒着，等被「聊到」再递。
+
+    contextual（活跃会话相关性注入，本轮新增＝§11.4② 触发入口）：
+    - 仅当传入 session_context 才有意义；返回集只取 fresh_new（今日尚未递过的相关/时效新条目），
+      剔除 already（今日已递），避免与首页/之前会话追重；零相关 → fresh_new 为空 → 返回 None（静默）。
+    - 调用方：前端 deskmate 活跃会话把最近对话作 session_context 传入，聊到某主题才递对应待办。
     """
     items = pending_items(base_dir)  # pending + snoozed 到期复活（§七 退避后轻递）
     if not items:
@@ -434,8 +442,12 @@ def build_handoff_opening(
                     break  # 老库缺列 → 不记交付标记（fail-open，仍递）
             c.commit()
     chosen = already + fresh_new
+    if contextual:
+        # 活跃会话相关性注入：只递今日尚未递过的相关/时效新条目，不重复呈现 already
+        # （今日已递），避免与首页/之前会话追重；零相关 fresh_new 为空 → 返回 None（静默）。
+        chosen = fresh_new
     if not chosen:
-        return None  # 今日额度用尽：安静攒到次日
+        return None  # 今日额度用尽 / 无相关项：安静攒到次日
     chosen.sort(key=lambda x: x.get("created_at") or "", reverse=True)
     lines = []
     for i, it in enumerate(chosen, 1):

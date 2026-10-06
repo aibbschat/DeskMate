@@ -4128,6 +4128,56 @@ def create_app(manager: SessionManager) -> FastAPI:
             logging.exception("deskmate proactive handoff failed")
             return JSONResponse({"error": "handoff failed"}, status_code=500)
 
+    @app.post("/v1/deskmate/proactive/handoff")
+    async def proactive_handoff_with_context(request: Request) -> dict[str, Any]:
+        """活跃会话相关性注入（§11.4② 相关型档的触发入口，本轮新增）。
+
+        前端在 deskmate 活跃会话里，把最近对话作为 ``session_context`` 传入；
+        ``build_handoff_opening(contextual=True)`` 按 bigram 重叠取最相关 1–2 条
+        （零关联不递，攒着等被聊到），只递今日尚未递过的新条目（不追重首页/之前会话）。
+
+        无 pending / 无相关项 / 今日额度用尽 → 返回 ``{"text": "", "items": []}``
+        （静默降级，绝不阻塞聊天）。
+        """
+        try:
+            try:
+                body = await request.json()
+            except Exception:
+                body = {}
+            session_context = (
+                (body or {}).get("session_context") or ""
+                if isinstance(body, dict)
+                else ""
+            )
+            from pathlib import Path as _P
+
+            from deskmate.proactivity.ledger import build_handoff_opening
+            from deskmate.proactivity.understanding import (
+                maybe_backfill_understanding,
+            )
+
+            desk_dir = _P(
+                os.environ.get("DESKMATE_DIR", os.path.expanduser("~/.deskmate"))
+            )
+            # 取件前先补一次理解（冷却 10min、无 key/失败 fail-open）——与 GET 同口径。
+            try:
+                maybe_backfill_understanding(base_dir=desk_dir)
+            except Exception:
+                logging.debug(
+                    "handoff(ctx) 取件前 understanding 补齐失败（跳过）", exc_info=True
+                )
+            opening = build_handoff_opening(
+                base_dir=desk_dir,
+                session_context=session_context,
+                contextual=True,
+            )
+            if not opening or not opening.get("items"):
+                return {"text": "", "items": []}
+            return opening
+        except Exception:
+            logging.exception("deskmate proactive handoff(ctx) failed")
+            return JSONResponse({"error": "handoff failed"}, status_code=500)
+
     @app.post("/v1/deskmate/proactive/handoff/ack")
     async def ack_deskmate_proactive_handoff(request: Request) -> dict[str, Any]:
         """标记某条主动产出的处理状态（状态只前进不后退）。

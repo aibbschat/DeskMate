@@ -4071,6 +4071,26 @@ export async function ackDeskmateHandoff(
     return false;
   }
 }
+/** 活跃会话相关性注入（§11.4② 触发入口）：把最近对话作为 session_context 传入，
+ * 后端按 bigram 重叠取最相关的主动产出 1–2 条；零关联返回 null（静默，不阻塞聊天）。
+ * 只递今日尚未递过的新条目，不追重首页/之前会话。 */
+export async function getDeskmateHandoffContext(
+  sessionContext: string,
+): Promise<HandoffOpening | null> {
+  try {
+    const res = await authedFetch(`${httpBase()}/v1/deskmate/proactive/handoff`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ session_context: sessionContext }),
+    });
+    if (!res.ok) return null;
+    const data = (await res.json()) as HandoffOpening;
+    if (!data || !data.items || data.items.length === 0) return null;
+    return data;
+  } catch {
+    return null;
+  }
+}
 
 /** 「记住这个」→ 写主动产出台账（source=mobile_voice，修⑧/P1）。
  * 手机 PWA 与桌面 GUI 同走 app.py 的 /v1/deskmate/proactive/capture；true=已落台账。 */

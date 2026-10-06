@@ -154,6 +154,70 @@ def test_handoff_degrades_failed_marker():
     assert "理解加工未完成" in opening["text"]  # 标记转友好文案
 
 
+def test_handoff_contextual_relevant_hit():
+    """本轮（§11.4② 触发入口）：活跃会话传相关 session_context → 命中并递出对应待办。"""
+    base = _fresh_base("mac")
+    rid = record_proactive(
+        base_dir=base, source="cloud_audit", kind="missing_foreshadow",
+        content="康得宝慢性中毒悬了9节未收", evidence="第9-17章", confidence=0.9,
+    )
+    with sqlite3.connect(str(base / "deskmate.db"), check_same_thread=False) as c:
+        c.execute(
+            "UPDATE proactive_ledger SET understanding=? WHERE id=?",
+            ("这条线要收一下，前面伏笔读者会记得。", rid),
+        )
+    # 会话上下文命中「康得宝」关键词 → 相关型档取中、contextual 只递 fresh_new
+    opening = build_handoff_opening(
+        base, session_context="我想接着写康得宝中毒那条线", contextual=True
+    )
+    assert opening is not None
+    ids = [it["id"] for it in opening["items"]]
+    assert rid in ids
+
+
+def test_handoff_contextual_no_relevance_none():
+    """本轮（§11.4②）：会话上下文与待办零关联 → 不递（攒着等被聊到），静默返回 None。"""
+    base = _fresh_base("mac")
+    rid = record_proactive(
+        base_dir=base, source="cloud_audit", kind="missing_foreshadow",
+        content="康得宝慢性中毒悬了9节未收", evidence="第9-17章", confidence=0.9,
+    )
+    with sqlite3.connect(str(base / "deskmate.db"), check_same_thread=False) as c:
+        c.execute(
+            "UPDATE proactive_ledger SET understanding=? WHERE id=?",
+            ("这条线要收一下。", rid),
+        )
+    # 会话在聊完全无关的主题 → 零重叠 → 不递
+    opening = build_handoff_opening(
+        base, session_context="今天天气真好适合出门散步", contextual=True
+    )
+    assert opening is None
+
+
+def test_handoff_contextual_excludes_already_delivered():
+    """本轮（§11.4②）：今日已递过的条目不进 contextual 返回集（不追重首页/之前会话）。"""
+    base = _fresh_base("mac")
+    rid = record_proactive(
+        base_dir=base, source="cloud_audit", kind="missing_foreshadow",
+        content="康得宝慢性中毒悬了9节未收", evidence="第9-17章", confidence=0.9,
+    )
+    with sqlite3.connect(str(base / "deskmate.db"), check_same_thread=False) as c:
+        c.execute(
+            "UPDATE proactive_ledger SET understanding=? WHERE id=?",
+            ("这条线要收一下。", rid),
+        )
+    # 先经一次带上下文的递出 → 打上 delivered_at（今日）
+    first = build_handoff_opening(
+        base, session_context="我想接着写康得宝中毒那条线", contextual=True
+    )
+    assert first is not None and rid in [it["id"] for it in first["items"]]
+    # 再次同类上下文 → 该条已 delivered 今日，contextual 只取 fresh_new → 不重复递
+    second = build_handoff_opening(
+        base, session_context="康得宝这条线怎么收尾", contextual=True
+    )
+    assert second is None
+
+
 def test_backfill_fills_understanding():
     """P1：maybe_backfill_understanding 调 LLM 把空 understanding 填上，handoff 随后能递出。"""
     base = _fresh_base("mac")

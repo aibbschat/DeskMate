@@ -88,6 +88,7 @@ import { PlanCard } from "./components/PlanCard";
 import { WorkspaceTrustPrompt } from "./components/WorkspaceTrustPrompt";
 import { DeskMateOverlay } from "./components/deskmate/DeskMateOverlay";
 import { DeskHome } from "./components/deskmate/DeskHome";
+import { DeskMateProactiveInline } from "./components/deskmate/DeskMateProactiveInline";
 import { GardenProfileCenter } from "./components/garden/GardenProfileCenter";
 import { EXPERTS, getExpert, type Expert } from "./components/deskmate/experts";
 import { ExpertAvatar } from "./components/deskmate/ExpertAvatar";
@@ -1852,6 +1853,12 @@ export function App() {
                   Jump to latest
                 </button>
               </div>
+            )}
+
+            {/* 活跃会话相关性注入（§11.4② 触发入口，本轮新增）：仅 deskmate 且非 idle 时挂载，
+                把最近对话作上下文，聊到某主题才递对应待办（非浮层、轻提示卡片）。 */}
+            {!idle && agent === "deskmate" && (
+              <DeskMateProactiveInline items={items} onPrefill={prefillComposer} />
             )}
 
             <Composer
