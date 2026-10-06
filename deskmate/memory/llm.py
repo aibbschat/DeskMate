@@ -496,31 +496,48 @@ def chat_memory(
         return (resp.choices[0].message.content or "").strip()
 
     def _attempt_group(group: str) -> str:
-        """在该组内逐条试：每条走熔断保护，配额类失败即换下一条。"""
+        """在该组内**逐条试**：每条走熔断保护，配额类失败即换下一条。
+
+        ⚠️ 2026-10-06 修bug：原先撞墙时 `_call_with_breaker` 直接 raise 穿透出去，
+        `while` 只对「无凭证」起作用 ⇒ **组内第二条通道根本没试**（火山限额时
+        小米/hy 明明可用却不被试，直到整个 chat_memory 抛错才降级到另一组）。
+        改为：撞墙（已记账）→ 记一条「换下一条」审计 → continue 试下一条；
+        全组试完才抛。
+        """
         base = _breaker_base_dir()
         tried = 0
+        last_exc: Optional[BaseException] = None
         while True:
             ch, skipped = route(group, base_dir=base)
             for c, why in skipped:
                 _audit_skip(c.key, why)
             if ch is None:
-                raise RuntimeError(f"{group} 组无可用通道（全部熔断或未配置）")
+                raise RuntimeError(
+                    f"{group} 组无可用通道（全部熔断或未配置）"
+                ) from last_exc
             tried += 1
             if tried > 8:
                 # 防御：候选表里全是「无凭证且无法跳过」的组合时退出，别死循环。
-                raise RuntimeError(f"{group} 组候选均无法调用（试了 {tried} 条）")
-            if ch.provider == "opencode":
-                # 免费组必须经 opencode_provider 的伪装协议（CLI 头 + 门面工具 + 仅流式），
-                # 直连 OpenAI() 会403 FreeTierError（2026-10-06 实测，见设计 §四）。
-                return _call_with_breaker(
-                    ch.provider, ch.model,
-                    lambda m=ch.model: _opencode_complete(
-                        m, system, user, temperature, max_tokens, timeout),
-                )
-            ak, bu, md = _creds_for(ch.provider, ch.model)
-            if not ak:
-                continue
-            return _call_with_breaker(ch.provider, ch.model, lambda: _do(ak, bu, md))
+                raise RuntimeError(
+                    f"{group} 组候选均无法调用（试了 {tried} 条）"
+                ) from last_exc
+            try:
+                if ch.provider == "opencode":
+                    # 免费组必须经 opencode_provider 的伪装协议（CLI 头 + 门面工具 +
+                    # 仅流式），直连 OpenAI() 会 403 FreeTierError（设计 §四）。
+                    return _call_with_breaker(
+                        ch.provider, ch.model,
+                        lambda m=ch.model: _opencode_complete(
+                            m, system, user, temperature, max_tokens, timeout),
+                    )
+                ak, bu, md = _creds_for(ch.provider, ch.model)
+                if not ak:
+                    continue
+                return _call_with_breaker(ch.provider, ch.model, lambda: _do(ak, bu, md))
+            except Exception as exc:  # noqa: BLE001
+                # 已由 _call_with_breaker 记好熔断；这里换组内下一条。
+                last_exc = exc
+                _audit_skip(ch.key, f"失败，换下一条：{type(exc).__name__}")
 
     group = memory_group()
     try:

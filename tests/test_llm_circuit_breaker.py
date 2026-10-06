@@ -385,3 +385,62 @@ def test_llm_channel_endpoints(tmp_path, monkeypatch):
     r3 = c.get("/v1/llm-channels/audit?limit=5")
     assert r3.status_code == 200
     assert isinstance(r3.json()["rows"], list)
+
+
+# --------------------------------------------------------------------------- #
+# 组内自动轮替（2026-10-06 修 bug 后锁定）
+# --------------------------------------------------------------------------- #
+
+def test_attempt_group_walks_to_next_channel_on_failure(tmp_path, monkeypatch):
+    """组内第一条撞墙后必须**试下一条**，而不是直接抛出去。
+
+    ⚠️ 这条锁一个真 bug：原实现里 `_call_with_breaker` 失败直接 raise 穿透，
+    `while` 只对「无凭证」生效 ⇒ 火山限额时，小米/hy 明明可用却不被试，
+    直到整个 chat_memory 抛错才降级到另一组。**组内轮替等于没实现。**
+    """
+    import deskmate.memory.llm as L
+
+    monkeypatch.setenv("DESKMATE_DIR", str(tmp_path))
+    order: list[str] = []
+
+    class _Ch:
+        def __init__(self, provider, model):
+            self.provider, self.model = provider, model
+            self.key = f"{provider}:{model}"
+            self.free = False
+
+    chs = [_Ch("ark", "m1"), _Ch("xiaomi", "m2"), _Ch("tencent", "m3")]
+
+    def _route(group, *, base_dir=None):
+        for c in chs:
+            order.append(c.key)
+            return c, []          # 每次都返回「下一条」未熔断的
+        return None, []
+
+    def _creds(provider, model):
+        return "AK", f"https://{provider}", model
+
+    def _do(ak, bu, md):
+        if md == "m1":
+            raise RuntimeError("AccountQuotaExceeded ... quota")
+        return f"ok-from-{md}"
+
+    monkeypatch.setattr(L, "_creds_for", _creds, raising=False)
+    # 简化：直接测 _attempt_group 的核心——通过 chat_memory 不好构造，
+    # 故改为断言 route 被反复调用（说明 while 真的在迭代）
+    calls = {"n": 0}
+
+    def _route_counting(group, *, base_dir=None):
+        calls["n"] += 1
+        if calls["n"] > 3:
+            return None, []
+        return _route(group, base_dir=base_dir)
+
+    monkeypatch.setattr("deskmate.llm_channels.route", _route_counting)
+    monkeypatch.setenv("DESKMATE_MEMORY_GROUP", "paid")
+    monkeypatch.setattr(L, "_creds_for", _creds, raising=False)
+
+    # 全部通道都失败 ⇒ 最终抛错，但**应尝试过 3 次**（而不是 1 次就退）
+    with pytest.raises(Exception):
+        L.chat_memory("s", "u", timeout=1)
+    assert calls["n"] >= 3, f"组内应逐条试，实际只试了 {calls['n']} 次"
