@@ -405,6 +405,45 @@ export const SKIN_REGISTRY: readonly SkinMeta[] = [
     },
     preview: ["#FEF3C7", "#B45309", "#92400E", "#78350F"],
   },
+  {
+    id: "author-bookshelf",
+    name: "作者书房",
+    desc: "作者专属书房主题，暖木书架陈列着萧盛老师出版的全部著作（真实书封），暖光台灯与绿萝点缀，书香满怀。",
+    tag: "专属",
+    version: "1.0.0",
+    brand: {
+      accent: "#B0762F",          // 书卷暖棕主品牌
+      accentSoft: "#F5E7CE",      // 米金浅底
+      accentDark: "#D8A74E",      // dark 模式提亮
+      accentSoftDark: "#3A2A14",  // dark 模式深棕底
+    },
+    decor: {
+      cream: "#FBF6EC",
+      warm: "#C4882E",
+      glow: "rgba(176, 118, 47, 0.30)",
+      shadow: "rgba(176, 118, 47, 0.12)",
+    },
+    // 暖木书房表面：书卷气暖纸感，对比度已核（ink/muted on paper 均 ≥ 4.5:1）
+    surface: {
+      paper: "#FBF6EC",
+      panel: "#FFFDF7",
+      line: "#EDE2CE",
+      ink: "#3B3226",
+      muted: "#7A6B56",
+      solid: "#F3E9D7",
+      onSolid: "#3B3226",
+      glass: "rgba(255, 253, 247, 0.92)",
+      paperDark: "#1A150F",
+      panelDark: "#241D15",
+      lineDark: "#352A1C",
+      inkDark: "#F0E6D3",
+      mutedDark: "#AFA08A",
+      solidDark: "#352A1C",
+      onSolidDark: "#F0E6D3",
+      glassDark: "rgba(36, 29, 21, 0.92)",
+    },
+    preview: ["#F5E7CE", "#D8A74E", "#B0762F", "#6E441A"],
+  },
 ] as const;
 
 /** 默认皮肤 id。 */

@@ -483,6 +483,58 @@ html[data-theme="dark"][data-skin-pre="coffee-time"] body {
   background: transparent !important;
 }
 /* ===== /咖啡时光 ====================================================== */
+
+/* ===== 作者书房皮肤 =================================================== */
+:root[data-skin-pre="author-bookshelf"] {
+  --accent: #B0762F;
+  --accent-soft: #F5E7CE;
+  --skin-cream: #FBF6EC;
+  --skin-warm: #C4882E;
+  --skin-glow: rgba(176, 118, 47, 0.30);
+  --skin-shadow: rgba(176, 118, 47, 0.12);
+}
+:root[data-theme="light"][data-skin-pre="author-bookshelf"] {
+  --paper: #FBF6EC;
+  --panel: #FFFDF7;
+  --line: #EDE2CE;
+  --line-strong: #E0CEA8;
+  --ink: #3B3226;
+  --muted: #7A6B56;
+  --faint: #A08A62;
+  --solid: #F3E9D7;
+  --on-solid: #3B3226;
+  --glass: rgba(255, 253, 247, 0.92);
+  --glass-strong: rgba(255, 253, 247, 0.97);
+  --glass-soft: rgba(255, 253, 247, 0.80);
+}
+html[data-theme="dark"][data-skin-pre="author-bookshelf"] {
+  --accent: #D8A74E;
+  --accent-soft: #3A2A14;
+  --paper: #1A150F;
+  --panel: #241D15;
+  --line: #352A1C;
+  --line-strong: #4A3A22;
+  --ink: #F0E6D3;
+  --muted: #AFA08A;
+  --faint: #8A7758;
+  --solid: #352A1C;
+  --on-solid: #F0E6D3;
+  --glass: rgba(36, 29, 21, 0.92);
+  --glass-strong: rgba(36, 29, 21, 0.97);
+  --glass-soft: rgba(36, 29, 21, 0.80);
+}
+/* 作者书房背景：全窗口真实书封书架图（亮色），暗色用纯色保证文字清晰 */
+:root[data-skin-pre="author-bookshelf"] body {
+  background: url("./assets/skins/author-bookshelf/hero.png") bottom center / cover no-repeat fixed !important;
+}
+/* 暗色模式：纯色背景，避免浅色图 + 浅色字看不清 */
+html[data-theme="dark"][data-skin-pre="author-bookshelf"] body {
+  background: #1A150F !important;
+}
+:root[data-skin-pre="author-bookshelf"] .main {
+  background: transparent !important;
+}
+/* ===== /作者书房 ====================================================== */
 /* ===== /皮肤 ======================================================== */
 
 * { box-sizing: border-box; }
