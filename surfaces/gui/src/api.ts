@@ -3228,7 +3228,73 @@ export async function getDeskmateAgencyStatus(): Promise<AgencyStatus | null> {
   }
 }
 
-/** 开/关 L2 自主层总开关（写 l2_settings.json）。 */
+// -- LLM 通道组（2026-10-06，设计 §二）----------------------------------
+// 两个总开关：付费组（火山→小米→hy Token Plan）/ 免费组（opencode 免费模型）。
+// 组内自动切+ 手动切组；这份状态跨端共享（熔断表进 SYNC_TABLES）。
+
+export interface LlmChannelGroup {
+  total: number;
+  available: string[];
+  open: string[];
+}
+export interface LlmChannelsStatus {
+  paid: LlmChannelGroup;
+  free: LlmChannelGroup;
+  memory_group: "paid" | "free";
+}
+export interface LlmChannelAuditRow {
+  ts: string;
+  event: string;
+  channel: string;
+  kind: string;
+  detail: string;
+  until: string;
+}
+
+/** 两组状态：各有哪些候选、哪些在熔断、后台任务用哪组。 */
+export async function getLlmChannels(): Promise<LlmChannelsStatus | null> {
+  try {
+    const res = await authedFetch(`${httpBase()}/v1/llm-channels`);
+    if (!res.ok) return null;
+    return (await res.json()) as LlmChannelsStatus;
+  } catch {
+    return null;
+  }
+}
+
+/** 手动切后台任务（记忆抽取/理解加工）走哪组：paid | free。 */
+export async function setLlmMemoryGroup(
+  group: "paid" | "free",
+): Promise<boolean> {
+  try {
+    const res = await authedFetch(`${httpBase()}/v1/llm-channels/memory-group`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ group }),
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+/** 最近的通道审计（本地簿记、不同步）——「为什么换了通道」一眼可见。 */
+export async function getLlmChannelAudit(
+  limit = 20,
+): Promise<LlmChannelAuditRow[] | null> {
+  try {
+    const res = await authedFetch(
+      `${httpBase()}/v1/llm-channels/audit?limit=${limit}`,
+    );
+    if (!res.ok) return null;
+    const data = (await res.json()) as { rows?: LlmChannelAuditRow[] };
+    return data.rows ?? [];
+  } catch {
+    return null;
+  }
+}
+
+/** 开/ 关 L2 自主层总开关（写 l2_settings.json）。 */
 export async function setDeskmateAgencyEnabled(enabled: boolean): Promise<boolean> {
   try {
     const res = await authedFetch(`${httpBase()}/v1/deskmate/agency/enabled`, {

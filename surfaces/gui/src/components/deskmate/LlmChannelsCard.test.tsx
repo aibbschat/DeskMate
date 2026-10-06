@@ -1,0 +1,104 @@
+// LLM 通道组卡片（2026-10-06，设计 §二）：两个总开关 + 熔断可见 + 切换审计。
+//
+// 关注三件事：① 手动切组真的调后端并改本地状态；② 限额中的通道列出来（让
+// 「为什么在换模型」可见）；③ 后端不可用时静默隐藏（不破坏设置页其余部分）。
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+
+vi.mock("../../api", () => ({
+  getLlmChannels: vi.fn(),
+  setLlmMemoryGroup: vi.fn(async () => true),
+  getLlmChannelAudit: vi.fn(async () => []),
+}));
+
+import { getLlmChannels, getLlmChannelAudit, setLlmMemoryGroup } from "../../api";
+import { LlmChannelsCard } from "./LlmChannelsCard";
+
+afterEach(() => {
+  cleanup();
+  vi.clearAllMocks();
+});
+
+const STATUS = {
+  paid: {
+    total: 3,
+    available: ["ark-agent-plan-cn:deepseek-v4-flash", "xiaomi:mimo-v2.5-pro"],
+    open: ["tencent-tokenplan:hy3"],
+  },
+  free: {
+    total: 13,
+    available: ["opencode:space-bunny-free"],
+    open: ["opencode:jev-1.13-free"],
+  },
+  memory_group: "free" as const,
+};
+
+describe("LlmChannelsCard", () => {
+  it("渲染两个总开关并标出当前组", async () => {
+    vi.mocked(getLlmChannels).mockResolvedValue(STATUS);
+    render(<LlmChannelsCard />);
+
+    const free = await screen.findByTestId("llm-group-free");
+    const paid = screen.getByTestId("llm-group-paid");
+    expect(free.getAttribute("aria-pressed")).toBe("true");
+    expect(paid.getAttribute("aria-pressed")).toBe("false");
+    // 两组的候选数都露出来（3 条付费 / 13 条免费）——用 within 限定到各自按钮，
+    // 否则 getByText 会因两处都含"条候选"而报multiple matches。
+    expect(within(paid).getByText(/3 条候选/)).toBeTruthy();
+    expect(within(free).getByText(/13 条候选/)).toBeTruthy();
+    // 限额提示也按组各自显示
+    expect(within(paid).getByText(/1 条限额中/)).toBeTruthy();
+  });
+
+  it("点另一个组 → 调后端并切高亮", async () => {
+    vi.mocked(getLlmChannels).mockResolvedValue(STATUS);
+    render(<LlmChannelsCard />);
+
+    const paid = await screen.findByTestId("llm-group-paid");
+    fireEvent.click(paid);
+
+    expect(setLlmMemoryGroup).toHaveBeenCalledWith("paid");
+    await vi.waitFor(() =>
+      expect(screen.getByTestId("llm-group-paid").getAttribute("aria-pressed")).toBe(
+        "true",
+      ),
+    );
+    expect(screen.getByTestId("llm-group-free").getAttribute("aria-pressed")).toBe(
+      "false",
+    );
+  });
+
+  it("列出限额中的通道（付费+ 免费合并）", async () => {
+    vi.mocked(getLlmChannels).mockResolvedValue(STATUS);
+    render(<LlmChannelsCard />);
+
+    const list = await screen.findByTestId("llm-open-list");
+    // hy3 与 jev-1.13 都该在列
+    expect(list.textContent).toContain("tencent-tokenplan:hy3");
+    expect(list.textContent).toContain("opencode:jev-1.13-free");
+  });
+
+  it("有审计时展示最近的通道切换", async () => {
+    vi.mocked(getLlmChannels).mockResolvedValue(STATUS);
+    vi.mocked(getLlmChannelAudit).mockResolvedValue([
+      {
+        ts: "2026-10-06T21:35:12",
+        event: "open",
+        channel: "opencode:jev-1.13-free",
+        kind: "transient",
+        detail: "upstream 500",
+        until: "",
+      },
+    ]);
+    render(<LlmChannelsCard />);
+    const list = await screen.findByTestId("llm-audit-list");
+    expect(list.textContent).toContain("限额");
+    expect(list.textContent).toContain("jev-1.13-free");
+  });
+
+  it("后端拿不到状态时静默隐藏（不破坏设置页）", async () => {
+    vi.mocked(getLlmChannels).mockResolvedValue(null);
+    const { container } = render(<LlmChannelsCard />);
+    expect(container.querySelector("[data-testid=llm-channels-card]")).toBeNull();
+  });
+});

@@ -53,6 +53,7 @@ import {
 import { useThemePref } from "../theme";
 import { Icon } from "./Icon";
 import { SkinPicker } from "./deskmate/skins/SkinPicker";
+import { LlmChannelsCard } from "./deskmate/LlmChannelsCard";
 import { PanelHead } from "./IntegrationsView";
 import { ModelsTab } from "./ManageTabs";
 import { GalleryModal } from "./GalleryModal";
@@ -139,6 +140,7 @@ export function SettingsView({
               <div className="mt-6">
                 <TokenSavingsCard />
                 <CompactionCard />
+                <LlmChannelsCard />
                 <WillModulationCard />
                 <AgencyCard />
               </div>
