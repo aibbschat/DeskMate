@@ -212,3 +212,125 @@ def test_audit_written_locally(base):
     assert len(lines) >= 2
     assert '"event": "open"' in lines[0]
     assert '"event": "close"' in lines[1]
+
+
+# --------------------------------------------------------------------------- #
+# 瞬时类递增退避（2026-10-06 实施时发现）
+# --------------------------------------------------------------------------- #
+
+def test_transient_cooldown_grows_with_strikes(base):
+    """同一通道反复 5xx → 冷却递增（60→120→240…封顶 30min），而非每次都只熔 60s。
+
+    否则一个持续故障的通道会在每次 tick 里被反复试一遍——那是「撞墙不收手」的
+    另一种形态（换个位置复发）。
+    """
+    from deskmate.llm_circuit_breaker import TRANSIENT_COOLDOWN_S, TRANSIENT_MAX_COOLDOWN_S
+
+    v1 = classify_error(status_code=500, body="", now=time.time())
+    record_failure("ark:flaky", v1, base_dir=base)
+    with sqlite3.connect(str(base / "deskmate.db")) as c:
+        u1 = float(c.execute(
+            f"SELECT cooldown_until FROM {TABLE} WHERE channel_key='ark:flaky'").fetchone()[0])
+
+    time.sleep(0.05)
+    record_failure("ark:flaky", v1, base_dir=base)
+    with sqlite3.connect(str(base / "deskmate.db")) as c:
+        u2 = float(c.execute(
+            f"SELECT cooldown_until FROM {TABLE} WHERE channel_key='ark:flaky'").fetchone()[0])
+
+    assert u2 > u1, f"第二次失败冷却应更长：{u1} → {u2}"
+    # 封顶不超过 30min
+    assert (u2 - time.time()) <= TRANSIENT_MAX_COOLDOWN_S + 5
+
+
+def test_quota_cooldown_not_grown_by_strikes(base):
+    """配额类冷却**不**递增（它由错误体决定，本就可能很长，别被 strikes 放大）。"""
+    v = classify_error(status_code=429, body=VOLC_QUOTA)
+    now0 = time.time()
+    record_failure("ark:q", v, base_dir=base)
+    with sqlite3.connect(str(base / "deskmate.db")) as c:
+        u1 = float(c.execute(
+            f"SELECT cooldown_until FROM {TABLE} WHERE channel_key='ark:q'").fetchone()[0])
+    time.sleep(0.05)
+    record_failure("ark:q", v, base_dir=base)
+    with sqlite3.connect(str(base / "deskmate.db")) as c:
+        u2 = float(c.execute(
+            f"SELECT cooldown_until FROM {TABLE} WHERE channel_key='ark:q'").fetchone()[0])
+    # 两次都解析到同一个重置点（23:59:59），不因 strikes 变化
+    assert abs(u1 - u2) < 1.0
+
+
+# --------------------------------------------------------------------------- #
+# 通道组（设计 §二）
+# --------------------------------------------------------------------------- #
+
+def test_paid_group_excludes_qwen_and_keeps_hy_tokenplan():
+    """付费组 = 火山→小米→**hy Token Plan**；qwen 明确不进链（萧哥 21:00）。"""
+    from deskmate.llm_channels import PAID_GROUP, paid_channels
+
+    keys = [f"{p}:{m}" for p, m in PAID_GROUP]
+    assert keys == [
+        "ark-agent-plan-cn:deepseek-v4-flash",
+        "xiaomi:mimo-v2.5-pro",
+        "tencent-tokenplan:hy3",
+    ], f"付费组顺序/成员变了：{keys}"
+    assert not any("qwen" in k for k in keys), "qwen 不该在付费组里"
+    # 已配凭证的才进候选
+    got = [c.key for c in paid_channels()]
+    assert "tencent-tokenplan:hy3" in got or not _has_creds("tencent-tokenplan")
+
+
+def _has_creds(provider: str) -> bool:
+    from deskmate.llm_channels import _has_credentials
+
+    return _has_credentials(provider)
+
+
+def test_free_group_sorts_non_reasoning_first():
+    """免费组**非推理优先**（后台批量活要速度；推理模型实测 14.3s）。"""
+    from deskmate.llm_channels import free_channels
+
+    try:
+        from coworker.providers.zen_catalog import is_reasoning
+    except Exception:
+        pytest.skip("zen_catalog 不可用")
+    chs = free_channels()
+    if len(chs) < 2:
+        pytest.skip("远端清单不足 2 个")
+    flags = [is_reasoning(c.model) for c in chs]
+    # False 段必须全部在 True 段之前
+    assert flags == sorted(flags), f"非推理未排在前：{flags}"
+
+
+def test_route_skips_open_channels(base, monkeypatch):
+    """route 跳过熔断中的通道，返回第一条可试的。"""
+    from deskmate import llm_channels as CH
+
+    monkeypatch.setenv("DESKMATE_DIR", str(base))
+    monkeypatch.setattr(CH, "paid_channels", lambda: [
+        CH.Channel("ark", "m1"), CH.Channel("ark", "m2"),
+    ])
+    record_failure("ark:m1", classify_error(status_code=429, body="quota exhausted"),
+                   base_dir=base)
+    ch, skipped = CH.route(CH.GROUP_PAID, base_dir=base)
+    assert ch is not None and ch.key == "ark:m2", "应跳过 m1 选 m2"
+    assert [c.key for c, _ in skipped] == ["ark:m1"]
+
+
+def test_route_returns_none_when_all_open(base, monkeypatch):
+    """全组熔断 → chosen=None（调用方据此降级，不是静默失败）。"""
+    from deskmate import llm_channels as CH
+
+    monkeypatch.setenv("DESKMATE_DIR", str(base))
+    monkeypatch.setattr(CH, "paid_channels", lambda: [CH.Channel("ark", "m1")])
+    record_failure("ark:m1", classify_error(status_code=429, body="quota exhausted"),
+                   base_dir=base)
+    ch, skipped = CH.route(CH.GROUP_PAID, base_dir=base)
+    assert ch is None and len(skipped) == 1
+
+
+def test_memory_group_defaults_to_free():
+    """后台任务默认走**免费组**（萧哥 21:24 拍板「记忆抽取走免费」）。"""
+    from deskmate.llm_channels import GROUP_FREE, memory_group
+
+    assert memory_group() == GROUP_FREE

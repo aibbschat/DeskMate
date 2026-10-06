@@ -146,6 +146,115 @@ def _llm_http_client() -> "httpx.Client":
     return httpx.Client(trust_env=not _proxy_is_loopback())
 
 
+# --------------------------------------------------------------------------- #
+# 通道组 + 熔断（2026-10-06，设计文档 §二/§3）
+# --------------------------------------------------------------------------- #
+# 为什么加这一层：2026-10-06 实测，日志里AccountQuotaExceeded 出现 28 次，
+# 全是同一个任务在重试打同一条已死的火山路、零次切换 ⇒「撞墙不收手」。
+# 修法是**先熔断记账、再按组内自动排换通道**，而不是继续重试同一条死路。
+#
+# 两个总开关（萧哥 21:04 拍板）：付费组 = 火山→小米→hy3（qwen 不进链）；
+# 免费组 = opencode 远端清单驱动。后台任务默认走免费组（萧哥 21:24 拍板）。
+_DESKMATE_DIR_ENV = "DESKMATE_DIR"
+
+
+def _breaker_base_dir():
+    """熔断表基目录：与本模块其余部分一致（DESKMATE_DIR 调用时解析）。"""
+    import os as _os
+    from pathlib import Path as _P
+
+    v = _os.environ.get(_DESKMATE_DIR_ENV, "").strip()
+    if v:
+        return _P(v).expanduser()
+    try:
+        from deskmate.paths import deskmate_base_dir
+
+        return _P(deskmate_base_dir())
+    except Exception:
+        return _P.home() / ".deskmate"
+
+
+def _status_of(exc: BaseException) -> Optional[int]:
+    """从异常里取 HTTP 状态码（各 SDK 包装方式不同，尽力而为）。"""
+    for attr in ("status_code", "http_status", "code"):
+        v = getattr(exc, attr, None)
+        if isinstance(v, int) and 100 <= v < 600:
+            return v
+    resp = getattr(exc, "response", None)
+    v = getattr(resp, "status_code", None)
+    return v if isinstance(v, int) else None
+
+
+def _retry_after_of(exc: BaseException) -> Optional[str]:
+    """从异常里取 ``retry-after``（opencode 的额度窗口靠它，§1.5 实测 40332s）。"""
+    resp = getattr(exc, "response", None)
+    headers = getattr(resp, "headers", None)
+    if headers is None:
+        return None
+    for getter in ("get",):
+        fn = getattr(headers, getter, None)
+        if callable(fn):
+            try:
+                v = fn("retry-after")
+                if v:
+                    return str(v)
+            except Exception:  # noqa: BLE001
+                pass
+    return None
+
+
+def _call_with_breaker(provider: str, model: str, fn) -> str:
+    """在通道上执行 ``fn()``，撞墙则熔断记账并按 ``retryable`` 决定是否重试一次。
+
+    ``fn`` 是零参可调用，返回文本；抛异常即视为失败。
+
+    铁律（设计 §3.2）：**配额类错误禁止原地重试** —— 记熔断 + 立刻上抛，
+    由上层的组内路由换通道。仅瞬时类（5xx/网络抖动）允许重试**一次**。
+    """
+    from deskmate.llm_circuit_breaker import classify_error, is_open, record_failure, record_success
+
+    key = f"{provider}:{model}"
+    base = _breaker_base_dir()
+
+    # 熔断中：不在同一条死路上再撞一次（§1.3 的教训）。上抛让上层换通道。
+    if is_open(key, base_dir=base):
+        from deskmate.llm_circuit_breaker import audit
+
+        audit(
+            event="skip",
+            channel=key,
+            detail="熔断中，跳过（不重试同一条死路）",
+            base_dir=base,
+        )
+        raise RuntimeError(f"通道 {key} 熔断中，跳过")
+
+    try:
+        out = fn()
+    except Exception as exc:  # noqa: BLE001
+        verdict = classify_error(
+            status_code=_status_of(exc),
+            body=f"{type(exc).__name__}: {exc}",
+            retry_after=_retry_after_of(exc),
+        )
+        record_failure(key, verdict, base_dir=base)
+        if not verdict.retryable:
+            raise  # 配额类：立刻上抛换通道，绝不原地重试
+        # 瞬时类：重试**一次**（不是无限）
+        try:
+            out = fn()
+        except Exception as exc2:  # noqa: BLE001
+            v2 = classify_error(
+                status_code=_status_of(exc2),
+                body=f"{type(exc2).__name__}: {exc2}",
+                retry_after=_retry_after_of(exc2),
+            )
+            record_failure(key, v2, base_dir=base)
+            raise
+    record_success(key, base_dir=base)
+    return out
+
+
+
 def chat(
     system: str,
     user: str,
@@ -158,21 +267,64 @@ def chat(
 
     仅在 llm_available() 为 True 时调用；否则请调用方先判断并跳过。
     timeout 默认 300s（5 分钟），避免网络/API 无响应时无限等待。
+
+    **走熔断（2026-10-06）**：主对话链路经 :func:`_call_with_breaker` —— 配额类错误
+    记熔断后**立刻上抛**（不原地重试），由上层换通道/提示重试。
+    熔断表跨端共享，故本地熔断时云端也会跳过同一条通道。
+    注意：本函数**不做组内自动轮替**（主对话对质量/延迟敏感，换模型应由引擎层决策），
+    只负责「别在同一条死路上反复撞」。
     """
     from openai import OpenAI
 
-    client = OpenAI(api_key=_api_key(), base_url=_base_url(), timeout=timeout,
-                   http_client=_llm_http_client())
-    resp = client.chat.completions.create(
-        model=_model(),
-        temperature=temperature,
-        max_tokens=max_tokens,
-        messages=[
-            {"role": "system", "content": system},
-            {"role": "user", "content": user},
-        ],
-    )
-    return (resp.choices[0].message.content or "").strip()
+    provider, model = _active_provider_and_model()
+
+    def _do() -> str:
+        client = OpenAI(api_key=_api_key(), base_url=_base_url(), timeout=timeout,
+                        http_client=_llm_http_client())
+        resp = client.chat.completions.create(
+            model=model,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+        )
+        return (resp.choices[0].message.content or "").strip()
+
+    return _call_with_breaker(provider, model, _do)
+
+
+def _active_provider_and_model() -> tuple:
+    """当前主对话的 ``(provider, model)``（用作熔断表的键）。
+
+    与 :func:`_resolve_provider` **同源同逻辑**（provider 名取自 ``prefs.json`` 的
+    ``default_model`` 前缀，且该前缀须是已注册 provider，否则不成立）。
+    刻意不重构 :func:`_resolve_provider` —— 它是记忆抽取的既有路径，
+    改动风险大于收益（红线：改语义须同步更新旧断言，且此处只需键，不必重排解析）。
+    """
+    default_model = ""
+    try:
+        prefs_path = _state_dir() / "prefs.json"
+        if prefs_path.is_file():
+            try:
+                default_model = json.loads(
+                    prefs_path.read_text(encoding="utf-8")
+                ).get("default_model", "")
+            except (OSError, ValueError):
+                default_model = ""
+    except Exception:  # noqa: BLE001
+        default_model = ""
+    if ":" in default_model:
+        prefix, rest = default_model.split(":", 1)
+        try:
+            from coworker.providers.registry import get_descriptor
+
+            if get_descriptor(prefix) is not None:
+                return prefix, rest
+        except Exception:  # noqa: BLE001
+            pass
+    return "default", (default_model or "unknown")
 
 
 async def chat_stream(
@@ -302,22 +454,142 @@ def chat_memory(
     max_tokens: int = 800,
     timeout: float = 300.0,
 ) -> str:
-    """记忆抽取专用 chat：默认走付费主对话 provider（保中文一字不差）。
+    """记忆抽取专用 chat：走**通道组**（2026-10-06，设计 §二）。
 
-    与 ``chat()`` 同签名（少流式），调用方用于后台自动沉淀记忆。
-    仅当显式设 ``DESKMATE_MEMORY_PROVIDER=omniroute`` 时走本机免费网关；
-    免费网关异常时自动降级回付费主模型重试一次，保证记忆不丢（宁可走付费也不静默失败）。
+    **默认走免费组**（萧哥 21:24 拍板「记忆抽取走免费」）：opencode 远端清单驱动
+    （13 个候选，非推理优先），中文已确认可用。省付费额度，也让后台活不再挤占主通道。
+
+    行为：
+    - 组内自动排：按 :func:`deskmate.llm_channels.route` 取下一条**非熔断**通道，每条经
+      :func:`_call_with_breaker` —— 撞墙即熔断记账，配额类**不原地重试**、上抛换下一条
+      （§1.3 的 28 次同路重试就是没这一层）。
+    - 本组全熔断 → **降级回付费组**（宁可走付费也不静默丢记忆，沿用原设计意图）。
+    - ``DESKMATE_MEMORY_GROUP=paid|free`` 切组（手动档）；旧 opt-in
+      ``DESKMATE_MEMORY_PROVIDER=omniroute`` 仍生效（历史行为不变）。
+
+    与 :func:`chat` 的分工：``chat`` 是**主对话**链路（她对你说的话），走付费主 provider
+    不变——付费通道对延迟/质量敏感；后台活才走免费。
+    """
+    # 历史 opt-in：OmniRoute 免费网关（本机当前未运行，保留兼容）
+    if _memory_use_omniroute(reasoning):
+        return _chat_memory_via_omniroute(
+            system, user, reasoning=reasoning,
+            temperature=temperature, max_tokens=max_tokens, timeout=timeout,
+        )
+
+    from deskmate.llm_channels import GROUP_PAID, memory_group, route
+
+    def _do(ak: str, bu: str, md: str) -> str:
+        from openai import OpenAI
+
+        client = OpenAI(api_key=ak, base_url=bu, timeout=timeout,
+                        http_client=_llm_http_client())
+        resp = client.chat.completions.create(
+            model=md,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+        )
+        return (resp.choices[0].message.content or "").strip()
+
+    def _attempt_group(group: str) -> str:
+        """在该组内逐条试：每条走熔断保护，配额类失败即换下一条。"""
+        base = _breaker_base_dir()
+        tried = 0
+        while True:
+            ch, skipped = route(group, base_dir=base)
+            for c, why in skipped:
+                _audit_skip(c.key, why)
+            if ch is None:
+                raise RuntimeError(f"{group} 组无可用通道（全部熔断或未配置）")
+            tried += 1
+            if tried > 8:
+                # 防御：候选表里全是「无凭证且无法跳过」的组合时退出，别死循环。
+                raise RuntimeError(f"{group} 组候选均无法调用（试了 {tried} 条）")
+            if ch.provider == "opencode":
+                # 免费组必须经 opencode_provider 的伪装协议（CLI 头 + 门面工具 + 仅流式），
+                # 直连 OpenAI() 会403 FreeTierError（2026-10-06 实测，见设计 §四）。
+                return _call_with_breaker(
+                    ch.provider, ch.model,
+                    lambda m=ch.model: _opencode_complete(
+                        m, system, user, temperature, max_tokens, timeout),
+                )
+            ak, bu, md = _creds_for(ch.provider, ch.model)
+            if not ak:
+                continue
+            return _call_with_breaker(ch.provider, ch.model, lambda: _do(ak, bu, md))
+
+    group = memory_group()
+    try:
+        return _attempt_group(group)
+    except Exception as primary_exc:
+        # 免费组全趴 → 降级回付费组（宁可走付费也不丢记忆）。
+        # 已在付费组时直接上抛（别在同一条死路上循环）。
+        if group == GROUP_PAID:
+            raise
+        from deskmate.llm_circuit_breaker import audit
+
+        audit(
+            event="group_fallback",
+            channel=group,
+            detail=f"整组不可用，降级回付费组：{type(primary_exc).__name__}",
+            base_dir=_breaker_base_dir(),
+        )
+        return _attempt_group(GROUP_PAID)
+
+
+def _audit_skip(channel_key: str, why: str) -> None:
+    """组内跳过某条通道时留一行审计（§1.3：让跳过原因可见）。"""
+    try:
+        from deskmate.llm_circuit_breaker import audit
+
+        audit(event="skip", channel=channel_key, detail=why,
+              base_dir=_breaker_base_dir())
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _creds_for(provider: str, model: str) -> tuple:
+    """取某条**付费**通道的 ``(api_key, base_url, model)``；无凭证返回空。
+
+    免费组（``provider == "opencode"``）不走这里——它必须经
+    :func:`_opencode_complete`（伪装协议，直连会403），见调用方分派。
+    """
+    try:
+        from coworker.secrets import SecretStore
+
+        prof = SecretStore().get(f"provider:{provider}")
+    except Exception:  # noqa: BLE001
+        prof = None
+    if not isinstance(prof, dict):
+        return "", "", model
+    return prof.get("api_key", ""), prof.get("base_url", ""), model
+
+
+def _chat_memory_via_omniroute(
+    system: str,
+    user: str,
+    *,
+    reasoning: bool,
+    temperature: float,
+    max_tokens: int,
+    timeout: float,
+) -> str:
+    """历史 opt-in 路径：OmniRoute 免费网关（``DESKMATE_MEMORY_PROVIDER=omniroute``）。
+
+    保留原行为：OmniRoute 异常时降级回主对话 provider 重试一次，保证记忆不丢。
     """
     ak, bu, md = _resolve_memory_provider(reasoning=reasoning)
     from openai import OpenAI
 
-    def _do(api_key: str, base_url: str, model: str) -> str:
-        client = OpenAI(api_key=api_key, base_url=base_url, timeout=timeout,
+    def _do(a: str, b: str, m: str) -> str:
+        client = OpenAI(api_key=a, base_url=b, timeout=timeout,
                         http_client=_llm_http_client())
         resp = client.chat.completions.create(
-            model=model,
-            temperature=temperature,
-            max_tokens=max_tokens,
+            model=m, temperature=temperature, max_tokens=max_tokens,
             messages=[
                 {"role": "system", "content": system},
                 {"role": "user", "content": user},
@@ -328,12 +600,59 @@ def chat_memory(
     try:
         return _do(ak, bu, md)
     except Exception:
-        # OmniRoute 免费网关不可用 / 异常：降级回主对话 provider，保证记忆不丢
-        if _memory_use_omniroute(reasoning):
-            lak, lbu, lmd = _resolve_provider()
-            if (lak, lbu, lmd) != (ak, bu, md):
-                try:
-                    return _do(lak, lbu, lmd)
-                except Exception:
-                    pass
+        lak, lbu, lmd = _resolve_provider()
+        if (lak, lbu, lmd) != (ak, bu, md):
+            try:
+                return _do(lak, lbu, lmd)
+            except Exception:
+                pass
         raise
+
+
+# --------------------------------------------------------------------------- #
+# 免费组调用：必须经 opencode_provider 的伪装协议
+# --------------------------------------------------------------------------- #
+
+#: 门面工具（2026-10-06 实测）：**不带工具 ⇒403 FreeTierError**
+#:（"OpenCode's free tier can only be used from within OpenCode"）；
+#: 且 `had_real_tools=True` 时不能把 tool_choice 设成 "none"。见设计 §四。
+_FREE_LANE_TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "read",
+            "description": "Read a file from the workspace.",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    }
+]
+
+
+def _opencode_complete(
+    model: str,
+    system: str,
+    user: str,
+    temperature: float,
+    max_tokens: int,
+    timeout: float,
+) -> str:
+    """经 ``OpencodeProvider`` 调Zen 免费通道（**不可用 OpenAI() 直连**）。
+
+    走生产 provider 的原因（2026-10-06 三次探测踩坑后确认，见设计 §四）：
+    裸 OpenAI 形状的请求会被判「不在 OpenCode 里面」而 403。
+    """
+    from coworker.providers.opencode_provider import OpencodeProvider
+
+    provider = OpencodeProvider()
+    turn = provider.complete(
+        model=model,
+        messages=[
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ],
+        tools=_FREE_LANE_TOOLS,
+        temperature=temperature,
+        max_tokens=max_tokens,
+        timeout=timeout,
+    )
+    return (turn.text or "").strip()

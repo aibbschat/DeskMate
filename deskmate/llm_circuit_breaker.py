@@ -54,6 +54,8 @@ TABLE = "llm_circuit_breaker"
 DEFAULT_COOLDOWN_S = 30 * 60# 无重置时间可解析时（火山/小米实测都没有）
 LONG_COOLDOWN_S = 6 * 3600        # opencode 403 FreeTierError：匿名层长期不可用
 TRANSIENT_COOLDOWN_S = 60# 5xx/网络抖动：短，且允许一次重试
+#:瞬时类递增退避的封顶（同一通道持续故障时不该每tick 都试一遍）
+TRANSIENT_MAX_COOLDOWN_S = 30 * 60
 # 熔断上限：防止无重置时间的通道（如小米 429）把冷却推到几天之外
 MAX_COOLDOWN_S = 24 * 3600
 
@@ -304,12 +306,36 @@ def is_open(channel_key: str, *, base_dir: Optional[Path] = None,
 def record_failure(channel_key: str, verdict: Verdict, *,
                    base_dir: Optional[Path] = None,
                    source_node: Optional[str] = None) -> None:
-    """记一次失败并打开熔断。**不抛异常**（记账失败不该影响主流程）。"""
+    """记一次失败并打开熔断。**不抛异常**（记账失败不该影响主流程）。
+
+    **瞬时类递增退避**（2026-10-06）：同一通道反复 5xx/网络抖动时不该每次都只熔 60s
+    ——那会让一个持续故障的通道在每次 tick 里被反复试一遍（另一种形态的"撞墙不收手"）。
+    故``transient`` 按已有 ``strike_count`` 递增：60s → 120s → 240s …封顶 30min。
+    配额类不走这条（它的冷却由错误体决定，本就可能很长）。
+    """
     db = _db(base_dir)
     now_s = time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime())
-    # cooldown_until 存 **epoch 秒字符串**（与 is_open 的 float() 读法同源——
+    # cooldown_until 存**epoch 秒字符串**（与 is_open 的 float() 读法同源——
     # 2026-10-06 首版存 ISO 而读取用 float()，导致永久熔断，见 is_open 注释）。
-    until_s = f"{verdict.cooldown_until:.3f}"
+    cooldown = verdict.cooldown_until
+    if verdict.kind == KIND_TRANSIENT:
+        prior = 0
+        try:
+            with sqlite3.connect(str(db), check_same_thread=False) as pc:
+                row = pc.execute(
+                    f"SELECT strike_count FROM {TABLE} WHERE channel_key=?",
+                    (channel_key,),
+                ).fetchone()
+                prior = int(row[0]) if row and row[0] is not None else 0
+        except sqlite3.Error:
+            prior = 0
+        # 每次失败把冷却翻倍（prior=1 → ×2，prior=2 → ×4 …），封顶 30min
+        if prior >= 1:
+            from datetime import timedelta
+
+            grown = timedelta(seconds=max(TRANSIENT_COOLDOWN_S, TRANSIENT_COOLDOWN_S * (2 ** min(prior, 5))))
+            cooldown = time.time() + min(grown.total_seconds(), TRANSIENT_MAX_COOLDOWN_S)
+    until_s = f"{cooldown:.3f}"
     try:
         with sqlite3.connect(str(db), check_same_thread=False) as c:
             _ensure_table(c)
