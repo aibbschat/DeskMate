@@ -2166,6 +2166,82 @@ def create_app(manager: SessionManager) -> FastAPI:
     def providers_remove(name: str) -> dict[str, Any]:
         return manager.remove_provider(name)
 
+    # ---- LLM 通道组（2026-10-06，设计 §二/§3）----
+    # 两个总开关：付费组（火山→小米→hy Token Plan）/ 免费组（opencode 远端清单）。
+    # 组内自动排由deskmate.llm_channels.route 负责；这里只暴露「状态 + 手动切组」。
+
+    @app.get("/v1/llm-channels")
+    def llm_channels_get() -> dict[str, Any]:
+        """两组各有哪些候选、哪些在熔断、后台任务当前用哪组。"""
+        try:
+            from deskmate.llm_channels import describe
+
+            return describe()
+        except Exception:
+            logging.exception("llm channels describe failed")
+            return JSONResponse({"error": "describe failed"}, status_code=500)
+
+    @app.post("/v1/llm-channels/memory-group")
+    async def llm_channels_set_memory_group(request: Request) -> dict[str, Any]:
+        """手动切后台任务（记忆抽取/理解加工）走哪组：``paid`` | ``free``。
+
+        写进 ``~/.config/coworker/prefs.json``（``memory_llm_group`` 键）——
+        走 prefs 而非环境变量，这样**跨进程持久**且重启后仍生效
+        （``llm_channels.memory_group`` 读取时 env 优先、prefs 兜底）。
+        """
+        try:
+            body = await request.json()
+        except Exception:
+            return JSONResponse({"error": "invalid json"}, status_code=400)
+        group = str((body or {}).get("group", "")).strip().lower()
+        if group not in ("paid", "free"):
+            return JSONResponse(
+                {"error": "group 必须是 'paid' 或 'free'"}, status_code=400
+            )
+        try:
+            import os
+            from pathlib import Path as _P
+
+            from coworker.secrets import state_dir
+
+            prefs = _P(state_dir()) / "prefs.json"
+            data = {}
+            if prefs.is_file():
+                try:
+                    data = json.loads(prefs.read_text(encoding="utf-8"))
+                except (OSError, ValueError):
+                    data = {}
+            data["memory_llm_group"] = group
+            tmp = prefs.with_suffix(f".json.{os.getpid()}.tmp")
+            tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+            os.replace(tmp, prefs)
+            return {"ok": True, "memory_group": group}
+        except Exception:
+            logging.exception("llm channels set memory-group failed")
+            return JSONResponse({"error": "set failed"}, status_code=500)
+
+    @app.get("/v1/llm-channels/audit")
+    def llm_channels_audit(limit: int = 40) -> dict[str, Any]:
+        """最近的通道审计（本地簿记、不同步）——让「为什么换了通道」一眼可见。"""
+        try:
+            from deskmate.llm_circuit_breaker import _base_dir as _cb_base
+
+            # _base_dir(base_dir=None) → 走 DESKMATE_DIR / 默认解析
+            path = _cb_base(None) / "llm_channel_audit.jsonl"
+            if not path.exists():
+                return {"rows": []}
+            lines = path.read_text(encoding="utf-8").strip().split("\n")
+            rows = []
+            for line in lines[-max(1, min(int(limit), 200)):]:
+                try:
+                    rows.append(json.loads(line))
+                except ValueError:
+                    continue
+            return {"rows": rows}
+        except Exception:
+            logging.exception("llm channels audit failed")
+            return JSONResponse({"error": "audit failed"}, status_code=500)
+
     @app.post("/v1/providers/verify")
     async def providers_verify(body: dict) -> dict[str, Any]:
         # Live read-only credential check (sync httpx) — run off the event loop.

@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import datetime
+import json
 import sqlite3
 import time
 
@@ -334,3 +335,53 @@ def test_memory_group_defaults_to_free():
     from deskmate.llm_channels import GROUP_FREE, memory_group
 
     assert memory_group() == GROUP_FREE
+
+
+# --------------------------------------------------------------------------- #
+# HTTP 端点（设置面板的「手动切组」入口）
+# --------------------------------------------------------------------------- #
+
+def test_llm_channel_endpoints(tmp_path, monkeypatch):
+    """三个端点：查状态 / 切组（写 prefs，跨进程持久）/ 看审计。
+
+    切组必须落**prefs.json** 而非只写环境变量——环境变量只活在当前进程，
+    Tauri 起的 sidecar 与 CLI/定时任务读到的是不同环境（实测踩过）。
+    """
+    import os
+
+    monkeypatch.setenv("COWORKER_STATE_DIR", str(tmp_path))
+    monkeypatch.setenv("DESKMATE_DIR", str(tmp_path))
+    monkeypatch.delenv("DESKMATE_MEMORY_GROUP", raising=False)
+
+    from fastapi.testclient import TestClient
+
+    from coworker.server.app import create_app
+    from coworker.server.manager import SessionManager
+
+    c = TestClient(create_app(SessionManager.__new__(SessionManager)))
+
+    r = c.get("/v1/llm-channels")
+    assert r.status_code == 200
+    body = r.json()
+    assert "paid" in body and "free" in body
+    assert "memory_group" in body
+
+    r2 = c.post("/v1/llm-channels/memory-group", json={"group": "paid"})
+    assert r2.status_code == 200 and r2.json()["ok"] is True
+    prefs = json.loads((tmp_path / "prefs.json").read_text(encoding="utf-8"))
+    assert prefs["memory_llm_group"] == "paid", "切组必须落 prefs（跨进程）"
+
+    # 新进程视角：只读 prefs 也能拿到（不依赖环境变量）
+    from deskmate.llm_channels import memory_group
+
+    assert memory_group() == "paid"
+
+    assert c.post("/v1/llm-channels/memory-group", json={"group": "free"}).status_code == 200
+    assert memory_group() == "free"
+
+    bad = c.post("/v1/llm-channels/memory-group", json={"group": "nope"})
+    assert bad.status_code == 400, "非法组必须 400，不能静默接受"
+
+    r3 = c.get("/v1/llm-channels/audit?limit=5")
+    assert r3.status_code == 200
+    assert isinstance(r3.json()["rows"], list)

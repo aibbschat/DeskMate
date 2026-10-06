@@ -63,15 +63,36 @@ _DEFAULT_MEMORY_GROUP = GROUP_FREE
 
 
 def memory_group() -> str:
-    """后台任务用哪组（默认免费组——萧哥 21:24 拍板）。"""
+    """后台任务用哪组。
+
+    优先级：环境变量 ``DESKMATE_MEMORY_GROUP`` > prefs.json 的 ``memory_llm_group``
+    > 默认免费组。**prefs 兜底是为了跨进程持久**（环境变量只活在当前进程，
+    Tauri 起的 sidecar 与 CLI/定时任务读到的是不同环境）。
+    """
     v = os.environ.get("DESKMATE_MEMORY_GROUP", "").strip().lower()
     if v in (GROUP_PAID, GROUP_FREE):
         return v
+    try:
+        import json
+
+        from coworker.secrets import state_dir
+
+        prefs = state_dir() / "prefs.json"
+        if prefs.is_file():
+            data = json.loads(prefs.read_text(encoding="utf-8"))
+            pv = str(data.get("memory_llm_group", "")).strip().lower()
+            if pv in (GROUP_PAID, GROUP_FREE):
+                return pv
+    except Exception:  # noqa: BLE001
+        pass
     return _DEFAULT_MEMORY_GROUP
 
 
 def set_memory_group(group: str) -> None:
-    """切后台任务的组（手动档）。写环境变量，本进程内立即生效。"""
+    """切后台任务的组（手动档，**进程内立即生效**）。
+
+    持久化请走 ``POST /v1/llm-channels/memory-group``（写 prefs.json，跨进程有效）。
+    """
     if group not in (GROUP_PAID, GROUP_FREE):
         raise ValueError(f"未知组：{group!r}（应为 {GROUP_PAID!r} / {GROUP_FREE!r}）")
     os.environ["DESKMATE_MEMORY_GROUP"] = group
