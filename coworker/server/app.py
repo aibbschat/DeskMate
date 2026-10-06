@@ -4090,6 +4090,63 @@ def create_app(manager: SessionManager) -> FastAPI:
             logging.exception("deskmate proactive tick failed")
             return JSONResponse({"error": "tick failed"}, status_code=500)
 
+    @app.get("/v1/deskmate/proactive/handoff")
+    async def get_deskmate_proactive_handoff() -> dict[str, Any]:
+        """获取小桔主动产出台账的「对话式对接开场白」。
+
+        前端在桌搭空会话首页（DeskHome）挂载时调用：若有 pending 的主动产出，
+        返回开场白文本 + 条目（含 evidence/understanding/source_node/created_at），
+        前端以页面内卡片呈现（非浮层），每条可「聊这个」prefill 到输入框，保证用户
+        能顺着她主动提出的主题接得上（设计 §三「接得上」要求：注入上下文 + 稳定 #id + 证据）。
+        """
+        try:
+            from pathlib import Path as _P
+
+            from deskmate.proactivity.ledger import build_handoff_opening
+
+            desk_dir = _P(
+                os.environ.get("DESKMATE_DIR", os.path.expanduser("~/.deskmate"))
+            )
+            opening = build_handoff_opening(base_dir=desk_dir)
+            if not opening or not opening.get("items"):
+                return {"text": "", "items": []}
+            return opening
+        except Exception:
+            logging.exception("deskmate proactive handoff failed")
+            return JSONResponse({"error": "handoff failed"}, status_code=500)
+
+    @app.post("/v1/deskmate/proactive/handoff/ack")
+    async def ack_deskmate_proactive_handoff(request: Request) -> dict[str, Any]:
+        """标记某条主动产出已读/稍后（状态只前进不后退）。
+
+        Body: {"id": "<ledger id>", "status": "acknowledged" | "dismissed"}
+        前端「稍后」按钮调用，避免每次回到空会话首页都重复呈现同一条；
+        acknowledge_ledger 内置降级守卫，不会把 actioned 退回 pending。
+        """
+        try:
+            body = await request.json()
+        except Exception:
+            return JSONResponse({"error": "invalid json"}, status_code=400)
+        rid = body.get("id")
+        new_status = body.get("status")
+        if not rid or new_status not in ("acknowledged", "dismissed"):
+            return JSONResponse(
+                {"error": "missing or invalid 'id'/'status'"}, status_code=400
+            )
+        try:
+            from pathlib import Path as _P
+
+            from deskmate.proactivity.ledger import acknowledge_ledger
+
+            desk_dir = _P(
+                os.environ.get("DESKMATE_DIR", os.path.expanduser("~/.deskmate"))
+            )
+            ok = acknowledge_ledger(base_dir=desk_dir, rid=rid, new_status=new_status)
+            return {"ok": bool(ok), "status": new_status}
+        except Exception:
+            logging.exception("deskmate proactive handoff ack failed")
+            return JSONResponse({"error": "ack failed"}, status_code=500)
+
     @app.post("/v1/deskmate/style-profile")
     async def deskmate_style_profile(request: Request) -> dict[str, Any]:
         """从本地样本文件抽作者风格画像，存 ~/.deskmate/style_profile.json。

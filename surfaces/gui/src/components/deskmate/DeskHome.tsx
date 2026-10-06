@@ -3,17 +3,32 @@
  *
  * 仅当 agent === "deskmate" 且会话为空（idle）时由 App.tsx 渲染。
  *
- * 首页只保留「小桔在忙」——展示小桔自主层正在做什么。
- * 功能入口（文稿编校）已移入专家中心；个人中心入口已移至左侧栏；
- * 今日资讯已撤掉（小桔会自己找资讯）。
+ * 首页只保留「小桔在忙」——展示小桔自主层正在做什么；并在这个空会话时刻递上
+ * 她云端/手机端主动产出的「几件还没收的事」（对话式开场白，非弹窗）：每条带
+ * 证据 + 理解，可「聊这个」prefill 到输入框（保证能顺着她主动提出的主题接得上）。
  */
 
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { AgencyPanel } from "./AgencyPanel";
+import { getDeskmateHandoff, ackDeskmateHandoff, type HandoffItem } from "../../api";
 
-export function DeskHome() {
+export function DeskHome({ onPrefill }: { onPrefill?: (text: string) => void }) {
   const { t, i18n } = useTranslation();
+  const [handoff, setHandoff] = useState<{ text: string; items: HandoffItem[] } | null>(null);
+  const [dismissed, setDismissed] = useState<Set<string>>(new Set());
+
+  useEffect(() => {
+    let alive = true;
+    getDeskmateHandoff()
+      .then((h) => {
+        if (alive && h) setHandoff(h);
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, []);
 
   // 每次回到首页（组件重新挂载）随机抽一条问候，制造新鲜感。
   const greeting = useMemo(() => {
@@ -22,12 +37,58 @@ export function DeskHome() {
     return list[Math.floor(Math.random() * list.length)];
   }, [t, i18n.language]);
 
+  const visibleItems = handoff ? handoff.items.filter((it) => !dismissed.has(it.id)) : [];
+
   return (
     <div className="hero">
       <h1 className="dm-home-greeting">
         <span className="mark">✦</span>
         {greeting}
       </h1>
+
+      {/* 小桔主动产出台账的对话式对接开场白：云端/手机端主动产出 → 本地开聊时递出。
+          非浮层，是空会话首页内的一条引导卡片，保证用户能顺着她提出的主题接得上。 */}
+      {visibleItems.length > 0 && (
+        <div className="dm-handoff">
+          <p className="dm-handoff-text">{handoff!.text}</p>
+          <ul className="dm-handoff-list">
+            {visibleItems.map((it) => (
+              <li key={it.id} className="dm-handoff-item">
+                <div className="dm-handoff-content">{it.content}</div>
+                {it.evidence ? (
+                  <div className="dm-handoff-evidence">依据：{it.evidence}</div>
+                ) : null}
+                {it.understanding ? (
+                  <div className="dm-handoff-understanding">她的理解：{it.understanding}</div>
+                ) : null}
+                <div className="dm-handoff-actions">
+                  <button
+                    type="button"
+                    className="dm-handoff-chat"
+                    onClick={() =>
+                      onPrefill?.(
+                        `${it.content}${it.evidence ? `\n\n（依据：${it.evidence}）` : ""}`,
+                      )
+                    }
+                  >
+                    聊这个
+                  </button>
+                  <button
+                    type="button"
+                    className="dm-handoff-later"
+                    onClick={async () => {
+                      await ackDeskmateHandoff(it.id, "acknowledged");
+                      setDismissed((s) => new Set(s).add(it.id));
+                    }}
+                  >
+                    稍后
+                  </button>
+                </div>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
 
       {/* L2 自主层「小桔在忙」——常驻展示自主行为 + 高风险提议卡待裁决 */}
       <AgencyPanel />

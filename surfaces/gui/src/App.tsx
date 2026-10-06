@@ -1773,7 +1773,7 @@ export function App() {
                     onPrefill={prefillComposer}
                   />
                 ) : agent === "deskmate" ? (
-                  <DeskHome />
+                  <DeskHome onPrefill={prefillComposer} />
                 ) : (
                   <div className="hero">
                     <h1 className="greeting">

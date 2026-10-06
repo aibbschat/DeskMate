@@ -4024,6 +4024,52 @@ export interface InspireResult {
   reason?: string;
 }
 
+// -- 主动产出台账：对话式对接开场白（P0 本地开聊挂载点） ----------------------
+export interface HandoffItem {
+  id: string;
+  source: string;
+  kind: string;
+  content: string;
+  evidence: string;
+  understanding: string;
+  status: string;
+  confidence: number;
+  created_at: string;
+  source_node: string;
+}
+export interface HandoffOpening {
+  text: string;
+  items: HandoffItem[];
+}
+/** 拉取小桔主动产出台账的「对话式开场白」。无 pending 返回 null（静默降级，不阻塞首页）。 */
+export async function getDeskmateHandoff(): Promise<HandoffOpening | null> {
+  try {
+    const res = await authedFetch(`${httpBase()}/v1/deskmate/proactive/handoff`);
+    if (!res.ok) return null;
+    const data = (await res.json()) as HandoffOpening;
+    if (!data || !data.items || data.items.length === 0) return null;
+    return data;
+  } catch {
+    return null;
+  }
+}
+/** 标记某条主动产出已读/稍后（状态只前进不后退），避免回到空会话首页时重复呈现。 */
+export async function ackDeskmateHandoff(
+  id: string,
+  status: "acknowledged" | "dismissed" = "acknowledged",
+): Promise<boolean> {
+  try {
+    const res = await authedFetch(`${httpBase()}/v1/deskmate/proactive/handoff/ack`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id, status }),
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
 /** 普通聊天里聊写作时，小桔基于认知库主动递一条创作灵感（POST /v1/deskmate/inspire）。 */
 export async function postInspire(text: string, concept?: string): Promise<InspireResult | null> {
   try {

@@ -35,6 +35,14 @@ LOCAL_MODULES=(
 )
 LOCAL_RUNNER="scripts/sync_daemon_runner.py"
 
+# 主动产出台账模块（主程序包，不是 sync 平铺包）：随 sync 文件一起上云，
+# 避免每次改 proactivity 都手动 scp。目标云端 /opt/openworker/deskmate/proactivity/。
+PROACTIVITY_MODULES=(
+  "deskmate/proactivity/ledger.py"
+  "deskmate/proactivity/tick.py"
+)
+CLOUD_PROACTIVITY_DIR="/opt/openworker/deskmate/proactivity"
+
 FORCE=0
 [[ "${1:-}" == "--force" ]] && FORCE=1
 
@@ -49,7 +57,7 @@ if ! ssh -o ConnectTimeout=15 -o BatchMode=yes "$SSH_HOST" "test -d '$CLOUD_SYNC
 fi
 
 # ---- 1. 必须已提交（红线：本地改动先 commit 进 fork/base）----
-ALL_FILES=("${LOCAL_MODULES[@]}" "$LOCAL_RUNNER")
+ALL_FILES=("${LOCAL_MODULES[@]}" "$LOCAL_RUNNER" "${PROACTIVITY_MODULES[@]}")
 if [[ "$FORCE" -eq 0 ]]; then
   DIRTY=""
   for f in "${ALL_FILES[@]}"; do
@@ -99,6 +107,18 @@ ssh -o ConnectTimeout=15 "$SSH_HOST" "sudo -n -u openworker cp '/tmp/sync_deploy
 ssh -o ConnectTimeout=15 "$SSH_HOST" "rm -f '/tmp/sync_deploy_runner.py'" || true
 echo "    ✓ sync_runner.py"
 
+# ---- 3b. 推送 proactivity 模块到云端主程序包 ----
+echo "==> 推送 proactivity 模块到云端 $CLOUD_PROACTIVITY_DIR"
+for f in "${PROACTIVITY_MODULES[@]}"; do
+  base="$(basename "$f")"
+  scp -q -o ConnectTimeout=15 "$f" "$SSH_HOST:/tmp/proactivity_deploy_$base"
+  ssh -o ConnectTimeout=15 "$SSH_HOST" "sudo -n -u openworker cp '/tmp/proactivity_deploy_$base' '$CLOUD_PROACTIVITY_DIR/$base'"
+  ssh -o ConnectTimeout=15 "$SSH_HOST" "rm -f '/tmp/proactivity_deploy_$base'" || true
+  # 清 proactivity 的 __pycache__，避免旧 .pyc 复用（与手动 scp 同风险）
+  ssh -o ConnectTimeout=15 "$SSH_HOST" "sudo -n -u openworker rm -rf '$CLOUD_PROACTIVITY_DIR/__pycache__'" || true
+  echo "    ✓ $base"
+done
+
 # ---- 4. 清云端 __pycache__（强制下次窗口重编译新码）----
 echo "==> 清云端 __pycache__"
 ssh -o ConnectTimeout=15 "$SSH_HOST" "sudo -n -u openworker rm -rf '$CLOUD_SYNC_DIR/__pycache__' && echo '    ✓ cleared'"
@@ -125,7 +145,22 @@ else
   exit 1
 fi
 
+# ---- 6. proactivity 模块对齐核对 ----
+echo "==> proactivity 模块对齐核对"
+for f in "${PROACTIVITY_MODULES[@]}"; do
+  base="$(basename "$f")"
+  local_md5="$(md5 -q "$f")"
+  cloud_md5="$(ssh -o ConnectTimeout=15 "$SSH_HOST" "sudo -n -u openworker md5sum '$CLOUD_PROACTIVITY_DIR/$base' 2>/dev/null | awk '{print \$1}'")"
+  if [[ "$local_md5" == "$cloud_md5" ]]; then
+    echo "    ✓ $base  $local_md5"
+  else
+    echo "    ✗ $base  本地=$local_md5 云端=$cloud_md5  (不一致!)" >&2
+    exit 1
+  fi
+done
+
 echo ""
-echo "✅ 本地→云端 sync 代码已对齐（4 文件 md5 一致）。"
+echo "✅ 本地→云端代码已对齐（4 个 sync 文件 + 2 个 proactivity 模块，共 6 文件 md5 一致）。"
+echo "   同步平铺包仅每小时 :02 窗口加载；主程序包（proactivity）需重启 openworker-server 才生效。"
 echo "   云端同步 daemon 仅在每小时 :02 错峰窗口启动，下次窗口即加载新码；无需手动重启。"
 echo "   如需立即生效，可手动跑一次：sudo /usr/local/sbin/xiaoju-sync-window.sh"
