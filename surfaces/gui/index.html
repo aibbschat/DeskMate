@@ -4,6 +4,16 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>OpenWorker</title>
+    <!-- 手机端 PWA 安装支持：指向手机版 manifest（其 start_url=/mobile.html）。
+         即使从根域名 / 触发安装，Chrome 也能拿到 manifest，装出真正的 WebAPK（打开手机版），
+         而不是只装个书签。桌面用户走 Tauri app，不会用浏览器 PWA。 -->
+    <link rel="manifest" href="/m.webmanifest" />
+    <meta name="theme-color" content="#F26B1F" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <meta name="apple-mobile-web-app-title" content="小桔" />
+    <link rel="apple-touch-icon" href="/m-icon-180.png" />
     <!-- Resolve the theme + skin before first paint (no white flash for dark users or wrong
          brand color after a skin switch). Must match:
            - src/theme.ts                       key "openwork-theme"
