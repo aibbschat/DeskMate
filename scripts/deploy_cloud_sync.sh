@@ -45,6 +45,19 @@ PROACTIVITY_MODULES=(
 )
 CLOUD_PROACTIVITY_DIR="/opt/openworker/deskmate/proactivity"
 
+# LLM 通道组+ 熔断（2026-10-06，设计 §二/§3）：本地与云端**必须同码同熔断表**，
+# 否则会出现「本地熔断了、云端还在撞」——与记忆里「48 条身份分裂」同类的事故。
+# 目标：/opt/openworker/deskmate/{memory,proactivity}/ 与 /opt/openworker/coworker/{server,providers}/
+CLOUD_DESKMATE_ROOT="/opt/openworker/deskmate"
+CLOUD_COWORKER_ROOT="/opt/openworker/coworker"
+CHANNEL_MODULES=(
+  "deskmate/llm_circuit_breaker.py"       # 熔断表+ 错误解析
+  "deskmate/llm_channels.py"              # 通道组（付费/免费 + 组内自动排）
+  "deskmate/memory/llm.py"                # chat/chat_memory 接入熔断与通道组
+  "coworker/providers/zen_catalog.py"     # Zen 免费模型动态清单（远端驱动）
+  "coworker/server/app.py"                # /v1/llm-channels* 端点
+)
+
 FORCE=0
 [[ "${1:-}" == "--force" ]] && FORCE=1
 
@@ -59,7 +72,7 @@ if ! ssh -o ConnectTimeout=15 -o BatchMode=yes "$SSH_HOST" "test -d '$CLOUD_SYNC
 fi
 
 # ---- 1. 必须已提交（红线：本地改动先 commit 进 fork/base）----
-ALL_FILES=("${LOCAL_MODULES[@]}" "$LOCAL_RUNNER" "${PROACTIVITY_MODULES[@]}")
+ALL_FILES=("${LOCAL_MODULES[@]}" "$LOCAL_RUNNER" "${PROACTIVITY_MODULES[@]}" "${CHANNEL_MODULES[@]}")
 if [[ "$FORCE" -eq 0 ]]; then
   DIRTY=""
   for f in "${ALL_FILES[@]}"; do
@@ -121,6 +134,26 @@ for f in "${PROACTIVITY_MODULES[@]}"; do
   echo "    ✓ $base"
 done
 
+# ---- 3c. 推送通道组/ 熔断模块（本地与云端必须同码，见 CHANNEL_MODULES 注释）----
+echo "==> 推送通道组/熔断模块到云端主程序包"
+for f in "${CHANNEL_MODULES[@]}"; do
+  base="$(basename "$f")"
+  # 目标目录按本地相对路径推（deskmate/xxx.py → $CLOUD_DESKMATE_ROOT/xxx.py；
+  # coworker/xxx.py → $CLOUD_COWORKER_ROOT/xxx.py），必要时建目录
+  case "$f" in
+    deskmate/*)   dest_dir="$CLOUD_DESKMATE_ROOT/$(dirname "${f#deskmate/}")" ;;
+    coworker/*)   dest_dir="$CLOUD_COWORKER_ROOT/$(dirname "${f#coworker/}")" ;;
+    *)            dest_dir="$CLOUD_DESKMATE_ROOT" ;;
+  esac
+  scp -q -o ConnectTimeout=15 "$f" "$SSH_HOST:/tmp/channel_deploy_$base"
+  ssh -o ConnectTimeout=15 "$SSH_HOST" "sudo -n -u openworker mkdir -p '$dest_dir'"
+  ssh -o ConnectTimeout=15 "$SSH_HOST" "sudo -n -u openworker cp '/tmp/channel_deploy_$base' '$dest_dir/$base'"
+  ssh -o ConnectTimeout=15 "$SSH_HOST" "rm -f '/tmp/channel_deploy_$base'" || true
+  # 清该目录 __pycache__（否则旧 .pyc 复用 = 云端跑旧码，10-05 已踩）
+  ssh -o ConnectTimeout=15 "$SSH_HOST" "sudo -n -u openworker rm -rf '$dest_dir/__pycache__'" || true
+  echo "    ✓ $f → $dest_dir"
+done
+
 # ---- 4. 清云端 __pycache__（强制下次窗口重编译新码）----
 echo "==> 清云端 __pycache__"
 ssh -o ConnectTimeout=15 "$SSH_HOST" "sudo -n -u openworker rm -rf '$CLOUD_SYNC_DIR/__pycache__' && echo '    ✓ cleared'"
@@ -161,8 +194,29 @@ for f in "${PROACTIVITY_MODULES[@]}"; do
   fi
 done
 
+# ---- 7. 通道组/熔断模块对齐核对 ----
+echo "==> 通道组/熔断模块对齐核对"
+for f in "${CHANNEL_MODULES[@]}"; do
+  base="$(basename "$f")"
+  case "$f" in
+    deskmate/*)   dest_dir="$CLOUD_DESKMATE_ROOT/$(dirname "${f#deskmate/}")" ;;
+    coworker/*)   dest_dir="$CLOUD_COWORKER_ROOT/$(dirname "${f#coworker/}")" ;;
+    *)            dest_dir="$CLOUD_DESKMATE_ROOT" ;;
+  esac
+  local_md5="$(md5 -q "$f")"
+  cloud_md5="$(ssh -o ConnectTimeout=15 "$SSH_HOST" "sudo -n -u openworker md5sum '$dest_dir/$base' 2>/dev/null | awk '{print \$1}'")"
+  if [[ "$local_md5" == "$cloud_md5" ]]; then
+    echo "    ✓ $base  $local_md5"
+  else
+    echo "    ✗ $base  本地=$local_md5 云端=$cloud_md5  (不一致!)" >&2
+    exit 1
+  fi
+done
+
 echo ""
-echo "✅ 本地→云端代码已对齐（4 个 sync 文件 + 4 个 proactivity 模块，共 8 文件 md5 一致）。"
-echo "   同步平铺包仅每小时 :02 窗口加载；主程序包（proactivity）需重启 openworker-server 才生效。"
-echo "   云端同步 daemon 仅在每小时 :02 错峰窗口启动，下次窗口即加载新码；无需手动重启。"
+echo "✅ 本地→云端代码已对齐（3 个 sync 文件 + runner + 4 个 proactivity + 5 个通道/熔断模块）。"
+echo "   同步平铺包仅每小时 :02 窗口加载；主程序包需**重启 openworker-server** 才生效："
+echo "     sudo systemctl restart openworker-server"
+echo "   ⚠️ 通道/熔断模块若与云端不一致，会出现「本地熔断了、云端还在撞」"
+echo "      ——与记忆里「48 条身份分裂」同类事故，故务必跑本脚本对齐。"
 echo "   如需立即生效，可手动跑一次：sudo /usr/local/sbin/xiaoju-sync-window.sh"
