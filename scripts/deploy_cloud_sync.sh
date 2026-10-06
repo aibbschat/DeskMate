@@ -51,11 +51,18 @@ CLOUD_PROACTIVITY_DIR="/opt/openworker/deskmate/proactivity"
 CLOUD_DESKMATE_ROOT="/opt/openworker/deskmate"
 CLOUD_COWORKER_ROOT="/opt/openworker/coworker"
 CHANNEL_MODULES=(
-  "deskmate/llm_circuit_breaker.py"       # 熔断表+ 错误解析
+  "deskmate/llm_circuit_breaker.py"       # 熔断表 + 错误解析
   "deskmate/llm_channels.py"              # 通道组（付费/免费 + 组内自动排）
   "deskmate/memory/llm.py"                # chat/chat_memory 接入熔断与通道组
   "coworker/providers/zen_catalog.py"     # Zen 免费模型动态清单（远端驱动）
   "coworker/server/app.py"                # /v1/llm-channels* 端点
+  # ⚠️ 主程序包的同步三件套（2026-10-06 补）：云端 `/opt/openworker/deskmate/memory/`
+  # 另有一份 sync_store_sqlite.py，而上面的 CHANNEL_MODULES 里的 llm.py 正是 import它。
+  # 只同步平铺包（LOCAL_MODULES）会导致「主程序包跑旧 SYNC_TABLES」——
+  # 实测踩过：migrate() 抛 KeyError: 'llm_circuit_breaker'，熔断表建了但没触发器/同步列。
+  "deskmate/memory/sync_store_sqlite.py"
+  "deskmate/memory/sync_daemon.py"
+  "deskmate/memory/sync_transport.py"
 )
 
 FORCE=0
