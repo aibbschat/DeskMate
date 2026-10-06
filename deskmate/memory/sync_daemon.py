@@ -320,8 +320,13 @@ class SyncEngine:
             if not existing.tombstone:
                 return
             # 墓碑态且同 hlc：交给墓碑侧表判定（见下has_tombstone 块），避免旧副本复活。
-        # ordered_status 来自注册表（SQLiteSyncStore._spec）；MemoryStore 等测试替身
-        # 无 _spec → 视为无 ordered（退回纯 HLC LWW），保证既有测试契约不被破坏。
+        # ordered_status 来自注册表（SQLiteSyncStore._spec）。
+        # MemoryStore 等测试替身无 _spec → 视为无 ordered（退回纯 HLC LWW），
+        # 保证既有测试契约不被破坏。
+        # ⚠️ 2026-10-06 记录的行为边界：**无 _spec 的 store 会静默失去 status 只前进
+        # 保护**（退回纯 HLC LWW，已处理的记录可能被更晚的 pending 盖回→ 反 nag 失效）。
+        # 这是「兼容测试替身」的有意取舍，不是 bug——生产链路全部走 SQLiteSyncStore
+        # （有 _spec）。若日后新增 store 实现，务必给它带上 _spec.ordered_status。
         ordered = getattr(store, "_spec", {}).get("ordered_status")
         # 防遗忘复活：本端已是墓碑（删除），且远端 op 的 HLC 更早或相等 → 不覆盖
         # （同 hlc 的 upsert 已在上面决胜放行走复活路径，此处只拦严格更早）。
@@ -498,16 +503,30 @@ class SyncDaemon:
             }
 
     def reconcile_baseline(self, remote_store: "MemoryStore") -> dict:
-        """首连前置：对端 item 快照已就位时，做一次性全量对账。
+        """首连前置：对端 item 快照已就位时，做一次性全量对账（**单表引擎专用**）。
 
         见模块级 ``reconcile_baseline``。本方法只是把本端 store 与对端 store
         对接的薄封装；生产环境由 SSH 反隧道把对端 item 快照拉到本端后调用。
+
+        ⚠️ **多表引擎下不可用**（2026-10-06修）：``SyncEngine`` 构造时若传入
+        ``{table: store}`` 字典，会显式把 ``self.store = None``（多表不暴露单一
+        store，逐表用 ``self.stores``）⇒ 下面的 ``getattr(None, "_spec", {})`` 会
+        抛 ``AttributeError: 'NoneType' object has no attribute 'items'``。
+        生产基线对账走的是 :func:`reconcile_baseline_oplog`（由
+        ``scripts/sync_daemon_runner.py`` 逐表调用，**不受此限制**）。
+
+        故此处 fail-fast 给出可操作提示，而不是让调用方撞一个 NoneType 异常。
         """
+        store = self.engine.store
+        if store is None:
+            raise RuntimeError(
+                "reconcile_baseline 只支持单表引擎；多表引擎请用 "
+                "reconcile_baseline_oplog(local_store_of_this_table, remote, engine, table, node, ordered_status)"
+                " 逐表调用（runner 的 _baseline_reconcile 即此路径）。"
+            )
         # 修⑤（§11.2② 补账）：方法壳同样要传 ordered_status（与模块级函数同参）。
-        ordered = getattr(self.engine.store, "_spec", {}).get("ordered_status")
-        return reconcile_baseline(
-            self.engine.store, remote_store, self.engine.node, ordered
-        )
+        ordered = getattr(store, "_spec", {}).get("ordered_status")
+        return reconcile_baseline(store, remote_store, self.engine.node, ordered)
 
 
 # ---------------------------------------------------------------------------

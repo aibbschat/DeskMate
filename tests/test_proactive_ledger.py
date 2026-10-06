@@ -9,6 +9,7 @@
 """
 from __future__ import annotations
 
+import pytest
 import sqlite3
 import tempfile
 import time
@@ -812,3 +813,51 @@ def test_failed_retry_after_cooldown():
 
         assert maybe_backfill_understanding(base) == 1
     assert pending_items(base)[0]["understanding"] == "重试成功了。"  # 不再永久钉在降级文案
+
+
+def test_daemon_reconcile_baseline_rejects_multi_table_engine():
+    """方法壳 SyncDaemon.reconcile_baseline 在多表引擎下必须 fail-fast 报可操作提示。
+
+    2026-10-06 巡检发现：多表引擎（SyncEngine 传 {table: store}）会把 self.store
+    置None（"多表不暴露单一 store"），而修⑤ 给方法壳加的
+    `getattr(self.engine.store, "_spec", {})` 会抛
+    `AttributeError: 'NoneType' object has no attribute 'items'`。
+    生产基线走reconcile_baseline_oplog（逐表），本方法壳无生产调用方，
+    但它是个地雷：谁调谁炸，且报错完全指不到根因。
+    """
+    from deskmate.memory.sync_daemon import MemoryStore, SyncDaemon, SyncEngine
+
+    # 用 _fresh_base（record_proactive 固定写 <base>/deskmate.db，名字不能自造）
+    base = _fresh_base("mac")
+    db = str(base / "deskmate.db")
+    record_proactive(
+        base_dir=base, source="cloud_audit", kind="k", content="c", evidence="e",
+        confidence=0.9,
+    )
+    store = _store(db)
+    oplog = SQLiteOplogStore(sqlite3.connect(db, check_same_thread=False))
+    # 多表引擎形态（runner 生产形态：stores dict）
+    multi = SyncEngine({"proactive_ledger": store}, oplog, "mac")
+    assert multi.store is None, "多表引擎下 store 应为 None（构造器显式置空）"
+    with pytest.raises(RuntimeError, match="只支持单表引擎"):
+        SyncDaemon(multi, transport=None).reconcile_baseline(MemoryStore())
+
+    # 单表引擎形态：正常路径不应抛
+    single = SyncEngine(
+        store, SQLiteOplogStore(sqlite3.connect(db, check_same_thread=False)), "mac"
+    )
+    assert single.store is not None
+    SyncDaemon(single, transport=None).reconcile_baseline(MemoryStore())
+
+
+def test_failed_retry_cooldown_is_60min_not_24h():
+    """failed 重试窗必须是 60min（文档 §11.12 修⑦ 口径），不是 24h。
+
+    火山 Coding Plan 限额通常 1~2 小时恢复；写成 24h 会让降级文案钉住一整天——
+    额度恢复了也不翻，这正是「绑死单一 provider」在代码里的第一处真实伤害。
+    """
+    from deskmate.proactivity import understanding as U
+
+    assert U._FAILED_RETRY_COOLDOWN_S == 60 * 60, (
+        f"failed 重试窗应为 3600s（60min），实际 {U._FAILED_RETRY_COOLDOWN_S}s"
+    )
