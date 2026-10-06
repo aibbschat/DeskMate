@@ -14,6 +14,7 @@ import hashlib
 import json
 import logging
 import sqlite3
+import threading
 import time
 from pathlib import Path
 from typing import Optional
@@ -25,6 +26,13 @@ LEDGER_TABLE = "proactive_ledger"
 # status 优先级（高→低），与 SYNC_TABLES['proactive_ledger']['ordered_status'] 同源。
 # 同步层（sync_daemon LWW）据此强制只前进；应用层 acknowledge_ledger 也兜底。
 STATUS_ORDER = ("actioned", "dismissed", "in_progress", "acknowledged", "pending")
+
+# ---- 建表一次性标志（按 base_dir 分桶，进程内）----
+# migrate() 每次都会 DROP 三触发器再重建 + commit（sync_store_sqlite 的幂等策略）。
+# record_proactive 是逐条调用、云端审计循环每小时跑 —— 每条都重建触发器是纯浪费，
+# 且长时间持写锁。故每个库只自举一次；进程重启后标志复位，可再幂等跑一次。
+_ensured: set[str] = set()
+_ensure_lock = threading.Lock()
 
 
 def _resolve_base(base_dir: Optional[Path]) -> Path:
@@ -43,7 +51,27 @@ def _ensure_table(conn: sqlite3.Connection) -> None:
     """自举建表 + 接入同步（加三列 + 触发器，幂等）。
 
     不依赖其它 store 的初始化顺序；测试用 /tmp 副本库也可直接跑。
+
+    幂等由 :data:`_ensured` 按真实库路径做进程内记忆：``migrate()`` 每次都会
+    DROP 三个触发器再重建 + commit，逐条调用是纯浪费（云端审计循环每小时跑）。
+    仍保留一次 ``sqlite_master`` 探测——万一库被外部重建/删除（测试换库、
+    运维重建），不能凭标志跳过建表。探测只是一次索引查询，远便宜于重建 DDL。
     """
+    try:
+        key = str(Path(conn.execute("PRAGMA database_list").fetchone()[2]).resolve())
+    except Exception:  # noqa: BLE001  拿不到路径就退回每次自举（正确性优先于性能）
+        key = None
+
+    if key is not None and key in _ensured:
+        try:
+            row = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (LEDGER_TABLE,)
+            ).fetchone()
+            if row is not None:
+                return
+        except sqlite3.OperationalError:
+            pass  # 表没了 → 继续自举
+
     conn.execute(
         f"CREATE TABLE IF NOT EXISTS {LEDGER_TABLE} ("
         f"id TEXT PRIMARY KEY, source TEXT, kind TEXT, content TEXT, evidence TEXT,"
@@ -63,6 +91,9 @@ def _ensure_table(conn: sqlite3.Connection) -> None:
         migrate(conn, node, LEDGER_TABLE)
     except Exception as e:  # noqa: BLE001  fail-open：建表成功即可落库，同步列缺失仅影响跨端
         logger.warning("proactive ledger migrate 失败（同步列/触发器可能缺失）: %s", e)
+    if key is not None:
+        with _ensure_lock:
+            _ensured.add(key)
 
 
 def _deterministic_id(source: str, kind: str, anchor: Optional[str], content: str) -> str:

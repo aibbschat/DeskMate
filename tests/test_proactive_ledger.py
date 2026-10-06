@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import sqlite3
 import tempfile
+import unittest.mock
 from pathlib import Path
 
 from deskmate.memory.sync_daemon import (
@@ -247,3 +248,57 @@ def test_cross_node_status_converge():
     eng_cloud = SyncEngine(_store(db_cloud), SQLiteOplogStore(sqlite3.connect(db_cloud, check_same_thread=False)), "cloud", "proactive_ledger")
     eng_cloud.apply_remote(eng_mac.oplog.since(0))
     assert _status_of(db_cloud, "rid1") == "actioned"
+
+
+def test_ensure_table_runs_migrate_once_per_db():
+    """_ensure_table 幂等记忆：同一库第二次调用不再跑 migrate（防重复 DDL 持写锁）。
+
+    云端审计循环每小时跑、逐条 record_proactive —— migrate() 每次都会 DROP 三触发器
+    再重建 + commit，逐条重建是纯浪费。这里用计数替身锁住「只跑一次」。
+    """
+    import deskmate.memory.sync_store_sqlite as sync_sql
+    import deskmate.proactivity.ledger as ledger_mod
+
+    base = _fresh_base("mac")
+    db = base / "deskmate.db"
+
+    calls = {"n": 0}
+    real_migrate = sync_sql.migrate
+
+    def counting_migrate(conn, node, tables=None):
+        calls["n"] += 1
+        return real_migrate(conn, node, tables)
+
+    with unittest.mock.patch.object(ledger_mod, "_ensured", set()), \
+         unittest.mock.patch.object(sync_sql, "migrate", counting_migrate):
+        with sqlite3.connect(str(db), check_same_thread=False) as c:
+            ledger_mod._ensure_table(c)
+        assert calls["n"] == 1, "首次必须自举（建表 + migrate）"
+        with sqlite3.connect(str(db), check_same_thread=False) as c:
+            ledger_mod._ensure_table(c)
+        assert calls["n"] == 1, f"同库第二次不应再跑 migrate，实际又跑了 {calls['n'] - 1} 次"
+        # 表确实在（不是靠标志骗过）
+        with sqlite3.connect(str(db), check_same_thread=False) as c:
+            assert c.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='proactive_ledger'"
+            ).fetchone() is not None
+
+
+def test_ensure_table_recreates_after_table_dropped():
+    """库被外部重建（表没了）时，即便标志还在也必须重新自举 —— 不能凭标志跳过建表。"""
+    import deskmate.proactivity.ledger as ledger_mod
+
+    base = _fresh_base("mac")
+    db = base / "deskmate.db"
+
+    with unittest.mock.patch.object(ledger_mod, "_ensured", set()):
+        with sqlite3.connect(str(db), check_same_thread=False) as c:
+            ledger_mod._ensure_table(c)
+            c.execute("DROP TABLE proactive_ledger")
+            c.commit()
+        # 第二次：表已被删 → 必须重新建出来
+        with sqlite3.connect(str(db), check_same_thread=False) as c:
+            ledger_mod._ensure_table(c)
+            assert c.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='proactive_ledger'"
+            ).fetchone() is not None, "表被删后必须重建，不能凭 _ensured 标志跳过"
