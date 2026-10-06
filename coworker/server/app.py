@@ -253,6 +253,14 @@ def create_app(manager: SessionManager) -> FastAPI:
         except Exception:  # never let the catalog mirror block startup
             pass
         try:
+            # Zen 免费模型动态清单（2026-10-06，设计 §3.4）——同一套 6h TTL 模式。
+            # 顺带在首次拉取后清理「已下架模型」的熔断记录（防熔断表无限膨胀）。
+            from ..providers.zen_catalog import start_catalog_refresh as _zen_refresh
+
+            _zen_refresh()
+        except Exception:  # 同上，绝不阻塞启动
+            pass
+        try:
             live = (
                 await manager.start_gateway()
             )  # start messaging listeners (if configured)

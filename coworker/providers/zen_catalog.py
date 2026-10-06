@@ -44,6 +44,7 @@ OpenCode Zen 的免费模型是**动态更换**的——某个模型会下架，
 from __future__ import annotations
 
 import json
+import logging
 import os
 import threading
 import time
@@ -53,6 +54,8 @@ import httpx
 
 from .base import ModelCapabilities
 from .matrix import ModelEntry
+
+logger = logging.getLogger(__name__)
 
 ZEN_MODELS_URL = "https://opencode.ai/zen/v1/models"
 CACHE_TTL_SECONDS = 6 * 3600
@@ -237,8 +240,49 @@ def _refresh_loop() -> None:
         time.sleep(REFRESH_INTERVAL_SECONDS)
         try:
             fetch_catalog(force=True)
+            _prune_breaker_for_delisted()
         except Exception:
             pass
+
+
+def _prune_breaker_for_delisted() -> None:
+    """清单刷新后，清理**已下架模型**的熔断记录（§3.4 联动）。
+
+    两个理由：①下架模型不该再参与轮替；②熔断表会随模型进出无限膨胀。
+    只清 ``opencode:`` 前缀的键（付费组是人工配置的，不受远端清单影响）。
+    fail-open：清理失败不影响刷新本身。
+    """
+    try:
+        from deskmate.llm_circuit_breaker import _db, prune_stale, TABLE
+    except Exception:  # noqa: BLE001
+        return
+    try:
+        current = {f"opencode:{m}" for m in known_model_ids()}
+    except Exception:  # noqa: BLE001
+        return
+    if not current:
+        return  # 清单不可用时不做判断（网络故障 ≠ 模型下架）
+    try:
+        import sqlite3
+
+        from deskmate.llm_circuit_breaker import _db, TABLE
+
+        db = _db(None)
+        if not db.exists():
+            return
+        with sqlite3.connect(str(db), check_same_thread=False) as c:
+            # ⚠️ 取**全表**行，不是只取 opencode: 前缀 —— keep 要靠它保住付费组记录。
+            # 首版只查了 opencode: 前缀，导致 keep 里缺付费组键、把它们误删（实测抓到）。
+            all_rows = [r[0] for r in c.execute(f"SELECT channel_key FROM {TABLE}")]
+        if not all_rows:
+            return
+        # 保留 = 现存清单 + 所有非 opencode 键（付费组人工配置，不受远端清单影响）
+        keep = current | {k for k in all_rows if not k.startswith("opencode:")}
+        n = prune_stale(keep, base_dir=None)
+        if n:
+            logger.info("zen 清单刷新：清理 %d 条已下架模型的熔断记录", n)
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def _ensure_refresh_thread(oneshot: bool = False) -> None:

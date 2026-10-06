@@ -926,3 +926,35 @@ def test_zen_catalog_entries_and_reasoning_flag(monkeypatch):
     assert Z.is_reasoning("space-bunny-free") is False
     # caps 里没有「是否推理」这一格 → 这是模块级补的
     assert not hasattr(entries["opencode:fledge-alpha-free"].caps, "reasoning")
+
+
+def test_zen_prune_keeps_paid_group_and_drops_delisted(monkeypatch, tmp_path):
+    """清单刷新清理：只删已下架的 opencode 模型，**付费组记录必须保住**。
+
+    ⚠️ 这条锁的是一个真bug：首版只查了 `opencode:` 前缀的行来构造 keep 集合，
+    付费组的键根本不在里面 → 被误删（付费组是人工配置，不该受远端清单影响）。
+    """
+    import sqlite3
+
+    from deskmate.llm_circuit_breaker import TABLE, classify_error, record_failure
+    from coworker.providers import zen_catalog as Z
+
+    monkeypatch.setenv("DESKMATE_DIR", str(tmp_path))
+    monkeypatch.setattr(Z, "known_model_ids", lambda: {"space-bunny-free"})
+
+    for key in (
+        "opencode:ghost-free",# 已下架（不在清单）
+        "opencode:space-bunny-free",      # 在清单
+        "ark-agent-plan-cn:deepseek-v4-flash",  # 付费组
+        "xiaomi:mimo-v2.5-pro",                # 付费组
+    ):
+        record_failure(key, classify_error(status_code=403), base_dir=tmp_path)
+
+    Z._prune_breaker_for_delisted()
+
+    with sqlite3.connect(str(tmp_path / "deskmate.db")) as c:
+        left = {r[0] for r in c.execute(f"SELECT channel_key FROM {TABLE}")}
+    assert "opencode:ghost-free" not in left, "已下架模型应清理"
+    assert "opencode:space-bunny-free" in left, "清单内的模型应保留"
+    assert "ark-agent-plan-cn:deepseek-v4-flash" in left, "付费组火山不该被远端清单牵连"
+    assert "xiaomi:mimo-v2.5-pro" in left, "付费组小米不该被远端清单牵连"
