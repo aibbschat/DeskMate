@@ -1405,3 +1405,33 @@ def test_gc_backfill_created_at_from_hlc(tmp_path):
     c.close()
     expected = int(hlc.split(".")[0], 16) // 1000
     assert ca == expected, f"created_at 应为 hlc 物理秒 {expected}，实得 {ca}"
+
+
+def test_gc_min_safe_seq_uses_max_of_push_and_pull():
+    """【2026-10-07 口径】GC 安全水位取 max(push, pull)。
+
+    背景（真实巡检）：错峰常驻架构下 Mac 的 push 游标会长期冻结（实测 push=1676
+    两天未动，而云端 pull 已到 4587）——那 3000+ 行早已被对端 pull 走，却因
+    "push 水位未过"而永久留存、GC 永不生效。
+
+    push_after_seq  = 本端推给对端已确认的水位（对端必已收到）
+    pull_after_seq  = 对端从本端拉走的水位（对端同样必已收到）
+    两者取大值即既安全（不删未送达）又不浪费（不滞留已送达）。
+    """
+    import importlib.util
+    import os
+
+    path = os.path.join(os.path.dirname(__file__), "..", "scripts", "gc_sync_oplog.py")
+    spec = importlib.util.spec_from_file_location("_gc_cli", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    src = open(path, encoding="utf-8").read()
+    # 水位口径必须取 max(push, pull)，而不是只用 push
+    assert "min_safe_seq = max(push_after_seq, pull_after_seq)" in src, (
+        "GC 水位未改成 max(push, pull) —— push 冻结会让已送达的行永久滞留"
+    )
+    # 删除路径必须用 min_safe_seq 而非 push_after_seq
+    assert "gc_oplog(conn, args.keep_days, min_safe_seq" in src, (
+        "gc_oplog 调用仍在用 push_after_seq，须改用 min_safe_seq"
+    )

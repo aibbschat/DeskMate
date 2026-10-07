@@ -117,10 +117,21 @@ def main() -> int:
 
     sd, sync_sql, st = _load_sync_modules(args.mode, args.repo_path, args.cloud_pkg_path)
 
-    # 读真实 push_after_seq（已推送水位）
+    # 读水位。**2026-10-07 口径修正**：原实现只取 push_after_seq，但错峰常驻架构下
+    # Mac 的 push 游标可能长期冻结（实测 push=1676 两天未动，而云端 pull 已到4587）——
+    # 那 3000+ 行早已被对端 pull 走，却因"push 水位未过"而永久留存。
+    # 两个水位各有"对端必已收到"的含义，取**两者较大值**才既安全又不浪费：
+    #   - push_after_seq：本端推给对端已确认的水位；
+    #   - pull_after_seq：对端从本端拉走的水位（对端主动 pull 时推进），
+    #     同样是"对端已拿到"的证明。
     cursor = st.CursorStore(cursor_path)
     push_after_seq = int(getattr(cursor, "push_after_seq", 0) or 0)
-    LOG.info("游标 push_after_seq=%d（只删 seq<=%d 且超龄的行）", push_after_seq, push_after_seq)
+    pull_after_seq = int(getattr(cursor, "pull_after_seq", 0) or 0)
+    min_safe_seq = max(push_after_seq, pull_after_seq)
+    LOG.info(
+        "游标 push=%d pull=%d → 安全水位 min_safe_seq=%d（只删 seq<=%d 且超龄的行）",
+        push_after_seq, pull_after_seq, min_safe_seq, min_safe_seq,
+    )
 
     conn = sqlite3.connect(db_path)
     try:
@@ -137,7 +148,7 @@ def main() -> int:
 
         cutoff = int(time.time()) - int(args.keep_days * 86400)
         where = "seq <= ? AND created_at IS NOT NULL AND created_at < ?"
-        params = (push_after_seq, cutoff)
+        params = (min_safe_seq, cutoff)
 
         # 报告：按表统计将删除条数
         rows = conn.execute(
@@ -170,8 +181,8 @@ def main() -> int:
         LOG.info("删除前在线冷备 → %s", backup_path)
         _online_backup(db_path, backup_path)
 
-        deleted = sync_sql.gc_oplog(conn, args.keep_days, push_after_seq, dry_run=False)
-        LOG.info("已删除 %d 条（seq<=%d 且超龄）", deleted, push_after_seq)
+        deleted = sync_sql.gc_oplog(conn, args.keep_days, min_safe_seq, dry_run=False)
+        LOG.info("已删除 %d 条（seq<=%d 且超龄）", deleted, min_safe_seq)
 
         if args.vacuum:
             LOG.info("VACUUM 回收空间（可能需要一点时间）…")
