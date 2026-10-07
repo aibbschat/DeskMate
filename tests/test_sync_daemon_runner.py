@@ -148,3 +148,101 @@ def test_serve_forever_backoff_does_not_spin_on_failure(node):
     t.join(timeout=3)
     # 0.5s 内最多约 1（首轮）+ 退避轮次；不会无限快循环
     assert node.daemon._calls < 50, "失败退避不应让 tick 空转"
+
+
+# ---------------------------------------------------------------------------
+# 日历型 tick（2026-10-07）：对齐云端 :02 错峰窗口
+# ---------------------------------------------------------------------------
+
+
+class _CalRunner:
+    """抽出 _next_slot_delta 做纯逻辑验证（不起 daemon/不碰真库）。"""
+    interval = 15.0
+
+    def __init__(self, slots):
+        self.window_slots = slots
+
+
+def _load_delta():
+    import re
+    src = open(
+        os.path.join(os.path.dirname(__file__), "..", "scripts", "sync_daemon_runner.py"),
+        encoding="utf-8",
+    ).read()
+    m = re.search(r"def _next_slot_delta\(self.*?\n(?=    def )", src, re.S)
+    ns = {}
+    exec(m.group(0), ns)
+    return ns["_next_slot_delta"]
+
+
+def test_next_slot_delta_targets_window_minute():
+    """tick 必须落在指定时刻：窗口前的等待时间要精确算对。"""
+    import datetime
+
+    f = _load_delta()
+    d = _CalRunner(["02:04"])
+    # 01:00 → 02:04 = 64 分钟
+    assert f(d, datetime.datetime(2026, 10, 7, 1, 0, 0)) == 64 * 60
+    # 02:00 → 02:04 = 4 分钟
+    assert f(d, datetime.datetime(2026, 10, 7, 2, 0, 0)) == 4 * 60
+    # 恰好差 1 秒
+    assert f(d, datetime.datetime(2026, 10, 7, 2, 3, 59)) == 1
+
+
+def test_next_slot_delta_rolls_over_midnight():
+    """过了今天的时刻 → 回绕到明天同一时刻（不能返回 0 或负数，否则死循环）。"""
+    import datetime
+
+    f = _load_delta()
+    d = _CalRunner(["02:04"])
+    # 02:04:01 已过点 → 应是距明天 02:04 的秒数（>23h）
+    delta = f(d, datetime.datetime(2026, 10, 7, 2, 4, 1))
+    assert delta > 23 * 3600, delta
+    # 23:59 → 明天 02:04 = 2h5m
+    assert f(d, datetime.datetime(2026, 10, 7, 23, 59, 0)) == 125 * 60
+
+
+def test_next_slot_delta_multiple_slots_picks_nearest():
+    """多时刻表（:02 与 :04）→ 取最近的那个未过时刻。"""
+    import datetime
+
+    f = _load_delta()
+    d = _CalRunner(["02:04", "04:30"])
+    # 02:10 时下一个应是 04:30
+    assert f(d, datetime.datetime(2026, 10, 7, 2, 10, 0)) == 140 * 60
+    # 04:00 时下一个应是 04:30
+    assert f(d, datetime.datetime(2026, 10, 7, 4, 0, 0)) == 30 * 60
+
+
+def test_next_slot_delta_invalid_config_falls_back_to_interval():
+    """时刻表写坏时不崩，退回固定间隔（fail-safe）。"""
+    import datetime
+
+    f = _load_delta()
+    d = _CalRunner(["坏格式"])
+    assert f(d, datetime.datetime(2026, 10, 7, 1, 0, 0)) == d.interval
+    d2 = _CalRunner([])
+    assert f(d2, datetime.datetime(2026, 10, 7, 1, 0, 0)) == d2.interval
+
+
+def test_argparser_exposes_window_calendar_flags():
+    """CLI 暴露 --window-calendar / --window-slots，且默认值对齐云端窗口。"""
+    import importlib.util
+    import os
+
+    path = os.path.join(
+        os.path.dirname(__file__), "..", "scripts", "sync_daemon_runner.py"
+    )
+    spec = importlib.util.spec_from_file_location("_sdr_cli", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    args = mod._build_argparser().parse_args(
+        ["--side", "mac", "--db-path", "/tmp/x.db", "--window-calendar"]
+    )
+    assert args.window_calendar is True
+    assert args.window_slots == "02:04"
+    # 默认不开日历型（保持旧行为，显式开启才生效）
+    args2 = mod._build_argparser().parse_args(
+        ["--side", "mac", "--db-path", "/tmp/x.db"]
+    )
+    assert args2.window_calendar is False

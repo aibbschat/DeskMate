@@ -48,6 +48,7 @@
 from __future__ import annotations
 
 import argparse
+import datetime
 import importlib
 import logging
 import os
@@ -55,6 +56,7 @@ import signal
 import sqlite3
 import sys
 import time
+from typing import List, Optional
 
 LOG = logging.getLogger("xiaoju.sync")
 
@@ -141,6 +143,8 @@ class SyncNode:
         interval: float = 15.0,
         cursor_path: str = "",
         log_path: str = "",
+        window_calendar: bool = False,
+        window_slots: Optional[List[str]] = None,
     ) -> None:
         self.side = side
         self.sd = sd
@@ -204,11 +208,16 @@ class SyncNode:
         self.daemon = sd.SyncDaemon(engine, self.transport, self.cursor)
         self.engine = engine
 
-        # 首连基线：两端游标都还是 0 → 需要一次存量全量对账（防二蛋边界）。
+        # 首连基线：两端游标都还是 0→ 需要一次存量全量对账（防二蛋边界）。
         # 基线成功后置 False，之后只跑纯增量；隧道/对端不可达时保持 True 重试。
         self._need_baseline = (
             self.cursor.pull_after_seq == 0 and self.cursor.push_after_seq == 0
         )
+
+        # 日历型 tick（2026-10-07）：见 _serve_window_calendar 的长注释。
+        # 开启后 tick 只在 window_slots 时刻跑，drift 检测交由云端窗口负责。
+        self.window_calendar = window_calendar
+        self.window_slots = [s for s in (window_slots or []) if s.strip()]
 
     # ---- 生命周期 ----
 
@@ -246,8 +255,14 @@ class SyncNode:
         """Mac 侧：集合级对账（drift）检测——拉对端快照做 record_id 对称差，超阈值写
         ``sync_health``/``drift``。单端生产者看不见对端全量，drift 必须发生在有隧道的同步层；
         云端副本走 ``sync`` 包无 proactivity 模块，故仅 ``side=='mac'`` 执行（云端 drift
-        经同步收敛）。每小时节流；隧道不通 fail-open 跳过。"""
-        if self.side != "mac":
+        经同步收敛）。每小时节流；隧道不通 fail-open 跳过。
+
+        2026-10-07：日历型模式下**停用**，改由云端窗口脚本在 push/pull 完成后做对账。
+        原因：Mac 常驻 tick 原本几乎全败（窗口外连接必被拒），drift 生产者实际休眠；
+        而真正在做对账的是云端窗口（它在拉 Mac 全量）。drift 判据口径不变（record_id
+        对称差），只是执行方从「Mac 同步层」换成「云端窗口」。
+        """
+        if self.side != "mac" or self.window_calendar:
             return
         try:
             now = time.time()
@@ -355,6 +370,85 @@ class SyncNode:
                 LOG.info("SSH 反隧道已起（Mac 拨出）")
             except Exception as exc:  # noqa: BLE001
                 LOG.error("SSH 隧道启动失败，将周期重拨: %r", exc)
+        if self.window_calendar:
+            self._serve_window_calendar()
+        else:
+            self._serve_interval_loop()
+        self._shutdown()
+
+    def _serve_window_calendar(self) -> None:
+        """日历型tick（2026-10-07）：只在对齐错峰窗口的时刻跑 tick。
+
+        为什么不用常驻间隔轮询（错峰常驻 A 方案的固有代价）：云端 sync daemon **只在每小时
+        :02 的窗口内启动**（`xiaoju-sync-window.timer`），窗口外它连不上。常驻 daemon 的 tick
+        于是几乎全败，指数退避封顶 240s 后与~54s 的窗口互相错开 → 实测 tick 落点
+        `11:59:39 → 12:03:54` 恰好跳过整个 12:02:00–12:02:54 窗口，两天零成功。
+
+        本模式的关键认知：**Mac 侧的 tick 本身是冗余的**。
+        - Mac→云：Mac 写入立刻进本地 `_sync_oplog`，云端窗口主动 `pull` 即取走（不依赖 Mac push）。
+        - 云→Mac：云端窗口 `push` 到 Mac 常驻 oplog server，`do_POST` 立即 apply（2026-10-05 根治）。
+        所以 Mac 侧只需保证 **oplog server + 反隧道常驻在线**（本方法保留），tick 本身
+        退化成"每窗口补跑一次全量 pull/推"，失败无副作用、不再刷屏。
+
+        窗口时刻表由 `--window-calendar` 给出（"MM:MM" 列表，默认 :02 与 :04 —— 云端
+        窗口约 :02 起、游标追平即收工，:04 给追平留余量）。每轮 tick 之间用可中断睡眠
+        （SIGTERM 可快速退出），故仍属常驻进程、由 launchd KeepAlive 兜底重启。
+        """
+        LOG.info(
+            "进入日历型 tick 模式（窗口时刻 %s；oplog server 与反隧道保持常驻）",
+            ",".join(self.window_slots),
+        )
+        _tick_count = 0
+        while not self._stop:
+            now = datetime.datetime.now()
+            due = self._next_slot_delta(now)
+            # 可中断睡眠：每 1s 查一次停止位（launchd KeepAlive 重启时能快速收敛）
+            for _ in range(int(due)):
+                if self._stop:
+                    break
+                time.sleep(1)
+            if self._stop:
+                break
+            self._ensure_tunnel()
+            if self._need_baseline:
+                if self._run_baseline():
+                    self._need_baseline = False
+            res = self.daemon.tick_safe()
+            _tick_count += 1
+            if res.get("ok"):
+                self._consecutive_fail = 0
+                LOG.info(
+                    "窗口 tick#%d 成功（%s）：pull_after=%s push_after=%s",
+                    _tick_count, now.strftime("%H:%M"),
+                    res.get("pull_after_seq"), res.get("push_after_seq"),
+                )
+            else:
+                # 窗口内失败 = 真实问题（不是架构预期的窗口外拒绝），记 warn 但不再指数退避
+                self._consecutive_fail += 1
+                LOG.warning(
+                    "窗口 tick#%d 失败（%s，窗口内失败属真实问题）: %s",
+                    _tick_count, now.strftime("%H:%M"), res.get("error"),
+                )
+
+    def _next_slot_delta(self, now: "datetime.datetime") -> float:
+        """距离下一个窗口时刻的秒数（对齐到最近的那个未过时刻）。"""
+        slots = []
+        for s in self.window_slots:
+            try:
+                hh, mm = s.strip().split(":")
+                slots.append((int(hh) * 60 + int(mm)) * 60)
+            except Exception:  # noqa: BLE001 配置写错就忽略该时刻
+                continue
+        if not slots:
+            return float(self.interval)
+        cur = now.hour * 3600 + now.minute * 60 + now.second
+        candidates = [t for t in slots if t > cur]
+        if candidates:
+            return min(candidates) - cur
+        # 今天都过了 → 明天第一个
+        return (24 * 3600 - cur) + min(slots)
+
+    def _serve_interval_loop(self) -> None:
         LOG.info("进入常驻 tick 循环（间隔 %.0fs）", self.interval)
         _tick_count = 0
         _heartbeat_every = 10
@@ -375,7 +469,7 @@ class SyncNode:
                 if self._stop:
                     break
                 time.sleep(1)
-        self._shutdown()
+        # 注意：_shutdown() 由 serve_forever 统一调用（两条分支都汇合到那里），此处不重复。
 
     def _shutdown(self) -> None:
         LOG.info("收到停止信号，优雅退出…")
@@ -413,6 +507,18 @@ def _build_argparser() -> argparse.ArgumentParser:
     p.add_argument("--remote-bind-port", type=int, default=18765)
     p.add_argument("--interval", type=float, default=15.0)
     p.add_argument("--cursor-path", default="")
+    p.add_argument(
+        "--window-calendar",
+        action="store_true",
+        help="日历型 tick：只在 --window-slots 时刻跑（对齐云端 :02 错峰窗口）。"
+        "oplog server 与反隧道仍常驻，drift 检测交由云端窗口负责",
+    )
+    p.add_argument(
+        "--window-slots",
+        default="02:04",
+        help="日历时刻表，逗号分隔 HH:MM。默认对齐云端 :02 窗口（追平即收工，"
+        ":04 留余量）",
+    )
     p.add_argument("--log-path", default="")
     p.add_argument("--log-level", default="INFO")
     return p
@@ -451,6 +557,8 @@ def main(argv=None) -> int:
         interval=args.interval,
         cursor_path=args.cursor_path,
         log_path=args.log_path,
+        window_calendar=args.window_calendar,
+        window_slots=[s for s in (args.window_slots or "").split(",") if s.strip()],
     )
 
     def _handle(signum, _frame):

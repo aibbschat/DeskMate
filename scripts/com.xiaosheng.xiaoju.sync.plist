@@ -30,6 +30,19 @@
         <string>/Users/xiaocheng/workspace/openworker/.workbuddy/server/aibbs.pem</string>
         <string>--log-path</string>
         <string>/Users/xiaocheng/.deskmate/sync_daemon.log</string>
+        <!--
+          日历型 tick（2026-10-07）：tick 只在 :02:04 跑，精确命中云端错峰同步窗口。
+          背景：云端 sync daemon 仅每小时 :02 启动（xiaoju-sync-window.timer，窗口约
+          54s），Mac 常驻 tick 在窗口外必被拒，指数退避封顶 240s 后与窗口互相错开 →
+          实测 tick 落点 11:59:39 → 12:03:54 恰好跳过整窗口，两天零成功、push 水位冻结。
+
+          注意：本进程仍需**常驻**（不是跑完即退）——云端窗口要push 到 Mac 的
+          18767 oplog server（HttpOplogServer 收到即 apply），该 server 与 SSH 反隧道
+          必须 24h 在线。日历型只改"tick 何时打"，server/隧道生命周期不变。
+        -->
+        <string>--window-calendar</string>
+        <string>--window-slots</string>
+        <string>02:04</string>
     </array>
 
     <key>RunAtLoad</key>
