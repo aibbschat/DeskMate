@@ -236,10 +236,40 @@ class SyncNode:
         res = self.daemon.tick_safe()
         if res.get("ok"):
             self._consecutive_fail = 0
+            self._check_drift()  # 隧道通时做集合级对账（仅 Mac 侧、节流）
         else:
             self._consecutive_fail += 1
             LOG.warning("tick 失败(第%d次): %s", self._consecutive_fail, res.get("error"))
         return res
+
+    def _check_drift(self) -> None:
+        """Mac 侧：集合级对账（drift）检测——拉对端快照做 record_id 对称差，超阈值写
+        ``sync_health``/``drift``。单端生产者看不见对端全量，drift 必须发生在有隧道的同步层；
+        云端副本走 ``sync`` 包无 proactivity 模块，故仅 ``side=='mac'`` 执行（云端 drift
+        经同步收敛）。每小时节流；隧道不通 fail-open 跳过。"""
+        if self.side != "mac":
+            return
+        try:
+            now = time.time()
+            if now - getattr(self, "_last_drift_check", 0.0) < 3600:
+                return
+            self._last_drift_check = now
+            drift_map = {}
+            for t in self.migrated:
+                try:
+                    snap = self.transport.pull_snapshot(t)
+                except Exception:  # noqa: BLE001  隧道不通 fail-open
+                    continue
+                remote_ids = {(r.get("record_id") if isinstance(r, dict) else getattr(r, "record_id", None)) for r in snap}
+                local_ids = {r.record_id for r in self.engine.stores[t].items()}
+                delta = len(remote_ids ^ local_ids)
+                if delta > 0:
+                    drift_map[t] = delta
+            if drift_map:
+                from deskmate.proactivity.ledger import run_producer
+                run_producer("sync_health", ctx={"drift": drift_map})
+        except Exception as exc:  # noqa: BLE001
+            LOG.debug("drift 检测失败（不阻断）: %r", exc)
 
     def _run_baseline(self) -> bool:
         """首连基线：逐表拉对端快照，reconcile_baseline_oplog 双向收敛。全部成功返 True。"""

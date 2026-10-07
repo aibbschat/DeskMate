@@ -185,6 +185,13 @@ SYNC_TABLES: dict[str, dict] = {
         "ordered_status": (
             "actioned", "dismissed", "in_progress", "acknowledged", "snoozed", "pending",
         ),
+        # P3-a（§11.6 隐私分级）：行级「只在本端、不同步」开关。
+        # 仅 proactive_ledger 启用——手机灵感/日记等敏感来源可标 visibility='local'，
+        # 该行**不产生 op**（触发器 WHEN 跳过）、**不进快照**（live_items/items 过滤）、
+        # **基线不对推送**（reconcile_baseline_oplog 排除）。列名固定 'visibility'
+        # （不入 business_cols，不进 oplog；local 行本就不产生 op，故对端无从感知）。
+        # 其它表不设这个键 → 全表照常同步（向后兼容）。
+        "local_visibility_col": "visibility",
     },
     # ---- 2026-10-06：LLM 通道熔断表（设计文档 §3.3）----
     # 为什么必须跨端共享：记忆里「48 条身份分裂」就是两套状态不一致的产物。
@@ -260,7 +267,12 @@ def _json_obj_expr(cols: tuple) -> str:
     return f"json_object({parts})"
 
 
-def _trigger_sql(table: str, cols: tuple, sync_key: str = "id") -> list[str]:
+def _trigger_sql(
+    table: str,
+    cols: tuple,
+    sync_key: str = "id",
+    local_visibility_col: Optional[str] = None,
+) -> list[str]:
     """生成某表的三组触发器（建前先 DROP，幂等重跑安全）。
 
     - ai：AFTER INSERT，suppress=0 时。先把本行 sync_uuid 补随机值（若 NULL）、
@@ -300,9 +312,23 @@ def _trigger_sql(table: str, cols: tuple, sync_key: str = "id") -> list[str]:
     )
     bump = f"UPDATE {_META_TABLE} SET hlc_counter = hlc_counter + 1;\n  "
     payload = _json_obj_expr(cols)
+    # P3-a（§11.6）：local 行不产生 op。触发器 WHEN 加可见性守卫——
+    # ai/au 看 NEW.visibility（写/改），ad 看 OLD.visibility（删）。
+    # 缺省（NULL）或 'sync' 视为可同步；只有显式 'local' 跳过。
+    vis_new = ""
+    vis_old = ""
+    if local_visibility_col:
+        vis_new = (
+            f" AND (NEW.{local_visibility_col} IS NULL"
+            f" OR NEW.{local_visibility_col} <> 'local')"
+        )
+        vis_old = (
+            f" AND (OLD.{local_visibility_col} IS NULL"
+            f" OR OLD.{local_visibility_col} <> 'local')"
+        )
     ai = (
         f"CREATE TRIGGER IF NOT EXISTS trg_{table}_ai AFTER INSERT ON {table}\n"
-        f"WHEN (SELECT suppress FROM _sync_meta) = 0\n"
+        f"WHEN (SELECT suppress FROM _sync_meta) = 0{vis_new}\n"
         f"BEGIN\n"
         f"  UPDATE {_META_TABLE} SET suppress=1;\n"
         f"  {bump}"
@@ -317,7 +343,7 @@ def _trigger_sql(table: str, cols: tuple, sync_key: str = "id") -> list[str]:
     )
     au = (
         f"CREATE TRIGGER IF NOT EXISTS trg_{table}_au AFTER UPDATE ON {table}\n"
-        f"WHEN (SELECT suppress FROM _sync_meta) = 0\n"
+        f"WHEN (SELECT suppress FROM _sync_meta) = 0{vis_new}\n"
         f"BEGIN\n"
         f"  UPDATE {_META_TABLE} SET suppress=1;\n"
         f"  {bump}"
@@ -330,7 +356,7 @@ def _trigger_sql(table: str, cols: tuple, sync_key: str = "id") -> list[str]:
     )
     ad = (
         f"CREATE TRIGGER IF NOT EXISTS trg_{table}_ad AFTER DELETE ON {table}\n"
-        f"WHEN (SELECT suppress FROM _sync_meta) = 0\n"
+        f"WHEN (SELECT suppress FROM _sync_meta) = 0{vis_old}\n"
         f"BEGIN\n"
         f"  {bump}"
         f"  INSERT INTO {_OPLOG_TABLE}(table_name, record_id, op, hlc, payload_json, tombstone, node)\n"
@@ -370,9 +396,17 @@ def migrate(conn: Any, node: str, table: Optional[str] = None) -> dict:
             hlc TEXT NOT NULL,
             payload_json TEXT,
             tombstone INTEGER DEFAULT 0,
-            node TEXT
+            node TEXT,
+            created_at INTEGER
         )"""
     )
+    # P3-c（§11.x 归档/GC）：oplog 行加 created_at（epoch 秒），供按龄清理。
+    # 既有库缺该列 → ALTER 补；存量 NULL 由 hlc 物理时间戳回填
+    # （hlc 格式 '%016x.%08x.%s'，前 16 位十六进制为 ms 物理时间——SQLite 无通用
+    # 十六进制→十进制转换，故在 Python 内回填，避免 SQL CAST 把 hex 当十进制误算）。
+    if "created_at" not in _table_cols(conn, _OPLOG_TABLE):
+        cur.execute(f"ALTER TABLE {_OPLOG_TABLE} ADD COLUMN created_at INTEGER")
+    _backfill_oplog_created_at(cur)
     cur.execute(
         f"""CREATE TABLE IF NOT EXISTS {_META_TABLE} (
             id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -407,6 +441,12 @@ def migrate(conn: Any, node: str, table: Optional[str] = None) -> dict:
         spec = SYNC_TABLES[t]
         cols = spec["business_cols"]
         existing = _table_cols(conn, t)
+
+        # P3-a（§11.6）：行级「只在本端」开关列。仅 proactive_ledger 设 local_visibility_col；
+        # 其它表无该键 → 不建列（向后兼容）。缺省 'sync' = 照常同步。
+        lvc = spec.get("local_visibility_col")
+        if lvc and lvc not in existing:
+            cur.execute(f"ALTER TABLE {t} ADD COLUMN {lvc} TEXT DEFAULT 'sync'")
 
         # 加三列（SQLite ALTER 不幂等，先探测）
         if "sync_uuid" not in existing:
@@ -456,7 +496,7 @@ def migrate(conn: Any, node: str, table: Optional[str] = None) -> dict:
             f"trg_{t}_ad",
         ):
             cur.execute(f"DROP TRIGGER IF EXISTS {name}")
-        for sql in _trigger_sql(t, cols, spec["sync_key"]):
+        for sql in _trigger_sql(t, cols, spec["sync_key"], lvc):
             cur.execute(sql)
 
     conn.commit()
@@ -542,14 +582,22 @@ class SQLiteSyncStore(_ShortConnMixin):
                 )
         return None
 
-    def live_items(self) -> list:
+    def live_items(self, exclude_local: bool = False) -> list:
         cols = ",".join(self._cols)
         now = time.time_ns() // 1_000_000
+        lvc = self._spec.get("local_visibility_col") if exclude_local else None
         with self._connect() as c:
-            rows = c.execute(
-                f"SELECT sync_uuid, sync_hlc, sync_tombstone, {cols} "
-                f"FROM {self.table} WHERE sync_tombstone=0"
-            ).fetchall()
+            if lvc:
+                rows = c.execute(
+                    f"SELECT sync_uuid, sync_hlc, sync_tombstone, {cols} "
+                    f"FROM {self.table} WHERE sync_tombstone=0"
+                    f" AND ({lvc} IS NULL OR {lvc} <> 'local')"
+                ).fetchall()
+            else:
+                rows = c.execute(
+                    f"SELECT sync_uuid, sync_hlc, sync_tombstone, {cols} "
+                    f"FROM {self.table} WHERE sync_tombstone=0"
+                ).fetchall()
         out = []
         for row in rows:
             sync_uuid, hlc_s, tomb, *biz = row
@@ -557,26 +605,44 @@ class SQLiteSyncStore(_ShortConnMixin):
             vu = _parse_ms(data.get("valid_until"))
             if vu is not None and vu < now:
                 continue
+            # 行级不同步（P3-a §11.6）：visibility='local' 的行触发器不赋值 sync_uuid/
+            # sync_hlc（NULL）——读取时回落到业务主键作本地身份、零 HLC，避免崩溃；
+            # 这些行只在本端，不上同步层（exclude_local 已拦截）。
+            rid = sync_uuid if sync_uuid is not None else data.get(self._pk)
+            hlc = HLC.from_str(hlc_s) if hlc_s else HLC(0, 0, "")
             out.append(
                 Record(
-                    record_id=sync_uuid,
+                    record_id=rid,
                     data=data,
-                    hlc=HLC.from_str(hlc_s),
+                    hlc=hlc,
                     tombstone=False,
                     valid_until=vu,
                 )
             )
         return out
 
-    def items(self) -> list:
+    def items(self, exclude_local: bool = False) -> list:
         """全部记录（含墓碑）。用于基线对账 / oplog 构造——删除记录以 tombstone=True
-        形式从墓碑侧表补回，使「本端删了远端还在」能被对账发现并传播删除。"""
+        形式从墓碑侧表补回，使「本端删了远端还在」能被对账发现并传播删除。
+
+        ``exclude_local``（P3-a §11.6）：为真且本表设了 ``local_visibility_col`` 时，
+        过滤掉 ``visibility='local'`` 的行——它们只在本端、不该被基线推送/快照外发。
+        （增量同步由触发器 WHEN 守卫拦截，无需此处；此处只覆盖基线/快照路径。）
+        """
         cols = ",".join(self._cols)
+        lvc = self._spec.get("local_visibility_col") if exclude_local else None
         with self._connect() as c:
-            rows = c.execute(
-                f"SELECT sync_uuid, sync_hlc, sync_tombstone, {cols} "
-                f"FROM {self.table}"
-            ).fetchall()
+            if lvc:
+                rows = c.execute(
+                    f"SELECT sync_uuid, sync_hlc, sync_tombstone, {cols} "
+                    f"FROM {self.table}"
+                    f" WHERE ({lvc} IS NULL OR {lvc} <> 'local')"
+                ).fetchall()
+            else:
+                rows = c.execute(
+                    f"SELECT sync_uuid, sync_hlc, sync_tombstone, {cols} "
+                    f"FROM {self.table}"
+                ).fetchall()
             seen = {r[0] for r in rows}
             tomb_rows = c.execute(
                 f"SELECT record_id, hlc FROM {_SYNC_TOMBSTONE_TABLE} "
@@ -587,11 +653,14 @@ class SQLiteSyncStore(_ShortConnMixin):
         for row in rows:
             sync_uuid, hlc_s, tomb, *biz = row
             data = dict(zip(self._cols, biz))
+            # 见 live_items：local 行 sync_uuid/sync_hlc 为 NULL，回落业务主键 + 零 HLC。
+            rid = sync_uuid if sync_uuid is not None else data.get(self._pk)
+            hlc = HLC.from_str(hlc_s) if hlc_s else HLC(0, 0, "")
             out.append(
                 Record(
-                    record_id=sync_uuid,
+                    record_id=rid,
                     data=data,
-                    hlc=HLC.from_str(hlc_s),
+                    hlc=hlc,
                     tombstone=bool(tomb),
                     valid_until=_parse_ms(data.get("valid_until")),
                 )
@@ -729,6 +798,65 @@ class SQLiteSyncStore(_ShortConnMixin):
         return HLC.from_str(row[0]) >= hlc
 
 
+def _backfill_oplog_created_at(cur: Any) -> int:
+    """把 oplog 中 created_at 为 NULL 的存量行，用 hlc 物理时间回填（epoch 秒）。
+
+    返回回填条数。hlc 格式 ``'%016x.%08x.%s'``：前 16 位十六进制 = ms 物理时间戳。
+    SQLite 无通用 hex→dec 转换（CAST 会把 hex 当十进制误算），故在 Python 内逐行回填。
+    """
+    rows = cur.execute(
+        f"SELECT seq, hlc FROM {_OPLOG_TABLE} "
+        f"WHERE created_at IS NULL AND hlc IS NOT NULL"
+    ).fetchall()
+    n = 0
+    for seq, hlc in rows:
+        # hlc 格式 '%016x.%08x.%s'：首个 '.' 前为 16 位十六进制物理 ms。
+        # 用 split('.')[0] 而非 [:16]，避免把分隔点也切进 hex 导致解析失败。
+        try:
+            ms = int(str(hlc).split(".")[0], 16)
+        except ValueError:
+            continue  # 异常格式保护：跳过该行，留待人工核查，不崩
+        cur.execute(
+            f"UPDATE {_OPLOG_TABLE} SET created_at=? WHERE seq=?",
+            (ms // 1000, seq),
+        )
+        n += 1
+    return n
+
+
+def gc_oplog(
+    conn: Any, keep_days: float, min_safe_seq: int, dry_run: bool = False
+) -> int:
+    """P3-c（§11.x 归档/GC）：清理本地 oplog 中「已推完且超龄」的事件。
+
+    删除条件（两者皆满足才删，缺一不可）：
+      1. ``seq <= min_safe_seq``：该事件 seq 不高于已推送水位（push_after_seq），
+         即对端**必然已收到**——本地副本仅为传输日志、可安全丢弃。
+         ``seq > min_safe_seq`` 的事件（含尚未推送的本端新写）一律保留，绝不丢同步。
+      2. ``created_at < cutoff``（cutoff = now - keep_days*86400，epoch 秒）：
+         仅清理真正陈旧的日志；近期事件即使已推送也保留，供审计/排查。
+
+    安全性（红线）：
+      - 本函数**绝不**调整游标（pull_after_seq / push_after_seq）；GC 只删已推送副本，
+        游标语义不变，下一轮 ``since(push_after_seq)`` 自然为空、无重推。
+      - ``dry_run=True`` 时只统计不删除，返回「将删除」的条数，便于先核对再执行。
+      - 调用方职责（CLI 脚本履行）：必须从 CursorStore 取真实 push_after_seq 作
+        ``min_safe_seq``；删除前必须对活库做在线冷备（sqlite3/.backup），绝不 cp 活库；
+        本函数属手动触发路径，**绝不**被 daemon / 自动循环调用。
+    """
+    cutoff = int(time.time()) - int(keep_days * 86400)
+    where = "seq <= ? AND created_at IS NOT NULL AND created_at < ?"
+    params = (int(min_safe_seq), cutoff)
+    if dry_run:
+        n = conn.execute(
+            f"SELECT COUNT(*) FROM {_OPLOG_TABLE} WHERE {where}", params
+        ).fetchone()[0]
+        return int(n)
+    cur = conn.execute(f"DELETE FROM {_OPLOG_TABLE} WHERE {where}", params)
+    conn.commit()
+    return cur.rowcount
+
+
 class SQLiteOplogStore(_ShortConnMixin):
     """接 _sync_oplog 的 append-only 日志；接口对齐 OplogStore（seq 游标）。跨线程安全。
 
@@ -743,8 +871,8 @@ class SQLiteOplogStore(_ShortConnMixin):
         with self._connect() as c:
             cur = c.execute(
                 f"INSERT INTO {_OPLOG_TABLE}"
-                f"(table_name, record_id, op, hlc, payload_json, tombstone, node) "
-                f"VALUES (?, ?, ?, ?, ?, ?, ?)",
+                f"(table_name, record_id, op, hlc, payload_json, tombstone, node, created_at) "
+                f"VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     op.table,
                     op.record_id,
@@ -753,12 +881,18 @@ class SQLiteOplogStore(_ShortConnMixin):
                     json.dumps(op.payload, ensure_ascii=False),
                     1 if op.tombstone else 0,
                     op.hlc.node,
+                    int(time.time()),  # P3-c：事件落地时间（epoch 秒），供按龄 GC
                 ),
             )
             c.commit()
             seq = cur.lastrowid
             op.seq = seq
             return seq
+
+    def gc(self, keep_days: float, min_safe_seq: int, dry_run: bool = False) -> int:
+        """P3-c（§11.x）：见模块级 ``gc_oplog``。短连接安全。"""
+        with self._connect() as c:
+            return gc_oplog(c, keep_days, min_safe_seq, dry_run=dry_run)
 
     def since(self, after_seq: int, table: Optional[str] = None) -> list:
         with self._connect() as c:

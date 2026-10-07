@@ -35,6 +35,7 @@ from deskmate.proactivity.ledger import (
     build_handoff_opening,
     pending_items,
     record_proactive,
+    _relevance_score,
 )
 
 
@@ -670,6 +671,39 @@ def test_relevance_tiers():
     assert any("康得宝" in c for c in contents)  # 相关型：命中上下文
     assert any("漂移" in c for c in contents)  # 时效型：即时递
     assert not any("春秋" in c for c in contents)  # 无关的攒着（等被聊到再递）
+
+
+def test_relevance_bigram_primary_bge_high_confidence():
+    """P3-b 校准锁定（证据级）：字面主闸 + BGE 仅高置信补充的防骚扰底线。
+
+    - 共享字面锚点（章/人物名）→ 主闸命中，必 > 0（不受 embedding 版本漂移影响）；
+    - 同书不同线（BGE 约 0.45，低于 BGE_SEMANTIC_PASS=0.5）→ 视作无关（攒着）；
+    - 完全无关（天气）→ 0。
+    防止 BGE 无关地板（~0.25–0.31）把无关项误判为相关、退化为「按时间念台账」骚扰。
+    """
+    item_anchor = {
+        "kind": "missing_foreshadow",
+        "content": "康得宝慢性中毒悬了9节未收",
+        "evidence": "第9-17章",
+        "understanding": "这条线要收",
+    }
+    # 共享字面锚点（康得宝）→ 主闸命中
+    score_anchor = _relevance_score(item_anchor, "我想接着写康得宝中毒那条线")
+    assert score_anchor > 0.0, "共享字面锚点应判相关"
+
+    # 同书不同线（春秋历法 vs 康得宝上下文）→ BGE < 高置信门槛 → 判无关
+    item_diff_thread = {
+        "kind": "timeline_error",
+        "content": "春秋历法换算错",
+        "evidence": "第3章 历法",
+        "understanding": "时间线对不上",
+    }
+    score_diff = _relevance_score(item_diff_thread, "我想接着写康得宝中毒那条线")
+    assert score_diff == 0.0, "同书不同线应判无关（BGE 地板不得污染）"
+
+    # 完全无关（天气）→ 0
+    score_unrelated = _relevance_score(item_anchor, "今天天气真好适合出门散步")
+    assert score_unrelated == 0.0, "完全无关应判 0"
 
 
 # ---------------------------------------------------------------------------

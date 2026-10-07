@@ -20,6 +20,7 @@ from deskmate.proactivity.confidence import (
 )
 from deskmate.proactivity.disturb import DisturbManager, SuggestionRecord
 from deskmate.proactivity.judge import JudgmentResult, _parse_judgment
+from deskmate.proactivity.tick import _cloud_audit_producer
 from deskmate.proactivity.context_builder import (
     PerceptionContext,
     ProactiveContext,
@@ -122,6 +123,71 @@ class TestConfidence:
         care = evaluate_action(0.65, suggestion_type="emotional_care")
         assert normal.action == ActionType.PREPARE
         assert care.action == ActionType.SUGGEST
+
+    # --- 2026-10-07 语义闸门：should_act=false 时无论 confidence 多高都 NO_ACTION ---
+
+    def test_should_act_false_forces_no_action(self):
+        # judge 明确判定不介入（如云端无桌面、未发现异常），即使自报 0.9 也不得 SUGGEST。
+        # 这是修复「没发现异常却被录入台账并递出」的根因。
+        result = evaluate_action(0.9, should_act=False)
+        assert result.action == ActionType.NO_ACTION
+
+    def test_should_act_false_beats_care_threshold(self):
+        # 关怀同理：judge 说不该关怀，0.8 高置信也不弹。
+        result = evaluate_action(0.8, suggestion_type="emotional_care", should_act=False)
+        assert result.action == ActionType.NO_ACTION
+
+    def test_should_act_true_unchanged_by_gate(self):
+        # should_act=True 时闸门不干预，高置信仍 SUGGEST。
+        result = evaluate_action(0.9, should_act=True)
+        assert result.action == ActionType.SUGGEST
+
+    def test_should_act_none_unchanged_by_gate(self):
+        # 未提供 should_act（默认 None）保持旧行为，不影响既有调用方。
+        result = evaluate_action(0.9)
+        assert result.action == ActionType.SUGGEST
+        result2 = evaluate_action(0.65)
+        assert result2.action == ActionType.PREPARE
+
+
+class TestCloudAuditProducer:
+    """cloud_audit 生产者防御性拒收（2026-10-07，对齐设计 §四 kind 值域）。"""
+
+    def _judge(self, should_act, kind, content="发现一处矛盾", reasoning="依据：…", conf=0.9):
+        return JudgmentResult(
+            should_act=should_act,
+            confidence=conf,
+            suggestion_type=kind,
+            suggestion_content=content,
+            reasoning=reasoning,
+        )
+
+    def test_should_act_false_rejected(self):
+        # judge 判定不介入（云端无桌面/没发现异常）→ 不产台账项。
+        items = _cloud_audit_producer(self._judge(False, "plot_contradiction"))
+        assert items == []
+
+    def test_invalid_kind_none_rejected(self):
+        # 越界 kind（none）即 10-07 踩到的垃圾项形态，必须拒收。
+        items = _cloud_audit_producer(self._judge(True, "none", content="无主动建议内容"))
+        assert items == []
+
+    def test_empty_content_rejected(self):
+        items = _cloud_audit_producer(self._judge(True, "plot_contradiction", content=""))
+        assert items == []
+
+    def test_valid_finding_accepted(self):
+        items = _cloud_audit_producer(self._judge(True, "plot_contradiction"))
+        assert len(items) == 1
+        assert items[0]["kind"] == "plot_contradiction"
+        assert items[0]["confidence"] == 0.9
+
+    def test_real_finding_new_kind_accepted(self):
+        # judge 扩写的真实发现（如 plot_repetition）不在拒绝清单内，必须放行——
+        # 不能用白名单误伤合法新 kind（对齐设计「保留真实发现、丢弃垃圾」）。
+        items = _cloud_audit_producer(self._judge(True, "plot_repetition"))
+        assert len(items) == 1
+        assert items[0]["kind"] == "plot_repetition"
 
 
 

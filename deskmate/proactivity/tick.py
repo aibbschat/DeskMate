@@ -38,7 +38,22 @@ def _cloud_audit_producer(judgment) -> list:
     sync_uuid/status/门槛/截断等由管道统一补（§九不变量：生产者不碰同步、浮层、递送）。
     不传 anchor → content-hash 兜底，每条实际发现独立成行、独立 #id（同内容跨端/跨
     时间自动合并，保 48 分裂防护）；章节/人物语义锚点待 JudgmentResult 加 finding_key。
+
+    防御性拒收（2026-10-07，与 §四 kind 值域 / §5.1「判定有效才写」对齐）：
+    - judge 明确 should_act=false（云端无桌面、未发现异常）→ 不产台账项，否则
+      "没发现问题" 会以自报 0.9 的 SUGGEST 写成 pending 并递出来（已踩的垃圾项）。
+    - 拒收空内容与越界 kind（none/unknown/无 key/解析失败等）：这些是 judge 在
+      "不介入" 或异常时产出的噪声；真实写作发现（含 judge 扩写的如 plot_repetition）
+      仍正常落库——故用拒绝清单而非白名单，避免误伤合法新 kind。
     """
+    # 语义闸门：judge 判定不介入 → 不产生任何台账项。
+    if not getattr(judgment, "should_act", False):
+        return []
+    # 拒绝清单：judge 在「不介入 / 无 key / 解析失败」时产出的噪声 kind。
+    # 不含此处者（含 judge 扩写的 plot_repetition 等真实发现）一律放行。
+    _NOISE_KINDS = {"", "none", "unknown", "no_key", "error", "parse_error"}
+    if not judgment.suggestion_content or judgment.suggestion_type in _NOISE_KINDS:
+        return []
     return [
         {
             "kind": judgment.suggestion_type,
@@ -276,6 +291,16 @@ class ProactiveEngine:
         except Exception:
             logger.debug("understanding 后处理调用失败（不阻断 tick）", exc_info=True)
 
+        # ===== P2 周期健康生产者（automation/sync_health/writing 自检）=====
+        # 复用 understanding 范式：每 tick 调用，生产者内部自节流（每小时/每日），
+        # fail-open 不阻断。让小桔主动「报告坏消息」（该跑没跑/同步漂移/手稿停笔）。
+        try:
+            from deskmate.proactivity.ledger import run_producers_all
+
+            run_producers_all(base_dir=self.base_dir)
+        except Exception:
+            logger.debug("周期健康生产者调用失败（不阻断 tick）", exc_info=True)
+
         # ===== 1.5 深度访谈 / 认知验证触发（③b 自动发起：纯规则，不占 LLM judge）=====
         # 触发条件见 should_interview_now：open_gaps>=2 且距上次访谈>=3 天。
         # idle 已在上方 return；busy（会议/通话）与深专注不弹——访谈需要用户专注回应。
@@ -510,6 +535,9 @@ class ProactiveEngine:
             suggest_threshold=suggest_thr,
             prepare_threshold=prepare_thr,
             suggestion_type=judgment.suggestion_type,
+            # ① 语义闸门（2026-10-07）：judge 明确不介入时，无论 confidence 多高都
+            # 强制 NO_ACTION——杜绝 "没发现异常" 被误录为 pending 并递出。
+            should_act=judgment.should_act,
         )
 
         # P2-4：「看见你在做什么」活动描述 + 长时间专注陪伴语

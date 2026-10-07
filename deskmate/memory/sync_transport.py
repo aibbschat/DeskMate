@@ -87,6 +87,9 @@ class _OplogHandler(BaseHTTPRequestHandler):
         与 SyncEngine.reconcile_baseline_oplog 的消费端（live_items 语义）保持一致：
         不把已过期（valid_until 早于现在）或已删记录当活记录推给对端，避免首连基线
         把过期记录当活记录传播、对账口径对不上。
+
+        P3-a（§11.6）：snapshot 经 ``live_items(exclude_local=True)`` 构建——本端标
+        ``visibility='local'`` 的行只在本端、不同步，故不进快照推给对端。
         """
         table = urllib.parse.parse_qs(parsed.query).get("table", [""])[0]
         stores = getattr(self.server, "stores", None)  # type: ignore[attr-defined]
@@ -94,7 +97,7 @@ class _OplogHandler(BaseHTTPRequestHandler):
             self.send_error(404)
             return
         recs = []
-        for r in stores[table].live_items():
+        for r in stores[table].live_items(exclude_local=True):
             recs.append(
                 {
                     "record_id": r.record_id,

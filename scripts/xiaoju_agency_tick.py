@@ -100,6 +100,13 @@ def main() -> dict:
     except Exception as e:  # noqa: BLE001
         log.exception("AgencyEngine.tick 抛异常（应已被内部 fail-open 吸收，此为兜底）: %s", e)
         return {"error": str(e)}
+    # 周期健康生产者（automation/sync_health/writing）：云端 hourly 窗口天然适配。
+    try:
+        from deskmate.proactivity.ledger import run_producers_all
+
+        run_producers_all(base_dir=DESKMATE_DIR)
+    except Exception as e:  # noqa: BLE001
+        log.exception("周期健康生产者失败（不阻断 agency）: %s", e)
     # 列表字段太长，摘要化后记录
     summary = {
         k: (f"<{len(v)} items>" if isinstance(v, list) else v)

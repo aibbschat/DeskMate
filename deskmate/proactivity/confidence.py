@@ -38,6 +38,7 @@ def evaluate_action(
     suggest_threshold: float | None = None,
     prepare_threshold: float | None = None,
     suggestion_type: str | None = None,
+    should_act: bool | None = None,
 ) -> ActionDecision:
     """根据置信度分数决定行动类型。
 
@@ -49,11 +50,26 @@ def evaluate_action(
         suggestion_type: 可选，建议类型。当为 ``emotional_care`` 时启用关怀专属
             低门槛（THRESHOLD_SUGGEST_CARE），且低于门槛直接 NO_ACTION（不进
             PREPARE），避免关怀被静默积压弹不出。
+        should_act: 可选，judge 的语义判定。``False`` 表示 judge 明确认为**不该
+            介入**（如云端无桌面、未发现异常）——此时无论 confidence 多高都强制
+            NO_ACTION，绝不走 SUGGEST 写台账/弹建议（2026-10-07 修复：原代码只
+            看 confidence 无视 should_act，导致 "没发现异常" 以自报 0.9 的 SUGGEST
+            被误录为 pending 并递出）。``True`` 或 ``None``（未提供）保持原行为。
 
     Returns:
         ActionDecision
     """
     confidence = max(0.0, min(1.0, confidence))
+
+    # 语义闸门（2026-10-07）：judge 明确判定不介入 → 强制不行动。
+    # 这是「判定有效才写台账」的设计前提（设计文档 §5.1）；不依赖 LLM 自报的
+    # confidence（模型常把 should_act=false 也配上 0.9 高置信）。
+    if should_act is False:
+        return ActionDecision(
+            action=ActionType.NO_ACTION,
+            confidence=confidence,
+            reason=reason or "judge 判定不介入（should_act=false），不主动打扰",
+        )
 
     # P2-5 情感关怀：专属低门槛，且不做 PREPARE 过渡。
     if suggestion_type == "emotional_care":

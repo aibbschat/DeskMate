@@ -10,6 +10,7 @@
 import os
 import sqlite3
 import tempfile
+import time
 
 import pytest
 
@@ -32,6 +33,9 @@ from deskmate.memory.sync_store_sqlite import (
     SQLiteOplogStore,
     SYNC_TABLES,
     _validate_sync_tables_no_vectors,
+    gc_oplog,
+    _backfill_oplog_created_at,
+    _OPLOG_TABLE,
 )
 
 CREATE = """CREATE TABLE profile_items (
@@ -1021,3 +1025,383 @@ def test_sync_tables_exclude_embedding_columns():
                 f"同步表 {table!r} 的 business_cols 含向量列 {col!r}："
                 f"违反「向量各端重算」策略①"
             )
+
+
+# ---------------------------------------------------------------------------
+# P3-a（§11.6 隐私分级）：行级 visibility='local' 不同步
+# 三道关口：① 触发器 WHEN 守卫（增量不产生 op）② items()/live_items() exclude_local
+#（快照/基线不外发）③ reconcile_baseline_oplog 排除 local 行（首连基线不推送）
+# ---------------------------------------------------------------------------
+
+LEDGER_CREATE = """CREATE TABLE proactive_ledger (
+    id TEXT PRIMARY KEY,
+    source TEXT, kind TEXT, content TEXT, evidence TEXT,
+    understanding TEXT, payload TEXT, source_node TEXT, status TEXT,
+    confidence REAL, created_at TEXT, acknowledged_at TEXT,
+    delivered_at TEXT, snoozed_until TEXT,
+    visibility TEXT DEFAULT 'sync'
+)"""
+
+
+LEDGER_COLS = (
+    "id, source, kind, content, evidence, understanding, payload,"
+    " source_node, status, confidence, created_at, acknowledged_at,"
+    " delivered_at, snoozed_until, visibility"
+)
+
+
+@pytest.fixture
+def ledger_pair():
+    """两个库各建 proactive_ledger + migrate（含 visibility 列与三触发器）。"""
+    d = tempfile.mkdtemp(prefix="pt_vis_")
+    ca, cb = os.path.join(d, "a.db"), os.path.join(d, "b.db")
+    for p, node in ((ca, "mac"), (cb, "cloud")):
+        c = sqlite3.connect(p)
+        c.execute(LEDGER_CREATE)
+        migrate(c, node, "proactive_ledger")
+        c.commit()
+        c.close()
+    return ca, cb
+
+
+def _ledger_insert(db, rid, visibility):
+    c = sqlite3.connect(db)
+    c.execute(
+        f"INSERT INTO proactive_ledger({LEDGER_COLS}) VALUES("
+        "?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (
+            rid, "automation", "task_anomaly", f"content-{rid}", "e", "", "{}",
+            "mac", "pending", 0.9, "2026-10-07T00:00:00", None, None, None,
+            visibility,
+        ),
+    )
+    c.commit()
+    c.close()
+
+
+def _daemon_pair(ca, cb, table):
+    cA = sqlite3.connect(ca)
+    sA, oA = SQLiteSyncStore(cA, table), SQLiteOplogStore(cA)
+    eA = SyncEngine(sA, oA, "mac")
+    cB = sqlite3.connect(cb)
+    sB, oB = SQLiteSyncStore(cB, table), SQLiteOplogStore(cB)
+    eB = SyncEngine(sB, oB, "cloud")
+    dA = SyncDaemon(eA, InMemoryTransport(oB))
+    dB = SyncDaemon(eB, InMemoryTransport(oA))
+    return dict(sA=sA, sB=sB, eA=eA, eB=eB, dA=dA, dB=dB)
+
+
+def test_visibility_local_generates_no_op(ledger_pair):
+    """关口①：标 local 的行 → 触发器 WHEN 守卫拦截 → 不产生 op、sync_uuid 不赋值。"""
+    ca, _ = ledger_pair
+    _ledger_insert(ca, "local1", "local")
+    _ledger_insert(ca, "sync1", "sync")
+
+    rows = {r[0]: r for r in _ledger_rows(ca)}
+    # local 行：sync_uuid 必须为 NULL（触发器未运行）
+    assert rows["local1"][1] is None, "local 行 sync_uuid 应为 NULL（触发器跳过）"
+    # sync 行：sync_uuid 已赋值
+    assert rows["sync1"][1] is not None, "sync 行 sync_uuid 应已赋值"
+
+    co = sqlite3.connect(ca)
+    n_ops = co.execute(
+        "SELECT COUNT(*) FROM _sync_oplog WHERE table_name='proactive_ledger'"
+    ).fetchone()[0]
+    co.close()
+    assert n_ops == 1, f"应只有 1 条 op（sync 行），实得 {n_ops}（local 行不得产生 op）"
+
+
+def _ledger_rows(db, visibility=None):
+    c = sqlite3.connect(db)
+    if visibility is None:
+        rows = c.execute(
+            "SELECT id, sync_uuid, visibility FROM proactive_ledger"
+        ).fetchall()
+    else:
+        rows = c.execute(
+            "SELECT id, sync_uuid, visibility FROM proactive_ledger WHERE visibility=?",
+            (visibility,),
+        ).fetchall()
+    c.close()
+    return rows
+
+
+def test_visibility_items_exclude_local(ledger_pair):
+    """关口②：items()/live_items() 的 exclude_local 过滤只筛 visibility='local'。"""
+    ca, _ = ledger_pair
+    for i, vis in enumerate(("sync", "local", "sync", "local")):
+        _ledger_insert(ca, f"r{i}", vis)
+
+    cA = sqlite3.connect(ca)
+    sA = SQLiteSyncStore(cA, "proactive_ledger")
+    all_rows = sA.items()
+    excluded = sA.items(exclude_local=True)
+    live_all = sA.live_items()
+    live_excl = sA.live_items(exclude_local=True)
+    cA.close()
+    excl_ids = {r.record_id for r in excluded}
+    # 默认含全部 4 条；exclude_local 只含 2 条 sync
+    assert len(all_rows) == 4
+    assert len(excluded) == 2
+    assert all(("r0" in rid) or ("r2" in rid) for rid in excl_ids)  # 仅 sync 行
+    assert len(live_all) == 4
+    assert len(live_excl) == 2
+
+
+def test_visibility_baseline_does_not_push_local(ledger_pair):
+    """关口③：基线对账（reconcile_baseline_oplog）不把 local 行推给对端。"""
+    ca, cb = ledger_pair
+    _ledger_insert(ca, "sa", "sync")
+    _ledger_insert(ca, "la", "local")
+
+    cB = sqlite3.connect(cb)
+    sB = SQLiteSyncStore(cB, "proactive_ledger")
+    remote_ms = MemoryStore()
+    for r in sB.items():
+        remote_ms.upsert(r.record_id, r.data, r.hlc, valid_until=r.valid_until)
+
+    cA = sqlite3.connect(ca)
+    sA = SQLiteSyncStore(cA, "proactive_ledger")
+    oA = SQLiteOplogStore(cA)
+    eA = SyncEngine(sA, oA, "mac")
+    ordered = SYNC_TABLES["proactive_ledger"].get("ordered_status")
+    rep = reconcile_baseline_oplog(
+        sA, remote_ms, eA, "proactive_ledger", "mac", ordered
+    )
+    cA.close()
+
+    assert "deskmate:proactive_ledger:la" not in rep["local_only"], (
+        "local 行不应被基线外推"
+    )
+    assert "deskmate:proactive_ledger:sa" in rep["local_only"], (
+        "sync 行应被基线外推"
+    )
+    co = sqlite3.connect(ca)
+    pushed = [
+        r[0]
+        for r in co.execute(
+            "SELECT record_id FROM _sync_oplog"
+            " WHERE table_name='proactive_ledger' AND tombstone=0"
+        ).fetchall()
+    ]
+    co.close()
+    assert all("la" not in pid for pid in pushed), "oplog 不得含 local 行的 op"
+    assert any("sa" in pid for pid in pushed), "oplog 应含 sync 行的 op"
+
+
+def test_visibility_full_sync_roundtrip_local_stays_local(ledger_pair):
+    """端到端：A 的 local 行经增量同步 + 基线双重保险也到不了 B。"""
+    ca, cb = ledger_pair
+    _ledger_insert(ca, "only_a", "local")
+
+    nodes = _daemon_pair(ca, cb, "proactive_ledger")
+    for _ in range(3):
+        nodes["dA"].tick()
+        nodes["dB"].tick()
+    # 再做一次首连基线（游标归零场景）
+    cB2 = sqlite3.connect(cb)
+    sB2 = SQLiteSyncStore(cB2, "proactive_ledger")
+    remote_ms = MemoryStore()
+    for r in sB2.items():
+        remote_ms.upsert(r.record_id, r.data, r.hlc, valid_until=r.valid_until)
+    cA2 = sqlite3.connect(ca)
+    sA2 = SQLiteSyncStore(cA2, "proactive_ledger")
+    oA2 = SQLiteOplogStore(cA2)
+    eA2 = SyncEngine(sA2, oA2, "mac")
+    ordered = SYNC_TABLES["proactive_ledger"].get("ordered_status")
+    reconcile_baseline_oplog(
+        sA2, remote_ms, eA2, "proactive_ledger", "mac", ordered
+    )
+    cA2.close()
+
+    cB = sqlite3.connect(cb)
+    b_ids = {r[0] for r in cB.execute("SELECT id FROM proactive_ledger").fetchall()}
+    cB.close()
+    assert "only_a" not in b_ids, "local 行不得经同步到达对端（增量 + 基线双保险）"
+
+
+def test_visibility_default_sync_continues(ledger_pair):
+    """回归保护：不显式标 local（缺省 'sync' 或 NULL）的行照常同步。"""
+    ca, cb = ledger_pair
+    _ledger_insert(ca, "default_sync", "sync")
+    # 缺省值（建表 DEFAULT 'sync'）
+    c = sqlite3.connect(ca)
+    c.execute(
+        f"INSERT INTO proactive_ledger({LEDGER_COLS}) VALUES("
+        "?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (
+            "default_null", "automation", "task_anomaly", "content-null", "e", "", "{}",
+            "mac", "pending", 0.9, "2026-10-07T00:00:00", None, None, None,
+            "sync",  # 显式 sync
+        ),
+    )
+    c.commit()
+    c.close()
+
+    nodes = _daemon_pair(ca, cb, "proactive_ledger")
+    for _ in range(3):
+        nodes["dA"].tick()
+        nodes["dB"].tick()
+    cB = sqlite3.connect(cb)
+    b_ids = {r[0] for r in cB.execute("SELECT id FROM proactive_ledger").fetchall()}
+    cB.close()
+    assert "default_sync" in b_ids and "default_null" in b_ids, (
+        "缺省/显式 sync 的行应正常同步"
+    )
+
+
+# ===========================================================================
+# P3-c（§11.x 归档/GC）：oplog 清理
+# ===========================================================================
+def _insert_oplog_row(db, table_name, record_id, created_at, hlc="0000000000000000.00000000.x"):
+    """直接往 _sync_oplog 插一行（seq 自动自增，created_at 显式控制）。
+
+    hlc 默认是零值（P3-c 删除只看 seq + created_at，不依赖 hlc）。
+    """
+    c = sqlite3.connect(db)
+    c.execute(
+        f"INSERT INTO {_OPLOG_TABLE}"
+        "(table_name, record_id, op, hlc, payload_json, tombstone, node, created_at) "
+        "VALUES (?,?,?,?,?,?,?,?)",
+        (
+            table_name, record_id, "upsert", hlc, "{}", 0, "mac",
+            created_at,
+        ),
+    )
+    seq = c.execute("SELECT last_insert_rowid()").fetchone()[0]
+    c.commit()
+    c.close()
+    return seq
+
+
+def test_gc_deletes_old_and_pushed_only(tmp_path):
+    """GC 只删『seq<=safe 且超龄』的行：近期、未推送、近期已推送都保留。"""
+    db = str(tmp_path / "gc.db")
+    c = sqlite3.connect(db)
+    c.execute("CREATE TABLE _noop(id TEXT)")  # 占位，触发 migrate 需要表存在不必要；此处直接建 oplog
+    # 直接确保 oplog + meta 存在（不依赖业务表 migrate）
+    c.execute(
+        f"CREATE TABLE IF NOT EXISTS {_OPLOG_TABLE} ("
+        "seq INTEGER PRIMARY KEY AUTOINCREMENT, table_name TEXT, record_id TEXT,"
+        " op TEXT, hlc TEXT, payload_json TEXT, tombstone INTEGER, node TEXT,"
+        " created_at INTEGER)"
+    )
+    c.execute("CREATE TABLE IF NOT EXISTS _sync_meta(id INTEGER PRIMARY KEY, node TEXT, hlc_counter INTEGER, suppress INTEGER)")
+    c.commit(); c.close()
+
+    now = int(time.time())
+    old = now - 100 * 86400  # 100 天前（超龄）
+    recent = now - 1 * 86400  # 1 天前（未超龄）
+    # 插入顺序决定 seq：1..3 为已推送(old/recent/old)，4 为未推送(old)，5 为近期已推送(recent) 放在 safe 内
+    _insert_oplog_row(db, "profile_items", "r1", old)      # seq1  old   pushed
+    _insert_oplog_row(db, "profile_items", "r2", recent)   # seq2  recent pushed -> 保留
+    _insert_oplog_row(db, "profile_items", "r3", old)      # seq3  old   pushed
+    _insert_oplog_row(db, "profile_items", "r4", old)      # seq4  old   UNPUSHED (seq>3) -> 保留
+    _insert_oplog_row(db, "user_posts", "r5", recent)     # seq5  recent pushed(但>safe) -> 保留
+
+    push_after_seq = 3
+    keep_days = 30
+    deleted = gc_oplog(sqlite3.connect(db), keep_days, push_after_seq, dry_run=False)
+    assert deleted == 2, f"应删 2 条(seq1,3 的 old+pushed)，实删 {deleted}"
+
+    c = sqlite3.connect(db)
+    kept = {r[0] for r in c.execute(f"SELECT record_id FROM {_OPLOG_TABLE}").fetchall()}
+    c.close()
+    assert kept == {"r2", "r4", "r5"}, f"应保留近期/未推送/超safe 行，实留 {kept}"
+
+
+def test_gc_keeps_unpushed_regardless_of_age(tmp_path):
+    """未推送（seq>safe）的事件即使很旧也绝不删——否则丢同步。"""
+    db = str(tmp_path / "gc2.db")
+    c = sqlite3.connect(db)
+    c.execute(
+        f"CREATE TABLE IF NOT EXISTS {_OPLOG_TABLE} ("
+        "seq INTEGER PRIMARY KEY AUTOINCREMENT, table_name TEXT, record_id TEXT,"
+        " op TEXT, hlc TEXT, payload_json TEXT, tombstone INTEGER, node TEXT,"
+        " created_at INTEGER)"
+    )
+    c.commit(); c.close()
+    now = int(time.time())
+    old = now - 365 * 86400  # 一年前
+    _insert_oplog_row(db, "profile_items", "ancient_pushed", old)   # seq1 pushed old -> 删
+    _insert_oplog_row(db, "profile_items", "ancient_unpushed", old) # seq2 unpushed old -> 留
+
+    deleted = gc_oplog(sqlite3.connect(db), 30, min_safe_seq=1, dry_run=False)
+    assert deleted == 1, f"只删 1 条已推送旧行，实删 {deleted}"
+    c = sqlite3.connect(db)
+    kept = {r[0] for r in c.execute(f"SELECT record_id FROM {_OPLOG_TABLE}").fetchall()}
+    c.close()
+    assert kept == {"ancient_unpushed"}
+
+
+def test_gc_dry_run_does_not_delete(tmp_path):
+    """dry_run 只统计不删，返回将删条数。"""
+    db = str(tmp_path / "gc3.db")
+    c = sqlite3.connect(db)
+    c.execute(
+        f"CREATE TABLE IF NOT EXISTS {_OPLOG_TABLE} ("
+        "seq INTEGER PRIMARY KEY AUTOINCREMENT, table_name TEXT, record_id TEXT,"
+        " op TEXT, hlc TEXT, payload_json TEXT, tombstone INTEGER, node TEXT,"
+        " created_at INTEGER)"
+    )
+    c.commit(); c.close()
+    now = int(time.time())
+    old = now - 100 * 86400
+    for _ in range(5):
+        _insert_oplog_row(db, "profile_items", f"x{_}", old)  # 5 条全 old 且 seq<=5
+    conn = sqlite3.connect(db)
+    will_delete = gc_oplog(conn, 30, min_safe_seq=5, dry_run=True)
+    assert will_delete == 5
+    remain = conn.execute(f"SELECT COUNT(*) FROM {_OPLOG_TABLE}").fetchone()[0]
+    conn.close()
+    assert remain == 5, "dry_run 不得实际删除"
+
+
+def test_gc_store_method_wraps_function(tmp_path):
+    """SQLiteOplogStore.gc 短连接包装与模块函数一致。"""
+    db = str(tmp_path / "gc4.db")
+    c = sqlite3.connect(db)
+    c.execute(
+        f"CREATE TABLE IF NOT EXISTS {_OPLOG_TABLE} ("
+        "seq INTEGER PRIMARY KEY AUTOINCREMENT, table_name TEXT, record_id TEXT,"
+        " op TEXT, hlc TEXT, payload_json TEXT, tombstone INTEGER, node TEXT,"
+        " created_at INTEGER)"
+    )
+    c.commit(); c.close()
+    now = int(time.time())
+    old = now - 100 * 86400
+    for _ in range(3):
+        _insert_oplog_row(db, "profile_items", f"x{_}", old)
+    oplog = SQLiteOplogStore(sqlite3.connect(db))
+    deleted = oplog.gc(keep_days=30, min_safe_seq=3, dry_run=False)
+    assert deleted == 3
+
+
+def test_gc_backfill_created_at_from_hlc(tmp_path):
+    """存量 oplog 缺 created_at 时，_backfill_oplog_created_at 用 hlc 物理时间回填。"""
+    db = str(tmp_path / "gc5.db")
+    c = sqlite3.connect(db)
+    c.execute(
+        f"CREATE TABLE IF NOT EXISTS {_OPLOG_TABLE} ("
+        "seq INTEGER PRIMARY KEY AUTOINCREMENT, table_name TEXT, record_id TEXT,"
+        " op TEXT, hlc TEXT, payload_json TEXT, tombstone INTEGER, node TEXT,"
+        " created_at INTEGER)"
+    )
+    # hlc 物理 ms = 0x000000018bd2d648 = 2026-... 随便一个确定值：1700000000000 ms
+    hlc = "0000018bd2d648.00000000.mac"
+    c.execute(
+        f"INSERT INTO {_OPLOG_TABLE}"
+        "(table_name, record_id, op, hlc, payload_json, tombstone, node, created_at) "
+        "VALUES ('profile_items','z','upsert',?, '{{}}',0,'mac',NULL)",
+        (hlc,),
+    )
+    c.commit()
+    n = _backfill_oplog_created_at(c)
+    c.commit()
+    c.close()
+    assert n == 1
+    c = sqlite3.connect(db)
+    ca = c.execute(f"SELECT created_at FROM {_OPLOG_TABLE} WHERE record_id='z'").fetchone()[0]
+    c.close()
+    expected = int(hlc.split(".")[0], 16) // 1000
+    assert ca == expected, f"created_at 应为 hlc 物理秒 {expected}，实得 {ca}"

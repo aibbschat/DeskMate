@@ -37,13 +37,23 @@ LOCAL_RUNNER="scripts/sync_daemon_runner.py"
 
 # 主动产出台账模块（主程序包，不是 sync 平铺包）：随 sync 文件一起上云，
 # 避免每次改 proactivity 都手动 scp。目标云端 /opt/openworker/deskmate/proactivity/。
+# ⚠️ confidence.py（§11.14 should_act 闸门）+ health_producers.py（P2 三生产者）务必纳入，
+# 否则云端跑旧码 → §11.14 修复与 P2 离线生效（10-07 实测：漏传 confidence.py 会让
+# 「没发现异常也递卡」在云端照旧复发）。
 PROACTIVITY_MODULES=(
   "deskmate/proactivity/ledger.py"
   "deskmate/proactivity/tick.py"
   "deskmate/proactivity/understanding.py"
   "deskmate/proactivity/server.py"
+  "deskmate/proactivity/confidence.py"
+  "deskmate/proactivity/health_producers.py"
 )
 CLOUD_PROACTIVITY_DIR="/opt/openworker/deskmate/proactivity"
+
+# P3-c 手动 oplog GC 工具（§11.15）：随 runner 一起上云到 /var/lib/openworker/.deskmate/，
+# 与 sync_runner.py 同目录（--cloud-pkg-path 默认即该目录，可 `python3 gc_sync_oplog.py --mode cloud`）。
+LOCAL_GC_SCRIPT="scripts/gc_sync_oplog.py"
+CLOUD_GC_SCRIPT="$CLOUD_DESKMATE/gc_sync_oplog.py"
 
 # LLM 通道组+ 熔断（2026-10-06，设计 §二/§3）：本地与云端**必须同码同熔断表**，
 # 否则会出现「本地熔断了、云端还在撞」——与记忆里「48 条身份分裂」同类的事故。
@@ -129,6 +139,12 @@ ssh -o ConnectTimeout=15 "$SSH_HOST" "sudo -n -u openworker cp '/tmp/sync_deploy
 ssh -o ConnectTimeout=15 "$SSH_HOST" "rm -f '/tmp/sync_deploy_runner.py'" || true
 echo "    ✓ sync_runner.py"
 
+echo "==> 推送 GC 工具到云端 $CLOUD_GC_SCRIPT"
+scp -q -o ConnectTimeout=15 "$LOCAL_GC_SCRIPT" "$SSH_HOST:/tmp/sync_deploy_gc.py"
+ssh -o ConnectTimeout=15 "$SSH_HOST" "sudo -n -u openworker cp '/tmp/sync_deploy_gc.py' '$CLOUD_GC_SCRIPT'"
+ssh -o ConnectTimeout=15 "$SSH_HOST" "rm -f '/tmp/sync_deploy_gc.py'" || true
+echo "    ✓ gc_sync_oplog.py"
+
 # ---- 3b. 推送 proactivity 模块到云端主程序包 ----
 echo "==> 推送 proactivity 模块到云端 $CLOUD_PROACTIVITY_DIR"
 for f in "${PROACTIVITY_MODULES[@]}"; do
@@ -186,6 +202,14 @@ else
   echo "    ✗ sync_runner.py  本地=$local_md5 云端=$cloud_md5  (不一致!)" >&2
   exit 1
 fi
+local_md5="$(md5 -q "$LOCAL_GC_SCRIPT")"
+cloud_md5="$(ssh -o ConnectTimeout=15 "$SSH_HOST" "sudo -n -u openworker md5sum '$CLOUD_GC_SCRIPT' 2>/dev/null | awk '{print \$1}'")"
+if [[ "$local_md5" == "$cloud_md5" ]]; then
+  echo "    ✓ gc_sync_oplog.py  $local_md5"
+else
+  echo "    ✗ gc_sync_oplog.py  本地=$local_md5 云端=$cloud_md5  (不一致!)" >&2
+  exit 1
+fi
 
 # ---- 6. proactivity 模块对齐核对 ----
 echo "==> proactivity 模块对齐核对"
@@ -221,7 +245,7 @@ for f in "${CHANNEL_MODULES[@]}"; do
 done
 
 echo ""
-echo "✅ 本地→云端代码已对齐（3 个 sync 文件 + runner + 4 个 proactivity + 5 个通道/熔断模块）。"
+echo "✅ 本地→云端代码已对齐（3 个 sync 文件 + runner + gc 工具 + 6 个 proactivity + 5 个通道/熔断模块）。"
 echo "   同步平铺包仅每小时 :02 窗口加载；主程序包需**重启 openworker-server** 才生效："
 echo "     sudo systemctl restart openworker-server"
 echo "   ⚠️ 通道/熔断模块若与云端不一致，会出现「本地熔断了、云端还在撞」"

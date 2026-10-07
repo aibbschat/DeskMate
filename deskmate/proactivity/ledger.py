@@ -75,17 +75,13 @@ RELEVANT_TOP_N = 2
 
 
 def _bigrams(text: str) -> set:
-    """字符二元组集合——中文无分词依赖的轻量语义近似（stdlib only）。"""
+    """字符二元组集合——中文无分词依赖的轻量语义近似（stdlib only），作为 BGE 不可用时的兜底。"""
     t = "".join((text or "").split())
     return {t[i : i + 2] for i in range(len(t) - 1)}
 
 
-def _relevance_score(item: dict, context: str) -> float:
-    """台账项与会话上下文的重叠度（bigram 交集 / sqrt(项长)），无外部依赖。
-
-    语义检索（BGE）按 §11.6/§11.8 属 P3「暂不做」；此处先用可解释的字面重叠兜底，
-    接口（分数越高越相关、0 = 无关联不递）与日后 BGE 版本一致，可整体替换。
-    """
+def _relevance_score_bigram(item: dict, context: str) -> float:
+    """字面重叠兜底（BGE 不可用时）：bigram 交集 / sqrt(项长)。"""
     ctx = _bigrams(context)
     if not ctx:
         return 0.0
@@ -96,6 +92,67 @@ def _relevance_score(item: dict, context: str) -> float:
     if not bi:
         return 0.0
     return len(bi & ctx) / (len(bi) ** 0.5)
+
+
+def _bge_available() -> bool:
+    """本地 BGE（fastembed）是否已可用；仅检查包存在，不加载模型。"""
+    try:
+        from deskmate.memory import local_embed
+        return bool(local_embed.available())
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _bge_embed(texts: list) -> Optional[list]:
+    """批量 embed；异常或不可用返回 None。首次调用会加载模型（~185MB），后续复用。"""
+    try:
+        from deskmate.memory import local_embed
+        if not local_embed.available():
+            return None
+        return local_embed.embed(texts)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _cosine(a, b) -> float:
+    try:
+        from deskmate.memory.semantic_search import cosine_similarity
+        return float(cosine_similarity(a, b))
+    except Exception:  # noqa: BLE001
+        return 0.0
+
+
+# BGE 语义相似度高置信门槛（P3-b 校准，实测）：BGE 中文无关句地板约 0.25–0.31、同书但不同线
+# 约 0.45、真相关（共享章/人物锚点或强改写）≥0.5。低于此值视为「语义未达可靠相关」，仅取字面
+# bigram 分，避免 BGE 地板把无关项误判为相关（设计 §11.4② 反骚扰底线：宁可少递不可乱递）。
+BGE_SEMANTIC_PASS = 0.5
+
+
+def _relevance_score(item: dict, context: str) -> float:
+    """台账项与会话上下文的相关性（0 = 不相关、不递）。
+
+    P3-b：字面 bigram 重叠为**主闸**（设计 §11.4② 证据随行——章/人物名等锚点精确匹配，
+    稳定可解释、不受 embedding 版本漂移影响）；BGE 语义相似度仅在**高置信**（≥
+    BGE_SEMANTIC_PASS）时补充，捕捉「共享语义但不共享字面」的改写/同义场景。两者取较大值。
+    fastembed 未装 / 异常时回落纯 bigram，行为不退化。
+    """
+    blob = " ".join(
+        str(item.get(k) or "") for k in ("kind", "content", "evidence", "understanding")
+    )
+    ctx = (context or "").strip()
+    if not (blob.strip() and ctx):
+        return 0.0
+    bg = _relevance_score_bigram(item, context)
+    if _bge_available():
+        emb = _bge_embed([blob, ctx])
+        if emb and len(emb) == 2:
+            sim = _cosine(emb[0], emb[1])
+            if sim >= BGE_SEMANTIC_PASS:
+                # 高置信语义相关：取 max（字面有重叠以字面为主，纯语义强相关以语义为主）
+                return max(bg, sim)
+            # 语义未达高置信：仅取字面分（BGE 地板不污染相关性判定）
+            return bg
+    return bg
 
 
 # ---- 生产者注册表（§四/§九「接口留好」，修⑧）----
@@ -140,6 +197,34 @@ def run_producer(
                 n += 1
         except Exception as e:  # noqa: BLE001
             logger.debug("producer %s 落库失败（不阻断）: %s", source, e, exc_info=True)
+    return n
+
+
+def run_producers_all(base_dir: Optional[Path] = None, *, exclude: tuple = ("cloud_audit",)) -> int:
+    """周期性跑全部已注册 producer（除已在 tick SUGGEST 分支跑的 cloud_audit），fail-open。
+
+    各 producer 内部按 ``proactivity_meta`` 自节流（每小时 / 每日），故可从任意 30s tick
+    或每小时云端窗口无脑调用，不会高频打扰。确定性 id 保证跨节点 / 跨调用不重复写。
+    返回总落库条数。
+
+    触发接入（§11.14 部署）：
+    - Mac 桌面端：``ProactiveEngine.tick()``（复用 understanding 后处理范式，用户不在也跑）；
+    - 云端：``scripts/xiaoju_agency_tick.py`` 的 hourly 窗口。
+    """
+    # 确保健康生产者模块已注册（@register_producer 在 import 时生效）
+    try:
+        import deskmate.proactivity.health_producers  # noqa: F401
+    except Exception:  # noqa: BLE001
+        pass
+    n = 0
+    for src in list(PRODUCERS.keys()):
+        if src in exclude:
+            continue
+        ctx = {"base_dir": base_dir} if base_dir is not None else {}
+        try:
+            n += run_producer(src, ctx=ctx, base_dir=base_dir)
+        except Exception as e:  # noqa: BLE001
+            logger.debug("producer %s 调用失败（不阻断）: %s", src, e, exc_info=True)
     return n
 
 
@@ -193,14 +278,16 @@ def _ensure_table(conn: sqlite3.Connection) -> None:
         f"id TEXT PRIMARY KEY, source TEXT, kind TEXT, content TEXT, evidence TEXT,"
         f" understanding TEXT, payload TEXT, source_node TEXT, status TEXT,"
         f" confidence REAL, created_at TEXT, acknowledged_at TEXT,"
-        f" delivered_at TEXT, snoozed_until TEXT)"
+        f" delivered_at TEXT, snoozed_until TEXT,"
+        f" visibility TEXT DEFAULT 'sync')"
     )
-    # 存量库升级（修④/修⑥ schema）：migrate() 只给表加同步三列、不加业务列，而触发器
+    # 存量库升级（修④/修⑥/P3-a schema）：migrate() 只给表加同步三列、不加业务列，而触发器
     # body 按 spec business_cols 生成 json_object——表缺列时 migrate 直接 OperationalError。
     # 故先探测补齐业务列再 migrate（老库首次升级必经；新库 CREATE 已含全列，此处 no-op）。
+    # P3-a：visibility 列（行级「只在本端、不同步」开关，§11.6 隐私分级）一并补齐。
     try:
         have = {r[1] for r in conn.execute(f"PRAGMA table_info({LEDGER_TABLE})")}
-        for _c in ("delivered_at", "snoozed_until"):
+        for _c in ("delivered_at", "snoozed_until", "visibility"):
             if _c not in have:
                 conn.execute(f"ALTER TABLE {LEDGER_TABLE} ADD COLUMN {_c} TEXT")
     except sqlite3.OperationalError:
@@ -248,6 +335,7 @@ def record_proactive(
     payload: Optional[dict] = None,
     source_node: Optional[str] = None,
     confidence: float = 0.0,
+    visibility: str = "sync",
 ) -> str:
     """落一条主动产出到 ``proactive_ledger``（status=pending），经触发器自动进 oplog 同步。
 
@@ -282,15 +370,16 @@ def record_proactive(
         cols = (
             "id, source, kind, content, evidence, understanding, payload,"
             " source_node, status, confidence, created_at, acknowledged_at,"
-            " delivered_at, snoozed_until"
+            " delivered_at, snoozed_until, visibility"
         )
         try:
             c.execute(
                 f"INSERT INTO {LEDGER_TABLE} ({cols})"
-                f" VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                f" VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     rid, source, kind, content, evidence, und, payload_json,
                     source_node, "pending", confidence, now, None, None, None,
+                    visibility,
                 ),
             )
         except sqlite3.IntegrityError:

@@ -164,8 +164,12 @@ class MemoryStore:
     def get(self, record_id: str) -> Optional[Record]:
         return self._recs.get(record_id)
 
-    def live_items(self) -> list[Record]:
-        """返回未墓碑且未过期的记录。"""
+    def live_items(self, exclude_local: bool = False) -> list[Record]:
+        """返回未墓碑且未过期的记录。
+
+        ``exclude_local`` 为 SQLiteSyncStore 的 P3-a（§11.6 行级不同步）参数，本内存骨架
+        无可见性列概念，接受并忽略（保持接口一致，使统一调用方无需区分 store 类型）。
+        """
         now = time.time_ns() // 1_000_000
         out = []
         for r in self._recs.values():
@@ -192,7 +196,8 @@ class MemoryStore:
             valid_until=existing.valid_until if existing else None,
         )
 
-    def items(self) -> list[Record]:
+    def items(self, exclude_local: bool = False) -> list[Record]:
+        # 见 live_items：exclude_local 为 SQLiteSyncStore 的 P3-a 参数，内存骨架忽略。
         return list(self._recs.values())
 
 
@@ -645,8 +650,12 @@ def reconcile_baseline_oplog(
     一端只读快照，故用 oplog 把「本端应外发」的记录推给对端，避免对端不可达时写丢。
     幂等可重跑；不污染后续纯增量同步。
     """
-    L = {r.record_id: r for r in local_store.items()}
-    R = {r.record_id: r for r in remote_snapshot.items()}
+    # P3-a（§11.6）：基线对账排除 local 行——本端标 visibility='local' 的记录
+    # 不应经基线推给对端（增量同步已由触发器 WHEN 守卫拦截，此处覆盖首连基线路径）。
+    # 对端快照由 live_items(exclude_local=True) 构建，自身已不含对端 local 行；
+    # 此处对两侧统一传 exclude_local=True（MemoryStore 忽略该参数，无副作用）。
+    L = {r.record_id: r for r in local_store.items(exclude_local=True)}
+    R = {r.record_id: r for r in remote_snapshot.items(exclude_local=True)}
     report = {"local_only": [], "remote_only": [], "conflicts": [], "resolved": 0}
     # 对端独有 → 写本端 store（suppress 触发器、不回声）：仅在本端物化该记录；
     # 对端本就持有它，无需回推（回推会撞 echo 防护被对端跳过，无副作用）。
