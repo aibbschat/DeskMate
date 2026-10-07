@@ -1407,16 +1407,17 @@ def test_gc_backfill_created_at_from_hlc(tmp_path):
     assert ca == expected, f"created_at 应为 hlc 物理秒 {expected}，实得 {ca}"
 
 
-def test_gc_min_safe_seq_uses_max_of_push_and_pull():
-    """【2026-10-07 口径】GC 安全水位取 max(push, pull)。
+def test_gc_min_safe_seq_uses_push_watermark_only():
+    """【2026-10-07 复核修正】GC 安全水位只取 push_after_seq（本端 seq 空间）。
 
-    背景（真实巡检）：错峰常驻架构下 Mac 的 push 游标会长期冻结（实测 push=1676
-    两天未动，而云端 pull 已到 4587）——那 3000+ 行早已被对端 pull 走，却因
-    "push 水位未过"而永久留存、GC 永不生效。
-
-    push_after_seq  = 本端推给对端已确认的水位（对端必已收到）
-    pull_after_seq  = 对端从本端拉走的水位（对端同样必已收到）
-    两者取大值即既安全（不删未送达）又不浪费（不滞留已送达）。
+    复核实测推翻了当天早些时候的 max(push, pull) 口径（见
+    reports/2026-10-07_三个待决落地_复核意见.md P2）：
+    - pull_after_seq 是「本端从对端拉走」的水位，位于**对端 oplog 的 seq 空间**，
+      不是"对端从本端拉走"（那个在对端 cursor 里）——两端空间混用：
+      云端 max(3989, 4789)=4789 > 云自身 oplog max(≈4050) → seq 护栏恒真、形同虚设；
+      Mac max(1676,1662)=1676 与 push-only 完全相同 → 原修复在 Mac 上无效。
+    - 原动机「Mac push 冻结」已由日历型 tick（808471a，每小时 :02:04）根治。
+    本测试锁住「只用 push + pull 不参与判定」的语义，防再次混入。
     """
     import importlib.util
     import os
@@ -1427,11 +1428,14 @@ def test_gc_min_safe_seq_uses_max_of_push_and_pull():
     spec.loader.exec_module(mod)
 
     src = open(path, encoding="utf-8").read()
-    # 水位口径必须取 max(push, pull)，而不是只用 push
-    assert "min_safe_seq = max(push_after_seq, pull_after_seq)" in src, (
-        "GC 水位未改成 max(push, pull) —— push 冻结会让已送达的行永久滞留"
+    # 水位只取本端空间的 push；绝不能再 max 混入对端空间的 pull
+    assert "min_safe_seq = push_after_seq" in src, (
+        "GC 水位必须只取 push_after_seq（本端 seq 空间）"
     )
-    # 删除路径必须用 min_safe_seq 而非 push_after_seq
+    assert "max(push_after_seq, pull_after_seq)" not in src, (
+        "pull_after_seq 属对端 seq 空间，参与 max 会让护栏越界失效（复核意见 P2）"
+    )
+    # 删除路径必须用 min_safe_seq 而非直接 push_after_seq（保留命名便于诊断日志）
     assert "gc_oplog(conn, args.keep_days, min_safe_seq" in src, (
-        "gc_oplog 调用仍在用 push_after_seq，须改用 min_safe_seq"
+        "gc_oplog 调用应经 min_safe_seq 变量（便于日志诊断）"
     )

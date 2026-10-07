@@ -137,14 +137,30 @@ def _record_drift(drift_map: dict) -> bool:
 
     云端若装了 ``deskmate.proactivity``（全包部署）就走 ``run_producer``，与Mac/agency
     tick 写的是同一张台账；纯 sync 平铺包无该模块时降级为仅记日志。
+
+    ⚠️ 两处 2026-10-07 复核修正（reports/2026-10-07_三个待决落地_复核意见.md P3-①③）：
+    1. 必须显式 import ``health_producers``：``sync_health`` 生产者靠 import 期
+       ``@register_producer`` 注册，而 ``proactivity/__init__`` **不**自动加载它——
+       只 import ledger 的话 ``PRODUCERS={}`` → run_producer 返回 0、零落库
+       （云端实测复现：registered=[] returned=0，台账 0 行却打"已写入"）。
+    2. 必须检查 run_producer 返回值 n：n=0 说明没真落库（未登记/未过写入门槛/被节流），
+       此前无条件打"已写入"是假日志，会把排障带偏。
     """
     try:
         sys.path.insert(0, "/opt/openworker")
+        # 触发 @register_producer 注册（含 sync_health/automation/writing）；缺失=预期降级
+        from deskmate.proactivity import health_producers  # noqa: F401
         from deskmate.proactivity.ledger import run_producer
 
-        run_producer("sync_health", ctx={"drift": drift_map}, base_dir=DESKMATE_DIR)
-        LOG.info("drift: 已写入 sync_health 台账 %s", drift_map)
-        return True
+        n = run_producer("sync_health", ctx={"drift": drift_map}, base_dir=DESKMATE_DIR)
+        if n > 0:
+            LOG.info("drift: 已写入 sync_health 台账 %s（%d 条）", drift_map, n)
+            return True
+        LOG.warning(
+            "drift: run_producer 返回 0 条、台账未落库（查 producer 注册/写入门槛/节流）：%s",
+            drift_map,
+        )
+        return False
     except Exception as exc:  # noqa: BLE001 无 proactivity 模块 = 预期降级
         LOG.info("drift: proactivity 不可用（纯 sync 包），仅记录日志: %r", exc)
         return False

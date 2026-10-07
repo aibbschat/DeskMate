@@ -117,19 +117,23 @@ def main() -> int:
 
     sd, sync_sql, st = _load_sync_modules(args.mode, args.repo_path, args.cloud_pkg_path)
 
-    # 读水位。**2026-10-07 口径修正**：原实现只取 push_after_seq，但错峰常驻架构下
-    # Mac 的 push 游标可能长期冻结（实测 push=1676 两天未动，而云端 pull 已到4587）——
-    # 那 3000+ 行早已被对端 pull 走，却因"push 水位未过"而永久留存。
-    # 两个水位各有"对端必已收到"的含义，取**两者较大值**才既安全又不浪费：
-    #   - push_after_seq：本端推给对端已确认的水位；
-    #   - pull_after_seq：对端从本端拉走的水位（对端主动 pull 时推进），
-    #     同样是"对端已拿到"的证明。
+    # 读水位。**2026-10-07 复核修正（回退 max(push,pull)）**：
+    # pull_after_seq 是「**本端从对端**拉走」的水位，位于**对端 oplog 的 seq 空间**，
+    # 并非「对端从本端拉走」（那个水位存在**对端的** cursor 里，本端读不到）。两者混取
+    # max 是空间错位：
+    #   - 云端实测 push=3989（自身空间）pull=4789（Mac 空间）→ max 超过云 oplog 自身
+    #     max(≈4050) → seq 护栏恒真、形同虚设，只剩 keep_days 龄兜底；
+    #   - Mac 实测 max(1676,1662)=1676，与只用 push 完全相同——原修复在 Mac 上无效。
+    # 原动机（Mac push 冻结）已由日历型 tick 根治（808471a：每小时 :02:04 对齐窗口，
+    # push 水位随每次成功 tick 推进），故回退为只取 push（本端空间、语义正确）。
+    # 若日后需覆盖「我未推、对端已拉」的行，正确做法是向对端拉取其 cursor（对端的
+    # pull_after_seq 才在我空间内），而不是拿本端 pull 顶替。
     cursor = st.CursorStore(cursor_path)
     push_after_seq = int(getattr(cursor, "push_after_seq", 0) or 0)
     pull_after_seq = int(getattr(cursor, "pull_after_seq", 0) or 0)
-    min_safe_seq = max(push_after_seq, pull_after_seq)
+    min_safe_seq = push_after_seq
     LOG.info(
-        "游标 push=%d pull=%d → 安全水位 min_safe_seq=%d（只删 seq<=%d 且超龄的行）",
+        "游标 push=%d pull=%d(对端空间,不参与) → 安全水位 min_safe_seq=%d（只删 seq<=%d 且超龄的行）",
         push_after_seq, pull_after_seq, min_safe_seq, min_safe_seq,
     )
 
