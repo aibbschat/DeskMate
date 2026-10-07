@@ -857,6 +857,91 @@ def gc_oplog(
     return cur.rowcount
 
 
+# ---------------------------------------------------------------------------
+# §6 租约 / 写权（Lease）—— 2026-10-07 落地「剩余待办第 5 项」
+# ---------------------------------------------------------------------------
+_LEASE_TABLE = "_sync_lease"
+
+
+class SQLiteLease(_ShortConnMixin):
+    """同步协议六零件之六「租约 / 写权」（草案 §5.6 / §6）：本端唯一写者。
+
+    - 单行 ``(name, holder, expires_at)``；``acquire`` 用单条 UPSERT-WHERE 原子完成
+      「不存在即抢占 / 已过期接管 / 同持有者续租」——并发下不会出现双持有者。
+    - TTL 过期后任何持有者可接管：持有者进程崩溃**不会永久锁死**（无死锁）。
+    - **本端语义**：租约表在各自 deskmate.db 内，保护的是本端多进程写者（如常驻
+      daemon 与每小时窗口同时做基线对账 / 未来两进程共存时的强一致写窗口）；
+      跨端单写权威由数据三分类规则保证（A 类 Mac 单写），不靠本表。
+    - 首个真实用点：``sync_daemon_runner._run_baseline``（基线对账是多语句长写，
+      两进程同时跑会互相打爆写锁——写饥饿的同类场景）。
+    - fail-open：本类只提供机制，调用方拿不到租约时**跳过本轮**即可，不应抛错。
+    """
+
+    def __init__(self, conn: Any) -> None:
+        self._init_conn(conn)
+        self._ensure_table()
+
+    def _ensure_table(self) -> None:
+        with self._connect() as c:
+            c.execute(
+                f"CREATE TABLE IF NOT EXISTS {_LEASE_TABLE} ("
+                "name TEXT PRIMARY KEY, "
+                "holder TEXT NOT NULL, "
+                "expires_at INTEGER NOT NULL)"
+            )
+            try:
+                c.commit()
+            except sqlite3.Error:
+                pass
+
+    def acquire(self, name: str, holder: str, ttl_s: float = 300.0) -> bool:
+        """抢占/续租。返回 True = 本 holder 现持有该租约；False = 被他人持有且未过期。"""
+        now = int(time.time())
+        expires = now + max(1, int(ttl_s))
+        with self._connect() as c:
+            cur = c.execute(
+                f"INSERT INTO {_LEASE_TABLE}(name, holder, expires_at) VALUES (?, ?, ?) "
+                f"ON CONFLICT(name) DO UPDATE SET holder=excluded.holder, "
+                f"expires_at=excluded.expires_at "
+                f"WHERE {_LEASE_TABLE}.expires_at <= ? OR {_LEASE_TABLE}.holder = ?",
+                (name, holder, expires, now, holder),
+            )
+            try:
+                c.commit()
+            except sqlite3.Error:
+                pass
+            return cur.rowcount == 1
+
+    def release(self, name: str, holder: str) -> bool:
+        """释放租约（仅持有者本人）。返回 True = 本次确实释放了。"""
+        with self._connect() as c:
+            cur = c.execute(
+                f"DELETE FROM {_LEASE_TABLE} WHERE name = ? AND holder = ?",
+                (name, holder),
+            )
+            try:
+                c.commit()
+            except sqlite3.Error:
+                pass
+            return cur.rowcount == 1
+
+    def status(self, name: str) -> Optional[tuple]:
+        """返回 (holder, expires_at) 或 None（无人持有/未创建）。已过期也返回，
+        由调用方结合 expires_at 判定（acquire 的接管判定是原子的，勿自行分裂判断）。
+        """
+        with self._connect() as c:
+            row = c.execute(
+                f"SELECT holder, expires_at FROM {_LEASE_TABLE} WHERE name = ?",
+                (name,),
+            ).fetchone()
+        return (row[0], row[1]) if row else None
+
+    def held(self, name: str) -> bool:
+        """当前是否被（未过期的）租约持有。"""
+        st = self.status(name)
+        return bool(st and st[1] > int(time.time()))
+
+
 class SQLiteOplogStore(_ShortConnMixin):
     """接 _sync_oplog 的 append-only 日志；接口对齐 OplogStore（seq 游标）。跨线程安全。
 

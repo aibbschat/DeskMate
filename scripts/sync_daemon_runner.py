@@ -272,34 +272,69 @@ class SyncNode:
             LOG.debug("drift 检测失败（不阻断）: %r", exc)
 
     def _run_baseline(self) -> bool:
-        """首连基线：逐表拉对端快照，reconcile_baseline_oplog 双向收敛。全部成功返 True。"""
-        ok = True
-        for t in self.migrated:
-            try:
-                snap = self.transport.pull_snapshot(t)
-            except Exception as exc:  # noqa: BLE001  (对端不可达 fail-open)
-                LOG.warning("基线对账拉表 %s 快照失败（下轮重试）: %r", t, exc)
-                ok = False
-                continue
-            remote_ms = self._snapshot_to_memory_store(snap)
-            try:
-                # 修⑤（§11.2② 补账）：基线对账必须带 ordered_status——否则首连/游标归零
-                # 时是纯 HLC LWW，actioned 可被更晚的 pending 盖回（反 nag 失效）。
-                # ordered_status 从表注册表取（SQLiteSyncStore._spec；替身无 _spec 视为无序）。
-                _spec = getattr(self.engine.stores[t], "_spec", None) or {}
-                ordered = _spec.get("ordered_status")
-                rep = self.sd.reconcile_baseline_oplog(
-                    self.engine.stores[t], remote_ms, self.engine, t, self.node, ordered
+        """首连基线：逐表拉对端快照，reconcile_baseline_oplog 双向收敛。全部成功返 True。
+
+        租约单写窗口（2026-10-07 · 剩余待办第 5 项落地，见 SQLiteLease）：基线对账是
+        多语句长写，同主机的常驻 daemon 与每小时窗口进程若同时进基线会互打写锁
+        （写饥饿同类场景）。抢不到租约 → 本轮跳过、返回 False（``_need_baseline``
+        保持 True，下轮重试）；TTL 600s 到期自动接管，持有者崩溃不死锁；
+        release 走 finally 兜底。整个方法 fail-open，租约异常绝不让 daemon 崩。
+        """
+        lease_holder = f"{self.side}:{os.getpid()}"
+        lease_conn = None
+        try:
+            lease_conn = sqlite3.connect(self.db_path)
+            lease = self.sync_sql.SQLiteLease(lease_conn)
+            if not lease.acquire("baseline", lease_holder, ttl_s=600):
+                st = lease.status("baseline")
+                LOG.warning(
+                    "基线对账租约被 %s 持有，本轮跳过（下轮重试）", st[0] if st else "?"
                 )
-                LOG.info(
-                    "基线对账[%s]: remote_only=%d local_only=%d conflicts=%d",
-                    t, len(rep["remote_only"]), len(rep["local_only"]),
-                    len(rep["conflicts"]),
-                )
-            except Exception as exc:  # noqa: BLE001
-                LOG.error("基线对账[%s] 失败: %r", t, exc)
-                ok = False
-        return ok
+                lease_conn.close()
+                return False
+        except Exception as exc:  # noqa: BLE001  租约是护栏不是主流程，异常不阻断基线
+            LOG.debug("基线租约获取失败（fail-open 继续）: %r", exc)
+            if lease_conn is not None:
+                try:
+                    lease_conn.close()
+                except Exception:  # noqa: BLE001
+                    pass
+            lease_conn = None
+        try:
+            ok = True
+            for t in self.migrated:
+                try:
+                    snap = self.transport.pull_snapshot(t)
+                except Exception as exc:  # noqa: BLE001  (对端不可达 fail-open)
+                    LOG.warning("基线对账拉表 %s 快照失败（下轮重试）: %r", t, exc)
+                    ok = False
+                    continue
+                remote_ms = self._snapshot_to_memory_store(snap)
+                try:
+                    # 修⑤（§11.2② 补账）：基线对账必须带 ordered_status——否则首连/游标归零
+                    # 时是纯 HLC LWW，actioned 可被更晚的 pending 盖回（反 nag 失效）。
+                    # ordered_status 从表注册表取（SQLiteSyncStore._spec；替身无 _spec 视为无序）。
+                    _spec = getattr(self.engine.stores[t], "_spec", None) or {}
+                    ordered = _spec.get("ordered_status")
+                    rep = self.sd.reconcile_baseline_oplog(
+                        self.engine.stores[t], remote_ms, self.engine, t, self.node, ordered
+                    )
+                    LOG.info(
+                        "基线对账[%s]: remote_only=%d local_only=%d conflicts=%d",
+                        t, len(rep["remote_only"]), len(rep["local_only"]),
+                        len(rep["conflicts"]),
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    LOG.error("基线对账[%s] 失败: %r", t, exc)
+                    ok = False
+            return ok
+        finally:
+            if lease_conn is not None:
+                try:
+                    lease.release("baseline", lease_holder)
+                except Exception:  # noqa: BLE001
+                    pass
+                lease_conn.close()
 
     def _snapshot_to_memory_store(self, snap: list):
         """把 /snapshot 拉来的记录 dict 列表还原成 MemoryStore（只读快照）。"""

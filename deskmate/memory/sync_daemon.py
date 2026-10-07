@@ -22,7 +22,9 @@
 3. 变更日志：``Op``（表 + record_id + op + hlc + 明文 payload + 墓碑）
 4. 冲突检测 + 合并：同 record_id 比 HLC，后者胜（LWW）；字段级 merge 预留钩子
 5. 墓碑：delete 记 tombstone，防止「遗忘被旧副本复活」
-6. 租约：少数强一致写场景预留（本骨架不实现，留接口）
+6. 租约：少数强一致写场景预留 —— ``sync_store_sqlite.SQLiteLease`` 已落地
+   （2026-10-07，剩余待办第 5 项）：同名资源唯一写者 + TTL 过期接管，
+   首个真实用点 = runner ``_run_baseline`` 的本端基线对账单写窗口。
 
 生产包装须 fail-open（任何异常捕获、同步失败不影响主流程）；本骨架为便于测试
 断言，协议层显式 raise，由上层 daemon 包裹 fail-open。
@@ -31,6 +33,7 @@
 from __future__ import annotations
 
 import json
+import os
 import time
 import uuid as _uuid
 from abc import ABC, abstractmethod
@@ -240,6 +243,27 @@ class OplogStore:
 # ---------------------------------------------------------------------------
 
 
+def _apply_pace() -> tuple:
+    """写节流参数（每次调用读环境变量，便于测试与运行时调优）。
+
+    返回 ``(chunk, yield_s)``：
+    - ``chunk``：每应用多少条 op 让出一次写锁（默认 100，最小 1）；
+    - ``yield_s``：让出时的 sleep 秒数（默认 10ms；0 = 关闭节流）。
+
+    见 ``SyncEngine.apply_remote`` 文档：这是 2026-10-04 双写压测
+    §10.4②「写饥饿」两个方案中的「节流」落地（另一「错峰窗口」10-05 已上云）。
+    """
+    try:
+        chunk = int(os.environ.get("XIAOJU_APPLY_CHUNK") or 100)
+    except (TypeError, ValueError):
+        chunk = 100
+    try:
+        yield_ms = float(os.environ.get("XIAOJU_APPLY_YIELD_MS") or 10)
+    except (TypeError, ValueError):
+        yield_ms = 10.0
+    return (max(1, chunk), max(0.0, yield_ms) / 1000.0)
+
+
 class SyncEngine:
     """B 类记录级同步引擎：本地变更 → oplog；远端 oplog → 应用（LWW 收敛）。"""
 
@@ -290,17 +314,37 @@ class SyncEngine:
 
     # ---- 远端事件应用（LWW 收敛；按 op.table 路由） ----
     def apply_remote(self, ops: list[Op]) -> None:
+        """应用远端事件；带**写节流**（写饥饿缓解，2026-10-07 落地剩余待办第 3 项）。
+
+        背景（2026-10-04 双写压测闭环复验 §10.4②）：同步 daemon 与后端争抢同一
+        SQLite 写锁时，长 burst 应用会造成约 3800 倍写饥饿。压测报告 §8.5 给出的
+        两个方案里「错峰窗口」已于 10-05 落地（云端 :02 停 backend 独占库）；本函数
+        落地另一方案「**节流**」：每 APPLY_CHUNK 条让出写锁一次，让同库的其他写入者
+        （后端 / 窗口外的业务写）有机会拿到锁。
+
+        - 默认 chunk=100 条 / yield=10ms：常规 tick（几十条）零感知；追平大批次
+          （数千条）总开销约 +1s，可接受。
+        - 环境变量可调：``XIAOJU_APPLY_CHUNK`` / ``XIAOJU_APPLY_YIELD_MS``；
+          ``XIAOJU_APPLY_YIELD_MS=0`` 关闭节流（回到旧行为）。
+        - 节流**不改变语义**：只在 op 之间 sleep，绝不跳过/重排任何事件。
+        """
+        chunk, yield_s = _apply_pace()
+        n = len(ops)
         if self.store is not None:
             # 单表引擎（向后兼容）：所有 op 应用到唯一 store，忽略 op.table
-            for op in ops:
+            for i, op in enumerate(ops):
                 self._apply_one_to(self.store, op)
+                if yield_s and (i + 1) % chunk == 0 and i + 1 < n:
+                    time.sleep(yield_s)
             return
-        for op in ops:
+        for i, op in enumerate(ops):
             st = self._stores.get(op.table)
             if st is None:
                 # 不在本引擎同步范围内的表（如尚未纳入的访谈/日记）——静默跳过，fail-safe
                 continue
             self._apply_one_to(st, op)
+            if yield_s and (i + 1) % chunk == 0 and i + 1 < n:
+                time.sleep(yield_s)
 
     def _apply_one_to(self, store, op: Op) -> None:
         # 回声防护：本节点产生的事件经对端转发回来，直接跳过（自己本来就有）。
