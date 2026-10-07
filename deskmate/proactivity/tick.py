@@ -50,8 +50,10 @@ def _cloud_audit_producer(judgment) -> list:
     if not getattr(judgment, "should_act", False):
         return []
     # 拒绝清单：judge 在「不介入 / 无 key / 解析失败」时产出的噪声 kind。
+    # no_action = judge 明确「这会儿没什么要我插嘴的」时自造的 kind（含空 content），
+    # 已实锤会以 confidence 0.9 落库并递出空卡片（cloud_audit:no_action），必须并入。
     # 不含此处者（含 judge 扩写的 plot_repetition 等真实发现）一律放行。
-    _NOISE_KINDS = {"", "none", "unknown", "no_key", "error", "parse_error"}
+    _NOISE_KINDS = {"", "none", "unknown", "no_key", "error", "parse_error", "no_action"}
     if not judgment.suggestion_content or judgment.suggestion_type in _NOISE_KINDS:
         return []
     return [

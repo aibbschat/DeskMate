@@ -236,9 +236,12 @@ def maybe_backfill_understanding(
         last = _meta_get(conn, "last_understanding_backfill_at")
         if last and (now - float(last)) < _BACKFILL_COOLDOWN_S:
             return 0
+        # 空内容行（content='')无加工价值，且补上 understanding 后会混过递送守卫递出空卡
+        # （2026-10-07 实锤：cloud_audit:no_action）——直接跳过，不浪费 LLM。
         rows = conn.execute(
             f"SELECT id, kind, content, evidence, source FROM {LEDGER_TABLE} "
             f"WHERE status='pending' AND (understanding IS NULL OR understanding='') "
+            f"AND content IS NOT NULL AND trim(content) <> '' "
             f"ORDER BY created_at ASC LIMIT ?",
             (limit,),
         ).fetchall()
@@ -249,6 +252,7 @@ def maybe_backfill_understanding(
                 rows = conn.execute(
                     f"SELECT id, kind, content, evidence, source FROM {LEDGER_TABLE} "
                     f"WHERE status='pending' AND understanding = ? "
+                    f"AND content IS NOT NULL AND trim(content) <> '' "
                     f"ORDER BY created_at ASC LIMIT ?",
                     (UNDERSTANDING_FAILED_MARKER, limit),
                 ).fetchall()

@@ -528,6 +528,48 @@ def test_write_gate_blocks_low_confidence_and_empty_evidence():
     assert len(pending_items(base)) == 1
 
 
+def test_record_blocks_empty_content():
+    """空内容不落台账（2026-10-07）：content 为空的条目递出去就是一张空卡，源头拦截。"""
+    base = _fresh_base("mac")
+    rid = record_proactive(
+        base_dir=base, source="cloud_audit", kind="no_action",
+        content="   ", evidence="窗口正常", confidence=0.9,
+    )
+    assert rid == ""
+    assert pending_items(base) == []
+
+
+def test_handoff_skips_empty_content_legacy_row():
+    """遗留垃圾行（content='' 但 understanding 已补）不得被递出（2026-10-07 修）。
+
+    record_proactive 已拦空内容，故这里直接用 SQL 注入一条历史遗留行，模拟 10-07
+    实际库中的 cloud_audit:no_action（空 content + 有理解 → 曾会递出空卡）。
+    """
+    base = _fresh_base("mac")
+    # 先落一条正常条目（确保表已建），并确认它照常递出
+    record_proactive(
+        base_dir=base, source="cloud_audit", kind="plot_contradiction",
+        content="第3章与第7章矛盾", evidence="第3章", confidence=0.9,
+        understanding="两处情节冲突，建议二选一。",
+    )
+    with sqlite3.connect(str(base / "deskmate.db"), check_same_thread=False) as c:
+        c.execute(
+            "INSERT INTO proactive_ledger"
+            " (id, source, kind, content, evidence, understanding, payload,"
+            "  source_node, status, confidence, created_at)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            ("cloud_audit:no_action:deadbeef", "cloud_audit", "no_action", "",
+             "窗口正常", "这会儿没什么要我插嘴的", "{}", "mac", "pending", 0.9,
+             "2026-10-07T00:00:00"),
+        )
+        c.commit()
+    out = build_handoff_opening(base_dir=base)
+    assert out is not None
+    ids = [it["id"] for it in out["items"]]
+    assert "cloud_audit:no_action:deadbeef" not in ids  # 空内容行被跳过
+    assert all(it["content"].strip() for it in out["items"])
+
+
 def test_evidence_truncated_at_500():
     base = _fresh_base("mac")
     record_proactive(

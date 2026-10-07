@@ -139,19 +139,48 @@ def _cron_missed(cron: str, last_run: Optional[float], now: float) -> bool:
         return False
 
 
+def _automation_db_path(base_dir: Optional[Path] = None) -> Optional[Path]:
+    """定位 Coworker 定时任务库 ``automation.db`` 的**真实落点**（找不到返回 None）。
+
+    该库属 Coworker 主程序（``manager.TaskStore``，基目录由 ``--data-dir`` / ``state_dir``
+    决定），**不在 deskmate 数据目录下**。历史误写成 ``~/.deskmate/automation.db``，
+    而该路径两端都不存在 → 生产者永远空转（已踩：本机/云端均 MISSING）。
+    实际落点两端不同，故按候选顺序取第一个存在的：
+    - 本机：``$COWORKER_STATE_DIR`` 或 ``~/.config/coworker/automation.db``；
+    - 云端：``/var/lib/openworker/automation.db``（= deskmate 基目录的上一级）；
+    - 显式 ``base_dir`` 内若有（测试注入 / 调用方指定）优先。
+    """
+    cands: list[Path] = []
+    if base_dir is not None:
+        b = Path(base_dir).expanduser()
+        cands += [b / "automation.db", b.parent / "automation.db"]
+    try:
+        from coworker.secrets import state_dir
+
+        cands.append(state_dir() / "automation.db")
+    except Exception:  # noqa: BLE001
+        cands.append(Path.home() / ".config" / "coworker" / "automation.db")
+    cands.append(Path.home() / ".deskmate" / "automation.db")  # 历史误写位置，兼容
+    for c in cands:
+        if c.is_file():
+            return c
+    return None
+
+
 @register_producer("automation")
 def _automation_producer(base_dir: Optional[Path] = None) -> list:
     """``automation`` → ``task_anomaly``：定时任务回执异常（该跑没跑 / 跑了零产出）。
 
-    数据：``~/.deskmate/automation.db`` 的 ``scheduled_tasks`` / ``task_runs``（JSON 列）+ ``auto_tasks/timeline.jsonl``。
+    数据：Coworker 定时任务库 ``automation.db``（见 ``_automation_db_path``）的
+    ``scheduled_tasks`` / ``task_runs``（JSON 列）+ ``auto_tasks/timeline.jsonl``。
     节流：每小时最多扫一次。
     """
     if not _throttled(base_dir, "producer:automation", 3600):
         return []
     items: list = []
     try:
-        adb = _resolve_base(base_dir) / "automation.db"
-        if not adb.is_file():
+        adb = _automation_db_path(base_dir)
+        if adb is None:
             return []
         conn = sqlite3.connect(str(adb), check_same_thread=False)
         try:

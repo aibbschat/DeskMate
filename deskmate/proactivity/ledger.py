@@ -350,6 +350,12 @@ def record_proactive(
     # §11.6：evidence 存锚点+截断片段（oplog payload_json 每份复制全文会放大同步成本，
     # 24h 2178 条 profile_items op 空转教训）。生产者自截之外这里强制兜底。
     evidence = (evidence or "")[:500]
+    # 空内容守卫（2026-10-07）：content 是递出卡片的正文，为空时条目毫无意义，
+    # 却会因 understanding 后处理补上文字而混过 build_handoff_opening 的守卫被递出空卡
+    # （已踩：cloud_audit:no_action 空 content + 有理解 → 递出一张空卡）。源头拦截。
+    if not (content or "").strip():
+        logger.debug("主动产出 content 为空（source=%s kind=%s），不落台账", source, kind)
+        return ""
     # §七写入门槛（修④）：confidence ≥ 0.75 且 evidence 明确才写 pending；
     # 低置信只进 prepare（上游 evaluate_action 的静默通道），不落台账、不递（§11.7③）。
     if confidence < MIN_WRITE_CONFIDENCE or not evidence.strip():
@@ -466,6 +472,10 @@ def build_handoff_opening(
         return None
     pool = []
     for it in items:
+        # 空内容守卫（2026-10-07）：content 为空的条目递出去就是一张空卡，
+        # 无论 understanding 是否已补，一律不进池（与 record_proactive 同源防线）。
+        if not (it.get("content") or "").strip():
+            continue
         und = it.get("understanding") or ""
         if und == UNDERSTANDING_FAILED_MARKER:
             it = dict(it)

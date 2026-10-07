@@ -172,6 +172,14 @@ class TestCloudAuditProducer:
         items = _cloud_audit_producer(self._judge(True, "none", content="无主动建议内容"))
         assert items == []
 
+    def test_no_action_kind_rejected(self):
+        # judge 自造的 no_action（「这会儿没什么要我插嘴的」）也是噪声 kind，必须拒收
+        # （实锤：cloud_audit:no_action 空 content 却落库并递出空卡）。
+        items = _cloud_audit_producer(
+            self._judge(True, "no_action", content="萧哥，这会儿没什么要我插嘴的——窗口状态正常")
+        )
+        assert items == []
+
     def test_empty_content_rejected(self):
         items = _cloud_audit_producer(self._judge(True, "plot_contradiction", content=""))
         assert items == []

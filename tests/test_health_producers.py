@@ -3,7 +3,9 @@
 这些生产者 fail-open、依赖真实文件（automation.db / sync_cursor.json / docx），
 故在 /tmp 构造输入验证：注册、产出正确记录、节流、确定性 anchor。
 
-**不碰 ~/.deskmate 活库**：base_dir 一律指向 tmp。
+**不碰活库**：base_dir 一律指向 tmp；automation 生产者还会按候选顺序找 Coworker 的
+automation.db（可能落到 `$COWORKER_STATE_DIR`），故相关用例显式把该环境变量也指向 tmp，
+免得读到本机/云端的真实库。
 """
 from __future__ import annotations
 
@@ -135,10 +137,33 @@ def test_automation_producer_throttled(base):
     assert second == [], f"节流后应返回空，实得 {second}"
 
 
-def test_automation_producer_no_db(base):
+def test_automation_db_path_finds_coworker_state_dir(monkeypatch, tmp_path):
+    """回归：automation.db 的真实落点是 Coworker 的 state_dir，不是 deskmate 目录。
+
+    历史 bug：误写成 `<deskmate_base>/automation.db`（两端都不存在）→ 生产者永远空转。
+    本用例把 COWORKER_STATE_DIR 指向 tmp 并放一个 automation.db，断言解析器能找到它。
+    """
+    from deskmate.proactivity.health_producers import _automation_db_path
+
+    sd = tmp_path / "coworker_state"
+    sd.mkdir()
+    (sd / "automation.db").write_bytes(b"")
+    monkeypatch.setenv("COWORKER_STATE_DIR", str(sd))
+
+    # 不传 base_dir → 应落到 COWORKER_STATE_DIR
+    assert _automation_db_path() == sd / "automation.db"
+    # 传一个不含 automation.db 的 base_dir → 仍应回落到 state_dir（不再死看 deskmate 目录）
+    empty_base = tmp_path / "deskmate_base"
+    empty_base.mkdir()
+    assert _automation_db_path(empty_base) == sd / "automation.db"
+
+
+def test_automation_producer_no_db(base, monkeypatch, tmp_path):
     """无 automation.db → 静默返回 []（fail-open，不崩）。"""
     from deskmate.proactivity.health_producers import _automation_producer
 
+    # 隔离 Coworker state_dir（否则会读到本机真实的 ~/.config/coworker/automation.db）
+    monkeypatch.setenv("COWORKER_STATE_DIR", str(tmp_path / "coworker_state"))
     items = _automation_producer(base_dir=base)
     assert items == []
 
