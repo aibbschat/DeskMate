@@ -100,6 +100,10 @@ def main() -> int:
     )
 
     db_path = args.db_path or _default_db(args.mode)
+    # mac 模式默认从脚本位置推导仓库根（scripts/ 的父目录），使 `deskmate.memory.*`
+    # 可导入；无需每次传 --repo-path。
+    if args.mode == "mac" and not args.repo_path:
+        args.repo_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     if not os.path.exists(db_path):
         LOG.error("数据库不存在: %s", db_path)
         return 2
