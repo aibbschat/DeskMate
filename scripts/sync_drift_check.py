@@ -52,7 +52,12 @@ def _load_pkg():
     方式 import，故 sys.path 指向其父目录；本机（仓库内演练）无 ``sync`` 目录，退回
     ``deskmate.memory``，两者 API 同形。
     """
-    pkg_parent = os.path.dirname(DESKMATE_DIR.rstrip("/"))
+    # `sync` 平铺包与本脚本同目录（sync_* 模块都在该包内）；须把其**父目录**入 sys.path
+    # 才能以包方式 import（包内是相对导入）。按脚本自身位置推导，避免依赖 DESKMATE_DIR
+    # 的调用形态。⚠️ 早期误用 dirname(DESKMATE_DIR)（= .deskmate 的上一级）→ 云端必
+    # ModuleNotFoundError: No module named 'sync'（10-07 部署实跑踩到）。
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    pkg_parent = os.path.dirname(script_dir)
     if pkg_parent not in sys.path:
         sys.path.insert(0, pkg_parent)
     try:
