@@ -410,6 +410,7 @@ class SyncNode:
             now = datetime.datetime.now()
             # 向上取整：宁可晚 <1s，也绝不早于窗口时刻（早到会撞上云端 daemon 未起）
             due = math.ceil(self._next_slot_delta(now))
+            target = now + datetime.timedelta(seconds=due)  # 目标唤醒墙钟（诊断漂移用）
             # 可中断睡眠：每 1s 查一次停止位（launchd KeepAlive 重启时能快速收敛）
             for _ in range(int(due)):
                 if self._stop:
@@ -417,25 +418,38 @@ class SyncNode:
                 time.sleep(1)
             if self._stop:
                 break
+            woke = datetime.datetime.now()
+            # 2026-10-07 首拍诊断补强：首拍日志曾把「睡下去的时刻(15:25)」当事件时间，
+            # 且看不出唤醒漂移（实测目标 16:02:04、实际 ~16:04:11，漂移 +127s 中 sleep
+            # 累积仅 ~19s，剩余成因待本行数据钉死）——目标/唤醒/漂移三元组一起记。
+            LOG.info(
+                "窗口 tick#%d 触发（目标 %s，唤醒 %s，漂移 %+.0fs，窗口格 %s）",
+                _tick_count + 1,
+                target.strftime("%H:%M:%S"), woke.strftime("%H:%M:%S"),
+                (woke - target).total_seconds(), ",".join(self.window_slots),
+            )
             self._ensure_tunnel()
             if self._need_baseline:
                 if self._run_baseline():
                     self._need_baseline = False
+            t0 = time.monotonic()
             res = self.daemon.tick_safe()
+            cost = time.monotonic() - t0
             _tick_count += 1
             if res.get("ok"):
                 self._consecutive_fail = 0
                 LOG.info(
-                    "窗口 tick#%d 成功（%s）：pull_after=%s push_after=%s",
-                    _tick_count, now.strftime("%H:%M"),
+                    "窗口 tick#%d 成功（实际 %s，耗时 %.1fs）：pull_after=%s push_after=%s",
+                    _tick_count, datetime.datetime.now().strftime("%H:%M:%S"), cost,
                     res.get("pull_after_seq"), res.get("push_after_seq"),
                 )
             else:
-                # 窗口内失败 = 真实问题（不是架构预期的窗口外拒绝），记 warn 但不再指数退避
+                # 失败不退避（下格自然重试）；用**实际时刻**记（睡下去的时刻会误导排障）
                 self._consecutive_fail += 1
                 LOG.warning(
-                    "窗口 tick#%d 失败（%s，窗口内失败属真实问题）: %s",
-                    _tick_count, now.strftime("%H:%M"), res.get("error"),
+                    "窗口 tick#%d 失败（实际 %s，耗时 %.1fs）: %s",
+                    _tick_count, datetime.datetime.now().strftime("%H:%M:%S"), cost,
+                    res.get("error"),
                 )
 
     def _next_slot_delta(self, now: "datetime.datetime") -> float:
