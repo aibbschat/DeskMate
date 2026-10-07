@@ -31,10 +31,40 @@ from pathlib import Path
 
 DESKMATE_DIR = os.environ.get("DESKMATE_DIR", "/var/lib/openworker/.deskmate")
 LOG_PATH = Path(DESKMATE_DIR) / "agency" / "xiaoju_agency_tick.log"
-L2_PATH = Path(DESKMATE_DIR) / "agency" / "l2_settings.json"
+# 与 deskmate/agency/settings.py::_default_path 保持一致：l2_settings.json 直接在
+# DESKMATE_DIR 下，无 agency/ 子目录（旧代码多拼一层 agency/ 会指向不存在的路径，
+# 导致 _ensure_l2_scope 的 file_existed 恒为 False）。
+L2_PATH = Path(DESKMATE_DIR) / "l2_settings.json"
 
-# 云端未配 AI圈 MCP，发声类行为会 fail-open 不跑；显式移除以免无效尝试与潜在出站。
+# 发声类行为（经 deskmate/connectors/aicircle.py stdio 调 ai-circle MCP server，
+# 与对话轮共用 ~/.config/coworker/mcp.json 同一份配置）。仅在「云端未配 AI圈 连接器」时
+# 才从白名单移除，避免无效尝试与潜在出站；配好则保留，让小桔自主发帖/回信/写手记。
 _DISABLE_WITHOUT_MCP = ("ai_circle_share", "ai_circle_column", "ai_circle_reply")
+
+
+def _ai_circle_available() -> bool:
+    """检测云端 AI圈 连接器是否可用（与对话轮共用 ~/.config/coworker/mcp.json）。
+
+    自主发声行为（share/column/reply）经 deskmate/connectors/aicircle.py 通过 stdio 拉起
+    ai-circle MCP server；该配置与对话轮同一份。配好（文件存在 + ai-circle 启用 + 有 command）
+    则返回 True，让其自主发声；未配则回落移除，避免 fail-open 空跑与潜在出站。
+    全部异常回落 False（保守，等同「未配」）。
+    """
+    try:
+        cfg = Path.home() / ".config" / "coworker" / "mcp.json"
+        if not cfg.is_file():
+            return False
+        data = json.loads(cfg.read_text(encoding="utf-8"))
+        srv = (data.get("mcpServers") or {}).get("ai-circle")
+        if not srv:
+            return False
+        if not srv.get("enabled", True):
+            return False
+        if not srv.get("command"):
+            return False
+        return True
+    except Exception:
+        return False
 
 
 def _ensure_l2_scope() -> None:
@@ -62,18 +92,26 @@ def _ensure_l2_scope() -> None:
             s.enabled = True
             changed = True
             logging.info("云端 L2 默认关闭（旧版代码）-> 路径乙显式开启")
-        # 开启状态下，移除云端无 MCP 的发声类（其余默认开）。
+        # 开启状态下，按「云端是否配好 AI圈 连接器」动态决定发声类去留：
+        # 配好则保留（小桔自主发帖/回信/写手记），未配则移除（避免无效尝试与潜在出站）。
         if s.enabled:
             before = set(s.whitelist_actions)
-            after = [a for a in s.whitelist_actions if a not in _DISABLE_WITHOUT_MCP]
-            if set(after) != before:
-                s.whitelist_actions = after
-                changed = True
-                logging.info(
-                    "云端无 AI圈 MCP：白名单移除发声类 %s，保留 %s",
-                    sorted(set(before) - set(after)),
-                    after,
-                )
+            if _ai_circle_available():
+                after = list(s.whitelist_actions)
+                if set(after) != before:
+                    s.whitelist_actions = after
+                    changed = True
+                    logging.info("云端已配 AI圈 连接器：保留发声类行为 %s", after)
+            else:
+                after = [a for a in s.whitelist_actions if a not in _DISABLE_WITHOUT_MCP]
+                if set(after) != before:
+                    s.whitelist_actions = after
+                    changed = True
+                    logging.info(
+                        "云端未配 AI圈 连接器：白名单移除发声类 %s，保留 %s",
+                        sorted(set(before) - set(after)),
+                        after,
+                    )
         if changed:
             save_agency_settings(s, base_dir=DESKMATE_DIR)
             logging.info("已写入 l2 配置：enabled=%s", s.enabled)

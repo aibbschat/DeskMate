@@ -105,6 +105,15 @@ CHANNEL_MODULES=(
   "deskmate/cognitive/memory_injector.py"
 )
 
+# 小桔手记行为（ai_circle_column.py）：含「专属表情 [xj:id] 封闭词表」注入（2026-10-07
+# 247d4e2）。此前 deploy 清单不含 agency/behaviors/ 包，导致云端跑 10-01 整包旧码、手记
+# 无表情块。现纳入同步 → 目标 /opt/openworker/deskmate/agency/behaviors/（与 CHANNEL_MODULES
+# 同款 deskmate/* 落点 + 清 __pycache__ + md5 核对）。⚠️ 该文件改动须先 commit 进 fork/base，
+# 否则预检会拒（与清单内其它文件同一红线）。
+AGENCY_BEHAVIORS_MODULES=(
+  "deskmate/agency/behaviors/ai_circle_column.py"
+)
+
 FORCE=0
 [[ "${1:-}" == "--force" ]] && FORCE=1
 
@@ -119,7 +128,7 @@ if ! ssh -o ConnectTimeout=15 -o BatchMode=yes "$SSH_HOST" "test -d '$CLOUD_SYNC
 fi
 
 # ---- 1. 必须已提交（红线：本地改动先 commit 进 fork/base）----
-ALL_FILES=("${LOCAL_MODULES[@]}" "$LOCAL_RUNNER" "${PROACTIVITY_MODULES[@]}" "${CHANNEL_MODULES[@]}" "$LOCAL_AGENCY_TICK" "$LOCAL_DRIFT_CHECK")
+ALL_FILES=("${LOCAL_MODULES[@]}" "$LOCAL_RUNNER" "${PROACTIVITY_MODULES[@]}" "${CHANNEL_MODULES[@]}" "${AGENCY_BEHAVIORS_MODULES[@]}" "$LOCAL_AGENCY_TICK" "$LOCAL_DRIFT_CHECK")
 if [[ "$FORCE" -eq 0 ]]; then
   DIRTY=""
   for f in "${ALL_FILES[@]}"; do
@@ -200,8 +209,8 @@ for f in "${PROACTIVITY_MODULES[@]}"; do
 done
 
 # ---- 3c. 推送通道组/ 熔断模块（本地与云端必须同码，见 CHANNEL_MODULES 注释）----
-echo "==> 推送通道组/熔断模块到云端主程序包"
-for f in "${CHANNEL_MODULES[@]}"; do
+echo "==> 推送通道组/熔断模块 + 自主行为包到云端主程序包"
+for f in "${CHANNEL_MODULES[@]}" "${AGENCY_BEHAVIORS_MODULES[@]}"; do
   base="$(basename "$f")"
   # 目标目录按本地相对路径推（deskmate/xxx.py → $CLOUD_DESKMATE_ROOT/xxx.py；
   # coworker/xxx.py → $CLOUD_COWORKER_ROOT/xxx.py），必要时建目录
@@ -284,8 +293,8 @@ for f in "${PROACTIVITY_MODULES[@]}"; do
 done
 
 # ---- 7. 通道组/熔断模块对齐核对 ----
-echo "==> 通道组/熔断模块对齐核对"
-for f in "${CHANNEL_MODULES[@]}"; do
+echo "==> 通道组/熔断模块 + 自主行为包对齐核对"
+for f in "${CHANNEL_MODULES[@]}" "${AGENCY_BEHAVIORS_MODULES[@]}"; do
   base="$(basename "$f")"
   case "$f" in
     deskmate/*)   dest_dir="$CLOUD_DESKMATE_ROOT/$(dirname "${f#deskmate/}")" ;;
