@@ -26,6 +26,7 @@ schema 不能把五维写死，必须"加一层不改表"。
 from __future__ import annotations
 
 import datetime
+import hashlib
 import json
 import logging
 import os
@@ -69,6 +70,10 @@ def anchor_row_key(item_kind: str, item_id: str, anchor_kind: str, anchor_value:
 
 # P1 汇流（R3）：顺锚走一跳的邻座上限（防爆炸；P1 量小，5 条足够）。
 _ANCHOR_NEIGHBOR_CAP = 5
+
+# P2-R1（2026-10-07）：person 锚自生长转正门槛。运行时发现的新人名先记 candidate，
+# 同一名字累计出现 >= 此值才升 active、开始产 person 锚（防「王/李」高频字与路人甲噪声）。
+_PERSON_PROMOTE_THRESHOLD = 3
 
 # 锚类型 → 人话标签（anchor_evidence 用，如「同主题：历史真实性」）。
 _ANCHOR_KIND_LABELS = {
@@ -304,6 +309,35 @@ class CognitiveStore:
                 -- 同锚邻座召回（反查索引）
                 CREATE INDEX IF NOT EXISTS idx_anchor_lookup
                     ON memory_anchors(anchor_kind, anchor_value, item_kind);
+
+                -- P2-R1（2026-10-07）：已知人名注册表（person 锚源）。
+                -- 取代原 env 手工逗号列表（对「人物浩如烟海」的历史写作 = 默认沉睡）。
+                -- 两路来源：seed（LLM 扫已出版书，直接 active）与 auto（运行时发现）；
+                -- auto 走 mode B 自生长——先进 candidate，累计 seen_count>=阈值才转 active。
+                CREATE TABLE IF NOT EXISTS known_persons (
+                    name       TEXT PRIMARY KEY,
+                    aliases    TEXT DEFAULT '',
+                    source     TEXT DEFAULT 'seed',    -- 'seed'(扫书) | 'auto'(运行时发现)
+                    status     TEXT DEFAULT 'active',  -- 'candidate' | 'active'
+                    seen_count INTEGER DEFAULT 0,      -- 运行时发现的累计出现次数
+                    created_at TEXT DEFAULT ''
+                );
+                CREATE INDEX IF NOT EXISTS idx_known_persons_status ON known_persons(status);
+                CREATE INDEX IF NOT EXISTS idx_known_persons_name   ON known_persons(name);
+
+                -- P2-R3（2026-10-07）：lessons 表——小桔从萧哥纠正/反馈里学到的条目，
+                -- 每轮注入对话（江河设计 §4.5 教学层）。scope='permanent' 的规则常驻；
+                -- 其余为 recent，按 created_at 取最近 N 条。lesson_id 用内容 md5 去重（幂等）。
+                CREATE TABLE IF NOT EXISTS teachings (
+                    lesson_id  TEXT PRIMARY KEY,
+                    content    TEXT NOT NULL,
+                    scope      TEXT DEFAULT 'recent',    -- 'recent' | 'permanent'
+                    source     TEXT DEFAULT 'manual',    -- 'manual' | 'feedback'
+                    created_at TEXT DEFAULT '',
+                    updated_at TEXT DEFAULT ''
+                );
+                CREATE INDEX IF NOT EXISTS idx_teachings_scope   ON teachings(scope);
+                CREATE INDEX IF NOT EXISTS idx_teachings_created ON teachings(created_at);
 
                 CREATE TABLE IF NOT EXISTS item_sources (
                     item_id  TEXT NOT NULL,
@@ -909,6 +943,146 @@ class CognitiveStore:
             logger.warning("upsert_anchors 失败（忽略，不影响主抽取）: %s", e)
             return 0
 
+    # ------------------------------------------------------------------
+    # P2-R1：已知人名注册表（person 锚源；seed + 自生长 mode B）
+    # ------------------------------------------------------------------
+    def list_active_persons(self) -> list[str]:
+        """返回 status='active' 的人名列表（供 person 锚词边界匹配）。
+
+        fail-open：库异常/表缺失 → 返回 []（调用方再无 env 则无 person 锚，绝不抛）。
+        """
+        try:
+            with self._connect() as conn:
+                rows = conn.execute(
+                    "SELECT name FROM known_persons WHERE status='active'"
+                ).fetchall()
+            return [r[0] for r in rows if r[0]]
+        except Exception as e:  # noqa: BLE001 —— fail-open：注册表缺失/查询异常不抛
+            logger.warning("list_active_persons 失败（忽略，退回无 person 锚）: %s", e)
+            return []
+
+    def seed_known_persons(self, names: list[str], source: str = "seed") -> int:
+        """批量灌入人名（seed 直接 active；INSERT OR IGNORE，幂等）。
+
+        seed 来自 LLM 扫已出版书，可信度高 → 直接 active、不经 candidate。
+        返回**实际新增**条数（重复由主键幂等跳过）。fail-open：异常仅告警、返回 0。
+        """
+        clean = sorted({(n or "").strip() for n in (names or []) if (n or "").strip()})
+        if not clean:
+            return 0
+        ts = _now_iso()
+        try:
+            with self._connect() as conn:
+                cur = conn.executemany(
+                    "INSERT OR IGNORE INTO known_persons"
+                    "(name, aliases, source, status, seen_count, created_at) "
+                    "VALUES(?, '', ?, 'active', 0, ?)",
+                    [(n, source, ts) for n in clean],
+                )
+                added = cur.rowcount if cur.rowcount is not None else 0
+            return added
+        except Exception as e:  # noqa: BLE001 —— fail-open：seed 失败不影响主链路
+            logger.warning("seed_known_persons 失败（忽略）: %s", e)
+            return 0
+
+    def add_known_person(self, name: str, source: str = "auto") -> None:
+        """运行时发现人名 → 自生长（mode B）+ 频次门槛转正（原子操作）。
+
+        - INSERT OR IGNORE 进 candidate（seen_count=0）；
+        - seen_count += 1；
+        - seen_count >= _PERSON_PROMOTE_THRESHOLD 且尚未 active → 升 active。
+        阈值内（前 2 次）保持 candidate、**不产 person 锚**；第 3 次起生效。
+        fail-open：任何异常仅告警、不抛（人名自生长绝不影响主认知抽取）。
+        """
+        n = (name or "").strip()
+        if not n:
+            return
+        ts = _now_iso()
+        try:
+            with self._connect() as conn:
+                conn.execute(
+                    "INSERT OR IGNORE INTO known_persons"
+                    "(name, aliases, source, status, seen_count, created_at) "
+                    "VALUES(?, '', ?, 'candidate', 0, ?)",
+                    (n, source, ts),
+                )
+                conn.execute(
+                    "UPDATE known_persons SET seen_count = seen_count + 1 WHERE name = ?",
+                    (n,),
+                )
+                conn.execute(
+                    "UPDATE known_persons SET status = 'active' "
+                    "WHERE name = ? AND seen_count >= ? AND status != 'active'",
+                    (n, _PERSON_PROMOTE_THRESHOLD),
+                )
+        except Exception as e:  # noqa: BLE001 —— fail-open：自生长失败不影响主链路
+            logger.warning("add_known_person 失败（忽略）: %s", e)
+
+    # ------------------------------------------------------------------
+    # P2-R3：lessons——小桔从萧哥纠正/反馈学到的条目（每轮注入）
+    # ------------------------------------------------------------------
+    def add_lesson(self, content: str, scope: str = "recent", source: str = "manual") -> bool:
+        """写入一条 lesson（手动/测试/未来 feedback 调用）。同内容幂等（不重插）。
+
+        scope：'recent'（默认，按时间取最近 N 条注入）| 'permanent'（常驻规则）。
+        lesson_id = 内容 md5（去重幂等）：同内容重复调用只留 1 行。
+        fail-open：空内容返回 False；写库异常仅告警、返回 False，绝不抛。
+        """
+        c = (content or "").strip()
+        if not c:
+            return False
+        lid = f"lesson::{hashlib.md5(c.encode()).hexdigest()[:12]}"
+        ts = _now_iso()
+        try:
+            with self._connect() as conn:
+                conn.execute(
+                    "INSERT OR IGNORE INTO teachings"
+                    "(lesson_id, content, scope, source, created_at, updated_at) "
+                    "VALUES(?,?,?,?,?,?)",
+                    (lid, c, scope, source, ts, ts),
+                )
+            return True
+        except Exception as e:  # noqa: BLE001 —— fail-open：写 lesson 失败不影响主链路
+            logger.warning("add_lesson 失败（忽略）: %s", e)
+            return False
+
+    def get_lessons_for_injection(
+        self, recent_limit: int = 3, char_cap: int = 1200
+    ) -> list[str]:
+        """返回注入用 lesson 正文列表：全部 permanent + 最近 recent_limit 条 recent。
+
+        限额防挤爆上下文：permanent 通常少、recent 限 recent_limit、总字数 cap char_cap。
+        permanent 排在前面（常驻规则优先保）。fail-open：表缺失/异常 → []。
+        """
+        try:
+            with self._connect() as conn:
+                perm = [
+                    r[0] for r in conn.execute(
+                        "SELECT content FROM teachings WHERE scope='permanent' "
+                        "ORDER BY created_at DESC"
+                    ).fetchall()
+                ]
+                rec = [
+                    r[0] for r in conn.execute(
+                        "SELECT content FROM teachings WHERE scope!='permanent' "
+                        "ORDER BY created_at DESC LIMIT ?",
+                        (recent_limit,),
+                    ).fetchall()
+                ]
+            out: list[str] = []
+            used = 0
+            for t in perm + rec:
+                if not t:
+                    continue
+                if used + len(t) > char_cap:
+                    break
+                out.append(t)
+                used += len(t)
+            return out
+        except Exception as e:  # noqa: BLE001 —— fail-open：lessons 缺失返回 []
+            logger.warning("get_lessons_for_injection 失败（忽略）: %s", e)
+            return []
+
     def recall_items(
         self,
         query: str,
@@ -952,13 +1126,21 @@ class CognitiveStore:
             for r in rows
             if r[0] not in excl
         ]
-        # P1 汇流（R3）：顺锚走一跳——FTS 命中的 seed 带出同锚「邻座」。
-        # 纯增益 + fail-open：任何异常都只 warning、退回纯 FTS（= 今天口径），绝不空结果。
+        # P1 汇流（R3）+ P2-R2 截断修复（Option B）：顺锚走一跳——FTS 命中的 seed
+        # 带出同锚「邻座」。纯增益 + fail-open：任何异常都只 warning、退回纯 FTS，绝不空结果。
+        neighbors: list[dict[str, Any]] = []
         if os.getenv("DESKMATE_ANCHOR_RECALL", "1") != "0" and hits:
             try:
-                hits.extend(self._recall_anchor_neighbors(hits, excl))
+                neighbors = self._recall_anchor_neighbors(hits, excl)
             except Exception as e:  # noqa: BLE001 —— fail-open：顺锚失败退回纯 FTS
                 logger.warning("顺锚召回失败（退回纯 FTS）: %s", e)
+                neighbors = []
+        # Option B（2026-10-07）：邻居至多 _ANCHOR_NEIGHBOR_CAP 条；有邻居时从 FTS
+        # 取数里预留等额配额，让邻居必进结果、FTS 不超额；无邻居时 FTS 不退化
+        #（= 历史纯 FTS 行为，修 ROUND-06-QC 已知局限「FTS 满 top_k 时邻居被截掉」）。
+        if neighbors:
+            keep = max(0, top_k - len(neighbors))
+            hits = hits[:keep] + neighbors
         return hits[:top_k]
 
     def _recall_anchor_neighbors(

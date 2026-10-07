@@ -98,6 +98,11 @@ CHANNEL_MODULES=(
   # （无锚表 / 不顺锚），本地同步上去的锚数据也召不回邻座（同 manager.py 漏传教训）。
   "deskmate/cognitive/store.py"
   "deskmate/cognitive/extractor.py"
+  # ⚠️ P2-R3 lessons 注入（2026-10-07）：memory_injector.py 含 build_lessons_context，
+  # manager.py L662 函数内 `from ... import build_lessons_context` 直接引用它。
+  # 漏传 → 云端旧 memory_injector 无此函数，R3 lessons 注入因 fail-open 静默失效
+  # （小桔在云端「学不会」你教的规矩）。本轮补足，确保 P2-R3 云端真生效。
+  "deskmate/cognitive/memory_injector.py"
 )
 
 FORCE=0

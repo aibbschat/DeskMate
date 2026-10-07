@@ -527,9 +527,11 @@ SYNCED_TABLES = ("profile_items", "learned_history", "loved_entries")
 # 阶段 6（2026-10-05）：注册表里新增、但本夹具无对应建表语句的表（应被跳过而非崩）
 # 2026-10-06：LLM 通道熔断表（llm_circuit_breaker，设计 §3.3）也进注册表，同样不在本夹具里。
 # 2026-10-07：P1 汇流共享锚表（memory_anchors）同进注册表，本夹具亦不建。
+# 2026-10-07：P2-R1 已知人名注册表（known_persons）同进注册表，本夹具亦不建。
+# 2026-10-07：P2-R3 lessons 表（teachings）同进注册表，本夹具亦不建。
 TABLES_ABSENT_IN_FIXTURE = (
     "user_posts", "comments", "proactive_ledger", "llm_circuit_breaker",
-    "memory_anchors",
+    "memory_anchors", "known_persons", "teachings",
 )
 
 

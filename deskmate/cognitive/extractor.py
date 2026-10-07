@@ -62,7 +62,8 @@ EXTRACTION_SYSTEM_PROMPT = """你是一个「认知分析师」，专门从作�
   ],
   "thinking_frameworks": [
     {"domain": "适用领域", "steps": ["步骤1", "步骤2", "步骤3"], "content": "思维框架描述", "evidence": "原文证据", "confidence": 0.5, "tags": []}
-  ]
+  ],
+  "persons": ["文中出现的专有历史人物/人名（不含「他/她/众人/作者」等泛指代词）"]
 }
 
 如果某个维度没有足够证据，返回空数组。不要编造。"""
@@ -104,12 +105,49 @@ def _extract_json(text: str) -> dict:
 # 条目的「议题」字段：立场看 topic，价值排序 / 思维框架看 domain。
 _ANCHOR_TOPIC_FIELDS = ("topic", "domain")
 
+# P2-R1b（2026-10-07）：person 锚的人名匹配。中文**没有词边界**——名字前后几乎总被
+# 汉字包围（「张居正推行改革」），词边界正则 `(?<![\w])…(?![\w])` 会系统性漏检
+# （ROUND-06-QC BLOCKER，实测 90%+ 漏检）。改**子串匹配**，另用「更长已知人名」
+# 排除短名误吞（「张居」⊂「张居正」）。
+def _person_in_text(
+    name: str, text: str, longer_names: Optional[list[str]] = None
+) -> bool:
+    """text 是否出现 name（中文按子串；排除被文本中更长已知人名包含的短名）。
 
-def _person_names_from_config() -> list[str]:
-    """已知人名源（逗号分隔）。仓库暂无 known-names 表，先用环境变量兜底；
-    未配置 = 不产出人名锚（best-effort：识别不出就跳过）。"""
+    排除逻辑：若 ``longer_names`` 里存在 ``ln`` 满足
+    ``ln != name and name in ln and ln in text``——说明该短名实际是文本中某个
+    更长已知人名的片段（如「张居」⊂「张居正」）→ 不认（防误吞）。
+    """
+    if not name or not text or name not in text:
+        return False
+    for ln in longer_names or []:
+        if ln and ln != name and name in ln and ln in text:
+            return False
+    return True
+
+
+def _active_person_names(store=None) -> list[str]:
+    """person 锚的「生效人名」源（P2-R1：DB 注册表，替代原 env 手工列表）。
+
+    优先级：
+    1. env ``DESKMATE_PERSON_NAMES``（逗号分隔）——保留作**强制 override**，
+       配了就绕过表、直接当 active（兼容老用法 / 应急）。
+    2. 否则 ``store.list_active_persons()``（known_persons 里 status='active'）。
+    两者皆无 → []（best-effort：识别不出人名就跳过，不产 person 锚）。
+
+    fail-open：store 缺失 / 查询异常 → []，绝不抛。
+    """
     raw = os.getenv("DESKMATE_PERSON_NAMES", "")
-    return [n.strip() for n in raw.split(",") if n.strip()]
+    names = [n.strip() for n in raw.split(",") if n.strip()]
+    if names:
+        return names
+    if store is None:
+        return []
+    try:
+        return store.list_active_persons()
+    except Exception as e:  # noqa: BLE001 —— fail-open：注册表读取失败退回无 person 锚
+        logger.warning("读取 active 人名失败（忽略，无 person 锚）: %s", e)
+        return []
 
 
 def extract_anchors(
@@ -117,12 +155,15 @@ def extract_anchors(
     source_title: str,
     source_type: str = "",
     extracted_items: Optional[list] = None,
+    store=None,
 ) -> list[tuple[str, str]]:
     """从一次抽取产出里派生「共享锚」（P1：topic / book / person）。
 
     - topic：取条目自身的议题字段（立场 topic / 价值排序与思维框架 domain）；
     - book：source_type == 'book' → 以书名作锚（同书条目自动成邻座）；
-    - person：best-effort，仅命中配置的已知人名才产出（无名单则跳过）。
+    - person：best-effort，仅命中「生效人名」（env override 或 DB 注册表 active）
+      才产出（无名单则跳过）。中文按**子串**匹配，并用更长已知人名排除短名误吞
+      （「张居」不认「张居正」）。
 
     轻量、无 LLM；异常一律吞掉（fail-open），返回已去重、已滤空值的 [(kind, value)]。
     """
@@ -150,8 +191,9 @@ def extract_anchors(
                     break
         if source_type == "book" and (source_title or "").strip():
             _add("book", source_title)
-        for name in _person_names_from_config():
-            if name in (text or ""):
+        names = _active_person_names(store)
+        for name in names:
+            if _person_in_text(name, text or "", names):
                 _add("person", name)
     except Exception as e:  # noqa: BLE001 —— fail-open：抽锚失败不影响主抽取
         logger.warning("extract_anchors 失败（忽略，不影响主抽取）: %s", e)
@@ -175,7 +217,7 @@ def _attach_anchors(
         store = getattr(pm, "store", None)
         if store is None or not item_id:
             return
-        anchors = extract_anchors(text, source_title, source_type, [item_dict])
+        anchors = extract_anchors(text, source_title, source_type, [item_dict], store=store)
         if anchors:
             store.upsert_anchors("profile_item", item_id, anchors)
     except Exception as e:  # noqa: BLE001 —— fail-open：挂锚失败不影响主抽取
@@ -346,10 +388,36 @@ class CognitiveExtractor:
             except Exception as e:
                 logger.error(f"Failed to add thinking framework: {e}")
 
+        # P2-R1 模式 B 自生长：把 LLM 抽到的专有人名喂进 known_persons（candidate 累积 /
+        # 阈值转正）。放在条目落锚**之后**——本轮的 person 锚用本轮开始时的 active 名单，
+        # 门槛在轮末才生效，故「第 3 次转正、第 4 次起才产 person 锚」。
+        # fail-open：字段缺失或写库异常都不影响主认知抽取。
+        self._grow_persons(data)
+
         # 更新画像摘要
         self._update_summary()
 
         return {**stats, "operations": operations}
+
+    def _grow_persons(self, data: dict) -> None:
+        """person 锚源自生长（mode B）：把 LLM 抽到的人名喂进 known_persons。
+
+        每个名调 ``store.add_known_person(name, 'auto')``——首次进 candidate，
+        累计出现达阈值才转 active（阈值见 store._PERSON_PROMOTE_THRESHOLD）。
+        fail-open：store 缺失 / 字段类型异常 → 仅告警，绝不打断主抽取。
+        """
+        try:
+            persons = data.get("persons", [])
+            if not isinstance(persons, list):
+                return
+            store = getattr(self.profile_manager, "store", None)
+            if store is None:
+                return
+            for nm in persons:
+                if isinstance(nm, str) and nm.strip():
+                    store.add_known_person(nm.strip(), "auto")
+        except Exception as e:  # noqa: BLE001 —— fail-open：人名自生长失败不影响主抽取
+            logger.warning("persons 自生长失败（忽略，不影响主抽取）: %s", e)
 
     def _update_summary(self):
         """更新画像的一句话总结。"""

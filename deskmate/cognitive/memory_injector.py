@@ -374,6 +374,34 @@ def build_cognitive_context(limit: int | None = None, query: str = "") -> str:
     return "\n\n---\n\n".join(sections)
 
 
+def build_lessons_context(base_dir: str | Path | None = None, query: str = "") -> str:
+    """生成「小桔学到的」注入段（lessons 教学层，江河设计 §4.5）；无数据返回空串。
+
+    从 ``teachings`` 表取「全部 permanent + 最近 N 条 recent」（限额见
+    ``CognitiveStore.get_lessons_for_injection``）。这些条目是小桔从萧盛的
+    纠正 / 反馈里学到的，每轮注入，让她回话带得上、不重复踩同一个坑。
+
+    fail-open：库缺失 / 查询异常 → ""，绝不阻断主记忆注入。
+    ``base_dir`` 传法同 ``load_cognitive_profile``（测试 / 多 workspace 隔离必备）。
+    """
+    try:
+        from .store import CognitiveStore
+
+        db = (Path(base_dir) / "deskmate.db") if base_dir else _db_path()
+        lessons = CognitiveStore(db_path=db).get_lessons_for_injection()
+        if not lessons:
+            return ""
+        lines = [
+            "## 小桔学到的（来自你的纠正与反馈）",
+            "下面这些是你从萧盛的纠正 / 反馈里学到的——回话时请照做，"
+            "不要再犯同样的错。",
+        ]
+        lines.extend(f"- {t}" for t in lessons)
+        return "\n".join(lines)
+    except Exception:
+        return ""  # fail-open：lessons 缺失不影响主记忆注入
+
+
 def has_cognitive_data() -> bool:
     """是否已有认知数据（底座 / 他的画像 / 她的世界观，任一存在即 True）。"""
     if load_persona_base():

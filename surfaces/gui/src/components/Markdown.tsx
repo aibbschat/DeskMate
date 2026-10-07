@@ -2,7 +2,6 @@ import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Icon } from "./Icon";
 import { Emote } from "./deskmate/emotes/Emote";
-import { EMOTE_MANIFEST } from "./deskmate/emotes/emoteManifest";
 
 // §34 (UX-016): the agent ends a deliverable turn with plain markdown —
 // [Title](artifact:relative/path) — and the renderer turns it into a chip that opens the
@@ -151,16 +150,13 @@ export function Markdown({ text }: { text: string }) {
           },
           img: ({ node: _n, src, alt, ...props }) => {
             if (typeof src === "string" && src.startsWith(EMOTE_PROTOCOL)) {
-              // emote:PACK:NAME（带包）或 emote:NAME（无包 → 回落默认包，冻结不随切换变画风）。
               const raw = src.slice(EMOTE_PROTOCOL.length);
               const ci = raw.indexOf(":");
-              const pack = ci === -1 ? undefined : raw.slice(0, ci);
               const name = ci === -1 ? raw : raw.slice(ci + 1);
               return (
                 <Emote
                   name={name}
-                  pack={pack ?? EMOTE_MANIFEST.defaultPack}
-                  size={22}
+                  size={36}
                   title={typeof alt === "string" ? alt : undefined}
                 />
               );

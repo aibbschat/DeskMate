@@ -239,6 +239,44 @@ SYNC_TABLES: dict[str, dict] = {
         ),
         "conflict_col": None,
     },
+    # ---- P2-R1（2026-10-07）：已知人名注册表（person 锚源）----
+    # seed（LLM 扫已出版书）+ 运行时自生长（mode B：candidate→阈值转正）两路来源。
+    # name 为 text pk 本身即唯一键，双端同名 → 同 sync_uuid → 自动合并
+    # （禁随机 uuid，照 memory_anchors / proactive_ledger 的 string 口径）。
+    # 纯文本、无向量列（天然过策略①守卫）→ factor 端各自独立生长也能收敛。
+    "known_persons": {
+        "pk": "name",
+        "pk_type": "text",
+        "sync_key": "name",
+        "sync_uuid_kind": "string",
+        "business_cols": (
+            "name",
+            "aliases",
+            "source",
+            "status",
+            "seen_count",
+            "created_at",
+        ),
+        "conflict_col": None,
+    },
+    # ---- P2-R3（2026-10-07）：lessons（小桔从纠正/反馈学到的条目）----
+    # 每轮注入教学层（江河设计 §4.5）；lesson_id 用内容 md5（双端同内容 → 同 id
+    # → 同 sync_uuid → 自动合并，禁随机 uuid）。纯文本、无向量列。
+    "teachings": {
+        "pk": "lesson_id",
+        "pk_type": "text",
+        "sync_key": "lesson_id",
+        "sync_uuid_kind": "string",
+        "business_cols": (
+            "lesson_id",
+            "content",
+            "scope",
+            "source",
+            "created_at",
+            "updated_at",
+        ),
+        "conflict_col": None,
+    },
 }
 
 # ---- 策略①护栏：跨端只同步明文事实、向量各端本地重算 ----

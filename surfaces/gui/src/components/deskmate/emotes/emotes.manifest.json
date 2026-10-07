@@ -1,12 +1,12 @@
 {
-  "version": "1.0.0",
-  "defaultPack": "moling-default",
-  "description": "小桔表情 · 接入标准（Emote Manifest）。前后端共用单一真相源：定义「有哪些表情、各自含义/触发场景/分类/情绪」，渲染实现由各端自行承载（前端为 SVG_REGISTRY）。新增表情只改本文件，无需改代码。",
+  "version": "2.0.0",
+  "defaultPack": "xiaoju-clay",
+  "description": "小桔表情 · 接入标准 v2。唯一 pack「xiaoju-clay」：3D 软胶黏土潮玩风小桔大头贴纸，全部为生活化通用表情，聊天高频场景适用。",
   "packs": {
-    "moling-default": {
-      "id": "moling-default",
-      "name": "小桔默认表情",
-      "style": "yellow-face",
+    "xiaoju-clay": {
+      "id": "xiaoju-clay",
+      "name": "小桔黏土",
+      "style": "3d-clay-sticker",
       "license": "custom",
       "emotes": [
         {
@@ -14,9 +14,9 @@
           "name_zh": "招手问好",
           "name_en": "wave",
           "category": "greeting",
-          "meaning": "用户主动打招呼、问好、引起注意",
-          "triggers": ["你好", "在吗", "打招呼", "hi"],
-          "emotion": "idle"
+          "meaning": "打招呼、你好、引起注意",
+          "triggers": ["你好", "在吗", "hi", "嗨", "打招呼"],
+          "emotion": "happy"
         },
         {
           "id": "cheer",
@@ -24,17 +24,8 @@
           "name_en": "cheer",
           "category": "celebration",
           "meaning": "开心庆祝、恭喜、为对方高兴",
-          "triggers": ["太棒了", "完成", "恭喜", "厉害"],
+          "triggers": ["太棒了", "恭喜", "厉害", "耶", "完成了"],
           "emotion": "happy"
-        },
-        {
-          "id": "idea",
-          "name_zh": "灵感来了",
-          "name_en": "idea",
-          "category": "writing",
-          "meaning": "有了想法、灵感、点子、受到启发",
-          "triggers": ["灵感", "点子", "启发", "有了"],
-          "emotion": "thinking"
         },
         {
           "id": "shy",
@@ -47,29 +38,29 @@
         },
         {
           "id": "v",
-          "name_zh": "嘚瑟比耶",
+          "name_zh": "比耶得意",
           "name_en": "v",
           "category": "celebration",
-          "meaning": "得意、胜利、搞定、嘚瑟",
-          "triggers": ["耶", "胜利", "666", "搞定"],
+          "meaning": "得意、胜利、搞定、小骄傲",
+          "triggers": ["搞定", "666", "耶", "赢了"],
           "emotion": "happy"
         },
         {
           "id": "sleepy",
-          "name_zh": "困到睁不开",
+          "name_zh": "犯困打哈欠",
           "name_en": "sleepy",
           "category": "greeting",
-          "meaning": "困倦、疲惫、想睡、熬夜",
-          "triggers": ["困", "累", "熬夜", "想睡"],
+          "meaning": "困倦、累了、想睡、熬夜",
+          "triggers": ["困", "累", "想睡", "熬夜", "哈欠"],
           "emotion": "idle"
         },
         {
           "id": "tea",
-          "name_zh": "摸鱼喝茶",
+          "name_zh": "喝茶摸鱼",
           "name_en": "tea",
           "category": "greeting",
-          "meaning": "摸鱼、休息、放松、划水",
-          "triggers": ["摸鱼", "休息", "放松", "划水"],
+          "meaning": "摸鱼、休息、放松、歇会儿",
+          "triggers": ["摸鱼", "休息", "喝茶", "放松", "划水"],
           "emotion": "idle"
         },
         {
@@ -77,17 +68,8 @@
           "name_zh": "安慰抱抱",
           "name_en": "hug",
           "category": "reaction",
-          "meaning": "想要安慰、抱抱、被安抚（难过/委屈时）",
-          "triggers": ["抱抱", "安慰", "难过", "委屈"],
-          "emotion": "concerned"
-        },
-        {
-          "id": "stuck",
-          "name_zh": "卡文抓狂",
-          "name_en": "stuck",
-          "category": "writing",
-          "meaning": "卡文、写不出、创作受阻、烦躁抓狂",
-          "triggers": ["卡文", "写不出", "崩溃", "卡住"],
+          "meaning": "给你抱抱、安慰、温暖一下",
+          "triggers": ["抱抱", "安慰", "摸摸", "辛苦"],
           "emotion": "concerned"
         },
         {
@@ -96,7 +78,7 @@
           "name_en": "facepalm",
           "category": "reaction",
           "meaning": "无语、无奈、服了、叹气",
-          "triggers": ["无语", "服了", "无奈", "叹气"],
+          "triggers": ["无语", "服了", "无奈", "扶额"],
           "emotion": "concerned"
         },
         {
@@ -104,35 +86,53 @@
           "name_zh": "暗中观察",
           "name_en": "peek",
           "category": "greeting",
-          "meaning": "偷看、围观、默默观察",
-          "triggers": ["偷看", "围观", "暗中", "默默"],
+          "meaning": "偷看、围观、默默吃瓜",
+          "triggers": ["偷看", "围观", "吃瓜", "暗中", "看看"],
           "emotion": "idle"
         },
         {
           "id": "clap",
-          "name_zh": "鼓掌",
+          "name_zh": "鼓掌点赞",
           "name_en": "clap",
           "category": "celebration",
-          "meaning": "鼓掌、点赞、叫好",
-          "triggers": ["鼓掌", "赞", "棒", "好"],
+          "meaning": "鼓掌、点赞、好棒、叫好",
+          "triggers": ["鼓掌", "赞", "好棒", "厉害", "精彩"],
           "emotion": "happy"
         },
         {
-          "id": "check",
-          "name_zh": "查证无误",
-          "name_en": "check",
-          "category": "writing",
-          "meaning": "已查证、核实、确认无误",
-          "triggers": ["查证", "核实", "确认", "无误"],
-          "emotion": "focused"
+          "id": "lol",
+          "name_zh": "笑哭了",
+          "name_en": "lol",
+          "category": "reaction",
+          "meaning": "笑出眼泪、太好笑了",
+          "triggers": ["笑死", "哈哈", "好笑", "笑吐"],
+          "emotion": "happy"
+        },
+        {
+          "id": "think",
+          "name_zh": "思考中",
+          "name_en": "think",
+          "category": "greeting",
+          "meaning": "让我想想、琢磨一下",
+          "triggers": ["想想", "思考", "琢磨", "嗯", "等下"],
+          "emotion": "thinking"
+        },
+        {
+          "id": "cry",
+          "name_zh": "委屈巴巴",
+          "name_en": "cry",
+          "category": "reaction",
+          "meaning": "委屈、难过、要哭了",
+          "triggers": ["委屈", "难过", "哭", "呜呜", "可怜"],
+          "emotion": "concerned"
         },
         {
           "id": "shock",
           "name_zh": "震惊",
           "name_en": "shock",
           "category": "reaction",
-          "meaning": "震惊、不敢相信",
-          "triggers": ["震惊", "天哪", "不敢信", "惊"],
+          "meaning": "震惊、不敢相信、卧槽",
+          "triggers": ["震惊", "天哪", "不敢信", "不会吧", "惊了"],
           "emotion": "concerned"
         },
         {
@@ -140,35 +140,20 @@
           "name_zh": "比心",
           "name_en": "heart",
           "category": "celebration",
-          "meaning": "表达喜爱、比心、么么",
-          "triggers": ["爱你", "喜欢", "比心", "么么"],
+          "meaning": "喜欢你、爱你、比个心",
+          "triggers": ["爱你", "喜欢", "比心", "么么", "比心"],
           "emotion": "happy"
         },
         {
-          "id": "inbox",
-          "name_zh": "资料到账",
-          "name_en": "inbox",
-          "category": "writing",
-          "meaning": "资料、文件、邮件收到、到账",
-          "triggers": ["资料", "收到", "到账", "文件"],
-          "emotion": "focused"
+          "id": "rage",
+          "name_zh": "崩溃抓狂",
+          "name_en": "rage",
+          "category": "reaction",
+          "meaning": "崩溃、抓狂、要疯了",
+          "triggers": ["崩溃", "抓狂", "疯了", "受不了", "烦躁"],
+          "emotion": "concerned"
         }
       ]
-    },
-    "moling-mono": {
-      "id": "moling-mono",
-      "name": "小桔线描",
-      "style": "mono-line",
-      "license": "custom",
-      "inherit": "moling-default"
-    },
-    "xiaoju-orange": {
-      "id": "xiaoju-orange",
-      "name": "小桔桔子",
-      "style": "xiaoju-mascot",
-      "license": "custom",
-      "description": "以小桔吉祥物为原型的专属表情包——桔子帽（橙+绿叶）、棕色刘海、浅肤色圆脸。聊天与日记通用。",
-      "inherit": "moling-default"
     }
   }
 }

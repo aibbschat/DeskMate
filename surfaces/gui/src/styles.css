@@ -3374,24 +3374,24 @@ html[data-platform="linux"] ::-webkit-scrollbar-thumb:hover { background-color: 
   border: 1px solid var(--line);
   cursor: not-allowed;
 }
-/* 小桔表情：聊天气泡里 inline 渲染，视觉 1.4em 但不撑行距，hover 放大、轻微浮动 */
+/* 小桔表情 v2：3D 黏土贴纸，聊天气泡里 inline 渲染 2.2em，hover 放大 */
 .deskmate-emote {
   display: inline-block;
-  width: 1.4em;
-  height: 1.4em;
+  width: 2.2em;
+  height: 2.2em;
   vertical-align: middle;
-  margin: -0.2em 1px;
+  margin: -0.3em 2px;
   line-height: 0;
   cursor: default;
 }
-.deskmate-emote svg {
+.deskmate-emote img {
   display: block;
   width: 100%;
   height: 100%;
-  animation: emote-bob 3.2s ease-in-out infinite;
+  object-fit: contain;
 }
 .deskmate-emote:hover {
-  transform: scale(1.25);
+  transform: scale(1.18);
 }
 @keyframes emote-bob {
   0%, 100% { transform: translateY(0); }
@@ -3404,7 +3404,9 @@ html[data-platform="linux"] ::-webkit-scrollbar-thumb:hover { background-color: 
 }
 /* 小桔表情选择面板（Composer 输入框旁的表情栏） */
 .emote-picker {
-  width: 256px;
+  width: 340px;
+  max-height: 360px;
+  overflow-y: auto;
 }
 .emote-pack-tabs {
   display: flex;
@@ -3436,15 +3438,15 @@ html[data-platform="linux"] ::-webkit-scrollbar-thumb:hover { background-color: 
 .emote-grid {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
-  gap: 4px;
+  gap: 6px;
 }
 .emote-cell {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 2px;
-  padding: 6px 2px;
-  border-radius: 10px;
+  gap: 4px;
+  padding: 10px 4px;
+  border-radius: 12px;
   border: 1px solid transparent;
   background: transparent;
   cursor: pointer;
@@ -3455,7 +3457,7 @@ html[data-platform="linux"] ::-webkit-scrollbar-thumb:hover { background-color: 
   border-color: var(--line);
 }
 .emote-cell-label {
-  font-size: 10.5px;
+  font-size: 11px;
   line-height: 1.1;
   color: var(--muted);
   text-align: center;

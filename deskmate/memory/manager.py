@@ -653,6 +653,19 @@ class DeskMateMemoryManager:
                 parts.append(delivered_ctx)
         except Exception:
             pass  # fail-open：台账缺失/查询失败不影响主记忆注入
+        # 「小桔学到的」（P2-R3 江河设计 §4.5 教学层）：从萧哥纠正/反馈学到的
+        # lessons 每轮注入，让她回话带得上这些认知、不重复踩同一个坑。
+        # fail-open 与上面各块一致；总开关 DESKMATE_AUTO_INJECT=0 已整体关闭本函数，
+        # 本块随之关闭；单独开关 DESKMATE_LESSONS_INJECT=0 可只关这一块。
+        try:
+            if os.environ.get("DESKMATE_LESSONS_INJECT", "1") != "0":
+                from deskmate.cognitive.memory_injector import build_lessons_context
+
+                lessons_ctx = build_lessons_context(self.base_dir, user_message)
+                if lessons_ctx:
+                    parts.append(lessons_ctx)
+        except Exception:
+            pass  # fail-open：lessons 缺失不影响主记忆注入
         if not parts:
             return ""
 

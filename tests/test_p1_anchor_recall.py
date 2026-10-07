@@ -121,6 +121,47 @@ def test_anchor_recall_fail_open(env, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# P2-R2（ROUND-07）：邻居截断配额 = Option B
+# ---------------------------------------------------------------------------
+def test_recall_reserves_quota_when_fts_full(env):
+    """FTS 命中填满 top_k 时，同锚邻居仍必进结果、总数不超 top_k。
+
+    top_k=3 暴露旧 bug：3 条 FTS 命中（满额）→ 旧口径 `hits.extend(...)[:3]`
+    把 2 个邻居截掉；Option B 从 FTS 里让出配额（keep=3-2=1）。
+    """
+    store = _store(env)
+    # 3 条含 query 词（FTS 命中 3 = 满 top_k），且同锚
+    _persist(store, [
+        _stance("s_A", "史料必须交叉比对"),
+        _stance("s_B", "史料需要多方佐证"),
+        _stance("s_C", "史料不可轻信孤证"),
+        # 2 条不含 query 词、只靠同锚带回
+        _stance("n_1", "孤证不能单独成立"),
+        _stance("n_2", "结论要谨慎下"),
+    ])
+    for i in ("s_A", "s_B", "s_C", "n_1", "n_2"):
+        _anchor(store, i, "topic", "历史真实性")
+
+    hits = store.recall_items("史料", top_k=3)
+    ids = [h["id"] for h in hits]
+    assert "n_1" in ids and "n_2" in ids, "同锚邻居被截断了（旧 bug 未修）"
+    assert len(ids) <= 3
+
+
+def test_recall_no_neighbors_no_degrade(env):
+    """无可顺锚邻座 → 行为 = 纯 FTS，不退化（无锚数据不缩水）。"""
+    store = _store(env)
+    _persist(store, [
+        _stance("s_A", "史料必须交叉比对"),
+        _stance("s_B", "史料需要多方佐证"),
+    ])
+    # 不落任何锚 → _recall_anchor_neighbors 返回 []
+    hits = store.recall_items("史料", top_k=8)
+    assert {h["id"] for h in hits} == {"s_A", "s_B"}   # 纯 FTS，无邻居，不退化
+    assert not any(h.get("via_anchor") for h in hits)
+
+
+# ---------------------------------------------------------------------------
 # 工单 §七：抽锚 / 去重 / 同步明文
 # ---------------------------------------------------------------------------
 
