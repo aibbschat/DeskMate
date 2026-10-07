@@ -138,7 +138,7 @@ def main(argv: list[str]) -> int:
                     help="每本最多抽前 N 块（0=不限，试跑省钱）")
     args = ap.parse_args(argv)
 
-    from deskmate.memory.llm import chat, llm_available
+    from deskmate.memory.llm import chat_memory, llm_available
 
     if not llm_available():
         print("[中止] LLM 不可用（未配 provider / 无密钥），无法扫描抽人名。")
@@ -175,7 +175,7 @@ def main(argv: list[str]) -> int:
         n_fail = 0
         for _heading, body in chunks:
             try:
-                found.update(_extract_persons_from_chunk(body, chat))
+                found.update(_extract_persons_from_chunk(body, chat_memory))
             except Exception as e:  # noqa: BLE001 —— 单块抽失败跳过，不中断整本
                 n_fail += 1
                 if n_fail <= 2:
