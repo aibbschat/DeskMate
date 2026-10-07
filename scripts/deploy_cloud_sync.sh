@@ -92,6 +92,12 @@ CHANNEL_MODULES=(
   # 在云端「不知道自己递过什么」。2026-10-07 之前 deploy 脚本漏了它，云端 manager.py
   # 停在 Sep 30 旧码——本轮必须把层一注入推上去（红线：本地与云端代码须完全一致）。
   "deskmate/memory/manager.py"
+  # ⚠️ P1 汇流最小版（2026-10-07）：认知层两件套。store.py 新增 memory_anchors 表 +
+  # recall_items 顺锚走一跳；extractor.py 抽取时顺手挂锚。云端 openworker-server 每轮
+  # 经 memory_injector → CognitiveStore.recall_items 构建上下文；漏传 → 云端跑旧码
+  # （无锚表 / 不顺锚），本地同步上去的锚数据也召不回邻座（同 manager.py 漏传教训）。
+  "deskmate/cognitive/store.py"
+  "deskmate/cognitive/extractor.py"
 )
 
 FORCE=0

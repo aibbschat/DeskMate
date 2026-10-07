@@ -219,6 +219,26 @@ SYNC_TABLES: dict[str, dict] = {
         # 若套用只前进语义，cooldown_until 过期后远端的旧 closed 记录会把它永久钉死。
         # 正确语义是「两端取更新的那份」，交给 HLC LWW + cooldown_until 读路径判定。
     },
+    # ---- P1 汇流最小版（2026-10-07）：共享锚表 ----
+    # 认知条目之间的「邻座」线索（人/事/主题/项目/书目）；同锚即相邻，召回时顺锚走一跳。
+    # 纯文本、无向量列（天然过策略①守卫）。row_key 为确定性字符串
+    # （item_kind \x1f item_id \x1f anchor_kind \x1f anchor_value），双端同锚 → 同 sync_uuid
+    # → 自动合并（禁随机 uuid，照 proactive_ledger / llm_circuit_breaker 的 string 口径）。
+    "memory_anchors": {
+        "pk": "row_key",
+        "pk_type": "text",
+        "sync_key": "row_key",
+        "sync_uuid_kind": "string",
+        "business_cols": (
+            "row_key",
+            "item_kind",
+            "item_id",
+            "anchor_kind",
+            "anchor_value",
+            "created_at",
+        ),
+        "conflict_col": None,
+    },
 }
 
 # ---- 策略①护栏：跨端只同步明文事实、向量各端本地重算 ----

@@ -55,6 +55,32 @@ def _now_iso() -> str:
     return datetime.datetime.now().isoformat(timespec="seconds")
 
 
+# P1 汇流：锚的确定性主键。分隔符用 US(\x1f)——正文/锚值里不会出现，避免拼接歧义。
+# 双端「同一条锚」算出同一 row_key → 同 sync_uuid → 同步自动合并（确定性，禁随机 uuid）。
+_ANCHOR_SEP = "\x1f"
+
+
+def anchor_row_key(item_kind: str, item_id: str, anchor_kind: str, anchor_value: str) -> str:
+    """memory_anchors 的确定性主键（跨端一致）。"""
+    return _ANCHOR_SEP.join(
+        (str(item_kind), str(item_id), str(anchor_kind), str(anchor_value))
+    )
+
+
+# P1 汇流（R3）：顺锚走一跳的邻座上限（防爆炸；P1 量小，5 条足够）。
+_ANCHOR_NEIGHBOR_CAP = 5
+
+# 锚类型 → 人话标签（anchor_evidence 用，如「同主题：历史真实性」）。
+_ANCHOR_KIND_LABELS = {
+    "topic": "主题", "book": "书目", "person": "人物",
+    "event": "事件", "project": "项目",
+}
+
+
+def _anchor_kind_label(kind: str) -> str:
+    return _ANCHOR_KIND_LABELS.get(kind, kind)
+
+
 def _parse_iso(s: str | None) -> datetime.datetime | None:
     """宽容解析 ISO 时间（支持带/不带 Z、偏移、纯日期），统一返回无时区 datetime。
 
@@ -260,6 +286,24 @@ class CognitiveStore:
                     ON profile_items(layer, dimension, status);
                 CREATE INDEX IF NOT EXISTS idx_items_layer_topic
                     ON profile_items(layer, topic);
+
+                -- P1 汇流最小版（2026-10-07）：共享锚表。
+                -- 条目抽取时顺手抽「锚」（人/事/主题/项目/书目），同锚即「邻座」；
+                -- 召回命中种子后顺锚走一跳召回邻座。纯文本、无向量列（可进 SYNC_TABLES）。
+                -- row_key = 确定性 <kind>\x1f<id>\x1f<anchor_kind>\x1f<value>（双端同锚同 key
+                -- → 同 sync_uuid → 自动合并）；四列唯一性另用 UNIQUE 兜底。
+                CREATE TABLE IF NOT EXISTS memory_anchors (
+                    row_key      TEXT PRIMARY KEY,
+                    item_kind    TEXT NOT NULL,
+                    item_id      TEXT NOT NULL,
+                    anchor_kind  TEXT NOT NULL,
+                    anchor_value TEXT NOT NULL,
+                    created_at   TEXT NOT NULL,
+                    UNIQUE (item_kind, item_id, anchor_kind, anchor_value)
+                );
+                -- 同锚邻座召回（反查索引）
+                CREATE INDEX IF NOT EXISTS idx_anchor_lookup
+                    ON memory_anchors(anchor_kind, anchor_value, item_kind);
 
                 CREATE TABLE IF NOT EXISTS item_sources (
                     item_id  TEXT NOT NULL,
@@ -825,6 +869,46 @@ class CognitiveStore:
         ).fetchall()
         return [HistoryEntry(action=r[0], old_value=r[1], new_value=r[2], reason=r[3], source=r[4], timestamp=r[5]) for r in rows]
 
+    # ------------------------------------------------------------------
+    # P1 汇流：锚（共享锚 → 邻座召回）
+    # ------------------------------------------------------------------
+    def upsert_anchors(
+        self,
+        item_kind: str,
+        item_id: str,
+        anchors: Optional[list[tuple[str, str]]] = None,
+    ) -> int:
+        """把某条目的「锚」写入 memory_anchors（INSERT OR IGNORE，幂等）。
+
+        P1 只写 item_kind='profile_item'。fail-open：任何异常仅告警、不抛——
+        抽锚失败绝不影响主抽取链路。返回拟写入的锚条数（重复由主键/唯一约束幂等跳过）。
+
+        Args:
+            anchors: [(anchor_kind, anchor_value), ...]；空/None 直接返回 0。
+        """
+        pairs = [(k, v) for (k, v) in (anchors or []) if k and v]
+        if not pairs:
+            return 0
+        ts = _now_iso()
+        try:
+            with self._connect() as conn:
+                conn.executemany(
+                    "INSERT OR IGNORE INTO memory_anchors"
+                    "(row_key, item_kind, item_id, anchor_kind, anchor_value, created_at) "
+                    "VALUES(?, ?, ?, ?, ?, ?)",
+                    [
+                        (
+                            anchor_row_key(item_kind, item_id, k, v),
+                            item_kind, item_id, k, v, ts,
+                        )
+                        for (k, v) in pairs
+                    ],
+                )
+            return len(pairs)
+        except Exception as e:  # noqa: BLE001 —— fail-open：抽锚失败不影响主链路
+            logger.warning("upsert_anchors 失败（忽略，不影响主抽取）: %s", e)
+            return 0
+
     def recall_items(
         self,
         query: str,
@@ -862,12 +946,85 @@ class CognitiveStore:
         except sqlite3.Error:
             return []
         excl = exclude_ids or set()
-        return [
+        hits = [
             {"id": r[0], "layer": r[1], "dimension": r[2], "topic": r[3],
              "content": r[4], "confidence": r[5]}
             for r in rows
             if r[0] not in excl
-        ][:top_k]
+        ]
+        # P1 汇流（R3）：顺锚走一跳——FTS 命中的 seed 带出同锚「邻座」。
+        # 纯增益 + fail-open：任何异常都只 warning、退回纯 FTS（= 今天口径），绝不空结果。
+        if os.getenv("DESKMATE_ANCHOR_RECALL", "1") != "0" and hits:
+            try:
+                hits.extend(self._recall_anchor_neighbors(hits, excl))
+            except Exception as e:  # noqa: BLE001 —— fail-open：顺锚失败退回纯 FTS
+                logger.warning("顺锚召回失败（退回纯 FTS）: %s", e)
+        return hits[:top_k]
+
+    def _recall_anchor_neighbors(
+        self, seeds: list[dict[str, Any]], excl: set[str]
+    ) -> list[dict[str, Any]]:
+        """顺 seed 的锚反查同锚「邻座」条目（R3；调用方负责整段 fail-open）。
+
+        - 只认 item_kind='profile_item'（P1 锚范围收敛，对齐 recall_items 查询的表）；
+        - 邻座不与 seed / excl 重复；
+        - 最多 _ANCHOR_NEIGHBOR_CAP 条（防爆炸）；
+        - 附纯增键 via_anchor=True + anchor_evidence（如「同主题：X」），
+          既有消费方按 r["id"] 取值，天然兼容。
+        """
+        seed_ids = [s["id"] for s in seeds if s.get("id")]
+        if not seed_ids:
+            return []
+        with self._connect() as conn:
+            # 1) seed 的锚集合（去重）
+            qmarks = ",".join("?" * len(seed_ids))
+            anchor_rows = conn.execute(
+                "SELECT DISTINCT anchor_kind, anchor_value FROM memory_anchors "
+                f"WHERE item_kind='profile_item' AND item_id IN ({qmarks})",
+                seed_ids,
+            ).fetchall()
+            if not anchor_rows:
+                return []
+            # 2) 反查同锚邻座（走 idx_anchor_lookup）
+            cond = ",".join("(?,?)" for _ in anchor_rows)
+            cond_params = [x for pair in anchor_rows for x in pair]
+            sib_rows = conn.execute(
+                "SELECT item_id, anchor_kind, anchor_value FROM memory_anchors "
+                "WHERE item_kind='profile_item' "
+                f"AND (anchor_kind, anchor_value) IN ({cond})",
+                cond_params,
+            ).fetchall()
+            skip = set(seed_ids) | set(excl)
+            neighbor_ids: list[str] = []
+            anchor_hit: dict[str, str] = {}
+            for iid, kind, value in sib_rows:
+                if iid in skip or iid in anchor_hit:
+                    continue
+                anchor_hit[iid] = f"同{_anchor_kind_label(kind)}：{value}"
+                neighbor_ids.append(iid)
+                if len(neighbor_ids) >= _ANCHOR_NEIGHBOR_CAP:
+                    break
+            if not neighbor_ids:
+                return []
+            # 3) 拉邻座正文（只取 active）
+            qmarks2 = ",".join("?" * len(neighbor_ids))
+            rows = conn.execute(
+                "SELECT id, layer, dimension, topic, content, confidence "
+                "FROM profile_items "
+                f"WHERE status='active' AND id IN ({qmarks2})",
+                neighbor_ids,
+            ).fetchall()
+        by_id = {r[0]: r for r in rows}
+        return [
+            {
+                "id": by_id[i][0], "layer": by_id[i][1], "dimension": by_id[i][2],
+                "topic": by_id[i][3], "content": by_id[i][4], "confidence": by_id[i][5],
+                "via_anchor": True,
+                "anchor_evidence": anchor_hit.get(i, ""),
+            }
+            for i in neighbor_ids
+            if i in by_id
+        ]
 
     # ------------------------------------------------------------------
     # meta KV（last_interview_at 等）

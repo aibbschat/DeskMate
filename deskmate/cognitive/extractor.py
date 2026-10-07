@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 from dataclasses import asdict
 from typing import Optional
@@ -95,6 +96,90 @@ def _extract_json(text: str) -> dict:
 
     logger.warning(f"Failed to parse JSON from LLM response: {text[:200]}")
     return {}
+
+
+# ---------------------------------------------------------------------------
+# P1 汇流：共享锚抽取（轻量、无 LLM、fail-open）
+# ---------------------------------------------------------------------------
+# 条目的「议题」字段：立场看 topic，价值排序 / 思维框架看 domain。
+_ANCHOR_TOPIC_FIELDS = ("topic", "domain")
+
+
+def _person_names_from_config() -> list[str]:
+    """已知人名源（逗号分隔）。仓库暂无 known-names 表，先用环境变量兜底；
+    未配置 = 不产出人名锚（best-effort：识别不出就跳过）。"""
+    raw = os.getenv("DESKMATE_PERSON_NAMES", "")
+    return [n.strip() for n in raw.split(",") if n.strip()]
+
+
+def extract_anchors(
+    text: str,
+    source_title: str,
+    source_type: str = "",
+    extracted_items: Optional[list] = None,
+) -> list[tuple[str, str]]:
+    """从一次抽取产出里派生「共享锚」（P1：topic / book / person）。
+
+    - topic：取条目自身的议题字段（立场 topic / 价值排序与思维框架 domain）；
+    - book：source_type == 'book' → 以书名作锚（同书条目自动成邻座）；
+    - person：best-effort，仅命中配置的已知人名才产出（无名单则跳过）。
+
+    轻量、无 LLM；异常一律吞掉（fail-open），返回已去重、已滤空值的 [(kind, value)]。
+    """
+    anchors: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+
+    def _add(kind: str, value: str) -> None:
+        value = (value or "").strip()
+        if not kind or not value:
+            return
+        key = (kind, value)
+        if key in seen:
+            return
+        seen.add(key)
+        anchors.append(key)
+
+    try:
+        for it in extracted_items or []:
+            if not isinstance(it, dict):
+                continue
+            for fld in _ANCHOR_TOPIC_FIELDS:
+                v = it.get(fld)
+                if isinstance(v, str) and v.strip():
+                    _add("topic", v)
+                    break
+        if source_type == "book" and (source_title or "").strip():
+            _add("book", source_title)
+        for name in _person_names_from_config():
+            if name in (text or ""):
+                _add("person", name)
+    except Exception as e:  # noqa: BLE001 —— fail-open：抽锚失败不影响主抽取
+        logger.warning("extract_anchors 失败（忽略，不影响主抽取）: %s", e)
+    return anchors
+
+
+def _attach_anchors(
+    pm: Optional[CognitiveProfileManager],
+    item_id: str,
+    text: str,
+    source_title: str,
+    source_type: str,
+    item_dict: dict,
+) -> None:
+    """把条目锚写进 memory_anchors（P1 只写 profile_item，即 recall_items 查询的表）。
+
+    句柄取自 pm.store（CognitiveProfileManager 已暴露 CognitiveStore，profile.py:58）。
+    fail-open：任何异常仅告警、绝不抛——挂锚失败不影响主抽取主链路。
+    """
+    try:
+        store = getattr(pm, "store", None)
+        if store is None or not item_id:
+            return
+        anchors = extract_anchors(text, source_title, source_type, [item_dict])
+        if anchors:
+            store.upsert_anchors("profile_item", item_id, anchors)
+    except Exception as e:  # noqa: BLE001 —— fail-open：挂锚失败不影响主抽取
+        logger.warning("挂锚失败（忽略，不影响主抽取）: %s", e)
 
 
 class CognitiveExtractor:
@@ -179,12 +264,13 @@ class CognitiveExtractor:
                 confidence=s.get("confidence", 0.5),
             )
             try:
-                _, op = self.profile_manager.add_stance(
+                stance, op = self.profile_manager.add_stance(
                     topic=s.get("topic", ""),
                     content=s.get("content", ""),
                     source=source,
                     tags=s.get("tags", []),
                 )
+                _attach_anchors(self.profile_manager, stance.id, text, source_title, source_type, s)
                 operations.append({"type": "stance", "topic": s.get("topic"), "operation": op})
                 stats["stances"] += 1
             except Exception as e:
@@ -200,13 +286,14 @@ class CognitiveExtractor:
                 confidence=p.get("confidence", 0.5),
             )
             try:
-                _, op = self.profile_manager.add_argument_pattern(
+                pattern, op = self.profile_manager.add_argument_pattern(
                     content=p.get("content", ""),
                     source=source,
                     pattern_type=p.get("pattern_type", ""),
                     evidence_preference=p.get("evidence_preference", ""),
                     tags=p.get("tags", []),
                 )
+                _attach_anchors(self.profile_manager, pattern.id, text, source_title, source_type, p)
                 operations.append({"type": "argument_pattern", "operation": op})
                 stats["argument_patterns"] += 1
             except Exception as e:
@@ -222,7 +309,7 @@ class CognitiveExtractor:
                 confidence=v.get("confidence", 0.5),
             )
             try:
-                _, op = self.profile_manager.add_value_ranking(
+                vr, op = self.profile_manager.add_value_ranking(
                     domain=v.get("domain", ""),
                     ranking=v.get("ranking", []),
                     content=v.get("content", ""),
@@ -230,6 +317,7 @@ class CognitiveExtractor:
                     tradeoff_notes=v.get("tradeoff_notes", ""),
                     tags=v.get("tags", []),
                 )
+                _attach_anchors(self.profile_manager, vr.id, text, source_title, source_type, v)
                 operations.append({"type": "value_ranking", "domain": v.get("domain"), "operation": op})
                 stats["value_rankings"] += 1
             except Exception as e:
@@ -245,13 +333,14 @@ class CognitiveExtractor:
                 confidence=f.get("confidence", 0.5),
             )
             try:
-                _, op = self.profile_manager.add_thinking_framework(
+                tf, op = self.profile_manager.add_thinking_framework(
                     domain=f.get("domain", ""),
                     steps=f.get("steps", []),
                     content=f.get("content", ""),
                     source=source,
                     tags=f.get("tags", []),
                 )
+                _attach_anchors(self.profile_manager, tf.id, text, source_title, source_type, f)
                 operations.append({"type": "thinking_framework", "domain": f.get("domain"), "operation": op})
                 stats["thinking_frameworks"] += 1
             except Exception as e:
@@ -399,8 +488,9 @@ def extract_cognitive_items(
             continue
         src = SourceRef(type=source_type, title=source_title, excerpt=content[:120],
                         date=source_date, confidence=0.6)
-        pm.add_stance(topic=topic, content=content, source=src,
-                      tags=[source_type], contexts=s.get("contexts") or [])
+        obj, _op = pm.add_stance(topic=topic, content=content, source=src,
+                                 tags=[source_type], contexts=s.get("contexts") or [])
+        _attach_anchors(pm, obj.id, text, source_title, source_type, s)
         deposited += 1
 
     # 论证模式
@@ -413,10 +503,11 @@ def extract_cognitive_items(
             continue
         src = SourceRef(type=source_type, title=source_title, excerpt=content[:120],
                         date=source_date, confidence=0.6)
-        pm.add_argument_pattern(content=content, source=src,
-                                pattern_type=p.get("pattern_type", ""),
-                                evidence_preference=p.get("evidence_preference", ""),
-                                tags=[source_type], contexts=p.get("contexts") or [])
+        obj, _op = pm.add_argument_pattern(content=content, source=src,
+                                          pattern_type=p.get("pattern_type", ""),
+                                          evidence_preference=p.get("evidence_preference", ""),
+                                          tags=[source_type], contexts=p.get("contexts") or [])
+        _attach_anchors(pm, obj.id, text, source_title, source_type, p)
         deposited += 1
 
     # 价值观排序
@@ -430,9 +521,10 @@ def extract_cognitive_items(
             continue
         src = SourceRef(type=source_type, title=source_title, excerpt=content[:120],
                         date=source_date, confidence=0.6)
-        pm.add_value_ranking(domain=domain, ranking=v.get("ranking", []), content=content,
-                             source=src, tradeoff_notes=v.get("tradeoff_notes", ""),
-                             tags=[source_type], contexts=v.get("contexts") or [])
+        obj, _op = pm.add_value_ranking(domain=domain, ranking=v.get("ranking", []), content=content,
+                                        source=src, tradeoff_notes=v.get("tradeoff_notes", ""),
+                                        tags=[source_type], contexts=v.get("contexts") or [])
+        _attach_anchors(pm, obj.id, text, source_title, source_type, v)
         deposited += 1
 
     # 思维框架
@@ -446,8 +538,9 @@ def extract_cognitive_items(
             continue
         src = SourceRef(type=source_type, title=source_title, excerpt=content[:120],
                         date=source_date, confidence=0.6)
-        pm.add_thinking_framework(domain=domain, steps=f.get("steps", []), content=content,
-                                  source=src, tags=[source_type], contexts=f.get("contexts") or [])
+        obj, _op = pm.add_thinking_framework(domain=domain, steps=f.get("steps", []), content=content,
+                                             source=src, tags=[source_type], contexts=f.get("contexts") or [])
+        _attach_anchors(pm, obj.id, text, source_title, source_type, f)
         deposited += 1
 
     if deposited:

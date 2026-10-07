@@ -26,7 +26,19 @@ def env(tmp_path, monkeypatch):
 
 
 def _store(env) -> CognitiveStore:
-    return CognitiveStore(db_path=env / "deskmate.db")
+    """建库并补 sync migrate。
+
+    R3（2026-10-07）：不 migrate 则 persist 写 profile_items 的
+    sync_uuid/sync_hlc/sync_tombstone 列会报 'no column named sync_uuid'，
+    recall 路径根本不可达（本文件存量 10 failed 的根因，非 P1 引入）。
+    """
+    store = CognitiveStore(db_path=env / "deskmate.db")
+    from deskmate.memory import sync_store_sqlite as _sss
+
+    with store._connect() as conn:
+        _sss.migrate(conn, "mac", "profile_items")
+        _sss.migrate(conn, "mac", "memory_anchors")
+    return store
 
 
 def _profile(layer_items: dict[str, list[Stance]]) -> CognitiveProfile:
