@@ -5,7 +5,8 @@
  *
  * 首页只保留「小桔在忙」——展示小桔自主层正在做什么；并在这个空会话时刻递上
  * 她云端/手机端主动产出的「几件还没收的事」（对话式开场白，非弹窗）：每条带
- * 证据 + 理解，可「聊这个」prefill 到输入框（保证能顺着她主动提出的主题接得上）。
+ * 证据 + 理解，可「聊这个」起聊（§11.16 层三：短句柄 prefill `#xxx 这条怎么回事？`，
+ * 她自己 proactive_lookup 回查展开，不把她的整句话塞回她嘴里）。
  */
 
 import { useEffect, useMemo, useState } from "react";
@@ -68,11 +69,13 @@ export function DeskHome({ onPrefill }: { onPrefill?: (text: string) => void }) 
                   <button
                     type="button"
                     className="dm-handoff-chat"
-                    onClick={() =>
-                      onPrefill?.(
-                        `${it.content}${it.evidence ? `\n\n（依据：${it.evidence}）` : ""}`,
-                      )
-                    }
+                    onClick={() => {
+                      // §11.16 层三：空会话首页没有「她说」的落点，退而求其次——
+                      // 只递短句柄让她自己回查展开（全文她 proactive_lookup 按 #id 调），
+                      // 不再把她的整句话塞回她嘴里。
+                      const short = it.id.split(":").pop()?.slice(0, 6) ?? "";
+                      onPrefill?.(`#${short} 这条怎么回事？`);
+                    }}
                   >
                     聊这个
                   </button>

@@ -607,3 +607,197 @@ def acknowledge_ledger(
             c.execute(f"UPDATE {LEDGER_TABLE} SET status=? WHERE id=?", (new_status, rid))
         c.commit()
     return True
+
+
+# ---- §11.16「灵动三层」（2026-10-07）：她递出卡片后要「接得上」----
+# 萧哥评审：卡片只是弹层，她递出时自己不知道递了什么；用户点「聊这个」=把她的话
+# 当用户消息发回去，她零上下文瞎接。三层补：①每轮注入「今天已递待办」②#id 回查工具
+# ③「聊这个」让她说（她先开口）。本组函数为①②供数 + ③的文案组装。
+
+_DELIVERED_CONTEXT_ITEM_MAX = 300  # 单条注入字符上限（防超长 content 吃光上下文预算）
+_DELIVERED_CONTEXT_TOTAL_MAX = 1_500  # 整个待办块上限
+
+
+def delivered_today_items(
+    base_dir: Optional[Path] = None, limit: int = 10
+) -> list[dict]:
+    """今天已递出、且用户尚未终态处理的台账项（delivered_at 倒序）。
+
+    排除 actioned/dismissed：已收口的条目再注入每轮上下文是纯噪声。
+    """
+    base = _resolve_base(base_dir)
+    db = base / "deskmate.db"
+    with sqlite3.connect(str(db), check_same_thread=False) as c:
+        try:
+            rows = c.execute(
+                f"SELECT id, source, kind, content, evidence, understanding, status,"
+                f" confidence, created_at, source_node, delivered_at, snoozed_until"
+                f" FROM {LEDGER_TABLE}"
+                f" WHERE delivered_at IS NOT NULL AND delivered_at <> ''"
+                f" AND substr(delivered_at,1,10)=?"
+                f" AND status NOT IN ('actioned','dismissed')"
+                f" ORDER BY delivered_at DESC LIMIT ?",
+                (_today(), int(limit)),
+            ).fetchall()
+        except sqlite3.OperationalError:
+            return []  # 表/列尚未建（老库）→ 无待办
+    keys = ("id", "source", "kind", "content", "evidence", "understanding", "status", "confidence", "created_at", "source_node", "delivered_at", "snoozed_until")
+    return [dict(zip(keys, r)) for r in rows]
+
+
+def render_delivered_context(items: list) -> str:
+    """把今天已递待办渲染成每轮注入块（§六.1 承诺的「注入上下文」落地）。
+
+    块内给足 #id + content + 依据 + 我的理解，让她「接话时从这儿展开」；
+    细节全文由 proactive_lookup 按 #id 回查（句柄即 _short_id）。
+    """
+    if not items:
+        return ""
+    lines = [
+        "## 我今天已递给用户的待办",
+        "（用户回话若涉及这些，从这儿展开接；要全文细节用 proactive_lookup 按 #id 回查）",
+    ]
+    total = 0
+    for it in items:
+        und = (it.get("understanding") or "").strip()
+        if und == UNDERSTANDING_FAILED_MARKER:
+            und = "（理解加工未完成，仅呈现依据）"
+        body = f"- #{_short_id(it['id'])} {it.get('content') or ''}"
+        ev = (it.get("evidence") or "").strip()
+        if ev:
+            body += f"（依据：{ev}）"
+        if und:
+            body += f"\n  我的理解：{und}"
+        if len(body) > _DELIVERED_CONTEXT_ITEM_MAX:
+            body = body[: _DELIVERED_CONTEXT_ITEM_MAX] + "…"
+        if total + len(body) > _DELIVERED_CONTEXT_TOTAL_MAX:
+            lines.append("- …（更多待办用 proactive_lookup 回查）")
+            break
+        lines.append(body)
+        total += len(body)
+    return "\n".join(lines)
+
+
+def lookup_items(
+    base_dir: Optional[Path] = None,
+    *,
+    handle: str = "",
+    query: str = "",
+    limit: int = 5,
+) -> list[dict]:
+    """按 #id 短句柄 / 完整 id / 关键词回查台账（§六.2 承诺的「句柄回查」落地）。
+
+    - handle：用户口中的「#a1b2c3」。含 ':' 视为完整 id 前缀；否则按指纹段前缀匹配
+      （id = <source>:<kind>:<指纹>，_short_id 取指纹尾 6，故 SQL 候选 + Python 复核
+      指纹段 startswith，避免命中 kind 文本误报）。指纹可能是锚点明文也可能是 sha1，
+      不做字符集假设。
+    - query：content/evidence/understanding 的子串（LIKE）语义检索。
+    - 两者都给 → 取交集语义（handle 命中优先，query 再滤）。
+    """
+    handle = (handle or "").strip().lstrip("#").strip()
+    query = (query or "").strip()
+    if not handle and not query:
+        return []
+    base = _resolve_base(base_dir)
+    db = base / "deskmate.db"
+    with sqlite3.connect(str(db), check_same_thread=False) as c:
+        try:
+            if handle and ":" in handle:
+                rows = c.execute(
+                    f"SELECT id, source, kind, content, evidence, understanding, status,"
+                    f" confidence, created_at, source_node, delivered_at, snoozed_until"
+                    f" FROM {LEDGER_TABLE} WHERE id LIKE ? ORDER BY created_at DESC LIMIT ?",
+                    (handle + "%", int(limit)),
+                ).fetchall()
+            elif handle:
+                # 候选：指纹段以 handle 开头（前导冒号锚定，拒 kind 文本误命中）
+                rows = c.execute(
+                    f"SELECT id, source, kind, content, evidence, understanding, status,"
+                    f" confidence, created_at, source_node, delivered_at, snoozed_until"
+                    f" FROM {LEDGER_TABLE} WHERE id LIKE ? ORDER BY created_at DESC LIMIT 50",
+                    ("%:" + handle + "%",),
+                ).fetchall()
+                rows = [
+                    r for r in rows
+                    if str(r[0]).rsplit(":", 1)[-1].startswith(handle)
+                ][: int(limit)]
+            else:
+                like = f"%{query}%"
+                rows = c.execute(
+                    f"SELECT id, source, kind, content, evidence, understanding, status,"
+                    f" confidence, created_at, source_node, delivered_at, snoozed_until"
+                    f" FROM {LEDGER_TABLE}"
+                    f" WHERE content LIKE ? OR evidence LIKE ? OR understanding LIKE ?"
+                    f" ORDER BY created_at DESC LIMIT ?",
+                    (like, like, like, int(limit)),
+                ).fetchall()
+        except sqlite3.OperationalError:
+            return []
+    keys = ("id", "source", "kind", "content", "evidence", "understanding", "status", "confidence", "created_at", "source_node", "delivered_at", "snoozed_until")
+    items = [dict(zip(keys, r)) for r in rows]
+    if handle and query:
+        # 双条件：handle 命中集内再按 query 滤一遍
+        items = [
+            it for it in items
+            if query in (it.get("content") or "")
+            or query in (it.get("evidence") or "")
+            or query in (it.get("understanding") or "")
+        ]
+    return items
+
+
+def mark_delivered(
+    base_dir: Optional[Path] = None, rid: Optional[str] = None
+) -> bool:
+    """补记 delivered_at（她真「说出口」的落会话路径，§11.16 层三）。
+
+    build_handoff_opening 递卡时已记；本函数给「聊这个」等卡片外路径补账——
+    交付口径统一走 delivered_at（跨端共享，§11.2③）。今日已记不刷新（保留首次
+    交付时间）；终态（actioned/dismissed）不记，delivered_today_items 本就不含它们。
+    """
+    if rid is None:
+        return False
+    base = _resolve_base(base_dir)
+    db = base / "deskmate.db"
+    with sqlite3.connect(str(db), check_same_thread=False) as c:
+        try:
+            row = c.execute(
+                f"SELECT status, delivered_at FROM {LEDGER_TABLE} WHERE id=?", (rid,)
+            ).fetchone()
+            if row is None:
+                return False
+            status, delivered_at = row
+            if status in ("actioned", "dismissed"):
+                return False
+            if (delivered_at or "")[:10] == _today():
+                return True  # 今日已记，幂等
+            c.execute(
+                f"UPDATE {LEDGER_TABLE} SET delivered_at=? WHERE id=?",
+                (time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime()), rid),
+            )
+            c.commit()
+        except sqlite3.OperationalError:
+            return False
+    return True
+
+
+def compose_speak_text(item: dict) -> str:
+    """「聊这个」让她先开口的文案组装（server 端定稿，前端不控 transcript 文本）。
+
+    第一人称复述自己递过的条目——她「知道自己在说什么」，用户接上即续聊。
+    understanding 为空则省略该行（不出现「我的理解：」空挂）；加工失败标记降级提示。
+    """
+    content = (item.get("content") or "").strip()
+    evidence = (item.get("evidence") or "").strip()
+    und = (item.get("understanding") or "").strip()
+    if und == UNDERSTANDING_FAILED_MARKER:
+        und = "（这条的理解加工没完成，我只能给你看依据）"
+    lines = [f"对了，说到这个——{content}"]
+    if evidence:
+        lines.append(f"（依据：{evidence}）")
+    if und:
+        lines.append(und)
+    lines.append(
+        f"（这条是 #{_short_id(item.get('id') or '')}，之后报这个号我就能调出来）"
+    )
+    return "\n".join(lines)

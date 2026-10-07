@@ -5,6 +5,8 @@
 
 工具列表：
 - proactive_tick      执行一次主动推理 tick（感知→判断→决策）
+- proactive_capture    把用户「记住这个」写入主动台账
+- proactive_lookup     按 #id 短句柄/关键词回查台账（§11.16 层二：接自己递的卡片）
 - proactive_feedback   记录用户对建议的反馈
 - proactive_silent     设置静默模式
 - proactive_stats      获取防打扰统计
@@ -135,6 +137,47 @@ def proactive_capture(
         return f"已记入主动台账：{rid}（琢磨完开聊时我递给你）"
     except Exception as e:
         return f"记入台账失败：{e}"
+
+
+@mcp.tool()
+def proactive_lookup(handle: str = "", query: str = "") -> str:
+    """回查主动产出台账（我之前递给你的卡片内容，§11.16 层二）。
+
+    用户报「#a1b2c3」这种短号、或问起我之前提过的一件事时调用——
+    我自己递出的卡片，接话前先用它把原文/依据/我的理解调出来，别凭印象瞎接。
+
+    Args:
+        handle: #id 短句柄（如 #a1b2c3）或完整 id 前缀（如 cloud_audit:drift:8aaf16）
+        query: 关键词（按 content/evidence/understanding 子串语义检索）
+
+    Returns:
+        命中条目的紧凑清单（id/内容/依据/我的理解/状态）；无命中给明确答复
+    """
+    try:
+        import json as _json
+
+        from .ledger import lookup_items
+
+        hits = lookup_items(_base_dir(), handle=handle, query=query, limit=5)
+        if not hits:
+            return (
+                "台账里没有匹配的条目。可能是：短号记岔了（# 后 4 位以上再试）、"
+                "或这件事我没递过/已被处理掉。可以直接问用户确认，别硬接。"
+            )
+        compact = [
+            {
+                "id": h.get("id"),
+                "短号": "#" + (h.get("id") or "").rsplit(":", 1)[-1][:6],
+                "内容": h.get("content"),
+                "依据": h.get("evidence"),
+                "我的理解": h.get("understanding"),
+                "状态": h.get("status"),
+            }
+            for h in hits
+        ]
+        return _json.dumps(compact, ensure_ascii=False, indent=2)
+    except Exception as e:
+        return f"台账回查失败：{e}"
 
 
 @mcp.tool()

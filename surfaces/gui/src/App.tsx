@@ -29,6 +29,8 @@ import {
   type SurfaceVisibility,
   type WorkspaceCommandTrust,
   postInspire,
+  speakDeskmateHandoff,
+  type HandoffItem,
 } from "./api";
 import type {
   ApprovalDecision,
@@ -1110,6 +1112,17 @@ export function App() {
   };
   const prefillComposer = (text: string, attachments?: Attachment[]) =>
     setComposerPrefill((p) => ({ text, attachments, nonce: (p?.nonce ?? 0) + 1 }));
+  // 「聊这个」让她说（§11.16 层三）：条目作为她的助手消息落本会话（server 端
+  // compose + append + broadcast，WS 即时渲染）。失败退回短句柄 prefill——
+  // 老后端/会话缺失时至少用户能拿着 #id 问她。
+  const speakHandoff = async (item: HandoffItem): Promise<boolean> => {
+    const ok = await speakDeskmateHandoff(sessionId, item.id);
+    if (!ok) {
+      const short = item.id.split(":").pop()?.slice(0, 6) ?? "";
+      prefillComposer(`#${short} 这条怎么回事？`);
+    }
+    return ok;
+  };
   const interrupt = () => sessionRef.current?.interrupt();
   const retry = () => {
     // Optimistic running: turn_start confirms; a rejected retry still ends in turn_done.
@@ -1856,9 +1869,10 @@ export function App() {
             )}
 
             {/* 活跃会话相关性注入（§11.4② 触发入口，本轮新增）：仅 deskmate 且非 idle 时挂载，
-                把最近对话作上下文，聊到某主题才递对应待办（非浮层、轻提示卡片）。 */}
+                把最近对话作上下文，聊到某主题才递对应待办（非浮层、轻提示卡片）。
+                「聊这个」（§11.16 层三）＝让她说：onSpeak 走 speak 端点，她的消息落消息流。 */}
             {!idle && agent === "deskmate" && (
-              <DeskMateProactiveInline items={items} onPrefill={prefillComposer} />
+              <DeskMateProactiveInline items={items} onSpeak={speakHandoff} />
             )}
 
             <Composer

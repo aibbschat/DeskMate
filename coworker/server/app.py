@@ -4296,6 +4296,71 @@ def create_app(manager: SessionManager) -> FastAPI:
             logging.exception("deskmate proactive handoff ack failed")
             return JSONResponse({"error": "ack failed"}, status_code=500)
 
+    @app.post("/v1/deskmate/proactive/handoff/speak")
+    async def speak_deskmate_proactive_handoff(request: Request) -> dict[str, Any]:
+        """「聊这个」让她先说（§11.16 层三）——把条目作为**她的助手消息**落入会话。
+
+        Body: {"id": "<ledger id>", "session_id": "<session id>"}
+        - 文案 server 端 compose_speak_text 定稿（第一人称复述 + #id 自报，
+          前端不控 transcript 文本）；她「递卡时知道自己在递什么」。
+        - 落会话走 proofread 同款模式：append_session_messages（live engine +
+          持久化，reload 后仍在）+ broadcast_session（GUI 即时渲染）。
+        - 顺手：mark_delivered 补交付账；status→in_progress（聊起来了＝在处理中，
+          新会话不再重递；acknowledge_ledger 只前进守卫兜底）。
+        """
+        try:
+            body = await request.json()
+        except Exception:
+            return JSONResponse({"error": "invalid json"}, status_code=400)
+        rid = (body.get("id") or "").strip() if isinstance(body, dict) else ""
+        session_id = (body.get("session_id") or "").strip() if isinstance(body, dict) else ""
+        if not rid or not session_id:
+            return JSONResponse(
+                {"error": "missing 'id'/'session_id'"}, status_code=400
+            )
+        try:
+            import time as _t
+
+            from pathlib import Path as _P
+
+            from deskmate.proactivity.ledger import (
+                _short_id,
+                acknowledge_ledger,
+                compose_speak_text,
+                lookup_items,
+                mark_delivered,
+            )
+
+            desk_dir = _P(
+                os.environ.get("DESKMATE_DIR", os.path.expanduser("~/.deskmate"))
+            )
+            hits = lookup_items(base_dir=desk_dir, handle=rid, limit=5)
+            item = next((h for h in hits if h.get("id") == rid), None)
+            if item is None and hits:
+                item = hits[0]  # 完整 id 前缀唯一命中
+            if item is None:
+                return JSONResponse({"error": "ledger item not found"}, status_code=404)
+            text = compose_speak_text(item)
+            ok = manager.append_session_messages(
+                session_id,
+                [{"role": "assistant", "content": text, "ts": int(_t.time())}],
+            )
+            if not ok:
+                return JSONResponse({"error": "session not found"}, status_code=404)
+            await manager.broadcast_session(
+                session_id, {"type": "assistant_message", "data": {"text": text}}
+            )
+            # 补账 + 状态前进（失败不阻断：话已落会话）
+            try:
+                mark_delivered(base_dir=desk_dir, rid=rid)
+                acknowledge_ledger(base_dir=desk_dir, rid=rid, new_status="in_progress")
+            except Exception:
+                logging.debug("speak 补账/状态前进失败（不阻断）", exc_info=True)
+            return {"ok": True, "id": rid, "short": _short_id(rid), "text": text}
+        except Exception:
+            logging.exception("deskmate proactive handoff speak failed")
+            return JSONResponse({"error": "speak failed"}, status_code=500)
+
     @app.post("/v1/deskmate/proactive/capture")
     async def capture_deskmate_proactive(request: Request) -> dict[str, Any]:
         """手机端/桌面端「记住这个」→ 写主动产出台账（source=mobile_voice，修⑧/P1）。

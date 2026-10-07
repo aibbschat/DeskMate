@@ -87,6 +87,11 @@ CHANNEL_MODULES=(
   "deskmate/memory/sync_store_sqlite.py"
   "deskmate/memory/sync_daemon.py"
   "deskmate/memory/sync_transport.py"
+  # ⚠️ 每轮上下文注入（§11.16 层一）：build_full_context_for_turn 挂「今天已递待办」块；
+  # 云端聊天（openworker-server 走 manager.py 构建小桔每轮上下文）必须同码，否则小桔
+  # 在云端「不知道自己递过什么」。2026-10-07 之前 deploy 脚本漏了它，云端 manager.py
+  # 停在 Sep 30 旧码——本轮必须把层一注入推上去（红线：本地与云端代码须完全一致）。
+  "deskmate/memory/manager.py"
 )
 
 FORCE=0

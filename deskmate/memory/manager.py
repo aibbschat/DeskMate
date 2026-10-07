@@ -634,6 +634,25 @@ class DeskMateMemoryManager:
                 parts.append(world_ctx)
         except Exception:
             pass
+        # 「她递出的卡片要接得上」（2026-10-07 §11.16 灵动三层·层一）：
+        # 今天已递给用户的待办（proactive_ledger delivered_at=今日、未终态）注入每轮，
+        # 让她在用户回话时「有货」展开，而不是用户把她的话复制回来她才现接。
+        # 细节全文走 proactive_lookup 按 #id 回查（层二）；fail-open 与上面各块一致。
+        # 开关：DESKMATE_AUTO_INJECT=0 时 deskmate_auto_inject_context 整体返回 "",
+        # 本块随之关闭，无需单独判断。
+        try:
+            from deskmate.proactivity.ledger import (
+                delivered_today_items,
+                render_delivered_context,
+            )
+
+            delivered_ctx = render_delivered_context(
+                delivered_today_items(self.base_dir)
+            )
+            if delivered_ctx:
+                parts.append(delivered_ctx)
+        except Exception:
+            pass  # fail-open：台账缺失/查询失败不影响主记忆注入
         if not parts:
             return ""
 

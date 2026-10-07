@@ -4137,6 +4137,27 @@ export async function ackDeskmateHandoff(
     return false;
   }
 }
+/** 「聊这个」让她先说（§11.16 层三）：把条目作为她的助手消息落入本会话。
+ * true=已落会话（GUI 经 WS assistant_message 即时渲染，reload 后也在）；
+ * false=端点失败（会话不存在/台账条目缺失），调用方可退回短句柄 prefill。 */
+export async function speakDeskmateHandoff(
+  sessionId: string,
+  id: string,
+): Promise<boolean> {
+  try {
+    const res = await authedFetch(
+      `${httpBase()}/v1/deskmate/proactive/handoff/speak`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id, session_id: sessionId }),
+      },
+    );
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
 /** 活跃会话相关性注入（§11.4② 触发入口）：把最近对话作为 session_context 传入，
  * 后端按 bigram 重叠取最相关的主动产出 1–2 条；零关联返回 null（静默，不阻塞聊天）。
  * 只递今日尚未递过的新条目，不追重首页/之前会话。 */
