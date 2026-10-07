@@ -62,6 +62,13 @@ CLOUD_GC_SCRIPT="$CLOUD_DESKMATE/gc_sync_oplog.py"
 LOCAL_AGENCY_TICK="scripts/xiaoju_agency_tick.py"
 CLOUD_AGENCY_TICK="$CLOUD_SYNC_DIR/xiaoju_agency_tick.py"
 
+# 云端窗口内的 drift 检测脚本（2026-10-07 三个待决落地·清单第1/3步）：Mac 日历型 tick 后
+# drift 由云端窗口接管，脚本随 sync 一起上云到 sync/sync_drift_check.py，窗口在 ALIGNED 后调用
+# （旁路观测，调用处必须 `|| true`，不得因它失败把整个窗口判 failed）。
+# ⚠️ 漏传会让清单第 3 步「云端窗口加 drift 调用」直接 FileNotFound → 窗口报错（10-07 实测缺）。
+LOCAL_DRIFT_CHECK="scripts/sync_drift_check.py"
+CLOUD_DRIFT_CHECK="$CLOUD_SYNC_DIR/sync_drift_check.py"
+
 # LLM 通道组+ 熔断（2026-10-06，设计 §二/§3）：本地与云端**必须同码同熔断表**，
 # 否则会出现「本地熔断了、云端还在撞」——与记忆里「48 条身份分裂」同类的事故。
 # 目标：/opt/openworker/deskmate/{memory,proactivity}/ 与 /opt/openworker/coworker/{server,providers}/
@@ -96,7 +103,7 @@ if ! ssh -o ConnectTimeout=15 -o BatchMode=yes "$SSH_HOST" "test -d '$CLOUD_SYNC
 fi
 
 # ---- 1. 必须已提交（红线：本地改动先 commit 进 fork/base）----
-ALL_FILES=("${LOCAL_MODULES[@]}" "$LOCAL_RUNNER" "${PROACTIVITY_MODULES[@]}" "${CHANNEL_MODULES[@]}" "$LOCAL_AGENCY_TICK")
+ALL_FILES=("${LOCAL_MODULES[@]}" "$LOCAL_RUNNER" "${PROACTIVITY_MODULES[@]}" "${CHANNEL_MODULES[@]}" "$LOCAL_AGENCY_TICK" "$LOCAL_DRIFT_CHECK")
 if [[ "$FORCE" -eq 0 ]]; then
   DIRTY=""
   for f in "${ALL_FILES[@]}"; do
@@ -116,7 +123,7 @@ if [[ "$FORCE" -eq 0 ]]; then
     printf "%b" "$DIRTY" >&2
     exit 1
   fi
-  echo "==> 预检通过：sync 模块 + runner + gc 工具 + proactivity 模块 + 通道/熔断模块 + 云端 L2 agency tick 均为已提交状态"
+  echo "==> 预检通过：sync 模块 + runner + gc 工具 + proactivity 模块 + 通道/熔断模块 + 云端 L2 agency tick + 云端 drift 脚本均为已提交状态"
 else
   echo "==> --force：跳过「必须已提交」校验（仅在你明确知道在做什么时用）"
 fi
@@ -157,6 +164,12 @@ scp -q -o ConnectTimeout=15 "$LOCAL_AGENCY_TICK" "$SSH_HOST:/tmp/agency_deploy_t
 ssh -o ConnectTimeout=15 "$SSH_HOST" "sudo -n -u openworker cp '/tmp/agency_deploy_tick.py' '$CLOUD_AGENCY_TICK'"
 ssh -o ConnectTimeout=15 "$SSH_HOST" "rm -f '/tmp/agency_deploy_tick.py'" || true
 echo "    ✓ xiaoju_agency_tick.py"
+
+echo "==> 推送云端 drift 检测脚本到云端 $CLOUD_DRIFT_CHECK"
+scp -q -o ConnectTimeout=15 "$LOCAL_DRIFT_CHECK" "$SSH_HOST:/tmp/drift_deploy_check.py"
+ssh -o ConnectTimeout=15 "$SSH_HOST" "sudo -n -u openworker cp '/tmp/drift_deploy_check.py' '$CLOUD_DRIFT_CHECK'"
+ssh -o ConnectTimeout=15 "$SSH_HOST" "rm -f '/tmp/drift_deploy_check.py'" || true
+echo "    ✓ sync_drift_check.py"
 
 # ---- 3b. 推送 proactivity 模块到云端主程序包 ----
 echo "==> 推送 proactivity 模块到云端 $CLOUD_PROACTIVITY_DIR"
@@ -231,6 +244,14 @@ else
   echo "    ✗ xiaoju_agency_tick.py  本地=$local_md5 云端=$cloud_md5  (不一致!)" >&2
   exit 1
 fi
+local_md5="$(md5 -q "$LOCAL_DRIFT_CHECK")"
+cloud_md5="$(ssh -o ConnectTimeout=15 "$SSH_HOST" "sudo -n -u openworker md5sum '$CLOUD_DRIFT_CHECK' 2>/dev/null | awk '{print \$1}'")"
+if [[ "$local_md5" == "$cloud_md5" ]]; then
+  echo "    ✓ sync_drift_check.py  $local_md5"
+else
+  echo "    ✗ sync_drift_check.py  本地=$local_md5 云端=$cloud_md5  (不一致!)" >&2
+  exit 1
+fi
 
 # ---- 6. proactivity 模块对齐核对 ----
 echo "==> proactivity 模块对齐核对"
@@ -266,7 +287,7 @@ for f in "${CHANNEL_MODULES[@]}"; do
 done
 
 echo ""
-echo "✅ 本地→云端代码已对齐（3 个 sync 文件 + runner + gc 工具 + 6 个 proactivity + 5 个通道/熔断模块 + 云端 L2 agency tick）。"
+echo "✅ 本地→云端代码已对齐（3 个 sync 文件 + runner + gc 工具 + 6 个 proactivity + 5 个通道/熔断模块 + 云端 L2 agency tick + 云端 drift 脚本）。"
 echo "   同步平铺包仅每小时 :02 窗口加载；主程序包需**重启 openworker-server** 才生效："
 echo "     sudo systemctl restart openworker-server"
 echo "   ⚠️ 通道/熔断模块若与云端不一致，会出现「本地熔断了、云端还在撞」"
