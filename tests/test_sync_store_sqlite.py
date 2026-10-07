@@ -1407,17 +1407,18 @@ def test_gc_backfill_created_at_from_hlc(tmp_path):
     assert ca == expected, f"created_at 应为 hlc 物理秒 {expected}，实得 {ca}"
 
 
-def test_gc_min_safe_seq_uses_push_watermark_only():
-    """【2026-10-07 复核修正】GC 安全水位只取 push_after_seq（本端 seq 空间）。
+def test_gc_min_safe_seq_uses_push_and_peer_pull():
+    """【2026-10-07 方案甲①终口径】安全水位 = max(push_after_seq, peer_pull_after_seq)。
 
-    复核实测推翻了当天早些时候的 max(push, pull) 口径（见
-    reports/2026-10-07_三个待决落地_复核意见.md P2）：
-    - pull_after_seq 是「本端从对端拉走」的水位，位于**对端 oplog 的 seq 空间**，
-      不是"对端从本端拉走"（那个在对端 cursor 里）——两端空间混用：
-      云端 max(3989, 4789)=4789 > 云自身 oplog max(≈4050) → seq 护栏恒真、形同虚设；
-      Mac max(1676,1662)=1676 与 push-only 完全相同 → 原修复在 Mac 上无效。
-    - 原动机「Mac push 冻结」已由日历型 tick（808471a，每小时 :02:04）根治。
-    本测试锁住「只用 push + pull 不参与判定」的语义，防再次混入。
+    演进链（三段式，本测试锁最终语义）：
+    1. 原始：push-only —— 对，但错峰窗口下 Mac push 自 10-05 冻结（16:02 实测：
+       云窗口仅 11s、Mac 首 tick 存量 ~5600 条结构性完不成）→ Mac GC 永不生效；
+    2. 当日 max(push, pull)：**错** —— pull_after_seq 属对端 seq 空间（复核意见 P2），
+       云 4789>自身 max 护栏失效、Mac 1676 纹丝不动；
+    3. 方案甲①（萧哥拍板）：对端 push 时经 X-Local-Pull-After-Seq 捎带
+       "它从本端拉走的水位"（单对端拓扑下该值就在**本端** seq 空间）→
+       max(push, peer_pull) 两项同空间、语义都是"对端必已拿到"。
+    本端自己的 pull_after_seq **绝不参与**。
     """
     import importlib.util
     import os
@@ -1428,12 +1429,11 @@ def test_gc_min_safe_seq_uses_push_watermark_only():
     spec.loader.exec_module(mod)
 
     src = open(path, encoding="utf-8").read()
-    # 水位只取本端空间的 push；绝不能再 max 混入对端空间的 pull
-    assert "min_safe_seq = push_after_seq" in src, (
-        "GC 水位必须只取 push_after_seq（本端 seq 空间）"
+    assert "min_safe_seq = max(push_after_seq, peer_pull_after_seq)" in src, (
+        "GC 安全水位必须是 max(push, peer_pull)——两项都在本端 seq 空间"
     )
     assert "max(push_after_seq, pull_after_seq)" not in src, (
-        "pull_after_seq 属对端 seq 空间，参与 max 会让护栏越界失效（复核意见 P2）"
+        "本端 pull_after_seq 属对端 seq 空间，参与 max 会让护栏越界失效（复核意见 P2）"
     )
     # 删除路径必须用 min_safe_seq 而非直接 push_after_seq（保留命名便于诊断日志）
     assert "gc_oplog(conn, args.keep_days, min_safe_seq" in src, (

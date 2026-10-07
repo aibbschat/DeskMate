@@ -139,10 +139,37 @@ class _OplogHandler(BaseHTTPRequestHandler):
                 engine.apply_remote(ops)
             except Exception:  # noqa: BLE001
                 pass
+        # 方案甲①（2026-10-07）：捎带「对端已拉我水位」。对端 push 时附带它自己的
+        # pull_after_seq——单对端拓扑下该值位于**本端** oplog 的 seq 空间（对端只从
+        # 被推的这一端拉），本端存为 peer_pull_after_seq 供 GC 作安全水位
+        # （max(push, peer_pull)，两者同空间）。单调取 max、fail-open：
+        self._record_peer_pull()
         self.send_response(200)
         self.send_header("Content-Length", "2")
         self.end_headers()
         self.wfile.write(b"{}")
+
+    def _record_peer_pull(self) -> None:
+        """读 X-Local-Pull-After-Seq 头，单调更新本端游标的 peer_pull_after_seq。
+
+        任何异常（头缺失/非数字/无 cursor）一律 fail-open：捎带是增强通道，
+        绝不能影响收 ops / 回 200。
+        """
+        raw = self.headers.get("X-Local-Pull-After-Seq")
+        if not raw:
+            return
+        cursor = getattr(self.server, "cursor", None)
+        if cursor is None:
+            return
+        try:
+            v = int(raw)
+            if v < 0:
+                return
+            if v > int(getattr(cursor, "peer_pull_after_seq", 0) or 0):
+                cursor.peer_pull_after_seq = v
+                cursor.save()
+        except Exception:  # noqa: BLE001
+            pass
 
     def log_message(self, *args) -> None:  # 静默：同步流量很大，不刷 stderr
         return
@@ -162,12 +189,17 @@ class HttpOplogServer:
         port: int = 8765,
         stores: Optional[dict] = None,
         engine: object = None,
+        cursor: object = None,
     ) -> None:
         self.oplog = oplog
         self.host = host
         self.port = port
         self.stores = stores
         self.engine = engine
+        # 方案甲①（2026-10-07）：可选游标（CursorStore）——POST 收到对端捎带的
+        # X-Local-Pull-After-Seq 时落 peer_pull_after_seq（见 _record_peer_pull）。
+        # runner 在创建 CursorStore 后回填 self.server.cursor 即可（构造顺序无强约束）。
+        self.cursor = cursor
         self._httpd: Optional[ThreadingHTTPServer] = None
         self._thread: Optional[threading.Thread] = None
 
@@ -177,6 +209,7 @@ class HttpOplogServer:
         self._httpd.oplog = self.oplog  # type: ignore[attr-defined]
         self._httpd.stores = self.stores  # type: ignore[attr-defined]
         self._httpd.engine = self.engine  # type: ignore[attr-defined]
+        self._httpd.cursor = self.cursor  # type: ignore[attr-defined]
         self._thread = threading.Thread(target=self._httpd.serve_forever, daemon=True)
         self._thread.start()
         self.port = self._httpd.server_address[1]
@@ -203,6 +236,9 @@ class HttpOplogTransport(Transport):
     def __init__(self, base_url: str, timeout: float = 10.0) -> None:
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
+        # 方案甲①（2026-10-07）：由 SyncDaemon.tick 在每次 push 前回填为本端
+        # pull_after_seq（单对端拓扑下位于**接收方** seq 空间）；None = 不带头。
+        self.local_pull_after_seq: Optional[int] = None
 
     def pull_since(self, after_seq: int) -> list[Op]:
         url = f"{self.base_url}/oplog?after={after_seq}"
@@ -215,11 +251,15 @@ class HttpOplogTransport(Transport):
         if not ops:
             return
         body = ("[" + ",".join(o.to_json() for o in ops) + "]").encode("utf-8")
+        headers = {"Content-Type": "application/json"}
+        if self.local_pull_after_seq is not None:
+            # 方案甲①：捎带「本端已拉对端水位」——接收方据此记 peer_pull_after_seq
+            headers["X-Local-Pull-After-Seq"] = str(int(self.local_pull_after_seq))
         req = urllib.request.Request(
             f"{self.base_url}/oplog",
             data=body,
             method="POST",
-            headers={"Content-Type": "application/json"},
+            headers=headers,
         )
         with urllib.request.urlopen(req, timeout=self.timeout) as resp:  # noqa: S310
             resp.read()
@@ -331,6 +371,11 @@ class CursorStore:
         self.path = path
         self.pull_after_seq = 0
         self.push_after_seq = 0
+        # 方案甲（2026-10-07）：「对端已拉我水位」——由对端 push 时经
+        # X-Local-Pull-After-Seq 头捎带（单对端拓扑下对端的 pull 游标位于**本端**
+        # oplog 的 seq 空间，语义即"它拿到了我到哪号"）。GC 用 max(push, peer_pull)
+        # 作安全水位：本端 push 冻结（错峰窗口下 Mac tick 难成功）时仍能证明已送达。
+        self.peer_pull_after_seq = 0
         self._load()
 
     def _load(self) -> None:
@@ -341,10 +386,12 @@ class CursorStore:
                 d = json.load(f)
             self.pull_after_seq = int(d.get("pull_after_seq", 0))
             self.push_after_seq = int(d.get("push_after_seq", 0))
+            self.peer_pull_after_seq = int(d.get("peer_pull_after_seq", 0))
         except Exception:
             # 损坏游标：宁可从 0 重拉（安全），也不拿错误游标推进
             self.pull_after_seq = 0
             self.push_after_seq = 0
+            self.peer_pull_after_seq = 0
 
     def save(self) -> None:
         tmp = f"{self.path}.tmp"
@@ -353,6 +400,7 @@ class CursorStore:
                 {
                     "pull_after_seq": self.pull_after_seq,
                     "push_after_seq": self.push_after_seq,
+                    "peer_pull_after_seq": self.peer_pull_after_seq,
                     "updated_at": int(time.time_ns() // 1_000_000),
                 },
                 f,

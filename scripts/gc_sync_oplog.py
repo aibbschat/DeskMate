@@ -128,13 +128,24 @@ def main() -> int:
     # push 水位随每次成功 tick 推进），故回退为只取 push（本端空间、语义正确）。
     # 若日后需覆盖「我未推、对端已拉」的行，正确做法是向对端拉取其 cursor（对端的
     # pull_after_seq 才在我空间内），而不是拿本端 pull 顶替。
+    # **方案甲①（2026-10-07，萧哥拍板）**：安全水位 = max(push, peer_pull)，
+    # 两者都在【本端 seq 空间】、语义都是"对端必已拿到"：
+    #   - push_after_seq：本端已推给对端并被接收的水位；
+    #   - peer_pull_after_seq：对端 push 时经 X-Local-Pull-After-Seq 捎带的
+    #     "它从本端拉走的水位"（单对端拓扑下对端的 pull 游标就在本端空间）——
+    #     这解开了"错峰窗口下 Mac push 冻结 → GC 永不生效"的死锁（16:02 实测：
+    #     云窗口仅 11s、Mac 首 tick 存量 ~5600 条结构性完不成，push 水位自 10-05 冻结）。
+    # 注意：本端自己的 pull_after_seq 属【对端 seq 空间】，**绝不参与**判定（复核意见 P2）。
     cursor = st.CursorStore(cursor_path)
     push_after_seq = int(getattr(cursor, "push_after_seq", 0) or 0)
+    peer_pull_after_seq = int(getattr(cursor, "peer_pull_after_seq", 0) or 0)
     pull_after_seq = int(getattr(cursor, "pull_after_seq", 0) or 0)
-    min_safe_seq = push_after_seq
+    min_safe_seq = max(push_after_seq, peer_pull_after_seq)
     LOG.info(
-        "游标 push=%d pull=%d(对端空间,不参与) → 安全水位 min_safe_seq=%d（只删 seq<=%d 且超龄的行）",
-        push_after_seq, pull_after_seq, min_safe_seq, min_safe_seq,
+        "游标 push=%d peer_pull=%d(对端已拉·本端空间) → 安全水位 min_safe_seq=%d"
+        "（本端 pull=%d 属对端空间,不参与；只删 seq<=%d 且超龄的行）",
+        push_after_seq, peer_pull_after_seq, min_safe_seq,
+        pull_after_seq, min_safe_seq,
     )
 
     conn = sqlite3.connect(db_path)

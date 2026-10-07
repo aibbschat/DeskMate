@@ -520,6 +520,13 @@ class SyncDaemon:
         local_new = [
             op for op in recent if op.origin is None or op.origin == self.engine.node
         ]
+        # 方案甲①（2026-10-07）：push 前把「本端已拉对端水位」交给 transport 捎带
+        # （X-Local-Pull-After-Seq）。单对端拓扑下该值位于**接收方** seq 空间，接收方
+        # 存为 peer_pull_after_seq —— 本端 push 冻结（错峰窗口下 tick 难成功）时，
+        # GC 仍能凭它证明"对端已拉走"，即复核报告方案甲的正确落地。非 HTTP transport
+        # 无该属性则跳过（InMemory/测试替身不受影响）。
+        if hasattr(self.transport, "local_pull_after_seq"):
+            self.transport.local_pull_after_seq = int(self.pull_after_seq)
         if local_new:
             self.transport.push(local_new)
         self.push_after_seq = self.engine.oplog.watermark()

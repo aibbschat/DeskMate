@@ -206,6 +206,9 @@ class SyncNode:
             self.tunnel = None
 
         self.cursor = st.CursorStore(self.cursor_path)
+        # 方案甲①（2026-10-07）：把游标挂给 oplog server —— POST 收到对端捎带的
+        # X-Local-Pull-After-Seq 时落 peer_pull_after_seq（GC 安全水位用）。
+        self.server.cursor = self.cursor
         self.daemon = sd.SyncDaemon(engine, self.transport, self.cursor)
         self.engine = engine
 
