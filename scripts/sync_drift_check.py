@@ -15,8 +15,10 @@ Mac 侧常驻 tick 只在**对端 daemon 在线时**才有意义，而错峰常�
 而"做对账"这件事本身，云端窗口才是正确执行方：**它在 pull Mac 全量**（`pull_snapshot`
 拿到 Mac 每张表的全部 ``record_id``），Mac 侧只是在被 pull。故drift 判定挪到此处：
 
-- 判据口径**完全不变**：逐表 ``record_id`` 对称差（``remote_ids ^ local_ids``），
-  非零即写入 ``sync_health`` 台账（``kind='drift'``）。
+- 判据：逐表 ``record_id`` 对称差（``remote_ids ^ local_ids``），非零即写入
+  ``sync_health`` 台账（``kind='drift'``）。两端**都用 live 口径**（本端 ``live_items``、
+  对端 ``/snapshot``，均 ``exclude_local``）—— 若本端误用 ``items()``，它会把本端墓碑
+  记录补回来，而墓碑对端根本拿不到，任何已删记录都会算成假差、差异永远归不到 ``{}``。
 - 执行方从"Mac 同步层"换成"云端窗口"，与2026-10-07 日历型 tick 改造同一批落地。
 
 ## 用法
@@ -108,7 +110,12 @@ def check_drift(threshold: int = 0) -> dict:
                 for r in snap
             }
             remote_ids.discard(None)
-            local_ids = {r.record_id for r in stores[t].items()}
+            # 口径必须与对端 /snapshot 一致（live + exclude_local）：``items()`` 会把墓碑
+            # 侧表的记录补回来，而墓碑是对端拿不到的 → 任何已删记录都会永远算成「本端
+            # 独有」的假差，差异永远收敛不到 ``{}``（2026-10-07 实测 11 条假差）。
+            local_ids = {
+                r.record_id for r in stores[t].live_items(exclude_local=True)
+            }
             delta = len(remote_ids ^ local_ids)
             if delta > threshold:
                 drift_map[t] = delta

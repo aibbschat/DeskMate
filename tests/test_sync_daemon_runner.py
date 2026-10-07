@@ -176,42 +176,43 @@ def _load_delta():
 
 
 def test_next_slot_delta_targets_window_minute():
-    """tick 必须落在指定时刻：窗口前的等待时间要精确算对。"""
+    """tick 落在「每小时的 :02:04」：等待按小时内偏移算，不是每日钟点。"""
     import datetime
 
     f = _load_delta()
     d = _CalRunner(["02:04"])
-    # 01:00 → 02:04 = 64 分钟
-    assert f(d, datetime.datetime(2026, 10, 7, 1, 0, 0)) == 64 * 60
-    # 02:00 → 02:04 = 4 分钟
-    assert f(d, datetime.datetime(2026, 10, 7, 2, 0, 0)) == 4 * 60
+    # 01:00:00 → 本小时 :02:04 = 2 分 4 秒
+    assert f(d, datetime.datetime(2026, 10, 7, 1, 0, 0)) == 2 * 60 + 4
+    # 01:02:00 → 还差 4 秒
+    assert f(d, datetime.datetime(2026, 10, 7, 1, 2, 0)) == 4
     # 恰好差 1 秒
-    assert f(d, datetime.datetime(2026, 10, 7, 2, 3, 59)) == 1
+    assert f(d, datetime.datetime(2026, 10, 7, 1, 2, 3)) == 1
 
 
-def test_next_slot_delta_rolls_over_midnight():
-    """过了今天的时刻 → 回绕到明天同一时刻（不能返回 0 或负数，否则死循环）。"""
+def test_next_slot_delta_rolls_over_to_next_hour():
+    """过了本小时的时刻 → 回绕到下一小时同一刻；任何时刻等待都 < 1 小时（每小时都打）。"""
     import datetime
 
     f = _load_delta()
     d = _CalRunner(["02:04"])
-    # 02:04:01 已过点 → 应是距明天 02:04 的秒数（>23h）
-    delta = f(d, datetime.datetime(2026, 10, 7, 2, 4, 1))
-    assert delta > 23 * 3600, delta
-    # 23:59 → 明天 02:04 = 2h5m
-    assert f(d, datetime.datetime(2026, 10, 7, 23, 59, 0)) == 125 * 60
+    # 01:02:05 已过点 → 距下一小时 :02:04
+    assert f(d, datetime.datetime(2026, 10, 7, 1, 2, 5)) == 3600 - 125 + 124
+    # 每小时都打：任意时刻的等待都落在 (0, 3600]
+    for h in range(24):
+        delta = f(d, datetime.datetime(2026, 10, 7, h, 30, 0))
+        assert 0 < delta <= 3600, (h, delta)
 
 
 def test_next_slot_delta_multiple_slots_picks_nearest():
-    """多时刻表（:02 与 :04）→ 取最近的那个未过时刻。"""
+    """多时刻表（每小时 :02:04 与 :04:30）→ 取本小时内最近的那个未过时刻。"""
     import datetime
 
     f = _load_delta()
     d = _CalRunner(["02:04", "04:30"])
-    # 02:10 时下一个应是 04:30
-    assert f(d, datetime.datetime(2026, 10, 7, 2, 10, 0)) == 140 * 60
-    # 04:00 时下一个应是 04:30
-    assert f(d, datetime.datetime(2026, 10, 7, 4, 0, 0)) == 30 * 60
+    # 01:00:00 → 最近的是 :02:04
+    assert f(d, datetime.datetime(2026, 10, 7, 1, 0, 0)) == 2 * 60 + 4
+    # 01:02:05 → :02:04 已过，下一个是 :04:30
+    assert f(d, datetime.datetime(2026, 10, 7, 1, 2, 5)) == (4 * 60 + 30) - (2 * 60 + 5)
 
 
 def test_next_slot_delta_invalid_config_falls_back_to_interval():
@@ -223,6 +224,8 @@ def test_next_slot_delta_invalid_config_falls_back_to_interval():
     assert f(d, datetime.datetime(2026, 10, 7, 1, 0, 0)) == d.interval
     d2 = _CalRunner([])
     assert f(d2, datetime.datetime(2026, 10, 7, 1, 0, 0)) == d2.interval
+    d3 = _CalRunner(["99:99"])  # 超出一小时范围 → 忽略
+    assert f(d3, datetime.datetime(2026, 10, 7, 1, 0, 0)) == d3.interval
 
 
 def test_argparser_exposes_window_calendar_flags():

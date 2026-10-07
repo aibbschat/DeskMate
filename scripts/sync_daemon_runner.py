@@ -51,6 +51,7 @@ import argparse
 import datetime
 import importlib
 import logging
+import math
 import os
 import signal
 import sqlite3
@@ -276,7 +277,12 @@ class SyncNode:
                 except Exception:  # noqa: BLE001  隧道不通 fail-open
                     continue
                 remote_ids = {(r.get("record_id") if isinstance(r, dict) else getattr(r, "record_id", None)) for r in snap}
-                local_ids = {r.record_id for r in self.engine.stores[t].items()}
+                # 与对端 /snapshot（live_items）同口径：用 items() 会把本端墓碑补回来，
+                # 而墓碑对端拿不到 → 已删记录永远算成假差（2026-10-07 实测 11 条）。
+                local_ids = {
+                    r.record_id
+                    for r in self.engine.stores[t].live_items(exclude_local=True)
+                }
                 delta = len(remote_ids ^ local_ids)
                 if delta > 0:
                     drift_map[t] = delta
@@ -390,9 +396,10 @@ class SyncNode:
         所以 Mac 侧只需保证 **oplog server + 反隧道常驻在线**（本方法保留），tick 本身
         退化成"每窗口补跑一次全量 pull/推"，失败无副作用、不再刷屏。
 
-        窗口时刻表由 `--window-calendar` 给出（"MM:MM" 列表，默认 :02 与 :04 —— 云端
-        窗口约 :02 起、游标追平即收工，:04 给追平留余量）。每轮 tick 之间用可中断睡眠
-        （SIGTERM 可快速退出），故仍属常驻进程、由 launchd KeepAlive 兜底重启。
+        窗口时刻表由 ``--window-calendar`` 给出（逗号分隔的 ``MM:SS`` 每小时偏移，默认
+        ``02:04`` = 每小时 :02:04 —— 云端窗口约 :02 起、daemon 就绪后一两秒那一拍）。
+        每轮 tick 之间用可中断睡眠（SIGTERM 可快速退出），故仍属常驻进程、由 launchd
+        KeepAlive 兜底重启。
         """
         LOG.info(
             "进入日历型 tick 模式（窗口时刻 %s；oplog server 与反隧道保持常驻）",
@@ -401,7 +408,8 @@ class SyncNode:
         _tick_count = 0
         while not self._stop:
             now = datetime.datetime.now()
-            due = self._next_slot_delta(now)
+            # 向上取整：宁可晚 <1s，也绝不早于窗口时刻（早到会撞上云端 daemon 未起）
+            due = math.ceil(self._next_slot_delta(now))
             # 可中断睡眠：每 1s 查一次停止位（launchd KeepAlive 重启时能快速收敛）
             for _ in range(int(due)):
                 if self._stop:
@@ -431,22 +439,32 @@ class SyncNode:
                 )
 
     def _next_slot_delta(self, now: "datetime.datetime") -> float:
-        """距离下一个窗口时刻的秒数（对齐到最近的那个未过时刻）。"""
-        slots = []
+        """距离下一个窗口时刻的秒数。
+
+        ``--window-slots`` 是**每小时内的偏移**（``MM:SS``，即每小时的「第几分第几秒」），
+        不是每日钟点：云端窗口每小时 :02 起、约十秒内收工，tick 也必须每小时打。
+        默认 ``02:04`` = 每小时 :02:04（云端 daemon 就绪后一两秒那一拍）。
+
+        ⚠️ 早期实现按 ``HH:MM``（凌晨 2:04）解析，等于一天只打一次 —— 2026-10-07 首小时
+        观测实测：下午整点永不触发、``push_after_seq`` 冻结（下方多余的 ``* 60`` 已去掉）。
+        """
+        offsets = []
         for s in self.window_slots:
             try:
-                hh, mm = s.strip().split(":")
-                slots.append((int(hh) * 60 + int(mm)) * 60)
+                mm, ss = s.strip().split(":")
+                off = int(mm) * 60 + int(ss)
             except Exception:  # noqa: BLE001 配置写错就忽略该时刻
                 continue
-        if not slots:
+            if 0 <= off < 3600:
+                offsets.append(off)
+        if not offsets:
             return float(self.interval)
-        cur = now.hour * 3600 + now.minute * 60 + now.second
-        candidates = [t for t in slots if t > cur]
+        cur = now.minute * 60 + now.second
+        candidates = [t for t in offsets if t > cur]
         if candidates:
             return min(candidates) - cur
-        # 今天都过了 → 明天第一个
-        return (24 * 3600 - cur) + min(slots)
+        # 本小时都过了 → 下一小时第一个
+        return (3600 - cur) + min(offsets)
 
     def _serve_interval_loop(self) -> None:
         LOG.info("进入常驻 tick 循环（间隔 %.0fs）", self.interval)
@@ -516,8 +534,8 @@ def _build_argparser() -> argparse.ArgumentParser:
     p.add_argument(
         "--window-slots",
         default="02:04",
-        help="日历时刻表，逗号分隔 HH:MM。默认对齐云端 :02 窗口（追平即收工，"
-        ":04 留余量）",
+        help="日历时刻表，逗号分隔 MM:SS（每小时的偏移，非钟点）。默认 02:04 = "
+        "每小时 :02:04，对齐云端 :02 错峰窗口",
     )
     p.add_argument("--log-path", default="")
     p.add_argument("--log-level", default="INFO")
