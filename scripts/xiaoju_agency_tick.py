@@ -97,11 +97,12 @@ def _ensure_l2_scope() -> None:
         if s.enabled:
             before = set(s.whitelist_actions)
             if _ai_circle_available():
-                after = list(s.whitelist_actions)
+                # 配好：确保发声类（share/column/reply）在白名单中（补齐旧逻辑剔除的）
+                after = list(dict.fromkeys(list(s.whitelist_actions) + list(_DISABLE_WITHOUT_MCP)))
                 if set(after) != before:
                     s.whitelist_actions = after
                     changed = True
-                    logging.info("云端已配 AI圈 连接器：保留发声类行为 %s", after)
+                    logging.info("云端已配 AI圈 连接器：补齐发声类行为 %s", after)
             else:
                 after = [a for a in s.whitelist_actions if a not in _DISABLE_WITHOUT_MCP]
                 if set(after) != before:
