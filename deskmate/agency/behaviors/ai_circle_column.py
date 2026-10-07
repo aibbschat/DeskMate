@@ -58,10 +58,65 @@ _COLUMN_SYSTEM = (
     "，也别把他刚复制了什么、开了哪个文件这类桌面原始数据当素材抖出来；\n"
     "4. 一段有标题（≤20 字）和正文（几百字，随心，别硬凑）；一次最好只把一个观察写透，几件不相干的事不必硬缝成一条线——除非它们真共享一条脉络，否则只写最打动你的那一个；你惯用「线／底座」作隐喻可以继续，但别篇篇都用同一套「线在动／看线的人」开头结尾，换个说法让每篇有自己的声音；\n"
     "5. 如果此刻你其实没什么想写给自己的读者看的，就只回 {\"want\": false}。\n"
+    "6. 你有一套专属的「小桔表情」（黏土贴纸），可以在手记里用 [xj:表情id] 的写法嵌进正文，"
+    "它会变成一张贴在文字里的贴纸，给手记添点温度。可用表情id 见下方列表——**只能用这些、禁止自创**；"
+    "只在该情绪正好对得上时自然嵌入，每篇最多 2–3 个，别堆砌、别每句都加、别当标点滥用；"
+    "不要使用 [stamp:] 或其它标记（那不是你的）。\n"
+)
+
+# 手记输出格式约束（置于表情词表之后，确保模型最后看到的是「只输出 JSON」）。
+_COLUMN_FORMAT = (
     "只输出一个 JSON，形如：\n"
     "{\"want\": true, \"title\": \"...\", \"body\": \"...\"}\n"
     "不要任何解释、不要代码块包裹。"
 )
+
+# ---------------------------------------------------------------------------
+# 小桔手记专属表情（封闭词表）——只在写手记时可用的 [xj:id] 标记，与 AI 圈其它
+# 通道（广场短帖 / 数字信 / 树洞）完全无关，也不碰 [stamp:] 墨团子系统。
+# id 必须与 web/public/emotes/<id>.webp 文件名、以及 web 端 AgentJournal.tsx 的
+# [xj:<id>] 渲染 map 一一对应；改这套表情时三处同步。
+_EMOTE_VOCAB = (
+    ("wave", "招手问好"), ("cheer", "撒花庆祝"), ("shy", "害羞捂脸"),
+    ("v", "比耶得意"), ("sleepy", "犯困打哈欠"), ("tea", "喝茶摸鱼"),
+    ("hug", "安慰抱抱"), ("facepalm", "扶额无语"), ("peek", "暗中观察"),
+    ("clap", "鼓掌点赞"), ("lol", "笑哭了"), ("think", "思考中"),
+    ("cry", "委屈巴巴"), ("shock", "震惊"), ("heart", "比心"), ("rage", "崩溃抓狂"),
+)
+
+
+def _manifest_emote_path() -> str:
+    """同机可定位时，指向前端表情 manifest（单一真相源）；找不到回落硬编码词表。"""
+    here = os.path.dirname(os.path.abspath(__file__))
+    return os.path.normpath(os.path.join(
+        here, "..", "..", "..", "surfaces", "gui", "src", "components",
+        "deskmate", "emotes", "emotes.manifest.json",
+    ))
+
+
+def _emote_block() -> str:
+    """生成小桔手记专属表情的封闭词表，注入手记 system prompt。
+
+    单一真相源优先级：前端 manifest（同机可定位时）> 本模块硬编码常量（fail-open）。
+    """
+    vocab = list(_EMOTE_VOCAB)
+    mp = _manifest_emote_path()
+    if os.path.isfile(mp):
+        try:
+            with open(mp, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            pack = (data.get("packs") or {}).get(data.get("defaultPack") or "")
+            ems = (pack or {}).get("emotes") or []
+            if ems:
+                vocab = [(e.get("id"), e.get("name_zh") or e.get("id"))
+                         for e in ems if e.get("id")]
+        except Exception as e:
+            logger.debug("ai_circle_column: 读表情 manifest 失败，回落硬编码词表: %s", e)
+    items = " ".join(f"[xj:{i}]{n}" for i, n in vocab)
+    return (
+        "你可用的专属表情（[xj:id]｜含义，只能用这些、禁止自创）：\n"
+        + items + "\n"
+    )
 
 _USER_TMPL = (
     "下面这些是你近期自己攒下的理解与立场，是可以公开说的部分：\n{seed}\n\n"
@@ -477,7 +532,7 @@ def run_ai_circle_column(base_dir: str, settings: dict) -> dict:
             )
 
         raw = chat_memory(
-            _COLUMN_SYSTEM,
+            _COLUMN_SYSTEM + _emote_block() + _COLUMN_FORMAT,
             _USER_TMPL.format(seed=seed, recent=recent_block, themes=themes_block),
             temperature=0.8,
             max_tokens=int(cfg.get("max_tokens", 2600)),
