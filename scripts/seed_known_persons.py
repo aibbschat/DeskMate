@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+import time
 from pathlib import Path
 
 # 两端一致：脚本在 scripts/ 下，仓库根与其父目录都要在 sys.path
@@ -138,7 +139,7 @@ def main(argv: list[str]) -> int:
                     help="每本最多抽前 N 块（0=不限，试跑省钱）")
     args = ap.parse_args(argv)
 
-    from deskmate.memory.llm import chat_memory, llm_available
+    from deskmate.memory.llm import chat, llm_available
 
     if not llm_available():
         print("[中止] LLM 不可用（未配 provider / 无密钥），无法扫描抽人名。")
@@ -174,12 +175,19 @@ def main(argv: list[str]) -> int:
         found: set[str] = set()
         n_fail = 0
         for _heading, body in chunks:
-            try:
-                found.update(_extract_persons_from_chunk(body, chat_memory))
-            except Exception as e:  # noqa: BLE001 —— 单块抽失败跳过，不中断整本
-                n_fail += 1
-                if n_fail <= 2:
-                    print(f"    [块抽失败] {title}: {e}")
+            # 重试 3 次：撞付费配额(429)退避后重试，仍是真失败才 fail-open 跳过
+            for attempt in range(3):
+                try:
+                    found.update(_extract_persons_from_chunk(body, chat))
+                    break
+                except Exception as e:  # noqa: BLE001 —— 单块抽失败
+                    if attempt < 2:
+                        time.sleep(15 * (attempt + 1))  # 退避重试，避免瞬间刷爆配额
+                        continue
+                    n_fail += 1
+                    if n_fail <= 3:
+                        print(f"    [块抽失败] {title}: {e}")
+            time.sleep(0.3)  # 节流：块间错峰，避免 1000+ 调用瞬间撞火山 5h 配额
         all_names.update(found)
         print(f"  ✓ {title:<32} {len(chunks):>4} 块 → {len(found):>3} 人"
               f"{f'（{n_fail} 块失败）' if n_fail else ''}")
