@@ -1578,7 +1578,7 @@ class DeskMateMemoryManager:
 
             # 跨 section 去重检查：检查所有 § 下是否已有高度相似的内容
             memory = self._load_global_memory()
-            if memory and llm_available():
+            if memory and self._memory_llm_ok():
                 cross_dup = self._check_cross_section_duplicate(memory, entry)
                 if cross_dup:
                     return f"MEMORY.md 已在 § {cross_dup} 中存在相似条目，跳过"
@@ -1599,10 +1599,14 @@ class DeskMateMemoryManager:
                 new_no_date = re.sub(r"^\d{4}-\d{1,2}-\d{1,2}[:：]\s*", "", entry)
                 if new_no_date in existing_no_date:
                     return f"MEMORY.md § {identifier} 已存在相同条目，跳过"
-                # 同主题合并：用 LLM 检查是否有相似条目，有就合并而非追加
-                merged = self._try_merge_similar(found["body"], entry)
-                if merged is not None:
-                    found["body"] = merged
+                # 同主题合并：仅当 LLM 可用（端点未熔断）才做；否则纯追加，
+                # 避免端点故障时卡顿（SDK 重试放大成 MCP 超时）或误判跳过。
+                if self._memory_llm_ok():
+                    merged = self._try_merge_similar(found["body"], entry)
+                    if merged is not None:
+                        found["body"] = merged
+                    else:
+                        found["body"] = (found["body"].rstrip() + "\n\n" + entry).strip()
                 else:
                     found["body"] = (found["body"].rstrip() + "\n\n" + entry).strip()
             else:
@@ -1612,6 +1616,31 @@ class DeskMateMemoryManager:
             return f"MEMORY.md 已写入 § {identifier}"
 
         return f"不支持的 section: {section}"
+
+    def _memory_llm_ok(self) -> bool:
+        """记忆写入的 LLM 查重是否可用（熔断感知）。
+
+        仅当「有 provider 凭证」**且**「opencode 免费组未全部熔断」时才返回 True，
+        走 LLM 查重/合并；否则返回 False，调用方改为纯文件追加——
+        端点故障（opencode 401/500）时不卡（SDK 重试放大成 MCP 超时）、不误判跳过。
+
+        免费组清单拉不到（catalog 故障，与 opencode 端点同源）→ 视为端点故障，降级。
+        """
+        if not llm_available():
+            return False
+        try:
+            from deskmate.llm_circuit_breaker import is_open
+            from deskmate.llm_channels import free_channels
+            chs = free_channels()
+            if not chs:
+                return False  # 免费组清单拉不到 = 端点故障，降级纯追加
+            # 免费组任一通道未熔断即视为可用；全熔断才降级
+            return any(
+                not is_open(f"{c.provider}:{c.model}", base_dir=self.base_dir)
+                for c in chs
+            )
+        except Exception:
+            return False  # 查询异常也降级，绝不卡写入
 
     def _check_cross_section_duplicate(self, memory: str, new_entry: str) -> str | None:
         """检查新条目是否与 MEMORY.md 中其他 § 的内容重复。
@@ -1653,6 +1682,7 @@ class DeskMateMemoryManager:
                 prompt,
                 temperature=0.0,
                 max_tokens=50,
+                timeout=12.0,
             )
             resp = resp.strip()
             if resp and resp != "NO_DUP" and len(resp) < 30:
@@ -2242,7 +2272,7 @@ class DeskMateMemoryManager:
 - 只返回合并后的文本 或 NO_MERGE，不要多余解释"""
         system = "你是记忆合并器。如果两条记忆同一主题，把新信息合并进旧的。不是同一主题就只返回 NO_MERGE。"
         try:
-            resp = chat(system, prompt, temperature=0.3, max_tokens=600)
+            resp = chat(system, prompt, temperature=0.3, max_tokens=600, timeout=12.0)
             if resp and "NO_MERGE" not in resp:
                 merged = resp.strip()
                 # 安全检查
