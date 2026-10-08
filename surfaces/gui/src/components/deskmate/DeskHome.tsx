@@ -14,7 +14,13 @@ import { useTranslation } from "react-i18next";
 import { AgencyPanel } from "./AgencyPanel";
 import { getDeskmateHandoff, ackDeskmateHandoff, type HandoffItem } from "../../api";
 
-export function DeskHome({ onPrefill }: { onPrefill?: (text: string) => void }) {
+export function DeskHome({
+  onPrefill,
+  onIntentExecuted,
+}: {
+  onPrefill?: (text: string) => void;
+  onIntentExecuted?: (intentId: string) => void;
+}) {
   const { t, i18n } = useTranslation();
   const [handoff, setHandoff] = useState<{ text: string; items: HandoffItem[] } | null>(null);
   const [dismissed, setDismissed] = useState<Set<string>>(new Set());
@@ -99,7 +105,7 @@ export function DeskHome({ onPrefill }: { onPrefill?: (text: string) => void }) 
       )}
 
       {/* L2 自主层「小桔在忙」——常驻展示自主行为 + 高风险提议卡待裁决 */}
-      <AgencyPanel />
+      <AgencyPanel onJumpToChat={onIntentExecuted} />
     </div>
   );
 }

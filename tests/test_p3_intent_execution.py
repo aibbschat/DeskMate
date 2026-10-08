@@ -56,26 +56,29 @@ _OUT = json.dumps({"kind": "synthesis", "title": "串成一条线", "body": "我
 
 
 # ---------------------------------------------------------------------------
-# 1) 主路径：executed → 真产出（判据 §四.1）
+# 1) 主路径：executed → 设 discuss_pending（R13 不再立即产出，判据 §四.1）
 # ---------------------------------------------------------------------------
 def test_executed_intent_produces_output(env, monkeypatch):
+    """#1 主路径：裁决 executed → 设 discuss_pending 标记（R13 不再立即产出）。
+
+    R13 改动：执行不再直接落 intent_outputs，而是设 active + discuss_pending=True，
+    等前端调 /discuss/start 启动讨论流程。产出要等讨论定稿（finalize_discussion）后才落库。
+    """
     eng, store, iid, rec = _propose(env, "我想把散落的记忆串成一条线")
     _patch_llm(monkeypatch, _OUT)
 
     assert eng.resolve_proposal(rec.id, TaskStatus.EXECUTED) is True
 
-    outs = store.get_recent_intent_outputs(5)
-    assert len(outs) == 1
-    assert outs[0]["status"] == "done"
-    assert outs[0]["kind"] == "synthesis"
-    assert "串起来" in outs[0]["artifact"]
-    assert outs[0]["intent_id"] == iid
-    # 意图完成 → 离开 active
-    assert store.get_intent(iid)["status"] == "done"
-    # 关联 task_log（回流链通）
+    # R13：不立即产出 intent_outputs（要等讨论定稿）
+    assert store.get_recent_intent_outputs(5) == []
+    # 意图进讨论流程（未完成，仍 active）
+    assert store.get_intent(iid)["status"] == "active"
+    # 关联 task_log：设了 discuss_pending 标记
     got = eng.log.get(rec.id)
-    assert got.extra["execution"]["executed"] is True
-    assert got.extra["execution"]["output_id"] == outs[0]["id"]
+    assert got.extra["execution"]["executed"] is False
+    assert got.extra["execution"]["reason"] == "discuss_pending"
+    assert got.extra["execution"]["discuss_pending"] is True
+    assert got.extra["execution"]["intent_id"] == iid
 
 
 # ---------------------------------------------------------------------------
@@ -107,9 +110,15 @@ def test_path_guard_uses_sacred_paths(env, tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# 3) 护栏·外发：只出草稿 + 二次人审（判据 §四.3）；点头后才真发
+# 3) 护栏·外发：执行后不立即产出草稿，进讨论流程等定稿后才出 draft + 二次人审提案
 # ---------------------------------------------------------------------------
 def test_external_intent_only_makes_draft(env, monkeypatch):
+    """#2 外发护栏：执行后不立即产出草稿，进讨论流程等定稿后才出 draft + 二次人审提案。
+
+    R13 改动：执行只设 discuss_pending，不出 draft_external 草稿，也不出 intent_outbound
+    提案卡。这些产出要等讨论流程的 run_discussion_round（出 draft）和 finalize_discussion
+    （定稿后才生成二次人审提案）才触发。
+    """
     eng, store, iid, rec = _propose(env, "我想发帖说说我对算法圈的判断", origin="长期兴趣")
     sent: list = []
     monkeypatch.setattr("deskmate.connectors.aicircle.post_topic",
@@ -118,49 +127,98 @@ def test_external_intent_only_makes_draft(env, monkeypatch):
 
     assert eng.resolve_proposal(rec.id, TaskStatus.EXECUTED) is True
 
-    assert sent == []                                     # 绝不自动外发
-    outs = store.get_recent_intent_outputs(5)
-    assert len(outs) == 1
-    assert outs[0]["kind"] == "draft_external"
-    assert outs[0]["status"] == "pending_review"
-    # 二次人审提案已生成（risk=high，不在白名单 → 不会被 tick 自动跑）
+    # R13：绝不外发
+    assert sent == []
+    # R13：不立即产出 intent_outputs（draft 要等讨论流程的 run_discussion_round）
+    assert store.get_recent_intent_outputs(5) == []
+    # R13：不立即产出 intent_outbound 提案卡（要等 finalize_discussion 后才生成）
+    pending = [r for r in eng.log.list(limit=50, status=TaskStatus.PROPOSED)
+               if r.action_type == "intent_outbound"]
+    assert len(pending) == 0
+    # 意图进讨论流程（未完成，仍 active）
+    assert store.get_intent(iid)["status"] == "active"
+    # 关联 task_log：设了 discuss_pending 标记
+    got = eng.log.get(rec.id)
+    assert got.extra["execution"]["reason"] == "discuss_pending"
+
+
+def test_second_approval_actually_sends(env, monkeypatch):
+    """#3 二次人审：讨论定稿后二次点头才真发（判据 §四.3 续）。
+
+    R13 改动：执行只设 discuss_pending → 走完整 discuss 流程（start→run→finalize）
+    → finalize 自动产出 intent_outbound 提案卡（外发型）→ 二次点头才真发。
+    """
+    from deskmate.agency.behaviors import intent_discuss as d
+
+    eng, store, iid, rec = _propose(env, "我想发帖说说我对算法圈的判断")
+    monkeypatch.setattr("deskmate.connectors.aicircle.post_topic", lambda *a, **k: None)
+    _patch_llm(monkeypatch, _OUT)
+
+    # 1. 执行 → discuss_pending（R13 不再立即产出）
+    eng.resolve_proposal(rec.id, TaskStatus.EXECUTED)
+    assert store.get_intent(iid)["status"] == "active"
+
+    # 2. 走完整 discuss 流程：start → run → finalize
+    _patch_llm(monkeypatch, "好，我去做了。")
+    d.start_discussion(str(env), iid, "sess_test")
+    _patch_llm(monkeypatch, _OUT)
+    d.run_discussion_round(str(env), iid, round_num=1)
+    _patch_llm(monkeypatch, json.dumps(
+        {"lesson_text": "发帖要先把判断说清楚。"}, ensure_ascii=False))
+    fin = d.finalize_discussion(str(env), iid)
+    assert fin["ok"] is True
+
+    # 3. finalize 已自动产出 intent_outbound 二次人审提案卡（修复 R13 bug）
     pending = [r for r in eng.log.list(limit=50, status=TaskStatus.PROPOSED)
                if r.action_type == "intent_outbound"]
     assert len(pending) == 1
     assert pending[0].risk == "high"
-    assert pending[0].extra["output_id"] == outs[0]["id"]
-    assert store.get_intent(iid)["status"] == "active"    # 外发未完 → 意图未 done
+    out_rec = pending[0]
 
-
-def test_second_approval_actually_sends(env, monkeypatch):
-    eng, store, iid, rec = _propose(env, "我想发帖说说我对算法圈的判断")
-    monkeypatch.setattr("deskmate.connectors.aicircle.post_topic", lambda *a, **k: None)
-    _patch_llm(monkeypatch, _OUT)
-    eng.resolve_proposal(rec.id, TaskStatus.EXECUTED)
-
-    out_rec = [r for r in eng.log.list(limit=50, status=TaskStatus.PROPOSED)
-               if r.action_type == "intent_outbound"][0]
+    # 4. 二次点头 → 真发
     sent: list = []
     monkeypatch.setattr("deskmate.connectors.aicircle.post_topic",
                         lambda tag, title, content: sent.append((tag, title, content)))
-
     assert eng.resolve_proposal(out_rec.id, TaskStatus.EXECUTED) is True
 
     assert len(sent) == 1                                  # 你点头了 → 真发出去
     assert "串起来" in sent[0][2]
-    assert store.get_recent_intent_outputs(5)[0]["status"] == "done"
     assert store.get_intent(iid)["status"] == "done"
     assert eng.log.get(out_rec.id).extra["sent"] is True
 
 
 def test_outbound_disabled_by_env(env, monkeypatch):
+    """#4 外发总闸：AGENCY_INTENT_OUTBOUND_ENABLED=0 → 二次点头也不发。
+
+    R13 改动：走完整 discuss 流程，finalize 自动产出 intent_outbound 提案卡后，
+    关掉外发总闸 → 二次点头不发出，rec.extra.send_reason=outbound_disabled。
+    """
+    from deskmate.agency.behaviors import intent_discuss as d
+
     eng, store, iid, rec = _propose(env, "我想发帖说说我对算法圈的判断")
     monkeypatch.setattr("deskmate.connectors.aicircle.post_topic", lambda *a, **k: None)
     _patch_llm(monkeypatch, _OUT)
-    eng.resolve_proposal(rec.id, TaskStatus.EXECUTED)
-    out_rec = [r for r in eng.log.list(limit=50, status=TaskStatus.PROPOSED)
-               if r.action_type == "intent_outbound"][0]
 
+    # 1. 执行 → discuss_pending
+    eng.resolve_proposal(rec.id, TaskStatus.EXECUTED)
+
+    # 2. 走完整 discuss 流程
+    _patch_llm(monkeypatch, "好，我去做了。")
+    d.start_discussion(str(env), iid, "sess_test")
+    _patch_llm(monkeypatch, _OUT)
+    d.run_discussion_round(str(env), iid, round_num=1)
+    _patch_llm(monkeypatch, json.dumps(
+        {"lesson_text": "发帖要先把判断说清楚。"}, ensure_ascii=False))
+    fin = d.finalize_discussion(str(env), iid)
+    assert fin["ok"] is True
+
+    # 3. finalize 已自动产出 intent_outbound 二次人审提案卡（修复 R13 bug）
+    pending = [r for r in eng.log.list(limit=50, status=TaskStatus.PROPOSED)
+               if r.action_type == "intent_outbound"]
+    assert len(pending) == 1
+    out_rec = pending[0]
+
+    # 4. 关掉外发总闸 → 二次点头也不发
     sent: list = []
     monkeypatch.setattr("deskmate.connectors.aicircle.post_topic",
                         lambda *a, **k: sent.append(a))

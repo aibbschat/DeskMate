@@ -352,7 +352,12 @@ class CognitiveStore:
                     horizon          TEXT DEFAULT 'short',-- 'short' | 'long'
                     status           TEXT DEFAULT 'open', -- 'open' | 'active' | 'done' | 'dropped'
                     origin           TEXT DEFAULT '',     -- 未满足的关怀 | 未接着的观察 | 长期兴趣 | 你的话
-                    proposed_task_id TEXT DEFAULT ''      -- 关联 task_log 的提案（生成后回填）
+                    proposed_task_id TEXT DEFAULT '',     -- 关联 task_log 的提案（生成后回填）
+                    -- R13（2026-10-08）：意图讨论态。discuss 是 sub-state——discussing 期间
+                    -- intent.status 仍走 'active'，discuss_state JSON 存 {round, phase,
+                    -- session_id, current_draft_ledger_id, last_user_feedback}。
+                    discuss_state     TEXT DEFAULT '',    -- JSON: 讨论进度（opening/working/feedback）
+                    current_round     INTEGER DEFAULT 0   -- 当前讨论轮次
                 );
                 CREATE INDEX IF NOT EXISTS idx_intents_status ON intents(status);
                 CREATE INDEX IF NOT EXISTS idx_intents_ts     ON intents(ts);
@@ -439,6 +444,11 @@ class CognitiveStore:
         # valid_until = NULL 表示「至今有效」（开放区间）。
         self._add_column("profile_items", "valid_from", "TEXT")
         self._add_column("profile_items", "valid_until", "TEXT")
+        # R13（2026-10-08）：intents 表加 discuss_state / current_round（老库升级）。
+        # discuss 是 sub-state——discussing 期间 intent.status 仍走 'active'，
+        # discuss_state JSON 存讨论进度，current_round 是当前轮次。
+        self._add_column("intents", "discuss_state", "TEXT DEFAULT ''")
+        self._add_column("intents", "current_round", "INTEGER DEFAULT 0")
         # P1-2 范围化注入：profile_items 的 FTS 索引（unicode61 + 字间空格，
         # 与 coworker/history/fts5.py 同一套约定）。
         try:
@@ -1345,7 +1355,11 @@ class CognitiveStore:
             return False
 
     def get_intent(self, intent_id: str) -> Optional[dict]:
-        """按 id 取一条意图（不限 status，供执行器取原始 goal/motivation）。fail-open → ``None``。"""
+        """按 id 取一条意图（不限 status，供执行器取原始 goal/motivation）。
+
+        R13：返回里含 ``discuss_state``（JSON 字符串）和 ``current_round``。
+        fail-open → ``None``。
+        """
         iid = (intent_id or "").strip()
         if not iid:
             return None
@@ -1353,7 +1367,8 @@ class CognitiveStore:
             with self._connect() as conn:
                 row = conn.execute(
                     "SELECT id, ts, goal, motivation, horizon, status, origin, "
-                    "proposed_task_id FROM intents WHERE id=?",
+                    "proposed_task_id, discuss_state, current_round "
+                    "FROM intents WHERE id=?",
                     (iid,),
                 ).fetchone()
         except Exception as e:  # noqa: BLE001 —— fail-open
@@ -1362,8 +1377,73 @@ class CognitiveStore:
         if not row:
             return None
         keys = ("id", "ts", "goal", "motivation", "horizon", "status",
-                "origin", "proposed_task_id")
+                "origin", "proposed_task_id", "discuss_state", "current_round")
         return dict(zip(keys, row))
+
+    # ------------------------------------------------------------------
+    # R13 意图讨论态（discuss 是 sub-state，intent.status 仍走 active）
+    # ------------------------------------------------------------------
+    def set_intent_discuss_state(self, intent_id: str, discuss_state: dict,
+                                  current_round: int = 0) -> bool:
+        """更新意图讨论态（R13）。discuss_state 是 JSON dict（{round, phase,
+        session_id, current_draft_ledger_id, last_user_feedback}）。fail-open。"""
+        iid = (intent_id or "").strip()
+        if not iid:
+            return False
+        try:
+            state_json = json.dumps(discuss_state or {}, ensure_ascii=False)
+            with self._connect() as conn:
+                conn.execute(
+                    "UPDATE intents SET discuss_state=?, current_round=? WHERE id=?",
+                    (state_json, int(current_round or 0), iid),
+                )
+            return True
+        except Exception as e:  # noqa: BLE001 —— fail-open
+            logger.warning("set_intent_discuss_state 失败（忽略）: %s", e)
+            return False
+
+    def get_discussing_intent_for_session(self, session_id: str) -> Optional[str]:
+        """多并发护栏（R13）：查 session 是否已绑 discussing intent。
+
+        扫所有 ``discuss_state`` 非空的 intent，找 ``session_id`` 匹配且
+        ``phase`` 非空的。返回 intent_id 或 ``None``。fail-open → ``None``。
+        """
+        sid = (session_id or "").strip()
+        if not sid:
+            return None
+        try:
+            with self._connect() as conn:
+                rows = conn.execute(
+                    "SELECT id, discuss_state FROM intents "
+                    "WHERE discuss_state IS NOT NULL AND discuss_state != ''"
+                ).fetchall()
+        except Exception as e:  # noqa: BLE001 —— fail-open
+            logger.warning("get_discussing_intent_for_session 失败（忽略）: %s", e)
+            return None
+        for iid, state_json in rows:
+            try:
+                state = json.loads(state_json or "{}")
+                if state.get("session_id") == sid and state.get("phase"):
+                    return iid
+            except Exception:  # noqa: BLE001 —— 单条解析失败不影响其余
+                continue
+        return None
+
+    def clear_intent_discuss_state(self, intent_id: str) -> bool:
+        """清空意图讨论态（R13 finalize/cancel 时用）。fail-open。"""
+        iid = (intent_id or "").strip()
+        if not iid:
+            return False
+        try:
+            with self._connect() as conn:
+                conn.execute(
+                    "UPDATE intents SET discuss_state='', current_round=0 WHERE id=?",
+                    (iid,),
+                )
+            return True
+        except Exception as e:  # noqa: BLE001 —— fail-open
+            logger.warning("clear_intent_discuss_state 失败（忽略）: %s", e)
+            return False
 
     # ------------------------------------------------------------------
     # R12 意图产物（「你同意了，她真做出来」的可复核产物；读/写全 fail-open）

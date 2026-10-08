@@ -51,6 +51,21 @@ export function itemsFromMessages(messages: ConversationMessage[]): Item[] {
       if (typeof m.ts === "number") user.ts = m.ts;
       if (user.text || user.attachments?.length) items.push(user);
     } else if (m.role === "assistant") {
+      // R13 意图讨论态消息：meta.origin === "intent_handoff" → 重建 intent_discuss 卡片
+      // （opening=只显示文字，draft=带「定稿/再改/不要」三按钮）。重载时按钮仍显示——
+      // 已结束的讨论点按钮后端会返回错误，前端静默 catch 不阻塞。
+      const meta: any = (m as any).meta || {};
+      if (meta.origin === "intent_handoff" && (m.content || "")) {
+        items.push({
+          kind: "intent_discuss",
+          text: String(m.content || ""),
+          intent_id: String(meta.intent_id || ""),
+          round: Number(meta.round || 0),
+          phase: meta.phase === "opening" ? "opening" : "draft",
+          ...(typeof m.ts === "number" ? { ts: m.ts } : {}),
+        });
+        continue;
+      }
       // A generated review-report card: render the rich ReportViewer instead of plain text.
       // The `report`/`report_name` sidecars are stripped before the LLM sees this message.
       // `report` 正常是嵌套对象；个别情况下可能是 JSON 字符串（旧存储/异常），这里兼容解析；

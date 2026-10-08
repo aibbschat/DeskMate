@@ -120,6 +120,10 @@ AGENCY_BEHAVIORS_MODULES=(
   "deskmate/agency/behaviors/intent_generation.py"
   # R12 出海口后半程（2026-10-08）：意图执行器（放行后真做出来；护栏钉死）
   "deskmate/agency/behaviors/intent_executor.py"
+  # R13 意图讨论流（2026-10-08）：start/run/finalize/cancel + 反馈分类；
+  # /v1/deskmate/agency/intent/discuss/* 端点 lazy import 本模块——漏传会让云端端点
+  # ImportError → 500（与上面同类漏传事故）。必须随行为包一起上云。
+  "deskmate/agency/behaviors/intent_discuss.py"
 )
 
 # 自主层核心（engine / registry / settings）：R9 反思 + R10 教学回流 + R11 意图层 + R12 意图执行

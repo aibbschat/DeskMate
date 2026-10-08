@@ -3206,6 +3206,9 @@ export interface AgencyTask {
   summary: string;
   detail: string;
   count: number;
+  // R13（2026-10-08）：后端 to_dict() 已返回 extra dict。意图提案被放行后，
+  // extra.execution = {discuss_pending: true, intent_id} 用来驱动前端跳聊天。
+  extra?: Record<string, unknown>;
 }
 
 /** L2 自主层状态：enabled / 白名单动作 / 主题域 / 最近任务 / 待裁决提议卡。 */
@@ -3382,20 +3385,29 @@ export async function peekScreen(): Promise<
   return observeCurrentScreen();
 }
 
-/** 裁决高风险提议卡。decision: executed | rejected | never */
+/** 裁决高风险提议卡。decision: executed | rejected | never
+ *
+ * R13（2026-10-08）：返回 {ok, discuss_pending?, intent_id?}——意图提案被放行后，
+ * 后端 _execute_intent_proposal 在 rec.extra.execution 写 discuss_pending=true + intent_id，
+ * 前端拿这俩信号跳聊天调 /discuss/start。非意图类（write_file 等）只看 ok。 */
 export async function resolveDeskmateAgencyProposal(
   id: string,
   decision: "executed" | "rejected" | "never",
-): Promise<boolean> {
+): Promise<{
+  ok: boolean;
+  discuss_pending?: boolean;
+  intent_id?: string;
+}> {
   try {
     const res = await authedFetch(`${httpBase()}/v1/deskmate/agency/propose/resolve`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ id, decision }),
     });
-    return res.ok;
+    if (!res.ok) return { ok: false };
+    return (await res.json()) as { ok: boolean; discuss_pending?: boolean; intent_id?: string };
   } catch {
-    return false;
+    return { ok: false };
   }
 }
 
@@ -4151,6 +4163,107 @@ export async function speakDeskmateHandoff(
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ id, session_id: sessionId }),
+      },
+    );
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+// --------------------------------------------------------------------------
+// R13 意图讨论流（4 个端点封装）——把意图执行从「一次性静默」改成「跨会话回合讨论」。
+// 状态机：点执行 → start（小桔开口）→ run（出 draft 递聊天）→ 用户点评 →
+//         再改（run round+1）/ 定稿（finalize）/ 不要（cancel）
+// --------------------------------------------------------------------------
+
+/** R13 启动意图讨论：设 discuss_state、写开场白 ledger。
+ * 返回 {ok, ledger_id, text}——前端拿 ledger_id 调 speakDeskmateHandoff 让小桔开口。
+ * blocking_intent_id 非空 = 同 session 已有讨论中的意图（多并发护栏）。
+ * null = 端点失败。 */
+export async function startIntentDiscuss(
+  sessionId: string,
+  intentId: string,
+): Promise<{
+  ok: boolean;
+  ledger_id: string;
+  text: string;
+  blocking_intent_id?: string;
+} | null> {
+  try {
+    const res = await authedFetch(
+      `${httpBase()}/v1/deskmate/agency/intent/discuss/start`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ intent_id: intentId, session_id: sessionId }),
+      },
+    );
+    if (!res.ok) return null;
+    return await res.json();
+  } catch {
+    return null;
+  }
+}
+
+/** R13 跑一轮讨论：调 executor 出 draft、递到聊天（带 meta 标记意图讨论态）。
+ * 前端在「再改」按钮时调。null = 端点失败。 */
+export async function runIntentDiscussRound(
+  sessionId: string,
+  intentId: string,
+  round: number,
+): Promise<{ ok: boolean; ledger_id: string; round: number } | null> {
+  try {
+    const res = await authedFetch(
+      `${httpBase()}/v1/deskmate/agency/intent/discuss/run`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ intent_id: intentId, session_id: sessionId, round }),
+      },
+    );
+    if (!res.ok) return null;
+    return await res.json();
+  } catch {
+    return null;
+  }
+}
+
+/** R13 定稿：落最终版 intent_outputs、写总结 lesson、speak 定稿确认。
+ * 前端在「定稿」按钮时调。null = 端点失败。 */
+export async function finalizeIntentDiscuss(
+  sessionId: string,
+  intentId: string,
+): Promise<{ ok: boolean; output_id: string; lesson_written: boolean } | null> {
+  try {
+    const res = await authedFetch(
+      `${httpBase()}/v1/deskmate/agency/intent/discuss/finalize`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ intent_id: intentId, session_id: sessionId }),
+      },
+    );
+    if (!res.ok) return null;
+    return await res.json();
+  } catch {
+    return null;
+  }
+}
+
+/** R13 取消讨论：intent.status=dropped、清 discuss_state。
+ * 前端在「不要」按钮时调。 */
+export async function cancelIntentDiscuss(
+  intentId: string,
+  sessionId?: string,
+): Promise<boolean> {
+  try {
+    const res = await authedFetch(
+      `${httpBase()}/v1/deskmate/agency/intent/discuss/cancel`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ intent_id: intentId, session_id: sessionId || "" }),
       },
     );
     return res.ok;

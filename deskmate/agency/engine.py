@@ -229,6 +229,20 @@ class AgencyEngine:
                 res = run_intent_generation(str(self.base_dir), settings.intent_generation)
                 if not res.get("generated"):
                     return None  # 冷却中 / 无素材 / 没 provider → 不刷屏
+
+                # 意图生成后，把 open 意图变成 PROPOSED 提案卡待人审
+                # （propose_from_intent 会把 intent 置 active，故只取 open 池即可）
+                try:
+                    from deskmate.cognitive.store import CognitiveStore
+
+                    store = CognitiveStore(
+                        db_path=os.path.join(str(self.base_dir), "deskmate.db")
+                    )
+                    for intent in store.get_open_intents(limit=20):
+                        self.propose_from_intent(intent)
+                except Exception as e:  # noqa: BLE001 —— fail-open：提案卡生成失败不阻断
+                    logger.warning("intent_generation: 提案卡生成失败（忽略）: %s", e)
+
                 return self.log.add(
                     action_type=action_type,
                     risk="low",
@@ -396,6 +410,11 @@ class AgencyEngine:
         if not ok:
             return ok
 
+        # resolve() 已改文件状态，但 rec 内存对象仍是旧的 PROPOSED；
+        # 后续 _execute_intent_proposal 会调 log.update(rec) 回写 extra，
+        # 若不同步状态，旧 PROPOSED 会覆盖回去 → 卡片"执行了但没消失"。
+        rec.status = decision
+
         # 教学回流（R10 · 江河设计 §四.4「拦必留教」）：每次裁决都留一条 lesson，
         # 让「拦下/放行」变成她学到的规则，而不是拦完就忘。fail-open，不影响主裁决。
         self._record_adjudication_lesson(rec, decision)
@@ -481,34 +500,37 @@ class AgencyEngine:
                     "origin": str(extra.get("origin") or ""),
                 }
 
-            from .behaviors.intent_executor import run_intent_execution
+            # R13（2026-10-08）：不直接跑 executor 落库，而是设 active 标记
+            # 「已放行，待启动讨论」。前端 resolve 后跳聊天，调 /discuss/start 端点
+            # 启动讨论。讨论完定稿后才落 intent_outputs + 写 lesson。
+            # 但保留「替你写原稿」红线检查——撞红线直接丢弃，不进讨论。
+            from .behaviors.intent_executor import is_manuscript_intent
 
-            res = run_intent_execution(
-                str(self.base_dir), intent, "executed", settings.intent_execution
-            )
-            rec.extra["execution"] = {
-                "executed": bool(res.get("executed")),
-                "reason": res.get("reason", ""),
-                "kind": res.get("kind", ""),
-                "output_id": res.get("output_id", ""),
-            }
-
-            if not res.get("executed"):
-                # 未产出（红线 no-op / 没 provider / 解析失败）→ 意图回退 active，等下次；
-                # 若撞的是「替你写原稿」红线，则直接丢弃这条意图（不再反复试）。
+            goal = str(intent.get("goal") or "")
+            if is_manuscript_intent(goal):
                 if iid:
-                    store.set_intent_status(
-                        iid, "dropped" if res.get("reason") == "sacred_manuscript" else "active"
-                    )
+                    store.set_intent_status(iid, "dropped")
+                rec.extra["execution"] = {
+                    "executed": False,
+                    "reason": "sacred_manuscript",
+                    "kind": "",
+                    "output_id": "",
+                }
                 self.log.update(rec)
                 return
 
-            if res.get("pending_review"):
-                # 对外表达类：草稿落库 + 生成二次人审提案，**绝不自动发**
+            # 设 active + discuss_pending 标记，等前端调 /discuss/start
+            if iid:
                 store.set_intent_status(iid, "active")
-                self._propose_intent_outbound(rec, res)
-            else:
-                store.set_intent_status(iid, "done")
+            rec.extra["execution"] = {
+                "executed": False,  # 还没执行，等讨论完才落库
+                "reason": "discuss_pending",
+                "kind": "",
+                "output_id": "",
+                # 前端看到 discuss_pending=True → 跳聊天调 /discuss/start 端点
+                "discuss_pending": True,
+                "intent_id": iid,
+            }
             self.log.update(rec)
         except Exception as e:  # noqa: BLE001 —— fail-open：执行失败不影响主裁决
             logger.warning("意图执行失败（忽略）: %s", e)

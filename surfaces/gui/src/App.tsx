@@ -30,6 +30,10 @@ import {
   type WorkspaceCommandTrust,
   postInspire,
   speakDeskmateHandoff,
+  startIntentDiscuss,
+  finalizeIntentDiscuss,
+  runIntentDiscussRound,
+  cancelIntentDiscuss,
   type HandoffItem,
 } from "./api";
 import type {
@@ -769,6 +773,25 @@ export function App() {
           // The event's reasoning is authoritative (covers background-delivered turns);
           // the local buffer is the fallback for older servers.
           const reasoning = d.reasoning || reasoningRef.current;
+          // R13 意图讨论态消息：meta.origin === "intent_handoff" → 渲染带「定稿/再改/不要」
+          // 三按钮的 intent_discuss 卡片（opening 阶段只显示文字）。
+          const meta = d.meta || {};
+          if (meta.origin === "intent_handoff" && (d.text || "")) {
+            setItems((p) => [
+              ...p,
+              {
+                kind: "intent_discuss",
+                text: String(d.text || ""),
+                intent_id: String(meta.intent_id || ""),
+                round: Number(meta.round || 0),
+                phase: meta.phase === "opening" ? "opening" : "draft",
+                ts: Date.now() / 1000,
+              },
+            ]);
+            setStreaming("");
+            setReasoningStream("");
+            break;
+          }
           // Report card: deskMate background report generation embeds `report` + `report_name`
           // on the assistant message — render the rich ReportViewer instead of plain text.
           if (d.report && d.report_name) {
@@ -1215,6 +1238,70 @@ export function App() {
     } catch {
       setItems([]);
       setUsage(emptyUsage());
+    }
+  };
+  // R13 意图讨论流：用户点「执行」→ 启动讨论 → 小桔开口（开场白落会话）→ 切到聊天。
+  // 复用当前 sessionId（DeskHome 只在 agent==="deskmate" 且空会话时渲染，故已在小桔会话里）。
+  // fail-open：失败仅切到聊天，不阻塞用户继续打字。
+  const startIntentDiscussion = async (intentId: string) => {
+    setSurface("session");
+    if (!sessionId) return;
+    try {
+      const res = await startIntentDiscuss(sessionId, intentId);
+      if (res && res.ok && res.ledger_id) {
+        // 让小桔开口——开场白作为她的助手消息落入本会话（WS assistant_message 即时渲染）。
+        await speakDeskmateHandoff(sessionId, res.ledger_id);
+      }
+    } catch {
+      // 静默：用户已在聊天视图，可继续手动操作。
+    }
+  };
+  // R13 三按钮回调：定稿 / 再改 / 不要。fail-open：失败仅置 resolved 标记，不阻塞。
+  // 改完 items 把对应 item 的 resolved 字段更新（按钮消失 + 状态徽标显示）。
+  const finalizeIntentDiscussion = async (intentId: string) => {
+    if (!sessionId) return;
+    setItems((p) =>
+      p.map((it) =>
+        it.kind === "intent_discuss" && it.intent_id === intentId
+          ? { ...it, resolved: "finalized" as const }
+          : it,
+      ),
+    );
+    try {
+      await finalizeIntentDiscuss(sessionId, intentId);
+    } catch {
+      // 静默：UI 已置定稿态，后端失败不阻塞（用户可手动重试）。
+    }
+  };
+  const reviseIntentDiscussion = async (intentId: string, round: number) => {
+    if (!sessionId) return;
+    setItems((p) =>
+      p.map((it) =>
+        it.kind === "intent_discuss" && it.intent_id === intentId
+          ? { ...it, resolved: "revising" as const }
+          : it,
+      ),
+    );
+    try {
+      // 跑下一轮：round+1，后端会产出新 draft 并通过 WS 推回（自动渲染新卡片）。
+      await runIntentDiscussRound(sessionId, intentId, round + 1);
+    } catch {
+      // 静默：UI 已置改中态，后端失败不阻塞。
+    }
+  };
+  const cancelIntentDiscussion = async (intentId: string) => {
+    if (!sessionId) return;
+    setItems((p) =>
+      p.map((it) =>
+        it.kind === "intent_discuss" && it.intent_id === intentId
+          ? { ...it, resolved: "cancelled" as const }
+          : it,
+      ),
+    );
+    try {
+      await cancelIntentDiscuss(intentId, sessionId);
+    } catch {
+      // 静默：UI 已置取消态，后端失败不阻塞。
     }
   };
   const switchAgent = async (name: string) => {
@@ -1787,7 +1874,10 @@ export function App() {
                     onPrefill={prefillComposer}
                   />
                 ) : agent === "deskmate" ? (
-                  <DeskHome onPrefill={prefillComposer} />
+                  <DeskHome
+                    onPrefill={prefillComposer}
+                    onIntentExecuted={startIntentDiscussion}
+                  />
                 ) : (
                   <div className="hero">
                     <h1 className="greeting">
@@ -1819,6 +1909,9 @@ export function App() {
                     // floating paragraph.
                     streamingText={streamMode(streaming, items, running) === "quiet" ? streaming : undefined}
                     expert={currentExpert}
+                    onFinalizeIntent={finalizeIntentDiscussion}
+                    onReviseIntent={reviseIntentDiscussion}
+                    onCancelIntent={cancelIntentDiscussion}
                   />
                   {/* Live thinking (reasoning models): a quiet collapsed block that streams the
                       trace for anyone who expands it; folds into the answer's disclosure when

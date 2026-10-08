@@ -279,17 +279,34 @@ def _ensure_table(conn: sqlite3.Connection) -> None:
         f" understanding TEXT, payload TEXT, source_node TEXT, status TEXT,"
         f" confidence REAL, created_at TEXT, acknowledged_at TEXT,"
         f" delivered_at TEXT, snoozed_until TEXT,"
-        f" visibility TEXT DEFAULT 'sync')"
+        f" visibility TEXT DEFAULT 'sync',"
+        # R13（2026-10-08）：意图讨论态字段。origin 标记条目来源
+        # （proactive_default / intent_handoff），intent_id 回溯意图，
+        # discuss_phase 区分 opening/draft/final，discuss_round 是讨论轮次。
+        f" origin TEXT DEFAULT 'proactive_default',"
+        f" intent_id TEXT,"
+        f" discuss_phase TEXT,"
+        f" discuss_round INTEGER)"
     )
     # 存量库升级（修④/修⑥/P3-a schema）：migrate() 只给表加同步三列、不加业务列，而触发器
     # body 按 spec business_cols 生成 json_object——表缺列时 migrate 直接 OperationalError。
     # 故先探测补齐业务列再 migrate（老库首次升级必经；新库 CREATE 已含全列，此处 no-op）。
     # P3-a：visibility 列（行级「只在本端、不同步」开关，§11.6 隐私分级）一并补齐。
+    # R13：origin/intent_id/discuss_phase/discuss_round 列（意图讨论态）。
     try:
         have = {r[1] for r in conn.execute(f"PRAGMA table_info({LEDGER_TABLE})")}
-        for _c in ("delivered_at", "snoozed_until", "visibility"):
+        new_cols = {
+            "delivered_at": "TEXT",
+            "snoozed_until": "TEXT",
+            "visibility": "TEXT DEFAULT 'sync'",
+            "origin": "TEXT DEFAULT 'proactive_default'",
+            "intent_id": "TEXT",
+            "discuss_phase": "TEXT",
+            "discuss_round": "INTEGER",
+        }
+        for _c, _t in new_cols.items():
             if _c not in have:
-                conn.execute(f"ALTER TABLE {LEDGER_TABLE} ADD COLUMN {_c} TEXT")
+                conn.execute(f"ALTER TABLE {LEDGER_TABLE} ADD COLUMN {_c} {_t}")
     except sqlite3.OperationalError:
         pass
     try:
@@ -336,11 +353,24 @@ def record_proactive(
     source_node: Optional[str] = None,
     confidence: float = 0.0,
     visibility: str = "sync",
+    # R13（2026-10-08）：意图讨论态。bypass_threshold=True 跳过 confidence 门槛
+    # （intent_handoff 的开场白短句过不了 0.75 门槛，但它是用户已同意的意图产物，
+    # 不该被拦）。origin 标记条目来源（proactive_default / intent_handoff），
+    # intent_id 回溯意图，discuss_phase 区分 opening/draft/final，discuss_round 是轮次。
+    bypass_threshold: bool = False,
+    origin: str = "proactive_default",
+    intent_id: Optional[str] = None,
+    discuss_phase: Optional[str] = None,
+    discuss_round: Optional[int] = None,
 ) -> str:
     """落一条主动产出到 ``proactive_ledger``（status=pending），经触发器自动进 oplog 同步。
 
     同 ``source/kind/anchor`` 重复调用 → 合并（更新非 status 字段，status 不降级）。
     返回确定性 id。
+
+    R13：``bypass_threshold=True`` 时跳过 confidence 门槛，用于 intent_handoff
+    的开场白短句（用户已同意的意图产物，不该被 confidence 门槛拦）。``origin`` /
+    ``intent_id`` / ``discuss_phase`` / ``discuss_round`` 用于意图讨论态标记。
     """
     base = _resolve_base(base_dir)
     db = base / "deskmate.db"
@@ -358,7 +388,9 @@ def record_proactive(
         return ""
     # §七写入门槛（修④）：confidence ≥ 0.75 且 evidence 明确才写 pending；
     # 低置信只进 prepare（上游 evaluate_action 的静默通道），不落台账、不递（§11.7③）。
-    if confidence < MIN_WRITE_CONFIDENCE or not evidence.strip():
+    # R13：bypass_threshold=True 时跳过门槛（intent_handoff 的开场白短句
+    # 过不了 0.75 门槛，但它是用户已同意的意图产物，不该被拦）。
+    if not bypass_threshold and (confidence < MIN_WRITE_CONFIDENCE or not evidence.strip()):
         logger.debug(
             "主动产出未过写入门槛（confidence=%.2f, evidence=%s），不落台账",
             confidence, "有" if evidence.strip() else "无",
@@ -376,16 +408,17 @@ def record_proactive(
         cols = (
             "id, source, kind, content, evidence, understanding, payload,"
             " source_node, status, confidence, created_at, acknowledged_at,"
-            " delivered_at, snoozed_until, visibility"
+            " delivered_at, snoozed_until, visibility,"
+            " origin, intent_id, discuss_phase, discuss_round"
         )
         try:
             c.execute(
                 f"INSERT INTO {LEDGER_TABLE} ({cols})"
-                f" VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                f" VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     rid, source, kind, content, evidence, und, payload_json,
                     source_node, "pending", confidence, now, None, None, None,
-                    visibility,
+                    visibility, origin, intent_id, discuss_phase, discuss_round,
                 ),
             )
         except sqlite3.IntegrityError:
@@ -404,8 +437,11 @@ def record_proactive(
             merged_und = und if understanding is not None else (cur_und or "")
             c.execute(
                 f"UPDATE {LEDGER_TABLE} SET content=?, evidence=?, understanding=?,"
-                f" payload=?, source_node=?, confidence=? WHERE id=?",
-                (content, evidence, merged_und, payload_json, source_node, confidence, rid),
+                f" payload=?, source_node=?, confidence=?,"
+                f" origin=?, intent_id=?, discuss_phase=?, discuss_round=?"
+                f" WHERE id=?",
+                (content, evidence, merged_und, payload_json, source_node, confidence,
+                 origin, intent_id, discuss_phase, discuss_round, rid),
             )
         c.commit()
     return rid

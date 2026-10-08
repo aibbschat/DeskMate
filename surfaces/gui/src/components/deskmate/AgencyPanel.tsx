@@ -52,7 +52,7 @@ function fmtTs(ts: string): string {
   return `${m[2]}-${m[3]} ${m[4]}:${m[5]}`;
 }
 
-export function AgencyPanel() {
+export function AgencyPanel({ onJumpToChat }: { onJumpToChat?: (intentId: string) => void }) {
   const [tasks, setTasks] = useState<AgencyTask[]>([]);
   const [pending, setPending] = useState<AgencyTask[]>([]);
   const [resolving, setResolving] = useState<string | null>(null);
@@ -79,7 +79,20 @@ export function AgencyPanel() {
   const resolve = async (id: string, decision: "executed" | "rejected" | "never") => {
     setResolving(id);
     try {
-      await resolveDeskmateAgencyProposal(id, decision);
+      const res = await resolveDeskmateAgencyProposal(id, decision);
+      // R13：意图提案被放行 → 后端返回 discuss_pending + intent_id，前端跳聊天
+      // 调 /discuss/start；这条提案不再 load() 刷面板（它进「讨论中」灰态）。
+      // 非意图类（write_file 等）无 discuss_pending 信号 → 走原 load() 刷新逻辑。
+      if (
+        decision === "executed" &&
+        res.ok &&
+        res.discuss_pending &&
+        res.intent_id &&
+        onJumpToChat
+      ) {
+        onJumpToChat(res.intent_id);
+        return;
+      }
       await load();
     } finally {
       setResolving(null);

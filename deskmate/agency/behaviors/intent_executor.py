@@ -201,14 +201,22 @@ def parse_intent_output(raw: str) -> Optional[dict[str, Any]]:
 # 主入口
 # ----------------------------------------------------------------------
 def run_intent_execution(base_dir: str, intent: dict[str, Any], decision: str = "executed",
-                         config: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+                         config: Optional[dict[str, Any]] = None,
+                         mode: str = "executed") -> dict[str, Any]:
     """把一条被放行的意图**真做出来**。fail-open（任何异常都不抛）。
 
     闸门顺序：开关 → 原稿红线（no-op）→ 对外表达（转草稿 + 二次人审）→ provider → 产出。
 
+    ``mode`` 取值：
+    - ``"executed"``（默认）：产出直接落 ``intent_outputs`` 表（老路径，R12 行为）。
+    - ``"discuss_draft"``（R13）：**不落库**，产出 artifact 返回给调用方
+      （discuss/run 端点）处理。执行链：discuss/run 调本函数拿 artifact →
+      写 proactive_ledger（phase=draft）→ speak 递到聊天 → 用户点评 →
+      几轮后 discuss/finalize 才把最终版落 intent_outputs。
+
     Returns:
         ``{"executed": bool, "reason": str, "output_id": str, "kind": str,
-        "pending_review": bool, "summary": str, "draft": {...}}``
+        "pending_review": bool, "summary": str, "artifact": str, "draft": {...}}``
     """
     result: dict[str, Any] = {
         "executed": False, "reason": "", "output_id": "", "kind": "",
@@ -273,6 +281,23 @@ def run_intent_execution(base_dir: str, intent: dict[str, Any], decision: str = 
     max_chars = int(cfg.get("max_chars", 4000) or 4000)
     artifact = parsed["body"][:max_chars]
     title = parsed["title"] or goal[:40]
+
+    # —— R13：discuss_draft 模式不直接落库，返回 artifact 给 discuss/run 端点处理 ——
+    # 执行链：discuss/run 端点调本函数（mode=discuss_draft）拿 artifact →
+    # 写 proactive_ledger（phase=draft）→ speak 递到聊天 → 用户点评 →
+    # 几轮后 discuss/finalize 端点才把最终版落 intent_outputs。
+    if mode == "discuss_draft":
+        result.update({
+            "executed": True,
+            "output_id": "",  # 未落库
+            "kind": kind,
+            "pending_review": external,
+            "artifact": artifact,
+            "summary": title,
+            "title": title,
+            "draft": {"title": title, "content": artifact} if external else {},
+        })
+        return result
 
     # —— 落库（产物可复核；供回流注入）——
     output_id = ""

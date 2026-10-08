@@ -192,7 +192,18 @@ export type Item =
   // 记忆保存提示（MEMORY-SPEC §5.1）：内联在对话里，可 Undo。
   | { kind: "memory"; id: number; text: string; previous?: string; undone?: boolean }
   // 创作灵感卡片：普通聊天里聊写作时，小桔基于认知库主动递（不持久化进会话历史）。
-  | { kind: "inspire"; text: string; refs?: string[]; ts?: number };
+  | { kind: "inspire"; text: string; refs?: string[]; ts?: number }
+  // R13 意图讨论态消息：小桔产出的 draft 递到聊天，附「定稿/再改/不要」三按钮
+  // （opening 阶段只显示文字不带按钮）。来自 WS assistant_message.meta.origin === "intent_handoff"。
+  | {
+      kind: "intent_discuss";
+      text: string;
+      intent_id: string;
+      round: number;
+      phase: "opening" | "draft";
+      resolved?: "finalized" | "cancelled" | "revising";
+      ts?: number;
+    };
 
 export interface GroupedQuestion {
   question: string;

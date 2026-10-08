@@ -3905,7 +3905,13 @@ def create_app(manager: SessionManager) -> FastAPI:
 
     @app.post("/v1/deskmate/agency/propose/resolve")
     async def deskmate_agency_propose_resolve(request: Request) -> dict[str, Any]:
-        """裁决高风险提议卡。Body: {"id": "...", "decision": "executed"|"rejected"|"never"}"""
+        """裁决高风险提议卡。Body: {"id": "...", "decision": "executed"|"rejected"|"never"}
+
+        R13（2026-10-08）：返回 ``{ok, discuss_pending, intent_id}``——意图提案被放行后，
+        ``_execute_intent_proposal`` 在 ``rec.extra.execution`` 写 ``discuss_pending=true``
+        + ``intent_id``，前端拿这俩信号跳聊天调 ``/discuss/start``。
+        非意图类（write_file 等）``discuss_pending=false``，``intent_id=""``。
+        """
         try:
             body = await request.json()
         except Exception:
@@ -3922,8 +3928,20 @@ def create_app(manager: SessionManager) -> FastAPI:
             desk_dir = _P(
                 os.environ.get("DESKMATE_DIR", os.path.expanduser("~/.deskmate"))
             )
-            ok = AgencyEngine(base_dir=desk_dir).resolve_proposal(record_id, decision)
-            return {"ok": ok}
+            engine = AgencyEngine(base_dir=desk_dir)
+            ok = engine.resolve_proposal(record_id, decision)
+            # R13：从 rec.extra.execution 读 discuss_pending + intent_id（仅 intent 类有）。
+            # resolve_proposal 内部已调 _execute_intent_proposal → log.update(rec)，
+            # 故 get() 拿到的是带 extra.execution 的最新记录。
+            discuss_pending = False
+            intent_id = ""
+            if ok and decision == "executed":
+                rec = engine.log.get(record_id)
+                if rec is not None:
+                    execution = (rec.extra or {}).get("execution") or {}
+                    discuss_pending = bool(execution.get("discuss_pending"))
+                    intent_id = str(execution.get("intent_id") or "")
+            return {"ok": ok, "discuss_pending": discuss_pending, "intent_id": intent_id}
         except Exception:
             logging.exception("deskmate agency resolve failed")
             return JSONResponse({"error": "resolve failed"}, status_code=500)
@@ -4360,6 +4378,211 @@ def create_app(manager: SessionManager) -> FastAPI:
         except Exception:
             logging.exception("deskmate proactive handoff speak failed")
             return JSONResponse({"error": "speak failed"}, status_code=500)
+
+    # ------------------------------------------------------------------
+    # R13 意图讨论流（4 个端点）——把意图执行从「一次性静默」改成「跨会话回合讨论」。
+    # 状态机：proposed → start → discussing(opening→working→feedback) → finalize/cancel
+    # 复用现有 speak 机制（append_session_messages + broadcast_session）递到聊天。
+    # ------------------------------------------------------------------
+    @app.post("/v1/deskmate/agency/intent/discuss/start")
+    async def intent_discuss_start(request: Request) -> dict[str, Any]:
+        """启动意图讨论。设 discuss_state、写开场白 ledger、返回 ledger_id + text。
+
+        前端拿 ledger_id + text 后调 speakDeskmateHandoff 让小桔开口。
+        Body: {"intent_id": str, "session_id": str}
+        """
+        try:
+            body = await request.json()
+        except Exception:
+            return JSONResponse({"error": "invalid json"}, status_code=400)
+        intent_id = (body.get("intent_id") or "").strip() if isinstance(body, dict) else ""
+        session_id = (body.get("session_id") or "").strip() if isinstance(body, dict) else ""
+        if not intent_id or not session_id:
+            return JSONResponse(
+                {"error": "missing intent_id/session_id"}, status_code=400
+            )
+        try:
+            from pathlib import Path as _P
+
+            from deskmate.agency.behaviors.intent_discuss import start_discussion
+
+            desk_dir = _P(
+                os.environ.get("DESKMATE_DIR", os.path.expanduser("~/.deskmate"))
+            )
+            res = start_discussion(str(desk_dir), intent_id, session_id)
+            if not res["ok"]:
+                status = 409 if res["reason"] == "already_discussing" else 400
+                return JSONResponse(
+                    {
+                        "error": res["reason"],
+                        "blocking_intent_id": res.get("blocking_intent_id", ""),
+                    },
+                    status_code=status,
+                )
+            return {"ok": True, "ledger_id": res["ledger_id"], "text": res["text"]}
+        except Exception:
+            logging.exception("intent discuss start failed")
+            return JSONResponse({"error": "start failed"}, status_code=500)
+
+    @app.post("/v1/deskmate/agency/intent/discuss/run")
+    async def intent_discuss_run(request: Request) -> dict[str, Any]:
+        """跑一轮讨论。调 executor 出 draft、写 ledger、speak 递到聊天（带 meta）。
+
+        Body: {"intent_id": str, "session_id": str, "round": int}
+        """
+        try:
+            body = await request.json()
+        except Exception:
+            return JSONResponse({"error": "invalid json"}, status_code=400)
+        intent_id = (body.get("intent_id") or "").strip() if isinstance(body, dict) else ""
+        session_id = (body.get("session_id") or "").strip() if isinstance(body, dict) else ""
+        round_num = int(body.get("round", 1)) if isinstance(body, dict) else 1
+        if not intent_id or not session_id:
+            return JSONResponse(
+                {"error": "missing intent_id/session_id"}, status_code=400
+            )
+        try:
+            import time as _t
+            from pathlib import Path as _P
+
+            from deskmate.agency.behaviors.intent_discuss import run_discussion_round
+            from deskmate.proactivity.ledger import mark_delivered
+
+            desk_dir = _P(
+                os.environ.get("DESKMATE_DIR", os.path.expanduser("~/.deskmate"))
+            )
+            res = run_discussion_round(str(desk_dir), intent_id, round_num)
+            if not res["ok"]:
+                return JSONResponse({"error": res["reason"]}, status_code=400)
+
+            # speak：把 draft artifact 递到聊天（带 meta 标记意图讨论态）
+            text = res["artifact"]
+            meta = {
+                "origin": "intent_handoff",
+                "intent_id": intent_id,
+                "phase": "draft",
+                "round": round_num,
+            }
+            ok = manager.append_session_messages(
+                session_id,
+                [
+                    {
+                        "role": "assistant",
+                        "content": text,
+                        "ts": int(_t.time()),
+                        "meta": meta,
+                    }
+                ],
+            )
+            if ok:
+                await manager.broadcast_session(
+                    session_id,
+                    {
+                        "type": "assistant_message",
+                        "data": {"text": text, "meta": meta},
+                    },
+                )
+            # 补账：draft ledger 标 delivered
+            try:
+                mark_delivered(base_dir=desk_dir, rid=res["ledger_id"])
+            except Exception:
+                logging.debug(
+                    "discuss run mark_delivered 失败（不阻断）", exc_info=True
+                )
+            return {"ok": True, "ledger_id": res["ledger_id"], "round": round_num}
+        except Exception:
+            logging.exception("intent discuss run failed")
+            return JSONResponse({"error": "run failed"}, status_code=500)
+
+    @app.post("/v1/deskmate/agency/intent/discuss/finalize")
+    async def intent_discuss_finalize(request: Request) -> dict[str, Any]:
+        """定稿。落最终版 intent_outputs、写总结 lesson、（可选）speak 定稿确认。
+
+        Body: {"intent_id": str, "session_id"?: str}
+        """
+        try:
+            body = await request.json()
+        except Exception:
+            return JSONResponse({"error": "invalid json"}, status_code=400)
+        intent_id = (body.get("intent_id") or "").strip() if isinstance(body, dict) else ""
+        session_id = (body.get("session_id") or "").strip() if isinstance(body, dict) else ""
+        if not intent_id:
+            return JSONResponse({"error": "missing intent_id"}, status_code=400)
+        try:
+            import time as _t
+            from pathlib import Path as _P
+
+            from deskmate.agency.behaviors.intent_discuss import finalize_discussion
+
+            desk_dir = _P(
+                os.environ.get("DESKMATE_DIR", os.path.expanduser("~/.deskmate"))
+            )
+            res = finalize_discussion(str(desk_dir), intent_id)
+            if not res["ok"]:
+                return JSONResponse({"error": res["reason"]}, status_code=400)
+            # 可选：speak 一句定稿确认
+            if session_id:
+                text = "好，这版定稿了，我落进记忆里。"
+                meta = {
+                    "origin": "intent_handoff",
+                    "intent_id": intent_id,
+                    "phase": "final",
+                }
+                manager.append_session_messages(
+                    session_id,
+                    [
+                        {
+                            "role": "assistant",
+                            "content": text,
+                            "ts": int(_t.time()),
+                            "meta": meta,
+                        }
+                    ],
+                )
+                await manager.broadcast_session(
+                    session_id,
+                    {
+                        "type": "assistant_message",
+                        "data": {"text": text, "meta": meta},
+                    },
+                )
+            return {
+                "ok": True,
+                "output_id": res["output_id"],
+                "lesson_written": res["lesson_written"],
+            }
+        except Exception:
+            logging.exception("intent discuss finalize failed")
+            return JSONResponse({"error": "finalize failed"}, status_code=500)
+
+    @app.post("/v1/deskmate/agency/intent/discuss/cancel")
+    async def intent_discuss_cancel(request: Request) -> dict[str, Any]:
+        """取消讨论。intent.status=dropped、清 discuss_state。
+
+        Body: {"intent_id": str, "session_id"?: str}
+        """
+        try:
+            body = await request.json()
+        except Exception:
+            return JSONResponse({"error": "invalid json"}, status_code=400)
+        intent_id = (body.get("intent_id") or "").strip() if isinstance(body, dict) else ""
+        if not intent_id:
+            return JSONResponse({"error": "missing intent_id"}, status_code=400)
+        try:
+            from pathlib import Path as _P
+
+            from deskmate.agency.behaviors.intent_discuss import cancel_discussion
+
+            desk_dir = _P(
+                os.environ.get("DESKMATE_DIR", os.path.expanduser("~/.deskmate"))
+            )
+            res = cancel_discussion(str(desk_dir), intent_id)
+            if not res["ok"]:
+                return JSONResponse({"error": res["reason"]}, status_code=400)
+            return {"ok": True}
+        except Exception:
+            logging.exception("intent discuss cancel failed")
+            return JSONResponse({"error": "cancel failed"}, status_code=500)
 
     @app.post("/v1/deskmate/proactive/capture")
     async def capture_deskmate_proactive(request: Request) -> dict[str, Any]:

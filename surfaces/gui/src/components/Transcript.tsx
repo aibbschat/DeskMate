@@ -428,6 +428,10 @@ interface Props {
   onUndoMemory?: (id: number, previous?: string) => void;
   /** 「记住这个」→ 写主动产出台账（mobile_voice，修⑧）；不传则不渲染按钮（桌面零变化）。 */
   onRememberItem?: (text: string) => void;
+  // R13 意图讨论态：draft 阶段的三按钮回调。不传则只显示文字不带按钮（兼容老调用方）。
+  onFinalizeIntent?: (intentId: string) => void;
+  onReviseIntent?: (intentId: string, round: number) => void;
+  onCancelIntent?: (intentId: string) => void;
 }
 
 // The transcript index whose notice gets the Retry button: the tail error notice, looking
@@ -451,6 +455,9 @@ export function Transcript({
   onAllowAnyway,
   onUndoMemory,
   onRememberItem,
+  onFinalizeIntent,
+  onReviseIntent,
+  onCancelIntent,
   expert,
 }: Props) {
   // §33 grouping: a turn = the maximal run of assistant/tool/resolved-approval items between
@@ -711,6 +718,70 @@ export function Transcript({
                 />
               </div>
             );
+          case "intent_discuss": {
+            // R13 意图讨论态：opening=只显示文字；draft=带「定稿/再改/不要」三按钮。
+            // resolved 非空 = 已结束（定稿/取消/改中），按钮消失只留正文 + 状态徽标。
+            const resolved = item.resolved;
+            const showButtons = item.phase === "draft" && !resolved && (onFinalizeIntent || onReviseIntent || onCancelIntent);
+            return (
+              <div
+                className="group bubble-assistant"
+                key={bi}
+                data-testid="intent-discuss-card"
+                style={{ background: "#f4f8ff", border: "1px solid #c8d9f5" }}
+              >
+                <div className="who">
+                  <XiaojuAvatar size={44} className="who-avatar" />
+                  <span>
+                    💬 小桔的产出
+                    {item.round > 0 ? ` · 第 ${item.round} 版` : ""}
+                    {resolved === "finalized" ? " · 已定稿" : ""}
+                    {resolved === "cancelled" ? " · 已取消" : ""}
+                    {resolved === "revising" ? " · 改中" : ""}
+                  </span>
+                </div>
+                <Markdown text={item.text} />
+                {showButtons && (
+                  <div
+                    style={{
+                      marginTop: 8,
+                      display: "flex",
+                      gap: 8,
+                      flexWrap: "wrap",
+                    }}
+                  >
+                    {onFinalizeIntent && (
+                      <button
+                        className="btn"
+                        data-testid="intent-discuss-finalize"
+                        onClick={() => onFinalizeIntent(item.intent_id)}
+                      >
+                        定稿
+                      </button>
+                    )}
+                    {onReviseIntent && (
+                      <button
+                        className="btn"
+                        data-testid="intent-discuss-revise"
+                        onClick={() => onReviseIntent(item.intent_id, item.round)}
+                      >
+                        再改
+                      </button>
+                    )}
+                    {onCancelIntent && (
+                      <button
+                        className="btn"
+                        data-testid="intent-discuss-cancel"
+                        onClick={() => onCancelIntent(item.intent_id)}
+                      >
+                        不要
+                      </button>
+                    )}
+                  </div>
+                )}
+              </div>
+            );
+          }
           default:
             return null;
         }
