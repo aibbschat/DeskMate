@@ -19,7 +19,7 @@ interface Props {
 }
 
 /** 聊天气泡内联表情尺寸（em 单位，相对于正文字号）。 */
-const INLINE_SIZE = "2.2em";
+const INLINE_SIZE = "2.8em";
 
 export function Emote({ name, size, title }: Props) {
   const src = EMOTE_IMAGES[name.toLowerCase()];

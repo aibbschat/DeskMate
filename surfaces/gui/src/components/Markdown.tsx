@@ -156,7 +156,7 @@ export function Markdown({ text }: { text: string }) {
               return (
                 <Emote
                   name={name}
-                  size={36}
+                  size={48}
                   title={typeof alt === "string" ? alt : undefined}
                 />
               );

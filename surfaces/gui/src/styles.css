@@ -3374,13 +3374,13 @@ html[data-platform="linux"] ::-webkit-scrollbar-thumb:hover { background-color: 
   border: 1px solid var(--line);
   cursor: not-allowed;
 }
-/* 小桔表情 v2：3D 黏土贴纸，聊天气泡里 inline 渲染 2.2em，hover 放大 */
+/* 小桔表情 v2：3D 黏土贴纸，聊天气泡里 inline 渲染 2.8em，hover 放大 */
 .deskmate-emote {
   display: inline-block;
-  width: 2.2em;
-  height: 2.2em;
+  width: 2.8em;
+  height: 2.8em;
   vertical-align: middle;
-  margin: -0.3em 2px;
+  margin: -0.4em 3px;
   line-height: 0;
   cursor: default;
 }
