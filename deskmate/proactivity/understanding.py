@@ -147,8 +147,35 @@ def _gather_bible(base_dir) -> str:
         return ""
 
 
+def _gather_user_facts(base_dir, item: dict) -> str:
+    """她记着的「关于用户的事实」+ 近期日记软规律（fail-open）。
+
+    修复（2026-10-08 萧哥报）：小桔库里其实知道姑射图是国子监第三章、节假日不写稿，
+    但主动卡片的「理解」LLM 拿不到——learned_history 用户事实与日记此前都没接进
+    ``_gather_grounding``。这里接上，让理解真正基于她已掌握的关于用户的事实。
+
+    写作类卡片（如「六天没动笔」）特意补足写作习惯/假期关键词，让理解能接住
+    「节假日不写稿」这类软规律，而不是把停笔误判成「卡住了」。
+    """
+    try:
+        from deskmate.memory.user_fact_context import build_user_fact_context
+
+        query = " ".join(
+            str(item.get(k) or "") for k in ("content", "evidence")
+        ).strip()
+        # 写作类卡片主动补写作习惯/假期词，避免停笔被误判成卡住
+        if (item.get("source") == "writing") or any(
+            k in query for k in ("动笔", "写稿", "没写", "停笔", "写作", "没动")
+        ):
+            query = (query + " 写 稿 不写 假期 放假 休息 国庆 平时 习惯").strip()
+        return build_user_fact_context(base_dir, query=query) or ""
+    except Exception as e:  # noqa: BLE001
+        logger.debug("用户事实召回失败（跳过）: %s", e)
+        return ""
+
+
 def _gather_grounding(base_dir, item: dict) -> str:
-    """汇总三路上下文（worldview / 记忆 / 圣经）为一段文本，供理解 prompt 参考。"""
+    """汇总上下文（世界观 / 记忆 / 圣经 / 关于用户的事实+日记）为一段文本，供理解 prompt 参考。"""
     blocks = []
     wv = _gather_worldview(base_dir)
     if wv.strip():
@@ -159,6 +186,9 @@ def _gather_grounding(base_dir, item: dict) -> str:
     bible = _gather_bible(base_dir)
     if bible.strip():
         blocks.append(bible.strip())
+    uf = _gather_user_facts(base_dir, item)
+    if uf.strip():
+        blocks.append(uf.strip())
     return "\n\n".join(blocks)
 
 

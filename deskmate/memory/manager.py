@@ -634,6 +634,18 @@ class DeskMateMemoryManager:
                 parts.append(world_ctx)
         except Exception:
             pass
+        # 「你跟我说过的 / 你近期的日常」（2026-10-08 修复：用户事实+日记此前两条
+        # 回灌路径都没接，导致小桔「库里知道、回答时拿不到」——如姑射图是国子监
+        # 第三章、节假日不写稿）。与上面各块一致：fail-open；总开关
+        # DESKMATE_AUTO_INJECT=0 已整体关闭本函数，本块随之关闭。
+        try:
+            from deskmate.memory.user_fact_context import build_user_fact_context
+
+            user_fact_ctx = build_user_fact_context(self.base_dir, user_message)
+            if user_fact_ctx:
+                parts.append(user_fact_ctx)
+        except Exception:
+            pass  # fail-open：用户事实缺失不影响主记忆注入
         # 「她递出的卡片要接得上」（2026-10-07 §11.16 灵动三层·层一）：
         # 今天已递给用户的待办（proactive_ledger delivered_at=今日、未终态）注入每轮，
         # 让她在用户回话时「有货」展开，而不是用户把她的话复制回来她才现接。
