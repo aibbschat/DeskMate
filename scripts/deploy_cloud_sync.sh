@@ -112,6 +112,22 @@ CHANNEL_MODULES=(
 # 否则预检会拒（与清单内其它文件同一红线）。
 AGENCY_BEHAVIORS_MODULES=(
   "deskmate/agency/behaviors/ai_circle_column.py"
+  # R9 反思层 R1（2026-10-08）：新增反思行为
+  "deskmate/agency/behaviors/reflection.py"
+  # R9/R10：世界观反思行为（也调 record_reflection）
+  "deskmate/agency/behaviors/worldview_reflection.py"
+  # R11 意图层（2026-10-08）：起心动念行为
+  "deskmate/agency/behaviors/intent_generation.py"
+)
+
+# 自主层核心（engine / registry / settings）：R9 反思 + R10 教学回流 + R11 意图层
+# 全改在这三文件。云端 openworker-server 与 xiaoju_agency_tick 经
+# /opt/openworker/deskmate/agency/ 加载；漏传 → 云端跑旧码（反思/教学/意图层
+# 在云端不生效，与 P2/P1 漏传教训同类事故）。目标 /opt/openworker/deskmate/agency/。
+AGENCY_MODULES=(
+  "deskmate/agency/engine.py"
+  "deskmate/agency/registry.py"
+  "deskmate/agency/settings.py"
 )
 
 FORCE=0
@@ -128,7 +144,7 @@ if ! ssh -o ConnectTimeout=15 -o BatchMode=yes "$SSH_HOST" "test -d '$CLOUD_SYNC
 fi
 
 # ---- 1. 必须已提交（红线：本地改动先 commit 进 fork/base）----
-ALL_FILES=("${LOCAL_MODULES[@]}" "$LOCAL_RUNNER" "${PROACTIVITY_MODULES[@]}" "${CHANNEL_MODULES[@]}" "${AGENCY_BEHAVIORS_MODULES[@]}" "$LOCAL_AGENCY_TICK" "$LOCAL_DRIFT_CHECK")
+ALL_FILES=("${LOCAL_MODULES[@]}" "$LOCAL_RUNNER" "${PROACTIVITY_MODULES[@]}" "${CHANNEL_MODULES[@]}" "${AGENCY_BEHAVIORS_MODULES[@]}" "${AGENCY_MODULES[@]}" "$LOCAL_AGENCY_TICK" "$LOCAL_DRIFT_CHECK")
 if [[ "$FORCE" -eq 0 ]]; then
   DIRTY=""
   for f in "${ALL_FILES[@]}"; do
@@ -156,6 +172,11 @@ fi
 # ---- 2. 语法预检（本地）----
 echo "==> 本地语法预检"
 for f in "${ALL_FILES[@]}"; do
+  python3 -c "import ast,sys; ast.parse(open('$f', encoding='utf-8').read())" \
+    || { echo "✗ 语法错误: $f" >&2; exit 1; }
+done
+# AGENCY_MODULES 也过一遍语法（上面 ALL_FILES 已含，这里冗余保险）
+for f in "${AGENCY_MODULES[@]}"; do
   python3 -c "import ast,sys; ast.parse(open('$f', encoding='utf-8').read())" \
     || { echo "✗ 语法错误: $f" >&2; exit 1; }
 done
@@ -210,7 +231,7 @@ done
 
 # ---- 3c. 推送通道组/ 熔断模块（本地与云端必须同码，见 CHANNEL_MODULES 注释）----
 echo "==> 推送通道组/熔断模块 + 自主行为包到云端主程序包"
-for f in "${CHANNEL_MODULES[@]}" "${AGENCY_BEHAVIORS_MODULES[@]}"; do
+for f in "${CHANNEL_MODULES[@]}" "${AGENCY_BEHAVIORS_MODULES[@]}" "${AGENCY_MODULES[@]}"; do
   base="$(basename "$f")"
   # 目标目录按本地相对路径推（deskmate/xxx.py → $CLOUD_DESKMATE_ROOT/xxx.py；
   # coworker/xxx.py → $CLOUD_COWORKER_ROOT/xxx.py），必要时建目录
@@ -294,7 +315,7 @@ done
 
 # ---- 7. 通道组/熔断模块对齐核对 ----
 echo "==> 通道组/熔断模块 + 自主行为包对齐核对"
-for f in "${CHANNEL_MODULES[@]}" "${AGENCY_BEHAVIORS_MODULES[@]}"; do
+for f in "${CHANNEL_MODULES[@]}" "${AGENCY_BEHAVIORS_MODULES[@]}" "${AGENCY_MODULES[@]}"; do
   base="$(basename "$f")"
   case "$f" in
     deskmate/*)   dest_dir="$CLOUD_DESKMATE_ROOT/$(dirname "${f#deskmate/}")" ;;
@@ -312,7 +333,7 @@ for f in "${CHANNEL_MODULES[@]}" "${AGENCY_BEHAVIORS_MODULES[@]}"; do
 done
 
 echo ""
-echo "✅ 本地→云端代码已对齐（3 个 sync 文件 + runner + gc 工具 + 6 个 proactivity + 5 个通道/熔断模块 + 云端 L2 agency tick + 云端 drift 脚本）。"
+echo "✅ 本地→云端代码已对齐（3 个 sync 文件 + runner + gc 工具 + 6 个 proactivity + 5 个通道/熔断模块 + 3 个 agency 核心 + 4 个 agency 行为 + 云端 L2 agency tick + 云端 drift 脚本）。"
 echo "   同步平铺包仅每小时 :02 窗口加载；主程序包需**重启 openworker-server** 才生效："
 echo "     sudo systemctl restart openworker-server"
 echo "   ⚠️ 通道/熔断模块若与云端不一致，会出现「本地熔断了、云端还在撞」"
