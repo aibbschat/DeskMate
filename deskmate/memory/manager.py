@@ -691,6 +691,19 @@ class DeskMateMemoryManager:
                     parts.append(refl_ctx)
         except Exception:
             pass  # fail-open：反思缺失不影响主记忆注入
+        # 「小桔自己做过的事」（R12 意图执行层）：意图被萧哥放行后她**真做出来的产物**
+        # 每轮注入，让「你同意 → 她做了 → 她记得自己做过」闭环回流，而非写完即弃。
+        # fail-open 与上面各块一致；总开关 DESKMATE_AUTO_INJECT=0 已整体关闭本函数，
+        # 本块随之关闭；单独开关 DESKMATE_INTENT_INJECT=0 可只关这一块。
+        try:
+            if os.environ.get("DESKMATE_INTENT_INJECT", "1") != "0":
+                from deskmate.cognitive.memory_injector import build_intent_context
+
+                intent_ctx = build_intent_context(self.base_dir)
+                if intent_ctx:
+                    parts.append(intent_ctx)
+        except Exception:
+            pass  # fail-open：意图产物缺失不影响主记忆注入
         if not parts:
             return ""
 

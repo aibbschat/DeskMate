@@ -118,11 +118,13 @@ AGENCY_BEHAVIORS_MODULES=(
   "deskmate/agency/behaviors/worldview_reflection.py"
   # R11 意图层（2026-10-08）：起心动念行为
   "deskmate/agency/behaviors/intent_generation.py"
+  # R12 出海口后半程（2026-10-08）：意图执行器（放行后真做出来；护栏钉死）
+  "deskmate/agency/behaviors/intent_executor.py"
 )
 
-# 自主层核心（engine / registry / settings）：R9 反思 + R10 教学回流 + R11 意图层
+# 自主层核心（engine / registry / settings）：R9 反思 + R10 教学回流 + R11 意图层 + R12 意图执行
 # 全改在这三文件。云端 openworker-server 与 xiaoju_agency_tick 经
-# /opt/openworker/deskmate/agency/ 加载；漏传 → 云端跑旧码（反思/教学/意图层
+# /opt/openworker/deskmate/agency/ 加载；漏传 → 云端跑旧码（反思/教学/意图层/执行
 # 在云端不生效，与 P2/P1 漏传教训同类事故）。目标 /opt/openworker/deskmate/agency/。
 AGENCY_MODULES=(
   "deskmate/agency/engine.py"
@@ -333,7 +335,7 @@ for f in "${CHANNEL_MODULES[@]}" "${AGENCY_BEHAVIORS_MODULES[@]}" "${AGENCY_MODU
 done
 
 echo ""
-echo "✅ 本地→云端代码已对齐（3 个 sync 文件 + runner + gc 工具 + 6 个 proactivity + 5 个通道/熔断模块 + 3 个 agency 核心 + 4 个 agency 行为 + 云端 L2 agency tick + 云端 drift 脚本）。"
+echo "✅ 本地→云端代码已对齐（3 个 sync 文件 + runner + gc 工具 + 6 个 proactivity + 5 个通道/熔断模块 + 3 个 agency 核心 + 5 个 agency 行为 + 云端 L2 agency tick + 云端 drift 脚本）。"
 echo "   同步平铺包仅每小时 :02 窗口加载；主程序包需**重启 openworker-server** 才生效："
 echo "     sudo systemctl restart openworker-server"
 echo "   ⚠️ 通道/熔断模块若与云端不一致，会出现「本地熔断了、云端还在撞」"

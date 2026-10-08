@@ -51,6 +51,31 @@ const SUBJECT_CONFLICT_TASK = {
   count: 0,
 };
 
+/** R11/R12 意图层两张提案卡（2026-10-08 补登记 action_type）。 */
+const INTENT_PROPOSED_TASK = {
+  id: "t_prop_intent",
+  ts: "2026-10-08T10:00:00",
+  action_type: "intent",
+  risk: "high",
+  status: "proposed",
+  topic: "",
+  summary: "她想做：我想把算法圈的争论整理一下",
+  detail: "因为老看到却不明白",
+  count: 0,
+};
+
+const INTENT_OUTBOUND_TASK = {
+  id: "t_prop_outbound",
+  ts: "2026-10-08T10:05:00",
+  action_type: "intent_outbound",
+  risk: "high",
+  status: "proposed",
+  topic: "对外表达",
+  summary: "她想对外说：关于反思闭环的动态",
+  detail: "草稿正文……",
+  count: 0,
+};
+
 /** 按 URL 路由的 fetch stub；resolveCalls 记录决议请求体，供断言。 */
 function stubAgencyApi(opts: {
   tasks?: unknown[];
@@ -207,5 +232,17 @@ describe("AgencyPanel", () => {
     await waitFor(() => expect(screen.getByTestId("agency-proposal")).toBeTruthy());
     expect(screen.getByText(/记忆主体冲突 · 需你确认/)).toBeTruthy();
     expect(screen.queryByText(/memory_subject_conflict/)).toBeNull();
+  });
+
+  it("意图层两张新卡显示中文动作名，内部键不得漏给用户", async () => {
+    // R12 补登记（2026-10-08）：intent / intent_outbound 漏登记 RISK_LABEL 会漏出
+    // 内部英文键（「intent · 需你确认」）。此用例锁住这两张卡。
+    stubAgencyApi({ tasks: [], pending: [INTENT_PROPOSED_TASK, INTENT_OUTBOUND_TASK] });
+    render(<AgencyPanel />);
+    await waitFor(() => expect(screen.getAllByTestId("agency-proposal").length).toBe(2));
+    expect(screen.getByText(/她想做的事 · 需你确认/)).toBeTruthy();
+    expect(screen.getByText(/她想对外说 · 需你确认/)).toBeTruthy();
+    expect(screen.queryByText(/intent · 需你确认/)).toBeNull();
+    expect(screen.queryByText(/intent_outbound/)).toBeNull();
   });
 });

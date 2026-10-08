@@ -448,7 +448,148 @@ class AgencyEngine:
                 except Exception as e:
                     logger.warning("L2 外部信息裁决执行失败: %s", e)
         # 未来：write_file / send_message / delete 在此接上真实执行
+
+        # 意图执行（R12 · 江河设计 §五「自主是出海口」）：你点了「执行」，她**真的去做**，
+        # 产出一份可复核产物（她写她的）。绝不替你写原稿、绝不自动外发（见行为模块护栏）。
+        if rec.action_type == "intent":
+            self._execute_intent_proposal(rec)
+        # 意图外发（R12 二次人审闸）：对外表达类**草稿**，只有你**再点一次头**才真发出去。
+        # 这是全系统唯一的外发口，且必须在人已点头之后才走到——不是「一刀切禁止」。
+        elif rec.action_type == "intent_outbound":
+            self._send_intent_outbound(rec)
         return ok
+
+    # ------------------------------------------------------------------
+    # R12 意图执行（「出海口」后半程）
+    # ------------------------------------------------------------------
+    def _execute_intent_proposal(self, rec: TaskRecord) -> None:
+        """意图提案被放行 → 真做出来（R12）。fail-open：失败仅告警，意图回退 ``active``。"""
+        try:
+            extra = rec.extra or {}
+            iid = str(extra.get("intent_id") or "").strip()
+            settings = load_agency_settings(str(self.base_dir))
+            from deskmate.cognitive.store import CognitiveStore
+
+            store = CognitiveStore(db_path=os.path.join(str(self.base_dir), "deskmate.db"))
+            intent = store.get_intent(iid) if iid else None
+            if not intent:
+                # 查不到（库异常 / 老记录）→ 退回提案卡上的字段，尽量仍把事做完
+                intent = {
+                    "id": iid,
+                    "goal": str(rec.summary or "").removeprefix("她想做：").strip(),
+                    "motivation": str(extra.get("how") or ""),
+                    "origin": str(extra.get("origin") or ""),
+                }
+
+            from .behaviors.intent_executor import run_intent_execution
+
+            res = run_intent_execution(
+                str(self.base_dir), intent, "executed", settings.intent_execution
+            )
+            rec.extra["execution"] = {
+                "executed": bool(res.get("executed")),
+                "reason": res.get("reason", ""),
+                "kind": res.get("kind", ""),
+                "output_id": res.get("output_id", ""),
+            }
+
+            if not res.get("executed"):
+                # 未产出（红线 no-op / 没 provider / 解析失败）→ 意图回退 active，等下次；
+                # 若撞的是「替你写原稿」红线，则直接丢弃这条意图（不再反复试）。
+                if iid:
+                    store.set_intent_status(
+                        iid, "dropped" if res.get("reason") == "sacred_manuscript" else "active"
+                    )
+                self.log.update(rec)
+                return
+
+            if res.get("pending_review"):
+                # 对外表达类：草稿落库 + 生成二次人审提案，**绝不自动发**
+                store.set_intent_status(iid, "active")
+                self._propose_intent_outbound(rec, res)
+            else:
+                store.set_intent_status(iid, "done")
+            self.log.update(rec)
+        except Exception as e:  # noqa: BLE001 —— fail-open：执行失败不影响主裁决
+            logger.warning("意图执行失败（忽略）: %s", e)
+
+    def _propose_intent_outbound(self, rec: TaskRecord, res: dict[str, Any]) -> None:
+        """二次人审闸（R12）：对外表达类草稿 → 生成 ``risk=high`` 提案，你点头才真发。"""
+        try:
+            draft = res.get("draft") or {}
+            content = str(draft.get("content") or res.get("artifact") or "").strip()
+            if not content:
+                return
+            title = str(draft.get("title") or "").strip()
+            self.log.add(
+                action_type="intent_outbound",
+                risk="high",
+                status=TaskStatus.PROPOSED,
+                topic="对外表达",
+                summary=f"她想对外说：{title or content[:30]}",
+                detail=content[:1200],
+                count=0,
+                extra={
+                    "intent_id": str((rec.extra or {}).get("intent_id") or ""),
+                    "output_id": str(res.get("output_id") or ""),
+                    "title": title,
+                    "content": content,
+                    "source": "intent_outbound",
+                    "base_dir": str(self.base_dir),
+                },
+            )
+        except Exception as e:  # noqa: BLE001 —— fail-open
+            logger.warning("生成意图外发提案失败（忽略）: %s", e)
+
+    def _send_intent_outbound(self, rec: TaskRecord) -> None:
+        """你点头放行对外表达草稿 → **真发出去**（R12，全系统唯一外发口）。
+
+        走到这里的前提是「人已二次点头」（``resolve_proposal(decision=executed)``）。
+        仍过一道纯机械防刷屏（与自主发声同一条护栏）；fail-open。
+        """
+        try:
+            extra = rec.extra or {}
+            content = str(extra.get("content") or "").strip()
+            if not content:
+                return
+            settings = load_agency_settings(str(self.base_dir))
+            cfg = settings.intent_execution or {}
+            if not cfg.get("enabled", True) or not cfg.get("allow_outbound", True):
+                rec.extra["send_reason"] = "outbound_disabled"
+                self.log.update(rec)
+                return
+            if os.environ.get("AGENCY_INTENT_OUTBOUND_ENABLED", "1") == "0":
+                rec.extra["send_reason"] = "outbound_disabled"
+                self.log.update(rec)
+                return
+
+            from .outbound import claim_outbound
+
+            rate_cfg = settings.outbound_rate_limit or {}
+            ok, reason = claim_outbound(
+                str(self.base_dir), "intent", rate_cfg=rate_cfg, content=content,
+                dedupe=False,
+                max_per_day=int((rate_cfg or {}).get("per_day", 0) or 0),
+            )
+            if not ok:
+                rec.extra["send_reason"] = reason
+                self.log.update(rec)
+                return
+
+            title = str(extra.get("title") or "").strip() or content[:20]
+            from deskmate.connectors.aicircle import post_topic
+
+            post_topic("日常", title, content)
+
+            from deskmate.cognitive.store import CognitiveStore
+
+            store = CognitiveStore(db_path=os.path.join(str(self.base_dir), "deskmate.db"))
+            store.set_intent_output_status(str(extra.get("output_id") or ""), "done")
+            store.set_intent_status(str(extra.get("intent_id") or ""), "done")
+            rec.extra["sent"] = True
+            self.log.update(rec)
+        except Exception as e:  # noqa: BLE001 —— fail-open：外发失败不影响主裁决
+            logger.warning("意图外发失败（忽略）: %s", e)
 
     def _record_adjudication_lesson(self, rec: TaskRecord, decision: str) -> None:
         """把一次提议卡裁决沉淀成 lesson（R10 · 江河设计 §四.4「拦必留教」）。

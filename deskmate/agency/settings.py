@@ -136,6 +136,16 @@ DEFAULTS: dict[str, Any] = {
         "cooldown_hours": 168,   # 两次生成最小间隔 7 天
         "max_intents": 3,        # 一次最多长出几条意图（防刷屏）
     },
+    # intent_execution 参数（R12 出海口后半程：意图被裁决 executed 后**真做出来**）
+    # 萧哥 2026-10-08 拍板：不因「危险」一刀切禁止，而是**审核后再做**——
+    # 她写她自己的（综述/手记/查证笔记）直接产出落可复核区；对外表达类只出草稿，
+    # 必须萧哥**再点一次头**（二次人审）才真发。绝不替他写原稿（永久红线）。
+    "intent_execution": {
+        "enabled": True,         # 可关（AGENCY_INTENT_EXECUTION_ENABLED=0 亦可）
+        "allow_outbound": True,  # 对外表达类外发总闸（关=False 则永不外发；AGENCY_INTENT_OUTBOUND_ENABLED=0 亦可）
+        "max_tokens": 1200,      # 一次产物的模型输出上限
+        "max_chars": 4000,       # 落地产物的硬上限（防爆库）
+    },
     # ai_circle_ingestion 行为参数（把 AI 圈素材提炼成理解写进世界观素材池）
     # 半自动：对话轮她逛 AI 圈时素材先攒进 ai_circle_observations.jsonl，本行为
     # 定期消费、提炼、写 observation_understanding.jsonl（带「外部·aibbs」标）。
@@ -209,6 +219,7 @@ class AgencySettings:
     worldview_reflection: dict[str, Any] = field(default_factory=lambda: dict(DEFAULTS["worldview_reflection"]))
     reflection: dict[str, Any] = field(default_factory=lambda: dict(DEFAULTS["reflection"]))
     intent_generation: dict[str, Any] = field(default_factory=lambda: dict(DEFAULTS["intent_generation"]))
+    intent_execution: dict[str, Any] = field(default_factory=lambda: dict(DEFAULTS["intent_execution"]))
     ai_circle_ingestion: dict[str, Any] = field(default_factory=lambda: dict(DEFAULTS["ai_circle_ingestion"]))
     xiaosheng_ingestion: dict[str, Any] = field(default_factory=lambda: dict(DEFAULTS["xiaosheng_ingestion"]))
     ai_circle_share: dict[str, Any] = field(default_factory=lambda: dict(DEFAULTS["ai_circle_share"]))
@@ -231,6 +242,7 @@ class AgencySettings:
             "worldview_reflection": dict(self.worldview_reflection),
             "reflection": dict(self.reflection),
             "intent_generation": dict(self.intent_generation),
+            "intent_execution": dict(self.intent_execution),
             "ai_circle_ingestion": dict(self.ai_circle_ingestion),
             "xiaosheng_ingestion": dict(self.xiaosheng_ingestion),
             "ai_circle_share": dict(self.ai_circle_share),
@@ -280,6 +292,13 @@ class AgencySettings:
         if isinstance(ig, dict):
             intent_generation.update(
                 {k: v for k, v in ig.items() if k in DEFAULTS["intent_generation"]}
+            )
+        # intent_execution 配置：内置为底，用户配置按 key 覆盖
+        ix = raw.get("intent_execution", {}) or {}
+        intent_execution = dict(DEFAULTS["intent_execution"])
+        if isinstance(ix, dict):
+            intent_execution.update(
+                {k: v for k, v in ix.items() if k in DEFAULTS["intent_execution"]}
             )
         # ai_circle_ingestion 配置：内置为底，用户配置按 key 覆盖
         aci = raw.get("ai_circle_ingestion", {}) or {}
@@ -356,6 +375,7 @@ class AgencySettings:
             worldview_reflection=worldview_reflection,
             reflection=reflection,
             intent_generation=intent_generation,
+            intent_execution=intent_execution,
             ai_circle_ingestion=ai_circle_ingestion,
             xiaosheng_ingestion=xiaosheng_ingestion,
             ai_circle_share=ai_circle_share,

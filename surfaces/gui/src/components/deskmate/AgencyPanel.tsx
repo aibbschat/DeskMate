@@ -35,6 +35,12 @@ const RISK_LABEL: Record<string, string> = {
   write_file: "写文件",
   send_message: "发消息",
   delete: "删除",
+  // R9/R11/R12 新增 action_type（2026-10-08 补登记）：新增动作若漏登记，labelOf 会
+  // 回退成内部英文键直接展示给用户，故后端每新增一个动作，必须同步此表。
+  reflection: "自我反思",
+  intent_generation: "起心动念",
+  intent: "她想做的事",
+  intent_outbound: "她想对外说",
 };
 
 const labelOf = (t: string) => RISK_LABEL[t] || t;

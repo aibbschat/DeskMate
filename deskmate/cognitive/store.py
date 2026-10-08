@@ -357,6 +357,23 @@ class CognitiveStore:
                 CREATE INDEX IF NOT EXISTS idx_intents_status ON intents(status);
                 CREATE INDEX IF NOT EXISTS idx_intents_ts     ON intents(ts);
 
+                -- R12（2026-10-08）：意图产物表——「你点了执行，她真做出来的东西」。
+                -- 承接 R11 的「只提不干」：意图提案被裁决 executed 后，执行器产出一份
+                -- **可复核产物**（她写她的：综述/手记/查证笔记；对外表达类只出草稿）。
+                -- 产物可被后续轮次注入召回（回流闭环），非写完即弃。
+                -- status: 'done'（已产出，可直接复核）| 'pending_review'（外发类草稿，等二次人审）
+                CREATE TABLE IF NOT EXISTS intent_outputs (
+                    id        TEXT PRIMARY KEY,
+                    ts        TEXT DEFAULT '',
+                    intent_id TEXT DEFAULT '',              -- 关联 intents.id
+                    goal      TEXT DEFAULT '',              -- 当初想做什么
+                    artifact  TEXT DEFAULT '',              -- 产出的可复核内容（她写她的）
+                    kind      TEXT DEFAULT 'synthesis',     -- synthesis | diary | research | draft_external
+                    status    TEXT DEFAULT 'done'           -- done | pending_review
+                );
+                CREATE INDEX IF NOT EXISTS idx_intent_outputs_status ON intent_outputs(status);
+                CREATE INDEX IF NOT EXISTS idx_intent_outputs_ts     ON intent_outputs(ts);
+
                 CREATE TABLE IF NOT EXISTS item_sources (
                     item_id  TEXT NOT NULL,
                     idx      INTEGER NOT NULL,
@@ -1325,6 +1342,88 @@ class CognitiveStore:
             return True
         except Exception as e:  # noqa: BLE001 —— fail-open
             logger.warning("set_intent_status 失败（忽略）: %s", e)
+            return False
+
+    def get_intent(self, intent_id: str) -> Optional[dict]:
+        """按 id 取一条意图（不限 status，供执行器取原始 goal/motivation）。fail-open → ``None``。"""
+        iid = (intent_id or "").strip()
+        if not iid:
+            return None
+        try:
+            with self._connect() as conn:
+                row = conn.execute(
+                    "SELECT id, ts, goal, motivation, horizon, status, origin, "
+                    "proposed_task_id FROM intents WHERE id=?",
+                    (iid,),
+                ).fetchone()
+        except Exception as e:  # noqa: BLE001 —— fail-open
+            logger.warning("get_intent 失败（忽略）: %s", e)
+            return None
+        if not row:
+            return None
+        keys = ("id", "ts", "goal", "motivation", "horizon", "status",
+                "origin", "proposed_task_id")
+        return dict(zip(keys, row))
+
+    # ------------------------------------------------------------------
+    # R12 意图产物（「你同意了，她真做出来」的可复核产物；读/写全 fail-open）
+    # ------------------------------------------------------------------
+    def add_intent_output(self, intent_id: str, goal: str, artifact: str,
+                          kind: str = "synthesis", status: str = "done") -> str:
+        """新增一条意图产物，返回 id（fail-open：异常或空 artifact → ``""``）。"""
+        art = (artifact or "").strip()
+        if not art:
+            return ""
+        out_id = uuid.uuid4().hex
+        try:
+            with self._connect() as conn:
+                conn.execute(
+                    "INSERT INTO intent_outputs "
+                    "(id, ts, intent_id, goal, artifact, kind, status) VALUES(?,?,?,?,?,?,?)",
+                    (
+                        out_id, _now_iso(), str(intent_id or "").strip(),
+                        str(goal or "").strip(), art, str(kind or "synthesis"),
+                        str(status or "done"),
+                    ),
+                )
+            return out_id
+        except Exception as e:  # noqa: BLE001 —— fail-open
+            logger.warning("add_intent_output 失败（忽略）: %s", e)
+            return ""
+
+    def get_recent_intent_outputs(self, limit: int = 3) -> list[dict]:
+        """取最近几条意图产物（供回流注入）。fail-open → ``[]``。"""
+        try:
+            lim = max(1, int(limit or 1))
+        except Exception:
+            lim = 3
+        try:
+            with self._connect() as conn:
+                rows = conn.execute(
+                    "SELECT id, ts, intent_id, goal, artifact, kind, status "
+                    "FROM intent_outputs ORDER BY ts DESC LIMIT ?",
+                    (lim,),
+                ).fetchall()
+        except Exception as e:  # noqa: BLE001 —— fail-open
+            logger.warning("get_recent_intent_outputs 失败（忽略）: %s", e)
+            return []
+        keys = ("id", "ts", "intent_id", "goal", "artifact", "kind", "status")
+        return [dict(zip(keys, r)) for r in rows]
+
+    def set_intent_output_status(self, output_id: str, status: str) -> bool:
+        """置产物状态（``done`` / ``pending_review``）。fail-open。"""
+        oid = (output_id or "").strip()
+        st = (status or "").strip()
+        if not oid or not st:
+            return False
+        try:
+            with self._connect() as conn:
+                conn.execute(
+                    "UPDATE intent_outputs SET status=? WHERE id=?", (st, oid)
+                )
+            return True
+        except Exception as e:  # noqa: BLE001 —— fail-open
+            logger.warning("set_intent_output_status 失败（忽略）: %s", e)
             return False
 
     def recall_items(

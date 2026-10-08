@@ -429,6 +429,45 @@ def build_reflection_context(base_dir: str | Path | None = None) -> str:
         return ""  # fail-open：反思缺失不影响主记忆注入
 
 
+def build_intent_context(base_dir: str | Path | None = None, limit: int = 3) -> str:
+    """生成「小桔自己做过的事」注入段（R12 意图执行层）；无数据返回空串。
+
+    从 ``intent_outputs`` 取最近 N 条产物（她放行后**真做出来**的东西），每轮注入，
+    让「你同意 → 她做了 → 她记得自己做过」闭环回流，而不是写完即弃。
+
+    ``status='pending_review'`` 的（对外表达类草稿，还在等你二次点头）会被标注出来——
+    她自己也知道「这条还没发出去」。
+
+    fail-open：库缺失 / 查询异常 → ""，绝不阻断主记忆注入。
+    ``base_dir`` 传法同 ``build_lessons_context``（测试 / 多 workspace 隔离必备）。
+    """
+    try:
+        from .store import CognitiveStore
+
+        db = (Path(base_dir) / "deskmate.db") if base_dir else _db_path()
+        rows = CognitiveStore(db_path=db).get_recent_intent_outputs(limit=limit)
+        if not rows:
+            return ""
+        lines = [
+            "## 小桔自己做过的事",
+            "下面这些是你自己想做、萧盛点头之后**你亲手做出来的**（不是他让你做的任务）。"
+            "回话时可以自然带着这些，但别当成汇报念出来。",
+        ]
+        for r in rows:
+            goal = str(r.get("goal") or "").strip()
+            art = str(r.get("artifact") or "").strip().replace("\n", " ")
+            if not goal:
+                continue
+            pending = str(r.get("status") or "") == "pending_review"
+            tail = "（这条是对外说的草稿，还没发——等他点头）" if pending else ""
+            lines.append(f"- 我想做「{goal}」，我做出来了：{art[:200]}{tail}")
+        if len(lines) <= 2:
+            return ""
+        return "\n".join(lines)
+    except Exception:
+        return ""  # fail-open：意图产物缺失不影响主记忆注入
+
+
 def has_cognitive_data() -> bool:
     """是否已有认知数据（底座 / 他的画像 / 她的世界观，任一存在即 True）。"""
     if load_persona_base():
