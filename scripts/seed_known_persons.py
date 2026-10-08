@@ -29,6 +29,8 @@ P1 的 person 锚原先靠 env ``DESKMATE_PERSON_NAMES`` 手工逗号列表 + �
 from __future__ import annotations
 
 import argparse
+import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -131,12 +133,43 @@ def _migrate_known_persons(store) -> None:
         print(f"[警告] known_persons 迁移失败（本地仍灌，跨端稍后补）: {e}")
 
 
+CHECKPOINT_PATH = os.path.expanduser("~/.deskmate/seed_known_persons.checkpoint.json")
+
+
+def _load_checkpoint() -> dict:
+    """读断点续跑 checkpoint（fail-open：缺失/损坏返回空 dict）。"""
+    try:
+        with open(CHECKPOINT_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except FileNotFoundError:
+        return {}
+    except Exception:  # noqa: BLE001 —— 损坏也当无 checkpoint，重扫
+        return {}
+
+
+def _save_checkpoint(data: dict) -> None:
+    """原子写 checkpoint（临时文件 + os.replace），避免写到一半崩。"""
+    import tempfile
+
+    try:
+        d = os.path.dirname(CHECKPOINT_PATH) or "."
+        fd, tmp = tempfile.mkstemp(dir=d, suffix=".tmp")
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        os.replace(tmp, CHECKPOINT_PATH)
+    except Exception:  # noqa: BLE001 —— checkpoint 写失败不影响主流程
+        pass
+
+
 def main(argv: list[str]) -> int:
     ap = argparse.ArgumentParser(description="LLM 扫已出版书 → 灌 known_persons 人名种子")
     ap.add_argument("--dry-run", action="store_true", help="只抽不写库，打印人名")
     ap.add_argument("--book", default="", help="只跑书名/路径含该子串的书")
     ap.add_argument("--limit-chunks", type=int, default=0,
                     help="每本最多抽前 N 块（0=不限，试跑省钱）")
+    ap.add_argument("--force", action="store_true",
+                    help="忽略断点续跑 checkpoint，从头全扫")
     args = ap.parse_args(argv)
 
     from deskmate.memory.llm import chat, llm_available
@@ -147,28 +180,54 @@ def main(argv: list[str]) -> int:
 
     books = [(rel, title) for rel, title in SEED_BOOKS
              if not args.book or args.book in rel or args.book in title]
+    total = len(books)
     print(f"书单根目录：{PUBLISHED}")
-    print(f"待扫 {len(books)} 本"
-          f"{'（dry-run，不写库）' if args.dry_run else ''}\n")
+    print(f"待扫 {total} 本"
+          f"{'（dry-run，不写库）' if args.dry_run else ''}"
+          f"{'（--force 忽略断点）' if args.force else '（支持断点续跑）'}\n",
+          flush=True)
 
-    all_names: set[str] = set()
-    for rel, title in books:
+    # 断点续跑：已完成且非 --force 的书直接跳过（checkpoint 在每本成功后写入）
+    checkpoint = _load_checkpoint()
+    done = checkpoint.get("completed", {}) if not args.force else {}
+    if not args.force and done:
+        print(f"[断点] 检测到 {len(done)} 本已完成，将自动跳过；"
+              f"用 --force 可重扫。\n", flush=True)
+
+    # 非 dry-run：提前建 store + 迁移 known_persons（装触发器，落 oplog 可跨端同步）
+    store = None
+    if not args.dry_run:
+        from deskmate.cognitive.store import CognitiveStore
+
+        store = CognitiveStore()
+        _migrate_known_persons(store)
+
+    all_names: set[str] = set()          # 仅 dry-run 汇总用
+    total_added = 0                       # 真跑：本批次实际新增条数
+    processed = 0
+    for i, (rel, title) in enumerate(books, 1):
+        # 断点续跑：真跑时跳过已完成的书（dry-run 总是全扫预览）
+        if store is not None and rel in done:
+            print(f"=== [{i}/{total}] 跳过（已完成）{title} ===", flush=True)
+            continue
+
         path = PUBLISHED / rel
         if not path.is_file():
-            print(f"  [缺失] {path}")
+            print(f"=== [{i}/{total}] [缺失] {path} ===", flush=True)
             continue
         if ".deskmate" in str(path):
-            print(f"  [跳过] 命中 .deskmate 守卫：{path}")
+            print(f"=== [{i}/{total}] [跳过] 命中 .deskmate 守卫：{path} ===", flush=True)
             continue
         try:
             text = _read_text(path)
         except Exception as e:  # noqa: BLE001 —— 单本读失败跳过
-            print(f"  [读取失败] {title}: {e}")
+            print(f"=== [{i}/{total}] [读取失败] {title}: {e} ===", flush=True)
             continue
         if not text.strip():
-            print(f"  [跳过] 无正文：{title}")
+            print(f"=== [{i}/{total}] [跳过] 无正文：{title} ===", flush=True)
             continue
 
+        print(f"\n=== [{i}/{total}] 开始扫描：{title} ===", flush=True)
         chunks = split_chunks(text)
         if args.limit_chunks > 0:
             chunks = chunks[: args.limit_chunks]
@@ -186,25 +245,45 @@ def main(argv: list[str]) -> int:
                         continue
                     n_fail += 1
                     if n_fail <= 3:
-                        print(f"    [块抽失败] {title}: {e}")
+                        print(f"    [块抽失败] {title}: {e}", flush=True)
             time.sleep(0.3)  # 节流：块间错峰，避免 1000+ 调用瞬间撞火山 5h 配额
-        all_names.update(found)
-        print(f"  ✓ {title:<32} {len(chunks):>4} 块 → {len(found):>3} 人"
-              f"{f'（{n_fail} 块失败）' if n_fail else ''}")
 
-    print(f"\n去重后共 {len(all_names)} 个人名。")
+        print(f"  ✓ {title:<32} {len(chunks):>4} 块 → {len(found):>3} 人"
+              f"{f'（{n_fail} 块失败）' if n_fail else ''}", flush=True)
+        all_names.update(found)
+
+        # —— 按本落库：扫完一本立刻写，崩了也不丢已扫的 ——
+        if store is not None:
+            added = store.seed_known_persons(sorted(found), "seed")
+            total_added += added
+            # 仅当本本「确有抽取」或「无失败」才记 checkpoint，避免 LLM 全挂时
+            # 把 0 抽取的书误判为已完成、永久跳过（下轮自动重试补全）。
+            really_done = (len(found) > 0) or (n_fail == 0)
+            if really_done:
+                done[rel] = {
+                    "title": title,
+                    "chunks": len(chunks),
+                    "extracted": len(found),
+                    "added": added,
+                    "at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                }
+                _save_checkpoint({"completed": done})
+                print(f"  ↳ 已落库：本本新增 {added} 条（累计本批 {total_added}），"
+                      f"checkpoint 已更新。", flush=True)
+            else:
+                print(f"  ⚠ 本本 0 抽取且 {n_fail} 块失败（疑似 LLM 端点故障），"
+                      f"不写 checkpoint，下轮自动重试。", flush=True)
+        time.sleep(1.0)  # 本间错峰，别贪多
+        processed += 1
+
     if args.dry_run:
+        print(f"\n去重后共 {len(all_names)} 个人名。")
         print("样例（前 40 个）：", sorted(all_names)[:40])
         return 0
 
-    from deskmate.cognitive.store import CognitiveStore
-
-    store = CognitiveStore()
-    _migrate_known_persons(store)
-    added = store.seed_known_persons(sorted(all_names), "seed")
-    total = len(store.list_active_persons())
-    print(f"已灌入 known_persons：新增 {added} 条（幂等跳过 {len(all_names) - added} 条），"
-          f"当前 active 共 {total} 条。")
+    active = len(store.list_active_persons()) if store else 0
+    print(f"\n[完成] 本批处理 {processed} 本，新增 {total_added} 条；"
+          f"known_persons 当前 active 共 {active} 条。", flush=True)
     return 0
 
 
