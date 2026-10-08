@@ -4386,9 +4386,12 @@ def create_app(manager: SessionManager) -> FastAPI:
     # ------------------------------------------------------------------
     @app.post("/v1/deskmate/agency/intent/discuss/start")
     async def intent_discuss_start(request: Request) -> dict[str, Any]:
-        """启动意图讨论。设 discuss_state、写开场白 ledger、返回 ledger_id + text。
+        """启动意图讨论。设 discuss_state、写开场白 ledger、**自送开场白到会话**。
 
-        前端拿 ledger_id + text 后调 speakDeskmateHandoff 让小桔开口。
+        R13 修复（2026-10-08）：开场白由本端点直接 append + broadcast（带
+        ``meta{origin=intent_handoff, phase=opening}``，渲染成讨论卡），空会话先兜底
+        建记录——不再依赖前端回调通用 speak 端点（那条通道丢 meta、空会话 404）。
+        前端成功后紧接着调 ``/discuss/run`` 触发第一轮 draft。
         Body: {"intent_id": str, "session_id": str}
         """
         try:
@@ -4402,6 +4405,7 @@ def create_app(manager: SessionManager) -> FastAPI:
                 {"error": "missing intent_id/session_id"}, status_code=400
             )
         try:
+            import time as _t
             from pathlib import Path as _P
 
             from deskmate.agency.behaviors.intent_discuss import start_discussion
@@ -4418,6 +4422,77 @@ def create_app(manager: SessionManager) -> FastAPI:
                         "blocking_intent_id": res.get("blocking_intent_id", ""),
                     },
                     status_code=status,
+                )
+            # R13 修复（2026-10-08 萧哥报「提议卡点执行，落不到聊天，直接消失」）：
+            # ① 用户看到提议卡的唯一位置是 DeskHome＝空会话（一条消息未发），而会话
+            #    记录只在首轮消息后才建 → 服务端无记录 → append_session_messages
+            #    返 False → 开场白落不进聊天。这里兜底建一条 deskmate 会话记录
+            #    （字段对齐 get_engine 新会话默认，workspace 空串会降级为 scratch）。
+            # ② 开场白不再依赖前端回调通用 speak 端点（那条通道 append/broadcast 都
+            #    不带 meta → 前端渲染成普通气泡而非讨论卡）。改为 start 端点自送，
+            #    与 run/finalize 端点同款：append + broadcast 都带 meta。
+            try:
+                if manager.session_store.load(session_id) is None:
+                    from coworker.sessions import SessionRecord
+
+                    manager.session_store.save(
+                        SessionRecord(
+                            session_id=session_id,
+                            workspace="",
+                            model=manager.model,
+                            mode=manager.mode.value,
+                            messages=[],
+                            agent="deskmate",
+                        )
+                    )
+            except Exception:
+                logging.debug(
+                    "discuss start 兜底建会话记录失败（不阻断）", exc_info=True
+                )
+            opening_meta = {
+                "origin": "intent_handoff",
+                "intent_id": intent_id,
+                "phase": "opening",
+                "round": 0,
+            }
+            delivered = manager.append_session_messages(
+                session_id,
+                [
+                    {
+                        "role": "assistant",
+                        "content": res["text"],
+                        "ts": int(_t.time()),
+                        "meta": opening_meta,
+                    }
+                ],
+            )
+            if delivered:
+                await manager.broadcast_session(
+                    session_id,
+                    {
+                        "type": "assistant_message",
+                        "data": {"text": res["text"], "meta": opening_meta},
+                    },
+                )
+            else:
+                logging.warning(
+                    "discuss start 开场白落库失败（session=%s）——聊天将看不到开场白",
+                    session_id,
+                )
+            # 补账 + 状态前进（沿用原 speak 通道语义；失败不阻断：话已落会话）
+            try:
+                from deskmate.proactivity.ledger import (
+                    acknowledge_ledger,
+                    mark_delivered,
+                )
+
+                mark_delivered(base_dir=desk_dir, rid=res["ledger_id"])
+                acknowledge_ledger(
+                    base_dir=desk_dir, rid=res["ledger_id"], new_status="in_progress"
+                )
+            except Exception:
+                logging.debug(
+                    "discuss start 补账/状态前进失败（不阻断）", exc_info=True
                 )
             return {"ok": True, "ledger_id": res["ledger_id"], "text": res["text"]}
         except Exception:

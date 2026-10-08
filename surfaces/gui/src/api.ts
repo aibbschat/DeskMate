@@ -4177,8 +4177,10 @@ export async function speakDeskmateHandoff(
 //         再改（run round+1）/ 定稿（finalize）/ 不要（cancel）
 // --------------------------------------------------------------------------
 
-/** R13 启动意图讨论：设 discuss_state、写开场白 ledger。
- * 返回 {ok, ledger_id, text}——前端拿 ledger_id 调 speakDeskmateHandoff 让小桔开口。
+/** R13 启动意图讨论：设 discuss_state、写开场白 ledger，**端点自送开场白**（append +
+ * broadcast 都带 meta{origin=intent_handoff, phase=opening}，渲染成讨论卡；空会话先
+ * 兜底建 deskmate 会话记录）。返回 {ok, ledger_id, text}——前端成功后紧接着调
+ * runIntentDiscussRound(sessionId, intentId, 1) 触发第一轮 draft。
  * blocking_intent_id 非空 = 同 session 已有讨论中的意图（多并发护栏）。
  * null = 端点失败。 */
 export async function startIntentDiscuss(

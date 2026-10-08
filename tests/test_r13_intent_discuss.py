@@ -258,3 +258,101 @@ def test_extract_lesson_empty_feedback_short_circuits(env, monkeypatch):
     r = d.extract_lesson_from_feedback("", "上一版 draft", "整理算法圈争论")
     assert r["is_meaningful"] is False
     assert called["n"] == 0  # 短路了，没调 LLM
+
+
+# ---------------------------------------------------------------------------
+# 12) 端点级：/discuss/start 必须自带开场白投递 + 兜底建会话记录
+# （2026-10-08 萧哥报「提议卡点执行，落不到聊天，直接消失」第三处根因）
+#
+# 场景锁死：用户看到提议卡的唯一位置是 DeskHome——**空会话**（一条消息未发）。
+# 服务端此时**没有会话记录**（记录只在首轮消息后才建）：
+#   - 旧实现靠前端回调通用 speak 端点投递开场白 → append_session_messages
+#     因记录不存在返 False → 404 → 开场白落不进聊天（卡消失、聊天空白）。
+#   - 且通用 speak 的 append/broadcast 都不带 meta → 即使记录在，也渲染成
+#     普通气泡而非 intent_discuss 讨论卡。
+# 修复后契约：start 端点自己 (a) 兜底建 deskmate 会话记录 (b) append+broadcast
+# 都带 meta{origin=intent_handoff, intent_id, phase=opening}。前端不再调 speak。
+# ---------------------------------------------------------------------------
+def _endpoint_client(env, monkeypatch, opening_text: str = "好，我去做了。"):
+    """起一个最小 SessionManager + TestClient（无 LLM、无网络），打桩开场白。"""
+    from fastapi.testclient import TestClient
+
+    from coworker.providers import ModelCapabilities, ProviderClient
+    from coworker.server import SessionManager, create_app
+
+    class _NoLLM(ProviderClient):
+        def complete(self, *, model, messages, tools=None, **settings):
+            raise RuntimeError("本测试不应触发对话补全")
+
+        def capabilities(self, model):
+            return ModelCapabilities()
+
+    manager = SessionManager(workspace=env, provider=_NoLLM())
+    _patch_llm(monkeypatch, opening_text)
+    return TestClient(create_app(manager)), manager
+
+
+def test_discuss_start_delivers_opening_with_meta_and_bootstraps_session(env, monkeypatch):
+    iid = _seed_intent(env)
+    client, manager = _endpoint_client(env, monkeypatch, "好，我把算法圈捋一捋，一会儿给你看。")
+
+    r = client.post(
+        "/v1/deskmate/agency/intent/discuss/start",
+        json={"intent_id": iid, "session_id": "brand_new_empty_session"},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is True
+    assert body["ledger_id"]
+    assert "算法圈" in body["text"]
+
+    # ① 空会话（服务端原本无记录）已兜底创建，agent=deskmate
+    rec = manager.session_store.load("brand_new_empty_session")
+    assert rec is not None, "start 必须兜底建会话记录，否则开场白落不进聊天"
+    assert rec.agent == "deskmate"
+
+    # ② 开场白已带 meta 落库（前端靠 meta.origin=intent_handoff 渲染讨论卡；reload 重建也靠它）
+    msgs = manager.session_messages("brand_new_empty_session")
+    assert msgs, "开场白必须落进会话消息"
+    meta = msgs[-1].get("meta") or {}
+    assert meta.get("origin") == "intent_handoff"
+    assert meta.get("intent_id") == iid
+    assert meta.get("phase") == "opening"
+    assert msgs[-1].get("content") == body["text"]
+
+    # ③ 开场白 ledger 已补账（防 DeskHome 待办列表重复递）
+    from deskmate.proactivity.ledger import lookup_items
+    hits = lookup_items(base_dir=env, handle=body["ledger_id"], limit=5)
+    assert hits and hits[0]["id"] == body["ledger_id"]
+    assert hits[0]["delivered_at"], "开场白 ledger 应标 delivered"
+
+
+def test_discuss_start_existing_session_keeps_record_untouched(env, monkeypatch):
+    """已有会话记录时不重建、不覆盖（只补投递）。"""
+    from coworker.sessions import SessionRecord
+
+    iid = _seed_intent(env)
+    client, manager = _endpoint_client(env, monkeypatch, "好，我去做了。")
+    manager.session_store.save(
+        SessionRecord(
+            session_id="existing_session",
+            workspace="",
+            model="test-model",
+            mode="default",
+            messages=[{"role": "user", "content": "早", "ts": 1}],
+            agent="deskmate",
+        )
+    )
+
+    r = client.post(
+        "/v1/deskmate/agency/intent/discuss/start",
+        json={"intent_id": iid, "session_id": "existing_session"},
+    )
+    assert r.status_code == 200
+    rec = manager.session_store.load("existing_session")
+    assert rec is not None
+    assert rec.model == "test-model", "不得覆盖已有会话记录字段"
+    # 开场白追加在既有消息之后
+    msgs = manager.session_messages("existing_session")
+    assert len(msgs) == 2
+    assert (msgs[-1].get("meta") or {}).get("origin") == "intent_handoff"

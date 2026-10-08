@@ -1249,8 +1249,12 @@ export function App() {
     try {
       const res = await startIntentDiscuss(sessionId, intentId);
       if (res && res.ok && res.ledger_id) {
-        // 让小桔开口——开场白作为她的助手消息落入本会话（WS assistant_message 即时渲染）。
-        await speakDeskmateHandoff(sessionId, res.ledger_id);
+        // R13 修复（2026-10-08「提议卡点执行落不到聊天」）：start 端点已自带开场白
+        // 投递（append+broadcast 都带 meta → 渲染成讨论卡，且空会话先兜底建记录），
+        // 不再回调通用 speak——那条通道丢 meta 会渲染成普通气泡，且空会话 404。
+        // 紧接着触发第一轮 run：她把 draft 做出来经 WS 推回（带「定稿/再改/不要」
+        // 三按钮的新卡）。fire-and-forget：executor 走 LLM 较慢，不阻塞界面。
+        void runIntentDiscussRound(sessionId, intentId, 1).catch(() => {});
       }
     } catch {
       // 静默：用户已在聊天视图，可继续手动操作。
