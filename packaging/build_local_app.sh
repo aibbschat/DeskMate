@@ -121,7 +121,16 @@ fi
 
 # ---- 可选：安装 ----
 if [ "$INSTALL" -eq 1 ]; then
-  echo "==> 安装到 ${INSTALLED:-/Applications/OpenWorker.app}"
+  # 安装目标（2026-10-08 事故补）：/Applications 恒装；~/Applications/OpenWorker.app
+  # **已存在**时也同步覆盖——萧哥 Dock 实际启动的是 ~/Applications 副本，只装
+  # /Applications 会让新码永远到不了用户手里（「修了几轮都没修好」交付侧第二根因；
+  # 实测 19:14 用户启动的 ~/Applications 包停在 14:07 旧码）。不主动创建家目录副本，
+  # 尊重多版本共存习惯——只在已存在时跟随更新。
+  TARGETS=("/Applications/OpenWorker.app")
+  if [ -d "$HOME/Applications/OpenWorker.app" ]; then
+    TARGETS+=("$HOME/Applications/OpenWorker.app")
+  fi
+  echo "==> 安装到: ${TARGETS[*]}"
   if pgrep -f "OpenWorker.app/Contents/MacOS/openworker-desktop" >/dev/null 2>&1; then
     echo "    退出运行中的 OpenWorker…"
     osascript -e 'tell application "OpenWorker" to quit' 2>/dev/null || true
@@ -129,12 +138,26 @@ if [ "$INSTALL" -eq 1 ]; then
       pgrep -f "OpenWorker.app/Contents/MacOS/openworker-desktop" >/dev/null 2>&1 || break
       sleep 0.5
     done
+    # 优雅退出超时后兜底强杀（否则旧二进制仍在内存里跑旧码）
+    PIDS="$(pgrep -f 'OpenWorker.app/Contents/MacOS/openworker-desktop' || true)"
+    if [ -n "$PIDS" ]; then
+      echo "    优雅退出超时，强退: $PIDS"
+      kill $PIDS 2>/dev/null || true
+      sleep 2
+    fi
   fi
-  rm -rf "${INSTALLED:-/Applications/OpenWorker.app}"
+  for DEST in "${TARGETS[@]}"; do
+    rm -rf "$DEST"
+  done
   cp -R "$APP_OUT" /Applications/
-  echo "    ✓ 已安装到 ${INSTALLED:-/Applications/OpenWorker.app}（内嵌前端哈希："
-  strings "${INSTALLED:-/Applications/OpenWorker.app}/Contents/MacOS/openworker-desktop" 2>/dev/null | grep -oE '(main|index)-[A-Za-z0-9_-]{8}\.js' | sort -u | sed 's/^/      /'
-  echo "    ）"
+  if [ "${#TARGETS[@]}" -gt 1 ]; then
+    cp -R "$APP_OUT" "$HOME/Applications/"
+  fi
+  for DEST in "${TARGETS[@]}"; do
+    echo "    ✓ 已安装到 $DEST（内嵌前端哈希："
+    strings "$DEST/Contents/MacOS/openworker-desktop" 2>/dev/null | grep -oE '(main|index)-[A-Za-z0-9_-]{8}\.js' | sort -u | sed 's/^/      /'
+    echo "    ）"
+  done
 fi
 
 echo "==> 完成。tauri.conf.json 与临时文件已还原/清理。"
