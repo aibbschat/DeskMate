@@ -200,6 +200,26 @@ class AgencyEngine:
                     count=res.get("written", 0),
                 )
 
+            if action_type == "reflection":
+                # 反思层 R1（江河设计·第二段「反思」）：回看 item_history 最近的判据/看法
+                # 变化，对旧看法做 maintain/revise/overturn 裁决并留下 reason（落 item_history）。
+                # 与 worldview_reflection 并列但错峰：反思用「最近变化 ≥ min_changes」触发，
+                # 且过独立冷却——避免同一 tick 双重 LLM 轰炸。fail-open，异常不阻断 tick。
+                from .behaviors.reflection import run_reflection
+
+                res = run_reflection(str(self.base_dir), settings.reflection)
+                if not res.get("reflected"):
+                    return None  # 冷却中 / 变化不足 / 没 provider → 不刷屏
+                return self.log.add(
+                    action_type=action_type,
+                    risk="low",
+                    status=TaskStatus.DONE,
+                    topic="",
+                    summary=res.get("summary", ""),
+                    detail=res.get("essay", ""),
+                    count=res.get("verdicts", 0),
+                )
+
             if action_type == "ai_circle_ingestion":
                 # 把攒下的 AI 圈素材（朋友互动/广场帖子/发帖反馈，带「外部·aibbs」标）
                 # 提炼成她自己的理解，写进世界观素材池——让「出去看/交朋友」回灌人格、推动成长。

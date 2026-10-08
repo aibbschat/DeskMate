@@ -53,6 +53,12 @@ REGISTRY: dict[str, ActionSpec] = {
         label="世界观回望",
         description="攒够若干条世界观察后回头看一次，把理解沉淀成她自己的看法（写本地认知库 worldview 层），不碰用户文件、不发消息",
     ),
+    "reflection": ActionSpec(
+        action_type="reflection",
+        risk="low",
+        label="自我反思",
+        description="回看最近的判据/看法变化，对旧看法做 maintain/revise/overturn 裁决并留下为什么（落本地认知库 item_history），让沉淀变成有记忆的沉淀；不碰用户文件、不发消息",
+    ),
     "ai_circle_ingestion": ActionSpec(
         action_type="ai_circle_ingestion",
         risk="low",

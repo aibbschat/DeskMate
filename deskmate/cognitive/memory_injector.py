@@ -402,6 +402,33 @@ def build_lessons_context(base_dir: str | Path | None = None, query: str = "") -
         return ""  # fail-open：lessons 缺失不影响主记忆注入
 
 
+def build_reflection_context(base_dir: str | Path | None = None) -> str:
+    """生成「小桔最近的自我反思」注入段（R9 反思层 R1）；无数据返回空串。
+
+    从 ``item_history`` 取最近的 ``action='reflected'`` 结论（裁决 + 为什么），
+    每轮注入，让她回话时带着最近一次自我修正，不重复踩自己旧偏差。
+
+    fail-open：库缺失 / 查询异常 → ""，绝不阻断主记忆注入。
+    ``base_dir`` 传法同 ``build_lessons_context``（测试 / 多 workspace 隔离必备）。
+    """
+    try:
+        from .store import CognitiveStore
+
+        db = (Path(base_dir) / "deskmate.db") if base_dir else _db_path()
+        refls = CognitiveStore(db_path=db).get_reflections_for_injection()
+        if not refls:
+            return ""
+        lines = [
+            "## 小桔最近的自我反思",
+            "下面是你最近对旧看法做的裁决（以及为什么）——回话时可以带着这些判断，"
+            "不必重复过去的偏差。",
+        ]
+        lines.extend(f"- {t}" for t in refls)
+        return "\n".join(lines)
+    except Exception:
+        return ""  # fail-open：反思缺失不影响主记忆注入
+
+
 def has_cognitive_data() -> bool:
     """是否已有认知数据（底座 / 他的画像 / 她的世界观，任一存在即 True）。"""
     if load_persona_base():

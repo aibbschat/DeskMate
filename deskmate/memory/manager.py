@@ -666,6 +666,19 @@ class DeskMateMemoryManager:
                     parts.append(lessons_ctx)
         except Exception:
             pass  # fail-open：lessons 缺失不影响主记忆注入
+        # 「小桔最近的自我反思」（R9 反思层 R1）：从 item_history 取最近对旧看法的裁决
+        # （maintain/revise/overturn + 为什么）每轮注入，让她回话带着最近一次自我修正。
+        # fail-open 与上面各块一致；总开关 DESKMATE_AUTO_INJECT=0 已整体关闭本函数，
+        # 本块随之关闭；单独开关 DESKMATE_REFLECTION_INJECT=0 可只关这一块。
+        try:
+            if os.environ.get("DESKMATE_REFLECTION_INJECT", "1") != "0":
+                from deskmate.cognitive.memory_injector import build_reflection_context
+
+                refl_ctx = build_reflection_context(self.base_dir)
+                if refl_ctx:
+                    parts.append(refl_ctx)
+        except Exception:
+            pass  # fail-open：反思缺失不影响主记忆注入
         if not parts:
             return ""
 

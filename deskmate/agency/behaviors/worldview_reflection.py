@@ -491,6 +491,7 @@ def _persist_worldview(base_dir: str, parsed: dict[str, Any],
     )
 
     written: list[dict] = []
+    stance = None
     try:
         stance, op = mgr.add_stance(
             topic=about, content=believe, source=src,
@@ -499,6 +500,25 @@ def _persist_worldview(base_dir: str, parsed: dict[str, Any],
         written.append({"kind": "stance", "op": op, "id": stance.id, "topic": about})
     except Exception as e:
         logger.warning("worldview_reflection: 写立场失败: %s", e)
+
+    # R9 反思层（2026-10-08）：世界观被回望改写时，把「为什么」同步留进 item_history
+    # （action='reflected'）——江河设计 §三「风险钉死」：verdict 改写旧看法时，
+    # 「为什么变」的痕迹不得被覆盖吞掉，要留在账本里等反思层 / 注入层召回。
+    # 红线：只加留痕、不改回望主逻辑；fail-open，留痕失败绝不影响回望写入。
+    if stance is not None:
+        try:
+            from deskmate.cognitive.store import CognitiveStore
+
+            CognitiveStore(
+                db_path=os.path.join(base_dir, "deskmate.db")
+            ).record_reflection(
+                stance.id,
+                verdict="revise",
+                reason=f"看世界回望（{date_iso}）：{believe}",
+                subject_kind="worldview",
+            )
+        except Exception as e:
+            logger.warning("worldview_reflection: 留反思痕失败（忽略）: %s", e)
 
     values = list(parsed.get("values") or [])
     if values:

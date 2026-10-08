@@ -1083,6 +1083,88 @@ class CognitiveStore:
             logger.warning("get_lessons_for_injection 失败（忽略）: %s", e)
             return []
 
+    # ------------------------------------------------------------------
+    # R9 反思层 R1：对旧看法做裁决 + 留 why（复用 item_history，不新开表）
+    # ------------------------------------------------------------------
+    def record_reflection(
+        self, item_id: str, verdict: str, reason: str,
+        subject_kind: str = "profile_item",
+    ) -> bool:
+        """把一次反思的裁决 + 理由落进 ``item_history``（``action='reflected'``）。
+
+        硬断言（江河设计 §三）：``reason`` 为空 = 本次反思作废——返回 False、不写痕，
+        落代码拦，不靠自觉。
+
+        落字段约定（复用既有列，零 DDL）：
+        - ``item_id``：被反思的条目（回指它「为什么被保持/修正/推翻」）；
+        - ``old_value``：裁决字面量（``maintain`` / ``revise`` / ``overturn``）；
+        - ``reason``：为什么（这是下一轮要召回的账，不得被覆盖吞掉）；
+        - ``source``：``subject_kind``（被反思对象的类别）。
+
+        fail-open：写库异常仅告警、返回 False，绝不抛（反思痕缺失不影响主链路）。
+        返回 True 表示确实写入了一行。
+        """
+        r = (reason or "").strip()
+        if not r:
+            return False  # 硬断言：没有理由的反思作废
+        if not (item_id or "").strip():
+            return False
+        try:
+            with self._connect() as conn:
+                conn.execute(
+                    "INSERT OR REPLACE INTO item_history "
+                    "(item_id, seq, action, old_value, new_value, reason, source, ts) "
+                    "VALUES(?, (SELECT COALESCE(MAX(seq), -1) + 1 FROM item_history "
+                    "WHERE item_id=?), 'reflected', ?, '', ?, ?, ?)",
+                    (item_id, item_id, str(verdict or ""), r,
+                     str(subject_kind or ""), _now_iso()),
+                )
+            return True
+        except Exception as e:  # noqa: BLE001 —— fail-open：写反思痕失败不影响主链路
+            logger.warning("record_reflection 失败（忽略）: %s", e)
+            return False
+
+    def get_reflections_for_injection(
+        self, limit: int = 3, char_cap: int = 800
+    ) -> list[str]:
+        """返回最近的反思结论（含 reason 摘要）供每轮注入。
+
+        从 ``item_history`` 取 ``action='reflected'`` 的行（按 ts 倒序），左连
+        ``profile_items`` 取被反思条目的正文摘要，拼成人话短句。限额同 lessons
+        （limit 条 + 总字数 cap char_cap）。
+
+        fail-open：空库 / 表缺失 / 查询异常 → ``[]``，绝不抛。
+        """
+        try:
+            with self._connect() as conn:
+                rows = conn.execute(
+                    "SELECT h.item_id, h.old_value, h.reason, h.source, h.ts, "
+                    "COALESCE(p.content, '') FROM item_history h "
+                    "LEFT JOIN profile_items p ON p.id = h.item_id "
+                    "WHERE h.action='reflected' "
+                    "ORDER BY h.ts DESC, h.seq DESC LIMIT ?",
+                    (max(1, int(limit)),),
+                ).fetchall()
+        except Exception as e:  # noqa: BLE001 —— fail-open：反思缺失返回 []
+            logger.warning("get_reflections_for_injection 失败（忽略）: %s", e)
+            return []
+
+        _LABELS = {"maintain": "继续保持", "revise": "修正", "overturn": "推翻"}
+        out: list[str] = []
+        used = 0
+        for item_id, verdict, reason, _subject_kind, _ts, content in rows:
+            r = (reason or "").strip()
+            if not r:
+                continue
+            subj = (content or "").strip().replace("\n", " ")[:40] or str(item_id)
+            v = _LABELS.get(str(verdict), str(verdict or "裁决"))
+            text = f"对「{subj}」：{v}——{r[:200]}"
+            if used + len(text) > char_cap:
+                break
+            out.append(text)
+            used += len(text)
+        return out
+
     def recall_items(
         self,
         query: str,
