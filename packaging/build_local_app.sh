@@ -98,12 +98,16 @@ else
   echo "⚠ 产物未检出 safety-card，请确认前端已编译开关代码" >&2
 fi
 # 非阻断校验：确认内嵌前端含当前 dist 主块。注意 Tauri 把资源压缩进二进制，
-# `strings` 对压缩内容可能漏检，故本步仅作提示，绝不中断安装（包在子 shell + set +u 内，
-# 即使变量未绑定也不会触发父脚本的 set -euo pipefail 退出）。
+# `strings` 对压缩内容可能漏检，故本步仅作提示，绝不中断安装。
+# ⚠️ 2026-10-08 事故修复：子 shell 原来只 `set +u`，但**继承**父脚本的 `set -e`+
+#    pipefail——grep 无命中（入口块早已是 main-*.js，旧模式找 index-*.js 永远落空）
+#    会让命令替换失败 → 子 shell 静默死亡 → **父脚本随之退出，--install 永远走不到**
+#    （产物停在 bundle 里、/Applications 还是旧包，「打包成功」是误读）。三处加固：
+#    ① set +e +u 双剥；② 模式同时匹配 main-*/index-*；③ 子 shell 结尾 exit 0。
 (
-  set +u
+  set +e +u
   if [ -f "$GUI/dist/index.html" ]; then
-    _cur=$(grep -oE 'assets/index-[A-Za-z0-9_-]+\.js' "$GUI/dist/index.html" 2>/dev/null | head -1 | sed 's#assets/##')
+    _cur=$(grep -oE 'assets/(main|index)-[A-Za-z0-9_-]+\.js' "$GUI/dist/index.html" 2>/dev/null | head -1 | sed 's#assets/##')
     if [ -n "$_cur" ]; then
       if strings "$APP_OUT/Contents/MacOS/openworker-desktop" 2>/dev/null | grep -q "$_cur"; then
         echo "    ✓ 内嵌前端为当前 dist 主块（$_cur）"
@@ -112,6 +116,7 @@ fi
       fi
     fi
   fi
+  exit 0
 )
 
 # ---- 可选：安装 ----
@@ -128,7 +133,7 @@ if [ "$INSTALL" -eq 1 ]; then
   rm -rf "${INSTALLED:-/Applications/OpenWorker.app}"
   cp -R "$APP_OUT" /Applications/
   echo "    ✓ 已安装到 ${INSTALLED:-/Applications/OpenWorker.app}（内嵌前端哈希："
-  strings "${INSTALLED:-/Applications/OpenWorker.app}/Contents/MacOS/openworker-desktop" 2>/dev/null | grep -oE 'index-[A-Za-z0-9_-]{8}\.js' | sort -u | sed 's/^/      /'
+  strings "${INSTALLED:-/Applications/OpenWorker.app}/Contents/MacOS/openworker-desktop" 2>/dev/null | grep -oE '(main|index)-[A-Za-z0-9_-]{8}\.js' | sort -u | sed 's/^/      /'
   echo "    ）"
 fi
 
