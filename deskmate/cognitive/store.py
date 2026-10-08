@@ -572,7 +572,15 @@ class CognitiveStore:
             # 清空本层旧数据再写（规模小，简单可靠）
             conn.execute("DELETE FROM profile_items WHERE layer=?", (layer,))
             conn.execute("DELETE FROM item_sources WHERE item_id NOT IN (SELECT id FROM profile_items)")
-            conn.execute("DELETE FROM item_history WHERE item_id NOT IN (SELECT id FROM profile_items)")
+            # 反思账本（R9/R10：action='reflected' / 'reflected_apply'）是**独立行**，
+            # 不随条目自身历史被整层重写带走。否则本层 persist 先删了自己的条目，
+            # 紧接着的这轮孤儿清理就会把「为什么保持/修正/推翻」一并抹掉
+            # （worldview 层每次回望都吞掉自己的反思痕）——R10 §3.1 钉死。
+            conn.execute(
+                "DELETE FROM item_history "
+                "WHERE action NOT IN ('reflected', 'reflected_apply') "
+                "AND item_id NOT IN (SELECT id FROM profile_items)"
+            )
             conn.execute("DELETE FROM cognitive_gaps WHERE layer=?", (layer,))
 
             rows, src_rows, hist_rows, gap_rows = [], [], [], []
@@ -1164,6 +1172,64 @@ class CognitiveStore:
             out.append(text)
             used += len(text)
         return out
+
+    # ------------------------------------------------------------------
+    # R10 反思层 R2：把裁决**真正落到条目上**（R1 只留痕、条目本身不变 = 裁决 inert）
+    # ------------------------------------------------------------------
+    def apply_reflection_verdict(self, item_id: str, verdict: str, reason: str) -> bool:
+        """把一次反思裁决落地到对应 ``profile_items`` 条目，并在 ``item_history`` 留痕。
+
+        R1 只在 ``item_history`` 写了一条 ``reflected``（裁决 + 为什么），条目本身
+        一个字没动——``revise`` / ``overturn`` 等于「反思了却没改看法」。这里补上：
+
+        - ``maintain`` → 不改条目（R1 的 ``reflected`` 痕已足够），返回 True；
+        - ``revise``   → 该条目 ``confidence`` ×0.6（下调；无该列则跳过这步）；
+        - ``overturn`` → 该条目 ``status`` 置 ``superseded``（不再活跃 → 召回即不可见；
+                         无该列则跳过）；
+        两种真实变更都在 ``item_history`` 追一条 ``action='reflected_apply'``（``reason`` 透传）。
+
+        防自循环：``reflected_apply`` 不在 reflection 的素材口径（``_CHANGE_ACTIONS``）里，
+        故本次落地不会在下一轮被当成「新变化」反复追问（与 ``reflected`` 同处理）。
+
+        fail-open：缺列 / 缺条目 / 写库异常 → 仅告警返回 False，绝不抛、绝不阻断 tick。
+        """
+        v = (verdict or "").strip().lower()
+        if v == "maintain":
+            return True  # R1 已留 reflected 痕，条目无需再动
+        if v not in ("revise", "overturn"):
+            return False
+        item = (item_id or "").strip()
+        if not item:
+            return False
+        r = (reason or "").strip()
+        try:
+            with self._connect() as conn:
+                cols = {
+                    row[1] for row in conn.execute("PRAGMA table_info(profile_items)").fetchall()
+                }
+                if v == "revise" and "confidence" in cols:
+                    conn.execute(
+                        "UPDATE profile_items SET confidence = COALESCE(confidence, 0.5) * 0.6 "
+                        "WHERE id=?",
+                        (item,),
+                    )
+                if v == "overturn" and "status" in cols:
+                    conn.execute(
+                        "UPDATE profile_items SET status='superseded' "
+                        "WHERE id=? AND status='active'",
+                        (item,),
+                    )
+                conn.execute(
+                    "INSERT OR REPLACE INTO item_history "
+                    "(item_id, seq, action, old_value, new_value, reason, source, ts) "
+                    "VALUES(?, (SELECT COALESCE(MAX(seq), -1) + 1 FROM item_history "
+                    "WHERE item_id=?), 'reflected_apply', ?, ?, ?, 'reflection', ?)",
+                    (item, item, v, v, r, _now_iso()),
+                )
+            return True
+        except Exception as e:  # noqa: BLE001 —— fail-open：落地失败不影响主链路
+            logger.warning("apply_reflection_verdict 失败（忽略）: %s", e)
+            return False
 
     def recall_items(
         self,

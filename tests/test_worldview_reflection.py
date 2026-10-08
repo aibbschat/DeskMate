@@ -22,6 +22,34 @@ from deskmate.agency.behaviors import worldview_reflection as wr
 
 
 # ----------------------------------------------------------------------
+# fixture：给测试库补 sync 三列（存量债修复，R10）
+# ----------------------------------------------------------------------
+@pytest.fixture(autouse=True)
+def _sync_ready(tmp_path):
+    """测试库先跑一次同步迁移，补上 profile_items 的 sync_uuid/sync_hlc/sync_tombstone。
+
+    根因：``CognitiveStore.persist()`` 的 INSERT 无条件写这三列，但测试夹具建的库
+    从没跑过 ``sync_store_sqlite.migrate()`` → 落库时报
+    ``table profile_items has no column named sync_uuid``（R1 同步表引入的存量债，
+    历次 QC 反复撞）。这里在建表后补齐，不动被测逻辑。
+    """
+    import sqlite3
+
+    from deskmate.cognitive.store import CognitiveStore
+    from deskmate.memory import sync_store_sqlite as sss
+
+    db = tmp_path / "deskmate.db"
+    CognitiveStore(db_path=db)  # 建表
+    conn = sqlite3.connect(str(db))
+    try:
+        sss.migrate(conn, node="test")
+        conn.commit()
+    finally:
+        conn.close()
+    yield
+
+
+# ----------------------------------------------------------------------
 # helpers
 # ----------------------------------------------------------------------
 def _seed_understanding(base: str, n: int = 5, prefix: str = "理解") -> None:

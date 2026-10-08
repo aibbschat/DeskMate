@@ -314,6 +314,8 @@ def run_reflection(base_dir: str,
     result["bailed"] = not verdicts
 
     # —— 落痕（硬断言：reason 空 → record_reflection 返回 False，不写）——
+    #     并对 revise/overturn **落地**（R10）：真正改条目可信度/状态，让「改了看法」
+    #     在数据与召回里可见；maintain 不改条目（R1 的 reflected 痕已足够）。
     recorded = 0
     for v in verdicts:
         c = batch[v["index"]]
@@ -321,6 +323,10 @@ def run_reflection(base_dir: str,
             c["item_id"], v["verdict"], v["reason"], c["subject_kind"]
         ):
             recorded += 1
+            if v["verdict"] in ("revise", "overturn"):
+                store.apply_reflection_verdict(
+                    c["item_id"], v["verdict"], v["reason"]
+                )
     result["verdicts"] = recorded
 
     # 无论她有没有给出结论，都标记这批已回看——不再拿同一批变化反复问她。

@@ -23,7 +23,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 from .settings import AgencySettings, load_agency_settings
-from .task_log import TaskLog, TaskStatus
+from .task_log import TaskLog, TaskRecord, TaskStatus
 from .risk import classify_risk, requires_approval
 from .registry import get_spec
 from .router import route_task
@@ -377,6 +377,10 @@ class AgencyEngine:
         if not ok:
             return ok
 
+        # 教学回流（R10 · 江河设计 §四.4「拦必留教」）：每次裁决都留一条 lesson，
+        # 让「拦下/放行」变成她学到的规则，而不是拦完就忘。fail-open，不影响主裁决。
+        self._record_adjudication_lesson(rec, decision)
+
         # 记忆主体冲突裁决（P1-1，2026-09-26）：必须在通用「非 executed
         # 提前返回」**之前**处理——rejected/never 也要落地（新条作废），
         # 否则 questioned 条目永远悬置。executed=以新条为准，其余=保留旧条。
@@ -426,6 +430,53 @@ class AgencyEngine:
                     logger.warning("L2 外部信息裁决执行失败: %s", e)
         # 未来：write_file / send_message / delete 在此接上真实执行
         return ok
+
+    def _record_adjudication_lesson(self, rec: TaskRecord, decision: str) -> None:
+        """把一次提议卡裁决沉淀成 lesson（R10 · 江河设计 §四.4「拦必留教」）。
+
+        设计意图：机器拦下/放行的每一次都该「学到点什么」，而不是拦完就忘。
+        派生规则（人话，不带工程腔）：
+        - ``executed``（放行）→ recent：「这类可以继续自主执行」
+        - ``rejected``（拦下）→ recent：「这类事先问你」
+        - ``never``（以后别提）→ permanent：「这类不要再提议」
+        ``extra['user_note']`` 有用户批注时并入正文。
+
+        fail-open：``add_lesson`` 自身已 fail-open；此处再包一层 try，
+        写 lesson 失败绝不影响主裁决状态变更。
+        """
+        try:
+            label = rec.action_type
+            spec = get_spec(rec.action_type)
+            if spec is not None and spec.label:
+                label = spec.label
+
+            if decision == TaskStatus.EXECUTED:
+                act, rule, scope = "本次放行（你没拦）", "这类可以继续自主执行", "recent"
+            elif decision == TaskStatus.REJECTED:
+                act, rule, scope = "本次拦下", "这类事先问你", "recent"
+            elif decision == TaskStatus.NEVER:
+                act, rule, scope = "以后别提", "这类不要再提议", "permanent"
+            else:
+                return
+
+            note = ""
+            try:
+                note = str((rec.extra or {}).get("user_note") or "").strip()
+            except Exception:
+                note = ""
+
+            content = f"「{label}」：{act}"
+            if note:
+                content += f"（你说：{note}）"
+            content += f" → {rule}"
+
+            from deskmate.cognitive.store import CognitiveStore
+
+            base_dir = str((rec.extra or {}).get("base_dir") or self.base_dir)
+            store = CognitiveStore(db_path=os.path.join(base_dir, "deskmate.db"))
+            store.add_lesson(content, scope=scope, source="adjudication")
+        except Exception as e:  # noqa: BLE001 —— fail-open：留教失败不影响主裁决
+            logger.warning("裁决留教失败（忽略）: %s", e)
 
     def status(self) -> dict[str, Any]:
         """面板/状态用：开关、白名单、最近任务。"""
