@@ -13,15 +13,10 @@ from unittest.mock import patch
 from deskmate.memory.manager import DeskMateMemoryManager
 
 
-def _fake_channel():
-    return type("C", (), {"provider": "opencode", "model": "fake-free"})()
-
-
 def test_memory_append_skips_llm_when_free_group_unavailable(tmp_path):
-    """端点故障（免费组不可用）→ memory 段纯文件追加，不调 LLM、不卡、不误跳。"""
+    """端点故障（chat 通道熔断）→ memory 段纯文件追加，不调 LLM、不卡、不误跳。"""
     mgr = DeskMateMemoryManager(base_dir=tmp_path)
-    with patch("deskmate.llm_channels.free_channels", return_value=[]), \
-         patch("deskmate.memory.llm.llm_available", return_value=True), \
+    with patch.object(DeskMateMemoryManager, "_memory_llm_ok", return_value=False), \
          patch("deskmate.memory.manager.chat") as mock_chat:
         res = mgr.append_to_section(
             "memory",

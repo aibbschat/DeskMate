@@ -1620,25 +1620,25 @@ class DeskMateMemoryManager:
     def _memory_llm_ok(self) -> bool:
         """记忆写入的 LLM 查重是否可用（熔断感知）。
 
-        仅当「有 provider 凭证」**且**「opencode 免费组未全部熔断」时才返回 True，
-        走 LLM 查重/合并；否则返回 False，调用方改为纯文件追加——
-        端点故障（opencode 401/500）时不卡（SDK 重试放大成 MCP 超时）、不误判跳过。
+        去重实际调用的 ``chat()`` 内部经 ``_call_with_breaker``，端点故障时记熔断
+        （键 = ``_active_provider_and_model()``，即主对话 provider，**配置无关**）。
+        本方法查**同一通道键**的熔断状态——熔断即视为不可用，调用方改为纯文件追加：
+        端点故障时不卡（单次 LLM 调用已 timeout=12.0 兜底）、不误判跳过。
 
-        免费组清单拉不到（catalog 故障，与 opencode 端点同源）→ 视为端点故障，降级。
+        ⚠️ 早期版本误查 opencode 免费组 breaker，而去重走的是主 provider（火山 Ark）
+        通道，键完全错开 ⇒ breaker 在主通道上打开后 gate 视而不见、每次仍撞坏端点
+        （7s/次，部分超时丢数据）。这是「记忆一直写不进去」的真根因，现改为查 chat()
+        实际使用的通道键。
         """
         if not llm_available():
             return False
         try:
+            from deskmate.memory.llm import _active_provider_and_model
             from deskmate.llm_circuit_breaker import is_open
-            from deskmate.llm_channels import free_channels
-            chs = free_channels()
-            if not chs:
-                return False  # 免费组清单拉不到 = 端点故障，降级纯追加
-            # 免费组任一通道未熔断即视为可用；全熔断才降级
-            return any(
-                not is_open(f"{c.provider}:{c.model}", base_dir=self.base_dir)
-                for c in chs
-            )
+            provider, model = _active_provider_and_model()
+            if not provider or not model:
+                return False
+            return not is_open(f"{provider}:{model}", base_dir=self.base_dir)
         except Exception:
             return False  # 查询异常也降级，绝不卡写入
 
