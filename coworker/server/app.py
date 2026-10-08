@@ -69,6 +69,12 @@ _WS_RATE_LIMIT_WINDOW_SECONDS = 10.0
 _MAX_MESSAGE_TEXT_CHARS = 200_000
 _MAX_ATTACHMENTS_BYTES = 15_000_000  # leaves JSON overhead below the 16 MiB frame cap
 
+# R13.1（2026-10-08 萧哥：「不做这个谈不上研究或讨论」）：意图讨论进行中
+# （discuss_state.phase == "working"）的用户打字旁路主聊天，直接当点评。
+# 进程内防抖：同一意图同一时刻只跑一轮 LLM 迭代；期间的后续点评追加进
+# discuss_state["pending_feedback"]，本轮 draft 出来后自动补跑消化（每轮一条）。
+_INTENT_DISCUSS_INFLIGHT: set[str] = set()
+
 # Thread-safe locks for module-level singleton initialization
 _deskmate_mm_lock = threading.Lock()
 _deskmate_tick_lock = threading.Lock()
@@ -6514,6 +6520,193 @@ def create_app(manager: SessionManager) -> FastAPI:
                 return
             asyncio.create_task(run_turn(content, retry=retry, display=display))
 
+        # R13.1：意图讨论进行中（phase=working）→ 聊天框打字即点评，旁路主聊天。
+        # 分类（feedback/finalize/chitchat）走后台 task，不阻塞 WS receive 循环；
+        # fail-open 全部落 chitchat → 原样转投主聊天（claim_turn），消息永不丢。
+        async def route_intent_discuss_text(text: str) -> bool:
+            try:
+                from pathlib import Path as _P
+
+                from deskmate.cognitive.store import CognitiveStore
+
+                desk_dir = _P(
+                    os.environ.get("DESKMATE_DIR", os.path.expanduser("~/.deskmate"))
+                )
+                store = CognitiveStore(db_path=str(desk_dir / "deskmate.db"))
+                iid = store.get_discussing_intent_for_session(session_id)
+                if not iid:
+                    return False
+                intent = store.get_intent(iid)
+                if not intent:
+                    return False
+                try:
+                    state = json.loads(intent.get("discuss_state") or "{}")
+                except Exception:
+                    state = {}
+                # 只在 draft 已出（working）后旁路：opening 阶段第一轮还在跑，
+                # 此时打字多半是闲聊/催促，照常走主聊天。
+                if not state or state.get("phase") != "working":
+                    return False
+                goal = str(intent.get("goal") or "")
+            except Exception:
+                logging.exception("intent discuss route 查询失败（转主聊天）")
+                return False
+
+            async def _append_and_broadcast(payload: dict) -> None:
+                import time as _t
+
+                if manager.append_session_messages(
+                    session_id,
+                    [
+                        {
+                            "role": payload["role"],
+                            "content": payload["content"],
+                            "ts": int(_t.time()),
+                            "meta": payload.get("meta"),
+                        }
+                    ],
+                ):
+                    await manager.broadcast_session(
+                        session_id,
+                        {
+                            "type": "assistant_message",
+                            "data": {"text": payload["content"], "meta": payload.get("meta")},
+                        },
+                    )
+
+            async def _bg() -> None:
+                from deskmate.agency.behaviors.intent_discuss import (
+                    classify_user_message,
+                )
+
+                try:
+                    verdict = await asyncio.to_thread(classify_user_message, text, goal)
+                    v = str(verdict.get("verdict") or "chitchat")
+                except Exception:
+                    v = "chitchat"  # fail-open：分类挂了当闲聊，转主聊天不丢消息
+                if v == "chitchat":
+                    await claim_turn(content=build_user_content(text, []))
+                    return
+                # feedback / finalize：点评先落会话（刷新后气泡仍在；不进主 engine
+                # 上下文——讨论内容属于讨论流，不污染主聊天历史）。
+                import time as _t
+
+                manager.append_session_messages(
+                    session_id,
+                    [{"role": "user", "content": text, "ts": int(_t.time())}],
+                )
+                if v == "finalize":
+                    if iid in _INTENT_DISCUSS_INFLIGHT:
+                        # 改稿还在跑：定稿指令并入 pending（下一版出来后再定）。
+                        _stash_pending(store, iid, text)
+                        return
+                    _INTENT_DISCUSS_INFLIGHT.add(iid)
+                    try:
+                        from deskmate.agency.behaviors.intent_discuss import (
+                            finalize_discussion,
+                        )
+
+                        res = await asyncio.to_thread(finalize_discussion, str(desk_dir), iid)
+                        if res.get("ok"):
+                            await _append_and_broadcast(
+                                {
+                                    "role": "assistant",
+                                    "content": "好，这版定稿了，我落进记忆里。",
+                                    "meta": {
+                                        "origin": "intent_handoff",
+                                        "intent_id": iid,
+                                        "phase": "final",
+                                    },
+                                }
+                            )
+                        else:
+                            logging.warning(
+                                "intent discuss finalize via chat 失败: %s", res.get("reason")
+                            )
+                    finally:
+                        _INTENT_DISCUSS_INFLIGHT.discard(iid)
+                    return
+                # feedback：跑下一轮（round+1），出 draft 推回
+                if iid in _INTENT_DISCUSS_INFLIGHT:
+                    # 上一轮还在跑：追加进 pending，本轮结束后自动补跑消化。
+                    _stash_pending(store, iid, text)
+                    return
+                _INTENT_DISCUSS_INFLIGHT.add(iid)
+                try:
+                    await _run_rounds(store, desk_dir, iid, text)
+                finally:
+                    _INTENT_DISCUSS_INFLIGHT.discard(iid)
+
+            async def _run_rounds(store, desk_dir, iid: str, first_feedback: str) -> None:
+                from deskmate.agency.behaviors.intent_discuss import run_discussion_round
+                from deskmate.proactivity.ledger import mark_delivered
+
+                feedback: str | None = first_feedback
+                while feedback is not None:
+                    intent_now = store.get_intent(iid) or {}
+                    try:
+                        st = json.loads(intent_now.get("discuss_state") or "{}")
+                    except Exception:
+                        st = {}
+                    if not st or not st.get("phase"):
+                        return  # 讨论已被结束（finalize/cancel），不再迭代
+                    nxt = int(st.get("round") or 1) + 1
+                    res = await asyncio.to_thread(
+                        run_discussion_round, str(desk_dir), iid, nxt, feedback
+                    )
+                    if not res.get("ok"):
+                        logging.warning(
+                            "intent discuss 反馈迭代失败: %s", res.get("reason")
+                        )
+                        return
+                    meta = {
+                        "origin": "intent_handoff",
+                        "intent_id": iid,
+                        "phase": "draft",
+                        "round": nxt,
+                    }
+                    await _append_and_broadcast(
+                        {"role": "assistant", "content": res["artifact"], "meta": meta}
+                    )
+                    try:
+                        await asyncio.to_thread(
+                            lambda: mark_delivered(base_dir=str(desk_dir), rid=res["ledger_id"])
+                        )
+                    except Exception:
+                        logging.debug("discuss 反馈迭代 mark_delivered 失败（不阻断）")
+                    # 消化 pending_feedback（每轮一条；用户 run 期间再点评会攒进来）
+                    try:
+                        st2 = json.loads(
+                            (store.get_intent(iid) or {}).get("discuss_state") or "{}"
+                        )
+                        pf = str(st2.get("pending_feedback") or "").strip()
+                        if pf:
+                            st2["pending_feedback"] = ""
+                            store.set_intent_discuss_state(
+                                iid, st2, current_round=int(st2.get("round") or nxt)
+                            )
+                            feedback = pf
+                        else:
+                            feedback = None
+                    except Exception:
+                        feedback = None
+
+            def _stash_pending(store, iid: str, text: str) -> None:
+                try:
+                    intent_now = store.get_intent(iid) or {}
+                    st = json.loads(intent_now.get("discuss_state") or "{}")
+                    st["pending_feedback"] = (
+                        str(st.get("pending_feedback") or "") + "\n" + text
+                    ).strip()
+                    store.set_intent_discuss_state(
+                        iid, st, current_round=int(st.get("round") or 1)
+                    )
+                except Exception:
+                    logging.exception("pending_feedback 存储失败（忽略）")
+
+            asyncio.create_task(_bg())
+            return True
+
         try:
             while True:
                 try:
@@ -6771,6 +6964,14 @@ def create_app(manager: SessionManager) -> FastAPI:
                             + (f"\n\n{text}" if text else "")
                         )
                     await _apply_model(model)
+                    # R13.1：意图讨论进行中（working）→ 纯文本打字即点评，旁路主聊天
+                    # （attachments 消息不旁路——带文件的多半是正式输入）。
+                    if (
+                        text
+                        and not attachments
+                        and await route_intent_discuss_text(text)
+                    ):
+                        continue
                     if text or attachments:
                         content = build_user_content(text, attachments)
                         await claim_turn(content=content, display=display)

@@ -338,7 +338,7 @@ def test_discuss_start_existing_session_keeps_record_untouched(env, monkeypatch)
             session_id="existing_session",
             workspace="",
             model="test-model",
-            mode="default",
+            mode="interactive",
             messages=[{"role": "user", "content": "早", "ts": 1}],
             agent="deskmate",
         )
@@ -356,3 +356,182 @@ def test_discuss_start_existing_session_keeps_record_untouched(env, monkeypatch)
     msgs = manager.session_messages("existing_session")
     assert len(msgs) == 2
     assert (msgs[-1].get("meta") or {}).get("origin") == "intent_handoff"
+
+
+# ---------------------------------------------------------------------------
+# 13) R13.1 端到端：讨论进行中（phase=working），聊天框打字即点评
+# （2026-10-08 萧哥：「这个如果不做，谈不上研究或讨论」——classify_user_message
+#  此前有实现无接线。契约：）
+#   - working 态打字 → LLM 三分类（fail-open → chitchat）
+#   - feedback  → 点评落会话 + 自动跑下一轮 draft（带 meta phase=draft 广播），
+#                 **不进主聊天 engine turn**（消息不双落、上下文不污染）
+#   - finalize  → 点评落会话 + finalize + 定稿确认（meta phase=final）
+#   - chitchat  → 原样转投主聊天（claim_turn），消息永不丢
+#   - opening 态（第一轮未出）→ 照常主聊天，不旁路
+# ---------------------------------------------------------------------------
+def _working_discussion(env, monkeypatch, session_id: str = "sess_ws") -> str:
+    """建意图 + start（opening）+ 手动推进到 working（模拟第一轮 draft 已出）。"""
+    iid = _seed_intent(env)
+    _patch_llm(monkeypatch, "好，我去做了。")
+    d.start_discussion(str(env), iid, session_id)
+    store = _store(env)
+    intent = store.get_intent(iid)
+    state = json.loads(intent["discuss_state"] or "{}")
+    state["phase"] = "working"
+    state["current_draft_ledger_id"] = "seed_draft"
+    store.set_intent_discuss_state(iid, state, current_round=1)
+    return iid
+
+
+def _ws_client(env, monkeypatch, turns, classify_out: str):
+    """带 ScriptedProvider 的 TestClient（chitchat 回退需要真 turn）+ classify 打桩。"""
+    from fastapi.testclient import TestClient
+
+    from coworker.providers import AssistantTurn, ModelCapabilities, ProviderClient
+    from coworker.server import SessionManager, create_app
+
+    class _Scripted(ProviderClient):
+        def __init__(self, ts):
+            self._ts = list(ts)
+
+        def complete(self, *, model, messages, tools=None, **settings):
+            return self._ts.pop(0)
+
+        def capabilities(self, model):
+            return ModelCapabilities()
+
+    manager = SessionManager(workspace=env, provider=_Scripted(turns))
+    monkeypatch.setattr("deskmate.memory.llm.chat",
+                        lambda *a, **k: classify_out)
+    monkeypatch.setattr("deskmate.memory.llm.llm_available", lambda: True)
+    return TestClient(create_app(manager)), manager
+
+
+def _recv_until(ws, want_type: str, max_frames: int = 30):
+    """收帧直到出现目标类型（容错跳过 post-turn 等杂帧）。"""
+    seen = []
+    for _ in range(max_frames):
+        evt = ws.receive_json()
+        seen.append(evt)
+        if evt["type"] == want_type:
+            return evt, seen
+    raise AssertionError(f"未等到 {want_type}；收到: {[e['type'] for e in seen]}")
+
+
+def test_chat_feedback_during_working_routes_to_discussion(env, monkeypatch):
+    """working 态打字=点评：不进主聊天，自动出下一版 draft。"""
+    from coworker.providers import AssistantTurn
+    from coworker.sessions import SessionRecord
+
+    iid = _working_discussion(env, monkeypatch, "sess_fb")
+    calls = {"run": []}
+
+    def fake_run(base_dir, intent_id, round_num, user_feedback=None):
+        calls["run"].append((intent_id, round_num, user_feedback))
+        return {"ok": True, "reason": "", "ledger_id": "L-test", "round": round_num,
+                "artifact": "第 2 版：按你的意见改短了第三段。", "title": "t", "kind": "synthesis"}
+
+    monkeypatch.setattr(d, "run_discussion_round", fake_run)
+    client, manager = _ws_client(
+        env, monkeypatch, turns=[], classify_out=json.dumps({"verdict": "feedback", "reason": ""})
+    )
+    # 旁路链 append_session_messages 需要会话记录存在（生产由 /discuss/start 兜底建）
+    manager.session_store.save(
+        SessionRecord(session_id="sess_fb", workspace="", model="m", mode="interactive",
+                      messages=[], agent="deskmate"))
+    # fallback turn：若旁路失效走了主聊天，会收到这条 → 断言干净失败而非卡死
+    manager.provider._ts.append(AssistantTurn(text="（主聊天不该跑）", finish_reason="stop"))
+
+    with client.websocket_connect("/ws/session/sess_fb?agent=deskmate") as ws:
+        assert ws.receive_json()["type"] == "ready"
+        ws.send_json({"type": "user_message", "text": "第三段太啰嗦，改短点"})
+        evt, _ = _recv_until(ws, "assistant_message")
+        data = evt["data"]
+        assert "第 2 版" in data["text"]
+        meta = data.get("meta") or {}
+        assert meta.get("origin") == "intent_handoff"
+        assert meta.get("intent_id") == iid
+        assert meta.get("phase") == "draft"
+        assert meta.get("round") == 2
+
+    # 点评已落会话（刷新后用户气泡仍在）；未跑主聊天 turn
+    assert calls["run"] == [(iid, 2, "第三段太啰嗦，改短点")]
+    msgs = manager.session_messages("sess_fb")
+    users = [m for m in msgs if m.get("role") == "user" and "改短点" in str(m.get("content"))]
+    assert users, "点评必须落会话消息（否则刷新后气泡消失）"
+    # 主聊天引擎未被调用（消息不进 engine 上下文；Provider turns 为空表，
+    # 若 claim_turn 被调会 pop 空列表 → IndexError，间接证明没走主聊天）
+
+
+def test_chat_finalize_during_working_finalizes(env, monkeypatch):
+    from coworker.providers import AssistantTurn
+    from coworker.sessions import SessionRecord
+
+    iid = _working_discussion(env, monkeypatch, "sess_fin")
+    fin = {"ok": True, "reason": "", "output_id": "o1"}
+    monkeypatch.setattr(d, "finalize_discussion",
+                        lambda *a, **k: fin)
+    client, manager = _ws_client(
+        env, monkeypatch, turns=[], classify_out=json.dumps({"verdict": "finalize", "reason": ""})
+    )
+    manager.session_store.save(
+        SessionRecord(session_id="sess_fin", workspace="", model="m", mode="interactive",
+                      messages=[], agent="deskmate"))
+    manager.provider._ts.append(AssistantTurn(text="（主聊天不该跑）", finish_reason="stop"))
+
+    with client.websocket_connect("/ws/session/sess_fin?agent=deskmate") as ws:
+        assert ws.receive_json()["type"] == "ready"
+        ws.send_json({"type": "user_message", "text": "可以，这版定了"})
+        evt, _ = _recv_until(ws, "assistant_message")
+        meta = evt["data"].get("meta") or {}
+        assert meta.get("phase") == "final"
+        assert meta.get("intent_id") == iid
+
+
+def test_chat_chitchat_during_working_falls_back_to_normal_turn(env, monkeypatch):
+    """chitchat：原样转投主聊天，消息不丢。"""
+    from coworker.providers import AssistantTurn
+    from coworker.sessions import SessionRecord
+
+    _working_discussion(env, monkeypatch, "sess_cc")
+    client, manager = _ws_client(
+        env, monkeypatch, turns=[AssistantTurn(text="嗯，在呢。", finish_reason="stop")],
+        classify_out=json.dumps({"verdict": "chitchat", "reason": ""}),
+    )
+    manager.session_store.save(
+        SessionRecord(session_id="sess_cc", workspace="", model="m", mode="interactive",
+                      messages=[], agent="deskmate"))
+
+    with client.websocket_connect("/ws/session/sess_cc?agent=deskmate") as ws:
+        assert ws.receive_json()["type"] == "ready"
+        ws.send_json({"type": "user_message", "text": "你吃饭了吗"})
+        evt, _ = _recv_until(ws, "turn_done")
+        assert evt["type"] == "turn_done"
+
+    # 主聊天正常落了 user 消息；discuss_state 未被动过（仍是 working、round 1）
+    msgs = manager.session_messages("sess_cc")
+    assert any(m.get("role") == "user" and "吃饭" in str(m.get("content")) for m in msgs)
+
+
+def test_chat_message_during_opening_goes_to_normal_turn(env, monkeypatch):
+    """opening 态（第一轮 draft 未出）：打字照常主聊天，不旁路。"""
+    from coworker.providers import AssistantTurn
+
+    iid = _seed_intent(env)
+    _patch_llm(monkeypatch, "好，我去做了。")
+    d.start_discussion(str(env), iid, "sess_op")
+    client, manager = _ws_client(
+        env, monkeypatch, turns=[AssistantTurn(text="马上好。", finish_reason="stop")],
+        classify_out=json.dumps({"verdict": "feedback", "reason": ""}),
+    )
+
+    with client.websocket_connect("/ws/session/sess_op?agent=deskmate") as ws:
+        assert ws.receive_json()["type"] == "ready"
+        ws.send_json({"type": "user_message", "text": "好了没"})
+        evt, _ = _recv_until(ws, "turn_done")
+        assert evt["type"] == "turn_done"
+
+    # opening 期间即使 classify 会判 feedback，也不该触发讨论迭代
+    intent = _store(env).get_intent(iid)
+    state = json.loads(intent["discuss_state"] or "{}")
+    assert state.get("phase") == "opening"
