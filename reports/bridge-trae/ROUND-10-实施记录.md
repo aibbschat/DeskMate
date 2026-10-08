@@ -73,7 +73,26 @@ ALL LIVE CHECKS PASSED
 
 ## 5. 全量回归（受控对照，证明零新增失败）
 
-> 见下（跑完回填）。
+**运行口径**（离线态 + 每测 90s 墙上时钟护栏，见 ROUND-11 记录 §5 的环境说明）：
+```
+HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 .venv/bin/python -m pytest -q --tb=line -rfE -p pytest_timeout_guard --ignore=tests/test_intent_generation.py
+```
+（该次运行的工作树 = **R10 态**：`a726785` 叠加「R11 tracked 改动已 stash、R11 新测试已 ignore」。）
+
+- **R10 态结果**：`44 failed, 3799 passed, 1 skipped`。
+- **与 R11 态（43 failed / 3822 passed）逐条比对**：失败集合**完全一致**，
+  唯一集合差是 `tests/test_health_producers.py::test_cron_missed`（时间窗口 flaky，R10 态失败 / R11 态通过）。
+  ⇒ 这 44 条在 R10 态即已存在，**无一条落在 R9/R10 改动面**（`reflection` / `teachings` /
+  `store.apply_reflection_verdict` / `persist` 孤儿清理）；分布为既有环境债：
+  `test_emotes`（表情包 v2 改名）、`test_forgetting_and_asof` / `test_interview_dismiss` /
+  `test_p1_temporal`（`sync_uuid` 夹具债）、`test_self_protection` / `test_permissions_risk` /
+  `test_tools_permissions`（权限决策）、`test_token_usage`、`test_seed_sampling`、`test_llm_circuit_breaker` 等。
+- R10 相关**定向 8 文件 137 passed**（§3），R9/R10 主链路全绿 → 判定 **R10 零新增失败**。
+
+> ⚠️ 环境说明：本仓全量套件含一个真实联网用例
+> `tests/test_proactive_ledger.py::test_relevance_tiers`（触发 fastembed 下载 BGE 模型），
+> 无网络时会把整轮永久挂死——故加 `HF_HUB_OFFLINE=1` 走离线（0.77s 通过）并挂临时超时护栏插件。
+> 该问题与 R9/R10 无关，属既有环境债。
 
 ## 6. 红线核对
 

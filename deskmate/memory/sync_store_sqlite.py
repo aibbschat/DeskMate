@@ -277,6 +277,10 @@ SYNC_TABLES: dict[str, dict] = {
         ),
         "conflict_col": None,
     },
+    # ---- R11（2026-10-08）：intents（意图层，让「目标」成一等公民）**故意不登记** ----
+    # ⚠️ 双写风险：Mac（24h 常驻）+ 云端（每小时 :02 窗口）两个 daemon 都会跑
+    # intent_generation，可能各端生成相似意图 → 撞 LWW。故本回合**先不进 SYNC_TABLES**，
+    # 待萧哥拍板「单写窗口」后再启用（届时补业务列 + 幂等去重，仿 teachings）。
 }
 
 # ---- 策略①护栏：跨端只同步明文事实、向量各端本地重算 ----

@@ -35,6 +35,7 @@ import shutil
 import sqlite3
 import sys
 import time
+import uuid
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Optional
@@ -338,6 +339,23 @@ class CognitiveStore:
                 );
                 CREATE INDEX IF NOT EXISTS idx_teachings_scope   ON teachings(scope);
                 CREATE INDEX IF NOT EXISTS idx_teachings_created ON teachings(created_at);
+
+                -- R11（2026-10-08）：意图层——让「目标」成为一等公民（江河设计 §四）。
+                -- 此前小桔只能提**注册好的动作**，不能提「她自己想干的事」（上发条）。
+                -- 意图 → 生成 proposed 提案（带 intent_id），裁决/教学复用 R10 链路。
+                -- 注：自生成意图的提案**一律停 PROPOSED 待人审**，绝不自动执行。
+                CREATE TABLE IF NOT EXISTS intents (
+                    id               TEXT PRIMARY KEY,
+                    ts               TEXT DEFAULT '',
+                    goal             TEXT DEFAULT '',     -- 我想做什么（第一人称）
+                    motivation       TEXT DEFAULT '',     -- 为什么，从哪条记忆长出来的
+                    horizon          TEXT DEFAULT 'short',-- 'short' | 'long'
+                    status           TEXT DEFAULT 'open', -- 'open' | 'active' | 'done' | 'dropped'
+                    origin           TEXT DEFAULT '',     -- 未满足的关怀 | 未接着的观察 | 长期兴趣 | 你的话
+                    proposed_task_id TEXT DEFAULT ''      -- 关联 task_log 的提案（生成后回填）
+                );
+                CREATE INDEX IF NOT EXISTS idx_intents_status ON intents(status);
+                CREATE INDEX IF NOT EXISTS idx_intents_ts     ON intents(ts);
 
                 CREATE TABLE IF NOT EXISTS item_sources (
                     item_id  TEXT NOT NULL,
@@ -1229,6 +1247,84 @@ class CognitiveStore:
             return True
         except Exception as e:  # noqa: BLE001 —— fail-open：落地失败不影响主链路
             logger.warning("apply_reflection_verdict 失败（忽略）: %s", e)
+            return False
+
+    # ------------------------------------------------------------------
+    # R11 意图层：让「目标」成一等公民（读/写全 fail-open）
+    # ------------------------------------------------------------------
+    def add_intent(self, goal: str, motivation: str = "", horizon: str = "short",
+                   origin: str = "", status: str = "open") -> str:
+        """新增一条意图，返回 id（fail-open：异常或空 goal → 返回 ``""``，绝不抛）。"""
+        g = (goal or "").strip()
+        if not g:
+            return ""
+        intent_id = uuid.uuid4().hex
+        try:
+            with self._connect() as conn:
+                conn.execute(
+                    "INSERT INTO intents "
+                    "(id, ts, goal, motivation, horizon, status, origin, proposed_task_id) "
+                    "VALUES(?,?,?,?,?,?,?,'')",
+                    (
+                        intent_id, _now_iso(), g, str(motivation or "").strip(),
+                        str(horizon or "short"), str(status or "open"),
+                        str(origin or "").strip(),
+                    ),
+                )
+            return intent_id
+        except Exception as e:  # noqa: BLE001 —— fail-open
+            logger.warning("add_intent 失败（忽略）: %s", e)
+            return ""
+
+    def get_open_intents(self, limit: int = 5) -> list[dict]:
+        """取 ``status='open'`` 的意图（供提案行为取用）。fail-open → ``[]``。"""
+        try:
+            lim = max(1, int(limit or 1))
+        except Exception:
+            lim = 5
+        try:
+            with self._connect() as conn:
+                rows = conn.execute(
+                    "SELECT id, ts, goal, motivation, horizon, status, origin, "
+                    "proposed_task_id FROM intents WHERE status='open' "
+                    "ORDER BY ts DESC LIMIT ?",
+                    (lim,),
+                ).fetchall()
+        except Exception as e:  # noqa: BLE001 —— fail-open
+            logger.warning("get_open_intents 失败（忽略）: %s", e)
+            return []
+        keys = ("id", "ts", "goal", "motivation", "horizon", "status",
+                "origin", "proposed_task_id")
+        return [dict(zip(keys, r)) for r in rows]
+
+    def link_intent_to_task(self, intent_id: str, task_id: str) -> bool:
+        """提案生成后回填 intent → task 关联。fail-open。"""
+        iid = (intent_id or "").strip()
+        if not iid:
+            return False
+        try:
+            with self._connect() as conn:
+                conn.execute(
+                    "UPDATE intents SET proposed_task_id=? WHERE id=?",
+                    (str(task_id or ""), iid),
+                )
+            return True
+        except Exception as e:  # noqa: BLE001 —— fail-open
+            logger.warning("link_intent_to_task 失败（忽略）: %s", e)
+            return False
+
+    def set_intent_status(self, intent_id: str, status: str) -> bool:
+        """置意图状态（``open`` / ``active`` / ``done`` / ``dropped``）。fail-open。"""
+        iid = (intent_id or "").strip()
+        st = (status or "").strip()
+        if not iid or not st:
+            return False
+        try:
+            with self._connect() as conn:
+                conn.execute("UPDATE intents SET status=? WHERE id=?", (st, iid))
+            return True
+        except Exception as e:  # noqa: BLE001 —— fail-open
+            logger.warning("set_intent_status 失败（忽略）: %s", e)
             return False
 
     def recall_items(

@@ -93,7 +93,7 @@ DEFAULTS: dict[str, Any] = {
     # 任务白名单：当前允许小桔自主执行的「动作类型」。风险等级是动作内禀的
     # （见 registry.py），这里只决定「开没开」。
     "whitelist": {
-        "actions": ["world_search", "observation_diary", "worldview_reflection", "reflection", "ai_circle_ingestion", "ai_circle_share", "ai_circle_column", "ai_circle_reply", "xiaosheng_ingestion"],
+        "actions": ["world_search", "observation_diary", "worldview_reflection", "reflection", "intent_generation", "ai_circle_ingestion", "ai_circle_share", "ai_circle_column", "ai_circle_reply", "xiaosheng_ingestion"],
         "topics": list(DEFAULT_TOPICS),
     },
     # world_search 行为参数
@@ -126,6 +126,15 @@ DEFAULTS: dict[str, Any] = {
         "cooldown_hours": 168,   # 两次反思最小间隔 7 天
         "max_recent": 20,        # 一次最多回看多少条 item_history 变化
         "min_changes": 3,        # 攒够几条未反思的变化才做一次裁决
+    },
+    # intent_generation 行为参数（意图层 R11：让「目标」成一等公民）
+    # 低频（7 天错峰）：从河床素材（未满足的关怀 / 未接着的观察 / 长期兴趣）
+    # 长出一批「她自己想干的事」，写成 intents（status=open）供提案取用。
+    # 自生成意图的提案**一律停 PROPOSED 待人审**，绝不自动执行（护栏）。
+    "intent_generation": {
+        "enabled": True,         # 可关（AGENCY_INTENT_GENERATION_ENABLED=0 亦可）
+        "cooldown_hours": 168,   # 两次生成最小间隔 7 天
+        "max_intents": 3,        # 一次最多长出几条意图（防刷屏）
     },
     # ai_circle_ingestion 行为参数（把 AI 圈素材提炼成理解写进世界观素材池）
     # 半自动：对话轮她逛 AI 圈时素材先攒进 ai_circle_observations.jsonl，本行为
@@ -199,6 +208,7 @@ class AgencySettings:
     observation_diary: dict[str, Any] = field(default_factory=lambda: dict(DEFAULTS["observation_diary"]))
     worldview_reflection: dict[str, Any] = field(default_factory=lambda: dict(DEFAULTS["worldview_reflection"]))
     reflection: dict[str, Any] = field(default_factory=lambda: dict(DEFAULTS["reflection"]))
+    intent_generation: dict[str, Any] = field(default_factory=lambda: dict(DEFAULTS["intent_generation"]))
     ai_circle_ingestion: dict[str, Any] = field(default_factory=lambda: dict(DEFAULTS["ai_circle_ingestion"]))
     xiaosheng_ingestion: dict[str, Any] = field(default_factory=lambda: dict(DEFAULTS["xiaosheng_ingestion"]))
     ai_circle_share: dict[str, Any] = field(default_factory=lambda: dict(DEFAULTS["ai_circle_share"]))
@@ -220,6 +230,7 @@ class AgencySettings:
             "observation_diary": dict(self.observation_diary),
             "worldview_reflection": dict(self.worldview_reflection),
             "reflection": dict(self.reflection),
+            "intent_generation": dict(self.intent_generation),
             "ai_circle_ingestion": dict(self.ai_circle_ingestion),
             "xiaosheng_ingestion": dict(self.xiaosheng_ingestion),
             "ai_circle_share": dict(self.ai_circle_share),
@@ -262,6 +273,13 @@ class AgencySettings:
         if isinstance(rf, dict):
             reflection.update(
                 {k: v for k, v in rf.items() if k in DEFAULTS["reflection"]}
+            )
+        # intent_generation 配置：内置为底，用户配置按 key 覆盖
+        ig = raw.get("intent_generation", {}) or {}
+        intent_generation = dict(DEFAULTS["intent_generation"])
+        if isinstance(ig, dict):
+            intent_generation.update(
+                {k: v for k, v in ig.items() if k in DEFAULTS["intent_generation"]}
             )
         # ai_circle_ingestion 配置：内置为底，用户配置按 key 覆盖
         aci = raw.get("ai_circle_ingestion", {}) or {}
@@ -337,6 +355,7 @@ class AgencySettings:
             observation_diary=observation_diary,
             worldview_reflection=worldview_reflection,
             reflection=reflection,
+            intent_generation=intent_generation,
             ai_circle_ingestion=ai_circle_ingestion,
             xiaosheng_ingestion=xiaosheng_ingestion,
             ai_circle_share=ai_circle_share,

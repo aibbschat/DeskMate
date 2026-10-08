@@ -59,6 +59,12 @@ REGISTRY: dict[str, ActionSpec] = {
         label="自我反思",
         description="回看最近的判据/看法变化，对旧看法做 maintain/revise/overturn 裁决并留下为什么（落本地认知库 item_history），让沉淀变成有记忆的沉淀；不碰用户文件、不发消息",
     ),
+    "intent_generation": ActionSpec(
+        action_type="intent_generation",
+        risk="low",
+        label="起心动念",
+        description="从既有的关怀/观察/兴趣素材里，用第一人称长出「她自己想干的事」（写本地 intents 表，status=open）；不碰用户文件、不发消息、不执行任何动作——意图只生成提案，一律停待人审",
+    ),
     "ai_circle_ingestion": ActionSpec(
         action_type="ai_circle_ingestion",
         risk="low",

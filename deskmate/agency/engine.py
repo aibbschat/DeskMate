@@ -220,6 +220,25 @@ class AgencyEngine:
                     count=res.get("verdicts", 0),
                 )
 
+            if action_type == "intent_generation":
+                # 意图层（R11）：从河床素材（关怀/观察/兴趣）里长出「她自己想干的事」，
+                # 写本地 intents（status=open）。本行为**只负责「想」不负责「做」**——
+                # 自生成意图的提案由 propose_from_intent 生成，且一律停 PROPOSED 待人审。
+                from .behaviors.intent_generation import run_intent_generation
+
+                res = run_intent_generation(str(self.base_dir), settings.intent_generation)
+                if not res.get("generated"):
+                    return None  # 冷却中 / 无素材 / 没 provider → 不刷屏
+                return self.log.add(
+                    action_type=action_type,
+                    risk="low",
+                    status=TaskStatus.DONE,
+                    topic="",
+                    summary=res.get("summary", ""),
+                    detail="",
+                    count=res.get("intents", 0),
+                )
+
             if action_type == "ai_circle_ingestion":
                 # 把攒下的 AI 圈素材（朋友互动/广场帖子/发帖反馈，带「外部·aibbs」标）
                 # 提炼成她自己的理解，写进世界观素材池——让「出去看/交朋友」回灌人格、推动成长。
@@ -477,6 +496,44 @@ class AgencyEngine:
             store.add_lesson(content, scope=scope, source="adjudication")
         except Exception as e:  # noqa: BLE001 —— fail-open：留教失败不影响主裁决
             logger.warning("裁决留教失败（忽略）: %s", e)
+
+    def propose_from_intent(self, intent: dict[str, Any]) -> Optional[Any]:
+        """把一条 open 意图变成**提案卡**（R11）：她打算怎么做 → ``PROPOSED`` 待人审。
+
+        **最高优先级护栏**：自生成意图的提案**一律保持 PROPOSED**，绝不自动执行——
+        动作类型用独立 slug ``"intent"``（**不在原白名单**、未注册 → 天然落人审）；
+        本方法只写提案卡，不碰 ``_run_low_risk`` 的自动执行逻辑。
+
+        生成后：``link_intent_to_task`` 回填关联，意图置 ``active``（离开 open 池）。
+        fail-open：任一步失败 → 返回 ``None``，不抛。
+        """
+        try:
+            data = intent or {}
+            iid = str(data.get("id") or "").strip()
+            goal = str(data.get("goal") or "").strip()
+            if not goal:
+                return None
+            how = str(data.get("motivation") or "").strip()
+            origin = str(data.get("origin") or "").strip()
+            rec = self.log.add(
+                action_type="intent",
+                risk="high",  # 自生成动作 → 一律高风险，必走人审
+                status=TaskStatus.PROPOSED,
+                topic=origin,
+                summary=f"她想做：{goal}",
+                detail=how,
+                count=0,
+                extra={"intent_id": iid, "how": how, "source": "intent", "origin": origin},
+            )
+            from deskmate.cognitive.store import CognitiveStore
+
+            store = CognitiveStore(db_path=os.path.join(str(self.base_dir), "deskmate.db"))
+            store.link_intent_to_task(iid, rec.id)
+            store.set_intent_status(iid, "active")
+            return rec
+        except Exception as e:  # noqa: BLE001 —— fail-open
+            logger.warning("propose_from_intent 失败（忽略）: %s", e)
+            return None
 
     def status(self) -> dict[str, Any]:
         """面板/状态用：开关、白名单、最近任务。"""
