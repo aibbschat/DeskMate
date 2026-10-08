@@ -154,7 +154,9 @@ if [ "$INSTALL" -eq 1 ]; then
     cp -R "$APP_OUT" "$HOME/Applications/"
   fi
   for DEST in "${TARGETS[@]}"; do
-    echo "    ✓ 已安装到 $DEST（内嵌前端哈希："
+    # ⚠️ $DEST 后紧跟全角字符（如「（」）会被 bash 并入变量名 → unbound variable。
+    # 必须写 ${DEST}（花括号显式定界）。
+    echo "    ✓ 已安装到 ${DEST}（内嵌前端哈希："
     strings "$DEST/Contents/MacOS/openworker-desktop" 2>/dev/null | grep -oE '(main|index)-[A-Za-z0-9_-]{8}\.js' | sort -u | sed 's/^/      /'
     echo "    ）"
   done

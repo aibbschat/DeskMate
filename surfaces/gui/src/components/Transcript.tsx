@@ -719,8 +719,10 @@ export function Transcript({
               </div>
             );
           case "intent_discuss": {
-            // R13 意图讨论态：opening=只显示文字；draft=带「定稿/再改/不要」三按钮。
-            // resolved 非空 = 已结束（定稿/取消/改中），按钮消失只留正文 + 状态徽标。
+            // R13 意图讨论态：与普通 assistant 气泡同构（无色块、无 emoji——2026-10-08
+            // 萧哥反馈「样式太突兀太粗糙，要跟现有样式融合」）。
+            // draft=带「定稿/再改/不要」三按钮；opening/final=纯文字。
+            // resolved 非空 = 已结束，按钮消失，状态走 approval-inline 小行（与 planreq 同款）。
             const resolved = item.resolved;
             const showButtons = item.phase === "draft" && !resolved && (onFinalizeIntent || onReviseIntent || onCancelIntent);
             return (
@@ -728,16 +730,13 @@ export function Transcript({
                 className="group bubble-assistant"
                 key={bi}
                 data-testid="intent-discuss-card"
-                style={{ background: "#f4f8ff", border: "1px solid #c8d9f5" }}
               >
                 <div className="who">
                   <XiaojuAvatar size={44} className="who-avatar" />
                   <span>
-                    💬 小桔的产出
-                    {item.round > 0 ? ` · 第 ${item.round} 版` : ""}
-                    {resolved === "finalized" ? " · 已定稿" : ""}
-                    {resolved === "cancelled" ? " · 已取消" : ""}
-                    {resolved === "revising" ? " · 改中" : ""}
+                    {item.phase === "draft"
+                      ? `小桔的产出${item.round > 0 ? ` · 第 ${item.round} 版` : ""}`
+                      : expert?.displayName ?? t("chat.assistant")}
                   </span>
                 </div>
                 <Markdown text={item.text} />
@@ -779,6 +778,25 @@ export function Transcript({
                     )}
                   </div>
                 )}
+                {resolved && (
+                  <div className="approval-inline">
+                    <span className={"status " + (resolved === "cancelled" ? "denied" : "ok")}>
+                      {resolved === "cancelled" ? "✕" : "✓"}
+                    </span>
+                    <span>
+                      {resolved === "finalized"
+                        ? "已定稿"
+                        : resolved === "cancelled"
+                          ? "已取消"
+                          : "按你的意见改中"}
+                    </span>
+                  </div>
+                )}
+                <BubbleMeta
+                  text={item.text}
+                  ts={item.ts}
+                  align="left"
+                />
               </div>
             );
           }
