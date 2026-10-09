@@ -25,6 +25,23 @@ const APP_VERSION = readAppVersion();
 // loads the vite instance Tauri itself spawns (a drifting port would make the window load a
 // stale/other server). `tauri.conf.json` devUrl must match this.
 export default defineConfig(({ command }) => {
+  // 2026-10-09 事故自检①：vite build 也会加载 .env.local / .env.production* 等文件——
+  // 曾有人在这些文件里写 VITE_COWORKER_HTTP=http://127.0.0.1:8765（本意只给 npm run dev），
+  // 结果该值被 define 成字面量烘进部署 bundle，httpBase 的浏览器同源分支整条变死代码，
+  // 云端所有 HTTP API 打到访客本机（全息屏/个人中心全空）。本地开发的 env 只许放
+  // .env.development.local（mode=development 才加载）。构建时发现即报错。
+  if (command === "build") {
+    for (const envFile of [".env", ".env.local", ".env.production", ".env.production.local"]) {
+      const p = path.resolve(__dirname, envFile);
+      if (fs.existsSync(p) && /VITE_COWORKER_HTTP\s*=/.test(fs.readFileSync(p, "utf8"))) {
+        throw new Error(
+          `[env-guard] ${envFile} 定义了 VITE_COWORKER_HTTP，vite build 会把它烘焙进 bundle ` +
+            `（部署后云端 API 全挂）。本地开发请改放 .env.development.local，` +
+            `或删除该行（桌面端走运行时注入，无需它）。`,
+        );
+      }
+    }
+  }
   let devToken = "";
   if (command === "serve") {
     const state =
@@ -41,7 +58,6 @@ export default defineConfig(({ command }) => {
   }
   return {
     base: "./",
-    plugins: [react()],
     // 双入口：桌面 index.html + 手机端 mobile.html。
     // 一次 `npm run build` 同时产出两端，dist/ 仍是一个目录 —— 守住 docs/DEPLOY-PARITY.md
     // 的铁律（只构建一次、本地与云端同一份字节），scripts/deploy_web.sh 一行都不用改。
@@ -69,5 +85,31 @@ export default defineConfig(({ command }) => {
     // Tauri CLI looks for these; harmless for the browser build.
     clearScreen: false,
     envPrefix: ["VITE_", "TAURI_"],
+    plugins: [
+      react(),
+      // 2026-10-09 事故自检②：产物级断言兜底。httpBase 的浏览器同源分支被 minifier 折叠后
+      // 会失去 `?"":` 三元特征（env-guard 漏网时第二道防线）。
+      {
+        name: "assert-httpbase-not-folded",
+        closeBundle() {
+          const dir = path.resolve(__dirname, "dist/assets");
+          if (!fs.existsSync(dir)) return;
+          for (const f of fs.readdirSync(dir)) {
+            if (!f.endsWith(".js")) continue;
+            const s = fs.readFileSync(path.join(dir, f), "utf8");
+            const i = s.indexOf("__COWORKER_HTTP__");
+            if (i < 0) continue;
+            const body = s.slice(i, i + 250);
+            if (!body.includes('?"":')) {
+              throw new Error(
+                `[assert-httpbase-not-folded] dist/assets/${f} 中 httpBase 的浏览器同源分支疑似被折叠` +
+                  `（附近 250 字符无 ?"": 三元特征）。最常见原因 = env 文件定义了 VITE_COWORKER_HTTP。`,
+              );
+            }
+            return; // 只检查第一个命中（httpBase 定义处）
+          }
+        },
+      },
+    ],
   };
 });

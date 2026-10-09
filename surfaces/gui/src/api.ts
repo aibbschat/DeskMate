@@ -18,6 +18,11 @@ const isBrowserPage = (): boolean =>
 // Empty string = same origin. The Tauri shell always injects __COWORKER_HTTP__, and browser
 // "npm run dev" sets VITE_COWORKER_HTTP, so this only affects hosted builds that want the
 // reverse proxy in front of them.
+// ⚠️ 2026-10-09 事故教训：曾因 surfaces/gui/.env.local 写了 VITE_COWORKER_HTTP=http://127.0.0.1:8765，
+// 而 vite build 也会加载 .env.local → 该值被 define 成字面量烘进 bundle → 浏览器同源分支整条
+// 变死代码 → 云端所有 HTTP API 打到访客本机（全息屏/个人中心全空）。约定：本地开发用的
+// VITE_COWORKER_HTTP 只许写在 .env.development.local（build 的 mode=production 不加载），
+// 且 vite.config.ts 的 closeBundle 自检会拦截误烘焙。
 export const httpBase = (): string =>
   (globalThis as any).__COWORKER_HTTP__ ||
   (import.meta as any).env?.VITE_COWORKER_HTTP ||

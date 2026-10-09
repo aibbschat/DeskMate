@@ -153,11 +153,32 @@ export function MailboxPage({
     setSending(false);
   };
 
+  // 拉这封信已有的往来（同一会话消息库）。历史 ts 是**秒**，统一乘 1000 成毫秒。
+  const loadThread = async (sessionId: string) => {
+    try {
+      const hist = (await getSessionMessages(sessionId)) as ConversationMessage[];
+      setThread(
+        hist
+          .filter((m) => m.role === "user" || m.role === "assistant")
+          .map((m) => ({
+            role: m.role === "user" ? "user" : "assistant",
+            text: typeof m.content === "string" ? m.content : JSON.stringify(m.content),
+            ts: typeof m.ts === "number" ? m.ts * 1000 : Date.now(),
+          })),
+      );
+    } catch {
+      /* 历史拉取失败不阻断看信 */
+    }
+  };
+
   // 点标题 = 摊开这封。从「未读」里点开即视为已读（设计单 §3.1「标已读/已展开」同一语义）。
   const openLetter = async (l: MailboxLetter) => {
     if (openId === l.id) return;
     closeReply();
     setOpenId(l.id);
+    // 已经有往来的信，**打开就把往来一起摊开**，不必非要先点「回信」。
+    // （萧哥 10-09 实测：回过信的信落进「已读」后再点开，回复内容不见了。）
+    if (l.mailbox_session_id) void loadThread(l.mailbox_session_id);
     if (!l.read) {
       await readMailboxLetter(l.id);
       setInbox((xs) => xs.map((x) => (x.id === l.id ? { ...x, read: true, read_at: x.read_at || now() } : x)));
@@ -177,27 +198,14 @@ export function MailboxPage({
     setReplying(true);
     setDraft("");
     setReplyErr(null);
-    setThread([]);
     setSending(false);
     const { ok, session_id } = await replyMailboxLetter(l.id);
     if (!ok || !session_id) {
       setReplyErr(t("deskmate.mailbox.replyFailed", { defaultValue: "回信会话创建失败" }));
       return;
     }
-    try {
-      const hist = (await getSessionMessages(session_id)) as ConversationMessage[];
-      setThread(
-        hist
-          .filter((m) => m.role === "user" || m.role === "assistant")
-          .map((m) => ({
-            role: m.role === "user" ? "user" : "assistant",
-            text: typeof m.content === "string" ? m.content : JSON.stringify(m.content),
-            ts: typeof m.ts === "number" ? m.ts * 1000 : Date.now(),
-          })),
-      );
-    } catch {
-      /* 历史拉取失败不阻断回信 */
-    }
+    // 打开信时若已拉过同一会话的往来，就不重复拉（免得已显示的纸闪一下）。
+    if (thread.length === 0) await loadThread(session_id);
     sessionRef.current = new Session(session_id, "", "deskmate", {
       onEvent: (ev) => {
         if (ev.type === "assistant_message") {

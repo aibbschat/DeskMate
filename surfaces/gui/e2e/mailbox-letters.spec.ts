@@ -97,6 +97,20 @@ test("「不用了」不是蒸发：它当着面移到归档，还带得上架�
   await expect(moved.locator(".dm-mb-row-chip")).toHaveText("不用了");
 });
 
+test("回过信的信落进「已读」后再点开，往来还在（萧哥 10-09 实测丢过）", async ({ page }) => {
+  await page.getByTestId("mb-cat-unread").click();
+  await page.getByTestId("mb-row").first().click();
+  await page.getByRole("button", { name: "回信" }).click();
+  await expect(page.locator(".dm-mb-read .dm-letter-msg")).toHaveCount(2);
+
+  // 换到「已读」栏，再点同一封：不点回信，往来就该跟着信一起摊开
+  await page.getByTestId("mb-cat-read").click();
+  await page.getByTestId("mb-row").first().click();
+  const leaves = page.locator(".dm-mb-read .dm-letter-msg");
+  await expect(leaves).toHaveCount(2);
+  await expect(leaves.first().locator(".dm-letter-msg-text")).toContainText("先只给我看第三处");
+});
+
 test("三栏各自能滚：右栏信纸超出屏幕也拉得动", async ({ page }) => {
   await page.getByTestId("mb-cat-unread").click();
   await page.getByTestId("mb-row").first().click();

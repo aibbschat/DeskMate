@@ -1906,10 +1906,7 @@ export function App() {
                     onPrefill={prefillComposer}
                   />
                 ) : agent === "deskmate" ? (
-                  <DeskHome
-                    onIntentExecuted={startIntentDiscussion}
-                    onOpenMailbox={() => setSurface("mailbox")}
-                  />
+                  <DeskHome onIntentExecuted={startIntentDiscussion} />
                 ) : (
                   <div className="hero">
                     <h1 className="greeting">

@@ -832,39 +832,7 @@ body {
    她云端/手机端主动盯到的事，在空会话首页以页面内卡片递出（非浮层硬弹）。
    质感基准 = .dm-digest-card 一套：细边框 + 低饱和 + hover 微浮起。 */
 /* 信箱 · 送达层门面（2026-10-09）
-   信件样式：纸纹信笺 + 抬头 + 日期落款，绝不弹聊天气泡（萧哥拍板）。 */
-.dm-mailbox-pointer {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin-top: 22px;
-  width: 100%;
-  max-width: 420px;
-  padding: 13px 16px;
-  border-radius: 13px;
-  border: 1px solid var(--line);
-  background: var(--panel);
-  color: var(--ink);
-  font-family: inherit;
-  font-size: 14px;
-  text-align: left;
-  cursor: pointer;
-  transition: border-color .12s ease, box-shadow .12s ease;
-}
-.dm-mailbox-pointer:hover { border-color: var(--line-strong); box-shadow: 0 6px 16px rgba(0,0,0,0.05); }
-.dm-mailbox-bell { font-size: 17px; line-height: 1; color: var(--accent); }
-.dm-mailbox-text { flex: 1; }
-.dm-mailbox-count {
-  min-width: 20px;
-  padding: 1px 7px;
-  border-radius: 999px;
-  background: var(--accent);
-  color: #fff;
-  font-size: 11px;
-  font-weight: 600;
-  text-align: center;
-}
-.dm-mailbox-arrow { color: var(--faint, #888); font-size: 17px; }
+   首页那条「去信箱」横幅已撤（萧哥 10-09：没必要）——入口只留侧栏 ✉ 那一行。 */
 
 /* 信箱页（第二轮 · 三栏收件箱，萧哥 10-09 拍板）
    左目录（未读/已读/归档，默认哪栏都不展开）→ 中标题列（首句截断）→ 右信纸（案 A 那套纸）。
