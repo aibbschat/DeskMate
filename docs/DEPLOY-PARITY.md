@@ -32,6 +32,30 @@
 
 token 属于运行时环境，不是构建参数。
 
+## env 文件规约（2026-10-09 事故补充）
+
+本地 dev 需要的构建期值（如 `VITE_COWORKER_HTTP=http://127.0.0.1:8765`）**只允许写在
+`.env.development.local`**（mode=development 才加载，`vite build` 不碰它）。
+
+🔴 **禁止创建 `.env.local` / `.env` / `.env.production*`**。Vite 的 `.local` 后缀语义是
+"本地私有、不入库"（gitignore），**不是"只在 dev 生效"**——它对**所有 mode（含 production
+build）都加载**。2026-10-09 事故：有人把 dev 值写进 `.env.local`，`vite build` 照样加载它，
+define 成字面量烘进 bundle，httpBase 的浏览器同源分支被 minifier 当死代码删除 → 云端所有
+HTTP API 打到访客本机 127.0.0.1:8765 → 全息屏/个人中心/信箱全空，且构建、部署全程无任何报错。
+
+Vite env 加载矩阵（build 时全加载 ≠ dev 时全加载，方向恰恰相反）：
+
+| 文件 | dev 模式 | build 模式 |
+|---|---|---|
+| `.env` | ✅ | ✅ |
+| `.env.local` | ✅ | ✅ ← 毒点 |
+| `.env.development` / `.env.development.local` | ✅ | ❌ 唯一安全位 |
+| `.env.production` / `.env.production.local` | ❌ | ✅ 禁用 |
+
+双保险（`vite.config.ts`）：env-guard 插件在 build 时发现上述禁用文件定义了
+`VITE_COWORKER_HTTP` 直接构建失败；closeBundle 断言产物 httpBase 必须保留 `?"":` 同源
+分支特征。两道都已实测能拦截复发，**不要删除**。
+
 ## 落地约束
 
 - 云端 /etc/openworker/env 里的 token 与本地配置必须一致，改一处就要改另一处。
