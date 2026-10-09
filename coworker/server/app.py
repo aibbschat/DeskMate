@@ -4467,38 +4467,68 @@ def create_app(manager: SessionManager) -> FastAPI:
         try:
             from pathlib import Path as _P
 
-            from deskmate.proactivity.ledger import list_letters, unread_letter_count
+            from deskmate.proactivity.ledger import (
+                archived_letters,
+                list_letters,
+                mailbox_counts,
+                unread_letter_count,
+            )
 
             desk_dir = _P(
                 os.environ.get("DESKMATE_DIR", os.path.expanduser("~/.deskmate"))
             )
-            only_unread = (status or "all").strip().lower() == "unread"
-            items = list_letters(base_dir=desk_dir, include_read=not only_unread)
+            want = (status or "all").strip().lower()
+            if want == "archived":
+                # 归档 = 他处置过的（不用了/稍后退避中/已接手）——必须看得见，
+                # 不然点一下信就蒸发了（萧哥 10-09 实测追问「去哪儿了」）。
+                items = archived_letters(base_dir=desk_dir)
+            else:
+                items = list_letters(
+                    base_dir=desk_dir, include_read=(want != "unread")
+                )
             # 标记每封信的轻回信往来（隐藏中 or 已提升进聊天都算）。list_sessions()
             # 返 dict 列表 → 取键。
+            #
+            # 2026-10-09：会话枚举单独隔离。它一抛（会话库暂时不可用/测试桩残缺），
+            # 旧写法会把**整个信箱**吞成 `items: []` —— 用户看到的是「信箱是空的」
+            # 而不是错误，把「往来标记缺失」伪装成「没信」，比报错更难查。信件本身
+            # 只依赖 ledger（SQLite），不该被会话库的故障连坐。
             mb_by_letter: dict[str, tuple[str, str]] = {}
-            for s in manager.list_sessions():
-                if s.get("origin") in (
-                    MAILBOX_SESSION_ORIGIN,
-                    MAILBOX_PROMOTED_ORIGIN,
-                ) and s.get("origin_label"):
-                    mb_by_letter[s["origin_label"]] = (
-                        s.get("session_id") or "",
-                        s.get("origin") or "",
-                    )
+            try:
+                for s in manager.list_sessions():
+                    if s.get("origin") in (
+                        MAILBOX_SESSION_ORIGIN,
+                        MAILBOX_PROMOTED_ORIGIN,
+                    ) and s.get("origin_label"):
+                        mb_by_letter[s["origin_label"]] = (
+                            s.get("session_id") or "",
+                            s.get("origin") or "",
+                        )
+            except Exception:
+                logging.warning(
+                    "mailbox list: 会话枚举失败，往来标记按「无」处理（不影响信件本身）",
+                    exc_info=True,
+                )
             for it in items:
                 pair = mb_by_letter.get(it["id"])
                 it["mailbox_session_id"] = pair[0] if pair else None
                 it["thread_promoted"] = bool(pair) and pair[1] == MAILBOX_PROMOTED_ORIGIN
                 it["read"] = bool(it.get("read_at"))
+            try:
+                counts = mailbox_counts(base_dir=desk_dir)
+            except Exception:
+                logging.warning("mailbox list: 分类计数失败", exc_info=True)
+                counts = {"unread": 0, "read": 0, "archived": 0}
             return {
                 "ok": True,
                 "unread_count": unread_letter_count(base_dir=desk_dir),
+                # 左栏三档的计数（未读/已读/归档），与 items 同一准入口径。
+                "counts": counts,
                 "items": items,
             }
         except Exception:
             logging.exception("deskmate mailbox list failed")
-            return {"ok": False, "unread_count": 0, "items": []}
+            return {"ok": False, "unread_count": 0, "counts": {"unread": 0, "read": 0, "archived": 0}, "items": []}
 
     @app.post("/v1/deskmate/mailbox/{letter_id}/read")
     async def read_deskmate_mailbox_letter(letter_id: str) -> dict[str, Any]:
