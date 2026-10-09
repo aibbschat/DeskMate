@@ -4482,6 +4482,18 @@ def create_app(manager: SessionManager) -> FastAPI:
                 # 归档 = 他处置过的（不用了/稍后退避中/已接手）——必须看得见，
                 # 不然点一下信就蒸发了（萧哥 10-09 实测追问「去哪儿了」）。
                 items = archived_letters(base_dir=desk_dir)
+            elif want == "read":
+                # 显式的「已读」栏（2026-10-09 补）：此前只有 archived 有独立分支，
+                # `status=read` 落到 else 与 all 同路 → 返回**全部** 55 封，而
+                # counts.read 只有 2，数字自相矛盾（契约说有 read，实则=all）。
+                # 前端当前只用 all+archived（左栏已读是本地分流），故这是埋在
+                # API 里的陷阱而非线上故障；但按契约补齐，别让下个调用方踩。
+                #
+                # 判据用 `read_at`（不是 `read`：后者由本端点在下面统一补，
+                # list_letters 本身不返该键，用它过滤会恒得 0 条）。
+                items = [
+                    it for it in list_letters(base_dir=desk_dir) if it.get("read_at")
+                ]
             else:
                 items = list_letters(
                     base_dir=desk_dir, include_read=(want != "unread")
