@@ -6,7 +6,14 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { letterLabel, letterTitle, shortHandle } from "./MailboxPage";
+import {
+  letterGroup,
+  letterLabel,
+  letterTitle,
+  monthKey,
+  monthLabel,
+  shortHandle,
+} from "./MailboxPage";
 import type { MailboxLetter } from "../../api";
 
 function letter(over: Partial<MailboxLetter>): MailboxLetter {
@@ -71,5 +78,31 @@ describe("letterTitle", () => {
 
   it("空信也不崩", () => {
     expect(letterTitle(letter({ content: "   " }))).toBe("（这封没写字）");
+  });
+});
+
+describe("letterGroup", () => {
+  it("按「她为什么写」归组，供已读/归档筛选", () => {
+    expect(letterGroup(letter({ kind: "emotional_care" }))).toBe("关怀");
+    expect(letterGroup(letter({ kind: "plot_contradiction" }))).toBe("书稿");
+    expect(letterGroup(letter({ kind: "idea_capture" }))).toBe("灵感");
+    expect(letterGroup(letter({ kind: "information_support" }))).toBe("资料");
+  });
+
+  it("认不出的种类进「别的」，不露出工程键名", () => {
+    expect(letterGroup(letter({ kind: "some_future_kind" }))).toBe("别的");
+  });
+});
+
+describe("monthKey / monthLabel", () => {
+  it("取 created_at 的年月当分桶键", () => {
+    expect(monthKey("2026-10-09T10:34:13")).toBe("2026-10");
+    expect(monthKey("")).toBe("");
+  });
+
+  it("当月标出来，别的只写年月", () => {
+    expect(monthLabel("2026-10", "2026-10")).toContain("本月");
+    expect(monthLabel("2026-09", "2026-10")).toBe("2026年9月");
+    expect(monthLabel("", "2026-10")).toBe("更早");
   });
 });

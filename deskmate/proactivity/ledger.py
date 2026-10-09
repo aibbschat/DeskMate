@@ -696,6 +696,10 @@ _MAILBOX_DENY_SUFFIXES = (
 )
 # 已读超期未处理 → 归档为「已搁置」（设计单 §7 TTL 衰减，不删、可展开、不挂红点）。
 SHELF_DAYS = 7
+# 信箱一切**给她的**计数按滚动窗口算（方案 B，萧哥 10-09 拍板「不删」后的替代）：
+# 累计数只增不减，一年后「归档 6000」既看不懂也教错人——她该学的是他现在还在看。
+# 0 = 不限窗口（退回累计口径）。
+MAILBOX_WINDOW_DAYS = int(os.environ.get("DESKMATE_MAILBOX_WINDOW_DAYS", "30"))
 
 
 def _deny_mailbox_kinds() -> frozenset:
@@ -851,20 +855,23 @@ def render_mailbox_self_context(base_dir: Optional[Path] = None) -> str:
     他能点哪些按钮。她知道自己有日记、有花园，是因为那些物件一直对她有名有姓；
     信箱也得这样，否则「已读回流」只是一条她读不懂的旁白。
 
-    一次给全：信箱在哪、他能做什么、现在几封、今天读了几个、催与不催的规矩。
+    数字只给**滚动窗口内**的（方案 B）：库里堆了多少封是界面的事，不是她的自我认知——
+    喂存量给她，一年后就变成「归档 6000」这种既看不懂又教错人的噪音。
     从没递过任何东西 → 返回 ""（不给她凭空造一个她没有的物件）。
     """
     try:
-        counts = mailbox_counts(base_dir)
+        ev = mailbox_evidence(base_dir)
         seen = int(mailbox_feedback_stats(base_dir).get("seen_today") or 0)
+        ever = mailbox_counts(base_dir)
     except Exception:  # noqa: BLE001
         return ""
-    total = counts["unread"] + counts["read"] + counts["archived"]
-    if total <= 0:
+    if ever["unread"] + ever["read"] + ever["archived"] <= 0:
         return ""
-    state = f"现在：未读 {counts['unread']} · 已读 {counts['read']} · 归档 {counts['archived']}。"
+    days = int(ev.get("window_days") or 0)
+    span = f"近 {days} 天" if days > 0 else "到现在"
+    state = f"{span}他读掉 {ev['read']} 封、动手处理 {ev['handled']} 封。"
     if seen > 0:
-        state += f"今天他读掉 {seen} 封。"
+        state += f"今天读了 {seen} 封。"
     return (
         "<mailbox>\n"
         "你有一个**信箱**：你主动递出去的话都收在那儿，不是在聊天里说过就没了。\n"
@@ -875,28 +882,41 @@ def render_mailbox_self_context(base_dir: Optional[Path] = None) -> str:
     )
 
 
-def mailbox_evidence(base_dir: Optional[Path] = None) -> dict:
-    """信箱上他真实做过什么：读过几封、动手处理过几封（只算入信箱的信）。"""
+def mailbox_evidence(base_dir: Optional[Path] = None, *, window_days: int = MAILBOX_WINDOW_DAYS) -> dict:
+    """信箱上他真实做过什么：读过几封、动手处理过几封（只算入信箱的信）。
+
+    **按滚动窗口算，不按累计**（萧哥 10-09 拍板「不删，按你的方向走」→ 方案 B）：
+    累计只增不减，读满 3 封的门槛会永远满足，那条教训就退化成「他历史上看过一次」
+    的死结论；她该学的是**他现在还在看**。``window_days=0`` 表示不限窗口（累计）。
+    """
     base = _resolve_base(base_dir)
     db = base / "deskmate.db"
+    cutoff = ""
+    if window_days and window_days > 0:
+        cutoff = time.strftime(
+            "%Y-%m-%dT%H:%M:%S", time.localtime(time.time() - window_days * 86400)
+        )
     read = handled = 0
     try:
         with sqlite3.connect(str(db), check_same_thread=False) as c:
             _ensure_table(c)
             rows = c.execute(
-                f"SELECT kind, origin, read_at, status, content FROM {LEDGER_TABLE}"
+                f"SELECT kind, origin, read_at, status, content, acknowledged_at"
+                f" FROM {LEDGER_TABLE}"
             ).fetchall()
-        for kind, origin, read_at, status, content in rows:
+        for kind, origin, read_at, status, content, ack_at in rows:
             row = {"kind": kind or "", "origin": origin or "", "content": content or ""}
             if not is_mailbox_letter(row) or not row["content"].strip():
                 continue
-            if read_at:
+            if read_at and (not cutoff or read_at >= cutoff):
                 read += 1
-            if status in ("actioned", "in_progress"):
+            if status in ("actioned", "in_progress") and (
+                not cutoff or (ack_at or "") >= cutoff
+            ):
                 handled += 1
     except Exception:  # noqa: BLE001
         pass
-    return {"read": read, "handled": handled}
+    return {"read": read, "handled": handled, "window_days": window_days}
 
 
 # 沉淀给教学层（P3 teachings）的两条规则——萧哥 10-09 判：每轮提示只是一句旁白，
@@ -947,8 +967,13 @@ def record_mailbox_teaching(base_dir: Optional[Path] = None) -> bool:
         if ev["read"] < _MAILBOX_TEACH_MIN_READ and ev["handled"] <= 0:
             return False
         content = _MAILBOX_LESSON_HANDLED if ev["handled"] > 0 else _MAILBOX_LESSON_READ
-        if _current_mailbox_lesson(base) == content:
+        current = _current_mailbox_lesson(base)
+        if current == content:
             return False  # 已经沉淀过这条，别为同一句话重建认知层
+        # **只升级不降级**：窗口是滚动的，他这个月没动手不等于从没动过手——
+        # 把「会读也会处理」退回成「会读」，等于教她「主动没用」，正好养反。
+        if current == _MAILBOX_LESSON_HANDLED and content == _MAILBOX_LESSON_READ:
+            return False
         from deskmate.cognitive.store import CognitiveStore
 
         return CognitiveStore(db_path=base / "deskmate.db").upsert_lesson_by_source(

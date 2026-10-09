@@ -111,6 +111,20 @@ test("回过信的信落进「已读」后再点开，往来还在（萧哥 10-0
   await expect(leaves.first().locator(".dm-letter-msg-text")).toContainText("先只给我看第三处");
 });
 
+test("已读/归档可按「她为什么写」筛，未读不给筛（一筛就漏信）", async ({ page }) => {
+  await page.getByTestId("mb-cat-unread").click();
+  await expect(page.getByTestId("mb-filters")).toHaveCount(0);
+
+  await page.getByTestId("mb-cat-archived").click();
+  await expect(page.getByTestId("mb-filters")).toBeVisible();
+  // fixture 归档那封是灵感 → 选「关怀」应当空掉，选「灵感」应当留着
+  await page.getByTestId("mb-filter-关怀").click();
+  await expect(page.getByTestId("mb-row")).toHaveCount(0);
+  await expect(page.locator(".dm-mb-list")).toContainText("这一组里没有信");
+  await page.getByTestId("mb-filter-灵感").click();
+  await expect(page.getByTestId("mb-row")).toHaveCount(1);
+});
+
 test("三栏各自能滚：右栏信纸超出屏幕也拉得动", async ({ page }) => {
   await page.getByTestId("mb-cat-unread").click();
   await page.getByTestId("mb-row").first().click();

@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import time
 from dataclasses import dataclass, field
 
@@ -31,13 +32,27 @@ from .ledger import register_producer
 from .user_active import ActivityState, UserActivity, detect_user_activity
 
 
+def _finding_anchor(judgment) -> str | None:
+    """把 judge 给的 finding_key 归一成台账锚点。
+
+    为什么要在这一层归一而不是直接用模型原文：模型两次输出同一处问题，写法可能差
+    一个空格或大小写（`Ch2-Ch12` vs `ch2 - ch12`），不归一就会各生成一行——正是要治的病。
+    留空/全是标点 → 返回 None，交给 record_proactive 用内容指纹兜底（旧行为，绝不拦产出）。
+    """
+    raw = str(getattr(judgment, "finding_key", "") or "")
+    key = re.sub(r"[\s\-_·、,，.。:：/]+", "-", raw.strip().lower()).strip("-")
+    return key[:48] or None
+
+
 @register_producer("cloud_audit")
 def _cloud_audit_producer(judgment) -> list:
     """cloud_audit 生产者（§四 注册式，修⑧）：一条 judge 结论 → 一条台账业务字段。
 
     sync_uuid/status/门槛/截断等由管道统一补（§九不变量：生产者不碰同步、浮层、递送）。
-    不传 anchor → content-hash 兜底，每条实际发现独立成行、独立 #id（同内容跨端/跨
-    时间自动合并，保 48 分裂防护）；章节/人物语义锚点待 JudgmentResult 加 finding_key。
+    锚点（2026-10-09 方案 D）：judge 现在会随结论产出 ``finding_key``（这条发现落在哪个
+    章节/人物/伏笔上），本 producer 归一后当 anchor 传下去 → **同一处问题再发现就合并回
+    原行**（更新依据与置信度，created_at 不刷新），而不是换个措辞就多一封。模型没给 key
+    时 anchor 为空，退回 content-hash 兜底（同内容才合并），行为不比以前差。
 
     防御性拒收（2026-10-07，与 §四 kind 值域 / §5.1「判定有效才写」对齐）：
     - judge 明确 should_act=false（云端无桌面、未发现异常）→ 不产台账项，否则
@@ -62,6 +77,9 @@ def _cloud_audit_producer(judgment) -> list:
             "content": judgment.suggestion_content,
             "evidence": judgment.reasoning[:500] if judgment.reasoning else "",
             "confidence": judgment.confidence,
+            # 语义锚点（方案 D）：同一处问题下次再发现 → 合并回原行（更新依据/置信度），
+            # 不再换个措辞就多一封。模型没给 key 时留空，退回内容指纹（旧行为）。
+            "anchor": _finding_anchor(judgment),
         }
     ]
 

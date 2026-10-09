@@ -76,6 +76,39 @@ export function letterTitle(l: MailboxLetter): string {
   return first.length > 42 ? `${first.slice(0, 42)}…` : first;
 }
 
+/** 归档/已读攒多了要能筛：按「她为什么写」归成几组（方案 A）。
+ *  落不到分组的进「别的」，绝不新增一个看不懂的工程分类。 */
+const KIND_GROUP: Record<string, string> = {
+  emotional_care: "关怀",
+  care: "关怀",
+  interview: "关怀",
+  observation: "关怀",
+  plot_contradiction: "书稿",
+  plot_repetition: "书稿",
+  writing_assistance: "书稿",
+  writing_task_assistance: "书稿",
+  idea_capture: "灵感",
+  information_support: "资料",
+  valuable_information_provision: "资料",
+  task_anomaly: "家里的事",
+};
+export const MAILBOX_GROUPS = ["关怀", "书稿", "灵感", "资料", "家里的事", "别的"];
+
+export function letterGroup(l: MailboxLetter): string {
+  return KIND_GROUP[l.kind] ?? "别的";
+}
+
+/** 归档/已读按月份分桶的键与标题（created_at 前 7 位 = YYYY-MM）。 */
+export function monthKey(iso: string): string {
+  return (iso || "").slice(0, 7);
+}
+export function monthLabel(key: string, nowKey: string): string {
+  if (!key) return "更早";
+  const [y, m] = key.split("-");
+  if (key === nowKey) return `${y}年${Number(m)}月 · 本月`;
+  return `${y}年${Number(m)}月`;
+}
+
 interface ThreadMsg {
   role: "user" | "assistant";
   text: string;
@@ -100,6 +133,8 @@ export function MailboxPage({
   const [sending, setSending] = useState(false);
   const [replyErr, setReplyErr] = useState<string | null>(null);
   const [replying, setReplying] = useState(false); // 是否已摊开稿纸
+  const [group, setGroup] = useState<string | null>(null); // 「她为什么写」筛选
+  const [openMonths, setOpenMonths] = useState<Set<string>>(new Set()); // 月份桶展开态
   const sessionRef = useRef<Session | null>(null);
 
   const load = useCallback(() => {
@@ -125,12 +160,55 @@ export function MailboxPage({
     };
   }, [load]);
 
-  const rows = useMemo<MailboxLetter[]>(() => {
+  const catRows = useMemo<MailboxLetter[]>(() => {
     if (cat === "archived") return archived;
     if (cat === "unread") return inbox.filter((l) => !l.read);
     if (cat === "read") return inbox.filter((l) => l.read);
     return [];
   }, [cat, inbox, archived]);
+
+  const rows = useMemo<MailboxLetter[]>(() => {
+    // 收件箱（未读）不筛——一筛就漏信。
+    if (cat === "unread" || !group) return catRows;
+    return catRows.filter((l) => letterGroup(l) === group);
+  }, [cat, catRows, group]);
+
+  // 已读 / 归档会一直攒（实测净增十几封/天）→ 按月分桶，默认只展开最近一个月（方案 A）。
+  const nowMonth = monthKey(new Date().toISOString().slice(0, 10) + "T00:00:00");
+  const buckets = useMemo<{ key: string; rows: MailboxLetter[] }[]>(() => {
+    if (cat === "unread") return [];
+    const by = new Map<string, MailboxLetter[]>();
+    for (const l of rows) {
+      const k = monthKey(l.created_at) || "更早";
+      by.set(k, [...(by.get(k) ?? []), l]);
+    }
+    return [...by.entries()]
+      .map(([key, list]) => ({ key, rows: list }))
+      .sort((a, b) => (a.key < b.key ? 1 : -1));
+  }, [cat, rows]);
+
+  // 进栏时默认只摊开**最近一个月**（方案 A）：列表看得清，也不用先点一下才有东西。
+  useEffect(() => {
+    if (cat === "unread" || !buckets.length) return;
+    if (openMonths.size === 0) setOpenMonths(new Set([buckets[0].key]));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cat, buckets.length]);
+
+  // 某封信所属的月份桶（点开它时要把那一桶展开，否则会出现「在收信却看不见列表」）。
+  useEffect(() => {
+    if (!letter || cat === "unread") return;
+    const k = monthKey(letter.created_at);
+    if (k && !openMonths.has(k)) setOpenMonths((s) => new Set(s).add(k));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [openId, cat]);
+
+  const toggleMonth = (k: string) =>
+    setOpenMonths((s) => {
+      const next = new Set(s);
+      if (next.has(k)) next.delete(k);
+      else next.add(k);
+      return next;
+    });
 
   const letter = useMemo(
     () => [...inbox, ...archived].find((l) => l.id === openId) ?? null,
@@ -252,6 +330,28 @@ export function MailboxPage({
     announceMailboxChanged();
   };
 
+  const renderRow = (l: MailboxLetter) => (
+    <button
+      key={l.id}
+      type="button"
+      data-testid="mb-row"
+      className={"dm-mb-row" + (l.id === openId ? " sel" : "")}
+      onClick={() => openLetter(l)}
+    >
+      <span className={"dm-mb-dot" + (l.read ? " read" : "")} aria-hidden />
+      <span className="dm-mb-row-bd">
+        <span className="dm-mb-row-from">
+          小桔 · {letterLabel(l)}
+          <time>{fmtShort(l.created_at)}</time>
+        </span>
+        <span className="dm-mb-row-t serif">{letterTitle(l)}</span>
+        {l.shelf_reason ? (
+          <span className="dm-mb-row-chip">{SHELF_LABEL[l.shelf_reason] ?? l.shelf_reason}</span>
+        ) : null}
+      </span>
+    </button>
+  );
+
   return (
     <div className={"dm-mailbox" + (letter ? " mb-open" : "")}>
       <nav className="dm-mb-rail">
@@ -268,7 +368,11 @@ export function MailboxPage({
             type="button"
             data-testid={`mb-cat-${c.key}`}
             className={"dm-mb-cat" + (cat === c.key ? " on" : "")}
-            onClick={() => setCat(cat === c.key ? null : c.key)}
+            onClick={() => {
+              setGroup(null); // 筛选不跨栏残留
+              if (cat !== c.key) setOpenMonths(new Set());
+              setCat(cat === c.key ? null : c.key);
+            }}
           >
             <span className="dm-mb-cat-caret" aria-hidden>
               {cat === c.key ? "▾" : "▸"}
@@ -285,34 +389,67 @@ export function MailboxPage({
             {t("deskmate.mailbox.pickCat", { defaultValue: "左边挑一栏。" })}
             <span>{t("deskmate.mailbox.pickCatSub", { defaultValue: "默认什么都不展开——打开信箱不再是一桌子纸。" })}</span>
           </p>
-        ) : rows.length === 0 ? (
+        ) : catRows.length === 0 ? (
           <p className="dm-mb-blank">{t("deskmate.mailbox.emptyCat", { defaultValue: "这一栏是空的。" })}</p>
         ) : (
           <>
             <div className="dm-mb-list-hd">
               {CATS.find((c) => c.key === cat)?.label} · {rows.length}
+              {rows.length !== catRows.length ? ` / ${catRows.length}` : ""}
             </div>
-            {rows.map((l) => (
-              <button
-                key={l.id}
-                type="button"
-                data-testid="mb-row"
-                className={"dm-mb-row" + (l.id === openId ? " sel" : "")}
-                onClick={() => openLetter(l)}
-              >
-                <span className={"dm-mb-dot" + (l.read ? " read" : "")} aria-hidden />
-                <span className="dm-mb-row-bd">
-                  <span className="dm-mb-row-from">
-                    小桔 · {letterLabel(l)}
-                    <time>{fmtShort(l.created_at)}</time>
-                  </span>
-                  <span className="dm-mb-row-t serif">{letterTitle(l)}</span>
-                  {l.shelf_reason ? (
-                    <span className="dm-mb-row-chip">{SHELF_LABEL[l.shelf_reason] ?? l.shelf_reason}</span>
-                  ) : null}
-                </span>
-              </button>
-            ))}
+
+            {/* 已读/归档攒多了才需要筛；未读不筛——一筛就漏信 */}
+            {cat !== "unread" && (
+              <div className="dm-mb-filters" data-testid="mb-filters">
+                <button
+                  type="button"
+                  className={"dm-mb-chip" + (group === null ? " on" : "")}
+                  onClick={() => setGroup(null)}
+                >
+                  {t("deskmate.mailbox.filterAll", { defaultValue: "全部" })}
+                </button>
+                {MAILBOX_GROUPS.map((g) => (
+                  <button
+                    key={g}
+                    type="button"
+                    data-testid={`mb-filter-${g}`}
+                    className={"dm-mb-chip" + (group === g ? " on" : "")}
+                    onClick={() => setGroup(group === g ? null : g)}
+                  >
+                    {g}
+                  </button>
+                ))}
+              </div>
+            )}
+
+            {rows.length === 0 ? (
+              <p className="dm-mb-blank">
+                {t("deskmate.mailbox.emptyFilter", { defaultValue: "这一组里没有信。" })}
+              </p>
+            ) : cat === "unread" ? (
+              rows.map(renderRow)
+            ) : (
+              buckets.map((b) => {
+                const open = openMonths.has(b.key);
+                return (
+                  <div key={b.key || "更早"} className="dm-mb-month">
+                    <button
+                      type="button"
+                      className="dm-mb-month-hd"
+                      data-testid={`mb-month-${b.key}`}
+                      onClick={() => toggleMonth(b.key)}
+                    >
+                      <span className="dm-mb-cat-caret" aria-hidden>
+                        {open ? "▾" : "▸"}
+                      </span>
+                      {monthLabel(b.key, nowMonth)}
+                      <span className="dm-mb-cat-n">{b.rows.length}</span>
+                    </button>
+                    {open && b.rows.map(renderRow)}
+                  </div>
+                );
+              })
+            )}
           </>
         )}
       </section>

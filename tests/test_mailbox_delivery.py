@@ -28,6 +28,9 @@ from deskmate.proactivity.ledger import (
     acknowledge_ledger,
     archived_letters,
     list_letters,
+    mailbox_counts,
+    mailbox_evidence,
+    record_mailbox_teaching,
     lookup_items,
     mark_letter_read,
     mailbox_feedback_stats,
@@ -209,13 +212,44 @@ def test_she_is_told_the_mailbox_exists(desk):
     ctx = render_mailbox_self_context(desk)
     assert "<mailbox>" in ctx
     assert "信箱" in ctx and "稍后" in ctx and "归档" in ctx
-    assert "未读 1" in ctx
-    # 他读过之后，同一块里补一句计数（不另开第二段旁白）
-    record_letter_seen(base_dir=desk, rid=rid)
-    assert "今天他读掉 1 封" in render_mailbox_self_context(desk)
+    assert "读掉 0 封" in ctx  # 还没人读过
+    # 他读过之后，报的是**窗口内**的数（方案 B：不喂存量）。
+    # 走 mark_letter_read 真路径：它同时落 read_at（窗口证据）与 seen（今天读了几个）。
+    mark_letter_read(base_dir=desk, rid=rid)
+    ctx2 = render_mailbox_self_context(desk)
+    assert "今天读了 1 封" in ctx2 and "读掉 1 封" in ctx2
     # 已读≠处理：seen 落盘 + 统计口径
     stats = mailbox_feedback_stats(desk)
     assert stats["seen_today"] == 1 and stats["replied_today"] == 0
+
+
+def test_counts_are_rolling_not_cumulative(desk):
+    """方案 B：给她的数字按滚动窗口算。库里堆多少是界面的事，不喂给她。"""
+    a = add(desk, "emotional_care", "最近的一封")
+    b = add(desk, "emotional_care", "两个月前的一封")
+    mark_letter_read(base_dir=desk, rid=a)
+    _patch_ledger(desk, b, read_at="2020-01-01T00:00:00")
+    assert mailbox_evidence(desk) == {"read": 1, "handled": 0, "window_days": 30}
+    # 界面口径不受窗口影响（列表不封顶，两封都还在已读栏里）
+    assert mailbox_counts(desk)["read"] == 2
+    # 不限窗口时才等于累计
+    assert mailbox_evidence(desk, window_days=0)["read"] == 2
+
+
+def test_lesson_never_downgrades(desk):
+    """窗口是滚动的：这个月没动手不等于从没动过手——不许把「会读也会处理」退回「会读」。"""
+    ids = [add(desk, "emotional_care", f"信{i}") for i in range(3)]
+    for rid in ids:
+        mark_letter_read(base_dir=desk, rid=rid)
+    acknowledge_ledger(base_dir=desk, rid=ids[0], new_status="actioned")
+    assert "动手处理" in _mailbox_lessons(desk)[0][0]
+    # 把处理与阅读的痕迹都推到窗口之外（两个月前）
+    old = "2020-01-01T00:00:00"
+    for rid in ids:
+        _patch_ledger(desk, rid, read_at=old, acknowledged_at=old)
+    assert mailbox_evidence(desk)["handled"] == 0  # 窗口内确实没证据了
+    record_mailbox_teaching(base_dir=desk)
+    assert "动手处理" in _mailbox_lessons(desk)[0][0]  # 但教训不降级
 
 
 def test_lookup_reaches_archived_letters(desk):

@@ -918,6 +918,26 @@ html[data-theme="dark"] .dm-mailbox {
   border-radius: 4px; padding: 0 4px; align-self: flex-start; margin-top: 2px;
 }
 
+/* 已读/归档的「她为什么写」筛选 + 按月分桶（方案 A：攒多了才需要，未读不筛） */
+.dm-mb-filters {
+  display: flex; flex-wrap: wrap; gap: 5px; padding: 0 12px 8px;
+  border-bottom: 1px solid var(--line);
+}
+.dm-mb-chip {
+  font-family: inherit; font-size: 11px; line-height: 18px; padding: 0 8px;
+  border: 1px solid var(--line-strong); border-radius: 999px;
+  background: transparent; color: var(--muted); cursor: pointer;
+}
+.dm-mb-chip:hover { color: var(--ink); border-color: var(--muted); }
+.dm-mb-chip.on { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); font-weight: 600; }
+.dm-mb-month-hd {
+  display: flex; align-items: center; gap: 7px; width: 100%; padding: 7px 12px;
+  border: 0; border-top: 1px solid var(--line); background: var(--paper);
+  font-family: inherit; font-size: 11.5px; color: var(--muted); text-align: left; cursor: pointer;
+}
+.dm-mb-month-hd:hover { color: var(--ink); }
+.dm-mb-month .dm-mb-row:first-of-type { border-top: 0; }
+
 /* 右：信纸阅读区 */
 .dm-mb-read { overflow-y: auto; overscroll-behavior: contain; padding: 16px 18px 44px; min-width: 0; }
 .dm-mb-read .dm-letter-msg, .dm-mb-read .dm-letter-compose { margin-top: 12px; }

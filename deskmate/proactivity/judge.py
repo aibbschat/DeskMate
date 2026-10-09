@@ -16,6 +16,11 @@ class JudgmentResult:
     suggestion_type: str       # 建议类型
     suggestion_content: str    # 建议内容
     reasoning: str             # 推理过程
+    # 这条发现**落在哪个对象上**（如 `ch2-ch12`、`人物:姑射`、`ch7:伏笔-玉佩`）。
+    # 台账的确定性 id 用它当锚点：同一处再发现一次就合并回原行（更新依据/置信度），
+    # 而不是换个措辞就新插一封——这是治「plot_contradiction 两天攒出 34 封」的根。
+    # 留空则退回内容指纹（同内容才合并），即 2026-10-09 之前的行为。
+    finding_key: str = ""
 
 
 # 推理提示词
@@ -56,7 +61,8 @@ _JUDGE_SYSTEM_PROMPT = """\
   "confidence": 0.0-1.0,
   "suggestion_type": "类型描述",
   "suggestion_content": "具体的建议内容",
-  "reasoning": "推理过程"
+  "reasoning": "推理过程",
+  "finding_key": "这条发现落在哪个对象上"
 }
 ```
 
@@ -64,6 +70,9 @@ _JUDGE_SYSTEM_PROMPT = """\
 - 只有在有把握时才 should_act=true（高置信度）
 - 如果信息不足，confidence 应该低于 0.5
 - suggestion_type 用英文 snake_case（如 plot_contradiction, missing_foreshadow, character_inconsistency, timeline_error）
+- finding_key 用**位置/对象**，不要复述句子：章节写 `ch2-ch12` 这种短横连接的形式，
+  人物写 `人物:名字`，伏笔写 `ch7:伏笔-玉佩`，日常关怀写 `care`。
+  同一处问题下次再发现，必须给出**一模一样**的 key（它是去重的锚）。
 - 建议内容简洁具体，不超过 200 字
 - 不要打扰用户正常工作，只在真正有价值时才建议
 """
@@ -137,6 +146,8 @@ def _parse_judgment(response: str) -> JudgmentResult:
             suggestion_type=str(data.get("suggestion_type", "unknown")),
             suggestion_content=str(data.get("suggestion_content", "")),
             reasoning=str(data.get("reasoning", "")),
+            # 模型不给 key 也不报错——留空即退回内容指纹（旧行为）。
+            finding_key=str(data.get("finding_key", "") or "")[:64].strip(),
         )
     except (json.JSONDecodeError, ValueError, TypeError) as e:
         return JudgmentResult(
