@@ -103,6 +103,13 @@ CHANNEL_MODULES=(
   # 漏传 → 云端旧 memory_injector 无此函数，R3 lessons 注入因 fail-open 静默失效
   # （小桔在云端「学不会」你教的规矩）。本轮补足，确保 P2-R3 云端真生效。
   "deskmate/cognitive/memory_injector.py"
+  # ⚠️ 用户事实回灌（c06ab7e / 2026-10-08）：manager.py:642 与 understanding.py:161
+  # 都 `from deskmate.memory.user_fact_context import build_user_fact_context`。
+  # 本清单是**逐文件显式列举**，加新文件若忘了往这里加 → 云端静默缺文件，
+  # 那两处 import 抛 ImportError 被 fail-open 吞掉 ⇒ 云端小桔「不知道自己知道」
+  # （库里存着的事实/日记回灌不进理解与聊天），且**不报错**，只能靠对账发现。
+  # 2026-10-09 实测：集合级对账（211 共有文件 0 漂移）抓出本条唯一差异。
+  "deskmate/memory/user_fact_context.py"
 )
 
 # 小桔手记行为（ai_circle_column.py）：含「专属表情 [xj:id] 封闭词表」注入（2026-10-07
@@ -340,6 +347,39 @@ done
 
 echo ""
 echo "✅ 本地→云端代码已对齐（3 个 sync 文件 + runner + gc 工具 + 6 个 proactivity + 5 个通道/熔断模块 + 3 个 agency 核心 + 5 个 agency 行为 + 云端 L2 agency tick + 云端 drift 脚本）。"
+
+# ---- 对账（2026-10-09 加）：本清单是逐文件显式列举，漏加即静默不同步 ----
+# 起因：user_fact_context.py（c06ab7e）被 manager.py/understanding.py import 却不在
+# 清单里，云端缺文件 → ImportError 被 fail-open 吞掉，「小桔不知道她自己知道」且**不报错**。
+# 同步成功≠云端完整；必须做集合级对账（md5 全量比对），别只信脚本自称。
+echo ""
+echo "==> 对账：本地 vs 云端 md5 全量比对"
+_reconcile() {
+  local tmp_l tmp_c
+  tmp_l="$(mktemp)"; tmp_c="$(mktemp)"
+  # 本地：deskmate/coworker 全量 .py（抓「本地有、云端没有」的漏项）
+  ( cd "$REPO_ROOT" && find deskmate coworker/server -name '*.py' -not -path '*__pycache__*' -type f \
+      | while read -r f; do printf '%s  %s\n' "$(md5 -q "$f")" "$f"; done ) | sort > "$tmp_l"
+  ssh "$SSH_HOST" "sudo find /opt/openworker/deskmate /opt/openworker/coworker/server -name '*.py' -not -path '*__pycache__*' -type f 2>/dev/null | while read -r f; do printf '%s  %s\n' \"\$(sudo md5sum \"\$f\" 2>/dev/null | cut -d' ' -f1)\" \"\${f#/opt/openworker/}\"; done" 2>/dev/null | grep -vE "Warning|setlocale" | sort > "$tmp_c"
+  local only_l only_c diff
+  only_l="$(comm -23 <(cut -d' ' -f3- "$tmp_l" | sort) <(cut -d' ' -f3- "$tmp_c" | sort) | wc -l | tr -d ' ')"
+  only_c="$(comm -13 <(cut -d' ' -f3- "$tmp_l" | sort) <(cut -d' ' -f3- "$tmp_c" | sort) | wc -l | tr -d ' ')"
+  diff="$(join -j 2 -o 0,1.1,2.1 <(sort -k2 "$tmp_l") <(sort -k2 "$tmp_c") 2>/dev/null \
+          | awk '$2 != $3' | wc -l | tr -d ' ')"
+  echo "   共有文件内容不一致: $diff"
+  echo "   仅本地有（云端缺，可能静默失效）: $only_l"
+  echo "   仅云端有（云端有旧漂移）: $only_c"
+  if [ "$diff" != "0" ] || [ "$only_c" != "0" ]; then
+    echo "   ❌ 对账未通过——上面两项非 0 即云端与本地不一致，请逐条查（红线：须完全一致）"
+  elif [ "$only_l" != "0" ]; then
+    echo "   ⚠️ 有本地独有文件未上云。若它们被云端代码 import，跑到那处会 ImportError"
+    echo "      被 fail-open 吞掉（功能静默失效且不报错）。须补进本脚本清单后重跑。"
+  else
+    echo "   ✅ 对账通过：云端与本地完全一致"
+  fi
+  rm -f "$tmp_l" "$tmp_c"
+}
+_reconcile
 echo "   同步平铺包仅每小时 :02 窗口加载；主程序包需**重启 openworker-server** 才生效："
 echo "     sudo systemctl restart openworker-server"
 echo "   ⚠️ 通道/熔断模块若与云端不一致，会出现「本地熔断了、云端还在撞」"
