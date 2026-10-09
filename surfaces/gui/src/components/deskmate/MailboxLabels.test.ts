@@ -6,7 +6,7 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { letterLabel, shortHandle } from "./MailboxPage";
+import { letterLabel, letterTitle, shortHandle } from "./MailboxPage";
 import type { MailboxLetter } from "../../api";
 
 function letter(over: Partial<MailboxLetter>): MailboxLetter {
@@ -49,5 +49,27 @@ describe("letterLabel", () => {
 describe("shortHandle", () => {
   it("取信 id 末段前 6 位当回查句柄", () => {
     expect(shortHandle("cloud_audit:emotional_care:abcdef12")).toBe("abcdef");
+  });
+});
+
+describe("letterTitle", () => {
+  it("标题 = 正文首句截断（信没有主题行，不为此加字段、也不让她现编）", () => {
+    expect(letterTitle(letter({ content: "看你昨晚灯还亮着。第三章那处时间线对不上。" }))).toBe(
+      "看你昨晚灯还亮着"
+    );
+  });
+
+  it("一句到底的长正文按 42 字切，带省略号", () => {
+    const t = letterTitle(letter({ content: "一".repeat(60) }));
+    expect(t.length).toBeLessThanOrEqual(43); // 42 + …
+    expect(t.endsWith("…")).toBe(true);
+  });
+
+  it("换行/空白折叠成一行，不破坏列表行高", () => {
+    expect(letterTitle(letter({ content: "第一段\n\n第二段" }))).toBe("第一段");
+  });
+
+  it("空信也不崩", () => {
+    expect(letterTitle(letter({ content: "   " }))).toBe("（这封没写字）");
   });
 });

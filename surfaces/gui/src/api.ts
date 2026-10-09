@@ -4170,6 +4170,9 @@ export interface MailboxLetter {
   thread_promoted?: boolean;
   /** 已读超 SHELF_DAYS 天仍未处理 → 「已搁置」归档态（设计单 §7 TTL 衰减）。 */
   stale?: boolean;
+  /** 归档原因（只在 ?status=archived 时返）：稍后退避 / 不用了 / 已办。 */
+  shelf_reason?: string;
+  acknowledged_at?: string | null;
   origin?: string;
   intent_id?: string | null;
 }
@@ -4177,12 +4180,17 @@ export interface MailboxLetter {
 export interface MailboxView {
   ok: boolean;
   unread_count: number;
+  /** 左栏三档计数（未读/已读/归档），与 items 同一准入口径。 */
+  counts?: { unread: number; read: number; archived: number };
   items: MailboxLetter[];
 }
 
 /** 拉取信箱信件列表 + 未读数（proactive_ledger 的 pending/snoozed 视图态项）。
- *  status="unread" 只要未读；默认 all 含已读（「已搁置」归档要用）。 */
-export async function getMailbox(status: "all" | "unread" = "all"): Promise<MailboxView> {
+ *  status="unread" 只要未读，"archived" 要归档（处置过的）；
+ *  默认 all = 收件箱（未读 + 已读，前端按 read 标记分栏，不再多要一趟接口）。 */
+export async function getMailbox(
+  status: "all" | "unread" | "archived" = "all"
+): Promise<MailboxView> {
   try {
     const res = await authedFetch(`${httpBase()}/v1/deskmate/mailbox?status=${status}`);
     if (!res.ok) return { ok: false, unread_count: 0, items: [] };

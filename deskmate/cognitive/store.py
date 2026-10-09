@@ -1099,6 +1099,38 @@ class CognitiveStore:
             logger.warning("add_lesson 失败（忽略）: %s", e)
             return False
 
+    def upsert_lesson_by_source(
+        self, source: str, content: str, scope: str = "permanent"
+    ) -> bool:
+        """**同一个 source 只留一条** lesson：先删该来源的旧条，再写新的。
+
+        为什么需要它：``add_lesson`` 的 lesson_id 由内容 md5 派生（同内容幂等），
+        这很好——但「会随证据升级」的那类教训（例如信箱回流：从「他会读」升级到
+        「他会读也会处理」）内容必然变，用 add_lesson 就会攒出两条 permanent，
+        每轮都被注入，越学越啰嗦。按来源归一，保证一个来源一条规则。
+
+        空内容 / 空 source → False。fail-open：异常仅告警，不抛。
+        """
+        c = (content or "").strip()
+        src = (source or "").strip()
+        if not c or not src:
+            return False
+        lid = f"lesson::{hashlib.md5(c.encode()).hexdigest()[:12]}"
+        ts = _now_iso()
+        try:
+            with self._connect() as conn:
+                conn.execute("DELETE FROM teachings WHERE source=?", (src,))
+                conn.execute(
+                    "INSERT OR REPLACE INTO teachings"
+                    "(lesson_id, content, scope, source, created_at, updated_at) "
+                    "VALUES(?,?,?,?,?,?)",
+                    (lid, c, scope, src, ts, ts),
+                )
+            return True
+        except Exception as e:  # noqa: BLE001 —— fail-open：写 lesson 失败不影响主链路
+            logger.warning("upsert_lesson_by_source 失败（忽略）: %s", e)
+            return False
+
     def get_lessons_for_injection(
         self, recent_limit: int = 3, char_cap: int = 1200
     ) -> list[str]:

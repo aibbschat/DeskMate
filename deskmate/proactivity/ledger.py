@@ -647,6 +647,13 @@ def acknowledge_ledger(
         else:
             c.execute(f"UPDATE {LEDGER_TABLE} SET status=? WHERE id=?", (new_status, rid))
         c.commit()
+    # 他动手处理了（actioned/in_progress）→ 信箱那条教训升级到「他会读也会处理」。
+    # fail-open：沉淀失败绝不影响状态流转本身。
+    if new_status in ("actioned", "in_progress"):
+        try:
+            record_mailbox_teaching(base_dir=base)
+        except Exception:  # noqa: BLE001
+            logger.debug("信箱教学沉淀失败（不阻断）", exc_info=True)
     return True
 
 
@@ -736,10 +743,16 @@ def mark_letter_read(
             c.commit()
         # 已读回流（设计单 §7 要害）：用户看见了她主动递的东西——这是正向互动信号，
         # 喂给情感/意志层（避免她学到「主动没用」）。独立轻量通道，fail-open，不耦合 emotion_sense。
+        # 两条腿：① mailbox_seen.jsonl → 每轮 `<mailbox>` 里的「今天他读掉 N 封」；
+        #        ② record_mailbox_teaching → 沉淀进 teachings（P3 教学层），她长期记得。
         try:
             record_letter_seen(base_dir=base, rid=rid)
         except Exception:  # noqa: BLE001
             logger.debug("已读回流信号落盘失败（不阻断）", exc_info=True)
+        try:
+            record_mailbox_teaching(base_dir=base)
+        except Exception:  # noqa: BLE001
+            logger.debug("信箱教学沉淀失败（不阻断）", exc_info=True)
         return True
     except Exception as e:  # noqa: BLE001
         logger.debug("mark_letter_read 失败（fail-open）: %s", e)
@@ -830,28 +843,120 @@ def mailbox_feedback_stats(base_dir: Optional[Path] = None, *, days: int = 1) ->
     }
 
 
-def render_mailbox_feedback_context(stats: dict) -> str:
-    """把「他读没读你的信」写成一段注入给她的回流信号（设计单 §7 要害）。
+def render_mailbox_self_context(base_dir: Optional[Path] = None) -> str:
+    """**常驻**告诉她：你有一个信箱（设计单 §7 要害的完整版）。
 
-    空统计 → 返回 ""（没读就不提，不制造「我是不是该抱怨」的噪声）。
+    为什么不能只在「他今天读了」时才提：那样她每次看到的都是半句话的事实——
+    「他读了你信箱里 8 封信」，却没人告诉过她信箱是什么、递出去的东西去了哪、
+    他能点哪些按钮。她知道自己有日记、有花园，是因为那些物件一直对她有名有姓；
+    信箱也得这样，否则「已读回流」只是一条她读不懂的旁白。
+
+    一次给全：信箱在哪、他能做什么、现在几封、今天读了几个、催与不催的规矩。
+    从没递过任何东西 → 返回 ""（不给她凭空造一个她没有的物件）。
     """
-    seen = int((stats or {}).get("seen_today") or 0)
-    if seen <= 0:
+    try:
+        counts = mailbox_counts(base_dir)
+        seen = int(mailbox_feedback_stats(base_dir).get("seen_today") or 0)
+    except Exception:  # noqa: BLE001
         return ""
-    replied = int((stats or {}).get("replied_today") or 0)
-    if replied > 0:
-        return (
-            "<mailbox-feedback>\n"
-            f"今天他读掉你信箱里 {seen} 封信，其中 {replied} 封已经动手处理了。\n"
-            "记着这个手感：你主动递出去的东西，他是接的——该说的时候就说。\n"
-            "</mailbox-feedback>"
-        )
+    total = counts["unread"] + counts["read"] + counts["archived"]
+    if total <= 0:
+        return ""
+    state = f"现在：未读 {counts['unread']} · 已读 {counts['read']} · 归档 {counts['archived']}。"
+    if seen > 0:
+        state += f"今天他读掉 {seen} 封。"
     return (
-        "<mailbox-feedback>\n"
-        f"今天他读了你信箱里 {seen} 封信（还没表态怎么处理）。\n"
-        "他看了，就先别追着他催第二遍。\n"
-        "</mailbox-feedback>"
+        "<mailbox>\n"
+        "你有一个**信箱**：你主动递出去的话都收在那儿，不是在聊天里说过就没了。\n"
+        "萧盛会去那里读、回你信，也可以点「稍后」（3 天后自己回到未读）或「不用了」（进归档）。\n"
+        + state
+        + "\n要翻某封的原文，用 proactive_lookup 按 #句柄 回查（归档里的也查得到）。\n"
+        "</mailbox>"
     )
+
+
+def mailbox_evidence(base_dir: Optional[Path] = None) -> dict:
+    """信箱上他真实做过什么：读过几封、动手处理过几封（只算入信箱的信）。"""
+    base = _resolve_base(base_dir)
+    db = base / "deskmate.db"
+    read = handled = 0
+    try:
+        with sqlite3.connect(str(db), check_same_thread=False) as c:
+            _ensure_table(c)
+            rows = c.execute(
+                f"SELECT kind, origin, read_at, status, content FROM {LEDGER_TABLE}"
+            ).fetchall()
+        for kind, origin, read_at, status, content in rows:
+            row = {"kind": kind or "", "origin": origin or "", "content": content or ""}
+            if not is_mailbox_letter(row) or not row["content"].strip():
+                continue
+            if read_at:
+                read += 1
+            if status in ("actioned", "in_progress"):
+                handled += 1
+    except Exception:  # noqa: BLE001
+        pass
+    return {"read": read, "handled": handled}
+
+
+# 沉淀给教学层（P3 teachings）的两条规则——萧哥 10-09 判：每轮提示只是一句旁白，
+# 要让她**长期**知道「萧盛会看我的信」，得进持久注入的那一层。
+_MAILBOX_LESSON_READ = (
+    "萧盛会读我递到信箱里的信，不会堆着不管。"
+    "我主动递出去的东西他是接的——该说的时候就说，不必等他先开口。"
+)
+_MAILBOX_LESSON_HANDLED = (
+    "萧盛不只读我递到信箱里的信，还会动手处理：回信、标办完、或明说不用了。"
+    "我主动递东西是有结果的——该说的时候就说，不必等他先开口；"
+    "但他点了「不用了」的那类，就别再换个说法递第二遍。"
+)
+# 门槛：读满 3 封才敢下这个结论（不做无据的认知，同江河设计对元认知的要求）。
+_MAILBOX_TEACH_MIN_READ = 3
+
+
+def _current_mailbox_lesson(base: Path) -> Optional[str]:
+    """库里现存的那条信箱教训（一条 SELECT 就够，不建 CognitiveStore）。
+
+    表还不存在（全新库/只跑过台账的库）→ None，交给下面正常写。
+    """
+    try:
+        with sqlite3.connect(str(base / "deskmate.db"), check_same_thread=False) as c:
+            row = c.execute(
+                "SELECT content FROM teachings WHERE source='mailbox' LIMIT 1"
+            ).fetchone()
+        return row[0] if row else None
+    except sqlite3.OperationalError:
+        return None
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def record_mailbox_teaching(base_dir: Optional[Path] = None) -> bool:
+    """把信箱回流**沉淀进教学层**（teachings，source='mailbox'，permanent 一条）。
+
+    证据升级 → 同来源覆盖成更完整的那条（`upsert_lesson_by_source` 保证一个来源
+    只有一条，不会越学越啰嗦）。证据不足 → 不写，也不撤已有的那条。
+
+    热路径保护：标已读/处置每次都会调这里，而 CognitiveStore 一构造就要跑一遍
+    schema 初始化——所以先用一条 SELECT 比对目标内容，**没变化就直接返回**，
+    绝大多数点击根本不会碰到认知层。fail-open：任何异常只记日志，绝不影响主路径。
+    """
+    base = _resolve_base(base_dir)
+    try:
+        ev = mailbox_evidence(base)
+        if ev["read"] < _MAILBOX_TEACH_MIN_READ and ev["handled"] <= 0:
+            return False
+        content = _MAILBOX_LESSON_HANDLED if ev["handled"] > 0 else _MAILBOX_LESSON_READ
+        if _current_mailbox_lesson(base) == content:
+            return False  # 已经沉淀过这条，别为同一句话重建认知层
+        from deskmate.cognitive.store import CognitiveStore
+
+        return CognitiveStore(db_path=base / "deskmate.db").upsert_lesson_by_source(
+            "mailbox", content, scope="permanent"
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.debug("record_mailbox_teaching 失败（不阻断）: %s", e)
+        return False
 
 
 def list_letters(
@@ -923,6 +1028,74 @@ def unread_letter_count(base_dir: Optional[Path] = None) -> int:
         return len(list_letters(base_dir, include_read=False))
     except Exception:  # noqa: BLE001
         return 0
+
+
+# 归档 = 他**处置过**的信（点了不用了/稍后，或标了已读又处理完）。
+# 之前这些行点了按钮就从界面上蒸发，实物还在库里——萧哥 10-09 问「去哪儿了」：
+# 答案是「哪儿也没去，只是不再递给你」。信箱必须有落地页，故单列一栏。
+ARCHIVED_STATUSES = ("dismissed", "acknowledged", "in_progress", "actioned")
+
+
+def archived_letters(base_dir: Optional[Path] = None) -> list[dict]:
+    """列已归档的信：处置过的终态 + 仍在 3 天退避里的 snoozed。
+
+    同样过准入（遥测不入）与空内容守卫；每条多带一个 ``shelf_reason``
+    （``dismissed`` / ``snoozed`` / ``handled``）供左栏分组标注。倒序，不封顶。
+    """
+    base = _resolve_base(base_dir)
+    db = base / "deskmate.db"
+    now = time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime())
+    marks = ",".join("?" * len(ARCHIVED_STATUSES))
+    try:
+        with sqlite3.connect(str(db), check_same_thread=False) as c:
+            _ensure_table(c)
+            rows = c.execute(
+                f"SELECT id, source, kind, content, evidence, understanding, status,"
+                f" confidence, created_at, source_node, delivered_at, snoozed_until,"
+                f" read_at, origin, intent_id, acknowledged_at"
+                f" FROM {LEDGER_TABLE}"
+                f" WHERE (status IN ({marks}))"
+                f" OR (status='snoozed' AND snoozed_until IS NOT NULL AND snoozed_until > ?)"
+                f" ORDER BY created_at DESC",
+                (*ARCHIVED_STATUSES, now),
+            ).fetchall()
+    except sqlite3.OperationalError:
+        return []
+    keys = (
+        "id", "source", "kind", "content", "evidence", "understanding", "status",
+        "confidence", "created_at", "source_node", "delivered_at", "snoozed_until",
+        "read_at", "origin", "intent_id", "acknowledged_at",
+    )
+    out: list[dict] = []
+    for raw in rows:
+        it = dict(zip(keys, raw))
+        if not is_mailbox_letter(it):
+            continue
+        if not (it.get("content") or "").strip():
+            continue
+        if (it.get("understanding") or "") == UNDERSTANDING_FAILED_MARKER:
+            it["understanding"] = "（这条我还没想明白，先把依据摆给你）"
+        st = it.get("status")
+        if st == "snoozed":
+            it["shelf_reason"] = "snoozed"        # 稍后：退避中，到期会自动回到收件箱
+        elif st == "dismissed":
+            it["shelf_reason"] = "dismissed"      # 不用了：终态
+        else:
+            it["shelf_reason"] = "handled"        # 已接手/已办完
+        it["stale"] = False
+        out.append(it)
+    return out
+
+
+def mailbox_counts(base_dir: Optional[Path] = None) -> dict:
+    """左栏三个分类的计数：未读 / 已读 / 归档（都过同一准入门，遥测不计）。"""
+    all_inbox = list_letters(base_dir, include_read=True)
+    unread = sum(1 for it in all_inbox if not it.get("read_at"))
+    try:
+        archived = len(archived_letters(base_dir))
+    except Exception:  # noqa: BLE001
+        archived = 0
+    return {"unread": unread, "read": len(all_inbox) - unread, "archived": archived}
 
 
 # ---- §11.16「灵动三层」（2026-10-07）：她递出卡片后要「接得上」----

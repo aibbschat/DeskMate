@@ -313,7 +313,15 @@
       "shelvedGroup": "Shelved {{n}}",
       "hiHer": "Xiaoju:",
       "hiMe": "From Xiaosheng:",
-      "composeHint": "Send it — she will see it in this turn"
+      "composeHint": "Send it — she will see it in this turn",
+      "catUnread": "Unread",
+      "catRead": "Read",
+      "catArchived": "Archive",
+      "pickCat": "Pick a folder on the left.",
+      "pickCatSub": "Nothing is expanded by default — opening the mailbox is no longer a table full of paper.",
+      "emptyCat": "Nothing here.",
+      "pickOne": "Choose a letter to open it here.",
+      "backToList": "Back to list"
     }
   },
   "experts": {

@@ -665,23 +665,18 @@ class DeskMateMemoryManager:
                 parts.append(delivered_ctx)
         except Exception:
             pass  # fail-open：台账缺失/查询失败不影响主记忆注入
-        # 「他读没读你的信」（信箱送达层 2026-10-09 · 设计单 §7 要害）：已读/处理
-        # 回流给她，免得信箱成她的表白墙+坟场——主动递出去没人接，她学到的就是
-        # 「主动没用」。读 mailbox_seen.jsonl 计数，零信号时整块不提。
+        # 「你有一个信箱」（信箱送达层 2026-10-09 · 设计单 §7 要害）：**常驻**告诉她这个
+        # 物件存在——她能递、他会读/回/稍后/不用了，以及现在几封、今天读了几个。
+        # 只在「他读过」时才提，她拿到的永远是半句话（知道有人读了，不知道读的是什么地方）。
         # fail-open 与上面各块一致；总开关 DESKMATE_AUTO_INJECT=0 已整体关闭本函数。
         try:
-            from deskmate.proactivity.ledger import (
-                mailbox_feedback_stats,
-                render_mailbox_feedback_context,
-            )
+            from deskmate.proactivity.ledger import render_mailbox_self_context
 
-            feedback_ctx = render_mailbox_feedback_context(
-                mailbox_feedback_stats(self.base_dir)
-            )
-            if feedback_ctx:
-                parts.append(feedback_ctx)
+            mailbox_ctx = render_mailbox_self_context(self.base_dir)
+            if mailbox_ctx:
+                parts.append(mailbox_ctx)
         except Exception:
-            pass  # fail-open：回流信号缺失不影响主记忆注入
+            pass  # fail-open：信箱自述缺失不影响主记忆注入
         # 「小桔学到的」（P2-R3 江河设计 §4.5 教学层）：从萧哥纠正/反馈学到的
         # lessons 每轮注入，让她回话带得上这些认知、不重复踩同一个坑。
         # fail-open 与上面各块一致；总开关 DESKMATE_AUTO_INJECT=0 已整体关闭本函数，

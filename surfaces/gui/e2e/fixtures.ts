@@ -384,7 +384,8 @@ export const MAILBOX_FIXTURE = {
       id: "cloud_audit:emotional_care:a1b3cd4",
       source: "cloud_audit",
       kind: "emotional_care",
-      content: "看你昨晚灯还亮着。第三章那处时间线对不上，我先记下了，不急。",
+      content:
+        "看你昨晚灯还亮着。第三章那处时间线对不上，我先记下了，不急。![招手问好](emote:wave)",
       evidence: "你 01:12 还在改稿，日历上今天 09:30 有会",
       understanding: "你不是担心改不完，是怕改坏了没人替你把关。",
       status: "pending",
@@ -667,8 +668,17 @@ export async function mockApi(page: import("@playwright/test").Page) {
   // backend's set_provider. verify (POST) never mutates: it's a live read-only credential check.
   const providers: any[] = PROVIDERS.map((p) => ({ ...p }));
   // 信箱 — PER-TEST copy so 标已读/稍后/回信/进聊天 mutate the same list a spec re-reads.
-  const mailboxState: { items: any[] } = {
+  // archived 单独一份：处置过的信要「当着面从收件箱移到归档」（萧哥 10-09 问「去哪儿了」）。
+  const mailboxState: { items: any[]; archived: any[] } = {
     items: MAILBOX_FIXTURE.items.map((it) => ({ ...it })),
+    archived: [
+      {
+        ...MAILBOX_FIXTURE.items[2],
+        id: "cloud_audit:idea_capture:shelf001",
+        read: true,
+        shelf_reason: "dismissed",
+      },
+    ],
   };
   // 一封信的轻回信往来（走的是同一个会话消息库）。ts 是**秒**——后端约定，
   // 前端渲染要乘 1000，这条也顺带钉住那个单位坑。
@@ -1216,11 +1226,19 @@ export async function mockApi(page: import("@playwright/test").Page) {
     if (p.startsWith("/v1/deskmate/mailbox")) {
       const act = /\/v1\/deskmate\/mailbox\/([^/]+)\/(read|snooze|dismiss|reply|promote)$/.exec(p);
       if (m === "GET") {
-        const onlyUnread = new URL(req.url()).searchParams.get("status") === "unread";
-        const items = mailboxState.items.filter((it) => (onlyUnread ? !it.read : true));
+        const want = new URL(req.url()).searchParams.get("status") || "all";
+        const items =
+          want === "archived"
+            ? mailboxState.archived
+            : mailboxState.items.filter((it) => (want === "unread" ? !it.read : true));
         return json({
           ok: true,
           unread_count: mailboxState.items.filter((it) => !it.read).length,
+          counts: {
+            unread: mailboxState.items.filter((it) => !it.read).length,
+            read: mailboxState.items.filter((it) => it.read).length,
+            archived: mailboxState.archived.length,
+          },
           items,
         });
       }
@@ -1236,7 +1254,13 @@ export async function mockApi(page: import("@playwright/test").Page) {
           return json({ ok: true });
         }
         if (action === "snooze" || action === "dismiss") {
+          // 处置过的信不是蒸发，是**移到归档**（带上架原因）——跟真后端一个行为。
           mailboxState.items = mailboxState.items.filter((x) => x.id !== id);
+          mailboxState.archived.unshift({
+            ...it,
+            read: true,
+            shelf_reason: action === "snooze" ? "snoozed" : "dismissed",
+          });
           return json({ ok: true });
         }
         if (action === "reply") {

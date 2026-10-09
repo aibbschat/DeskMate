@@ -25,12 +25,15 @@ from coworker.server import create_app
 from coworker.server.manager import SessionManager
 from coworker.sessions import SessionRecord
 from deskmate.proactivity.ledger import (
+    acknowledge_ledger,
+    archived_letters,
     list_letters,
+    lookup_items,
     mark_letter_read,
     mailbox_feedback_stats,
     record_letter_seen,
     record_proactive,
-    render_mailbox_feedback_context,
+    render_mailbox_self_context,
     unread_letter_count,
 )
 
@@ -144,16 +147,89 @@ def test_seen_signal_appends(desk):
     assert json.loads(lines[-1])["id"] == "x:3"
 
 
-def test_feedback_stats_and_render(desk):
+# -- ⑤ 沉淀进教学层（P3 teachings）：她长期记得「萧盛会看我的信」 ----------------
+
+
+def _mailbox_lessons(desk):
+    from deskmate.cognitive.store import CognitiveStore
+
+    with CognitiveStore(db_path=desk / "deskmate.db")._connect() as c:
+        return c.execute(
+            "SELECT content, scope, source FROM teachings WHERE source='mailbox'"
+        ).fetchall()
+
+
+def test_reading_enough_letters_teaches_her_permanently(desk):
+    """每轮提示只是一句旁白；读满 3 封才沉淀成 permanent 教训（不做无据的认知）。"""
+    ids = [add(desk, "emotional_care", f"第{i}封") for i in range(3)]
+    assert _mailbox_lessons(desk) == []  # 一封都没读 → 不下结论
+    mark_letter_read(base_dir=desk, rid=ids[0])
+    assert _mailbox_lessons(desk) == []  # 只读 1 封，还不够
+    mark_letter_read(base_dir=desk, rid=ids[1])
+    mark_letter_read(base_dir=desk, rid=ids[2])
+    rows = _mailbox_lessons(desk)
+    assert len(rows) == 1 and rows[0][1] == "permanent"
+    assert "会读" in rows[0][0]
+
+
+def test_teaching_upgrades_in_place_and_never_duplicates(desk):
+    """证据升级 → 同一个 source 只留一条（不越学越啰嗦，不挤爆注入预算）。"""
+    ids = [add(desk, "emotional_care", f"信{i}", confidence=0.9) for i in range(4)]
+    for rid in ids[:3]:
+        mark_letter_read(base_dir=desk, rid=rid)
+    assert len(_mailbox_lessons(desk)) == 1
+    # 他动手处理了一封 → 内容升级成「会读也会处理」，但**仍只有一条**
+    acknowledge_ledger(base_dir=desk, rid=ids[0], new_status="actioned")
+    rows = _mailbox_lessons(desk)
+    assert len(rows) == 1
+    assert "动手处理" in rows[0][0]
+    # 再多读几封也不会长出第二条
+    mark_letter_read(base_dir=desk, rid=ids[3])
+    assert len(_mailbox_lessons(desk)) == 1
+
+
+def test_permanent_mailbox_lesson_reaches_injection(desk):
+    """沉淀的那条必须真被每轮注入吃到（get_lessons_for_injection 取 permanent）。"""
+    from deskmate.cognitive.store import CognitiveStore
+
+    ids = [add(desk, "idea_capture", f"灵感{i}") for i in range(3)]
+    for rid in ids:
+        mark_letter_read(base_dir=desk, rid=rid)
+    lessons = CognitiveStore(db_path=desk / "deskmate.db").get_lessons_for_injection()
+    assert any("信箱" in t for t in lessons)
+
+
+def test_she_is_told_the_mailbox_exists(desk):
+    """信箱自述是**常驻**的：不能等他读了才提，那样她拿到的永远是半句话
+    （知道有人读了，不知道读的是个什么地方）——她知道自己有日记、有花园，
+    信箱也得是同一个级别的物件。"""
+    # 一封都没递过 → 不凭空造物件
+    assert render_mailbox_self_context(desk) == ""
     rid = add(desk, "emotional_care", "看你昨晚灯还亮着")
-    assert render_mailbox_feedback_context(mailbox_feedback_stats(desk)) == ""  # 没读就不提
+    ctx = render_mailbox_self_context(desk)
+    assert "<mailbox>" in ctx
+    assert "信箱" in ctx and "稍后" in ctx and "归档" in ctx
+    assert "未读 1" in ctx
+    # 他读过之后，同一块里补一句计数（不另开第二段旁白）
     record_letter_seen(base_dir=desk, rid=rid)
-    record_letter_seen(base_dir=desk, rid="ghost:not-in-ledger")
+    assert "今天他读掉 1 封" in render_mailbox_self_context(desk)
+    # 已读≠处理：seen 落盘 + 统计口径
     stats = mailbox_feedback_stats(desk)
-    assert stats["seen_today"] == 2
-    ctx = render_mailbox_feedback_context(stats)
-    assert "<mailbox-feedback>" in ctx and "2" in ctx
-    assert render_mailbox_feedback_context({}) == ""
+    assert stats["seen_today"] == 1 and stats["replied_today"] == 0
+
+
+def test_lookup_reaches_archived_letters(desk):
+    """她回查旧信不用挑状态：归档里的（dismissed）也查得到。"""
+    rid = add(desk, "idea_capture", "他一辈子都在替别人记账")
+    acknowledge_ledger(base_dir=desk, rid=rid, new_status="dismissed")
+    hits = lookup_items(desk, handle=_short_of(rid))
+    assert [it["id"] for it in hits] == [rid]
+    assert hits[0]["status"] == "dismissed"
+
+
+def _short_of(rid: str) -> str:
+    """#句柄 = 指纹段前几位（与 ledger._short_id 同口径）。"""
+    return rid.rsplit(":", 1)[-1][:6]
 
 
 def test_stale_shelf_after_seven_days(desk):
@@ -211,8 +287,33 @@ def test_mailbox_list_shape_and_unread_filter(client, desk):
     assert unread["unread_count"] == 1
 
 
-def test_snooze_and_leave_list(client, desk):
-    rid = add(desk, "emotional_care", "稍后说")
-    assert client.post(f"/v1/deskmate/mailbox/{rid}/snooze").json()["ok"] is True
-    assert [it["id"] for it in client.get("/v1/deskmate/mailbox").json()["items"]] == []
-    assert client.post(f"/v1/deskmate/mailbox/{rid}/dismiss").json()["ok"] is True
+def test_snooze_and_dismiss_land_in_archive(client, desk):
+    """点了「稍后/不用了」的信不能蒸发——必须能在归档里回查（萧哥 10-09 追问）。"""
+    a = add(desk, "emotional_care", "稍后说")
+    b = add(desk, "idea_capture", "不用了")
+    assert client.post(f"/v1/deskmate/mailbox/{a}/snooze").json()["ok"] is True
+    assert client.post(f"/v1/deskmate/mailbox/{b}/dismiss").json()["ok"] is True
+    # 收件箱清空
+    assert client.get("/v1/deskmate/mailbox").json()["items"] == []
+    # 但归档里两封都在，且带得上架原因
+    arch = client.get("/v1/deskmate/mailbox?status=archived").json()
+    assert {it["id"] for it in arch["items"]} == {a, b}
+    reasons = {it["id"]: it["shelf_reason"] for it in arch["items"]}
+    assert reasons == {a: "snoozed", b: "dismissed"}
+    # 左栏三档计数：收件箱 0（2 封都在归档），未读/已读/归档各归各
+    counts = client.get("/v1/deskmate/mailbox").json()["counts"]
+    assert counts == {"unread": 0, "read": 0, "archived": 2}
+
+
+def test_snoozed_letter_returns_to_inbox_after_backoff(desk):
+    """退避到期后它自己回到收件箱（现有 3 天口径），归档只是让它这段时间可见。"""
+    a = add(desk, "emotional_care", "过几天再说")
+    with sqlite3.connect(str(desk / "deskmate.db")) as c:
+        c.execute(
+            "UPDATE proactive_ledger SET status='snoozed',"
+            " snoozed_until='2020-01-01T00:00:00' WHERE id=?",
+            (a,),
+        )
+        c.commit()
+    assert [it["id"] for it in list_letters(desk)] == [a]  # 已到期 → 回收件箱
+    assert archived_letters(desk) == []  # 不再算归档

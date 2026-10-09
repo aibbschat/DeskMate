@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>信箱 · 双栏收件箱改造（2026-10-09 第二轮）</title>
+<style>
+  .light{--paper:#f5f6f7;--panel:#fff;--ink:#17191c;--muted:#5b616b;--faint:#9aa1aa;--line:#e8eaed;--line-strong:#d8dce1;--accent:#2563eb;--accent-soft:#e9f0fd;--mb-paper:#fffdf7;--mb-rule:rgba(23,25,28,.07);--stamp:#b91c1c;--stamp-soft:#f9e7e5;--side:#eef1f5}
+  .dark{--paper:#131417;--panel:#1c1e22;--ink:#e6e8eb;--muted:#9aa1ab;--faint:#62686f;--line:#2a2d33;--line-strong:#3a3e46;--accent:#4c8dff;--accent-soft:#1c2a44;--mb-paper:#1a1c20;--mb-rule:rgba(230,232,235,.06);--stamp:#e0757a;--stamp-soft:#2b1b1e;--side:#171a1f}
+  *{box-sizing:border-box}
+  body{margin:0;padding:32px 24px 90px;background:#dfe3e8;color:#17191c;font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif}
+  .wrap{max-width:1340px;margin:0 auto}
+  h1{font-size:22px;margin:0 0 6px}
+  .lead{font-size:13.5px;color:#4a5058;line-height:1.8;max-width:900px}
+  .brief{background:#fff;border:1px solid #cfd6de;border-radius:12px;padding:15px 18px;margin:14px 0 30px;font-size:13px;line-height:1.85;color:#3c424a}
+  .brief b{font-size:13px}
+  .brief ul{margin:6px 0 0;padding-left:18px}
+  h2.sec{font-size:15px;margin:38px 0 4px}
+  p.sub{font-size:12.5px;color:#5b616b;margin:0 0 14px;line-height:1.75;max-width:980px}
+  .serif{font-family:"Songti SC","Noto Serif CJK SC",Georgia,serif}
+  .mono{font-family:ui-monospace,SFMono-Regular,monospace}
+  .pane{border-radius:14px;padding:14px;background:var(--paper);border:1px solid var(--line-strong)}
+  .pane-tag{font-size:11px;color:var(--muted);letter-spacing:.5px;margin-bottom:10px;display:flex;justify-content:space-between}
+  .duo{display:grid;grid-template-columns:1fr 1fr;gap:18px}
+
+  /* ---------- 共用：左栏目录 ---------- */
+  .mbox{display:grid;grid-template-columns:186px 1fr;background:var(--paper);border:1px solid var(--line);border-radius:10px;overflow:hidden;height:452px}
+  .mbox.wide3{grid-template-columns:176px 236px 1fr}
+  .rail{background:var(--side);border-right:1px solid var(--line);padding:12px 10px;display:flex;flex-direction:column;gap:2px;overflow-y:auto}
+  .rail-title{font-family:var(--serif);font-size:14px;color:var(--ink);padding:2px 8px 10px;display:flex;align-items:baseline;gap:6px}
+  .rail-title span{font-size:10.5px;color:var(--faint);font-family:inherit}
+  .grp{border-radius:7px}
+  .grp > .hd{display:flex;align-items:center;gap:7px;padding:8px 9px;font-size:12.5px;color:var(--ink);cursor:pointer;border-radius:7px}
+  .grp > .hd:hover{background:rgba(127,127,127,.09)}
+  .grp.on > .hd{background:var(--panel);color:var(--accent);font-weight:600;box-shadow:inset 0 0 0 1px var(--line)}
+  .caret{font-size:9px;color:var(--faint);width:9px;flex:none}
+  .grp.on .caret{color:var(--accent)}
+  .n{margin-left:auto;font-size:10.5px;color:var(--muted);background:rgba(127,127,127,.13);border-radius:999px;padding:0 6px;line-height:16px;flex:none}
+  .grp.on .n{color:var(--accent);background:var(--accent-soft)}
+  .subs{padding:1px 0 5px 22px;display:flex;flex-direction:column;gap:1px}
+  .subs .s{font-size:11.5px;color:var(--muted);padding:4px 7px;border-radius:5px;cursor:pointer;display:flex;gap:6px}
+  .subs .s:hover{color:var(--ink)}
+  .subs .s.on{color:var(--accent)}
+  .subs .s i{margin-left:auto;font-style:normal;font-size:10px;color:var(--faint)}
+
+  /* ---------- 共用：标题列表 ---------- */
+  .list{border-right:1px solid var(--line);overflow-y:auto;background:var(--panel)}
+  .list-hd{font-size:11px;color:var(--faint);padding:9px 12px 6px;letter-spacing:.5px;position:sticky;top:0;background:var(--panel)}
+  .row{padding:9px 12px;border-top:1px solid var(--line);cursor:pointer;display:flex;gap:8px}
+  .row:hover{background:var(--paper)}
+  .row.sel{background:var(--accent-soft)}
+  .row .un{width:6px;height:6px;border-radius:50%;background:var(--accent);margin-top:6px;flex:none}
+  .row .un.read{background:transparent;border:1px solid var(--line-strong)}
+  .row .bd{min-width:0}
+  .row .from{font-size:11px;color:var(--muted);display:flex;gap:6px;align-items:baseline}
+  .row .from time{margin-left:auto;font-size:10px;color:var(--faint)}
+  .row .t{font-family:var(--serif);font-size:12.5px;color:var(--ink);line-height:1.5;margin-top:2px;overflow:hidden;text-overflow:ellipsis;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
+  .row.sel .t{color:var(--accent)}
+  .row .chip{font-size:9.5px;color:var(--muted);border:1px solid var(--line-strong);border-radius:4px;padding:0 4px}
+
+  /* ---------- 共用：信纸阅读区 ---------- */
+  .read{overflow-y:auto;padding:16px 18px;background:var(--paper)}
+  .sheet{position:relative;background:var(--mb-paper);border:1px solid var(--line);border-radius:3px;padding:15px 17px 13px}
+  .sheet::before{content:"";position:absolute;inset:7px;border:1px solid var(--mb-rule);pointer-events:none}
+  .hi{font-family:var(--serif);font-size:14.5px;font-weight:600;color:var(--ink);letter-spacing:.5px}
+  .tag{font-size:10.5px;padding:1px 6px;border-radius:5px;background:var(--line);color:var(--muted);white-space:nowrap}
+  .head{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;margin-bottom:8px}
+  .body{font-family:var(--serif);font-size:14px;line-height:1.8;color:var(--ink)}
+  .tail{display:flex;align-items:baseline;gap:10px;margin-top:12px}
+  .by{font-family:var(--serif);font-size:12.5px;color:var(--ink)}
+  .dt{margin-left:auto;font-size:10.5px;color:var(--faint)}
+  .acts{display:flex;flex-wrap:wrap;gap:14px;padding:9px 3px 0}
+  .a{font-size:12px;color:var(--muted);background:none;border:0;padding:0;cursor:pointer}
+  .a:hover{color:var(--ink);text-decoration:underline}
+  .a.p{color:var(--accent);font-weight:600}
+  .leaf{margin:12px 0 0 14px}
+  .compose{margin:12px 0 0 14px;border:1px dashed var(--line-strong);border-radius:3px}
+  .rules{min-height:88px;background-image:repeating-linear-gradient(to bottom,transparent 0 27px,var(--mb-rule) 27px 28px);background-position:0 6px;font-family:var(--serif);font-size:14px;line-height:28px;color:var(--faint);padding:6px 16px}
+  .bar{display:flex;align-items:center;gap:9px;padding:8px 13px;border-top:1px solid var(--line)}
+  .hint{font-size:11px;color:var(--faint)}
+  .stmp{margin-left:auto;width:31px;height:35px;border:1px dashed var(--stamp);background:var(--stamp-soft);color:var(--stamp);border-radius:3px;display:grid;place-items:center;font-size:8.5px;text-align:center;line-height:1.1}
+  .send{background:var(--accent);color:#fff;border:0;border-radius:4px;padding:7px 15px;font-family:var(--serif);font-size:12.5px;letter-spacing:2px}
+  .note{font-size:12.5px;line-height:1.8;color:#3c424a;background:#fff;border:1px solid #cfd6de;border-left:3px solid #2563eb;border-radius:0 10px 10px 0;padding:11px 14px;margin-top:12px}
+  .decision{background:#fff;border:1px solid #cfd6de;border-radius:12px;padding:16px 18px;margin-top:26px}
+  .decision ol{margin:8px 0 0;padding-left:20px;font-size:13px;line-height:1.95;color:#3c424a}
+  .narrow{max-width:400px;height:auto}
+  .narrow .mbox{grid-template-columns:1fr;height:520px}
+  .narrow .rail{border-right:0;border-bottom:1px solid var(--line)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>信箱 · 双栏收件箱改造（第二轮）</h1>
+  <p class="lead">你 10-09 实测四个问题，这稿解决第 1 个（结构），另外三个（表情渲染 / 处置后蒸发 / 已读她知不知道）已在代码里回答，见文末。</p>
+
+  <div class="brief">
+    <b>现状为什么「不像信箱，像一篇篇日记」</b>
+    <ul>
+      <li>没有<b>目录</b>：所有信一进来就全部摊开正文，等于把 68 封信的纸直接倒在桌上。</li>
+      <li>没有<b>标题层</b>：邮箱的干净来自「先看标题，再决定开不开」，我们跳过了这一层。</li>
+      <li>没有<b>去处</b>：稍后/不用了一按就蒸发，界面上找不到（数据其实都在库里）。</li>
+      <li>页面<b>滚不动</b>：全屏页缺自己的滚动容器，超出屏幕的部分看不见（已修）。</li>
+    </ul>
+  </div>
+
+  <h2 class="sec">甲 · 三栏（网易式：目录 / 标题列 / 信纸）</h2>
+  <p class="sub">最像邮箱客户端，一屏能同时看见目录、标题、正文。代价：我们主区默认只有 ~760px 习惯宽度，三栏后信纸被压到 ~330px，一封信要折很多行。</p>
+  <div class="pane light">
+    <div class="pane-tag"><span>浅色 · 1280 宽屏</span><span>甲 · 三栏</span></div>
+    <div class="mbox wide3">
+      <div class="rail">
+        <div class="rail-title">信箱 <span>小桔递来的</span></div>
+        <div class="grp on"><div class="hd"><span class="caret">▾</span>未读<span class="n">56</span></div></div>
+        <div class="grp"><div class="hd"><span class="caret">▸</span>已读<span class="n">2</span></div></div>
+        <div class="grp"><div class="hd"><span class="caret">▸</span>归档<span class="n">21</span></div>
+          <div class="subs" style="display:none"></div>
+        </div>
+        <div style="padding:10px 9px 0;font-size:10.5px;color:var(--faint);line-height:1.6">归档里分：<br>稍后退避 17 · 不用了 3 · 已办 1</div>
+      </div>
+      <div class="list">
+        <div class="list-hd">未读 56 · 今天 8 封</div>
+        <div class="row sel"><span class="un"></span><div class="bd"><div class="from">小桔 · 她想关心你<time>10:34</time></div><div class="t serif">看你昨晚灯还亮着。第三章那处时间线对不上，我先记下了…</div></div></div>
+        <div class="row"><span class="un"></span><div class="bd"><div class="from">小桔 · 书稿前后对不上<time>09:58</time></div><div class="t serif">第二章末写「十月十七日雪」，第十二章却说是「十月初初见雪」…</div></div></div>
+        <div class="row"><span class="un"></span><div class="bd"><div class="from">小桔 · 写作上<time>09:12</time></div><div class="t serif">你停在「他一辈子都在替别人记账」这句上，已经三天了。</div></div></div>
+        <div class="row"><span class="un read"></span><div class="bd"><div class="from">小桔 · 手机那头<time>昨天 07:41</time></div><div class="t serif">早上在厨房念的那句，我没敢打断，先替你收进来了。</div></div></div>
+      </div>
+      <div class="read">
+        <div class="sheet">
+          <div class="head"><span class="hi">小桔：</span><span class="tag">她想关心你</span><span class="tag mono">#9c724b</span></div>
+          <div class="body">看你昨晚灯还亮着。第三章那处时间线对不上，我先记下了，不急。<br><span style="color:var(--muted);font-size:12.5px">她的理解：你不是担心改不完，是怕改坏了没人替你把关。</span></div>
+          <div class="tail"><span class="by">—— 小桔</span><span class="dt mono">2026-10-09 10:34</span></div>
+        </div>
+        <div class="acts"><span class="a">标已读</span><span class="a">稍后</span><span class="a">不用了</span><span class="a">回信</span><span class="a p">进聊天</span></div>
+        <div class="compose">
+          <div style="padding:12px 16px 0"><span class="hi">小桔：</span></div>
+          <div class="rules">这里写回她的话…</div>
+          <div class="bar"><span class="hint">写完直接寄，她这一轮就看见</span><span class="stmp">小桔<br>邮</span><span class="send">寄出</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <h2 class="sec">乙 · 两栏（目录带标题列表 / 信纸）—— 我推荐这案</h2>
+  <p class="sub">左栏是<b>目录 + 标题</b>合在一起的手风琴（默认三个分类全折叠，只看见三行字；点开哪类，标题就在它下面展开），右栏只有你点开的那封信。信纸拿到全部宽度，读起来还是「一封信」；窄屏塌成上下两段（目录 → 点开直接换成正文 + 返回）。网易那个「中间还有一列」在这里被省掉，是因为我们的信不需要 236px 的独立标题列也能看清。</p>
+  <div class="duo">
+    <div class="pane light">
+      <div class="pane-tag"><span>浅色 · 未读展开、点开一封</span><span>乙 · 两栏</span></div>
+      <div class="mbox">
+        <div class="rail">
+          <div class="rail-title">信箱 <span>79 封</span></div>
+          <div class="grp on"><div class="hd"><span class="caret">▾</span>未读<span class="n">56</span></div></div>
+          <div class="list" style="border-top:0">
+            <div class="row sel"><span class="un"></span><div class="bd"><div class="from">小桔 · 想关心你<time>10:34</time></div><div class="t serif">看你昨晚灯还亮着…</div></div></div>
+            <div class="row"><span class="un"></span><div class="bd"><div class="from">小桔 · 书稿对不上<time>09:58</time></div><div class="t serif">第二章末写「十月十七日雪」…</div></div></div>
+            <div class="row"><span class="un"></span><div class="bd"><div class="from">小桔 · 写作上<time>09:12</time></div><div class="t serif">你停在那句上，已经三天了。</div></div></div>
+            <div class="row"><span class="un"></span><div class="bd"><div class="from">小桔 · 资料佐证<time>昨天</time></div><div class="t serif">元代国子监的作息我查到了两条…</div></div></div>
+          </div>
+          <div class="grp" style="margin-top:4px"><div class="hd"><span class="caret">▸</span>已读<span class="n">2</span></div></div>
+          <div class="grp"><div class="hd"><span class="caret">▸</span>归档<span class="n">21</span></div></div>
+        </div>
+        <div class="read">
+          <div class="sheet">
+            <div class="head"><span class="hi">小桔：</span><span class="tag">她想关心你</span><span class="tag mono">#9c724b</span></div>
+            <div class="body">看你昨晚灯还亮着。第三章那处时间线对不上，我先记下了，不急。</div>
+            <div style="margin:9px 0 0;padding-left:10px;border-left:2px solid var(--accent-soft);font-size:12.5px;color:var(--ink)">她的理解：你不是担心改不完，是怕改坏了没人替你把关。</div>
+            <div style="margin:8px 0 0;padding-left:10px;border-left:2px solid var(--line-strong);font-size:12px;color:var(--muted)">依据：你 01:12 还在改稿，日历上今天 09:30 有会</div>
+            <div class="tail"><span class="by">—— 小桔</span><span class="dt mono">2026-10-09 10:34</span></div>
+          </div>
+          <div class="acts"><span class="a">标已读</span><span class="a">稍后</span><span class="a">不用了</span><span class="a">回信</span><span class="a p">进聊天</span></div>
+          <div class="leaf sheet">
+            <div class="hi" style="font-size:13.5px;color:var(--accent)">萧哥 提笔：</div>
+            <div class="body" style="font-size:13.5px">先只给我看第三处，别的我晚点说。</div>
+            <div class="tail"><span class="by">—— 萧盛</span><span class="dt mono">11:02</span></div>
+          </div>
+          <div class="leaf sheet">
+            <div class="hi" style="font-size:13.5px">小桔：</div>
+            <div class="body" style="font-size:13.5px">好，只留第三处：第二章末「十月十七日雪」与第十二章「十月初初见雪」撞了，隔三天。</div>
+            <div class="tail"><span class="by">—— 小桔</span><span class="dt mono">11:13</span></div>
+          </div>
+          <div class="compose">
+            <div style="padding:12px 16px 0"><span class="hi" style="font-size:13.5px">小桔：</span></div>
+            <div class="rules">这里写回她的话…</div>
+            <div class="bar"><span class="hint">写完直接寄，她这一轮就看见</span><span class="stmp">小桔<br>邮</span><span class="send">寄出</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="pane dark">
+      <div class="pane-tag"><span>深色 · 全折叠（这就是默认态，干净）</span><span>乙 · 两栏</span></div>
+      <div class="mbox">
+        <div class="rail">
+          <div class="rail-title">信箱 <span>79 封</span></div>
+          <div class="grp"><div class="hd"><span class="caret">▸</span>未读<span class="n">56</span></div></div>
+          <div class="grp"><div class="hd"><span class="caret">▸</span>已读<span class="n">2</span></div></div>
+          <div class="grp"><div class="hd"><span class="caret">▸</span>归档<span class="n">21</span></div></div>
+          <div style="margin-top:auto;padding:10px 9px 0;font-size:10.5px;color:var(--faint);line-height:1.7">归档 = 处置过的<br>稍后退避 17<br>不用了 3<br>已办 1</div>
+        </div>
+        <div class="read" style="display:grid;place-items:center;text-align:center;color:var(--muted);font-size:13px;line-height:1.9">
+          <div>左边挑一封，信在这里摊开。<br><span style="font-size:11.5px;color:var(--faint)">默认什么都不展开——打开信箱不再是一桌子纸。</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <h2 class="sec">乙 · 窄屏（400px 塌成上下两段）</h2>
+  <p class="sub">点标题后左栏收起、只留信 + 一个「‹ 回列表」；返回时列表还在原位（不重新拉）。</p>
+  <div class="pane light narrow">
+    <div class="mbox">
+      <div class="rail" style="flex-direction:row;gap:8px;padding:8px 10px;overflow-x:auto">
+        <div class="grp on" style="flex:none"><div class="hd"><span class="caret">▾</span>未读<span class="n">56</span></div></div>
+        <div class="grp" style="flex:none"><div class="hd"><span class="caret">▸</span>已读<span class="n">2</span></div></div>
+        <div class="grp" style="flex:none"><div class="hd"><span class="caret">▸</span>归档<span class="n">21</span></div></div>
+      </div>
+      <div class="read" style="padding:13px 14px">
+        <div style="font-size:11.5px;color:var(--accent);margin-bottom:8px">‹ 回列表</div>
+        <div class="sheet">
+          <div class="head"><span class="hi">小桔：</span><span class="tag">想关心你</span></div>
+          <div class="body" style="font-size:13.5px">看你昨晚灯还亮着。第三章那处时间线对不上，我先记下了，不急。</div>
+          <div class="tail"><span class="by">—— 小桔</span><span class="dt mono">10-09 10:34</span></div>
+        </div>
+        <div class="acts"><span class="a">标已读</span><span class="a">稍后</span><span class="a">不用了</span><span class="a p">回信</span></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="decision">
+    <b>三个要你拍的点</b>
+    <ol>
+      <li><b>甲三栏 还是 乙两栏</b>：我推荐<b>乙</b>——信纸要够宽才像信；乙的默认态是三行折叠目录，打开信箱不再是一桌子纸。</li>
+      <li><b>标题从哪来</b>：信没有主题行。乙稿里标题用的是<b>正文首句截断</b>（零成本、不撒谎）。另一条路是让她寄信时自己写一句「事由」当标题——更好看，但要动生产端 <code>record_proactive</code> 并回填存量 79 封。你定：先用首句截断，还是直接上「事由」？</li>
+      <li><b>归档要不要再分三档</b>：稍后退避（到期自动回未读）/ 不用了（终态）/ 已办（她接手过）。乙稿左栏底部先做成归档下的三个子项，你也可以只要一个「归档」。</li>
+    </ol>
+  </div>
+
+  <div class="note">
+    <b>另外三个问题这轮已经改了（不用等这稿）</b><br>
+    ① <b>滚不动</b>：全屏页缺 <code>height:100% + overflow-y:auto</code>，已补，e2e 里钉了一条「68 封也拉得动」。<br>
+    ② <b>表情露符号</b>：她回信用聊天那套 <code>![招手问好](emote:wave)</code>，信箱是纯文本所以露出 token；现在信纸与往来都走聊天同一个 <code>renderEmoteInline</code>，贴纸照渲染，e2e 断言「不出现 emote: 字样」。<br>
+    ③ <b>稍后/不用了去哪儿了</b>：数据一直都在库里（你本机实测：snoozed 18 · dismissed 7 · actioned 1 · in_progress 1），只是过去没有落地页。已加 <code>?status=archived</code> + <code>archived_letters()</code>，每封带<b>上架原因</b>（稍后退避 / 不用了 / 已办），左栏「归档」直接用它；稍后的到期会自己回到未读。
+  </div>
+</div>
+</body>
+</html>

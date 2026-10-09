@@ -313,7 +313,15 @@
       "shelvedGroup": "已搁置 {{n}} 封",
       "hiHer": "小桔：",
       "hiMe": "萧哥 提笔：",
-      "composeHint": "写完直接寄，她这一轮就看见"
+      "composeHint": "写完直接寄，她这一轮就看见",
+      "catUnread": "未读",
+      "catRead": "已读",
+      "catArchived": "归档",
+      "pickCat": "左边挑一栏。",
+      "pickCatSub": "默认什么都不展开——打开信箱不再是一桌子纸。",
+      "emptyCat": "这一栏是空的。",
+      "pickOne": "挑一封，信在这里摊开。",
+      "backToList": "回列表"
     }
   },
   "experts": {
