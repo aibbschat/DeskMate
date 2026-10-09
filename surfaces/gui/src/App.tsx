@@ -606,18 +606,60 @@ export function App() {
     return () => clearTimeout(t);
   }, [uiReady, booting]);
 
-  const loadSettings = () =>
-    getSettings()
-      .then((s) => {
-        setModels(s.models || []);
-        setModelLabels(s.model_labels || {});
-        setModelTiers(s.model_tiers || {});
-        setModelContextWindows(s.model_context_windows || {});
-        setContextBar(s.context_bar === true);
-        setModelReady(s.model_ready);
-        if (s.surfaces) setSurfaces(s.surfaces);
-      })
-      .catch(() => {});
+  // Each setter is guarded by a shallow-equality check (sameRef) because this now runs on a
+  // timer: getSettings() rebuilds the full label/tier/window maps from the live catalogs on
+  // every call, so returning brand-new object identities each poll would re-render every
+  // model-aware component forever (the context meter, the picker, every Transcript bubble
+  // that reads a label). Same content ⇒ no setState ⇒ no render.
+  const sameRef = useRef({
+    models: null as string[] | null,
+    labels: null as Record<string, string> | null,
+    tiers: null as Record<string, string> | null,
+    windows: null as Record<string, number> | null,
+  });
+  const sameArr = (a: unknown[] | null, b: unknown[]) =>
+    a != null && a.length === b.length && a.every((v, i) => v === b[i]);
+  const sameRec = (
+    a: Record<string, string | number> | null,
+    b: Record<string, string | number>,
+  ) => {
+    if (a == null) return false;
+    const ka = Object.keys(a);
+    return ka.length === Object.keys(b).length && ka.every((k) => a[k] === b[k]);
+  };
+
+  const loadSettings = useCallback(
+    () =>
+      getSettings()
+        .then((s) => {
+          const p = sameRef.current;
+          const models = s.models || [];
+          if (!sameArr(p.models, models)) {
+            p.models = models;
+            setModels(models);
+          }
+          const labels = s.model_labels || {};
+          if (!sameRec(p.labels, labels)) {
+            p.labels = labels;
+            setModelLabels(labels);
+          }
+          const tiers = s.model_tiers || {};
+          if (!sameRec(p.tiers, tiers)) {
+            p.tiers = tiers;
+            setModelTiers(tiers);
+          }
+          const windows = s.model_context_windows || {};
+          if (!sameRec(p.windows, windows)) {
+            p.windows = windows;
+            setModelContextWindows(windows);
+          }
+          setContextBar(s.context_bar === true);
+          setModelReady(s.model_ready);
+          if (s.surfaces) setSurfaces(s.surfaces);
+        })
+        .catch(() => {}),
+    [],
+  );
 
   // Open Settings → Configure Models (from the composer's "No model connected" chip).
   const openModelSetup = () => openSettings("models");
@@ -626,12 +668,28 @@ export function App() {
   // do this on close).
   useEffect(() => {
     if (surface !== "settings") loadSettings();
-  }, [surface]);
+  }, [surface, loadSettings]);
+
+  // Keep the picker's model list live (2026-10-09: "the composer's opencode free models never
+  // update"). The backend mirrors the vendor catalog on a 6h TTL, but the GUI only ever asked
+  // for settings at boot and on surface change — so a model delisted/newly listed upstream stayed
+  // invisible until the user happened to visit Settings. 10 minutes is well inside the 6h TTL
+  // (plenty for a refresh to land) while adding a negligible request rate.
+  //
+  // Not 15s like the session poll on purpose: getSettings() re-reads and re-parses the ~840KB
+  // OpenRouter cache on every call, and that runs on the server's single-threaded event loop —
+  // the App.tsx session-poll comment records exactly what over-polling did to it (REST every
+  // ~2s, session switches queued behind). This payload has no liveness/badge requirement, so
+  // there is nothing to gain from a fast interval.
+  useEffect(() => {
+    const t = setInterval(loadSettings, 10 * 60 * 1000);
+    return () => clearInterval(t);
+  }, [loadSettings]);
 
   useEffect(() => {
     refreshSessions();
     loadSettings(); // selectable models + which session surfaces are visible
-  }, [refreshSessions]);
+  }, [refreshSessions, loadSettings]);
 
   // Poll the session list so the attention/liveness badges stay live and sessions created
   // out-of-band (unattended work, messaging, automations) appear without a manual refresh.

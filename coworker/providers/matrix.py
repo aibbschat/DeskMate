@@ -283,6 +283,11 @@ MATRIX: dict[str, ModelEntry] = {
     # 入选为当日从本机（CN 出口）实测可用/限流的 8 个 *-free 模型；区域封锁
     # （muse-spark-*-contributor）与上游已下架（deepseek-v4-flash-free、jev-1.13）未入选。
     # context 262_144 为 zen 网关默认窗口。免费额度限速，仍只建议轻量草稿用。
+    #
+    # ⚠️ 2026-10-09：这批条目**降级为冷启动/离线兜底**，不再参与选择器列表
+    # （见 all_model_ids）—— Zen 免费模型会下架，手铺项并进列表=陈旧项永不消失。
+    # 正常路径一律以 zen_catalog 的远端清单为准；这 8 个只是「首次拉取前/拉取失败」
+    # 时让界面不空。与 zen_catalog._seed() 是同一批，两处需同步维护。
     "opencode:space-bunny-free": ModelEntry(
         "Space Bunny · OpenCode 免费", _AGENTIC, 262_144
     ),
@@ -373,14 +378,17 @@ def _live_zen() -> Dict[str, ModelEntry]:
     """Live OpenCode Zen **免费** models (``opencode:<id>`` → ModelEntry), mirrored from the
     vendor's ``/zen/v1/models``（2026-10-06 移植深证 harness 的动态侦探）。
 
-    与 ``_live_openrouter`` 同构：远端清单为准，静态 ``MATRIX`` 里那 8 个手铺模型
-    保留为**离线兜底**（zen_catalog 的 seed 也用同一批）。
+    与 ``_live_openrouter`` 同构，**但兜底策略不同**（见模块下方 ``all_model_ids``）：
+    本函数只负责「拿到当前应该展示的条目」，不掺入静态 MATRIX 的手铺项——
+    因为 Zen 免费模型会下架，静态项并进来=陈旧模型永远下不掉（2026-10-09 实测：
+    ``fledge-alpha-free`` / ``mimo-v2.5-free`` 早已下架，却因静态 MATRIX 供着
+    而一直躺在聊天框的免费区，选中后必然失败）。
 
     为什么必须动态（设计 §1.5）：Zen 免费模型会下架/新上架，手工铺货保鲜期只有几天——
-    实测当天就已漂 5个，其中 ``deepseek-v4-flash-free`` / ``jev-1.13-free``
-    正是matrix.py 注释里写「已下架」的那两个。
+    实测当天就已漂 5 个。
 
-    失败返回 {}，静态 MATRIX 兜底（不因catalog 故障让 picker 空掉）。
+    失败返回 {}；此时由 ``zen_catalog`` 的 seed（同一批手铺模型）兜底，
+    **绝不**回落到静态 MATRIX（那正是陈旧项的来源）。
     """
     from .zen_catalog import get_zen_entries
 
@@ -399,6 +407,14 @@ def _live_catalogs() -> Dict[str, ModelEntry]:
 
 
 def entry_for(model: str) -> ModelEntry | None:
+    """Look up one model's entry.
+
+    ``opencode:`` 前缀**先查动态清单**（与 ``all_model_ids`` 同一权威口径）：
+    已下架的模型即使静态 MATRIX 里有手铺条目也不返回，避免 capability 探测
+    与路由层把「早已不存在」的模型当成可用。
+    """
+    if model.startswith("opencode:"):
+        return _live_zen().get(model) or MATRIX.get(model)
     return MATRIX.get(model) or _live_catalogs().get(model)
 
 
@@ -421,8 +437,22 @@ def model_context_windows() -> dict[str, int]:
 
 
 def all_model_ids() -> list[str]:
-    """Every curated id (static matrix + live catalogs). Drives the composer picker."""
-    return [*MATRIX, *_live_catalogs().keys()]
+    """Every curated id (static matrix + live catalogs). Drives the composer picker.
+
+    **opencode: 前缀以动态清单为唯一权威源**（2026-10-09 修「聊天框免费模型不更新」）：
+    静态 MATRIX 里那 8 个手铺的opencode 条目**不并进来**。原实现是并集，
+    导致已下架模型（实测``fledge-alpha-free`` / ``mimo-v2.5-free``）被静态项供着
+    永远留在选择器里——用户选中必然 404，而下架这件事本身永远不会被反映到 UI。
+
+    冷启动兜底改由 ``zen_catalog`` 的 seed 承担（``get_zen_entries`` 在缓存缺失时
+    就返回 seed），语义仍是「离线不空列表」，但 seed 是随远端清单维护的，
+    而静态 MATRIX 是一次性快照。两者都在时，远端清单优先。
+
+    openrouter: 同理为纯动态（静态表本就无openrouter 条目），无需特判。
+    """
+    live = _live_catalogs()
+    static = [m for m in MATRIX if not m.startswith("opencode:")]
+    return [*static, *live.keys()]
 
 
 def is_derived_model(model: str) -> bool:

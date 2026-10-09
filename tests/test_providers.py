@@ -958,3 +958,63 @@ def test_zen_prune_keeps_paid_group_and_drops_delisted(monkeypatch, tmp_path):
     assert "opencode:space-bunny-free" in left, "清单内的模型应保留"
     assert "ark-agent-plan-cn:deepseek-v4-flash" in left, "付费组火山不该被远端清单牵连"
     assert "xiaomi:mimo-v2.5-pro" in left, "付费组小米不该被远端清单牵连"
+
+
+def test_picker_drops_delisted_opencode_models(monkeypatch):
+    """聊天框的免费模型列表必须只反映**远端清单**，不掺静态手铺项。
+
+    2026-10-09 实测的病：``all_model_ids()`` 是静态 MATRIX 与动态清单的**并集**，
+    于是早已下架的 ``fledge-alpha-free`` / ``mimo-v2.5-free`` 被静态项供着，
+    永远躺在选择器的免费区里——用户选中必然失败，而「下架」这件事本身
+    永远反映不到 UI。openrouter 早就是纯动态，opencode 没跟上。
+
+    动态清单为准；静态 8 项降级为冷启动兜底（由 zen_catalog 的 seed 承担）。
+    """
+    from coworker.providers import matrix as M
+    from coworker.providers import zen_catalog as Z
+
+    now = __import__("time").time()
+    # 远端清单：fledge-alpha / mimo-v2.5 已下架，space-bunny 与新增的 exo 在架。
+    monkeypatch.setattr(
+        Z,
+        "_load_cache",
+        lambda: {
+            "fetched_at": now,
+            "models": [{"id": "space-bunny-free"}, {"id": "exo-free"}],
+        },
+    )
+    monkeypatch.setattr(M, "_live_openrouter", lambda: {})
+
+    ids = M.all_model_ids()
+    zen = [m for m in ids if m.startswith("opencode:")]
+
+    assert set(zen) == {"opencode:space-bunny-free", "opencode:exo-free"}, (
+        "opencode 列表应严格等于远端清单：下架的消失、新上架的立刻出现"
+    )
+    # 静态 MATRIX 里确实还躺着这两个下架项——正是它们当年撑起了陈旧条目。
+    assert "opencode:fledge-alpha-free" in M.MATRIX, "前提：静态兜底项仍在"
+    assert "opencode:mimo-v2.5-free" in M.MATRIX, "前提：静态兜底项仍在"
+    # 非 opencode 的条目不受影响（付费组、其它 provider 一个不少）。
+    assert "gpt-5.6-sol" in ids
+    assert "ark-agent-plan-cn:deepseek-v4-flash" in ids
+
+
+def test_picker_falls_back_to_seed_when_catalog_unavailable(monkeypatch):
+    """远端清单拿不到时仍要有列表可显示（离线/冷启动不能空）。
+
+    兜底责任已从静态 MATRIX 移交 ``zen_catalog._seed()``：这里锁住「拿不到
+    清单 → get_zen_entries 走 seed → 选择器非空」，免得日后有人把兜底删了
+    变成冷启动空列表。
+    """
+    from coworker.providers import matrix as M
+    from coworker.providers import zen_catalog as Z
+
+    monkeypatch.setattr(Z, "_load_cache", lambda: None)
+    monkeypatch.setattr(Z, "_seed", lambda: [{"id": "space-bunny-free"}])
+    monkeypatch.setattr(M, "_live_openrouter", lambda: {})
+    monkeypatch.setattr(Z, "_ensure_refresh_thread", lambda oneshot=False: None)
+
+    ids = M.all_model_ids()
+    assert "opencode:space-bunny-free" in ids, "清单不可用时应有 seed 兜底"
+    assert "gpt-5.6-sol" in ids, "非 opencode 条目不受影响"
+
