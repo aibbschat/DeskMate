@@ -176,6 +176,39 @@ def _cron_missed(cron: str, last_run: Optional[float], now: float) -> bool:
         return False
 
 
+def _cron_due_today(cron: Optional[str], now: float) -> bool:
+    """今天**是否已经到过**该任务的应跑时刻（不含 30 分钟宽限，那是 _cron_missed 的事）。
+
+    为什么需要它（2026-10-10 实测）：判据②「今天零产出」若不先问「今天该不该跑」，
+    就会在**任务还没到点**的清晨报「今天零产出」。实测 06:49 跑体检，5 个当日
+    09:30–16:00 才到点的任务被**全部**误报——它们连跑都还没跑。
+
+    fail-open 方向选择：**无 cron / croniter 不可用 → True**（保守，可能误报但不会漏报），
+    与 _cron_missed 的 fail-closed 方向相反，因为二者管的是不同后果。
+    """
+    if not cron:
+        return False  # 无 cron = 手动任务，不按「今天该跑」处理
+    try:
+        from croniter import croniter
+        from datetime import datetime, timedelta
+
+        # ⚠️ 本地午夜**不能**用 now % 86400 算——那是 UTC 午夜。本机 UTC+8 时，
+        # now=06:49 本地时 now%86400 会落到前一天 22:49，起点直接错一天，
+        # 导致「每天 09:30 的任务」在清晨被判成「今天还没到点」之外的怪结果。
+        # 必须用 datetime 构造本地 00:00。
+        day_start = datetime.fromtimestamp(now).replace(hour=0, minute=0, second=0, microsecond=0)
+        itr = croniter(cron, day_start - timedelta(seconds=1))
+        for _ in range(96):  # 每天至多 96 个应跑点，足够
+            m = itr.get_next(datetime)
+            if m.timestamp() > now:
+                return False
+            if _today() == time.strftime("%Y-%m-%d", time.localtime(m.timestamp())):
+                return True
+        return False
+    except Exception:  # noqa: BLE001
+        return True  # 判不出来 → 保守，不漏报
+
+
 def _automation_db_path(base_dir: Optional[Path] = None) -> Optional[Path]:
     """定位 Coworker 定时任务库 ``automation.db`` 的**真实落点**（找不到返回 None）。
 
@@ -264,6 +297,16 @@ def _automation_producer(base_dir: Optional[Path] = None) -> list:
             # 用 max(last_run, last_started) 参与判定：谁新用谁，
             # 这样既认「已跑完」也认「正在跑」，运行期间不再误报。
             ran_at = max([x for x in (last_run, last_started) if x] or [None])
+            # ⚠️ 2026-10-10 补漏判据（方案 B 自身的漏洞，恢复 automation 时实测抓到）：
+            # 判据②「今天零产出」原本**只**看今天 timeline 有无记录，却没先确认
+            # 「今天到底该不该跑」。实测 10-10 06:49（任务 09:30/09:40/10:00/10:30/16:00
+            # 才到点、最近一次全是 10-09），5 个任务被**全部**报成「今天零产出」——
+            # 它们连跑都还没跑。这是缺陷①「用 last_run 判运行中」的同型错误：
+            # 换了字段，但同样没问「此刻该不该已经有产出」。
+            # 故②的前置条件改为：**今天应跑时刻已过**，且本次已开跑（ran_at 在今天应跑点之后）。
+            # 两者都不满足 → 今天本来就没到点，什么都不报。
+            due_today = _cron_due_today(cron, now)
+            ran_today = bool(ran_at) and _today() == _iso(ran_at)[:10]
             # ① 该跑却没跑成
             if cron and _cron_missed(cron, ran_at, now):
                 items.append({
@@ -285,7 +328,7 @@ def _automation_producer(base_dir: Optional[Path] = None) -> list:
             #     且它假设「产出必进 artifacts」，但读书任务 artifacts 恒为 []（正文写进
             #     .deskmate/tmp_reading/）。关键词判据**整条删除**，只认硬锚点。
             status = run.get("status") or last_status
-            if status == "ok":
+            if status == "ok" and due_today and ran_today:
                 zero = False
                 reason = ""
                 stem = _title_stem(title)

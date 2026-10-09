@@ -94,7 +94,11 @@ def _make_automation_db(base, *, last_run=None, run_status="ok", task_type="dail
         "task_type": task_type,
         "last_run": last_run if last_run is not None else time.time(),
         "last_status": run_status,
-        "schedule": {"cron": "0 8 * * *"},
+        # 每分钟都跑 ⇒ 「今天已到点」在任何时刻都为真（避免测试因运行时刻而漂移）。
+        # 原用 "0 8 * * *"，但判据②新增 due_today 闸门后，凌晨跑测试会因 08:00 未到
+        # 而正确地不产出 → 测试变脆。测试要的是「到点后零产出」这一语义，
+        # 而非「某个具体钟点」。
+        "schedule": {"cron": "* * * * *"},
     }
     conn.execute(
         "INSERT INTO scheduled_tasks(id, enabled, data) VALUES(?,1,?)",
@@ -261,17 +265,22 @@ def test_writing_producer_throttled(base, monkeypatch):
 # ---- 2026-10-09：automation 误报止血（方案 A）----
 
 
-def test_disabled_producers_defaults_to_automation():
-    """默认停用 automation（误报止血），其余两个健康生产者保留。"""
+def test_disabled_producers_defaults_to_empty_after_fix():
+    """**2026-10-10**：误报根治后默认**一个都不停**（automation 已恢复）。
+
+    曾断言 ``MISREPORTING == ("automation",)``（2026-10-09 止血期），
+    方案 B（``44b8490``）修掉三处缺陷后由萧哥拍板恢复。
+    """
     from deskmate.proactivity.disabled_producers import (
         MISREPORTING,
         disabled_producers,
         exclude_for_producers_all,
     )
 
-    assert MISREPORTING == ("automation",)
-    assert disabled_producers() == ("automation",)
-    # sync_health / writing 实测产出真实且有价值（同步漂移、停笔位点），必须保留
+    assert MISREPORTING == ()
+    assert disabled_producers() == ()
+    # 三个健康生产者全部重新上岗
+    assert "automation" not in disabled_producers()
     assert "sync_health" not in disabled_producers()
     assert "writing" not in disabled_producers()
 
@@ -286,7 +295,8 @@ def test_exclude_keeps_cloud_audit_default():
 
     exc = exclude_for_producers_all()
     assert "cloud_audit" in exc
-    assert "automation" in exc
+    # automation 已恢复（方案 B 修掉误报），默认不再出现在排除名单里
+    assert "automation" not in exc
 
 
 def test_disabled_producers_env_override(monkeypatch):
@@ -304,24 +314,33 @@ def test_disabled_producers_env_override(monkeypatch):
     assert D.disabled_producers() == ("automation", "writing")
 
 
-def test_run_producers_all_actually_skips_automation(monkeypatch, tmp_path):
-    """端到端：run_producers_all 接到 exclude 后，automation 生产者**不被调用**。
+def test_run_producers_all_actually_runs_automation(monkeypatch, tmp_path):
+    """端到端：**2026-10-10 automation 已恢复**，默认应被真正调用。
 
-    这条锁的是真回归风险——exclude 只是参数，若调用方忘了传，误报会立刻回来，
-    而台账里不会留下任何痕迹（它安静地又开始报）。
+    这条锁的是「恢复真的生效」——MISREPORTING 清空了，但若调用方的 exclude 接线
+    仍把它排除掉，automation 就会**安静地继续不体检**（台账里没有任何痕迹）。
+    反向风险同样由下面第二个用例锁住：显式停用时它必须真的不被调用。
     """
     from deskmate.proactivity import disabled_producers as D
-    from deskmate.proactivity import health_producers as HP
+    from deskmate.proactivity import health_producers as HP  # noqa: F401
     from deskmate.proactivity import ledger as L
 
     called = []
     monkeypatch.setitem(L.PRODUCERS, "automation", lambda **k: called.append("automation") or [])
     monkeypatch.setitem(L.PRODUCERS, "writing", lambda **k: called.append("writing") or [])
 
+    # 默认（无环境变量）→ automation 恢复，应被调用
     monkeypatch.delenv(D._ENV_KEY, raising=False)
     L.run_producers_all(base_dir=tmp_path, exclude=D.exclude_for_producers_all())
-    assert "automation" not in called
-    assert "writing" in called, "保留的生产者仍应被调用"
+    assert "automation" in called, "判据已修好，automation 应恢复体检"
+    assert "writing" in called
+
+    # 反向锁：显式停用时必须真的不调用（env 开关仍然有效）
+    called.clear()
+    monkeypatch.setenv(D._ENV_KEY, "automation")
+    L.run_producers_all(base_dir=tmp_path, exclude=D.exclude_for_producers_all())
+    assert "automation" not in called, "显式停用必须生效"
+    assert "writing" in called, "其余生产者不受影响"
 
     # 对拍：清空停用清单 → automation 恢复（证明是 exclude 在起作用，不是别的）
     called.clear()
@@ -428,3 +447,63 @@ def test_stale_task_still_reported_as_missed(tmp_path, monkeypatch):
     items = _automation_producer(base_dir=base)
     kinds = [i["anchor"].rsplit(":", 1)[-1] for i in items]
     assert "miss" in kinds, f"真 miss 被漏报了: {items}"
+
+
+def test_cron_due_today_before_and_after_schedule():
+    """**2026-10-10 回归**：判据②必须有「今天该跑过」前置条件。
+
+    方案 B 自身的漏洞：恢复 automation 时实测 06:49 跑体检，5 个当日 09:30-16:00
+    才到点的任务被**全部**报成「今天零产出」——它们连跑都还没跑。
+    """
+    from deskmate.proactivity.health_producers import _cron_due_today
+
+    now = time.time()
+    today = time.strftime("%Y-%m-%d", time.localtime(now))
+    # 今天 00:00 → 09:30 还没到
+    midnight = time.mktime(time.strptime(today, "%Y-%m-%d"))
+    assert _cron_due_today("30 9 * * *", midnight + 60) is False
+    # 今天 23:59 → 09:30 早就过了
+    assert _cron_due_today("30 9 * * *", midnight + 86399) is True
+    # 无 cron（手动任务）→ False，不按「今天该跑」处理
+    assert _cron_due_today(None, now) is False
+
+
+def test_zero_output_not_reported_before_schedule_time(tmp_path, monkeypatch):
+    """**2026-10-10 回归（端到端）**：任务还没到点，不得报「今天零产出」。
+
+    这是恢复 automation 当天实测抓到的真误报（5 个任务全中）。
+    """
+    import sqlite3
+
+    from deskmate.proactivity.health_producers import _automation_producer
+
+    base = tmp_path / "bd_early"
+    base.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("COWORKER_STATE_DIR", str(base))
+
+    adb = base / "automation.db"
+    c = sqlite3.connect(str(adb))
+    c.execute("CREATE TABLE scheduled_tasks (id TEXT PRIMARY KEY, enabled INTEGER, data TEXT)")
+    c.execute("CREATE TABLE task_runs (run_id TEXT PRIMARY KEY, task_id TEXT, started_at REAL, data TEXT)")
+    # cron 设在「明天」不可能到的时刻：每天 00:00，但用一次性的极端 cron
+    # 「0 0 1 1 *」（每年 1 月 1 日）→ 今天绝无可能到点
+    tid = "t_future"
+    c.execute(
+        "INSERT INTO scheduled_tasks VALUES(?,1,?)",
+        (tid, json.dumps({
+            "title": "未来任务：暂不到点",
+            "schedule": {"cron": "0 0 1 1 *"},
+            "last_status": "ok",
+        }, ensure_ascii=False)),
+    )
+    # 最近一次 run 是**昨天**跑的且 status=ok（若不设 due_today 闸门，会被判「今天零产出」）
+    yesterday = time.time() - 86400
+    c.execute(
+        "INSERT INTO task_runs VALUES(?,?,?,?)",
+        ("r_y", tid, yesterday, json.dumps({"status": "ok"})),
+    )
+    c.commit()
+    c.close()
+
+    items = _automation_producer(base_dir=base)
+    assert not [i for i in items if i["anchor"].endswith(":zero")], f"未到点却报零产出: {items}"
