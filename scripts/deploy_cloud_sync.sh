@@ -43,11 +43,17 @@ LOCAL_RUNNER="scripts/sync_daemon_runner.py"
 PROACTIVITY_MODULES=(
   "deskmate/proactivity/ledger.py"
   "deskmate/proactivity/tick.py"
+  "deskmate/proactivity/judge.py"
   "deskmate/proactivity/understanding.py"
   "deskmate/proactivity/server.py"
   "deskmate/proactivity/confidence.py"
   "deskmate/proactivity/health_producers.py"
 )
+# ⚠️ judge.py 必须随 tick.py 一起上云：tick.py:30 `from .judge import JudgmentResult,
+# judge_proactive_action`，而云端 xiaoju_agency_tick.py:146 跑 run_producers_all → 调 tick 内的
+# `_cloud_audit_producer`，该生产者用 `judgment.finding_key`（2026-10-09 提交 1729942 新增）。
+# 漏传 → 云端跑旧 judge.py，JudgmentResult 无 finding_key → 锚点合并特性在云端静默失效
+# （退回内容指纹），且违反「本地与云端代码须完全一致」红线。务必与 tick/ledger 同批同步。
 CLOUD_PROACTIVITY_DIR="/opt/openworker/deskmate/proactivity"
 
 # P3-c 手动 oplog GC 工具（§11.15）：随 runner 一起上云到 /var/lib/openworker/.deskmate/，
