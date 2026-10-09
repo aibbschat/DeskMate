@@ -249,3 +249,76 @@ def test_writing_producer_throttled(base, monkeypatch):
     assert first, "首次应产出 stall_flag"
     second = _writing_producer(base_dir=base)
     assert second == [], f"节流后应返回空，实得 {second}"
+
+
+# ---- 2026-10-09：automation 误报止血（方案 A）----
+
+
+def test_disabled_producers_defaults_to_automation():
+    """默认停用 automation（误报止血），其余两个健康生产者保留。"""
+    from deskmate.proactivity.disabled_producers import (
+        MISREPORTING,
+        disabled_producers,
+        exclude_for_producers_all,
+    )
+
+    assert MISREPORTING == ("automation",)
+    assert disabled_producers() == ("automation",)
+    # sync_health / writing 实测产出真实且有价值（同步漂移、停笔位点），必须保留
+    assert "sync_health" not in disabled_producers()
+    assert "writing" not in disabled_producers()
+
+
+def test_exclude_keeps_cloud_audit_default():
+    """exclude 会**整体替换** ledger 的默认 exclude，必须把 cloud_audit 带上。
+
+    run_producers_all 的签名默认 exclude=("cloud_audit",)（它由 tick 的 SUGGEST 分支负责）。
+    若只传停用名单，cloud_audit 会在每个周期窗口被多跑一遍 —— 白烧 token。
+    """
+    from deskmate.proactivity.disabled_producers import exclude_for_producers_all
+
+    exc = exclude_for_producers_all()
+    assert "cloud_audit" in exc
+    assert "automation" in exc
+
+
+def test_disabled_producers_env_override(monkeypatch):
+    """环境变量可覆盖/一键回滚：显式设值完全覆盖默认（用于止血与对拍）。"""
+    from deskmate.proactivity import disabled_producers as D
+
+    monkeypatch.setenv(D._ENV_KEY, "sync_health")
+    assert D.disabled_producers() == ("sync_health",)
+
+    monkeypatch.setenv(D._ENV_KEY, "")  # 空串 = 一个都不停（回滚）
+    assert D.disabled_producers() == ()
+    assert D.exclude_for_producers_all() == ("cloud_audit",)
+
+    monkeypatch.setenv(D._ENV_KEY, " automation , writing ")  # 去空白去重
+    assert D.disabled_producers() == ("automation", "writing")
+
+
+def test_run_producers_all_actually_skips_automation(monkeypatch, tmp_path):
+    """端到端：run_producers_all 接到 exclude 后，automation 生产者**不被调用**。
+
+    这条锁的是真回归风险——exclude 只是参数，若调用方忘了传，误报会立刻回来，
+    而台账里不会留下任何痕迹（它安静地又开始报）。
+    """
+    from deskmate.proactivity import disabled_producers as D
+    from deskmate.proactivity import health_producers as HP
+    from deskmate.proactivity import ledger as L
+
+    called = []
+    monkeypatch.setitem(L.PRODUCERS, "automation", lambda **k: called.append("automation") or [])
+    monkeypatch.setitem(L.PRODUCERS, "writing", lambda **k: called.append("writing") or [])
+
+    monkeypatch.delenv(D._ENV_KEY, raising=False)
+    L.run_producers_all(base_dir=tmp_path, exclude=D.exclude_for_producers_all())
+    assert "automation" not in called
+    assert "writing" in called, "保留的生产者仍应被调用"
+
+    # 对拍：清空停用清单 → automation 恢复（证明是 exclude 在起作用，不是别的）
+    called.clear()
+    monkeypatch.setenv(D._ENV_KEY, "")
+    L.run_producers_all(base_dir=tmp_path, exclude=D.exclude_for_producers_all())
+    assert "automation" in called
+

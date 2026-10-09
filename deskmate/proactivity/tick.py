@@ -314,10 +314,20 @@ class ProactiveEngine:
         # ===== P2 周期健康生产者（automation/sync_health/writing 自检）=====
         # 复用 understanding 范式：每 tick 调用，生产者内部自节流（每小时/每日），
         # fail-open 不阻断。让小桔主动「报告坏消息」（该跑没跑/同步漂移/手稿停笔）。
+        #
+        # 2026-10-09：``automation`` 因误报被临时停用（见 disabled_producers
+        # 模块 docstring 的三重缺陷分析）。注意 exclude 会**整体替换** ledger 签名里的默认值，
+        # 所以必须用 exclude_for_producers_all()（它已并入 ``cloud_audit``）——
+        # 只传停用名单会让 cloud_audit 在每个周期窗口被重复跑一遍。
         try:
+            from deskmate.proactivity.disabled_producers import (
+                exclude_for_producers_all,
+            )
             from deskmate.proactivity.ledger import run_producers_all
 
-            run_producers_all(base_dir=self.base_dir)
+            run_producers_all(
+                base_dir=self.base_dir, exclude=exclude_for_producers_all()
+            )
         except Exception:
             logger.debug("周期健康生产者调用失败（不阻断 tick）", exc_info=True)
 

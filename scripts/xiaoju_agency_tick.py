@@ -140,10 +140,17 @@ def main() -> dict:
         log.exception("AgencyEngine.tick 抛异常（应已被内部 fail-open 吸收，此为兜底）: %s", e)
         return {"error": str(e)}
     # 周期健康生产者（automation/sync_health/writing）：云端 hourly 窗口天然适配。
+    # 2026-10-09：``automation`` 因误报被临时停用（见 disabled_producers
+    # 模块）。exclude 会**整体替换** ledger 签名默认值，故须用``exclude_for_producers_all()``。
     try:
+        from deskmate.proactivity.disabled_producers import (
+            exclude_for_producers_all,
+        )
         from deskmate.proactivity.ledger import run_producers_all
 
-        run_producers_all(base_dir=DESKMATE_DIR)
+        run_producers_all(
+            base_dir=DESKMATE_DIR, exclude=exclude_for_producers_all()
+        )
     except Exception as e:  # noqa: BLE001
         log.exception("周期健康生产者失败（不阻断 agency）: %s", e)
     # 列表字段太长，摘要化后记录

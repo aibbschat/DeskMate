@@ -97,9 +97,17 @@ class ProviderRouter(ProviderClient):
         **settings: Any,
     ):
         self._note_use(model)
-        return self._client_for(model).complete(
-            model=self._bare(model), messages=messages, tools=tools, **settings
-        )
+
+        def _call(m: str):
+            return self._client_for(m).complete(
+                model=self._bare(m), messages=messages, tools=tools, **settings
+            )
+
+        # 付费套餐撞额度时按 PAID_GROUP 换下一条（火山 → 小米 → 腾讯 hy3）。
+        # 非付费套餐与免费组在 plan_attempts 里原样返回单通道，行为不变。
+        from .paid_fallback import complete_with_fallback
+
+        return complete_with_fallback(_call, model)
 
     def stream(
         self,
@@ -110,9 +118,18 @@ class ProviderRouter(ProviderClient):
         **settings: Any,
     ):
         self._note_use(model)
-        return self._client_for(model).stream(
-            model=self._bare(model), messages=messages, tools=tools, **settings
-        )
+
+        def _open(m: str):
+            return self._client_for(m).stream(
+                model=self._bare(m), messages=messages, tools=tools, **settings
+            )
+
+        # 流式同样要能换通道。注意此处**不写 return**：stream 必须是惰性生成器，
+        # 写成 return ... 会把生成器对象原样返回、丢掉外层的回退代理。
+        # stream_with_fallback 内部保证「首个 chunk 之前」可换通道，之后原样上抛。
+        from .paid_fallback import stream_with_fallback
+
+        yield from stream_with_fallback(_open, model)
 
     def capabilities(self, model: str):
         return capabilities_for(model)

@@ -48,7 +48,19 @@ PROACTIVITY_MODULES=(
   "deskmate/proactivity/server.py"
   "deskmate/proactivity/confidence.py"
   "deskmate/proactivity/health_producers.py"
+  "deskmate/proactivity/disabled_producers.py"
 )
+# ⚠️ 2026-10-09 新增：disabled_producers.py（automation 误报止血模块）。
+# tick.py 与 xiaoju_agency_tick.py 均 `from deskmate.proactivity.disabled_producers import ...`，
+# 漏传 → 云端 tick 每轮抛 ImportError（被 except 吞掉）→ 云端**悄悄停跑所有健康生产者**，
+# 且不留任何日志线索。务必与 tick.py 同批同步。
+
+# ⚠️ 2026-10-09 新增：主链路付费组回退。
+# router.py 改为 `from .paid_fallback import complete_with_fallback / stream_with_fallback`。
+# 漏传 paid_fallback.py 的后果特别隐蔽：import 写在**函数体内**，故导入期不报错、
+# 服务能正常启动，但**每次调用主链路都抛 ModuleNotFoundError** ⇒ 云端小桔彻底不能对话。
+# router.py 与它必须同批同步（本次实测：火山周额度撞顶后必须能自动切小米/hy）。
+# 两者已列入下方 CHANNEL_MODULES，复用其传输与 md5 校验循环。
 # ⚠️ judge.py 必须随 tick.py 一起上云：tick.py:30 `from .judge import JudgmentResult,
 # judge_proactive_action`，而云端 xiaoju_agency_tick.py:146 跑 run_producers_all → 调 tick 内的
 # `_cloud_audit_producer`，该生产者用 `judgment.finding_key`（2026-10-09 提交 1729942 新增）。
@@ -85,6 +97,13 @@ CHANNEL_MODULES=(
   "deskmate/llm_channels.py"              # 通道组（付费/免费 + 组内自动排）
   "deskmate/memory/llm.py"                # chat/chat_memory 接入熔断与通道组
   "coworker/providers/zen_catalog.py"     # Zen 免费模型动态清单（远端驱动）
+  # ⚠️ 主链路付费组回退三件套（2026-10-09 新增）：实测火山周额度撞顶 429 时，
+  # router.py 裸奔（不查熔断、不换通道）导致主聊天每 35 秒撞一次墙，而熔断器在旁边
+  # 正确记账——两套配置脱节。修法是把跨套餐回退（火山→小米→腾讯 hy3）接进 router。
+  # 三者**必须同批**：router import paid_fallback，且 import 写在函数体内，
+  # 漏传时服务照常启动但每次调用都 ModuleNotFoundError ⇒ 云端小桔彻底不能对话。
+  "coworker/providers/router.py"           # ProviderRouter（已接入 paid_fallback）
+  "coworker/providers/paid_fallback.py"   # 付费组跨套餐回退 + 熔断记账
   "coworker/server/app.py"                # /v1/llm-channels* 端点
   # ⚠️ 主程序包的同步三件套（2026-10-06 补）：云端 `/opt/openworker/deskmate/memory/`
   # 另有一份 sync_store_sqlite.py，而上面的 CHANNEL_MODULES 里的 llm.py 正是 import它。
