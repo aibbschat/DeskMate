@@ -4152,6 +4152,7 @@ export async function ackDeskmateHandoff(
 // -- 信箱 · 送达层（2026-10-09）：proactive_ledger 的门面（presentation layer） --
 // 信箱只持信件元数据；轻回信走「隐藏 mailbox 会话」复用同一引擎（前端用 Session 类连 WS）。
 // 与江河设计 §九 正交，独立于 P3 自主闭环；Mac-only 不同步（决策5）。
+// 准入（哪些台账行算「一封信」）在服务端 ledger.is_mailbox_letter：系统遥测不入。
 export interface MailboxLetter {
   id: string;
   source: string;
@@ -4163,7 +4164,14 @@ export interface MailboxLetter {
   read_at: string | null;
   read: boolean;
   created_at: string;
+  /** 该信的轻回信会话 id（隐藏中或已提升都返）。 */
   mailbox_session_id: string | null;
+  /** 往来已被「进聊天」提升成普通会话（侧栏可见，信箱留引用）。 */
+  thread_promoted?: boolean;
+  /** 已读超 SHELF_DAYS 天仍未处理 → 「已搁置」归档态（设计单 §7 TTL 衰减）。 */
+  stale?: boolean;
+  origin?: string;
+  intent_id?: string | null;
 }
 
 export interface MailboxView {
@@ -4172,10 +4180,11 @@ export interface MailboxView {
   items: MailboxLetter[];
 }
 
-/** 拉取信箱信件列表 + 未读数（proactive_ledger 的 pending/snoozed 视图态项）。 */
-export async function getMailbox(): Promise<MailboxView> {
+/** 拉取信箱信件列表 + 未读数（proactive_ledger 的 pending/snoozed 视图态项）。
+ *  status="unread" 只要未读；默认 all 含已读（「已搁置」归档要用）。 */
+export async function getMailbox(status: "all" | "unread" = "all"): Promise<MailboxView> {
   try {
-    const res = await authedFetch(`${httpBase()}/v1/deskmate/mailbox`);
+    const res = await authedFetch(`${httpBase()}/v1/deskmate/mailbox?status=${status}`);
     if (!res.ok) return { ok: false, unread_count: 0, items: [] };
     return (await res.json()) as MailboxView;
   } catch {
@@ -4220,7 +4229,7 @@ export async function dismissMailboxLetter(id: string): Promise<boolean> {
 }
 
 /** 轻回信：确保一封「隐藏 mailbox 会话」存在，返回其 session_id。
- * 前端再用 Session 类连 /ws/session/{id} 复用同一引擎；信件样式渲染往来。 */
+ *  前端再用 Session 类连 /ws/session/{id} 复用同一引擎；信件样式渲染往来。 */
 export async function replyMailboxLetter(id: string): Promise<{ ok: boolean; session_id: string | null }> {
   try {
     const res = await authedFetch(`${httpBase()}/v1/deskmate/mailbox/${encodeURIComponent(id)}/reply`, {
@@ -4230,6 +4239,27 @@ export async function replyMailboxLetter(id: string): Promise<{ ok: boolean; ses
     return { ok: !!d.ok, session_id: d.session_id ?? null };
   } catch {
     return { ok: false, session_id: null };
+  }
+}
+
+/** 「进聊天」：把这封信的隐藏往来提升成普通会话（侧栏可见、气泡样式续聊）。
+ *  返 workspace 供 App 直接 selectSession。 */
+export async function promoteMailboxLetter(
+  id: string
+): Promise<{ ok: boolean; session_id: string | null; workspace: string }> {
+  try {
+    const res = await authedFetch(
+      `${httpBase()}/v1/deskmate/mailbox/${encodeURIComponent(id)}/promote`,
+      { method: "POST" }
+    );
+    const d = (await res.json()) as {
+      ok?: boolean;
+      session_id?: string | null;
+      workspace?: string;
+    };
+    return { ok: !!d.ok, session_id: d.session_id ?? null, workspace: d.workspace ?? "" };
+  } catch {
+    return { ok: false, session_id: null, workspace: "" };
   }
 }
 

@@ -90,7 +90,8 @@
     "dockSidebar": "Dock sidebar (⌘B)",
     "collapseSidebar": "Collapse sidebar (⌘B)",
     "dockSidebarAria": "Dock sidebar",
-    "collapseSidebarAria": "Collapse sidebar"
+    "collapseSidebarAria": "Collapse sidebar",
+    "mailbox": "Mailbox"
   },
   "composer": {
     "discussLabel": "Discuss",
@@ -289,7 +290,31 @@
       "Let's make today's draft less terrible. Kidding — more awesome.",
       "Got a wild idea? I'm your safest sounding board.",
       "The first sentence is the hardest. Then it's just talking."
-    ]
+    ],
+    "mailbox": {
+      "title": "Mailbox",
+      "hasUnread": "You have {{n}} letters in the mailbox",
+      "empty": "Mailbox · take a look",
+      "unreadCount": "{{n}} unread",
+      "allClear": "Nothing waiting — Xiaoju has nothing to hand over.",
+      "markRead": "Mark read",
+      "later": "Later",
+      "dismiss": "No need",
+      "openChat": "Open chat",
+      "viewChat": "View thread",
+      "reply": "Reply",
+      "closeReply": "Collapse",
+      "threadStart": "No exchange yet — write a few lines on the sheet below.",
+      "replyPlaceholder": "Write back to her…",
+      "sending": "Sending…",
+      "send": "Send",
+      "replyFailed": "Could not open the reply thread",
+      "shelved": "Shelved",
+      "shelvedGroup": "Shelved {{n}}",
+      "hiHer": "Xiaoju:",
+      "hiMe": "From Xiaosheng:",
+      "composeHint": "Send it — she will see it in this turn"
+    }
   },
   "experts": {
     "title": "Expert Center",

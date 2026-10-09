@@ -1,0 +1,430 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>信箱 · 回信视觉三案（2026-10-09）</title>
+<style>
+  /* ---- 真实设计令牌（抄自 surfaces/gui/src/styles.css，浅/深两套） ---- */
+  .light {
+    color-scheme: light;
+    --paper:#f5f6f7; --panel:#ffffff; --ink:#17191c; --muted:#5b616b; --faint:#9aa1aa;
+    --line:#e8eaed; --line-strong:#d8dce1; --accent:#2563eb; --accent-soft:#e9f0fd;
+    --stamp:#b91c1c; --stamp-soft:#f9e7e5; --ok:#2f7d57;
+    --paper-tint:#fffdf7; --rule:rgba(23,25,28,.07);
+  }
+  .dark {
+    color-scheme: dark;
+    --paper:#131417; --panel:#1c1e22; --ink:#e6e8eb; --muted:#9aa1ab; --faint:#62686f;
+    --line:#2a2d33; --line-strong:#3a3e46; --accent:#4c8dff; --accent-soft:#1c2a44;
+    --stamp:#e0757a; --stamp-soft:#2b1b1e; --ok:#4dac72;
+    --paper-tint:#1a1c20; --rule:rgba(230,232,235,.06);
+  }
+  * { box-sizing:border-box; }
+  body {
+    margin:0; padding:34px 26px 90px; background:#dfe3e8; color:#17191c;
+    font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;
+  }
+  .wrap { max-width:1320px; margin:0 auto; }
+  h1 { font-size:23px; margin:0 0 6px; letter-spacing:.3px; }
+  .lead { font-size:13.5px; color:#4a5058; line-height:1.75; max-width:820px; margin-bottom:8px; }
+  .brief { background:#fff; border:1px solid #cfd6de; border-radius:12px; padding:16px 18px; margin:16px 0 34px; }
+  .brief b { font-size:13px; }
+  .brief ul { margin:8px 0 0; padding-left:18px; font-size:13px; line-height:1.8; color:#3c424a; }
+  h2.sec { font-size:15px; margin:40px 0 4px; letter-spacing:.4px; }
+  p.sec-sub { font-size:12.5px; color:#5b616b; margin:0 0 16px; line-height:1.7; }
+  .row { display:grid; grid-template-columns:1fr 1fr; gap:18px; }
+  .row.three { grid-template-columns:1fr 1fr 1fr; }
+  .pane { border-radius:14px; padding:18px; background:var(--paper); border:1px solid var(--line-strong); }
+  .pane-tag { font-size:11px; color:var(--muted); letter-spacing:.6px; margin-bottom:12px; display:flex; justify-content:space-between; }
+  .serif { font-family:"Songti SC","Noto Serif CJK SC",Georgia,serif; }
+  .mono { font-family:ui-monospace,SFMono-Regular,monospace; }
+  .note { font-size:12.5px; line-height:1.8; color:#3c424a; background:#fff; border:1px solid #cfd6de;
+          border-left:3px solid #2563eb; border-radius:0 10px 10px 0; padding:11px 14px; margin-top:12px; }
+  .note b { font-size:12.5px; }
+  .note .k { color:#8a9099; }
+
+  /* ================= 现状（我要否掉的样子） ================= */
+  .now-letter { background:var(--panel); border:1px solid var(--line); border-radius:14px; padding:15px 17px; }
+  .now-head { display:flex; align-items:baseline; gap:8px; font-size:12px; color:var(--muted); }
+  .now-sig { font-size:14px; color:var(--ink); font-weight:600; }
+  .now-chip { font-size:10.5px; background:var(--line); color:var(--muted); border-radius:5px; padding:1px 6px; }
+  .now-date { margin-left:auto; font-size:10.5px; color:var(--faint); }
+  .now-body { font-size:14px; line-height:1.7; color:var(--ink); margin:9px 0 12px; }
+  .now-btns { display:flex; gap:7px; flex-wrap:wrap; margin-bottom:12px; }
+  .now-btn { font-size:12px; padding:5px 11px; border-radius:8px; border:1px solid var(--line-strong); background:transparent; color:var(--muted); }
+  .now-thread { border-top:1px dashed var(--line-strong); padding-top:12px; display:flex; flex-direction:column; gap:12px; }
+  .now-msg { position:relative; padding-left:11px; border-left:2px solid var(--line); }
+  .now-msg.me { border-left-color:var(--accent-soft); }
+  .now-msg-from { font-size:12px; color:var(--muted); }
+  .now-msg-text { font-size:13.5px; line-height:1.7; color:var(--ink); text-indent:2em; white-space:pre-wrap; }
+  .now-composer { margin-top:12px; display:flex; flex-direction:column; gap:7px; }
+  .now-ta { width:100%; height:62px; border:1px solid var(--line-strong); border-radius:10px; background:var(--panel);
+            padding:9px 11px; font-size:13px; color:var(--muted); font-family:inherit; }
+  .now-send { align-self:flex-end; background:var(--accent); color:#fff; border:0; border-radius:9px; padding:6px 16px; font-size:12.5px; }
+
+  /* ================= 公共：纸与字 ================= */
+  .sheet { background:var(--paper-tint); border:1px solid var(--line); border-radius:3px; padding:16px 18px 18px; position:relative; }
+  .sheet:before { content:""; position:absolute; inset:7px; border:1px solid var(--rule); pointer-events:none; }
+  .greeting { font-size:14px; color:var(--ink); letter-spacing:.5px; }
+  .signed { font-size:14px; line-height:1.85; color:var(--ink); white-space:pre-wrap; }
+  .sig-tail { display:flex; align-items:baseline; gap:10px; margin-top:10px; }
+  .sig-name { font-size:13px; color:var(--ink); }
+  .sig-date { margin-left:auto; font-size:11px; color:var(--faint); letter-spacing:.4px; }
+
+  /* ================= 案 A · 抽一张信纸写 ================= */
+  .a-stack { position:relative; display:flex; flex-direction:column; gap:9px; }
+  .a-leaf { box-shadow:0 1px 0 var(--line); }
+  .a-leaf.old { opacity:.72; }
+  .a-hollow { color:var(--accent); font-size:13px; }
+  .a-compose { border:1px dashed var(--line-strong); background:transparent; padding:0; }
+  .a-rules {
+    min-height:104px; padding:14px 16px 8px; position:relative;
+    background-image:repeating-linear-gradient(to bottom, transparent 0 27px, var(--rule) 27px 28px);
+    background-position:0 4px;
+  }
+  .a-placeholder { font-size:13.5px; color:var(--faint); letter-spacing:.4px; }
+  .a-caret { display:inline-block; width:1px; height:15px; background:var(--accent); vertical-align:-3px; animation:blink 1.15s steps(1) infinite; }
+  @keyframes blink { 50% { opacity:0; } }
+  .a-actions { display:flex; align-items:center; gap:10px; padding:9px 14px; border-top:1px solid var(--line); }
+  .a-hint { font-size:11.5px; color:var(--faint); }
+  .a-post { margin-left:auto; display:flex; align-items:center; gap:8px; }
+  .stamp {
+    width:34px; height:38px; border:1px dashed var(--stamp); border-radius:3px; color:var(--stamp);
+    display:grid; place-items:center; font-size:9px; letter-spacing:.5px; background:var(--stamp-soft);
+    text-align:center; line-height:1.15;
+  }
+  .btn-post { display:flex; align-items:center; gap:7px; background:var(--accent); color:#fff; border:0;
+              border-radius:4px; padding:8px 15px; font-size:13px; letter-spacing:2px; font-family:inherit; }
+  .btn-ghost { background:transparent; color:var(--muted); border:1px solid var(--line-strong); border-radius:4px; padding:8px 12px; font-size:12.5px; font-family:inherit; }
+
+  /* ================= 案 B · 邮件客户端（信头 + 送达回执） ================= */
+  .b-card { background:var(--panel); border:1px solid var(--line); border-radius:6px; overflow:hidden; }
+  .b-head { border-bottom:1px solid var(--line); padding:11px 14px; background:var(--paper); }
+  .b-subject { font-size:13px; color:var(--ink); display:flex; align-items:center; gap:8px; }
+  .b-subject .tagx { font-size:10px; color:var(--muted); border:1px solid var(--line-strong); border-radius:3px; padding:0 5px; }
+  .b-rows { margin-top:8px; display:flex; flex-direction:column; gap:4px; }
+  .b-row { font-size:11.5px; color:var(--muted); display:flex; gap:7px; }
+  .b-row .lbl { color:var(--faint); width:46px; flex:none; }
+  .b-row .val { color:var(--ink); }
+  .b-trace { margin-top:9px; font-size:11px; color:var(--ok); display:flex; align-items:center; gap:6px; }
+  .dot { width:6px; height:6px; border-radius:50%; background:var(--ok); flex:none; }
+  .dot.wait { background:var(--faint); }
+  .b-body { padding:14px; }
+  .b-para { font-size:13.5px; line-height:1.85; color:var(--ink); white-space:pre-wrap; }
+  .b-quota { border-top:1px solid var(--line); }
+  .b-quota-h { font-size:11.5px; color:var(--faint); padding:8px 14px; background:var(--paper); letter-spacing:.5px; }
+  .b-q { padding:10px 14px; border-top:1px solid var(--line); }
+  .b-q .who { font-size:11.5px; color:var(--muted); display:flex; gap:8px; }
+  .b-q .who time { margin-left:auto; color:var(--faint); }
+  .b-q .txt { font-size:13px; line-height:1.75; color:var(--muted); margin-top:3px; }
+  .b-compose { border-top:1px solid var(--line-strong); background:var(--paper-tint); }
+  .b-to { font-size:11.5px; color:var(--faint); padding:9px 14px 0; }
+  .b-to b { color:var(--accent); font-weight:500; }
+  .b-input { padding:6px 14px 0; font-size:13.5px; line-height:1.85; color:var(--ink); }
+  .b-input .typing { color:var(--ink); }
+  .b-bar { display:flex; align-items:center; gap:9px; padding:11px 14px; }
+  .b-bar .kbd { font-size:10.5px; color:var(--faint); margin-left:auto; }
+  .b-send { background:var(--accent); color:#fff; border:0; border-radius:4px; padding:8px 18px; font-size:13px; letter-spacing:2px; font-family:inherit; }
+  .b-att { font-size:12px; color:var(--muted); }
+
+  /* ================= 案 C · 邮路时间线 ================= */
+  .c-road { position:relative; padding-left:30px; }
+  .c-road:before { content:""; position:absolute; left:10px; top:6px; bottom:6px; width:1px; background:var(--line-strong); }
+  .c-node { position:relative; margin-bottom:13px; }
+  .c-node:before {
+    content:""; position:absolute; left:-25px; top:4px; width:15px; height:15px; border-radius:50%;
+    border:1px solid var(--line-strong); background:var(--panel);
+  }
+  .c-node.her:before { border-color:var(--accent); box-shadow:inset 0 0 0 3px var(--accent-soft); }
+  .c-node.mine:before { border-color:var(--muted); }
+  .c-node.live:before { border-color:var(--ok); animation:pulse 1.8s ease-out infinite; }
+  @keyframes pulse { 0%{box-shadow:0 0 0 0 rgba(77,172,114,.45)} 100%{box-shadow:0 0 0 9px rgba(77,172,114,0)} }
+  .c-mark { display:flex; align-items:baseline; gap:8px; font-size:11px; color:var(--faint); letter-spacing:.4px; }
+  .c-mark .dir { color:var(--muted); }
+  .c-mark time { margin-left:auto; }
+  .c-leaf { margin-top:4px; background:var(--paper-tint); border:1px solid var(--line); padding:12px 14px; }
+  .c-leaf .txt { font-size:13.5px; line-height:1.8; color:var(--ink); white-space:pre-wrap; }
+  .c-pen { display:flex; align-items:center; gap:10px; margin-top:4px; padding:11px 14px;
+           border:1px dashed var(--line-strong); color:var(--muted); font-size:13px; }
+  .c-pen .go { margin-left:auto; font-size:12.5px; color:var(--accent); letter-spacing:1px; }
+  .beam { background-image:linear-gradient(100deg, transparent 20%, var(--accent-soft) 45%, transparent 70%);
+          background-size:220% 100%; animation:beam 2.6s linear infinite; }
+  @keyframes beam { from{background-position:120% 0} to{background-position:-60% 0} }
+
+  /* ================= 窄屏 ================= */
+  .narrow { max-width:392px; }
+  .decision { background:#fff; border:1px solid #cfd6de; border-radius:12px; padding:16px 18px; margin-top:22px; }
+  .decision ol { margin:8px 0 0; padding-left:20px; font-size:13px; line-height:1.9; color:#3c424a; }
+  .decision b { font-size:13.5px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>信箱 · 回信视觉三案</h1>
+  <p class="lead">需求（萧哥 10-09 口述）：<b>别跟聊天一样，要邮箱往来的样式，有发邮件的感觉。</b><br>
+  判据我按三条来量：① 看不到 IM 输入框/气泡/左右分栏；② 读起来有「信头—正文—署名—日期—送达」这套礼仪；③ 她的信和你回的信是<b>两份文件</b>，不是同一条流的两种颜色。</p>
+
+  <div class="brief">
+    <b>先摆现状（我今天已经落码的样子，否掉它）</b>
+    <ul>
+      <li>问题一：往来块下面挂了一个 textarea + 右下角实心「寄出」按钮 —— 这就是聊天输入框换了皮肤，你的手指一看就知道要打字发出去。</li>
+      <li>问题二：两条往来紧贴堆叠，只差一个「小桔：／萧哥：」抬头，没有各自的纸、没有署名落款 —— 不像两份文件，像一条消息流的两种颜色。</li>
+      <li>问题三：没有任何「寄出之后发生了什么」的痕迹（送达、她还没回）—— 发邮件的手感恰恰在<b>回执</b>上。</li>
+    </ul>
+  </div>
+
+  <h2 class="sec">现状 · 我今天写的（对照用）</h2>
+  <p class="sec-sub">浅色 / 深色各一份。红箭头指的就是要否掉的三个地方。</p>
+  <div class="row">
+    <div class="pane light">
+      <div class="pane-tag"><span>浅色</span><span>现在这版</span></div>
+      <div class="now-letter">
+        <div class="now-head"><span class="now-sig">小桔：</span><span class="now-chip">她想关心你</span><span class="now-date">2026-10-09 10:34</span></div>
+        <div class="now-body serif">看你昨晚灯还亮着。第三章那处时间线对不上，我先记下了，不急。</div>
+        <div class="now-btns"><span class="now-btn">稍后</span><span class="now-btn">不用了</span><span class="now-btn">回信</span><span class="now-btn">进聊天</span></div>
+        <div class="now-thread">
+          <div class="now-msg"><div class="now-msg-from">小桔：</div><div class="now-msg-text serif">我把 12 章的日期摘出来了，你看这两处。</div></div>
+          <div class="now-msg me"><div class="now-msg-from">萧哥：</div><div class="now-msg-text serif">先只给我看第三处，别的我晚点说。</div></div>
+        </div>
+        <div class="now-composer"><div class="now-ta">给小桔写封回信…</div><span class="now-send">寄出</span></div>
+      </div>
+    </div>
+    <div class="pane dark">
+      <div class="pane-tag"><span>深色</span><span>现在这版 · 标题已提亮</span></div>
+      <div class="now-letter">
+        <div class="now-head"><span class="now-sig">小桔：</span><span class="now-chip">她想关心你</span><span class="now-date">2026-10-09 10:34</span></div>
+        <div class="now-body serif">看你昨晚灯还亮着。第三章那处时间线对不上，我先记下了，不急。</div>
+        <div class="now-btns"><span class="now-btn">稍后</span><span class="now-btn">不用了</span><span class="now-btn">回信</span><span class="now-btn">进聊天</span></div>
+        <div class="now-thread">
+          <div class="now-msg"><div class="now-msg-from">小桔：</div><div class="now-msg-text serif">我把 12 章的日期摘出来了，你看这两处。</div></div>
+          <div class="now-msg me"><div class="now-msg-from">萧哥：</div><div class="now-msg-text serif">先只给我看第三处，别的我晚点说。</div></div>
+        </div>
+        <div class="now-composer"><div class="now-ta">给小桔写封回信…</div><span class="now-send">寄出</span></div>
+      </div>
+    </div>
+  </div>
+
+  <h2 class="sec">案 A · 抽一张信纸写（纸感最重）</h2>
+  <p class="sec-sub">往来 = <b>一摞信</b>，每张纸自带署名落款；回信是<b>压在最下面的一张空白信纸</b>，抬头已经印好「小桔：」，稿纸横线，没有输入框外框；寄出这颗动作挂在右下角，配一枚邮票。代价：横线纸在深色底要单独调，最长信会变高。</p>
+  <div class="row">
+    <div class="pane light">
+      <div class="pane-tag"><span>浅色</span><span>案 A</span></div>
+      <div class="a-stack">
+        <div class="sheet a-leaf old">
+          <div class="greeting serif">小桔：</div>
+          <div class="signed serif" style="margin-top:4px">看你昨晚灯还亮着。第三章那处时间线对不上，我先记下了，不急。</div>
+          <div class="sig-tail"><span class="sig-name serif">—— 小桔</span><span class="sig-date mono">10-09 10:34</span></div>
+        </div>
+        <div class="sheet a-leaf">
+          <div class="greeting serif a-hollow">萧哥 提笔：</div>
+          <div class="signed serif" style="margin-top:4px">先只给我看第三处，别的我晚点说。</div>
+          <div class="sig-tail"><span class="sig-name serif">—— 萧盛</span><span class="sig-date mono">10-09 11:02</span></div>
+        </div>
+        <div class="sheet a-leaf">
+          <div class="greeting serif">小桔：</div>
+          <div class="signed serif" style="margin-top:4px">好，只留第三处：第二章末「十月十七」与第十二章「十月初」撞了。</div>
+          <div class="sig-tail"><span class="sig-name serif">—— 小桔</span><span class="sig-date mono">10-09 11:05</span></div>
+        </div>
+        <div class="sheet a-compose">
+          <div class="greeting serif" style="padding:12px 16px 0">小桔：</div>
+          <div class="a-rules"><span class="a-hollow serif">这里写给他/她的话</span><span class="a-caret"></span></div>
+          <div class="a-actions">
+            <span class="a-hint">写完直接寄，她会在下一轮看见</span>
+            <div class="a-post">
+              <div class="stamp">小桔<br>邮</div>
+              <button class="btn-post serif">寄 出</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="pane dark">
+      <div class="pane-tag"><span>深色</span><span>案 A · 纸色提亮到 #1a1c20，横线只留 6% 白</span></div>
+      <div class="a-stack">
+        <div class="sheet a-leaf old">
+          <div class="greeting serif">小桔：</div>
+          <div class="signed serif" style="margin-top:4px">看你昨晚灯还亮着。第三章那处时间线对不上，我先记下了，不急。</div>
+          <div class="sig-tail"><span class="sig-name serif">—— 小桔</span><span class="sig-date mono">10-09 10:34</span></div>
+        </div>
+        <div class="sheet a-leaf">
+          <div class="greeting serif a-hollow">萧哥 提笔：</div>
+          <div class="signed serif" style="margin-top:4px">先只给我看第三处，别的我晚点说。</div>
+          <div class="sig-tail"><span class="sig-name serif">—— 萧盛</span><span class="sig-date mono">10-09 11:02</span></div>
+        </div>
+        <div class="sheet a-compose">
+          <div class="greeting serif" style="padding:12px 16px 0">小桔：</div>
+          <div class="a-rules"><span class="a-hollow serif">这里写给他/她的话</span><span class="a-caret"></span></div>
+          <div class="a-actions">
+            <span class="a-hint">写完直接寄，她会在下一轮看见</span>
+            <div class="a-post">
+              <div class="stamp">小桔<br>邮</div>
+              <button class="btn-post serif">寄 出</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <h2 class="sec">案 B · 邮件客户端（最像「发邮件」，我推荐这案）</h2>
+  <p class="sec-sub">一封<b>往来</b>是一张文件卡：信头（收件人 / 关于什么 / 第几封）+ 正文 + 送达回执；旧往来折成一条可展开的「往来记录」；写回信时卡尾长出一段<b>信头式的撰写区</b>（寄件人自动带你的名、抬头印「小桔：」），底下工具带是「寄出 / 存草稿」，寄完信头多一行<b>「已投递 · 她还没回」</b>。代价：最轻，只重排现在这块 DOM。</p>
+  <div class="row">
+    <div class="pane light">
+      <div class="pane-tag"><span>浅色</span><span>案 B · 正在写</span></div>
+      <div class="b-card">
+        <div class="b-head">
+          <div class="b-subject serif">关于 第三章时间线 <span class="tagx mono">#a1b3cd4</span></div>
+          <div class="b-rows">
+            <div class="b-row"><span class="lbl">寄件人</span><span class="val">萧盛</span></div>
+            <div class="b-row"><span class="lbl">收件人</span><span class="val">小桔 · 你的 Agent</span></div>
+            <div class="b-row"><span class="lbl">这是第</span><span class="val">3 封往来 · 2026-10-09 11:02</span></div>
+          </div>
+          <div class="b-trace"><span class="dot"></span>已投递 11:02 · 她还没回</div>
+        </div>
+        <div class="b-body">
+          <div class="b-para serif">先只给我看第三处，别的我晚点说。</div>
+          <div class="sig-tail"><span class="sig-name serif">—— 萧盛</span></div>
+        </div>
+        <div class="b-quota">
+          <div class="b-quota-h">往来记录 · 2 封</div>
+          <div class="b-q">
+            <div class="who"><span>小桔 → 你</span><time class="mono">11:05</time></div>
+            <div class="txt serif">好，只留第三处：第二章末「十月十七」与第十二章「十月初」撞了。</div>
+          </div>
+          <div class="b-q">
+            <div class="who"><span>小桔 → 你（首封）</span><time class="mono">10:34</time></div>
+            <div class="txt serif">看你昨晚灯还亮着。第三章那处时间线对不上，我先记下了，不急。</div>
+          </div>
+        </div>
+        <div class="b-compose">
+          <div class="b-to">回复 <b>小桔</b> · 无需主题，续在同一封往来里</div>
+          <div class="b-input serif"><span class="typing">那两处我都不改，把第十二章的日期往后挪三天——</span><span class="a-caret"></span></div>
+          <div class="b-bar">
+            <button class="b-send serif">寄 出</button>
+            <span class="b-att">存草稿</span>
+            <span class="kbd mono">⌘↵ 寄出</span>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="pane dark">
+      <div class="pane-tag"><span>深色</span><span>案 B · 寄完的回执态</span></div>
+      <div class="b-card">
+        <div class="b-head">
+          <div class="b-subject serif">关于 第三章时间线 <span class="tagx mono">#a1b3cd4</span></div>
+          <div class="b-rows">
+            <div class="b-row"><span class="lbl">寄件人</span><span class="val">萧盛</span></div>
+            <div class="b-row"><span class="lbl">收件人</span><span class="val">小桔 · 你的 Agent</span></div>
+            <div class="b-row"><span class="lbl">这是第</span><span class="val">4 封往来 · 2026-10-09 11:41</span></div>
+          </div>
+          <div class="b-trace"><span class="dot"></span>已投递 11:41 · 她正在写回信<span class="dot wait" style="margin-left:4px"></span></div>
+        </div>
+        <div class="b-body">
+          <div class="b-para serif">那两处我都不改，把第十二章的日期往后挪三天——顺手把 12 章那张表拉直。</div>
+          <div class="sig-tail"><span class="sig-name serif">—— 萧盛</span></div>
+        </div>
+        <div class="b-quota">
+          <div class="b-quota-h">往来记录 · 3 封</div>
+          <div class="b-q">
+            <div class="who"><span>小桔 → 你</span><time class="mono">11:05</time></div>
+            <div class="txt serif">好，只留第三处：第二章末「十月十七」与第十二章「十月初」撞了。</div>
+          </div>
+          <div class="b-q">
+            <div class="who"><span>你 → 小桔</span><time class="mono">11:02</time></div>
+            <div class="txt serif">先只给我看第三处，别的我晚点说。</div>
+          </div>
+        </div>
+        <div class="b-compose" style="background:transparent">
+          <div class="b-to">这封已寄出 · 想再说一句就往下面续</div>
+          <div class="b-input serif" style="color:var(--faint)">（提笔续写…）</div>
+          <div class="b-bar">
+            <button class="b-send serif">寄 出</button>
+            <span class="b-att">进聊天</span>
+            <span class="kbd mono">⌘↵ 寄出</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <h2 class="sec">案 C · 邮路时间线（最不像聊天）</h2>
+  <p class="sec-sub">左边一根<b>邮路</b>，每封往来是一枚邮戳节点：她的邮戳是空心钴蓝环、你的是灰环，全部<b>同一条路、不左右分栏</b>（这是去聊天感的关键）。她在想的那条带一束光扫过（动=活跃，停=完结），末端一枚空邮戳 = 提笔。代价：新造一套视觉语汇，样式工作量最大。</p>
+  <div class="row">
+    <div class="pane light">
+      <div class="pane-tag"><span>浅色</span><span>案 C</span></div>
+      <div class="c-road">
+        <div class="c-node her">
+          <div class="c-mark"><span class="dir serif">收到 · 小桔</span><time class="mono">10:34</time></div>
+          <div class="c-leaf"><div class="txt serif">看你昨晚灯还亮着。第三章那处时间线对不上，我先记下了，不急。</div></div>
+        </div>
+        <div class="c-node mine">
+          <div class="c-mark"><span class="dir serif">寄出 · 萧盛</span><time class="mono">11:02</time></div>
+          <div class="c-leaf"><div class="txt serif">先只给我看第三处，别的我晚点说。</div></div>
+        </div>
+        <div class="c-node her">
+          <div class="c-mark"><span class="dir serif">收到 · 小桔</span><time class="mono">11:05</time></div>
+          <div class="c-leaf"><div class="txt serif">好，只留第三处：第二章末「十月十七」与第十二章「十月初」撞了。</div></div>
+        </div>
+        <div class="c-node live">
+          <div class="c-mark"><span class="dir serif">小桔正在写</span><time class="mono">·</time></div>
+          <div class="c-leaf beam"><div class="txt serif" style="color:var(--muted)">她还没写完，写完这枚戳就盖上…</div></div>
+        </div>
+        <div class="c-node mine">
+          <div class="c-pen serif">提笔回她一句<span class="go">写 信 ›</span></div>
+        </div>
+      </div>
+    </div>
+    <div class="pane dark">
+      <div class="pane-tag"><span>深色</span><span>案 C</span></div>
+      <div class="c-road">
+        <div class="c-node her">
+          <div class="c-mark"><span class="dir serif">收到 · 小桔</span><time class="mono">10:34</time></div>
+          <div class="c-leaf"><div class="txt serif">看你昨晚灯还亮着。第三章那处时间线对不上，我先记下了，不急。</div></div>
+        </div>
+        <div class="c-node mine">
+          <div class="c-mark"><span class="dir serif">寄出 · 萧盛</span><time class="mono">11:02</time></div>
+          <div class="c-leaf"><div class="txt serif">先只给我看第三处，别的我晚点说。</div></div>
+        </div>
+        <div class="c-node live">
+          <div class="c-mark"><span class="dir serif">小桔正在写</span><time class="mono">·</time></div>
+          <div class="c-leaf beam"><div class="txt serif" style="color:var(--muted)">她还没写完，写完这枚戳就盖上…</div></div>
+        </div>
+        <div class="c-node mine">
+          <div class="c-pen serif">提笔回她一句<span class="go">写 信 ›</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <h2 class="sec">窄屏（392px）· 案 B</h2>
+  <p class="sec-sub">窄屏下信头三行折成两行，工具带不掉下去；这案在窄屏最稳，案 A 的稿纸横线在窄屏会显挤。</p>
+  <div class="pane light narrow">
+    <div class="b-card">
+      <div class="b-head">
+        <div class="b-subject serif">关于 第三章时间线 <span class="tagx mono">#a1b3cd4</span></div>
+        <div class="b-rows">
+          <div class="b-row"><span class="lbl">寄给</span><span class="val">小桔 · 你的 Agent</span></div>
+          <div class="b-row"><span class="lbl">第 3 封</span><span class="val">2026-10-09 11:02 · 已投递，她还没回</span></div>
+        </div>
+      </div>
+      <div class="b-body"><div class="b-para serif">先只给我看第三处，别的我晚点说。</div></div>
+      <div class="b-compose">
+        <div class="b-to">回复 <b>小桔</b></div>
+        <div class="b-input serif"><span class="typing">那两处我都不改，把第十二章往后挪三天——</span><span class="a-caret"></span></div>
+        <div class="b-bar"><button class="b-send serif">寄 出</button><span class="b-att">存草稿</span></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="decision">
+    <b>要你拍的三点（拍完我就照定稿改码，不再自行发挥）</b>
+    <ol>
+      <li><b>选哪案</b>：我的推荐是 <b>B + 借 A 的印字抬头</b>——B 的「信头 + 送达回执」最接近发邮件的手感，改动也最小；A 的稿纸横线只用在撰写区那张纸上，别铺满往来。</li>
+      <li><b>她的来信还要不要纸边</b>：案 A 每张都有压边纸框（信纸感强，但一屏三张就有你说的「卡片堆叠」味）；案 B 只有往来这一张卡，来信保持现在的轻卡。<b>建议：来信不加纸边，只在撰写与已寄出的那份上用纸</b>。</li>
+      <li><b>「已投递 · 她还没回」要不要真做</b>：要的话我给信件加一个投递回执（寄出后她的回复落库前一直挂着），这是三案里唯一需要动后端的一项；只改样式就只能画静态假状态。</li>
+    </ol>
+  </div>
+</div>
+</body>
+</html>

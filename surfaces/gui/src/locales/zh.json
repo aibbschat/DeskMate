@@ -90,7 +90,8 @@
     "dockSidebar": "固定侧边栏 (⌘B)",
     "collapseSidebar": "折叠侧边栏 (⌘B)",
     "dockSidebarAria": "固定侧边栏",
-    "collapseSidebarAria": "折叠侧边栏"
+    "collapseSidebarAria": "折叠侧边栏",
+    "mailbox": "信箱"
   },
   "composer": {
     "discussLabel": "讨论",
@@ -289,7 +290,31 @@
       "来都来了，不如写两段？",
       "剧情卡壳了？咱俩一起盘盘。",
       "空白页别怕，它最怕你落下第一个字。"
-    ]
+    ],
+    "mailbox": {
+      "title": "信箱",
+      "hasUnread": "你有 {{n}} 封信在信箱",
+      "empty": "信箱 · 去看看",
+      "unreadCount": "{{n}} 封未读",
+      "allClear": "信箱是空的，小桔没啥要递给你的。",
+      "markRead": "标已读",
+      "later": "稍后",
+      "dismiss": "不用了",
+      "openChat": "进聊天",
+      "viewChat": "看对话",
+      "reply": "回信",
+      "closeReply": "收起",
+      "threadStart": "还没有往来——下面那张纸写几句寄给她。",
+      "replyPlaceholder": "这里写回她的话…",
+      "sending": "寄出中…",
+      "send": "寄出",
+      "replyFailed": "回信会话创建失败",
+      "shelved": "已搁置",
+      "shelvedGroup": "已搁置 {{n}} 封",
+      "hiHer": "小桔：",
+      "hiMe": "萧哥 提笔：",
+      "composeHint": "写完直接寄，她这一轮就看见"
+    }
   },
   "experts": {
     "title": "专家中心",

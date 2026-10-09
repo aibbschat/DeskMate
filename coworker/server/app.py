@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import binascii
+import hashlib
 import json
 import logging
 import os
@@ -244,6 +245,24 @@ from .. import toolchain
 from ..teams.model import AuthorityError as TeamsAuthorityError
 from ..teams.model import BoardError as TeamsBoardError
 from .manager import SessionManager
+
+
+# -- 信箱 · 隐藏「轻回信」会话的稳定 id（设计单 2026-10-09 §5） --------------------
+# 会话 id 会直接当 `conversations/<id>.jsonl` 的文件名用，受
+# `coworker.conversations._SAFE_SESSION_ID = [A-Za-z0-9_-]{1,128}` 守卫；信件 id 形如
+# `mobile_voice:idea_capture:abcd` 带冒号，拿它拼前缀会在 `_file()` 里抛 ValueError
+# （实测 /reply 恒返回 ok:false）。故对信 id 取 sha1 前 24 位：**确定性可重算**（同一封
+# 信永远同一个会话，幂等复用），反向映射（哪个会话对应哪封信）存在
+# `SessionRecord.origin="mailbox"` + `origin_label=<信 id>` 里——不新造 schema。
+MAILBOX_SESSION_ORIGIN = "mailbox"
+# 「进聊天」提升后的标记：照常进侧栏，但仍带 origin_label=信 id，让信箱知道这封已聊开。
+MAILBOX_PROMOTED_ORIGIN = "mailbox_promoted"
+
+
+def mailbox_session_id(letter_id: str) -> str:
+    """一封信的轻回信会话 id（charset-safe、确定性、幂等）。"""
+    digest = hashlib.sha1(str(letter_id).encode("utf-8")).hexdigest()[:24]
+    return f"mailbox-{digest}"
 
 
 def create_app(manager: SessionManager) -> FastAPI:
@@ -960,10 +979,11 @@ def create_app(manager: SessionManager) -> FastAPI:
     @app.get("/v1/sessions")
     def sessions(workspace: str | None = None) -> dict[str, Any]:
         items = manager.list_sessions(workspace)
-        # 信箱隐藏会话（mailbox:<letter_id>）不进主时间线/侧栏——它们是信箱信件往来的
-        # 承载，由信箱页以信件样式呈现（设计单 §5）。仅在此 REST 层过滤，不动
-        # manager.list_sessions 本身（信箱端点需枚举它们算 mailbox_session_id）。
-        items = [s for s in items if not s.session_id.startswith("mailbox:")]
+        # 信箱的「轻回信」隐藏会话不进主时间线/侧栏——它们是信件往来的承载，由信箱页
+        # 以信件样式呈现（设计单 §5）。「进聊天」(promote) 清掉 origin 标记后即归位。
+        # 注意 list_sessions() 返回的是 **dict 列表**（manager.py:6084），取键不取属性。
+        # 仅在此 REST 层过滤，不动 manager.list_sessions 本身（信箱端点要枚举它们）。
+        items = [s for s in items if s.get("origin") != MAILBOX_SESSION_ORIGIN]
         return {"sessions": items}
 
     @app.get("/v1/sessions/{session_id}/messages")
@@ -4395,9 +4415,55 @@ def create_app(manager: SessionManager) -> FastAPI:
     # 信箱只持信件元数据（read_at/status）；轻回信走「隐藏 mailbox 会话」复用同一引擎。
     # 与江河设计 §九 正交，独立于 P3 自主闭环；Mac-only 不同步（决策5）。
     # ------------------------------------------------------------------
+    def _ensure_mailbox_session(letter_id: str) -> dict[str, Any]:
+        """建/复用一封信的隐藏轻回信会话（幂等）。失败 fail-open 返 ok:False。"""
+        try:
+            from coworker.sessions import SessionRecord
+
+            session_id = mailbox_session_id(letter_id)
+            record = manager.session_store.load(session_id)
+            if record is None:
+                # workspace 空串 → 引擎侧降级为 scratch，与 deskmate 其它兜底建会话
+                # 同款（见 intent_discuss start 的注释）。
+                manager.session_store.save(
+                    SessionRecord(
+                        session_id=session_id,
+                        workspace="",
+                        model=manager.model,
+                        mode=manager.mode.value,
+                        messages=[],
+                        agent="deskmate",
+                    )
+                )
+                # origin 不落 save()（sessions 行存在后才能写，见 ConversationStore
+                # .set_origin 的注释）——必须在 save 之后单独标。
+                manager.session_store.set_origin(
+                    session_id, MAILBOX_SESSION_ORIGIN, letter_id
+                )
+                return {
+                    "ok": True,
+                    "session_id": session_id,
+                    "workspace": "",
+                    "created": True,
+                }
+            return {
+                "ok": True,
+                "session_id": session_id,
+                "workspace": record.workspace or "",
+                "created": False,
+            }
+        except Exception:
+            logging.exception("deskmate mailbox session ensure failed")
+            return {"ok": False, "session_id": None}
+
     @app.get("/v1/deskmate/mailbox")
-    async def get_deskmate_mailbox() -> dict[str, Any]:
-        """列信箱信件 + 未读数。信件即 proactive_ledger 的 pending/snoozed 视图态项。"""
+    async def get_deskmate_mailbox(status: str = "all") -> dict[str, Any]:
+        """列信箱信件 + 未读数。信件即 proactive_ledger 的 pending/snoozed 视图态项。
+
+        ``status=unread`` 只要未读；``all``（默认）含已读（前端「已搁置」归档要用）。
+        准入（哪些行算一封信）在 ``ledger.is_mailbox_letter``——系统遥测不入，
+        未读数与列表**同口径**，免得信箱一开就挂几十个红点。
+        """
         try:
             from pathlib import Path as _P
 
@@ -4406,18 +4472,24 @@ def create_app(manager: SessionManager) -> FastAPI:
             desk_dir = _P(
                 os.environ.get("DESKMATE_DIR", os.path.expanduser("~/.deskmate"))
             )
-            items = list_letters(base_dir=desk_dir, include_read=True)
-            # 标记每封信是否已有 mailbox 隐藏会话（轻回信承载）
-            sessions = manager.list_sessions()
-            mb_ids = {
-                s.session_id[len("mailbox:"):]
-                for s in sessions
-                if s.session_id.startswith("mailbox:")
-            }
+            only_unread = (status or "all").strip().lower() == "unread"
+            items = list_letters(base_dir=desk_dir, include_read=not only_unread)
+            # 标记每封信的轻回信往来（隐藏中 or 已提升进聊天都算）。list_sessions()
+            # 返 dict 列表 → 取键。
+            mb_by_letter: dict[str, tuple[str, str]] = {}
+            for s in manager.list_sessions():
+                if s.get("origin") in (
+                    MAILBOX_SESSION_ORIGIN,
+                    MAILBOX_PROMOTED_ORIGIN,
+                ) and s.get("origin_label"):
+                    mb_by_letter[s["origin_label"]] = (
+                        s.get("session_id") or "",
+                        s.get("origin") or "",
+                    )
             for it in items:
-                it["mailbox_session_id"] = (
-                    f"mailbox:{it['id']}" if it["id"] in mb_ids else None
-                )
+                pair = mb_by_letter.get(it["id"])
+                it["mailbox_session_id"] = pair[0] if pair else None
+                it["thread_promoted"] = bool(pair) and pair[1] == MAILBOX_PROMOTED_ORIGIN
                 it["read"] = bool(it.get("read_at"))
             return {
                 "ok": True,
@@ -4484,43 +4556,40 @@ def create_app(manager: SessionManager) -> FastAPI:
             return {"ok": False}
 
     @app.post("/v1/deskmate/mailbox/{letter_id}/reply")
-    async def reply_deskmate_mailbox_letter(
-        request: Request, letter_id: str
-    ) -> dict[str, Any]:
+    async def reply_deskmate_mailbox_letter(letter_id: str) -> dict[str, Any]:
         """轻回信：确保一封「隐藏 mailbox 会话」存在，返回其 session_id。
 
-        - 会话 id 固定 ``mailbox:<letter_id>``（幂等：已存在则复用）。
-        - agent=deskmate，走与正常聊天**同一套 WS 引擎**；list_sessions 按
-          ``mailbox:`` 前缀过滤，不进侧栏（信箱是其家）。
+        - 会话 id = ``mailbox-<sha1(信 id)[:24]>``（确定性、幂等、过会话 id 字符白名单，
+          见 :func:`mailbox_session_id` 的注释）。
+        - agent=deskmate，走与正常聊天**同一套 WS 引擎**；``origin='mailbox'`` 标记
+          让 REST 列表把它挡在侧栏外（信箱是它的家）。
         - 实际消息发送 + 引擎跑轮由前端连 ``/ws/session/{id}`` 完成（复用现有聊天
           路径，不在 REST 端重新造引擎）。本端点只负责建/取会话。
-        - body.text 预留（当前不在 REST 落库，避免与 WS 发送重复）；前端拿到
-          session_id 后自行经 WS 发送，信箱以信件样式渲染往来。
+        - 不在 REST 落用户消息，避免与 WS 发送重复；前端拿到 session_id 后自行经 WS
+          发送，信箱以信件样式渲染往来。
         """
+        return _ensure_mailbox_session(letter_id)
+
+    @app.post("/v1/deskmate/mailbox/{letter_id}/promote")
+    async def promote_deskmate_mailbox_letter(letter_id: str) -> dict[str, Any]:
+        """「进聊天」：把这封信的隐藏往来**提升**成普通会话（气泡样式续聊）。
+
+        只换 origin 标记 ``mailbox`` → ``mailbox_promoted``：前者被 /v1/sessions 过滤掉，
+        后者照常出现在侧栏，同时仍带 ``origin_label=信 id``，让信箱知道「这封已经聊开了」
+        并留一个回看对话的引用（设计单 §5 第 5 步）。没有往来时先建会话再提升。
+        """
+        res = _ensure_mailbox_session(letter_id)
+        if not res.get("ok"):
+            return res
+        sid = res["session_id"]
         try:
-            from pathlib import Path as _P
-
-            from coworker.sessions import SessionRecord
-
-            desk_dir = _P(
-                os.environ.get("DESKMATE_DIR", os.path.expanduser("~/.deskmate"))
-            )
-            session_id = f"mailbox:{letter_id}"
-            if manager.session_store.load(session_id) is None:
-                manager.session_store.save(
-                    SessionRecord(
-                        session_id=session_id,
-                        workspace="",
-                        model=manager.model,
-                        mode=manager.mode.value,
-                        messages=[],
-                        agent="deskmate",
-                    )
-                )
-            return {"ok": True, "session_id": session_id}
+            ok = manager.session_store.set_origin(sid, MAILBOX_PROMOTED_ORIGIN, letter_id)
+            if not ok:
+                return {"ok": False, "session_id": sid, "error": "session not found"}
+            return {"ok": True, "session_id": sid, "workspace": res.get("workspace", "")}
         except Exception:
-            logging.exception("deskmate mailbox reply failed")
-            return {"ok": False, "session_id": None}
+            logging.exception("deskmate mailbox promote failed")
+            return {"ok": False, "session_id": sid}
 
     # ------------------------------------------------------------------
     # R13 意图讨论流（4 个端点）——把意图执行从「一次性静默」改成「跨会话回合讨论」。

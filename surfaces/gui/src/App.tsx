@@ -34,6 +34,8 @@ import {
   finalizeIntentDiscuss,
   runIntentDiscussRound,
   cancelIntentDiscuss,
+  announceMailboxChanged,
+  promoteMailboxLetter,
   type HandoffItem,
   type MailboxLetter,
 } from "./api";
@@ -1148,9 +1150,19 @@ export function App() {
     }
     return ok;
   };
-  // 信箱「进聊天」：起一个普通 deskmate 会话（气泡样式续聊），把信件内容 prefill 进
-  // 输入框，让萧哥直接以这个主题开聊——轻回信与真聊两条路径自此分叉（设计单 §5）。
-  const openChatFromMailbox = (letter: MailboxLetter) => {
+  // 信箱「进聊天」两条路（设计单 §5）：
+  // ① 这封信已经有轻回信往来 → promote 成普通会话（解除隐藏标记、进侧栏），直接切进去
+  //    用气泡样式续上原有的上下文；
+  // ② 还没聊过 → 起一个干净的 deskmate 会话，把信的内容 prefill 进输入框开聊。
+  const openChatFromMailbox = async (letter: MailboxLetter) => {
+    if (letter.mailbox_session_id) {
+      const res = await promoteMailboxLetter(letter.id);
+      if (res.ok && res.session_id) {
+        announceMailboxChanged(); // 让信箱列表刷出「看对话」态
+        await selectSession(res.session_id, res.workspace, "deskmate");
+        return;
+      }
+    }
     startNewSession("deskmate");
     const short = letter.id.split(":").pop()?.slice(0, 6) ?? "";
     prefillComposer(`${letter.content}\n（来自信箱 #${short}）`);

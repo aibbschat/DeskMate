@@ -421,7 +421,11 @@ def finalize_discussion(base_dir: str, intent_id: str) -> dict:
         try:
             from deskmate.proactivity.ledger import acknowledge_ledger
 
-            acknowledge_ledger(base_dir, draft_ledger_id)
+            # 修（2026-10-09）：`new_status` 是 keyword-only 且必填，漏传必 TypeError
+            # ——被下面 fail-open 吞掉，讨论的 draft 行永远停在 pending（也正是它
+            # 会堆在信箱里，逼迫准入门把 origin=intent_handoff 挡在门外）。
+            # 定稿 = 这条 draft 已被采纳，收成 actioned（非 dismissed：他没拒绝）。
+            acknowledge_ledger(base_dir, draft_ledger_id, new_status="actioned")
         except Exception as e:  # noqa: BLE001 —— fail-open
             logger.warning("intent_discuss: acknowledge draft 失败: %s", e)
 

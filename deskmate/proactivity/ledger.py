@@ -650,9 +650,68 @@ def acknowledge_ledger(
     return True
 
 
-# ---- 信箱呈现层（2026-10-09）：标已读 + 列信 + 未读数 ----
+# ---- 信箱呈现层（2026-10-09）：准入白名单 + 标已读 + 列信 + 未读数 + 已读回流 ----
 # 信箱是 ledger 的门面：以下函数只动视图态（read_at），不动 status 机与跨端同步。
 # 所有回复内容走同一聊天引擎（见 coworker/server/app.py mailbox 端点），ledger 只持元数据。
+
+# 准入（萧哥 2026-10-09 拍板）：系统遥测是她给自己的**运维日志**，不是递给他的话，
+# 不入信箱（实测本机 95 条 pending 里 12 条是 memory_write_error、还有密钥外泄告警），
+# 否则信箱变成错误日志倾倒场。这类行仍留在台账里，活跃会话的相关性注入
+# （build_handoff_opening(contextual=True)）与层一每轮回查都照常能捞到它们——不丢声。
+#
+# 口径取「默认入、点名拦」（江河设计 §4.4 自由默认 · 拦是例外）：新 kind 不必登记
+# 就能出现在信箱；只有明确列在下面的运维/错误类被挡。命名带 error/failure/alert… 后缀
+# 的按遥测处理，是防「以后新增一个 xxx_error 又漏进来」的兜底，不是主判据。
+_MAILBOX_DENY_KINDS = frozenset(
+    {
+        "",
+        "none",
+        "no_action",
+        "memory_write_error",
+        "memory_write_failure",
+        "timeline_error",
+        "hard_anchor_error",
+        "incomplete_response",
+        "event_timeline_provision",
+        "sync_conflict",
+        "api_key_exposure_alert",
+    }
+)
+_MAILBOX_DENY_SUFFIXES = (
+    "_error",
+    "_failure",
+    "_alert",
+    "_exception",
+    "_warning",
+    "_crash",
+    "_timeout",
+    "_conflict",
+)
+# 已读超期未处理 → 归档为「已搁置」（设计单 §7 TTL 衰减，不删、可展开、不挂红点）。
+SHELF_DAYS = 7
+
+
+def _deny_mailbox_kinds() -> frozenset:
+    """遥测 kind 黑名单（可用 DESKMATE_MAILBOX_DENY_KINDS 逗号追加，无需改码重启即生效）。"""
+    extra = os.environ.get("DESKMATE_MAILBOX_DENY_KINDS", "")
+    names = {k.strip() for k in extra.split(",") if k.strip()}
+    return _MAILBOX_DENY_KINDS | names
+
+
+def is_mailbox_letter(row: dict) -> bool:
+    """这一条台账行有没有资格成为「一封信」。"""
+    kind = str(row.get("kind") or "")
+    if kind in _deny_mailbox_kinds():
+        return False
+    if kind.endswith(_MAILBOX_DENY_SUFFIXES):
+        return False
+    # 意图讨论流（origin=intent_handoff）有**自己的呈现面**——聊天里的讨论卡
+    # （带 定稿/再改/不要 三按钮）。再在信箱复述一遍就是同一件事两张皮，
+    # 且 draft 行随轮次增长（每轮一条），信箱会被草稿淹掉。
+    if str(row.get("origin") or "") == "intent_handoff":
+        return False
+    return True
+
 
 def mark_letter_read(
     base_dir: Optional[Path] = None, rid: Optional[str] = None
@@ -690,10 +749,10 @@ def mark_letter_read(
 def record_letter_seen(base_dir: Optional[Path] = None, rid: Optional[str] = None) -> None:
     """已读回流信号：用户看见了某封主动信（正向互动）。
 
-    落盘到 ``<deskmate>/mailbox_seen.jsonl``（每行一条，原子写、append-only、
-    fail-open）。情感/意志层后续可消费此信号——例如「主动递出的信用户会看」
-    抬高她主动关怀的意愿，反向「发了没人理」则降温。Mac-only（与 ledger 视图态同口径，
-    不进 oplog）。不在此处调用 LLM，纯信号记录。
+    落盘到 ``<deskmate>/mailbox_seen.jsonl``——**append-only**，每行一条 JSON
+    （``{ts, id, kind}``），由 :func:`mailbox_feedback_stats` 消费、经层一注入链
+    回流给她（见 ``render_mailbox_feedback_context``）。Mac-only（与 ledger 视图态
+    同口径，不进 oplog）。不在此处调用 LLM，纯信号记录。
     """
     if not rid:
         return
@@ -707,19 +766,109 @@ def record_letter_seen(base_dir: Optional[Path] = None, rid: Optional[str] = Non
         },
         ensure_ascii=False,
     )
-    tmp = path.with_suffix(path.suffix + f".{os.getpid()}.tmp")
-    with open(tmp, "w", encoding="utf-8") as f:
+    base.mkdir(parents=True, exist_ok=True)
+    # 追加写。此前是「写临时文件 + os.replace」——那是**覆盖**，三次标已读只剩最后
+    # 一条记录，等于把回流吃掉了（与 docstring 的 append-only 自相矛盾）。append 模式
+    # 单次 write 即落一行，进程中断最坏是半行，读侧按 JSON 解析失败逐行跳过。
+    with open(path, "a", encoding="utf-8") as f:
         f.write(line + "\n")
-    os.replace(tmp, path)
+
+
+def mailbox_feedback_stats(base_dir: Optional[Path] = None, *, days: int = 1) -> dict:
+    """读 mailbox_seen.jsonl，统计近 ``days`` 天他真正读了几封、回了信没有。
+
+    返回 ``{"seen_today": n, "replied_today": n, "unanswered_today": n}``。
+    「回了」= 该信已流转出 pending/snoozed（他动过手），或 status 到了 actioned/in_progress。
+    fail-open：文件不存在/坏行一律跳过，不抛。
+    """
+    base = _resolve_base(base_dir)
+    path = base / "mailbox_seen.jsonl"
+    today = _today() if days == 1 else None
+    ids: list[str] = []
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            for raw in f:
+                raw = raw.strip()
+                if not raw:
+                    continue
+                try:
+                    rec = json.loads(raw)
+                except json.JSONDecodeError:
+                    continue  # 半行/坏行跳过
+                ts = str(rec.get("ts") or "")
+                rid = str(rec.get("id") or "")
+                if not rid:
+                    continue
+                if today and ts[:10] != today:
+                    continue
+                ids.append(rid)
+    except FileNotFoundError:
+        return {"seen_today": 0, "replied_today": 0, "unanswered_today": 0}
+    except OSError:
+        return {"seen_today": 0, "replied_today": 0, "unanswered_today": 0}
+
+    replied = 0
+    if ids:
+        db = base / "deskmate.db"
+        try:
+            with sqlite3.connect(str(db), check_same_thread=False) as c:
+                _ensure_table(c)
+                marks = ",".join("?" * len(set(ids)))
+                rows = c.execute(
+                    f"SELECT id, status FROM {LEDGER_TABLE} WHERE id IN ({marks})",
+                    tuple(set(ids)),
+                ).fetchall()
+                finished = {r[0] for r in rows if r[1] in ("actioned", "in_progress")}
+                replied = len(finished)
+        except Exception:  # noqa: BLE001
+            replied = 0
+    seen = len(set(ids))
+    return {
+        "seen_today": seen,
+        "replied_today": replied,
+        "unanswered_today": max(0, seen - replied),
+    }
+
+
+def render_mailbox_feedback_context(stats: dict) -> str:
+    """把「他读没读你的信」写成一段注入给她的回流信号（设计单 §7 要害）。
+
+    空统计 → 返回 ""（没读就不提，不制造「我是不是该抱怨」的噪声）。
+    """
+    seen = int((stats or {}).get("seen_today") or 0)
+    if seen <= 0:
+        return ""
+    replied = int((stats or {}).get("replied_today") or 0)
+    if replied > 0:
+        return (
+            "<mailbox-feedback>\n"
+            f"今天他读掉你信箱里 {seen} 封信，其中 {replied} 封已经动手处理了。\n"
+            "记着这个手感：你主动递出去的东西，他是接的——该说的时候就说。\n"
+            "</mailbox-feedback>"
+        )
+    return (
+        "<mailbox-feedback>\n"
+        f"今天他读了你信箱里 {seen} 封信（还没表态怎么处理）。\n"
+        "他看了，就先别追着他催第二遍。\n"
+        "</mailbox-feedback>"
+    )
 
 
 def list_letters(
-    base_dir: Optional[Path] = None, *, include_read: bool = True
+    base_dir: Optional[Path] = None,
+    *,
+    include_read: bool = True,
+    only_letters: bool = True,
 ) -> list[dict]:
     """列信箱信件（pending + snoozed 到期复活的视图态项），created_at 倒序。
 
-    read_at 一并返回；调用方据 read_at 是否为空区分未读/已读。
-    include_read=False 时只返未读（read_at IS NULL）。
+    - ``only_letters=True``（默认）：过 :func:`is_mailbox_letter` 准入——系统遥测
+      不入信箱（萧哥 2026-10-09 拍板）。
+    - 空 content 守卫：与 :func:`build_handoff_opening` 同源——空条目递出去就是一张空信。
+    - ``understanding == UNDERSTANDING_FAILED_MARKER`` 降级成友好文案，**不**把工程标记
+      露到界面上；信箱是他自己来拉的，所以不像 handoff 那样因「加工未完成」就不递。
+    - 每条附 ``stale``（已读超 ``SHELF_DAYS`` 天仍未处理 = 设计单 §7 的「已搁置」归档态）。
+    - ``include_read=False`` 只返未读（未读数口径，同样过准入）。
     """
     base = _resolve_base(base_dir)
     db = base / "deskmate.db"
@@ -735,7 +884,8 @@ def list_letters(
             _ensure_table(c)
             rows = c.execute(
                 f"SELECT id, source, kind, content, evidence, understanding, status,"
-                f" confidence, created_at, source_node, delivered_at, snoozed_until, read_at"
+                f" confidence, created_at, source_node, delivered_at, snoozed_until,"
+                f" read_at, origin, intent_id"
                 f" FROM {LEDGER_TABLE} {clause} ORDER BY created_at DESC",
                 (now,),
             ).fetchall()
@@ -744,17 +894,33 @@ def list_letters(
     keys = (
         "id", "source", "kind", "content", "evidence", "understanding", "status",
         "confidence", "created_at", "source_node", "delivered_at", "snoozed_until",
-        "read_at",
+        "read_at", "origin", "intent_id",
     )
-    return [dict(zip(keys, r)) for r in rows]
+    shelf_cutoff = time.strftime(
+        "%Y-%m-%dT%H:%M:%S", time.localtime(time.time() - SHELF_DAYS * 86400)
+    )
+    out: list[dict] = []
+    for raw in rows:
+        it = dict(zip(keys, raw))
+        if only_letters and not is_mailbox_letter(it):
+            continue
+        if not (it.get("content") or "").strip():
+            continue  # 空信守卫（与生产端 record_proactive 同一道防线）
+        if (it.get("understanding") or "") == UNDERSTANDING_FAILED_MARKER:
+            it["understanding"] = "（这条我还没想明白，先把依据摆给你）"
+        read_at = it.get("read_at") or ""
+        it["stale"] = bool(read_at and read_at < shelf_cutoff)
+        out.append(it)
+    return out
 
 
 def unread_letter_count(base_dir: Optional[Path] = None) -> int:
-    """未读信件数（read_at IS NULL 且 status 在 pending/snoozed 且 snoozed 已到期）。"""
+    """未读信件数（read_at IS NULL 且 status 在 pending/snoozed 且 snoozed 已到期）。
+
+    与 :func:`list_letters` **同一准入口径**——系统遥测不占红点，避免信箱一开就 95 未读。
+    """
     try:
-        return len(
-            list_letters(base_dir, include_read=False)
-        )
+        return len(list_letters(base_dir, include_read=False))
     except Exception:  # noqa: BLE001
         return 0
 

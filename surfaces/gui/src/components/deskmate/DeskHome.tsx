@@ -63,7 +63,7 @@ export function DeskHome({
         </span>
         <span className="dm-mailbox-text">
           {unread > 0
-            ? t("deskmate.mailbox.hasUnread", { count: unread, defaultValue: `你有 ${unread} 封信在信箱` })
+            ? t("deskmate.mailbox.hasUnread", { n: unread, defaultValue: `你有 ${unread} 封信在信箱` })
             : t("deskmate.mailbox.empty", { defaultValue: "信箱 · 去看看" })}
         </span>
         {unread > 0 && <span className="dm-mailbox-count">{unread > 99 ? "99+" : unread}</span>}

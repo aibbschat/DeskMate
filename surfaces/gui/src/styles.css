@@ -866,8 +866,23 @@ body {
 }
 .dm-mailbox-arrow { color: var(--faint, #888); font-size: 17px; }
 
-/* 信箱页 */
-.dm-mailbox { max-width: 760px; margin: 0 auto; padding: 22px 24px 60px; }
+/* 信箱页
+   案 A（萧哥 2026-10-09 拍板）：**一摞信纸**，不是聊天。每封往来自带纸、抬头、署名落款；
+   回信是压在最下面的一张空白稿纸（印好抬头 + 稿纸横线 + 邮票 + 「寄出」）。
+   深色下纸色单独提亮、横线只留 6% 白，避免整页发灰。 */
+.dm-mailbox {
+  max-width: 760px; margin: 0 auto; padding: 22px 24px 60px;
+  --mb-paper: #fffdf7;                    /* 信纸米白（亮色） */
+  --mb-rule: rgba(23, 25, 28, 0.07);      /* 稿纸横线 + 内压边 */
+  --mb-stamp: #b91c1c;                    /* 邮戳朱砂 */
+  --mb-stamp-soft: #f9e7e5;
+}
+html[data-theme="dark"] .dm-mailbox {
+  --mb-paper: #1a1c20;
+  --mb-rule: rgba(230, 232, 235, 0.06);
+  --mb-stamp: #e0757a;
+  --mb-stamp-soft: #2b1b1e;
+}
 .dm-mailbox-head { display: flex; align-items: center; gap: 12px; margin-bottom: 18px; }
 .dm-mailbox-back {
   width: 30px; height: 30px; border-radius: 8px; border: 1px solid var(--line);
@@ -877,84 +892,115 @@ body {
 .dm-mailbox-title { flex: 1; font-family: var(--serif); font-size: 24px; margin: 0; color: var(--ink); }
 .dm-mailbox-unread { font-size: 12.5px; color: var(--muted); }
 .dm-mailbox-empty { padding: 40px 0; text-align: center; color: var(--muted); font-size: 14px; }
-.dm-mailbox-list { display: flex; flex-direction: column; gap: 16px; }
+.dm-mailbox-list { display: flex; flex-direction: column; gap: 22px; }
 
-/* 单封信：信笺卡片 */
-.dm-letter {
-  border: 1px solid var(--line);
-  border-radius: 14px;
-  background: var(--paper);
-  padding: 16px 18px;
-  box-shadow: 0 1px 2px rgba(0,0,0,0.03);
-  transition: border-color .12s ease, opacity .12s ease;
+/* 一张纸：直角 + 内压边（信纸的礼仪，不是卡片圆角） */
+.dm-sheet {
+  position: relative; background: var(--mb-paper);
+  border: 1px solid var(--line); border-radius: 3px; padding: 16px 18px 14px;
 }
-.dm-letter-read { opacity: 0.66; }
-.dm-letter-open { border-color: var(--line-strong); box-shadow: 0 8px 22px rgba(0,0,0,0.06); }
-.dm-letter-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
-.dm-letter-from { display: flex; align-items: baseline; gap: 8px; }
-.dm-letter-sig { font-family: var(--serif); font-size: 15px; font-weight: 600; color: var(--ink); }
+.dm-sheet::before {
+  content: ""; position: absolute; inset: 7px; border: 1px solid var(--mb-rule); pointer-events: none;
+}
+
+/* 一封往来（分组本身不铺纸，纸只用在正文那一张上——防「卡片里再套卡片」） */
+.dm-letter { display: flex; flex-direction: column; gap: 0; }
+.dm-letter-head { display: flex; flex-wrap: wrap; align-items: baseline; column-gap: 8px; row-gap: 4px; margin-bottom: 8px; }
+.dm-letter-sig { font-family: var(--serif); font-size: 15px; font-weight: 600; color: var(--ink); letter-spacing: .5px; flex: none; white-space: nowrap; }
 .dm-letter-tag {
-  font-size: 11px; padding: 1px 7px; border-radius: 6px;
+  font-size: 11px; padding: 1px 7px; border-radius: 6px; white-space: nowrap;
   background: var(--line); color: var(--muted);
 }
-.dm-letter-id {
-  font-size: 11px; color: var(--faint, #888);
-  font-family: ui-monospace, SFMono-Regular, monospace;
-}
-.dm-letter-date { font-size: 11.5px; color: var(--faint, #999); white-space: nowrap; }
+.dm-letter-id { font-size: 11px; color: var(--faint, #888); font-family: ui-monospace, SFMono-Regular, monospace; flex: none; }
 .dm-letter-body {
-  font-family: var(--serif);
-  font-size: 14.5px;
-  line-height: 1.7;
-  color: var(--ink);
-  white-space: pre-wrap;
+  font-family: var(--serif); font-size: 14.5px; line-height: 1.75;
+  color: var(--ink); white-space: pre-wrap;
 }
+/* 落款行：署名在左、日期靠右——信纸上最后那一步 */
+.dm-letter-tail { display: flex; align-items: baseline; gap: 10px; margin-top: 12px; }
+.dm-letter-by { font-family: var(--serif); font-size: 13px; color: var(--ink); letter-spacing: .5px; flex: none; white-space: nowrap; }
+.dm-letter-date { margin-left: auto; font-size: 11px; color: var(--faint, #999); letter-spacing: .4px; white-space: nowrap; }
 .dm-letter-understanding {
-  margin: 8px 0 0; padding-left: 10px; border-left: 2px solid var(--accent-soft);
+  margin: 10px 0 0; padding-left: 10px; border-left: 2px solid var(--accent-soft);
   font-size: 12.5px; line-height: 1.6; color: var(--ink);
 }
 .dm-letter-evidence {
   margin: 8px 0 0; padding-left: 10px; border-left: 2px solid var(--line-strong);
   font-size: 12px; line-height: 1.55; color: var(--muted);
 }
-.dm-letter-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 14px; }
-.dm-letter-btn {
-  padding: 6px 13px; border-radius: 9px; font-size: 12.5px; font-family: inherit;
-  cursor: pointer; border: 1px solid var(--line); background: transparent; color: var(--muted);
-  transition: all .12s ease;
+/* 已读 / 已搁置：只压纸，不动下面那排小字（还要能点得清） */
+.dm-letter-read .dm-sheet { opacity: .72; }
+.dm-letter-stale .dm-sheet { opacity: .58; }
+.dm-letter-shelf-chip {
+  font-size: 10.5px; padding: 1px 6px; border-radius: 5px;
+  border: 1px solid var(--line-strong); color: var(--muted);
 }
-.dm-letter-btn:hover { border-color: var(--line-strong); color: var(--ink); }
-.dm-letter-btn-primary { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); font-weight: 600; }
-.dm-letter-btn-primary:hover { background: var(--accent); color: #fff; }
+.dm-mailbox-shelf { margin-top: 26px; }
+.dm-mailbox-shelf-toggle {
+  display: flex; align-items: center; gap: 6px; width: 100%;
+  padding: 7px 2px; border: 0; background: transparent; cursor: pointer;
+  font-family: inherit; font-size: 12.5px; color: var(--muted); text-align: left;
+}
+.dm-mailbox-shelf-toggle:hover { color: var(--ink); }
+.dm-mailbox-shelf .dm-mailbox-list { margin-top: 10px; }
+
+/* 处置那一排：纸上不放按钮（一放就成工具卡），全部走纸下的便签小字，同一语言 */
+.dm-letter-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 16px; padding: 9px 3px 0; }
+.dm-letter-btn {
+  padding: 0; border: 0; background: transparent; cursor: pointer;
+  font-family: inherit; font-size: 12.5px; color: var(--muted); letter-spacing: .3px;
+  transition: color .12s ease;
+}
+.dm-letter-btn:hover { color: var(--ink); text-decoration: underline; }
+.dm-letter-btn-primary { color: var(--accent); font-weight: 600; }
+.dm-letter-btn-primary:hover { color: var(--accent); }
 .dm-letter-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
-/* 轻回信往来（信件样式，非气泡） */
-.dm-letter-thread { margin-top: 14px; padding-top: 14px; border-top: 1px dashed var(--line); display: flex; flex-direction: column; gap: 12px; }
-.dm-letter-thread-empty { font-size: 12.5px; color: var(--muted); margin: 0 0 4px; }
-.dm-letter-reply-err { font-size: 12px; color: #c0392b; }
-.dm-letter-msg { max-width: 92%; }
-.dm-letter-msg-user { margin-left: auto; text-align: right; }
-.dm-letter-msg-from { font-size: 11.5px; color: var(--muted); margin-bottom: 3px; }
+/* 往来：一摞纸，第二封起微微右移一档，读起来是「同一件事的后续」而不是一条流 */
+.dm-letter-thread { display: flex; flex-direction: column; gap: 10px; margin: 14px 0 0 14px; }
+.dm-letter-thread .dm-sheet { padding: 13px 16px 12px; }
+.dm-letter-thread-empty { font-size: 12.5px; color: var(--muted); margin: 0 0 2px 3px; }
+.dm-letter-reply-err { font-size: 12px; color: var(--danger, #b91c1c); margin-left: 3px; }
+.dm-letter-msg-from { font-family: var(--serif); font-size: 14px; color: var(--ink); letter-spacing: .5px; }
+.dm-letter-msg-user .dm-letter-msg-from { color: var(--accent); }
 .dm-letter-msg-text {
-  font-family: var(--serif); font-size: 14px; line-height: 1.65; color: var(--ink);
-  white-space: pre-wrap; display: inline-block; text-align: left;
-  padding: 9px 13px; border-radius: 10px; background: var(--panel); border: 1px solid var(--line);
+  font-family: var(--serif); font-size: 14px; line-height: 1.75; color: var(--ink);
+  white-space: pre-wrap; margin-top: 3px;
 }
-.dm-letter-msg-user .dm-letter-msg-text { background: var(--accent-soft); border-color: transparent; }
-.dm-letter-msg-date { display: block; font-size: 10.5px; color: var(--faint, #aaa); margin-top: 3px; }
-.dm-letter-compose { display: flex; flex-direction: column; gap: 8px; margin-top: 6px; }
+.dm-letter-msg-date { font-size: 10.5px; color: var(--faint, #aaa); margin-left: auto; white-space: nowrap; }
+
+/* 回信那张空白稿纸：印好抬头、稿纸横线、字落在线上；右下角邮票 + 「寄出」 */
+.dm-letter-compose { margin: 12px 0 0 14px; border: 1px dashed var(--line-strong); border-radius: 3px; background: transparent; }
+.dm-compose-hi { font-family: var(--serif); font-size: 14px; color: var(--ink); padding: 14px 16px 0; letter-spacing: .5px; }
 .dm-letter-textarea {
-  width: 100%; resize: vertical; font-family: var(--serif); font-size: 14px; line-height: 1.6;
-  color: var(--ink); padding: 10px 12px; border-radius: 10px; border: 1px solid var(--line);
-  background: var(--panel);
+  display: block; width: 100%; min-height: 112px; resize: vertical;
+  border: 0; background-color: transparent; outline: none;
+  /* 行高 28px 与下面的 27/28 横线严格对齐，不然字会浮在线上方 */
+  background-image: repeating-linear-gradient(to bottom, transparent 0 27px, var(--mb-rule) 27px 28px);
+  background-position: 0 8px;
+  padding: 8px 16px 12px; font-family: var(--serif); font-size: 14px; line-height: 28px; color: var(--ink);
 }
-.dm-letter-textarea:focus { outline: none; border-color: var(--accent); }
+.dm-letter-textarea::placeholder { color: var(--faint); letter-spacing: .4px; }
+.dm-compose-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 9px 14px; border-top: 1px solid var(--line); }
+.dm-compose-hint { font-size: 11.5px; color: var(--faint); }
+.dm-stamp {
+  margin-left: auto; width: 34px; height: 38px; border: 1px dashed var(--mb-stamp); border-radius: 3px;
+  background: var(--mb-stamp-soft); color: var(--mb-stamp);
+  display: grid; place-items: center; text-align: center; font-size: 9px; line-height: 1.15; letter-spacing: .5px;
+}
 .dm-letter-send {
-  align-self: flex-end; padding: 7px 18px; border-radius: 9px; font-size: 13px; font-weight: 600;
-  font-family: inherit; cursor: pointer; border: 1px solid var(--accent); background: var(--accent); color: #fff;
+  padding: 8px 17px; border: 0; border-radius: 4px; background: var(--accent); color: #fff;
+  font-family: var(--serif); font-size: 13px; letter-spacing: 2px; cursor: pointer;
   transition: opacity .12s ease;
 }
-.dm-letter-send:disabled { opacity: 0.5; cursor: not-allowed; }
+.dm-letter-send:disabled { opacity: .5; cursor: not-allowed; }
+
+/* 窄屏：稿纸横线在窄栏会显挤，收一档缩进、纸内边距留小 */
+@media (max-width: 640px) {
+  .dm-mailbox { padding: 16px 14px 48px; }
+  .dm-letter-thread, .dm-letter-compose { margin-left: 8px; }
+  .dm-sheet { padding: 13px 14px 12px; }
+}
 
 /* transcript */
 /* Conversation column — mock's `max-w-3xl mx-auto space-y-5` (the px-6/py-6 gutter is supplied by

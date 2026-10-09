@@ -375,6 +375,74 @@ const PROVIDERS = [
   { name: "openai-codex", title: "ChatGPT subscription", needs_key: false, auth: "oauth", signed_in: false, account: null, authorizing: false, last_error: null, blurb: "Sign in with your ChatGPT plan and run OpenAI models through your subscription — no API key. Tokens stay on this machine.", fields: [], configured: false, values: {}, suggested_models: ["gpt-5.6-sol"], key_set_at: null, last_used_at: null },
 ];
 
+/** 信箱（送达层 2026-10-09 · 案 A 一摞信纸）默认样本。
+ *  三种调性各一封：关怀 / 书稿发现 / 手机灵感，外加一封已读，够看纸感与落款。
+ *  spec 想在上面改状态，直接在 mockApi 之后再 page.route 覆盖即可（后注册的先匹配）。 */
+export const MAILBOX_FIXTURE = {
+  items: [
+    {
+      id: "cloud_audit:emotional_care:a1b3cd4",
+      source: "cloud_audit",
+      kind: "emotional_care",
+      content: "看你昨晚灯还亮着。第三章那处时间线对不上，我先记下了，不急。",
+      evidence: "你 01:12 还在改稿，日历上今天 09:30 有会",
+      understanding: "你不是担心改不完，是怕改坏了没人替你把关。",
+      status: "pending",
+      confidence: 0.86,
+      created_at: "2026-10-09T10:34:13",
+      delivered_at: "",
+      snoozed_until: null,
+      read_at: null,
+      read: false,
+      stale: false,
+      origin: "proactive_default",
+      intent_id: null,
+      mailbox_session_id: null,
+      thread_promoted: false,
+    },
+    {
+      id: "cloud_audit:plot_contradiction:7f21aa0",
+      source: "cloud_audit",
+      kind: "plot_contradiction",
+      content: "第二章末写「十月十七日雪」，第十二章却说是「十月初初见雪」。同一座城，隔了三天。",
+      evidence: "稿件章节 2 / 12 的日期比对",
+      understanding: "两处只有一处要改，挪第十二章更省事。",
+      status: "pending",
+      confidence: 0.91,
+      created_at: "2026-10-09T09:58:02",
+      delivered_at: "",
+      snoozed_until: null,
+      read_at: null,
+      read: false,
+      stale: false,
+      origin: "proactive_default",
+      intent_id: null,
+      mailbox_session_id: null,
+      thread_promoted: false,
+    },
+    {
+      id: "mobile_voice:idea_capture:c930bb1",
+      source: "mobile_voice",
+      kind: "idea_capture",
+      content: "你早上在厨房念的那句：「他一辈子都在替别人记账。」我没敢打断，先替你收进来了。",
+      evidence: "手机语音 07:41 · 12 秒",
+      understanding: "这句像国子监某个人物的骨头。",
+      status: "pending",
+      confidence: 0.8,
+      created_at: "2026-10-08T07:41:20",
+      delivered_at: "",
+      snoozed_until: null,
+      read_at: "2026-10-08T08:02:11",
+      read: true,
+      stale: false,
+      origin: "proactive_default",
+      intent_id: null,
+      mailbox_session_id: null,
+      thread_promoted: false,
+    },
+  ],
+};
+
 /** Install the API + WebSocket mocks on a page. Returns handles for assertions/seed data. */
 export async function mockApi(page: import("@playwright/test").Page) {
   // The rail defaults to HIDDEN (UX-038 follow-up). Existing specs were written
@@ -598,6 +666,20 @@ export async function mockApi(page: import("@playwright/test").Page) {
   // Providers — mutable so save (POST) flips `configured` and stamps key_set_at, matching the
   // backend's set_provider. verify (POST) never mutates: it's a live read-only credential check.
   const providers: any[] = PROVIDERS.map((p) => ({ ...p }));
+  // 信箱 — PER-TEST copy so 标已读/稍后/回信/进聊天 mutate the same list a spec re-reads.
+  const mailboxState: { items: any[] } = {
+    items: MAILBOX_FIXTURE.items.map((it) => ({ ...it })),
+  };
+  // 一封信的轻回信往来（走的是同一个会话消息库）。ts 是**秒**——后端约定，
+  // 前端渲染要乘 1000，这条也顺带钉住那个单位坑。
+  const mailboxThread = [
+    { role: "user", content: "先只给我看第三处，别的我晚点说。", ts: 1791514920 }, // 10-09 11:02
+    {
+      role: "assistant",
+      content: "好，只留第三处：第二章末「十月十七日雪」与第十二章「十月初初见雪」撞了，隔三天。",
+      ts: 1791515580, // 10-09 11:13
+    },
+  ];
   // Automations — mutable so Run now appends a run, enable/disable toggles, and delete removes.
   const automations: any[] = [{ ...AUTOMATION }, { ...AUTOMATION_CLEAN }];
   // MCP servers (empty by default; the granola OAuth quick-add test populates it).
@@ -1120,6 +1202,53 @@ export async function mockApi(page: import("@playwright/test").Page) {
     const m = req.method();
     const json = (body: unknown, status = 200) =>
       route.fulfill({ status, contentType: "application/json", body: JSON.stringify(body) });
+
+    // 信箱（送达层 2026-10-09）。列表 + 五个动作都在这份内存态上流转，所以 spec 里
+    // 点「标已读/稍后/回信/进聊天」之后重新拉列表能看到变化，跟真后端一个行为。
+    if (/\/v1\/sessions\/mailbox-[^/]+\/messages$/.test(p)) {
+      return json({
+        messages: mailboxThread,
+        total: mailboxThread.length,
+        offset: 0,
+        limit: mailboxThread.length,
+      });
+    }
+    if (p.startsWith("/v1/deskmate/mailbox")) {
+      const act = /\/v1\/deskmate\/mailbox\/([^/]+)\/(read|snooze|dismiss|reply|promote)$/.exec(p);
+      if (m === "GET") {
+        const onlyUnread = new URL(req.url()).searchParams.get("status") === "unread";
+        const items = mailboxState.items.filter((it) => (onlyUnread ? !it.read : true));
+        return json({
+          ok: true,
+          unread_count: mailboxState.items.filter((it) => !it.read).length,
+          items,
+        });
+      }
+      if (act) {
+        const [, rawId, action] = act;
+        const id = decodeURIComponent(rawId);
+        const it = mailboxState.items.find((x) => x.id === id);
+        const sid = `mailbox-${id.replace(/[^a-z0-9]/gi, "").slice(0, 12) || "seed0001"}`;
+        if (!it) return json({ ok: false }, 404);
+        if (action === "read") {
+          it.read = true;
+          it.read_at = "2026-10-09T11:20:00";
+          return json({ ok: true });
+        }
+        if (action === "snooze" || action === "dismiss") {
+          mailboxState.items = mailboxState.items.filter((x) => x.id !== id);
+          return json({ ok: true });
+        }
+        if (action === "reply") {
+          it.mailbox_session_id = sid;
+          return json({ ok: true, session_id: sid, workspace: "" });
+        }
+        it.mailbox_session_id = sid;
+        it.thread_promoted = true;
+        return json({ ok: true, session_id: sid, workspace: "" });
+      }
+      return json({ ok: false, unread_count: 0, items: [] }, 404);
+    }
 
     // session-scoped (id-agnostic — any session resolves to the same fixture).
     // POST = the per-session mute override (§32 Access toggles) — flip the shared state so
