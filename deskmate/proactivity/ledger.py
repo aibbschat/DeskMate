@@ -193,6 +193,14 @@ def run_producer(
         try:
             kwargs = dict(item)
             kwargs.pop("source", None)  # 来源由注册名决定，防止 item 自报错来源
+            # R0 把关（第0层 指纹锚定）：矛盾类判定缺锚点 → 拒收，不落台账、不造 34× 重复。
+            # 精准命中 34× 的泄漏点（矛盾判定一律经 producer 产出落库），不影响非 judge 链路。
+            if kwargs.get("kind") in _ANCHOR_REQUIRED_KINDS and not kwargs.get("anchor"):
+                logger.debug(
+                    "R0 拒收 producer=%s kind=%s：矛盾类判定缺锚点，不落台账",
+                    source, kwargs.get("kind"),
+                )
+                continue
             rid = record_proactive(base_dir=base_dir, source=source, **kwargs)
             if rid:
                 n += 1
@@ -332,11 +340,60 @@ def _ensure_table(conn: sqlite3.Connection) -> None:
             _ensured.add(key)
 
 
+# ---- R0（第0层 指纹锚定，2026-10-09）----
+# 矛盾类发现（写作场景的设定/时间线/伏笔/人物一致性判定）必须有锚点：无锚点 → 模型每次重判
+# 都换措辞 → 退回 content-hash 永远算新 id → 同一问题被反复落库（实测 plot_contradiction
+# 单问题两天攒 34 封）。
+#
+# 落地方式（关键决策）：锚点合并放在 ``_resolve_dedup_rid``（有锚点 → 同 id 合并，治措辞漂移，
+# 34→1 的核心）；「矛盾类无锚点 → 拒收」的把关放在 ``run_producer`` 的条目产出环节，而不是
+# ``record_proactive`` 本身。
+#   - 这样精准命中 34× 的泄漏点：矛盾判定一律经 producer 产出 → 落库；且不影响其它直接调
+#     ``record_proactive`` 的链路（intent_discuss 的 opening/draft、手机端 mobile_voice 的
+#     idea_capture/topic_note 都用非锚点 kind；单测也直接用裸 record_proactive 当夹具）。
+#   - 不引入「无锚点模糊去重兜底（bigram Jaccard 合并相似措辞）」：实测会把内容不同、仅
+#     evidence 模板相同的两条记录误并（如两封不同的 emotional_care 信共用同一模板 → 同 rid
+#     → 错误合并，违反「不误杀」验收）；模糊网收益有限，真正的 34→1 靠锚点合并即达成。
+_ANCHOR_REQUIRED_KINDS = frozenset(
+    {
+        "plot_contradiction",
+        "missing_foreshadow",
+        "character_inconsistency",
+        "timeline_error",
+        "plot_repetition",
+    }
+)
+
+
+def _resolve_dedup_rid(
+    c,
+    source: str,
+    kind: str,
+    anchor: Optional[str],
+    content: str,
+    evidence: str,
+) -> str:
+    """R0：决定本次落库的确定性 id。
+
+    - 有锚点 → ``source:kind:anchor``（同锚点天然合并，治措辞漂移，34→1 的关键）。
+    - 无锚点 → 旧 content-hash 兜底（同内容合并，不比以前差）。
+
+    「矛盾类无锚点 → 拒收」的把关上移到 ``run_producer`` 的条目产出环节（见
+    ``_ANCHOR_REQUIRED_KINDS`` 使用处），此处不做拒收，避免误伤直接调 ``record_proactive``
+    的非 judge 链路与单测夹具。
+    """
+    if anchor:
+        return f"{source}:{kind}:{anchor}"
+    # 旧兜底：content 截断 hash 使同内容合并。
+    return _deterministic_id(source, kind, None, content)
+
+
 def _deterministic_id(source: str, kind: str, anchor: Optional[str], content: str) -> str:
     """确定性 id = ``<source>:<kind>:<指纹>``。
 
     指纹优先用生产者提供的稳定锚点（如证据章节定位）；缺失时基于 content 截断 hash 兜底，
     使同内容合并。双端同 id → 同 sync_uuid → 自动合并（禁用随机 uuid）。
+    R0 后该兜底路径只对**非矛盾类** kind 生效（矛盾类无锚点直接拒收，见 ``_resolve_dedup_rid``）。
     """
     if anchor:
         finger = anchor
@@ -371,7 +428,8 @@ def record_proactive(
     """落一条主动产出到 ``proactive_ledger``（status=pending），经触发器自动进 oplog 同步。
 
     同 ``source/kind/anchor`` 重复调用 → 合并（更新非 status 字段，status 不降级）。
-    返回确定性 id。
+    返回确定性 id。R0（2026-10-09）：矛盾类 kind 缺 anchor 且无相似既有行时**拒收**
+    （返回空串，不落台账），避免无锚点矛盾判定被反复重判、把重复搬进库。
 
     R13：``bypass_threshold=True`` 时跳过 confidence 门槛，用于 intent_handoff
     的开场白短句（用户已同意的意图产物，不该被 confidence 门槛拦）。``origin`` /
@@ -379,7 +437,6 @@ def record_proactive(
     """
     base = _resolve_base(base_dir)
     db = base / "deskmate.db"
-    rid = _deterministic_id(source, kind, anchor, content)
     now = time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime())
     und = understanding if understanding is not None else ""
     # §11.6：evidence 存锚点+截断片段（oplog payload_json 每份复制全文会放大同步成本，
@@ -410,6 +467,10 @@ def record_proactive(
                 source_node = sn[0] if sn and sn[0] else "mac"
             except Exception:
                 source_node = "mac"
+        # R0（第0层 指纹锚定）：确定性 id（有锚点→source:kind:anchor 合并；无锚点→content-hash 兜底）。
+        # 「矛盾类无锚点→拒收」的把关在 run_producer 的条目产出环节（见 _ANCHOR_REQUIRED_KINDS），
+        # 不在此处，避免误伤非 judge 链路与单测夹具。
+        rid = _resolve_dedup_rid(c, source, kind, anchor, content, evidence)
         cols = (
             "id, source, kind, content, evidence, understanding, payload,"
             " source_node, status, confidence, created_at, acknowledged_at,"

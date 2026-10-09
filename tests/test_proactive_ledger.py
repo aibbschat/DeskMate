@@ -278,6 +278,9 @@ def test_no_anchor_distinct_content_distinct_rows():
 
     直接修复「anchor=suggestion_type 致同类型恒为单行、新发现被旧 status 吞掉」。
     同 content 仍合并（保 48 分裂防护，对应确定性 id 血泪教训）。
+    注：矛盾类 kind（plot_contradiction 等）无锚点的**拒收**把关在 run_producer 产出环节
+    （见 ledger._ANCHOR_REQUIRED_KINDS），此处直接调 record_proactive 当夹具、不经 producer，
+    故照旧落库以验证 P0.5 的「不同 content 不过合并 / 相同 content 合并」语义。
     """
     base = _fresh_base("mac")
     record_proactive(

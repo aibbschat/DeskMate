@@ -11,7 +11,7 @@ from __future__ import annotations
 import sqlite3
 
 from deskmate.proactivity.judge import JudgmentResult
-from deskmate.proactivity.ledger import run_producer
+from deskmate.proactivity.ledger import pending_items, run_producer
 from deskmate.proactivity.tick import _cloud_audit_producer, _finding_anchor
 
 
@@ -87,10 +87,38 @@ def test_different_findings_stay_separate(tmp_path):
     assert len(_rows(tmp_path)) == 3
 
 
-def test_no_key_still_behaves_as_before(tmp_path):
-    """模型不给 key → 退回内容指纹：同内容仍合并，不同内容仍各一行（不比以前差）。"""
-    _deliver(tmp_path, _j("", "完全相同的一句话"))
-    _deliver(tmp_path, _j("", "完全相同的一句话"))
+def test_no_anchor_contradiction_rejected(tmp_path):
+    """R0：矛盾类（plot_contradiction）无锚点 → 经 producer 产出环节拒收，不落台账、不造重复行。
+
+    这正是「同问题被重判 34 次」的止血点：模型不给 finding_key 时，宁可拒收，
+    也不退回 content-hash 把重复搬进库。把关在 run_producer 的条目产出环节
+    （见 ledger._ANCHOR_REQUIRED_KINDS）：直接调 record_proactive 的夹具不受影响。
+    """
+    _deliver(tmp_path, _j("", "第二章末写十月十七日雪，第十二章却说十月初初见雪。"))
+    _deliver(tmp_path, _j("", "两处初雪的时间对不上：第二章是十七日，第十二章写的是月初。"))
+    # 全部被 producer 拒收 → 不会触发建表；pending_items 对缺表优雅返回 []，等价于 0 行。
+    assert len(pending_items(tmp_path)) == 0, "矛盾类无锚点不应落库"
+
+
+def test_anchor_required_reject_does_not_affect_anchored(tmp_path):
+    """有锚点的矛盾类仍正常落库并合并（R0 只拦无锚点的）。"""
+    _deliver(tmp_path, _j("ch2-ch12", "第二章末写十月十七日雪，第十二章却说十月初初见雪。"))
+    _deliver(tmp_path, _j("ch2-ch12", "两处初雪的时间对不上：第二章是十七日，第十二章写的是月初。"))
     assert len(_rows(tmp_path)) == 1
-    _deliver(tmp_path, _j("", "另一句不同的话"))
+
+
+def test_non_anchor_kind_fallback_preserved(tmp_path):
+    """非矛盾类（如 ops 类 task_anomaly）无锚点仍走旧兜底：同内容合并、不同内容各一行。"""
+    _deliver(tmp_path, _j("", "定时任务 backup 在 14:00 执行失败", kind="task_anomaly"))
+    _deliver(tmp_path, _j("", "定时任务 backup 在 14:00 执行失败", kind="task_anomaly"))
+    assert len(_rows(tmp_path)) == 1
+    _deliver(tmp_path, _j("", "另一项定时任务 sync 在 15:00 也失败了", kind="task_anomaly"))
     assert len(_rows(tmp_path)) == 2
+
+
+def test_non_anchor_kind_different_content_stays_separate(tmp_path):
+    """非矛盾类无锚点、措辞不同 → 各一行（不模糊合并，避免误杀不同事项）。"""
+    _deliver(tmp_path, _j("", "定时任务 backup 在 14:00 执行失败", kind="task_anomaly"))
+    _deliver(tmp_path, _j("", "定时任务 backup 于 14:00 跑挂了", kind="task_anomaly"))
+    rows = _rows(tmp_path)
+    assert len(rows) == 2, f"措辞不同的同 kind 无锚点项应各留一行，实际 {len(rows)} 行"
