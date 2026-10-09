@@ -35,11 +35,18 @@ def test_producers_registered():
 
 
 # ---- 纯函数 ----
-def test_hit_fail_words():
+def test_hit_fail_words_deprecated_always_false():
+    """**2026-10-09 改**：关键词失败判据已整条废弃，恒返回 False。
+
+    原断言（命中「火山/限额/429」为 True）已作废——该判据双向都错：
+    - 误伤：**成功**汇报原文就含「不擅自删除」「没有超时」等措辞；
+    - 漏报：假设「产出必进 artifacts」，而读书任务 artifacts 恒为 []。
+    零产出判据改为只认 timeline.jsonl 硬锚点。
+    """
     from deskmate.proactivity.health_producers import _hit_fail_words
 
-    assert _hit_fail_words("今天又被火山限额挡住了，跑空") is True
-    assert _hit_fail_words("HTTP 429 太多，无法完成") is True
+    assert _hit_fail_words("今天又被火山限额挡住了，跑空") is False
+    assert _hit_fail_words("HTTP 429 太多，无法完成") is False
     assert _hit_fail_words("一切正常，产出已落盘") is False
 
 
@@ -63,10 +70,10 @@ def test_cron_missed():
     from deskmate.proactivity.health_producers import _cron_missed
 
     now = time.time()
-    # 每小时整点跑：2 小时前就过了上一次应跑点、且 last_run 更早 → miss
-    assert _cron_missed("0 * * * *", now - 7200, now) is True
-    # last_run 就在最近一次应跑点之后 → 跑过了
+    # 已跑过：last_run 在最近一次应跑点之后（hourly ⇒ 最近应跑点在 1 小时内）
     assert _cron_missed("0 * * * *", now - 60, now) is False
+    # 没跑过：last_run=None，应跑点已过 30 分钟宽限 → miss
+    assert _cron_missed("0 * * * *", None, now) is True
     # 无 cron → 不报
     assert _cron_missed(None, None, now) is False
 
@@ -322,3 +329,102 @@ def test_run_producers_all_actually_skips_automation(monkeypatch, tmp_path):
     L.run_producers_all(base_dir=tmp_path, exclude=D.exclude_for_producers_all())
     assert "automation" in called
 
+
+
+# ---- 2026-10-09 方案B：automation 误报三处修复的回归锁 ----
+
+
+def test_title_stem_splits_on_colon():
+    """缺陷②依据：title 与 timeline task_name 是冒号前缀关系（实测）。"""
+    from deskmate.proactivity.health_producers import _title_stem
+
+    assert _title_stem("每日读书：萧盛已出版作品") == "每日读书"
+    assert _title_stem("进度跟踪：国子监秘闻录") == "进度跟踪"
+    assert _title_stem("无冒号标题") == "无冒号标题"
+
+
+def test_timeline_matches_by_task_name_not_task_type(tmp_path):
+    """**缺陷②回归**：判据必须按 task_name 匹配。
+
+    实测 5 个启用任务的 task_type 全是 None → 依赖它会让该分支永不触发。
+    """
+    from deskmate.proactivity.health_producers import _timeline_has_today
+
+    bd = tmp_path / "bd_tl2"
+    bd.mkdir()
+    tl = bd / "auto_tasks" / "timeline.jsonl"
+    tl.parent.mkdir(parents=True, exist_ok=True)
+    today = time.strftime("%Y-%m-%d", time.localtime())
+    # 只有 task_name，没有 task_type —— 真实数据即如此
+    tl.write_text(
+        json.dumps({"task_name": "每日读书", "date": today}, ensure_ascii=False) + chr(10),
+        encoding="utf-8",
+    )
+    assert _timeline_has_today(bd, "每日读书") is True
+    assert _timeline_has_today(bd, "写作营") is False
+
+
+def test_running_task_not_reported_as_missed(tmp_path, monkeypatch):
+    """**缺陷①回归（真实故障）**：任务运行期间不得报「该跑却没跑成」。
+
+    现场：读书任务 10:00:57 开始、10:37:16 结束，误报发生在 10:34:13 ——
+    跑了 36 分钟，它在第 34 分钟报警。根因：last_run 只在**结束**时更新。
+    """
+    import sqlite3
+
+    from deskmate.proactivity.health_producers import _automation_producer
+
+    base = tmp_path / "bd_running"
+    # 隔离：不读本机/云端真实 automation.db（沿用文件头约定）
+    monkeypatch.setenv("COWORKER_STATE_DIR", str(base))
+    base.mkdir(parents=True, exist_ok=True)
+    adb = base / "automation.db"
+    c = sqlite3.connect(str(adb))
+    c.execute("CREATE TABLE scheduled_tasks (id TEXT PRIMARY KEY, enabled INTEGER, data TEXT)")
+    c.execute(
+        "CREATE TABLE task_runs (run_id TEXT PRIMARY KEY, task_id TEXT, started_at REAL, data TEXT)"
+    )
+    tid = "t_running"
+    c.execute(
+        "INSERT INTO scheduled_tasks VALUES (?,1,?)",
+        (tid, json.dumps({"title": "每日读书：萧盛已出版作品", "schedule": {"cron": "0 * * * *"}})),
+    )
+    # 关键：task_runs 有本次 started_at（刚刚开始），但 last_run 仍是 None（**未结束**）
+    c.execute(
+        "INSERT INTO task_runs VALUES (?,?,?,?)",
+        ("r1", tid, time.time() - 60, json.dumps({"status": "running"})),
+    )
+    c.commit()
+    c.close()
+
+    items = _automation_producer(base_dir=base)
+    kinds = [i["anchor"].rsplit(":", 1)[-1] for i in items]
+    assert "miss" not in kinds, f"运行中的任务被误报为 miss: {items}"
+
+
+def test_stale_task_still_reported_as_missed(tmp_path, monkeypatch):
+    """反向锁：修缺陷①**不能**把真 miss 也一起放过。"""
+    import sqlite3
+
+    from deskmate.proactivity.health_producers import _automation_producer
+
+    base = tmp_path / "bd_stale"
+    # 隔离：不读本机/云端真实 automation.db（沿用文件头约定）
+    monkeypatch.setenv("COWORKER_STATE_DIR", str(base))
+    base.mkdir(parents=True, exist_ok=True)
+    adb = base / "automation.db"
+    c = sqlite3.connect(str(adb))
+    c.execute("CREATE TABLE scheduled_tasks (id TEXT PRIMARY KEY, enabled INTEGER, data TEXT)")
+    c.execute("CREATE TABLE task_runs (run_id TEXT PRIMARY KEY, task_id TEXT, started_at REAL, data TEXT)")
+    tid = "t_stale"
+    c.execute(
+        "INSERT INTO scheduled_tasks VALUES (?,1,?)",
+        (tid, json.dumps({"title": "该跑没跑", "schedule": {"cron": "0 * * * *"}})),
+    )
+    # 没有任何 run 记录、last_run 也为 None → 真 miss
+    c.commit()
+    c.close()
+
+    items = _automation_producer(base_dir=base)
+    kinds = [i["anchor"].rsplit(":", 1)[-1] for i in items]
+    assert "miss" in kinds, f"真 miss 被漏报了: {items}"

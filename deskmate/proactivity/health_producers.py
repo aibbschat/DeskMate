@@ -78,19 +78,52 @@ def _iso(ts: Optional[float]) -> str:
         return str(ts)
 
 
-_FAIL_WORDS = ("火山", "限额", "quota", "额度", "无法", "失败", "对不起", "抱歉", "没能", "跑空", "超时", "429")
+# ⚠️ 2026-10-09 **移除**关键词失败词表（原 _FAIL_WORDS / _hit_fail_words）。
+# 它是「回执 ok 但零产出」判据的唯一依据，实测**双向都错**：
+#   误伤：词表含「抱歉/失败/无法/火山/额度」，而**成功**的汇报原文就会写
+#         「不擅自删除」「没有超时」这类措辞 ⇒ 成功被判失败；
+#   漏报：它假设「产出必进 artifacts」，而读书任务 artifacts 恒为 []
+#         （正文写进 .deskmate/tmp_reading/，不走 artifact 通道）。
+# 零产出判据已改为**只认 timeline.jsonl 硬锚点**（见 _automation_producer ②）。
+# 保留符号仅供旧测试/外部引用不断裂，实际不再被调用。
+_FAIL_WORDS: tuple[str, ...] = ()
 
 
 def _hit_fail_words(text: str) -> bool:
-    t = (text or "").lower()
-    return any(w.lower() in t for w in _FAIL_WORDS)
+    """**已废弃**，恒返回 False。
+
+    保留函数名只为不打断可能存在的外部引用；新逻辑不再用关键词判失败。
+    """
+    return False
 
 
-def _timeline_has_today(base_dir: Optional[Path], task_type: str) -> bool:
-    """读 ``~/.deskmate/auto_tasks/timeline.jsonl``，判今天是否有某 task_type 的真实产出。
+def _title_stem(title: str) -> str:
+    """取任务标题的「冒号前缀」——它才是与 timeline 的 task_name 对得上的部分。
 
-    这是「status=ok 但实际零产出」的硬锚点（文档 §11.3 automation 示例：每日读书
-    status=ok 但 timeline.jsonl 停更）。stdlib 逐行解析，fail-open。
+    ⚠️ 2026-10-09 实测：任务 title 与 timeline task_name 是**冒号前缀关系**——
+
+        title「每日读书：萧盛已出版作品」  →  task_name「每日读书」
+        title「进度跟踪：国子监秘闻录」    →  task_name「进度跟踪」
+
+    所以不能再拿 ``task.get("task_type")`` 去匹配（实测 5 个启用任务的 task_type
+    **全是 None**，该判据对所有任务永不触发）。
+    """
+    t = (title or "").strip()
+    for sep in ("：", ":", "·", "-", "—", "—"):
+        if sep in t:
+            head = t.split(sep, 1)[0].strip()
+            if head:
+                return head
+    return t
+
+
+def _timeline_has_today(base_dir: Optional[Path], task_name: str) -> bool:
+    """读 ``auto_tasks/timeline.jsonl``，判今天是否有某 ``task_name`` 的真实产出。
+
+    这是「status=ok 但实际零产出」的**硬锚点**。stdlib 逐行解析，fail-open。
+
+    匹配用 task_name，并额外容忍 record 自带 task_type 时按 type 匹配
+    （老记录可能只有 type 没有 name）。
     """
     try:
         path = _resolve_base(base_dir) / "auto_tasks" / "timeline.jsonl"
@@ -106,7 +139,11 @@ def _timeline_has_today(base_dir: Optional[Path], task_type: str) -> bool:
                     rec = json.loads(line)
                 except Exception:  # noqa: BLE001
                     continue
-                if rec.get("task_type") == task_type and rec.get("date") == today:
+                if rec.get("date") != today:
+                    continue
+                name = rec.get("task_name") or ""
+                rtype = rec.get("task_type") or ""
+                if (name and name == task_name) or (rtype and rtype == task_name):
                     return True
         return False
     except Exception:  # noqa: BLE001
@@ -200,14 +237,35 @@ def _automation_producer(base_dir: Optional[Path] = None) -> list:
             last_run = task.get("last_run")
             last_status = task.get("last_status")
             task_type = task.get("task_type")
-            # 最近一次 run 回执
+            # 最近一次 run 回执 + 它的 started_at
+            #
+            # ⚠️ 2026-10-09 修误报（缺陷①）：原实现只读 ``last_run``，而 last_run **只在任务
+            # 结束时才更新** ⇒ 任务运行期间读到的仍是上一次（甚至 None）→ 必然判「没跑成」。
+            # 实测铁证：10-09 读书任务 10:00:57 开始、10:37:16 结束，而误报发生在
+            # **10:34:13** —— 跑了 36 分钟，它在第 34 分钟报「该跑却没跑成」。
+            # task_runs.started_at 记的是**开始**时间，用它判定「本次已开跑」即可识破。
             run_row = conn.execute(
-                "SELECT data FROM task_runs WHERE task_id=? ORDER BY started_at DESC LIMIT 1",
+                "SELECT data, started_at FROM task_runs WHERE task_id=?"
+                " ORDER BY started_at DESC LIMIT 1",
                 (tid,),
             ).fetchone()
             run = json.loads(run_row[0]) if run_row and run_row[0] else {}
+            # ⚠️ started_at 必须是**能转 float 的**值：真实库是 REAL，但脏数据/历史遗留
+            # 可能是 TEXT（如旧 fixture 写的 'x'）。此处裸 float() 会抛 ValueError，
+            # 而异常会被本函数的 except 吞掉 ⇒ **整个生产者静默返回空**（连真故障也不报）。
+            # 故逐条 try，解析不了就当作「没有 started_at」而非致命错误。
+            last_started = None
+            if run_row and run_row[1] is not None:
+                try:
+                    last_started = float(run_row[1])
+                except (TypeError, ValueError):
+                    last_started = None
+            # 「本次已开跑」= started_at 晚于最近一次应跑时刻（_cron_missed 内部同口径）。
+            # 用 max(last_run, last_started) 参与判定：谁新用谁，
+            # 这样既认「已跑完」也认「正在跑」，运行期间不再误报。
+            ran_at = max([x for x in (last_run, last_started) if x] or [None])
             # ① 该跑却没跑成
-            if cron and _cron_missed(cron, last_run, now):
+            if cron and _cron_missed(cron, ran_at, now):
                 items.append({
                     "kind": "task_anomaly",
                     "content": f"今天「{title}」该跑却还没跑成，要不要去查一下？",
@@ -217,25 +275,30 @@ def _automation_producer(base_dir: Optional[Path] = None) -> list:
                 })
                 continue
             # ② 跑了但零产出（status=ok 但无真实产出）
+            #
+            # ⚠️ 2026-10-09 修误报（缺陷②③）：原判据两处都错——
+            #   缺陷②：锚点分支写 ``task_type in ("daily_reading", "progress_tracking")``，
+            #     而实测 5 个启用任务的 task_type **全是 None** ⇒ 该分支对所有任务永不触发，
+            #     timeline 里明明有正确记录却认不出来。改用标题冒号前缀匹配 task_name。
+            #   缺陷③：零产出靠 ``_hit_fail_words`` 关键词表 —— 该表含「抱歉/失败/无法/火山/
+            #     额度」，而**成功**的汇报原文就会写「不擅自删除」这类措辞 ⇒ 成功被误判失败；
+            #     且它假设「产出必进 artifacts」，但读书任务 artifacts 恒为 []（正文写进
+            #     .deskmate/tmp_reading/）。关键词判据**整条删除**，只认硬锚点。
             status = run.get("status") or last_status
             if status == "ok":
                 zero = False
                 reason = ""
-                if task_type in ("daily_reading", "progress_tracking"):
-                    if not _timeline_has_today(base_dir, task_type):
-                        zero = True
-                        reason = f"timeline.jsonl {_today()} 无 {task_type} 记录"
-                if not zero:
-                    artifacts = run.get("artifacts") or []
-                    result_text = run.get("result_text") or ""
-                    if not artifacts and _hit_fail_words(result_text):
-                        zero = True
-                        reason = "回执 ok 但无产出文件且回复疑似被限额/失败"
+                stem = _title_stem(title)
+                if not _timeline_has_today(base_dir, stem):
+                    zero = True
+                    reason = f"timeline.jsonl {_today()} 无「{stem}」记录"
                 if zero:
                     items.append({
                         "kind": "task_anomaly",
-                        "content": f"「{title}」今天回执 ok，但实际没产出（疑似火山限额跑空），得留意。",
-                        "evidence": f"last_run={_iso(last_run)} status=ok; {reason}",
+                        "content": f"「{title}」今天回执 ok，但 timeline 里查无实产，得留意。",
+                        "evidence": (
+                            f"last_run={_iso(last_run)} status=ok; {reason}"
+                        ),
                         "confidence": 0.8,
                         "anchor": f"{tid}:{_today()}:zero",
                     })
