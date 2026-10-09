@@ -226,6 +226,7 @@ echo "==> 推送模块文件到云端 $CLOUD_SYNC_DIR"
 for f in "${LOCAL_MODULES[@]}"; do
   base="$(basename "$f")"
   scp -q -o ConnectTimeout=15 "$f" "$SSH_HOST:/tmp/sync_deploy_$base"
+  ssh -o ConnectTimeout=15 "$SSH_HOST" "sudo chmod 644 /tmp/sync_deploy_$base || true"   # scp 以 ubuntu 写入，默认 0600；openworker 无读权限（实测 Permission denied）
   ssh -o ConnectTimeout=15 "$SSH_HOST" "sudo -n -u openworker cp '/tmp/sync_deploy_$base' '$CLOUD_SYNC_DIR/$base'"
   ssh -o ConnectTimeout=15 "$SSH_HOST" "rm -f '/tmp/sync_deploy_$base'" || true
   echo "    ✓ $base"
@@ -260,6 +261,7 @@ echo "==> 推送 proactivity 模块到云端 $CLOUD_PROACTIVITY_DIR"
 for f in "${PROACTIVITY_MODULES[@]}"; do
   base="$(basename "$f")"
   scp -q -o ConnectTimeout=15 "$f" "$SSH_HOST:/tmp/proactivity_deploy_$base"
+  ssh -o ConnectTimeout=15 "$SSH_HOST" "sudo chmod 644 /tmp/proactivity_deploy_$base || true"   # scp 以 ubuntu 写入，默认 0600；openworker 无读权限（实测 Permission denied）
   ssh -o ConnectTimeout=15 "$SSH_HOST" "sudo -n -u openworker cp '/tmp/proactivity_deploy_$base' '$CLOUD_PROACTIVITY_DIR/$base'"
   ssh -o ConnectTimeout=15 "$SSH_HOST" "rm -f '/tmp/proactivity_deploy_$base'" || true
   # 清 proactivity 的 __pycache__，避免旧 .pyc 复用（与手动 scp 同风险）
@@ -279,6 +281,7 @@ for f in "${CHANNEL_MODULES[@]}" "${AGENCY_BEHAVIORS_MODULES[@]}" "${AGENCY_MODU
     *)            dest_dir="$CLOUD_DESKMATE_ROOT" ;;
   esac
   scp -q -o ConnectTimeout=15 "$f" "$SSH_HOST:/tmp/channel_deploy_$base"
+  ssh -o ConnectTimeout=15 "$SSH_HOST" "sudo chmod 644 /tmp/channel_deploy_$base || true"   # scp 以 ubuntu 写入，默认 0600；openworker 无读权限（实测 Permission denied）
   ssh -o ConnectTimeout=15 "$SSH_HOST" "sudo -n -u openworker mkdir -p '$dest_dir'"
   ssh -o ConnectTimeout=15 "$SSH_HOST" "sudo -n -u openworker cp '/tmp/channel_deploy_$base' '$dest_dir/$base'"
   ssh -o ConnectTimeout=15 "$SSH_HOST" "rm -f '/tmp/channel_deploy_$base'" || true
