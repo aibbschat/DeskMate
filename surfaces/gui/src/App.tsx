@@ -35,6 +35,7 @@ import {
   runIntentDiscussRound,
   cancelIntentDiscuss,
   type HandoffItem,
+  type MailboxLetter,
 } from "./api";
 import type {
   ApprovalDecision,
@@ -94,6 +95,7 @@ import { PlanCard } from "./components/PlanCard";
 import { WorkspaceTrustPrompt } from "./components/WorkspaceTrustPrompt";
 import { DeskMateOverlay } from "./components/deskmate/DeskMateOverlay";
 import { DeskHome } from "./components/deskmate/DeskHome";
+import { MailboxPage } from "./components/deskmate/MailboxPage";
 import { DeskMateProactiveInline } from "./components/deskmate/DeskMateProactiveInline";
 import { GardenProfileCenter } from "./components/garden/GardenProfileCenter";
 import { EXPERTS, getExpert, type Expert } from "./components/deskmate/experts";
@@ -310,7 +312,7 @@ export function App() {
   // load; corrected by loadSettings.
   const [modelReady, setModelReady] = useState(true);
   const [surface, setSurface] = useState<
-    "session" | "scheduled" | "integrations" | "skillstore" | "audit" | "inbox" | "persona" | "settings" | "experts" | "roundtable" | "badges" | "profile" | "creation" | "teamchat"
+    "session" | "scheduled" | "integrations" | "skillstore" | "audit" | "inbox" | "persona" | "settings" | "experts" | "roundtable" | "badges" | "profile" | "creation" | "teamchat" | "mailbox"
   >("session");
   const [teamId] = useState("");
   // A remembered Scheduled-detail target must not outlive the surface (see the
@@ -1146,6 +1148,13 @@ export function App() {
     }
     return ok;
   };
+  // 信箱「进聊天」：起一个普通 deskmate 会话（气泡样式续聊），把信件内容 prefill 进
+  // 输入框，让萧哥直接以这个主题开聊——轻回信与真聊两条路径自此分叉（设计单 §5）。
+  const openChatFromMailbox = (letter: MailboxLetter) => {
+    startNewSession("deskmate");
+    const short = letter.id.split(":").pop()?.slice(0, 6) ?? "";
+    prefillComposer(`${letter.content}\n（来自信箱 #${short}）`);
+  };
   const interrupt = () => sessionRef.current?.interrupt();
   const retry = () => {
     // Optimistic running: turn_start confirms; a rejected retry still ends in turn_done.
@@ -1660,6 +1669,8 @@ export function App() {
         creationActive={surface === "creation"}
         onOpenProfile={() => setSurface("profile")}
         profileActive={surface === "profile"}
+        onOpenMailbox={() => setSurface("mailbox")}
+        mailboxActive={surface === "mailbox"}
         scheduledActive={surface === "scheduled"}
         integrationsActive={surface === "integrations"}
         skillStoreActive={surface === "skillstore"}
@@ -1717,6 +1728,11 @@ export function App() {
         <BadgeWall onBack={() => setSurface("session")} />
       ) : surface === "profile" ? (
         <GardenProfileCenter onBack={() => setSurface("session")} />
+      ) : surface === "mailbox" ? (
+        <MailboxPage
+          onBack={() => setSurface("profile")}
+          onOpenChat={(letter) => openChatFromMailbox(letter)}
+        />
       ) : (
       <div className={"main" + (surface === "session" && agent !== "chat" && !railHidden ? " rail-open" : "")}>
         <div className="main-topbar">
@@ -1879,8 +1895,8 @@ export function App() {
                   />
                 ) : agent === "deskmate" ? (
                   <DeskHome
-                    onPrefill={prefillComposer}
                     onIntentExecuted={startIntentDiscussion}
+                    onOpenMailbox={() => setSurface("mailbox")}
                   />
                 ) : (
                   <div className="hero">

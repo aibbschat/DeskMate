@@ -4149,6 +4149,97 @@ export async function ackDeskmateHandoff(
     return false;
   }
 }
+// -- 信箱 · 送达层（2026-10-09）：proactive_ledger 的门面（presentation layer） --
+// 信箱只持信件元数据；轻回信走「隐藏 mailbox 会话」复用同一引擎（前端用 Session 类连 WS）。
+// 与江河设计 §九 正交，独立于 P3 自主闭环；Mac-only 不同步（决策5）。
+export interface MailboxLetter {
+  id: string;
+  source: string;
+  kind: string;
+  content: string;
+  evidence: string;
+  understanding: string;
+  status: string;
+  read_at: string | null;
+  read: boolean;
+  created_at: string;
+  mailbox_session_id: string | null;
+}
+
+export interface MailboxView {
+  ok: boolean;
+  unread_count: number;
+  items: MailboxLetter[];
+}
+
+/** 拉取信箱信件列表 + 未读数（proactive_ledger 的 pending/snoozed 视图态项）。 */
+export async function getMailbox(): Promise<MailboxView> {
+  try {
+    const res = await authedFetch(`${httpBase()}/v1/deskmate/mailbox`);
+    if (!res.ok) return { ok: false, unread_count: 0, items: [] };
+    return (await res.json()) as MailboxView;
+  } catch {
+    return { ok: false, unread_count: 0, items: [] };
+  }
+}
+
+/** 标已读（read_at + 回流情感层「用户看见了」，设计单 §7 要害）。 */
+export async function readMailboxLetter(id: string): Promise<boolean> {
+  try {
+    const res = await authedFetch(`${httpBase()}/v1/deskmate/mailbox/${encodeURIComponent(id)}/read`, {
+      method: "POST",
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+/** 稍后（3 天退避后自动复活轻递，复用 ledger 状态机 snoozed）。 */
+export async function snoozeMailboxLetter(id: string): Promise<boolean> {
+  try {
+    const res = await authedFetch(`${httpBase()}/v1/deskmate/mailbox/${encodeURIComponent(id)}/snooze`, {
+      method: "POST",
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+/** 不用了（终态，复用 ledger 状态机 dismissed）。 */
+export async function dismissMailboxLetter(id: string): Promise<boolean> {
+  try {
+    const res = await authedFetch(`${httpBase()}/v1/deskmate/mailbox/${encodeURIComponent(id)}/dismiss`, {
+      method: "POST",
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+/** 轻回信：确保一封「隐藏 mailbox 会话」存在，返回其 session_id。
+ * 前端再用 Session 类连 /ws/session/{id} 复用同一引擎；信件样式渲染往来。 */
+export async function replyMailboxLetter(id: string): Promise<{ ok: boolean; session_id: string | null }> {
+  try {
+    const res = await authedFetch(`${httpBase()}/v1/deskmate/mailbox/${encodeURIComponent(id)}/reply`, {
+      method: "POST",
+    });
+    const d = (await res.json()) as { ok?: boolean; session_id?: string | null };
+    return { ok: !!d.ok, session_id: d.session_id ?? null };
+  } catch {
+    return { ok: false, session_id: null };
+  }
+}
+
+// Fired when the mailbox changes (read/snooze/dismiss/reply) so the sidebar bell and
+// DeskHome pointer refresh their unread counts without polling.
+export const MAILBOX_CHANGED = "coworker:mailbox-changed";
+export function announceMailboxChanged() {
+  window.dispatchEvent(new CustomEvent(MAILBOX_CHANGED));
+}
+
 /** 「聊这个」让她先说（§11.16 层三）：把条目作为她的助手消息落入本会话。
  * true=已落会话（GUI 经 WS assistant_message 即时渲染，reload 后也在）；
  * false=端点失败（会话不存在/台账条目缺失），调用方可退回短句柄 prefill。 */

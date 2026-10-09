@@ -13,6 +13,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import sqlite3
 import threading
 import time
@@ -303,6 +304,10 @@ def _ensure_table(conn: sqlite3.Connection) -> None:
             "intent_id": "TEXT",
             "discuss_phase": "TEXT",
             "discuss_round": "INTEGER",
+            # 信箱呈现层（2026-10-09）：用户「标已读/已展开」时间戳。
+            # 空 = 未读；与 status 正交——已读但未处理 = read_at 非空且 status 仍 pending/snoozed。
+            # 仅本地视图态，不进 oplog（Mac-only，不同步，决策5）。
+            "read_at": "TEXT",
         }
         for _c, _t in new_cols.items():
             if _c not in have:
@@ -643,6 +648,115 @@ def acknowledge_ledger(
             c.execute(f"UPDATE {LEDGER_TABLE} SET status=? WHERE id=?", (new_status, rid))
         c.commit()
     return True
+
+
+# ---- 信箱呈现层（2026-10-09）：标已读 + 列信 + 未读数 ----
+# 信箱是 ledger 的门面：以下函数只动视图态（read_at），不动 status 机与跨端同步。
+# 所有回复内容走同一聊天引擎（见 coworker/server/app.py mailbox 端点），ledger 只持元数据。
+
+def mark_letter_read(
+    base_dir: Optional[Path] = None, rid: Optional[str] = None
+) -> bool:
+    """标一封信已读（read_at=now）。
+
+    与 status 正交：已读 ≠ 处理（actioned/dismissed）。标已读须回流情感层
+    「用户看见了」（见 record_letter_seen），否则信箱成她的「表白墙+坟场」——
+    她学到「主动没用」，与养孩子初衷相反（设计单 §7）。fail-open。
+    """
+    if rid is None:
+        return False
+    base = _resolve_base(base_dir)
+    db = base / "deskmate.db"
+    try:
+        with sqlite3.connect(str(db), check_same_thread=False) as c:
+            _ensure_table(c)
+            now = time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime())
+            c.execute(
+                f"UPDATE {LEDGER_TABLE} SET read_at=? WHERE id=?", (now, rid)
+            )
+            c.commit()
+        # 已读回流（设计单 §7 要害）：用户看见了她主动递的东西——这是正向互动信号，
+        # 喂给情感/意志层（避免她学到「主动没用」）。独立轻量通道，fail-open，不耦合 emotion_sense。
+        try:
+            record_letter_seen(base_dir=base, rid=rid)
+        except Exception:  # noqa: BLE001
+            logger.debug("已读回流信号落盘失败（不阻断）", exc_info=True)
+        return True
+    except Exception as e:  # noqa: BLE001
+        logger.debug("mark_letter_read 失败（fail-open）: %s", e)
+        return False
+
+
+def record_letter_seen(base_dir: Optional[Path] = None, rid: Optional[str] = None) -> None:
+    """已读回流信号：用户看见了某封主动信（正向互动）。
+
+    落盘到 ``<deskmate>/mailbox_seen.jsonl``（每行一条，原子写、append-only、
+    fail-open）。情感/意志层后续可消费此信号——例如「主动递出的信用户会看」
+    抬高她主动关怀的意愿，反向「发了没人理」则降温。Mac-only（与 ledger 视图态同口径，
+    不进 oplog）。不在此处调用 LLM，纯信号记录。
+    """
+    if not rid:
+        return
+    base = _resolve_base(base_dir)
+    path = base / "mailbox_seen.jsonl"
+    line = json.dumps(
+        {
+            "ts": time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime()),
+            "id": rid,
+            "kind": "seen",
+        },
+        ensure_ascii=False,
+    )
+    tmp = path.with_suffix(path.suffix + f".{os.getpid()}.tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write(line + "\n")
+    os.replace(tmp, path)
+
+
+def list_letters(
+    base_dir: Optional[Path] = None, *, include_read: bool = True
+) -> list[dict]:
+    """列信箱信件（pending + snoozed 到期复活的视图态项），created_at 倒序。
+
+    read_at 一并返回；调用方据 read_at 是否为空区分未读/已读。
+    include_read=False 时只返未读（read_at IS NULL）。
+    """
+    base = _resolve_base(base_dir)
+    db = base / "deskmate.db"
+    now = time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime())
+    clause = (
+        "WHERE (status='pending'"
+        " OR (status='snoozed' AND (snoozed_until IS NULL OR snoozed_until <= ?)))"
+    )
+    if not include_read:
+        clause += " AND read_at IS NULL"
+    try:
+        with sqlite3.connect(str(db), check_same_thread=False) as c:
+            _ensure_table(c)
+            rows = c.execute(
+                f"SELECT id, source, kind, content, evidence, understanding, status,"
+                f" confidence, created_at, source_node, delivered_at, snoozed_until, read_at"
+                f" FROM {LEDGER_TABLE} {clause} ORDER BY created_at DESC",
+                (now,),
+            ).fetchall()
+    except sqlite3.OperationalError:
+        return []
+    keys = (
+        "id", "source", "kind", "content", "evidence", "understanding", "status",
+        "confidence", "created_at", "source_node", "delivered_at", "snoozed_until",
+        "read_at",
+    )
+    return [dict(zip(keys, r)) for r in rows]
+
+
+def unread_letter_count(base_dir: Optional[Path] = None) -> int:
+    """未读信件数（read_at IS NULL 且 status 在 pending/snoozed 且 snoozed 已到期）。"""
+    try:
+        return len(
+            list_letters(base_dir, include_read=False)
+        )
+    except Exception:  # noqa: BLE001
+        return 0
 
 
 # ---- §11.16「灵动三层」（2026-10-07）：她递出卡片后要「接得上」----

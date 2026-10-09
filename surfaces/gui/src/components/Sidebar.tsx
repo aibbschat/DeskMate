@@ -3,9 +3,11 @@ import { useTranslation } from "react-i18next";
 import {
   AUTOMATIONS_CHANGED,
   getAutomations,
+  getMailbox,
   getPersonas,
   getSettings,
   INBOX_UNLOCK,
+  MAILBOX_CHANGED,
   PERSONAS_CHANGED,
   setNavLayout,
   type Automation,
@@ -150,6 +152,9 @@ interface Props {
   // 个人中心入口（独立页面，收纳默契/记忆/日记/勋章等私人化内容）。
   onOpenProfile?: () => void;
   profileActive?: boolean;
+  // 信箱入口（送达层门面，2026-10-09）：铃铛 + 未读数，跳转信箱页。
+  onOpenMailbox?: () => void;
+  mailboxActive?: boolean;
   // Collapse controls (⌘B / hover-peek). `onCollapse` docks/undocks; `onPeekLeave` hides the
   // floating peek when the pointer leaves the panel.
   collapsed?: boolean;
@@ -201,6 +206,20 @@ export function Sidebar(props: Props) {
     window.addEventListener(INBOX_UNLOCK, unlock);
     return () => {
       window.removeEventListener(INBOX_UNLOCK, unlock);
+    };
+  }, []);
+  // 信箱未读数（送达层门面，2026-10-09）：读 mailbox 列表的 unread_count；标已读/
+  // 稍后/不用了/回信经 MAILBOX_CHANGED 即时刷新，避免轮询。
+  const [mailUnread, setMailUnread] = useState(0);
+  useEffect(() => {
+    const load = () =>
+      getMailbox()
+        .then((m) => setMailUnread(m.ok ? m.unread_count : 0))
+        .catch(() => {});
+    load();
+    window.addEventListener(MAILBOX_CHANGED, load);
+    return () => {
+      window.removeEventListener(MAILBOX_CHANGED, load);
     };
   }, []);
   // UX-023: automations feed the nav row's badge + the Scheduled band. The 15s poll
@@ -1101,6 +1120,29 @@ export function Sidebar(props: Props) {
           <span className="flex-1">{t("sidebar.profile", { defaultValue: "个人中心" })}</span>
         </button>
       </div>
+
+      {/* 信箱（送达层门面，2026-10-09）：铃铛 + 未读数，跳转信箱页。
+          与首页 DeskHome 的「去信箱」指针共用同一未读口径（MAILBOX_CHANGED 即时刷新）。 */}
+      {props.onOpenMailbox && (
+        <div className="px-2.5 mt-1">
+          <button
+            className={
+              "w-full flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-[13px] text-left hover:bg-paper hover:text-ink " +
+              (props.mailboxActive ? "text-ink bg-paper" : "text-muted")
+            }
+            data-testid="nav-mailbox"
+            onClick={props.onOpenMailbox}
+          >
+            <span className="shrink-0 text-[15px] leading-none" aria-hidden>✉</span>
+            <span className="flex-1">{t("sidebar.mailbox", { defaultValue: "信箱" })}</span>
+            {mailUnread > 0 && (
+              <span className="text-[10px] font-semibold text-ink bg-faint/30 rounded-full px-1.5 leading-[15px] shrink-0">
+                {mailUnread > 99 ? "99+" : mailUnread}
+              </span>
+            )}
+          </button>
+        </div>
+      )}
 
       {/* Scroll area: Pinned band + the RECENT header (with group/filter control), then the body —
           grouped (per-persona accordion) or flat (chronological list). */}

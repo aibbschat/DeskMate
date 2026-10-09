@@ -959,7 +959,12 @@ def create_app(manager: SessionManager) -> FastAPI:
 
     @app.get("/v1/sessions")
     def sessions(workspace: str | None = None) -> dict[str, Any]:
-        return {"sessions": manager.list_sessions(workspace)}
+        items = manager.list_sessions(workspace)
+        # 信箱隐藏会话（mailbox:<letter_id>）不进主时间线/侧栏——它们是信箱信件往来的
+        # 承载，由信箱页以信件样式呈现（设计单 §5）。仅在此 REST 层过滤，不动
+        # manager.list_sessions 本身（信箱端点需枚举它们算 mailbox_session_id）。
+        items = [s for s in items if not s.session_id.startswith("mailbox:")]
+        return {"sessions": items}
 
     @app.get("/v1/sessions/{session_id}/messages")
     def session_messages(
@@ -4384,6 +4389,138 @@ def create_app(manager: SessionManager) -> FastAPI:
         except Exception:
             logging.exception("deskmate proactive handoff speak failed")
             return JSONResponse({"error": "speak failed"}, status_code=500)
+
+    # ------------------------------------------------------------------
+    # 信箱 · 送达层（2026-10-09）：proactive_ledger 的门面。
+    # 信箱只持信件元数据（read_at/status）；轻回信走「隐藏 mailbox 会话」复用同一引擎。
+    # 与江河设计 §九 正交，独立于 P3 自主闭环；Mac-only 不同步（决策5）。
+    # ------------------------------------------------------------------
+    @app.get("/v1/deskmate/mailbox")
+    async def get_deskmate_mailbox() -> dict[str, Any]:
+        """列信箱信件 + 未读数。信件即 proactive_ledger 的 pending/snoozed 视图态项。"""
+        try:
+            from pathlib import Path as _P
+
+            from deskmate.proactivity.ledger import list_letters, unread_letter_count
+
+            desk_dir = _P(
+                os.environ.get("DESKMATE_DIR", os.path.expanduser("~/.deskmate"))
+            )
+            items = list_letters(base_dir=desk_dir, include_read=True)
+            # 标记每封信是否已有 mailbox 隐藏会话（轻回信承载）
+            sessions = manager.list_sessions()
+            mb_ids = {
+                s.session_id[len("mailbox:"):]
+                for s in sessions
+                if s.session_id.startswith("mailbox:")
+            }
+            for it in items:
+                it["mailbox_session_id"] = (
+                    f"mailbox:{it['id']}" if it["id"] in mb_ids else None
+                )
+                it["read"] = bool(it.get("read_at"))
+            return {
+                "ok": True,
+                "unread_count": unread_letter_count(base_dir=desk_dir),
+                "items": items,
+            }
+        except Exception:
+            logging.exception("deskmate mailbox list failed")
+            return {"ok": False, "unread_count": 0, "items": []}
+
+    @app.post("/v1/deskmate/mailbox/{letter_id}/read")
+    async def read_deskmate_mailbox_letter(letter_id: str) -> dict[str, Any]:
+        """标已读（read_at + 回流情感层「用户看见了」，设计单 §7 要害）。"""
+        try:
+            from pathlib import Path as _P
+
+            from deskmate.proactivity.ledger import mark_letter_read
+
+            desk_dir = _P(
+                os.environ.get("DESKMATE_DIR", os.path.expanduser("~/.deskmate"))
+            )
+            ok = mark_letter_read(base_dir=desk_dir, rid=letter_id)
+            return {"ok": ok}
+        except Exception:
+            logging.exception("deskmate mailbox read failed")
+            return {"ok": False}
+
+    @app.post("/v1/deskmate/mailbox/{letter_id}/snooze")
+    async def snooze_deskmate_mailbox_letter(letter_id: str) -> dict[str, Any]:
+        """稍后（3 天退避后自动复活轻递，复用 ledger 状态机 snoozed）。"""
+        try:
+            from pathlib import Path as _P
+
+            from deskmate.proactivity.ledger import acknowledge_ledger
+
+            desk_dir = _P(
+                os.environ.get("DESKMATE_DIR", os.path.expanduser("~/.deskmate"))
+            )
+            ok = acknowledge_ledger(
+                base_dir=desk_dir, rid=letter_id, new_status="snoozed"
+            )
+            return {"ok": ok}
+        except Exception:
+            logging.exception("deskmate mailbox snooze failed")
+            return {"ok": False}
+
+    @app.post("/v1/deskmate/mailbox/{letter_id}/dismiss")
+    async def dismiss_deskmate_mailbox_letter(letter_id: str) -> dict[str, Any]:
+        """不用了（终态，复用 ledger 状态机 dismissed）。"""
+        try:
+            from pathlib import Path as _P
+
+            from deskmate.proactivity.ledger import acknowledge_ledger
+
+            desk_dir = _P(
+                os.environ.get("DESKMATE_DIR", os.path.expanduser("~/.deskmate"))
+            )
+            ok = acknowledge_ledger(
+                base_dir=desk_dir, rid=letter_id, new_status="dismissed"
+            )
+            return {"ok": ok}
+        except Exception:
+            logging.exception("deskmate mailbox dismiss failed")
+            return {"ok": False}
+
+    @app.post("/v1/deskmate/mailbox/{letter_id}/reply")
+    async def reply_deskmate_mailbox_letter(
+        request: Request, letter_id: str
+    ) -> dict[str, Any]:
+        """轻回信：确保一封「隐藏 mailbox 会话」存在，返回其 session_id。
+
+        - 会话 id 固定 ``mailbox:<letter_id>``（幂等：已存在则复用）。
+        - agent=deskmate，走与正常聊天**同一套 WS 引擎**；list_sessions 按
+          ``mailbox:`` 前缀过滤，不进侧栏（信箱是其家）。
+        - 实际消息发送 + 引擎跑轮由前端连 ``/ws/session/{id}`` 完成（复用现有聊天
+          路径，不在 REST 端重新造引擎）。本端点只负责建/取会话。
+        - body.text 预留（当前不在 REST 落库，避免与 WS 发送重复）；前端拿到
+          session_id 后自行经 WS 发送，信箱以信件样式渲染往来。
+        """
+        try:
+            from pathlib import Path as _P
+
+            from coworker.sessions import SessionRecord
+
+            desk_dir = _P(
+                os.environ.get("DESKMATE_DIR", os.path.expanduser("~/.deskmate"))
+            )
+            session_id = f"mailbox:{letter_id}"
+            if manager.session_store.load(session_id) is None:
+                manager.session_store.save(
+                    SessionRecord(
+                        session_id=session_id,
+                        workspace="",
+                        model=manager.model,
+                        mode=manager.mode.value,
+                        messages=[],
+                        agent="deskmate",
+                    )
+                )
+            return {"ok": True, "session_id": session_id}
+        except Exception:
+            logging.exception("deskmate mailbox reply failed")
+            return {"ok": False, "session_id": None}
 
     # ------------------------------------------------------------------
     # R13 意图讨论流（4 个端点）——把意图执行从「一次性静默」改成「跨会话回合讨论」。
