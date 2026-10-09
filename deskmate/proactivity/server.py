@@ -19,6 +19,7 @@ from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
 
+from .ledger import is_mobile_kind_allowed
 from .tick import ProactiveEngine
 
 mcp = FastMCP("deskmate-proactivity")
@@ -119,6 +120,12 @@ def proactive_capture(
 
         if not (content or "").strip():
             return "失败：content 不能为空"
+        # ⚠️ 2026-10-10 白名单：与 app.py 的 /v1/deskmate/proactive/capture 同一口径。
+        # kind 来自调用方参数，原实现只 .strip() 就落库；实测可传矛盾类 kind
+        # （plot_contradiction 等）绕过 R0 的「无锚点矛盾类拒收」把关。
+        _k = (kind or "idea_capture").strip() or "idea_capture"
+        if not is_mobile_kind_allowed(_k):
+            return f"失败：kind 非法（{_k}），本入口仅接受 idea_capture / topic_note"
         if not (evidence or "").strip():
             evidence = f"用户亲口要求记住（{_t.strftime('%Y-%m-%d %H:%M', _t.localtime())}）"
         rid = record_proactive(

@@ -122,3 +122,44 @@ def test_non_anchor_kind_different_content_stays_separate(tmp_path):
     _deliver(tmp_path, _j("", "定时任务 backup 于 14:00 跑挂了", kind="task_anomaly"))
     rows = _rows(tmp_path)
     assert len(rows) == 2, f"措辞不同的同 kind 无锚点项应各留一行，实际 {len(rows)} 行"
+
+
+# ---- 2026-10-10 手机端 kind 白名单（堵 R0 绕过口）----
+
+
+def test_mobile_kind_whitelist_blocks_contradiction_kinds():
+    """**回归**：手机端不得直写矛盾类 kind。
+
+    背景：R0 把「无锚点矛盾类拒收」上移到 run_producer，而 capture 端点的 kind
+    直接取自 HTTP body 且无校验 ⇒ 手机端可传 kind=plot_contradiction 直落矛盾类，
+    anchor=None，绕过拒收。实测可产出 mobile_voice:plot_contradiction:973f653b… 。
+    """
+    from deskmate.proactivity.ledger import (
+        _ANCHOR_REQUIRED_KINDS,
+        MOBILE_KINDS,
+        is_mobile_kind_allowed,
+    )
+
+    # 白名单与矛盾类清单**必须零交集**——这是本测试的核心断言
+    assert not (MOBILE_KINDS & _ANCHOR_REQUIRED_KINDS)
+    # 正常 kind 放行
+    assert is_mobile_kind_allowed("idea_capture") is True
+    assert is_mobile_kind_allowed("topic_note") is True
+    # 空值放行（落库口径同：空 → idea_capture）
+    assert is_mobile_kind_allowed(None) is True
+    assert is_mobile_kind_allowed("") is True
+    assert is_mobile_kind_allowed("   ") is True
+    # 矛盾类全拒
+    for k in _ANCHOR_REQUIRED_KINDS:
+        assert is_mobile_kind_allowed(k) is False, k
+
+
+def test_mobile_kind_whitelist_rejects_unknown_kind():
+    """未知 kind 也应拒（白名单而非黑名单：新增矛盾类时自动覆盖）。"""
+    from deskmate.proactivity.ledger import is_mobile_kind_allowed
+
+    assert is_mobile_kind_allowed("plot_contradiction") is False
+    assert is_mobile_kind_allowed("opening") is False
+    assert is_mobile_kind_allowed("draft") is False
+    assert is_mobile_kind_allowed("rm -rf /") is False
+    assert is_mobile_kind_allowed("IDEA_CAPTURE") is False  # 大小写敏感，不静默归一

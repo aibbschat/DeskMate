@@ -4931,6 +4931,20 @@ def create_app(manager: SessionManager) -> FastAPI:
         if not content:
             return JSONResponse({"error": "missing 'content'"}, status_code=400)
         kind = ((body.get("kind") or "idea_capture").strip() or "idea_capture")
+        # ⚠️ 2026-10-10 白名单：kind 来自 HTTP body，原实现只 .strip() 就落库。
+        # 实测手机端可传 kind=plot_contradiction 直写矛盾类且 anchor=None，
+        # 绕过 R0 的「无锚点矛盾类拒收」把关（该把关在 run_producer 环节）。
+        # 手机端只该记「想到的 / 想记的」，矛盾判定是 judge/cloud_audit 的职责。
+        try:
+            from deskmate.proactivity.ledger import is_mobile_kind_allowed
+
+            if not is_mobile_kind_allowed(kind):
+                return JSONResponse(
+                    {"error": f"invalid kind: {kind}（该端点仅接受 idea_capture / topic_note）"},
+                    status_code=422,
+                )
+        except ImportError:
+            logging.warning("台账模块不可用，跳过 kind 白名单校验（降级：允许任意 kind）")
         evidence = (body.get("evidence") or "").strip()
         try:
             confidence = float(body.get("confidence", 0.9) or 0.9)

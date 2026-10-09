@@ -364,6 +364,28 @@ _ANCHOR_REQUIRED_KINDS = frozenset(
     }
 )
 
+#: 手机端 / 「记住这个」入口**允许**的 kind 白名单（2026-10-10）。
+#:
+#: 为什么需要：``POST /v1/deskmate/proactive/capture`` 的 ``kind`` 直接取自 HTTP body，
+#: 原实现只 ``.strip()`` 就落库。实测手机端传 ``kind=plot_contradiction`` 可直写矛盾类
+#: 且 ``anchor=None``，产出 ``mobile_voice:plot_contradiction:973f653b…``。
+#: 而 R0 的拒收把关上移到了 ``run_producer`` 的条目产出环节 ⇒ 这条 HTTP 路径成了绕过口：
+#: 矛盾类本应「无锚点即拒收」，却能绕过拒收直接落库。
+#:
+#: 与其把写门级拒收加回 record_proactive（会误伤 19 个测试函数 / 24 处夹具，
+#: 见 R0 commit f22cfda 的设计取舍），不如在此处按**来源能力**收口：
+#: 手机端本就只该记「想到的」「想记的」两类，矛盾判定是 judge/cloud_audit 的职责。
+MOBILE_KINDS = frozenset({"idea_capture", "topic_note"})
+
+
+def is_mobile_kind_allowed(kind: Optional[str]) -> bool:
+    """手机端/「记住这个」入口的 kind 是否在白名单内（None/空 视为默认 idea_capture，放行）。
+
+    判定口径与落库口径一致：空值落到 ``idea_capture``，故空值放行。
+    """
+    k = (kind or "idea_capture").strip() or "idea_capture"
+    return k in MOBILE_KINDS
+
 
 def _resolve_dedup_rid(
     c,
