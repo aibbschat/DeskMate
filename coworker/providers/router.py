@@ -103,7 +103,7 @@ class ProviderRouter(ProviderClient):
                 model=self._bare(m), messages=messages, tools=tools, **settings
             )
 
-        # 付费套餐撞额度时按 PAID_GROUP 换下一条（火山 → 小米 → 腾讯 hy3）。
+        # 付费套餐撞额度时按 PAID_GROUP 换下一条（火山 → 腾讯 hy3；小米线 2026-10-10 起暂停排查）。
         # 非付费套餐与免费组在 plan_attempts 里原样返回单通道，行为不变。
         from .paid_fallback import complete_with_fallback
 

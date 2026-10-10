@@ -8,7 +8,7 @@
 
 | 组 | 成员 | 用途 |
 |---|---|---|
-| **付费组**（默认） | 火山 `ark-agent-plan-cn` → 小米 `xiaomi` → 腾讯 `tencent-tokenplan:hy3` | 她对你说的话（对话、主动递卡片） |
+| **付费组**（默认） | 火山 `ark-agent-plan-cn` → 腾讯 `tencent-tokenplan:hy3`（小米线 2026-10-10 起暂停排查） | 她对你说的话（对话、主动递卡片） |
 | **免费组** | opencode `*-free`（**远端清单驱动**，见 `zen_catalog`） | 后台加工（记忆抽取 / 理解加工 / 发帖草稿） |
 
 - `qwen` **不进链**（早期测试配置，萧哥 21:00 明确不要）
@@ -48,9 +48,9 @@ GROUP_PAID = "paid"
 GROUP_FREE = "free"
 
 #: 付费组（顺序 = 优先级）。qwen 刻意不在此列（早期测试配置，萧哥 21:00 明确不要）。
+#: 小米线 2026-10-10 起暂停（排查套餐用量异常）；恢复时把 ("xiaomi","mimo-v2.5-pro") 加回 ark 与 tencent 之间。
 PAID_GROUP: Tuple[Tuple[str, str], ...] = (
     ("ark-agent-plan-cn", "deepseek-v4-flash"),
-    ("xiaomi", "mimo-v2.5-pro"),
     ("tencent-tokenplan", "hy3"),
 )
 
