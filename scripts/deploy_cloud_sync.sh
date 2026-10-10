@@ -97,6 +97,12 @@ CHANNEL_MODULES=(
   "deskmate/llm_channels.py"              # 通道组（付费/免费 + 组内自动排）
   "deskmate/memory/llm.py"                # chat/chat_memory 接入熔断与通道组
   "coworker/providers/zen_catalog.py"     # Zen 免费模型动态清单（远端驱动）
+  # ⚠️ 聊天框免费模型动态刷新（2026-10-09 a6a1e54）：matrix.py 的 entry_for 接入
+  # opencode 免费模型的动态清单（opencode: 前缀先查动态清单、降级冷启动/离线兜底）。
+  # 它正是『云端聊天框还是老模型』的根因——原清单独漏 matrix.py，导致云端停在 10-06 旧码
+  # （实测 mtime=Oct 6 10:25、a6a1e54 特征串命中 0、entry_for 在 372 行无动态分支）。
+  # 漏传即云端永远跑老矩阵、免费模型不刷新且不报错，必须随 router/paid_fallback 同批同步。
+  "coworker/providers/matrix.py"          # ProviderMatrix（opencode 免费模型动态刷新）
   # ⚠️ 主链路付费组回退三件套（2026-10-09 新增）：实测火山周额度撞顶 429 时，
   # router.py 裸奔（不查熔断、不换通道）导致主聊天每 35 秒撞一次墙，而熔断器在旁边
   # 正确记账——两套配置脱节。修法是把跨套餐回退（火山→小米→腾讯 hy3）接进 router。
