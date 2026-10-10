@@ -608,6 +608,11 @@ def build_handoff_opening(
             continue
         else:
             it = dict(it)
+        # 遥测（系统运维日志，如 memory_write_error / *_error）不主动念：与信箱准入
+        # 同守一道门（_is_telemetry_kind），否则会话注入会把日志原文倒一大坨（2026-10-10）。
+        # 条目仍留台账——层一每轮回查、他真问起时仍可被动浮现（不丢声）。
+        if _is_telemetry_kind(it.get("kind")):
+            continue
         pool.append(it)
     if not pool:
         return None
@@ -792,12 +797,23 @@ def _deny_mailbox_kinds() -> frozenset:
     return _MAILBOX_DENY_KINDS | names
 
 
+def _is_telemetry_kind(kind: str) -> bool:
+    """遥测类 kind 判定（系统运维日志，不是递给他的话）：纳入 deny 黑名单或带遥测后缀。
+
+    抽成公共判定，让**信箱准入 / 首页对接开场白 / 活跃会话相关性注入**三处
+    同守一道门——否则会像 2026-10-10 那样：信箱拦了遥测，会话注入却原样倒出一大坨。
+    遥测行仍留在台账里（不丢声），层一每轮回查与「他真问起」时仍可被动浮现。
+    """
+    kind = str(kind or "")
+    if kind in _deny_mailbox_kinds():
+        return True
+    return kind.endswith(_MAILBOX_DENY_SUFFIXES)
+
+
 def is_mailbox_letter(row: dict) -> bool:
     """这一条台账行有没有资格成为「一封信」。"""
     kind = str(row.get("kind") or "")
-    if kind in _deny_mailbox_kinds():
-        return False
-    if kind.endswith(_MAILBOX_DENY_SUFFIXES):
+    if _is_telemetry_kind(kind):
         return False
     # 意图讨论流（origin=intent_handoff）有**自己的呈现面**——聊天里的讨论卡
     # （带 定稿/再改/不要 三按钮）。再在信箱复述一遍就是同一件事两张皮，

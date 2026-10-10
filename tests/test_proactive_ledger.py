@@ -33,8 +33,10 @@ from deskmate.proactivity.ledger import (
     STATUS_ORDER,
     acknowledge_ledger,
     build_handoff_opening,
+    is_mailbox_letter,
     pending_items,
     record_proactive,
+    _is_telemetry_kind,
     _relevance_score,
 )
 
@@ -141,7 +143,7 @@ def test_handoff_degrades_failed_marker():
     """P1 守卫（§11.5）：understanding_failed 标记降级递，并转友好文案。"""
     base = _fresh_base("mac")
     rid = record_proactive(
-        base_dir=base, source="cloud_audit", kind="timeline_error",
+        base_dir=base, source="cloud_audit", kind="plot_contradiction",
         content="时间线Y春秋对不上", evidence="第3章", confidence=0.9,
     )
     from deskmate.proactivity.ledger import UNDERSTANDING_FAILED_MARKER
@@ -154,6 +156,84 @@ def test_handoff_degrades_failed_marker():
     assert opening is not None  # 降级递（不当异常丢件）
     assert "时间线Y春秋对不上" in opening["text"]
     assert "理解加工未完成" in opening["text"]  # 标记转友好文案
+
+
+# ---------------------------------------------------------------------------
+# 口径统一（2026-10-10）：遥测 deny 判定抽公共函数，信箱 / 首页对接 / 会话注入同守一道门
+# ---------------------------------------------------------------------------
+def test_is_telemetry_kind_deny_and_suffix():
+    """_is_telemetry_kind：点名黑名单 + 遥测后缀兜底，且正常 kind 不算遥测。"""
+    assert _is_telemetry_kind("memory_write_error") is True
+    assert _is_telemetry_kind("writing_setting_storage_error") is True
+    assert _is_telemetry_kind("api_key_exposure_alert") is True
+    assert _is_telemetry_kind("some_future_error") is True   # 后缀兜底
+    assert _is_telemetry_kind("tool_exception") is True
+    assert _is_telemetry_kind("") is True                    # 空 kind 视作遥测
+    assert _is_telemetry_kind("emotional_care") is False
+    assert _is_telemetry_kind("plot_contradiction") is False
+
+
+def test_handoff_homepage_excludes_telemetry():
+    """首页对接开场白（GET）不得主动念遥测；合规信照常递。"""
+    base = _fresh_base("mac")
+    # 遥测项（已理解）——若不过滤，会像 2026-10-10 那样在会话里倒一大坨日志
+    rid_t = record_proactive(
+        base_dir=base, source="system", kind="memory_write_error",
+        content="国子监设定写入超时 stack trace", evidence="写入层", confidence=0.9,
+    )
+    # 合规信（关怀）
+    rid_c = record_proactive(
+        base_dir=base, source="companion", kind="emotional_care",
+        content="今天你盯着这个家挺累的，歇会儿", evidence="情感层", confidence=0.9,
+    )
+    with sqlite3.connect(str(base / "deskmate.db"), check_same_thread=False) as c:
+        c.execute("UPDATE proactive_ledger SET understanding=? WHERE id=?",
+                  ("要复查一下设定是否落盘。", rid_t))
+        c.execute("UPDATE proactive_ledger SET understanding=? WHERE id=?",
+                  ("你最近老熬夜，我在意你。", rid_c))
+    opening = build_handoff_opening(base)  # 首页口径（无 session_context）
+    assert opening is not None
+    ids = [it["id"] for it in opening["items"]]
+    assert rid_c in ids                       # 合规信：保留
+    assert rid_t not in ids                   # 遥测：不主动念
+    assert "国子监设定写入超时" not in opening["text"]
+    assert "今天你盯着这个家挺累的" in opening["text"]
+
+
+def test_handoff_contextual_excludes_telemetry():
+    """活跃会话相关性注入（POST contextual）同样滤掉遥测，只递相关合规信。"""
+    base = _fresh_base("mac")
+    rid_t = record_proactive(
+        base_dir=base, source="system", kind="writing_setting_storage_error",
+        content="云盒子同步落盘失败 trace", evidence="同步层", confidence=0.9,
+    )
+    rid_c = record_proactive(
+        base_dir=base, source="cloud_audit", kind="plot_contradiction",
+        content="康得宝慢性中毒悬了9节未收", evidence="第9-17章", confidence=0.9,
+    )
+    with sqlite3.connect(str(base / "deskmate.db"), check_same_thread=False) as c:
+        c.execute("UPDATE proactive_ledger SET understanding=? WHERE id=?",
+                  ("同步可能没对齐，得查。", rid_t))
+        c.execute("UPDATE proactive_ledger SET understanding=? WHERE id=?",
+                  ("这条线要收一下，读者会记得。", rid_c))
+    # 会话上下文命中合规信关键词 → 相关型档取中；遥测与上下文无关且被 deny 门拦
+    opening = build_handoff_opening(
+        base, session_context="我想接着写康得宝中毒那条线", contextual=True
+    )
+    assert opening is not None
+    ids = [it["id"] for it in opening["items"]]
+    assert rid_c in ids
+    assert rid_t not in ids
+    assert "云盒子同步落盘失败" not in opening["text"]
+
+
+def test_is_mailbox_letter_consistent_with_telemetry_gate():
+    """信箱准入与 handoff 同源：遥测在两端都判为非信/不念。"""
+    for kind in ("memory_write_error", "some_future_failure"):
+        assert is_mailbox_letter({"kind": kind}) is False
+        assert _is_telemetry_kind(kind) is True
+    assert is_mailbox_letter({"kind": "emotional_care"}) is True
+    assert _is_telemetry_kind("emotional_care") is False
 
 
 def test_handoff_contextual_relevant_hit():
@@ -260,7 +340,7 @@ def test_backfill_marks_failed_on_error():
     """P1：有 key 但 LLM 调用失败 → 标 understanding_failed 降级递。"""
     base = _fresh_base("mac")
     record_proactive(
-        base_dir=base, source="cloud_audit", kind="timeline_error",
+        base_dir=base, source="cloud_audit", kind="plot_contradiction",
         content="时间线矛盾", evidence="第3章", confidence=0.9,
     )
     with unittest.mock.patch("deskmate.memory.llm.llm_available", return_value=True), \
@@ -591,7 +671,7 @@ def test_daily_cap_reshow_and_tomorrow_refill():
     base = _fresh_base("mac")
     for i in range(5):
         record_proactive(
-            base_dir=base, source="cloud_audit", kind="timeline_error",
+            base_dir=base, source="cloud_audit", kind="plot_contradiction",
             content=f"发现{i}", evidence=f"第{i}章", confidence=0.9,
             understanding=f"第{i}条的理解。",
         )
@@ -633,7 +713,7 @@ def test_daily_cap_reshow_and_tomorrow_refill():
 def test_snoozed_lifecycle():
     base = _fresh_base("mac")
     rid = record_proactive(
-        base_dir=base, source="cloud_audit", kind="timeline_error",
+        base_dir=base, source="cloud_audit", kind="plot_contradiction",
         content="稍后再说的发现", evidence="第3章", confidence=0.9,
         understanding="这条可以缓缓。",
     )
