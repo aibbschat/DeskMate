@@ -104,14 +104,24 @@ def test_complete_falls_back_to_next_channel(groups):
     assert calls[0].startswith(ARK) and calls[1].startswith(XIAOMI)
 
 
-def test_complete_all_fail_raises_last(groups):
-    """全组挂 → 抛最后一个异常（不是静默成功，也不是首个异常）。"""
+def test_complete_all_fail_raises_first_channel_error(groups):
+    """全组挂 → 抛**原请求通道**的异常（2026-10-10 改）。
+
+    此前抛 ``last_exc``（最后一条尝试的异常），导致报错张冠李戴：请求小米却报
+    「No Tencent Token Plan API key」，请求腾讯却报「No Xiaomi API key」——
+    每个通道都报下一个通道的错，排查时被完全带偏。
+
+    实测成因：多条尝试抛同类型 ``RuntimeError`` 时，末位恰是另一家厂商的报错。
+    用户真正指定、真正失败的是原请求那条通道，故应抛它的异常。
+    """
     def call(m):
         raise RuntimeError("boom " + m)
 
     with pytest.raises(RuntimeError) as ei:
         pf.complete_with_fallback(call, ARK + ":doubao-seed-2.1-turbo")
-    assert TENCENT in str(ei.value)
+    # 必须是火山（ARK，原请求），不是腾讯（最后一条尝试）
+    assert "ark-agent-plan-cn" in str(ei.value)
+    assert TENCENT not in str(ei.value)
 
 
 def test_complete_single_channel_passthrough(groups):
@@ -178,4 +188,40 @@ def test_stream_single_channel_passthrough(groups):
         pf.stream_with_fallback(lambda m: iter(["a", "b"]), "openrouter:x")
     )
     assert got == ["a", "b"]
+
+
+def test_error_not_mislabeled_across_vendors(groups):
+    """**回归**：每条通道必须报**自己**的错，不得串到下一家厂商。
+
+    2026-10-10 实测（真实 router 调用，三条全缺 key）：
+        请求 xiaomi:mimo-v2.5-pro     -> No Tencent Token Plan API key   <- 串位
+        请求 tencent-tokenplan:hy3    -> No Xiaomi API key               <- 串位
+    两者都是 RuntimeError，末位恰是下一家厂商 → 排查时完全带偏。
+    """
+    def call(m):
+        raise RuntimeError("No %s API key configured" % m.split(":")[0])
+
+    for requested, expect in [
+        (XIAOMI + ":mimo-v2.5-pro", XIAOMI),
+        (TENCENT + ":hy3", TENCENT),
+        (ARK + ":doubao-seed-2.1-turbo", ARK),
+    ]:
+        with pytest.raises(RuntimeError) as ei:
+            pf.complete_with_fallback(call, requested)
+        msg = str(ei.value)
+        assert expect in msg, (requested, msg)
+
+
+def test_stream_all_fail_raises_first_channel_error(groups):
+    """流式全组挂 → 同样抛原请求通道的异常（与 complete 对齐）。"""
+    def factory(m):
+        def gen():
+            raise RuntimeError("boom " + m)
+            yield  # pragma: no cover
+        return gen()
+
+    with pytest.raises(RuntimeError) as ei:
+        list(pf.stream_with_fallback(factory, ARK + ":doubao-seed-2.1-turbo"))
+    assert ARK in str(ei.value)
+    assert TENCENT not in str(ei.value)
 

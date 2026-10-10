@@ -193,15 +193,23 @@ def _filtered_attempts(requested: str) -> List[str]:
 
 
 def complete_with_fallback(call, requested: str, **kwargs) -> Any:
-    """按尝试序列调用 ``call(model)``，失败换下一条；全失败则抛最后一个异常。
+    """按尝试序列调用 ``call(model)``，失败换下一条。
 
     ``call`` 接收 model 字符串并返回结果。**熔断记账在这里**：失败记一笔、成功记一笔，
     于是「第一次撞墙 → 之后冷却期内直接跳过」自动成立。
+
+    全失败时抛**原请求通道**的异常（``2026-10-10`` 修）。此前抛的是 ``last_exc``（最后
+    一条尝试的异常），于是报错张冠李戴：请求小米却报「No Tencent Token Plan API key」，
+    请求腾讯却报「No Xiaomi API key」——每个通道都报下一个通道的错，排查时被完全带偏。
+    实测成因：三条尝试全缺 key 时抛的都是 ``RuntimeError``，末位恰是另一家厂商。
     """
     attempts = _filtered_attempts(requested)
+    if len(attempts) == 0:  # 熔断把原模型也滤掉了（理论不该发生，防御）
+        return call(requested)
     if len(attempts) == 1:
         return call(attempts[0])
 
+    first_exc: Optional[BaseException] = None
     last_exc: Optional[BaseException] = None
     for idx, model in enumerate(attempts):
         provider, _, bare = model.partition(":")
@@ -209,6 +217,8 @@ def complete_with_fallback(call, requested: str, **kwargs) -> Any:
             out = call(model)
         except Exception as exc:  # noqa: BLE001
             _note_failure(provider, bare, exc)
+            if first_exc is None:  # 原请求通道（attempts[0]）的异常
+                first_exc = exc
             last_exc = exc
             logger.warning(
                 "主链路通道 %s 失败（%s），换下一条", model, type(exc).__name__
@@ -216,12 +226,10 @@ def complete_with_fallback(call, requested: str, **kwargs) -> Any:
             continue
         if idx > 0:
             logger.warning("主链路已降级到 %s（原 %s 不可用）", model, requested)
-            _note_success(provider, bare)
-        else:
-            _note_success(provider, bare)
+        _note_success(provider, bare)
         return out
-    assert last_exc is not None
-    raise last_exc
+    # 抛原请求通道的异常：它才是用户真正指定、真正失败的那条通道。
+    raise (first_exc if first_exc is not None else last_exc)  # type: ignore[misc]
 
 
 def stream_with_fallback(factory, requested: str, **kwargs) -> Iterator[Any]:
@@ -233,10 +241,14 @@ def stream_with_fallback(factory, requested: str, **kwargs) -> Iterator[Any]:
     - 拿到第一个 chunk **之后**失败 → 原样上抛（此时换通道会把两条回复混在一起）。
     """
     attempts = _filtered_attempts(requested)
+    if len(attempts) == 0:  # 熔断把原模型也滤掉了（理论不该发生，防御）
+        yield from factory(requested)
+        return
     if len(attempts) == 1:
         yield from factory(attempts[0])
         return
 
+    first_exc: Optional[BaseException] = None
     last_exc: Optional[BaseException] = None
     for idx, model in enumerate(attempts):
         provider, _, bare = model.partition(":")
@@ -254,6 +266,8 @@ def stream_with_fallback(factory, requested: str, **kwargs) -> Iterator[Any]:
             return
         except Exception as exc:  # noqa: BLE001
             _note_failure(provider, bare, exc)
+            if first_exc is None:  # 原请求通道（attempts[0]）的异常
+                first_exc = exc
             last_exc = exc
             if emitted:
                 # 已经吐过内容，不能换通道重来。
@@ -263,5 +277,5 @@ def stream_with_fallback(factory, requested: str, **kwargs) -> Iterator[Any]:
                 model, type(exc).__name__,
             )
             continue
-    assert last_exc is not None
-    raise last_exc
+    # 同 complete_with_fallback：抛原请求通道的异常，避免报错张冠李戴。
+    raise (first_exc if first_exc is not None else last_exc)  # type: ignore[misc]
