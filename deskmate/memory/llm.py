@@ -524,7 +524,7 @@ def chat_memory(
             temperature=temperature, max_tokens=max_tokens, timeout=timeout,
         )
 
-    from deskmate.llm_channels import GROUP_PAID, memory_group, route
+    from deskmate.llm_channels import GROUP_FREE, GROUP_PAID, memory_group, route
 
     def _do(ak: str, bu: str, md: str) -> str:
         from openai import OpenAI
