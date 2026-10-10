@@ -162,6 +162,12 @@ AGENCY_BEHAVIORS_MODULES=(
   # /v1/deskmate/agency/intent/discuss/* 端点 lazy import 本模块——漏传会让云端端点
   # ImportError → 500（与上面同类漏传事故）。必须随行为包一起上云。
   "deskmate/agency/behaviors/intent_discuss.py"
+  # 2026-10-10 免费优先路由（free_only）：以下 4 个自主/反思行为文件同步纳入，
+  # 否则云端跑旧码（不带 free_only）→ 本地与云端不一致（"同步成功≠云端完整"陷阱）。
+  "deskmate/agency/behaviors/ai_circle_share.py"
+  "deskmate/agency/behaviors/ai_circle_reply.py"
+  "deskmate/agency/behaviors/creative_suggest.py"
+  "deskmate/agency/behaviors/understand_observations.py"
 )
 
 # 自主层核心（engine / registry / settings）：R9 反思 + R10 教学回流 + R11 意图层 + R12 意图执行

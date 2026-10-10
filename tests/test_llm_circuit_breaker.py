@@ -444,3 +444,117 @@ def test_attempt_group_walks_to_next_channel_on_failure(tmp_path, monkeypatch):
     with pytest.raises(Exception):
         L.chat_memory("s", "u", timeout=1)
     assert calls["n"] >= 3, f"组内应逐条试，实际只试了 {calls['n']} 次"
+
+
+# --------------------------------------------------------------------------- #
+# 2026-10-10 修 bug：chat() 付费组降级 + chat_memory free_only（自主/反思层省额度）
+# --------------------------------------------------------------------------- #
+
+class _FakeCh:
+    def __init__(self, provider, model):
+        self.provider, self.model = provider, model
+        self.key = f"{provider}:{model}"
+        self.free = False
+
+
+def test_chat_falls_back_within_paid_group(tmp_path, monkeypatch):
+    """chat() 主通道（default_model）熔断时，应沿付费组换下一条健康通道，而非静默失败。
+
+    锁 2026-10-10 修的 bug：原实现只读 default_model，死模型上直接抛，
+    intent_*/judge 等后台交互路径静默瘫。现应落到付费组下一个健康通道。
+    """
+    import deskmate.memory.llm as L
+
+    monkeypatch.setenv("DESKMATE_DIR", str(tmp_path))
+    monkeypatch.setenv("COWORKER_STATE_DIR", str(tmp_path))
+
+    # default_model = 死的火山主模型
+    monkeypatch.setattr(
+        L, "_active_provider_and_model",
+        lambda: ("ark-agent-plan-cn", "doubao-seed-2.1-turbo"),
+    )
+    # 付费组候选：主位死，小米健康（chat() 内部重新 import，故 patch 源模块）
+    monkeypatch.setattr(
+        "deskmate.llm_channels.paid_channels",
+        lambda: [_FakeCh("ark-agent-plan-cn", "doubao-seed-2.1-turbo"),
+                 _FakeCh("xiaomi", "mimo-v2.5-pro")],
+    )
+    # 凭证 + 调用：主位在调用时抛配额错（模拟死模型），小米返回文本（不真打网络）
+    monkeypatch.setattr(L, "_creds_for", lambda p, m: ("AK", f"https://{p}", m))
+    calls: list[str] = []
+    def _cb(provider, model, fn):
+        calls.append(f"{provider}:{model}")
+        if provider == "ark-agent-plan-cn":
+            raise RuntimeError("AccountQuotaExceeded")
+        return "ok-from-xiaomi"
+    monkeypatch.setattr(L, "_call_with_breaker", _cb)
+
+    out = L.chat("sys", "usr", timeout=1)
+    assert out == "ok-from-xiaomi", f"应落到小米，实际调用：{calls}"
+    assert "ark-agent-plan-cn:doubao-seed-2.1-turbo" in calls, f"应先试主位，实际：{calls}"
+    assert "xiaomi:mimo-v2.5-pro" in calls, f"应尝试小米兜底，实际：{calls}"
+
+
+def test_chat_raises_when_all_paid_open(tmp_path, monkeypatch):
+    """付费组全部熔断时，chat() 应抛错（而非返回 None/静默空转）。"""
+    import deskmate.memory.llm as L
+
+    monkeypatch.setenv("DESKMATE_DIR", str(tmp_path))
+    monkeypatch.setenv("COWORKER_STATE_DIR", str(tmp_path))
+    monkeypatch.setattr(
+        L, "_active_provider_and_model",
+        lambda: ("ark-agent-plan-cn", "doubao-seed-2.1-turbo"),
+    )
+    monkeypatch.setattr(
+        "deskmate.llm_channels.paid_channels",
+        lambda: [_FakeCh("ark-agent-plan-cn", "doubao-seed-2.1-turbo"),
+                 _FakeCh("xiaomi", "mimo-v2.5-pro")],
+    )
+    for key in ("ark-agent-plan-cn:doubao-seed-2.1-turbo", "xiaomi:mimo-v2.5-pro"):
+        record_failure(key, classify_error(status_code=429, body="quota"),
+                       base_dir=tmp_path)
+    monkeypatch.setattr(L, "_creds_for", lambda p, m: ("AK", f"https://{p}", m))
+    monkeypatch.setattr(
+        L, "_call_with_breaker", lambda p, m, fn: (_ for _ in ()).throw(RuntimeError("boom"))
+    )
+    with pytest.raises(Exception):
+        L.chat("sys", "usr", timeout=1)
+
+
+def test_chat_memory_free_only_does_not_fallback_to_paid(tmp_path, monkeypatch):
+    """chat_memory(free_only=True) 免费组全挂时直接抛，绝不兜底付费（省额度）。"""
+    import deskmate.memory.llm as L
+
+    monkeypatch.setenv("DESKMATE_DIR", str(tmp_path))
+    monkeypatch.setenv("COWORKER_STATE_DIR", str(tmp_path))
+
+    paid_touched = {"n": 0}
+    def _route(group, *, base_dir=None):
+        if group == "paid":
+            paid_touched["n"] += 1
+        return (None, [])  # 两组都「无可用通道」
+    monkeypatch.setattr("deskmate.llm_channels.route", _route)
+
+    with pytest.raises(Exception):
+        L.chat_memory("s", "u", timeout=1, free_only=True)
+    assert paid_touched["n"] == 0, "free_only 绝不应触碰付费组"
+
+
+def test_chat_memory_default_falls_back_to_paid(tmp_path, monkeypatch):
+    """chat_memory(free_only=False) 免费组全挂时应兜底回付费组（不丢记忆）。"""
+    import deskmate.memory.llm as L
+
+    monkeypatch.setenv("DESKMATE_DIR", str(tmp_path))
+    monkeypatch.setenv("COWORKER_STATE_DIR", str(tmp_path))
+    monkeypatch.setenv("DESKMATE_MEMORY_GROUP", "free")
+
+    calls = {"free": 0, "paid": 0}
+    def _route(group, *, base_dir=None):
+        calls[group] = calls.get(group, 0) + 1
+        return (None, [])
+    monkeypatch.setattr("deskmate.llm_channels.route", _route)
+
+    with pytest.raises(Exception):
+        L.chat_memory("s", "u", timeout=1)
+    assert calls["free"] >= 1, "应先试免费组"
+    assert calls["paid"] >= 1, "默认应兜底到付费组"

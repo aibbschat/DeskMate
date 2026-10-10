@@ -285,12 +285,17 @@ def decide_and_digest(
 
         prompt = _build_prompt(clean, at or "", base_dir)
         # max_tokens 给到足够大——一段可以是 1500 字+；预留余量给多段。
-        out = chat_memory(
-            _SYSTEM, prompt,
-            temperature=temperature,
-            max_tokens=2400,
-            timeout=30.0,
-        )
+        # 看世界理解走免费组（free_only）：免费全挂时直接跳过本批，不兜底付费（省额度）。
+        try:
+            out = chat_memory(
+                _SYSTEM, prompt,
+                temperature=temperature,
+                max_tokens=2400,
+                timeout=30.0,
+                free_only=True,
+            )
+        except Exception:
+            return []
         raw = str(out or "")
         text = raw.strip()
         if not text:

@@ -268,21 +268,26 @@ def chat(
     仅在 llm_available() 为 True 时调用；否则请调用方先判断并跳过。
     timeout 默认 300s（5 分钟），避免网络/API 无响应时无限等待。
 
-    **走熔断（2026-10-06）**：主对话链路经 :func:`_call_with_breaker` —— 配额类错误
-    记熔断后**立刻上抛**（不原地重试），由上层换通道/提示重试。
-    熔断表跨端共享，故本地熔断时云端也会跳过同一条通道。
-    注意：本函数**不做组内自动轮替**（主对话对质量/延迟敏感，换模型应由引擎层决策），
-    只负责「别在同一条死路上反复撞」。
+    **走熔断 + 付费组自动降级（2026-10-10 修 bug）**：主对话链路经
+    :func:`_call_with_breaker`。原先只读 ``default_model``（``prefs.json``），
+    若该通道熔断（如火山 5h 配额撞爆），调用直接失败、**无任何降级** ⇒ 意图执行/
+    讨论（``intent_*``）、主动递卡片 judge 等后台交互路径静默瘫掉。现改为：
+    ``default_model`` 通道不可用（配额/熔断）时，沿**付费组**（ark→小米→hy3）自动
+    换下一条健康通道，保证对话/主动行为不中断。主对话只在付费组内部轮替
+    （不切免费组，保质量/延迟）。
     """
-    from openai import OpenAI
+    from deskmate.llm_circuit_breaker import is_open
+    from deskmate.llm_channels import paid_channels
 
-    provider, model = _active_provider_and_model()
+    base = _breaker_base_dir()
 
-    def _do() -> str:
-        client = OpenAI(api_key=_api_key(), base_url=_base_url(), timeout=timeout,
+    def _do(ak: str, bu: str, md: str) -> str:
+        from openai import OpenAI
+
+        client = OpenAI(api_key=ak, base_url=bu, timeout=timeout,
                         http_client=_llm_http_client())
         resp = client.chat.completions.create(
-            model=model,
+            model=md,
             temperature=temperature,
             max_tokens=max_tokens,
             messages=[
@@ -292,7 +297,43 @@ def chat(
         )
         return (resp.choices[0].message.content or "").strip()
 
-    return _call_with_breaker(provider, model, _do)
+    # 候选：default_model 优先；其次付费组其余健康通道（ark→小米→hy3）。
+    primary_provider, primary_model = _active_provider_and_model()
+    candidates = [(primary_provider, primary_model)]
+    try:
+        for ch in paid_channels():
+            if (ch.provider, ch.model) != (primary_provider, primary_model):
+                candidates.append((ch.provider, ch.model))
+    except Exception:  # noqa: BLE001
+        pass
+
+    last_exc: Optional[BaseException] = None
+    tried = 0
+    for provider, model in candidates:
+        if tried > 8:  # 防御：候选表异常时退出，别死循环
+            break
+        tried += 1
+        key = f"{provider}:{model}"
+        if is_open(key, base_dir=base):
+            _audit_skip(key, "熔断中，跳过（不重试同一条死路）")
+            continue
+        ak, bu, md = (
+            (_api_key(), _base_url(), _model())
+            if provider == "default"
+            else _creds_for(provider, model)
+        )
+        if not ak:
+            continue
+        try:
+            return _call_with_breaker(
+                provider, model, lambda a=ak, b=bu, m=md: _do(a, b, m)
+            )
+        except Exception as exc:  # noqa: BLE001
+            last_exc = exc
+            _audit_skip(key, f"失败，换下一条：{type(exc).__name__}")
+    raise last_exc or RuntimeError(
+        f"chat: 付费组无可用通道（试了 {tried} 条）"
+    )
 
 
 def _active_provider_and_model() -> tuple:
@@ -453,6 +494,7 @@ def chat_memory(
     temperature: float = 0.3,
     max_tokens: int = 800,
     timeout: float = 300.0,
+    free_only: bool = False,
 ) -> str:
     """记忆抽取专用 chat：走**通道组**（2026-10-06，设计 §二）。
 
@@ -466,6 +508,11 @@ def chat_memory(
     - 本组全熔断 → **降级回付费组**（宁可走付费也不静默丢记忆，沿用原设计意图）。
     - ``DESKMATE_MEMORY_GROUP=paid|free`` 切组（手动档）；旧 opt-in
       ``DESKMATE_MEMORY_PROVIDER=omniroute`` 仍生效（历史行为不变）。
+
+    ``free_only=True``（2026-10-10 萧哥拍板，自主/反思层用）：**只走免费组**，
+    免费组全不可用（限流/下架）时**直接抛、绝不兜底付费**——宁可后台任务稍后重试，
+    也不烧小米/火山额度。记忆抽取等「不能丢」的链路保持 ``free_only=False``
+    （免费全趴兜底回付费，沿用原设计意图）。
 
     与 :func:`chat` 的分工：``chat`` 是**主对话**链路（她对你说的话），走付费主 provider
     不变——付费通道对延迟/质量敏感；后台活才走免费。
@@ -539,13 +586,14 @@ def chat_memory(
                 last_exc = exc
                 _audit_skip(ch.key, f"失败，换下一条：{type(exc).__name__}")
 
-    group = memory_group()
+    group = GROUP_FREE if free_only else memory_group()
     try:
         return _attempt_group(group)
     except Exception as primary_exc:
-        # 免费组全趴 → 降级回付费组（宁可走付费也不丢记忆）。
+        # 自主/反思层：免费组全趴 → 直接上抛（绝不兜底付费，省额度）。
+        # 普通记忆抽取：免费组全趴 → 降级回付费组（宁可走付费也不丢记忆）。
         # 已在付费组时直接上抛（别在同一条死路上循环）。
-        if group == GROUP_PAID:
+        if free_only or group == GROUP_PAID:
             raise
         from deskmate.llm_circuit_breaker import audit
 
