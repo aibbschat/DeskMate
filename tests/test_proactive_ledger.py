@@ -227,6 +227,48 @@ def test_handoff_contextual_excludes_telemetry():
     assert "云盒子同步落盘失败" not in opening["text"]
 
 
+def test_handoff_excludes_ops_mailbox_only_kinds():
+    """运维巡检类（task_anomaly/drift/…）＝系统简报：只进信箱，会话开场/相关性注入都不念。
+
+    2026-10-10 二次「还是会弹出来」：URGENT 时效型即时递把 automation 巡检异常
+    （「AI圈轮巡·早 08:30」回执 ok 但 timeline 查无实产）每次开新会话都倒一遍。
+    口径（萧哥拍板）：这类归信箱——信箱收（is_mailbox_letter 仍 True）、台账留
+    （层一每轮回查/他真问起仍可被动浮现），但开场白池整类剔除。
+    """
+    base = _fresh_base("mac")
+    rid_a = record_proactive(
+        base_dir=base, source="automation", kind="task_anomaly",
+        content="「AI圈轮巡·早 08:30」今天回执 ok，但 timeline 里查无实产，得留意。",
+        evidence="last_run=2026-10-10 08:30 status=ok; timeline.jsonl 无记录",
+        confidence=0.8,
+    )
+    with sqlite3.connect(str(base / "deskmate.db"), check_same_thread=False) as c:
+        c.execute("UPDATE proactive_ledger SET understanding=? WHERE id=?",
+                  ("轮巡回执与实际产出对不上，值得核对一次。", rid_a))
+    rid_c = record_proactive(
+        base_dir=base, source="cloud_audit", kind="emotional_care",
+        content="今天你盯着这个家挺累的，歇会儿", evidence="情感层", confidence=0.9,
+    )
+    with sqlite3.connect(str(base / "deskmate.db"), check_same_thread=False) as c:
+        c.execute("UPDATE proactive_ledger SET understanding=? WHERE id=?",
+                  ("你最近老熬夜，我在意你。", rid_c))
+    # 首页开场白：巡检类不念，合规信照递
+    opening = build_handoff_opening(base)
+    assert opening is not None
+    ids = [it["id"] for it in opening["items"]]
+    assert rid_a not in ids
+    assert rid_c in ids
+    assert "AI圈轮巡" not in opening["text"]
+    # 相关性注入：就算上下文正聊到巡检，也不主动递（被动召回归层一，不归开场白）
+    opening2 = build_handoff_opening(
+        base, session_context="AI圈轮巡 回执 timeline 实产", contextual=True
+    )
+    assert opening2 is None or all(it["id"] != rid_a for it in opening2["items"])
+    # 信箱口径：巡检类仍是一封信（归信箱，不丢声）
+    row = next(r for r in pending_items(base) if r["id"] == rid_a)
+    assert is_mailbox_letter(row) is True
+
+
 def test_is_mailbox_letter_consistent_with_telemetry_gate():
     """信箱准入与 handoff 同源：遥测在两端都判为非信/不念。"""
     for kind in ("memory_write_error", "some_future_failure"):
@@ -794,7 +836,9 @@ def test_relevance_tiers():
     assert op is not None
     contents = [it["content"] for it in op["items"]]
     assert any("康得宝" in c for c in contents)  # 相关型：命中上下文
-    assert any("漂移" in c for c in contents)  # 时效型：即时递
+    # 2026-10-10 口径更新：drift 归运维巡检类（OPS_MAILBOX_ONLY_KINDS）＝信箱收、开场不念
+    # （原断言锁的是「时效型即时递含 drift」旧语义，随本轮口径一并更新）
+    assert not any("漂移" in c for c in contents)
     assert not any("春秋" in c for c in contents)  # 无关的攒着（等被聊到再递）
 
 

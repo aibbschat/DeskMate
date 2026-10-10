@@ -71,6 +71,18 @@ def _today() -> str:
 # 时效型来源/类型（任务异常/同步漂移/系统体检）：即时递，不受日上限与相关性约束。
 URGENT_SOURCES = ("automation", "sync_health", "ops")
 URGENT_KINDS = ("task_anomaly", "drift", "window_failed", "ops_report")
+#: 运维巡检类（health_producers 家族产出）＝系统简报：**只进信箱，会话开场不念**。
+#: 2026-10-10 二次「还是会弹出来」：URGENT 时效型即时递把 automation 巡检异常
+#: 每次开新会话都倒一遍（遥测门只拦 *_error，拦不住这批「正常名字」的巡检 kind）。
+#: 口径（萧哥拍板）：这类归信箱——台账仍保留（层一每轮回查、他真问起仍可被动浮现），
+#: is_mailbox_letter 仍收（信箱可见），唯独不进 build_handoff_opening 的会话池。
+OPS_MAILBOX_ONLY_KINDS = (
+    "task_anomaly",
+    "drift",
+    "window_failed",
+    "ops_report",
+    "stall_flag",
+)
 # 相关型：一次只递最相关的 N 条（§11.4②，防「按时间序念台账＝骚扰」）。
 RELEVANT_TOP_N = 2
 
@@ -628,7 +640,8 @@ def build_handoff_opening(
       新条目只取剩余额度。
 
     三档分流（§11.4，修⑨）：
-    - 时效型（URGENT_SOURCES/URGENT_KINDS）：即时递，不受日上限与相关性约束；
+    - 时效型（URGENT_SOURCES/URGENT_KINDS）：即时递，不受日上限与相关性约束
+      （运维巡检类 OPS_MAILBOX_ONLY_KINDS 除外：信箱收、开场不念，2026-10-10）；
     - 相关型：给了 session_context 时按 bigram 重叠取最相关 RELEVANT_TOP_N 条（零关联不递）；
     - 无上下文（DeskHome 空会话首页）：时效型 + 按 created_at 倒序取剩余日额度
       （轻递，§六「开新会话递」原语义，量被日上限封顶）；
@@ -660,6 +673,10 @@ def build_handoff_opening(
         # 同守一道门（_is_telemetry_kind），否则会话注入会把日志原文倒一大坨（2026-10-10）。
         # 条目仍留台账——层一每轮回查、他真问起时仍可被动浮现（不丢声）。
         if _is_telemetry_kind(it.get("kind")):
+            continue
+        # 运维巡检类（OPS_MAILBOX_ONLY_KINDS，2026-10-10）＝系统简报：信箱收、台账留，
+        # 开场白/相关性注入都不念——时效型即时递不覆盖系统简报（二次「弹出来」修正）。
+        if it.get("kind") in OPS_MAILBOX_ONLY_KINDS:
             continue
         pool.append(it)
     if not pool:
