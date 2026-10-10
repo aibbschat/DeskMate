@@ -1020,3 +1020,71 @@ def test_failed_retry_cooldown_is_60min_not_24h():
     assert U._FAILED_RETRY_COOLDOWN_S == 60 * 60, (
         f"failed 重试窗应为 3600s（60min），实际 {U._FAILED_RETRY_COOLDOWN_S}s"
     )
+
+
+# ---------------------------------------------------------------------------
+# R2 共享节流簿记 + Leak B judge 节流（2026-10-10）
+# ---------------------------------------------------------------------------
+
+def test_throttled_shared_false_on_fresh_base():
+    """空台账库：任何 source 都不应触发节流（fail-open 不节流）。"""
+    from deskmate.proactivity.ledger import _ANCHOR_REQUIRED_KINDS, _throttled_shared
+
+    base = _fresh_base("mac")
+    assert _throttled_shared(base, "cloud_audit", 3600, kinds=_ANCHOR_REQUIRED_KINDS) is False
+    assert _throttled_shared(base, "cloud_audit", 3600, kinds={"task_anomaly"}) is False
+
+
+def test_throttled_shared_true_for_anchor_kind_within_window():
+    """窗口内已有 pending 矛盾类发现（如 plot_contradiction）→ 触发 Leak B judge 节流。"""
+    from deskmate.proactivity.ledger import _ANCHOR_REQUIRED_KINDS, _throttled_shared
+
+    base = _fresh_base("mac")
+    record_proactive(
+        base_dir=base, source="cloud_audit", kind="plot_contradiction",
+        content="第二章与第十二章时间线矛盾", evidence="第2/12章", confidence=0.9,
+    )
+    # 矛盾类命中
+    assert _throttled_shared(base, "cloud_audit", 3600, kinds=_ANCHOR_REQUIRED_KINDS) is True
+    # 非矛盾类（task_anomaly）不命中 → 互不误节流
+    assert _throttled_shared(base, "cloud_audit", 3600, kinds={"task_anomaly"}) is False
+
+
+def test_throttled_shared_excludes_health_kinds():
+    """健康巡检 kind 被 exclude_kinds 排除时，不触发 judge 节流（互不误伤）。"""
+    from deskmate.proactivity.ledger import _HEALTH_KINDS, _throttled_shared
+
+    base = _fresh_base("mac")
+    record_proactive(
+        base_dir=base, source="cloud_audit", kind="task_anomaly",
+        content="定时任务没跑成", evidence="cron=...", confidence=0.82,
+        anchor="t1:2026-10-10:miss",
+    )
+    # 排除健康巡检 kind → 不触发
+    assert _throttled_shared(
+        base, "cloud_audit", 3600, exclude_kinds=_HEALTH_KINDS
+    ) is False
+    # 但按 kind 精确命中 → 触发（R2 automation 跨节点节流）
+    assert _throttled_shared(base, "cloud_audit", 3600, kinds={"task_anomaly"}) is True
+
+
+def test_throttled_shared_expires_after_window():
+    """窗口外的旧记录不触发节流（按 created_at 时间窗，不靠「有没有这 kind」）。"""
+    from deskmate.proactivity.ledger import _ANCHOR_REQUIRED_KINDS, _throttled_shared
+
+    base = _fresh_base("mac")
+    rid = record_proactive(
+        base_dir=base, source="cloud_audit", kind="plot_contradiction",
+        content="旧矛盾", evidence="第3章", confidence=0.9,
+    )
+    # 把这条的 created_at 拨到 10 分钟前
+    old = time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(time.time() - 600))
+    with sqlite3.connect(str(base / "deskmate.db"), check_same_thread=False) as c:
+        c.execute(
+            f"UPDATE proactive_ledger SET created_at=? WHERE id=?", (old, rid)
+        )
+        c.commit()
+    # 窗口 5 秒：10 分钟前的记录已过期 → 不触发
+    assert _throttled_shared(base, "cloud_audit", 5, kinds=_ANCHOR_REQUIRED_KINDS) is False
+    # 窗口 1200 秒：仍命中
+    assert _throttled_shared(base, "cloud_audit", 1200, kinds=_ANCHOR_REQUIRED_KINDS) is True

@@ -11,6 +11,10 @@ import time
 from dataclasses import dataclass, field
 
 logger = logging.getLogger(__name__)
+
+# Leak B + R2 同源节流窗口（2026-10-10）：cloud_audit 的 judge 在窗口内已由任一节点
+# 产出过 pending 矛盾类发现 → 跳过 judge，省 token。与 R2 健康巡检窗口对齐（1h）。
+_JUDGE_THROTTLE_WINDOW_S = 3600
 from pathlib import Path
 from typing import Optional
 
@@ -28,7 +32,7 @@ from .context_builder import (
 )
 from .disturb import DisturbManager
 from .judge import JudgmentResult, judge_proactive_action
-from .ledger import register_producer
+from .ledger import _ANCHOR_REQUIRED_KINDS, _throttled_shared, register_producer
 from .user_active import ActivityState, UserActivity, detect_user_activity
 
 
@@ -555,6 +559,32 @@ class ProactiveEngine:
             )
 
         # ===== 2. 思考（Think）=====
+        # 共享节流（Leak B + R2 同源薄记，2026-10-10）：窗口内本 source 已有 pending 矛盾类
+        # 发现（任一节点同步来的）→ 跳过 judge，省 token。正是「同问题被重判 34 次」的止血点。
+        # 只盯矛盾类（_ANCHOR_REQUIRED_KINDS）以避免误伤 emotional_care 等；健康巡检 kind 本就
+        # 不经此入口。仍推进专注陪伴计时，避免 P1-1「工作累了来提醒」退化。
+        if _throttled_shared(
+            self.base_dir, "cloud_audit", _JUDGE_THROTTLE_WINDOW_S,
+            kinds=_ANCHOR_REQUIRED_KINDS,
+        ):
+            what_doing = ""
+            companion_msg = ""
+            try:
+                from .companion import describe_activity, get_companion_tracker
+
+                what_doing = describe_activity(_win, activity)
+                companion_msg = get_companion_tracker().update(activity, _win) or ""
+            except Exception:
+                pass
+            return TickResult(
+                action=ActionType.NO_ACTION,
+                activity=activity,
+                skipped_reason="共享节流：窗口内已有 pending 矛盾发现，跳过 judge",
+                elapsed_ms=int((time.time() - start) * 1000),
+                heartbeat_interval_ms=self._heartbeat_interval_ms,
+                what_user_doing=what_doing,
+                companion_message=companion_msg,
+            )
         judgment = judge_proactive_action(context_text, model=self.model)
 
         # ===== 3. 行动（Act）=====

@@ -136,12 +136,16 @@ def test_mobile_kind_whitelist_blocks_contradiction_kinds():
     """
     from deskmate.proactivity.ledger import (
         _ANCHOR_REQUIRED_KINDS,
+        _HEALTH_KINDS,
         MOBILE_KINDS,
         is_mobile_kind_allowed,
     )
 
     # 白名单与矛盾类清单**必须零交集**——这是本测试的核心断言
     assert not (MOBILE_KINDS & _ANCHOR_REQUIRED_KINDS)
+    # 健康巡检 kind 与矛盾类 / 手机端白名单也须零交集（防误节流 / 误收口）
+    assert not (_HEALTH_KINDS & _ANCHOR_REQUIRED_KINDS)
+    assert not (_HEALTH_KINDS & MOBILE_KINDS)
     # 正常 kind 放行
     assert is_mobile_kind_allowed("idea_capture") is True
     assert is_mobile_kind_allowed("topic_note") is True

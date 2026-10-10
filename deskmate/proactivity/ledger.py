@@ -535,6 +535,54 @@ def record_proactive(
     return rid
 
 
+# ---- 共享节流簿记（R2 跨节点 + Leak B judge 节流，2026-10-10，同源单一薄记）----
+# 读 proactive_ledger（在 SYNC_TABLES，跨节点同步）：任一节点在窗口内已产出 → 视为「已产出」，
+# 从而 Mac+云端同一时段只烧一轮 judge / 只报一次健康巡检。R2 与 Leak B 共用这一张薄记，
+# 不各建一套。
+# 注意：本块刻意放在 _ANCHOR_REQUIRED_KINDS / MOBILE_KINDS 区域之外 —— 两者相邻关系由
+# test_producer_finding_key 的「零交集」断言守护，请勿把新集合插到它们之间。
+_HEALTH_KINDS = frozenset({"task_anomaly", "drift", "window_failed", "stall_flag"})
+
+
+def _throttled_shared(
+    base_dir,
+    source: str,
+    window_s: float,
+    *,
+    kinds: Optional[set] = None,
+    exclude_kinds: Optional[set] = None,
+) -> bool:
+    """跨节点节流判据：source 在 window_s 内是否已在（同步来的）proactive_ledger 产出过。
+
+    返回 True=应节流（跳过）。fail-open：表不存在/异常 → 返回 False（不节流、照常产出）。
+
+    - kinds：只认这些 kind（R2 健康巡检按 kind 隔离，automation 不误节流 writing）。
+    - exclude_kinds：排除这些 kind（Leak B judge 节流排除健康巡检 kind，避免互相误伤）。
+    """
+    try:
+        db = _resolve_base(base_dir) / "deskmate.db"
+        conn = sqlite3.connect(str(db), check_same_thread=False)
+        try:
+            cutoff = time.strftime(
+                "%Y-%m-%dT%H:%M:%S", time.localtime(time.time() - window_s)
+            )
+            sql = f"SELECT 1 FROM {LEDGER_TABLE} WHERE source=? AND created_at >= ?"
+            args: list = [source, cutoff]
+            if kinds:
+                sql += " AND kind IN (%s)" % ",".join("?" * len(kinds))
+                args += list(kinds)
+            if exclude_kinds:
+                sql += " AND kind NOT IN (%s)" % ",".join("?" * len(exclude_kinds))
+                args += list(exclude_kinds)
+            sql += " LIMIT 1"
+            hit = conn.execute(sql, args).fetchone()
+        finally:
+            conn.close()
+        return hit is not None
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def pending_items(base_dir: Optional[Path] = None) -> list[dict]:
     """查所有 ``status='pending'`` 的台账项（created_at 倒序），供本地对接注入会话上下文。"""
     base = _resolve_base(base_dir)

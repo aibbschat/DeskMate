@@ -36,30 +36,53 @@ logger = logging.getLogger(__name__)
 from .ledger import register_producer, _resolve_base
 
 
-# ---- 节流（复用 proactivity_meta 本端簿记，与 understanding 后处理同表）----
-def _throttled(base_dir: Optional[Path], key: str, interval_s: float) -> bool:
-    """距上次跑 >= interval 才放行；读写 ``proactivity_meta``。fail-open：异常即放行。"""
+# ---- 节流（本端 proactivity_meta 簿记 + R2 跨节点共享簿记，2026-10-10）----
+def _throttled(
+    base_dir: Optional[Path],
+    key: str,
+    interval_s: float,
+    *,
+    source: Optional[str] = None,
+    kind: Optional[str] = None,
+    window_s: Optional[float] = None,
+) -> bool:
+    """本端 + 跨节点节流（R2，2026-10-10）。
+
+    - 本端：距上次跑 >= interval 才放行（读写 ``proactivity_meta``）。
+    - 跨节点：source+kind 在 window_s 内已由任一节点（同步来的）proactive_ledger 产出过
+      → 视为「已产出」跳过，使 Mac+云端同一时段只报一次（治 R2）。
+    返回 True=放行，False=节流跳过。fail-open：异常一律放行（True），绝不阻断调用方。
+    """
     try:
         db = _resolve_base(base_dir) / "deskmate.db"
         conn = sqlite3.connect(str(db), check_same_thread=False)
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS proactivity_meta (key TEXT PRIMARY KEY, value TEXT)"
-        )
-        now = time.time()
-        r = conn.execute(
-            "SELECT value FROM proactivity_meta WHERE key=?", (key,)
-        ).fetchone()
-        last = float(r[0]) if r else 0.0
-        if (now - last) < interval_s:
+        try:
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS proactivity_meta (key TEXT PRIMARY KEY, value TEXT)"
+            )
+            now = time.time()
+            r = conn.execute(
+                "SELECT value FROM proactivity_meta WHERE key=?", (key,)
+            ).fetchone()
+            last = float(r[0]) if r else 0.0
+            if (now - last) < interval_s:
+                return False  # 本端未到间隔 → 节流
+            # R2 跨节点：其他节点近期已产出同 source+kind → 节流（不写本端时间戳）
+            if source and window_s:
+                from .ledger import _throttled_shared
+
+                if _throttled_shared(
+                    base_dir, source, window_s, kinds={kind} if kind else None
+                ):
+                    return False
+            conn.execute(
+                "INSERT INTO proactivity_meta(key,value) VALUES(?,?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                (key, f"{now:.3f}"),
+            )
+            conn.commit()
+        finally:
             conn.close()
-            return False
-        conn.execute(
-            "INSERT INTO proactivity_meta(key,value) VALUES(?,?) "
-            "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-            (key, f"{now:.3f}"),
-        )
-        conn.commit()
-        conn.close()
         return True
     except Exception:  # noqa: BLE001
         return True
@@ -245,7 +268,7 @@ def _automation_producer(base_dir: Optional[Path] = None) -> list:
     ``scheduled_tasks`` / ``task_runs``（JSON 列）+ ``auto_tasks/timeline.jsonl``。
     节流：每小时最多扫一次。
     """
-    if not _throttled(base_dir, "producer:automation", 3600):
+    if not _throttled(base_dir, "producer:automation", 3600, source="cloud_audit", kind="task_anomaly", window_s=3600):
         return []
     items: list = []
     try:
@@ -380,7 +403,7 @@ def _sync_health_producer(base_dir: Optional[Path] = None, drift: Optional[dict]
             })
         return items
     # ---- window_failed（本地游标超时）----
-    if not _throttled(base_dir, "producer:sync_health", 3600):
+    if not _throttled(base_dir, "producer:sync_health", 3600, source="cloud_audit", kind="window_failed", window_s=3600):
         return []
     try:
         db = _resolve_base(base_dir) / "deskmate.db"
@@ -441,7 +464,7 @@ def _writing_producer(base_dir: Optional[Path] = None) -> list:
     伏笔未收 / 新增段落需读正文 + LLM，置信度难达 0.75 写入门槛，本期先只做 ``stall_flag``
     （设计文档 §11.8 标注「16:00 待验证」，stall_flag 靠 mtime 差值最稳）。
     """
-    if not _throttled(base_dir, "producer:writing", 3600 * 24):  # 每日至多扫一次
+    if not _throttled(base_dir, "producer:writing", 3600 * 24, source="cloud_audit", kind="stall_flag", window_s=3600 * 24):  # 每日至多扫一次
         return []
     items: list = []
     try:
