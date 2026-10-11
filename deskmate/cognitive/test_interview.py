@@ -15,6 +15,7 @@ from pathlib import Path
 import deskmate.cognitive.store as storemod
 import deskmate.cognitive.profile as pmod
 import deskmate.cognitive.interview as ival
+import deskmate.memory.llm as llm_mod
 from deskmate.cognitive.models import CognitiveProfile, Stance, CognitiveGap, SourceRef, _now
 
 
@@ -31,11 +32,21 @@ def _hermetic():
     saved = {
         "store_CognitiveStore": storemod.CognitiveStore,
         "profile_CognitiveStore": pmod.CognitiveStore,
-        "profile_default_managers": pmod._default_managers,
+        # ⚠ 必须是**快照副本**，不能是原对象引用：_hermetic 期间 _gpm 会往这个 dict
+        # 里塞 manager 实例；若存的是引用，_restore 再赋回去时旧实例（指向前一个用例的
+        # 临时库）会泄漏到下一个用例——致使 start_interview/answer_interview 经未打补丁的
+        # resolve_profile_manager→get_profile_manager 命中 stale manager，会话写进旧临时库、
+        # answer_interview 读新临时库 → session 查不到 → session_done 永远 False。
+        "profile_default_managers": dict(pmod._default_managers),
         "profile_gpm": pmod.get_profile_manager,
         "ival_CognitiveStore": ival.CognitiveStore,
         "ival_gpm": ival.get_profile_manager,
         "ival_get_extractor": ival.get_extractor,
+        # 让整个用例模块**真正离线**：本机若配了 provider 凭证，llm_available() 会返回 True，
+        # 于是 extract_cognitive_items 真去调 LLM、落「立场」类条目，而非规则兜底的「访谈」
+        # 类条目——两个 test_explore_* 断言的正是规则兜底路径，会因此误红。强制 False 使
+        # 模块确定走规则兜底（与用例注释「不依赖 LLM / 降级为规则兜底」一致），不再随环境飘。
+        "llm_llm_available": llm_mod.llm_available,
         "env_DESKMATE_DIR": os.environ.get("DESKMATE_DIR"),
     }
 
@@ -48,6 +59,10 @@ def _hermetic():
     # 走 pytest 时 conftest 已设 DESKMATE_DIR 兜住了；但本文件末尾有 ``unittest.main()``
     # 直跑入口，直跑时 conftest **完全不参与** → 只能靠这里兜住。
     os.environ["DESKMATE_DIR"] = str(tmp)
+
+    # 强制 LLM 不可用：本模块所有用例都应在「无 LLM」下确定走规则兜底，
+    # 不依赖本机是否恰好配了 provider 凭证（见 saved["llm_llm_available"] 注释）。
+    llm_mod.llm_available = lambda: False
 
     storemod.CognitiveStore = _TmpStore
     pmod.CognitiveStore = _TmpStore
@@ -88,6 +103,7 @@ def _restore(saved):
     pmod.CognitiveStore = saved["profile_CognitiveStore"]
     pmod._default_managers = saved["profile_default_managers"]
     pmod.get_profile_manager = saved["profile_gpm"]
+    llm_mod.llm_available = saved["llm_llm_available"]
     ival.CognitiveStore = saved["ival_CognitiveStore"]
     ival.get_profile_manager = saved["ival_gpm"]
     ival.get_extractor = saved["ival_get_extractor"]
