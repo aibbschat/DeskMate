@@ -444,6 +444,13 @@ class CognitiveStore:
         # valid_until = NULL 表示「至今有效」（开放区间）。
         self._add_column("profile_items", "valid_from", "TEXT")
         self._add_column("profile_items", "valid_until", "TEXT")
+        # 同步身份三列：persist() 会写入 sync_uuid/sync_hlc/sync_tombstone（见 :671 的 INSERT）。
+        # 这三列的触发器与存量回填由 sync_store_sqlite.migrate 管理；此处只兜底「列存在」，
+        # 使新建库/测试库/未来新用户库与同步路径结构一致，避免 persist 因缺列而炸。
+        # 已 migrate 的活库该列已存在 → _add_column 探测后跳过，无副作用（含云端）。
+        self._add_column("profile_items", "sync_uuid", "TEXT")
+        self._add_column("profile_items", "sync_hlc", "TEXT")
+        self._add_column("profile_items", "sync_tombstone", "INTEGER DEFAULT 0")
         # R13（2026-10-08）：intents 表加 discuss_state / current_round（老库升级）。
         # discuss 是 sub-state——discussing 期间 intent.status 仍走 'active'，
         # discuss_state JSON 存讨论进度，current_round 是当前轮次。

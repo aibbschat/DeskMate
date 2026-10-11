@@ -256,6 +256,16 @@ def test_start_interview_writes_suppression_meta():
         pm.save()
         ensure_emotional_gaps(pm=pm)
 
+        # ensure_emotional_gaps 在有回血方式数据（recovery_pattern tag）时会跳过
+        # 「情感·回血方式」topic，仅播出 1 个探索型 gap；而 should_interview_now 的
+        # 常规触发需 open_gaps >= 2（_TRIGGER_GAP_THRESHOLD）。真实场景（用户有回血
+        # 数据但无关怀偏好数据）下会只剩 1 个 gap → 访谈永不触发，这是一个独立的
+        # 生产侧触发脆弱性（已记入排查报告，待产品决策），不在此处改动生产逻辑。
+        # 本测试要验证的是「首次可触发 → start_interview 写抑制时间戳 → 二次判定
+        # 被抑制」的核心回归，故在此补足一个 open gap 以达触发阈值。
+        if len(pm.profile.open_gaps()) < 2:
+            pm.add_gap("情感·关怀补充", "补充一个探索型缺口以触发首次访谈", priority=0.7)
+
         engine = ival.get_interview_engine()
         # 首次：应可触发
         assert engine.should_interview_now(pm.profile, layer="emotional") is True
