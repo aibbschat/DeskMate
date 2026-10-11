@@ -151,6 +151,19 @@ CHANNEL_MODULES=(
   # 均 import 它。漏传 → 云端 manager/tick 跑旧码，情绪注入因 fail-open 静默失效
   # （小桔在云端「没有自己的天气」），且**不报错**（同 user_fact_context 漏传教训）。
   "deskmate/growth/emotion_engine.py"
+  # ⚠️ 认知访谈/验证引擎（2026-10-11 补）：interview.py（③b 深度访谈闭环）与
+  # validation_engine.py（认知 Turing test 验证）均被云端代码 import 且云端真实跑——
+  #   - proactivity/tick.py:362   `from deskmate.cognitive.interview import maybe_trigger_interview`
+  #   - proactivity/tick.py:427   `from deskmate.cognitive.validation_engine import run_validation`
+  #   - coworker/server/app.py:3762 `from deskmate.cognitive.validation_engine import run_validation`
+  # 原清单漏了这两文件 → 云端一直跑 9月/10月旧码：「永不换题」(generate_scenario 永远
+  # 取最高置信第一条+template[0])、验证答对「沉淀新认知」静默丢弃（apply_feedback 抽取失败
+  # 只告警不落）、访谈回答抽取失败静默丢弃（_absorb_response 仅 llm_not_available 才兜底）
+  # 三处 2026-10-11 修复全没生效。这正是「同步成功≠云端完整」陷阱：清单逐文件列举，
+  # 漏了就云端缺/旧且不报错（同 user_fact_context 漏传教训）。现补入，确保认知引擎
+  # 本地与云端同码（红线）。
+  "deskmate/cognitive/interview.py"
+  "deskmate/cognitive/validation_engine.py"
 )
 
 # 小桔手记行为（ai_circle_column.py）：含「专属表情 [xj:id] 封闭词表」注入（2026-10-07
