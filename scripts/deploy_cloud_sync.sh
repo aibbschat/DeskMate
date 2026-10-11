@@ -164,6 +164,18 @@ CHANNEL_MODULES=(
   # 本地与云端同码（红线）。
   "deskmate/cognitive/interview.py"
   "deskmate/cognitive/validation_engine.py"
+  # ⚠️ 情绪态常量单一真相源（P0#1 / commit e710796）原子部署单元：deskmate/constants/ 是
+  # 新包（云端此前根本没有），emotion_profile.py / emotion_sense.py / emotion_timeline.py
+  # 已重构为 `from deskmate.constants.emotion import ...`。三者必须和**新包同批**上云——
+  # 只推任一部分，云端要么 ImportError 崩、要么继续跑重构前旧码（旧码不依赖 constants）。
+  # 这 5 个文件是集合级对账发现的**存量漂移**（非本轮改动）：云端缺 constants 包、3 个
+  # 情绪文件停留在重构前旧版。收掉才满足「本地与云端代码须完全一致」红线。本地
+  # cognitive(92)+growth(131) 全绿已验证该重构行为保持，上云即与本地真相源对齐。
+  "deskmate/constants/__init__.py"
+  "deskmate/constants/emotion.py"
+  "deskmate/cognitive/emotion_profile.py"
+  "deskmate/growth/emotion_sense.py"
+  "deskmate/growth/emotion_timeline.py"
 )
 
 # 小桔手记行为（ai_circle_column.py）：含「专属表情 [xj:id] 封闭词表」注入（2026-10-07
