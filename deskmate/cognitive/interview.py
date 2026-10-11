@@ -350,7 +350,7 @@ class SocraticInterviewEngine(InterviewEngine):
             SocraticInterviewEngine._absorb_response_emotional(pm, topic, text)
             return
 
-        # cognitive 层：LLM 抽取四维度（fail-open，仅 LLM 完全不可用才降级规则）
+        # cognitive 层：LLM 抽取四维度（fail-open，抽取失败一律降级规则兜底）
         try:
             from .extractor import extract_cognitive_items
 
@@ -361,9 +361,12 @@ class SocraticInterviewEngine(InterviewEngine):
         except Exception as e:
             logger.warning("访谈 LLM 抽取失败（降级规则）: %s", e)
             dep = {"error": "exception"}
-        if dep.get("error") == "llm_not_available":
+        # 任何抽取失败（不可用 / 抛异常 / JSON 解析失败 / 调用失败）都降级为规则兜底，
+        # 绝不静默丢弃用户回答——原逻辑只认 llm_not_available，其余 error 落入 else
+        # 分支什么都不落，等于用户白答（2026-10-11 萧哥实证）。成功（无 error 键）才
+        # 信任 LLM 路径、由抽取器落结构化条目，不重复落。
+        if dep.get("error"):
             SocraticInterviewEngine._absorb_response_rule(pm, topic, text)
-        # 其他情况（成功抽到 N 条 / 抽到 0 / 解析失败 / 调用异常）信任 LLM 路径，不重复落
 
     @staticmethod
     def _absorb_response_emotional(pm, topic, text):

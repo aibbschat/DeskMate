@@ -19,6 +19,7 @@ sys.path.insert(0, str(ROOT))
 
 from deskmate.cognitive.profile import CognitiveProfileManager
 from deskmate.cognitive.models import SourceRef
+from deskmate.cognitive.store import CognitiveStore
 from deskmate.cognitive.validation_engine import (
     get_validation_engine,
     run_validation,
@@ -315,3 +316,35 @@ def test_run_validation_falls_back_when_items_stale():
     assert r["applied"] is True
     # 已回退：重新生成的情境有自己的 id，不会沿用失效的那个
     assert r["scenario"]["id"] != "stale-scenario"
+
+
+def test_generate_scenario_rotates_across_calls():
+    """连续生成应轮换，不能永远只出同一道验证题（2026-10-11 根因修复回归）。
+
+    种子画像有 3 条立场 + 1 条价值观、均 0.8 置信度；旧逻辑永远只取最高置信度的
+    第一条 + 永远 template[0]，于是永远只出「稿费翻倍」那一道。修复后带 store 调用
+    应在条目与模板两个维度轮换，连续生成出不同情境。
+    """
+    pm, tmp = _fresh_manager()
+    store = CognitiveStore(db_path=str(Path(tmp) / "rotate.db"))
+    engine = get_validation_engine()
+
+    scenarios = [engine.generate_scenario(pm.get(), store=store) for _ in range(4)]
+    texts = [s["scenario"] for s in scenarios]
+    distinct = set(texts)
+    assert len(distinct) > 1, f"连续生成应轮换出不同情境，但拿到了：{texts}"
+    # 轮换游标已持久化：再开的 store 接着上次继续，而不是从头重问
+    store2 = CognitiveStore(db_path=str(Path(tmp) / "rotate.db"))
+    again = engine.generate_scenario(pm.get(), store=store2)
+    assert again["scenario"] not in texts or len(distinct) == len(texts), \
+        "轮换游标应跨进程持久化，避免重启后从头重问同一道"
+
+
+def test_generate_scenario_without_store_is_deterministic():
+    """无 store（如单测）时保持原有确定性：同一条目、template[0]，不破坏既有调用方。"""
+    pm, tmp = _fresh_manager()
+    engine = get_validation_engine()
+    s1 = engine.generate_scenario(pm.get())
+    s2 = engine.generate_scenario(pm.get())
+    assert s1["scenario"] == s2["scenario"], "无 store 应确定性出同一道题"
+    assert "稿费" in s1["scenario"], "确定性路径默认取 template[0]（含稿费翻倍）"

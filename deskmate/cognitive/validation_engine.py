@@ -63,6 +63,22 @@ _SCENARIO_TEMPLATES: list[dict[str, Any]] = [
     },
 ]
 
+# 模板池：按维度可选用哪些情境模板。
+# 根因修复（2026-10-11，萧哥实证「永远只出那一道稿费翻倍的题」）：
+# 旧逻辑 stance/thinking 永远只取 _SCENARIO_TEMPLATES[0]、value 永远只取 [3]，
+# 4 套模板里 2 套（创作取舍 / 历史态度）是死代码，永远走不到；且条目永远取
+# 置信度最高的第一条 → 同一条原则被反复问、题目从不变。现按维度展开模板池，
+# generate_scenario 在其中轮换（配合条目轮换游标），连续生成即出不同情境。
+_TEMPLATE_POOL = {
+    "stance": [0, 1, 2],     # 创作约稿 / 创作取舍 / 历史态度
+    "thinking": [0, 1, 2],
+    "value": [3],             # 价值冲突
+    "argument": [3],
+}
+# 轮换游标在 CognitiveStore 里的 meta key（保证跨进程/跨重启连续）
+_META_LAST_ITEM = "validation_last_item_id"
+_META_LAST_TEMPLATE = "validation_template_idx"
+
 # 评估用：回答中如果出现与画像条目一致的核心关键词 → 判定"立场一致"
 # 从画像条目 content 里抽有信息量的词（2字以上、非停用词）
 _STOPWORDS = {
@@ -121,7 +137,12 @@ class TuringScenarioEngine(ValidationEngine):  # noqa: F821 (base 在 interfaces
     # ------------------------------------------------------------------
     # 1. 生成情境
     # ------------------------------------------------------------------
-    def generate_scenario(self, profile: CognitiveProfile, domain: Optional[str] = None) -> dict:
+    def generate_scenario(
+        self,
+        profile: CognitiveProfile,
+        domain: Optional[str] = None,
+        store: Optional[Any] = None,
+    ) -> dict:
         """
         从高置信度画像条目抽一个话题，套进"没遇到过"的情境。
 
@@ -129,6 +150,9 @@ class TuringScenarioEngine(ValidationEngine):  # noqa: F821 (base 在 interfaces
         - 优先取置信度 >= 0.7 的 active 条目（立场 > 价值观 > 思维框架 > 论证）
         - domain 可限定取某领域
         - 场景 id 用 uuid，related_items 记录引用了哪些画像条目
+        - **轮换**：store 非空时，条目取「上次问过的下一条」、模板取「上次用过的下一套」，
+          避免永远只出同一道验证题（2026-10-11 修复）。无 store（如单测）退回确定性取
+          最高置信度第一条、模板[0]，保持既有行为。
         """
         if profile is None:
             return {"id": "", "domain": domain or "general", "scenario": "", "question": "", "related_items": []}
@@ -153,16 +177,48 @@ class TuringScenarioEngine(ValidationEngine):  # noqa: F821 (base 在 interfaces
         if not candidates:
             return {"id": "", "domain": domain or "general", "scenario": "", "question": "", "related_items": []}
 
-        # 按置信度降序取第一个（最确定的条目 → 最值得验证）
+        # 按置信度降序排序（最确定的条目 → 最值得验证），再在候选里轮换，
+        # 取「上次问过的下一条」——避免永远只问置信度最高的那一条。
         candidates.sort(key=lambda x: x[1].confidence, reverse=True)
-        dim, item = candidates[0]
+        chosen_idx = 0
+        last_id = None
+        if store is not None:
+            try:
+                last_id = store.get_meta(_META_LAST_ITEM) or None
+            except Exception:
+                last_id = None
+        if last_id is not None:
+            for i, (_, it) in enumerate(candidates):
+                if it.id == last_id:
+                    chosen_idx = (i + 1) % len(candidates)
+                    break
+        dim, item = candidates[chosen_idx]
         topic = _topic_of_item(item)
         content = _content_of_item(item)
 
-        # 套模板（创作类优先用创作模板，其他用通用）
-        template = _SCENARIO_TEMPLATES[0] if dim in ("stance", "thinking") else _SCENARIO_TEMPLATES[3]
+        # 模板轮换：按维度在模板池里取「上次用过的下一套」，4 套模板不再只用第 0 套。
+        pool = _TEMPLATE_POOL.get(dim, [0])
+        t_idx = pool[0]
+        if store is not None:
+            try:
+                last_t = int(store.get_meta(_META_LAST_TEMPLATE) or 0)
+            except Exception:
+                last_t = 0
+            if last_t in pool:
+                t_idx = pool[(pool.index(last_t) + 1) % len(pool)]
+            else:
+                t_idx = pool[0]
+        template = _SCENARIO_TEMPLATES[t_idx]
         scenario_text = template["template"].replace("{topic}", topic or content[:12]).replace("{modifier}", template.get("modifier", ""))
         question = f"在「{template['kind']}」情境下，你会怎么做？为什么？"
+
+        # 持久化轮换游标，下次「接着问」而非「原地重问」
+        if store is not None:
+            try:
+                store.set_meta(_META_LAST_ITEM, item.id)
+                store.set_meta(_META_LAST_TEMPLATE, t_idx)
+            except Exception:
+                logger.debug("validation 轮换游标持久化失败（不影响本次生成）", exc_info=True)
 
         return {
             "id": uuid.uuid4().hex[:12],
@@ -722,9 +778,9 @@ def run_validation(
             profile, scenario_id or "", related_items, scenario_text, domain
         )
         if scenario is None:
-            scenario = engine.generate_scenario(profile, domain=domain)
+            scenario = engine.generate_scenario(profile, domain=domain, store=pm.store)
     else:
-        scenario = engine.generate_scenario(profile, domain=domain)
+        scenario = engine.generate_scenario(profile, domain=domain, store=pm.store)
     if not scenario.get("id"):
         return {
             "scenario": {},
