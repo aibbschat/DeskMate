@@ -8,7 +8,7 @@
 
 | 组 | 成员 | 用途 |
 |---|---|---|
-| **付费组**（默认） | 火山 `ark-agent-plan-cn` → 腾讯 `tencent-tokenplan:hy3`（小米线 2026-10-10 起暂停排查） | 她对你说的话（对话、主动递卡片） |
+| **付费组**（默认） | 火山 `ark-agent-plan-cn` → 小米 `xiaomi:mimo-v2.6-pro` → 腾讯 `tencent-tokenplan:hy3`（2026-10-11 萧哥要求把小米加回，恢复 ark→小米→腾讯 三层冗余） | 她对你说的话（对话、主动递卡片） |
 | **免费组** | opencode `*-free`（**远端清单驱动**，见 `zen_catalog`）+ 本地 `local` 兜底（CVM llama-server） | 后台加工（记忆抽取 / 理解加工 / 发帖草稿） |
 
 - `qwen` **不进链**（早期测试配置，萧哥 21:00 明确不要）
@@ -57,9 +57,11 @@ LOCAL_LLM_BASE_URL_ENV = "DESKMATE_LOCAL_LLM_BASE_URL"
 LOCAL_LLM_BASE_URL_DEFAULT = "http://127.0.0.1:18080/v1"
 
 #: 付费组（顺序 = 优先级）。qwen 刻意不在此列（早期测试配置，萧哥 21:00 明确不要）。
-#: 小米线 2026-10-10 起暂停（排查套餐用量异常）；恢复时把 ("xiaomi","mimo-v2.6-pro") 加回 ark 与 tencent 之间。
+#: 小米线 2026-10-11 恢复（萧哥要求加回，结束用量排查）；现 ark→小米→腾讯 三层冗余，
+#: 任一家额度撞顶（如火山周额度 429）都能自动切到下一家，不再单点依赖腾讯兜底。
 PAID_GROUP: Tuple[Tuple[str, str], ...] = (
     ("ark-agent-plan-cn", "deepseek-v4-flash"),
+    ("xiaomi", "mimo-v2.6-pro"),
     ("tencent-tokenplan", "hy3"),
 )
 

@@ -266,15 +266,16 @@ def test_quota_cooldown_not_grown_by_strikes(base):
 # --------------------------------------------------------------------------- #
 
 def test_paid_group_excludes_qwen_and_keeps_hy_tokenplan():
-    """付费组 = 火山→**hy Token Plan**（小米线 2026-10-10 起暂停排查用量异常）；qwen 明确不进链（萧哥 21:00）。"""
+    """付费组 = 火山→小米(mimo-v2.6-pro)→腾讯 hy Token Plan（2026-10-11 萧哥要求加回小米，恢复三层冗余）；qwen 明确不进链（萧哥 21:00）。"""
     from deskmate.llm_channels import PAID_GROUP, paid_channels
 
     keys = [f"{p}:{m}" for p, m in PAID_GROUP]
     assert keys == [
         "ark-agent-plan-cn:deepseek-v4-flash",
+        "xiaomi:mimo-v2.6-pro",
         "tencent-tokenplan:hy3",
     ], f"付费组顺序/成员变了：{keys}"
-    assert not any("xiaomi" in k for k in keys), "小米线暂停期间不该在付费组里"
+    assert any("xiaomi" in k for k in keys), "小米应已加回付费组（2026-10-11 萧哥要求）"
     assert not any("qwen" in k for k in keys), "qwen 不该在付费组里"
     # 已配凭证的才进候选
     got = [c.key for c in paid_channels()]
