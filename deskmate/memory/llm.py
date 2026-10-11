@@ -579,11 +579,21 @@ def chat_memory(
                     )
                 if ch.provider == "local":
                     # 本地 llama-server 兜底（OpenAI 兼容，trust_env=False 防代理劫持 localhost）。
-                    return _call_with_breaker(
-                        ch.provider, ch.model,
-                        lambda m=ch.model: _local_complete(
-                            m, system, user, temperature, max_tokens, timeout),
-                    )
+                    import time as _time
+
+                    _t0 = _time.time()
+                    try:
+                        _result = _call_with_breaker(
+                            ch.provider, ch.model,
+                            lambda m=ch.model: _local_complete(
+                                m, system, user, temperature, max_tokens, timeout),
+                        )
+                        _record_local_fallback(True, _time.time() - _t0, len(user))
+                        return _result
+                    except Exception as _exc:  # noqa: BLE001
+                        # 记录失败耗时后原样上抛，交由外层 except 记审计并换下一条/整组降级。
+                        _record_local_fallback(False, _time.time() - _t0, len(user))
+                        raise
                 ak, bu, md = _creds_for(ch.provider, ch.model)
                 if not ak:
                     continue
@@ -728,6 +738,34 @@ def _opencode_complete(
         timeout=timeout,
     )
     return (turn.text or "").strip()
+
+
+def _record_local_fallback(success: bool, elapsed: float, chars: int) -> None:
+    """轻量埋点（B 任务）：local 兜底层被触发时追加一行 JSON 到 ``local_fallback.log``。
+
+    用途：观测「本地 llama-server 兜底是否真的被命中、命中频率与耗时」，从而判断 CVM
+    是否扛得住。日志落在 ``DESKMATE_DIR``（云端 ``/var/lib/openworker/.deskmate``）。
+    任何异常都静默吞掉——埋点失败绝不影响主链路（兜底对话本身）。
+    """
+    try:
+        from datetime import datetime, timezone
+
+        log = _breaker_base_dir() / "local_fallback.log"
+        with open(log, "a", encoding="utf-8") as _f:
+            _f.write(
+                json.dumps(
+                    {
+                        "ts": datetime.now(timezone.utc).isoformat(),
+                        "success": success,
+                        "elapsed_s": round(elapsed, 3),
+                        "prompt_chars": chars,
+                    },
+                    ensure_ascii=False,
+                )
+                + "\n"
+            )
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def _local_complete(

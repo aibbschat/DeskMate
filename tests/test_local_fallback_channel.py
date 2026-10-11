@@ -79,3 +79,36 @@ def test_free_only_routing_invokes_local_complete(monkeypatch, tmp_path):
     assert seen.get("model") == "qwen3-4b-instruct", "应把 local 模型传给 _local_complete"
     assert seen.get("system") == "sys-prompt"
     assert seen.get("user") == "usr-prompt"
+
+
+def test_local_fallback_records_stats_on_hit(monkeypatch, tmp_path):
+    """local 兜底被触发时，``_record_local_fallback`` 必须在 ``local_fallback.log`` 写一行。
+
+    B 任务埋点回归：验证埋点真的落盘（成功行含 ts/success/elapsed_s/prompt_chars），
+    供后续观测『本地兜底命中频率与耗时』。失败静默不影响主链路由函数自身保证。
+    """
+    import json as _json
+
+    monkeypatch.setenv("DESKMATE_DIR", str(tmp_path))
+    monkeypatch.setattr(llm_mod, "_memory_use_omniroute", lambda bible=False: False)
+    # 强制 route 只返回 local 通道 → 必走 local 分支
+    local_ch = SimpleNamespace(
+        provider="local", model="qwen3-4b-instruct", key="local:qwen3-4b-instruct"
+    )
+    monkeypatch.setattr(
+        deskmate.llm_channels, "route", lambda group, base_dir=None: (local_ch, [])
+    )
+    monkeypatch.setattr(llm_mod, "_call_with_breaker", lambda p, m, fn: fn())
+    monkeypatch.setattr(llm_mod, "_local_complete", lambda *a, **k: "小桔兜底回复")
+
+    out = llm_mod.chat_memory("s", "u", free_only=True, max_tokens=20, temperature=0.7)
+    assert out == "小桔兜底回复"
+
+    log = tmp_path / "local_fallback.log"
+    assert log.exists(), "local 兜底命中应写 local_fallback.log"
+    lines = log.read_text(encoding="utf-8").strip().splitlines()
+    assert len(lines) == 1, f"应恰好记 1 行，实际 {len(lines)}"
+    rec = _json.loads(lines[0])
+    assert rec["success"] is True
+    assert "elapsed_s" in rec and "prompt_chars" in rec
+    assert rec["prompt_chars"] == len("u")
