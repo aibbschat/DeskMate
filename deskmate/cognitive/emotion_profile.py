@@ -20,6 +20,8 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
+from deskmate.constants.emotion import STATE_LOW, STATE_SMOOTH, STATE_CALM, STATE_GROWTH
+
 logger = logging.getLogger(__name__)
 
 # 维度 tag（与 emotion_extract.py 写入一致）
@@ -148,19 +150,19 @@ def mood_tint_for_event(kind: str) -> str:
         if hint == "受阻":
             neg = [x for x in t if x["polarity"] == "negative"]
             if neg:
-                return "低落"
+                return STATE_LOW
         else:
             pos = [x for x in t if x["polarity"] == "positive"]
             if pos:
-                return "顺利"
+                return STATE_SMOOTH
     # 兜底：事件类型默认映射（与 FLOWER_KINDS 一致）
     _DEFAULT = {
-        "skill_created": "顺利", "creation_approved": "顺利", "badge_unlocked": "顺利",
-        "user_corrected": "成长", "creation_rework": "成长",
-        "roundtable": "顺利", "suggestion_accepted": "顺利",
-        "skill_evolved": "顺利", "writing": "平静", "report": "顺利",
+        "skill_created": STATE_SMOOTH, "creation_approved": STATE_SMOOTH, "badge_unlocked": STATE_SMOOTH,
+        "user_corrected": STATE_GROWTH, "creation_rework": STATE_GROWTH,
+        "roundtable": STATE_SMOOTH, "suggestion_accepted": STATE_SMOOTH,
+        "skill_evolved": STATE_SMOOTH, "writing": STATE_CALM, "report": STATE_SMOOTH,
     }
-    return _DEFAULT.get(kind, "平静")
+    return _DEFAULT.get(kind, STATE_CALM)
 
 
 def emotional_context(limit_trigger: int = 3, limit_recovery: int = 2) -> str:

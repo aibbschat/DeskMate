@@ -39,6 +39,14 @@ from pathlib import Path
 from typing import Any, Optional
 
 from deskmate.coerce import as_float
+from deskmate.constants.emotion import (
+    STATE_LOW,
+    STATE_STRESS,
+    STATE_SMOOTH,
+    STATE_BUSY,
+    STATE_CALM,
+    STATE_MOOD,
+)
 from deskmate.growth import emotion_sense
 from deskmate.persistence import BlobStore
 from deskmate.paths import deskmate_base_dir
@@ -124,28 +132,28 @@ def _infer_emotion(events: dict[str, int]) -> tuple[str, str]:
     #    不顺且一整天没什么互动 = 低落。旧实现用 mood<65 判，而 mood 恒为 80，
     #    这个分支有史以来一次都没走到过。
     if neg >= 2 and neg > pos and total <= 3:
-        return "低落", f"{neg} 次不顺，且当天几乎没有其它互动"
+        return STATE_LOW, f"{neg} 次不顺，且当天几乎没有其它互动"
 
     # ② 压力大：不顺明显压过了顺，而且人还在忙
     if neg >= 2 and neg > pos:
-        return "压力大", f"{neg} 次不顺、{pos} 次顺利，共 {total} 次互动"
+        return STATE_STRESS, f"{neg} 次不顺、{pos} 次顺利，共 {total} 次互动"
 
     # ③ 只打回一次、且当天创作量不小：创作不顺确实构成压力（创作是他的主业）
     if neg == 1 and pos == 0 and creative >= 2:
-        return "压力大", f"1 次不顺，且当天有 {creative} 项创作活动"
+        return STATE_STRESS, f"1 次不顺，且当天有 {creative} 项创作活动"
 
     # ④ 顺利：有正反馈，且不比负反馈少（打回一次、定稿两次，仍算顺利）
     if pos > 0 and pos >= neg:
-        return "顺利", f"{pos} 次正反馈（定稿/采纳/学到）"
+        return STATE_SMOOTH, f"{pos} 次正反馈（定稿/采纳/学到）"
 
     # ⑤ 忙碌：没有明显不顺，但事情多
     if creative >= 2 or total >= 5:
-        return "忙碌", f"{total} 次互动，{creative} 项创作"
+        return STATE_BUSY, f"{total} 次互动，{creative} 项创作"
 
     # ⑥ 平静（含「有一两次小不顺但整体平稳」——不再整天被一次打回抹掉）
     if neg:
-        return "平静", f"节奏平稳（{neg} 次不顺未影响整体）"
-    return "平静", "节奏平稳，没有明显波动"
+        return STATE_CALM, f"节奏平稳（{neg} 次不顺未影响整体）"
+    return STATE_CALM, "节奏平稳，没有明显波动"
 
 
 class EmotionTimeline:
@@ -473,7 +481,7 @@ class EmotionTimeline:
         return {
             "state": state,
             "note": note,
-            "mood": emotion_sense.STATE_MOOD.get(state, 78.0),
+            "mood": STATE_MOOD.get(state, 78.0),
             "source": "inferred",
             # 行为推断的置信度固定偏低：看的是事件计数，不是他的表达
             "confidence": 0.4,
@@ -625,9 +633,9 @@ class EmotionTimeline:
             lines.append(f"- 其中 {len(stated)} 天出自他本人写的日记，其余为行为推断")
 
         # 关怀建议（基于趋势）
-        if "压力大" in state_counts or "低落" in state_counts:
+        if STATE_STRESS in state_counts or STATE_LOW in state_counts:
             lines.append("- 关怀提示：用户近期有压力/低落信号，可主动关心进度和状态（如「最近赶稿辛苦了，今天进度怎么样？」）。")
-        elif state_counts.get("顺利", 0) >= len(snaps) / 2:
+        elif state_counts.get(STATE_SMOOTH, 0) >= len(snaps) / 2:
             lines.append("- 关怀提示：用户近期状态顺利，可在合适时机肯定进展或聊下一步计划。")
         else:
             lines.append("- 关怀提示：用户节奏平稳，可按正常节奏互动，不必过度打扰。")

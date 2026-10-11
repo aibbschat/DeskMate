@@ -44,20 +44,9 @@ import os
 import re
 from typing import Iterable, Optional
 
+from deskmate.constants.emotion import EMOTION_STATES, STATE_MOOD
+
 logger = logging.getLogger(__name__)
-
-# 五态：与 EmotionTimeline 的 state、花园 mood_tint 三方对齐，改一处必须改三处
-EMOTION_STATES = ("顺利", "平静", "忙碌", "压力大", "低落")
-
-# 各态的心情基准值。mood 已改为情绪派生值（E1），没有第二个来源，
-# LLM 给了具体数值就用它的，没给就落到这个基准上。
-STATE_MOOD: dict[str, float] = {
-    "顺利": 82.0,
-    "平静": 78.0,
-    "忙碌": 72.0,
-    "压力大": 58.0,
-    "低落": 48.0,
-}
 
 # kill switch：DESKMATE_EMOTION_SENSE=0 一键退回纯规则（不出网、不烧 token）
 _ENV_FLAG = "DESKMATE_EMOTION_SENSE"
