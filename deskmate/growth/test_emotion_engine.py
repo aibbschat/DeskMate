@@ -280,7 +280,7 @@ def test_circadian_feature_only(engine):
 # ---------------------------------------------------------------------------
 
 def test_injection_subject_tag(tmp_base):
-    """build_full_context_for_turn 含段标题「你自己的心情（…不是萧盛的）」."""
+    """build_full_context_for_turn 含段标题「你此刻的心情（…不是萧盛的）」."""
     from deskmate.growth.emotion_engine import EmotionEngine, _ensure_schema, _db_path
     db = _db_path(tmp_base)
     _ensure_schema(db)
@@ -295,9 +295,12 @@ def test_injection_subject_tag(tmp_base):
         from deskmate.memory.manager import DeskMateMemoryManager
         mgr = DeskMateMemoryManager(base_dir=tmp_base)
         ctx = mgr.build_full_context_for_turn("你好")
-        assert "你自己的心情" in ctx
+        # 2026-10-11 修订：注入改为「当下心情标签」（get_mood_label），强制语气对齐，
+        # 不再注入滞后的自由文本 description。激素(50,50,40,30) → 标签「平静」。
+        assert "你此刻的心情" in ctx
         assert "不是萧盛的" in ctx
-        assert "今天有点安静" in ctx
+        assert "你现在的真实心情" in ctx
+        assert "平静" in ctx
     finally:
         os.environ.pop("DESKMATE_EMOTION_ENGINE", None)
 
@@ -539,3 +542,56 @@ def test_self_expression_forced_overrides_should_act_false(engine):
     assert r_blocked.action == ActionType.NO_ACTION, (
         "without fix, should_act=False should block via semantic gate"
     )
+
+
+# ---------------------------------------------------------------------------
+# §7-15: get_mood_label 与前端 hormoneToExpression 同源（对话说出的心情 == 桌宠脸）
+# ---------------------------------------------------------------------------
+
+def _set_hormones(engine, dopamine, serotonin, oxytocin, cortisol):
+    # 与读路径一致的 _connect（WAL）；用 INSERT OR REPLACE 保证行存在（首读前无行）。
+    from deskmate.growth.emotion_engine import _connect
+    from datetime import datetime
+    with _connect(engine._db) as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO emotion_state "
+            "(key, dopamine, serotonin, oxytocin, cortisol, description, updated_at) "
+            "VALUES ('self', ?, ?, ?, ?, '（测试）', ?)",
+            (dopamine, serotonin, oxytocin, cortisol, datetime.now().isoformat(timespec="seconds")),
+        )
+
+
+def test_mood_label_happy_from_high_dopamine(engine):
+    """dopamine>=65 且 cortisol 低 → 开心（与前端 laugh 同源）。"""
+    _set_hormones(engine, 80, 50, 40, 25)
+    assert engine.get_mood_label()["label"] == "开心"
+
+
+def test_mood_label_low_from_high_cortisol(engine):
+    """cortisol>=60 且 dopamine 低 → 低落（与前端 cry 同源）。"""
+    _set_hormones(engine, 30, 50, 40, 70)
+    assert engine.get_mood_label()["label"] == "低落"
+
+
+def test_mood_label_angry_from_high_cortisol_dopamine(engine):
+    """cortisol>=60 且 dopamine>=65 → 烦躁（与前端 angry 同源）。"""
+    _set_hormones(engine, 80, 50, 40, 70)
+    assert engine.get_mood_label()["label"] == "烦躁"
+
+
+def test_mood_label_peaceful_from_serotonin(engine):
+    """serotonin>=60 且 dopamine<50 → 平静（与前端 sleepy 同源）。"""
+    _set_hormones(engine, 30, 75, 40, 25)
+    assert engine.get_mood_label()["label"] == "平静"
+
+
+def test_mood_label_close_from_oxytocin(engine):
+    """oxytocin>=60 → 亲近（与前端 shy 同源）。"""
+    _set_hormones(engine, 30, 50, 70, 25)
+    assert engine.get_mood_label()["label"] == "亲近"
+
+
+def test_mood_label_default_neutral(engine):
+    """激素都在阈值内 → 平静（与前端 smile 同源）。"""
+    _set_hormones(engine, 50, 50, 40, 30)
+    assert engine.get_mood_label()["label"] == "平静"

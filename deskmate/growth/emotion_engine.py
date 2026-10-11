@@ -229,6 +229,38 @@ class EmotionEngine:
         except Exception:
             return ""
 
+    def get_mood_label(self) -> dict:
+        """返回小桔「当下」心情的权威标签（供对话注入 + 与桌宠脸同源）。
+
+        阈值与前端 surfaces/gui/src/components/deskmate/mascotEmoteMap.ts 的
+        HORMONE_THRESHOLDS / hormoneToExpression **严格对齐**——保证「对话里说出的心情」
+        与「桌宠展示的脸」永不矛盾（dopamine>=65↔laugh/开心，cortisol>=60↔cry/低落，
+        serotonin>=60&dopamine<50↔sleepy/平静，oxytocin>=60↔shy/亲近）。
+        取**当前**激素（turn 时实时算，非 update_after_turn 写回的滞后文本）。
+        """
+        try:
+            s = self.get_state()
+            d = float(s.get("dopamine", DOPAMINE_BASE))
+            se = float(s.get("serotonin", SEROTONIN_BASE))
+            ox = float(s.get("oxytocin", OXYTOCIN_BASE))
+            co = float(s.get("cortisol", CORTISOL_BASE))
+        except Exception:
+            return {"label": "平静", "detail": "心里没什么波澜", "intensity": 0.0}
+
+        # 与前端 HORMONE_THRESHOLDS 对齐：CORTISOL_HIGH=60, DOPAMINE_HIGH=65,
+        # DOPAMINE_LOW=50, SEROTONIN_HIGH=60, OXYTOCIN_HIGH=60
+        if co >= 60.0 and d >= 65.0:
+            return {"label": "烦躁", "detail": "心里有点急、有点躁", "intensity": (co - 60.0) / 40.0}
+        if co >= 60.0:
+            return {"label": "低落", "detail": "心里发沉、有点难受", "intensity": (co - 60.0) / 40.0}
+        if d >= 65.0:
+            return {"label": "开心", "detail": "心里亮亮的、轻快", "intensity": (d - 65.0) / 35.0}
+        if se >= 60.0 and d < 50.0:
+            return {"label": "平静", "detail": "心里安稳、松弛", "intensity": (se - 60.0) / 40.0}
+        if ox >= 60.0:
+            return {"label": "亲近", "detail": "心里软软的、想靠近你", "intensity": (ox - 60.0) / 40.0}
+        return {"label": "平静", "detail": "心里没什么波澜", "intensity": 0.0}
+
     def update_after_turn(
         self,
         user_msg: str,
@@ -288,7 +320,7 @@ class EmotionEngine:
             system=_EMOTION_SYSTEM,
             user=prompt_user,
             free_only=True,
-            temperature=0.5,
+            temperature=0.35,
             max_tokens=300,
         )
 

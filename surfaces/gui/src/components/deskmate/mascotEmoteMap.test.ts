@@ -56,8 +56,8 @@ describe("mascotStateToExpression（瞬时/事件层）", () => {
     expect(mascotStateToExpression("happy")).toBe("cheer");
   });
 
-  it("concerned → cry", () => {
-    expect(mascotStateToExpression("concerned")).toBe("cry");
+  it("concerned → neutral（UI 状态不劫持情绪脸，哭只来自激素 cortisol>=60）", () => {
+    expect(mascotStateToExpression("concerned")).toBe("neutral");
   });
 
   it("idle / walking / null → smile（不覆盖激素层）", () => {
@@ -78,7 +78,7 @@ describe("isWorkingState", () => {
 describe("resolveFace（最终优先级）", () => {
   it("激素缺失时退回运行状态映射", () => {
     expect(resolveFace(null, "happy")).toBe("cheer");
-    expect(resolveFace(undefined, "concerned")).toBe("cry");
+    expect(resolveFace(undefined, "concerned")).toBe("neutral");
     expect(resolveFace(null, "thinking")).toBe("neutral");
     expect(resolveFace(null, null)).toBe("smile");
   });

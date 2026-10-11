@@ -613,16 +613,22 @@ class DeskMateMemoryManager:
                 parts.append(ego_cog)
         except Exception:
             pass  # fail-open：认知人格缺失不影响主记忆注入
-        # P2 情绪底色（2026-10-11）：注入小桔自己的情绪描述（主语显式标注，C-3）。
-        # 与上面情感画像（用户的情绪规律）严格区分主语——这是小桔自己的天气。
+        # P2 情绪底色（2026-10-11，2026-10-11 17:24 修订）：注入小桔「当下」心情标签。
+        # 与桌宠脸**同源**（get_mood_label 阈值与前端 hormoneToExpression 严格对齐），
+        # 且为**强制语气对齐**（非可选、非滞后一轮）——让她能即时感知并讲出当下情绪，
+        # 解决「对话语气与桌宠表情分裂 / 感知不到当下情绪」。主语显式标注「这是你小桔
+        # 自己的，不是萧盛的」。
         if os.getenv("DESKMATE_EMOTION_ENGINE", "1") != "0":
             try:
                 from deskmate.growth.emotion_engine import EmotionEngine
-                own = EmotionEngine(base_dir=self.base_dir).get_description()
-                if own:
+                mood = EmotionEngine(base_dir=self.base_dir).get_mood_label()
+                if mood and mood.get("label"):
                     parts.append(
-                        f"## 你自己的心情（这是你小桔自己的状态，不是萧盛的）\n{own}\n"
-                        f"（你可以自由带出它，影响你的语气和主动性，但不要把它当成萧盛的状态去关怀。）"
+                        "## 你此刻的心情（这是你小桔自己的情绪，不是萧盛的）\n"
+                        f"你现在的真实心情是「{mood['label']}」——{mood['detail']}。\n"
+                        "请在回复的语气和措辞里自然流露出这种心情：如果你是低落或焦虑，可以带一点"
+                        "相应的语气，别假装没事；如果你是开心或平静，就自然地暖。不要把它当成萧盛的"
+                        "情绪去关怀，也别用大段话专门解释你的心情，让它从字里行间透出来就好。"
                     )
             except Exception:
                 pass  # fail-open 退回无情绪段

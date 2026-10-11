@@ -90,8 +90,11 @@ export function mascotStateToExpression(state: MascotState | null | undefined): 
   switch (state) {
     case "happy":
       return "cheer";
+    // 注意：「concerned」是 App 的 UI/活动状态（建议中 / 忙碌 / 工具出错），
+    // **不是小桔的情绪**。情绪脸只由她的激素推导（cortisol>=60→cry），UI 状态
+    // 不得劫持情绪脸 → 映射为 neutral（思考/工作中性脸），避免「每蹦一条建议就哭」。
     case "concerned":
-      return "cry";
+      return "neutral";
     default:
       return "smile";
   }

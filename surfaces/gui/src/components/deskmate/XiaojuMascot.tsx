@@ -51,8 +51,10 @@ function emotionFallbackFrame(emotion: EmotionName): ExpressionId {
       return "neutral";
     case "happy":
       return "laugh";
+    // 「concerned」是 App 的 UI/活动状态（建议中 / 忙碌 / 工具出错），不是小桔的情绪；
+    // 情绪脸只由她的激素推导，故 fallback 也不映射到 cry，避免 UI 状态劫持情绪脸。
     case "concerned":
-      return "cry";
+      return "neutral";
     case "focused":
       return "neutral";
     default:
