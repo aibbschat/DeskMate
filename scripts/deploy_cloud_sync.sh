@@ -146,6 +146,11 @@ CHANNEL_MODULES=(
   # （库里存着的事实/日记回灌不进理解与聊天），且**不报错**，只能靠对账发现。
   # 2026-10-09 实测：集合级对账（211 共有文件 0 漂移）抓出本条唯一差异。
   "deskmate/memory/user_fact_context.py"
+  # ⚠️ P2 情绪底色（2026-10-11）：小桔自己的连续内在情绪引擎。
+  # manager.py（L616 注入 + L2774 after-turn hook）和 tick.py（L249 衰减 + L527 注入）
+  # 均 import 它。漏传 → 云端 manager/tick 跑旧码，情绪注入因 fail-open 静默失效
+  # （小桔在云端「没有自己的天气」），且**不报错**（同 user_fact_context 漏传教训）。
+  "deskmate/growth/emotion_engine.py"
 )
 
 # 小桔手记行为（ai_circle_column.py）：含「专属表情 [xj:id] 封闭词表」注入（2026-10-07

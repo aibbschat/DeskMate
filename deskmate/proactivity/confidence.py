@@ -31,6 +31,10 @@ THRESHOLD_PREPARE = 0.5    # 50%-80% → 静默准备
 # 用更低门槛让其更容易触发；且不走 PREPARE（关怀不需要「静默准备」）。
 THRESHOLD_SUGGEST_CARE = 0.6
 
+# P2 情绪底色（2026-10-11）：self_expression 专属门槛。独立于 emotional_care，
+# 不受其 7 天冷却限制（C-2）。小桔自己的情绪表达，门槛与关怀相当。
+THRESHOLD_SUGGEST_SELF_EXPRESSION = 0.55
+
 
 def evaluate_action(
     confidence: float,
@@ -83,6 +87,21 @@ def evaluate_action(
             action=ActionType.NO_ACTION,
             confidence=confidence,
             reason=reason or f"情感关怀置信度不足 ({confidence:.0%})，不主动打扰",
+        )
+
+    # P2 情绪底色（2026-10-11）：self_expression 独立于 emotional_care（C-2）。
+    # 不受 emotional_care 的 7 天冷却限制，专属低门槛，不做 PREPARE 过渡。
+    if suggestion_type == "self_expression":
+        if confidence >= THRESHOLD_SUGGEST_SELF_EXPRESSION:
+            return ActionDecision(
+                action=ActionType.SUGGEST,
+                confidence=confidence,
+                reason=reason or f"小桔的心情 ({confidence:.0%})，自我表达",
+            )
+        return ActionDecision(
+            action=ActionType.NO_ACTION,
+            confidence=confidence,
+            reason=reason or f"自我表达置信度不足 ({confidence:.0%})，暂不打扰",
         )
 
     thr_suggest = suggest_threshold if suggest_threshold is not None else THRESHOLD_SUGGEST

@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import re
 import time
 from dataclasses import dataclass, field
@@ -245,6 +246,14 @@ class ProactiveEngine:
             prepare_thr = THRESHOLD_PREPARE
             self._growth_interval_ratio = 1.0
         self._heartbeat_interval_ms = int(5 * 60_000 * self._growth_interval_ratio)
+
+        # P2 情绪底色（2026-10-11）：每 5min tick 衰减（纯计算，不花 token）。
+        try:
+            from deskmate.growth.emotion_engine import EmotionEngine
+            from datetime import datetime as _dt
+            EmotionEngine(base_dir=self.base_dir).decay_step(_dt.now())
+        except Exception:
+            pass  # fail-open
 
         # ===== 1.6 日记灵感（后台动作，不打扰、不占通道）=====
         # 与深度访谈同一范式：纯规则、零 LLM、条件满足才发生。
@@ -509,6 +518,14 @@ class ProactiveEngine:
             emotion_profile_ctx = emotional_context()
         except Exception:
             emotion_profile_ctx = ""
+        # P2 情绪底色（2026-10-11）：小桔自己的情绪描述（主语显式标注，C-3）。
+        own_emotion_ctx = ""
+        if os.getenv("DESKMATE_EMOTION_ENGINE", "1") != "0":
+            try:
+                from deskmate.growth.emotion_engine import EmotionEngine
+                own_emotion_ctx = EmotionEngine(base_dir=self.base_dir).get_description()
+            except Exception:
+                own_emotion_ctx = ""
         # 「她观察到的世界」：把小桔主动摄入的外部观察回灌主动推理上下文，
         # 让 L2 主动决策（judge）也能依据她看到的世界判断要不要介入（2026-09-06）。
         # fail-open：取不到就当空，绝不拖累 tick。
@@ -537,6 +554,8 @@ class ProactiveEngine:
             extra_ctx += f"\n## 情感回顾（连续关怀）\n{emotion_ctx}"
         if emotion_profile_ctx:
             extra_ctx += f"\n## 情感画像（他亲口说过的情绪，关怀请贴合）\n{emotion_profile_ctx}"
+        if own_emotion_ctx:
+            extra_ctx += f"\n## 你自己的心情（不是萧盛的，是你自己的）\n{own_emotion_ctx}"
         if extra_ctx:
             ctx = ProactiveContext(
                 perception=ctx.perception,
@@ -587,6 +606,22 @@ class ProactiveEngine:
             )
         judgment = judge_proactive_action(context_text, model=self.model)
 
+        # P2 情绪底色（2026-10-11 整改）：硬冷却消费 pending。
+        # emotion_engine 在激素显著变化时写 pending → tick 消费它，强制 self_expression，
+        # 发起后清 pending + 刷 2h cooldown。不依赖 LLM 自发返回 suggestion_type。
+        _self_expression_forced = False
+        try:
+            from deskmate.growth.emotion_engine import EmotionEngine
+            _ee = EmotionEngine(base_dir=self.base_dir)
+            if _ee.get_self_expression_pending():
+                judgment.suggestion_type = "self_expression"
+                judgment.confidence = max(judgment.confidence, 0.6)
+                judgment.should_act = True  # 绕过语义闸门（should_act=False 默认值会拦死强制路径）
+                judgment.reasoning = (judgment.reasoning or "") + "；情绪引擎 pending 强制自我表达"
+                _self_expression_forced = True
+        except Exception:
+            pass
+
         # ===== 3. 行动（Act）=====
         # 信任感调制阈值已在开头算好（trust 高 → 阈值下调 → 更敢主动）
         decision = evaluate_action(
@@ -599,6 +634,14 @@ class ProactiveEngine:
             # 强制 NO_ACTION——杜绝 "没发现异常" 被误录为 pending 并递出。
             should_act=judgment.should_act,
         )
+
+        # 消费 pending：发起后清 pending + 刷 cooldown（2h 内不重复）
+        if _self_expression_forced and decision.action == ActionType.SUGGEST:
+            try:
+                from deskmate.growth.emotion_engine import EmotionEngine
+                EmotionEngine(base_dir=self.base_dir).consume_self_expression_pending()
+            except Exception:
+                pass
 
         # P2-4：「看见你在做什么」活动描述 + 长时间专注陪伴语
         # 必须在 NO_ACTION 提前 return 之前计算，否则 get_companion_tracker().update()

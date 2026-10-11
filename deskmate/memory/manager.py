@@ -613,6 +613,19 @@ class DeskMateMemoryManager:
                 parts.append(ego_cog)
         except Exception:
             pass  # fail-open：认知人格缺失不影响主记忆注入
+        # P2 情绪底色（2026-10-11）：注入小桔自己的情绪描述（主语显式标注，C-3）。
+        # 与上面情感画像（用户的情绪规律）严格区分主语——这是小桔自己的天气。
+        if os.getenv("DESKMATE_EMOTION_ENGINE", "1") != "0":
+            try:
+                from deskmate.growth.emotion_engine import EmotionEngine
+                own = EmotionEngine(base_dir=self.base_dir).get_description()
+                if own:
+                    parts.append(
+                        f"## 你自己的心情（这是你小桔自己的状态，不是萧盛的）\n{own}\n"
+                        f"（你可以自由带出它，影响你的语气和主动性，但不要把它当成萧盛的状态去关怀。）"
+                    )
+            except Exception:
+                pass  # fail-open 退回无情绪段
         # 「越用越懂你·每日读书」：把面板里的读书沉淀接回对话（修复死数据）
         # —— auto_tasks 读书洞察此前只展示在「作品与创作」面板，聊天检索链路不消费。
         try:
@@ -2758,4 +2771,22 @@ class DeskMateMemoryManager:
         if len(files) > 50:
             for f in files[:-50]:
                 f.unlink()
+        # P2 情绪底色（2026-10-11）：对话后异步触发情绪更新（挂载点 §4.6）。
+        # 本函数已在 L826 经 executor.submit 异步执行，再内部分发到 emotion 内部
+        # 线程即双重异步、绝不阻塞主对话。
+        try:
+            from deskmate.growth.emotion_engine import EmotionEngine
+            chat_interval = 300.0
+            prev_files = [f for f in files if f.name != p.name]
+            if prev_files:
+                try:
+                    prev_ts = int(prev_files[-1].stem)
+                    chat_interval = max(0.0, (ts - prev_ts) / 1e9)
+                except (ValueError, IndexError):
+                    pass
+            EmotionEngine(base_dir=self.base_dir).update_after_turn(
+                user_msg, assistant_msg, chat_interval_sec=chat_interval,
+            )
+        except Exception:
+            pass  # fail-open：情绪更新失败不影响主流程
         return p

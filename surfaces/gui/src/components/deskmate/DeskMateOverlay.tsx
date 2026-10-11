@@ -84,6 +84,21 @@ interface Props {
   hidden?: boolean;
 }
 
+/** P2 情绪底色：4 激素 → 吉祥物状态映射。
+ *  开心（dopamine 高 + cortisol 低）→ happy；
+ *  压力大（cortisol 高）→ concerned；
+ *  平静（serotonin 高）→ idle；
+ *  其余 → null（不覆盖当前状态）。
+ */
+function hormoneToMascot(
+  dopamine: number, serotonin: number, _oxytocin: number, cortisol: number,
+): "happy" | "concerned" | "idle" | null {
+  if (cortisol >= 60) return "concerned";
+  if (dopamine >= 65 && cortisol < 40) return "happy";
+  if (serotonin >= 60 && dopamine < 50) return "idle";
+  return null;
+}
+
 export function DeskMateOverlay({ agent, sessionId, activeExpert, hidden }: Props) {
   const [panelOpen, setPanelOpen] = useState(false);
   const [memoryOpen, setMemoryOpen] = useState(false);
@@ -234,6 +249,12 @@ export function DeskMateOverlay({ agent, sessionId, activeExpert, hidden }: Prop
   // 成长系统快照（等级/亲密度/信任感/默契度/技能熟练度），面板展开时拉取
   const [growth, setGrowth] = useState<GrowthSnapshot | null>(null);
 
+  // P2 情绪底色（2026-10-11）：小桔自己的内在情绪（4 激素 + 描述）
+  const [innerEmotion, setInnerEmotion] = useState<{
+    dopamine: number; serotonin: number; oxytocin: number; cortisol: number;
+    description: string; updated_at: string;
+  } | null>(null);
+
   // 勋章解锁报喜：队列 + 当前正在展示的一枚
   const [celebrationQueue, setCelebrationQueue] = useState<CelebrationItem[]>([]);
   const [activeCelebration, setActiveCelebration] = useState<CelebrationItem | null>(null);
@@ -257,6 +278,21 @@ export function DeskMateOverlay({ agent, sessionId, activeExpert, hidden }: Prop
           fresh.forEach((b) => celebratedIdsRef.current.add(b.id));
           setCelebrationQueue((q) => [...q, ...fresh]);
         }
+      }
+    } catch { /* 静默降级 */ }
+  }, []);
+
+  // P2 情绪底色：拉取小桔自己的内在情绪状态
+  const refreshInnerEmotion = useCallback(async () => {
+    try {
+      const r = await authedFetch(`${httpBase()}/v1/deskmate/emotion`);
+      if (!r.ok) return;
+      const d = await r.json();
+      if (d && typeof d.dopamine === "number") {
+        setInnerEmotion(d);
+        // 激素 → 吉祥物表情映射
+        const mascot = hormoneToMascot(d.dopamine, d.serotonin, d.oxytocin, d.cortisol);
+        if (mascot) setMascotState(mascot);
       }
     } catch { /* 静默降级 */ }
   }, []);
@@ -295,25 +331,30 @@ export function DeskMateOverlay({ agent, sessionId, activeExpert, hidden }: Prop
       .catch(() => {/* 静默降级 */});
     // 拉取成长系统快照（等级/亲密度/信任感/默契度/技能熟练度）+ 检测新解锁勋章
     void refreshGrowth();
+    void refreshInnerEmotion();
   }, [panelOpen]);
 
-  // 挂载时拉取一次 growth 快照（同时检测是否有新解锁勋章可报喜）
+  // 挂载时拉取一次 growth 快照（同时检测是否有新解锁勋章可报喜）+ 情绪状态
   useEffect(() => {
     void refreshGrowth();
-  }, [refreshGrowth]);
+    void refreshInnerEmotion();
+  }, [refreshGrowth, refreshInnerEmotion]);
 
   // 勋章解锁报喜：定时自检（覆盖聊天计数 / 圆桌等不经由面板的路径）+ 事件触发
   useEffect(() => {
     const onRefresh = () => { void refreshGrowth(); };
     window.addEventListener("deskmate:badges-refresh", onRefresh);
     const timer = window.setInterval(() => {
-      if (!document.hidden) void refreshGrowth();
+      if (!document.hidden) {
+        void refreshGrowth();
+        void refreshInnerEmotion();
+      }
     }, 20_000);
     return () => {
       window.removeEventListener("deskmate:badges-refresh", onRefresh);
       window.clearInterval(timer);
     };
-  }, [refreshGrowth]);
+  }, [refreshGrowth, refreshInnerEmotion]);
 
   // 报喜队列推进：一次只展示一枚（activeCelebration 为空且队列非空时取下一枚）
   useEffect(() => {
@@ -626,6 +667,30 @@ export function DeskMateOverlay({ agent, sessionId, activeExpert, hidden }: Prop
               try { setMemoryGraphOpen(true); } catch (e) { console.error("dblclick error", e); }
             }}
           />
+          {/* P2 情绪底色：小桔的天气（description 气泡，点击 mascot 时不遮挡） */}
+          {innerEmotion?.description && !panelOpen && (
+            <div
+              className="mascot-weather-bubble"
+              style={{
+                position: "absolute",
+                bottom: "-1.6em",
+                left: "50%",
+                transform: "translateX(-50%)",
+                fontSize: "0.72em",
+                color: "var(--muted-ink, #888)",
+                background: "var(--card-bg, rgba(255,255,255,0.85))",
+                borderRadius: "0.6em",
+                padding: "0.15em 0.55em",
+                whiteSpace: "nowrap",
+                pointerEvents: "none",
+                opacity: 0.85,
+                boxShadow: "0 1px 3px rgba(0,0,0,0.08)",
+              }}
+              title={`dopamine ${innerEmotion.dopamine.toFixed(0)} · serotonin ${innerEmotion.serotonin.toFixed(0)} · oxytocin ${innerEmotion.oxytocin.toFixed(0)} · cortisol ${innerEmotion.cortisol.toFixed(0)}`}
+            >
+              {innerEmotion.description}
+            </div>
+          )}
           {activeCelebration && (
             <div className="mascot-speech mascot-celebrate" data-testid="badge-celebration">
               <button

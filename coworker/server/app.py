@@ -3204,6 +3204,29 @@ def create_app(manager: SessionManager) -> FastAPI:
             logging.exception("get deskmate growth failed")
             return JSONResponse({"error": "growth failed"}, status_code=500)
 
+    @app.get("/v1/deskmate/emotion")
+    async def get_deskmate_emotion() -> dict[str, Any]:
+        """获取小桔自己的内在情绪状态（4 激素 + 描述）。
+
+        P2 情绪底色（2026-10-11）：前端「小桔的天气」面板用。
+        DESKMATE_EMOTION_ENGINE=0 时返回空对象（fail-open）。
+        """
+        try:
+            import os as _os
+            from pathlib import Path as _P
+
+            if _os.getenv("DESKMATE_EMOTION_ENGINE", "1") == "0":
+                return {}
+            from deskmate.growth.emotion_engine import EmotionEngine
+
+            desk_dir = _P(
+                _os.environ.get("DESKMATE_DIR", _os.path.expanduser("~/.deskmate"))
+            )
+            return EmotionEngine(base_dir=desk_dir).get_state()
+        except Exception:
+            logging.exception("get deskmate emotion failed")
+            return {}
+
     @app.get("/v1/deskmate/badges")
     async def get_deskmate_badges() -> dict[str, Any]:
         """获取勋章墙数据（全量勋章 + 获得状态 + 进度 + 解锁时间 + 统计摘要）。
