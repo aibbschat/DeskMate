@@ -25,7 +25,7 @@ from datetime import datetime
 from typing import Any, Optional
 
 from deskmate.cognitive.interfaces import ValidationEngine
-from deskmate.cognitive.models import CognitiveProfile, SourceRef, HistoryEntry
+from deskmate.cognitive.models import CognitiveProfile, SourceRef, HistoryEntry, Stance
 
 logger = logging.getLogger(__name__)
 
@@ -610,11 +610,21 @@ class TuringScenarioEngine(ValidationEngine):  # noqa: F821 (base 在 interfaces
                         pm=pm,
                         mode="new_only",
                     )
+                except Exception as e:
+                    logger.warning("验证答对 LLM 抽取失败（降级规则兜底）: %s", e)
+                    dep = {"error": "exception"}
+                # 任何抽取失败（不可用 / 抛异常 / JSON 解析失败 / 调用失败）一律降级为
+                # 规则兜底落条，绝不静默丢弃用户作答——原逻辑只 warned 不落，等于白答
+                # （与 interview._absorb_response 同修，2026-10-11 萧哥实证）。成功（无
+                # error 键）仍信任 LLM 路径、由抽取器落结构化新认知，不重复落。
+                if dep.get("error"):
+                    d = _deposit_rule_fallback(pm, user_response, scenario)
+                    if d:
+                        note += f"；沉淀 {d} 条新认知（规则兜底·含情境标签）"
+                else:
                     d = dep.get("deposited", 0)
                     if d:
                         note += f"；沉淀 {d} 条新认知（含情境标签）"
-                except Exception as e:
-                    logger.warning("验证答对沉淀失败（不影响原置信度逻辑）: %s", e)
         elif overall < 0.5:
             # 不像：降置信度 + 生成 gap
             if targets:
@@ -655,6 +665,42 @@ class TuringScenarioEngine(ValidationEngine):  # noqa: F821 (base 在 interfaces
     def _evaluate_stub(self) -> dict:
         """占位——保留接口，实际逻辑走 evaluate_similarity。"""
         return {}
+
+
+def _deposit_rule_fallback(pm, user_response: str, scenario: str = "") -> int:
+    """验证答对·LLM 抽取失败时的规则兜底：把用户作答落成新认知条目，避免新角度静默丢失。
+
+    与 interview._absorb_response_rule 同思路——LLM 不可用 / 抛异常 / JSON 解析失败 /
+    调用失败时，用规则把回答落为 stance 并打 validation 情境标签。幂等：同主题已有
+    active 条目则只补来源、不重复落。成功（LLM 抽取器正常返回结构化新认知）不走这里。
+    """
+    text = (user_response or "").strip()
+    if not text or pm is None:
+        return 0
+    topic = (scenario or "")[:60].strip() or "认知验证作答"
+    profile = pm.profile
+    for s in profile.stances:
+        if s.topic == topic and s.status == "active":
+            s.add_source(SourceRef(
+                type="validation", title="认知验证",
+                excerpt=text[:120], date=datetime.now().isoformat()[:10], confidence=0.6))
+            s.last_updated = datetime.now().isoformat()
+            return 1
+    stance = Stance(
+        topic=topic,
+        content=text[:200],
+        category="认知验证",
+        tags=["认知验证", "validation"],
+    )
+    stance.add_source(SourceRef(
+        type="validation", title="认知验证",
+        excerpt=text[:120], date=datetime.now().isoformat()[:10], confidence=0.6))
+    stance.history.append(HistoryEntry(
+        action="created", new_value=text[:200],
+        reason="验证答对·规则兜底沉淀", source="认知验证"))
+    profile.stances.append(stance)
+    profile.extraction_count += 1
+    return 1
 
 
 def _topic_from_eval(evaluation: dict) -> str:

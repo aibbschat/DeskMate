@@ -348,3 +348,75 @@ def test_generate_scenario_without_store_is_deterministic():
     s2 = engine.generate_scenario(pm.get())
     assert s1["scenario"] == s2["scenario"], "无 store 应确定性出同一道题"
     assert "稿费" in s1["scenario"], "确定性路径默认取 template[0]（含稿费翻倍）"
+
+
+# ---------------------------------------------------------------------------
+# 回归：验证答对时 LLM 抽取失败不得静默丢弃用户作答
+# ---------------------------------------------------------------------------
+
+def _make_pass_eval(scenario):
+    return {
+        "overall_score": 0.9,
+        "dimension_scores": {"stance": 0.95, "argument": 0.9, "value": 0.9, "expression": 0.9},
+        "divergence_points": [],
+        "related_items": scenario["related_items"],
+        "scenario": scenario["scenario"],
+    }
+
+
+def test_apply_feedback_rule_fallback_when_extractor_raises(monkeypatch):
+    """答对时 extract_cognitive_items 抛异常 → 规则兜底落新认知，不静默丢弃。
+
+    回归背景：原 apply_feedback 对抽取异常只 logger.warning 不落任何条目，等于用户
+    答对的作答里的新角度被丢掉（2026-10-11 萧哥实证同类问题）。修复后任何失败都
+    走 _deposit_rule_fallback。
+    """
+    def boom(*a, **k):
+        raise RuntimeError("LLM 抽取挂了")
+
+    monkeypatch.setattr("deskmate.cognitive.extractor.extract_cognitive_items", boom)
+
+    pm, tmp = _fresh_manager()
+    engine = get_validation_engine()
+    scenario = engine.generate_scenario(pm.get())
+
+    before = len(pm.get().stances)
+    engine.apply_feedback(
+        pm.get(), _make_pass_eval(scenario),
+        user_response="我宁可少赚也不改史料。真实比金钱重要，这是我写历史小说的底线。",
+        pm=pm,
+    )
+    pm.save()
+
+    after = len(pm.get().stances)
+    assert after == before + 1, f"抽取抛异常应规则兜底落 1 条新认知，但 {before} → {after}"
+    new = next(
+        s for s in pm.get().stances
+        if getattr(s, "category", "") == "认知验证" and "validation" in (s.tags or [])
+    )
+    assert new is not None
+    assert "规则兜底" in (new.history[-1].reason if new.history else "")
+
+
+def test_apply_feedback_rule_fallback_when_extractor_returns_error(monkeypatch):
+    """答对时 extract_cognitive_items 返回 {'error': ...}（解析/调用失败，不抛异常）
+    → 同样规则兜底落新认知，不静默丢弃。"""
+    def err_dict(*a, **k):
+        return {"error": "json_parse_failed"}
+
+    monkeypatch.setattr("deskmate.cognitive.extractor.extract_cognitive_items", err_dict)
+
+    pm, tmp = _fresh_manager()
+    engine = get_validation_engine()
+    scenario = engine.generate_scenario(pm.get())
+
+    before = len(pm.get().stances)
+    engine.apply_feedback(
+        pm.get(), _make_pass_eval(scenario),
+        user_response="稿费翻倍我也不改。史料真实是我的创作底线，不为商业扭曲历史。",
+        pm=pm,
+    )
+    pm.save()
+
+    after = len(pm.get().stances)
+    assert after == before + 1, f"抽取返回 error 应规则兜底落 1 条新认知，但 {before} → {after}"
