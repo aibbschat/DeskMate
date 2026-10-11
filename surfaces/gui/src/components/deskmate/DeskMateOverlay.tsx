@@ -35,6 +35,12 @@ import {
   emotionToMascotState,
   mascotToEmotionName,
 } from "./EmotionState";
+import { type MascotState } from "./MascotStates";
+import {
+  type ExpressionId,
+  mascotStateToExpression,
+  resolveFace,
+} from "./mascotEmoteMap";
 import { type Expert } from "./experts";
 
 /* ------------------------------------------------------------------ */
@@ -156,6 +162,15 @@ export function DeskMateOverlay({ agent, sessionId, activeExpert, hidden }: Prop
     idleDuration: [5000, 12000],
     walkDuration: [4000, 8000],
   });
+
+  // B 方案换脸：mascotState 实时镜像到 ref，供 20s 情绪轮询读取最新状态。
+  const mascotStateRef = useRef<MascotState>(mascotState);
+  useEffect(() => {
+    mascotStateRef.current = mascotState;
+  }, [mascotState]);
+
+  // B 方案换脸：当前表情帧（由 P2 情绪底色 / 运行状态解析，驱动 XiaojuMascot 换脸）。
+  const [expression, setExpression] = useState<ExpressionId>("smile");
 
   // 拖拽桌宠：按下后移动超过 5px 视为拖拽，暂停行走并跟手移动；松开恢复。
   const handleMascotMouseDown = useCallback((e: React.MouseEvent) => {
@@ -290,9 +305,11 @@ export function DeskMateOverlay({ agent, sessionId, activeExpert, hidden }: Prop
       const d = await r.json();
       if (d && typeof d.dopamine === "number") {
         setInnerEmotion(d);
-        // 激素 → 吉祥物表情映射
+        // 激素 → 姿态/粒子层（原有行为：压力大低头、开心跳跃…）
         const mascot = hormoneToMascot(d.dopamine, d.serotonin, d.oxytocin, d.cortisol);
         if (mascot) setMascotState(mascot);
+        // B 方案换脸：激素持续心情 → 表情帧（工作状态优先 neutral，见 resolveFace）
+        setExpression(resolveFace(d, mascotStateRef.current));
       }
     } catch { /* 静默降级 */ }
   }, []);
@@ -459,7 +476,10 @@ export function DeskMateOverlay({ agent, sessionId, activeExpert, hidden }: Prop
       const d = (e as CustomEvent<{ emotion: EmotionName; params?: EmotionParams }>).detail;
       if (d?.emotion) {
         // 同步到桌宠状态
-        setMascotState(emotionToMascotState(d.emotion));
+        const mapped = emotionToMascotState(d.emotion);
+        setMascotState(mapped);
+        // B 方案换脸：事件性情绪即时驱动表情帧（thinking→neutral / happy→cheer / concerned→cry）
+        setExpression(mascotStateToExpression(mapped));
       }
     };
     const onStatus = (e: Event) => {
@@ -469,7 +489,9 @@ export function DeskMateOverlay({ agent, sessionId, activeExpert, hidden }: Prop
       if (d.confidence !== undefined) setConfidence(d.confidence);
       if (d.memories) setMemories(d.memories);
       if (d.emotion) {
-        setMascotState(emotionToMascotState(d.emotion));
+        const mapped = emotionToMascotState(d.emotion);
+        setMascotState(mapped);
+        setExpression(mascotStateToExpression(mapped));
       }
     };
     const onMemoryUpdate = (e: Event) => {
@@ -652,6 +674,7 @@ export function DeskMateOverlay({ agent, sessionId, activeExpert, hidden }: Prop
           {/* 小桔桌宠 */}
           <XiaojuMascot
             emotion={currentEmotion}
+            expression={expression}
             walkDirection={direction}
             isWalking={mascotState === "walking"}
             scale={petScale}

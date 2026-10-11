@@ -19,10 +19,51 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { EmotionName } from "./EmotionState";
+import type { ExpressionId } from "./mascotEmoteMap";
 import mascotImg from "../../assets/mascot-xiaoju.png";
+// B 方案表情帧：同一构图只换脸（1024² 透明 PNG，assets/mascot-frames/）
+import laughImg from "../../assets/mascot-frames/laugh.png";
+import cheerImg from "../../assets/mascot-frames/cheer.png";
+import cryImg from "../../assets/mascot-frames/cry.png";
+import angryImg from "../../assets/mascot-frames/angry.png";
+import shockImg from "../../assets/mascot-frames/shock.png";
+import sleepyImg from "../../assets/mascot-frames/sleepy.png";
+import shyImg from "../../assets/mascot-frames/shy.png";
+import neutralImg from "../../assets/mascot-frames/neutral.png";
+
+/** 表情帧 id → 打包内图片资源。 */
+const FRAME_MAP: Record<ExpressionId, string> = {
+  smile: mascotImg,
+  laugh: laughImg,
+  cheer: cheerImg,
+  cry: cryImg,
+  angry: angryImg,
+  shock: shockImg,
+  sleepy: sleepyImg,
+  shy: shyImg,
+  neutral: neutralImg,
+};
+
+/** 无 expression 时的兜底：由 EmotionName 推断表情帧（保持旧调用方兼容）。 */
+function emotionFallbackFrame(emotion: EmotionName): ExpressionId {
+  switch (emotion) {
+    case "thinking":
+      return "neutral";
+    case "happy":
+      return "laugh";
+    case "concerned":
+      return "cry";
+    case "focused":
+      return "neutral";
+    default:
+      return "smile";
+  }
+}
 
 interface XiaojuMascotProps {
   emotion?: EmotionName;
+  /** B 方案：显式表情帧（由 P2 情绪底色 / 运行状态解析后传入）；缺省时按 emotion 兜底。 */
+  expression?: ExpressionId;
   walkDirection?: "left" | "right";
   isWalking?: boolean;
   scale?: number;
@@ -148,6 +189,7 @@ function FocusedSparks({ size }: { size: number }) {
 
 export function XiaojuMascot({
   emotion = "idle",
+  expression,
   walkDirection = "right",
   isWalking = false,
   scale = 1.0,
@@ -159,10 +201,26 @@ export function XiaojuMascot({
   const [bouncing, setBouncing] = useState(false);
   const clickTimerRef = useRef<number>(0);
 
-  // 桌宠形象固定用打包内的高清默认图（src/assets/mascot-xiaoju.png）——
-  // 换肤只改整站配色/装饰，永远不替换小桔自己的形象。
-  // (Vite 处理 import 为带 hash 的 URL)
-  const mascotUrl = mascotImg;
+  // B 方案换脸：expression 显式优先，缺省退回 emotion 兜底。
+  // 默认 smile 仍用打包内高清母版图（mascot-xiaoju.png，透明甜笑）；
+  // 表情帧 1024² 透明 PNG 由 Vite 处理为带 hash 的 URL，object-fit: contain 等比缩放。
+  const faceSrc = FRAME_MAP[expression ?? emotionFallbackFrame(emotion)];
+
+  // 换脸淡入淡出：旧帧留在底层淡出，新帧在上层淡入，320ms 后卸载旧帧。
+  // 注意：effect 只依赖 faceSrc（不用 currentSrc），避免 setState 触发的二次
+  // 运行把卸载定时器清掉，导致旧帧永远残留在 DOM（实测线上 bug）。
+  const [shown, setShown] = useState<{ src: string; prev: string | null }>({
+    src: faceSrc,
+    prev: null,
+  });
+  useEffect(() => {
+    setShown((s) => (s.src === faceSrc ? s : { src: faceSrc, prev: s.src }));
+    const t = window.setTimeout(
+      () => setShown((s) => (s.prev ? { ...s, prev: null } : s)),
+      320,
+    );
+    return () => window.clearTimeout(t);
+  }, [faceSrc]);
 
   const m = Math.max(0, Math.min(100, mood)) / 100;
   const v = Math.max(0, Math.min(100, vitality)) / 100;
@@ -300,6 +358,30 @@ export function XiaojuMascot({
           pointer-events: none;
           filter: drop-shadow(0 6px 12px rgba(0, 0, 0, 0.12));
         }
+        /* B 方案换脸：双层堆叠淡入淡出（旧帧淡出 + 新帧淡入） */
+        .xj-face {
+          position: relative;
+          width: 100%;
+          height: 100%;
+        }
+        .xj-face .xj-img {
+          position: absolute;
+          inset: 0;
+        }
+        @keyframes xj-face-in {
+          from { opacity: 0; transform: scale(0.96); }
+          to { opacity: 1; transform: scale(1); }
+        }
+        @keyframes xj-face-out {
+          from { opacity: 1; }
+          to { opacity: 0; }
+        }
+        .xj-face-in {
+          animation: xj-face-in 0.28s ease-out both;
+        }
+        .xj-face-out {
+          animation: xj-face-out 0.28s ease-in both;
+        }
         /* 粒子通用 */
         .xj-particle {
           position: absolute;
@@ -365,7 +447,25 @@ export function XiaojuMascot({
       >
         <div className="xj-gesture" style={{ width: size, height: size }}>
           <div className="xj-facing">
-            <img src={mascotUrl} alt="小桔" className="xj-img" draggable={false} />
+            <div className="xj-face">
+              {shown.prev && (
+                <img
+                  key={`out-${shown.prev}`}
+                  src={shown.prev}
+                  alt=""
+                  aria-hidden="true"
+                  className="xj-img xj-face-out"
+                  draggable={false}
+                />
+              )}
+              <img
+                key={`in-${shown.src}`}
+                src={shown.src}
+                alt="小桔"
+                className="xj-img xj-face-in"
+                draggable={false}
+              />
+            </div>
           </div>
         </div>
       </div>
