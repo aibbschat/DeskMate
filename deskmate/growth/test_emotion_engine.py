@@ -375,6 +375,52 @@ def test_toggle_off(engine):
 
 
 # ---------------------------------------------------------------------------
+# §7-13: 门闸须与实际通道一致（付费 provider OR 免费组可用即放行）
+# ---------------------------------------------------------------------------
+
+def test_gate_open_when_only_free_group_available(engine):
+    """云端场景：llm_available()=False（无付费 provider）但免费组可用 → 门闸放行、真调 chat_memory。
+
+    2026-10-11 抓到的 bug：原门闸只查 llm_available()，云端仅配免费组 → 误判 False
+    → update_after_turn 整段被跳过、情绪层零更新。修复后免费组可用即放行。
+    """
+    call_count = 0
+
+    def counting_chat(*args, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        return _make_llm_response(dopamine=80.0)
+
+    with patch("deskmate.memory.llm.chat_memory", side_effect=counting_chat):
+        with patch("deskmate.memory.llm.llm_available", return_value=False):
+            engine.update_after_turn("hi", "hello", 300.0)
+
+    assert call_count == 1, "gate should open via free group even when llm_available is False"
+    s = engine.get_state()
+    assert s["dopamine"] > 50.0, f"dopamine should rise via free-group LLM, got {s['dopamine']}"
+
+
+def test_gate_closed_when_no_llm_at_all(engine):
+    """付费+免费组均不可用 → 门闸拦截、不调 chat_memory（fail-open 不崩）。"""
+    call_count = 0
+
+    def counting_chat(*args, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        return _make_llm_response()
+
+    s_before = engine.get_state()
+    with patch("deskmate.memory.llm.chat_memory", side_effect=counting_chat):
+        with patch("deskmate.memory.llm.llm_available", return_value=False):
+            with patch("deskmate.llm_channels.route", return_value=(None, [])):
+                engine.update_after_turn("hi", "hello", 300.0)
+
+    assert call_count == 0, "no LLM at all → chat_memory must not be called"
+    s_after = engine.get_state()
+    assert s_after["dopamine"] == s_before["dopamine"]
+
+
+# ---------------------------------------------------------------------------
 # helpers
 # ---------------------------------------------------------------------------
 

@@ -255,8 +255,14 @@ class EmotionEngine:
         now: datetime | None,
     ) -> None:
         from deskmate.memory.llm import chat_memory, llm_available
+        from deskmate.llm_channels import route, GROUP_FREE
 
-        if not llm_available():
+        # 门闸须与实际通道一致：情绪层用 chat_memory(free_only=True)（免费组），
+        # 故「付费 provider 可用」或「免费组任一可用」即放行（短路 OR）。
+        # 原实现只查 llm_available()（付费 provider），云端仅配免费组 → 误判 False
+        # → 整段被跳过（2026-10-11 实测：免费组正常可用、llm_available()=False）。
+        free_ch, _ = route(GROUP_FREE)
+        if not llm_available() and free_ch is None:
             return
 
         now = now or datetime.now()
