@@ -173,11 +173,11 @@ MATRIX: dict[str, ModelEntry] = {
     ),
     # Xiaomi 官方 token-plan 端点（provider:xiaomi，2026-09-01 实测模型 ID 服务端认可，
     # 当前 429 额度用尽属暂时；OpenRouter 中转不稳定故注册官方端点备用）。
-    "xiaomi:mimo-v2.5-pro": ModelEntry(
-        "MiMo V2.5 Pro · Xiaomi token-plan", context_window=256_000
+    "xiaomi:mimo-v2.6-pro": ModelEntry(
+        "MiMo V2.6 Pro · Xiaomi token-plan", context_window=256_000
     ),
-    "xiaomi:mimo-v2.5": ModelEntry(
-        "MiMo V2.5 · Xiaomi token-plan", context_window=256_000
+    "xiaomi:mimo-v2.6": ModelEntry(
+        "MiMo V2.6 · Xiaomi token-plan", context_window=256_000
     ),
     # Tencent TokenHub Token Plan（provider:tencent-tokenplan）。Hy 套餐为纯文本线——官方
     # 「可用模型」明确写「暂不支持图片、视频等多模态能力」，故 caps 用 _AGENTIC

@@ -946,7 +946,7 @@ def test_zen_prune_keeps_paid_group_and_drops_delisted(monkeypatch, tmp_path):
         "opencode:ghost-free",# 已下架（不在清单）
         "opencode:space-bunny-free",      # 在清单
         "ark-agent-plan-cn:deepseek-v4-flash",  # 付费组
-        "xiaomi:mimo-v2.5-pro",                # 付费组
+        "xiaomi:mimo-v2.6-pro",                # 付费组
     ):
         record_failure(key, classify_error(status_code=403), base_dir=tmp_path)
 
@@ -957,7 +957,7 @@ def test_zen_prune_keeps_paid_group_and_drops_delisted(monkeypatch, tmp_path):
     assert "opencode:ghost-free" not in left, "已下架模型应清理"
     assert "opencode:space-bunny-free" in left, "清单内的模型应保留"
     assert "ark-agent-plan-cn:deepseek-v4-flash" in left, "付费组火山不该被远端清单牵连"
-    assert "xiaomi:mimo-v2.5-pro" in left, "付费组小米不该被远端清单牵连"
+    assert "xiaomi:mimo-v2.6-pro" in left, "付费组小米不该被远端清单牵连"
 
 
 def test_picker_drops_delisted_opencode_models(monkeypatch):

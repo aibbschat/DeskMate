@@ -22,7 +22,7 @@ afterEach(() => {
 const STATUS = {
   paid: {
     total: 3,
-    available: ["ark-agent-plan-cn:deepseek-v4-flash", "xiaomi:mimo-v2.5-pro"],
+    available: ["ark-agent-plan-cn:deepseek-v4-flash", "xiaomi:mimo-v2.6-pro"],
     open: ["tencent-tokenplan:hy3"],
   },
   free: {

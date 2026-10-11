@@ -659,9 +659,9 @@ DESCRIPTORS: list[ProviderDescriptor] = [
         "xiaomi",
         "Xiaomi (MiMo)",
         base_url="https://token-plan-cn.xiaomimimo.com/v1",
-        recommended_model="mimo-v2.5-pro",
+        recommended_model="mimo-v2.6-pro",
         env_key="XIAOMI_API_KEY",
-        endpoint_help="Xiaomi Token Plan API (xiaomimimo.com). Text models: claude-sonnet-5, mimo-v2.5.",
+        endpoint_help="Xiaomi Token Plan API (xiaomimimo.com). Text models: claude-sonnet-5, mimo-v2.6.",
     ),
     # Tencent Cloud TokenHub ▸ Token Plan. One provider id covers BOTH plans: 通用 Token Plan
     # and Hy Token Plan share a single API key and a single base URL, and the serving plan is

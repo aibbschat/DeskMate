@@ -54,7 +54,7 @@ def wired(monkeypatch):
 
     chans = [
         ("ark-agent-plan-cn", "deepseek-v4-flash"),
-        ("xiaomi", "mimo-v2.5-pro"),
+        ("xiaomi", "mimo-v2.6-pro"),
         ("tencent-tokenplan", "hy3"),
     ]
     monkeypatch.setattr(pf, "paid_group_channels", lambda: chans)
@@ -71,9 +71,9 @@ def test_router_complete_degrades_ark_to_xiaomi(wired):
         model="ark-agent-plan-cn:doubao-seed-2.1-turbo",
         messages=[{"role": "user", "content": "hi"}],
     )
-    assert out == "xiaomi:mimo-v2.5-pro", "应降级到小米"
+    assert out == "xiaomi:mimo-v2.6-pro", "应降级到小米"
     assert clients["ark-agent-plan-cn"].calls == ["doubao-seed-2.1-turbo"], "确实先试了火山"
-    assert clients["xiaomi"].calls == ["mimo-v2.5-pro"]
+    assert clients["xiaomi"].calls == ["mimo-v2.6-pro"]
 
 
 def test_router_stream_degrades_ark_to_xiaomi(wired):
@@ -85,7 +85,7 @@ def test_router_stream_degrades_ark_to_xiaomi(wired):
             messages=[{"role": "user", "content": "hi"}],
         )
     )
-    assert got == ["xiaomi|mimo-v2.5-pro"]
+    assert got == ["xiaomi|mimo-v2.6-pro"]
 
 
 def test_router_non_paid_untouched(wired):

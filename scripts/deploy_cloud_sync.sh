@@ -103,6 +103,11 @@ CHANNEL_MODULES=(
   # （实测 mtime=Oct 6 10:25、a6a1e54 特征串命中 0、entry_for 在 372 行无动态分支）。
   # 漏传即云端永远跑老矩阵、免费模型不刷新且不报错，必须随 router/paid_fallback 同批同步。
   "coworker/providers/matrix.py"          # ProviderMatrix（opencode 免费模型动态刷新）
+  # ⚠️ 2026-10-11 MiMo v2.5→v2.6 切换：registry.py（recommended_model / endpoint_help）
+  # 与 selection/server.py（mimo 别名 → xiaomi:mimo-v2.6）必须随 matrix 同批同步，否则
+  # 云端聊天框推荐模型/别名仍指向已下架的 v2.5，且本地云端代码不一致（红线）。
+  "coworker/providers/registry.py"        # Provider 注册表（recommended_model / endpoint_help）
+  "deskmate/selection/server.py"          # 模型别名解析（mimo → xiaomi:mimo-v2.6）
   # ⚠️ 主链路付费组回退三件套（2026-10-09 新增）：实测火山周额度撞顶 429 时，
   # router.py 裸奔（不查熔断、不换通道）导致主聊天每 35 秒撞一次墙，而熔断器在旁边
   # 正确记账——两套配置脱节。修法是把跨套餐回退（火山→小米→腾讯 hy3）接进 router。

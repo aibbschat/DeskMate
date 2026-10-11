@@ -477,7 +477,7 @@ def test_chat_falls_back_within_paid_group(tmp_path, monkeypatch):
     monkeypatch.setattr(
         "deskmate.llm_channels.paid_channels",
         lambda: [_FakeCh("ark-agent-plan-cn", "doubao-seed-2.1-turbo"),
-                 _FakeCh("xiaomi", "mimo-v2.5-pro")],
+                 _FakeCh("xiaomi", "mimo-v2.6-pro")],
     )
     # 凭证 + 调用：主位在调用时抛配额错（模拟死模型），小米返回文本（不真打网络）
     monkeypatch.setattr(L, "_creds_for", lambda p, m: ("AK", f"https://{p}", m))
@@ -492,7 +492,7 @@ def test_chat_falls_back_within_paid_group(tmp_path, monkeypatch):
     out = L.chat("sys", "usr", timeout=1)
     assert out == "ok-from-xiaomi", f"应落到小米，实际调用：{calls}"
     assert "ark-agent-plan-cn:doubao-seed-2.1-turbo" in calls, f"应先试主位，实际：{calls}"
-    assert "xiaomi:mimo-v2.5-pro" in calls, f"应尝试小米兜底，实际：{calls}"
+    assert "xiaomi:mimo-v2.6-pro" in calls, f"应尝试小米兜底，实际：{calls}"
 
 
 def test_chat_raises_when_all_paid_open(tmp_path, monkeypatch):
@@ -508,9 +508,9 @@ def test_chat_raises_when_all_paid_open(tmp_path, monkeypatch):
     monkeypatch.setattr(
         "deskmate.llm_channels.paid_channels",
         lambda: [_FakeCh("ark-agent-plan-cn", "doubao-seed-2.1-turbo"),
-                 _FakeCh("xiaomi", "mimo-v2.5-pro")],
+                 _FakeCh("xiaomi", "mimo-v2.6-pro")],
     )
-    for key in ("ark-agent-plan-cn:doubao-seed-2.1-turbo", "xiaomi:mimo-v2.5-pro"):
+    for key in ("ark-agent-plan-cn:doubao-seed-2.1-turbo", "xiaomi:mimo-v2.6-pro"):
         record_failure(key, classify_error(status_code=429, body="quota"),
                        base_dir=tmp_path)
     monkeypatch.setattr(L, "_creds_for", lambda p, m: ("AK", f"https://{p}", m))

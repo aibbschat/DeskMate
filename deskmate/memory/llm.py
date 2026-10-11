@@ -2,7 +2,7 @@
 
 不再从 .env / os.environ 读 DESKMATE_API_KEY 等变量。
 改为复用 OpenWorker 的 provider 体系：
-  1. 从 prefs.json 读 default_model（如 "xiaomi:mimo-v2.5-pro"）
+  1. 从 prefs.json 读 default_model（如 "xiaomi:mimo-v2.6-pro"）
   2. 取 provider 前缀 -> SecretStore.get("provider:xiaomi") -> {api_key, base_url}
   3. 用 OpenAI SDK 构造 client（所有 OpenAI-compatible provider 通用）
 
@@ -39,7 +39,7 @@ def _resolve_provider() -> tuple[str, str, str]:
     """从 SecretStore + prefs.json 解析当前激活 provider 的凭证。
 
     Returns (api_key, base_url, model_name)。
-    model_name 是去掉了 provider 前缀的裸模型名（如 "mimo-v2.5-pro"）。
+    model_name 是去掉了 provider 前缀的裸模型名（如 "mimo-v2.6-pro"）。
     """
     state = _state_dir()
     prefs_path = state / "prefs.json"
@@ -53,7 +53,7 @@ def _resolve_provider() -> tuple[str, str, str]:
         except (OSError, json.JSONDecodeError):
             pass
 
-    # 2. 解析 provider 名（从 model 字符串前缀，如 "xiaomi:mimo-v2.5-pro" -> "xiaomi"）
+    # 2. 解析 provider 名（从 model 字符串前缀，如 "xiaomi:mimo-v2.6-pro" -> "xiaomi"）
     provider_name = ""
     bare_model = default_model
     if ":" in default_model:
@@ -577,6 +577,13 @@ def chat_memory(
                         lambda m=ch.model: _opencode_complete(
                             m, system, user, temperature, max_tokens, timeout),
                     )
+                if ch.provider == "local":
+                    # 本地 llama-server 兜底（OpenAI 兼容，trust_env=False 防代理劫持 localhost）。
+                    return _call_with_breaker(
+                        ch.provider, ch.model,
+                        lambda m=ch.model: _local_complete(
+                            m, system, user, temperature, max_tokens, timeout),
+                    )
                 ak, bu, md = _creds_for(ch.provider, ch.model)
                 if not ak:
                     continue
@@ -721,3 +728,42 @@ def _opencode_complete(
         timeout=timeout,
     )
     return (turn.text or "").strip()
+
+
+def _local_complete(
+    model: str,
+    system: str,
+    user: str,
+    temperature: float,
+    max_tokens: int,
+    timeout: float,
+) -> str:
+    """经本地 llama-server（OpenAI 兼容）兜底调用。
+
+    端点读 ``DESKMATE_LOCAL_LLM_BASE_URL``（默认 ``http://127.0.0.1:18080/v1``），
+    ``trust_env=False`` 避免被本机 / 公司代理劫持 localhost。仅在免费组所有远端 opencode
+    通道熔断时由 ``route()`` 选到（排最末兜底，见 ``deskmate.llm_channels.free_channels``）。
+    """
+    import httpx
+
+    from openai import OpenAI
+
+    base_url = os.environ.get(
+        "DESKMATE_LOCAL_LLM_BASE_URL", "http://127.0.0.1:18080/v1"
+    )
+    client = OpenAI(
+        api_key="local",
+        base_url=base_url,
+        timeout=timeout,
+        http_client=httpx.Client(trust_env=False),
+    )
+    resp = client.chat.completions.create(
+        model=model,
+        temperature=temperature,
+        max_tokens=max_tokens,
+        messages=[
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ],
+    )
+    return (resp.choices[0].message.content or "").strip()

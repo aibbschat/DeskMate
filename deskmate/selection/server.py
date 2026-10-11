@@ -38,9 +38,9 @@ _MODEL_ALIASES = {
     "deepseek-chat": "deepseek:deepseek-v4-flash",
     "deepseek": "deepseek:deepseek-v4-flash",
     "deepseek-v4-flash": "deepseek:deepseek-v4-flash",
-    "mimo": "xiaomi:mimo-v2.5",
-    "mimo-v2.5": "xiaomi:mimo-v2.5",
-    "mimo-v2.5-pro": "xiaomi:mimo-v2.5-pro",
+    "mimo": "xiaomi:mimo-v2.6",
+    "mimo-v2.6": "xiaomi:mimo-v2.6",
+    "mimo-v2.6-pro": "xiaomi:mimo-v2.6-pro",
 }
 
 

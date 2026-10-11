@@ -9,7 +9,7 @@
 | 组 | 成员 | 用途 |
 |---|---|---|
 | **付费组**（默认） | 火山 `ark-agent-plan-cn` → 腾讯 `tencent-tokenplan:hy3`（小米线 2026-10-10 起暂停排查） | 她对你说的话（对话、主动递卡片） |
-| **免费组** | opencode `*-free`（**远端清单驱动**，见 `zen_catalog`） | 后台加工（记忆抽取 / 理解加工 / 发帖草稿） |
+| **免费组** | opencode `*-free`（**远端清单驱动**，见 `zen_catalog`）+ 本地 `local` 兜底（CVM llama-server） | 后台加工（记忆抽取 / 理解加工 / 发帖草稿） |
 
 - `qwen` **不进链**（早期测试配置，萧哥 21:00 明确不要）
 - 手动切粒度 = **A**：切「付费组 / 免费组」，**组内自动排**
@@ -47,8 +47,17 @@ logger = logging.getLogger(__name__)
 GROUP_PAID = "paid"
 GROUP_FREE = "free"
 
+#: 本地兜底模型（CVM 上常驻 llama-server，见 ``deskmate/memory/llm.py:_local_complete``）。
+#: 作为免费组最末兜底：所有远端 opencode 免费通道熔断时，本地 Qwen3-Instruct 仍可跑后台加工
+#: （记忆抽取 / 反思 / 理解），宁可本地算也不让任务全挂。Mac 端无 llama-server → 首次调用
+#: 失败被熔断跳过，无害。
+LOCAL_LLM_PROVIDER = "local"
+LOCAL_LLM_MODEL = "qwen3-4b-instruct"
+LOCAL_LLM_BASE_URL_ENV = "DESKMATE_LOCAL_LLM_BASE_URL"
+LOCAL_LLM_BASE_URL_DEFAULT = "http://127.0.0.1:18080/v1"
+
 #: 付费组（顺序 = 优先级）。qwen 刻意不在此列（早期测试配置，萧哥 21:00 明确不要）。
-#: 小米线 2026-10-10 起暂停（排查套餐用量异常）；恢复时把 ("xiaomi","mimo-v2.5-pro") 加回 ark 与 tencent 之间。
+#: 小米线 2026-10-10 起暂停（排查套餐用量异常）；恢复时把 ("xiaomi","mimo-v2.6-pro") 加回 ark 与 tencent 之间。
 PAID_GROUP: Tuple[Tuple[str, str], ...] = (
     ("ark-agent-plan-cn", "deepseek-v4-flash"),
     ("tencent-tokenplan", "hy3"),
@@ -142,7 +151,13 @@ def free_channels() -> List[Channel]:
     # 再 index 会 ValueError（2026-10-06 首版踩过：排序到一半的元素已不在表里）。
     order = {mid: i for i, mid in enumerate(free_ids)}
     free_ids.sort(key=lambda mid: (is_reasoning(mid), order[mid]))
-    return [Channel(provider="opencode", model=m, free=True) for m in free_ids]
+    chs = [Channel(provider="opencode", model=m, free=True) for m in free_ids]
+    # 本地兜底通道（2026-10-11 萧哥拍板）：CVM 常驻 llama-server（OpenAI 兼容，
+    # DESKMATE_LOCAL_LLM_BASE_URL，默认 127.0.0.1:18080）。排最末——优先用远端免费通道，
+    # 仅当它们全熔断时本地模型兜底跑后台加工（记忆抽取 / 反思 / 理解），宁可本地算也不让任务全挂。
+    # Mac 端无 llama-server → 首次调用失败被熔断跳过，无害（设计 §二）。
+    chs.append(Channel(provider=LOCAL_LLM_PROVIDER, model=LOCAL_LLM_MODEL, free=True))
+    return chs
 
 
 def channels_for_group(group: str) -> List[Channel]:

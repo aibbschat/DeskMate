@@ -34,7 +34,7 @@ TENCENT = "tencent-tokenplan"
 @pytest.fixture
 def groups(monkeypatch):
     """把付费组固定成三条，隔离真实配置（含熔断状态）。"""
-    chans = [(ARK, "deepseek-v4-flash"), (XIAOMI, "mimo-v2.5-pro"), (TENCENT, "hy3")]
+    chans = [(ARK, "deepseek-v4-flash"), (XIAOMI, "mimo-v2.6-pro"), (TENCENT, "hy3")]
     monkeypatch.setattr(pf, "paid_group_channels", lambda: chans)
     monkeypatch.setattr(pf, "_is_open", lambda p, m: False)
     return chans
@@ -47,7 +47,7 @@ def test_same_plan_other_models_skipped(groups):
     assert ARK + ":deepseek-v4-flash" not in seq, "同套餐换模型 = 白撞一次"
     assert seq == [
         ARK + ":doubao-seed-2.1-turbo",
-        XIAOMI + ":mimo-v2.5-pro",
+        XIAOMI + ":mimo-v2.6-pro",
         TENCENT + ":hy3",
     ]
 
@@ -65,13 +65,13 @@ def test_paid_model_outside_candidate_table_still_falls_back(groups):
     若按「模型是否在候选表」判定，回退对它完全不启用 —— 而它恰恰最需要回退。
     """
     seq = pf.plan_attempts(ARK + ":doubao-seed-2.1-turbo")
-    assert XIAOMI + ":mimo-v2.5-pro" in seq
+    assert XIAOMI + ":mimo-v2.6-pro" in seq
 
 
 def test_requested_model_always_first(groups):
     """原模型永远在首位 —— 不悄悄换掉用户指定的模型。"""
-    seq = pf.plan_attempts(XIAOMI + ":mimo-v2.5-pro")
-    assert seq[0] == XIAOMI + ":mimo-v2.5-pro"
+    seq = pf.plan_attempts(XIAOMI + ":mimo-v2.6-pro")
+    assert seq[0] == XIAOMI + ":mimo-v2.6-pro"
 
 
 # ---- 熔断过滤 ----
@@ -80,10 +80,10 @@ def test_open_channels_filtered_except_head(groups, monkeypatch):
     monkeypatch.setattr(
         pf,
         "_is_open",
-        lambda p, m: (p, m) == (XIAOMI, "mimo-v2.5-pro"),
+        lambda p, m: (p, m) == (XIAOMI, "mimo-v2.6-pro"),
     )
     seq = pf._filtered_attempts(ARK + ":doubao-seed-2.1-turbo")
-    assert XIAOMI + ":mimo-v2.5-pro" not in seq
+    assert XIAOMI + ":mimo-v2.6-pro" not in seq
     assert TENCENT + ":hy3" in seq
     assert seq[0] == ARK + ":doubao-seed-2.1-turbo", "首位不该被熔断过滤掉"
 
@@ -194,7 +194,7 @@ def test_error_not_mislabeled_across_vendors(groups):
     """**回归**：每条通道必须报**自己**的错，不得串到下一家厂商。
 
     2026-10-10 实测（真实 router 调用，三条全缺 key）：
-        请求 xiaomi:mimo-v2.5-pro     -> No Tencent Token Plan API key   <- 串位
+        请求 xiaomi:mimo-v2.6-pro     -> No Tencent Token Plan API key   <- 串位
         请求 tencent-tokenplan:hy3    -> No Xiaomi API key               <- 串位
     两者都是 RuntimeError，末位恰是下一家厂商 → 排查时完全带偏。
     """
@@ -202,7 +202,7 @@ def test_error_not_mislabeled_across_vendors(groups):
         raise RuntimeError("No %s API key configured" % m.split(":")[0])
 
     for requested, expect in [
-        (XIAOMI + ":mimo-v2.5-pro", XIAOMI),
+        (XIAOMI + ":mimo-v2.6-pro", XIAOMI),
         (TENCENT + ":hy3", TENCENT),
         (ARK + ":doubao-seed-2.1-turbo", ARK),
     ]:
