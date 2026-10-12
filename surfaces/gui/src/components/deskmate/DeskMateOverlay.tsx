@@ -41,6 +41,15 @@ import {
   mascotStateToExpression,
   resolveFace,
 } from "./mascotEmoteMap";
+import {
+  type FaceState,
+  EVENT_DWELL_MS,
+  DEFAULT_STABILIZE_PARAMS,
+  applyEventFace,
+  applyHormoneFace,
+  initFaceState,
+  visibleFace,
+} from "./faceStabilizer";
 import { type Expert } from "./experts";
 
 /* ------------------------------------------------------------------ */
@@ -171,6 +180,16 @@ export function DeskMateOverlay({ agent, sessionId, activeExpert, hidden }: Prop
 
   // B 方案换脸：当前表情帧（由 P2 情绪底色 / 运行状态解析，驱动 XiaojuMascot 换脸）。
   const [expression, setExpression] = useState<ExpressionId>("smile");
+
+  // 情绪稳定化（2026-10-11 修复"一会儿哭一会儿笑"）：
+  // 事件脸临时驻留（dwell 后回落激素脸）+ 激素脸连续一致确认 + 最小切换间隔。
+  const faceStateRef = useRef<FaceState>(initFaceState("smile", Date.now()));
+
+  /** 统一入口：状态机推进后，若展示脸变化则同步 expression。 */
+  const commitFace = useCallback((next: FaceState) => {
+    faceStateRef.current = next;
+    setExpression((cur) => (cur === visibleFace(next) ? cur : visibleFace(next)));
+  }, []);
 
   // 拖拽桌宠：按下后移动超过 5px 视为拖拽，暂停行走并跟手移动；松开恢复。
   const handleMascotMouseDown = useCallback((e: React.MouseEvent) => {
@@ -308,11 +327,19 @@ export function DeskMateOverlay({ agent, sessionId, activeExpert, hidden }: Prop
         // 激素 → 姿态/粒子层（原有行为：压力大低头、开心跳跃…）
         const mascot = hormoneToMascot(d.dopamine, d.serotonin, d.oxytocin, d.cortisol);
         if (mascot) setMascotState(mascot);
-        // B 方案换脸：激素持续心情 → 表情帧（工作状态优先 neutral，见 resolveFace）
-        setExpression(resolveFace(d, mascotStateRef.current));
+        // B 方案换脸：激素持续心情 → 表情帧（工作状态优先 neutral，见 resolveFace）。
+        // 2026-10-11 稳定化：激素脸须连续一致（默认 2 轮=40s）才切换，防 LLM 抖动翻脸。
+        commitFace(
+          applyHormoneFace(
+            faceStateRef.current,
+            resolveFace(d, mascotStateRef.current),
+            Date.now(),
+            DEFAULT_STABILIZE_PARAMS,
+          ),
+        );
       }
     } catch { /* 静默降级 */ }
-  }, []);
+  }, [commitFace]);
 
   // 记忆注入低调提示（非模态、节流）
   const [contextHint, setContextHint] = useState<string | null>(null);
@@ -478,8 +505,18 @@ export function DeskMateOverlay({ agent, sessionId, activeExpert, hidden }: Prop
         // 同步到桌宠状态
         const mapped = emotionToMascotState(d.emotion);
         setMascotState(mapped);
-        // B 方案换脸：事件性情绪即时驱动表情帧（thinking→neutral / happy→cheer / concerned→cry）
-        setExpression(mascotStateToExpression(mapped));
+        // B 方案换脸：事件性情绪即时驱动表情帧（thinking→neutral / happy→cheer / concerned→cry）。
+        // 2026-10-11 稳定化：事件脸临时驻留（默认 12~15s）后回落激素脸，不再永久覆盖。
+        const target = mascotStateToExpression(mapped);
+        commitFace(
+          applyEventFace(
+            faceStateRef.current,
+            target,
+            EVENT_DWELL_MS[target],
+            Date.now(),
+            DEFAULT_STABILIZE_PARAMS,
+          ),
+        );
       }
     };
     const onStatus = (e: Event) => {
@@ -491,7 +528,17 @@ export function DeskMateOverlay({ agent, sessionId, activeExpert, hidden }: Prop
       if (d.emotion) {
         const mapped = emotionToMascotState(d.emotion);
         setMascotState(mapped);
-        setExpression(mascotStateToExpression(mapped));
+        // 同上：事件脸走稳定化（idle/smile 不覆盖 → 回落激素脸）。
+        const target = mascotStateToExpression(mapped);
+        commitFace(
+          applyEventFace(
+            faceStateRef.current,
+            target,
+            EVENT_DWELL_MS[target],
+            Date.now(),
+            DEFAULT_STABILIZE_PARAMS,
+          ),
+        );
       }
     };
     const onMemoryUpdate = (e: Event) => {
@@ -580,7 +627,7 @@ export function DeskMateOverlay({ agent, sessionId, activeExpert, hidden }: Prop
       window.removeEventListener("deskmate:interview", onInterview);
       window.removeEventListener("deskmate:validation", onValidation);
     };
-  }, [setMascotState, handleToggleProactive, proactiveEnabled]);
+  }, [setMascotState, handleToggleProactive, proactiveEnabled, commitFace]);
 
   // NOTE: emotion is driven explicitly by the `deskmate:status` / `deskmate:emotion`
   // events (dispatched from App.tsx from real session-agent state), not auto-derived
