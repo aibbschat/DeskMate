@@ -38,6 +38,9 @@ import {
 import { type MascotState } from "./MascotStates";
 import {
   type ExpressionId,
+  type InnerEmotionMood,
+  asExpressionId,
+  faceToMascotState,
   mascotStateToExpression,
   resolveFace,
 } from "./mascotEmoteMap";
@@ -97,21 +100,6 @@ interface Props {
   activeExpert?: Expert | null;
   /** 花园（个人中心）打开时隐藏桌宠/状态面板，避免遮住园里物件。 */
   hidden?: boolean;
-}
-
-/** P2 情绪底色：4 激素 → 吉祥物状态映射。
- *  开心（dopamine 高 + cortisol 低）→ happy；
- *  压力大（cortisol 高）→ concerned；
- *  平静（serotonin 高）→ idle；
- *  其余 → null（不覆盖当前状态）。
- */
-function hormoneToMascot(
-  dopamine: number, serotonin: number, _oxytocin: number, cortisol: number,
-): "happy" | "concerned" | "idle" | null {
-  if (cortisol >= 60) return "concerned";
-  if (dopamine >= 65 && cortisol < 40) return "happy";
-  if (serotonin >= 60 && dopamine < 50) return "idle";
-  return null;
 }
 
 export function DeskMateOverlay({ agent, sessionId, activeExpert, hidden }: Props) {
@@ -283,10 +271,12 @@ export function DeskMateOverlay({ agent, sessionId, activeExpert, hidden }: Prop
   // 成长系统快照（等级/亲密度/信任感/默契度/技能熟练度），面板展开时拉取
   const [growth, setGrowth] = useState<GrowthSnapshot | null>(null);
 
-  // P2 情绪底色（2026-10-11）：小桔自己的内在情绪（4 激素 + 描述）
+  // P2 情绪底色（2026-10-11，2026-10-12 扩展）：小桔自己的内在情绪。
+  // mood / face 由后端下发（阈值只在 emotion_engine.py 存在一份），旧后端不返回时为 undefined。
   const [innerEmotion, setInnerEmotion] = useState<{
     dopamine: number; serotonin: number; oxytocin: number; cortisol: number;
     description: string; updated_at: string;
+    mood?: InnerEmotionMood; face?: ExpressionId;
   } | null>(null);
 
   // 勋章解锁报喜：队列 + 当前正在展示的一枚
@@ -323,16 +313,19 @@ export function DeskMateOverlay({ agent, sessionId, activeExpert, hidden }: Prop
       if (!r.ok) return;
       const d = await r.json();
       if (d && typeof d.dopamine === "number") {
-        setInnerEmotion(d);
-        // 激素 → 姿态/粒子层（原有行为：压力大低头、开心跳跃…）
-        const mascot = hormoneToMascot(d.dopamine, d.serotonin, d.oxytocin, d.cortisol);
+        // 后端下发的 face 是权威；旧后端没有该字段时为 null，
+        // resolveFace 自动回落到本地激素阈值（不致于整层失效）。
+        const backendFace = asExpressionId(d.face) ?? asExpressionId(d.mood?.face);
+        setInnerEmotion({ ...d, face: backendFace ?? undefined });
+        // 心情 → 姿态/粒子层（压力大低头、开心跳跃…）
+        const mascot = faceToMascotState(backendFace);
         if (mascot) setMascotState(mascot);
-        // B 方案换脸：激素持续心情 → 表情帧（工作状态优先 neutral，见 resolveFace）。
-        // 2026-10-11 稳定化：激素脸须连续一致（默认 2 轮=40s）才切换，防 LLM 抖动翻脸。
+        // B 方案换脸：持续心情 → 表情帧（工作状态优先 neutral，见 resolveFace）。
+        // 2026-10-11 稳定化：脸须连续一致（默认 2 轮=40s）才切换，防 LLM 抖动翻脸。
         commitFace(
           applyHormoneFace(
             faceStateRef.current,
-            resolveFace(d, mascotStateRef.current),
+            resolveFace(d, mascotStateRef.current, backendFace),
             Date.now(),
             DEFAULT_STABILIZE_PARAMS,
           ),

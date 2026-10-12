@@ -78,6 +78,25 @@ SELF_EXPRESSION_DELTA_THRESHOLD = 8.0
 
 HORMONE_KEYS = ("dopamine", "serotonin", "oxytocin", "cortisol")
 
+# 心情标签阈值：**按单次变化上限的比例**折算成「相对基线的偏移量」。
+#
+# 为什么不用绝对值：基线是 50/50/40/30，单次上限只有 +15/+4/+8/+10。
+# 旧实现把阈值写死成 65/60/60/60，于是 serotonin 要连拉 3 轮满格且期间零衰减
+# 才够得着。实测重放 814 条 emotion_log：serotonin / oxytocin / cortisol
+# **一次都没越过阈值**，731 次落到兜底「平静」——她每轮都被注入
+# 「你现在的真实心情是平静、心里没什么波澜」，等于系统亲手把情绪抹平了。
+# 这与 GrowthState.mood 恒为 80、「低落」从未触发过是同一个坑（见 state.py §E1）。
+#
+# 挂钩 MAX_DELTAS 后阈值随动力学量纲自动缩放：一轮真实波动就能被感知，
+# 而「拉满一轮」正好落在 STRONG 附近，不会一有风吹草动就翻脸。
+MOOD_OFFSET_RATIO_WEAK = 0.5     # 轻度：单次上限的一半
+MOOD_OFFSET_RATIO_STRONG = 0.85  # 明显：接近单次拉满
+
+MOOD_OFFSETS: dict[str, tuple[float, float]] = {
+    k: (MAX_DELTAS[k] * MOOD_OFFSET_RATIO_WEAK, MAX_DELTAS[k] * MOOD_OFFSET_RATIO_STRONG)
+    for k in HORMONE_KEYS
+}
+
 # LLM prompt
 _EMOTION_SYSTEM = (
     "你是小桔的内在情绪引擎。根据当前 4 个激素值、对话内容和聊天间隔，"
@@ -147,6 +166,72 @@ def _clamp_delta(new_val: float, old_val: float, max_delta: float) -> float:
     if abs(delta) > max_delta:
         delta = max_delta if delta > 0 else -max_delta
     return _clamp(old_val + delta)
+
+
+def mood_label_from_offsets(offsets: dict[str, float]) -> dict:
+    """由「相对基线的偏移」推导当下心情标签。
+
+    纯函数，不读库——供 get_mood_label / API 端点 / 单测共用，
+    也是前端表情的**唯一真相源**（前端只消费 label / face，不再自己判阈值）。
+
+    判定不是固定 if 链，而是**按归一化强度竞争**：每个候选情绪算出
+    intensity（偏移 / STRONG 阈值，封顶 1.0），取最强者。
+    为什么不能写死优先级：serotonin 半衰期 2h（4 个激素里第二慢），且几乎
+    每轮暖聊都会 +1~+3，于是它会长期悬在阈值之上——固定优先级下「平静」
+    就成了新的常驻态，把 oxytocin 的「亲近」永久压住，等于换个标签重犯
+    同一个毛病。改成比强度后，谁此刻偏离基线最多谁说话。
+
+    face 取值与 surfaces/gui/src/components/deskmate/mascotEmoteMap.ts 的
+    ExpressionId 一一对应，由后端直接下发，前端不再重算。
+    """
+    def _norm(key: str, negative: bool = False) -> float:
+        """偏移 / STRONG 阈值，**不封顶**——用于候选之间比强弱。"""
+        _, strong = MOOD_OFFSETS[key]
+        x = -offsets.get(key, 0.0) if negative else offsets.get(key, 0.0)
+        return max(0.0, x / strong)
+
+    def _reached(key: str, negative: bool = False) -> bool:
+        """是否达到「轻度」阈值。"""
+        weak = MOOD_OFFSETS[key][0]
+        x = offsets.get(key, 0.0)
+        return (-x >= weak) if negative else (x >= weak)
+
+    dop_up = _reached("dopamine")
+    dop_down = _reached("dopamine", negative=True)
+
+    # 候选情绪：tuple = (tie-break 权重, label, detail, face, 归一化强度)。
+    # 首位 c[0] 是 tie-break 权重——同等强度时 distress 优先于愉悦、
+    # 亲近优先于平静（distress 1.0 > 低落 0.9 > 开心 0.7 > 亲近 0.5 > 平静 0.4），
+    # 让「有温度」的信号不被「没波澜」盖掉；末位 c[4] 是未封顶强度，供 max 比强弱。
+    candidates: list[tuple[float, str, str, str, float]] = []
+    if _reached("cortisol"):
+        if dop_up:
+            candidates.append((1.0, "烦躁", "心里有点急、有点躁", "angry",
+                               max(_norm("cortisol"), _norm("dopamine"))))
+        else:
+            candidates.append((0.9, "低落", "心里发沉、有点难受", "cry", _norm("cortisol")))
+    if dop_up:
+        candidates.append((0.7, "开心", "心里亮亮的、轻快", "laugh", _norm("dopamine")))
+    # 快乐明显低于基线（且压力没升）→ 提不起劲。旧实现没有这条，
+    # 导致「书出不了，心里堵得慌」（dopamine -8）这类真实低谷被判成「没什么波澜」。
+    if dop_down and not _reached("cortisol"):
+        candidates.append((0.6, "低落", "心里有点沉、提不起劲", "cry",
+                           _norm("dopamine", negative=True)))
+    if _reached("oxytocin"):
+        candidates.append((0.5, "亲近", "心里软软的、想靠近你", "shy", _norm("oxytocin")))
+    if _reached("serotonin") and not dop_up:
+        candidates.append((0.4, "平静", "心里安稳、松弛", "sleepy", _norm("serotonin")))
+
+    if not candidates:
+        return {"label": "平静", "detail": "心里没什么波澜", "intensity": 0.0, "face": "smile"}
+    # 先比强度（未封顶），同分再比 tie-break 权重（已按权重降序排好，
+    # 稳定排序 + max 取首个最大者 ⇒ 同分时靠前者胜出）。
+    _, label, detail, face, strength = max(
+        sorted(candidates, key=lambda c: -c[0]), key=lambda c: c[4]
+    )
+    # 对外报告的 intensity 封顶到 1.0（措辞分级用，不该出现 4.4 这种数）。
+    return {"label": label, "detail": detail,
+            "intensity": round(min(1.0, strength), 2), "face": face}
 
 
 class EmotionEngine:
@@ -230,36 +315,32 @@ class EmotionEngine:
             return ""
 
     def get_mood_label(self) -> dict:
-        """返回小桔「当下」心情的权威标签（供对话注入 + 与桌宠脸同源）。
+        """返回小桔「当下」心情的权威标签（供对话注入 + 桌宠表情同源）。
 
-        阈值与前端 surfaces/gui/src/components/deskmate/mascotEmoteMap.ts 的
-        HORMONE_THRESHOLDS / hormoneToExpression **严格对齐**——保证「对话里说出的心情」
-        与「桌宠展示的脸」永不矛盾（dopamine>=65↔laugh/开心，cortisol>=60↔cry/低落，
-        serotonin>=60&dopamine<50↔sleepy/平静，oxytocin>=60↔shy/亲近）。
+        标签由 mood_label_from_offsets 推导，阈值是「相对基线的偏移」而非绝对值
+        ——见 MOOD_OFFSETS 的注释。前端不再自行判阈值，只消费这里的 label
+        （经 /v1/deskmate/emotion 下发），保证「对话里说出的心情」与
+        「桌宠展示的脸」永不矛盾。
         取**当前**激素（turn 时实时算，非 update_after_turn 写回的滞后文本）。
         """
         try:
             s = self.get_state()
-            d = float(s.get("dopamine", DOPAMINE_BASE))
-            se = float(s.get("serotonin", SEROTONIN_BASE))
-            ox = float(s.get("oxytocin", OXYTOCIN_BASE))
-            co = float(s.get("cortisol", CORTISOL_BASE))
+            offsets = {
+                k: float(s.get(k, BASELINES[k])) - BASELINES[k] for k in HORMONE_KEYS
+            }
         except Exception:
-            return {"label": "平静", "detail": "心里没什么波澜", "intensity": 0.0}
+            return {"label": "平静", "detail": "心里没什么波澜",
+                    "intensity": 0.0, "face": "smile"}
+        return mood_label_from_offsets(offsets)
 
-        # 与前端 HORMONE_THRESHOLDS 对齐：CORTISOL_HIGH=60, DOPAMINE_HIGH=65,
-        # DOPAMINE_LOW=50, SEROTONIN_HIGH=60, OXYTOCIN_HIGH=60
-        if co >= 60.0 and d >= 65.0:
-            return {"label": "烦躁", "detail": "心里有点急、有点躁", "intensity": (co - 60.0) / 40.0}
-        if co >= 60.0:
-            return {"label": "低落", "detail": "心里发沉、有点难受", "intensity": (co - 60.0) / 40.0}
-        if d >= 65.0:
-            return {"label": "开心", "detail": "心里亮亮的、轻快", "intensity": (d - 65.0) / 35.0}
-        if se >= 60.0 and d < 50.0:
-            return {"label": "平静", "detail": "心里安稳、松弛", "intensity": (se - 60.0) / 40.0}
-        if ox >= 60.0:
-            return {"label": "亲近", "detail": "心里软软的、想靠近你", "intensity": (ox - 60.0) / 40.0}
-        return {"label": "平静", "detail": "心里没什么波澜", "intensity": 0.0}
+    def get_snapshot(self) -> dict:
+        """4 激素 + description + 当下心情标签/表情帧（供 API 一次性下发）。
+
+        前端据此渲染表情，不再自行判阈值——阈值只在本模块存在一份。
+        """
+        state = self.get_state()
+        mood = self.get_mood_label()
+        return {**state, "mood": mood, "face": mood.get("face", "smile")}
 
     def update_after_turn(
         self,

@@ -3206,9 +3206,12 @@ def create_app(manager: SessionManager) -> FastAPI:
 
     @app.get("/v1/deskmate/emotion")
     async def get_deskmate_emotion() -> dict[str, Any]:
-        """获取小桔自己的内在情绪状态（4 激素 + 描述）。
+        """获取小桔自己的内在情绪状态（4 激素 + 描述 + 心情标签 + 表情帧）。
 
         P2 情绪底色（2026-10-11）：前端「小桔的天气」面板用。
+        2026-10-12：改为下发 get_snapshot()，额外带 mood{label,detail,intensity,face}
+        与顶层 face —— 阈值只在后端存在一份，前端不再自行判激素阈值，
+        从根上消除「对话说出的心情」与「桌宠的脸」分裂。
         DESKMATE_EMOTION_ENGINE=0 时返回空对象（fail-open）。
         """
         try:
@@ -3222,7 +3225,7 @@ def create_app(manager: SessionManager) -> FastAPI:
             desk_dir = _P(
                 _os.environ.get("DESKMATE_DIR", _os.path.expanduser("~/.deskmate"))
             )
-            return EmotionEngine(base_dir=desk_dir).get_state()
+            return EmotionEngine(base_dir=desk_dir).get_snapshot()
         except Exception:
             logging.exception("get deskmate emotion failed")
             return {}

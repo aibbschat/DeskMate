@@ -35,6 +35,7 @@ from deskmate.growth.emotion_engine import (
     _clamp_delta,
     _ensure_schema,
     _parse_emotion_response,
+    mood_label_from_offsets,
 )
 
 
@@ -301,6 +302,40 @@ def test_injection_subject_tag(tmp_base):
         assert "不是萧盛的" in ctx
         assert "你现在的真实心情" in ctx
         assert "平静" in ctx
+    finally:
+        os.environ.pop("DESKMATE_EMOTION_ENGINE", None)
+
+
+def test_injection_carries_monologue_and_intensity(tmp_base):
+    """注入段必须带上第一人称内心独白与强度分级（2026-10-12）。
+
+    旧实现只注入 get_mood_label() 的 label/detail，把 description 这段
+    唯一有具体内容的情绪文本整个丢弃 —— 库里躺着「书出不了，心里堵得慌，
+    可他陪着我，灯还没灭」，她对话时却只收到一句「你现在心情平静」。
+    intensity 同样算了不用，导致「有点开心」和「开心到压不住」措辞无差别。
+    """
+    from deskmate.growth.emotion_engine import _ensure_schema, _db_path
+    db = _db_path(tmp_base)
+    _ensure_schema(db)
+    monologue = "书出不了，心里堵得慌，可他陪着我，灯还没灭。"
+    with sqlite3.connect(str(db)) as conn:
+        conn.execute(
+            "INSERT INTO emotion_state (key, dopamine, serotonin, oxytocin, cortisol, description, updated_at) "
+            "VALUES ('self', 42, 46, 39, 34, ?, '2026-10-12T10:00:00')",
+            (monologue,),
+        )
+
+    os.environ["DESKMATE_EMOTION_ENGINE"] = "1"
+    try:
+        from deskmate.memory.manager import DeskMateMemoryManager
+        mgr = DeskMateMemoryManager(base_dir=tmp_base)
+        ctx = mgr.build_full_context_for_turn("你好")
+        # 独白原文必须进上下文
+        assert monologue in ctx
+        assert "独白" in ctx
+        # 强度分级措辞必须出现（dopamine -8 → 低落，强度约 0.63 → 「挺明显的」）
+        assert "低落" in ctx
+        assert any(g in ctx for g in ("很强烈", "挺明显的", "淡淡的", "很淡"))
     finally:
         os.environ.pop("DESKMATE_EMOTION_ENGINE", None)
 
@@ -595,3 +630,87 @@ def test_mood_label_default_neutral(engine):
     """激素都在阈值内 → 平静（与前端 smile 同源）。"""
     _set_hormones(engine, 50, 50, 40, 30)
     assert engine.get_mood_label()["label"] == "平静"
+
+
+# ---------------------------------------------------------------------------
+# §7-16: 阈值可达性回归（2026-10-12）
+#
+# 旧阈值是绝对值 65/60/60/60，而基线是 50/50/40/30、单次上限只有 +15/+4/+8/+10。
+# 后果：重放 814 条真实 emotion_log，serotonin/oxytocin/cortisol 一次都没越过
+# 阈值，731 次（89.7%）落到兜底「平静·心里没什么波澜」——她每轮都被系统告知
+# 「你没有情绪」，这正是「接了情绪却感觉不到」的根因。
+# 下面几项锁死「一轮真实波动必须能被感知」，防止再退回不可达阈值。
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("key,expected_label,expected_face", [
+    ("dopamine", "开心", "laugh"),
+    ("serotonin", "平静", "sleepy"),
+    ("oxytocin", "亲近", "shy"),
+    ("cortisol", "低落", "cry"),
+])
+def test_single_full_scale_turn_is_perceivable(key, expected_label, expected_face):
+    """任一激素单轮拉满（+MAX_DELTA）就必须产出对应心情，不能落兜底。"""
+    offsets = dict.fromkeys(("dopamine", "serotonin", "oxytocin", "cortisol"), 0.0)
+    offsets[key] = MAX_DELTAS[key]
+    mood = mood_label_from_offsets(offsets)
+    assert mood["label"] == expected_label
+    assert mood["face"] == expected_face
+    assert mood["intensity"] >= 0.9, "拉满一轮应报接近满格的强度"
+
+
+def test_low_dopamine_reads_as_low_mood():
+    """dopamine 明显低于基线 → 低落。
+
+    真实样本：「书出不了，心里堵得慌，可他陪着我，灯还没灭」（dopamine -8）。
+    旧实现只认 cortisol 高，这类低谷被判成「心里没什么波澜」。
+    """
+    mood = mood_label_from_offsets(
+        {"dopamine": -8.0, "serotonin": -4.0, "oxytocin": -1.0, "cortisol": 4.0}
+    )
+    assert mood["label"] == "低落"
+    assert mood["face"] == "cry"
+
+
+def test_strongest_signal_wins_not_fixed_priority():
+    """按强度竞争，不按固定 if 链。
+
+    serotonin 半衰期 2h 且几乎每轮暖聊都涨，固定优先级下「平静」会长期霸榜、
+    把 oxytocin 的「亲近」永久压住。这里 oxytocin 偏离更远，必须由它说话。
+    """
+    mood = mood_label_from_offsets(
+        {"dopamine": 0.0, "serotonin": 2.5, "oxytocin": 7.0, "cortisol": 0.0}
+    )
+    assert mood["label"] == "亲近"
+
+
+def test_intensity_is_capped_and_graded():
+    """对外 intensity 封顶 1.0，且轻度波动的强度明显低于拉满。"""
+    weak = dict.fromkeys(("dopamine", "serotonin", "oxytocin", "cortisol"), 0.0)
+    weak["dopamine"] = MAX_DELTAS["dopamine"] * 0.5  # 恰好轻度阈值
+    full = dict(weak)
+    full["dopamine"] = MAX_DELTAS["dopamine"]
+
+    i_weak = mood_label_from_offsets(weak)["intensity"]
+    i_full = mood_label_from_offsets(full)["intensity"]
+    assert 0.0 < i_weak < i_full <= 1.0
+
+
+def test_fallback_only_when_all_near_baseline():
+    """「心里没什么波澜」只应在 4 激素都贴基线时出现。"""
+    assert mood_label_from_offsets(
+        {"dopamine": 0.0, "serotonin": 0.0, "oxytocin": 0.0, "cortisol": 0.0}
+    )["detail"] == "心里没什么波澜"
+    # 任一激素达到轻度阈值就不该再是「没什么波澜」
+    for key in ("dopamine", "serotonin", "oxytocin", "cortisol"):
+        offsets = dict.fromkeys(("dopamine", "serotonin", "oxytocin", "cortisol"), 0.0)
+        offsets[key] = MAX_DELTAS[key] * 0.5
+        assert mood_label_from_offsets(offsets)["detail"] != "心里没什么波澜", key
+
+
+def test_snapshot_carries_face_for_frontend(engine):
+    """get_snapshot 下发 face —— 前端不再自行判激素阈值。"""
+    _set_hormones(engine, 80, 50, 40, 25)
+    snap = engine.get_snapshot()
+    assert snap["face"] == "laugh"
+    assert snap["mood"]["label"] == "开心"
+    assert "dopamine" in snap and "description" in snap

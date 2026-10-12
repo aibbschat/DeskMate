@@ -4,6 +4,8 @@
 
 import { describe, expect, it } from "vitest";
 import {
+  asExpressionId,
+  faceToMascotState,
   hormoneToExpression,
   isWorkingState,
   mascotStateToExpression,
@@ -92,5 +94,69 @@ describe("resolveFace（最终优先级）", () => {
     expect(resolveFace(h({ dopamine: 80, cortisol: 20 }), "idle")).toBe("laugh");
     expect(resolveFace(h({ cortisol: 70 }), "idle")).toBe("cry");
     expect(resolveFace(h({ oxytocin: 70 }), "walking")).toBe("shy");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 2026-10-12：阈值单一真相源移到后端。前端只消费 mood.face，不再自比激素阈值
+// ——旧阈值(65/60/60/60)对 serotonin/oxytocin/cortisol 实际不可达，前后端两份
+// 判定一起永远停在兜底 smile，是「看不见也听不到她情绪」的同一个根因。
+// ---------------------------------------------------------------------------
+
+describe("resolveFace 优先采用后端下发的 face", () => {
+  it("后端 face 存在时压过本地激素阈值", () => {
+    // 本地阈值算这组激素会得 smile（都在旧阈值内），但后端说她是亲近
+    expect(resolveFace(h({ oxytocin: 45 }), "idle", "shy")).toBe("shy");
+    expect(resolveFace(h({}), "idle", "cry")).toBe("cry");
+  });
+
+  it("瞬时工作状态仍优先于后端 face", () => {
+    expect(resolveFace(h({}), "thinking", "laugh")).toBe("neutral");
+    expect(resolveFace(h({}), "working", "cry")).toBe("neutral");
+  });
+
+  it("激素缺失但有后端 face 时照样能渲染", () => {
+    expect(resolveFace(null, "idle", "shy")).toBe("shy");
+  });
+
+  it("后端 face 非法/缺失时回落本地激素阈值（兼容旧后端）", () => {
+    expect(resolveFace(h({ dopamine: 80, cortisol: 20 }), "idle", null)).toBe("laugh");
+    expect(resolveFace(h({ cortisol: 70 }), "idle", undefined)).toBe("cry");
+  });
+});
+
+describe("asExpressionId 校验后端脏数据", () => {
+  it("合法帧 id 原样返回", () => {
+    expect(asExpressionId("laugh")).toBe("laugh");
+    expect(asExpressionId("smile")).toBe("smile");
+  });
+
+  it("非法值一律 null，不致于把脸渲染成空", () => {
+    expect(asExpressionId("explode")).toBeNull();
+    expect(asExpressionId("")).toBeNull();
+    expect(asExpressionId(undefined)).toBeNull();
+    expect(asExpressionId(42)).toBeNull();
+  });
+});
+
+describe("faceToMascotState（心情 → 姿态/粒子层）", () => {
+  it("压力类 → concerned（低头后缩）", () => {
+    expect(faceToMascotState("cry")).toBe("concerned");
+    expect(faceToMascotState("angry")).toBe("concerned");
+  });
+
+  it("开心 → happy（弹跳）", () => {
+    expect(faceToMascotState("laugh")).toBe("happy");
+  });
+
+  it("松弛 → idle", () => {
+    expect(faceToMascotState("sleepy")).toBe("idle");
+  });
+
+  it("亲近/平淡/中性 → null，不覆盖既有姿态", () => {
+    expect(faceToMascotState("shy")).toBeNull();
+    expect(faceToMascotState("smile")).toBeNull();
+    expect(faceToMascotState("neutral")).toBeNull();
+    expect(faceToMascotState(null)).toBeNull();
   });
 });
