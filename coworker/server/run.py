@@ -179,8 +179,27 @@ def main(argv=None) -> None:
         # Bring up the select-text popup adapter so it's ready the moment the app opens.
         _spawn_selection_adapter(args.port)
         app = build_app(args.cwd, args.model, args.mode)
+        # access log 带时间戳（2026-10-13 吞吐排查时发现默认格式无时间戳，
+        # 「12:37-12:40 堵塞窗口哪些请求挂起」只能靠行序倒推）。复制 uvicorn
+        # 默认 LOGGING_CONFIG 只改 formatter，其余行为不变。
+        try:
+            from uvicorn.config import LOGGING_CONFIG as _UV_LOG
+
+            _log_cfg = dict(_UV_LOG)
+            _fmts = dict(_UV_LOG.get("formatters") or {})
+            _acc = dict(_fmts.get("access") or {})
+            _acc["fmt"] = "%(asctime)s - %(client_addr)s - \"%(request_line)s\" %(status_code)s"
+            _acc.pop("use_colors", None)
+            _def = dict(_fmts.get("default") or {})
+            _def["fmt"] = "%(asctime)s %(levelprefix)s %(message)s"
+            _def.pop("use_colors", None)
+            _log_cfg["formatters"] = {**_fmts, "access": _acc, "default": _def}
+        except Exception:  # uvicorn 版本差异时退回默认配置
+            _log_cfg = None
         uvicorn.run(
-            app, host=args.host, port=args.port, ws_max_size=_WS_MAX_FRAME_BYTES
+            app, host=args.host, port=args.port,
+            ws_max_size=_WS_MAX_FRAME_BYTES,
+            log_config=_log_cfg,
         )
     finally:
         if generated_token_path is not None:

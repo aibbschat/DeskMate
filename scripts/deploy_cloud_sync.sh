@@ -118,7 +118,8 @@ CHANNEL_MODULES=(
   # 漏传时服务照常启动但每次调用都 ModuleNotFoundError ⇒ 云端小桔彻底不能对话。
   "coworker/providers/router.py"           # ProviderRouter（已接入 paid_fallback）
   "coworker/providers/paid_fallback.py"   # 付费组跨套餐回退 + 熔断记账
-  "coworker/server/app.py"                # /v1/llm-channels* 端点
+  "coworker/server/app.py"                # /v1/llm-channels* 端点 + LLM 专用池/超时中间件
+  "coworker/server/run.py"                # uvicorn 启动入口（access log 时间戳，2026-10-13）
   # ⚠️ 主程序包的同步三件套（2026-10-06 补）：云端 `/opt/openworker/deskmate/memory/`
   # 另有一份 sync_store_sqlite.py，而上面的 CHANNEL_MODULES 里的 llm.py 正是 import它。
   # 只同步平铺包（LOCAL_MODULES）会导致「主程序包跑旧 SYNC_TABLES」——

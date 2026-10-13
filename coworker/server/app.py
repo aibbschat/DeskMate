@@ -68,6 +68,57 @@ _WS_MAX_FRAME_BYTES = 16 * 1024 * 1024
 _WS_RATE_LIMIT_COUNT = 30
 _WS_RATE_LIMIT_WINDOW_SECONDS = 10.0
 _MAX_MESSAGE_TEXT_CHARS = 200_000
+
+
+# --------------------------------------------------------------------------- #
+# LLM 专用执行器（2026-10-13 吞吐事故的根治：故障域隔离）
+#
+# 事故链：LLM 多 provider 降级链撞墙 60-120s × 多任务并发（understanding 补齐 /
+# agency tick 的 AI 圈行为 / 用户触发的 inspire·审校·日记回复）→ asyncio.to_thread
+# 的默认线程池（min(32, cpu+4)）工人被占满 → 数据端点（勋章/日记/记忆/个人中心）
+# 的 to_thread 任务排队 → 面板全空；LLM 链走完工人释放 → 自动恢复。
+# 用户反复复现：「信箱操作太频繁就堵住，过一会儿自动好」。
+#
+# 修复思路不是继续打补丁（to_thread 化更多处），而是圈住爆炸半径：
+# LLM 长任务全部走这个 2 工人专用池，与数据端点的默认池物理隔离——
+# LLM 再慢、降级链再长，最多占 2 个专用工人，数据吞吐不受影响。
+# --------------------------------------------------------------------------- #
+from concurrent.futures import ThreadPoolExecutor  # noqa: E402
+
+LLM_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="xiaoju-llm")
+
+
+async def run_llm(func, /, *args, **kwargs):
+    """把同步 LLM 调用放进专用 2 工人执行器（非 to_thread 默认池）。
+
+    与 ``asyncio.to_thread`` 的区别只在执行器：LLM 慢任务在这里排队，
+    不再和数据端点的 DB 快任务抢工人。用法与 to_thread 一致：
+    ``await run_llm(store.generate_reply, content)``。
+    """
+    import functools
+
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(
+        LLM_EXECUTOR, functools.partial(func, *args, **kwargs)
+    )
+
+
+def _spawn_llm(func, /, *args, **kwargs):
+    """fire-and-forget 版 run_llm：把 LLM 活丢进专用池后台跑，不阻塞当前请求。
+
+    用于「补齐类」副作用（understanding 回填等）：请求必须秒回，
+    补齐结果由下一轮 tick 自然带上。异常由调用方函数自身 fail-open 吞掉；
+    这里再加一层兜底防止线程内未捕获异常污染执行器日志。
+    """
+    import functools
+
+    def _safe():
+        try:
+            func(*args, **kwargs)
+        except Exception:
+            logging.debug("background llm task failed", exc_info=True)
+
+    LLM_EXECUTOR.submit(_safe)
 _MAX_ATTACHMENTS_BYTES = 15_000_000  # leaves JSON overhead below the 16 MiB frame cap
 
 # R13.1（2026-10-08 萧哥：「不做这个谈不上研究或讨论」）：意图讨论进行中
@@ -355,6 +406,25 @@ def create_app(manager: SessionManager) -> FastAPI:
             {"error": "missing or invalid OpenWorker sidecar token"},
             status_code=401,
         )
+
+    @app.middleware("http")
+    async def data_endpoint_timeout(request: Request, call_next):
+        """数据端点 12s 快速失败（2026-10-13 吞吐事故第二道防线）。
+
+        只保护 /v1/deskmate/ 下的 GET 数据读取（勋章/日记/花园/记忆/个人中心）——
+        它们正常都是毫秒级 DB 读；一旦排队超过 12s 说明系统已异常，与其让前端
+        无限转圈白屏，不如 504 让上层有机会展示错误/缓存/重试。
+        LLM 类端点（inspire/审校/tick 等 POST）与流式端点不套——它们本来
+        就有长耗时的预期，前端有自己的 loading 态。
+        """
+        path = request.url.path
+        if request.method == "GET" and path.startswith("/v1/deskmate/"):
+            try:
+                return await asyncio.wait_for(call_next(request), timeout=12.0)
+            except asyncio.TimeoutError:
+                logging.warning("data endpoint timeout (504): %s", path)
+                return JSONResponse({"error": "timeout"}, status_code=504)
+        return await call_next(request)
 
     app.add_middleware(
         CORSMiddleware,
@@ -3763,8 +3833,8 @@ def create_app(manager: SessionManager) -> FastAPI:
             body = {}
         try:
             from deskmate.cognitive.validation_engine import run_validation
-            # run_validation 内部走 chat_memory（同步 LLM 链）——走线程防冻循环。
-            r = await asyncio.to_thread(
+            # run_validation 内部走 chat_memory（同步 LLM 链）——LLM 专用池。
+            r = await run_llm(
                 run_validation,
                 layer=body.get("layer", "cognitive"),
                 domain=body.get("domain"),
@@ -3795,7 +3865,7 @@ def create_app(manager: SessionManager) -> FastAPI:
 
             # 前端回传 generate 阶段拿到的情境，反哺才落在用户真正作答的那条画像上
             # （evaluate 同样内部走 LLM——走线程防冻循环）
-            r = await asyncio.to_thread(
+            r = await run_llm(
                 run_validation,
                 layer=body.get("layer", "cognitive"),
                 ai_response=ai_resp,
@@ -4030,7 +4100,7 @@ def create_app(manager: SessionManager) -> FastAPI:
                 os.environ.get("DESKMATE_DIR", os.path.expanduser("~/.deskmate"))
             )
             # creative_suggest 内部走 chat_memory（同步 LLM 链）——必须走线程防冻循环。
-            return await asyncio.to_thread(try_inspire, str(desk_dir), text, concept)
+            return await run_llm(try_inspire, str(desk_dir), text, concept)
         except Exception:
             logging.exception("deskmate inspire failed")
             return {"triggered": False, "reason": "error"}
@@ -4060,7 +4130,7 @@ def create_app(manager: SessionManager) -> FastAPI:
                 os.environ.get("DESKMATE_DIR", os.path.expanduser("~/.deskmate"))
             )
             # advise 内部一次 LLM 推理（docstring 自述）——走线程防冻循环。
-            return await asyncio.to_thread(advise, str(desk_dir), draft, kind)
+            return await run_llm(advise, str(desk_dir), draft, kind)
         except Exception:
             logging.exception("deskmate writing_advisor failed")
             return {"ok": False, "kind": kind, "advice": "", "worldview_used": False, "reason": "error"}
@@ -4215,9 +4285,11 @@ def create_app(manager: SessionManager) -> FastAPI:
                         _deskmate_tick_engine = ProactiveEngine(base_dir=desk_dir)
             engine = _deskmate_tick_engine
             engine.disturb.persist(desk_dir / "memory" / "disturb_state.json")
-            # Run the sync tick in a thread to avoid blocking the event loop.
+            # Run the sync tick in the LLM-dedicated executor: tick 含 LLM 调用
+            # （感知→思考→行动），撞墙期最长 60-120s，必须与数据端点的默认池隔离
+            # （2026-10-13 吞吐事故：LLM 占满 to_thread 默认池 → 面板全空）。
             # The tick does: subprocess (osascript/pbpaste) + LLM call + evaluate.
-            result = await asyncio.to_thread(
+            result = await run_llm(
                 engine.tick,
                 user_message=body.get("user_message", ""),
                 skip_activity_check=bool(body.get("skip_activity_check", False)),
@@ -4280,11 +4352,9 @@ def create_app(manager: SessionManager) -> FastAPI:
                     maybe_backfill_understanding,
                 )
 
-                # LLM 同步链必须走线程：直接调会冻住事件循环（2026-10-13 事故，
-                # 健康期冻 2-3s、降级期冻 75-120s，全站数据端点集体挂起）。
-                await asyncio.to_thread(
-                    maybe_backfill_understanding, base_dir=desk_dir
-                )
+                # 补齐是「取件前的副作用」，不该让信箱等 LLM——后台跑（信箱秒开，
+                # 补齐结果下一轮 tick 自然带上）。走 LLM 专用池（2026-10-13 吞吐事故）。
+                _spawn_llm(maybe_backfill_understanding, base_dir=desk_dir)
             except Exception:
                 logging.debug(
                     "handoff 取件前 understanding 补齐失败（跳过）", exc_info=True
@@ -4330,10 +4400,8 @@ def create_app(manager: SessionManager) -> FastAPI:
             )
             # 取件前先补一次理解（冷却 10min、无 key/失败 fail-open）——与 GET 同口径。
             try:
-                # 同上：LLM 同步链走线程，绝不冻事件循环。
-                await asyncio.to_thread(
-                    maybe_backfill_understanding, base_dir=desk_dir
-                )
+                # 同上：后台补齐不阻塞取件（信箱秒开），走 LLM 专用池。
+                _spawn_llm(maybe_backfill_understanding, base_dir=desk_dir)
             except Exception:
                 logging.debug(
                     "handoff(ctx) 取件前 understanding 补齐失败（跳过）", exc_info=True
@@ -5156,7 +5224,7 @@ def create_app(manager: SessionManager) -> FastAPI:
             base = os.environ.get("DESKMATE_DIR", os.path.expanduser("~/.deskmate"))
             w = DiaryWriter(base_dir=base)
             # ensure_today → narrate 调 LLM（5~25s，diary.py 自述）——走线程防冻循环。
-            path = await asyncio.to_thread(w.ensure_today)
+            path = await run_llm(w.ensure_today)
             date = Path(str(path)).stem
             return {"path": str(path), "content": w.read(date)}
         except Exception:
@@ -5405,14 +5473,14 @@ def create_app(manager: SessionManager) -> FastAPI:
         try:
             from deskmate.growth.moments import _fallback_reply
 
-            real_reply = await asyncio.to_thread(store.generate_reply, content)
+            real_reply = await run_llm(store.generate_reply, content)
             final_reply = real_reply or _fallback_reply(content)
             if final_reply:
                 await asyncio.to_thread(store.add_comment, post_id, "xiaoju", final_reply)
             try:
                 from deskmate.cognitive.diary_extract import extract_diary_into_cognitive
 
-                await asyncio.to_thread(extract_diary_into_cognitive)
+                await run_llm(extract_diary_into_cognitive)
             except Exception:
                 logging.warning("diary -> cognitive extract failed", exc_info=True)
         except Exception:
@@ -5505,7 +5573,7 @@ def create_app(manager: SessionManager) -> FastAPI:
                 try:
                     # generate_reply 是同步 LLM 降级链——走线程防冻循环（与发帖
                     # 路径同款教训：2026-10-13 事故，直接调用会冻住全站）。
-                    rtext = await asyncio.to_thread(store.generate_reply, text)
+                    rtext = await run_llm(store.generate_reply, text)
                     reply_comment = store.add_comment(moment_id, "xiaoju", rtext)
                 except Exception:
                     logging.warning("xiaoju auto-reply failed", exc_info=True)
@@ -5771,7 +5839,7 @@ def create_app(manager: SessionManager) -> FastAPI:
 
             for _idx, ctitle, ctext in work_units:
                 try:
-                    res = await asyncio.to_thread(proofread_chapter, ctitle, ctext, profile_text)
+                    res = await run_llm(proofread_chapter, ctitle, ctext, profile_text)
                     items = res["items"]
                     block = format_chapter_block(ctitle, items)
                     all_items.extend(items)
@@ -5800,7 +5868,7 @@ def create_app(manager: SessionManager) -> FastAPI:
 
             # ---- 结尾总览报告卡 ----
             try:
-                letter = await asyncio.to_thread(generate_letter, all_items)
+                letter = await run_llm(generate_letter, all_items)
             except Exception:
                 letter = ""
             total = len(all_items)
@@ -5964,7 +6032,7 @@ def create_app(manager: SessionManager) -> FastAPI:
                 try:
                     # P2-10：刷新圣经内含多批 LLM 抽取（秒到分钟级），若在 async 端点
                     # 内同步调用会阻塞整个 sidecar。包进线程池，不挡其他请求。
-                    await asyncio.to_thread(refresh_bible_if_novel, str(pp))
+                    await run_llm(refresh_bible_if_novel, str(pp))
                 except Exception:
                     logging.warning("报告流刷新圣经失败（不影响报告生成）：%s", pp)
                 if pp.is_dir():
@@ -6017,8 +6085,8 @@ def create_app(manager: SessionManager) -> FastAPI:
             safe = _safe_report_name(src_name)
             chapter_indices = body.get("chapter_indices")
 
-            # 同步生成报告
-            report = await asyncio.to_thread(
+            # 同步生成报告（LLM 链）——LLM 专用池
+            report = await run_llm(
                 generate_review_report,
                 raw_text, profile, safe, bible or None, chapter_indices,
             )
