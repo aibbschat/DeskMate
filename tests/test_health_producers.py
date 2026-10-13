@@ -137,6 +137,45 @@ def test_automation_producer_zero_output(base):
     assert any("zero" in it["anchor"] for it in items)
 
 
+def test_automation_producer_result_text_counts_as_output(base):
+    """2026-10-13 修结构性误报（AI圈轮巡「回执 ok 无实产」假警报）：
+
+    automation.db 体系的任务（AI圈轮巡·午/傍晚/晚 等）产出落在
+    ``task_runs.result_text``（云端实测：10-12 晚班回执含 5 条收件箱逐条回应），
+    **从不写 auto_tasks/timeline.jsonl**——那是 deskmate auto_tasks 体系
+    （读书/进度跟踪）的账本。原判据②只认 timeline ⇒ 所有有实产的
+    automation 任务被必然误报「ok 但查无实产」（10-07/10-12/10-13 三天
+    信箱假警报即此）。
+
+    修正语义：result_text 非空即实产；为空才回落 timeline 锚。
+    本用例：result_text 有内容 + timeline 无记录 → **不**产出 task_anomaly。
+    """
+    from deskmate.proactivity.health_producers import _automation_producer
+
+    tid = _make_automation_db(base)  # timeline 无 daily_reading
+    # 给最近一次 run 补上实产 result_text（复刻轮巡真实形态）
+    adb = base / "automation.db"
+    conn = sqlite3.connect(str(adb))
+    row = conn.execute(
+        "SELECT data FROM task_runs WHERE task_id=? ORDER BY started_at DESC LIMIT 1",
+        (tid,),
+    ).fetchone()
+    run = json.loads(row[0])
+    run["result_text"] = "晚班轮巡收好了，收件箱 5 条已逐条回应。"
+    conn.execute(
+        "UPDATE task_runs SET data=? WHERE task_id=? AND started_at=(SELECT MAX(started_at) FROM task_runs WHERE task_id=?)",
+        (json.dumps(run, ensure_ascii=False), tid, tid),
+    )
+    conn.commit()
+    conn.close()
+
+    items = _automation_producer(base_dir=base)
+    zero_items = [it for it in items if it.get("anchor", "").endswith(":zero")]
+    assert not zero_items, (
+        f"result_text 非空即实产，不应报「查无实产」，实得 {zero_items}"
+    )
+
+
 def test_automation_producer_throttled(base):
     """每小时至多扫一次：第二次调用（同秒）被节流返回 []。"""
     from deskmate.proactivity.health_producers import _automation_producer

@@ -354,14 +354,23 @@ def _automation_producer(base_dir: Optional[Path] = None) -> list:
             if status == "ok" and due_today and ran_today:
                 zero = False
                 reason = ""
-                stem = _title_stem(title)
-                if not _timeline_has_today(base_dir, stem):
-                    zero = True
-                    reason = f"timeline.jsonl {_today()} 无「{stem}」记录"
+                # ⚠️ 2026-10-13 修结构性误报（AI圈轮巡「回执 ok 无实产」三天假警报）：
+                #   原判据只认 auto_tasks/timeline.jsonl，但那是 deskmate auto_tasks
+                #   体系（读书/进度跟踪）的账本；automation.db 体系的任务（AI圈轮巡
+                #   午/傍晚/晚三班）产出在 task_runs.result_text，从不写 timeline
+                #   ⇒ 有实产也必然误报。云端实测 10-12 晚班 result_text 含 5 条
+                #   收件箱逐条回应，却被报「查无实产」。
+                #   修正：result_text 非空即实产；为空才回落 timeline 锚（auto_tasks 类）。
+                result_text = (run.get("result_text") or "").strip()
+                if not result_text:
+                    stem = _title_stem(title)
+                    if not _timeline_has_today(base_dir, stem):
+                        zero = True
+                        reason = f"result_text 空 且 timeline.jsonl {_today()} 无「{stem}」记录"
                 if zero:
                     items.append({
                         "kind": "task_anomaly",
-                        "content": f"「{title}」今天回执 ok，但 timeline 里查无实产，得留意。",
+                        "content": f"「{title}」今天回执 ok，但没查到实产，得留意。",
                         "evidence": (
                             f"last_run={_iso(last_run)} status=ok; {reason}"
                         ),
