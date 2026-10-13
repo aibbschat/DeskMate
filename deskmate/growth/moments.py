@@ -143,6 +143,10 @@ class MomentsStore:
         """委托 DiaryStore.get_posts（cursor 分页：{items, next_cursor, comments}）。"""
         return self.store.get_posts(limit=limit, cursor=cursor)
 
+    def get_post(self, moment_id: str) -> dict[str, Any] | None:
+        """委托 DiaryStore.get_post（单条 + 内联留言），供前端发帖后轮询小桔真回复。"""
+        return self.store.get_post(moment_id)
+
     # ------------------------------------------------------------------
     # 用户日记
     # ------------------------------------------------------------------

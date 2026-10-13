@@ -49,10 +49,6 @@ interface Moment {
   pendingReply?: boolean;
 }
 
-function uid(): string {
-  return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-}
-
 /** 轻量 markdown 渲染（小桔日记用） */
 function renderText(text: string): React.ReactNode {
   const lines = text.split("\n");
