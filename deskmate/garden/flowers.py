@@ -17,6 +17,7 @@ fail-open：任何异常静默，不影响个人中心与主动推理主流程�
 from __future__ import annotations
 
 import datetime
+import hashlib
 import json
 import logging
 import os
@@ -205,20 +206,65 @@ def _title_for(kind: str, label: str, subject: str) -> str:
     return f"{label} · {snippet}"
 
 
+def _bloom_watermark(growth, base_dir: Path | str | None = None) -> str:
+    """廉价水印：自上次 bloom 以来有没有新「可开花事件」。
+
+    纯内存扫描（recent_events + 日记素材账本），**不碰数据库、不构造 EmotionTimeline**，
+    毫秒级。返回可开花事件的指纹集合的稳定哈希；集合不变即无新事件，maybe_bloom 可整段跳过。
+
+    fail-open：任何异常返回 ""（空水印不会等于已存水印，于是 maybe_bloom 照常全量跑，
+    只是没被优化——不会因水印故障漏开花）。
+    """
+    try:
+        state = getattr(growth, "state", None)
+        if state is None:
+            return ""
+        fids: list[str] = []
+        events = list(getattr(state, "recent_events", None) or [])
+        events = events + _material_events(base_dir)
+        for e in events:
+            if not isinstance(e, dict):
+                continue
+            spec = FLOWER_KINDS.get(str(e.get("kind", "")))
+            if not spec:
+                continue
+            fids.append(f"{spec[0]}:{_fingerprint(e)}")
+        badges = getattr(state, "badges_unlocked", None) or {}
+        badge_fids = [
+            f"badge_flower:badge:{b}" for b, u in badges.items()
+            if b and u != "backfilled"
+        ]
+        sig = "|".join(sorted(fids) + sorted(badge_fids))
+        return hashlib.md5(sig.encode("utf-8")).hexdigest()[:24]
+    except Exception:
+        logger.debug("garden bloom watermark failed", exc_info=True)
+        return ""
+
+
 # ---------------------------------------------------------------------------
 # 判定：从成长状态里开出新花
 # ---------------------------------------------------------------------------
 
 
-def _candidate_flowers(growth, base_dir: Path | str | None = None) -> list[FlowerRecord]:
+def _candidate_flowers(
+    growth,
+    existing_ids: set[str] | None = None,
+    base_dir: Path | str | None = None,
+    timeline=None,
+) -> list[FlowerRecord]:
     """从 GrowthEngine.state 生成「应开但可能尚未开」的花（不查幂等）。
 
     数据源两路：``recent_events``（快，但只有 50 条易失窗口）＋ 日记素材账本
     （append-only 全量流水，把滚出窗口的事件补回来）。花 id 幂等，重复不重复开。
+
+    ``existing_ids``：已开花的 flower_id 集合。**已开过的花在做情绪定色前就丢弃**——
+    情绪定色要构造 EmotionTimeline（开数据库连接），是 maybe_bloom 的主要成本；只对
+    真正新开的几朵算，避免「只新增 1 朵却为全部 614 朵重算情绪」的浪费（2026-10-13 性能根因）。
     """
     out: list[FlowerRecord] = []
     state = growth.state
     seen: set[str] = set()
+    existing_ids = existing_ids or set()
 
     # 1) recent_events 按 kind 映射（账本补回的历史事件一并参与）
     events = list(getattr(state, "recent_events", None) or [])
@@ -236,10 +282,12 @@ def _candidate_flowers(growth, base_dir: Path | str | None = None) -> list[Flowe
         if fid in seen:
             continue
         seen.add(fid)
+        if fid in existing_ids:        # 已开过：仅幂等去重，绝不再为它算情绪
+            continue
         # 发生日（本地时区），不是发现日 —— 补开的历史花才不会全挤在今天
         date = _local_date_from_ts(e.get("ts", "")) or _today()
         # 情绪定色：当日真实情感优先，其次情感画像按事件类型，最后花种默认
-        mood = _mood_for_event(base_dir, date, kind, _default_mood)
+        mood = _mood_for_event(base_dir, date, kind, _default_mood, timeline=timeline)
         out.append(FlowerRecord(
             flower_id=fid,
             kind=flower_kind,
@@ -258,7 +306,7 @@ def _candidate_flowers(growth, base_dir: Path | str | None = None) -> list[Flowe
         if not badge_id or unlocked_at == "backfilled":
             continue
         fid = f"badge_flower:badge:{badge_id}"
-        if fid in seen:
+        if fid in seen or fid in existing_ids:
             continue
         seen.add(fid)
         badge_date = str(unlocked_at)[:10] if unlocked_at else _today()
@@ -270,7 +318,7 @@ def _candidate_flowers(growth, base_dir: Path | str | None = None) -> list[Flowe
             quote="",
             date=badge_date,
             source_ts=str(unlocked_at or ""),
-            mood_tint=_mood_for_event(base_dir, badge_date, "badge_unlocked", "顺利"),
+            mood_tint=_mood_for_event(base_dir, badge_date, "badge_unlocked", "顺利", timeline=timeline),
             echo=_echo_for("badge_flower", badge_id),
         ))
 
@@ -295,20 +343,24 @@ _TIMELINE_MOOD: dict[str, str] = {
 }
 
 
-def _mood_from_timeline(base_dir: Path | str | None, date: str) -> str:
+def _mood_from_timeline(base_dir: Path | str | None, date: str, timeline=None) -> str:
     """取某一天的真实情感状态（映射为花的 mood_tint），查不到返回空串。
 
     情感时间线按天记快照，而花开的日期是「事件发生日」（见 _local_date_from_ts），
     两边都是本地日期，可以直接对上——补开的历史花也能按当天真实心情定色。
+
+    ``timeline`` 可选：传入已构造的 ``EmotionTimeline`` 实例，避免每朵花都重开数据库连接
+    （一次 bloom 内多朵新花共享同一份时间线快照）。
 
     fail-open：读不到 / 异常都返回 ""，由调用方回落到事件类型查表。
     """
     if not date:
         return ""
     try:
-        from deskmate.growth.emotion_timeline import EmotionTimeline
-
-        snap = EmotionTimeline(base_dir=base_dir)._data.get(date)
+        if timeline is None:
+            from deskmate.growth.emotion_timeline import EmotionTimeline
+            timeline = EmotionTimeline(base_dir=base_dir)
+        snap = timeline._data.get(date)
         if not isinstance(snap, dict):
             return ""
         return _TIMELINE_MOOD.get(str(snap.get("state", "") or ""), "")
@@ -317,13 +369,13 @@ def _mood_from_timeline(base_dir: Path | str | None, date: str) -> str:
         return ""
 
 
-def _mood_for_event(base_dir: Path | str | None, date: str, kind: str, default: str) -> str:
+def _mood_for_event(base_dir: Path | str | None, date: str, kind: str, default: str, timeline=None) -> str:
     """花的情绪定色，优先级：**当日真实情感 > 情感画像按事件类型 > 花种默认**。
 
     真实情感来自 EmotionTimeline（按天快照，含 mood 与当日事件统计）；
     情感画像的 mood_tint_for_event 只按事件类型静态查表，是次优解。
     """
-    real = _mood_from_timeline(base_dir, date)
+    real = _mood_from_timeline(base_dir, date, timeline=timeline)
     if real:
         return real
     try:
@@ -372,20 +424,42 @@ def maybe_bloom(base_dir: Path | str | None = None) -> list[dict]:
     幂等：已存在于 ``garden.flowers`` 的花不会重复开。
     首次上线：历史徽章 / 近事件自动补开，花园一打开就有内容。
 
+    **新事件闸门（2026-10-13 性能根治）**：用 ``_bloom_watermark`` 比对「自上次 bloom
+    以来有没有新可开花事件」。水印没变 → 整段跳过 bloom 扫描（0 数据库、0 时间线构造），
+    仅保留廉价的存量花重着色（1 次时间线加载，毫秒级）。水印变了才跑全量，且只对
+    真正新开的几朵算情绪（见 ``_candidate_flowers`` 的现有 id 前置去重）。
+
     Returns:
         本次新增的花朵（dict）；无新增返回 []。任何异常返回 []（fail-open）。
     """
     try:
+        from deskmate.growth.emotion_timeline import EmotionTimeline
         from deskmate.growth.engine import GrowthEngine
 
         growth = GrowthEngine(base_dir=base_dir)
         garden = load_garden(base_dir)
-        candidates = _candidate_flowers(growth, base_dir)
-        fresh = [f for f in candidates if f.flower_id not in garden.flowers]
+
+        # —— 新事件闸门：水印不变则跳过 bloom 重算 ——
+        wm = _bloom_watermark(growth, base_dir)
+        if wm and wm == garden.last_bloom_watermark:
+            # 无新事件：仍跑 retint（廉价，1 次时间线加载）保证存量花色新鲜；有改动才落盘。
+            retinted = retint_flowers(garden, base_dir)
+            if retinted:
+                save_garden(garden, base_dir)
+            return []
+
+        # 水印变化（或首次）：仅对尚未开过的花算情绪，共享同一份时间线快照。
+        timeline = EmotionTimeline(base_dir=base_dir)
+        candidates = _candidate_flowers(
+            growth, set(garden.flowers.keys()), base_dir, timeline=timeline
+        )
+        fresh = candidates
         # 存量花按当日真实情感重新定色（幂等）。接线前落库的花是按事件类型
         # 定色的，不重算就永远停在错误颜色上——只改情感时间线有据可依的那些。
         retinted = retint_flowers(garden, base_dir)
         if not fresh and not retinted:
+            garden.last_bloom_watermark = wm
+            save_garden(garden, base_dir)
             return []
         for f in fresh:
             garden.flowers[f.flower_id] = f.to_dict()
@@ -396,6 +470,7 @@ def maybe_bloom(base_dir: Path | str | None = None) -> list[dict]:
             "retinted": retinted,
             "ids": [f.flower_id for f in fresh],
         })
+        garden.last_bloom_watermark = wm
         save_garden(garden, base_dir)
         return [f.to_dict() for f in fresh]
     except Exception:

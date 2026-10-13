@@ -90,6 +90,7 @@ class GardenState:
     lit_flowers: dict[str, str] = field(default_factory=dict)    # 被点亮的花（P2）：flower_id -> iso
     archive: list[dict] = field(default_factory=list)        # 花园年鉴（P2）：超限归档的旧花（cap 500）
     updated_at: str = ""
+    last_bloom_watermark: str = ""     # 新事件闸门水印：自上次 bloom 以来有无新「可开花事件」
 
     def to_dict(self) -> dict:
         return {
@@ -105,6 +106,7 @@ class GardenState:
             "lit_flowers": dict(self.lit_flowers),
             "archive": self.archive[-500:],
             "updated_at": self.updated_at,
+            "last_bloom_watermark": self.last_bloom_watermark,
         }
 
 
@@ -229,6 +231,7 @@ def _build_garden(data: dict) -> GardenState:
     st.year_flowers = _years_of(data)
     st.lit_flowers = _lit_of(data)
     st.archive = _archive_of(data)
+    st.last_bloom_watermark = str(data.get("last_bloom_watermark", "") or "")
     return st
 
 

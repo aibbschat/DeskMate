@@ -11,11 +11,13 @@
 
 import datetime
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
 from deskmate.garden import season as season_mod
 from deskmate.garden.clock import maybe_settle_garden, maybe_visit
+from deskmate.garden import flowers as flowers_mod
 from deskmate.garden.flowers import BED_LABELS, FLOWER_KINDS, FLOWER_INFO, maybe_bloom
 from deskmate.garden.state import GardenState, load_garden, save_garden
 from deskmate.growth.engine import GrowthEngine
@@ -135,6 +137,73 @@ def test_bloom_does_not_bloom_chat_traces(tmp_path):
     ]
     save_state(engine.state, tmp_path)
     assert maybe_bloom(tmp_path) == []  # 日常痕迹不开花
+
+
+def test_candidate_flowers_skips_mood_for_already_existing(tmp_path):
+    """根因锁死：已开过的花在做情绪定色前就被丢弃，绝不为它重开数据库连接。
+
+    2026-10-13 性能事故根因 = 只新增 1 朵却为全部 614 朵重算情绪（每朵新开 EmotionTimeline）。
+    修复后 `_candidate_flowers` 拿到 existing_ids，已存在的直接跳过，不调 `_mood_for_event`。
+    """
+    engine = GrowthEngine(base_dir=tmp_path)
+    engine.state.recent_events = [
+        {"ts": "2026-09-02T10:00:00", "kind": "creation_approved", "note": "第三章定稿"},
+        {"ts": "2026-09-02T10:05:00", "kind": "user_corrected", "note": "人物称呼改了一处"},
+    ]
+    save_state(engine.state, tmp_path)
+
+    # 先以空 existing 拿到全部候选 fid
+    all_candidates = flowers_mod._candidate_flowers(engine, set(), tmp_path)
+    all_fids = {c.flower_id for c in all_candidates}
+    assert all_fids, "应有候选花"
+
+    # existing = 全部候选 → 不应触发任何情绪定色
+    with patch.object(flowers_mod, "_mood_for_event", wraps=flowers_mod._mood_for_event) as spy:
+        flowers_mod._candidate_flowers(engine, all_fids, tmp_path)
+        assert spy.call_count == 0, f"已开过的花不应触发情绪定色，实际 {spy.call_count} 次"
+
+    # existing = 空 → 应照常为每朵算情绪
+    with patch.object(flowers_mod, "_mood_for_event", wraps=flowers_mod._mood_for_event) as spy:
+        got = flowers_mod._candidate_flowers(engine, set(), tmp_path)
+        assert spy.call_count == len(got) == len(all_candidates)
+
+
+def test_new_event_gate_skips_when_no_new_events(tmp_path):
+    """新事件闸门：自上次 bloom 起无新可开花事件时，整段跳过、返回 [] 且绝不重复开花。"""
+    engine = GrowthEngine(base_dir=tmp_path)
+    engine.state.recent_events = [
+        {"ts": "2026-09-02T10:00:00", "kind": "creation_approved", "note": "定稿"},
+    ]
+    save_state(engine.state, tmp_path)
+
+    assert len(maybe_bloom(tmp_path)) == 1
+    g = load_garden(tmp_path)
+    assert g.last_bloom_watermark, "首开后应写入水印"
+    count = len(g.flowers)
+
+    # 无新事件再开园 → 闸门拦下
+    assert maybe_bloom(tmp_path) == []
+    assert maybe_bloom(tmp_path) == []
+    g2 = load_garden(tmp_path)
+    assert len(g2.flowers) == count, "闸门不应导致重复开花"
+
+
+def test_new_event_gate_opens_on_new_event(tmp_path):
+    """闸门在水印变化（确有新事件）时正常放行，只新增对应的新花。"""
+    engine = GrowthEngine(base_dir=tmp_path)
+    engine.state.recent_events = [
+        {"ts": "2026-09-02T10:00:00", "kind": "creation_approved", "note": "定稿"},
+    ]
+    save_state(engine.state, tmp_path)
+    assert len(maybe_bloom(tmp_path)) == 1
+
+    engine.state.recent_events.append(
+        {"ts": "2026-09-03T10:00:00", "kind": "skill_created", "note": "新技能", "skill_name": "X"}
+    )
+    save_state(engine.state, tmp_path)
+    fresh = maybe_bloom(tmp_path)
+    assert len(fresh) == 1, "新事件应触发一次新开花"
+    assert fresh[0]["kind"] == "starflower"
 
 
 def test_bloom_backfills_historical_badges(tmp_path):
