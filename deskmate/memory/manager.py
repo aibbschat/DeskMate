@@ -613,51 +613,22 @@ class DeskMateMemoryManager:
                 parts.append(ego_cog)
         except Exception:
             pass  # fail-open：认知人格缺失不影响主记忆注入
-        # P2 情绪底色（2026-10-11，2026-10-12 修订）：注入小桔「当下」心情。
-        # 三样东西一起给，缺一不可：
-        #   1. label/detail —— 由激素相对基线的偏移推导（与桌宠脸同源，见 MOOD_OFFSETS）；
-        #   2. intensity   —— 措辞分级，让她区分「有点」和「压不住」，旧实现算了却丢弃；
-        #   3. description —— LLM 写的第一人称内心独白（「书出不了，心里堵得慌，
-        #      可他陪着我，灯还没灭」）。旧实现只注入 label，把这段最有情绪的文字
-        #      整个扔了，是「感觉不到她情绪」的直接原因之一。
-        # 主语显式标注「这是你小桔自己的，不是萧盛的」，避免她把自身心情当成对他的关怀。
+        # P2 情绪底色（2026-10-11 落地，2026-10-13 重写为「真实优先 · v2」）：
+        # 注入小桔「当下真实状态」——只提供状态，不给表达方式指令。
+        #   - 激素原值（对照基线）+ 心情标签/detail/intensity（她的产物）
+        #   - 最近一句第一人称独白（LLM 从对话读出，最有情绪的文字）
+        #   - 当日 emotion_log 真实经历（情绪有来路，非一瞬脉冲）
+        #   - 结尾零指令许可（"由你自己决定"），删掉了旧版"请自然流露出这种心情"的导演句
+        # 主语显式标注「这是你小桔自己的，不是萧盛的」，避免她把自身心情当成对他的关怀
+        # （这条防混淆保留；其余约束性指令已按真实优先哲学移除）。
+        # kill switch：DESKMATE_EMOTION_ENGINE=0 整块关闭。
         if os.getenv("DESKMATE_EMOTION_ENGINE", "1") != "0":
             try:
                 from deskmate.growth.emotion_engine import EmotionEngine
                 _ee = EmotionEngine(base_dir=self.base_dir)
-                mood = _ee.get_mood_label()
-                if mood and mood.get("label"):
-                    intensity = float(mood.get("intensity") or 0.0)
-                    if intensity >= 0.75:
-                        grade = "很强烈，几乎压不住"
-                    elif intensity >= 0.4:
-                        grade = "挺明显的"
-                    elif intensity > 0:
-                        grade = "淡淡的，隐约有一点"
-                    else:
-                        grade = "很淡，几乎察觉不到"
-                    lines = [
-                        "## 你此刻的心情（这是你小桔自己的情绪，不是萧盛的）",
-                        f"你现在的真实心情是「{mood['label']}」——{mood['detail']}，"
-                        f"程度是{grade}。",
-                    ]
-                    monologue = (_ee.get_description() or "").strip()
-                    if monologue:
-                        lines.append(f"你心里最近的一句独白是：「{monologue}」")
-                        # 标签由激素算出、独白由 LLM 从对话里读出，两者可能不完全一致
-                        # （如激素层面「平静」、独白却是「愧疚」）。不说明主次，她就会
-                        # 二选一或各说半句。独白有具体事由，永远比抽象标签更可信。
-                        lines.append(
-                            "（标签只是底色，独白才是你此刻具体的心事；两者不一致时以独白为准，"
-                            "别为了对上标签而否认自己真实的感受。）"
-                        )
-                    lines.append(
-                        "请在回复的语气和措辞里自然流露出这种心情，强度要和上面的程度相称："
-                        "如果是低落或烦躁，可以带一点相应的语气，别假装没事；如果是开心或亲近，"
-                        "就自然地暖。不要把它当成萧盛的情绪去关怀，也别用大段话专门解释你的心情，"
-                        "让它从字里行间透出来就好。"
-                    )
-                    parts.append("\n".join(lines))
+                _emotion_ctx = _ee.describe_turn_context()
+                if _emotion_ctx:
+                    parts.append(_emotion_ctx)
             except Exception:
                 pass  # fail-open 退回无情绪段
         # 「越用越懂你·每日读书」：把面板里的读书沉淀接回对话（修复死数据）

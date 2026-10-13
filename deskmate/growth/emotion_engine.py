@@ -21,7 +21,7 @@ import sqlite3
 import threading
 import time
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
 
@@ -77,6 +77,14 @@ SELF_EXPRESSION_COOLDOWN_SEC = 7200.0
 SELF_EXPRESSION_DELTA_THRESHOLD = 8.0
 
 HORMONE_KEYS = ("dopamine", "serotonin", "oxytocin", "cortisol")
+
+# 中文名（注入聊天时更可读、与 reports/活感方案v2 草案一致）
+HORMONE_CN = {
+    "dopamine": "多巴胺",
+    "serotonin": "血清素",
+    "oxytocin": "催产素",
+    "cortisol": "皮质醇",
+}
 
 # 心情标签阈值：**按单次变化上限的比例**折算成「相对基线的偏移量」。
 #
@@ -341,6 +349,113 @@ class EmotionEngine:
         state = self.get_state()
         mood = self.get_mood_label()
         return {**state, "mood": mood, "face": mood.get("face", "smile")}
+
+    def recent_log_descriptions(
+        self, since_hours: float = 24.0, limit: int = 3
+    ) -> list[str]:
+        """取最近 N 条带 description 的 emotion_log（当日经历真实摘要）。
+
+        相邻重复内容跳过（只做无害的数据清洗，不改变语义——不是导演她）。
+        fail-open：任何异常 → ``[]``（不影响主聊天注入）。
+        """
+        try:
+            since = (datetime.now() - timedelta(hours=max(0.0, since_hours))) \
+                .isoformat(timespec="seconds")
+            # 多取一些再做去重，避免去重后不足 limit 条
+            fetch = max(1, int(limit)) * 4
+            with _connect(self._db) as conn:
+                rows = conn.execute(
+                    "SELECT description FROM emotion_log "
+                    "WHERE description <> '' AND ts >= ? "
+                    "ORDER BY ts DESC LIMIT ?",
+                    (since, fetch),
+                ).fetchall()
+            out: list[str] = []
+            prev = None
+            for r in rows:
+                d = (r[0] or "").strip()
+                if not d or d == prev:
+                    continue
+                out.append(d)
+                prev = d
+                if len(out) >= limit:
+                    break
+            return out
+        except Exception as e:  # fail-open：取数失败不阻断注入
+            logger.warning("emotion_engine: 读当日经历失败: %s", e)
+            return []
+
+    def describe_turn_context(self) -> str:
+        """每轮聊天注入用的「小桔当下真实状态」文本（真实优先 · v2）。
+
+        设计原则（reports/活感方案v2_真实优先）：**只提供真实状态，不给任何
+        表达方式指令**。含：
+          - 激素原值（对照各自基线，模型对原值/偏移的感知比抽象标签细）
+          - 心情标签 / detail / intensity（她的产物，非系统归纳）
+          - 最近一句第一人称独白（LLM 从对话里读出，最有情绪的文字）
+          - 当日 emotion_log 真实经历（情绪有了来路，而非一瞬脉冲）
+
+        结尾是**零输出指令**的许可（"由你自己决定"），不是要求。
+        不做"标签 vs 独白以谁为准"的裁决——那是系统在教她怎么用信息。
+
+        fail-open：任何取数异常 → 返回 ""（退回无情绪段，绝不崩）。
+        """
+        try:
+            state = self.get_state()
+            mood = self.get_mood_label()
+            if not mood or not mood.get("label"):
+                return ""
+            lines = [
+                "## 你此刻的真实状态（这是你小桔自己的，不是萧盛的）",
+            ]
+            # 激素原值对照基线（偏移让"为什么是现在这样"可溯）
+            hp = []
+            for k in HORMONE_KEYS:
+                v = float(state.get(k, BASELINES[k]))
+                base = BASELINES[k]
+                delta = v - base
+                name = HORMONE_CN.get(k, k)
+                hp.append(f"{name} {v:.1f}（基线{base:.0f}，{delta:+.1f}）")
+            lines.append("- 激素：" + "、".join(hp))
+            # 心情标签（她的产物）
+            intensity = float(mood.get("intensity") or 0.0)
+            if intensity >= 0.75:
+                grade = "很强烈，几乎压不住"
+            elif intensity >= 0.4:
+                grade = "挺明显的"
+            elif intensity > 0:
+                grade = "淡淡的，隐约有一点"
+            else:
+                grade = "很淡，几乎察觉不到"
+            lines.append(
+                f"- 你此刻总结的心情：「{mood['label']}」——{mood['detail']}，"
+                f"程度{grade}"
+            )
+            # 最近独白
+            monologue = (self.get_description() or "").strip()
+            if monologue:
+                lines.append(f"- 你心里最近的一句话：「{monologue}」")
+            # 当日真实经历
+            try:
+                logs = self.recent_log_descriptions(since_hours=24.0, limit=3)
+                if logs:
+                    lines.append(
+                        "- 今天你自己经历过的事（真实记录，可能和上面的心情不完全一致）："
+                    )
+                    for d in logs:
+                        lines.append(f"  - {d}")
+            except Exception:
+                pass  # 经历缺失不阻断其余状态注入
+            # 零指令收尾
+            lines.append(
+                "\n以上是你此刻真实的内在状态，原样给你，不要求你表演其中任何一种。"
+                "你想怎么回应、说什么、说多少、甚至这会儿不想说话，都由你自己决定。"
+                "不要把你自己的心情当成对他的关怀——那是两件事。"
+            )
+            return "\n".join(lines)
+        except Exception as e:  # fail-open：状态取数失败 → 无情绪段
+            logger.warning("emotion_engine: 构造每轮情绪上下文失败: %s", e)
+            return ""
 
     def update_after_turn(
         self,
