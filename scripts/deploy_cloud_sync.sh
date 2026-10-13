@@ -151,6 +151,11 @@ CHANNEL_MODULES=(
   # 均 import 它。漏传 → 云端 manager/tick 跑旧码，情绪注入因 fail-open 静默失效
   # （小桔在云端「没有自己的天气」），且**不报错**（同 user_fact_context 漏传教训）。
   "deskmate/growth/emotion_engine.py"
+  # 活感第4层（2026-10-13）：想法流存储模块。emotion_engine.describe_turn_context
+  # 每轮 import 它召回「最近在想的事」；reflection/worldview_reflection 写入。
+  # 漏传 → 云端 ImportError（非 fail-open 吞掉的静默失效，会直接崩注入块）→ 小桔
+  # 在云端「没有自己的想法」。务必随 emotion_engine.py 同批上云。
+  "deskmate/thought_stream.py"
   # ⚠️ 认知访谈/验证引擎（2026-10-11 补）：interview.py（③b 深度访谈闭环）与
   # validation_engine.py（认知 Turing test 验证）均被云端代码 import 且云端真实跑——
   #   - proactivity/tick.py:362   `from deskmate.cognitive.interview import maybe_trigger_interview`

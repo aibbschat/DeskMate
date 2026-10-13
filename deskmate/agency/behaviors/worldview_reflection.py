@@ -545,6 +545,15 @@ def _persist_worldview(base_dir: str, parsed: dict[str, Any],
         except Exception as e:
             logger.warning("worldview_reflection: 写思维框架失败: %s", e)
 
+    # 第4层（真实优先）：把"我相信"写进想法流 —— 她看世界长出的看法，聊天时
+    # 能带出来（"她最近在想的事"）。fail-open：写库失败绝不阻断回望主流程。
+    try:
+        from deskmate.thought_stream import add_thought
+        if believe:
+            add_thought(base_dir, believe, kind="worldview", about=about)
+    except Exception:
+        pass
+
     return written
 
 

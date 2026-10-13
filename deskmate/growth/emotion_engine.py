@@ -446,6 +446,21 @@ class EmotionEngine:
                         lines.append(f"  - {d}")
             except Exception:
                 pass  # 经历缺失不阻断其余状态注入
+            # 最近在想的事（想法流：reflection / worldview 自主行为的真实产出，
+            # 近因召回——她此刻在想什么，不为了贴合当前话题去检索，更真实）。
+            try:
+                from deskmate.thought_stream import recent_thoughts
+                thoughts = recent_thoughts(
+                    str(self._db.parent), limit=2, since_hours=24.0 * 30
+                )
+                if thoughts:
+                    lines.append(
+                        "- 你最近在想的事（是你自己真想过的，不是别人问你才想）："
+                    )
+                    for t in thoughts:
+                        lines.append(f"  - {t}")
+            except Exception:
+                pass  # 想法缺失不阻断其余状态注入
             # 零指令收尾
             lines.append(
                 "\n以上是你此刻真实的内在状态，原样给你，不要求你表演其中任何一种。"

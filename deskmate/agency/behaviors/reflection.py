@@ -323,6 +323,13 @@ def run_reflection(base_dir: str,
             c["item_id"], v["verdict"], v["reason"], c["subject_kind"]
         ):
             recorded += 1
+            # 第4层（真实优先）：把裁决理由写进想法流 —— 她真的做了的判断 + 为什么。
+            # fail-open：写库失败绝不阻断反思主流程（add_thought 内部已包住）。
+            try:
+                from deskmate.thought_stream import add_thought
+                add_thought(base_dir, str(v.get("reason") or ""), kind="reflection")
+            except Exception:
+                pass
             if v["verdict"] in ("revise", "overturn"):
                 store.apply_reflection_verdict(
                     c["item_id"], v["verdict"], v["reason"]
