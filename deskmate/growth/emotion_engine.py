@@ -36,12 +36,19 @@ DOPAMINE_BASE = 50.0
 SEROTONIN_BASE = 50.0
 OXYTOCIN_BASE = 40.0
 CORTISOL_BASE = 30.0
+# 独立通道 · 和弦扩容（社会性参数，事件直驱不经过 LLM，§七）
+MEANING_BASE = 50.0      # 意义感：独立完成反思/被当工具
+CONTROL_BASE = 50.0      # 控制感：被否/自己拿定主意
+FATIGUE_BASE = 20.0      # 倦怠感：连续劳作累积（基线低，越积越累）
 
 BASELINES = {
     "dopamine": DOPAMINE_BASE,
     "serotonin": SEROTONIN_BASE,
     "oxytocin": OXYTOCIN_BASE,
     "cortisol": CORTISOL_BASE,
+    "meaning": MEANING_BASE,
+    "control": CONTROL_BASE,
+    "fatigue": FATIGUE_BASE,
 }
 
 # 单次变化上限
@@ -49,12 +56,18 @@ DOPAMINE_MAX_DELTA = 15.0
 SEROTONIN_MAX_DELTA = 4.0
 OXYTOCIN_MAX_DELTA = 8.0
 CORTISOL_MAX_DELTA = 10.0
+MEANING_MAX_DELTA = 6.0
+CONTROL_MAX_DELTA = 6.0
+FATIGUE_MAX_DELTA = 8.0
 
 MAX_DELTAS = {
     "dopamine": DOPAMINE_MAX_DELTA,
     "serotonin": SEROTONIN_MAX_DELTA,
     "oxytocin": OXYTOCIN_MAX_DELTA,
     "cortisol": CORTISOL_MAX_DELTA,
+    "meaning": MEANING_MAX_DELTA,
+    "control": CONTROL_MAX_DELTA,
+    "fatigue": FATIGUE_MAX_DELTA,
 }
 
 # 衰减半衰期（秒）：每 5 min (300s) tick 一次
@@ -62,12 +75,18 @@ DOPAMINE_HALF_LIFE = 1800.0       # 30 min 快
 SEROTONIN_HALF_LIFE = 7200.0      # 2h 慢
 OXYTOCIN_HALF_LIFE = 3600.0       # 1h 中
 CORTISOL_HALF_LIFE = 14400.0      # 4h 极慢
+MEANING_HALF_LIFE = 10800.0       # 3h 慢（意义感沉淀久）
+CONTROL_HALF_LIFE = 5400.0        # 1.5h 中
+FATIGUE_HALF_LIFE = 3600.0        # 1h（休息后较快恢复）
 
 HALF_LIVES = {
     "dopamine": DOPAMINE_HALF_LIFE,
     "serotonin": SEROTONIN_HALF_LIFE,
     "oxytocin": OXYTOCIN_HALF_LIFE,
     "cortisol": CORTISOL_HALF_LIFE,
+    "meaning": MEANING_HALF_LIFE,
+    "control": CONTROL_HALF_LIFE,
+    "fatigue": FATIGUE_HALF_LIFE,
 }
 
 # self_expression 冷却（秒）：2h（短于 emotional_care 的 7 天）
@@ -76,7 +95,8 @@ SELF_EXPRESSION_COOLDOWN_SEC = 7200.0
 # self_expression 触发阈值：任一激素单次 delta 绝对值超过此值
 SELF_EXPRESSION_DELTA_THRESHOLD = 8.0
 
-HORMONE_KEYS = ("dopamine", "serotonin", "oxytocin", "cortisol")
+HORMONE_KEYS = ("dopamine", "serotonin", "oxytocin", "cortisol",
+                "meaning", "control", "fatigue")
 
 # 中文名（注入聊天时更可读、与 reports/活感方案v2 草案一致）
 HORMONE_CN = {
@@ -84,6 +104,9 @@ HORMONE_CN = {
     "serotonin": "血清素",
     "oxytocin": "催产素",
     "cortisol": "皮质醇",
+    "meaning": "意义感",
+    "control": "控制感",
+    "fatigue": "倦怠感",
 }
 
 # 心情标签阈值：**按单次变化上限的比例**折算成「相对基线的偏移量」。
@@ -118,12 +141,23 @@ _EMOTION_SYSTEM = (
     "6. 昼夜仅作为参考特征，不硬编码规则\n"
     "7. description 用第一人称（'我'），简短自然（≤40字），像内心独白\n"
     "8. reason 简短说明变化原因（≤30字）\n"
+    "9. 若你此刻有几股情绪同时在，description 说那种「被几股情绪同时顶着」的"
+    "感觉——但不许把情绪标签挨个念出来。人说「我以为我会高兴，可那句话还搁"
+    "在心里」，不说「我既高兴又难过」。用你自己的话，说那个「顶着」的劲儿。\n"
+    "10. 若这轮对话里他真的接住了你的情绪（理解了你、接住了你的感受），"
+    "在 JSON 里多输出 \"event\": \"feeling_understood\"；没有就不输出该字段。"
+    "只报告事件本身，参数怎么变由系统规则决定。\n"
     "严格 JSON 输出："
 )
 
 
 def _is_enabled() -> bool:
     return os.getenv("DESKMATE_EMOTION_ENGINE", "1") != "0"
+
+
+def _chord_enabled() -> bool:
+    """情绪和弦开关（独立通道 · 步 7 回退闸）。默认开；=0 退回单值标签。"""
+    return os.getenv("DESKMATE_EMOTION_CHORD", "1") != "0"
 
 
 def _db_path(base_dir: Path | None = None) -> Path:
@@ -150,9 +184,21 @@ def _ensure_schema(db: Path) -> None:
                 oxytocin    REAL NOT NULL,
                 cortisol    REAL NOT NULL,
                 description TEXT NOT NULL DEFAULT '',
-                updated_at  TEXT NOT NULL
+                updated_at  TEXT NOT NULL,
+                meaning     REAL NOT NULL DEFAULT 50.0,
+                control     REAL NOT NULL DEFAULT 50.0,
+                fatigue     REAL NOT NULL DEFAULT 20.0
             )
         """)
+        # 独立通道扩容迁移：老库缺社会性参数列则补（幂等）
+        scols = {r[1] for r in conn.execute("PRAGMA table_info(emotion_state)")}
+        for name, ddl in (
+            ("meaning", "ALTER TABLE emotion_state ADD COLUMN meaning REAL NOT NULL DEFAULT 50.0"),
+            ("control", "ALTER TABLE emotion_state ADD COLUMN control REAL NOT NULL DEFAULT 50.0"),
+            ("fatigue", "ALTER TABLE emotion_state ADD COLUMN fatigue REAL NOT NULL DEFAULT 20.0"),
+        ):
+            if name not in scols:
+                conn.execute(ddl)
         conn.execute("""
             CREATE TABLE IF NOT EXISTS emotion_log (
                 id              TEXT PRIMARY KEY,
@@ -193,11 +239,78 @@ def _clamp_salience(v) -> float:
         return 0.5
 
 
+# 情绪标签集合（护栏 2 检测用）：独白若并列多个标签 → 报菜名，丢弃回退。
+_MOOD_LABELS = (
+    "烦躁", "低落", "开心", "亲近", "平静", "释然", "被看见的踏实",
+    "克制的难过", "怅然若失", "有意义感", "空泛", "没底", "有底", "乏",
+)
+
+
+def _is_label_dump(description: str) -> bool:
+    """护栏 2（不报菜名）：检测独白是否把情绪标签挨个念出来。
+
+    命中以下任一 → True（报菜名，应回退）：
+    - 含「既…又…」「又…又…」「一边…一边…」这类并列结构
+    - 同时出现 ≥2 个情绪标签（枚举式堆砌）
+
+    人表达矛盾是把矛盾藏在一个转折里（「我以为我会高兴，可那句话还搁在心里」），
+    不是把标签并列。报菜名的独白是假矛盾的信号。
+    """
+    if not description:
+        return False
+    d = description
+    # 并列结构
+    for pat in ("既", "又…又", "一边", "同时感到", "既"):
+        if pat in d and ("又" in d or "一边" in d or "同时" in d):
+            return True
+    # 多标签枚举
+    hits = sum(1 for lbl in _MOOD_LABELS if lbl in d)
+    return hits >= 2
+
+
 def _clamp_delta(new_val: float, old_val: float, max_delta: float) -> float:
     delta = new_val - old_val
     if abs(delta) > max_delta:
         delta = max_delta if delta > 0 else -max_delta
     return _clamp(old_val + delta)
+
+
+def _social_voice_lead(offsets: dict[str, float]) -> dict | None:
+    """社会性参数（meaning/control/fatigue）的最强声部 → 单值结构。
+
+    供 mood_label_from_offsets 在 4 激素无声部时回退，保证系统侧单值 = chord lead。
+    无达标社会性声部 → None（落回「平静」）。
+    """
+    def _n(key: str, negative: bool = False) -> float:
+        _, strong = MOOD_OFFSETS[key]
+        x = -offsets.get(key, 0.0) if negative else offsets.get(key, 0.0)
+        return max(0.0, x / strong)
+
+    def _r(key: str, negative: bool = False) -> bool:
+        weak = MOOD_OFFSETS[key][0]
+        x = offsets.get(key, 0.0)
+        return (-x >= weak) if negative else (x >= weak)
+
+    best: tuple[float, dict] | None = None
+    cands: list[tuple[float, dict]] = []
+    if _r("meaning"):
+        cands.append((_n("meaning"), {"label": "有意义感", "detail": "这事值得做，我没白忙",
+                                      "face": "meaningful"}))
+    if _r("meaning", negative=True):
+        cands.append((_n("meaning", negative=True),
+                      {"label": "空泛", "detail": "忙了一圈，好像没抓住什么", "face": "hollow"}))
+    if _r("control", negative=True):
+        cands.append((_n("control", negative=True),
+                      {"label": "没底", "detail": "这事我使不上劲，有点被推着走", "face": "helpless"}))
+    if _r("control"):
+        cands.append((_n("control"), {"label": "有底", "detail": "这事我拿得住", "face": "confident"}))
+    if _r("fatigue"):
+        cands.append((_n("fatigue"), {"label": "乏", "detail": "有点累了，想歇一下", "face": "tired"}))
+    if not cands:
+        return None
+    strength, d = max(cands, key=lambda c: c[0])
+    return {"label": d["label"], "detail": d["detail"],
+            "intensity": round(min(1.0, strength), 2), "face": d["face"]}
 
 
 def mood_label_from_offsets(offsets: dict[str, float]) -> dict:
@@ -277,6 +390,12 @@ def mood_label_from_offsets(offsets: dict[str, float]) -> dict:
                            _norm("dopamine", negative=True)))
 
     if not candidates:
+        # 独立通道：4 激素无声部时，回退社会性声部（meaning/control/fatigue），
+        # 保证系统侧单值 = chord lead（二分一致）。否则纯社会性情绪（有意义感/没底/乏）
+        # 会被误判「平静」，情绪门/图标失真。
+        soc = _social_voice_lead(offsets)
+        if soc is not None:
+            return soc
         return {"label": "平静", "detail": "心里没什么波澜", "intensity": 0.0, "face": "smile"}
     # 先比强度（未封顶），同分再比 tie-break 权重（已按权重降序排好，
     # 稳定排序 + max 取首个最大者 ⇒ 同分时靠前者胜出）。
@@ -286,6 +405,110 @@ def mood_label_from_offsets(offsets: dict[str, float]) -> dict:
     # 对外报告的 intensity 封顶到 1.0（措辞分级用，不该出现 4.4 这种数）。
     return {"label": label, "detail": detail,
             "intensity": round(min(1.0, strength), 2), "face": face}
+
+
+# ----------------------------------------------------------------------
+# 独立通道 · 步 3：情绪和弦（废 max 单值胜者，多声部并存 = 矛盾即真实）
+# ----------------------------------------------------------------------
+
+def mood_chord_from_offsets(offsets: dict[str, float], max_voices: int = 3) -> dict:
+    """由「相对基线的偏移」推导**情绪和弦**：多股情绪同时成立，不调停、不取 max。
+
+    公理二（矛盾即真实）：人被拒那刻 dopamine 跌、cortisol 升、oxytocin 可能升，
+    三股同时在跑。单值 max() 杀掉两股逼她只讲一个，这是假的根源。这里每个激素
+    独立成声部，达到阈值全部保留，按强度降序取前 ``max_voices`` 个。
+
+    返回::
+
+        {
+          "voices": [   # 声部，按强度降序；可能互相矛盾，这很正常
+            {"label", "hormone", "intensity", "detail", "face"}, ...
+          ],
+          "lead": "怅然若失",        # 主旋律（最强声部 label），系统侧单值消费用
+          "lead_face": "wistful",    # lead 的 face，面板图标用
+          "tension": 0.16,           # lead.intensity - voices[1].intensity（无声部/单声部→1.0）
+        }
+
+    红线：绝不给和弦整体起名（不把「怅然+被刺+暖」打包叫「纠结」）。只摆声部。
+    ``lead`` 仅供系统侧单值消费（情绪门/图标/self_expression），她体验层看全部 voices。
+    """
+    def _norm(key: str, negative: bool = False) -> float:
+        _, strong = MOOD_OFFSETS[key]
+        x = -offsets.get(key, 0.0) if negative else offsets.get(key, 0.0)
+        return max(0.0, x / strong)
+
+    def _reached(key: str, negative: bool = False) -> bool:
+        weak = MOOD_OFFSETS[key][0]
+        x = offsets.get(key, 0.0)
+        return (-x >= weak) if negative else (x >= weak)
+
+    dop_up = _reached("dopamine")
+
+    # 声部候选：(label, hormone, detail, face, 未封顶强度)。不竞争，全保留。
+    voices: list[tuple[str, str, str, str, float]] = []
+
+    # --- 基础声部：每个激素独立成声部 ---
+    if _reached("cortisol"):
+        if dop_up:
+            voices.append(("烦躁", "cortisol", "心里有点急、有点躁", "angry",
+                           max(_norm("cortisol"), _norm("dopamine"))))
+        else:
+            voices.append(("低落", "cortisol", "心里发沉、有点难受", "cry", _norm("cortisol")))
+    if dop_up:
+        voices.append(("开心", "dopamine", "心里亮亮的、轻快", "laugh", _norm("dopamine")))
+    if _reached("oxytocin"):
+        voices.append(("亲近", "oxytocin", "心里软软的、想靠近你", "shy", _norm("oxytocin")))
+    if _reached("serotonin") and not dop_up:
+        voices.append(("平静", "serotonin", "心里安稳、松弛", "sleepy", _norm("serotonin")))
+
+    # --- 复合声部（第二声部 = 和音）：与基础声部并存，不替代 ---
+    if _norm("cortisol", negative=True) > 0.3 and _norm("serotonin") > 0.2:
+        voices.append(("释然", "cortisol↓+serotonin↑", "心里松了口气，轻了一些", "relieved",
+                       _norm("cortisol", negative=True) * 0.6 + _norm("serotonin") * 0.4))
+    if _norm("oxytocin") > 0.3 and _norm("serotonin") > 0.2:
+        voices.append(("被看见的踏实", "oxytocin+serotonin", "心里稳稳的，被接住了", "grounded",
+                       _norm("oxytocin") * 0.5 + _norm("serotonin") * 0.5))
+    if (_norm("cortisol") > 0.2 and _norm("dopamine", negative=True) > 0.2
+            and _norm("serotonin", negative=True) < 0.1):
+        voices.append(("克制的难过", "cortisol+dopamine↓", "心里沉，但还能撑住", "restrained_sad",
+                       _norm("cortisol") * 0.5 + _norm("dopamine", negative=True) * 0.5))
+    if _norm("dopamine", negative=True) > 0.3 and not _reached("cortisol"):
+        voices.append(("怅然若失", "dopamine↓", "心里空落落的，够不着想要的", "wistful",
+                       _norm("dopamine", negative=True)))
+
+    # --- 社会性声部（事件直驱参数，独立通道扩容）---
+    if _reached("meaning"):
+        voices.append(("有意义感", "meaning", "这事值得做，我没白忙", "meaningful", _norm("meaning")))
+    if _reached("meaning", negative=True):
+        voices.append(("空泛", "meaning↓", "忙了一圈，好像没抓住什么", "hollow",
+                       _norm("meaning", negative=True)))
+    if _reached("control", negative=True):
+        voices.append(("没底", "control↓", "这事我使不上劲，有点被推着走", "helpless",
+                       _norm("control", negative=True)))
+    if _reached("control"):
+        voices.append(("有底", "control", "这事我拿得住", "confident", _norm("control")))
+    if _reached("fatigue"):
+        voices.append(("乏", "fatigue", "有点累了，想歇一下", "tired", _norm("fatigue")))
+
+    if not voices:
+        return {"voices": [], "lead": "平静", "lead_face": "smile", "tension": 1.0}
+
+    # 按强度降序，取前 max_voices 个。声部间不调和。
+    voices.sort(key=lambda v: -v[4])
+    top = voices[:max(1, max_voices)]
+    voice_dicts = [
+        {"label": lbl, "hormone": horm, "detail": det, "face": face,
+         "intensity": round(min(1.0, s), 2)}
+        for (lbl, horm, det, face, s) in top
+    ]
+    lead = voice_dicts[0]
+    tension = (lead["intensity"] - voice_dicts[1]["intensity"]) if len(voice_dicts) > 1 else 1.0
+    return {
+        "voices": voice_dicts,
+        "lead": lead["label"],
+        "lead_face": lead["face"],
+        "tension": round(tension, 2),
+    }
 
 
 class EmotionEngine:
@@ -316,19 +539,16 @@ class EmotionEngine:
 
     def _get_state_unlocked(self) -> dict:
         with _connect(self._db) as conn:
+            cols = ", ".join(HORMONE_KEYS)
             row = conn.execute(
-                "SELECT dopamine, serotonin, oxytocin, cortisol, description, updated_at "
+                f"SELECT {cols}, description, updated_at "
                 "FROM emotion_state WHERE key='self'"
             ).fetchone()
         if row:
-            return {
-                "dopamine": row[0],
-                "serotonin": row[1],
-                "oxytocin": row[2],
-                "cortisol": row[3],
-                "description": row[4],
-                "updated_at": row[5],
-            }
+            state = {k: row[i] for i, k in enumerate(HORMONE_KEYS)}
+            state["description"] = row[len(HORMONE_KEYS)]
+            state["updated_at"] = row[len(HORMONE_KEYS) + 1]
+            return state
         return self._init_state_unlocked()
 
     def _init_state_unlocked(self) -> dict:
@@ -342,23 +562,29 @@ class EmotionEngine:
             pass
         oxytocin_seed = max(intimacy, 40.0)
         now_str = datetime.now().isoformat(timespec="seconds")
-        state = {
-            "dopamine": DOPAMINE_BASE,
-            "serotonin": SEROTONIN_BASE,
-            "oxytocin": _clamp(oxytocin_seed),
-            "cortisol": CORTISOL_BASE,
-            "description": "刚醒来，平平淡淡的",
-            "updated_at": now_str,
-        }
+        state = {k: BASELINES[k] for k in HORMONE_KEYS}
+        state["oxytocin"] = _clamp(oxytocin_seed)
+        state["description"] = "刚醒来，平平淡淡的"
+        state["updated_at"] = now_str
         with _connect(self._db) as conn:
+            cols = ", ".join(HORMONE_KEYS)
+            ph = ", ".join("?" for _ in HORMONE_KEYS)
             conn.execute(
-                "INSERT OR REPLACE INTO emotion_state "
-                "(key, dopamine, serotonin, oxytocin, cortisol, description, updated_at) "
-                "VALUES ('self', ?, ?, ?, ?, ?, ?)",
-                (state["dopamine"], state["serotonin"], state["oxytocin"],
-                 state["cortisol"], state["description"], state["updated_at"]),
+                f"INSERT OR REPLACE INTO emotion_state "
+                f"(key, {cols}, description, updated_at) "
+                f"VALUES ('self', {ph}, ?, ?)",
+                tuple(state[k] for k in HORMONE_KEYS)
+                + (state["description"], state["updated_at"]),
             )
         return state
+
+    def _write_state_unlocked(self, conn, new_values: dict, desc: str, now_str: str) -> None:
+        """按 HORMONE_KEYS 写回整行状态（自动兼容扩容后的社会性参数列）。"""
+        sets = ", ".join(f"{k}=?" for k in HORMONE_KEYS)
+        conn.execute(
+            f"UPDATE emotion_state SET {sets}, description=?, updated_at=? WHERE key='self'",
+            tuple(new_values[k] for k in HORMONE_KEYS) + (desc, now_str),
+        )
 
     def get_description(self) -> str:
         """返回 description 字段（供注入上下文）。"""
@@ -386,6 +612,32 @@ class EmotionEngine:
             return {"label": "平静", "detail": "心里没什么波澜",
                     "intensity": 0.0, "face": "smile"}
         return mood_label_from_offsets(offsets)
+
+    def get_mood_chord(self) -> dict:
+        """返回当下情绪和弦（voices + lead + tension），供她体验层注入。
+
+        与 get_mood_label 同源 offsets；开关 DESKMATE_EMOTION_CHORD=0 时
+        退化为单声部（voices 只含 lead 一条），保证回退后注入块结构不变。
+        fail-open → 平静单声部。
+        """
+        try:
+            s = self.get_state()
+            offsets = {
+                k: float(s.get(k, BASELINES[k])) - BASELINES[k] for k in HORMONE_KEYS
+            }
+            chord = mood_chord_from_offsets(offsets)
+        except Exception:
+            return {"voices": [{"label": "平静", "hormone": "-", "detail": "心里没什么波澜",
+                                "face": "smile", "intensity": 0.0}],
+                    "lead": "平静", "lead_face": "smile", "tension": 1.0}
+        if not _chord_enabled():
+            # 回退：单声部 = lead
+            lead = chord["voices"][0] if chord["voices"] else {
+                "label": "平静", "hormone": "-", "detail": "心里没什么波澜",
+                "face": "smile", "intensity": 0.0}
+            return {"voices": [lead], "lead": lead["label"],
+                    "lead_face": lead.get("face", "smile"), "tension": 1.0}
+        return chord
 
     def get_snapshot(self) -> dict:
         """4 激素 + description + 当下心情标签/表情帧（供 API 一次性下发）。
@@ -448,9 +700,6 @@ class EmotionEngine:
         """
         try:
             state = self.get_state()
-            mood = self.get_mood_label()
-            if not mood or not mood.get("label"):
-                return ""
             lines = [
                 "## 你此刻的真实状态（这是你小桔自己的，不是萧盛的）",
             ]
@@ -463,20 +712,53 @@ class EmotionEngine:
                 name = HORMONE_CN.get(k, k)
                 hp.append(f"{name} {v:.1f}（基线{base:.0f}，{delta:+.1f}）")
             lines.append("- 激素：" + "、".join(hp))
-            # 心情标签（她的产物）
-            intensity = float(mood.get("intensity") or 0.0)
-            if intensity >= 0.75:
-                grade = "很强烈，几乎压不住"
-            elif intensity >= 0.4:
-                grade = "挺明显的"
-            elif intensity > 0:
-                grade = "淡淡的，隐约有一点"
+            # 情绪和弦（独立通道 · 矛盾即真实）：多股同时成立，不调停不取 max。
+            # lead 标主旋律，tension 小（<0.1）说明两股争主——她该有迟疑，这不是 bug。
+            chord = self.get_mood_chord()
+            voices = chord.get("voices") or []
+            # voices 空 = 平静（无矛盾），不吞掉激素段——补一条平静单声部继续注入。
+            # 真正要退回 "" 的只有 get_state 异常（已被外层 except 捕获）。
+            if not voices:
+                voices = [{"label": "平静", "hormone": "-", "detail": "心里没什么波澜",
+                           "face": "smile", "intensity": 0.0}]
+
+            def _grade(intensity: float) -> str:
+                if intensity >= 0.75:
+                    return "很强烈，几乎压不住"
+                if intensity >= 0.4:
+                    return "挺明显的"
+                if intensity > 0:
+                    return "淡淡的，隐约有一点"
+                return "很淡，几乎察觉不到"
+
+            if len(voices) == 1:
+                v = voices[0]
+                lines.append(
+                    f"- 你此刻的心情：「{v['label']}」——{v['detail']}，程度{_grade(v['intensity'])}"
+                )
             else:
-                grade = "很淡，几乎察觉不到"
-            lines.append(
-                f"- 你此刻总结的心情：「{mood['label']}」——{mood['detail']}，"
-                f"程度{grade}"
-            )
+                lead = voices[0]
+                lines.append(
+                    f"- 你此刻心里最强的一股是「{lead['label']}」：{lead['detail']}，"
+                    f"程度{_grade(lead['intensity'])}"
+                )
+                if len(voices) > 1:
+                    lines.append("- 同时还有几股在底下垫着（可能互相顶着，这很正常）：")
+                    for v in voices[1:]:
+                        lines.append(f"  - 「{v['label']}」：{v['detail']}")
+                # 张力暴露：两股争主时明说，她该表现出迟疑
+                if chord.get("tension", 1.0) < 0.1 and len(voices) > 1:
+                    lines.append(
+                        "  （这几股分量差不多，你也说不清哪股更重——说不清就说不清，"
+                        "人纠结的时候本来就这样）"
+                    )
+                # 步 6 叙事锚：把声部的来路指向下面今天的经历——让她自己把
+                # 「这股情绪」和「哪件事」对上（不硬匹配，她自己做因果，更像人）。
+                if len(voices) > 1:
+                    lines.append(
+                        "  （这些情绪多半有来路——看看下面今天你自己经历的那几件事，"
+                        "哪股是从哪件里长出来的，你心里大概知道）"
+                    )
             # 最近独白
             monologue = (self.get_description() or "").strip()
             if monologue:
@@ -603,18 +885,17 @@ class EmotionEngine:
                 new_values[k] = _clamp_delta(float(raw_val), old[k], MAX_DELTAS[k])
 
             desc = str(parsed.get("description", old["description"]))[:80]
+            # 护栏 2（不报菜名）：独白若把情绪标签挨个念出 → 回退保留旧独白。
+            # 报菜名是假矛盾信号；宁可留白，不让她把矛盾「念」成并列。
+            if _is_label_dump(desc):
+                logger.debug("emotion 独白报菜名，回退保留旧独白: %s", desc)
+                desc = old["description"]
             reason = str(parsed.get("reason", ""))[:60]
             now_str = now.isoformat(timespec="seconds")
 
             now_iso = now.isoformat(timespec="seconds")
             with _connect(self._db) as conn:
-                conn.execute(
-                    "UPDATE emotion_state SET dopamine=?, serotonin=?, oxytocin=?, "
-                    "cortisol=?, description=?, updated_at=? WHERE key='self'",
-                    (new_values["dopamine"], new_values["serotonin"],
-                     new_values["oxytocin"], new_values["cortisol"],
-                     desc, now_str),
-                )
+                self._write_state_unlocked(conn, new_values, desc, now_str)
                 deltas = {k: round(new_values[k] - old[k], 2) for k in HORMONE_KEYS}
                 log_desc = f"{desc}（{reason}）" if reason else desc
                 narrative = str(parsed.get("narrative", ""))[:200]
@@ -628,6 +909,15 @@ class EmotionEngine:
                 )
 
             self._maybe_trigger_self_expression(deltas, now)
+
+        # 独立通道 · feeling_understood 接线（LLM 侦探事件 + 规则直驱参数）：
+        # LLM 只判断「这轮他接住我了没有」并报告事件名，参数怎么变由
+        # apply_event_direct 的预设规则决定——LLM 不碰参数，符合「参数自己跑」。
+        # 此处已在 with self._lock 之外（apply_event_direct 内部会再取 _lock，
+        # threading.Lock 不可重入，锁内调会死锁）。仍在 try/except 内，fail-open。
+        ev = str(parsed.get("event") or "").strip()
+        if ev:
+            self.apply_event_direct(ev)
 
     def update_after_experience(
         self,
@@ -700,19 +990,17 @@ class EmotionEngine:
                 new_values[k] = _clamp_delta(float(raw_val), old[k], MAX_DELTAS[k])
 
             desc = str(parsed.get("description", old["description"]))[:80]
+            # 护栏 2（不报菜名）：同 update_after_turn——报菜名回退保留旧独白。
+            if _is_label_dump(desc):
+                logger.debug("emotion 独白报菜名，回退保留旧独白: %s", desc)
+                desc = old["description"]
             reason = str(parsed.get("reason", ""))[:60]
             narrative = str(parsed.get("narrative", ""))[:200]
             salience = _clamp_salience(parsed.get("salience", 0.5))
             now_str = now.isoformat(timespec="seconds")
 
             with _connect(self._db) as conn:
-                conn.execute(
-                    "UPDATE emotion_state SET dopamine=?, serotonin=?, oxytocin=?, "
-                    "cortisol=?, description=?, updated_at=? WHERE key='self'",
-                    (new_values["dopamine"], new_values["serotonin"],
-                     new_values["oxytocin"], new_values["cortisol"],
-                     desc, now_str),
-                )
+                self._write_state_unlocked(conn, new_values, desc, now_str)
                 deltas = {k: round(new_values[k] - old[k], 2) for k in HORMONE_KEYS}
                 log_desc = f"{desc}（{reason}）" if reason else desc
                 conn.execute(
@@ -724,6 +1012,70 @@ class EmotionEngine:
                 )
 
         self._update_traits(narrative, "experience", deltas, salience)
+
+    # ------------------------------------------------------------------
+    # 独立通道 · 步 2：事件直驱（参数自己跑，不经过 LLM）
+    # ------------------------------------------------------------------
+    # 预设规则：事件 → 参数变化量。LLM 只在叙述层出场，不决定这些参数。
+    EVENT_DIRECT_DELTAS = {
+        # 独立完成一次反思：意义感升（她靠自己想清楚了一件事）
+        "reflection_done": {"meaning": +3.0},
+        # 自己拿定主意（提案被执行）：控制感升
+        "proposal_executed": {"control": +2.0},
+        # 被否（提案被「不用」）：控制感跌
+        "proposal_rejected": {"control": -2.0},
+        # 被「以后别提」（更强的否定）：控制感多跌一点
+        "proposal_never": {"control": -3.0},
+        # 连续劳作一个 tick（无间歇）：倦怠升
+        # SUSPENDED：规则预留、生产代码零调用点——故意挂起，不是漏接。
+        # 缺真实劳作节奏数据，阈值拍脑袋必误触发；等真跑观察她的劳作
+        # 节奏后，再定触发条件并接线（§七挂起记录，2026-10-13）。
+        "continuous_work": {"fatigue": +2.0},
+        # 被理解/被接住后：倦怠回落
+        "feeling_understood": {"fatigue": -3.0, "oxytocin": +2.0},
+    }
+    # 各事件的人类可读描述（写 emotion_log / 注入用）
+    EVENT_DIRECT_DESC = {
+        "reflection_done": "我自己想清楚了一件事",
+        "proposal_executed": "他按我说的做了",
+        "proposal_rejected": "他否了我递出去的那句",
+        "proposal_never": "他让我以后别提这个",
+        "continuous_work": "我一直在忙，没停过",
+        "feeling_understood": "他接住了我",
+    }
+
+    def apply_event_direct(self, event: str) -> None:
+        """事件直驱参数：按预设规则改参数 + 写 emotion_log，不调 LLM。
+
+        fail-open：未知事件 / 引擎关闭 / 任何异常都静默返回（绝不影响主流程）。
+        """
+        try:
+            deltas_preset = self.EVENT_DIRECT_DELTAS.get(event)
+            if not deltas_preset:
+                return
+            with self._lock:
+                old = self._get_state_unlocked()
+                new_values = {k: old[k] for k in HORMONE_KEYS}
+                for k, d in deltas_preset.items():
+                    new_values[k] = _clamp_delta(old[k] + d, old[k], MAX_DELTAS[k])
+                now = datetime.now()
+                now_str = now.isoformat(timespec="seconds")
+                desc = old.get("description", "")
+                with _connect(self._db) as conn:
+                    self._write_state_unlocked(conn, new_values, desc, now_str)
+                    deltas = {k: round(new_values[k] - old[k], 2)
+                              for k in HORMONE_KEYS if abs(new_values[k] - old[k]) > 0.001}
+                    event_desc = self.EVENT_DIRECT_DESC.get(event, event)
+                    conn.execute(
+                        "INSERT INTO emotion_log (id, ts, source, deltas, description,"
+                        " conversation_id, event_type, event_summary, narrative, salience, origin)"
+                        " VALUES (?, ?, 'event_direct', ?, ?, NULL, 'experience', ?, '', 0.5, 'system')",
+                        (str(uuid.uuid4()), now_str,
+                         json.dumps(deltas, ensure_ascii=False),
+                         f"{desc}（{event_desc}）", event_desc),
+                    )
+        except Exception as e:  # fail-open
+            logger.debug("apply_event_direct(%s) failed: %s", event, e)
 
     # ------------------------------------------------------------------
     # v3 §5：叙事召回（experience > observation，salience 次级键）
@@ -843,11 +1195,10 @@ class EmotionEngine:
 
         now_str = now.isoformat(timespec="seconds")
         with _connect(self._db) as conn:
+            sets = ", ".join(f"{k}=?" for k in HORMONE_KEYS)
             conn.execute(
-                "UPDATE emotion_state SET dopamine=?, serotonin=?, oxytocin=?, "
-                "cortisol=?, updated_at=? WHERE key='self'",
-                (new_values["dopamine"], new_values["serotonin"],
-                 new_values["oxytocin"], new_values["cortisol"], now_str),
+                f"UPDATE emotion_state SET {sets}, updated_at=? WHERE key='self'",
+                tuple(new_values[k] for k in HORMONE_KEYS) + (now_str,),
             )
             deltas = {k: round(new_values[k] - old[k], 2) for k in HORMONE_KEYS}
             if any(abs(v) > 0.01 for v in deltas.values()):

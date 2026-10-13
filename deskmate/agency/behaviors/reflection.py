@@ -336,6 +336,15 @@ def run_reflection(base_dir: str,
                 )
     result["verdicts"] = recorded
 
+    # 独立通道 · 事件直驱：她独立完成了一次反思（recorded>0 才算真做完），
+    # 意义感 +3。不经过 LLM，规则直接改参数。fail-open。
+    if recorded > 0:
+        try:
+            from deskmate.growth.emotion_engine import EmotionEngine
+            EmotionEngine(base_dir=base_dir).apply_event_direct("reflection_done")
+        except Exception:
+            pass
+
     # 无论她有没有给出结论，都标记这批已回看——不再拿同一批变化反复问她。
     for c in batch:
         reflected_keys.add(f"{c.get('item_id')}#{c.get('seq')}")

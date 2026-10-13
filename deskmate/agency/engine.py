@@ -415,6 +415,21 @@ class AgencyEngine:
         # 若不同步状态，旧 PROPOSED 会覆盖回去 → 卡片"执行了但没消失"。
         rec.status = decision
 
+        # 独立通道 · 事件直驱：她递出去的话被裁决了——控制感随裁决起落。
+        # executed=他按我说的做(+2) / rejected=他否了(-2) / never=他让我别提(-3)。
+        # 不经过 LLM，规则直接改参数。fail-open，绝不影响主裁决。
+        try:
+            from deskmate.growth.emotion_engine import EmotionEngine
+            _ev = {
+                TaskStatus.EXECUTED: "proposal_executed",
+                TaskStatus.REJECTED: "proposal_rejected",
+                TaskStatus.NEVER: "proposal_never",
+            }.get(decision)
+            if _ev:
+                EmotionEngine(base_dir=str(self.base_dir)).apply_event_direct(_ev)
+        except Exception:
+            pass
+
         # 教学回流（R10 · 江河设计 §四.4「拦必留教」）：每次裁决都留一条 lesson，
         # 让「拦下/放行」变成她学到的规则，而不是拦完就忘。fail-open，不影响主裁决。
         self._record_adjudication_lesson(rec, decision)
