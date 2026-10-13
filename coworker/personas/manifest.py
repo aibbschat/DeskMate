@@ -250,6 +250,36 @@ def _recommends(persona_id: str, meta: dict) -> list[Recommendation]:
     return out
 
 
+def _resolve_persona_base(ref: str) -> str:
+    """Resolve a ``module:attr`` reference to a persona base text.
+
+    Interface-driven: a manifest may declare ``persona_base: deskmate.persona:XIAOJU_SYSTEM``
+    to have the canonical persona text (the single source of truth in ``deskmate/persona.py``)
+    prepended to its body. This makes the chat system prompt carry the real persona instead of
+    a summarized copy — fixing the long-standing gap where ``persona.py`` was the *declared*
+    single source of truth (2026-09-03) but never actually injected into the main chat.
+
+    Fail-open: any resolution error (missing module/attr, non-string value, import failure)
+    returns ``""`` so the body is left unchanged rather than crashing persona loading.
+    """
+    if not ref or ":" not in ref:
+        return ""
+    module_name, attr = ref.split(":", 1)
+    module_name, attr = module_name.strip(), attr.strip()
+    if not module_name or not attr:
+        return ""
+    try:
+        import importlib
+
+        module = importlib.import_module(module_name)
+        value = getattr(module, attr, None)
+    except Exception:
+        return ""
+    if not isinstance(value, str):
+        return ""
+    return value.strip()
+
+
 def parse_manifest(
     text: str,
     *,
@@ -318,10 +348,23 @@ def parse_manifest(
     recommends = _recommends(persona_id, meta)
     connectors = _connectors(persona_id, meta.get("connectors"), recommends, builtin)
 
+    # Persona base injection (活感方案 A, 2026-10-13): prepend the canonical persona text
+    # declared via `persona_base: module:attr` so the chat system prompt is driven by
+    # deskmate/persona.py (the single source of truth) instead of a summarized copy in this
+    # body. The separator mirrors deskmate.persona.for_scene() (base --- scene) so the model
+    # sees "who it is" before "what it should do". Fail-open: absent/invalid ref → body only.
+    persona_base_ref = str(meta.get("persona_base") or "").strip()
+    persona_base_text = (
+        _resolve_persona_base(persona_base_ref) if persona_base_ref else ""
+    )
+    system_prompt = body.strip()
+    if persona_base_text:
+        system_prompt = f"{persona_base_text}\n\n---\n\n{system_prompt}"
+
     return PersonaManifest(
         id=persona_id,
         name=str(meta.get("name") or persona_id).strip(),
-        system_prompt=body.strip(),
+        system_prompt=system_prompt,
         icon=str(meta.get("icon", "")).strip(),
         tagline=str(meta.get("tagline", "")).strip(),
         description=str(meta.get("description", "")).strip(),

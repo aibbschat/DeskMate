@@ -4,6 +4,10 @@ name: 小桔
 icon: sparkles
 tagline: 懂你的桌面搭档 — 写作（小说）+ 编程 + 办公一体
 family: knowledge
+# 活感方案 A（2026-10-13）：人格底座由 deskmate/persona.py 的 XIAOJU_SYSTEM 单一定义，
+# 此处只描述能力/双模式/工具，不再重复定义人格。系统在加载时把该底座拼到 body 前，
+# 使主聊天 system prompt 真正以 persona.py 为单一事实源（此前只声明未注入）。
+persona_base: deskmate.persona:XIAOJU_SYSTEM
 tools: [files, search, shell, todo]
 messaging: false
 connectors: false

@@ -214,3 +214,67 @@ def test_invalid_recommends_rejected(text, needle):
     with pytest.raises(ManifestError) as e:
         parse_manifest(text)
     assert needle in str(e.value).lower()
+
+
+# --- 活感方案 A (2026-10-13): persona_base injection ------------------------- #
+# 让 deskmate/persona.py（人格单一事实源）真正拼进主聊天 system prompt，
+# 而不是只在 deskmate.md 里"声明"。
+
+PERSONA_BASE = """---
+id: based
+name: Based
+persona_base: deskmate.persona:XIAOJU_SYSTEM
+tools: []
+---
+You are the body. Capabilities here.
+"""
+
+
+def test_persona_base_prepends_canonical_text():
+    """`persona_base: module:attr` 把人格底座（单一事实源）拼到 body 前，
+    用 for_scene() 同款 '---' 分隔符隔开「你是谁」与「你要做什么」。"""
+    from deskmate.persona import XIAOJU_SYSTEM
+
+    m = parse_manifest(PERSONA_BASE)
+    assert m.system_prompt.startswith(XIAOJU_SYSTEM.strip())
+    assert "---\n\n" in m.system_prompt
+    assert "You are the body." in m.system_prompt
+    assert m.system_prompt.endswith("Capabilities here.")
+
+
+def test_persona_base_absent_is_backward_compatible():
+    """没有 persona_base 字段 → system prompt 就是 body 原样（行为不变）。"""
+    m = parse_manifest(VALID)
+    assert m.system_prompt == "You are a demo coworker. Do helpful things."
+
+
+@pytest.mark.parametrize(
+    "ref",
+    [
+        "nonexistent.module:NOSUCH",  # 模块不可导入
+        "deskmate.persona:NO_SUCH_ATTR",  # 属性缺失
+        "malformed",  # 无 ':' 分隔
+        "",  # 空
+    ],
+)
+def test_persona_base_fails_open_on_bad_ref(ref):
+    """bad/空 persona_base 引用绝不能让加载崩溃 —— body 保持原样（fail-open）。"""
+    text = f"---\nid: x\ntools: []\npersona_base: {ref}\n---\nbody only\n"
+    m = parse_manifest(text)
+    assert m.system_prompt == "body only"
+
+
+def test_deskmate_md_injects_persona_base():
+    """线上 deskmate persona 的 system prompt 现在真正带 deskmate/persona.py 的
+    XIAOJU_SYSTEM（真实单一事实源），而不是一段摘要副本。"""
+    from coworker.personas.manifest import load_manifest_file
+    from deskmate.persona import XIAOJU_SYSTEM
+    from pathlib import Path
+
+    md = Path(__file__).resolve().parents[1] / "coworker" / "personas" / "builtin" / "deskmate.md"
+    m = load_manifest_file(md, builtin=True)
+    assert m.system_prompt.startswith(XIAOJU_SYSTEM.strip())
+    assert "你是小桔" in m.system_prompt
+    # 能力/双模式段仍在（在底座之后）
+    assert "性格双模式" in m.system_prompt
+
