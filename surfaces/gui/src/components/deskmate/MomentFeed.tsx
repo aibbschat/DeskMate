@@ -316,11 +316,16 @@ export function MomentFeed() {
     if (!text || publishing) return;
     setPublishing(true);
     try {
-      const r = await authedFetch(`${httpBase()}/v1/deskmate/moments/post`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ content: text }),
-      });
+      const r = await authedFetch(
+        `${httpBase()}/v1/deskmate/moments/post`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ content: text }),
+        },
+        // 后端现已即时返回；此处 30s 兜底仅防极端情况，避免『发送中』永久卡死
+        { timeoutMs: 30000 },
+      );
       if (r.ok) {
         const d = await r.json();
         const post = d.post;

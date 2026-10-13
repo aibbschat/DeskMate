@@ -2700,11 +2700,23 @@ export async function nameCurrentProject(
 export const authedFetch = (
   input: RequestInfo | URL,
   init: RequestInit = {},
+  opts?: { timeoutMs?: number },
 ): Promise<Response> => {
   const headers = new Headers(init.headers);
   const token = apiToken();
   if (token) headers.set("X-OpenWorker-Token", token);
-  return globalThis.fetch(input, { ...init, headers });
+  let signal = init.signal as AbortSignal | undefined;
+  let abortTimer: ReturnType<typeof setTimeout> | undefined;
+  if (opts?.timeoutMs && !signal) {
+    const ac = new AbortController();
+    abortTimer = setTimeout(() => ac.abort(), opts.timeoutMs);
+    signal = ac.signal;
+  }
+  return globalThis
+    .fetch(input, { ...init, headers, signal })
+    .finally(() => {
+      if (abortTimer) clearTimeout(abortTimer);
+    });
 };
 
 export interface ProofreadItem {

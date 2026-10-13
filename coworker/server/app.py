@@ -5381,9 +5381,37 @@ def create_app(manager: SessionManager) -> FastAPI:
             logging.exception("get deskmate moments failed")
             return {"items": [], "next_cursor": None, "comments": {}}
 
+    async def _after_post_generate(store, post_id: str, content: str) -> None:
+        """后台补完：生成小桔真回复并落库为留言 + 认知画像提取。
+
+        在 worker 线程里跑同步 LLM 调用（asyncio.to_thread），绝不阻塞事件循环，
+        因此即便 LLM 链路耗时数十秒，也不会卡住『发送中』或拖垮其它面板的取数。
+        fail-open：任何异常只记日志，不影响已返回的发布结果。
+        """
+        try:
+            from deskmate.growth.moments import _fallback_reply
+
+            real_reply = await asyncio.to_thread(store.generate_reply, content)
+            final_reply = real_reply or _fallback_reply(content)
+            if final_reply:
+                await asyncio.to_thread(store.add_comment, post_id, "xiaoju", final_reply)
+            try:
+                from deskmate.cognitive.diary_extract import extract_diary_into_cognitive
+
+                await asyncio.to_thread(extract_diary_into_cognitive)
+            except Exception:
+                logging.warning("diary -> cognitive extract failed", exc_info=True)
+        except Exception:
+            logging.warning("background moment reply generation failed", exc_info=True)
+
     @app.post("/v1/deskmate/moments/post")
     async def post_deskmate_moment(request: Request) -> dict[str, Any]:
-        """用户发一条日记；后端顺带生成小桔的回复（LLM，失败回落规则）。"""
+        """用户发一条日记。
+
+        立即落库并返回（规则兜底回复），小桔的真回复（LLM）与认知画像提取在后台线程
+        异步完成，不阻塞本次响应——避免多 provider 降级链（可达数十秒）卡住请求，
+        导致前端卡『发送中』、事件循环被阻塞进而拖垮其它面板的取数。
+        """
         try:
             body = await request.json()
         except Exception:
@@ -5392,21 +5420,13 @@ def create_app(manager: SessionManager) -> FastAPI:
         if not content or not content.strip():
             return JSONResponse({"error": "内容为空"}, status_code=400)
         try:
-            from deskmate.growth.moments import MomentsStore
+            from deskmate.growth.moments import MomentsStore, _fallback_reply
 
             base = os.environ.get("DESKMATE_DIR", os.path.expanduser("~/.deskmate"))
             store = MomentsStore(base_dir=base)
             post = store.add_user_post(content)
-            reply = store.generate_reply(content)
-            # 关键修复：把小桔回复作为 comments（author=xiaoju）落库。
-            # 原实现只把 reply 塞进返回体、从未 add_comment → 重进日记页从 DB 读空，
-            # 回复消失（无论规则还是 LLM 留言都不留痕）。落库后 get_posts 自然读回。
-            reply_comment = None
-            try:
-                reply_comment = store.add_comment(post["id"], "xiaoju", reply)
-            except Exception:
-                logging.warning("persist xiaoju reply failed", exc_info=True)
-            post["comments"] = [reply_comment] if reply_comment else []
+            # 即时规则回复，保证前端秒回、不卡『发送中』
+            reply = _fallback_reply(content)
             # A1：默认全开 —— 每篇日记自动进『聊天主动回忆』（loved_entries + 视图），
             # 去掉 per-entry 点按摩擦。前端 🩷 按钮反转成『取消回忆/静音』toggle。
             try:
@@ -5415,14 +5435,12 @@ def create_app(manager: SessionManager) -> FastAPI:
             except Exception:
                 logging.warning("auto-love diary failed", exc_info=True)
                 post["loved"] = False
-            # ③a 焊点自动接线：新日记写入 → 增量提取进认知画像（幂等，fail-open）。
-            # 让"日记积累 → 认知盲区(gap) → 访谈发起"的弹药链真正自动运转。
-            try:
-                from deskmate.cognitive.diary_extract import extract_diary_into_cognitive
-                extract_diary_into_cognitive()
-            except Exception:
-                logging.warning("diary -> cognitive extract failed", exc_info=True)
-            return {"post": post, "reply": reply}
+            post["comments"] = []
+            # 立即返回：解除『发送中』，事件循环不被 LLM 阻塞
+            response = {"post": post, "reply": reply, "pending_reply": True}
+            # 后台补完：小桔真回复（LLM）+ 认知画像提取，落库但不阻塞本次响应
+            asyncio.create_task(_after_post_generate(store, post["id"], content))
+            return response
         except Exception:
             logging.exception("post deskmate moment failed")
             return JSONResponse({"error": "发布失败"}, status_code=500)
