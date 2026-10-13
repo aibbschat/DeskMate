@@ -19,6 +19,11 @@ from .app import _WS_MAX_FRAME_BYTES, create_app
 from .manager import SessionManager
 from ..mcp.builtin import _MCP_RUN_FLAG
 
+# 空闲 HTTP keep-alive 时长（2026-10-13 13:45 面板全空事故根因，详见下方
+# uvicorn.run 接线处注释）。uvicorn 默认 5s 会制造「服务端已 FIN、WebView
+# 仍在复用」的半死连接竞态；300s 远长于前端最长轮询间隔（30s）。
+KEEP_ALIVE_SECONDS = 300
+
 
 def _load_env_file() -> None:
     """Load ~/.config/coworker/.env into os.environ (does NOT override existing vars).
@@ -200,6 +205,12 @@ def main(argv=None) -> None:
             app, host=args.host, port=args.port,
             ws_max_size=_WS_MAX_FRAME_BYTES,
             log_config=_log_cfg,
+            # 2026-10-13 13:45 面板全空事故根因：uvicorn 默认 keep-alive 5s，
+            # 服务端先关空闲连接，WebView 在半死连接上发请求 → 卡到 TCP 超时
+            # （实测 173s）→ 占满 WebView 6 连接槽 → 面板 GET 全排队 → 全空，
+            # TCP 超时后排队请求一次性涌出 →「自动恢复」。必须远长于前端最长
+            # 轮询间隔（30s），让服务端在会话期内永不先关。
+            timeout_keep_alive=KEEP_ALIVE_SECONDS,
         )
     finally:
         if generated_token_path is not None:

@@ -21,6 +21,7 @@ import json
 import os
 import re
 import threading
+import time
 import uuid
 from pathlib import Path
 from typing import Any, Optional
@@ -75,6 +76,12 @@ _ARK_PLAN_CHAIN = [
     "kimi-k2.7-code",
     "doubao-seed-2.1-turbo",
 ]
+
+# 日记回复降级链总预算（墙钟秒数）。2026-10-13 事故：付费组全半开 + 免费组
+# 全熔断时，10+ 通道串行降级（chat_memory 25s + ark 链 12s×8 + secrets 全量
+# provider 25s×N）实测 6 分 05 秒才出话——单通道都按设计快速失败，但总和
+# 无上限。超预算立即放弃，回落 _fallback_reply（她自己写过的话）。
+_REPLY_BUDGET_SECONDS = 90.0
 
 
 def _uid() -> str:
@@ -219,6 +226,7 @@ class MomentsStore:
             out = self._call_llm(
                 _XIAOJU_SYSTEM,
                 f"萧盛刚写了一条日记：\n{text}\n\n以小桔身份回一句。",
+                deadline=time.monotonic() + _REPLY_BUDGET_SECONDS,
             )
             if out:
                 return out
@@ -227,23 +235,33 @@ class MomentsStore:
         return _fallback_reply(text, base_dir=self.base)
 
     @staticmethod
-    def _call_llm(system: str, user: str) -> str:
+    def _call_llm(system: str, user: str, deadline: float | None = None) -> str:
         """按降级链调用 LLM，不写死 provider：
         1) 默认 provider（跟随用户 default_model，mimo 额度恢复后自然走它）；
         2) 失败时依次降级到火山 Agent 套餐内其它模型（同 key/base，仅换 model，
            max_retries=0 + 短超时快速失败，避免 25s×SDK重试 放大成 76s）；
         3) 再失败则遍历 secrets.json 里其它已配置 provider（临时挂掉自动找可用）；
         4) 全失败抛异常，由调用方回落本地规则。
-        """
-        # 1) 默认 provider（chat_memory 内部已含 OmniRoute→主模型降级）
-        try:
-            from deskmate.memory.llm import chat_memory
 
-            return chat_memory(
-                system, user, temperature=0.7, max_tokens=500, timeout=25.0
-            )
-        except Exception:
-            pass
+        deadline：整条降级链的墙钟预算（2026-10-13 事故：付费组全半开 +
+        免费组全熔断时，10+ 通道串行降级实测 6 分 05 秒才出话）。单通道都
+        快速失败，但总和没有上限——超预算立即放弃，由调用方回落她自己
+        写过的话（_fallback_reply），用户在预算内一定等到回复。
+        """
+
+        def _expired() -> bool:
+            return deadline is not None and time.monotonic() >= deadline
+
+        # 1) 默认 provider（chat_memory 内部已含 OmniRoute→主模型降级）
+        if not _expired():
+            try:
+                from deskmate.memory.llm import chat_memory
+
+                return chat_memory(
+                    system, user, temperature=0.7, max_tokens=500, timeout=25.0
+                )
+            except Exception:
+                pass
         # 2) 火山 Agent 套餐内多模型降级（2026-09-01 实测全可用；2.1-turbo 最慢放最后）
         import json as _json
         import os as _os
@@ -264,6 +282,8 @@ class MomentsStore:
             pass
         if ark_key and ark_base:
             for model in _ARK_PLAN_CHAIN:
+                if _expired():
+                    break
                 try:
                     client = OpenAI(
                         api_key=ark_key, base_url=ark_base, timeout=12.0, max_retries=0
@@ -290,6 +310,8 @@ class MomentsStore:
         if secrets_path.is_file():
             data = _json.loads(secrets_path.read_text(encoding="utf-8"))
             for key, prof in data.items():
+                if _expired():
+                    break
                 if not key.startswith("provider:") or not isinstance(prof, dict):
                     continue
                 if not prof.get("api_key"):
