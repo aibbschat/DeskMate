@@ -3763,7 +3763,9 @@ def create_app(manager: SessionManager) -> FastAPI:
             body = {}
         try:
             from deskmate.cognitive.validation_engine import run_validation
-            r = run_validation(
+            # run_validation 内部走 chat_memory（同步 LLM 链）——走线程防冻循环。
+            r = await asyncio.to_thread(
+                run_validation,
                 layer=body.get("layer", "cognitive"),
                 domain=body.get("domain"),
             )
@@ -3792,7 +3794,9 @@ def create_app(manager: SessionManager) -> FastAPI:
             from deskmate.cognitive.validation_engine import run_validation
 
             # 前端回传 generate 阶段拿到的情境，反哺才落在用户真正作答的那条画像上
-            r = run_validation(
+            # （evaluate 同样内部走 LLM——走线程防冻循环）
+            r = await asyncio.to_thread(
+                run_validation,
                 layer=body.get("layer", "cognitive"),
                 ai_response=ai_resp,
                 user_response=user_resp,
@@ -4025,7 +4029,8 @@ def create_app(manager: SessionManager) -> FastAPI:
             desk_dir = _P(
                 os.environ.get("DESKMATE_DIR", os.path.expanduser("~/.deskmate"))
             )
-            return try_inspire(str(desk_dir), text, concept)
+            # creative_suggest 内部走 chat_memory（同步 LLM 链）——必须走线程防冻循环。
+            return await asyncio.to_thread(try_inspire, str(desk_dir), text, concept)
         except Exception:
             logging.exception("deskmate inspire failed")
             return {"triggered": False, "reason": "error"}
@@ -4054,7 +4059,8 @@ def create_app(manager: SessionManager) -> FastAPI:
             desk_dir = _P(
                 os.environ.get("DESKMATE_DIR", os.path.expanduser("~/.deskmate"))
             )
-            return advise(str(desk_dir), draft, kind)
+            # advise 内部一次 LLM 推理（docstring 自述）——走线程防冻循环。
+            return await asyncio.to_thread(advise, str(desk_dir), draft, kind)
         except Exception:
             logging.exception("deskmate writing_advisor failed")
             return {"ok": False, "kind": kind, "advice": "", "worldview_used": False, "reason": "error"}
@@ -4274,7 +4280,11 @@ def create_app(manager: SessionManager) -> FastAPI:
                     maybe_backfill_understanding,
                 )
 
-                maybe_backfill_understanding(base_dir=desk_dir)
+                # LLM 同步链必须走线程：直接调会冻住事件循环（2026-10-13 事故，
+                # 健康期冻 2-3s、降级期冻 75-120s，全站数据端点集体挂起）。
+                await asyncio.to_thread(
+                    maybe_backfill_understanding, base_dir=desk_dir
+                )
             except Exception:
                 logging.debug(
                     "handoff 取件前 understanding 补齐失败（跳过）", exc_info=True
@@ -4320,7 +4330,10 @@ def create_app(manager: SessionManager) -> FastAPI:
             )
             # 取件前先补一次理解（冷却 10min、无 key/失败 fail-open）——与 GET 同口径。
             try:
-                maybe_backfill_understanding(base_dir=desk_dir)
+                # 同上：LLM 同步链走线程，绝不冻事件循环。
+                await asyncio.to_thread(
+                    maybe_backfill_understanding, base_dir=desk_dir
+                )
             except Exception:
                 logging.debug(
                     "handoff(ctx) 取件前 understanding 补齐失败（跳过）", exc_info=True
@@ -5142,7 +5155,8 @@ def create_app(manager: SessionManager) -> FastAPI:
 
             base = os.environ.get("DESKMATE_DIR", os.path.expanduser("~/.deskmate"))
             w = DiaryWriter(base_dir=base)
-            path = w.ensure_today()
+            # ensure_today → narrate 调 LLM（5~25s，diary.py 自述）——走线程防冻循环。
+            path = await asyncio.to_thread(w.ensure_today)
             date = Path(str(path)).stem
             return {"path": str(path), "content": w.read(date)}
         except Exception:
@@ -5489,7 +5503,9 @@ def create_app(manager: SessionManager) -> FastAPI:
             reply_comment = None
             if author == "me":
                 try:
-                    rtext = store.generate_reply(text)
+                    # generate_reply 是同步 LLM 降级链——走线程防冻循环（与发帖
+                    # 路径同款教训：2026-10-13 事故，直接调用会冻住全站）。
+                    rtext = await asyncio.to_thread(store.generate_reply, text)
                     reply_comment = store.add_comment(moment_id, "xiaoju", rtext)
                 except Exception:
                     logging.warning("xiaoju auto-reply failed", exc_info=True)
