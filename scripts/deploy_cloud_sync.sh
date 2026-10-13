@@ -49,6 +49,9 @@ PROACTIVITY_MODULES=(
   "deskmate/proactivity/confidence.py"
   "deskmate/proactivity/health_producers.py"
   "deskmate/proactivity/disabled_producers.py"
+  # ⚠️ 2026-10-13 补：companion.py 属「真实优先」活感 WIP 批，被云端代码 import，
+  # 漏传 → 云端跑旧码（与 ledger/her_voice 同类漏传教训）。随 tick/ledger 同批同步。
+  "deskmate/proactivity/companion.py"
 )
 # ⚠️ 2026-10-09 新增：disabled_producers.py（automation 误报止血模块）。
 # tick.py 与 xiaoju_agency_tick.py 均 `from deskmate.proactivity.disabled_producers import ...`，
@@ -239,6 +242,18 @@ GARDEN_MODULES=(
   "deskmate/garden/storybook.py"
 )
 
+# 成长/日记/人格核心（2026-10-13 补）：发日记真回复异步落库 + 单条 GET 委托 + 「真实优先」活感 WIP。
+# 这些文件被云端 openworker-server 运行时 import：app.py 的 /v1/deskmate/moments/* 端点直接调用
+# MomentsStore.get_post（定义在 moments.py，经 diary_store.py 落地）；diary.py/persona.py 是「真实优先」
+# 活感 WIP。漏传 → 云端复活后该端点 AttributeError 崩 / 云端跑旧人格码（与 user_fact_context 同类
+# 「同步成功≠云端完整」陷阱）。务必随 app.py 同批同步，否则云端与本地代码不一致（红线）。
+GROWTH_MODULES=(
+  "deskmate/growth/moments.py"
+  "deskmate/growth/diary_store.py"
+  "deskmate/growth/diary.py"
+  "deskmate/persona.py"
+)
+
 FORCE=0
 [[ "${1:-}" == "--force" ]] && FORCE=1
 
@@ -253,7 +268,7 @@ if ! ssh -o ConnectTimeout=15 -o BatchMode=yes "$SSH_HOST" "test -d '$CLOUD_SYNC
 fi
 
 # ---- 1. 必须已提交（红线：本地改动先 commit 进 fork/base）----
-ALL_FILES=("${LOCAL_MODULES[@]}" "$LOCAL_RUNNER" "${PROACTIVITY_MODULES[@]}" "${CHANNEL_MODULES[@]}" "${AGENCY_BEHAVIORS_MODULES[@]}" "${AGENCY_MODULES[@]}" "${GARDEN_MODULES[@]}" "$LOCAL_AGENCY_TICK" "$LOCAL_DRIFT_CHECK")
+ALL_FILES=("${LOCAL_MODULES[@]}" "$LOCAL_RUNNER" "${PROACTIVITY_MODULES[@]}" "${CHANNEL_MODULES[@]}" "${AGENCY_BEHAVIORS_MODULES[@]}" "${AGENCY_MODULES[@]}" "${GARDEN_MODULES[@]}" "${GROWTH_MODULES[@]}" "$LOCAL_AGENCY_TICK" "$LOCAL_DRIFT_CHECK")
 if [[ "$FORCE" -eq 0 ]]; then
   DIRTY=""
   for f in "${ALL_FILES[@]}"; do
@@ -342,7 +357,7 @@ done
 
 # ---- 3c. 推送通道组/ 熔断模块（本地与云端必须同码，见 CHANNEL_MODULES 注释）----
 echo "==> 推送通道组/熔断模块 + 自主行为包到云端主程序包"
-for f in "${CHANNEL_MODULES[@]}" "${AGENCY_BEHAVIORS_MODULES[@]}" "${AGENCY_MODULES[@]}" "${GARDEN_MODULES[@]}"; do
+for f in "${CHANNEL_MODULES[@]}" "${AGENCY_BEHAVIORS_MODULES[@]}" "${AGENCY_MODULES[@]}" "${GARDEN_MODULES[@]}" "${GROWTH_MODULES[@]}"; do
   base="$(basename "$f")"
   # 目标目录按本地相对路径推（deskmate/xxx.py → $CLOUD_DESKMATE_ROOT/xxx.py；
   # coworker/xxx.py → $CLOUD_COWORKER_ROOT/xxx.py），必要时建目录
@@ -427,7 +442,7 @@ done
 
 # ---- 7. 通道组/熔断模块对齐核对 ----
 echo "==> 通道组/熔断模块 + 自主行为包对齐核对"
-for f in "${CHANNEL_MODULES[@]}" "${AGENCY_BEHAVIORS_MODULES[@]}" "${AGENCY_MODULES[@]}" "${GARDEN_MODULES[@]}"; do
+for f in "${CHANNEL_MODULES[@]}" "${AGENCY_BEHAVIORS_MODULES[@]}" "${AGENCY_MODULES[@]}" "${GARDEN_MODULES[@]}" "${GROWTH_MODULES[@]}"; do
   base="$(basename "$f")"
   case "$f" in
     deskmate/*)   dest_dir="$CLOUD_DESKMATE_ROOT/$(dirname "${f#deskmate/}")" ;;
