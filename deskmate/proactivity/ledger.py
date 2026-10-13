@@ -616,6 +616,26 @@ def pending_items(base_dir: Optional[Path] = None) -> list[dict]:
     return [dict(zip(keys, r)) for r in rows]
 
 
+def delivery_suppressed_by_mood(base_dir: Optional[Path] = None) -> bool:
+    """情绪门（活感 v2 §三.4）：她低落/烦躁时，主动递出先不递（她不想说）。
+
+    只压「她主动找你聊」的非时效型递出；时效型（系统异常/运维巡检）照常递，
+    那不属于她的情绪调度。
+
+    fail-open：情绪引擎不可用 / 被关（``DESKMATE_EMOTION_ENGINE=0``）/ 取数异常
+    → 返回 ``False``（照常递，绝不静默丢件）。
+    """
+    try:
+        from deskmate.growth.emotion_engine import EmotionEngine, _is_enabled
+
+        if not _is_enabled():
+            return False
+        mood = EmotionEngine(base_dir=base_dir).get_mood_label()
+        return (mood or {}).get("label") in ("低落", "烦躁")
+    except Exception:
+        return False
+
+
 def build_handoff_opening(
     base_dir: Optional[Path] = None,
     *,
@@ -655,8 +675,14 @@ def build_handoff_opening(
     items = pending_items(base_dir)  # pending + snoozed 到期复活（§七 退避后轻递）
     if not items:
         return None
+    # 情绪门（活感 v2 §三.4）：她低落/烦躁时，非时效型主动递出先不递。
+    suppressed = delivery_suppressed_by_mood(base_dir)
     pool = []
     for it in items:
+        # 情绪门：她低落/烦躁时压住「她主动找你聊」的递出；系统异常/运维（时效型）
+        # 不归她的情绪调度，照常递（避免隐患被无限压下）。
+        if suppressed and it.get("source") not in URGENT_SOURCES and it.get("kind") not in URGENT_KINDS:
+            continue
         # 空内容守卫（2026-10-07）：content 为空的条目递出去就是一张空卡，
         # 无论 understanding 是否已补，一律不进池（与 record_proactive 同源防线）。
         if not (it.get("content") or "").strip():

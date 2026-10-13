@@ -5420,13 +5420,14 @@ def create_app(manager: SessionManager) -> FastAPI:
         if not content or not content.strip():
             return JSONResponse({"error": "内容为空"}, status_code=400)
         try:
-            from deskmate.growth.moments import MomentsStore, _fallback_reply
+            from deskmate.growth.moments import MomentsStore
 
             base = os.environ.get("DESKMATE_DIR", os.path.expanduser("~/.deskmate"))
             store = MomentsStore(base_dir=base)
             post = store.add_user_post(content)
-            # 即时规则回复，保证前端秒回、不卡『发送中』
-            reply = _fallback_reply(content)
+            # 不再同步返回兜底模板：小桔真回复由后台 LLM 异步生成、作为 xiaoju 留言落库，
+            # 前端轮询真留言显示。reply=None 仅占位，前端据此走 pending 状态。
+            reply = None
             # A1：默认全开 —— 每篇日记自动进『聊天主动回忆』（loved_entries + 视图），
             # 去掉 per-entry 点按摩擦。前端 🩷 按钮反转成『取消回忆/静音』toggle。
             try:
@@ -5444,6 +5445,26 @@ def create_app(manager: SessionManager) -> FastAPI:
         except Exception:
             logging.exception("post deskmate moment failed")
             return JSONResponse({"error": "发布失败"}, status_code=500)
+
+    @app.get("/v1/deskmate/moments/{moment_id}")
+    async def get_deskmate_moment(moment_id: str) -> dict[str, Any]:
+        """取单条日记（含内联留言），供前端发帖后轮询小桔真回复。
+
+        小桔的真回复由后台 LLM 异步生成、以 xiaoju 留言落库；前端发帖后立即轮询本接口，
+        拿到 xiaoju 留言即替换乐观更新的占位，避免把兜底模板当小桔回复显示。
+        """
+        try:
+            from deskmate.growth.moments import MomentsStore
+
+            base = os.environ.get("DESKMATE_DIR", os.path.expanduser("~/.deskmate"))
+            store = MomentsStore(base_dir=base)
+            post = store.get_post(moment_id)
+            if not post:
+                return JSONResponse({"error": "not found"}, status_code=404)
+            return {"post": post, "comments": post.get("comments", [])}
+        except Exception:
+            logging.exception("get deskmate moment failed")
+            return JSONResponse({"error": "查询失败"}, status_code=500)
 
     @app.post("/v1/deskmate/moments/comment")
     async def post_deskmate_moment_comment(request: Request) -> dict[str, Any]:

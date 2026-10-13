@@ -432,6 +432,42 @@ class DiaryStore:
         # user_posts 自身的留言已在 items 内联，此映射主要为小桔日记（非 user_posts 行）服务。
         return {"items": items, "next_cursor": next_cursor, "comments": by_moment}
 
+    def get_post(self, moment_id: str) -> dict[str, Any] | None:
+        """按 id 取单条 user_posts（含内联 comments）。找不到返回 None。
+
+        供前端发帖后轮询小桔真回复：后台 LLM 异步把回复作为 xiaoju 留言落库，
+        前端轮询本方法拿到真留言即可替换乐观更新的占位。fail-open：异常返回 None。
+        """
+        try:
+            with self._connect() as conn:
+                row = conn.execute(
+                    "SELECT id, author, content, created_at, loved, archived "
+                    "FROM user_posts WHERE id = ?",
+                    (moment_id,),
+                ).fetchone()
+                if not row:
+                    return None
+                rows = conn.execute(
+                    "SELECT id, moment_id, author, text, created_at FROM comments "
+                    "WHERE moment_id = ? ORDER BY created_at ASC, id ASC",
+                    (moment_id,),
+                ).fetchall()
+            comments = [
+                {"id": cid, "author": cauthor, "text": ctext, "createdAt": cat}
+                for cid, _mid, cauthor, ctext, cat in rows
+            ]
+            return {
+                "id": row[0],
+                "author": row[1],
+                "content": row[2],
+                "createdAt": row[3],
+                "loved": bool(row[4]),
+                "archived": bool(row[5]),
+                "comments": comments,
+            }
+        except Exception:
+            return None
+
     # ------------------------------------------------------------------
     # 读：快照（兼容旧 MomentsStore.snapshot 结构）
     # ------------------------------------------------------------------

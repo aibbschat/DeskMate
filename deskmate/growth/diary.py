@@ -391,9 +391,22 @@ class DiaryWriter:
         return _now_hhmm()
 
     def _opening(self, seq: int, at: str = "") -> str:
-        """一则的开场白：第一则与后续补记语气不同（后记不该又来一遍"今天"）。"""
+        """一则的开场白：第一则与后续补记语气不同（后记不该又来一遍"今天"）。
+
+        真实优先（活感 v2 §三.3）：她写过历史时，优先用她自己的近作开场，
+        固定 4 句仅在没有她任何历史可用时出现（冷启动兜底）。
+        """
         if seq <= 1:
             return "今天我们一起做了些事，我都记在心里。"
+        # 有她的历史 → 优先近作（按 seq 轮换，避免每则都同一句）
+        try:
+            from deskmate.growth.her_voice import recent_her_lines
+
+            lines = recent_her_lines(base_dir=self.base, limit=8)
+            if lines:
+                return lines[(seq - 1) % len(lines)]
+        except Exception:
+            pass
         try:
             hour = int(str(at).split(":", 1)[0])
         except (ValueError, IndexError):

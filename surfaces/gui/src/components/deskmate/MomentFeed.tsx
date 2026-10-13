@@ -45,6 +45,8 @@ interface Moment {
   /** 小桔日记卡在当天文件里的顺序（1=最早），用于同分钟多则的稳定排序 */
   seq?: number;
   comments: MomentComment[];
+  /** 发帖后小桔真回复（后台 LLM 异步落库）尚未轮询到时的占位态 */
+  pendingReply?: boolean;
 }
 
 function uid(): string {
@@ -310,7 +312,49 @@ export function MomentFeed() {
   const safePage = Math.min(page, totalPages);
   const pageItems = activeMoments.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE);
 
-  /** 用户发日记；后端返回 post + 小桔真回复（LLM） */
+  /** 发帖后轮询小桔真回复：后台 LLM 异步把回复作为 xiaoju 留言落库，轮询到即替换显示。
+   *  绝不让兜底模板冒充小桔回复——pending 期间显示「正在想…」，真留言到达即替换。 */
+  const pollXiaojuReply = useCallback((id: string) => {
+    let tries = 0;
+    const tick = async () => {
+      tries += 1;
+      try {
+        const r = await authedFetch(`${httpBase()}/v1/deskmate/moments/${id}`);
+        if (r.ok) {
+          const d = await r.json();
+          const cs: any[] = Array.isArray(d.comments) ? d.comments : [];
+          const hasXj = cs.some((c) => c.author === "xiaoju");
+          if (hasXj) {
+            const mapped: MomentComment[] = cs.map((c: any) => ({
+              id: c.id,
+              author: c.author === "xiaoju" ? "xiaoju" : "me",
+              text: c.text,
+              at: c.createdAt,
+            }));
+            setMoments((prev) =>
+              prev.map((m) =>
+                m.id === id ? { ...m, comments: mapped, pendingReply: false } : m,
+              ),
+            );
+            return;
+          }
+        }
+      } catch {
+        /* 静默重试 */
+      }
+      if (tries < 12) {
+        window.setTimeout(tick, 2500);
+      } else {
+        // 超时仍未拿到（极端 LLM 全挂）：解除 pending，下次刷新时间线会补上
+        setMoments((prev) =>
+          prev.map((m) => (m.id === id ? { ...m, pendingReply: false } : m)),
+        );
+      }
+    };
+    window.setTimeout(tick, 2000);
+  }, []);
+
+  /** 用户发日记；后端返回 post（pending_reply），小桔真回复后台异步落库 */
   const publish = async () => {
     const text = draft.trim();
     if (!text || publishing) return;
@@ -329,22 +373,8 @@ export function MomentFeed() {
       if (r.ok) {
         const d = await r.json();
         const post = d.post;
-        // 信任后端落库的评论：小桔回复已作为 comments[0] 持久化（author=xiaoju），
-        // 重载日记页从 DB 读回不丢。仅当后端未返回时本地兜底（防旧包/异常）。
-        const persistedReply: MomentComment =
-          post.comments && post.comments[0]
-            ? {
-                id: post.comments[0].id,
-                author: post.comments[0].author,
-                text: post.comments[0].text,
-                at: post.comments[0].createdAt,
-              }
-            : {
-                id: uid(),
-                author: "xiaoju",
-                text: d.reply || "我记下了。",
-                at: new Date().toISOString(),
-              };
+        // 小桔真回复由后台 LLM 异步生成、作为 xiaoju 留言落库。发帖即时只返回
+        // pending_reply，前端轮询真留言——绝不要把兜底模板当小桔回复显示。
         const me: Moment = {
           id: post.id,
           author: "me",
@@ -353,13 +383,17 @@ export function MomentFeed() {
           content: post.content,
           loved: !!post.loved,
           archived: false,
-          comments: [persistedReply],
+          comments: [],
+          pendingReply: true,
         };
         setMoments((prev) => [me, ...prev]);
         setDraft("");
         setComposerOpen(false);
         setPage(1);
-        flashNotice("小桔回复了你");
+        // 自动展开这条的留言区，让「正在想…」→ 真回复可见
+        setOpenComments((p) => ({ ...p, [post.id]: true }));
+        flashNotice("小桔正在回你…");
+        pollXiaojuReply(post.id);
       } else {
         flashNotice("发布失败，请稍后再试");
       }
@@ -683,6 +717,15 @@ function MomentCard({
 
       {openComments && (
         <div className="mom-comments">
+          {moment.pendingReply && (
+            <div className="mom-comment-item xj">
+              <XiaojuAvatar size={20} />
+              <div className="mom-comment-bubble">
+                <span className="mom-comment-author">小桔</span>
+                <span>正在想… 🤔</span>
+              </div>
+            </div>
+          )}
           {moment.comments.map((c) => (
             <div key={c.id} className={`mom-comment-item ${c.author === "xiaoju" ? "xj" : "me"}`}>
               {c.author === "xiaoju" ? (

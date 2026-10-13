@@ -156,6 +156,11 @@ CHANNEL_MODULES=(
   # 漏传 → 云端 ImportError（非 fail-open 吞掉的静默失效，会直接崩注入块）→ 小桔
   # 在云端「没有自己的想法」。务必随 emotion_engine.py 同批上云。
   "deskmate/thought_stream.py"
+  # 活感第3层（2026-10-13）：小桔自己的声音来源。moments/companion/diary/ledger 四处兜底
+  # 与陪伴语都 import 它取「她写过的第一人称原句」；漏传 → 云端 import 崩（非 fail-open
+  # 吞掉的静默失效），小桔在云端 LLM 不可用时退回客服模板（失去真实优先）。务必随上方
+  # 四文件同批上云。
+  "deskmate/growth/her_voice.py"
   # ⚠️ 认知访谈/验证引擎（2026-10-11 补）：interview.py（③b 深度访谈闭环）与
   # validation_engine.py（认知 Turing test 验证）均被云端代码 import 且云端真实跑——
   #   - proactivity/tick.py:362   `from deskmate.cognitive.interview import maybe_trigger_interview`

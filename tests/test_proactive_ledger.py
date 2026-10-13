@@ -278,6 +278,75 @@ def test_is_mailbox_letter_consistent_with_telemetry_gate():
     assert _is_telemetry_kind("emotional_care") is False
 
 
+# ---------------------------------------------------------------------------
+# 情绪门（活感 v2 §三.4）：她低落/烦躁时，主动递出先不递；平顺时递
+# ---------------------------------------------------------------------------
+def _set_mood(base: Path, dopamine: float = 50.0, cortisol: float = 30.0) -> None:
+    """写 emotion_state（cortisol 拉高 → 低落；dopamine 拉高+cortisol 低 → 烦躁/开心）。"""
+    from deskmate.growth.emotion_engine import EmotionEngine
+
+    EmotionEngine(base_dir=base).get_state()  # 自举建表 + 基线行
+    with sqlite3.connect(str(base / "deskmate.db"), check_same_thread=False) as c:
+        c.execute(
+            "UPDATE emotion_state SET dopamine=?, cortisol=? WHERE key='self'",
+            (dopamine, cortisol),
+        )
+
+
+def _record_care(base) -> str:
+    return record_proactive(
+        base_dir=base, source="companion", kind="emotional_care",
+        content="今天你盯着这个家挺累的，歇会儿", evidence="情感层",
+        understanding="你最近老熬夜，我在意你。", confidence=0.9,
+    )
+
+
+def test_mood_gate_suppresses_when_distressed():
+    """她低落（cortisol 高）→ 非时效型主动递出被压住，开场白返回 None。"""
+    base = _fresh_base("mac")
+    _record_care(base)
+    _set_mood(base, cortisol=80.0)  # 低落
+    assert build_handoff_opening(base) is None
+
+
+def test_mood_gate_delivers_when_calm():
+    """她平顺（基线）→ 照常递出。"""
+    base = _fresh_base("mac")
+    _record_care(base)
+    _set_mood(base, cortisol=30.0)  # 平静
+    opening = build_handoff_opening(base)
+    assert opening is not None
+    assert "今天你盯着这个家挺累的" in opening["text"]
+
+
+def test_mood_gate_urgent_still_delivered():
+    """时效型（source∈URGENT_SOURCES 且非信箱专用类）不归她的情绪调度 → 即便低落也照常递。
+
+    注：task_anomaly/drift 等运维类本身在 OPS_MAILBOX_ONLY_KINDS（只进信箱、不开场念），
+    故「情绪门照常递」的验证对象须是 source=automation 但 kind 非 mailbox-only 的项。
+    """
+    base = _fresh_base("mac")
+    record_proactive(
+        base_dir=base, source="automation", kind="plot_contradiction",
+        content="轮巡回执与实际产出对不上", evidence="自动化",
+        understanding="得核对一次。", confidence=0.8,
+    )
+    _set_mood(base, cortisol=80.0)  # 低落
+    opening = build_handoff_opening(base)
+    assert opening is not None
+    assert "轮巡回执" in opening["text"]
+
+
+def test_mood_gate_fail_open_when_engine_off(monkeypatch):
+    """情绪引擎关闭 → fail-open 照常递，不静默丢件。"""
+    monkeypatch.setenv("DESKMATE_EMOTION_ENGINE", "0")
+    base = _fresh_base("mac")
+    _record_care(base)
+    opening = build_handoff_opening(base)
+    assert opening is not None
+    assert "今天你盯着这个家挺累的" in opening["text"]
+
+
 def test_handoff_contextual_relevant_hit():
     """本轮（§11.4② 触发入口）：活跃会话传相关 session_context → 命中并递出对应待办。"""
     base = _fresh_base("mac")

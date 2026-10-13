@@ -13,7 +13,7 @@
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from ..perception.window_monitor import ActiveWindow
@@ -153,6 +153,7 @@ class FocusSession:
     app: str
     notified_minutes: set[int]  # 已触发陪伴语的分钟数（去重）
     bundle_id: str = ""  # 起始应用 bundle（用于判断切到分心类时重置）
+    used_lines: set[str] = field(default_factory=set)  # 她的近作冷却（只防复读，不约束表达）
 
 
 class CompanionTracker:
@@ -240,6 +241,21 @@ class CompanionTracker:
         for threshold in self._THRESHOLDS:
             if duration_min >= threshold and threshold not in self._session.notified_minutes:
                 self._session.notified_minutes.add(threshold)
+                # 真实优先（活感 v2 §三.3）：优先用她自己的近作作陪伴语，
+                # 固定池降级为「最后防线」，用过的进冷却（只防复读，不约束表达）。
+                try:
+                    from deskmate.growth.her_voice import pick_her_line, recent_her_lines
+
+                    activity_desc = _match_activity(app, bundle)
+                    lines = recent_her_lines(limit=8)
+                    line = pick_her_line(activity_desc, lines, min_shared=1)
+                    if line is None and lines:
+                        line = lines[0]  # 陪伴存在感不苛求话题，退而取最近一条
+                    if line and line not in self._session.used_lines:
+                        self._session.used_lines.add(line)
+                        return line
+                except Exception:
+                    pass
                 # 选一个模板（用分钟数做种子，保证同一阈值同一用户体验一致）
                 templates = self._MESSAGES[threshold]
                 idx = (duration_min // threshold) % len(templates)

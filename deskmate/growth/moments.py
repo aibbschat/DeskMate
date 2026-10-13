@@ -23,7 +23,7 @@ import re
 import threading
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 from .diary_store import DiaryStore
 
@@ -99,8 +99,22 @@ def _trim(text: str, n: int = _CONTENT_MAX) -> str:
 # 导出 diary_memory.md（§ 分节）供 memory/manager.prefetch 检索。见 diary_store.py。
 
 
-def _fallback_reply(content: str) -> str:
+def _fallback_reply(content: str, base_dir: Optional[Path] | None = None) -> str:
+    """LLM 不可用时的本地回落（活感 v2 §三.3：优先用她自己的声音）。
+
+    1) 先按相关性从她写过的第一人称原句里捞一条接上（须带过滤，不裸捞）；
+    2) 捞不到搭调的 → 落固定池（最后防线，保证回复永远有）。
+    """
     c = content or ""
+    try:
+        from deskmate.growth.her_voice import pick_her_line, recent_her_lines
+
+        line = pick_her_line(c, recent_her_lines(base_dir=base_dir, limit=8), min_shared=2)
+        if line:
+            return line
+    except Exception:
+        pass
+    # 固定池（最后防线）：按内容情绪给不同回应，保证回复永远有
     if re.search(r"难过|累|烦|压力|焦虑|崩溃", c):
         return "今天不太容易吧。我陪着你，想说什么都可以慢慢说，不用硬撑着。"
     if re.search(r"开心|高兴|棒|成功|搞定|完成|顺利", c):
@@ -206,7 +220,7 @@ class MomentsStore:
                 return out
         except Exception:
             pass
-        return _fallback_reply(text)
+        return _fallback_reply(text, base_dir=self.base)
 
     @staticmethod
     def _call_llm(system: str, user: str) -> str:

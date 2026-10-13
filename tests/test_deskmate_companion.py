@@ -136,3 +136,41 @@ class TestCompanionTracker:
         tracker._session = _session(start_min=0, notified=[])
         tracker.reset()
         assert tracker._session is None
+
+    def test_her_line_preferred(self, monkeypatch, tmp_path):
+        """活感 v2 §三.3：有她的近作时，陪伴语优先用她的声音，而非固定模板。"""
+        monkeypatch.setenv("DESKMATE_DIR", str(tmp_path))
+        diary = tmp_path / "diary"
+        diary.mkdir()
+        (diary / "2026-10-13.md").write_text(
+            "# 我们的回忆\n\n## 09:00 <!--xj:e1-->\n今天写完一章，心里亮亮的\n",
+            encoding="utf-8",
+        )
+        tracker = CompanionTracker()
+        tracker._session = _session(start_min=31, notified=[])
+        msg = tracker.update(_activity(), _win())
+        assert msg == "今天写完一章，心里亮亮的"
+
+    def test_no_her_line_falls_to_template(self, monkeypatch, tmp_path):
+        """无她的历史 → 仍落固定模板（最后防线，陪伴语永远有）。"""
+        monkeypatch.setenv("DESKMATE_DIR", str(tmp_path))
+        tracker = CompanionTracker()
+        tracker._session = _session(start_min=31, notified=[])
+        msg = tracker.update(_activity(), _win())
+        assert msg is not None
+        assert "半小时" in msg or "30" in msg
+
+    def test_her_line_cooldown_falls_to_template(self, monkeypatch, tmp_path):
+        """用过的近作进冷却：唯一近作在冷却中 → 落固定模板，不重复复读。"""
+        monkeypatch.setenv("DESKMATE_DIR", str(tmp_path))
+        diary = tmp_path / "diary"
+        diary.mkdir()
+        (diary / "2026-10-13.md").write_text(
+            "# 我们的回忆\n\n## 09:00 <!--xj:e1-->\n今天写完一章，心里亮亮的\n",
+            encoding="utf-8",
+        )
+        tracker = CompanionTracker()
+        tracker._session = _session(start_min=31, notified=[])
+        tracker._session.used_lines = {"今天写完一章，心里亮亮的"}
+        msg = tracker.update(_activity(), _win())
+        assert msg != "今天写完一章，心里亮亮的"
