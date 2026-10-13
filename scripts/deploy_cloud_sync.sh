@@ -130,6 +130,14 @@ CHANNEL_MODULES=(
   "coworker/providers/paid_fallback.py"   # 付费组跨套餐回退 + 熔断记账
   "coworker/server/app.py"                # /v1/llm-channels* 端点 + LLM 专用池/超时中间件
   "coworker/server/run.py"                # uvicorn 启动入口（access log 时间戳，2026-10-13）
+  # ⚠️ 2026-10-13 补录：coworker/server/manager.py **此前只在集合级对账里被检查、
+  # 从未被传输**（对账查≠推得上去）—— 云端因此长期跑旧 manager.py。本轮它新增了
+  # `model_vendors`（picker 按厂商分组的数据源），漏推的后果是「同步显示成功、云端
+  # 选择器仍按旧两档平铺」，且**不报错**，只能靠对账抓。
+  # 它必须与 matrix.py / registry.py 同批：三者共同决定 picker 的模型清单与分组。
+  # ⚠️ 云端 openworker-server 每轮经 manager.py 构建小桔上下文，改动语义面很宽，
+  # 推完务必确认 systemctl 状态（当前为「停机保号」态，重开即生效）。
+  "coworker/server/manager.py"            # SessionManager（每轮上下文 + 模型清单/分组）
   # ⚠️ 主程序包的同步三件套（2026-10-06 补）：云端 `/opt/openworker/deskmate/memory/`
   # 另有一份 sync_store_sqlite.py，而上面的 CHANNEL_MODULES 里的 llm.py 正是 import它。
   # 只同步平铺包（LOCAL_MODULES）会导致「主程序包跑旧 SYNC_TABLES」——
@@ -482,10 +490,16 @@ echo "==> 对账：本地 vs 云端 md5 全量比对"
 _reconcile() {
   local tmp_l tmp_c
   tmp_l="$(mktemp)"; tmp_c="$(mktemp)"
+  # ⚠️ 对账范围 = **生产代码**（2026-10-13 修）。原先把 `test_*.py` 也算进来，
+  # 而云端只跑 openworker-server + 同步窗口、**从不跑测试** ⇒ 这5 个测试文件永远
+  # 「不一致」，把真漏项埋进噪音里（本次即4 真差异 + 5 测试噪音混在一起）。
+  # 判据：只有**会被云端 import 的模块**才可能造成静默失效，测试文件不属于此类。
+  # 测试文件差异仍会打印（供人工知悉），但不参与红绿判定。
+  local XTRA='-not -name test_*.py'
   # 本地：deskmate/coworker 全量 .py（抓「本地有、云端没有」的漏项）
-  ( cd "$REPO_ROOT" && find deskmate coworker/server -name '*.py' -not -path '*__pycache__*' -type f \
+  ( cd "$REPO_ROOT" && find deskmate coworker/server -name '*.py' $XTRA -not -path '*__pycache__*' -type f \
       | while read -r f; do printf '%s  %s\n' "$(md5 -q "$f")" "$f"; done ) | sort > "$tmp_l"
-  ssh "$SSH_HOST" "sudo find /opt/openworker/deskmate /opt/openworker/coworker/server -name '*.py' -not -path '*__pycache__*' -type f 2>/dev/null | while read -r f; do printf '%s  %s\n' \"\$(sudo md5sum \"\$f\" 2>/dev/null | cut -d' ' -f1)\" \"\${f#/opt/openworker/}\"; done" 2>/dev/null | grep -vE "Warning|setlocale" | sort > "$tmp_c"
+  ssh "$SSH_HOST" "sudo find /opt/openworker/deskmate /opt/openworker/coworker/server -name '*.py' $XTRA -not -path '*__pycache__*' -type f 2>/dev/null | while read -r f; do printf '%s  %s\n' \"\$(sudo md5sum \"\$f\" 2>/dev/null | cut -d' ' -f1)\" \"\${f#/opt/openworker/}\"; done" 2>/dev/null | grep -vE "Warning|setlocale" | sort > "$tmp_c"
   local only_l only_c diff
   only_l="$(comm -23 <(cut -d' ' -f3- "$tmp_l" | sort) <(cut -d' ' -f3- "$tmp_c" | sort) | wc -l | tr -d ' ')"
   only_c="$(comm -13 <(cut -d' ' -f3- "$tmp_l" | sort) <(cut -d' ' -f3- "$tmp_c" | sort) | wc -l | tr -d ' ')"
@@ -494,6 +508,11 @@ _reconcile() {
   echo "   共有文件内容不一致: $diff"
   echo "   仅本地有（云端缺，可能静默失效）: $only_l"
   echo "   仅云端有（云端有旧漂移）: $only_c"
+  # 测试文件差异：云端不跑测试，故仅提示不判红（列出来供人工知悉）。
+  local _t
+  _t="$( { comm -3 <(cd "$REPO_ROOT" && find deskmate coworker/server -name 'test_*.py' -not -path '*__pycache__*' -type f | sort) \
+             <(ssh "$SSH_HOST" "sudo find /opt/openworker/deskmate /opt/openworker/coworker/server -name 'test_*.py' -not -path '*__pycache__*' -type f 2>/dev/null | sed 's|^|/opt/openworker/|'" 2>/dev/null | grep -vE "Warning|setlocale" | sed 's|^/opt/openworker/||' | sort) ; } 2>/dev/null | wc -l | tr -d ' ')"
+  [ "$_t" != "0" ] && echo "   （提示）测试文件差异 $_t 处 —— 云端不跑测试，不影响运行"
   if [ "$diff" != "0" ] || [ "$only_c" != "0" ]; then
     echo "   ❌ 对账未通过——上面两项非 0 即云端与本地不一致，请逐条查（红线：须完全一致）"
   elif [ "$only_l" != "0" ]; then
