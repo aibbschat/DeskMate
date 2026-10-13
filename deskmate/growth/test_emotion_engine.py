@@ -658,14 +658,24 @@ def test_single_full_scale_turn_is_perceivable(key, expected_label, expected_fac
     assert mood["intensity"] >= 0.9, "拉满一轮应报接近满格的强度"
 
 
-def test_low_dopamine_reads_as_low_mood():
-    """dopamine 明显低于基线 → 低落。
+def test_low_dopamine_reads_as_wistful():
+    """dopamine 明显低于基线（cortisol 未起）→ 怅然若失（v3 §6.2）。
 
     真实样本：「书出不了，心里堵得慌，可他陪着我，灯还没灭」（dopamine -8）。
-    旧实现只认 cortisol 高，这类低谷被判成「心里没什么波澜」。
+    v2 把这类低谷笼统判为「低落」；v3 按萧哥边界精确化——心里想但没达成
+    （想要却没做到）的落空型沉，即怅然若失。 cortisol 触发的压力型低落仍在。
     """
     mood = mood_label_from_offsets(
         {"dopamine": -8.0, "serotonin": -4.0, "oxytocin": -1.0, "cortisol": 4.0}
+    )
+    assert mood["label"] == "怅然若失"
+    assert mood["face"] == "wistful"
+
+
+def test_low_dopamine_with_cortisol_still_low_mood():
+    """dopamine↓ 且 cortisol 明显升高 → 压力型「低落」仍在（v2 语义保留）。"""
+    mood = mood_label_from_offsets(
+        {"dopamine": -8.0, "serotonin": -4.0, "oxytocin": -1.0, "cortisol": 8.0}
     )
     assert mood["label"] == "低落"
     assert mood["face"] == "cry"

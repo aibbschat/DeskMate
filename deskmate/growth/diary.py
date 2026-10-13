@@ -650,6 +650,15 @@ class DiaryWriter:
         eid = _gen_eid(date, at)
         body = self._render_entry(events, badges, top, st, seq=seq, at=at, eid=eid)
         path = self._append_text(date, body)
+        # 活感 v3 §4.4：写下日记是她「做」的经历 → 经历捕获（experience 类型）。
+        # fail-open：引擎异常/LLM 不可用绝不阻断日记落盘（日记已写完，此处只是回声）。
+        try:
+            from deskmate.growth.emotion_engine import EmotionEngine
+            EmotionEngine(base_dir=self.base).update_after_experience(
+                f"写下了今天第 {seq} 则日记（{len(events)} 条素材）"
+            )
+        except Exception:
+            pass
         return {"date": date, "path": path, "seq": seq, "at": at}
 
     def _append_text(self, date: str, body: str) -> str:

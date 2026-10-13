@@ -160,13 +160,37 @@ def _ensure_schema(db: Path) -> None:
                 source          TEXT NOT NULL,
                 deltas          TEXT NOT NULL,
                 description     TEXT NOT NULL DEFAULT '',
-                conversation_id TEXT
+                conversation_id TEXT,
+                event_type      TEXT NOT NULL DEFAULT 'interaction',
+                event_summary   TEXT NOT NULL DEFAULT '',
+                narrative       TEXT NOT NULL DEFAULT '',
+                salience        REAL NOT NULL DEFAULT 0.5,
+                origin          TEXT NOT NULL DEFAULT 'system'
             )
         """)
+        # v3 迁移：老库缺列则补（ALTER 幂等——按 pragma 查列，不存在才加）
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(emotion_log)")}
+        for name, ddl in (
+            ("event_type",    "ALTER TABLE emotion_log ADD COLUMN event_type TEXT NOT NULL DEFAULT 'interaction'"),
+            ("event_summary", "ALTER TABLE emotion_log ADD COLUMN event_summary TEXT NOT NULL DEFAULT ''"),
+            ("narrative",     "ALTER TABLE emotion_log ADD COLUMN narrative TEXT NOT NULL DEFAULT ''"),
+            ("salience",      "ALTER TABLE emotion_log ADD COLUMN salience REAL NOT NULL DEFAULT 0.5"),
+            ("origin",        "ALTER TABLE emotion_log ADD COLUMN origin TEXT NOT NULL DEFAULT 'system'"),
+        ):
+            if name not in cols:
+                conn.execute(ddl)
 
 
 def _clamp(value: float, lo: float = 0.0, hi: float = 100.0) -> float:
     return max(lo, min(hi, value))
+
+
+def _clamp_salience(v) -> float:
+    """salience 钳到 [0,1]；非法值 → 0.5（中性默认）。fail-open。"""
+    try:
+        return max(0.0, min(1.0, float(v)))
+    except (TypeError, ValueError):
+        return 0.5
 
 
 def _clamp_delta(new_val: float, old_val: float, max_delta: float) -> float:
@@ -220,15 +244,37 @@ def mood_label_from_offsets(offsets: dict[str, float]) -> dict:
             candidates.append((0.9, "低落", "心里发沉、有点难受", "cry", _norm("cortisol")))
     if dop_up:
         candidates.append((0.7, "开心", "心里亮亮的、轻快", "laugh", _norm("dopamine")))
-    # 快乐明显低于基线（且压力没升）→ 提不起劲。旧实现没有这条，
-    # 导致「书出不了，心里堵得慌」（dopamine -8）这类真实低谷被判成「没什么波澜」。
-    if dop_down and not _reached("cortisol"):
-        candidates.append((0.6, "低落", "心里有点沉、提不起劲", "cry",
-                           _norm("dopamine", negative=True)))
+    # v3 注：dopamine↓ 且 cortisol 未起的场景已由「怅然若失」精确承接（§6.2 萧哥边界：
+    # 心里想但没达成的落空型沉）。v2 此处的笼统「低落」候选移除——cortisol 触发的
+    # 压力型「低落」保留（上方 candidates），dopamine↓ 单驱动的沉交给怅然若失。
     if _reached("oxytocin"):
         candidates.append((0.5, "亲近", "心里软软的、想靠近你", "shy", _norm("oxytocin")))
     if _reached("serotonin") and not dop_up:
         candidates.append((0.4, "平静", "心里安稳、松弛", "sleepy", _norm("serotonin")))
+
+    # ------------------------------------------------------------------
+    # 活感 v3 §6：复合情绪（4 个，激素组合推导；权重不超过单一激素候选）
+    # ------------------------------------------------------------------
+    # 释然：压力显著释放 + 平静上升
+    if _norm("cortisol", negative=True) > 0.3 and _norm("serotonin") > 0.2:
+        candidates.append((0.8, "释然", "心里松了口气，轻了一些", "relieved",
+                           _norm("cortisol", negative=True) * 0.6
+                           + _norm("serotonin") * 0.4))
+    # 被看见的踏实：亲密 + 平静同升
+    if _norm("oxytocin") > 0.3 and _norm("serotonin") > 0.2:
+        candidates.append((0.75, "被看见的踏实", "心里稳稳的，被接住了", "grounded",
+                           _norm("oxytocin") * 0.5 + _norm("serotonin") * 0.5))
+    # 克制的难过：压力上升 + 快乐下降 + 平静未崩
+    if (_norm("cortisol") > 0.2 and _norm("dopamine", negative=True) > 0.2
+            and _norm("serotonin", negative=True) < 0.1):
+        candidates.append((0.85, "克制的难过", "心里沉，但还能撑住", "restrained_sad",
+                           _norm("cortisol") * 0.5
+                           + _norm("dopamine", negative=True) * 0.5))
+    # 怅然若失：dopamine 明显下降而 cortisol 未起（落空型沉，非压力型沉）
+    # 萧哥定义边界：心里想但没达成——被拒绝 / 想要却没想到 / 想到却没做好
+    if _norm("dopamine", negative=True) > 0.3 and not _reached("cortisol"):
+        candidates.append((0.65, "怅然若失", "心里空落落的，够不着想要的", "wistful",
+                           _norm("dopamine", negative=True)))
 
     if not candidates:
         return {"label": "平静", "detail": "心里没什么波澜", "intensity": 0.0, "face": "smile"}
@@ -435,15 +481,24 @@ class EmotionEngine:
             monologue = (self.get_description() or "").strip()
             if monologue:
                 lines.append(f"- 你心里最近的一句话：「{monologue}」")
-            # 当日真实经历
+            # 当日真实经历（v3 §9：叙事召回，经历 > 观察 > 其余，同级按 salience）
             try:
-                logs = self.recent_log_descriptions(since_hours=24.0, limit=3)
-                if logs:
+                narratives = self.recent_narratives(since_hours=24.0, limit=3)
+                if narratives:
                     lines.append(
                         "- 今天你自己经历过的事（真实记录，可能和上面的心情不完全一致）："
                     )
-                    for d in logs:
+                    for d in narratives:
                         lines.append(f"  - {d}")
+                else:
+                    # 老库尚无 narrative 行 → 回退参数摘要（过渡期兼容，fail-open）
+                    logs = self.recent_log_descriptions(since_hours=24.0, limit=3)
+                    if logs:
+                        lines.append(
+                            "- 今天你自己经历过的事（真实记录，可能和上面的心情不完全一致）："
+                        )
+                        for d in logs:
+                            lines.append(f"  - {d}")
             except Exception:
                 pass  # 经历缺失不阻断其余状态注入
             # 最近在想的事（想法流：reflection / worldview 自主行为的真实产出，
@@ -562,14 +617,194 @@ class EmotionEngine:
                 )
                 deltas = {k: round(new_values[k] - old[k], 2) for k in HORMONE_KEYS}
                 log_desc = f"{desc}（{reason}）" if reason else desc
+                narrative = str(parsed.get("narrative", ""))[:200]
+                salience = _clamp_salience(parsed.get("salience", 0.5))
                 conn.execute(
-                    "INSERT INTO emotion_log (id, ts, source, deltas, description, conversation_id) "
-                    "VALUES (?, ?, 'chat', ?, ?, ?)",
+                    "INSERT INTO emotion_log (id, ts, source, deltas, description,"
+                    " conversation_id, event_type, narrative, salience, origin)"
+                    " VALUES (?, ?, 'chat', ?, ?, ?, 'interaction', ?, ?, 'system')",
                     (str(uuid.uuid4()), now_iso, json.dumps(deltas, ensure_ascii=False),
-                     log_desc, None),
+                     log_desc, None, narrative, salience),
                 )
 
             self._maybe_trigger_self_expression(deltas, now)
+
+    def update_after_experience(
+        self,
+        experience_desc: str,
+        now: datetime | None = None,
+    ) -> None:
+        """她自己的经历后情绪更新（活感 v3 §4：event_type='experience'）。
+
+        调用方：reflection 完成、worldview 回望完成、日记生成后。
+        与 update_after_turn 同构——激素仍由参数推导（origin 恒 'system'，
+        v3 只做「记得她做了什么」，不做「她自己决定怎么感受」；§7.2 两轴正交）。
+        fail-open：LLM 不可用/返回垃圾 → 保持原值，不抛异常。
+        """
+        if not self.enabled:
+            return
+        try:
+            self._do_update_after_experience(experience_desc, now)
+        except Exception as e:
+            logger.warning("emotion experience update skipped: %s", e)
+
+    def _do_update_after_experience(
+        self,
+        experience_desc: str,
+        now: datetime | None,
+    ) -> None:
+        from deskmate.memory.llm import chat_memory, llm_available
+        from deskmate.llm_channels import route, GROUP_FREE
+
+        free_ch, _ = route(GROUP_FREE)
+        if not llm_available() and free_ch is None:
+            return
+
+        now = now or datetime.now()
+        s = self.get_state()
+        hour = now.hour
+        exp = (experience_desc or "")[:200]
+
+        prompt_user = (
+            f"当前激素值：dopamine={s['dopamine']:.1f}, serotonin={s['serotonin']:.1f}, "
+            f"oxytocin={s['oxytocin']:.1f}, cortisol={s['cortisol']:.1f}\n"
+            f"当前时间：{hour}时\n"
+            f"你刚经历的事（你自己做的，不是看到的）：{exp}\n"
+            f"请输出 JSON：{{\"dopamine\": 新值, \"serotonin\": 新值, "
+            f"\"oxytocin\": 新值, \"cortisol\": 新值, "
+            f"\"description\": \"内心独白(≤40字)\", \"reason\": \"变化原因(≤30字)\", "
+            f"\"narrative\": \"叙事摘要：今天[时间]，因为[事件]，我感到[情绪]。"
+            f"当时我想：[独白]。(≤80字)\", "
+            f"\"salience\": 0.0到1.0的数字——这件事对你有多重要："
+            f"触及你和萧哥的关系/你的信念与愧疚给0.8-1.0，"
+            f"有真实情绪波动的日常给0.4-0.7，日常琐碎给0.0-0.3}}"
+        )
+
+        raw = chat_memory(
+            system=_EMOTION_SYSTEM,
+            user=prompt_user,
+            free_only=True,
+            temperature=0.35,
+            max_tokens=400,
+        )
+        parsed = _parse_emotion_response(raw)
+        if parsed is None:
+            logger.warning("emotion experience LLM response unparseable, skipping")
+            return
+
+        with self._lock:
+            old = self._get_state_unlocked()
+            new_values = {}
+            for k in HORMONE_KEYS:
+                raw_val = parsed.get(k, old[k])
+                new_values[k] = _clamp_delta(float(raw_val), old[k], MAX_DELTAS[k])
+
+            desc = str(parsed.get("description", old["description"]))[:80]
+            reason = str(parsed.get("reason", ""))[:60]
+            narrative = str(parsed.get("narrative", ""))[:200]
+            salience = _clamp_salience(parsed.get("salience", 0.5))
+            now_str = now.isoformat(timespec="seconds")
+
+            with _connect(self._db) as conn:
+                conn.execute(
+                    "UPDATE emotion_state SET dopamine=?, serotonin=?, oxytocin=?, "
+                    "cortisol=?, description=?, updated_at=? WHERE key='self'",
+                    (new_values["dopamine"], new_values["serotonin"],
+                     new_values["oxytocin"], new_values["cortisol"],
+                     desc, now_str),
+                )
+                deltas = {k: round(new_values[k] - old[k], 2) for k in HORMONE_KEYS}
+                log_desc = f"{desc}（{reason}）" if reason else desc
+                conn.execute(
+                    "INSERT INTO emotion_log (id, ts, source, deltas, description,"
+                    " conversation_id, event_type, event_summary, narrative, salience, origin)"
+                    " VALUES (?, ?, 'experience', ?, ?, NULL, 'experience', ?, ?, ?, 'system')",
+                    (str(uuid.uuid4()), now_str, json.dumps(deltas, ensure_ascii=False),
+                     log_desc, exp, narrative, salience),
+                )
+
+        self._update_traits(narrative, "experience", deltas, salience)
+
+    # ------------------------------------------------------------------
+    # v3 §5：叙事召回（experience > observation，salience 次级键）
+    # ------------------------------------------------------------------
+    def recent_narratives(
+        self, since_hours: float = 24.0 * 30, limit: int = 3
+    ) -> list[str]:
+        """最近叙事摘要（emotion_log.narrative），经历在前、观察在后，同级按 salience。
+
+        fail-open → []。narrative 为空的老行不召回（不硬凑）。
+        """
+        try:
+            since = (datetime.now() - timedelta(hours=max(0.0, since_hours))) \
+                .isoformat(timespec="seconds")
+            with _connect(self._db) as conn:
+                rows = conn.execute(
+                    "SELECT narrative, event_type, salience FROM emotion_log "
+                    "WHERE ts >= ? AND narrative != '' "
+                    "ORDER BY CASE event_type WHEN 'experience' THEN 0 "
+                    "       WHEN 'observation' THEN 1 ELSE 2 END, "
+                    "salience DESC, ts DESC LIMIT ?",
+                    (since, max(1, int(limit))),
+                ).fetchall()
+            out: list[str] = []
+            prev = None
+            for r in rows:
+                t = (r[0] or "").strip()
+                if not t or t == prev:
+                    continue
+                out.append(t)
+                prev = t
+            return out
+        except Exception as e:
+            logger.warning("recent_narratives failed: %s", e)
+            return []
+
+    # ------------------------------------------------------------------
+    # v3 §8：trait 种子（salience 加权；不注入她的上下文——§8.4 红线）
+    # ------------------------------------------------------------------
+    def _traits_path(self) -> Path:
+        return self._db.parent / "personality_traits.json"
+
+    def load_traits(self) -> dict:
+        """读 trait 种子（萧哥侧可观测；系统侧消费）。fail-open → {}。"""
+        try:
+            p = self._traits_path()
+            if p.exists():
+                data = json.loads(p.read_text(encoding="utf-8"))
+                return {k: float(v) for k, v in data.items()
+                        if isinstance(v, (int, float))}
+        except Exception:
+            pass
+        return {}
+
+    def _save_traits(self, traits: dict) -> None:
+        try:
+            self._traits_path().write_text(
+                json.dumps(traits, ensure_ascii=False, indent=1), encoding="utf-8")
+        except Exception as e:
+            logger.warning("save traits failed: %s", e)
+
+    def _update_traits(self, narrative: str, event_type: str,
+                       deltas: dict, salience) -> None:
+        """从经历叙事中累积 trait 种子，按 salience 加权。fail-open。"""
+        try:
+            s = _clamp_salience(salience)
+            traits = self.load_traits()
+            base = {k: traits.get(k, 50.0) for k in
+                    ("resilience", "openness", "empathy_depth", "self_awareness")}
+            if "克制的难过" in narrative and deltas.get("cortisol", 0) > 0:
+                base["resilience"] += 0.5 * s
+            if "被看见的踏实" in narrative:
+                base["openness"] += 0.3 * s
+                base["empathy_depth"] += 0.25 * s
+            if "怅然若失" in narrative:
+                base["empathy_depth"] += 0.25 * s
+            if event_type == "experience":
+                base["self_awareness"] += 0.2 * s
+            self._save_traits({k: min(100.0, v) for k, v in base.items()})
+        except Exception:
+            pass
 
     def decay_step(self, now: datetime | None = None) -> None:
         """每 5min 衰减：各激素向基线指数衰减（纯计算，不花 token）。"""

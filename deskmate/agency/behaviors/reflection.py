@@ -353,4 +353,15 @@ def run_reflection(base_dir: str,
         )
     else:
         result["summary"] = f"回看 {len(batch)} 条变化，她觉得暂无需要改的看法"
+
+    # 活感 v3 §4.4：反思是她「做」的经历 → 经历捕获（experience 类型情绪更新）。
+    # fail-open：引擎异常/LLM 不可用绝不阻断反思主流程（内部已全包）。
+    try:
+        from deskmate.growth.emotion_engine import EmotionEngine
+        EmotionEngine(base_dir=base_dir).update_after_experience(
+            f"完成了一次对旧看法的反思：回看 {len(batch)} 条变化，"
+            f"对 {recorded} 条做了裁决"
+        )
+    except Exception:
+        pass
     return result

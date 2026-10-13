@@ -554,6 +554,16 @@ def _persist_worldview(base_dir: str, parsed: dict[str, Any],
     except Exception:
         pass
 
+    # 活感 v3 §4.4：世界观回望是她「做」的经历 → 经历捕获（experience 类型）。
+    # fail-open：引擎异常/LLM 不可用绝不阻断回望主流程。
+    try:
+        from deskmate.growth.emotion_engine import EmotionEngine
+        EmotionEngine(base_dir=base_dir).update_after_experience(
+            f"完成了一次对「{about}」的世界观回望，沉淀下「{str(believe)[:60]}」"
+        )
+    except Exception:
+        pass
+
     return written
 
 
