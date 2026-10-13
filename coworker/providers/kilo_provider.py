@@ -26,10 +26,13 @@ Kilo AI（https://kilo.ai）发布了一个 OpenAI 兼容网关，其**免费池
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Optional
 
 from .base import AssistantTurn
 from .openai_provider import OpenAIProvider
+
+logger = logging.getLogger(__name__)
 
 KILO_BASE_URL = "https://api.kilo.ai/api/gateway"
 #: SDK 要求非空 api_key；值本身无所谓——发出前会被 hook 剥掉（见 _strip_authorization）。
@@ -38,6 +41,9 @@ KILO_PLACEHOLDER_KEY = "kilo"
 KILO_AUTO_MODEL = "kilo-auto/free"
 #: 与插件一致的 UA（归属卫生；网关不校验，实测无 UA 也通）。
 KILO_USER_AGENT = "dsh-our-free-model"
+#: 空回复重试的 token 下限（4× 仍小于它时取它）——推理模型的思考量不可预测，
+#: 给太小等于没加码。实测 32 → 128 足以让 content 落地。
+EMPTY_RETRY_MIN_TOKENS = 128
 
 
 def _strip_authorization(request: Any):
@@ -109,8 +115,24 @@ class KiloProvider(OpenAIProvider):
         **settings: Any,
     ) -> AssistantTurn:
         settings.setdefault("extra_headers", {"user-agent": KILO_USER_AGENT})
-        return super().complete(
+        turn = super().complete(
             model=model, messages=messages, tools=tools, **settings
+        )
+        if (turn.text or "").strip():
+            return turn
+        # 🔴 空回复兜底（2026-10-13 实测）：Kilo 自动路由会挑到**推理模型**，
+        # 小 budget 时 token 全进了 `reasoning_content`，`finish_reason='length'`
+        # 且 `content=''` ⇒ 调用方（后台记忆抽取 / 理解加工）拿到空字符串，
+        # 看起来像「跑过了」实则白跑一轮。加码重试一次；仍空就交回调用方
+        # （让它走熔断 / 降级链，而不是在这里无限重试烧免费额度）。
+        logger.debug(
+            "Kilo 空回复（finish_reason=%s），加码重试一次", turn.finish_reason
+        )
+        budget = int(settings.get("max_tokens") or 0)
+        retry = dict(settings)
+        retry["max_tokens"] = max(budget * 4, EMPTY_RETRY_MIN_TOKENS)
+        return super().complete(
+            model=model, messages=messages, tools=tools, **retry
         )
 
     def stream(

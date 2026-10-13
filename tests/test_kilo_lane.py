@@ -363,3 +363,98 @@ def test_chat_memory_kilo_channel_goes_through_kilo_provider(monkeypatch, tmp_pa
     assert calls["complete"]["model"] == "kilo-auto/free"
     # trust_env=False（回环代理场景）传进了 client 构造
     assert calls["ctor"] is True
+
+
+def _empty_content_completion() -> dict:
+    """``finish_reason='length'`` 且 content 为空 —— Kilo 免费池的推理模型实测形态。"""
+    return {
+        "id": "gen-test",
+        "object": "chat.completion",
+        "created": 1791876763,
+        "model": "kilo-auto/free",
+        "choices": [
+            {
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "content": "",
+                    "reasoning_content": "先想想…",
+                },
+                "finish_reason": "length",
+            }
+        ],
+        "usage": {"prompt_tokens": 3, "completion_tokens": 32, "total_tokens": 35},
+    }
+
+
+def test_kilo_retries_with_more_tokens_when_reply_is_empty():
+    """🔴 空回复兜底：思考模型把token 全花在 reasoning 上时自动加码重试。
+
+    实测（2026-10-13本机）：``kilo-auto/free`` 路由到推理模型，
+    ``max_tokens=32`` 时 ``finish_reason='length'`` 且 ``content=''``
+    —— token 全进了 ``reasoning_content``，调用方拿到空字符串。
+    后台记忆抽取/理解加工会把它当「有结果但内容为空」⇒ 白跑一轮。
+
+    RED 依据：首版无此兜底，``complete()`` 直接返回空 text。
+    """
+    seen: list[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        import json as _json
+
+        body = _json.loads(request.content.decode())
+        mt = int(body.get("max_tokens") or 0)
+        seen.append(mt)
+        # 第一次（小 budget）→ 空回复；第二次（大 budget）→ 正常
+        if len(seen) == 1:
+            return httpx.Response(200, json=_empty_content_completion())
+        return httpx.Response(200, json=_ok_completion())
+
+    client = kilo_provider_mod.build_kilo_client(transport=httpx.MockTransport(handler))
+    provider = kilo_provider_mod.KiloProvider(client=client)
+    turn = provider.complete(
+        model="kilo-auto/free",
+        messages=[{"role": "user", "content": "回复OK两个字"}],
+        max_tokens=32,
+    )
+    assert turn.text == "OK", "空回复应自动加码重试并拿到内容"
+    assert len(seen) == 2, f"应恰好请求 2 次，实际 {len(seen)}"
+    assert seen[1] > seen[0], f"重试必须加大 budget：{seen}"
+
+
+def test_kilo_does_not_retry_when_reply_present():
+    """有内容时**不得**多打一次请求（免费池也有速率，真调是浪费）。"""
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        return httpx.Response(200, json=_ok_completion())
+
+    client = kilo_provider_mod.build_kilo_client(transport=httpx.MockTransport(handler))
+    provider = kilo_provider_mod.KiloProvider(client=client)
+    turn = provider.complete(
+        model="kilo-auto/free",
+        messages=[{"role": "user", "content": "回复OK两个字"}],
+        max_tokens=32,
+    )
+    assert turn.text == "OK"
+    assert calls["n"] == 1, f"有内容就不该重试，实际打了 {calls['n']} 次"
+
+
+def test_kilo_gives_up_after_retry_still_empty():
+    """重试后仍空 → 返回空（不无限重试），让调用方的熔断/降级链接手。"""
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        return httpx.Response(200, json=_empty_content_completion())
+
+    client = kilo_provider_mod.build_kilo_client(transport=httpx.MockTransport(handler))
+    provider = kilo_provider_mod.KiloProvider(client=client)
+    turn = provider.complete(
+        model="kilo-auto/free",
+        messages=[{"role": "user", "content": "hi"}],
+        max_tokens=32,
+    )
+    assert not (turn.text or "").strip(), "两次都空就该老实返回空"
+    assert calls["n"] == 2, f"重试上限 1 次，总请求 {calls['n']} 次"
