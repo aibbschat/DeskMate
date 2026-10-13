@@ -331,11 +331,29 @@ def test_route_returns_none_when_all_open(base, monkeypatch):
     assert ch is None and len(skipped) == 1
 
 
-def test_memory_group_defaults_to_free():
-    """后台任务默认走**免费组**（萧哥 21:24 拍板「记忆抽取走免费」）。"""
-    from deskmate.llm_channels import GROUP_FREE, memory_group
+def test_memory_group_defaults_to_paid():
+    """🔴 2026-10-13 后台任务默认走**付费组**（萧哥「乙」拍板）。
 
-    assert memory_group() == GROUP_FREE
+    拍板链：10-06 萧哥 21:24 定「记忆抽取走免费」→ 10-13 opencode 匿名车道整条
+    403、免费组仅剩 Kilo，而 Kilo 免费池上游声明 prompt 可能被记录 ⇒ 记忆抽取
+    的输入是萧哥的对话片段，**不能**送去那条车道。故默认改付费组（ark→小米→腾讯
+    三层冗余），免费组只跑发帖草稿一类公开内容。
+
+    用例保留而非删除：它锁的是「默认值」这个契约本身，改组必须改这里。
+    """
+    import os
+
+    import deskmate.llm_channels as CH
+
+    # 锁**代码默认值**（模块常量）：prefs.json 可能显式写着 free，那是用户
+    # 手动档，不该让本用例变红。
+    assert CH._DEFAULT_MEMORY_GROUP == CH.GROUP_PAID, (
+        "无 prefs / 无环境变量时，后台任务默认必须是付费组"
+    )
+
+    # 读 prefs 的路径也要能取到合法组名（本机 prefs 此刻仍写着 free）。
+    os.environ.pop("DESKMATE_MEMORY_GROUP", None)
+    assert CH.memory_group() in (CH.GROUP_PAID, CH.GROUP_FREE)
 
 
 # --------------------------------------------------------------------------- #

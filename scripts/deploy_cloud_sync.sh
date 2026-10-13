@@ -106,6 +106,16 @@ CHANNEL_MODULES=(
   # （实测 mtime=Oct 6 10:25、a6a1e54 特征串命中 0、entry_for 在 372 行无动态分支）。
   # 漏传即云端永远跑老矩阵、免费模型不刷新且不报错，必须随 router/paid_fallback 同批同步。
   "coworker/providers/matrix.py"          # ProviderMatrix（opencode 免费模型动态刷新）
+  # ⚠️ 2026-10-13 Kilo 免费车道（Our Free Model 插件移植）：免费组主力换 Kilo。两文件
+  # **必须同批**，且必须随 matrix/llm_channels/memory-llm 一起上云：
+  #   - deskmate/llm_channels.py:free_channels → `from coworker.providers.kilo_catalog import fetch_catalog`
+  #   - deskmate/memory/llm.py:chat_memory 分派 → `_kilo_complete` → `kilo_provider.KiloProvider`
+  #   - coworker/server/app.py 启动钩子 → `kilo_catalog.start_catalog_refresh`
+  # 漏传 kilo_catalog → 云端免费组 fetch_catalog() 全挂 → 免费组返空 → 后台任务无通道；
+  # 漏传 kilo_provider → 命中的那一路 chat() 抛 ModuleNotFoundError（熔断记账后换下一条，
+  # 表象是「免费组莫名全熔断」）。两者都是静默失效，只能靠本清单闭合。
+  "coworker/providers/kilo_provider.py"    # KiloProvider（免密钥 + 剥 Authorization 头）
+  "coworker/providers/kilo_catalog.py"    # Kilo 免费模型动态清单（远端驱动 + 自动路由置顶）
   # ⚠️ 2026-10-11 MiMo v2.5→v2.6 切换：registry.py（recommended_model / endpoint_help）
   # 与 selection/server.py（mimo 别名 → xiaomi:mimo-v2.6）必须随 matrix 同批同步，否则
   # 云端聊天框推荐模型/别名仍指向已下架的 v2.5，且本地云端代码不一致（红线）。

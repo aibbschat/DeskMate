@@ -3482,8 +3482,8 @@ class SessionManager:
         from ..providers.registry import get_descriptor
 
         # Free/paid tier per model id: keyless local/free gateways (Ollama, OmniRoute,
-        # OpenCode) are "free"; everything that needs a billable API key is "paid". Drives
-        # the composer picker's two-section (免费 / 付费) grouping.
+        # OpenCode, Kilo) are "free"; everything that needs a billable API key is "paid". Drives
+        # the composer picker's grouping.
         tiers: dict[str, str] = {}
         for _m in selectable:
             _prov = _m.split(":", 1)[0] if ":" in _m else "openai"
@@ -3496,6 +3496,20 @@ class SessionManager:
                 else "paid"
             )
 
+        # 上游厂商分组（2026-10-13 萧哥要求）：{full id → 厂商显示名}。驱动 composer
+        # picker 按「厂商 × 免费/付费」分组折叠——免费/付费两档平铺几十项没法看，
+        # 加上 Kilo 免费池后更长。厂商名取 descriptor 的 title（设置页同款名字，
+        # 如 "Volcengine Agent Plan" / "Xiaomi token-plan" / "Our Free Model · Kilo"）；
+        # 裸 id（OpenAI 默认）归 OpenAI，未知前缀归「自定义模型」。
+        vendors: dict[str, str] = {}
+        for _m in selectable:
+            if ":" in _m:
+                _vp = _m.split(":", 1)[0]
+                _vd = get_descriptor(_vp)
+                vendors[_m] = _vd.title if _vd is not None else "自定义模型"
+            else:
+                vendors[_m] = "OpenAI"
+
         return {
             "provider": "openai",
             "model": self.model,
@@ -3505,6 +3519,8 @@ class SessionManager:
             "model_labels": model_labels(),
             # {full id → "free" | "paid"}, so the GUI can split the picker into two tiers.
             "model_tiers": tiers,
+            # {full id → 厂商显示名}（2026-10-13）：picker 按厂商 × 档位分组折叠。
+            "model_vendors": vendors,
             # {full id → context window in tokens}, verified matrix entries only —
             # drives the composer's context-fill meter (absent id → meter hides).
             "model_context_windows": model_context_windows(),

@@ -29,6 +29,22 @@ OpenCode Zen 的免费模型是**动态更换**的——某个模型会下架，
 - 兜底：网络不可达且无缓存 → 用 seed，保证 picker 不空
 - **seed 沿用`matrix.py` 现有 8 个**，仅作离线兜底，**永不作为真相源**
 
+## 🔴 车道开关 ZEN_LANE_ENABLED（2026-10-13 萧哥拍板）
+
+opencode 匿名免费车道**整条死亡**：不是 429 限流，是网关直接拒绝匿名流量
+（`403 free tier unavailable` / `FreeTierError`，"free tier can only be used
+from within OpenCode"）。证据：熔断表 12 个 `opencode:*` 全 open（jev-1.13-free
+累计 313 次 strike）；本机出口实测推理全死而 `/models` 清单仍 200；插件自己的
+轻量探针（15 分钟一轮）同样全挂 → 上游收紧（指纹/区域策略），非我方 hammering
+所致（协议是忠实移植，10-11 当天还 388 成功）。详见
+`reports/opencode免费车道排查_Kilo车道实测_2026-10-13.md`。
+
+处置（萧哥「乙 + 保留代码」）：免费组主力换成 Kilo 车道（kilo_catalog），
+**本模块代码全部保留**，仅把 `ZEN_LANE_ENABLED` 置 False —— picker 不再展示
+必然 403 的死模型（陈旧项永不消失正是这个模块诞生的理由），后台刷新也停掉
+（省得每 6h 拉一个推理全死的清单）。上游若恢复，把常量翻回 True 即整体复活，
+无需改任何调用方。
+
 ## 与熔断表的联动
 
 `stale_models()` 返回远端已消失的模型 id，供熔断表清理记录——
@@ -61,6 +77,11 @@ ZEN_MODELS_URL = "https://opencode.ai/zen/v1/models"
 CACHE_TTL_SECONDS = 6 * 3600
 REFRESH_INTERVAL_SECONDS = 6 * 3600
 CACHE_FILENAME = "zen_catalog.json"
+
+#: 🔴 车道总开关（2026-10-13）：opencode 匿名免费车道整条死亡（403 FreeTierError，
+#: 见模块 docstring 与 reports/opencode免费车道排查_Kilo车道实测_2026-10-13.md）。
+#: False = picker 不展示、后台不刷新（代码全部保留）；上游恢复后翻回 True 即复活。
+ZEN_LANE_ENABLED = False
 
 # Zen 网关的默认上下文窗口（实测 8 个模型均为 262_144；网关模型对象不带该字段）。
 # 与 matrix.py 里手填的 262_144 保持一致。
@@ -194,7 +215,13 @@ def get_zen_entries() -> Dict[str, ModelEntry]:
 
     **请求路径永不阻塞网络**：读缓存即返回；缺失/过期时触发后台刷新
     （冷启动另加一次性填充，几秒内到位）。同 ``get_openrouter_entries`` 的范式。
+
+    🔴 车道关闭时（``ZEN_LANE_ENABLED=False``，2026-10-13 起）恒返回 {}：
+    上游整条拒绝匿名流量，picker 展示必然 403 的死模型比不展示更糟；
+    复活 = 把常量翻回 True，无需改任何调用方。
     """
+    if not ZEN_LANE_ENABLED:
+        return {}
     cache = _load_cache()
     missing = cache is None
     stale = cache is not None and (time.time() - cache.get("fetched_at", 0)) >= CACHE_TTL_SECONDS
@@ -296,5 +323,11 @@ def _ensure_refresh_thread(oneshot: bool = False) -> None:
 
 
 def start_catalog_refresh() -> None:
-    """服务器启动时调一次，开始周期刷新。"""
+    """服务器启动时调一次，开始周期刷新。
+
+    车道关闭时（``ZEN_LANE_ENABLED=False``）直接返回：没有可服务的模型，
+    不必每 6h 拉一个推理全死的清单、也不必清理熔断表。
+    """
+    if not ZEN_LANE_ENABLED:
+        return
     _ensure_refresh_thread()

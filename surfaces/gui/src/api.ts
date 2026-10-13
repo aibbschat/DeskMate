@@ -973,6 +973,10 @@ export interface ModelSettings {
   // 用于 composer 选择器按 免费/付费 两段分组。注意：官方 v0.2.0 此处为 Record<string, string[]>，
   // 我们后端语义为单模型→单 tier 字符串，故保持 Record<string, string>。
   model_tiers?: Record<string, string>;
+  // {full model id → 厂商显示名}（2026-10-13）：composer 选择器按「厂商 × 档位」
+  // 分组折叠。厂商名取 descriptor title（设置页同款）。旧后端无此字段 →
+  // Composer 从 label 的 "· via X" 后缀兜底推导。
+  model_vendors?: Record<string, string>;
 }
 
 export interface PdfSettings {

@@ -154,7 +154,9 @@ def _llm_http_client() -> "httpx.Client":
 # 修法是**先熔断记账、再按组内自动排换通道**，而不是继续重试同一条死路。
 #
 # 两个总开关（萧哥 21:04 拍板）：付费组 = 火山→小米→hy3（qwen 不进链）；
-# 免费组 = opencode 远端清单驱动。后台任务默认走免费组（萧哥 21:24 拍板）。
+# 免费组 = Kilo 远端清单驱动（2026-10-13 起，opencode 车道死亡退役）。
+# 后台任务默认组 2026-10-13 萧哥改判「乙」= **付费**（Kilo prompt 可能被上游记录，
+# 记忆抽取输入是萧哥的对话片段）；发帖草稿/自主层等公开内容才走免费组。
 _DESKMATE_DIR_ENV = "DESKMATE_DIR"
 
 
@@ -498,14 +500,17 @@ def chat_memory(
 ) -> str:
     """记忆抽取专用 chat：走**通道组**（2026-10-06，设计 §二）。
 
-    **默认走免费组**（萧哥 21:24 拍板「记忆抽取走免费」）：opencode 远端清单驱动
-    （13 个候选，非推理优先），中文已确认可用。省付费额度，也让后台活不再挤占主通道。
+    **默认走付费组**（2026-10-13 萧哥「乙」方案改判）：opencode 车道整条死亡后
+    免费组主力是 Kilo，而 Kilo 免费池 prompt 可能被上游记录——记忆抽取输入是
+    萧哥的对话片段，不过可能被记录的车道。 ark→小米→腾讯三层冗余，任一家额度
+    撞顶自动切下一家。想省额度可显式 `DESKMATE_MEMORY_GROUP=free` 走免费组
+    （Kilo 远端清单驱动，适合公开内容）。
 
     行为：
     - 组内自动排：按 :func:`deskmate.llm_channels.route` 取下一条**非熔断**通道，每条经
       :func:`_call_with_breaker` —— 撞墙即熔断记账，配额类**不原地重试**、上抛换下一条
       （§1.3 的 28 次同路重试就是没这一层）。
-    - 本组全熔断 → **降级回付费组**（宁可走付费也不静默丢记忆，沿用原设计意图）。
+    - 本组全熔断 → **降级回另一组**（宁可走另一组也不静默丢记忆，沿用原设计意图）。
     - ``DESKMATE_MEMORY_GROUP=paid|free`` 切组（手动档）；旧 opt-in
       ``DESKMATE_MEMORY_PROVIDER=omniroute`` 仍生效（历史行为不变）。
 
@@ -572,9 +577,20 @@ def chat_memory(
                 if ch.provider == "opencode":
                     # 免费组必须经 opencode_provider 的伪装协议（CLI 头 + 门面工具 +
                     # 仅流式），直连 OpenAI() 会 403 FreeTierError（设计 §四）。
+                    # ⚠️ 2026-10-13：opencode 车道已整条死亡（见 zen_catalog.ZEN_LANE_ENABLED），
+                    # 此分支保留待上游恢复；当前免费组主力是下面的 kilo 分支。
                     return _call_with_breaker(
                         ch.provider, ch.model,
                         lambda m=ch.model: _opencode_complete(
+                            m, system, user, temperature, max_tokens, timeout),
+                    )
+                if ch.provider == "kilo":
+                    # Kilo 免费车道（2026-10-13 移植 Our Free Model 插件）：普通 OpenAI
+                    # 兼容端点，但**不能带 Authorization 头**（任意 token → INVALID_TOKEN），
+                    # 必须经 KiloProvider（client 自带剥头 hook，见 kilo_provider.py）。
+                    return _call_with_breaker(
+                        ch.provider, ch.model,
+                        lambda m=ch.model: _kilo_complete(
                             m, system, user, temperature, max_tokens, timeout),
                     )
                 if ch.provider == "local":
@@ -637,8 +653,9 @@ def _audit_skip(channel_key: str, why: str) -> None:
 def _creds_for(provider: str, model: str) -> tuple:
     """取某条**付费**通道的 ``(api_key, base_url, model)``；无凭证返回空。
 
-    免费组（``provider == "opencode"``）不走这里——它必须经
-    :func:`_opencode_complete`（伪装协议，直连会403），见调用方分派。
+    免费组（``provider == "opencode"`` / ``"kilo"`` / ``"local"``）不走这里——
+    它们必须经各自的专用 complete（伪装协议 / 剥 Authorization / 本地端点），
+    见调用方分派。
     """
     try:
         from coworker.secrets import SecretStore
@@ -733,6 +750,40 @@ def _opencode_complete(
             {"role": "user", "content": user},
         ],
         tools=_FREE_LANE_TOOLS,
+        temperature=temperature,
+        max_tokens=max_tokens,
+        timeout=timeout,
+    )
+    return (turn.text or "").strip()
+
+
+def _kilo_complete(
+    model: str,
+    system: str,
+    user: str,
+    temperature: float,
+    max_tokens: int,
+    timeout: float,
+) -> str:
+    """经 ``KiloProvider`` 调 Kilo 免费池（**不可用裸 OpenAI() 直连**）。
+
+    两个直连必死的点（2026-10-13 实测）：
+    1. 带任何非空 ``Authorization`` → ``INVALID_TOKEN``（KiloProvider 的 client
+       用 event hook 剥掉该头，见 kilo_provider.build_kilo_client）；
+    2. 侧车继承的本机回环代理（WorkBuddy 开发代理）挂掉时会劫持外网调用 ——
+       与 ``_llm_http_client`` 同一套 ``_proxy_is_loopback`` 判断。
+    """
+    from coworker.providers.kilo_provider import KiloProvider, build_kilo_client
+
+    provider = KiloProvider(
+        client=build_kilo_client(trust_env=not _proxy_is_loopback())
+    )
+    turn = provider.complete(
+        model=model,
+        messages=[
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ],
         temperature=temperature,
         max_tokens=max_tokens,
         timeout=timeout,

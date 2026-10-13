@@ -398,10 +398,28 @@ def _live_zen() -> Dict[str, ModelEntry]:
         return {}
 
 
+def _live_kilo() -> Dict[str, ModelEntry]:
+    """Live Kilo **免费** models (``kilo:<id>`` → ModelEntry), mirrored from the
+    Kilo gateway's ``/models`` listing（2026-10-13 移植 Our Free Model 插件第二条
+    匿名车道，见 kilo_catalog.py）。
+
+    与 ``_live_zen`` 同构：失败返回 {}，由 seed 兜底；**绝不**回落到静态 MATRIX。
+    opencode 车道 2026-10-13 整条死亡（403 FreeTierError，见 reports/）后，
+    免费组主力换成本车道；静态 MATRIX 里的 opencode 手铺项保留作冷启动兜底，
+    但 picker 以 zen_catalog 的 lane 开关为准（见该模块 ZEN_LANE_ENABLED）。
+    """
+    from .kilo_catalog import get_kilo_entries
+
+    try:
+        return get_kilo_entries()
+    except Exception:
+        return {}
+
+
 def _live_catalogs() -> Dict[str, ModelEntry]:
-    """所有动态清单的并集（OpenRouter 付费/免费 + Zen 免费）。"""
+    """所有动态清单的并集（OpenRouter 付费/免费 + Zen 免费 + Kilo 免费）。"""
     merged: Dict[str, ModelEntry] = {}
-    for source in (_live_openrouter(), _live_zen()):
+    for source in (_live_openrouter(), _live_zen(), _live_kilo()):
         merged.update(source)
     return merged
 

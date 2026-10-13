@@ -141,7 +141,10 @@
     "pdfSkippedError": "{{name}} skipped — {{error}}",
     "couldNotReadPdf": "could not read PDF",
     "freeModels": "Free models",
-    "paidModels": "Paid models"
+    "paidModels": "Paid models",
+    "freeTag": "Free",
+    "paidTag": "Paid",
+    "otherVendors": "Other"
   },
   "settings": {
     "title": "Settings",

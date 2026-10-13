@@ -141,7 +141,10 @@
     "pdfSkippedError": "{{name}} 已跳过 — {{error}}",
     "couldNotReadPdf": "无法读取 PDF",
     "freeModels": "免费模型",
-    "paidModels": "付费模型"
+    "paidModels": "付费模型",
+    "freeTag": "免费",
+    "paidTag": "付费",
+    "otherVendors": "其他"
   },
   "settings": {
     "title": "设置",

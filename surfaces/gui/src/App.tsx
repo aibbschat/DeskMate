@@ -250,6 +250,8 @@ export function App() {
   const [modelLabels, setModelLabels] = useState<Record<string, string>>({});
   // {full model id → "free" | "paid"} (from the backend), drives the picker's two-tier split.
   const [modelTiers, setModelTiers] = useState<Record<string, string>>({});
+  // {full model id → 厂商显示名}（2026-10-13）：picker 按「厂商 × 档位」分组折叠。
+  const [modelVendors, setModelVendors] = useState<Record<string, string>>({});
   // {full model id → context window in tokens} from the curated matrix (verified only);
   // drives the composer usage chip's context-fill meter.
   const [modelContextWindows, setModelContextWindows] = useState<Record<string, number>>({});
@@ -615,6 +617,7 @@ export function App() {
     models: null as string[] | null,
     labels: null as Record<string, string> | null,
     tiers: null as Record<string, string> | null,
+    vendors: null as Record<string, string> | null,
     windows: null as Record<string, number> | null,
   });
   const sameArr = (a: unknown[] | null, b: unknown[]) =>
@@ -647,6 +650,11 @@ export function App() {
           if (!sameRec(p.tiers, tiers)) {
             p.tiers = tiers;
             setModelTiers(tiers);
+          }
+          const vendors = s.model_vendors || {};
+          if (!sameRec(p.vendors, vendors)) {
+            p.vendors = vendors;
+            setModelVendors(vendors);
           }
           const windows = s.model_context_windows || {};
           if (!sameRec(p.windows, windows)) {
@@ -2061,6 +2069,7 @@ export function App() {
               models={models}
               modelLabels={modelLabels}
               modelTiers={modelTiers}
+              modelVendors={modelVendors}
               running={running}
               connected={connected}
               modelReady={modelReady}

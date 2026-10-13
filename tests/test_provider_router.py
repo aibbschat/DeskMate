@@ -329,13 +329,31 @@ def test_manager_curated_models(tmp_path, monkeypatch):
     monkeypatch.setattr(SessionManager, "_ollama_alive", lambda self: True)
 
     mgr = SessionManager(data_dir=tmp_path)
-    # No provider keys → the active default plus the keyless free gateways (OmniRoute /
-    # OpenCode) the fork always keeps selectable. Derive them from MATRIX so the
-    # assertion tracks the matrix instead of hard-coding ids.
-    from coworker.providers.matrix import MATRIX
+    # No provider keys → the active default plus the keyless free gateways the fork always
+    # keeps selectable. Derive them from MATRIX so the assertion tracks the matrix instead of
+    # hard-coding ids.
+    #
+    # 🔴 2026-10-13: (a) the Kilo free lane joined as a third keyless gateway, so its
+    # dynamic catalog is part of the expected set — pinned here (not fetched) to keep this
+    # test hermetic; (b) the opencode lane is disabled (whole lane 403s), so `opencode:*`
+    # must NOT be selectable any more.
+    from coworker.providers import matrix as M
 
-    _free = [k for k in MATRIX if k.split(":", 1)[0] in ("omniroute", "opencode")]
-    assert mgr.get_settings()["models"] == [mgr.model, *_free]
+    monkeypatch.setattr(M, "_live_openrouter", lambda: {})
+    monkeypatch.setattr(
+        M,
+        "_live_kilo",
+        lambda: {
+            "kilo:kilo-auto/free": M.ModelEntry("Kilo Auto · Kilo 免费", None, 32_768),
+        },
+    )
+
+    _free = [k for k in M.MATRIX if k.split(":", 1)[0] == "omniroute"]
+    got = mgr.get_settings()["models"]
+    assert got == [mgr.model, *_free, "kilo:kilo-auto/free"]
+    assert not [m for m in got if m.startswith("opencode:")], (
+        "opencode 车道已关闭（整条 403），不该再出现在选择器里"
+    )
 
     # a provider key unlocks exactly that provider's matrix models
     mgr.set_provider("anthropic", {"api_key": "sk-ant-test"})

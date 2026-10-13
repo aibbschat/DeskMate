@@ -909,9 +909,17 @@ def test_zen_catalog_stale_models_guesses_nothing_without_cache(monkeypatch):
 
 
 def test_zen_catalog_entries_and_reasoning_flag(monkeypatch):
-    """entries 键为 opencode:<id>；推理模型登记可供按速度排序（caps 无此字段）。"""
+    """entries 键为 opencode:<id>；推理模型登记可供按速度排序（caps 无此字段）。
+
+    ⚠️ 这里 pin ``ZEN_LANE_ENABLED=True``：本用例锁的是**模块自身的解析逻辑**
+    （前缀 / label / 推理标记），与「这条车道当前开不开」正交。2026-10-13 起
+    生产常量是 False（opencode 车道整条 403，见 zen_catalog 模块docstring），
+    不 pin 就会因门禁恒返 {} 而测不到真正的解析逻辑。车道关闭的行为另由
+    ``test_zen_lane_disabled_hides_models_from_picker`` 单独锁。
+    """
     from coworker.providers import zen_catalog as Z
 
+    monkeypatch.setattr(Z, "ZEN_LANE_ENABLED", True)
     now = __import__("time").time()
     monkeypatch.setattr(
         Z, "_load_cache",
@@ -969,10 +977,16 @@ def test_picker_drops_delisted_opencode_models(monkeypatch):
     永远反映不到 UI。openrouter 早就是纯动态，opencode 没跟上。
 
     动态清单为准；静态 8 项降级为冷启动兜底（由 zen_catalog 的 seed 承担）。
+
+    ⚠️ pin ``ZEN_LANE_ENABLED=True``：本用例锁的是「列表严格等于远端清单」这条
+    **治陈旧项的机制**（2026-10-09 修的病），与车道开关正交。生产常量现为 False
+    （见zen_catalog 模块 docstring），不 pin 则恒空、机制无从验证；关闭态另由
+    ``test_zen_lane_disabled_hides_models_from_picker`` 锁。
     """
     from coworker.providers import matrix as M
     from coworker.providers import zen_catalog as Z
 
+    monkeypatch.setattr(Z, "ZEN_LANE_ENABLED", True)
     now = __import__("time").time()
     # 远端清单：fledge-alpha / mimo-v2.5 已下架，space-bunny 与新增的 exo 在架。
     monkeypatch.setattr(
@@ -1005,10 +1019,14 @@ def test_picker_falls_back_to_seed_when_catalog_unavailable(monkeypatch):
     兜底责任已从静态 MATRIX 移交 ``zen_catalog._seed()``：这里锁住「拿不到
     清单 → get_zen_entries 走 seed → 选择器非空」，免得日后有人把兜底删了
     变成冷启动空列表。
+
+    ⚠️ pin ``ZEN_LANE_ENABLED=True``：本用例锁的是 **seed 兜底机制**，与车道
+    开关正交；关闭态由test_zen_lane_disabled_hides_models_from_picker 锁。
     """
     from coworker.providers import matrix as M
     from coworker.providers import zen_catalog as Z
 
+    monkeypatch.setattr(Z, "ZEN_LANE_ENABLED", True)
     monkeypatch.setattr(Z, "_load_cache", lambda: None)
     monkeypatch.setattr(Z, "_seed", lambda: [{"id": "space-bunny-free"}])
     monkeypatch.setattr(M, "_live_openrouter", lambda: {})
@@ -1017,4 +1035,45 @@ def test_picker_falls_back_to_seed_when_catalog_unavailable(monkeypatch):
     ids = M.all_model_ids()
     assert "opencode:space-bunny-free" in ids, "清单不可用时应有 seed 兜底"
     assert "gpt-5.6-sol" in ids, "非 opencode 条目不受影响"
+
+
+def test_zen_lane_disabled_hides_models_from_picker(monkeypatch):
+    """🔴 2026-10-13 车道开关：opencode 匿名车道整条 403 后，选择器不再展示它。
+
+    背景：opencode 网关对匿名流量返回 ``FreeTierError``（实测「free tier can
+    only be used from within OpenCode」），但 ``/models`` 清单仍然 200 —— 于是
+    陈旧的 free 模型永远躺在选择器里，用户选中必然失败，且**不报错**。这正是
+    zen_catalog 当初诞生的病因（陈旧项永不消失）。
+
+    处置（萧哥「乙 + 保留代码」）：代码全留，仅把 ``ZEN_LANE_ENABLED`` 置
+    False。本用例锁住这个行为 —— 关闭时 ``get_zen_entries()`` 恒空、picker 里
+    一个 ``opencode:`` 都不剩；**同时锁住付费组与其他条目一个不少**（门禁不得
+    误伤）。上游若恢复，把常量翻回 True，本用例即转红提醒同步复活调用方。
+    """
+    from coworker.providers import matrix as M
+    from coworker.providers import zen_catalog as Z
+
+    # 不 pin 常量：这里要验的就是**生产默认值**为 False。
+    assert Z.ZEN_LANE_ENABLED is False, "opencode 车道应处于关闭态（2026-10-13）"
+
+    # 即使缓存里有货（模拟「清单还活着」这个最坏情况），关闭态也不许外泄。
+    now = __import__("time").time()
+    monkeypatch.setattr(
+        Z,
+        "_load_cache",
+        lambda: {
+            "fetched_at": now,
+            "models": [{"id": "space-bunny-free"}, {"id": "exo-free"}],
+        },
+    )
+    monkeypatch.setattr(M, "_live_openrouter", lambda: {})
+
+    assert Z.get_zen_entries() == {}, "车道关闭时不得返回任何 entry"
+    ids = M.all_model_ids()
+    assert not [m for m in ids if m.startswith("opencode:")], (
+        "选择器里不该再有 opencode 条目（用户选中必然 403）"
+    )
+    # 门禁只关opencode，不得误伤其它 provider。
+    assert "gpt-5.6-sol" in ids
+    assert "ark-agent-plan-cn:deepseek-v4-flash" in ids
 

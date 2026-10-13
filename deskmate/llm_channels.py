@@ -9,7 +9,7 @@
 | 组 | 成员 | 用途 |
 |---|---|---|
 | **付费组**（默认） | 火山 `ark-agent-plan-cn` → 小米 `xiaomi:mimo-v2.6-pro` → 腾讯 `tencent-tokenplan:hy3`（2026-10-11 萧哥要求把小米加回，恢复 ark→小米→腾讯 三层冗余） | 她对你说的话（对话、主动递卡片） |
-| **免费组** | opencode `*-free`（**远端清单驱动**，见 `zen_catalog`）+ 本地 `local` 兜底（CVM llama-server） | 后台加工（记忆抽取 / 理解加工 / 发帖草稿） |
+| **免费组** | Kilo 免费池（**远端清单驱动**，见 `kilo_catalog`）+ 本地 `local` 兜底（CVM llama-server） | 后台加工（发帖草稿 / 理解加工 / 自主层） |
 
 - `qwen` **不进链**（早期测试配置，萧哥 21:00 明确不要）
 - 手动切粒度 = **A**：切「付费组 / 免费组」，**组内自动排**
@@ -19,19 +19,23 @@
 ## 组内排序
 
 **付费组**：按配置顺序（主 → 备），跳过熔断中的。
-**免费组**：**非推理模型优先**（后台批量活要速度）—— 推理模型实测 14.3s 才出content
-（`zen_catalog.is_reasoning`）；同档内按清单顺序稳定排序。
+**免费组**：自动路由入口（`kilo-auto/free` / `openrouter/free`）排最前，其余按
+远端清单序（Kilo 免费池基本全员推理模型，「非推理优先」在这里没有信息量，
+见 `kilo_catalog.free_lane_order`）。
 
-## 记忆抽取走免费组（萧哥 21:24 拍板）
+## 记忆抽取走付费组（2026-10-13 萧哥「乙」方案改判）
 
-`DESKMATE_MEMORY_GROUP=free` 时走免费组，默认 `paid`。
-原先只有 `DESKMATE_MEMORY_PROVIDER=omniroute` 一条opt-in（且本机 OmniRoute
-并未在跑），现已由通道组取代 —— 免费组走 opencode 远端清单，供给更稳。
+`DESKMATE_MEMORY_GROUP=paid|free` 可覆盖，默认 **`paid`**。
+历史：10-06 萧哥拍板「记忆抽取走免费」（省额度）；10-13 opencode 车道整条
+死亡（403 FreeTierError，见 `reports/opencode免费车道排查_Kilo车道实测_2026-10-13.md`），
+免费组换 Kilo 后萧哥改判「乙」：**Kilo 免费池 prompt 可能被上游记录**，记忆抽取
+输入是萧哥的对话片段 → 记忆抽取回付费组（ark→小米→腾讯），Kilo 只跑发帖草稿
+这类公开内容。prefs.json 的 `memory_llm_group` 是跨进程持久的手动档。
 
 ## 与旧 `DESKMATE_MEMORY_PROVIDER=omniroute` 的兼容
 
 保留：设了它仍走 OmniRoute 免费网关（历史行为不变）。
-新路径：设 `DESKMATE_MEMORY_GROUP=free` 走通道组免费组（opencode 远端清单）。
+新路径：设 `DESKMATE_MEMORY_GROUP=free` 走通道组免费组（Kilo 远端清单）。
 两者都设时 `MEMORY_GROUP` 优先（更明确的新语义）。
 """
 
@@ -65,19 +69,23 @@ PAID_GROUP: Tuple[Tuple[str, str], ...] = (
     ("tencent-tokenplan", "hy3"),
 )
 
-#: 免费组用远端清单（zen_catalog），此处不硬编码 —— 手工铺货保鲜期只有几天
+#: 免费组用 Kilo 远端清单（kilo_catalog），此处不硬编码 —— 手工铺货保鲜期只有几天
 #: （设计 §1.5：实测当天已漂 5 个模型）。空元组表示「清单未就绪」。
 
-#: 后台任务（记忆抽取/理解加工）默认走哪组。
-#: 萧哥 21:24 拍板「记忆抽取走免费」；用环境变量可覆盖，便于回退。
-_DEFAULT_MEMORY_GROUP = GROUP_FREE
+#: 后台任务（发帖草稿/理解加工/自主层）默认走哪组。
+#: 2026-10-13 萧哥「乙」方案改判为 **paid**：opencode 车道整条死亡后免费组主力是
+#: Kilo，而 Kilo 免费池 prompt 可能被上游记录——记忆抽取输入是萧哥的对话片段，
+#: 不能过可能被记录的车道。Kilo 只跑发帖草稿/理解加工/自主层（公开内容）。
+#: 用环境变量 / prefs.json 的 memory_llm_group 可覆盖，便于回退。
+_DEFAULT_MEMORY_GROUP = GROUP_PAID
 
 
 def memory_group() -> str:
     """后台任务用哪组。
 
     优先级：环境变量 ``DESKMATE_MEMORY_GROUP`` > prefs.json 的 ``memory_llm_group``
-    > 默认免费组。**prefs 兜底是为了跨进程持久**（环境变量只活在当前进程，
+    > 默认**付费组**（2026-10-13 萧哥「乙」：Kilo prompt 可能被上游记录，
+    记忆抽取不过免费车道）。**prefs 兜底是为了跨进程持久**（环境变量只活在当前进程，
     Tauri 起的 sidecar 与 CLI/定时任务读到的是不同环境）。
     """
     v = os.environ.get("DESKMATE_MEMORY_GROUP", "").strip().lower()
@@ -132,31 +140,26 @@ def paid_channels() -> List[Channel]:
 
 
 def free_channels() -> List[Channel]:
-    """免费组候选：**非推理模型优先**，同档内按远端清单顺序。
+    """免费组候选：**自动路由入口排最前**，其余按 Kilo 远端清单序，本地兜底垫底。
 
-    清单来自 `zen_catalog`（远端驱动）；拉不到时用其内置 seed（8 个），
-    再拉不到则返回空列表（调用方据此判定「免费组无可用」）。
+    清单来自 `kilo_catalog`（远端驱动，2026-10-13 起主力；opencode 车道整条
+    死亡后退役，代码保留在 opencode_provider/zen_catalog，见后者 ZEN_LANE_ENABLED）。
+    拉不到时用其内置 seed（15 个），再拉不到则返回空列表（调用方据此判定
+    「免费组无可用」）。
     """
     try:
-        from coworker.providers.zen_catalog import fetch_catalog, is_reasoning
+        from coworker.providers.kilo_catalog import free_lane_order
     except Exception:  # noqa: BLE001
         return []
     try:
-        raw = fetch_catalog()
+        free_ids = free_lane_order()
     except Exception as e:  # noqa: BLE001
-        logger.debug("免费清单拉取失败（免费组将为空）: %s", e)
-        return []
-    # fetch_catalog 已按远端顺序返回 list（顺序稳定）；不转 set —— 转了就丢顺序。
-    free_ids = [m["id"] for m in raw if m.get("id") and m["id"].endswith("-free")]
-    # 非推理优先；同档内保持远端清单原序（稳定）。
-    # ⚠️ 排序键不能写 `free_ids.index(mid)` —— sort 的 key 在列表被原地改动后
-    # 再 index 会 ValueError（2026-10-06 首版踩过：排序到一半的元素已不在表里）。
-    order = {mid: i for i, mid in enumerate(free_ids)}
-    free_ids.sort(key=lambda mid: (is_reasoning(mid), order[mid]))
-    chs = [Channel(provider="opencode", model=m, free=True) for m in free_ids]
+        logger.debug("Kilo 清单拉取失败（免费组将只剩本地兜底）: %s", e)
+        free_ids = []
+    chs = [Channel(provider="kilo", model=m, free=True) for m in free_ids]
     # 本地兜底通道（2026-10-11 萧哥拍板）：CVM 常驻 llama-server（OpenAI 兼容，
     # DESKMATE_LOCAL_LLM_BASE_URL，默认 127.0.0.1:18080）。排最末——优先用远端免费通道，
-    # 仅当它们全熔断时本地模型兜底跑后台加工（记忆抽取 / 反思 / 理解），宁可本地算也不让任务全挂。
+    # 仅当它们全熔断时本地模型兜底跑后台加工（发帖草稿 / 反思 / 理解），宁可本地算也不让任务全挂。
     # Mac 端无 llama-server → 首次调用失败被熔断跳过，无害（设计 §二）。
     chs.append(Channel(provider=LOCAL_LLM_PROVIDER, model=LOCAL_LLM_MODEL, free=True))
     return chs

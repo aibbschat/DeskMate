@@ -235,6 +235,16 @@ def _build_opencode(profile: dict[str, Any], secrets: Any) -> ProviderClient:
     return OpencodeProvider(api_key=api_key, base_url=base_url)
 
 
+def _build_kilo(profile: dict[str, Any], secrets: Any) -> ProviderClient:
+    # Kilo 免费网关（Our Free Model 插件第二条匿名车道，2026-10-13 移植，见
+    # kilo_provider.py）：免密钥、免登录、无门面协议。⚠️ 请求**不能带** Authorization
+    # 头（任意非空 token 都会 INVALID_TOKEN），hook 在 client 构造时统一处理。
+    from .kilo_provider import KiloProvider
+
+    base_url = ((profile or {}).get("base_url") or "").strip() or None
+    return KiloProvider(base_url=base_url)
+
+
 def _openai_compat(vendor: str, default_base_url: str, env_key: Optional[str] = None):
     """Builder factory for vendors reached through their OpenAI-compatible API (Z AI, DeepSeek,
     Kimi, MiniMax, Qwen, xAI, Mistral). The key is resolved from the vendor's OWN profile (or its
@@ -811,6 +821,32 @@ DESCRIPTORS: list[ProviderDescriptor] = [
         recommended_model="space-bunny-free",
         blurb="OpenCode Zen 免费通道（opencode2dsh 协议移植）：免密钥 *-free 模型"
         "（Space Bunny / MiMo / Nemotron 等）。匿名额度限速，建议仅用于轻量草稿。",
+    ),
+    # Kilo 免费网关（Our Free Model 插件第二条匿名车道，2026-10-13 接入）：
+    # 免密钥、免登录、无门面协议，模型清单远端动态驱动（kilo_catalog，6h 刷新）。
+    # ⚠️ 隐私 trade-off（萧哥 10-13 知情拍板）：免费池 prompt 可能被上游记录，
+    # 故只用于后台加工/草稿；记忆抽取走付费组，不经过本车道。
+    ProviderDescriptor(
+        name="kilo",
+        title="Our Free Model · Kilo",
+        needs_key=False,
+        fields=[
+            ProviderField(
+                "base_url",
+                "Kilo 网关地址",
+                secret=False,
+                required=False,
+                default="https://api.kilo.ai/api/gateway",
+                placeholder="https://api.kilo.ai/api/gateway",
+                help="Kilo AI 的 OpenAI 兼容网关。免费池免密钥即可用（isFree 模型），"
+                "无需登录、无需 API Key。",
+            ),
+        ],
+        build=_build_kilo,
+        recommended_model="kilo-auto/free",
+        blurb="Our Free Model 插件移植的 Kilo 免费车道：免密钥 *-free 模型"
+        "（自动路由 / Nemotron / Ling / Step 等，清单随上游 6h 自动更新）。"
+        "⚠️ 免费池 prompt 可能被上游提供方记录，仅适合草稿与后台加工，勿传敏感内容。",
     ),
 ]
 

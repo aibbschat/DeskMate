@@ -58,6 +58,8 @@ interface Props {
   modelLabels?: Record<string, string>; // curated display names (raw id when absent)
   /** {full model id → "free" | "paid"} — splits the picker into 免费 / 付费 two tiers. */
   modelTiers?: Record<string, string>;
+  /** {full model id → 厂商显示名}（2026-10-13）：picker 按厂商 × 档位分组折叠。 */
+  modelVendors?: Record<string, string>;
   /** 当前会话 id；官方 v0.2.0 用于门控 slash skill 弹窗与 "This session" 绑定子菜单
    *  （无会话不弹）。本 fork 已接官方门控逻辑（见 slash 状态机 + attach 菜单绑定行）。 */
   sessionId?: string;
@@ -472,29 +474,56 @@ export function Composer(props: Props) {
   };
 
   const modelsLoaded = !!(props.models && props.models.length);
-  // Group models into 免费 / 付费 tiers (owner ask 2026-08-14): keyless local/free
-  // gateways (Ollama/OmniRoute/OpenCode) are free; everything needing a billable key is paid.
+  // 模型选择器分组（2026-10-13 萧哥要求重构）：按「上游厂商 × 免费/付费」分组折叠。
+  // 旧版只有 免费/付费 两档平铺——opencode / 火山 / 小米 / OpenRouter 几百项混列，
+  // 加上 Kilo 免费池后更没法看。现在每组一个厂商（后端 model_vendors 供名），
+  // 组可折叠（见 Dropdown），含当前选中项的组默认展开、小组（≤4）默认展开。
   const modelGroups = useMemo(() => {
     const tiers = props.modelTiers;
     const tierOf = (m: string): "free" | "paid" => {
       const known = tiers?.[m];
       if (known === "free" || known === "paid") return known;
-      return m.startsWith("omniroute:") || m.startsWith("opencode:") || m.startsWith("ollama:")
+      return m.startsWith("omniroute:") || m.startsWith("opencode:") || m.startsWith("kilo:") || m.startsWith("ollama:")
         ? "free"
         : "paid";
     };
+    // 厂商名：后端 model_vendors（descriptor title，设置页同款名字）为准；
+    // 旧后端缺字段时从 label 的 "· via X" 后缀抠，再不行归「其他」。
+    const vendorOf = (m: string): string => {
+      const v = props.modelVendors?.[m];
+      if (v) return v;
+      const lbl = props.modelLabels?.[m];
+      const via = lbl?.split(" · ").slice(1).join(" · ");
+      return via || t("composer.otherVendors");
+    };
     const all = Array.from(new Set([props.model, ...(props.models || [])]));
-    const free: Option[] = [];
-    const paid: Option[] = [];
+    // 分组键 = 厂商 + 档位：OpenRouter 免费档/付费档同厂商不同档，必须分开成组。
+    type Bucket = { title: string; tier: "free" | "paid"; options: Option[] };
+    const buckets = new Map<string, Bucket>();
     for (const m of all) {
-      const opt: Option = { value: m, label: props.modelLabels?.[m] || shortModel(m) };
-      (tierOf(m) === "free" ? free : paid).push(opt);
+      const tier = tierOf(m);
+      const title = vendorOf(m);
+      const key = `${title}\u0000${tier}`;
+      let bucket = buckets.get(key);
+      if (!bucket) {
+        bucket = { title, tier, options: [] };
+        buckets.set(key, bucket);
+      }
+      bucket.options.push({ value: m, label: props.modelLabels?.[m] || shortModel(m) });
     }
-    const groups: { title: string; options: Option[] }[] = [];
-    if (free.length) groups.push({ title: t("composer.freeModels"), options: free });
-    if (paid.length) groups.push({ title: t("composer.paidModels"), options: paid });
+    const groups = Array.from(buckets.values());
+    // 排序：免费档在前；档内按厂商名。当前选中模型所在组置顶（打开先看到自己选的）。
+    groups.sort((a, b) => {
+      if (a.tier !== b.tier) return a.tier === "free" ? -1 : 1;
+      return a.title.localeCompare(b.title);
+    });
+    const curIdx = groups.findIndex((g) => g.options.some((o) => o.value === props.model));
+    if (curIdx > 0) {
+      const [cur] = groups.splice(curIdx, 1);
+      groups.unshift(cur);
+    }
     return groups;
-  }, [props.model, props.models, props.modelLabels, props.modelTiers]);
+  }, [props.model, props.models, props.modelLabels, props.modelTiers, props.modelVendors, t]);
 
   const iconBtn =
     "w-7 h-7 grid place-items-center rounded-md text-muted hover:text-ink hover:bg-paper shrink-0";

@@ -331,9 +331,20 @@ def create_app(manager: SessionManager) -> FastAPI:
         try:
             # Zen 免费模型动态清单（2026-10-06，设计 §3.4）——同一套 6h TTL 模式。
             # 顺带在首次拉取后清理「已下架模型」的熔断记录（防熔断表无限膨胀）。
+            # ⚠️ 2026-10-13：opencode 车道整条死亡，ZEN_LANE_ENABLED=False 时此调用
+            # 直接返回（不拉清单、不清理），代码保留待上游恢复。
             from ..providers.zen_catalog import start_catalog_refresh as _zen_refresh
 
             _zen_refresh()
+        except Exception:  # 同上，绝不阻塞启动
+            pass
+        try:
+            # Kilo 免费模型动态清单（2026-10-13，Our Free Model 插件移植的第二条
+            # 匿名车道）——同一套 6h TTL 模式；刷新后 diff 上架/下架并清理下架模型的
+            # 熔断记录。免费组主力（opencode 退役后），漏起 → picker 只有 seed。
+            from ..providers.kilo_catalog import start_catalog_refresh as _kilo_refresh
+
+            _kilo_refresh()
         except Exception:  # 同上，绝不阻塞启动
             pass
         try:
