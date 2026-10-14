@@ -662,7 +662,7 @@ def run_worldview_reflection(base_dir: str,
     prompt = _build_reflection_prompt(roots, xs_entries, ext_entries)
     try:
         out = chat_memory(_SYSTEM, prompt, temperature=0.8,
-                          max_tokens=1200, timeout=40.0, free_only=True)
+                          max_tokens=1200, timeout=40.0)
     except Exception as e:
         logger.warning("worldview_reflection: 回望调用失败: %s", e)
         result["reason"] = "llm_error"

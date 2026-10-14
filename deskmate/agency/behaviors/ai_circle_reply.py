@@ -105,7 +105,7 @@ def run_ai_circle_reply(base_dir: str, settings: dict) -> dict:
             except Exception:
                 pass
             reply = chat_memory(
-                _REPLY_SYSTEM, user_msg, temperature=0.85, max_tokens=600, free_only=True
+                _REPLY_SYSTEM, user_msg, temperature=0.85, max_tokens=600
             ).strip()
         except Exception as e:
             logger.warning("ai_circle_reply LLM 失败 peer=%s: %s", peer_id, e)

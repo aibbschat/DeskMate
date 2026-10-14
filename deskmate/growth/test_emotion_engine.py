@@ -413,14 +413,14 @@ def test_toggle_off(engine):
 
 
 # ---------------------------------------------------------------------------
-# §7-13: 门闸须与实际通道一致（付费 provider OR 免费组可用即放行）
+# §7-13: 门闸（2026-10-14 起情绪层走付费组）：付费 provider 可用才放行
 # ---------------------------------------------------------------------------
 
-def test_gate_open_when_only_free_group_available(engine):
-    """云端场景：llm_available()=False（无付费 provider）但免费组可用 → 门闸放行、真调 chat_memory。
+def test_gate_closed_when_only_free_group_available(engine):
+    """llm_available()=False（无付费 provider）→ 门闸拦截，即使免费组可用也不调 chat_memory。
 
-    2026-10-11 抓到的 bug：原门闸只查 llm_available()，云端仅配免费组 → 误判 False
-    → update_after_turn 整段被跳过、情绪层零更新。修复后免费组可用即放行。
+    2026-10-11 曾修复「云端仅配免费组时误判」而放行免费组；2026-10-14 萧哥拍板
+    后台全面切付费组，情绪层不再过免费车道——本测试锁住新门闸语义。
     """
     call_count = 0
 
@@ -431,15 +431,17 @@ def test_gate_open_when_only_free_group_available(engine):
 
     with patch("deskmate.memory.llm.chat_memory", side_effect=counting_chat):
         with patch("deskmate.memory.llm.llm_available", return_value=False):
-            engine.update_after_turn("hi", "hello", 300.0)
+            # 模拟免费组此时有可用通道：新门闸也不该看它（情绪层只走付费组）
+            with patch("deskmate.llm_channels.route", return_value=(object(), [])):
+                engine.update_after_turn("hi", "hello", 300.0)
 
-    assert call_count == 1, "gate should open via free group even when llm_available is False"
+    assert call_count == 0, "付费 provider 不可用 → 门闸拦截（免费组可用也不放行）"
     s = engine.get_state()
-    assert s["dopamine"] > 50.0, f"dopamine should rise via free-group LLM, got {s['dopamine']}"
+    assert s["dopamine"] <= 50.0, f"dopamine 不应因免费组 LLM 上升, got {s['dopamine']}"
 
 
 def test_gate_closed_when_no_llm_at_all(engine):
-    """付费+免费组均不可用 → 门闸拦截、不调 chat_memory（fail-open 不崩）。"""
+    """付费组不可用 → 门闸拦截、不调 chat_memory（fail-open 不崩）。"""
     call_count = 0
 
     def counting_chat(*args, **kwargs):
@@ -450,8 +452,7 @@ def test_gate_closed_when_no_llm_at_all(engine):
     s_before = engine.get_state()
     with patch("deskmate.memory.llm.chat_memory", side_effect=counting_chat):
         with patch("deskmate.memory.llm.llm_available", return_value=False):
-            with patch("deskmate.llm_channels.route", return_value=(None, [])):
-                engine.update_after_turn("hi", "hello", 300.0)
+            engine.update_after_turn("hi", "hello", 300.0)
 
     assert call_count == 0, "no LLM at all → chat_memory must not be called"
     s_after = engine.get_state()

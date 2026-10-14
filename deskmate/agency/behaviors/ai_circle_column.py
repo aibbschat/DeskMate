@@ -536,7 +536,6 @@ def run_ai_circle_column(base_dir: str, settings: dict) -> dict:
             _USER_TMPL.format(seed=seed, recent=recent_block, themes=themes_block),
             temperature=0.8,
             max_tokens=int(cfg.get("max_tokens", 2600)),
-            free_only=True,
         )
     except Exception as e:
         logger.warning("ai_circle_column LLM 失败: %s", e)

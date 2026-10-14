@@ -285,14 +285,14 @@ def decide_and_digest(
 
         prompt = _build_prompt(clean, at or "", base_dir)
         # max_tokens 给到足够大——一段可以是 1500 字+；预留余量给多段。
-        # 看世界理解走免费组（free_only）：免费全挂时直接跳过本批，不兜底付费（省额度）。
+        # 2026-10-14 起走 memory_group（付费组）：输入含萧哥对话，不过可能被
+        # 上游记录的免费车道（同 10-13「乙」方案判据）。
         try:
             out = chat_memory(
                 _SYSTEM, prompt,
                 temperature=temperature,
                 max_tokens=2400,
                 timeout=30.0,
-                free_only=True,
             )
         except Exception:
             return []

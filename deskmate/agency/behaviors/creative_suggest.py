@@ -107,7 +107,7 @@ def generate(
 2. 不许替他写正文，你是给视角和素材，不是代笔。
 3. 不许自称「小桔」。"""
 
-        out = chat_memory(_SYSTEM, prompt, temperature=temperature, max_tokens=600, timeout=30.0, free_only=True)
+        out = chat_memory(_SYSTEM, prompt, temperature=temperature, max_tokens=600, timeout=30.0)
         text = " ".join(str(out or "").split())
         if not text or not (_MIN_CHARS <= len(text) <= _MAX_CHARS):
             return None

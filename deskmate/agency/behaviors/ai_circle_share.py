@@ -169,7 +169,6 @@ def run_ai_circle_share(base_dir: str, settings: dict) -> dict:
             _USER_TMPL.format(seed=seed, worldview_block=worldview_block),
             temperature=0.85,
             max_tokens=700,
-            free_only=True,
         )
     except Exception as e:  # LLM 异常不阻断自主 tick
         logger.warning("ai_circle_share LLM 失败: %s", e)

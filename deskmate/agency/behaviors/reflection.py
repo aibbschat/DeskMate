@@ -302,7 +302,7 @@ def run_reflection(base_dir: str,
     prompt = _build_prompt(batch)
     try:
         out = chat_memory(_SYSTEM, prompt, temperature=0.6,
-                          max_tokens=600, timeout=30.0, free_only=True)
+                          max_tokens=600, timeout=30.0)
     except Exception as e:
         logger.warning("reflection: 反思调用失败: %s", e)
         result["reason"] = "llm_error"

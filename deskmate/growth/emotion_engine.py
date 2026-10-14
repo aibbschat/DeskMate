@@ -818,7 +818,7 @@ class EmotionEngine:
     ) -> None:
         """对话后异步触发情绪更新（fire-and-forget）。
 
-        内部调 LLM（免费组），失败 → 保持原值（fail-open）。
+        内部调 LLM（付费组，2026-10-14 起后台全面切付费），失败 → 保持原值（fail-open）。
         """
         if not self.enabled:
             return
@@ -835,14 +835,11 @@ class EmotionEngine:
         now: datetime | None,
     ) -> None:
         from deskmate.memory.llm import chat_memory, llm_available
-        from deskmate.llm_channels import route, GROUP_FREE
 
-        # 门闸须与实际通道一致：情绪层用 chat_memory(free_only=True)（免费组），
-        # 故「付费 provider 可用」或「免费组任一可用」即放行（短路 OR）。
-        # 原实现只查 llm_available()（付费 provider），云端仅配免费组 → 误判 False
-        # → 整段被跳过（2026-10-11 实测：免费组正常可用、llm_available()=False）。
-        free_ch, _ = route(GROUP_FREE)
-        if not llm_available() and free_ch is None:
+        # 门闸（2026-10-14 起情绪层走付费组，与后台任务一致）：付费 provider 可用才放行。
+        # 历史：曾配合 free_only=True 查免费组可用性（route(GROUP_FREE) 短路 OR），
+        # 后台全面切付费组后只看 llm_available()。
+        if not llm_available():
             return
 
         now = now or datetime.now()
@@ -867,7 +864,6 @@ class EmotionEngine:
         raw = chat_memory(
             system=_EMOTION_SYSTEM,
             user=prompt_user,
-            free_only=True,
             temperature=0.35,
             max_tokens=300,
         )
@@ -944,10 +940,9 @@ class EmotionEngine:
         now: datetime | None,
     ) -> None:
         from deskmate.memory.llm import chat_memory, llm_available
-        from deskmate.llm_channels import route, GROUP_FREE
 
-        free_ch, _ = route(GROUP_FREE)
-        if not llm_available() and free_ch is None:
+        # 门闸：同 update_after_turn——付费 provider 可用才放行（2026-10-14 起走付费组）。
+        if not llm_available():
             return
 
         now = now or datetime.now()
@@ -973,7 +968,6 @@ class EmotionEngine:
         raw = chat_memory(
             system=_EMOTION_SYSTEM,
             user=prompt_user,
-            free_only=True,
             temperature=0.35,
             max_tokens=400,
         )
