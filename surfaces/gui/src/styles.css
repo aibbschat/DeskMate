@@ -831,6 +831,120 @@ body {
 /* 主动产出台账 · 对话式对接卡片（DeskHome handoff，P0 2026-10-06）
    她云端/手机端主动盯到的事，在空会话首页以页面内卡片递出（非浮层硬弹）。
    质感基准 = .dm-digest-card 一套：细边框 + 低饱和 + hover 微浮起。 */
+
+/* 活跃会话内联 handoff 卡片（§11.4②）
+   挂载在消息流底部、Composer 上方；暖色轻卡片，不抢聊天焦点。 */
+.dm-handoff-inline {
+  margin: 8px 0 4px;
+  padding: 12px 14px 10px;
+  border-radius: 12px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+}
+.dm-handoff-text {
+  margin: 0 0 8px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--muted);
+}
+.dm-handoff-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.dm-handoff-item {
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: var(--paper);
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.dm-handoff-content {
+  font-size: 13.5px;
+  line-height: 1.55;
+  color: var(--ink);
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+.dm-handoff-id {
+  flex: none;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--accent);
+  background: var(--accent-soft);
+  border-radius: 4px;
+  padding: 1px 5px;
+  line-height: 1.4;
+  letter-spacing: 0.3px;
+}
+.dm-handoff-evidence,
+.dm-handoff-understanding {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--muted);
+  padding-left: 2px;
+}
+.dm-handoff-evidence::before {
+  content: "依据：";
+  color: var(--faint);
+  font-weight: 500;
+}
+.dm-handoff-understanding::before {
+  content: "她的理解：";
+  color: var(--faint);
+  font-weight: 500;
+}
+.dm-handoff-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 4px;
+  padding-top: 6px;
+  border-top: 1px solid var(--line);
+}
+.dm-handoff-chat {
+  flex: 1;
+  padding: 6px 14px;
+  border-radius: 999px;
+  border: 1px solid var(--accent);
+  background: var(--accent);
+  color: #fff;
+  font-size: 12.5px;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  letter-spacing: 0.3px;
+}
+.dm-handoff-chat:hover {
+  background: var(--accent);
+  filter: brightness(1.08);
+  box-shadow: 0 2px 8px rgba(37, 99, 235, 0.25);
+}
+.dm-handoff-later {
+  flex: 1;
+  padding: 6px 14px;
+  border-radius: 999px;
+  border: 1px solid var(--line-strong);
+  background: transparent;
+  color: var(--muted);
+  font-size: 12.5px;
+  font-family: inherit;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.dm-handoff-later:hover {
+  border-color: var(--muted);
+  color: var(--ink);
+  background: var(--paper);
+}
+
 /* 信箱 · 送达层门面（2026-10-09）
    首页那条「去信箱」横幅已撤（萧哥 10-09：没必要）——入口只留侧栏 ✉ 那一行。 */
 

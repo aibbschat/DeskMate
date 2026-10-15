@@ -509,7 +509,11 @@ def build_engine(
     # Route by the model's `provider:` prefix (OpenAI default, Ollama, …). The manager normally
     # passes its shared router; this fallback covers the TUI / direct build_engine() callers.
     # Resolved here (not at engine construction) because the explorer subagent captures it.
-    provider = provider or ProviderRouter(secrets, default_provider="openai")
+    provider = provider or ProviderRouter(
+        secrets,
+        default_provider="openai",
+        dynamic_routing=bool(os.environ.get("DESKMATE_DYNAMIC_ROUTING", "")) == "1",
+    )
     # Repo-focused personas can fan broad research out to read-only explorer subagents, keeping
     # their own context for the actual change.
     if agent.subagents and ws is not None:

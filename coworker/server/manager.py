@@ -201,6 +201,8 @@ class SessionManager:
         else:
             base = state_dir()
         base.mkdir(parents=True, exist_ok=True)
+        # 提前设置 _data_base，使下方 ProviderRouter 构造即可读取 prefs（dynamic_routing 开关）。
+        self._data_base = base
 
         self.memory_store: MemoryStore = SQLiteMemoryStore(base / "coworker.db")
         # MEMORY-SPEC §4.3/§6: the on/off switch + the user's standing rules. Settings-
@@ -238,7 +240,10 @@ class SessionManager:
         # shared by every engine and the `/v1/chat/completions` proxy.
         if self.provider is None:
             self.provider = ProviderRouter(
-                self.secrets, default_provider="openai", on_use=self._note_provider_use
+                self.secrets,
+                default_provider="openai",
+                on_use=self._note_provider_use,
+                dynamic_routing=bool(self._load_prefs().get("dynamic_routing", False)),
             )
         self.mcp = MCPManager(secrets=self.secrets)
         # OAuth MCP servers with a sign-in in flight / their last connect error —

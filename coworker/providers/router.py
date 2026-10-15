@@ -12,12 +12,20 @@ existing engines pick up the change without a rebuild.
 
 from __future__ import annotations
 
+import logging
 import threading
 from typing import Any, Optional
+
+logger = logging.getLogger(__name__)
 
 from .base import ProviderClient
 from .capabilities import capabilities_for
 from .registry import build_provider_client, get_descriptor
+from .dynamic_route import (
+    AUTO_MODEL,
+    GROUP_PAID,
+    resolve_auto_model,
+)
 
 
 class ProviderRouter(ProviderClient):
@@ -27,6 +35,8 @@ class ProviderRouter(ProviderClient):
         *,
         default_provider: str = "openai",
         on_use: Any = None,
+        dynamic_routing: bool = False,
+        auto_route_fn: Any = None,
     ) -> None:
         self._secrets = secrets
         self._default = default_provider
@@ -35,6 +45,51 @@ class ProviderRouter(ProviderClient):
         # Optional callable(provider_name) fired when a completion is dispatched — drives the
         # Settings pane's "Last used" line. Best-effort: its failures never break a model call.
         self._on_use = on_use
+        # 动态路由 judge 层（借鉴 PilotDeck）。默认关：仅当会话模型 == "auto" 哨兵且本开关开时，
+        # 才按单条消息难度动态选免费组/付费组；否则完全透传，不越权替用户换模型。
+        self._dynamic_routing = bool(dynamic_routing)
+        # 测试 / 注入用：覆盖默认 resolve_auto_model（避免测试时真的拉 Kilo 远端清单）。
+        self._auto_route_fn = auto_route_fn
+        # 上一轮动态选的组（free/paid），供短续接消息继承（对齐 PilotDeck isShortContinuation）。
+        self._last_dynamic_group: Any = None
+
+    def set_dynamic_routing(self, enabled: bool) -> None:
+        """运行时开关（无需重建 router 即可生效）。"""
+        self._dynamic_routing = bool(enabled)
+
+    def _resolve_auto(self, model: str, messages: list) -> str:
+        """把 ``AUTO_MODEL`` 哨兵解析成具体通道；不介入时原样返回。
+
+        fail-open：解析异常也原样返回 ``model``，绝不卡主流程。
+        """
+        if model != AUTO_MODEL or not self._dynamic_routing:
+            return model
+        fn = self._auto_route_fn or resolve_auto_model
+        try:
+            resolved = fn(
+                messages,
+                dynamic_enabled=True,
+                prev_group=self._last_dynamic_group,
+            )
+        except Exception:  # noqa: BLE001
+            logger.debug("动态路由解析异常，透传原模型", exc_info=True)
+            return model
+        if resolved:
+            self._last_dynamic_group = self._group_of_key(resolved)
+            return resolved
+        return model
+
+    @staticmethod
+    def _group_of_key(key: str) -> Any:
+        """由通道 key 推断组（paid/free），用于续接继承；取不到返回 None。"""
+        try:
+            from .dynamic_route import GROUP_PAID, GROUP_FREE
+            from deskmate.llm_channels import PAID_GROUP
+
+            prov = key.split(":", 1)[0]
+            return GROUP_PAID if prov in {p for p, _ in PAID_GROUP} else GROUP_FREE
+        except Exception:  # noqa: BLE001
+            return None
 
     def _note_use(self, model: str) -> None:
         if self._on_use is None:
@@ -96,6 +151,7 @@ class ProviderRouter(ProviderClient):
         tools: Optional[list[dict[str, Any]]] = None,
         **settings: Any,
     ):
+        model = self._resolve_auto(model, messages)
         self._note_use(model)
 
         def _call(m: str):
@@ -117,6 +173,7 @@ class ProviderRouter(ProviderClient):
         tools: Optional[list[dict[str, Any]]] = None,
         **settings: Any,
     ):
+        model = self._resolve_auto(model, messages)
         self._note_use(model)
 
         def _open(m: str):
