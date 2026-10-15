@@ -631,6 +631,16 @@ class DeskMateMemoryManager:
                     parts.append(_emotion_ctx)
             except Exception:
                 pass  # fail-open 退回无情绪段
+        # 对话层时钟（2026-10-15）：一行纯事实「现在是 …周几 晚上 22:06」。
+        # 不补她聊天时永远不知道几点；纯本地零 LLM，不导演（怎么反应是她的事）。
+        # 开关：DESKMATE_CLOCK=0。fail-open。
+        try:
+            from deskmate.perception.clock import clock_context
+            _clock_ctx = clock_context()
+            if _clock_ctx:
+                parts.append(_clock_ctx)
+        except Exception:
+            pass  # fail-open：时钟缺失不影响主对话
         # 天气感知（2026-10-15）：他问起窗外/出门时注入真实天气（缓存+双源，
         # 她用真实数据回答不编）；外面正下雨/雪/打雷时给一行氛围——她置身其中。
         # 情绪影响走 proactivity tick 的 apply_weather_mood（规则直驱），不在这里。
