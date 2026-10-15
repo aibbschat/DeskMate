@@ -126,6 +126,12 @@ CHANNEL_MODULES=(
   # 正确记账——两套配置脱节。修法是把跨套餐回退（火山→小米→腾讯 hy3）接进 router。
   # 三者**必须同批**：router import paid_fallback，且 import 写在函数体内，
   # 漏传时服务照常启动但每次调用都 ModuleNotFoundError ⇒ 云端小桔彻底不能对话。
+  # ⚠️ 2026-10-15 补：dynamic_route.py（P0 动态路由 judge 层）。router.py L24 顶层
+  # `from .dynamic_route import ...` 直接引用它——漏传 ⇒ 云端 router.py 导入期即崩 ⇒
+  # openworker-server 起不来。它位于 coworker/providers/，而本脚本全量对账只扫
+  # deskmate + coworker/server（扫不到 providers/，属对账盲区），故必须显式列此清单
+  # 才能推上去；否则对账永远假绿。务必随 router.py 同批。
+  "coworker/providers/dynamic_route.py"     # P0 动态路由 judge 层（router.py 顶层 import）
   "coworker/providers/router.py"           # ProviderRouter（已接入 paid_fallback）
   "coworker/providers/paid_fallback.py"   # 付费组跨套餐回退 + 熔断记账
   "coworker/server/app.py"                # /v1/llm-channels* 端点 + LLM 专用池/超时中间件
@@ -279,6 +285,10 @@ GROWTH_MODULES=(
 # 否则云端技能交付步 ImportError（"同步成功≠云端完整"陷阱，与 user_fact_context 同类漏传事故）。
 SKILLS_TOOLS_MODULES=(
   "deskmate/skills/tools/office_safe_deliver.py"
+  # 2026-10-15 补：seed_office.py（办公技能幂等 seed / ensure_office_skills）。虽当前未被
+  # 云端运行时 import（纯 seed 脚本，对账「本地独有」告警即它），但补入可消除告警、并让云端
+  # 具备同款 seed 能力；随 office_safe_deliver.py 同批上云到 /opt/openworker/deskmate/skills/。
+  "deskmate/skills/seed_office.py"
 )
 
 FORCE=0
