@@ -631,6 +631,17 @@ class DeskMateMemoryManager:
                     parts.append(_emotion_ctx)
             except Exception:
                 pass  # fail-open 退回无情绪段
+        # 天气感知（2026-10-15）：他问起窗外/出门时注入真实天气（缓存+双源，
+        # 她用真实数据回答不编）；外面正下雨/雪/打雷时给一行氛围——她置身其中。
+        # 情绪影响走 proactivity tick 的 apply_weather_mood（规则直驱），不在这里。
+        # 开关：DESKMATE_WEATHER=0 整块关闭。
+        try:
+            from deskmate.perception.weather import weather_context
+            _wx_ctx = weather_context(user_message, base_dir=self.base_dir)
+            if _wx_ctx:
+                parts.append(_wx_ctx)
+        except Exception:
+            pass  # fail-open：天气不可知不影响主对话
         # 「越用越懂你·每日读书」：把面板里的读书沉淀接回对话（修复死数据）
         # —— auto_tasks 读书洞察此前只展示在「作品与创作」面板，聊天检索链路不消费。
         try:

@@ -255,6 +255,16 @@ class ProactiveEngine:
         except Exception:
             pass  # fail-open
 
+        # 天气情绪（2026-10-15）：天气变化 → 她的参数（规则直驱，LLM 不碰参数）。
+        # 她口味写在 perception/weather.py 的 WEATHER_MOOD_DELTAS（喜欢雨天/晴天，
+        # 不喜阴天）；同一天同一天气只算一次，不按 tick 刷屏。缓存+双源+fail-open。
+        # 开关：DESKMATE_WEATHER=0 全关；DESKMATE_WEATHER_MOOD=0 只关情绪保留播报。
+        try:
+            from deskmate.perception.weather import apply_weather_mood
+            apply_weather_mood(base_dir=self.base_dir)
+        except Exception:
+            pass  # fail-open：天气不可知不影响主动推理主流程
+
         # ===== 1.6 日记灵感（后台动作，不打扰、不占通道）=====
         # 与深度访谈同一范式：纯规则、零 LLM、条件满足才发生。
         # 差异在于日记**不需要用户在场**——她是自己动笔，不是来打断你。
