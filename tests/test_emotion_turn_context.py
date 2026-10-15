@@ -51,21 +51,27 @@ def test_describe_turn_context_has_real_state_and_zero_directive(ee, monkeypatch
 
 def test_recent_log_descriptions_filters_empty_and_orders_recent(ee):
     """当日经历真实摘要：过滤空 description，按时间倒序，上限生效。"""
+    # ts 必须相对当前时间（写死日期会随真实时间流逝掉出 24h 窗口——2026-10-15 暴露）
+    from datetime import datetime, timedelta
+    now = datetime.now()
+    ts_a = (now - timedelta(hours=3)).isoformat(timespec="seconds")
+    ts_b = (now - timedelta(hours=2)).isoformat(timespec="seconds")
+    ts_c = (now - timedelta(hours=1)).isoformat(timespec="seconds")
     with _connect(ee._db) as conn:
         conn.execute(
             "INSERT INTO emotion_log (id, ts, source, deltas, description) "
             "VALUES (?,?,?,?,?)",
-            ("a", "2026-10-13T08:00:00", "x", "{}", "上午因为 X 心里亮过"),
+            ("a", ts_a, "x", "{}", "上午因为 X 心里亮过"),
         )
         conn.execute(
             "INSERT INTO emotion_log (id, ts, source, deltas, description) "
             "VALUES (?,?,?,?,?)",
-            ("b", "2026-10-13T09:30:00", "x", "{}", "下午被 Y 堵了一下"),
+            ("b", ts_b, "x", "{}", "下午被 Y 堵了一下"),
         )
         conn.execute(
             "INSERT INTO emotion_log (id, ts, source, deltas, description) "
             "VALUES (?,?,?,?,?)",
-            ("c", "2026-10-13T10:00:00", "x", "{}", ""),  # 空描述须被过滤
+            ("c", ts_c, "x", "{}", ""),  # 空描述须被过滤
         )
 
     descs = ee.recent_log_descriptions(since_hours=24.0, limit=3)

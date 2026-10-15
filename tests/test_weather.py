@@ -277,15 +277,17 @@ def test_mood_reapplies_on_condition_change(base, engine_spy):
 
 
 def test_mood_skips_when_engine_rule_missing(base, monkeypatch):
-    """引擎还没接 weather_* 规则（二期交付前的窗口期）→ 静默跳过、不记去重。
+    """能力探测：规则表里没有对应 weather_* 时 → 静默跳过、不记去重。
 
-    规则补上后自动生效——同一天内下次调用仍会尝试（不因跳过而吞掉一次）。
+    （2026-10-15 二期已把 weather_* 注册进引擎表，此测改为 monkeypatch
+    一张删掉 weather_rain 的表，专门守护「未知事件安全跳过」机制本身。）
     """
     from deskmate.growth.emotion_engine import EmotionEngine
 
     monkeypatch.setattr(
         EmotionEngine, "EVENT_DIRECT_DELTAS",
-        {k: v for k, v in EmotionEngine.EVENT_DIRECT_DELTAS.items()},
+        {k: v for k, v in EmotionEngine.EVENT_DIRECT_DELTAS.items()
+         if k != "weather_rain"},
     )
     monkeypatch.setattr(
         EmotionEngine, "apply_event_direct",
