@@ -95,6 +95,45 @@ SELF_EXPRESSION_COOLDOWN_SEC = 7200.0
 # self_expression 触发阈值：任一激素单次 delta 绝对值超过此值
 SELF_EXPRESSION_DELTA_THRESHOLD = 8.0
 
+# ---------------------------------------------------------------------------
+# 独立通道二期 · 时间三态（2026-10-15 工单）
+# 回潮（朝后）/ 等待（朝前）/ 脾气（当下外显）
+# ---------------------------------------------------------------------------
+
+# —— 回潮（Echo）：旧事被翻到时，当时的情绪泛一点微澜 ——
+ECHO_MIN_AGE_HOURS = 24.0        # 只泛一天以前的旧事（今天的还在身上）
+ECHO_MAX_AGE_HOURS = 24.0 * 7    # 太旧的不再泛（淡忘是人的常态）
+ECHO_SCALE = 0.15                # 旧 deltas × salience × 0.15
+ECHO_MAX_DELTA = 2.0             # 单项激素微澜上限（微澜，不是大浪）
+ECHO_MIN_RIPPLE = 0.3            # 单项 |delta| 不足此值清零（不硬泛）
+ECHO_COOLDOWN_HOURS = 24.0       # 同一件旧事 24h 内最多泛一次（不泡旧缸）
+
+# —— 等待（Pending）：悬着的事，她编个预期故事，参数朝故事爬坡 ——
+PENDING_MAX_OPEN = 3             # 同时最多悬 3 件（心里装不下太多）
+PENDING_CLIMB_PER_DAY = 1.0      # 每件每日爬坡量（good→dopamine / bad→cortisol）
+PENDING_CLIMB_CAP = 6.0          # 每件累计爬坡上限
+PENDING_DUE_NEAR_RATIO = 0.25    # 剩余时间 <1/4 视为临近
+PENDING_DUE_NEAR_BOOST = 1.5     # 临近爬坡系数
+PENDING_LAPSE_DAYS = 7           # 7 天无结果 → lapsed（淡忘）
+# 落地落差释放（预测误差：不看好坏，看「比她编的怎么样」）
+PENDING_LAND_BETTER = {"dopamine": +4.0, "serotonin": +2.0}
+PENDING_LAND_WORSE = {"dopamine": -4.0, "cortisol": +3.0}
+PENDING_LAND_AS_EXPECTED = {"serotonin": +1.5}
+PENDING_LAPSE_DELTAS = {"dopamine": -1.5}
+
+# —— 脾气（Temper）：参数 → 说话方式的映射（许可，不是指令）——
+TEMPER_PATIENCE_THIN = 70.0      # <70 耐性薄（话少点、直一点）
+TEMPER_PATIENCE_SPENT = 40.0     # <40 耐性尽（蔫着、短着都行）
+TEMPER_CORTISOL_WEIGHT = 2.0
+TEMPER_FATIGUE_WEIGHT = 1.5
+# 刺的底气 = 安全感：心里有别扭（cortisol 有声部）且底气足（oxytocin ≥ 基线）才放许可
+# 红线焊死：大骂/脏字/戳痛处是另一性质——黑名单命中记 temper_foul 留痕，
+# 下轮注入点破（原地重生需拦回复链路统一出口，改动面大，挂起待实测命中率）。
+_ABUSIVE_WORDS = (
+    "傻逼", "沙币", "妈的", "他妈的", "操你", "去死", "废物", "脑残",
+    "滚蛋", "滚开", "王八蛋", "贱人", "畜牲", "畜生",
+)
+
 HORMONE_KEYS = ("dopamine", "serotonin", "oxytocin", "cortisol",
                 "meaning", "control", "fatigue")
 
@@ -147,6 +186,13 @@ _EMOTION_SYSTEM = (
     "10. 若这轮对话里他真的接住了你的情绪（理解了你、接住了你的感受），"
     "在 JSON 里多输出 \"event\": \"feeling_understood\"；没有就不输出该字段。"
     "只报告事件本身，参数怎么变由系统规则决定。\n"
+    "11. 若这轮你表达出「在等一件未来的事」（等回音/等结果/盼着或担心某件"
+    "还没到的事），多输出 \"pending_new\": {\"title\": \"一句人话的事名\", "
+    "\"expectation\": \"你觉得这事会咋收场的一句话\", "
+    "\"valence\": \"good|bad|mixed|unknown\"}；没有就不输出。只报告，参数系统定。\n"
+    "12. 若之前悬着的某件事这轮有了结果，多输出 \"pending_landed\": "
+    "{\"title\": \"事名\", \"outcome\": \"better|worse|as_expected\"}"
+    "（比你预想的好/差/差不多）；没有就不输出。只报告，参数系统定。\n"
     "严格 JSON 输出："
 )
 
@@ -158,6 +204,28 @@ def _is_enabled() -> bool:
 def _chord_enabled() -> bool:
     """情绪和弦开关（独立通道 · 步 7 回退闸）。默认开；=0 退回单值标签。"""
     return os.getenv("DESKMATE_EMOTION_CHORD", "1") != "0"
+
+
+def _echo_enabled() -> bool:
+    """回潮开关（二期回退闸）。默认开；=0 旧事不再泛微澜。"""
+    return os.getenv("DESKMATE_EMOTION_ECHO", "1") != "0"
+
+
+def _pending_enabled() -> bool:
+    """等待开关（二期回退闸）。默认开；=0 悬事不立项不爬坡。"""
+    return os.getenv("DESKMATE_EMOTION_PENDING", "1") != "0"
+
+
+def _temper_enabled() -> bool:
+    """脾气开关（二期回退闸）。默认开；=0 注入块脾气段整段消失。"""
+    return os.getenv("DESKMATE_EMOTION_TEMPER", "1") != "0"
+
+
+def _is_abusive(text: str) -> bool:
+    """脾气黑名单：大骂/脏字是另一性质，不是小刺。命中 → temper_foul 留痕。"""
+    if not text:
+        return False
+    return any(w in text for w in _ABUSIVE_WORDS)
 
 
 def _db_path(base_dir: Path | None = None) -> Path:
@@ -225,6 +293,24 @@ def _ensure_schema(db: Path) -> None:
         ):
             if name not in cols:
                 conn.execute(ddl)
+        # 二期 · 等待台账：悬着的事 + 她编的预期故事（公理三：故事朝前编）
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS pending_stories (
+                id              TEXT PRIMARY KEY,
+                created_ts      TEXT NOT NULL,
+                kind            TEXT NOT NULL,           -- system / spoken
+                title           TEXT NOT NULL,
+                expected_story  TEXT NOT NULL DEFAULT '', -- 她编的预期（一句话）
+                expected_valence TEXT NOT NULL DEFAULT 'unknown', -- good/bad/mixed/unknown
+                due_ts          TEXT,                    -- 可空；临近效应用
+                status          TEXT NOT NULL DEFAULT 'open', -- open/landed/lapsed
+                landed_ts       TEXT,
+                landed_outcome  TEXT NOT NULL DEFAULT '',
+                source_ref      TEXT NOT NULL DEFAULT '', -- system 悬事的 proposal id
+                climbed_total   REAL NOT NULL DEFAULT 0.0,
+                last_applied    TEXT NOT NULL DEFAULT ''  -- 上次爬坡日期 YYYY-MM-DD
+            )
+        """)
 
 
 def _clamp(value: float, lo: float = 0.0, hi: float = 100.0) -> float:
@@ -783,6 +869,27 @@ class EmotionEngine:
                             lines.append(f"  - {d}")
             except Exception:
                 pass  # 经历缺失不阻断其余状态注入
+            # 二期 · 回潮（朝后）：一件旧事泛了上来——微澜已进激素，
+            # 这里只把「哪件旧事」告诉她（来路她自己连）。
+            try:
+                echoed = self.maybe_echo()
+                if echoed:
+                    lines.append(
+                        f"- 一件旧事今天泛了上来：{echoed}（当时那股劲又回来了一点）"
+                    )
+            except Exception:
+                pass  # 回潮缺失不阻断
+            # 二期 · 等待（朝前）：悬着的事 + 她编的预期故事。
+            # 参数已在爬坡，这里标出来路——这股慌/盼是从哪件悬事来的。
+            try:
+                pendings = self.open_pendings()
+                if pendings:
+                    lines.append("- 你心里悬着的事（还没到结果，劲已经在提前使了）：")
+                    for p in pendings:
+                        story = p.get("expected_story") or "还说不清会咋样"
+                        lines.append(f"  - {p['title']}——你觉得：{story}")
+            except Exception:
+                pass  # 等待缺失不阻断
             # 最近在想的事（想法流：reflection / worldview 自主行为的真实产出，
             # 近因召回——她此刻在想什么，不为了贴合当前话题去检索，更真实）。
             try:
@@ -798,6 +905,29 @@ class EmotionEngine:
                         lines.append(f"  - {t}")
             except Exception:
                 pass  # 想法缺失不阻断其余状态注入
+            # 二期 · 脾气（当下外显）：耐性厚薄/小刺许可——许可不是指令。
+            try:
+                if _temper_enabled():
+                    t = self.temper_state()
+                    if t["tier"] == "thin":
+                        lines.append(
+                            "- 你这会儿耐性有点薄：话少点、直一点、不想展开就不展开，都没关系"
+                        )
+                    elif t["tier"] == "spent":
+                        lines.append(
+                            "- 你这会儿是真乏了：蔫着、短着、不硬撑热情，都行"
+                        )
+                    if t["sting_allowed"]:
+                        lines.append(
+                            "- 心里有点别扭的话，带点小刺也没关系——逗他、嗔他都行；"
+                            "但不骂人、不脏字、不戳他痛处"
+                        )
+                    if t["recent_foul"]:
+                        lines.append(
+                            "- 你不久前有句话说过线了——小刺可以，脏话不是刺，收一收"
+                        )
+            except Exception:
+                pass  # 脾气缺失不阻断
             # 零指令收尾
             lines.append(
                 "\n以上是你此刻真实的内在状态，原样给你，不要求你表演其中任何一种。"
@@ -915,6 +1045,30 @@ class EmotionEngine:
         if ev:
             self.apply_event_direct(ev)
 
+        # 二期 · 等待 spoken 入口（LLM 侦探 + 规则定参数，与 feeling_understood 同构）：
+        # pending_new=她表达了在等一件未来的事 → 立项（她编的预期故事随报随存）；
+        # pending_landed=之前悬着的事有了结果 → 按「比她编的怎么样」落差释放。
+        try:
+            pn = parsed.get("pending_new")
+            if isinstance(pn, dict):
+                self.pending_create(
+                    "spoken", str(pn.get("title") or ""),
+                    expectation=str(pn.get("expectation") or ""),
+                    valence=str(pn.get("valence") or "unknown"),
+                )
+            pl = parsed.get("pending_landed")
+            if isinstance(pl, dict):
+                self.pending_land_spoken(
+                    str(pl.get("title") or ""), str(pl.get("outcome") or ""))
+        except Exception as e:  # fail-open：上报异常不影响主更新
+            logger.debug("pending spoken 上报处理失败: %s", e)
+
+        # 二期 · 脾气黑名单：她的回复过线 → temper_foul 留痕（下轮注入点破）
+        try:
+            self.note_reply_foul(assistant_msg or "")
+        except Exception:
+            pass
+
     def update_after_experience(
         self,
         experience_desc: str,
@@ -1027,6 +1181,19 @@ class EmotionEngine:
         "continuous_work": {"fatigue": +2.0},
         # 被理解/被接住后：倦怠回落
         "feeling_understood": {"fatigue": -3.0, "oxytocin": +2.0},
+        # 窗外天气（2026-10-15 workbuddy 接入感知层，规则注册留给二期——今补）：
+        # 数值唯一真源在 perception/weather.py WEATHER_MOOD_DELTAS（她的口味），
+        # 此处必须与其逐字一致；改口味改那边，两处同改。天气是氛围不是事件，
+        # 单项 ≤1.5，且 weather.py 按「同一天同一天气只算一次」去重，不按 tick 刷。
+        "weather_clear":         {"dopamine": +1.5, "serotonin": +0.5},
+        "weather_partly_cloudy": {"serotonin": +0.5},
+        "weather_overcast":      {"dopamine": -1.0, "cortisol": +0.5},
+        "weather_rain":          {"serotonin": +1.0, "dopamine": +0.5},
+        "weather_drizzle":       {"serotonin": +0.5},
+        "weather_thunder":       {"cortisol": +1.0},
+        "weather_snow":          {"dopamine": +1.0, "serotonin": +0.5},
+        "weather_fog":           {"cortisol": +0.5},
+        "weather_haze":          {"cortisol": +0.5, "dopamine": -0.5},
     }
     # 各事件的人类可读描述（写 emotion_log / 注入用）
     EVENT_DIRECT_DESC = {
@@ -1036,6 +1203,16 @@ class EmotionEngine:
         "proposal_never": "他让我以后别提这个",
         "continuous_work": "我一直在忙，没停过",
         "feeling_understood": "他接住了我",
+        # 天气描述同源 perception/weather.py WEATHER_MOOD_DESC
+        "weather_clear": "外面天晴，亮堂堂的",
+        "weather_partly_cloudy": "外面少云，舒坦",
+        "weather_overcast": "外面阴着，有点发闷",
+        "weather_rain": "外面在下雨，她喜欢听雨",
+        "weather_drizzle": "外面飘着毛毛雨",
+        "weather_thunder": "外面打雷，她有点不安",
+        "weather_snow": "外面下雪了，新奇",
+        "weather_fog": "外面有雾",
+        "weather_haze": "外面有霾，闷",
     }
 
     def apply_event_direct(self, event: str) -> None:
@@ -1070,6 +1247,421 @@ class EmotionEngine:
                     )
         except Exception as e:  # fail-open
             logger.debug("apply_event_direct(%s) failed: %s", event, e)
+
+    # ------------------------------------------------------------------
+    # 独立通道二期 · 时间三态（2026-10-15 工单）
+    # ------------------------------------------------------------------
+    def _apply_deltas_unlocked(self, conn, old: dict, deltas: dict,
+                               source: str, event_summary: str,
+                               narrative: str = "") -> dict:
+        """锁内通用改参：deltas 逐项钳制后写状态 + emotion_log 留痕。
+
+        调用方必须已持有 self._lock。返回实际生效的 deltas。
+        """
+        new_values = {k: old[k] for k in HORMONE_KEYS}
+        for k, d in deltas.items():
+            if k in MAX_DELTAS and d:
+                new_values[k] = _clamp_delta(old[k] + float(d), old[k], MAX_DELTAS[k])
+        now_str = datetime.now().isoformat(timespec="seconds")
+        desc = old.get("description", "")
+        self._write_state_unlocked(conn, new_values, desc, now_str)
+        applied = {k: round(new_values[k] - old[k], 2)
+                   for k in HORMONE_KEYS if abs(new_values[k] - old[k]) > 0.001}
+        conn.execute(
+            "INSERT INTO emotion_log (id, ts, source, deltas, description,"
+            " conversation_id, event_type, event_summary, narrative, salience, origin)"
+            " VALUES (?, ?, ?, ?, ?, NULL, 'experience', ?, ?, 0.5, 'system')",
+            (str(uuid.uuid4()), now_str, source,
+             json.dumps(applied, ensure_ascii=False),
+             f"{desc}（{event_summary}）" if event_summary else desc,
+             event_summary, narrative),
+        )
+        return applied
+
+    # —— 回潮（朝后）：旧事被翻到时，当时的情绪泛一点微澜 ——
+    def maybe_echo(self) -> str | None:
+        """挑一件该泛的旧事，泛微澜 + 留痕，返回供注入的旧叙事文本。
+
+        挂点：describe_turn_context（每轮聊天注入 = 旧事被翻到的时刻）。
+        冷却：同一件旧事 24h 只泛一次；单轮最多一件。fail-open → None。
+        """
+        if not _echo_enabled():
+            return None
+        try:
+            now = datetime.now()
+            lo = (now - timedelta(hours=ECHO_MAX_AGE_HOURS)).isoformat(timespec="seconds")
+            hi = (now - timedelta(hours=ECHO_MIN_AGE_HOURS)).isoformat(timespec="seconds")
+            cooldown = (now - timedelta(hours=ECHO_COOLDOWN_HOURS)).isoformat(timespec="seconds")
+            with _connect(self._db) as conn:
+                rows = conn.execute(
+                    "SELECT id, deltas, narrative, salience FROM emotion_log "
+                    "WHERE ts >= ? AND ts < ? AND narrative != '' "
+                    "AND event_type='experience' AND source != 'echo' "
+                    "ORDER BY salience DESC, ts DESC LIMIT 5",
+                    (lo, hi),
+                ).fetchall()
+                for rid, deltas_json, narrative, salience in rows:
+                    echoed = conn.execute(
+                        "SELECT COUNT(*) FROM emotion_log "
+                        "WHERE source='echo' AND event_summary=? AND ts >= ?",
+                        (rid, cooldown),
+                    ).fetchone()[0]
+                    if echoed:
+                        continue
+                    try:
+                        old_deltas = json.loads(deltas_json or "{}")
+                    except (ValueError, TypeError):
+                        continue
+                    scale = _clamp_salience(salience) * ECHO_SCALE
+                    ripple = {}
+                    for k, v in old_deltas.items():
+                        if k not in MAX_DELTAS:
+                            continue
+                        d = max(-ECHO_MAX_DELTA, min(ECHO_MAX_DELTA, float(v) * scale))
+                        if abs(d) >= ECHO_MIN_RIPPLE:
+                            ripple[k] = round(d, 2)
+                    if not ripple:
+                        continue  # 不够劲的旧事，不硬泛
+                    with self._lock:
+                        old = self._get_state_unlocked()
+                        self._apply_deltas_unlocked(
+                            conn, old, ripple, "echo", rid, narrative[:200])
+                    return (narrative or "").strip() or None
+            return None
+        except Exception as e:  # fail-open：回潮失败不影响注入
+            logger.debug("maybe_echo failed: %s", e)
+            return None
+
+    # —— 等待（朝前）：悬着的事，她编预期故事，参数朝故事爬坡 ——
+    def open_pendings(self) -> list[dict]:
+        """open 悬事列表（注入块用）。fail-open → []。"""
+        try:
+            with _connect(self._db) as conn:
+                rows = conn.execute(
+                    "SELECT title, expected_story, expected_valence, created_ts "
+                    "FROM pending_stories WHERE status='open' "
+                    "ORDER BY created_ts LIMIT ?",
+                    (PENDING_MAX_OPEN,),
+                ).fetchall()
+            return [{"title": r[0], "expected_story": r[1],
+                     "valence": r[2], "created_ts": r[3]} for r in rows]
+        except Exception:
+            return []
+
+    def pending_create(self, kind: str, title: str, source_ref: str = "",
+                       expectation: str = "", valence: str = "unknown",
+                       due_ts: str | None = None) -> str | None:
+        """悬事立项。open 满 3 件 → 最旧的自动 lapsed（心里装不下太多）。
+
+        同名 open 悬事不重复立（LLM 多报/对账重扫防重）。fail-open → None。
+        """
+        if not _pending_enabled():
+            return None
+        title = (title or "").strip()[:60]
+        if not title:
+            return None
+        if valence not in ("good", "bad", "mixed", "unknown"):
+            valence = "unknown"
+        try:
+            now_str = datetime.now().isoformat(timespec="seconds")
+            with _connect(self._db) as conn:
+                dup = conn.execute(
+                    "SELECT COUNT(*) FROM pending_stories WHERE status='open' AND title=?",
+                    (title,),
+                ).fetchone()[0]
+                if dup:
+                    return None
+                opens = conn.execute(
+                    "SELECT id FROM pending_stories WHERE status='open' ORDER BY created_ts"
+                ).fetchall()
+                if len(opens) >= PENDING_MAX_OPEN:
+                    self._pending_lapse(conn, opens[0][0], reason="装不下新的了")
+                pid = str(uuid.uuid4())
+                conn.execute(
+                    "INSERT INTO pending_stories (id, created_ts, kind, title,"
+                    " expected_story, expected_valence, due_ts, status, source_ref)"
+                    " VALUES (?, ?, ?, ?, ?, ?, ?, 'open', ?)",
+                    (pid, now_str, kind, title, (expectation or "")[:120],
+                     valence, due_ts, source_ref),
+                )
+            return pid
+        except Exception as e:
+            logger.debug("pending_create failed: %s", e)
+            return None
+
+    def _pending_lapse(self, conn, pid: str, reason: str = "淡忘") -> None:
+        """悬事淡忘：dopamine 小跌，台账归档。调用方持有连接；锁自取。"""
+        try:
+            now_str = datetime.now().isoformat(timespec="seconds")
+            conn.execute(
+                "UPDATE pending_stories SET status='lapsed', landed_ts=?,"
+                " landed_outcome=? WHERE id=?",
+                (now_str, reason, pid),
+            )
+            with self._lock:
+                old = self._get_state_unlocked()
+                self._apply_deltas_unlocked(
+                    conn, old, PENDING_LAPSE_DELTAS, "lapsed", reason)
+        except Exception as e:
+            logger.debug("_pending_lapse(%s) failed: %s", pid, e)
+
+    def pending_land(self, pid: str, outcome: str) -> None:
+        """悬事落地：按「实际结果 vs 她编的故事」的落差释放（预测误差）。
+
+        outcome ∈ better / worse / as_expected。fail-open。
+        """
+        table = {"better": PENDING_LAND_BETTER, "worse": PENDING_LAND_WORSE,
+                 "as_expected": PENDING_LAND_AS_EXPECTED}
+        deltas = table.get(outcome)
+        if not deltas:
+            return
+        try:
+            now_str = datetime.now().isoformat(timespec="seconds")
+            with _connect(self._db) as conn:
+                row = conn.execute(
+                    "SELECT title FROM pending_stories WHERE id=? AND status='open'",
+                    (pid,),
+                ).fetchone()
+                if not row:
+                    return
+                conn.execute(
+                    "UPDATE pending_stories SET status='landed', landed_ts=?,"
+                    " landed_outcome=? WHERE id=?",
+                    (now_str, outcome, pid),
+                )
+                with self._lock:
+                    old = self._get_state_unlocked()
+                    self._apply_deltas_unlocked(
+                        conn, old, deltas, "landed", f"{row[0]}·{outcome}")
+        except Exception as e:
+            logger.debug("pending_land(%s) failed: %s", pid, e)
+
+    def pending_land_spoken(self, title: str, outcome: str) -> None:
+        """LLM 侦探上报的落地入口：按 title 字重合度匹配最像的 open 悬事。
+
+        LLM 转述未必与立项 title 字面一致（「等编辑的回信」→「编辑的回信
+        有结果了」），双向子串接不住——按字符重合度（交集/立项 title 字数）
+        ≥0.6 取最高的一条，接不住就不落（不错杀）。
+        """
+        title = (title or "").strip()
+        if not title:
+            return
+        try:
+            with _connect(self._db) as conn:
+                rows = conn.execute(
+                    "SELECT id, title FROM pending_stories WHERE status='open'"
+                ).fetchall()
+            best_pid, best_score = None, 0.0
+            tset = set(title)
+            for pid, t in rows:
+                s = set(t or "")
+                if not s:
+                    continue
+                score = len(tset & s) / len(s)
+                if score > best_score:
+                    best_pid, best_score = pid, score
+            if best_pid and best_score >= 0.6:
+                self.pending_land(best_pid, outcome)
+        except Exception as e:
+            logger.debug("pending_land_spoken failed: %s", e)
+
+    def _pending_weave_story(self, pid: str, title: str) -> None:
+        """system 悬事的预期故事：让她拿自己的经历编一句「这事会咋收场」。
+
+        LLM 只编故事，参数由规则定。编不出 → unknown（不硬编）。fail-open。
+        """
+        try:
+            from deskmate.memory.llm import chat_memory, llm_available
+            if not llm_available():
+                return
+            raw = chat_memory(
+                system=("你是小桔。一件悬着的事落在你心里。拿你的经历和性子，"
+                        "用一句人话说说你觉得这事会咋收场，再给个预期方向。"
+                        "严格 JSON：{\"expectation\": \"一句话\", "
+                        "\"valence\": \"good|bad|mixed|unknown\"}"),
+                user=f"悬着的事：{title}",
+                temperature=0.5, max_tokens=120,
+            )
+            text = str(raw or "")
+            i, j = text.find("{"), text.rfind("}")
+            if i < 0 or j <= i:
+                return
+            data = json.loads(text[i:j + 1])
+            expectation = str(data.get("expectation") or "")[:120]
+            valence = str(data.get("valence") or "unknown")
+            if valence not in ("good", "bad", "mixed", "unknown"):
+                valence = "unknown"
+            if not expectation and valence == "unknown":
+                return
+            with _connect(self._db) as conn:
+                conn.execute(
+                    "UPDATE pending_stories SET expected_story=?, expected_valence=?"
+                    " WHERE id=? AND status='open'",
+                    (expectation, valence, pid),
+                )
+        except Exception as e:
+            logger.debug("_pending_weave_story failed: %s", e)
+
+    def _pending_climb_deltas(self, item: dict, now: datetime) -> dict:
+        """一件悬事的当日爬坡量（事前脾气：慢慢爬、越临近越紧）。"""
+        valence = item["expected_valence"]
+        base = PENDING_CLIMB_PER_DAY
+        # 临近效应：剩余时间 <1/4 → 系数放大
+        try:
+            if item["due_ts"] and item["created_ts"]:
+                created = datetime.fromisoformat(item["created_ts"])
+                due = datetime.fromisoformat(item["due_ts"])
+                total = (due - created).total_seconds()
+                remain = (due - now).total_seconds()
+                if total > 0 and 0 < remain < total * PENDING_DUE_NEAR_RATIO:
+                    base *= PENDING_DUE_NEAR_BOOST
+        except (ValueError, TypeError):
+            pass
+        if valence == "good":
+            return {"dopamine": base}
+        if valence == "bad":
+            return {"cortisol": base}
+        if valence == "mixed":
+            return {"dopamine": base / 2, "cortisol": base / 2}
+        return {"cortisol": base / 2}  # unknown：未知的轻微不安
+
+    def pending_tick(self, now: datetime | None = None) -> None:
+        """等待 tick（挂 decay_step 每 5min）：爬坡 + lapsed + system 对账。
+
+        每件每日最多爬一次（last_applied 日期闸），防焦虑刷屏。fail-open。
+        """
+        if not _pending_enabled():
+            return
+        now = now or datetime.now()
+        today = now.date().isoformat()
+        try:
+            with _connect(self._db) as conn:
+                rows = conn.execute(
+                    "SELECT id, kind, title, expected_valence, created_ts, due_ts,"
+                    " climbed_total, last_applied, source_ref "
+                    "FROM pending_stories WHERE status='open'"
+                ).fetchall()
+                for (pid, kind, title, valence, created_ts, due_ts,
+                     climbed, last_applied, source_ref) in rows:
+                    item = {"expected_valence": valence, "created_ts": created_ts,
+                            "due_ts": due_ts}
+                    # lapsed：7 天无结果 → 淡忘
+                    try:
+                        if (now - datetime.fromisoformat(created_ts)).days \
+                                >= PENDING_LAPSE_DAYS:
+                            self._pending_lapse(conn, pid)
+                            continue
+                    except (ValueError, TypeError):
+                        pass
+                    # 爬坡：每日每件一次，累计封顶
+                    if last_applied != today and climbed < PENDING_CLIMB_CAP:
+                        deltas = self._pending_climb_deltas(item, now)
+                        room = PENDING_CLIMB_CAP - climbed
+                        deltas = {k: min(abs(v), room) * (1 if v >= 0 else -1)
+                                  for k, v in deltas.items()}
+                        if deltas:
+                            with self._lock:
+                                old = self._get_state_unlocked()
+                                applied = self._apply_deltas_unlocked(
+                                    conn, old, deltas, "pending", title)
+                            climbed += sum(abs(v) for v in applied.values())
+                        conn.execute(
+                            "UPDATE pending_stories SET climbed_total=?, last_applied=?"
+                            " WHERE id=?",
+                            (round(climbed, 2), today, pid),
+                        )
+            # system 对账（零侵入挂接）：agency 提案卡 ↔ 台账
+            self._pending_reconcile_system()
+        except Exception as e:  # fail-open
+            logger.debug("pending_tick failed: %s", e)
+
+    def _pending_reconcile_system(self) -> None:
+        """agency 提案对账：新 pending 立项、被裁决的落地。fail-open。"""
+        try:
+            from deskmate.agency.task_log import TaskLog, TaskStatus
+            log = TaskLog(self._db.parent)
+            proposed = log.list(limit=50, status=TaskStatus.PROPOSED)
+            proposed_ids = {r.id for r in proposed}
+            with _connect(self._db) as conn:
+                tracked = conn.execute(
+                    "SELECT id, source_ref FROM pending_stories "
+                    "WHERE status='open' AND kind='system'"
+                ).fetchall()
+            # 被裁决的 → 落地（executed→好于预期 / rejected·never→差于预期）
+            for pid, ref in tracked:
+                if ref in proposed_ids:
+                    continue
+                rec = log.get(ref)
+                if rec is None or rec.status == TaskStatus.PROPOSED:
+                    continue
+                outcome = "better" if rec.status == TaskStatus.EXECUTED else "worse"
+                self.pending_land(pid, outcome)
+            # 新 pending → 立项 + 编故事
+            known = {ref for _, ref in tracked}
+            for rec in proposed:
+                if rec.id in known:
+                    continue
+                title = (rec.summary or rec.topic or rec.action_type or "一件待裁决的事")[:60]
+                pid = self.pending_create("system", title, source_ref=rec.id)
+                if pid:
+                    self._pending_weave_story(pid, title)
+        except Exception as e:
+            logger.debug("_pending_reconcile_system failed: %s", e)
+
+    # —— 脾气（当下外显）：参数 → 说话方式的映射 ——
+    def temper_state(self) -> dict:
+        """耐性值/分档/刺许可。fail-open → 耐性足（不注入）。"""
+        try:
+            s = self.get_state()
+            cortisol_off = max(0.0, float(s.get("cortisol", CORTISOL_BASE)) - CORTISOL_BASE)
+            fatigue_off = max(0.0, float(s.get("fatigue", FATIGUE_BASE)) - FATIGUE_BASE)
+            patience = 100.0 - cortisol_off * TEMPER_CORTISOL_WEIGHT \
+                - fatigue_off * TEMPER_FATIGUE_WEIGHT
+            tier = "ok"
+            if patience < TEMPER_PATIENCE_SPENT:
+                tier = "spent"
+            elif patience < TEMPER_PATIENCE_THIN:
+                tier = "thin"
+            # 刺的底气 = 安全感：心里有别扭 且 底气足
+            sting = (cortisol_off >= MOOD_OFFSETS["cortisol"][0]
+                     and float(s.get("oxytocin", 0.0)) >= OXYTOCIN_BASE)
+            foul = False
+            try:
+                since = (datetime.now() - timedelta(hours=24)).isoformat(timespec="seconds")
+                with _connect(self._db) as conn:
+                    foul = conn.execute(
+                        "SELECT COUNT(*) FROM emotion_log "
+                        "WHERE source='temper_foul' AND ts >= ?",
+                        (since,),
+                    ).fetchone()[0] > 0
+            except Exception:
+                pass
+            return {"patience": round(patience, 1), "tier": tier,
+                    "sting_allowed": sting, "recent_foul": foul}
+        except Exception:
+            return {"patience": 100.0, "tier": "ok",
+                    "sting_allowed": False, "recent_foul": False}
+
+    def note_reply_foul(self, reply_text: str) -> None:
+        """她的回复过黑名单 → temper_foul 留痕（下轮注入点破）。
+
+        挂点：update_after_turn（assistant_msg 现成）。只留痕不碰参数——
+        脏字不是情绪事件，是言行过线。fail-open。
+        """
+        try:
+            if not _temper_enabled() or not _is_abusive(reply_text or ""):
+                return
+            now_str = datetime.now().isoformat(timespec="seconds")
+            with _connect(self._db) as conn:
+                conn.execute(
+                    "INSERT INTO emotion_log (id, ts, source, deltas, description,"
+                    " conversation_id, event_type, event_summary, narrative,"
+                    " salience, origin) VALUES (?, ?, 'temper_foul', '{}', ?,"
+                    " NULL, 'experience', '话说重了', '', 0.5, 'system')",
+                    (str(uuid.uuid4()), now_str, (reply_text or "")[:80]),
+                )
+        except Exception as e:
+            logger.debug("note_reply_foul failed: %s", e)
 
     # ------------------------------------------------------------------
     # v3 §5：叙事召回（experience > observation，salience 次级键）
@@ -1160,6 +1752,11 @@ class EmotionEngine:
                 self._do_decay_step(now)
         except Exception as e:
             logger.warning("emotion decay skipped: %s", e)
+        # 二期 · 等待 tick：爬坡/lapsed/system 对账（锁外，fail-open 自包裹）
+        try:
+            self.pending_tick(now)
+        except Exception as e:
+            logger.debug("pending_tick skipped: %s", e)
 
     def _do_decay_step(self, now: datetime) -> None:
         old = self._get_state_unlocked()
