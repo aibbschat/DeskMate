@@ -15,6 +15,7 @@ import pytest
 from deskmate.perception import weather as wx_mod
 from deskmate.perception.weather import (
     WEATHER_MOOD_DELTAS,
+    WEATHER_MOOD_DESC,
     apply_weather_mood,
     condition_from_wmo,
     condition_from_wttr_text,
@@ -195,6 +196,23 @@ def test_weather_mood_event():
     assert weather_mood_event("clear") == "weather_clear"
     assert weather_mood_event("unknown") is None
     assert weather_mood_event("不存在的天气") is None
+
+
+def test_weather_rules_in_sync_with_engine():
+    """天气规则两处同源，逐字一致（2026-10-16 巡审 P1）。
+
+    EmotionEngine.EVENT_DIRECT_DELTAS 的 weather_* 与 WEATHER_MOOD_DELTAS 靠注释
+    约定「两处同改」——这是已知坑。加一条单测 import 两侧 dict 断言相等，防漂移。
+    描述表 EVENT_DIRECT_DESC 与 WEATHER_MOOD_DESC 同理。
+    """
+    from deskmate.growth.emotion_engine import EmotionEngine
+    for cond, deltas in WEATHER_MOOD_DELTAS.items():
+        key = f"weather_{cond}"
+        assert EmotionEngine.EVENT_DIRECT_DELTAS.get(key) == deltas, \
+            f"{key} 与 WEATHER_MOOD_DELTAS[{cond}] 漂移"
+    for cond, desc in WEATHER_MOOD_DESC.items():
+        assert EmotionEngine.EVENT_DIRECT_DESC.get(f"weather_{cond}") == desc, \
+            f"weather_{cond} 描述与 WEATHER_MOOD_DESC 漂移"
 
 
 # ---------------------------------------------------------------------------
