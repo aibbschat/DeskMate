@@ -116,15 +116,68 @@ def _bge_available() -> bool:
         return False
 
 
+# BGE 挂死护栏（2026-10-16 workbuddy 记账）：模型首次加载要下载 ~185MB，弱网/沙箱下
+# 会把调用线程拖死（每 5min tick 一次 = 线程泄漏慢性病）。超时一次即熔断——bigram
+# 字面兜底本来就是主闸，BGE 只是高置信补充，熔断后行为不退化。
+_BGE_TIMEOUT_S = float(os.environ.get("DESKMATE_BGE_TIMEOUT_S", "30"))
+_BGE_EMBED_DISABLED = os.environ.get("DESKMATE_BGE_EMBED", "1") == "0"  # 测试一键关
+_bge_breaker = threading.Event()   # set = 已熔断（本进程不再试 BGE）
+
+
+def _bge_breaker_tripped() -> bool:
+    """熔断是否已触发（含环境变量一键关）。"""
+    return _BGE_EMBED_DISABLED or _bge_breaker.is_set()
+
+
 def _bge_embed(texts: list) -> Optional[list]:
-    """批量 embed；异常或不可用返回 None。首次调用会加载模型（~185MB），后续复用。"""
+    """批量 embed；异常/不可用/超时/熔断返回 None。首次调用会加载模型（~185MB）。
+
+    超时：子线程跑 embed，超 _BGE_TIMEOUT_S 未归 → 熔断（本进程不再试），返回 None。
+    防的是「每 5min tick 泄漏一个挂死线程」的慢性病——bigram 主闸仍在，行为不退化。
+    """
+    if _bge_breaker_tripped():
+        return None
     try:
         from deskmate.memory import local_embed
         if not local_embed.available():
             return None
-        return local_embed.embed(texts)
     except Exception:  # noqa: BLE001
         return None
+
+    box: dict = {}
+
+    def _run() -> None:
+        try:
+            from deskmate.memory import local_embed
+            box["emb"] = local_embed.embed(texts)
+        except Exception:  # noqa: BLE001
+            box["emb"] = None
+
+    t = threading.Thread(target=_run, daemon=True, name="bge-embed")
+    t.start()
+    t.join(_BGE_TIMEOUT_S)
+    if t.is_alive():
+        _bge_breaker.set()
+        logger.warning(
+            "BGE embed 超时（%.0fs），本进程熔断 BGE，回落 bigram 字面兜底",
+            _BGE_TIMEOUT_S,
+        )
+        return None
+    return box.get("emb")
+
+
+def _bge_reset_for_test() -> None:
+    """清熔断态（**仅供测试**：一个用例熔断后不许污染同进程其他用例）。"""
+    _bge_breaker.clear()
+
+
+def bge_breaker_status() -> dict:
+    """熔断状态诊断（供 MCP/排查）。"""
+    return {
+        "disabled_by_env": _BGE_EMBED_DISABLED,
+        "tripped": _bge_breaker.is_set(),
+        "timeout_s": _BGE_TIMEOUT_S,
+    }
 
 
 def _cosine(a, b) -> float:

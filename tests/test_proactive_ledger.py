@@ -57,6 +57,22 @@ def _fresh_base(node: str) -> Path:
     return base
 
 
+@pytest.fixture(autouse=True)
+def _no_bge(monkeypatch):
+    """一刀切关 BGE（2026-10-16 根治「没网全量回归卡死」）。
+
+    BGE 首次加载要下载 ~185MB 模型，沙箱/弱网下挂死调用线程。bigram 字面兜底
+    本来就是主闸（设计 §11.4②），关掉 BGE 所有断言照常成立。每个用例前清熔断态，
+    防止一个用例熔断污染同进程其他用例。
+    """
+    from deskmate.proactivity import ledger as _ledger
+
+    monkeypatch.setattr(_ledger, "_bge_available", lambda: False)
+    _ledger._bge_reset_for_test()
+    yield
+    _ledger._bge_reset_for_test()
+
+
 def _store(db: str) -> SQLiteSyncStore:
     return SQLiteSyncStore(sqlite3.connect(db, check_same_thread=False), "proactive_ledger")
 
@@ -942,6 +958,60 @@ def test_relevance_bigram_primary_bge_high_confidence():
     # 完全无关（天气）→ 0
     score_unrelated = _relevance_score(item_anchor, "今天天气真好适合出门散步")
     assert score_unrelated == 0.0, "完全无关应判 0"
+
+
+# ---------------------------------------------------------------------------
+# 10b. BGE 挂死护栏（2026-10-16 workbuddy 记账：超时熔断 + 一键关）
+# ---------------------------------------------------------------------------
+def test_bge_embed_timeout_trips_breaker(monkeypatch):
+    """embed 超时 → 熔断（本进程不再试）+ 返回 None（bigram 主闸接管，行为不退化）。"""
+    import threading
+    from deskmate.proactivity import ledger as _ledger
+
+    monkeypatch.setattr(_ledger, "_bge_available", lambda: True)
+    monkeypatch.setattr(_ledger, "_BGE_TIMEOUT_S", 0.05)  # 缩短超时，不等 30s
+
+    import deskmate.memory.local_embed as _le
+    started = threading.Event()
+
+    def _hang(texts):
+        started.set()
+        threading.Event().wait(10)  # 挂死（daemon 线程，测试结束自动清）
+        return None
+
+    monkeypatch.setattr(_le, "embed", _hang)
+    _ledger._bge_reset_for_test()
+    assert _ledger._bge_embed(["a", "b"]) is None
+    assert started.is_set(), "确实调到了 embed"
+    assert _ledger._bge_breaker.is_set(), "超时后应熔断"
+    # 熔断后再调：直接 None，不再进 embed
+    started.clear()
+    assert _ledger._bge_embed(["a", "b"]) is None
+    assert not started.is_set(), "熔断后不该再碰 embed"
+
+
+def test_bge_embed_env_disabled(monkeypatch):
+    """DESKMATE_BGE_EMBED=0 → 一刀切关（测试/弱网环境用）。"""
+    from deskmate.proactivity import ledger as _ledger
+
+    monkeypatch.setattr(_ledger, "_BGE_EMBED_DISABLED", True)
+    monkeypatch.setattr(_ledger, "_bge_available", lambda: True)
+    assert _ledger._bge_embed(["a", "b"]) is None
+    assert _ledger.bge_breaker_status()["disabled_by_env"] is True
+
+
+def test_bge_embed_normal_path_unaffected(monkeypatch):
+    """正常路径（BGE 可用且不超时）→ 返回向量，不熔断。"""
+    from deskmate.proactivity import ledger as _ledger
+
+    monkeypatch.setattr(_ledger, "_bge_available", lambda: True)
+    monkeypatch.setattr(_ledger, "_BGE_TIMEOUT_S", 5)
+    import deskmate.memory.local_embed as _le
+    monkeypatch.setattr(_le, "embed", lambda texts: [[0.1] * 4 for _ in texts])
+    _ledger._bge_reset_for_test()
+    out = _ledger._bge_embed(["x", "y"])
+    assert out == [[0.1] * 4, [0.1] * 4]
+    assert not _ledger._bge_breaker.is_set()
 
 
 # ---------------------------------------------------------------------------
