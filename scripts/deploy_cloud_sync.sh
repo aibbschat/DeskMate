@@ -285,8 +285,12 @@ GROWTH_MODULES=(
 # 「报告」不「传输」（manager.py 同款教训），实测云端 /opt/openworker/deskmate/perception/
 # 根本没有 weather.py ⇒ 那处 import 一直 ImportError 被 fail-open 吞掉 ⇒ 云端小桔
 # 「没有天气」且不报错。目标 /opt/openworker/deskmate/perception/。
+# ⚠️ clock.py 同批补（10-16 实测同类漏网）：manager.py 对话上下文「情绪块之后天气块
+# 之前」挂 clock_context，云端 manager.py 是新码但 clock.py 从未上云 ⇒ 注入点
+# ImportError 被 fail-open 吞 ⇒ 云端她不知道现在几点且不报错（对账「仅本地有 1」抓到的）。
 PERCEPTION_MODULES=(
   "deskmate/perception/weather.py"
+  "deskmate/perception/clock.py"
 )
 
 # 办公技能工具（2026-10-15 P1 原子替换+恢复副本）：office_safe_deliver.py 被
