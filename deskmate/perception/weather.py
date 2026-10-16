@@ -26,14 +26,18 @@
 - ``DESKMATE_WEATHER_LAT/LON`` 手动覆盖坐标（配合 LOCATION 用）
 - ``DESKMATE_WEATHER_TTL_MIN`` 天气缓存新鲜期分钟数（默认 30）
 
-位置解析链（2026-10-16 萧哥拍板「跟着 IP 走」）：手动覆盖 → IP 定位缓存（12h）→
-ipapi.co 刷新 → 退回宁波（家）。定位缓存与天气缓存同文件，陈旧定位照用（陈旧 > 没有）。
+位置解析链（2026-10-16 萧哥拍板「跟着 IP 走」，同日按实测重排）：手动覆盖 → IP 定位
+缓存（12h）→ 定位源链刷新（ipip.net/cip.cc 国内文本源，实测国内数据准：湖南出口
+准确定为张家界；ip-api.com 免费库数据旧会错标长沙）→ 退回宁波（家）。国内文本源
+只给城市名不给坐标：命中后用 open-meteo geocoding 补坐标。定位缓存与天气缓存同
+文件，陈旧定位照用（陈旧 > 没有）。
 """
 from __future__ import annotations
 
 import json
 import logging
 import os
+import re
 import time
 import urllib.parse
 from datetime import date, datetime
@@ -109,14 +113,8 @@ _DEFAULT_LAT, _DEFAULT_LON = 29.87, 121.55   # 宁波（她和萧哥的家，全
 _HTTP_TIMEOUT = 8.0
 _IP_GEO_TIMEOUT = 5.0          # IP 定位超时（比天气更短：位置是手段不是目的）
 _IP_GEO_TTL = 12 * 3600.0      # 定位缓存新鲜期（位置是慢变量，同城移动无感）
-# IP 定位源链（顺序=优先级）。2026-10-16 实测：ipapi.co 对无 JS 客户端一律返回
-# Cloudflare managed challenge（HTTP 403 HTML）⇒ 永远解析不出 JSON ⇒ 定位静默
-# 失效走宁波兜底——萧哥实测「她识别不出城市、天气还是宁波」的根因。
-# ip-api.com 首选：免费免 key、lang=zh-CN 中文城市名、含经纬度。备案两条：
-# ① 免费层仅 http（不传任何敏感信息，仅按出口 IP 定个位；45 req/min，
-#   我们 12h 才打一次无感）；② 它的 city 可能是区/县级（如长沙「青园」而非
-#   「长沙」）——天气双源里 wttr 按城市名查，查不到 open-meteo 按坐标兜底。
-# ipapi.co 保留为次选（HTTPS；万一哪天 CF 放过无 JS 客户端）。
+# IP 定位源链的定义与选型依据见下方 _IP_GEO_SOURCES 注释（2026-10-16 按实测重排：
+# 国内文本源 ipip.net/cip.cc 数据准，ip-api.com 免费库数据旧会错标城市）。
 
 
 # ---------------------------------------------------------------------------
@@ -153,8 +151,12 @@ def _location_of(cache: dict) -> str:
     return city or _DEFAULT_LOCATION
 
 
-def _coords() -> tuple[float, float]:
-    """坐标纯读取：手动 LAT/LON → 定位缓存 → 宁波兜底。不触发网络。"""
+def _coords() -> tuple[float | None, float | None]:
+    """坐标纯读取：手动 LAT/LON → 定位缓存；都没有 → (None, None)。不触发网络。
+
+    故意不兜宁波：兜了等于把「不知道坐标」伪装成「在宁波」，open-meteo 会拿
+    宁波坐标配外地城市名查天气——错得比没有更糟。
+    """
     lat_env, lon_env = os.environ.get("DESKMATE_WEATHER_LAT"), os.environ.get("DESKMATE_WEATHER_LON")
     if lat_env and lon_env:
         try:
@@ -166,10 +168,10 @@ def _coords() -> tuple[float, float]:
         lat, lon = float(geo.get("lat")), float(geo.get("lon"))
         return lat, lon
     except (TypeError, ValueError):
-        return _DEFAULT_LAT, _DEFAULT_LON
+        return None, None
 
 
-def _coords_of(cache: dict) -> tuple[float, float]:
+def _coords_of(cache: dict) -> tuple[float | None, float | None]:
     """同 _coords，但从给定 cache dict 取。"""
     lat_env, lon_env = os.environ.get("DESKMATE_WEATHER_LAT"), os.environ.get("DESKMATE_WEATHER_LON")
     if lat_env and lon_env:
@@ -177,12 +179,7 @@ def _coords_of(cache: dict) -> tuple[float, float]:
             return float(lat_env), float(lon_env)
         except (TypeError, ValueError):
             pass
-    geo = cache.get("geo") or {}
-    try:
-        lat, lon = float(geo.get("lat")), float(geo.get("lon"))
-        return lat, lon
-    except (TypeError, ValueError):
-        return _DEFAULT_LAT, _DEFAULT_LON
+    return _geo_coords(cache.get("geo") or {})
 
 
 def _ttl_sec() -> float:
@@ -323,6 +320,21 @@ def _http_get_json(url: str, timeout: float | None = None) -> dict | None:
         return None
 
 
+def _http_get_text(url: str, timeout: float | None = None) -> str | None:
+    """同 _http_get_json 但取文本（ipip.net / cip.cc 返回纯文本而非 JSON）。"""
+    try:
+        import httpx
+
+        with httpx.Client(timeout=timeout or _HTTP_TIMEOUT, follow_redirects=True) as cli:
+            resp = cli.get(url, headers={"User-Agent": "curl/8.0 (deskmate-weather)"})
+            if resp.status_code != 200:
+                return None
+            return resp.text
+    except Exception:
+        logger.debug("weather http(text) failed: %s", url, exc_info=True)
+        return None
+
+
 def _fetch_wttr(location: str | None = None) -> dict | None:
     """wttr.in（免密钥，中文城市名）。
 
@@ -387,6 +399,8 @@ def _fetch_open_meteo(
     """Open-Meteo（免密钥，WMO 码，需坐标）。坐标/城市由 fetch_weather 单点解析传入。"""
     if lat is None or lon is None:
         lat, lon = _coords()
+    if lat is None or lon is None:
+        return None  # 没坐标不硬撑：城市名直查归 wttr，拿错坐标查天气比不查更糟
     if location is None:
         location = _location()
     url = (
@@ -444,7 +458,7 @@ def _parse_ip_api_com(data: dict) -> dict | None:
 
 
 def _parse_ipapi_co(data: dict) -> dict | None:
-    """ipapi.co 响应 → {city, lat, lon}（city 英文，备案见上）。"""
+    """ipapi.co 响应 → {city, lat, lon}（city 英文；该源常被 Cloudflare 拦，垫底用）。"""
     try:
         city = str(data.get("city") or "").strip()
         if not city:
@@ -454,33 +468,104 @@ def _parse_ipapi_co(data: dict) -> dict | None:
         return None
 
 
-_IP_GEO_SOURCES: tuple[tuple[str, object], ...] = (
-    ("http://ip-api.com/json/?lang=zh-CN", _parse_ip_api_com),
-    ("https://ipapi.co/json/", _parse_ipapi_co),
+# 运营商后缀词（IP 库文本「中国 湖南 张家界 电信」尾巴上的，非地名）
+_ISP_WORDS = frozenset({
+    "电信", "联通", "移动", "铁通", "网通", "教育网", "广电", "电信DNS", "长城宽带", "鹏博士",
+})
+
+
+def _city_from_addr(addr: str) -> dict | None:
+    """IP 库地址文本 → {'city': 市级名}（无坐标，由调用方 geocode 补）。
+
+    「中国 湖南 张家界 电信」→ 张家界；「中国 上海 上海 电信」→ 上海（直辖市
+    省/市同名，取末段仍对）；「中国 内蒙古 呼和浩特」→ 呼和浩特。
+    """
+    parts = [p for p in re.split(r"\s+", addr.strip()) if p and p not in _ISP_WORDS]
+    if parts and parts[0] in ("中国",):
+        parts = parts[1:]
+    city = parts[-1].strip() if parts else ""
+    return {"city": city} if city else None
+
+
+def _parse_ipip_net(text: str) -> dict | None:
+    """ipip.net 文本：'当前 IP：x 来自于：中国 湖南 张家界 电信' → {city}。"""
+    m = re.search(r"来自于：\s*(.+)", text or "")
+    return _city_from_addr(m.group(1)) if m else None
+
+
+def _parse_cip_cc(text: str) -> dict | None:
+    """cip.cc 多行文本：'地址\\t: 中国 湖南 张家界' → {city}。"""
+    m = re.search(r"地址\s*[:：]\s*(.+)", text or "")
+    return _city_from_addr(m.group(1)) if m else None
+
+
+def _geocode_city(city: str) -> tuple[float, float] | None:
+    """中文城市名 → (lat, lon)（open-meteo geocoding，免费免 key，支持中文）。"""
+    url = (
+        "https://geocoding-api.open-meteo.com/v1/search"
+        f"?name={urllib.parse.quote(city)}&language=zh&count=1&format=json"
+    )
+    data = _http_get_json(url, timeout=_IP_GEO_TIMEOUT)
+    try:
+        first = (data or {}).get("results") or [{}]
+        return float(first[0]["latitude"]), float(first[0]["longitude"])
+    except (AttributeError, IndexError, KeyError, TypeError, ValueError):
+        return None
+
+
+# IP 定位源链（顺序=优先级；kind = text/json 决定取响应的方式）。
+# 2026-10-16 重排依据（萧哥实测「识别不出城市/还在宁波」根因链）：
+# ① ipapi.co 对无 JS 客户端一律 Cloudflare managed challenge（403 HTML）⇒ 静默失效；
+# ② ip-api.com 免费库数据旧：同一湖南出口被错标「长沙青园」（萧哥实际在张家界）；
+# ③ ipip.net / cip.cc 国内库数据新，实测同 IP 准确定位「张家界」⇒ 升首选。
+# 备案：国内文本源只给城市名不给坐标，命中后立即 _geocode_city 补；ip-api.com
+# 免费层仅 http；ipapi.co 保留垫底（HTTPS，万一哪天 CF 放过无 JS 客户端）。
+_IP_GEO_SOURCES: tuple[tuple[str, str, object], ...] = (
+    ("text", "https://myip.ipip.net", _parse_ipip_net),
+    ("text", "https://cip.cc", _parse_cip_cc),
+    ("json", "http://ip-api.com/json/?lang=zh-CN", _parse_ip_api_com),
+    ("json", "https://ipapi.co/json/", _parse_ipapi_co),
 )
 
 
 def _fetch_ip_geo() -> dict | None:
-    """IP 定位源链：ip-api.com → ipapi.co；全失败 → None（绝不抛）。
+    """IP 定位源链（ipip.net → cip.cc → ip-api.com → ipapi.co）；全失败 → None。
 
-    单源挂（被墙/被 Cloudflare 拦/限流）自动落下一源：位置是手段不是目的，
-    但「唯一源静默失效」曾让定位整体退回宁波兜底且不报错（10-16 实测根因）。
+    单源挂（被墙/被 Cloudflare 拦/限流/数据旧）自动落下一源——「唯一源静默
+    失效」曾让定位整体退回宁波兜底且不报错（10-16 实测根因）。国内文本源
+    只给城市名：命中后立即补 geocode，补不到保留 city-only（lat/lon=None，
+    wttr 直查城市名可用，open-meteo 无坐标跳过——不准比没有更糟）。
     """
-    for url, parse in _IP_GEO_SOURCES:
-        data = _http_get_json(url, timeout=_IP_GEO_TIMEOUT)
-        if not isinstance(data, dict):
+    for kind, url, parse in _IP_GEO_SOURCES:
+        if kind == "text":
+            raw: object = _http_get_text(url, timeout=_IP_GEO_TIMEOUT)
+        else:
+            raw = _http_get_json(url, timeout=_IP_GEO_TIMEOUT)
+        geo = parse(raw) if isinstance(raw, (dict, str)) else None
+        if not geo:
             continue
-        geo = parse(data)
-        if geo:
-            return geo
+        if geo.get("lat") is None:
+            coords = _geocode_city(geo["city"])
+            if coords:
+                geo = {**geo, "lat": coords[0], "lon": coords[1]}
+        return geo
     return None
 
 
-def _resolve_location(base_dir: Path | str | None, cache: dict) -> tuple[str, float, float, dict]:
+def _geo_coords(geo: dict) -> tuple[float | None, float | None]:
+    """定位 dict → (lat, lon)；缺坐标/不是数 → (None, None)（city-only 定位合法）。"""
+    try:
+        return float(geo["lat"]), float(geo["lon"])
+    except (KeyError, TypeError, ValueError):
+        return None, None
+
+
+def _resolve_location(base_dir: Path | str | None, cache: dict) -> tuple[str, float | None, float | None, dict]:
     """位置解析单点：手动覆盖 → 缓存新鲜 → 联网刷新 → 缓存陈旧 → 宁波兜底。
 
     只在 fetch_weather 刷新天气时调用（天气 TTL 30min，定位 TTL 12h——
-    定位网打得更少）。返回 (城市, 纬, 经, 可能更新过的 cache)。
+    定位网打得更少）。返回 (城市, 纬|None, 经|None, 可能更新过的 cache)；
+    坐标为 None 表示「只知城市名」（wttr 直查城市名可用，open-meteo 跳过）。
     """
     lat_env = os.environ.get("DESKMATE_WEATHER_LAT")
     lon_env = os.environ.get("DESKMATE_WEATHER_LON")
@@ -499,17 +584,20 @@ def _resolve_location(base_dir: Path | str | None, cache: dict) -> tuple[str, fl
     geo = cache.get("geo") or {}
     geo_ts = float(geo.get("ts") or 0.0)
     if geo.get("city") and time.time() - geo_ts < _IP_GEO_TTL:
-        return str(geo["city"]), float(geo["lat"]), float(geo["lon"]), cache
+        lat, lon = _geo_coords(geo)
+        return str(geo["city"]), lat, lon, cache
 
     fresh = _fetch_ip_geo()
     if fresh:
         cache = dict(cache)
         cache["geo"] = {**fresh, "ts": time.time()}
         save_cache(base_dir, cache)
-        return fresh["city"], fresh["lat"], fresh["lon"], cache
+        lat, lon = _geo_coords(fresh)
+        return fresh["city"], lat, lon, cache
 
     if geo.get("city"):   # 陈旧定位 > 没有定位（跨城当天仍准）
-        return str(geo["city"]), float(geo["lat"]), float(geo["lon"]), cache
+        lat, lon = _geo_coords(geo)
+        return str(geo["city"]), lat, lon, cache
     return _DEFAULT_LOCATION, _DEFAULT_LAT, _DEFAULT_LON, cache
 
 

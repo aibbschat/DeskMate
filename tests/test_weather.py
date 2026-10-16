@@ -63,14 +63,21 @@ OPEN_METEO = {
 }
 
 # IP 定位源链样本（2026-10-16 真机实测；ipapi.co 为被 CF 拦之前的正常形态）
-IP_API_COM_J1 = {  # 首选源：status=success + 中文城市 + lat/lon
+IP_API_COM_J1 = {  # 备选 JSON 源：status=success + 中文城市 + lat/lon（免费库数据旧）
     "status": "success", "country": "中国", "regionName": "湖南",
     "city": "青园", "lat": 28.1142, "lon": 112.983,
 }
-IPAPI_CO_J1 = {  # 次选源：city 英文 + latitude/longitude
+IPAPI_CO_J1 = {  # 垫底 JSON 源：city 英文 + latitude/longitude
     "ip": "118.254.98.222", "city": "Shaoxing",
     "latitude": 30.0, "longitude": 120.5,
 }
+# 国内文本源（2026-10-16 实测：同一湖南出口，国内库准确定位张家界，ip-api.com 错标青园）
+IPIP_NET_TEXT = "当前 IP：118.254.98.222  来自于：中国 湖南 张家界  电信\n"
+CIP_CC_TEXT = "IP\t: 118.254.98.222\n地址\t: 中国 湖南 张家界\n运营商\t: 电信\n"
+GEOCODE_J1 = {"results": [  # open-meteo geocoding 中文「张家界」（补坐标用）
+    {"name": "张家界", "latitude": 29.12944, "longitude": 110.47833,
+     "country": "中国", "admin1": "湖南"},
+]}
 
 # base fixture 会把 _fetch_ip_geo 一刀切关；源链用例（test_geo_source_*）要放回真身
 _REAL_FETCH_IP_GEO = wx_mod._fetch_ip_geo
@@ -94,6 +101,10 @@ def base(tmp_path, monkeypatch):
     )
     # 默认「无网 → IP 定位失败」：各用例按需覆盖成具体城市（见 test_geo_*）
     monkeypatch.setattr(wx_mod, "_fetch_ip_geo", lambda: None)
+    monkeypatch.setattr(
+        wx_mod, "_http_get_text",
+        lambda url: (_ for _ in ()).throw(AssertionError(f"网络(text)未 patch: {url}")),
+    )
     return tmp_path
 
 
@@ -395,61 +406,126 @@ def test_geo_ip_response_garbage_fail_open(base, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# IP 定位源链（2026-10-16 根治：ipapi.co 被 Cloudflare managed challenge 拦，
-# 单源静默失效 → 定位整体退回宁波兜底且不报错——萧哥实测「识别不出来」根因）
+# IP 定位源链（2026-10-16 两轮根治：① ipapi.co 被 CF managed challenge 拦 →
+# 单源静默失效；② ip-api.com 免费库数据旧，湖南出口错标「长沙青园」——
+# 萧哥实际在张家界。终态：国内文本源 ipip.net/cip.cc 首选，geocoding 补坐标）
 # ---------------------------------------------------------------------------
-def test_geo_source_ip_api_com_chinese_city(base, monkeypatch):
-    """首选源 ip-api.com：中文城市名 + 经纬度解析，定位缓存落盘。"""
+def test_parse_ipip_net_text():
+    """ipip.net 文本样本 → 市级城市名（真机实测格式）。"""
+    assert wx_mod._parse_ipip_net(IPIP_NET_TEXT) == {"city": "张家界"}
+    assert wx_mod._parse_ipip_net("garbage 无来自于") is None
+
+
+def test_parse_cip_cc_text():
+    """cip.cc 多行文本样本 → 市级城市名。"""
+    assert wx_mod._parse_cip_cc(CIP_CC_TEXT) == {"city": "张家界"}
+    assert wx_mod._parse_cip_cc("no address line") is None
+
+
+def test_city_from_addr_variants():
+    """地址文本切城市名：直辖市省/市同名、自治区多段、运营商后缀都扛住。"""
+    parse = wx_mod._city_from_addr
+    assert parse("中国 上海 上海 电信") == {"city": "上海"}
+    assert parse("中国 内蒙古 呼和浩特 联通") == {"city": "呼和浩特"}
+    assert parse("中国 湖南 张家界 电信") == {"city": "张家界"}
+    assert parse("   ") is None
+    assert parse("中国 电信") is None
+
+
+def test_geo_source_ipip_net_hits_with_geocode(base, monkeypatch):
+    """首选源 ipip.net 文本命中（张家界）→ geocoding 补坐标 → 缓存落盘带坐标。"""
     monkeypatch.setattr(wx_mod, "_fetch_ip_geo", _REAL_FETCH_IP_GEO)
-    monkeypatch.setattr(wx_mod, "_http_get_json", lambda url, timeout=None: IP_API_COM_J1)
+    monkeypatch.setattr(wx_mod, "_http_get_text", lambda url, timeout=None: IPIP_NET_TEXT)
+    monkeypatch.setattr(
+        wx_mod, "_http_get_json",
+        lambda url, timeout=None: GEOCODE_J1 if "geocoding-api" in url
+        else (_ for _ in ()).throw(AssertionError(f"意外 JSON 请求: {url}")),
+    )
+    city, lat, lon, _ = wx_mod._resolve_location(base, {})
+    assert (city, lat, lon) == ("张家界", 29.12944, 110.47833)
+    geo = load_cache(base)["geo"]
+    assert geo["city"] == "张家界" and geo["lat"] == 29.12944
+
+
+def test_geo_source_cip_cc_backup_when_ipip_down(base, monkeypatch):
+    """ipip.net 挂 → 落 cip.cc（国内源互备）→ geocode 补坐标。"""
+    monkeypatch.setattr(wx_mod, "_fetch_ip_geo", _REAL_FETCH_IP_GEO)
+    hits: list[str] = []
+
+    def fake_text(url, timeout=None):
+        hits.append(url)
+        return None if "ipip.net" in url else CIP_CC_TEXT
+
+    monkeypatch.setattr(wx_mod, "_http_get_text", fake_text)
+    monkeypatch.setattr(wx_mod, "_http_get_json", lambda url, timeout=None: GEOCODE_J1)
+    city, lat, lon, _ = wx_mod._resolve_location(base, {})
+    assert (city, lat, lon) == ("张家界", 29.12944, 110.47833)
+    assert len(hits) == 2  # ipip 挂了才打 cip.cc
+
+
+def test_geo_source_city_only_when_geocode_fails(base, monkeypatch):
+    """国内源只给城市名 + geocode 挂 → city-only（lat/lon=None）：
+    wttr 直查城市名可用；open-meteo 无坐标跳过（不错配坐标）。"""
+    monkeypatch.setattr(wx_mod, "_fetch_ip_geo", _REAL_FETCH_IP_GEO)
+    monkeypatch.setattr(wx_mod, "_http_get_text", lambda url, timeout=None: IPIP_NET_TEXT)
+    monkeypatch.setattr(wx_mod, "_http_get_json", lambda url, timeout=None: None)  # geocode 挂
+    city, lat, lon, _ = wx_mod._resolve_location(base, {})
+    assert (city, lat, lon) == ("张家界", None, None)
+
+    seen: dict = {}
+
+    def fake_wttr(location=None):
+        seen["wttr"] = location
+        return None  # wttr 也挂，逼后级
+
+    monkeypatch.setattr(wx_mod, "_fetch_wttr", fake_wttr)
+    # 不 patch open-meteo：真身收 (None, None, "张家界") 应内部拒绝且不打网
+    # （直调用例 test_fetch_open_meteo_no_coords_returns_none 单独锁该行为）
+    wx = fetch_weather(base, force=True)
+    assert seen["wttr"] == "张家界"
+    assert wx is None  # 两源都挂 → None；open-meteo 没有拿错坐标硬撑
+
+
+def test_fetch_open_meteo_no_coords_returns_none(base, monkeypatch):
+    """无坐标直调 open-meteo → None（不拿缓存/宁波坐标硬撑）。"""
+    assert wx_mod._fetch_open_meteo(None, None, "张家界") is None
+    assert wx_mod._fetch_open_meteo(location="张家界") is None
+
+
+def test_geo_source_json_fallback_when_text_sources_fail(base, monkeypatch):
+    """两个国内文本源全挂 → 落 ip-api.com（JSON 自带坐标，虽然数据旧）。"""
+    monkeypatch.setattr(wx_mod, "_fetch_ip_geo", _REAL_FETCH_IP_GEO)
+    monkeypatch.setattr(wx_mod, "_http_get_text", lambda url, timeout=None: None)
+    hits: list[str] = []
+
+    def fake_json(url, timeout=None):
+        hits.append(url)
+        return IP_API_COM_J1 if "ip-api.com" in url else None
+
+    monkeypatch.setattr(wx_mod, "_http_get_json", fake_json)
     city, lat, lon, _ = wx_mod._resolve_location(base, {})
     assert (city, lat, lon) == ("青园", 28.1142, 112.983)
-    assert load_cache(base)["geo"]["city"] == "青园"
-
-
-def test_geo_source_first_blocked_falls_to_second(base, monkeypatch):
-    """首源被拦（403 → None）→ 自动落次源 ipapi.co；次源命中即停。"""
-    monkeypatch.setattr(wx_mod, "_fetch_ip_geo", _REAL_FETCH_IP_GEO)
-    hits: list[str] = []
-
-    def fake_get(url, timeout=None):
-        hits.append(url)
-        return None if "ip-api.com" in url else IPAPI_CO_J1
-
-    monkeypatch.setattr(wx_mod, "_http_get_json", fake_get)
-    city, lat, lon, _ = wx_mod._resolve_location(base, {})
-    assert (city, lat, lon) == ("Shaoxing", 30.0, 120.5)
-    assert len(hits) == 2  # 首源失败才打次源，命中即停
-
-
-def test_geo_source_first_status_fail_falls_to_second(base, monkeypatch):
-    """首源能通但拒绝（status=fail，如限流）→ 同样落次源。"""
-    monkeypatch.setattr(wx_mod, "_fetch_ip_geo", _REAL_FETCH_IP_GEO)
-    hits: list[str] = []
-
-    def fake_get(url, timeout=None):
-        hits.append(url)
-        return {"status": "fail", "message": "rate limited"} if "ip-api.com" in url else IPAPI_CO_J1
-
-    monkeypatch.setattr(wx_mod, "_http_get_json", fake_get)
-    city, lat, lon, _ = wx_mod._resolve_location(base, {})
-    assert (city, lat, lon) == ("Shaoxing", 30.0, 120.5)
-    assert len(hits) == 2
+    assert len(hits) == 1  # ip-api.com 命中即停，不打 ipapi.co
 
 
 def test_geo_source_all_blocked_falls_back_to_ningbo(base, monkeypatch):
-    """源链全挂 → 宁波兜底（fail-open 不变；两个源都试过）。"""
+    """源链全挂（两文本 + 两 JSON 都失败）→ 宁波兜底（fail-open 不变）。"""
     monkeypatch.setattr(wx_mod, "_fetch_ip_geo", _REAL_FETCH_IP_GEO)
     hits: list[str] = []
 
-    def fake_get(url, timeout=None):
+    def fake_text(url, timeout=None):
         hits.append(url)
         return None
 
-    monkeypatch.setattr(wx_mod, "_http_get_json", fake_get)
+    def fake_json(url, timeout=None):
+        hits.append(url)
+        return None
+
+    monkeypatch.setattr(wx_mod, "_http_get_text", fake_text)
+    monkeypatch.setattr(wx_mod, "_http_get_json", fake_json)
     city, lat, lon, _ = wx_mod._resolve_location(base, {})
     assert (city, lat, lon) == ("宁波", 29.87, 121.55)
-    assert len(hits) == 2
+    assert len(hits) == 4  # 四个源都试过才兜底
 
 
 def test_master_switch_off(base, monkeypatch):
