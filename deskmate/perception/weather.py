@@ -109,7 +109,14 @@ _DEFAULT_LAT, _DEFAULT_LON = 29.87, 121.55   # 宁波（她和萧哥的家，全
 _HTTP_TIMEOUT = 8.0
 _IP_GEO_TIMEOUT = 5.0          # IP 定位超时（比天气更短：位置是手段不是目的）
 _IP_GEO_TTL = 12 * 3600.0      # 定位缓存新鲜期（位置是慢变量，同城移动无感）
-_IP_GEO_URL = "https://ipapi.co/json/"   # 免密钥 HTTPS，1k 次/日（12h 一次≈2 次/日）
+# IP 定位源链（顺序=优先级）。2026-10-16 实测：ipapi.co 对无 JS 客户端一律返回
+# Cloudflare managed challenge（HTTP 403 HTML）⇒ 永远解析不出 JSON ⇒ 定位静默
+# 失效走宁波兜底——萧哥实测「她识别不出城市、天气还是宁波」的根因。
+# ip-api.com 首选：免费免 key、lang=zh-CN 中文城市名、含经纬度。备案两条：
+# ① 免费层仅 http（不传任何敏感信息，仅按出口 IP 定个位；45 req/min，
+#   我们 12h 才打一次无感）；② 它的 city 可能是区/县级（如长沙「青园」而非
+#   「长沙」）——天气双源里 wttr 按城市名查，查不到 open-meteo 按坐标兜底。
+# ipapi.co 保留为次选（HTTPS；万一哪天 CF 放过无 JS 客户端）。
 
 
 # ---------------------------------------------------------------------------
@@ -423,23 +430,50 @@ def _fetch_open_meteo(
 # ---------------------------------------------------------------------------
 # IP 定位（2026-10-16 萧哥拍板「跟着 IP 走」：他人不在宁波，她嘴里的天气得跟他走）
 # ---------------------------------------------------------------------------
-def _fetch_ip_geo() -> dict | None:
-    """ipapi.co → {city, lat, lon}；失败/字段不全 → None（绝不抛）。
-
-    返回的城市名是英文的（如 Shaoxing）——备案：真聊听着别扭时再想辙。
-    """
-    data = _http_get_json(_IP_GEO_URL, timeout=_IP_GEO_TIMEOUT)
-    if not isinstance(data, dict):
-        return None
+def _parse_ip_api_com(data: dict) -> dict | None:
+    """ip-api.com 响应 → {city, lat, lon}；status 非 success/字段缺 → None。"""
     try:
+        if str(data.get("status") or "") != "success":
+            return None
         city = str(data.get("city") or "").strip()
-        lat = float(data.get("latitude"))
-        lon = float(data.get("longitude"))
         if not city:
             return None
-        return {"city": city, "lat": lat, "lon": lon}
-    except (TypeError, ValueError):
+        return {"city": city, "lat": float(data["lat"]), "lon": float(data["lon"])}
+    except (KeyError, TypeError, ValueError):
         return None
+
+
+def _parse_ipapi_co(data: dict) -> dict | None:
+    """ipapi.co 响应 → {city, lat, lon}（city 英文，备案见上）。"""
+    try:
+        city = str(data.get("city") or "").strip()
+        if not city:
+            return None
+        return {"city": city, "lat": float(data["latitude"]), "lon": float(data["longitude"])}
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+_IP_GEO_SOURCES: tuple[tuple[str, object], ...] = (
+    ("http://ip-api.com/json/?lang=zh-CN", _parse_ip_api_com),
+    ("https://ipapi.co/json/", _parse_ipapi_co),
+)
+
+
+def _fetch_ip_geo() -> dict | None:
+    """IP 定位源链：ip-api.com → ipapi.co；全失败 → None（绝不抛）。
+
+    单源挂（被墙/被 Cloudflare 拦/限流）自动落下一源：位置是手段不是目的，
+    但「唯一源静默失效」曾让定位整体退回宁波兜底且不报错（10-16 实测根因）。
+    """
+    for url, parse in _IP_GEO_SOURCES:
+        data = _http_get_json(url, timeout=_IP_GEO_TIMEOUT)
+        if not isinstance(data, dict):
+            continue
+        geo = parse(data)
+        if geo:
+            return geo
+    return None
 
 
 def _resolve_location(base_dir: Path | str | None, cache: dict) -> tuple[str, float, float, dict]:

@@ -62,6 +62,19 @@ OPEN_METEO = {
     },
 }
 
+# IP 定位源链样本（2026-10-16 真机实测；ipapi.co 为被 CF 拦之前的正常形态）
+IP_API_COM_J1 = {  # 首选源：status=success + 中文城市 + lat/lon
+    "status": "success", "country": "中国", "regionName": "湖南",
+    "city": "青园", "lat": 28.1142, "lon": 112.983,
+}
+IPAPI_CO_J1 = {  # 次选源：city 英文 + latitude/longitude
+    "ip": "118.254.98.222", "city": "Shaoxing",
+    "latitude": 30.0, "longitude": 120.5,
+}
+
+# base fixture 会把 _fetch_ip_geo 一刀切关；源链用例（test_geo_source_*）要放回真身
+_REAL_FETCH_IP_GEO = wx_mod._fetch_ip_geo
+
 
 @pytest.fixture
 def base(tmp_path, monkeypatch):
@@ -379,6 +392,64 @@ def test_geo_ip_response_garbage_fail_open(base, monkeypatch):
     monkeypatch.setattr(wx_mod, "_http_get_json", lambda url: {"junk": True})
     city, lat, lon, _ = wx_mod._resolve_location(base, {})
     assert (city, lat, lon) == ("宁波", 29.87, 121.55)
+
+
+# ---------------------------------------------------------------------------
+# IP 定位源链（2026-10-16 根治：ipapi.co 被 Cloudflare managed challenge 拦，
+# 单源静默失效 → 定位整体退回宁波兜底且不报错——萧哥实测「识别不出来」根因）
+# ---------------------------------------------------------------------------
+def test_geo_source_ip_api_com_chinese_city(base, monkeypatch):
+    """首选源 ip-api.com：中文城市名 + 经纬度解析，定位缓存落盘。"""
+    monkeypatch.setattr(wx_mod, "_fetch_ip_geo", _REAL_FETCH_IP_GEO)
+    monkeypatch.setattr(wx_mod, "_http_get_json", lambda url, timeout=None: IP_API_COM_J1)
+    city, lat, lon, _ = wx_mod._resolve_location(base, {})
+    assert (city, lat, lon) == ("青园", 28.1142, 112.983)
+    assert load_cache(base)["geo"]["city"] == "青园"
+
+
+def test_geo_source_first_blocked_falls_to_second(base, monkeypatch):
+    """首源被拦（403 → None）→ 自动落次源 ipapi.co；次源命中即停。"""
+    monkeypatch.setattr(wx_mod, "_fetch_ip_geo", _REAL_FETCH_IP_GEO)
+    hits: list[str] = []
+
+    def fake_get(url, timeout=None):
+        hits.append(url)
+        return None if "ip-api.com" in url else IPAPI_CO_J1
+
+    monkeypatch.setattr(wx_mod, "_http_get_json", fake_get)
+    city, lat, lon, _ = wx_mod._resolve_location(base, {})
+    assert (city, lat, lon) == ("Shaoxing", 30.0, 120.5)
+    assert len(hits) == 2  # 首源失败才打次源，命中即停
+
+
+def test_geo_source_first_status_fail_falls_to_second(base, monkeypatch):
+    """首源能通但拒绝（status=fail，如限流）→ 同样落次源。"""
+    monkeypatch.setattr(wx_mod, "_fetch_ip_geo", _REAL_FETCH_IP_GEO)
+    hits: list[str] = []
+
+    def fake_get(url, timeout=None):
+        hits.append(url)
+        return {"status": "fail", "message": "rate limited"} if "ip-api.com" in url else IPAPI_CO_J1
+
+    monkeypatch.setattr(wx_mod, "_http_get_json", fake_get)
+    city, lat, lon, _ = wx_mod._resolve_location(base, {})
+    assert (city, lat, lon) == ("Shaoxing", 30.0, 120.5)
+    assert len(hits) == 2
+
+
+def test_geo_source_all_blocked_falls_back_to_ningbo(base, monkeypatch):
+    """源链全挂 → 宁波兜底（fail-open 不变；两个源都试过）。"""
+    monkeypatch.setattr(wx_mod, "_fetch_ip_geo", _REAL_FETCH_IP_GEO)
+    hits: list[str] = []
+
+    def fake_get(url, timeout=None):
+        hits.append(url)
+        return None
+
+    monkeypatch.setattr(wx_mod, "_http_get_json", fake_get)
+    city, lat, lon, _ = wx_mod._resolve_location(base, {})
+    assert (city, lat, lon) == ("宁波", 29.87, 121.55)
+    assert len(hits) == 2
 
 
 def test_master_switch_off(base, monkeypatch):
