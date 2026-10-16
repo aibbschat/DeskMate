@@ -277,3 +277,34 @@ def test_abusive_blacklist_and_foul(eng):
     eng2.get_state()
     eng2.note_reply_foul("正常说话而已")
     assert eng2.temper_state()["recent_foul"] is False
+
+
+# ----------------------------------------------------------------------
+# 日志卫生（2026-10-16 巡审 P0）
+# ----------------------------------------------------------------------
+def test_prune_emotion_log_only_old_time_decay(eng):
+    """只裁 14 天前的 time_decay；新 time_decay 与所有 experience 行保留。"""
+    from deskmate.growth.emotion_engine import EMOTION_LOG_DECAY_KEEP_DAYS
+    old_ts = (datetime.now()
+              - timedelta(days=EMOTION_LOG_DECAY_KEEP_DAYS + 3)).isoformat(timespec="seconds")
+    fresh_ts = datetime.now().isoformat(timespec="seconds")
+    with _connect(eng._db) as conn:
+        def _ins(source: str, ts: str) -> None:
+            conn.execute(
+                "INSERT INTO emotion_log (id, ts, source, deltas, description, conversation_id) "
+                "VALUES (?, ?, ?, '{}', '', NULL)",
+                (str(uuid.uuid4()), ts, source))
+        _ins("time_decay", old_ts)     # 过期 → 该裁
+        _ins("time_decay", fresh_ts)   # 未过期 → 保留
+        _ins("experience", old_ts)     # 情绪来路 → 绝不裁
+        # 让 decay 真跑（_do_decay_step 在 elapsed<1s 时早退）
+        conn.execute(
+            "UPDATE emotion_state SET updated_at=? WHERE key='self'",
+            ((datetime.now() - timedelta(hours=1)).isoformat(timespec="seconds"),))
+    eng.decay_step()
+    with _connect(eng._db) as conn:
+        rows = conn.execute("SELECT source, ts FROM emotion_log").fetchall()
+    kept = {(s, ts) for s, ts in rows}
+    assert ("time_decay", old_ts) not in kept, "14 天前的 time_decay 应被裁"
+    assert ("time_decay", fresh_ts) in kept, "新 time_decay 应保留"
+    assert ("experience", old_ts) in kept, "experience 行绝不裁（情绪来路）"

@@ -108,6 +108,12 @@ ECHO_MAX_DELTA = 2.0             # 单项激素微澜上限（微澜，不是大
 ECHO_MIN_RIPPLE = 0.3            # 单项 |delta| 不足此值清零（不硬泛）
 ECHO_COOLDOWN_HOURS = 24.0       # 同一件旧事 24h 内最多泛一次（不泡旧缸）
 
+# —— 日志卫生（2026-10-16 巡审 P0）：time_decay 低价值行滚动保留 ——
+# decay_step 几乎每拍（前端 15s / 后台 30s）只要任一激素偏离基线 >0.01 就写一条
+# time_decay，表无界增长。只裁 source='time_decay' 且早于 N 天的行；
+# experience / echo 行是「情绪来路」，绝不裁（maybe_echo 依赖 7 天内 experience 的 narrative）。
+EMOTION_LOG_DECAY_KEEP_DAYS = 14
+
 # —— 等待（Pending）：悬着的事，她编个预期故事，参数朝故事爬坡 ——
 PENDING_MAX_OPEN = 3             # 同时最多悬 3 件（心里装不下太多）
 PENDING_CLIMB_PER_DAY = 1.0      # 每件每日爬坡量（good→dopamine / bad→cortisol）
@@ -239,6 +245,10 @@ def _connect(db: Path) -> sqlite3.Connection:
     conn = sqlite3.connect(str(db), isolation_level=None)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA synchronous=NORMAL")
+    # 2026-10-16 巡审 P0：server / 后台 scheduler / MCP memory 可能多进程同摸 deskmate.db，
+    # 锁冲突会直接抛 "database is locked"，再被 fail-open 静默吞掉——表现成「情绪莫名不更新」，
+    # 极难排查。busy_timeout 让 SQLite 遇锁先等 5s 重试，而不是立刻失败。
+    conn.execute("PRAGMA busy_timeout=5000")
     return conn
 
 
@@ -293,7 +303,11 @@ def _ensure_schema(db: Path) -> None:
         ):
             if name not in cols:
                 conn.execute(ddl)
-        # 二期 · 等待台账：悬着的事 + 她编的预期故事（公理三：故事朝前编）
+        # 2026-10-16 巡审 P0：emotion_log 的查询按 ts 走（maybe_echo / recent_log_descriptions），
+        # 但表只有 PK 索引 → 表膨胀后这些查询随表变大而变慢（emoji_log 亦无 ts 索引）。
+        # 补一条 ts 索引，成本一行。
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_emotion_log_ts ON emotion_log(ts)")
         conn.execute("""
             CREATE TABLE IF NOT EXISTS pending_stories (
                 id              TEXT PRIMARY KEY,
@@ -341,14 +355,24 @@ def _is_label_dump(description: str) -> bool:
 
     人表达矛盾是把矛盾藏在一个转折里（「我以为我会高兴，可那句话还搁在心里」），
     不是把标签并列。报菜名的独白是假矛盾的信号。
+
+    2026-10-16 巡审 P0 修正：旧实现把「又…又」当字面量匹配，真实文本里
+    「又开心又难过」不含省略号，永远匹配不上——只剩「既 + 又」一条腿在撑，
+    护栏 2 实际命中范围不到设计的一半；且「既」在元组里写重了。
+    改为按「又」出现次数判并列，并删掉重复项。
     """
     if not description:
         return False
     d = description
     # 并列结构
-    for pat in ("既", "又…又", "一边", "同时感到", "既"):
-        if pat in d and ("又" in d or "一边" in d or "同时" in d):
-            return True
+    if d.count("又") >= 2:            # 「又…又…」（真实文本无省略号，按次数判）
+        return True
+    if "既" in d and "又" in d:       # 「既…又…」
+        return True
+    if "一边" in d:                   # 「一边…一边…」
+        return True
+    if "同时感到" in d:               # 「同时感到…」枚举式堆砌
+        return True
     # 多标签枚举
     hits = sum(1 for lbl in _MOOD_LABELS if lbl in d)
     return hits >= 2
@@ -399,6 +423,75 @@ def _social_voice_lead(offsets: dict[str, float]) -> dict | None:
             "intensity": round(min(1.0, strength), 2), "face": d["face"]}
 
 
+def _build_voice_candidates(
+        offsets: dict[str, float]) -> list[tuple[float, str, str, str, str, float]]:
+    """构建基础 + 复合情绪声部候选（label / chord 共用，杜绝逻辑复制分叉）。
+
+    返回 tuple：(tie-break 权重, label, hormone, detail, face, 未封顶强度)。
+    仅含 4 激素及其复合声部；社会性声部（meaning/control/fatigue）由调用方各自
+    处理（label 走 _social_voice_lead 回退、chord 直接并列），故不在此构建。
+
+    2026-10-16 巡审 P1：原 mood_label_from_offsets 与 mood_chord_from_offsets 各
+    复制一份候选构建逻辑（含复合情绪公式），改一处忘一处会让「对话里说出的心情」
+    与「和弦 lead」分叉——恰是模块文档承诺「永不矛盾」的东西。抽出候选构建，
+    两处各自保留原选择逻辑（label 比强度 + tie-break，chord 全保留按强度排序）。
+    """
+    def _norm(key: str, negative: bool = False) -> float:
+        """偏移 / STRONG 阈值，**不封顶**——用于候选之间比强弱。"""
+        _, strong = MOOD_OFFSETS[key]
+        x = -offsets.get(key, 0.0) if negative else offsets.get(key, 0.0)
+        return max(0.0, x / strong)
+
+    def _reached(key: str, negative: bool = False) -> bool:
+        """是否达到「轻度」阈值。"""
+        weak = MOOD_OFFSETS[key][0]
+        x = offsets.get(key, 0.0)
+        return (-x >= weak) if negative else (x >= weak)
+
+    dop_up = _reached("dopamine")
+    # tuple = (tie-break 权重, label, hormone, detail, face, 未封顶强度)
+    cands: list[tuple[float, str, str, str, str, float]] = []
+    if _reached("cortisol"):
+        if dop_up:
+            cands.append((1.0, "烦躁", "cortisol", "心里有点急、有点躁", "angry",
+                          max(_norm("cortisol"), _norm("dopamine"))))
+        else:
+            cands.append((0.9, "低落", "cortisol", "心里发沉、有点难受", "cry",
+                          _norm("cortisol")))
+    if dop_up:
+        cands.append((0.7, "开心", "dopamine", "心里亮亮的、轻快", "laugh", _norm("dopamine")))
+    # v3 注：dopamine↓ 且 cortisol 未起的场景已由「怅然若失」精确承接（§6.2 萧哥边界：
+    # 心里想但没达成的落空型沉）。v2 此处的笼统「低落」候选移除——cortisol 触发的
+    # 压力型「低落」保留（上方 cands），dopamine↓ 单驱动的沉交给怅然若失。
+    if _reached("oxytocin"):
+        cands.append((0.5, "亲近", "oxytocin", "心里软软的、想靠近你", "shy", _norm("oxytocin")))
+    if _reached("serotonin") and not dop_up:
+        cands.append((0.4, "平静", "serotonin", "心里安稳、松弛", "sleepy", _norm("serotonin")))
+
+    # ------------------------------------------------------------------
+    # 活感 v3 §6：复合情绪（激素组合推导；权重不超过单一激素候选）
+    # ------------------------------------------------------------------
+    # 释然：压力显著释放 + 平静上升
+    if _norm("cortisol", negative=True) > 0.3 and _norm("serotonin") > 0.2:
+        cands.append((0.8, "释然", "cortisol↓+serotonin↑", "心里松了口气，轻了一些", "relieved",
+                      _norm("cortisol", negative=True) * 0.6 + _norm("serotonin") * 0.4))
+    # 被看见的踏实：亲密 + 平静同升
+    if _norm("oxytocin") > 0.3 and _norm("serotonin") > 0.2:
+        cands.append((0.75, "被看见的踏实", "oxytocin+serotonin", "心里稳稳的，被接住了", "grounded",
+                      _norm("oxytocin") * 0.5 + _norm("serotonin") * 0.5))
+    # 克制的难过：压力上升 + 快乐下降 + 平静未崩
+    if (_norm("cortisol") > 0.2 and _norm("dopamine", negative=True) > 0.2
+            and _norm("serotonin", negative=True) < 0.1):
+        cands.append((0.85, "克制的难过", "cortisol+dopamine↓", "心里沉，但还能撑住", "restrained_sad",
+                      _norm("cortisol") * 0.5 + _norm("dopamine", negative=True) * 0.5))
+    # 怅然若失：dopamine 明显下降而 cortisol 未起（落空型沉，非压力型沉）
+    # 萧哥定义边界：心里想但没达成——被拒绝 / 想要却没想到 / 想到却没做好
+    if _norm("dopamine", negative=True) > 0.3 and not _reached("cortisol"):
+        cands.append((0.65, "怅然若失", "dopamine↓", "心里空落落的，够不着想要的", "wistful",
+                      _norm("dopamine", negative=True)))
+    return cands
+
+
 def mood_label_from_offsets(offsets: dict[str, float]) -> dict:
     """由「相对基线的偏移」推导当下心情标签。
 
@@ -414,66 +507,17 @@ def mood_label_from_offsets(offsets: dict[str, float]) -> dict:
 
     face 取值与 surfaces/gui/src/components/deskmate/mascotEmoteMap.ts 的
     ExpressionId 一一对应，由后端直接下发，前端不再重算。
+
+    候选构建已抽到 _build_voice_candidates（与 chord 共用），此处只保留选择逻辑。
     """
-    def _norm(key: str, negative: bool = False) -> float:
-        """偏移 / STRONG 阈值，**不封顶**——用于候选之间比强弱。"""
-        _, strong = MOOD_OFFSETS[key]
-        x = -offsets.get(key, 0.0) if negative else offsets.get(key, 0.0)
-        return max(0.0, x / strong)
-
-    def _reached(key: str, negative: bool = False) -> bool:
-        """是否达到「轻度」阈值。"""
-        weak = MOOD_OFFSETS[key][0]
-        x = offsets.get(key, 0.0)
-        return (-x >= weak) if negative else (x >= weak)
-
-    dop_up = _reached("dopamine")
-    dop_down = _reached("dopamine", negative=True)
-
     # 候选情绪：tuple = (tie-break 权重, label, detail, face, 归一化强度)。
     # 首位 c[0] 是 tie-break 权重——同等强度时 distress 优先于愉悦、
     # 亲近优先于平静（distress 1.0 > 低落 0.9 > 开心 0.7 > 亲近 0.5 > 平静 0.4），
     # 让「有温度」的信号不被「没波澜」盖掉；末位 c[4] 是未封顶强度，供 max 比强弱。
-    candidates: list[tuple[float, str, str, str, float]] = []
-    if _reached("cortisol"):
-        if dop_up:
-            candidates.append((1.0, "烦躁", "心里有点急、有点躁", "angry",
-                               max(_norm("cortisol"), _norm("dopamine"))))
-        else:
-            candidates.append((0.9, "低落", "心里发沉、有点难受", "cry", _norm("cortisol")))
-    if dop_up:
-        candidates.append((0.7, "开心", "心里亮亮的、轻快", "laugh", _norm("dopamine")))
-    # v3 注：dopamine↓ 且 cortisol 未起的场景已由「怅然若失」精确承接（§6.2 萧哥边界：
-    # 心里想但没达成的落空型沉）。v2 此处的笼统「低落」候选移除——cortisol 触发的
-    # 压力型「低落」保留（上方 candidates），dopamine↓ 单驱动的沉交给怅然若失。
-    if _reached("oxytocin"):
-        candidates.append((0.5, "亲近", "心里软软的、想靠近你", "shy", _norm("oxytocin")))
-    if _reached("serotonin") and not dop_up:
-        candidates.append((0.4, "平静", "心里安稳、松弛", "sleepy", _norm("serotonin")))
-
-    # ------------------------------------------------------------------
-    # 活感 v3 §6：复合情绪（4 个，激素组合推导；权重不超过单一激素候选）
-    # ------------------------------------------------------------------
-    # 释然：压力显著释放 + 平静上升
-    if _norm("cortisol", negative=True) > 0.3 and _norm("serotonin") > 0.2:
-        candidates.append((0.8, "释然", "心里松了口气，轻了一些", "relieved",
-                           _norm("cortisol", negative=True) * 0.6
-                           + _norm("serotonin") * 0.4))
-    # 被看见的踏实：亲密 + 平静同升
-    if _norm("oxytocin") > 0.3 and _norm("serotonin") > 0.2:
-        candidates.append((0.75, "被看见的踏实", "心里稳稳的，被接住了", "grounded",
-                           _norm("oxytocin") * 0.5 + _norm("serotonin") * 0.5))
-    # 克制的难过：压力上升 + 快乐下降 + 平静未崩
-    if (_norm("cortisol") > 0.2 and _norm("dopamine", negative=True) > 0.2
-            and _norm("serotonin", negative=True) < 0.1):
-        candidates.append((0.85, "克制的难过", "心里沉，但还能撑住", "restrained_sad",
-                           _norm("cortisol") * 0.5
-                           + _norm("dopamine", negative=True) * 0.5))
-    # 怅然若失：dopamine 明显下降而 cortisol 未起（落空型沉，非压力型沉）
-    # 萧哥定义边界：心里想但没达成——被拒绝 / 想要却没想到 / 想到却没做好
-    if _norm("dopamine", negative=True) > 0.3 and not _reached("cortisol"):
-        candidates.append((0.65, "怅然若失", "心里空落落的，够不着想要的", "wistful",
-                           _norm("dopamine", negative=True)))
+    candidates: list[tuple[float, str, str, str, float]] = [
+        (w, lbl, det, face, s)
+        for (w, lbl, _horm, det, face, s) in _build_voice_candidates(offsets)
+    ]
 
     if not candidates:
         # 独立通道：4 激素无声部时，回退社会性声部（meaning/control/fatigue），
@@ -528,39 +572,13 @@ def mood_chord_from_offsets(offsets: dict[str, float], max_voices: int = 3) -> d
         x = offsets.get(key, 0.0)
         return (-x >= weak) if negative else (x >= weak)
 
-    dop_up = _reached("dopamine")
-
     # 声部候选：(label, hormone, detail, face, 未封顶强度)。不竞争，全保留。
-    voices: list[tuple[str, str, str, str, float]] = []
-
-    # --- 基础声部：每个激素独立成声部 ---
-    if _reached("cortisol"):
-        if dop_up:
-            voices.append(("烦躁", "cortisol", "心里有点急、有点躁", "angry",
-                           max(_norm("cortisol"), _norm("dopamine"))))
-        else:
-            voices.append(("低落", "cortisol", "心里发沉、有点难受", "cry", _norm("cortisol")))
-    if dop_up:
-        voices.append(("开心", "dopamine", "心里亮亮的、轻快", "laugh", _norm("dopamine")))
-    if _reached("oxytocin"):
-        voices.append(("亲近", "oxytocin", "心里软软的、想靠近你", "shy", _norm("oxytocin")))
-    if _reached("serotonin") and not dop_up:
-        voices.append(("平静", "serotonin", "心里安稳、松弛", "sleepy", _norm("serotonin")))
-
-    # --- 复合声部（第二声部 = 和音）：与基础声部并存，不替代 ---
-    if _norm("cortisol", negative=True) > 0.3 and _norm("serotonin") > 0.2:
-        voices.append(("释然", "cortisol↓+serotonin↑", "心里松了口气，轻了一些", "relieved",
-                       _norm("cortisol", negative=True) * 0.6 + _norm("serotonin") * 0.4))
-    if _norm("oxytocin") > 0.3 and _norm("serotonin") > 0.2:
-        voices.append(("被看见的踏实", "oxytocin+serotonin", "心里稳稳的，被接住了", "grounded",
-                       _norm("oxytocin") * 0.5 + _norm("serotonin") * 0.5))
-    if (_norm("cortisol") > 0.2 and _norm("dopamine", negative=True) > 0.2
-            and _norm("serotonin", negative=True) < 0.1):
-        voices.append(("克制的难过", "cortisol+dopamine↓", "心里沉，但还能撑住", "restrained_sad",
-                       _norm("cortisol") * 0.5 + _norm("dopamine", negative=True) * 0.5))
-    if _norm("dopamine", negative=True) > 0.3 and not _reached("cortisol"):
-        voices.append(("怅然若失", "dopamine↓", "心里空落落的，够不着想要的", "wistful",
-                       _norm("dopamine", negative=True)))
+    # 基础 + 复合声部来自与 mood_label_from_offsets 共用的 _build_voice_candidates
+    # （2026-10-16 巡审 P1 去重，杜绝两处公式漂移导致「说出的心情」与「和弦 lead」分叉）。
+    voices: list[tuple[str, str, str, str, float]] = [
+        (lbl, horm, det, face, s)
+        for (_w, lbl, horm, det, face, s) in _build_voice_candidates(offsets)
+    ]
 
     # --- 社会性声部（事件直驱参数，独立通道扩容）---
     if _reached("meaning"):
@@ -595,6 +613,21 @@ def mood_chord_from_offsets(offsets: dict[str, float], max_voices: int = 3) -> d
         "lead_face": lead["face"],
         "tension": round(tension, 2),
     }
+
+
+# ---------------------------------------------------------------------------
+# v3 §8.4 trait 种子 —— **当前挂起**（2026-10-16 萧盛拍板：停写）
+# ---------------------------------------------------------------------------
+# 巡审 P2 结论（2026-10-16）：_update_traits 是只写不读的账本——全仓生产代码无消费者
+# （仅 tests + scripts/v3_scenario_probe.py 读），且单调递增（只 min(100, v) 封顶、永不回落），
+# 触发条件又是 narrative 里硬编码的中文关键词（「克制的难过」「被看见的踏实」「怅然若失」），
+# 而这些词恰是情绪 prompt 模板本就引导 LLM 输出的标签 —— 反馈环自我印证，traits 只会
+# 朝预设方向漂、漂到饱和。按 §8.4 红线不注入她自己是对的，但「性格演化」目前是死数据。
+# 萧盛拍板：**停写**（_update_traits 断掉落盘），现有 personality_traits.json 保留作历史证据。
+# 重启条件：v3.2+ 待办 #9「矛盾并存 → 特质演化」语义定稿
+# （见 reports/独立通道_矛盾即真实_技术文档_2026-10-13.md「v3.2+ 待办」）。
+# 重启时把本常量置 False，_update_traits 逻辑原样保留，无需改动调用点。
+TRAITS_EVOLUTION_SUSPENDED = True
 
 
 class EmotionEngine:
@@ -1725,7 +1758,14 @@ class EmotionEngine:
 
     def _update_traits(self, narrative: str, event_type: str,
                        deltas: dict, salience) -> None:
-        """从经历叙事中累积 trait 种子，按 salience 加权。fail-open。"""
+        """从经历叙事中累积 trait 种子，按 salience 加权。fail-open。
+
+        **当前挂起**（TRAITS_EVOLUTION_SUSPENDED，2026-10-16 萧盛拍板）：
+        早退不落盘，personality_traits.json 保留作历史证据（不再增长）。
+        挂起原因与重启条件见 TRAITS_EVOLUTION_SUSPENDED 处的注释。
+        """
+        if TRAITS_EVOLUTION_SUSPENDED:
+            return
         try:
             s = _clamp_salience(salience)
             traits = self.load_traits()
@@ -1800,6 +1840,35 @@ class EmotionEngine:
                      json.dumps(deltas, ensure_ascii=False),
                      old.get("description", ""), None),
                 )
+            # 日志卫生（2026-10-16 巡审 P0）：裁旧 time_decay 行，每天最多一次。
+            self._prune_emotion_log(conn, now)
+
+    def _prune_emotion_log(self, conn, now: datetime) -> None:
+        """裁掉 14 天前的 time_decay 低价值行（每天最多一次，fail-open）。
+
+        decay 几乎每拍写一条 time_decay，表无界增长（巡审 P0）。只裁
+        source='time_decay'；experience / echo 行是「情绪来路」，绝不裁
+        （maybe_echo 依赖 7 天内 experience 的 narrative）。日期文件守卫
+        ``.emotion_log_pruned`` 记当天日期，避免每拍都跑一次 DELETE。
+        fail-open：裁剪任何异常都不影响 decay 主流程。
+        """
+        guard = self._db.parent / ".emotion_log_pruned"
+        today = now.strftime("%Y-%m-%d")
+        try:
+            if guard.exists() and guard.read_text(encoding="utf-8").strip() == today:
+                return
+        except OSError:
+            pass
+        try:
+            cutoff = (now - timedelta(days=EMOTION_LOG_DECAY_KEEP_DAYS)).isoformat(
+                timespec="seconds")
+            conn.execute(
+                "DELETE FROM emotion_log WHERE source='time_decay' AND ts < ?",
+                (cutoff,),
+            )
+            guard.write_text(today, encoding="utf-8")
+        except Exception as e:  # fail-open
+            logger.debug("prune emotion_log skipped: %s", e)
 
     def _maybe_trigger_self_expression(self, deltas: dict, now: datetime) -> None:
         """检查是否有激素显著变化 → 写 pending 标记（供 tick 消费）。

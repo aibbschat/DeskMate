@@ -197,8 +197,15 @@ def test_recent_narratives_skips_empty(base):
 # ---------------------------------------------------------------------------
 # 步 6：trait 种子按 salience 加权
 # ---------------------------------------------------------------------------
-def test_traits_weighted_by_salience(engine, base):
-    """重要事件大步走，琐事几乎不动。"""
+def test_traits_weighted_by_salience(engine, base, monkeypatch):
+    """重要事件大步走，琐事几乎不动（**临时启用挂起的 trait 演化**校验加权逻辑）。
+
+    2026-10-16 巡审：trait 演化已挂起（`TRAITS_EVOLUTION_SUSPENDED=True`）。
+    本用例把该常量临时置 False，保住加权逻辑的回归覆盖；挂起默认行为由
+    `test_traits_suspended_no_write` 另测（重启时本逻辑原样可用）。
+    """
+    from deskmate.growth import emotion_engine as ee_mod
+    monkeypatch.setattr(ee_mod, "TRAITS_EVOLUTION_SUSPENDED", False)
     with patch("deskmate.memory.llm.llm_available", return_value=True), \
          patch("deskmate.llm_channels.route", return_value=("free-ch", {})):
         with patch("deskmate.memory.llm.chat_memory",
@@ -220,6 +227,24 @@ def test_traits_weighted_by_salience(engine, base):
     assert traits["self_awareness"] == pytest.approx(50.20, abs=0.01)
     # 无克制的难过 → resilience 不动
     assert traits.get("resilience", 50.0) == 50.0
+
+
+def test_traits_suspended_no_write(engine, base):
+    """挂起态（默认）：trait 演化停写，personality_traits.json 不增长（2026-10-16 萧盛拍板）。
+
+    巡审结论：trait 账本只写不读、单调、靠 narrative 硬编码关键词自证环——
+    停写并保留 json 作历史证据。重启条件见 TRAITS_EVOLUTION_SUSPENDED 处注释。
+    """
+    with patch("deskmate.memory.llm.llm_available", return_value=True), \
+         patch("deskmate.llm_channels.route", return_value=("free-ch", {})):
+        with patch("deskmate.memory.llm.chat_memory",
+                   return_value=_llm_payload(
+                       narrative="今天上午，因为他交底家事，我感到被看见的踏实。",
+                       salience=0.9)):
+            engine.update_after_experience("他交底了家事")
+    # 挂起态：update_after_experience 照跑，但 _update_traits 早退、不落盘
+    assert engine.load_traits() == {}, "挂起态不应写 personality_traits.json"
+    assert not (base / "personality_traits.json").exists(), "挂起态不应生成 traits 文件"
 
 
 def test_traits_fail_open(engine, base):

@@ -178,11 +178,14 @@ def test_event_direct_writes_experience_log(eng):
 # 护栏 2：不报菜名
 # ----------------------------------------------------------------------
 def test_label_dump_detection():
-    """报菜名（既…又…/枚举/同时+双标签）拦下；转折藏矛盾的人话放行。"""
+    """报菜名（既…又…/又…又…/枚举/同时+双标签）拦下；转折藏矛盾的人话放行。"""
     from deskmate.growth.emotion_engine import _is_label_dump as dump
     assert dump("我既高兴又难过") is True
     assert dump("我既怅然若失又被刺了一下还带着暖") is True
     assert dump("我同时感到开心和低落") is True
+    # 2026-10-16 巡审 P0 修复：「又…又…」旧实现按字面量（含省略号）匹配，
+    # 真实文本「又开心又难过」永不含省略号 → 修复为按「又」出现次数判。
+    assert dump("我又开心又难过") is True
     # 转折藏矛盾（人话）放行
     assert dump("我以为我会高兴，可那句话还搁在心里") is False
     assert dump("心里空落落的，够不着想要的") is False
