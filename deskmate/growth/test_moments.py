@@ -350,3 +350,69 @@ def test_add_comment_preserves_line_breaks():
     post = store.add_user_post("我的日记")
     c = store.add_comment(post["id"], "xiaoju", "这句我记下了。\n下次你写到这里，我会接得上。")
     assert c["text"] == "这句我记下了。\n下次你写到这里，我会接得上。"
+
+
+# ---------------------------------------------------------------------------
+# 长文日记沉淀/回复不截断（2026-10-16 根治）
+#
+# 旧 _trim（_CONTENT_MAX=120）曾同时污染两处「她读日记」的链路：
+# - love()：>120 字的日记只存前 120 字符+「…」进 loved_entries ⇒ 她「聊天主动回忆」
+#   永远只看得到前半段（萧哥实测：她回复「你写到'也就是说…'就断在那儿了」，
+#   那个省略号是代码加的，不是日记原文）；
+# - generate_reply()：她刚看完日记回话，prompt 里也是 120 截断版 ⇒ 接不住后半段。
+# 且 _trim 的 re.sub(r"\s+", " ") 把换行压成空格——add_user_post 早已修掉的
+# 「日记禁压行」，沉淀链路又踩一遍。
+# 用户原文完整保存在 user_posts（235/218 字符实测），失真的只是记忆副本。
+# ---------------------------------------------------------------------------
+_LONG_DIARY = (
+    "如果我们的出版行业真的死了，那么我们还剩下什么呢？那就只剩下活着了，像动物一样活着。\n"
+    "图书是什么？图书是我们唯一能够获取的精神食粮，这一点是网文无法比拟的。"
+    "也就是说，图书行业通过最大可能的保证了作品的质量，传输给读者的是有营养的东西。\n"
+    "所以，出版行业真的死了，那么我们精神上吸取营养的入口就没有了，剩下的就只是像动物一样活着。"
+)  # 150+ 字符，超旧 _CONTENT_MAX=120；结尾关键词「剩下的就只是」
+
+
+def _loved_content(base: Path) -> str:
+    import sqlite3
+
+    conn = sqlite3.connect(str(base / "deskmate.db"))
+    try:
+        return conn.execute("SELECT content FROM loved_entries").fetchone()[0]
+    finally:
+        conn.close()
+
+
+def test_love_keeps_full_text_over_120_chars():
+    """>120 字日记沉淀必须存全文——她记住的不能是前半段。"""
+    store, base = _store()
+    r = store.love("m-long", _LONG_DIARY)
+    assert r["memorized"] is True
+    content = _loved_content(base)
+    assert "剩下的就只是像动物一样活着" in content, "loved_entries 仍是 120 截断版"
+    assert not content.rstrip().endswith("…"), "不该有截断省略号"
+    assert len(content) > 150
+
+
+def test_love_preserves_paragraph_newlines():
+    """沉淀副本保留段落换行（_trim 的 re.sub(r"\\s+"," ") 曾把它压成空格）。"""
+    store, base = _store()
+    store.love("m-nl", "第一段，出版的事。\n第二段，活着的事。")
+    content = _loved_content(base)
+    assert "\n" in content, "换行被压平"
+    assert content.count("🩷 萧盛的日记：") == 1
+
+
+def test_generate_reply_prompt_sees_full_text(monkeypatch):
+    """她读完日记回话：喂给 LLM 的 prompt 必须含全文结尾，不是 120 截断。"""
+    store, _ = _store()
+    seen: dict = {}
+
+    def fake_call_llm(system, user, deadline=None):
+        seen["user"] = user
+        return "我看到了，鼻子有点酸。"
+
+    monkeypatch.setattr(store, "_call_llm", fake_call_llm)
+    reply = store.generate_reply(_LONG_DIARY)
+    assert reply == "我看到了，鼻子有点酸。"
+    assert "剩下的就只是像动物一样活着" in seen["user"], "回复 prompt 被 120 截断"
+    assert "\n" in seen["user"], "回复 prompt 把日记压成了单行"

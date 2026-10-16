@@ -39,9 +39,6 @@ def _default_base_dir() -> Path:
 
     return deskmate_base_dir()
 
-# 内容展示上限（防超长日记刷屏记忆）
-_CONTENT_MAX = 120
-
 # 小桔身份（LLM 生成留言用，第一人称、有记性、不说套话）
 # 2026-09-23 二次放开：先放宽到 40~80 字（原 15~40 偏短、活人感不足，萧哥实测常仅 10~20 字）；
 # 当晚再按萧哥意思彻底去字数硬建议——改为「长短随内容自然来」，更像朋友看完日记的真实反应；
@@ -94,11 +91,6 @@ def _now_iso() -> str:
 
 def _today() -> str:
     return datetime.date.today().isoformat()
-
-
-def _trim(text: str, n: int = _CONTENT_MAX) -> str:
-    text = re.sub(r"\s+", " ", (text or "")).strip()
-    return text if len(text) <= n else text[:n] + "…"
 
 
 # 注：原 _append_memory_line（把沉淀追加进全局 MEMORY.md）已废弃。
@@ -173,11 +165,15 @@ class MomentsStore:
         """把日记沉淀落 SQLite（loved_entries），并导出检索视图。
 
         不再写入全局 MEMORY.md（避免 2 万字符截断 + compress/purify 改写丢失）。
+        **全文沉淀，不截断**（2026-10-16 根治）：旧 _CONTENT_MAX=120 把长日记砍成
+        前半段+「…」才落库，她「聊天主动回忆」永远只读得到前半段——萧哥实测
+        「你写到'也就是说…'就断在那儿了」，那个省略号是代码加的。user_posts 里
+        原文一直完整，失真的只是记忆副本；换行也保留（add_user_post 同款语义）。
         返回 {loved, memorized, message}。
         """
         if not content or not content.strip():
             return {"loved": True, "memorized": False, "message": "这条没有内容可沉淀"}
-        line = f"🩷 萧盛的日记：{_trim(content)}"
+        line = f"🩷 萧盛的日记：{content.strip()}"
         try:
             res = self.store.love(moment_id, line)
         except Exception:
@@ -221,7 +217,9 @@ class MomentsStore:
     # 小桔真回复（LLM 降级链，不写死任何 provider，失败回落本地规则）
     # ------------------------------------------------------------------
     def generate_reply(self, content: str) -> str:
-        text = _trim(content)
+        # 全文进 prompt（2026-10-16 根治：旧 _trim 120 截断 ⇒ 她只看着前半段回话，
+        # 接不住日记后半段；换行保留——段落结构是她「读」的一部分）
+        text = (content or "").strip()
         try:
             out = self._call_llm(
                 _XIAOJU_SYSTEM,
