@@ -21,9 +21,13 @@
 配置（环境变量，调用时取值——paths.py 的教训，不缓存模块级常量）：
 - ``DESKMATE_WEATHER=0``      总开关（默认开）
 - ``DESKMATE_WEATHER_MOOD=0`` 只关情绪影响，保留播报（默认开）
-- ``DESKMATE_WEATHER_LOCATION`` 城市名（默认「宁波」，她和萧哥的家）
-- ``DESKMATE_WEATHER_LAT/LON`` 兜底源坐标（默认宁波 29.87/121.55）
-- ``DESKMATE_WEATHER_TTL_MIN`` 缓存新鲜期分钟数（默认 30）
+- ``DESKMATE_WEATHER_LOCATION`` 城市名（**手动覆盖**；不设则走 IP 定位——
+  萧哥不在宁波时，她嘴里的天气应跟着他走，不能人不在、嘴还拴在宁波）
+- ``DESKMATE_WEATHER_LAT/LON`` 手动覆盖坐标（配合 LOCATION 用）
+- ``DESKMATE_WEATHER_TTL_MIN`` 天气缓存新鲜期分钟数（默认 30）
+
+位置解析链（2026-10-16 萧哥拍板「跟着 IP 走」）：手动覆盖 → IP 定位缓存（12h）→
+ipapi.co 刷新 → 退回宁波（家）。定位缓存与天气缓存同文件，陈旧定位照用（陈旧 > 没有）。
 """
 from __future__ import annotations
 
@@ -101,8 +105,11 @@ _WEATHER_QUERY_WORDS = (
 )
 
 _DEFAULT_LOCATION = "宁波"
-_DEFAULT_LAT, _DEFAULT_LON = 29.87, 121.55   # 宁波（她和萧哥的家）
+_DEFAULT_LAT, _DEFAULT_LON = 29.87, 121.55   # 宁波（她和萧哥的家，全挂时的兜底）
 _HTTP_TIMEOUT = 8.0
+_IP_GEO_TIMEOUT = 5.0          # IP 定位超时（比天气更短：位置是手段不是目的）
+_IP_GEO_TTL = 12 * 3600.0      # 定位缓存新鲜期（位置是慢变量，同城移动无感）
+_IP_GEO_URL = "https://ipapi.co/json/"   # 免密钥 HTTPS，1k 次/日（12h 一次≈2 次/日）
 
 
 # ---------------------------------------------------------------------------
@@ -117,13 +124,55 @@ def _mood_enabled() -> bool:
 
 
 def _location() -> str:
-    return (os.environ.get("DESKMATE_WEATHER_LOCATION") or _DEFAULT_LOCATION).strip() or _DEFAULT_LOCATION
+    """城市名纯读取：手动覆盖 → 定位缓存 → 宁波兜底。**不触发网络**。
+
+    注：本函数故意不联网——它被 _fetch_wttr/_fetch_open_meteo/_format_weather_block
+    多处调用，联网解析只允许发生在 fetch_weather 单点（见 _resolve_location）。
+    """
+    env = (os.environ.get("DESKMATE_WEATHER_LOCATION") or "").strip()
+    if env:
+        return env
+    cached = (load_cache(None).get("geo") or {})
+    city = str(cached.get("city") or "").strip()
+    return city or _DEFAULT_LOCATION
+
+
+def _location_of(cache: dict) -> str:
+    """同 _location，但从给定 cache dict 取（避免 fetch 链路重复读盘）。"""
+    env = (os.environ.get("DESKMATE_WEATHER_LOCATION") or "").strip()
+    if env:
+        return env
+    city = str((cache.get("geo") or {}).get("city") or "").strip()
+    return city or _DEFAULT_LOCATION
 
 
 def _coords() -> tuple[float, float]:
+    """坐标纯读取：手动 LAT/LON → 定位缓存 → 宁波兜底。不触发网络。"""
+    lat_env, lon_env = os.environ.get("DESKMATE_WEATHER_LAT"), os.environ.get("DESKMATE_WEATHER_LON")
+    if lat_env and lon_env:
+        try:
+            return float(lat_env), float(lon_env)
+        except (TypeError, ValueError):
+            pass
+    geo = load_cache(None).get("geo") or {}
     try:
-        lat = float(os.environ.get("DESKMATE_WEATHER_LAT", _DEFAULT_LAT))
-        lon = float(os.environ.get("DESKMATE_WEATHER_LON", _DEFAULT_LON))
+        lat, lon = float(geo.get("lat")), float(geo.get("lon"))
+        return lat, lon
+    except (TypeError, ValueError):
+        return _DEFAULT_LAT, _DEFAULT_LON
+
+
+def _coords_of(cache: dict) -> tuple[float, float]:
+    """同 _coords，但从给定 cache dict 取。"""
+    lat_env, lon_env = os.environ.get("DESKMATE_WEATHER_LAT"), os.environ.get("DESKMATE_WEATHER_LON")
+    if lat_env and lon_env:
+        try:
+            return float(lat_env), float(lon_env)
+        except (TypeError, ValueError):
+            pass
+    geo = cache.get("geo") or {}
+    try:
+        lat, lon = float(geo.get("lat")), float(geo.get("lon"))
         return lat, lon
     except (TypeError, ValueError):
         return _DEFAULT_LAT, _DEFAULT_LON
@@ -253,11 +302,11 @@ def condition_from_wmo(code: int) -> str:
 # ---------------------------------------------------------------------------
 # HTTP（httpx 核心依赖；超时短，失败即换源/退回缓存）
 # ---------------------------------------------------------------------------
-def _http_get_json(url: str) -> dict | None:
+def _http_get_json(url: str, timeout: float | None = None) -> dict | None:
     try:
         import httpx
 
-        with httpx.Client(timeout=_HTTP_TIMEOUT, follow_redirects=True) as cli:
+        with httpx.Client(timeout=timeout or _HTTP_TIMEOUT, follow_redirects=True) as cli:
             resp = cli.get(url, headers={"User-Agent": "curl/8.0 (deskmate-weather)"})
             if resp.status_code != 200:
                 return None
@@ -267,13 +316,14 @@ def _http_get_json(url: str) -> dict | None:
         return None
 
 
-def _fetch_wttr() -> dict | None:
+def _fetch_wttr(location: str | None = None) -> dict | None:
     """wttr.in（免密钥，中文城市名）。
 
     请求带 lang=zh，但该参数并不总是生效——lang_zh 缺位时退回 weatherDesc
     英文描述归一化，显示文本取中文标签（CONDITION_LABELS）。
+    location 由 fetch_weather 单点解析后传入；None 时退回 _location()（直调兼容）。
     """
-    loc = urllib.parse.quote(_location())
+    loc = urllib.parse.quote(location or _location())
     data = _http_get_json(f"https://wttr.in/{loc}?format=j1&lang=zh")
     if not isinstance(data, dict):
         return None
@@ -309,7 +359,7 @@ def _fetch_wttr() -> dict | None:
                 "chance_of_rain": chance,
             }
         return {
-            "location": _location(),
+            "location": location or _location(),
             "condition": cond,
             "condition_text": cond_text,
             "temp_c": round(temp_c, 1),
@@ -324,9 +374,14 @@ def _fetch_wttr() -> dict | None:
         return None
 
 
-def _fetch_open_meteo() -> dict | None:
-    """Open-Meteo（免密钥，WMO 码，需坐标——默认宁波）。"""
-    lat, lon = _coords()
+def _fetch_open_meteo(
+    lat: float | None = None, lon: float | None = None, location: str | None = None
+) -> dict | None:
+    """Open-Meteo（免密钥，WMO 码，需坐标）。坐标/城市由 fetch_weather 单点解析传入。"""
+    if lat is None or lon is None:
+        lat, lon = _coords()
+    if location is None:
+        location = _location()
     url = (
         "https://api.open-meteo.com/v1/forecast"
         f"?latitude={lat}&longitude={lon}"
@@ -350,7 +405,7 @@ def _fetch_open_meteo() -> dict | None:
             "chance_of_rain": int((daily.get("precipitation_probability_max") or [0])[0] or 0),
         }
         return {
-            "location": _location(),
+            "location": location,
             "condition": condition_from_wmo(code),
             "condition_text": f"WMO:{code}",
             "temp_c": round(temp_c, 1),
@@ -366,6 +421,65 @@ def _fetch_open_meteo() -> dict | None:
 
 
 # ---------------------------------------------------------------------------
+# IP 定位（2026-10-16 萧哥拍板「跟着 IP 走」：他人不在宁波，她嘴里的天气得跟他走）
+# ---------------------------------------------------------------------------
+def _fetch_ip_geo() -> dict | None:
+    """ipapi.co → {city, lat, lon}；失败/字段不全 → None（绝不抛）。
+
+    返回的城市名是英文的（如 Shaoxing）——备案：真聊听着别扭时再想辙。
+    """
+    data = _http_get_json(_IP_GEO_URL, timeout=_IP_GEO_TIMEOUT)
+    if not isinstance(data, dict):
+        return None
+    try:
+        city = str(data.get("city") or "").strip()
+        lat = float(data.get("latitude"))
+        lon = float(data.get("longitude"))
+        if not city:
+            return None
+        return {"city": city, "lat": lat, "lon": lon}
+    except (TypeError, ValueError):
+        return None
+
+
+def _resolve_location(base_dir: Path | str | None, cache: dict) -> tuple[str, float, float, dict]:
+    """位置解析单点：手动覆盖 → 缓存新鲜 → 联网刷新 → 缓存陈旧 → 宁波兜底。
+
+    只在 fetch_weather 刷新天气时调用（天气 TTL 30min，定位 TTL 12h——
+    定位网打得更少）。返回 (城市, 纬, 经, 可能更新过的 cache)。
+    """
+    lat_env = os.environ.get("DESKMATE_WEATHER_LAT")
+    lon_env = os.environ.get("DESKMATE_WEATHER_LON")
+    if lat_env and lon_env:
+        try:
+            lat, lon = float(lat_env), float(lon_env)
+            city = (os.environ.get("DESKMATE_WEATHER_LOCATION") or "").strip() or f"{lat:.2f},{lon:.2f}"
+            return city, lat, lon, cache
+        except (TypeError, ValueError):
+            pass
+    env = (os.environ.get("DESKMATE_WEATHER_LOCATION") or "").strip()
+    if env:
+        lat, lon = _coords_of(cache)
+        return env, lat, lon, cache
+
+    geo = cache.get("geo") or {}
+    geo_ts = float(geo.get("ts") or 0.0)
+    if geo.get("city") and time.time() - geo_ts < _IP_GEO_TTL:
+        return str(geo["city"]), float(geo["lat"]), float(geo["lon"]), cache
+
+    fresh = _fetch_ip_geo()
+    if fresh:
+        cache = dict(cache)
+        cache["geo"] = {**fresh, "ts": time.time()}
+        save_cache(base_dir, cache)
+        return fresh["city"], fresh["lat"], fresh["lon"], cache
+
+    if geo.get("city"):   # 陈旧定位 > 没有定位（跨城当天仍准）
+        return str(geo["city"]), float(geo["lat"]), float(geo["lon"]), cache
+    return _DEFAULT_LOCATION, _DEFAULT_LAT, _DEFAULT_LON, cache
+
+
+# ---------------------------------------------------------------------------
 # 对外：取天气（缓存优先，双源兜底，全 fail-open）
 # ---------------------------------------------------------------------------
 def fetch_weather(base_dir: Path | str | None = None, *, force: bool = False) -> Optional[dict]:
@@ -373,7 +487,8 @@ def fetch_weather(base_dir: Path | str | None = None, *, force: bool = False) ->
 
     - 总开关关 → None
     - 缓存新鲜 → 直接返回（不打网络）
-    - 否则刷新：wttr → open-meteo；都失败 → 退回旧缓存（哪怕过期）；一无所有 → None
+    - 否则刷新：先单点解析位置（IP 定位，手动覆盖优先），再 wttr → open-meteo；
+      都失败 → 退回旧缓存（哪怕过期）；一无所有 → None
     """
     if not _enabled():
         return None
@@ -381,7 +496,8 @@ def fetch_weather(base_dir: Path | str | None = None, *, force: bool = False) ->
     data = cache.get("data")
     if isinstance(data, dict) and data and not force and _fresh(cache):
         return data
-    fresh = _fetch_wttr() or _fetch_open_meteo()
+    city, lat, lon, cache = _resolve_location(base_dir, cache)
+    fresh = _fetch_wttr(city) or _fetch_open_meteo(lat, lon, city)
     if fresh:
         cache = dict(cache)
         cache["data"] = fresh

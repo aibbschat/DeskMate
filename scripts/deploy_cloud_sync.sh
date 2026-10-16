@@ -279,6 +279,16 @@ GROWTH_MODULES=(
   "deskmate/persona.py"
 )
 
+# 天气感知（2026-10-16 补）：weather.py 被 manager.py:649（聊天注入 weather_context）与
+# tick.py:263（apply_weather_mood 情绪通道）import——云端 openworker-server 每轮上下文与
+# 云端 agency tick 都会走到。**10-15 天气感知落地时它不在任何清单里**：集合级对账只
+# 「报告」不「传输」（manager.py 同款教训），实测云端 /opt/openworker/deskmate/perception/
+# 根本没有 weather.py ⇒ 那处 import 一直 ImportError 被 fail-open 吞掉 ⇒ 云端小桔
+# 「没有天气」且不报错。目标 /opt/openworker/deskmate/perception/。
+PERCEPTION_MODULES=(
+  "deskmate/perception/weather.py"
+)
+
 # 办公技能工具（2026-10-15 P1 原子替换+恢复副本）：office_safe_deliver.py 被
 # office-word/excel/pptx 技能的交付步经 `python -m deskmate.skills.tools.office_safe_deliver`
 # 调用；云端自主副本（xiaoju_agency_tick）经仓库 cwd 跑同一条命令，故必须随主链路同批上云，
@@ -305,7 +315,7 @@ if ! ssh -o ConnectTimeout=15 -o BatchMode=yes "$SSH_HOST" "test -d '$CLOUD_SYNC
 fi
 
 # ---- 1. 必须已提交（红线：本地改动先 commit 进 fork/base）----
-ALL_FILES=("${LOCAL_MODULES[@]}" "$LOCAL_RUNNER" "${PROACTIVITY_MODULES[@]}" "${CHANNEL_MODULES[@]}" "${AGENCY_BEHAVIORS_MODULES[@]}" "${AGENCY_MODULES[@]}" "${GARDEN_MODULES[@]}" "${GROWTH_MODULES[@]}" "${SKILLS_TOOLS_MODULES[@]}" "$LOCAL_AGENCY_TICK" "$LOCAL_DRIFT_CHECK")
+ALL_FILES=("${LOCAL_MODULES[@]}" "$LOCAL_RUNNER" "${PROACTIVITY_MODULES[@]}" "${CHANNEL_MODULES[@]}" "${AGENCY_BEHAVIORS_MODULES[@]}" "${AGENCY_MODULES[@]}" "${GARDEN_MODULES[@]}" "${GROWTH_MODULES[@]}" "${SKILLS_TOOLS_MODULES[@]}" "${PERCEPTION_MODULES[@]}" "$LOCAL_AGENCY_TICK" "$LOCAL_DRIFT_CHECK")
 if [[ "$FORCE" -eq 0 ]]; then
   DIRTY=""
   for f in "${ALL_FILES[@]}"; do
@@ -393,8 +403,8 @@ for f in "${PROACTIVITY_MODULES[@]}"; do
 done
 
 # ---- 3c. 推送通道组/ 熔断模块（本地与云端必须同码，见 CHANNEL_MODULES 注释）----
-echo "==> 推送通道组/熔断模块 + 自主行为包到云端主程序包"
-for f in "${CHANNEL_MODULES[@]}" "${AGENCY_BEHAVIORS_MODULES[@]}" "${AGENCY_MODULES[@]}" "${GARDEN_MODULES[@]}" "${GROWTH_MODULES[@]}" "${SKILLS_TOOLS_MODULES[@]}"; do
+echo "==> 推送通道组/熔断模块 + 自主行为包 + 天气感知到云端主程序包"
+for f in "${CHANNEL_MODULES[@]}" "${AGENCY_BEHAVIORS_MODULES[@]}" "${AGENCY_MODULES[@]}" "${GARDEN_MODULES[@]}" "${GROWTH_MODULES[@]}" "${SKILLS_TOOLS_MODULES[@]}" "${PERCEPTION_MODULES[@]}"; do
   base="$(basename "$f")"
   # 目标目录按本地相对路径推（deskmate/xxx.py → $CLOUD_DESKMATE_ROOT/xxx.py；
   # coworker/xxx.py → $CLOUD_COWORKER_ROOT/xxx.py），必要时建目录
@@ -478,8 +488,8 @@ for f in "${PROACTIVITY_MODULES[@]}"; do
 done
 
 # ---- 7. 通道组/熔断模块对齐核对 ----
-echo "==> 通道组/熔断模块 + 自主行为包对齐核对"
-for f in "${CHANNEL_MODULES[@]}" "${AGENCY_BEHAVIORS_MODULES[@]}" "${AGENCY_MODULES[@]}" "${GARDEN_MODULES[@]}" "${GROWTH_MODULES[@]}" "${SKILLS_TOOLS_MODULES[@]}"; do
+echo "==> 通道组/熔断模块 + 自主行为包 + 天气感知对齐核对"
+for f in "${CHANNEL_MODULES[@]}" "${AGENCY_BEHAVIORS_MODULES[@]}" "${AGENCY_MODULES[@]}" "${GARDEN_MODULES[@]}" "${GROWTH_MODULES[@]}" "${SKILLS_TOOLS_MODULES[@]}" "${PERCEPTION_MODULES[@]}"; do
   base="$(basename "$f")"
   case "$f" in
     deskmate/*)   dest_dir="$CLOUD_DESKMATE_ROOT/$(dirname "${f#deskmate/}")" ;;
@@ -497,7 +507,7 @@ for f in "${CHANNEL_MODULES[@]}" "${AGENCY_BEHAVIORS_MODULES[@]}" "${AGENCY_MODU
 done
 
 echo ""
-echo "✅ 本地→云端代码已对齐（3 个 sync 文件 + runner + gc 工具 + 6 个 proactivity + 5 个通道/熔断模块 + 3 个 agency 核心 + 5 个 agency 行为 + 云端 L2 agency tick + 云端 drift 脚本）。"
+echo "✅ 本地→云端代码已对齐（3 个 sync 文件 + runner + gc 工具 + 6 个 proactivity + 5 个通道/熔断模块 + 3 个 agency 核心 + 5 个 agency 行为 + 天气感知 + 云端 L2 agency tick + 云端 drift 脚本）。"
 
 # ---- 对账（2026-10-09 加）：本清单是逐文件显式列举，漏加即静默不同步 ----
 # 起因：user_fact_context.py（c06ab7e）被 manager.py/understanding.py import 却不在

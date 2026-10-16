@@ -65,15 +65,30 @@ OPEN_METEO = {
 
 @pytest.fixture
 def base(tmp_path, monkeypatch):
-    """隔离 base_dir + 默认开关全开 + 网络永不通（漏 patch 会立刻炸）。"""
+    """隔离 base_dir + 默认开关全开 + 网络永不通（漏 patch 会立刻炸）+ 无手动城市。
+
+    注意：不再默认设 DESKMATE_WEATHER_LOCATION——「跟 IP 走」的用例需要无覆盖环境。
+    需要固定城市的旧用例用 ``ningbo`` fixture。
+    """
     monkeypatch.setenv("DESKMATE_WEATHER", "1")
     monkeypatch.setenv("DESKMATE_WEATHER_MOOD", "1")
-    monkeypatch.setenv("DESKMATE_WEATHER_LOCATION", "宁波")
+    monkeypatch.delenv("DESKMATE_WEATHER_LOCATION", raising=False)
+    monkeypatch.delenv("DESKMATE_WEATHER_LAT", raising=False)
+    monkeypatch.delenv("DESKMATE_WEATHER_LON", raising=False)
     monkeypatch.setattr(
         wx_mod, "_http_get_json",
         lambda url: (_ for _ in ()).throw(AssertionError(f"网络未 patch: {url}")),
     )
+    # 默认「无网 → IP 定位失败」：各用例按需覆盖成具体城市（见 test_geo_*）
+    monkeypatch.setattr(wx_mod, "_fetch_ip_geo", lambda: None)
     return tmp_path
+
+
+@pytest.fixture
+def ningbo(base, monkeypatch):
+    """旧用例兼容：手动覆盖城市=宁波（跟 IP 走引入前的默认形态）。"""
+    monkeypatch.setenv("DESKMATE_WEATHER_LOCATION", "宁波")
+    return base
 
 
 @pytest.fixture
@@ -178,15 +193,15 @@ def test_stale_cache_both_sources_fail_returns_stale(base, monkeypatch):
         "data": {"condition": "overcast", "temp_c": 18.0, "location": "宁波"},
         "fetched_at_ts": _t.time() - 3600,
     })
-    monkeypatch.setattr(wx_mod, "_fetch_wttr", lambda: None)
-    monkeypatch.setattr(wx_mod, "_fetch_open_meteo", lambda: None)
+    monkeypatch.setattr(wx_mod, "_fetch_wttr", lambda *a, **k: None)
+    monkeypatch.setattr(wx_mod, "_fetch_open_meteo", lambda *a, **k: None)
     wx = fetch_weather(base)
     assert wx and wx["condition"] == "overcast"
 
 
 def test_no_cache_all_fail_returns_none(base, monkeypatch):
-    monkeypatch.setattr(wx_mod, "_fetch_wttr", lambda: None)
-    monkeypatch.setattr(wx_mod, "_fetch_open_meteo", lambda: None)
+    monkeypatch.setattr(wx_mod, "_fetch_wttr", lambda *a, **k: None)
+    monkeypatch.setattr(wx_mod, "_fetch_open_meteo", lambda *a, **k: None)
     assert fetch_weather(base) is None
 
 
@@ -232,6 +247,138 @@ def test_both_sources_garbage_fail_open(base, monkeypatch):
     """两个源都返回解析不了的垃圾 → None，不抛。"""
     monkeypatch.setattr(wx_mod, "_http_get_json", lambda url: {"junk": True})
     assert fetch_weather(base) is None
+
+
+# ---------------------------------------------------------------------------
+# 跟 IP 走（2026-10-16 萧哥拍板：人不在宁波时她嘴里的天气得跟他走）
+# ---------------------------------------------------------------------------
+def _fake_wx(location):
+    return {
+        "location": location, "condition": "clear", "condition_text": "晴",
+        "temp_c": 25.0, "feels_like_c": 26.0, "humidity": 40, "today": {},
+        "provider": "wttr", "fetched_at": "2026-10-16T10:00:00",
+    }
+
+
+def test_geo_ip_success_feeds_both_sources(base, monkeypatch):
+    """IP 定位成功 → wttr/open-meteo 都吃到定位的城市与坐标；缓存落盘。"""
+    seen: dict = {}
+    monkeypatch.setattr(
+        wx_mod, "_fetch_ip_geo",
+        lambda: {"city": "Shaoxing", "lat": 30.0, "lon": 120.5},
+    )
+
+    def fake_wttr(location=None):
+        seen["wttr_loc"] = location
+        return None  # 让它走 open-meteo 兜底，两个源都验
+
+    def fake_meteo(lat=None, lon=None, location=None):
+        seen.update({"lat": lat, "lon": lon, "meteo_loc": location})
+        return {
+            "location": location, "condition": "clear", "condition_text": "晴",
+            "temp_c": 25.0, "feels_like_c": 26.0, "humidity": 40,
+            "today": {}, "provider": "open-meteo",
+            "fetched_at": "2026-10-16T10:00:00",
+        }
+
+    monkeypatch.setattr(wx_mod, "_fetch_wttr", fake_wttr)
+    monkeypatch.setattr(wx_mod, "_fetch_open_meteo", fake_meteo)
+    wx = fetch_weather(base)
+    assert wx and wx["location"] == "Shaoxing"
+    assert seen == {"wttr_loc": "Shaoxing", "lat": 30.0, "lon": 120.5, "meteo_loc": "Shaoxing"}
+    # 定位缓存落盘
+    geo = load_cache(base)["geo"]
+    assert geo["city"] == "Shaoxing" and geo["lat"] == 30.0
+
+
+def test_geo_fresh_cache_no_network(base, monkeypatch):
+    """定位缓存 12h 新鲜 → 不再打 IP 定位（打就炸）。"""
+    import time as _t
+    save_cache(base, {"geo": {"city": "Shaoxing", "lat": 30.0, "lon": 120.5, "ts": _t.time()}})
+    monkeypatch.setattr(
+        wx_mod, "_fetch_ip_geo",
+        lambda: (_ for _ in ()).throw(AssertionError("新鲜缓存不该打 IP 定位")),
+    )
+    seen: dict = {}
+
+    def fake_wttr(location=None):
+        seen["loc"] = location
+        return _fake_wx(location)
+
+    monkeypatch.setattr(wx_mod, "_fetch_wttr", fake_wttr)
+    wx = fetch_weather(base)
+    assert wx and seen["loc"] == "Shaoxing"
+
+
+def test_geo_stale_cache_used_when_refresh_fails(base, monkeypatch):
+    """定位缓存过期 + 刷新失败 → 用陈旧定位（陈旧 > 没有，跨城当天仍准）。"""
+    import time as _t
+    save_cache(base, {"geo": {
+        "city": "Shaoxing", "lat": 30.0, "lon": 120.5,
+        "ts": _t.time() - 24 * 3600,  # 过期
+    }})
+    monkeypatch.setattr(wx_mod, "_fetch_ip_geo", lambda: None)  # 刷新失败
+    seen: dict = {}
+
+    def fake_wttr(location=None):
+        seen["loc"] = location
+        return _fake_wx(location)
+
+    monkeypatch.setattr(wx_mod, "_fetch_wttr", fake_wttr)
+    wx = fetch_weather(base)
+    assert wx and seen["loc"] == "Shaoxing"
+
+
+def test_geo_manual_override_wins(base, monkeypatch):
+    """手动覆盖最优先：设了城市就不打 IP 定位，也不看缓存。"""
+    import time as _t
+    monkeypatch.setenv("DESKMATE_WEATHER_LOCATION", "北京")
+    save_cache(base, {"geo": {"city": "Shaoxing", "lat": 30.0, "lon": 120.5, "ts": _t.time()}})
+    monkeypatch.setattr(
+        wx_mod, "_fetch_ip_geo",
+        lambda: (_ for _ in ()).throw(AssertionError("手动覆盖时不该打 IP 定位")),
+    )
+    seen: dict = {}
+
+    def fake_wttr(location=None):
+        seen["loc"] = location
+        return _fake_wx(location)
+
+    monkeypatch.setattr(wx_mod, "_fetch_wttr", fake_wttr)
+    wx = fetch_weather(base)
+    assert wx and seen["loc"] == "北京"
+
+
+def test_geo_all_fail_falls_back_to_ningbo(base, monkeypatch):
+    """无覆盖+无缓存+定位失败 → 宁波兜底（她的家，行为同引入前）。"""
+    monkeypatch.setattr(wx_mod, "_fetch_ip_geo", lambda: None)
+    seen: dict = {}
+
+    def fake_wttr(location=None):
+        seen["loc"] = location
+        return _fake_wx(location)
+
+    monkeypatch.setattr(wx_mod, "_fetch_wttr", fake_wttr)
+    wx = fetch_weather(base)
+    assert wx and seen["loc"] == "宁波"
+    # open-meteo 兜底坐标也应是宁波
+    seen2: dict = {}
+
+    def fake_meteo(lat=None, lon=None, location=None):
+        seen2.update({"lat": lat, "lon": lon})
+        return {**_fake_wx(location), "provider": "open-meteo"}
+
+    monkeypatch.setattr(wx_mod, "_fetch_wttr", lambda *a, **k: None)
+    monkeypatch.setattr(wx_mod, "_fetch_open_meteo", fake_meteo)
+    wx2 = fetch_weather(base, force=True)
+    assert wx2 and seen2 == {"lat": 29.87, "lon": 121.55}
+
+
+def test_geo_ip_response_garbage_fail_open(base, monkeypatch):
+    """IP 定位返回垃圾 → 落兜底，不抛。"""
+    monkeypatch.setattr(wx_mod, "_http_get_json", lambda url: {"junk": True})
+    city, lat, lon, _ = wx_mod._resolve_location(base, {})
+    assert (city, lat, lon) == ("宁波", 29.87, 121.55)
 
 
 def test_master_switch_off(base, monkeypatch):
