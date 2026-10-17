@@ -271,6 +271,26 @@ class TestSpeakerConfig:
         assert default_config_path().name == "mi_speaker.json"
         assert default_config_path().parent.name == "coworker"
 
+    def test_build_channel_passes_speak_timeout(self):
+        """speak_timeout（ubus 回执等待上限）须从配置透传到通道。"""
+        channel = build_voice_channel(
+            _brain(),
+            config={"enabled": True, "username": "13400000000", "speak_timeout": 7},
+            connector=FakeConnector([[]]),
+        )
+        assert channel is not None
+        assert channel._speak_timeout == 7.0
+
+    def test_build_channel_speak_timeout_default(self):
+        """未配置 speak_timeout 时用默认 10s（覆盖 S12 服务端 40+ 秒回 3012）。"""
+        channel = build_voice_channel(
+            _brain(),
+            config={"enabled": True, "username": "13400000000"},
+            connector=FakeConnector([[]]),
+        )
+        assert channel is not None
+        assert channel._speak_timeout == 10.0
+
 
 # ---------------------------------------------------------------------- connector
 class FakeMinaService:
@@ -604,12 +624,21 @@ class TestLifespanWiring:
 
 # ---------------------------------------------------------------------- 运维可观测性 + 播报误报
 class TestChannelLoggingAndSpeakErrors:
-    """2026-10-17 真机联调暴露的两个工程缺陷：
+    """2026-10-17 真机联调暴露的工程缺陷（两轮迭代）：
 
+    第一轮（11:00 修复）：
     1. uvicorn 只配自己的 logger，root 无 handler → 本模块 INFO 全被
        last-resort(WARNING+) 吞掉，「新提问/已播报」全程不可见，延迟排查只能靠猜。
     2. Mina ubus「远程控制超时」(code 3012) 被记成「播报失败」——真机实测命令
        已送达设备、正常播放。误报会误导后来人加重试逻辑（重试=同一条回答播两遍）。
+
+    第二轮（16:20 修复，真机验收 3-5s 后从日志发现）：
+    3. 3012 在 S12 上是**常态**（两轮真机都出现）而非异常：打 WARNING 会给
+       「出错了」的错误信号，且「已播报」INFO 行被 except 分支吞掉——
+       「新提问→已播报」运维闭环断了一半。
+    4. ubus 回执等待无上限：服务端要 40+ 秒才回 3012（15:28:24 提问 →
+       15:29:13 才打日志，49s），播放 3-5s 早开始了，daemon 却被回执等待
+       卡住停滞轮询。加 speak_timeout 上限，超时按「已送达」处理。
     """
 
     def test_ensure_channel_logging_attaches_info_handler(self):
@@ -630,8 +659,9 @@ class TestChannelLoggingAndSpeakErrors:
             lg.handlers = before  # 不污染其他测试
             lg.setLevel(logging.NOTSET)
 
-    async def test_remote_timeout_logged_as_unknown_and_never_retried(self, caplog):
-        """Mina 回执超时 ≠ 播放失败：命令通常已送达设备（真机实测听到播报）。"""
+    async def test_remote_timeout_logged_as_delivered_and_never_retried(self, caplog):
+        """Mina 回执超时（3012）是 S12 常态：按「已播报/命令已送达」记 INFO，
+        严禁重试（重试=双播），且不再打 WARNING（会误导成故障）。"""
         import logging
 
         calls = {"n": 0}
@@ -652,11 +682,48 @@ class TestChannelLoggingAndSpeakErrors:
             ],
         )
         conn.speak = timeout_speak
-        with caplog.at_level(logging.WARNING, logger="deskmate.connectors.xiaomi_voice"):
+        with caplog.at_level(logging.INFO, logger="deskmate.connectors.xiaomi_voice"):
             await channel.run_forever()
         assert calls["n"] == 1, "远程控制超时严禁重试（重试=双播）"
-        assert any("播报状态未知" in r.message for r in caplog.records)
+        delivered = [r for r in caplog.records if "已播报" in r.message]
+        assert delivered, "3012 路径也应留下「已播报」闭环行"
+        assert all(r.levelno == logging.INFO for r in delivered)
+        assert any("命令已送达" in r.message for r in caplog.records)
         assert not any("播报失败" in r.message for r in caplog.records)
+        assert not any(
+            r.levelno >= logging.WARNING and "xiaomi-voice" in r.message
+            for r in caplog.records
+        ), "3012 常态不得打 WARNING（误报故障信号）"
+
+    async def test_speak_receipt_wait_capped(self, caplog):
+        """ubus 回执等待必须有上限：服务端 40+ 秒才回 3012（真机实测 49s 停滞），
+        播放 3-5s 早已开始。speak_timeout 到点按「已送达」放行，循环不被卡死。"""
+        import asyncio
+        import logging
+
+        calls = {"n": 0}
+
+        async def slow_speak(text: str) -> bool:
+            calls["n"] += 1
+            await asyncio.sleep(30)  # 模拟服务端拖着不回执
+            return True
+
+        channel, conn = _channel(
+            [
+                [_ask("r1", 100, "旧")],
+                [_ask("r2", 200, "问题")],
+            ],
+        )
+        conn.speak = slow_speak
+        channel._speak_timeout = 0.2
+        t0 = asyncio.get_running_loop().time()
+        with caplog.at_level(logging.INFO, logger="deskmate.connectors.xiaomi_voice"):
+            await channel.run_forever()
+        elapsed = asyncio.get_running_loop().time() - t0
+        assert calls["n"] == 1, "超时后严禁重试（重试=双播）"
+        assert elapsed < 5, f"回执等待卡死了轮询：{elapsed:.1f}s（应 ~0.2s 放行）"
+        assert any("已播报" in r.message for r in caplog.records)
+        assert any("命令已送达" in r.message for r in caplog.records)
 
     async def test_genuine_speak_failure_still_logged_as_failure(self, caplog):
         import logging
@@ -674,7 +741,7 @@ class TestChannelLoggingAndSpeakErrors:
         with caplog.at_level(logging.WARNING, logger="deskmate.connectors.xiaomi_voice"):
             await channel.run_forever()
         assert any("播报失败" in r.message for r in caplog.records)
-        assert not any("播报状态未知" in r.message for r in caplog.records)
+        assert not any("命令已送达" in r.message for r in caplog.records)
 
 
 # ---------------------------------------------------------------------- 幻影模型护栏

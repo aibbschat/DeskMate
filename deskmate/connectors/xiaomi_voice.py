@@ -23,10 +23,17 @@ logger = logging.getLogger(__name__)
 RunTurn = Callable[[str], Awaitable[str]]
 
 #: Mina ubus「远程控制超时」特征串（code 3012）：请求其实已送达设备执行，
-#: 只是 Mina 回执超时。2026-10-17 真机实测：日志报失败但音箱正常播出。
+#: 只是 Mina 回执超时。2026-10-17 真机两轮实测：日志报失败但音箱正常播出。
 #: 刻意与「真失败」区分——若按失败处理（尤其是将来有人加重试），同一条
 #: 回答会被播两遍。
 _REMOTE_TIMEOUT_MARKERS = ("远程控制超时", "3012")
+
+#: ubus 回执等待上限（秒）。S12 老固件回执通道坏：服务端要 40+ 秒才回 3012
+#: （真机实测 15:28:24 提问 → 15:29:13 才打日志，停滞 49s），而播放 3-5s 早就
+#: 开始了。等满回执对用户体验零贡献，只拖累「发现下一句提问」的时效。
+#: 到点按「命令已送达」放行——缩短窗口不增加误判面（3012 本身就不携带设备
+#: 状态，等 30s 拿到 3012 同样无法区分播了/没播）。
+_DEFAULT_SPEAK_TIMEOUT = 10.0
 
 
 def _is_remote_timeout(exc: BaseException) -> bool:
@@ -63,6 +70,8 @@ class VoiceChannel:
       走 manager.get_engine(agent="deskmate") → engine.run() → 收集
       ASSISTANT_MESSAGE。测试可注入任意 fake。
     - poll_interval: 轮询间隔秒（下限 0.1s）。
+    - speak_timeout: ubus 回执等待上限秒（下限 1.0s）。S12 回执通道坏，
+      服务端 40+ 秒才回 3012，播放却 3-5s 已开始；到点按已送达放行。
     """
 
     def __init__(
@@ -71,11 +80,13 @@ class VoiceChannel:
         connector: Any,
         run_turn: RunTurn,
         poll_interval: float = 1.5,
+        speak_timeout: float = _DEFAULT_SPEAK_TIMEOUT,
         log: Optional[logging.Logger] = None,
     ) -> None:
         self._connector = connector
         self._run_turn = run_turn
         self._poll_interval = max(0.1, float(poll_interval))
+        self._speak_timeout = max(1.0, float(speak_timeout))
         self._log = log or logger
         self._tracker = AskTracker()
         self._stop = asyncio.Event()
@@ -130,15 +141,25 @@ class VoiceChannel:
             return
         await self._safe_stop()  # 原生应答可能在思考期间刚起，播报前再停
         try:
-            await self._connector.speak(text)
+            await asyncio.wait_for(
+                self._connector.speak(text), timeout=self._speak_timeout
+            )
             self._log.info("[xiaomi-voice] 已播报（%d 字）", len(text))
+        except asyncio.TimeoutError:
+            # 回执通道坏（S12 常态）：命令已送达、设备在播，只是 Mina 不回执。
+            # 刻意不重试——重试会把同一条回答播两遍。
+            self._log.info(
+                "[xiaomi-voice] 已播报（%d 字；回执 %.0fs 超时，命令已送达，不重试）",
+                len(text),
+                self._speak_timeout,
+            )
         except Exception as e:
             if _is_remote_timeout(e):
-                # Mina 回执超时 ≠ 播放失败：ubus 命令通常已送达设备（真机实测）。
-                # 刻意不重试——重试会把同一条回答播两遍。
-                self._log.warning(
-                    "[xiaomi-voice] 播报状态未知（Mina 回执超时，命令可能已送达设备；不重试，避免双播）: %s",
-                    e,
+                # 同上的 3012 路径：服务端自己拖了 40+ 秒才回「远程控制超时」。
+                # 按已送达记 INFO——这是常态路径，不是故障。
+                self._log.info(
+                    "[xiaomi-voice] 已播报（%d 字；Mina 回执超时 3012，命令已送达，不重试）",
+                    len(text),
                 )
             else:
                 self._log.warning("[xiaomi-voice] 播报失败: %s", e)
@@ -174,4 +195,5 @@ def build_voice_channel(
         connector=connector,
         run_turn=run_turn,
         poll_interval=float(cfg.get("poll_interval") or 1.5),
+        speak_timeout=float(cfg.get("speak_timeout") or _DEFAULT_SPEAK_TIMEOUT),
     )
