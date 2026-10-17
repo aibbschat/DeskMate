@@ -602,6 +602,105 @@ class TestLifespanWiring:
             assert client.get("/v1/health").status_code == 200
 
 
+# ---------------------------------------------------------------------- 运维可观测性 + 播报误报
+class TestChannelLoggingAndSpeakErrors:
+    """2026-10-17 真机联调暴露的两个工程缺陷：
+
+    1. uvicorn 只配自己的 logger，root 无 handler → 本模块 INFO 全被
+       last-resort(WARNING+) 吞掉，「新提问/已播报」全程不可见，延迟排查只能靠猜。
+    2. Mina ubus「远程控制超时」(code 3012) 被记成「播报失败」——真机实测命令
+       已送达设备、正常播放。误报会误导后来人加重试逻辑（重试=同一条回答播两遍）。
+    """
+
+    def test_ensure_channel_logging_attaches_info_handler(self):
+        import logging
+
+        from deskmate.connectors import xiaomi_voice as xv
+
+        lg = logging.getLogger("deskmate.connectors.xiaomi_voice")
+        before = list(lg.handlers)
+        try:
+            xv.ensure_channel_logging()
+            assert lg.handlers, "应至少有一个 handler（否则 INFO 仍被吞）"
+            assert lg.getEffectiveLevel() == logging.INFO
+            n = len(lg.handlers)
+            xv.ensure_channel_logging()  # 幂等：不重复加
+            assert len(lg.handlers) == n
+        finally:
+            lg.handlers = before  # 不污染其他测试
+            lg.setLevel(logging.NOTSET)
+
+    async def test_remote_timeout_logged_as_unknown_and_never_retried(self, caplog):
+        """Mina 回执超时 ≠ 播放失败：命令通常已送达设备（真机实测听到播报）。"""
+        import logging
+
+        calls = {"n": 0}
+
+        async def timeout_speak(text: str) -> bool:
+            calls["n"] += 1
+            raise RuntimeError(
+                "Error https://api2.mina.mi.com/remote/ubus: {'code': 101, "
+                "'message': 'ubus server or device returned invalid result', "
+                "'data': {'device_data': '{\"msg\":\"远程控制超时\",\"code\":3012}', "
+                "'reqID': 'app_ios_x'}}"
+            )
+
+        channel, conn = _channel(
+            [
+                [_ask("r1", 100, "旧")],
+                [_ask("r2", 200, "问题")],
+            ],
+        )
+        conn.speak = timeout_speak
+        with caplog.at_level(logging.WARNING, logger="deskmate.connectors.xiaomi_voice"):
+            await channel.run_forever()
+        assert calls["n"] == 1, "远程控制超时严禁重试（重试=双播）"
+        assert any("播报状态未知" in r.message for r in caplog.records)
+        assert not any("播报失败" in r.message for r in caplog.records)
+
+    async def test_genuine_speak_failure_still_logged_as_failure(self, caplog):
+        import logging
+
+        async def broken_speak(text: str) -> bool:
+            raise RuntimeError("device offline")
+
+        channel, conn = _channel(
+            [
+                [_ask("r1", 100, "旧")],
+                [_ask("r2", 200, "问题")],
+            ],
+        )
+        conn.speak = broken_speak
+        with caplog.at_level(logging.WARNING, logger="deskmate.connectors.xiaomi_voice"):
+            await channel.run_forever()
+        assert any("播报失败" in r.message for r in caplog.records)
+        assert not any("播报状态未知" in r.message for r in caplog.records)
+
+
+# ---------------------------------------------------------------------- 幻影模型护栏
+class TestPhantomModelGuard:
+    """xiaomi:mimo-v2.6 是幻影模型：小米 token-plan 端点 /v1/models 实测没有它
+    （2026-10-17 curl 直证；chat 调用返 400 "Unsupported model"，真实存在的同级
+    模型是 mimo-v2.6-pro）。
+
+    真实踩坑：prefs.json 的 default_model 被设成幻影模型 → 每轮必 400 → 熔断 →
+    降级重试，小爱语音端到端延迟 5-10s。矩阵/别名表再铺它就是给人埋雷。
+    """
+
+    def test_matrix_has_no_phantom_xiaomi_model(self):
+        from coworker.providers.matrix import MATRIX
+
+        assert "xiaomi:mimo-v2.6" not in MATRIX, "幻影模型必须清出矩阵（永远 400）"
+        assert "xiaomi:mimo-v2.6-pro" in MATRIX, "真实模型应保留"
+
+    def test_selection_aliases_never_point_at_phantom(self):
+        from deskmate.selection.server import _MODEL_ALIASES
+
+        bad = {s: f for s, f in _MODEL_ALIASES.items() if f == "xiaomi:mimo-v2.6"}
+        assert not bad, f"别名仍指向幻影模型: {bad}"
+        assert _MODEL_ALIASES["mimo"] == "xiaomi:mimo-v2.6-pro"
+
+
 # ---------------------------------------------------------------------- 登录 CLI
 class TestInteractiveLogin:
     """_interactive_login：MI_PASS 缺失时走 getpass 交互输入（不回显/不进历史）。"""

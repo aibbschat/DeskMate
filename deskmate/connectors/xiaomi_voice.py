@@ -22,6 +22,36 @@ logger = logging.getLogger(__name__)
 
 RunTurn = Callable[[str], Awaitable[str]]
 
+#: Mina ubus「远程控制超时」特征串（code 3012）：请求其实已送达设备执行，
+#: 只是 Mina 回执超时。2026-10-17 真机实测：日志报失败但音箱正常播出。
+#: 刻意与「真失败」区分——若按失败处理（尤其是将来有人加重试），同一条
+#: 回答会被播两遍。
+_REMOTE_TIMEOUT_MARKERS = ("远程控制超时", "3012")
+
+
+def _is_remote_timeout(exc: BaseException) -> bool:
+    """Mina 回执超时（命令可能已送达）vs 真播报失败。"""
+    s = str(exc)
+    return any(m in s for m in _REMOTE_TIMEOUT_MARKERS)
+
+
+def ensure_channel_logging() -> None:
+    """确保语音通道日志可见（INFO 级 StreamHandler，幂等）。
+
+    为什么需要：server 走 uvicorn，uvicorn 只配自己的 logger，root 没有
+    handler → 本模块日志只剩 logging 的 last-resort（WARNING+），INFO 全被
+    吞掉。2026-10-17 排查语音延迟时「新提问/已播报」全程不可见，只能靠猜。
+    语音通道是运维关键路径，构建通道时确保有 INFO 级输出。
+    """
+    if logger.handlers:
+        return
+    h = logging.StreamHandler()
+    h.setFormatter(
+        logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s")
+    )
+    logger.addHandler(h)
+    logger.setLevel(logging.INFO)
+
 
 class VoiceChannel:
     """小爱音箱语音通道守护循环。
@@ -103,7 +133,15 @@ class VoiceChannel:
             await self._connector.speak(text)
             self._log.info("[xiaomi-voice] 已播报（%d 字）", len(text))
         except Exception as e:
-            self._log.warning("[xiaomi-voice] 播报失败: %s", e)
+            if _is_remote_timeout(e):
+                # Mina 回执超时 ≠ 播放失败：ubus 命令通常已送达设备（真机实测）。
+                # 刻意不重试——重试会把同一条回答播两遍。
+                self._log.warning(
+                    "[xiaomi-voice] 播报状态未知（Mina 回执超时，命令可能已送达设备；不重试，避免双播）: %s",
+                    e,
+                )
+            else:
+                self._log.warning("[xiaomi-voice] 播报失败: %s", e)
 
     async def _safe_stop(self) -> None:
         try:
@@ -119,6 +157,7 @@ def build_voice_channel(
     connector: Any = None,
 ) -> Optional[VoiceChannel]:
     """按配置构建语音通道；未启用或未配置账号时返回 None（fail-closed）。"""
+    ensure_channel_logging()
     cfg = config if config is not None else load_speaker_config()
     if not cfg.get("enabled"):
         return None

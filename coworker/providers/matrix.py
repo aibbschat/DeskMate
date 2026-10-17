@@ -171,13 +171,14 @@ MATRIX: dict[str, ModelEntry] = {
     "ark-agent-plan-cn:kimi-k2.7-code": ModelEntry(
         "Kimi K2.7 Code · Volcengine Agent Plan", context_window=256_000
     ),
-    # Xiaomi 官方 token-plan 端点（provider:xiaomi，2026-09-01 实测模型 ID 服务端认可，
-    # 当前 429 额度用尽属暂时；OpenRouter 中转不稳定故注册官方端点备用）。
+    # Xiaomi 官方 token-plan 端点（provider:xiaomi）。模型清单以端点
+    # GET /v1/models 实测为准（2026-10-17 复核）：mimo-v2.5 / mimo-v2.5-pro /
+    # mimo-v2.6-flash / mimo-v2.6-pro（外加 asr/tts 专用号，非对话模型）。
+    # ⚠️ 曾经铺过的 ``xiaomi:mimo-v2.6`` 是幻影：端点没有这个 model id，
+    # chat 调用必返 400 "Unsupported model"（default_model 误设成它时每轮
+    # 撞墙再降级，小爱语音延迟 5-10s）。清出去，别再铺回来。
     "xiaomi:mimo-v2.6-pro": ModelEntry(
         "MiMo V2.6 Pro · Xiaomi token-plan", context_window=256_000
-    ),
-    "xiaomi:mimo-v2.6": ModelEntry(
-        "MiMo V2.6 · Xiaomi token-plan", context_window=256_000
     ),
     # Tencent TokenHub Token Plan（provider:tencent-tokenplan）。Hy 套餐为纯文本线——官方
     # 「可用模型」明确写「暂不支持图片、视频等多模态能力」，故 caps 用 _AGENTIC

@@ -38,8 +38,11 @@ _MODEL_ALIASES = {
     "deepseek-chat": "deepseek:deepseek-v4-flash",
     "deepseek": "deepseek:deepseek-v4-flash",
     "deepseek-v4-flash": "deepseek:deepseek-v4-flash",
-    "mimo": "xiaomi:mimo-v2.6",
-    "mimo-v2.6": "xiaomi:mimo-v2.6",
+    # ⚠️ 别名必须指向端点真实存在的 model id（2026-10-17 实测 /v1/models）：
+    # 曾经 ``mimo → xiaomi:mimo-v2.6`` 是幻影模型（端点没有这个 id，必返
+    # 400 Unsupported model），已改指 mimo-v2.6-pro。
+    "mimo": "xiaomi:mimo-v2.6-pro",
+    "mimo-v2.6": "xiaomi:mimo-v2.6-pro",
     "mimo-v2.6-pro": "xiaomi:mimo-v2.6-pro",
 }
 
