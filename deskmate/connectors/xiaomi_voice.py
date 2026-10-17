@@ -35,11 +35,64 @@ _REMOTE_TIMEOUT_MARKERS = ("远程控制超时", "3012")
 #: 状态，等 30s 拿到 3012 同样无法区分播了/没播）。
 _DEFAULT_SPEAK_TIMEOUT = 10.0
 
+#: 提问聚合窗口（秒）。小爱端点检测激进：用户思考停顿/换气都被判「说完了」，
+#: 半句话被截断；后续语音可能拆成独立记录晚几秒到来、也可能被抢答播放期间
+#: 的设备 AEC 吞掉（2026-10-17 萧哥真机观察「往往没说完就接过去」）。
+#: 窗口内汇合延续记录再拼接；延迟被思考提示 filler 播放覆盖。0=关闭。
+_DEFAULT_MERGE_WINDOW = 2.5
+
 
 def _is_remote_timeout(exc: BaseException) -> bool:
     """Mina 回执超时（命令可能已送达）vs 真播报失败。"""
     s = str(exc)
     return any(m in s for m in _REMOTE_TIMEOUT_MARKERS)
+
+
+def _merge_questions(group: list[dict]) -> str:
+    """把一组（被端点截断拆开的）提问按时间序拼成完整句。
+
+    相邻重复只留一份（小爱对同一句识别出两条记录的罕见情形）。
+    """
+    out: list[str] = []
+    for a in sorted(group, key=lambda x: int(x.get("timestamp_ms") or 0)):
+        q = str(a.get("question") or "").strip()
+        if q and (not out or out[-1] != q):
+            out.append(q)
+    return "".join(out)  # 中文无分隔拼接
+
+
+class _AskAggregator:
+    """提问聚合器：小爱端点检测激进（思考停顿/换气都被判「说完了」），
+    用户的半句话会被截断；后续语音可能作为独立记录晚几秒到来，也可能
+    在抢答播放期间被设备 AEC 吞掉不进记录（2026-10-17 萧哥真机观察
+    「往往没说完就接过去，小桔只听到半句话」）。
+
+    策略：窗口期内汇合延续记录，flush 时按时间序拼接，一次性交给大脑。
+    代价（多等一个窗口）被思考提示 filler 的播放覆盖；窗口内没有后续
+    也不亏。窗口从首条到达起算、不顺延（防用户断续续等永远不答）。
+    """
+
+    def __init__(self, window: float) -> None:
+        self._window = max(0.0, float(window))
+        self._pending: list[dict] = []
+        self._deadline: Optional[float] = None
+
+    def add(self, asks: list[dict], now: float) -> None:
+        for a in asks:
+            if str(a.get("question") or "").strip():
+                self._pending.append(a)
+        if self._pending and self._deadline is None:
+            self._deadline = now + self._window
+
+    def pop_ready(self, now: float, force: bool = False) -> list[list[dict]]:
+        """取出到期的组；force=True 时忽略期限（退出前 flush 用）。"""
+        if not self._pending:
+            return []
+        if not force and (self._deadline is None or now < self._deadline):
+            return []
+        group, self._pending = self._pending, []
+        self._deadline = None
+        return [group]
 
 
 def ensure_channel_logging() -> None:
@@ -72,6 +125,8 @@ class VoiceChannel:
     - poll_interval: 轮询间隔秒（下限 0.1s）。
     - speak_timeout: ubus 回执等待上限秒（下限 1.0s）。S12 回执通道坏，
       服务端 40+ 秒才回 3012，播放却 3-5s 已开始；到点按已送达放行。
+    - merge_window: 提问聚合窗口秒。小爱端点检测激进会把半句话截断，
+      窗口内汇合延续记录再拼接交给大脑；延迟被 filler 覆盖。0=关闭。
     - thinking_filler: 打断小爱后、大脑思考前发送的短 TTS 提示文本，
       填补思考期间的静默。speak() 只发命令不等播放完成，filler 与
       run_turn 并行。空串则不发。缺省「让我想想」。
@@ -84,6 +139,7 @@ class VoiceChannel:
         run_turn: RunTurn,
         poll_interval: float = 1.5,
         speak_timeout: float = _DEFAULT_SPEAK_TIMEOUT,
+        merge_window: float = _DEFAULT_MERGE_WINDOW,
         thinking_filler: str = "让我想想",
         log: Optional[logging.Logger] = None,
     ) -> None:
@@ -91,6 +147,8 @@ class VoiceChannel:
         self._run_turn = run_turn
         self._poll_interval = max(0.1, float(poll_interval))
         self._speak_timeout = max(1.0, float(speak_timeout))
+        self._merge_window = max(0.0, float(merge_window))
+        self._aggregator = _AskAggregator(self._merge_window)
         self._thinking_filler = thinking_filler
         self._filler_tasks: list[asyncio.Task] = []  # 并行发送中的思考提示
         self._log = log or logger
@@ -117,16 +175,19 @@ class VoiceChannel:
     # -- 主循环 --------------------------------------------------------------
     async def run_forever(self) -> None:
         self._log.info("[xiaomi-voice] 语音通道启动（轮询 %.1fs）", self._poll_interval)
+        loop = asyncio.get_running_loop()
         try:
             while not self._stop.is_set():
                 try:
                     asks = await self._connector.latest_asks()
                     fresh = self._tracker.fresh(asks)
                     for ask in fresh:
-                        # 发现即静音（xiaogpt 轮询循环级打断）：不等大脑/播报
-                        # 流程，小爱抢答压得越早漏得越少。
+                        # 发现即静音（xiaogpt 轮询循环级打断）：不等聚合
+                        # 窗口/大脑流程，小爱抢答压得越早漏得越少。
                         await self._safe_mute()
-                        await self._handle(ask)
+                    self._aggregator.add(fresh, loop.time())
+                    for group in self._aggregator.pop_ready(loop.time()):
+                        await self._handle_group(group)
                 except Exception as e:  # 轮询异常：记日志，循环继续
                     self._log.warning("[xiaomi-voice] 轮询异常（继续）: %s", e)
                 try:
@@ -135,18 +196,31 @@ class VoiceChannel:
                     pass
         finally:
             self._log.info("[xiaomi-voice] 语音通道停止")
+            # 退出前 flush 未到期组：App 关闭不吞用户最后一句话（若关闭流程
+            # 有取消时限，被取消也只是丢这半句，不影响主链路）。
+            try:
+                for group in self._aggregator.pop_ready(loop.time(), force=True):
+                    await self._handle_group(group)
+            except Exception as e:
+                self._log.debug("[xiaomi-voice] 退出前 flush 失败（忽略）: %s", e)
             for t in self._filler_tasks:  # 等取消落地，避免 "Task was destroyed"
                 t.cancel()
             if self._filler_tasks:
                 await asyncio.gather(*self._filler_tasks, return_exceptions=True)
 
-    # -- 单问处理 ------------------------------------------------------------
-    async def _handle(self, ask: dict) -> None:
-        question = str(ask.get("question") or "").strip()
+    # -- 单组处理 ------------------------------------------------------------
+    async def _handle_group(self, group: list[dict]) -> None:
+        """处理一组（可能被端点截断拆开的）提问：拼接 → 提示 → 大脑 → 播报。"""
+        question = _merge_questions(group)
         if not question:
             return
-        self._log.info("[xiaomi-voice] 新提问: %s", question[:80])
-        await self._safe_mute()  # 检测时刻静音（循环级已静音过一次，双保险）
+        if len(group) > 1:
+            self._log.info(
+                "[xiaomi-voice] 新提问（合并 %d 条截断记录）: %s", len(group), question[:80]
+            )
+        else:
+            self._log.info("[xiaomi-voice] 新提问: %s", question[:80])
+        await self._safe_mute()  # 双保险：循环级已静音过一次（发现即静音）
         # 思考提示：打断后立刻发一句短 TTS，填补大脑思考期间的静默。
         # 必须**并行**发送（create_task，不 await 回执）：S12 的 ubus 回执要
         # 40+ 秒，若 await 它 run_turn 会被推迟 speak_timeout 秒——端到端
@@ -235,6 +309,9 @@ def build_voice_channel(
         run_turn=run_turn,
         poll_interval=float(cfg.get("poll_interval") or 1.5),
         speak_timeout=float(cfg.get("speak_timeout") or _DEFAULT_SPEAK_TIMEOUT),
+        merge_window=float(cfg.get("merge_window") or 0.0)
+        if "merge_window" in cfg
+        else _DEFAULT_MERGE_WINDOW,
         # 显式空串 = 关闭思考提示（尊重配置，不用 or 回退默认）
         thinking_filler=str(cfg["thinking_filler"])
         if "thinking_filler" in cfg

@@ -108,13 +108,27 @@ def _brain(replies: dict[str, str] | None = None, default: str = "默认回复")
     return run_turn
 
 
-def _channel(script: list[list[dict]], run_turn=None, connector_cls=FakeConnector, *, thinking_filler: str = ""):
-    """装配 通道+假连接器（脚本耗尽自动停），返回 (channel, connector)。"""
+def _channel(
+    script: list[list[dict]],
+    run_turn=None,
+    connector_cls=FakeConnector,
+    *,
+    thinking_filler: str = "",
+    merge_window: float = 0.0,
+):
+    """装配 通道+假连接器（脚本耗尽自动停），返回 (channel, connector)。
+
+    thinking_filler / merge_window 透传：filler 与聚合相关测试显式传值；
+    其余测试缺省 "" / 0.0（快速路径，逐问立即处理）。注意 merge_window
+    必须在构造时透传——VoiceChannel 内部的 _AskAggregator 在 __init__
+    时就固定了窗口值，事后设 channel._merge_window 字段无效（踩坑）。
+    """
     channel = VoiceChannel(
         connector=None,
         run_turn=run_turn or _brain(),
         poll_interval=0.1,
         thinking_filler=thinking_filler,
+        merge_window=merge_window,
     )
     conn = connector_cls(script)
     conn.on_exhausted = channel.stop
@@ -201,6 +215,7 @@ class TestVoiceChannel:
                 [_ask("r3", 300, "好问题")],
             ],
             run_turn=flaky_brain,
+            merge_window=0.0,  # 关聚合，逐问独立处理（本测试意图：容错）
         )
         await channel.run_forever()
         assert conn.spoken == ["回复:好问题"]
@@ -346,6 +361,21 @@ class TestSpeakerConfig:
         )
         assert channel is not None
         assert channel._speak_timeout == 10.0
+
+    def test_build_channel_merge_window_passthrough(self):
+        """merge_window（提问聚合窗口）须从配置透传；缺省 2.5s。"""
+        ch1 = build_voice_channel(
+            _brain(),
+            config={"enabled": True, "username": "13400000000", "merge_window": 1.5},
+            connector=FakeConnector([[]]),
+        )
+        assert ch1 is not None and ch1._merge_window == 1.5
+        ch2 = build_voice_channel(
+            _brain(),
+            config={"enabled": True, "username": "13400000000"},
+            connector=FakeConnector([[]]),
+        )
+        assert ch2 is not None and ch2._merge_window == 2.5
 
     def test_build_channel_passes_thinking_filler(self):
         """thinking_filler 从配置透传到通道。"""
@@ -836,6 +866,203 @@ class TestChannelLoggingAndSpeakErrors:
         assert not any("命令已送达" in r.message for r in caplog.records)
 
 
+# ---------------------------------------------------------------------- 提问聚合（半句截断防御）
+class TestAskMerging:
+    """小爱端点检测激进：用户话没说完（思考停顿/换气）就被判「说完了」，
+    抢答开始后设备 AEC 还会吞掉后续语音——小桔可能只拿到半句话。
+
+    2026-10-17 真机记录实证（18:04-18:05）：多数轮次 query 完整，但萧哥
+    观察「往往没说完就接过去」——间歇性截断。对话记录服务里残句与后续
+    可能拆成两条、也可能后续被 AEC 吞掉不进记录。
+
+    对策：聚合窗口。发现提问后等 merge_window 秒，汇合窗口内到达的延续
+    记录，按时间序拼接后一次性交给大脑。延迟被思考提示 filler 的播放
+    覆盖（用户感知不变）；窗口内没有后续也不亏——只多等一个 filler 的
+    时长。窗口值经 mi_speaker.json 可配，0 = 关闭（立即处理）。
+    """
+
+    async def test_single_ask_processed_after_window(self):
+        """单条提问：等窗口到期后原样处理（不少字、不多字）。"""
+        channel, conn = _channel(
+            [
+                [_ask("r1", 100, "旧")],
+                [_ask("r2", 200, "你晓得我最近在写什么吗")],
+                [],
+                [],
+                [],
+                [],
+            ],
+            thinking_filler="",
+            merge_window=0.3,
+        )
+        got: list[str] = []
+
+        async def recording_brain(text: str) -> str:
+            got.append(text)
+            return "回复"
+
+        channel._run_turn = recording_brain
+        await channel.run_forever()
+        assert got == ["你晓得我最近在写什么吗"]  # 原样，不拼接不截断
+        assert conn.spoken == ["回复"]
+
+    async def test_split_query_merged_within_window(self):
+        """核心场景：残句 + 窗口内到达的后续 → 合并成完整句，只答一次。"""
+        channel, conn = _channel(
+            [
+                [_ask("r1", 100, "旧")],  # 基线
+                [_ask("r2", 200, "你晓得我最近在写")],  # 残句（端点截断）
+                [],
+                [],
+                [_ask("r3", 260, "什么小说吗")],  # 后续语音（窗口内到达）
+                [],
+                [],
+            ],
+            thinking_filler="",
+            merge_window=0.5,
+        )
+        got: list[str] = []
+
+        async def recording_brain(text: str) -> str:
+            got.append(text)
+            return "回复"
+
+        channel._run_turn = recording_brain
+        await channel.run_forever()
+        assert got == ["你晓得我最近在写什么小说吗"], f"应合并为完整句，实际: {got}"
+        assert conn.spoken == ["回复"]  # 只播一次（不是两条各答一次）
+
+    async def test_asks_beyond_window_processed_separately(self):
+        """超出窗口的到达算新问题：各自处理（用户真的停顿了很久）。"""
+        channel, conn = _channel(
+            [
+                [_ask("r1", 100, "旧")],  # t=0.1 基线
+                [_ask("r2", 200, "第一个问题")],  # t=0.2，deadline=0.6
+                [],  # t=0.3
+                [],  # t=0.4
+                [],  # t=0.5
+                [],  # t=0.6 ← 本 tick flush 第一问（无新记录混入）
+                [_ask("r3", 900, "第二个问题")],  # t=0.7 新组
+                [],  # t=0.8
+                [],  # t=0.9 → 耗尽 stop（退出前 flush 第二问）
+            ],
+            thinking_filler="",
+            merge_window=0.4,
+        )
+        got: list[str] = []
+
+        async def recording_brain(text: str) -> str:
+            got.append(text)
+            return "回复"
+
+        channel._run_turn = recording_brain
+        await channel.run_forever()
+        assert got == ["第一个问题", "第二个问题"]
+
+    async def test_merge_order_follows_timestamp_and_dedups_adjacent(self):
+        """拼接按时间序；相邻重复（同句两次识别）只留一份。"""
+        from deskmate.connectors.xiaomi_voice import _merge_questions
+
+        group = [
+            _ask("r3", 300, "什么小说吗"),
+            _ask("r2", 200, "你晓得我最近在写"),
+            _ask("r2b", 210, "你晓得我最近在写"),  # 相邻重复
+        ]
+        assert _merge_questions(group) == "你晓得我最近在写什么小说吗"
+
+    async def test_mute_happens_immediately_not_delayed_by_window(self):
+        """静音时机不能被聚合窗口推迟——发现即静音（抢答压得越早漏得越少）。"""
+        channel, conn = _channel(
+            [
+                [_ask("r1", 100, "旧")],
+                [_ask("r2", 200, "问题")],
+                [],
+                [],
+            ],
+            thinking_filler="",
+            merge_window=0.5,
+        )
+        order: list[str] = []
+
+        async def recording_brain(text: str) -> str:
+            order.append("brain")
+            return "回复"
+
+        orig_mute = conn.mute_xiaoai
+
+        async def recording_mute() -> bool:
+            order.append("mute")
+            return await orig_mute()
+
+        conn.mute_xiaoai = recording_mute
+        channel._run_turn = recording_brain
+        await channel.run_forever()
+        assert order[0] == "mute"  # 窗口内 mute 已发生，brain 要等窗口
+        assert "brain" in order
+
+    async def test_filler_sent_once_per_group(self):
+        """filler 每组只发一次（不是窗口内每条记录一次）。"""
+        channel, conn = _channel(
+            [
+                [_ask("r1", 100, "旧")],
+                [_ask("r2", 200, "残句")],
+                [],
+                [],
+                [_ask("r3", 260, "后续")],
+                [],
+                [],
+            ],
+            thinking_filler="让我想想",
+            merge_window=0.5,
+        )
+        await channel.run_forever()
+        assert conn.spoken.count("让我想想") == 1  # 一组一次
+
+    async def test_stop_flushes_pending_group(self):
+        """停止时仍有未到期组：flush 处理，不吞掉用户最后一句话。"""
+        channel, conn = _channel(
+            [
+                [_ask("r1", 100, "旧")],
+                [_ask("r2", 200, "最后一问")],
+                [],
+                [],
+            ],
+            thinking_filler="",
+            merge_window=30.0,
+        )
+        got: list[str] = []
+
+        async def recording_brain(text: str) -> str:
+            got.append(text)
+            return "回复"
+
+        channel._run_turn = recording_brain
+        # 脚本耗尽 → on_exhausted → stop；退出前应 flush
+        await channel.run_forever()
+        assert got == ["最后一问"], f"stop 时应 flush 未到期组，实际: {got}"
+
+    async def test_zero_window_processes_immediately(self):
+        """merge_window=0：零延迟立即处理（向后兼容旧行为）。"""
+        channel, conn = _channel(
+            [
+                [_ask("r1", 100, "旧")],
+                [_ask("r2", 200, "问题")],
+                [],
+            ],
+            thinking_filler="",
+            merge_window=0.0,
+        )
+        got: list[str] = []
+
+        async def recording_brain(text: str) -> str:
+            got.append(text)
+            return "回复"
+
+        channel._run_turn = recording_brain
+        await channel.run_forever()
+        assert got == ["问题"]
+
+
 # ---------------------------------------------------------------------- 静音小爱（mute_xiaoai）
 class TestMuteXiaoai:
     """小爱抢答消音方案（2026-10-17 萧哥提，xiaogpt --mute_xiaoai 同款）：
@@ -936,6 +1163,7 @@ class TestMuteXiaoai:
                 [_ask("r3", 300, "问题二")],
             ],
             connector_cls=BrokenMuteConnector,
+            merge_window=0.0,  # 关聚合，两问独立处理（本测试意图：静音失败不杀循环）
         )
         await channel.run_forever()
         assert conn.spoken == ["默认回复", "默认回复"]  # 两问都正常应答
