@@ -149,10 +149,21 @@ class XiaomiSpeakerConnector:
 
             username = str(self._cfg.get("username") or os.environ.get("MI_USER") or "")
             password = os.environ.get("MI_PASS", "")
-            if not username or not password:
+            token_path = str(self._cfg.get("token_path") or (Path.home() / ".mi.token"))
+            # 守护进程常驻路径没有 MI_PASS；只要 token 文件里已有 micoapi
+            # 服务 token（登录成功后 miservice 会落盘），就允许无密码启动，
+            # _ensure_login 会加载复用、跳过 login()，password 不会被使用。
+            has_token = False
+            try:
+                if Path(token_path).is_file():
+                    _tok = json.loads(Path(token_path).read_text(encoding="utf-8"))
+                    has_token = isinstance(_tok, dict) and _SID_MICOAPI in _tok
+            except (OSError, json.JSONDecodeError):
+                has_token = False
+            if not username or (not password and not has_token):
                 raise RuntimeError(
                     "未配置小米账号：mi_speaker.json 的 username + MI_PASS 环境变量"
-                    "（一次性登录：MI_USER=.. MI_PASS=.. python -m "
+                    "（一次性登录：python -m "
                     "deskmate.connectors.xiaomi_speaker login）"
                 )
             try:

@@ -690,3 +690,63 @@ class TestOtpCallbackWiring:
         finally:
             asyncio.run(conn.close())
         assert captured["kw"].get("otp_callback") is cb
+
+
+# ---------------------------------------------------------------------- token 复用启动
+class TestTokenReuseStart:
+    """守护进程常驻路径：~/.mi.token 有效时，无 MI_PASS 也必须能启动。
+
+    真实场景：lifespan 起 VoiceChannel 时环境里没有 MI_PASS，
+    若 start() 无条件要求密码，token 明明有效也会被拦，语音通道起不来。
+    """
+
+    def _fake_miservice(self, monkeypatch):
+        import miservice
+
+        class FakeAccount:
+            def __init__(self, session, username, password, token_path=".mi.token", **kw):
+                self.token = None
+                self.token_store = None
+
+            async def login(self, sid):
+                return True
+
+        class FakeSvc:
+            def __init__(self, account):
+                pass
+
+            async def device_list(self):
+                return [{"deviceID": "d1", "name": "小爱音箱"}]
+
+        monkeypatch.setattr(miservice, "MiAccount", FakeAccount)
+        monkeypatch.setattr(miservice, "MiNAService", FakeSvc)
+
+    def test_valid_token_starts_without_password(self, tmp_path, monkeypatch):
+        import asyncio
+
+        token_file = tmp_path / ".mi.token"
+        token_file.write_text(
+            json.dumps({"deviceId": "x", "userId": "u", "micoapi": ("s", "t")}),
+            encoding="utf-8",
+        )
+        self._fake_miservice(monkeypatch)
+        monkeypatch.delenv("MI_PASS", raising=False)
+        conn = XiaomiSpeakerConnector(
+            {"username": "u", "did": "", "token_path": str(token_file)}
+        )
+        try:
+            did = asyncio.run(conn.start())
+        finally:
+            asyncio.run(conn.close())
+        assert did == "d1"
+
+    def test_no_token_no_password_still_raises(self, tmp_path, monkeypatch):
+        import asyncio
+
+        self._fake_miservice(monkeypatch)
+        monkeypatch.delenv("MI_PASS", raising=False)
+        conn = XiaomiSpeakerConnector(
+            {"username": "u", "did": "", "token_path": str(tmp_path / "none.json")}
+        )
+        with pytest.raises(RuntimeError, match="未配置小米账号"):
+            asyncio.run(conn.start())
