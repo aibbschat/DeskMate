@@ -372,6 +372,13 @@ class XiaomiSpeakerConnector:
             return False
         return bool(await self._service.player_pause(self._did))
 
+    async def get_player_status(self) -> dict:
+        """播放状态查询（S12 实测：在播 status=1，空闲 status=0/3）。
+
+        供通道播放探测用——不等对话记录，小爱一开播就 pause。
+        """
+        return await self._service.player_get_status(self._did)
+
 
 # ---------------------------------------------------------------------- 一次性登录 CLI
 async def _interactive_login() -> int:

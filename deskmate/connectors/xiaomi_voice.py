@@ -130,6 +130,11 @@ class VoiceChannel:
     - thinking_filler: 打断小爱后、大脑思考前发送的短 TTS 提示文本，
       填补思考期间的静默。speak() 只发命令不等播放完成，filler 与
       run_turn 并行。空串则不发。缺省「让我想想」。
+    - mute_on_playback: 播放状态探测开关（默认开）。不等对话记录——
+      记录出现延迟（1-3s）是小爱抢答漏字大半句的元凶；每轮查
+      player_get_status，小爱在播（status=1）且非我方播出即 pause，
+      链路压到 轮询间隔+mute ~0.9s。误伤面：小爱放歌/闹钟/报时也会
+      被 pause；false 关探测，回归记录驱动（xiaogpt 原版行为）。
     """
 
     def __init__(
@@ -141,6 +146,7 @@ class VoiceChannel:
         speak_timeout: float = _DEFAULT_SPEAK_TIMEOUT,
         merge_window: float = _DEFAULT_MERGE_WINDOW,
         thinking_filler: str = "让我想想",
+        mute_on_playback: bool = True,
         log: Optional[logging.Logger] = None,
     ) -> None:
         self._connector = connector
@@ -150,7 +156,12 @@ class VoiceChannel:
         self._merge_window = max(0.0, float(merge_window))
         self._aggregator = _AskAggregator(self._merge_window)
         self._thinking_filler = thinking_filler
+        self._mute_on_playback = bool(mute_on_playback)
         self._filler_tasks: list[asyncio.Task] = []  # 并行发送中的思考提示
+        #: 我方播放守卫（loop.time() 基准，秒）：此前不做播放探测 pause。
+        #: 覆盖生成期 + filler/正式播报的命令期与设备侧云端播放延迟
+        #: （3-5s）——这期间 status==1 是小桔自己在播，pause=掐自己。
+        self._own_playback_until: float = 0.0
         self._log = log or logger
         self._tracker = AskTracker()
         self._stop = asyncio.Event()
@@ -180,6 +191,11 @@ class VoiceChannel:
             while not self._stop.is_set():
                 try:
                     asks = await self._connector.latest_asks()
+                    # 播放状态探测（提前打断）：不等对话记录——记录出现延迟
+                    # 1-3s，等它小爱已播大半句（2026-10-17 真机实测 pause
+                    # 机制有效、链路各段快，唯独记录迟）。
+                    if self._mute_on_playback:
+                        await self._probe_mute(loop.time())
                     fresh = self._tracker.fresh(asks)
                     for ask in fresh:
                         # 发现即静音（xiaogpt 轮询循环级打断）：不等聚合
@@ -214,6 +230,10 @@ class VoiceChannel:
         question = _merge_questions(group)
         if not question:
             return
+        loop = asyncio.get_running_loop()
+        # 播放守卫起：生成期 + filler + 正式播报全程（含设备云端播放延迟）
+        # 不许探测 pause——那会掐小桔自己的声音。
+        self._own_playback_until = loop.time() + 120.0
         if len(group) > 1:
             self._log.info(
                 "[xiaomi-voice] 新提问（合并 %d 条截断记录）: %s", len(group), question[:80]
@@ -233,6 +253,12 @@ class VoiceChannel:
             task = asyncio.create_task(self._speak_filler(self._thinking_filler))
             self._filler_tasks.append(task)
             task.add_done_callback(self._filler_tasks.remove)
+            # filler 守卫：命令期（回执最多 speak_timeout）+ 设备云端播放
+            # 延迟（3-5s）——播出期间探测 pause 会掐掉「让我想想」。
+            self._own_playback_until = max(
+                self._own_playback_until,
+                loop.time() + self._speak_timeout + 15.0,
+            )
             await asyncio.sleep(0)  # 让 filler task 启动到「命令已提交」
         try:
             reply = await self._run_turn(question)
@@ -265,6 +291,13 @@ class VoiceChannel:
                 )
             else:
                 self._log.warning("[xiaomi-voice] 播报失败: %s", e)
+                return
+        # 播报守卫续到设备侧播放预计结束（约 4 字/秒 + 云端延迟余量）：
+        # 回答播出中 status==1，探测 pause 会停掉小桔自己的话。
+        self._own_playback_until = max(
+            self._own_playback_until,
+            loop.time() + 15.0 + len(text) / 4.0,
+        )
 
     async def _speak_filler(self, text: str) -> None:
         """并行发送思考提示（fire-and-forget，失败只记 debug）。"""
@@ -282,6 +315,32 @@ class VoiceChannel:
             await self._connector.mute_xiaoai()
         except Exception as e:
             self._log.debug("[xiaomi-voice] 静音小爱失败（继续）: %s", e)
+
+    async def _probe_mute(self, now: float) -> None:
+        """播放状态探测：小爱在播（status=1）且非我方播出 → pause。
+
+        为什么不等对话记录：记录出现延迟 1-3s，等它小爱已播大半句
+        （2026-10-17 萧哥真机反馈「小爱的字还是挺多」）。S12 真机实测
+        pause 有效（播放中 status=1 可识别，pause 后 status=0 真停）。
+        探测把打断链路压到 轮询间隔 + mute ~0.9s。
+
+        守卫 now < _own_playback_until：我方生成/播出期（含 filler 与
+        正式播报的设备侧云端延迟）——这期间在播的是小桔自己，pause=掐
+        自己（测试：test_probe_respects_own_playback_guard）。
+        """
+        if now < self._own_playback_until:
+            return  # 我方在播，让路
+        try:
+            status = await self._connector.get_player_status()
+        except Exception as e:
+            self._log.debug("[xiaomi-voice] 播放状态查询失败（跳过本轮探测）: %s", e)
+            return
+        if not isinstance(status, dict) or status.get("status") != 1:
+            return
+        await self._safe_mute()
+        self._log.info(
+            "[xiaomi-voice] 播放探测：小爱在播 → 已 pause（未等对话记录，提前打断）"
+        )
 
 
 def build_voice_channel(
@@ -316,4 +375,6 @@ def build_voice_channel(
         thinking_filler=str(cfg["thinking_filler"])
         if "thinking_filler" in cfg
         else "让我想想",
+        # 播放状态探测：默认开；显式 false 关（回归 xiaogpt 记录驱动）
+        mute_on_playback=bool(cfg.get("mute_on_playback", True)),
     )

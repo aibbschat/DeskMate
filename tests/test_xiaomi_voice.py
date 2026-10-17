@@ -15,6 +15,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 
@@ -55,6 +56,9 @@ class FakeConnector:
         self.stops = 0
         self.polls = 0
         self.events: list[tuple[str, str]] = []  # (kind, detail) 全局事件序
+        self.status_queries = 0
+        #: 播放状态探测的注入点（S12 真机实测：在播 status=1，空闲 status=0/3）
+        self.play_status: dict = {"status": 0}
 
     async def latest_asks(self) -> list[dict]:
         self.polls += 1
@@ -73,6 +77,11 @@ class FakeConnector:
         self.mutes.append(True)
         self.events.append(("mute", ""))
         return True
+
+    async def get_player_status(self) -> dict:
+        """播放状态（S12 真机实测：在播 status=1；空闲 0/3）。"""
+        self.status_queries += 1
+        return dict(self.play_status)
 
     async def play_url(self, url: str) -> bool:
         self.played.append(url)
@@ -361,6 +370,30 @@ class TestSpeakerConfig:
         )
         assert channel is not None
         assert channel._speak_timeout == 10.0
+
+    def test_build_channel_mute_on_playback_default_on(self):
+        """播放状态探测默认开（抢答漏字元凶是记录延迟，探测不等记录）。"""
+        channel = build_voice_channel(
+            _brain(),
+            config={"enabled": True, "username": "13400000000"},
+            connector=FakeConnector([[]]),
+        )
+        assert channel is not None
+        assert channel._mute_on_playback is True
+
+    def test_build_channel_mute_on_playback_config_off(self):
+        """显式 false 关探测（用户不愿误伤小爱放歌等场景时）。"""
+        channel = build_voice_channel(
+            _brain(),
+            config={
+                "enabled": True,
+                "username": "13400000000",
+                "mute_on_playback": False,
+            },
+            connector=FakeConnector([[]]),
+        )
+        assert channel is not None
+        assert channel._mute_on_playback is False
 
     def test_build_channel_merge_window_passthrough(self):
         """merge_window（提问聚合窗口）须从配置透传；缺省 2.5s。"""
@@ -1168,6 +1201,119 @@ class TestMuteXiaoai:
         await channel.run_forever()
         assert conn.spoken == ["默认回复", "默认回复"]  # 两问都正常应答
         assert len(conn.mutes) >= 2
+
+
+# ------------------------------------------------------- 播放状态探测（提前打断）
+class TestPlaybackProbe:
+    """2026-10-17 萧哥验收反馈：「小爱的字还是挺多，然后才是让我想想」。
+
+    根因实测：pause 机制本身有效（S12 真机：播放中 status=1 可识别、
+    mute_xiaoai pause 后 status=0 真停），链路各段也快（轮询 0.08s、
+    mute 0.4s）——晚在「对话记录出现」本身：用户说完 → 小爱开播 →
+    记录才出现在 Mina API（估计 1-3s），等记录再 pause 小爱已播大半句。
+
+    对策：播放状态探测——不等记录，每轮查 player_get_status，小爱在播
+    （status=1）且非我方播出 → pause。把链路压到 轮询间隔+mute ~0.9s。
+    代价：小爱放歌/闹钟/报时也会被 pause（语音出口场景可接受，
+    mute_on_playback=false 可关）。守卫：我方生成/播出期（含 filler
+    与正式播报的云端播放延迟）绝不探测 pause——会掐小桔自己的声音。
+    """
+
+    async def test_probe_mutes_xiaoai_without_any_record(self, caplog):
+        """没有任何对话记录也 pause：小爱一开播就掐（不等记录）。"""
+        import logging
+
+        channel, conn = _channel([[], [], [], []])
+        conn.play_status = {"status": 1}  # 小爱在播，但记录还没出现
+        with caplog.at_level(logging.INFO, logger="deskmate.connectors.xiaomi_voice"):
+            await channel.run_forever()
+        assert conn.mutes, "在播即应 pause（提前打断）"
+        assert conn.status_queries >= 1, "应先查播放状态"
+        assert any("播放探测" in r.message for r in caplog.records)
+
+    async def test_probe_skips_when_idle(self):
+        """空闲（status=0/3）：不发无效 pause。"""
+        channel, conn = _channel([[], [], []])
+        conn.play_status = {"status": 0}
+        await channel.run_forever()
+        assert conn.mutes == []
+        assert conn.status_queries >= 1  # 但状态查了（探测在工作）
+
+    async def test_probe_respects_own_playback_guard(self):
+        """我方生成/播出期：status=1 也绝不 pause（掐小桔自己的声音=事故）。"""
+
+        async def slow_brain(text: str) -> str:
+            conn.events.append(("brain", text))
+            await asyncio.sleep(0.3)  # 生成期：探测必须让路
+            return "回复"
+
+        channel, conn = _channel(
+            [
+                [_ask("r1", 100, "旧")],  # 基线
+                [],  # 探测轮（提问前，合法 pause）
+                [_ask("r2", 200, "问题")],  # 触发 slow_brain（guard 起）
+                [],  # 生成期
+                [],  # 生成期
+                [],  # 生成期
+                [],  # guard 仍罩（filler/speak 云端延迟）
+                [], [], [],
+            ],
+            run_turn=slow_brain,
+        )
+        conn.play_status = {"status": 1}  # 全程「在播」
+        await channel.run_forever()
+        # 关键断言：大脑跑起来之后（guard 已起 + 播报守卫续到播放结束），
+        # 一次 mute 都不能再有——那会掐掉小桔自己的 filler/回答。
+        kinds = [k for k, _ in conn.events]
+        brain_at = kinds.index("brain")
+        mutes_after_brain = kinds[brain_at:].count("mute")
+        assert mutes_after_brain == 0, (
+            f"生成/播出期探测应让路，brain 后还有 {mutes_after_brain} 次 mute"
+        )
+
+    async def test_probe_disabled_by_config(self):
+        """mute_on_playback=false：关探测（用户接受记录驱动的漏字时）。"""
+        channel, conn = _channel([[], [], []])
+        conn.play_status = {"status": 1}
+        channel._mute_on_playback = False
+        await channel.run_forever()
+        assert conn.mutes == []
+        assert conn.status_queries == 0  # 关了就完全不查（省调用）
+
+    async def test_probe_status_error_does_not_kill_loop(self, caplog):
+        """查状态网络错：跳过本轮探测，循环不死（fail-open）。"""
+        import logging
+
+        class BrokenStatusConnector(FakeConnector):
+            async def get_player_status(self) -> dict:
+                raise RuntimeError("mina 500")
+
+        channel, conn = _channel(
+            [
+                [_ask("r1", 100, "旧")],
+                [_ask("r2", 200, "问题")],
+            ],
+            connector_cls=BrokenStatusConnector,
+        )
+        with caplog.at_level(logging.DEBUG, logger="deskmate.connectors.xiaomi_voice"):
+            await channel.run_forever()
+        assert conn.spoken == ["默认回复"]  # 主链路照常
+
+    async def test_probe_mute_failure_does_not_kill_loop(self):
+        """探测 pause 失败：不杀循环，下一轮继续探测。"""
+
+        class BrokenProbeMuteConnector(FakeConnector):
+            async def mute_xiaoai(self) -> bool:
+                self.mutes.append(True)
+                raise RuntimeError("mina 500")
+
+        channel, conn = _channel(
+            [[], [], [_ask("r1", 100, "旧")], [_ask("r2", 200, "问题")]],
+            connector_cls=BrokenProbeMuteConnector,
+        )
+        conn.play_status = {"status": 1}
+        await channel.run_forever()
+        assert conn.spoken == ["默认回复"]  # 主链路照常
 
 
 # ---------------------------------------------------------------------- 幻影模型护栏
