@@ -8,10 +8,16 @@
 - 全部 fail-open：调用方吞异常、记日志，不影响主服务。
 
 能力（miservice MiNAService API 已实测）：
+- conversations()   MiNA 对话记录（userprofile.mina.mi.com，mi-gpt 同款路线）
 - latest_asks()    归一化最新提问列表（request_id / timestamp_ms / question / answer）
 - speak(text)      让小爱播报文本 —— 小桔的嘴
 - play_url(url)    播放音频 URL（自定义 TTS 音色备用通道）
 - stop_playback()  停止当前播放 —— 打断小爱原生应答（xiaogpt --mute_xiaoai 对策）
+
+提问数据源说明（S12 真机实测的坑）：对话记录走 userprofile.mina.mi.com
+用户画像服务（conversations），**不是** miservice 的 get_latest_ask
+（api2 ubus nlp_result_get）——后者在 S12 老固件上设备端返 1001 空数据。
+hardware 参数（如 S12A）从 device_list 解析时缓存，该接口必填。
 
 一次性登录（OTP 交互，只需跑一次；token 之后自动复用）。密码走 getpass
 交互输入，不回显、不进 shell 历史——**不要把密码贴在命令行里**：
@@ -25,6 +31,7 @@ import asyncio
 import json
 import logging
 import os
+import uuid
 from collections import deque
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Optional
@@ -136,6 +143,7 @@ class XiaomiSpeakerConnector:
         self._service = service  # MiNAService（或 fake）
         self._account = None
         self._did = str(self._cfg.get("did") or "")
+        self._hardware = ""  # 设备硬件型号（device_list 解析时缓存，conversations 接口必填）
         self._session = None  # aiohttp session（自建时才需要关）
 
     # -- 生命周期 ------------------------------------------------------------
@@ -218,18 +226,24 @@ class XiaomiSpeakerConnector:
         devices = await self._service.device_list() or []
         if not devices:
             raise RuntimeError("小米账号下没有小爱音箱设备")
+
+        def _pick(d: dict) -> None:
+            self._did = str(d.get("deviceID", ""))
+            self._hardware = str(d.get("hardware") or "")
+
         want = self._did
         if want:
             for d in devices:
                 if str(d.get("deviceID", "")) == want:
+                    self._hardware = str(d.get("hardware") or "")
                     return
             for d in devices:
                 if str(d.get("miotDID", "")) == want or str(d.get("name", "")) == want:
-                    self._did = str(d.get("deviceID", ""))
+                    _pick(d)
                     return
             raise RuntimeError(f"找不到设备 {want!r}（账号下共 {len(devices)} 台）")
         if len(devices) == 1:
-            self._did = str(devices[0].get("deviceID", ""))
+            _pick(devices[0])
             return
         names = "、".join(str(d.get("name", d.get("deviceID", "?"))) for d in devices)
         raise RuntimeError(f"账号下有多台设备（{names}），请在配置里指定 did")
@@ -250,27 +264,75 @@ class XiaomiSpeakerConnector:
         await self.close()
 
     # -- 能力 ----------------------------------------------------------------
+    async def conversations(self, limit: int = 10) -> list[dict]:
+        """MiNA 对话记录（mi-gpt / mi-service-lite 同款路线，S12 实测 code=0）。
+
+        打 userprofile.mina.mi.com 用户画像服务，**不是** api2 的 ubus
+        nlp_result_get——后者在 S12 老固件上设备端返 1001 空数据（真机
+        实测），对话记录服务才是实时写入的可靠数据源。records 从新到旧。
+        """
+        # 注入 service 且带 get_conversations（测试路径）：直接用 fake 数据
+        fetcher = getattr(self._service, "get_conversations", None)
+        if fetcher is not None:
+            raw = await fetcher(self._did, self._hardware, limit) or []
+            return [r for r in raw if isinstance(r, dict)]
+        # 生产路径：account 直连 userprofile 端点（miservice 无此封装）
+        if self._account is None or not self._did:
+            return []
+        url = (
+            "https://userprofile.mina.mi.com/device_profile/v2/conversation"
+            f"?limit={int(limit)}&source=dialogu&hardware={self._hardware}"
+            f"&requestId=app_ios_{uuid.uuid4().hex[:24]}"
+        )
+        headers = {
+            "User-Agent": (
+                "Mozilla/5.0 (Linux; Android 10; 000; wv) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Version/4.0 Chrome/119.0.6045.193 Mobile "
+                "Safari/537.36 /XiaoMi/HybridView/ micoSoundboxApp/i "
+                "appVersion/A_2.4.40"
+            ),
+            "Referer": "https://userprofile.mina.mi.com/dialogue-note/index.html",
+        }
+        cookies = {
+            "userId": self._account.token["userId"],
+            "serviceToken": self._account.token["micoapi"][1],
+            "deviceId": self._did,
+        }
+        async with self._account.request(url, headers=headers, cookies=cookies) as r:
+            resp = await r.json(content_type=None)
+        if resp.get("code") != 0:
+            return []
+        data = resp.get("data")
+        if isinstance(data, str):
+            try:
+                data = json.loads(data)
+            except (ValueError, TypeError):
+                return []
+        if not isinstance(data, dict):
+            return []
+        return [r for r in (data.get("records") or []) if isinstance(r, dict)]
+
     async def latest_asks(self) -> list[dict]:
-        """归一化最新提问。字段：request_id / timestamp_ms / question / answer。"""
-        raw = await self._service.get_latest_ask(self._did) or []
+        """归一化最新提问。字段：request_id / timestamp_ms / question / answer。
+
+        过滤规则同 mi-gpt：只保留单 answer 且类型为 TTS/LLM 的记录——
+        滤掉「退出」等命令（无 answer）和音乐播放（TTS+Audio 双 answer）。
+        """
         out: list[dict] = []
-        for m in raw:
-            if not isinstance(m, dict):
+        for rec in await self.conversations():
+            answers = rec.get("answers") or []
+            if len(answers) != 1:
                 continue
-            answers = (m.get("response") or {}).get("answer") or []
-            question = ""
-            answer = ""
-            for a in answers:
-                if not isinstance(a, dict):
-                    continue
-                question = question or str(a.get("question") or "")
-                answer = answer or str(a.get("content") or "")
+            a = answers[0]
+            if not isinstance(a, dict) or a.get("type") not in ("TTS", "LLM"):
+                continue
+            answer = ((a.get("tts") or {}).get("text") or (a.get("llm") or {}).get("text") or "").strip()
             out.append(
                 {
-                    "request_id": str(m.get("request_id") or ""),
-                    "timestamp_ms": int(m.get("timestamp_ms") or 0),
-                    "question": question.strip(),
-                    "answer": answer.strip(),
+                    "request_id": str(rec.get("requestId") or ""),
+                    "timestamp_ms": int(rec.get("time") or 0),
+                    "question": str(rec.get("query") or "").strip(),
+                    "answer": answer,
                 }
             )
         return out

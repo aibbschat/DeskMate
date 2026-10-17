@@ -276,9 +276,10 @@ class TestSpeakerConfig:
 class FakeMinaService:
     """假 MiNAService：记录调用，返回脚本化的 MiNA 原始数据。"""
 
-    def __init__(self, devices=None, raw_asks=None):
+    def __init__(self, devices=None, records=None, hardware="S12A"):
         self._devices = devices if devices is not None else []
-        self._raw_asks = raw_asks if raw_asks is not None else []
+        self._records = records if records is not None else []
+        self._hardware = hardware
         self.tts_calls: list[tuple[str, str]] = []
         self.stop_calls: list[str] = []
         self.url_calls: list[tuple[str, str]] = []
@@ -286,8 +287,13 @@ class FakeMinaService:
     async def device_list(self, master: int = 0):
         return self._devices
 
+    async def get_conversations(self, deviceId: str, hardware: str, limit: int = 10):
+        """userprofile conversation 接口的 fake（生产走 account 直连 HTTP）。"""
+        self.last_hardware = hardware
+        return self._records
+
     async def get_latest_ask(self, deviceId: str):
-        return self._raw_asks
+        return []  # nlp_result_get 路线：S12 老固件实测返 1001 空数据，已弃用
 
     async def text_to_speech(self, deviceId: str, text: str) -> bool:
         self.tts_calls.append((deviceId, text))
@@ -302,30 +308,34 @@ class FakeMinaService:
         return True
 
 
-def _raw_ask(rid: str, ts: int, question: str, to_speak: str) -> dict:
-    """MiNA get_latest_ask 的原始消息形状（miservice minaservice.py 实测结构）。"""
+def _raw_conv(
+    rid: str, ts: int, query: str, tts_text: str = "", *, answers: list | None = None
+) -> dict:
+    """userprofile conversation 记录的真形状（S12 实测 code=0 响应）。
+
+    answers 缺省构一个 TTS answer；传 [] 表示命令类（如「退出」，无 answer）。
+    """
+    if answers is None:
+        answers = (
+            [{"type": "TTS", "tts": {"text": tts_text}, "illegalContent": False}]
+            if tts_text
+            else []
+        )
     return {
-        "request_id": rid,
-        "timestamp_ms": ts,
-        "response": {
-            "answer": [
-                {
-                    "domain": "weather",
-                    "action": "query",
-                    "content": to_speak,
-                    "question": question,
-                }
-            ]
-        },
+        "bitSet": [0, 1, 1, 1, 1, 1],
+        "answers": answers,
+        "time": ts,
+        "query": query,
+        "requestId": rid,
+        "illegalContent": False,
     }
 
 
 class TestConnector:
-    async def test_latest_asks_normalizes_raw_messages(self):
-        svc = FakeMinaService(
-            raw_asks=[_raw_ask("r1", 100, "小桔你好", "你好呀萧哥")]
-        )
+    async def test_latest_asks_normalizes_conversation_records(self):
+        svc = FakeMinaService(devices=[{"deviceID": "d1", "name": "小爱音箱", "hardware": "S12A"}], records=[_raw_conv("r1", 100, "小桔你好", "你好呀萧哥")])
         conn = XiaomiSpeakerConnector({"did": "d1"}, service=svc)
+        await conn.start()
         asks = await conn.latest_asks()
         assert asks == [
             {
@@ -336,12 +346,35 @@ class TestConnector:
             }
         ]
 
-    async def test_latest_asks_handles_empty_and_malformed(self):
-        svc = FakeMinaService(raw_asks=[{"request_id": "r1"}, "not-a-dict"])
+    async def test_latest_asks_filters_commands_and_music(self):
+        # 「退出」无 answer → 命令，过滤；音乐播放 TTS+Audio 双 answer → 过滤
+        svc = FakeMinaService(
+            devices=[{"deviceID": "d1", "name": "小爱音箱", "hardware": "S12A"}],
+            records=[
+                _raw_conv("r-cmd", 300, "退出", answers=[]),
+                _raw_conv(
+                    "r-music",
+                    200,
+                    "播放音乐",
+                    answers=[
+                        {"type": "TTS", "tts": {"text": "好的"}},
+                        {"type": "Audio", "audio": {"url": "x"}},
+                    ],
+                ),
+                _raw_conv("r-ok", 100, "小桔在吗", "在呢萧哥"),
+            ]
+        )
         conn = XiaomiSpeakerConnector({"did": "d1"}, service=svc)
+        await conn.start()
         asks = await conn.latest_asks()
-        assert len(asks) == 1
-        assert asks[0]["question"] == ""
+        assert [a["request_id"] for a in asks] == ["r-ok"]
+
+    async def test_latest_asks_handles_empty_and_malformed(self):
+        svc = FakeMinaService(devices=[{"deviceID": "d1", "hardware": "S12A"}], records=[{"requestId": "r1", "time": 5, "query": "q"}, "not-a-dict"])
+        conn = XiaomiSpeakerConnector({"did": "d1"}, service=svc)
+        await conn.start()
+        asks = await conn.latest_asks()
+        assert asks == []
 
     async def test_speak_and_stop_delegate_to_service(self):
         svc = FakeMinaService()
