@@ -750,3 +750,48 @@ class TestTokenReuseStart:
         )
         with pytest.raises(RuntimeError, match="未配置小米账号"):
             asyncio.run(conn.start())
+
+
+class TestVoiceChannelEnvFlag:
+    """XIAOMI_SPEAKER_ENABLE 运维开关（.env）：未开时即使 json enabled=true
+    也不构建通道。此前 lifespan 漏读该变量——开关是假的，只有 json 生效。"""
+
+    def test_env_off_skips_build(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("XIAOMI_SPEAKER_ENABLE", raising=False)
+        calls = {"n": 0}
+
+        def fake_build(run_turn, *, config=None, connector=None):
+            calls["n"] += 1
+            return None
+
+        monkeypatch.setattr(
+            "deskmate.connectors.xiaomi_voice.build_voice_channel", fake_build
+        )
+        from fastapi.testclient import TestClient
+
+        from coworker.server.app import create_app
+        from coworker.server.manager import SessionManager
+
+        with TestClient(create_app(SessionManager(data_dir=tmp_path / "data"))):
+            pass
+        assert calls["n"] == 0
+
+    def test_env_on_builds(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("XIAOMI_SPEAKER_ENABLE", "1")
+        calls = {"n": 0}
+
+        def fake_build(run_turn, *, config=None, connector=None):
+            calls["n"] += 1
+            return None
+
+        monkeypatch.setattr(
+            "deskmate.connectors.xiaomi_voice.build_voice_channel", fake_build
+        )
+        from fastapi.testclient import TestClient
+
+        from coworker.server.app import create_app
+        from coworker.server.manager import SessionManager
+
+        with TestClient(create_app(SessionManager(data_dir=tmp_path / "data"))):
+            pass
+        assert calls["n"] == 1
