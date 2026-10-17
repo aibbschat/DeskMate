@@ -12,7 +12,9 @@
 - latest_asks()    归一化最新提问列表（request_id / timestamp_ms / question / answer）
 - speak(text)      让小爱播报文本 —— 小桔的嘴
 - play_url(url)    播放音频 URL（自定义 TTS 音色备用通道）
-- stop_playback()  停止当前播放 —— 打断小爱原生应答（xiaogpt --mute_xiaoai 对策）
+- stop_playback()  停止当前播放 —— 彻底停止（player_stop）
+- mute_xiaoai()    静音小爱原生应答 —— xiaogpt --mute_xiaoai 同款（先查
+                   状态 status==1 再 player_pause；pause 不用 stop）
 
 提问数据源说明（S12 真机实测的坑）：对话记录走 userprofile.mina.mi.com
 用户画像服务（conversations），**不是** miservice 的 get_latest_ask
@@ -348,6 +350,27 @@ class XiaomiSpeakerConnector:
     async def stop_playback(self) -> bool:
         """停止当前播放——打断小爱原生应答。"""
         return bool(await self._service.player_stop(self._did))
+
+    async def mute_xiaoai(self) -> bool:
+        """静音小爱原生应答（xiaogpt --mute_xiaoai 同款对策）。
+
+        2026-10-17 对照 xiaogpt 源码（yihong0618/xiaogpt stop_if_xiaoai_is_playing）
+        + S12 真机实测的三处关键设计：
+        1. **pause 不用 stop**：player_pause（ubus action=pause）只暂停当前
+           播放流、播放器会话保持；player_stop（action=stop）更暴力，社区
+           反馈部分固件上会中断播放器会话。
+        2. **先查状态再 pause**：player_get_status 只在 status==1（在播）时
+           才 pause——少发无效命令；S12 实测空闲 status=3（pause/stop 空闲
+           可达均返 True，但不该乱发）。
+        3. 状态查询异常**上抛不吞**：由调用方（通道 _safe_mute）兜底，
+           保持 connector 层的错误透明。
+
+        返回 True 表示执行了 pause；False 表示当前没在播（无需动作）。
+        """
+        status = await self._service.player_get_status(self._did)
+        if (status or {}).get("status") != 1:
+            return False
+        return bool(await self._service.player_pause(self._did))
 
 
 # ---------------------------------------------------------------------- 一次性登录 CLI

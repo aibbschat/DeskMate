@@ -64,7 +64,7 @@ class VoiceChannel:
     """小爱音箱语音通道守护循环。
 
     参数：
-    - connector: 提供 latest_asks() / speak() / stop_playback() 的对象
+    - connector: 提供 latest_asks() / speak() / mute_xiaoai() 的对象
      （生产为 XiaomiSpeakerConnector，测试为 FakeConnector）。
     - run_turn: async (question: str) -> str，小桔大脑。生产由 app 提供：
       走 manager.get_engine(agent="deskmate") → engine.run() → 收集
@@ -72,6 +72,9 @@ class VoiceChannel:
     - poll_interval: 轮询间隔秒（下限 0.1s）。
     - speak_timeout: ubus 回执等待上限秒（下限 1.0s）。S12 回执通道坏，
       服务端 40+ 秒才回 3012，播放却 3-5s 已开始；到点按已送达放行。
+    - thinking_filler: 打断小爱后、大脑思考前发送的短 TTS 提示文本，
+      填补思考期间的静默。speak() 只发命令不等播放完成，filler 与
+      run_turn 并行。空串则不发。缺省「让我想想」。
     """
 
     def __init__(
@@ -81,12 +84,15 @@ class VoiceChannel:
         run_turn: RunTurn,
         poll_interval: float = 1.5,
         speak_timeout: float = _DEFAULT_SPEAK_TIMEOUT,
+        thinking_filler: str = "让我想想",
         log: Optional[logging.Logger] = None,
     ) -> None:
         self._connector = connector
         self._run_turn = run_turn
         self._poll_interval = max(0.1, float(poll_interval))
         self._speak_timeout = max(1.0, float(speak_timeout))
+        self._thinking_filler = thinking_filler
+        self._filler_tasks: list[asyncio.Task] = []  # 并行发送中的思考提示
         self._log = log or logger
         self._tracker = AskTracker()
         self._stop = asyncio.Event()
@@ -94,6 +100,8 @@ class VoiceChannel:
     # -- 控制 ----------------------------------------------------------------
     def stop(self) -> None:
         self._stop.set()
+        for t in self._filler_tasks:  # 取消还没发完的思考提示
+            t.cancel()
 
     @property
     def running(self) -> bool:
@@ -113,7 +121,11 @@ class VoiceChannel:
             while not self._stop.is_set():
                 try:
                     asks = await self._connector.latest_asks()
-                    for ask in self._tracker.fresh(asks):
+                    fresh = self._tracker.fresh(asks)
+                    for ask in fresh:
+                        # 发现即静音（xiaogpt 轮询循环级打断）：不等大脑/播报
+                        # 流程，小爱抢答压得越早漏得越少。
+                        await self._safe_mute()
                         await self._handle(ask)
                 except Exception as e:  # 轮询异常：记日志，循环继续
                     self._log.warning("[xiaomi-voice] 轮询异常（继续）: %s", e)
@@ -123,6 +135,10 @@ class VoiceChannel:
                     pass
         finally:
             self._log.info("[xiaomi-voice] 语音通道停止")
+            for t in self._filler_tasks:  # 等取消落地，避免 "Task was destroyed"
+                t.cancel()
+            if self._filler_tasks:
+                await asyncio.gather(*self._filler_tasks, return_exceptions=True)
 
     # -- 单问处理 ------------------------------------------------------------
     async def _handle(self, ask: dict) -> None:
@@ -130,7 +146,20 @@ class VoiceChannel:
         if not question:
             return
         self._log.info("[xiaomi-voice] 新提问: %s", question[:80])
-        await self._safe_stop()  # 打断小爱原生应答（检测时刻）
+        await self._safe_mute()  # 检测时刻静音（循环级已静音过一次，双保险）
+        # 思考提示：打断后立刻发一句短 TTS，填补大脑思考期间的静默。
+        # 必须**并行**发送（create_task，不 await 回执）：S12 的 ubus 回执要
+        # 40+ 秒，若 await 它 run_turn 会被推迟 speak_timeout 秒——端到端
+        # 延迟凭空 +10s（2026-10-17 修：原实现是 await wait_for 串行等）。
+        # sleep(0) 让 task 立即启动，保证 filler 命令先于正式 speak 入队
+        # （设备侧按到达顺序播放：先「让我想想」再回答）。
+        # 注意：run_turn 之后不能再静音——filler 可能正在播，pause 会把它
+        # 掐断；正式 speak 到设备播出有 3-5s 云端延迟，设备自会排队接播。
+        if self._thinking_filler:
+            task = asyncio.create_task(self._speak_filler(self._thinking_filler))
+            self._filler_tasks.append(task)
+            task.add_done_callback(self._filler_tasks.remove)
+            await asyncio.sleep(0)  # 让 filler task 启动到「命令已提交」
         try:
             reply = await self._run_turn(question)
         except Exception as e:  # 大脑异常：本轮静默，不杀循环
@@ -139,7 +168,6 @@ class VoiceChannel:
         text = (reply or "").strip()
         if not text:
             return
-        await self._safe_stop()  # 原生应答可能在思考期间刚起，播报前再停
         try:
             await asyncio.wait_for(
                 self._connector.speak(text), timeout=self._speak_timeout
@@ -164,11 +192,22 @@ class VoiceChannel:
             else:
                 self._log.warning("[xiaomi-voice] 播报失败: %s", e)
 
-    async def _safe_stop(self) -> None:
+    async def _speak_filler(self, text: str) -> None:
+        """并行发送思考提示（fire-and-forget，失败只记 debug）。"""
         try:
-            await self._connector.stop_playback()
-        except Exception:
-            pass
+            await asyncio.wait_for(
+                self._connector.speak(text), timeout=self._speak_timeout
+            )
+            self._log.debug("[xiaomi-voice] 思考提示已发送（%d 字）", len(text))
+        except Exception as e:
+            self._log.debug("[xiaomi-voice] 思考提示发送失败（不影响主流程）: %s", e)
+
+    async def _safe_mute(self) -> None:
+        """静音小爱原生应答（xiaogpt --mute_xiaoai 同款）；失败只记 debug 不杀循环。"""
+        try:
+            await self._connector.mute_xiaoai()
+        except Exception as e:
+            self._log.debug("[xiaomi-voice] 静音小爱失败（继续）: %s", e)
 
 
 def build_voice_channel(
@@ -196,4 +235,8 @@ def build_voice_channel(
         run_turn=run_turn,
         poll_interval=float(cfg.get("poll_interval") or 1.5),
         speak_timeout=float(cfg.get("speak_timeout") or _DEFAULT_SPEAK_TIMEOUT),
+        # 显式空串 = 关闭思考提示（尊重配置，不用 or 回退默认）
+        thinking_filler=str(cfg["thinking_filler"])
+        if "thinking_filler" in cfg
+        else "让我想想",
     )

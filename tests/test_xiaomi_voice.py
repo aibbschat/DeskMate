@@ -50,9 +50,11 @@ class FakeConnector:
         self._script = list(script)
         self.on_exhausted = None
         self.spoken: list[str] = []
+        self.mutes: list[bool] = []
         self.played: list[str] = []
         self.stops = 0
         self.polls = 0
+        self.events: list[tuple[str, str]] = []  # (kind, detail) 全局事件序
 
     async def latest_asks(self) -> list[dict]:
         self.polls += 1
@@ -64,6 +66,12 @@ class FakeConnector:
 
     async def speak(self, text: str) -> bool:
         self.spoken.append(text)
+        self.events.append(("speak", text))
+        return True
+
+    async def mute_xiaoai(self) -> bool:
+        self.mutes.append(True)
+        self.events.append(("mute", ""))
         return True
 
     async def play_url(self, url: str) -> bool:
@@ -100,12 +108,13 @@ def _brain(replies: dict[str, str] | None = None, default: str = "默认回复")
     return run_turn
 
 
-def _channel(script: list[list[dict]], run_turn=None, connector_cls=FakeConnector):
+def _channel(script: list[list[dict]], run_turn=None, connector_cls=FakeConnector, *, thinking_filler: str = ""):
     """装配 通道+假连接器（脚本耗尽自动停），返回 (channel, connector)。"""
     channel = VoiceChannel(
         connector=None,
         run_turn=run_turn or _brain(),
         poll_interval=0.1,
+        thinking_filler=thinking_filler,
     )
     conn = connector_cls(script)
     conn.on_exhausted = channel.stop
@@ -169,7 +178,7 @@ class TestVoiceChannel:
         await channel.run_forever()
 
         assert conn.spoken == ["你好呀萧哥"]
-        assert conn.stops >= 1  # 播报前打断了小爱原生应答
+        assert len(conn.mutes) >= 2  # 发现即静音 + 播报前再静音（双保险，xiaogpt 同款）
         assert conn.polls == 3  # 基线轮 + 新问轮 + 脚本耗尽轮
 
     async def test_baseline_poll_never_speaks(self):
@@ -233,6 +242,53 @@ class TestVoiceChannel:
         await channel.run_forever()
         assert conn.spoken == []
 
+    async def test_thinking_filler_spoken_before_brain_reply(self):
+        """打断小爱后、大脑思考前，先发一句 filler 填补静默。"""
+        channel, conn = _channel(
+            [
+                [_ask("r1", 100, "旧")],
+                [_ask("r2", 200, "小桔你好")],
+            ],
+            run_turn=_brain({"小桔你好": "你好呀萧哥"}),
+            thinking_filler="让我想想",
+        )
+        await channel.run_forever()
+        assert conn.spoken[0] == "让我想想"
+        assert conn.spoken[1] == "你好呀萧哥"
+
+    async def test_empty_thinking_filler_skips_fill(self):
+        """filler 为空时不发任何提示（向后兼容）。"""
+        channel, conn = _channel(
+            [
+                [_ask("r1", 100, "旧")],
+                [_ask("r2", 200, "问题")],
+            ],
+            thinking_filler="",
+        )
+        await channel.run_forever()
+        assert conn.spoken == ["默认回复"]
+
+    async def test_filler_failure_does_not_kill_loop(self):
+        """filler 发送失败：不影响大脑思考和正式播报。"""
+        channel, conn = _channel(
+            [
+                [_ask("r1", 100, "旧")],
+                [_ask("r2", 200, "问题")],
+            ],
+            thinking_filler="让我想想",
+        )
+        original_speak = conn.speak
+
+        async def broken_speak(text: str) -> bool:
+            if text == "让我想想":
+                raise RuntimeError("filler failed")
+            return await original_speak(text)
+
+        conn.speak = broken_speak
+        await channel.run_forever()
+        # filler 失败了，但正式回复仍然播出
+        assert conn.spoken == ["默认回复"]
+
     async def test_stop_ends_loop(self):
         channel = VoiceChannel(
             connector=FakeConnector([]), run_turn=_brain(), poll_interval=0.1
@@ -291,6 +347,26 @@ class TestSpeakerConfig:
         assert channel is not None
         assert channel._speak_timeout == 10.0
 
+    def test_build_channel_passes_thinking_filler(self):
+        """thinking_filler 从配置透传到通道。"""
+        channel = build_voice_channel(
+            _brain(),
+            config={"enabled": True, "username": "13400000000", "thinking_filler": "嗯"},
+            connector=FakeConnector([[]]),
+        )
+        assert channel is not None
+        assert channel._thinking_filler == "嗯"
+
+    def test_build_channel_thinking_filler_default(self):
+        """未配置 thinking_filler 时缺省「让我想想」。"""
+        channel = build_voice_channel(
+            _brain(),
+            config={"enabled": True, "username": "13400000000"},
+            connector=FakeConnector([[]]),
+        )
+        assert channel is not None
+        assert channel._thinking_filler == "让我想想"
+
 
 # ---------------------------------------------------------------------- connector
 class FakeMinaService:
@@ -303,6 +379,9 @@ class FakeMinaService:
         self.tts_calls: list[tuple[str, str]] = []
         self.stop_calls: list[str] = []
         self.url_calls: list[tuple[str, str]] = []
+        self.pause_calls: list[str] = []
+        self.status_queries: list[str] = []
+        self.play_status_override: dict | None = None
 
     async def device_list(self, master: int = 0):
         return self._devices
@@ -314,6 +393,18 @@ class FakeMinaService:
 
     async def get_latest_ask(self, deviceId: str):
         return []  # nlp_result_get 路线：S12 老固件实测返 1001 空数据，已弃用
+
+    async def player_get_status(self, deviceId: str):
+        """播放状态查询。S12 真机实测：空闲 status=3；在播 status=1
+        （xiaogpt 的 ==1 判断）。测试可经 play_status_override 注入。"""
+        self.status_queries.append(deviceId)
+        if self.play_status_override is not None:
+            return self.play_status_override
+        return {"status": 3, "volume": 40, "loop_type": 1}
+
+    async def player_pause(self, deviceId: str):
+        self.pause_calls.append(deviceId)
+        return True
 
     async def text_to_speech(self, deviceId: str, text: str) -> bool:
         self.tts_calls.append((deviceId, text))
@@ -571,6 +662,7 @@ class TestLifespanWiring:
                 connector=None,
                 run_turn=_brain({"小桔在吗": "在呢萧哥"}),
                 poll_interval=0.1,
+                thinking_filler="",
             )
             conn = FakeConnector(
                 [
@@ -742,6 +834,112 @@ class TestChannelLoggingAndSpeakErrors:
             await channel.run_forever()
         assert any("播报失败" in r.message for r in caplog.records)
         assert not any("命令已送达" in r.message for r in caplog.records)
+
+
+# ---------------------------------------------------------------------- 静音小爱（mute_xiaoai）
+class TestMuteXiaoai:
+    """小爱抢答消音方案（2026-10-17 萧哥提，xiaogpt --mute_xiaoai 同款）：
+
+    已核实（GitHub 源码 + S12 真机实测）：
+    - xiaogpt 用 player_pause（action=pause）不用 player_stop——pause 只暂停
+      当前播放流、播放器会话保持；stop 更暴力，部分固件会中断播放器会话。
+    - xiaogpt 先 player_get_status 确认 status==1（在播）才 pause——少发无效
+      命令；S12 真机实测空闲时 status=3，pause/stop 空闲可达均返 True。
+    - xiaogpt 双保险：轮询循环发现新提问即 pause + 主循环处理前再 pause。
+    """
+
+    async def test_mute_pauses_only_when_playing(self):
+        svc = FakeMinaService()
+        svc.play_status_override = {"status": 1, "volume": 40}
+        conn = XiaomiSpeakerConnector({"did": "d1"}, service=svc)
+        assert await conn.mute_xiaoai() is True
+        assert svc.status_queries == ["d1"]  # 先查状态
+        assert svc.pause_calls == ["d1"]  # 在播才 pause
+        assert svc.stop_calls == []  # 严禁 player_stop（xiaogpt 社区选择）
+
+    async def test_mute_skips_pause_when_idle(self):
+        """status=3（S12 实测空闲态）：不发无效 pause。"""
+        svc = FakeMinaService()
+        svc.play_status_override = {"status": 3, "volume": 40}
+        conn = XiaomiSpeakerConnector({"did": "d1"}, service=svc)
+        assert await conn.mute_xiaoai() is False
+        assert svc.pause_calls == []
+        assert svc.stop_calls == []
+
+    async def test_mute_skips_pause_when_already_paused(self):
+        """status=2（已暂停）：不再 pause。"""
+        svc = FakeMinaService()
+        svc.play_status_override = {"status": 2, "volume": 40}
+        conn = XiaomiSpeakerConnector({"did": "d1"}, service=svc)
+        assert await conn.mute_xiaoai() is False
+        assert svc.pause_calls == []
+
+    async def test_mute_propagates_status_query_error(self):
+        """查状态失败：异常上抛，由通道 _safe_mute 兜底（fail-open 不杀循环）。"""
+
+        class BrokenStatus(FakeMinaService):
+            async def player_get_status(self, deviceId: str):
+                raise RuntimeError("network down")
+
+        svc = BrokenStatus()
+        conn = XiaomiSpeakerConnector({"did": "d1"}, service=svc)
+        try:
+            await conn.mute_xiaoai()
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError("状态查询异常应上抛（兜底在通道层）")
+        assert svc.pause_calls == []
+
+    async def test_channel_mutes_before_brain_runs(self):
+        """发现新提问立即静音——必须早于大脑处理（xiaogpt 轮询循环打断）。"""
+        channel, conn = _channel(
+            [
+                [_ask("r1", 100, "旧")],  # 基线轮
+                [_ask("r2", 200, "小桔你好")],
+            ],
+        )
+
+        async def recording_brain(text: str) -> str:
+            conn.events.append(("brain", text))
+            return "你好呀萧哥"
+
+        channel._run_turn = recording_brain
+        await channel.run_forever()
+        kinds = [k for k, _ in conn.events]
+        assert kinds[0] == "mute", f"首个事件应是静音，实际: {kinds}"
+        assert "brain" in kinds and kinds.index("brain") > kinds.index("mute")
+
+    async def test_channel_mutes_each_new_ask(self):
+        """一轮轮询返回多条新提问：每条都先静音（连喊场景不漏）。"""
+        channel, conn = _channel(
+            [
+                [_ask("r1", 100, "旧")],
+                [_ask("r2", 200, "问题一"), _ask("r3", 300, "问题二")],
+            ],
+        )
+        await channel.run_forever()
+        assert len(conn.mutes) >= 2  # 每问「发现即静音」+「检测时刻」各一次（播报前不再静音——会掐断 filler）
+
+    async def test_mute_failure_does_not_kill_loop(self):
+        """静音失败（如状态查询网络错）：记日志继续，下一问照常应答。"""
+
+        class BrokenMuteConnector(FakeConnector):
+            async def mute_xiaoai(self) -> bool:
+                self.mutes.append(True)
+                raise RuntimeError("mina 500")
+
+        channel, conn = _channel(
+            [
+                [_ask("r1", 100, "旧")],
+                [_ask("r2", 200, "问题一")],
+                [_ask("r3", 300, "问题二")],
+            ],
+            connector_cls=BrokenMuteConnector,
+        )
+        await channel.run_forever()
+        assert conn.spoken == ["默认回复", "默认回复"]  # 两问都正常应答
+        assert len(conn.mutes) >= 2
 
 
 # ---------------------------------------------------------------------- 幻影模型护栏
