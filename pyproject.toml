@@ -43,6 +43,11 @@ dependencies = [
     # 注意：a2a-sdk 会拉入 docstring_parser<0.16，与 aisuite 要求的 >=0.16 存在 pip 解析警告，
     # 实测 aisuite 在 0.15 下仍可正常 import（仅警告），暂不影响功能。
     "a2a-sdk>=1.1.2",
+    # 小爱音箱连接器（deskmate/connectors/xiaomi_speaker.py，路线 A：MiService 云端协议）：
+    # 小米账号登录 + MiNA 小爱音箱 TTS 播报/提问拦截。纯 Python、零硬依赖（aiohttp 缺失时
+    # 回退内置 biohttp，pycryptodome 缺失时回退纯 Python AES），MIT，DMG-safe。
+    # 连接器对它是懒加载（import 在 start() 内）——不装不影响主服务，装了语音通道才能用。
+    "miservice>=3.0",
     # tomllib landed in the 3.11 stdlib; on the 3.10 floor config.py falls back to tomli.
     "tomli>=2; python_version < '3.11'",
 ]

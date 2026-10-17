@@ -357,7 +357,57 @@ def create_app(manager: SessionManager) -> FastAPI:
             import traceback
 
             traceback.print_exc()
+        # 小爱音箱语音通道（路线 A：MiService 云端协议，零刷机）——
+        # 小桔借小爱音箱的麦克风（远场耳朵）和扬声器（嘴）听说读写。
+        # 开关：XIAOMI_SPEAKER_ENABLE=1 + ~/.config/coworker/mi_speaker.json。
+        # 登录是阻塞网络调用，放后台 task；失败只记日志，不影响主服务。
+        _xiaomi_voice_task = None
+        if os.environ.get("XIAOMI_SPEAKER_ENABLE", "").lower() in ("1", "true", "yes"):
+            try:
+                from deskmate.connectors.xiaomi_voice import build_voice_channel
+
+                async def _xiaomi_run_turn(question: str) -> str:
+                    """小桔大脑：与 UI 聊天同一套引擎（agent=deskmate，
+                    人格 / 记忆 / 成长全链路），绝不是裸 LLM 透传。"""
+                    from ..events import EventType
+
+                    sid = "xiaomi-voice"
+                    engine = manager.get_engine(sid, agent="deskmate")
+                    if engine is None:
+                        return ""
+                    parts: list[str] = []
+                    async for event in engine.run(question):
+                        if event.type is EventType.ASSISTANT_MESSAGE:
+                            text = (event.data or {}).get("text") or ""
+                            if text.strip():
+                                parts.append(text.strip())
+                    try:
+                        manager.persist_session(sid)  # 跨重启续上对话
+                    except Exception:
+                        pass
+                    return "\n".join(parts)
+
+                _xiaomi_channel = build_voice_channel(_xiaomi_run_turn)
+                if _xiaomi_channel is not None:
+
+                    async def _xiaomi_serve():
+                        try:
+                            await _xiaomi_channel.serve()
+                        except Exception as e:  # 登录失败等：记日志，主服务不受影响
+                            print(f"[coworker] xiaomi voice channel stopped: {e}")
+
+                    _xiaomi_voice_task = asyncio.create_task(_xiaomi_serve())
+            except Exception:  # 配置缺失/导入失败：静默跳过
+                import traceback
+
+                traceback.print_exc()
         yield
+        if _xiaomi_voice_task is not None:
+            _xiaomi_channel.stop()
+            try:  # 等循环干净退出；登录卡死等场景 2s 超时后强cancel
+                await asyncio.wait_for(_xiaomi_voice_task, timeout=2.0)
+            except Exception:
+                _xiaomi_voice_task.cancel()
         await manager.aclose()  # stop gateway + close MCP connections on shutdown
 
     app = FastAPI(title="coworker", version="0.0.0", lifespan=lifespan)
