@@ -13,8 +13,10 @@
 - play_url(url)    播放音频 URL（自定义 TTS 音色备用通道）
 - stop_playback()  停止当前播放 —— 打断小爱原生应答（xiaogpt --mute_xiaoai 对策）
 
-一次性登录（OTP 交互，只需跑一次；token 之后自动复用）：
-    MI_USER=138xxxx MI_PASS=xxxx python -m deskmate.connectors.xiaomi_speaker login
+一次性登录（OTP 交互，只需跑一次；token 之后自动复用）。密码走 getpass
+交互输入，不回显、不进 shell 历史——**不要把密码贴在命令行里**：
+    python -m deskmate.connectors.xiaomi_speaker login
+（也可 MI_PASS=xxx python -m ... login，但密码会留在 shell 历史中，不推荐）
 """
 
 from __future__ import annotations
@@ -266,7 +268,17 @@ class XiaomiSpeakerConnector:
 
 # ---------------------------------------------------------------------- 一次性登录 CLI
 async def _interactive_login() -> int:
-    """OTP 交互登录（终端输入验证码），成功后 token 落盘，之后无需再登。"""
+    """OTP 交互登录（终端输入验证码），成功后 token 落盘，之后无需再登。
+
+    密码优先取 MI_PASS 环境变量；未提供时用 getpass 交互输入——
+    不回显、不进 shell 历史，避免密码落在命令行里。
+    """
+    if not os.environ.get("MI_PASS", "").strip():
+        import getpass
+
+        pw = getpass.getpass("小米账号密码（输入不回显，不会留下记录）: ").strip()
+        if pw:
+            os.environ["MI_PASS"] = pw
     conn = XiaomiSpeakerConnector(load_speaker_config())
     try:
         did = await conn.start()

@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import json
+import os
 
 import pytest
 
@@ -566,3 +567,64 @@ class TestLifespanWiring:
 
         with TestClient(self._app(tmp_path)) as client:
             assert client.get("/v1/health").status_code == 200
+
+
+# ---------------------------------------------------------------------- 登录 CLI
+class TestInteractiveLogin:
+    """_interactive_login：MI_PASS 缺失时走 getpass 交互输入（不回显/不进历史）。"""
+
+    def test_missing_mi_pass_prompts_via_getpass(self, monkeypatch):
+        import asyncio
+
+        from deskmate.connectors import xiaomi_speaker as xs
+
+        monkeypatch.delenv("MI_PASS", raising=False)
+        seen: dict = {}
+
+        class FakeConn:
+            def __init__(self, cfg):
+                self._cfg = cfg
+
+            async def start(self):
+                seen["pass"] = os.environ.get("MI_PASS", "")
+                seen["username"] = self._cfg.get("username", "")
+                return "did-123"
+
+            async def close(self):
+                pass
+
+        monkeypatch.setattr(xs, "XiaomiSpeakerConnector", FakeConn)
+        monkeypatch.setattr(xs, "load_speaker_config", lambda: {"username": "138xxxx"})
+        monkeypatch.setattr(
+            "getpass.getpass", lambda prompt="": "pw-from-getpass"
+        )
+        rc = asyncio.run(xs._interactive_login())
+        assert rc == 0
+        assert seen["pass"] == "pw-from-getpass"
+        assert seen["username"] == "138xxxx"
+
+    def test_mi_pass_set_skips_getpass(self, monkeypatch):
+        import asyncio
+
+        from deskmate.connectors import xiaomi_speaker as xs
+
+        monkeypatch.setenv("MI_PASS", "env-pass")
+
+        def boom(prompt=""):
+            raise AssertionError("MI_PASS 已设置时不应弹 getpass")
+
+        class FakeConn:
+            def __init__(self, cfg):
+                pass
+
+            async def start(self):
+                return "did-123"
+
+            async def close(self):
+                pass
+
+        monkeypatch.setattr(xs, "XiaomiSpeakerConnector", FakeConn)
+        monkeypatch.setattr(xs, "load_speaker_config", lambda: {})
+        monkeypatch.setattr("getpass.getpass", boom)
+        rc = asyncio.run(xs._interactive_login())
+        assert rc == 0
