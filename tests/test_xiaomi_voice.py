@@ -448,11 +448,29 @@ class TestConnector:
     def test_build_voice_channel_enabled_builds(self):
         ch = build_voice_channel(
             lambda t: _noop(),
-            config={"enabled": True, "poll_interval": 2.0},
+            config={"enabled": True, "username": "138xxxx", "poll_interval": 2.0},
             connector=FakeConnector([]),
         )
         assert ch is not None
         assert ch._poll_interval == 2.0
+
+    def test_build_voice_channel_no_username_returns_none(self):
+        # 启用但没配账号：fail-closed 不启动，避免空账号反复登录刷屏
+        assert (
+            build_voice_channel(
+                lambda t: _noop(),
+                config={"enabled": True, "username": ""},
+            )
+            is None
+        )
+
+    def test_build_voice_channel_with_username_builds(self):
+        ch = build_voice_channel(
+            lambda t: _noop(),
+            config={"enabled": True, "username": "138xxxx"},
+            connector=FakeConnector([]),
+        )
+        assert ch is not None
 
 
 async def _noop(text: str = "") -> str:

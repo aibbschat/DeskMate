@@ -122,6 +122,11 @@ def build_voice_channel(
     cfg = config if config is not None else load_speaker_config()
     if not cfg.get("enabled"):
         return None
+    if not str(cfg.get("username") or "").strip():
+        logger.warning(
+            "[xiaomi-voice] 已启用但未配置小米账号（username/MI_USER），跳过启动"
+        )
+        return None
     if connector is None:
         from .xiaomi_speaker import XiaomiSpeakerConnector
 
