@@ -628,3 +628,65 @@ class TestInteractiveLogin:
         monkeypatch.setattr("getpass.getpass", boom)
         rc = asyncio.run(xs._interactive_login())
         assert rc == 0
+
+
+# ---------------------------------------------------------------------- OTP 接线
+class TestOtpCallbackWiring:
+    """start() 不得用 otp_callback=None 覆盖 miservice 自带的默认终端输入。
+
+    真实踩坑：显式传 None 后，CLI 登录在需要短信验证码时直接抛
+    "OTP verification required but no otp_callback provided"，
+    终端交互被自己关掉。
+    """
+
+    def _fake_miservice(self, monkeypatch, captured: dict):
+        import miservice
+
+        class FakeAccount:
+            def __init__(self, session, username, password, token_path=".mi.token", **kw):
+                captured["kw"] = kw
+                self.token = None
+
+            async def login(self, sid):
+                return True
+
+        class FakeSvc:
+            def __init__(self, account):
+                pass
+
+            async def device_list(self):
+                return [{"deviceID": "d1", "name": "小爱音箱"}]
+
+        monkeypatch.setattr(miservice, "MiAccount", FakeAccount)
+        monkeypatch.setattr(miservice, "MiNAService", FakeSvc)
+
+    def test_no_callback_keeps_library_default(self, monkeypatch):
+        import asyncio
+
+        captured: dict = {}
+        self._fake_miservice(monkeypatch, captured)
+        monkeypatch.setenv("MI_PASS", "pw")
+        conn = XiaomiSpeakerConnector({"username": "u", "did": ""})
+        try:
+            did = asyncio.run(conn.start())
+        finally:
+            asyncio.run(conn.close())
+        assert did == "d1"
+        assert "otp_callback" not in captured["kw"]
+
+    def test_explicit_callback_passed_through(self, monkeypatch):
+        import asyncio
+
+        captured: dict = {}
+        self._fake_miservice(monkeypatch, captured)
+        monkeypatch.setenv("MI_PASS", "pw")
+
+        async def cb(otp_method: str) -> str:
+            return "123456"
+
+        conn = XiaomiSpeakerConnector({"username": "u", "did": ""})
+        try:
+            asyncio.run(conn.start(otp_callback=cb))
+        finally:
+            asyncio.run(conn.close())
+        assert captured["kw"].get("otp_callback") is cb

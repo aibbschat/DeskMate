@@ -161,13 +161,24 @@ class XiaomiSpeakerConnector:
                 self._session = ClientSession()
             except ImportError:
                 self._session = None  # miservice 自带 biohttp 回退
-            self._account = MiAccount(
-                self._session,
-                username,
-                password,
-                str(self._cfg.get("token_path") or (Path.home() / ".mi.token")),
-                otp_callback=otp_callback,
-            )
+            # 注意：otp_callback 为 None 时**不传该参数**——miservice 的
+            # MiAccount 默认值就是终端输入 otp_input，显式传 None 会把它
+            # 覆盖掉，导致 CLI 登录需要验证码时直接抛异常（真实踩坑）。
+            if otp_callback is not None:
+                self._account = MiAccount(
+                    self._session,
+                    username,
+                    password,
+                    str(self._cfg.get("token_path") or (Path.home() / ".mi.token")),
+                    otp_callback=otp_callback,
+                )
+            else:
+                self._account = MiAccount(
+                    self._session,
+                    username,
+                    password,
+                    str(self._cfg.get("token_path") or (Path.home() / ".mi.token")),
+                )
             self._service = MiNAService(self._account)
         await self._ensure_login()
         await self._resolve_device()
