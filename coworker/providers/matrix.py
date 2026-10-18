@@ -405,9 +405,9 @@ def _live_kilo() -> Dict[str, ModelEntry]:
     匿名车道，见 kilo_catalog.py）。
 
     与 ``_live_zen`` 同构：失败返回 {}，由 seed 兜底；**绝不**回落到静态 MATRIX。
-    opencode 车道 2026-10-13 整条死亡（403 FreeTierError，见 reports/）后，
-    免费组主力换成本车道；静态 MATRIX 里的 opencode 手铺项保留作冷启动兜底，
-    但 picker 以 zen_catalog 的 lane 开关为准（见该模块 ZEN_LANE_ENABLED）。
+    ⚠️ 2026-10-18：opencode 官方封禁免费使用，外网免费车道全撤
+    （``kilo_catalog.KILO_LANE_ENABLED=False``）→ 本函数恒返回 {}（不走网络），
+    picker 不再展示 Kilo 条目；官方放行后翻常量即恢复。
     """
     from .kilo_catalog import get_kilo_entries
 

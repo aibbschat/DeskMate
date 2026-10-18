@@ -154,9 +154,12 @@ def _llm_http_client() -> "httpx.Client":
 # 修法是**先熔断记账、再按组内自动排换通道**，而不是继续重试同一条死路。
 #
 # 两个总开关（萧哥 21:04 拍板）：付费组 = 火山→小米→hy3（qwen 不进链）；
-# 免费组 = Kilo 远端清单驱动（2026-10-13 起，opencode 车道死亡退役）。
+# 免费组 = 曾经是 Kilo 远端清单驱动（2026-10-13 起，opencode 车道死亡退役）；
+# **2026-10-18 外网免费车道全撤**（opencode 官方封禁免费使用、连官方客户端都
+# 不可用，持续的动态探测可能让官方一直不放行 → 萧哥拍板 Kilo 也撤，
+# KILO_LANE_ENABLED=False），免费组仅剩本地 llama-server 兜底（不探测任何官方）。
 # 后台任务默认组 2026-10-13 萧哥改判「乙」= **付费**（Kilo prompt 可能被上游记录，
-# 记忆抽取输入是萧哥的对话片段）；发帖草稿/自主层等公开内容才走免费组。
+# 记忆抽取输入是萧哥的对话片段）；默认值至退役后保持不变。
 _DESKMATE_DIR_ENV = "DESKMATE_DIR"
 
 
@@ -501,10 +504,11 @@ def chat_memory(
     """记忆抽取专用 chat：走**通道组**（2026-10-06，设计 §二）。
 
     **默认走付费组**（2026-10-13 萧哥「乙」方案改判）：opencode 车道整条死亡后
-    免费组主力是 Kilo，而 Kilo 免费池 prompt 可能被上游记录——记忆抽取输入是
+    免费组主力曾是 Kilo，而 Kilo 免费池 prompt 可能被上游记录——记忆抽取输入是
     萧哥的对话片段，不过可能被记录的车道。 ark→小米→腾讯三层冗余，任一家额度
     撞顶自动切下一家。想省额度可显式 `DESKMATE_MEMORY_GROUP=free` 走免费组
-    （Kilo 远端清单驱动，适合公开内容）。
+    （2026-10-18 外网免费车道全撤后仅剩本地 llama-server 兜底，见
+    `deskmate.llm_channels` 模块 docstring；Mac 端本地兜底不可用 → 实际仍落付费组）。
 
     行为：
     - 组内自动排：按 :func:`deskmate.llm_channels.route` 取下一条**非熔断**通道，每条经
@@ -577,7 +581,8 @@ def chat_memory(
                     # 免费组必须经 opencode_provider 的伪装协议（CLI 头 + 门面工具 +
                     # 仅流式），直连 OpenAI() 会 403 FreeTierError（设计 §四）。
                     # ⚠️ 2026-10-13：opencode 车道已整条死亡（见 zen_catalog.ZEN_LANE_ENABLED），
-                    # 此分支保留待上游恢复；当前免费组主力是下面的 kilo 分支。
+                    # 此分支保留待上游恢复；免费组主力（Kilo）也于 2026-10-18 全撤，
+                    # 当前免费组仅剩下面的 local 分支。
                     return _call_with_breaker(
                         ch.provider, ch.model,
                         lambda m=ch.model: _opencode_complete(
@@ -587,13 +592,18 @@ def chat_memory(
                     # Kilo 免费车道（2026-10-13 移植 Our Free Model 插件）：普通 OpenAI
                     # 兼容端点，但**不能带 Authorization 头**（任意 token → INVALID_TOKEN），
                     # 必须经 KiloProvider（client 自带剥头 hook，见 kilo_provider.py）。
+                    # ⚠️ 2026-10-18：opencode 官方封禁免费使用 → 外网免费车道全撤
+                    # （kilo_catalog.KILO_LANE_ENABLED=False，free_lane_order 恒空），
+                    # 此分支当前不可达（route 选不到 kilo 通道），保留待官方放行后复活。
                     return _call_with_breaker(
                         ch.provider, ch.model,
                         lambda m=ch.model: _kilo_complete(
                             m, system, user, temperature, max_tokens, timeout),
                     )
                 if ch.provider == "local":
-                    # 本地 llama-server 兜底（OpenAI 兼容，trust_env=False 防代理劫持 localhost）。
+                    # 本地 llama-server 兜底（OpenAI 兼容，trust_env=False 防代理劫持
+                    # localhost）。2026-10-18 起为**免费组唯一成员**（外网免费车道全撤），
+                    # Mac 端无 llama-server → 失败被熔断跳过，后台任务随后降级回付费组。
                     import time as _time
 
                     _t0 = _time.time()
@@ -771,6 +781,10 @@ def _kilo_complete(
        用 event hook 剥掉该头，见 kilo_provider.build_kilo_client）；
     2. 侧车继承的本机回环代理（WorkBuddy 开发代理）挂掉时会劫持外网调用 ——
        与 ``_llm_http_client`` 同一套 ``_proxy_is_loopback`` 判断。
+
+    ⚠️ 2026-10-18：opencode 官方封禁免费使用 → Kilo 车道全撤
+    （KILO_LANE_ENABLED=False），本函数当前不可达（route 选不到 kilo 通道），
+    保留待官方放行后随车道开关一起复活。
     """
     from coworker.providers.kilo_provider import KiloProvider, build_kilo_client
 

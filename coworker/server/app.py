@@ -342,6 +342,9 @@ def create_app(manager: SessionManager) -> FastAPI:
             # Kilo 免费模型动态清单（2026-10-13，Our Free Model 插件移植的第二条
             # 匿名车道）——同一套 6h TTL 模式；刷新后 diff 上架/下架并清理下架模型的
             # 熔断记录。免费组主力（opencode 退役后），漏起 → picker 只有 seed。
+            # ⚠️ 2026-10-18：opencode 官方封禁免费使用（连官方客户端都不可用），
+            # 萧哥拍板外网免费车道全撤——KILO_LANE_ENABLED=False 时此调用直接返回
+            # （不拉清单、不清理、零探测），代码保留待官方放行后翻常量复活。
             from ..providers.kilo_catalog import start_catalog_refresh as _kilo_refresh
 
             _kilo_refresh()

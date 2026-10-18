@@ -12,7 +12,19 @@
 7. chat_memory 的 kilo 分派：kilo 通道必须经 KiloProvider（裸 OpenAI() 直连会
    INVALID_TOKEN）。
 
-不碰活库、不发真实网络请求（网络路径全部 mock）。
+🔴 2026-10-18 外网免费车道全撤（萧哥拍板）：opencode 官方封禁免费使用（免费
+通道一条也用不了，连官方客户端都不可用），持续的动态探测可能让官方一直不放行
+⇒ `KILO_LANE_ENABLED=False`：picker 不展示、后台不刷新、fetch_catalog 恒返 []
+且不走网络、免费组仅剩本地 llama-server 兜底。**代码全部保留**，官方放行后翻
+常量即复活。因此本文件分两类：
+
+- **行为测试**（清单 2/3/5/7）：monkeypatch pin `KILO_LANE_ENABLED=True`，
+  锁的是模块自身解析逻辑/复活路径，与「车道当前开不开」正交（同 zen 测试的
+  `test_zen_catalog_entries_and_reasoning_flag` 模式）；
+- **关闭态契约测试**（文件末尾 `test_kilo_lane_disabled_*`）：不 pin，锁生产
+  默认 False——零网络、零 entry、免费组只剩 local、picker 无 kilo: 条目。
+
+不碰活库、不发真实网络请求（网络路径全部 mock；关闭态测试连 mock 都不触发）。
 """
 
 from __future__ import annotations
@@ -86,6 +98,11 @@ def test_kilo_provider_defaults():
 
 
 def test_probe_kilo_lane(monkeypatch):
+    """Test 按钮的存活探针（**手动**，无任何后台循环调用它）。
+
+    2026-10-18 车道退役后探针函数保留：设置页「Test」按钮仍是手动诊断入口，
+    不构成动态探测；复活后它继续可用。
+    """
     class _Resp:
         status_code = 200
 
@@ -154,8 +171,13 @@ def test_is_free_row_excludes_safety_classifier():
 
 
 def test_fetch_catalog_filters_free_rows(kilo_cache, monkeypatch):
-    """网络路径的过滤契约：上游 listing 混合免费/付费/分类器 → 只留免费对话模型。"""
+    """网络路径的过滤契约：上游 listing 混合免费/付费/分类器 → 只留免费对话模型。
+
+    ⚠️ pin ``KILO_LANE_ENABLED=True``：锁的是模块自身的过滤逻辑，与车道开关
+    正交（2026-10-18 起生产常量 False，不 pin 则恒返 [] 测不到过滤）。
+    """
     _path, _write = kilo_cache
+    monkeypatch.setattr(kilo_catalog_mod, "KILO_LANE_ENABLED", True)
 
     class _Resp:
         def raise_for_status(self):
@@ -174,7 +196,13 @@ def test_fetch_catalog_filters_free_rows(kilo_cache, monkeypatch):
 
 
 def test_fresh_cache_never_touches_network(kilo_cache, monkeypatch):
+    """TTL 契约：缓存新鲜时请求路径不走网络（复活后仍须成立）。
+
+    ⚠️ pin ``KILO_LANE_ENABLED=True``：与车道开关正交（关闭态连缓存都不读，
+    由 ``test_kilo_lane_disabled_*`` 锁）。
+    """
     _path, write = kilo_cache
+    monkeypatch.setattr(kilo_catalog_mod, "KILO_LANE_ENABLED", True)
 
     def _boom(*a, **k):  # pragma: no cover - 命中即失败
         raise AssertionError("新鲜缓存不应走网络")
@@ -187,7 +215,12 @@ def test_fresh_cache_never_touches_network(kilo_cache, monkeypatch):
 
 
 def test_stale_cache_refetches_from_upstream(kilo_cache, monkeypatch):
+    """过期缓存触发重拉 + 落盘（复活后的刷新契约）。
+
+    ⚠️ pin ``KILO_LANE_ENABLED=True``：与车道开关正交。
+    """
     _path, write = kilo_cache
+    monkeypatch.setattr(kilo_catalog_mod, "KILO_LANE_ENABLED", True)
     write(_LIVE_ROWS, age_seconds=7 * 3600)  # 过期
     fresh = [r for r in _LIVE_ROWS if r["id"] == "kilo-auto/free"]
 
@@ -207,7 +240,14 @@ def test_stale_cache_refetches_from_upstream(kilo_cache, monkeypatch):
 
 
 def test_network_down_falls_back_to_seed(kilo_cache, monkeypatch):
+    """网络不可达且无缓存 → 内置 seed（复活后 picker 不空的兜底契约）。
+
+    ⚠️ pin ``KILO_LANE_ENABLED=True``：与车道开关正交——关闭态**刻意不给
+    seed**（picker 不空不再是目标，免费组清空是有意为之），见
+    ``test_kilo_lane_disabled_returns_empty_without_network``。
+    """
     _path, _write = kilo_cache
+    monkeypatch.setattr(kilo_catalog_mod, "KILO_LANE_ENABLED", True)
 
     def _down(*a, **k):
         raise httpx.ConnectError("no route")
@@ -218,8 +258,13 @@ def test_network_down_falls_back_to_seed(kilo_cache, monkeypatch):
     assert len(ids) == 15 and "kilo-auto/free" in ids  # 内置 seed，picker 不空
 
 
-def test_get_kilo_entries_labels_and_caps(kilo_cache):
+def test_get_kilo_entries_labels_and_caps(kilo_cache, monkeypatch):
+    """entries 键为 kilo:<id>；label 剥厂商前缀与 (free)；caps 采信网关字段。
+
+    ⚠️ pin ``KILO_LANE_ENABLED=True``：锁模块解析逻辑，与车道开关正交。
+    """
     _path, write = kilo_cache
+    monkeypatch.setattr(kilo_catalog_mod, "KILO_LANE_ENABLED", True)
     write(_LIVE_ROWS)
     entries = kilo_catalog_mod.get_kilo_entries()
     assert set(entries) == {"kilo:kilo-auto/free", "kilo:nvidia/nemotron-3.5-lightning:free"}
@@ -231,8 +276,13 @@ def test_get_kilo_entries_labels_and_caps(kilo_cache):
     assert nemotron.label == "Nemotron 3.5 Lightning · Kilo 免费"  # 剥 "NVIDIA: " 与 "(free)"
 
 
-def test_free_lane_order_puts_auto_routers_first(kilo_cache):
+def test_free_lane_order_puts_auto_routers_first(kilo_cache, monkeypatch):
+    """自动路由入口置顶 + 过滤是 free_lane_order 自己的防线（复活后契约）。
+
+    ⚠️ pin ``KILO_LANE_ENABLED=True``：与车道开关正交。
+    """
     _path, write = kilo_cache
+    monkeypatch.setattr(kilo_catalog_mod, "KILO_LANE_ENABLED", True)
     write(_LIVE_ROWS)  # 故意混入付费/分类器行：过滤是 free_lane_order 自己的防线
     order = kilo_catalog_mod.free_lane_order()
     assert order[0] == "kilo-auto/free"  # 自动路由置顶（单模型下架不波及它）
@@ -241,6 +291,11 @@ def test_free_lane_order_puts_auto_routers_first(kilo_cache):
 
 
 def test_stale_models_detects_delisting(kilo_cache):
+    """下架检测：previous_ids 中不在当前缓存清单里的即下架（供熔断表清理）。
+
+    纯本地缓存读、不走网络，与车道开关正交（关闭态生产上无人调用它——
+    只有刷新循环会调，而刷新已停）。
+    """
     _path, write = kilo_cache
     write(_LIVE_ROWS)
     stale = kilo_catalog_mod.stale_models({"kilo-auto/free", "kilo:gone-model"})
@@ -251,8 +306,15 @@ def test_stale_models_detects_delisting(kilo_cache):
 # 3. 免费组 + 记忆抽取默认组
 # --------------------------------------------------------------------------- #
 
-def test_free_group_is_kilo_plus_local_no_opencode(kilo_cache):
+def test_free_group_is_kilo_plus_local_no_opencode(kilo_cache, monkeypatch):
+    """复活态免费组组成：kilo 通道（自动路由置顶）+ 本地兜底垫底，无 opencode。
+
+    ⚠️ pin ``KILO_LANE_ENABLED=True``：2026-10-18 起生产上免费组仅剩 local
+    （见 ``test_free_group_is_local_only_when_lane_disabled``）；本用例锁的是
+    **复活后**的组成契约，别让复活路长歪。
+    """
     _path, write = kilo_cache
+    monkeypatch.setattr(kilo_catalog_mod, "KILO_LANE_ENABLED", True)
     write(_LIVE_ROWS)
     chs = llm_channels_mod.free_channels()
     providers = [c.provider for c in chs]
@@ -289,9 +351,15 @@ def test_memory_group_prefs_override(monkeypatch, tmp_path):
 # --------------------------------------------------------------------------- #
 
 def test_picker_includes_kilo_and_hides_dead_opencode(monkeypatch, kilo_cache):
+    """复活态 picker：含 Kilo 条目、不含 opencode 条目（zen 车道关闭）。
+
+    ⚠️ pin ``KILO_LANE_ENABLED=True``：锁 picker 组装逻辑，与车道开关正交
+    （关闭态 picker 无 kilo: 由 ``test_picker_hides_kilo_when_lane_disabled`` 锁）。
+    """
     from coworker.providers import matrix as matrix_mod
 
     _path, write = kilo_cache
+    monkeypatch.setattr(kilo_catalog_mod, "KILO_LANE_ENABLED", True)
     write(_LIVE_ROWS)
     ids = matrix_mod.all_model_ids()
     kilo_ids = [i for i in ids if i.startswith("kilo:")]
@@ -326,7 +394,12 @@ def test_registry_kilo_descriptor_keyless():
 # --------------------------------------------------------------------------- #
 
 def test_chat_memory_kilo_channel_goes_through_kilo_provider(monkeypatch, tmp_path):
-    """免费组选到 kilo 通道 → 必须经 KiloProvider（不是裸 OpenAI()）。"""
+    """复活路径锁：route 若选到 kilo 通道 → 必须经 KiloProvider（不是裸 OpenAI()）。
+
+    2026-10-18 车道退役后生产上 route 选不到 kilo 通道（free_lane_order 恒空），
+    本用例**直接注入 kilo 通道**验证分派分支本身没被改坏——官方放行翻常量即复活，
+    分派逻辑须此刻就是对的。
+    """
     import deskmate.memory.llm as llm_mod
 
     calls: dict = {}
@@ -458,3 +531,69 @@ def test_kilo_gives_up_after_retry_still_empty():
     )
     assert not (turn.text or "").strip(), "两次都空就该老实返回空"
     assert calls["n"] == 2, f"重试上限 1 次，总请求 {calls['n']} 次"
+
+
+# --------------------------------------------------------------------------- #
+# 6. 🔴 关闭态契约（2026-10-18 外网免费车道全撤 · 萧哥拍板）
+# --------------------------------------------------------------------------- #
+
+def test_kilo_lane_disabled_returns_empty_without_network(kilo_cache, monkeypatch):
+    """🔴 生产默认 ``KILO_LANE_ENABLED=False``：零网络、零 entry、恒空。
+
+    背景：opencode 官方封禁萧哥的免费使用（免费通道一条也用不了，连官方客户端
+    都不可用）。萧哥判断持续的动态探测可能让官方一直不放行 ⇒ 外网免费车道全撤。
+
+    锁三条：
+    1. 即使缓存里全是货（模拟「清单还活着」这个最坏情况），关闭态也不外泄；
+    2. ``fetch_catalog`` 恒返 [] **且不走网络**（httpx.get 一碰就炸）——
+       连 seed 都不给：picker 不空不再是目标，免费组清空是有意为之；
+    3. ``start_catalog_refresh`` 不抛、不起线程（后台 6h 探测彻底停止）。
+
+    复活 = 把常量翻回 True；那时本用例转红，提醒同步检查调用方。
+    """
+    _path, write = kilo_cache
+    # 最坏情况：缓存新鲜且满载——关闭态也不许读它、不许外泄。
+    write([r for r in _LIVE_ROWS if r.get("id") == "kilo-auto/free"])
+
+    def _boom(*a, **k):  # pragma: no cover - 命中即失败
+        raise AssertionError("车道关闭时严禁发起任何网络请求（零探测）")
+
+    monkeypatch.setattr(httpx, "get", _boom)
+    monkeypatch.setattr(httpx, "post", _boom)
+
+    assert kilo_catalog_mod.KILO_LANE_ENABLED is False, "Kilo 车道应处于关闭态（2026-10-18）"
+    assert kilo_catalog_mod.get_kilo_entries() == {}, "关闭态不得返回任何 entry"
+    assert kilo_catalog_mod.fetch_catalog(force=True) == [], "关闭态 fetch 恒空且不走网络"
+    assert kilo_catalog_mod.fetch_catalog() == []
+    assert kilo_catalog_mod.free_lane_order() == [], "免费组试用顺序恒空"
+    assert kilo_catalog_mod.known_model_ids() == set()
+    kilo_catalog_mod.start_catalog_refresh()  # 不抛即契约（不拉清单、不起线程）
+
+
+def test_free_group_is_local_only_when_lane_disabled():
+    """🔴 关闭态免费组 = 仅剩本地 llama-server 兜底（不探测任何官方）。
+
+    本地 CVM 设施是小桔自己的算力，与 opencode 官方放行无关，故保留；
+    Mac 端无 llama-server → 调用失败被熔断跳过，后台任务随后降级回付费组。
+    """
+    chs = llm_channels_mod.free_channels()
+    assert [c.provider for c in chs] == ["local"], (
+        f"外网免费车道全撤后免费组应只剩 local，实际：{[c.key for c in chs]}"
+    )
+    assert chs[0].model == "qwen3-4b-instruct"
+    assert chs[0].free is True
+
+
+def test_picker_hides_kilo_when_lane_disabled(monkeypatch):
+    """🔴 关闭态 picker：一个 ``kilo:`` 条目都不剩；其他 provider 不得误伤。"""
+    from coworker.providers import matrix as matrix_mod
+    from coworker.providers import zen_catalog as zen_mod
+
+    assert zen_mod.ZEN_LANE_ENABLED is False and kilo_catalog_mod.KILO_LANE_ENABLED is False
+    monkeypatch.setattr(matrix_mod, "_live_openrouter", lambda: {})
+    ids = matrix_mod.all_model_ids()
+    assert not [m for m in ids if m.startswith("kilo:")], "选择器里不该再有 Kilo 条目"
+    assert not [m for m in ids if m.startswith("opencode:")], "选择器里不该再有 opencode 条目"
+    # 门禁只关两条免费车道，付费组与其他条目一个不少。
+    assert "gpt-5.6-sol" in ids
+    assert "ark-agent-plan-cn:deepseek-v4-flash" in ids

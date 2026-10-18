@@ -28,6 +28,24 @@ Kilo 免费池随上游增删（今天实测 16 个 ``isFree:true`` 行，其中
 ⚠️ 插件自更新机制（updater.js：Ed25519 签名 manifest 热替换插件代码）**不移植**——
 我们的「插件」就是仓库代码，上游变更走 git + deploy_cloud_sync；模型清单的
 「随上游更新」由本模块的 6h 刷新承担。
+
+## 🔴 车道开关 KILO_LANE_ENABLED（2026-10-18 萧哥拍板）
+
+opencode 官方把萧哥的**免费使用封了**（实测免费通道一条也用不了，连 opencode
+官方客户端都不可用）。萧哥判断：小桔这边**持续的动态探测**（6h 清单刷新 +
+冷启动即拉 + 缓存过期即拉）可能让官方一直不放行，故拍板把**外网免费车道全撤**。
+
+处置（与 zen 的 `ZEN_LANE_ENABLED=False` 同构，萧哥「保留代码」口径）：
+本模块**代码全部保留**，仅把 `KILO_LANE_ENABLED` 置 False——
+
+- `get_kilo_entries()` 恒返回 `{}` → picker（matrix）不再展示 Kilo 免费模型；
+- `fetch_catalog()` 恒返回 `[]` **且不走网络**（连 seed 都不给——picker 不空
+  不再是目标，免费组即将清空是有意为之）；
+- `start_catalog_refresh()` 直接返回 → 后台 6h 刷新线程不再启动，**零探测**；
+- `free_lane_order()` 恒空 → `llm_channels.free_channels()` 只剩本地兜底
+  （CVM llama-server，小桔自己的设施，不探测任何官方）。
+
+上游放行后把常量翻回 True 即整体复活，无需改任何调用方（同 zen 的约定）。
 """
 
 from __future__ import annotations
@@ -55,6 +73,13 @@ CACHE_FILENAME = "kilo_catalog.json"
 #: 免费池的自动路由入口（ listing 里排第一）。排最前：单模型下架不会波及它，
 #: 后台加工优先用它最稳。
 AUTO_ROUTER_IDS = ("kilo-auto/free", "openrouter/free")
+
+#: 🔴 车道总开关（2026-10-18）：opencode 官方封禁萧哥的免费使用（免费通道一条
+#: 也用不了，连官方客户端都不可用），持续动态探测可能让官方一直不放行 ⇒ 外网
+#: 免费车道全撤（zen 已于 10-13 同方式关闭，见 zen_catalog.ZEN_LANE_ENABLED）。
+#: False = picker 不展示、后台不刷新、fetch_catalog 不走网络恒返 []（免费组仅剩
+#: 本地 llama-server 兜底）。代码全部保留；官方放行后翻回 True 即整体复活。
+KILO_LANE_ENABLED = False
 
 #: 排除的 id 片段：安全分类器不是对话模型（2026-10-13 实测它在免费池里）。
 _EXCLUDE_SUBSTRINGS = ("content-safety",)
@@ -154,10 +179,15 @@ def _is_free_row(row: dict) -> bool:
 def fetch_catalog(force: bool = False) -> List[dict]:
     """返回远端 Kilo 免费池清单（原始 row 列表，含 id/name/context_length 等）。
 
+    - 🔴 车道关闭时（``KILO_LANE_ENABLED=False``，2026-10-18 起）**恒返回 [] 且
+      不走网络**：官方封禁免费使用后不再探测；连 seed 都不返回（picker 不空不再是
+      目标，免费组清空是有意为之）。复活 = 常量翻回 True。
     - 缓存新鲜且 ``force=False`` → 直接返回（**不走网络**）
     - 否则拉远端；成功则存缓存、diff 记一行「上架/下架」日志并返回
     - 网络失败 → 有缓存用缓存，否则用 seed
     """
+    if not KILO_LANE_ENABLED:
+        return []
     cache = _load_cache()
     if not force and cache is not None:
         if time.time() - cache.get("fetched_at", 0) < CACHE_TTL_SECONDS:
@@ -259,7 +289,13 @@ def get_kilo_entries() -> Dict[str, ModelEntry]:
 
     **请求路径永不阻塞网络**：读缓存即返回；缺失/过期时触发后台刷新
     （冷启动另加一次性填充，几秒内到位）。同 ``get_openrouter_entries`` 的范式。
+
+    🔴 车道关闭时（``KILO_LANE_ENABLED=False``，2026-10-18 起）恒返回 {}：
+    opencode 官方封禁免费使用后不再展示/不再探测（原因见模块 docstring）。
+    复活 = 把常量翻回 True，无需改任何调用方。
     """
+    if not KILO_LANE_ENABLED:
+        return {}
     cache = _load_cache()
     missing = cache is None
     stale = cache is not None and (time.time() - cache.get("fetched_at", 0)) >= CACHE_TTL_SECONDS
@@ -276,7 +312,11 @@ def get_kilo_entries() -> Dict[str, ModelEntry]:
 
 
 def known_model_ids() -> set:
-    """当前清单里的全部 Kilo 免费模型 id（裸名，不含 ``kilo:`` 前缀）。"""
+    """当前清单里的全部 Kilo 免费模型 id（裸名，不含 ``kilo:`` 前缀）。
+
+    🔴 车道关闭时（``KILO_LANE_ENABLED=False``）经 ``fetch_catalog`` 恒返 []，
+    本函数随之恒空（熔断表清理因此也不会误判「全下架」）。
+    """
     return {r["id"] for r in fetch_catalog() if r.get("id")}
 
 
@@ -285,6 +325,9 @@ def free_lane_order() -> List[str]:
 
     实测免费池基本全员 ``reasoning``（排序区分不出快慢），所以不搞「非推理优先」——
     清单序 + 自动路由置顶就是最稳的顺序（zen 那套排序在这里没有信息量）。
+
+    🔴 车道关闭时（``KILO_LANE_ENABLED=False``）经 ``fetch_catalog`` 恒返 []，
+    本函数随之恒空 → ``llm_channels.free_channels()`` 只剩本地兜底通道。
     """
     rows = fetch_catalog()
     ids = [r["id"] for r in rows if r.get("id") and _is_free_row(r)]
@@ -371,5 +414,12 @@ def _ensure_refresh_thread(oneshot: bool = False) -> None:
 
 
 def start_catalog_refresh() -> None:
-    """服务器启动时调一次，开始周期刷新。"""
+    """服务器启动时调一次，开始周期刷新。
+
+    🔴 车道关闭时（``KILO_LANE_ENABLED=False``，2026-10-18 起）直接返回：
+    外网免费车道全撤后没有可服务的模型，不必每 6h 拉一次清单、不必清理熔断表
+    ——**零探测**是这次退役的核心目的（官方放行前不再出现任何 Kilo 流量）。
+    """
+    if not KILO_LANE_ENABLED:
+        return
     _ensure_refresh_thread()

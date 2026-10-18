@@ -11,6 +11,14 @@ Mac 端无 llama-server → 首次调用失败被熔断跳过，无害。
 （只要求「兜底前全是远端免费车道，且不含 local」），并新增
 ``test_free_channels_excludes_dead_opencode_lane``锁住 opencode 不再进组。
 
+🔴 2026-10-18 外网免费车道全撤（萧哥拍板）：opencode 官方封禁免费使用（免费
+通道一条也用不了，连官方客户端都不可用），持续的**动态探测**可能让官方一直不
+放行 ⇒ Kilo 也撤（``kilo_catalog.KILO_LANE_ENABLED=False``）。生产上免费组
+**仅剩 local 兜底**（小桔自己的 CVM 设施，不探测任何官方）——这个关闭态由
+``tests/test_kilo_lane.py::test_free_group_is_local_only_when_lane_disabled``
+锁。本文件两个组成测试因此 pin ``KILO_LANE_ENABLED=True``：它们锁的是
+**复活后**「远端车道 + local 垫底」的组成契约，别让复活路长歪。
+
 不碰活库、不发任何网络请求（fetch_catalog / _local_complete 全被 mock 替换）。
 """
 from __future__ import annotations
@@ -24,13 +32,20 @@ import deskmate.memory.llm as llm_mod
 from coworker.providers import kilo_catalog as K
 from coworker.providers import zen_catalog as Z
 
-#: 免费组的**远端** provider 车道（不含 local 兜底）。Kilo 是当前主力；
-#: opencode 已于 2026-10-13 因整条 403 被摘出免费组（代码保留）。
+#: 免费组的**远端** provider 车道（不含 local 兜底）。Kilo 曾是主力；
+#: opencode 已于 2026-10-13 因整条 403 被摘出免费组（代码保留）；Kilo 也于
+#: 2026-10-18 随外网免费车道全撤（KILO_LANE_ENABLED=False，生产上免费组仅剩
+#: local；本常量只服务于 pin 开关后的复活态组成测试）。
 REMOTE_FREE_PROVIDERS = ("kilo",)
 
 
 def test_free_channels_appends_local_fallback_last(monkeypatch):
-    """免费组候选末尾必须是本地兜底通道（provider='local'，排最末）。"""
+    """复活态：免费组候选末尾必须是本地兜底通道（provider='local'，排最末）。
+
+    ⚠️ pin ``KILO_LANE_ENABLED=True``：2026-10-18 起生产上免费组仅剩 local
+    （见 test_kilo_lane.py 的关闭态用例）；本用例锁**复活后**的组成契约。
+    """
+    monkeypatch.setattr(K, "KILO_LANE_ENABLED", True)
     monkeypatch.setattr(
         K,
         "fetch_catalog",
@@ -59,7 +74,11 @@ def test_free_channels_excludes_dead_opencode_lane(monkeypatch):
     锁的是**处置**而非实现细节：即使 Kilo 清单某个模型后缀恰好长得像
     ``*-free``，也不该被当成 opencode 通道（provider 由组装处写死）。这条红了
     说明有人把死车道又接回了组里 → 后台任务会全部撞 403 并熔断。
+
+    ⚠️ pin ``KILO_LANE_ENABLED=True``：验的是复活态组成（关闭态免费组仅剩
+    local，无 kilo 可误判，见 test_kilo_lane.py 的关闭态用例）。
     """
+    monkeypatch.setattr(K, "KILO_LANE_ENABLED", True)
     monkeypatch.setattr(
         K,
         "fetch_catalog",
