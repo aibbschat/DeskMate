@@ -19,6 +19,8 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
+// 免费组现状（2026-10-18 外网免费车道全撤）：仅剩云端本地 llama-server 兜底一条
+// （local:qwen3-4b-instruct，小桔自己的 CVM 设施，电脑端不可用）。fixture 用真实 id。
 const STATUS = {
   paid: {
     total: 3,
@@ -26,9 +28,9 @@ const STATUS = {
     open: ["tencent-tokenplan:hy3"],
   },
   free: {
-    total: 13,
-    available: ["opencode:space-bunny-free"],
-    open: ["opencode:jev-1.13-free"],
+    total: 1,
+    available: [],
+    open: ["local:qwen3-4b-instruct"],
   },
   memory_group: "free" as const,
 };
@@ -42,10 +44,10 @@ describe("LlmChannelsCard", () => {
     const paid = screen.getByTestId("llm-group-paid");
     expect(free.getAttribute("aria-pressed")).toBe("true");
     expect(paid.getAttribute("aria-pressed")).toBe("false");
-    // 两组的候选数都露出来（3 条付费 / 13 条免费）——用 within 限定到各自按钮，
+    // 两组的候选数都露出来（3 条付费 / 1 条免费）——用 within 限定到各自按钮，
     // 否则 getByText 会因两处都含"条候选"而报multiple matches。
     expect(within(paid).getByText(/3 条候选/)).toBeTruthy();
-    expect(within(free).getByText(/13 条候选/)).toBeTruthy();
+    expect(within(free).getByText(/1 条候选/)).toBeTruthy();
     // 限额提示也按组各自显示
     expect(within(paid).getByText(/1 条限额中/)).toBeTruthy();
   });
@@ -73,9 +75,9 @@ describe("LlmChannelsCard", () => {
     render(<LlmChannelsCard />);
 
     const list = await screen.findByTestId("llm-open-list");
-    // hy3 与 jev-1.13 都该在列
+    // hy3 与云端本地兜底都该在列
     expect(list.textContent).toContain("tencent-tokenplan:hy3");
-    expect(list.textContent).toContain("opencode:jev-1.13-free");
+    expect(list.textContent).toContain("local:qwen3-4b-instruct");
   });
 
   it("有审计时展示最近的通道切换", async () => {
@@ -84,7 +86,7 @@ describe("LlmChannelsCard", () => {
       {
         ts: "2026-10-06T21:35:12",
         event: "open",
-        channel: "opencode:jev-1.13-free",
+        channel: "local:qwen3-4b-instruct",
         kind: "transient",
         detail: "upstream 500",
         until: "",
@@ -93,7 +95,7 @@ describe("LlmChannelsCard", () => {
     render(<LlmChannelsCard />);
     const list = await screen.findByTestId("llm-audit-list");
     expect(list.textContent).toContain("限额");
-    expect(list.textContent).toContain("jev-1.13-free");
+    expect(list.textContent).toContain("qwen3-4b-instruct");
   });
 
   it("后端拿不到状态时静默隐藏（不破坏设置页）", async () => {

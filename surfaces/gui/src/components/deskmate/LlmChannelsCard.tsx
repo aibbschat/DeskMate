@@ -11,7 +11,9 @@ const CARD = "rounded-xl2 border border-line bg-panel";
 const FIELD_LABEL = "text-[12.5px] font-medium text-ink";
 
 /** LLM 通道组：两个总开关（付费组 / 免费组）+ 组内自动排的状态与审计。
- *  设计 §二：后台任务默认走免费组（省付费额度）；她对你说的话走付费组。
+ *  她对你说的话走付费组；后台任务默认也走付费组（2026-10-13 起，免费池 prompt
+ *  可能被上游记录）。免费组 2026-10-18 起仅剩云端本地 llama-server 兜底
+ *  （外网免费车道全撤，见 PITFALLS §P4）。
  *  组内具体走哪条由deskmate.llm_channels.route 自动排（跳过熔断中的），
  *  本卡片只管「手动切组」+ 让状态可见（哪些候选可用/ 哪些在熔断）。 */
 export function LlmChannelsCard() {
@@ -59,7 +61,7 @@ export function LlmChannelsCard() {
       <div className="flex gap-2 mt-3" role="group" aria-label="通道组">
         {(
           [
-            ["free", "免费组", "记忆抽取、理解加工等后台活走这里，省付费额度"],
+            ["free", "免费组", "仅剩云端本地模型兜底（电脑端不可用，会自动降回付费组）"],
             ["paid", "付费组", "她对你说的话走这里（质量与延迟更稳）"],
           ] as const
         ).map(([key, label, hint]) => {

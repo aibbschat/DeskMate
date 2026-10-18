@@ -678,8 +678,8 @@ export function App() {
     if (surface !== "settings") loadSettings();
   }, [surface, loadSettings]);
 
-  // Keep the picker's model list live (2026-10-09: "the composer's opencode free models never
-  // update"). The backend mirrors the vendor catalog on a 6h TTL, but the GUI only ever asked
+  // Keep the picker's model list live (2026-10-09 origin: "the composer's free models never
+  // update"). The backend mirrors the vendor catalog (OpenRouter, 6h TTL) — the GUI only ever asked
   // for settings at boot and on surface change — so a model delisted/newly listed upstream stayed
   // invisible until the user happened to visit Settings. 10 minutes is well inside the 6h TTL
   // (plenty for a refresh to land) while adding a negligible request rate.

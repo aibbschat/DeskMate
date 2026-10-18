@@ -475,15 +475,18 @@ export function Composer(props: Props) {
 
   const modelsLoaded = !!(props.models && props.models.length);
   // 模型选择器分组（2026-10-13 萧哥要求重构）：按「上游厂商 × 免费/付费」分组折叠。
-  // 旧版只有 免费/付费 两档平铺——opencode / 火山 / 小米 / OpenRouter 几百项混列，
-  // 加上 Kilo 免费池后更没法看。现在每组一个厂商（后端 model_vendors 供名），
+  // 旧版只有 免费/付费 两档平铺——免费网关 / 火山 / 小米 / OpenRouter 几百项混列，
+  // 更没法看。现在每组一个厂商（后端 model_vendors 供名），
   // 组可折叠（见 Dropdown），含当前选中项的组默认展开、小组（≤4）默认展开。
   const modelGroups = useMemo(() => {
     const tiers = props.modelTiers;
     const tierOf = (m: string): "free" | "paid" => {
       const known = tiers?.[m];
       if (known === "free" || known === "paid") return known;
-      return m.startsWith("omniroute:") || m.startsWith("opencode:") || m.startsWith("kilo:") || m.startsWith("ollama:")
+      // 旧后端缺 model_tiers 时的前缀兜底：keyless 网关判免费。
+      // ⚠️ opencode:/kilo: 两个前缀 2026-10-18 已随外网免费车道删除（后端不再
+      // 供这类 id，见 PITFALLS §P4），别再加回来。
+      return m.startsWith("omniroute:") || m.startsWith("ollama:")
         ? "free"
         : "paid";
     };

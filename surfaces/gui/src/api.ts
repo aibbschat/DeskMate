@@ -3253,7 +3253,8 @@ export async function getDeskmateAgencyStatus(): Promise<AgencyStatus | null> {
 }
 
 // -- LLM 通道组（2026-10-06，设计 §二）----------------------------------
-// 两个总开关：付费组（火山→小米→hy Token Plan）/ 免费组（opencode 免费模型）。
+// 两个总开关：付费组（火山→小米→hy Token Plan）/ 免费组（2026-10-18 外网免费
+// 车道全撤后仅剩云端本地 llama-server 兜底，电脑端不可用会自动降回付费组）。
 // 组内自动切+ 手动切组；这份状态跨端共享（熔断表进 SYNC_TABLES）。
 
 export interface LlmChannelGroup {
