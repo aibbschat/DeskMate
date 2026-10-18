@@ -41,19 +41,23 @@
   **已拆** = `write_file` 的 path scoping（可写 roots 外）、延迟执行文件（`.git/hooks` 等）、持久权威（`save_skill`/`create|update|delete_scheduled_task` ⇒ 她能装技能、自建删定时任务）、无法定位路径的写不再 fail-closed。
 - ✅ 那几处"地板仍在"的假注释已于 10-02 订正（提交 `c1d78f5`，纯注释零行为变更）。**规矩不变：注释/docstring 一律不作数**，判防线只有一条路——**实测 `evaluate()` 或读短路块本身**。agency 层 L2 提议卡是另一层，仍在。
 
-## §P4 — 外网免费车道全撤（2026-10-18）：两个车道开关 + 复活路径 + 两条测试陷阱
+## §P4 — 外网免费车道**已删除**（2026-10-18）：代码全删，不是关闭
 
-**背景**：opencode 官方封禁萧哥的免费使用（免费通道一条也用不了，连官方客户端都不可用）。萧哥判断持续的**动态探测**可能让官方一直不放行 ⇒ 拍板把外网免费车道全部撤掉。
+**背景**：opencode 官方封禁萧哥的免费使用（免费通道一条也用不了，连官方客户端都不可用）。10-18 白天先做「关闭态」（commit `b92a119`：两个 `*_LANE_ENABLED=False`，代码保留等放行）；**同日 20:35 萧哥升级拍板为删除**——「今天才知道探测多了会被封号，留着没用，就算恢复，下次也不敢再踩这个坑」。当前契约 = commit `bafa941`（删除，-2691 行）。
 
-**现状契约**（commit `b92a119`，2026-10-18）：
-- 两个车道开关均 False：`zen_catalog.ZEN_LANE_ENABLED`（10-13，opencode 整条 403）与 `kilo_catalog.KILO_LANE_ENABLED`（10-18）。False = picker 不展示、后台 6h 刷新不启动、`fetch_catalog` 恒返 `[]` **且不走网络**。
-- **免费组仅剩本地 llama-server 兜底**（CVM 设施，不探测任何官方）；Mac 端本地不可用 → 后台任务降级回付费组（`memory_group` 默认 paid）。`prefs.json:memory_llm_group` 本机实测已是 paid。
-- **复活 = 把两个常量翻回 True**，无需改任何调用方；provider/catalog/`chat_memory` 分派分支代码全留。
-- ⚠️ 关闭态 `fetch_catalog` **连 seed 都不给**是有意为之（picker 不空不再是目标）——别"修"它返回 seed，那会把死模型又送回 picker。
-- 设置页 provider「Test」按钮探针（`registry.verify_provider_key` → `probe_kilo_lane`/`probe_free_lane`）是**手动**诊断、无后台循环调用，不构成动态探测，保留。
+**现状契约（删除态）**：
+- 四个模块已 git rm：`coworker/providers/{opencode_provider,kilo_provider,zen_catalog,kilo_catalog}.py`。连带删除：matrix 静态 8 项 + `_live_zen`/`_live_kilo`、registry 两个 descriptor 与 Test 探针分支、app.py 两个 6h 刷新启动钩子、`memory/llm.py` 的 `_opencode_complete`/`_kilo_complete` 分派、`test_kilo_lane.py` 整文件、deploy 清单四条目。
+- **免费组仅剩本地 llama-server 兜底**（`free_channels() == [local]`，小桔自己的 CVM 设施，不探测任何官方）；Mac 端本地不可用 → 后台任务降级回付费组（`memory_group` 默认 paid，prefs 实测已是 paid）。
+- **保留**：本地兜底、403 长冷却/retry-after 解析等通用熔断逻辑、`openrouter_catalog`（picker 手动选项，非后台免费组、非封号当事方——若要一并撤，另议）。
+- 删除态契约测试：`tests/test_free_lane_removed.py`（8 条：四模块不可 import、registry 无 descriptor、picker 无条目、免费组仅剩 local、memory/llm 无分派函数、deploy 脚本不传输、付费组三项不变）。**谁想加回免费车道，先改这个文件**——它锁的就是「不加回」。
 
-**测试陷阱一：全量跑必红 40+，别慌着往自己头上扣**。`tests/` 全量（排除三个真出网文件）基线即 40 红，其中 8 个是 chat_memory 相关（`test_kilo_lane/test_llm_circuit_breaker/test_llm_free_only_routing/test_local_fallback_channel` 里 patch `route` 的用例）——**单文件/四文件合跑全绿，全量下相互污染才红**（2026-10-18 双跑实证：HEAD 基线与改后跑同一批红）。定性方法：同命令跑 parent commit 基线对比，别只看总数。
+**测试陷阱一：全量跑必红 39+，别慌着往自己头上扣**。`tests/` 全量（排除三个真出网文件）基线即 40 红（10-18 parent 实测），其中 8 个是 chat_memory 相关用例——**单文件合跑全绿、全量下相互污染才红**。定性方法：同命令跑 parent commit 基线对比，别只看总数。删除后全量 39 failed / 4191 passed，与基线 comm 对比**零新增**（唯一差异是随 `test_kilo_lane.py` 删除消失的那条红）。
 
-**测试陷阱二：`test_health_producers` 的两个 cron 用例有整点 30 分钟窗口**。`_cron_missed` 判据是「应跑时刻已过 30 分钟宽限仍没跑才算 miss」⇒ **整点后 0–30 分钟内执行必红**（19:0x 跑全量红 2 个、19:3x 跑全绿，同一份代码）。实证：`_cron_missed("0 * * * *", None, 整点+60s) → False`（红）、`整点+31min → True`（绿）。跑全量前看一眼时钟，落在窗口内的红不算回归。
+**测试陷阱二：`test_health_producers` 的两个 cron 用例有整点 30 分钟窗口**。`_cron_missed` 判据是「应跑时刻已过 30 分钟宽限仍没跑才算 miss」⇒ **整点后 0–30 分钟内执行必红**（19:0x 跑全量红 2 个、19:3x 跑全绿，同一份代码）。跑全量前看一眼时钟，落在窗口内的红不算回归。
 
-**复活后要连带做的**：① 两个常量翻 True；② 前端 `LlmChannelsCard.tsx:62`/`api.ts:3256`「免费组省付费额度」文案（10-18 已过时未改，改前端要重打包 + deploy_web.sh）；③ 确认 `deploy_cloud_sync.sh` 的 CHANNEL_MODULES 仍含全部 5 个相关文件（kilo_catalog/kilo_provider/llm_channels/matrix/memory-llm/app）。
+**删除时容易漏的三处**（本次实测踩到）：
+1. **云端残留**：`deploy_cloud_sync.sh` 只传不删——四个 .py 删出本地后云端 `/opt/openworker/coworker/providers/` 仍躺着旧副本（19:29 传的），须 ssh 精确 `rm` + 清 `providers/__pycache__`；云端缓存 json 在 `/var/lib/openworker/.config/coworker/`（**不是** `.deskmate/`，两段 ls 连读会看错位置），`mv` 成 `.bak-del-20261018` 留证。
+2. **本地缓存残骸**：`~/.config/coworker/` 下 146 个 `kilo_catalog*`/`zen_catalog*`（正式缓存 + 上百个从未清理的 `.tmp`——原子写 tmp 名唯一但刷新线程不回收，历史泄漏），模块删除后永久孤儿，已移入 `~/.Trash/deskmate-catalog-cache-20261018/`（可恢复）。
+3. **测试 fixture 借用已删 provider 名**：`test_dynamic_route.py` 用 `kilo:stub` 当路由键载体——`router._bare()` 剥前缀依赖 `get_descriptor(prefix)`，descriptor 删除后不剥了 ⇒ 断言 `["stub"]` 变 `["kilo:stub"]`。改 fixture 前缀（`omniroute:stub`）即可，别去改 `_bare`。
+
+**复活要连带做的**（萧哥若哪天要加回）：① 从 git 历史恢复四模块（`git show b92a119:<path>`，注意矩阵/registry/app/memory-llm 五处接入点要一起回）；② 删/改 `test_free_lane_removed.py`；③ 前端 `LlmChannelsCard.tsx:62`/`api.ts:3256`「免费组省付费额度」文案（10-18 已过时未改，改前端要重打包 + deploy_web.sh）；④ deploy 清单恢复四条目。
