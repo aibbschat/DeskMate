@@ -1,25 +1,14 @@
-"""回归：免费组末尾追加本地 llama-server 兜底通道（2026-10-11 萧哥拍板）。
+"""回归：本地 llama-server 兜底通道（2026-10-11 萧哥拍板；2026-10-18 起为免费组唯一成员）。
 
-设计：免费组 = 远端免费清单（动态，会下架）+ **本地 local 兜底**（CVM 常驻
-llama-server，OpenAI 兼容）。local 排最末——优先用远端免费通道，仅当它们全熔断时，本地
-Qwen3-Instruct 兜底跑后台加工（记忆抽取 / 反思 / 理解），宁可本地算也不让任务全挂。
-Mac 端无 llama-server → 首次调用失败被熔断跳过，无害。
+设计：免费组曾 = 远端免费清单（opencode → Kilo，动态，会下架）+ **本地 local
+兜底**（CVM 常驻 llama-server，OpenAI 兼容）。2026-10-18 萧哥拍板**删除**
+外网免费车道（opencode 官方封禁免费使用；「今天才知道探测多了会被封号，
+留着没用，下次也不敢再踩这个坑」）⇒ 免费组仅剩 local 一条——组成契约由
+``tests/test_free_lane_removed.py`` 锁（模块不可 import、picker 无条目、
+free_channels 仅剩 local），本文件专注 local 兜底自身的接线：
+free_only 路径选到 local → 必走 ``_local_complete``；命中 → 埋点落盘。
 
-🔴 2026-10-13 远端车道换人：opencode 匿名车道整条 403（``FreeTierError``），
-免费组主力改成 **Kilo**（Our Free Model 插件移植，免密钥+剥Authorization）。
-「远端免费通道 = opencode」这个前提随之作废，本文件断言已改为 provider 无关
-（只要求「兜底前全是远端免费车道，且不含 local」），并新增
-``test_free_channels_excludes_dead_opencode_lane``锁住 opencode 不再进组。
-
-🔴 2026-10-18 外网免费车道全撤（萧哥拍板）：opencode 官方封禁免费使用（免费
-通道一条也用不了，连官方客户端都不可用），持续的**动态探测**可能让官方一直不
-放行 ⇒ Kilo 也撤（``kilo_catalog.KILO_LANE_ENABLED=False``）。生产上免费组
-**仅剩 local 兜底**（小桔自己的 CVM 设施，不探测任何官方）——这个关闭态由
-``tests/test_kilo_lane.py::test_free_group_is_local_only_when_lane_disabled``
-锁。本文件两个组成测试因此 pin ``KILO_LANE_ENABLED=True``：它们锁的是
-**复活后**「远端车道 + local 垫底」的组成契约，别让复活路长歪。
-
-不碰活库、不发任何网络请求（fetch_catalog / _local_complete 全被 mock 替换）。
+不碰活库、不发任何网络请求（_local_complete 全被 mock 替换）。
 """
 from __future__ import annotations
 
@@ -29,75 +18,26 @@ import pytest
 
 import deskmate.llm_channels
 import deskmate.memory.llm as llm_mod
-from coworker.providers import kilo_catalog as K
-from coworker.providers import zen_catalog as Z
-
-#: 免费组的**远端** provider 车道（不含 local 兜底）。Kilo 曾是主力；
-#: opencode 已于 2026-10-13 因整条 403 被摘出免费组（代码保留）；Kilo 也于
-#: 2026-10-18 随外网免费车道全撤（KILO_LANE_ENABLED=False，生产上免费组仅剩
-#: local；本常量只服务于 pin 开关后的复活态组成测试）。
-REMOTE_FREE_PROVIDERS = ("kilo",)
 
 
-def test_free_channels_appends_local_fallback_last(monkeypatch):
-    """复活态：免费组候选末尾必须是本地兜底通道（provider='local'，排最末）。
+def test_free_channels_is_local_only():
+    """免费组仅剩本地兜底一条（外网免费车道 2026-10-18 删除后的组成契约）。
 
-    ⚠️ pin ``KILO_LANE_ENABLED=True``：2026-10-18 起生产上免费组仅剩 local
-    （见 test_kilo_lane.py 的关闭态用例）；本用例锁**复活后**的组成契约。
+    与 test_free_lane_removed.py::test_free_group_is_local_only 同口径——
+    这里从「兜底接线」角度再锁一次：免费组 = [local]，且 free=True。
     """
-    monkeypatch.setattr(K, "KILO_LANE_ENABLED", True)
-    monkeypatch.setattr(
-        K,
-        "fetch_catalog",
-        lambda: [
-            {"id": "kilo-auto/free", "isFree": True},
-            {"id": "nvidia/nemotron-3.5-lightning:free", "isFree": True},
-        ],
-    )
     chs = deskmate.llm_channels.free_channels()
-    assert chs, "免费组不应为空"
-    # 前 N-1 条都是远端免费车道（provider 无关；不再锁死 opencode）
-    assert all(c.provider in REMOTE_FREE_PROVIDERS for c in chs[:-1]), (
-        f"本地兜底前的候选必须全是远端免费车道，实际：{[c.provider for c in chs]}"
-    )
-    last = chs[-1]
-    assert last.provider == deskmate.llm_channels.LOCAL_LLM_PROVIDER, (
-        "本地兜底必须排最末"
-    )
-    assert last.model == deskmate.llm_channels.LOCAL_LLM_MODEL
-    assert last.free is True
-
-
-def test_free_channels_excludes_dead_opencode_lane(monkeypatch):
-    """🔴 opencode 车道整条 403 后，免费组里不许再有 ``provider='opencode'`` 的通道。
-
-    锁的是**处置**而非实现细节：即使 Kilo 清单某个模型后缀恰好长得像
-    ``*-free``，也不该被当成 opencode 通道（provider 由组装处写死）。这条红了
-    说明有人把死车道又接回了组里 → 后台任务会全部撞 403 并熔断。
-
-    ⚠️ pin ``KILO_LANE_ENABLED=True``：验的是复活态组成（关闭态免费组仅剩
-    local，无 kilo 可误判，见 test_kilo_lane.py 的关闭态用例）。
-    """
-    monkeypatch.setattr(K, "KILO_LANE_ENABLED", True)
-    monkeypatch.setattr(
-        K,
-        "fetch_catalog",
-        lambda: [
-            {"id": "kilo-auto/free", "isFree": True},
-            # 长得像 opencode 免费模型的 id：验证不是靠后缀匹配路由的
-            {"id": "space-bunny-free", "isFree": True},
-        ],
-    )
-    chs = deskmate.llm_channels.free_channels()
-    offenders = [c.model for c in chs if c.provider == "opencode"]
-    assert not offenders, f"死车道 opencode 仍在免费组里：{offenders}"
+    assert [c.key for c in chs] == [
+        f"{deskmate.llm_channels.LOCAL_LLM_PROVIDER}:{deskmate.llm_channels.LOCAL_LLM_MODEL}"
+    ]
+    assert chs[0].free is True
 
 
 def test_free_only_routing_invokes_local_complete(monkeypatch, tmp_path):
     """free_only 路径选到 local 通道时，必须走 ``_local_complete``（本地 llama-server）。
 
     这是 local 兜底接线的直接回归：若 ``route`` 返回 local 通道，``chat_memory`` 应命中
-    ``if ch.provider == "local"`` 分支并调用 ``_local_complete``，而非 opencode/付费分支。
+    ``if ch.provider == "local"`` 分支并调用 ``_local_complete``。
     """
     monkeypatch.setattr(llm_mod, "_memory_use_omniroute", lambda bible=False: False)
     monkeypatch.setattr(llm_mod, "_breaker_base_dir", lambda: str(tmp_path))

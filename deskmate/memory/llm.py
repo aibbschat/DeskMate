@@ -155,9 +155,10 @@ def _llm_http_client() -> "httpx.Client":
 #
 # 两个总开关（萧哥 21:04 拍板）：付费组 = 火山→小米→hy3（qwen 不进链）；
 # 免费组 = 曾经是 Kilo 远端清单驱动（2026-10-13 起，opencode 车道死亡退役）；
-# **2026-10-18 外网免费车道全撤**（opencode 官方封禁免费使用、连官方客户端都
-# 不可用，持续的动态探测可能让官方一直不放行 → 萧哥拍板 Kilo 也撤，
-# KILO_LANE_ENABLED=False），免费组仅剩本地 llama-server 兜底（不探测任何官方）。
+# **2026-10-18 外网免费车道删除**（opencode 官方封禁免费使用、连官方客户端都
+# 不可用，持续的动态探测可能让官方一直不放行 → 萧哥拍板连代码一并删：
+# 「今天才知道探测多了会被封号，留着没用，下次也不敢再踩这个坑」），
+# 免费组仅剩本地 llama-server 兜底（不探测任何官方）。
 # 后台任务默认组 2026-10-13 萧哥改判「乙」= **付费**（Kilo prompt 可能被上游记录，
 # 记忆抽取输入是萧哥的对话片段）；默认值至退役后保持不变。
 _DESKMATE_DIR_ENV = "DESKMATE_DIR"
@@ -503,12 +504,12 @@ def chat_memory(
 ) -> str:
     """记忆抽取专用 chat：走**通道组**（2026-10-06，设计 §二）。
 
-    **默认走付费组**（2026-10-13 萧哥「乙」方案改判）：opencode 车道整条死亡后
-    免费组主力曾是 Kilo，而 Kilo 免费池 prompt 可能被上游记录——记忆抽取输入是
-    萧哥的对话片段，不过可能被记录的车道。 ark→小米→腾讯三层冗余，任一家额度
-    撞顶自动切下一家。想省额度可显式 `DESKMATE_MEMORY_GROUP=free` 走免费组
-    （2026-10-18 外网免费车道全撤后仅剩本地 llama-server 兜底，见
-    `deskmate.llm_channels` 模块 docstring；Mac 端本地兜底不可用 → 实际仍落付费组）。
+    **默认走付费组**（2026-10-13 萧哥「乙」方案改判）：免费组主力曾是 Kilo，
+    而 Kilo 免费池 prompt 可能被上游记录——记忆抽取输入是萧哥的对话片段，
+    不过可能被记录的车道。 ark→小米→腾讯三层冗余，任一家额度撞顶自动切下一家。
+    想省额度可显式 `DESKMATE_MEMORY_GROUP=free` 走免费组（2026-10-18 外网免费
+    车道删除后仅剩本地 llama-server 兜底，见 `deskmate.llm_channels` 模块
+    docstring；Mac 端本地兜底不可用 → 实际仍落付费组）。
 
     行为：
     - 组内自动排：按 :func:`deskmate.llm_channels.route` 取下一条**非熔断**通道，每条经
@@ -577,32 +578,10 @@ def chat_memory(
                     f"{group} 组候选均无法调用（试了 {tried} 条）"
                 ) from last_exc
             try:
-                if ch.provider == "opencode":
-                    # 免费组必须经 opencode_provider 的伪装协议（CLI 头 + 门面工具 +
-                    # 仅流式），直连 OpenAI() 会 403 FreeTierError（设计 §四）。
-                    # ⚠️ 2026-10-13：opencode 车道已整条死亡（见 zen_catalog.ZEN_LANE_ENABLED），
-                    # 此分支保留待上游恢复；免费组主力（Kilo）也于 2026-10-18 全撤，
-                    # 当前免费组仅剩下面的 local 分支。
-                    return _call_with_breaker(
-                        ch.provider, ch.model,
-                        lambda m=ch.model: _opencode_complete(
-                            m, system, user, temperature, max_tokens, timeout),
-                    )
-                if ch.provider == "kilo":
-                    # Kilo 免费车道（2026-10-13 移植 Our Free Model 插件）：普通 OpenAI
-                    # 兼容端点，但**不能带 Authorization 头**（任意 token → INVALID_TOKEN），
-                    # 必须经 KiloProvider（client 自带剥头 hook，见 kilo_provider.py）。
-                    # ⚠️ 2026-10-18：opencode 官方封禁免费使用 → 外网免费车道全撤
-                    # （kilo_catalog.KILO_LANE_ENABLED=False，free_lane_order 恒空），
-                    # 此分支当前不可达（route 选不到 kilo 通道），保留待官方放行后复活。
-                    return _call_with_breaker(
-                        ch.provider, ch.model,
-                        lambda m=ch.model: _kilo_complete(
-                            m, system, user, temperature, max_tokens, timeout),
-                    )
                 if ch.provider == "local":
                     # 本地 llama-server 兜底（OpenAI 兼容，trust_env=False 防代理劫持
-                    # localhost）。2026-10-18 起为**免费组唯一成员**（外网免费车道全撤），
+                    # localhost）。2026-10-18 起为**免费组唯一成员**（opencode / Kilo
+                    # 外网免费车道已删除，见 deskmate/llm_channels 模块 docstring），
                     # Mac 端无 llama-server → 失败被熔断跳过，后台任务随后降级回付费组。
                     import time as _time
 
@@ -662,9 +641,9 @@ def _audit_skip(channel_key: str, why: str) -> None:
 def _creds_for(provider: str, model: str) -> tuple:
     """取某条**付费**通道的 ``(api_key, base_url, model)``；无凭证返回空。
 
-    免费组（``provider == "opencode"`` / ``"kilo"`` / ``"local"``）不走这里——
-    它们必须经各自的专用 complete（伪装协议 / 剥 Authorization / 本地端点），
-    见调用方分派。
+    免费组（``provider == "local"``）不走这里——本地 llama-server 必须经
+    ``_local_complete``（trust_env=False 防代理劫持 localhost）。历史上的
+    opencode / kilo 专用分派 2026-10-18 随外网免费车道删除一并移除。
     """
     try:
         from coworker.secrets import SecretStore
@@ -718,90 +697,15 @@ def _chat_memory_via_omniroute(
 
 
 # --------------------------------------------------------------------------- #
-# 免费组调用：必须经 opencode_provider 的伪装协议
+# 本地 llama-server 兜底调用（2026-10-18 起为免费组唯一成员）
 # --------------------------------------------------------------------------- #
 
-#: 门面工具（2026-10-06 实测）：**不带工具 ⇒403 FreeTierError**
-#:（"OpenCode's free tier can only be used from within OpenCode"）；
-#: 且 `had_real_tools=True` 时不能把 tool_choice 设成 "none"。见设计 §四。
-_FREE_LANE_TOOLS = [
-    {
-        "type": "function",
-        "function": {
-            "name": "read",
-            "description": "Read a file from the workspace.",
-            "parameters": {"type": "object", "properties": {}},
-        },
-    }
-]
-
-
-def _opencode_complete(
-    model: str,
-    system: str,
-    user: str,
-    temperature: float,
-    max_tokens: int,
-    timeout: float,
-) -> str:
-    """经 ``OpencodeProvider`` 调Zen 免费通道（**不可用 OpenAI() 直连**）。
-
-    走生产 provider 的原因（2026-10-06 三次探测踩坑后确认，见设计 §四）：
-    裸 OpenAI 形状的请求会被判「不在 OpenCode 里面」而 403。
-    """
-    from coworker.providers.opencode_provider import OpencodeProvider
-
-    provider = OpencodeProvider()
-    turn = provider.complete(
-        model=model,
-        messages=[
-            {"role": "system", "content": system},
-            {"role": "user", "content": user},
-        ],
-        tools=_FREE_LANE_TOOLS,
-        temperature=temperature,
-        max_tokens=max_tokens,
-        timeout=timeout,
-    )
-    return (turn.text or "").strip()
-
-
-def _kilo_complete(
-    model: str,
-    system: str,
-    user: str,
-    temperature: float,
-    max_tokens: int,
-    timeout: float,
-) -> str:
-    """经 ``KiloProvider`` 调 Kilo 免费池（**不可用裸 OpenAI() 直连**）。
-
-    两个直连必死的点（2026-10-13 实测）：
-    1. 带任何非空 ``Authorization`` → ``INVALID_TOKEN``（KiloProvider 的 client
-       用 event hook 剥掉该头，见 kilo_provider.build_kilo_client）；
-    2. 侧车继承的本机回环代理（WorkBuddy 开发代理）挂掉时会劫持外网调用 ——
-       与 ``_llm_http_client`` 同一套 ``_proxy_is_loopback`` 判断。
-
-    ⚠️ 2026-10-18：opencode 官方封禁免费使用 → Kilo 车道全撤
-    （KILO_LANE_ENABLED=False），本函数当前不可达（route 选不到 kilo 通道），
-    保留待官方放行后随车道开关一起复活。
-    """
-    from coworker.providers.kilo_provider import KiloProvider, build_kilo_client
-
-    provider = KiloProvider(
-        client=build_kilo_client(trust_env=not _proxy_is_loopback())
-    )
-    turn = provider.complete(
-        model=model,
-        messages=[
-            {"role": "system", "content": system},
-            {"role": "user", "content": user},
-        ],
-        temperature=temperature,
-        max_tokens=max_tokens,
-        timeout=timeout,
-    )
-    return (turn.text or "").strip()
+# 🔴 2026-10-18 删除（萧哥拍板）：_FREE_LANE_TOOLS / _opencode_complete /
+# _kilo_complete 原在此处——opencode 官方封禁免费使用，且持续的**动态探测**
+# 可能让官方一直不放行；「今天才知道探测多了会被封号，留着没用，下次也不敢
+# 再踩这个坑」。连带删除四个车道模块（opencode_provider / kilo_provider /
+# zen_catalog / kilo_catalog）。_local_complete 保留（自己的 CVM 设施，
+# 不探测任何官方）。删除态契约见 tests/test_free_lane_removed.py。
 
 
 def _record_local_fallback(success: bool, elapsed: float, chars: int) -> None:
@@ -843,8 +747,9 @@ def _local_complete(
     """经本地 llama-server（OpenAI 兼容）兜底调用。
 
     端点读 ``DESKMATE_LOCAL_LLM_BASE_URL``（默认 ``http://127.0.0.1:18080/v1``），
-    ``trust_env=False`` 避免被本机 / 公司代理劫持 localhost。仅在免费组所有远端 opencode
-    通道熔断时由 ``route()`` 选到（排最末兜底，见 ``deskmate.llm_channels.free_channels``）。
+    ``trust_env=False`` 避免被本机 / 公司代理劫持 localhost。2026-10-18 起为
+    免费组**唯一成员**（opencode / Kilo 外网免费车道已删除，见
+    ``deskmate.llm_channels.free_channels``）。
     """
     import httpx
 

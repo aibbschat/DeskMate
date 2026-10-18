@@ -289,19 +289,19 @@ def _has_creds(provider: str) -> bool:
 
 
 def test_free_group_sorts_non_reasoning_first():
-    """免费组**非推理优先**（后台批量活要速度；推理模型实测 14.3s）。"""
+    """免费组**非推理优先**（后台批量活要速度；推理模型实测 14.3s）。
+
+    🔴 2026-10-18：opencode / Kilo 外网免费车道已删除（萧哥拍板），免费组
+    仅剩本地 llama-server 兜底一条——「非推理优先」排序随远端清单消失而
+    作废（单条通道无从排序）。历史机制（zen_catalog.is_reasoning 驱动）的
+    回归价值随车道删除一并终结，本用例改为锁「免费组仅剩 local 一条」。
+    """
     from deskmate.llm_channels import free_channels
 
-    try:
-        from coworker.providers.zen_catalog import is_reasoning
-    except Exception:
-        pytest.skip("zen_catalog 不可用")
     chs = free_channels()
-    if len(chs) < 2:
-        pytest.skip("远端清单不足 2 个")
-    flags = [is_reasoning(c.model) for c in chs]
-    # False 段必须全部在 True 段之前
-    assert flags == sorted(flags), f"非推理未排在前：{flags}"
+    assert len(chs) == 1 and chs[0].provider == "local", (
+        f"外网免费车道删除后免费组应仅剩 local 一条，实际：{[c.key for c in chs]}"
+    )
 
 
 def test_route_skips_open_channels(base, monkeypatch):

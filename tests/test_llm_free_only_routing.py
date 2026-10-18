@@ -10,6 +10,9 @@ creative_suggest、understand_observations）全部空转崩溃、无产出。
 1) 不再抛 NameError、能走到 _call_with_breaker 并返回；
 2) 传给 route 的确实是 'free' 组（GROUP_FREE）。
 
+2026-10-18 起免费组唯一成员是本地 llama-server 兜底（opencode / Kilo
+外网免费车道已删除），故 mock channel 用 provider="local"。
+
 不碰活库、不发任何网络请求。
 """
 from __future__ import annotations
@@ -24,9 +27,9 @@ import deskmate.memory.llm as llm_mod
 
 def _fake_channel():
     return SimpleNamespace(
-        provider="opencode",
-        model="mimo-v2.6-flash-free",
-        key="opencode:mimo-v2.6-flash-free",
+        provider="local",
+        model="qwen3-4b-instruct",
+        key="local:qwen3-4b-instruct",
     )
 
 

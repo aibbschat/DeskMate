@@ -223,28 +223,6 @@ def _build_omniroute(profile: dict[str, Any], secrets: Any) -> ProviderClient:
     return OpenAIProvider(client=client)
 
 
-def _build_opencode(profile: dict[str, Any], secrets: Any) -> ProviderClient:
-    # OpenCode Zen 免费通道按 opencode2dsh/dsh-plugin 的线协议接入（2026-10-06 移植，见
-    # opencode_provider.py）：匿名流量带 `Authorization: Bearer public`（字面量）+ CLI 伪装
-    # 头 + bash/read 门面工具，仅流式。用户填了付费 key 则转发（同网关付费模型）。绝不回退
-    # OPENAI_API_KEY / SecretStore 的 OpenAI 配置 —— 那个 key 不能泄漏给 opencode.ai。
-    from .opencode_provider import OpencodeProvider
-
-    base_url = ((profile or {}).get("base_url") or "").strip() or None
-    api_key = ((profile or {}).get("api_key") or "").strip() or None
-    return OpencodeProvider(api_key=api_key, base_url=base_url)
-
-
-def _build_kilo(profile: dict[str, Any], secrets: Any) -> ProviderClient:
-    # Kilo 免费网关（Our Free Model 插件第二条匿名车道，2026-10-13 移植，见
-    # kilo_provider.py）：免密钥、免登录、无门面协议。⚠️ 请求**不能带** Authorization
-    # 头（任意非空 token 都会 INVALID_TOKEN），hook 在 client 构造时统一处理。
-    from .kilo_provider import KiloProvider
-
-    base_url = ((profile or {}).get("base_url") or "").strip() or None
-    return KiloProvider(base_url=base_url)
-
-
 def _openai_compat(vendor: str, default_base_url: str, env_key: Optional[str] = None):
     """Builder factory for vendors reached through their OpenAI-compatible API (Z AI, DeepSeek,
     Kimi, MiniMax, Qwen, xAI, Mistral). The key is resolved from the vendor's OWN profile (or its
@@ -789,65 +767,13 @@ DESCRIPTORS: list[ProviderDescriptor] = [
         blurb="经本机 OmniRoute 网关调度 290+ 供应商，内置免密钥免费模型（model:auto）。"
         "建议仅用于圆桌外脑／偶发草稿，勿作主写作流量。",
     ),
-    # OpenCode Zen 免费网关 (zen/v1)：2026-10-06 按 opencode2dsh/dsh-plugin 的线协议重新
-    # 移植并铺货（此前 2026-08-26 因可用性不稳撤过一次）。匿名免费额度走 Bearer public +
-    # CLI 伪装头 + bash/read 门面工具，仅流式 —— 见 opencode_provider.py；矩阵里的 8 个
-    # *-free 条目即当日实测可用的名单。
-    ProviderDescriptor(
-        name="opencode",
-        title="OpenCode 免费模型",
-        needs_key=False,
-        fields=[
-            ProviderField(
-                "base_url",
-                "OpenCode 网关地址",
-                secret=False,
-                required=False,
-                default="https://opencode.ai/zen/v1",
-                placeholder="https://opencode.ai/zen/v1",
-                help="OpenCode Zen 免费网关（zen/v1）。匿名免费额度即可用 *-free 模型；"
-                "付费模型需自备 key。",
-            ),
-            ProviderField(
-                "api_key",
-                "API Key（可选）",
-                secret=True,
-                required=False,
-                placeholder="免费 *-free 模型留空；付费模型填 OpenCode key",
-                help="仅当使用 OpenCode 付费模型时才填；免费 *-free 模型留空走匿名额度。",
-            ),
-        ],
-        build=_build_opencode,
-        recommended_model="space-bunny-free",
-        blurb="OpenCode Zen 免费通道（opencode2dsh 协议移植）：免密钥 *-free 模型"
-        "（Space Bunny / MiMo / Nemotron 等）。匿名额度限速，建议仅用于轻量草稿。",
-    ),
-    # Kilo 免费网关（Our Free Model 插件第二条匿名车道，2026-10-13 接入）：
-    # 免密钥、免登录、无门面协议，模型清单远端动态驱动（kilo_catalog，6h 刷新）。
-    # ⚠️ 隐私 trade-off（萧哥 10-13 知情拍板）：免费池 prompt 可能被上游记录，
-    # 故只用于后台加工/草稿；记忆抽取走付费组，不经过本车道。
-    ProviderDescriptor(
-        name="kilo",
-        title="Our Free Model · Kilo",
-        needs_key=False,
-        fields=[
-            ProviderField(
-                "base_url",
-                "Kilo 网关地址",
-                secret=False,
-                required=False,
-                default="https://api.kilo.ai/api/gateway",
-                placeholder="https://api.kilo.ai/api/gateway",
-                help="Kilo AI 的 OpenAI 兼容网关。免费池免密钥即可用（isFree 模型），"
-                "无需登录、无需 API Key。",
-            ),
-        ],
-        build=_build_kilo,
-        recommended_model="kilo-auto/free",
-        blurb="Our Free Model 插件移植的 Kilo 免费车道：免密钥 *-free 模型"
-        "（自动路由 / Nemotron / Ling / Step 等，清单随上游 6h 自动更新）。"
-        "⚠️ 免费池 prompt 可能被上游提供方记录，仅适合草稿与后台加工，勿传敏感内容。",
-    ),
+    # 🔴 2026-10-18 删除（萧哥拍板）：opencode / Kilo 两个外网免费车道 descriptor
+    # 原在此处（2026-10-06 / 2026-10-13 接入）。删除原因：opencode 官方封禁免费
+    # 使用（免费通道一条也用不了，连官方客户端都不可用），且持续的**动态探测**
+    # 可能让官方一直不放行——「今天才知道探测多了会被封号，留着没用，下次也不
+    # 敢再踩这个坑」。连带删除：opencode_provider / kilo_provider /
+    # zen_catalog / kilo_catalog 四个模块 + matrix 静态条目 + 启动钩子。
+    # 删除态契约见 tests/test_free_lane_removed.py。
 ]
 
 _BY_NAME = {d.name: d for d in DESCRIPTORS}
@@ -1162,12 +1088,9 @@ def verify_provider_key(
                     "error": "OmniRoute 拒绝了 Key：若仪表板设了密码请填正确的 Key；否则留空用免密钥。",
                 }
             return {"ok": False, "error": f"OmniRoute 返回 HTTP {resp.status_code}。"}
-        elif name == "opencode":
-            # 免费通道仅收流式 + bash/read 门面形状的请求体（opencode2dsh 协议），
-            # 普通 POST 会被拒 —— 探针必须同样伪装。见 opencode_provider.py。
-            from .opencode_provider import probe_free_lane
-
-            return probe_free_lane(base_url, timeout=timeout)
+        # 🔴 2026-10-18 删除：opencode 探针分支（probe_free_lane）随外网免费
+        # 车道全撤一并删除——设置页已无该 provider 入口，保留探针反而可能被
+        # 误触发形成探测。见 tests/test_free_lane_removed.py。
         elif name in ("ark", "ark-agent-plan-cn"):
             default_base = next(
                 (f.default for f in d.fields if f.key == "base_url" and f.default), ""

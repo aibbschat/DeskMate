@@ -3486,9 +3486,10 @@ class SessionManager:
         from ..providers.matrix import model_context_windows, model_labels
         from ..providers.registry import get_descriptor
 
-        # Free/paid tier per model id: keyless local/free gateways (Ollama, OmniRoute,
-        # OpenCode, Kilo) are "free"; everything that needs a billable API key is "paid". Drives
-        # the composer picker's grouping.
+        # Free/paid tier per model id: keyless local/free gateways (Ollama, OmniRoute)
+        # are "free"; everything that needs a billable API key is "paid". Drives
+        # the composer picker's grouping. (opencode / Kilo 外网免费车道 2026-10-18
+        # 已删除，见 tests/test_free_lane_removed.py。)
         tiers: dict[str, str] = {}
         for _m in selectable:
             _prov = _m.split(":", 1)[0] if ":" in _m else "openai"
@@ -3502,10 +3503,9 @@ class SessionManager:
             )
 
         # 上游厂商分组（2026-10-13 萧哥要求）：{full id → 厂商显示名}。驱动 composer
-        # picker 按「厂商 × 免费/付费」分组折叠——免费/付费两档平铺几十项没法看，
-        # 加上 Kilo 免费池后更长。厂商名取 descriptor 的 title（设置页同款名字，
-        # 如 "Volcengine Agent Plan" / "Xiaomi token-plan" / "Our Free Model · Kilo"）；
-        # 裸 id（OpenAI 默认）归 OpenAI，未知前缀归「自定义模型」。
+        # picker 按「厂商 × 免费/付费」分组折叠——免费/付费两档平铺几十项没法看。
+        # 厂商名取 descriptor 的 title（设置页同款名字，如 "Volcengine Agent Plan" /
+        # "Xiaomi token-plan"）；裸 id（OpenAI 默认）归 OpenAI，未知前缀归「自定义模型」。
         vendors: dict[str, str] = {}
         for _m in selectable:
             if ":" in _m:

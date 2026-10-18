@@ -99,23 +99,16 @@ CHANNEL_MODULES=(
   "deskmate/llm_circuit_breaker.py"       # 熔断表 + 错误解析
   "deskmate/llm_channels.py"              # 通道组（付费/免费 + 组内自动排）
   "deskmate/memory/llm.py"                # chat/chat_memory 接入熔断与通道组
-  "coworker/providers/zen_catalog.py"     # Zen 免费模型动态清单（远端驱动）
   # ⚠️ 聊天框免费模型动态刷新（2026-10-09 a6a1e54）：matrix.py 的 entry_for 接入
   # opencode 免费模型的动态清单（opencode: 前缀先查动态清单、降级冷启动/离线兜底）。
   # 它正是『云端聊天框还是老模型』的根因——原清单独漏 matrix.py，导致云端停在 10-06 旧码
   # （实测 mtime=Oct 6 10:25、a6a1e54 特征串命中 0、entry_for 在 372 行无动态分支）。
   # 漏传即云端永远跑老矩阵、免费模型不刷新且不报错，必须随 router/paid_fallback 同批同步。
-  "coworker/providers/matrix.py"          # ProviderMatrix（opencode 免费模型动态刷新）
-  # ⚠️ 2026-10-13 Kilo 免费车道（Our Free Model 插件移植）：免费组主力换 Kilo。两文件
-  # **必须同批**，且必须随 matrix/llm_channels/memory-llm 一起上云：
-  #   - deskmate/llm_channels.py:free_channels → `from coworker.providers.kilo_catalog import fetch_catalog`
-  #   - deskmate/memory/llm.py:chat_memory 分派 → `_kilo_complete` → `kilo_provider.KiloProvider`
-  #   - coworker/server/app.py 启动钩子 → `kilo_catalog.start_catalog_refresh`
-  # 漏传 kilo_catalog → 云端免费组 fetch_catalog() 全挂 → 免费组返空 → 后台任务无通道；
-  # 漏传 kilo_provider → 命中的那一路 chat() 抛 ModuleNotFoundError（熔断记账后换下一条，
-  # 表象是「免费组莫名全熔断」）。两者都是静默失效，只能靠本清单闭合。
-  "coworker/providers/kilo_provider.py"    # KiloProvider（免密钥 + 剥 Authorization 头）
-  "coworker/providers/kilo_catalog.py"    # Kilo 免费模型动态清单（远端驱动 + 自动路由置顶）
+  # 🔴 2026-10-18：opencode / Kilo 外网免费车道已**删除**（萧哥拍板——opencode 官方
+  # 封禁免费使用，探测多了会被封号，留着没用下次也不敢再踩）。zen_catalog /
+  # kilo_catalog / kilo_provider / opencode_provider 四个模块连同本清单中的条目
+  # 一并移除；matrix.py 保留在清单里（静态条目已清、OpenRouter 动态清单仍在）。
+  "coworker/providers/matrix.py"          # ProviderMatrix（OpenRouter 动态清单；免费车道已删）
   # ⚠️ 2026-10-11 MiMo v2.5→v2.6 切换：registry.py（recommended_model / endpoint_help）
   # 与 selection/server.py（mimo 别名 → xiaomi:mimo-v2.6）必须随 matrix 同批同步，否则
   # 云端聊天框推荐模型/别名仍指向已下架的 v2.5，且本地云端代码不一致（红线）。

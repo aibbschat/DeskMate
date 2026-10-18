@@ -14,8 +14,8 @@
 |---|---|---|
 | `quota_exhausted`（火山） | body 含 `AccountQuotaExceeded` **且**含 `It will reset at <ts>` | **解析出重置时间戳**（实测 `2026-10-06 23:59:59 +0800 CST`）——到点自动恢复 |
 | `quota_exhausted`（小米） | body 含 `quota exhausted` | 默认退避（无重置时间可解析） |
-| `rate_limited`（opencode） | 429 + 响应头 `retry-after`（实测 40332 ≈ 11.2h） | **解析 retry-after 秒数** |
-| `unavailable`（opencode 403） | 403 `FreeTierError`（该模型对匿名层不可用）/ 上游过载 | 长冷却（区域封锁会随出口 IP 变，但不该高频试） |
+| `rate_limited`（429） | 429 + 响应头 `retry-after`（opencode 实测 40332 ≈ 11.2h，2026-10-18 车道已删） | **解析 retry-after 秒数** |
+| `unavailable`（403） | 403 `FreeTierError`（该模型对匿名层不可用）/ 上游过载 | 长冷却（区域封锁会随出口 IP 变，但不该高频试） |
 | `transient`（5xx / 网络） | 5xx、`Upstream error from ...`、超时 | **短**冷却，且允许**一次**重试（区别于配额类：这类可能是抖动） |
 
 ## 铁律
@@ -25,8 +25,9 @@
    （记忆里"48 条身份分裂"就是两套状态不一致的产物；本地熔断了、云端还在撞是同类事故）。
 3. **审计日志本地簿记、不同步**（`~/.deskmate/llm_channel_audit.jsonl`）——
    审计是「本端发生过什么」，跨端同步会互相污染。
-4. **下架模型不参与轮替** —— 清单刷新时用 `zen_catalog.stale_models()` 清理其熔断记录
-   （否则熔断表无限膨胀）。
+4. **下架模型不参与轮替** —— 清理时以调用方给的 ``known_channels`` 为准
+   （``prune_stale``；历史上的驱动方 ``zen_catalog.stale_models()`` 随
+   opencode / Kilo 外网免费车道 2026-10-18 删除一并移除）。
 
 ## 边界
 
@@ -52,7 +53,7 @@ TABLE = "llm_circuit_breaker"
 
 # 冷却默认值（秒）。到点即半开（half_open）——允许试一次，成功则关闭。
 DEFAULT_COOLDOWN_S = 30 * 60# 无重置时间可解析时（火山/小米实测都没有）
-LONG_COOLDOWN_S = 6 * 3600        # opencode 403 FreeTierError：匿名层长期不可用
+LONG_COOLDOWN_S = 6 * 3600        # 403 FreeTierError：匿名层长期不可用（opencode 实测，车道 2026-10-18 已删）
 TRANSIENT_COOLDOWN_S = 60# 5xx/网络抖动：短，且允许一次重试
 #:瞬时类递增退避的封顶（同一通道持续故障时不该每tick 都试一遍）
 TRANSIENT_MAX_COOLDOWN_S = 30 * 60
@@ -397,7 +398,8 @@ def record_success(channel_key: str, *, base_dir: Optional[Path] = None) -> None
 def prune_stale(known_channels: set, *, base_dir: Optional[Path] = None) -> int:
     """清理不在 ``known_channels`` 里的通道记录（模型下架后防表无限膨胀）。
 
-    由 :func:`coworker.providers.zen_catalog.stale_models` 驱动。
+    由调用方驱动（历史上的驱动方 ``zen_catalog.stale_models`` 随 opencode /
+    Kilo 外网免费车道 2026-10-18 删除一并移除）。
     返回清理条数。
     """
     db = _db(base_dir)

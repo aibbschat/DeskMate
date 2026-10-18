@@ -328,28 +328,14 @@ def create_app(manager: SessionManager) -> FastAPI:
             start_catalog_refresh()
         except Exception:  # never let the catalog mirror block startup
             pass
-        try:
-            # Zen 免费模型动态清单（2026-10-06，设计 §3.4）——同一套 6h TTL 模式。
-            # 顺带在首次拉取后清理「已下架模型」的熔断记录（防熔断表无限膨胀）。
-            # ⚠️ 2026-10-13：opencode 车道整条死亡，ZEN_LANE_ENABLED=False 时此调用
-            # 直接返回（不拉清单、不清理），代码保留待上游恢复。
-            from ..providers.zen_catalog import start_catalog_refresh as _zen_refresh
-
-            _zen_refresh()
-        except Exception:  # 同上，绝不阻塞启动
-            pass
-        try:
-            # Kilo 免费模型动态清单（2026-10-13，Our Free Model 插件移植的第二条
-            # 匿名车道）——同一套 6h TTL 模式；刷新后 diff 上架/下架并清理下架模型的
-            # 熔断记录。免费组主力（opencode 退役后），漏起 → picker 只有 seed。
-            # ⚠️ 2026-10-18：opencode 官方封禁免费使用（连官方客户端都不可用），
-            # 萧哥拍板外网免费车道全撤——KILO_LANE_ENABLED=False 时此调用直接返回
-            # （不拉清单、不清理、零探测），代码保留待官方放行后翻常量复活。
-            from ..providers.kilo_catalog import start_catalog_refresh as _kilo_refresh
-
-            _kilo_refresh()
-        except Exception:  # 同上，绝不阻塞启动
-            pass
+        # 🔴 2026-10-18 删除（萧哥拍板）：zen / kilo 两个外网免费车道的清单刷新
+        # 启动钩子原在此处（6h 周期 + 冷启动即拉 = 持续的动态探测）。opencode
+        # 官方封禁免费使用后萧哥判断探测可能让官方一直不放行，拍板**删除**而非
+        # 保留：「今天才知道探测多了会被封号，留着没用，下次也不敢再踩这个坑」。
+        # 连带删除 zen_catalog / kilo_catalog / opencode_provider / kilo_provider
+        # 四个模块；本地 llama-server 兜底（deskmate/llm_channels.free_channels）
+        # 是小桔自己的 CVM 设施，不探测任何官方，不受影响。
+        # 删除态契约见 tests/test_free_lane_removed.py。
         try:
             live = (
                 await manager.start_gateway()
@@ -2340,7 +2326,8 @@ def create_app(manager: SessionManager) -> FastAPI:
         return manager.remove_provider(name)
 
     # ---- LLM 通道组（2026-10-06，设计 §二/§3）----
-    # 两个总开关：付费组（火山→小米→hy Token Plan）/ 免费组（opencode 远端清单）。
+    # 两个总开关：付费组（火山→小米→hy Token Plan）/ 免费组（仅剩本地 llama-server
+    # 兜底；opencode / Kilo 外网免费车道 2026-10-18 删除，见 llm_channels 模块 docstring）。
     # 组内自动排由deskmate.llm_channels.route 负责；这里只暴露「状态 + 手动切组」。
 
     @app.get("/v1/llm-channels")

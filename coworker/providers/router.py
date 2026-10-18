@@ -48,7 +48,7 @@ class ProviderRouter(ProviderClient):
         # 动态路由 judge 层（借鉴 PilotDeck）。默认关：仅当会话模型 == "auto" 哨兵且本开关开时，
         # 才按单条消息难度动态选免费组/付费组；否则完全透传，不越权替用户换模型。
         self._dynamic_routing = bool(dynamic_routing)
-        # 测试 / 注入用：覆盖默认 resolve_auto_model（避免测试时真的拉 Kilo 远端清单）。
+        # 测试 / 注入用：覆盖默认 resolve_auto_model（避免测试时真的走免费组通道）。
         self._auto_route_fn = auto_route_fn
         # 上一轮动态选的组（free/paid），供短续接消息继承（对齐 PilotDeck isShortContinuation）。
         self._last_dynamic_group: Any = None

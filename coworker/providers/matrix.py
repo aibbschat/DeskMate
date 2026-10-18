@@ -278,41 +278,12 @@ MATRIX: dict[str, ModelEntry] = {
         ModelCapabilities(tools=False, vision=False, streaming=True),
     ),
     # -- OpenCode Zen 免费通道 (zen/v1) ----------------------------------------
-    # 2026-10-06 重新铺货：按 DSH 的 opencode2dsh/dsh-plugin 移植线协议后重测（匿名
-    # Bearer public + CLI 伪装头 + bash/read 门面工具、仅流式，见 opencode_provider.py；
-    # 上一次 2026-08-26 因"裸 OpenAI 形状的请求大多被拒"撤货，根因即缺这套伪装）。
-    # 入选为当日从本机（CN 出口）实测可用/限流的 8 个 *-free 模型；区域封锁
-    # （muse-spark-*-contributor）与上游已下架（deepseek-v4-flash-free、jev-1.13）未入选。
-    # context 262_144 为 zen 网关默认窗口。免费额度限速，仍只建议轻量草稿用。
-    #
-    # ⚠️ 2026-10-09：这批条目**降级为冷启动/离线兜底**，不再参与选择器列表
-    # （见 all_model_ids）—— Zen 免费模型会下架，手铺项并进列表=陈旧项永不消失。
-    # 正常路径一律以 zen_catalog 的远端清单为准；这 8 个只是「首次拉取前/拉取失败」
-    # 时让界面不空。与 zen_catalog._seed() 是同一批，两处需同步维护。
-    "opencode:space-bunny-free": ModelEntry(
-        "Space Bunny · OpenCode 免费", _AGENTIC, 262_144
-    ),
-    "opencode:fledge-alpha-free": ModelEntry(
-        "Fledge Alpha · OpenCode 免费", _AGENTIC, 262_144
-    ),
-    "opencode:nemotron-3.5-lightning-free": ModelEntry(
-        "Nemotron 3.5 Lightning · OpenCode 免费", _AGENTIC, 262_144
-    ),
-    "opencode:nemotron-3-ultra-free": ModelEntry(
-        "Nemotron 3 Ultra · OpenCode 免费", _AGENTIC, 262_144
-    ),
-    "opencode:mimo-v2.5-free": ModelEntry(
-        "MiMo v2.5 · OpenCode 免费", _AGENTIC, 262_144
-    ),
-    "opencode:mimo-v2.6-flash-free": ModelEntry(
-        "MiMo v2.6 Flash · OpenCode 免费", _AGENTIC, 262_144
-    ),
-    "opencode:longcat-2.5-preview-free": ModelEntry(
-        "Longcat 2.5 Preview · OpenCode 免费", _AGENTIC, 262_144
-    ),
-    "opencode:ling-3.1-flash-free": ModelEntry(
-        "Ling 3.1 Flash · OpenCode 免费", _AGENTIC, 262_144
-    ),
+    # 🔴 2026-10-18 删除（萧哥拍板）：opencode 官方封禁免费使用（免费通道一条也
+    # 用不了，连官方客户端都不可用），且持续的**动态探测**可能让官方一直不放行
+    # ——「今天才知道探测多了会被封号，留着没用，下次也不敢再踩这个坑」。
+    # 本曾铺 8 个 *-free 手铺项 + zen/kilo 两个动态 catalog + 两个 provider
+    # 全部删除（git rm：opencode_provider / kilo_provider / zen_catalog /
+    # kilo_catalog）。删除态契约见 tests/test_free_lane_removed.py。
     # -- cloud accounts (models running in the user's own AWS/GCP) ----------------
     # Bedrock ids carry a family segment (claude/ → native Anthropic path, other/ →
     # Converse) plus AWS's own `-v<n>:<m>` version suffix. Some regions require the
@@ -375,52 +346,18 @@ def _live_openrouter() -> Dict[str, ModelEntry]:
         return {}
 
 
-def _live_zen() -> Dict[str, ModelEntry]:
-    """Live OpenCode Zen **免费** models (``opencode:<id>`` → ModelEntry), mirrored from the
-    vendor's ``/zen/v1/models``（2026-10-06 移植深证 harness 的动态侦探）。
-
-    与 ``_live_openrouter`` 同构，**但兜底策略不同**（见模块下方 ``all_model_ids``）：
-    本函数只负责「拿到当前应该展示的条目」，不掺入静态 MATRIX 的手铺项——
-    因为 Zen 免费模型会下架，静态项并进来=陈旧模型永远下不掉（2026-10-09 实测：
-    ``fledge-alpha-free`` / ``mimo-v2.5-free`` 早已下架，却因静态 MATRIX 供着
-    而一直躺在聊天框的免费区，选中后必然失败）。
-
-    为什么必须动态（设计 §1.5）：Zen 免费模型会下架/新上架，手工铺货保鲜期只有几天——
-    实测当天就已漂 5 个。
-
-    失败返回 {}；此时由 ``zen_catalog`` 的 seed（同一批手铺模型）兜底，
-    **绝不**回落到静态 MATRIX（那正是陈旧项的来源）。
-    """
-    from .zen_catalog import get_zen_entries
-
-    try:
-        return get_zen_entries()
-    except Exception:
-        return {}
-
-
-def _live_kilo() -> Dict[str, ModelEntry]:
-    """Live Kilo **免费** models (``kilo:<id>`` → ModelEntry), mirrored from the
-    Kilo gateway's ``/models`` listing（2026-10-13 移植 Our Free Model 插件第二条
-    匿名车道，见 kilo_catalog.py）。
-
-    与 ``_live_zen`` 同构：失败返回 {}，由 seed 兜底；**绝不**回落到静态 MATRIX。
-    ⚠️ 2026-10-18：opencode 官方封禁免费使用，外网免费车道全撤
-    （``kilo_catalog.KILO_LANE_ENABLED=False``）→ 本函数恒返回 {}（不走网络），
-    picker 不再展示 Kilo 条目；官方放行后翻常量即恢复。
-    """
-    from .kilo_catalog import get_kilo_entries
-
-    try:
-        return get_kilo_entries()
-    except Exception:
-        return {}
+# 🔴 2026-10-18 删除（萧哥拍板）：opencode 官方封禁免费使用（免费通道一条也
+# 用不了，连官方客户端都不可用），持续的**动态探测**可能让官方一直不放行
+# ——「今天才知道探测多了会被封号，留着没用，下次也不敢再踩这个坑」。
+# 原 _live_zen（opencode 免费清单镜像）/ _live_kilo（Kilo 免费清单镜像）
+# 随 zen_catalog / kilo_catalog 两个模块一并删除（git rm），删除态契约见
+# tests/test_free_lane_removed.py。
 
 
 def _live_catalogs() -> Dict[str, ModelEntry]:
-    """所有动态清单的并集（OpenRouter 付费/免费 + Zen 免费 + Kilo 免费）。"""
+    """所有动态清单的并集（仅剩 OpenRouter 付费/免费；zen/kilo 车道 2026-10-18 删除）。"""
     merged: Dict[str, ModelEntry] = {}
-    for source in (_live_openrouter(), _live_zen(), _live_kilo()):
+    for source in (_live_openrouter(),):
         merged.update(source)
     return merged
 
@@ -428,12 +365,9 @@ def _live_catalogs() -> Dict[str, ModelEntry]:
 def entry_for(model: str) -> ModelEntry | None:
     """Look up one model's entry.
 
-    ``opencode:`` 前缀**先查动态清单**（与 ``all_model_ids`` 同一权威口径）：
-    已下架的模型即使静态 MATRIX 里有手铺条目也不返回，避免 capability 探测
-    与路由层把「早已不存在」的模型当成可用。
+    静态 MATRIX 优先，其次动态清单（OpenRouter）。opencode/kilo 车道
+    2026-10-18 已删除（外网免费车道全撤），不再有前缀特判。
     """
-    if model.startswith("opencode:"):
-        return _live_zen().get(model) or MATRIX.get(model)
     return MATRIX.get(model) or _live_catalogs().get(model)
 
 
@@ -458,20 +392,14 @@ def model_context_windows() -> dict[str, int]:
 def all_model_ids() -> list[str]:
     """Every curated id (static matrix + live catalogs). Drives the composer picker.
 
-    **opencode: 前缀以动态清单为唯一权威源**（2026-10-09 修「聊天框免费模型不更新」）：
-    静态 MATRIX 里那 8 个手铺的opencode 条目**不并进来**。原实现是并集，
-    导致已下架模型（实测``fledge-alpha-free`` / ``mimo-v2.5-free``）被静态项供着
-    永远留在选择器里——用户选中必然 404，而下架这件事本身永远不会被反映到 UI。
-
-    冷启动兜底改由 ``zen_catalog`` 的 seed 承担（``get_zen_entries`` 在缓存缺失时
-    就返回 seed），语义仍是「离线不空列表」，但 seed 是随远端清单维护的，
-    而静态 MATRIX 是一次性快照。两者都在时，远端清单优先。
-
-    openrouter: 同理为纯动态（静态表本就无openrouter 条目），无需特判。
+    静态 MATRIX + 动态清单（OpenRouter）的并集。opencode/kilo 免费车道
+    2026-10-18 已删除（外网免费车道全撤，萧哥拍板）——历史上 opencode:
+    前缀曾以动态清单为唯一权威源、静态 8 项仅冷启动兜底（2026-10-09 修
+    「聊天框免费模型不更新」），随车道删除一并作废。openrouter 为纯动态
+    （静态表本就无 openrouter 条目），无需特判。
     """
     live = _live_catalogs()
-    static = [m for m in MATRIX if not m.startswith("opencode:")]
-    return [*static, *live.keys()]
+    return [*MATRIX.keys(), *live.keys()]
 
 
 def is_derived_model(model: str) -> bool:
