@@ -40,3 +40,20 @@
   **仍在** = 自保护（`~/.config/coworker/*` 写入被拒）+ **严重度恰为 CRITICAL 的 shell**（需 `tool_guard` 在，即 `execution_level != "off"`；`rm -rf`/`find -delete`/`mv`/`chmod 777`/cron·SSH 篡改都是 **HIGH ⇒ 放行** ⇒ "bypass 仍防数据损失"是错觉）+ shell 写入被 OS 沙箱限制在 roots；
   **已拆** = `write_file` 的 path scoping（可写 roots 外）、延迟执行文件（`.git/hooks` 等）、持久权威（`save_skill`/`create|update|delete_scheduled_task` ⇒ 她能装技能、自建删定时任务）、无法定位路径的写不再 fail-closed。
 - ✅ 那几处"地板仍在"的假注释已于 10-02 订正（提交 `c1d78f5`，纯注释零行为变更）。**规矩不变：注释/docstring 一律不作数**，判防线只有一条路——**实测 `evaluate()` 或读短路块本身**。agency 层 L2 提议卡是另一层，仍在。
+
+## §P4 — 外网免费车道全撤（2026-10-18）：两个车道开关 + 复活路径 + 两条测试陷阱
+
+**背景**：opencode 官方封禁萧哥的免费使用（免费通道一条也用不了，连官方客户端都不可用）。萧哥判断持续的**动态探测**可能让官方一直不放行 ⇒ 拍板把外网免费车道全部撤掉。
+
+**现状契约**（commit `b92a119`，2026-10-18）：
+- 两个车道开关均 False：`zen_catalog.ZEN_LANE_ENABLED`（10-13，opencode 整条 403）与 `kilo_catalog.KILO_LANE_ENABLED`（10-18）。False = picker 不展示、后台 6h 刷新不启动、`fetch_catalog` 恒返 `[]` **且不走网络**。
+- **免费组仅剩本地 llama-server 兜底**（CVM 设施，不探测任何官方）；Mac 端本地不可用 → 后台任务降级回付费组（`memory_group` 默认 paid）。`prefs.json:memory_llm_group` 本机实测已是 paid。
+- **复活 = 把两个常量翻回 True**，无需改任何调用方；provider/catalog/`chat_memory` 分派分支代码全留。
+- ⚠️ 关闭态 `fetch_catalog` **连 seed 都不给**是有意为之（picker 不空不再是目标）——别"修"它返回 seed，那会把死模型又送回 picker。
+- 设置页 provider「Test」按钮探针（`registry.verify_provider_key` → `probe_kilo_lane`/`probe_free_lane`）是**手动**诊断、无后台循环调用，不构成动态探测，保留。
+
+**测试陷阱一：全量跑必红 40+，别慌着往自己头上扣**。`tests/` 全量（排除三个真出网文件）基线即 40 红，其中 8 个是 chat_memory 相关（`test_kilo_lane/test_llm_circuit_breaker/test_llm_free_only_routing/test_local_fallback_channel` 里 patch `route` 的用例）——**单文件/四文件合跑全绿，全量下相互污染才红**（2026-10-18 双跑实证：HEAD 基线与改后跑同一批红）。定性方法：同命令跑 parent commit 基线对比，别只看总数。
+
+**测试陷阱二：`test_health_producers` 的两个 cron 用例有整点 30 分钟窗口**。`_cron_missed` 判据是「应跑时刻已过 30 分钟宽限仍没跑才算 miss」⇒ **整点后 0–30 分钟内执行必红**（19:0x 跑全量红 2 个、19:3x 跑全绿，同一份代码）。实证：`_cron_missed("0 * * * *", None, 整点+60s) → False`（红）、`整点+31min → True`（绿）。跑全量前看一眼时钟，落在窗口内的红不算回归。
+
+**复活后要连带做的**：① 两个常量翻 True；② 前端 `LlmChannelsCard.tsx:62`/`api.ts:3256`「免费组省付费额度」文案（10-18 已过时未改，改前端要重打包 + deploy_web.sh）；③ 确认 `deploy_cloud_sync.sh` 的 CHANNEL_MODULES 仍含全部 5 个相关文件（kilo_catalog/kilo_provider/llm_channels/matrix/memory-llm/app）。
