@@ -23,3 +23,34 @@ serde_json = "1"
 uuid = { version = "1", features = ["v4"] }
 # Kept outside the Tauri shell so another product can depend on the same local STT engine.
 ocw-stt = { path = "../../../stt" }
+
+# NOTE: toolchain is pinned to 1.92.0 via rust-toolchain.toml. Two independent
+# rustc/linker bugs bite this project's release build on aarch64 macOS:
+#
+#   1) E0463 (ctor_proc_macro missing) — fixed by vendoring ctor 0.8.0 locally
+#      (see `vendor/ctor`) and forcing `extern crate ctor_proc_macro;` in its
+#      lib.rs. Root cause: `tauri-utils` pulls ctor with `dtor` OFF, so the
+#      crate's `ctor_proc_macro` is only `pub use`d (never used) and gets pruned
+#      by the linker → E0463. The vendored copy keeps it linked.
+#
+#   2) "mis-aligned LINKEDIT string pool" at load time — release builds apply the
+#      rustc default `-C strip=debuginfo`, which (on this toolchain) leaves a
+#      416-byte hole in the __LINKEDIT segment of *some* proc-macro dylibs
+#      (ctor_proc_macro @1.93, darling_macro @1.92). The compiler then cannot
+#      load the macro crate and the build aborts. Disabling strip for the release
+#      profile ([profile.release] below) makes every proc-macro dylib valid.
+#      Binary size is larger (~41MB unstripped) but the build is reliable; the
+#      final app binary can be stripped with the system `strip` tool if desired
+#      (that only touches the shipped binary, not the build-time macro crates).
+#
+# Do NOT bump the toolchain pin or re-enable strip until both upstream rustc bugs
+# are fixed.
+
+[patch.crates-io]
+ctor = { path = "vendor/ctor" }
+
+[profile.release]
+# See NOTE (2) above: rustc's default `strip = "debuginfo"` corrupts proc-macro
+# dylibs on aarch64 macOS for this toolchain, breaking the build with
+# "mis-aligned LINKEDIT string pool". Keep strip off so macro crates stay valid.
+strip = "none"

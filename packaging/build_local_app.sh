@@ -84,6 +84,9 @@ PY
 
 # ---- 3) tauri build ----
 echo "==> [3/3] tauri build --bundles app"
+# 注：historically 本机构建曾被 cargo 1.93 的 E0463 回归卡住（ctor 重导出 proc-macro
+# 不被链接）。已通过 src-tauri/vendor/ctor 本地副本 + `extern crate ctor_proc_macro;`
+# 根治（见 vendor/ctor/src/lib.rs 头注释），**无需特殊工具链**，默认 cargo 即可。
 ( cd "$GUI" && npm run tauri build -- --bundles app )
 
 # ---- 校验产物含新前端 ----
