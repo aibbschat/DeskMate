@@ -1972,7 +1972,7 @@ export function App() {
                     onPrefill={prefillComposer}
                   />
                 ) : agent === "deskmate" ? (
-                  <DeskHome onIntentExecuted={startIntentDiscussion} />
+                  <DeskHome sessionId={sessionId} onIntentExecuted={startIntentDiscussion} />
                 ) : (
                   <div className="hero">
                     <h1 className="greeting">

@@ -4136,6 +4136,8 @@ export interface HandoffItem {
   confidence: number;
   created_at: string;
   source_node: string;
+  /** 后端 ledger 的交付标记（调用前快照）：今日已递过的条目首页不再复述（2026-10-19）。 */
+  delivered_at?: string;
 }
 export interface HandoffOpening {
   text: string;

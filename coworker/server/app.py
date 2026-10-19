@@ -4547,6 +4547,28 @@ def create_app(manager: SessionManager) -> FastAPI:
                 item = hits[0]  # 完整 id 前缀唯一命中
             if item is None:
                 return JSONResponse({"error": "ledger item not found"}, status_code=404)
+            # 空会话兜底建记录（2026-10-19「开聊即递」修复；同 intent_discuss_start）：
+            # 首页挂载时她先开口——此刻会话记录还没建（只在首轮用户消息后建），
+            # append_session_messages 会返 False → 404，她的话落不进聊天。先建一条
+            # deskmate 会话记录（workspace 空串 → 引擎侧降级为 scratch，与其它兜底一致）。
+            try:
+                if manager.session_store.load(session_id) is None:
+                    from coworker.sessions import SessionRecord
+
+                    manager.session_store.save(
+                        SessionRecord(
+                            session_id=session_id,
+                            workspace="",
+                            model=manager.model,
+                            mode=manager.mode.value,
+                            messages=[],
+                            agent="deskmate",
+                        )
+                    )
+            except Exception:
+                logging.debug(
+                    "handoff speak 兜底建会话记录失败（不阻断）", exc_info=True
+                )
             text = compose_speak_text(item)
             ok = manager.append_session_messages(
                 session_id,

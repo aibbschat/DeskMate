@@ -546,3 +546,163 @@ def test_zero_output_not_reported_before_schedule_time(tmp_path, monkeypatch):
 
     items = _automation_producer(base_dir=base)
     assert not [i for i in items if i["anchor"].endswith(":zero")], f"未到点却报零产出: {items}"
+
+
+# ---- writing 生产者：多书泛化（2026-10-19，替代单书硬编码）----
+
+
+def _make_book(root: Path, dirname: str, files: dict[str, float]) -> Path:
+    """在扫描根下造一个书名目录；files: {文件名: 距今天数}（0.1 ≈ 2.4 小时前）。"""
+    d = root / dirname
+    d.mkdir(parents=True)
+    for fname, days in files.items():
+        p = d / fname
+        p.write_bytes(b"PK fake")
+        ts = time.time() - days * 86400
+        os.utime(p, (ts, ts))
+    return d
+
+
+def test_writing_producer_scans_all_books(base, monkeypatch):
+    """多书并行：扫根下所有书名目录，只报停笔的；书名剥数字前缀、天数进文案。"""
+    from deskmate.proactivity.health_producers import _writing_producer
+
+    root = base / "已出版"
+    _make_book(root, "20.国子监秘闻录", {"国子监秘闻录.docx": 10})
+    _make_book(root, "21.京报笔谈：锦州之围", {"京报笔谈.docx": 1})  # 新写的，不报
+    _make_book(root, "2.兰陵王", {"兰陵王.docx": 700})  # 写完的老书，不 nag
+    monkeypatch.setenv("SCRIBE_ROOTS", str(root))
+    monkeypatch.delenv("SCRIBE_DOCX", raising=False)
+
+    items = _writing_producer(base_dir=base)
+    stalls = [it for it in items if it["kind"] == "stall_flag"]
+    assert len(stalls) == 1, f"应只报停笔的那本，实得 {items}"
+    assert "国子监秘闻录" in stalls[0]["content"], stalls[0]
+    assert "10" in stalls[0]["content"], "停笔天数应进文案"
+    assert stalls[0]["anchor"] == "writing:stall:国子监秘闻录", stalls[0]
+    assert stalls[0]["evidence"].startswith("文档: 国子监秘闻录.docx"), stalls[0]
+
+
+def test_writing_producer_newest_file_wins(base, monkeypatch):
+    """同书多文件：以最新 mtime 为准（大纲刚改过 = 没停笔）。"""
+    from deskmate.proactivity.health_producers import _writing_producer
+
+    root = base / "已出版"
+    _make_book(
+        root, "20.国子监秘闻录",
+        {"国子监秘闻录.docx": 10, "国子监秘闻录-大纲.docx": 0.5},
+    )
+    monkeypatch.setenv("SCRIBE_ROOTS", str(root))
+    monkeypatch.delenv("SCRIBE_DOCX", raising=False)
+
+    items = _writing_producer(base_dir=base)
+    assert not [it for it in items if it["kind"] == "stall_flag"], f"大纲新鲜不应报，实得 {items}"
+
+
+def test_writing_producer_lock_files_not_activity(base, monkeypatch):
+    """~$ 锁文件 / 隐藏文件不算活动（Word 开着≠在写）。"""
+    from deskmate.proactivity.health_producers import _writing_producer
+
+    root = base / "已出版"
+    _make_book(
+        root, "20.国子监秘闻录",
+        {"国子监秘闻录.docx": 10, "~$国子监秘闻录.docx": 0.01, ".DS_Store": 0.01},
+    )
+    monkeypatch.setenv("SCRIBE_ROOTS", str(root))
+    monkeypatch.delenv("SCRIBE_DOCX", raising=False)
+
+    items = _writing_producer(base_dir=base)
+    stalls = [it for it in items if it["kind"] == "stall_flag"]
+    assert len(stalls) == 1, f"锁文件不应掩盖停笔，实得 {items}"
+
+
+def test_writing_producer_per_book_anchors(base, monkeypatch):
+    """两本都停笔 → 两条独立 anchor 与各自书名（不互相覆盖/串台）。"""
+    from deskmate.proactivity.health_producers import _writing_producer
+
+    root = base / "已出版"
+    _make_book(root, "20.国子监秘闻录", {"国子监秘闻录.docx": 10})
+    _make_book(root, "21.京报笔谈：锦州之围", {"京报笔谈.docx": 12})
+    monkeypatch.setenv("SCRIBE_ROOTS", str(root))
+    monkeypatch.delenv("SCRIBE_DOCX", raising=False)
+
+    items = _writing_producer(base_dir=base)
+    stalls = [it for it in items if it["kind"] == "stall_flag"]
+    assert len(stalls) == 2, f"两本停笔应各报一条，实得 {items}"
+    anchors = {it["anchor"] for it in stalls}
+    # 锚点只留安全字符（剥掉全角冒号等）——前端有 id.split(":") 逻辑，锚点须干净
+    assert anchors == {"writing:stall:国子监秘闻录", "writing:stall:京报笔谈锦州之围"}, anchors
+    by_book = {it["anchor"]: it["content"] for it in stalls}
+    assert "国子监秘闻录" in by_book["writing:stall:国子监秘闻录"]
+    assert "京报笔谈：锦州之围" in by_book["writing:stall:京报笔谈锦州之围"]  # 文案保留完整书名
+
+
+def test_writing_producer_retires_stale_rows(base, monkeypatch):
+    """过时行退役：旧锚点滞留行（内容已过时、snoozed 已过期）被 acknowledge，
+    不与新锚点行重复报同一本书（2026-10-19 泛化引入的收口）。"""
+    import sqlite3
+
+    from deskmate.proactivity.health_producers import _writing_producer
+    from deskmate.proactivity.ledger import record_proactive
+
+    root = base / "已出版"
+    _make_book(root, "20.国子监秘闻录", {"国子监秘闻录.docx": 10})
+    monkeypatch.setenv("SCRIBE_ROOTS", str(root))
+    monkeypatch.delenv("SCRIBE_DOCX", raising=False)
+
+    # 旧版单锚点行（升级前 guozijian，已被用户 snoozed 且退避期已过 → 会复活轻递）
+    record_proactive(
+        base_dir=base,
+        source="writing",
+        kind="stall_flag",
+        content="你《长编》已经 5 天没动笔了，是卡在哪儿了吗？",
+        evidence="文档: 国子监秘闻录.docx; 最后修改: 2026-10-03; 停笔约 5 天",
+        confidence=0.82,
+        anchor="writing:stall:guozijian",
+    )
+
+    items = _writing_producer(base_dir=base)
+    assert any(it["anchor"] == "writing:stall:国子监秘闻录" for it in items), items
+
+    con = sqlite3.connect(str(base / "deskmate.db"))
+    row = con.execute(
+        "SELECT status FROM proactive_ledger WHERE id=?",
+        ("writing:stall_flag:writing:stall:guozijian",),
+    ).fetchone()
+    con.close()
+    assert row is not None and row[0] == "acknowledged", f"旧行应被退役，实得 {row}"
+
+
+def test_writing_producer_retire_skips_user_terminal_states(base, monkeypatch):
+    """用户已终态处理（dismissed/actioned）的行不被动过——只清理系统滞留。"""
+    import sqlite3
+
+    from deskmate.proactivity.health_producers import _writing_producer
+    from deskmate.proactivity.ledger import acknowledge_ledger, record_proactive
+
+    root = base / "已出版"
+    _make_book(root, "20.国子监秘闻录", {"国子监秘闻录.docx": 10})
+    monkeypatch.setenv("SCRIBE_ROOTS", str(root))
+    monkeypatch.delenv("SCRIBE_DOCX", raising=False)
+
+    # 用户显式「不用了」的行：退役逻辑不得覆盖用户终态
+    record_proactive(
+        base_dir=base,
+        source="writing",
+        kind="stall_flag",
+        content="你《夜不收》已经 9 天没动笔了，是卡在哪儿了吗？",
+        evidence="文档: 夜不收.docx; 停笔约 9 天",
+        confidence=0.82,
+        anchor="writing:stall:夜不收：绝命救援",
+    )
+    acknowledge_ledger(base_dir=base, rid="writing:stall_flag:writing:stall:夜不收：绝命救援", new_status="dismissed")
+
+    _writing_producer(base_dir=base)
+
+    con = sqlite3.connect(str(base / "deskmate.db"))
+    row = con.execute(
+        "SELECT status FROM proactive_ledger WHERE id=?",
+        ("writing:stall_flag:writing:stall:夜不收：绝命救援",),
+    ).fetchone()
+    con.close()
+    assert row is not None and row[0] == "dismissed", f"用户终态不得被改，实得 {row}"

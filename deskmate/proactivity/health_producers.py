@@ -26,6 +26,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import sqlite3
 import time
 from pathlib import Path
@@ -33,7 +34,12 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-from .ledger import register_producer, _resolve_base
+from .ledger import (
+    LEDGER_TABLE,
+    _resolve_base,
+    acknowledge_ledger,
+    register_producer,
+)
 
 
 # ---- 节流（本端 proactivity_meta 簿记 + R2 跨节点共享簿记，2026-10-10）----
@@ -458,39 +464,145 @@ def _sync_health_producer(base_dir: Optional[Path] = None, drift: Optional[dict]
     return items
 
 
-# 《长编》（国子监秘闻录）工作稿默认路径；可经环境变量 SCRIBE_DOCX 覆盖（多书场景扩展点）。
-_DEFAULT_SCRIBE_DOCX = os.path.expanduser(
-    "~/Documents/已出版/20.国子监秘闻录/国子监秘闻录.docx"
-)
+# ---- writing 生产者：多书停笔监测（2026-10-19 泛化，替代单书硬编码）----
+# 萧哥多书并行是常态，此前写死单一 docx（换书/挪位即静默不报）。
+# 现默认扫「已出版」根目录下的每个书名目录，取该书目录下最新一个手稿类文件
+# （.docx/.md，排除 ~$ 锁文件与隐藏文件）的 mtime 作为「最后动笔」：
+#   - 停笔 >= _STALL_DAYS_THRESHOLD 天 → 报 stall_flag（每书一条，anchor 带书名）
+#   - 距最后动笔超过 _ACTIVE_WINDOW_DAYS 天 → 不在写的书，不再监测（不 nag 旧作）
+# 逃生口（优先级从高到低）：
+#   - SCRIBE_DOCX：显式指定单个手稿文件（旧语义，只监测这一本）
+#   - SCRIBE_ROOTS：os.pathsep 分隔的扫描根，替换默认根
+_DEFAULT_SCRIBE_ROOTS = ("~/Documents/已出版",)
 _STALL_DAYS_THRESHOLD = 3  # 停笔超过此天数才报（避免每天 nag）
+_ACTIVE_WINDOW_DAYS = 45  # 超过此天数未动笔的书不再监测（写完/搁置 ≠ 停笔）
+_MANUSCRIPT_EXTS = (".docx", ".md")
+# 书名目录的数字序号前缀：「20.国子监秘闻录」→「国子监秘闻录」
+_BOOK_DIR_PREFIX = re.compile(r"^\d+\s*[.、]\s*")
+# anchor 指纹只留安全字符（中日韩文字 + 字母数字），保证 id 稳定可读
+_SLUG_UNSAFE = re.compile(r"[^0-9A-Za-z\u4e00-\u9fff]+")
+
+
+def _book_name(dir_name: str) -> str:
+    """从书名目录名剥掉序号前缀得到书名。"""
+    return _BOOK_DIR_PREFIX.sub("", dir_name).strip() or dir_name
+
+
+def _newest_activity(book_dir: Path) -> Optional[tuple[float, str]]:
+    """书名目录下最新一个手稿类文件的 (mtime, 文件名)；无则 None。
+
+    ~$ 锁文件（Word 打开时的临时文件）与隐藏文件不算活动——开着 ≠ 在写。
+    """
+    newest: Optional[tuple[float, str]] = None
+    try:
+        for p in book_dir.iterdir():
+            if not p.is_file():
+                continue
+            name = p.name
+            if name.startswith("~$") or name.startswith("."):
+                continue
+            if p.suffix.lower() not in _MANUSCRIPT_EXTS:
+                continue
+            m = p.stat().st_mtime
+            if newest is None or m > newest[0]:
+                newest = (m, name)
+    except OSError:
+        return None
+    return newest
+
+
+def _scan_books(roots: list[Path]) -> list[tuple[str, float, str]]:
+    """扫各根下的一级子目录（一本一目录），返回 [(书名, 最新 mtime, 文件名)]。"""
+    books: list[tuple[str, float, str]] = []
+    for root in roots:
+        if not root.is_dir():
+            continue
+        try:
+            entries = sorted(root.iterdir())
+        except OSError:
+            continue
+        for d in entries:
+            if not d.is_dir() or d.name.startswith("."):
+                continue
+            act = _newest_activity(d)
+            if act is None:
+                continue
+            books.append((_book_name(d.name), act[0], act[1]))
+    return books
+
+
+def _retire_stale_stalls(base_dir: Optional[Path], keep_ids: set[str]) -> None:
+    """退役本次扫描未再产出的 stall_flag 行（2026-10-19 多书泛化引入的收口）。
+
+    生产者拥有「停笔观测」的全集：本次没复现的行 = 过时（书写恢复了 / 换锚点了 /
+    书不在监测范围了）。不退役则会滞留台账并被复活轻递——泛化前单锚点
+    ``writing:stall:guozijian`` 的旧行就会与新锚点行**重复报同一本书**（且内容是旧的）。
+    走 acknowledge_ledger（只前进不后退）：用户终态（dismissed/actioned）天然免疫。
+    fail-open：任何异常只记日志，绝不阻断生产。
+    """
+    try:
+        base = _resolve_base(base_dir)
+        db = base / "deskmate.db"
+        if not db.is_file():
+            return
+        with sqlite3.connect(str(db), check_same_thread=False) as c:
+            try:
+                rows = c.execute(
+                    f"SELECT id FROM {LEDGER_TABLE} WHERE source=? AND kind=?",
+                    ("writing", "stall_flag"),
+                ).fetchall()
+            except sqlite3.OperationalError:
+                return  # 表尚未建
+        for (rid,) in rows:
+            if rid not in keep_ids:
+                acknowledge_ledger(base_dir=base_dir, rid=rid, new_status="acknowledged")
+    except Exception as e:  # noqa: BLE001
+        logger.debug("writing 退役过时停笔行失败（不阻断）: %s", e, exc_info=True)
 
 
 @register_producer("writing")
 def _writing_producer(base_dir: Optional[Path] = None) -> list:
-    """``writing`` → ``stall_flag``：手稿停笔位点（基于 docx mtime，确定性高）。
+    """``writing`` → ``stall_flag``：手稿停笔位点（多书，基于文件 mtime，确定性高）。
 
-    只读 docx 文件 mtime（不读内容、不碰写，安全）；停笔超阈值才报，每天重扫同 id 合并。
-    伏笔未收 / 新增段落需读正文 + LLM，置信度难达 0.75 写入门槛，本期先只做 ``stall_flag``
-    （设计文档 §11.8 标注「16:00 待验证」，stall_flag 靠 mtime 差值最稳）。
+    只读文件 mtime（不读内容、不碰写，安全）；停笔超阈值才报，每天重扫同 id 合并。
+    伏笔未收 / 新增段落需读正文 + LLM，置信度难达 0.75 写入门槛，本期先只做
+    ``stall_flag``（设计文档 §11.8 标注「16:00 待验证」，stall_flag 靠 mtime 差值最稳）。
     """
     if not _throttled(base_dir, "producer:writing", 3600 * 24, source="cloud_audit", kind="stall_flag", window_s=3600 * 24):  # 每日至多扫一次
         return []
     items: list = []
     try:
-        docx = os.environ.get("SCRIBE_DOCX") or _DEFAULT_SCRIBE_DOCX
-        p = Path(docx).expanduser()
-        if not p.is_file():
-            return []
-        mtime = p.stat().st_mtime
-        stall_days = (time.time() - mtime) / 86400.0
-        if stall_days >= _STALL_DAYS_THRESHOLD:
+        now = time.time()
+        explicit = (os.environ.get("SCRIBE_DOCX") or "").strip()
+        if explicit:
+            # 旧语义：显式单文件（测试/特殊部署用），书名取文件名去扩展名
+            p = Path(explicit).expanduser()
+            if not p.is_file():
+                return []
+            candidates = [(p.stem, p.stat().st_mtime, p.name)]
+        else:
+            env_roots = (os.environ.get("SCRIBE_ROOTS") or "").split(os.pathsep)
+            roots = [Path(r.strip()).expanduser() for r in env_roots if r.strip()] or [
+                Path(r).expanduser() for r in _DEFAULT_SCRIBE_ROOTS
+            ]
+            candidates = _scan_books(roots)
+        for name, mtime, fname in candidates:
+            stall_days = (now - mtime) / 86400.0
+            if stall_days >= _ACTIVE_WINDOW_DAYS:
+                continue  # 不在写的书：写完/搁置许久了，不 nag
+            if stall_days < _STALL_DAYS_THRESHOLD:
+                continue  # 新鲜
+            slug = _SLUG_UNSAFE.sub("", name) or "book"
             items.append({
                 "kind": "stall_flag",
-                "content": f"你《长编》已经 {int(stall_days)} 天没动笔了，是卡在哪儿了吗？",
-                "evidence": f"文档: {p.name}; 最后修改: {_iso(mtime)}; 停笔约 {int(stall_days)} 天",
+                "content": f"你《{name}》已经 {int(stall_days)} 天没动笔了，是卡在哪儿了吗？",
+                "evidence": f"文档: {fname}; 最后修改: {_iso(mtime)}; 停笔约 {int(stall_days)} 天",
                 "confidence": 0.82,
-                "anchor": "writing:stall:guozijian",
+                "anchor": f"writing:stall:{slug}",
             })
+        # 收口：退役本次未复现的旧行（换锚点/书写恢复后的滞留），fail-open
+        keep_ids = {f"writing:stall_flag:{it['anchor']}" for it in items}
+        _retire_stale_stalls(base_dir, keep_ids)
     except Exception as e:  # noqa: BLE001
         logger.debug("writing 生产者失败（不阻断）: %s", e, exc_info=True)
         return []
