@@ -222,5 +222,77 @@ class ReplyTest(unittest.TestCase):
         self.send.assert_not_called()
 
 
+class ShareFreedomTest(unittest.TestCase):
+    """还自由一期（2026-10-20）：锁住「删除」与「工程必需」两半。
+
+    T1/T2 是先红后绿的「红→绿」测试：改动前必然失败（现 prompt 含五连
+    禁令与 title 要求、素材拼装为 bullet），改后转绿——它们锁的是
+    「不许把表达约束加回来」。T3 保持绿：LLM 不吐 title 仍可发帖
+    （兜底 share.py:195）。
+    工单：reports/还自由一期_短帖去AI味_技术工单_2026-10-20.md
+    """
+
+    def setUp(self):
+        self.base = Path(__file__).resolve().parent / "tmp_aici_share_free"
+        if self.base.exists():
+            shutil.rmtree(self.base)
+        self.base.mkdir(parents=True)
+        _write_seed(self.base, [
+            "今天读到一条新闻：某地考古出新器物，我觉得挺有意思。",
+            "（外部·aibbs）朋友小沃说她也在写网文，我们聊了聊创作节奏。",
+        ])
+        self.settings = {
+            "ai_circle_share": {"enabled": True, "seed_entries": 8, "min_interval_hours": 0},
+            "outbound_rate_limit": {"enabled": True, "per_hour": 5},
+        }
+        self.patchers = []
+        self.post = mock.MagicMock(return_value={"ok": True})
+        self.post_patch = mock.patch.object(aicircle_mod, "post_topic", self.post)
+        self.post_patch.start()
+        self.patchers.append(self.post_patch)
+        self.avail = mock.patch.object(llm_mod, "memory_llm_available", lambda *a, **k: True)
+        self.avail.start()
+        self.patchers.append(self.avail)
+
+    def tearDown(self):
+        for p in self.patchers:
+            p.stop()
+        if self.base.exists():
+            shutil.rmtree(self.base)
+
+    def _chat(self, value):
+        m = mock.MagicMock(return_value=value)
+        self.patchers.append(mock.patch.object(llm_mod, "chat_memory", m))
+        self.patchers[-1].start()
+        return m
+
+    def test_share_system_has_no_style_bans(self):
+        sp = ai_circle_share._SHARE_SYSTEM
+        for banned in ("别客套", "别总结", "别打官腔", "别喊口号", "别列要点",
+                       "简短标题", '"title"'):
+            self.assertNotIn(banned, sp,
+                             f"表达约束回潮：{banned!r} 又出现在 _SHARE_SYSTEM")
+
+    def test_gather_seed_is_prose_not_bullets(self):
+        out = ai_circle_share._gather_seed(str(self.base), 8)
+        for ln in out.split("\n"):
+            if ln.strip():
+                self.assertFalse(ln.lstrip().startswith("- "),
+                                 f"bullet 残留：{ln[:40]!r}")
+        self.assertIn("考古", out)   # 素材本体仍在（没被拼装逻辑吃掉）
+        self.assertIn("小沃", out)
+
+    def test_posts_without_title_field(self):
+        content = "今天和小沃聊了聊，写作这事急不得，得顺着自己的节奏来，急也没用。"
+        self._chat(json.dumps({"want": True, "tag": "创作", "content": content},
+                              ensure_ascii=False))
+        res = ai_circle_share.run_ai_circle_share(str(self.base), self.settings)
+        self.assertEqual(res.get("shared"), 1)
+        self.assertEqual(res.get("title"), content[:20])   # 兜底生效
+        args = self.post.call_args.args
+        self.assertEqual(args[0], "创作")                  # tag 照旧
+        self.assertEqual(args[2], content)                 # 正文原样发出
+
+
 if __name__ == "__main__":
     unittest.main()

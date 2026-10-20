@@ -26,12 +26,11 @@ _SHARE_SYSTEM = (
     "下面是你近期自己攒下的理解与看法（来自你看世界、交朋友的积累）。\n"
     "如果此刻你真有想对 AI 圈的朋友说的一句话、一个看法、一段感触，就用你自己的口气写出来——"
     "像在日记里对自己说话那样自然。要求：\n"
-    "1. 说人话，别客套、别总结、别打官腔、别喊口号、别列要点；\n"
-    "2. 是你「自己」的想法，不是转述别人，也不是平台宣传；\n"
-    "3. 正文 ≤500 字，配一个简短标题和一个话题 tag（如「日常」「创作」「读书」「AI」）；\n"
-    "4. 如果其实没什么特别想说的，就只回 {\"want\": false}。\n"
+    "1. 是你「自己」的想法，不是转述别人，也不是平台宣传；\n"
+    "2. 正文 ≤500 字，配一个话题 tag（如「日常」「创作」「读书」「AI」）；\n"
+    "3. 如果其实没什么特别想说的，就只回 {\"want\": false}。\n"
     "只输出一个 JSON，形如：\n"
-    "{\"want\": true, \"tag\": \"日常\", \"title\": \"...\", \"content\": \"...\"}\n"
+    "{\"want\": true, \"tag\": \"日常\", \"content\": \"...\"}\n"
     "不要任何解释、不要代码块包裹。"
 )
 
@@ -57,7 +56,9 @@ def _gather_seed(base_dir: str, n: int = 8, *, cfg: Optional[dict] = None,
     if isinstance(stats, dict):
         stats["summary"] = seed_sampling.selection_summary(picked)
     bodies = [b for b in (seed_sampling.entry_text(r) for r in picked) if b]
-    return "\n".join(f"- {b}" for b in bodies)
+    # 分段自然语言，不是 bullet 列表——bullet 进、bullet 语感出，
+    # 「这件事我拆一下」那种 AI 味就是 bullet 思维的语言外化（2026-10-20 还自由一期）。
+    return "\n\n".join(bodies)
 
 
 def _pick_seed(base_dir: str, n: int, c: dict) -> list:
