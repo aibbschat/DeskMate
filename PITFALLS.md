@@ -61,3 +61,24 @@
 3. **测试 fixture 借用已删 provider 名**：`test_dynamic_route.py` 用 `kilo:stub` 当路由键载体——`router._bare()` 剥前缀依赖 `get_descriptor(prefix)`，descriptor 删除后不剥了 ⇒ 断言 `["stub"]` 变 `["kilo:stub"]`。改 fixture 前缀（`omniroute:stub`）即可，别去改 `_bare`。
 
 **复活要连带做的**（萧哥若哪天要加回）：① 从 git 历史恢复四模块（`git show b92a119:<path>`，注意矩阵/registry/app/memory-llm 五处接入点要一起回）；② 删/改 `test_free_lane_removed.py`；③ 前端 `LlmChannelsCard.tsx:62`/`api.ts:3256`「免费组省付费额度」文案（10-18 已过时未改，改前端要重打包 + deploy_web.sh）；④ deploy 清单恢复四条目。
+
+## §P5 — release 打包在 aarch64 macOS 反复失败：mis-aligned LINKEDIT + E0463（双 bug，已根治）
+
+**现象**：`./packaging/build_local_app.sh`（Tauri 2 / aarch64）release 构建在 Apple Silicon 上反复失败，两种错交替出现：
+1. **E0463** `can't find crate for 'ctor_proc_macro'`（编译期，cargo 报找不到）。
+2. **`mis-aligned LINKEDIT string pool`**（链接/加载某个 proc-macro dylib 时报，ctor_proc_macro 偏移 `0x6167C`@1.93、darling_macro 偏移 `0x2B98E4`@1.92）。
+
+**根因 = 两条互相独立的 rustc/链接器 bug，必须同时治**：
+- **(1) E0463**：`tauri-utils` 以 `default-features=false, features=["std","proc_macro"]`（即 **dtor 关**）引入 `ctor 0.8.0`；dtor 关时 ctor 的 `ctor_proc_macro` 子 crate 只被 `pub use` 重导出、没人真正 `use` → cargo 剪枝 → E0463。治本 = **vendor/ctor**（`surfaces/gui/src-tauri/vendor/ctor`，去 `#![no_std]` + 加 `extern crate ctor_proc_macro;` 强制链接 + `ctor-proc-macro` 改 non-optional + `proc_macro` 特征简化）+ `rust-toolchain.toml` 锁 **1.92.0**（1.93 产出的 ctor dylib 同样坏）。
+- **(2) mis-aligned**：rustc release 默认 `-C strip=debuginfo` 在 aarch64 macOS 上把**部分 proc-macro dylib** 的 `__LINKEDIT` 段啃出 **416 字节空洞**（段偏移/声明大小不变、头部未同步、字符串池错位）→ 编译器加载宏 crate 失败。**治本 = `[profile.release] strip = "none"`**（关掉 release 默认 strip，所有宏 crate 即有效）。
+
+**已证伪的弯路（别再走）**：Qoder 并发写坏缓存 / 沙箱 mmap 污染 / 随机竞态——都被**确定性偏移**（同 crate 同工具链下偏移恒定）推翻；`CARGO_TARGET_DIR` 隔离实验已回退，`build_local_app.sh` 的 `APP_OUT` 已还原为固定 `target/release/bundle/...` 路径。
+
+**固化（commit `c1c8944`，已推 backup/fork/base）**：
+- `rust-toolchain.toml`：`channel = "1.92.0"`。
+- `src-tauri/Cargo.toml`：`[patch.crates-io] ctor = { path = "vendor/ctor" }` + `[profile.release] strip = "none"`（注释写明两条根因；**勿升 pin、勿把 strip 改回 debuginfo**，直到上游 rustc 修这俩 bug）。
+- `vendor/ctor/`：ctor 0.8.0 本地副本（改造见上）。
+
+**验证（结论先行）**：仅依赖 `Cargo.toml` 的 `[profile.release]`（**不设任何环境变量**）全量重编 → `BUILD_EXIT_RC=0`、日志全程无 mis-aligned/E0463/could-not-compile，产出 `OpenWorker.app`，内嵌前端 chunk 哈希命中 `dist/`（确认两 bug 修复随前端打进包）。
+
+**副作用/备注**：关 strip 后最终 app 二进制不剥离调试信息 → ~41MB（可接受）。若日后要瘦身，用系统 `strip` 只剥**最终 `openworker-desktop` 二进制**（那一步只动产物、不动构建期宏 crate，不会复现 mis-aligned）。
