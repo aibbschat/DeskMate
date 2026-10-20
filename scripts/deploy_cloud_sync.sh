@@ -307,7 +307,10 @@ echo "==> 云端同步包: $CLOUD_SYNC_DIR + $CLOUD_RUNNER"
 
 # ---- 0. 连通性 + 云端路径校验 ----
 if ! ssh -o ConnectTimeout=15 -o BatchMode=yes "$SSH_HOST" "test -d '$CLOUD_SYNC_DIR' && test -f '$CLOUD_RUNNER'" >/dev/null 2>&1; then
-  echo "✗ 无法连到 $SSH_HOST 或云端同步包路径不存在（$CLOUD_SYNC_DIR / $CLOUD_RUNNER）" >&2
+  # ${} 花括号体必须：macOS bash 3.2 在 UTF-8 locale 下会把 $CLOUD_RUNNER 后面的
+  # 全角「）」吞进变量名，set -u 下报误导性 unbound variable，把「连不上云」真因吞掉
+  # （2026-10-20 实测复现：bash 3.2.57，`"$X）"` → `X�: unbound variable`）。
+  echo "✗ 无法连到 $SSH_HOST 或云端同步包路径不存在（$CLOUD_SYNC_DIR / ${CLOUD_RUNNER}）" >&2
   exit 1
 fi
 
