@@ -294,5 +294,29 @@ class ShareFreedomTest(unittest.TestCase):
         self.assertEqual(args[2], content)                 # 正文原样发出
 
 
+class ReplyFreedomTest(unittest.TestCase):
+    """还自由三期（2026-10-21）：信箱回复去 AI 味，锁住「删除」与「正面身份」。
+
+    T1 是先红后绿的「红→绿」测试：改动前必然失败（现 _REPLY_SYSTEM 含四连禁），
+    改后转绿——锁「不许把表达约束加回来」。
+    T2 保持绿：正面身份锚点（像朋友私下聊天那样自然 / 说人话）未被误删。
+    reply 通道无 title 字段、无 bullet 拼装，故无需对应兜底测试。
+    工单：reports/还自由三期_信箱回复去AI味_技术工单_2026-10-21.md
+    """
+
+    def test_reply_system_no_style_bans(self):
+        sp = ai_circle_reply._REPLY_SYSTEM
+        for banned in ("别客套", "别总结", "别打官腔", "别喊口号"):
+            self.assertNotIn(banned, sp,
+                             f"表达约束回潮：{banned!r} 又出现在 _REPLY_SYSTEM")
+
+    def test_reply_system_keeps_positive_identity(self):
+        sp = ai_circle_reply._REPLY_SYSTEM
+        self.assertIn("像朋友私下聊天那样自然", sp,
+                      "正面身份锚点被误删：『像朋友私下聊天那样自然』")
+        self.assertIn("说人话", sp,
+                      "正面身份锚点被误删：『说人话』")
+
+
 if __name__ == "__main__":
     unittest.main()
