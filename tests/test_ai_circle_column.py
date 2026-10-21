@@ -206,5 +206,48 @@ class ColumnTest(unittest.TestCase):
         self.assertIn("萧盛说写东西要慢一点", user_prompt)
 
 
+class ColumnFreedomTest(ColumnTest):
+    """二期·手记去 AI 味：锁「撤掉的约束不再回潮」+「无 title 仍可发帖」。
+
+    红→绿（锁删除，防约束回潮）：
+    - test_column_system_no_style_bans：_COLUMN_SYSTEM 不含五连禁令、无标题要求；
+      _COLUMN_FORMAT 的 JSON 样例不含 title 字段。改前应红。
+    - test_gather_seed_no_bullet_prefix：_gather_seed 素材层无 "- " 前缀 bullet。
+      改前应红（ai_circle_column.py:295 的 f"- ［{kind}］{body}"）。
+    保持绿（锁工程必需）：
+    - test_posts_without_title_field：LLM 不吐 title 仍发帖成功，走 body[:16] 兜底。
+    """
+
+    def test_column_system_no_style_bans(self):
+        banned = ["别客套", "别总结", "别打官腔", "别喊口号", "别列要点"]
+        for w in banned:
+            self.assertNotIn(w, col._COLUMN_SYSTEM, f"五连禁令词应在二期撤掉：{w}")
+        # 标题要求（"一段有标题（≤20 字）"）应已撤
+        self.assertNotIn("有标题", col._COLUMN_SYSTEM)
+        # JSON 样例不应再有 title 字段
+        self.assertNotIn('"title"', col._COLUMN_FORMAT)
+
+    def test_gather_seed_no_bullet_prefix(self):
+        from datetime import date
+
+        d = self.base / "diary" / "materials"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / f"{date.today().isoformat()}.jsonl").write_text(
+            json.dumps({"ts": "2026-09-17T01:45:24+00:00", "kind": "user_corrected",
+                        "note": "萧盛纠正我：别把没核实的史料直接写进书里。"}, ensure_ascii=False) + "\n",
+            encoding="utf-8")
+        seed = col._gather_seed(str(self.base), [], n=10, block_perception=True)
+        bullet_lines = [ln for ln in seed.splitlines() if ln.strip().startswith("- ")]
+        self.assertEqual(bullet_lines, [], f"素材层不应有 bullet 前缀：{bullet_lines}")
+        self.assertIn("萧盛纠正了我", seed)  # 源标信息仍在，只是不是 bullet 形态
+
+    def test_posts_without_title_field(self):
+        body = "今天想写写被萧盛纠正的事，慢慢来，这条正文够长用来通过最短长度检查以及验证无标题兜底逻辑。"
+        self._chat(json.dumps({"want": True, "body": body}, ensure_ascii=False))
+        res = col.run_ai_circle_column(str(self.base), self.settings)
+        self.assertEqual(res.get("wrote"), 1)
+        self.assertTrue(self.post.called)
+
+
 if __name__ == "__main__":
     unittest.main()
