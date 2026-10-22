@@ -100,15 +100,26 @@ def test_pending_create_and_dedup(eng):
     """立项成功；同名 open 不重复立。"""
     pid = eng.pending_create("spoken", "等他回我消息", expectation="大概会回", valence="good")
     assert pid
-    assert eng.pending_create("spoken", "等他回我消息") is None
+    assert eng.pending_create("spoken", "等他回我消息", expectation="大概会回") is None
     assert len(eng.open_pendings()) == 1
+
+
+def test_pending_spoken_requires_expectation(eng):
+    """问题 A：spoken 类必须有 ≥5 字预期故事，否则不立项（挡客套话/即时任务）。"""
+    assert eng.pending_create("spoken", "下次再见") is None
+    assert eng.pending_create("spoken", "等你缓过来", expectation="") is None
+    assert eng.pending_create("spoken", "下一题", expectation="嗯") is None  # <5 字
+    # 有预期就能立
+    assert eng.pending_create("spoken", "等编辑回信", expectation="他大概下周回")
+    # system 类不受此限（对账来的可能没预期）
+    assert eng.pending_create("system", "某提案待审", source_ref="x")
 
 
 def test_pending_max_open_lapse_oldest(eng):
     """open 满 3 件 → 新来一件，最旧的自动 lapsed。"""
-    ids = [eng.pending_create("spoken", f"悬事{i}") for i in range(PENDING_MAX_OPEN)]
+    ids = [eng.pending_create("spoken", f"悬事{i}", expectation=f"这件事的预期{i}") for i in range(PENDING_MAX_OPEN)]
     assert all(ids)
-    eng.pending_create("spoken", "新来的悬事")
+    eng.pending_create("spoken", "新来的悬事", expectation="新来的预期很长")
     opens = eng.open_pendings()
     assert len(opens) == PENDING_MAX_OPEN
     assert "悬事0" not in [p["title"] for p in opens], "最旧的应被挤成 lapsed"
@@ -117,9 +128,22 @@ def test_pending_max_open_lapse_oldest(eng):
     assert st == "lapsed"
 
 
+def test_pending_lapse_reason_carries_title(eng):
+    """问题 B：挤兑 lapsed 的留痕要带上被挤掉的 title，不能全是「装不下新的了」。"""
+    eng.pending_create("spoken", "悬事A", expectation="悬事A的预期")
+    eng.pending_create("spoken", "悬事B", expectation="悬事B的预期")
+    eng.pending_create("spoken", "悬事C", expectation="悬事C的预期")
+    eng.pending_create("spoken", "悬事D", expectation="悬事D的预期")  # 挤掉悬事A
+    with _connect(eng._db) as conn:
+        row = conn.execute(
+            "SELECT event_summary FROM emotion_log WHERE source='lapsed' ORDER BY ts DESC LIMIT 1"
+        ).fetchone()
+    assert row and "悬事A" in row[0], f"lapsed 留痕应带被挤掉的 title，got: {row}"
+
+
 def test_pending_climb_once_per_day(eng):
     """爬坡每日每件一次：同日两次 tick 只爬一次；good→dopamine 升。"""
-    eng.pending_create("spoken", "盼着他的回音", valence="good")
+    eng.pending_create("spoken", "盼着他的回音", expectation="他会回我", valence="good")
     before = _state(eng)
     eng.pending_tick()
     after1 = _state(eng)
@@ -132,7 +156,7 @@ def test_pending_climb_once_per_day(eng):
 
 def test_pending_climb_valence_direction(eng):
     """bad→cortisol 升；mixed→两股同起（忐忑）。"""
-    eng.pending_create("spoken", "担心被否", valence="bad")
+    eng.pending_create("spoken", "担心被否", expectation="可能被否", valence="bad")
     before = _state(eng)
     eng.pending_tick()
     after = _state(eng)
@@ -142,7 +166,7 @@ def test_pending_climb_valence_direction(eng):
     d = tempfile.mkdtemp()
     e2 = EmotionEngine(base_dir=Path(d))
     e2.get_state()
-    e2.pending_create("spoken", "七上八下的事", valence="mixed")
+    e2.pending_create("spoken", "七上八下的事", expectation="好坏参半", valence="mixed")
     b2 = e2.get_state()
     e2.pending_tick()
     a2 = e2.get_state()
@@ -151,7 +175,7 @@ def test_pending_climb_valence_direction(eng):
 
 def test_pending_land_better_worse(eng):
     """落地落差：better→dopamine+serotonin 升；worse→dopamine 跌+cortisol 升。"""
-    pid = eng.pending_create("spoken", "等一个结果", valence="bad")
+    pid = eng.pending_create("spoken", "等一个结果", expectation="可能有结果", valence="bad")
     before = _state(eng)
     eng.pending_land(pid, "better")
     after = _state(eng)
@@ -162,7 +186,7 @@ def test_pending_land_better_worse(eng):
             "SELECT status, landed_outcome FROM pending_stories WHERE id=?", (pid,)).fetchone()
     assert row[0] == "landed" and row[1] == "better"
 
-    pid2 = eng.pending_create("spoken", "另一件事", valence="good")
+    pid2 = eng.pending_create("spoken", "另一件事", expectation="会有结果", valence="good")
     before2 = _state(eng)
     eng.pending_land(pid2, "worse")
     after2 = _state(eng)
@@ -172,7 +196,7 @@ def test_pending_land_better_worse(eng):
 
 def test_pending_land_spoken_fuzzy(eng):
     """spoken 落地按 title 模糊匹配。"""
-    eng.pending_create("spoken", "等编辑的回信", valence="good")
+    eng.pending_create("spoken", "等编辑的回信", expectation="他大概会回信", valence="good")
     eng.pending_land_spoken("编辑的回信有结果了", "as_expected")
     with _connect(eng._db) as conn:
         st = conn.execute(
@@ -182,7 +206,7 @@ def test_pending_land_spoken_fuzzy(eng):
 
 def test_pending_lapse_after_7_days(eng):
     """7 天无结果 → lapsed + dopamine 小跌。"""
-    eng.pending_create("spoken", "久等无音的事")
+    eng.pending_create("spoken", "久等无音的事", expectation="不知道会不会有结果")
     old_ts = (datetime.now() - timedelta(days=8)).isoformat(timespec="seconds")
     with _connect(eng._db) as conn:
         conn.execute("UPDATE pending_stories SET created_ts=? WHERE status='open'", (old_ts,))
@@ -220,7 +244,7 @@ def test_pending_reconcile_system(eng):
 
 def test_pending_climb_cap(eng):
     """累计爬坡封顶 PENDING_CLIMB_CAP。"""
-    eng.pending_create("spoken", "长线悬着的事", valence="bad")
+    eng.pending_create("spoken", "长线悬着的事", expectation="悬很久才有结果", valence="bad")
     with _connect(eng._db) as conn:
         conn.execute("UPDATE pending_stories SET climbed_total=? WHERE status='open'",
                      (PENDING_CLIMB_CAP,))
