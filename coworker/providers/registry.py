@@ -599,7 +599,7 @@ DESCRIPTORS: list[ProviderDescriptor] = [
         "deepseek",
         "DeepSeek",
         base_url="https://api.deepseek.com",
-        recommended_model="deepseek-v4-flash",
+        recommended_model="deepseek-flash",
         env_key="DEEPSEEK_API_KEY",
     ),
     _compat(

@@ -215,8 +215,14 @@ MATRIX: dict[str, ModelEntry] = {
         ),
     ),
     "zai:glm-5.2": ModelEntry("GLM-5.2 · Z AI", _AGENTIC, 128_000),
+    # DeepSeek V4.1 Flash (2026-09 发布, 10-17 官方将 API 名统一为 deepseek-flash;
+    # 旧名 deepseek-v4-flash 仍可用并自动路由到 V4.1 Flash, 列为别名保留向后兼容)。
+    # 上下文 1M, 原生多模态(图)+ 工具调用; thinking 默认开, 可用参数切非思考。
+    "deepseek:deepseek-flash": ModelEntry(
+        "DeepSeek V4.1 Flash · DeepSeek", _AGENTIC, 1_048_576
+    ),
     "deepseek:deepseek-v4-flash": ModelEntry(
-        "DeepSeek V4 Flash · DeepSeek", _AGENTIC, 128_000
+        "DeepSeek V4.1 Flash · DeepSeek (legacy alias)", _AGENTIC, 1_048_576
     ),
     "deepseek:deepseek-v4-pro": ModelEntry(
         "DeepSeek V4 Pro · DeepSeek", _AGENTIC, 128_000
