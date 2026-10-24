@@ -7,6 +7,9 @@
 - proactive_tick      执行一次主动推理 tick（感知→判断→决策）
 - proactive_capture    把用户「记住这个」写入主动台账
 - proactive_lookup     按 #id 短句柄/关键词回查台账（§11.16 层二：接自己递的卡片）
+- proactive_next_steps 查一条台账项的预置下一步（阶段六任务直达）
+- proactive_start_task 开始一个台账下一步任务（置进行中并返回任务指令）
+- proactive_finish_task 结束一个台账下一步任务（done/dismiss/later）
 - proactive_feedback   记录用户对建议的反馈
 - proactive_silent     设置静默模式
 - proactive_stats      获取防打扰统计
@@ -239,6 +242,76 @@ def proactive_stats() -> str:
         return json.dumps(stats, ensure_ascii=False, indent=2)
     except Exception as e:
         return f"获取统计失败：{e}"
+
+
+@mcp.tool()
+def proactive_next_steps(handle: str = "") -> str:
+    """查一条台账项的预置下一步（阶段六任务直达）。
+
+    Args:
+        handle: 台账 #id 短句柄、完整 id 前缀，或书名/关键词。
+
+    Returns:
+        该事项的下一步列表（step_key/标题/任务指令），找不到时如实说明。
+    """
+    try:
+        import json as _json
+
+        from .next_steps import _find_item, next_steps_for_item
+
+        item = _find_item(_base_dir(), handle)
+        if item is None:
+            return "台账里找不到该事项"
+        return _json.dumps(next_steps_for_item(item), ensure_ascii=False, indent=2)
+    except Exception as e:
+        return f"查下一步失败：{e}"
+
+
+@mcp.tool()
+def proactive_start_task(handle: str, step: str = "") -> str:
+    """开始一个台账下一步任务（阶段六任务直达）。
+
+    把台账项置为 in_progress，并返回可直接执行的任务指令——主对话拿到指令
+    就直接开工，不要再问用户是哪本书、从哪儿开始。找不到事项时如实说明，不要编任务。
+
+    Args:
+        handle: 台账 #id 短句柄、完整 id 前缀，或书名/关键词。
+        step: 下一步的 step_key（如 check_characters / continue_outline / douyin_topic）；
+            留空则默认第一条。
+    """
+    try:
+        import json as _json
+
+        from .next_steps import start_task
+
+        res = start_task(_base_dir(), handle, step)
+        if not res.get("ok"):
+            return f"开始任务失败：{res.get('error') or '未知原因'}"
+        return (
+            f"已开始任务（台账项置为进行中）：{res['step']['title']}\n"
+            f"任务指令：{res['instruction']}"
+        )
+    except Exception as e:
+        return f"开始任务失败：{e}"
+
+
+@mcp.tool()
+def proactive_finish_task(handle: str, outcome: str = "done") -> str:
+    """结束一个台账下一步任务（阶段六跟进状态）。
+
+    Args:
+        handle: 台账 #id 短句柄、完整 id 前缀，或书名/关键词。
+        outcome: done=已完成 → actioned；dismiss=不要 → dismissed；later=稍后 → snoozed。
+    """
+    try:
+        from .next_steps import finish_task
+
+        res = finish_task(_base_dir(), handle, outcome)
+        if not res.get("ok"):
+            return f"结束任务失败：{res.get('error') or '未知原因'}"
+        return f"任务已结束，新状态：{res.get('status')}"
+    except Exception as e:
+        return f"结束任务失败：{e}"
 
 
 def main() -> None:

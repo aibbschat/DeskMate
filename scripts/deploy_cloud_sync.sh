@@ -49,6 +49,14 @@ PROACTIVITY_MODULES=(
   "deskmate/proactivity/confidence.py"
   "deskmate/proactivity/health_producers.py"
   "deskmate/proactivity/disabled_producers.py"
+  # ⚠️ 2026-10-24 主动性改造：新增 4 个 proactivity 模块（阶段一二三四六）。
+  # tick.py（已部署）import writing_context / suggestion_types / deferred；
+  # ledger.py + server.py（已部署）import next_steps。漏传 → 云端跑旧 tick/ledger/server
+  # 触发 ImportError 被 fail-open 吞 → 云端静默停摆。务必随 tick/ledger 同批同步。
+  "deskmate/proactivity/deferred.py"
+  "deskmate/proactivity/next_steps.py"
+  "deskmate/proactivity/suggestion_types.py"
+  "deskmate/proactivity/writing_context.py"
   # ⚠️ 2026-10-13 补：companion.py 属「真实优先」活感 WIP 批，被云端代码 import，
   # 漏传 → 云端跑旧码（与 ledger/her_voice 同类漏传教训）。随 tick/ledger 同批同步。
   "deskmate/proactivity/companion.py"

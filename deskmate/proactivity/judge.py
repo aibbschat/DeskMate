@@ -73,7 +73,7 @@ _JUDGE_SYSTEM_PROMPT = """\
 重要：
 - 只有在有把握时才 should_act=true（高置信度）
 - 如果信息不足，confidence 应该低于 0.5
-- suggestion_type 用英文 snake_case（如 plot_contradiction, missing_foreshadow, character_inconsistency, timeline_error）
+- suggestion_type 只能从下列类型里选一个，不要自造新类型：plot_contradiction, character_inconsistency, timeline_error, missing_foreshadow, writing_stall, chapter_updated, writing_review, research_gap, emotional_care, self_expression, task_reminder, generic（阶段三类型收敛：自造类型会让偏好学习与台账合并失效）
 - finding_key 用**位置/对象**，不要复述句子：章节写 `ch2-ch12` 这种短横连接的形式，
   人物写 `人物:名字`，伏笔写 `ch7:伏笔-玉佩`，日常关怀写 `care`。
   同一处问题下次再发现，必须给出**一模一样**的 key（它是去重的锚）。

@@ -110,6 +110,9 @@ class TickResult:
     diary: Optional[dict] = None
     # 花园花开结算负载：后台把新事件开成花（不打扰；前端可轻声提示一句）
     garden: Optional[dict] = None
+    # 阶段二（2026-10-24）：PREPARE / 深专注拦截被暂存进台账时置 True，deferred_id 为台账 id。
+    deferred: bool = False
+    deferred_id: str = ""
 
     @property
     def has_suggestion(self) -> bool:
@@ -174,6 +177,11 @@ class TickResult:
         # 花园花开结算：后台动作（不打扰），前端可轻声提示一句
         if self.garden:
             result["garden"] = self.garden
+
+        # 阶段二：暂存待递标记（前端忽略未知字段，兼容）。
+        if self.deferred:
+            result["deferred"] = True
+            result["deferred_id"] = self.deferred_id
 
         return result
 
@@ -549,13 +557,35 @@ class ProactiveEngine:
         mem_ctx = self._memory_context
         if world_ctx:
             mem_ctx = (mem_ctx + "\n\n" + world_ctx).strip() if mem_ctx else world_ctx
+        # 阶段一（2026-10-24）：后台 tick 不传 workspace 时，judge 原本看不到手稿与圣经。
+        # 这里用写作工作区兜底（ingest_dirs.json 首项 / ~/Documents/已出版），只影响本轮上下文，
+        # 不改 engine.workspace 的持久状态；解析失败则退回原行为。
+        effective_workspace = self.workspace
+        writing_status = ""
+        try:
+            from deskmate.proactivity.writing_context import (
+                build_writing_status,
+                resolve_writing_workspace,
+            )
+
+            if not effective_workspace:
+                resolved = resolve_writing_workspace(base_dir=self.base_dir)
+                if resolved is not None:
+                    effective_workspace = str(resolved)
+            if effective_workspace:
+                writing_status = build_writing_status(effective_workspace)
+        except Exception:
+            effective_workspace = self.workspace
+            writing_status = ""
         ctx = build_proactive_context(
-            workspace=self.workspace,
+            workspace=effective_workspace,
             memory_context=mem_ctx,
             user_activity=activity_desc,
             project_context=self._project_context,
         )
         extra_ctx = ""
+        if writing_status:
+            extra_ctx += f"\n## 写作状态\n{writing_status}"
         if pref_ctx:
             extra_ctx += f"\n## 用户行为偏好\n{pref_ctx}"
         if behavior_ctx:
@@ -615,6 +645,23 @@ class ProactiveEngine:
                 companion_message=companion_msg,
             )
         judgment = judge_proactive_action(context_text, model=self.model)
+        # 阶段三（2026-10-24）：类型收敛——judge 自造的类型会让偏好学习与台账合并失效，
+        # 这里统一归一后再决策；分类型阈值取“成长调制值与类型固定值中更低者”，
+        # 既保留信任感调制方向，又保证写作类永远不高于 0.65 / 0.45。
+        try:
+            from deskmate.proactivity.suggestion_types import (
+                normalize_suggestion_type,
+                thresholds_for,
+            )
+
+            judgment.suggestion_type = normalize_suggestion_type(
+                judgment.suggestion_type
+            )
+            _type_s, _type_p = thresholds_for(judgment.suggestion_type)
+            suggest_thr = min(suggest_thr, _type_s)
+            prepare_thr = min(prepare_thr, _type_p)
+        except Exception:
+            pass
 
         # P2 情绪底色（2026-10-11 整改）：硬冷却消费 pending。
         # emotion_engine 在激素显著变化时写 pending → tick 消费它，强制 self_expression，
@@ -682,16 +729,31 @@ class ProactiveEngine:
             )
 
         if decision.action == ActionType.SUGGEST:
-            # P1-1：深专注时不弹建议（只静默记录，打扰分寸升级）
+            # P1-1：深专注时不弹建议。阶段二（2026-10-24）：不再只静默记录就丢掉，
+            # 先暂存进台账，待开聊时递；情绪类与暂存失败时仍按原逻辑静默处理。
             if focus is not None and focus.level == "deep":
+                deferred_id = ""
+                try:
+                    from deskmate.proactivity.deferred import defer_judgment
+
+                    deferred_id = defer_judgment(
+                        self.base_dir,
+                        judgment,
+                        f"深专注（{focus.reason}）不打扰，已暂存待递",
+                        original_action="suggest_deep_focus",
+                    )
+                except Exception:
+                    deferred_id = ""
                 return TickResult(
                     action=ActionType.NO_ACTION,
                     judgment=judgment,
                     activity=activity,
                     decision=decision,
-                    skipped_reason=f"深专注（{focus.reason}）不打扰，静默记录",
+                    skipped_reason=f"深专注（{focus.reason}）不打扰，已暂存待递" if deferred_id else f"深专注（{focus.reason}）不打扰，静默记录",
                     elapsed_ms=int((time.time() - start) * 1000),
                     heartbeat_interval_ms=self._heartbeat_interval_ms,
+                    deferred=bool(deferred_id),
+                    deferred_id=deferred_id,
                 )
             # 防打扰检查
             suggestion_key = judgment.suggestion_content[:100]
@@ -733,6 +795,21 @@ class ProactiveEngine:
             except Exception:
                 pass
 
+        # 阶段二（2026-10-24）：PREPARE 原来只返回 action=prepare，不进台账、不广播，
+        # 前端也不处理，等于丢件。这里暂存进台账，待开聊时由开场白递出。
+        deferred_id = ""
+        if decision.action == ActionType.PREPARE:
+            try:
+                from deskmate.proactivity.deferred import defer_judgment
+
+                deferred_id = defer_judgment(
+                    self.base_dir,
+                    judgment,
+                    "中置信已暂存，待开聊时递",
+                    original_action="prepare",
+                )
+            except Exception:
+                deferred_id = ""
         self.last_tick_time = time.time()
 
         # P2-4：「看见你在做什么」活动描述 + 长时间专注陪伴语
@@ -757,6 +834,8 @@ class ProactiveEngine:
             what_user_doing=what_doing,
             companion_message=companion_msg,
             diary=diary_payload,
+            deferred=bool(deferred_id),
+            deferred_id=deferred_id,
         )
 
     def record_feedback(self, suggestion_key: str, accepted: bool) -> None:

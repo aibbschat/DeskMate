@@ -689,6 +689,50 @@ def delivery_suppressed_by_mood(base_dir: Optional[Path] = None) -> bool:
         return False
 
 
+def close_loop_pending_text(base_dir: Optional[Path] = None, *, limit: int = 3, max_age_days: int = 30) -> str:
+    """阶段四（2026-10-24）：把 close_loop 降级提案附带到开聊开场白里。
+
+    close_loop_pending.jsonl 原本没有任何递送入口，提案会静默躺着。
+    这里只读、只取最近 30 天内 status=proposed 的行（最多 3 条），不改文件、
+    不改台账 items；萧盛表态后由对话主助手把对应行清掉（见 deskmate.md 阶段五）。
+    """
+    try:
+        base = _resolve_base(base_dir)
+        path = base / "memory" / "close_loop_pending.jsonl"
+        if not path.is_file():
+            return ""
+        now = time.time()
+        summaries: list[str] = []
+        for line in path.read_text(encoding="utf-8", errors="ignore").splitlines():
+            try:
+                entry = json.loads(line)
+            except Exception:
+                continue
+            if not isinstance(entry, dict):
+                continue
+            status = entry.get("status")
+            if status is not None and status != "proposed":
+                continue
+            try:
+                ts = float(entry.get("ts") or 0)
+            except (TypeError, ValueError):
+                ts = 0
+            if ts and (now - ts) > max_age_days * 86400:
+                continue
+            summary = str(entry.get("action_summary") or "").strip()
+            if summary:
+                summaries.append(summary)
+        if not summaries:
+            return ""
+        lines = "\n".join(f"- {s}" for s in summaries[-limit:])
+        return (
+            "\n另外还有几件上次没做完的事（需你点头我才做，回复做 / 不要 / 稍后即可）：\n"
+            + lines
+        )
+    except Exception:
+        return ""
+
+
 def build_handoff_opening(
     base_dir: Optional[Path] = None,
     *,
@@ -825,13 +869,44 @@ def build_handoff_opening(
     for i, it in enumerate(chosen, 1):
         ev = f"（依据：{it['evidence']}）" if it.get("evidence") else ""
         un = f"\n    我的理解：{it['understanding']}" if it.get("understanding") else ""
-        lines.append(f"{i}. {it['content']}{ev}{un}\n    #{_short_id(it['id'])}")
+        # 阶段六（2026-10-24）：跟进状态之“到期”——待处理项龄期超过 3 天要让萧盛看得见，
+        # 超过 7 天建议重新评估或放弃；解析失败则跳过标签，绝不阻断递送。
+        age_label = ""
+        try:
+            if it.get("status") == "pending" and it.get("created_at"):
+                _created = time.strptime(str(it["created_at"])[:19], "%Y-%m-%dT%H:%M:%S")
+                _age_days = (time.time() - time.mktime(_created)) / 86400.0
+                if _age_days > 7:
+                    age_label = f"（已等 {int(_age_days)} 天，超期：建议重新评估或放弃）"
+                elif _age_days > 3:
+                    age_label = f"（已等 {int(_age_days)} 天）"
+        except Exception:
+            age_label = ""
+        lines.append(f"{i}. {it['content']}{ev}{un}{age_label}\n    #{_short_id(it['id'])}")
     text = (
         "我替你盯着这个家，发现几件事还没收：\n"
         + "\n".join(lines)
         + "\n你要先处理哪个？（回复序号或条目 #id 即可）"
     )
-    return {"text": text, "items": chosen}
+    # 阶段四：附带递送 close_loop 旧提案（不改 items、不改 ack 流程）。
+    try:
+        extra = close_loop_pending_text(base_dir)
+        if extra:
+            text += extra
+    except Exception:
+        pass
+    # 阶段六：下一步任务直达——每条 chosen 项自带可执行下一步，萧盛回复 S 编号
+    # 即可开工，不用再交代一遍；next_steps 字段供前端与主对话取用，前端忽略未知字段兼容。
+    ns_steps: list[dict] = []
+    try:
+        from deskmate.proactivity.next_steps import render_next_steps_section
+
+        ns_text, ns_steps = render_next_steps_section(chosen)
+        if ns_text:
+            text += ns_text
+    except Exception:
+        ns_steps = []
+    return {"text": text, "items": chosen, "next_steps": ns_steps}
 
 
 def acknowledge_ledger(

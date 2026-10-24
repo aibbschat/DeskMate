@@ -607,3 +607,94 @@ def _writing_producer(base_dir: Optional[Path] = None) -> list:
         logger.debug("writing 生产者失败（不阻断）: %s", e, exc_info=True)
         return []
     return items
+
+
+# ---- 阶段四（2026-10-24）：新章节信号生产者 ----
+# 与 stall_flag 互补：stall 是“很久没写”，这里是“刚写了”。只比 mtime + 大小，
+# 不读正文、不改稿件；真正的核对仍由萧盛点头后在对话里用 novel_memory 做。
+def _activity_meta_get(base_dir, key: str) -> str:
+    try:
+        db = _resolve_base(base_dir) / "deskmate.db"
+        conn = sqlite3.connect(str(db), check_same_thread=False)
+        try:
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS proactivity_meta (key TEXT PRIMARY KEY, value TEXT)"
+            )
+            row = conn.execute(
+                "SELECT value FROM proactivity_meta WHERE key=?", (key,)
+            ).fetchone()
+            return row[0] if row else ""
+        finally:
+            conn.close()
+    except Exception:
+        return ""
+
+
+def _activity_meta_set(base_dir, key: str, value: str) -> None:
+    try:
+        db = _resolve_base(base_dir) / "deskmate.db"
+        conn = sqlite3.connect(str(db), check_same_thread=False)
+        try:
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS proactivity_meta (key TEXT PRIMARY KEY, value TEXT)"
+            )
+            conn.execute(
+                "INSERT INTO proactivity_meta(key,value) VALUES(?,?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                (key, value),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception:
+        pass
+
+
+@register_producer("writing_activity")
+def _writing_activity_producer(base_dir: Optional[Path] = None) -> list:
+    """``writing_activity`` → ``chapter_updated``：某本书的手稿文件刚被改动。
+
+    每小时至多扫一次。首次扫描只记基线（不产出），避免把旧稿全报一遍；
+    之后发现最新文件 mtime 或大小变了，产出一条信号，anchor 按书名固定，
+    同一本书反复改动合并回同一行，不刷屏。
+    """
+    if not _throttled(base_dir, "producer:writing_activity", 3600, source="cloud_audit", kind="chapter_updated", window_s=3600):
+        return []
+    items: list = []
+    try:
+        env_roots = (os.environ.get("SCRIBE_ROOTS") or "").split(os.pathsep)
+        roots = [Path(r.strip()).expanduser() for r in env_roots if r.strip()] or [
+            Path(r).expanduser() for r in _DEFAULT_SCRIBE_ROOTS
+        ]
+        for name, mtime, fname in _scan_books(roots):
+            slug = _SLUG_UNSAFE.sub("", name) or "book"
+            # 取该书最新文件的大小（_scan_books 只返回 mtime 与文件名，需再 stat 一次）。
+            size = 0
+            try:
+                for root in roots:
+                    for d in root.iterdir():
+                        if _book_name(d.name) == name and d.is_dir():
+                            fp = d / fname
+                            if fp.is_file():
+                                size = fp.stat().st_size
+            except OSError:
+                pass
+            key = f"producer:writing_activity:last:{slug}"
+            current = f"{mtime:.0f}|{size}|{fname}"
+            previous = _activity_meta_get(base_dir, key)
+            _activity_meta_set(base_dir, key, current)
+            if not previous:
+                continue  # 首次见这本书：只记基线，不 nag
+            if previous == current:
+                continue
+            items.append({
+                "kind": "chapter_updated",
+                "content": f"《{name}》有新改动（{fname}，最近修改于 {_iso(mtime)}），要不要我核对人物 / 时间线？",
+                "evidence": f"文档: {fname}; 最后修改: {_iso(mtime)}; 上次基线: {previous}",
+                "confidence": 0.8,
+                "anchor": f"writing:chapter:{slug}",
+            })
+    except Exception as e:  # noqa: BLE001
+        logger.debug("writing_activity 生产者失败（不阻断）: %s", e, exc_info=True)
+        return []
+    return items
