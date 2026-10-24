@@ -703,6 +703,18 @@ def build_engine(
             from .emotes import emote_system_block, get_active_pack
 
             parts.append(emote_system_block(get_active_pack()))
+        # 小桔自己的内在记录（2026-10-24 语气层）：只递她自己写下的独白与叙事，
+        # 不递数值、标签、分档——情绪只能由她自己产生，硬规则不进这里。
+        # fail-open：无记录或异常时 build_tone_record 返回空串，不影响主聊天。
+        if agent.name == "deskmate":
+            try:
+                from deskmate.growth.tone_record import build_tone_record
+
+                tone_record = build_tone_record()
+                if tone_record:
+                    parts.append(tone_record)
+            except Exception:
+                pass
         # DeskMate @角色召唤（opt-in，DESKMATE_MENTION，默认开）：解析最后一条 user 消息的 @，
         # 命中花名册则注入 handoff 协议，让被 @ 角色临时参与本轮（会话身份 = 新建会话选定的
         # persona，@ 仅当轮补位）。default_persona_id 取会话 agent 名，供 handoff 说明基线。

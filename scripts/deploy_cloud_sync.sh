@@ -278,7 +278,27 @@ GROWTH_MODULES=(
   "deskmate/growth/diary_store.py"
   "deskmate/growth/diary.py"
   "deskmate/persona.py"
+  # ⚠️ 2026-10-24 语气层（真实优先）：tone_record.py 每轮把小桔自己上一轮独白+叙事原样回灌，
+  # 由 agent.build_engine 注入 tone block 作参考（全 fail-open）。云端 openworker-server 走
+  # manager.py 构建上下文，漏传 → ImportError 被 fail-open 吞 → 语气层完全不生效（红线坑）。
+  # 随 moments 同批同步。
+  "deskmate/growth/tone_record.py"
 )
+
+# 语气层（2026-10-24 补）：coworker/agent.py 的 build_engine 注入 tone block。
+# 云端 manager.py:23 `from ..agent import build_engine` 实测云端 Sep-23 旧码未注入 tone；
+# 它既不在传输清单也不在对账扫描（coworker/ 根目录，双重盲区）→ 本地改了云上没动。
+# 随通道组同批推送（dest_dir=$CLOUD_COWORKER_ROOT），并纳入对账 .py 扫描。
+COWORKER_ROOT_MODULES=(
+  "coworker/agent.py"
+)
+# 人格文件（2026-10-24 补）：deskmate.md 被云端 persona loader 读取。
+# 它是 .md，下面的 ast.parse 预检会误报，故**不进 ALL_FILES**，仅走独立 scp + md5 核对
+# （见 3d/7b 段）+ 对账 .md 扫描。漏传 → 云端跑旧人格（二元硬切换未废）。
+PERSONA_FILES=(
+  "coworker/personas/builtin/deskmate.md"
+)
+CLOUD_PERSONA_DIR="$CLOUD_COWORKER_ROOT/personas/builtin"
 
 # 天气感知（2026-10-16 补）：weather.py 被 manager.py:649（聊天注入 weather_context）与
 # tick.py:263（apply_weather_mood 情绪通道）import——云端 openworker-server 每轮上下文与
@@ -336,7 +356,9 @@ if ! ssh -o ConnectTimeout=15 -o BatchMode=yes "$SSH_HOST" "test -d '$CLOUD_SYNC
 fi
 
 # ---- 1. 必须已提交（红线：本地改动先 commit 进 fork/base）----
-ALL_FILES=("${LOCAL_MODULES[@]}" "$LOCAL_RUNNER" "${PROACTIVITY_MODULES[@]}" "${CHANNEL_MODULES[@]}" "${AGENCY_BEHAVIORS_MODULES[@]}" "${AGENCY_MODULES[@]}" "${GARDEN_MODULES[@]}" "${GROWTH_MODULES[@]}" "${SKILLS_TOOLS_MODULES[@]}" "${PERCEPTION_MODULES[@]}" "${CONNECTORS_MODULES[@]}" "$LOCAL_AGENCY_TICK" "$LOCAL_DRIFT_CHECK")
+# ⚠️ PERSONA_FILES（.md）故意不进 ALL_FILES：下面的语法预检用 ast.parse，对 .md 会误报。
+# 它走独立的 scp + md5 核对（见 3d/7b 段），并纳入对账 .md 扫描。
+ALL_FILES=("${LOCAL_MODULES[@]}" "$LOCAL_RUNNER" "${PROACTIVITY_MODULES[@]}" "${CHANNEL_MODULES[@]}" "${AGENCY_BEHAVIORS_MODULES[@]}" "${AGENCY_MODULES[@]}" "${GARDEN_MODULES[@]}" "${GROWTH_MODULES[@]}" "${COWORKER_ROOT_MODULES[@]}" "${SKILLS_TOOLS_MODULES[@]}" "${PERCEPTION_MODULES[@]}" "${CONNECTORS_MODULES[@]}" "$LOCAL_AGENCY_TICK" "$LOCAL_DRIFT_CHECK")
 if [[ "$FORCE" -eq 0 ]]; then
   DIRTY=""
   for f in "${ALL_FILES[@]}"; do
@@ -425,7 +447,7 @@ done
 
 # ---- 3c. 推送通道组/ 熔断模块（本地与云端必须同码，见 CHANNEL_MODULES 注释）----
 echo "==> 推送通道组/熔断模块 + 自主行为包 + 天气感知到云端主程序包"
-for f in "${CHANNEL_MODULES[@]}" "${AGENCY_BEHAVIORS_MODULES[@]}" "${AGENCY_MODULES[@]}" "${GARDEN_MODULES[@]}" "${GROWTH_MODULES[@]}" "${SKILLS_TOOLS_MODULES[@]}" "${PERCEPTION_MODULES[@]}" "${CONNECTORS_MODULES[@]}"; do
+for f in "${CHANNEL_MODULES[@]}" "${AGENCY_BEHAVIORS_MODULES[@]}" "${AGENCY_MODULES[@]}" "${GARDEN_MODULES[@]}" "${GROWTH_MODULES[@]}" "${COWORKER_ROOT_MODULES[@]}" "${PERSONA_FILES[@]}" "${SKILLS_TOOLS_MODULES[@]}" "${PERCEPTION_MODULES[@]}" "${CONNECTORS_MODULES[@]}"; do
   base="$(basename "$f")"
   # 目标目录按本地相对路径推（deskmate/xxx.py → $CLOUD_DESKMATE_ROOT/xxx.py；
   # coworker/xxx.py → $CLOUD_COWORKER_ROOT/xxx.py），必要时建目录
@@ -510,7 +532,7 @@ done
 
 # ---- 7. 通道组/熔断模块对齐核对 ----
 echo "==> 通道组/熔断模块 + 自主行为包 + 天气感知对齐核对"
-for f in "${CHANNEL_MODULES[@]}" "${AGENCY_BEHAVIORS_MODULES[@]}" "${AGENCY_MODULES[@]}" "${GARDEN_MODULES[@]}" "${GROWTH_MODULES[@]}" "${SKILLS_TOOLS_MODULES[@]}" "${PERCEPTION_MODULES[@]}" "${CONNECTORS_MODULES[@]}"; do
+for f in "${CHANNEL_MODULES[@]}" "${AGENCY_BEHAVIORS_MODULES[@]}" "${AGENCY_MODULES[@]}" "${GARDEN_MODULES[@]}" "${GROWTH_MODULES[@]}" "${COWORKER_ROOT_MODULES[@]}" "${PERSONA_FILES[@]}" "${SKILLS_TOOLS_MODULES[@]}" "${PERCEPTION_MODULES[@]}" "${CONNECTORS_MODULES[@]}"; do
   base="$(basename "$f")"
   case "$f" in
     deskmate/*)   dest_dir="$CLOUD_DESKMATE_ROOT/$(dirname "${f#deskmate/}")" ;;
@@ -528,7 +550,7 @@ for f in "${CHANNEL_MODULES[@]}" "${AGENCY_BEHAVIORS_MODULES[@]}" "${AGENCY_MODU
 done
 
 echo ""
-echo "✅ 本地→云端代码已对齐（3 个 sync 文件 + runner + gc 工具 + 6 个 proactivity + 5 个通道/熔断模块 + 3 个 agency 核心 + 5 个 agency 行为 + 天气感知 + 云端 L2 agency tick + 云端 drift 脚本）。"
+echo "✅ 本地→云端代码已对齐（3 个 sync 文件 + runner + gc 工具 + 6 个 proactivity + 5 个通道/熔断模块 + 3 个 agency 核心 + 5 个 agency 行为 + 天气感知 + 云端 L2 agency tick + 云端 drift 脚本 + 语气层 agent.py/tone_record.py + 人格 deskmate.md）。"
 
 # ---- 对账（2026-10-09 加）：本清单是逐文件显式列举，漏加即静默不同步 ----
 # 起因：user_fact_context.py（c06ab7e）被 manager.py/understanding.py import 却不在
@@ -545,10 +567,12 @@ _reconcile() {
   # 判据：只有**会被云端 import 的模块**才可能造成静默失效，测试文件不属于此类。
   # 测试文件差异仍会打印（供人工知悉），但不参与红绿判定。
   local XTRA='-not -name test_*.py'
-  # 本地：deskmate/coworker 全量 .py（抓「本地有、云端没有」的漏项）
-  ( cd "$REPO_ROOT" && find deskmate coworker/server -name '*.py' $XTRA -not -path '*__pycache__*' -type f \
+  # 本地：deskmate/coworker 全量 .py（抓「本地有、云端没有」的漏项）。
+  # ⚠️ 2026-10-24 扩到 coworker/（原只扫 coworker/server）：coworker/ 根目录与
+  # personas/providers/ 等此前是对账盲区，agent.py/deskmate.md 等漂移抓不到。
+  ( cd "$REPO_ROOT" && find deskmate coworker -name '*.py' $XTRA -not -path '*__pycache__*' -type f \
       | while read -r f; do printf '%s  %s\n' "$(md5 -q "$f")" "$f"; done ) | sort > "$tmp_l"
-  ssh "$SSH_HOST" "sudo find /opt/openworker/deskmate /opt/openworker/coworker/server -name '*.py' $XTRA -not -path '*__pycache__*' -type f 2>/dev/null | while read -r f; do printf '%s  %s\n' \"\$(sudo md5sum \"\$f\" 2>/dev/null | cut -d' ' -f1)\" \"\${f#/opt/openworker/}\"; done" 2>/dev/null | grep -vE "Warning|setlocale" | sort > "$tmp_c"
+  ssh "$SSH_HOST" "sudo find /opt/openworker/deskmate /opt/openworker/coworker -name '*.py' $XTRA -not -path '*__pycache__*' -type f 2>/dev/null | while read -r f; do printf '%s  %s\n' \"\$(sudo md5sum \"\$f\" 2>/dev/null | cut -d' ' -f1)\" \"\${f#/opt/openworker/}\"; done" 2>/dev/null | grep -vE "Warning|setlocale" | sort > "$tmp_c"
   local only_l only_c diff
   only_l="$(comm -23 <(cut -d' ' -f3- "$tmp_l" | sort) <(cut -d' ' -f3- "$tmp_c" | sort) | wc -l | tr -d ' ')"
   only_c="$(comm -13 <(cut -d' ' -f3- "$tmp_l" | sort) <(cut -d' ' -f3- "$tmp_c" | sort) | wc -l | tr -d ' ')"
@@ -559,8 +583,8 @@ _reconcile() {
   echo "   仅云端有（云端有旧漂移）: $only_c"
   # 测试文件差异：云端不跑测试，故仅提示不判红（列出来供人工知悉）。
   local _t
-  _t="$( { comm -3 <(cd "$REPO_ROOT" && find deskmate coworker/server -name 'test_*.py' -not -path '*__pycache__*' -type f | sort) \
-             <(ssh "$SSH_HOST" "sudo find /opt/openworker/deskmate /opt/openworker/coworker/server -name 'test_*.py' -not -path '*__pycache__*' -type f 2>/dev/null | sed 's|^|/opt/openworker/|'" 2>/dev/null | grep -vE "Warning|setlocale" | sed 's|^/opt/openworker/||' | sort) ; } 2>/dev/null | wc -l | tr -d ' ')"
+  _t="$( { comm -3 <(cd "$REPO_ROOT" && find deskmate coworker -name 'test_*.py' -not -path '*__pycache__*' -type f | sort) \
+             <(ssh "$SSH_HOST" "sudo find /opt/openworker/deskmate /opt/openworker/coworker -name 'test_*.py' -not -path '*__pycache__*' -type f 2>/dev/null | sed 's|^|/opt/openworker/|'" 2>/dev/null | grep -vE "Warning|setlocale" | sed 's|^/opt/openworker/||' | sort) ; } 2>/dev/null | wc -l | tr -d ' ')"
   [ "$_t" != "0" ] && echo "   （提示）测试文件差异 $_t 处 —— 云端不跑测试，不影响运行"
   if [ "$diff" != "0" ] || [ "$only_c" != "0" ]; then
     echo "   ❌ 对账未通过——上面两项非 0 即云端与本地不一致，请逐条查（红线：须完全一致）"
@@ -570,6 +594,20 @@ _reconcile() {
   else
     echo "   ✅ 对账通过：云端与本地完全一致"
   fi
+  # 人格 .md 对账（2026-10-24 加）：deskmate.md 是 .md，上面的 .py 扫描抓不到，
+  # 但云端 persona loader 会读它 → 漏传/漂移会让云端跑旧人格且不报错。单独比对。
+  local tl_md tc_md md_diff
+  tl_md="$(mktemp)"; tc_md="$(mktemp)"
+  ( cd "$REPO_ROOT" && find coworker/personas -name '*.md' -not -path '*__pycache__*' -type f \
+      | while read -r f; do printf '%s  %s\n' "$(md5 -q "$f")" "${f#coworker/personas/}"; done ) | sort > "$tl_md"
+  ssh "$SSH_HOST" "sudo find /opt/openworker/coworker/personas -name '*.md' -not -path '*__pycache__*' -type f 2>/dev/null | while read -r f; do printf '%s  %s\n' \"\$(sudo md5sum \"\$f\" 2>/dev/null | cut -d' ' -f1)\" \"\${f#/opt/openworker/coworker/personas/}\"; done" 2>/dev/null | grep -vE "Warning|setlocale" | sort > "$tc_md"
+  md_diff="$(join -j 2 -o 0,1.1,2.1 <(sort -k2 "$tl_md") <(sort -k2 "$tc_md") 2>/dev/null | awk '$2 != $3' | wc -l | tr -d ' ')"
+  if [ "$md_diff" != "0" ]; then
+    echo "   ❌ 人格 .md 对账未通过（deskmate.md 等与云端不一致）: $md_diff"
+  else
+    echo "   ✅ 人格 .md 对账通过"
+  fi
+  rm -f "$tl_md" "$tc_md"
   rm -f "$tmp_l" "$tmp_c"
 }
 _reconcile
