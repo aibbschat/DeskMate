@@ -90,6 +90,8 @@ def _client():
 
     # 圣经实体抽取走记忆专用 provider：默认即主对话付费模型（保中文一字不差，护史实严谨红线）。
     # 仅当显式设 DESKMATE_MEMORY_PROVIDER=omniroute 才走本机免费网关；异常时自动降级回付费主模型。
+    # ⚠️ 2026-10-24 实测 OmniRoute 免费层全死，该 opt-in 当前无可用上游（等于空转），
+    # 仅当本机网关修复/替换后才真正生效。
     ak, bu, _ = _resolve_memory_provider(reasoning=True)
     return OpenAI(api_key=ak, base_url=bu)
 

@@ -484,9 +484,10 @@ export function Composer(props: Props) {
       const known = tiers?.[m];
       if (known === "free" || known === "paid") return known;
       // 旧后端缺 model_tiers 时的前缀兜底：keyless 网关判免费。
-      // ⚠️ opencode:/kilo: 两个前缀 2026-10-18 已随外网免费车道删除（后端不再
-      // 供这类 id，见 PITFALLS §P4），别再加回来。
-      return m.startsWith("omniroute:") || m.startsWith("ollama:")
+      // ⚠️ opencode:/kilo:/omniroute: 三个前缀 2026-10-18 / 2026-10-24 已随外网
+      // 免费车道删除（OmniRoute 免费层实测全死，2026-10-24），后端不再供这类 id
+      // （见 PITFALLS §P4 与 tests/test_omniroute_removed.py），别再加回来。
+      return m.startsWith("ollama:")
         ? "free"
         : "paid";
     };

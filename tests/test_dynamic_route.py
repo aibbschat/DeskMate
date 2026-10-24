@@ -126,8 +126,8 @@ def test_resolve_disabled_returns_none():
 
 def test_resolve_free_channel():
     msgs = [{"role": "user", "content": "你好"}]
-    route_fn = lambda g: (_StubChannel("omniroute:stub"), [])  # 永远是免费组通道
-    assert resolve_auto_model(msgs, dynamic_enabled=True, route_fn=route_fn) == "omniroute:stub"
+    route_fn = lambda g: (_StubChannel("ollama:stub"), [])  # 永远是免费组通道
+    assert resolve_auto_model(msgs, dynamic_enabled=True, route_fn=route_fn) == "ollama:stub"
 
 
 def test_resolve_free_unavailable_falls_back_to_paid():
@@ -175,9 +175,9 @@ def test_router_resolves_auto_when_enabled(monkeypatch):
         "coworker.providers.router.build_provider_client",
         lambda *a, **k: fake,
     )
-    r = ProviderRouter(dynamic_routing=True, auto_route_fn=lambda m, **k: "omniroute:stub")
+    r = ProviderRouter(dynamic_routing=True, auto_route_fn=lambda m, **k: "ollama:stub")
     r.complete(model=AUTO_MODEL, messages=[{"role": "user", "content": "你好"}])
-    assert fake.calls == ["stub"]  # 被解析成 omniroute:stub 的 bare 名（kilo 车道 2026-10-18 删除，fixture 换现存 provider）
+    assert fake.calls == ["stub"]  # 被解析成 ollama:stub 的 bare 名（kilo 车道 2026-10-18 删、omniroute 车道 2026-10-24 亦删，fixture 换现存 provider ollama）
     assert r._last_dynamic_group == GROUP_FREE
 
 
@@ -187,7 +187,7 @@ def test_router_passes_through_explicit_model(monkeypatch):
         "coworker.providers.router.build_provider_client",
         lambda *a, **k: fake,
     )
-    r = ProviderRouter(dynamic_routing=True, auto_route_fn=lambda m, **k: "omniroute:stub")
+    r = ProviderRouter(dynamic_routing=True, auto_route_fn=lambda m, **k: "ollama:stub")
     r.complete(model="gpt-4", messages=[{"role": "user", "content": "你好"}])
     assert fake.calls == ["gpt-4"]  # 显式模型不被动态路由覆盖（不越权）
 
@@ -199,7 +199,7 @@ def test_router_disabled_does_not_resolve(monkeypatch):
         lambda *a, **k: fake,
     )
     # dynamic_routing 默认关 → "auto" 透传（裸名仍是 "auto"，不解析）
-    r = ProviderRouter(auto_route_fn=lambda m, **k: "omniroute:stub")
+    r = ProviderRouter(auto_route_fn=lambda m, **k: "ollama:stub")
     r.complete(model=AUTO_MODEL, messages=[{"role": "user", "content": "你好"}])
     assert fake.calls == [AUTO_MODEL]
 
@@ -210,6 +210,6 @@ def test_router_stream_resolves_auto(monkeypatch):
         "coworker.providers.router.build_provider_client",
         lambda *a, **k: fake,
     )
-    r = ProviderRouter(dynamic_routing=True, auto_route_fn=lambda m, **k: "omniroute:stub")
+    r = ProviderRouter(dynamic_routing=True, auto_route_fn=lambda m, **k: "ollama:stub")
     list(r.stream(model=AUTO_MODEL, messages=[{"role": "user", "content": "你好"}]))
     assert fake.calls == ["stub"]

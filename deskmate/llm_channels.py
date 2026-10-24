@@ -60,6 +60,9 @@ descriptor、picker 无条目、免费组仅剩 local、deploy 脚本不再传�
 ## 与旧 `DESKMATE_MEMORY_PROVIDER=omniroute` 的兼容
 
 保留：设了它仍走 OmniRoute 免费网关（历史行为不变）。
+⚠️ 2026-10-24 实测 OmniRoute 免费层全部上游失效（auto 元路由卡死 40s、
+免费模型全 timeout/410/502），该 opt-in 当前无可用上游、等于空转——仅当本机
+网关修复/替换为可用免费源后才真正生效。
 新路径：设 `DESKMATE_MEMORY_GROUP=free` 走通道组免费组（现仅剩本地
 llama-server 兜底；外网免费车道 2026-10-18 已删除）。
 两者都设时 `MEMORY_GROUP` 优先（更明确的新语义）。

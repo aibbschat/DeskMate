@@ -205,24 +205,6 @@ def _build_ollama(profile: dict[str, Any], secrets: Any) -> ProviderClient:
     return OpenAIProvider(api_key="ollama", base_url=base_url)
 
 
-def _build_omniroute(profile: dict[str, Any], secrets: Any) -> ProviderClient:
-    # OmniRoute is a local OpenAI-compatible gateway (default http://localhost:20128/v1). Its
-    # built-in keyless free providers answer with `model: "auto"` and no API key, so a fresh
-    # install works out of the box. The SDK still needs a non-empty key string, so we pass a
-    # harmless placeholder; if the user enabled OmniRoute's dashboard password they paste the
-    # real key, which we forward as Bearer.
-    base_url = ((profile or {}).get("base_url") or "").strip() or "http://localhost:20128/v1"
-    api_key = ((profile or {}).get("api_key") or "").strip() or "omniroute"
-    # CRITICAL: OmniRoute is a loopback service. Disable proxy env vars (HTTP_PROXY/HTTPS_PROXY)
-    # so a system proxy never hijacks the localhost connection — otherwise the desktop app gets
-    # "Connection error" whenever a proxy is configured in its environment.
-    import httpx
-    from openai import OpenAI
-
-    client = OpenAI(api_key=api_key, base_url=base_url, http_client=httpx.Client(trust_env=False))
-    return OpenAIProvider(client=client)
-
-
 def _openai_compat(vendor: str, default_base_url: str, env_key: Optional[str] = None):
     """Builder factory for vendors reached through their OpenAI-compatible API (Z AI, DeepSeek,
     Kimi, MiniMax, Qwen, xAI, Mistral). The key is resolved from the vendor's OWN profile (or its
@@ -732,40 +714,6 @@ DESCRIPTORS: list[ProviderDescriptor] = [
         # Reliable native tool-calling + strong coding quality (verified). Pull with
         # `ollama pull qwen3-coder:30b`.
         recommended_model="qwen3-coder:30b",
-    ),
-    # OmniRoute: a local AI gateway that exposes an OpenAI-compatible endpoint and routes to
-    # 290+ upstream vendors, including keyless free providers (model "auto"). Reuses the
-    # OpenAIProvider pointed at the local gateway — no new client code, no upstream key needed
-    # for the free tier. Intended for the roundtable's external peer / occasional drafting, NOT
-    # the main writing flow (free-tier quality varies + prompts pass through third parties).
-    ProviderDescriptor(
-        name="omniroute",
-        title="OmniRoute 免费模型",
-        needs_key=False,
-        fields=[
-            ProviderField(
-                "base_url",
-                "OmniRoute 网关地址",
-                secret=False,
-                required=False,
-                default="http://localhost:20128/v1",
-                placeholder="http://localhost:20128/v1",
-                help="本机 OmniRoute 中转站地址（默认 localhost:20128）。它是 OpenAI 兼容网关，"
-                "免费模型免密钥即可用；若给它的仪表板设了密码，则需填下方 Key。",
-            ),
-            ProviderField(
-                "api_key",
-                "OmniRoute API Key（可选）",
-                secret=True,
-                required=False,
-                placeholder="仪表板设了密码才需要；否则留空",
-                help="仅当 OmniRoute 启用了访问密码时才填它签发的 Key；留空即走免密钥免费模型。",
-            ),
-        ],
-        build=_build_omniroute,
-        recommended_model="auto",
-        blurb="经本机 OmniRoute 网关调度 290+ 供应商，内置免密钥免费模型（model:auto）。"
-        "建议仅用于圆桌外脑／偶发草稿，勿作主写作流量。",
     ),
     # 🔴 2026-10-18 删除（萧哥拍板）：opencode / Kilo 两个外网免费车道 descriptor
     # 原在此处（2026-10-06 / 2026-10-13 接入）。删除原因：opencode 官方封禁免费

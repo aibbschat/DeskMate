@@ -270,13 +270,6 @@ MATRIX: dict[str, ModelEntry] = {
     # so free/paid status stays aligned with upstream instead of going stale. See that
     # module for the rationale and the accepted "declared-free may still bill" tradeoff.
 
-    # -- local AI gateway (OmniRoute) --------------------------------------------
-    # Keyless free combo. Marked streaming-only + no tools: free upstreams vary, and we use
-    # this for the roundtable's external peer / occasional drafting, never the main flow.
-    "omniroute:auto": ModelEntry(
-        "Auto · OmniRoute 免费",
-        ModelCapabilities(tools=False, vision=False, streaming=True),
-    ),
     # -- OpenCode Zen 免费通道 (zen/v1) ----------------------------------------
     # 🔴 2026-10-18 删除（萧哥拍板）：opencode 官方封禁免费使用（免费通道一条也
     # 用不了，连官方客户端都不可用），且持续的**动态探测**可能让官方一直不放行

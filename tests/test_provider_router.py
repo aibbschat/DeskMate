@@ -341,9 +341,16 @@ def test_manager_curated_models(tmp_path, monkeypatch):
 
     monkeypatch.setattr(M, "_live_openrouter", lambda: {})
 
-    _free = [k for k in M.MATRIX if k.split(":", 1)[0] == "omniroute"]
+    # 🔴 2026-10-24: OmniRoute 免费网关删除（实测 localhost:20128 进程在、端口在听，
+    # 但所有免费上游全部 410/502/timeout，auto 元路由卡死 40s 无响应——免费层已全死。
+    # 删除态契约见 tests/test_omniroute_removed.py）。
     got = mgr.get_settings()["models"]
-    assert got == [mgr.model, *_free]
+    assert not [m for m in got if m.startswith("omniroute:")], (
+        "OmniRoute 车道已删除（2026-10-24），不该再出现在选择器里"
+    )
+    assert got == [mgr.model], (
+        "无 provider key 时仅默认模型可选（OmniRoute 免费网关已删，2026-10-24）"
+    )
     assert not [m for m in got if m.startswith("opencode:")], (
         "opencode 车道已删除（2026-10-18），不该再出现在选择器里"
     )

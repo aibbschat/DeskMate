@@ -446,6 +446,8 @@ async def chat_stream(
 # 对史料严谨型用户危害大，故默认不省钱、先保真。
 # 想省时显式开启：设 DESKMATE_MEMORY_PROVIDER=omniroute 走本机 OmniRoute 免费网关
 # （localhost:20128，免密钥）；异常时仍自动降级回付费主模型，绝不丢记忆。
+# ⚠️ 2026-10-24 实测该免费层已全死（auto 元路由卡死、免费模型全 timeout/410/502），
+# 此 opt-in 当前无可用上游、等于空转，仅当本机网关修复/替换后才生效。
 _OMNIROUTE_BASE_URL = "http://localhost:20128/v1"
 _OMNIROUTE_API_KEY = "omniroute"  # 占位免密钥：OmniRoute 网关接受任意非空 key，对齐 registry._build_omniroute
 _OMNIROUTE_MODEL = "auto"  # OmniRoute 通用免密钥组合模型
@@ -526,7 +528,8 @@ def chat_memory(
     与 :func:`chat` 的分工：``chat`` 是**主对话**链路（她对你说的话），走付费主 provider
     不变——付费通道对延迟/质量敏感；后台活走本函数（2026-10-14 起同样默认付费组）。
     """
-    # 历史 opt-in：OmniRoute 免费网关（本机当前未运行，保留兼容）
+    # 历史 opt-in：OmniRoute 免费网关（⚠️ 2026-10-24 实测免费层全死，当前无可用
+    # 上游、等于空转；保留兼容路径，待本机网关修复/替换）
     if _memory_use_omniroute(reasoning):
         return _chat_memory_via_omniroute(
             system, user, reasoning=reasoning,
