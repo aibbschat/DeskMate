@@ -16,6 +16,7 @@
 | `quota_exhausted`（小米） | body 含 `quota exhausted` | 默认退避（无重置时间可解析） |
 | `rate_limited`（429） | 429 + 响应头 `retry-after`（opencode 实测 40332 ≈ 11.2h，2026-10-18 车道已删） | **解析 retry-after 秒数** |
 | `unavailable`（403） | 403 `FreeTierError`（该模型对匿名层不可用）/ 上游过载 | 长冷却（区域封锁会随出口 IP 变，但不该高频试） |
+| `risk_control`（风控窗口） | body 含 `high risk` / `rejected because` / `content_filter`（小米 MiMo / 火山 ark 实测同文案） | **2 分钟**短冷却，禁止原地重试（2026-10-24 定性：网关瞬时风控窗口，非内容定罪，自愈） |
 | `transient`（5xx / 网络） | 5xx、`Upstream error from ...`、超时 | **短**冷却，且允许**一次**重试（区别于配额类：这类可能是抖动） |
 
 ## 铁律
@@ -57,6 +58,9 @@ LONG_COOLDOWN_S = 6 * 3600        # 403 FreeTierError：匿名层长期不可用
 TRANSIENT_COOLDOWN_S = 60# 5xx/网络抖动：短，且允许一次重试
 #:瞬时类递增退避的封顶（同一通道持续故障时不该每tick 都试一遍）
 TRANSIENT_MAX_COOLDOWN_S = 30 * 60
+#: 内容风控窗口（2026-10-24 实测：小米聊天 + 后台 tick 同 90s 窗口齐拒，
+#: 同载荷稍后重放 16/16 全过 → 分钟级瞬时窗口，短冷却即可）
+RISK_COOLDOWN_S = 2 * 60
 # 熔断上限：防止无重置时间的通道（如小米 429）把冷却推到几天之外
 MAX_COOLDOWN_S = 24 * 3600
 
@@ -65,6 +69,7 @@ KIND_QUOTA = "quota_exhausted"
 KIND_RATE = "rate_limited"
 KIND_UNAVAILABLE = "unavailable"
 KIND_TRANSIENT = "transient"
+KIND_RISK = "risk_control"
 
 # 允许原地重试的类别（仅瞬时故障；配额类绝不重试——§1.3 的教训）
 _RETRYABLE_KINDS = frozenset({KIND_TRANSIENT})
@@ -171,6 +176,24 @@ def classify_error(
             kind=KIND_UNAVAILABLE,
             cooldown_until=now + LONG_COOLDOWN_S,
             detail="403 free tier unavailable",
+            retryable=False,
+        )
+
+    # ⑥ 内容风控拦截（2026-10-24 实测定性：小米 MiMo / 火山 ark 均出现，
+    #    同一 30-90s 窗口内聊天 + 后台 tick 多条独立链路齐拒、同载荷稍后重放全过）
+    #    ⇒ 网关级瞬时风控窗口，**非额度、非内容定罪**。短冷却跳过窗口期，
+    #    禁止原地重试（窗口内重试必再拒，白烧一次调用）。放在兜底分支**之前**，
+    #    否则会掉进 unknown→transient 被伪装成网络错误。
+    if (
+        "high risk" in blob
+        or "rejected because" in blob
+        or "content_filter" in blob
+        or "content filter" in blob
+    ):
+        return Verdict(
+            kind=KIND_RISK,
+            cooldown_until=now + RISK_COOLDOWN_S,
+            detail="provider risk-control window (self-heals ~1-2 min)",
             retryable=False,
         )
 

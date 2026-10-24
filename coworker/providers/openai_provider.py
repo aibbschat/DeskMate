@@ -11,7 +11,9 @@ tools combined with reasoning on GPT-5.6+, so reasoning + tools needs `/v1/respo
 from __future__ import annotations
 
 import json
+import os
 import re
+from pathlib import Path
 from typing import Any, Optional
 
 from .base import (
@@ -23,6 +25,49 @@ from .base import (
     ToolCall,
 )
 from .capabilities import capabilities_for
+
+# --------------------------------------------------------------------------- #
+# 风控载荷取证（2026-10-24）：小米 MiMo / 火山 ark 会以 "…considered high risk"
+# 瞬时拒绝请求（实测为分钟级自愈的网关级风控窗口，非内容定罪）。被拒时把完整
+# 请求载荷落一份本地 JSON，下次窗口出现即可取证「到底是不是内容触发」。
+# 只在 high-risk 拒绝时落盘（罕见事件），DESKMATE_RISK_CAPTURE=0 关闭。
+# --------------------------------------------------------------------------- #
+_RISK_MARKERS = ("high risk", "rejected because", "content_filter", "content filter")
+_CAPTURE_KEEP = 20
+
+
+def _capture_risk_payload(kwargs: dict[str, Any], exc: BaseException) -> None:
+    """high-risk 拒绝 → 完整请求载荷（messages+tools）落盘。绝不上抛（取证不能拖垮主链路）。"""
+    try:
+        if os.environ.get("DESKMATE_RISK_CAPTURE", "") == "0":
+            return
+        text = str(exc)
+        if not any(m in text for m in _RISK_MARKERS):
+            return
+        base = os.environ.get("DESKMATE_LLM_PAYLOAD_CAPTURE_DIR", "").strip()
+        cap_dir = Path(base) if base else Path.home() / ".deskmate" / "llm_payload_capture"
+        cap_dir.mkdir(parents=True, exist_ok=True)
+        import time as _time
+
+        stamp = _time.strftime("%Y%m%d-%H%M%S")
+        out = {
+            "captured_at": _time.time(),
+            "model": kwargs.get("model"),
+            "error": text[:500],
+            "n_messages": len(kwargs.get("messages") or []),
+            "n_tools": len(kwargs.get("tools") or []),
+            "messages": kwargs.get("messages"),
+            "tools": kwargs.get("tools"),
+        }
+        (cap_dir / f"risk-{stamp}.json").write_text(
+            json.dumps(out, ensure_ascii=False), encoding="utf-8"
+        )
+        # 只留最近 _CAPTURE_KEEP 份（载荷含完整上下文，单份可能几百 KB）。
+        olds = sorted(cap_dir.glob("risk-*.json"))
+        for p in olds[: max(0, len(olds) - _CAPTURE_KEEP)]:
+            p.unlink(missing_ok=True)
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def resolve_api_key(secrets: Any = None) -> Optional[str]:
@@ -208,14 +253,18 @@ class OpenAIProvider(ProviderClient):
         client = self._ensure_client()
         # Up to three param-fix retries: effort, the max_tokens rename, and the
         # max_tokens over-limit drop can ALL need fixing on one call.
-        for _ in range(3):
-            try:
+        try:
+            for _ in range(3):
+                try:
+                    response = client.chat.completions.create(**kwargs)
+                    break
+                except Exception as exc:
+                    kwargs = _param_fix_retry(kwargs, exc)
+            else:
                 response = client.chat.completions.create(**kwargs)
-                break
-            except Exception as exc:
-                kwargs = _param_fix_retry(kwargs, exc)
-        else:
-            response = client.chat.completions.create(**kwargs)
+        except Exception as exc:
+            _capture_risk_payload(kwargs, exc)
+            raise
         choice = response.choices[0]
         message = choice.message
         text = getattr(message, "content", None)
@@ -264,14 +313,18 @@ class OpenAIProvider(ProviderClient):
 
         # Up to three param-fix retries: effort, the max_tokens rename, and the
         # max_tokens over-limit drop can ALL need fixing on one call.
-        for _ in range(3):
-            try:
+        try:
+            for _ in range(3):
+                try:
+                    chunks = client.chat.completions.create(**kwargs)
+                    break
+                except Exception as exc:
+                    kwargs = _param_fix_retry(kwargs, exc)
+            else:
                 chunks = client.chat.completions.create(**kwargs)
-                break
-            except Exception as exc:
-                kwargs = _param_fix_retry(kwargs, exc)
-        else:
-            chunks = client.chat.completions.create(**kwargs)
+        except Exception as exc:
+            _capture_risk_payload(kwargs, exc)
+            raise
         for chunk in chunks:
             chunk_usage = _usage_from(getattr(chunk, "usage", None))
             if chunk_usage is not None:

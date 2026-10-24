@@ -17,6 +17,7 @@ import pytest
 from deskmate.llm_circuit_breaker import (
     KIND_QUOTA,
     KIND_RATE,
+    KIND_RISK,
     KIND_TRANSIENT,
     KIND_UNAVAILABLE,
     MAX_COOLDOWN_S,
@@ -55,6 +56,31 @@ def test_volc_quota_parses_exact_reset_time_and_forbids_retry():
     assert datetime.datetime.fromtimestamp(v.cooldown_until) == datetime.datetime(
         2026, 10, 6, 23, 59, 59
     ), "应解析出错误体里的精确重置时间，而非默认退避"
+
+
+# 小米/火山真实风控拒绝形态（2026-10-24 18:11 实测：小米聊天 + 后台 tick 同窗口齐拒，
+# 同载荷稍后重放 16/16 全过 → 网关瞬时风控窗口，非内容定罪）
+HIGH_RISK = "The request was rejected because it was considered high risk"
+
+
+def test_high_risk_rejection_is_risk_control_short_window_not_transient():
+    """high risk 拒绝 = 网关瞬时风控窗口：短冷却、禁止原地重试，不当成网络错误反复撞。"""
+    now = time.time()
+    for status in (400, None):  # 实测两种包装形态都出现（SDK 带/不带 status）
+        v = classify_error(status_code=status, body=HIGH_RISK, now=now)
+        assert v.kind == KIND_RISK, f"status={status} 应识别为 risk_control"
+        assert v.retryable is False, "同载荷立刻重试没有意义（窗口未过必再拒）"
+        gap = v.cooldown_until - now
+        assert 30 <= gap <= 300, (
+            f"status={status} 风控窗口实测 1-2 分钟自愈：冷却应是分钟级短退避，"
+            f"实测 {gap:.0f}s（掉进 unknown→transient 兜底=识别失败）"
+        )
+
+
+def test_high_risk_rejection_not_misclassified_as_quota_or_transient():
+    """回归锁：high risk 不得落进 quota / transient / unknown 兜底（2026-10-24 前的旧行为）。"""
+    v = classify_error(status_code=None, body=HIGH_RISK, now=time.time())
+    assert v.kind not in (KIND_QUOTA, KIND_RATE, KIND_TRANSIENT)
 
 
 def test_xiaomi_quota_has_no_reset_time_uses_default():

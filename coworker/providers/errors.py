@@ -33,6 +33,14 @@ _NO_QUOTA = (
     "credit balance is too low",
     "billing hard limit",
 )
+# 网关内容风控拒绝（小米 MiMo / 火山 ark 实测同文案，2026-10-24 定性：分钟级
+# 瞬时风控窗口，非内容定罪——同一窗口内聊天 + 后台任务齐拒，同载荷稍后重放全过）。
+_RISK_CONTROL = (
+    "high risk",
+    "rejected because",
+    "content_filter",
+    "content filter",
+)
 
 
 def friendly_model_error(model: str, exc: Exception) -> Optional[str]:
@@ -43,6 +51,13 @@ def friendly_model_error(model: str, exc: Exception) -> Optional[str]:
         "gradually or require a plan upgrade. Pick a different model, or check "
         "the provider's console for availability."
     )
+    if any(marker in text for marker in _RISK_CONTROL):
+        # 2026-10-24 实测定性：这是服务商网关的瞬时风控窗口（1-2 分钟自愈），
+        # 不是内容违规判定。说清楚这三点，别让用户以为自己在"犯事"。
+        return (
+            "（服务商风控网关临时拦截了这次请求，通常 1-2 分钟自动恢复。"
+            "这不是内容违规，也不扣额度——稍等重发一次即可，后台任务会自动切到下一家通道。）"
+        )
     if any(marker in text for marker in _NO_QUOTA):
         return (
             f"Your account is out of quota for {model} — add credits or raise the limit "
