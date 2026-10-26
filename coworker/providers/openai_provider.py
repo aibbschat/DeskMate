@@ -142,6 +142,36 @@ _MAX_TOKENS_ERROR = "'max_tokens' is not supported"
 # 2026-08-15: Together defaulted Kimi K3 to ~2k tokens — every ~5KB write truncated).
 DEFAULT_MAX_TOKENS = 32000
 
+# Connection-level resilience (2026-10-26). DeepSeek and other gateways close idle
+# keep-alive sockets, so a reused pooled connection (chat a few rounds later) or a long
+# stream can die with a bare "Connection error." We (a) disable keep-alive on the SDK
+# client and (b) retry transient wire failures on a freshly built socket at the app layer.
+_CONNECTION_RETRIES = 3
+
+
+def _is_retryable_connection_error(exc: BaseException) -> bool:
+    """True for transient transport failures worth retrying on a fresh socket.
+
+    These mean "the wire broke" — keep-alive socket closed by the gateway, idle timeout,
+    mid-stream reset — NOT a 4xx/5xx application error. The SDK's own ``max_retries`` can
+    be exhausted or doesn't cover a stream that dies after it started, so we add an
+    app-layer retry that rebuilds the client (discarding any dead pooled connection).
+    """
+    try:
+        import httpx
+    except Exception:  # noqa: BLE001
+        httpx = None
+    if httpx is not None and isinstance(exc, httpx.TransportError):
+        return True
+    try:
+        import openai
+    except Exception:  # noqa: BLE001
+        openai = None
+    if openai is not None and isinstance(exc, openai.APIConnectionError):
+        return True
+    # Bare "Connection error." is the SDK's message when it can't subclass the failure.
+    return "Connection error" in str(exc)
+
 
 def _param_fix_retry(kwargs: dict[str, Any], exc: Exception) -> dict[str, Any]:
     """Kwargs for the one retry an unsupported-parameter error earns, or re-raise.
@@ -219,6 +249,7 @@ class OpenAIProvider(ProviderClient):
         if self._client is None:
             # Lazy import so the SDK is only required when actually talking to OpenAI.
             from openai import OpenAI
+            import httpx
 
             key = self._api_key or resolve_api_key(self._secrets)
             if not key:
@@ -226,11 +257,36 @@ class OpenAIProvider(ProviderClient):
                     "No model API key configured. Set OPENAI_API_KEY in the environment, "
                     "or add your key in Manage → Settings."
                 )
-            kwargs: dict[str, Any] = {"api_key": key}
+            # `Connection: close` → every request opens a fresh TCP/TLS connection and the
+            # gateway closes it after the response. This eliminates the whole class of
+            # "reused a keep-alive socket the gateway silently closed" failures (the
+            # "chat a few rounds then Connection error" symptom). The extra handshake is
+            # ~tens of ms — negligible next to LLM latency.
+            http_client = httpx.Client(headers={"Connection": "close"})
+            kwargs: dict[str, Any] = {
+                "api_key": key,
+                "max_retries": 2,
+                "timeout": httpx.Timeout(connect=15.0, read=600.0, write=60.0, pool=30.0),
+                "http_client": http_client,
+            }
             if self._base_url:
                 kwargs["base_url"] = self._base_url
             self._client = OpenAI(**kwargs)
         return self._client
+
+    def _create_with_param_fix(self, client: Any, kwargs: dict[str, Any]) -> Any:
+        """chat.completions.create wrapped in the 3x parameter-fix retry (unchanged).
+
+        Returns the SDK response, or raises a non-parameter error untouched so the
+        caller's connection-retry loop can decide what to do with it.
+        """
+        for _ in range(3):
+            try:
+                return client.chat.completions.create(**kwargs)
+            except Exception as exc:
+                kwargs = _param_fix_retry(kwargs, exc)
+        else:
+            return client.chat.completions.create(**kwargs)
 
     def complete(
         self,
@@ -251,20 +307,27 @@ class OpenAIProvider(ProviderClient):
         _pin_reasoning_effort(kwargs)
 
         client = self._ensure_client()
-        # Up to three param-fix retries: effort, the max_tokens rename, and the
-        # max_tokens over-limit drop can ALL need fixing on one call.
-        try:
-            for _ in range(3):
-                try:
-                    response = client.chat.completions.create(**kwargs)
-                    break
-                except Exception as exc:
-                    kwargs = _param_fix_retry(kwargs, exc)
-            else:
-                response = client.chat.completions.create(**kwargs)
-        except Exception as exc:
-            _capture_risk_payload(kwargs, exc)
-            raise
+        # Connection-level retry: a fresh socket per attempt (see
+        # _is_retryable_connection_error). This is what makes DeepSeek's intermittent
+        # "Connection error." self-heal instead of reaching the user.
+        last_exc: Optional[BaseException] = None
+        for _attempt in range(_CONNECTION_RETRIES):
+            try:
+                response = self._create_with_param_fix(client, kwargs)
+                break
+            except Exception as exc:
+                if _is_retryable_connection_error(exc):
+                    last_exc = exc
+                    self._client = None
+                    client = self._ensure_client()
+                    continue
+                _capture_risk_payload(kwargs, exc)
+                raise
+        else:
+            _capture_risk_payload(
+                kwargs, last_exc or RuntimeError("connection retries exhausted")
+            )
+            raise last_exc or RuntimeError("connection retries exhausted")
         choice = response.choices[0]
         message = choice.message
         text = getattr(message, "content", None)
@@ -304,59 +367,85 @@ class OpenAIProvider(ProviderClient):
         kwargs.setdefault("max_tokens", DEFAULT_MAX_TOKENS)
         _pin_reasoning_effort(kwargs)
         client = self._ensure_client()
-
         text_parts: list[str] = []
         reasoning_parts: list[str] = []
         tool_accum: dict[int, dict[str, str]] = {}
         finish_reason = None
         usage: Optional[TokenUsage] = None
 
-        # Up to three param-fix retries: effort, the max_tokens rename, and the
-        # max_tokens over-limit drop can ALL need fixing on one call.
-        try:
-            for _ in range(3):
-                try:
-                    chunks = client.chat.completions.create(**kwargs)
-                    break
-                except Exception as exc:
-                    kwargs = _param_fix_retry(kwargs, exc)
-            else:
-                chunks = client.chat.completions.create(**kwargs)
-        except Exception as exc:
-            _capture_risk_payload(kwargs, exc)
-            raise
-        for chunk in chunks:
-            chunk_usage = _usage_from(getattr(chunk, "usage", None))
-            if chunk_usage is not None:
-                usage = chunk_usage
-            choices = getattr(chunk, "choices", None)
-            if not choices:
+        # Connection-level retry: a fresh socket per attempt (see
+        # _is_retryable_connection_error). A stream that dies BEFORE emitting any token is
+        # restarted from scratch; one that dies after tokens is surfaced (never silently
+        # doubled) — the engine owns turn-level retry.
+        last_exc: Optional[BaseException] = None
+        for _attempt in range(_CONNECTION_RETRIES):
+            try:
+                chunks = self._create_with_param_fix(client, kwargs)
+            except Exception as exc:
+                if _is_retryable_connection_error(exc):
+                    last_exc = exc
+                    self._client = None
+                    client = self._ensure_client()
+                    continue
+                _capture_risk_payload(kwargs, exc)
+                raise
+
+            emitted = False
+            try:
+                for chunk in chunks:
+                    chunk_usage = _usage_from(getattr(chunk, "usage", None))
+                    if chunk_usage is not None:
+                        usage = chunk_usage
+                    choices = getattr(chunk, "choices", None)
+                    if not choices:
+                        continue
+                    choice = choices[0]
+                    delta = getattr(choice, "delta", None)
+                    if delta is not None:
+                        reasoning = _delta_reasoning(delta)
+                        if reasoning:
+                            reasoning_parts.append(reasoning)
+                            emitted = True
+                            yield StreamChunk(reasoning_delta=reasoning)
+                        content = getattr(delta, "content", None)
+                        if content:
+                            text_parts.append(content)
+                            emitted = True
+                            yield StreamChunk(text_delta=content)
+                        for tc in getattr(delta, "tool_calls", None) or []:
+                            acc = tool_accum.setdefault(
+                                getattr(tc, "index", 0), {"id": "", "name": "", "args": ""}
+                            )
+                            if getattr(tc, "id", None):
+                                acc["id"] = tc.id
+                            fn = getattr(tc, "function", None)
+                            if fn is not None:
+                                if getattr(fn, "name", None):
+                                    acc["name"] = fn.name
+                                if getattr(fn, "arguments", None):
+                                    acc["args"] += fn.arguments
+                    if getattr(choice, "finish_reason", None):
+                        finish_reason = choice.finish_reason
+            except Exception as exc:
+                if emitted or not _is_retryable_connection_error(exc):
+                    _capture_risk_payload(kwargs, exc)
+                    raise
+                # Died before producing any token → restart the whole stream fresh.
+                last_exc = exc
+                self._client = None
+                client = self._ensure_client()
+                text_parts = []
+                reasoning_parts = []
+                tool_accum = {}
+                finish_reason = None
+                usage = None
                 continue
-            choice = choices[0]
-            delta = getattr(choice, "delta", None)
-            if delta is not None:
-                reasoning = _delta_reasoning(delta)
-                if reasoning:
-                    reasoning_parts.append(reasoning)
-                    yield StreamChunk(reasoning_delta=reasoning)
-                content = getattr(delta, "content", None)
-                if content:
-                    text_parts.append(content)
-                    yield StreamChunk(text_delta=content)
-                for tc in getattr(delta, "tool_calls", None) or []:
-                    acc = tool_accum.setdefault(
-                        getattr(tc, "index", 0), {"id": "", "name": "", "args": ""}
-                    )
-                    if getattr(tc, "id", None):
-                        acc["id"] = tc.id
-                    fn = getattr(tc, "function", None)
-                    if fn is not None:
-                        if getattr(fn, "name", None):
-                            acc["name"] = fn.name
-                        if getattr(fn, "arguments", None):
-                            acc["args"] += fn.arguments
-            if getattr(choice, "finish_reason", None):
-                finish_reason = choice.finish_reason
+            break  # stream completed cleanly
+        else:
+            _capture_risk_payload(
+                kwargs, last_exc or RuntimeError("connection retries exhausted")
+            )
+            raise last_exc or RuntimeError("connection retries exhausted")
 
         tool_calls = []
         for index in sorted(tool_accum):
