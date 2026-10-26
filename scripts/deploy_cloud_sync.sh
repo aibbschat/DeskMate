@@ -285,6 +285,15 @@ GROWTH_MODULES=(
   "deskmate/growth/tone_record.py"
 )
 
+# 长编小说记忆模块（2026-10-26 补）：全量对账抓出 1 处存量漂移——云端
+# /opt/openworker/deskmate/novel_memory/core.py 的 mtime 停在 2026-09-24，
+# 本地已推进到 10-24（704a5316 删除 OmniRoute 免费网关等）。它此前不在任何
+# 清单→同步脚本不传。现纳入，随主程序包上云到 /opt/openworker/deskmate/novel_memory/，
+# 落点由 3c 循环的 deskmate/* 分支自动推导。漏传→云端小说记忆跑旧码（红线不一致）。
+NOVEL_MEMORY_MODULES=(
+  "deskmate/novel_memory/core.py"
+)
+
 # 语气层（2026-10-24 补）：coworker/agent.py 的 build_engine 注入 tone block。
 # 云端 manager.py:23 `from ..agent import build_engine` 实测云端 Sep-23 旧码未注入 tone；
 # 它既不在传输清单也不在对账扫描（coworker/ 根目录，双重盲区）→ 本地改了云上没动。
@@ -347,6 +356,13 @@ SKILLS_TOOLS_MODULES=(
   # 云端运行时 import（纯 seed 脚本，对账「本地独有」告警即它），但补入可消除告警、并让云端
   # 具备同款 seed 能力；随 office_safe_deliver.py 同批上云到 /opt/openworker/deskmate/skills/。
   "deskmate/skills/seed_office.py"
+  # 2026-10-26 方案乙：小桔技能落盘统一改写到 Coworker 规范池。skill_store.py 实现
+  # publish_to_coworker + include_coworker 合并视图；server.py 的 skill_list 与
+  # manager.py 的 build_skill_index 改为 include_coworker=True。三文件必须随主链路
+  # 同批上云，否则云端小桔技能仍落旧目录、skill_list 看不到（与 seed_office 同类漏传）。
+  "deskmate/skills/skill_store.py"
+  "deskmate/skills/server.py"
+  "deskmate/skills/manager.py"
 )
 
 FORCE=0
@@ -368,7 +384,7 @@ fi
 # ---- 1. 必须已提交（红线：本地改动先 commit 进 fork/base）----
 # ⚠️ PERSONA_FILES（.md）故意不进 ALL_FILES：下面的语法预检用 ast.parse，对 .md 会误报。
 # 它走独立的 scp + md5 核对（见 3d/7b 段），并纳入对账 .md 扫描。
-ALL_FILES=("${LOCAL_MODULES[@]}" "$LOCAL_RUNNER" "${PROACTIVITY_MODULES[@]}" "${CHANNEL_MODULES[@]}" "${AGENCY_BEHAVIORS_MODULES[@]}" "${AGENCY_MODULES[@]}" "${GARDEN_MODULES[@]}" "${GROWTH_MODULES[@]}" "${COWORKER_ROOT_MODULES[@]}" "${COWORKER_DRIFT_MODULES[@]}" "${SKILLS_TOOLS_MODULES[@]}" "${PERCEPTION_MODULES[@]}" "${CONNECTORS_MODULES[@]}" "$LOCAL_AGENCY_TICK" "$LOCAL_DRIFT_CHECK")
+ALL_FILES=("${LOCAL_MODULES[@]}" "$LOCAL_RUNNER" "${PROACTIVITY_MODULES[@]}" "${CHANNEL_MODULES[@]}" "${AGENCY_BEHAVIORS_MODULES[@]}" "${AGENCY_MODULES[@]}" "${GARDEN_MODULES[@]}" "${GROWTH_MODULES[@]}" "${NOVEL_MEMORY_MODULES[@]}" "${COWORKER_ROOT_MODULES[@]}" "${COWORKER_DRIFT_MODULES[@]}" "${SKILLS_TOOLS_MODULES[@]}" "${PERCEPTION_MODULES[@]}" "${CONNECTORS_MODULES[@]}" "$LOCAL_AGENCY_TICK" "$LOCAL_DRIFT_CHECK")
 if [[ "$FORCE" -eq 0 ]]; then
   DIRTY=""
   for f in "${ALL_FILES[@]}"; do
@@ -457,7 +473,7 @@ done
 
 # ---- 3c. 推送通道组/ 熔断模块（本地与云端必须同码，见 CHANNEL_MODULES 注释）----
 echo "==> 推送通道组/熔断模块 + 自主行为包 + 天气感知到云端主程序包"
-for f in "${CHANNEL_MODULES[@]}" "${AGENCY_BEHAVIORS_MODULES[@]}" "${AGENCY_MODULES[@]}" "${GARDEN_MODULES[@]}" "${GROWTH_MODULES[@]}" "${COWORKER_ROOT_MODULES[@]}" "${COWORKER_DRIFT_MODULES[@]}" "${PERSONA_FILES[@]}" "${SKILLS_TOOLS_MODULES[@]}" "${PERCEPTION_MODULES[@]}" "${CONNECTORS_MODULES[@]}"; do
+for f in "${CHANNEL_MODULES[@]}" "${AGENCY_BEHAVIORS_MODULES[@]}" "${AGENCY_MODULES[@]}" "${GARDEN_MODULES[@]}" "${GROWTH_MODULES[@]}" "${NOVEL_MEMORY_MODULES[@]}" "${COWORKER_ROOT_MODULES[@]}" "${COWORKER_DRIFT_MODULES[@]}" "${PERSONA_FILES[@]}" "${SKILLS_TOOLS_MODULES[@]}" "${PERCEPTION_MODULES[@]}" "${CONNECTORS_MODULES[@]}"; do
   base="$(basename "$f")"
   # 目标目录按本地相对路径推（deskmate/xxx.py → $CLOUD_DESKMATE_ROOT/xxx.py；
   # coworker/xxx.py → $CLOUD_COWORKER_ROOT/xxx.py），必要时建目录
@@ -542,7 +558,7 @@ done
 
 # ---- 7. 通道组/熔断模块对齐核对 ----
 echo "==> 通道组/熔断模块 + 自主行为包 + 天气感知对齐核对"
-for f in "${CHANNEL_MODULES[@]}" "${AGENCY_BEHAVIORS_MODULES[@]}" "${AGENCY_MODULES[@]}" "${GARDEN_MODULES[@]}" "${GROWTH_MODULES[@]}" "${COWORKER_ROOT_MODULES[@]}" "${COWORKER_DRIFT_MODULES[@]}" "${PERSONA_FILES[@]}" "${SKILLS_TOOLS_MODULES[@]}" "${PERCEPTION_MODULES[@]}" "${CONNECTORS_MODULES[@]}"; do
+for f in "${CHANNEL_MODULES[@]}" "${AGENCY_BEHAVIORS_MODULES[@]}" "${AGENCY_MODULES[@]}" "${GARDEN_MODULES[@]}" "${GROWTH_MODULES[@]}" "${NOVEL_MEMORY_MODULES[@]}" "${COWORKER_ROOT_MODULES[@]}" "${COWORKER_DRIFT_MODULES[@]}" "${PERSONA_FILES[@]}" "${SKILLS_TOOLS_MODULES[@]}" "${PERCEPTION_MODULES[@]}" "${CONNECTORS_MODULES[@]}"; do
   base="$(basename "$f")"
   case "$f" in
     deskmate/*)   dest_dir="$CLOUD_DESKMATE_ROOT/$(dirname "${f#deskmate/}")" ;;

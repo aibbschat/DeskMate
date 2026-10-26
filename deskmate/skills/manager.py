@@ -48,7 +48,8 @@ class SkillManager:
 
         LLM 看到匹配任务时自觉调用 skill_view(name) 加载完整技能。
         """
-        skills = self.store.list_skills()
+        # 方案乙：合并 Coworker 规范池，使索引与小桔实际可见的技能池一致
+        skills = self.store.list_skills(include_coworker=True)
         if not skills:
             return ""
 

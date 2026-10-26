@@ -177,7 +177,8 @@ def skill_list(category: str = "") -> str:
     """
     try:
         skills = _get_mgr().store.list_skills(
-            category=category if category else None
+            category=category if category else None,
+            include_coworker=True,  # 方案乙：与 Coworker 规范池同池显示
         )
         return json.dumps(skills, ensure_ascii=False, indent=2)
     except Exception as e:

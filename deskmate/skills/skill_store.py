@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import re
 import shutil
@@ -51,6 +52,8 @@ try:
 except ImportError:  # 兜底：冻结包若未收集 yaml 也不应崩，仅降级解析能力
     _YAML = None
 
+logger = logging.getLogger(__name__)
+
 
 # 技能目录
 DEFAULT_SKILLS_DIR = Path(os.path.expanduser("~/.deskmate/skills"))
@@ -60,6 +63,41 @@ CATEGORIES = ["writing", "coding", "office", "general"]
 
 # 导入的社区技能包根目录（agentskills.io 标准：imported/<skill-name>/SKILL.md）
 IMPORTED_DIR = "imported"
+
+# 方案乙：小桔自研技能除落本地扁平库外，额外发布到 Coworker 规范技能池
+# （~/.config/coworker/skills，与 skill_list / effective_skill_names 同池），
+# 使小桔生成的技能在「设置 → 技能」里可见、可被 load_skill 加载。
+# 测试可用 DESKMATE_COWORKER_SKILLS_DIR 重定向发布目标。
+def _coworker_skills_dir() -> Path | None:
+    """Coworker 规范全局技能目录（小桔发布目标）。
+
+    与生产 effective_skill_names 扫描的 global_dir 完全一致：
+    coworker.secrets.state_dir()/skills（macOS/Linux → ~/.config/coworker/skills）。
+    """
+    override = os.environ.get("DESKMATE_COWORKER_SKILLS_DIR")
+    if override:
+        return Path(override)
+    try:
+        from coworker.secrets import state_dir
+
+        return state_dir() / "skills"
+    except Exception:
+        # 兜底：与 state_dir 解析顺序一致（macOS/Linux XDG 式）
+        if os.name == "nt":
+            base = Path(
+                os.environ.get("APPDATA", Path.home() / "AppData" / "Roaming")
+            )
+            return base / "coworker" / "skills"
+        return Path.home() / ".config" / "coworker" / "skills"
+
+
+def _coworker_skill_slug(name: str) -> str:
+    """技能名 → Coworker 目录安全名（ascii）。中文名退化为短 hash。"""
+    slug = re.sub(r"[^a-z0-9-]", "-", (name or "").lower())
+    slug = re.sub(r"-+", "-", slug).strip("-")
+    if not slug:
+        slug = hashlib.md5((name or "skill").encode("utf-8")).hexdigest()[:12]
+    return slug
 
 
 def _safe_filename(name: str) -> str:
@@ -240,7 +278,64 @@ class SkillStore:
         content = _build_frontmatter(meta) + "\n\n" + body.strip() + "\n"
         filepath.parent.mkdir(parents=True, exist_ok=True)
         filepath.write_text(content, encoding="utf-8")
+        # 方案乙：同步发布到 Coworker 规范技能池（skill_list 可见），失败不阻断主流程
+        self.publish_to_coworker(
+            name=name,
+            description=description,
+            body=body,
+            tags=tags,
+            trigger=trigger,
+            category=category,
+        )
         return {"path": str(filepath), "name": name, "status": "已创建"}
+
+    # ------------------------------------------------------------------
+    # 方案乙：发布到 Coworker 规范技能池（与 skill_list 同池）
+    # ------------------------------------------------------------------
+
+    def publish_to_coworker(
+        self,
+        name: str,
+        description: str,
+        body: str,
+        tags: list[str] | None = None,
+        trigger: str = "",
+        category: str = "general",
+    ) -> bool:
+        """把技能以 Coworker SKILL.md 格式发布到规范全局技能目录。
+
+        目录式 ``<slug>/SKILL.md``（与 coworker 的 SkillLoader / effective_skill_names
+        完全一致），frontmatter 保留真实中文名。幂等覆盖。任何异常（权限/路径）都
+        fail-open，绝不阻断小桔的技能创建主流程。
+
+        Returns:
+            True 表示成功落盘到规范池；目标不可写时返回 False。
+        """
+        cw = _coworker_skills_dir()
+        if cw is None:
+            return False
+        try:
+            cw.mkdir(parents=True, exist_ok=True)
+            folder = cw / _coworker_skill_slug(name)
+            folder.mkdir(parents=True, exist_ok=True)
+            today = date.today().isoformat()
+            lines = [
+                "---",
+                f"name: {name}",
+                f"description: {description}",
+                "source: deskmate",
+                f"created: {today}",
+                f"updated: {today}",
+                "---",
+                "",
+                (body or "").strip(),
+                "",
+            ]
+            (folder / "SKILL.md").write_text("\n".join(lines), encoding="utf-8")
+            return True
+        except OSError as e:
+            logger.debug("publish_to_coworker failed (non-fatal): %s", e)
+            return False
 
     # ------------------------------------------------------------------
     # 导入 agentskills.io 社区技能包（目录式，只读）
@@ -492,6 +587,19 @@ class SkillStore:
             r"^updated:.*$", f"updated: {today}", updated, flags=re.MULTILINE
         )
         filepath.write_text(updated, encoding="utf-8")
+        # 方案乙：同步到 Coworker 规范池，避免两池副本漂移
+        try:
+            m, b = _parse_frontmatter(updated)
+            self.publish_to_coworker(
+                name=m.get("name", name_or_path),
+                description=m.get("description", ""),
+                body=b,
+                tags=m.get("tags"),
+                trigger=m.get("trigger", ""),
+                category=filepath.parent.name,
+            )
+        except Exception as e:  # noqa: BLE001 - fail-open，绝不阻断主流程
+            logger.debug("patch_skill 同步发布到 coworker 失败 (non-fatal): %s", e)
         return {"status": "ok", "message": "技能已更新"}
 
     def increment_uses(self, name_or_path: str, success: bool = True) -> None:
@@ -549,15 +657,26 @@ class SkillStore:
     # 列表
     # ------------------------------------------------------------------
 
-    def list_skills(self, category: str | None = None, limit: int = 20) -> list[dict]:
-        """列出所有技能。"""
-        skills = self._all_skills()
+    def list_skills(
+        self, category: str | None = None, limit: int = 20, include_coworker: bool = False
+    ) -> list[dict]:
+        """列出所有技能。
+
+        include_coworker=True 时，额外合并 Coworker 规范技能池
+        （~/.config/coworker/skills）里小桔扁平库没有的技能，使小桔的技能列表
+        与「设置 → 技能」（skill_list）看到的池子一致——方案乙「同一个池子」。
+        """
+        skills = self._all_skills(include_coworker=include_coworker)
         if category and category in CATEGORIES:
             skills = [s for s in skills if s.get("category") == category]
         return skills[:limit]
 
-    def _all_skills(self) -> list[dict]:
-        """扫描所有技能文件（自研扁平 .md + 导入的 agentskills.io 包）。"""
+    def _all_skills(self, include_coworker: bool = False) -> list[dict]:
+        """扫描所有技能文件（自研扁平 .md + 导入的 agentskills.io 包）。
+
+        include_coworker=True 时合并 Coworker 规范池（见 list_skills）。
+        扁平库与 Coworker 池同名技能去重时扁平库优先（元数据更丰富）。
+        """
         skills = []
         for cat in CATEGORIES:
             cat_dir = self.skills_dir / cat
@@ -587,7 +706,48 @@ class SkillStore:
                     continue
         # 导入的社区技能包（agentskills.io）
         skills.extend(self.list_imported())
+
+        if include_coworker:
+            skills.extend(self._coworker_pool_skills(skills))
         return skills
+
+    def _coworker_pool_skills(self, existing: list[dict]) -> list[dict]:
+        """扫描 Coworker 规范技能池，返回扁平库里没有的技能（去重）。"""
+        cw = _coworker_skills_dir()
+        if not cw or not cw.is_dir():
+            return []
+        seen = {s.get("name") for s in existing}
+        out: list[dict] = []
+        for sub in sorted(cw.iterdir()):
+            md = sub / "SKILL.md"
+            if not md.is_file():
+                continue
+            try:
+                text = md.read_text(encoding="utf-8")
+                meta, body = _parse_frontmatter(text)
+            except OSError:
+                continue
+            name = meta.get("name") or sub.name
+            if name in seen:
+                continue  # 扁平库优先（元数据更丰富）
+            seen.add(name)
+            out.append(
+                {
+                    "name": name,
+                    "description": meta.get("description", ""),
+                    "tags": meta.get("tags", []),
+                    "trigger": meta.get("trigger", ""),
+                    "category": meta.get("category") or "general",
+                    "path": str(md),
+                    "uses": meta.get("uses", 0),
+                    "success_rate": meta.get("success_rate", 0.0),
+                    "last_used": meta.get("last_used", ""),
+                    "created": meta.get("created", ""),
+                    "updated": meta.get("updated", ""),
+                    "body": body[:2000],
+                }
+            )
+        return out
 
     # ------------------------------------------------------------------
     # 归档
@@ -824,3 +984,34 @@ class SkillStore:
                     best_score = score
                     best_path = f
         return best_path if best_score >= 6 else None
+
+
+# ---------------------------------------------------------------------------
+# 方案乙：存量迁移 —— 把扁平技能库里的技能一键发布到 Coworker 规范池（幂等）
+# ---------------------------------------------------------------------------
+
+def migrate_legacy_flat_skills(store: "SkillStore") -> int:
+    """把扁平技能库里的存量技能发布到 Coworker 规范技能池（幂等覆盖）。
+
+    用于「方案乙」上线后，把历史上落在 ~/.deskmate/skills 的技能对齐到
+    ~/.config/coworker/skills，使 skill_list 看到完整池子。返回发布数量。
+    任何单条失败都不影响其余（fail-open）。
+    """
+    count = 0
+    for s in store.list_skills(limit=2000):
+        try:
+            full = store.read_skill(s["name"])
+            if not full:
+                continue
+            store.publish_to_coworker(
+                name=full["meta"].get("name", s["name"]),
+                description=full["meta"].get("description", ""),
+                body=full["body"],
+                tags=full["meta"].get("tags"),
+                trigger=full["meta"].get("trigger", ""),
+                category=s.get("category", "general"),
+            )
+            count += 1
+        except Exception as e:  # noqa: BLE001 - 单条失败不阻断
+            logger.debug("migrate_legacy_flat_skills 跳过 %s: %s", s.get("name"), e)
+    return count
