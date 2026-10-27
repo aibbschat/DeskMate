@@ -390,6 +390,52 @@ def create_app(manager: SessionManager) -> FastAPI:
                 import traceback
 
                 traceback.print_exc()
+        # QQ 好友通道（私聊版）：NapCat（OneBot 11 正向 WS）→ 小桔
+        # 开关：QQ_FRIEND_ENABLE=1 + ~/.config/coworker/qq_friend.json
+        # 说明：docs/QQ接入_私聊版.md
+        _qq_friend_task = None
+        try:
+            from deskmate.connectors.qq_friend import build_qq_channel, qq_channel_enabled
+        except Exception:  # 模块缺失时当作没配，不影响主服务
+            build_qq_channel = None
+            qq_channel_enabled = None
+        if qq_channel_enabled is not None and qq_channel_enabled():
+            try:
+
+                async def _qq_friend_run_turn(text: str) -> str:
+                    """小桔大脑：与 UI 聊天同一套引擎（agent=deskmate），人格/记忆/成长全链路。"""
+                    from ..events import EventType
+
+                    sid = "qq-friend"
+                    engine = manager.get_engine(sid, agent="deskmate")
+                    if engine is None:
+                        return ""
+                    parts: list[str] = []
+                    async for event in engine.run(text):
+                        if event.type is EventType.ASSISTANT_MESSAGE:
+                            piece = (event.data or {}).get("text") or ""
+                            if piece.strip():
+                                parts.append(piece.strip())
+                    try:
+                        manager.persist_session(sid)  # 跨重启续上对话
+                    except Exception:
+                        pass
+                    return "\n".join(parts)
+
+                _qq_channel = build_qq_channel(_qq_friend_run_turn)
+                if _qq_channel is not None:
+
+                    async def _qq_serve():
+                        try:
+                            await _qq_channel.serve()
+                        except Exception as exc:  # NapCat 没起等：记日志，主服务不受影响
+                            print(f"[coworker] qq friend channel stopped: {exc}")
+
+                    _qq_friend_task = asyncio.create_task(_qq_serve())
+            except Exception:  # 配置缺失 / 导入失败：静默跳过
+                import traceback
+
+                traceback.print_exc()
         yield
         if _xiaomi_voice_task is not None:
             _xiaomi_channel.stop()
@@ -397,6 +443,12 @@ def create_app(manager: SessionManager) -> FastAPI:
                 await asyncio.wait_for(_xiaomi_voice_task, timeout=2.0)
             except Exception:
                 _xiaomi_voice_task.cancel()
+        if _qq_friend_task is not None:
+            _qq_channel.stop()
+            try:
+                await asyncio.wait_for(_qq_friend_task, timeout=2.0)
+            except Exception:
+                _qq_friend_task.cancel()
         await manager.aclose()  # stop gateway + close MCP connections on shutdown
 
     app = FastAPI(title="coworker", version="0.0.0", lifespan=lifespan)
