@@ -4,7 +4,7 @@ id: editor-in-chief
 name: 主编
 icon: book
 tagline: 组队派活 · 审核验收 · 终审裁决
-requires_folder: false
+requires_folder: true
 subagents: false
 version: "1"
 team: lead

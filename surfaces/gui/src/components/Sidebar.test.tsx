@@ -205,8 +205,20 @@ describe("From Slack group (§31)", () => {
 
 describe("New session button", () => {
   it("is a plain button (no \u25be picker \u2014 UX-029 moved the pick to the composer) starting the last-used coworker", async () => {
+    // The \u25be only renders when MORE THAN ONE whitelisted persona is enabled. Production always
+    // has cowork + deskmate, so this fixture must too \u2014 with cowork alone the split collapses to
+    // a plain button and the assertion below would be testing the wrong shape.
     stubFetch([
-      { match: "/v1/personas", method: "GET", json: PERSONAS },
+      {
+        match: "/v1/personas",
+        method: "GET",
+        json: {
+          personas: [
+            ...PERSONAS.personas,
+            { id: "deskmate", name: "小桔", icon: "deskmate", tagline: "companion", requires_folder: false, enabled: true, surfaced: true, default: false },
+          ],
+        },
+      },
       { match: "/v1/settings", method: "GET", json: { nav_layout: "flat" } },
     ]);
     render(<Sidebar {...baseProps} />);
@@ -218,5 +230,32 @@ describe("New session button", () => {
     expect(screen.getByLabelText("Choose a persona")).toBeTruthy();
     fireEvent.click(screen.getByText("New session"));
     expect(baseProps.onNewSession).toHaveBeenCalledWith("cowork");
+  });
+
+  // 主编（lead）必须能从新建会话下拉里选到：团队只能由 lead 会话经 propose_team 编制出来，
+  // 而它既不在圆桌 7 专家里、也不在右侧「我的伙伴」的 ENGINEERING_IDS 白名单里 —— 一旦它被
+  // 新建会话白名单漏掉，功能就存在但没有任何入口（2026-10-28 实测踩到）。
+  it("offers 主编 (a lead persona) in the \u25be picker and starts a session on it", async () => {
+    stubFetch([
+      {
+        match: "/v1/personas",
+        method: "GET",
+        json: {
+          personas: [
+            ...PERSONAS.personas,
+            { id: "deskmate", name: "小桔", icon: "deskmate", tagline: "companion", requires_folder: false, enabled: true, surfaced: true, default: false },
+            { id: "editor-in-chief", name: "主编", icon: "book", tagline: "组队派活 · 审核验收 · 终审裁决", requires_folder: true, enabled: true, surfaced: true, default: false },
+          ],
+        },
+      },
+      { match: "/v1/settings", method: "GET", json: { nav_layout: "flat" } },
+    ]);
+    render(<Sidebar {...baseProps} />);
+    await screen.findByText("incident watch");
+
+    fireEvent.click(screen.getByLabelText("Choose a persona"));
+    const entry = await screen.findByText("主编");
+    fireEvent.click(entry);
+    expect(baseProps.onNewSession).toHaveBeenCalledWith("editor-in-chief");
   });
 });

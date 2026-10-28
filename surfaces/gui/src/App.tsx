@@ -65,7 +65,10 @@ import readerImg from "./assets/avatars/reader.png";
 import publisherImg from "./assets/avatars/publisher.png";
 import adaptationImg from "./assets/avatars/adaptation.png";
 import genreImg from "./assets/avatars/genre.png";
+import editorInChiefImg from "./assets/avatars/editor-in-chief.png";
 
+// 会话空态名片的头像表：key 是 persona id（= 会话的 agent 字段）。
+// 圆桌 7 位专家用静物象征图；主编是唯一会「带团队」的 lead，用人像以示其组织者身份。
 const PERSONA_AVATAR: Record<string, string> = {
   historian: historianImg,
   "lit-editor": litEditorImg,
@@ -74,6 +77,7 @@ const PERSONA_AVATAR: Record<string, string> = {
   publisher: publisherImg,
   adaptation: adaptationImg,
   genre: genreImg,
+  "editor-in-chief": editorInChiefImg,
 };
 import { Sidebar } from "./components/Sidebar";
 import { ThinkingBlock, Transcript } from "./components/Transcript";

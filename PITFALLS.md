@@ -82,3 +82,23 @@
 **验证（结论先行）**：仅依赖 `Cargo.toml` 的 `[profile.release]`（**不设任何环境变量**）全量重编 → `BUILD_EXIT_RC=0`、日志全程无 mis-aligned/E0463/could-not-compile，产出 `OpenWorker.app`，内嵌前端 chunk 哈希命中 `dist/`（确认两 bug 修复随前端打进包）。
 
 **副作用/备注**：关 strip 后最终 app 二进制不剥离调试信息 → ~41MB（可接受）。若日后要瘦身，用系统 `strip` 只剥**最终 `openworker-desktop` 二进制**（那一步只动产物、不动构建期宏 crate，不会复现 mis-aligned）。
+
+## §P4 — 新增 persona 后前端"看不见"：新建会话 ▾ 有一层前端白名单
+
+- **现象（2026-10-28 实测）**：`/v1/personas` 明明返回 `editor-in-chief`（`enabled=true surfaced=true ships=true`），
+  但整个 GUI 找不到入口，萧哥报「前端面板里看不到主编」。
+- **根因**：前端有三道独立闸门，任一道挡住＝角色不可达，且**后端接口一切正常**（所以查接口查不出问题）：
+  1. `Sidebar.tsx` `NewSessionSplit` 里写死 `ALLOWED_NEW_SESSION = new Set(["cowork","deskmate"])`
+     （2026-08-26 owner ask「精简下拉」的产物）。不在集合里 = 下拉菜单没有。
+  2. 右侧「我的伙伴」`RightRail` 只收 `p.roundtable || ENGINEERING_IDS.includes(p.id)`。
+  3. 侧栏角色折叠区默认 flat 布局不渲染；grouped 下折叠体里也**故意没有**"新建会话"按钮
+     （注释：靠顶部 ▾ 统一入口）。
+- **判据**：后端 `registry.sidebar()` / `list_all()` 有 ≠ 用户能点到。**新加 persona 必须同时检查上面三处**。
+- **已修**：白名单补 `"editor-in-chief"`（它是 lead，只能从"一个会话"起步；团队必须由 lead 会话经
+  `propose_team` 编制）。回归用例 `Sidebar.test.tsx` → `offers 主编 (a lead persona) in the ▾ picker`。
+- **连带**：主编 manifest 原为 `requires_folder: false`，但 `manager.create_team` 硬检查
+  lead 会话必须有 workspace（否则批准后报 `the lead session has no workspace`），上游 4 个 lead 全是 `true`。
+  ⇒ 一并改 `requires_folder: true`（前端 `isProjectScoped` 读的就是这个字段，会弹选文件夹闸门）。
+- **验证姿势**：前端产物字节级搜白名单数组（`new Set(["cowork","deskmate","editor-in-chief"])`）；
+  装包后资源指纹 `main-<新哈希>.js` 命中 `dist/`；`md5 -q` 三处二进制一致。**Tauri 资源是 brotli 压缩，
+  搜中文/类名一律搜不到，别据此判"没打进去"**（见打包 skill 坑 1 补充）。
