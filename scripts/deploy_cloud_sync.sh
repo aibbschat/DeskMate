@@ -344,6 +344,10 @@ CONNECTORS_MODULES=(
   "deskmate/connectors/aicircle.py"
   "deskmate/connectors/xiaomi_speaker.py"
   "deskmate/connectors/xiaomi_voice.py"
+  # ⚠️ 2026-10-28 补：qq_friend.py（QQ 好友私聊 OneBot 11 / commit 108d0820）当时
+  # 忘加清单——对账「仅本地有 1」抓到。云端 app.py 已含 9 处 QQ 引用，模块缺文件时
+  # 虽被 try/except 当作没配不崩，但 QQ 功能在云端**静默不可用**。纯 stdlib 无依赖。
+  "deskmate/connectors/qq_friend.py"
 )
 
 # 办公技能工具（2026-10-15 P1 原子替换+恢复副本）：office_safe_deliver.py 被
