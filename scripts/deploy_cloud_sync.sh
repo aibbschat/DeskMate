@@ -300,6 +300,10 @@ NOVEL_MEMORY_MODULES=(
 # 随通道组同批推送（dest_dir=$CLOUD_COWORKER_ROOT），并纳入对账 .py 扫描。
 COWORKER_ROOT_MODULES=(
   "coworker/agent.py"
+  # ⚠️ 2026-10-28 补录：engine.py 长期「不在清单」却与云端一致（靠早期整包/手动 scp 对齐），
+  # 一改就断档。本轮审批卡对账需要 permission_required/TOOL_FINISHED 自带 tool_call_id，
+  # 漏传 → 云端仍发无 id 事件 → 前端只能按 name 粗略撤卡（历史卡残留/去重降级）。
+  "coworker/engine.py"
 )
 # coworker/ 历史漂移补推（2026-10-24 补）：扩对账到 coworker/ 后，集合级全量比对抓出 4 个
 # 本地比云端新的历史漂移（此前是对账盲区）。含 openai_provider.py 的 5d04171 high-risk 风控钩子，
