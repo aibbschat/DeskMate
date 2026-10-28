@@ -126,14 +126,14 @@ export function ScheduledView({ onOpenRun, onRunNow, initialOpenId }: Props) {
           <PanelHead title="Automations" sub="Recurring tasks OpenWorker runs on a schedule." />
         </div>
         <button
-          className="text-[13px] px-3 py-1.5 rounded-lg border border-lineStrong bg-panel hover:border-accent hover:text-accent shrink-0"
+          className="text-ui px-3 py-1.5 rounded-lg border border-lineStrong bg-panel hover:border-accent hover:text-accent shrink-0"
           onClick={() => setShowForm((v) => !v)}
         >
           + New automation
         </button>
       </div>
 
-      <div className="text-[12px] text-faint flex gap-1.5 mb-4">
+      <div className="text-meta text-faint flex gap-1.5 mb-4">
         <span aria-hidden>ⓘ</span>
         <span>
           Runs only while openworker-server is up — a missed schedule catches up once when it next
@@ -155,7 +155,7 @@ export function ScheduledView({ onOpenRun, onRunNow, initialOpenId }: Props) {
 
       {empty ? (
         !showForm && (
-          <div className={CARD + " p-4 text-[13px] text-muted"}>
+          <div className={CARD + " p-4 text-ui text-muted"}>
             No scheduled tasks yet — use a template above, click <strong>+ New automation</strong>,
             or just ask OpenWorker in a session.
           </div>
@@ -169,7 +169,7 @@ export function ScheduledView({ onOpenRun, onRunNow, initialOpenId }: Props) {
               onClick={() => setOpenId(t.id)}
             >
               <div className="flex items-center justify-between gap-2.5 mb-1">
-                <span className="text-[13px] font-semibold truncate">{t.title}</span>
+                <span className="text-ui font-semibold truncate">{t.title}</span>
                 <button
                   className="sched-card-del"
                   title="Delete automation"
@@ -183,7 +183,7 @@ export function ScheduledView({ onOpenRun, onRunNow, initialOpenId }: Props) {
                   <Icon name="trash" size={14} />
                 </button>
               </div>
-              <div className="flex items-center gap-1.5 text-[12px] text-muted">
+              <div className="flex items-center gap-1.5 text-meta text-muted">
                 <Icon name="clock" size={13} className="text-faint shrink-0" />
                 {t.enabled ? t.schedule : "Paused"} · next {fmt(t.next_run)} · {t.run_count} run{t.run_count === 1 ? "" : "s"}
                 {t.last_status ? ` · last ${t.last_status}` : ""}
@@ -214,7 +214,7 @@ function NewAutomationForm({
 
   return (
     <div className={CARD + " tmpl-form p-4 mb-4"}>
-      <div className="text-[11px] uppercase tracking-[0.05em] text-faint mb-2.5">
+      <div className="text-label uppercase tracking-[0.05em] text-faint mb-2.5">
         New automation
       </div>
       <input
@@ -328,7 +328,7 @@ function TaskDetail({
   if (!task)
     return (
       <Shell>
-        <div className="text-[13px] text-muted">Loading…</div>
+        <div className="text-ui text-muted">Loading…</div>
       </Shell>
     );
 
@@ -366,7 +366,7 @@ function TaskDetail({
 
   return (
     <Shell>
-      <button className="text-[13px] text-muted hover:text-ink mb-3" onClick={onBack}>
+      <button className="text-ui text-muted hover:text-ink mb-3" onClick={onBack}>
         ← Automations
       </button>
       <div className="sched-detail">

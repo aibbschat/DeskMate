@@ -135,11 +135,15 @@ interface Props {
   onOpenSkillStore: () => void;
   onOpenAudit: () => void;
   onOpenInbox: () => void;
+  // 团队面板：lead + worker 的并行运行态（后端真跑，不是日志回放）。
+  // 可选：老调用方（测试里的最小 props）不传就不显示这一项，而不是让类型炸掉。
+  onOpenTeam?: () => void;
   scheduledActive: boolean;
   integrationsActive: boolean;
   skillStoreActive: boolean;
   auditActive: boolean;
   inboxActive: boolean;
+  teamActive?: boolean;
   // Expert Center nav (专家中心 UI): summon a domain expert into the conversation.
   onOpenExperts: () => void;
   expertsActive: boolean;
@@ -376,7 +380,7 @@ export function Sidebar(props: Props) {
   ) => (
     <button
       className={
-        "w-full flex items-center gap-2.5 px-3 py-1.5 text-[13px] text-left " +
+        "w-full flex items-center gap-2.5 px-3 py-1.5 text-ui text-left " +
         (active ? "text-ink bg-paper" : "hover:bg-paper")
       }
       onClick={() => {
@@ -565,7 +569,7 @@ export function Sidebar(props: Props) {
       >
         {editing ? (
           <input
-            className="flex-1 min-w-0 px-1.5 py-0.5 rounded-md bg-panel border border-accent text-[13px] text-ink outline-none"
+            className="flex-1 min-w-0 px-1.5 py-0.5 rounded-md bg-panel border border-accent text-ui text-ink outline-none"
             value={editValue}
             autoFocus
             onClick={(e) => e.stopPropagation()}
@@ -581,7 +585,7 @@ export function Sidebar(props: Props) {
           <>
             <span
               className={
-                "min-w-0 flex-1 flex items-center gap-1.5 truncate text-[13px] " +
+                "min-w-0 flex-1 flex items-center gap-1.5 truncate text-ui " +
                 (active ? "font-medium text-ink" : "text-ink")
               }
             >
@@ -595,7 +599,7 @@ export function Sidebar(props: Props) {
               }
             >
               {opts.showTime && compactAge(s.updated_at) && (
-                <span className="text-[11px] text-faint tabular-nums">{compactAge(s.updated_at)}</span>
+                <span className="text-label text-faint tabular-nums">{compactAge(s.updated_at)}</span>
               )}
               <OriginIcon s={s} t={t} />
               <LiveDot state={s.liveness} t={t} />
@@ -639,7 +643,7 @@ export function Sidebar(props: Props) {
             read as noise in both grouped and chronological). */}
         {editing ? (
           <input
-            className="flex-1 min-w-0 px-1.5 py-0.5 rounded-md bg-panel border border-accent text-[13px] text-ink outline-none"
+            className="flex-1 min-w-0 px-1.5 py-0.5 rounded-md bg-panel border border-accent text-ui text-ink outline-none"
             value={editValue}
             autoFocus
             onClick={(e) => e.stopPropagation()}
@@ -653,7 +657,7 @@ export function Sidebar(props: Props) {
           />
         ) : (
           <>
-            <span className="min-w-0 flex-1 block truncate text-[13px] font-medium">
+            <span className="min-w-0 flex-1 block truncate text-ui font-medium">
               {title}
             </span>
             <span
@@ -707,8 +711,8 @@ export function Sidebar(props: Props) {
               onClick={() => props.onOpenAutomation(a.id)}
             >
               <div className="flex-1 min-w-0">
-                <div className="text-[13px] text-ink truncate">{a.title}</div>
-                <div className="text-[11px] text-faint truncate">{a.schedule}</div>
+                <div className="text-ui text-ink truncate">{a.title}</div>
+                <div className="text-label text-faint truncate">{a.schedule}</div>
               </div>
               <UnseenBadge n={a.unseen_runs || 0} failed={a.unseen_failed} t={t} />
             </button>
@@ -752,11 +756,11 @@ export function Sidebar(props: Props) {
               ([key, label]) => (
                 <button
                   key={key}
-                  className="w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-[13px] text-left hover:bg-paper"
+                  className="w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-ui text-left hover:bg-paper"
                   onClick={() => setGroupBy(key)}
                 >
                   <span className="flex-1">{label}</span>
-                  {layout === key && <span className="text-accent text-[12px]">✓</span>}
+                  {layout === key && <span className="text-accent text-meta">✓</span>}
                 </button>
               ),
             )}
@@ -768,7 +772,7 @@ export function Sidebar(props: Props) {
                     {t("sidebar.filterByCoworker")}
                   </span>
                   {filterPersonas.size > 0 && (
-                    <button className="text-[11px] text-accent" onClick={() => setFilterPersonas(new Set())}>
+                    <button className="text-label text-accent" onClick={() => setFilterPersonas(new Set())}>
                       {t("sidebar.clear")}
                     </button>
                   )}
@@ -779,7 +783,7 @@ export function Sidebar(props: Props) {
                     return (
                       <button
                         key={p.id}
-                        className="w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-[13px] text-left hover:bg-paper"
+                        className="w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-ui text-left hover:bg-paper"
                         onClick={() => toggleFilterPersona(p.id)}
                       >
                         <span
@@ -795,7 +799,7 @@ export function Sidebar(props: Props) {
                     );
                   })}
                 </div>
-                <div className="px-2 pt-1 pb-0.5 text-[11px] text-faint leading-snug">
+                <div className="px-2 pt-1 pb-0.5 text-label text-faint leading-snug">
                   {t("sidebar.noneCheckedShowsAll")}
                 </div>
               </>
@@ -893,7 +897,7 @@ export function Sidebar(props: Props) {
             </div>
             <div className="space-y-0.5">
               {projectOrder.length === 0 && (
-                <div className="px-2 py-1.5 text-[12px] text-faint leading-snug">
+                <div className="px-2 py-1.5 text-meta text-faint leading-snug">
                   {t("sidebar.noProjectsYet")}
                 </div>
               )}
@@ -941,7 +945,7 @@ export function Sidebar(props: Props) {
                           {shown.map((s) => sessionRow(s, { showTime: true }))}
                           {!showAll && list.length > peek && (
                             <button
-                              className="px-2 py-1 text-[12px] text-faint hover:text-muted"
+                              className="px-2 py-1 text-meta text-faint hover:text-muted"
                               onClick={() => setProjShowAll((s) => toggleSet(s, proj))}
                             >
                               {t("sidebar.showMore", { count: list.length - peek })}
@@ -949,7 +953,7 @@ export function Sidebar(props: Props) {
                           )}
                         </div>
                       ) : (
-                        <div className="px-2 py-1.5 pl-[19px] text-[12px] text-faint leading-snug">
+                        <div className="px-2 py-1.5 pl-[19px] text-meta text-faint leading-snug">
                           {t("sidebar.noConversationsInProject")}
                         </div>
                       ))}
@@ -961,7 +965,7 @@ export function Sidebar(props: Props) {
         ) : (
           <div className="space-y-0.5">
             {mine.filter(matches).length === 0 ? (
-              <div className="px-2 py-1.5 text-[12px] text-faint leading-snug">
+              <div className="px-2 py-1.5 text-meta text-faint leading-snug">
                 {normalizedQuery ? t("sidebar.noMatchingConversations") : t("sidebar.noConversationsYet")}
               </div>
             ) : (
@@ -972,7 +976,7 @@ export function Sidebar(props: Props) {
                 ).map((s) => sessionRow(s))}
                 {!personaShowAll.has(browseKey) && mine.filter(matches).length > peek && (
                   <button
-                    className="px-2 py-1 text-[12px] text-faint hover:text-muted"
+                    className="px-2 py-1 text-meta text-faint hover:text-muted"
                     onClick={() => setPersonaShowAll((s) => toggleSet(s, browseKey))}
                   >
                     {t("sidebar.showMore", { count: mine.filter(matches).length - peek })}
@@ -986,7 +990,7 @@ export function Sidebar(props: Props) {
         {archived.length > 0 && (
           <div className="mt-2 pt-1.5 border-t border-line">
             <button
-              className="w-full flex items-center gap-1.5 px-1.5 py-1 rounded text-[12px] text-faint hover:text-muted"
+              className="w-full flex items-center gap-1.5 px-1.5 py-1 rounded text-meta text-faint hover:text-muted"
               onClick={() => setShowArchived((v) => !v)}
             >
               <Icon name={showArchived ? "chevronDown" : "chevronRight"} size={13} className="shrink-0" />
@@ -1022,7 +1026,7 @@ export function Sidebar(props: Props) {
             <Icon name="sidebar" size={16} />
           </button>
         )}
-        <div className="brand-wordmark text-[15px]">{t("sidebar.openWorker")}<span className="beta-tag">{import.meta.env.VITE_APP_VERSION}</span></div>
+        <div className="brand-wordmark text-heading">{t("sidebar.openWorker")}<span className="beta-tag">{import.meta.env.VITE_APP_VERSION}</span></div>
       </div>
 
       {/* New session: split button — primary starts the last-used persona; ▾ picks a specific one. */}
@@ -1037,7 +1041,7 @@ export function Sidebar(props: Props) {
           SearchModal over the whole app. Matches the bottom-nav rows to reduce the boxy look. */}
       <div className="px-2.5 mt-1">
         <button
-          className="w-full flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-[13px] text-left text-muted hover:bg-paper hover:text-ink"
+          className="w-full flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-ui text-left text-muted hover:bg-paper hover:text-ink"
           onClick={() => setSearchModalOpen(true)}
         >
           <Icon name="search" size={15} className="shrink-0" /> {t("sidebar.search")}
@@ -1049,7 +1053,7 @@ export function Sidebar(props: Props) {
       <div className="px-2.5 mt-1">
         <button
           className={
-            "w-full flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-[13px] text-left hover:bg-paper hover:text-ink " +
+            "w-full flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-ui text-left hover:bg-paper hover:text-ink " +
             (props.scheduledActive ? "text-ink bg-paper" : "text-muted")
           }
           data-testid="nav-automations"
@@ -1065,7 +1069,7 @@ export function Sidebar(props: Props) {
       <div className="px-2.5 mt-1">
         <button
           className={
-            "w-full flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-[13px] text-left hover:bg-paper hover:text-ink " +
+            "w-full flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-ui text-left hover:bg-paper hover:text-ink " +
             (props.expertsActive ? "text-ink bg-paper" : "text-muted")
           }
           data-testid="nav-experts"
@@ -1080,7 +1084,7 @@ export function Sidebar(props: Props) {
       <div className="px-2.5 mt-1">
         <button
           className={
-            "w-full flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-[13px] text-left hover:bg-paper hover:text-ink " +
+            "w-full flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-ui text-left hover:bg-paper hover:text-ink " +
             (props.roundtableActive ? "text-ink bg-paper" : "text-muted")
           }
           data-testid="nav-roundtable"
@@ -1095,7 +1099,7 @@ export function Sidebar(props: Props) {
       <div className="px-2.5 mt-1">
         <button
           className={
-            "w-full flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-[13px] text-left hover:bg-paper hover:text-ink " +
+            "w-full flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-ui text-left hover:bg-paper hover:text-ink " +
             (props.creationActive ? "text-ink bg-paper" : "text-muted")
           }
           data-testid="nav-creation"
@@ -1110,7 +1114,7 @@ export function Sidebar(props: Props) {
       <div className="px-2.5 mt-1">
         <button
           className={
-            "w-full flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-[13px] text-left hover:bg-paper hover:text-ink " +
+            "w-full flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-ui text-left hover:bg-paper hover:text-ink " +
             (props.profileActive ? "text-ink bg-paper" : "text-muted")
           }
           data-testid="nav-profile"
@@ -1127,13 +1131,13 @@ export function Sidebar(props: Props) {
         <div className="px-2.5 mt-1">
           <button
             className={
-              "w-full flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-[13px] text-left hover:bg-paper hover:text-ink " +
+              "w-full flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-ui text-left hover:bg-paper hover:text-ink " +
               (props.mailboxActive ? "text-ink bg-paper" : "text-muted")
             }
             data-testid="nav-mailbox"
             onClick={props.onOpenMailbox}
           >
-            <span className="shrink-0 text-[15px] leading-none" aria-hidden>✉</span>
+            <span className="shrink-0 text-heading leading-none" aria-hidden>✉</span>
             <span className="flex-1">{t("sidebar.mailbox", { defaultValue: "信箱" })}</span>
             {mailUnread > 0 && (
               <span className="text-[10px] font-semibold text-ink bg-faint/30 rounded-full px-1.5 leading-[15px] shrink-0">
@@ -1176,7 +1180,7 @@ export function Sidebar(props: Props) {
                     >
                       <span
                         className={
-                          "min-w-0 flex-1 truncate text-[13px] " +
+                          "min-w-0 flex-1 truncate text-ui " +
                           (isCurrent(s.key) ? "font-semibold text-ink" : "font-medium text-ink")
                         }
                       >
@@ -1200,7 +1204,7 @@ export function Sidebar(props: Props) {
             ) : (
             <div className="space-y-0.5">
               {recentSessions.length === 0 ? (
-                <div className="px-2 py-1.5 text-[12px] text-faint leading-snug">
+                <div className="px-2 py-1.5 text-meta text-faint leading-snug">
                   {normalizedQuery ? t("sidebar.noMatchingConversations") : t("sidebar.noConversationsYet")}
                 </div>
               ) : (
@@ -1211,7 +1215,7 @@ export function Sidebar(props: Props) {
                   ).map((s) => cardRow(s))}
                   {recentSessions.length > RECENT_PEEK && (
                     <button
-                      className="w-full text-left px-2 py-1.5 text-[12px] text-muted hover:text-ink"
+                      className="w-full text-left px-2 py-1.5 text-meta text-muted hover:text-ink"
                       onClick={() => setRecentExpanded((v) => !v)}
                     >
                       {recentExpanded
@@ -1241,13 +1245,13 @@ export function Sidebar(props: Props) {
                 role="menu"
               >
                 <div
-                  className="px-3 py-1.5 mb-1 text-[11px] text-faint truncate border-b border-line"
+                  className="px-3 py-1.5 mb-1 text-label text-faint truncate border-b border-line"
                   title={t("sidebar.cloudConnected")}
                 >
                   {t("sidebar.cloudConnected")}
                 </div>
                 <button
-                  className="w-full flex items-center gap-2.5 px-3 py-1.5 mb-1 text-[13px] text-left text-accent hover:bg-paper"
+                  className="w-full flex items-center gap-2.5 px-3 py-1.5 mb-1 text-ui text-left text-accent hover:bg-paper"
                   data-testid="open-cloud"
                   onClick={() => {
                     setAppMenuOpen(false);
@@ -1264,6 +1268,8 @@ export function Sidebar(props: Props) {
                   <AttnBadge n={totalAttention} t={t} />,
                 )}
                 {appMenuItem("plug", t("sidebar.connectors"), props.onOpenIntegrations, props.integrationsActive)}
+                {props.onOpenTeam &&
+                  appMenuItem("users", t("sidebar.team", { defaultValue: "团队" }), props.onOpenTeam, props.teamActive)}
                 {appMenuItem("wrench", t("sidebar.skillStore", { defaultValue: "技能广场" }), props.onOpenSkillStore, props.skillStoreActive)}
                 <div className="h-px bg-line my-1 mx-2" />
                 {appMenuItem(
@@ -1271,7 +1277,7 @@ export function Sidebar(props: Props) {
                   t("sidebar.settings"),
                   props.onManage,
                   false,
-                  <span className="text-[11px] text-faint">⌘ ,</span>,
+                  <span className="text-label text-faint">⌘ ,</span>,
                 )}
                 {appMenuItem("clock", t("sidebar.automations"), props.onOpenScheduled, props.scheduledActive)}
                 {appMenuItem("audit", t("sidebar.activity"), props.onOpenAudit, props.auditActive)}
@@ -1281,7 +1287,7 @@ export function Sidebar(props: Props) {
 
           <button
             className={
-              "w-full flex items-center gap-2 px-2.5 py-2 rounded-lg text-[13px] text-left " +
+              "w-full flex items-center gap-2 px-2.5 py-2 rounded-lg text-ui text-left " +
               (appMenuOpen ? "bg-paper text-ink" : "hover:bg-paper")
             }
             data-testid="account-row"
@@ -1384,7 +1390,7 @@ function NewSessionSplit({
       <div className="flex">
         <button
           className={
-            "newsplit-primary flex-1 text-left px-3 py-2 bg-accent text-white text-[13px] font-medium hover:opacity-95 flex items-center gap-2 " +
+            "newsplit-primary flex-1 text-left px-3 py-2 bg-accent text-white text-ui font-medium hover:opacity-95 flex items-center gap-2 " +
             (solo ? "rounded-lg" : "rounded-l-lg")
           }
           onClick={() => onNew(solo && enabled.length === 1 ? enabled[0].id : current)}
@@ -1422,11 +1428,11 @@ function NewSessionSplit({
                   <PersonaGlyph icon={p.icon} family={p.family} size={12} />
                 </span>
                 <span className="min-w-0">
-                  <span className="block text-[13px] font-medium truncate">
+                  <span className="block text-ui font-medium truncate">
                     {shortPersonaName(p.name, p.id)}
                   </span>
                   {p.tagline && (
-                    <span className="block text-[11px] text-muted truncate">{p.tagline}</span>
+                    <span className="block text-label text-muted truncate">{p.tagline}</span>
                   )}
                 </span>
               </button>

@@ -214,7 +214,7 @@ function CollapsibleSection({
       >
         <div className="flex items-center gap-2">
           {icon && <span className="text-gray-400">{icon}</span>}
-          <span className="text-[11px] font-semibold text-gray-900 tracking-wide">
+          <span className="text-label font-semibold text-gray-900 tracking-wide">
             {title}
           </span>
           {badge !== undefined && (
@@ -560,7 +560,7 @@ function Layer4Details({
               .slice(0, 3)
               .map(([name, p]) => (
                 <div key={name} className="flex items-center gap-2">
-                  <span className="text-[11px] text-gray-700 flex-1 truncate">{name}</span>
+                  <span className="text-label text-gray-700 flex-1 truncate">{name}</span>
                   <span className="text-[10px] text-gray-400 tabular-nums">
                     {Math.round(p.proficiency * 100)}%
                   </span>
@@ -593,7 +593,7 @@ function Layer4Details({
         }}
       >
         <div>
-          <div className="text-[11px] font-medium text-gray-900">记忆注入</div>
+          <div className="text-label font-medium text-gray-900">记忆注入</div>
           <div className="text-[10px] text-gray-500 mt-0.5">
             {injectEnabled ? "已开启 · 每轮自动带上相关记忆" : "已关闭 · 记忆保留但不注入"}
           </div>
@@ -623,7 +623,7 @@ function Layer4Details({
         }}
       >
         <div>
-          <div className="text-[11px] font-medium text-gray-900">主动模式</div>
+          <div className="text-label font-medium text-gray-900">主动模式</div>
           <div className="text-[10px] text-gray-500 mt-0.5">
             {proactiveEnabled ? "桌宠会主动提供建议" : "桌宠等待你的指令"}
           </div>
@@ -648,7 +648,7 @@ function Layer4Details({
       <div className="flex gap-2 mt-1">
         {onOpenAutoTasks && (
           <button
-            className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg text-[11px] font-medium text-gray-700 transition-all duration-100 hover:bg-gray-100 active:scale-[0.98]"
+            className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg text-label font-medium text-gray-700 transition-all duration-100 hover:bg-gray-100 active:scale-[0.98]"
             style={{
               background: "#f9fafb",
               border: "0.5px solid rgba(0, 0, 0, 0.06)",
@@ -661,7 +661,7 @@ function Layer4Details({
         )}
         {onOpenLocalIntake && (
           <button
-            className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg text-[11px] font-medium text-gray-700 transition-all duration-100 hover:bg-gray-100 active:scale-[0.98]"
+            className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg text-label font-medium text-gray-700 transition-all duration-100 hover:bg-gray-100 active:scale-[0.98]"
             style={{
               background: "#f9fafb",
               border: "0.5px solid rgba(0, 0, 0, 0.06)",
@@ -674,7 +674,7 @@ function Layer4Details({
         )}
         {onOpenMemory && (
           <button
-            className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg text-[11px] font-medium text-gray-700 transition-all duration-100 hover:bg-gray-100 active:scale-[0.98]"
+            className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg text-label font-medium text-gray-700 transition-all duration-100 hover:bg-gray-100 active:scale-[0.98]"
             style={{
               background: "#f9fafb",
               border: "0.5px solid rgba(0, 0, 0, 0.06)",
@@ -687,7 +687,7 @@ function Layer4Details({
         )}
         {onOpenProofread && (
           <button
-            className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg text-[11px] font-medium text-gray-700 transition-all duration-100 hover:bg-gray-100 active:scale-[0.98]"
+            className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg text-label font-medium text-gray-700 transition-all duration-100 hover:bg-gray-100 active:scale-[0.98]"
             style={{
               background: "#f9fafb",
               border: "0.5px solid rgba(0, 0, 0, 0.06)",

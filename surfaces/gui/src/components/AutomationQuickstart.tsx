@@ -247,13 +247,13 @@ export function AutomationQuickstart({
       ? "Pick a channel to post to first"
       : "";
 
-  const label = "block text-[12px] text-muted mt-3 mb-1";
+  const label = "block text-meta text-muted mt-3 mb-1";
   const input =
-    "w-full px-3 py-2 rounded-lg border border-line bg-panel text-[13px] outline-none focus:border-accent";
+    "w-full px-3 py-2 rounded-lg border border-line bg-panel text-ui outline-none focus:border-accent";
 
   return (
     <div className="mb-4">
-      <div className="text-[11px] uppercase tracking-[0.05em] text-faint mb-2.5">
+      <div className="text-label uppercase tracking-[0.05em] text-faint mb-2.5">
         Start from a template
       </div>
       {/* Equal-height cards (owner ask 2026-07-12): 1fr rows + h-full — <button> grid items
@@ -271,8 +271,8 @@ export function AutomationQuickstart({
             }
             onClick={() => pick(t)}
           >
-            <span className="text-[13px] font-semibold">{t.title}</span>
-            <span className="text-[12px] text-muted leading-relaxed flex-1">{t.blurb}</span>
+            <span className="text-ui font-semibold">{t.title}</span>
+            <span className="text-meta text-muted leading-relaxed flex-1">{t.blurb}</span>
             <span className="flex items-center gap-1.5 mt-1">
               {t.conns.map((c) => {
                 const cs = connState(c.name);
@@ -291,7 +291,7 @@ export function AutomationQuickstart({
                   </span>
                 );
               })}
-              <span className="text-[11px] text-faint ml-0.5">
+              <span className="text-label text-faint ml-0.5">
                 {t.conns.length === 0 ? `No connections needed · ${t.cadence}` : t.cadence}
               </span>
             </span>
@@ -307,11 +307,11 @@ export function AutomationQuickstart({
         >
           {/* §30: the card names its template — without this it starts abruptly after the grid. */}
           <div className="flex items-baseline gap-2 pb-2.5 mb-1 border-b border-line">
-            <span className="text-[11px] uppercase tracking-[0.05em] text-accent font-semibold">
+            <span className="text-label uppercase tracking-[0.05em] text-accent font-semibold">
               Set up
             </span>
-            <span className="text-[14px] font-semibold">{picked.title}</span>
-            <span className="ml-auto text-[12px] text-faint max-sm:hidden">
+            <span className="text-body font-semibold">{picked.title}</span>
+            <span className="ml-auto text-meta text-faint max-sm:hidden">
               {picked.conns.length ? "Connections, delivery & schedule" : "Delivery & schedule"} ·{" "}
               {picked.cadence}
             </span>
@@ -323,14 +323,14 @@ export function AutomationQuickstart({
                 <div className="flex items-center gap-3 py-2.5">
                   {c && <ConnectorBadge connector={c} size={26} title={c.title} />}
                   <span className="min-w-0 flex-1">
-                    <span className="block text-[13px] font-medium">{c?.title || name}</span>
-                    <span className="block text-[12px] text-faint">{why}</span>
+                    <span className="block text-ui font-medium">{c?.title || name}</span>
+                    <span className="block text-meta text-faint">{why}</span>
                   </span>
                   {c?.connected ? (
-                    <span className="text-[13px] text-ok">✓ Connected</span>
+                    <span className="text-ui text-ok">✓ Connected</span>
                   ) : (
                     <button
-                      className="px-3.5 py-1 rounded-full border border-line text-[13px] hover:bg-paper"
+                      className="px-3.5 py-1 rounded-full border border-line text-ui hover:bg-paper"
                       onClick={() => startConnect(name)}
                       data-testid={`ob-connect-${name}`}
                     >
@@ -369,7 +369,7 @@ export function AutomationQuickstart({
                       }
                     />
                   </div>
-                  <p className="text-[11px] text-warnInk mt-1">
+                  <p className="text-label text-warnInk mt-1">
                     The bot must be a member of the channel — invite @OpenWorker in Slack if it isn't.
                   </p>
                 </>
@@ -385,7 +385,7 @@ export function AutomationQuickstart({
                   />
                 </div>
                 <input
-                  className="w-28 px-3 py-2 rounded-lg border border-line bg-panel text-[13px] outline-none focus:border-accent"
+                  className="w-28 px-3 py-2 rounded-lg border border-line bg-panel text-ui outline-none focus:border-accent"
                   type="time"
                   aria-label="Time"
                   value={time}
@@ -407,7 +407,7 @@ export function AutomationQuickstart({
                 </>
               )}
               {picked.consent ? (
-                <label className="flex items-start gap-2.5 mt-3.5 text-[13px] text-muted select-none">
+                <label className="flex items-start gap-2.5 mt-3.5 text-ui text-muted select-none">
                   <input
                     type="checkbox"
                     className="mt-0.5"
@@ -425,7 +425,7 @@ export function AutomationQuickstart({
                   </span>
                 </label>
               ) : picked.conns.length > 0 ? (
-                <p className="text-[13px] text-muted mt-3">
+                <p className="text-ui text-muted mt-3">
                   This automation only <b className="text-ink">reads</b> on schedule — reading
                   never needs approval.
                 </p>
@@ -435,21 +435,21 @@ export function AutomationQuickstart({
 
           <div className="flex items-center gap-3 mt-4">
             <button
-              className="text-[13px] text-faint hover:text-muted"
+              className="text-ui text-faint hover:text-muted"
               onClick={() => setPickedKey(null)}
             >
               Cancel
             </button>
             {/* A silently-disabled primary reads as a bug — always name the missing piece. */}
             {gateHint && (
-              <span className="ml-auto text-[12px] text-faint" data-testid="ob-create-hint">
+              <span className="ml-auto text-meta text-faint" data-testid="ob-create-hint">
                 {gateHint}
               </span>
             )}
             <button
               className={
                 (gateHint ? "" : "ml-auto ") +
-                "px-5 py-2 rounded-full bg-ink text-panel text-[13px] disabled:opacity-40"
+                "px-5 py-2 rounded-full bg-ink text-panel text-ui disabled:opacity-40"
               }
               disabled={busy || !allConnected || (picked.needsChannel && !channel)}
               onClick={create}
@@ -471,7 +471,7 @@ export function AutomationQuickstart({
           >
             <div className="flex items-center gap-3 px-5 pt-5">
               <ConnectorBadge connector={connTarget} size={34} title={connTarget.title} />
-              <div className="flex-1 font-semibold text-[16px] tracking-tight">
+              <div className="flex-1 font-semibold text-title tracking-tight">
                 Connect {connTarget.title}
               </div>
               <button

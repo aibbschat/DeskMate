@@ -51,10 +51,10 @@ const relTime = (epoch?: number | null): string | null => {
 // Shared tab bodies for the Settings and Integrations pages (the old top-tab ManageModal was retired
 // when Settings/Activity became full-page surfaces): ModelsTab → Settings ▸ Models; ConnectorsTab +
 // McpTab → Integrations ▸ Connectors / MCP servers.
-const SEC_H = "text-[11px] uppercase tracking-[0.05em] text-faint font-semibold";
+const SEC_H = "text-label uppercase tracking-[0.05em] text-faint font-semibold";
 const CARD = "rounded-xl2 border border-line bg-panel";
 const INPUT =
-  "w-full px-3 py-2 rounded-lg border border-line bg-paper text-[13px] text-ink outline-none focus:border-accent";
+  "w-full px-3 py-2 rounded-lg border border-line bg-paper text-ui text-ink outline-none focus:border-accent";
 const BTN_BORDERED =
   "text-[12.5px] px-3 py-1.5 rounded-lg border border-line bg-paper hover:border-lineStrong shrink-0";
 const BTN_ACCENT = "text-[12.5px] px-3 py-1.5 rounded-lg bg-accent text-white shrink-0 disabled:opacity-50";
@@ -81,15 +81,30 @@ export function ModelsTab() {
     refreshSettings();
   }, []);
 
-  if (!settings) return <div className="text-[13px] text-muted">Loading…</div>;
+  if (!settings) return <div className="text-ui text-muted">Loading…</div>;
 
   const info = ps.info;
   const knownNames = ps.providers.map((p) => p.name);
 
   if (ps.sel === null) {
+    // 每个厂商在 composer 选择器里已有几个模型（"openai:gpt-5" → openai）。归到名字命中
+    // 的第一个厂商；裸模型 id（openai 的旧格式）算给 openai。
+    const names = ps.providers.map((p) => p.name);
+    const provOf = (id: string) => {
+      const i = id.indexOf(":");
+      return i > 0 && names.includes(id.slice(0, i)) ? id.slice(0, i) : "openai";
+    };
+    const countFor = (name: string) => settings.models.filter((id) => provOf(id) === name).length;
     return (
       <div>
-        <ProviderCards ps={ps} tp="set" gridClass="grid grid-cols-2 xl:grid-cols-3 gap-2.5" lastUsed />
+        <ProviderCards
+          ps={ps}
+          tp="set"
+          gridClass="grid grid-cols-2 xl:grid-cols-3 gap-2.5"
+          lastUsed
+          refine
+          countFor={countFor}
+        />
         <ComposerPickerCard settings={settings} providers={ps.providers} onChanged={refreshSettings} />
       </div>
     );
@@ -116,7 +131,7 @@ export function ModelsTab() {
       />
 
       {ps.sel === "openai" && settings.source === "env" && (
-        <p className="text-[12px] text-muted mt-3 leading-relaxed">
+        <p className="text-meta text-muted mt-3 leading-relaxed">
           A key is set via <code>OPENAI_API_KEY</code> in this server's environment. You can override
           it above; the stored key is used only when the environment variable is absent.
         </p>
@@ -125,7 +140,7 @@ export function ModelsTab() {
       {info?.configured ? (
         <div className="mt-6">
           <div className={SEC_H + " mb-1.5"}>Models</div>
-          <p className="text-[12px] text-muted mb-2.5 leading-relaxed">
+          <p className="text-meta text-muted mb-2.5 leading-relaxed">
             Ticked models show in the composer's picker; the black badge marks the default for new
             sessions.
           </p>
@@ -145,7 +160,7 @@ export function ModelsTab() {
         (info?.suggested_models?.length || 0) > 0 && (
           <div className="mt-6" data-testid="model-preview">
             <div className={SEC_H + " mb-1.5"}>Included models</div>
-            <p className="text-[12px] text-muted mb-2.5 leading-relaxed">
+            <p className="text-meta text-muted mb-2.5 leading-relaxed">
               Curated, agent-capable models this provider serves — add your key above to enable them.
             </p>
             <div className="space-y-1">
@@ -154,7 +169,7 @@ export function ModelsTab() {
                 return (
                   <div
                     key={m}
-                    className="px-2.5 py-1.5 rounded-lg border border-line bg-paper text-[13px] text-muted"
+                    className="px-2.5 py-1.5 rounded-lg border border-line bg-paper text-ui text-muted"
                     title={full}
                   >
                     {settings.model_labels?.[full] || m}
@@ -181,6 +196,7 @@ function ComposerPickerCard({
   providers: ProviderInfo[];
   onChanged: () => void;
 }) {
+  const [q, setQ] = useState("");
   const names = providers.map((p) => p.name);
   const provOf = (id: string) => {
     const i = id.indexOf(":");
@@ -193,12 +209,29 @@ function ComposerPickerCard({
   return (
     <div className="mt-6" data-testid="composer-picker">
       <div className={SEC_H + " mb-1.5"}>In the composer's picker</div>
-      <p className="text-[12px] text-muted mb-2.5 leading-relaxed">
+      <p className="text-meta text-muted mb-2.5 leading-relaxed">
         The models offered when starting a session; the black badge marks the default. Add more
         from a provider's card above.
       </p>
+      {settings.models.length > 8 && (
+        <input
+          className="w-full mb-2 px-3 py-1.5 rounded-lg border border-line bg-panel text-ui outline-none focus:border-accent"
+          placeholder="Filter models…"
+          value={q}
+          data-testid="composer-picker-filter"
+          onChange={(e) => setQ(e.target.value)}
+        />
+      )}
       <div className="mlist">
-        {settings.models.map((id) => {
+        {settings.models
+          .filter((id) =>
+            q.trim()
+              ? `${settings.model_labels?.[id] || ""} ${id} ${tag(id)}`
+                  .toLowerCase()
+                  .includes(q.trim().toLowerCase())
+              : true,
+          )
+          .map((id) => {
           const isDefault = id === settings.model;
           return (
             <div className="mlist-row" key={id}>
@@ -214,7 +247,7 @@ function ComposerPickerCard({
                   {settings.model_labels?.[id] || id}
                 </span>
               </label>
-              <span className="text-[11px] text-faint mr-2 shrink-0">{tag(id)}</span>
+              <span className="text-label text-faint mr-2 shrink-0">{tag(id)}</span>
               {isDefault ? (
                 <span className="mlist-default">default</span>
               ) : (
@@ -359,7 +392,7 @@ function PluginInstallPanel({ onInstalled }: { onInstalled: () => void }) {
   return (
     <div className={CARD + " p-3.5 space-y-2.5"}>
       <div className="flex items-center gap-2 flex-wrap">
-        <span className="text-[14px] font-medium">插件包安装</span>
+        <span className="text-body font-medium">插件包安装</span>
         <span className="text-[10.5px] normal-case tracking-normal text-faint">
           · .json / .zip 本地包，一键装 server + 角色
         </span>
@@ -475,7 +508,7 @@ export function McpTab() {
       </p>
 
       {servers.length === 0 && !adding ? (
-        <div className={CARD + " p-4 text-[13px] text-muted"}>
+        <div className={CARD + " p-4 text-ui text-muted"}>
           No MCP servers configured.{" "}
           <button className="text-accent font-medium" onClick={() => setAdding(true)}>
             Add a server
@@ -582,7 +615,7 @@ function McpRow({
       <div className="flex items-center gap-3">
         <Toggle checked={server.enabled} onChange={onToggle} title="Enable this server" />
         <div className="flex-1 min-w-0">
-          <div className="text-[14px] font-medium">{server.name}</div>
+          <div className="text-body font-medium">{server.name}</div>
           <div className="text-[11.5px] text-faint">
             {server.transport} · {authorizing ? "signing in…" : server.status.replace("_", " ")}
             {server.tool_count != null ? ` · ${server.tool_count} tools` : ""}
@@ -596,10 +629,10 @@ function McpRow({
               Sign in
             </button>
           ) : authorizing ? (
-            <span className="text-[12px] text-muted shrink-0">waiting for browser…</span>
+            <span className="text-meta text-muted shrink-0">waiting for browser…</span>
           ) : server.status === "connected" ? (
             <button
-              className="text-[12px] text-muted hover:text-ink shrink-0"
+              className="text-meta text-muted hover:text-ink shrink-0"
               onClick={signOut}
               data-testid={`mcp-signout-${server.name}`}
             >
@@ -607,7 +640,7 @@ function McpRow({
             </button>
           ) : null)}
         <button
-          className="text-[12px] text-muted hover:text-ink shrink-0"
+          className="text-meta text-muted hover:text-ink shrink-0"
           onClick={loadTools}
           disabled={busy}
         >
@@ -623,7 +656,7 @@ function McpRow({
       {toolErr && <div className="text-[12.5px] text-danger mt-1.5">{toolErr}</div>}
       {tools && (
         <div className="mt-2.5 pt-2.5 border-t border-line flex flex-wrap gap-1.5">
-          {tools.length === 0 && <div className="text-[12px] text-faint">No tools.</div>}
+          {tools.length === 0 && <div className="text-meta text-faint">No tools.</div>}
           {tools.map((t) => (
             <span
               key={t.name}
@@ -683,7 +716,7 @@ function PresetCard({ preset, onAdded }: { preset: PresetEntry; onAdded: () => v
     <div className={CARD + " p-3.5 flex flex-col gap-2"} data-testid={`mcp-preset-${preset.name}`}>
       <div className="flex items-center gap-3">
         <div className="flex-1 min-w-0">
-          <div className="text-[14px] font-medium">{preset.label}</div>
+          <div className="text-body font-medium">{preset.label}</div>
           <div className="text-[11.5px] text-faint">{preset.blurb}</div>
         </div>
         <button className={BTN_ACCENT} onClick={connect} disabled={busy}>
@@ -851,7 +884,7 @@ function AddForm({
             onChange={(e) => setCommand(e.target.value)}
           />
           <textarea
-            className={INPUT + " resize-y font-mono text-[12px]"}
+            className={INPUT + " resize-y font-mono text-meta"}
             rows={2}
             placeholder={"Args, one per line:\n-y @modelcontextprotocol/server-filesystem /path"}
             value={argsText}
@@ -859,7 +892,7 @@ function AddForm({
             onChange={(e) => setArgsText(e.target.value)}
           />
           <textarea
-            className={INPUT + " resize-y font-mono text-[12px]"}
+            className={INPUT + " resize-y font-mono text-meta"}
             rows={2}
             placeholder={"Env vars, one per line (optional):\nAPI_KEY=…"}
             value={envText}
@@ -887,7 +920,7 @@ function AddForm({
           {busy ? "Adding…" : "Add & connect"}
         </button>
         {probed != null && !busy && (
-          <span className="text-[12px] text-accent">connected · {probed} tools</span>
+          <span className="text-meta text-accent">connected · {probed} tools</span>
         )}
         <button className="text-[12.5px] text-muted hover:text-ink" onClick={onCancel} disabled={busy}>
           cancel
@@ -940,7 +973,7 @@ export function UnauthorizedBlock({
       <div className="space-y-2">
         {items.map((m) => (
           <div key={m.id} className="rounded-xl border border-line bg-paper p-2.5">
-            <div className="flex items-center gap-2 text-[12px] text-muted">
+            <div className="flex items-center gap-2 text-meta text-muted">
               <span className="font-medium text-ink">{m.user_name || m.user_id}</span>
               <span>in {m.chat_name || m.chat_id}</span>
               <span className="ml-auto shrink-0">{relTime(m.ts) || ""}</span>
@@ -995,7 +1028,7 @@ export function ListeningSessionsBlock({ c }: { c: Connector }) {
     <div className="border-t border-line px-3.5 py-3" data-testid={`listening-${c.name}`}>
       <div className={SEC_H + " mb-2"}>Sessions listening to {c.title} channels · {mine.length}</div>
       {mine.length === 0 ? (
-        <div className="text-[12px] text-faint">
+        <div className="text-meta text-faint">
           None yet — open a session's Sources ▸ Channels to subscribe it to a channel.
         </div>
       ) : (
@@ -1057,12 +1090,12 @@ export function AllowlistBlock({
         <div className={SEC_H + " mb-2"}>Allowed to message</div>
         <div className="flex flex-wrap gap-1.5">
           {allowedUsers.length === 0 && (
-            <span className="text-[12px] text-faint">nobody yet — Allow a recent sender →</span>
+            <span className="text-meta text-faint">nobody yet — Allow a recent sender →</span>
           )}
           {allowedUsers.map((u) => (
             <span
               key={u}
-              className="inline-flex items-center gap-1.5 pl-2 pr-1 py-1 rounded-full bg-paper border border-line text-[12px]"
+              className="inline-flex items-center gap-1.5 pl-2 pr-1 py-1 rounded-full bg-paper border border-line text-meta"
               title={`id ${u}`}
             >
               <span className="w-4 h-4 rounded-full bg-accentSoft text-accent grid place-items-center text-[9px] font-bold">
@@ -1086,7 +1119,7 @@ export function AllowlistBlock({
       <div>
         <div className={SEC_H + " mb-2"}>Recent senders</div>
         {unknownRecent.length === 0 ? (
-          <div className="text-[12px] text-faint">None yet. Message the bot once and it'll show here.</div>
+          <div className="text-meta text-faint">None yet. Message the bot once and it'll show here.</div>
         ) : (
           <div className="space-y-1.5">
             {unknownRecent.map((r) => (
@@ -1142,7 +1175,7 @@ export function ConnectorTools({ c, onChanged }: { c: Connector; onChanged: () =
               onChange={(e) => toggle(tool.name, e.target.checked)}
             />
             <span className="min-w-0">
-              <span className="block text-[13px]">{tool.label}</span>
+              <span className="block text-ui">{tool.label}</span>
               <span className="block text-[11.5px] text-faint">
                 {tool.name} · {tool.kind} · asks approval
               </span>
@@ -1223,7 +1256,7 @@ export function ConnectSetup({
             <>
               <button className={BTN_ACCENT + " opacity-50"} disabled data-testid="managed-coming-soon">
                 {`Connect ${c.title} with one click`}
-                <span className="ml-2 text-[11px] font-medium px-1.5 py-0.5 rounded-full bg-white/25">
+                <span className="ml-2 text-label font-medium px-1.5 py-0.5 rounded-full bg-white/25">
                   Coming soon
                 </span>
               </button>

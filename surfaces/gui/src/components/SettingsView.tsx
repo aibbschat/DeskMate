@@ -8,6 +8,8 @@ import {
   getTrustedWorkspaces,
   setCompactionSettings,
   setContextBar,
+  setHideReasoningRunning,
+  setReasoningEffort,
   setOnboarded,
   setPdfSettings,
   setScratchBase,
@@ -51,6 +53,7 @@ import {
   type DictationStatus,
 } from "../tauri";
 import { useThemePref } from "../theme";
+import { useTextSize } from "../textSize";
 import { Icon } from "./Icon";
 import { SkinPicker } from "./deskmate/skins/SkinPicker";
 import { LlmChannelsCard } from "./deskmate/LlmChannelsCard";
@@ -71,9 +74,9 @@ type SetTab = "appearance" | "models" | "voice" | "personas";
 
 const CARD = "rounded-xl2 border border-line bg-panel";
 const FIELD_LABEL = "text-[12.5px] font-medium text-ink";
-const FIELD_HELP = "text-[12px] text-muted mt-1.5 leading-relaxed";
+const FIELD_HELP = "text-meta text-muted mt-1.5 leading-relaxed";
 const INPUT =
-  "flex-1 min-w-0 px-3 py-2 rounded-lg border border-line bg-paper text-[13px] text-ink outline-none focus:border-accent";
+  "flex-1 min-w-0 px-3 py-2 rounded-lg border border-line bg-paper text-ui text-ink outline-none focus:border-accent";
 const BTN_ACCENT = "text-[12.5px] px-3 py-2 rounded-lg bg-accent text-white shrink-0 disabled:opacity-40";
 const BTN_BORDERED =
   "text-[12.5px] px-3 py-2 rounded-lg border border-line bg-paper hover:border-lineStrong shrink-0";
@@ -113,7 +116,7 @@ export function SettingsView({
             <button
               key={tabItem.key}
               className={
-                "w-full text-left px-2.5 py-2 rounded-lg text-[13px] flex items-center gap-2 " +
+                "w-full text-left px-2.5 py-2 rounded-lg text-ui flex items-center gap-2 " +
                 (active ? "bg-paper text-accent font-medium" : "text-muted hover:bg-paper hover:text-ink")
               }
               onClick={() => setTab(tabItem.key)}
@@ -289,7 +292,7 @@ function VoiceInputSection() {
       />
 
       {!desktop ? (
-        <div className={CARD + " p-4 text-[13px] text-muted"}>{t("settings.voiceInputDesktopOnly")}</div>
+        <div className={CARD + " p-4 text-ui text-muted"}>{t("settings.voiceInputDesktopOnly")}</div>
       ) : (
         <div className="space-y-4">
           <div className="rounded-xl border border-green-200 bg-green-50/70 px-4 py-3 text-[12.5px] text-green-800">
@@ -301,8 +304,8 @@ function VoiceInputSection() {
               <Icon name="code" size={18} className="text-accent mt-0.5" />
               <div className="min-w-0 flex-1">
                 <div className="text-[13.5px] font-medium">{t("settings.thisDevice")}</div>
-                <div className="text-[12px] text-muted mt-1">{status?.device_summary || t("settings.checkingCompatibility")}</div>
-                {status?.compatibility_reason && <div className="text-[12px] text-red-600 mt-1.5">{status.compatibility_reason}</div>}
+                <div className="text-meta text-muted mt-1">{status?.device_summary || t("settings.checkingCompatibility")}</div>
+                {status?.compatibility_reason && <div className="text-meta text-red-600 mt-1.5">{status.compatibility_reason}</div>}
               </div>
               {status && (
                 <span className={"text-[11.5px] px-2 py-1 rounded-full " + (status.supported ? "bg-green-50 text-green-700" : "bg-red-50 text-red-600")}>
@@ -310,7 +313,7 @@ function VoiceInputSection() {
                 </span>
               )}
             </div>
-            <div className="border-t border-line bg-paper/50 px-4 py-3 grid grid-cols-2 gap-3 text-[12px] text-muted">
+            <div className="border-t border-line bg-paper/50 px-4 py-3 grid grid-cols-2 gap-3 text-meta text-muted">
               <div><span className="block text-ink font-medium">{t("settings.macLabel")}</span>{t("settings.macRequirements")}</div>
               <div><span className="block text-ink font-medium">{t("settings.windowsLabel")}</span>{t("settings.windowsRequirements")}</div>
               <div><span className="block text-ink font-medium">{t("settings.memoryLabel")}</span>{t("settings.memoryRequirements")}</div>
@@ -323,7 +326,7 @@ function VoiceInputSection() {
               <div className="w-9 h-9 rounded-lg bg-accentSoft text-accent grid place-items-center font-semibold">W</div>
               <div className="min-w-0 flex-1">
                 <div className="text-[13.5px] font-medium">{t("settings.whisperBaseEnglish")}</div>
-                <div className="text-[12px] text-muted mt-0.5">
+                <div className="text-meta text-muted mt-0.5">
                   {status?.model_verified ? t("settings.installedAndVerified", { size: formatBytes(status.model_bytes) }) : t("settings.localVoiceModel", { size: formatBytes(status?.model_bytes || 147_964_211) })}
                 </div>
               </div>
@@ -331,12 +334,12 @@ function VoiceInputSection() {
                 <>
                   <span className="text-[11.5px] px-2 py-1 rounded-full bg-green-50 text-green-700">{t("settings.verified")}</span>
                   <button className={BTN_BORDERED} onClick={() => void repair()}>{t("settings.repair")}</button>
-                  <button className="text-[12px] text-red-600 px-2 py-2" onClick={() => void remove()}>{t("settings.delete")}</button>
+                  <button className="text-meta text-red-600 px-2 py-2" onClick={() => void remove()}>{t("settings.delete")}</button>
                 </>
               ) : downloading ? (
                 <button className={BTN_BORDERED} onClick={() => void cancelDownload()}>{t("settings.cancel")}</button>
               ) : phase === "verifying" ? (
-                <span className="text-[12px] text-muted">{t("settings.verifying")}</span>
+                <span className="text-meta text-muted">{t("settings.verifying")}</span>
               ) : (
                 <button className={BTN_ACCENT} disabled={!status?.supported} onClick={() => void download()}>{t("settings.downloadModel")}</button>
               )}
@@ -354,7 +357,7 @@ function VoiceInputSection() {
               <Icon name="mic" size={18} className={ready ? "text-green-600" : "text-muted"} />
               <div className="min-w-0 flex-1">
                 <div className="text-[13.5px] font-medium">{t("settings.microphoneTest")}</div>
-                <div className="text-[12px] text-muted mt-0.5">
+                <div className="text-meta text-muted mt-0.5">
                   {ready ? t("settings.micReady") : t("settings.micSetup")}
                 </div>
               </div>
@@ -363,11 +366,11 @@ function VoiceInputSection() {
                 {status?.recording ? t("settings.stopAndCheck") : phase === "transcribing" ? t("settings.transcribingStatus") : ready ? t("settings.testAgain") : t("settings.testMicrophone")}
               </button>
             </div>
-            {status?.recording && <div className="border-t border-line px-4 py-3 text-[12px] text-accent" role="status">{t("settings.listeningSpeak")}</div>}
-            {testTranscript && <div className="border-t border-line bg-paper/50 px-4 py-3 text-[13px]}">&ldquo;{testTranscript}&rdquo;</div>}
+            {status?.recording && <div className="border-t border-line px-4 py-3 text-meta text-accent" role="status">{t("settings.listeningSpeak")}</div>}
+            {testTranscript && <div className="border-t border-line bg-paper/50 px-4 py-3 text-ui}">&ldquo;{testTranscript}&rdquo;</div>}
           </div>
 
-          {error && <div role="alert" className="rounded-lg border border-red-200 bg-red-50 px-3 py-2.5 text-[12px] text-red-700">{error}</div>}
+          {error && <div role="alert" className="rounded-lg border border-red-200 bg-red-50 px-3 py-2.5 text-meta text-red-700">{error}</div>}
         </div>
       )}
     </section>
@@ -397,7 +400,7 @@ function PersonasSection({ onOpenPersona }: { onOpenPersona?: (id: string) => vo
         <Icon name="sparkle" size={16} className="text-accent shrink-0" />
         <span className="min-w-0 flex-1">
           <span className="block text-[13.5px] font-medium">{t("settings.browsePersonaGallery")}</span>
-          <span className="block text-[12px] text-muted">
+          <span className="block text-meta text-muted">
             {t("settings.browsePersonaGallerySub")}
           </span>
         </span>
@@ -417,6 +420,7 @@ function PersonasSection({ onOpenPersona }: { onOpenPersona?: (id: string) => vo
 function AppearanceSection() {
   const { t } = useTranslation();
   const [theme, setTheme] = useThemePref();
+  const [textSize, setTextSize] = useTextSize();
   const [autostart, setAuto] = useState(false);
   const [keepAwake, setKeep] = useState(false);
   const desktop = isTauri();
@@ -456,6 +460,29 @@ function AppearanceSection() {
         <div className={FIELD_HELP}>{t("settings.autoHelp")}</div>
       </div>
 
+      {/* 字号档位（按设备生效，localStorage）：只换字号、不改布局宽度 */}
+      <div className={CARD + " p-4 mb-4"} data-testid="text-size-card">
+        <div className={FIELD_LABEL}>{t("settings.textSize")}</div>
+        <div
+          className="seg mt-2.5"
+          role="radiogroup"
+          aria-label={t("settings.textSizeAria")}
+          data-testid="text-size-seg"
+        >
+          {(["small", "default", "large"] as const).map((s) => (
+            <button
+              key={s}
+              className={s === textSize ? "active" : ""}
+              data-testid={`text-size-${s}`}
+              onClick={() => setTextSize(s)}
+            >
+              {t(`settings.textSize_${s}`)}
+            </button>
+          ))}
+        </div>
+        <div className={FIELD_HELP}>{t("settings.textSizeHelp")}</div>
+      </div>
+
       {/* 桌宠大小（仅「桌搭 DeskMate」模式生效） */}
       <div className={CARD + " p-4 mb-4"}>
         <div className={FIELD_LABEL + " mb-2.5"}>桌宠大小</div>
@@ -474,7 +501,7 @@ function AppearanceSection() {
             }}
             className="flex-1"
           />
-          <span className="text-[12px] tabular-nums text-muted w-10 text-right">
+          <span className="text-meta tabular-nums text-muted w-10 text-right">
             {Math.round(petScale * 100)}%
           </span>
         </div>
@@ -503,15 +530,15 @@ function AppearanceSection() {
           <label className="flex items-start gap-3 py-2">
             <input type="checkbox" className="mt-0.5" checked={autostart} onChange={(e) => toggleAuto(e.target.checked)} />
             <span>
-              <span className="block text-[13px] text-ink">{t("settings.openAtLogin")}</span>
-              <span className="block text-[12px] text-muted">{t("settings.openAtLoginDesc")}</span>
+              <span className="block text-ui text-ink">{t("settings.openAtLogin")}</span>
+              <span className="block text-meta text-muted">{t("settings.openAtLoginDesc")}</span>
             </span>
           </label>
           <label className="flex items-start gap-3 py-2">
             <input type="checkbox" className="mt-0.5" checked={keepAwake} onChange={(e) => toggleKeep(e.target.checked)} />
             <span>
-              <span className="block text-[13px] text-ink">{t("settings.keepAwake")}</span>
-              <span className="block text-[12px] text-muted">{t("settings.keepAwakeDesc")}</span>
+              <span className="block text-ui text-ink">{t("settings.keepAwake")}</span>
+              <span className="block text-meta text-muted">{t("settings.keepAwakeDesc")}</span>
             </span>
           </label>
         </div>
@@ -560,9 +587,9 @@ function TrustedWorkspacesCard() {
         {t("settings.trustedWorkspacesHelp")}
       </div>
       {workspaces === null ? (
-        <div className="text-[12px] text-muted mt-3">{t("settings.loading")}</div>
+        <div className="text-meta text-muted mt-3">{t("settings.loading")}</div>
       ) : workspaces.length === 0 ? (
-        <div className="text-[12px] text-muted mt-3">{t("settings.noWorkspacesTrusted")}</div>
+        <div className="text-meta text-muted mt-3">{t("settings.noWorkspacesTrusted")}</div>
       ) : (
         <div className="mt-3 divide-y divide-line">
           {workspaces.map((workspace) => (
@@ -577,7 +604,7 @@ function TrustedWorkspacesCard() {
                 </div>
               </div>
               <button
-                className="text-[12px] text-red-600 px-2 py-1"
+                className="text-meta text-red-600 px-2 py-1"
                 onClick={() => void revoke(workspace.workspace)}
               >
                 {t("settings.revoke")}
@@ -636,7 +663,7 @@ function SafetyCard() {
       <div className={FIELD_LABEL}>{t("settings.safety")}</div>
       <div className={FIELD_HELP}>{t("settings.safetyHelp")}</div>
 
-      <div className="mt-3 text-[13px] text-ink">{t("settings.executionLevel")}</div>
+      <div className="mt-3 text-ui text-ink">{t("settings.executionLevel")}</div>
       <div className="seg mt-2" role="radiogroup" aria-label={t("settings.executionLevel")} data-testid="execution-level">
         {(["off", "auto", "strict"] as const).map((lv) => (
           <button
@@ -661,8 +688,8 @@ function SafetyCard() {
           onChange={(e) => save({ sandbox_enabled: e.target.checked })}
         />
         <span>
-          <span className="block text-[13px] text-ink">{t("settings.sandboxEnabled")}</span>
-          <span className="block text-[12px] text-muted">{t("settings.sandboxEnabledHelp")}</span>
+          <span className="block text-ui text-ink">{t("settings.sandboxEnabled")}</span>
+          <span className="block text-meta text-muted">{t("settings.sandboxEnabledHelp")}</span>
         </span>
       </label>
 
@@ -676,8 +703,8 @@ function SafetyCard() {
           onChange={(e) => save({ sandbox_network: e.target.checked })}
         />
         <span>
-          <span className="block text-[13px] text-ink">{t("settings.sandboxNetwork")}</span>
-          <span className="block text-[12px] text-muted">{t("settings.sandboxNetworkHelp")}</span>
+          <span className="block text-ui text-ink">{t("settings.sandboxNetwork")}</span>
+          <span className="block text-meta text-muted">{t("settings.sandboxNetworkHelp")}</span>
         </span>
       </label>
 
@@ -739,7 +766,7 @@ function UpdateInline() {
         </button>
       )}
       {(state === "none" || state === "error" || state === "installing") && (
-        <span className="text-[12px] text-muted">
+        <span className="text-meta text-muted">
           {statusText}
         </span>
       )}
@@ -785,7 +812,7 @@ function TokenSavingsCard() {
         {t("settings.tokenSavingsHelp")}
       </div>
 
-      <div className="mt-3 text-[13px] text-ink">{t("settings.pdfsNoNativePdf")}</div>
+      <div className="mt-3 text-ui text-ink">{t("settings.pdfsNoNativePdf")}</div>
       <div className="seg mt-2" role="radiogroup" aria-label={t("settings.pdfFallbackAria")} data-testid="pdf-fallback">
         <button
           className={pdf.pdf_fallback === "text" ? "active" : ""}
@@ -806,26 +833,26 @@ function TokenSavingsCard() {
 
       <div className="mt-3 flex items-center gap-5">
         <label className="flex items-center gap-2.5">
-          <span className="text-[13px] text-ink">{t("settings.maxPages")}</span>
+          <span className="text-ui text-ink">{t("settings.maxPages")}</span>
           <input
             type="number"
             min={1}
             max={100}
             value={pdf.pdf_max_pages}
             data-testid="pdf-max-pages"
-            className="w-16 px-2 py-1.5 rounded-lg border border-line bg-paper text-[13px] text-ink outline-none focus:border-accent"
+            className="w-16 px-2 py-1.5 rounded-lg border border-line bg-paper text-ui text-ink outline-none focus:border-accent"
             onChange={(e) => save({ pdf_max_pages: Math.max(1, Math.min(Number(e.target.value) || 20, 100)) })}
           />
         </label>
         <label className="flex items-center gap-2.5">
-          <span className="text-[13px] text-ink">{t("settings.maxSize")}</span>
+          <span className="text-ui text-ink">{t("settings.maxSize")}</span>
           <input
             type="number"
             min={1}
             max={10}
             value={pdf.pdf_max_mb}
             data-testid="pdf-max-mb"
-            className="w-16 px-2 py-1.5 rounded-lg border border-line bg-paper text-[13px] text-ink outline-none focus:border-accent"
+            className="w-16 px-2 py-1.5 rounded-lg border border-line bg-paper text-ui text-ink outline-none focus:border-accent"
             onChange={(e) => save({ pdf_max_mb: Math.max(1, Math.min(Number(e.target.value) || 10, 10)) })}
           />
           <span className="text-[12.5px] text-muted">{t("settings.mb")}</span>
@@ -909,14 +936,14 @@ function CompactionCard() {
 
       <div className="mt-3 flex items-center gap-5 flex-wrap">
         <label className="flex items-center gap-2.5">
-          <span className="text-[13px] text-ink">Compact at</span>
+          <span className="text-ui text-ink">Compact at</span>
           <input
             type="number"
             min={10}
             max={95}
             value={draftPct ?? pctValue}
             data-testid="compaction-threshold"
-            className="w-16 px-2 py-1.5 rounded-lg border border-line bg-paper text-[13px] text-ink outline-none focus:border-accent"
+            className="w-16 px-2 py-1.5 rounded-lg border border-line bg-paper text-ui text-ink outline-none focus:border-accent"
             onChange={(e) => setDraftPct(e.target.value)}
             onBlur={commitPct}
             onKeyDown={(e) => {
@@ -927,7 +954,7 @@ function CompactionCard() {
           <span className="text-[12.5px] text-muted">% of the context window</span>
         </label>
         <label className="flex items-center gap-2.5">
-          <span className="text-[13px] text-ink">or at</span>
+          <span className="text-ui text-ink">or at</span>
           <input
             type="number"
             min={10_000}
@@ -935,7 +962,7 @@ function CompactionCard() {
             step={10_000}
             value={draftCap ?? cfg.compaction_cap_tokens}
             data-testid="compaction-cap"
-            className="w-28 px-2 py-1.5 rounded-lg border border-line bg-paper text-[13px] text-ink outline-none focus:border-accent"
+            className="w-28 px-2 py-1.5 rounded-lg border border-line bg-paper text-ui text-ink outline-none focus:border-accent"
             onChange={(e) => setDraftCap(e.target.value)}
             onBlur={commitCap}
             onKeyDown={(e) => {
@@ -952,11 +979,11 @@ function CompactionCard() {
       </div>
 
       <div className="mt-3 flex items-center gap-2.5">
-        <span className="text-[13px] text-ink">Summarizer model</span>
+        <span className="text-ui text-ink">Summarizer model</span>
         <select
           value={cfg.compaction_model}
           data-testid="compaction-model"
-          className="px-2 py-1.5 rounded-lg border border-line bg-paper text-[13px] text-ink outline-none focus:border-accent"
+          className="px-2 py-1.5 rounded-lg border border-line bg-paper text-ui text-ink outline-none focus:border-accent"
           onChange={(e) => save({ compaction_model: e.target.value })}
         >
           <option value="">Session&rsquo;s own model (default)</option>
@@ -979,12 +1006,23 @@ function CompactionCard() {
 // The chip's bar is context-window occupancy; the session total (unbounded) lives in
 // the popover. Some people would rather not watch a meter at all, hence the toggle.
 function ContextBarCard() {
+  const { t } = useTranslation();
   const [shown, setShown] = useState<boolean | null>(null);
+  const [hidden, setHidden] = useState<boolean | null>(null);
+  const [effort, setEffort] = useState<string>("default");
 
   useEffect(() => {
     getSettings()
-      .then((s) => setShown(s.context_bar === true))
-      .catch(() => setShown(false));
+      .then((s) => {
+        setShown(s.context_bar === true);
+        setHidden(s.hide_reasoning_running === true);
+        setEffort(s.reasoning_effort || "default");
+      })
+      .catch(() => {
+        setShown(false);
+        setHidden(false);
+        setEffort("default");
+      });
   }, []);
 
   const save = async (next: boolean) => {
@@ -992,7 +1030,17 @@ function ContextBarCard() {
     await setContextBar(next);
   };
 
-  if (shown === null) return null;
+  const saveHidden = async (next: boolean) => {
+    setHidden(next);
+    await setHideReasoningRunning(next);
+  };
+
+  const saveEffort = async (next: string) => {
+    setEffort(next);
+    await setReasoningEffort(next);
+  };
+
+  if (shown === null || hidden === null) return null;
   return (
     <div className={CARD + " p-4 mb-4"} data-testid="context-bar-card">
       <div className={FIELD_LABEL}>Composer</div>
@@ -1005,14 +1053,41 @@ function ContextBarCard() {
           onChange={(e) => save(e.target.checked)}
         />
         <span>
-          <span className="block text-[13px] text-ink">Show the context window bar</span>
-          <span className="block text-[12px] text-muted">
+          <span className="block text-ui text-ink">Show the context window bar</span>
+          <span className="block text-meta text-muted">
             A small meter showing how full the model&rsquo;s context window is. Turn it off
             to show this session&rsquo;s token total instead; either way the full breakdown
             is one click away.
           </span>
         </span>
       </label>
+      <label className="flex items-start gap-3 py-2">
+        <input
+          type="checkbox"
+          className="mt-0.5"
+          data-testid="hide-reasoning-toggle"
+          checked={hidden}
+          onChange={(e) => saveHidden(e.target.checked)}
+        />
+        <span>
+          <span className="block text-ui text-ink">{t("settings.hide_reasoning_title")}</span>
+          <span className="block text-meta text-muted">{t("settings.hide_reasoning_desc")}</span>
+        </span>
+      </label>
+      <div className="flex items-center gap-3 py-2">
+        <span className="block text-ui text-ink">{t("settings.reasoning_effort_title")}</span>
+        <select
+          className="ml-auto text-meta text-ink bg-transparent border border-border rounded px-2 py-1"
+          value={effort}
+          onChange={(e) => saveEffort(e.target.value)}
+          data-testid="reasoning-effort-select"
+        >
+          <option value="default">{t("settings.reasoning_effort_default")}</option>
+          <option value="low">{t("settings.reasoning_effort_low")}</option>
+          <option value="medium">{t("settings.reasoning_effort_medium")}</option>
+          <option value="high">{t("settings.reasoning_effort_high")}</option>
+        </select>
+      </div>
     </div>
   );
 }
@@ -1045,10 +1120,10 @@ function MemoryInjectionCard() {
           onChange={(e) => save(e.target.checked)}
         />
         <span>
-          <span className="block text-[13px] text-ink">
+          <span className="block text-ui text-ink">
             每轮自动带上相关记忆
           </span>
-          <span className="block text-[12px] text-muted">
+          <span className="block text-meta text-muted">
             开启后，小桔会在每次对话时自动检索并注入与当前话题相关的记忆，越聊越懂你。关闭则保留记忆但不自动注入。
           </span>
         </span>
@@ -1141,8 +1216,8 @@ function WillModulationCard() {
   }) => (
     <div className="py-2 flex items-start gap-3" data-testid={props.testid}>
       <div className="flex-1">
-        <div className="text-[13px] text-ink">{props.label}</div>
-        <div className="text-[12px] text-muted">{props.desc}</div>
+        <div className="text-ui text-ink">{props.label}</div>
+        <div className="text-meta text-muted">{props.desc}</div>
       </div>
       <input
         type="number"
@@ -1154,7 +1229,7 @@ function WillModulationCard() {
           const n = Number(e.target.value);
           if (Number.isFinite(n)) props.onChange(n);
         }}
-        className="w-20 px-2 py-1 rounded-lg border border-line bg-paper text-[13px] text-ink outline-none focus:border-accent"
+        className="w-20 px-2 py-1 rounded-lg border border-line bg-paper text-ui text-ink outline-none focus:border-accent"
       />
     </div>
   );
@@ -1162,7 +1237,7 @@ function WillModulationCard() {
   return (
     <div className={CARD + " p-4 mb-4"} data-testid="will-modulation-card">
       <div className={FIELD_LABEL}>意志层 / 行为调制</div>
-      <div className="text-[12px] text-muted mt-1 leading-relaxed">
+      <div className="text-meta text-muted mt-1 leading-relaxed">
         这 5 个阈值决定意志层让「画像」覆盖到「行为」的杠杆长度。每条独立保存。
         <span className="block mt-1">
           <span className="text-accent">📎 联动关系</span>：4 与 5 共用同一条画像输入（你过去的高置信立场）——立场命中数增多时，这两条会自动一起涨。需要压制其中某一条，请直接手动覆盖。
@@ -1180,8 +1255,8 @@ function WillModulationCard() {
           onChange={(e) => update({ enabled: e.target.checked })}
         />
         <span>
-          <span className="block text-[13px] text-ink">让认知与情感影响行为（总开关）</span>
-          <span className="block text-[12px] text-muted">
+          <span className="block text-ui text-ink">让认知与情感影响行为（总开关）</span>
+          <span className="block text-meta text-muted">
             关闭 = 按固定参数运行，下方 5 个阈值都不生效；开启 = 下方的值才是实际生效值。修改任何一条后请保持总开关开启，否则不生效。
           </span>
         </span>
@@ -1291,7 +1366,7 @@ function AgencyCard() {
   return (
     <div className={CARD + " p-4 mb-4"} data-testid="agency-card">
       <div className={FIELD_LABEL}>自主层 / 替你行动（L2）</div>
-      <div className="text-[12px] text-muted mt-1 leading-relaxed">
+      <div className="text-meta text-muted mt-1 leading-relaxed">
         小桔可以<b>不等你开口</b>就去做的事。低风险动作（如主动信息摄入）自主执行并记进「小桔在忙」；
         <span className="text-accent"> 高风险动作（写文件 / 发消息 / 删除）永远不会自动执行</span>，
         只会生成提议卡等你裁决。
@@ -1306,8 +1381,8 @@ function AgencyCard() {
           onChange={(e) => toggle(e.target.checked)}
         />
         <span>
-          <span className="block text-[13px] text-ink">允许小桔自主行动（总开关）</span>
-          <span className="block text-[12px] text-muted">
+          <span className="block text-ui text-ink">允许小桔自主行动（总开关）</span>
+          <span className="block text-meta text-muted">
             关闭 = 小桔只回应你，绝不主动做任何事。也可设环境变量 <code>DESKMATE_L2_ENABLED=0</code> 强制关闭。
           </span>
         </span>
@@ -1315,7 +1390,7 @@ function AgencyCard() {
 
       <div className="py-2" data-testid="agency-whitelist">
         <div className="text-[12.5px] font-medium text-ink">白名单动作</div>
-        <div className="text-[12px] text-muted mt-1">
+        <div className="text-meta text-muted mt-1">
           {actions.length === 0 ? (
             "（空）"
           ) : (
@@ -1336,7 +1411,7 @@ function AgencyCard() {
       {topics.length > 0 && (
         <div className="py-2" data-testid="agency-topics">
           <div className="text-[12.5px] font-medium text-ink">关注主题域</div>
-          <div className="text-[12px] text-muted mt-1">{topics.join(" · ")}</div>
+          <div className="text-meta text-muted mt-1">{topics.join(" · ")}</div>
         </div>
       )}
 
@@ -1350,7 +1425,7 @@ function AgencyCard() {
         >
           {busy ? "执行中…" : "立刻跑一次"}
         </button>
-        {msg && <span className="text-[12px] text-muted">{msg}</span>}
+        {msg && <span className="text-meta text-muted">{msg}</span>}
       </div>
     </div>
   );
@@ -1377,13 +1452,13 @@ function SidebarCard() {
     <div className={CARD + " p-4 mb-4"}>
       <div className={FIELD_LABEL}>{t("settings.sidebar")}</div>
       <label className="flex items-center gap-3 mt-2.5">
-        <span className="text-[13px] text-ink">{t("settings.conversationsShownPerCoworker")}</span>
+        <span className="text-ui text-ink">{t("settings.conversationsShownPerCoworker")}</span>
         <input
           type="number"
           min={1}
           max={50}
           value={peek}
-          className="w-16 px-2 py-1.5 rounded-lg border border-line bg-paper text-[13px] text-ink outline-none focus:border-accent"
+          className="w-16 px-2 py-1.5 rounded-lg border border-line bg-paper text-ui text-ink outline-none focus:border-accent"
           onChange={(e) => save(Number(e.target.value))}
         />
       </label>

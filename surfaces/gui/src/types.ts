@@ -45,7 +45,9 @@ export type ApprovalDecision =
   | "always_command"
   | "always_domain"
   | "always_task"
-  | "readonly_session";
+  | "readonly_session"
+  // 轮次已结束、没人回答 —— 卡留住作为历史，但不能再点（gateReconciliation.expireOpenGates）。
+  | "expired";
 
 export interface TodoItem {
   content: string;
@@ -104,6 +106,15 @@ export interface Attachment {
   text?: string; // text files
 }
 
+// 审批卡为什么被升级到人手上（后端 Auto-Approve reviewer 的裁决结果）。
+//   reviewer_unsure      —— 审查者拿不准，交给人判断（最常见）
+//   human_required       —— 该动作按策略必须人工点头（审查者无权放行）
+//   reviewer_unavailable —— 审查者不可用（模型/服务异常），退回人工
+export interface ApprovalEscalationInfo {
+  kind: "reviewer_unsure" | "human_required" | "reviewer_unavailable";
+  reason: string;
+}
+
 // Transcript items
 // `ts` = unix seconds (the server's canonical-message stamp; live items stamp locally).
 // Optional: sessions saved before the server stamped timestamps have none.
@@ -136,6 +147,11 @@ export type Item =
       provenance?: string;
       // the Auto-Approve reviewer answered `unsure` and raised this card.
       reviewerUnsure?: string;
+      // 卡片被升级给人看的原因（reviewer_unsure / human_required / reviewer_unavailable）。
+      // 与 reviewerUnsure 的区别：后者只有含糊这一种情况，且是旧字段；两者都渲染同一行提示。
+      escalation?: ApprovalEscalationInfo;
+      // 这张卡对应的工具调用 id —— 去重与「在别处已回答」对账都靠它，禁按标题/参数猜。
+      toolCallId?: string;
       // server-classified: this shell command only reads locally.
       readonlyOk?: boolean;
       resolved?: ApprovalDecision;
@@ -159,6 +175,7 @@ export type Item =
       members: { persona: string; name?: string; model?: string; reason?: string }[];
       enable_chat?: boolean;
       note?: string;
+      toolCallId?: string;
       resolved?: "approved" | "rejected";
     }
   | {
@@ -187,6 +204,7 @@ export type Item =
       kind: "itemsreq";
       items: { title: string; criteria: string; description?: string }[];
       note?: string;
+      toolCallId?: string;
       resolved?: "approved" | "rejected";
     }
   // 记忆保存提示（MEMORY-SPEC §5.1）：内联在对话里，可 Undo。

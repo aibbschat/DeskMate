@@ -157,7 +157,7 @@ export function LocalIntake({ open, onClose }: { open: boolean; onClose: () => v
             <span style={{ color: "var(--muted)" }}>
               <Icon name="file" size={16} className="opacity-60" />
             </span>
-            <span className="text-[14px] font-semibold" style={{ color: "var(--ink)" }}>
+            <span className="text-body font-semibold" style={{ color: "var(--ink)" }}>
               本地资料库
             </span>
           </div>
@@ -183,7 +183,7 @@ export function LocalIntake({ open, onClose }: { open: boolean; onClose: () => v
             className="rounded-xl p-3"
             style={{ border: "1px solid var(--line)", background: "var(--paper)" }}
           >
-            <div className="text-[12px] font-medium mb-2" style={{ color: "var(--ink)" }}>
+            <div className="text-meta font-medium mb-2" style={{ color: "var(--ink)" }}>
               摄入目录
             </div>
             <div className="flex flex-col gap-1.5">
@@ -213,7 +213,7 @@ export function LocalIntake({ open, onClose }: { open: boolean; onClose: () => v
             </div>
             <button
               onClick={() => void addDir()}
-              className="mt-2 text-[12px] flex items-center gap-1 px-2.5 py-1 rounded-lg"
+              className="mt-2 text-meta flex items-center gap-1 px-2.5 py-1 rounded-lg"
               style={{ background: "var(--accent-soft)", color: "var(--accent)" }}
             >
               <Icon name="plus" size={12} /> 添加目录
@@ -225,7 +225,7 @@ export function LocalIntake({ open, onClose }: { open: boolean; onClose: () => v
             className="rounded-xl p-3"
             style={{ border: "1px solid var(--line)", background: "var(--paper)" }}
           >
-            <div className="text-[12px] font-medium mb-2" style={{ color: "var(--ink)" }}>
+            <div className="text-meta font-medium mb-2" style={{ color: "var(--ink)" }}>
               归档分类
             </div>
             <input
@@ -233,7 +233,7 @@ export function LocalIntake({ open, onClose }: { open: boolean; onClose: () => v
               value={category}
               onChange={(e) => setCategory(e.target.value)}
               placeholder="输入或选择分类名（如：写作教程 / 随笔 / 非史料书）"
-              className="w-full px-2.5 py-1.5 rounded-lg text-[12px] outline-none"
+              className="w-full px-2.5 py-1.5 rounded-lg text-meta outline-none"
               style={{
                 background: "var(--panel)",
                 border: "1px solid var(--line)",
@@ -246,7 +246,7 @@ export function LocalIntake({ open, onClose }: { open: boolean; onClose: () => v
                 <option key={c} value={c} />
               ))}
             </datalist>
-            <div className="text-[11px] mt-1.5" style={{ color: "var(--faint)" }}>
+            <div className="text-label mt-1.5" style={{ color: "var(--faint)" }}>
               已有分类：{categories.length ? categories.join("、") : "（暂无，填写即新建）"}
             </div>
           </div>
@@ -255,7 +255,7 @@ export function LocalIntake({ open, onClose }: { open: boolean; onClose: () => v
           <button
             onClick={() => void handleScan()}
             disabled={scanning || dirs.length === 0}
-            className="text-[12px] px-3 py-2 rounded-lg self-start"
+            className="text-meta px-3 py-2 rounded-lg self-start"
             style={{
               background: "var(--accent)",
               color: "#fff",
@@ -266,7 +266,7 @@ export function LocalIntake({ open, onClose }: { open: boolean; onClose: () => v
           </button>
 
           {/* 读稿协助提示 */}
-          <div className="text-[11px]" style={{ color: "var(--faint)" }}>
+          <div className="text-label" style={{ color: "var(--faint)" }}>
             小桔可以读你的稿子（包括《国子监秘闻录》）来建人物圣经、看进度、查人物飘没飘，也能把讨论沉淀进记忆——读稿协助是红线之内的正常行为；她绝不会改写你的原稿文件。
           </div>
 
@@ -274,12 +274,12 @@ export function LocalIntake({ open, onClose }: { open: boolean; onClose: () => v
           {candidates.length > 0 && (
             <div className="flex flex-col gap-2">
               <div className="flex items-center justify-between">
-                <span className="text-[12px]" style={{ color: "var(--muted)" }}>
+                <span className="text-meta" style={{ color: "var(--muted)" }}>
                   发现 {candidates.length} 份文件（勾选要摄入的）
                 </span>
                 <button
                   onClick={() => setSelected(new Set(candidates.map((c) => c.path)))}
-                  className="text-[11px]"
+                  className="text-label"
                   style={{ color: "var(--accent)" }}
                 >
                   全选
@@ -299,7 +299,7 @@ export function LocalIntake({ open, onClose }: { open: boolean; onClose: () => v
                   />
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-1.5">
-                      <div className="text-[12px] font-medium" style={{ color: "var(--ink)" }}>
+                      <div className="text-meta font-medium" style={{ color: "var(--ink)" }}>
                         {c.name}
                       </div>
                       <span
@@ -317,7 +317,7 @@ export function LocalIntake({ open, onClose }: { open: boolean; onClose: () => v
                       </span>
                     </div>
                     <div
-                      className="text-[11px] mt-0.5 truncate"
+                      className="text-label mt-0.5 truncate"
                       style={{ color: "var(--faint)", fontFamily: "var(--mono)" }}
                     >
                       {c.path}
@@ -329,7 +329,7 @@ export function LocalIntake({ open, onClose }: { open: boolean; onClose: () => v
           )}
 
           {result && (
-            <div className="text-[12px]" style={{ color: "var(--accent)" }}>
+            <div className="text-meta" style={{ color: "var(--accent)" }}>
               {result}
             </div>
           )}
@@ -361,7 +361,7 @@ export function LocalIntake({ open, onClose }: { open: boolean; onClose: () => v
               <button
                 onClick={() => void handleIngest()}
                 disabled={ingesting || selected.size === 0}
-                className="text-[12px] px-3 py-2 rounded-lg"
+                className="text-meta px-3 py-2 rounded-lg"
                 style={{
                   background: "var(--accent)",
                   color: "#fff",

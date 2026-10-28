@@ -2,6 +2,7 @@ import { useState, type ReactNode } from "react";
 import type { InboxItem } from "../api";
 import type { QuestionOption } from "../types";
 import { humanizeApprovalTitle } from "../humanize";
+import { ApprovalEscalation } from "./ApprovalEscalation";
 import {
   approvalActionLabels,
   PreviewBlock,
@@ -18,21 +19,21 @@ import {
 // options and single questions render exactly as before.
 
 // Shared styles (mock parity — same language as SourcesDrawer/PersonaView).
-const SEC = "text-[11px] uppercase tracking-[0.05em] text-faint font-semibold";
+const SEC = "text-label uppercase tracking-[0.05em] text-faint font-semibold";
 const BTN_PRIMARY =
-  "px-3 py-1.5 rounded-lg bg-accent text-white text-[13px] font-medium hover:brightness-105 disabled:opacity-40 disabled:hover:brightness-100";
+  "px-3 py-1.5 rounded-lg bg-accent text-white text-ui font-medium hover:brightness-105 disabled:opacity-40 disabled:hover:brightness-100";
 const BTN_BORDERED =
-  "px-3 py-1.5 rounded-lg border border-line bg-paper text-[13px] hover:border-lineStrong";
+  "px-3 py-1.5 rounded-lg border border-line bg-paper text-ui hover:border-lineStrong";
 // §35 approval buttons: blue border for the primary, quiet Deny (matches ApprovalCard).
 const BTN_ACCENT =
-  "px-3 py-1.5 rounded-lg border border-accent text-accent text-[13px] font-semibold hover:bg-accentSoft";
-const BTN_QUIET = "px-3 py-1.5 text-[13px] text-faint hover:text-danger";
+  "px-3 py-1.5 rounded-lg border border-accent text-accent text-ui font-semibold hover:bg-accentSoft";
+const BTN_QUIET = "px-3 py-1.5 text-ui text-faint hover:text-danger";
 const OPT_BASE =
-  "inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full border text-[13px] transition-colors";
+  "inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full border text-ui transition-colors";
 const OPT_OFF = "border-line bg-paper text-ink hover:border-accent hover:bg-accentSoft/50";
 const OPT_ON = "border-accent bg-accentSoft text-accent font-medium";
 const INPUT =
-  "flex-1 min-w-0 rounded-lg bg-paper border border-line px-3 py-2 text-[13px] text-ink placeholder:text-faint outline-none focus:border-lineStrong";
+  "flex-1 min-w-0 rounded-lg bg-paper border border-line px-3 py-2 text-ui text-ink placeholder:text-faint outline-none focus:border-lineStrong";
 // Rich options stack as full-width rows (pills can't hold a description line).
 const ROW_BASE = "w-full text-left rounded-lg border px-3 py-2 transition-colors";
 const ROW_OFF = "border-line bg-paper hover:border-accent hover:bg-accentSoft/50";
@@ -111,7 +112,7 @@ function QuestionBlock({ spec, onAnswer }: { spec: QSpec; onAnswer: (a: string) 
   const preview = previewIdx >= 0 ? options[previewIdx].preview : "";
 
   const recommendedTag = (
-    <span className="text-[11px] uppercase tracking-[0.04em] font-semibold text-ok bg-okSoft border border-okLine rounded-full px-1.5 py-px shrink-0">
+    <span className="text-label uppercase tracking-[0.04em] font-semibold text-ok bg-okSoft border border-okLine rounded-full px-1.5 py-px shrink-0">
       Recommended
     </span>
   );
@@ -132,15 +133,15 @@ function QuestionBlock({ spec, onAnswer }: { spec: QSpec; onAnswer: (a: string) 
           >
             <span
               className={
-                "flex items-center gap-2 text-[13px] " + (on ? "text-accent font-medium" : "text-ink font-medium")
+                "flex items-center gap-2 text-ui " + (on ? "text-accent font-medium" : "text-ink font-medium")
               }
             >
-              {multi && on && <span className="text-accent text-[11px] leading-none">✓</span>}
+              {multi && on && <span className="text-accent text-label leading-none">✓</span>}
               <span className="min-w-0 truncate">{o.label}</span>
               {o.recommended && recommendedTag}
             </span>
             {o.description && (
-              <span className="block text-[12px] text-muted mt-0.5 leading-snug">{o.description}</span>
+              <span className="block text-meta text-muted mt-0.5 leading-snug">{o.description}</span>
             )}
           </button>
         );
@@ -157,7 +158,7 @@ function QuestionBlock({ spec, onAnswer }: { spec: QSpec; onAnswer: (a: string) 
             {optionRows}
             <pre
               data-testid="question-preview"
-              className="flex-1 min-w-0 rounded-lg border border-line bg-paper p-3 text-[12px] leading-relaxed font-mono whitespace-pre overflow-auto max-h-72 text-ink"
+              className="flex-1 min-w-0 rounded-lg border border-line bg-paper p-3 text-meta leading-relaxed font-mono whitespace-pre overflow-auto max-h-72 text-ink"
             >
               {preview}
             </pre>
@@ -175,7 +176,7 @@ function QuestionBlock({ spec, onAnswer }: { spec: QSpec; onAnswer: (a: string) 
                   className={OPT_BASE + " " + (on ? OPT_ON : OPT_OFF)}
                   onClick={() => pick(o)}
                 >
-                  {multi && on && <span className="text-accent text-[11px] leading-none">✓</span>}
+                  {multi && on && <span className="text-accent text-label leading-none">✓</span>}
                   {o.label}
                 </button>
               );
@@ -251,7 +252,7 @@ function QuestionCard({
       <div className={SEC + " flex items-center gap-1.5"} data-testid={grouped ? "question-stepper" : undefined}>
         {grouped && step > 0 && (
           <button
-            className="text-faint hover:text-ink leading-none text-[13px]"
+            className="text-faint hover:text-ink leading-none text-ui"
             title="Previous question"
             aria-label="Previous question"
             onClick={() => setStep(step - 1)}
@@ -277,9 +278,9 @@ function QuestionCard({
           </>
         )}
       </div>
-      <div className="text-[14px] font-semibold mt-0.5 leading-snug">{spec.question}</div>
+      <div className="text-body font-semibold mt-0.5 leading-snug">{spec.question}</div>
       {item.body ? (
-        <div className="text-[13px] text-muted mt-1 whitespace-pre-wrap">{item.body}</div>
+        <div className="text-ui text-muted mt-1 whitespace-pre-wrap">{item.body}</div>
       ) : null}
       {chip}
       {/* key={step} resets selection/text/hover state when the stepper advances */}
@@ -317,7 +318,7 @@ export function InboxItemCard({
           {(() => {
             const s = scopeNote(item.data.tool, item.data.arguments);
             return (
-              <span className={"text-[11px] whitespace-nowrap pt-0.5 " + (s.external ? "text-warnInk" : "text-faint")}>
+              <span className={"text-label whitespace-nowrap pt-0.5 " + (s.external ? "text-warnInk" : "text-faint")}>
                 {s.text}
               </span>
             );
@@ -326,7 +327,7 @@ export function InboxItemCard({
       ) : isQuestion ? null : ( // QuestionCard owns its header + title (stepper needs them)
         <>
           <div className={SEC}>{item.kind}</div>
-          <div className="text-[14px] font-semibold mt-0.5 leading-snug">{item.title}</div>
+          <div className="text-body font-semibold mt-0.5 leading-snug">{item.title}</div>
         </>
       )}
       {item.kind === "approval" && item.data?.tool === "save_skill" ? (
@@ -337,8 +338,12 @@ export function InboxItemCard({
       ) : item.kind === "approval" && item.data?.tool && typeof item.data.arguments?.command === "string" ? (
         <PreviewBlock text={item.data.arguments.command} />
       ) : !isQuestion && item.body ? (
-        <div className="text-[13px] text-muted mt-1 whitespace-pre-wrap">{item.body}</div>
+        <div className="text-ui text-muted mt-1 whitespace-pre-wrap">{item.body}</div>
       ) : null}
+      {/* 为什么这张卡升级到信箱（审查者拿不准 / 策略要求 / 审查者不可用）。 */}
+      {item.kind === "approval" && (
+        <ApprovalEscalation escalation={item.data?.escalation} reviewerUnsure={item.data?.reviewer_unsure} />
+      )}
       {!isQuestion && chip}
       {item.kind === "approval" ? (
         <div className="flex items-center gap-2 mt-2.5 flex-wrap">

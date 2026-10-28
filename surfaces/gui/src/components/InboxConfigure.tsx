@@ -26,8 +26,8 @@ import { Icon } from "./Icon";
 // also deleted a duplication: the mirror channel used to be editable BOTH on this page and
 // via an inline configurator on the Inbox list.
 const CARD = "rounded-xl2 border border-line bg-panel";
-const SELECT = "px-2.5 py-1.5 rounded-lg border border-line bg-paper text-[13px] text-ink";
-const BTN_ACCENT_SM = "text-[12px] px-2.5 py-1 rounded-md bg-accent text-white disabled:opacity-50";
+const SELECT = "px-2.5 py-1.5 rounded-lg border border-line bg-paper text-ui text-ink";
+const BTN_ACCENT_SM = "text-meta px-2.5 py-1 rounded-md bg-accent text-white disabled:opacity-50";
 
 export function InboxConfigure() {
   return (
@@ -40,8 +40,8 @@ export function InboxConfigure() {
       {/* Unrouted = delivery FAILURES ("messages that never reached you"), so it lives with
           the Inbox now (§28; previously with routing under Connectors, §26). */}
       <div className="mt-6" data-testid="unrouted-section">
-        <h3 className="text-[14px] font-semibold mb-1">Unrouted</h3>
-        <p className="text-[13px] text-muted mb-3">
+        <h3 className="text-body font-semibold mb-1">Unrouted</h3>
+        <p className="text-ui text-muted mb-3">
           Inbound messages and background-turn failures nothing claimed — nothing vanishes
           silently.
         </p>
@@ -123,8 +123,8 @@ function InboxRoutingCard() {
 
   return (
     <div className={CARD + " p-4"} data-testid="inbox-mirror-card">
-      <div className="font-semibold text-[13px] mb-1">Unattended approvals</div>
-      <p className="text-[12px] text-muted mb-3">
+      <div className="font-semibold text-ui mb-1">Unattended approvals</div>
+      <p className="text-meta text-muted mb-3">
         Channel where an Unattended session posts Approve/Deny buttons. Currently mirroring to{" "}
         <strong className="text-ink font-medium" title={target || undefined}>
           {known ? `#${known}` : target || "in-app Inbox only"}
@@ -144,17 +144,17 @@ function InboxRoutingCard() {
           Set
         </button>
         {target && (
-          <button className="text-[12px] text-danger/80 hover:text-danger" onClick={clear}>
+          <button className="text-meta text-danger/80 hover:text-danger" onClick={clear}>
             clear
           </button>
         )}
       </div>
       {missingSlackOwner && (
-        <p className="text-[12px] text-warnInk mt-2">
+        <p className="text-meta text-warnInk mt-2">
           Choose an approval owner under Integrations → Slack before routing approvals here.
         </p>
       )}
-      {error && <p className="text-[12px] text-warnInk mt-2">{error}</p>}
+      {error && <p className="text-meta text-warnInk mt-2">{error}</p>}
     </div>
   );
 }
@@ -183,8 +183,8 @@ function DmRouteCard() {
 
   return (
     <div className={CARD + " p-4"}>
-      <div className="font-semibold text-[13px] mb-1">Direct messages</div>
-      <p className="text-[12px] text-muted mb-3">
+      <div className="font-semibold text-ui mb-1">Direct messages</div>
+      <p className="text-meta text-muted mb-3">
         Session that handles DMs to the bot. With none, DMs park under Unrouted below.
       </p>
       <div className="flex items-center gap-2">
@@ -242,13 +242,13 @@ function SubscriptionsCard() {
         <span className="text-muted shrink-0">
           <Icon name="plug" size={15} />
         </span>
-        <span className="font-semibold text-[13px]">Channel subscriptions</span>
-        <span className="text-[12px] text-muted">— sessions that listen to a channel (inbound)</span>
+        <span className="font-semibold text-ui">Channel subscriptions</span>
+        <span className="text-meta text-muted">— sessions that listen to a channel (inbound)</span>
       </div>
 
       {subs && subs.length > 0 ? (
-        <table className="w-full text-[13px]">
-          <thead className="text-[11px] uppercase tracking-[0.04em] text-faint">
+        <table className="w-full text-ui">
+          <thead className="text-label uppercase tracking-[0.04em] text-faint">
             <tr className="text-left">
               <th className="font-medium px-4 py-2">Session</th>
               <th className="font-medium px-4 py-2">Listens to</th>
@@ -269,12 +269,12 @@ function SubscriptionsCard() {
                     </span>
                     {s.channel_name ? `#${s.channel_name}` : s.channel}
                     {s.channel_name && (
-                      <span className="text-[11px] text-faint">{s.channel}</span>
+                      <span className="text-label text-faint">{s.channel}</span>
                     )}
                   </span>
                   {s.collision && (
                     <span
-                      className="ml-1.5 text-[11px] text-warnInk bg-warnSoft/70 border border-warnInk/15 rounded px-1.5 py-0.5"
+                      className="ml-1.5 text-label text-warnInk bg-warnSoft/70 border border-warnInk/15 rounded px-1.5 py-0.5"
                       title="This channel is also your Inbox-routing target — inbound and outbound on one channel conflate broadcast with request/reply."
                     >
                       ⚠ collides
@@ -296,7 +296,7 @@ function SubscriptionsCard() {
           </tbody>
         </table>
       ) : (
-        <div className="px-4 py-3 text-[13px] text-muted">
+        <div className="px-4 py-3 text-ui text-muted">
           No channel subscriptions yet — add one below or ask a coworker to watch a channel.
         </div>
       )}
@@ -337,15 +337,15 @@ function UnroutedTable() {
 
   if (items && items.length === 0)
     return (
-      <div className={CARD + " p-4 text-[13px] text-muted"}>
+      <div className={CARD + " p-4 text-ui text-muted"}>
         Nothing here — no dropped messages or failed turns.
       </div>
     );
 
   return (
     <div className={CARD + " overflow-hidden"}>
-      <table className="w-full text-[13px]">
-        <thead className="text-[11px] uppercase tracking-[0.04em] text-faint">
+      <table className="w-full text-ui">
+        <thead className="text-label uppercase tracking-[0.04em] text-faint">
           <tr className="text-left">
             <th className="font-medium px-4 py-2">When</th>
             <th className="font-medium px-4 py-2">Source</th>

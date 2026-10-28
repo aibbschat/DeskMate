@@ -18,7 +18,7 @@ import { PILL_ACCENT, PILL_LINE, TAG_ACCENT } from "./ui";
 // existing ConnectSetup directly (Gmail's managed flow skips the modal entirely).
 
 const INPUT =
-  "w-full px-3 py-2 rounded-lg border border-line bg-paper text-[13px] text-ink outline-none focus:border-accent";
+  "w-full px-3 py-2 rounded-lg border border-line bg-paper text-ui text-ink outline-none focus:border-accent";
 
 export function AddConnectionModal({
   c,
@@ -62,7 +62,7 @@ export function AddConnectionModal({
       >
         <div className="flex items-center gap-3 px-5 pt-5">
           <ConnectorBadge connector={c} size={34} title={c.title} />
-          <div className="flex-1 font-semibold text-[16px] tracking-tight">
+          <div className="flex-1 font-semibold text-title tracking-tight">
             {title || `Connect ${c.title}`}
           </div>
           <button className="text-faint hover:text-ink text-[20px] leading-none" onClick={onClose} title="Close">
@@ -73,7 +73,7 @@ export function AddConnectionModal({
         {twoModes ? (
           <>
             <div className="px-5 pt-4">
-              <div className="inline-flex rounded-full p-0.5 bg-paper text-[13px] font-medium">
+              <div className="inline-flex rounded-full p-0.5 bg-paper text-ui font-medium">
                 {(["one", "manual"] as const).map((p) => (
                   <button
                     key={p}
@@ -150,7 +150,7 @@ function McpOneClick({ c, onConnected }: { c: Connector; onConnected: () => void
   };
   return (
     <div className="px-5 py-4 space-y-3">
-      <p className="text-[13px] text-muted">
+      <p className="text-ui text-muted">
         Opens {c.title} in your browser — sign in and approve access there. No tokens
         typed, and no OpenWorker account needed: the sign-in runs entirely on this
         computer.
@@ -163,8 +163,8 @@ function McpOneClick({ c, onConnected }: { c: Connector; onConnected: () => void
       >
         {waiting ? "Check your browser…" : `Connect ${c.title}`}
       </button>
-      {error && <div className="text-[13px] text-danger">{error}</div>}
-      <p className="text-[12px] text-faint text-center flex items-center justify-center gap-1.5">
+      {error && <div className="text-ui text-danger">{error}</div>}
+      <p className="text-meta text-faint text-center flex items-center justify-center gap-1.5">
         <span className={TAG_ACCENT}>Recommended</span> agents get a curated set of{" "}
         {c.title} tools · tokens stay on this computer
       </p>
@@ -185,7 +185,7 @@ function GenericOneClick({ c, cloud }: { c: Connector; cloud: CloudStatus | null
   };
   return (
     <div className="px-5 py-4 space-y-3">
-      <p className="text-[13px] text-muted">
+      <p className="text-ui text-muted">
         Opens {c.title} in your browser — approve access there. No tokens typed; connect
         again with another account to add it alongside.
       </p>
@@ -203,8 +203,8 @@ function GenericOneClick({ c, cloud }: { c: Connector; cloud: CloudStatus | null
       ) : (
         <CloudStatusPending />
       )}
-      {error && <div className="text-[13px] text-danger">{error}</div>}
-      <p className="text-[12px] text-faint text-center flex items-center justify-center gap-1.5">
+      {error && <div className="text-ui text-danger">{error}</div>}
+      <p className="text-meta text-faint text-center flex items-center justify-center gap-1.5">
         <span className={TAG_ACCENT}>Recommended</span> tokens stay on this computer
       </p>
     </div>
@@ -222,7 +222,7 @@ function SlackOneClick({ c, cloud }: { c: Connector; cloud: CloudStatus | null }
   };
   return (
     <div className="px-5 py-4 space-y-3">
-      <p className="text-[13px] text-muted">
+      <p className="text-ui text-muted">
         Opens Slack in your browser — approve @ocw for the workspace. No tokens; works for any
         number of workspaces.
       </p>
@@ -235,8 +235,8 @@ function SlackOneClick({ c, cloud }: { c: Connector; cloud: CloudStatus | null }
       ) : (
         <CloudStatusPending />
       )}
-      {error && <div className="text-[13px] text-danger">{error}</div>}
-      <p className="text-[12px] text-faint text-center flex items-center justify-center gap-1.5">
+      {error && <div className="text-ui text-danger">{error}</div>}
+      <p className="text-meta text-faint text-center flex items-center justify-center gap-1.5">
         <span className={TAG_ACCENT}>Recommended</span> relay · tokens stay on this computer
       </p>
     </div>
@@ -254,7 +254,7 @@ function GithubOneClick({ c, cloud }: { c: Connector; cloud: CloudStatus | null 
   };
   return (
     <div className="px-5 py-4 space-y-3">
-      <p className="text-[13px] text-muted">
+      <p className="text-ui text-muted">
         Opens GitHub in your browser — approve OpenWorker there. An existing @ocw-agent App
         installation links right up; otherwise you'll pick an account and repos. No tokens
         typed; the agent acts as ocw-agent[bot].
@@ -271,8 +271,8 @@ function GithubOneClick({ c, cloud }: { c: Connector; cloud: CloudStatus | null 
       ) : (
         <CloudStatusPending />
       )}
-      {error && <div className="text-[13px] text-danger">{error}</div>}
-      <p className="text-[12px] text-faint text-center flex items-center justify-center gap-1.5">
+      {error && <div className="text-ui text-danger">{error}</div>}
+      <p className="text-meta text-faint text-center flex items-center justify-center gap-1.5">
         <span className={TAG_ACCENT}>Recommended</span> relay · short-lived tokens, never stored
       </p>
     </div>
@@ -291,7 +291,7 @@ function HubSpotOneClick({ c, cloud }: { c: Connector; cloud: CloudStatus | null
   };
   return (
     <div className="px-5 py-4 space-y-3">
-      <p className="text-[13px] text-muted">
+      <p className="text-ui text-muted">
         Opens HubSpot in your browser — pick the portal there. What agents may do is chosen
         NOW, at consent:
       </p>
@@ -302,7 +302,7 @@ function HubSpotOneClick({ c, cloud }: { c: Connector; cloud: CloudStatus | null
             ["write", "Read & write", "adds: log notes and tasks, update records, create contacts — never delete"],
           ] as const
         ).map(([value, label, blurb]) => (
-          <label key={value} className="flex items-start gap-2 text-[13px] cursor-pointer">
+          <label key={value} className="flex items-start gap-2 text-ui cursor-pointer">
             <input
               type="radio"
               name="hubspot-access"
@@ -313,7 +313,7 @@ function HubSpotOneClick({ c, cloud }: { c: Connector; cloud: CloudStatus | null
             />
             <span>
               <span className="font-medium">{label}</span>
-              <span className="block text-[12px] text-muted">{blurb}</span>
+              <span className="block text-meta text-muted">{blurb}</span>
             </span>
           </label>
         ))}
@@ -327,8 +327,8 @@ function HubSpotOneClick({ c, cloud }: { c: Connector; cloud: CloudStatus | null
       ) : (
         <CloudStatusPending />
       )}
-      {error && <div className="text-[13px] text-danger">{error}</div>}
-      <p className="text-[12px] text-faint text-center">
+      {error && <div className="text-ui text-danger">{error}</div>}
+      <p className="text-meta text-faint text-center">
         Works for any number of portals · tokens stay on this computer
       </p>
     </div>
@@ -350,7 +350,7 @@ function SlackManual({ onConnected }: { onConnected: () => void }) {
   };
   return (
     <div className="px-5 py-4 space-y-3">
-      <ol className="list-decimal pl-4 text-[13px] text-muted space-y-1">
+      <ol className="list-decimal pl-4 text-ui text-muted space-y-1">
         <li>Create an app at api.slack.com/apps</li>
         <li>Enable Socket Mode, add bot scopes, install it to your workspace</li>
         <li>Paste both tokens</li>
@@ -360,8 +360,8 @@ function SlackManual({ onConnected }: { onConnected: () => void }) {
       <button className={PILL_LINE + " w-full !py-2"} onClick={submit} disabled={busy || !bot.trim() || !app.trim()}>
         {busy ? "Validating…" : "Connect"}
       </button>
-      {error && <div className="text-[13px] text-danger">{error}</div>}
-      <p className="text-[12px] text-warnInk text-center">
+      {error && <div className="text-ui text-danger">{error}</div>}
+      <p className="text-meta text-warnInk text-center">
         One mode at a time — this pauses any relay workspaces.
       </p>
     </div>

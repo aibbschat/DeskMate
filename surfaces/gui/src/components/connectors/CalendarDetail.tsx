@@ -32,7 +32,7 @@ export function CalendarDetail({ c, cloud, slack: _slack, onChanged }: DetailPro
           <h2 className="text-[20px] font-semibold tracking-tight leading-tight">
             Google Calendar
           </h2>
-          <div className="text-[13px] text-muted flex items-center gap-1.5">
+          <div className="text-ui text-muted flex items-center gap-1.5">
             {c.connected ? (
               <>
                 <span className="w-2 h-2 rounded-full bg-ok" />
@@ -64,7 +64,7 @@ export function CalendarDetail({ c, cloud, slack: _slack, onChanged }: DetailPro
 
       {!c.connected && (
         <div className={GRP}>
-          <div className={ROW + " text-[13px] text-muted"}>
+          <div className={ROW + " text-ui text-muted"}>
             Sign in with Google — each account stays separate, agents say which one they use.
             {cloud?.signed_in ? "" : " Requires cloud sign-in."}
           </div>
@@ -96,13 +96,13 @@ function AccountRow({ a, onChanged }: { a: GmailAccount; onChanged: () => void }
   return (
     <div className={ROW} data-testid={`gcal-account-${a.email}`}>
       <span className="min-w-0 flex-1 flex items-center gap-2">
-        <span className="text-[13px] font-medium truncate">{a.email}</span>
+        <span className="text-ui font-medium truncate">{a.email}</span>
         {a.default && <span className={TAG_ACCENT}>Default</span>}
         {a.needs_reauth && <span className={TAG_WARN}>⚠ Sign in again</span>}
       </span>
       {!a.default && (
         <button
-          className="text-[12px] text-muted hover:text-ink shrink-0"
+          className="text-meta text-muted hover:text-ink shrink-0"
           data-testid={`gcal-make-default-${a.email}`}
           onClick={async () => {
             await setGcalDefaultAccount(a.email);

@@ -73,11 +73,11 @@ export function SlackHowItWorks({ workspaces }: { workspaces: SlackWorkspace[] }
     // the only boxes on screen are the two mini-windows, which own their frames.
     <div className="mb-5" data-testid="slack-howitworks">
       <div className="flex items-baseline gap-2.5">
-        <h3 className="text-[13px] font-semibold tracking-tight">
+        <h3 className="text-ui font-semibold tracking-tight">
           Getting started with Slack &amp; OpenWorker
         </h3>
         <button
-          className="ml-auto shrink-0 inline-flex items-center gap-1.5 text-[12px] text-muted hover:text-ink"
+          className="ml-auto shrink-0 inline-flex items-center gap-1.5 text-meta text-muted hover:text-ink"
           data-testid="hiw-collapse"
           title={collapsed ? "Show how mentions work" : "Collapse — reopen anytime"}
           onClick={toggle}
@@ -91,7 +91,7 @@ export function SlackHowItWorks({ workspaces }: { workspaces: SlackWorkspace[] }
           </span>
         </button>
       </div>
-      <div className="text-[12px] text-muted mt-0.5">
+      <div className="text-meta text-muted mt-0.5">
         <span className="text-ok font-bold">✓ </span>
         {ws?.account || "Workspace"} connected
         {mine
@@ -121,7 +121,7 @@ export function SlackHowItWorks({ workspaces }: { workspaces: SlackWorkspace[] }
             {tab === 1 && <SceneThread meFirst={meFirst} meInitial={meInitial} />}
             {tab === 2 && <SceneTeammates />}
           </div>
-          <div className="mt-2.5 text-[12px] text-muted" data-testid="hiw-caption">
+          <div className="mt-2.5 text-meta text-muted" data-testid="hiw-caption">
             {CAPTIONS[tab]}
           </div>
         </div>

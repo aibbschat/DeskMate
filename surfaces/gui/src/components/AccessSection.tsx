@@ -41,12 +41,12 @@ import { Toggle } from "./Toggle";
 // slack (the backend's own default when no platform prefix is given).
 const platformOf = (channel: string) => (channel.includes(":") ? channel.split(":")[0] : "slack");
 
-const SEC_H = "text-[11px] uppercase tracking-[0.05em] text-faint font-semibold";
+const SEC_H = "text-label uppercase tracking-[0.05em] text-faint font-semibold";
 const TAG_CORE =
-  "text-[11px] px-1.5 py-0.5 rounded-full bg-warnSoft/70 text-warnInk border border-warnInk/15";
-const BTN_ACCENT = "text-[12px] px-2.5 py-1.5 rounded-lg bg-accent text-white shrink-0";
+  "text-label px-1.5 py-0.5 rounded-full bg-warnSoft/70 text-warnInk border border-warnInk/15";
+const BTN_ACCENT = "text-meta px-2.5 py-1.5 rounded-lg bg-accent text-white shrink-0";
 const BTN_BORDERED =
-  "text-[12px] px-2.5 py-1.5 rounded-lg border border-line bg-paper hover:border-lineStrong shrink-0";
+  "text-meta px-2.5 py-1.5 rounded-lg border border-line bg-paper hover:border-lineStrong shrink-0";
 
 export function AccessSection({
   sessionId,
@@ -234,7 +234,7 @@ export function AccessSection({
           <Icon name={open ? "chevronDown" : "chevronRight"} size={14} className="rail-chev" />
           <span>Access</span>
           <span
-            className="ml-auto min-w-0 truncate text-[11px] font-normal text-faint"
+            className="ml-auto min-w-0 truncate text-label font-normal text-faint"
             data-testid="access-summary"
             title={summary}
           >
@@ -288,7 +288,7 @@ export function AccessSection({
               <div>
                 <div className={`${SEC_H} mb-1.5`}>Sources</div>
                 {connected.length === 0 && (
-                  <div className="text-[12px] text-faint py-0.5">
+                  <div className="text-meta text-faint py-0.5">
                     No connectors enabled for this session.
                   </div>
                 )}
@@ -297,13 +297,13 @@ export function AccessSection({
                     <div className="flex items-center gap-2 py-1" key={c.connector}>
                       <ConnectorBadge connector={visualFor(c.connector, "connector", byName)} size={24} />
                       <div className="min-w-0 flex-1">
-                        <div className="text-[13px] font-medium leading-tight truncate">
+                        <div className="text-ui font-medium leading-tight truncate">
                           <span>{labelFor(c.connector, byName)}</span>
                           {c.detail && <span className="text-faint font-normal"> · {c.detail}</span>}
                         </div>
                         {byName[c.connector]?.channels && (
                           <button
-                            className="inline-flex items-center gap-0.5 text-[11px] text-accent hover:underline"
+                            className="inline-flex items-center gap-0.5 text-label text-accent hover:underline"
                             onClick={() => {
                               setDraft("");
                               setChannelsFor(c.connector);
@@ -328,7 +328,7 @@ export function AccessSection({
                 {adding ? (
                   <div className="mt-1.5">
                     <input
-                      className="w-full px-2.5 py-1.5 rounded-lg border border-line bg-panel text-[13px] outline-none focus:border-accent"
+                      className="w-full px-2.5 py-1.5 rounded-lg border border-line bg-panel text-ui outline-none focus:border-accent"
                       placeholder="Search connectors…"
                       value={query}
                       onChange={(e) => setQuery(e.target.value)}
@@ -344,7 +344,7 @@ export function AccessSection({
                     {results.length === 0 && (
                       // Also covers a failed/empty catalog fetch: an open picker must never
                       // be silently blank — point at the Connectors page either way.
-                      <div className="text-[12px] text-faint mt-1.5 px-0.5">
+                      <div className="text-meta text-faint mt-1.5 px-0.5">
                         No match — see all on the Connectors page below.
                       </div>
                     )}
@@ -363,10 +363,10 @@ export function AccessSection({
                         >
                           <ConnectorBadge connector={visualFor(c.name, "connector", byName)} size={22} />
                           <span className="min-w-0 flex-1">
-                            <span className="block text-[13px] font-medium leading-tight">
+                            <span className="block text-ui font-medium leading-tight">
                               {c.title}
                             </span>
-                            <span className="block text-[11px] text-faint truncate">{c.blurb}</span>
+                            <span className="block text-label text-faint truncate">{c.blurb}</span>
                           </span>
                           <Icon name="chevronRight" size={11} className="text-faint shrink-0" />
                         </button>
@@ -377,7 +377,7 @@ export function AccessSection({
                   /* UX-038 (owner ruling: option C): ONE footer row, both verbs — the
                      in-session add flow (with its lands-enabled-here guarantee) and the
                      global-page jump. The mute explainer lives on the toggles' tooltip. */
-                  <div className="mt-1.5 flex items-center gap-1.5 text-[12px]">
+                  <div className="mt-1.5 flex items-center gap-1.5 text-meta">
                     <button
                       className="text-accent hover:underline text-left"
                       onClick={() => setAdding(true)}
@@ -405,11 +405,11 @@ export function AccessSection({
                       <div className="flex items-center gap-2 py-1" key={r.connector}>
                         <ConnectorBadge connector={visualFor(r.connector, "connector", byName)} size={24} />
                         <div className="min-w-0 flex-1">
-                          <div className="flex items-center gap-1.5 text-[13px] font-medium leading-tight">
+                          <div className="flex items-center gap-1.5 text-ui font-medium leading-tight">
                             <span className="truncate">{labelFor(r.connector, byName)}</span>
                             {r.tier === "core" && <span className={TAG_CORE}>core</span>}
                           </div>
-                          <div className="text-[11px] text-faint truncate" title={r.reason}>
+                          <div className="text-label text-faint truncate" title={r.reason}>
                             {r.reason}
                           </div>
                         </div>
@@ -460,7 +460,7 @@ export function AccessSection({
                   </div>
                 ) : (
                   <button
-                    className="mt-1 text-[12px] text-accent hover:underline text-left"
+                    className="mt-1 text-meta text-accent hover:underline text-left"
                     onClick={() => setAddingFolder(true)}
                   >
                     + Give access to a folder…
@@ -505,19 +505,19 @@ function ConnectInline({
   return (
     <div>
       <button
-        className="inline-flex items-center gap-1 text-[12px] text-faint hover:text-ink mb-2"
+        className="inline-flex items-center gap-1 text-meta text-faint hover:text-ink mb-2"
         onClick={onBack}
         aria-label="Back to sources"
       >
         <Icon name="arrowLeft" size={13} /> Connect {c.title}
       </button>
-      {c.blurb && <p className="text-[12px] text-muted mb-1 leading-relaxed">{c.blurb}</p>}
+      {c.blurb && <p className="text-meta text-muted mb-1 leading-relaxed">{c.blurb}</p>}
       <div className="-mx-2">
         <ConnectSetup c={c} cloud={cloud} onConnected={onDone} />
       </div>
       {/* Scope semantics, stated once (owner ask 2026-07-13): connecting is account-level,
           the toggle above is what scopes it to a session. */}
-      <p className="text-[11px] text-faint mt-2 leading-snug">
+      <p className="text-label text-faint mt-2 leading-snug">
         Connecting makes {c.title} available to all your coworkers — the toggle in this list
         controls just this session.
       </p>
@@ -551,7 +551,7 @@ function ChannelsInline({
   return (
     <div>
       <button
-        className="inline-flex items-center gap-1 text-[12px] text-faint hover:text-ink mb-2"
+        className="inline-flex items-center gap-1 text-meta text-faint hover:text-ink mb-2"
         onClick={onBack}
         aria-label="Back to sources"
       >
@@ -559,7 +559,7 @@ function ChannelsInline({
       </button>
       <div className={`${SEC_H} mb-1.5`}>Subscribed channels · {channels.length}</div>
       {channels.length === 0 ? (
-        <div className="text-[12px] text-faint py-0.5">
+        <div className="text-meta text-faint py-0.5">
           Not listening to any {label} channel yet.
         </div>
       ) : (
@@ -567,12 +567,12 @@ function ChannelsInline({
           {channels.map((s) => (
             <div className="flex items-center gap-1.5 py-1" key={s.channel}>
               <Icon name="plug" size={13} className="text-muted shrink-0" />
-              <span className="min-w-0 flex-1 text-[13px] truncate" title={s.channel}>
+              <span className="min-w-0 flex-1 text-ui truncate" title={s.channel}>
                 {s.channel_name ? `#${s.channel_name}` : s.channel}
               </span>
               {s.collision && (
                 <span
-                  className="text-[11px] text-warnInk bg-warnSoft/70 border border-warnInk/15 rounded px-1 shrink-0"
+                  className="text-label text-warnInk bg-warnSoft/70 border border-warnInk/15 rounded px-1 shrink-0"
                   title="This channel is also this session's Inbox-routing target — inbound and outbound collide."
                 >
                   ⚠
@@ -597,11 +597,11 @@ function ChannelsInline({
         </button>
       </div>
       {error && (
-        <p className="text-[11px] text-warnInk mt-1.5 leading-snug" data-testid="channel-add-error">
+        <p className="text-label text-warnInk mt-1.5 leading-snug" data-testid="channel-add-error">
           {error}
         </p>
       )}
-      <p className="text-[11px] text-faint mt-1.5 leading-snug">
+      <p className="text-label text-faint mt-1.5 leading-snug">
         The agent receives messages posted to these channels. Removing one stops this session
         from listening — the connector stays connected.
       </p>

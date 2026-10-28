@@ -103,7 +103,7 @@ function RejectPanel({
         value={note}
         onChange={(e) => onNote(e.target.value)}
         placeholder="填写你的修改意见（可选，将带入下一版重写）…"
-        className="w-full rounded-md border border-black/10 dark:border-white/10 bg-paper p-2 text-[13px] text-ink resize-y min-h-[64px]"
+        className="w-full rounded-md border border-black/10 dark:border-white/10 bg-paper p-2 text-ui text-ink resize-y min-h-[64px]"
       />
       <div className="flex gap-2">
         <button className="btn primary" disabled={busy} onClick={onConfirm}>
@@ -546,7 +546,7 @@ export function CreationPipelineView({
         <div className="creation-title">
           <span className="font-semibold text-ink">创作流水线</span>
           {snap && (
-            <span className="text-[12px] text-muted">
+            <span className="text-meta text-muted">
               · {PHASE_LABEL[phase] ?? phase}
               {snap.team_id ? ` · team ${snap.team_id.slice(0, 8)}` : ""}
             </span>
@@ -561,7 +561,7 @@ export function CreationPipelineView({
 
       <div className="creation-body">
         {error && (
-          <div className="rounded-lg bg-rose-500/10 text-rose-600 text-[13px] px-3 py-2 mb-3">{error}</div>
+          <div className="rounded-lg bg-rose-500/10 text-rose-600 text-ui px-3 py-2 mb-3">{error}</div>
         )}
 
         {/* 未开始：创建表单（流程总览 + 结构化制作要求，宽屏两栏降密度） */}
@@ -569,35 +569,35 @@ export function CreationPipelineView({
           <div className="rounded-xl border border-black/10 dark:border-white/10 bg-paper p-5 space-y-5 max-w-4xl">
             {/* 流程总览：把整个流程摆出来（横贯全宽） */}
             <div>
-              <div className="text-[13px] font-semibold text-ink mb-2.5">创作流水线全貌</div>
+              <div className="text-ui font-semibold text-ink mb-2.5">创作流水线全貌</div>
               <div className="flex items-center gap-1.5 overflow-x-auto pb-1">
                 {FLOW_STEPS.map((s, i) => (
                   <div key={s.label} className="flex items-center gap-1.5 shrink-0">
                     <div className="flex flex-col items-center">
-                      <div className="w-7 h-7 rounded-full bg-accent/15 text-accent flex items-center justify-center text-[12px] font-semibold">
+                      <div className="w-7 h-7 rounded-full bg-accent/15 text-accent flex items-center justify-center text-meta font-semibold">
                         {i + 1}
                       </div>
-                      <span className="text-[11px] text-ink mt-1 whitespace-nowrap">{s.label}</span>
+                      <span className="text-label text-ink mt-1 whitespace-nowrap">{s.label}</span>
                       <span className="text-[10px] text-muted whitespace-nowrap">{s.who}</span>
                     </div>
-                    {i < FLOW_STEPS.length - 1 && <span className="text-muted text-[12px] mb-5">→</span>}
+                    {i < FLOW_STEPS.length - 1 && <span className="text-muted text-meta mb-5">→</span>}
                   </div>
                 ))}
                 <div className="flex flex-col items-center shrink-0 ml-1">
-                  <div className="w-7 h-7 rounded-full bg-emerald-500/15 text-emerald-600 flex items-center justify-center text-[12px] font-semibold">
+                  <div className="w-7 h-7 rounded-full bg-emerald-500/15 text-emerald-600 flex items-center justify-center text-meta font-semibold">
                     ✓
                   </div>
-                  <span className="text-[11px] text-emerald-600 mt-1 whitespace-nowrap">定稿 docx</span>
+                  <span className="text-label text-emerald-600 mt-1 whitespace-nowrap">定稿 docx</span>
                 </div>
               </div>
-              <div className="text-[11px] text-muted mt-1.5">
+              <div className="text-label text-muted mt-1.5">
                 每位成员都是独立 Agent：编剧写稿、审核专家把关、主编拍板；剧本可在「拍板」处送圆桌 7 位专家终审。
               </div>
             </div>
 
             <div className="border-t border-black/5 dark:border-white/10 pt-4">
-              <div className="text-[13px] font-semibold text-ink">新建创作项目</div>
-              <div className="text-[11px] text-muted mt-0.5">
+              <div className="text-ui font-semibold text-ink">新建创作项目</div>
+              <div className="text-label text-muted mt-0.5">
                 左侧填基本盘，右侧提制作要求 —— 要求会成为强约束，写稿时严格执行。
               </div>
             </div>
@@ -606,9 +606,9 @@ export function CreationPipelineView({
             <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
               <div className="space-y-4">
                 <div>
-                  <div className="text-[12px] text-muted mb-1">概念 / 剧情点子</div>
+                  <div className="text-meta text-muted mb-1">概念 / 剧情点子</div>
                   <textarea
-                    className="w-full rounded-lg border border-black/10 dark:border-white/15 bg-transparent p-2.5 text-[13px] text-ink"
+                    className="w-full rounded-lg border border-black/10 dark:border-white/15 bg-transparent p-2.5 text-ui text-ink"
                     rows={3}
                     placeholder="例如：一部明代背景的历史剧，主角以锦衣卫身份周旋于东厂与文官之间"
                     value={concept}
@@ -616,11 +616,11 @@ export function CreationPipelineView({
                   />
                 </div>
                 <div>
-                  <div className="text-[12px] text-muted mb-1">原著文件路径（可选）</div>
+                  <div className="text-meta text-muted mb-1">原著文件路径（可选）</div>
                   <div className="flex gap-2">
                     <input
                       type="text"
-                      className="flex-1 min-w-0 rounded-lg border border-black/10 dark:border-white/15 bg-transparent px-2.5 py-2 text-[13px] text-ink"
+                      className="flex-1 min-w-0 rounded-lg border border-black/10 dark:border-white/15 bg-transparent px-2.5 py-2 text-ui text-ink"
                       placeholder="如 /Users/.../原著.docx 或 .txt；留空则仅凭概念创作"
                       value={novelRef}
                       onChange={(e) => setNovelRef(e.target.value)}
@@ -640,17 +640,17 @@ export function CreationPipelineView({
                   </div>
                 </div>
                 <div className="flex gap-4">
-                  <label className="flex items-center gap-1.5 text-[13px] text-ink">
+                  <label className="flex items-center gap-1.5 text-ui text-ink">
                     <input type="radio" checked={kind === "screenplay"} onChange={() => setKind("screenplay")} /> 剧本（含大纲）
                   </label>
-                  <label className="flex items-center gap-1.5 text-[13px] text-ink">
+                  <label className="flex items-center gap-1.5 text-ui text-ink">
                     <input type="radio" checked={kind === "outline"} onChange={() => setKind("outline")} /> 仅大纲
                   </label>
                 </div>
-                <div className="flex items-center gap-2 text-[12px] text-muted">
+                <div className="flex items-center gap-2 text-meta text-muted">
                   执行器：
                   <select
-                    className="rounded border border-black/10 dark:border-white/15 bg-transparent px-2 py-1 text-[12px] text-ink"
+                    className="rounded border border-black/10 dark:border-white/15 bg-transparent px-2 py-1 text-meta text-ink"
                     value={executor}
                     onChange={(e) => setExecutor(e.target.value as any)}
                   >
@@ -662,7 +662,7 @@ export function CreationPipelineView({
                   {busy ? (novelRef.trim() ? "正在建立原著索引…" : "创建中…") : "开始创作"}
                 </button>
                 {busy && novelRef.trim() && (
-                  <div className="text-[12px] text-muted">
+                  <div className="text-meta text-muted">
                     首次读取原著需建索引（读全文 → 切章 → 生成改编圣经）；stub 模式为降级索引、不烧 token，请稍候…
                   </div>
                 )}
@@ -675,13 +675,13 @@ export function CreationPipelineView({
                   (kind === "screenplay" ? "" : "opacity-60")
                 }
               >
-                <div className="text-[12px] font-semibold text-ink">
+                <div className="text-meta font-semibold text-ink">
                   制作要求<span className="text-[10px] font-normal text-muted"> · 可提要求，强约束</span>
                 </div>
 
                 {/* 风格 chips（多选） */}
                 <div>
-                  <div className="text-[12px] text-muted mb-1.5">
+                  <div className="text-meta text-muted mb-1.5">
                     风格（可多选）<span className="text-[10px]">· 将成为剧本的强制要求</span>
                   </div>
                   <div className="flex flex-wrap gap-1.5">
@@ -689,7 +689,7 @@ export function CreationPipelineView({
                       <button
                         key={s}
                         className={
-                          "px-2.5 py-1 rounded-full text-[12px] border " +
+                          "px-2.5 py-1 rounded-full text-meta border " +
                           (styles.includes(s)
                             ? "bg-accent/15 border-accent/40 text-accent font-medium"
                             : "border-black/10 dark:border-white/15 text-ink hover:border-accent/40")
@@ -702,7 +702,7 @@ export function CreationPipelineView({
                     {styleInput.trim() && (
                       <button
                         className={
-                          "px-2.5 py-1 rounded-full text-[12px] border " +
+                          "px-2.5 py-1 rounded-full text-meta border " +
                           (styles.includes(styleInput.trim())
                             ? "bg-accent/15 border-accent/40 text-accent font-medium"
                             : "border-black/10 dark:border-white/15 text-ink")
@@ -713,7 +713,7 @@ export function CreationPipelineView({
                       </button>
                     )}
                     <input
-                      className="w-32 rounded-full border border-black/10 dark:border-white/15 bg-transparent px-2.5 py-1 text-[12px] text-ink"
+                      className="w-32 rounded-full border border-black/10 dark:border-white/15 bg-transparent px-2.5 py-1 text-meta text-ink"
                       placeholder="自定义风格…"
                       value={styleInput}
                       onChange={(e) => setStyleInput(e.target.value)}
@@ -723,13 +723,13 @@ export function CreationPipelineView({
 
                 {/* 节奏 chips（单选） */}
                 <div>
-                  <div className="text-[12px] text-muted mb-1.5">叙事节奏</div>
+                  <div className="text-meta text-muted mb-1.5">叙事节奏</div>
                   <div className="flex flex-wrap gap-1.5">
                     {PACING_PRESETS.map((p) => (
                       <button
                         key={p}
                         className={
-                          "px-2.5 py-1 rounded-full text-[12px] border " +
+                          "px-2.5 py-1 rounded-full text-meta border " +
                           (pacing === p
                             ? "bg-accent/15 border-accent/40 text-accent font-medium"
                             : "border-black/10 dark:border-white/15 text-ink hover:border-accent/40")
@@ -747,20 +747,20 @@ export function CreationPipelineView({
                   <div className="space-y-2">
                     <div className="flex items-center gap-4">
                       <div>
-                        <div className="text-[12px] text-muted mb-1">剧本总集数</div>
+                        <div className="text-meta text-muted mb-1">剧本总集数</div>
                         <div className="flex items-center gap-1">
                           <input
                             type="number"
                             min={1}
                             max={24}
-                            className="w-16 rounded-lg border border-black/10 dark:border-white/15 bg-transparent px-2 py-1 text-[13px] text-ink text-center"
+                            className="w-16 rounded-lg border border-black/10 dark:border-white/15 bg-transparent px-2 py-1 text-ui text-ink text-center"
                             value={episodes}
                             onChange={(e) => setEpisodes(Math.max(1, Math.min(24, parseInt(e.target.value || "1", 10) || 1)))}
                           />
-                          <span className="text-[12px] text-muted">集</span>
+                          <span className="text-meta text-muted">集</span>
                         </div>
                       </div>
-                      <div className="text-[11px] text-muted flex-1">
+                      <div className="text-label text-muted flex-1">
                         {episodes > 1
                           ? "分集模式：每集独立撰写、审核、拍板；做完后可随时「续写加集」接着做"
                           : "全本模式：整本剧本一个文件"}
@@ -768,12 +768,12 @@ export function CreationPipelineView({
                     </div>
                     {episodes > 1 && (
                       <div>
-                        <div className="text-[12px] text-muted mb-1">
+                        <div className="text-meta text-muted mb-1">
                           本次只产出哪些集（可选，如 <span className="font-mono">1,3,5</span>；空=全部）
                         </div>
                         <input
                           type="text"
-                          className="w-full rounded-lg border border-black/10 dark:border-white/15 bg-transparent px-2.5 py-1 text-[12px] text-ink"
+                          className="w-full rounded-lg border border-black/10 dark:border-white/15 bg-transparent px-2.5 py-1 text-meta text-ink"
                           placeholder={`1-${episodes} 中的集号，逗号分隔`}
                           value={episodeRange}
                           onChange={(e) => setEpisodeRange(e.target.value)}
@@ -796,9 +796,9 @@ export function CreationPipelineView({
                 <div className="flex items-center justify-between gap-3">
                   <div className="flex items-center gap-2 min-w-0">
                     <span className="cre-pulse-dot w-2.5 h-2.5 rounded-full bg-accent shrink-0" />
-                    <span className="text-[13px] font-semibold text-ink truncate">{runState.label}</span>
+                    <span className="text-ui font-semibold text-ink truncate">{runState.label}</span>
                   </div>
-                  <span className="text-[12px] font-semibold text-accent shrink-0 tabular-nums">
+                  <span className="text-meta font-semibold text-accent shrink-0 tabular-nums">
                     {Math.round(runState.progress)}%
                   </span>
                 </div>
@@ -808,11 +808,11 @@ export function CreationPipelineView({
                     style={{ width: `${Math.max(4, Math.min(100, runState.progress))}%` }}
                   />
                 </div>
-                <div className="mt-2 text-[12px] text-ink/85">{runState.message}</div>
+                <div className="mt-2 text-meta text-ink/85">{runState.message}</div>
                 {runState.events.length > 0 && (
                   <div className="mt-2 space-y-0.5">
                     {runState.events.map((e, i) => (
-                      <div key={i} className="flex items-center gap-1.5 text-[11px] text-muted cre-rise">
+                      <div key={i} className="flex items-center gap-1.5 text-label text-muted cre-rise">
                         <span className="w-1 h-1 rounded-full bg-accent/50 shrink-0" />
                         <span className="truncate">{e.message}</span>
                       </div>
@@ -848,7 +848,7 @@ export function CreationPipelineView({
                                 : null
                     : null;
                   const badge =
-                    "w-8 h-8 rounded-full flex items-center justify-center text-[12px] font-semibold shrink-0 " +
+                    "w-8 h-8 rounded-full flex items-center justify-center text-meta font-semibold shrink-0 " +
                     (isDone
                       ? "bg-emerald-500/15 text-emerald-600 ring-1 ring-emerald-500/30 cre-pop"
                       : isEpisodicOngoing
@@ -857,7 +857,7 @@ export function CreationPipelineView({
                           ? "bg-accent/20 text-accent ring-2 ring-accent/50 shadow-[0_0_14px_rgba(37,99,235,0.35)] cre-breathe"
                           : "bg-black/[0.04] dark:bg-white/[0.06] text-muted");
                   const labelCls =
-                    "text-[11px] mt-1.5 whitespace-nowrap " +
+                    "text-label mt-1.5 whitespace-nowrap " +
                     (isActive
                       ? "text-accent font-semibold"
                       : isDone
@@ -902,22 +902,22 @@ export function CreationPipelineView({
               </div>
               {/* 制作要求 badge */}
               <div className="flex flex-wrap items-center gap-1.5 mt-2 pt-2 border-t border-black/5 dark:border-white/10">
-                <span className="text-[11px] text-muted">制作要求：</span>
+                <span className="text-label text-muted">制作要求：</span>
                 {!snap.style?.length && !snap.pacing && (snap.episodes ?? 1) <= 1 && (
-                  <span className="text-[11px] text-muted">未指定（默认创作）</span>
+                  <span className="text-label text-muted">未指定（默认创作）</span>
                 )}
                 {(snap.style ?? []).map((s) => (
-                  <span key={s} className="px-2 py-0.5 rounded-full bg-accent/10 text-accent text-[11px]">
+                  <span key={s} className="px-2 py-0.5 rounded-full bg-accent/10 text-accent text-label">
                     {s}
                   </span>
                 ))}
                 {snap.pacing && (
-                  <span className="px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-700 text-[11px]">
+                  <span className="px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-700 text-label">
                     节奏：{snap.pacing}
                   </span>
                 )}
                 {(snap.episodes ?? 1) > 1 && (
-                  <span className="px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-700 text-[11px]">
+                  <span className="px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-700 text-label">
                     {snap.episodes} 集
                     {snap.episode_range?.length && snap.episode_range.length < (snap.episodes ?? 1)
                       ? `（本次产出 ${snap.episode_range.join(",")}）`
@@ -927,20 +927,20 @@ export function CreationPipelineView({
               </div>
             </div>
 
-            <div className="text-[13px] text-ink">
+            <div className="text-ui text-ink">
               <span className="text-muted">概念：</span>
               {snap.concept}
             </div>
             {snap.novel_ref && (
-              <div className="text-[13px] text-ink">
+              <div className="text-ui text-ink">
                 <span className="text-muted">原著：</span>
-                <span className="font-mono text-[12px]">{snap.novel_ref}</span>
+                <span className="font-mono text-meta">{snap.novel_ref}</span>
               </div>
             )}
 
             {/* 原著索引失败提示（不阻断，按无原著继续） */}
             {snap.novel_index?.status === "failed" && (
-              <div className="rounded-lg bg-amber-500/10 text-amber-700 text-[12px] px-3 py-2">
+              <div className="rounded-lg bg-amber-500/10 text-amber-700 text-meta px-3 py-2">
                 原著索引失败：{snap.novel_index.error ?? "未知原因"}（已按无原著继续，修正路径后需重建流水线）
               </div>
             )}
@@ -949,13 +949,13 @@ export function CreationPipelineView({
             {snap.novel_index?.status === "ready" && (
               <div className="rounded-xl border border-black/10 dark:border-white/10 bg-paper p-3 space-y-2">
                 <div className="flex items-center justify-between">
-                  <span className="text-[13px] font-semibold text-ink">原著参考章节</span>
-                  <span className="text-[12px] text-muted">
+                  <span className="text-ui font-semibold text-ink">原著参考章节</span>
+                  <span className="text-meta text-muted">
                     {snap.novel_index.total_chars?.toLocaleString()} 字 · {snap.novel_index.n} 章
                     {snap.novel_index.degraded ? " · 降级索引" : " · LLM 精炼圣经"}
                   </span>
                 </div>
-                <div className="text-[12px] text-muted">
+                <div className="text-meta text-muted">
                   {snap.related_chapters?.length
                     ? `当前引用：${snap.related_chapters
                         .map((i) => `第${i}章${toc.get(i) ? `《${toc.get(i)}》` : ""}`)
@@ -964,7 +964,7 @@ export function CreationPipelineView({
                 </div>
                 <div className="flex items-center gap-2">
                   <input
-                    className="flex-1 rounded-lg border border-black/10 dark:border-white/15 bg-transparent px-2.5 py-1.5 text-[12px] text-ink"
+                    className="flex-1 rounded-lg border border-black/10 dark:border-white/15 bg-transparent px-2.5 py-1.5 text-meta text-ink"
                     placeholder={`匹配主题（默认：${(snap.concept || "").slice(0, 12)}…）`}
                     value={pickTopic}
                     onChange={(e) => setPickTopic(e.target.value)}
@@ -976,7 +976,7 @@ export function CreationPipelineView({
                 {candidates.length > 0 && (
                   <div className="space-y-1.5 border-t border-black/5 dark:border-white/10 pt-2">
                     {candidates.map((c) => (
-                      <label key={c.idx} className="flex items-start gap-2 text-[12px] text-ink cursor-pointer">
+                      <label key={c.idx} className="flex items-start gap-2 text-meta text-ink cursor-pointer">
                         <input
                           type="checkbox"
                           className="mt-0.5"
@@ -988,7 +988,7 @@ export function CreationPipelineView({
                             第{c.idx}章《{c.title}》
                           </span>
                           <span className="text-muted">（{c.chars.toLocaleString()} 字）</span>
-                          <div className="text-muted text-[11px] truncate">{c.head}</div>
+                          <div className="text-muted text-label truncate">{c.head}</div>
                         </span>
                       </label>
                     ))}
@@ -1013,13 +1013,13 @@ export function CreationPipelineView({
             {isEpisodic && epGroups.length > 0 && (
               <div className="space-y-2">
                 {!outlineDone && (
-                  <div className="rounded-lg bg-amber-500/10 border border-amber-500/20 text-amber-700 text-[12px] px-3 py-2">
+                  <div className="rounded-lg bg-amber-500/10 border border-amber-500/20 text-amber-700 text-meta px-3 py-2">
                     <span className="font-medium">当前需先完成大纲：</span>请点击下方「写大纲」按钮（或在步骤条点「① 写大纲」），待大纲定稿后，「写第 N 集」按钮会自动亮起。
                   </div>
                 )}
                 <div className="flex items-center justify-between">
-                  <div className="text-[13px] font-semibold text-ink">分集进度</div>
-                  <div className="text-[11px] text-muted tabular-nums">
+                  <div className="text-ui font-semibold text-ink">分集进度</div>
+                  <div className="text-label text-muted tabular-nums">
                     {epGroups.filter(([, g]) => g.prod?.state === "done").length}/{epGroups.length} 集已定稿
                   </div>
                 </div>
@@ -1053,7 +1053,7 @@ export function CreationPipelineView({
                           <div className="flex items-center gap-2 flex-wrap">
                             <span
                               className={
-                                "text-[13px] font-semibold " +
+                                "text-ui font-semibold " +
                                 (prodState === "done" ? "text-emerald-600" : "text-ink")
                               }
                             >
@@ -1066,7 +1066,7 @@ export function CreationPipelineView({
                             </span>
                             <span
                               className={
-                                "px-2 py-0.5 rounded-full text-[11px] font-medium " +
+                                "px-2 py-0.5 rounded-full text-label font-medium " +
                                 (STATE_PILL[prodState] ?? "bg-black/[0.04] text-muted")
                               }
                             >
@@ -1076,7 +1076,7 @@ export function CreationPipelineView({
                             {g.rev && (
                               <span
                                 className={
-                                  "px-2 py-0.5 rounded-full text-[11px] font-medium " +
+                                  "px-2 py-0.5 rounded-full text-label font-medium " +
                                   (STATE_PILL[revState] ?? "bg-black/[0.04] text-muted")
                                 }
                               >
@@ -1086,7 +1086,7 @@ export function CreationPipelineView({
                           </div>
                           <div className="flex items-center gap-2">
                             <button
-                              className="text-[12px] text-muted hover:text-accent"
+                              className="text-meta text-muted hover:text-accent"
                               onClick={() => g.prod && showPreview(g.prod.id, g.prod.title)}
                             >
                               {loadingPreview === g.prod?.id ? "加载中…" : "预览"}
@@ -1095,12 +1095,12 @@ export function CreationPipelineView({
                         </div>
                         {/* 审核意见：让用户看到审核专家写了什么（审/拍板/打回前可据此判断） */}
                         {g.rev && revState !== "open" && (
-                          <div className="flex items-center justify-between text-[12px] rounded-lg bg-black/[0.02] dark:bg-white/[0.03] px-2.5 py-1.5">
+                          <div className="flex items-center justify-between text-meta rounded-lg bg-black/[0.02] dark:bg-white/[0.03] px-2.5 py-1.5">
                             <span className={"font-medium " + (STATE_COLOR[revState] ?? "text-muted")}>
                               审核意见 · {STATE_LABEL[revState] ?? revState}
                             </span>
                             <button
-                              className="text-[12px] text-muted hover:text-accent"
+                              className="text-meta text-muted hover:text-accent"
                               onClick={() => g.rev && showPreview(g.rev.id, `审核意见 · ${g.rev.title}`)}
                             >
                               {loadingPreview === g.rev.id ? "加载中…" : "看意见"}
@@ -1138,7 +1138,7 @@ export function CreationPipelineView({
                                       {b.label}
                                     </button>
                                     {!rejectOpen && snap?.user_notes?.[`screen:${ep}`] && (
-                                      <span className="text-[12px] text-warnInk">⚑ 已带修改意见</span>
+                                      <span className="text-meta text-warnInk">⚑ 已带修改意见</span>
                                     )}
                                   </span>
                                 );
@@ -1167,7 +1167,7 @@ export function CreationPipelineView({
                   <div>
                     {!extendOpen ? (
                       <button
-                        className="w-full rounded-xl border border-dashed border-black/15 dark:border-white/20 py-2.5 text-[13px] text-muted hover:text-accent hover:border-accent/40"
+                        className="w-full rounded-xl border border-dashed border-black/15 dark:border-white/20 py-2.5 text-ui text-muted hover:text-accent hover:border-accent/40"
                         onClick={() => {
                           setExtFrom(maxEp + 1);
                           setExtTo(maxEp + 3);
@@ -1181,76 +1181,76 @@ export function CreationPipelineView({
                     ) : (
                       <div className="rounded-xl border border-accent/30 bg-paper p-3.5 space-y-3">
                         <div className="flex items-center justify-between">
-                          <span className="text-[13px] font-semibold text-ink">续写加集</span>
-                          <button className="text-[12px] text-muted hover:text-ink" onClick={() => setExtendOpen(false)}>
+                          <span className="text-ui font-semibold text-ink">续写加集</span>
+                          <button className="text-meta text-muted hover:text-ink" onClick={() => setExtendOpen(false)}>
                             收起
                           </button>
                         </div>
                         {/* 继承制作要求（只读） */}
                         <div className="flex flex-wrap items-center gap-1.5">
-                          <span className="text-[11px] text-muted">继承制作要求：</span>
+                          <span className="text-label text-muted">继承制作要求：</span>
                           {(snap?.style ?? []).map((s) => (
-                            <span key={s} className="px-2 py-0.5 rounded-full bg-accent/10 text-accent text-[11px]">
+                            <span key={s} className="px-2 py-0.5 rounded-full bg-accent/10 text-accent text-label">
                               {s}
                             </span>
                           ))}
                           {snap?.pacing && (
-                            <span className="px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-700 text-[11px]">
+                            <span className="px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-700 text-label">
                               节奏：{snap.pacing}
                             </span>
                           )}
-                          <span className="text-[11px] text-muted">（自动延续，无需重选）</span>
+                          <span className="text-label text-muted">（自动延续，无需重选）</span>
                         </div>
                         {/* 续写范围 */}
                         <div className="flex items-center gap-3">
-                          <span className="text-[12px] text-muted">续写范围</span>
+                          <span className="text-meta text-muted">续写范围</span>
                           <div className="flex items-center gap-1">
-                            <span className="text-[12px] text-muted">第</span>
+                            <span className="text-meta text-muted">第</span>
                             <input
                               type="number"
                               min={maxEp + 1}
                               max={99}
-                              className="w-16 rounded-lg border border-black/10 dark:border-white/15 bg-transparent px-2 py-1 text-[13px] text-ink text-center"
+                              className="w-16 rounded-lg border border-black/10 dark:border-white/15 bg-transparent px-2 py-1 text-ui text-ink text-center"
                               value={extFrom}
                               onChange={(e) => setExtFrom(Math.max(1, parseInt(e.target.value || "1", 10) || 1))}
                             />
-                            <span className="text-[12px] text-muted">至</span>
+                            <span className="text-meta text-muted">至</span>
                             <input
                               type="number"
                               min={extFrom}
                               max={99}
-                              className="w-16 rounded-lg border border-black/10 dark:border-white/15 bg-transparent px-2 py-1 text-[13px] text-ink text-center"
+                              className="w-16 rounded-lg border border-black/10 dark:border-white/15 bg-transparent px-2 py-1 text-ui text-ink text-center"
                               value={extTo}
                               onChange={(e) => setExtTo(Math.max(extFrom, parseInt(e.target.value || "1", 10) || 1))}
                             />
-                            <span className="text-[12px] text-muted">集</span>
+                            <span className="text-meta text-muted">集</span>
                           </div>
                         </div>
                         {/* 前情上下文档位 */}
                         <div className="space-y-1.5">
-                          <div className="text-[12px] text-muted">前情上下文（新集动笔时注入，续写衔接）</div>
-                          <label className="flex items-center gap-2 text-[12px] text-ink cursor-pointer">
+                          <div className="text-meta text-muted">前情上下文（新集动笔时注入，续写衔接）</div>
+                          <label className="flex items-center gap-2 text-meta text-ink cursor-pointer">
                             <input
                               type="radio"
                               checked={extPrior === "summary_recent"}
                               onChange={() => setExtPrior("summary_recent")}
                             />
                             前集摘要 + 紧邻上集定稿全文
-                            <span className="text-[11px] text-muted">（推荐，衔接最准）</span>
+                            <span className="text-label text-muted">（推荐，衔接最准）</span>
                           </label>
-                          <label className="flex items-center gap-2 text-[12px] text-ink cursor-pointer">
+                          <label className="flex items-center gap-2 text-meta text-ink cursor-pointer">
                             <input
                               type="radio"
                               checked={extPrior === "summary"}
                               onChange={() => setExtPrior("summary")}
                             />
                             仅前集摘要
-                            <span className="text-[11px] text-muted">（每集约150字，省 token）</span>
+                            <span className="text-label text-muted">（每集约150字，省 token）</span>
                           </label>
-                          <label className="flex items-center gap-2 text-[12px] text-ink cursor-pointer">
+                          <label className="flex items-center gap-2 text-meta text-ink cursor-pointer">
                             <input type="checkbox" checked={extNotes} onChange={(e) => setExtNotes(e.target.checked)} />
                             附带历史审改意见
-                            <span className="text-[11px] text-muted">（审核评语/打回理由，续写不重蹈覆辙）</span>
+                            <span className="text-label text-muted">（审核评语/打回理由，续写不重蹈覆辙）</span>
                           </label>
                         </div>
                         <div className="flex gap-2 justify-end">
@@ -1271,7 +1271,7 @@ export function CreationPipelineView({
             {/* board 项状态：两模式均渲染；分集模式仅显示大纲等无集号项（剧本预览见上方分集卡片，避免重复） */}
             <div className="space-y-1.5">
               {isEpisodic && (
-                <div className="text-[13px] font-semibold text-ink">
+                <div className="text-ui font-semibold text-ink">
                   {phase === "lead_outline"
                     ? "大纲内容（拍板前请点「预览」查看）"
                     : "大纲（已定稿，点「预览」可回看）"}
@@ -1280,14 +1280,14 @@ export function CreationPipelineView({
               {snap.items.filter((it) => !isEpisodic || it.episode == null).map((it) => (
                   <div
                     key={it.id}
-                    className="flex items-center gap-2 text-[13px] rounded-lg bg-black/[0.02] dark:bg-white/[0.03] px-3 py-2"
+                    className="flex items-center gap-2 text-ui rounded-lg bg-black/[0.02] dark:bg-white/[0.03] px-3 py-2"
                   >
                     <span className="text-ink flex-1">{it.title}</span>
-                    <span className={"text-[12px] font-medium " + (STATE_COLOR[it.state] ?? "text-muted")}>
+                    <span className={"text-meta font-medium " + (STATE_COLOR[it.state] ?? "text-muted")}>
                       {STATE_LABEL[it.state] ?? it.state}
                     </span>
                     <button
-                      className="text-[12px] text-muted hover:text-accent"
+                      className="text-meta text-muted hover:text-accent"
                       onClick={() => showPreview(it.id, it.title)}
                     >
                       {loadingPreview === it.id ? "加载中…" : "预览"}
@@ -1342,7 +1342,7 @@ export function CreationPipelineView({
                     </button>
                   )}
                   {!rejectOpen && snap?.user_notes?.["outline"] && (
-                    <span className="text-[12px] text-warnInk self-center">⚑ 已带修改意见</span>
+                    <span className="text-meta text-warnInk self-center">⚑ 已带修改意见</span>
                   )}
                   <button className="btn" disabled={busy} onClick={() => run(() => leadOutline(pid, true))}>
                     主编直接定稿
@@ -1397,7 +1397,7 @@ export function CreationPipelineView({
                     </button>
                   )}
                   {!rejectOpen && snap?.user_notes?.["screen"] && (
-                    <span className="text-[12px] text-warnInk self-center">⚑ 已带修改意见</span>
+                    <span className="text-meta text-warnInk self-center">⚑ 已带修改意见</span>
                   )}
                   <button className="btn" disabled={busy} onClick={() => run(() => leadScreen(pid, true))}>
                     主编直接定稿
@@ -1407,7 +1407,7 @@ export function CreationPipelineView({
                   </button>
                 </>
               )}
-              {phase === "done" && <div className="text-[13px] text-emerald-600 font-medium">✅ 已定稿</div>}
+              {phase === "done" && <div className="text-ui text-emerald-600 font-medium">✅ 已定稿</div>}
             </div>
 
             {/* 终审提案生成中（openProposal 无进度，至少给个反馈） */}
@@ -1415,9 +1415,9 @@ export function CreationPipelineView({
               <div className="rounded-xl border border-accent/30 bg-gradient-to-br from-accent/[0.08] via-paper to-emerald-500/[0.06] p-4 shadow-sm cre-panel-in">
                 <div className="flex items-center gap-2">
                   <span className="cre-pulse-dot w-2.5 h-2.5 rounded-full bg-accent shrink-0" />
-                  <span className="text-[13px] font-semibold text-ink">正在生成终审方案…</span>
+                  <span className="text-ui font-semibold text-ink">正在生成终审方案…</span>
                 </div>
-                <div className="mt-2 text-[12px] text-muted">
+                <div className="mt-2 text-meta text-muted">
                   拉取送审片段、验收标准与前序审核意见，请稍候。
                 </div>
               </div>
@@ -1443,17 +1443,17 @@ export function CreationPipelineView({
                 <div className="flex items-center justify-between gap-3">
                   <div className="flex items-center gap-2 min-w-0">
                     <span className="cre-pulse-dot w-2.5 h-2.5 rounded-full bg-accent shrink-0" />
-                    <span className="text-[13px] font-semibold text-ink truncate">圆桌终审进行中</span>
+                    <span className="text-ui font-semibold text-ink truncate">圆桌终审进行中</span>
                   </div>
-                  <span className="text-[12px] font-semibold text-accent shrink-0 tabular-nums">
+                  <span className="text-meta font-semibold text-accent shrink-0 tabular-nums">
                     已等待 {reviewElapsed}s
                   </span>
                 </div>
-                <div className="mt-2 text-[12px] text-ink/85">
+                <div className="mt-2 text-meta text-ink/85">
                   已接收 {events.length} 条研讨事件 · 圆桌需在各位专家间往返多轮，通常 1–3 分钟。
                 </div>
                 {reviewElapsed >= 120 && (
-                  <div className="mt-2 text-[12px] text-warnInk bg-warnSoft/70 border border-warnInk/15 rounded-lg px-2.5 py-1.5">
+                  <div className="mt-2 text-meta text-warnInk bg-warnSoft/70 border border-warnInk/15 rounded-lg px-2.5 py-1.5">
                     耗时较长但仍在继续；若超过数分钟仍无新事件，可能是 LLM 服务拥堵，可关闭本页重试或稍后再审。
                   </div>
                 )}
@@ -1466,20 +1466,20 @@ export function CreationPipelineView({
                 {events.map((ev, i) => {
                   if (ev.type === "speaking")
                     return (
-                      <div key={i} className="text-[12px] text-muted">
+                      <div key={i} className="text-meta text-muted">
                         {ev.speaker} 思考中…
                       </div>
                     );
                   if (ev.type === "turn_end" || ev.type === "turn")
                     return (
-                      <div key={i} className="text-[13px]">
+                      <div key={i} className="text-ui">
                         <span className="font-medium text-accent">{ev.speaker}：</span>
                         <span className="text-ink whitespace-pre-wrap">{ev.text}</span>
                       </div>
                     );
                   if (ev.type === "info")
                     return (
-                      <div key={i} className="text-[12px] text-muted">
+                      <div key={i} className="text-meta text-muted">
                         {ev.text}
                       </div>
                     );
@@ -1491,8 +1491,8 @@ export function CreationPipelineView({
             {/* 终审结论 + 确认 */}
             {synthesis && (
               <div className="rounded-xl border border-accent/30 bg-accent-soft/40 p-3 space-y-2">
-                <div className="text-[13px] font-semibold text-ink">圆桌《综合研判报告》</div>
-                <div className="text-[13px] text-ink max-h-72 overflow-auto prose prose-sm">
+                <div className="text-ui font-semibold text-ink">圆桌《综合研判报告》</div>
+                <div className="text-ui text-ink max-h-72 overflow-auto prose prose-sm">
                   <ReactMarkdown>{synthesis}</ReactMarkdown>
                 </div>
                 <div className="flex gap-2 justify-end">
@@ -1508,12 +1508,12 @@ export function CreationPipelineView({
 
             {/* 定稿 docx 路径 */}
             {docxPath && (
-              <div className="rounded-lg bg-emerald-500/10 text-emerald-700 text-[13px] px-3 py-2">
+              <div className="rounded-lg bg-emerald-500/10 text-emerald-700 text-ui px-3 py-2">
                 定稿已落地：{docxPath}
               </div>
             )}
             {snap.docx && Object.keys(snap.docx).length > 0 && !docxPath && (
-              <div className="text-[12px] text-muted">
+              <div className="text-meta text-muted">
                 已导出：{Object.entries(snap.docx).map(([k, v]) => `${k} → ${v}`).join("；")}
               </div>
             )}

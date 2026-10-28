@@ -350,12 +350,12 @@ export function ProofreadPanel({ open, onClose, sessionId, initialFocus }: Props
         >
           <div className="flex items-center gap-2">
             <Icon name="pencil" size={16} />
-            <span className="text-[14px] font-semibold" style={{ color: "var(--ink)" }}>
+            <span className="text-body font-semibold" style={{ color: "var(--ink)" }}>
               文稿编校
             </span>
             {manuscriptName && (
               <span
-                className="inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded"
+                className="inline-flex items-center gap-1 text-label px-2 py-0.5 rounded"
                 style={{ color: "var(--accent)", background: "var(--paper)" }}
               >
                 <Icon name="archive" size={12} />
@@ -364,7 +364,7 @@ export function ProofreadPanel({ open, onClose, sessionId, initialFocus }: Props
             )}
             {profile?.summary && (
               <span
-                className="inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded"
+                className="inline-flex items-center gap-1 text-label px-2 py-0.5 rounded"
                 style={{ color: "var(--accent)", background: "var(--paper)" }}
               >
                 <Icon name="sparkle" size={12} />
@@ -395,7 +395,7 @@ export function ProofreadPanel({ open, onClose, sessionId, initialFocus }: Props
                 {(["proofread", "advisor"] as const).map((m) => (
                   <button
                     key={m}
-                    className="text-[12px] px-3 py-1.5 rounded-lg"
+                    className="text-meta px-3 py-1.5 rounded-lg"
                     style={{
                       color: mode === m ? "#fff" : "var(--muted)",
                       background: mode === m ? "var(--accent)" : "transparent",
@@ -408,7 +408,7 @@ export function ProofreadPanel({ open, onClose, sessionId, initialFocus }: Props
                 ))}
               </div>
               <button
-                className="inline-flex items-center gap-1.5 text-[12px] px-2.5 py-1.5 rounded border"
+                className="inline-flex items-center gap-1.5 text-meta px-2.5 py-1.5 rounded border"
                 style={{ borderColor: "var(--line)", color: "var(--ink)" }}
                 onClick={() => draftInputRef.current?.click()}
               >
@@ -417,7 +417,7 @@ export function ProofreadPanel({ open, onClose, sessionId, initialFocus }: Props
               </button>
               {mode === "proofread" && (
                 <button
-                  className="inline-flex items-center gap-1.5 text-[12px] px-2.5 py-1.5 rounded border"
+                  className="inline-flex items-center gap-1.5 text-meta px-2.5 py-1.5 rounded border"
                   style={{ borderColor: "var(--line)", color: "var(--ink)" }}
                   onClick={() => sampleInputRef.current?.click()}
                 >
@@ -427,7 +427,7 @@ export function ProofreadPanel({ open, onClose, sessionId, initialFocus }: Props
               )}
               {savedManuscripts.length > 0 && (
                 <select
-                  className="text-[12px] px-2 py-1.5 rounded border"
+                  className="text-meta px-2 py-1.5 rounded border"
                   style={{ borderColor: "var(--line)", color: "var(--ink)", background: "var(--paper)" }}
                   value=""
                   onChange={(e) => {
@@ -447,7 +447,7 @@ export function ProofreadPanel({ open, onClose, sessionId, initialFocus }: Props
               )}
               {canPickChapter && (
                 <select
-                  className="text-[12px] px-2 py-1.5 rounded border"
+                  className="text-meta px-2 py-1.5 rounded border"
                   style={{ borderColor: "var(--line)", color: "var(--ink)", background: "var(--paper)" }}
                   value={selectedChapter ?? "all"}
                   onChange={(e) => {
@@ -465,7 +465,7 @@ export function ProofreadPanel({ open, onClose, sessionId, initialFocus }: Props
               )}
               {mode === "proofread" ? (
                 <button
-                  className="text-[12px] px-3 py-1.5 rounded font-medium"
+                  className="text-meta px-3 py-1.5 rounded font-medium"
                   style={{ background: "var(--accent)", color: "#fff" }}
                   onClick={onProofread}
                   disabled={running}
@@ -475,7 +475,7 @@ export function ProofreadPanel({ open, onClose, sessionId, initialFocus }: Props
               ) : (
                 <>
                   <select
-                    className="text-[12px] px-2 py-1.5 rounded border"
+                    className="text-meta px-2 py-1.5 rounded border"
                     style={{ borderColor: "var(--line)", color: "var(--ink)", background: "var(--paper)" }}
                     value={adviceKind}
                     onChange={(e) => setAdviceKind(e.target.value as typeof adviceKind)}
@@ -487,7 +487,7 @@ export function ProofreadPanel({ open, onClose, sessionId, initialFocus }: Props
                     <option value="general">想法</option>
                   </select>
                   <button
-                    className="text-[12px] px-3 py-1.5 rounded font-medium"
+                    className="text-meta px-3 py-1.5 rounded font-medium"
                     style={{ background: "var(--accent)", color: "#fff" }}
                     onClick={onAdvisor}
                     disabled={adviceLoading}
@@ -497,7 +497,7 @@ export function ProofreadPanel({ open, onClose, sessionId, initialFocus }: Props
                 </>
               )}
               <button
-                className="inline-flex items-center gap-1.5 text-[12px] px-2.5 py-1.5 rounded border"
+                className="inline-flex items-center gap-1.5 text-meta px-2.5 py-1.5 rounded border"
                 style={{ borderColor: "var(--line)", color: "var(--muted)" }}
                 onClick={onExportChapter}
                 title="导出当前草稿（或当前章节）为 .txt"
@@ -506,25 +506,25 @@ export function ProofreadPanel({ open, onClose, sessionId, initialFocus }: Props
                 导出本章
               </button>
               {profileSource && (
-                <span className="text-[11px]" style={{ color: "var(--muted)" }}>
+                <span className="text-label" style={{ color: "var(--muted)" }}>
                   风格样本：{profileSource}
                 </span>
               )}
             </div>
-            <div className="text-[11px]" style={{ color: "var(--faint)" }}>
+            <div className="text-label" style={{ color: "var(--faint)" }}>
               {scopeLabel}
               {draftFile && chapters.length > 1 && " · Word 文档已按章拆分，选章后可逐章审"}
             </div>
             {error && (
               <div
-                className="text-[12px] px-2 py-1.5 rounded"
+                className="text-meta px-2 py-1.5 rounded"
                 style={{ color: "#b00020", background: "rgba(176,0,32,0.08)" }}
               >
                 {error}
               </div>
             )}
             <textarea
-              className="flex-1 min-h-0 w-full rounded-lg border p-3 text-[13px] leading-relaxed resize-none"
+              className="flex-1 min-h-0 w-full rounded-lg border p-3 text-ui leading-relaxed resize-none"
               style={{ borderColor: "var(--line)", background: "var(--paper)", color: "var(--ink)" }}
               placeholder={mode === "advisor" ? "把要拿给小桔看的情节 / 框架 / 书评粘贴到这里，或点「打开文件」选择 .txt / .docx…" : "把要批改的文稿粘贴到这里，或点「打开文件」选择 .txt / .docx…"}
               value={draft}
@@ -564,12 +564,12 @@ export function ProofreadPanel({ open, onClose, sessionId, initialFocus }: Props
             {mode === "proofread" ? (
               <>
                 {running && (
-                  <div className="text-[13px] italic" style={{ color: "var(--muted)" }}>
+                  <div className="text-ui italic" style={{ color: "var(--muted)" }}>
                     小桔正在逐句审读你的文稿… 完成后结果会发到聊天。
                   </div>
                 )}
                 {!running && (
-                  <div className="text-[13px] italic leading-relaxed" style={{ color: "var(--faint)" }}>
+                  <div className="text-ui italic leading-relaxed" style={{ color: "var(--faint)" }}>
                     校对完成后，结果会以结构化消息发到聊天（【原文】/【建议】/【理由】按章分组）。
                     你可以在聊天里直接阅读，回到原稿手动修改你认可的条目。
                   </div>
@@ -578,12 +578,12 @@ export function ProofreadPanel({ open, onClose, sessionId, initialFocus }: Props
             ) : (
               <>
                 {adviceLoading && (
-                  <div className="text-[13px] italic" style={{ color: "var(--muted)" }}>
+                  <div className="text-ui italic" style={{ color: "var(--muted)" }}>
                     小桔正在用她自己的镜头读你的文字… 她不是审字，是聊看法。
                   </div>
                 )}
                 {!adviceLoading && !adviceText && !adviceError && (
-                  <div className="text-[13px] italic leading-relaxed" style={{ color: "var(--faint)" }}>
+                  <div className="text-ui italic leading-relaxed" style={{ color: "var(--faint)" }}>
                     这是「写作顾问」——不是编辑、不是代笔，是小桔用她看世界长出来的世界观，
                     读你的情节 / 框架 / 书评，给你她的看法。粘贴好文稿、选好类型，点「让小桔看看」。
                     <br /><br />
@@ -592,7 +592,7 @@ export function ProofreadPanel({ open, onClose, sessionId, initialFocus }: Props
                 )}
                 {adviceError && (
                   <div
-                    className="text-[12px] px-2 py-1.5 rounded"
+                    className="text-meta px-2 py-1.5 rounded"
                     style={{ color: "#b00020", background: "rgba(176,0,32,0.08)" }}
                   >
                     {adviceError}
@@ -600,7 +600,7 @@ export function ProofreadPanel({ open, onClose, sessionId, initialFocus }: Props
                 )}
                 {adviceText && (
                   <div
-                    className="rounded-xl border p-3 text-[13px] leading-relaxed"
+                    className="rounded-xl border p-3 text-ui leading-relaxed"
                     style={{ borderColor: "var(--line)", background: "var(--paper)", color: "var(--ink)", whiteSpace: "pre-wrap" }}
                   >
                     <div className="flex items-center gap-1.5 mb-1.5" style={{ color: "var(--accent)" }}>
@@ -616,7 +616,7 @@ export function ProofreadPanel({ open, onClose, sessionId, initialFocus }: Props
         </div>
         {toast && (
           <div
-            className="absolute left-1/2 -translate-x-1/2 px-3 py-1.5 rounded-full text-[12px] shadow"
+            className="absolute left-1/2 -translate-x-1/2 px-3 py-1.5 rounded-full text-meta shadow"
             style={{ bottom: 14, background: "var(--ink)", color: "var(--panel)", zIndex: 5 }}
           >
             {toast}

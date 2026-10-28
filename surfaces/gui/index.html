@@ -18,6 +18,7 @@
          brand color after a skin switch). Must match:
            - src/theme.ts                       key "openwork-theme"
            - src/components/deskmate/skins/skinStore.ts   key "openwork-skin"
+           - src/textSize.ts                    key "openwork-text-size"
          styles.css uses [data-skin-pre="<id>"] to bind CSS variables per skin. -->
     <script>
       try {
@@ -27,6 +28,10 @@
         var s = localStorage.getItem("openwork-skin");
         // 非法 id 在 styles.css 里没匹配 → 视觉等同 default；store 启动时会再校验一次
         document.documentElement.dataset.skinPre = s || "default";
+        // 字号档位：与 textSize.ts 同一个 key。default 不挂属性（走 styles.css 出厂值），
+        // 所以只有小/大才需要在这里预置，首帧就是最终字号。
+        var ts = localStorage.getItem("openwork-text-size");
+        if (ts === "small" || ts === "large") document.documentElement.dataset.textSize = ts;
       } catch (e) {
         document.documentElement.dataset.theme = "light";
         document.documentElement.dataset.skinPre = "default";

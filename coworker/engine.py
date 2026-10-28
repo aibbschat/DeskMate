@@ -879,7 +879,7 @@ class TurnEngine:
                 continue
             yield Event(
                 EventType.TOOL_PROPOSED,
-                {"name": tool_call.name, "arguments": tool_call.arguments},
+                {"id": tool_call.id, "name": tool_call.name, "arguments": tool_call.arguments},
             )
             self._audit(tool_call, stage="proposed")
             if _is_mangled(tool_call):
@@ -979,7 +979,7 @@ class TurnEngine:
         self._audit(tool_call, stage="finished", status="error", reason=reason)
         return Event(
             EventType.TOOL_FINISHED,
-            {"name": tool_call.name, "status": "error", "reason": reason},
+            {"id": tool_call.id, "name": tool_call.name, "status": "error", "reason": reason},
         )
 
     def _interrupted_tool(self, tool_call: ToolCall) -> Event:
@@ -992,7 +992,7 @@ class TurnEngine:
         )
         return Event(
             EventType.TOOL_FINISHED,
-            {"name": tool_call.name, "status": "interrupted", "reason": "stopped"},
+            {"id": tool_call.id, "name": tool_call.name, "status": "interrupted", "reason": "stopped"},
         )
 
     def _parallel_safe(self, tool_call: ToolCall) -> bool:
@@ -1330,6 +1330,7 @@ class TurnEngine:
                 yield Event(
                     EventType.TOOL_FINISHED,
                     {
+                        "id": tool_call.id,
                         "name": tool_call.name,
                         "status": "denied",
                         "reason": "blocked by the safety reviewer",
@@ -1366,6 +1367,9 @@ class TurnEngine:
             yield Event(
                 EventType.PERMISSION_REQUIRED,
                 {
+                    # The card's identity on the wire: the GUI pairs 提出/回答/完成 三件事
+                    # 靠这个 id（详见 surfaces/gui/src/gateReconciliation.ts）。
+                    "tool_call_id": tool_call.id,
                     "name": tool_call.name,
                     "arguments": tool_call.arguments,
                     "reason": decision.reason,
@@ -1477,7 +1481,7 @@ class TurnEngine:
             self.messages.append(err_msg)
             yield Event(
                 EventType.TOOL_FINISHED,
-                {"name": tool_call.name, "status": "denied", "reason": reason},
+                {"id": tool_call.id, "name": tool_call.name, "status": "denied", "reason": reason},
             )
             self._audit(tool_call, stage="finished", status="denied", reason=reason)
             yield False
@@ -1489,7 +1493,7 @@ class TurnEngine:
             )
             yield Event(
                 EventType.TOOL_FINISHED,
-                {"name": tool_call.name, "status": "error", "reason": "unknown tool"},
+                {"id": tool_call.id, "name": tool_call.name, "status": "error", "reason": "unknown tool"},
             )
             yield False
             return
@@ -1563,6 +1567,7 @@ class TurnEngine:
         return Event(
             EventType.TOOL_FINISHED,
             {
+                "id": tool_call.id,
                 "name": tool_call.name,
                 "status": status,
                 "result_preview": _preview(result),
@@ -1775,6 +1780,7 @@ class TurnEngine:
         yield Event(
             EventType.TOOL_FINISHED,
             {
+                "id": tool_call.id,
                 "name": tool_call.name,
                 "status": status,
                 "result_preview": _preview(result),
@@ -1825,6 +1831,7 @@ class TurnEngine:
         yield Event(
             EventType.TOOL_FINISHED,
             {
+                "id": tool_call.id,
                 "name": tool_call.name,
                 "status": status,
                 "result_preview": _preview(result),
@@ -1892,6 +1899,7 @@ class TurnEngine:
         yield Event(
             EventType.TOOL_FINISHED,
             {
+                "id": tool_call.id,
                 "name": tool_call.name,
                 "status": status,
                 "result_preview": _preview(result),
@@ -1989,6 +1997,7 @@ class TurnEngine:
         yield Event(
             EventType.TOOL_FINISHED,
             {
+                "id": tool_call.id,
                 "name": tool_call.name,
                 "status": status,
                 "result_preview": _preview(result),
@@ -2044,6 +2053,7 @@ class TurnEngine:
         yield Event(
             EventType.TOOL_FINISHED,
             {
+                "id": tool_call.id,
                 "name": tool_call.name,
                 "status": status,
                 "result_preview": _preview(result),
@@ -2097,6 +2107,7 @@ class TurnEngine:
         yield Event(
             EventType.TOOL_FINISHED,
             {
+                "id": tool_call.id,
                 "name": tool_call.name,
                 "status": status,
                 "result_preview": _preview(result),

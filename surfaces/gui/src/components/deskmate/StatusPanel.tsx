@@ -490,7 +490,7 @@ export function StatusPanel({
               Lv.{level} · {stageName}
             </span>
             <span
-              className="text-[11px] px-1.5 py-0.5 rounded"
+              className="text-label px-1.5 py-0.5 rounded"
               style={{
                 color: params.color,
                 background: params.colorSoft,
@@ -625,7 +625,7 @@ export function StatusPanel({
                     border: streakDays >= 7 ? "1px solid #ffd54f" : "1px solid var(--line)",
                   }}
                 >
-                  <span className="text-[16px]">
+                  <span className="text-title">
                     {streakDays >= 30 ? "🔥" : streakDays >= 7 ? "⭐" : "📅"}
                   </span>
                   <div>
@@ -666,7 +666,7 @@ export function StatusPanel({
                         }}
                       >
                         <div className="flex items-center gap-1">
-                          <span className="text-[13px]">{ach.icon}</span>
+                          <span className="text-ui">{ach.icon}</span>
                           <span
                             className="text-[10.5px] font-medium"
                             style={{
@@ -685,7 +685,7 @@ export function StatusPanel({
                             minWidth: 120,
                           }}
                         >
-                          <div className="text-[11px] font-semibold mb-0.5" style={{ color: "var(--ink)" }}>
+                          <div className="text-label font-semibold mb-0.5" style={{ color: "var(--ink)" }}>
                             {ach.icon} {ach.name}
                           </div>
                           <div className="text-[10px]" style={{ color: "var(--muted)" }}>
@@ -745,7 +745,7 @@ export function StatusPanel({
                   .map(([name, p]) => (
                     <div key={name} className="flex items-center gap-2">
                       <span
-                        className="text-[11px] flex-1 truncate"
+                        className="text-label flex-1 truncate"
                         style={{ color: "var(--muted)" }}
                       >
                         {name}
@@ -785,7 +785,7 @@ export function StatusPanel({
                 {[...growth.recent_events].slice(-5).reverse().map((ev, i) => (
                   <div
                     key={`${ev.ts}-${i}`}
-                    className="text-[11px] px-2 py-1 rounded"
+                    className="text-label px-2 py-1 rounded"
                     style={{
                       color: "var(--muted)",
                       background: "var(--paper)",
@@ -880,7 +880,7 @@ export function StatusPanel({
                 >
                   了解度 {learned.stats.total}
                 </span>
-                <span className="text-[11px]" style={{ color: "var(--muted)" }}>
+                <span className="text-label" style={{ color: "var(--muted)" }}>
                   偏好 {learned.stats.by_category.preference || 0} · 习惯{" "}
                   {learned.stats.by_category.habit || 0} · 工具{" "}
                   {learned.stats.by_category.tool || 0}

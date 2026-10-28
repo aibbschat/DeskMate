@@ -89,14 +89,14 @@ export function ConnectorsSection() {
     return (
       <div>
         <button
-          className="text-[13px] text-accent mb-3"
+          className="text-ui text-accent mb-3"
           data-testid="connectors-breadcrumb"
           onClick={() => setDetail(null)}
         >
           ‹ Connectors
         </button>
         {!s ? (
-          <div className="text-[13px] text-muted">Loading…</div>
+          <div className="text-ui text-muted">Loading…</div>
         ) : (
           <McpServerDetail server={s} onChanged={refresh} onGone={() => setDetail(null)} />
         )}
@@ -110,14 +110,14 @@ export function ConnectorsSection() {
     return (
       <div>
         <button
-          className="text-[13px] text-accent mb-3"
+          className="text-ui text-accent mb-3"
           data-testid="connectors-breadcrumb"
           onClick={() => setDetail(null)}
         >
           ‹ Connectors
         </button>
         {!c ? (
-          <div className="text-[13px] text-muted">Loading…</div>
+          <div className="text-ui text-muted">Loading…</div>
         ) : !c.connected ? (
           /* Pre-connect page (§38). When a connect completes, the poll flips
              c.connected and this same route re-renders as the connected page. */
@@ -165,14 +165,14 @@ function GenericDetail({
         <ConnectorBadge connector={c} size={44} title={c.title} />
         <div className="min-w-0 flex-1">
           <h2 className="text-[20px] font-semibold tracking-tight leading-tight">{c.title}</h2>
-          <div className="text-[13px] text-muted flex items-center gap-1.5">
+          <div className="text-ui text-muted flex items-center gap-1.5">
             <span className="w-2 h-2 rounded-full bg-ok" />
             {c.account || (c.auth === "none" ? "Built in" : "Connected")}
           </div>
         </div>
         {c.auth !== "none" && (
           <button
-            className="text-[13px] text-danger/80 hover:text-danger shrink-0"
+            className="text-ui text-danger/80 hover:text-danger shrink-0"
             onClick={async () => {
               await disconnectConnector(c.name);
               onChanged();

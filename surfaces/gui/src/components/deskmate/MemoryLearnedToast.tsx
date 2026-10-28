@@ -58,7 +58,7 @@ export function MemoryLearnedToast({ facts, autoHideMs = 7000, onDone }: MemoryL
         </div>
         <div className="min-w-0">
           <div
-            className="text-[12px] font-semibold mb-0.5"
+            className="text-meta font-semibold mb-0.5"
             style={{ color: "var(--ink)" }}
           >
             我刚记住了

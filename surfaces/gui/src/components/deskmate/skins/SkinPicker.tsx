@@ -14,7 +14,7 @@ import { setActiveSkin, useActiveSkin } from "./skinStore";
 
 const CARD = "rounded-xl2 border border-line bg-panel";
 const FIELD_LABEL = "text-[12.5px] font-medium text-ink";
-const FIELD_HELP = "text-[12px] text-muted mt-1.5 leading-relaxed";
+const FIELD_HELP = "text-meta text-muted mt-1.5 leading-relaxed";
 
 interface SkinCardProps {
   skin: (typeof SKIN_REGISTRY)[number];
@@ -60,7 +60,7 @@ function SkinCard({ skin, active, onPick }: SkinCardProps) {
         ))}
       </div>
       <div className="flex items-baseline gap-2 mb-0.5">
-        <span className="text-[14px] font-semibold text-ink">{skin.name}</span>
+        <span className="text-body font-semibold text-ink">{skin.name}</span>
         <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-accent-soft text-accent font-medium">
           {skin.tag}
         </span>

@@ -53,7 +53,7 @@ export function ProviderMark({ name, title, size = 32 }: { name: string; title: 
       {url ? (
         <img src={url} alt="" style={{ width: size * 0.6, height: size * 0.6 }} />
       ) : (
-        <span className="text-[13px] font-semibold text-muted">{title[0]}</span>
+        <span className="text-ui font-semibold text-muted">{title[0]}</span>
       )}
     </span>
   );
@@ -225,24 +225,24 @@ export function useProviderSetup(opts?: { onSaved?: () => void }): ProviderSetup
       // The card keeps just the state — the account email truncated badly at card
       // width (owner-hit 2026-08-21); the detail pane shows who is signed in.
       if (p.signed_in)
-        return <span className="block text-[12px] text-ok font-medium truncate">✓ Signed in</span>;
-      return <span className="block text-[12px] text-faint truncate">Sign in with your plan</span>;
+        return <span className="block text-meta text-ok font-medium truncate">✓ Signed in</span>;
+      return <span className="block text-meta text-faint truncate">Sign in with your plan</span>;
     }
     if (p.configured && p.needs_key) {
       const used = o?.lastUsed ? relTime(p.last_used_at) : null;
       return (
-        <span className="block text-[12px] text-ok font-medium truncate">
+        <span className="block text-meta text-ok font-medium truncate">
           ✓ Connected{used ? <span className="text-muted font-normal"> · used {used}</span> : ""}
         </span>
       );
     }
     if (!p.needs_key)
       return (
-        <span className="block text-[12px] text-faint truncate">
+        <span className="block text-meta text-faint truncate">
           {keylessOk.has(p.name) ? <span className="text-ok font-medium">✓ Running</span> : "No key needed"}
         </span>
       );
-    return <span className="block text-[12px] text-faint truncate">Not set up</span>;
+    return <span className="block text-meta text-faint truncate">Not set up</span>;
   };
 
   return {
@@ -334,11 +334,11 @@ function OAuthSignIn({ info, tp, onChanged }: { info: ProviderInfo; tp: string; 
     return (
       <div className="mt-4">
         <div className="flex items-center gap-2.5 rounded-xl border border-okLine bg-okSoft px-3 py-2.5">
-          <span className="text-[13px] text-ink min-w-0 flex-1 truncate" data-testid={`${tp}-oauth-account`}>
+          <span className="text-ui text-ink min-w-0 flex-1 truncate" data-testid={`${tp}-oauth-account`}>
             ✓ Signed in{info.account ? ` as ${info.account}` : ""}
           </span>
           <button
-            className="shrink-0 rounded-lg border border-line bg-panel px-3 py-1.5 text-[13px] text-ink hover:border-lineStrong"
+            className="shrink-0 rounded-lg border border-line bg-panel px-3 py-1.5 text-ui text-ink hover:border-lineStrong"
             data-testid={`${tp}-oauth-signout`}
             onClick={async () => {
               await codexSignout().catch(() => {});
@@ -348,7 +348,7 @@ function OAuthSignIn({ info, tp, onChanged }: { info: ProviderInfo; tp: string; 
             Sign out
           </button>
         </div>
-        <p className="text-[12px] text-faint mt-2">
+        <p className="text-meta text-faint mt-2">
           Usage draws on the plan's rolling window, not per-token billing. Sign-in stays on this computer.
         </p>
       </div>
@@ -357,7 +357,7 @@ function OAuthSignIn({ info, tp, onChanged }: { info: ProviderInfo; tp: string; 
   return (
     <div className="mt-4">
       <button
-        className="rounded-lg border border-accent bg-accent px-4 py-2 text-[13px] font-medium text-white hover:brightness-105 disabled:opacity-40"
+        className="rounded-lg border border-accent bg-accent px-4 py-2 text-ui font-medium text-white hover:brightness-105 disabled:opacity-40"
         onClick={() => void start()}
         disabled={busy}
         data-testid={`${tp}-oauth-signin`}
@@ -365,7 +365,7 @@ function OAuthSignIn({ info, tp, onChanged }: { info: ProviderInfo; tp: string; 
         {busy ? "Waiting for the browser…" : "Sign in with ChatGPT"}
       </button>
       {busy && (
-        <p className="text-[12px] text-faint mt-2">
+        <p className="text-meta text-faint mt-2">
           Finish signing in in the browser window.
           {reopenUrl && (
             <>
@@ -380,7 +380,7 @@ function OAuthSignIn({ info, tp, onChanged }: { info: ProviderInfo; tp: string; 
           )}
         </p>
       )}
-      <div className="mt-2 min-h-[19px] text-[13px]">
+      <div className="mt-2 min-h-[19px] text-ui">
         {error && <span className="text-warnInk">{error}</span>}
       </div>
     </div>
@@ -392,31 +392,120 @@ export function ProviderCards({
   tp,
   gridClass = "grid grid-cols-2 gap-2.5",
   lastUsed = false,
+  refine = false,
+  countFor,
 }: {
   ps: ProviderSetupState;
   tp: string; // testid prefix ("ob" onboarding, "set" settings)
   gridClass?: string;
   lastUsed?: boolean;
+  /** 设置页的模型页用：搜索框 + 「已就绪 / 未配置」分组 + 未配置默认折叠。
+   *  引导流程（onboarding）不用 —— 那里厂商只有几个，加了反而挡路。 */
+  refine?: boolean;
+  /** 该厂商在 composer 选择器里已有几个模型（右侧小计数，0/undefined 不显示）。 */
+  countFor?: (provider: string) => number;
 }) {
+  const [q, setQ] = useState("");
+  const [showRest, setShowRest] = useState(false);
   const card =
     "flex items-center gap-2.5 rounded-xl border border-line bg-panel px-3 py-2.5 text-left hover:border-lineStrong transition-colors";
-  return (
-    <div className={gridClass}>
-      {ps.ordered.map((p) => (
-        <button
-          key={p.name}
-          className={card}
-          data-testid={`${tp}-provider-${p.name}`}
-          onClick={() => ps.openProvider(p.name)}
-        >
-          <ProviderMark name={p.name} title={p.title} />
-          <span className="min-w-0 flex-1">
-            <span className="block text-[13px] font-semibold leading-tight truncate">{p.title}</span>
-            {ps.statusFor(p, { lastUsed })}
+
+  const renderCard = (p: ProviderInfo) => {
+    const n = countFor?.(p.name) || 0;
+    return (
+      <button
+        key={p.name}
+        className={card}
+        data-testid={`${tp}-provider-${p.name}`}
+        onClick={() => ps.openProvider(p.name)}
+      >
+        <ProviderMark name={p.name} title={p.title} />
+        <span className="min-w-0 flex-1">
+          <span className="block text-ui font-semibold leading-tight truncate">{p.title}</span>
+          {ps.statusFor(p, { lastUsed })}
+        </span>
+        {n > 0 && (
+          <span
+            className="text-label text-faint bg-paper border border-line rounded-full px-1.5 py-px tabular-nums shrink-0"
+            title={`${n} model${n === 1 ? "" : "s"} in the composer's picker`}
+            data-testid={`${tp}-provider-count-${p.name}`}
+          >
+            {n}
           </span>
-          <span className="text-faint text-[14px]">›</span>
-        </button>
-      ))}
+        )}
+        <span className="text-faint text-body">›</span>
+      </button>
+    );
+  };
+
+  if (!refine) return <div className={gridClass}>{ps.ordered.map(renderCard)}</div>;
+
+  // 搜索：标题、厂商 id、blurb 都算命中（有人记得的是 "qwen" 而不是 "通义千问"）。
+  const needle = q.trim().toLowerCase();
+  const matched = needle
+    ? ps.ordered.filter((p) =>
+        `${p.title} ${p.name} ${p.blurb || ""}`.toLowerCase().includes(needle),
+      )
+    : ps.ordered;
+  // 已就绪优先：配好/已登录的排前面，最近用过的更前 —— 打开这页十次有九次是去改那个能用的。
+  const ready = matched
+    .filter((p) => p.configured || p.signed_in)
+    .sort((a, b) => (b.last_used_at || 0) - (a.last_used_at || 0) || a.title.localeCompare(b.title));
+  const rest = matched
+    .filter((p) => !(p.configured || p.signed_in))
+    .sort((a, b) => a.title.localeCompare(b.title));
+
+  return (
+    <div>
+      <div className="relative mb-2.5">
+        <input
+          className="w-full pl-3 pr-8 py-1.5 rounded-lg border border-line bg-panel text-ui outline-none focus:border-accent"
+          placeholder="Search providers…"
+          value={q}
+          data-testid={`${tp}-provider-search`}
+          onChange={(e) => setQ(e.target.value)}
+        />
+        {q && (
+          <button
+            className="absolute right-2 top-1/2 -translate-y-1/2 text-faint hover:text-ink text-body leading-none"
+            onClick={() => setQ("")}
+            aria-label="Clear search"
+            data-testid={`${tp}-provider-search-clear`}
+          >
+            ×
+          </button>
+        )}
+      </div>
+
+      {ready.length > 0 && (
+        <>
+          <div className="text-label text-faint uppercase tracking-wide mb-1.5" data-testid={`${tp}-group-ready`}>
+            Ready to use · {ready.length}
+          </div>
+          <div className={gridClass}>{ready.map(renderCard)}</div>
+        </>
+      )}
+
+      {rest.length > 0 && (
+        <>
+          <button
+            className="flex items-center gap-1.5 text-label text-faint uppercase tracking-wide mt-3 mb-1.5 hover:text-ink"
+            onClick={() => setShowRest((v) => !v)}
+            data-testid={`${tp}-group-rest-toggle`}
+            aria-expanded={showRest}
+          >
+            <span className="inline-block w-2">{showRest ? "▾" : "▸"}</span>
+            Not set up · {rest.length}
+          </button>
+          {showRest && <div className={gridClass}>{rest.map(renderCard)}</div>}
+        </>
+      )}
+
+      {matched.length === 0 && (
+        <div className="text-meta text-faint py-4 text-center" data-testid={`${tp}-provider-empty`}>
+          No provider matches “{q}”.
+        </div>
+      )}
     </div>
   );
 }
@@ -434,9 +523,9 @@ export function ProviderForm({
   footer?: ReactNode;
 }) {
   const { info, sel } = ps;
-  const label = "block text-[12px] text-muted mt-3 mb-1";
+  const label = "block text-meta text-muted mt-3 mb-1";
   const input =
-    "w-full px-3 py-2 rounded-lg border bg-panel text-[13px] outline-none focus:border-accent";
+    "w-full px-3 py-2 rounded-lg border bg-panel text-ui outline-none focus:border-accent";
   const fieldsAll = info?.fields || [];
   const keyed = fieldsAll.some((x) => x.secret);
   // Cloud providers declare a segmented auth-method choice; the selected method's
@@ -473,7 +562,7 @@ export function ProviderForm({
           />
           {ps.fieldSaved === f.key && (
             <span
-              className="absolute right-2 top-1/2 -translate-y-1/2 text-[11px] font-medium text-ok bg-okSoft rounded-full px-2 py-0.5 pointer-events-none"
+              className="absolute right-2 top-1/2 -translate-y-1/2 text-label font-medium text-ok bg-okSoft rounded-full px-2 py-0.5 pointer-events-none"
               data-testid={`${tp}-field-saved-${f.key}`}
             >
               ✓ Saved
@@ -482,7 +571,7 @@ export function ProviderForm({
           {/* §39: state lives IN the field — no status lines below. */}
           {ps.savedState && testable && (
             <span
-              className="absolute right-2 top-1/2 -translate-y-1/2 text-[11px] font-medium text-ok bg-okSoft rounded-full px-2 py-0.5 pointer-events-none"
+              className="absolute right-2 top-1/2 -translate-y-1/2 text-label font-medium text-ok bg-okSoft rounded-full px-2 py-0.5 pointer-events-none"
               data-testid={`${tp}-saved-pill`}
             >
               {info?.needs_key ? <>✓ Tested &amp; saved</> : <>✓ Detected</>}
@@ -491,7 +580,7 @@ export function ProviderForm({
         </div>
         {testable && (
           <button
-            className="px-4 rounded-lg border border-line text-[13px] font-medium text-ink hover:border-lineStrong shrink-0 disabled:opacity-40"
+            className="px-4 rounded-lg border border-line text-ui font-medium text-ink hover:border-lineStrong shrink-0 disabled:opacity-40"
             onClick={() => ps.runTestAndSave()}
             disabled={ps.verify.state === "testing" || (!ps.secretFilled && !ps.credentialed)}
             data-testid={`${tp}-test`}
@@ -500,23 +589,23 @@ export function ProviderForm({
           </button>
         )}
       </div>
-      {f.help && <p className="text-[12px] text-faint mt-1">{f.help}</p>}
+      {f.help && <p className="text-meta text-faint mt-1">{f.help}</p>}
     </div>
   );
 
   return (
     <div>
-      <button className="text-[13px] text-muted hover:text-ink" onClick={ps.backToGallery} data-testid={`${tp}-back`}>
+      <button className="text-ui text-muted hover:text-ink" onClick={ps.backToGallery} data-testid={`${tp}-back`}>
         ‹ All providers
       </button>
       <div className="flex items-center gap-3 mt-3 mb-1">
         <ProviderMark name={info?.name || ""} title={info?.title || ""} size={36} />
         <span className="min-w-0">
-          <span className="block text-[14px] font-semibold leading-tight">{info?.title}</span>
+          <span className="block text-body font-semibold leading-tight">{info?.title}</span>
           {info ? ps.statusFor(info) : null}
         </span>
       </div>
-      {info?.blurb && <p className="text-[12px] text-faint mt-1">{info.blurb}</p>}
+      {info?.blurb && <p className="text-meta text-faint mt-1">{info.blurb}</p>}
 
       {info?.auth === "oauth" && <OAuthSignIn info={info} tp={tp} onChanged={ps.refreshProviders} />}
 
@@ -548,7 +637,7 @@ export function ProviderForm({
                   role="radio"
                   aria-checked={active}
                   className={
-                    "flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[13px] whitespace-nowrap transition-colors " +
+                    "flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-ui whitespace-nowrap transition-colors " +
                     (active
                       ? "bg-panel text-ink font-medium shadow-sm ring-1 ring-line"
                       : "text-muted hover:text-ink")
@@ -568,29 +657,29 @@ export function ProviderForm({
           </div>
 
           <div className="mt-2.5 rounded-xl border border-line bg-paper/60 px-4 pb-3.5 pt-3">
-            {selected?.desc && <p className="text-[12px] text-muted">{selected.desc}</p>}
+            {selected?.desc && <p className="text-meta text-muted">{selected.desc}</p>}
             {selected?.command && (
               <button
-                className="mt-2.5 inline-flex items-center gap-2 rounded-lg border border-line bg-panel px-2.5 py-1.5 text-[12px] font-mono text-ink hover:border-lineStrong"
+                className="mt-2.5 inline-flex items-center gap-2 rounded-lg border border-line bg-panel px-2.5 py-1.5 text-meta font-mono text-ink hover:border-lineStrong"
                 onClick={() => void navigator.clipboard?.writeText(selected.command || "")}
                 title="Copy command"
                 data-testid={`${tp}-cmd-copy`}
               >
                 {selected.command}
-                <span className="font-sans text-[11px] text-faint">⧉</span>
+                <span className="font-sans text-label text-faint">⧉</span>
               </button>
             )}
             {methodFields.map((f) => fieldRow(f, false))}
             <div className="mt-3.5 flex items-center justify-between gap-3 border-t border-line pt-3">
               {ps.savedState ? (
-                <span className="text-[12px] font-medium text-ok" data-testid={`${tp}-saved-pill`}>
+                <span className="text-meta font-medium text-ok" data-testid={`${tp}-saved-pill`}>
                   ✓ Tested &amp; saved
                 </span>
               ) : (
-                <span className="text-[12px] text-faint">Runs one read-only check, then saves.</span>
+                <span className="text-meta text-faint">Runs one read-only check, then saves.</span>
               )}
               <button
-                className="shrink-0 rounded-lg border border-accent bg-accent px-4 py-1.5 text-[13px] font-medium text-white hover:brightness-105 disabled:opacity-40"
+                className="shrink-0 rounded-lg border border-accent bg-accent px-4 py-1.5 text-ui font-medium text-white hover:brightness-105 disabled:opacity-40"
                 onClick={() => ps.runTestAndSave()}
                 disabled={ps.verify.state === "testing"}
                 data-testid={`${tp}-test`}
@@ -603,7 +692,7 @@ export function ProviderForm({
       )}
 
       {info?.needs_key && KEY_HELP[sel] && (
-        <p className="text-[12px] text-faint mt-2">
+        <p className="text-meta text-faint mt-2">
           No key yet?{" "}
           <button
             className="text-muted underline decoration-line underline-offset-2 hover:text-ink"
@@ -615,7 +704,7 @@ export function ProviderForm({
         </p>
       )}
       {info && !info.needs_key && info.auth !== "oauth" && (
-        <p className="text-[12px] text-faint mt-2">
+        <p className="text-meta text-faint mt-2">
           No API key needed — Ollama runs models on this computer.{" "}
           <button
             className="text-muted underline decoration-line underline-offset-2 hover:text-ink"
@@ -636,7 +725,7 @@ export function ProviderForm({
         if (!ps.showEndpoint)
           return (
             <button
-              className="block self-start text-[13px] text-muted hover:text-ink mt-4"
+              className="block self-start text-ui text-muted hover:text-ink mt-4"
               onClick={() => ps.setShowEndpoint(true)}
               data-testid={`${tp}-endpoint-link`}
             >
@@ -658,20 +747,20 @@ export function ProviderForm({
               />
               {ps.fieldSaved === ep.key && (
                 <span
-                  className="absolute right-2 top-1/2 -translate-y-1/2 text-[11px] font-medium text-ok bg-okSoft rounded-full px-2 py-0.5 pointer-events-none"
+                  className="absolute right-2 top-1/2 -translate-y-1/2 text-label font-medium text-ok bg-okSoft rounded-full px-2 py-0.5 pointer-events-none"
                   data-testid={`${tp}-field-saved-${ep.key}`}
                 >
                   ✓ Saved
                 </span>
               )}
             </div>
-            {ep.help && <p className="text-[12px] text-faint mt-1">{ep.help}</p>}
+            {ep.help && <p className="text-meta text-faint mt-1">{ep.help}</p>}
           </div>
         );
       })()}
 
       {/* Error line: fixed height so failures never reflow the form. */}
-      <div className="mt-3 min-h-[19px] text-[13px]">
+      <div className="mt-3 min-h-[19px] text-ui">
         {ps.verify.state === "error" && <span className="text-warnInk">{ps.verify.msg}</span>}
       </div>
       {info?.auth === "oauth" ? null : footer}

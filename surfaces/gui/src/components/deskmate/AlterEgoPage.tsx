@@ -329,7 +329,7 @@ export function AlterEgoPage({ open, onClose }: Props) {
         </div>
         <button
           onClick={onClose}
-          className="px-4 py-2 rounded-lg text-[13px] font-semibold transition-colors"
+          className="px-4 py-2 rounded-lg text-ui font-semibold transition-colors"
           style={{
             background: "#c2662f",
             color: "#fff",
@@ -367,7 +367,7 @@ export function AlterEgoPage({ open, onClose }: Props) {
             <button
               onClick={handleEnable}
               disabled={enabling}
-              className="px-4 py-2 rounded-lg text-[13px] font-semibold transition-colors"
+              className="px-4 py-2 rounded-lg text-ui font-semibold transition-colors"
               style={{
                 background: enabling ? "#cbb39c" : "#c2662f",
                 color: "#fff",

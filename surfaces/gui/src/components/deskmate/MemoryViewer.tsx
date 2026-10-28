@@ -215,7 +215,7 @@ export function MemoryViewer({
             style={{ color: "var(--faint)" }}
           >
             <Icon name="file" size={24} className="mb-2 opacity-40" />
-            <span className="text-[13px]">未找到记忆文件</span>
+            <span className="text-ui">未找到记忆文件</span>
           </div>
         ) : (
           <div className="flex flex-col h-full min-h-0">
@@ -229,7 +229,7 @@ export function MemoryViewer({
             <Icon name="file" size={16} className="opacity-60" />
           </span>
             <span
-              className="text-[14px] font-semibold"
+              className="text-body font-semibold"
               style={{ color: "var(--ink)" }}
             >
               记忆
@@ -304,19 +304,19 @@ export function MemoryViewer({
               style={{ borderBottom: "1px solid var(--line)" }}
             >
               <span
-                className="text-[11px]"
+                className="text-label"
                 style={{ color: "var(--faint)", fontFamily: "var(--mono)" }}
               >
                 {current.path}
               </span>
               {current.lastModified && (
-                <span className="text-[11px]" style={{ color: "var(--faint)" }}>
+                <span className="text-label" style={{ color: "var(--faint)" }}>
                   {formatDate(current.lastModified)}
                 </span>
               )}
               <div className="flex-1" />
               <button
-                className="text-[12px] flex items-center gap-1 px-2 py-1 rounded-lg"
+                className="text-meta flex items-center gap-1 px-2 py-1 rounded-lg"
                 style={{ color: "var(--muted)" }}
                 onClick={handleExport}
                 title="导出当前记忆文件"
@@ -326,7 +326,7 @@ export function MemoryViewer({
               </button>
               {!editing ? (
                 <button
-                  className="text-[12px] flex items-center gap-1 px-2 py-1 rounded-lg"
+                  className="text-meta flex items-center gap-1 px-2 py-1 rounded-lg"
                   style={{ color: "var(--accent)" }}
                   onClick={startEditing}
                 >
@@ -336,7 +336,7 @@ export function MemoryViewer({
               ) : (
                 <div className="flex items-center gap-1.5">
                   <button
-                    className="text-[12px] px-2 py-1 rounded-lg"
+                    className="text-meta px-2 py-1 rounded-lg"
                     style={{
                       background: "var(--accent)",
                       color: "#fff",
@@ -348,7 +348,7 @@ export function MemoryViewer({
                       {saving ? "保存中…" : "保存"}
                     </button>
                     <button
-                      className="text-[12px] px-2 py-1 rounded-lg"
+                      className="text-meta px-2 py-1 rounded-lg"
                       style={{ color: "var(--muted)" }}
                       onClick={cancelEditing}
                       disabled={saving}
@@ -397,7 +397,7 @@ export function MemoryViewer({
                 记忆溯源 · 最近忘了什么
                 <span style={{ color: "var(--faint)" }}>{traceOpen ? "▾" : "▸"}</span>
               </button>
-              <div className="text-[11px] mt-1.5" style={{ color: "var(--faint)" }}>
+              <div className="text-label mt-1.5" style={{ color: "var(--faint)" }}>
                 USER.md 重复率：
                 <span
                   style={{
@@ -410,7 +410,7 @@ export function MemoryViewer({
                 {" · "}
                 {dedup.entries ?? 0} 条
               </div>
-              <div className="text-[11px] mt-1" style={{ color: "var(--faint)" }}>
+              <div className="text-label mt-1" style={{ color: "var(--faint)" }}>
                 记忆分层：
                 <span style={{ color: (layering.layered ?? true) ? "var(--muted)" : "var(--accent)", fontWeight: 600 }}>
                   {layering.layered ?? true ? "已分离" : "待净化"}
@@ -433,12 +433,12 @@ export function MemoryViewer({
                 <div className="flex flex-col gap-1.5 mt-2">
                   {(traces.forgot ?? []).length === 0 &&
                     (traces.inject ?? []).length === 0 && (
-                      <div className="text-[11px]" style={{ color: "var(--faint)" }}>
+                      <div className="text-label" style={{ color: "var(--faint)" }}>
                         暂无溯源记录（对话后会逐渐积累）
                       </div>
                     )}
                   {(traces.forgot ?? []).map((r, i) => (
-                    <div key={`f${i}`} className="text-[11px] leading-relaxed" style={{ color: "var(--muted)" }}>
+                    <div key={`f${i}`} className="text-label leading-relaxed" style={{ color: "var(--muted)" }}>
                       <span style={{ color: "var(--accent)" }}>
                         {r.action === "archived" ? "已归档" : "已删除"}
                       </span>
@@ -450,7 +450,7 @@ export function MemoryViewer({
                     </div>
                   ))}
                   {(traces.inject ?? []).slice(0, 3).map((r, i) => (
-                    <div key={`i${i}`} className="text-[11px] leading-relaxed" style={{ color: "var(--muted)" }}>
+                    <div key={`i${i}`} className="text-label leading-relaxed" style={{ color: "var(--muted)" }}>
                       <span style={{ color: "var(--accent)" }}>本轮注入</span>
                       {" · "}
                       {r.ts ? formatDate(new Date(r.ts).getTime()) : ""}
@@ -486,20 +486,20 @@ export function MemoryViewer({
               style={{ border: "1px solid var(--line)", background: "var(--paper)" }}
             >
               <div className="flex items-center gap-2 flex-wrap">
-                <span className="text-[12px]" style={{ color: "var(--muted)" }}>
+                <span className="text-meta" style={{ color: "var(--muted)" }}>
                   🕰 回溯到
                 </span>
                 <input
                   type="date"
                   value={asOfDate}
                   onChange={(e) => setAsOfDate(e.target.value)}
-                  className="text-[12px] px-2 py-1 rounded-lg"
+                  className="text-meta px-2 py-1 rounded-lg"
                   style={{ border: "1px solid var(--line)", background: "var(--paper)", color: "var(--ink)" }}
                 />
                 <button
                   onClick={() => void handleAsOf()}
                   disabled={!asOfDate || asOfLoading}
-                  className="text-[12px] px-2.5 py-1 rounded-lg"
+                  className="text-meta px-2.5 py-1 rounded-lg"
                   style={{
                     background: "var(--accent)",
                     color: "#fff",
@@ -514,7 +514,7 @@ export function MemoryViewer({
                       setAsOfResult(null);
                       setAsOfDate("");
                     }}
-                    className="text-[12px] px-2 py-1 rounded-lg"
+                    className="text-meta px-2 py-1 rounded-lg"
                     style={{ border: "1px solid var(--line)", color: "var(--muted)" }}
                   >
                     返回当前
@@ -535,13 +535,13 @@ export function MemoryViewer({
                       style={{ border: "1px solid var(--line)", background: "var(--paper)" }}
                     >
                       <div
-                        className="text-[12px] leading-relaxed whitespace-pre-wrap break-words"
+                        className="text-meta leading-relaxed whitespace-pre-wrap break-words"
                         style={{ color: "var(--ink)" }}
                       >
                         {it.content || "（空）"}
                       </div>
                       <div
-                        className="text-[11px] mt-0.5"
+                        className="text-label mt-0.5"
                         style={{ color: "var(--faint)", fontFamily: "var(--mono)" }}
                       >
                         {[it.dimension, it.topic].filter(Boolean).join(" · ")}
@@ -645,7 +645,7 @@ function StructuredMemoryList({
       </div>
 
       {items.length === 0 && (
-        <div className="text-[12px] py-10 text-center" style={{ color: "var(--faint)" }}>
+        <div className="text-meta py-10 text-center" style={{ color: "var(--faint)" }}>
           暂无条目（对话或观察后会逐渐积累）
         </div>
       )}
@@ -686,14 +686,14 @@ function StructuredMemoryList({
                 </div>
                 {meta && (
                   <div
-                    className="text-[11px] mt-1"
+                    className="text-label mt-1"
                     style={{ color: "var(--faint)", fontFamily: "var(--mono)" }}
                   >
                     {meta}
                   </div>
                 )}
                 {!isLearned && (it.valid_from || it.valid_until) && (
-                  <div className="text-[11px] mt-0.5" style={{ color: "var(--faint)" }}>
+                  <div className="text-label mt-0.5" style={{ color: "var(--faint)" }}>
                     有效期：自 {fmtTs(it.valid_from)} ·{" "}
                     {it.valid_until ? `至 ${fmtTs(it.valid_until)}` : "至今有效"}
                   </div>
@@ -705,7 +705,7 @@ function StructuredMemoryList({
                   {confirming ? (
                     <>
                       <button
-                        className="text-[12px] px-2 py-1 rounded-lg"
+                        className="text-meta px-2 py-1 rounded-lg"
                         style={{
                           background: "var(--accent)",
                           color: "#fff",
@@ -717,7 +717,7 @@ function StructuredMemoryList({
                         {busy ? "处理中…" : "确认遗忘"}
                       </button>
                       <button
-                        className="text-[12px] px-2 py-1 rounded-lg"
+                        className="text-meta px-2 py-1 rounded-lg"
                         style={{ color: "var(--muted)" }}
                         onClick={onCancel}
                         disabled={busy}
@@ -727,7 +727,7 @@ function StructuredMemoryList({
                     </>
                   ) : (
                     <button
-                      className="text-[12px] flex items-center gap-1 px-2 py-1 rounded-lg"
+                      className="text-meta flex items-center gap-1 px-2 py-1 rounded-lg"
                       style={{ color: "var(--accent)" }}
                       onClick={() => onRequestForget(it.id)}
                     >
@@ -738,7 +738,7 @@ function StructuredMemoryList({
                 </div>
               ) : (
                 <span
-                  className="flex-shrink-0 text-[11px] px-2 py-1 rounded-lg"
+                  className="flex-shrink-0 text-label px-2 py-1 rounded-lg"
                   style={{ color: "var(--faint)", background: "var(--line)" }}
                 >
                   已遗忘

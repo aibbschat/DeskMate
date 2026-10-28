@@ -62,26 +62,26 @@ export function SkillCard({
       <div className="flex items-start gap-3">
         <div className="text-2xl shrink-0">{skill.icon || "🔧"}</div>
         <div className="flex-1 min-w-0">
-          <div className="text-[14px] font-medium truncate">{skill.name}</div>
-          <div className="text-[12px] text-muted line-clamp-2">{skill.description}</div>
+          <div className="text-body font-medium truncate">{skill.name}</div>
+          <div className="text-meta text-muted line-clamp-2">{skill.description}</div>
         </div>
       </div>
 
-      <div className="flex items-center gap-2 text-[11px] text-faint">
+      <div className="flex items-center gap-2 text-label text-faint">
         <span className="px-1.5 py-0.5 rounded bg-faint/30">
           {CATEGORY_LABELS[skill.category] || skill.category}
         </span>
         {skill.version && <span>v{skill.version}</span>}
       </div>
 
-      {error && <div className="text-[12px] text-danger">{error}</div>}
+      {error && <div className="text-meta text-danger">{error}</div>}
 
       <div className="flex items-center gap-2 mt-auto pt-2">
         {isInstalled ? (
           <>
-            <span className="text-[12px] text-ok">已安装</span>
+            <span className="text-meta text-ok">已安装</span>
             <button
-              className="text-[12px] text-danger hover:underline ml-auto"
+              className="text-meta text-danger hover:underline ml-auto"
               onClick={handleUninstall}
               disabled={busy}
             >
@@ -90,7 +90,7 @@ export function SkillCard({
           </>
         ) : (
           <button
-            className="px-3 py-1.5 rounded-lg bg-accent text-white text-[12px] font-medium hover:opacity-90 disabled:opacity-50"
+            className="px-3 py-1.5 rounded-lg bg-accent text-white text-meta font-medium hover:opacity-90 disabled:opacity-50"
             onClick={handleInstall}
             disabled={busy}
           >

@@ -81,7 +81,7 @@ export function ProjectBindMenu(props: {
   ) => (
     <button
       key={key}
-      className="w-full flex items-center gap-2.5 px-3 py-1.5 text-[13px] text-left hover:bg-paper"
+      className="w-full flex items-center gap-2.5 px-3 py-1.5 text-ui text-left hover:bg-paper"
       onClick={onClick}
     >
       <span
@@ -124,10 +124,10 @@ export function ProjectBindMenu(props: {
           menu.derived.kind === "git" ? (
             <span className="inline-flex items-center gap-1.5">
               <Icon name="branch" size={12} className="text-faint shrink-0" />
-              <span className="font-mono text-[12px]">{menu.derived.label}</span>
+              <span className="font-mono text-meta">{menu.derived.label}</span>
             </span>
           ) : (
-            <span className="font-mono text-[12px] text-muted" title={menu.derived.full}>
+            <span className="font-mono text-meta text-muted" title={menu.derived.full}>
               {trimPath(menu.derived.label)}
             </span>
           ),
@@ -145,7 +145,7 @@ export function ProjectBindMenu(props: {
         ),
       )}
       {q && shown.length === 0 && (
-        <div className="px-3 py-1.5 text-[12px] text-faint">no matches</div>
+        <div className="px-3 py-1.5 text-meta text-faint">no matches</div>
       )}
       <div className="my-1 border-t border-line" />
       {naming ? (

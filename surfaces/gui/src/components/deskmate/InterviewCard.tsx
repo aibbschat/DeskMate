@@ -193,7 +193,7 @@ export function InterviewCard({ interview, onClose }: InterviewCardProps) {
         >
           <div className="flex items-start gap-2.5 px-3.5 pt-3 pb-0">
             <div
-              className="flex-shrink-0 w-8 h-8 rounded-full flex items-center justify-center text-[15px]"
+              className="flex-shrink-0 w-8 h-8 rounded-full flex items-center justify-center text-heading"
               style={{ background: "var(--accent-soft)", color: "var(--accent)" }}
             >
               🌸
@@ -202,7 +202,7 @@ export function InterviewCard({ interview, onClose }: InterviewCardProps) {
               <div className="text-[12.5px] font-semibold" style={{ color: "var(--ink)" }}>
                 小桔想更懂你
               </div>
-              <div className="text-[11px]" style={{ color: "var(--faint)" }}>
+              <div className="text-label" style={{ color: "var(--faint)" }}>
                 深度访谈 · {total} 个问题
               </div>
             </div>
@@ -216,7 +216,7 @@ export function InterviewCard({ interview, onClose }: InterviewCardProps) {
             </button>
           </div>
           <div
-            className="px-3.5 pt-1.5 pb-1 text-[13px] leading-relaxed"
+            className="px-3.5 pt-1.5 pb-1 text-ui leading-relaxed"
             style={{ color: "var(--muted)" }}
           >
             {inviteText(questions)}
@@ -274,16 +274,16 @@ export function InterviewCard({ interview, onClose }: InterviewCardProps) {
         {/* 头部 */}
         <div className="flex items-center gap-2.5 px-4 pt-3.5 pb-2">
           <div
-            className="flex-shrink-0 w-8 h-8 rounded-full flex items-center justify-center text-[15px]"
+            className="flex-shrink-0 w-8 h-8 rounded-full flex items-center justify-center text-heading"
             style={{ background: "var(--accent-soft)", color: "var(--accent)" }}
           >
             🌸
           </div>
           <div className="flex-1 min-w-0">
-            <div className="text-[13px] font-semibold" style={{ color: "var(--ink)" }}>
+            <div className="text-ui font-semibold" style={{ color: "var(--ink)" }}>
               {phase === "done" ? "谢谢你的坦诚" : "小桔想更懂你"}
             </div>
-            <div className="text-[11px]" style={{ color: "var(--faint)" }}>
+            <div className="text-label" style={{ color: "var(--faint)" }}>
               {phase === "done"
                 ? "这些会被记进我对你的理解里"
                 : `第 ${idx + 1} / ${total} 题`}
@@ -291,7 +291,7 @@ export function InterviewCard({ interview, onClose }: InterviewCardProps) {
           </div>
           {phase !== "done" && (
             <button
-              className="flex-shrink-0 w-7 h-7 rounded flex items-center justify-center text-[12px]"
+              className="flex-shrink-0 w-7 h-7 rounded flex items-center justify-center text-meta"
               style={{ color: "var(--faint)" }}
               onClick={handleDecline}
               aria-label="退出访谈"
@@ -305,7 +305,7 @@ export function InterviewCard({ interview, onClose }: InterviewCardProps) {
           /* ---------- 完成页 ---------- */
           <div className="px-4 pb-5">
             <div
-              className="rounded-xl px-3.5 py-3 text-[13px] leading-relaxed"
+              className="rounded-xl px-3.5 py-3 text-ui leading-relaxed"
               style={{ background: "var(--accent-soft)", color: "var(--ink)" }}
             >
               谢谢你认真回答。这些表达会沉淀进认知画像，让我以后更贴近你的想法。
@@ -335,19 +335,19 @@ export function InterviewCard({ interview, onClose }: InterviewCardProps) {
               >
                 {modeMeta(q.mode).label}
               </span>
-              <span className="text-[11px]" style={{ color: "var(--faint)" }}>
+              <span className="text-label" style={{ color: "var(--faint)" }}>
                 {modeMeta(q.mode).hint}
               </span>
             </div>
             <div
-              className="text-[14px] font-medium leading-relaxed mb-2"
+              className="text-body font-medium leading-relaxed mb-2"
               style={{ color: "var(--ink)" }}
             >
               {q.question}
             </div>
             {q.context ? (
               <div
-                className="text-[11px] leading-relaxed mb-2 px-2 py-1.5 rounded-lg"
+                className="text-label leading-relaxed mb-2 px-2 py-1.5 rounded-lg"
                 style={{ background: "var(--paper)", color: "var(--faint)" }}
               >
                 背景：{q.context}
@@ -378,7 +378,7 @@ export function InterviewCard({ interview, onClose }: InterviewCardProps) {
               </div>
             )}
             <div className="flex items-center justify-between mt-2.5">
-              <span className="text-[11px]" style={{ color: "var(--faint)" }}>
+              <span className="text-label" style={{ color: "var(--faint)" }}>
                 {answered} / {total} 已答
               </span>
               <div className="flex items-center gap-2">
@@ -409,7 +409,7 @@ export function InterviewCard({ interview, onClose }: InterviewCardProps) {
             </div>
           </div>
         ) : (
-          <div className="px-4 pb-5 text-[13px]" style={{ color: "var(--muted)" }}>
+          <div className="px-4 pb-5 text-ui" style={{ color: "var(--muted)" }}>
             暂时没有可问的问题。
           </div>
         )}

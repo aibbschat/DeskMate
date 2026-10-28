@@ -16,6 +16,7 @@ import ReactDOM from "react-dom/client";
 // 手机端不引 SettingsView，少了这一行 Transcript 就会把 `chat.assistant` 这种键名当名字渲染。
 import "../i18n";
 import { initTheme } from "../theme";
+import { initTextSize } from "../textSize";
 import { initSkin } from "../components/deskmate/skins/skinStore";
 import { runtimeConfigReady, hasRuntimeToken } from "../runtimeReady";
 import { reportActivePackToBackend } from "../components/deskmate/emotes/emotePack";
@@ -26,6 +27,8 @@ import { MobileApp } from "./App";
 
 initTheme();
 initSkin();
+// 字号档位：手机端与桌面共用 styles.css 的 --fs-* token，所以同一档位在两屏都生效。
+initTextSize();
 
 /** 状态栏色跟随当前皮肤的 --accent（换肤/切深浅色都重取）。 */
 function syncThemeColor() {

@@ -22,15 +22,15 @@ import { Icon } from "./Icon";
 // Persona-bundled skills arrive with personas (§10), managed on the persona page, not here.
 
 const CARD = "rounded-xl2 border border-line bg-panel";
-const FIELD_LABEL = "text-[13px] font-medium text-ink";
+const FIELD_LABEL = "text-ui font-medium text-ink";
 const INPUT =
-  "w-full min-w-0 px-3 py-2 rounded-lg border border-line bg-paper text-[13px] text-ink outline-none focus:border-accent";
+  "w-full min-w-0 px-3 py-2 rounded-lg border border-line bg-paper text-ui text-ink outline-none focus:border-accent";
 const BTN_ACCENT =
-  "text-[13px] px-3 py-2 rounded-lg bg-accent text-white shrink-0 disabled:opacity-40";
+  "text-ui px-3 py-2 rounded-lg bg-accent text-white shrink-0 disabled:opacity-40";
 const BTN_BORDERED =
-  "text-[13px] px-3 py-2 rounded-lg border border-line bg-paper hover:border-lineStrong shrink-0";
+  "text-ui px-3 py-2 rounded-lg border border-line bg-paper hover:border-lineStrong shrink-0";
 const BADGE =
-  "text-[11px] px-2 py-0.5 rounded-full border border-line bg-paper text-muted shrink-0";
+  "text-label px-2 py-0.5 rounded-full border border-line bg-paper text-muted shrink-0";
 
 type Editor = {
   mode: "new" | "edit";
@@ -164,8 +164,8 @@ export function SkillsTab({
     <section>
       <div className="flex items-start justify-between gap-3 mb-4">
         <div>
-          <h2 className="text-[16px] font-semibold">Skills</h2>
-          <p className="text-[13px] text-muted mt-1 leading-relaxed">
+          <h2 className="text-title font-semibold">Skills</h2>
+          <p className="text-ui text-muted mt-1 leading-relaxed">
             Reusable instructions the worker can follow in every conversation. Off here means
             off everywhere.
           </p>
@@ -198,8 +198,8 @@ export function SkillsTab({
                     setEditor(emptyEditor());
                   }}
                 >
-                  <div className="text-[13px] font-medium">Write it myself</div>
-                  <div className="text-[12px] text-muted">
+                  <div className="text-ui font-medium">Write it myself</div>
+                  <div className="text-meta text-muted">
                     A name, a description, and the instructions
                   </div>
                 </button>
@@ -211,8 +211,8 @@ export function SkillsTab({
                     fileInput.current?.click();
                   }}
                 >
-                  <div className="text-[13px] font-medium">Import a file</div>
-                  <div className="text-[12px] text-muted">
+                  <div className="text-ui font-medium">Import a file</div>
+                  <div className="text-meta text-muted">
                     A .zip or SKILL.md someone shared — you review before it installs
                   </div>
                 </button>
@@ -225,8 +225,8 @@ export function SkillsTab({
                     onCreateSkill?.("");
                   }}
                 >
-                  <div className="text-[13px] font-medium">Create with OpenWorker</div>
-                  <div className="text-[12px] text-muted">
+                  <div className="text-ui font-medium">Create with OpenWorker</div>
+                  <div className="text-meta text-muted">
                     Starts a conversation — the worker builds it and asks before adding it to
                     your skills
                   </div>
@@ -249,7 +249,7 @@ export function SkillsTab({
       />
 
       {error ? (
-        <div className="text-[13px] text-red-500 mb-3" role="alert">
+        <div className="text-ui text-red-500 mb-3" role="alert">
           {error}
         </div>
       ) : null}
@@ -257,7 +257,7 @@ export function SkillsTab({
         <div
           role="status"
           className={
-            "mb-3 flex items-start gap-2 rounded-lg border px-3 py-2 text-[13px] " +
+            "mb-3 flex items-start gap-2 rounded-lg border px-3 py-2 text-ui " +
             (notice.tone === "ok"
               ? "bg-tealSoft/70 text-tealInk border-tealInk/20"
               : "bg-warnSoft/70 text-warnInk border-warnInk/20")
@@ -278,19 +278,19 @@ export function SkillsTab({
 
       {upload ? (
         <div className={`${CARD} p-4 mb-4`}>
-          <div className="text-[13px] font-medium mb-1">Review before installing</div>
-          <p className="text-[13px] text-muted mb-3">
+          <div className="text-ui font-medium mb-1">Review before installing</div>
+          <p className="text-ui text-muted mb-3">
             Read the instructions — installing a skill means the worker will follow them.
           </p>
-          <div className="text-[13px] mb-1">
+          <div className="text-ui mb-1">
             <span className="font-medium">{upload.name}</span>
             <span className="text-muted"> — {upload.description || "no description"}</span>
           </div>
-          <pre className="text-[12px] bg-paper border border-line rounded-lg p-3 whitespace-pre-wrap max-h-64 overflow-y-auto mb-2">
+          <pre className="text-meta bg-paper border border-line rounded-lg p-3 whitespace-pre-wrap max-h-64 overflow-y-auto mb-2">
             {upload.instructions}
           </pre>
           {upload.files?.length ? (
-            <div className="text-[12px] text-muted mb-2">
+            <div className="text-meta text-muted mb-2">
               Bundled files: {upload.files.join(", ")}
             </div>
           ) : null}
@@ -307,7 +307,7 @@ export function SkillsTab({
 
       {editor ? (
         <div className={`${CARD} p-4 mb-4`}>
-          <div className="text-[13px] font-medium mb-3">
+          <div className="text-ui font-medium mb-3">
             {editor.mode === "new" ? "New skill" : `Edit ${editor.name}`}
           </div>
           <label className={FIELD_LABEL} htmlFor="skill-name">
@@ -358,7 +358,7 @@ export function SkillsTab({
 
       <div className={`${CARD} divide-y divide-line`}>
         {rows.length === 0 && !editor ? (
-          <div className="p-5 text-[13px] text-muted">
+          <div className="p-5 text-ui text-muted">
             No skills yet — <b>Add skill</b> teaches your worker its first one, like
             “prepare my Monday status report”.
           </div>
@@ -367,7 +367,7 @@ export function SkillsTab({
           <div key={row.name} className="flex items-center gap-3 px-4 py-3">
             <div className="flex-1 min-w-0">
               <div className="flex items-center gap-2">
-                <span className={`text-[13px] font-medium ${row.enabled ? "" : "text-muted"}`}>
+                <span className={`text-ui font-medium ${row.enabled ? "" : "text-muted"}`}>
                   {row.name}
                 </span>
                 {row.source !== "local" ? <span className={BADGE}>{row.source}</span> : null}
@@ -376,7 +376,7 @@ export function SkillsTab({
                     text hid the affordance). */}
                 {row.files ? (
                   <button
-                    className="inline-flex items-center gap-1 text-[11px] px-1.5 py-0.5 rounded-md border border-line bg-paper text-muted hover:text-ink hover:border-lineStrong shrink-0"
+                    className="inline-flex items-center gap-1 text-label px-1.5 py-0.5 rounded-md border border-line bg-paper text-muted hover:text-ink hover:border-lineStrong shrink-0"
                     title="Show folder"
                     onClick={() => revealSkill(row.name)}
                   >
@@ -386,7 +386,7 @@ export function SkillsTab({
               </div>
               {/* Full description, wrapping — a skill's one-liner is its menu entry; cutting
                   it mid-word hid what the skill does (live drive). */}
-              <div className="text-[12px] text-muted leading-relaxed">{row.description}</div>
+              <div className="text-meta text-muted leading-relaxed">{row.description}</div>
             </div>
             <button
               className={BTN_BORDERED}
@@ -410,7 +410,7 @@ export function SkillsTab({
             >
               {armedDelete === row.name ? "Confirm delete" : <Icon name="trash" size={13} />}
             </button>
-            <label className="inline-flex items-center gap-1.5 text-[12px] text-muted">
+            <label className="inline-flex items-center gap-1.5 text-meta text-muted">
               <input
                 type="checkbox"
                 role="switch"

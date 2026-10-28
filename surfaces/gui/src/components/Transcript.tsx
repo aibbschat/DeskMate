@@ -196,6 +196,12 @@ function buildRows(items: TurnItem[]): TurnRow[] {
 }
 
 function approvalChip(resolved: ApprovalDecision | undefined, t: (k: string, opts?: Record<string, unknown>) => string) {
+  if (resolved === "expired")
+    return (
+      <span className="text-[10.5px] px-1.5 rounded-full bg-paper text-faint shrink-0" title={t("chat.expiredTitle")}>
+        {t("chat.expired")}
+      </span>
+    );
   if (resolved === "deny")
     return <span className="text-[10.5px] px-1.5 rounded-full bg-dangerSoft text-danger shrink-0">{t("chat.declined")}</span>;
   return (
@@ -210,7 +216,7 @@ function approvalChip(resolved: ApprovalDecision | undefined, t: (k: string, opt
 
 function LineText({ line }: { line: HumanLine }) {
   return (
-    <span className="min-w-0 text-[13px] leading-relaxed">
+    <span className="min-w-0 text-ui leading-relaxed">
       <span className="text-muted">{line.pre}</span>
       {line.obj && <span className="text-ink">{line.obj}</span>}
       {line.post && <span className="text-muted">{line.post}</span>}
@@ -252,17 +258,17 @@ function StepRow({
         )}
         {!!tool.hidden && (
           <span
-            className="text-[11px] text-warnInk shrink-0"
+            className="text-label text-warnInk shrink-0"
             data-testid="tool-hidden-count"
             title={t("chat.hiddenTitle")}
           >
             {t("chat.hiddenCount", { count: tool.hidden })}
           </span>
         )}
-        {failed && <span className="text-[11px] text-danger shrink-0">{tool.status}</span>}
+        {failed && <span className="text-label text-danger shrink-0">{tool.status}</span>}
         {!running && (
           <button
-            className="ml-auto shrink-0 text-[11px] text-faint opacity-0 group-hover:opacity-100 cursor-pointer"
+            className="ml-auto shrink-0 text-label text-faint opacity-0 group-hover:opacity-100 cursor-pointer"
             onClick={() => setRaw((v) => !v)}
           >
             {t("chat.raw")}
@@ -280,15 +286,15 @@ function StepRow({
           className="ml-8 mr-2 my-1 px-3 py-2 rounded-lg border border-line bg-dangerSoft/40"
           data-testid="reviewer-deny-card"
         >
-          <div className="text-[11px] font-medium text-danger">Blocked by the reviewer</div>
-          <div className="text-[12px] text-ink mt-0.5">{tool.reviewerReason}</div>
-          <div className="text-[11px] text-faint mt-1">
+          <div className="text-label font-medium text-danger">Blocked by the reviewer</div>
+          <div className="text-meta text-ink mt-0.5">{tool.reviewerReason}</div>
+          <div className="text-label text-faint mt-1">
             The agent was told only that it was blocked — not why — so it can&rsquo;t argue
             its way past this. If the action is actually fine, you can run it as proposed:
           </div>
           {tool.allowAnyway && onAllowAnyway && !overrideSent && (
             <button
-              className="mt-1.5 px-2.5 py-1 rounded-lg border border-line bg-panel text-[12px] text-ink hover:bg-paper"
+              className="mt-1.5 px-2.5 py-1 rounded-lg border border-line bg-panel text-meta text-ink hover:bg-paper"
               data-testid="reviewer-allow-anyway"
               onClick={() => {
                 setOverrideSent(true);
@@ -299,7 +305,7 @@ function StepRow({
             </button>
           )}
           {overrideSent && (
-            <div className="mt-1.5 text-[11px] text-ok" data-testid="reviewer-override-sent">
+            <div className="mt-1.5 text-label text-ok" data-testid="reviewer-override-sent">
               Approved — the agent will retry this exact action.
             </div>
           )}
@@ -378,7 +384,7 @@ function TurnGroup({
         <div className="ml-1.5 mt-1 pl-2 border-l-2 border-line flex flex-col gap-0.5">
           {rows.map((row, i) =>
             row.type === "narr" ? (
-              <div className="turn-narr px-2 py-1 text-[13px] text-muted max-w-[60ch]" key={i} data-testid="turn-narration">
+              <div className="turn-narr px-2 py-1 text-ui text-muted max-w-[60ch]" key={i} data-testid="turn-narration">
                 <Markdown text={row.text} />
               </div>
             ) : row.type === "ask" ? (
@@ -393,7 +399,7 @@ function TurnGroup({
           )}
           {streamingText && (
             <div
-              className="turn-narr px-2 py-1 text-[13px] text-muted max-w-[60ch]"
+              className="turn-narr px-2 py-1 text-ui text-muted max-w-[60ch]"
               data-testid="turn-live-stream"
             >
               <Markdown text={streamingText} />

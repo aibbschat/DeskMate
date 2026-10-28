@@ -129,7 +129,7 @@ export function ValidationCard({ validation, onClose }: ValidationCardProps) {
         >
           <div className="flex items-center gap-2.5 px-3.5 pt-3">
             <div
-              className="flex-shrink-0 w-8 h-8 rounded-full flex items-center justify-center text-[15px]"
+              className="flex-shrink-0 w-8 h-8 rounded-full flex items-center justify-center text-heading"
               style={{ background: "var(--accent-soft)", color: "var(--accent)" }}
             >
               🌸
@@ -138,7 +138,7 @@ export function ValidationCard({ validation, onClose }: ValidationCardProps) {
               <div className="text-[12.5px] font-semibold" style={{ color: "var(--ink)" }}>
                 小桔想考考自己
               </div>
-              <div className="text-[11px]" style={{ color: "var(--faint)" }}>
+              <div className="text-label" style={{ color: "var(--faint)" }}>
                 认知验证 · 一个情境
               </div>
             </div>
@@ -152,7 +152,7 @@ export function ValidationCard({ validation, onClose }: ValidationCardProps) {
             </button>
           </div>
           <div
-            className="px-3.5 pt-1.5 pb-1 text-[13px] leading-relaxed"
+            className="px-3.5 pt-1.5 pb-1 text-ui leading-relaxed"
             style={{ color: "var(--muted)" }}
           >
             我想验证一下自己有多懂你：给你一个没遇到过的新情境，我先替你想个答案，你再告诉我你真实的做法。
@@ -207,22 +207,22 @@ export function ValidationCard({ validation, onClose }: ValidationCardProps) {
         {/* 头部 */}
         <div className="flex items-center gap-2.5 px-4 pt-3.5 pb-2">
           <div
-            className="flex-shrink-0 w-8 h-8 rounded-full flex items-center justify-center text-[15px]"
+            className="flex-shrink-0 w-8 h-8 rounded-full flex items-center justify-center text-heading"
             style={{ background: "var(--accent-soft)", color: "var(--accent)" }}
           >
             🌸
           </div>
           <div className="flex-1 min-w-0">
-            <div className="text-[13px] font-semibold" style={{ color: "var(--ink)" }}>
+            <div className="text-ui font-semibold" style={{ color: "var(--ink)" }}>
               {phase === "done" ? "验证结果" : "小桔想考考自己"}
             </div>
-            <div className="text-[11px]" style={{ color: "var(--faint)" }}>
+            <div className="text-label" style={{ color: "var(--faint)" }}>
               {phase === "done" ? "看看它有没有真的懂你" : "认知验证 · 一个情境"}
             </div>
           </div>
           {phase !== "done" && (
             <button
-              className="flex-shrink-0 w-7 h-7 rounded flex items-center justify-center text-[12px]"
+              className="flex-shrink-0 w-7 h-7 rounded flex items-center justify-center text-meta"
               style={{ color: "var(--faint)" }}
               onClick={handleCloseNow}
               aria-label="退出验证"
@@ -236,7 +236,7 @@ export function ValidationCard({ validation, onClose }: ValidationCardProps) {
           /* ---------- 结果页 ---------- */
           <div className="px-4 pb-5">
             <div
-              className="rounded-xl px-3.5 py-3 text-[13px] leading-relaxed"
+              className="rounded-xl px-3.5 py-3 text-ui leading-relaxed"
               style={{ background: "var(--accent-soft)", color: "var(--ink)" }}
             >
               {result.feedback}
@@ -244,7 +244,7 @@ export function ValidationCard({ validation, onClose }: ValidationCardProps) {
             {result.engine && (
               <div className="mt-1.5 text-center">
                 <span
-                  className="inline-block rounded-full px-2.5 py-0.5 text-[11px]"
+                  className="inline-block rounded-full px-2.5 py-0.5 text-label"
                   style={{
                     background:
                       result.engine === "llm"
@@ -300,7 +300,7 @@ export function ValidationCard({ validation, onClose }: ValidationCardProps) {
                 return (
                   <div key={key} className="flex items-center gap-2">
                     <span
-                      className="w-[70px] text-[11px] text-right flex-shrink-0"
+                      className="w-[70px] text-label text-right flex-shrink-0"
                       style={{ color: "var(--muted)" }}
                     >
                       {label}
@@ -318,7 +318,7 @@ export function ValidationCard({ validation, onClose }: ValidationCardProps) {
                       />
                     </div>
                     <span
-                      className="w-[34px] text-[11px] font-semibold"
+                      className="w-[34px] text-label font-semibold"
                       style={{ color: v >= 0.5 ? "var(--accent)" : "var(--danger, #EA6668)" }}
                     >
                       {Math.round(v * 100)}%
@@ -330,7 +330,7 @@ export function ValidationCard({ validation, onClose }: ValidationCardProps) {
 
             {result.divergence_points.length > 0 && (
               <div
-                className="mt-3 rounded-xl px-3.5 py-2.5 text-[12px] leading-relaxed"
+                className="mt-3 rounded-xl px-3.5 py-2.5 text-meta leading-relaxed"
                 style={{ background: "var(--paper)", color: "var(--muted)" }}
               >
                 {result.divergence_points.map((p, i) => (
@@ -372,11 +372,11 @@ export function ValidationCard({ validation, onClose }: ValidationCardProps) {
             {/* AI 代答 */}
             <div className="mb-2">
               <div className="flex items-center justify-between mb-1">
-                <span className="text-[11px] font-semibold" style={{ color: "var(--muted)" }}>
+                <span className="text-label font-semibold" style={{ color: "var(--muted)" }}>
                   小桔替你答的
                 </span>
                 <button
-                  className="text-[11px] px-2 py-0.5 rounded border"
+                  className="text-label px-2 py-0.5 rounded border"
                   style={{ borderColor: "var(--line)", color: "var(--faint)" }}
                   onClick={handleRegen}
                 >
@@ -384,7 +384,7 @@ export function ValidationCard({ validation, onClose }: ValidationCardProps) {
                 </button>
               </div>
               <div
-                className="rounded-xl px-3 py-2.5 text-[13px] leading-relaxed"
+                className="rounded-xl px-3 py-2.5 text-ui leading-relaxed"
                 style={{ background: "var(--accent-soft)", color: "var(--ink)" }}
               >
                 {aiAnswer || "小桔正在替你思考……"}
@@ -393,7 +393,7 @@ export function ValidationCard({ validation, onClose }: ValidationCardProps) {
 
             {/* 用户回答 */}
             <div className="mb-1">
-              <div className="text-[11px] font-semibold mb-1" style={{ color: "var(--muted)" }}>
+              <div className="text-label font-semibold mb-1" style={{ color: "var(--muted)" }}>
                 你真实的做法
               </div>
               <textarea
@@ -417,7 +417,7 @@ export function ValidationCard({ validation, onClose }: ValidationCardProps) {
             </div>
 
             {error && (
-              <div className="text-[12px] mt-1" style={{ color: "var(--danger, #EA6668)" }}>
+              <div className="text-meta mt-1" style={{ color: "var(--danger, #EA6668)" }}>
                 {error}
               </div>
             )}

@@ -29,13 +29,13 @@ import { Markdown } from "./Markdown";
 import { Toggle } from "./Toggle";
 import { indexConnectors, labelFor, visualFor, type ConnectorMap } from "../connectors/visuals";
 
-const SEC_H = "text-[11px] uppercase tracking-[0.05em] text-faint font-semibold";
+const SEC_H = "text-label uppercase tracking-[0.05em] text-faint font-semibold";
 const TAG_CORE =
-  "text-[11px] px-1.5 py-0.5 rounded-full bg-warnSoft/70 text-warnInk border border-warnInk/15";
-const TAG_MCP = "text-[11px] px-1.5 py-0.5 rounded border border-line text-faint";
-const BTN_ACCENT = "text-[12px] px-2.5 py-1.5 rounded-lg bg-accent text-white shrink-0";
+  "text-label px-1.5 py-0.5 rounded-full bg-warnSoft/70 text-warnInk border border-warnInk/15";
+const TAG_MCP = "text-label px-1.5 py-0.5 rounded border border-line text-faint";
+const BTN_ACCENT = "text-meta px-2.5 py-1.5 rounded-lg bg-accent text-white shrink-0";
 const BTN_BORDERED =
-  "text-[12px] px-2.5 py-1.5 rounded-lg border border-line bg-paper hover:border-lineStrong shrink-0 disabled:opacity-40";
+  "text-meta px-2.5 py-1.5 rounded-lg border border-line bg-paper hover:border-lineStrong shrink-0 disabled:opacity-40";
 const GRP = "rounded-xl2 border border-line bg-panel divide-y divide-line overflow-hidden";
 const COL_STATUS = "w-[96px] flex justify-end items-center shrink-0";
 const COL_ENABLE = "w-[64px] flex justify-center items-center shrink-0";
@@ -117,7 +117,7 @@ export function PersonaView({
       {onBack && (
         <>
           <button
-            className="inline-flex items-center gap-1 text-[13px] text-muted hover:text-ink"
+            className="inline-flex items-center gap-1 text-ui text-muted hover:text-ink"
             onClick={onBack}
           >
             <Icon name="arrowLeft" size={15} /> Back
@@ -125,7 +125,7 @@ export function PersonaView({
           <span className="text-faint">·</span>
         </>
       )}
-      <span className="text-[13px] font-semibold">Coworker</span>
+      <span className="text-ui font-semibold">Coworker</span>
     </div>
   );
 
@@ -133,7 +133,7 @@ export function PersonaView({
     return (
       <main className="flex-1 min-w-0 flex flex-col bg-paper">
         {header}
-        <div className="p-12 text-center text-faint text-[13px]">{error || "Loading…"}</div>
+        <div className="p-12 text-center text-faint text-ui">{error || "Loading…"}</div>
       </main>
     );
   }
@@ -183,10 +183,10 @@ export function PersonaView({
               <h1 className="text-[20px] font-semibold tracking-tight">
                 {fullPersonaName(detail.name, personaId)}
               </h1>
-              <p className="text-[13px] text-muted mt-0.5">{detail.tagline}</p>
+              <p className="text-ui text-muted mt-0.5">{detail.tagline}</p>
             </div>
             <div className="ml-auto flex items-center gap-2">
-              <span className="text-[12px] text-muted">{detail.enabled ? "Enabled" : "Disabled"}</span>
+              <span className="text-meta text-muted">{detail.enabled ? "Enabled" : "Disabled"}</span>
               <Toggle checked={detail.enabled} onChange={toggleEnabled} title="Enable this coworker" />
             </div>
           </header>
@@ -196,7 +196,7 @@ export function PersonaView({
             <section>
               <div className={`${SEC_H} mb-1.5`}>About</div>
               {detail.description && (
-                <div className="text-[14px] leading-relaxed text-ink/90">
+                <div className="text-body leading-relaxed text-ink/90">
                   <Markdown text={detail.description} />
                 </div>
               )}
@@ -252,7 +252,7 @@ export function PersonaView({
             <section>
               <div className={`${SEC_H} mb-1.5 flex items-baseline`}>
                 <span>Connectors</span>
-                <span className="ml-auto flex font-semibold text-[11px] text-faint normal-case tracking-normal">
+                <span className="ml-auto flex font-semibold text-label text-faint normal-case tracking-normal">
                   <span className={COL_STATUS}>Status</span>
                   <span className={COL_ENABLE}>Enable</span>
                 </span>
@@ -263,18 +263,18 @@ export function PersonaView({
                     <ConnectorBadge connector={visualFor(r.ref, r.kind, byName)} size={32} />
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2">
-                        <span className="text-[13px] font-medium">{labelFor(r.ref, byName)}</span>
+                        <span className="text-ui font-medium">{labelFor(r.ref, byName)}</span>
                         {r.kind === "mcp" ? (
                           <span className={TAG_MCP}>MCP</span>
                         ) : r.tier === "core" ? (
                           <span className={TAG_CORE}>core</span>
                         ) : null}
                       </div>
-                      {r.reason && <div className="text-[12px] text-muted">{r.reason}</div>}
+                      {r.reason && <div className="text-meta text-muted">{r.reason}</div>}
                     </div>
                     <span className={COL_STATUS}>
                       {r.connected ? (
-                        <span className="text-[11px] font-medium px-2 py-0.5 rounded-full bg-okSoft text-ok border border-okLine">
+                        <span className="text-label font-medium px-2 py-0.5 rounded-full bg-okSoft text-ok border border-okLine">
                           ● Ready
                         </span>
                       ) : (
@@ -299,13 +299,13 @@ export function PersonaView({
                           }
                         />
                       ) : (
-                        <span className="text-faint text-[11px]">—</span>
+                        <span className="text-faint text-label">—</span>
                       )}
                     </span>
                   </div>
                 ))}
               </div>
-              <p className="text-[12px] text-faint mt-1.5 px-1">
+              <p className="text-meta text-faint mt-1.5 px-1">
                 Enabled connectors are on when a new session starts — you can still mute any of
                 them per session.
               </p>
@@ -327,11 +327,11 @@ export function PersonaView({
                     size={12}
                     className={"text-faint transition-transform" + (showTools ? " rotate-90" : "")}
                   />
-                  <span className="text-[13px]">Tool calls</span>
-                  <span className="ml-auto text-[12px] text-faint">{detail.tools.length}</span>
+                  <span className="text-ui">Tool calls</span>
+                  <span className="ml-auto text-meta text-faint">{detail.tools.length}</span>
                 </button>
                 {showTools && (
-                  <div className="px-4 pb-3 font-mono text-[12px] text-muted">
+                  <div className="px-4 pb-3 font-mono text-meta text-muted">
                     {detail.tools.join(" · ")}
                   </div>
                 )}
@@ -340,7 +340,7 @@ export function PersonaView({
           )}
 
           {/* defaults footer */}
-          <section className="flex flex-wrap gap-x-8 gap-y-2 text-[13px]">
+          <section className="flex flex-wrap gap-x-8 gap-y-2 text-ui">
             {detail.recommended_models.length > 0 && (
               <div>
                 <span className="text-faint">Models</span> ·{" "}
@@ -364,7 +364,7 @@ export function PersonaView({
           </section>
 
           {/* management — the controls that left the list page (UX-035) */}
-          <section className="border-t border-line pt-4 flex flex-wrap items-center gap-x-5 gap-y-2 text-[13px]">
+          <section className="border-t border-line pt-4 flex flex-wrap items-center gap-x-5 gap-y-2 text-ui">
             <label className="flex items-center gap-2 text-muted select-none">
               <input
                 type="checkbox"
@@ -392,7 +392,7 @@ export function PersonaView({
               (confirmDel ? (
                 <span className="flex items-center gap-1.5">
                   <button
-                    className="text-[12px] px-2.5 py-1.5 rounded-lg bg-danger text-white"
+                    className="text-meta px-2.5 py-1.5 rounded-lg bg-danger text-white"
                     data-testid="persona-delete-confirm"
                     onClick={async () => {
                       const r = await deletePersona(personaId);
@@ -408,7 +408,7 @@ export function PersonaView({
                 </span>
               ) : (
                 <button
-                  className="text-[13px] text-danger/80 hover:text-danger"
+                  className="text-ui text-danger/80 hover:text-danger"
                   data-testid="persona-delete"
                   onClick={() => setConfirmDel(true)}
                 >

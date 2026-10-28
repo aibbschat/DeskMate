@@ -57,7 +57,7 @@ export function SessionSetupRow(props: Props) {
   };
 
   const chip =
-    "relative inline-flex items-center gap-1.5 px-2 py-1.5 rounded-lg text-[13px] text-muted hover:text-ink hover:bg-paper cursor-pointer select-none whitespace-nowrap";
+    "relative inline-flex items-center gap-1.5 px-2 py-1.5 rounded-lg text-ui text-muted hover:text-ink hover:bg-paper cursor-pointer select-none whitespace-nowrap";
 
   return (
     <div className="max-w-3xl mx-auto mb-1.5 px-1 flex items-center gap-1.5" data-testid="setup-row">
@@ -83,17 +83,17 @@ export function SessionSetupRow(props: Props) {
                   props.onPickCoworker(p.id);
                 }}
               >
-                <span className="block text-[13px] font-medium text-ink">
+                <span className="block text-ui font-medium text-ink">
                   {fullPersonaName(p.name, p.id)}
                 </span>
                 {p.tagline && (
-                  <span className="block text-[12px] text-muted truncate">{p.tagline}</span>
+                  <span className="block text-meta text-muted truncate">{p.tagline}</span>
                 )}
               </button>
             ))}
             <div className="border-t border-line mt-1 pt-1">
               <button
-                className="w-full text-left px-2.5 py-1.5 rounded-lg hover:bg-paper text-[12px] text-accent"
+                className="w-full text-left px-2.5 py-1.5 rounded-lg hover:bg-paper text-meta text-accent"
                 data-testid="import-coworker"
                 onClick={() => {
                   setOpenMenu(null);
@@ -103,7 +103,7 @@ export function SessionSetupRow(props: Props) {
                 Import coworker…
               </button>
               <button
-                className="w-full text-left px-2.5 py-1.5 rounded-lg hover:bg-paper text-[12px] text-accent"
+                className="w-full text-left px-2.5 py-1.5 rounded-lg hover:bg-paper text-meta text-accent"
                 onClick={() => {
                   setOpenMenu(null);
                   props.onManage();
@@ -138,20 +138,20 @@ export function SessionSetupRow(props: Props) {
                   >
                     <Icon name="folder" size={13} className="mt-0.5 shrink-0 text-muted" />
                     <span className="min-w-0">
-                      <span className="block text-[13px] font-medium text-ink truncate">{baseName(w.path)}</span>
-                      <span className="block text-[12px] text-faint truncate">{w.path}</span>
+                      <span className="block text-ui font-medium text-ink truncate">{baseName(w.path)}</span>
+                      <span className="block text-meta text-faint truncate">{w.path}</span>
                     </span>
                   </button>
                 ))}
               <div className={(recents || []).some((w) => w.exists) ? "border-t border-line mt-1 pt-1" : ""}>
                 <button
-                  className="w-full text-left px-2.5 py-1.5 rounded-lg hover:bg-paper text-[12px] text-accent"
+                  className="w-full text-left px-2.5 py-1.5 rounded-lg hover:bg-paper text-meta text-accent"
                   onClick={() => void browse()}
                 >
                   {props.folderName ? "Choose another folder…" : "Choose a folder…"}
                 </button>
               </div>
-              {error && <div className="px-2.5 py-1 text-[12px] text-warnInk">{error}</div>}
+              {error && <div className="px-2.5 py-1 text-meta text-warnInk">{error}</div>}
             </div>
           )}
         </div>

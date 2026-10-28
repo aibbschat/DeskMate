@@ -45,20 +45,20 @@ export function ConfigModal({
     <div className="fixed inset-0 z-50 flex items-center justify-center">
       <div className="fixed inset-0 bg-black/40" onClick={onClose} />
       <div className="relative bg-panel rounded-xl border border-line shadow-2xl w-[380px] p-5">
-        <div className="text-[16px] font-semibold mb-1">
+        <div className="text-title font-semibold mb-1">
           配置 {skill.name}
         </div>
-        <div className="text-[12px] text-muted mb-4">
+        <div className="text-meta text-muted mb-4">
           {skill.description}
         </div>
 
         <div className="mb-4">
-          <label className="block text-[13px] font-medium mb-1.5">
+          <label className="block text-ui font-medium mb-1.5">
             {skill.config_key_name || "API Key"}
           </label>
           <input
             type="password"
-            className="w-full px-3 py-2 rounded-lg border border-line bg-panel text-[13px] outline-none focus:border-accent"
+            className="w-full px-3 py-2 rounded-lg border border-line bg-panel text-ui outline-none focus:border-accent"
             placeholder={skill.config_key_hint || "输入密钥"}
             value={key}
             onChange={(e) => {
@@ -68,21 +68,21 @@ export function ConfigModal({
             autoFocus
           />
           {skill.config_key_hint && (
-            <div className="text-[11px] text-faint mt-1">{skill.config_key_hint}</div>
+            <div className="text-label text-faint mt-1">{skill.config_key_hint}</div>
           )}
         </div>
 
-        {error && <div className="text-[12px] text-danger mb-3">{error}</div>}
+        {error && <div className="text-meta text-danger mb-3">{error}</div>}
 
         <div className="flex items-center justify-end gap-2">
           <button
-            className="px-3 py-1.5 rounded-lg text-[13px] text-muted hover:bg-paper"
+            className="px-3 py-1.5 rounded-lg text-ui text-muted hover:bg-paper"
             onClick={onClose}
           >
             取消
           </button>
           <button
-            className="px-4 py-1.5 rounded-lg bg-accent text-white text-[13px] font-medium hover:opacity-90 disabled:opacity-50"
+            className="px-4 py-1.5 rounded-lg bg-accent text-white text-ui font-medium hover:opacity-90 disabled:opacity-50"
             onClick={handleSave}
             disabled={busy}
           >

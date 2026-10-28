@@ -84,7 +84,7 @@ export function LlmChannelsCard() {
             >
               <span
                 className={[
-                  "block text-[13px] font-medium",
+                  "block text-ui font-medium",
                   on ? "text-accent" : "text-ink",
                 ].join(" ")}
               >

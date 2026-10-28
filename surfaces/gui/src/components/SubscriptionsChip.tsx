@@ -186,12 +186,12 @@ export function ChannelPicker({
                 inputRef.current?.blur();
               }}
             >
-              <span className="text-[13px] text-ink">
+              <span className="text-ui text-ink">
                 {c.name ? `#${c.name}` : c.channel}
               </span>
-              {c.name && <span className="ml-1.5 text-[11px] text-faint">{c.channel}</span>}
+              {c.name && <span className="ml-1.5 text-label text-faint">{c.channel}</span>}
               {c.last_text && (
-                <span className="block text-[11px] text-faint truncate">
+                <span className="block text-label text-faint truncate">
                   {c.last_from ? `${c.last_from}: ` : ""}
                   {c.last_text}
                 </span>
@@ -202,7 +202,7 @@ export function ChannelPicker({
               channel roster (seconds on a big workspace; cached 15 min after). */}
           {searching && lookups.length === 0 && (
             <div
-              className="px-3 py-1.5 text-[12px] text-faint"
+              className="px-3 py-1.5 text-meta text-faint"
               data-testid="roster-searching"
             >
               searching your workspace’s channels…
@@ -226,15 +226,15 @@ export function ChannelPicker({
                 inputRef.current?.blur();
               }}
             >
-              <span className="text-[13px] text-ink">
+              <span className="text-ui text-ink">
                 {r.is_private ? "🔒 " : "#"}
                 {r.name}
               </span>
               {r.workspace && (
-                <span className="ml-1.5 text-[11px] text-faint">{r.workspace}</span>
+                <span className="ml-1.5 text-label text-faint">{r.workspace}</span>
               )}
               {!r.is_member && (
-                <span className="block text-[11px] text-warnInk">
+                <span className="block text-label text-warnInk">
                   invite @ocw to this channel in Slack so it can listen
                 </span>
               )}

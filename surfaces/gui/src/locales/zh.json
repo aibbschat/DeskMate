@@ -1,4 +1,12 @@
 {
+  "app": {
+    "thinking_hidden": "思考中…"
+  },
+  "approval": {
+    "escalation_reviewer_unsure": "自动审查拿不准，交给你判断：",
+    "escalation_human_required": "这一动作按策略必须由你点头：",
+    "escalation_reviewer_unavailable": "自动审查暂时不可用，先由你来定："
+  },
   "chat": {
     "copyTitle": "复制消息",
     "copied": "已复制",
@@ -7,6 +15,8 @@
     "declined": "✕ 已拒绝",
     "approved": "✓ 已批准",
     "approvedTitle": "已批准 · {{rule}}",
+    "expired": "已失效",
+    "expiredTitle": "这一轮已经结束，没人回答这张卡 —— 它不能再点了。",
     "autoAllowed": "自动允许",
     "autoAllowedTitle": "此自动化的常设审批已自动允许：{{rule}}。可在自动化页面撤销。",
     "hiddenTitle": "在 agent 查看结果前已被隐私过滤器移除 — agent 不会看到任何痕迹。",
@@ -78,6 +88,7 @@
     "projects": "项目",
     "inbox": "收件箱",
     "connectors": "连接器",
+    "team": "团队",
     "settings": "设置",
     "activity": "活动",
     "signOut": "退出登录",
@@ -201,9 +212,22 @@
     "auto": "自动",
     "autoHelp": "自动跟随 Mac 系统外观。",
     "appearanceAria": "外观",
+    "textSize": "字号",
+    "textSizeAria": "字号大小",
+    "textSize_small": "小",
+    "textSize_default": "默认",
+    "textSize_large": "大",
+    "textSizeHelp": "只改文字大小，界面布局不动。按设备记住，手机端同样生效。",
     "sidebar": "侧边栏",
     "conversationsShownPerCoworker": "每个协作者显示的对话数",
     "sidebarHelp": "较长的列表会折叠在「显示更多」后。按协作者和项目分别生效。",
+    "hide_reasoning_title": "工作时隐藏思考过程",
+    "hide_reasoning_desc": "任务运行期间，将快速滚动的思考文本折叠成一行安静的「思考中…」提示。完整思考内容仍会在任务结束后显示。",
+    "reasoning_effort_title": "推理级别",
+    "reasoning_effort_default": "默认（跟随模型）",
+    "reasoning_effort_low": "低",
+    "reasoning_effort_medium": "中",
+    "reasoning_effort_high": "高",
     "files": "文件",
     "filesPlaceholder": "~/OpenWorker",
     "browse": "浏览",

@@ -1278,6 +1278,14 @@ def create_app(manager: SessionManager) -> FastAPI:
     def teams_journal() -> dict[str, Any]:
         return {"cases": manager.journal_overview()}
 
+    @app.get("/v1/team-roster")
+    def team_roster(session_id: str) -> dict[str, Any]:
+        # GUI team panel (read-only): roster + live engine state + board slice. Deliberately
+        # NOT under /v1/teams/{team_id}/… so it can key off the *session* the user is looking
+        # at (they know their session, not the team id), and so it never collides with the
+        # board's token-authenticated /v1/board surface.
+        return manager.team_roster(session_id)
+
     # ---- The open board surface (OPE-100): token-authenticated `/v1/board` API.
     # Identity is the TOKEN (actor+role bound at mint, resolved per request, never
     # client-asserted); authority is the STORE — the same double gate in-app agents
@@ -2542,6 +2550,18 @@ def create_app(manager: SessionManager) -> FastAPI:
     def settings_set_context_bar(body: dict) -> dict[str, Any]:
         # Composer: show the context-window fill bar, or just the popover (owner ask).
         return manager.set_context_bar((body or {}).get("context_bar", True))
+
+    @app.post("/v1/settings/hide-reasoning")
+    def settings_set_hide_reasoning(body: dict) -> dict[str, Any]:
+        # #611: collapse the live reasoning stream to a quiet indicator while a turn
+        # runs (the finalized reasoning still appears after). User-global preference.
+        return manager.set_hide_reasoning_running((body or {}).get("hide_reasoning_running", False))
+
+    @app.post("/v1/settings/reasoning-effort")
+    def settings_set_reasoning_effort(body: dict) -> dict[str, Any]:
+        # Reasoning effort for new sessions: "default"/"low"/"medium"/"high". Providers that
+        # don't model effort ignore it safely. Applied to the next session build.
+        return manager.set_reasoning_effort((body or {}).get("reasoning_effort", "default"))
 
     @app.post("/v1/settings/auto-approve")
     def settings_set_auto_approve(body: dict) -> dict[str, Any]:

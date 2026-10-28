@@ -76,7 +76,7 @@ export function UnderstandingCard({ onClose }: { onClose: () => void }) {
             >
               <Icon name="sparkle" size={15} />
             </span>
-            <span className="text-[14px] font-semibold" style={{ color: "var(--ink)" }}>
+            <span className="text-body font-semibold" style={{ color: "var(--ink)" }}>
               {t("deskmate.understandingTitle")}
             </span>
           </div>
@@ -101,7 +101,7 @@ export function UnderstandingCard({ onClose }: { onClose: () => void }) {
               >
                 {stats.total}
               </div>
-              <div className="text-[12px] mt-1" style={{ color: "var(--muted)" }}>
+              <div className="text-meta mt-1" style={{ color: "var(--muted)" }}>
                 {t("deskmate.totalKnown")}
               </div>
             </div>
@@ -135,7 +135,7 @@ export function UnderstandingCard({ onClose }: { onClose: () => void }) {
             {t("deskmate.recentlyLearned")}
           </div>
           {loading ? (
-            <div className="text-[12px]" style={{ color: "var(--faint)" }}>
+            <div className="text-meta" style={{ color: "var(--faint)" }}>
               …
             </div>
           ) : data && data.items.length > 0 ? (

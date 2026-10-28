@@ -18,8 +18,8 @@ export interface FinalProposal {
 function Block({ label, body }: { label: string; body: string }) {
   return (
     <div>
-      <div className="text-[12px] font-medium text-muted mb-1">{label}</div>
-      <div className="text-[13px] text-ink whitespace-pre-wrap max-h-44 overflow-auto rounded-lg bg-black/[0.03] dark:bg-white/[0.04] p-2.5">
+      <div className="text-meta font-medium text-muted mb-1">{label}</div>
+      <div className="text-ui text-ink whitespace-pre-wrap max-h-44 overflow-auto rounded-lg bg-black/[0.03] dark:bg-white/[0.04] p-2.5">
         {body || "（空）"}
       </div>
     </div>
@@ -41,7 +41,7 @@ export function ProposalCard({
 }) {
   return (
     <div className="rounded-xl border border-black/10 dark:border-white/10 bg-paper p-4 space-y-3">
-      <div className="flex items-center gap-2 text-[13px] font-semibold text-ink">
+      <div className="flex items-center gap-2 text-ui font-semibold text-ink">
         <Icon name="sparkle" size={16} className="text-accent" />
         <span>终审提案 · {proposal.topic}</span>
       </div>
@@ -51,7 +51,7 @@ export function ProposalCard({
       <Block label="④ 前序单点审核意见" body={proposal.prior_review} />
 
       <div>
-        <div className="text-[12px] font-medium text-muted mb-1">
+        <div className="text-meta font-medium text-muted mb-1">
           ② 终审专家（可在推荐基础上增减）
         </div>
         <div className="flex flex-wrap gap-2">
@@ -62,7 +62,7 @@ export function ProposalCard({
                 key={e.id}
                 onClick={() => onToggle(e.id)}
                 className={
-                  "px-2.5 py-1 rounded-full text-[12px] border transition " +
+                  "px-2.5 py-1 rounded-full text-meta border transition " +
                   (on
                     ? "border-accent bg-accent-soft text-accent font-medium"
                     : "border-black/10 dark:border-white/15 text-muted hover:text-ink")

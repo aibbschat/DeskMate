@@ -17,15 +17,15 @@ import { Toggle } from "./Toggle";
 // per-coworker detail page. Unshipped coworkers (ships:false) and the installer are quiet
 // text disclosures at the bottom; Folder/Zip install through native pickers.
 const CARD = "rounded-xl2 border border-line bg-panel";
-const SELECT = "px-2.5 py-2 rounded-lg border border-line bg-paper text-[13px] text-ink shrink-0";
+const SELECT = "px-2.5 py-2 rounded-lg border border-line bg-paper text-ui text-ink shrink-0";
 const INPUT =
-  "flex-1 min-w-0 px-3 py-2 rounded-lg border border-line bg-paper text-[13px] text-ink outline-none focus:border-accent";
-const BTN_ACCENT = "text-[13px] px-3 py-2 rounded-lg bg-accent text-white shrink-0 disabled:opacity-40";
+  "flex-1 min-w-0 px-3 py-2 rounded-lg border border-line bg-paper text-ui text-ink outline-none focus:border-accent";
+const BTN_ACCENT = "text-ui px-3 py-2 rounded-lg bg-accent text-white shrink-0 disabled:opacity-40";
 const BTN_BORDERED =
-  "text-[13px] px-2.5 py-1.5 rounded-lg border border-line bg-paper hover:border-lineStrong shrink-0 disabled:opacity-40 disabled:hover:border-line";
+  "text-ui px-2.5 py-1.5 rounded-lg border border-line bg-paper hover:border-lineStrong shrink-0 disabled:opacity-40 disabled:hover:border-line";
 
 const QUIET_ROW =
-  "w-full flex items-center gap-2 px-4 pt-2 mt-6 text-[13px] text-muted select-none";
+  "w-full flex items-center gap-2 px-4 pt-2 mt-6 text-ui text-muted select-none";
 
 export function PersonasTab({ onOpenPersona }: { onOpenPersona?: (id: string) => void }) {
   const [personas, setPersonas] = useState<Persona[]>([]);
@@ -145,22 +145,22 @@ export function PersonasTab({ onOpenPersona }: { onOpenPersona?: (id: string) =>
     return (
       <div className={title ? "mt-7" : "mt-1.5"}>
         {title && (
-          <div className="text-[12px] font-semibold text-muted px-4 mb-1.5">{title}</div>
+          <div className="text-meta font-semibold text-muted px-4 mb-1.5">{title}</div>
         )}
         <div className={CARD + " divide-y divide-line"}>
           {list.map((p) => (
             <div key={p.id} className="px-[18px] py-4">
               <div className="flex items-center gap-3">
                 <div className="min-w-0 flex-1">
-                  <div className="text-[14px] font-medium truncate">{p.name}</div>
-                  <div className="text-[12px] text-faint truncate mt-0.5">{p.tagline}</div>
+                  <div className="text-body font-medium truncate">{p.name}</div>
+                  <div className="text-meta text-faint truncate mt-0.5">{p.tagline}</div>
                 </div>
                 {p.default ? (
                   /* The default coworker cannot be disabled or hidden — no toggle, no
                      configure; a quiet tag says why (owner 2026-08-21). It regains its
                      controls the moment another coworker is made default. */
                   <span
-                    className="text-[11px] font-medium px-2 py-0.5 rounded-full bg-paper border border-lineStrong text-muted shrink-0"
+                    className="text-label font-medium px-2 py-0.5 rounded-full bg-paper border border-lineStrong text-muted shrink-0"
                     title="Default for new sessions"
                     data-testid="persona-default-tag"
                   >
@@ -191,7 +191,7 @@ export function PersonasTab({ onOpenPersona }: { onOpenPersona?: (id: string) =>
               </div>
               {confirmOff === p.id && (
                 <div
-                  className="mt-2 flex items-center gap-2.5 text-[12px] text-muted"
+                  className="mt-2 flex items-center gap-2.5 text-meta text-muted"
                   data-testid={`persona-disable-warning-${p.id}`}
                 >
                   <span className="min-w-0">
@@ -200,7 +200,7 @@ export function PersonasTab({ onOpenPersona }: { onOpenPersona?: (id: string) =>
                     archived”.
                   </span>
                   <button
-                    className="text-[12px] px-2.5 py-1.5 rounded-lg bg-accent text-white shrink-0"
+                    className="text-meta px-2.5 py-1.5 rounded-lg bg-accent text-white shrink-0"
                     data-testid={`persona-disable-confirm-${p.id}`}
                     onClick={() => {
                       setConfirmOff(null);
@@ -241,7 +241,7 @@ export function PersonasTab({ onOpenPersona }: { onOpenPersona?: (id: string) =>
               className={"transition-transform" + (showUnshipped ? " rotate-90" : "")}
             />
             <span>Not in this release · {unshipped.length} coworkers</span>
-            <span className="ml-auto text-faint text-[12px]">
+            <span className="ml-auto text-faint text-meta">
               {internal ? "internal build" : "not in this release"}
             </span>
           </button>
@@ -261,7 +261,7 @@ export function PersonasTab({ onOpenPersona }: { onOpenPersona?: (id: string) =>
           className={"transition-transform" + (showInstall ? " rotate-90" : "")}
         />
         <span>Install a coworker</span>
-        <span className="ml-auto text-faint text-[12px]">GitHub · folder · .zip</span>
+        <span className="ml-auto text-faint text-meta">GitHub · folder · .zip</span>
       </button>
       {showInstall && (
         <div className={CARD + " mt-1.5 p-4"}>
@@ -298,7 +298,7 @@ export function PersonasTab({ onOpenPersona }: { onOpenPersona?: (id: string) =>
                 >
                   {busy ? "Installing…" : "Choose folder…"}
                 </button>
-                <span className="text-[12px] text-faint">
+                <span className="text-meta text-faint">
                   Opens the system folder picker; installs on selection.
                 </span>
               </>
@@ -320,7 +320,7 @@ export function PersonasTab({ onOpenPersona }: { onOpenPersona?: (id: string) =>
               </label>
             )}
           </div>
-          <div className="flex items-start gap-2 mt-3 text-[12px] text-muted leading-relaxed">
+          <div className="flex items-start gap-2 mt-3 text-meta text-muted leading-relaxed">
             <span className="text-warnInk shrink-0">⚠</span>
             <span>
               Only install coworkers from sources you trust and can hold accountable — a
@@ -332,7 +332,7 @@ export function PersonasTab({ onOpenPersona }: { onOpenPersona?: (id: string) =>
           </div>
         </div>
       )}
-      {msg && <div className="text-[13px] text-muted mt-2.5">{msg}</div>}
+      {msg && <div className="text-ui text-muted mt-2.5">{msg}</div>}
 
       {consent && consent.length > 0 && (
         <div className="mt-4 space-y-2" data-testid="consent-review">
@@ -340,7 +340,7 @@ export function PersonasTab({ onOpenPersona }: { onOpenPersona?: (id: string) =>
               are a one-line summary with the exact tools under a collapsed chevron. A
               coworker runs no third-party code, so this list is complete — but a prompt
               still steers an agent, so who it came from genuinely matters. */}
-          <div className="flex items-start gap-2.5 rounded-xl border border-warnInk/30 bg-warnSoft px-3.5 py-2.5 text-[13px] text-warnInk">
+          <div className="flex items-start gap-2.5 rounded-xl border border-warnInk/30 bg-warnSoft px-3.5 py-2.5 text-ui text-warnInk">
             <Icon name="shield" size={15} className="shrink-0 mt-0.5" />
             <span>
               Only enable coworkers from someone you trust. Nothing here runs third-party
@@ -389,13 +389,13 @@ function ConsentCard({
   const recommends = c.recommends || [];
   return (
     <div className={CARD + " p-3.5"} data-testid={`consent-${c.id}`}>
-      <div className="text-[13px] font-medium flex items-center gap-2">
+      <div className="text-ui font-medium flex items-center gap-2">
         <span>{c.name}</span>
-        {c.version && <span className="text-[11px] text-faint font-normal">v{c.version}</span>}
+        {c.version && <span className="text-label text-faint font-normal">v{c.version}</span>}
       </div>
-      {c.description && <div className="text-[12px] text-muted mt-0.5">{c.description}</div>}
+      {c.description && <div className="text-meta text-muted mt-0.5">{c.description}</div>}
       {c.replaces && (
-        <div className="text-[12px] text-muted mt-1.5" data-testid="replaces-note">
+        <div className="text-meta text-muted mt-1.5" data-testid="replaces-note">
           Replaces {c.name}
           {c.replaces.version ? ` v${c.replaces.version}` : ""}
           {c.replaces.installed_at ? ` (installed ${c.replaces.installed_at})` : ""}.
@@ -404,7 +404,7 @@ function ConsentCard({
             : " Same capabilities as before — it stays enabled."}
         </div>
       )}
-      <div className="text-[13px] text-ink mt-2">
+      <div className="text-ui text-ink mt-2">
         Can {summary}
         {c.connectors === "all"
           ? " · use ALL your connected services"
@@ -414,7 +414,7 @@ function ConsentCard({
         {c.messaging ? " · send messages" : ""}
         {c.mcp.length ? ` · use MCP: ${c.mcp.join(", ")}` : ""}
         <button
-          className="ml-2 text-accent text-[12px] hover:underline"
+          className="ml-2 text-accent text-meta hover:underline"
           data-testid="consent-tools-toggle"
           onClick={() => setShowTools((v) => !v)}
         >
@@ -422,12 +422,12 @@ function ConsentCard({
         </button>
       </div>
       {showTools && (
-        <div className="text-[12px] text-muted mt-1 font-mono">{c.tools.join(" · ") || "—"}</div>
+        <div className="text-meta text-muted mt-1 font-mono">{c.tools.join(" · ") || "—"}</div>
       )}
       {recommends.length > 0 && (
         <div className="mt-2 space-y-0.5">
           {recommends.map((r) => (
-            <div key={r.kind + r.ref} className="text-[12px] text-muted">
+            <div key={r.kind + r.ref} className="text-meta text-muted">
               <span className="text-ink">{r.ref}</span>
               {r.tier === "core" ? " (recommended)" : " (optional)"} — {r.reason}
             </div>
@@ -438,7 +438,7 @@ function ConsentCard({
         {/* Enable right here (owner ask 2026-08-11) — the old "enable it above" copy
             sent the user hunting back up the list. */}
         {enabled ? (
-          <span className="text-[13px] text-muted" data-testid="consent-enabled">
+          <span className="text-ui text-muted" data-testid="consent-enabled">
             ✓ Enabled — it's in your coworker picker.
           </span>
         ) : (
@@ -454,7 +454,7 @@ function ConsentCard({
             {busy ? "Enabling…" : "Enable this coworker"}
           </button>
         )}
-        <span className="text-[12px] text-faint">Recommended mode: {c.recommended_mode}.</span>
+        <span className="text-meta text-faint">Recommended mode: {c.recommended_mode}.</span>
       </div>
     </div>
   );

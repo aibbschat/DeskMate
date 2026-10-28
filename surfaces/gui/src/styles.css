@@ -49,6 +49,32 @@
   --mono: "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
   /* The right rail's width while reading an artifact (wider than the 332px inspector). */
   --artifact-rail-w: min(62vw, 960px);
+  /* 字号档位默认值（Settings ▸ 外观 ▸ 字号，实现见 src/textSize.ts）。
+     这六个值刻意等于历史硬编码的 11/12/13/14/15/16px —— 未设置档位时渲染与旧版一致。 */
+  --fs-label: 11px;
+  --fs-meta: 12px;
+  --fs-ui: 13px;
+  --fs-body: 14px;
+  --fs-heading: 15px;
+  --fs-title: 16px;
+}
+
+/* 字号换挡：只动这六个 token，布局尺寸（侧栏宽、间距、图标）一律不变。 */
+:root[data-text-size="small"] {
+  --fs-label: 10px;
+  --fs-meta: 11px;
+  --fs-ui: 12px;
+  --fs-body: 13px;
+  --fs-heading: 14px;
+  --fs-title: 15px;
+}
+:root[data-text-size="large"] {
+  --fs-label: 12px;
+  --fs-meta: 13px;
+  --fs-ui: 14px;
+  --fs-body: 15px;
+  --fs-heading: 16px;
+  --fs-title: 17px;
 }
 
 /* Dark palette. `data-theme` is set on <html> by an inline script in index.html (pre-paint)

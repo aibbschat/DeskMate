@@ -1,4 +1,12 @@
 {
+  "app": {
+    "thinking_hidden": "Thinking…"
+  },
+  "approval": {
+    "escalation_reviewer_unsure": "The auto-reviewer wasn't sure — your call:",
+    "escalation_human_required": "This action always needs your approval:",
+    "escalation_reviewer_unavailable": "Auto-review is unavailable right now, so this comes to you:"
+  },
   "chat": {
     "copyTitle": "Copy message",
     "copied": "Copied",
@@ -7,6 +15,8 @@
     "declined": "✕ declined",
     "approved": "✓ approved",
     "approvedTitle": "approved · {{rule}}",
+    "expired": "expired",
+    "expiredTitle": "This turn ended without an answer, so this card can no longer be used.",
     "autoAllowed": "auto-allowed",
     "autoAllowedTitle": "Auto-allowed by this automation's standing approval: {{rule}}. Revoke on its Automations page.",
     "hiddenTitle": "Removed by your privacy filters before the agent saw the results — agents get no trace of these.",
@@ -78,6 +88,7 @@
     "projects": "Projects",
     "inbox": "Inbox",
     "connectors": "Connectors",
+    "team": "Team",
     "settings": "Settings",
     "activity": "Activity",
     "signOut": "Sign out",
@@ -201,9 +212,22 @@
     "auto": "Auto",
     "autoHelp": "Auto follows your Mac's appearance.",
     "appearanceAria": "Appearance",
+    "textSize": "Text size",
+    "textSizeAria": "Text size",
+    "textSize_small": "Small",
+    "textSize_default": "Default",
+    "textSize_large": "Large",
+    "textSizeHelp": "Changes text only — the layout stays put. Remembered per device, and it applies to the phone view too.",
     "sidebar": "Sidebar",
     "conversationsShownPerCoworker": "Conversations shown per coworker",
     "sidebarHelp": "Longer lists collapse behind “Show more”. Applies per coworker and per project.",
+    "hide_reasoning_title": "Hide thinking while I work",
+    "hide_reasoning_desc": "While a task runs, collapse the fast-scrolling thinking text into a quiet “Thinking…” line. The full thinking still appears after the task ends.",
+    "reasoning_effort_title": "Reasoning effort",
+    "reasoning_effort_default": "Default (model's own)",
+    "reasoning_effort_low": "Low",
+    "reasoning_effort_medium": "Medium",
+    "reasoning_effort_high": "High",
     "files": "Files",
     "filesPlaceholder": "~/OpenWorker",
     "browse": "Browse",

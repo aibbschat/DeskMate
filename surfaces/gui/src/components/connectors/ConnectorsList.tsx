@@ -55,7 +55,7 @@ export function ConnectorsList({
           placeholder="Search"
           value={filter}
           onChange={(e) => setFilter(e.target.value)}
-          className="w-44 px-3.5 py-1.5 rounded-full border border-line bg-panel text-[13px] outline-none focus:border-accent"
+          className="w-44 px-3.5 py-1.5 rounded-full border border-line bg-panel text-ui outline-none focus:border-accent"
         />
       </div>
 
@@ -74,11 +74,11 @@ export function ConnectorsList({
               >
                 <ConnectorBadge connector={c} size={34} title={c.title} />
                 <span className="min-w-0 flex-1">
-                  <span className="font-medium text-[13px]">{c.title}</span>
-                  <span className="block text-[12px] text-muted">{statusLine(c)}</span>
+                  <span className="font-medium text-ui">{c.title}</span>
+                  <span className="block text-meta text-muted">{statusLine(c)}</span>
                 </span>
                 {healthChip(c, slack)}
-                <span className="text-faint text-[14px] shrink-0">›</span>
+                <span className="text-faint text-body shrink-0">›</span>
               </button>
             ))}
           </div>
@@ -104,8 +104,8 @@ export function ConnectorsList({
           >
             <ConnectorBadge connector={c} size={34} title={c.title} />
             <span className="min-w-0 flex-1">
-              <span className="font-medium text-[13px]">{c.title}</span>
-              <span className="block text-[12px] text-muted truncate">{c.blurb}</span>
+              <span className="font-medium text-ui">{c.title}</span>
+              <span className="block text-meta text-muted truncate">{c.blurb}</span>
             </span>
             <span
               className={PILL_QUIET + " cursor-pointer"}
@@ -120,7 +120,7 @@ export function ConnectorsList({
           </button>
         ))}
         {shown.length === 0 && (
-          <div className={ROW + " text-[13px] text-muted"}>Nothing matches.</div>
+          <div className={ROW + " text-ui text-muted"}>Nothing matches.</div>
         )}
       </div>
       {!showAll && !q && available.length > AVAILABLE_FOLD && (

@@ -30,14 +30,14 @@ const KIND_TABS: { key: string; label: string }[] = [
 ];
 
 const CHIP = (active: boolean) =>
-  "text-[12px] px-2.5 py-1 rounded-full border " +
+  "text-meta px-2.5 py-1 rounded-full border " +
   (active
     ? "border-accent text-accent bg-accentSoft"
     : "border-line text-muted hover:border-lineStrong");
 
 // Page-level tabs (§28): underline style, one visual level ABOVE the filter chips.
 const TAB = (active: boolean) =>
-  "pb-2 -mb-px text-[13px] border-b-2 flex items-center gap-1.5 " +
+  "pb-2 -mb-px text-ui border-b-2 flex items-center gap-1.5 " +
   (active
     ? "text-ink font-medium border-accent"
     : "text-muted border-transparent hover:text-ink");
@@ -163,7 +163,7 @@ export function InboxView({
             >
               Pending
               {items.length > 0 && (
-                <span className="text-[11px] px-1.5 rounded-full bg-accentSoft text-accent leading-4">
+                <span className="text-label px-1.5 rounded-full bg-accentSoft text-accent leading-4">
                   {items.length}
                 </span>
               )}
@@ -175,7 +175,7 @@ export function InboxView({
             >
               Configure
               {unroutedCount > 0 && (
-                <span className="text-[11px] px-1.5 rounded-full bg-warnSoft text-warnInk leading-4">
+                <span className="text-label px-1.5 rounded-full bg-warnSoft text-warnInk leading-4">
                   ⚠ {unroutedCount}
                 </span>
               )}
@@ -186,7 +186,7 @@ export function InboxView({
             <InboxConfigure />
           ) : (
             <>
-              <div className="text-[12px] text-faint -mt-1 mb-4" data-testid="inbox-routing">
+              <div className="text-meta text-faint -mt-1 mb-4" data-testid="inbox-routing">
                 {routing ? (
                   <span>
                     Also delivered to{" "}

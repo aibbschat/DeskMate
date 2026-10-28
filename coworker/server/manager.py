@@ -755,7 +755,11 @@ class SessionManager:
             # Auto-Approve (spec §1.5): prefs-backed, so the Settings toggle takes effect on
             # the next session build without a config.toml edit.
             auto_approve=self.auto_approve(),
-            auto_approve_shadow=self.auto_approve_shadow(),        )
+            auto_approve_shadow=self.auto_approve_shadow(),
+            # Reasoning effort (default/low/medium/high) forwarded to provider.stream — the
+            # engine passes **settings through; providers that don't model effort ignore it
+            # (safely whitelist-filtered). Applies to the next session build.
+            model_settings=self.model_settings_for_session(),        )
         # An automation run rebuilt here (manual "Run now" over WS, durable resume) still
         # carries its task's standing allowances — the rules live on the task record.
         if owning_task is not None:
@@ -2347,6 +2351,97 @@ class SessionManager:
             ),
         }
 
+    def team_roster(self, session_id: str) -> dict[str, Any]:
+        """The GUI team panel's one read: who is on the team, what they hold, and whether
+        their engine is actually running right now.
+
+        Read-only and side-effect free — the panel polls it while open, so it must never
+        wake anything (no `kick_team_tick`, no cursor advance). Liveness is derived, not
+        stored: `is_running` for a live turn plus the `_team_inflight` set for a drain
+        that has been dispatched but whose turn has not started yet.
+        """
+        team = self.teams.for_lead_session(session_id)
+        role = "lead"
+        if team is None:
+            pair = self.teams.for_worker_session(session_id)
+            if pair is not None:
+                team, _worker = pair
+                role = "worker"
+        if team is None:
+            return {"team": None, "role": None}
+
+        items: list[dict[str, Any]] = []
+        try:
+            items = self.team_store.list_items(team.space, self._user_actor())
+        except Exception:
+            # An unreadable board must not blank the roster — the panel still shows who
+            # is on the team, which is how you notice the board went away.
+            items = []
+
+        def busy(sid: str) -> bool:
+            return self.is_running(sid) or sid in self._team_inflight
+
+        by_actor: dict[str, list[dict[str, Any]]] = {}
+        for item in items:
+            by_actor.setdefault(str(item.get("assignee") or ""), []).append(item)
+
+        def slice_of(actor: str) -> dict[str, Any]:
+            mine = by_actor.get(actor, [])
+            counts: dict[str, int] = {}
+            for i in mine:
+                counts[str(i.get("state", ""))] = counts.get(str(i.get("state", "")), 0) + 1
+            current = next(
+                (str(i.get("title", "")) for i in mine if i.get("state") == "in_progress"),
+                "",
+            )
+            return {"counts": counts, "current": current}
+
+        workers = [
+            {
+                "actor": w.actor,
+                "persona": w.persona,
+                "session_id": w.session_id,
+                "model": w.model,
+                "reason": w.reason,
+                "running": busy(w.session_id),
+                **slice_of(w.actor),
+            }
+            for w in team.workers
+        ]
+        counts: dict[str, int] = {}
+        for item in items:
+            s = str(item.get("state", ""))
+            counts[s] = counts.get(s, 0) + 1
+        return {
+            "team": {
+                "team_id": team.team_id,
+                "space": team.space,
+                "lead_session": team.lead_session,
+                "lead_actor": team.lead_actor,
+                "paused": team.paused,
+                "chat_enabled": team.chat_enabled,
+                "created_at": team.created_at,
+                "lead_running": busy(team.lead_session),
+                "lead": slice_of(team.lead_actor),
+            },
+            "role": role,
+            "session_id": session_id,
+            "workers": workers,
+            "counts": counts,
+            # The board itself, newest first — the panel's middle column. Trimmed to the
+            # fields a read-only view needs; descriptions can be long.
+            "items": [
+                {
+                    "id": i.get("id"),
+                    "title": i.get("title", ""),
+                    "state": i.get("state", ""),
+                    "assignee": i.get("assignee") or "",
+                    "updated_at": i.get("updated_at", ""),
+                }
+                for i in sorted(items, key=lambda i: int(i.get("id") or 0), reverse=True)[:200]
+            ],
+        }
+
     def kick_team_tick(self) -> None:
         """Nudge the wake plumbing from outside the turn loop — e.g. after an
         external board client writes through the `/v1/board` API, so a review or a
@@ -3541,6 +3636,13 @@ class SessionManager:
             "nav_layout": self._nav_layout(),
             "sessions_peek": self.sessions_peek(),
             "context_bar": self.context_bar(),
+            # #611: collapse the live reasoning stream to a quiet indicator while a
+            # turn runs (default FALSE — the trace shows as before). The finalized
+            # reasoning still appears after the turn.
+            "hide_reasoning_running": self.hide_reasoning_running(),
+            # Reasoning effort for new sessions: "default" (provider's own), or an
+            # explicit low/medium/high override understood by the OpenAI/Codex paths.
+            "reasoning_effort": self.reasoning_effort(),
             # Auto-Approve feature flag + its shadow-eval sibling (spec §1.5). Drive the
             # Settings toggles and gate the composer's Auto-Approve mode entry.
             "auto_approve": self.auto_approve(),
@@ -3614,6 +3716,46 @@ class SessionManager:
         self._prefs["context_bar"] = bool(shown)
         self._save_prefs()
         return {"ok": True, "context_bar": self.context_bar()}
+
+    def hide_reasoning_running(self) -> bool:
+        """#611: while a turn runs, collapse the live (fast-scrolling) reasoning
+        stream to a quiet one-line indicator instead of showing the trace grow.
+        The finalized reasoning still appears after the turn, so nothing is lost.
+        OFF by default — people who want to watch the trace get it as before."""
+        return bool(self._prefs.get("hide_reasoning_running", False))
+
+    def set_hide_reasoning_running(self, hidden: Any) -> dict[str, Any]:
+        self._prefs["hide_reasoning_running"] = bool(hidden)
+        self._save_prefs()
+        return {"ok": True, "hide_reasoning_running": self.hide_reasoning_running()}
+
+    # Valid reasoning_effort values understood by the OpenAI/Codex paths; providers that
+    # don't model effort (Anthropic thinking_budget, Gemini thinking_config) ignore this
+    # key safely (their _request_kwargs whitelist-filters unknown settings). "default" = the
+    # provider's own server-side default (no override sent).
+    VALID_REASONING_EFFORT = ("default", "low", "medium", "high")
+
+    def reasoning_effort(self) -> str:
+        """Per-session-model reasoning effort: "default" (provider's own), "low", "medium",
+        or "high". Applied to new sessions via the engine's model_settings."""
+        v = str(self._prefs.get("reasoning_effort", "default")).strip().lower()
+        return v if v in self.VALID_REASONING_EFFORT else "default"
+
+    def set_reasoning_effort(self, effort: str) -> dict[str, Any]:
+        v = str(effort or "default").strip().lower()
+        if v not in self.VALID_REASONING_EFFORT:
+            return {"ok": False, "error": f"invalid reasoning_effort: {effort}"}
+        self._prefs["reasoning_effort"] = v
+        self._save_prefs()
+        return {"ok": True, "reasoning_effort": self.reasoning_effort()}
+
+    def model_settings_for_session(self) -> dict[str, Any]:
+        """Reasoning knobs forwarded to the engine's provider.stream call (engine.py passes
+        **settings through). Empty when effort is "default" so providers use their own."""
+        effort = self.reasoning_effort()
+        if effort == "default":
+            return {}
+        return {"reasoning_effort": effort}
 
     # -- Auto-Approve (spec §1.5, Part 6 step 3) --------------------------------
     # The feature flag and its shadow-eval sibling live in prefs (GUI-writable), falling

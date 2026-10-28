@@ -840,7 +840,7 @@ export function DeskMateOverlay({ agent, sessionId, activeExpert, hidden }: Prop
       {/* 记忆注入低调提示 — 左下角，数秒后自动消失，非模态、不抢操作 */}
       {contextHint && (
         <div
-          className="fixed bottom-4 left-4 z-50 rounded-lg border px-3 py-2 text-[12px] shadow-lg"
+          className="fixed bottom-4 left-4 z-50 rounded-lg border px-3 py-2 text-meta shadow-lg"
           style={{
             background: "var(--panel)",
             borderColor: "var(--line)",

@@ -108,8 +108,8 @@ export function BondPanel({ growth }: { growth?: GrowthSnapshot | null }) {
       {/* 关系阶段 */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-1.5">
-          <span className="text-[12px]">{emoji}</span>
-          <span className="text-[11px] font-semibold text-gray-900">
+          <span className="text-meta">{emoji}</span>
+          <span className="text-label font-semibold text-gray-900">
             {stage || "关系"}
           </span>
           <span className="text-[10px] text-gray-400">· 深度 {Math.round(depth)}</span>
@@ -156,7 +156,7 @@ export function BondPanel({ growth }: { growth?: GrowthSnapshot | null }) {
               .map((ev, i) => {
                 const meta = EVENT_META[ev.kind] ?? { icon: "·", label: ev.kind, domain: "" };
                 return (
-                  <div key={i} className="flex items-center gap-1.5 text-[11px] leading-relaxed">
+                  <div key={i} className="flex items-center gap-1.5 text-label leading-relaxed">
                     <span style={{ flexShrink: 0 }}>{meta.icon}</span>
                     <span className="text-gray-600 flex-1 truncate">
                       {meta.label}

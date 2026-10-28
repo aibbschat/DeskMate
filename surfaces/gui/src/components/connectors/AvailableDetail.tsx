@@ -29,7 +29,7 @@ export function AvailableDetail({
         <ConnectorBadge connector={c} size={44} title={c.title} />
         <div className="min-w-0 flex-1">
           <h2 className="text-[20px] font-semibold tracking-tight leading-tight">{c.title}</h2>
-          <div className="text-[13px] text-muted">{c.blurb}</div>
+          <div className="text-ui text-muted">{c.blurb}</div>
         </div>
         <button
           className={PILL_ACCENT}
@@ -40,14 +40,14 @@ export function AvailableDetail({
         </button>
       </div>
 
-      {c.about && <p className="text-[13px] text-ink/90 leading-relaxed mb-1 px-0.5">{c.about}</p>}
+      {c.about && <p className="text-ui text-ink/90 leading-relaxed mb-1 px-0.5">{c.about}</p>}
 
       {(c.access?.length ?? 0) > 0 && (
         <>
           <div className={GRP_H}>Access</div>
           <div className={GRP} data-testid="available-access">
             {c.access!.map((line) => (
-              <div key={line} className={ROW + " !min-h-[36px] !py-2 text-[13px]"}>
+              <div key={line} className={ROW + " !min-h-[36px] !py-2 text-ui"}>
                 {line}
               </div>
             ))}
@@ -63,21 +63,21 @@ export function AvailableDetail({
           <div className={GRP_H}>Tools</div>
           <div className={GRP}>
             <button
-              className={ROW + " w-full text-left hover:bg-paper/60 text-[13px]"}
+              className={ROW + " w-full text-left hover:bg-paper/60 text-ui"}
               data-testid="available-tools-toggle"
               onClick={() => setShowTools((v) => !v)}
             >
               <span className="min-w-0 flex-1 text-muted">
                 {tools.length} tool{tools.length === 1 ? "" : "s"} this connector adds
               </span>
-              <span className="text-faint text-[13px] shrink-0">{showTools ? "Hide" : "View"}</span>
+              <span className="text-faint text-ui shrink-0">{showTools ? "Hide" : "View"}</span>
             </button>
             {showTools &&
               tools.map((t) => (
                 <div key={t.name} className={ROW + " !min-h-[38px]"}>
                   <span className="min-w-0 flex-1">
-                    <span className="text-[13px]">{t.label}</span>
-                    <span className="block text-[12px] text-muted">{t.description}</span>
+                    <span className="text-ui">{t.label}</span>
+                    <span className="block text-meta text-muted">{t.description}</span>
                   </span>
                   {t.kind !== "read" && <span className={TAG_QUIET}>asks first</span>}
                 </div>

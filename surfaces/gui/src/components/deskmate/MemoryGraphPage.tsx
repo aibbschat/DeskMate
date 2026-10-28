@@ -143,14 +143,14 @@ export function MemoryGraphPage({ open, onClose, onOpenList }: Props) {
         <div className="flex items-center gap-2">
           <button
             onClick={onOpenList}
-            className="px-3 py-2 rounded-lg text-[12px] font-medium transition-colors"
+            className="px-3 py-2 rounded-lg text-meta font-medium transition-colors"
             style={{ background: "rgba(255,250,243,0.82)", border: "1px solid rgba(214,188,160,0.6)", color: "#6b4a32" }}
           >
             列表视图
           </button>
           <button
             onClick={onClose}
-            className="px-4 py-2 rounded-lg text-[13px] font-semibold transition-colors"
+            className="px-4 py-2 rounded-lg text-ui font-semibold transition-colors"
             style={{ background: "#c2662f", color: "#fff", border: "none", boxShadow: "0 4px 14px rgba(180,110,60,0.3)" }}
           >
             返回

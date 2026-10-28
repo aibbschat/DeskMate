@@ -51,6 +51,7 @@ import type {
 import { isProjectScoped, shortPersonaName } from "./personaScope";
 import { baseName } from "./paths";
 import { itemsFromMessages } from "./itemsFromMessages";
+import { dedupeGates, expireOpenGates, hasOpenGates, reconcileResolvedGates, retireFinishedGate } from "./gateReconciliation";
 import { addTurnUsage, emptyUsage, usageFromMessages } from "./usage";
 import { streamMode } from "./streamGate";
 import { parseTs } from "./time";
@@ -107,6 +108,8 @@ import { ReportDialog } from "./components/deskmate/ReportDialog";
 import { ExpertsCenter } from "./components/deskmate/ExpertsCenter";
 import { CreationChatView } from "./components/CreationChatView";
 import { TeamChatView } from "./components/TeamChatView";
+import { TeamPanel } from "./components/TeamPanel";
+import { Gallery } from "./gallery/Gallery";
 import { BadgeWall } from "./components/deskmate/BadgeWall";
 import { useTranslation } from "react-i18next";
 import XiaojuAvatar from "./components/XiaojuAvatar";
@@ -258,6 +261,9 @@ export function App() {
   // Settings: show the composer's context-window fill bar. OFF by default (owner ask),
   // so an older backend without the field also shows the session total.
   const [contextBar, setContextBar] = useState(false);
+  // #611: while a turn runs, collapse the live reasoning stream to a quiet indicator
+  // instead of showing the fast-scrolling trace. The finalized reasoning still appears.
+  const [hideReasoningRunning, setHideReasoningRunning] = useState(false);
   // Per-session token usage (OPE-42): rebuilt from the transcript on session load,
   // accumulated live from assistant_message events, reset with the transcript.
   const [usage, setUsage] = useState<SessionUsage>(emptyUsage());
@@ -270,6 +276,13 @@ export function App() {
   // multi-second silent stall mid-turn.
   const [compacting, setCompacting] = useState(false);
   const [items, setItems] = useState<Item[]>([]);
+  // Ref mirror of `items`: the Inbox poll lives in an effect whose closure can't read fresh
+  // state, and reconciliation needs the *current* cards to decide whether an extra
+  // resolved-list fetch is even worth it.
+  const itemsRef = useRef<Item[]>([]);
+  useEffect(() => {
+    itemsRef.current = items;
+  }, [items]);
   const [streaming, setStreamingState] = useState("");
   // Ref mirror of `streaming`: the WS handler closure is built once per socket and can't read
   // fresh state — the interrupted/error flush below needs the live buffer at event time.
@@ -316,9 +329,14 @@ export function App() {
   // load; corrected by loadSettings.
   const [modelReady, setModelReady] = useState(true);
   const [surface, setSurface] = useState<
-    "session" | "scheduled" | "integrations" | "skillstore" | "audit" | "inbox" | "persona" | "settings" | "experts" | "roundtable" | "badges" | "profile" | "creation" | "teamchat" | "mailbox"
+    "session" | "scheduled" | "integrations" | "skillstore" | "audit" | "inbox" | "persona" | "settings" | "experts" | "roundtable" | "badges" | "profile" | "creation" | "teamchat" | "mailbox" | "team" | "gallery"
   >("session");
   const [teamId] = useState("");
+  // #gallery：卡片状态画廊（只读假数据，没有导航入口）。调试/改样式后用这个地址进来，
+  // 不用在 app 里手动点出一条"审查者不可用的审批卡"。桌面 app 的 webview 同样吃 hash。
+  useEffect(() => {
+    if (window.location.hash === "#gallery") setSurface("gallery");
+  }, []);
   // A remembered Scheduled-detail target must not outlive the surface (see the
   // scheduledOpenId comment above): nav re-entry lands on the list, never a
   // possibly-deleted automation's dead detail.
@@ -662,6 +680,7 @@ export function App() {
             setModelContextWindows(windows);
           }
           setContextBar(s.context_bar === true);
+          setHideReasoningRunning(s.hide_reasoning_running === true);
           setModelReady(s.model_ready);
           if (s.surfaces) setSurfaces(s.surfaces);
         })
@@ -895,23 +914,29 @@ export function App() {
             setTodo(normalizeTodos(d.arguments.todos ?? d.arguments.items));
           setItems((p) => [
             ...p,
-            { kind: "tool", id: newId(), name: d.name, args: d.arguments, status: "…" },
+            { kind: "tool", id: d.id || newId(), name: d.name, args: d.arguments, status: "…" },
           ]);
           break;
         case "permission_required":
           // Unattended → the backend parked it in the Inbox; don't also surface a live card.
           if (unattendedRef.current) break;
-          setItems((p) => [
-            ...p,
-            {
-              kind: "approval",
-              name: d.name,
-              args: d.arguments,
-              reason: d.reason,
-              category: d.category,
-              standingTarget: d.standing_target || undefined,
-            },
-          ]);
+          setItems((p) =>
+            dedupeGates([
+              ...p,
+              {
+                kind: "approval",
+                name: d.name,
+                args: d.arguments,
+                reason: d.reason,
+                category: d.category,
+                standingTarget: d.standing_target || undefined,
+                // 卡的身份：同一个 tool_call_id 只允许存在一张（断线重放不再叠卡）。
+                toolCallId: d.tool_call_id || undefined,
+                reviewerUnsure: d.reviewer_unsure || undefined,
+                escalation: d.escalation || undefined,
+              },
+            ]),
+          );
           break;
         case "directory_requested":
           if (unattendedRef.current) break;
@@ -942,13 +967,18 @@ export function App() {
           break;
         case "tool_finished":
           setItems((p) =>
-            updateLastTool(
-              p,
+            // 完成即权威：这个调用已经跑完（或被拒），它那张门卡不该还能点。
+            retireFinishedGate(
+              updateLastTool(
+                p,
+                d.name,
+                d.status,
+                d.result_preview || d.reason,
+                d.display?.hidden_by_filters,
+                d.standing_rule,
+              ),
               d.name,
-              d.status,
-              d.result_preview || d.reason,
-              d.display?.hidden_by_filters,
-              d.standing_rule,
+              d.id,
             ),
           );
           dmToolTotal.current += 1;
@@ -964,6 +994,8 @@ export function App() {
           }
           break;
         case "turn_end":
+          // 一轮结束还没人回答的门卡：后端不再等它，标成失效（历史留住，但不能再点）。
+          setItems((p) => expireOpenGates(p));
           if (d.status === "max_iterations_exceeded")
             setItems((p) => [...p, { kind: "notice", tone: "warn", text: "Stopped: max iterations reached." }]);
           break;
@@ -1138,7 +1170,18 @@ export function App() {
   useEffect(() => {
     if (surface !== "session") return;
     const load = () => {
-      getInbox(sessionId, "pending").then(setSessionInbox).catch(() => setSessionInbox([]));
+      getInbox(sessionId, "pending")
+        .then((list) => {
+          setSessionInbox(list);
+          // 信箱里已经回答、聊天里那张卡还挂着 → 撤卡。只在真有带 id 的未回答卡时才多拉
+          // 一次 resolved 列表，平时不多发请求（这条 10s 轮询很在意开销）。
+          if (hasOpenGates(itemsRef.current)) {
+            getInbox(sessionId, "resolved")
+              .then((resolved) => setItems((p) => reconcileResolvedGates(p, resolved)))
+              .catch(() => {});
+          }
+        })
+        .catch(() => setSessionInbox([]));
       getUnattended(sessionId).then(markUnattended).catch(() => markUnattended(false));
     };
     load();
@@ -1655,7 +1698,7 @@ export function App() {
               View run ›
             </button>
             <button
-              className="text-[12px] text-faint px-0.5"
+              className="text-meta text-faint px-0.5"
               data-testid="toast-dismiss"
               title="Dismiss"
               onClick={() => setRunToast(null)}
@@ -1748,7 +1791,9 @@ export function App() {
         onOpenProfile={() => setSurface("profile")}
         profileActive={surface === "profile"}
         onOpenMailbox={() => setSurface("mailbox")}
+        onOpenTeam={() => setSurface("team")}
         mailboxActive={surface === "mailbox"}
+        teamActive={surface === "team"}
         scheduledActive={surface === "scheduled"}
         integrationsActive={surface === "integrations"}
         skillStoreActive={surface === "skillstore"}
@@ -1779,6 +1824,13 @@ export function App() {
         <AuditView />
       ) : surface === "inbox" ? (
         <InboxView onOpenSession={openSessionFromInbox} />
+      ) : surface === "team" ? (
+        <TeamPanel
+          sessionId={sessionId}
+          onOpenSession={(sid, ag) => void selectSession(sid, "", ag || "")}
+        />
+      ) : surface === "gallery" ? (
+        <Gallery />
       ) : surface === "persona" ? (
         <PersonaView
           personaId={personaViewId || agent}
@@ -2010,11 +2062,16 @@ export function App() {
                   />
                   {/* Live thinking (reasoning models): a quiet collapsed block that streams the
                       trace for anyone who expands it; folds into the answer's disclosure when
-                      the message finalizes. */}
-                  {running && reasoningStream && !streaming && (
+                      the message finalizes. #611: when "hide thinking while working" is on, the
+                      fast-scrolling live trace is replaced by a quiet one-line indicator; the
+                      finalized reasoning still appears after the turn. */}
+                  {running && reasoningStream && !streaming && !hideReasoningRunning && (
                     <div className="transcript">
                       <ThinkingBlock text={reasoningStream} live />
                     </div>
+                  )}
+                  {running && reasoningStream && !streaming && hideReasoningRunning && (
+                    <WaitingForAgent label={t("app.thinking_hidden")} />
                   )}
                   {/* Compaction runs between provider turns (nothing streams during it), so
                       the transient takes over the waiting slot with a specific label. */}
@@ -2046,7 +2103,7 @@ export function App() {
             {!following && (running || !!streaming) && (
               <div className="relative h-0 z-10">
                 <button
-                  className="absolute bottom-3 left-1/2 -translate-x-1/2 flex items-center gap-1.5 px-3 py-1.5 rounded-full border border-line bg-panel shadow-md text-[12px] text-muted hover:text-ink cursor-pointer whitespace-nowrap"
+                  className="absolute bottom-3 left-1/2 -translate-x-1/2 flex items-center gap-1.5 px-3 py-1.5 rounded-full border border-line bg-panel shadow-md text-meta text-muted hover:text-ink cursor-pointer whitespace-nowrap"
                   data-testid="jump-to-latest"
                   onClick={followLatest}
                 >

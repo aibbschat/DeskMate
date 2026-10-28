@@ -161,7 +161,7 @@ export function Composer(props: Props) {
   const bindRow = (icon: "book" | "table", label: string, kind: "memory" | "board") => (
     <button
       className={
-        "w-full flex items-center gap-2.5 px-3 py-1.5 text-[13px] text-left hover:bg-paper" +
+        "w-full flex items-center gap-2.5 px-3 py-1.5 text-ui text-left hover:bg-paper" +
         (bindMenu === kind ? " bg-paper" : "")
       }
       onClick={() => setBindMenu(bindMenu === kind ? null : kind)}
@@ -567,7 +567,7 @@ export function Composer(props: Props) {
       {props.approvalSlot}
 
       {dictationError && (
-        <div className="max-w-3xl mx-auto mb-2 px-1 text-[12px] text-red-600" role="alert">
+        <div className="max-w-3xl mx-auto mb-2 px-1 text-meta text-red-600" role="alert">
           {dictationError}
         </div>
       )}
@@ -619,9 +619,9 @@ export function Composer(props: Props) {
         {slashQuery !== null && (
           <div className="px-2 pt-2" data-testid="skill-popup" role="listbox" aria-label="Skills">
             {slashSkills === null ? (
-              <div className="px-2 py-1.5 text-[12px] text-faint">Loading skills…</div>
+              <div className="px-2 py-1.5 text-meta text-faint">Loading skills…</div>
             ) : slashMatches.length === 0 ? (
-              <div className="px-2 py-1.5 text-[12px] text-faint">No matching skills.</div>
+              <div className="px-2 py-1.5 text-meta text-faint">No matching skills.</div>
             ) : (
               slashMatches.map((s, i) => (
                 <button
@@ -635,9 +635,9 @@ export function Composer(props: Props) {
                   onMouseEnter={() => setSlashIndex(i)}
                   onClick={() => pickSkill(s)}
                 >
-                  <span className="text-[13px] font-medium text-accent shrink-0">/{s.name}</span>
-                  <span className="text-[12px] text-faint truncate flex-1">{s.description}</span>
-                  <span className="text-[11px] px-1.5 py-0.5 rounded-full border border-line text-faint shrink-0">
+                  <span className="text-ui font-medium text-accent shrink-0">/{s.name}</span>
+                  <span className="text-meta text-faint truncate flex-1">{s.description}</span>
+                  <span className="text-label px-1.5 py-0.5 rounded-full border border-line text-faint shrink-0">
                     {s.scope}
                   </span>
                 </button>
@@ -752,7 +752,7 @@ export function Composer(props: Props) {
                   return <i key={index} style={{ height: Math.round(4 + level * 24) }} />;
                 })}
               </span>
-              <span className="text-[12px] text-muted tabular-nums">{recordingTime}</span>
+              <span className="text-meta text-muted tabular-nums">{recordingTime}</span>
             </div>
           ) : props.workspace !== undefined ? (
             <ModeMenu
@@ -962,7 +962,7 @@ function UsageChip({
             <div className="flex flex-col gap-1.5">
               {Object.entries(usage.byModel).map(([id, t]) => (
                 <div key={id}>
-                  <div className="text-[12px] text-ink font-medium truncate" title={id}>
+                  <div className="text-meta text-ink font-medium truncate" title={id}>
                     {labelFor(id)}
                   </div>
                   {/* Every row is a session sum. With a cache split, the input rows are
@@ -1024,7 +1024,7 @@ function ModeMenu({
           comparison): "Ask for approval ⌄" not a generic "Mode ⌄" pill. aria-label stays
           "Mode" so the accessible name is stable across mode changes. */}
       <button
-        className="inline-flex items-center gap-1 px-2 py-1 rounded-lg text-[12px] text-muted hover:text-ink hover:bg-paper shrink-0"
+        className="inline-flex items-center gap-1 px-2 py-1 rounded-lg text-meta text-muted hover:text-ink hover:bg-paper shrink-0"
         onClick={() => setOpen((v) => !v)}
         aria-haspopup="menu"
         aria-expanded={open}
@@ -1056,13 +1056,13 @@ function ModeMenu({
               >
                 <span
                   className={
-                    "text-[13px] " + (o.value === mode ? "font-medium text-accent" : "text-ink")
+                    "text-ui " + (o.value === mode ? "font-medium text-accent" : "text-ink")
                   }
                 >
                   {t(o.translationKey)}
                   {o.value === mode && <span className="ml-1.5">✓</span>}
                 </span>
-                <span className="text-[11px] text-faint leading-snug">{t(o.descKey)}</span>
+                <span className="text-label text-faint leading-snug">{t(o.descKey)}</span>
               </button>
             ))}
             {onUnattendedChange && (
@@ -1070,8 +1070,8 @@ function ModeMenu({
                 <div className="my-1 border-t border-line" />
                 <div className="flex items-center gap-2 px-2.5 py-1.5">
                   <span className="flex-1 min-w-0">
-                    <span className="block text-[13px] text-ink">{t("composer.sendApprovalsToInbox")}</span>
-                    <span className="block text-[11px] text-faint leading-snug">
+                    <span className="block text-ui text-ink">{t("composer.sendApprovalsToInbox")}</span>
+                    <span className="block text-label text-faint leading-snug">
                       {t("composer.sendApprovalsToInboxDescription")}
                     </span>
                   </span>
@@ -1094,7 +1094,7 @@ function ModeMenu({
 function attachItem(icon: "image" | "file" | "fileCode", label: string, onClick: () => void) {
   return (
     <button
-      className="w-full flex items-center gap-2.5 px-3 py-1.5 text-[13px] text-left hover:bg-paper"
+      className="w-full flex items-center gap-2.5 px-3 py-1.5 text-ui text-left hover:bg-paper"
       onClick={onClick}
     >
       <Icon name={icon} size={15} className="shrink-0 text-muted" /> {label}

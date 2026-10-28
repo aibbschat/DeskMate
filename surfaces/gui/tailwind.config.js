@@ -46,6 +46,16 @@ export default {
         mono: ["SF Mono", "JetBrains Mono", "Menlo", "monospace"],
       },
       borderRadius: { xl2: "14px" },
+      // 字号 token（styles.css 定义默认值与 [data-text-size] 三档）。app 里不再写
+      // text-[13px] 这类硬编码：换档只改 token。六个类对应历史尺寸 11/12/13/14/15/16px。
+      fontSize: {
+        title: "var(--fs-title)",
+        heading: "var(--fs-heading)",
+        body: "var(--fs-body)",
+        ui: "var(--fs-ui)",
+        meta: "var(--fs-meta)",
+        label: "var(--fs-label)",
+      },
     },
   },
   plugins: [],

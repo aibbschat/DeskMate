@@ -123,19 +123,19 @@ export function CustomMcpGroup({
           >
             <McpGlyph />
             <span className="min-w-0 flex-1">
-              <span className="font-medium text-[13px]">{s.name}</span>
-              <span className="block text-[12px] text-muted truncate">{mcpStatusLine(s)}</span>
+              <span className="font-medium text-ui">{s.name}</span>
+              <span className="block text-meta text-muted truncate">{mcpStatusLine(s)}</span>
             </span>
             {mcpChip(s)}
-            <span className="text-faint text-[14px] shrink-0">›</span>
+            <span className="text-faint text-body shrink-0">›</span>
           </button>
         ))}
         {presets.map((p) => (
           <div key={p.name} className={ROW} data-testid={`mcp-preset-${p.name}`}>
             <McpGlyph />
             <span className="min-w-0 flex-1">
-              <span className="font-medium text-[13px]">{p.label}</span>
-              <span className="block text-[12px] text-muted truncate">{p.blurb}</span>
+              <span className="font-medium text-ui">{p.label}</span>
+              <span className="block text-meta text-muted truncate">{p.blurb}</span>
             </span>
             <span
               className={PILL_QUIET + " cursor-pointer"}
@@ -166,7 +166,7 @@ const EXAMPLE = `{
 }`;
 
 const INPUT =
-  "w-full text-[13px] px-3 py-2 rounded-lg border border-line bg-paper text-ink outline-none focus:border-accent";
+  "w-full text-ui px-3 py-2 rounded-lg border border-line bg-paper text-ink outline-none focus:border-accent";
 
 // A friendly default server name from its URL: walk the hostname's labels left to
 // right, skip the generic ones (mcp/api/data/www…), take the first distinctive label
@@ -250,7 +250,7 @@ export function AddMcpModal({
   };
 
   const tabBtn = (active: boolean) =>
-    "text-[12px] px-2.5 py-1 rounded-md border shrink-0 " +
+    "text-meta px-2.5 py-1 rounded-md border shrink-0 " +
     (active ? "border-accent text-accent font-medium" : "border-line text-muted hover:text-ink");
 
   return (
@@ -258,8 +258,8 @@ export function AddMcpModal({
       <div className="absolute inset-0 bg-black/30" onClick={onClose} />
       <div className="absolute left-1/2 top-24 -translate-x-1/2 w-[540px] max-w-[92vw] rounded-xl2 border border-line bg-panel shadow-xl p-5 space-y-3">
         <div className="flex items-center justify-between">
-          <div className="text-[14px] font-semibold">Add custom MCP server</div>
-          <button className="text-faint hover:text-ink text-[16px] leading-none" onClick={onClose}>
+          <div className="text-body font-semibold">Add custom MCP server</div>
+          <button className="text-faint hover:text-ink text-title leading-none" onClick={onClose}>
             ×
           </button>
         </div>
@@ -273,7 +273,7 @@ export function AddMcpModal({
         </div>
         {tab === "url" ? (
           <>
-            <div className="text-[13px] text-muted">
+            <div className="text-ui text-muted">
               Connect a hosted MCP server. If it needs sign-in, the row will offer it after the
               first test.
             </div>
@@ -295,19 +295,19 @@ export function AddMcpModal({
               }}
               placeholder="https://mcp.example.com/mcp"
               spellCheck={false}
-              className={INPUT + " font-mono text-[12px]"}
+              className={INPUT + " font-mono text-meta"}
               data-testid="mcp-add-url"
             />
           </>
         ) : (
           <>
-            <div className="text-[13px] text-muted">Paste server JSON (name → config):</div>
+            <div className="text-ui text-muted">Paste server JSON (name → config):</div>
             <textarea
               value={text}
               onChange={(e) => setText(e.target.value)}
               spellCheck={false}
               rows={9}
-              className="w-full font-mono text-[12px] px-3 py-2.5 rounded-lg border border-line bg-paper text-ink outline-none focus:border-accent resize-y"
+              className="w-full font-mono text-meta px-3 py-2.5 rounded-lg border border-line bg-paper text-ink outline-none focus:border-accent resize-y"
             />
           </>
         )}
@@ -315,11 +315,11 @@ export function AddMcpModal({
           <button className={PILL_ACCENT} onClick={tab === "url" ? saveUrl : saveJson}>
             {tab === "url" ? "Add & test" : "Add"}
           </button>
-          <button className="text-[13px] text-muted hover:text-ink" onClick={onClose}>
+          <button className="text-ui text-muted hover:text-ink" onClick={onClose}>
             cancel
           </button>
         </div>
-        {error && <div className="text-[13px] text-danger">{error}</div>}
+        {error && <div className="text-ui text-danger">{error}</div>}
       </div>
     </div>
   );
@@ -376,15 +376,15 @@ export function McpServerDetail({
       <div className="flex items-center gap-3">
         <McpGlyph />
         <div className="flex-1 min-w-0">
-          <div className="text-[16px] font-semibold">{server.name}</div>
-          <div className="text-[12px] text-muted">{mcpStatusLine(server)}</div>
+          <div className="text-title font-semibold">{server.name}</div>
+          <div className="text-meta text-muted">{mcpStatusLine(server)}</div>
         </div>
         {mcpChip(server)}
       </div>
 
       <div className={GRP}>
         <div className={ROW}>
-          <span className="text-[13px] flex-1">Enabled</span>
+          <span className="text-ui flex-1">Enabled</span>
           <Toggle
             checked={server.enabled}
             onChange={async () => {
@@ -395,9 +395,9 @@ export function McpServerDetail({
           />
         </div>
         <div className={ROW}>
-          <span className="text-[13px] flex-1">
+          <span className="text-ui flex-1">
             Test connection
-            <span className="block text-[12px] text-faint">
+            <span className="block text-meta text-faint">
               Starts the server and lists its tools — without opening a session.
             </span>
           </span>
@@ -431,25 +431,25 @@ export function McpServerDetail({
           )}
         </div>
         {server.last_error && server.status !== "connected" && (
-          <div className="px-4 py-2.5 text-[13px] text-danger break-words">
+          <div className="px-4 py-2.5 text-ui text-danger break-words">
             {server.last_error}
           </div>
         )}
         <div className={ROW}>
-          <span className="text-[13px] flex-1">Tools</span>
-          <button className="text-[13px] text-muted hover:text-ink" onClick={loadTools} disabled={busy}>
+          <span className="text-ui flex-1">Tools</span>
+          <button className="text-ui text-muted hover:text-ink" onClick={loadTools} disabled={busy}>
             {busy ? "…" : tools ? "hide" : "show"}
           </button>
         </div>
-        {toolErr && <div className="px-4 py-2.5 text-[13px] text-danger">{toolErr}</div>}
+        {toolErr && <div className="px-4 py-2.5 text-ui text-danger">{toolErr}</div>}
         {tools && (
           <div className="px-4 py-3 flex flex-wrap gap-1.5">
-            {tools.length === 0 && <div className="text-[12px] text-faint">No tools.</div>}
+            {tools.length === 0 && <div className="text-meta text-faint">No tools.</div>}
             {tools.map((t) => (
               <span
                 key={t.name}
                 title={t.description}
-                className="font-mono text-[12px] px-1.5 py-0.5 rounded-md bg-paper border border-line"
+                className="font-mono text-meta px-1.5 py-0.5 rounded-md bg-paper border border-line"
               >
                 {t.name}
               </span>
@@ -460,8 +460,8 @@ export function McpServerDetail({
 
       <div className={GRP}>
         <div className="px-4 py-3">
-          <div className="text-[12px] font-semibold text-muted mb-1.5">Configuration</div>
-          <pre className="font-mono text-[12px] text-muted whitespace-pre-wrap break-all">
+          <div className="text-meta font-semibold text-muted mb-1.5">Configuration</div>
+          <pre className="font-mono text-meta text-muted whitespace-pre-wrap break-all">
             {JSON.stringify(server.config, null, 2)}
           </pre>
         </div>
@@ -470,7 +470,7 @@ export function McpServerDetail({
       <div className="flex items-center gap-4">
         {isOauth && server.status === "connected" && (
           <button
-            className="text-[13px] text-muted hover:text-ink"
+            className="text-ui text-muted hover:text-ink"
             onClick={async () => {
               await signoutMcp(server.name);
               onChanged();
@@ -481,7 +481,7 @@ export function McpServerDetail({
           </button>
         )}
         <button
-          className="text-[13px] text-danger/80 hover:text-danger"
+          className="text-ui text-danger/80 hover:text-danger"
           onClick={async () => {
             await deleteMcpServer(server.name);
             onChanged();

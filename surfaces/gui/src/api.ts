@@ -417,6 +417,54 @@ export async function getJournalCases(): Promise<JournalCase[]> {
   return (await res.json()).cases ?? [];
 }
 
+// ---- Team panel (read-only roster + live engine state) ---------------------------
+// Keyed off the SESSION the user is looking at, not a team id: the human knows which
+// conversation they are in, and a session may lead a team, be a worker on one, or none.
+// `running` is derived server-side from the live engine — it is the panel's whole point.
+export interface TeamRosterWorker {
+  actor: string;
+  persona: string;
+  session_id: string;
+  model: string;
+  reason: string;
+  running: boolean;
+  counts: Record<string, number>;
+  current: string; // the title of the item it is in_progress on, "" when idle
+}
+
+export interface TeamRosterItem {
+  id: number;
+  title: string;
+  state: string; // open | in_progress | blocked | review | done | canceled
+  assignee: string;
+  updated_at: string;
+}
+
+export interface TeamRoster {
+  team: null | {
+    team_id: string;
+    space: string;
+    lead_session: string;
+    lead_actor: string;
+    paused: boolean;
+    chat_enabled: boolean;
+    created_at: string;
+    lead_running: boolean;
+    lead: { counts: Record<string, number>; current: string };
+  };
+  role: "lead" | "worker" | null;
+  session_id?: string;
+  workers?: TeamRosterWorker[];
+  counts?: Record<string, number>;
+  items?: TeamRosterItem[];
+}
+
+export async function getTeamRoster(sessionId: string): Promise<TeamRoster> {
+  const qs = sessionId ? `?session_id=${encodeURIComponent(sessionId)}` : "";
+  const res = await fetch(`${httpBase()}/v1/team-roster${qs}`);
+  return res.json();
+}
+
 export interface ArtifactInfo {
   path: string; // workspace-relative (the display/API identifier)
   abs_path?: string; // absolute — what "Copy path" copies
@@ -943,6 +991,11 @@ export interface ModelSettings {
   // Composer: show the context-window fill bar (default FALSE; absent → the chip shows
   // the session total). The usage popover keeps both numbers regardless.
   context_bar?: boolean;
+  // #611: collapse the live reasoning stream to a quiet indicator while a turn runs
+  // (default FALSE — the trace shows as before). The finalized reasoning still appears.
+  hide_reasoning_running?: boolean;
+  // Reasoning effort for new sessions: "default" (provider's own) or low/medium/high.
+  reasoning_effort?: string;
   // Auto-Approve mode (spec §1.5): the feature flag that offers the reviewer mode, and its
   // shadow-eval sibling. Both default FALSE and are absent on older backends — the composer
   // hides the Auto-Approve mode entry unless auto_approve is explicitly true.
@@ -1035,6 +1088,31 @@ export async function setContextBar(
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ context_bar: shown }),
+  });
+  return res.json();
+}
+
+/** #611: persist whether the composer suppresses the live reasoning stream while a turn
+ * runs. The finalized reasoning still appears after the turn. */
+export async function setHideReasoningRunning(
+  hidden: boolean,
+): Promise<{ ok: boolean; hide_reasoning_running?: boolean; error?: string }> {
+  const res = await fetch(`${httpBase()}/v1/settings/hide-reasoning`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ hide_reasoning_running: hidden }),
+  });
+  return res.json();
+}
+
+/** Persist the reasoning effort for new sessions: "default" | "low" | "medium" | "high". */
+export async function setReasoningEffort(
+  effort: string,
+): Promise<{ ok: boolean; reasoning_effort?: string; error?: string }> {
+  const res = await fetch(`${httpBase()}/v1/settings/reasoning-effort`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ reasoning_effort: effort }),
   });
   return res.json();
 }
@@ -1597,6 +1675,9 @@ export async function restoreDeskmateSkill(
 // -- Inbox + Unattended -------------------------------------------------------
 export interface InboxItem {
   id: string;
+  // 产生这条信箱条目的工具调用 id（后端 InboxItem.tool_call_id）。用它把「信箱里已经回答」
+  // 对账回聊天里的内联卡（见 gateReconciliation.reconcileResolvedGates）。
+  tool_call_id?: string;
   session_id: string;
   kind: "approval" | "question" | "notification" | "directory" | "plan";
   title: string;

@@ -19,10 +19,10 @@ import { Toggle } from "./Toggle";
 // no scope vocabulary, no markdown, no files. Everything else memory does happens in
 // chat (toast §5.1, attribution §5.2).
 const CARD = "rounded-xl2 border border-line bg-panel";
-const FIELD_LABEL = "text-[13px] font-medium text-ink";
-const FIELD_HELP = "text-[12px] text-muted mt-1.5 leading-relaxed";
+const FIELD_LABEL = "text-ui font-medium text-ink";
+const FIELD_HELP = "text-meta text-muted mt-1.5 leading-relaxed";
 const BTN_ACCENT =
-  "text-[13px] px-3 py-2 rounded-lg bg-accent text-white shrink-0 disabled:opacity-40";
+  "text-ui px-3 py-2 rounded-lg bg-accent text-white shrink-0 disabled:opacity-40";
 
 export function MemorySection() {
   const [settings, setSettings] = useState<MemorySettings | null>(null);
@@ -78,7 +78,7 @@ export function MemorySection() {
   };
 
   if (!settings || entries === null)
-    return <div className="text-[13px] text-muted">Loading…</div>;
+    return <div className="text-ui text-muted">Loading…</div>;
 
   return (
     <section>
@@ -93,7 +93,7 @@ export function MemorySection() {
           <Toggle checked={settings.enabled} onChange={toggleEnabled} title="Remember new things about you" />
           <div className="min-w-0 flex-1">
             <div className={FIELD_LABEL}>Remember new things about me</div>
-            <div className="text-[12px] text-muted mt-0.5">
+            <div className="text-meta text-muted mt-0.5">
               Lasting preferences you mention in chat get saved and used in future conversations —
               you'll see a small note each time, with one-tap Undo. Turning this off stops new
               saves; anything already below is still used until you delete it.
@@ -101,7 +101,7 @@ export function MemorySection() {
           </div>
         </div>
         {toggleMsg && (
-          <div className="text-[13px] text-muted mt-3 pt-3 border-t border-line" data-testid="memory-toggle-msg">
+          <div className="text-ui text-muted mt-3 pt-3 border-t border-line" data-testid="memory-toggle-msg">
             {toggleMsg}
           </div>
         )}
@@ -114,7 +114,7 @@ export function MemorySection() {
           <div className={FIELD_LABEL + " flex-1"}>What I've learned about you</div>
           {entries.length > 0 && (
             <button
-              className="text-[12px] text-danger/80 hover:text-danger"
+              className="text-meta text-danger/80 hover:text-danger"
               data-testid="memory-delete-all"
               onClick={wipeAll}
             >
@@ -128,13 +128,13 @@ export function MemorySection() {
           they knew when they started.
         </div>
         {listMsg && (
-          <div className="text-[13px] text-muted mt-2.5" data-testid="memory-list-msg">
+          <div className="text-ui text-muted mt-2.5" data-testid="memory-list-msg">
             {listMsg}
           </div>
         )}
         {entries.length === 0 ? (
           !listMsg && (
-            <div className="text-[12px] text-muted mt-3" data-testid="memory-empty">
+            <div className="text-meta text-muted mt-3" data-testid="memory-empty">
               Nothing yet. When you mention a lasting preference in chat — or say "remember
               that…" — it will show up here.
             </div>
@@ -187,7 +187,7 @@ function UserRulesCard({
           "Use DD-MM-YYYY for dates"
         }
         data-testid="user-rules-input"
-        className="w-full mt-2.5 px-3 py-2.5 rounded-lg border border-line bg-paper text-[13px] text-ink outline-none focus:border-accent resize-y leading-relaxed"
+        className="w-full mt-2.5 px-3 py-2.5 rounded-lg border border-line bg-paper text-ui text-ink outline-none focus:border-accent resize-y leading-relaxed"
       />
       <div className="flex items-center gap-3 mt-2">
         <button
@@ -199,7 +199,7 @@ function UserRulesCard({
           Save
         </button>
         {savedMsg && (
-          <span className="text-[13px] text-muted">
+          <span className="text-ui text-muted">
             Saved — applies to new conversations. Ones you already have open keep the
             instructions they started with.
           </span>
@@ -232,7 +232,7 @@ function MemoryRow({ entry, onChanged }: { entry: MemoryEntry; onChanged: () => 
           onChange={(e) => setDraft(e.target.value)}
           rows={2}
           autoFocus
-          className="w-full px-3 py-2 rounded-lg border border-line bg-paper text-[13px] text-ink outline-none focus:border-accent resize-y leading-relaxed"
+          className="w-full px-3 py-2 rounded-lg border border-line bg-paper text-ui text-ink outline-none focus:border-accent resize-y leading-relaxed"
           onKeyDown={(e) => {
             if (e.key === "Enter" && !e.shiftKey) {
               e.preventDefault();
@@ -245,7 +245,7 @@ function MemoryRow({ entry, onChanged }: { entry: MemoryEntry; onChanged: () => 
           <button className={BTN_ACCENT} onClick={() => void save()}>
             Save
           </button>
-          <button className="text-[13px] text-muted hover:text-ink" onClick={() => setEditing(false)}>
+          <button className="text-ui text-muted hover:text-ink" onClick={() => setEditing(false)}>
             cancel
           </button>
         </div>
@@ -254,7 +254,7 @@ function MemoryRow({ entry, onChanged }: { entry: MemoryEntry; onChanged: () => 
 
   return (
     <div className="py-2.5 flex items-start gap-2.5 group" data-testid={`memory-row-${entry.id}`}>
-      <div className="min-w-0 flex-1 text-[13px] leading-relaxed">{entry.content}</div>
+      <div className="min-w-0 flex-1 text-ui leading-relaxed">{entry.content}</div>
       <button
         className="text-faint hover:text-ink shrink-0 mt-0.5"
         title="Fix this"

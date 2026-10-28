@@ -86,7 +86,7 @@ export function AutoTasks({ open, onClose }: { open: boolean; onClose: () => voi
         >
           <div className="flex items-center gap-2">
             <span className="text-sm">📋</span>
-            <span className="text-[13px] font-semibold text-gray-900">计划任务</span>
+            <span className="text-ui font-semibold text-gray-900">计划任务</span>
             <span className="text-[10px] text-gray-400">小桔在自动为你做什么</span>
           </div>
           <button
@@ -103,13 +103,13 @@ export function AutoTasks({ open, onClose }: { open: boolean; onClose: () => voi
           className="p-3 overflow-y-auto flex flex-col gap-2.5"
           style={{ maxHeight: "calc(84vh - 52px)" }}
         >
-          {loading && <div className="text-[11px] text-gray-400 px-1 py-2">加载中…</div>}
+          {loading && <div className="text-label text-gray-400 px-1 py-2">加载中…</div>}
           {!loading && tasks.length === 0 && !err && (
-            <div className="text-[11px] text-gray-400 px-1 py-8 text-center">
+            <div className="text-label text-gray-400 px-1 py-8 text-center">
               暂无已登记的计划任务
             </div>
           )}
-          {err && <div className="text-[11px] text-red-500 px-1 py-1">{err}</div>}
+          {err && <div className="text-label text-red-500 px-1 py-1">{err}</div>}
 
           {tasks.map((t) => {
             const cat = CATEGORY_LABEL[t.category] ?? CATEGORY_LABEL.other;
@@ -125,8 +125,8 @@ export function AutoTasks({ open, onClose }: { open: boolean; onClose: () => voi
                 <div className="flex items-start justify-between gap-3">
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-1.5">
-                      <span className="text-[11px]">{cat.icon}</span>
-                      <span className="text-[12px] font-semibold text-gray-900 truncate">
+                      <span className="text-label">{cat.icon}</span>
+                      <span className="text-meta font-semibold text-gray-900 truncate">
                         {t.task_name}
                       </span>
                       <span className="text-[9px] font-medium text-gray-400 bg-gray-100 px-1.5 py-0.5 rounded-full">

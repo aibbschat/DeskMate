@@ -37,7 +37,7 @@ function initials(name: string): string {
   return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
 }
 
-const LABEL = "text-[13px] text-muted w-24 shrink-0";
+const LABEL = "text-ui text-muted w-24 shrink-0";
 
 /** The relay status line, one honest layer at a time: sign-in → socket → live.
  * Dot color + text; never a synthetic "Slack is down" claim. */
@@ -73,7 +73,7 @@ export function SlackDetail({ c, cloud, slack, onChanged }: DetailProps) {
         <ConnectorBadge connector={c} size={44} title="Slack" />
         <div className="min-w-0 flex-1">
           <h2 className="text-[20px] font-semibold tracking-tight leading-tight">Slack</h2>
-          <div className="text-[13px] text-muted flex items-center gap-1.5">
+          <div className="text-ui text-muted flex items-center gap-1.5">
             {c.connected ? (
               <>
                 <span
@@ -101,7 +101,7 @@ export function SlackDetail({ c, cloud, slack, onChanged }: DetailProps) {
 
       {!c.connected && (
         <div className={GRP}>
-          <div className={ROW + " text-[13px] text-muted"}>
+          <div className={ROW + " text-ui text-muted"}>
             One @ocw app, installed per workspace — each keeps its own allow-list.
             {cloud?.signed_in ? "" : " One-click needs cloud sign-in; Manual works without it."}
           </div>
@@ -220,7 +220,7 @@ function WorkspaceGroup({
         {empty ? (
           <>
             <div className={ROW}>
-              <span className="min-w-0 flex-1 text-[13px] text-muted flex items-center gap-2 flex-wrap">
+              <span className="min-w-0 flex-1 text-ui text-muted flex items-center gap-2 flex-wrap">
                 <span>No one allowed yet — mentions of the bot show up here for your OK.</span>
                 <PersonPicker teamId={w.team_id} allowed={[]} onChanged={onChanged} />
               </span>
@@ -273,7 +273,7 @@ function WorkspaceGroup({
 function DisconnectBtn({ teamId, busy, onClick }: { teamId: string; busy: boolean; onClick: () => void }) {
   return (
     <button
-      className="text-[13px] text-danger/80 hover:text-danger shrink-0"
+      className="text-ui text-danger/80 hover:text-danger shrink-0"
       data-testid={`disconnect-workspace-${teamId}`}
       title="Stops relaying this workspace to this computer. The app stays installed in Slack."
       onClick={onClick}
@@ -312,12 +312,12 @@ function PeopleRow({
       <span className={LABEL}>People</span>
       <span className="min-w-0 flex-1 flex flex-wrap items-center gap-1.5">
         {allowed.length === 0 && (
-          <span className="text-[12px] text-faint">nobody yet — pick a name, or approve a waiting sender below</span>
+          <span className="text-meta text-faint">nobody yet — pick a name, or approve a waiting sender below</span>
         )}
         {allowed.map((u) => (
           <span
             key={u}
-            className="inline-flex items-center gap-1.5 pl-1 pr-2 py-0.5 rounded-full bg-paper border border-line text-[13px]"
+            className="inline-flex items-center gap-1.5 pl-1 pr-2 py-0.5 rounded-full bg-paper border border-line text-ui"
             title={`id ${u}`}
             data-testid={u === installerId ? "people-chip-you" : undefined}
           >
@@ -325,10 +325,10 @@ function PeopleRow({
               {initials(label(u))}
             </span>
             {label(u)}
-            {u === installerId && <span className="text-[11px] text-faint">· you</span>}
+            {u === installerId && <span className="text-label text-faint">· you</span>}
             {protectedIds?.includes(u) ? (
               <span
-                className="text-[11px] text-faint"
+                className="text-label text-faint"
                 title="Remove approval-owner access before removing this person."
               >
                 · owner
@@ -422,7 +422,7 @@ function PersonPicker({
     <span className="relative" ref={wrap}>
       <button
         ref={btn}
-        className="inline-flex items-center px-2 py-0.5 rounded-full border border-dashed border-line text-[13px] text-muted hover:text-ink hover:border-faint"
+        className="inline-flex items-center px-2 py-0.5 rounded-full border border-dashed border-line text-ui text-muted hover:text-ink hover:border-faint"
         data-testid={testId || `add-person-${teamId || "default"}`}
         title="Pick from the workspace directory"
         onClick={toggle}
@@ -437,7 +437,7 @@ function PersonPicker({
         >
           <input
             autoFocus
-            className="w-full bg-paper border border-line rounded-lg px-2 py-1 text-[13px] outline-none placeholder:text-faint"
+            className="w-full bg-paper border border-line rounded-lg px-2 py-1 text-ui outline-none placeholder:text-faint"
             placeholder="Type a name…"
             value={q}
             onChange={(e) => setQ(e.target.value)}
@@ -447,9 +447,9 @@ function PersonPicker({
           />
           <div className="max-h-56 overflow-y-auto py-1">
             {err ? (
-              <div className="px-2 py-1.5 text-[12px] text-warnInk">{err}</div>
+              <div className="px-2 py-1.5 text-meta text-warnInk">{err}</div>
             ) : candidates.length === 0 ? (
-              <div className="px-2 py-1.5 text-[12px] text-faint">no matches</div>
+              <div className="px-2 py-1.5 text-meta text-faint">no matches</div>
             ) : (
               candidates.map((m) => (
                 <button
@@ -463,10 +463,10 @@ function PersonPicker({
                     pick(m);
                   }}
                 >
-                  <span className="text-[13px] font-medium">{m.name}</span>{" "}
-                  <span className="text-[12px] text-faint">@{m.handle}</span>
+                  <span className="text-ui font-medium">{m.name}</span>{" "}
+                  <span className="text-meta text-faint">@{m.handle}</span>
                   {m.guest && (
-                    <span className="ml-1.5 text-[11px] text-warnInk bg-warnSoft/70 border border-warnInk/15 rounded px-1 py-0.5">
+                    <span className="ml-1.5 text-label text-warnInk bg-warnSoft/70 border border-warnInk/15 rounded px-1 py-0.5">
                       guest
                     </span>
                   )}
@@ -474,7 +474,7 @@ function PersonPicker({
               ))
             )}
           </div>
-          <div className="px-2 pb-1 text-[11px] text-faint">
+          <div className="px-2 pb-1 text-label text-faint">
             From your workspace directory — stays on this computer.
           </div>
         </div>
@@ -515,14 +515,14 @@ function ApprovalOwnersRow({
       <span className={LABEL}>Approvals</span>
       <span className="min-w-0 flex-1 flex flex-wrap items-center gap-1.5">
         {owners.length === 0 && (
-          <span className="text-[12px] text-warnInk">
+          <span className="text-meta text-warnInk">
             Choose at least one owner before routing Inbox approvals to Slack.
           </span>
         )}
         {owners.map((u) => (
           <span
             key={u}
-            className="inline-flex items-center gap-1.5 pl-1 pr-2 py-0.5 rounded-full bg-paper border border-line text-[13px]"
+            className="inline-flex items-center gap-1.5 pl-1 pr-2 py-0.5 rounded-full bg-paper border border-line text-ui"
             title={`id ${u}`}
             data-testid={`approval-owner-${u}`}
           >
@@ -530,7 +530,7 @@ function ApprovalOwnersRow({
               {initials(label(u))}
             </span>
             {label(u)}
-            {u === installerId && <span className="text-[11px] text-faint">· installer</span>}
+            {u === installerId && <span className="text-label text-faint">· installer</span>}
             {editable && (
               <button className={XBTN} title="remove approval owner" onClick={() => remove(u)}>
                 ×
@@ -549,9 +549,9 @@ function ApprovalOwnersRow({
           />
         )}
         {!editable && owners.length > 0 && (
-          <span className="text-[12px] text-faint">Set by the workspace installer.</span>
+          <span className="text-meta text-faint">Set by the workspace installer.</span>
         )}
-        {err && <span className="basis-full text-[12px] text-warnInk">{err}</span>}
+        {err && <span className="basis-full text-meta text-warnInk">{err}</span>}
       </span>
     </div>
   );
@@ -566,9 +566,9 @@ function WaitingRow({ m, onChanged }: { m: ParkedMessage; onChanged: () => void 
     <div className={ROW + " bg-warnSoft/25"} data-testid={`waiting-${m.id}`}>
       <span className={LABEL}>Waiting</span>
       <span className="min-w-0 flex-1">
-        <span className="font-medium text-[13px]">{m.user_name || m.user_id}</span>{" "}
-        <span className="text-[13px] text-muted">in {m.chat_name || m.chat_id}</span>
-        <span className="block text-[13px] text-muted truncate">“{m.text}”</span>
+        <span className="font-medium text-ui">{m.user_name || m.user_id}</span>{" "}
+        <span className="text-ui text-muted">in {m.chat_name || m.chat_id}</span>
+        <span className="block text-ui text-muted truncate">“{m.text}”</span>
       </span>
       <button
         className={PILL_ACCENT + " !py-1"}
@@ -600,7 +600,7 @@ function ListeningRows({ subs, onChanged }: { subs: Subscription[]; onChanged: (
       <span className={LABEL}>Listening</span>
       <span className="min-w-0 flex-1 space-y-1">
         {subs.map((s) => (
-          <span key={s.session_id + s.channel} className="flex items-center gap-2 text-[13px]">
+          <span key={s.session_id + s.channel} className="flex items-center gap-2 text-ui">
             <span className="font-medium truncate" title={s.session_id}>
               {s.session_title || s.session_id}
             </span>

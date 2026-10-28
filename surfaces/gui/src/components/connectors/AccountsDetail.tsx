@@ -38,7 +38,7 @@ export function AccountsDetail({ c, cloud, slack: _slack, onChanged }: DetailPro
           <h2 className="text-[20px] font-semibold tracking-tight leading-tight">
             {c.title}
           </h2>
-          <div className="text-[13px] text-muted flex items-center gap-1.5">
+          <div className="text-ui text-muted flex items-center gap-1.5">
             {c.connected ? (
               <>
                 <span className="w-2 h-2 rounded-full bg-ok" />
@@ -119,9 +119,9 @@ function Row({
   return (
     <div className={ROW} data-testid={`account-${a.account_id}`}>
       <span className="min-w-0 flex-1 flex items-center gap-2">
-        <span className="text-[13px] font-medium truncate">{a.name}</span>
+        <span className="text-ui font-medium truncate">{a.name}</span>
         {a.name !== a.account_id && (
-          <span className="text-[11px] text-faint truncate" title={a.account_id}>
+          <span className="text-label text-faint truncate" title={a.account_id}>
             {a.account_id}
           </span>
         )}
@@ -129,7 +129,7 @@ function Row({
       </span>
       {!a.default && (
         <button
-          className="text-[12px] text-muted hover:text-ink shrink-0"
+          className="text-meta text-muted hover:text-ink shrink-0"
           data-testid={`account-make-default-${a.account_id}`}
           onClick={async () => {
             await setDefaultAccount(connector, a.account_id);

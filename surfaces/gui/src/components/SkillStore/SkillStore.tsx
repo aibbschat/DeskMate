@@ -61,7 +61,7 @@ export function SkillStore() {
         {/* Header */}
         <div className="mb-6">
           <h1 className="text-[20px] font-semibold tracking-tight">技能广场</h1>
-          <p className="text-[13px] text-muted mt-1">
+          <p className="text-ui text-muted mt-1">
             安装 MCP 技能，扩展 AI 的能力。安装后按需配置 API Key。
           </p>
         </div>
@@ -73,7 +73,7 @@ export function SkillStore() {
               <button
                 key={c.key}
                 className={
-                  "px-3 py-1.5 rounded-lg text-[12px] transition-colors " +
+                  "px-3 py-1.5 rounded-lg text-meta transition-colors " +
                   (category === c.key
                     ? "bg-accent text-white"
                     : "bg-faint/30 text-muted hover:bg-faint/50")
@@ -84,16 +84,16 @@ export function SkillStore() {
               </button>
             ))}
           </div>
-          <div className="text-[12px] text-faint">
+          <div className="text-meta text-faint">
             已安装 {installedCount} / {skills.length}
           </div>
         </div>
 
         {/* Skill grid */}
         {loading ? (
-          <div className="text-center text-[13px] text-muted py-12">加载中…</div>
+          <div className="text-center text-ui text-muted py-12">加载中…</div>
         ) : filtered.length === 0 ? (
-          <div className="text-center text-[13px] text-muted py-12">暂无技能</div>
+          <div className="text-center text-ui text-muted py-12">暂无技能</div>
         ) : (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
             {filtered.map((skill) => (
@@ -109,7 +109,7 @@ export function SkillStore() {
         {/* Installed section */}
         {installedCount > 0 && (
           <div className="mt-8">
-            <h2 className="text-[16px] font-semibold mb-3">已安装</h2>
+            <h2 className="text-title font-semibold mb-3">已安装</h2>
             <div className="space-y-2">
               {skills
                 .filter((s) => s.status === "installed" || s.status === "configured")
@@ -120,14 +120,14 @@ export function SkillStore() {
                   >
                     <span className="text-lg">{skill.icon || "🔧"}</span>
                     <div className="flex-1 min-w-0">
-                      <div className="text-[13px] font-medium truncate">{skill.name}</div>
-                      <div className="text-[11px] text-faint">{skill.description}</div>
+                      <div className="text-ui font-medium truncate">{skill.name}</div>
+                      <div className="text-label text-faint">{skill.description}</div>
                     </div>
                     {skill.status === "configured" ? (
-                      <span className="text-[11px] text-ok">已配置</span>
+                      <span className="text-label text-ok">已配置</span>
                     ) : (
                       <button
-                        className="text-[12px] text-accent hover:underline"
+                        className="text-meta text-accent hover:underline"
                         onClick={() => setConfigSkill(skill)}
                       >
                         配置
@@ -141,8 +141,8 @@ export function SkillStore() {
 
         {/* Curator / 归档与自整理 (P0-7) */}
         <div className="mt-8">
-          <h2 className="text-[16px] font-semibold mb-3">自整理（curator）</h2>
-          <div className="text-[12px] text-faint mb-3">
+          <h2 className="text-title font-semibold mb-3">自整理（curator）</h2>
+          <div className="text-meta text-faint mb-3">
             自动归档：
             <span className={curator?.auto_archive_enabled ? "text-ok" : "text-muted"}>
               {curator?.auto_archive_enabled ? "已开启" : "关闭（默认只报告）"}
@@ -151,7 +151,7 @@ export function SkillStore() {
           </div>
           {curator && curator.archived_names.length > 0 ? (
             <div className="space-y-2">
-              <div className="text-[12px] text-muted">已归档（未删除，可一键还原）：</div>
+              <div className="text-meta text-muted">已归档（未删除，可一键还原）：</div>
               {curator.archived_names.map((name) => (
                 <div
                   key={name}
@@ -159,11 +159,11 @@ export function SkillStore() {
                 >
                   <span className="text-lg">🗄️</span>
                   <div className="flex-1 min-w-0">
-                    <div className="text-[13px] font-medium truncate">{name}</div>
-                    <div className="text-[11px] text-faint">归档在 archive/，不丢失</div>
+                    <div className="text-ui font-medium truncate">{name}</div>
+                    <div className="text-label text-faint">归档在 archive/，不丢失</div>
                   </div>
                   <button
-                    className="text-[12px] text-accent hover:underline disabled:opacity-50"
+                    className="text-meta text-accent hover:underline disabled:opacity-50"
                     disabled={restoring === name}
                     onClick={async () => {
                       setRestoring(name);
@@ -181,7 +181,7 @@ export function SkillStore() {
               ))}
             </div>
           ) : (
-            <div className="text-[12px] text-faint">暂无归档技能。</div>
+            <div className="text-meta text-faint">暂无归档技能。</div>
           )}
         </div>
       </div>

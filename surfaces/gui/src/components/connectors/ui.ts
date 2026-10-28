@@ -9,10 +9,10 @@ export const GRP = "rounded-xl2 border border-line bg-panel divide-y divide-line
 export const ROW = "flex items-center gap-3 px-4 py-2.5 min-h-[44px]";
 
 /** Sentence-case section header above a group. */
-export const GRP_H = "text-[12px] font-semibold text-muted px-4 mt-6 mb-1.5";
+export const GRP_H = "text-meta font-semibold text-muted px-4 mt-6 mb-1.5";
 
 /** Quiet footnote under a group. */
-export const FOOT = "text-[12px] text-faint px-4 pt-1.5";
+export const FOOT = "text-meta text-faint px-4 pt-1.5";
 
 export const PILL_ACCENT =
   "text-[12.5px] font-medium px-3 py-1.5 rounded-full bg-accent text-white shrink-0 disabled:opacity-50";
@@ -30,13 +30,13 @@ export const TAG_QUIET =
 
 /** Status chip variants for the Connected list. */
 export const CHIP_OK =
-  "text-[11px] font-medium px-2 py-0.5 rounded-full bg-okSoft text-ok border border-okLine shrink-0";
+  "text-label font-medium px-2 py-0.5 rounded-full bg-okSoft text-ok border border-okLine shrink-0";
 export const CHIP_WARN =
-  "text-[11px] font-medium px-2 py-0.5 rounded-full bg-warnSoft text-warnInk border border-warnInk/20 shrink-0";
+  "text-label font-medium px-2 py-0.5 rounded-full bg-warnSoft text-warnInk border border-warnInk/20 shrink-0";
 export const CHIP_OFF =
-  "text-[11px] font-medium px-2 py-0.5 rounded-full bg-paper text-muted border border-lineStrong shrink-0";
+  "text-label font-medium px-2 py-0.5 rounded-full bg-paper text-muted border border-lineStrong shrink-0";
 export const CHIP_ERR =
-  "text-[11px] font-medium px-2 py-0.5 rounded-full bg-danger/10 text-danger border border-danger/25 shrink-0";
+  "text-label font-medium px-2 py-0.5 rounded-full bg-danger/10 text-danger border border-danger/25 shrink-0";
 
 /** Small × affordance (danger on hover). */
 export const XBTN = "text-faint hover:text-danger shrink-0 leading-none";

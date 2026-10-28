@@ -1,5 +1,6 @@
 import { useState } from "react";
 import type { ApprovalDecision, Item } from "../types";
+import { ApprovalEscalation } from "./ApprovalEscalation";
 import { humanizeApprovalTitle, type HumanLine } from "../humanize";
 import { Icon } from "./Icon";
 
@@ -318,11 +319,9 @@ export function ApprovalCard({
     </div>
   ) : null;
   // Quiet, not a warning: the reviewer hesitating is context, not danger.
-  const reviewerUnsure = item.reviewerUnsure ? (
-    <div className="text-[12px] text-muted mt-1" data-testid="approval-reviewer-unsure">
-      reviewer wasn&rsquo;t sure: {item.reviewerUnsure}
-    </div>
-  ) : null;
+  const reviewerUnsure = (
+    <ApprovalEscalation escalation={item.escalation} reviewerUnsure={item.reviewerUnsure} />
+  );
 
   // §35 compact row: routine workspace writes — one line, preview expands inline from the
   // tool args. Standing/grant flows keep the full card (they carry §25 consent weight).
@@ -426,7 +425,14 @@ export function ApprovalCard({
       {reason && <div className="approval-reason">{reason}</div>}
 
       {item.resolved ? (
-        <div className="resolved">Approved: {item.resolved.replace("_", " ")}</div>
+        // 失效不是"批准"：这一轮已经结束、没人回答，卡留住当历史但不能再点。
+        item.resolved === "expired" ? (
+          <div className="resolved text-faint" data-testid="approval-expired">
+            已失效 · 这一轮结束时还没有人回答
+          </div>
+        ) : (
+          <div className="resolved">Approved: {item.resolved.replace("_", " ")}</div>
+        )
       ) : (
         <Buttons
           item={item}
