@@ -108,7 +108,7 @@ import { ReportDialog } from "./components/deskmate/ReportDialog";
 import { ExpertsCenter } from "./components/deskmate/ExpertsCenter";
 import { CreationChatView } from "./components/CreationChatView";
 import { TeamChatView } from "./components/TeamChatView";
-import { TeamPanel } from "./components/TeamPanel";
+import { TeamView } from "./components/TeamView";
 import { Gallery } from "./gallery/Gallery";
 import { BadgeWall } from "./components/deskmate/BadgeWall";
 import { useTranslation } from "react-i18next";
@@ -1825,9 +1825,13 @@ export function App() {
       ) : surface === "inbox" ? (
         <InboxView onOpenSession={openSessionFromInbox} />
       ) : surface === "team" ? (
-        <TeamPanel
+        <TeamView
           sessionId={sessionId}
-          onOpenSession={(sid, ag) => void selectSession(sid, "", ag || "")}
+          // The view is keyed off the TEAM, not the session: a lead session owns one
+          // team, a worker carries its lead's team_id, a plain session carries none.
+          teamId={sessions.find((s) => s.session_id === sessionId)?.team?.team_id || ""}
+          onOpenSession={(sid) => void selectSession(sid, "", "")}
+          onClose={() => setSurface("session")}
         />
       ) : surface === "gallery" ? (
         <Gallery />

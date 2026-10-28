@@ -1,3 +1,4 @@
+import type { TeamSummary } from "./teamView";
 import type { GroupedQuestion, QuestionOption, SessionInfo, WsEvent } from "./types";
 
 declare const __COWORKER_DEV_TOKEN__: string;
@@ -294,6 +295,16 @@ export interface BoardItem {
   links: { kind: string; item: number }[];
   // Blocked rows only: the latest blocker comment, clamped ("need tfvars…").
   blocker?: string;
+  // The assignee's own one-line progress (`set_status`), "" when it never reported.
+  status?: string;
+  // "Waiting on the human" — filled by the server when this item's assignee has a
+  // pending inbox prompt. Presentation only: the item's state is unchanged.
+  waiting?: {
+    prompt_id: string;
+    tool: string;
+    preview: string;
+    session_id: string;
+  } | null;
 }
 
 export interface Board {
@@ -417,54 +428,19 @@ export async function getJournalCases(): Promise<JournalCase[]> {
   return (await res.json()).cases ?? [];
 }
 
-// ---- Team panel (read-only roster + live engine state) ---------------------------
-// Keyed off the SESSION the user is looking at, not a team id: the human knows which
-// conversation they are in, and a session may lead a team, be a worker on one, or none.
-// `running` is derived server-side from the live engine — it is the panel's whole point.
-export interface TeamRosterWorker {
-  actor: string;
-  persona: string;
-  session_id: string;
-  model: string;
-  reason: string;
-  running: boolean;
-  counts: Record<string, number>;
-  current: string; // the title of the item it is in_progress on, "" when idle
-}
-
-export interface TeamRosterItem {
-  id: number;
-  title: string;
-  state: string; // open | in_progress | blocked | review | done | canceled
-  assignee: string;
-  updated_at: string;
-}
-
-export interface TeamRoster {
-  team: null | {
-    team_id: string;
-    space: string;
-    lead_session: string;
-    lead_actor: string;
-    paused: boolean;
-    chat_enabled: boolean;
-    created_at: string;
-    lead_running: boolean;
-    lead: { counts: Record<string, number>; current: string };
-  };
-  role: "lead" | "worker" | null;
-  session_id?: string;
-  workers?: TeamRosterWorker[];
-  counts?: Record<string, number>;
-  items?: TeamRosterItem[];
-}
-
-export async function getTeamRoster(sessionId: string): Promise<TeamRoster> {
-  const qs = sessionId ? `?session_id=${encodeURIComponent(sessionId)}` : "";
-  const res = await fetch(`${httpBase()}/v1/team-roster${qs}`);
+// ---- Team View ---------------------------------------------------------------------
+// Keyed off the TEAM id, not the session: a lead session owns exactly one team, and
+// workers carry `team.team_id` too. The summary is the read model the work tab groups
+// on ("what needs me"), so it is fetched as one document rather than derived client-side.
+// Read-only and side-effect free — the view polls it while open.
+export async function getTeamSummary(
+  teamId: string,
+): Promise<TeamSummary | { error: string }> {
+  const res = await fetch(
+    `${httpBase()}/v1/teams/${encodeURIComponent(teamId)}/summary`,
+  );
   return res.json();
 }
-
 export interface ArtifactInfo {
   path: string; // workspace-relative (the display/API identifier)
   abs_path?: string; // absolute — what "Copy path" copies

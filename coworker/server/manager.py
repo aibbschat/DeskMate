@@ -1859,7 +1859,9 @@ class SessionManager:
         if space is None:
             return {"error": "no board for this session"}
         try:
-            item = self.team_store.get_item(space, int(item_id))
+            item = self.team_store.get_item(
+                space, int(item_id), actor=self._user_actor()
+            )
         except TeamsBoardError as error:
             return {"error": str(error)}
         timeline: list[dict[str, Any]] = []
@@ -1931,6 +1933,16 @@ class SessionManager:
                     if payload.get("comment"):
                         item["blocker"] = self._clamp(payload["comment"], 120)
                     break
+        # "Waiting on the human" is a projection, not a state: an item is waiting
+        # when its assignee has a pending inbox request (permission prompt, question)
+        # or went quiet mid-turn. Folded in here so one round-trip answers "what
+        # needs me?" — the Team View's work tab groups on exactly this.
+        from ..teams.summary import all_events, waiting_items
+
+        waits = waiting_items(all_events(self.team_store, space), self.inbox, items)
+        for item in items:
+            if item["id"] in waits:
+                item["waiting"] = waits[item["id"]]
         return {"space": space, "name": Path(space).name, "items": items}
 
     def board_transition(
@@ -2351,96 +2363,21 @@ class SessionManager:
             ),
         }
 
-    def team_roster(self, session_id: str) -> dict[str, Any]:
-        """The GUI team panel's one read: who is on the team, what they hold, and whether
-        their engine is actually running right now.
+    def team_summary(self, team_id: str) -> dict[str, Any]:
+        """The Team View's one read: tasks grouped by what they need from the human,
+        per-worker usage and the pending waits.
 
-        Read-only and side-effect free — the panel polls it while open, so it must never
-        wake anything (no `kick_team_tick`, no cursor advance). Liveness is derived, not
-        stored: `is_running` for a live turn plus the `_team_inflight` set for a drain
-        that has been dispatched but whose turn has not started yet.
+        Read-only and side-effect free — the view polls it while open, so it must
+        never wake anything (no `kick_team_tick`, no inbox or cursor advance).
         """
-        team = self.teams.for_lead_session(session_id)
-        role = "lead"
+        from ..teams.summary import make_summary
+
+        team = self.teams.get(team_id)
         if team is None:
-            pair = self.teams.for_worker_session(session_id)
-            if pair is not None:
-                team, _worker = pair
-                role = "worker"
-        if team is None:
-            return {"team": None, "role": None}
-
-        items: list[dict[str, Any]] = []
-        try:
-            items = self.team_store.list_items(team.space, self._user_actor())
-        except Exception:
-            # An unreadable board must not blank the roster — the panel still shows who
-            # is on the team, which is how you notice the board went away.
-            items = []
-
-        def busy(sid: str) -> bool:
-            return self.is_running(sid) or sid in self._team_inflight
-
-        by_actor: dict[str, list[dict[str, Any]]] = {}
-        for item in items:
-            by_actor.setdefault(str(item.get("assignee") or ""), []).append(item)
-
-        def slice_of(actor: str) -> dict[str, Any]:
-            mine = by_actor.get(actor, [])
-            counts: dict[str, int] = {}
-            for i in mine:
-                counts[str(i.get("state", ""))] = counts.get(str(i.get("state", "")), 0) + 1
-            current = next(
-                (str(i.get("title", "")) for i in mine if i.get("state") == "in_progress"),
-                "",
-            )
-            return {"counts": counts, "current": current}
-
-        workers = [
-            {
-                "actor": w.actor,
-                "persona": w.persona,
-                "session_id": w.session_id,
-                "model": w.model,
-                "reason": w.reason,
-                "running": busy(w.session_id),
-                **slice_of(w.actor),
-            }
-            for w in team.workers
-        ]
-        counts: dict[str, int] = {}
-        for item in items:
-            s = str(item.get("state", ""))
-            counts[s] = counts.get(s, 0) + 1
-        return {
-            "team": {
-                "team_id": team.team_id,
-                "space": team.space,
-                "lead_session": team.lead_session,
-                "lead_actor": team.lead_actor,
-                "paused": team.paused,
-                "chat_enabled": team.chat_enabled,
-                "created_at": team.created_at,
-                "lead_running": busy(team.lead_session),
-                "lead": slice_of(team.lead_actor),
-            },
-            "role": role,
-            "session_id": session_id,
-            "workers": workers,
-            "counts": counts,
-            # The board itself, newest first — the panel's middle column. Trimmed to the
-            # fields a read-only view needs; descriptions can be long.
-            "items": [
-                {
-                    "id": i.get("id"),
-                    "title": i.get("title", ""),
-                    "state": i.get("state", ""),
-                    "assignee": i.get("assignee") or "",
-                    "updated_at": i.get("updated_at", ""),
-                }
-                for i in sorted(items, key=lambda i: int(i.get("id") or 0), reverse=True)[:200]
-            ],
-        }
+            return {"error": "team not found"}
+        if self._board_space(team.lead_session) != team.space:
+            return {"error": "the lead's board binding has changed"}
+        return make_summary(self, team, time.time())
 
     def kick_team_tick(self) -> None:
         """Nudge the wake plumbing from outside the turn loop — e.g. after an
@@ -2548,7 +2485,12 @@ class SessionManager:
         # item's ASSIGNEE — a filer merely hears about it.
         def _holds(event) -> bool:
             try:
-                item = self.team_store.get_item(team.space, int(event["item_id"]))
+                item = self.team_store.get_item(
+                    team.space,
+                    int(event["item_id"]),
+                    actor=self._user_actor(),
+                    include_comments=False,
+                )
             except Exception:
                 return False
             return item["assignee"] == actor
@@ -2641,7 +2583,9 @@ class SessionManager:
             item = None
             if item_id is not None:
                 try:
-                    item = self.team_store.get_item(team.space, int(item_id))
+                    item = self.team_store.get_item(
+                        team.space, int(item_id), actor=self._user_actor()
+                    )
                 except Exception:
                     item = None
             title = f"#{item_id} {item['title']}" if item else f"#{item_id}"

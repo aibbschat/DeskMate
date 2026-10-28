@@ -95,6 +95,18 @@ export interface SessionInfo {
   // "From Slack" group and the row's platform icon.
   origin?: string;
   origin_label?: string;
+  // Agent teams: {} for plain sessions. Leads carry role="lead" + team_id; workers
+  // carry role="worker" + lead_session + the item they are on — the Team View and the
+  // sidebar's team entry read this, and it is the only place a session knows its team.
+  team?: {
+    role?: string;
+    team_id?: string;
+    actor?: string;
+    lead_session?: string;
+    space?: string;
+    current_item?: string;
+    status?: string;
+  };
 }
 
 // Attachments (images, PDFs, text files) sent with a user message.

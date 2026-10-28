@@ -1278,13 +1278,10 @@ def create_app(manager: SessionManager) -> FastAPI:
     def teams_journal() -> dict[str, Any]:
         return {"cases": manager.journal_overview()}
 
-    @app.get("/v1/team-roster")
-    def team_roster(session_id: str) -> dict[str, Any]:
-        # GUI team panel (read-only): roster + live engine state + board slice. Deliberately
-        # NOT under /v1/teams/{team_id}/… so it can key off the *session* the user is looking
-        # at (they know their session, not the team id), and so it never collides with the
-        # board's token-authenticated /v1/board surface.
-        return manager.team_roster(session_id)
+    @app.get("/v1/teams/{team_id}/summary")
+    def team_summary(team_id: str):
+        result = manager.team_summary(team_id)
+        return JSONResponse(result, status_code=404 if "error" in result else 200)
 
     # ---- The open board surface (OPE-100): token-authenticated `/v1/board` API.
     # Identity is the TOKEN (actor+role bound at mint, resolved per request, never
@@ -1340,7 +1337,7 @@ def create_app(manager: SessionManager) -> FastAPI:
     @app.get("/v1/board/item")
     def board_get_item(request: Request, space: str, id: int):
         return _board(
-            request, lambda actor: manager.team_store.get_item(space, int(id))
+            request, lambda actor: manager.team_store.get_item(space, int(id), actor=actor)
         )
 
     @app.post("/v1/board/items")

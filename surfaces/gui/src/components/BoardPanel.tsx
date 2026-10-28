@@ -265,7 +265,9 @@ const STATE_LABEL: Record<string, string> = {
   canceled: "Canceled",
 };
 
-function ItemDetail({
+// Exported so the Team View's task detail is the SAME pane the board rail opens —
+// one detail implementation, one set of verdict actions, no drift between the two.
+export function ItemDetail({
   detail,
   onTransition,
   onAddNote,

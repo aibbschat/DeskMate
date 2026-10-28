@@ -304,6 +304,32 @@ COWORKER_ROOT_MODULES=(
   # 一改就断档。本轮审批卡对账需要 permission_required/TOOL_FINISHED 自带 tool_call_id，
   # 漏传 → 云端仍发无 id 事件 → 前端只能按 name 粗略撤卡（历史卡残留/去重降级）。
   "coworker/engine.py"
+  # ⚠️ 2026-10-28 补：toolresult.py（PagedToolResult）。上游 teams/{store,artifacts}.py
+  # `from ..toolresult import PagedToolResult` —— 云端缺这一个文件，整个 coworker/teams
+  # 包 import 就炸，团队功能（含 lead 的 propose_team）在云端直接不可用。
+  "coworker/toolresult.py"
+)
+# 团队底座（2026-10-28 整包对齐上游）：store/summary 等被 server/manager.py 直接 import。
+# 本次移植 TeamView 需要 summary.make_summary + store 的 set_status/分页/附件鉴权，
+# 原先本地落后上游若干迭代（store 差 506 行、tools 240 行、attachments 115 行）。
+# 目标是 /opt/openworker/coworker/teams/（下方 case 分支按 coworker/* 推子目录）。
+# 漏传任一文件 = ImportError 被 fail-open 吞 = 团队看板静默空白。
+TEAMS_MODULES=(
+  "coworker/teams/__init__.py"
+  "coworker/teams/artifacts.py"
+  "coworker/teams/attachments.py"
+  "coworker/teams/chat.py"
+  "coworker/teams/cli.py"
+  "coworker/teams/dialect.py"
+  "coworker/teams/journal.py"
+  "coworker/teams/mcp_server.py"
+  "coworker/teams/model.py"
+  "coworker/teams/proposals.py"
+  "coworker/teams/registry.py"
+  "coworker/teams/store.py"
+  "coworker/teams/summary.py"
+  "coworker/teams/tokens.py"
+  "coworker/teams/tools.py"
 )
 # coworker/ 历史漂移补推（2026-10-24 补）：扩对账到 coworker/ 后，集合级全量比对抓出 4 个
 # 本地比云端新的历史漂移（此前是对账盲区）。含 openai_provider.py 的 5d04171 high-risk 风控钩子，
@@ -392,7 +418,7 @@ fi
 # ---- 1. 必须已提交（红线：本地改动先 commit 进 fork/base）----
 # ⚠️ PERSONA_FILES（.md）故意不进 ALL_FILES：下面的语法预检用 ast.parse，对 .md 会误报。
 # 它走独立的 scp + md5 核对（见 3d/7b 段），并纳入对账 .md 扫描。
-ALL_FILES=("${LOCAL_MODULES[@]}" "$LOCAL_RUNNER" "${PROACTIVITY_MODULES[@]}" "${CHANNEL_MODULES[@]}" "${AGENCY_BEHAVIORS_MODULES[@]}" "${AGENCY_MODULES[@]}" "${GARDEN_MODULES[@]}" "${GROWTH_MODULES[@]}" "${NOVEL_MEMORY_MODULES[@]}" "${COWORKER_ROOT_MODULES[@]}" "${COWORKER_DRIFT_MODULES[@]}" "${SKILLS_TOOLS_MODULES[@]}" "${PERCEPTION_MODULES[@]}" "${CONNECTORS_MODULES[@]}" "$LOCAL_AGENCY_TICK" "$LOCAL_DRIFT_CHECK")
+ALL_FILES=("${LOCAL_MODULES[@]}" "$LOCAL_RUNNER" "${PROACTIVITY_MODULES[@]}" "${CHANNEL_MODULES[@]}" "${AGENCY_BEHAVIORS_MODULES[@]}" "${AGENCY_MODULES[@]}" "${GARDEN_MODULES[@]}" "${GROWTH_MODULES[@]}" "${NOVEL_MEMORY_MODULES[@]}" "${COWORKER_ROOT_MODULES[@]}" "${COWORKER_DRIFT_MODULES[@]}" "${TEAMS_MODULES[@]}" "${SKILLS_TOOLS_MODULES[@]}" "${PERCEPTION_MODULES[@]}" "${CONNECTORS_MODULES[@]}" "$LOCAL_AGENCY_TICK" "$LOCAL_DRIFT_CHECK")
 if [[ "$FORCE" -eq 0 ]]; then
   DIRTY=""
   for f in "${ALL_FILES[@]}"; do
@@ -481,7 +507,7 @@ done
 
 # ---- 3c. 推送通道组/ 熔断模块（本地与云端必须同码，见 CHANNEL_MODULES 注释）----
 echo "==> 推送通道组/熔断模块 + 自主行为包 + 天气感知到云端主程序包"
-for f in "${CHANNEL_MODULES[@]}" "${AGENCY_BEHAVIORS_MODULES[@]}" "${AGENCY_MODULES[@]}" "${GARDEN_MODULES[@]}" "${GROWTH_MODULES[@]}" "${NOVEL_MEMORY_MODULES[@]}" "${COWORKER_ROOT_MODULES[@]}" "${COWORKER_DRIFT_MODULES[@]}" "${PERSONA_FILES[@]}" "${SKILLS_TOOLS_MODULES[@]}" "${PERCEPTION_MODULES[@]}" "${CONNECTORS_MODULES[@]}"; do
+for f in "${CHANNEL_MODULES[@]}" "${AGENCY_BEHAVIORS_MODULES[@]}" "${AGENCY_MODULES[@]}" "${GARDEN_MODULES[@]}" "${GROWTH_MODULES[@]}" "${NOVEL_MEMORY_MODULES[@]}" "${COWORKER_ROOT_MODULES[@]}" "${COWORKER_DRIFT_MODULES[@]}" "${TEAMS_MODULES[@]}" "${PERSONA_FILES[@]}" "${SKILLS_TOOLS_MODULES[@]}" "${PERCEPTION_MODULES[@]}" "${CONNECTORS_MODULES[@]}"; do
   base="$(basename "$f")"
   # 目标目录按本地相对路径推（deskmate/xxx.py → $CLOUD_DESKMATE_ROOT/xxx.py；
   # coworker/xxx.py → $CLOUD_COWORKER_ROOT/xxx.py），必要时建目录
@@ -566,7 +592,7 @@ done
 
 # ---- 7. 通道组/熔断模块对齐核对 ----
 echo "==> 通道组/熔断模块 + 自主行为包 + 天气感知对齐核对"
-for f in "${CHANNEL_MODULES[@]}" "${AGENCY_BEHAVIORS_MODULES[@]}" "${AGENCY_MODULES[@]}" "${GARDEN_MODULES[@]}" "${GROWTH_MODULES[@]}" "${NOVEL_MEMORY_MODULES[@]}" "${COWORKER_ROOT_MODULES[@]}" "${COWORKER_DRIFT_MODULES[@]}" "${PERSONA_FILES[@]}" "${SKILLS_TOOLS_MODULES[@]}" "${PERCEPTION_MODULES[@]}" "${CONNECTORS_MODULES[@]}"; do
+for f in "${CHANNEL_MODULES[@]}" "${AGENCY_BEHAVIORS_MODULES[@]}" "${AGENCY_MODULES[@]}" "${GARDEN_MODULES[@]}" "${GROWTH_MODULES[@]}" "${NOVEL_MEMORY_MODULES[@]}" "${COWORKER_ROOT_MODULES[@]}" "${COWORKER_DRIFT_MODULES[@]}" "${TEAMS_MODULES[@]}" "${PERSONA_FILES[@]}" "${SKILLS_TOOLS_MODULES[@]}" "${PERCEPTION_MODULES[@]}" "${CONNECTORS_MODULES[@]}"; do
   base="$(basename "$f")"
   case "$f" in
     deskmate/*)   dest_dir="$CLOUD_DESKMATE_ROOT/$(dirname "${f#deskmate/}")" ;;
