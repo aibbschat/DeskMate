@@ -229,6 +229,7 @@ class OpenAIProvider(ProviderClient):
         api_key: Optional[str] = None,
         base_url: Optional[str] = None,
         secrets: Any = None,
+        default_headers: Optional[dict[str, str]] = None,
     ):
         # The SDK client is built lazily on first use, NOT at construction. This lets an engine
         # be assembled before any key exists — the desktop app lets you enter the key in Settings
@@ -239,10 +240,13 @@ class OpenAIProvider(ProviderClient):
         # `base_url` points the same OpenAI SDK at any OpenAI-compatible endpoint — used by the
         # provider router for Ollama (`http://localhost:11434/v1`, with a placeholder key) and,
         # later, other OpenAI-shaped backends. When None, behavior is identical to stock OpenAI.
+        # `default_headers` rides every request (e.g. OpenCode Go 要求第三方 agent 自带
+        # 诚实 UA + `x-opencode-session` 会话头，见 registry 的 opencode-go descriptor）。
         self._client = client
         self._api_key = api_key
         self._base_url = base_url
         self._secrets = secrets
+        self._default_headers = dict(default_headers or {})
         self.default_model = default_model
 
     def _ensure_client(self) -> Any:
@@ -271,6 +275,8 @@ class OpenAIProvider(ProviderClient):
             }
             if self._base_url:
                 kwargs["base_url"] = self._base_url
+            if self._default_headers:
+                kwargs["default_headers"] = self._default_headers
             self._client = OpenAI(**kwargs)
         return self._client
 

@@ -70,6 +70,7 @@ export const PROVIDER_ORDER = [
   "qwen",
   "minimax",
   "xai",
+  "opencode-go",
 ];
 
 export function providerRank(name: string): number {

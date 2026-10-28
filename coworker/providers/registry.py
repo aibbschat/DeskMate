@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import os
 import threading
+import uuid
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
@@ -34,6 +35,10 @@ from .vertex_provider import VertexProvider
 _env_lock = threading.Lock()
 
 DEFAULT_OLLAMA_URL = "http://localhost:11434"
+
+#: OpenCode Go 网关的 OpenAI 兼容端点（docs: /console/go#endpoints——每个 text 模型都能
+#: 走 OpenAI Chat Completions，官方按需翻译）。付费订阅网关，与免费层无关。
+OPENCODE_GO_BASE_URL = "https://opencode.ai/inference/go/openai/v1"
 
 
 @dataclass(frozen=True)
@@ -205,12 +210,22 @@ def _build_ollama(profile: dict[str, Any], secrets: Any) -> ProviderClient:
     return OpenAIProvider(api_key="ollama", base_url=base_url)
 
 
-def _openai_compat(vendor: str, default_base_url: str, env_key: Optional[str] = None):
+def _openai_compat(
+    vendor: str,
+    default_base_url: str,
+    env_key: Optional[str] = None,
+    *,
+    default_headers: Optional[dict[str, str]] = None,
+):
     """Builder factory for vendors reached through their OpenAI-compatible API (Z AI, DeepSeek,
     Kimi, MiniMax, Qwen, xAI, Mistral). The key is resolved from the vendor's OWN profile (or its
     env var) — deliberately NOT from the OpenAI env/SecretStore fallback, so a configured OpenAI
     key is never silently sent to a different vendor's endpoint. Missing key ⇒ fail fast with a
     vendor-named error (these are only built on demand, when one of their models is selected).
+
+    `default_headers` rides every request through this vendor's client — used by OpenCode Go,
+    whose terms require third-party agents to identify with an honest UA and a session header
+    (registry: opencode-go descriptor).
     """
 
     def build(profile: dict[str, Any], secrets: Any) -> ProviderClient:
@@ -222,7 +237,9 @@ def _openai_compat(vendor: str, default_base_url: str, env_key: Optional[str] = 
             raise RuntimeError(
                 f"No {vendor} API key configured — add it in Settings ▸ Models."
             )
-        return OpenAIProvider(api_key=api_key, base_url=base_url)
+        return OpenAIProvider(
+            api_key=api_key, base_url=base_url, default_headers=default_headers
+        )
 
     return build
 
@@ -649,6 +666,60 @@ DESCRIPTORS: list[ProviderDescriptor] = [
             "hy3, hy3-preview."
         ),
     ),
+    # OpenCode Go（$10/月订阅，官方明文支持第三方 coding agent 接入，docs: /console/go、
+    # /console/harnesses）。与 2026-10-18 删除的 opencode **免费车道**无关：那条是蹭匿名
+    # 免费层 + 动态探测清单被封（PITFALLS §P4）；这条是拿付费 key 走官方网关。
+    # provider 名必须用 `opencode-go`（不是 `opencode`）——删除态契约测试锁死了
+    # `get_descriptor("opencode") is None`，见 tests/test_free_lane_removed.py。
+    # 合规要点（官方对第三方 client 的要求，违反可能再度封号）：
+    #   ① 诚实 UA：`xiaoju/1.0`，不得用通用 SDK/HTTP 库名，更不得伪装官方客户端；
+    #   ② 每请求带稳定 `x-opencode-session` 头（官方原话"Go requires it"）。UUID 在
+    #      **模块加载时**生成一次（进程内稳定、重启才换）——正好是官方要的
+    #      "stable session ID"，足够做路由/缓存亲和；per-conversation 粒度需要把
+    #      session id 穿透整个 engine→router→provider 调用链，萧哥拍板「不用这么
+    #      复杂」，先不做；
+    #   ③ 流量必须是典型 coding agent 流量 + 静态模型表（不探测清单）——模型条目
+    #      在 matrix.py 手铺，见那里的注释。
+    ProviderDescriptor(
+        name="opencode-go",
+        title="OpenCode Go",
+        needs_key=True,
+        fields=[
+            ProviderField(
+                "api_key",
+                "OpenCode Go API key",
+                secret=True,
+                placeholder="oc_sk_…",
+            ),
+            ProviderField(
+                "base_url",
+                "Endpoint",
+                required=False,
+                default=OPENCODE_GO_BASE_URL,
+                placeholder=OPENCODE_GO_BASE_URL,
+                help=(
+                    "Prefilled with OpenCode Go's gateway. Get a key at "
+                    "opencode.ai/console (Account ▸ Personal API keys). Only Go-list "
+                    "models work; free-tier chat models return 403 outside OpenCode."
+                ),
+            ),
+        ],
+        build=_openai_compat(
+            "OpenCode Go",
+            OPENCODE_GO_BASE_URL,
+            "OPENCODE_GO_API_KEY",
+            default_headers={
+                "User-Agent": "xiaoju/1.0",
+                "x-opencode-session": f"ses_{uuid.uuid4().hex}",
+            },
+        ),
+        recommended_model="glm-5.3-flash",
+        env_key="OPENCODE_GO_API_KEY",
+        blurb=(
+            "OpenCode Go 订阅网关——一个 key 用多家开源/平价模型（GLM / Kimi / DeepSeek "
+            "/ Qwen / MiniMax …），端点已预填，贴 key 即用。"
+        ),
+    ),
     _compat(
         "xai",
         "xAI (Grok)",
@@ -778,6 +849,8 @@ def detect_provider(api_key: str) -> Optional[str]:
         return "openrouter"
     if key.startswith("AIza"):
         return "gemini"
+    if key.startswith("oc_sk_"):  # OpenCode Console 个人 API key
+        return "opencode-go"
     if key.startswith(("sk-", "sk_")):
         return "openai"
     return None
@@ -1039,6 +1112,16 @@ def verify_provider_key(
         # 🔴 2026-10-18 删除：opencode 探针分支（probe_free_lane）随外网免费
         # 车道全撤一并删除——设置页已无该 provider 入口，保留探针反而可能被
         # 误触发形成探测。见 tests/test_free_lane_removed.py。
+        elif name == "opencode-go":
+            # Go 网关的模型清单在 /inference/go/v1/models（**不是** chat 端点的
+            # /openai/v1 前缀下——docs: /console/go#endpoints 给的就是这个地址），
+            # 走通用分支会 404 误报 key 坏。只在用户点 Test 时发这一次请求，
+            # 不做任何后台/周期探测（PITFALLS §P4 教训）。
+            resp = httpx.get(
+                "https://opencode.ai/inference/go/v1/models",
+                headers={"Authorization": f"Bearer {key}"},
+                timeout=timeout,
+            )
         elif name in ("ark", "ark-agent-plan-cn"):
             default_base = next(
                 (f.default for f in d.fields if f.key == "base_url" and f.default), ""

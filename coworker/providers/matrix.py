@@ -204,6 +204,36 @@ MATRIX: dict[str, ModelEntry] = {
     "tencent-tokenplan:hy4-preview": ModelEntry(
         "Hy4 Preview · Tencent Token Plan"
     ),
+    # -- OpenCode Go（付费订阅网关 opencode-go:，2026-10-28 接入）--------------------
+    # 静态手铺，**不接任何动态清单/探测**——opencode 免费车道就是死在持续探测上
+    # （PITFALLS §P4，官方封号）。模型清单来源：官方文档 /console/go#endpoints
+    # （2026-10-28）。上下文窗口只填本矩阵已核实过的同款模型值，未核实的留 None
+    # （GUI 计量条隐藏，不拿猜的数字充数）。caps 统一 _AGENTIC：经 OpenAI 兼容
+    # 端点走翻译层，视觉未在该端点实测，看图不归它。刻意不收：Muse Spark /
+    # Iceman（会拿请求数据训练）、Beam Free（限区+免费层性质，别再碰）、
+    # GLM-5.3/Kimi K3.1 Pro 等 $15 低额度档（额度太薄，picker 里少一个坑）。
+    "opencode-go:glm-5.3-flash": ModelEntry(
+        "GLM-5.3-Flash · OpenCode Go", _AGENTIC
+    ),
+    "opencode-go:glm-5.2": ModelEntry("GLM-5.2 · OpenCode Go", _AGENTIC, 128_000),
+    "opencode-go:kimi-k3": ModelEntry("Kimi K3 · OpenCode Go", _AGENTIC, 1_000_000),
+    "opencode-go:kimi-k2.7-code": ModelEntry(
+        "Kimi K2.7 Code · OpenCode Go", _AGENTIC, 256_000
+    ),
+    "opencode-go:deepseek-v4.1-flash": ModelEntry(
+        "DeepSeek V4.1 Flash · OpenCode Go", _AGENTIC, 1_048_576
+    ),
+    "opencode-go:mimo-v2.6-pro": ModelEntry(
+        "MiMo V2.6 Pro · OpenCode Go", _AGENTIC, 256_000
+    ),
+    "opencode-go:qwen3.8-flash": ModelEntry(
+        "Qwen3.8 Flash · OpenCode Go", _AGENTIC
+    ),
+    "opencode-go:hy3": ModelEntry("Hy3 · OpenCode Go", _AGENTIC, 256_000),
+    "opencode-go:claude-haiku-5-5": ModelEntry(
+        "Claude Haiku 5.5 · OpenCode Go", _AGENTIC
+    ),
+    "opencode-go:gpt-6-luna": ModelEntry("GPT-6 Luna · OpenCode Go", _AGENTIC),
     # -- direct OpenAI-compatible vendors ----------------------------------------
     # Muse Spark (Meta Model API, public preview 2026-07-09): multimodal + tools via
     # their OpenAI-compat surface. Vision yes; PDFs unverified over compat — falls
