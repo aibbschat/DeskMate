@@ -6,10 +6,12 @@ import { humanizeAsk, humanizeTool, type HumanLine } from "../humanize";
 import { Markdown, stripEmote } from "./Markdown";
 import { renderEmoteInline } from "./deskmate/emotes/Emote";
 import { ConnectorMessageCard } from "./ConnectorMessageCard";
+import { BoardWakeCard } from "./BoardWakeCard";
 import { ReportViewer } from "./deskmate/ReportViewer";
 import { Icon } from "./Icon";
 import { type Expert } from "./deskmate/experts";
 import XiaojuAvatar from "./XiaojuAvatar";
+import { useTurnStyle } from "../turnStyle";
 
 // Long user pastes swallow the transcript (owner ask 2026-07-30): clamp past a generous
 // threshold with a more…/less… toggle. Normal typed messages never see the control; the
@@ -337,6 +339,8 @@ function TurnGroup({
   const running = live || tools.some((t) => t.status === "…");
   const [userToggle, setUserToggle] = useState<boolean | null>(null);
   const open = userToggle ?? false;
+  const [style] = useTurnStyle();
+  const [bubbleOpen, setBubbleOpen] = useState(false);
   const lastNarr = [...items].reverse().find((it): it is AssistantItem => it.kind === "assistant");
   const liveLine = streamingText || lastNarr?.text || "";
 
@@ -344,6 +348,42 @@ function TurnGroup({
   const declined = items.filter((it) => it.kind === "approval" && it.resolved === "deny").length;
   const hiddenTotal = tools.reduce((n, t) => n + (t.hidden || 0), 0);
   const stepsLabel = t("chat.steps", { nSteps });
+
+  // 显示风格分支（本 fork 新增）：时间线 / 气泡展开态 → 时间线步骤流；气泡收起态 → 极简气泡；
+  // 折叠卡片 → 沿用官方 stepgroup（现状）。三种风格每步都复用 StepRow 的「raw」点开看详情，不造假。
+  const expanded = style === "timeline" || (style === "bubble" && bubbleOpen);
+  if (expanded) {
+    return (
+      <div className="turn-timeline my-1" data-testid={style === "timeline" ? "turn-timeline" : "turn-bubble-expanded"}>
+        {running && (
+          <div className="flex items-center gap-1.5 text-[12.5px] text-accent mb-1">
+            <span className="spinner" />
+            <span>{t("chat.runningSteps", { stepsLabel })}</span>
+            {liveLine && <span className="truncate text-muted max-w-[40ch]">· {liveLine}</span>}
+          </div>
+        )}
+        <TurnSteps rows={rows} onAllowAnyway={onAllowAnyway} streamingText={streamingText} border />
+      </div>
+    );
+  }
+  if (style === "bubble" && !bubbleOpen) {
+    return (
+      <div className="my-1" data-testid="turn-bubble">
+        <button
+          type="button"
+          className="inline-flex items-center gap-2 max-w-full rounded-2xl bg-accentSoft border border-accent/30 px-3.5 py-2 text-ui text-accent hover:bg-accent/10"
+          onClick={() => setBubbleOpen(true)}
+          data-testid="turn-bubble-open"
+        >
+          {running && <span className="spinner" />}
+          <span className="font-medium whitespace-nowrap">{running ? t("chat.runningSteps", { stepsLabel }) : stepsLabel}</span>
+          {running && liveLine && (
+            <span className="truncate text-ink/80 max-w-[36ch]">· {liveLine}</span>
+          )}
+        </button>
+      </div>
+    );
+  }
 
   return (
     <details className="stepgroup" open={open}>
@@ -381,34 +421,50 @@ function TurnGroup({
         )}
       </summary>
       {open && (
-        <div className="ml-1.5 mt-1 pl-2 border-l-2 border-line flex flex-col gap-0.5">
-          {rows.map((row, i) =>
-            row.type === "narr" ? (
-              <div className="turn-narr px-2 py-1 text-ui text-muted max-w-[60ch]" key={i} data-testid="turn-narration">
-                <Markdown text={row.text} />
-              </div>
-            ) : row.type === "ask" ? (
-              <div className="flex items-baseline gap-2 px-2 py-0.5" key={i} data-testid="turn-ask">
-                <span className={"w-3.5 text-center text-[10px] shrink-0 " + (row.approval.resolved === "deny" ? "text-danger" : "text-ok")}>●</span>
-                <LineText line={humanizeAsk(row.approval.name, row.approval.args)} />
-                {approvalChip(row.approval.resolved, t)}
-              </div>
-            ) : (
-              <StepRow tool={row.tool} approval={row.approval} onAllowAnyway={onAllowAnyway} key={i} />
-            ),
-          )}
-          {streamingText && (
-            <div
-              className="turn-narr px-2 py-1 text-ui text-muted max-w-[60ch]"
-              data-testid="turn-live-stream"
-            >
-              <Markdown text={streamingText} />
-              <span className="stream-cursor">▍</span>
-            </div>
-          )}
-        </div>
+        <TurnSteps rows={rows} onAllowAnyway={onAllowAnyway} streamingText={streamingText} border />
       )}
     </details>
+  );
+}
+
+// 步骤列表（时间线 / 气泡展开态 / 折叠卡片展开态 共用）：每条 step 复用 StepRow，
+// 自带「raw」点开看工具名 + 入参 + 结果预览，保证执行过程真实可查、不造假。
+function TurnSteps({
+  rows,
+  onAllowAnyway,
+  streamingText,
+  border,
+}: {
+  rows: TurnRow[];
+  onAllowAnyway?: (name: string, args: any) => void;
+  streamingText?: string;
+  border?: boolean;
+}) {
+  const { t } = useTranslation();
+  return (
+    <div className={"flex flex-col gap-0.5" + (border ? " ml-1.5 mt-1 pl-2 border-l-2 border-line" : "")}>
+      {rows.map((row, i) =>
+        row.type === "narr" ? (
+          <div className="turn-narr px-2 py-1 text-ui text-muted max-w-[60ch]" key={i} data-testid="turn-narration">
+            <Markdown text={row.text} />
+          </div>
+        ) : row.type === "ask" ? (
+          <div className="flex items-baseline gap-2 px-2 py-0.5" key={i} data-testid="turn-ask">
+            <span className={"w-3.5 text-center text-[10px] shrink-0 " + (row.approval.resolved === "deny" ? "text-danger" : "text-ok")}>●</span>
+            <LineText line={humanizeAsk(row.approval.name, row.approval.args)} />
+            {approvalChip(row.approval.resolved, t)}
+          </div>
+        ) : (
+          <StepRow tool={row.tool} approval={row.approval} onAllowAnyway={onAllowAnyway} key={i} />
+        ),
+      )}
+      {streamingText && (
+        <div className="turn-narr px-2 py-1 text-ui text-muted max-w-[60ch]" data-testid="turn-live-stream">
+          <Markdown text={streamingText} />
+          <span className="stream-cursor">▍</span>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -523,6 +579,10 @@ export function Transcript({
         const { item } = block;
         switch (item.kind) {
           case "connector":
+            // 板消息走结构化 BoardWakeCard（后端 _board_source 已带 source.board.rows；
+            // 否则退化成散文整块，正是之前"事件进度卡片粗糙"的根）。其它 connector（Slack 等）
+            // 仍走通用 ConnectorMessageCard。
+            if (item.source?.board) return <BoardWakeCard source={item.source} key={bi} />;
             return <ConnectorMessageCard source={item.source} key={bi} />;
           case "user":
             return (
@@ -685,9 +745,8 @@ export function Transcript({
           case "inspire":
             return (
               <div
-                className="group bubble-assistant"
+                className="group bubble-assistant inspire-card"
                 key={bi}
-                style={{ background: "#fff8e8", border: "1px solid #f0d9a0" }}
               >
                 <div className="who">
                   <XiaojuAvatar size={44} className="who-avatar" />
@@ -695,20 +754,10 @@ export function Transcript({
                 </div>
                 <Markdown text={item.text} />
                 {item.refs && item.refs.length > 0 && (
-                  <div style={{ marginTop: 6, fontSize: 12, color: "#8a6d3b" }}>
+                  <div className="mt-1.5 text-muted text-[12px]">
                     <span style={{ fontWeight: 600 }}>锚定她观察到的真实世界：</span>
                     {item.refs.map((r, i) => (
-                      <span
-                        key={i}
-                        style={{
-                          display: "inline-block",
-                          margin: "2px 4px 0 0",
-                          padding: "1px 8px",
-                          borderRadius: 999,
-                          background: "#fdf2d6",
-                          border: "1px solid #f0d9a0",
-                        }}
-                      >
+                      <span key={i} className="inspire-ref">
                         {r}
                       </span>
                     ))}
