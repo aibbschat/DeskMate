@@ -87,6 +87,8 @@ from ..sessions import SessionRecord
 from ..teams import Actor as TeamActor
 from ..teams import BoardError as TeamsBoardError
 from ..teams import JournalStore, Role as TeamRole, TeamStore, board_tools, journal_tools
+from ..teams.store import WORKER_WAITING
+from ..teams.tools import decide_worker_call_tool
 from ..projects import (
     project_key,
     project_label,
@@ -787,6 +789,10 @@ class SessionManager:
 
             engine.compaction_state = CompactionState.from_dict(record.compaction)
         engine.compaction_settings = self.compaction_settings
+        # Team delegation: a lead's decide_worker_call proxy re-resolves the original worker
+        # action under harness authority (never from the lead's note). Set per-session so
+        # only team leads can exercise it (worker_review_context checks team ownership).
+        engine.delegated_approval = lambda args: self.worker_review_context(session_id, args)
         self._engines[session_id] = engine
         # 自动化运行标记：本会话若是某个定时/手动任务的运行实例，它跑出的 web_search 等
         # 工具结果不能算作萧盛影响（否则检索转储会冒充满「内部·萧盛」标）。owning_task 在
@@ -1112,6 +1118,52 @@ class SessionManager:
 
         return ask
 
+    def note_worker_waiting(
+        self, session_id: str, tool_name: str, *, prompt_id: str = "", preview: str = ""
+    ) -> None:
+        """A team worker parked on a tool approval (the lead is Manual): tell the lead
+        through the board — `worker_waiting` is on its wake allowlist (§11.6). The wake
+        digest names the call and the prompt id so the lead can answer it with
+        `decide_worker_call`; the human can always answer the prompt directly too.
+        No-op for non-team sessions (checked here, so callers may invoke unconditionally)."""
+        found = self.teams.for_worker_session(session_id)
+        if found is None:
+            return
+        team, worker = found
+        item_id = None
+        try:
+            candidates = [
+                it
+                for it in self.team_store.list_items(team.space, self._user_actor())
+                if it.get("assignee") == worker.actor and it.get("state") == "in_progress"
+            ]
+            # A session is not a task identity. Never pick the first candidate.
+            if len(candidates) == 1:
+                item_id = candidates[0]["id"]
+        except Exception:  # noqa: BLE001
+            item_id = None
+        try:
+            self.team_store.append_event(
+                team.space,
+                WORKER_WAITING,
+                TeamActor(
+                    id=worker.actor,
+                    role=TeamRole.WORKER,
+                    persona=worker.persona,
+                    session_id=session_id,
+                ),
+                item_id=item_id,
+                payload={
+                    "tool": tool_name,
+                    "session_id": session_id,
+                    "prompt_id": prompt_id,
+                    "preview": preview[:300],
+                },
+            )
+        except Exception:  # noqa: BLE001 — a notice must never break the approval
+            logger.exception("worker_waiting event for %s failed", session_id)
+        self.kick_team_tick()
+
     def inbox_approver(self, session_id: str, agent: str):
         """Inbox-based approver — the default for no-socket runs (background, self-wake, durable
         resume). On resume the item already exists + is resolved, so wait returns at once.
@@ -1128,6 +1180,16 @@ class SessionManager:
             )
             if item.state == "pending":
                 self.persist_session(session_id)
+                # §11.6: a worker parked under a Manual lead — tell its lead via the
+                # board (background turns are how workers run; the socket approver
+                # does the same for attended ones). note_worker_waiting is a no-op
+                # for non-team sessions, so this is safe to call unconditionally.
+                self.note_worker_waiting(
+                    session_id,
+                    request.tool_name,
+                    prompt_id=item.id,
+                    preview=_approval_body(request)[:300],
+                )
                 await self.mirror_inbox_item(item)
             resolution = await self.inbox.wait(item.id)
             return self.approval_outcome(resolution, request, session_id)
@@ -1223,17 +1285,61 @@ class SessionManager:
         if engine is not None:
             self.save(session_id, engine)
 
-    async def resolve_inbox(self, item_id: str, resolution: str) -> bool:
+    def reconcile_obsolete_prompts(self, session_id: str = "") -> int:
+        """Retire only tool-bound prompts whose call already has a result.
+
+        A repaired interrupted call has a result stub too. A genuinely pending
+        call has no result and remains available for durable resume.
+        """
+        pending = self.inbox.pending(session_id or None)
+        answered_by_session = {}
+        retired = 0
+        for item in pending:
+            if not item.tool_call_id:
+                continue
+            if item.session_id not in answered_by_session:
+                engine = self._engines.get(item.session_id)
+                record = self.session_store.load(item.session_id) if engine is None else None
+                messages = (
+                    engine.messages
+                    if engine is not None
+                    else (record.messages if record else [])
+                )
+                answered_by_session[item.session_id] = {
+                    m.get("tool_call_id") for m in messages if m.get("role") == "tool"
+                }
+            if item.tool_call_id in answered_by_session[item.session_id]:
+                if self.inbox.resolve(item.id, "interrupted", by="system:obsolete-prompt"):
+                    retired += 1
+        return retired
+
+    async def resolve_inbox(self, item_id: str, resolution: str, by: str = "") -> bool:
         """Resolve an Inbox item from any surface (REST / Slack button / channel reply). If the
         asking agent is still suspended live, that await handles it. Otherwise the process restarted
         (or the engine was evicted) while blocked → durably resume: rebuild the engine from the
-        saved thread and continue the turn."""
+        saved thread and continue the turn. `by` = the deciding person when known."""
         item = self.inbox.get(item_id)
-        ok = self.inbox.resolve(item_id, resolution)
+        if item is not None:
+            self.reconcile_obsolete_prompts(item.session_id)
+        pending_before = {p.id: p for p in self.inbox.pending()}
+        ok = self.inbox.resolve(item_id, resolution, by=by)
         if not ok or item is None:
             return ok
-        if not self.is_running(item.session_id):
-            await self._durable_resume(item)
+        # Store resolution may atomically deny the original worker call and retire sibling
+        # proxies too (§11.6 cascade). Resume all affected idle sessions after a restart, not
+        # just the lead whose card was clicked. Live waiters are released by the store.
+        resumed_sessions = set()
+        resumes = []
+        for resolved in pending_before.values():
+            if (
+                resolved.state == "resolved"
+                and resolved.session_id not in resumed_sessions
+                and not self.is_running(resolved.session_id)
+            ):
+                resumed_sessions.add(resolved.session_id)
+                resumes.append(self._durable_resume(resolved))
+        if resumes:
+            await asyncio.gather(*resumes)
         return ok
 
     async def _durable_resume(self, item) -> None:
@@ -2084,11 +2190,46 @@ class SessionManager:
         if role == "lead":
             tools.append(self._steer_tool(session_id))
             tools.append(self._team_options_tool())
+            # §11.6: a Manual lead answers a worker's parked tool call via decide_worker_call.
+            # The decider resolves the worker's own parked prompt; ownership is checked against
+            # this lead's team (worker_review_context / _owned_worker_prompt), so a lead cannot
+            # proxy-approve a worker that isn't theirs.
+            tools.append(
+                decide_worker_call_tool(
+                    lambda worker, call_id, decision, note: self._lead_decide_worker_call(
+                        session_id, worker, call_id, decision, note
+                    )
+                )
+            )
         # post_chat registers for every team persona; it resolves the group at call
         # time (the team may not exist yet at engine build) and fails gracefully
         # when chat is off.
         tools.append(self._post_chat_tool(session_id, role))
         return tools
+
+    def _lead_decide_worker_call(
+        self, lead_session: str, worker: str, call_id: str, decision: str, note: str
+    ) -> dict:
+        """The `decider` wired into this lead's `decide_worker_call_tool`. Verifies the named
+        worker is on THIS lead's team (ownership, not the lead's claim), then resolves the
+        worker's parked approval prompt with the lead's decision. The lead's own
+        approve/deny happens through the tool's permission flow; this only applies the decision
+        to the worker's original request. The inbox cascade retires the lead's proxy card if the
+        worker resolved first, and supersedes the worker's now-redundant prompt when the lead's
+        proxy resolves first (§11.6)."""
+        item = self._owned_worker_prompt(lead_session, {"worker": worker, "call_id": call_id})
+        if item is None:
+            return {"error": "No such pending worker request on this team."}
+        resolution = "allow" if str(decision or "").strip().lower() == "allow" else "deny"
+        ok = self.inbox.resolve(item.id, resolution, by=f"lead:{worker}")
+        if not ok:
+            return {"error": "The worker request could not be resolved (already handled?)."}
+        return {
+            "ok": True,
+            "resolution": resolution,
+            "call_id": str(call_id or ""),
+            "note": str(note or ""),
+        }
 
     def _post_chat_tool(self, session_id: str, role: str) -> Any:
         import aisuite as ai
@@ -2622,6 +2763,11 @@ class SessionManager:
         # on their slice (assigned ∪ filed) — comments, moves, reassignments. The
         # lead additionally subscribes to the board-wide decision classes.
         directs = self.team_store.feed_for(team.space, actor)
+        if not is_lead and directs and all(e["kind"] == WORKER_WAITING for e in directs):
+            # A wait owned by the lead/user is not work for a worker. Advance this
+            # informational-only batch so it cannot repeatedly wake them.
+            self.team_store.consume_feed(team.space, actor, max(e["seq"] for e in directs))
+            directs = []
         subs = (
             self.team_store.subscribed_events(team.space, actor) if is_lead else []
         )
@@ -2819,6 +2965,49 @@ class SessionManager:
                         ),
                     }
                 )
+            elif event["kind"] == WORKER_WAITING:
+                # §11.6: a worker parked on a tool call under a Manual lead. The lead
+                # decides (its decision asks the human), or the human answers directly.
+                # For a non-lead reader, the wait is informational only — a collaborator
+                # is not an approval authority, so keep it out of their action list.
+                tool = payload.get("tool") or "a tool"
+                prompt_id = payload.get("prompt_id", "")
+                waiter = event.get("actor") or ""
+                if is_lead:
+                    lines.append(
+                        f"{waiter} is waiting for your decision on a tool call"
+                        + (f" ({tool})" if tool != "a tool" else "")
+                        + (
+                            f" — answer via decide_worker_call (prompt {prompt_id})."
+                            if prompt_id
+                            else "."
+                        )
+                    )
+                    rows.append(
+                        {
+                            "item": item_id,
+                            "actor": waiter,
+                            "kind": "waiting",
+                            "tool": tool,
+                            "prompt_id": prompt_id,
+                        }
+                    )
+                else:
+                    lines.append(
+                        f"{waiter} is waiting for the lead or user"
+                        + (f" on {tool}" if tool != "a tool" else "")
+                        + "."
+                    )
+                    rows.append(
+                        {
+                            "item": item_id,
+                            "actor": waiter,
+                            "kind": "waiting",
+                            "tool": tool,
+                            "prompt_id": prompt_id,
+                        }
+                    )
+                continue
         for chat in chats or []:
             who = chat["author"] if chat["author_role"] != "user" else "[User]"
             lines.append(f"# team chat — {who}: {clamp(chat['text'])}")
@@ -4613,6 +4802,13 @@ class SessionManager:
     async def broadcast_session(self, session_id: str, message: dict) -> None:
         """Fan a turn event out to every socket viewing this session. Best-effort: a dead socket
         is dropped, never fatal to the turn (delivery is socket-independent)."""
+        data = message.get("data") or {}
+        if message.get("type") == "permission_required" and data.get("name") == "decide_worker_call":
+            # Attach the worker's actual waiting call so the lead's approval card shows WHAT
+            # is being allowed/denied, not an opaque call id (§11.6).
+            worker_call = self.worker_call_for(data.get("arguments") or {}, lead_session=session_id)
+            if worker_call:
+                message = {**message, "data": {**data, "worker_call": worker_call}}
         for cb in list(self._session_clients.get(session_id, ())):
             try:
                 await cb(message)
@@ -4626,6 +4822,134 @@ class SessionManager:
         self.audit_store.close()
 
     # -- automation (scheduled tasks) -------------------------------------------
+    def worker_call_for(
+        self, arguments: dict[str, Any], *, lead_session: str | None = None
+    ) -> dict[str, Any] | None:
+        """The worker's waiting tool call that a lead's `decide_worker_call` answers
+        (`call_id` is the worker's parked Inbox item). Attached to the lead's approval card
+        so the human sees WHAT is being allowed or denied, not an id. None when the item is
+        unknown or is not an approval."""
+        item = self.inbox.get(str((arguments or {}).get("call_id") or ""))
+        if item is None or item.kind != "approval":
+            return None
+        if lead_session is not None and not self._owned_worker_prompt(lead_session, arguments):
+            return None
+        data = item.data or {}
+        task_fields = {}
+        found = self.teams.for_worker_session(item.session_id)
+        if found:
+            from ..teams.summary import all_events
+
+            team, _worker = found
+            for event in all_events(self.team_store, team.space):
+                if (
+                    event["kind"] == WORKER_WAITING
+                    and event["payload"].get("prompt_id") == item.id
+                    and event.get("item_id") is not None
+                ):
+                    try:
+                        task = self.team_store.get_item(
+                            team.space, event["item_id"], actor=self._user_actor()
+                        )
+                        task_fields = {"item_id": task["id"], "item_title": task["title"]}
+                    except TeamsBoardError:
+                        pass
+        return {
+            **task_fields,
+            "worker": str((arguments or {}).get("worker") or ""),
+            "tool": str(data.get("tool") or ""),
+            "arguments": data.get("arguments") or {},
+            "reason": (item.body or "").split("\n", 1)[0],
+            "state": item.state,
+            "resolution": item.resolution,
+        }
+
+    def _owned_worker_prompt(self, lead_session: str, arguments: dict):
+        """The worker's parked approval item this lead is allowed to answer, or None.
+
+        Ownership = the named worker is on THIS lead's team and the item belongs to that
+        worker's session. Never trusts the lead's own claim of ownership — checked against
+        the team registry."""
+        team = self.teams.for_lead_session(lead_session)
+        member = (
+            next(
+                (
+                    w
+                    for w in team.workers
+                    if w.actor == str(arguments.get("worker") or "").strip().lower()
+                ),
+                None,
+            )
+            if team
+            else None
+        )
+        item = self.inbox.get(str(arguments.get("call_id") or ""))
+        return (
+            item
+            if member and item and item.kind == "approval" and item.session_id == member.session_id
+            else None
+        )
+
+    def worker_review_context(self, lead_session: str, arguments: dict) -> dict:
+        """Resolve exactly one owned, pending call and carry its permission floors.
+
+        Read only harness state. No worker transcript, lead rationale, file contents,
+        or environment values are added to the reviewer's context."""
+        from ..providers import ToolCall
+
+        item = self._owned_worker_prompt(lead_session, arguments)
+        if item is None or item.state != "pending":
+            return {
+                "hard_deny": True,
+                "reason": "The worker request is missing, belongs to another team, or was already answered.",
+            }
+        name = item.data.get("tool")
+        args = item.data.get("arguments")
+        if not isinstance(name, str) or not isinstance(args, dict) or name == "decide_worker_call":
+            return {"hard_deny": True, "reason": "The original worker action is invalid."}
+        worker = self.get_engine(item.session_id)
+        spec = worker.registry.get(name)
+        if spec is None:
+            return {"hard_deny": True, "reason": "The worker tool is no longer available."}
+        decision = worker.permissions.evaluate(name, args, spec.metadata)
+        call = ToolCall(id=item.id, name=name, arguments=args)
+        downloaded = worker._downloaded_target(call) is not None
+        # Preserve the floor recorded when the worker parked the call, even after
+        # an engine rebuild loses runtime-only provenance.
+        saved = item.data.get("escalation") or {}
+        human_only = decision.human_only or downloaded or saved.get("kind") == "human_required"
+        reason = (
+            (saved.get("reason") if saved.get("kind") == "human_required" else None)
+            or (
+                "The worker would execute a downloaded file; a human must decide."
+                if downloaded
+                else decision.reason
+            )
+        )
+        return {
+            "tool": name,
+            "arguments": args,
+            "reason": reason,
+            "hard_deny": not decision.allowed and not decision.needs_user,
+            "human_only": human_only,
+            "provenance": item.data.get("provenance") or worker._provenance(call),
+            "context": {
+                "worker": arguments.get("worker"),
+                "request_id": item.id,
+                "workspace": str(worker.permissions.workspace_root or ""),
+                "working_folders": [
+                    {"path": str(path), "writable": writable}
+                    for path, writable in worker.permissions._resolved_roots()
+                ],
+                "permission_reason": decision.reason,
+                "mode": worker.permissions.mode.value,
+                "settings_epoch": worker.reviewer_settings_epoch,
+                "category": getattr(spec.metadata, "category", ""),
+                "destination": item.data.get("mcp_destination"),
+                "runtime_facts": getattr(worker, "runtime_facts", {}),
+            },
+        }
+
     def approval_prompt_data(self, session_id: str, request) -> dict[str, Any]:
         """Extra Inbox-item payload for a parked approval. Always carries the tool name +
         arguments so the GUI can render the same humanized card (§35) it shows live —
@@ -4638,7 +4962,28 @@ class SessionManager:
         data: dict[str, Any] = {
             "tool": request.tool_name,
             "arguments": getattr(request, "arguments", None) or {},
+            # §35 parity (OPE-136): the parked card shows the same scope chip + reason the
+            # live card would — carry the escalation kind, provenance, and MCP destination
+            # stamped on the request, plus any non-boilerplate reason.
+            "escalation": getattr(request, "escalation", None),
+            "provenance": getattr(request, "provenance", ""),
         }
+        if request.tool_name == "decide_worker_call":
+            worker_call = self.worker_call_for(data["arguments"], lead_session=session_id)
+            if worker_call:
+                data["worker_call"] = worker_call
+                # Store-owned dependency: atomically retires this redundant gate if the
+                # original worker prompt resolves before or after creation.
+                data["worker_prompt_id"] = str(data["arguments"]["call_id"])
+        category = getattr(getattr(request, "metadata", None), "category", "")
+        if category:
+            data["category"] = category
+        dest = getattr(request, "mcp_destination", None)
+        if dest:
+            data["mcp_destination"] = dest
+        reason = (getattr(request, "reason", "") or "").strip()
+        if reason and reason != "requires approval":
+            data["reason"] = reason
         task = self.task_store.task_for_run_session(session_id)
         if task is None:
             return data
@@ -4701,6 +5046,22 @@ class SessionManager:
         """
         from ..engine import ApprovalOutcome
 
+        if resolution == "superseded":
+            # A lead's proxy approval whose original worker request was already resolved
+            # (e.g. the human answered the worker's own card directly). Nothing to do but
+            # record it — the engine retires the proxy without re-executing.
+            original = (
+                self._owned_worker_prompt(
+                    session_id, getattr(request, "arguments", None) or {}
+                )
+                if request.tool_name == "decide_worker_call"
+                else None
+            )
+            return (
+                ApprovalOutcome.SUPERSEDED
+                if original is not None and original.state == "resolved"
+                else ApprovalOutcome.DENY
+            )
         if resolution == "always_task":
             minted = self.mint_task_rule(
                 session_id,

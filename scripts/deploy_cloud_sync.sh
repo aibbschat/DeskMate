@@ -308,6 +308,23 @@ COWORKER_ROOT_MODULES=(
   # `from ..toolresult import PagedToolResult` —— 云端缺这一个文件，整个 coworker/teams
   # 包 import 就炸，团队功能（含 lead 的 propose_team）在云端直接不可用。
   "coworker/toolresult.py"
+  # ⚠️ 2026-10-30 补（团队委托审批移植）：runtime_context.py 是本轮新建的 coworker/ 根目录
+  # 文件，已由 agent.py:build_engine `from .runtime_context import capture, runtime_context_tool`
+  # 顶层 import —— 云端缺它，agent 建引擎就 ImportError（被 fail-open 吞，无日志），
+  # 连带 runtime_facts 探查与 reviewer 的 WORKER ACTION CONTEXT 静默失效。
+  # 同属「coworker/ 根目录双重盲区」，随 agent.py/engine.py 同批推送。
+  "coworker/runtime_context.py"
+  # ⚠️ 2026-10-30 补：reviewer.py 在 2b1b26f0（团队委托审批移植）改过——新增
+  # `action_context` 形参 + WORKER ACTION CONTEXT 段，主编代理审批的评审上下文全靠它。
+  # 但它从未进过传输清单，且 agent.py:825 是在**函数体内** `from .reviewer import Reviewer`
+  # （导入期不报错，最隐蔽）——漏传 ⇒ 云端继续跑旧 reviewer.py，委托审批静默降级。
+  "coworker/reviewer.py"
+  # ⚠️ 2026-10-30 补（最关键）：inbox.py 是团队委托审批级联的**唯一实现处**——
+  # resolve() 的「拒绝 lead 的 allow 代理 ⇒ 原子拒绝原始 worker 调用」+ 依赖卡 supersede，
+  # 以及 add() 的 supersede-on-add，全在 2b1b26f0 改出来。它同样从未进过传输清单：
+  # 漏传 ⇒ 云端跑旧 inbox.py，主编审批 worker 请求这条链路在云端**整体静默失效**
+  # （不报错、不告警，只表现为「派下去的活又卡住」）。
+  "coworker/inbox.py"
 )
 # 团队底座（2026-10-28 整包对齐上游）：store/summary 等被 server/manager.py 直接 import。
 # 本次移植 TeamView 需要 summary.make_summary + store 的 set_status/分页/附件鉴权，
