@@ -1,0 +1,306 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>小桔 · 思考/执行显示风格 — 视觉样张</title>
+<style>
+  /* ===== 真实 token（取自 surfaces/gui/src/styles.css + 皮肤系统）=====
+     --accent #F26B1F 小桔橙（皮肤 system 的 [data-skin-pre] 覆盖值）
+     --accent-soft #FFE7CC
+     --paper #f5f6f7  --panel #fff  --ink #17191c  --muted #5b616b  --faint #9aa1aa  --line #e8eaed
+     --ok #2f7d57 / --ok-dot #3f9c5a  --warn-ink #b45309  --danger #b91c1c
+     暖米白底 + 衬线正文 = MomentFeed 既定气质（styles.css:4662）
+  */
+  :root{
+    --accent:#F26B1F; --accent-soft:#FFE7CC;
+    --paper:#f5f6f7; --panel:#ffffff; --ink:#17191c; --muted:#5b616b; --faint:#9aa1aa;
+    --line:#e8eaed; --line-strong:#d8dce1;
+    --ok:#2f7d57; --ok-dot:#3f9c5a; --warn-ink:#b45309; --danger:#b91c1c;
+    --beige:#FBF5EC; --beige-card:#FFFDF8; --beige-line:#EAD9BE; --beige-ink:#3A2A14; --beige-muted:#8a6d3b;
+    --serif: Georgia, "Songti SC", "Noto Serif SC", "STSong", serif;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, system-ui, sans-serif;
+  }
+  *{box-sizing:border-box;}
+  body{
+    margin:0; background:#eef0f2; color:var(--ink);
+    font-family:var(--sans); font-size:14px; line-height:1.6; padding:32px 20px 60px;
+  }
+  .wrap{max-width:1080px; margin:0 auto;}
+  h1{font-size:22px; margin:0 0 4px; letter-spacing:-.01em;}
+  .sub{color:var(--muted); margin:0 0 26px; font-size:13px;}
+  .card{background:var(--panel); border:1px solid var(--line); border-radius:16px; padding:20px 22px; margin:0 0 22px; box-shadow:0 1px 2px rgba(20,20,20,.03);}
+  .card h2{font-size:14px; margin:0 0 14px; color:var(--ink); display:flex; align-items:center; gap:8px;}
+  .card h2 .tag{font-size:11px; font-weight:500; color:var(--accent); background:var(--accent-soft); padding:2px 8px; border-radius:999px;}
+  .hint{font-size:12px; color:var(--faint); margin-top:10px;}
+
+  /* ===== 选择器放置位置 mock（设置 ▸ 外观）===== */
+  .setting-row{display:flex; align-items:center; justify-content:space-between; padding:13px 0; border-bottom:1px solid var(--line);}
+  .setting-row:last-child{border-bottom:none;}
+  .setting-label{font-size:13px;}
+  .setting-label .desc{display:block; font-size:11px; color:var(--faint); margin-top:2px;}
+  .seg{display:inline-flex; background:var(--paper); border:1px solid var(--line); border-radius:10px; padding:3px;}
+  .seg button{border:none; background:none; font:inherit; font-size:12px; color:var(--muted); padding:5px 12px; border-radius:7px; cursor:pointer;}
+  .seg button.on{background:var(--panel); color:var(--accent); box-shadow:0 1px 2px rgba(0,0,0,.06); font-weight:600;}
+  .swatches{display:flex; gap:6px;}
+  .sw{width:20px; height:20px; border-radius:50%; border:2px solid #fff; box-shadow:0 0 0 1px var(--line);}
+  /* 风格缩略选择卡（仿 SkinPicker 气质） */
+  .style-thumbs{display:flex; gap:12px; margin-top:6px;}
+  .thumb{flex:1; border:1.5px solid var(--line); border-radius:12px; padding:10px; cursor:pointer; background:var(--beige-card); transition:border-color .15s, transform .1s;}
+  .thumb:hover{transform:translateY(-1px);}
+  .thumb.on{border-color:var(--accent); box-shadow:0 0 0 3px var(--accent-soft);}
+  .thumb .tname{font-size:12px; font-weight:600; color:var(--beige-ink); margin-bottom:8px;}
+  .thumb .mini{height:54px; border-radius:8px; background:var(--beige); border:1px solid var(--beige-line); padding:7px; overflow:hidden;}
+  /* mini 示意图 */
+  .mini-tl{display:flex; flex-direction:column; gap:5px;}
+  .mini-node{display:flex; align-items:center; gap:5px; font-size:8px; color:var(--beige-muted);}
+  .mini-dot{width:7px;height:7px;border-radius:50%; flex:none;}
+  .mini-bar{height:6px; border-radius:3px; background:var(--beige-line);}
+  .mini-bar.w40{width:40%} .mini-bar.w70{width:70%} .mini-bar.w55{width:55%}
+  .mini-card{border:1px solid var(--beige-line); border-radius:6px; padding:5px; font-size:8px; color:var(--beige-muted);}
+  .mini-bubble{background:var(--accent-soft); border-radius:8px; padding:6px; font-size:8px; color:var(--accent);}
+
+  /* ===== 顶部分段切换 ===== */
+  .switch{display:inline-flex; background:var(--paper); border:1px solid var(--line); border-radius:12px; padding:4px; margin-bottom:16px;}
+  .switch button{border:none; background:none; font:inherit; font-size:13px; color:var(--muted); padding:8px 18px; border-radius:9px; cursor:pointer;}
+  .switch button.on{background:var(--panel); color:var(--accent); font-weight:600; box-shadow:0 1px 3px rgba(0,0,0,.07);}
+
+  /* ===== 大预览容器（小桔暖米白面板）===== */
+  .stage{background:var(--beige); border:1px solid var(--beige-line); border-radius:16px; padding:22px; min-height:300px;}
+  .panel-title{display:flex; align-items:center; gap:10px; margin-bottom:16px; color:var(--beige-ink);}
+  .avatar{width:30px;height:30px;border-radius:50%; background:linear-gradient(135deg,var(--accent),#ff9a4d); color:#fff; display:flex; align-items:center; justify-content:center; font-weight:700; font-size:14px; flex:none;}
+  .panel-title .who{font-size:13px; font-weight:600;}
+  .panel-title .state{font-size:11px; color:var(--beige-muted);}
+
+  /* 通用：spinner / thinking / step 节点（对齐真实 .spinner / .thinking-body） */
+  .spinner{display:inline-block;width:11px;height:11px;border-radius:50%;border:2px solid var(--accent);border-right-color:transparent;animation:spin .8s linear infinite;vertical-align:middle;}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  .thinking{margin:2px 0 14px;}
+  .thinking-head{display:flex;align-items:center;gap:5px;font-size:12px;color:var(--beige-muted);cursor:pointer;user-select:none;}
+  .thinking-caret{transition:transform .15s; transform:rotate(-90deg); font-size:10px;}
+  .thinking-caret.open{transform:rotate(0);}
+  .thinking-live{animation:bootpulse 1.4s ease-in-out infinite; color:var(--accent);}
+  @keyframes bootpulse{0%,100%{opacity:.45}50%{opacity:1}}
+  .thinking-body{font-size:12px;line-height:1.6;color:var(--beige-muted);white-space:pre-wrap;overflow-wrap:anywhere;border-left:2px solid var(--beige-line);padding:5px 0 5px 10px;margin:6px 0 6px 4px; font-family:var(--serif);}
+
+  /* —— 风格A：时间线 —— */
+  .tl{position:relative; margin-left:6px; padding-left:20px;}
+  .tl::before{content:""; position:absolute; left:5px; top:6px; bottom:6px; width:2px; background:var(--beige-line);}
+  .tl-item{position:relative; padding:7px 0;}
+  .tl-node{position:absolute; left:-20px; top:9px; width:12px; height:12px; border-radius:50%; border:2px solid var(--beige-line); background:var(--beige-card); display:flex; align-items:center; justify-content:center;}
+  .tl-node.done{border-color:var(--ok-dot); background:var(--ok-dot);}
+  .tl-node.run{border-color:var(--accent);}
+  .tl-node .ck{color:#fff; font-size:8px; font-weight:700;}
+  .tl-row{display:flex; align-items:baseline; gap:8px;}
+  .tl-name{font-size:13px; color:var(--beige-ink); font-family:var(--serif);}
+  .tl-name.pend{color:var(--beige-muted);}
+  .tl-meta{font-size:11px; color:var(--beige-muted);}
+  .tl-meta.run{color:var(--accent);}
+  .progress-pill{display:inline-block; margin-top:10px; font-size:11px; color:var(--accent); background:var(--accent-soft); padding:3px 10px; border-radius:999px;}
+
+  /* —— 风格B：折叠卡片（现状升级） —— */
+  .sg{border:1px solid var(--beige-line); border-radius:12px; background:var(--beige-card); overflow:hidden;}
+  .sg-head{display:flex; align-items:center; gap:8px; padding:11px 13px; cursor:pointer; font-size:12.5px; color:var(--beige-muted);}
+  .sg-head .chev{color:var(--accent); font-weight:700;}
+  .sg-head .live{margin-left:auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--beige-ink); font-size:12px;}
+  .sg-body{border-top:1px solid var(--beige-line); padding:10px 14px 12px; margin:0 0 0; }
+  .step{display:flex; align-items:baseline; gap:9px; padding:5px 0; font-size:13px; color:var(--beige-ink); font-family:var(--serif);}
+  .step .sdot{width:14px; text-align:center; font-size:11px; flex:none;}
+  .step.done .sdot{color:var(--ok-dot);}
+  .step.run .sdot{color:var(--accent);}
+  .step.pend{color:var(--beige-muted);}
+  .step .sargs{font-size:10px; color:var(--beige-muted); margin-left:auto; text-decoration:underline dotted; cursor:pointer;}
+
+  /* —— 风格C：极简气泡 —— */
+  .bubble{background:var(--accent-soft); border:1px solid #ffd2a8; border-radius:14px; padding:12px 15px; max-width:420px;}
+  .bubble .b1{display:flex; align-items:center; gap:8px; font-size:13px; color:var(--accent); font-weight:600;}
+  .bubble .b2{margin-top:6px; font-size:12px; color:var(--beige-ink); font-family:var(--serif);}
+  .bubble .b3{margin-top:5px; font-size:11px; color:var(--beige-muted); font-style:italic;}
+
+  /* 步骤可点开详情（对齐真实 StepRow 的 raw 展开：工具名 + 入参 + 结果预览） */
+  .clk{cursor:pointer;}
+  .tl-item.clk:hover .tl-name{color:var(--accent);}
+  .step.clk:hover{background:var(--beige);}
+  .step-detail{margin:7px 0 9px 22px; border-left:2px solid var(--beige-line); padding:5px 0 5px 12px;}
+  .step-detail .dt{font-size:11px; color:var(--accent); font-weight:600; margin-bottom:4px; letter-spacing:.02em;}
+  .step-detail pre{margin:0; font-family:ui-monospace,Menlo,Consolas,monospace; font-size:11px; color:var(--beige-muted); white-space:pre-wrap; word-break:break-word; line-height:1.65;}
+  .foot{font-size:12px; color:var(--faint); margin-top:18px; line-height:1.7;}
+  .foot code{background:var(--paper); border:1px solid var(--line); border-radius:5px; padding:1px 5px; font-size:11px; color:var(--muted);}
+  .hidden{display:none;}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>小桔 · 思考 / 执行显示风格 — 视觉样张</h1>
+  <p class="sub">独立样张，不改动任何 app 代码。所有颜色 / 圆角 / 字体均取自现有 design token（小桔暖橙 <code style="background:none;border:none;padding:0;color:var(--accent)">#F26B1F</code>、暖米白底、衬线正文 = MomentFeed 既定气质）。点上方分段可切换三种风格。</p>
+
+  <!-- 1. 选择器放置位置 -->
+  <div class="card">
+    <h2>① 选择器挂在哪 <span class="tag">设置 ▸ 外观</span></h2>
+    <div class="setting-row">
+      <div class="setting-label">字号<span class="desc">只换字号，布局不动</span></div>
+      <div class="seg"><button>小</button><button class="on">标准</button><button>大</button></div>
+    </div>
+    <div class="setting-row">
+      <div class="setting-label">皮肤<span class="desc">小桔形象永不被皮肤替换（红线）</span></div>
+      <div class="swatches"><span class="sw" style="background:#F26B1F"></span><span class="sw" style="background:#6A994E"></span><span class="sw" style="background:#0EA5E9"></span><span class="sw" style="background:#EC4899"></span><span class="sw" style="background:#92400E"></span></div>
+    </div>
+    <div class="setting-row" style="display:block;">
+      <div class="setting-label" style="margin-bottom:4px;">思考与执行显示风格 <span class="desc">新增项 · 复用现有 SkinPicker 气质，与皮肤正交</span></div>
+      <div class="style-thumbs" id="thumbs">
+        <div class="thumb on" data-style="A"><div class="tname">时间线</div><div class="mini"><div class="mini-tl"><div class="mini-node"><span class="mini-dot" style="background:var(--ok-dot)"></span>步骤</div><div class="mini-node"><span class="mini-dot" style="background:var(--accent)"></span>步骤</div><div class="mini-node"><span class="mini-dot" style="background:var(--beige-line)"></span>步骤</div></div></div></div>
+        <div class="thumb" data-style="B"><div class="tname">折叠卡片</div><div class="mini"><div class="mini-card">正在运行 5 步…</div><div class="mini-bar w70" style="margin-top:5px"></div><div class="mini-bar w55"></div></div></div>
+        <div class="thumb" data-style="C"><div class="tname">极简气泡</div><div class="mini"><div class="mini-bubble">小桔正在查证史料…</div></div></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 2. 可切换大预览 -->
+  <div class="card">
+    <h2>② 三种风格实拍（运行中状态）</h2>
+    <div class="switch" id="switch">
+      <button class="on" data-style="A">时间线</button>
+      <button data-style="B">折叠卡片</button>
+      <button data-style="C">极简气泡</button>
+    </div>
+
+    <div class="stage">
+      <div class="panel-title">
+        <div class="avatar">桔</div>
+        <div><div class="who">小桔</div><div class="state" id="stateLine">正在思考与执行 · 本地史料任务</div></div>
+      </div>
+
+      <!-- A 时间线 -->
+      <div class="preview" data-style="A">
+        <div class="thinking">
+          <div class="thinking-head"><span class="thinking-caret open">▾</span><span>思考了 8 秒</span></div>
+          <div class="thinking-body">本地史料库有一条关键发现，接下来要查证几个地理和史实关键点：先核对《明史·地理志》对应条目，再比对方志引文出处，确认无误后整理成对照表。</div>
+        </div>
+        <div class="tl">
+          <div class="tl-item clk"><span class="tl-node done"><span class="ck">✓</span></span><div class="tl-row"><span class="tl-name">读取本地史料库</span><span class="tl-meta">已找到 3 条关键线索 · 点开看详情</span></div>
+            <div class="step-detail hidden">
+              <div class="dt">执行详情（工具名 · 入参 · 返回预览）</div>
+              <pre>search_history  query="康得宝 慢性中毒 线索"  top_k=5  source="本地史料库/.deskmate/history"
+
+→ 命中 3 条关键线索：
+  1. 《萤窗琐记》卷七：康得宝冬日畏寒、食少、渐羸，医者初疑"积冷"
+  2. 方志补遗·嘉庆：同年腊月有"井水微浊，饮者多曳"记载
+  3. 药理杂抄：附子入剂用量异于常方，疑有叠加</pre>
+            </div>
+          </div>
+          <div class="tl-item clk"><span class="tl-node done"><span class="ck">✓</span></span><div class="tl-row"><span class="tl-name">比对《明史·地理志》条目</span><span class="tl-meta">2 处吻合 · 点开看详情</span></div>
+            <div class="step-detail hidden">
+              <div class="dt">执行详情（工具名 · 入参 · 返回预览）</div>
+              <pre>lookup_reference  title="明史·地理志"  volume="卷四十一·郡县"
+
+→ 比对结果：
+  · 康得宝籍贯地望与志载"某某县"吻合
+  · 卷中"水利"条与方志补遗井水记载可互证
+  · 1 处存疑（刊本异文），已标红待复核</pre>
+            </div>
+          </div>
+          <div class="tl-item clk"><span class="tl-node run"><span class="spinner"></span></span><div class="tl-row"><span class="tl-name">核验方志引文出处</span><span class="tl-meta run">执行中…（暂无可展开详情）</span></div></div>
+          <div class="tl-item"><span class="tl-node"></span><div class="tl-row"><span class="tl-name pend">整理地理与史实对照表</span><span class="tl-meta">待执行</span></div></div>
+          <div class="tl-item"><span class="tl-node"></span><div class="tl-row"><span class="tl-name pend">生成查证结论</span><span class="tl-meta">待执行</span></div></div>
+        </div>
+        <span class="progress-pill">第 3 / 5 步</span>
+      </div>
+
+      <!-- B 折叠卡片 -->
+      <div class="preview hidden" data-style="B">
+        <div class="sg">
+          <div class="sg-head"><span class="chev">▾</span><span>正在运行 5 步…</span><span class="live">· 核验方志引文出处</span></div>
+          <div class="sg-body">
+            <div class="thinking" style="margin-bottom:8px;">
+              <div class="thinking-head clk"><span class="thinking-caret">▸</span><span>思考过程（点开）</span></div>
+              <div class="thinking-body hidden">先确认检索方向：以"康得宝·慢性中毒"为线索锚点，从本地史料库入手，再与《明史·地理志》及方志互证，避免孤证。执行顺序：检索 → 比对 → 核验出处 → 整理对照 → 出结论。</div>
+            </div>
+            <div class="step done clk"><span class="sdot">✓</span><span>读取本地史料库</span><span class="sargs">入参</span>
+              <div class="step-detail hidden">
+                <div class="dt">执行详情（工具名 · 入参 · 返回预览）</div>
+                <pre>search_history  query="康得宝 慢性中毒 线索"  top_k=5  source="本地史料库/.deskmate/history"
+
+→ 命中 3 条关键线索：
+  1. 《萤窗琐记》卷七：康得宝冬日畏寒、食少、渐羸，医者初疑"积冷"
+  2. 方志补遗·嘉庆：同年腊月"井水微浊，饮者多曳"
+  3. 药理杂抄：附子入剂用量异于常方，疑有叠加</pre>
+              </div>
+            </div>
+            <div class="step done clk"><span class="sdot">✓</span><span>比对《明史·地理志》条目</span><span class="sargs">入参</span>
+              <div class="step-detail hidden">
+                <div class="dt">执行详情（工具名 · 入参 · 返回预览）</div>
+                <pre>lookup_reference  title="明史·地理志"  volume="卷四十一·郡县"
+
+→ 比对结果：
+  · 籍贯地望与志载吻合
+  · "水利"条与方志井水记载互证
+  · 1 处刊本异文存疑，已标红待复核</pre>
+              </div>
+            </div>
+            <div class="step run clk"><span class="sdot"><span class="spinner"></span></span><span>核验方志引文出处</span><span class="sargs">入参</span></div>
+            <div class="step pend"><span class="sdot">○</span><span>整理地理与史实对照表</span></div>
+            <div class="step pend"><span class="sdot">○</span><span>生成查证结论</span></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- C 极简气泡 -->
+      <div class="preview hidden" data-style="C">
+        <div class="bubble">
+          <div class="b1"><span class="spinner"></span>小桔正在查证史料</div>
+          <div class="b2">第 3 / 5 步 · 核验方志引文出处</div>
+          <div class="b3">思考：先核对方志原文，再与《明史·地理志》条目比对。</div>
+        </div>
+      </div>
+    </div>
+    <p class="hint" id="capA">时间线：Manus 式步骤流，运行中即见状态节点（已完成绿 / 执行中橙 / 待执行灰），顶部折叠思考块带计时。信息密度高、进度感强。</p>
+    <p class="hint hidden" id="capB">折叠卡片：直接复用现有 <code>stepgroup</code> + <code>ThinkingBlock</code> 真实组件，只是把"运行中默认收起"改为默认露出节点，零新结构、最稳。</p>
+    <p class="hint hidden" id="capC">极简气泡：最低密度，一句话状态 + 一句思考，适合不想被打扰的用户。其余细节仍可在点开会话后查看。</p>
+  </div>
+
+  <p class="foot">
+    落地映射（证明不是凭空画，能接进现有代码）：<br>
+    · <b>时间线</b> → 复用 <code>Transcript.tsx</code> 的 <code>buildRows</code> 步骤数据与 <code>styles.css</code> 的 <code>.spinner</code> / 状态色；新增一个 timeline 渲染分支。<br>
+    · <b>折叠卡片</b> → 现有 <code>stepgroup</code>（默认 <code>open=false</code> 改判运行态默认展开）+ <code>ThinkingBlock</code>，几乎零成本。<br>
+    · <b>极简气泡</b> → 现有 live 行 + <code>thinking-live</code> 脉冲的轻量封装。<br>
+    · <b>选择器</b> → 在 <code>SettingsView ▸ 外观</code> 新增一项，状态存 <code>settings</code>（与皮肤正交，不冲突红线），渲染层按值选分支。
+  </p>
+</div>
+
+<script>
+  const switchEl = document.getElementById('switch');
+  const thumbsEl = document.getElementById('thumbs');
+  const previews = document.querySelectorAll('.preview');
+  const caps = {A:document.getElementById('capA'), B:document.getElementById('capB'), C:document.getElementById('capC')};
+  const stateLine = document.getElementById('stateLine');
+
+  function select(style){
+    switchEl.querySelectorAll('button').forEach(b=>b.classList.toggle('on', b.dataset.style===style));
+    thumbsEl.querySelectorAll('.thumb').forEach(t=>t.classList.toggle('on', t.dataset.style===style));
+    previews.forEach(p=>p.classList.toggle('hidden', p.dataset.style!==style));
+    Object.values(caps).forEach(c=>c.classList.add('hidden'));
+    caps[style].classList.remove('hidden');
+  }
+  switchEl.addEventListener('click', e=>{ if(e.target.dataset.style) select(e.target.dataset.style); });
+  thumbsEl.addEventListener('click', e=>{ const t=e.target.closest('.thumb'); if(t) select(t.dataset.style); });
+
+  // 步骤行点开/收起详情（对齐真实 StepRow 的 raw 展开：工具名 + 入参 + 结果预览）
+  document.querySelector('.stage').addEventListener('click', e=>{
+    const row = e.target.closest('.tl-item.clk, .step.clk');
+    if(!row) return;
+    const det = row.querySelector('.step-detail');
+    if(det) det.classList.toggle('hidden');
+  });
+  // 思考块折叠/展开
+  document.querySelectorAll('.thinking-head.clk').forEach(h=>{
+    h.addEventListener('click', ()=>{
+      const box = h.parentElement;
+      const body = box.querySelector('.thinking-body');
+      const caret = h.querySelector('.thinking-caret');
+      if(body) body.classList.toggle('hidden');
+      if(caret) caret.classList.toggle('open');
+    });
+  });
+</script>
+</body>
+</html>

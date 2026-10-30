@@ -1,0 +1,254 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>小桔 · 审批卡 / 事件进度卡 · 通用精致化样张</title>
+<style>
+  /* ===== 设计原则：卡片只用主题 token，不写死任何颜色 =====
+     下方 .card / .board 的所有颜色均来自 var(--token)。
+     切换"主题"只是改这些 token 的取值，卡片标记完全不动。 */
+
+  /* —— 主题定义（仅模拟皮肤，真实值取自 styles.css）—— */
+  .theme-default-light {
+    --paper:#f5f6f7; --panel:#ffffff; --ink:#17191c; --muted:#5b616b; --faint:#9aa1aa;
+    --line:#e8eaed; --line-strong:#d8dce1; --accent:#2563eb; --accent-soft:#e9f0fd;
+    --ok:#2f7d57; --ok-dot:#3f9c5a; --warn-ink:#b45309; --danger:#b91c1c;
+  }
+  .theme-xiaoju-light {
+    --paper:#FBF6EF; --panel:#FFFCF7; --ink:#2A211B; --muted:#7A6A5C; --faint:#A2907C;
+    --line:#F1E4D4; --line-strong:#E4D2BC; --accent:#F26B1F; --accent-soft:#FFE7CC;
+    --ok:#2f7d57; --ok-dot:#3f9c5a; --warn-ink:#b45309; --danger:#b91c1c;
+  }
+  .theme-xiaoju-dark {
+    --paper:#17130F; --panel:#201A15; --ink:#F2E9DF; --muted:#A79483; --faint:#7A6A5A;
+    --line:#33281F; --line-strong:#453527; --accent:#FFA94D; --accent-soft:#3a2410;
+    --ok:#6FD3A0; --ok-dot:#4DAC72; --warn-ink:#F2C36B; --danger:#F79C95;
+  }
+  .theme-starry-light {
+    --paper:#12132C; --panel:#1C1E42; --ink:#E6EAFF; --muted:#B8C1F2; --faint:#AAB3E8;
+    --line:#303466; --line-strong:#424884; --accent:#ADB7FF; --accent-soft:#262B5C;
+    --ok:#6FD3A0; --ok-dot:#4DAC72; --warn-ink:#F2C36B; --danger:#F79C95;
+  }
+
+  * { box-sizing: border-box; }
+  body { margin:0; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Inter,system-ui,sans-serif;
+         background:var(--paper); color:var(--ink); transition:background .25s,color .25s; }
+  .wrap { max-width: 720px; margin: 0 auto; padding: 28px 20px 80px; }
+  .topbar { position:sticky; top:0; z-index:5; background:var(--glass-strong); backdrop-filter:blur(8px);
+            border-bottom:1px solid var(--line); padding:12px 0; margin-bottom:24px; }
+  .topbar-in { max-width:720px; margin:0 auto; padding:0 20px; display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
+  .topbar h1 { font-size:15px; font-weight:600; margin:0; color:var(--ink); }
+  .topbar .sub { font-size:12px; color:var(--muted); }
+  .switcher { display:flex; gap:6px; margin-left:auto; flex-wrap:wrap; }
+  .switcher button { font:inherit; font-size:12px; padding:6px 11px; border-radius:8px;
+            border:1px solid var(--line-strong); background:var(--panel); color:var(--muted); cursor:pointer; }
+  .switcher button.active { border-color:var(--accent); color:var(--accent); background:var(--accent-soft); font-weight:600; }
+
+  .note { font-size:12.5px; color:var(--muted); line-height:1.7; margin:0 0 8px; }
+  .note code { font-family:ui-monospace,Menlo,Consolas,monospace; font-size:.92em; color:var(--ink);
+               background:var(--paper); border:1px solid var(--line); border-radius:5px; padding:1px 5px; }
+  .section { margin:34px 0 8px; }
+  .section h2 { font-size:13px; font-weight:600; color:var(--muted); text-transform:uppercase; letter-spacing:.06em;
+                margin:0 0 4px; }
+  .section .hint { font-size:12px; color:var(--faint); margin:0 0 14px; }
+
+  /* 模拟聊天栏宽度（卡片在此列内渲染） */
+  .stage { max-width: 560px; }
+
+  /* ===================== 审批卡（通用精致化） ===================== */
+  .card { background:var(--panel); border:1px solid var(--line-strong); border-radius:14px;
+          padding:14px 16px; box-shadow:0 1px 2px rgba(0,0,0,.04); }
+  .card + .card { margin-top:14px; }
+  .card-head { display:flex; align-items:flex-start; gap:11px; }
+  .icon-chip { width:32px; height:32px; border-radius:9px; background:var(--accent-soft); color:var(--accent);
+               display:flex; align-items:center; justify-content:center; flex:none; }
+  .card-headtext { min-width:0; flex:1; }
+  .card-title { font-size:14px; font-weight:600; color:var(--ink); line-height:1.45; }
+  .card-title b { font-weight:600; }
+  .scope { display:inline-block; margin-top:3px; font-size:11px; color:var(--muted); }
+  .scope.out { color:var(--warn-ink); }
+  .divider { height:1px; background:var(--line); margin:12px 0; }
+  .preview { font-family:ui-monospace,Menlo,Consolas,monospace; font-size:12.5px; color:var(--muted);
+             background:var(--paper); border:1px solid var(--line); border-radius:9px; padding:10px 12px;
+             white-space:pre-wrap; line-height:1.6; max-height:130px; overflow:auto; }
+  .quote { font-size:14px; color:var(--ink); border-left:3px solid var(--line-strong);
+           padding:2px 0 2px 12px; line-height:1.55; }
+  .actions { display:flex; align-items:center; gap:8px; margin-top:14px; flex-wrap:wrap; }
+  .btn { font:inherit; font-size:13px; padding:7px 13px; border-radius:9px; border:1px solid var(--line-strong);
+         background:var(--panel); color:var(--ink); cursor:pointer; transition:background .15s,border-color .15s; }
+  .btn:hover { background:var(--paper); }
+  .btn.primary { border-color:var(--accent); color:var(--accent); font-weight:600; background:var(--accent-soft); }
+  .btn.primary:hover { filter:brightness(.98); }
+  .btn.ghost { border:0; background:none; color:var(--faint); }
+  .btn.ghost:hover { color:var(--danger); }
+  .actions .spacer { flex:1; }
+
+  /* ===================== 事件进度卡（板唤醒·结构化） ===================== */
+  .board { background:var(--panel); border:1px solid var(--line-strong); border-radius:14px; overflow:hidden;
+           box-shadow:0 1px 2px rgba(0,0,0,.04); }
+  .board-head { display:flex; align-items:center; gap:10px; padding:11px 14px; }
+  .badge { font-size:10.5px; font-weight:600; letter-spacing:.05em; text-transform:uppercase; color:var(--muted);
+           border:1px solid var(--line-strong); border-radius:6px; padding:2px 7px; flex:none; }
+  .board-title { font-size:14px; font-weight:600; color:var(--ink); }
+  .board-summary { font-size:12px; color:var(--muted); }
+  .board-time { margin-left:auto; font-size:11px; color:var(--faint); white-space:nowrap; }
+  .board-body { padding:2px 14px 6px; }
+  .evt { display:flex; gap:11px; padding:9px 0; border-top:1px solid var(--line); }
+  .evt:first-child { border-top:0; }
+  .dot { width:8px; height:8px; border-radius:50%; margin-top:6px; flex:none; background:var(--faint); }
+  .dot.review { background:var(--warn-ink); }
+  .dot.blocked { background:var(--danger); }
+  .dot.done { background:var(--ok-dot); }
+  .dot.work { background:var(--accent); }
+  .evt-main { min-width:0; flex:1; }
+  .evt-text { font-size:14px; color:var(--ink); line-height:1.45; }
+  .evt-text code { font-family:ui-monospace,Menlo,Consolas,monospace; font-size:.9em; color:var(--muted); }
+  .evt-actor { color:var(--muted); }
+  .handoff { margin-top:7px; font-size:12px; color:var(--muted); background:var(--paper);
+             border-left:3px solid var(--line-strong); border-radius:0 8px 8px 0; padding:8px 11px; line-height:1.6; }
+  .handoff-toggle { font:inherit; font-size:12px; color:var(--accent); background:none; border:0;
+                    padding:5px 0 0; cursor:pointer; }
+  .board-foot { padding:10px 14px; border-top:1px solid var(--line); font-size:12px; color:var(--faint); line-height:1.5; }
+  .board-foot a { color:var(--accent); text-decoration:none; }
+</style>
+</head>
+<body class="theme-xiaoju-light" id="root">
+  <div class="topbar">
+    <div class="topbar-in">
+      <div>
+        <h1>审批卡 / 事件进度卡 · 通用精致化样张</h1>
+        <div class="sub">只用主题 token · 切换皮肤不冲突</div>
+      </div>
+      <div class="switcher" id="sw">
+        <button data-t="theme-default-light">默认·浅(钴蓝)</button>
+        <button data-t="theme-xiaoju-light" class="active">小桔橙·浅</button>
+        <button data-t="theme-xiaoju-dark">小桔橙·深</button>
+        <button data-t="theme-starry-light">星夜·浅(深表面)</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="wrap">
+    <p class="note">
+      设计方向：把"粗糙/突兀"从<strong>颜色</strong>转到<strong>结构 · 排版 · 间距 · 层级</strong>。
+      两张卡的所有颜色都来自主题变量（<code>--panel --line --ink --muted --accent …</code>），
+      不写死任何色值；点上方四个主题按钮，可见同一套标记在四套皮肤下都成立、互不冲突。
+    </p>
+
+    <!-- ============ 审批卡 ============ -->
+    <div class="section">
+      <h2>① 交给我批准的卡片（ApprovalCard）</h2>
+      <p class="hint">三段式：头部（图标 + 人话标题 + 作用域标记）／ 中部（提案正文）／ 底部（操作）。内部用细分隔线做结构，标识/路径/编号走等宽弱色退后。</p>
+      <div class="stage">
+        <!-- 普通本地写文件 -->
+        <div class="card">
+          <div class="card-head">
+            <div class="icon-chip">⛨</div>
+            <div class="card-headtext">
+              <div class="card-title">Write a file <b>萤窗案_章纲_v1.docx</b></div>
+              <span class="scope">stays on this computer</span>
+            </div>
+          </div>
+          <div class="divider"></div>
+          <div class="preview"># 第 9 章 起，全书扩至 15–16 章
+## 后半部章纲
+- 第 9 章：康得宝初现端倪
+- 第 10 章：县丞夜访，账目现疑
+- …（共 8 章正文骨架）</div>
+          <div class="actions">
+            <button class="btn ghost">Deny</button>
+            <span class="spacer"></span>
+            <button class="btn">Always allow</button>
+            <button class="btn primary">Allow once</button>
+          </div>
+        </div>
+
+        <!-- 出站消息（外部·需警示色 token） -->
+        <div class="card">
+          <div class="card-head">
+            <div class="icon-chip">⛨</div>
+            <div class="card-headtext">
+              <div class="card-title">Send a message to <b># team chat</b></div>
+              <span class="scope out">leaves this computer → Slack</span>
+            </div>
+          </div>
+          <div class="divider"></div>
+          <div class="quote">「#3 后半部章纲 v1 已接手，正在按 .deskmate 四份档案做结构设计，正文 docx 暂读不到，已向团队要件。」</div>
+          <div class="actions">
+            <button class="btn ghost">Deny</button>
+            <span class="spacer"></span>
+            <button class="btn">Always allow</button>
+            <button class="btn primary">Allow once</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ============ 事件进度卡（板唤醒·结构化） ============ -->
+    <div class="section">
+      <h2>② 事件进度卡片（Board wake · 结构化）</h2>
+      <p class="hint">核心改动：把现在那坨"原始文本整块"拆成<strong>逐条事件行</strong>——每行一个 token 状态点（待审/阻塞/完成/进行/闲置）+ 条目编号 + 动作 + 执行者；长交接说明收进可展开引用块。直接扶正已存在但没接上、零样式的 BoardWakeCard。</p>
+      <div class="stage">
+        <div class="board">
+          <div class="board-head">
+            <span class="badge">Board</span>
+            <span class="board-title">Team board</span>
+            <span class="board-summary">3 moves · 1 filing</span>
+            <span class="board-time">1m ago</span>
+          </div>
+          <div class="board-body">
+            <div class="evt">
+              <span class="dot work"></span>
+              <div class="evt-main">
+                <div class="evt-text"><code>#3</code> 后半部章纲 v1 → <b>in_progress</b> <span class="evt-actor">by gouzhang</span></div>
+                <button class="handoff-toggle" onclick="this.nextElementSibling.style.display='block';this.remove()">show hand-off</button>
+                <div class="handoff" style="display:none">接手 #3。已通读 .deskmate 四份档案（OUTLINE 八折骨架 / CHARACTERS 人物弧光 / TIMELINE 时间线 / NOTES 势力与伏笔）。正文 docx 我这边只能拿到压缩字节，读不出正文——已向团队要件，同时先按档案做结构设计。</div>
+              </div>
+            </div>
+            <div class="evt">
+              <span class="dot work"></span>
+              <div class="evt-main">
+                <div class="evt-text"><code>#1</code> 八章正文 → <b>in_progress</b> <span class="evt-actor">by kanyu</span></div>
+              </div>
+            </div>
+            <div class="evt">
+              <span class="dot review"></span>
+              <div class="evt-main">
+                <div class="evt-text"><code>#4</code> 四份设定 → <b>review</b> <span class="evt-actor">by jihe</span></div>
+                <button class="handoff-toggle" onclick="this.nextElementSibling.style.display='block';this.remove()">show hand-off</button>
+                <div class="handoff" style="display:none">设定集初稿完成，请主编过目人物弧光与势力伏笔是否和 OUTLINE 一致。</div>
+              </div>
+            </div>
+            <div class="evt">
+              <span class="dot idle"></span>
+              <div class="evt-main">
+                <div class="evt-text"><code>#2</code> 地图核校 → <b>filed</b> <span class="evt-actor">by kanyu</span></div>
+              </div>
+            </div>
+          </div>
+          <div class="board-foot">
+            完整交接说明与验收标准都在看板上 · <a href="#">打开看板</a>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <p class="note" style="margin-top:28px">
+      <strong>实现映射（验收通过后才会动 app 代码）：</strong><br>
+      · 审批卡：精修 <code>ApprovalCard.tsx</code> 的 CSS（间距/层级/分隔线），全部 token 化，不改颜色逻辑。<br>
+      · 事件进度卡：把 <code>Transcript.tsx</code> 里 board connector 消息从 <code>ConnectorMessageCard</code>（原始文本整块）改路由到 <code>BoardWakeCard</code>，并补写其缺失的 token 化样式——这正是消除"粗糙"的根。
+    </p>
+  </div>
+
+  <script>
+    const sw = document.getElementById('sw');
+    const root = document.getElementById('root');
+    sw.addEventListener('click', e => {
+      const b = e.target.closest('button'); if (!b) return;
+      root.className = b.dataset.t;
+      [...sw.children].forEach(x => x.classList.toggle('active', x === b));
+    });
+  </script>
+</body>
+</html>
