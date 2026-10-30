@@ -597,3 +597,149 @@ def test_lead_backstop_fires_only_for_forgotten_timers(manager, monkeypatch):
         __import__("datetime").timezone.utc
     ))
     assert manager._lead_backstop_due(team) is False
+
+
+# --------------------------------------------------- stalled-worker revival (beyond upstream)
+# The local watchdog not only tells the lead, it re-pings a stalled worker, capped,
+# then auto-blocks the item so the lead can take over — closing the "one turn =
+# permanent orphan" hole that let a team idle for hours with the board lying.
+
+
+async def test_revive_stalled_worker_repings_up_to_cap_then_autoblocks(
+    manager, monkeypatch
+):
+    import asyncio as _asyncio
+    import time as _time
+
+    from coworker.agents.base import Agent
+    from coworker.sessions import SessionRecord
+    from coworker.teams.model import space_for_workspace
+
+    worker_agent = Agent(name="swe-worker", title="SWE", system_prompt="p", team="worker")
+    monkeypatch.setattr("coworker.server.manager.get_agent", lambda name: worker_agent)
+    manager.session_store.save(
+        SessionRecord(
+            session_id="lead-sid",
+            workspace=manager.default_workspace,
+            model="m",
+            mode="interactive",
+            messages=[],
+            agent="swe-lead",
+        )
+    )
+    manager.create_team("lead-sid", [{"persona": "swe-worker", "name": "nia"}])
+    team = manager.teams.for_lead_session("lead-sid")
+    space = space_for_workspace(manager.default_workspace)
+    lead = Actor(id=team.lead_actor, role=Role.LEAD)
+    worker = Actor(id="nia", role=Role.WORKER)
+    item = manager.team_store.create_item(space, lead, title="T", criteria="c")
+    manager.team_store.assign(space, lead, item["id"], "nia")
+    manager.team_store.transition(space, worker, item["id"], "in_progress")
+    wsid = team.workers[0].session_id
+
+    manager._team_last_alive["lead-sid"] = _time.time() - 700
+    manager._team_last_alive[wsid] = _time.time() - 700
+
+    delivered = []
+    async def fake_deliver(sid, msg, source=None):
+        delivered.append(sid)
+        return True
+    monkeypatch.setattr(manager, "deliver_to_session", fake_deliver)
+
+    stalled = manager._stalled_team_state(team)
+    assert stalled and stalled[0][3] == "nia", "the stalled worker must be identified"
+
+    # Within the cap, each call re-pings the worker once. We re-age it after each
+    # call to simulate continued silence (a real re-ping would land a pending inbox).
+    for _ in range(manager.TEAM_WORKER_STALL_REPING_CAP):
+        n = await manager._revive_stalled_workers(team, stalled)
+        assert n == 1
+        await _asyncio.sleep(0)  # let the fire-and-forget deliver task run
+        manager._team_last_alive[wsid] = _time.time() - 700  # keep it stale
+    assert len(delivered) == manager.TEAM_WORKER_STALL_REPING_CAP
+
+    # Cap exhausted → auto-block, no further re-ping.
+    n = await manager._revive_stalled_workers(team, stalled)
+    assert n == 0
+    reloaded = manager.team_store.get_item(
+        space, item["id"], actor=lead, include_comments=False
+    )
+    assert reloaded["state"] == "blocked"
+
+
+async def test_stalled_detection_is_per_worker_and_skips_fresh(manager, monkeypatch):
+    import time as _time
+
+    from coworker.agents.base import Agent
+    from coworker.sessions import SessionRecord
+    from coworker.teams.model import space_for_workspace
+
+    worker_agent = Agent(name="swe-worker", title="SWE", system_prompt="p", team="worker")
+    monkeypatch.setattr("coworker.server.manager.get_agent", lambda name: worker_agent)
+    manager.session_store.save(
+        SessionRecord(
+            session_id="lead-sid",
+            workspace=manager.default_workspace,
+            model="m",
+            mode="interactive",
+            messages=[],
+            agent="swe-lead",
+        )
+    )
+    manager.create_team("lead-sid", [{"persona": "swe-worker", "name": "nia"}])
+    team = manager.teams.for_lead_session("lead-sid")
+    space = space_for_workspace(manager.default_workspace)
+    lead = Actor(id=team.lead_actor, role=Role.LEAD)
+    worker = Actor(id="nia", role=Role.WORKER)
+    item = manager.team_store.create_item(space, lead, title="T", criteria="c")
+    manager.team_store.assign(space, lead, item["id"], "nia")
+    manager.team_store.transition(space, worker, item["id"], "in_progress")
+    wsid = team.workers[0].session_id
+
+    # Freshly alive (recent tick) → NOT stalled, even though in_progress.
+    manager._team_last_alive[wsid] = _time.time()
+    manager._team_last_alive["lead-sid"] = _time.time()
+    assert manager._stalled_team_state(team) == ()
+
+    # Age the worker → stalled now.
+    manager._team_last_alive[wsid] = _time.time() - 700
+    stalled = manager._stalled_team_state(team)
+    assert stalled and stalled[0][1] == "in_progress"
+
+
+def test_watchdog_message_names_the_stalled_item(manager, monkeypatch):
+    import time as _time
+
+    from coworker.agents.base import Agent
+    from coworker.sessions import SessionRecord
+    from coworker.teams.model import space_for_workspace
+
+    worker_agent = Agent(name="swe-worker", title="SWE", system_prompt="p", team="worker")
+    monkeypatch.setattr("coworker.server.manager.get_agent", lambda name: worker_agent)
+    manager.session_store.save(
+        SessionRecord(
+            session_id="lead-sid",
+            workspace=manager.default_workspace,
+            model="m",
+            mode="interactive",
+            messages=[],
+            agent="swe-lead",
+        )
+    )
+    manager.create_team("lead-sid", [{"persona": "swe-worker", "name": "nia"}])
+    team = manager.teams.for_lead_session("lead-sid")
+    space = space_for_workspace(manager.default_workspace)
+    lead = Actor(id=team.lead_actor, role=Role.LEAD)
+    worker = Actor(id="nia", role=Role.WORKER)
+    item = manager.team_store.create_item(space, lead, title="写章纲", criteria="c")
+    manager.team_store.assign(space, lead, item["id"], "nia")
+    manager.team_store.transition(space, worker, item["id"], "in_progress")
+    wsid = team.workers[0].session_id
+    manager._team_last_alive[wsid] = _time.time() - 700
+    manager._team_last_alive["lead-sid"] = _time.time() - 700
+
+    stalled = manager._stalled_team_state(team)
+    msg = manager._team_watchdog_message(team, stalled)
+    assert "写章纲" in msg      # the stalled item's title
+    assert "nia" in msg         # the assignee
+    assert "停滞" in msg        # it says stalled

@@ -163,6 +163,10 @@ class InboxStore:
         )
         with self._lock:
             self._items[item.id] = item
+            source_id = item.data.get("worker_prompt_id")
+            source = self._items.get(source_id) if isinstance(source_id, str) else None
+            if source is not None and source.state == STATE_RESOLVED:
+                self._supersede_locked(item, source)
             self._save()
         return item
 
@@ -331,20 +335,76 @@ class InboxStore:
         return self.list(session_id=session_id, state=STATE_PENDING)
 
     # -- the state machine ------------------------------------------------------
-    def resolve(self, item_id: str, resolution: str) -> bool:
+    # -- the state machine ------------------------------------------------------
+    @staticmethod
+    def _resolve_locked(item, resolution: str, by: str) -> None:
+        item.state = STATE_RESOLVED
+        item.resolution = resolution
+        item.resolved_at = _now()
+        item.resolved_by = (by or "").strip()
+
+    @classmethod
+    def _supersede_locked(cls, item, source) -> None:
+        cls._resolve_locked(item, "superseded", "system:worker-resolution")
+        if isinstance(item.data.get("worker_call"), dict):
+            item.data["worker_call"] = {
+                **item.data["worker_call"],
+                "state": source.state,
+                "resolution": source.resolution,
+            }
+
+    def resolve(self, item_id: str, resolution: str, by: str = "") -> bool:
         """Resolve an item exactly once. First responder wins; later attempts are no-ops
-        (return False). Fires any awaiting agent (the suspended inbox_approver)."""
+        (return False). Fires any awaiting agent (the suspended inbox_approver).
+
+        Cascades to dependent items linked by ``worker_prompt_id`` (a lead's
+        ``decide_worker_call`` proxy is retired when the original worker prompt it
+        answers resolves first, and vice versa). A ``deny`` of a lead's proposal to
+        ALLOW a worker action atomically denies the original worker call too — never
+        leaves it parked indefinitely, and never inverts a denial into an allow.
+        """
         with self._lock:
             item = self._items.get(item_id)
             if item is None or item.state == STATE_RESOLVED:
                 return False
-            item.state = STATE_RESOLVED
-            item.resolution = resolution
-            item.resolved_at = _now()
+            self._resolve_locked(item, resolution, by)
+            resolved_ids = [item_id]
+            source_id = item.data.get("worker_prompt_id")
+            source = self._items.get(source_id) if isinstance(source_id, str) else None
+            args = item.data.get("arguments") or {}
+            if (
+                resolution == "deny"
+                and item.kind == KIND_APPROVAL
+                and item.data.get("tool") == "decide_worker_call"
+                and isinstance(args, dict)
+                and args.get("decision") == "allow"
+                and args.get("call_id") == source_id
+                and source is not None
+                and source.kind == KIND_APPROVAL
+                and source.state == STATE_PENDING
+            ):
+                self._resolve_locked(source, "deny", by)
+                resolved_ids.append(source.id)
+                if isinstance(item.data.get("worker_call"), dict):
+                    item.data["worker_call"] = {
+                        **item.data["worker_call"],
+                        "state": STATE_RESOLVED,
+                        "resolution": "deny",
+                    }
+            for dependent in self._items.values():
+                if (
+                    dependent.state == STATE_PENDING
+                    and dependent.data.get("worker_prompt_id") in resolved_ids
+                ):
+                    self._supersede_locked(
+                        dependent, self._items[dependent.data["worker_prompt_id"]]
+                    )
+                    resolved_ids.append(dependent.id)
             self._save()
-        waiter = self._waiters.get(item_id)
-        if waiter is not None:
-            waiter.set()
+        for resolved_id in resolved_ids:
+            waiter = self._waiters.get(resolved_id)
+            if waiter is not None:
+                waiter.set()
         return True
 
     def resolve_session(
@@ -362,10 +422,11 @@ class InboxStore:
     async def wait(self, item_id: str) -> str:
         """Await an item's resolution; returns the resolution string. Used by the approver to
         suspend the agent until a human answers (from any surface)."""
-        item = self._items.get(item_id)
-        if item is not None and item.state == STATE_RESOLVED:
-            return item.resolution or ""
-        ev = self._waiters.setdefault(item_id, asyncio.Event())
+        with self._lock:
+            item = self._items.get(item_id)
+            if item is not None and item.state == STATE_RESOLVED:
+                return item.resolution or ""
+            ev = self._waiters.setdefault(item_id, asyncio.Event())
         await ev.wait()
         resolved = self._items.get(item_id)
         return (resolved.resolution if resolved else "") or ""

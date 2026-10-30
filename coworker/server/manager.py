@@ -309,6 +309,14 @@ class SessionManager:
         # Lead-session last-turn timestamps for the check-in backstop (monotonic-ish
         # wall clock; restart resets the clock rather than firing a wake storm).
         self._team_last_alive: dict[str, float] = {}
+        # Team watchdog (synced from upstream OpenWorker, PR #792): the lead is alerted
+        # once per *distinct* stalled state so it isn't woken every tick; the stale
+        # state is the tuple returned by _stalled_team_state.
+        self._team_watchdog_alerted: dict[str, tuple] = {}
+        # Stalled-worker auto-revive re-ping counter, keyed by worker session id. A
+        # stalled in_progress worker is nudged back to work up to the cap, then
+        # auto-blocked for the lead to take over (prevents silent multi-hour idles).
+        self._team_reping: dict[str, int] = {}
         self._loop: Optional[asyncio.AbstractEventLoop] = None        # Personas: registry + lifecycle state under this manager's data dir. Installed as the
         # process singleton so agents.get_agent resolves persona ids (incl. third-party) here.
         self.personas = PersonaRegistry(state_path=base / "personas.json")
@@ -2415,9 +2423,19 @@ class SessionManager:
     # a running team — and it de-facto covers a worker dying without a transition
     # (its item goes stale; the backstop wake surfaces it in the digest).
     TEAM_LEAD_BACKSTOP_SECS = 600
+    # Stalled-worker auto-revive: nudge an idle in_progress worker back to work this
+    # many times; after that, auto-block the item and hand it to the lead. Beyond
+    # upstream — upstream's watchdog only *tells* the lead, it never re-pings the
+    # worker, so a one-turn-stalled worker silently idles for hours.
+    TEAM_WORKER_STALL_REPING_CAP = 3
 
-    def _lead_backstop_due(self, team) -> bool:
+    def _lead_backstop_due(self, team, stalled=None) -> bool:
         sid = team.lead_session
+        if self.TEAM_LEAD_BACKSTOP_SECS <= 0 or team.paused:
+            return False
+        # Local port has no "stopped session" concept (upstream tracked it on the
+        # WakeStore); a session is either running or not, and the checks below
+        # already cover "don't re-wake an active/queued session".
         if self.is_running(sid) or sid in self._team_inflight:
             return False
         if self.wakes.pending(sid):
@@ -2426,40 +2444,176 @@ class SessionManager:
         last = self._team_last_alive.setdefault(sid, time.time())
         if time.time() - last < self.TEAM_LEAD_BACKSTOP_SECS:
             return False
-        try:
-            items = self.team_store.list_items(team.space, self._user_actor())
-        except Exception:
-            return False
-        return any(
-            i["state"] in ("in_progress", "blocked", "review") for i in items
-        )
+        if stalled is None:
+            stalled = self._stalled_team_state(team)
+        # Alert once per *distinct* stalled state, not every tick.
+        return bool(stalled) and self._team_watchdog_alerted.get(sid) != stalled
 
     async def _maybe_backstop_lead(self, team) -> int:
-        if not self._lead_backstop_due(team):
+        stalled = self._stalled_team_state(team)
+        if not stalled:
             return 0
+        # Beyond upstream: actually nudge a stalled *worker's* in_progress item back
+        # to life, instead of only telling the lead. Returns how many were re-pinged.
+        revived = await self._revive_stalled_workers(team, stalled)
+        if not self._lead_backstop_due(team, stalled):
+            return revived
         if not self.teams.count_wake(team.team_id, cap=self.TEAM_WAKE_CAP_PER_HOUR):
-            return 0
+            logger.warning("team %s paused for budget this hour", team.team_id)
+            return revived
         sid = team.lead_session
         self._team_last_alive[sid] = time.time()
-        message = (
-            "⏰ Backstop check — work is in flight but you had no check-in timer"
-            " set.\n\n"
-            + (self.team_staleness_digest(sid) or "Board state unavailable.")
-            + "\n\nGlance, act only if something needs you, and set your next"
-            " check-in with sleep_until (start 3–5 minutes out; stretch when quiet)."
-        )
+        message = self._team_watchdog_message(team, stalled)
         self._team_inflight.add(sid)
 
         async def _deliver() -> None:
             try:
-                await self.deliver_to_session(
+                accepted = await self.deliver_to_session(
                     sid, message, source=self._board_source(team, message)
                 )
+                if accepted:
+                    self._team_watchdog_alerted[sid] = stalled
             finally:
                 self._team_inflight.discard(sid)
 
         asyncio.create_task(_deliver())
-        return 1
+        return revived + 1
+
+    def _stalled_team_state(self, team) -> tuple:
+        """Upstream OpenWorker watchdog (PR #792): which in-flight items have an
+        assignee that is genuinely idle — not running, no pending wake, no pending
+        inbox. Returns a tuple of
+        (item_id, state, updated_seq, assignee, last_alive) so the alert is keyed by
+        *distinct* stalled state and not re-fired every tick."""
+        workers = {w.actor: w.session_id for w in team.workers}
+        workers[team.lead_actor] = team.lead_session
+        if self.inbox.list(session_id=team.lead_session, state="pending"):
+            return ()
+        stalled = []
+        for item in self.team_store.list_items(team.space, self._user_actor()):
+            if item["state"] not in ("in_progress", "blocked", "review"):
+                continue
+            sid = workers.get(item["assignee"])
+            if sid and (
+                self.is_running(sid)
+                or sid in self._team_inflight
+                or self.wakes.pending(sid)
+                or self.inbox.list(session_id=sid, state="pending")
+            ):
+                continue
+            last = self._team_last_alive.get(
+                sid, self._team_last_alive.get(team.lead_session, time.time())
+            )
+            if time.time() - last >= self.TEAM_LEAD_BACKSTOP_SECS:
+                stalled.append(
+                    (
+                        item["id"],
+                        item["state"],
+                        item["updated_seq"],
+                        item["assignee"],
+                        self._team_last_alive.get(sid, 0)
+                        if sid != team.lead_session
+                        else 0,
+                    )
+                )
+        return tuple(stalled)
+
+    async def _revive_stalled_workers(self, team, stalled) -> int:
+        """Beyond upstream: when a *worker's* in_progress item has stalled, actually
+        re-ping the idle worker to continue — the missing piece that lets a team keep
+        working instead of silently idling for hours. Capped; once exhausted the item
+        is auto-blocked and the lead is alerted to take over (what a human would do)."""
+        workers = {w.actor: w.session_id for w in team.workers}
+        revived = 0
+        for item_id, state, _seq, assignee, last_alive in stalled:
+            if state != "in_progress":
+                continue  # review/blocked are the lead's call, not a worker to nudge
+            wsid = workers.get(assignee)
+            if not wsid or wsid == team.lead_session:
+                continue  # not a worker (or it's the lead's own item)
+            if (
+                self.is_running(wsid)
+                or wsid in self._team_inflight
+                or self.wakes.pending(wsid)
+            ):
+                continue  # already alive — don't double-ping
+            key = wsid
+            count = self._team_reping.get(key, 0)
+            try:
+                item = self.team_store.get_item(
+                    team.space, item_id, actor=self._user_actor(), include_comments=False
+                )
+                title = item.get("title", f"#{item_id}")
+            except Exception:
+                title = f"#{item_id}"
+            if count >= self.TEAM_WORKER_STALL_REPING_CAP:
+                # Exhausted re-pings: stop nudging, auto-block + force a lead alert.
+                try:
+                    self.team_store.transition(
+                        team.space,
+                        self._user_actor(),
+                        item_id,
+                        "blocked",
+                        comment=(
+                            f"停滞：连续 {count} 次自动唤醒仍无产出，已自动转 blocked，"
+                            "待主编接管。"
+                        ),
+                    )
+                except Exception:
+                    pass
+                self._team_watchdog_alerted[team.lead_session] = stalled
+                continue
+            self._team_reping[key] = count + 1
+            # Mark alive now so the next stall check waits a full backstop window
+            # before re-pinging — prevents tight re-ping loops.
+            self._team_last_alive[wsid] = time.time()
+            minutes = max(1, int((time.time() - last_alive) / 60)) if last_alive else 10
+            msg = (
+                f"你的工作项 #{item_id}「{title}」仍标记为 in_progress，但系统检测到你已停滞约 {minutes} 分钟、"
+                "没有任何产出（无模型活动、无进展）。请立即继续推进：\n"
+                "1) 未完成则马上产出实质成果，完成后将此项转为 review（附「完成，请审」）；\n"
+                "2) 若确实卡住（缺资料 / 需主编决策 / 工具受限），不要空挂 in_progress，立即转 blocked 并写明卡点；\n"
+                "3) 若需多轮才能完成，每轮结束前用 sleep_until 排定下一轮，并告诉主编还差什么。\n"
+                "严禁只回「好的 / 我继续」或重复设 in_progress 而不产出——必须给出可见成果，或坦诚说明卡点。"
+            )
+            self._team_inflight.add(wsid)
+
+            async def _deliver(wsid=wsid, msg=msg) -> None:
+                try:
+                    await self.deliver_to_session(
+                        wsid, msg, source=self._board_source(team, msg)
+                    )
+                finally:
+                    self._team_inflight.discard(wsid)
+
+            asyncio.create_task(_deliver())
+            revived += 1
+        return revived
+
+    def _team_watchdog_message(self, team, stalled) -> str:
+        workers = {w.actor: w.session_id for w in team.workers}
+        workers[team.lead_actor] = team.lead_session
+        lines = ["Team watchdog — 以下工作项已停滞（idle）至少十分钟、无产出："]
+        for item_id, state, _seq, assignee, last_alive in stalled:
+            wsid = workers.get(assignee)
+            minutes = max(1, int((time.time() - last_alive) / 60)) if last_alive else 10
+            try:
+                item = self.team_store.get_item(
+                    team.space, item_id, actor=self._user_actor(), include_comments=False
+                )
+                title = item.get("title", f"#{item_id}")
+            except Exception:
+                title = f"#{item_id}"
+            who = assignee if assignee != team.lead_actor else "你（主编）"
+            lines.append(
+                f"- #{item_id}「{title}」负责人 {who}，状态 {state}，已停滞约 {minutes} 分钟"
+            )
+        lines.append("")
+        lines.append(
+            "请核查：是被派活后空转、卡在工具 / 审批、还是忘了续命。需要则 re-ping 该 worker、改派或自己接手；"
+            "处理完结束本轮。看板变更会自动唤醒你，不要自己起轮询。"
+        )
+        return "\n".join(lines)
 
     async def _drain_team_member(
         self, team, *, session_id: str, actor: str, is_lead: bool
