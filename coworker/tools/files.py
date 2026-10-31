@@ -47,6 +47,27 @@ _SCHEMA = {
 }
 
 
+_DOCX_SUFFIX = ".docx"
+
+
+def _docx_lines(target: Path) -> "list[str] | str":
+    """A .docx is a ZIP archive — reading it as text hands the agent binary garbage
+    (it starts with `PK\\x03\\x04`), which is how a worker ends up announcing
+    "no shell in this environment, I can't read the body". Extract the prose instead
+    so the numbered-lines contract (`path:line` citations) still holds.
+
+    Returns the extracted lines, or an error string the caller surfaces verbatim.
+    """
+    try:
+        from deskmate.perception.file_reader import extract_docx_text
+    except Exception as exc:  # noqa: BLE001 - deskmate is optional at this layer
+        return f"docx extraction unavailable: {exc}"
+    text = extract_docx_text(target)
+    if text.startswith("（") and text.endswith("）"):
+        return text  # extraction-stage failure, surfaced as-is
+    return text.splitlines() or [""]
+
+
 def file_tools(workspace: str, roots: Optional[list] = None) -> list:
     """Windowed read_file rooted at `workspace`. With `roots` (RootDir list), absolute
     paths inside ANY root also resolve — multi-root sessions (universal scratch) address
@@ -85,18 +106,36 @@ def file_tools(workspace: str, roots: Optional[list] = None) -> list:
 
         selected: list[str] = []
         total = 0
-        try:
-            with open(target, "r", encoding="utf-8", errors="replace") as fh:
-                for i, line in enumerate(fh, 1):
-                    total = i
-                    if i < start or len(selected) >= n:
-                        continue
-                    text = line.rstrip("\n")
-                    if len(text) > _MAX_LINE_CHARS:
-                        text = text[:_MAX_LINE_CHARS] + "… (line truncated)"
-                    selected.append(f"{i:>6}\t{text}")
-        except OSError as exc:
-            return {"error": f"read failed: {exc}"}
+        extracted = False
+        pre_read: Optional[list[str]] = None
+        if target.suffix.lower() == _DOCX_SUFFIX:
+            got = _docx_lines(target)
+            if isinstance(got, str):
+                return {"error": got}
+            pre_read = got
+            extracted = True
+        if pre_read is not None:
+            total = len(pre_read)
+            for i, line in enumerate(pre_read, 1):
+                if i < start or len(selected) >= n:
+                    continue
+                text = line.rstrip("\n")
+                if len(text) > _MAX_LINE_CHARS:
+                    text = text[:_MAX_LINE_CHARS] + "… (line truncated)"
+                selected.append(f"{i:>6}\t{text}")
+        else:
+            try:
+                with open(target, "r", encoding="utf-8", errors="replace") as fh:
+                    for i, line in enumerate(fh, 1):
+                        total = i
+                        if i < start or len(selected) >= n:
+                            continue
+                        text = line.rstrip("\n")
+                        if len(text) > _MAX_LINE_CHARS:
+                            text = text[:_MAX_LINE_CHARS] + "… (line truncated)"
+                        selected.append(f"{i:>6}\t{text}")
+            except OSError as exc:
+                return {"error": f"read failed: {exc}"}
 
         end = start + len(selected) - 1 if selected else start - 1
         result: dict[str, Any] = {
@@ -106,6 +145,8 @@ def file_tools(workspace: str, roots: Optional[list] = None) -> list:
             "total_lines": total,
             "content": "\n".join(selected),
         }
+        if extracted:
+            result["extracted"] = True
         if end < total:
             result["note"] = (
                 f"showing lines {start}-{end} of {total}; "

@@ -146,6 +146,16 @@ def _extract_text(p: Path, max_bytes: int | None = None) -> str | None:
         return f"（读取失败：{e}）"
 
 
+def extract_docx_text(path) -> str:
+    """公开入口：抽取 .docx 正文（段落 + 表格），不截断。
+
+    给 agent 的 `read_file`（coworker/tools/files.py）复用——那边按文本行读文件，
+    .docx 是 ZIP，直接读只会拿到 `PK\\x03\\x04` 开头的二进制，worker 据此断定
+    「这个环境读不了正文」。抽取逻辑只留这一份，避免两处漂移。
+    """
+    return _extract_docx(Path(path).expanduser().resolve())
+
+
 def _extract_docx(p: Path) -> str:
     """抽取 .docx 全文（段落 + 表格），不截断。"""
     try:
