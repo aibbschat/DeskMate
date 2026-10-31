@@ -143,3 +143,39 @@ def test_pipeline_staffs_real_sessions_and_can_add_expert(manager, tmp_path):
     assert [w.actor for w in pl._team.workers].count("plot") == 1
     rec = manager.session_store.load(res["worker"]["session_id"])
     assert rec is not None and rec.team["space"] == pl.space
+
+
+# --------------------------------------------------------------- 对话式加人（对主编说）
+
+def test_parse_intent_recognizes_add_expert():
+    from deskmate.creation.chat_flow import parse_intent
+
+    i = parse_intent("加个情节架构专家", {})
+    assert i.type == "add_expert" and i.expert_name == "情节架构"
+    i = parse_intent("帮我把情节架构专家加进来", {})
+    assert i.type == "add_expert" and i.expert_name == "情节架构"
+    i = parse_intent("加人", {})
+    assert i.type == "add_expert" and i.expert_name == ""
+    # 圆桌不能误吞成加人
+    assert parse_intent("请七专家终审", {}).type == "roundtable"
+
+
+def test_chat_add_expert_staffs_the_team(manager, tmp_path):
+    agent_bridge.set_manager(manager)
+    pl = CreativePipeline(
+        space="creation:chattest",
+        base_dir=tmp_path / "data",
+        executor=StubExecutor(),
+    )
+    pl.start_screenplay_project("一个关于诏狱的故事")
+
+    from deskmate.creation.chat_flow import CreationChat
+
+    chat = CreationChat(pl, "chattest")
+
+    async def _drain():
+        return [m async for m in chat.post("加个 design-worker 专家")]
+
+    msgs = asyncio.run(_drain())
+    assert any("已加入团队" in (m.get("title") or m.get("text") or "") for m in msgs), msgs
+    assert any(w.persona == "design-worker" for w in pl._team.workers)

@@ -109,13 +109,26 @@ def parse_intent(text: str, state: dict) -> Intent:
     if m:
         return Intent("expert", expert_name=m.group(1), question=m.group(2) or t)
 
+    # 圆桌终审（先于加人：避免「请七专家…」被当成招募专家）
+    if re.search(r"圆桌|终审|研讨|七专家", t):
+        return Intent("roundtable")
+
+    # 动态加人（C+）：对主编说「加个情节架构专家」即把专家补进现有团队
+    if re.search(r"加人|招人|补人|扩编", t) or re.search(
+        r"(?:加|添加|招|招募|补).{0,16}(?:专家|老师|学家)", t
+    ) or re.search(r"(?:专家|老师|学家).{0,10}(?:加进|加入|加|招|补|进来)", t):
+        name = re.sub(
+            r"(?:再)?加(?:一|个|一位|一个|名|人)?|添加|招(?:募|聘)?|补|扩编"
+            r"|请|要|找|把|帮我|给我|我|想|一位|一个|名|个|专家|老师|学家"
+            r"|进来|加入|进团队|吧|呢|了|的|。|！|!|，|,|\s",
+            "",
+            t,
+        ).strip()
+        return Intent("add_expert", expert_name=name, raw=t)
+
     # 一键直通
     if re.search(r"一键直通|直通到完|自动写完|全部跑完|一口气", t):
         return Intent("auto_pilot")
-
-    # 圆桌终审
-    if re.search(r"圆桌|终审|研讨|七专家", t):
-        return Intent("roundtable")
 
     # 导出
     if re.search(r"导出|下载|docx|保存文件", t):
@@ -303,6 +316,7 @@ class CreationChat:
             "· 「审一下」\n"
             "· 「定稿」 / 「重写，强调动机」\n"
             "· 「@历史学家 说说双屿港背景」\n"
+            "· 「加个情节架构专家」\n"
             "· 「一键直通到完」\n\n"
             "所有决策你说了算，专家只是顾问。"
         ))
@@ -317,6 +331,7 @@ class CreationChat:
             "| 定稿 / 通过 | 定稿当前产出 |\n"
             "| 重写，XXX | 打回并附修改意见 |\n"
             "| @专家名 XXX | 召唤任意专家参与讨论 |\n"
+            "| 加XX专家 | 把一位专家临时补进团队 |\n"
             "| 圆桌 / 终审 | 触发7专家圆桌研讨 |\n"
             "| 一键直通 | 自动跑完大纲→剧本→定稿 |\n"
             "| 导出 | 导出当前定稿 docx |\n"
@@ -348,6 +363,7 @@ class CreationChat:
             "review_screen": self._do_review_screen,
             "lead_screen": self._do_lead_screen,
             "expert": self._do_expert,
+            "add_expert": self._do_add_expert,
             "roundtable": self._do_roundtable,
             "auto_pilot": self._do_auto_pilot,
             "export": self._do_export,
@@ -595,6 +611,62 @@ class CreationChat:
                     yield _msg(MSG_SYSTEM, text=f"可以说「写第{nxt}集」继续，或「一键直通」自动跑完。")
         else:
             yield _msg(MSG_SYSTEM, text=f"{title}已打回。{f'修改意见：{note}' if note else ''} 说「写第{episode or ''}集」重新生成。")
+
+    # ---- 动作：动态加人（C+） ----
+    async def _do_add_expert(self, intent: Intent, state: dict) -> AsyncGenerator[dict, None]:
+        """把用户点名的专家补进现有团队；不重建团队、不动已完成工作。"""
+        from . import agent_bridge
+
+        query = (getattr(intent, "expert_name", "") or "").strip()
+        try:
+            available = agent_bridge.available_experts(self.pipeline.space)
+        except Exception as exc:
+            logger.warning("加载可加专家失败: %s", exc)
+            available = []
+        candidates = [p for p in available if not p.get("joined")]
+
+        target = None
+        if query:
+            q = query.lower()
+            for p in candidates:
+                fields = [p.get("persona", ""), p.get("name", ""), p.get("tagline", "")]
+                if any(f and (q in f.lower() or f.lower() in q) for f in fields):
+                    target = p
+                    break
+
+        if target is None:
+            if not available:
+                yield _msg(MSG_ERROR, text="当前不能动态加专家（需要主 app 在运行，且该专家已安装启用）。")
+            elif not candidates:
+                yield _msg(MSG_SYSTEM, text="可用的专家都已在团队里了。")
+            else:
+                names = "、".join(f"{p['name']}（{p['persona']}）" for p in candidates)
+                yield _msg(MSG_SYSTEM, text=(
+                    f"可以加这些专家：{names}。\n"
+                    "告诉我加谁，例如「加个情节架构专家」。"
+                ))
+            return
+
+        try:
+            res = self.pipeline.add_expert(
+                target["persona"], reason=f"用户要求：{getattr(intent, 'raw', '')}"
+            )
+        except Exception as exc:  # noqa: BLE001 — 独立模式等：给出可读原因，不炸对话
+            yield _msg(MSG_ERROR, text=f"加人失败：{exc}")
+            return
+
+        if not res.get("approved"):
+            yield _msg(MSG_ERROR, text=f"加人未通过：{res.get('error', '未知原因')}")
+            return
+        yield _msg(
+            MSG_MILESTONE,
+            kind="expert",
+            title=f"{target['name']} 已加入团队",
+            text=(
+                f"已把「{target['name']}」补进团队（{res.get('worker', {}).get('actor', target['persona'])}）。"
+                "既有产出和工作项不受影响，后续写作/审核可以派给他。"
+            ),
+        )
 
     # ---- 动作：专家召唤 ----
     async def _do_expert(self, intent: Intent, state: dict) -> AsyncGenerator[dict, None]:
