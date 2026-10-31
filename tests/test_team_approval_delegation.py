@@ -187,6 +187,12 @@ def test_worker_wait_digest_is_informational_and_wait_only_batch_does_not_wake(
     body, rows = manager._team_digest(team, events, [], is_lead=False, reader="sam")
     assert "decide_worker_call" not in body and "your decision" not in body
     assert "lead or user" in body and rows[0]["kind"] == "waiting"
+    # The GUI renders rows, not the prose. A waiting row carries NO item/title
+    # (a session is not a task identity), so it must still carry enough to render:
+    # tool + decision flag. Without them the row text is empty -> a styled card
+    # with blank bullets (shipped 2026-10-31, fixed same day).
+    assert rows[0]["tool"] == "run_shell"
+    assert rows[0]["decision"] is False
     consumed = []
     monkeypatch.setattr(manager.team_store, "feed_for", lambda *a: events)
     monkeypatch.setattr(
@@ -218,6 +224,13 @@ def test_note_worker_waiting_emits_board_event_for_lead(manager):
     body, rows = manager._team_digest(team, waiting, [], is_lead=True, reader="lead")
     assert "decide_worker_call" in body
     assert rows[0]["kind"] == "waiting"
+    # The lead's row must be renderable AND marked as its decision to make —
+    # `decision` is what makes the GUI say "waiting for YOUR decision" instead of
+    # the informational "waiting for the lead or user".
+    assert rows[0]["tool"] == "run_shell"
+    assert rows[0]["prompt_id"] == "p1"
+    assert rows[0]["decision"] is True
+    assert "python -m unittest" in (rows[0].get("note") or "")
 
 
 def test_lead_decide_worker_call_resolves_worker_prompt(manager):

@@ -46,6 +46,14 @@ class Team:
     wakes_this_hour: int = 0
 
 
+def _is_namespaced_space(space: str) -> bool:
+    """True for a synthetic board key (`creation:<pid>`) rather than a real workspace
+    path. Pipeline teams live on such keys and staff themselves with synthetic session
+    ids, so a real-path check is what separates them from coworker teams."""
+    s = (space or "").strip()
+    return (not s.startswith("/")) or ":" in s
+
+
 class TeamRegistry:
     def __init__(self, path: Optional[str | Path] = None) -> None:
         self.path = Path(path) if path else None
@@ -113,6 +121,93 @@ class TeamRegistry:
                 if worker.session_id == session_id:
                     return team, worker
         return None
+
+    def detach_session(self, session_id: str) -> dict:
+        """Remove a session from whatever team it belonged to. Called when the session is
+        DELETED: without this, the registry kept advertising a worker whose session no
+        longer existed, `assign` validated against that ghost, the wake went to a session
+        with no record and no engine, and the dispatched work silently evaporated — the
+        lead got no signal and quietly did the job itself (2026-10-31: two full rounds
+        lost this way). Removing the member makes any further assignment fail LOUDLY, and
+        a team left with no workers is dropped so the lead can staff a fresh one.
+
+        Returns what was detached: {"role": "lead"|"worker"|None, "session_id",
+        "team_id", "actor", "workers_left", "team_removed"}."""
+        out = {
+            "role": None,
+            "session_id": session_id,
+            "team_id": "",
+            "actor": "",
+            "workers_left": 0,
+            "team_removed": False,
+        }
+        with self._lock:
+            for team_id, team in list(self._teams.items()):
+                if team.lead_session == session_id:
+                    # The lead's session is gone — the team cannot function at all.
+                    del self._teams[team_id]
+                    out.update(
+                        role="lead",
+                        team_id=team_id,
+                        actor=team.lead_actor,
+                        workers_left=0,
+                        team_removed=True,
+                    )
+                    self._save()
+                    return out
+                for worker in list(team.workers):
+                    if worker.session_id != session_id:
+                        continue
+                    team.workers.remove(worker)
+                    left = len(team.workers)
+                    if left == 0:
+                        # Nothing to dispatch to any more — drop it so `propose_team`
+                        # isn't blocked by "this session already leads a team".
+                        del self._teams[team_id]
+                        out["team_removed"] = True
+                    out.update(
+                        role="worker",
+                        team_id=team_id,
+                        actor=worker.actor,
+                        workers_left=left,
+                    )
+                    self._save()
+                    return out
+        return out
+
+    def prune_missing_sessions(self, session_exists) -> list[dict]:
+        """Drop every member whose session no longer exists; returns what was pruned.
+
+        Self-heal for rosters orphaned before `detach_session` existed (and by any
+        out-of-band record loss): a listed worker whose session is gone still validated
+        for `assign`, so the board kept showing in_progress work that could never run.
+        `session_exists` is a callable(str) -> bool supplied by the caller, because the
+        registry has no access to the session store.
+
+        Teams whose space is a NAMESPACED key are skipped: those are pipeline teams
+        (deskmate/creation) whose board space is a synthetic key (`creation:<pid>`) and
+        whose member sessions are synthetic too (`creation:<pid>:<persona>`) — they never
+        exist in the coworker session store BY DESIGN, so probing would delete live
+        pipeline rosters. Only coworker teams (space = a real workspace path) are probed.
+        """
+        with self._lock:
+            session_ids = []
+            for team in self._teams.values():
+                if _is_namespaced_space(team.space):
+                    continue
+                session_ids.append(team.lead_session)
+                session_ids.extend(w.session_id for w in team.workers)
+        pruned = []
+        for sid in session_ids:
+            try:
+                if session_exists(sid):
+                    continue
+            except Exception:  # noqa: BLE001 — a probe failure must not drop a member
+                continue
+            out = self.detach_session(sid)
+            if out["role"] is not None:
+                pruned.append(out)
+        return pruned
 
     def set_paused(self, team_id: str, paused: bool) -> None:
         with self._lock:

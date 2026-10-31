@@ -301,6 +301,25 @@ class SessionManager:
         self.team_store = TeamStore(base / "teams.db", journal=self.journal_store)
         self.chat_store = ChatStore(base / "chat.db")
         self.teams = TeamRegistry(base / "teams.json")
+        # Self-heal on start: a listed member whose session record is gone is a ghost —
+        # `assign` still validated it, the wake went to a session with no engine, and the
+        # dispatched work silently evaporated (2026-10-31: two rounds lost). Rosters
+        # orphaned before detach_session existed are cleaned up here instead of needing a
+        # hand-edit of teams.json. Never fatal: a probe problem must not block startup.
+        try:
+            for gone in self.teams.prune_missing_sessions(
+                lambda sid: self.session_store.load(sid) is not None
+            ):
+                logger.warning(
+                    "pruned ghost team member: %s '%s' (session %s) from team %s%s",
+                    gone["role"],
+                    gone["actor"],
+                    gone["session_id"],
+                    gone["team_id"],
+                    " — team dropped" if gone["team_removed"] else "",
+                )
+        except Exception:  # noqa: BLE001
+            logger.exception("team roster prune failed")
         # External board clients (OPE-100): join tokens bind actor+role; the
         # `/v1/board` API resolves them and the store enforces authority.
         self.board_tokens = BoardTokens(base / "board-tokens.json")
@@ -793,6 +812,12 @@ class SessionManager:
         # action under harness authority (never from the lead's note). Set per-session so
         # only team leads can exercise it (worker_review_context checks team ownership).
         engine.delegated_approval = lambda args: self.worker_review_context(session_id, args)
+        # Team worker lane (owner ruling 2026-10-31, option A): a pre-spawned worker gets
+        # its own per-session output directory auto-approved, so dispatched work actually
+        # comes back instead of parking on an approval nobody is there to click. Only the
+        # worker role gets this — the lead and every human-facing session are unaffected.
+        if self.teams.for_worker_session(session_id) is not None:
+            engine.permissions.worker_scope = self.scratch_base() / session_id
         self._engines[session_id] = engine
         # 自动化运行标记：本会话若是某个定时/手动任务的运行实例，它跑出的 web_search 等
         # 工具结果不能算作萧盛影响（否则检索转储会冒充满「内部·萧盛」标）。owning_task 在
@@ -2985,11 +3010,16 @@ class SessionManager:
                     )
                     rows.append(
                         {
-                            "item": item_id,
-                            "actor": waiter,
+                            **row,
                             "kind": "waiting",
                             "tool": tool,
                             "prompt_id": prompt_id,
+                            # True = this reader is the authority who decides, so the UI
+                            # renders it as an action. False = informational only.
+                            "decision": True,
+                            "note": self._clamp(
+                                payload.get("preview") or "", self.DIGEST_CLAMP_UI
+                            ),
                         }
                     )
                 else:
@@ -3000,11 +3030,14 @@ class SessionManager:
                     )
                     rows.append(
                         {
-                            "item": item_id,
-                            "actor": waiter,
+                            **row,
                             "kind": "waiting",
                             "tool": tool,
                             "prompt_id": prompt_id,
+                            "decision": False,
+                            "note": self._clamp(
+                                payload.get("preview") or "", self.DIGEST_CLAMP_UI
+                            ),
                         }
                     )
                 continue
@@ -6653,6 +6686,23 @@ class SessionManager:
     def delete_session(self, session_id: str) -> dict[str, Any]:
         if session_id.startswith("__"):
             return {"ok": False, "error": "internal sessions cannot be deleted here"}
+        # A team member is not an ordinary chat. Deleting one used to leave the team
+        # registry pointing at a session that no longer existed: `assign` still validated
+        # (the ghost worker was listed), the wake went to a session with no record and no
+        # engine, nothing ran, and nothing told the lead — dispatched work just vanished
+        # and the lead ended up doing it itself. Detach FIRST, so the team stops
+        # advertising the member before its record goes away.
+        detached = self.teams.detach_session(session_id)
+        if detached["role"] is not None:
+            logger.info(
+                "session %s deleted: detached %s '%s' from team %s (%d workers left%s)",
+                session_id,
+                detached["role"],
+                detached["actor"],
+                detached["team_id"],
+                detached["workers_left"],
+                ", team dropped" if detached["team_removed"] else "",
+            )
         engine = self._engines.pop(session_id, None)
         if engine is not None:
             try:
@@ -6689,7 +6739,12 @@ class SessionManager:
                     shutil.rmtree(resolved)
             except OSError:
                 pass  # a stale/foreign path must not fail the delete
-        return {"ok": ok, "session_id": session_id}
+        out = {"ok": ok, "session_id": session_id}
+        # Surfaced so the caller can say "removed from team X" instead of silently
+        # leaving a board full of work assigned to a session that is gone.
+        if detached["role"] is not None:
+            out["team"] = detached
+        return out
 
     # -- provider proxy ---------------------------------------------------------
     def provider_complete(self, model, messages, tools=None):

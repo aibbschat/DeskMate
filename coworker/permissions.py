@@ -325,10 +325,22 @@ class PermissionEngine:
     tool_guard: Any = None
     # Execution level for the guard: "off" | "auto" | "strict" (see EXECUTION_LEVELS).
     execution_level: str = "auto"
+    # Team worker lane (owner ruling 2026-10-31, option A). For a pre-spawned TEAM
+    # WORKER session this is that worker's OWN per-session output directory; None for
+    # everything else (a human-facing session, the lead, an automation run).
+    #
+    # Why it exists: a worker has no human at a keyboard — it cannot click. Every
+    # consequential call used to park it on an approval until somebody answered, so
+    # dispatched work never came back and the lead quietly did it all itself (measured:
+    # 2 rounds, 0 worker output, 2026-10-31). This unlocks ONLY routine work inside its
+    # own lane; see the worker branch in evaluate() for the exact shape.
+    worker_scope: Optional[Path] = None
 
     def __post_init__(self) -> None:
         self.workspace_root = Path(self.workspace_root).expanduser().resolve()
         self.auto_allow_tools = set(self.auto_allow_tools)
+        if self.worker_scope is not None:
+            self.worker_scope = Path(self.worker_scope).expanduser().resolve()
         if self.roots is None:
             self.roots = [{"path": self.workspace_root, "writable": True}]
 
@@ -557,6 +569,35 @@ class PermissionEngine:
         if self.mode is Mode.CUSTOM and tool_name in self.auto_allow_tools:
             return Decision(True, "auto-allowed by config")
 
+        # ── Team worker lane (owner ruling 2026-10-31) ─────────────────────────
+        # Deliberately the LAST auto-approve path: every floor above still applies and
+        # nothing above is skipped. Reaching here means the call is consequential,
+        # already passed self-protection, write scoping, the persistent-authority floor
+        # and the protected-in-project floor, and matched no allowlist.
+        #
+        # What a worker gets without asking:
+        #   • lookups (web_search & friends) — read-only, no local state changes;
+        #   • writes landing inside its OWN per-session output directory.
+        # What still asks, unchanged: shell/exec (governance guard runs above, and a
+        # worker running commands is a different risk class), deletes, persistent-
+        # authority tools, protected in-project files, connector egress (posting
+        # outward), and ANY write outside its own directory — your manuscript, another
+        # session's files, the project folder. Those are exactly the calls worth a
+        # decision, and the lead (or you) still sees every one.
+        if self.worker_scope is not None:
+            if is_egress and not is_connector:
+                return Decision(True, "team worker: lookup (read-only)")
+            if is_write:
+                paths, located = write_paths(tool_name, arguments)
+                if (
+                    located
+                    and paths
+                    and all(self._under_worker_scope(p) for p in paths)
+                ):
+                    return Decision(
+                        True, "team worker: write inside its own output directory"
+                    )
+
         # Otherwise: ask the user.
         return Decision(False, "requires approval", needs_user=True)
 
@@ -611,6 +652,18 @@ class PermissionEngine:
             except ValueError:
                 continue
         return False
+
+    def _under_worker_scope(self, path: str) -> bool:
+        """True iff this path lands inside the worker's own output directory. Anchored
+        exactly like `_under_root` (relative paths resolve against the workspace), so a
+        worker can't widen its lane by passing a relative or `~` path."""
+        if self.worker_scope is None:
+            return False
+        try:
+            self._candidate(path).relative_to(self.worker_scope)
+            return True
+        except (ValueError, OSError):
+            return False
 
     def _touches_protected(
         self, tool_name: str, arguments: dict[str, Any], is_shell: bool
