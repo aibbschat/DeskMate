@@ -419,6 +419,24 @@ SKILLS_TOOLS_MODULES=(
   "deskmate/skills/skill_store.py"
   "deskmate/skills/server.py"
   "deskmate/skills/manager.py"
+  # 创作圆桌整包（2026-10-31 补）：app.py 把 deskmate.roundtable.web 挂到 /roundtable，
+  # 而 roundtable 立刻 import deskmate.creation.*（pipeline 顶层 `from . import
+  # agent_bridge`）。整包此前从未进清单 —— 云端一旦跑旧码/缺文件，挂载失败被
+  # `except: 创作圆桌挂载失败（功能不可用）` 一行 warning 吞掉：服务照常起、圆桌
+  # 悄悄不可用，正是「漏传 = 静默失效」的同款事故。整包相互 import，必须同批上云。
+  "deskmate/creation/__init__.py"
+  "deskmate/creation/agent_bridge.py"
+  "deskmate/creation/bible_feedback.py"
+  "deskmate/creation/chat_flow.py"
+  "deskmate/creation/docx_export.py"
+  "deskmate/creation/executor.py"
+  "deskmate/creation/final_review.py"
+  "deskmate/creation/global_profile.py"
+  "deskmate/creation/guard.py"
+  "deskmate/creation/novel_index.py"
+  "deskmate/creation/personas_loader.py"
+  "deskmate/creation/pipeline.py"
+  "deskmate/creation/service.py"
 )
 
 FORCE=0

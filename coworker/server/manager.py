@@ -711,11 +711,16 @@ class SessionManager:
                 roots = [{"path": ws, "writable": True, "label": "workspace"}, *extra]
             team = (record.team if record else {}) or {}
             if team.get("role") == "worker":
-                lead = self.session_store.load(str(team.get("lead_session") or ""))
-                if lead is not None:
-                    # Shared team filesystem, with a worker-owned directory for worktrees.
+                # Shared team filesystem, with a worker-owned directory for worktrees.
+                # Provisioned FROM THE LEAD'S ID, not from its session record: a creation
+                # pipeline leads through a synthetic `creation:<pid>:lead` key that has no
+                # record, and skipping the root there meant the worker could never hand a
+                # file to its lead — the write was rejected by root scoping before the
+                # worker lane ever ran. The directory is the same one the lane approves.
+                lead_sid = str(team.get("lead_session") or "")
+                if lead_sid and "/" not in lead_sid and lead_sid not in {".", ".."}:
                     for path, label in (
-                        (self._provision_scratch(lead.session_id), "team scratch"),
+                        (self._provision_scratch(lead_sid), "team scratch"),
                         (self._provision_scratch(session_id), "worker scratch"),
                     ):
                         if not any(
@@ -848,7 +853,14 @@ class SessionManager:
         member = self.teams.for_worker_session(session_id)
         worker_info = (record.team if record is not None else {}) or {}
         if member is not None or str(worker_info.get("role") or "") == "worker":
-            engine.permissions.worker_scope = self.scratch_base() / session_id
+            # Path, not str, and ALREADY RESOLVED: this is assigned onto a live engine
+            # (no `__post_init__` re-run), and the decision path compares it against
+            # `PermissionEngine._candidate()`, which resolves symlinks. `scratch_base()`
+            # does not — so a scratch base that sits behind a symlink (e.g. /tmp →
+            # /private/tmp, or an external volume reached through a link) would make
+            # every own-directory write miss the lane and park on an approval nobody is
+            # there to click. `_provision_scratch` resolves, so both sides agree.
+            engine.permissions.worker_scope = Path(self._provision_scratch(session_id))
             # The team's shared scratch (the lead's own scratch dir, handed to every
             # worker as a writable root in `_session_roots`) must be writable without
             # a prompt too: an unattended team has nobody to click Allow, so a worker

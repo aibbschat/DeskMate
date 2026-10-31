@@ -197,6 +197,27 @@ def add_expert(
     return res
 
 
+_ACK_OPENERS = (
+    "已写入", "已保存", "已生成", "已交付", "已上传", "写入完成", "保存完成",
+    "ok", "done", "saved", "written",
+)
+
+
+def _is_acknowledgement(text: str) -> bool:
+    """True when the reply only CONFIRMS a delivery instead of containing one.
+
+    The dispatch prompt tells the worker to answer with a single line ("已写入")
+    because the real payload is the file. So when the file is missing, the last
+    assistant message is quite likely that confirmation — and returning it would
+    silently store three characters as the outline/screenplay body. A worker that
+    fails to write must fall back to the LLM, not appear to succeed.
+    """
+    head = (text or "").strip().lstrip("`").strip().lower()
+    if not head or len(head) > 200:  # a real deliverable is longer than a note
+        return False
+    return any(head.startswith(opener) for opener in _ACK_OPENERS)
+
+
 def _last_assistant_text(messages: list, start: int) -> str:
     for message in reversed(messages[start:]):
         if message.get("role") != "assistant":
@@ -312,4 +333,14 @@ def dispatch_task(
             text = _last_assistant_text(record.messages, before)
     except Exception as exc:  # noqa: BLE001
         logger.warning("读取 worker 消息失败(%s): %s", worker.session_id, exc)
+    if text and _is_acknowledgement(text):
+        # The file was never written and the reply is only a confirmation: treat
+        # the delivery as failed so the caller falls back to the LLM, instead of
+        # storing "已写入" as if it were the draft.
+        logger.warning(
+            "worker %s 未写出成稿文件，回复仅为确认语（%r）→ 视为交付失败，回退 LLM",
+            worker.actor,
+            text[:40],
+        )
+        return None
     return text or None

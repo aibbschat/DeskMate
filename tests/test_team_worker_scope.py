@@ -18,12 +18,15 @@ Two defects behind "派活下去，下面的 Agent 产出不了东西":
 """
 
 import asyncio
+import threading
+from pathlib import Path
 
 import pytest
 from coworker.permissions import Mode, PermissionEngine
 from coworker.server.manager import SessionManager
 from coworker.sessions import SessionRecord
 from coworker.teams.registry import TeamWorker
+from deskmate.creation import agent_bridge
 
 
 @pytest.fixture
@@ -128,6 +131,103 @@ def test_worker_scope_is_only_set_for_the_worker_role(manager):
     assert worker_engine.permissions.worker_scope is not None
     assert worker_engine.permissions.worker_scope.name == "worker"
     assert lead_engine.permissions.worker_scope is None
+
+
+def test_worker_lane_holds_when_the_scratch_base_is_a_symlink(manager, tmp_path, monkeypatch):
+    """判定级：写自己的输出目录必须真的放行——哪怕 scratch 基址是个符号链接。
+
+    之前的用例只断言 `worker_scope.name`，从不 evaluate 一次真实写，于是这条溜了过去：
+    车道赋的是未 resolve 的 `scratch_base()/sid`，而判定侧会把路径 resolve，
+    `/tmp → /private/tmp` 一错位就整个车道失效，写文件重新回到「等审批」，
+    表现就是「派下去的活产出不了」。默认 `~/OpenWorker` 不含软链，所以平时不发作。
+    """
+    real = tmp_path / "real-scratch"
+    real.mkdir()
+    link = tmp_path / "linked-scratch"
+    link.symlink_to(real)  # scratch 基址在软链之后
+    monkeypatch.setenv("COWORKER_SCRATCH_BASE", str(link))
+
+    engine = manager.get_engine("worker", agent="swe-worker")
+    own = Path(manager.scratch_base()) / "worker" / "成稿.md"
+    d = engine.permissions.evaluate("write_file", {"path": str(own), "content": "x"})
+    assert d.allowed, f"软链基址下车道失效：{d.reason}"
+    assert "own output directory" in d.reason
+
+
+def test_pipeline_team_worker_can_write_the_shared_scratch(manager, tmp_path):
+    """判定级：流水线团队的共享盘必须可写，而不是被 root 作用域提前挡掉。
+
+    创作流水线的主编是合成的 `creation:<pid>:lead`，没有 session record；旧代码据此
+    整个跳过 team-scratch root，写共享盘在车道之前就被判「path is not in a writable
+    directory」——等于「交工件给主编」这条路对流水线是死的。
+    """
+    agent_bridge.set_manager(manager)
+    try:
+        space = "creation:sharedroot"
+        res = agent_bridge.reserve_worker_sessions(space, ["screenwriter"])
+        sid = res["screenwriter"]
+        team = manager.teams.create(
+            space=space,
+            lead_session=f"{space}:lead",
+            lead_actor="lead",
+            workers=[TeamWorker(actor="screenwriter", persona="screenwriter", session_id=sid)],
+        )
+        agent_bridge.bind_team(space, team)
+        engine = manager.get_engine(sid, agent="screenwriter")
+        labels = [getattr(r, "label", "") for r in (engine.roots or [])]
+        assert "team scratch" in labels, f"流水线团队缺共享盘 root：{labels}"
+        shared = Path(manager.scratch_base()) / f"{space}:lead" / "交接.md"
+        d = engine.permissions.evaluate("write_file", {"path": str(shared), "content": "x"})
+        assert d.allowed, f"共享盘仍被拦：{d.reason}"
+    finally:
+        agent_bridge.set_manager(None)
+
+
+def test_dispatch_rejects_a_pure_acknowledgement(manager, tmp_path):
+    """判定级：只回一句「已写入」而文件没写出来，必须算交付失败。
+
+    派活 prompt 明确要求「回复只写一句『已写入』」，正文在文件里。所以文件缺失时，
+    兜底拿到的最后一条 assistant 文本极可能就是这句确认语；若照单全收，流水线会把
+    三个字当成大纲/剧本正文存进去——无报错、无告警，比失败更糟。
+    """
+    agent_bridge.set_manager(manager)
+    space = "creation:ackprobe"
+    res = agent_bridge.reserve_worker_sessions(space, ["screenwriter"])
+    sid = res["screenwriter"]
+    team = manager.teams.create(
+        space=space,
+        lead_session=f"{space}:lead",
+        lead_actor="lead",
+        workers=[TeamWorker(actor="screenwriter", persona="screenwriter", session_id=sid)],
+    )
+    agent_bridge.bind_team(space, team)
+    loop = asyncio.new_event_loop()
+    threading.Thread(target=loop.run_forever, daemon=True).start()
+    manager._loop = loop
+    try:
+        async def only_confirms(session_id, message, *, source=None):
+            rec = manager.session_store.load(session_id)
+            rec.messages.append({"role": "user", "content": message})
+            rec.messages.append({"role": "assistant", "content": "已写入"})
+            manager.session_store.save(rec)
+
+        manager.deliver_to_session = only_confirms
+        assert (
+            agent_bridge.dispatch_task(space, "screenwriter", "写第一场", timeout=10) is None
+        ), "确认语不能当成交稿正文"
+
+        async def writes_the_file(session_id, message, *, source=None):
+            p = Path(manager.scratch_base()) / session_id / "creation" / "draft.md"
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text("第一场 诏狱走廊 夜 内\n苏源: 你还记得那道门吗？", encoding="utf-8")
+
+        manager.deliver_to_session = writes_the_file
+        got = agent_bridge.dispatch_task(space, "screenwriter", "写第二场", timeout=10)
+        assert got and "诏狱走廊" in got, "真成稿仍须照常取回"
+    finally:
+        manager._loop = None
+        loop.call_soon_threadsafe(loop.stop)
+        agent_bridge.set_manager(None)
 
 
 def _shared_engine(tmp_path, shared: str):
