@@ -102,3 +102,118 @@
 - **验证姿势**：前端产物字节级搜白名单数组（`new Set(["cowork","deskmate","editor-in-chief"])`）；
   装包后资源指纹 `main-<新哈希>.js` 命中 `dist/`；`md5 -q` 三处二进制一致。**Tauri 资源是 brotli 压缩，
   搜中文/类名一律搜不到，别据此判"没打进去"**（见打包 skill 坑 1 补充）。
+
+## §P6 — 后端新增 `_team_digest` row kind，前端 BoardWakeCard 必须同步：否则渲染成「有样式无内容」的空卡
+
+- **现象（2026-10-31 00:58 萧哥截图实测）**：lead 会话里 "Board wake / update" 折叠卡样式在，
+  展开后**只剩两个橙色圆点、一行字都没有**。看着像"前端没渲染"，其实后端一切正常。
+- **根因（两层，缺一就空）**：
+  1. **前端**：`BoardWakeCard.tsx` 的 `rowText()` 是 `switch (row.kind)`，**没有 `case "waiting"`**
+     → 落进 `default: return \`${item}${title}\``。而 worker 挂起行**天生没有 item/title**
+     （`note_worker_waiting` 只在"唯一 in_progress 项"时才填 item_id；session ≠ task identity）
+     → 拼出**空字符串** → 有圆点无文字。
+     `summarize()` 同样不认 "waiting" → counts 为空 → 折叠行退化成兜底文案 **"update"**（截图里就是它）。
+  2. **后端**：`_team_digest` 的 WORKER_WAITING 分支只给了 `item/actor/kind/tool/prompt_id`，
+     **没给 `title`、没给"这是谁的决定"标记、没给 `note`** —— 就算前端修好了也拼不出话。
+- **判据（很有用）**：折叠行显示 **"update"** 而**不是** "N moved / N review / …"
+  ＝**没有任何 kind 被 `summarize()` 认出来**＝后端发了前端不认的新 kind。这是秒定位的指纹。
+- **已修**：
+  - 后端行补 `**row`（带上 title）+ `decision: bool`（True=读者是决定者 True 只对 lead）+
+    `note`（UI 夹紧的 preview，worker 到底想干啥）。
+  - 前端 `rowText` 加 `case "waiting"`；`summarize` 加 `bump("decision")` 且计入 attention（琥珀色）；
+    `stateDot` waiting→review 色；`default` 兜底**永不返回空串**；note 按钮文案 "show request"。
+  - **旧数据兼容**：`readerDecides(row) => row.decision !== false`。已在库里的旧行**没有** decision 字段，
+    而"纯等待批次不会唤醒 worker"是设计（非 lead 只消费不唤醒），所以**无标记的行必然是 lead 的行**
+    → 默认 true，否则你重打包后会看到旧卡文案翻转成"waiting for the lead or user"。
+- **红线**：**凡后端给 `_board_source` 的 rows 加新 kind，必须同批改前端三处**
+  （`rowText` / `summarize` / `stateDot`），并加一条"每个 `.boardwake-row-text` 非空"的断言测试。
+  后端绿灯 ≠ 界面有字；这是跨层契约，两边都不报错。
+- **验证**：先红后绿（旧码 2 后端 + 4 前端红）；新码 15 后端 + 8 前端全绿。
+  真数据佐证：`~/.config/coworker/teams.db` 的 `team_events WHERE kind='worker_waiting'`
+  → seq 891 kanyu/web_search、892 gouzhang/write_file（**正好两条＝截图里两个空圆点**）。
+
+## §P7 — 团队派活「静默蒸发」：删会话不从团队摘成员 + worker 无键盘却每个工具调用都要人点
+
+- **现象（2026-10-31 萧哥报，两轮皆空）**：主编派活给 kanyu/gouzhang/jihe，**零产出**；
+  主编自己把活干完了。看板上一堆 `in_progress` 永远不动，且不报错、不告警。
+- **根因是两条独立缺陷叠在一起（缺一不至于全空）**：
+  1. **`delete_session` 不碰团队注册表**（`teams.json`）。worker 会话一删，
+     `TeamRegistry` 仍列着它 → `assign` 校验通过（幽灵成员）→ 唤醒发往一个
+     **没有 session record、没有 engine** 的 id → 永不执行。
+     ⚠ 团队名册是 **JSON 文件**（`~/.config/coworker/teams.json`），
+     **不是** session record 的 `team` 列 —— 二者互不同步，删会话只删后者。
+  2. **worker 没有键盘**：它是预算的会话，每个 `write_file`/`web_search` 都是
+     consequential → 停车等审批。人不可能一直点 → 卡死；主编等不到产出就自己干。
+     实测：kanyu 卡 `web_search`、gouzhang 卡 `write_file`，两个 prompt 都在等人。
+- **判据（秒定位三件套）**：
+  ① `teams.json` 里 worker 的 `session_id` 去 `sessions` 表/`conversations/*.jsonl` 查 → 查不到＝幽灵；
+  ② inbox 里 prompt 的 `resolution == "session deleted"`（不是 allow/deny）＝会话被删/被孤儿回收；
+  ③ 服务端日志里 `DELETE /v1/sessions/<worker-id>`。
+  ⚠ 反面陷阱：**上轮修的委托审批其实是通的**——主编真的调了 `decide_worker_call(allow)`，
+  只因 prompt 已被 `session deleted` 结掉才返回
+  *"already answered"*。**看到这条错误别再查委托审批链路，去查会话是不是没了。**
+- **已修**：
+  - `TeamRegistry.detach_session()` + `delete_session` 前置调用：删成员即摘名册，
+    最后一个 worker 没了就整队解散（否则 `propose_team` 永远回
+    *"this session already leads a team"*，萧哥被卡死）。删 lead 也整队解散。
+  - `TeamRegistry.prune_missing_sessions()` + manager 启动自检：清理历史遗留幽灵
+    （萧哥当前这个队就是幽灵，靠重启自愈，不用手改 teams.json）。
+  - **worker lane**（萧哥拍板 option A）：`PermissionEngine.worker_scope` =
+    该 worker 自己的 `~/OpenWorker/<session_id>/`。仅 worker 角色有。
+    自动放行：① 查找类（web_search 等 EGRESS，排除 connector）② 写自己输出目录内的文件。
+    **仍然要问**：shell/exec、删除、越权写（你的正稿、别人的会话目录）、
+    persistent-authority 工具、受保护的项目文件（.git/hooks、CI）。
+    实现位置刻意在 `evaluate()` **最后一条**自动放行路径——上面所有地板
+    （自保护、写路径作用域、越权、受保护文件、治理护栏）一条没跳。
+- **红线**：**给团队/权限层加新角色能力时，必须同时回答"它没有键盘时谁来点"**。
+  另外：`teams.json`（名册）与 `sessions`（record）是两份独立事实，
+  任何改会话生命周期的代码都要问"名册要不要同步"。
+- **验证**：先红后绿（旧码 10 红 / 新码 13 绿）；权限+团队+信箱子集与干净 HEAD
+  基线**逐条相同**（4 条既有失败，零回归）。
+
+## §P8 — agent 的 `read_file` 按文本行读 .docx → 拿到 ZIP 二进制，worker 据此宣告"读不了正文"
+
+- **现象（2026-10-31 实测）**：worker `jigang` 读《夜不收大纲.docx》，返回 `PK\x03\x04` 开头的
+  二进制，它自己下结论「我这个环境没有 shell，读不了正文」→ 一整个 worker 卡在"读不了"上。
+  同批 `dengying`/`mingcha` 连会话都没起 → 萧哥看到"派了活但没产出"。
+- **根因**：`coworker/tools/files.py:read_file` 是**按行编号**的纯文本读（`open(..., "r")`），
+  **没有 docx 分支**；而 .docx 是 ZIP。venv 里 `python-docx` **是装着的**，
+  `deskmate/perception/file_reader.py` 也有现成抽取（段落+表格），只是没接到 agent 工具上。
+  ⚠ 反面陷阱：别听 agent 说"没有 shell 所以读不了"——那是它对自己的误诊，**去查它到底拿到什么**。
+- **已修**：`file_reader.py` 加公开 `extract_docx_text()`（唯一抽取实现，避免两处漂移）；
+  `read_file` 对 `.docx` 走抽取再编号，保持 `path:line` 引用契约，并标 `extracted: true`；
+  抽取失败（python-docx 缺 / Word 锁文件 `~$*.docx`）**原样报错**，绝不回落到二进制。
+- **验**：真文件抽取《夜不收：绝命救援.docx》得 75555 字；`~$` 锁文件优雅报错。
+  新增 `tests/test_read_file_docx.py` 6 测（先红后绿：旧码 4 红）。
+- **红线**：**凡是"文件按文本读"的入口，都要问一遍"办公格式怎么办"**（docx/xlsx/pptx 都是 ZIP）。
+
+## §P9 — 移植上游组件只搬 TSX 不搬 CSS：界面退化成"有结构无样式"，且**两边都不报错**
+
+- **现象（2026-10-31 萧哥截图）**：团队看板三个 tab 在，任务行是**纯文本行**，无卡片、无状态胶囊、
+  无层次；折叠行显示兜底文案 `update`。看着像"我们自己糊的看板"。
+- **根因（不是自造，是移植时被砍 + 设计系统没搬）**：
+  - `TeamView.tsx` 上游 **1325 行**，本地只有 **621 行（47%）**；文件头注释自己写着
+    *"ported from upstream's TeamView.tsx, **trimmed** …"* 并列了两处"有意分歧"。
+  - **`.team-*` CSS：上游 187 条 / 本地 0 条** —— 本地全靠 Tailwind 裸拼，所以没有卡片/胶囊/层次。
+  - 连带缺失：`TeamRail.tsx`(251)、`TeamUpdateLine.tsx`(218)、`TaskChip.tsx`、`teamRoster.ts`；
+    `TeamRequestCard.tsx` 本地 74 行 vs 上游 852（桩）。
+- **判据（秒定位）**：① 折叠/汇总行显示**兜底文案**（如 `update`）而不是"N moved / N review"
+  ＝前端不认这个 kind/结构；② `grep -c "\.team-" styles.css` == 0 ＝设计系统没搬；
+  ③ 拿本地文件行数 vs `git show origin/main:<path> | wc -l`，**差一半以上就是砍过**。
+- **为什么能静默通过**：后端契约两边**同构**（`teamView.ts` 的 `TeamSummary/TeamTask/TeamWorker/GROUPS`
+  同名同构，api 函数齐备）→ 数据全到位 → 测试全绿 → 只有人眼能看出丑。**tsc/vitest 都抓不到"没有 CSS"**。
+- **已修（萧哥选 B：抄官方设计系统 + 全量任务视图，保留两处有意分歧）**：
+  - 搬上游 `styles.css` 的 **2045–2413 行整块**（369 行 / 187 条规则），加变量 shim
+    （本地缺 `--canvas/--chrome/--chrome-hover/--fs-mono/--ink-2/--ink-3/--team-rail-w`；
+     上游 `--ink-2/--ink-3` 其实**自身也没定义**，属遗留）。
+  - 新建 `teamRoster.ts`、`TaskChip.tsx`、`TeamRail.tsx`（只取 `WorkerSearch`）。
+  - `TeamView.tsx` 重做为全量版：TaskRow（圆点+标题+状态+成员chip+步数+时间）、
+    MetricBar（时间/token 分段条）、Stats（4 张卡 + 按成员/角色 + 累计曲线 + 提问表 + 时间去向）、
+    WorkerRows（搜索 + 筛选 + 分页）、PendingTeamRequests、TaskDetailPane（含相关协作者）。
+  - **保留的本地分歧**：不做内嵌 WorkerConversation（避免 transcript 审批接线分叉成两套）；
+    点 worker 直接开真会话；详情复用 `BoardPanel.ItemDetail`（给它加了 `hideTitle` 可选属性）。
+  - i18n：从**上游 zh.json/en.json 直接取值**（39 键），不自己编；补 `pending_requests` 基键。
+- **验证**：tsc 干净；vitest **391 passed / 4 failed**，4 条为既有失败（skins/MomentFeed），零回归；
+  新增 `TeamView.test.tsx` 5 测（先红后绿：旧码 4 红），专门断言"行必须有标题+状态文本"防复发。
+- **红线**：**移植上游 UI 时，CSS 与 TSX 是同一件事** —— 提交前必做
+  `grep -c "<组件前缀>-" styles.css`（>0）＋ 行数比对，否则就是"有结构无样式"的静默退化。
