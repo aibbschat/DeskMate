@@ -39,6 +39,7 @@ from .personas_loader import (
     build_team_workers,
 )
 from ..teams_client import TeamsClient
+from . import agent_bridge
 from .executor import CreativeExecutor, StubExecutor, ReviewResult
 from .final_review import (
     build_final_review_proposal,
@@ -414,7 +415,42 @@ class CreativePipeline:
 
     # -- 建团 --------------------------------------------------------------
     def _staff(self):
-        return build_team_workers(lambda pid: f"{self.space}:{pid}")
+        """团队花名册。主 app 在跑时为每个 worker 预建**真会话**（零 token，第一次
+        派活才烧模型），board 上的 actor 从此对应真实 agent；圆桌独立运行时回退
+        占位 session id（AgentExecutor 也随之 fail-open 回退 LLM）。"""
+        personas = [OUTLINE_WORKER, SCREENPLAY_WORKER, REVIEW_WORKER]
+        sessions = agent_bridge.reserve_worker_sessions(self.space, personas)
+        return build_team_workers(
+            lambda pid: sessions.get(pid) or f"{self.space}:{pid}"
+        )
+
+    def _create_team(self):
+        self._team = self.reg.create(
+            space=self.space,
+            lead_session=self.lead_session,
+            lead_actor=LEAD_ID,
+            workers=self._staff(),
+        )
+        # 团队存在后把 team_id / actor 回写进预建的真会话（占位会话静默跳过）。
+        agent_bridge.bind_team(self.space, self._team)
+        return self._team
+
+    def add_expert(self, persona: str, *, name: str = "", reason: str = "") -> dict:
+        """C+ 动态加人：给已建好的团队临时再招一位专家（如情节架构专家）。
+
+        不重建团队、不动既有工作项与历史；新成员立刻可被派活。主 app 不可用时
+        抛 RuntimeError（由 service 转成前端可读错误，不静默假装成功）。
+        """
+        if self._team is None:
+            self._team = self.reg.for_lead_session(self.lead_session)
+        res = agent_bridge.add_expert(
+            self.space, persona, name=name, reason=reason
+        )
+        if res.get("approved"):
+            # 花名册是由桥侧的 registry 写盘的，本实例缓存需重读才能看到新成员。
+            self.reg.refresh()
+            self._team = self.reg.for_lead_session(self.lead_session)
+        return res
 
     def _read_novel(self, ref: str, max_chars: int = 6000) -> str:
         """（已退役，保留兼容）读原著前 max_chars 字窗口。
@@ -470,12 +506,7 @@ class CreativePipeline:
             if novel_ref and self._novel_cache_root
             else NovelIndex(novel_ref) if novel_ref else None
         )
-        self._team = self.reg.create(
-            space=self.space,
-            lead_session=self.lead_session,
-            lead_actor=LEAD_ID,
-            workers=self._staff(),
-        )
+        self._create_team()
         outline = self.store.create_item(
             self.space, self.lead, title="大纲v1",
             criteria="结构完整、契合原著精神、无逻辑硬伤", description=concept,
@@ -586,12 +617,7 @@ class CreativePipeline:
             if novel_ref and self._novel_cache_root
             else NovelIndex(novel_ref) if novel_ref else None
         )
-        self._team = self.reg.create(
-            space=self.space,
-            lead_session=self.lead_session,
-            lead_actor=LEAD_ID,
-            workers=self._staff(),
-        )
+        self._create_team()
         outline = self.store.create_item(
             self.space, self.lead, title="大纲v1",
             criteria="结构完整、契合原著精神、无逻辑硬伤", description=concept,

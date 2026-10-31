@@ -27,7 +27,7 @@ from typing import AsyncGenerator, Awaitable, Callable, Optional
 
 from .pipeline import CreativePipeline
 from .personas_loader import validate_creative_personas
-from .executor import StubExecutor, LLMExecutor, ReviewResult
+from .executor import StubExecutor, LLMExecutor, AgentExecutor, ReviewResult
 from .final_review import build_final_review_proposal, apply_final_review, build_roundtable_context
 
 logger = logging.getLogger(__name__)
@@ -119,9 +119,16 @@ def create_pipeline(
     episodes = max(1, int(episodes or 1))
     if kind == "outline":
         episodes = 1  # 大纲路线不产剧本，集数无意义
-    executor = StubExecutor() if executor_kind == "stub" else LLMExecutor()
     pid = uuid.uuid4().hex[:12]
     space = f"creation:{pid}"
+    # executor_kind: stub（零 token 演示）/ llm（直连 LLM）/ agent（真专家团队执行，
+    # 专家桥不可用时逐次回退 llm——见 deskmate/creation/agent_bridge.py）。
+    if executor_kind == "stub":
+        executor = StubExecutor()
+    elif executor_kind == "agent":
+        executor = AgentExecutor(space)
+    else:
+        executor = LLMExecutor()
     pl = CreativePipeline(
         space=space, executor=executor, base_dir=base_dir, novel_cache_root=novel_cache_root
     )
@@ -236,9 +243,15 @@ def _restore_pipeline(pid: str) -> Optional[CreativePipeline]:
     meta = _load_registry().get(pid)
     if not meta:
         return None
-    from .executor import LLMExecutor, StubExecutor
+    from .executor import AgentExecutor, LLMExecutor, StubExecutor
 
-    executor = StubExecutor() if meta.get("executor_kind") == "stub" else LLMExecutor()
+    kind = meta.get("executor_kind")
+    if kind == "stub":
+        executor = StubExecutor()
+    elif kind == "agent":
+        executor = AgentExecutor(meta["space"])
+    else:
+        executor = LLMExecutor()
     pl = CreativePipeline(
         space=meta["space"],
         executor=executor,
@@ -387,7 +400,43 @@ def snapshot(pid: str) -> dict:
         # 人物小传（防漂移锚点：前端可预览/编辑，每集剧本重注入）
         "char_profiles": getattr(pl, "_char_profiles", "") or "",
         "char_profiles_ready": bool(getattr(pl, "_char_profiles", "") or ""),
+        # 在册专家（团队花名册）：前端展示「这支团队现在有谁」
+        "experts": _roster(pl),
     }
+
+
+# -- 专家团队（C：真 agent 执行 + C+ 动态加人） ---------------------------
+def _roster(pl: "CreativePipeline") -> list[dict]:
+    team = pl._team or pl.reg.for_lead_session(pl.lead_session)
+    if team is None:
+        return []
+    return [
+        {"actor": w.actor, "persona": w.persona, "reason": w.reason}
+        for w in team.workers
+    ]
+
+
+def experts(pid: str) -> dict:
+    """当前在册专家 + 可临时加入的专家（人设注册表动态扫描，与主编侧同源）。"""
+    from . import agent_bridge
+
+    pl = get_pipeline(pid)
+    return {
+        "roster": _roster(pl),
+        "available": agent_bridge.available_experts(pl.space),
+    }
+
+
+def add_expert(
+    pid: str, persona: str, *, name: str = "", reason: str = ""
+) -> dict:
+    """C+ 动态加人：给已建团队临时再招一位专家（如情节架构专家）。
+
+    不重建团队、不动既有工作项与历史；新成员立刻可被派活。
+    """
+    pl = get_pipeline(pid)
+    res = pl.add_expert(persona, name=name, reason=reason)
+    return {**res, "roster": _roster(pl)}
 
 
 # -- 加集续写（同一本书做完前 N 集，后续接着做） ---------------------------

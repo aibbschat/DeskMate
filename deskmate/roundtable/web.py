@@ -179,6 +179,14 @@ class CreatePipelineBody(BaseModel):
     episode_range: list[int] = []  # 仅产出的集号（空=1..episodes）
 
 
+class AddExpertBody(BaseModel):
+    """POST /api/creation/{pid}/add-expert 的请求体：往已建团队临时加一位专家。"""
+
+    persona: str = ""
+    name: str = ""
+    reason: str = ""
+
+
 class NovelPickBody(BaseModel):
     topic: str = ""
     k: int = 3
@@ -302,7 +310,12 @@ def _run_read_book(mp: str, emit) -> None:
     emit({"type": "done", "ok": True})
 
 
-def create_app(rt_port: int = 9920, base_dir: Optional[str] = None, workspace: Optional[str] = None) -> FastAPI:
+def create_app(
+    rt_port: int = 9920,
+    base_dir: Optional[str] = None,
+    workspace: Optional[str] = None,
+    manager=None,
+) -> FastAPI:
     # 挂入主 app 时 rt_port 默认 9920，但实际端口与挂载前缀均由 COWORKER_PORT 语境决定：
     # - 主 app（run.py 起 sidecar）会设置 COWORKER_PORT，并把本 app 整块挂到 /roundtable 下，
     #   此时 opencode-a2a 的完整路径是 /roundtable/opencode-a2a，Agent Card 的
@@ -319,6 +332,16 @@ def create_app(rt_port: int = 9920, base_dir: Optional[str] = None, workspace: O
     # 复用主 app 会话库：圆桌结束后把纪要落盘，使其进入左侧历史对话栏。
     _store = _resolve_store(base_dir)
     _rt_workspace = workspace
+
+    # 把主 app 的 manager 注入创作专家桥：流水线的真 agent 执行（派活给真 worker
+    # 会话）与动态加人都要经它；独立运行（无 manager）时桥为空，AgentExecutor
+    # 自动逐次回退 LLM，不影响圆桌本身。无条件写入，避免上一个 app 的 manager 残留。
+    try:
+        from deskmate.creation import agent_bridge
+
+        agent_bridge.set_manager(manager)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("创作专家桥注入失败（真 agent 执行将回退 LLM）：%s", exc)
 
     # 把 opencode A2A 适配层挂到 /opencode-a2a：单进程即可让 OpenCode 成为 peer。
     try:
@@ -678,6 +701,27 @@ def create_app(rt_port: int = 9920, base_dir: Optional[str] = None, workspace: O
                     episodes=body.episodes, episode_range=body.episode_range))
             except Exception as exc:  # noqa: BLE001
                 return JSONResponse({"error": str(exc)}, status_code=400)
+
+        # 专家团队（C+）：在册名单 + 可临时加入的专家（人设注册表动态扫描）
+        @app.get("/api/creation/{pid}/experts")
+        async def api_experts(pid: str):
+            try:
+                return JSONResponse(_csvc.experts(pid))
+            except KeyError:
+                return JSONResponse({"error": "not found"}, status_code=404)
+
+        # 动态加人：给已建团队临时再招一位专家（不重建团队）
+        @app.post("/api/creation/{pid}/add-expert")
+        async def api_add_expert(pid: str, body: AddExpertBody):
+            try:
+                res = _csvc.add_expert(
+                    pid, body.persona, name=body.name, reason=body.reason
+                )
+            except KeyError:
+                return JSONResponse({"error": "not found"}, status_code=404)
+            except Exception as exc:  # noqa: BLE001
+                return JSONResponse({"error": str(exc)}, status_code=400)
+            return JSONResponse(res)
 
         @app.get("/api/creation/pipeline/{pid}")
         async def api_get_pipeline(pid: str):

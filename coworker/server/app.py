@@ -7635,7 +7635,11 @@ def create_app(manager: SessionManager) -> FastAPI:
         _rt_base = str(getattr(manager.session_store, "base", "")) or None
         _rt_mount = _Mount(
             "/roundtable",
-            _create_roundtable_app(base_dir=_rt_base, workspace=manager.default_workspace),
+            _create_roundtable_app(
+                base_dir=_rt_base,
+                workspace=manager.default_workspace,
+                manager=manager,
+            ),
         )
         # 必须排在 /{tenant} 通配挂载之前，否则 /roundtable/ 会被 A2A 多租户路由抢匹配返回 404。
         _routes = app.router.routes

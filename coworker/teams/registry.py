@@ -59,6 +59,10 @@ class TeamRegistry:
         self.path = Path(path) if path else None
         self._lock = threading.Lock()
         self._teams: dict[str, Team] = {}
+        self.refresh()
+
+    def _load(self) -> dict[str, Team]:
+        teams: dict[str, Team] = {}
         if self.path and self.path.is_file():
             for raw in json.loads(self.path.read_text(encoding="utf-8")).get(
                 "teams", []
@@ -66,7 +70,22 @@ class TeamRegistry:
                 workers = [TeamWorker(**w) for w in raw.pop("workers", [])]
                 team = Team(**{**raw, "workers": []})
                 team.workers = workers
-                self._teams[team.team_id] = team
+                teams[team.team_id] = team
+        return teams
+
+    def refresh(self) -> None:
+        """Re-read teams.json from disk.
+
+        The same file is written by more than one registry instance in the process
+        tree (deskmate's creation pipeline keeps its own TeamsClient), so a long-lived
+        instance would otherwise serve a stale roster forever — a member it just
+        appended would vanish from every read that goes through the other instance."""
+        try:
+            loaded = self._load()
+        except Exception:  # noqa: BLE001 — a torn/partial read must not wipe live state
+            return
+        with self._lock:
+            self._teams = loaded
 
     def _save(self) -> None:
         if not self.path:
@@ -102,6 +121,22 @@ class TeamRegistry:
             self._teams[team.team_id] = team
             self._save()
         return team
+
+    def add_worker(self, team_id: str, worker: TeamWorker) -> Optional[Team]:
+        """Staff one MORE worker onto an existing team (the dynamic-add path).
+
+        Teams used to be staffed exactly once — `propose_team` refuses a session
+        that already leads a team — so a missing specialist (e.g. a plot-architecture
+        expert) could only be had by tearing the whole team down. Adding a member
+        keeps the existing roster, board and history intact. Returns the team, or
+        None when the team is gone (deleted between the caller's check and here)."""
+        with self._lock:
+            team = self._teams.get(team_id)
+            if team is None:
+                return None
+            team.workers.append(worker)
+            self._save()
+            return team
 
     def all(self) -> list[Team]:
         return list(self._teams.values())

@@ -16,6 +16,8 @@ import {
   getChatHistory,
   streamChat,
   getRoundtablePersonas,
+  getCreationExperts,
+  addCreationExpert,
   type CreationChatMessage,
   type CreationItem,
   type Persona,
@@ -171,12 +173,16 @@ export const CreationChatView: React.FC<Props> = ({ onBack }) => {
   const [personas, setPersonas] = useState<Persona[]>([]);
   const [showExpertPicker, setShowExpertPicker] = useState(false);
   const [pickerMode, setPickerMode] = useState<"review" | "summon">("review");
+  // C+ 动态加人：团队在册专家 + 可临时加入的专家
+  const [roster, setRoster] = useState<{ actor: string; persona: string; reason?: string }[]>([]);
+  const [available, setAvailable] = useState<{ persona: string; name: string; tagline?: string; joined: boolean }[]>([]);
+  const [showAddExpert, setShowAddExpert] = useState(false);
 
   // 创建表单
   const [concept, setConcept] = useState("");
   const [novelRef, setNovelRef] = useState("");
   const [episodes, setEpisodes] = useState(1);
-  const [executor, setExecutor] = useState<"stub" | "llm">("llm");
+  const [executor, setExecutor] = useState<"stub" | "llm" | "agent">("agent");
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -192,6 +198,38 @@ export const CreationChatView: React.FC<Props> = ({ onBack }) => {
   useEffect(() => {
     getRoundtablePersonas().then(setPersonas).catch((e) => console.error("加载专家列表失败", e));
   }, []);
+
+  // 加载团队花名册与可加专家（C+ 动态加人）
+  const loadExperts = useCallback(async (p: string) => {
+    try {
+      const r = await getCreationExperts(p);
+      setRoster(r.roster ?? []);
+      setAvailable(r.available ?? []);
+    } catch (e) {
+      console.error("加载团队成员失败", e);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (pid) loadExperts(pid);
+  }, [pid, loadExperts]);
+
+  const addExpert = useCallback(async (persona: string) => {
+    if (!pid) return;
+    setShowAddExpert(false);
+    try {
+      const r = await addCreationExpert(pid, persona);
+      if (!r.approved) {
+        alert(`加人失败：${r.error ?? "未知原因"}`);
+        return;
+      }
+      setRoster(r.roster ?? []);
+      // 新成员加入后刷新可选列表（joined 标记随之更新）
+      loadExperts(pid);
+    } catch (e) {
+      alert(`加人失败：${e}`);
+    }
+  }, [pid, loadExperts]);
 
   // 加载历史
   const loadHistory = useCallback(async (p: string) => {
@@ -296,8 +334,9 @@ export const CreationChatView: React.FC<Props> = ({ onBack }) => {
             </div>
             <div style={{ flex: 1 }}>
               <label style={{ display: "block", fontSize: 13, fontWeight: 600, marginBottom: 6 }}>执行器</label>
-              <select value={executor} onChange={(e) => setExecutor(e.target.value as "stub" | "llm")}
+              <select value={executor} onChange={(e) => setExecutor(e.target.value as "stub" | "llm" | "agent")}
                 style={{ width: "100%", padding: "10px 12px", borderRadius: 8, border: "1px solid #d0d0d5", fontSize: 14, boxSizing: "border-box" }}>
+                <option value="agent">真专家团队（专家不可用时回退 LLM）</option>
                 <option value="llm">LLM（真实创作）</option>
                 <option value="stub">Stub（演示）</option>
               </select>
@@ -341,6 +380,22 @@ export const CreationChatView: React.FC<Props> = ({ onBack }) => {
                 el?.scrollIntoView({ behavior: "smooth", block: "center" });
               }}>
               {m.type === "milestone" ? "✅ " : "📄 "}{m.title ?? m.kind}
+            </div>
+          ))}
+        </div>
+
+        <div style={{ marginBottom: 16 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+            <div style={{ fontSize: 11, color: "#8b8b8b", fontWeight: 600 }}>团队成员</div>
+            <button onClick={() => setShowAddExpert(true)} title="临时再加一位专家"
+              style={{ fontSize: 11, padding: "2px 8px", borderRadius: 10, border: "1px solid #d0d0d5", background: "#fff", color: "#2d6cdf", cursor: "pointer" }}>＋ 加专家</button>
+          </div>
+          {roster.length === 0 && <div style={{ fontSize: 12, color: "#c0c0c5" }}>暂无成员</div>}
+          {roster.map((w) => (
+            <div key={w.actor} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, padding: "4px 0" }}>
+              <span style={{ width: 6, height: 6, borderRadius: "50%", background: "#19b36e", flexShrink: 0 }} />
+              <span style={{ fontWeight: 500 }}>{w.actor}</span>
+              {w.reason && <span style={{ color: "#8b8b8b", fontSize: 11, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{w.reason}</span>}
             </div>
           ))}
         </div>
@@ -467,6 +522,50 @@ export const CreationChatView: React.FC<Props> = ({ onBack }) => {
                 </button>
               ))}
               {personas.length === 0 && <div style={{ textAlign: "center", color: "#8b8b8b", fontSize: 13, padding: 20 }}>加载专家列表中…</div>}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 加专家弹出层（C+ 动态加人：加进团队花名册，后续派活可派给他） */}
+      {showAddExpert && (
+        <div style={{
+          position: "fixed", inset: 0, background: "rgba(0,0,0,0.4)",
+          display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000,
+        }} onClick={() => setShowAddExpert(false)}>
+          <div style={{
+            background: "#fff", borderRadius: 16, padding: 24, width: 420, maxHeight: "70vh",
+            overflowY: "auto", boxShadow: "0 8px 40px rgba(0,0,0,0.15)",
+          }} onClick={(e) => e.stopPropagation()}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+              <h3 style={{ margin: 0, fontSize: 17, fontWeight: 700 }}>加一位专家</h3>
+              <button onClick={() => setShowAddExpert(false)} style={{ border: "none", background: "none", fontSize: 20, cursor: "pointer", color: "#8b8b8b" }}>×</button>
+            </div>
+            <p style={{ margin: "0 0 16px", fontSize: 12, color: "#8b8b8b" }}>
+              临时补进这支团队（不重建团队、不动已完成的工作），后续写作/审核可派给他。
+            </p>
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              {available.filter((p) => !p.joined).map((p) => (
+                <button key={p.persona} onClick={() => addExpert(p.persona)} style={{
+                  display: "flex", alignItems: "center", gap: 12, padding: "12px 14px",
+                  borderRadius: 10, border: "1px solid #ececef", background: "#fff",
+                  cursor: "pointer", textAlign: "left", transition: "all 0.15s",
+                }} onMouseEnter={(e) => { e.currentTarget.style.background = "#f0f4ff"; e.currentTarget.style.borderColor = "#2d6cdf"; }}
+                  onMouseLeave={(e) => { e.currentTarget.style.background = "#fff"; e.currentTarget.style.borderColor = "#ececef"; }}>
+                  <div style={{ width: 36, height: 36, borderRadius: "50%", background: "linear-gradient(135deg, #667eea, #764ba2)", display: "flex", alignItems: "center", justifyContent: "center", color: "#fff", fontSize: 16, fontWeight: 700, flexShrink: 0 }}>
+                    {p.name.charAt(0)}
+                  </div>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 14, fontWeight: 600, color: "#1d1d1f" }}>{p.name}</div>
+                    {p.tagline && <div style={{ fontSize: 12, color: "#8b8b8b", marginTop: 2 }}>{p.tagline}</div>}
+                  </div>
+                </button>
+              ))}
+              {available.filter((p) => !p.joined).length === 0 && (
+                <div style={{ textAlign: "center", color: "#8b8b8b", fontSize: 13, padding: 20 }}>
+                  {available.length === 0 ? "专家列表加载中…" : "当前可用专家都已在团队里了"}
+                </div>
+              )}
             </div>
           </div>
         </div>

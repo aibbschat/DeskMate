@@ -128,7 +128,7 @@ export function CreationPipelineView({
   const [snap, setSnap] = useState<CreationSnapshot | null>(null);
   const [concept, setConcept] = useState("");
   const [kind, setKind] = useState<"outline" | "screenplay">("screenplay");
-  const [executor, setExecutor] = useState<"stub" | "llm">("stub");
+  const [executor, setExecutor] = useState<"stub" | "llm" | "agent">("stub");
   const [novelRef, setNovelRef] = useState("");
   // 结构化制作要求（可提要求）
   const [styles, setStyles] = useState<string[]>([]);
@@ -656,6 +656,7 @@ export function CreationPipelineView({
                   >
                     <option value="stub">stub（演示·不烧 token）</option>
                     <option value="llm">llm（真实创作）</option>
+                    <option value="agent">agent（真专家团队，专家不可用时回退 llm）</option>
                   </select>
                 </div>
                 <button className="btn primary" disabled={busy || !concept.trim()} onClick={start}>

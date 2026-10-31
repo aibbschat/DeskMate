@@ -840,19 +840,30 @@ class SessionManager:
         # its own per-session output directory auto-approved, so dispatched work actually
         # comes back instead of parking on an approval nobody is there to click. Only the
         # worker role gets this — the lead and every human-facing session are unaffected.
-        if self.teams.for_worker_session(session_id) is not None:
+        # Worker lane is derived from the DURABLE session record first, roster second:
+        # a worker spawned by another process/registry instance (the deskmate creation
+        # pipeline keeps its own TeamsClient over the same teams.json) must still get
+        # its auto-approved scratch, or dispatched work parks on an approval nobody
+        # is there to click. `record.team` is written by the harness only.
+        member = self.teams.for_worker_session(session_id)
+        worker_info = (record.team if record is not None else {}) or {}
+        if member is not None or str(worker_info.get("role") or "") == "worker":
             engine.permissions.worker_scope = self.scratch_base() / session_id
             # The team's shared scratch (the lead's own scratch dir, handed to every
             # worker as a writable root in `_session_roots`) must be writable without
             # a prompt too: an unattended team has nobody to click Allow, so a worker
             # that saves hand-off files there would park forever. Same lane rule —
             # only this team's shared dir, still no shell, still no writes elsewhere.
-            member = self.teams.for_worker_session(session_id)
-            if member is not None:
+            lead_session = (
+                member[0].lead_session
+                if member is not None
+                else str(worker_info.get("lead_session") or "")
+            )
+            if lead_session:
                 # Path, not str: this is assigned onto a live engine (no
                 # __post_init__ re-run), and the decision path compares Paths.
                 engine.permissions.worker_shared_scopes = (
-                    Path(self._provision_scratch(member[0].lead_session)),
+                    Path(self._provision_scratch(lead_session)),
                 )
         self._engines[session_id] = engine
         # 自动化运行标记：本会话若是某个定时/手动任务的运行实例，它跑出的 web_search 等
@@ -2355,6 +2366,7 @@ class SessionManager:
         if role == "lead":
             tools.append(self._steer_tool(session_id))
             tools.append(self._team_options_tool())
+            tools.append(self._add_worker_tool(session_id))
             # §11.6: a Manual lead answers a worker's parked tool call via decide_worker_call.
             # The decider resolves the worker's own parked prompt; ownership is checked against
             # this lead's team (worker_review_context / _owned_worker_prompt), so a lead cannot
@@ -2521,6 +2533,30 @@ class SessionManager:
             ),
         )
 
+    def _add_worker_tool(self, lead_session_id: str) -> Any:
+        """The lead's upward staffing verb: pull a specialist in mid-run without
+        rebuilding the team. Fails closed on anything `team_options` wouldn't list."""
+        import aisuite as ai
+
+        manager = self
+
+        def add_worker(persona: str, name: str = "", reason: str = "") -> dict:
+            """Add one MORE worker coworker to your existing team — use when you
+            need a specialist that wasn't staffed at the start (e.g. a plot
+            architect). Existing teammates, board items and history are untouched.
+            `name` is the handle you'll assign/@mention by; omitted = persona id."""
+            return manager.add_to_team(
+                lead_session_id,
+                {"persona": persona, "name": name, "reason": reason},
+            )
+
+        return ai.tool(
+            add_worker,
+            metadata=ai.ToolMetadata(
+                category="team", risk_level="medium", capabilities=["team"]
+            ),
+        )
+
     def _steer_tool(self, lead_session_id: str) -> Any:
         """The lead's downward steering verb. Text lands in the worker's session
         attributed [Lead] — queued into a live turn, or a fresh background turn when
@@ -2559,6 +2595,188 @@ class SessionManager:
             ),
         )
 
+    def _prepare_team_worker(
+        self,
+        member: Any,
+        *,
+        used: set[str],
+        workspace: str,
+        model: str,
+        mode: Any,
+        lead_session: str,
+        space: str,
+        team_id: str = "",
+    ) -> tuple[Optional[TeamWorker], str]:
+        """Validate one staffing request and PRE-SPAWN its worker session.
+
+        Spawn ≠ first turn: an unassigned worker costs zero tokens; its first model
+        turn fires when the first assignment (or dispatch) lands. Shared by the
+        initial staffing gate (`create_team`) and the later dynamic-add path
+        (`add_to_team`) so the two can never drift in validation or handle rules.
+        Fails closed on personas without `team: worker`. Returns (worker, "") or
+        (None, error).
+        """
+        pid = str((member or {}).get("persona", "")).strip()
+        try:
+            ag = get_agent(pid)
+        except Exception:
+            return None, f"unknown coworker '{pid}' — it must be installed and enabled"
+        if getattr(ag, "team", None) != "worker":
+            # Fail closed: solo personas are not team-eligible — their prompts
+            # are written at a human, not a lead.
+            return None, f"'{pid}' is not team-capable (needs `team: worker`)"
+        # The lead-given callname is the HANDLE: board assignee, @mention target,
+        # sidebar label. It must be mention-safe and unique on the team.
+        name = str((member or {}).get("name", "")).strip().lower()
+        if name and not re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,23}", name):
+            return None, (
+                f"'{name}' isn't a usable callname — letters/digits/._- only, max 24"
+            )
+        actor, n = name or pid, 2
+        while actor in used:
+            actor, n = f"{name or pid}-{n}", n + 1
+        used.add(actor)
+        worker_sid = uuid.uuid4().hex[:12]
+        self.session_store.save(
+            SessionRecord(
+                session_id=worker_sid,
+                workspace=workspace,
+                model=model,
+                mode=mode,
+                messages=[],
+                agent=pid,
+            )
+        )
+        # Written via the dedicated setter: the turn-save upsert never touches
+        # `team`, so a worker's first turn can't detach it from its lead.
+        self.session_store.set_team(
+            worker_sid,
+            {
+                "team_id": team_id,
+                "role": "worker",
+                "actor": actor,
+                "lead_session": lead_session,
+                "space": space,
+            },
+        )
+        return (
+            TeamWorker(
+                actor=actor,
+                persona=pid,
+                session_id=worker_sid,
+                model=model,
+                reason=str((member or {}).get("reason", "")).strip(),
+            ),
+            "",
+        )
+
+    def add_to_team(
+        self,
+        lead_session_id: str,
+        member: dict[str, Any],
+        *,
+        workspace: Optional[str] = None,
+        model: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """The dynamic-add gate: staff ONE more worker onto a team that already
+        exists — "I need a plot-architecture expert, can I add one mid-run?".
+
+        Deliberately NOT a second `create_team`: the roster, board, journal and
+        every in-flight item stay untouched; the new member is simply appended and
+        becomes assignable/wakeable immediately. `workspace`/`model` default to the
+        lead's own record, but can be passed explicitly for teams whose lead has no
+        session record (pipeline teams live on synthetic `creation:<pid>` keys).
+        """
+        team = self.teams.for_lead_session(lead_session_id)
+        if team is None:
+            return {
+                "approved": False,
+                "error": "this session leads no team — create one first",
+            }
+        record = self.session_store.load(lead_session_id)
+        workspace = (
+            workspace
+            or (record.workspace if record is not None else "")
+            or self.default_workspace
+            or ""
+        )
+        if not workspace:
+            return {
+                "approved": False,
+                "error": "no workspace to bind the new worker session to",
+            }
+        spawned = self.spawn_worker(
+            team, member, workspace=workspace, model=model, lead_session=lead_session_id
+        )
+        if not spawned.get("approved"):
+            return spawned
+        worker = spawned.pop("worker_obj")
+        attached = self.teams.add_worker(team.team_id, worker)
+        if attached is None:
+            return {"approved": False, "error": "the team no longer exists"}
+        return {
+            **spawned,
+            "note": (
+                "worker added — it is idle until assigned or dispatched. The team's"
+                " existing items and history are unchanged."
+            ),
+        }
+
+    def spawn_worker(
+        self,
+        team,
+        member: dict[str, Any],
+        *,
+        workspace: Optional[str] = None,
+        model: Optional[str] = None,
+        lead_session: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """Validate + PRE-SPAWN one worker for an EXISTING team object, WITHOUT
+        mutating any registry.
+
+        Split out of `add_to_team` because the roster may live in more than one
+        `TeamRegistry` instance over the same teams.json (the deskmate sidecar keeps
+        its own): the instance that WRITES the roster must be the caller's, while the
+        heavy lifting (session record, team metadata, worker scope) belongs to the
+        manager. Returns {"approved": True, "worker": {...}, "worker_obj": TeamWorker}.
+        """
+        record = self.session_store.load(lead_session or team.lead_session)
+        workspace = (
+            workspace
+            or (record.workspace if record is not None else "")
+            or self.default_workspace
+            or ""
+        )
+        if not workspace:
+            return {
+                "approved": False,
+                "error": "no workspace to bind the new worker session to",
+            }
+        used = {"lead", "user", "board"} | {w.actor for w in team.workers}
+        worker, error = self._prepare_team_worker(
+            member,
+            used=used,
+            workspace=workspace,
+            model=str(model or (record.model if record is not None else "") or self.model),
+            mode=record.mode if record is not None else self.mode,
+            lead_session=lead_session or team.lead_session,
+            space=team.space,
+            team_id=team.team_id,
+        )
+        if worker is None:
+            return {"approved": False, "error": error}
+        self._emit_session_created(worker.session_id, worker.persona)
+        return {
+            "approved": True,
+            "team_id": team.team_id,
+            "worker": {
+                "actor": worker.actor,
+                "persona": worker.persona,
+                "session_id": worker.session_id,
+            },
+            "worker_obj": worker,
+        }
+
     def create_team(
         self, session_id: str, members: list[dict[str, Any]], *, enable_chat: bool = False
     ) -> dict[str, Any]:
@@ -2574,66 +2792,19 @@ class SessionManager:
         workers: list[TeamWorker] = []
         used: set[str] = {"lead", "user", "board"}  # reserved handles
         for member in members:
-            pid = str((member or {}).get("persona", "")).strip()
-            try:
-                ag = get_agent(pid)
-            except Exception:
-                return {
-                    "approved": False,
-                    "error": f"unknown coworker '{pid}' — it must be installed and enabled",
-                }
-            if getattr(ag, "team", None) != "worker":
-                # Fail closed: solo personas are not team-eligible — their prompts
-                # are written at a human, not a lead.
-                return {
-                    "approved": False,
-                    "error": f"'{pid}' is not team-capable (needs `team: worker`)",
-                }
-            # The lead-given callname is the HANDLE: board assignee, @mention target,
-            # sidebar label. It must be mention-safe and unique on the team.
-            name = str(member.get("name", "")).strip().lower()
-            if name and not re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,23}", name):
-                return {
-                    "approved": False,
-                    "error": f"'{name}' isn't a usable callname — letters/digits/._- only, max 24",
-                }
-            actor, n = name or pid, 2
-            while actor in used:
-                actor, n = f"{name or pid}-{n}", n + 1
-            used.add(actor)
-            worker_sid = uuid.uuid4().hex[:12]
-            model = str(member.get("model") or record.model)
-            self.session_store.save(
-                SessionRecord(
-                    session_id=worker_sid,
-                    workspace=record.workspace,
-                    model=model,
-                    mode=record.mode,
-                    messages=[],
-                    agent=pid,
-                )
+            worker, error = self._prepare_team_worker(
+                member,
+                used=used,
+                workspace=record.workspace,
+                model=str((member or {}).get("model") or record.model),
+                mode=record.mode,
+                lead_session=session_id,
+                space=space,
+                team_id="",  # patched below once the team exists
             )
-            # Written via the dedicated setter: the turn-save upsert never touches
-            # `team`, so a worker's first turn can't detach it from its lead.
-            self.session_store.set_team(
-                worker_sid,
-                {
-                    "team_id": "",  # patched below once the team exists
-                    "role": "worker",
-                    "actor": actor,
-                    "lead_session": session_id,
-                    "space": space,
-                },
-            )
-            workers.append(
-                TeamWorker(
-                    actor=actor,
-                    persona=pid,
-                    session_id=worker_sid,
-                    model=model,
-                    reason=str(member.get("reason", "")).strip(),
-                )
-            )
+            if worker is None:
+                return {"approved": False, "error": error}
+            workers.append(worker)
         chat_group = ""
         if enable_chat:
             group = self.chat_store.create_group(

@@ -3841,6 +3841,8 @@ export interface CreationSnapshot {
   include_review_notes?: boolean;
   /** 用户打回时填写的修改意见（按 stage 存：outline / screen / screen:N），重写时注入 prompt */
   user_notes?: Record<string, string>;
+  /** 在册专家（团队花名册）：actor / persona / reason */
+  experts?: { actor: string; persona: string; reason?: string }[];
 }
 export interface FinalProposal {
   item_kind: string;
@@ -3861,7 +3863,7 @@ export interface FinalReviewEvent {
 export async function createPipeline(
   kind: "outline" | "screenplay",
   concept: string,
-  executor: "stub" | "llm" = "stub",
+  executor: "stub" | "llm" | "agent" = "stub",
   novelRef = "",
   opts: {
     style?: string[];
@@ -3901,6 +3903,33 @@ export async function createPipeline(
 
 export async function getPipeline(pid: string): Promise<CreationSnapshot> {
   const res = await authedFetch(`${creationBase()}/api/creation/pipeline/${encodeURIComponent(pid)}`);
+  return res.json();
+}
+
+/** 在册专家 + 可临时加入的专家（人设注册表动态扫描）。 */
+export async function getCreationExperts(pid: string): Promise<{
+  roster: { actor: string; persona: string; reason?: string }[];
+  available: { persona: string; name: string; tagline?: string; joined: boolean }[];
+}> {
+  const res = await authedFetch(`${creationBase()}/api/creation/${encodeURIComponent(pid)}/experts`);
+  return res.json();
+}
+
+/** 动态加人：给已建团队临时再招一位专家（不重建团队、不动既有工作项）。 */
+export async function addCreationExpert(
+  pid: string,
+  persona: string,
+  opts: { name?: string; reason?: string } = {},
+): Promise<{
+  approved?: boolean;
+  error?: string;
+  roster: { actor: string; persona: string; reason?: string }[];
+}> {
+  const res = await authedFetch(`${creationBase()}/api/creation/${encodeURIComponent(pid)}/add-expert`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ persona, name: opts.name ?? "", reason: opts.reason ?? "" }),
+  });
   return res.json();
 }
 

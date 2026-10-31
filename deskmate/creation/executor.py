@@ -501,3 +501,62 @@ class LLMExecutor:
         approved = parse_verdict(raw)
         _emit(on_event, type="note", message="已给出审核意见", progress=100)
         return ReviewResult(approved=approved, opinion=raw)
+
+
+_STAGE_PERSONA = {
+    "draft_outline": "outline-writer",
+    "split_scenes": "screenwriter",
+    "review": "script-reviewer",
+}
+
+
+class AgentExecutor(LLMExecutor):
+    """真专家执行器：把每次生成/审核派给团队里对应 persona 的**真实 worker 会话**
+    （人格 prompt + 工具 + 技能都在它自己身上），回来取成稿。
+
+    刻意继承 LLMExecutor 并只覆写 ``_call_chat``：B 阶段打磨的方法论 prompt、
+    verdict 解析、分段续写工程全部原样复用，不另写一套（两套 prompt 一定会漂）。
+
+    每次调用 = 一个真实回合。分集写剧本的「拆场景 + 逐场景」会各派一次，成本与
+    普通 LLM 调用同数量级，但耗时更长（真 agent 要读工具/写文件）。
+
+    fail-open：主 app 不可用、worker 不在册、回合失败或超时 → 同一条 prompt 直接
+    回退 LLMExecutor，绝不让创作流水线因「专家桥」断掉而崩。
+    """
+
+    def __init__(self, space: str, *, timeout: float = 900.0, filename: str = "draft.md"):
+        self.space = space
+        self.timeout = timeout
+        self.filename = filename
+
+    def _persona_for(self, stage: str) -> str:
+        if stage in _STAGE_PERSONA:
+            return _STAGE_PERSONA[stage]
+        return "screenwriter" if stage.startswith("scene_") else ""
+
+    def _call_chat(
+        self, system: str, user: str, *, max_tokens: int, on_event=None, stage: str = ""
+    ) -> str:
+        persona = self._persona_for(stage)
+        if persona:
+            from .agent_bridge import dispatch_task
+
+            text = dispatch_task(
+                self.space,
+                persona,
+                f"{system}\n\n{user}",
+                timeout=self.timeout,
+                filename=self.filename,
+                on_event=on_event,
+            )
+            if text:
+                return text
+            _emit(
+                on_event,
+                type="note",
+                message="专家桥未就绪或未按时交付，本次回退 LLM 直跑",
+                progress=0,
+            )
+        return super()._call_chat(
+            system, user, max_tokens=max_tokens, on_event=on_event, stage=stage
+        )
