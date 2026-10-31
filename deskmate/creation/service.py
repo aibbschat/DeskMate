@@ -157,8 +157,15 @@ def create_pipeline(
     }
     _save_registry()
 
-    # 预建原著索引（创建时同步，后续 draft 直接命中缓存；失败降级不阻断）
-    novel_index = _build_index_for(pl, degrade=(executor_kind == "stub"))
+    # 预建原著索引。stub 模式零 LLM、秒级完成，同步建；llm 模式要为整本书生成
+    # 改编圣经，一本书可能几分钟——放到后台线程，创建接口立即返回，
+    # 前端据 novel_index.status == "building" 轮询 novel_index_status 等完成。
+    if executor_kind == "stub":
+        novel_index = _build_index_for(pl, degrade=True)
+    elif not getattr(pl, "novel_ref", ""):
+        novel_index = {"status": "none", "novel_ref": ""}
+    else:
+        novel_index = _start_index_build(pid, pl)
     return {
         "pid": pid,
         "kind": kind,
@@ -171,6 +178,32 @@ def create_pipeline(
         "episodes": int(pl.episodes or 1),
         "episode_range": list(pl.episode_range or []),
     }
+
+
+# 原著索引后台构建中的 pid 集合（llm 模式整书精炼圣经耗时可达数分钟，
+# 不能卡住创建接口；draft 若先到会同步等待，build 命中缓存即秒回）。
+_INDEX_BUILDING: set[str] = set()
+_INDEX_BUILD_LOCK = threading.Lock()
+
+
+def _start_index_build(pid: str, pl: "CreativePipeline") -> dict:
+    """后台线程建索引，立即返回 building 状态；完成后回写失败标记到注册表。"""
+    with _INDEX_BUILD_LOCK:
+        _INDEX_BUILDING.add(pid)
+
+    def _run() -> None:
+        try:
+            _build_index_for(pl, degrade=False)
+        finally:
+            with _INDEX_BUILD_LOCK:
+                _INDEX_BUILDING.discard(pid)
+            meta = _REGISTRY_META.get(pid)
+            if meta is not None:
+                meta["novel_index_failed"] = bool(getattr(pl, "_novel_index_failed", False))
+                _save_registry()
+
+    threading.Thread(target=_run, name=f"novel-index-{pid}", daemon=True).start()
+    return {"status": "building", "novel_ref": getattr(pl, "novel_ref", "")}
 
 
 def _build_index_for(pl: "CreativePipeline", *, degrade: bool = False) -> dict:
@@ -407,14 +440,18 @@ def item_content(pid: str, item_id: int) -> dict:
 
 # -- 原著索引（阶段 5：创建时预建 + 进行中可指定关联章节） -----------------
 def novel_index_status(pid: str) -> dict:
-    """查询原著索引状态：none（未关联）/ pending（未建）/ ready / failed。"""
+    """查询原著索引状态：none（未关联）/ building（后台建索引中）/ pending（未建）/ ready / failed。"""
     pl = get_pipeline(pid)
     ni = getattr(pl, "novel_index", None)
     if ni is None:
         return {"status": "none", "novel_ref": getattr(pl, "novel_ref", "")}
+    with _INDEX_BUILD_LOCK:
+        building = pid in _INDEX_BUILDING
     if getattr(pl, "_novel_index_failed", False):
         return {"status": "failed", "novel_ref": ni.ref}
     meta = ni.get_meta()
+    if building and not meta:
+        return {"status": "building", "novel_ref": ni.ref}
     if not meta:
         return {"status": "pending", "novel_ref": ni.ref}
     return {

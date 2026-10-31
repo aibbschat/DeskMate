@@ -744,6 +744,18 @@ class CreativePipeline:
     def draft_screenplay(self, screen_item_id: Optional[int] = None, *, episode: Optional[int] = None,
                          on_event=None, abort: "Optional[threading.Event]" = None) -> str:
         """撰写剧本（分集模式按集写，episode 空则自动推进下一未定稿集）。"""
+        # 防覆写：分集模式全部定稿后，「写剧本」若不指定集号会落到最后一集并
+        # 静默重写其已定稿草稿——改为明确报错，要求用户指定要重写的集号。
+        if screen_item_id is None and episode is None and self._is_episodic():
+            items = self.ids.get("screen_items", {}) or {}
+            nxt = self._next_episode()
+            if nxt in items and self.store.get_item(self.space, items[nxt], actor=self.lead)[
+                "state"
+            ] == "done":
+                raise ValueError(
+                    f"全部 {len(items)} 集都已定稿。若要重写某一集，请明确指定集号"
+                    f"（如「重写第{nxt}集」），以免覆盖已定稿的草稿"
+                )
         screen_item_id = screen_item_id or self._screen_item_id(episode)
         review_item_id = self._screen_review_item_id(episode)
         if episode is None:
