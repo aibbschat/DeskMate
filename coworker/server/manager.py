@@ -877,6 +877,16 @@ class SessionManager:
                 engine.permissions.worker_shared_scopes = (
                     Path(self._provision_scratch(lead_session)),
                 )
+        # Team lead lane (owner ruling 2026-10-31): the approver must not need
+        # approving. A lead's decide_worker_call is how it answers a worker's parked
+        # approval; upstream marks that tool consequential on purpose, which recursed
+        # into a 39-minute deadlock on the first live expert run (the lead's allow
+        # sat in the user's inbox while three worker approvals idled behind it).
+        # Roster is the source of truth — for_lead_session, mirroring the worker
+        # lane's for_worker_session — so a resumed/rebuilt lead engine (durable
+        # resume) keeps the lane, and a disbanded team's ex-lead loses it.
+        if self.teams.for_lead_session(session_id) is not None:
+            engine.permissions.team_lead = True
         self._engines[session_id] = engine
         # 自动化运行标记：本会话若是某个定时/手动任务的运行实例，它跑出的 web_search 等
         # 工具结果不能算作萧盛影响（否则检索转储会冒充满「内部·萧盛」标）。owning_task 在

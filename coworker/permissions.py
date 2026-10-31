@@ -348,6 +348,17 @@ class PermissionEngine:
     # shared scratch. Kept separate from `worker_scope` (which stays the worker's
     # own output dir) so the two are never confused in a decision's reason string.
     worker_shared_scopes: tuple[Path, ...] = ()
+    # Team lead lane (owner ruling 2026-10-31, 「给 lead 开审批车道」). True only for
+    # a session the manager resolved as SOME team's lead (TeamRegistry.for_lead_session).
+    # Why: decide_worker_call is how a lead answers a worker's parked approval, and
+    # its upstream metadata is deliberately `requires_approval=True` ("Consequential
+    # on purpose") — which recurses: the approver needs approving. Measured on the
+    # first live expert run (2026-10-31 16:04): the lead woke, issued the two allow
+    # decisions, and its own call parked in the user's inbox for 39 minutes while
+    # three worker approvals idled behind it. An unattended team deadlocks there.
+    # The lane covers ONLY the lead's team-management verbs (decide_worker_call /
+    # steer_worker); every floor above still applies and writes/shell still ask.
+    team_lead: bool = False
 
     def __post_init__(self) -> None:
         self.workspace_root = Path(self.workspace_root).expanduser().resolve()
@@ -584,6 +595,22 @@ class PermissionEngine:
         # Custom mode auto-approves the configured tools.
         if self.mode is Mode.CUSTOM and tool_name in self.auto_allow_tools:
             return Decision(True, "auto-allowed by config")
+
+        # ── Team lead lane (owner ruling 2026-10-31) ──────────────────────────
+        # The approver must not need approving. `decide_worker_call` IS the lead's
+        # act of answering a worker's parked approval; its upstream metadata marks it
+        # consequential on purpose, which recursed into a 39-minute deadlock on the
+        # first live expert run (the lead's allow sat in the user's inbox while three
+        # worker approvals idled behind it). The lane is narrow on purpose:
+        #   • only the two team-management verbs a lead owns — decide_worker_call
+        #     (answer a worker's parked call) and steer_worker (downward guidance);
+        #   • only for a session the manager resolved as a team's lead.
+        # What still asks, unchanged: the lead's own writes (your manuscript!), shell,
+        # deletes, connector egress — this lane never touches the filesystem.
+        # add_worker is deliberately NOT here: spawning sessions spends real
+        # resources and deserves a human's click.
+        if self.team_lead and tool_name in ("decide_worker_call", "steer_worker"):
+            return Decision(True, "team lead: managing its own workers")
 
         # ── Team worker lane (owner ruling 2026-10-31) ─────────────────────────
         # Deliberately the LAST auto-approve path: every floor above still applies and
