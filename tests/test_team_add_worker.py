@@ -169,13 +169,17 @@ def test_chat_add_expert_staffs_the_team(manager, tmp_path):
     )
     pl.start_screenplay_project("一个关于诏狱的故事")
 
+    # 候选池里必须有真实可用的创作类专家（评审反馈：建团后曾只剩运维工人）
+    pool = {p["persona"]: p for p in agent_bridge.available_experts(pl.space)}
+    assert "plot-architect" in pool and not pool["plot-architect"]["joined"], pool
+
     from deskmate.creation.chat_flow import CreationChat
 
     chat = CreationChat(pl, "chattest")
 
     async def _drain():
-        return [m async for m in chat.post("加个 design-worker 专家")]
+        return [m async for m in chat.post("加个情节架构专家")]
 
     msgs = asyncio.run(_drain())
     assert any("已加入团队" in (m.get("title") or m.get("text") or "") for m in msgs), msgs
-    assert any(w.persona == "design-worker" for w in pl._team.workers)
+    assert any(w.persona == "plot-architect" for w in pl._team.workers)
