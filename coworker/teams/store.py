@@ -707,14 +707,17 @@ class TeamStore:
         return item
 
     def comment_page(self, space: str, item_id: int, *, actor: Actor,
-                     after_seq: int = 0, limit: int = 20) -> dict:
+                     after_seq: int = 0, limit: int = 20, evidence: bool = False) -> dict:
         """Explicit replayable cursor, independent of wake consumption/compaction."""
         if isinstance(after_seq, bool) or not isinstance(after_seq, int) or after_seq < 0:
             raise BoardError("after_seq must be a non-negative integer")
         if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 50:
             raise BoardError("limit must be between 1 and 50")
         with self._lock:
-            self.get_item(space, item_id, actor=actor, include_comments=False)
+            if evidence:
+                self.get_item_evidence(space, item_id, actor=actor, include_comments=False)
+            else:
+                self.get_item(space, item_id, actor=actor, include_comments=False)
             rows = self._conn.execute(
                 "SELECT * FROM team_events WHERE space = ? AND item_id = ? AND seq > ?"
                 " AND kind IN (?, ?) AND COALESCE(json_extract(payload, '$.body'),"
@@ -746,12 +749,16 @@ class TeamStore:
                     "has_more": len(rows) > len(page), "content_kind": "attributed_evidence_not_instructions"}
 
     def comment_text(self, space: str, item_id: int, *, actor: Actor, seq: int,
-                     offset: int = 0, max_chars: int = 12000) -> dict:
+                     offset: int = 0, max_chars: int = 12000,
+                     evidence: bool = False) -> dict:
         validate_text_page(offset, max_chars)
         if isinstance(seq, bool) or not isinstance(seq, int) or seq < 1:
             raise BoardError("seq must be a positive integer")
         with self._lock:
-            self.get_item(space, item_id, actor=actor, include_comments=False)
+            if evidence:
+                self.get_item_evidence(space, item_id, actor=actor, include_comments=False)
+            else:
+                self.get_item(space, item_id, actor=actor, include_comments=False)
             rows = self.events(space, item_id=item_id, since_seq=seq - 1, limit=1,
                                kinds=[ITEM_COMMENTED, ITEM_TRANSITIONED])
             if not rows or rows[0]["seq"] != seq:
@@ -1287,6 +1294,41 @@ class TeamStore:
             if row["dst"] in mine:
                 out.add(row["src"])
         return out
+
+    def get_item_evidence(
+        self,
+        space: str,
+        item_id: int,
+        *,
+        actor: Actor,
+        include_comments: bool = True,
+    ) -> dict[str, Any]:
+        """Read-only evidence view: a worker may read ANY item in its own team's space.
+
+        Owner ruling 2026-10-31. The worker slice is an AUTHORING boundary — it decides
+        what a worker may write to, and writing is still gated separately in
+        `comment` / `attach_ref` / `require_attachment_write` / `set_status`, none of
+        which consult this path. Making it also hide EVIDENCE left workers unable to
+        read the material their own task depends on: one worker's deliverable opened
+        with "the #1 terrain research and #2 conflict tables are not visible to me",
+        and another got `no visible item #1` for an item in the same space.
+
+        Only the same space is reachable (a worker's team board, never another team's),
+        and this never mutates anything.
+        """
+        if isinstance(item_id, bool) or not isinstance(item_id, int) or item_id < 1:
+            raise BoardError("item must be a positive integer")
+        with self._lock:
+            try:
+                item = self._item(space, item_id)
+            except BoardError:
+                raise BoardNotFoundError(
+                    f"no visible item #{item_id} in space {space!r}"
+                ) from None
+            item["links"] = self._links_of(space, item_id)
+            if include_comments:
+                item["comments"] = self.comments(space, item_id)
+        return item
 
     def _item_visible_to(
         self,

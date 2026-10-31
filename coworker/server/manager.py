@@ -842,6 +842,18 @@ class SessionManager:
         # worker role gets this — the lead and every human-facing session are unaffected.
         if self.teams.for_worker_session(session_id) is not None:
             engine.permissions.worker_scope = self.scratch_base() / session_id
+            # The team's shared scratch (the lead's own scratch dir, handed to every
+            # worker as a writable root in `_session_roots`) must be writable without
+            # a prompt too: an unattended team has nobody to click Allow, so a worker
+            # that saves hand-off files there would park forever. Same lane rule —
+            # only this team's shared dir, still no shell, still no writes elsewhere.
+            member = self.teams.for_worker_session(session_id)
+            if member is not None:
+                # Path, not str: this is assigned onto a live engine (no
+                # __post_init__ re-run), and the decision path compares Paths.
+                engine.permissions.worker_shared_scopes = (
+                    Path(self._provision_scratch(member[0].lead_session)),
+                )
         self._engines[session_id] = engine
         # 自动化运行标记：本会话若是某个定时/手动任务的运行实例，它跑出的 web_search 等
         # 工具结果不能算作萧盛影响（否则检索转储会冒充满「内部·萧盛」标）。owning_task 在
@@ -3133,7 +3145,13 @@ class SessionManager:
             if kind == WORKER_WAITING:
                 return is_lead  # digest also checks the exact prompt is still pending
             if kind == "item_commented":
-                if p.get("attachments") or p.get("artifact"):
+                if p.get("artifact"):
+                    # A published deliverable is the worker's hand-off: the lead MUST
+                    # see it. Gating this on needs_attention meant a worker could
+                    # attach_file and never wake the lead (2026-10-31) — the lead then
+                    # judged "zero output" over work that actually existed.
+                    return is_lead
+                if p.get("attachments"):
                     return bool(p.get("needs_attention")) and is_lead
                 if e.get("actor_role") == "user":
                     return True
@@ -3290,20 +3308,38 @@ class SessionManager:
                 lines.append(f"New item filed by {event['actor']}: {title}")
                 rows.append({**row, "kind": "filed"})
             elif event["kind"] == "item_commented":
+                artifact = payload.get("artifact") or {}
+                # A published deliverable is the hand-off itself: name it in the wake
+                # line so a lead scanning the digest sees "there is output" without
+                # having to guess from a one-line caption.
+                published = ""
+                if artifact:
+                    published = (
+                        f" 〔工件 {artifact.get('name', '?')}"
+                        f" v{artifact.get('version', '?')}"
+                        f" · {artifact.get('bytes', 0)}B · artifact_id="
+                        f"{artifact.get('artifact_id', '')}"
+                        f" — 全文用 read_team_artifact 读〕"
+                    )
                 lines.append(
                     f"Comment on {title} by {event['actor']}:"
-                    f" {clamp(payload.get('body', ''))}"
+                    f" {clamp(payload.get('body', ''))}{published}"
                 )
-                rows.append(
-                    {
-                        **row,
-                        "kind": "comment",
-                        "needs_attention": bool(payload.get("needs_attention")),
-                        "note": self._clamp(
-                            payload.get("body") or "", self.DIGEST_CLAMP_UI
-                        ),
+                comment_row = {
+                    **row,
+                    "kind": "comment",
+                    "needs_attention": bool(payload.get("needs_attention")),
+                    "note": self._clamp(payload.get("body") or "", self.DIGEST_CLAMP_UI),
+                }
+                if artifact:
+                    comment_row["artifact"] = {
+                        "artifact_id": artifact.get("artifact_id", ""),
+                        "version": artifact.get("version"),
+                        "name": artifact.get("name", ""),
+                        "bytes": artifact.get("bytes", 0),
+                        "ref": artifact.get("ref", ""),
                     }
-                )
+                rows.append(comment_row)
             elif event["kind"] == WORKER_WAITING:
                 # §11.6: a worker parked on a tool call under a Manual lead. The lead
                 # decides (its decision asks the human), or the human answers directly.

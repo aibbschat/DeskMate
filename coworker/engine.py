@@ -102,6 +102,12 @@ async def _deny_all(_request: PermissionRequest) -> ApprovalOutcome:
 
 
 class TurnEngine:
+    # How many times a single turn will re-ask after a model round that produced
+    # neither text nor tool calls. Two is enough for a thinking model that loses its
+    # answer into `reasoning` once, and short enough that a wedged model costs two
+    # round-trips instead of the whole iteration budget.
+    _EMPTY_TURN_MAX_RETRIES = 2
+
     def __init__(
         self,
         *,
@@ -295,6 +301,11 @@ class TurnEngine:
         # Set by a tool carrying `__coworker_yields_turn__` (self-wake): the loop ends the
         # turn right after this iteration instead of continuing to another model round.
         self._yield_for_wake = False
+        # Empty-turn guard: a round that produced neither text nor tool calls is not
+        # "the model is done", it is a silent no-op (thinking-only models put the whole
+        # answer in `reasoning`). Counted per turn so a stuck model can't burn the
+        # iteration budget forever — see _EMPTY_TURN_MAX_RETRIES.
+        self._empty_turn_retries = 0
         # tool_call.id → the standing rule that auto-allowed it ("tool → target"), so the
         # TOOL_FINISHED event can carry the note to the tool card (§25).
         self._standing_notes: dict[str, str] = {}
@@ -509,6 +520,7 @@ class TurnEngine:
 
     async def _loop(self) -> AsyncIterator[Event]:
         self._yield_for_wake = False
+        self._empty_turn_retries = 0
         iterations = 0
         while True:
             if iterations >= self.max_iterations:
@@ -617,6 +629,31 @@ class TurnEngine:
                 if self._steering:
                     self._inject_steering()
                     continue
+                if self._empty_turn(turn):
+                    # A round with no text and no calls used to end the turn silently —
+                    # the worker looked "assigned and idle" while producing nothing
+                    # (2026-10-31: 9 of 14 assistant rounds on one worker were empty).
+                    # Ask once for visible output instead of assuming it is finished.
+                    self._empty_turn_retries += 1
+                    self._inject_empty_turn_nudge(turn)
+                    yield Event(
+                        EventType.ITERATION_END,
+                        {
+                            "iteration": iterations,
+                            "empty_turn": True,
+                            "retry": self._empty_turn_retries,
+                        },
+                    )
+                    continue
+                if self._empty_turn_retries and not (turn.text or "").strip():
+                    # Retries asked for output and still got nothing. Say so on the
+                    # record instead of ending on a blank assistant message: "no
+                    # output" is a diagnosis, a blank bubble is a mystery.
+                    self._append_notice(
+                        "empty_turn",
+                        f"模型连续 {self._empty_turn_retries + 1} 轮没有产出任何正文或工具调用，"
+                        "本轮已结束（内容可能只写进了思考过程）。",
+                    )
                 # Post-turn hook: fire-and-forget memory/skill extraction.
                 # ⚠️ MUST be non-blocking: the hook makes sync LLM calls
                 # (post_session_summary, evolve_skill_on_success) that take 2-5s.
@@ -2333,6 +2370,52 @@ class TurnEngine:
             text = text.strip()
             if text:
                 self._ask_replies.append((anchor, text, q))
+
+    def _empty_turn(self, turn: "AssistantTurn") -> bool:
+        """True when this model round left nothing anyone can see — no text, no tool
+        calls — and the loop should ask once instead of ending the turn.
+
+        Ending on an empty round is how a worker ends up "assigned and idle with zero
+        output": thinking models put the whole answer in `reasoning` (display-only),
+        so the transcript shows an assistant message with an empty body and the turn
+        simply stops (measured 2026-10-31: 9/14, 5/14, 4/12 empty rounds on three
+        workers). Capped so a wedged model cannot burn the iteration budget.
+        """
+        if self._cancel.is_set():
+            return False
+        if self._empty_turn_retries >= self._EMPTY_TURN_MAX_RETRIES:
+            return False
+        return not (turn.text or "").strip()
+
+    def _inject_empty_turn_nudge(self, turn: "AssistantTurn") -> None:
+        """The one-line user-turn nudge that follows an empty round.
+
+        Deliberately names the two real causes separately: content written only into
+        thinking (invisible to everyone else, and to the board), and a genuinely
+        no-op round. Asks for visible output — text or a tool call — never for
+        "try again" in the abstract.
+        """
+        last = self._empty_turn_retries >= self._EMPTY_TURN_MAX_RETRIES
+        if (turn.reasoning or "").strip():
+            head = (
+                "你上一轮把内容全部写进了思考过程（reasoning），正文为空、也没有调用任何工具。"
+                "思考只有你自己能看到——团队、看板和用户都收不到任何东西。"
+            )
+        else:
+            head = "你上一轮既没有输出正文，也没有调用任何工具，等于什么都没做。"
+        if last:
+            tail = (
+                "最后一次：请直接用一句话说明你正在做什么、或卡在哪里（写文件 / 看板交接 / "
+                "转状态都行）。再留空，本轮就到此结束，系统会判定你停滞。"
+            )
+        else:
+            tail = (
+                "请立刻给出可见产出：要么写出正文回复，要么调用工具（写文件并发布到看板、"
+                "在日志留交接、把工作项转成 review 或 blocked）。不要只思考不落地。"
+            )
+        self.messages.append(
+            {"role": "user", "content": head + tail, "ts": time.time()}
+        )
 
     def _inject_steering(self) -> None:
         for text, source in self._steering:

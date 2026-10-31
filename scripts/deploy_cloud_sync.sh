@@ -325,6 +325,11 @@ COWORKER_ROOT_MODULES=(
   # 漏传 ⇒ 云端跑旧 inbox.py，主编审批 worker 请求这条链路在云端**整体静默失效**
   # （不报错、不告警，只表现为「派下去的活又卡住」）。
   "coworker/inbox.py"
+  # ⚠️ 2026-10-31 补：permissions.py 是 worker 车道（worker_scope / worker_shared_scopes）
+  # 的唯一实现处。它从未进过传输清单，而 manager.get_engine 是**运行期赋值**
+  # （engine.permissions.worker_scope = ...），导入期不报错、不告警 —— 漏传的后果不是崩，
+  # 是云端 worker 每写一个文件都弹审批卡，无人值守即永久卡死（团队场景最隐蔽的静默失效）。
+  "coworker/permissions.py"
 )
 # 团队底座（2026-10-28 整包对齐上游）：store/summary 等被 server/manager.py 直接 import。
 # 本次移植 TeamView 需要 summary.make_summary + store 的 set_status/分页/附件鉴权，

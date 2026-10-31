@@ -294,6 +294,15 @@ def standing_rule_candidate(
     return value or None
 
 
+def _within(candidate: Path, scope: Path) -> bool:
+    """Path containment on two already-resolved absolute paths."""
+    try:
+        candidate.relative_to(scope)
+        return True
+    except (ValueError, OSError):
+        return False
+
+
 @dataclass
 class PermissionEngine:
     workspace_root: Path
@@ -335,12 +344,19 @@ class PermissionEngine:
     # 2 rounds, 0 worker output, 2026-10-31). This unlocks ONLY routine work inside its
     # own lane; see the worker branch in evaluate() for the exact shape.
     worker_scope: Optional[Path] = None
+    # Extra directories a team worker may write to without a prompt — the team's
+    # shared scratch. Kept separate from `worker_scope` (which stays the worker's
+    # own output dir) so the two are never confused in a decision's reason string.
+    worker_shared_scopes: tuple[Path, ...] = ()
 
     def __post_init__(self) -> None:
         self.workspace_root = Path(self.workspace_root).expanduser().resolve()
         self.auto_allow_tools = set(self.auto_allow_tools)
         if self.worker_scope is not None:
             self.worker_scope = Path(self.worker_scope).expanduser().resolve()
+        self.worker_shared_scopes = tuple(
+            Path(p).expanduser().resolve() for p in (self.worker_shared_scopes or ())
+        )
         if self.roots is None:
             self.roots = [{"path": self.workspace_root, "writable": True}]
 
@@ -594,8 +610,14 @@ class PermissionEngine:
                     and paths
                     and all(self._under_worker_scope(p) for p in paths)
                 ):
+                    shared = any(
+                        self._under_worker_shared_scope(p) for p in paths
+                    )
                     return Decision(
-                        True, "team worker: write inside its own output directory"
+                        True,
+                        "team worker: write inside the team shared scratch"
+                        if shared
+                        else "team worker: write inside its own output directory",
                     )
 
         # Otherwise: ask the user.
@@ -654,16 +676,36 @@ class PermissionEngine:
         return False
 
     def _under_worker_scope(self, path: str) -> bool:
-        """True iff this path lands inside the worker's own output directory. Anchored
-        exactly like `_under_root` (relative paths resolve against the workspace), so a
-        worker can't widen its lane by passing a relative or `~` path."""
-        if self.worker_scope is None:
+        """True iff this path lands inside the worker's own output directory or the
+        team's shared scratch. Anchored exactly like `_under_root` (relative paths
+        resolve against the workspace), so a worker can't widen its lane by passing a
+        relative or `~` path.
+
+        The shared scratch is included because the runtime hands it to every worker as
+        a writable root; without it a worker saving a hand-off there parks on an
+        approval that nobody is present to click (the whole point of the worker lane).
+        """
+        scopes = list(self.worker_shared_scopes or ())
+        if self.worker_scope is not None:
+            scopes.append(self.worker_scope)
+        if not scopes:
             return False
         try:
-            self._candidate(path).relative_to(self.worker_scope)
-            return True
+            candidate = self._candidate(path)
         except (ValueError, OSError):
             return False
+        return any(_within(candidate, scope) for scope in scopes)
+
+    def _under_worker_shared_scope(self, path: str) -> bool:
+        """True iff the path lands in the team's shared scratch (not the worker's own
+        dir) — only used to word the auto-allow reason honestly."""
+        if not self.worker_shared_scopes:
+            return False
+        try:
+            candidate = self._candidate(path)
+        except (ValueError, OSError):
+            return False
+        return any(_within(candidate, scope) for scope in self.worker_shared_scopes)
 
     def _touches_protected(
         self, tool_name: str, arguments: dict[str, Any], is_shell: bool

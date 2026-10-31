@@ -130,6 +130,69 @@ def test_worker_scope_is_only_set_for_the_worker_role(manager):
     assert lead_engine.permissions.worker_scope is None
 
 
+def _shared_engine(tmp_path, shared: str):
+    """A worker-lane engine that also owns the team's shared scratch."""
+    ws = tmp_path / "repo"
+    ws.mkdir(exist_ok=True)
+    lane = tmp_path / "scratch" / "worker"
+    lane.mkdir(parents=True, exist_ok=True)
+    return PermissionEngine(
+        workspace_root=ws,
+        mode=Mode.INTERACTIVE,
+        roots=[
+            {"path": str(ws), "writable": True},
+            {"path": str(lane), "writable": True},
+            {"path": shared, "writable": True},
+        ],
+        worker_scope=lane,
+        worker_shared_scopes=(shared,),
+    )
+
+
+def test_worker_lane_allows_writes_into_the_team_shared_scratch(tmp_path):
+    """共享盘是可写 root，就必须也能写——否则无人值守的 worker 会卡在审批上。
+
+    现场：root 里给了 lead 的 team scratch，但作用域只认 worker 自己的目录，
+    写共享盘会弹卡，而团队场景没有人在旁边点允许。
+    """
+    shared = tmp_path / "scratch" / "lead"
+    shared.mkdir(parents=True, exist_ok=True)
+    d = _shared_engine(tmp_path, str(shared)).evaluate(
+        "write_file", {"path": str(shared / "交接.md"), "content": "x"}
+    )
+    assert d.allowed and "shared scratch" in d.reason
+    # 自己的目录仍然是「自己的目录」这条口径，不被共享盘顶掉
+    own = _shared_engine(tmp_path, str(shared)).evaluate(
+        "write_file",
+        {"path": str(tmp_path / "scratch" / "worker" / "草稿.md"), "content": "x"},
+    )
+    assert own.allowed and "own output directory" in own.reason
+
+
+def test_worker_shared_scratch_still_refuses_everything_else(tmp_path):
+    """共享盘不是提权：稿子目录、别人的会话目录照样要问。"""
+    shared = tmp_path / "scratch" / "lead"
+    shared.mkdir(parents=True, exist_ok=True)
+    eng = _shared_engine(tmp_path, str(shared))
+    assert not eng.evaluate(
+        "write_file", {"path": str(tmp_path / "repo" / "正文.md"), "content": "x"}
+    ).allowed
+    assert not eng.evaluate(
+        "write_file",
+        {"path": str(tmp_path / "scratch" / "someone-else" / "x.md"), "content": "x"},
+    ).allowed
+
+
+def test_shared_scratch_is_wired_only_for_the_worker(manager):
+    """接线：worker 的 engine 拿到团队共享盘（lead 的 scratch），lead 自己没有。"""
+    worker_engine = manager.get_engine("worker", agent="swe-worker")
+    lead_engine = manager.get_engine("lead", agent="swe-lead")
+    shared = worker_engine.permissions.worker_shared_scopes
+    assert shared, "worker 必须拿到团队共享盘，否则写交接文件会被拦"
+    assert shared[0].name == "lead"
+    assert not lead_engine.permissions.worker_shared_scopes
+
+
 # -- 2. deleting a session no longer orphans the team --------------------------
 
 

@@ -292,3 +292,75 @@ def test_create_item_tool_schema_keeps_the_title_parameter(store):
     # The auto-generator strips dict keys named "title" (pydantic metadata cleanup),
     # which would delete this parameter; the explicit schema must keep it.
     assert "title" in properties
+
+
+# ------------------------------------------- 只读证据通道（2026-10-31 萧哥拍板）
+
+
+def test_worker_can_read_another_workers_item_as_evidence(store):
+    """主人的活要用到队友的材料时，队友的工作项必须读得到。
+
+    现场：worker 的产出开头写着「#1 后半部地图考据、#2 三方冲突落地，在我这边不可见」，
+    另一个 worker 直接拿到 `no visible item #1 in space`（同一个 space 里明明有）。
+    """
+    mine = assigned_item(store, assignee="worker-1")
+    theirs = assigned_item(store, assignee="worker-2")
+    store.comment(SPACE, Actor(id="worker-2", role=Role.WORKER), theirs, "考据：仓廒十二")
+
+    evidence = store.get_item_evidence(SPACE, theirs, actor=WORKER)
+    assert evidence["id"] == theirs
+    assert any("考据" in c["body"] for c in evidence["comments"])
+
+
+def test_evidence_read_does_not_widen_the_authored_slice(store):
+    """证据只读：`list_items` 与 `get_item` 的作用域语义一字不改。"""
+    mine = assigned_item(store, assignee="worker-1")
+    theirs = assigned_item(store, assignee="worker-2")
+
+    assert {i["id"] for i in store.list_items(SPACE, WORKER)} == {mine}
+    with pytest.raises(BoardError):
+        store.get_item(SPACE, theirs, actor=WORKER)
+
+
+def test_evidence_read_grants_no_write(store):
+    """读到 ≠ 能写：评论、附件、状态变更仍各自独立把关。"""
+    theirs = assigned_item(store, assignee="worker-2")
+    with pytest.raises(AuthorityError, match="assigned"):
+        store.comment(SPACE, WORKER, theirs, "drive-by")
+    with pytest.raises(AuthorityError):
+        store.require_attachment_write(SPACE, WORKER, theirs)
+    # set_status 先过可见性再过归属，落在 BoardError —— 一样是写不进去
+    with pytest.raises(BoardError):
+        store.set_status(SPACE, WORKER, theirs, "帮忙改一下")
+
+
+def test_evidence_read_is_bounded_by_space(store, tmp_path):
+    """别的团队看板照样读不到——开口只在自己这支队伍里。"""
+    other = TeamStore(tmp_path / "other.db")
+    try:
+        item = other.create_item("elsewhere", Actor(id="lead-2", role=Role.LEAD),
+                                 title="别队的活", criteria="c")
+        with pytest.raises(BoardError):
+            store.get_item_evidence("elsewhere", item["id"], actor=WORKER)
+        with pytest.raises(BoardError):
+            store.get_item_evidence(SPACE, 9999, actor=WORKER)
+    finally:
+        other.close()
+
+
+def test_worker_tool_layer_reads_cross_team_evidence(store):
+    """工具层：worker 的 get_item / get_item_comments 走证据通道。"""
+    theirs = assigned_item(store, assignee="worker-2")
+    store.comment(SPACE, Actor(id="worker-2", role=Role.WORKER), theirs, "龙山仓：仓廒十二")
+
+    tools = {t.__name__: t for t in board_tools(store, space=SPACE, actor=WORKER)}
+    got = tools["get_item"](item=theirs)
+    assert "error" not in got, got
+    assert got["id"] == theirs
+
+    page = tools["get_item_comments"](item=theirs)
+    assert any("龙山仓" in c["body"] for c in page["comments"]), page
+
+    # 主编的视图不受影响（作用域本来就是全开）
+    lead_tools = {t.__name__: t for t in board_tools(store, space=SPACE, actor=LEAD)}
+    assert lead_tools["get_item"](item=theirs)["id"] == theirs
