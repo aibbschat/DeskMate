@@ -263,14 +263,14 @@ class CreationChat:
         store = pl.store
         space = pl.space
         ids = pl.ids
-        outline_item = store.get_item(space, ids.get("outline_item", -1)) if ids.get("outline_item") else {}
-        outline_review = store.get_item(space, ids.get("outline_review_item", -1)) if ids.get("outline_review_item") else {}
+        outline_item = store.get_item(space, ids.get("outline_item", -1), actor=pl.lead) if ids.get("outline_item") else {}
+        outline_review = store.get_item(space, ids.get("outline_review_item", -1), actor=pl.lead) if ids.get("outline_review_item") else {}
         screen_items = ids.get("screen_items") or {}
         current_ep = pl._next_episode() if pl._is_episodic() else None
         # screen_items 内存中是 int 键（pipeline.py:415），JSON 恢复后是 str 键；
         # 统一用 int(ep) 取（恢复路径已在 service._restore_pipeline 归一化回 int）
         screen_item = (
-            store.get_item(space, screen_items[int(current_ep)])
+            store.get_item(space, screen_items[int(current_ep)], actor=pl.lead)
             if current_ep and int(current_ep) in screen_items
             else {}
         )

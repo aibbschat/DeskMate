@@ -253,9 +253,12 @@ def make_summary(manager, team, now):
             ]
         )
         step = None
+        last_activity = 0.0
         for m in messages:
+            ts = stamp((m.get("timing") or {}).get("model_started") or m.get("ts"))
+            if ts:
+                last_activity = max(last_activity, ts)
             if m.get("role") == "assistant" and isinstance(m.get("usage"), dict):
-                ts = stamp((m.get("timing") or {}).get("model_started") or m.get("ts"))
                 if ts:
                     usage_points.append(
                         {
@@ -289,6 +292,7 @@ def make_summary(manager, team, now):
                 "workspace": record.workspace if record else "",
                 "running": manager.is_running(sid),
                 "tokens": total,
+                "last_activity": last_activity,
                 "usage_partial": any(
                     m.get("role") == "assistant" and not m.get("usage")
                     for m in messages

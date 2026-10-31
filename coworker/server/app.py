@@ -295,6 +295,7 @@ from ..providers import AssistantTurn
 from .. import toolchain
 from ..teams.model import AuthorityError as TeamsAuthorityError
 from ..teams.model import BoardError as TeamsBoardError
+from ..teams.model import BoardNotFoundError as TeamsBoardNotFoundError
 from .manager import SessionManager
 
 
@@ -1241,12 +1242,13 @@ def create_app(manager: SessionManager) -> FastAPI:
         from fastapi.responses import Response
 
         try:
-            path = manager.attachment_store.path_for(name)
+            data, mime = manager.board_attachment(session_id, name)
         except TeamsBoardError as error:
             return JSONResponse({"error": str(error)}, status_code=404)
         return Response(
-            content=path.read_bytes(),
-            media_type=manager.attachment_store.mime_for(name),
+            content=data,
+            media_type=mime,
+            headers={"X-Content-Type-Options": "nosniff", "Content-Security-Policy": "sandbox"},
         )
 
     @app.post("/v1/sessions/{session_id}/board/comment")
@@ -1306,6 +1308,11 @@ def create_app(manager: SessionManager) -> FastAPI:
             )
         try:
             return handler(actor)
+        except TeamsBoardNotFoundError as error:
+            # Hidden and missing share one code on purpose — a board reader must
+            # not be able to probe item ids it cannot see (store raises NotFound
+            # for both; upstream parity).
+            return JSONResponse({"error": str(error)}, status_code=404)
         except TeamsAuthorityError as error:
             return JSONResponse({"error": str(error)}, status_code=403)
         except (TeamsBoardError, ValueError) as error:
@@ -1339,6 +1346,17 @@ def create_app(manager: SessionManager) -> FastAPI:
         return _board(
             request, lambda actor: manager.team_store.get_item(space, int(id), actor=actor)
         )
+
+    @app.get("/v1/board/comments")
+    def board_comments(request: Request, space: str, id: int, after_seq: int = 0, limit: int = 20):
+        return _board(request, lambda actor: manager.team_store.comment_page(
+            space, id, actor=actor, after_seq=after_seq, limit=limit))
+
+    @app.get("/v1/board/comment")
+    def board_comment_text(request: Request, space: str, id: int, seq: int,
+                           offset: int = 0, max_chars: int = 12000):
+        return _board(request, lambda actor: manager.team_store.comment_text(
+            space, id, actor=actor, seq=seq, offset=offset, max_chars=max_chars))
 
     @app.post("/v1/board/items")
     def board_create_item(request: Request, body: dict):
@@ -1382,16 +1400,20 @@ def create_app(manager: SessionManager) -> FastAPI:
     @app.post("/v1/board/items/comment")
     def board_comment_item(request: Request, body: dict):
         body = body or {}
-        return _board(
-            request,
-            lambda actor: manager.team_store.comment(
+
+        def run(actor):
+            result = manager.team_store.comment(
                 str(body.get("space", "")),
                 actor,
                 int(body.get("id", 0)),
                 str(body.get("body", "")),
                 refs=[str(ref) for ref in body.get("refs") or []],
-            ),
-        )
+                needs_attention=body.get("needs_attention", False),
+            )
+            manager.kick_team_tick()
+            return result
+
+        return _board(request, run)
 
     @app.post("/v1/board/items/assign")
     def board_assign_item(request: Request, body: dict):
@@ -1408,6 +1430,12 @@ def create_app(manager: SessionManager) -> FastAPI:
             return item
 
         return _board(request, run)
+
+    @app.post("/v1/board/items/status")
+    def board_set_status(request: Request, body: dict):
+        return _board(request, lambda actor: manager.team_store.set_status(
+            str(body.get("space", "")), actor, body.get("id"), body.get("text")
+        ))  # Display-only: deliberately no team tick.
 
     @app.post("/v1/board/items/claim")
     def board_claim_item(request: Request, body: dict):
@@ -1441,6 +1469,13 @@ def create_app(manager: SessionManager) -> FastAPI:
         body = body or {}
 
         def run(actor):
+            # The authoritative publication path (upstream parity): require the
+            # write gate FIRST, store the bytes, then attach_ref writes the
+            # dedicated payload event. A plain comment carrying an attachment://
+            # ref must NEVER grant attachment-byte access (anti-forgery).
+            manager.team_store.require_attachment_write(
+                str(body.get("space", "")), actor, int(body.get("id", 0))
+            )
             raw = str(body.get("data_b64", ""))
             # Cheap pre-decode bound: base64 is ~4/3 of the payload, so anything
             # multiples over the cap is refused before allocating the decode.
@@ -1458,26 +1493,30 @@ def create_app(manager: SessionManager) -> FastAPI:
                 data, str(body.get("filename", ""))
             )
             filename = str(body.get("filename", ""))
-            event = manager.team_store.comment(
+            event = manager.team_store.attach_ref(
                 str(body.get("space", "")),
                 actor,
                 int(body.get("id", 0)),
                 str(body.get("caption", "")) or f"attached {filename}",
-                refs=[ref],
+                ref,
             )
             return {"ref": ref, "seq": event["seq"]}
 
         return _board(request, run)
 
     @app.get("/v1/board/attachment")
-    def board_attachment(request: Request, name: str):
+    def board_attachment(request: Request, name: str, space: str):
         def run(actor):
             from fastapi.responses import Response
 
+            # Attachment bytes are gated by item visibility in that space — a
+            # valid board token alone must not read every blob by name.
+            manager.team_store.require_attachment_access(space, actor, name)
             path = manager.attachment_store.path_for(name)
             return Response(
                 content=path.read_bytes(),
                 media_type=manager.attachment_store.mime_for(name),
+                headers={"X-Content-Type-Options": "nosniff", "Content-Security-Policy": "sandbox"},
             )
 
         return _board(request, run)
@@ -7066,6 +7105,8 @@ def create_app(manager: SessionManager) -> FastAPI:
             await ws.send_json({"type": "input_rejected", "data": {"error": reason}})
 
         async def claim_turn(*, retry: bool = False, content=None, display=None) -> None:
+            # A fresh user turn reverses a previous Stop: automatic wakes are live again.
+            manager.wakes.set_stopped(session_id, False)
             if not manager.try_mark_running(session_id):
                 await reject_input(
                     "This session is already running a turn. Wait for it to finish or stop it."
@@ -7343,7 +7384,7 @@ def create_app(manager: SessionManager) -> FastAPI:
                     else:
                         engine.approve_action_once(name, arguments or {})
                 elif kind == "interrupt":
-                    engine.request_interrupt()
+                    manager.stop_session(session_id)
                 elif kind == "retry":
                     # Re-run after a provider error (engine guards on the error-notice
                     # tail, so a stray frame is a no-op that still ends with turn_done).
@@ -7539,6 +7580,13 @@ def create_app(manager: SessionManager) -> FastAPI:
             pass
         finally:
             manager.unregister_session_client(session_id, ws.send_json)
+            # Nobody is watching this session any more: a prompt parked inline would wait
+            # invisibly, so it moves to the Inbox (and a bound channel) right now — not
+            # on the next engine rebuild.
+            try:
+                await manager.promote_pending_prompts(session_id)
+            except Exception:
+                pass
 
     @app.websocket("/ws/events")
     async def ws_events(ws: WebSocket) -> None:

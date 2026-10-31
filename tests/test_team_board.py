@@ -266,6 +266,22 @@ def test_tools_return_errors_instead_of_raising(store):
     assert "error" in result
 
 
+def test_comment_timestamps_render_with_a_local_offset(store):
+    """The model does time arithmetic against its own clock, so a bare UTC `ts`
+    made a lead read a 21-minute gap as "eight hours" (2026-10-31 incident).
+    Tool output carries the local clock and its offset; the store keeps UTC."""
+    item = assigned_item(store)
+    store.transition(SPACE, WORKER, item, "in_progress")
+    store.comment(SPACE, WORKER, item, "hand-off")
+    tools = {t.__name__: t for t in board_tools(store, space=SPACE, actor=WORKER)}
+    page = tools["get_item_comments"](item=item)
+    assert page["comments"], page
+    stamp = page["comments"][-1]["ts"]
+    assert stamp[-6] in "+-" and stamp[-3] == ":", stamp
+    # the stored value stays UTC — only the model-facing rendering moved
+    assert store.comments(SPACE, item)[-1]["ts"].endswith("+00:00")
+
+
 def test_create_item_tool_schema_keeps_the_title_parameter(store):
     from coworker.tools.registry import ToolRegistry
 

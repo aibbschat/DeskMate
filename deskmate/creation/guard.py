@@ -18,7 +18,7 @@ class PipelineGuard:
         self.store = store
 
     # -- 依赖解析 ----------------------------------------------------------
-    def _parent_ids(self, space: str, item_id: int) -> list[int]:
+    def _parent_ids(self, space: str, item_id: int, actor) -> list[int]:
         """依赖仅来自 ``link(kind=parent)`` 边——即「本项依赖某父项定稿」。
 
         ``_links_of`` 对「本项为子」的 parent 边返回 ``{"kind": "parent", "item": <父id>}``
@@ -29,7 +29,7 @@ class PipelineGuard:
         挂到产出项），**不是**门禁依赖，此处不读取，避免把「大纲审核项针对大纲」误判成
         「审核项依赖大纲 done」而在审核阶段误拦。
         """
-        item = self.store.get_item(space, item_id)
+        item = self.store.get_item(space, item_id, actor=actor)
         parents: list[int] = []
         for link in item.get("links", []) or []:
             if link.get("kind") == "parent":
@@ -39,12 +39,14 @@ class PipelineGuard:
         return parents
 
     # -- 检查 --------------------------------------------------------------
-    def check(self, space: str, item_id: int, to: str) -> None:
-        """进入 in_progress 前的依赖检查；其余状态（open/review/done…）不拦。"""
+    def check(self, space: str, item_id: int, to: str, actor) -> None:
+        """进入 in_progress 前的依赖检查；其余状态（open/review/done…）不拦。
+
+        Reads enforce actor visibility, so the acting member is passed through."""
         if to != "in_progress":
             return
-        for parent_id in self._parent_ids(space, item_id):
-            parent = self.store.get_item(space, parent_id)
+        for parent_id in self._parent_ids(space, item_id, actor):
+            parent = self.store.get_item(space, parent_id, actor=actor)
             if parent.get("state") != "done":
                 raise PipelineGuardError(
                     f"项 #{item_id} 依赖父项 #{parent_id}，但父项尚未定稿"
@@ -57,7 +59,7 @@ class PipelineGuard:
 
         review/done 的 actor 权限由上游 store 照常校验（worker 不能 done/打回）。
         """
-        self.check(space, item_id, to)
+        self.check(space, item_id, to, actor)
         return self.store.transition(
             space, actor, item_id, to, comment=comment, refs=refs, taint=taint
         )

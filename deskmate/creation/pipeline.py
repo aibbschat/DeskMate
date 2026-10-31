@@ -343,7 +343,7 @@ class CreativePipeline:
         """分集模式下默认推进的集号：最小的未定稿集。"""
         items = self.ids.get("screen_items", {})
         for ep in sorted(items):
-            st = self.store.get_item(self.space, items[ep]).get("state")
+            st = self.store.get_item(self.space, items[ep], actor=self.lead).get("state")
             if st != "done":
                 return ep
         return max(items) if items else 1
@@ -378,7 +378,7 @@ class CreativePipeline:
                 break
             rid = self.ids["screen_review_items"][ep]
             try:
-                item = self.store.get_item(self.space, rid)
+                item = self.store.get_item(self.space, rid, actor=self.lead)
             except Exception:  # noqa: BLE001
                 continue
             for c in reversed(item.get("comments", []) or []):
@@ -534,7 +534,7 @@ class CreativePipeline:
         """
         if not self._is_episodic():
             raise PipelineGuardError("当前为全本模式（单文件剧本），不支持加集；请新建分集流水线")
-        outline_item = self.store.get_item(self.space, self.ids.get("outline_item", -1))
+        outline_item = self.store.get_item(self.space, self.ids.get("outline_item", -1), actor=self.lead)
         if outline_item.get("state") != "done":
             raise PipelineGuardError("大纲尚未定稿，不能加集：请先完成大纲审核与拍板")
         existing: dict = dict(self.ids.get("screen_items", {}) or {})
@@ -609,13 +609,13 @@ class CreativePipeline:
 
     # -- 辅助 --------------------------------------------------------------
     def _criteria(self, item_id: int) -> str:
-        return self.store.get_item(self.space, item_id).get("criteria", "")
+        return self.store.get_item(self.space, item_id, actor=self.lead).get("criteria", "")
 
     def _outline_text(self) -> str:
         return self._drafts.get(self.ids.get("outline_item", -1), "")
 
     def _last_review_result(self, review_item_id: int) -> ReviewResult:
-        item = self.store.get_item(self.space, review_item_id)
+        item = self.store.get_item(self.space, review_item_id, actor=self.lead)
         for c in reversed(item.get("comments", []) or []):
             body = c.get("body") or c.get("comment") or ""
             if body:
@@ -663,7 +663,7 @@ class CreativePipeline:
         outline_item_id = outline_item_id or self.ids["outline_item"]
         self.store.assign(self.space, self.lead, outline_item_id, assignee=OUTLINE_WORKER)
         w = Actor(OUTLINE_WORKER, Role.WORKER)
-        if self.store.get_item(self.space, outline_item_id)["state"] == "open":
+        if self.store.get_item(self.space, outline_item_id, actor=self.lead)["state"] == "open":
             self.guard.transition(self.space, w, outline_item_id, to="in_progress", comment="开始撰写大纲")
         # 重写注入：用户打回意见（_user_notes["outline"]）+ 最近一次审核打回意见，
         # 一并拼进 prompt，让 LLM 真正按反馈改，而非原地重来。
@@ -715,7 +715,7 @@ class CreativePipeline:
         if result is None:
             result = self._last_review_result(review_item_id)
         # 状态守卫（与剧本路线一致）：大纲须处于 review 才可定稿
-        cur_state = self.store.get_item(self.space, outline_item_id)["state"]
+        cur_state = self.store.get_item(self.space, outline_item_id, actor=self.lead)["state"]
         if result.approved and cur_state != "review":
             raise ValueError(
                 f"大纲当前处于「{cur_state}」状态，须先重新撰写（写大纲）进入待审，再定稿"
@@ -745,7 +745,7 @@ class CreativePipeline:
             episode = self._episode_of(screen_item_id)
         self.store.assign(self.space, self.lead, screen_item_id, assignee=SCREENPLAY_WORKER)
         w = Actor(SCREENPLAY_WORKER, Role.WORKER)
-        if self.store.get_item(self.space, screen_item_id)["state"] == "open":
+        if self.store.get_item(self.space, screen_item_id, actor=self.lead)["state"] == "open":
             # 门禁点：剧本 in_progress 前检查大纲是否 done；未定稿则抛 PipelineGuardError
             self.guard.transition(self.space, w, screen_item_id, to="in_progress", comment="开始撰写剧本")
         # 防漂移锚点：首次写剧本且无小传时，自动从圣经/大纲抽取人物小传（透明、幂等、落盘复用）。
@@ -818,7 +818,7 @@ class CreativePipeline:
         # 状态守卫：产出项须处于 review（已写稿待拍板）才可定稿。
         # 打回后产出项为 in_progress（重写中），直接拍板会触发 board 底层
         # `in_progress → done` 非法转移 —— 改为明确中文报错，让用户先重写。
-        cur_state = self.store.get_item(self.space, screen_item_id)["state"]
+        cur_state = self.store.get_item(self.space, screen_item_id, actor=self.lead)["state"]
         if result.approved and cur_state != "review":
             raise ValueError(
                 f"{('第'+str(episode)+'集') if episode else '剧本'}当前处于「{cur_state}」状态，须先重新撰写（写剧本）进入待审，再定稿"

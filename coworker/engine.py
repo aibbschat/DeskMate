@@ -292,6 +292,9 @@ class TurnEngine:
         self._turn_truncated = False
         # Each pending steering message: (text, optional MessageSource sidecar dict).
         self._steering: list[tuple[str, Optional[dict[str, Any]]]] = []
+        # Set by a tool carrying `__coworker_yields_turn__` (self-wake): the loop ends the
+        # turn right after this iteration instead of continuing to another model round.
+        self._yield_for_wake = False
         # tool_call.id → the standing rule that auto-allowed it ("tool → target"), so the
         # TOOL_FINISHED event can carry the note to the tool card (§25).
         self._standing_notes: dict[str, str] = {}
@@ -361,6 +364,7 @@ class TurnEngine:
             message["_display"] = display
         self.messages.append(message)
         self._cancel.clear()
+        self._yield_for_wake = False
         if self.session_facts is not None:
             self.session_facts.begin_turn()
         # §8.4 retry guard resets per user turn: two reviewer denials in one turn route
@@ -465,11 +469,15 @@ class TurnEngine:
         if not pending:
             return
         self._cancel.clear()
+        self._yield_for_wake = False
         yield Event(EventType.TURN_START, {"input": "(resumed)"})
         async for event in self._handle_tool_calls(pending):
             yield event
         yield Event(EventType.ITERATION_END, {"iteration": 0})
         if not self._cancel.is_set():
+            if self._yield_for_wake:
+                yield Event(EventType.TURN_END, {"status": "sleeping", "iterations": 0})
+                return
             async for event in self._loop():
                 yield event
 
@@ -500,6 +508,7 @@ class TurnEngine:
         return []
 
     async def _loop(self) -> AsyncIterator[Event]:
+        self._yield_for_wake = False
         iterations = 0
         while True:
             if iterations >= self.max_iterations:
@@ -650,8 +659,15 @@ class TurnEngine:
                 self._append_notice("interrupted")
                 yield Event(EventType.INTERRUPTED, {"iterations": iterations})
                 return
+            if self._yield_for_wake and not self._steering:
+                yield Event(
+                    EventType.TURN_END,
+                    {"status": "sleeping", "iterations": iterations},
+                )
+                return
             if self._steering:
                 self._inject_steering()
+                self._yield_for_wake = False
 
     # -- auto-compaction (OPE-27) ------------------------------------------------
     def _compaction_config(self) -> dict[str, Any]:
@@ -1677,6 +1693,15 @@ class TurnEngine:
             return {"error": str(exc), "error_type": type(exc).__name__}, "error"
 
     def _record_result(self, tool_call: ToolCall, result: Any, status: str) -> Event:
+        spec = self.registry.get(tool_call.name)
+        if (
+            status == "ok"
+            and isinstance(result, dict)
+            and result.get("ok")
+            and spec
+            and getattr(spec.func, "__coworker_yields_turn__", False)
+        ):
+            self._yield_for_wake = True
         self._step += 1
         if status == "ok":
             # Only successful calls: a write that raised left nothing on disk to run.

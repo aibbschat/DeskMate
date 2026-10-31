@@ -377,6 +377,51 @@ def test_digest_clamps_long_comments_and_carries_structured_rows(manager):
     assert moved[0]["note"].endswith("…") and len(moved[0]["note"]) < 700
 
 
+def test_lead_digest_reports_who_is_running_and_anchors_the_clock(manager):
+    """A running worker is a machine signal in the lead's digest, and the digest
+    ends with a local clock. The incident: three workers mid-turn, the lead read
+    "no new comments" as "nobody moved", then subtracted a UTC timestamp from its
+    local clock and called 21 minutes "eight hours"."""
+    import re
+
+    from coworker.sessions import SessionRecord
+    from coworker.teams.registry import TeamWorker
+
+    manager.session_store.save(
+        SessionRecord(
+            session_id="lead",
+            workspace=manager.default_workspace,
+            model="m",
+            mode="interactive",
+            messages=[],
+            agent="editor-in-chief",
+        )
+    )
+    space = manager._board_space("lead")
+    team = manager.teams.create(
+        space=space,
+        lead_session="lead",
+        lead_actor="lead",
+        workers=[TeamWorker(actor="sam", persona="swe-worker", session_id="worker")],
+    )
+    manager._running_sessions.add("worker")
+    item = manager.team_store.create_item(space, LEAD, title="骨架", criteria="c")
+    manager.team_store.assign(space, LEAD, item["id"], "sam")
+    subs = manager.team_store.subscribed_events(space, "lead")
+
+    message, rows = manager._team_digest(team, [], subs, is_lead=True, reader="lead")
+    assert rows  # the digest still carries the event it woke for
+    assert "@sam: running" in message
+    assert "NOT idle" in message
+    assert re.search(r"now: .*[+-]\d{2}:\d{2}", message), message
+
+    # The same worker, idle again: the line says idle instead of pretending
+    # nothing exists.
+    manager._running_sessions.discard("worker")
+    message, _ = manager._team_digest(team, [], subs, is_lead=True)
+    assert "@sam: idle" in message
+
+
 def test_item_detail_timeline_and_blocker_fact(manager):
     """The detail pane renders the item's merged event story; blocked rows carry
     the latest blocker comment as a plain fact (owner-approved mock 2026-08-17)."""

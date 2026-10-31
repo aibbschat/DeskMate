@@ -102,6 +102,9 @@ class InboxStore:
         self._lock = threading.Lock()
         self._items: dict[str, InboxItem] = {}
         self._waiters: dict[str, asyncio.Event] = {}
+        # The loop a waiter was created on, so a resolve from ANY thread (REST, lead
+        # delegation, connector) can wake it with call_soon_threadsafe.
+        self._waiter_loops: dict[str, asyncio.AbstractEventLoop] = {}
         self._load()
 
     # -- persistence ------------------------------------------------------------
@@ -403,8 +406,19 @@ class InboxStore:
             self._save()
         for resolved_id in resolved_ids:
             waiter = self._waiters.get(resolved_id)
-            if waiter is not None:
-                waiter.set()
+            if waiter is None:
+                continue
+            loop = self._waiter_loops.get(resolved_id)
+            if loop is not None and not loop.is_closed():
+                loop.call_soon_threadsafe(waiter.set)
+            else:
+                # No recorded loop (a waiter registered straight into _waiters, e.g. an
+                # embedder or a test). Wake it on the loop running here if there is one;
+                # otherwise nothing is left to schedule onto, so set it directly.
+                try:
+                    asyncio.get_running_loop().call_soon_threadsafe(waiter.set)
+                except RuntimeError:
+                    waiter.set()
         return True
 
     def resolve_session(
@@ -427,9 +441,28 @@ class InboxStore:
             if item is not None and item.state == STATE_RESOLVED:
                 return item.resolution or ""
             ev = self._waiters.setdefault(item_id, asyncio.Event())
+            self._waiter_loops[item_id] = asyncio.get_running_loop()
         await ev.wait()
         resolved = self._items.get(item_id)
         return (resolved.resolution if resolved else "") or ""
+
+    def promote_to_inbox(self, session_id: str) -> list[InboxItem]:
+        """Flip a session's still-pending INLINE prompts to Inbox visibility. Called when
+        the last live viewer of an attended session disconnects: an inline item shows only
+        inside that session, so with nobody watching it the agent would wait invisibly
+        (the 2026-09-01 stall — a question asked over the live path, socket dropped, turn
+        parked until an engine rebuild re-raised it). Promoted items appear in the
+        cross-session Inbox (and mirror to a bound channel) while staying answerable inline
+        when the session is reopened. Returns the items that changed."""
+        changed: list[InboxItem] = []
+        with self._lock:
+            for item in self.pending(session_id):
+                if item.visibility == VIS_INLINE:
+                    item.visibility = VIS_INBOX
+                    changed.append(item)
+            if changed:
+                self._save()
+        return changed
 
     # -- resume reconciliation --------------------------------------------------
     def reconcile_on_resume(self, session_id: str) -> dict:
