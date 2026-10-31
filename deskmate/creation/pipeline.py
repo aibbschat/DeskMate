@@ -619,7 +619,12 @@ class CreativePipeline:
         for c in reversed(item.get("comments", []) or []):
             body = c.get("body") or c.get("comment") or ""
             if body:
-                approved = "打回" not in body and "不合格" not in body
+                # 与 executor.review / 圆桌终审复用同一套 verdict 解析（含 VERDICT 行
+                # 结构化 + 否定式清洗），避免「建议修改三处」这种弱意见被误判打回、
+                # 或「不建议打回」被裸「打回」误杀。
+                from .final_review import parse_verdict
+
+                approved = parse_verdict(body)
                 return ReviewResult(approved=approved, opinion=body)
         return ReviewResult(approved=True, opinion="（无审核意见，默认通过）")
 

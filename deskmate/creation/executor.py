@@ -251,6 +251,29 @@ class StubExecutor:
 
 
 class LLMExecutor:
+    def _call_chat(
+        self, system: str, user: str, *, max_tokens: int, on_event=None, stage: str = ""
+    ) -> str:
+        """统一的 LLM 调用封装：失败时记日志、上报进度 note，并抛出中文友好异常。
+
+        避免 `chat()` 的原始 provider 异常（如「付费组无可用通道」）直接冒到前端；
+        SSE 层（service._stream_step）会把异常转成 `{"type":"error","message":...}`
+        事件，用户看到可读提示而非 Python 栈。
+        """
+        from deskmate.memory.llm import chat, llm_available
+
+        if not llm_available():
+            msg = "未配置 LLM provider 凭证，请在设置中添加 API Key 后重试"
+            _emit(on_event, type="note", message=msg, progress=0)
+            raise RuntimeError(msg)
+        try:
+            return chat(system=system, user=user, max_tokens=max_tokens)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("LLM 生成失败（%s）: %s", stage or "chat", exc)
+            msg = f"生成失败：{exc}（可重试；若持续失败请检查 provider 凭证与配额）"
+            _emit(on_event, type="note", message=msg, progress=0)
+            raise RuntimeError(msg) from exc
+
     def draft_outline(
         self,
         concept: str,
@@ -263,7 +286,7 @@ class LLMExecutor:
         on_event=None,
         abort: "Optional[threading.Event]" = None,
     ) -> str:
-        from deskmate.memory.llm import chat, llm_available
+        from deskmate.memory.llm import llm_available
 
         if not llm_available():
             return ""
@@ -281,7 +304,7 @@ class LLMExecutor:
         rev = _revision_block(revision_notes)
         char_block = _character_block(character_profiles, for_outline=True)
         _emit(on_event, type="note", message="正在撰写大纲…", progress=30)
-        text = chat(
+        text = self._call_chat(
             system="你是资深大纲专家。把用户的概念/剧情点子写成结构完整、"
             "有戏剧冲突的剧本大纲，标注主要人物与幕结构。若提供原著参考，"
             "人物的行为动机、性格弧光、关键悬念必须与原著一致——改编只能换叙事手法，"
@@ -290,6 +313,8 @@ class LLMExecutor:
             "若给出修改要求，须针对上一版的具体问题逐条修订，不得忽悠。",
             user=concept + novel_block + req + rev + char_block,
             max_tokens=2000,
+            on_event=on_event,
+            stage="draft_outline",
         )
         _emit(on_event, type="note", message="大纲初稿完成", progress=100)
         return text
@@ -319,7 +344,7 @@ class LLMExecutor:
 
         每个阶段切换点经 on_event 上报进度（SSE 流式：前端实时看到做到哪一步）。
         """
-        from deskmate.memory.llm import chat, llm_available
+        from deskmate.memory.llm import llm_available
 
         if not llm_available():
             return ""
@@ -341,7 +366,7 @@ class LLMExecutor:
         if abort is not None and abort.is_set():
             return ""
         _emit(on_event, type="note", message="正在拆解场景…", progress=5)
-        plan = chat(
+        plan = self._call_chat(
             system=(
                 "你是编剧统筹。把给定大纲拆成连续场景清单，每行严格格式："
                 "序号.场景名|一句话目标。只输出清单，不要其他内容。"
@@ -349,6 +374,8 @@ class LLMExecutor:
             ),
             user=f"大纲：\n{outline}" + (f"\n\n目标集数：第 {episode}/{episodes} 集" if is_episodic else ""),
             max_tokens=800,
+            on_event=on_event,
+            stage="split_scenes",
         )
         scenes = _parse_scenes(plan)
         if len(scenes) < 2:
@@ -371,12 +398,14 @@ class LLMExecutor:
                 f"并与前情自然衔接。"
                 + (f"（这是第 {episode}/{episodes} 集，结尾须给下集留钩子。）" if is_episodic else "")
             )
-            seg = chat(
+            seg = self._call_chat(
                 system="你是编剧。依据大纲与原著参考撰写剧本正文，注意场景边界清晰、"
                 "人物台词个性鲜明、可拍性。每段只写当前场景，不要重复前情。"
                 "若给出制作要求，必须严格遵守。",
                 user=user,
                 max_tokens=3800,
+                on_event=on_event,
+                stage=f"scene_{i}",
             )
             if not seg or not seg.strip():
                 logger.warning("场景 %s 生成为空，跳过", name)
@@ -396,7 +425,7 @@ class LLMExecutor:
 
     def review(self, text: str, criteria: str, novel_text: str = "", on_event=None,
                 abort: "Optional[threading.Event]" = None) -> ReviewResult:
-        from deskmate.memory.llm import chat, llm_available
+        from deskmate.memory.llm import llm_available
         from deskmate.style_profile_store import format_style_fingerprint
 
         if not llm_available():
@@ -419,11 +448,18 @@ class LLMExecutor:
                 f"明显偏离处须指出并给出修正建议：\n{fp}"
             )
         _emit(on_event, type="note", message="审核专家正在逐项核验…", progress=50)
-        raw = chat(
-            system="你是剧本审核专家。依据验收标准评审文本，先给结论"
-            "（通过/打回），再给可执行的修改意见。若提供原著参考，须对照原著评判改编适配度。",
+        raw = self._call_chat(
+            system="你是剧本审核专家。依据验收标准评审文本。"
+            "输出格式硬性要求：第一行必须是 `VERDICT: APPROVE`（通过定稿）"
+            "或 `VERDICT: REJECT`（打回修改），其后才是可执行的修改意见（好在哪里、"
+            "弱在哪里、怎么改）。判定口径：只有存在会影响成稿质量的硬伤（结构断裂、"
+            "人物 OOC、史实硬错、节奏崩坏、偏离验收标准）才 REJECT；"
+            "「建议优化三处台词」这类弱建议是 APPROVE + 意见，不要打回。"
+            "若提供原著参考，须对照原著评判改编适配度。",
             user=f"验收标准：{criteria}{style_section}\n\n文本：\n{text}{novel_block}",
             max_tokens=6000,
+            on_event=on_event,
+            stage="review",
         )
         # 统一 verdict 解析：复用 final_review.parse_verdict（含否定式清洗），
         # 与终审裁决逻辑一致，避免两套判断对同份文本给出相反结论
