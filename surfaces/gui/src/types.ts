@@ -90,6 +90,9 @@ export interface SessionInfo {
   liveness?: "working" | "sleeping" | "idle";
   // Channels this session listens to (inbound subscriptions).
   subscriptions?: string[];
+  // Which machine hosts the session (upstream's multi-machine roster). This fork's
+  // server does not send it yet — the Team View's roster falls back to "this machine".
+  machine_name?: string;
   // §31: set when the session was spawned by a platform mention rather than the user —
   // machine key ("slack") + display label ("#general · T0ABCD"). Drives the sidebar's
   // "From Slack" group and the row's platform icon.

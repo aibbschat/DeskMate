@@ -21,13 +21,30 @@ function summarize(rows: BoardWakeRow[]): { text: string; attention: boolean } {
     else if (row.kind === "assigned") bump("assignment");
     else if (row.kind === "comment") bump("comment");
     else if (row.kind === "chat") bump("chat message");
+    else if (row.kind === "waiting") {
+      // §11.6: a parked worker call. Only the lead can answer it — for anyone else
+      // it is a status line, not an action, so it must not read as their decision.
+      if (readerDecides(row)) bump("decision");
+      else bump("waiting");
+    }
   }
   const parts = Object.entries(counts).map(
     ([label, n]) => `${n} ${label}${n === 1 ? "" : "s"}`
   );
-  // reviews/blocked demand a decision — those tint the collapsed line amber
-  const attention = (counts.review || 0) + (counts.blocked || 0) > 0;
+  // reviews/blocked/pending decisions demand a decision — those tint the
+  // collapsed line amber. A decision is the loudest of them: name it first.
+  const attention =
+    (counts.decision || 0) + (counts.review || 0) + (counts.blocked || 0) > 0;
   return { text: parts.join(", ") || "update", attention };
+}
+
+// Does this parked-call row ask the READER to decide? Rows written before
+// 2026-10-31 carry no flag; a wait-only batch never wakes a worker by design
+// (the lead is the authority), so an unflagged row is always a lead's row —
+// defaulting to true keeps already-delivered wakes from flipping to the
+// informational wording on the next render.
+function readerDecides(row: BoardWakeRow): boolean {
+  return row.decision !== false;
 }
 
 function rowText(row: BoardWakeRow): string {
@@ -46,12 +63,28 @@ function rowText(row: BoardWakeRow): string {
       return `${row.actor} commented on ${item}${title}`;
     case "chat":
       return `# team chat — ${row.actor}`;
+    case "waiting": {
+      // §11.6 — a worker parked on a tool call. The lead is the approval authority
+      // (its decision asks the human); for everyone else this is informational.
+      const what = row.tool || "a tool call";
+      const who = row.actor || "A worker";
+      return readerDecides(row)
+        ? `${who} is waiting for your decision on ${what}`
+        : `${who} is waiting for the lead or user on ${what}`;
+    }
     default:
-      return `${item}${title}`;
+      // An unrecognized kind must never render as a blank row (a WORKER_WAITING
+      // row with no item/title produced exactly that). Fall back to something
+      // readable, then to the kind itself, then to the source text's own label.
+      return `${item}${title}`.trim() || `${row.actor || ""} ${row.kind}`.trim();
   }
 }
 
 function stateDot(row: BoardWakeRow): string {
+  // A parked worker call is a decision awaiting someone — amber like review, but
+  // only when the reader is the one who can answer it.
+  if (row.kind === "waiting")
+    return readerDecides(row) ? "board-dot review" : "board-dot idle";
   if (row.kind === "moved" && row.to === "review") return "board-dot review";
   if (row.kind === "moved" && row.to === "blocked") return "board-dot blocked";
   if (row.kind === "moved" && row.to === "done") return "board-dot done";
@@ -100,7 +133,9 @@ export function BoardWakeCard({ source }: { source: MessageSource }) {
                     >
                       {row.kind === "chat" || row.kind === "comment"
                         ? "show message"
-                        : "show hand-off"}
+                        : row.kind === "waiting"
+                          ? "show request"
+                          : "show hand-off"}
                     </button>
                   ))}
               </span>

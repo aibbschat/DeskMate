@@ -273,12 +273,16 @@ export function ItemDetail({
   onAddNote,
   loadAttachment,
   onOpenWorker,
+  hideTitle,
 }: {
   detail: BoardItemDetail;
   onTransition?: (item: number, to: string, comment?: string) => void;
   onAddNote?: (item: number, body: string) => Promise<void>;
   loadAttachment?: (stored: string) => Promise<string | null>;
   onOpenWorker?: (actor: string) => void;
+  // The team view's task pane prints the title in its own header; asking for it here
+  // too would print it twice. Opt-in so every existing caller is unaffected.
+  hideTitle?: boolean;
 }) {
   // "Request changes…" discloses a comment box; the verdict rides the transition.
   const [changesOpen, setChangesOpen] = useState(false);
@@ -289,9 +293,11 @@ export function ItemDetail({
   }, [detail.id]);
   return (
     <div className="board-detail" data-testid="board-detail">
-      <div className="board-detail-title">
-        <span className="board-detail-id">#{detail.id}</span> {detail.title}
-      </div>
+      {!hideTitle && (
+        <div className="board-detail-title">
+          <span className="board-detail-id">#{detail.id}</span> {detail.title}
+        </div>
+      )}
       <div className="board-detail-meta">
         <span className={"board-detail-st st-" + detail.state}>
           {STATE_LABEL[detail.state] || detail.state}

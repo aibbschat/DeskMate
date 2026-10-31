@@ -229,12 +229,18 @@ export interface MessageSource {
 // One digest event on a board wake. `note` is a UI-clamped excerpt of a hand-off
 // comment (the full text lives on the board).
 export interface BoardWakeRow {
-  kind: "assigned" | "claimed" | "moved" | "filed" | "comment" | "chat" | string;
+  kind: "assigned" | "claimed" | "moved" | "filed" | "comment" | "chat" | "waiting" | string;
   item?: number | null;
   title?: string;
   actor?: string;
   to?: string;
   note?: string;
+  // kind === "waiting" (§11.6): a worker parked on a tool call under a Manual lead.
+  tool?: string;
+  prompt_id?: string;
+  // true when the READER is the authority that must answer it (the lead); for
+  // everyone else the wait is informational and renders without a call to act.
+  decision?: boolean;
 }
 
 // A transcript message from GET /v1/sessions/{id}/messages. Kept permissive (open shape) because
