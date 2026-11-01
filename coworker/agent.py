@@ -428,6 +428,23 @@ def build_engine(
         # authority (each was already granted write access), and deny_paths still
         # outranks any mount, so secrets stay sealed.
         sd["mounts"] = mounts_from_write_roots(root_list)
+        # Align the shell's write scope with the file tools: a scheduled task already
+        # mounts the user's Desktop/Documents/Downloads (see manager._scheduled_write_roots),
+        # but interactive sessions did not — so a command writing a book manuscript's
+        # .deskmate (e.g. dropping a character bible) died with "Operation not permitted"
+        # while write_file into the same folder succeeded. Trust the user's own local
+        # folders for shell writes here too (deny_paths still seals secrets).
+        _user_dirs = [Path.home() / "Desktop", Path.home() / "Documents", Path.home() / "Downloads"]
+        _trusted: list[str] = []
+        for _d in _user_dirs:
+            try:
+                _rd = _d.expanduser().resolve()
+            except Exception:
+                continue
+            if _rd.is_dir():
+                _trusted.append(str(_rd))
+        if _trusted:
+            sd["trusted_write_subpaths"] = _trusted
         sandbox_cfg = sandbox_config_from_dict(ws, sd)
     executor = LocalExecutor(cwd=ws, sandbox=sandbox_cfg) if ws is not None else None
     todo = TodoList()

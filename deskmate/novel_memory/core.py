@@ -72,6 +72,9 @@ _AUX_FILE_MARKERS = (
     "大纲", "人物小传", "人物设定", "设定集", "世界观", "背景设定", "资料",
     "制度", "参考", "备考", "备忘", "梗概", "synopsis", "outline", "notes",
     "character", "setting", "reference", "worldbuilding", "world", "background",
+    # 非叙事法律/元文档：授权协议、合同、版权声明、简介、目录等。全书检索与
+    # 圣经抽取都不该从这些文件里抽内容（避免混入账户户名、作者签名等噪声）。
+    "授权协议", "协议", "合同", "版权", "简介", "目录", "声明",
 )
 
 
@@ -1287,7 +1290,7 @@ def _fts5_connection(folder: str) -> sqlite3.Connection | None:
     return conn
 
 
-def build_fts5_index(folder: str, force: bool = False) -> int:
+def build_fts5_index(folder: str, force: bool = False, *, exclude_aux: bool = False) -> int:
     """构建或增量更新 FTS5 全文索引。
 
     扫描所有文本文件，将内容写入 SQLite FTS5 虚拟表，并在覆盖前记录修订 diff。
@@ -1351,6 +1354,11 @@ def build_fts5_index(folder: str, force: bool = False) -> int:
 
         # 收集所有文本文件
         text_files = _iter_text_files(scan_root)
+        # 全书检索应聚焦小说叙事正文；排除授权协议/合同/大纲/简介/目录等辅助或
+        # 法律文档，否则检索会返回账户户名、作者签名等非叙事噪声（与 scan_novel
+        # 的 exclude_aux 约定保持一致，圣经重建已默认排除）。
+        if exclude_aux:
+            text_files = [p for p in text_files if not _is_aux_file(p)]
 
         indexed_count = 0
         for p in text_files:

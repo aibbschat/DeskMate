@@ -49,6 +49,11 @@ class SandboxConfig:
     # Admin-only escape hatch: extra native policy rules embedded verbatim.
     # MUST NOT come from user input or untrusted approval flows.
     extra_rules: str = ""
+    # Subpaths the seatbelt must allow for file-write *beyond* workspace + mounts.
+    # Used to align the *shell's* write scope with the file tools / guarded_write so
+    # a path the file tools can write into is not silently broken by the sandbox when
+    # a *command* (not a file tool) writes there. deny_paths still outranks these.
+    trusted_write_subpaths: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -142,6 +147,9 @@ def sandbox_config_from_dict(
         cfg.timeout_seconds = float(data["timeout_seconds"])
     if "extra_rules" in data and isinstance(data["extra_rules"], str):
         cfg.extra_rules = data["extra_rules"]
+    trusted = data.get("trusted_write_subpaths")
+    if isinstance(trusted, list):
+        cfg.trusted_write_subpaths = [str(t) for t in trusted if t]
     extra_deny = data.get("deny_paths")
     if isinstance(extra_deny, list):
         cfg.deny_paths = list(dict.fromkeys([*_DEFAULT_DENY_PATHS, *extra_deny]))

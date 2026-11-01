@@ -142,6 +142,14 @@ class MacOSSandbox:
             lines.append(f'  (subpath "{p}"))')
         lines.append("(allow file-write*")
         lines.append(f'  (subpath "{_san(config.workspace_dir)}"))')
+        # Trusted write subpaths: align the shell's write scope with the file tools
+        # and guarded_write so a legitimate write target is not blocked by the
+        # seatbelt when reached via a *command* rather than a file tool. deny_paths
+        # still outranks any of these (secrets stay sealed).
+        for tp in config.trusted_write_subpaths:
+            if tp:
+                lines.append("(allow file-write*")
+                lines.append(f'  (subpath "{_san(tp)}"))')
         for mount in config.mounts:
             if mount.writable:
                 lines.append("(allow file-write*")
