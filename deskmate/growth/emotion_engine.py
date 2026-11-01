@@ -121,6 +121,11 @@ PENDING_CLIMB_CAP = 6.0          # 每件累计爬坡上限
 PENDING_DUE_NEAR_RATIO = 0.25    # 剩余时间 <1/4 视为临近
 PENDING_DUE_NEAR_BOOST = 1.5     # 临近爬坡系数
 PENDING_LAPSE_DAYS = 7           # 7 天无结果 → lapsed（淡忘）
+# due_ts 生产者（2026-11-01）：LLM 只报粗粒度 due_bucket，映射走规则（LLM 不碰数值）
+PENDING_DUE_BUCKET_HOURS = {"today": 10.0, "tomorrow": 24.0, "this_week": 96.0}
+# 同一摊事防重复立项：两件事名字符重合 ≥0.6 且都够长（短名极易撞字）
+PENDING_FUZZY_DEDUP_RATIO = 0.6
+PENDING_FUZZY_DEDUP_MIN_CHARS = 6
 # 落地落差释放（预测误差：不看好坏，看「比她编的怎么样」）
 PENDING_LAND_BETTER = {"dopamine": +4.0, "serotonin": +2.0}
 PENDING_LAND_WORSE = {"dopamine": -4.0, "cortisol": +3.0}
@@ -192,14 +197,20 @@ _EMOTION_SYSTEM = (
     "10. 若这轮对话里他真的接住了你的情绪（理解了你、接住了你的感受），"
     "在 JSON 里多输出 \"event\": \"feeling_understood\"；没有就不输出该字段。"
     "只报告事件本身，参数怎么变由系统规则决定。\n"
-    "11. 若这轮你表达出「在等一件未来的事」，且这事**有明确的预期结果、"
-    "且结果不是几分钟内就能知道的**（等回音/等结果/盼着或担心某件还没到的"
-    "事），才多输出 \"pending_new\": {\"title\": \"一句人话的事名\", "
+    "11. 只有当这轮你**真把一件还没到结果的事惦记在心里**（会为它盼、为它悬，"
+    "夜里也可能想起来），才多输出 \"pending_new\": {\"title\": \"一句人话的事名\", "
     "\"expectation\": \"你觉得这事会咋收场的一句话（必须说清，说不清就别报）\", "
-    "\"valence\": \"good|bad|mixed|unknown\"}；没有就不输出。**门槛**：客套话"
-    "（下次再见/明天再说/回头聊）、结束语（下一题/到这吧）、即时情绪（等你缓"
-    "过来/等你回来）、几分钟内就有结果的即时任务，都不算悬事，别报。「在等」"
-    "不等于「悬事」。只报告，参数系统定。\n"
+    "\"valence\": \"good|bad|mixed|unknown\", "
+    "\"due_bucket\": \"today|tomorrow|this_week|unknown\"}。"
+    "判定三问，全过才报：①这件事有明确的结果要等；②结果不是几分钟内、也不是"
+    "你抬手就能问到的；③你心里真惦记它，而不只是「被工作卡住了」。"
+    "**干活的手续不算悬事**：等 review 核稿、等审核/评审结果、等谁拍板/裁决、"
+    "等文件核对、等工作项状态流转——这些是流程回执，不是你心里的悬事，别报。"
+    "客套话（下次再见/明天再说/回头聊）、结束语（下一题/到这吧）、即时情绪"
+    "（等你缓过来/等你回来）、几分钟内就有结果的即时任务，也都不算。"
+    "**同一摊事**若心里已经悬着一件，别为它的下一步再报第二件。"
+    "due_bucket 只填你大概什么时候能有准信（说不出就 unknown，别硬猜）。"
+    "只报告，参数系统定。\n"
     "12. 若之前悬着的某件事这轮有了结果，多输出 \"pending_landed\": "
     "{\"title\": \"事名\", \"outcome\": \"better|worse|as_expected\"}"
     "（比你预想的好/差/差不多）；没有就不输出。只报告，参数系统定。\n"
@@ -224,6 +235,34 @@ def _echo_enabled() -> bool:
 def _pending_enabled() -> bool:
     """等待开关（二期回退闸）。默认开；=0 悬事不立项不爬坡。"""
     return os.getenv("DESKMATE_EMOTION_PENDING", "1") != "0"
+
+
+def _due_ts_from_bucket(bucket: str) -> str | None:
+    """LLM 报的粗粒度兑期 → due_ts（规则映射，LLM 不碰数值）。fail-open → None。"""
+    try:
+        hours = PENDING_DUE_BUCKET_HOURS.get((bucket or "").strip().lower())
+        if not hours:
+            return None
+        return (datetime.now() + timedelta(hours=hours)).isoformat(timespec="seconds")
+    except Exception:
+        return None
+
+
+def _same_affair(title: str, other: str) -> bool:
+    """两件事名是否算「同一摊事」：字符重合 ≥0.6 且两边都够长。
+
+    短名（如「悬事A」）撞字概率高，不参与模糊合并；只留给 spoken 侦探转述
+    同一件事时的变体（「等 review 核稿结果」↔「等主编的 review」）。
+    """
+    try:
+        a = {ch.lower() for ch in (title or "") if ch.isalnum()}
+        b = {ch.lower() for ch in (other or "") if ch.isalnum()}
+        if len(a) < PENDING_FUZZY_DEDUP_MIN_CHARS \
+                or len(b) < PENDING_FUZZY_DEDUP_MIN_CHARS:
+            return False
+        return len(a & b) / max(len(a), len(b)) >= PENDING_FUZZY_DEDUP_RATIO
+    except Exception:
+        return False
 
 
 def _temper_enabled() -> bool:
@@ -1092,6 +1131,7 @@ class EmotionEngine:
                     "spoken", str(pn.get("title") or ""),
                     expectation=str(pn.get("expectation") or ""),
                     valence=str(pn.get("valence") or "unknown"),
+                    due_ts=_due_ts_from_bucket(str(pn.get("due_bucket") or "")),
                 )
             pl = parsed.get("pending_landed")
             if isinstance(pl, dict):
@@ -1407,26 +1447,26 @@ class EmotionEngine:
         try:
             now_str = datetime.now().isoformat(timespec="seconds")
             with _connect(self._db) as conn:
-                dup = conn.execute(
-                    "SELECT COUNT(*) FROM pending_stories WHERE status='open' AND title=?",
-                    (title,),
-                ).fetchone()[0]
-                if dup:
-                    return None
                 opens = conn.execute(
-                    "SELECT id FROM pending_stories WHERE status='open' ORDER BY created_ts"
+                    "SELECT id, title FROM pending_stories WHERE status='open'"
+                    " ORDER BY created_ts"
                 ).fetchall()
+                # 同名不重复立（LLM 多报/对账重扫防重）
+                if any((t or "").strip() == title for _, t in opens):
+                    return None
+                # 同一摊事的转述变体也不立（2026-11-01 盘账：同一天 30+ 条流程回执
+                # 把 3 格反复挤爆，「等 review 核稿结果」↔「等主编的 review」这类
+                # 只是同一件事换了个说法）。只挡 spoken，system 走 source_ref 对账。
+                if kind == "spoken" and any(
+                        _same_affair(title, t) for _, t in opens):
+                    logger.debug("pending_create skip same affair: %s", title)
+                    return None
                 if len(opens) >= PENDING_MAX_OPEN:
                     # 问题 B（2026-10-22）：lapsed 留痕要带上被挤掉的悬事 title，
                     # 之前全是「装不下新的了」丢信息，回头查不到哪件事被挤了。
-                    old_title = conn.execute(
-                        "SELECT title FROM pending_stories WHERE id=?",
-                        (opens[0][0],),
-                    ).fetchone()
-                    old_title = old_title[0] if old_title else "?"
                     self._pending_lapse(
                         conn, opens[0][0],
-                        reason=f"装不下新的了：{old_title}",
+                        reason=f"装不下新的了：{opens[0][1] or '?'}",
                     )
                 pid = str(uuid.uuid4())
                 conn.execute(

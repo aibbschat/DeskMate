@@ -104,6 +104,47 @@ def test_pending_create_and_dedup(eng):
     assert len(eng.open_pendings()) == 1
 
 
+def test_pending_fuzzy_dedup_same_affair(eng):
+    """同一摊事换个说法（「等 review 核稿结果」↔「等主编的 review」）不再立项。"""
+    assert eng.pending_create(
+        "spoken", "等 review 核稿结果", expectation="核完要么确认改对了，要么返工",
+        valence="unknown")
+    assert eng.pending_create(
+        "spoken", "等主编的 review", expectation="他大概会给一条意见",
+        valence="mixed") is None
+    assert len(eng.open_pendings()) == 1, "同一摊事只该悬一件"
+
+
+def test_pending_fuzzy_keeps_short_titles_apart(eng):
+    """短名不参与模糊合并（撞字概率高，如「悬事0」「悬事1」）。"""
+    assert eng.pending_create("spoken", "悬事0", expectation="预期一二三")
+    assert eng.pending_create("spoken", "悬事1", expectation="预期一二三")
+    assert len(eng.open_pendings()) == 2
+
+
+def test_due_bucket_maps_by_rule(eng):
+    """due_bucket 由规则映射成 due_ts；认不出的桶一律不设（不硬猜）。"""
+    from deskmate.growth.emotion_engine import _due_ts_from_bucket
+    assert _due_ts_from_bucket("tomorrow") is not None
+    assert _due_ts_from_bucket("this_week") is not None
+    assert _due_ts_from_bucket("unknown") is None
+    assert _due_ts_from_bucket("") is None
+    assert _due_ts_from_bucket("随便吧") is None
+
+
+def test_pending_due_near_boosts_climb(eng):
+    """有 due_ts 且剩余 <1/4 → 当次爬坡 ×1.5（临近效应真正可触发）。"""
+    now = datetime.now()
+    item = {
+        "expected_valence": "good",
+        "created_ts": (now - timedelta(hours=20)).isoformat(timespec="seconds"),
+        "due_ts": (now + timedelta(hours=2)).isoformat(timespec="seconds"),
+    }
+    assert eng._pending_climb_deltas(item, now)["dopamine"] == 1.5
+    item["due_ts"] = None
+    assert eng._pending_climb_deltas(item, now)["dopamine"] == 1.0
+
+
 def test_pending_spoken_requires_expectation(eng):
     """问题 A：spoken 类必须有 ≥5 字预期故事，否则不立项（挡客套话/即时任务）。"""
     assert eng.pending_create("spoken", "下次再见") is None
