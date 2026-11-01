@@ -145,6 +145,23 @@ def test_pending_due_near_boosts_climb(eng):
     assert eng._pending_climb_deltas(item, now)["dopamine"] == 1.0
 
 
+def test_turn_context_records_system_read(eng):
+    """系统读法留痕：record=True 存一行（lead/voices/原文），默认不留。"""
+    ctx = eng.describe_turn_context(record=True)
+    assert ctx
+    with _connect(eng._db) as conn:
+        row = conn.execute(
+            "SELECT lead, voices, context FROM emotion_read_log"
+            " ORDER BY ts DESC LIMIT 1").fetchone()
+        n1 = conn.execute("SELECT COUNT(*) FROM emotion_read_log").fetchone()[0]
+    assert row and row[2] == ctx, "留痕必须是实际注入的原文"
+    assert json.loads(row[1]), "声部要存结构，不能只留文本"
+    eng.describe_turn_context()  # 默认 record=False
+    with _connect(eng._db) as conn:
+        n2 = conn.execute("SELECT COUNT(*) FROM emotion_read_log").fetchone()[0]
+    assert n2 == n1, "探针/测试调用不该记账"
+
+
 def test_pending_spoken_requires_expectation(eng):
     """问题 A：spoken 类必须有 ≥5 字预期故事，否则不立项（挡客套话/即时任务）。"""
     assert eng.pending_create("spoken", "下次再见") is None

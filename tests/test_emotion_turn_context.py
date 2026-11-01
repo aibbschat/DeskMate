@@ -117,7 +117,7 @@ def test_manager_injects_emotion_context_without_directive(tmp_path, monkeypatch
     marker = "## 你此刻的真实状态（这是你小桔自己的"
     monkeypatch.setattr(
         "deskmate.growth.emotion_engine.EmotionEngine.describe_turn_context",
-        lambda self: marker + "\n- 激素：多巴胺 55.1（基线50，+5.1）\n由你自己决定",
+        lambda self, record=False: marker + "\n- 激素：多巴胺 55.1（基线50，+5.1）\n由你自己决定",
     )
     out = mm.build_full_context_for_turn("")
     assert marker in out

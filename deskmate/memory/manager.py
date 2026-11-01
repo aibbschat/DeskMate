@@ -626,7 +626,8 @@ class DeskMateMemoryManager:
             try:
                 from deskmate.growth.emotion_engine import EmotionEngine
                 _ee = EmotionEngine(base_dir=self.base_dir)
-                _emotion_ctx = _ee.describe_turn_context()
+                # record=True：把这份「系统读法」留一行（差异史 X 栏，只记账）
+                _emotion_ctx = _ee.describe_turn_context(record=True)
                 if _emotion_ctx:
                     parts.append(_emotion_ctx)
             except Exception:

@@ -351,6 +351,19 @@ def _ensure_schema(db: Path) -> None:
         # 补一条 ts 索引，成本一行。
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_emotion_log_ts ON emotion_log(ts)")
+        # 2026-11-01：系统读法留痕（差异史 X 栏）。每轮注入给她的和弦/文本存一行，
+        # 供以后比对「系统读她 X / 她自认 Y」；只记账，不参与任何参数或行为。
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS emotion_read_log (
+                id      TEXT PRIMARY KEY,
+                ts      TEXT NOT NULL,
+                lead    TEXT NOT NULL DEFAULT '',
+                voices  TEXT NOT NULL DEFAULT '[]',
+                context TEXT NOT NULL DEFAULT ''
+            )
+        """)
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_emotion_read_ts ON emotion_read_log(ts)")
         conn.execute("""
             CREATE TABLE IF NOT EXISTS pending_stories (
                 id              TEXT PRIMARY KEY,
@@ -845,8 +858,11 @@ class EmotionEngine:
             logger.warning("emotion_engine: 读当日经历失败: %s", e)
             return []
 
-    def describe_turn_context(self) -> str:
+    def describe_turn_context(self, record: bool = False) -> str:
         """每轮聊天注入用的「小桔当下真实状态」文本（真实优先 · v2）。
+
+        record=True 时额外把这份系统读法写进 emotion_read_log（差异史 X 栏），
+        只记账、不改注入内容；默认 False，测试/探针调用不留痕。
 
         设计原则（reports/活感方案v2_真实优先）：**只提供真实状态，不给任何
         表达方式指令**。含：
@@ -1010,7 +1026,22 @@ class EmotionEngine:
                 "你想怎么回应、说什么、说多少、甚至这会儿不想说话，都由你自己决定。"
                 "不要把你自己的心情当成对他的关怀——那是两件事。"
             )
-            return "\n".join(lines)
+            text = "\n".join(lines)
+            if record:
+                try:
+                    with _connect(self._db) as conn:
+                        conn.execute(
+                            "INSERT INTO emotion_read_log (id, ts, lead, voices,"
+                            " context) VALUES (?, ?, ?, ?, ?)",
+                            (str(uuid.uuid4()),
+                             datetime.now().isoformat(timespec="seconds"),
+                             str(chord.get("lead") or ""),
+                             json.dumps(voices, ensure_ascii=False),
+                             text),
+                        )
+                except Exception as e:  # fail-open：记账失败不影响注入
+                    logger.debug("emotion_read_log failed: %s", e)
+            return text
         except Exception as e:  # fail-open：状态取数失败 → 无情绪段
             logger.warning("emotion_engine: 构造每轮情绪上下文失败: %s", e)
             return ""
