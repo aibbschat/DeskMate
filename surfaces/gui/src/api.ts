@@ -4194,7 +4194,7 @@ export async function* streamStep(
 /** 创作对话消息（与后端 chat_flow.py 的 _msg 对应）。 */
 export interface CreationChatMessage {
   id: string;
-  type: "user" | "system" | "progress" | "artifact" | "review" | "milestone" | "expert" | "expert_card" | "roundtable" | "help" | "error" | "inspire";
+  type: "user" | "system" | "progress" | "artifact" | "review" | "milestone" | "expert" | "expert_card" | "roundtable" | "help" | "error" | "inspire" | "advice";
   ts: string;
   text?: string;
   title?: string;
@@ -4596,6 +4596,32 @@ export async function writingAdvisor(
     });
     if (!res.ok) return null;
     return (await res.json()) as WritingAdvisorResult;
+  } catch {
+    return null;
+  }
+}
+
+export interface WritingAdviceAutoResult {
+  triggered: boolean;
+  advice?: string;
+  kind?: "plot" | "framework" | "review" | "general";
+  reason?: string;
+  judgment_persisted?: boolean;
+}
+
+/**
+ * 日常写作对话：他写完一段，她用自己的看法读后给意见（POST .../writing-advisor/auto）。
+ * 后端已做门槛（够长 / 像稿子 / 冷却）；降级时 triggered=false，前端不展示。
+ */
+export async function autoWritingAdvice(text: string): Promise<WritingAdviceAutoResult | null> {
+  try {
+    const res = await authedFetch(`${httpBase()}/v1/deskmate/cognitive/writing-advisor/auto`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text }),
+    });
+    if (!res.ok) return null;
+    return (await res.json()) as WritingAdviceAutoResult;
   } catch {
     return null;
   }

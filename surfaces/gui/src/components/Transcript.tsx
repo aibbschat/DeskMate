@@ -773,6 +773,28 @@ export function Transcript({
                 />
               </div>
             );
+          case "advice":
+            return (
+              <div
+                className="group bubble-assistant"
+                key={bi}
+                style={{ background: "rgba(138,99,210,0.06)", border: "1px solid rgba(138,99,210,0.18)" }}
+              >
+                <div className="who">
+                  <XiaojuAvatar size={44} className="who-avatar" />
+                  <span>🗣 小桔的看法</span>
+                </div>
+                <Markdown text={item.text} />
+                <BubbleMeta
+                  text={item.text}
+                  ts={item.ts}
+                  align="left"
+                  onRemember={
+                    onRememberItem ? () => onRememberItem(stripEmote(item.text)) : undefined
+                  }
+                />
+              </div>
+            );
           case "intent_discuss": {
             // R13 意图讨论态：与普通 assistant 气泡同构（无色块、无 emoji——2026-10-08
             // 萧哥反馈「样式太突兀太粗糙，要跟现有样式融合」）。

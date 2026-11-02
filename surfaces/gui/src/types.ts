@@ -226,6 +226,9 @@ export type Item =
   | { kind: "memory"; id: number; text: string; previous?: string; undone?: boolean }
   // 创作灵感卡片：普通聊天里聊写作时，小桔基于认知库主动递（不持久化进会话历史）。
   | { kind: "inspire"; text: string; refs?: string[]; ts?: number }
+  // 小桔的写作看法：日常写作对话里他写完一段，她用自己的世界观读后给意见
+  // （不持久化进会话历史；后端有门槛与冷却，降级时不展示）。
+  | { kind: "advice"; text: string; adviceKind?: string; ts?: number }
   // R13 意图讨论态消息：小桔产出的 draft 递到聊天，附「定稿/再改/不要」三按钮
   // （opening 阶段只显示文字不带按钮）。来自 WS assistant_message.meta.origin === "intent_handoff"。
   | {

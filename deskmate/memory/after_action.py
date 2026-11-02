@@ -931,7 +931,12 @@ def _maybe_update_style_profile(last_user: str) -> None:
             return
         from deskmate.style_profile_store import update_style_profile
 
-        update_style_profile(text, source=f"对话-{datetime.now().strftime('%Y-%m-%d')}")
+        # 聊天消息只进「对话桶」：写作侧文风指纹只认书稿桶，避免聊天语感冒充文风
+        update_style_profile(
+            text,
+            source=f"对话-{datetime.now().strftime('%Y-%m-%d')}",
+            bucket="chat",
+        )
     except Exception:
         logger.debug("after_action: 风格画像增量更新跳过", exc_info=True)
 

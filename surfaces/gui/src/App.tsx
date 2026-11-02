@@ -29,6 +29,7 @@ import {
   type SurfaceVisibility,
   type WorkspaceCommandTrust,
   postInspire,
+  autoWritingAdvice,
   speakDeskmateHandoff,
   startIntentDiscuss,
   finalizeIntentDiscuss,
@@ -1205,6 +1206,15 @@ export function App() {
         setItems((p) => [
           ...p,
           { kind: "inspire", text: sug, refs: insp.refs, ts: Date.now() / 1000 },
+        ]);
+      }
+    });
+    // 他写完一段 → 小桔用自己的世界观读后给看法（门槛/冷却由后端控；降级不展示）。
+    void autoWritingAdvice(text).then((adv) => {
+      if (adv?.triggered && adv.advice) {
+        setItems((p) => [
+          ...p,
+          { kind: "advice", text: adv.advice!, adviceKind: adv.kind, ts: Date.now() / 1000 },
         ]);
       }
     });

@@ -66,7 +66,15 @@ def _requirement_block(
         parts.append(f"- 集数定位：第 {ep}/{episodes} 集（单集须有完整起承转合，结尾留钩子）")
     if style_fingerprint:
         indented = "\n  ".join(style_fingerprint.splitlines())
-        parts.append(f"- 文风指纹（萧哥写作风格量化特征，须贴合）：\n  {indented}")
+        # 只有真有书稿样本时才「须贴合」；否则明确降级为粗参考，不拿聊天语感当文风硬标准
+        from deskmate.style_profile_store import manuscript_fingerprint_available
+
+        if manuscript_fingerprint_available():
+            parts.append(f"- 文风指纹（萧哥写作风格量化特征，须贴合）：\n  {indented}")
+        else:
+            parts.append(
+                f"- 文风参考（暂无书稿样本，以下为对话口径，仅作粗参考，勿据此收敛文风）：\n  {indented}"
+            )
     if not parts:
         return ""
     return "\n\n【制作要求（必须严格遵守，违者返工）】\n" + "\n".join(parts)
@@ -466,11 +474,19 @@ class LLMExecutor:
         # 让「越写越懂你的文风」在审稿环节也被校验（偏离须指出并建议修正）。
         style_section = ""
         if fp:
-            style_section = (
-                f"\n\n【文风对齐评判】请对照以下萧哥写作风格量化指纹，评审文本是否贴合其声口"
-                f"（句长节奏、四字格密度、文白比例、对话占比、标点节奏）；"
-                f"明显偏离处须指出并给出修正建议：\n{fp}"
-            )
+            from deskmate.style_profile_store import manuscript_fingerprint_available
+
+            if manuscript_fingerprint_available():
+                style_section = (
+                    f"\n\n【文风对齐评判】请对照以下萧哥写作风格量化指纹，评审文本是否贴合其声口"
+                    f"（句长节奏、四字格密度、文白比例、对话占比、标点节奏）；"
+                    f"明显偏离处须指出并给出修正建议：\n{fp}"
+                )
+            else:
+                style_section = (
+                    f"\n\n【文风参考（暂无书稿样本）】以下指标来自对话记录，仅作粗参考；"
+                    f"不要把偏离当违例，重点仍按六个维度评审：\n{fp}"
+                )
         _emit(on_event, type="note", message="审核专家正在逐项核验…", progress=50)
         raw = self._call_chat(
             system=(

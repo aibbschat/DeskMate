@@ -48,9 +48,18 @@ def load_style_profile(path: Path | None = None) -> dict[str, Any]:
 def format_style_quantified(style: dict[str, Any]) -> str:
     """把量化风格指标格式化为可读文本（供分身 prompt 注入）。
 
+    只认**书稿桶**（写作侧不能拿聊天语感当文风）；无书稿样本时降级到旧指标并标注口径。
     只输出有统计基础的指标（n >= 2 才认为有统计意义）。
     """
-    metrics = style.get("metrics") or {}
+    buckets = style.get("buckets") if isinstance(style.get("buckets"), dict) else {}
+    entry = buckets.get("manuscript") if isinstance(buckets, dict) else None
+    manuscript_metrics = entry.get("metrics") if isinstance(entry, dict) else None
+    degraded = False
+    if isinstance(manuscript_metrics, dict) and manuscript_metrics.get("n", 0) >= 2:
+        metrics = manuscript_metrics
+    else:
+        metrics = style.get("metrics") or {}
+        degraded = True
     if not metrics or metrics.get("n", 0) < 2:
         return ""
 
@@ -105,7 +114,21 @@ def format_style_quantified(style: dict[str, Any]) -> str:
     if not lines:
         return ""
 
-    header = f"## 用户写作风格（量化指纹，基于 {metrics.get('chars', 0):.0f} 字样本）"
+    if degraded:
+        # 旧口径：顶层 chars 是累加总量；缺省再退回指标均值
+        total_chars = style.get("chars")
+        if not isinstance(total_chars, (int, float)) or total_chars <= 0:
+            total_chars = metrics.get("chars", 0)
+        header = (
+            "## 用户写作风格（口语口径降级：暂无书稿样本，以下指标来自对话记录，"
+            f"仅供粗参考；样本 {total_chars:.0f} 字）"
+        )
+    else:
+        # 书稿桶 chars 是累加总量；metrics.chars 经加权平均是单样本均字数，勿混用
+        total_chars = entry.get("chars") if isinstance(entry, dict) else None
+        if not isinstance(total_chars, (int, float)) or total_chars <= 0:
+            total_chars = metrics.get("chars", 0)
+        header = f"## 用户写作风格（量化指纹·书稿口径，基于 {total_chars:.0f} 字书稿样本）"
     return header + "\n" + "\n".join(lines)
 
 

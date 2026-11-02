@@ -10,11 +10,15 @@
     --target "书名" \
     --summary "本次读书的中文摘要，2-4句" \
     --insight "一条最值得记的风格/人物/叙事手法洞察" \
-    --tags "风格,叙事"
+    --tags "风格,叙事" \
+    --text-file "本次读到的原文正文存成的 txt 路径（可选）"
 
 说明：
   - 即使没有 --insight/--tags，也会记录「读完动作」本身（含 summary）。
   - insight 默认 push_to_vault=True（能提炼出来的就是值得沉淀的）。
+  - --text-file：本次读到的**书的原文**（非读后感），可重复传多个文件，逐文件喂进
+    文风画像的「书稿桶」（bucket=manuscript，按内容 sha1 去重）。只传正文
+    （.txt/.md），合同/目录/人物资料卡不传；没有就省略，不影响登记。
   - 异常会打印并 exit(1)，但不影响读书主流程（它是附加登记步骤）。
 """
 import argparse
@@ -36,6 +40,12 @@ def main() -> int:
     p.add_argument("--task-type", default="daily_reading", help="auto_tasks 任务类型")
     p.add_argument("--task-name", default="每日读书", help="展示用任务名")
     p.add_argument("--action", default="finish", help="动作类型，默认 finish")
+    p.add_argument(
+        "--text-file",
+        action="append",
+        default=None,
+        help="本次读到的原文正文文件（txt/md，可重复传多个），逐文件喂进文风画像书稿桶",
+    )
     args = p.parse_args()
 
     from deskmate.auto_tasks import record_task_result
@@ -60,6 +70,26 @@ def main() -> int:
         tags=tags,
         task_name=args.task_name,
     )
+
+    # 本次读到的原文喂进文风画像「书稿桶」（fail-open：失败不影响登记）
+    for tf in args.text_file or []:
+        tf = tf.strip()
+        if not tf:
+            continue
+        try:
+            from deskmate.style_profile_store import update_style_profile
+
+            raw = open(os.path.expanduser(tf), encoding="utf-8", errors="replace").read()
+            if len(raw.strip()) < 500:
+                print(f"SKIP style: {tf} 过短（{len(raw.strip())} 字 < 500），不入画像")
+                continue
+            update_style_profile(
+                raw, source=f"书稿-{args.target}·{os.path.basename(tf)}", bucket="manuscript"
+            )
+            print(f"OK style: {tf}（{len(raw)} 字）已入书稿桶")
+        except Exception as exc:  # noqa: BLE001
+            print(f"WARN style: {tf} 入画像失败（不影响登记）: {exc}", file=sys.stderr)
+
     print(f"OK recorded -> task_type={rec.task_type} target={rec.target} insights={len(rec.insights)}")
     return 0
 

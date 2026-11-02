@@ -272,6 +272,14 @@ def load_manuscript_file(path: str) -> dict:
         chapters = load_manuscript(name) if name else None
         if not chapters:
             return {"error": f"路径不存在：{path}"}
+        # 已存书稿同样喂书稿桶（写作侧文风指纹只认书稿，零 LLM、去重、fail-open）
+        try:
+            from deskmate.style_profile_store import update_style_profile
+
+            joined = "\n".join(str(c.get("text", "")) for c in chapters)
+            update_style_profile(joined, source=f"书稿-{name}", bucket="manuscript")
+        except Exception:
+            pass
         return {
             "chapters": [
                 {"idx": c["idx"], "title": c["title"], "text": c["text"]} for c in chapters
@@ -281,6 +289,16 @@ def load_manuscript_file(path: str) -> dict:
         }
 
     from deskmate.writing import split_into_chapters
+
+    # 书稿样本：读他自己的稿子时，顺手把真实书稿文风喂进「书稿桶」——
+    # 写作/审稿的文风指纹只认书稿桶（聊天语感不参与）。零 LLM、按内容去重、fail-open。
+    try:
+        from deskmate.style_profile_store import update_style_profile
+
+        update_style_profile(raw_text, source=f"书稿-{pp.name}", bucket="manuscript")
+    except Exception:
+        pass
+
     chapters = split_into_chapters(raw_text)
     if not chapters:
         return {"error": "未能从文稿中识别章节（需含「第X章/回/节」等标题）"}

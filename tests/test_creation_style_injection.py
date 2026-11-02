@@ -48,12 +48,24 @@ def _metrics() -> dict:
 
 @pytest.fixture
 def profile_path(tmp_path, monkeypatch):
-    """落地一份含量化指标的 style_profile.json，并把 DEFAULT_PROFILE_PATH 指向它。"""
+    """落地一份带书稿桶量化指标的 style_profile.json，并把 DEFAULT_PROFILE_PATH 指向它。
+
+    2026-11-01 起文风指纹只认「书稿桶」（聊天样本不参与），故 fixture 同时写 buckets。
+    """
     import deskmate.style_profile_store as sps
 
     p = tmp_path / "style_profile.json"
     p.write_text(
-        json.dumps({"metrics": _metrics(), "updates": 1}, ensure_ascii=False),
+        json.dumps(
+            {
+                "metrics": _metrics(),
+                "buckets": {
+                    "manuscript": {"metrics": _metrics(), "chars": 3000, "updates": 1}
+                },
+                "updates": 1,
+            },
+            ensure_ascii=False,
+        ),
         encoding="utf-8",
     )
     monkeypatch.setattr(sps, "DEFAULT_PROFILE_PATH", p)
@@ -89,6 +101,19 @@ def test_format_style_fingerprint_empty_without_metrics(tmp_path, monkeypatch):
     monkeypatch.setattr(sps, "DEFAULT_PROFILE_PATH", p)
     clear_style_fingerprint_cache()
     assert format_style_fingerprint() == ""
+
+
+def test_requirement_block_degrades_without_manuscript(tmp_path, monkeypatch):
+    """只有聊天/旧口径指标时，写作侧明确降级为「粗参考」，绝不「须贴合」。"""
+    import deskmate.style_profile_store as sps
+
+    p = tmp_path / "legacy.json"
+    p.write_text(json.dumps({"metrics": _metrics()}, ensure_ascii=False), encoding="utf-8")
+    monkeypatch.setattr(sps, "DEFAULT_PROFILE_PATH", p)
+    clear_style_fingerprint_cache()
+    block = EX._requirement_block(style=["悬疑"])
+    assert "文风参考（暂无书稿样本" in block
+    assert "须贴合" not in block
 
 
 def test_review_prompt_injects_style_alignment(profile_path, monkeypatch):

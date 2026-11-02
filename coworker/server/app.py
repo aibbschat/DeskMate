@@ -4294,6 +4294,34 @@ def create_app(manager: SessionManager) -> FastAPI:
             logging.exception("deskmate writing_advisor failed")
             return {"ok": False, "kind": kind, "advice": "", "worldview_used": False, "reason": "error"}
 
+    @app.post("/v1/deskmate/cognitive/writing-advisor/auto")
+    async def deskmate_writing_advisor_auto(request: Request) -> dict[str, Any]:
+        """写作顾问·自动接入：日常写作对话里他写完一段，她读后给看法。
+
+        与手动端点共用 ``advise()``，但多一道门槛（够长 / 像稿子 / 冷却），且降级
+        （没世界观 / 没 provider / 没看法）时返回 ``triggered=False``，**不往聊天里塞话**。
+        纯只读消费 worldview + 一次 LLM 推理，fail-open。
+        """
+        try:
+            body = await request.json()
+        except Exception:
+            return JSONResponse({"error": "invalid json"}, status_code=400)
+        text = (body.get("text") or "").strip()
+        kind = (body.get("kind") or "").strip() or None
+        try:
+            from pathlib import Path as _P
+
+            from deskmate.cognitive.writing_advisor import try_advise
+
+            desk_dir = _P(
+                os.environ.get("DESKMATE_DIR", os.path.expanduser("~/.deskmate"))
+            )
+            # try_advise 内部一次 LLM 推理（读稿给看法）——走线程防冻循环。
+            return await run_llm(try_advise, str(desk_dir), text, "", kind)
+        except Exception:
+            logging.exception("deskmate writing_advisor auto failed")
+            return {"triggered": False, "advice": "", "reason": "error"}
+
     @app.get("/v1/deskmate/external/status")
     async def deskmate_external_status() -> dict[str, Any]:
         """外部信息不可信区统计：总量、按状态/来源/分类、待裁决数。"""

@@ -3,9 +3,11 @@
 职责：
 - 读取 `~/.deskmate/style_profile.json`（或指定路径）现有画像；
 - 用新文本的量化风格信号（deskmate.style_metrics）增量合并；
+- **按来源分桶**（``manuscript`` 书稿 / ``chat`` 对话）：写作侧文风指纹只取书稿桶，
+  聊天继续单独学聊天语感，互不稀释；
 - 保留原有定性 profile（summary/features），新增 `metrics`（量化层）+
-  `samples`（来源快照）+ `updates`（更新次数）——**向后兼容**：
-  deskmate.writing 的 `format_profile_for_prompt` 只读 summary/features，
+  `buckets`（分桶量化层）+ `samples`（来源快照）+ `updates`（更新次数）——
+  **向后兼容**：deskmate.writing 的 `format_profile_for_prompt` 只读 summary/features，
   不受新增字段影响。
 
 设计（对应 docs/越用越懂你-打磨建议.md P1-5）：
@@ -26,6 +28,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import sys
@@ -40,6 +43,19 @@ DEFAULT_PROFILE_PATH = (
     Path(os.environ.get("DESKMATE_DIR", str(Path.home() / ".deskmate")))
     / "style_profile.json"
 )
+
+# 样本分桶：书稿样本（作者本人的作品）与对话样本（日常聊天语感）分开存。
+# 写作侧的文风指纹**只认书稿桶**——聊天语感不能冒充文风（2026-11-01 萧哥拍板）。
+BUCKET_MANUSCRIPT = "manuscript"
+BUCKET_CHAT = "chat"
+_BUCKET_LABELS = {BUCKET_MANUSCRIPT: "书稿样本", BUCKET_CHAT: "对话样本"}
+
+
+def _resolve_bucket(source: str, bucket: Optional[str]) -> str:
+    """确定本次样本进哪个桶：显式指定优先，否则按来源推断（对话-* → 聊天桶）。"""
+    if bucket in (BUCKET_MANUSCRIPT, BUCKET_CHAT):
+        return bucket
+    return BUCKET_CHAT if (source or "").startswith("对话") else BUCKET_MANUSCRIPT
 
 
 def _is_default_path(path: Path) -> bool:
@@ -86,14 +102,22 @@ def update_style_profile(
     source: str = "",
     profile_path: Optional[Path] = None,
     max_sample_chars: int = 50_000,
+    bucket: Optional[str] = None,
 ) -> dict:
-    """用一份新文本增量更新风格画像。
+    """用一份新文本增量更新风格画像（按来源分桶：书稿 / 对话）。
+
+    - ``bucket="manuscript"``：书稿样本（他本人写的稿子）。写作/审稿的文风指纹**只认这桶**。
+    - ``bucket="chat"``：对话样本（日常聊天语感），只用于聊天时学他的口气，不冒充文风。
+    - ``bucket`` 缺省按 ``source`` 推断：以「对话」开头的来源进聊天桶，其余进书稿桶。
+    - 顶层 ``metrics``/``samples``/``chars`` 仍按旧语义维护（混合口径，只留给旧读者兼容）；
+      写作侧不再消费顶层，避免聊天语感污染文风指纹。
 
     Args:
-        text: 新样本文本（作者文稿/审稿产出）。
-        source: 来源描述（如「《国子监秘闻录》第3章」），用于 samples 记录。
+        text: 新样本文本（书稿 / 聊天消息）。
+        source: 来源描述（如「《国子监秘闻录》第3章」「对话-2026-11-01」），用于 samples 记录。
         profile_path: 画像路径，默认 ~/.deskmate/style_profile.json。
         max_sample_chars: 单次样本送入统计的最大字符数（控制开销）。
+        bucket: 样本桶；缺省按 source 推断。
 
     Returns:
         更新后的完整画像 dict。
@@ -104,10 +128,22 @@ def update_style_profile(
     sample = (text or "").strip()
     if not sample:
         return data
+    sample = sample[:max_sample_chars]
+    bkey = _resolve_bucket(source, bucket)
 
-    metrics_new = compute_style_metrics(sample[:max_sample_chars])
+    # 书稿样本按内容去重：同一份稿子反复打开审阅时，不能把画像刷爆（幂等、fail-open）
+    digest = hashlib.sha1(sample.encode("utf-8")).hexdigest()
+    hashes = data.get("ingested_hashes")
+    if not isinstance(hashes, list):
+        hashes = []
+    if bkey == BUCKET_MANUSCRIPT and digest in hashes:
+        return data
 
-    # ---- 提取既有状态 ----
+    metrics_new = compute_style_metrics(sample)
+    if not int(metrics_new.get("chars", 0) or 0):
+        return data  # 没有中文正文（空稿 / 纯代码）不入画像
+
+    # ---- 提取既有状态（顶层混合口径，保持旧字段语义不变） ----
     metrics_old = data.get("metrics") if isinstance(data.get("metrics"), dict) else None
     old_n = 0
     if isinstance(metrics_old, dict):
@@ -136,6 +172,36 @@ def update_style_profile(
     if len(samples) > 20:
         samples = samples[-20:]
 
+    # ---- 分桶更新（书稿 / 对话各算各的，互不稀释） ----
+    buckets = data.get("buckets")
+    if not isinstance(buckets, dict):
+        buckets = {}
+    entry = buckets.get(bkey)
+    if not isinstance(entry, dict):
+        entry = {}
+    b_metrics_old = entry.get("metrics") if isinstance(entry.get("metrics"), dict) else None
+    b_n = int(b_metrics_old.get("n", 0) or 0) if b_metrics_old else 0
+    b_metrics = merge_metrics(b_metrics_old, metrics_new, b_n)
+    b_metrics["n"] = b_n + 1
+    b_samples = entry.get("samples") if isinstance(entry.get("samples"), list) else []
+    b_samples.append(
+        {
+            "source": source or f"sample-{int(entry.get('updates', 0) or 0) + 1}",
+            "chars": metrics_new.get("chars", 0),
+            "updated_at": _now_iso(),
+            "metrics": metrics_new,
+        }
+    )
+    if len(b_samples) > 20:
+        b_samples = b_samples[-20:]
+    buckets[bkey] = {
+        "metrics": b_metrics,
+        "samples": b_samples,
+        "chars": int(entry.get("chars", 0) or 0) + int(metrics_new.get("chars", 0) or 0),
+        "updates": int(entry.get("updates", 0) or 0) + 1,
+        "updated_at": _now_iso(),
+    }
+
     # ---- 组装新画像（保留原 profile 定性层） ----
     profile = data.get("profile") or {}
     new_data = {
@@ -147,6 +213,8 @@ def update_style_profile(
         "features": profile.get("features", {}) if isinstance(profile.get("features"), dict) else {},
         "metrics": metrics_merged,
         "samples": samples,
+        "buckets": buckets,
+        "ingested_hashes": (hashes + [digest])[-100:],
         "source": source or data.get("source", ""),
         "chars": chars_total + metrics_new.get("chars", 0),
         "updates": updates + 1,
@@ -189,23 +257,62 @@ def clear_style_fingerprint_cache() -> None:
     _STYLE_FP_CACHE.clear()
 
 
+def _bucket_entry(data: dict, bucket: str) -> Optional[dict]:
+    """取某个桶的条目（无则 None）。"""
+    buckets = data.get("buckets")
+    if not isinstance(buckets, dict):
+        return None
+    entry = buckets.get(bucket)
+    return entry if isinstance(entry, dict) and isinstance(entry.get("metrics"), dict) else None
+
+
+def _bucket_metrics(data: dict, bucket: str) -> Optional[dict]:
+    """取某个桶的量化指标；无 buckets 的旧画像按「素材来源」兼容归属。"""
+    entry = _bucket_entry(data, bucket)
+    if entry:
+        return entry["metrics"]
+    # 兼容旧画像（还没有 buckets 字段）：历史自动抽取全部来自对话消息，
+    # 因此顶层混合指标归聊天桶；书稿桶保持空 → 写作侧会明确降级告知，不拿聊天语感冒充文风。
+    if bucket == BUCKET_CHAT and isinstance(data.get("metrics"), dict):
+        return data["metrics"]
+    return None
+
+
+def manuscript_fingerprint_available(profile_path: Optional[Path] = None) -> bool:
+    """是否已有书稿样本（写作侧据此区分「须贴合」与「仅粗参考」）。"""
+    data = load_profile(profile_path or DEFAULT_PROFILE_PATH)
+    metrics = _bucket_metrics(data, BUCKET_MANUSCRIPT)
+    return bool(metrics) and int(metrics.get("n", 0) or 0) > 0
+
+
 def format_style_fingerprint(
-    profile_path: Optional[Path] = None, *, use_cache: bool = True
+    profile_path: Optional[Path] = None,
+    *,
+    bucket: str = BUCKET_MANUSCRIPT,
+    use_cache: bool = True,
 ) -> str:
     """把已量化的风格画像格式化为紧凑「文风指纹」字符串，供写作/审稿 prompt 注入。
 
+    - 默认只取**书稿桶**：写作侧绝不能拿聊天语感当文风（2026-11-01 修正）。
     - 返回 "" 表示无画像或尚无量化指标（零配置场景不注入、不污染 prompt）。
-    - 结果按路径缓存（画像在单次进程内不变），避免每次 LLM 生成都读盘。
-    - 供 C 任务「把 P1-5 风格信号接入写作/审稿流水线」统一调用：
-      写作侧（大纲/剧本强约束段）与审稿侧（executor.review / 圆桌终审上下文）共用。
+    - 书稿桶为空但存在旧/对话指标时，**明确降级告知**（标注口径，提醒不要据此收敛文风）。
+    - 结果按「路径 + 桶」缓存（画像在单次进程内不变），避免每次 LLM 生成都读盘。
     """
     path = profile_path or DEFAULT_PROFILE_PATH
-    key = str(path)
+    key = f"{path}|{bucket}"
     if use_cache and key in _STYLE_FP_CACHE:
         return _STYLE_FP_CACHE[key]
     data = load_profile(path)
-    metrics = data.get("metrics") if isinstance(data.get("metrics"), dict) else None
-    out = _format_metrics_for_human(metrics) if metrics else ""
+    metrics = _bucket_metrics(data, bucket)
+    out = ""
+    if metrics:
+        out = _format_metrics_for_human(metrics)
+    elif bucket == BUCKET_MANUSCRIPT and isinstance(data.get("metrics"), dict):
+        out = (
+            "【暂无书稿样本：以下指标来自对话记录，仅供粗参考，勿据此收敛文风；"
+            "多读几本他的书稿后会自动切到书稿口径】\n"
+            + _format_metrics_for_human(data["metrics"])
+        )
     if use_cache:
         _STYLE_FP_CACHE[key] = out
     return out
@@ -220,6 +327,12 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument("text_file", nargs="?", help="新样本文本文件路径（txt/md/docx 会被尽力解析）")
     parser.add_argument("--source", default="", help="样本来源描述（如《国子监秘闻录》第3章）")
     parser.add_argument("--profile", default=None, help="画像路径（默认 ~/.deskmate/style_profile.json）")
+    parser.add_argument(
+        "--bucket",
+        default=None,
+        choices=[BUCKET_MANUSCRIPT, BUCKET_CHAT],
+        help="样本桶：manuscript=书稿（默认，写作指纹只认这个）/ chat=对话样本",
+    )
     parser.add_argument("--show", action="store_true", help="仅查看当前画像（含量化指标）")
     args = parser.parse_args(argv)
 
@@ -235,8 +348,17 @@ def main(argv: Optional[list[str]] = None) -> int:
         feats = prof.get("features") or {}
         for k, v in feats.items():
             print(f"  {k}: {v}")
-        print("\n量化指标：")
-        print(_format_metrics_for_human(data.get("metrics")))
+        print("\n各桶量化指标：")
+        buckets = data.get("buckets") if isinstance(data.get("buckets"), dict) else {}
+        if not buckets:
+            print("（旧画像还没有分桶：现有指标为混合口径，按聊天桶兼容；"
+                  "用 --bucket manuscript 导入书稿后会逐步切开）")
+        for bkey, entry in buckets.items():
+            metrics = (entry or {}).get("metrics") if isinstance(entry, dict) else None
+            label = _BUCKET_LABELS.get(bkey, bkey)
+            print(f"\n[{label}] 样本数 {(metrics or {}).get('n', 0)} · "
+                  f"累计 {(entry or {}).get('chars', 0)} 字")
+            print(_format_metrics_for_human(metrics or {}))
         if data.get("samples"):
             print("\n样本记录：")
             for smp in data["samples"]:
@@ -258,11 +380,15 @@ def main(argv: Optional[list[str]] = None) -> int:
         print("文本为空，跳过更新。", file=sys.stderr)
         return 1
 
-    data = update_style_profile(text, source=args.source, profile_path=path)
-    print(f"已更新画像：{path}")
+    data = update_style_profile(
+        text, source=args.source, profile_path=path, bucket=args.bucket
+    )
+    print(f"已更新画像：{path}（{_BUCKET_LABELS.get(_resolve_bucket(args.source, args.bucket), '')}）")
+    bkey = _resolve_bucket(args.source, args.bucket)
+    entry = (data.get("buckets") or {}).get(bkey) or {}
     print(f"更新次数 → {data.get('updates')} · 累计字符 {data.get('chars')}")
-    print("\n量化指标（合并后）：")
-    print(_format_metrics_for_human(data.get("metrics")))
+    print(f"\n{_BUCKET_LABELS.get(bkey, bkey)}量化指标（合并后）：")
+    print(_format_metrics_for_human(entry.get("metrics") or {}))
     return 0
 
 

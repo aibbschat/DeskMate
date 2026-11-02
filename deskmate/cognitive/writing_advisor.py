@@ -15,12 +15,19 @@
   绝不假装有权威意见。
 - 不碰用户文件、不发消息、不写库——纯只读消费 worldview + 一次 LLM 推理，fail-open。
 
-落点：``coworker/server/app.py`` 的 ``POST /v1/deskmate/cognitive/writing-advisor``（薄壳）。
+落点：``coworker/server/app.py`` 的 ``POST /v1/deskmate/cognitive/writing-advisor``（手动，
+写作批改台「写作顾问」模式）与 ``.../writing-advisor/auto``（自动，日常写作对话里他写完
+一段她就读后给看法）；读后的观感由 ``_persist_judgment`` 沉淀进 worldview 层。
 """
 
 from __future__ import annotations
 
+import json
 import logging
+import os
+import time
+from datetime import date
+from pathlib import Path
 from typing import Any, Optional
 
 from deskmate.agency.behaviors.worldview_reflection import load_worldview_beliefs
@@ -36,6 +43,24 @@ _MAX_CHARS = 1500
 
 # 草稿送审上限：写作顾问看的是「方向 / 立场 / 框架」，不是逐字校稿；太长截前段并提示。
 _MAX_DRAFT_CHARS = 6000
+
+# —— 日常写作对话的自动接入门槛（避免每写一句都惊动她）——
+# 够长 + 像稿子 + 冷却，三者都满足才自动读稿；降级（没世界观 / 没 provider）时不往聊天里塞话。
+_AUTO_MIN_CHARS = 150
+_AUTO_COOLDOWN_HOURS = 2
+_ADVISOR_COOLDOWN_FILE = "last_writing_advisor.json"
+
+# 观感沉淀的置信度：低于「亲口说」的 0.6（worldview_reflection._CONFIDENCE），
+# 因为这是读稿当下的一次判断，不是她稳定形成的立场；多读几次同类稿子会逐步加固。
+_JUDGMENT_CONFIDENCE = 0.45
+
+# 观感沉淀的立场主题（按阅读视角归并，让同类判断慢慢长成她稳定的写作观）
+_JUDGMENT_TOPICS = {
+    "plot": "写作判断·情节",
+    "framework": "写作判断·框架",
+    "review": "写作判断·书评",
+    "general": "写作判断·一般写作",
+}
 
 _KIND_LABELS: dict[str, str] = {
     "plot": "情节（一段情节走向 / 大纲）",
@@ -97,6 +122,44 @@ def _kind_instruction(kind: str) -> str:
     )
 
 
+def _persist_judgment(base_dir: str, kind: str, draft: str, advice: str) -> bool:
+    """把她读稿后的观感沉淀进 worldview 层（「哪儿硌手、哪儿认」不再聊完就散）。
+
+    红线：
+    - 只写她**真的说了**的看法（advice 原文节选），不补写、不编造；
+    - 置信度（0.45）低于「亲口说」（0.6），因为这是读稿当下的一次判断，不是稳定立场；
+    - 留痕：SourceRef 记 kind + 草稿节选 + 日期，供日后回看「她为什么这么认」；
+    - 写库失败绝不影响返回（fail-open）。
+    """
+    try:
+        from deskmate.cognitive.models import SourceRef
+        from deskmate.cognitive.profile import CognitiveProfileManager
+
+        label = _KIND_LABELS.get(kind, _KIND_LABELS["general"])
+        topic = _JUDGMENT_TOPICS.get(kind, _JUDGMENT_TOPICS["general"])
+        excerpt = " ".join((draft or "").split())[:200]
+        src = SourceRef(
+            type="writing_advisor",
+            title=f"读萧哥的{label}",
+            excerpt=excerpt,
+            date=date.today().isoformat(),
+            confidence=_JUDGMENT_CONFIDENCE,
+        )
+        mgr = CognitiveProfileManager(
+            profile_path=os.path.join(base_dir, "deskmate.db"), layer="worldview"
+        )
+        mgr.add_stance(
+            topic=topic,
+            content=" ".join(advice.split())[:600],
+            source=src,
+            tags=["worldview", "写作判断", "读稿观感"],
+        )
+        return True
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("writing_advisor: 观感沉淀失败（忽略，不影响返回）: %s", exc)
+        return False
+
+
 def advise(
     base_dir: str,
     draft: str,
@@ -113,15 +176,18 @@ def advise(
         temperature: LLM 温度
 
     Returns:
-        ``{"ok": bool, "kind": str, "advice": str, "worldview_used": bool, "reason": str}``
+        ``{"ok": bool, "kind": str, "advice": str, "worldview_used": bool,
+        "judgment_persisted": bool, "reason": str}``
         - ok=False 且 reason 为 ``no_worldview`` / ``no_provider`` / ``too_short`` / ``error``
           ——前端据此优雅降级，不展示假结果。
+        - ``judgment_persisted``：本次看法是否已沉淀进 worldview 层（只在她真说了时写）。
     """
     result: dict[str, Any] = {
         "ok": False,
         "kind": kind,
         "advice": "",
         "worldview_used": False,
+        "judgment_persisted": False,
         "reason": "",
     }
 
@@ -206,4 +272,101 @@ def advise(
     result["advice"] = text
     result["worldview_used"] = True
     result["reason"] = ""
+    # 观感沉淀：把她「哪儿硌手、哪儿认」落进 worldview 层，而不是聊完就散。
+    # 只在她真说了看法时写；失败不影响这次返回（fail-open）。
+    result["judgment_persisted"] = _persist_judgment(base_dir, kind, draft, text)
     return result
+
+
+# ----------------------------------------------------------------------
+# 日常写作对话的自动接入（她主动读稿，而不是等他手动点按钮）
+# ----------------------------------------------------------------------
+_DRAFT_HINTS = (
+    "情节", "大纲", "人物", "人物小传", "框架", "书评", "读后感", "这一章", "这段",
+    "场景", "台词", "世界观", "序章", "第一章", "第一回", "伏笔", "暗线",
+)
+_NARRATIVE_SIGNS = ("。", "“", "”", "「", "」", "《", "》", "？", "！")
+
+
+def looks_like_draft(text: str) -> bool:
+    """是否像「他写出来的一段稿子」（而不是一句聊天）。
+
+    判据宽松但有下限：提到创作用词，或成段（≥3 个句号）且带叙事痕迹（引号/书名号）。
+    """
+    t = text or ""
+    if any(h in t for h in _DRAFT_HINTS):
+        return True
+    return t.count("。") >= 3 and any(s in t for s in _NARRATIVE_SIGNS)
+
+
+def infer_kind(text: str) -> str:
+    """从文本猜阅读视角：框架 / 书评 / 情节 / 一般写作。"""
+    t = text or ""
+    if any(w in t for w in ("大纲", "框架", "结构", "三幕", "起承转合")):
+        return "framework"
+    if any(w in t for w in ("书评", "评论", "读后感")):
+        return "review"
+    if any(w in t for w in ("情节", "人物", "动机", "场景", "台词", "转折")):
+        return "plot"
+    return "general"
+
+
+def _advisor_due(base_dir: str, hours: float = _AUTO_COOLDOWN_HOURS) -> bool:
+    """自动读稿冷却：命中即刷时间戳（无论后续是否真生成到看法），防反复刷屏。"""
+    try:
+        path = Path(base_dir) / "agency" / _ADVISOR_COOLDOWN_FILE
+        if path.exists():
+            ts = json.loads(path.read_text(encoding="utf-8")).get("ts")
+            if ts and (time.time() - float(ts)) < hours * 3600:
+                return False
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"ts": time.time()}, ensure_ascii=False), encoding="utf-8")
+        return True
+    except Exception:  # noqa: BLE001
+        return True
+
+
+def try_advise(
+    base_dir: str,
+    text: str,
+    concept: str = "",
+    kind: Optional[str] = None,
+) -> dict[str, Any]:
+    """日常写作对话的自动接入：他写完一段，她用自己的看法读给他听。
+
+    与手动 ``advise`` 的区别：
+    - 自动触发要有门槛（够长 + 像稿子 + 冷却），不做每句都读；
+    - **降级时不往聊天里塞**（没世界观 / 没 provider / 没看法 → triggered=False），
+      避免每轮刷「我还没形成看法」；
+    - ``concept`` 暂不使用（保留与 inspire 端点一致的调用签名）。
+
+    Returns:
+        ``{"triggered": bool, "advice": str, "kind": str, "reason": str,
+        "judgment_persisted": bool}``
+    """
+    out: dict[str, Any] = {
+        "triggered": False,
+        "advice": "",
+        "kind": kind or "general",
+        "reason": "",
+        "judgment_persisted": False,
+    }
+    text = (text or "").strip()
+    if len(text) < _AUTO_MIN_CHARS:
+        out["reason"] = "too_short"
+        return out
+    if not looks_like_draft(text):
+        out["reason"] = "not_draft"
+        return out
+    out["kind"] = kind or infer_kind(text)
+    if not _advisor_due(base_dir):
+        out["reason"] = "cooldown"
+        return out
+    res = advise(base_dir, text, out["kind"])
+    if not res.get("ok") or not res.get("worldview_used") or not res.get("advice"):
+        out["reason"] = res.get("reason") or "no_advice"
+        return out
+    out["triggered"] = True
+    out["advice"] = res["advice"]
+    out["judgment_persisted"] = bool(res.get("judgment_persisted"))
+    return out

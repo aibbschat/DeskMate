@@ -148,10 +148,18 @@ def build_roundtable_context(proposal: "FinalReviewProposal") -> str:
         )
     fp = format_style_fingerprint()
     if fp:
-        context += (
-            f"\n\n【文风对齐（萧哥写作风格量化指纹）】终审须额外评判文本是否贴合以下声口特征"
-            f"（句长节奏、四字格密度、文白比例、对话占比、标点节奏）：\n{fp}"
-        )
+        from deskmate.style_profile_store import manuscript_fingerprint_available
+
+        if manuscript_fingerprint_available():
+            context += (
+                f"\n\n【文风对齐（萧哥写作风格量化指纹）】终审须额外评判文本是否贴合以下声口特征"
+                f"（句长节奏、四字格密度、文白比例、对话占比、标点节奏）：\n{fp}"
+            )
+        else:
+            context += (
+                f"\n\n【文风参考（暂无书稿样本）】以下指标来自对话记录，仅作粗参考，"
+                f"不据此判定文风违例：\n{fp}"
+            )
     return context
 
 

@@ -39,6 +39,7 @@ MSG_ROUNDTABLE = "roundtable"
 MSG_HELP = "help"
 MSG_ERROR = "error"
 MSG_INSPIRE = "inspire"  # 小桔的创作灵感（基于认知库，带真实世界溯源）
+MSG_ADVICE = "advice"  # 小桔的写作看法（用她自己的世界观读你写的东西，不替写不改稿）
 
 
 def _now() -> str:
@@ -170,6 +171,10 @@ def parse_intent(text: str, state: dict) -> Intent:
     # 帮助
     if re.search(r"帮助|help|怎么用|能做什么|指令", low):
         return Intent("help")
+
+    # 读稿 / 给看法（写作顾问：她用自己的世界观读你写的东西，不替写不改稿）
+    if re.search(r"你读读|读一下|读读这段|看看这段|看看我写的|给点看法|你怎么看|你的看法|有什么看法|评价一下", t):
+        return Intent("advise", raw=t)
 
     # 灵感 / 创作建议（主动给启发，基于她观察到的真实世界）
     if re.search(r"灵感|给.*灵感|帮我想|缺创意|创作建议|没思路|卡住|写不下去|启发我|怎么找灵感", t):
@@ -369,6 +374,7 @@ class CreationChat:
             "export": self._do_export,
             "help": self._do_help,
             "inspire": self._do_inspire,
+            "advise": self._do_advise,
             "unknown": self._do_unknown,
         }.get(intent.type)
         if handler is None:
@@ -778,6 +784,16 @@ class CreationChat:
 
     async def _do_unknown(self, intent: Intent, state: dict) -> AsyncGenerator[dict, None]:
         raw = getattr(intent, "raw", "")
+        # 他写完一段直接贴过来 → 她读后给看法（比「不确定要做什么」有用得多）
+        try:
+            from deskmate.cognitive.writing_advisor import looks_like_draft
+
+            if len(raw) >= 150 and looks_like_draft(raw):
+                async for msg in self._do_advise(intent, state):
+                    yield msg
+                return
+        except Exception:  # noqa: BLE001 — 判据异常时退回原流程
+            pass
         # 语境主动（B 主动发言）：自由聊创作且冷却允许时，主动递一条灵感
         if _inspire_due(getattr(self.pipeline, "base_dir", None)):
             async for msg in self._do_inspire(intent, state):
@@ -794,7 +810,35 @@ class CreationChat:
         ))
 
 
-    # ---- 动作：创作灵感（基于认知库的真实世界启发） ----
+    # ---- 动作：写作顾问（她用自己的世界观读你写的东西，给看法，不代写） ----
+    async def _do_advise(self, intent: Intent, state: dict) -> AsyncGenerator[dict, None]:
+        """读稿给看法：她用自己的世界观读萧哥写的东西（journal 里不落草稿，只落看法）。
+
+        降级（没世界观 / 没 provider / 没看法）时给一句诚实的话，不假装有权威判断。
+        """
+        raw = getattr(intent, "raw", "") or ""
+        base = getattr(self.pipeline, "base_dir", None) or deskmate_base_dir()
+        yield _msg(MSG_PROGRESS, label="小桔读稿中…", message="我在用我的看法读你写的东西…", progress=30)
+        try:
+            from deskmate.cognitive.writing_advisor import advise, infer_kind
+
+            out = await asyncio.to_thread(advise, str(base), raw, infer_kind(raw))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("写作顾问失败（降级）: %s", exc)
+            out = None
+        if not out or not out.get("advice"):
+            yield _msg(
+                MSG_SYSTEM,
+                text="这段话我还没读出能站得住的看法——你再写，我多看多想，等我看得更透再跟你聊。",
+            )
+            return
+        yield _msg(
+            MSG_ADVICE,
+            kind=out.get("kind", "general"),
+            worldview_used=bool(out.get("worldview_used")),
+            text=out.get("advice", ""),
+        )
+
     async def _do_inspire(self, intent: Intent, state: dict) -> AsyncGenerator[dict, None]:
         user_text = getattr(intent, "raw", "") or ""
         base = getattr(self.pipeline, "base_dir", None) or deskmate_base_dir()
