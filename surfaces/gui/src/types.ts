@@ -202,7 +202,7 @@ export type Item =
       multi?: boolean;
       resolved?: string;
     }
-  | { kind: "notice"; tone: "info" | "warn"; text: string; retriable?: boolean; title?: string; server?: string; detail?: string }
+  | { kind: "notice"; tone: "info" | "warn"; text: string; retriable?: boolean; title?: string; server?: string; detail?: string; compact?: boolean }
   // 工具安装请求（request_tool）：agent 找不到某 CLI 时向用户申请安装；declining 是正常结果。
   | {
       kind: "toolreq";

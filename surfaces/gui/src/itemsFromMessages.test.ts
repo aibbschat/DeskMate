@@ -93,6 +93,7 @@ describe("itemsFromMessages compaction", () => {
       kind: "notice",
       tone: "info",
       text: "Context compacted — earlier turns were summarized",
+      compact: true,
     });
   });
 });

@@ -52,17 +52,29 @@ describe("TurnGroup (Transcript §33)", () => {
     expect(container.textContent).toContain('{"ok": true}');
   });
 
-  it("a running turn is labeled Running but starts COLLAPSED (§33 ref #3)", () => {
+  it("a running turn auto-expands so the thinking is live, then folds when done (2026-11-03)", () => {
     const items: Item[] = [
       { kind: "assistant", text: "Looking at the repo." },
       { kind: "tool", id: "t1", name: "grep", args: { pattern: "TODO" }, status: "…" },
     ];
-    const { container } = render(<Transcript items={items} onApprove={vi.fn()} />);
+    render(<Transcript items={items} onApprove={vi.fn()} />);
     expect(screen.getByText(/Running 1 step…/)).toBeTruthy();
-    expect(screen.queryByTestId("turn-narration")).toBeNull(); // collapsed by default
-    expect(screen.getByTestId("turn-live-line").textContent).toContain("Looking at the repo");
-    fireEvent.click(container.querySelector("summary.stepgroup-head")!);
+    // 运行中自动展开：正在跑的步骤与叙述实时可见（旧版强制收起＝「每步思考不可见」的根）。
     expect(screen.getByTestId("step-running")).toBeTruthy();
+    expect(screen.getByTestId("turn-narration").textContent).toContain("Looking at the repo");
+    // 跑完（running 落 false）自动收敛：只剩一行「N step」，叙述不再外露，点开才看。
+    cleanup();
+    render(
+      <Transcript
+        items={[
+          { kind: "assistant", text: "Looking at the repo." },
+          { kind: "tool", id: "t1", name: "grep", args: { pattern: "TODO" }, status: "ok" },
+        ]}
+        onApprove={vi.fn()}
+      />,
+    );
+    expect(screen.getByText("1 step")).toBeTruthy();
+    expect(screen.queryByTestId("turn-narration")).toBeNull();
   });
 
   it("declined approvals keep their own 'Wanted to' row and surface on the collapsed line", () => {
@@ -91,31 +103,33 @@ describe("TurnGroup (Transcript §33)", () => {
 });
 
 describe("live turns (§33 flicker fix)", () => {
+  // 显式钉死 cards：本组测的是折叠卡片风格下的运行中动态（旧版靠上方 describe 的
+  // localStorage 残留，脆弱；2026-11-03 改为显式设置，避免测试顺序变动误伤）。
+  beforeEach(() => {
+    localStorage.setItem("openwork-turn-style", "cards");
+  });
   const LIVE: Item[] = [
     { kind: "user", text: "build the app" },
     { kind: "tool", id: "t1", name: "read_file", args: { path: "data.json" }, status: "ok" },
     { kind: "assistant", text: "Inspecting the fetched dataset next." },
   ];
 
-  it("while running, trailing assistant text stays INSIDE the group — no answer bubble flash", () => {
+  it("while running, the group auto-expands: narration live inside, no answer bubble flash", () => {
     const { container } = render(<Transcript items={LIVE} onApprove={vi.fn()} running />);
-    // No assistant bubble anywhere; the group starts COLLAPSED with the narration riding
-    // the header as the live line (§33 ref #3 — expanding is opt-in).
+    // 运行中不闪答案气泡：trailing assistant 仍留在组内。
     expect(container.querySelector(".bubble-assistant")).toBeNull();
-    expect(screen.queryByTestId("turn-narration")).toBeNull();
-    expect(screen.getByTestId("turn-live-line").textContent).toContain("Inspecting the fetched dataset");
-    // Expanding shows it as the quiet line inside.
-    fireEvent.click(container.querySelector("summary.stepgroup-head")!);
+    // 自动展开 → 叙述实时可见（旧版强制收起，只有一行 live-line＝"每步思考不可见"）。
     expect(screen.getByTestId("turn-narration").textContent).toContain("Inspecting the fetched dataset");
-    // Once the turn ends (running=false), the same trailing text IS the answer bubble.
+    // 跑完（running=false）自动收敛：trailing text 成为答案气泡，组内不再外露叙述。
     cleanup();
     const done = render(<Transcript items={LIVE} onApprove={vi.fn()} />);
     expect(done.container.querySelector(".bubble-assistant")?.textContent).toContain(
       "Inspecting the fetched dataset",
     );
+    expect(screen.queryByTestId("turn-narration")).toBeNull();
   });
 
-  it("quiet streamed text rides the collapsed header and the expanded body — never floats", () => {
+  it("quiet streamed text renders in the auto-expanded live body — never floats", () => {
     const { container } = render(
       <Transcript
         items={LIVE}
@@ -124,12 +138,9 @@ describe("live turns (§33 flicker fix)", () => {
         streamingText="The quote endpoint rate-limited, so I'm checking the historical pages."
       />,
     );
-    // Collapsed: the STREAMING text wins the header live line (fresher than the last item).
-    expect(screen.getByTestId("turn-live-line").textContent).toContain("quote endpoint rate-limited");
-    expect(container.querySelector(".bubble-assistant")).toBeNull();
-    // Expanded: it renders as the small quiet line under the steps.
-    fireEvent.click(container.querySelector("summary.stepgroup-head")!);
+    // 运行中自动展开：streaming 文本直接进展开体的安静行（不再挤在收起的标题上）。
     expect(screen.getByTestId("turn-live-stream").textContent).toContain("quote endpoint rate-limited");
+    expect(container.querySelector(".bubble-assistant")).toBeNull();
   });
 
   it("a PENDING approval neither splits the turn nor promotes the narration", () => {

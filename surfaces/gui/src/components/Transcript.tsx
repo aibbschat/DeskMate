@@ -332,13 +332,14 @@ function TurnGroup({
   onAllowAnyway?: (name: string, args: any) => void;
 }) {
   const { t } = useTranslation();
-  // Turns start COLLAPSED, running or not (owner call 2026-07-14) — the header's live
-  // line is the pulse; expanding is opt-in.
+  // 折叠卡片（cards）＝「动态可见→收敛」：运行中自动展开让每步思考实时可看，
+  // 跑完自动收起只留「N 步」+答案（萧盛 2026-11-03：旧版运行中也强制收起＝每步思考不可见，
+  // 是"没治好"的根）。用户手动开合（userToggle）始终优先于自动态。
   const rows = buildRows(items);
   const tools = items.filter((it): it is ToolItem => it.kind === "tool");
   const running = live || tools.some((t) => t.status === "…");
   const [userToggle, setUserToggle] = useState<boolean | null>(null);
-  const open = userToggle ?? false;
+  const open = userToggle ?? running;
   const [style] = useTurnStyle();
   const [bubbleOpen, setBubbleOpen] = useState(false);
   const lastNarr = [...items].reverse().find((it): it is AssistantItem => it.kind === "assistant");
@@ -587,7 +588,7 @@ export function Transcript({
           case "user":
             return (
               <div className="group self-end max-w-[78%] flex flex-col items-end" key={bi}>
-                <div className="bubble-user px-3.5 py-2.5 rounded-[14px_14px_4px_14px] bg-solid text-onSolid text-[14.5px] leading-relaxed whitespace-pre-wrap">
+                <div className="bubble-user px-3.5 py-2.5 rounded-[14px_14px_4px_14px] bg-solid text-onSolid text-chat leading-relaxed whitespace-pre-wrap">
                   {item.attachments && item.attachments.length > 0 && (
                     <div className="bubble-attachments">
                       {item.attachments.map((a, i) =>
@@ -699,7 +700,15 @@ export function Transcript({
               );
             }
             return (
-              <div className={"notice " + (item.tone === "warn" ? "warn" : "")} key={bi}>
+              <div
+                className={
+                  "notice " +
+                  (item.tone === "warn" ? "warn " : "") +
+                  (item.compact ? "notice-compact" : "")
+                }
+                key={bi}
+                data-testid={item.compact ? "compact-divider" : undefined}
+              >
                 {item.text}
                 {item.retriable && !running && onRetry && block.i === retryAnchor(items) && (
                   <button className="btn ml-2" data-testid="notice-retry" onClick={onRetry}>

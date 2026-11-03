@@ -57,6 +57,9 @@
   --fs-body: 14px;
   --fs-heading: 15px;
   --fs-title: 16px;
+  /* 聊天阅读档：气泡正文/Markdown 专用。默认 15px 等于旧硬编码，未换挡时逐像素一致；
+     大档给 +2px（17px）让"设置到大"在聊天区有明显响应（旧版正文写死 px 完全不换挡的根）。 */
+  --fs-chat: 15px;
 }
 
 /* 字号换挡：只动这六个 token，布局尺寸（侧栏宽、间距、图标）一律不变。 */
@@ -67,6 +70,7 @@
   --fs-body: 13px;
   --fs-heading: 14px;
   --fs-title: 15px;
+  --fs-chat: 14px;
 }
 :root[data-text-size="large"] {
   --fs-label: 12px;
@@ -75,6 +79,7 @@
   --fs-body: 15px;
   --fs-heading: 16px;
   --fs-title: 17px;
+  --fs-chat: 17px;
 }
 
 /* Dark palette. `data-theme` is set on <html> by an inline script in index.html (pre-paint)
@@ -1270,25 +1275,26 @@ html[data-theme="dark"] .dm-mailbox {
 /* Conversation column — mock's `max-w-3xl mx-auto space-y-5` (the px-6/py-6 gutter is supplied by
    .main-scroll). The user bubble is restyled inline with Tailwind utilities on the element. */
 .transcript { max-width: 768px; margin: 0 auto; display: flex; flex-direction: column; gap: 20px; }
-.bubble-assistant { font-size: 15px; line-height: 1.55; white-space: pre-wrap; }
+.bubble-assistant { font-size: var(--fs-chat); line-height: 1.55; white-space: pre-wrap; }
 .bubble-assistant .who { display: flex; align-items: center; gap: 8px; font-size: 22px; letter-spacing: 0.02em; font-weight: 600; color: var(--ink); margin-bottom: 6px; }
 .bubble-assistant .who .who-avatar { width: 36px; height: 36px; flex: none; color: var(--accent); }
 
 /* markdown-rendered assistant content (the bubble's pre-wrap would double-space block output) */
-.md { white-space: normal; font-size: 15px; line-height: 1.68; color: var(--ink); }
+.md { white-space: normal; font-size: var(--fs-chat); line-height: 1.68; color: var(--ink); }
 .md > :first-child { margin-top: 0; }
 .md > :last-child { margin-bottom: 0; }
 .md p { margin: 0 0 12px; }
 .md strong { font-weight: 600; color: var(--ink); }
 
-/* headings — a clear hierarchy with generous space above so sections breathe */
+/* headings — a clear hierarchy with generous space above so sections breathe.
+   字号用 em（相对 --fs-chat 基线），换挡时整段层级一起缩放（旧版写死 px 不随字号变）。 */
 .md h1, .md h2, .md h3, .md h4, .md h5 {
   margin: 22px 0 9px; line-height: 1.3; font-weight: 650; letter-spacing: -0.01em; color: var(--ink);
 }
-.md h1 { font-size: 20px; }
-.md h2 { font-size: 17px; }
-.md h3 { font-size: 15px; }
-.md h4, .md h5 { font-size: 13.5px; }
+.md h1 { font-size: 1.33em; }
+.md h2 { font-size: 1.13em; }
+.md h3 { font-size: 1em; }
+.md h4, .md h5 { font-size: 0.9em; }
 
 /* lists — visible markers + comfortable item spacing (was a run-together wall of text) */
 .md ul, .md ol { margin: 4px 0 14px; padding-left: 22px; }
@@ -1309,14 +1315,14 @@ html[data-theme="dark"] .dm-mailbox {
   margin: 4px 0 14px; padding: 12px 14px; overflow-x: auto;
   background: var(--paper); border: 1px solid var(--line); border-radius: 12px;
 }
-.md pre code { background: none; border: none; padding: 0; font-size: 12.5px; line-height: 1.55; }
+.md pre code { background: none; border: none; padding: 0; font-size: 0.83em; line-height: 1.55; }
 
 /* blockquote */
 .md blockquote { margin: 4px 0 14px; padding: 4px 14px; border-left: 3px solid var(--line-strong); color: var(--muted); }
 .md blockquote p:last-child { margin-bottom: 0; }
 
 /* tables — header tint, zebra rows, roomier cells (kept block-scrollable for wide tables) */
-.md table { display: block; overflow-x: auto; border-collapse: collapse; margin: 6px 0 14px; font-size: 13.5px; }
+.md table { display: block; overflow-x: auto; border-collapse: collapse; margin: 6px 0 14px; font-size: 0.9em; }
 .md th, .md td { border: 1px solid var(--line); padding: 7px 12px; text-align: left; vertical-align: top; }
 .md th { background: var(--paper); font-weight: 600; color: var(--muted); white-space: nowrap; }
 .md tbody tr:nth-child(even) { background: color-mix(in srgb, var(--paper) 45%, transparent); }
@@ -1349,8 +1355,18 @@ html[data-theme="dark"] .dm-mailbox {
 .tool .status.ok { color: var(--ok); }
 .tool .status.denied, .tool .status.error { color: var(--accent); }
 
-.notice { font-size: 13px; color: var(--muted); text-align: center; }
+.notice { font-size: var(--fs-ui); color: var(--muted); text-align: center; }
 .notice.warn { color: var(--accent); }
+/* 上下文压缩分隔线（OPE-27）：旧版是一条整行居中的 13px 文案，长会话里每轮一条、堆七八行，
+   正是"思考过后占了聊天区很多位置"的一主因。改成两端细线 + 小字的中性分隔，负 margin 收紧
+   它上下那 20px 的 transcript gap，让"这里压缩过"回到它本来的低调。 */
+.notice-compact {
+  display: flex; align-items: center; gap: 10px;
+  margin: -10px 0; font-size: var(--fs-label); color: var(--faint); text-align: center;
+}
+.notice-compact::before, .notice-compact::after {
+  content: ""; flex: 1 1 0; height: 1px; background: var(--line);
+}
 
 /* approval */
 .approval {

@@ -52,6 +52,9 @@ export default {
         title: "var(--fs-title)",
         heading: "var(--fs-heading)",
         body: "var(--fs-body)",
+        // 聊天阅读档（2026-11-03）：气泡正文/Markdown 专用，换挡时聊天文字要有明显响应
+        // （萧盛：「设置到最大，对聊天区文字变化不大」的根＝正文硬编码 px 不吃 token）。
+        chat: "var(--fs-chat)",
         ui: "var(--fs-ui)",
         meta: "var(--fs-meta)",
         label: "var(--fs-label)",
