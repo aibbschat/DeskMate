@@ -355,7 +355,10 @@ def save_profile(profile: DecisionProfile, path: Path | None = None) -> None:
 
 
 def extract_and_update(user_text: str, path: Path | None = None) -> tuple[DecisionProfile, list[DecisionSignal]]:
-    """从用户文本提取信号并增量更新画像（一步完成）。
+    """从用户文本提取信号并增量更新画像（一步完成，并发安全）。
+
+    默认（path=None）走统一库，通过 BlobStore.atomic_update 把 load→update→save
+    包在 BEGIN IMMEDIATE 事务里，消除多进程/线程竞态。
 
     Returns:
         (更新后的画像, 本次提取的信号列表)
@@ -363,10 +366,27 @@ def extract_and_update(user_text: str, path: Path | None = None) -> tuple[Decisi
     signals = extract_signals(user_text)
     if not signals:
         return load_profile(path), []
-    profile = load_profile(path)
-    update_profile(profile, signals)
-    save_profile(profile, path)
-    return profile, signals
+
+    def _do_update(old_data: dict) -> dict:
+        profile = DecisionProfile.from_dict(old_data) if isinstance(old_data, dict) else DecisionProfile()
+        update_profile(profile, signals)
+        return profile.to_dict()
+
+    if path is None:
+        result = BlobStore().atomic_update(
+            BlobStore.KEY_DECISION,
+            _do_update,
+            legacy_path=DEFAULT_PROFILE_PATH,
+        )
+        if result is None:
+            return DecisionProfile(), signals
+        return DecisionProfile.from_dict(result), signals
+    else:
+        # 显式路径（文件）：测试/自定义场景，无并发
+        profile = load_profile(path)
+        update_profile(profile, signals)
+        save_profile(profile, path)
+        return profile, signals
 
 
 # ---------------------------------------------------------------------------

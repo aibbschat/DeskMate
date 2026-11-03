@@ -112,6 +112,10 @@ def update_style_profile(
     - 顶层 ``metrics``/``samples``/``chars`` 仍按旧语义维护（混合口径，只留给旧读者兼容）；
       写作侧不再消费顶层，避免聊天语感污染文风指纹。
 
+    **并发安全**：默认全局路径（走统一库）通过 ``BlobStore.atomic_update`` 把
+    load→merge→save 包在 SQLite ``BEGIN IMMEDIATE`` 事务里，彻底消除多进程/线程
+    read-modify-write 竞态。显式路径（文件）仍走原有逻辑（CLI/测试场景，无并发）。
+
     Args:
         text: 新样本文本（书稿 / 聊天消息）。
         source: 来源描述（如「《国子监秘闻录》第3章」「对话-2026-11-01」），用于 samples 记录。
@@ -123,108 +127,127 @@ def update_style_profile(
         更新后的完整画像 dict。
     """
     path = profile_path or DEFAULT_PROFILE_PATH
-    data = load_profile(path)
 
     sample = (text or "").strip()
     if not sample:
-        return data
+        return load_profile(path)
     sample = sample[:max_sample_chars]
     bkey = _resolve_bucket(source, bucket)
 
-    # 书稿样本按内容去重：同一份稿子反复打开审阅时，不能把画像刷爆（幂等、fail-open）
-    digest = hashlib.sha1(sample.encode("utf-8")).hexdigest()
-    hashes = data.get("ingested_hashes")
-    if not isinstance(hashes, list):
-        hashes = []
-    if bkey == BUCKET_MANUSCRIPT and digest in hashes:
-        return data
-
     metrics_new = compute_style_metrics(sample)
     if not int(metrics_new.get("chars", 0) or 0):
-        return data  # 没有中文正文（空稿 / 纯代码）不入画像
+        return load_profile(path)  # 没有中文正文（空稿 / 纯代码）不入画像
 
-    # ---- 提取既有状态（顶层混合口径，保持旧字段语义不变） ----
-    metrics_old = data.get("metrics") if isinstance(data.get("metrics"), dict) else None
-    old_n = 0
-    if isinstance(metrics_old, dict):
-        old_n = int(metrics_old.get("n", 0) or 0)
-    samples = data.get("samples")
-    if not isinstance(samples, list):
-        samples = []
-    chars_total = int(data.get("chars", 0) or 0)
-    updates = int(data.get("updates", 0) or 0)
-    first_updated = data.get("first_updated_at", _now_iso())
+    digest = hashlib.sha1(sample.encode("utf-8")).hexdigest()
 
-    # ---- 合并量化指标（加权平均，样本数 old_n -> old_n+1） ----
-    metrics_merged = merge_metrics(metrics_old, metrics_new, old_n)
-    metrics_merged["n"] = old_n + 1
+    # ---- 构建合并逻辑（作为 fn 传给 atomic_update，或直接执行）----
+    def _merge(old_data: dict) -> Optional[dict]:
+        """纯合并逻辑：输入旧画像，返回新画像（或 None 表示放弃写入）。"""
+        data = old_data if isinstance(old_data, dict) else {}
 
-    # ---- 记录本次样本快照 ----
-    samples.append(
-        {
-            "source": source or f"sample-{updates + 1}",
-            "chars": metrics_new.get("chars", 0),
+        # 幂等去重（书稿桶）
+        hashes = data.get("ingested_hashes")
+        if not isinstance(hashes, list):
+            hashes = []
+        if bkey == BUCKET_MANUSCRIPT and digest in hashes:
+            return None  # 放弃写入，返回 None 不触发 update
+
+        # ---- 提取既有状态（顶层混合口径，保持旧字段语义不变） ----
+        metrics_old = data.get("metrics") if isinstance(data.get("metrics"), dict) else None
+        old_n = 0
+        if isinstance(metrics_old, dict):
+            old_n = int(metrics_old.get("n", 0) or 0)
+        samples = data.get("samples")
+        if not isinstance(samples, list):
+            samples = []
+        chars_total = int(data.get("chars", 0) or 0)
+        updates = int(data.get("updates", 0) or 0)
+        first_updated = data.get("first_updated_at", _now_iso())
+
+        # ---- 合并量化指标（加权平均，样本数 old_n -> old_n+1） ----
+        metrics_merged = merge_metrics(metrics_old, metrics_new, old_n)
+        metrics_merged["n"] = old_n + 1
+
+        # ---- 记录本次样本快照 ----
+        samples.append(
+            {
+                "source": source or f"sample-{updates + 1}",
+                "chars": metrics_new.get("chars", 0),
+                "updated_at": _now_iso(),
+                "metrics": metrics_new,
+            }
+        )
+        if len(samples) > 20:
+            samples = samples[-20:]
+
+        # ---- 分桶更新（书稿 / 对话各算各的，互不稀释） ----
+        buckets = data.get("buckets")
+        if not isinstance(buckets, dict):
+            buckets = {}
+        entry = buckets.get(bkey)
+        if not isinstance(entry, dict):
+            entry = {}
+        b_metrics_old = entry.get("metrics") if isinstance(entry.get("metrics"), dict) else None
+        b_n = int(b_metrics_old.get("n", 0) or 0) if b_metrics_old else 0
+        b_metrics = merge_metrics(b_metrics_old, metrics_new, b_n)
+        b_metrics["n"] = b_n + 1
+        b_samples = entry.get("samples") if isinstance(entry.get("samples"), list) else []
+        b_samples.append(
+            {
+                "source": source or f"sample-{int(entry.get('updates', 0) or 0) + 1}",
+                "chars": metrics_new.get("chars", 0),
+                "updated_at": _now_iso(),
+                "metrics": metrics_new,
+            }
+        )
+        if len(b_samples) > 20:
+            b_samples = b_samples[-20:]
+        buckets[bkey] = {
+            "metrics": b_metrics,
+            "samples": b_samples,
+            "chars": int(entry.get("chars", 0) or 0) + int(metrics_new.get("chars", 0) or 0),
+            "updates": int(entry.get("updates", 0) or 0) + 1,
             "updated_at": _now_iso(),
-            "metrics": metrics_new,
         }
-    )
-    # 快照只保留最近 20 次，避免无限膨胀
-    if len(samples) > 20:
-        samples = samples[-20:]
 
-    # ---- 分桶更新（书稿 / 对话各算各的，互不稀释） ----
-    buckets = data.get("buckets")
-    if not isinstance(buckets, dict):
-        buckets = {}
-    entry = buckets.get(bkey)
-    if not isinstance(entry, dict):
-        entry = {}
-    b_metrics_old = entry.get("metrics") if isinstance(entry.get("metrics"), dict) else None
-    b_n = int(b_metrics_old.get("n", 0) or 0) if b_metrics_old else 0
-    b_metrics = merge_metrics(b_metrics_old, metrics_new, b_n)
-    b_metrics["n"] = b_n + 1
-    b_samples = entry.get("samples") if isinstance(entry.get("samples"), list) else []
-    b_samples.append(
-        {
-            "source": source or f"sample-{int(entry.get('updates', 0) or 0) + 1}",
-            "chars": metrics_new.get("chars", 0),
+        # ---- 组装新画像 ----
+        profile = data.get("profile") or {}
+        return {
+            "profile": profile,
+            "summary": profile.get("summary", ""),
+            "features": profile.get("features", {}) if isinstance(profile.get("features"), dict) else {},
+            "metrics": metrics_merged,
+            "samples": samples,
+            "buckets": buckets,
+            "ingested_hashes": (hashes + [digest])[-100:],
+            "source": source or data.get("source", ""),
+            "chars": chars_total + metrics_new.get("chars", 0),
+            "updates": updates + 1,
+            "first_updated_at": first_updated,
             "updated_at": _now_iso(),
-            "metrics": metrics_new,
         }
-    )
-    if len(b_samples) > 20:
-        b_samples = b_samples[-20:]
-    buckets[bkey] = {
-        "metrics": b_metrics,
-        "samples": b_samples,
-        "chars": int(entry.get("chars", 0) or 0) + int(metrics_new.get("chars", 0) or 0),
-        "updates": int(entry.get("updates", 0) or 0) + 1,
-        "updated_at": _now_iso(),
-    }
 
-    # ---- 组装新画像（保留原 profile 定性层） ----
-    profile = data.get("profile") or {}
-    new_data = {
-        "profile": profile,
-        # 顶层冗余 summary/features：deskmate.writing._auto_load_style_profile
-        # 会把整个 json 直接丢给 format_profile_for_prompt（只读顶层），
-        # 顶层冗余保证两种读取姿势都能正确取到定性画像。
-        "summary": profile.get("summary", ""),
-        "features": profile.get("features", {}) if isinstance(profile.get("features"), dict) else {},
-        "metrics": metrics_merged,
-        "samples": samples,
-        "buckets": buckets,
-        "ingested_hashes": (hashes + [digest])[-100:],
-        "source": source or data.get("source", ""),
-        "chars": chars_total + metrics_new.get("chars", 0),
-        "updates": updates + 1,
-        "first_updated_at": first_updated,
-        "updated_at": _now_iso(),
-    }
-    save_profile(path, new_data)
-    # 画像已更新，清掉文风指纹缓存（否则写作/审稿会一直用首次生成的旧指纹）
-    clear_style_fingerprint_cache()
-    return new_data
+    # ---- 执行：默认全局路径走原子事务；显式路径走原有 load-modify-save ----
+    if _is_default_path(path):
+        result = BlobStore().atomic_update(
+            BlobStore.KEY_STYLE,
+            _merge,
+            legacy_path=DEFAULT_PROFILE_PATH,
+        )
+        if result is None:
+            # atomic_update 返回 None 可能是 fn 返回 None（去重）或异常
+            return load_profile(path)
+        clear_style_fingerprint_cache()
+        return result
+    else:
+        # 显式路径（CLI/自定义）：无并发，原有逻辑安全
+        old_data = load_profile(path)
+        new_data = _merge(old_data)
+        if new_data is None:
+            return old_data if isinstance(old_data, dict) else {}
+        save_profile(path, new_data)
+        clear_style_fingerprint_cache()
+        return new_data
 
 
 def _format_metrics_for_human(metrics: dict) -> str:

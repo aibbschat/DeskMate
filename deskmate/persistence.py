@@ -74,6 +74,7 @@ class BlobStore:
         conn = sqlite3.connect(str(self.db_path), isolation_level=None)
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA synchronous=NORMAL")
+        conn.execute("PRAGMA busy_timeout=5000")
         return conn
 
     def _ensure(self) -> None:
@@ -130,6 +131,71 @@ class BlobStore:
                 )
         except Exception:
             pass
+
+    def atomic_update(
+        self,
+        key: str,
+        fn: callable,
+        *,
+        legacy_path: Optional[str | Path] = None,
+    ) -> Optional[dict]:
+        """原子 read-modify-write：用 BEGIN IMMEDIATE 锁把整个流程包成单个事务。
+
+        解决经典竞态：多进程/线程同时 load → 各改各的 → save 全量 → 后写的覆盖先写的。
+        BEGIN IMMEDIATE 让 SQLite 立刻拿写锁，其他进程在 busy_timeout 内等待。
+
+        Args:
+            key: json_blobs key
+            fn: callable(old_data: dict | None) -> new_data: dict | None
+                - 入参是 DB 当前值（None 表示不存在）
+                - 返回 None 表示放弃写入（不变更）
+                - 返回 dict 表示写入新值
+            legacy_path: DB 为空时尝试从 legacy 文件迁移的路径（同 get 的 legacy_path）
+
+        Returns:
+            fn 返回的 new_data；fail-open 时返回 None。
+        """
+        try:
+            with self._connect() as conn:
+                # IMMEDIATE：立刻拿写锁，阻止其他进程写；读不阻塞（WAL 模式）
+                conn.execute("BEGIN IMMEDIATE")
+                try:
+                    row = conn.execute(
+                        "SELECT data FROM json_blobs WHERE key=?", (key,)
+                    ).fetchone()
+                    old_data = json.loads(row[0]) if row else None
+                    # DB 无 → 尝试 legacy 迁移
+                    if old_data is None and legacy_path:
+                        legacy = Path(legacy_path)
+                        if legacy.is_file():
+                            try:
+                                old_data = json.loads(legacy.read_text(encoding="utf-8"))
+                            except Exception:
+                                old_data = None
+
+                    new_data = fn(old_data if isinstance(old_data, dict) else {})
+                    if new_data is None:
+                        conn.execute("ROLLBACK")
+                        return None
+                    if not isinstance(new_data, dict):
+                        conn.execute("ROLLBACK")
+                        return None
+
+                    conn.execute(
+                        "INSERT INTO json_blobs(key, data, updated_at) VALUES(?,?,?) "
+                        "ON CONFLICT(key) DO UPDATE SET data=excluded.data, updated_at=excluded.updated_at",
+                        (key, json.dumps(new_data, ensure_ascii=False), _now_iso()),
+                    )
+                    conn.execute("COMMIT")
+                    return new_data
+                except Exception:
+                    try:
+                        conn.execute("ROLLBACK")
+                    except Exception:
+                        pass
+                    raise
+        except Exception:
+            return None
 
     # ------------------------------------------------------------------
     # 迁移（幂等）
