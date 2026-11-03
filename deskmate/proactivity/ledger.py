@@ -14,6 +14,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import sqlite3
 import threading
 import time
@@ -1613,23 +1614,38 @@ def mark_delivered(
     return True
 
 
+def _clip_first_sentence(text: str, cap: int = 80) -> str:
+    """取首句（。！？/换行截断）并封顶 cap 字——长论述不再整段倾倒进消息流。"""
+    text = (text or "").strip()
+    if not text:
+        return ""
+    head = text.split("\n", 1)[0].strip()
+    m = re.match(r"^[\s\S]{1,%d}?(?:[。！？]|$)" % cap, head)
+    s = (m.group(0) if m else head[:cap]).rstrip()
+    clipped = len(head) > len(s) or len(text) > len(head)
+    return s + ("…" if clipped and not s.endswith("…") else "")
+
+
 def compose_speak_text(item: dict) -> str:
     """「聊这个」让她先开口的文案组装（server 端定稿，前端不控 transcript 文本）。
 
-    第一人称复述自己递过的条目——她「知道自己在说什么」，用户接上即续聊。
+    2026-11-03 短版（瘦身卡改版）：只递**摘要 + 依据 + 一句理解 + #id**——
+    content 可能是几千字的长论述（曾经整段倾倒刷屏），全文留在想法卡详情区
+    与信箱里，消息流只活这一句。第一人称复述不变，她「知道自己在说什么」。
     understanding 为空则省略该行（不出现「我的理解：」空挂）；加工失败标记降级提示。
     """
-    content = (item.get("content") or "").strip()
+    summary = _clip_first_sentence(item.get("content") or "", cap=80)
     evidence = (item.get("evidence") or "").strip()
     und = (item.get("understanding") or "").strip()
-    if und == UNDERSTANDING_FAILED_MARKER:
-        und = "（这条的理解加工没完成，我只能给你看依据）"
-    lines = [f"对了，说到这个——{content}"]
+    lines = [f"对了，说到这个——{summary}"]
     if evidence:
         lines.append(f"（依据：{evidence}）")
-    if und:
-        lines.append(und)
+    if und == UNDERSTANDING_FAILED_MARKER:
+        lines.append("这条的理解加工没完成，我只能给你看依据。")
+    elif und:
+        lines.append(f"我的理解：{_clip_first_sentence(und, cap=60)}")
     lines.append(
+        f"来龙去脉我都记着，想细看说一声。"
         f"（这条是 #{_short_id(item.get('id') or '')}，之后报这个号我就能调出来）"
     )
     return "\n".join(lines)

@@ -2135,7 +2135,12 @@ export function App() {
                 把最近对话作上下文，聊到某主题才递对应待办（非浮层、轻提示卡片）。
                 「聊这个」（§11.16 层三）＝让她说：onSpeak 走 speak 端点，她的消息落消息流。 */}
             {!idle && agent === "deskmate" && (
-              <DeskMateProactiveInline items={items} onSpeak={speakHandoff} />
+              <DeskMateProactiveInline
+                items={items}
+                onSpeak={speakHandoff}
+                onRunStep={(s) => prefillComposer(s.instruction)}
+                onOpenMailbox={() => setSurface("mailbox")}
+              />
             )}
 
             <Composer

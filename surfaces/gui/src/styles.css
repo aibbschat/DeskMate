@@ -854,122 +854,199 @@ body {
 }
 .dm-digest-more:hover { border-color: var(--accent); color: var(--accent); background: var(--panel); }
 
-/* 主动产出台账 · 对话式对接卡片（DeskHome handoff，P0 2026-10-06）
-   她云端/手机端主动盯到的事，在空会话首页以页面内卡片递出（非浮层硬弹）。
-   质感基准 = .dm-digest-card 一套：细边框 + 低饱和 + hover 微浮起。 */
-
-/* 活跃会话内联 handoff 卡片（§11.4②）
-   挂载在消息流底部、Composer 上方；暖色轻卡片，不抢聊天焦点。 */
-.dm-handoff-inline {
+/* 主动想法卡 · 瘦身三态（2026-11-03 改版，mock：ui-mocks/主动想法卡_瘦身三态_2026-11-03.html）
+   挂载在消息流底部、Composer 上方（§11.4② 相关性注入）。收起＝一行提示；展开＝每条
+   一行摘要 + #id + 龄期；点开单条＝详情限高 180px 内部滚动。
+   红线：不再渲染后端拼好的长文 handoff.text——两千字的条目曾双份刷屏（旧 .dm-handoff-*
+   把 text 与 items 各念一遍）；全文只活在详情滚动区与信箱里，卡体限高 40vh，
+   任何一层都不允许占满全屏。小按钮右下收口，通栏大胶囊退役。 */
+.dm-thought {
+  --th-amber: #c2662f;        /* 小桔暖色（同 .dm-mailbox --mb-* 的局部变量口径） */
+  --th-amber-soft: #fdf3ea;
+  --th-line: #f0dcc9;
   margin: 8px 0 4px;
-  padding: 12px 14px 10px;
-  border-radius: 12px;
-  border: 1px solid var(--line);
+  border: 1px solid var(--th-line);
+  border-radius: 14px;
   background: var(--panel);
+  box-shadow: 0 1px 3px rgba(180, 130, 90, 0.06);
+  overflow: hidden;
   font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
 }
-.dm-handoff-text {
-  margin: 0 0 8px;
-  font-size: 12.5px;
-  line-height: 1.5;
-  color: var(--muted);
+html[data-theme="dark"] .dm-thought {
+  --th-amber: #e08b4f;
+  --th-amber-soft: #241d16;
+  --th-line: #4a382a;
 }
-.dm-handoff-list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
+.dm-thought-head {
+  display: flex; align-items: center; gap: 8px;
+  padding: 11px 14px; cursor: pointer; user-select: none;
 }
-.dm-handoff-item {
-  padding: 10px 12px;
-  border-radius: 10px;
-  border: 1px solid var(--line);
-  background: var(--paper);
-  display: flex;
-  flex-direction: column;
-  gap: 5px;
+.dm-thought-head:hover { background: var(--th-amber-soft); }
+.dm-thought-spark { flex: none; color: var(--th-amber); font-size: 14px; }
+.dm-thought-line {
+  flex: 1; min-width: 0; font-size: var(--fs-ui); line-height: 1.5; color: var(--ink);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-.dm-handoff-content {
-  font-size: 13.5px;
-  line-height: 1.55;
-  color: var(--ink);
-  display: flex;
-  align-items: baseline;
-  gap: 6px;
-}
-.dm-handoff-id {
-  flex: none;
-  font-size: 11px;
-  font-weight: 600;
-  color: var(--accent);
-  background: var(--accent-soft);
-  border-radius: 4px;
-  padding: 1px 5px;
-  line-height: 1.4;
-  letter-spacing: 0.3px;
-}
-.dm-handoff-evidence,
-.dm-handoff-understanding {
-  font-size: 12px;
-  line-height: 1.5;
-  color: var(--muted);
-  padding-left: 2px;
-}
-.dm-handoff-evidence::before {
-  content: "依据：";
-  color: var(--faint);
-  font-weight: 500;
-}
-.dm-handoff-understanding::before {
-  content: "她的理解：";
-  color: var(--faint);
-  font-weight: 500;
-}
-.dm-handoff-actions {
-  display: flex;
-  gap: 8px;
-  margin-top: 4px;
-  padding-top: 6px;
+.dm-thought-chev { flex: none; color: var(--faint); font-size: 10px; transition: transform 0.18s ease; }
+.dm-thought-chev.open,
+.dm-thought-item.open > .dm-thought-row .dm-thought-chev { transform: rotate(90deg); }
+/* 卡体总高封顶：多条时内部滚动，绝不撑破聊天区 */
+.dm-thought-body {
   border-top: 1px solid var(--line);
+  padding: 6px 12px 12px;
+  max-height: 40vh; overflow-y: auto;
 }
-.dm-handoff-chat {
-  flex: 1;
-  padding: 6px 14px;
-  border-radius: 999px;
-  border: 1px solid var(--accent);
-  background: var(--accent);
-  color: #fff;
-  font-size: 12.5px;
-  font-weight: 600;
-  font-family: inherit;
-  cursor: pointer;
-  transition: all 0.15s ease;
-  letter-spacing: 0.3px;
+.dm-thought-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+.dm-thought-item { border-bottom: 1px solid var(--line); }
+.dm-thought-item:last-child { border-bottom: none; }
+.dm-thought-row {
+  display: flex; align-items: center; gap: 8px;
+  padding: 10px 2px; cursor: pointer;
 }
-.dm-handoff-chat:hover {
-  background: var(--accent);
-  filter: brightness(1.08);
-  box-shadow: 0 2px 8px rgba(37, 99, 235, 0.25);
+.dm-thought-id {
+  flex: none; font-family: var(--mono); font-size: 10.5px; font-weight: 600;
+  color: var(--accent); background: var(--accent-soft);
+  border-radius: 4px; padding: 1.5px 5px;
 }
-.dm-handoff-later {
-  flex: 1;
-  padding: 6px 14px;
-  border-radius: 999px;
-  border: 1px solid var(--line-strong);
-  background: transparent;
-  color: var(--muted);
-  font-size: 12.5px;
-  font-family: inherit;
-  cursor: pointer;
-  transition: all 0.15s ease;
+.dm-thought-sum {
+  flex: 1; min-width: 0; font-size: var(--fs-ui); line-height: 1.55; color: var(--ink);
+  display: -webkit-box; -webkit-line-clamp: 1; -webkit-box-orient: vertical; overflow: hidden;
 }
-.dm-handoff-later:hover {
-  border-color: var(--muted);
-  color: var(--ink);
-  background: var(--paper);
+.dm-thought-age {
+  flex: none; font-size: var(--fs-label); color: var(--warn-ink);
+  background: var(--warn-soft); border-radius: 999px; padding: 2px 8px;
 }
+.dm-thought-detail { padding: 0 2px 12px; }
+/* 详情限高 180px + 内部滚动：两千字也压得住（这是「不再占全屏」的硬保证） */
+.dm-thought-detail-inner {
+  max-height: 180px; overflow-y: auto; padding-right: 8px;
+  border-left: 2px solid var(--th-line); margin-left: 2px; padding-left: 12px;
+}
+.dm-thought-detail-inner p { font-size: var(--fs-meta); line-height: 1.75; color: var(--muted); margin: 0 0 8px; }
+.dm-thought-detail-inner p b { color: var(--ink); font-weight: 600; }
+.dm-thought-detail-inner::-webkit-scrollbar { width: 4px; }
+.dm-thought-detail-inner::-webkit-scrollbar-thumb { background: var(--line-strong); border-radius: 2px; }
+.dm-thought-steps { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 2px; }
+.dm-thought-step {
+  font-family: inherit; font-size: var(--fs-label);
+  color: var(--accent); background: var(--accent-soft);
+  border: 1px solid transparent; border-radius: 999px;
+  padding: 3px 10px; cursor: pointer; transition: all 0.15s ease;
+}
+.dm-thought-step:hover { border-color: var(--accent); }
+.dm-thought-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 10px; }
+.dm-thought-chat, .dm-thought-later {
+  font-family: inherit; font-size: var(--fs-meta);
+  border-radius: 8px; padding: 5px 14px; cursor: pointer; transition: all 0.15s ease;
+}
+.dm-thought-chat {
+  border: 1px solid var(--th-amber); background: var(--th-amber);
+  color: #fff; font-weight: 600;
+}
+.dm-thought-chat:hover { filter: brightness(1.08); }
+.dm-thought-later { border: 1px solid var(--line-strong); background: transparent; color: var(--muted); }
+.dm-thought-later:hover { border-color: var(--muted); color: var(--ink); }
+.dm-thought-foot {
+  display: flex; justify-content: space-between; align-items: center;
+  border-top: 1px dashed var(--line); margin-top: 8px; padding-top: 9px;
+}
+.dm-thought-more, .dm-thought-mute {
+  background: none; border: none; padding: 0; cursor: pointer;
+  font-family: inherit; font-size: var(--fs-label);
+}
+.dm-thought-more { color: var(--accent); }
+.dm-thought-mute { color: var(--faint); }
+.dm-thought-mute:hover { color: var(--muted); }
+
+/* 我们的记忆 · 星尘夜空（2026-11-03 改版，mock：ui-mocks/我们的记忆_星尘夜空_2026-11-03.html）
+   全屏沉浸页：暮色渐变天幕 + 暖米白文字，刻意不压纯黑（萧盛：「黑了看着难受」）。
+   canvas 透明叠在 .dm-sky 的渐变上；外壳（顶栏/图例/抽屉）走同一组 --sky-* 变量。 */
+.dm-sky {
+  --sky-cream: #f6ead6;
+  --sky-dim: rgba(246, 234, 214, 0.62);
+  --sky-amber: #ffb35c;
+  --sky-glass: rgba(38, 32, 66, 0.55);
+  --sky-line: rgba(255, 225, 180, 0.16);
+  position: fixed; inset: 0; z-index: 60; overflow: hidden;
+  font-family: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", -apple-system, system-ui, sans-serif;
+  color: var(--sky-cream);
+  background:
+    radial-gradient(90% 46% at 50% 108%, rgba(255, 150, 80, 0.20) 0%, rgba(255, 150, 80, 0) 60%),
+    linear-gradient(180deg, #232248 0%, #2f2a55 34%, #43335e 62%, #5c4368 84%, #6e4f66 100%);
+}
+.dm-sky-top {
+  position: absolute; left: 0; right: 0; top: 0; z-index: 5;
+  padding: 22px 28px; display: flex; justify-content: space-between; align-items: flex-start;
+}
+.dm-sky-top h1 {
+  margin: 0; font-size: 26px; font-weight: 800; letter-spacing: 3px; color: var(--sky-cream);
+  text-shadow: 0 0 24px rgba(255, 180, 92, 0.35);
+}
+.dm-sky-lede { margin-top: 6px; font-size: 13px; color: var(--sky-dim); max-width: 470px; line-height: 1.65; }
+.dm-sky-count { margin-top: 8px; font-size: 13px; color: var(--sky-amber); font-weight: 600; }
+.dm-sky-count b { font-size: 20px; }
+.dm-sky-count span { color: var(--sky-dim); font-weight: 400; }
+.dm-sky-factor { margin-top: 6px; font-size: 12px; color: var(--sky-dim); }
+.dm-sky-btns { display: flex; gap: 8px; }
+.dm-sky-ghost {
+  padding: 8px 12px; border-radius: 9px; font-size: 12px; cursor: pointer; font-family: inherit;
+  background: var(--sky-glass); border: 1px solid var(--sky-line); color: var(--sky-cream);
+  backdrop-filter: blur(8px);
+}
+.dm-sky-ghost:hover { border-color: rgba(255, 179, 92, 0.5); color: var(--sky-amber); }
+.dm-sky-solid {
+  padding: 8px 16px; border-radius: 9px; font-size: 13px; font-weight: 600; cursor: pointer; font-family: inherit;
+  background: linear-gradient(135deg, #ff9d4d, #e2683a); color: #fff; border: none;
+  box-shadow: 0 6px 22px rgba(226, 104, 58, 0.4);
+}
+.dm-sky-canvas { position: absolute; inset: 0; top: 96px; }
+.dm-sky-state { display: flex; align-items: center; justify-content: center; height: 100%; color: var(--sky-dim); }
+.dm-sky-hover {
+  position: absolute; left: 50%; transform: translateX(-50%); bottom: 92px; z-index: 3;
+  padding: 9px 14px; border-radius: 11px; max-width: 60vw;
+  background: rgba(28, 22, 52, 0.92); border: 1px solid var(--sky-line);
+  color: var(--sky-cream); font-size: 12.5px; line-height: 1.6;
+  pointer-events: none; opacity: 0; transition: opacity 0.15s;
+}
+.dm-sky-hover.show { opacity: 1; }
+.dm-sky-legend {
+  position: absolute; left: 24px; bottom: 24px; z-index: 5; padding: 12px 14px; border-radius: 16px;
+  background: var(--sky-glass); border: 1px solid var(--sky-line); backdrop-filter: blur(10px);
+  font-size: 12.5px; color: var(--sky-cream); line-height: 1.9;
+}
+.dm-sky-legend .lg-row { display: flex; align-items: center; gap: 8px; cursor: pointer; user-select: none; }
+.dm-sky-legend .lg-row.off { opacity: 0.32; }
+.dm-sky-legend .lg-dot { width: 10px; height: 10px; border-radius: 50%; flex: none; }
+.dm-sky-legend .lg-hint { margin-top: 6px; font-size: 11.5px; color: var(--sky-dim); line-height: 1.65; }
+.dm-sky-drawer {
+  position: absolute; top: 0; right: 0; height: 100%; width: 360px; max-width: 86vw; z-index: 7;
+  background: rgba(30, 24, 56, 0.82); backdrop-filter: blur(16px);
+  border-left: 1px solid var(--sky-line);
+  transform: translateX(105%); transition: transform 0.32s cubic-bezier(0.22, 0.9, 0.3, 1);
+  display: flex; flex-direction: column; padding: 22px 20px 16px; box-sizing: border-box;
+}
+.dm-sky-drawer.show { transform: translateX(0); }
+.dm-sky-drawer .dw-close {
+  position: absolute; top: 16px; right: 16px; width: 30px; height: 30px; border-radius: 50%;
+  border: 1px solid var(--sky-line); background: transparent; color: var(--sky-cream);
+  font-size: 15px; cursor: pointer;
+}
+.dm-sky-drawer .dw-scroll { overflow-y: auto; padding-right: 4px; flex: 1; }
+.dm-sky-chip {
+  display: inline-flex; align-items: center; gap: 7px; align-self: flex-start;
+  font-size: 12px; font-weight: 600; color: #241d3d; padding: 4px 11px; border-radius: 20px;
+}
+.dm-sky-drawer .dw-ts { font-size: 12px; color: var(--sky-dim); margin: 14px 0 8px; }
+.dm-sky-drawer .dw-fact { font-size: 15px; line-height: 1.8; color: var(--sky-cream); }
+.dm-sky-drawer h4 { margin: 18px 0 8px; font-size: 13px; font-weight: 700; color: var(--sky-amber); }
+.dm-sky-drawer .dw-mem {
+  font-size: 12.5px; line-height: 1.65; color: var(--sky-dim); cursor: pointer;
+  background: rgba(255, 255, 255, 0.05); border: 1px solid var(--sky-line);
+  border-radius: 10px; padding: 8px 11px; margin-bottom: 7px;
+}
+.dm-sky-drawer .dw-mem:hover { color: var(--sky-cream); border-color: rgba(255, 179, 92, 0.45); }
+.dm-sky-drawer .dw-head { font-size: 17px; font-weight: 700; color: var(--sky-cream); margin-top: 12px; }
+.dm-sky-drawer .dw-sub { font-size: 12px; color: var(--sky-dim); margin-top: 4px; }
 
 /* 信箱 · 送达层门面（2026-10-09）
    首页那条「去信箱」横幅已撤（萧哥 10-09：没必要）——入口只留侧栏 ✉ 那一行。 */

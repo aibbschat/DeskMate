@@ -4232,9 +4232,23 @@ export interface HandoffItem {
   /** 后端 ledger 的交付标记（调用前快照）：今日已递过的条目首页不再复述（2026-10-19）。 */
   delivered_at?: string;
 }
+/** 台账项自带的预置下一步（deskmate/proactivity/next_steps.py，2026-10-24 阶段六）。
+ *  instruction 是可直接执行的完整任务指令——前端点 chip 只把它 prefill 进输入框，
+ *  开工与否由萧盛回车定夺。 */
+export interface NextStep {
+  step_key: string;
+  title: string;
+  instruction: string;
+  item_id: string;
+  item_kind?: string;
+  book?: string;
+  step_no?: string;
+}
 export interface HandoffOpening {
   text: string;
   items: HandoffItem[];
+  /** 瘦身卡（2026-11-03）：前端不再渲染长文 text 念台账，S 步骤改从结构化字段取。 */
+  next_steps?: NextStep[];
 }
 /** 拉取小桔主动产出台账的「对话式开场白」。无 pending 返回 null（静默降级，不阻塞首页）。 */
 export async function getDeskmateHandoff(): Promise<HandoffOpening | null> {

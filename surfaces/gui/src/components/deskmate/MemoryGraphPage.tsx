@@ -1,14 +1,15 @@
 /**
- * MemoryGraphPage — 「我们的记忆」全屏独立页。
+ * MemoryGraphPage — 「我们的记忆」星尘夜空全屏页（2026-11-03 改版）。
  *
  * 点桌宠面板「查看记忆 / 我们的记忆」整窗打开。拉后端实时数据
- * /v1/deskmate/learned-history，渲染力导向图谱（作品/项目做枢纽星团、
- * 四类分色暖区）。悬停看内容、点击看详情、可按分类筛选。
- * 顶部「返回」回到桌宠面板，「列表视图」切换到原有 MemoryViewer。
+ * /v1/deskmate/learned-history，交给 MemoryGraph 画星尘夜空（每条记忆＝一颗星，
+ * 作品＝星群）。外壳从暖米色换成暮色玻璃：天幕渐变由 .dm-sky 承载（刻意不压黑），
+ * canvas 透明叠在其上。悬停看内容、点星看详情、点主星聚焦星群、图例筛类别、
+ * 「复位星空」/面包屑「整片夜空」退出聚焦。样式真源在 styles.css 的 .dm-sky-* 段。
  */
 import { useCallback, useEffect, useState } from "react";
 import { authedFetch, httpBase } from "../../api";
-import { MemoryGraph, CATEGORY_META, type MemItem } from "./MemoryGraph";
+import { MemoryGraph, CATEGORY_META, type MemItem, type SelectInfo } from "./MemoryGraph";
 
 interface Props {
   open: boolean;
@@ -16,12 +17,6 @@ interface Props {
   onOpenList: () => void;
 }
 
-interface SelectInfo {
-  item: MemItem;
-  related: MemItem[];
-}
-
-/** P1-8：成长关系快照（来自 /v1/deskmate/learning-graph 的 growth 块）。 */
 interface GrowthInfo {
   trust: number;
   intimacy: number;
@@ -47,6 +42,7 @@ export function MemoryGraphPage({ open, onClose, onOpenList }: Props) {
   const [hidden, setHidden] = useState<Set<string>>(new Set());
   const [hover, setHover] = useState<string | null>(null);
   const [selected, setSelected] = useState<SelectInfo | null>(null);
+  const [resetSignal, setResetSignal] = useState(0);
 
   useEffect(() => {
     if (!open) return;
@@ -79,7 +75,7 @@ export function MemoryGraphPage({ open, onClose, onOpenList }: Props) {
         if (!cancelled) setGrowth((d?.growth as GrowthInfo) ?? null);
       })
       .catch(() => {
-        /* 关系快照是锦上添花，失败不阻断图谱 */
+        /* 关系快照是锦上添花，失败不阻断星空 */
       });
     return () => {
       cancelled = true;
@@ -95,241 +91,143 @@ export function MemoryGraphPage({ open, onClose, onOpenList }: Props) {
     });
   }, []);
 
+  const resetSky = useCallback(() => {
+    setResetSignal((v) => v + 1);
+    setSelected(null);
+  }, []);
+
   if (!open) return null;
 
   const shownCount = items.filter((i) => !hidden.has(i.category)).length;
 
   return (
-    <div
-      className="fixed inset-0 z-[60]"
-      style={{
-        background:
-          "radial-gradient(120% 90% at 22% 12%, #fff8ef 0%, #ffe9d4 38%, #f6dcc6 72%, #efcdb4 100%)",
-        color: "#5b4636",
-        fontFamily:
-          '"PingFang SC","Hiragino Sans GB","Microsoft YaHei",-apple-system,system-ui,sans-serif',
-      }}
-    >
+    <div className="dm-sky">
       {/* 顶部栏 */}
-      <div
-        className="absolute left-0 right-0 top-0 flex items-center justify-between px-6 py-4"
-        style={{ zIndex: 2 }}
-      >
+      <div className="dm-sky-top">
         <div>
-          <h1 style={{ margin: 0, fontSize: 26, fontWeight: 800, letterSpacing: 2, color: "#6b4a32" }}>
-            我们的记忆
-          </h1>
-          <div style={{ marginTop: 6, fontSize: 13, color: "#9a7b5f", maxWidth: 460, lineHeight: 1.6 }}>
-            这是小桔一点一点，记住的你。散落在四个温柔的角落，被一本本作品轻轻串起。
+          <h1>我们的记忆</h1>
+          <div className="dm-sky-lede">
+            每条记忆是一颗星星，一本作品是一片星群。夜空不是黑的，是暮色——你越用它越亮。
           </div>
-          <div style={{ marginTop: 8, fontSize: 13, color: "#b07a4e", fontWeight: 600 }}>
-            共 <b style={{ fontSize: 20, color: "#c2662f" }}>{shownCount}</b> 条记忆
+          <div className="dm-sky-count">
+            共 <b>{shownCount}</b> 颗星
             {(hidden.size > 0 || shownCount !== items.length) && (
-              <span style={{ color: "#a38568", fontWeight: 400 }}> / 总计 {items.length}</span>
+              <span> / 全部 {items.length}</span>
             )}
             {growth && growth.bond_stage && (
-              <span style={{ marginLeft: 14, color: "#a38568", fontWeight: 500 }}>
-                关系 · <b style={{ color: "#c2662f" }}>{growth.bond_stage}</b>
-                {"　"}信任 {growth.trust.toFixed(2)} · 亲密度 {growth.intimacy.toFixed(0)} · 默契 {growth.empathy.toFixed(0)}
+              <span>
+                　关系 · <b style={{ color: "var(--sky-amber)" }}>{growth.bond_stage}</b>
+                　信任 {growth.trust.toFixed(2)} · 亲密度 {growth.intimacy.toFixed(0)} · 默契 {growth.empathy.toFixed(0)}
               </span>
             )}
           </div>
           {growth && (
-            <div style={{ marginTop: 6, fontSize: 12, color: "#b99a7d", fontWeight: 400 }}>
-              图谱连接随我们的默契加深 ×{growth.relation_factor.toFixed(2)} —— 你越用，它越懂你，我们的图越密。
+            <div className="dm-sky-factor">
+              星群随我们的默契加深 ×{growth.relation_factor.toFixed(2)} —— 你越用，它越懂你，我们的天越密。
             </div>
           )}
         </div>
-        <div className="flex items-center gap-2">
-          <button
-            onClick={onOpenList}
-            className="px-3 py-2 rounded-lg text-meta font-medium transition-colors"
-            style={{ background: "rgba(255,250,243,0.82)", border: "1px solid rgba(214,188,160,0.6)", color: "#6b4a32" }}
-          >
-            列表视图
-          </button>
-          <button
-            onClick={onClose}
-            className="px-4 py-2 rounded-lg text-ui font-semibold transition-colors"
-            style={{ background: "#c2662f", color: "#fff", border: "none", boxShadow: "0 4px 14px rgba(180,110,60,0.3)" }}
-          >
-            返回
-          </button>
+        <div className="dm-sky-btns">
+          <button className="dm-sky-ghost" onClick={resetSky}>复位星空</button>
+          <button className="dm-sky-ghost" onClick={onOpenList}>列表视图</button>
+          <button className="dm-sky-solid" onClick={onClose}>返回</button>
         </div>
       </div>
 
-      {/* 画布 */}
-      <div className="absolute inset-0" style={{ top: 96 }}>
+      {/* 天幕画布 */}
+      <div className="dm-sky-canvas">
         {loading ? (
-          <div className="flex items-center justify-center h-full" style={{ color: "#a38568" }}>
-            正在唤起记忆…
-          </div>
+          <div className="dm-sky-state">正在唤起记忆…</div>
         ) : error ? (
-          <div className="flex items-center justify-center h-full" style={{ color: "#c0392b" }}>
-            读取记忆失败：{error}
-          </div>
+          <div className="dm-sky-state" style={{ color: "#ff9d8a" }}>读取记忆失败：{error}</div>
         ) : items.length === 0 ? (
-          <div className="flex items-center justify-center h-full" style={{ color: "#a38568" }}>
-            还没有记住什么，多聊聊，我就会开始收藏。
-          </div>
+          <div className="dm-sky-state">还没有记住什么，多聊聊，我就会开始收藏星星。</div>
         ) : (
-          <MemoryGraph items={items} hiddenCats={hidden} onSelect={setSelected} onHover={setHover} />
+          <MemoryGraph
+            items={items}
+            hiddenCats={hidden}
+            onSelect={setSelected}
+            onHover={setHover}
+            resetSignal={resetSignal}
+          />
         )}
       </div>
 
       {/* 悬停提示条 */}
-      <div
-        className="absolute left-1/2 -translate-x-1/2 px-4 py-2 rounded-xl"
-        style={{
-          bottom: 92,
-          background: "rgba(60,42,30,0.86)",
-          color: "#fff7ec",
-          fontSize: 12.5,
-          lineHeight: 1.5,
-          maxWidth: "60vw",
-          opacity: hover ? 1 : 0,
-          transition: "opacity 0.15s",
-          pointerEvents: "none",
-          zIndex: 3,
-        }}
-      >
-        {hover}
-      </div>
+      <div className={"dm-sky-hover" + (hover ? " show" : "")}>{hover}</div>
 
       {/* 图例 + 筛选 */}
-      <div
-        className="absolute rounded-2xl"
-        style={{
-          left: 24,
-          bottom: 24,
-          zIndex: 3,
-          background: "rgba(255,250,243,0.74)",
-          backdropFilter: "blur(8px)",
-          border: "1px solid rgba(214,188,160,0.55)",
-          padding: "12px 14px",
-          fontSize: 12.5,
-          color: "#7a5f48",
-          lineHeight: 1.8,
-          boxShadow: "0 8px 26px rgba(180,130,90,0.16)",
-        }}
-      >
+      <div className="dm-sky-legend">
         {Object.entries(CATEGORY_META).map(([cat, meta]) => {
           const dim = hidden.has(cat);
           return (
             <div
               key={cat}
+              className={"lg-row" + (dim ? " off" : "")}
               onClick={() => toggleCat(cat)}
-              style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", opacity: dim ? 0.4 : 1 }}
             >
-              <span
-                style={{
-                  width: 12,
-                  height: 12,
-                  borderRadius: "50%",
-                  background: meta.color,
-                  boxShadow: "0 0 0 3px rgba(255,255,255,0.5)",
-                  flex: "0 0 auto",
-                }}
-              />
+              <span className="lg-dot" style={{ background: meta.color, boxShadow: `0 0 8px ${meta.color}` }} />
               {meta.name}
-              {dim && <span style={{ color: "#a38568", fontSize: 11 }}>（已隐藏）</span>}
+              {dim && <span style={{ fontSize: 11 }}>（已隐藏）</span>}
             </div>
           );
         })}
-        <div style={{ marginTop: 7, color: "#9a7b5f", fontSize: 11.5, lineHeight: 1.6 }}>
-          ● 较大带字节点 = 一部作品/项目，周围环绕相关记忆。
+        <div className="lg-hint">
+          ✦ 亮一点的主星 = 一部作品/项目，周围是它的记忆星尘。
           <br />
-          悬停看内容 · 点击看详情 · 可拖动整理 · 点击图例筛选
+          滚轮缩放 · 拖拽平移 · 点星群看连线 · 点单星看内容 · 图例可筛
         </div>
       </div>
 
-      {/* 详情面板 */}
-      <div
-        className="absolute top-0 right-0 h-full"
-        style={{
-          width: 360,
-          maxWidth: "86vw",
-          zIndex: 4,
-          background: "rgba(255,250,243,0.96)",
-          backdropFilter: "blur(14px)",
-          borderLeft: "1px solid rgba(214,188,160,0.6)",
-          boxShadow: "-14px 0 40px rgba(160,110,70,0.18)",
-          transform: selected ? "translateX(0)" : "translateX(105%)",
-          transition: "transform 0.32s cubic-bezier(0.22,0.9,0.3,1)",
-          display: "flex",
-          flexDirection: "column",
-          padding: "22px 22px 16px",
-          boxSizing: "border-box",
-        }}
-      >
-        <button
-          onClick={() => setSelected(null)}
-          style={{
-            position: "absolute",
-            top: 16,
-            right: 16,
-            width: 30,
-            height: 30,
-            borderRadius: "50%",
-            border: "none",
-            background: "rgba(214,188,160,0.25)",
-            color: "#6b4a32",
-            fontSize: 16,
-            cursor: "pointer",
-          }}
-        >
-          ×
-        </button>
+      {/* 详情抽屉 */}
+      <div className={"dm-sky-drawer" + (selected ? " show" : "")}>
+        <button className="dw-close" onClick={() => setSelected(null)}>×</button>
         {selected && (
-          <div style={{ overflowY: "auto", paddingRight: 4 }}>
-            <div
-              style={{
-                display: "inline-flex",
-                alignItems: "center",
-                gap: 7,
-                fontSize: 12,
-                fontWeight: 600,
-                padding: "4px 11px",
-                borderRadius: 20,
-                color: "#fff",
-                background: CATEGORY_META[selected.item.category]?.color ?? "#b9a7d6",
-              }}
-            >
-              {CATEGORY_META[selected.item.category]?.name ?? "其他"}
-            </div>
-            {selected.item.ts && (
-              <div style={{ fontSize: 12, color: "#a38568", margin: "14px 0 8px" }}>
-                {fmtDate(selected.item.ts)}
-              </div>
-            )}
-            <div style={{ fontSize: 15, lineHeight: 1.75, color: "#4d3a2a" }}>{selected.item.fact}</div>
-
-            {selected.related.length > 0 && (
+          <div className="dw-scroll">
+            {selected.group ? (
               <>
-                <div style={{ margin: "18px 0 8px", fontSize: 13, fontWeight: 700, color: "#6b4a32" }}>
-                  相关的记忆（{selected.related.length}）
-                </div>
-                <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
-                  {selected.related.map((r, i) => (
-                    <div
-                      key={i}
-                      onClick={() => setSelected({ item: r, related: [] })}
-                      title="点击查看这条记忆"
-                      style={{
-                        fontSize: 12.5,
-                        lineHeight: 1.6,
-                        color: "#6a5340",
-                        background: "rgba(255,255,255,0.6)",
-                        border: "1px solid rgba(214,188,160,0.4)",
-                        borderRadius: 9,
-                        padding: "8px 10px",
-                        cursor: "pointer",
-                      }}
-                    >
-                      {r.fact.length > 80 ? r.fact.slice(0, 80) + "…" : r.fact}
-                    </div>
-                  ))}
-                </div>
+                <div className="dw-head">《{selected.group.title}》</div>
+                <div className="dw-sub">这片星群 {selected.group.count} 颗星 · 点星尘看单条，点下面清单直接读</div>
+                <h4>最近的星</h4>
+                {selected.related.map((r, i) => (
+                  <div
+                    key={i}
+                    className="dw-mem"
+                    onClick={() => setSelected({ item: r, related: [] })}
+                    title="点击查看这条记忆"
+                  >
+                    {r.fact.length > 80 ? r.fact.slice(0, 80) + "…" : r.fact}
+                  </div>
+                ))}
+                {selected.group.count > selected.related.length && (
+                  <div className="dw-sub">还有 {selected.group.count - selected.related.length} 颗在天上（列表视图可全量翻）</div>
+                )}
+              </>
+            ) : (
+              <>
+                <span
+                  className="dm-sky-chip"
+                  style={{ background: CATEGORY_META[selected.item.category]?.color ?? "#b9a8ff" }}
+                >
+                  {CATEGORY_META[selected.item.category]?.name ?? "其他"}
+                </span>
+                {selected.item.ts && <div className="dw-ts">{fmtDate(selected.item.ts)}</div>}
+                <div className="dw-fact">{selected.item.fact}</div>
+                {selected.related.length > 0 && (
+                  <>
+                    <h4>同一片星群的星（{selected.related.length}）</h4>
+                    {selected.related.map((r, i) => (
+                      <div
+                        key={i}
+                        className="dw-mem"
+                        onClick={() => setSelected({ item: r, related: [] })}
+                        title="点击查看这条记忆"
+                      >
+                        {r.fact.length > 80 ? r.fact.slice(0, 80) + "…" : r.fact}
+                      </div>
+                    ))}
+                  </>
+                )}
               </>
             )}
           </div>
