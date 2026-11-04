@@ -1529,6 +1529,23 @@ class SessionManager:
     async def _durable_resume(self, item) -> None:
         if not getattr(item, "tool_call_id", None):
             return  # nothing to reconstruct (legacy item) — best-effort: leave it
+        # 任务 run 的挂起（问人/审批）在重启后继续时，也必须包回 TaskRun：
+        # 否则她自己续完、结果只留在会话文件里，没有任何人知道。
+        task = None
+        try:
+            task = self.task_store.task_for_run_session(item.session_id)
+        except Exception:
+            task = None
+        if task is not None:
+            try:
+                await self._run_scheduled_task(
+                    task, "resume", session_id=item.session_id, resume=True
+                )
+                return
+            except Exception:
+                logger.exception(
+                    "任务 run 的重启续跑失败，退回普通 turn: %s", item.session_id
+                )
         engine = self.get_engine(item.session_id)
         if engine is None or not hasattr(engine, "resume"):
             return
@@ -5318,6 +5335,13 @@ class SessionManager:
         (else parked). Returns the platforms whose listeners came up."""
         # Team steering/kicks are dispatched from tool threads; they need the app loop.
         self._loop = asyncio.get_running_loop()
+        # 上一次进程死得难看留下的幽灵 run 先落终态，否则 UI 永远「在跑」、停不掉。
+        try:
+            reconciled = self.reconcile_task_runs()
+            if reconciled:
+                logger.info("启动对账：%s 个幽灵 run 标记为 interrupted", reconciled)
+        except Exception:
+            logger.warning("启动对账失败（fail-open）", exc_info=True)
         self.scheduler.start()  # tick scheduler for automations (independent of connectors)
         return await self._build_and_start_gateway()
 
@@ -6638,7 +6662,13 @@ class SessionManager:
             _lg.getLogger(__name__).warning("主动闭环任务提交失败：%s", e)
 
     async def _run_scheduled_task(
-        self, task, trigger: str, *, session_id: Optional[str] = None, wake=None
+        self,
+        task,
+        trigger: str,
+        *,
+        session_id: Optional[str] = None,
+        wake=None,
+        resume: bool = False,
     ) -> TaskRun:
         run = TaskRun(
             task_id=task.id, trigger=trigger
@@ -6747,7 +6777,7 @@ class SessionManager:
             return run
 
         # 连续失败退避期内：cron 到点也先不动，等退避结束（wake 不受影响）。
-        if goal_on and wake is None and _goal_backoff > 0:
+        if goal_on and wake is None and not resume and _goal_backoff > 0:
             run.status, run.finished_at = "skipped", _epoch()
             skip_goal = dict(goal_prev)
             skip_goal["skipped"] = True
@@ -6780,8 +6810,10 @@ class SessionManager:
                 if isinstance(run.checkpoint.get("goal"), dict):
                     run.checkpoint["goal"]["sleeping"] = False
                     run.checkpoint["goal"]["wake_id"] = ""
-        if wake is not None and isinstance(run.checkpoint.get("goal"), dict):
-            # 醒来这轮本身就是一次正常等待后的复查，先清掉睡眠标记。
+        if (wake is not None or resume) and isinstance(
+            run.checkpoint.get("goal"), dict
+        ):
+            # 醒来/续跑这轮本身就是一次正常复查，先清掉睡眠标记。
             run.checkpoint["goal"]["sleeping"] = False
             run.checkpoint["goal"]["wake_id"] = ""
         # 进这一轮之前已经挂着的 wake（含即将被 mark_fired 的这一条）不算「本轮新睡」。
@@ -6812,8 +6844,8 @@ class SessionManager:
         # own session id, then saves the transcript. The user can reopen that session and ask a
         # follow-up — the scheduled agent is no longer fire-and-forget.
         engine = None
-        if wake is not None:
-            # 醒来：优先复用内存里的引擎（消息连续）；进程重启后从会话记录重建。
+        if wake is not None or resume:
+            # 醒来/续跑：优先复用内存里的引擎（消息连续）；进程重启后从会话记录重建。
             engine = self._engines.get(run.session_id)
             if engine is None:
                 messages = None
@@ -6830,7 +6862,9 @@ class SessionManager:
         # Register the live engine up-front: a parked approval persists the session
         # mid-run (durable suspend), and resolving from the Inbox must find this engine.
         self._engines[run.session_id] = engine
-        if wake is not None:
+        if resume:
+            opening = ""  # 续跑不注入新开场，engine.resume() 从挂起点接着走
+        elif wake is not None:
             opening = self._wake_message(wake)
             try:
                 digest = self.team_staleness_digest(run.session_id)
@@ -6873,7 +6907,8 @@ class SessionManager:
         _engine_error = ""
         _goal_sleeping, _sleep_wake_id = False, ""
         try:
-            async for _event in engine.run(opening):
+            _stream = engine.resume() if resume else engine.run(opening)
+            async for _event in _stream:
                 # Autonomy §A1: persist progress incrementally so a crash mid-run
                 # doesn't throw away everything already done. Throttled to every
                 # 5th event — one SQLite write per tool call is write amplification
@@ -6967,6 +7002,8 @@ class SessionManager:
                 await self._notify_task_done(task, run)
         except Exception as exc:
             run.status, run.error = "error", str(exc)
+            # 错误也要留 traceback：只有字符串时，排查「为什么没成」只能靠猜。
+            logger.exception("自主任务执行异常: %s", getattr(task, "id", ""))
         finally:
             run.finished_at = _epoch()
             # §C1 "stoppable": a control endpoint (cancel) or the enabled switch
@@ -7199,6 +7236,33 @@ class SessionManager:
         except Exception:
             logger.debug("取消自主任务睡眠失败（fail-open）", exc_info=True)
 
+    def reconcile_task_runs(self) -> int:
+        """启动对账：把「没人跑、也没结束」的 run 标成 interrupted。
+
+        kill -9 / 优雅退出时 run 的 finally 可能来不及落终态，留下 status=running
+        的幽灵行：UI 永远显示在跑，cancel_run 又回「已结束」，停也停不掉。
+        有活引擎的 run 跳过；sleeping 是合法中间态（有 pending wake），不动。
+        返回修正条数，fail-open。
+        """
+        fixed = 0
+        try:
+            for task in self.task_store.list():
+                for run in self.task_store.runs(task.id, limit=50):
+                    if run.status != "running":
+                        continue
+                    if self._engines.get(run.session_id) is not None:
+                        continue
+                    run.status = "interrupted"
+                    run.finished_at = run.finished_at or _epoch()
+                    cp = run.checkpoint if isinstance(run.checkpoint, dict) else {}
+                    cp["interrupted"] = True
+                    run.checkpoint = cp
+                    self.task_store.add_run(run)
+                    fixed += 1
+        except Exception:
+            logger.warning("任务 run 启动对账失败（fail-open）", exc_info=True)
+        return fixed
+
     def _task_question_asker(
         self, session_id: str, agent: str, *, timeout_s: float = 1800.0
     ):
@@ -7266,6 +7330,12 @@ class SessionManager:
             self._cancel_task_wakes(run.session_id, "run canceled by user")
             run.status, run.cancel_requested = "canceled", True
             run.finished_at = run.finished_at or _epoch()
+            self.task_store.add_run(run)
+            return {"ok": True, "run": run.to_dict()}
+        if run.status == "running" and run.finished_at is not None:
+            # 僵尸行（进程退出时 finally 没来得及改状态）：没有活引擎可中断，
+            # 直接落终态，别再把「叫停」回成「已结束」。
+            run.status, run.cancel_requested = "canceled", True
             self.task_store.add_run(run)
             return {"ok": True, "run": run.to_dict()}
         if run.finished_at is not None or run.status != "running":
