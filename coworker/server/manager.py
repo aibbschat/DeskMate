@@ -5979,7 +5979,9 @@ class SessionManager:
         for tool in WRITE_TOOLS:
             engine.permissions.allow_tool_for_session(tool)
 
-    def _build_task_engine(self, task, *, session_id: str) -> TurnEngine:
+    def _build_task_engine(
+        self, task, *, session_id: str, messages: Optional[list[dict[str, Any]]] = None
+    ) -> TurnEngine:
         ag = get_agent(task.agent)
         Path(task.workspace).mkdir(parents=True, exist_ok=True)
         # Scheduled runs own the workspace as the primary writable root, plus the user's
@@ -5992,10 +5994,23 @@ class SessionManager:
         # passed because they scope the run's SHELL through the macOS sandbox. Details and
         # the full list of what survives: _scheduled_write_roots.
         roots = self._scheduled_write_roots(task)
+        # 自我驱动（autonomy loop）：目标制任务才注册 sleep_for / sleep_until /
+        # wake_on / wake_on_event，让她自己安排下一次复查，而不是被 cron 硬推。
+        # 普通一次性任务保持原样（回归）。
+        goal_wake = None
+        try:
+            from deskmate.autonomy.goal import goal_enabled
+
+            if goal_enabled(task):
+                goal_wake = getattr(self, "wakes", None)
+        except Exception:
+            goal_wake = None
         engine = build_engine(
             agent=ag,
             workspace=task.workspace,
             model=task.model or self.model,
+            messages=messages,
+            wake_store=goal_wake,
             # Scheduled runs are autonomous by design: the human already signed off when
             # the task was created (the `requires_approval` consent card on
             # create_scheduled_task, or the GUI automation form). Running unattended in
@@ -6302,9 +6317,33 @@ class SessionManager:
         message = self._wake_message(wake)
         # A lead's timer wake carries the staleness digest — pure code over the
         # board, scoped by role membership (teamless sessions get a bare wake).
-        digest = self.team_staleness_digest(wake.session_id)
+        try:
+            digest = self.team_staleness_digest(wake.session_id)
+        except Exception:
+            digest = ""
         if digest:
             message = f"{message}\n\n{digest}"
+        # 自我驱动：任务 run 会话醒来的那一轮也必须是 TaskRun（checkpoint/投递/结案/
+        # 叫停都还在账本里），否则她醒来干完活，结果只会留在会话文件里没人知道。
+        task = None
+        try:
+            task = self.task_store.task_for_run_session(wake.session_id)
+        except Exception:
+            task = None
+        if task is not None:
+            if not getattr(task, "enabled", True):
+                self._cancel_task_wakes(wake.session_id, "task is paused")
+                return
+            try:
+                await self._run_scheduled_task(
+                    task, "wake", session_id=wake.session_id, wake=wake
+                )
+                return
+            except Exception:
+                logger.exception(
+                    "self-wake task resume failed for %s — falling back to a plain turn",
+                    wake.session_id,
+                )
         await self.deliver_to_session(wake.session_id, message)
 
     async def deliver_to_session(
@@ -6588,10 +6627,15 @@ class SessionManager:
         except Exception as e:
             _lg.getLogger(__name__).warning("主动闭环任务提交失败：%s", e)
 
-    async def _run_scheduled_task(self, task, trigger: str) -> TaskRun:
+    async def _run_scheduled_task(
+        self, task, trigger: str, *, session_id: Optional[str] = None, wake=None
+    ) -> TaskRun:
         run = TaskRun(
             task_id=task.id, trigger=trigger
         )  # __post_init__ sets run.session_id
+        if session_id:
+            # 自我驱动续跑：wake 醒来的一轮复用原会话，跨轮消息不断、账本不丢。
+            run.session_id = session_id
         # §C1: stamp the run with the goal generation it belongs to. Old tasks
         # (and SimpleNamespace-shaped test doubles) read as generation 0, so this
         # is a no-op for every pre-C1 task.
@@ -6643,6 +6687,41 @@ class SessionManager:
         except Exception:
             goal_on, goal_prev = False, {}
 
+        # 自我驱动（autonomy loop）：本轮自己挂了 wake → 她就是「安排了下次复查」，
+        # 不是做完了。cron 到点也不能再开一条腿，否则同一个目标会有两条循环。
+        if goal_on and wake is None:
+            sleeping = bool(goal_prev.get("sleeping"))
+            wake_id = str(goal_prev.get("wake_id") or "")
+            if sleeping:
+                alive = False
+                try:
+                    alive = bool(wake_id) and any(
+                        w.id == wake_id for w in self.wakes.pending()
+                    )
+                except Exception:
+                    alive = False
+                if alive:
+                    run.status, run.finished_at = "skipped", _epoch()
+                    skip_goal = dict(goal_prev)
+                    skip_goal["skipped"] = True
+                    run.checkpoint = {"goal": skip_goal}
+                    self.task_store.add_run(run)
+                    return run
+                # wake 丢了（进程重启/被清）→ cron 兜底续跑，绝不永远 skipped。
+                if isinstance(run.checkpoint.get("goal"), dict):
+                    run.checkpoint["goal"]["sleeping"] = False
+                    run.checkpoint["goal"]["wake_id"] = ""
+        if wake is not None and isinstance(run.checkpoint.get("goal"), dict):
+            # 醒来这轮本身就是一次正常等待后的复查，先清掉睡眠标记。
+            run.checkpoint["goal"]["sleeping"] = False
+            run.checkpoint["goal"]["wake_id"] = ""
+        # 进这一轮之前已经挂着的 wake（含即将被 mark_fired 的这一条）不算「本轮新睡」。
+        _pre_wake_ids: set[str] = set()
+        if goal_on:
+            try:
+                _pre_wake_ids = {w.id for w in self.wakes.pending(run.session_id)}
+            except Exception:
+                _pre_wake_ids = set()
         # UX-026: tell every open app window a SCHEDULED run just started (the 5s
         # top-right toast). A quiet goal check must not toast on every cron tick —
         # "no change" means no interruption at all.
@@ -6663,19 +6742,43 @@ class SessionManager:
         # Each run is a real, persisted conversation thread: it runs the instructions under its
         # own session id, then saves the transcript. The user can reopen that session and ask a
         # follow-up — the scheduled agent is no longer fire-and-forget.
-        engine = self._build_task_engine(task, session_id=run.session_id)
+        engine = None
+        if wake is not None:
+            # 醒来：优先复用内存里的引擎（消息连续）；进程重启后从会话记录重建。
+            engine = self._engines.get(run.session_id)
+            if engine is None:
+                messages = None
+                try:
+                    record = self.session_store.load(run.session_id)
+                    messages = record.messages if record else None
+                except Exception:
+                    messages = None
+                engine = self._build_task_engine(
+                    task, session_id=run.session_id, messages=messages
+                )
+        if engine is None:
+            engine = self._build_task_engine(task, session_id=run.session_id)
         # Register the live engine up-front: a parked approval persists the session
         # mid-run (durable suspend), and resolving from the Inbox must find this engine.
         self._engines[run.session_id] = engine
-        # The first turn is the task itself. The framing matters: instructions often restate the
-        # schedule ("every day at 5:32pm…"), so make explicit that the schedule already fired and
-        # the job now is to execute, not to (re)schedule.
-        opening = (
-            f"⏰ Scheduled run — {task.title}\n\n"
-            "This automation is due now: carry out the task below immediately and produce the "
-            "result. The schedule already exists — do not create or modify any scheduled tasks.\n\n"
-            f"{task.instructions}"
-        )
+        if wake is not None:
+            opening = self._wake_message(wake)
+            try:
+                digest = self.team_staleness_digest(run.session_id)
+            except Exception:
+                digest = ""
+            if digest:
+                opening = f"{opening}\n\n{digest}"
+        else:
+            # The first turn is the task itself. The framing matters: instructions often restate the
+            # schedule ("every day at 5:32pm…"), so make explicit that the schedule already fired and
+            # the job now is to execute, not to (re)schedule.
+            opening = (
+                f"⏰ Scheduled run — {task.title}\n\n"
+                "This automation is due now: carry out the task below immediately and produce the "
+                "result. The schedule already exists — do not create or modify any scheduled tasks.\n\n"
+                f"{task.instructions}"
+            )
         if goal_on:
             try:
                 from deskmate.autonomy.goal import build_goal_opening
@@ -6683,10 +6786,23 @@ class SessionManager:
                 opening += build_goal_opening(goal_prev)
             except Exception:
                 pass
+        # 会话互斥：wake 与 cron 两条腿都可能来，running 标记让后来者让路。
+        # manager 未经 __init__（测试/回放）时没有这张表，就不做互斥、照常跑。
+        _claimed_session = False
+        if goal_on and getattr(self, "_running_sessions", None) is not None:
+            try:
+                _claimed_session = self.try_mark_running(run.session_id)
+            except Exception:
+                _claimed_session = False
+            if not _claimed_session:
+                run.status, run.finished_at = "skipped", _epoch()
+                self.task_store.add_run(run)
+                return run
         # Must exist before the try/finally: an exception path still reads them.
         _quiet_this_run, _goal_state = False, ""
         _goal_stuck, _blocker = False, ""
         _engine_error = ""
+        _goal_sleeping, _sleep_wake_id = False, ""
         try:
             async for _event in engine.run(opening):
                 # Autonomy §A1: persist progress incrementally so a crash mid-run
@@ -6738,6 +6854,21 @@ class SessionManager:
                         )
                 except Exception:
                     pass
+            # 自己挂了唤醒 → 这轮是「等待」，不是结论：不投递、不结案、不发事件，
+            # 但把引擎留在内存里，醒来那轮才有连续上下文。
+            if goal_on and not _goal_stuck:
+                try:
+                    _new_wakes = [
+                        w
+                        for w in self.wakes.pending(run.session_id)
+                        if w.id not in _pre_wake_ids
+                    ]
+                except Exception:
+                    _new_wakes = []
+                if _new_wakes:
+                    _goal_sleeping = True
+                    _sleep_wake_id = _new_wakes[-1].id
+                    run.status = "sleeping"
             # 全局 after-action：自动/定时任务完成也记一笔 + 刷新小说圣经。
             # 静默检查不写记忆：否则每轮「无变化」都会污染记忆库。
             try:
@@ -6746,7 +6877,7 @@ class SessionManager:
 
                 from deskmate.memory.after_action import reflect_and_persist
 
-                if not _quiet_this_run and not _goal_stuck:
+                if not _quiet_this_run and not _goal_stuck and not _goal_sleeping:
                     _th.Thread(
                         target=reflect_and_persist,
                         args=(task.workspace, task.instructions, run.result_text or ""),
@@ -6761,6 +6892,7 @@ class SessionManager:
                 task.notify_on_completion
                 and not _quiet_this_run
                 and not _goal_stuck
+                and not _goal_sleeping
                 and not self._control_marks().get(run.run_id)
             ):
                 await self._notify_task_done(task, run)
@@ -6797,6 +6929,8 @@ class SessionManager:
                         _goal_outcome = "error"
                     elif _goal_stuck:
                         _goal_outcome = "stuck"
+                    elif _goal_sleeping:
+                        _goal_outcome = "sleeping"
                     elif quiet:
                         _goal_outcome = "quiet"
                     else:
@@ -6821,6 +6955,14 @@ class SessionManager:
                         blocker=_blocker if _goal_outcome == "stuck" else "",
                         now=run.finished_at,
                     )
+                    if _goal_outcome == "sleeping":
+                        goal_now = run.checkpoint.get("goal")
+                        if isinstance(goal_now, dict):
+                            goal_now["sleeping"] = True
+                            goal_now["wake_id"] = _sleep_wake_id or goal_now.get(
+                                "wake_id", ""
+                            )
+                            goal_now["done"] = False
                     if _goal_outcome == "stuck":
                         goal_now = run.checkpoint.get("goal")
                         stuck_rounds = int((goal_now or {}).get("stuck_rounds") or 0)
@@ -6855,7 +6997,13 @@ class SessionManager:
             # completion toast, no goal conclusion. It gets its own stop event.
             # 自主循环：非终局轮（静默检查 / 尚未到上限的卡住轮）不投递、不结案、
             # 不发完成 toast —— 只有真的「有结果」或「卡到上限」才打扰用户。
-            suppress = bool(goal_on and _goal_outcome == "stuck" and not _give_up)
+            suppress = bool(
+                goal_on
+                and (
+                    (_goal_outcome == "stuck" and not _give_up)
+                    or _goal_outcome == "sleeping"
+                )
+            )
             if not quiet and not halted and not suppress:
                 try:
                     from deskmate.autonomy.delivery import (
@@ -6871,6 +7019,9 @@ class SessionManager:
                             from deskmate.autonomy.goal import record_concluded
 
                             record_concluded(run)
+                            self._cancel_task_wakes(
+                                run.session_id, "goal concluded"
+                            )
                         except Exception:
                             logger.warning(
                                 "自主任务结案标记失败（fail-open）", exc_info=True
@@ -6885,6 +7036,7 @@ class SessionManager:
                 except Exception:
                     logger.warning("自主任务完成投递失败（fail-open）", exc_info=True)
             elif halted:
+                self._cancel_task_wakes(run.session_id, f"run {halted}")
                 try:
                     await self.broadcast_event(
                         {
@@ -6903,6 +7055,11 @@ class SessionManager:
                 except Exception:
                     logger.warning("自主任务停止事件发送失败", exc_info=True)
             self._control_marks().pop(run.run_id, None)
+            if _claimed_session:
+                try:
+                    self.mark_idle(run.session_id)
+                except Exception:
+                    logger.debug("mark_idle 失败（fail-open）", exc_info=True)
         return run
 
     async def _notify_task_done(self, task, run: TaskRun) -> None:
@@ -6962,6 +7119,17 @@ class SessionManager:
         except Exception:
             logger.warning("中断自主任务引擎失败", exc_info=True)
 
+    def _cancel_task_wakes(self, session_id: str, reason: str) -> None:
+        """Drop a run session's pending self-wake (pause / cancel / conclude).
+
+        Without this a task that is paused or concluded would still be re-invoked
+        by its own stale timer — the wake must not outlive the reason it existed.
+        """
+        try:
+            self.wakes.cancel_sleep(session_id, reason)
+        except Exception:
+            logger.debug("取消自主任务睡眠失败（fail-open）", exc_info=True)
+
     def cancel_run(self, task_id: str, run_id: str) -> dict[str, Any]:
         """Stop the CURRENT run without disabling the task itself (§C1).
 
@@ -6973,6 +7141,13 @@ class SessionManager:
         run = self.task_store.find_run(run_id)
         if run is None or run.task_id != task_id:
             return {"ok": False, "error": "not found"}
+        if run.status == "sleeping":
+            # 睡眠中的 run 没有活引擎可中断，但「叫停」必须能停掉它的下一次唤醒。
+            self._cancel_task_wakes(run.session_id, "run canceled by user")
+            run.status, run.cancel_requested = "canceled", True
+            run.finished_at = run.finished_at or _epoch()
+            self.task_store.add_run(run)
+            return {"ok": True, "run": run.to_dict()}
         if run.finished_at is not None or run.status != "running":
             return {"ok": False, "error": "run already finished"}
         self._control_marks()[run_id] = "cancel"
@@ -7085,6 +7260,8 @@ class SessionManager:
                 # not merely prevent future ticks. Its goal checkpoint survives,
                 # so resuming continues the goal instead of starting over.
                 for r in self.task_store.runs(task.id, limit=5):
+                    # 暂停也要掐掉自己安排的睡眠，否则暂停后仍会被定时唤醒跑一轮。
+                    self._cancel_task_wakes(r.session_id, "task paused")
                     if r.status == "running" and r.finished_at is None:
                         self._control_marks()[r.run_id] = "pause"
                         self._try_interrupt(r)
@@ -7132,6 +7309,11 @@ class SessionManager:
         return {"ok": True, "task": task.public()}
 
     def delete_automation(self, task_id: str) -> dict[str, Any]:
+        try:
+            for r in self.task_store.runs(task_id):
+                self._cancel_task_wakes(r.session_id, "task deleted")
+        except Exception:
+            logger.debug("删除任务前清理睡眠失败（fail-open）", exc_info=True)
         return {"ok": self.task_store.delete(task_id), "id": task_id}
 
     def prepare_manual_run(self, task_id: str) -> dict[str, Any]:
