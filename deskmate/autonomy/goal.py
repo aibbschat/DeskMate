@@ -63,7 +63,13 @@ def parse_quiet(text: str) -> tuple[bool, str]:
 def build_goal_opening(previous: Optional[dict]) -> str:
     """注入 opening 的目标制协议。带上轮状态，模型才知道「变没变」。"""
     prev = previous or {}
-    state = str(prev.get("state") or "").strip() or "（无，这是第一次检查）"
+    raw_state = str(prev.get("state") or "").strip()
+    if raw_state:
+        state = raw_state
+    elif prev.get("attempts"):
+        state = "（无状态摘要，但下方有前几轮尝试记录）"
+    else:
+        state = "（无，这是第一次检查）"
     checked = prev.get("last_checked")
     when = (
         time.strftime("%Y-%m-%d %H:%M", time.localtime(float(checked)))
@@ -302,7 +308,7 @@ def _attempts_block(previous: dict) -> str:
             ts = time.strftime("%m-%d %H:%M", time.localtime(at))
         steps = "；".join(str(s) for s in (a.get("steps") or [])) or "（没有工具动作）"
         line = f"· {ts} [{a.get('outcome') or '?'}] {steps}"
-        if a.get("result"):
+        if a.get("result") and not a.get("blocker"):
             line += f" → {str(a['result'])[:80]}"
         if a.get("error"):
             line += f" → 失败：{str(a['error'])[:80]}"
