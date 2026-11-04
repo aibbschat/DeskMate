@@ -1,0 +1,407 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>我们的记忆 · 星尘夜空 mock 2026-11-03</title>
+<style>
+:root {
+  --sans:"PingFang SC","Hiragino Sans GB","Microsoft YaHei",-apple-system,system-ui,sans-serif;
+  --mono:"SF Mono","JetBrains Mono",Menlo,monospace;
+  --cream:#f6ead6;            /* 主文字：暖米白，不刺眼 */
+  --cream-dim:rgba(246,234,214,.62);
+  --amber:#ffb35c;            /* 小桔的暖光，用在强调 */
+  --glass:rgba(38,32,66,.55); /* 暮色玻璃：面板底，半透 */
+  --glass-line:rgba(255,225,180,.16);
+}
+* { box-sizing:border-box; margin:0; padding:0; }
+html,body { height:100%; overflow:hidden; }
+body {
+  font-family:var(--sans); color:var(--cream);
+  /* 暮色天幕：上深蓝紫 → 中紫 → 地平线暖橘的一丝余晖。刻意避开纯黑。 */
+  background:
+    radial-gradient(90% 46% at 50% 108%, rgba(255,150,80,.20) 0%, rgba(255,150,80,0) 60%),
+    linear-gradient(180deg, #232248 0%, #2f2a55 34%, #43335e 62%, #5c4368 84%, #6e4f66 100%);
+}
+#app { position:relative; height:100%; }
+canvas { display:block; width:100%; height:100%; cursor:grab; }
+canvas.focusing { cursor:pointer; }
+
+.topbar {
+  position:absolute; left:0; right:0; top:0; padding:22px 28px; z-index:5;
+  display:flex; justify-content:space-between; align-items:flex-start; pointer-events:none;
+}
+.topbar > * { pointer-events:auto; }
+h1 { font-size:26px; font-weight:800; letter-spacing:3px; color:var(--cream); text-shadow:0 0 24px rgba(255,180,92,.35); }
+.lede { margin-top:6px; font-size:13px; color:var(--cream-dim); max-width:470px; line-height:1.65; }
+.count { margin-top:8px; font-size:13px; color:var(--amber); font-weight:600; }
+.count b { font-size:20px; }
+.count span { color:var(--cream-dim); font-weight:400; }
+.btns { display:flex; gap:8px; }
+.btn-ghost {
+  padding:8px 12px; border-radius:9px; font-size:12px; cursor:pointer;
+  background:var(--glass); border:1px solid var(--glass-line); color:var(--cream);
+  backdrop-filter:blur(8px);
+}
+.btn-ghost:hover { border-color:rgba(255,179,92,.5); color:var(--amber); }
+.btn-solid {
+  padding:8px 16px; border-radius:9px; font-size:13px; font-weight:600; cursor:pointer;
+  background:linear-gradient(135deg,#ff9d4d,#e2683a); color:#fff; border:none;
+  box-shadow:0 6px 22px rgba(226,104,58,.4);
+}
+
+.crumbs {
+  position:absolute; top:28px; left:50%; transform:translateX(-50%); z-index:6;
+  display:flex; align-items:center; gap:8px; padding:7px 14px; border-radius:999px;
+  background:var(--glass); border:1px solid var(--glass-line); backdrop-filter:blur(8px);
+  font-size:12.5px; color:var(--cream-dim);
+}
+.crumbs a { color:var(--amber); cursor:pointer; text-decoration:none; font-weight:600; }
+
+.legend {
+  position:absolute; left:24px; bottom:24px; z-index:5; padding:12px 14px; border-radius:16px;
+  background:var(--glass); border:1px solid var(--glass-line); backdrop-filter:blur(10px);
+  font-size:12.5px; color:var(--cream); line-height:1.9;
+}
+.legend .row { display:flex; align-items:center; gap:8px; cursor:pointer; }
+.legend .row.off { opacity:.32; }
+.legend .dot { width:10px; height:10px; border-radius:50%; box-shadow:0 0 8px currentColor; }
+.legend .hint { margin-top:6px; font-size:11.5px; color:var(--cream-dim); line-height:1.65; }
+
+.tip {
+  position:absolute; z-index:8; max-width:430px; padding:9px 13px; border-radius:11px;
+  background:rgba(28,22,52,.92); color:var(--cream); font-size:12.5px; line-height:1.6;
+  border:1px solid var(--glass-line); backdrop-filter:blur(6px);
+  pointer-events:none; opacity:0; transition:opacity .12s;
+}
+
+.drawer {
+  position:absolute; top:0; right:0; height:100%; width:360px; max-width:86vw; z-index:7;
+  background:rgba(30,24,56,.82); backdrop-filter:blur(16px);
+  border-left:1px solid var(--glass-line);
+  transform:translateX(105%); transition:transform .32s cubic-bezier(.22,.9,.3,1);
+  display:flex; flex-direction:column; padding:22px 20px 16px;
+}
+.drawer.show { transform:translateX(0); }
+.drawer .close {
+  position:absolute; top:16px; right:16px; width:30px; height:30px; border-radius:50%;
+  border:1px solid var(--glass-line); background:transparent; color:var(--cream); font-size:15px; cursor:pointer;
+}
+.drawer .scroll { overflow-y:auto; padding-right:4px; flex:1; }
+.drawer .cat {
+  display:inline-flex; align-items:center; gap:7px; align-self:flex-start;
+  font-size:12px; font-weight:600; color:#241d3d; padding:4px 11px; border-radius:20px;
+}
+.drawer .ts { font-size:12px; color:var(--cream-dim); margin:14px 0 8px; }
+.drawer .fact { font-size:15px; line-height:1.8; color:var(--cream); }
+.drawer h4 { margin:18px 0 8px; font-size:13px; color:var(--amber); }
+.drawer .mem {
+  font-size:12.5px; line-height:1.65; color:var(--cream-dim); cursor:pointer;
+  background:rgba(255,255,255,.05); border:1px solid var(--glass-line);
+  border-radius:10px; padding:8px 11px; margin-bottom:7px;
+}
+.drawer .mem:hover { color:var(--cream); border-color:rgba(255,179,92,.45); }
+.drawer .cluster-head { font-size:17px; font-weight:700; color:var(--cream); margin-top:12px; }
+.drawer .cluster-sub { font-size:12px; color:var(--cream-dim); margin-top:4px; }
+
+.note {
+  position:absolute; right:24px; bottom:24px; z-index:5; max-width:300px;
+  padding:12px 14px; border-radius:14px; font-size:11.5px; line-height:1.8; color:var(--cream-dim);
+  background:var(--glass); border:1px solid var(--glass-line); backdrop-filter:blur(8px);
+}
+.note b { color:var(--amber); }
+</style>
+</head>
+<body>
+<div id="app">
+  <canvas id="cv"></canvas>
+
+  <div class="topbar">
+    <div>
+      <h1>我们的记忆</h1>
+      <div class="lede">每条记忆是一颗星星，一本作品是一片星群。夜空不是黑的，是暮色——你越用它越亮。</div>
+      <div class="count">共 <b id="cAll">1298</b> 颗星 <span id="cShown"></span></div>
+    </div>
+    <div class="btns">
+      <button class="btn-ghost" id="btnReset">复位星空</button>
+      <button class="btn-ghost">列表视图</button>
+      <button class="btn-solid">返回</button>
+    </div>
+  </div>
+
+  <div class="crumbs"><a id="crumbRoot">整片夜空</a><span id="crumbSep" style="display:none;color:rgba(246,234,214,.4)">/</span><span id="crumbCur"></span></div>
+
+  <div class="legend" id="legend">
+    <div id="legendRows"></div>
+    <div class="hint">滚轮缩放 · 拖拽平移 · 点星群看连线与成员<br>点单星看内容 · 图例筛类别</div>
+  </div>
+
+  <div class="tip" id="tip"></div>
+
+  <div class="drawer" id="drawer">
+    <button class="close" id="drawerClose">×</button>
+    <div class="scroll" id="drawerBody"></div>
+  </div>
+
+  <div class="note">
+    <b>星尘模式</b>：默认全空皆星、无药丸标签（只有大星群挂名）；点进星群才画连线、其余暗下去。底色是暮色渐变 + 地平线余晖，刻意不压黑。
+  </div>
+</div>
+
+<script>
+/* ══ 数据（假，规模=真实 1298）══ */
+const CATS = {
+  preference: { name:"偏好",      color:"#ff9ec4" },
+  habit:      { name:"习惯",      color:"#ffc36b" },
+  tool:       { name:"工具/项目", color:"#8fe3a8" },
+  other:      { name:"其他",      color:"#b9a8ff" },
+};
+const CAT_KEYS = Object.keys(CATS);
+
+const WORKS = [
+  { t:"夜不收", n:186 }, { t:"大清钱王", n:142 }, { t:"国子监秘录", n:118 },
+  { t:"碧蹄馆", n:96 }, { t:"三星堆", n:88 }, { t:"大明裂变", n:74 },
+  { t:"宋会要辑稿", n:62 }, { t:"杏林殇", n:54 }, { t:"上元读史", n:46 },
+  { t:"大宋梦华", n:40 }, { t:"投名状", n:34 }, { t:"明朝烟火味儿", n:30 },
+  { t:"池上", n:26 }, { t:"醒世恒言", n:22 }, { t:"本朝掌故", n:19 },
+  { t:"西游记", n:16 }, { t:"营田议", n:14 }, { t:"赋役", n:12 },
+  { t:"军百年", n:11 }, { t:"周礼", n:9 }, { t:"兰亭传", n:8 },
+  { t:"忘川", n:7 }, { t:"秦", n:6 }, { t:"大唐", n:5 }, { t:"刺明", n:4 },
+];
+const NEBULA = { preference:46, habit:40, tool:34, other:49 }; // 无作品归属的散星（合计 169，全空 1298）
+
+const FACTS = [
+  "写历史场景时先查《明实录》再落笔，别拿二手结论糊弄",
+  "凌晨两点还在改第三章，第二天说「昨晚睡不着，就着台灯写了点」",
+  "把「碧蹄馆的水系」手绘在方格纸上贴在显示器边上",
+  "不喜欢把人物死因提前写进备注，怕自己心软",
+  "读《万历野获编》时会顺手摘沈德符的收材料规矩",
+  "习惯把卡住的段落整段删掉重写，而不是改句子",
+  "给夜不收设计口令时用了戚继光《纪效新书》的字句",
+  "每次导出稿子都要在文件名加日期，怕丢版本",
+  "说「这段写了两年舍不得删」的时候，是在心疼沉没成本",
+  "校对时更信耳朵不信眼睛，会小声念出来",
+];
+
+let _s = 20261103;
+function rnd(){ _s=(_s*1103515245+12345)&0x7fffffff; return _s/0x7fffffff; }
+function gauss(){ return (rnd()+rnd()+rnd()-1.5)/1.5; }
+
+/* ══ 星空构建：每片星群 = 一颗主星 + n 颗成员星（高斯环绕） ══ */
+const stars = [];   // {x,y,r,cat,fact,work}
+const groups = [];  // {t,x,y,R,n,main,memberIdx[]}
+
+function buildSky(){
+  stars.length=0; groups.length=0;
+  const cx=window.innerWidth*0.5, cy=window.innerHeight*0.54;
+  const maxR=Math.min(window.innerWidth,window.innerHeight)*0.42;
+  WORKS.forEach((w,i)=>{
+    const k=i+1, a=k*2.399963;
+    const rr=maxR*Math.sqrt(k/WORKS.length);
+    const gx=cx+Math.cos(a)*rr*1.32, gy=cy+Math.sin(a)*rr*0.92;
+    const spread=14+Math.sqrt(w.n)*4.2;
+    const memberIdx=[];
+    for(let j=0;j<w.n;j++){
+      const ang=rnd()*Math.PI*2, d=Math.abs(gauss())*spread;
+      const cat=CAT_KEYS[Math.floor(rnd()*4)];
+      memberIdx.push(stars.length);
+      stars.push({ x:gx+Math.cos(ang)*d, y:gy+Math.sin(ang)*d*0.86,
+        r:1.1+rnd()*1.5, cat, fact:FACTS[Math.floor(rnd()*FACTS.length)], work:i });
+    }
+    groups.push({ t:w.t, x:gx, y:gy, R:spread, n:w.n, memberIdx,
+      main:{ r:2.6+Math.min(4.5,Math.sqrt(w.n)*0.42) } });
+  });
+  // 散星云雾：四团低密度星砂
+  const clouds=[{x:window.innerWidth*0.12,y:window.innerHeight*0.3},{x:window.innerWidth*0.88,y:window.innerHeight*0.24},
+                {x:window.innerWidth*0.1,y:window.innerHeight*0.78},{x:window.innerWidth*0.9,y:window.innerHeight*0.72}];
+  CAT_KEYS.forEach((k,i)=>{
+    const p=clouds[i], c=NEBULA[k];
+    for(let j=0;j<c;j++){
+      const ang=rnd()*Math.PI*2, d=Math.abs(gauss())*(46+Math.sqrt(c)*3.6);
+      stars.push({ x:p.x+Math.cos(ang)*d, y:p.y+Math.sin(ang)*d*0.7,
+        r:0.8+rnd()*1.1, cat:k, fact:FACTS[Math.floor(rnd()*FACTS.length)], work:-1 });
+    }
+  });
+}
+
+/* ══ 视图：缩放平移 + 聚焦 ══ */
+const cv=document.getElementById("cv"), ctx=cv.getContext("2d");
+let W=0,H=0,DPR=1;
+let view={x:0,y:0,k:1}, drag=null, moved=false;
+const hidden=new Set();
+let focus=-1, hoverStar=null, hoverGroup=null;
+
+function resize(){
+  DPR=Math.min(2,window.devicePixelRatio||1);
+  W=cv.clientWidth; H=cv.clientHeight;
+  cv.width=W*DPR; cv.height=H*DPR; ctx.setTransform(DPR,0,0,DPR,0,0);
+}
+const toS = p => ({ x:p.x*view.k+view.x, y:p.y*view.k+view.y });
+const toW = (sx,sy) => ({ x:(sx-view.x)/view.k, y:(sy-view.y)/view.k });
+
+/* 每颗星一个闪烁相位，暮色里轻轻呼吸 */
+const phase = new Float32Array(4096);
+function twinkle(i,t){ return 0.82 + 0.18*Math.sin(t*0.0011 + phase[i%4096]); }
+
+function draw(t){
+  ctx.clearRect(0,0,W,H);
+  const fg = focus>=0;
+
+  // 星群连线（只聚焦时画）
+  if (fg){
+    const g=groups[focus];
+    ctx.strokeStyle="rgba(255,220,170,0.30)"; ctx.lineWidth=1;
+    for(const mi of g.memberIdx){
+      const s=stars[mi]; if(hidden.has(s.cat)) continue;
+      const p=toS(s);
+      ctx.beginPath(); ctx.moveTo(toS(g).x,toS(g).y); ctx.lineTo(p.x,p.y); ctx.stroke();
+    }
+  }
+
+  // 星
+  for(let i=0;i<stars.length;i++){
+    const s=stars[i];
+    if(hidden.has(s.cat)) continue;
+    const inFocus = fg && s.work===focus;
+    if (fg && !inFocus && s.work!==-1) continue;           // 聚焦时：他群星隐去
+    if (fg && !inFocus && s.work===-1 && view.k<1.6) continue; // 散星只在近看时出现
+    const p=toS(s);
+    if (p.x<-8||p.x>W+8||p.y<-8||p.y>H+8) continue;
+    const dim = fg && !inFocus;
+    const a = twinkle(i,t)*(dim?0.12:1)*(s.work===-1?0.7:1);
+    const r = s.r*Math.min(2,0.7+view.k*0.5);
+    ctx.save();
+    ctx.globalAlpha=a;
+    ctx.shadowColor=CATS[s.cat].color; ctx.shadowBlur=(inFocus||hoverStar===i)?10:5;
+    ctx.fillStyle=CATS[s.cat].color;
+    ctx.beginPath(); ctx.arc(p.x,p.y,r,0,Math.PI*2); ctx.fill();
+    ctx.restore();
+  }
+
+  // 主星 + 星群名
+  groups.forEach((g,i)=>{
+    if (fg && i!==focus) return;
+    const p=toS(g);
+    if (p.x<-60||p.x>W+60||p.y<-60||p.y>H+60) return;
+    ctx.save();
+    const gr=ctx.createRadialGradient(p.x,p.y,1,p.x,p.y,g.main.r*4);
+    gr.addColorStop(0,"rgba(255,236,200,0.95)"); gr.addColorStop(1,"rgba(255,236,200,0)");
+    ctx.fillStyle=gr; ctx.beginPath(); ctx.arc(p.x,p.y,g.main.r*4,0,Math.PI*2); ctx.fill();
+    ctx.fillStyle="#fff3dd"; ctx.shadowColor="#ffcf8a"; ctx.shadowBlur=14;
+    ctx.beginPath(); ctx.arc(p.x,p.y,g.main.r*Math.min(1.8,0.8+view.k*0.5),0,Math.PI*2); ctx.fill();
+    ctx.restore();
+    const named = g.n>=26 || i===focus || view.k>=1.8 || i===hoverGroup;
+    if (named){
+      ctx.font="600 12px "+'PingFang SC,sans-serif';
+      ctx.textAlign="center"; ctx.textBaseline="top";
+      ctx.fillStyle = i===focus ? "#ffd9a0" : "rgba(246,234,214,0.82)";
+      ctx.shadowColor="rgba(20,14,40,0.9)"; ctx.shadowBlur=6;
+      ctx.fillText("《"+g.t+"》 · "+g.n, p.x, p.y+g.main.r*2+8);
+      ctx.shadowBlur=0;
+    }
+  });
+
+  requestAnimationFrame(draw);
+}
+
+/* ══ 命中 ══ */
+function pick(sx,sy){
+  const w=toW(sx,sy);
+  // 主星优先
+  for(let i=groups.length-1;i>=0;i--){
+    const g=groups[i];
+    if(Math.hypot(g.x-w.x,g.y-w.y) < (g.main.r+6)/view.k) return {kind:"group",i};
+  }
+  let best=-1,bd=1e9;
+  for(let i=0;i<stars.length;i++){
+    const s=stars[i]; if(hidden.has(s.cat)) continue;
+    if(focus>=0 && s.work!==focus && s.work!==-1) continue;
+    const d=Math.hypot(s.x-w.x,s.y-w.y);
+    if(d < 7/view.k && d<bd){ bd=d; best=i; }
+  }
+  return best>=0 ? {kind:"star",i:best} : null;
+}
+
+const tip=document.getElementById("tip");
+cv.addEventListener("mousemove",e=>{
+  const r=cv.getBoundingClientRect(), sx=e.clientX-r.left, sy=e.clientY-r.top;
+  if(drag){ view.x+=sx-drag.x; view.y+=sy-drag.y; drag.x=sx; drag.y=sy;
+            if(Math.hypot(sx-drag.ox,sy-drag.oy)>3) moved=true; return; }
+  const h=pick(sx,sy);
+  hoverStar = h&&h.kind==="star" ? h.i : null;
+  hoverGroup = h&&h.kind==="group" ? h.i : null;
+  cv.classList.toggle("focusing", !!h);
+  if(h){
+    tip.textContent = h.kind==="star"
+      ? stars[h.i].fact+" · "+CATS[stars[h.i].cat].name
+      : "《"+groups[h.i].t+"》星群 · "+groups[h.i].n+" 颗星，点开看连线";
+    tip.style.left=Math.min(e.clientX+14,innerWidth-450)+"px"; tip.style.top=(e.clientY+14)+"px"; tip.style.opacity=1;
+  } else tip.style.opacity=0;
+});
+cv.addEventListener("mouseleave",()=>{ hoverStar=hoverGroup=null; tip.style.opacity=0; });
+cv.addEventListener("mousedown",e=>{ const r=cv.getBoundingClientRect(); drag={x:e.clientX-r.left,y:e.clientY-r.top,ox:e.clientX-r.left,oy:e.clientY-r.top}; cv.style.cursor="grabbing"; });
+window.addEventListener("mouseup",()=>{ drag=null; cv.style.cursor="grab"; });
+cv.addEventListener("wheel",e=>{
+  e.preventDefault();
+  const r=cv.getBoundingClientRect(), sx=e.clientX-r.left, sy=e.clientY-r.top;
+  const w=toW(sx,sy), k2=Math.max(0.5,Math.min(4,view.k*(e.deltaY<0?1.16:0.86)));
+  view.k=k2; view.x=sx-w.x*k2; view.y=sy-w.y*k2;
+},{passive:false});
+
+cv.addEventListener("click",e=>{
+  if(moved){ moved=false; return; }
+  const r=cv.getBoundingClientRect();
+  const h=pick(e.clientX-r.left,e.clientY-r.top);
+  if(!h){ if(focus>=0) setFocus(-1); return; }
+  if(h.kind==="group"){ setFocus(focus===h.i?-1:h.i); if(focus>=0) showGroup(h.i); }
+  else { const s=stars[h.i]; setFocus(s.work>=0?s.work:focus); showStar(s); }
+});
+
+document.getElementById("btnReset").onclick=()=>{ view={x:0,y:0,k:1}; setFocus(-1); closeDrawer(); };
+
+/* ══ 聚焦 / 抽屉 / 面包屑 ══ */
+function setFocus(i){
+  focus=i;
+  const cur=document.getElementById("crumbCur"), sep=document.getElementById("crumbSep");
+  if(i<0){ cur.textContent=""; sep.style.display="none"; document.getElementById("cShown").textContent=""; }
+  else { cur.textContent="《"+groups[i].t+"》星群"; sep.style.display="inline";
+         document.getElementById("cShown").textContent=" · 正在看 "+groups[i].n+" 颗星"; }
+}
+document.getElementById("crumbRoot").onclick=()=>{ setFocus(-1); closeDrawer(); };
+
+const drawer=document.getElementById("drawer"), dBody=document.getElementById("drawerBody");
+document.getElementById("drawerClose").onclick=closeDrawer;
+function closeDrawer(){ drawer.classList.remove("show"); }
+function showStar(s){
+  dBody.innerHTML='<span class="cat" style="background:'+CATS[s.cat].color+'">'+CATS[s.cat].name+'</span>'+
+    '<div class="ts">2026-10-28 03:14'+(s.work>=0?" · 《"+WORKS[s.work].t+"》":" · 散星")+'</div>'+
+    '<div class="fact">'+s.fact+'</div><h4>附近的星</h4>'+
+    FACTS.slice(0,3).map(f=>'<div class="mem">'+f+'</div>').join("");
+  drawer.classList.add("show");
+}
+function showGroup(i){
+  const g=groups[i];
+  dBody.innerHTML='<div class="cluster-head">《'+g.t+"》</div>"+
+    '<div class="cluster-sub">这片星群 '+g.n+" 颗星 · 近 30 天新增 24 颗</div><h4>最近的星</h4>"+
+    g.memberIdx.slice(0,12).map(mi=>'<div class="mem">'+stars[mi].fact+"</div>").join("");
+  drawer.classList.add("show");
+}
+
+/* ══ 图例 ══ */
+const legendRows=document.getElementById("legendRows");
+legendRows.innerHTML=CAT_KEYS.map(k=>
+  '<div class="row" data-k="'+k+'"><span class="dot" style="background:'+CATS[k].color+';color:'+CATS[k].color+'"></span>'+CATS[k].name+"</div>").join("");
+legendRows.querySelectorAll(".row").forEach(el=>{
+  el.onclick=()=>{ const k=el.dataset.k;
+    hidden.has(k)?hidden.delete(k):hidden.add(k);
+    el.classList.toggle("off",hidden.has(k)); };  // 主循环逐帧在跑，无需手动 draw（否则叠加多条 rAF 链）
+});
+
+buildSky();
+for(let i=0;i<phase.length;i++) phase[i]=rnd()*Math.PI*2;
+window.addEventListener("resize",()=>{ resize(); });
+resize();
+requestAnimationFrame(draw);
+</script>
+</body>
+</html>

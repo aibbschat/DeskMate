@@ -1,0 +1,267 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>小桔递想法 · 瘦身卡三态 mock 2026-11-03</title>
+<style>
+/* 取 app 设计 token（styles.css :root 亮色档），字号用 --fs-* 六档口径 */
+:root {
+  --paper:#f5f6f7; --panel:#ffffff; --ink:#17191c; --muted:#5b616b; --faint:#9aa1aa;
+  --line:#e8eaed; --line-strong:#d8dce1; --accent:#2563eb; --accent-soft:#e9f0fd;
+  --warn-ink:#b45309; --warn-soft:#fef3c7; --danger:#b91c1c;
+  --fs-label:11px; --fs-meta:12px; --fs-ui:13px; --fs-body:14px; --fs-heading:15px; --fs-title:16px;
+  /* 小桔暖色（与 app 里 dm-* 卡片同一血统） */
+  --xj-amber:#c2662f; --xj-amber-soft:#fdf3ea; --xj-line:#f0dcc9;
+  --sans:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",Inter,system-ui,sans-serif;
+  --mono:"SF Mono","JetBrains Mono",Menlo,monospace;
+}
+* { box-sizing:border-box; margin:0; padding:0; }
+body {
+  font-family:var(--sans); background:var(--paper); color:var(--ink);
+  padding:40px 24px 80px; display:flex; flex-direction:column; align-items:center; gap:44px;
+}
+h1 { font-size:20px; font-weight:800; letter-spacing:1px; }
+.sub { font-size:var(--fs-meta); color:var(--muted); margin-top:6px; max-width:640px; line-height:1.7; }
+.stage { width:100%; max-width:680px; }
+.stage-tag {
+  font-size:var(--fs-label); font-weight:700; letter-spacing:2px; color:var(--faint);
+  margin-bottom:10px; text-transform:uppercase;
+}
+/* 模拟会话底：一条普通助手消息，作为"她正常说话"的参照 */
+.chat-bubble {
+  background:var(--panel); border:1px solid var(--line); border-radius:14px;
+  padding:14px 16px; font-size:var(--fs-body); line-height:1.7; color:var(--ink);
+  margin-bottom:14px;
+}
+.chat-bubble .who { font-size:var(--fs-label); color:var(--xj-amber); font-weight:700; margin-bottom:6px; }
+
+/* ── 想法卡（唯一真源组件，三态都出自它） ─────────────────────── */
+.thought {
+  border:1px solid var(--xj-line); border-radius:14px; background:var(--panel);
+  box-shadow:0 1px 3px rgba(180,130,90,.06);
+  overflow:hidden;
+}
+.thought-head {
+  display:flex; align-items:center; gap:8px; padding:11px 14px; cursor:pointer;
+  user-select:none;
+}
+.thought-head:hover { background:var(--xj-amber-soft); }
+.thought-head .spark { color:var(--xj-amber); font-size:14px; }
+.thought-head .line {
+  flex:1; font-size:var(--fs-ui); color:var(--ink); line-height:1.5;
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+}
+.thought-head .line b { color:var(--xj-amber); font-weight:700; }
+.thought-head .chev { color:var(--faint); font-size:11px; transition:transform .18s ease; }
+.thought.open .chev { transform:rotate(90deg); }
+
+/* 收起态：整卡只有 head 一行 */
+.thought:not(.open) .thought-body { display:none; }
+.thought-body { border-top:1px solid var(--line); padding:6px 12px 12px; }
+
+/* 条目行：默认一行摘要 */
+.t-item { border-bottom:1px solid var(--line); padding:0; }
+.t-item:last-child { border-bottom:none; }
+.t-row {
+  display:flex; align-items:center; gap:8px; padding:10px 2px; cursor:pointer;
+}
+.t-id {
+  flex:none; font-family:var(--mono); font-size:10.5px; font-weight:600; color:var(--accent);
+  background:var(--accent-soft); border-radius:4px; padding:1.5px 5px;
+}
+.t-sum {
+  flex:1; min-width:0; font-size:var(--fs-ui); line-height:1.55; color:var(--ink);
+  display:-webkit-box; -webkit-line-clamp:1; -webkit-box-orient:vertical; overflow:hidden;
+}
+.t-age {
+  flex:none; font-size:var(--fs-label); color:var(--warn-ink); background:var(--warn-soft);
+  border-radius:999px; padding:2px 8px;
+}
+.t-chev { flex:none; color:var(--faint); font-size:10px; transition:transform .18s; }
+.t-item.open .t-chev { transform:rotate(90deg); }
+
+/* 条目详情：限高 + 内部滚动 —— 永远不会占屏 */
+.t-detail { display:none; padding:0 2px 12px 2px; }
+.t-item.open .t-detail { display:block; }
+.t-detail-inner {
+  max-height:180px; overflow-y:auto; padding-right:8px;
+  border-left:2px solid var(--xj-line); margin-left:2px; padding-left:12px;
+}
+.t-detail-inner p { font-size:var(--fs-meta); line-height:1.75; color:var(--muted); margin-bottom:8px; }
+.t-detail-inner p b { color:var(--ink); font-weight:600; }
+.t-detail-inner .lbl { color:var(--faint); font-weight:600; }
+/* 滚动到底的暗示 */
+.t-detail-inner::-webkit-scrollbar { width:4px; }
+.t-detail-inner::-webkit-scrollbar-thumb { background:var(--line-strong); border-radius:2px; }
+
+/* 下一步 chips */
+.t-steps { display:flex; flex-wrap:wrap; gap:6px; margin-top:2px; }
+.t-step {
+  font-size:var(--fs-label); color:var(--accent); background:var(--accent-soft);
+  border:1px solid transparent; border-radius:999px; padding:3px 10px; cursor:pointer;
+}
+.t-step:hover { border-color:var(--accent); }
+
+/* 动作区：小按钮，右下角，不再通栏大胶囊 */
+.t-actions { display:flex; justify-content:flex-end; gap:8px; margin-top:10px; }
+.btn-chat, .btn-later {
+  font-family:var(--sans); font-size:var(--fs-meta); border-radius:8px; padding:5px 14px;
+  cursor:pointer; transition:all .15s;
+}
+.btn-chat { border:1px solid var(--xj-amber); background:var(--xj-amber); color:#fff; font-weight:600; }
+.btn-chat:hover { filter:brightness(1.08); }
+.btn-later { border:1px solid var(--line-strong); background:transparent; color:var(--muted); }
+.btn-later:hover { border-color:var(--muted); color:var(--ink); }
+
+/* 卡脚：整卡级动作 */
+.thought-foot {
+  display:flex; justify-content:space-between; align-items:center;
+  border-top:1px dashed var(--line); margin-top:8px; padding-top:9px;
+}
+.thought-foot .more { font-size:var(--fs-label); color:var(--accent); cursor:pointer; }
+.thought-foot .all-later { font-size:var(--fs-label); color:var(--faint); cursor:pointer; }
+.thought-foot .all-later:hover { color:var(--muted); }
+
+/* 「聊这个」之后她的开场气泡（短版，替代现在的全文倾倒） */
+.speak-bubble {
+  background:var(--xj-amber-soft); border:1px solid var(--xj-line); border-radius:14px;
+  padding:12px 15px; font-size:var(--fs-body); line-height:1.7; margin-top:14px;
+}
+.speak-bubble .who { font-size:var(--fs-label); color:var(--xj-amber); font-weight:700; margin-bottom:5px; }
+.speak-bubble .ref { font-family:var(--mono); font-size:10.5px; color:var(--faint); }
+
+.note {
+  max-width:680px; width:100%; background:#fffdf7; border:1px solid var(--xj-line);
+  border-radius:12px; padding:16px 18px; font-size:var(--fs-meta); line-height:1.9; color:#6b5a48;
+}
+.note b { color:var(--xj-amber); }
+.note code { font-family:var(--mono); font-size:11px; background:var(--paper); padding:1px 5px; border-radius:4px; }
+</style>
+</head>
+<body>
+
+<h1>小桔递想法 · 瘦身卡（三态）</h1>
+<p class="sub">同一张卡：收起＝一行提示（方案 3 的克制）；点开＝条目列表（方案 1 的结构）；再点单条＝详情限高 180px、内部滚动 —— <b>任何一层都不会占全屏</b>。长文（今天那条两千字的三十六计论述）被装进限高滚动区，卡片总高封顶。</p>
+
+<!-- ═══════════ 态 1 · 收起 ═══════════ -->
+<div class="stage">
+  <div class="stage-tag">态 1 · 收起（默认落在会话底部，Composer 上方）</div>
+  <div class="chat-bubble">
+    <div class="who">小桔</div>
+    龙山仓这段我陪你磨到第三遍了，这轮先记到这。
+  </div>
+  <div class="thought" id="th1">
+    <div class="thought-head" onclick="document.getElementById('th1').classList.toggle('open')">
+      <span class="spark">✦</span>
+      <span class="line">我有 <b>3 件事</b>想跟你对一下，都跟《夜不收》有关 —— 点开看看</span>
+      <span class="chev">▶</span>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════ 态 2 · 展开（条目一行摘要） ═══════════ -->
+<div class="stage">
+  <div class="stage-tag">态 2 · 展开（每条＝#id + 一行摘要 + 龄期，动作藏在详情里）</div>
+  <div class="thought open">
+    <div class="thought-head">
+      <span class="spark">✦</span>
+      <span class="line">我有 <b>3 件事</b>想跟你对一下，都跟《夜不收》有关</span>
+      <span class="chev" style="transform:rotate(90deg)">▶</span>
+    </div>
+    <div class="thought-body">
+      <div class="t-item">
+        <div class="t-row">
+          <span class="t-id">#a3f21c</span>
+          <span class="t-sum">烧龙山仓是对的——不烧仓，前面每一步都是在骗读者；这条我查不了内核，只能给你看到哪一步</span>
+          <span class="t-age">已等 3 天</span>
+          <span class="t-chev">▶</span>
+        </div>
+      </div>
+      <div class="t-item">
+        <div class="t-row">
+          <span class="t-id">#7c90de</span>
+          <span class="t-sum">「每日读书」回执说正常、但没产实——日志核时间和落盘位置这一步还没做</span>
+        </div>
+      </div>
+      <div class="t-item">
+        <div class="t-row">
+          <span class="t-id">#1b5e40</span>
+          <span class="t-sum">《国子监秘录》考据笔记想补一条「针炎铜人」：天圣五年铜人二具的事</span>
+        </div>
+      </div>
+      <div class="thought-foot">
+        <span class="more">去信箱看全部 →</span>
+        <span class="all-later">这阵子都别递了</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════ 态 3 · 单条详情（限高滚动） ═══════════ -->
+<div class="stage">
+  <div class="stage-tag">态 3 · 点开单条（详情区 max-height:180px 内部滚动 —— 两千字也压得住）</div>
+  <div class="thought open">
+    <div class="thought-head">
+      <span class="spark">✦</span>
+      <span class="line">我有 <b>3 件事</b>想跟你对一下，都跟《夜不收》有关</span>
+      <span class="chev" style="transform:rotate(90deg)">▶</span>
+    </div>
+    <div class="thought-body">
+      <div class="t-item open">
+        <div class="t-row">
+          <span class="t-id">#a3f21c</span>
+          <span class="t-sum">烧龙山仓是对的——不烧仓，前面每一步都是在骗读者</span>
+          <span class="t-age">已等 3 天</span>
+          <span class="t-chev" style="transform:rotate(90deg)">▶</span>
+        </div>
+        <div class="t-detail">
+          <div class="t-detail-inner">
+            <p><span class="lbl">她的理解：</span>这个决定是对的。龙山仓不是剧情选择，是这本书的梁——夜不收以军令为天职，不烧仓，前面写的每一步都是在骗读者。你选的是难的那条路，也是唯一不塌的那条。</p>
+            <p><span class="lbl">依据：</span>剪贴板显示萧哥正在做关键剧情决策：放弃 V2 解法，确认必须烧龙山仓。他说「说变就变还是夜不收吗」，说明他已自己相通，但带着对烂尾的担忧。</p>
+            <p>我的理解：你说「说变就变还是夜不收吗」——这就是梁。不烧仓，前面每一步都是顺滑的谎；烧了，话才停得下来。难的那条路恰恰是唯一不塌的那条。带着烂尾担忧往前走，别怕——这根刺不是瑕疵，是书的骨头。我接着你。</p>
+            <p>这件事我查不了内核：手上只有几部古籍，没有执行日志，没有产物目录，没有任务调度的半点痕迹。能用的就这几本书。但单凭「回执OK但无实产」这个状态本身，已经可以断定一句：出问题的不是"跑没跑"，而是"跑到了哪一步"。一个声称正常、却什么也没留下的任务，它的"正常"二字本身就不可信。这个判断不是我瞎猜，手头的书恰好能佐证这种思维。三十六计头一计叫瞒天过海，开篇就说："备周则意怠，常见则不疑。阴在阳之内，不在阳之对。"状态显示正常，正是让人不提防的原因——真问题藏在"正常"这张皮底下，而不是站在它的对立面。我们总以为出了故障系统会喊疼，会报错，会亮红灯；可实际上最常见的坑，恰恰是它按部就班地走完流程、回了一个漂亮的确认，然后在没人检查的地方悄悄落了空。阳面一切如常，阴面空空如也。这就是"阴在阳之内"。万历野获编的自序里，沈德符讲他收材料的规矩："若郢书燕说，则不敢存也。"又说"编中强半述近事"。他写的是当代见闻，但他坚持只记有实据的，不收录那些听着像那么回事、实际没影的传言。回执也是一种"记"，它记的是"这件事做完了"。但记本身不是实物——沈德符不会因为一句"据说"就把事写进书里，我们也不能因为一个"ok"就认定产物已经落地。</p>
+            <p>三垣笔记的自序里也有个分辨：作者区分"灼见"与"附述"，"先举予所灼见以笔之书，其因闻而记者，犹云附述"。亲眼所见才能算实据，听来的只能降一等、标明是转述。这放到任务上再清楚不过：产物落盘，是"灼见"；回执报告，只是"附述"。</p>
+          </div>
+          <div class="t-steps">
+            <span class="t-step">S1 · 出审核清单</span>
+            <span class="t-step">S2 · 续写提纲</span>
+            <span class="t-step">S3 · 列可执行清单</span>
+            <span class="t-step">S4 · 起草下一步</span>
+          </div>
+          <div class="t-actions">
+            <button class="btn-later">稍后</button>
+            <button class="btn-chat">聊这个</button>
+          </div>
+        </div>
+      </div>
+      <div class="t-item">
+        <div class="t-row">
+          <span class="t-id">#7c90de</span>
+          <span class="t-sum">「每日读书」回执说正常、但没产实——日志核时间和落盘位置这一步还没做</span>
+        </div>
+      </div>
+      <div class="thought-foot">
+        <span class="more">去信箱看全部 →</span>
+        <span class="all-later">这阵子都别递了</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="speak-bubble">
+    <div class="who">聊这个之后，她的开场（短版，全文不再倾倒进消息流）</div>
+    对了，说到这个——龙山仓烧不烧，我陪你想过：不烧，前面每一步都是在骗读者。这条的来龙去脉我都记着。
+    <span class="ref">#a3f21c</span>
+  </div>
+</div>
+
+<div class="note">
+  <b>落地要点</b>（拍板后我照这个改）：<br>
+  ① <code>DeskMateProactiveInline.tsx</code> / <code>DeskHome</code>：不再渲染后端拼好的长文 <code>handoff.text</code>（它只作降级兜底），改为只用结构化 <code>items</code> 渲染本卡；条目摘要取 <code>content</code> 首句截一行，依据/理解进限高 180px 滚动区。<br>
+  ② <code>compose_speak_text</code>（ledger.py:1616）：「聊这个」落会话的文案改短版——摘要 + 一句邀请 + #id，长文留在卡详情和信箱里。这是唯一要动后端的一处。<br>
+  ③ 卡默认收起（态 1），当日首次展开后记住状态；多条时卡总高封顶约 40vh，内部滚动。<br>
+  ④ 大按钮「聊这个/稍后」从通栏胶囊缩成右下小按钮；「去信箱」成为卡脚常驻出口。
+</div>
+
+</body>
+</html>

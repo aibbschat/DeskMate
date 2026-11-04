@@ -1,0 +1,451 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>我们的记忆 · 作品星座 mock 2026-11-03</title>
+<style>
+:root {
+  --fs-label:11px; --fs-meta:12px; --fs-ui:13px; --fs-body:14px;
+  --sans:"PingFang SC","Hiragino Sans GB","Microsoft YaHei",-apple-system,system-ui,sans-serif;
+  --mono:"SF Mono","JetBrains Mono",Menlo,monospace;
+}
+* { box-sizing:border-box; margin:0; padding:0; }
+html,body { height:100%; overflow:hidden; }
+body {
+  font-family:var(--sans); color:#5b4636;
+  background:radial-gradient(120% 90% at 22% 12%, #fff8ef 0%, #ffe9d4 38%, #f6dcc6 72%, #efcdb4 100%);
+}
+#app { position:relative; height:100%; }
+canvas { display:block; width:100%; height:100%; }
+
+/* 顶部栏 */
+.topbar {
+  position:absolute; left:0; right:0; top:0; padding:22px 28px; z-index:5;
+  display:flex; justify-content:space-between; align-items:flex-start; pointer-events:none;
+}
+.topbar > * { pointer-events:auto; }
+h1 { font-size:26px; font-weight:800; letter-spacing:2px; color:#6b4a32; }
+.lede { margin-top:6px; font-size:13px; color:#9a7b5f; max-width:480px; line-height:1.6; }
+.count { margin-top:8px; font-size:13px; color:#b07a4e; font-weight:600; }
+.count b { font-size:20px; color:#c2662f; }
+.count span { color:#a38568; font-weight:400; }
+.btns { display:flex; gap:8px; }
+.btn-ghost {
+  padding:8px 12px; border-radius:9px; font-size:12px; font-weight:500; cursor:pointer;
+  background:rgba(255,250,243,.82); border:1px solid rgba(214,188,160,.6); color:#6b4a32;
+}
+.btn-solid {
+  padding:8px 16px; border-radius:9px; font-size:13px; font-weight:600; cursor:pointer;
+  background:#c2662f; color:#fff; border:none; box-shadow:0 4px 14px rgba(180,110,60,.3);
+}
+
+/* 面包屑：星座 ⇄ 星团 */
+.crumbs {
+  position:absolute; top:26px; left:50%; transform:translateX(-50%); z-index:6;
+  display:flex; align-items:center; gap:8px; padding:7px 14px; border-radius:999px;
+  background:rgba(255,250,243,.88); border:1px solid rgba(214,188,160,.6);
+  font-size:12.5px; color:#7a5f48; box-shadow:0 4px 16px rgba(180,130,90,.14);
+}
+.crumbs a { color:#c2662f; cursor:pointer; text-decoration:none; font-weight:600; }
+.crumbs .sep { color:#c9ab8b; }
+
+/* 图例 */
+.legend {
+  position:absolute; left:24px; bottom:24px; z-index:5; padding:12px 14px; border-radius:16px;
+  background:rgba(255,250,243,.78); backdrop-filter:blur(8px);
+  border:1px solid rgba(214,188,160,.55); box-shadow:0 8px 26px rgba(180,130,90,.16);
+  font-size:12.5px; color:#7a5f48; line-height:1.8;
+}
+.legend .row { display:flex; align-items:center; gap:8px; cursor:pointer; }
+.legend .row.off { opacity:.38; }
+.legend .dot { width:11px; height:11px; border-radius:50%; box-shadow:0 0 0 3px rgba(255,255,255,.5); }
+.legend .hint { margin-top:7px; font-size:11.5px; color:#9a7b5f; line-height:1.6; }
+
+/* 悬停提示 */
+.tip {
+  position:absolute; z-index:8; max-width:420px; padding:9px 12px; border-radius:11px;
+  background:rgba(60,42,30,.9); color:#fff7ec; font-size:12.5px; line-height:1.6;
+  pointer-events:none; opacity:0; transition:opacity .12s;
+}
+
+/* 右侧详情抽屉（限高、内部滚动 —— 与想法卡同一口径） */
+.drawer {
+  position:absolute; top:0; right:0; height:100%; width:360px; max-width:86vw; z-index:7;
+  background:rgba(255,250,243,.96); backdrop-filter:blur(14px);
+  border-left:1px solid rgba(214,188,160,.6); box-shadow:-14px 0 40px rgba(160,110,70,.18);
+  transform:translateX(105%); transition:transform .3s cubic-bezier(.22,.9,.3,1);
+  display:flex; flex-direction:column; padding:22px 20px 16px;
+}
+.drawer.show { transform:translateX(0); }
+.drawer .close {
+  position:absolute; top:16px; right:16px; width:30px; height:30px; border-radius:50%;
+  border:none; background:rgba(214,188,160,.25); color:#6b4a32; font-size:16px; cursor:pointer;
+}
+.drawer .cat {
+  display:inline-flex; align-items:center; gap:7px; align-self:flex-start;
+  font-size:12px; font-weight:600; color:#fff; padding:4px 11px; border-radius:20px;
+}
+.drawer .ts { font-size:12px; color:#a38568; margin:14px 0 8px; }
+.drawer .fact { font-size:15px; line-height:1.75; color:#4d3a2a; }
+.drawer .scroll { overflow-y:auto; padding-right:4px; flex:1; }
+.drawer h4 { margin:18px 0 8px; font-size:13px; color:#6b4a32; }
+.drawer .mem {
+  font-size:12.5px; line-height:1.6; color:#6a5340; cursor:pointer;
+  background:rgba(255,255,255,.6); border:1px solid rgba(214,188,160,.4);
+  border-radius:9px; padding:8px 10px; margin-bottom:7px;
+}
+.drawer .mem:hover { border-color:#c2662f; }
+.drawer .cluster-head { font-size:17px; font-weight:700; color:#6b4a32; margin-top:12px; }
+.drawer .cluster-sub { font-size:12px; color:#a38568; margin-top:4px; }
+
+.note {
+  position:absolute; right:24px; bottom:24px; z-index:5; max-width:300px;
+  padding:12px 14px; border-radius:14px; font-size:11.5px; line-height:1.75; color:#7a5f48;
+  background:rgba(255,250,243,.8); border:1px solid rgba(214,188,160,.5);
+}
+.note b { color:#c2662f; }
+</style>
+</head>
+<body>
+<div id="app">
+  <canvas id="cv"></canvas>
+
+  <div class="topbar">
+    <div>
+      <h1>我们的记忆</h1>
+      <div class="lede">这是小桔一点一点，记住的你。一本作品就是一颗星团——先看星空，点进去再看每一颗星。</div>
+      <div class="count">共 <b id="cAll">1298</b> 条记忆 <span id="cShown"></span></div>
+    </div>
+    <div class="btns">
+      <button class="btn-ghost">列表视图</button>
+      <button class="btn-ghost" id="btnBack">回到星空</button>
+      <button class="btn-solid">返回</button>
+    </div>
+  </div>
+
+  <div class="crumbs" id="crumbs"><a id="crumbRoot">记忆星空</a><span class="sep" id="crumbSep" style="display:none">/</span><span id="crumbCur" style="color:#7a5f48"></span></div>
+
+  <div class="legend" id="legend">
+    <div id="legendRows"></div>
+    <div class="hint">○ 发光的团 = 一部作品/项目，大小 = 记忆条数<br>点团看星尘 · 点星尘看内容 · 图例可筛</div>
+  </div>
+
+  <div class="tip" id="tip"></div>
+
+  <div class="drawer" id="drawer">
+    <button class="close" id="drawerClose">×</button>
+    <div class="scroll" id="drawerBody"></div>
+  </div>
+
+  <div class="note">
+    <b>这版解决什么</b>：默认只画「作品星座」——几百个标签药丸不再同屏打架；星团展开用确定性环形排布，不再逐帧跑 O(n²) 力导向；1298 条也只剩 30 来个团 + 星尘，一眼看清结构。
+  </div>
+</div>
+
+<script>
+/* ── 假数据：复刻真实规模（1298 条 / 数百书名），但默认视图只呈现结构 ── */
+const CATS = {
+  preference: { name:"偏好",     color:"#ef7d9b" },
+  habit:      { name:"习惯",     color:"#f4a261" },
+  tool:       { name:"工具/项目", color:"#7fb069" },
+  other:      { name:"其他",     color:"#b9a7d6" },
+};
+const CAT_KEYS = Object.keys(CATS);
+
+// 作品/项目枢纽（count = 围绕它的记忆条数）
+const CLUSTERS = [
+  { t:"夜不收",        n:186 }, { t:"大清钱王",      n:142 }, { t:"国子监秘录",    n:118 },
+  { t:"碧蹄馆",        n:96 },  { t:"三星堆",        n:88 },  { t:"大明裂变",      n:74 },
+  { t:"宋会要辑稿",    n:62 },  { t:"杏林殇",        n:54 },  { t:"上元读史",      n:46 },
+  { t:"大宋梦华",      n:40 },  { t:"投名状",        n:34 },  { t:"明朝烟火味儿",  n:30 },
+  { t:"池上",          n:26 },  { t:"醒世恒言",      n:22 },  { t:"本朝掌故",      n:19 },
+  { t:"西游记",        n:16 },  { t:"露营议",        n:14 },  { t:"警示者",        n:12 },
+  { t:"军百年",        n:11 },  { t:"共担时代责任",  n:9 },   { t:"赋役",          n:8 },
+  { t:"周礼",          n:7 },   { t:"兰亭传",        n:6 },   { t:"忘川",          n:5 },
+  { t:"秦",            n:4 },   { t:"大唐",          n:4 },   { t:"刺明",          n:3 },
+  { t:"西洲曲",        n:3 },   { t:"袁崇焕",        n:2 },   { t:"外科医生",      n:2 },
+];
+// 未归属任何作品的散星（按四类聚成四片淡星云）
+const NEBULA = { preference:118, habit:96, tool:74, other:132 };
+
+const FACTS = [
+  "写历史场景时先查《明实录》再落笔，别拿二手结论糊弄",
+  "凌晨两点还在改第三章，第二天说「昨晚睡不着，就着台灯写了点」",
+  "把「碧蹄馆的水系」手绘在方格纸上贴在显示器边上",
+  "不喜欢把人物死因提前写进备注，怕自己心软",
+  "读《万历野获编》时会顺手摘沈德符的收材料规矩",
+  "习惯把卡住的段落整段删掉重写，而不是改句子",
+  "给夜不收设计口令时用了戚继光《纪效新书》的字句",
+  "每次导出稿子都要改文件名后缀加日期，怕丢版本",
+  "说「这段写了两年舍不得删」的时候，是在心疼沉没成本",
+  "校对时更信耳朵不信眼睛，会小声念出来",
+];
+
+/* 确定性伪随机（每次刷新星图一致，可复现） */
+let _s = 20261103;
+function rnd(){ _s = (_s*1103515245+12345) & 0x7fffffff; return _s/0x7fffffff; }
+
+/* ── 布局：星座环带（黄金角螺旋，按条数从内到外） ── */
+const cv = document.getElementById("cv");
+const ctx = cv.getContext("2d");
+let W=0,H=0,DPR=1;
+function resize(){
+  DPR = Math.min(2, window.devicePixelRatio||1);
+  W = cv.clientWidth; H = cv.clientHeight;
+  cv.width = W*DPR; cv.height = H*DPR;
+  ctx.setTransform(DPR,0,0,DPR,0,0);
+  layout();
+  draw();
+}
+
+const hidden = new Set();
+let focusIdx = -1;           // -1 = 星空全景
+let hover = null;            // {kind:'cluster'|'dust'|'nebula', ...}
+let clusters = [];           // 运行时节点
+let dusts = [];              // 当前聚焦星团的星尘
+
+function radiusOf(n){ return 12 + Math.min(34, Math.sqrt(n)*2.1); }
+
+function layout(){
+  const cx = W*0.5, cy = H*0.52;
+  const maxR = Math.min(W,H)*0.36;
+  clusters = CLUSTERS.map((c,i)=>{
+    const k = i+1;
+    const a = k*2.399963;                 // 黄金角
+    const r = maxR * Math.sqrt(k/CLUSTERS.length) * (0.72 + 0.28*Math.sin(k*1.7));
+    return { ...c, x:cx+Math.cos(a)*r*1.28, y:cy+Math.sin(a)*r*0.98, R:radiusOf(c.n) };
+  });
+  // 出界收拢
+  clusters.forEach(c=>{
+    c.x = Math.max(70+c.R, Math.min(W-70-c.R-(drawerOpen()?300:0), c.x));
+    c.y = Math.max(150+c.R, Math.min(H-90-c.R, c.y));
+  });
+  buildDust();
+}
+
+function buildDust(){
+  dusts = [];
+  if (focusIdx < 0) return;
+  const c = clusters[focusIdx];
+  const shown = Math.min(c.n, 90);        // 星尘最多画 90 颗，其余 +N 计数
+  const ringR = c.R + 26;
+  for (let i=0;i<shown;i++){
+    const a = (i/shown)*Math.PI*2 + rnd()*0.22;
+    const rr = ringR + rnd()*58;
+    const cat = CAT_KEYS[Math.floor(rnd()*4)];
+    dusts.push({ x:c.x+Math.cos(a)*rr*1.15, y:c.y+Math.sin(a)*rr*0.9, cat,
+                 fact:FACTS[Math.floor(rnd()*FACTS.length)], idx:i });
+  }
+}
+
+function drawerOpen(){ return document.getElementById("drawer").classList.contains("show"); }
+
+/* ── 渲染 ── */
+function draw(){
+  ctx.clearRect(0,0,W,H);
+  const focused = focusIdx >= 0;
+
+  // 散星星云（未归属记忆）：全景时四片淡色雾团
+  if (!focused){
+    const spots = [ {x:W*0.16,y:H*0.24},{x:W*0.84,y:H*0.22},{x:W*0.14,y:H*0.8},{x:W*0.86,y:H*0.78} ];
+    CAT_KEYS.forEach((k,i)=>{
+      if (hidden.has(k)) return;
+      const p = spots[i], n = NEBULA[k];
+      ctx.save();
+      ctx.globalAlpha = 0.16;
+      ctx.fillStyle = CATS[k].color;
+      ctx.beginPath(); ctx.arc(p.x,p.y, 46+Math.sqrt(n)*3.4, 0, Math.PI*2); ctx.fill();
+      ctx.restore();
+      ctx.font = "500 11px "+getFont(); ctx.fillStyle = "rgba(122,95,72,.75)";
+      ctx.textAlign = "center";
+      ctx.fillText(CATS[k].name+" · "+n+" 条散星", p.x, p.y + 62+Math.sqrt(n)*3.4);
+    });
+  }
+
+  // 团间关系线（全景，弱连接；聚焦时只连被选团）
+  ctx.strokeStyle = "rgba(210,170,130,0.16)"; ctx.lineWidth = 1;
+  for (let i=0;i<clusters.length;i++){
+    for (let j=i+1;j<clusters.length;j++){
+      if (focused && i!==focusIdx && j!==focusIdx) continue;
+      const a=clusters[i], b=clusters[j];
+      const d = Math.hypot(a.x-b.x,a.y-b.y);
+      if (d < 210){ ctx.beginPath(); ctx.moveTo(a.x,a.y); ctx.lineTo(b.x,b.y); ctx.stroke(); }
+    }
+  }
+
+  clusters.forEach((c,i)=>{
+    const dim = focused && i!==focusIdx;
+    const alpha = dim ? 0.22 : 1;
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    // 光晕
+    const g = ctx.createRadialGradient(c.x,c.y,c.R*0.2, c.x,c.y,c.R*1.9);
+    g.addColorStop(0,"rgba(255,214,140,0.85)");
+    g.addColorStop(1,"rgba(255,214,140,0)");
+    ctx.fillStyle = g;
+    ctx.beginPath(); ctx.arc(c.x,c.y,c.R*1.9,0,Math.PI*2); ctx.fill();
+    // 本体
+    ctx.shadowColor = "rgba(220,160,70,0.5)"; ctx.shadowBlur = i===focusIdx?26:14;
+    ctx.fillStyle = "#ffd27a";
+    ctx.beginPath(); ctx.arc(c.x,c.y,c.R,0,Math.PI*2); ctx.fill();
+    ctx.shadowBlur = 0;
+    ctx.lineWidth = i===focusIdx?2.6:1.8;
+    ctx.strokeStyle = i===hover?.i&&hover?.kind==="cluster" ? "#a3501c" : "rgba(200,130,50,0.9)";
+    ctx.stroke();
+    ctx.restore();
+
+    // 标签：全景只给「够大或被悬停/聚焦」的团画字 —— 这就是不再打架的关键
+    const wantLabel = !dim && (c.n>=26 || i===focusIdx || (hover&&hover.kind==="cluster"&&hover.i===i));
+    if (wantLabel){
+      const label = "《"+c.t+"》";
+      ctx.font = "600 12.5px "+getFont();
+      const tw = ctx.measureText(label).width;
+      const bw = tw+16, bh = 20, bx = c.x-bw/2, by = c.y-c.R-30;
+      ctx.fillStyle = "rgba(255,250,243,0.94)";
+      roundRect(bx,by,bw,bh,10); ctx.fill();
+      ctx.strokeStyle = "rgba(214,188,160,0.7)"; ctx.lineWidth=1; roundRect(bx,by,bw,bh,10); ctx.stroke();
+      ctx.fillStyle = "#7a4f23"; ctx.textAlign="center"; ctx.textBaseline="middle";
+      ctx.fillText(label, c.x, by+bh/2);
+      // 条数角标
+      ctx.font = "600 10.5px "+getFont();
+      ctx.fillStyle = "rgba(163,80,28,0.9)";
+      ctx.fillText(c.n+" 条", c.x, c.y+c.R+13);
+    } else if (!dim) {
+      ctx.font = "500 10px "+getFont(); ctx.textAlign="center"; ctx.textBaseline="middle";
+      ctx.fillStyle = "rgba(122,79,35,0.85)";
+      ctx.fillText(c.n, c.x, c.y);
+    }
+  });
+
+  // 星尘（聚焦态）
+  dusts.forEach((d,i)=>{
+    if (hidden.has(d.cat)) return;
+    const isHov = hover && hover.kind==="dust" && hover.i===i;
+    ctx.save();
+    ctx.shadowColor = CATS[d.cat].color; ctx.shadowBlur = isHov?12:6;
+    ctx.fillStyle = CATS[d.cat].color;
+    ctx.globalAlpha = isHov?1:0.9;
+    ctx.beginPath(); ctx.arc(d.x,d.y, isHov?5.4:3.4, 0, Math.PI*2); ctx.fill();
+    ctx.restore();
+  });
+  const c = focusIdx>=0 ? clusters[focusIdx] : null;
+  if (c && c.n > dusts.length){
+    ctx.font = "500 11px "+getFont(); ctx.fillStyle="#9a7b5f"; ctx.textAlign="center";
+    ctx.fillText("还有 "+(c.n-dusts.length)+" 条在抽屉里 →", c.x, c.y+c.R+40);
+  }
+}
+
+function roundRect(x,y,w,h,r){
+  ctx.beginPath();
+  ctx.moveTo(x+r,y); ctx.arcTo(x+w,y,x+w,y+h,r); ctx.arcTo(x+w,y+h,x,y+h,r);
+  ctx.arcTo(x,y+h,x,y,r); ctx.arcTo(x,y,x+w,y,r); ctx.closePath();
+}
+function getFont(){ return 'PingFang SC, sans-serif'; }
+
+/* ── 命中 ── */
+function pick(mx,my){
+  if (focusIdx>=0){
+    for (let i=dusts.length-1;i>=0;i--){
+      const d=dusts[i]; if (hidden.has(d.cat)) continue;
+      if (Math.hypot(d.x-mx,d.y-my) < 7) return {kind:"dust", i};
+    }
+  }
+  for (let i=clusters.length-1;i>=0;i--){
+    const c=clusters[i];
+    if (Math.hypot(c.x-mx,c.y-my) < c.R+4) return {kind:"cluster", i};
+  }
+  return null;
+}
+
+const tip = document.getElementById("tip");
+cv.addEventListener("mousemove", e=>{
+  const r = cv.getBoundingClientRect();
+  const h = pick(e.clientX-r.left, e.clientY-r.top);
+  hover = h;
+  cv.style.cursor = h ? "pointer" : "default";
+  if (h && h.kind==="dust"){
+    const d = dusts[h.i];
+    tip.textContent = d.fact + "  ·  " + CATS[d.cat].name;
+    tip.style.left = Math.min(e.clientX+14, window.innerWidth-440)+"px";
+    tip.style.top = (e.clientY+14)+"px";
+    tip.style.opacity = 1;
+  } else if (h && h.kind==="cluster"){
+    const c = clusters[h.i];
+    tip.textContent = "《"+c.t+"》 · 围绕它的记忆 "+c.n+" 条" + (focusIdx===h.i?"（已展开，点星尘看内容）":"（点开看星尘）");
+    tip.style.left = Math.min(e.clientX+14, window.innerWidth-440)+"px";
+    tip.style.top = (e.clientY+14)+"px";
+    tip.style.opacity = 1;
+  } else tip.style.opacity = 0;
+  draw();
+});
+cv.addEventListener("mouseleave", ()=>{ hover=null; tip.style.opacity=0; draw(); });
+
+cv.addEventListener("click", e=>{
+  const r = cv.getBoundingClientRect();
+  const h = pick(e.clientX-r.left, e.clientY-r.top);
+  if (!h){ if (focusIdx>=0){ setFocus(-1); } return; }
+  if (h.kind==="cluster"){
+    setFocus(focusIdx===h.i ? -1 : h.i);
+    if (focusIdx>=0) showClusterDrawer(h.i);
+  } else if (h.kind==="dust"){
+    showDustDrawer(dusts[h.i]);
+  }
+});
+
+document.getElementById("btnBack").onclick = ()=>{ setFocus(-1); closeDrawer(); };
+
+function setFocus(i){
+  focusIdx = i;
+  buildDust();
+  const cur = document.getElementById("crumbCur"), sep=document.getElementById("crumbSep");
+  if (i<0){ cur.textContent=""; sep.style.display="none"; }
+  else { cur.textContent = "《"+clusters[i].t+"》星团"; sep.style.display="inline"; }
+  document.getElementById("cShown").textContent = i<0 ? "" : " · 正在看《"+clusters[i].t+"》的 "+clusters[i].n+" 条";
+  draw();
+}
+document.getElementById("crumbRoot").onclick = ()=>{ setFocus(-1); closeDrawer(); };
+
+/* ── 抽屉 ── */
+const drawer = document.getElementById("drawer"), dBody = document.getElementById("drawerBody");
+document.getElementById("drawerClose").onclick = closeDrawer;
+function closeDrawer(){ drawer.classList.remove("show"); }
+function catChip(k){ return '<span class="cat" style="background:'+CATS[k].color+'">'+CATS[k].name+'</span>'; }
+function showDustDrawer(d){
+  dBody.innerHTML = catChip(d.cat) + '<div class="ts">2026-10-28 03:14</div>' +
+    '<div class="fact">'+d.fact+'</div>' +
+    '<h4>相关的记忆（3）</h4>' +
+    FACTS.slice(0,3).map(f=>'<div class="mem">'+f+'</div>').join("");
+  drawer.classList.add("show"); draw();
+}
+function showClusterDrawer(i){
+  const c = clusters[i];
+  dBody.innerHTML = '<div class="cluster-head">《'+c.t+'》</div>' +
+    '<div class="cluster-sub">围绕这部作品的记忆 '+c.n+' 条 · 近 30 天新增 24 条</div>' +
+    '<h4>按类别</h4>' +
+    CAT_KEYS.map(k=>'<div class="mem">'+CATS[k].name+' · '+Math.round(c.n*(0.15+((k.length*7)%10)/28))+' 条</div>').join("") +
+    '<h4>最近的星尘</h4>' +
+    dusts.slice(0,10).map(d=>'<div class="mem">'+d.fact+'</div>').join("");
+  drawer.classList.add("show"); draw();
+}
+
+/* ── 图例筛选 ── */
+const legendRows = document.getElementById("legendRows");
+legendRows.innerHTML = CAT_KEYS.map(k=>
+  '<div class="row" data-k="'+k+'"><span class="dot" style="background:'+CATS[k].color+'"></span>'+CATS[k].name+'</div>'
+).join("");
+legendRows.querySelectorAll(".row").forEach(el=>{
+  el.onclick = ()=>{
+    const k = el.dataset.k;
+    if (hidden.has(k)) hidden.delete(k); else hidden.add(k);
+    el.classList.toggle("off", hidden.has(k));
+    document.getElementById("cShown").textContent = hidden.size ? " · 已隐藏 "+hidden.size+" 类" : (focusIdx>=0?" · 正在看《"+clusters[focusIdx].t+"》":"");
+    draw();
+  };
+});
+
+window.addEventListener("resize", resize);
+resize();
+</script>
+</body>
+</html>
