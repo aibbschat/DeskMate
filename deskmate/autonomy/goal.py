@@ -88,6 +88,8 @@ def build_goal_opening(previous: Optional[dict]) -> str:
         "正常结束本轮。这一轮结果会送达用户并结案，之后不再复查。\n"
         f"· 试了几次都推进不了：以 {STUCK_MARK}<一句话说明缺什么才能继续> 开头回应，"
         "不要反复做同样的事。\n"
+        "· 节奏由你定：如果判断需要比下一轮 cron 更早复查，用 sleep_for 安排下一次检查再结束"
+        "本轮（等待本身不是结束）；不需要就照常结束。\n"
         "不要创建或修改任何定时任务。"
         + _stuck_hint(prev)
         + _attempts_block(prev)
