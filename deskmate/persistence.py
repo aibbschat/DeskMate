@@ -46,6 +46,25 @@ def _now_iso() -> str:
     return datetime.datetime.now().astimezone().isoformat(timespec="seconds")
 
 
+class BlobWriteError(RuntimeError):
+    """``json_blobs`` 写入失败——与「fn 主动返回 None 放弃写入」严格区分。
+
+    背景（2026-11-04）：沙箱里 ``BEGIN IMMEDIATE``/写库被 seatbelt 拒绝时，
+    原实现 ``except Exception: return None`` 把「写失败」伪装成「业务放弃」，
+    调用方（record_reading）据此无条件打印 ``OK style 已入书稿桶``，造成假 OK。
+    现在写失败一律抛本异常，``None`` 只表示 fn 主动放弃。
+    """
+
+    def __init__(self, key: str, original: Optional[BaseException] = None) -> None:
+        super().__init__(
+            f"json_blobs 写入失败：key={key}（{original!r}）"
+            if original is not None
+            else f"json_blobs 写入失败：key={key}"
+        )
+        self.key = key
+        self.original = original
+
+
 class BlobStore:
     """keyed JSON blobs over deskmate.db（json_blobs 表）。"""
 
@@ -148,12 +167,16 @@ class BlobStore:
             key: json_blobs key
             fn: callable(old_data: dict | None) -> new_data: dict | None
                 - 入参是 DB 当前值（None 表示不存在）
-                - 返回 None 表示放弃写入（不变更）
+                - 返回 None / 非 dict 表示**业务上主动放弃**（不变更，返回 None）
                 - 返回 dict 表示写入新值
             legacy_path: DB 为空时尝试从 legacy 文件迁移的路径（同 get 的 legacy_path）
 
         Returns:
-            fn 返回的 new_data；fail-open 时返回 None。
+            fn 返回的 new_data；fn 主动放弃时返回 None。
+
+        Raises:
+            BlobWriteError: 读取/写入/提交任一环节失败（如沙箱无写权限）。
+                **不再用 None 掩盖写失败**——调用方据此区分「放弃」与「失败」。
         """
         try:
             with self._connect() as conn:
@@ -174,10 +197,7 @@ class BlobStore:
                                 old_data = None
 
                     new_data = fn(old_data if isinstance(old_data, dict) else {})
-                    if new_data is None:
-                        conn.execute("ROLLBACK")
-                        return None
-                    if not isinstance(new_data, dict):
+                    if new_data is None or not isinstance(new_data, dict):
                         conn.execute("ROLLBACK")
                         return None
 
@@ -194,8 +214,10 @@ class BlobStore:
                     except Exception:
                         pass
                     raise
-        except Exception:
-            return None
+        except BlobWriteError:
+            raise
+        except Exception as exc:
+            raise BlobWriteError(key, exc) from exc
 
     # ------------------------------------------------------------------
     # 迁移（幂等）

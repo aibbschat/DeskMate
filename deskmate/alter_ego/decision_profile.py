@@ -22,6 +22,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import time
@@ -29,7 +30,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
-from deskmate.persistence import BlobStore
+from deskmate.persistence import BlobStore, BlobWriteError
 
 DEFAULT_PROFILE_PATH = (
     Path(os.environ.get("DESKMATE_DIR", str(Path.home() / ".deskmate")))
@@ -373,11 +374,16 @@ def extract_and_update(user_text: str, path: Path | None = None) -> tuple[Decisi
         return profile.to_dict()
 
     if path is None:
-        result = BlobStore().atomic_update(
-            BlobStore.KEY_DECISION,
-            _do_update,
-            legacy_path=DEFAULT_PROFILE_PATH,
-        )
+        try:
+            result = BlobStore().atomic_update(
+                BlobStore.KEY_DECISION,
+                _do_update,
+                legacy_path=DEFAULT_PROFILE_PATH,
+            )
+        except BlobWriteError:
+            # 决策画像属旁路增强：写库失败不阻断对话主流程（fail-open），但留痕。
+            logging.warning("decision_profile 写入失败，本次信号未落库", exc_info=True)
+            return load_profile(None), signals
         if result is None:
             return DecisionProfile(), signals
         return DecisionProfile.from_dict(result), signals

@@ -30,13 +30,14 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import logging
 import os
 import sys
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from deskmate.persistence import BlobStore
+from deskmate.persistence import BlobStore, BlobWriteError
 from deskmate.style_metrics import compute_style_metrics, merge_metrics
 
 DEFAULT_PROFILE_PATH = (
@@ -64,7 +65,21 @@ def _is_default_path(path: Path) -> bool:
 
 
 def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+    """本地时区 ISO 时间戳（与 ``json_blobs.updated_at`` 口径一致）。
+
+    2026-11-04 修正：原来用 UTC，导致桶内 ``updated_at`` 比表级 ``updated_at``
+    看起来早 8 小时，排查时容易误判成「昨天写的」。
+    """
+    return datetime.now().astimezone().isoformat(timespec="seconds")
+
+
+def content_digest(text: str, max_sample_chars: int = 50_000) -> str:
+    """书稿样本内容指纹——与桶内 ``ingested_hashes`` 去重口径完全一致。
+
+    供喂桶脚本在写入前自查「这份稿子是不是已经在桶里」，避免把幂等跳过
+    误判成写入失败。
+    """
+    return hashlib.sha1((text or "").strip()[:max_sample_chars].encode("utf-8")).hexdigest()
 
 
 def load_profile(path: Path) -> dict:
@@ -103,6 +118,7 @@ def update_style_profile(
     profile_path: Optional[Path] = None,
     max_sample_chars: int = 50_000,
     bucket: Optional[str] = None,
+    raise_on_error: bool = False,
 ) -> dict:
     """用一份新文本增量更新风格画像（按来源分桶：书稿 / 对话）。
 
@@ -122,9 +138,15 @@ def update_style_profile(
         profile_path: 画像路径，默认 ~/.deskmate/style_profile.json。
         max_sample_chars: 单次样本送入统计的最大字符数（控制开销）。
         bucket: 样本桶；缺省按 source 推断。
+        raise_on_error: 写统一库失败时是否抛出 ``BlobWriteError``。默认 False 保持
+            fail-open（聊天主流程不因画像写入失败而中断）；需要确认「真的写进去了」的
+            调用方（定时任务喂桶 / CLI）传 True。
 
     Returns:
-        更新后的完整画像 dict。
+        更新后的完整画像 dict（失败或主动放弃时返回库中现有画像）。
+
+    Raises:
+        BlobWriteError: ``raise_on_error=True`` 且写库失败时。
     """
     path = profile_path or DEFAULT_PROFILE_PATH
 
@@ -138,7 +160,7 @@ def update_style_profile(
     if not int(metrics_new.get("chars", 0) or 0):
         return load_profile(path)  # 没有中文正文（空稿 / 纯代码）不入画像
 
-    digest = hashlib.sha1(sample.encode("utf-8")).hexdigest()
+    digest = content_digest(text, max_sample_chars)
 
     # ---- 构建合并逻辑（作为 fn 传给 atomic_update，或直接执行）----
     def _merge(old_data: dict) -> Optional[dict]:
@@ -219,7 +241,7 @@ def update_style_profile(
             "metrics": metrics_merged,
             "samples": samples,
             "buckets": buckets,
-            "ingested_hashes": (hashes + [digest])[-100:],
+            "ingested_hashes": list(dict.fromkeys([*hashes, digest]))[-100:],
             "source": source or data.get("source", ""),
             "chars": chars_total + metrics_new.get("chars", 0),
             "updates": updates + 1,
@@ -229,13 +251,21 @@ def update_style_profile(
 
     # ---- 执行：默认全局路径走原子事务；显式路径走原有 load-modify-save ----
     if _is_default_path(path):
-        result = BlobStore().atomic_update(
-            BlobStore.KEY_STYLE,
-            _merge,
-            legacy_path=DEFAULT_PROFILE_PATH,
-        )
+        try:
+            result = BlobStore().atomic_update(
+                BlobStore.KEY_STYLE,
+                _merge,
+                legacy_path=DEFAULT_PROFILE_PATH,
+            )
+        except BlobWriteError as exc:
+            # 写库失败（沙箱无写权限 / 锁超时等）：默认 fail-open 保持聊天主流程可用，
+            # 但必须留痕，避免又变成「静默假 OK」。需要强校验的调用方传 raise_on_error=True。
+            logging.warning("style_profile 写入失败，本次样本未落库: %s", exc)
+            if raise_on_error:
+                raise
+            return load_profile(path)
         if result is None:
-            # atomic_update 返回 None 可能是 fn 返回 None（去重）或异常
+            # None 只表示 _merge 主动放弃（书稿内容已在桶里，幂等跳过）
             return load_profile(path)
         clear_style_fingerprint_cache()
         return result

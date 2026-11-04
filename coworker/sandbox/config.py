@@ -86,6 +86,11 @@ def default_sandbox_config(workspace_dir: str | Path) -> SandboxConfig:
         deny_paths=list(_DEFAULT_DENY_PATHS),
         network_allow=True,
         allow_read_all=True,
+        # 助手自己的状态目录（记忆 / 文风画像 / 定时任务沉淀）：进程内直写不受沙箱影响，
+        # 但定时任务用 shell 调脚本写库时会被 seatbelt 拒绝，且失败常被上层吞成「假成功」
+        # （2026-11-04：喂桶输出 OK style 但 manuscript 桶纹丝不动）。
+        # 与 file tools 的写范围对齐，只放开这一个目录；deny_paths 仍然优先。
+        trusted_write_subpaths=[str(Path.home() / ".deskmate")],
     )
 
 
@@ -149,7 +154,11 @@ def sandbox_config_from_dict(
         cfg.extra_rules = data["extra_rules"]
     trusted = data.get("trusted_write_subpaths")
     if isinstance(trusted, list):
-        cfg.trusted_write_subpaths = [str(t) for t in trusted if t]
+        # 合并而不是覆盖：默认的 ~/.deskmate 必须保留，否则用户配置一出现，
+        # 定时任务写库又会退回被 seatbelt 拒绝的老状态。
+        cfg.trusted_write_subpaths = list(
+            dict.fromkeys([*cfg.trusted_write_subpaths, *[str(t) for t in trusted if t]])
+        )
     extra_deny = data.get("deny_paths")
     if isinstance(extra_deny, list):
         cfg.deny_paths = list(dict.fromkeys([*_DEFAULT_DENY_PATHS, *extra_deny]))

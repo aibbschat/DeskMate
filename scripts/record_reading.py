@@ -71,27 +71,72 @@ def main() -> int:
         task_name=args.task_name,
     )
 
-    # 本次读到的原文喂进文风画像「书稿桶」（fail-open：失败不影响登记）
+    # 本次读到的原文喂进文风画像「书稿桶」（fail-open：失败不影响上面的登记，但要报出来）
+    style_failures = 0
+    from deskmate.persistence import BlobWriteError
+    from deskmate.style_profile_store import (
+        DEFAULT_PROFILE_PATH,
+        content_digest,
+        load_profile,
+        update_style_profile,
+    )
+
     for tf in args.text_file or []:
         tf = tf.strip()
         if not tf:
             continue
         try:
-            from deskmate.style_profile_store import update_style_profile
-
             raw = open(os.path.expanduser(tf), encoding="utf-8", errors="replace").read()
-            if len(raw.strip()) < 500:
-                print(f"SKIP style: {tf} 过短（{len(raw.strip())} 字 < 500），不入画像")
+            sample = raw.strip()
+            if len(sample) < 500:
+                print(f"SKIP style: {tf} 过短（{len(sample)} 字 < 500），不入画像")
                 continue
+
+            # 幂等自查：内容已在桶里 → 明确报 SKIP，别把「跳过」算成失败
+            digest = content_digest(raw)
+            before = load_profile(DEFAULT_PROFILE_PATH)
+            if digest in set(before.get("ingested_hashes") or []):
+                print(f"SKIP style: {tf} 内容已在书稿桶（幂等跳过，未重复计入）")
+                continue
+
+            before_n = _manuscript_n(before)
             update_style_profile(
-                raw, source=f"书稿-{args.target}·{os.path.basename(tf)}", bucket="manuscript"
+                raw,
+                source=f"书稿-{args.target}·{os.path.basename(tf)}",
+                bucket="manuscript",
+                raise_on_error=True,
             )
-            print(f"OK style: {tf}（{len(raw)} 字）已入书稿桶")
+            after_n = _manuscript_n(load_profile(DEFAULT_PROFILE_PATH))
+            if after_n <= before_n:
+                # 关键校验：不再无条件打 OK——没涨就是没落库（沙箱/锁/未知原因）
+                print(
+                    f"WARN style: {tf} 调用未报错但书稿桶样本数未增长（{before_n}→{after_n}），判为未入桶",
+                    file=sys.stderr,
+                )
+                style_failures += 1
+            else:
+                print(f"OK style: {tf}（{len(raw)} 字）已入书稿桶（样本 {before_n}→{after_n}）")
+        except BlobWriteError as exc:
+            print(f"WARN style: {tf} 写统一库失败（沙箱/权限/锁？）: {exc}", file=sys.stderr)
+            style_failures += 1
         except Exception as exc:  # noqa: BLE001
             print(f"WARN style: {tf} 入画像失败（不影响登记）: {exc}", file=sys.stderr)
+            style_failures += 1
 
     print(f"OK recorded -> task_type={rec.task_type} target={rec.target} insights={len(rec.insights)}")
+    if style_failures:
+        print(f"喂桶失败 {style_failures} 份，需补跑（登记已完成）", file=sys.stderr)
+        return 2
     return 0
+
+
+def _manuscript_n(profile: dict) -> int:
+    """取画像里书稿桶的样本数（缺失按 0）。"""
+    try:
+        entry = (profile.get("buckets") or {}).get("manuscript") or {}
+        return int((entry.get("metrics") or {}).get("n", 0) or 0)
+    except Exception:  # noqa: BLE001
+        return 0
 
 
 if __name__ == "__main__":
