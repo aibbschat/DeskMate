@@ -5998,19 +5998,29 @@ class SessionManager:
         # wake_on / wake_on_event，让她自己安排下一次复查，而不是被 cron 硬推。
         # 普通一次性任务保持原样（回归）。
         goal_wake = None
+        goal_asker = None
         try:
             from deskmate.autonomy.goal import goal_enabled
 
             if goal_enabled(task):
                 goal_wake = getattr(self, "wakes", None)
+                # needs_you：目标制任务注册 ask_user，缺信息时落 Inbox 找人问，
+                # 不是闷头猜或者直接报错；超时会自动放行并让她说明卡点。
+                try:
+                    goal_asker = self._task_question_asker(
+                        session_id, getattr(task, "agent", "cowork")
+                    )
+                except Exception:
+                    goal_asker = None
         except Exception:
-            goal_wake = None
+            goal_wake, goal_asker = None, None
         engine = build_engine(
             agent=ag,
             workspace=task.workspace,
             model=task.model or self.model,
             messages=messages,
             wake_store=goal_wake,
+            question_asker=goal_asker,
             # Scheduled runs are autonomous by design: the human already signed off when
             # the task was created (the `requires_approval` consent card on
             # create_scheduled_task, or the GUI automation form). Running unattended in
@@ -6648,8 +6658,12 @@ class SessionManager:
         # is missing or a stored blob is odd, this stays an ordinary scheduled run.
         goal_on = False
         goal_prev: dict = {}
+        _goal_budget_reason = ""
+        _goal_backoff = 0.0
         try:
             from deskmate.autonomy.goal import (
+                backoff_remaining,
+                budget_exceeded,
                 goal_enabled,
                 is_concluded,
                 previous_goal_state,
@@ -6684,8 +6698,63 @@ class SessionManager:
                     inherited = dict(goal_prev)
                     inherited["generation"] = run.goal_generation
                     run.checkpoint = {"goal": inherited}
+                # 硬预算：自续期不是永动机；退避：连续失败别按原节奏硬撞。
+                try:
+                    _goal_budget_reason = budget_exceeded(goal_prev, time.time())
+                    _goal_backoff = backoff_remaining(goal_prev, time.time())
+                except Exception:
+                    _goal_budget_reason, _goal_backoff = "", 0.0
         except Exception:
             goal_on, goal_prev = False, {}
+
+        # 到预算上限：不再复查，把「最后状态 + 为什么停」交付出去并结案。
+        if goal_on and _goal_budget_reason:
+            run.status, run.finished_at = "expired", _epoch()
+            last_state = str(goal_prev.get("state") or "").strip()
+            run.result_text = (
+                f"自主任务到预算上限，已停止复查：{_goal_budget_reason}。"
+                + (f"\n最后一轮状态：{last_state}" if last_state else "")
+            )
+            expired_goal = dict(goal_prev)
+            expired_goal.update(
+                {"done": True, "expired": _goal_budget_reason, "rounds": goal_prev.get("rounds")}
+            )
+            run.checkpoint = {"goal": expired_goal}
+            self.task_store.add_run(run)
+            try:
+                from deskmate.autonomy.delivery import (
+                    build_completion_event,
+                    deliver_run_result,
+                )
+
+                ledger_id = deliver_run_result(task, run)
+                if ledger_id:
+                    try:
+                        from deskmate.autonomy.goal import record_concluded
+
+                        record_concluded(run)
+                    except Exception:
+                        pass
+                    self._cancel_task_wakes(run.session_id, "budget exhausted")
+                    self.task_store.add_run(run)
+                    await self.broadcast_event(
+                        build_completion_event(
+                            task, run, status=run.status, ledger_id=ledger_id
+                        )
+                    )
+            except Exception:
+                logger.warning("自主任务预算结案投递失败（fail-open）", exc_info=True)
+            return run
+
+        # 连续失败退避期内：cron 到点也先不动，等退避结束（wake 不受影响）。
+        if goal_on and wake is None and _goal_backoff > 0:
+            run.status, run.finished_at = "skipped", _epoch()
+            skip_goal = dict(goal_prev)
+            skip_goal["skipped"] = True
+            skip_goal["backoff"] = True
+            run.checkpoint = {"goal": skip_goal}
+            self.task_store.add_run(run)
+            return run
 
         # 自我驱动（autonomy loop）：本轮自己挂了 wake → 她就是「安排了下次复查」，
         # 不是做完了。cron 到点也不能再开一条腿，否则同一个目标会有两条循环。
@@ -7129,6 +7198,57 @@ class SessionManager:
             self.wakes.cancel_sleep(session_id, reason)
         except Exception:
             logger.debug("取消自主任务睡眠失败（fail-open）", exc_info=True)
+
+    def _task_question_asker(
+        self, session_id: str, agent: str, *, timeout_s: float = 1800.0
+    ):
+        """目标制任务的 ask_user：落 Inbox、原地等人答；超时自动放行。
+
+        与普通会话共用 Inbox 通道——答在同一个 run 里继续（不重开一轮），
+        所以「卡在只有人能定的岔口」变成「她来问你」，而不是猜或干等。
+        超时会把卡片结掉，避免留下一张没人消费的孤儿卡（重启后被 durable
+        resume 当成挂起工具调用再掀一轮）。
+        """
+
+        async def ask(args: dict[str, Any], tool_call_id: Optional[str] = None) -> dict:
+            from ..tools.ask import answer_result, question_item_fields
+
+            fields = question_item_fields(args)
+            if fields is None:
+                return {"answer": "", "error": "no question"}
+            inbox_name = self.inbox_routing.route_for(session_id, agent)
+            item = self.inbox.add_question(
+                session_id, inbox=inbox_name, tool_call_id=tool_call_id, **fields
+            )
+            if item.state != "pending":
+                return answer_result(item.questions, item.resolution)
+            try:
+                self.persist_session(session_id)
+            except Exception:
+                pass
+            try:
+                await self.mirror_inbox_item(item)
+            except Exception:
+                pass
+            try:
+                answer = await asyncio.wait_for(
+                    self.inbox.wait(item.id), timeout=timeout_s
+                )
+            except asyncio.TimeoutError:
+                try:
+                    self.inbox.resolve(
+                        item.id, "（超时未答：自动放行，按未答继续）", by="system"
+                    )
+                except Exception:
+                    logger.debug("自主任务问人超时结卡失败（fail-open）", exc_info=True)
+                return {
+                    "answer": "",
+                    "error": "nobody answered in time; proceed with the least "
+                    "destructive option, or report [[STUCK]] with what you need",
+                }
+            return answer_result(item.questions, answer)
+
+        return ask
 
     def cancel_run(self, task_id: str, run_id: str) -> dict[str, Any]:
         """Stop the CURRENT run without disabling the task itself (§C1).

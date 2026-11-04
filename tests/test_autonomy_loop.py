@@ -238,7 +238,12 @@ def test_second_round_opening_carries_first_round_failure(tmp_path, monkeypatch)
     r1 = asyncio.run(mgr._run_scheduled_task(task, "schedule"))
     assert r1.status == "error"
     assert openings[0] and "hash=abc" not in openings[0], "首轮没有历史"
+    assert r1.checkpoint["goal"]["backoff_until"] > 0, "失败轮必须置退避"
 
+    # 退避期内 cron 会被跳过；模拟退避到期后再看第二轮 opening。
+    latest = mgr.task_store.runs(task.id)[0]
+    latest.checkpoint["goal"]["backoff_until"] = 0
+    mgr.task_store.add_run(latest)
     r2 = asyncio.run(mgr._run_scheduled_task(task, "schedule"))
     opening2 = openings[1]
     assert "run_shell" in opening2, "下一轮不知道上次调了什么工具"
@@ -370,7 +375,11 @@ def test_real_engine_receives_previous_failure_memory(tmp_path, monkeypatch):
     # 但错误必须被记进 run.error 与 attempt，下一轮才看得到。
     assert "boom-first-round" in (r1.error or ""), "引擎错误没被记下来"
     assert r1.checkpoint["goal"]["attempts"][-1]["outcome"] == "error"
+    assert r1.checkpoint["goal"]["backoff_until"] > 0, "失败轮必须置退避"
 
+    latest = manager.task_store.runs(task.id)[0]
+    latest.checkpoint["goal"]["backoff_until"] = 0
+    manager.task_store.add_run(latest)
     r2 = asyncio.run(manager._run_scheduled_task(task, "schedule"))
     assert r2.status == "ok"
     assert len(provider.calls) >= 2, "第二轮没真的调用模型"

@@ -30,6 +30,12 @@ STUCK_GIVE_UP = 3
 STUCK_ESCALATE = 2
 FLAT_HINT = 3
 ATTEMPT_LIMIT = 5
+#: 硬预算：自续期不能是永动机。到任一条就停止复查并交付当前状态。
+BUDGET_MAX_ROUNDS = 500
+BUDGET_MAX_HOURS = 72.0
+#: 连续失败退避：60s 起，指数翻倍，封顶 30 分钟。
+BACKOFF_BASE_S = 60
+BACKOFF_CAP_S = 1800
 _MAX_STATE = 200
 _STEP_MAX = 80
 _RESULT_MAX = 160
@@ -287,9 +293,51 @@ def note_attempt(
             goal["flat_rounds"] = 0
     else:
         goal["flat_rounds"] = 0
-    goal["last_checked"] = now if now is not None else time.time()
+    now_ts = float(now) if now is not None else time.time()
+    goal["rounds"] = int(goal.get("rounds") or 0) + 1
+    goal.setdefault("started_at", now_ts)
+    if outcome == "error":
+        err = int(goal.get("error_rounds") or 0)
+        goal["backoff_until"] = now_ts + min(
+            BACKOFF_BASE_S * (2 ** max(0, err - 1)), BACKOFF_CAP_S
+        )
+    else:
+        goal.pop("backoff_until", None)
+    goal["last_checked"] = now_ts
     cp["goal"] = goal
     return goal
+
+
+def budget_exceeded(goal: Any, now: Optional[float] = None) -> str:
+    """自续期硬预算。返回非空字符串 = 已超限（原因），调用方应停止并交付。
+
+    两条：最多 BUDGET_MAX_ROUNDS 轮；最长盯 BUDGET_MAX_HOURS 小时。
+    """
+    now_ts = float(now) if now is not None else time.time()
+    goal = goal if isinstance(goal, dict) else {}
+    rounds = int(goal.get("rounds") or 0)
+    if rounds >= BUDGET_MAX_ROUNDS:
+        return f"轮次预算用尽（已跑 {rounds} 轮）"
+    started = goal.get("started_at")
+    try:
+        started_ts = float(started) if started else 0.0
+    except (TypeError, ValueError):
+        started_ts = 0.0
+    if started_ts and (now_ts - started_ts) >= BUDGET_MAX_HOURS * 3600:
+        hours = int((now_ts - started_ts) / 3600)
+        return f"时长预算用尽（已盯 {hours} 小时）"
+    return ""
+
+
+def backoff_remaining(goal: Any, now: Optional[float] = None) -> float:
+    """连续失败后的剩余退避秒数（0 = 可以继续）。"""
+    now_ts = float(now) if now is not None else time.time()
+    goal = goal if isinstance(goal, dict) else {}
+    try:
+        until = float(goal.get("backoff_until") or 0)
+    except (TypeError, ValueError):
+        until = 0.0
+    return max(0.0, until - now_ts)
 
 
 def _attempts_block(previous: dict) -> str:
