@@ -157,9 +157,12 @@ def test_manager_goal_path_is_wired():
     from coworker.server.manager import SessionManager
 
     src = inspect.getsource(SessionManager._run_scheduled_task)
+    # 2026-11-04 自主循环：record_check 被 note_attempt 取代（多了尝试链/卡点计数），
+    # 并新增 [[STUCK]] 解析与投递成功后才结案。测试保留，只是锁新的接线面。
     for name in (
         "goal_enabled", "previous_goal_state", "is_concluded",
-        "build_goal_opening", "parse_quiet", "record_check", "record_concluded",
+        "build_goal_opening", "parse_quiet", "parse_stuck", "note_attempt",
+        "attempt_from_messages", "STUCK_GIVE_UP", "record_concluded",
     ):
         assert name in src, f"_run_scheduled_task 没接 {name}"
 

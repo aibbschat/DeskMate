@@ -6685,6 +6685,8 @@ class SessionManager:
                 pass
         # Must exist before the try/finally: an exception path still reads them.
         _quiet_this_run, _goal_state = False, ""
+        _goal_stuck, _blocker = False, ""
+        _engine_error = ""
         try:
             async for _event in engine.run(opening):
                 # Autonomy §A1: persist progress incrementally so a crash mid-run
@@ -6695,6 +6697,14 @@ class SessionManager:
                     run.event_count += 1
                     ev_data = getattr(_event, "data", None) or {}
                     ev_name = getattr(getattr(_event, "type", None), "name", "")
+                    if ev_name == "ERROR":
+                        # 模型/工具层的错误被引擎吞成事件，不会让 run 抛错。目标制跑
+                        # 必须把它记下来，否则下一轮 opening 里看不到「上次为什么没成」。
+                        detail = ""
+                        if isinstance(ev_data, dict):
+                            detail = str(ev_data.get("error") or ev_data.get("message") or "")
+                        if detail:
+                            _engine_error = detail
                     if ev_name == "ITERATION_END" and isinstance(ev_data, dict):
                         step = int(ev_data.get("iteration", 0) or 0)
                         run.current_step = f"第 {step} 步执行中"
@@ -6712,13 +6722,20 @@ class SessionManager:
             run.result_text = _last_assistant_text(engine.messages)
             run.artifacts = _recent_files(task.workspace, since=run.started_at)
             run.status = "ok"
-            # A goal run may declare "no change" — that turn is a quiet check,
-            # not a result. Parse before any notification / memory write.
+            # A goal run may declare either "no change" (a quiet check) or a blocker
+            # ([[STUCK]]). Both are parsed before any notification / memory write:
+            # a stuck turn is NOT a result, and a quiet turn must not disturb.
             if goal_on:
                 try:
-                    from deskmate.autonomy.goal import parse_quiet
+                    from deskmate.autonomy.goal import parse_quiet, parse_stuck
 
-                    _quiet_this_run, _goal_state = parse_quiet(run.result_text or "")
+                    _goal_stuck, _blocker = parse_stuck(run.result_text or "")
+                    if _goal_stuck:
+                        run.status = "stuck"
+                    else:
+                        _quiet_this_run, _goal_state = parse_quiet(
+                            run.result_text or ""
+                        )
                 except Exception:
                     pass
             # 全局 after-action：自动/定时任务完成也记一笔 + 刷新小说圣经。
@@ -6729,7 +6746,7 @@ class SessionManager:
 
                 from deskmate.memory.after_action import reflect_and_persist
 
-                if not _quiet_this_run:
+                if not _quiet_this_run and not _goal_stuck:
                     _th.Thread(
                         target=reflect_and_persist,
                         args=(task.workspace, task.instructions, run.result_text or ""),
@@ -6743,6 +6760,7 @@ class SessionManager:
             if (
                 task.notify_on_completion
                 and not _quiet_this_run
+                and not _goal_stuck
                 and not self._control_marks().get(run.run_id)
             ):
                 await self._notify_task_done(task, run)
@@ -6760,21 +6778,64 @@ class SessionManager:
             elif halted == "pause":
                 run.status, run.paused_at = "paused", run.finished_at
             quiet = bool(goal_on and _quiet_this_run and run.status == "ok")
+            _goal_outcome, _give_up = "", False
             if goal_on and not halted:
                 # A halted turn is NOT a completed check: leave the previous goal
                 # state untouched so the next run / resumed goal continues.
+                # 自主循环：每轮都记下「实际做了什么、结果如何、错在哪」，下一轮
+                # opening 带着它，模型才会换路子而不是原样重试同一动作。
                 try:
-                    from deskmate.autonomy.goal import record_check, record_concluded
+                    from deskmate.autonomy.goal import (
+                        STUCK_GIVE_UP,
+                        attempt_from_messages,
+                        note_attempt,
+                    )
 
-                    if quiet:
-                        record_check(run, state=_goal_state, now=run.finished_at)
-                    elif run.status == "ok":
-                        record_concluded(run)
+                    if _engine_error and not run.error:
+                        run.error = _engine_error
+                    if run.status == "error" or (_engine_error and not quiet and not _goal_stuck):
+                        _goal_outcome = "error"
+                    elif _goal_stuck:
+                        _goal_outcome = "stuck"
+                    elif quiet:
+                        _goal_outcome = "quiet"
+                    else:
+                        _goal_outcome = "changed"
+                    # 静默轮别把 [[NO_CHANGE]] 原文再喂回去，否则模型容易照抄成
+                    # 「本轮也没变化」；只保留动作与结论摘要。
+                    _attempt_result = (
+                        run.result_text or ""
+                        if _goal_outcome in ("changed", "stuck")
+                        else ""
+                    )
+                    note_attempt(
+                        run,
+                        outcome=_goal_outcome,
+                        attempt=attempt_from_messages(
+                            engine.messages,
+                            result=_attempt_result,
+                            error=run.error or "",
+                            at=run.finished_at or 0.0,
+                        ),
+                        state=_goal_state if _goal_outcome == "quiet" else "",
+                        blocker=_blocker if _goal_outcome == "stuck" else "",
+                        now=run.finished_at,
+                    )
+                    if _goal_outcome == "stuck":
+                        goal_now = run.checkpoint.get("goal")
+                        stuck_rounds = int((goal_now or {}).get("stuck_rounds") or 0)
+                        if stuck_rounds >= STUCK_GIVE_UP:
+                            # 连续卡住到上限：投一次卡点并结案，不再空转。
+                            _give_up = True
+                            if not (run.result_text or "").strip():
+                                run.result_text = (
+                                    f"我卡住了：{_blocker or '反复尝试仍无法推进'}"
+                                )
                     goal_state = run.checkpoint.get("goal")
                     if isinstance(goal_state, dict):
                         goal_state["generation"] = run.goal_generation
                 except Exception:
-                    pass
+                    logger.warning("自主任务尝试记录失败（fail-open）", exc_info=True)
             # Persist the run as a continuable session + keep the live engine for an immediate
             # follow-up; record the run (now carrying its session_id).
             try:
@@ -6792,7 +6853,10 @@ class SessionManager:
             # turn a completed task into an error.
             # §C1: a cancelled/paused run is NOT a result — no ledger row, no
             # completion toast, no goal conclusion. It gets its own stop event.
-            if not quiet and not halted:
+            # 自主循环：非终局轮（静默检查 / 尚未到上限的卡住轮）不投递、不结案、
+            # 不发完成 toast —— 只有真的「有结果」或「卡到上限」才打扰用户。
+            suppress = bool(goal_on and _goal_outcome == "stuck" and not _give_up)
+            if not quiet and not halted and not suppress:
                 try:
                     from deskmate.autonomy.delivery import (
                         build_completion_event,
@@ -6800,12 +6864,24 @@ class SessionManager:
                     )
 
                     ledger_id = deliver_run_result(task, run)
+                    # 修「先结案后投递」：只有投递真的拿到台账 id 才算结案。
+                    # 投递失败/空产出时保持 done=False，下一轮还能补投，绝不静默丢。
+                    if goal_on and run.status in ("ok", "stuck") and ledger_id:
+                        try:
+                            from deskmate.autonomy.goal import record_concluded
+
+                            record_concluded(run)
+                        except Exception:
+                            logger.warning(
+                                "自主任务结案标记失败（fail-open）", exc_info=True
+                            )
                     self.task_store.add_run(run)  # persist the delivered_at receipt
-                    await self.broadcast_event(
-                        build_completion_event(
-                            task, run, status=run.status, ledger_id=ledger_id
+                    if ledger_id:
+                        await self.broadcast_event(
+                            build_completion_event(
+                                task, run, status=run.status, ledger_id=ledger_id
+                            )
                         )
-                    )
                 except Exception:
                     logger.warning("自主任务完成投递失败（fail-open）", exc_info=True)
             elif halted:
