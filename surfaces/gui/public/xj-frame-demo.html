@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<title>小桔序列帧 Demo</title>
+<style>
+  body {
+    margin: 0; min-height: 100vh; display: flex; align-items: center; justify-content: center;
+    background: repeating-conic-gradient(#ddd 0% 25%, #fff 0% 50%) 0 0/40px 40px;
+    font-family: -apple-system, sans-serif;
+  }
+  .stage { width: 400px; height: 400px; position: relative; }
+  img { width: 100%; height: 100%; object-fit: contain; }
+  .hud {
+    position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);
+    background: rgba(0,0,0,0.7); color: #fff; padding: 8px 16px; border-radius: 20px;
+    font-size: 12px; font-variant-numeric: tabular-nums;
+  }
+</style>
+</head>
+<body>
+<div class="stage"><img id="pet" alt="小桔"></div>
+<div class="hud" id="hud">加载中…</div>
+<script>
+const TOTAL = 121;
+const FRAME_MS = 42;
+const PREFIX = '/pet-clips/idle/frames/idle_';
+const imgs = [];
+const pet = document.getElementById('pet');
+const hud = document.getElementById('hud');
+let loaded = 0;
+for (let i = 0; i < TOTAL; i++) {
+  const im = new Image();
+  im.src = PREFIX + String(i).padStart(3,'0') + '.webp';
+  im.onload = () => { loaded++; if (loaded === TOTAL) start(); };
+  imgs.push(im);
+}
+let idx = 0;
+function start() {
+  pet.src = imgs[0].src;
+  setInterval(() => {
+    idx = (idx + 1) % TOTAL;
+    pet.src = imgs[idx].src;
+    hud.textContent = `帧 ${idx}/${TOTAL-1} · ${FRAME_MS}ms/帧 · ${(TOTAL*FRAME_MS/1000).toFixed(1)}s 循环`;
+  }, FRAME_MS);
+}
+</script>
+</body>
+</html>

@@ -20,6 +20,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { EmotionName } from "./EmotionState";
 import type { ExpressionId } from "./mascotEmoteMap";
+import { XjFramePlayer } from "./XjFramePlayer";
+// clip manifest：声明哪些情绪有真序列帧素材（frameCount>0），有就走序列帧，没有回退 PNG
+import petManifest from "../../../public/pet-clips/manifest.json";
 import mascotImg from "../../assets/mascot-xiaoju.png";
 // B 方案表情帧：同一构图只换脸（1024² 透明 PNG，assets/mascot-frames/）
 import laughImg from "../../assets/mascot-frames/laugh.png";
@@ -30,6 +33,9 @@ import shockImg from "../../assets/mascot-frames/shock.png";
 import sleepyImg from "../../assets/mascot-frames/sleepy.png";
 import shyImg from "../../assets/mascot-frames/shy.png";
 import neutralImg from "../../assets/mascot-frames/neutral.png";
+// 真动态层（旧 diff 贴纸方案已废弃，改用序列帧）
+// import eyesClosedImg from "../../assets/mascot-layers/eyes-closed.png";
+// import mouthOpenImg from "../../assets/mascot-layers/mouth-open.png";
 
 /** 表情帧 id → 打包内图片资源。 */
 const FRAME_MAP: Record<ExpressionId, string> = {
@@ -185,6 +191,52 @@ function FocusedSparks({ size }: { size: number }) {
   );
 }
 
+/** 哭：真眼泪——两滴泪从眼角沿 SVG 路径流下、滑过脸颊、落地蒸发 */
+function TearStream() {
+  return (
+    <svg
+      className="xj-tears"
+      viewBox="0 0 1024 1024"
+      width="100%"
+      height="100%"
+      style={{ position: "absolute", inset: 0, pointerEvents: "none", zIndex: 6 }}
+    >
+      {/* 左眼路径：外眼角 (335,470) → 沿脸颊 (348,560) → (355,620) */}
+      <path id="xj-tear-l" d="M 335 470 C 345 520, 352 570, 355 625" fill="none" />
+      {/* 右眼路径：外眼角 (690,470) → 沿脸颊 (678,560) → (672,625) */}
+      <path id="xj-tear-r" d="M 690 470 C 680 520, 674 570, 672 625" fill="none" />
+      {[0, 1].map((i) => (
+        <g key={i}>
+          <circle r="7" fill="#9fd8ff" opacity="0.9">
+            <animateMotion
+              dur="1.5s"
+              begin={`${i * 0.75}s`}
+              repeatCount="indefinite"
+              path={`M ${i === 0 ? "335 470 C 345 520, 352 570, 355 625" : "690 470 C 680 520, 674 570, 672 625"}`}
+            />
+            <animate
+              attributeName="opacity"
+              values="0;0.9;0.9;0"
+              keyTimes="0;0.15;0.85;1"
+              dur="1.5s"
+              begin={`${i * 0.75}s`}
+              repeatCount="indefinite"
+            />
+            <animate
+              attributeName="r"
+              values="5;7;6;2"
+              keyTimes="0;0.2;0.8;1"
+              dur="1.5s"
+              begin={`${i * 0.75}s`}
+              repeatCount="indefinite"
+            />
+          </circle>
+        </g>
+      ))}
+    </svg>
+  );
+}
+
 /* ------------------------------------------------------------------ */
 /*  主组件                                                              */
 /* ------------------------------------------------------------------ */
@@ -203,10 +255,29 @@ export function XiaojuMascot({
   const [bouncing, setBouncing] = useState(false);
   const clickTimerRef = useRef<number>(0);
 
+  // 旧 diff 贴纸方案的眨眼/嘴动逻辑已废弃，真动态改由序列帧承担。
+  // const eyesClosed ...
+  // const mouthOpen ...
+
   // B 方案换脸：expression 显式优先，缺省退回 emotion 兜底。
   // 默认 smile 仍用打包内高清母版图（mascot-xiaoju.png，透明甜笑）；
   // 表情帧 1024² 透明 PNG 由 Vite 处理为带 hash 的 URL，object-fit: contain 等比缩放。
   const faceSrc = FRAME_MAP[expression ?? emotionFallbackFrame(emotion)];
+
+  // 真序列帧 clip：emotion/expression → clip 名。manifest 里 frameCount>0 才用序列帧，否则回退 PNG。
+  const clipName = (() => {
+    if (expression === "cry") return "cry";
+    if (expression === "laugh" || expression === "cheer" || emotion === "happy") return "happy";
+    if (expression === "angry") return "angry";
+    if (expression === "shock") return "shock";
+    if (expression === "sleepy") return "sleepy";
+    if (expression === "shy") return "shy";
+    if (emotion === "thinking" || emotion === "focused") return "thinking";
+    if (isWalking) return "idle"; // 走路暂时用 idle clip
+    return "idle";
+  })();
+  const clipMeta = (petManifest.clips as Record<string, { frameCount: number }>)[clipName];
+  const useFramePlayer = !!clipMeta && clipMeta.frameCount > 0;
 
   // 换脸淡入淡出：旧帧留在底层淡出，新帧在上层淡入，320ms 后卸载旧帧。
   // 注意：effect 只依赖 faceSrc（不用 currentSrc），避免 setState 触发的二次
@@ -263,6 +334,20 @@ export function XiaojuMascot({
   }, [onClick]);
 
   const size = Math.round(200 * scale);
+
+  // 真序列帧模式：直接用 XjFramePlayer，跳过 PNG/CSS transform 逻辑
+  if (useFramePlayer) {
+    return (
+      <XjFramePlayer
+        clip={clipName}
+        frameCount={clipMeta.frameCount}
+        size={size}
+        facing={walkDirection}
+        onClick={handleClick}
+        onDoubleClick={onDoubleClick}
+      />
+    );
+  }
 
   return (
     <div
@@ -384,6 +469,12 @@ export function XiaojuMascot({
         .xj-face-out {
           animation: xj-face-out 0.28s ease-in both;
         }
+        /* 真动态贴纸层：绝对定位叠在整图上，按 1024² 画布百分比锚定 */
+        .xj-layer {
+          position: absolute;
+          object-fit: fill;
+          pointer-events: none;
+        }
         /* 粒子通用 */
         .xj-particle {
           position: absolute;
@@ -441,6 +532,8 @@ export function XiaojuMascot({
       {emotion === "thinking" && <ThinkingBubble size={size} />}
       {emotion === "concerned" && <CareHearts size={size} />}
       {emotion === "focused" && <FocusedSparks size={size} />}
+      {/* 真眼泪：cry 表情时从眼角沿脸颊流下 */}
+      {expression === "cry" && <TearStream />}
 
       {/* 角色层 */}
       <div
@@ -467,6 +560,18 @@ export function XiaojuMascot({
                 className="xj-img xj-face-in"
                 draggable={false}
               />
+              {/* 真动态贴纸层暂禁用：diff 抠图在 3D 黏土脸上会露馅（补丁轮廓/横切线），
+                  等真分层素材或 3D 模型方案落地后再启用。 */}
+              {/*
+              <img
+                src={eyesClosedImg}
+                ...
+              />
+              <img
+                src={mouthOpenImg}
+                ...
+              />
+              */}
             </div>
           </div>
         </div>

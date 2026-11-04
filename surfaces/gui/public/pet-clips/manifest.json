@@ -1,0 +1,14 @@
+{
+  "frameMs": 42,
+  "clips": {
+    "idle": { "frameCount": 121, "loop": true },
+    "working": { "frameCount": 0, "loop": true },
+    "thinking": { "frameCount": 0, "loop": true },
+    "happy": { "frameCount": 0, "loop": true },
+    "cry": { "frameCount": 0, "loop": true },
+    "angry": { "frameCount": 0, "loop": true },
+    "shock": { "frameCount": 0, "loop": true },
+    "sleepy": { "frameCount": 0, "loop": true },
+    "shy": { "frameCount": 0, "loop": true }
+  }
+}
