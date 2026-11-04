@@ -112,6 +112,8 @@ def test_build_goal_opening_carries_previous_state():
     text = build_goal_opening({"state": "hash=abc", "last_checked": 1730000000.0})
     assert "hash=abc" in text, "上轮状态必须进 opening，否则无法跨次比对"
     assert "[[NO_CHANGE]]" in text and "[[STATE]]" in text
+    # 11-05 撤表达模板后，旧断言仍锁协议；这里补锁「变化轮仍会送达并结案」的价值。
+    assert "送达" in text and "结案" in text, "送达语义不能随模板一起被删"
     assert build_goal_opening({})  # 首次检查也要有协议说明
 
 
