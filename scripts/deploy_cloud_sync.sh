@@ -215,6 +215,16 @@ CHANNEL_MODULES=(
   "deskmate/cognitive/emotion_profile.py"
   "deskmate/growth/emotion_sense.py"
   "deskmate/growth/emotion_timeline.py"
+  # ⚠️ 2026-11-04 自主能力 ABC（A/B1/B2/C1）新增包：manager.py 顶层 import
+  # deskmate/autonomy/{delivery,attendance,goal}，漏传 ⇒ 云端 openworker-server
+  # 启动期 ImportError 被 fail-open 吞掉 = 送达/目标制静默失效（同 clock.py/weather.py 教训）。
+  # 整包 5 个文件必须同批；落点走 deskmate/* → $CLOUD_DESKMATE_ROOT/$(dirname)，自动建目录。
+  # 当前云端「停机保号」，本清单仅预置，未执行 deploy；复活时随整批同步。
+  "deskmate/autonomy/__init__.py"
+  "deskmate/autonomy/delivery.py"
+  "deskmate/autonomy/gate.py"
+  "deskmate/autonomy/attendance.py"
+  "deskmate/autonomy/goal.py"
 )
 
 # 小桔手记行为（ai_circle_column.py）：含「专属表情 [xj:id] 封闭词表」注入（2026-10-07

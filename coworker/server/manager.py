@@ -1186,6 +1186,27 @@ class SessionManager:
         Also the default for background/self-wake runs (no live socket). Mirrors to a bound channel
         like the approver does."""
 
+        # B1 / 出勤三档：``auto`` 档（PoC 环境变量开关，默认关闭）不进信箱、
+        # 不 await 任何人，按「最小破坏」固定代答并落审计。D3 保持 BYPASS 后，
+        # 这条是唤醒／后台续跑唯一的挂起点；attended / inbox 完全走下面的原逻辑。
+        try:
+            from deskmate.autonomy.attendance import (
+                build_auto_question_asker,
+                current_attendance,
+                should_auto_answer,
+            )
+
+            if should_auto_answer(current_attendance()):
+                def _audit_auto_answer(entry: dict) -> None:
+                    try:
+                        self.audit_store.append(entry)
+                    except Exception:
+                        logger.info("attendance=auto 代答审计写入失败: %s", entry)
+
+                return build_auto_question_asker(_audit_auto_answer)
+        except Exception:
+            logger.warning("出勤三档模块不可用，保持原有信箱问答", exc_info=True)
+
         async def ask(
             args: dict[str, Any], tool_call_id: Optional[str] = None
         ) -> dict[str, Any]:
@@ -6571,23 +6592,74 @@ class SessionManager:
         run = TaskRun(
             task_id=task.id, trigger=trigger
         )  # __post_init__ sets run.session_id
+        # §C1: stamp the run with the goal generation it belongs to. Old tasks
+        # (and SimpleNamespace-shaped test doubles) read as generation 0, so this
+        # is a no-op for every pre-C1 task.
+        run.goal_generation = int(getattr(task, "goal_generation", 0) or 0)
         self.task_store.add_run(run)  # mark "running"
+
+        # Autonomy §B2: opt-in goal-based runs. The previous run's checkpoint is
+        # the ONLY cross-run state (no wake_store wiring in this path — see the
+        # construction plan §B4). Everything here is fail-open: if the goal module
+        # is missing or a stored blob is odd, this stays an ordinary scheduled run.
+        goal_on = False
+        goal_prev: dict = {}
+        try:
+            from deskmate.autonomy.goal import (
+                goal_enabled,
+                is_concluded,
+                previous_goal_state,
+            )
+
+            goal_on = goal_enabled(task)
+            if goal_on:
+                prior = [
+                    r
+                    for r in (self.task_store.runs(task.id, limit=20) or [])
+                    if r.run_id != run.run_id
+                ]
+                if is_concluded(prior, generation=run.goal_generation):
+                    # Already reported and closed in THIS generation; cron keeps
+                    # firing, but a finished goal must never produce a second
+                    # delivery. §C1: the generation filter is what lets a
+                    # restarted goal run again without rewriting old done runs.
+                    run.status, run.finished_at = "skipped", _epoch()
+                    run.checkpoint = {
+                        "goal": {
+                            "done": True,
+                            "skipped": True,
+                            "generation": run.goal_generation,
+                        }
+                    }
+                    self.task_store.add_run(run)
+                    return run
+                goal_prev = previous_goal_state(
+                    prior, generation=run.goal_generation
+                )
+                if goal_prev:
+                    inherited = dict(goal_prev)
+                    inherited["generation"] = run.goal_generation
+                    run.checkpoint = {"goal": inherited}
+        except Exception:
+            goal_on, goal_prev = False, {}
+
         # UX-026: tell every open app window a SCHEDULED run just started (the 5s
-        # top-right toast). Manual runs never come through here — the user is
-        # already watching those live.
-        await self.broadcast_event(
-            {
-                "type": "automation_run_started",
-                "data": {
-                    "task_id": task.id,
-                    "task_title": task.title,
-                    "session_id": run.session_id,
-                    "workspace": task.workspace,
-                    "agent": task.agent,
-                    "trigger": trigger,
-                },
-            }
-        )
+        # top-right toast). A quiet goal check must not toast on every cron tick —
+        # "no change" means no interruption at all.
+        if not goal_on:
+            await self.broadcast_event(
+                {
+                    "type": "automation_run_started",
+                    "data": {
+                        "task_id": task.id,
+                        "task_title": task.title,
+                        "session_id": run.session_id,
+                        "workspace": task.workspace,
+                        "agent": task.agent,
+                        "trigger": trigger,
+                    },
+                }
+            )
         # Each run is a real, persisted conversation thread: it runs the instructions under its
         # own session id, then saves the transcript. The user can reopen that session and ask a
         # follow-up — the scheduled agent is no longer fire-and-forget.
@@ -6604,33 +6676,105 @@ class SessionManager:
             "result. The schedule already exists — do not create or modify any scheduled tasks.\n\n"
             f"{task.instructions}"
         )
+        if goal_on:
+            try:
+                from deskmate.autonomy.goal import build_goal_opening
+
+                opening += build_goal_opening(goal_prev)
+            except Exception:
+                pass
+        # Must exist before the try/finally: an exception path still reads them.
+        _quiet_this_run, _goal_state = False, ""
         try:
             async for _event in engine.run(opening):
-                pass
+                # Autonomy §A1: persist progress incrementally so a crash mid-run
+                # doesn't throw away everything already done. Throttled to every
+                # 5th event — one SQLite write per tool call is write amplification
+                # (see the 24h/2178-row empty-oplog lesson).
+                try:
+                    run.event_count += 1
+                    ev_data = getattr(_event, "data", None) or {}
+                    ev_name = getattr(getattr(_event, "type", None), "name", "")
+                    if ev_name == "ITERATION_END" and isinstance(ev_data, dict):
+                        step = int(ev_data.get("iteration", 0) or 0)
+                        run.current_step = f"第 {step} 步执行中"
+                        # Merge, never replace: a goal run's inherited state lives
+                        # in this dict and must survive the whole tool loop.
+                        if not isinstance(run.checkpoint, dict):
+                            run.checkpoint = {}
+                        run.checkpoint.update(
+                            {"last_iteration": step, "event_count": run.event_count}
+                        )
+                    if run.event_count % 5 == 0:
+                        self.task_store.add_run(run)
+                except Exception:
+                    pass
             run.result_text = _last_assistant_text(engine.messages)
             run.artifacts = _recent_files(task.workspace, since=run.started_at)
             run.status = "ok"
-            # 全局 after-action：自动/定时任务完成也记一笔 + 刷新小说圣经
+            # A goal run may declare "no change" — that turn is a quiet check,
+            # not a result. Parse before any notification / memory write.
+            if goal_on:
+                try:
+                    from deskmate.autonomy.goal import parse_quiet
+
+                    _quiet_this_run, _goal_state = parse_quiet(run.result_text or "")
+                except Exception:
+                    pass
+            # 全局 after-action：自动/定时任务完成也记一笔 + 刷新小说圣经。
+            # 静默检查不写记忆：否则每轮「无变化」都会污染记忆库。
             try:
                 import logging as _log
                 import threading as _th
 
                 from deskmate.memory.after_action import reflect_and_persist
 
-                _th.Thread(
-                    target=reflect_and_persist,
-                    args=(task.workspace, task.instructions, run.result_text or ""),
-                    kwargs={"artifacts": run.artifacts},
-                    daemon=True,
-                ).start()
+                if not _quiet_this_run:
+                    _th.Thread(
+                        target=reflect_and_persist,
+                        args=(task.workspace, task.instructions, run.result_text or ""),
+                        kwargs={"artifacts": run.artifacts},
+                        daemon=True,
+                    ).start()
             except Exception:
                 _log.warning("after_action 任务收尾触发失败", exc_info=True)
-            if task.notify_on_completion:
+            # §C1: a run that was just cancelled/paused must not fire the
+            # "task done" notification on its way out.
+            if (
+                task.notify_on_completion
+                and not _quiet_this_run
+                and not self._control_marks().get(run.run_id)
+            ):
                 await self._notify_task_done(task, run)
         except Exception as exc:
             run.status, run.error = "error", str(exc)
         finally:
             run.finished_at = _epoch()
+            # §C1 "stoppable": a control endpoint (cancel) or the enabled switch
+            # (pause) writes an in-process mark that the run loop can actually
+            # see. The store alone is NOT enough — the loop's own add_run(run)
+            # would overwrite the endpoint's write with its in-memory object.
+            halted = self._control_marks().get(run.run_id)
+            if halted == "cancel":
+                run.status, run.cancel_requested = "canceled", True
+            elif halted == "pause":
+                run.status, run.paused_at = "paused", run.finished_at
+            quiet = bool(goal_on and _quiet_this_run and run.status == "ok")
+            if goal_on and not halted:
+                # A halted turn is NOT a completed check: leave the previous goal
+                # state untouched so the next run / resumed goal continues.
+                try:
+                    from deskmate.autonomy.goal import record_check, record_concluded
+
+                    if quiet:
+                        record_check(run, state=_goal_state, now=run.finished_at)
+                    elif run.status == "ok":
+                        record_concluded(run)
+                    goal_state = run.checkpoint.get("goal")
+                    if isinstance(goal_state, dict):
+                        goal_state["generation"] = run.goal_generation
+                except Exception:
+                    pass
             # Persist the run as a continuable session + keep the live engine for an immediate
             # follow-up; record the run (now carrying its session_id).
             try:
@@ -6639,6 +6783,50 @@ class SessionManager:
             except Exception:
                 pass
             self.task_store.add_run(run)
+            # Autonomy §A2: close the delivery loop for BOTH success and failure.
+            # The old path only broadcast a task_done to a session socket that has
+            # zero frontend consumers; the result vanished when no window was open.
+            # Now: durable ledger row (surfaced by the opening line / mailbox) plus
+            # a global "automation_run_finished" event on /ws/events for an
+            # immediate hint. Everything here is fail-open — delivery must never
+            # turn a completed task into an error.
+            # §C1: a cancelled/paused run is NOT a result — no ledger row, no
+            # completion toast, no goal conclusion. It gets its own stop event.
+            if not quiet and not halted:
+                try:
+                    from deskmate.autonomy.delivery import (
+                        build_completion_event,
+                        deliver_run_result,
+                    )
+
+                    ledger_id = deliver_run_result(task, run)
+                    self.task_store.add_run(run)  # persist the delivered_at receipt
+                    await self.broadcast_event(
+                        build_completion_event(
+                            task, run, status=run.status, ledger_id=ledger_id
+                        )
+                    )
+                except Exception:
+                    logger.warning("自主任务完成投递失败（fail-open）", exc_info=True)
+            elif halted:
+                try:
+                    await self.broadcast_event(
+                        {
+                            "type": "automation_run_stopped",
+                            "data": {
+                                "task_id": task.id,
+                                "task_title": task.title,
+                                "run_id": run.run_id,
+                                "session_id": run.session_id,
+                                "workspace": task.workspace,
+                                "agent": task.agent,
+                                "status": run.status,
+                            },
+                        }
+                    )
+                except Exception:
+                    logger.warning("自主任务停止事件发送失败", exc_info=True)
+            self._control_marks().pop(run.run_id, None)
         return run
 
     async def _notify_task_done(self, task, run: TaskRun) -> None:
@@ -6676,6 +6864,47 @@ class SessionManager:
                 pass
 
     # -- automation REST --------------------------------------------------------
+    # -- run control (autonomy §C1) ---------------------------------------------
+    def _control_marks(self) -> dict[str, str]:
+        """In-process run control marks, shared across coroutines.
+
+        Lazily created so a manager built without ``__init__`` (tests, replay)
+        still works. Never persisted: a process restart already killed the run.
+        The store alone is not a usable channel here — the run loop writes its
+        own in-memory ``run`` back with ``add_run()`` on every checkpoint.
+        """
+        return self.__dict__.setdefault("_run_controls", {})
+
+    def _try_interrupt(self, run) -> None:
+        """Actually stop the turn: ``engine.request_interrupt()`` makes a running
+        loop yield INTERRUPTED instead of continuing to call tools."""
+        engine = self._engines.get(run.session_id)
+        if engine is None:
+            return
+        try:
+            engine.request_interrupt()
+        except Exception:
+            logger.warning("中断自主任务引擎失败", exc_info=True)
+
+    def cancel_run(self, task_id: str, run_id: str) -> dict[str, Any]:
+        """Stop the CURRENT run without disabling the task itself (§C1).
+
+        Writes an in-process mark (visible to the run loop), persists
+        ``cancel_requested`` for the UI, then interrupts the live engine. The
+        run's own ``finally`` marks it ``canceled`` and suppresses both the
+        ledger delivery and the goal conclusion — a stopped turn is not a result.
+        """
+        run = self.task_store.find_run(run_id)
+        if run is None or run.task_id != task_id:
+            return {"ok": False, "error": "not found"}
+        if run.finished_at is not None or run.status != "running":
+            return {"ok": False, "error": "run already finished"}
+        self._control_marks()[run_id] = "cancel"
+        run.cancel_requested = True
+        self.task_store.add_run(run)
+        self._try_interrupt(run)
+        return {"ok": True, "run": run.to_dict()}
+
     def list_automations(self) -> dict[str, Any]:
         # Unseen = runs started after the task's seen mark (UX-023 sidebar badges).
         # `unseen_failed` tints the badge when the NEWEST unseen run errored.
@@ -6753,6 +6982,7 @@ class SessionManager:
             # rendered the grants, the submit IS the consent. Same validation as the
             # agent tool — only target-bound write grants survive.
             always_allowed_tools=grant_entries(payload.get("permissions")),
+            goal_mode=str(payload.get("goal_mode") or ""),
         )
         task.workspace = self._provision_scratch(task.task_session_id)
         self.task_store.save(task)
@@ -6765,11 +6995,47 @@ class SessionManager:
         if task is None:
             return {"ok": False, "error": "not found"}
         if "enabled" in changes:
-            task.enabled = bool(changes["enabled"])
+            raw = changes["enabled"]
+            # bool("false") is True — parse strictly so an API caller can't
+            # accidentally re-enable a task with a string.
+            new_enabled = (
+                raw
+                if isinstance(raw, bool)
+                else str(raw).strip().lower() in ("1", "true", "yes", "on")
+            )
+            task.enabled = new_enabled
+            if not new_enabled:
+                # §C1: pausing must also stop the turn that is ALREADY running,
+                # not merely prevent future ticks. Its goal checkpoint survives,
+                # so resuming continues the goal instead of starting over.
+                for r in self.task_store.runs(task.id, limit=5):
+                    if r.status == "running" and r.finished_at is None:
+                        self._control_marks()[r.run_id] = "pause"
+                        self._try_interrupt(r)
+                        break
+            else:
+                for r in self.task_store.runs(task.id, limit=5):
+                    if r.status == "paused":
+                        r.resumed_at = time.time()
+                        self.task_store.add_run(r)
+                        break
         if changes.get("instructions") is not None:
             task.instructions = changes["instructions"]
         if changes.get("title") is not None:
             task.title = changes["title"]
+        if changes.get("goal_mode") is not None:
+            # Declared at launch/update time, never inferred from a task category.
+            task.goal_mode = str(changes["goal_mode"] or "")
+        if changes.get("restart_goal"):
+            # §C1: re-open a concluded goal WITHOUT rewriting history. Every run
+            # is stamped with the generation it belongs to (see _run_scheduled_task),
+            # so bumping the counter makes prior done/skipped runs invisible to
+            # the new generation. Never touch an old run's `done`.
+            task.goal_generation = int(getattr(task, "goal_generation", 0) or 0) + 1
+            if changes.get("goal_mode") is None and not str(
+                getattr(task, "goal_mode", "") or ""
+            ).strip():
+                task.goal_mode = "watch"
         if changes.get("cron") is not None:
             from croniter import croniter
 

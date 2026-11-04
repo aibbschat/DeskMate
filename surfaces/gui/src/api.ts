@@ -2114,6 +2114,11 @@ export interface Automation {
   last_status: string | null;
   run_count: number;
   notify_on_completion: boolean;
+  // Autonomy §C1: goal-based watch is declared at launch time (not inferred from
+  // a task category); generation is bumped when a concluded goal is reopened so
+  // older done/skipped runs never block the new generation.
+  goal_mode?: string;
+  goal_generation?: number;
   // UX-023 sidebar badges: runs started since the user last opened this automation's
   // detail; `unseen_failed` = the newest unseen run errored (danger tint).
   unseen_runs?: number;
@@ -2136,6 +2141,17 @@ export interface AutomationRun {
   artifacts: string[];
   error: string | null;
   trigger: string;
+  // Autonomy §A1 / §C1 durable run state — already persisted by the backend;
+  // shows progress, a stop/pause trace, and cross-run goal checkpoints.
+  progress?: number;
+  current_step?: string;
+  checkpoint?: Record<string, unknown>;
+  paused_at?: number | null;
+  resumed_at?: number | null;
+  cancel_requested?: boolean;
+  delivered_at?: number | null;
+  event_count?: number;
+  goal_generation?: number;
 }
 
 export async function getAutomations(): Promise<Automation[]> {
@@ -2150,9 +2166,10 @@ export function announceAutomationsChanged() {
   window.dispatchEvent(new CustomEvent(AUTOMATIONS_CHANGED));
 }
 
-/** App-wide event stream (/ws/events): session-independent server pushes — today
- * automation_run_started (the UX-026 toast). Quietly reconnects while the app is
- * open; the returned cleanup stops it for good. */
+/** App-wide event stream (/ws/events): session-independent server pushes —
+ * automation_run_started (the UX-026 toast) and automation_run_finished
+ * (autonomy §A2 completion hint; the durable result lives in proactive_ledger).
+ * Quietly reconnects while the app is open; the returned cleanup stops it for good. */
 export function connectEvents(
   onEvent: (msg: { type: string; data?: Record<string, unknown> }) => void
 ): () => void {
@@ -2193,6 +2210,8 @@ export async function createAutomation(payload: {
   cron?: string;
   fire_at?: string;
   timezone?: string;
+  // Autonomy §C1: opt into "watch until it changes, then report once".
+  goal_mode?: string;
   // §25 standing grants (the creating surface rendered them; submit IS the consent).
   // Only target-bound write entries survive server-side validation.
   permissions?: { tool: string; target: string; access: "read" | "write" }[];
@@ -2247,6 +2266,22 @@ export async function finalizeAutomationRun(id: string, runId: string) {
     { method: "POST" },
   );
   return res.json();
+}
+
+/** Autonomy §C1: stop the CURRENT run without disabling the task. The backend
+ * interrupts the live turn and suppresses the completion delivery. */
+export async function cancelAutomationRun(id: string, runId: string): Promise<{ ok: boolean; error?: string }> {
+  const res = await fetch(
+    `${httpBase()}/v1/automations/${encodeURIComponent(id)}/runs/${encodeURIComponent(runId)}/cancel`,
+    { method: "POST" },
+  );
+  return res.json();
+}
+
+/** Autonomy §C1: reopen a concluded goal as a fresh generation. History is never
+ * rewritten — older done/skipped runs simply stop applying to the new generation. */
+export async function restartAutomationGoal(id: string) {
+  return updateAutomation(id, { restart_goal: true });
 }
 
 export async function allowUser(

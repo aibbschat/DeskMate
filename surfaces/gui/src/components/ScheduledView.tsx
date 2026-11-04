@@ -1,11 +1,13 @@
 import { useEffect, useState } from "react";
 import {
   createAutomation,
+  cancelAutomationRun,
   deleteAutomation,
   getAutomation,
   getAutomations,
   markAutomationSeen,
   announceAutomationsChanged,
+  restartAutomationGoal,
   updateAutomation,
   type Automation,
   type AutomationRun,
@@ -88,6 +90,8 @@ export function ScheduledView({ onOpenRun, onRunNow, initialOpenId }: Props) {
     title: string;
     instructions: string;
     cron?: string;
+    // Autonomy §C1: declared by the user in the form, not inferred from a category.
+    goal_mode?: string;
     permissions?: { tool: string; target: string; access: "read" | "write" }[];
   }) => {
     setBusy(payload.title);
@@ -203,12 +207,13 @@ function NewAutomationForm({
 }: {
   busy: boolean;
   onCancel: () => void;
-  onCreate: (p: { title: string; instructions: string; cron?: string }) => void;
+  onCreate: (p: { title: string; instructions: string; cron?: string; goal_mode?: string }) => void;
 }) {
   const [title, setTitle] = useState("");
   const [instructions, setInstructions] = useState("");
   const [time, setTime] = useState("09:00");
   const [freq, setFreq] = useState("daily");
+  const [goalMode, setGoalMode] = useState(false);
 
   const valid = title.trim() && instructions.trim();
 
@@ -252,6 +257,17 @@ function NewAutomationForm({
           </select>
         </label>
       </div>
+      {/* Autonomy §C1: opt-in at launch — "watch until it changes, then report once".
+          Off by default so every existing automation keeps its one-shot behaviour. */}
+      <label className="goal-toggle-row">
+        <input
+          type="checkbox"
+          checked={goalMode}
+          onChange={(e) => setGoalMode(e.target.checked)}
+        />
+        <span>持续盯梢</span>
+        <span className="dim">按计划静默复查，只在目标有变化时报告一次</span>
+      </label>
       <div className="tmpl-form-actions">
         <button
           className="btn-primary sm"
@@ -261,6 +277,7 @@ function NewAutomationForm({
               title: title.trim(),
               instructions: instructions.trim(),
               cron: toCron(time, freq),
+              goal_mode: goalMode ? "watch" : "",
             })
           }
         >
@@ -295,6 +312,7 @@ function TaskDetail({
   const [instructions, setInstructions] = useState("");
   const [time, setTime] = useState("09:00");
   const [freq, setFreq] = useState("daily");
+  const [goalMode, setGoalMode] = useState(false);
   const [saving, setSaving] = useState(false);
 
   // The seen mark AS OF opening — the "new" pills compare against this frozen value
@@ -324,6 +342,13 @@ function TaskDetail({
       .then(() => announceAutomationsChanged())
       .catch(() => {});
   }, [id]);
+  // Autonomy §C1 "visible": the detail used to refresh only on user actions, so
+  // a live run's step/checkpoint never moved. Poll while the detail is open;
+  // the global stop/finish events are consumed in App.tsx (single WS connection).
+  useEffect(() => {
+    const h = window.setInterval(refresh, 5000);
+    return () => window.clearInterval(h);
+  }, [id]);
 
   if (!task)
     return (
@@ -338,6 +363,7 @@ function TaskDetail({
     const { time: t, freq: f } = fromCron(task.schedule_raw?.cron);
     setTime(t);
     setFreq(f);
+    setGoalMode(Boolean(task.goal_mode));
     setEditing(true);
   };
   const saveEdit = async () => {
@@ -347,6 +373,7 @@ function TaskDetail({
         title: title.trim(),
         instructions: instructions.trim(),
         cron: toCron(time, freq),
+        goal_mode: goalMode ? "watch" : "",
       });
       await refresh();
       setEditing(false);
@@ -356,6 +383,20 @@ function TaskDetail({
   };
   const toggle = async () => {
     await updateAutomation(id, { enabled: !task.enabled });
+    refresh();
+  };
+  // §C1: reopening a concluded goal bumps its generation; history is never rewritten.
+  const restartGoal = async () => {
+    await restartAutomationGoal(id);
+    await refresh();
+    announceAutomationsChanged();
+  };
+  const openRun = (r: AutomationRun) => {
+    if (!r.session_id) return;
+    onOpenRun(r.session_id, task.workspace, task.agent, { id: task.id, title: task.title });
+  };
+  const stopRun = async (runId: string) => {
+    await cancelAutomationRun(id, runId);
     refresh();
   };
   const remove = async () => {
@@ -404,28 +445,46 @@ function TaskDetail({
         </div>
 
         {editing ? (
-          <div className="tmpl-sched sched-edit-sched">
-            <label className="tmpl-field">
-              <span>At</span>
-              <input type="time" className="tmpl-input tmpl-time" value={time} onChange={(e) => setTime(e.target.value)} />
+          <>
+            <div className="tmpl-sched sched-edit-sched">
+              <label className="tmpl-field">
+                <span>At</span>
+                <input type="time" className="tmpl-input tmpl-time" value={time} onChange={(e) => setTime(e.target.value)} />
+              </label>
+              <label className="tmpl-field">
+                <span>Repeat</span>
+                <select className="tmpl-input tmpl-select" value={freq} onChange={(e) => setFreq(e.target.value)}>
+                  <option value="daily">Every day</option>
+                  <option value="weekdays">Weekdays</option>
+                  <option value="weekends">Weekends</option>
+                </select>
+              </label>
+            </div>
+            <label className="goal-toggle-row">
+              <input type="checkbox" checked={goalMode} onChange={(e) => setGoalMode(e.target.checked)} />
+              <span>持续盯梢</span>
+              <span className="dim">按计划静默复查，只在目标有变化时报告一次</span>
             </label>
-            <label className="tmpl-field">
-              <span>Repeat</span>
-              <select className="tmpl-input tmpl-select" value={freq} onChange={(e) => setFreq(e.target.value)}>
-                <option value="daily">Every day</option>
-                <option value="weekdays">Weekdays</option>
-                <option value="weekends">Weekends</option>
-              </select>
-            </label>
-          </div>
+          </>
         ) : (
-          <div className="conn-meta">
-            <label className="switch">
-              <input type="checkbox" checked={task.enabled} onChange={toggle} />
-              <span className="slider" />
-            </label>{" "}
-            {task.enabled ? `Active · next ${fmt(task.next_run)}` : "Paused"} · {task.schedule}
-          </div>
+          <>
+            <div className="conn-meta">
+              <label className="switch">
+                <input type="checkbox" checked={task.enabled} onChange={toggle} />
+                <span className="slider" />
+              </label>{" "}
+              {task.enabled ? `Active · next ${fmt(task.next_run)}` : "Paused"} · {task.schedule}
+            </div>
+            {/* §C1: goal generation is explicit — reopening never rewrites old runs. */}
+            {Boolean(task.goal_mode) && (
+              <div className="goal-banner">
+                <Icon name="clock" size={14} />
+                <span>持续盯梢 · 第 {(task.goal_generation ?? 0) + 1} 代</span>
+                <span className="dim">结案后停止复查，需要时可重启</span>
+                <button className="btn sm" onClick={restartGoal}>重启目标</button>
+              </div>
+            )}
+          </>
         )}
 
         <div className="sa-sub">Instructions</div>
@@ -473,35 +532,60 @@ function TaskDetail({
           Each run is a live conversation — open one to see what the agent did and ask a follow-up.
         </div>
         {runs.length === 0 && <div className="dim">No runs yet.</div>}
-        {runs.map((r) => (
-          <div
-            className="sched-run open"
-            key={r.run_id}
-            onClick={() =>
-              r.session_id &&
-              onOpenRun(r.session_id, task.workspace, task.agent, {
-                id: task.id,
-                title: task.title,
-              })
-            }
-            title="Open this run's conversation"
-          >
-            <div className="sched-run-row">
-              <span>
-                {seenMark !== null && r.started_at > seenMark && (
-                  <span className="run-new-pill" data-testid="run-new">new</span>
-                )}
-                {fmt(r.started_at)} · <span className={"run-" + r.status}>{r.status}</span> · {r.trigger}
-                {r.artifacts.length > 0 && <span className="dim"> · {r.artifacts.length} file(s)</span>}
-              </span>
-              <span className="sched-run-go" aria-hidden>
-                Open ›
-              </span>
+        {runs.map((r) => {
+          // §C1 "visible / stoppable / take over": live steps, the cross-run goal
+          // checkpoint, a real stop button, and an explicit takeover action.
+          // `progress` is still 0.0 by design (no fake percentage) — the live
+          // step + event count are the honest progress signal.
+          const live = r.status === "running" && !r.finished_at;
+          const goal = (r.checkpoint as { goal?: { state?: string } } | undefined)?.goal;
+          return (
+            <div
+              className="sched-run open"
+              key={r.run_id}
+              onClick={() => openRun(r)}
+              title="Open this run's conversation"
+            >
+              <div className="sched-run-row">
+                <span>
+                  {seenMark !== null && r.started_at > seenMark && (
+                    <span className="run-new-pill" data-testid="run-new">new</span>
+                  )}
+                  {fmt(r.started_at)} · <span className={"run-" + r.status}>{r.status}</span> · {r.trigger}
+                  {r.artifacts.length > 0 && <span className="dim"> · {r.artifacts.length} file(s)</span>}
+                  {r.cancel_requested && <span className="dim"> · 已请求停止</span>}
+                </span>
+                <span className="sched-run-actions">
+                  {live && (
+                    <button
+                      className="btn sm danger-btn"
+                      title="停止本轮（不投递结果）"
+                      onClick={(e) => { e.stopPropagation(); void stopRun(r.run_id); }}
+                    >
+                      <Icon name="stop" size={13} /> 叫停
+                    </button>
+                  )}
+                  <button
+                    className="link sched-run-go"
+                    title="接管：打开本轮会话继续对话"
+                    onClick={(e) => { e.stopPropagation(); openRun(r); }}
+                  >
+                    Open › 接管
+                  </button>
+                </span>
+              </div>
+              {live && (
+                <div className="sched-progress" data-testid="run-progress">
+                  <div className="sched-progress-track"><span className="sched-progress-bar" /></div>
+                  <span className="dim">{r.current_step || "执行中"} · {r.event_count ?? 0} 个事件</span>
+                </div>
+              )}
+              {goal?.state && <div className="sched-goal-state">上轮状态：{goal.state}</div>}
+              {r.result_text && <div className="sched-run-peek">{r.result_text}</div>}
+              {r.error && <div className="mcp-error">{r.error}</div>}
             </div>
-            {r.result_text && <div className="sched-run-peek">{r.result_text}</div>}
-            {r.error && <div className="mcp-error">{r.error}</div>}
-          </div>
-        ))}
+          );
+        })}
       </div>
     </Shell>
   );

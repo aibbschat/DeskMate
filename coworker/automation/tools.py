@@ -67,6 +67,17 @@ _CREATE_SCHEMA = {
                     "type": "string",
                     "description": "IANA tz, e.g. 'America/New_York'. Defaults to the machine's local time — pass it only to override.",
                 },
+                "goal_mode": {
+                    "type": "string",
+                    "enum": ["", "watch"],
+                    "description": (
+                        "Omit for an ordinary scheduled run. Pass 'watch' when the user "
+                        "wants a standing goal instead of a per-run result (e.g. 'keep an "
+                        "eye on this page and tell me only when it changes'). Each quiet "
+                        "check stays silent; the first real change is delivered once and "
+                        "closes the goal."
+                    ),
+                },
                 "permissions": {
                     "type": "array",
                     "description": (
@@ -109,7 +120,7 @@ _UPDATE_SCHEMA = {
     "type": "function",
     "function": {
         "name": "update_scheduled_task",
-        "description": "Enable/disable or edit a scheduled task (its instructions, cron, or title).",
+        "description": "Enable/disable or edit a scheduled task (its instructions, cron, title, goal mode, or restart a concluded goal).",
         "parameters": {
             "type": "object",
             "properties": {
@@ -118,6 +129,14 @@ _UPDATE_SCHEMA = {
                 "instructions": {"type": "string"},
                 "cron": {"type": "string"},
                 "title": {"type": "string"},
+                "goal_mode": {
+                    "type": "string",
+                    "description": "Opt into a goal-based watch: keep checking on each scheduled run and report only when the target changes. Empty string = ordinary one-shot run.",
+                },
+                "restart_goal": {
+                    "type": "boolean",
+                    "description": "Re-open a concluded goal as a fresh generation, without rewriting any past run. Use this when the user asks to watch the same target again after it has already reported.",
+                },
             },
             "required": ["id"],
         },
@@ -168,7 +187,8 @@ def scheduling_tools(
     default_workspace: str,
 ) -> list[Callable[..., Any]]:
     def create_scheduled_task(
-        title, instructions, cron=None, fire_at=None, timezone="local", permissions=None
+        title, instructions, cron=None, fire_at=None, timezone="local",
+        permissions=None, goal_mode="",
     ):
         from croniter import croniter
 
@@ -203,6 +223,7 @@ def scheduling_tools(
             origin_session_id=origin.get("session_id", ""),
             agent=origin.get("agent", "cowork"),
             always_allowed_tools=grants,
+            goal_mode=str(goal_mode or ""),
         )
         store.save(task)
         return {
@@ -219,7 +240,8 @@ def scheduling_tools(
         return {"tasks": [t.public() for t in store.list()]}
 
     def update_scheduled_task(
-        id, enabled=None, instructions=None, cron=None, title=None
+        id, enabled=None, instructions=None, cron=None, title=None,
+        goal_mode=None, restart_goal=False,
     ):
         from croniter import croniter
 
@@ -237,6 +259,19 @@ def scheduling_tools(
             task.instructions = instructions
         if title is not None:
             task.title = title
+        if goal_mode is not None:
+            # Declared by the user's instruction, never inferred from a category.
+            task.goal_mode = str(goal_mode or "")
+        if restart_goal:
+            # §C1: bump the generation instead of clearing old runs' `done`.
+            # Kept in lockstep with manager.update_automation, but self-contained
+            # here so the scheduling tool never imports the deskmate package
+            # (that package is optional on the cloud replica).
+            task.goal_generation = int(getattr(task, "goal_generation", 0) or 0) + 1
+            if goal_mode is None and not str(
+                getattr(task, "goal_mode", "") or ""
+            ).strip():
+                task.goal_mode = "watch"
         store.save(task)
         return {"ok": True, "task": task.public()}
 

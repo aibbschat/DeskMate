@@ -2712,6 +2712,12 @@ def create_app(manager: SessionManager) -> FastAPI:
     def automation_run_finalize(task_id: str, run_id: str) -> dict[str, Any]:
         return manager.finalize_manual_run(task_id, run_id)
 
+    @app.post("/v1/automations/{task_id}/runs/{run_id}/cancel")
+    def automation_run_cancel(task_id: str, run_id: str) -> dict[str, Any]:
+        # Autonomy §C1: stop the current run (not the task) — the run loop marks
+        # it canceled and suppresses the completion delivery.
+        return manager.cancel_run(task_id, run_id)
+
     @app.post("/v1/deskmate/memory")
     async def save_deskmate_memory(request: Request) -> dict[str, Any]:
         """保存 DeskMate 记忆文件（SOUL/USER/MEMORY）并广播更新到指定会话浮层。"""

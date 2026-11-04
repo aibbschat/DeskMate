@@ -1339,14 +1339,46 @@ export function App() {
   // manual Run-now — the user is already watching). Rides the app-wide /ws/events
   // stream; View run opens the run's live session.
   const [runToast, setRunToast] = useState<{
-    title: string; sessionId: string; workspace: string; agent: string; time: string;
+    title: string; heading: string; sessionId: string; workspace: string; agent: string; time: string;
   } | null>(null);
   useEffect(() => {
     const stop = connectEvents((msg) => {
+      if (msg.type === "automation_run_finished") {
+        // Autonomy §A2: a scheduled/自主 task finished. The durable result is
+        // already in proactive_ledger (opening line + mailbox); this is only an
+        // immediate hint so a finished task never looks like "nothing happened".
+        const d = (msg.data ?? {}) as Record<string, string>;
+        setRunToast({
+          title: `${d.status === "error" ? "未完成" : "已完成"} · ${d.task_title || "Automation"}`,
+          heading: "Automation finished",
+          sessionId: d.session_id || "",
+          workspace: d.workspace || "",
+          agent: d.agent || "cowork",
+          time: new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }),
+        });
+        announceAutomationsChanged();
+        return;
+      }
+      if (msg.type === "automation_run_stopped") {
+        // Autonomy §C1: a cancelled/paused run is NOT a result — no ledger row,
+        // no completion delivery. Still tell the user so "stoppable" is visible.
+        const d = (msg.data ?? {}) as Record<string, string>;
+        setRunToast({
+          title: `已停止 · ${d.task_title || "Automation"}`,
+          heading: "Automation stopped",
+          sessionId: d.session_id || "",
+          workspace: d.workspace || "",
+          agent: d.agent || "cowork",
+          time: new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }),
+        });
+        announceAutomationsChanged();
+        return;
+      }
       if (msg.type !== "automation_run_started") return;
       const d = (msg.data ?? {}) as Record<string, string>;
       setRunToast({
         title: d.task_title || "Automation",
+        heading: "Automation started",
         sessionId: d.session_id || "",
         workspace: d.workspace || "",
         agent: d.agent || "cowork",
@@ -1695,7 +1727,7 @@ export function App() {
         >
           <div className="flex items-center gap-2 text-[12.5px] font-semibold">
             <span className="w-[7px] h-[7px] rounded-full bg-faint toast-pulse" />
-            Automation started
+            {runToast.heading}
           </div>
           <div className="text-[12.5px] text-muted mt-0.5 ml-[15px] truncate">
             {runToast.title} · {runToast.time} run

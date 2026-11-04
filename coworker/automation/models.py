@@ -141,6 +141,16 @@ class ScheduledTask:
     # Sidebar unread tracking (UX-023): runs started after this mark count as
     # "unseen"; opening the automation's detail advances it. 0.0 = never opened.
     seen_runs_at: float = 0.0
+    # Autonomy §B2: opt-in goal-based runs ("watch until it changes, then report").
+    # Empty = ordinary one-shot scheduled run (the behaviour every existing task
+    # has). This is declared at launch time, NOT a task-category allowlist: the
+    # user's instruction grants the scope, we only add the cross-run state holder.
+    goal_mode: str = ""
+    # Autonomy §C1: goal generation. Re-opening a concluded goal bumps this counter;
+    # runs are stamped with the generation they belong to, so history from an older
+    # generation can never keep the reopened goal "skipped". 0 = every pre-C1 task,
+    # which makes the default behaviour byte-for-byte identical to B2.
+    goal_generation: int = 0
 
     def __post_init__(self) -> None:
         if not self.task_session_id:
@@ -153,9 +163,14 @@ class ScheduledTask:
 
     @classmethod
     def from_dict(cls, d: dict) -> "ScheduledTask":
+        # Forward/backward compatible, like TaskRun.from_dict: an older blob lacks
+        # the new autonomy fields, a newer blob may carry keys this build doesn't
+        # know. Neither may take the whole automation list down (multi-replica
+        # sync means a Mac and a VM can briefly run different builds).
         d = dict(d)
         d["schedule"] = Schedule.from_dict(d.get("schedule") or {})
-        return cls(**d)
+        known = set(cls.__dataclass_fields__)
+        return cls(**{k: v for k, v in d.items() if k in known})
 
     # -- standing rules (§25) --------------------------------------------------
     def standing_rules(self) -> dict[str, set[str]]:
@@ -205,6 +220,9 @@ class ScheduledTask:
             "last_status": self.last_status,
             "run_count": self.run_count,
             "notify_on_completion": self.notify_on_completion,
+            "goal_mode": self.goal_mode,
+            # §C1: lets the task card show / restart the current goal generation.
+            "goal_generation": self.goal_generation,
             # UX-023: lets the detail freeze the pre-open mark for its "new" pills.
             "seen_runs_at": self.seen_runs_at,
             # Structured for the task page's revoke list; `entry` is the revoke handle.
@@ -230,6 +248,21 @@ class TaskRun:
     trigger: str = "schedule"  # schedule | manual | catchup
     session_id: str = ""  # the run's own conversation thread — persisted + continuable
 
+    # -- durable run state (autonomy §A1) ---------------------------------------
+    # All new fields have defaults: task_runs stores a JSON blob, so old rows must
+    # still load. progress is intentionally left at 0.0 until B defines a real
+    # goal-based measure; A only guarantees checkpoint/current_step survive a crash.
+    progress: float = 0.0
+    current_step: str = ""
+    checkpoint: dict = field(default_factory=dict)
+    paused_at: Optional[float] = None
+    resumed_at: Optional[float] = None
+    cancel_requested: bool = False
+    delivered_at: Optional[float] = None  # delivery receipt — idempotent ledger write
+    event_count: int = 0
+    # §C1: which goal generation this run belongs to (0 = pre-C1 / ordinary run).
+    goal_generation: int = 0
+
     def __post_init__(self) -> None:
         if not self.session_id:
             self.session_id = f"__run__{self.run_id}"
@@ -239,4 +272,8 @@ class TaskRun:
 
     @classmethod
     def from_dict(cls, d: dict) -> "TaskRun":
-        return cls(**d)
+        # Forward/backward compatible: ignore keys this build doesn't know instead
+        # of blowing up on an old or newer blob (a stale row must never take the
+        # whole automation list down).
+        known = set(cls.__dataclass_fields__)
+        return cls(**{k: v for k, v in dict(d).items() if k in known})
