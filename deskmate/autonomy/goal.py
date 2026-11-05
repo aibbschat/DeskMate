@@ -102,6 +102,8 @@ def build_goal_opening(previous: Optional[dict]) -> str:
         "不要反复做同样的事。\n"
         "节奏由你定：如果判断需要比下一轮 cron 更早复查，用 sleep_for 安排下一次检查再结束"
         "本轮（等待本身不是结束）；不需要就照常结束。\n"
+        "缺关键信息：用 ask_user 在对话里问（会落在你接任务的那个对话里，用户不用到处找）。"
+        "问完别停下整轮等人——先做不依赖它的部分，把等待写进 [[STATE]]；下一轮会自动告诉你有没有回复。\n"
         "不要创建或修改任何定时任务。"
         + _stuck_hint(prev)
         + _attempts_block(prev)

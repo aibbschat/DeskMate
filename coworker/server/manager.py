@@ -6032,7 +6032,7 @@ class SessionManager:
                 # 不是闷头猜或者直接报错；超时会自动放行并让她说明卡点。
                 try:
                     goal_asker = self._task_question_asker(
-                        session_id, getattr(task, "agent", "cowork")
+                        session_id, getattr(task, "agent", "cowork"), task=task
                     )
                 except Exception:
                     goal_asker = None
@@ -6765,6 +6765,14 @@ class SessionManager:
                         record_concluded(run)
                     except Exception:
                         pass
+                    try:
+                        await self._report_to_origin(
+                            task, "【任务结束】" + (run.result_text or "")[:400]
+                        )
+                    except Exception:
+                        logger.warning(
+                            "任务预算结案回写原对话失败（fail-open）", exc_info=True
+                        )
                     self._cancel_task_wakes(run.session_id, "budget exhausted")
                     self.task_store.add_run(run)
                     await self.broadcast_event(
@@ -6889,6 +6897,29 @@ class SessionManager:
                 opening += build_goal_opening(goal_prev)
             except Exception:
                 pass
+            # 上轮在原对话里问过的问题：答了就把答案带回来；没答就提醒别重复问。
+            _pending_q = goal_prev.get("pending_question")
+            if isinstance(_pending_q, dict) and _pending_q.get("item_id"):
+                try:
+                    _item = self.inbox.get(str(_pending_q["item_id"]))
+                except Exception:
+                    _item = None
+                if _item is not None and getattr(_item, "state", "") == "resolved":
+                    opening += (
+                        "\n\n--- 之前的提问已有回复 ---\n"
+                        f"问题：{_pending_q.get('title', '')}\n"
+                        f"萧盛的回答：{getattr(_item, 'resolution', '') or ''}\n"
+                        "按这个回答继续；不要重复问同一个问题。"
+                    )
+                    if isinstance(run.checkpoint.get("goal"), dict):
+                        run.checkpoint["goal"].pop("pending_question", None)
+                else:
+                    opening += (
+                        "\n\n--- 你上轮问的问题还没答 ---\n"
+                        f"问题：{_pending_q.get('title', '')}\n"
+                        "别停下整轮等人：先做不依赖它就能做的事，把等待写进 [[STATE]]；"
+                        "不要重复问同一个问题。"
+                    )
         # 会话互斥：wake 与 cron 两条腿都可能来，running 标记让后来者让路。
         # manager 未经 __init__（测试/回放）时没有这张表，就不做互斥、照常跑。
         _claimed_session = False
@@ -6906,6 +6937,7 @@ class SessionManager:
         _goal_stuck, _blocker = False, ""
         _engine_error = ""
         _goal_sleeping, _sleep_wake_id = False, ""
+        _asked_this_run = False
         try:
             _stream = engine.resume() if resume else engine.run(opening)
             async for _event in _stream:
@@ -6973,6 +7005,17 @@ class SessionManager:
                     _goal_sleeping = True
                     _sleep_wake_id = _new_wakes[-1].id
                     run.status = "sleeping"
+            # 这一轮把问题投递到了原对话 → 它不是「结果」，是 needs_you。
+            if goal_on:
+                try:
+                    _q_holder = (
+                        self.__dict__.get("_task_questions") or {}
+                    ).get(run.session_id) or {}
+                except Exception:
+                    _q_holder = {}
+                if _q_holder.get("question") and not _goal_stuck:
+                    _asked_this_run = True
+                    run.status = "needs_you"
             # 全局 after-action：自动/定时任务完成也记一笔 + 刷新小说圣经。
             # 静默检查不写记忆：否则每轮「无变化」都会污染记忆库。
             try:
@@ -6981,7 +7024,12 @@ class SessionManager:
 
                 from deskmate.memory.after_action import reflect_and_persist
 
-                if not _quiet_this_run and not _goal_stuck and not _goal_sleeping:
+                if (
+                    not _quiet_this_run
+                    and not _goal_stuck
+                    and not _goal_sleeping
+                    and not _asked_this_run
+                ):
                     _th.Thread(
                         target=reflect_and_persist,
                         args=(task.workspace, task.instructions, run.result_text or ""),
@@ -6997,6 +7045,7 @@ class SessionManager:
                 and not _quiet_this_run
                 and not _goal_stuck
                 and not _goal_sleeping
+                and not _asked_this_run
                 and not self._control_marks().get(run.run_id)
             ):
                 await self._notify_task_done(task, run)
@@ -7041,11 +7090,24 @@ class SessionManager:
                         _goal_outcome = "quiet"
                     else:
                         _goal_outcome = "changed"
+                    if _asked_this_run and _goal_outcome in ("quiet", "changed"):
+                        _goal_outcome = "needs_you"
+                    # 这一轮投递过的提问：记进检查点，下一轮检查回复。
+                    _topic = None
+                    try:
+                        _q_holder = (
+                            self.__dict__.get("_task_questions") or {}
+                        ).pop(run.session_id, None)
+                    except Exception:
+                        _q_holder = None
+                    if _q_holder and _q_holder.get("question"):
+                        _topic = dict(_q_holder["question"])
+                        _topic["asked_at"] = run.finished_at
                     # 静默轮别把 [[NO_CHANGE]] 原文再喂回去，否则模型容易照抄成
                     # 「本轮也没变化」；只保留动作与结论摘要。
                     _attempt_result = (
                         run.result_text or ""
-                        if _goal_outcome in ("changed", "stuck")
+                        if _goal_outcome in ("changed", "stuck", "needs_you")
                         else ""
                     )
                     note_attempt(
@@ -7061,6 +7123,10 @@ class SessionManager:
                         blocker=_blocker if _goal_outcome == "stuck" else "",
                         now=run.finished_at,
                     )
+                    if _topic is not None and isinstance(
+                        run.checkpoint.get("goal"), dict
+                    ):
+                        run.checkpoint["goal"]["pending_question"] = _topic
                     if _goal_outcome == "sleeping":
                         goal_now = run.checkpoint.get("goal")
                         if isinstance(goal_now, dict):
@@ -7092,6 +7158,16 @@ class SessionManager:
             except Exception:
                 pass
             self.task_store.add_run(run)
+            # 进度回原对话：静默轮按节奏报，卡住/失败立即报（结果另有【任务结果】）。
+            if goal_on and getattr(task, "origin_session_id", ""):
+                try:
+                    _progress = self._origin_progress_text(
+                        task, run, _goal_outcome, goal_prev
+                    )
+                    if _progress:
+                        await self._report_to_origin(task, _progress)
+                except Exception:
+                    logger.warning("任务进度回写原对话失败（fail-open）", exc_info=True)
             # Autonomy §A2: close the delivery loop for BOTH success and failure.
             # The old path only broadcast a task_done to a session socket that has
             # zero frontend consumers; the result vanished when no window was open.
@@ -7107,7 +7183,7 @@ class SessionManager:
                 goal_on
                 and (
                     (_goal_outcome == "stuck" and not _give_up)
-                    or _goal_outcome == "sleeping"
+                    or _goal_outcome in ("sleeping", "needs_you")
                 )
             )
             if not quiet and not halted and not suppress:
@@ -7134,6 +7210,16 @@ class SessionManager:
                             )
                     self.task_store.add_run(run)  # persist the delivered_at receipt
                     if ledger_id:
+                        if goal_on:
+                            try:
+                                await self._report_to_origin(
+                                    task,
+                                    "【任务结果】" + (run.result_text or "")[:400],
+                                )
+                            except Exception:
+                                logger.warning(
+                                    "任务结果回写原对话失败（fail-open）", exc_info=True
+                                )
                         await self.broadcast_event(
                             build_completion_event(
                                 task, run, status=run.status, ledger_id=ledger_id
@@ -7264,15 +7350,62 @@ class SessionManager:
         return fixed
 
     def _task_question_asker(
-        self, session_id: str, agent: str, *, timeout_s: float = 1800.0
+        self, session_id: str, agent: str, *, task=None, timeout_s: float = 1800.0
     ):
-        """目标制任务的 ask_user：落 Inbox、原地等人答；超时自动放行。
+        """目标制任务的 ask_user。
 
-        与普通会话共用 Inbox 通道——答在同一个 run 里继续（不重开一轮），
-        所以「卡在只有人能定的岔口」变成「她来问你」，而不是猜或干等。
-        超时会把卡片结掉，避免留下一张没人消费的孤儿卡（重启后被 durable
-        resume 当成挂起工具调用再掀一轮）。
+        有 origin 会话（用户在对话里下的任务）：问询落**原对话**——inline 卡 + 一条
+        对话消息，并且**不阻塞**：她先去做不用等这个回答的部分，下一轮自动检查回复。
+        不是让用户到处找入口，是她回到对话里来找人。
+
+        没有 origin（GUI 表单建的任务）：保持原 Inbox 阻塞（超时自动放行）行为。
         """
+        origin_sid = ""
+        if task is not None:
+            origin_sid = str(getattr(task, "origin_session_id", "") or "").strip()
+        if origin_sid:
+
+            async def ask_origin(
+                args: dict[str, Any], tool_call_id: Optional[str] = None
+            ) -> dict:
+                from ..tools.ask import question_item_fields
+
+                fields = question_item_fields(args)
+                if fields is None:
+                    return {"answer": "", "error": "no question"}
+                inbox_name = self.inbox_routing.route_for(origin_sid, agent)
+                item = self.inbox.add_question(
+                    origin_sid,
+                    inbox=inbox_name,
+                    # inline：只出现在这个对话里，不塞进全局 Inbox 让用户到处找。
+                    visibility="inline",
+                    # 不给 tool_call_id：原会话没有挂起的 turn，避免被 durable-resume
+                    # 当成待续跑的工具调用再掀一轮。
+                    tool_call_id=None,
+                    **fields,
+                )
+                holder = self.__dict__.setdefault("_task_questions", {}).setdefault(
+                    session_id, {}
+                )
+                holder["question"] = {
+                    "item_id": item.id,
+                    "title": fields["title"],
+                    "options": list(fields.get("options") or []),
+                }
+                try:
+                    self.persist_session(origin_sid)
+                except Exception:
+                    pass
+                await self._report_to_origin(task, self._question_text(fields))
+                # 关键：不 await 人。返回「已投递」让模型继续干不依赖它的活。
+                return {
+                    "answer": "",
+                    "error": "question posted to the conversation; do NOT block — "
+                    "continue with the work that does not depend on it, report "
+                    "progress, and re-check the answer next round",
+                }
+
+            return ask_origin
 
         async def ask(args: dict[str, Any], tool_call_id: Optional[str] = None) -> dict:
             from ..tools.ask import answer_result, question_item_fields
@@ -7313,6 +7446,81 @@ class SessionManager:
             return answer_result(item.questions, answer)
 
         return ask
+
+    def _question_text(self, fields: dict) -> str:
+        title = str(fields.get("title") or "（问题）")
+        options = [str(o) for o in (fields.get("options") or [])]
+        line = f"需要你定一下：{title}"
+        if options:
+            line += "\n选项：" + " / ".join(options)
+        return line + "\n（我先继续做不用等这个的部分，下一轮会检查你的回复）"
+
+    def _append_origin_message(self, session_id: str, text: str, *, task_id: str = "") -> bool:
+        """只往原对话追加一条消息（不触发模型 turn），并留痕 task_id。
+
+        ConversationStore 是 append-only：load 全量、append 一条、save 只追加尾部。
+        与用户正在聊天存在极小写竞态，失败只记日志（fail-open），不拖垮任务。
+        """
+        if not session_id or not text:
+            return False
+        try:
+            record = self.session_store.load(session_id)
+            if record is None:
+                return False
+            record.messages.append(
+                {
+                    "role": "assistant",
+                    "content": text,
+                    "ts": time.time(),
+                    "_task_id": task_id,
+                }
+            )
+            self.session_store.save(record)
+            return True
+        except Exception:
+            logger.warning("任务消息追加到原对话失败（fail-open）", exc_info=True)
+            return False
+
+    async def _report_to_origin(self, task, text: str) -> bool:
+        """把一条消息送回任务发起的那个对话，并推给打开的窗口。"""
+        sid = str(getattr(task, "origin_session_id", "") or "").strip()
+        if not sid or not text:
+            return False
+        ok = self._append_origin_message(
+            sid, text, task_id=str(getattr(task, "id", ""))
+        )
+        if ok:
+            try:
+                await self.broadcast_session(
+                    sid, {"type": "assistant_message", "data": {"text": text}}
+                )
+            except Exception:
+                logger.debug("任务消息推送原会话失败（fail-open）", exc_info=True)
+        return ok
+
+    def _origin_progress_text(self, task, run, outcome: str, goal_prev: dict) -> str:
+        """静默轮按节奏、异常轮立即往原对话报一条进度；changed/needs_you 另有汇报。"""
+        if outcome in ("changed", "needs_you", "sleeping", ""):
+            return ""
+        goal = (run.checkpoint or {}).get("goal") or {}
+        rounds = int((goal_prev or {}).get("rounds") or 0) + 1
+        state = str(goal.get("state") or "")[:140]
+        if outcome == "quiet":
+            try:
+                every = max(1, int(os.environ.get("COWORKER_TASK_PROGRESS_EVERY", "3")))
+            except Exception:
+                every = 3
+            if rounds % every:
+                return ""
+            head = f"【盯梢进度】第 {rounds} 轮：没有变化"
+        elif outcome == "stuck":
+            stuck = int(goal.get("stuck_rounds") or 0)
+            head = f"【盯梢进度】第 {rounds} 轮：卡住了（连续 {stuck} 轮）"
+        elif outcome == "error":
+            head = f"【盯梢进度】第 {rounds} 轮：执行失败"
+        else:
+            return ""
+        return f"{head}{('；' + state) if state else ''}"
 
     def cancel_run(self, task_id: str, run_id: str) -> dict[str, Any]:
         """Stop the CURRENT run without disabling the task itself (§C1).
