@@ -6,7 +6,6 @@ ggml-base.bin，Whisper 中文输出天然偏繁体。本模块是换引擎的�
 """
 from __future__ import annotations
 
-import importlib.util
 import json
 import os
 import subprocess
@@ -18,10 +17,11 @@ from pathlib import Path
 import pytest
 
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "sensevoice_stt.py"
-spec = importlib.util.spec_from_file_location("sensevoice_stt", SCRIPT)
-assert spec and spec.loader
-stt = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(stt)
+# 真实实现在 deskmate.stt（console script / PyInstaller 都从这里 import），
+# scripts/sensevoice_stt.py 只是开发入口的薄封装。
+import deskmate.stt as stt
+
+assert hasattr(stt, "main")
 
 
 class _FakeResult:

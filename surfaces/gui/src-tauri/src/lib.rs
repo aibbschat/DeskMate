@@ -306,6 +306,26 @@ fn server_bin() -> PathBuf {
     p
 }
 
+/// 本地 SenseVoice 听写入口：与 `openworker-server` 同一个 console-script 目录里的
+/// `openworker-stt`。开发/本地包走 .venv 回退链，正式冻结包需把它一并放进 sidecar 目录；
+/// 找不到时 `Dictation` 会明确报错，绝不回退到输出繁体的 Whisper。
+fn sensevoice_stt_bin() -> Option<PathBuf> {
+    if let Ok(p) = std::env::var("OPENWORKER_STT_BIN") {
+        return Some(PathBuf::from(p));
+    }
+    let name = if cfg!(windows) {
+        "openworker-stt.exe"
+    } else {
+        "openworker-stt"
+    };
+    let candidate = server_bin().parent()?.join(name);
+    if candidate.is_file() {
+        Some(candidate)
+    } else {
+        None
+    }
+}
+
 /// Mirror of `coworker.secrets.state_dir()` so the shell and server agree on `desktop.json`.
 /// Windows: `%APPDATA%\coworker`; POSIX: `~/.config/coworker`. `COWORKER_STATE_DIR` overrides.
 fn state_dir() -> PathBuf {
@@ -966,9 +986,14 @@ pub fn run() {
                 http: http.clone(),
                 token: api_token.clone(),
             });
-            // Voice recordings are transient; only the explicitly installed local Whisper model
-            // lives in the existing application state directory.
-            app.manage(Arc::new(Dictation::new(state_dir().join("models"))));
+            // 录音只在内存；语音资产（含 SenseVoice 模型）在 state_dir/models。
+            // 转写交给同机 openworker-stt：Whisper Base 中文输出繁体，已下线。
+            let dictation = Dictation::new(state_dir().join("models"));
+            let dictation = match sensevoice_stt_bin() {
+                Some(bin) => dictation.with_stt_bin(bin),
+                None => dictation,
+            };
+            app.manage(Arc::new(dictation));
 
             // 2. Build the window, injecting the sidecar endpoints before the SPA loads.
             //    Overlay title bar (macOS): traffic lights float over the edge-to-edge UI.

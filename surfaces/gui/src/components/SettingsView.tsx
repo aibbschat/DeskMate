@@ -326,9 +326,9 @@ function VoiceInputSection() {
             <div className="p-4 flex items-center gap-3">
               <div className="w-9 h-9 rounded-lg bg-accentSoft text-accent grid place-items-center font-semibold">W</div>
               <div className="min-w-0 flex-1">
-                <div className="text-[13.5px] font-medium">{t("settings.whisperBaseEnglish")}</div>
+                <div className="text-[13.5px] font-medium">{t("settings.senseVoiceZh")}</div>
                 <div className="text-meta text-muted mt-0.5">
-                  {status?.model_verified ? t("settings.installedAndVerified", { size: formatBytes(status.model_bytes) }) : t("settings.localVoiceModel", { size: formatBytes(status?.model_bytes || 147_964_211) })}
+                  {status?.model_verified ? t("settings.installedAndVerified") : t("settings.localVoiceModel")}
                 </div>
               </div>
               {status?.model_verified ? (

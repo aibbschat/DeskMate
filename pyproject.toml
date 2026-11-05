@@ -79,6 +79,9 @@ deskmate-stt = ["sherpa-onnx==1.13.8"]
 [project.scripts]
 openworker = "coworker.cli:main"
 openworker-server = "coworker.server.run:main"
+# 本地语音听写（deskmate/stt.py）：桌面 stt crate 录音后调它，SenseVoice 中文简体。
+# 与 openworker-server 同在 .venv/bin/，本地包回退链据此定位；不进云端同步清单。
+openworker-stt = "deskmate.stt:main"
 openworker-connectors = "coworker.connectors.cli:main"
 # The board as an open surface (OPE-100): `ocw board …` / `ocw journal …`,
 # including `ocw board mcp` — the stdio MCP server external harnesses attach to.

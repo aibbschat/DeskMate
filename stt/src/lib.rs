@@ -9,11 +9,12 @@ use std::{
     io::{Read, Write},
     path::{Path, PathBuf},
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc::{self, Receiver, Sender},
         Arc, Mutex,
     },
     thread,
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 use cpal::{
@@ -22,7 +23,9 @@ use cpal::{
 };
 use serde::Serialize;
 use sha2::{Digest, Sha256};
-use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
+// whisper.cpp 推理已下线：中文输出繁体（Whisper Base 训练语料以繁体字幕为主），
+// 改由同机 `openworker-stt`（SenseVoiceSmall int8 / sherpa-onnx）转写，见 `transcribe()`。
+// Cargo.toml 仍保留 whisper-rs 依赖，避免改动依赖图触发整包重编译；本 crate 不再链接调用。
 
 /// A reasonably fast English model for short OpenWorker prompts (~142 MB).
 pub const DEFAULT_MODEL_FILE: &str = "ggml-base.bin";
@@ -72,6 +75,9 @@ pub struct Dictation {
     live: Arc<Mutex<Option<(Arc<Mutex<Vec<f32>>>, u32)>>>,
     download_in_progress: AtomicBool,
     cancel_download: AtomicBool,
+    /// 本地 SenseVoice 转写入口（openworker-stt）。None = 宿主未配置，听写时明确报错，
+    /// 绝不静默回退到会输出繁体的 Whisper。
+    stt_bin: Option<PathBuf>,
 }
 
 enum Command {
@@ -105,7 +111,15 @@ impl Dictation {
             live,
             download_in_progress: AtomicBool::new(false),
             cancel_download: AtomicBool::new(false),
+            stt_bin: std::env::var("OPENWORKER_STT_BIN").ok().map(PathBuf::from),
         }
+    }
+
+    /// 宿主显式注入 SenseVoice 转写入口（桌面 App 从 server_bin() 同目录解析）。
+    /// 保留 `new()` 的单参数签名，既有测试与调用点不受影响。
+    pub fn with_stt_bin(mut self, bin: impl Into<PathBuf>) -> Self {
+        self.stt_bin = Some(bin.into());
+        self
     }
 
     pub fn status(&self) -> DictationStatus {
@@ -118,7 +132,7 @@ impl Dictation {
             model_verified,
             test_passed: model_verified && self.ready_marker_path.is_file(),
             download_in_progress: self.download_in_progress.load(Ordering::SeqCst),
-            model_name: "Whisper Base English (local)",
+            model_name: "SenseVoice Chinese (local)",
             model_bytes: DEFAULT_MODEL_BYTES,
         }
     }
@@ -299,7 +313,7 @@ impl Dictation {
         if samples.len() < (sample_rate as usize / 4) {
             return Ok(String::new());
         }
-        transcribe(&self.model_path, &resample_mono(&samples, sample_rate))
+        transcribe(self.stt_bin.as_deref(), &resample_mono(&samples, sample_rate))
     }
 
     /// Instantaneous input loudness of the in-flight recording, 0.0..=1.0 — RMS over the
@@ -574,39 +588,70 @@ fn resample_mono(input: &[f32], source_rate: u32) -> Vec<f32> {
         .collect()
 }
 
-fn transcribe(model_path: &Path, samples: &[f32]) -> Result<String, String> {
-    if !model_path.is_file() {
-        return Err("The local voice model is not installed yet.".to_owned());
-    }
-    let context = WhisperContext::new_with_params(
-        model_path
-            .to_str()
-            .ok_or_else(|| "The local voice model path is not valid text.".to_owned())?,
-        WhisperContextParameters::default(),
-    )
-    .map_err(|e| format!("Could not load the local voice model: {e}"))?;
-    let mut state = context
-        .create_state()
-        .map_err(|e| format!("Could not prepare transcription: {e}"))?;
-    let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
-    params.set_language(Some("zh"));
-    params.set_translate(false);
-    params.set_print_progress(false);
-    params.set_print_special(false);
-    params.set_print_realtime(false);
-    params.set_suppress_blank(true);
-    state
-        .full(params, samples)
-        .map_err(|e| format!("Could not transcribe the recording: {e}"))?;
+/// 录音只在内存里；交给 SenseVoice 前落一个 16 kHz / 单声道 / 16-bit 临时 WAV，
+/// 子进程退出后立刻删除（录音与转写都不持久化）。
+static WAV_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-    let mut text = String::new();
-    for segment in state.as_iter() {
-        let segment = segment
-            .to_str()
-            .map_err(|e| format!("Could not read the transcript: {e}"))?;
-        text.push_str(segment);
+fn temp_wav_path() -> PathBuf {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0);
+    let seq = WAV_COUNTER.fetch_add(1, Ordering::Relaxed);
+    std::env::temp_dir().join(format!(
+        "ocw-stt-{}-{nanos}-{seq}.wav",
+        std::process::id()
+    ))
+}
+
+fn write_wav_mono_16k(path: &Path, samples: &[f32]) -> Result<(), String> {
+    let data_len = (samples.len() * 2) as u32;
+    let mut buf = Vec::with_capacity(44 + samples.len() * 2);
+    buf.extend_from_slice(b"RIFF");
+    buf.extend_from_slice(&(36_u32 + data_len).to_le_bytes());
+    buf.extend_from_slice(b"WAVEfmt ");
+    buf.extend_from_slice(&16_u32.to_le_bytes()); // fmt chunk size
+    buf.extend_from_slice(&1_u16.to_le_bytes()); // PCM
+    buf.extend_from_slice(&1_u16.to_le_bytes()); // mono
+    buf.extend_from_slice(&16_000_u32.to_le_bytes()); // sample rate
+    buf.extend_from_slice(&32_000_u32.to_le_bytes()); // byte rate = 16000*1*2
+    buf.extend_from_slice(&2_u16.to_le_bytes()); // block align
+    buf.extend_from_slice(&16_u16.to_le_bytes()); // bits per sample
+    buf.extend_from_slice(b"data");
+    buf.extend_from_slice(&data_len.to_le_bytes());
+    for sample in samples {
+        let pcm = (sample.clamp(-1.0, 1.0) * 32_767.0) as i16;
+        buf.extend_from_slice(&pcm.to_le_bytes());
     }
-    Ok(text.trim().to_owned())
+    fs::write(path, buf).map_err(|e| format!("Could not stage the recording: {e}"))
+}
+
+/// 转写走同机 `openworker-stt`（SenseVoiceSmall int8 / sherpa-onnx），中文输出简体。
+/// 失败一律显式报错，不回退 Whisper —— 静默回退等于把繁体问题放回来。
+fn transcribe(stt_bin: Option<&Path>, samples: &[f32]) -> Result<String, String> {
+    let bin = stt_bin.ok_or_else(|| {
+        "本地语音听写组件未安装（openworker-stt），请在设置中重新配置语音输入。".to_owned()
+    })?;
+    let wav = temp_wav_path();
+    write_wav_mono_16k(&wav, samples)?;
+    // 全限定：本 crate 已有录音用的 `enum Command`，不能 `use std::process::Command`。
+    let result = std::process::Command::new(bin)
+        .arg("--wav")
+        .arg(&wav)
+        .output();
+    let _ = fs::remove_file(&wav); // 临时录音用完即弃
+    let output = result
+        .map_err(|e| format!("Could not start the local SenseVoice transcriber: {e}"))?;
+    if !output.status.success() {
+        let detail = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+        let detail = if detail.is_empty() {
+            "unknown error"
+        } else {
+            detail.as_str()
+        };
+        return Err(format!("SenseVoice 听写失败：{detail}"));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
 }
 
 #[cfg(test)]
@@ -617,8 +662,8 @@ mod tests {
     };
 
     use super::{
-        resample_mono, write_verification_marker, Dictation, DEFAULT_MODEL_BYTES,
-        DEFAULT_MODEL_FILE,
+        resample_mono, transcribe, write_verification_marker, write_wav_mono_16k, Dictation,
+        DEFAULT_MODEL_BYTES, DEFAULT_MODEL_FILE,
     };
 
     #[test]
@@ -635,7 +680,43 @@ mod tests {
 
     #[test]
     fn default_model_size_matches_the_published_base_english_artifact() {
-        assert_eq!(DEFAULT_MODEL_BYTES, 147_964_211);
+        // 与本机已安装的 ggml-base.bin（147951465 B）以及 DEFAULT_MODEL_SHA256 一致；
+        // 旧断言写的 147964211 是上游早期产物大小，早已不适用。
+        assert_eq!(DEFAULT_MODEL_BYTES, 147_951_465);
+    }
+
+    #[test]
+    fn wav_staging_is_16k_mono_pcm16_and_removable() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("ocw-stt-wav-{unique}"));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("mic.wav");
+        write_wav_mono_16k(&path, &[0.0, 1.0, -1.0]).unwrap();
+        let bytes = fs::read(&path).unwrap();
+        assert_eq!(&bytes[0..4], b"RIFF");
+        assert_eq!(&bytes[8..12], b"WAVE");
+        assert_eq!(u16::from_le_bytes([bytes[22], bytes[23]]), 1); // mono
+        assert_eq!(
+            u32::from_le_bytes([bytes[24], bytes[25], bytes[26], bytes[27]]),
+            16_000
+        );
+        assert_eq!(u16::from_le_bytes([bytes[34], bytes[35]]), 16); // 16-bit
+        assert_eq!(
+            u32::from_le_bytes([bytes[40], bytes[41], bytes[42], bytes[43]]),
+            6
+        ); // 3 samples
+        assert_eq!(i16::from_le_bytes([bytes[44], bytes[45]]), 0);
+        assert_eq!(i16::from_le_bytes([bytes[46], bytes[47]]), 32_767);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn transcribe_without_an_stt_entrypoint_fails_instead_of_falling_back_to_whisper() {
+        let error = transcribe(None, &[0.0; 100]).unwrap_err();
+        assert!(error.contains("openworker-stt"), "{error}");
     }
 
     #[test]
