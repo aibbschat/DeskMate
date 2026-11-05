@@ -1,18 +1,21 @@
 /**
- * XiaojuMascot — 小桔桌宠（透明 PNG + CSS 动画 + 情绪粒子）。
+ * XiaojuMascot — 小桔桌宠（序列帧动画 + 情绪粒子；PNG 表情帧做兜底）。
  *
- * 视觉分层：
- *   xj-root      → 粒子层（绝对定位，随情绪渲染星星/气泡/雨滴/火花）
- *   xj-wrapper   → 呼吸浮动（所有状态共有）
- *   xj-gesture   → 姿态动画（idle 轻摇 / walk 颠簸 / think 摆头 / happy 跳跃 / sad 低头 / focused 前倾）
- *   xj-facing    → 朝向翻转（walkDirection=left 时 scaleX(-1)）
- *   xj-img       → 小桔 PNG
+ * 两条渲染路径（由 manifest frameCount 决定，有素材走序列帧、没有回退 PNG）：
+ *   A. 序列帧（当前九段全部就位，实际走的就是这条）
+ *      MoodParticles（粒子层）+ XjFramePlayer（720² 透明 WebP，42ms/帧）
+ *      身体动作全部由帧承担，不叠 CSS transform。
+ *   B. PNG 兜底（某 clip 缺素材时）
+ *      xj-wrapper（呼吸）→ xj-gesture（姿态动画）→ xj-facing（翻转）→ xj-img（表情帧）
+ *      外加 TearStream 眼泪 SVG（坐标按 1024² 老构图，只适配这条路径）。
  *
- * 情绪粒子：
+ * 情绪粒子（两条路径共用 MoodParticles）：
  *   happy     → 星星/爱心从角色周围飘出
  *   thinking  → 头顶"..."思考气泡
- *   concerned → 头顶雨滴（沮丧）
+ *   concerned → 头顶爱心（安静陪伴）
  *   focused   → 周围小火花闪烁
+ *
+ * 🔴 桌宠一律无声（萧哥 2026-11-05 定）：帧序列无音轨，不得添加 <audio>/音效。
  *
  * 接口与 CicadaMascot 兼容。
  */
@@ -20,6 +23,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { EmotionName } from "./EmotionState";
 import type { ExpressionId } from "./mascotEmoteMap";
+import { resolveClip } from "./petClipMap";
 import { XjFramePlayer } from "./XjFramePlayer";
 // clip manifest：声明哪些情绪有真序列帧素材（frameCount>0），有就走序列帧，没有回退 PNG
 import petManifest from "../../../public/pet-clips/manifest.json";
@@ -238,6 +242,33 @@ function TearStream() {
 }
 
 /* ------------------------------------------------------------------ */
+/*  情绪粒子层（两条渲染路径共用）                                        */
+/* ------------------------------------------------------------------ */
+
+/**
+ * MoodParticles — 星星 / 思考气泡 / 爱心 / 火花。
+ *
+ * 为什么单独抽出来（2026-11-05）：九段序列帧全部就位后 useFramePlayer 恒为真，
+ * 而旧实现里「序列帧分支」在粒子层之前就 return 了 —— 素材换上了，但原本的
+ * 情绪细节（开心的星星、思考的「…」气泡、专注的火花、陪伴的爱心）被静默吞掉，
+ * 且没有报错、没人会发现。现在粒子层包在两条路径外面，序列帧只负责身体动作。
+ *
+ * 不含眼泪：cry 素材已自带「低头忍泪 → 眼泪滑下 → 抬手抹眼角」的表演；
+ * 旧 TearStream 的 SVG 路径按 1024² 老构图锚定眼角坐标（335,470 / 690,470），
+ * 叠到 720² 新素材上会错位，故只在 PNG 回退路径里保留。
+ */
+function MoodParticles({ emotion, size }: { emotion: EmotionName; size: number }) {
+  return (
+    <>
+      {emotion === "happy" && <HappyParticles size={size} />}
+      {emotion === "thinking" && <ThinkingBubble size={size} />}
+      {emotion === "concerned" && <CareHearts size={size} />}
+      {emotion === "focused" && <FocusedSparks size={size} />}
+    </>
+  );
+}
+
+/* ------------------------------------------------------------------ */
 /*  主组件                                                              */
 /* ------------------------------------------------------------------ */
 
@@ -265,20 +296,8 @@ export function XiaojuMascot({
   const faceSrc = FRAME_MAP[expression ?? emotionFallbackFrame(emotion)];
 
   // 真序列帧 clip：emotion/expression → clip 名。manifest 里 frameCount>0 才用序列帧，否则回退 PNG。
-  const clipName = (() => {
-    if (expression === "cry") return "cry";
-    if (expression === "laugh" || expression === "cheer" || emotion === "happy") return "happy";
-    if (expression === "angry") return "angry";
-    if (expression === "shock") return "shock";
-    if (expression === "sleepy") return "sleepy";
-    if (expression === "shy") return "shy";
-    if (emotion === "thinking") return "thinking";
-    // focused = 专注做事，对应「低头打字」的 working 素材；
-    // thinking 是托下巴想办法，两者动作不同，不要合并（10-05 素材到位后拆分）
-    if (emotion === "focused") return "working";
-    if (isWalking) return "idle"; // 走路暂时用 idle clip
-    return "idle";
-  })();
+  // 选择规则见 petClipMap.ts（九条映射由 petClipMap.test.ts 逐条锁死）；这里不再内联判断。
+  const clipName = resolveClip(expression, emotion, isWalking);
   const clipMeta = (petManifest.clips as Record<string, { frameCount: number }>)[clipName];
   const useFramePlayer = !!clipMeta && clipMeta.frameCount > 0;
 
@@ -338,17 +357,21 @@ export function XiaojuMascot({
 
   const size = Math.round(200 * scale);
 
-  // 真序列帧模式：直接用 XjFramePlayer，跳过 PNG/CSS transform 逻辑
+  // 真序列帧模式：XjFramePlayer 负责身体动作，粒子层仍叠在外层（见 MoodParticles 注释）。
+  // 这里刻意不加 CSS 弹跳：帧序列本身就在动，再叠 transform 会破坏「帧间硬切」的表现。
   if (useFramePlayer) {
     return (
-      <XjFramePlayer
-        clip={clipName}
-        frameCount={clipMeta.frameCount}
-        size={size}
-        facing={walkDirection}
-        onClick={handleClick}
-        onDoubleClick={onDoubleClick}
-      />
+      <div className="relative" style={{ width: size, height: size }}>
+        <MoodParticles emotion={emotion} size={size} />
+        <XjFramePlayer
+          clip={clipName}
+          frameCount={clipMeta.frameCount}
+          size={size}
+          facing={walkDirection}
+          onClick={handleClick}
+          onDoubleClick={onDoubleClick}
+        />
+      </div>
     );
   }
 
@@ -530,12 +553,9 @@ export function XiaojuMascot({
         }
       `}</style>
 
-      {/* 情绪粒子层 */}
-      {emotion === "happy" && <HappyParticles size={size} />}
-      {emotion === "thinking" && <ThinkingBubble size={size} />}
-      {emotion === "concerned" && <CareHearts size={size} />}
-      {emotion === "focused" && <FocusedSparks size={size} />}
-      {/* 真眼泪：cry 表情时从眼角沿脸颊流下 */}
+      {/* 情绪粒子层（PNG 路径与序列帧路径共用同一份，避免两套漂移） */}
+      <MoodParticles emotion={emotion} size={size} />
+      {/* 真眼泪：仅 PNG 路径需要——序列帧素材自带流泪表演（见 MoodParticles 注释） */}
       {expression === "cry" && <TearStream />}
 
       {/* 角色层 */}
