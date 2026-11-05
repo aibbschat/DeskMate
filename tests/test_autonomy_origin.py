@@ -249,3 +249,60 @@ def test_plain_task_has_no_origin_reports(tmp_path, monkeypatch):
     run = _run(mgr, task)
     assert run.delivered_at is not None
     assert "盯梢进度" not in _origin_text(mgr) and "任务结果" not in _origin_text(mgr)
+
+# -- 7/8. 重复提问去重 + 答复确认 ---------------------------------------------
+def test_repeated_question_reuses_previous_answer(tmp_path, monkeypatch):
+    """同一问题问第二遍：已答就直接把答案当工具结果，不再打扰用户。"""
+    mgr = _mgr(tmp_path, monkeypatch)
+    task = _real_task()
+    mgr.task_store.save(task)
+    item = mgr.inbox.add_question(ORIGIN, "用哪个账号继续？", options=["A账号", "B账号"], visibility="inline")
+    mgr.inbox.resolve(item.id, "A账号", by="test")
+    prior = TaskRun(
+        task_id=task.id, status="needs_you", finished_at=time.time() - 60,
+        checkpoint={"goal": {"state": "hash=x", "done": False, "rounds": 1,
+                             "pending_question": {"item_id": item.id, "title": "用哪个账号继续？"}}},
+    )
+    mgr.task_store.add_run(prior)
+    openings: list[str] = []
+    _patch_engine(monkeypatch, [{"ask": "用哪个账号继续？", "text": "收到 A账号，继续"}], openings)
+
+    run = _run(mgr, task)
+    assert mgr.inbox.pending(session_id=ORIGIN) == [], "已答过的问题不该再发一张卡"
+    assert run.status != "needs_you", "答案已知就不该再判 needs_you"
+    assert run.delivered_at is not None
+
+
+def test_repeated_pending_question_does_not_duplicate_card(tmp_path, monkeypatch):
+    """同一问题还没答时又问：不重复发卡，也不把本轮回成结果。"""
+    mgr = _mgr(tmp_path, monkeypatch)
+    task = _real_task()
+    mgr.task_store.save(task)
+    item = mgr.inbox.add_question(ORIGIN, "用哪个账号继续？", options=["A账号"], visibility="inline")
+    prior = TaskRun(
+        task_id=task.id, status="needs_you", finished_at=time.time() - 60,
+        checkpoint={"goal": {"state": "hash=x", "done": False, "rounds": 1,
+                             "pending_question": {"item_id": item.id, "title": "用哪个账号继续？"}}},
+    )
+    mgr.task_store.add_run(prior)
+    openings: list[str] = []
+    _patch_engine(monkeypatch, [{"ask": "用哪个账号继续？", "text": "我先做别的"}], openings)
+
+    run = _run(mgr, task)
+    pending = mgr.inbox.pending(session_id=ORIGIN)
+    assert len(pending) == 1, "同一个问题不该出现两张卡"
+    assert run.status == "needs_you"
+    assert run.delivered_at is None
+
+
+def test_resolving_question_acknowledges_in_conversation(tmp_path, monkeypatch):
+    """用户在对话里答完卡，立刻有一句「已记录」确认，不是静默消失。"""
+    mgr = _mgr(tmp_path, monkeypatch)
+    task = _real_task()
+    asker = mgr._task_question_asker("__run__z", "cowork", task=task)
+    asyncio.run(asker({"question": "用哪个账号继续？", "options": ["A账号", "B账号"]}))
+    item = mgr.inbox.pending(session_id=ORIGIN)[0]
+
+    asyncio.run(mgr.resolve_inbox(item.id, "B账号", by="test"))
+    text = _origin_text(mgr)
+    assert "已记录你的回答：B账号" in text, "答完没有任何确认，用户会以为没点上"

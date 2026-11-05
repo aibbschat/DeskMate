@@ -1509,6 +1509,21 @@ class SessionManager:
         ok = self.inbox.resolve(item_id, resolution, by=by)
         if not ok or item is None:
             return ok
+        # 原对话里的问人卡：答完立刻在对话里留一句「已记录」，让用户看见自己答上了。
+        try:
+            if (
+                item.kind == "question"
+                and getattr(item, "visibility", "") == "inline"
+                and not getattr(item, "tool_call_id", None)
+            ):
+                _ack = f"（已记录你的回答：{resolution}）"
+                if self._append_origin_message(item.session_id, _ack):
+                    await self.broadcast_session(
+                        item.session_id,
+                        {"type": "assistant_message", "data": {"text": _ack}},
+                    )
+        except Exception:
+            logger.debug("问人卡确认消息写入失败（fail-open）", exc_info=True)
         # Store resolution may atomically deny the original worker call and retire sibling
         # proxies too (§11.6 cascade). Resume all affected idle sessions after a restart, not
         # just the lead whose card was clicked. Live waiters are released by the store.
@@ -6294,8 +6309,39 @@ class SessionManager:
             j = result.judgment
             if j is None:
                 return
+            # P1（2026-11-05）：后台广播原本不落台账、不记 delivered_at，
+            # 「接受/忽略」无账可查（17:50 后零新增、零送达变化）。
+            # 补一条送达凭证，id 同时用作 WS payload 的 id，供反馈回查。
+            rid = ""
+            target = ""
+            try:
+                from pathlib import Path as _Path
+
+                from deskmate.proactivity.ledger import record_suggestion_delivery
+                from deskmate.proactivity.writing_context import extract_book_titles
+
+                titles = extract_book_titles(getattr(j, "suggestion_content", ""))
+                target = sorted(titles)[0] if titles else ""
+                desk_dir = _Path(
+                    os.environ.get("DESKMATE_DIR", os.path.expanduser("~/.deskmate"))
+                )
+                rid = record_suggestion_delivery(
+                    base_dir=desk_dir,
+                    content=getattr(j, "suggestion_content", ""),
+                    suggestion_type=getattr(j, "suggestion_type", ""),
+                    reasoning=getattr(j, "reasoning", ""),
+                    confidence=getattr(result.decision, "confidence", 0.0)
+                    if result.decision
+                    else 0.0,
+                    target=target,
+                    delivery_channel="background_ws",
+                )
+            except Exception:
+                logging.exception("deskmate suggestion delivery ledger failed")
             payload = {
-                "id": f"sug-{int(time.time() * 1000)}",
+                "id": rid or f"sug-{int(time.time() * 1000)}",
+                "ledger_id": rid,
+                "target": target,
                 "suggestion_type": getattr(j, "suggestion_type", ""),
                 "suggestion_content": getattr(j, "suggestion_content", ""),
                 "confidence": getattr(result.decision, "confidence", 0.0)
@@ -6932,6 +6978,14 @@ class SessionManager:
                 run.status, run.finished_at = "skipped", _epoch()
                 self.task_store.add_run(run)
                 return run
+        # 让 asker 知道「上一轮问过什么」，同一个问题不重复发卡（见 _task_question_asker）。
+        if goal_on:
+            try:
+                self.__dict__.setdefault("_task_origin_prev_q", {})[
+                    run.session_id
+                ] = goal_prev.get("pending_question") or {}
+            except Exception:
+                pass
         # Must exist before the try/finally: an exception path still reads them.
         _quiet_this_run, _goal_state = False, ""
         _goal_stuck, _blocker = False, ""
@@ -7103,6 +7157,12 @@ class SessionManager:
                     if _q_holder and _q_holder.get("question"):
                         _topic = dict(_q_holder["question"])
                         _topic["asked_at"] = run.finished_at
+                    try:
+                        (self.__dict__.get("_task_origin_prev_q") or {}).pop(
+                            run.session_id, None
+                        )
+                    except Exception:
+                        pass
                     # 静默轮别把 [[NO_CHANGE]] 原文再喂回去，否则模型容易照抄成
                     # 「本轮也没变化」；只保留动作与结论摘要。
                     _attempt_result = (
@@ -7373,6 +7433,30 @@ class SessionManager:
                 fields = question_item_fields(args)
                 if fields is None:
                     return {"answer": "", "error": "no question"}
+                # 去重：上一轮已经问过同一个问题——
+                #   已答 -> 直接把答案当工具结果返回，不再打扰用户；
+                #   未答 -> 不重复发卡，回到等待。
+                prev_q = (self.__dict__.get("_task_origin_prev_q") or {}).get(
+                    session_id
+                ) or {}
+                if prev_q.get("title") and prev_q.get("title") == fields["title"]:
+                    try:
+                        prev_item = self.inbox.get(str(prev_q.get("item_id") or ""))
+                    except Exception:
+                        prev_item = None
+                    if prev_item is not None and prev_item.state == "resolved":
+                        return {"answer": str(prev_item.resolution or "")}
+                    if prev_item is not None and prev_item.state == "pending":
+                        holder = self.__dict__.setdefault(
+                            "_task_questions", {}
+                        ).setdefault(session_id, {})
+                        holder["question"] = dict(prev_q)
+                        return {
+                            "answer": "",
+                            "error": "you already asked this; the question is "
+                            "still pending in the conversation — continue with "
+                            "other work and check the answer next round",
+                        }
                 inbox_name = self.inbox_routing.route_for(origin_sid, agent)
                 item = self.inbox.add_question(
                     origin_sid,
