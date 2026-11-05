@@ -8,6 +8,10 @@
  *   - 预加载全部帧，运行时只切 <img>.src，零解码开销
  *
  * 素材约定：public/pet-clips/<clipName>/frames/<clipName>_NNN.webp
+ *
+ * 🔴 契约：桌宠**一律无声**（萧哥 2026-11-05 定）。
+ *    本播放器只吃帧序列，不得加 <audio>/Audio()/音效文件；生成素材时视频音轨
+ *    在拆帧阶段就丢掉了，不要为了「有个声音更活泼」再补回音效。
  */
 import { useEffect, useRef, useState, useCallback } from "react";
 

@@ -37,3 +37,11 @@ output/
 .novel_pipeline_fix/国子监第四章稻梁谋大纲_找回.md
 .novel_pipeline_fix/*_找回.md
 
+# --- 桌宠序列帧素材：只入库「成品帧」，不入库中间产物 ---
+# 源视频可随时由 ui-mocks/assets/xiaoju-stand-v2-master.png 重出（每段 5s，10 份约 6MB）；
+# Swift 拆帧器是编译产物（源码 ui-mocks/tools/xjframegrab.swift 入库）；
+# .scratch 是构建缓存（合成帧中间目录，实测 70MB+）。
+ui-mocks/video-raw/
+ui-mocks/tools/xjframegrab
+.scratch/
+

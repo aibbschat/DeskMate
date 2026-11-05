@@ -272,7 +272,10 @@ export function XiaojuMascot({
     if (expression === "shock") return "shock";
     if (expression === "sleepy") return "sleepy";
     if (expression === "shy") return "shy";
-    if (emotion === "thinking" || emotion === "focused") return "thinking";
+    if (emotion === "thinking") return "thinking";
+    // focused = 专注做事，对应「低头打字」的 working 素材；
+    // thinking 是托下巴想办法，两者动作不同，不要合并（10-05 素材到位后拆分）
+    if (emotion === "focused") return "working";
     if (isWalking) return "idle"; // 走路暂时用 idle clip
     return "idle";
   })();
