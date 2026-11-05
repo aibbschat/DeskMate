@@ -87,6 +87,46 @@ AUDIO_PATTERN = re.compile(
 )
 
 
+def _holo_detector():
+    """复用烘焙脚本里的检测函数，避免"生产的"和"验收的"两套判据漂移。"""
+    import sys
+
+    scripts = str(REPO / "scripts")
+    if scripts not in sys.path:
+        sys.path.insert(0, scripts)
+    from xj_holo_bake import frame_has_holo_kb
+
+    return frame_has_holo_kb
+
+
+def test_working_clip_has_holo_keyboard():
+    """working 段必须有全息投影键盘（萧哥 2026-11-05 定，方案 C）。
+
+    她的 working 动作是"低头、双手悬在肚子前点按"，底下空着会显得在点空气。
+    投影键盘的用法本就是空中点按，所以素材不重做，只在她手下叠一块光垫。
+    这里防的是：以后重跑 xj_clip_build.py 覆盖了 working 帧，却忘了再跑 xj_holo_bake.py。
+    """
+    has_holo = _holo_detector()
+    frames = sorted((CLIPS / "working" / "frames").glob("*.webp"))
+    probes = sorted({0, len(frames) // 3, len(frames) // 2, len(frames) - 1})
+    missing = [frames[i].name for i in probes if not has_holo(Image.open(frames[i]))]
+    assert not missing, (
+        f"这些帧没有投影键盘：{missing} —— 重跑了 xj_clip_build 而没重跑 xj_holo_bake？"
+    )
+
+
+def test_holo_detector_is_specific():
+    """反向锁判据：别的 clip 里不该有青色发光块。
+
+    没有这一条，"蓝远高于红"的判据可能宽到把任何亮像素都算命中，
+    上面那条就变成了永远绿的空断言。
+    """
+    has_holo = _holo_detector()
+    for name in ("idle", "happy", "sleepy", "angry"):
+        first = sorted((CLIPS / name / "frames").glob("*.webp"))[0]
+        assert not has_holo(Image.open(first)), f"{name} 里检测到青色发光块，判据太宽"
+
+
 @pytest.mark.parametrize("filename", ["XjFramePlayer.tsx", "XiaojuMascot.tsx"])
 def test_mascot_is_silent(filename: str):
     """桌宠展示一律无声：组件里不得出现任何音频播放路径。"""

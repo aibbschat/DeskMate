@@ -44,4 +44,6 @@ output/
 ui-mocks/video-raw/
 ui-mocks/tools/xjframegrab
 .scratch/
+# 全息键盘的 look-test 产出（预览图/对比条/动图），随时由 xj_holo_bake.py 重出
+ui-mocks/out/
 
