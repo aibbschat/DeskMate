@@ -89,6 +89,18 @@ _ASK_SCHEMA = {
                     "type": "string",
                     "description": "Short (≤ ~12 char) chip label for the card, e.g. \"Region\".",
                 },
+                "kind": {
+                    "type": "string",
+                    "enum": ["reversible", "irreversible"],
+                    "description": (
+                        "Why you are asking, so an unattended run behaves safely. "
+                        "reversible = you could pick a default and change it back later "
+                        "(which account, which folder, which wording). irreversible = "
+                        "external/destructive/irreversible (delete data, send a message, "
+                        "spend money, speak for the user) — never guess. Defaults to "
+                        "irreversible when omitted."
+                    ),
+                },
                 "questions": {
                     "type": "array",
                     "maxItems": MAX_GROUPED_QUESTIONS,
@@ -130,6 +142,7 @@ def ask_user_tool() -> object:
         multi: bool = False,
         header: str = "",
         questions: list | None = None,
+        kind: str = "irreversible",
     ) -> dict:
         """Ask the user a question and wait for their answer — use when you genuinely need a human
         decision or information you can't infer (a preference, a missing fact, a choice between real

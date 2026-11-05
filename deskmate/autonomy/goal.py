@@ -40,6 +40,13 @@ BUDGET_MAX_HOURS = 72.0
 #: 连续失败退避：60s 起，指数翻倍，封顶 30 分钟。
 BACKOFF_BASE_S = 60
 BACKOFF_CAP_S = 1800
+#: 问询协议（三档）：可逆的事问一次就按明标假设走；不可逆的问一次、退避提醒、超时停机。
+QUESTION_KIND_REVERSIBLE = "reversible"
+QUESTION_KIND_IRREVERSIBLE = "irreversible"
+#: 不可逆问询的提醒间隔（第 1/2/3 次之后）：2 分钟、10 分钟、1 小时。
+QUESTION_RETRY_SCHEDULE_S = (120, 600, 3600)
+#: 不可逆问询最多等多久；超过就停下任务并报告卡点（不往前猜）。
+QUESTION_MAX_WAIT_S = 6 * 3600
 _MAX_STATE = 200
 _STEP_MAX = 80
 _RESULT_MAX = 160
@@ -104,6 +111,14 @@ def build_goal_opening(previous: Optional[dict]) -> str:
         "本轮（等待本身不是结束）；不需要就照常结束。\n"
         "缺关键信息：用 ask_user 在对话里问（会落在你接任务的那个对话里，用户不用到处找）。"
         "问完别停下整轮等人——先做不依赖它的部分，把等待写进 [[STATE]]；下一轮会自动告诉你有没有回复。\n"
+        "【无人时怎么处理问询（三档）】\n"
+        "1. 你能自己定的事：直接做，做完汇报——不要问。\n"
+        "2. 需要人拍板但可逆（选配置/换路径/用哪个账号这类改得回来的）："
+        "ask_user(question=..., kind=\"reversible\") 问一次，不阻塞；等不到就按你在 [[STATE]] "
+        "里写明的默认假设继续，并标注「这是我的假设，可一键改」。\n"
+        "3. 需要人拍板且不可逆/对外（删数据、发东西、花钱、替你表态）："
+        "ask_user(question=..., kind=\"irreversible\") 问一次，绝不自作主张；"
+        "系统会按 2 分钟/10 分钟/1 小时退避提醒，超时会停下任务并报告卡点。\n"
         "不要创建或修改任何定时任务。"
         + _stuck_hint(prev)
         + _attempts_block(prev)
@@ -403,3 +418,50 @@ def _stuck_hint(previous: dict) -> str:
             f"不要再空转，用 {STUCK_MARK} 说明。"
         )
     return ("\n" + "\n".join(parts)) if parts else ""
+
+# -- 问询协议：分类 / 语义去重 / 退避 / 超时 ------------------------------------
+def question_kind(value: Any) -> str:
+    """把模型声明的分类归一。**默认不可逆**——没声明就按「不许猜」处理，最安全。"""
+    v = str(value or "").strip().lower()
+    if v == QUESTION_KIND_REVERSIBLE:
+        return QUESTION_KIND_REVERSIBLE
+    return QUESTION_KIND_IRREVERSIBLE
+
+
+def _norm_question(text: Any) -> str:
+    return "".join(ch for ch in str(text or "").lower() if ch.isalnum())
+
+
+def same_question(a: Any, b: Any) -> bool:
+    """同一个问题换了个说法也算同一个（bigram Jaccard），避免每轮骚扰。"""
+    na, nb = _norm_question(a), _norm_question(b)
+    if not na or not nb:
+        return False
+    if na == nb:
+        return True
+    ga = {na[i : i + 2] for i in range(len(na) - 1)} or {na}
+    gb = {nb[i : i + 2] for i in range(len(nb) - 1)} or {nb}
+    return len(ga & gb) / max(len(ga), len(gb)) >= 0.75
+
+
+def next_retry_delay(attempts: Any) -> int:
+    try:
+        n = max(1, int(attempts or 1))
+    except (TypeError, ValueError):
+        n = 1
+    idx = min(n - 1, len(QUESTION_RETRY_SCHEDULE_S) - 1)
+    return QUESTION_RETRY_SCHEDULE_S[idx]
+
+
+def question_overdue(pending: Any, now: Optional[float] = None) -> bool:
+    """不可逆问询是否已经等到上限（该停任务了）。"""
+    if not isinstance(pending, dict):
+        return False
+    if question_kind(pending.get("kind")) != QUESTION_KIND_IRREVERSIBLE:
+        return False
+    now_ts = float(now) if now is not None else time.time()
+    try:
+        asked = float(pending.get("asked_at") or 0)
+    except (TypeError, ValueError):
+        asked = 0.0
+    return bool(asked) and (now_ts - asked) >= QUESTION_MAX_WAIT_S

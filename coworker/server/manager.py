@@ -6783,6 +6783,83 @@ class SessionManager:
         except Exception:
             goal_on, goal_prev = False, {}
 
+        # 不可逆问询等到上限：停下任务并报告卡点（绝不往前猜）。
+        if goal_on:
+            _pq0 = goal_prev.get("pending_question")
+            if isinstance(_pq0, dict) and _pq0.get("item_id"):
+                _qitem = None
+                try:
+                    _qitem = self.inbox.get(str(_pq0["item_id"]))
+                except Exception:
+                    _qitem = None
+                _unanswered = _qitem is not None and getattr(
+                    _qitem, "state", ""
+                ) != "resolved"
+                try:
+                    from deskmate.autonomy.goal import question_overdue
+
+                    _overdue = _unanswered and question_overdue(
+                        _pq0, time.time()
+                    )
+                except Exception:
+                    _overdue = False
+                if _overdue:
+                    run.status, run.finished_at = "blocked", _epoch()
+                    try:
+                        _asked = float(_pq0.get("asked_at") or 0)
+                        _waited_h = max(0.0, (time.time() - _asked) / 3600.0)
+                    except (TypeError, ValueError):
+                        _waited_h = 0.0
+                    run.result_text = (
+                        f"任务停在卡点上：{_pq0.get('title', '')}（已等你 "
+                        f"{_waited_h:.1f} 小时，问了 "
+                        f"{int(_pq0.get('attempts') or 1)} 次）。"
+                        "恢复方式：回答对话里那张卡，或直接告诉我该怎么做。"
+                    )
+                    _blocked_goal = dict(goal_prev)
+                    _blocked_goal.update({"done": True, "blocked": True})
+                    run.checkpoint = {"goal": _blocked_goal}
+                    self.task_store.add_run(run)
+                    try:
+                        from deskmate.autonomy.delivery import (
+                            build_completion_event,
+                            deliver_run_result,
+                        )
+
+                        _lid = deliver_run_result(task, run)
+                        if _lid:
+                            try:
+                                from deskmate.autonomy.goal import (
+                                    record_concluded,
+                                )
+
+                                record_concluded(run)
+                            except Exception:
+                                pass
+                            try:
+                                await self._report_to_origin(
+                                    task, "【任务停下】" + (run.result_text or "")[:400]
+                                )
+                            except Exception:
+                                logger.warning(
+                                    "任务卡点回写原对话失败（fail-open）",
+                                    exc_info=True,
+                                )
+                            self._cancel_task_wakes(
+                                run.session_id, "blocked on unanswered question"
+                            )
+                            self.task_store.add_run(run)
+                            await self.broadcast_event(
+                                build_completion_event(
+                                    task, run, status=run.status, ledger_id=_lid
+                                )
+                            )
+                    except Exception:
+                        logger.warning(
+                            "任务卡点投递失败（fail-open）", exc_info=True
+                        )
+                    return run
+
         # 到预算上限：不再复查，把「最后状态 + 为什么停」交付出去并结案。
         if goal_on and _goal_budget_reason:
             run.status, run.finished_at = "expired", _epoch()
@@ -6950,6 +7027,7 @@ class SessionManager:
                     _item = self.inbox.get(str(_pending_q["item_id"]))
                 except Exception:
                     _item = None
+                _pq_kind = str(_pending_q.get("kind") or "irreversible")
                 if _item is not None and getattr(_item, "state", "") == "resolved":
                     opening += (
                         "\n\n--- 之前的提问已有回复 ---\n"
@@ -6957,14 +7035,27 @@ class SessionManager:
                         f"萧盛的回答：{getattr(_item, 'resolution', '') or ''}\n"
                         "按这个回答继续；不要重复问同一个问题。"
                     )
+                    if _pq_kind == "reversible":
+                        opening += (
+                            "这可逆——如果与你上轮的默认假设不同，改回来即可并说明改了哪。"
+                        )
+                    else:
+                        opening += "这是不可逆的，先确认你此前没按假设越权做过事。"
                     if isinstance(run.checkpoint.get("goal"), dict):
                         run.checkpoint["goal"].pop("pending_question", None)
+                elif _pq_kind == "reversible":
+                    opening += (
+                        "\n\n--- 你上轮的可逆提问还没答 ---\n"
+                        f"问题：{_pending_q.get('title', '')}\n"
+                        "按你在 [[STATE]] 里写明的默认假设继续，别停下等人、也别重复问；"
+                        "你的假设要标明「这是我的假设，可一键改」。"
+                    )
                 else:
                     opening += (
-                        "\n\n--- 你上轮问的问题还没答 ---\n"
+                        "\n\n--- 你上轮的不可逆提问还没答 ---\n"
                         f"问题：{_pending_q.get('title', '')}\n"
-                        "别停下整轮等人：先做不依赖它就能做的事，把等待写进 [[STATE]]；"
-                        "不要重复问同一个问题。"
+                        "绝不猜：只做不依赖它就能做的事，把等待写进 [[STATE]]；"
+                        "不要重复问（系统会退避提醒，到时限会停下任务）。"
                     )
         # 会话互斥：wake 与 cron 两条腿都可能来，running 标记让后来者让路。
         # manager 未经 __init__（测试/回放）时没有这张表，就不做互斥、照常跑。
@@ -7433,29 +7524,68 @@ class SessionManager:
                 fields = question_item_fields(args)
                 if fields is None:
                     return {"answer": "", "error": "no question"}
-                # 去重：上一轮已经问过同一个问题——
-                #   已答 -> 直接把答案当工具结果返回，不再打扰用户；
-                #   未答 -> 不重复发卡，回到等待。
+                from deskmate.autonomy.goal import (
+                    next_retry_delay,
+                    question_kind,
+                    question_overdue,
+                    same_question,
+                )
+
+                def _num(value, default=0.0):
+                    try:
+                        return float(value)
+                    except (TypeError, ValueError):
+                        return default
+
+                kind = question_kind(args.get("kind"))
+                now = time.time()
+                # 语义去重：同一个问题换个说法也算同一个（避免每轮骚扰）。
                 prev_q = (self.__dict__.get("_task_origin_prev_q") or {}).get(
                     session_id
                 ) or {}
-                if prev_q.get("title") and prev_q.get("title") == fields["title"]:
+                if prev_q.get("title") and same_question(
+                    prev_q.get("title"), fields["title"]
+                ):
                     try:
                         prev_item = self.inbox.get(str(prev_q.get("item_id") or ""))
                     except Exception:
                         prev_item = None
                     if prev_item is not None and prev_item.state == "resolved":
+                        # 已答：直接把答案当工具结果返回，不再发卡打扰用户。
                         return {"answer": str(prev_item.resolution or "")}
                     if prev_item is not None and prev_item.state == "pending":
                         holder = self.__dict__.setdefault(
                             "_task_questions", {}
                         ).setdefault(session_id, {})
-                        holder["question"] = dict(prev_q)
+                        pending = dict(prev_q)
+                        if question_overdue(pending, now):
+                            return {
+                                "answer": "",
+                                "error": "this question has been waiting too "
+                                "long; STOP this task and report the blocker — "
+                                "do not ask again",
+                            }
+                        if now >= _num(pending.get("next_retry_at")):
+                            attempts = int(pending.get("attempts") or 1) + 1
+                            delay = next_retry_delay(attempts)
+                            pending.update(
+                                {"attempts": attempts, "next_retry_at": now + delay}
+                            )
+                            waited = int(
+                                (now - _num(pending.get("asked_at"))) // 60
+                            )
+                            await self._report_to_origin(
+                                task,
+                                f"（还在等你回答：{pending.get('title', '')}；"
+                                f"已等 {waited} 分钟，下次提醒约 "
+                                f"{delay // 60} 分钟后）",
+                            )
+                        holder["question"] = pending
                         return {
                             "answer": "",
-                            "error": "you already asked this; the question is "
-                            "still pending in the conversation — continue with "
-                            "other work and check the answer next round",
+                            "error": "you already asked this; it is still "
+                            "pending in the conversation — do other work, do "
+                            "not ask again (the system handles reminders)",
                         }
                 inbox_name = self.inbox_routing.route_for(origin_sid, agent)
                 item = self.inbox.add_question(
@@ -7475,18 +7605,33 @@ class SessionManager:
                     "item_id": item.id,
                     "title": fields["title"],
                     "options": list(fields.get("options") or []),
+                    "kind": kind,
+                    "asked_at": now,
+                    "attempts": 1,
+                    "next_retry_at": now + next_retry_delay(1),
                 }
                 try:
                     self.persist_session(origin_sid)
                 except Exception:
                     pass
-                await self._report_to_origin(task, self._question_text(fields))
+                await self._report_to_origin(
+                    task, self._question_text(fields, kind=kind)
+                )
                 # 关键：不 await 人。返回「已投递」让模型继续干不依赖它的活。
+                if kind == "reversible":
+                    return {
+                        "answer": "",
+                        "error": "question posted to the conversation (reversible). "
+                        "Do NOT block: pick a clearly-labeled default assumption, "
+                        "continue the work, and say it can be changed when the "
+                        "answer arrives.",
+                    }
                 return {
                     "answer": "",
-                    "error": "question posted to the conversation; do NOT block — "
-                    "continue with the work that does not depend on it, report "
-                    "progress, and re-check the answer next round",
+                    "error": "question posted to the conversation (irreversible). "
+                    "Do NOT block: continue only with work that does not depend "
+                    "on this decision, and never guess it; the system will "
+                    "remind and eventually stop the task.",
                 }
 
             return ask_origin
@@ -7531,13 +7676,15 @@ class SessionManager:
 
         return ask
 
-    def _question_text(self, fields: dict) -> str:
+    def _question_text(self, fields: dict, *, kind: str = "irreversible") -> str:
         title = str(fields.get("title") or "（问题）")
         options = [str(o) for o in (fields.get("options") or [])]
         line = f"需要你定一下：{title}"
         if options:
             line += "\n选项：" + " / ".join(options)
-        return line + "\n（我先继续做不用等这个的部分，下一轮会检查你的回复）"
+        if kind == "reversible":
+            return line + "\n（可逆：我先按明标的默认假设推进，你回来可以一键改）"
+        return line + "\n（不可逆：我不会先做，等你回复；系统会定时提醒，不会反复打扰）"
 
     def _append_origin_message(self, session_id: str, text: str, *, task_id: str = "") -> bool:
         """只往原对话追加一条消息（不触发模型 turn），并留痕 task_id。

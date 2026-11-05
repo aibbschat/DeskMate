@@ -87,7 +87,10 @@ class ScriptedEngine:
             asker = self._mgr._task_question_asker(
                 self._session_id, "cowork", task=self._task
             )
-            await asker({"question": step["ask"], "options": ["A账号", "B账号"]})
+            _args = {"question": step["ask"], "options": ["A账号", "B账号"]}
+            if step.get("ask_kind"):
+                _args["kind"] = step["ask_kind"]
+            await asker(_args)
         if step.get("raise"):
             raise RuntimeError("boom")
         self.messages.append({"role": "assistant", "content": step.get("text", "")})
@@ -306,3 +309,115 @@ def test_resolving_question_acknowledges_in_conversation(tmp_path, monkeypatch):
     asyncio.run(mgr.resolve_inbox(item.id, "B账号", by="test"))
     text = _origin_text(mgr)
     assert "已记录你的回答：B账号" in text, "答完没有任何确认，用户会以为没点上"
+
+# -- 9+. 三档问询协议：kind / 语义去重 / 退避 / 超时停机 -----------------------
+def test_ask_tool_declares_kind(tmp_path, monkeypatch):
+    from coworker.tools.ask import ask_user_tool
+
+    props = ask_user_tool().__coworker_schema__["function"]["parameters"]["properties"]
+    assert "kind" in props, "LLM 看不到 kind 就无法区分可逆/不可逆"
+    assert "reversible" in json.dumps(props["kind"], ensure_ascii=False)
+    assert "irreversible" in json.dumps(props["kind"], ensure_ascii=False)
+
+
+def test_same_question_matches_paraphrase():
+    from deskmate.autonomy.goal import same_question
+
+    assert same_question("用哪个账号继续？", "使用哪个账号继续")
+    assert same_question("用哪个账号继续？", "用哪个账号继续")
+    assert not same_question("用哪个账号继续？", "几点开会")
+
+
+def test_question_kind_recorded_in_checkpoint(tmp_path, monkeypatch):
+    mgr = _mgr(tmp_path, monkeypatch)
+    task = _real_task()
+    mgr.task_store.save(task)
+    openings: list[str] = []
+    _patch_engine(monkeypatch, [{"ask": "用哪个账号继续？", "ask_kind": "reversible", "text": "先按默认 A 做"}], openings)
+
+    run = _run(mgr, task)
+    pq = run.checkpoint["goal"].get("pending_question") or {}
+    assert pq.get("kind") == "reversible"
+    assert pq.get("attempts") == 1
+    assert pq.get("next_retry_at", 0) > 0
+
+
+def test_pending_question_within_backoff_is_silent(tmp_path, monkeypatch):
+    mgr = _mgr(tmp_path, monkeypatch)
+    task = _real_task()
+    mgr.task_store.save(task)
+    item = mgr.inbox.add_question(ORIGIN, "用哪个账号继续？", options=["A账号"], visibility="inline")
+    prior = TaskRun(
+        task_id=task.id, status="needs_you", finished_at=time.time() - 60,
+        checkpoint={"goal": {"state": "hash=x", "done": False, "rounds": 1,
+                             "pending_question": {"item_id": item.id, "title": "用哪个账号继续？",
+                                                  "kind": "irreversible", "asked_at": time.time() - 60,
+                                                  "attempts": 1, "next_retry_at": time.time() + 600}}},
+    )
+    mgr.task_store.add_run(prior)
+    before = len(mgr.inbox.pending(session_id=ORIGIN))
+    text_before = _origin_text(mgr)
+    openings: list[str] = []
+    _patch_engine(monkeypatch, [{"ask": "使用哪个账号继续", "text": "先做别的"}], openings)
+
+    run = _run(mgr, task)
+    assert len(mgr.inbox.pending(session_id=ORIGIN)) == before, "退避期内不该再发卡"
+    assert _origin_text(mgr) == text_before, "退避期内不该再发提醒"
+    assert run.status == "needs_you"
+
+
+def test_retry_due_posts_one_reminder_and_bumps_schedule(tmp_path, monkeypatch):
+    mgr = _mgr(tmp_path, monkeypatch)
+    task = _real_task()
+    mgr.task_store.save(task)
+    item = mgr.inbox.add_question(ORIGIN, "用哪个账号继续？", options=["A账号"], visibility="inline")
+    prior = TaskRun(
+        task_id=task.id, status="needs_you", finished_at=time.time() - 60,
+        checkpoint={"goal": {"state": "hash=x", "done": False, "rounds": 1,
+                             "pending_question": {"item_id": item.id, "title": "用哪个账号继续？",
+                                                  "kind": "irreversible", "asked_at": time.time() - 900,
+                                                  "attempts": 1, "next_retry_at": time.time() - 1}}},
+    )
+    mgr.task_store.add_run(prior)
+    openings: list[str] = []
+    _patch_engine(monkeypatch, [{"ask": "用哪个账号继续？", "text": "先做别的"}], openings)
+
+    run = _run(mgr, task)
+    assert "还在等你回答" in _origin_text(mgr), "该退避提醒时没提醒"
+    pq = run.checkpoint["goal"].get("pending_question") or {}
+    assert int(pq.get("attempts") or 0) == 2
+    assert pq.get("next_retry_at", 0) > time.time()
+
+
+def test_overdue_question_stops_task_with_blocker(tmp_path, monkeypatch):
+    from deskmate.autonomy.goal import QUESTION_MAX_WAIT_S as Q_MAX_WAIT_S
+
+    mgr = _mgr(tmp_path, monkeypatch)
+    task = _real_task()
+    mgr.task_store.save(task)
+    item = mgr.inbox.add_question(ORIGIN, "要发出这条消息吗？", options=["发", "不发"], visibility="inline")
+    prior = TaskRun(
+        task_id=task.id, status="needs_you", finished_at=time.time() - 60,
+        checkpoint={"goal": {"state": "hash=x", "done": False, "rounds": 1,
+                             "pending_question": {"item_id": item.id, "title": "要发出这条消息吗？",
+                                                  "kind": "irreversible", "asked_at": time.time() - Q_MAX_WAIT_S - 60,
+                                                  "attempts": 3, "next_retry_at": time.time() - 1}}},
+    )
+    mgr.task_store.add_run(prior)
+    openings: list[str] = []
+    _patch_engine(monkeypatch, [{"text": "不该跑引擎"}], openings)
+
+    run = _run(mgr, task)
+    assert run.status == "blocked", "超时没停任务，会无限空转"
+    assert run.delivered_at is not None, "停任务要留下「卡在哪、等了多久」"
+    assert run.checkpoint["goal"]["done"] is True
+    assert "要发出这条消息吗" in (run.result_text or "")
+    assert len(openings) == 0, "已超时就别再起引擎"
+
+
+def test_opening_lists_three_tier_protocol(tmp_path):
+    from deskmate.autonomy.goal import build_goal_opening
+
+    text = build_goal_opening({})
+    assert "可逆" in text and "不可逆" in text
+    assert "kind" in text, "得告诉模型怎么声明分类"
