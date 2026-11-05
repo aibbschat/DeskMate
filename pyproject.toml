@@ -69,6 +69,12 @@ bedrock = ["boto3>=1.34"]
 # 体积：依赖约 185MB（onnxruntime 80MB 是大头）+ 模型约 102MB（首次下载或随包分发）。
 # 许可：fastembed Apache-2.0 / onnxruntime MIT / BGE 模型 MIT ⇒ DMG-safe。
 deskmate-embed = ["fastembed>=0.4"]
+# 本地语音听写（scripts/sensevoice_stt.py）：桌面 Composer 现在走 whisper.cpp
+# ggml-base.bin，中文输出繁体字。SenseVoiceSmall int8 是通用 sherpa-onnx 格式，
+# 中文输出简体且自带标点，8 秒音频实测约 0.18s。模型文件 239MB 预置在
+# <state_dir>/models/sensevoice，不进 wheel / bundle；可选依赖，不装则 CLI 明确报错。
+# 许可：sherpa-onnx Apache-2.0 / SenseVoice 模型 Apache-2.0 ⇒ DMG-safe。
+deskmate-stt = ["sherpa-onnx==1.13.8"]
 
 [project.scripts]
 openworker = "coworker.cli:main"
