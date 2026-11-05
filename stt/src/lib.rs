@@ -719,6 +719,39 @@ mod tests {
         assert!(error.contains("openworker-stt"), "{error}");
     }
 
+    /// 锁住「Rust 写临时 WAV → 子进程转写 → 原样返回文本 → 删临时文件」整条链路。
+    /// 用 fake 入口替代真实模型，测试不依赖 239MB 资产。
+    #[cfg(unix)]
+    #[test]
+    fn transcribe_passes_a_wav_and_returns_the_cli_text_verbatim() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("ocw-stt-fake-{unique}"));
+        fs::create_dir_all(&dir).unwrap();
+        let fake = dir.join("fake-stt");
+        fs::write(&fake, "#!/bin/sh\nprintf '今天天气不错'\n").unwrap();
+        fs::set_permissions(&fake, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let staged_before = fs::read_dir(std::env::temp_dir())
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| entry.file_name().to_string_lossy().starts_with("ocw-stt-"))
+            .count();
+        let text = transcribe(Some(&fake), &[0.0, 0.5, -0.5]).unwrap();
+        assert_eq!(text, "今天天气不错");
+        let staged_after = fs::read_dir(std::env::temp_dir())
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| entry.file_name().to_string_lossy().starts_with("ocw-stt-"))
+            .count();
+        assert_eq!(staged_before, staged_after, "临时录音 WAV 必须删干净");
+        fs::remove_dir_all(dir).unwrap();
+    }
+
     #[test]
     fn readiness_requires_a_verified_model_and_persists_after_a_test() {
         let unique = SystemTime::now()
