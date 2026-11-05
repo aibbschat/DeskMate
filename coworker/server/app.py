@@ -4058,6 +4058,12 @@ def create_app(manager: SessionManager) -> FastAPI:
         CustomEvent，App.tsx 监听后调本端点。本端点直接操作 DisturbManager 的
         持久化文件（与 proactivity MCP 服务用的是同一份 disturb_state.json），
         这样防打扰规则（连续忽略 3 次降级、30 分钟冷却）就能真正生效。
+
+        P1（2026-11-05）：同时按**书名对象**记 7 天冷却。旧版 suggestion_key
+        是正文前 100 字、LLM 每次措辞都不同 → 精确 key 冷却永不命中，
+        feedback 又不带类型与对象，于是「忽略了还天天提」。对象冷却写进
+        deskmate.db 的 proactivity_meta（SQL 单键 upsert），不会被多进程
+        全量覆盖 disturb_state.json 时冲掉。
         """
         try:
             body = await request.json()
@@ -4078,11 +4084,36 @@ def create_app(manager: SessionManager) -> FastAPI:
             disturb_path = desk_dir / "memory" / "disturb_state.json"
             mgr = DisturbManager()
             mgr.persist(disturb_path)  # 加载已有的持久化状态
+            # 反查建议类型：前端只回传正文 key，类型在防打扰记录里（也可由调用方显式给）
+            suggestion_type = str(body.get("suggestion_type") or "")
+            if not suggestion_type:
+                for rec in reversed(mgr.records):
+                    if rec.suggestion_key == suggestion_key:
+                        suggestion_type = rec.suggestion_type
+                        break
             mgr.record_feedback(suggestion_key, accepted)
             # record_feedback 内部会调 _persist()，但 DisturbManager 可能未设 persist_path
             mgr.persist_path = disturb_path
             mgr._persist()
-            return {"ok": True, "accepted": accepted}
+            # 按书名对象的冷却（与 ProactiveEngine.record_feedback 同源、同一份库）
+            cooled_books: list[str] = []
+            try:
+                from deskmate.proactivity.writing_context import record_book_feedback
+
+                cooled_books = record_book_feedback(
+                    text=suggestion_key,
+                    accepted=accepted,
+                    suggestion_type=suggestion_type,
+                    base_dir=desk_dir,
+                )
+            except Exception:
+                logging.exception("deskmate feedback book cooldown failed")
+            return {
+                "ok": True,
+                "accepted": accepted,
+                "suggestion_type": suggestion_type,
+                "cooled_books": cooled_books,
+            }
         except Exception:
             logging.exception("deskmate feedback failed")
             return JSONResponse({"error": "feedback failed"}, status_code=500)

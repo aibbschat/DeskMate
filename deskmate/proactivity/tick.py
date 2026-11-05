@@ -562,10 +562,12 @@ class ProactiveEngine:
         # 不改 engine.workspace 的持久状态；解析失败则退回原行为。
         effective_workspace = self.workspace
         writing_status = ""
+        writing_books = []
         try:
             from deskmate.proactivity.writing_context import (
-                build_writing_status,
+                format_writing_status,
                 resolve_writing_workspace,
+                scan_writing_books,
             )
 
             if not effective_workspace:
@@ -573,10 +575,14 @@ class ProactiveEngine:
                 if resolved is not None:
                     effective_workspace = str(resolved)
             if effective_workspace:
-                writing_status = build_writing_status(effective_workspace)
+                # 只扫一次：状态文本与下面的 P0 门禁共用同一份结构化事实，
+                # 避免「judge 看到的书」和「门禁判断的书」两套口径。
+                writing_books = scan_writing_books(effective_workspace)
+                writing_status = format_writing_status(writing_books)
         except Exception:
             effective_workspace = self.workspace
             writing_status = ""
+            writing_books = []
         ctx = build_proactive_context(
             workspace=effective_workspace,
             memory_context=mem_ctx,
@@ -678,6 +684,56 @@ class ProactiveEngine:
                 _self_expression_forced = True
         except Exception:
             pass
+
+        # ===== 2.5 P0 硬门禁（2026-11-05）：多书并行时「某本停笔」是切换，不是中断 =====
+        # 11-05 实锤：judge 的写作状态第一行就是「《夜不收》：今天动过笔」，
+        # 卡片依据自己也写了「只是这本书被搁置了」，却仍选择催国子监。
+        # 所以不能靠模型自觉——在决策之前用确定性规则把这类卡片挡死：
+        #   ① 存在当前在写的书 → 禁止针对其他书的停笔/催写/关怀卡；
+        #   ② 被他忽略过的书名 → 7 天冷却内不再提。
+        # 两者都 fail-open：门禁自身出错绝不阻断主动推理。
+        try:
+            from deskmate.proactivity.writing_context import (
+                guard_writing_suggestion,
+                is_book_cooled,
+            )
+
+            _guard_reason = guard_writing_suggestion(
+                content=judgment.suggestion_content,
+                reasoning=judgment.reasoning,
+                suggestion_type=judgment.suggestion_type,
+                books=writing_books,
+                forced_self_expression=_self_expression_forced,
+            )
+            if not _guard_reason and judgment.suggestion_content:
+                if is_book_cooled(
+                    f"{judgment.suggestion_content}\n{judgment.reasoning}",
+                    base_dir=self.base_dir,
+                ):
+                    _guard_reason = "这本书刚被他忽略过，7 天内不再提"
+            if _guard_reason:
+                what_doing = ""
+                companion_msg = ""
+                try:
+                    from .companion import describe_activity, get_companion_tracker
+
+                    what_doing = describe_activity(_win, activity)
+                    companion_msg = get_companion_tracker().update(activity, _win) or ""
+                except Exception:
+                    pass
+                return TickResult(
+                    action=ActionType.NO_ACTION,
+                    judgment=judgment,
+                    activity=activity,
+                    skipped_reason=_guard_reason,
+                    elapsed_ms=int((time.time() - start) * 1000),
+                    heartbeat_interval_ms=self._heartbeat_interval_ms,
+                    what_user_doing=what_doing,
+                    companion_message=companion_msg,
+                    diary=diary_payload,
+                )
+        except Exception:
+            logger.debug("多书并行门禁失败（不阻断 tick）", exc_info=True)
 
         # ===== 3. 行动（Act）=====
         # 信任感调制阈值已在开头算好（trust 高 → 阈值下调 → 更敢主动）
@@ -843,18 +899,34 @@ class ProactiveEngine:
 
         同时上报成长系统：接受 → 信任/默契/心情上升；忽略 → 下降。
         被接受的建议沉淀为「行为偏好」（P1-2：主动本身越用越懂）。
+
+        P1（2026-11-05）：反馈按**书名对象**落到 7 天冷却里。旧版
+        suggestion_key = 正文前 100 字，LLM 每次措辞不同就永远命不中去重；
+        「忽略」也没带类型，凑不满连续忽略降级。这里补上对象与类型，
+        前端 HTTP 端点（不过 ProactiveEngine）另有一处同源写入。
         """
+        typ = ""
+        for rec in reversed(self.disturb.records):
+            if rec.suggestion_key == suggestion_key:
+                typ = rec.suggestion_type
+                break
+        try:
+            from deskmate.proactivity.writing_context import record_book_feedback
+
+            record_book_feedback(
+                text=suggestion_key,
+                accepted=accepted,
+                suggestion_type=typ,
+                base_dir=self.base_dir,
+            )
+        except Exception as e:
+            logger.debug("按书名记录反馈冷却失败（不阻断）: %s", e)
         self.disturb.record_feedback(suggestion_key, accepted)
         # P1-2：被接受 → 沉淀行为偏好（反查建议类型；不碰 memory manager）
         if accepted:
             try:
                 from deskmate.proactivity.preferences import PreferenceStore
 
-                typ = ""
-                for rec in reversed(self.disturb.records):
-                    if rec.suggestion_key == suggestion_key:
-                        typ = rec.suggestion_type
-                        break
                 if typ:
                     PreferenceStore(base_dir=self.base_dir).record_accepted(
                         typ, suggestion_key

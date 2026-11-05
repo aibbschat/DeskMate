@@ -1614,6 +1614,80 @@ def mark_delivered(
     return True
 
 
+def record_suggestion_delivery(
+    base_dir: Optional[Path] = None,
+    *,
+    content: str,
+    suggestion_type: str,
+    reasoning: str = "",
+    confidence: float = 0.0,
+    target: str = "",
+    delivery_channel: str = "background_ws",
+) -> str:
+    """P1（2026-11-05）：后台 WS 广播的建议落**送达凭证**，返回确定性 id。
+
+    旧链路里 ``manager._broadcast_deskmate_suggestion`` 只把 judgment 拼成一条
+    WS 消息（id 是随机时间戳），既不落台账、也不记 delivered_at，于是
+    「接受/忽略」无账可查，反馈只能靠前台 disturb_state.json 的整文件覆盖去猜。
+    这里补上凭证：**status 直接是 delivered**，不进 pending —— 否则
+    build_handoff_opening 会把同一张卡二次递出。
+
+    id = ``deskmate_suggestion:<类型>:<对象>:<正文指纹>``：同一条重复广播幂等合并，
+    不同措辞的建议各有各的账。payload 带类型/对象/通道/送达时间，供回查。
+    fail-open：写失败返回空串，绝不阻断广播。
+    """
+    if not (content or "").strip():
+        return ""
+    try:
+        base = _resolve_base(base_dir)
+        db = base / "deskmate.db"
+        now = time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime())
+        slug = re.sub(r"[^0-9A-Za-z\u4e00-\u9fff]+", "", (target or "")[:24]) or "none"
+        digest = hashlib.sha1(content.encode("utf-8")).hexdigest()[:10]
+        rid = f"deskmate_suggestion:{suggestion_type}:{slug}:{digest}"
+        payload = json.dumps(
+            {
+                "suggestion_type": str(suggestion_type or ""),
+                "target": str(target or ""),
+                "delivery_channel": str(delivery_channel or ""),
+                "delivery_id": rid,
+                "delivered_at": now,
+            },
+            ensure_ascii=False,
+        )
+        with sqlite3.connect(str(db), check_same_thread=False) as c:
+            _ensure_table(c)
+            try:
+                sn = c.execute("SELECT node FROM _sync_meta WHERE id=1").fetchone()
+                source_node = sn[0] if sn and sn[0] else "mac"
+            except Exception:
+                source_node = "mac"
+            cols = (
+                "id, source, kind, content, evidence, understanding, payload,"
+                " source_node, status, confidence, created_at, acknowledged_at,"
+                " delivered_at, snoozed_until, visibility,"
+                " origin, intent_id, discuss_phase, discuss_round"
+            )
+            c.execute(
+                f"INSERT INTO {LEDGER_TABLE} ({cols})"
+                f" VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
+                f" ON CONFLICT(id) DO UPDATE SET"
+                f" content=excluded.content, evidence=excluded.evidence,"
+                f" payload=excluded.payload, confidence=excluded.confidence",
+                (
+                    rid, "deskmate_suggestion", str(suggestion_type or ""), content,
+                    (reasoning or "后台 WS 广播送达凭证")[:500], "", payload,
+                    source_node, "delivered", float(confidence or 0.0), now, None,
+                    now, None, "sync", "proactive_default", None, None, None,
+                ),
+            )
+            c.commit()
+        return rid
+    except Exception as e:  # noqa: BLE001
+        logger.debug("建议送达凭证落库失败（不阻断广播）: %s", e)
+        return ""
+
+
 def _clip_first_sentence(text: str, cap: int = 80) -> str:
     """取首句（。！？/换行截断）并封顶 cap 字——长论述不再整段倾倒进消息流。"""
     text = (text or "").strip()

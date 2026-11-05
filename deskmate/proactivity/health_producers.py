@@ -586,12 +586,40 @@ def _writing_producer(base_dir: Optional[Path] = None) -> list:
                 Path(r).expanduser() for r in _DEFAULT_SCRIBE_ROOTS
             ]
             candidates = _scan_books(roots)
+        # P0（2026-11-05）：有「当前在写」（今天/昨天动过笔）的书时，其余书只是
+        # 切换后的其他项目，不再产 stall_flag。旧逻辑靠 45 天活跃窗口把 7 天没动的
+        # 书也算「在写但停了」，会一直 nag 到第 45 天。没有当前项目时才按停笔正常报。
+        # 口径与 judge 侧共用 writing_context 的同一份结构化事实（单一事实源）。
+        if not explicit:
+            try:
+                from deskmate.proactivity.writing_context import (
+                    WritingBook,
+                    current_writing_book,
+                )
+
+                _cur = current_writing_book(
+                    [WritingBook(n, m, f) for n, m, f in candidates]
+                )
+                if _cur is not None:
+                    candidates = [c for c in candidates if c[0] == _cur.name]
+            except Exception:
+                pass
         for name, mtime, fname in candidates:
             stall_days = (now - mtime) / 86400.0
             if stall_days >= _ACTIVE_WINDOW_DAYS:
                 continue  # 不在写的书：写完/搁置许久了，不 nag
             if stall_days < _STALL_DAYS_THRESHOLD:
                 continue  # 新鲜
+            # P1：他刚忽略过这本书 → 7 天冷却内连台账都不再产，避免复活轻递。
+            try:
+                from deskmate.proactivity.writing_context import is_book_cooled
+
+                if is_book_cooled(
+                    f"《{name}》{int(stall_days)} 天没动笔", base_dir=base_dir
+                ):
+                    continue
+            except Exception:
+                pass
             slug = _SLUG_UNSAFE.sub("", name) or "book"
             items.append({
                 "kind": "stall_flag",

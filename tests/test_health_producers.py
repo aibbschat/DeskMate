@@ -569,7 +569,9 @@ def test_writing_producer_scans_all_books(base, monkeypatch):
 
     root = base / "已出版"
     _make_book(root, "20.国子监秘闻录", {"国子监秘闻录.docx": 10})
-    _make_book(root, "21.京报笔谈：锦州之围", {"京报笔谈.docx": 1})  # 新写的，不报
+    # 2.5 天前：已超出「当前在写」的 2 天窗口（不会触发 P0 门禁把国子监一并跳过），
+    # 但仍没到 3 天停笔阈值，自己也不该报 —— 保留本用例锁住「只报停笔的那本」。
+    _make_book(root, "21.京报笔谈：锦州之围", {"京报笔谈.docx": 2.5})
     _make_book(root, "2.兰陵王", {"兰陵王.docx": 700})  # 写完的老书，不 nag
     monkeypatch.setenv("SCRIBE_ROOTS", str(root))
     monkeypatch.delenv("SCRIBE_DOCX", raising=False)
