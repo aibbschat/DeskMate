@@ -12,6 +12,8 @@
 """
 from __future__ import annotations
 
-from . import discussion, rooms, roster
+from . import discussion, reading, rooms, roster, runtime
 
-__all__ = ["discussion", "rooms", "roster"]
+# 注意：web 故意不在此导入 —— create_app() 会打开 sqlite / 建表，是 import 期副作用。
+# 需要 Web 服务时显式 ``from deskmate.bots.web import create_app``。
+__all__ = ["discussion", "reading", "rooms", "roster", "runtime"]

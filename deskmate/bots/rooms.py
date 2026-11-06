@@ -21,6 +21,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 import threading
 import time
@@ -32,8 +33,24 @@ from coworker.teams.chat import ChatStore
 
 from deskmate.teams_client import resolve_base
 
-from .discussion import DiscussionLimits
+from .discussion import DiscussionLimits, bound_reason, resolve_mentions
 from .roster import KNOWN_BOT_IDS, list_bots
+
+logger = logging.getLogger(__name__)
+
+_DEFAULT_RUNTIME: Any = None
+_DEFAULT_RUNTIME_LOCK = threading.Lock()
+
+
+def _default_runtime() -> Any:
+    """懒加载真 Agent 运行时：import 期绝不构造 provider / 起 engine。"""
+    global _DEFAULT_RUNTIME
+    with _DEFAULT_RUNTIME_LOCK:
+        if _DEFAULT_RUNTIME is None:
+            from .runtime import BotRuntime
+
+            _DEFAULT_RUNTIME = BotRuntime()
+        return _DEFAULT_RUNTIME
 
 
 @dataclass(frozen=True)
@@ -187,6 +204,76 @@ class RoomStore:
         return self.chat_store.post(
             room_id, author, text, author_role=author_role
         )
+
+    # ---------------------------------------------------------------- 说人话
+    def say(
+        self,
+        room_id: str,
+        text: str,
+        *,
+        runtime: Any = None,
+        author: str = "user",
+    ) -> dict[str, Any]:
+        """群里说一句 → 唤醒 bot → 各自署名回话。**不填表单、不出纪要**。
+
+        - 不 @ = 全员（受 ``max_members`` 约束），``@谁`` 只唤醒谁；
+        - 每个 bot 是**真 Agent**：要不要读稿、读哪一章由它自己决定，
+          用户不必点「阅读全书」，也不必给路径；
+        - 一轮发言有硬上限（``max_messages``）；bot 之间可接话，但不会
+          互相递归唤醒（bot 消息的 ``author_role`` 不是 user）；
+        - **绝不生成纪要 / 总结 / 主持人收尾**（萧哥 11-06 决策 3）。
+        """
+        room = self.get_room(room_id)
+        if room is None:
+            raise ValueError(f"群 {room_id} 不存在或已解散")
+        clean = (text or "").strip()
+        if not clean:
+            raise ValueError("群里不能发空话")
+
+        rt = runtime if runtime is not None else _default_runtime()
+        user_msg = self.chat_store.post(room_id, author, clean, author_role="user")
+        woken = list(resolve_mentions(clean, room.bot_ids))[: self.limits.max_members]
+        history = list(self.chat_store.messages(room_id))
+        replies: list[dict[str, Any]] = []
+        bounded: str | None = None
+
+        for bot_id in woken:
+            reason = bound_reason(1, len(replies), self.limits)
+            if reason:
+                bounded = reason
+                break
+            try:
+                reply = rt.speak(bot_id, clean, history=history)
+            except Exception as exc:  # noqa: BLE001 —— 一个 bot 挂了不拖垮整群
+                logger.warning("bot %s 发言失败：%s", bot_id, exc)
+                continue
+            if not (reply or "").strip():
+                continue
+            msg = self.chat_store.post(
+                room_id, bot_id, reply, author_role="bot"
+            )
+            self.chat_store.consume(room_id, bot_id, int(msg["seq"]))
+            replies.append(
+                {
+                    "seq": msg["seq"],
+                    "author": bot_id,
+                    "name": room.bot_names.get(bot_id, bot_id),
+                    "text": reply,
+                    "author_role": "bot",
+                }
+            )
+            # 后发言的 bot 看得到前面 bot 刚说的话（真讨论，不是并列的独白），
+            # 但不额外增加模型调用数。
+            history.append(
+                {"author": bot_id, "author_role": "bot", "text": reply}
+            )
+        return {
+            "room_id": room_id,
+            "user_message": user_msg,
+            "woken": list(woken),
+            "replies": replies,
+            "bounded": bounded,
+        }
 
     def close(self) -> None:
         with self._lock:
