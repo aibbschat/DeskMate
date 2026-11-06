@@ -447,6 +447,12 @@ SKILLS_TOOLS_MODULES=(
   "deskmate/creation/personas_loader.py"
   "deskmate/creation/pipeline.py"
   "deskmate/creation/service.py"
+  # Bot Mode 骨架（2026-11-06 补）：整包相互 import（__init__ 会 import 三个模块），
+  # 必须同批上云；漏一个就是 ImportError 被 fail-open 吞掉的静默失效。
+  "deskmate/bots/__init__.py"
+  "deskmate/bots/roster.py"
+  "deskmate/bots/rooms.py"
+  "deskmate/bots/discussion.py"
 )
 
 FORCE=0
