@@ -9,8 +9,14 @@ default_permission_mode、mcp 声明），跟小桔 deskmate.md 同构。旧圆�
 变成能自主调用 ``read_book`` 的真 Agent。
 
 三条硬约束：
-1. **provider 不跟随主对话模型**：默认指向付费通道组（ark），否则会重演昨天
-   「opencode-go 400 MissingSessionID」把每批抽取打挂的事故。
+1. **跟随 GUI 主模型，但必须走官方 ProviderRouter**（2026-11-06 萧哥拍板改判）：
+   群聊用 ``prefs.json:default_model`` 选的模型，与主对话同源。旧版写死「绝不跟随」
+   是因为当时自己拼裸 ``OpenAIProvider``，绕过了 ``registry`` descriptor —— opencode-go
+   网关要 ``x-opencode-session``，裸调必得 400 MissingSessionID（11-06 圣经抽取事故）。
+   现在交给 ``ProviderRouter``：它按 ``provider:`` 前缀选 client，descriptor 自带的合规
+   会话头会一并生效，**裸调的原因根治了**，所以可以安全地跟随主模型。
+   显式 ``DESKMATE_BOT_MODEL`` 覆盖优先；主模型缺失或为 ``auto`` 哨兵时才退回付费通道组
+   （在 /api/health 里标明来源，不静默降级）。
 2. **工具面只读**：``dataclasses.replace`` 换掉 tool_factory，再收紧 registry，
    只留 ``read_book`` / ``list_books``；write_file / apply_patch / run_shell /
    save_skill / a2a_call / web_fetch 全部摘掉 —— 书稿绝不进入可写工具的射程。
@@ -24,6 +30,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import dataclasses
+import json
 import logging
 import os
 import re
@@ -92,6 +99,77 @@ def strip_self_attribution(text: str) -> str:
     return "".join(lines[1:]).lstrip("\r\n").strip()
 
 
+#: 显式覆盖（验收 / 回退）：``DESKMATE_BOT_MODEL=provider:model``，优先于 GUI 主模型。
+MODEL_OVERRIDE_ENV = "DESKMATE_BOT_MODEL"
+
+
+def _main_model_from_prefs() -> str:
+    """读 GUI 主模型（``prefs.json:default_model``），与 SessionManager 同源。
+
+    只读取、不写、不缓存：设置面板改了模型，下一个新建的 bot engine 立刻跟上
+    （已缓存的 engine 仍用旧模型，与「换模型要开新会话」的既有约定一致）。
+    """
+    from coworker.secrets import state_dir
+
+    try:
+        path = state_dir() / "prefs.json"
+        if not path.is_file():
+            return ""
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return str(data.get("default_model") or "").strip()
+    except Exception:  # noqa: BLE001 —— prefs 损坏不该让群聊崩在 import/构造期
+        return ""
+
+
+def model_choice() -> tuple[str, str, str]:
+    """这次群聊用哪个模型：``(model, source, reason)``，**零网络、零凭证解析**。
+
+    - ``override``：``DESKMATE_BOT_MODEL`` 显式指定，完整 ``provider:model`` 字符串；
+    - ``main``：GUI 主模型，同样是完整字符串，交给 ``ProviderRouter`` 自己剥前缀；
+    - ``paid_fallback``：主模型缺失或是 ``auto`` 动态路由哨兵（没有具体通道可直连），
+      退回付费通道组；``model`` 为空，由 ``paid_credentials()`` 解析。
+
+    ``reason`` 只在 fallback 时非空，供 ``/api/health`` 展示——**不静默降级**。
+    """
+    override = os.environ.get(MODEL_OVERRIDE_ENV, "").strip()
+    if override:
+        return override, "override", ""
+    main = _main_model_from_prefs()
+    if main:
+        try:
+            from coworker.providers.dynamic_route import AUTO_MODEL
+        except Exception:  # noqa: BLE001
+            AUTO_MODEL = "auto"
+        if main == AUTO_MODEL:
+            return "", "paid_fallback", "主模型是 auto 动态路由，群聊需要明确模型"
+        return main, "main", ""
+    return "", "paid_fallback", "prefs 未设 default_model"
+
+
+def resolve_default_provider_model() -> tuple[Any, str, str]:
+    """一次解析出 ``(provider, model, source)``，防 provider / model 各自路由串味。
+
+    ``main`` / ``override`` 走官方 ``ProviderRouter``：它按前缀挑 client，
+    ``opencode-go`` 这类网关 descriptor 自带的 UA + ``x-opencode-session`` 会生效，
+    不会重演 400 MissingSessionID。``paid_fallback`` 才用裸 OpenAIProvider（付费组
+    成员都是 OpenAI 兼容直连，不需要会话头）。
+    """
+    model, source, _reason = model_choice()
+    if source == "paid_fallback":
+        from coworker.providers.openai_provider import OpenAIProvider
+
+        api_key, base_url, channel_model = paid_credentials()
+        return (
+            OpenAIProvider(api_key=api_key, base_url=base_url, default_model=channel_model),
+            channel_model,
+            source,
+        )
+    from coworker.providers.router import ProviderRouter
+    from coworker.secrets import SecretStore
+
+    return ProviderRouter(secrets=SecretStore()), model, source
+
+
 def paid_credentials() -> tuple[str, str, str]:
     """取付费通道组里第一条可用通道的 ``(api_key, base_url, model)``。
 
@@ -111,11 +189,11 @@ def paid_credentials() -> tuple[str, str, str]:
 
 
 def default_provider() -> Any:
-    """付费通道组的 OpenAI 兼容 provider。
+    """**付费组兜底**用的 OpenAI 兼容 provider（保留给 fallback 与旧调用方）。
 
-    **绝不**用 ``_resolve_provider()`` 的 default_model：主模型 opencode-go 网关
-    要求 ``x-opencode-session`` 会话头，后台裸调用必得 400 MissingSessionID
-    （见 2026-11-06 圣经抽取事故）。
+    2026-11-06 起这已**不是**群聊默认：默认走 ``resolve_default_provider_model()``
+    的官方 ``ProviderRouter``（跟随 GUI 主模型，且自带网关会话头）。此函数仅供
+    「主模型缺失 / auto」的付费组回退与回归测试使用，别再当成默认入口。
     """
     from coworker.providers.openai_provider import OpenAIProvider
 
@@ -124,6 +202,7 @@ def default_provider() -> Any:
 
 
 def default_model() -> str:
+    """付费组兜底模型（兼容旧调用方）；群聊实际模型请看 ``model_choice()``。"""
     return paid_credentials()[2]
 
 
@@ -305,18 +384,15 @@ class BotRuntime:
             )
             ws = self.workspace_root / _safe_segment(key[0]) / bot_id
             ws.mkdir(parents=True, exist_ok=True)
-            provider, model = self.provider, self.model
-            if provider is None or not model:
-                # 一次解析，避免 provider / model 各自路由到不同通道
-                api_key, base_url, channel_model = paid_credentials()
-                if provider is None:
-                    from coworker.providers.openai_provider import OpenAIProvider
-
-                    provider = OpenAIProvider(
-                        api_key=api_key, base_url=base_url, default_model=channel_model
-                    )
-                if not model:
-                    model = channel_model
+            if self.provider is not None and self.model:
+                # 显式注入（离线测试 / 验收）：provider 与 model 成对给，直接沿用。
+                provider, model = self.provider, self.model
+            else:
+                # 一次解析，避免 provider / model 各自路由到不同通道。默认跟随 GUI
+                # 主模型并走官方 ProviderRouter；缺主模型 / auto 时才回付费组，且
+                # resolve_default_provider_model 会在 paid_credentials 抛错时 fail-fast。
+                provider, model, source = resolve_default_provider_model()
+                logger.info("bot 群模型来源=%s model=%s", source, model)
             eng = build_engine(
                 agent=agent,
                 provider=provider,

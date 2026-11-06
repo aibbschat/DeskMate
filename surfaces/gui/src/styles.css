@@ -685,13 +685,13 @@ body {
   min-height: 0; overflow: hidden;
   background: var(--paper);   /* plain paper, matching the mock (was a dotted graph texture) */
 }
-/* 创作圆桌：以 iframe 内嵌，须占满主内容网格单元（与 .main 同列），
+/* 创作圆桌 / Bot 群：以 iframe 内嵌，须占满主内容网格单元（与 .main 同列），
    不能用 position:absolute;inset:0 —— 父容器 .app 非定位元素，会让它盖满整窗（含左栏）导致卡死。 */
-.roundtable-view {
+.roundtable-view, .botroom-view {
   position: relative; display: flex; flex-direction: column;
   min-width: 0; min-height: 0; overflow: hidden;
 }
-.roundtable-view iframe {
+.roundtable-view iframe, .botroom-view iframe {
   flex: 1 1 auto; width: 100%; min-height: 0; border: 0; background: #fff;
 }
 .main-topbar {

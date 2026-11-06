@@ -114,6 +114,10 @@ PAGE = r"""<!doctype html>
   </main>
 </div>
 <script>
+// 独立页跑在 /，挂进 sidecar 时跑在 /bots/。前缀由 create_app(base_prefix=...) 在
+// 服务端注入，不靠 JS 猜 location —— 两种形态共用同一份页面，API 路径不会打错域。
+const BASE = __BOT_BASE__;
+const url = p => BASE + p;
 let current = null, rooms = [], bots = [];
 const streams = {};   // turn_id -> 正在生长的气泡
 const $ = s => document.querySelector(s);
@@ -122,8 +126,8 @@ function botName(id) {
   const b = bots.find(x => x.id === id);
   return b ? b.name : id;
 }
-async function api(url, opt) {
-  const r = await fetch(url, opt);
+async function api(path, opt) {
+  const r = await fetch(url(path), opt);
   const d = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error(d.detail || ('HTTP ' + r.status));
   return d;
@@ -241,7 +245,7 @@ async function send() {
     `<div class="msg me"><span class="who">我</span>${esc(text)}</div>`);
   $('#log').scrollTop = $('#log').scrollHeight;
   try {
-    const resp = await fetch('/api/rooms/' + current + '/stream', {
+    const resp = await fetch(url('/api/rooms/' + current + '/stream'), {
       method: 'POST', headers: {'Content-Type':'application/json'},
       body: JSON.stringify({text})
     });
@@ -295,21 +299,41 @@ def _sse(event: dict[str, Any]) -> str:
     return f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
 
 
-def create_app(base_dir: Optional[str] = None, runtime: Any = None) -> FastAPI:
-    """``runtime`` 可注入伪造的 BotRuntime（离线测试 / 未来桌面端接入用）。
+def create_app(
+    base_dir: Optional[str] = None,
+    runtime: Any = None,
+    base_prefix: str = "",
+) -> FastAPI:
+    """``runtime`` 可注入伪造的 BotRuntime（离线测试 / 桌面端接入用）。
 
     不传时走 ``rooms._default_runtime()`` 懒加载真 Agent，import 期不构造 provider。
+
+    ``base_prefix`` 是**挂载前缀**（sidecar 里传 ``/bots``，独立 9921 页传空串）：
+    Starlette Mount 会剥掉前缀，后端路由仍是 ``/api/...``，但页面里生成的 fetch URL
+    必须带上它，否则会打到主 app 根路径 404。前缀由服务端注入 PAGE，不让 JS 猜。
     """
     app = FastAPI(title="Bot 群")
     store = RoomStore(base_dir or os.environ.get("DESKMATE_BOT_BASE"))
+    _bp = str(base_prefix or "").strip().strip("/")
+    prefix = "/" + _bp if _bp else ""
+    page = PAGE.replace("__BOT_BASE__", json.dumps(prefix))
 
     @app.get("/", response_class=HTMLResponse)
     def index() -> str:
-        return PAGE
+        return page
 
     @app.get("/api/health")
     def health() -> dict[str, Any]:
-        return {"ok": True, "books": len(default_shelf().list_books())}
+        from .runtime import model_choice
+
+        model, source, reason = model_choice()
+        return {
+            "ok": True,
+            "books": len(default_shelf().list_books()),
+            "model": model or "(付费通道组兜底)",
+            "model_source": source,
+            "model_reason": reason,
+        }
 
     @app.get("/api/bots")
     def bots() -> list[dict[str, str]]:

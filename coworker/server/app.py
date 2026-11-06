@@ -7717,6 +7717,31 @@ def create_app(manager: SessionManager) -> FastAPI:
     except Exception as exc:  # noqa: BLE001
         logging.getLogger(__name__).warning("创作圆桌挂载失败（功能不可用）：%s", exc)
 
+    # Bot 群：真 Agent 常驻 + 群随话题建撤，挂到 /bots。与创作圆桌**并存**，
+    # 圆桌暂不退役（萧哥 11-06：先在 GUI 里验一遍新 bot 群再说）。
+    # 群库用 RoomStore 默认目录（与独立 9921 页同一份），切换入口不丢群。
+    try:
+        from deskmate.bots.web import create_app as _create_bot_room_app
+        from starlette.routing import Mount as _BotMount
+
+        # base_prefix 必传：Mount 会剥掉 /bots，后端路由仍是 /api/...，但页面里
+        # fetch 的 URL 要带前缀，否则打到主 app 根路径 404（web.py:create_app 有说明）。
+        _bot_mount = _BotMount("/bots", _create_bot_room_app(base_prefix="/bots"))
+        _routes = app.router.routes
+        _idx = next(
+            (i for i, r in enumerate(_routes) if getattr(r, "path", "") == "/{tenant}"),
+            len(_routes),
+        )
+        _routes.insert(_idx, _bot_mount)
+        logging.getLogger(__name__).info("Bot 群已挂载于 /bots")
+    except Exception as exc:  # noqa: BLE001
+        # 这里会吞掉 ImportError：云端若漏传 deskmate/bots/*.py 就是「页面打不开但服务不报错」。
+        # 部署前务必核对 deploy_cloud_sync.sh 的增量清单（红线：漏传=静默失效）。
+        logging.getLogger(__name__).warning(
+            "Bot 群挂载失败（功能不可用，先核对 deploy_cloud_sync.sh 是否含 deskmate/bots/*.py）：%s",
+            exc,
+        )
+
     return app
 
 

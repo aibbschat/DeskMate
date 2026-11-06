@@ -150,6 +150,9 @@ interface Props {
   // 创作圆桌入口（独立页面，主区以 iframe 内嵌）。
   onOpenRoundtable?: () => void;
   roundtableActive?: boolean;
+  // Bot 群入口（真 Agent 常驻 + 临时群，与圆桌并存；独立页面以 iframe 内嵌）。
+  onOpenBotRoom?: () => void;
+  botRoomActive?: boolean;
   // 创作流水线入口（独立页面，驱动原生 teams 执行 + 圆桌终审）。
   onOpenCreation?: () => void;
   creationActive?: boolean;
@@ -1092,6 +1095,21 @@ export function Sidebar(props: Props) {
         >
           <Icon name="users" size={15} className="shrink-0" />
           <span className="flex-1">{t("sidebar.roundtable")}</span>
+        </button>
+      </div>
+
+      {/* Bot 群：真 Agent 常驻、群随话题建撤。圆桌保留并存，先在 GUI 里验一遍再谈退役。 */}
+      <div className="px-2.5 mt-1">
+        <button
+          className={
+            "w-full flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-ui text-left hover:bg-paper hover:text-ink " +
+            (props.botRoomActive ? "text-ink bg-paper" : "text-muted")
+          }
+          data-testid="nav-botroom"
+          onClick={props.onOpenBotRoom}
+        >
+          <Icon name="chat" size={15} className="shrink-0" />
+          <span className="flex-1">{t("sidebar.botroom", { defaultValue: "Bot 群" })}</span>
         </button>
       </div>
 

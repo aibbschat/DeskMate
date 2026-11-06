@@ -334,7 +334,7 @@ export function App() {
   // load; corrected by loadSettings.
   const [modelReady, setModelReady] = useState(true);
   const [surface, setSurface] = useState<
-    "session" | "scheduled" | "integrations" | "skillstore" | "audit" | "inbox" | "persona" | "settings" | "experts" | "roundtable" | "badges" | "profile" | "creation" | "teamchat" | "mailbox" | "team" | "gallery"
+    "session" | "scheduled" | "integrations" | "skillstore" | "audit" | "inbox" | "persona" | "settings" | "experts" | "roundtable" | "botroom" | "badges" | "profile" | "creation" | "teamchat" | "mailbox" | "team" | "gallery"
   >("session");
   const [teamId] = useState("");
   // #gallery：卡片状态画廊（只读假数据，没有导航入口）。调试/改样式后用这个地址进来，
@@ -1832,6 +1832,8 @@ export function App() {
         onOpenExperts={() => setSurface("experts")}
         onOpenRoundtable={() => setSurface("roundtable")}
         roundtableActive={surface === "roundtable"}
+        onOpenBotRoom={() => setSurface("botroom")}
+        botRoomActive={surface === "botroom"}
         onOpenCreation={() => setSurface("creation")}
         creationActive={surface === "creation"}
         onOpenProfile={() => setSurface("profile")}
@@ -1899,6 +1901,12 @@ export function App() {
       ) : surface === "roundtable" ? (
         <div className="roundtable-view">
           <iframe src={`${httpBase()}/roundtable/`} title="创作圆桌" />
+        </div>
+      ) : surface === "botroom" ? (
+        // Bot 群：真 Agent 常驻、群随话题建撤。挂在主 sidecar 的 /bots/ 下，
+        // 与创作圆桌并存（先在 GUI 里验一遍，确认没问题再谈圆桌退役）。
+        <div className="botroom-view">
+          <iframe src={`${httpBase()}/bots/`} title="Bot 群" />
         </div>
       ) : surface === "creation" ? (
         <CreationChatView onBack={() => setSurface("session")} />

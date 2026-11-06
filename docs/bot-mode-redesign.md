@@ -452,3 +452,70 @@
 - 本次验收范围 3 位 bot（非全员 8 位），已覆盖第 1 轮并发与 3 轮接话；全员 8 位未重复跑，避免无谓烧钱。
 - 9921 保持默认未动（ark 仍 429，`23:59:59` 重置后自动恢复）；9922 为临时群库的验收实例。
 - 产物：`/tmp/bot_quality_compare_20261106-221101/result.md`、`/tmp/bot_sse_verify_20261106-221341/report.md`（含 SSE 原始流与落库全文）。
+
+## 19. 模型链路改判 + GUI 接入（11-06 22:35 萧哥拍板，暂不打包）
+
+### 19.1 起因：一个与直觉相反的事实
+
+22:35 萧哥问「群聊的模型是不是跟着所选的主模型走的？如果是，不用去管他了，可以接入 GUI 了」。核实结果**不是**，而且是刻意写死的硬约束：
+
+| 核实点 | 事实 |
+|---|---|
+| GUI 主模型 | `prefs.json:default_model = deepseek:deepseek-flash`（熔断表 `closed`，主聊天健康） |
+| 群聊实取 | `rooms._default_runtime()` → `BotRuntime()` → `paid_credentials()` → `llm_channels.route(GROUP_PAID)`，固定 `ark → 小米 → 腾讯` |
+| 主模型作用范围 | `manager.py:269/4987` `_prefs["default_model"]` → `self.model`，只进主对话会话；bot 侧一行 prefs 都不读 |
+| 代码原文 | `bots/runtime.py`：「**绝不**用 `_resolve_provider()` 的 default_model」 |
+| 运行时实测 | `route(GROUP_PAID)` 返回 `None`（三条全熔断）；临时群库 SSE 两条 bot 都 `error: 付费通道组无可用通道` |
+
+熔断到期实读（`deskmate.db:llm_circuit_breaker`）：小米约 22:45（30 分钟退避）、ark `23:59:59`（配额重置）、腾讯次日约 04:15（403 长冷却）。⇒ 接入 GUI 后，23:59:59 前点群聊会直接 fail-fast；「不用管」当时**不成立**。
+
+### 19.2 根源：旧红线的原因可以被根治，而不是绕过
+
+11-06 圣经抽取事故里，后台裸调 `opencode-go` 网关得 `400 MissingSessionID`。当时的修法是「后台一律改走付费组，绝不跟随主模型」——**把症状当成契约**。真因是 `runtime.py` 自己拼裸 `OpenAIProvider`，绕过了 `registry` 的 `ProviderDescriptor.build()`：descriptor 本来就给 opencode-go 内置了 `User-Agent: xiaoju/1.0` + 稳定 `x-opencode-session`（`registry.py:711-714`）。
+
+官方 `ProviderRouter`（主对话用的同一个 provider）实测：
+
+| 主模型 | `_provider_name` | `_bare` | 网关头 |
+|---|---|---|---|
+| `deepseek:deepseek-flash` | `deepseek` | `deepseek-flash` | 不需要 |
+| `opencode-go:deepseek-v4.1-flash` | `opencode-go` | `deepseek-v4.1-flash` | `UA=xiaoju/1.0` + `x-opencode-session=ses_…` **自动带上** |
+
+⇒ 换成官方 Router 后，「跟随主模型」不再触发 400，旧红线的原因消失。萧哥 22:35 拍板：**改成跟随主模型**（不是加白名单、不是临时切通道）。
+
+### 19.3 落地契约
+
+- 优先级：`DESKMATE_BOT_MODEL=provider:model`（显式覆盖，验收/回退）> `prefs.json:default_model`（GUI 主模型）。
+- 两者都把**完整 `provider:model` 字符串**交给 `ProviderRouter`，由它剥前缀、选 client、带合规头；不自拼裸 provider。
+- 主模型缺失或为 `auto` 哨兵（没有具体通道可直连）→ 回付费组兜底，`/api/health` 返回 `model_source=paid_fallback` + `model_reason`，**不静默降级**。
+- `model_choice()` 零网络零凭证解析，供 health 展示；`resolve_default_provider_model()` 一次解析 `(provider, model, source)`，防 provider/model 串味。
+- 已缓存的 engine 沿用旧模型，新 engine 跟随新设置（与「换模型要开新会话」的既有约定一致）。
+- **保质硬前提不动**：不降 reasoning、不减人数、不压字数；质量由 GUI 所选模型决定。
+
+### 19.4 GUI 接入（新增入口，圆桌并存，暂不打包）
+
+- 后端：`coworker/server/app.py` 用 `Mount("/bots", create_app(base_prefix="/bots"))`，插在 `/{tenant}` 通配之前（同 `/roundtable` 范例）；群库用 `RoomStore` 默认目录，与独立 9921 页同一份，切换入口不丢群。
+- 页面：`web.py` 的 `create_app(..., base_prefix=...)` 把前缀注入 `PAGE` 的 `const BASE`，`api()` 与 SSE `fetch` 统一走 `url(path)`。独立页 `BASE=""`、挂载页 `BASE="/bots"`，双形态共用一份页面，不靠 JS 猜 location。
+- 前端：`App.tsx` 加 surface `botroom` + iframe `${httpBase()}/bots/`；`Sidebar.tsx` 加 `nav-botroom`（`chat` 图标）；zh/en i18n；`styles.css` 与 `.roundtable-view` 共用 iframe 布局规则。
+- **创作圆桌入口与后端一律未动、并存不退役**——按萧哥「先做新 bot、建群测试、成功后再让圆桌退役」的顺序，先在 GUI 里验一遍。
+- **暂不打包**：只改源码并提交 `fork/base`，不跑 `build_local_app.sh`、不重打 DMG、不部署云端。桌面 App 要等下次重打包才看得见新入口；期间继续用 9921 独立页。
+
+### 19.5 验证（实测，不靠推断）
+
+| 项 | 结果 |
+|---|---|
+| `model_choice()` | `('deepseek:deepseek-flash', 'main', '')` |
+| `/api/health` | `model=deepseek:deepseek-flash, model_source=main` |
+| 挂载可达 | `GET /bots/` 200、`/bots/api/health` 200、`/bots/api/bots` 8 位；页面 `BASE="/bots"` |
+| 独立页 | `BASE=""`，占位符无残留，SSE 路径同样带 `url()` |
+| bot 群回归 | 82 例全绿（含新增 10 例、旧断言价值保留） |
+| 前端 | `tsc --noEmit` 0 错；`vitest` 414 例 410 绿 / 4 红，经 HEAD `styles.css` 基线对照确认 **4 红为既有**（皮肤对比度 / CSS 同步 / 留言框），与本次改动无关；还原后 md5 一致 |
+| Python 全量 | `4707 passed / 38 failed / 1 skipped`（10m43s）。38 红所在 17 个文件做 HEAD 基线对照：**HEAD 与改动版同为 31 红、FAILED 清单逐项一致 ⇒ 零新增红**，恢复后 md5 一致；全量多出的 7 红（通道/熔断/本地兜底）在子集里全绿，是既有的全量顺序污染（14:45 基线同为 38 failed） |
+| 部署清单 | `deskmate/bots/*.py` 9 个在 `SKILLS_TOOLS_MODULES`、`coworker/server/app.py` 在 `LOCAL_MODULES`，两者均进传输循环（537/585）与对账循环（610/670）；**无需补清单**，本次也不部署（云端停机保号） |
+
+### 19.6 边界与红线（单列）
+
+- §18.4 记的是 22:05 验收当时的**历史状态**（默认回付费组）；19 节起默认链路已改为跟随主模型，两节不矛盾，以本节为准。§16.2(1) 的质量不变量原文未动。
+- 旧测试 `test_bot_runtime_uses_paid_channel_not_main_gateway` 语义变更，按测试红线**未删用例、断言一字未删**，改名为 `test_bot_paid_fallback_is_not_a_naked_gateway`，价值重述为「付费组兜底也不裸连网关」；新默认由 `tests/test_bot_main_model.py` 锁住。
+- `app.py` 的 `except` 会吞掉 `ImportError`：云端若漏传 `deskmate/bots/*.py`，现象是「服务照常起、/bots 悄悄打不开」。已在 warning 里写明先核对清单。
+- 未跑真机群聊全文重验：本次只改模型来源与入口，§18 的质量证据仍有效；**桌面 GUI 内的实际点击与 iframe 呈现，等重打包后由萧哥目测**。
+- 所有提交仅在 `fork/base`，**未 push origin**。

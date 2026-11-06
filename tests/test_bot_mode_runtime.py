@@ -149,8 +149,12 @@ def test_bot_decides_to_read_by_itself(shelf_dir: Path, tmp_path: Path) -> None:
     rt.close()
 
 
-def test_bot_runtime_uses_paid_channel_not_main_gateway(tmp_path: Path, monkeypatch) -> None:
-    """默认 provider 必须是付费通道组，不能裸连 opencode-go（400 MissingSessionID）。
+def test_bot_paid_fallback_is_not_a_naked_gateway(tmp_path: Path, monkeypatch) -> None:
+    """**付费组兜底**路径仍不裸连 opencode-go（400 MissingSessionID）。
+
+    2026-11-06 语义变更：群聊默认已改为「跟随 GUI 主模型 + 官方 ProviderRouter」
+    （萧哥拍板），本用例不再代表默认行为；但它锁的「兜底也不能裸连网关」这条
+    **价值仍然成立**，断言一字未删。新默认由 tests/test_bot_main_model.py 锁住。
 
     conftest 把 COWORKER_STATE_DIR 指到 tmp，真机 SecretStore 读不到；这里注入一条
     假凭证，验证的是「走 llm_channels 付费组路由」这条路径本身。
