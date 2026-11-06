@@ -20,12 +20,15 @@
 """
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import json
 import logging
+import os
 import sqlite3
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, AsyncIterator, Optional
@@ -35,6 +38,8 @@ from coworker.teams.chat import ChatStore
 from deskmate.teams_client import resolve_base
 
 from .discussion import DiscussionLimits, bound_reason, is_pass, resolve_mentions
+from .materials import RoomMaterials, default_materials
+from .reading import default_shelf
 from .roster import KNOWN_BOT_IDS, list_bots
 
 logger = logging.getLogger(__name__)
@@ -73,10 +78,13 @@ class RoomStore:
         *,
         chat_store: ChatStore | None = None,
         limits: DiscussionLimits | None = None,
+        materials: RoomMaterials | None = None,
     ) -> None:
         self.base = Path(base_dir).expanduser() if base_dir else resolve_base()
         self.chat_store = chat_store or ChatStore(self.base / "chat.db")
         self.limits = limits or DiscussionLimits()
+        # 群级共享材料面：一次备料全群取用，测试可注入临时书架。
+        self.materials = materials if materials is not None else default_materials(default_shelf())
         self.db_path = self.base / "bots.db"
         self._lock = threading.RLock()
         self._conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
@@ -188,6 +196,8 @@ class RoomStore:
                 (now, room_id),
             )
             self._conn.commit()
+        # 群级材料随撤群清掉（消息历史不动，room_id 永不复用）。
+        self.materials.drop(room_id)
         return {"room_id": room_id, "disbanded_at": now, "idempotent": False}
 
     def post(
@@ -205,6 +215,12 @@ class RoomStore:
         return self.chat_store.post(
             room_id, author, text, author_role=author_role
         )
+
+    @staticmethod
+    def _parallel_enabled() -> bool:
+        """第 1 轮并发开关；设 ``DESKMATE_BOT_PARALLEL_FIRST_ROUND=0`` 一键回到
+        全串行（语义存疑时保讨论原样，不必改代码）。默认开。"""
+        return os.environ.get("DESKMATE_BOT_PARALLEL_FIRST_ROUND", "1") != "0"
 
     # ---------------------------------------------------------------- 说人话
     def say(
@@ -232,6 +248,9 @@ class RoomStore:
             raise ValueError("群里不能发空话")
 
         rt = runtime if runtime is not None else _default_runtime()
+        # 群级一次备料（纯本地 IO，零 LLM）：所有人共用同一份原文 + 目录，
+        # 不再各自 list_books → 猜 → 读 → 发现不对 → 再读。
+        pack = self.materials.prepare(room_id, clean)
         user_msg = self.chat_store.post(room_id, author, clean, author_role="user")
         aliases = {name: bot_id for bot_id, name in room.bot_names.items()}
         woken = list(
@@ -256,6 +275,64 @@ class RoomStore:
                 bounded = reason
                 break
             round_no = completed_rounds + 1
+            # 第 1 轮并发：各 bot 看同一份群历史 + 同一份共享材料，独立出方向。
+            # 第 2 轮起仍是原来的串行接话（后发言者看得到完整前文），语义不破。
+            if self._parallel_enabled() and round_no == 1 and len(active) > 1:
+                spoke = []
+                snapshot = list(history)
+                results: list[tuple[str, str]] = []
+                with ThreadPoolExecutor(max_workers=min(len(active), 6)) as pool:
+                    futures = {
+                        pool.submit(
+                            rt.speak,
+                            bot_id,
+                            clean,
+                            history=snapshot,
+                            names=room.bot_names,
+                            room_id=room_id,
+                            round_index=round_no,
+                            materials=pack,
+                        ): bot_id
+                        for bot_id in list(active)
+                    }
+                    for fut in as_completed(futures):
+                        bid = futures[fut]
+                        try:
+                            results.append((bid, fut.result()))
+                        except Exception as exc:  # noqa: BLE001
+                            logger.warning("bot %s 并发发言失败：%s", bid, exc)
+                # 谁先好谁先落库；顺序即真实群聊里「谁先说话」。
+                for bid, reply in results:
+                    reason = bound_reason(completed_rounds, len(replies), self.limits)
+                    if reason:
+                        bounded = reason
+                        break
+                    if not (reply or "").strip() or is_pass(reply):
+                        passed.append(bid)
+                        continue
+                    msg = self.chat_store.post(
+                        room_id, bid, reply, author_role="bot"
+                    )
+                    self.chat_store.consume(room_id, bid, int(msg["seq"]))
+                    replies.append(
+                        {
+                            "seq": msg["seq"],
+                            "author": bid,
+                            "name": room.bot_names.get(bid, bid),
+                            "text": reply,
+                            "author_role": "bot",
+                        }
+                    )
+                    spoke.append(bid)
+                first_round_ids = {b for b, _ in results}
+                for row in replies:
+                    if row["author_role"] == "bot" and row["author"] in first_round_ids:
+                        history.append(
+                            {"author": row["author"], "author_role": "bot", "text": row["text"]}
+                        )
+                completed_rounds += 1
+                active = _next_active(spoke, multi_round=multi_round)
+                continue
             spoke: list[str] = []
             for bot_id in list(active):
                 reason = bound_reason(completed_rounds, len(replies), self.limits)
@@ -270,6 +347,7 @@ class RoomStore:
                         names=room.bot_names,
                         room_id=room_id,
                         round_index=round_no,
+                        materials=pack,
                     )
                 except Exception as exc:  # noqa: BLE001 —— 一个 bot 挂了不拖垮整群
                     logger.warning("bot %s 发言失败：%s", bot_id, exc)
@@ -340,6 +418,7 @@ class RoomStore:
             raise ValueError("群里不能发空话")
 
         rt = runtime if runtime is not None else _default_runtime()
+        pack = self.materials.prepare(room_id, clean)
         user_msg = self.chat_store.post(room_id, author, clean, author_role="user")
         aliases = {name: bot_id for bot_id, name in room.bot_names.items()}
         woken = list(
@@ -372,6 +451,108 @@ class RoomStore:
                 break
             round_no = completed_rounds + 1
             yield {"type": "round_start", "room_id": room_id, "round": round_no}
+            # 第 1 轮并发：N 条 LLM 流通过事件队列交错推给前端，谁先好谁先落库。
+            # 第 2 轮起仍走下面的串行接话，后发言者看得到完整前文。
+            if self._parallel_enabled() and round_no == 1 and len(active) > 1:
+                spoke = []
+                snapshot = list(history)
+                queue: asyncio.Queue = asyncio.Queue()
+
+                async def _one(bot_id: str) -> None:
+                    nm = room.bot_names.get(bot_id, bot_id)
+                    tid = f"{room_id}:{user_msg['seq']}:{round_no}:{bot_id}"
+                    sc = {
+                        "bot_id": bot_id, "name": nm,
+                        "turn_id": tid, "round": round_no,
+                    }
+                    await queue.put({"type": "bot_start", **sc})
+                    final_text = ""
+                    failed = False
+                    try:
+                        async with contextlib.aclosing(
+                            rt.speak_stream(
+                                bot_id,
+                                clean,
+                                history=snapshot,
+                                names=room.bot_names,
+                                room_id=room_id,
+                                round_index=round_no,
+                                materials=pack,
+                            )
+                        ) as events:
+                            async for ev in events:
+                                if ev.get("type") == "final":
+                                    final_text = str(ev.get("text") or "")
+                                elif ev.get("type") == "error":
+                                    failed = True
+                                await queue.put({**ev, **sc})
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning("bot %s 并发流式发言失败：%s", bot_id, exc)
+                        await queue.put({"type": "error", "message": str(exc), **sc})
+                        failed = True
+                    await queue.put({
+                        "type": "_bot_done", **sc,
+                        "final": final_text, "failed": failed,
+                    })
+
+                tasks = [asyncio.create_task(_one(b)) for b in list(active)]
+                finished = 0
+                try:
+                    while finished < len(tasks):
+                        ev = await queue.get()
+                        if ev.get("type") != "_bot_done":
+                            yield ev
+                            continue
+                        finished += 1
+                        bid = ev["bot_id"]
+                        reply = str(ev["final"] or "").strip()
+                        sc = {k: ev[k] for k in ("bot_id", "name", "turn_id", "round")}
+                        if bounded is None:
+                            bounded = bound_reason(
+                                completed_rounds, len(replies), self.limits
+                            )
+                        if bounded is not None:
+                            continue
+                        if ev["failed"] or not reply or is_pass(reply):
+                            if is_pass(reply):
+                                passed.append(bid)
+                            yield {
+                                "type": "bot_pass",
+                                "reason": "error" if ev["failed"] else (
+                                    "pass" if is_pass(reply) else "empty"
+                                ),
+                                **sc,
+                            }
+                            continue
+                        msg = self.chat_store.post(
+                            room_id, bid, reply, author_role="bot"
+                        )
+                        self.chat_store.consume(room_id, bid, int(msg["seq"]))
+                        item = {
+                            "seq": msg["seq"],
+                            "author": bid,
+                            "name": ev["name"],
+                            "text": reply,
+                            "author_role": "bot",
+                        }
+                        replies.append(item)
+                        yield {
+                            "type": "bot_end", **item,
+                            "turn_id": ev["turn_id"], "round": round_no,
+                        }
+                        spoke.append(bid)
+                finally:
+                    for task in tasks:
+                        if not task.done():
+                            task.cancel()
+                # 第 2 轮接话看得到完整的第 1 轮（与 say() 一致）。
+                for row in replies:
+                    history.append(
+                        {"author": row["author"], "author_role": "bot", "text": row["text"]}
+                    )
+                completed_rounds += 1
+                active = _next_active(spoke, multi_round=multi_round)
+                continue
             spoke: list[str] = []
             for bot_id in list(active):
                 reason = bound_reason(completed_rounds, len(replies), self.limits)
@@ -399,6 +580,7 @@ class RoomStore:
                             names=room.bot_names,
                             room_id=room_id,
                             round_index=round_no,
+                            materials=pack,
                         )
                     ) as events:
                         async for ev in events:

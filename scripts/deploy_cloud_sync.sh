@@ -464,6 +464,7 @@ SKILLS_TOOLS_MODULES=(
   "deskmate/bots/rooms.py"
   "deskmate/bots/discussion.py"
   "deskmate/bots/reading.py"
+  "deskmate/bots/materials.py"
   "deskmate/bots/runtime.py"
   "deskmate/bots/web.py"
 )

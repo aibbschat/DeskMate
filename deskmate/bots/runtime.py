@@ -49,8 +49,9 @@ _GROUP_GUIDANCE = """
   读者会在哪一句愣住，按你人设里的输出格式写足，别为压字数砍掉可执行细节；
   不写成验收报告／工作汇报的体例，也不写「可以考虑加个反转」这类空话。
   纯接话、补一句的轮次不必重复展开已经说过的部分。
-- 需要书稿背景时**自己调用 read_book**，书名从大家的话里找；绝不问用户要路径、
-  绝不要求填任何表格字段。读不到就直说读不到，不要编造情节或段号。
+- 群里若已共享书稿材料（原文分块 + 完整目录），**直接引用那份**，不必从头翻目录；
+  需要里面没有的正文或大纲时，自己用 read_book 按文件名关键词点名补读。
+  绝不问用户要路径、绝不要求填任何表格字段。读不到就直说读不到，不要编造情节或段号。
 - 只读，不写文件、不改稿、不派活、不建工作项、不做审核验收、不打回重改。
 - **不生成纪要 / 总结 / 主持人收尾**；不要替别人发言，也不要复述群历史。
 - 群里已经显示你的名字，**不要**在发言开头加署名、来源标注、@ 前缀或
@@ -183,11 +184,17 @@ def build_prompt(
     *,
     names: Mapping[str, str] | None = None,
     round_index: int = 1,
+    materials: Any = None,
 ) -> str:
     """构造一次发言的 prompt。
 
     第 1 轮由用户原话驱动；第 2 轮起是 bot 之间接话，**不重复用户原话**
     （它已经在群历史里了），改为要求挑一个具体观点回应或显式 pass。
+
+    ``materials`` 是群级共享材料包（``RoomMaterials.prepare`` 的产物），放在
+    最前面当**固定前缀**：同一群所有 bot 拿到字节一致的一份，既省掉各自
+    「找文件」的往返，也让 provider 的前缀缓存有机会命中。它是原文分块，
+    不是摘要；不传时行为与旧版完全一致。
     """
     prior = format_history(history, names=names)
     if round_index <= 1:
@@ -198,7 +205,14 @@ def build_prompt(
             "请挑一个具体观点回应、补充或提出不同意见，不要复述别人说过的话；"
             "如果没有新的可说，直接回复 pass。"
         )
-    return (prior + "\n\n" if prior else "") + lead
+    block = ""
+    if materials is not None:
+        block = (
+            materials.prompt_block()
+            if hasattr(materials, "prompt_block")
+            else str(materials)
+        )
+    return (block + "\n\n" if block else "") + (prior + "\n\n" if prior else "") + lead
 
 
 def _safe_segment(value: str) -> str:
@@ -329,6 +343,7 @@ class BotRuntime:
         names: Mapping[str, str] | None = None,
         room_id: str | None = None,
         round_index: int = 1,
+        materials: Any = None,
     ) -> str:
         """说一句人话 → bot 自主决定要不要读稿 → 返回它这一轮的署名发言。"""
         eng = self.engine(bot_id, room_id=room_id)
@@ -339,6 +354,7 @@ class BotRuntime:
                 history=history,
                 names=names,
                 round_index=round_index,
+                materials=materials,
             )
 
     def _speak_locked(
@@ -349,11 +365,14 @@ class BotRuntime:
         history: Sequence[dict] | None,
         names: Mapping[str, str] | None,
         round_index: int,
+        materials: Any = None,
     ) -> str:
         """兼容旧 ``/say`` 契约的一次性发言（整段返回）。"""
         # 群历史是唯一上下文源：清掉上一轮的累积副本，避免三重冗余 / 复读。
         eng.messages.clear()
-        prompt = build_prompt(text, history, names=names, round_index=round_index)
+        prompt = build_prompt(
+            text, history, names=names, round_index=round_index, materials=materials
+        )
         before = len(eng.messages)
         _run_sync(self._drive(eng, prompt))
         replies = [
@@ -365,8 +384,19 @@ class BotRuntime:
 
     @staticmethod
     async def _drive(eng: Any, prompt: str) -> None:
-        async for _event in eng.run(prompt):
-            pass
+        """旧契约的一次性发言。事件不往前端推，但 **error 绝不吞**：
+        engine 的 payload 是 ``{"error": ..., "error_type": ...}``，旧实现全部
+        pass 掉，配额超限 / 通道 429 会被误当成「bot 没说话」。抛出去让
+        ``RoomStore.say`` 的 except 记下真实原因（行为仍是不落库）。"""
+        async for event in eng.run(prompt):
+            kind = getattr(getattr(event, "type", None), "value", None)
+            if kind is None:
+                kind = str(getattr(event, "type", ""))
+            if kind == "error":
+                data = getattr(event, "data", None) or {}
+                detail = str(data.get("error") or data.get("message") or "bot 发言出错")
+                etype = str(data.get("error_type") or "error")
+                raise RuntimeError(f"{etype}: {detail}")
 
     # ------------------------------------------------------------ speak stream
     async def speak_stream(
@@ -378,6 +408,7 @@ class BotRuntime:
         names: Mapping[str, str] | None = None,
         room_id: str | None = None,
         round_index: int = 1,
+        materials: Any = None,
     ) -> AsyncIterator[dict[str, Any]]:
         """**原生流式发言**：把官方 TurnEngine 的逐 token 事件原样透出来。
 
@@ -400,7 +431,8 @@ class BotRuntime:
         try:
             eng.messages.clear()
             prompt = build_prompt(
-                text, history, names=names, round_index=round_index
+                text, history, names=names, round_index=round_index,
+                materials=materials,
             )
             streamed: list[str] = []
             final_text = ""
@@ -427,9 +459,16 @@ class BotRuntime:
                                     str(data.get("text") or "")
                                 )
                         elif kind == "error":
+                            # engine 给的是 {"error": ..., "error_type": ...}，不是
+                            # "message"。旧代码把它吞成「bot 发言出错」，429 配额
+                            # 超限看起来就像 bot 弃权，无法判断该等还是该修。
+                            detail = str(
+                                data.get("error") or data.get("message") or "bot 发言出错"
+                            )
                             yield {
                                 "type": "error",
-                                "message": str(data.get("message") or "bot 发言出错"),
+                                "message": detail,
+                                "error_type": str(data.get("error_type") or ""),
                             }
             except GeneratorExit:
                 eng.request_interrupt()
