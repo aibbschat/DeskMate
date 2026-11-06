@@ -109,6 +109,16 @@ class BookShelf:
         return d
 
     # ------------------------------------------------------------ 正文（只读）
+    def _experience_files(self, book_dir: Path) -> list[Path]:
+        """小桔既有的 ``.deskmate`` 沉淀。**只在 chapter 点名时**才进补读候选。
+
+        绝不把它们并进 ``_chapter_files``：那会让圣典／简报被当成「正文优先级 0」
+        排到小说正文前面，正是 §16 修掉的「合同排第一」质量事故重演。
+        """
+        from .experience import experience_files
+
+        return experience_files(book_dir)
+
     def _chapter_files(self, book_dir: Path) -> list[Path]:
         try:
             entries = sorted(book_dir.iterdir(), key=lambda p: p.name)
@@ -135,6 +145,11 @@ class BookShelf:
         needle = str(chapter or "").strip()
         if needle:
             matched = [p for p in files if needle in p.name]
+            if not matched:
+                # 顶层没有，再看小桔既有沉淀：让 bot 能点名补读圣典／进度简报。
+                matched = [
+                    p for p in self._experience_files(book_dir) if needle in p.name
+                ]
             if matched:
                 files = matched
         parts: list[str] = []
@@ -212,6 +227,9 @@ def make_reading_tools(shelf: BookShelf) -> list[Callable[..., str]]:
 
         一次读不全时返回内容里会列出未加载的文件名，用 chapter 填其中的
         关键词再调用一次即可续读。协议／简介／目录不是创作材料，不要拿来当正文。
+        群里共享材料里还有小桔逐日维护的沉淀，需要更完整的事实时可点名补读
+        （如 chapter="CHARACTERS" / "进度简报" / "新增正文"）；这些文件在
+        .deskmate 子目录里，留空不会读到，只有点名才进候选。
         """
         return shelf.read(title, chapter=chapter)
 

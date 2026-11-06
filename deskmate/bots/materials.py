@@ -13,11 +13,16 @@
   砍掉「找文件」往返不动最后那一轮产生质量的深度思考。
 
 硬红线（保质优先，违反即回退）：
-- **共享的是原文分块 + 文件索引，绝不是 LLM 抽取／摘要／圣经／纪要**；
+- **共享的是原文分块 + 文件索引，绝不现场做 LLM 抽取／有损压缩／纪要**；
   零 LLM、纯本地 IO、只读走 ``sacred_paths``（复用 ``BookShelf`` 的守卫）。
 - **不削真 Agent**：``read_book`` 仍在，bot 可随时按文件名关键词补读别的材料。
 - 自然语言触发，零表单：书名从群里那句人话里抽，抽不到就不备料。
 - 不改思考强度、不压正文字数、不减唤醒人数。
+
+§17 补充（11-06 21:25 萧哥定调）：本层还会把**小桔已经落盘的既有沉淀**
+（逐日圣典／进度简报／逐字留档／文风画像）原样摆进同一份群共享材料。
+那是她每天读过、早已存在的文件，性质是「群里多放一份」，不是本次为讨论
+生成的压缩物 ⇒ 不触发上面那条红线，红线原文不改，详见 docs §17.0。
 """
 from __future__ import annotations
 
@@ -29,6 +34,7 @@ from typing import Optional, Sequence
 
 from deskmate.sacred_paths import guarded_assistance_read
 
+from .experience import collect_experience, load_style_profile
 from .reading import BookShelf, parse_book_title
 
 # 非创作文本：默认不喂给 bot（列进索引，bot 主动要才读）。
@@ -43,6 +49,8 @@ _REFERENCE_MARKS = (
 
 # 备料预算。与 BookShelf 默认一致；不放大（单轮已 329s，放大只会更慢更贵）。
 _DEFAULT_MAX_CHARS = 12_000
+# 经验层独立预算：435 万字的书桶绝不能整桶塞进 prompt。
+_DEFAULT_EXPERIENCE_CHARS = 12_000
 _RELOAD_MARKS = ("重读", "重新读", "再读一遍", "刷新材料", "重新加载")
 
 
@@ -79,11 +87,17 @@ class MaterialPack:
     fingerprint: str
     body: str
     index: str
+    experience: str = ""
 
     def prompt_block(self) -> str:
-        """注入 prompt 的固定前缀。原文在前，索引在后，不含任何摘要。"""
+        """注入 prompt 的固定前缀。经验层在前，原文居中，索引在后。
+
+        §17：**只增不减** —— 原文层与索引原样保留，经验层是追加的一节。
+        """
+        exp = self.experience + "\n\n" if self.experience else ""
         return (
             "# 群里已经共享的书稿材料（只读，可直接引用）\n\n"
+            + exp
             + self.body
             + "\n\n"
             + self.index
@@ -103,12 +117,22 @@ class RoomMaterials:
         shelf: BookShelf,
         *,
         max_chars: int | None = None,
+        experience_chars: int | None = None,
+        style_loader=None,
     ) -> None:
         self.shelf = shelf
         raw = os.environ.get("DESKMATE_BOT_MATERIAL_CHARS")
         self.max_chars = int(raw) if (raw and raw.isdigit() and 200 <= int(raw) <= 80_000) else (
             max_chars if max_chars is not None else _DEFAULT_MAX_CHARS
         )
+        raw_exp = os.environ.get("DESKMATE_BOT_EXPERIENCE_CHARS")
+        if experience_chars is not None:
+            self.experience_chars = int(experience_chars)
+        elif raw_exp and raw_exp.isdigit() and 200 <= int(raw_exp) <= 30_000:
+            self.experience_chars = int(raw_exp)
+        else:
+            self.experience_chars = _DEFAULT_EXPERIENCE_CHARS
+        self.style_loader = style_loader or load_style_profile
         self._cache: dict[str, MaterialPack] = {}
         self._lock = threading.RLock()
 
@@ -151,7 +175,16 @@ class RoomMaterials:
         if not files:
             return cached
 
+        # 群级一次备料：小桔既有沉淀也纳入同一份指纹，改稿 / 新简报 / 书桶
+        # 补集后下一句哪怕只是「接着聊」也自动换新。
+        exp = collect_experience(
+            book_dir,
+            max_chars=self.experience_chars,
+            style_loader=self.style_loader,
+        )
         fingerprint = _fingerprint(files)
+        if exp.has_any:
+            fingerprint += "|exp:" + exp.fingerprint
         if (
             not force
             and cached is not None
@@ -160,7 +193,7 @@ class RoomMaterials:
         ):
             return cached
 
-        pack = self._build(title, files, fingerprint)
+        pack = self._build(title, files, fingerprint, exp)
         with self._lock:
             self._cache[rid] = pack
         return pack
@@ -170,7 +203,11 @@ class RoomMaterials:
         return any(m in str(text or "") for m in _RELOAD_MARKS)
 
     def _build(
-        self, title: str, files: Sequence[Path], fingerprint: str
+        self,
+        title: str,
+        files: Sequence[Path],
+        fingerprint: str,
+        exp=None,
     ) -> MaterialPack:
         # 正文优先；同类内仍按文件名稳定排序，保证跨 bot 字节一致。
         ranked = sorted(files, key=lambda p: (classify(p.name), p.name))
@@ -207,11 +244,16 @@ class RoomMaterials:
             "**文件名关键词**（例如 chapter=\"绝命救援\"）单独补读；"
             "chapter 不是路径，填绝对路径不会命中。没读到的部分不要凭空编情节或段号。"
         )
+        if exp is not None and exp.has_any:
+            lines.append("")
+            lines.append("小桔已经读过并逐日维护的沉淀（同属群共享材料，可点名补读）：")
+            lines.extend(exp.index_lines)
         return MaterialPack(
             book=title,
             fingerprint=fingerprint,
             body=body,
             index="\n".join(lines),
+            experience=exp.text if exp is not None else "",
         )
 
 

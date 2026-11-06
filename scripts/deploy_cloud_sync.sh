@@ -465,6 +465,11 @@ SKILLS_TOOLS_MODULES=(
   "deskmate/bots/discussion.py"
   "deskmate/bots/reading.py"
   "deskmate/bots/materials.py"
+  "deskmate/bots/experience.py"
+  # §17 经验层新引入的既有依赖：load_style_profile() 会读文风画像 BlobStore。
+  # 它是函数内 import 且 fail-open，漏传只会静默跳过文风段，不会报错 —— 正是
+  # 「漏传 = 静默失效」的典型，故一并列入增量白名单。
+  "deskmate/style_profile_store.py"
   "deskmate/bots/runtime.py"
   "deskmate/bots/web.py"
 )
