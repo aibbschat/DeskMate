@@ -254,3 +254,22 @@ def test_no_form_fields_on_new_api(store) -> None:
         assert not (params & banned), f"{fn.__qualname__} 混入了表单字段 {params & banned}"
     src = (Path(rooms.__file__).parent / "web.py").read_text(encoding="utf-8")
     assert not any(k in src for k in ("manuscript_path", "chapter_range", "direction", "criteria"))
+
+
+# ------------------------------------------------ 读稿：读不全要让 bot 知道能续读
+
+def test_read_reports_unloaded_chapters_for_followup(shelf_dir: Path) -> None:
+    """「先读《夜不收》」只读到前 N 字时，必须把未加载章节名交回 bot。
+
+    否则真 Agent 根本不知道后面还有稿子，只能就着开头硬编，建议自然不具体。
+    给出文件名后它可以用 ``chapter`` 参数自己续读，不需要用户填任何路径。
+    """
+    book = shelf_dir / "16.夜不收"
+    (book / "附录 长篇.txt").write_text("甲" * 400, encoding="utf-8")
+    shelf = reading.BookShelf(shelf_dir, max_chars=200)
+    out = shelf.read("《夜不收》")
+    assert "未完整加载" in out
+    assert "附录 长篇.txt" in out, "读不全的章节名必须显式列出，bot 才有续读线索"
+    assert "chapter" in out, "要告诉 bot 用哪个参数续读"
+    # 只读红线：读稿不改动任何原稿
+    assert (book / "附录 长篇.txt").read_text(encoding="utf-8") == "甲" * 400

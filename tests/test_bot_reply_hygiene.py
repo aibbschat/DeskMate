@@ -106,8 +106,15 @@ def test_speak_stream_final_strips_prefix(tmp_path: Path) -> None:
 
 
 def test_group_guidance_no_hard_length_cap() -> None:
-    """群聊层不得再设 100~300 字硬上限：那会把「具体到能落笔」压回空泛。"""
+    """群聊层不得再设 100~300 字硬上限：那会把「具体到能落笔」压回空泛。
+
+    也不留「长篇报告 / 轮次才简短」这类长度暗示 —— 模型会把它们当成字数指令，
+    等同换皮的软上限。要约束的是**体例**（别写成验收报告）与**不重复**，不是长度。
+    """
     g = rt._GROUP_GUIDANCE
     assert "100~300" not in g
     assert "300 字" not in g
+    assert "长篇" not in g
+    assert "才简短" not in g
     assert "具体" in g and "伏笔" in g
+    assert "写足" in g

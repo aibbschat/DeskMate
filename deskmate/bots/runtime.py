@@ -15,7 +15,9 @@ default_permission_mode、mcp 声明），跟小桔 deskmate.md 同构。旧圆�
    只留 ``read_book`` / ``list_books``；write_file / apply_patch / run_shell /
    save_skill / a2a_call / web_fetch 全部摘掉 —— 书稿绝不进入可写工具的射程。
 3. **有界**：max_iterations 封顶，每次群里一句话每个 bot 只跑一个 turn，
-   群历史上限 20 条，读稿上限 12000 字。不 @ 不烧钱，@ 谁谁答。
+   群历史上限 20 条 / 总量 18000 字（**单条发言不截断**），读稿单次上限
+   12000 字（读不全会把未加载章节名交回 bot 让它自己续读）。
+   不 @ 不烧钱，@ 谁谁答。
 """
 from __future__ import annotations
 
@@ -45,7 +47,8 @@ _GROUP_GUIDANCE = """
 
 - 你是群里的一员，用**自己的专长**说人话。**要具体**：给方向就交代伏笔埋在哪、
   读者会在哪一句愣住，按你人设里的输出格式写足，别为压字数砍掉可执行细节；
-  不写长篇报告，也不写「可以考虑加个反转」这类空话。纯接话、补一句的轮次才简短。
+  不写成验收报告／工作汇报的体例，也不写「可以考虑加个反转」这类空话。
+  纯接话、补一句的轮次不必重复展开已经说过的部分。
 - 需要书稿背景时**自己调用 read_book**，书名从大家的话里找；绝不问用户要路径、
   绝不要求填任何表格字段。读不到就直说读不到，不要编造情节或段号。
 - 只读，不写文件、不改稿、不派活、不建工作项、不做审核验收、不打回重改。
@@ -57,6 +60,11 @@ _GROUP_GUIDANCE = """
 """
 
 _HISTORY_LIMIT = 20
+# 群历史给模型的总字数预算（不是单条发言上限）。旧实现把每条硬砍到 600 字，
+# 1676 字的具体建议只传了前 1/3 给后发言者，讨论必然退化成空泛附和 —— 撤掉
+# 单条截断，改用「总量有界 + 从最新往回取」：够装下 10 条完整长发言，又不随
+# 轮次线性膨胀。真正限制长篇的是人设输出格式与 provider 的 max_tokens，不是这里。
+_HISTORY_BUDGET = 18_000
 _DEFAULT_MAX_ITERATIONS = 4
 
 # 模型爱在发言开头自加一行署名/来源标注。prompt 里已明令禁止，但模型不保证遵守
@@ -141,16 +149,32 @@ def format_history(
     if not rows:
         return ""
     lookup = {str(k): str(v) for k, v in (names or {}).items()}
-    lines = []
-    for m in rows:
+    lines: list[str] = []
+    used = 0
+    omitted = 0
+    # 从最新往回取：预算不够时优先保住最近的完整发言（结论通常在结尾）。
+    for m in reversed(rows):
         author = str(m.get("author") or "?")
         who = lookup.get(author, author)
         role = str(m.get("author_role") or "")
         tag = "（我）" if role == "user" else f"（{role}）"
         text = str(m.get("text") or "").strip()
-        if text:
-            lines.append(f"{who}{tag}: {text[:600]}")
-    return "群内已有发言：\n" + "\n".join(lines) if lines else ""
+        if not text:
+            continue
+        room = _HISTORY_BUDGET - used
+        if room <= 0:
+            omitted += 1
+            continue
+        if len(text) > room:
+            text = "…" + text[-room:]
+        used += len(text)
+        lines.append(f"{who}{tag}: {text}")
+    if not lines:
+        return ""
+    lines.reverse()
+    if omitted:
+        lines.insert(0, f"（更早 {omitted} 条发言未载入上下文）")
+    return "群内已有发言：\n" + "\n".join(lines)
 
 
 def build_prompt(

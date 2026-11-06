@@ -139,25 +139,55 @@ class BookShelf:
                 files = matched
         parts: list[str] = []
         used = 0
+        partial: list[str] = []   # 读到了但被预算截断的章节
+        unread: list[str] = []    # 完全没进上下文的章节
         book_name = _clean_dir_name(book_dir.name)
         for p in files:
             if used >= self.max_chars:
-                break
+                unread.append(p.name)
+                continue
             text = guarded_assistance_read(p, max_chars=self.max_chars)
             if not text:
+                unread.append(p.name)
                 continue
             room = self.max_chars - used
             body = text[:room]
             used += len(body)
             parts.append(f"《{book_name}》· {p.name}\n{body}")
-            if used >= self.max_chars:
-                parts.append(f"（已到本次读取上限 {self.max_chars} 字，其余未加载）")
+            if len(body) < len(text):
+                partial.append(p.name)
+        if used >= self.max_chars or partial or unread:
+            # 真 Agent 得知道「后面还有稿子」以及怎么自己续读，否则只能就着
+            # 开头硬编，具体建议从根上就没材料。文件名即续读线索，零表单。
+            todo = list(dict.fromkeys(partial + unread))
+            listed = "、".join(todo[:8])
+            more = f"，另有 {len(todo) - 8} 个" if len(todo) > 8 else ""
+            parts.append(
+                f"（本次已到读取上限 {self.max_chars} 字；尚未完整加载：{listed}{more}。"
+                '需要后续内容时用 chapter 参数填文件名关键词（如 chapter="附录"）'
+                "单独续读；没读到的部分不要凭空推断情节或段号。）"
+            )
         return "\n\n".join(parts)
 
 
 def default_shelf() -> BookShelf:
+    """默认只读书架。``DESKMATE_BOT_READ_CHARS`` 可调一次读稿的字数预算。
+
+    默认 12000 字是成本护栏，不是「全书」：真 Agent 会看到未加载章节名并可用
+    ``chapter`` 自己续读。想让它一次读更多，把这个环境变量调大即可（上限 80000），
+    代价是输入 token 和单轮耗时同步上升。
+    """
     root = os.environ.get("DESKMATE_BOT_BOOKS_ROOT") or _DEFAULT_BOOKS_ROOT
-    return BookShelf(Path(root))
+    raw = os.environ.get("DESKMATE_BOT_READ_CHARS")
+    max_chars = 12_000
+    if raw:
+        try:
+            parsed = int(raw)
+            if 200 <= parsed <= 80_000:
+                max_chars = parsed
+        except ValueError:
+            pass
+    return BookShelf(Path(root), max_chars=max_chars)
 
 
 def make_reading_tools(shelf: BookShelf) -> list[Callable[..., str]]:
@@ -173,6 +203,8 @@ def make_reading_tools(shelf: BookShelf) -> list[Callable[..., str]]:
 
         title 用自然语言里的书名即可（如「《夜不收》」）；chapter 可选，
         填章节名或关键词（如「烧仓」）只挑匹配的文件，留空则读全书前若干章。
+        一次读不全时返回内容里会列出未加载的章节文件名，用 chapter 填其中
+        的关键词再调用一次即可续读 —— 想引用后段情节就自己多读几次。
         """
         return shelf.read(title, chapter=chapter)
 

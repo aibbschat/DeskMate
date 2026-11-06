@@ -300,3 +300,37 @@ def test_engine_messages_not_accumulate_history_copies(tmp_path) -> None:
     assert "第 2 轮接话" in joined
     assert joined.count("上一轮说过的话") == 1, "群历史只应有一份，不累积副本"
     rt.close()
+
+
+# ------------------------------------------------- 5. 展开讲：上下文不得砍长发言
+
+def test_format_history_keeps_long_substantive_reply() -> None:
+    """1676 字级别的建设性意见必须完整传给后发言的 bot。
+
+    旧实现 ``text[:600]`` 会把结论砍在半路：后发言者只看到前 600 字，
+    接话必然接不到「埋伏笔的位置 / 读者愣住的那句」，讨论就退化成空泛附和。
+    """
+    body = "伏笔埋在第十一章末：" + "信号弹与铜雀渡的船家" * 120
+    tail = "读者会在这一句愣住：船家没提粮车，却知道白烟没有焦味。"
+    out = format_history(
+        [{"author": "brainstormer", "author_role": "bot", "text": body + tail}],
+        names={"brainstormer": "创意脑洞"},
+    )
+    assert len(body + tail) > 600
+    assert tail in out, "长发言的结尾被砍，后发言者只能看到半截观点"
+    assert "创意脑洞（bot）" in out
+
+
+def test_format_history_bounded_but_keeps_latest_whole() -> None:
+    """放开单条不等于放开总量：历史整体仍有预算，且最新一条要完整。"""
+    rows = [
+        {
+            "author": "historian",
+            "author_role": "bot",
+            "text": f"第{i}条 " + "考" * 3000 + f" 结尾{i}",
+        }
+        for i in range(25)
+    ]
+    out = format_history(rows)
+    assert "第24条" in out and "结尾24" in out, "最新发言必须完整进上下文"
+    assert len(out) <= 20_000, "群历史总量必须有界，不能随轮次线性膨胀"
