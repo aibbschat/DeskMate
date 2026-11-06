@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>小桔桌宠 · 形象换成工作小桔 + 序列帧流水线样张</title>
+<style>
+  :root{
+    --paper:#f7f3ea; --panel:#fffdf8; --ink:#2b2620; --muted:#8b8172; --line:#e6dfd0;
+    --accent:#2563eb; --ok:#1a7f4b; --warn:#b7791f; --danger:#c0392b;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--paper);color:var(--ink);
+    font-family:Manrope,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;font-size:14px;line-height:1.65;}
+  .wrap{max-width:1080px;margin:0 auto;padding:40px 24px 80px;}
+  h1{font-size:22px;font-weight:600;margin:0 0 6px;}
+  h2{font-size:16px;font-weight:600;margin:36px 0 14px;padding-top:20px;border-top:1px solid var(--line);}
+  .sub{color:var(--muted);font-size:13px;margin-bottom:8px;}
+  .badges{display:flex;gap:8px;flex-wrap:wrap;margin:14px 0 4px;}
+  .badge{padding:3px 10px;border-radius:20px;font-size:12px;font-weight:500;background:#eef2ff;color:var(--accent);}
+  .badge.ok{background:#e8f5ee;color:var(--ok);}
+  .badge.warn{background:#fdf3e0;color:var(--warn);}
+  .badge.danger{background:#fbeceb;color:var(--danger);}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:20px;margin-bottom:14px;}
+  .row{display:flex;gap:20px;flex-wrap:wrap;align-items:flex-start;}
+  figure{margin:0;}
+  figcaption{font-size:12px;color:var(--muted);margin-top:8px;text-align:center;}
+  .stage{display:flex;align-items:center;justify-content:center;background:#faf7f0;
+    border:1px dashed var(--line);border-radius:10px;padding:10px;}
+  .checker{background:repeating-conic-gradient(#e3e3e3 0% 25%, #fbfbfb 0% 50%) 0 0/24px 24px;}
+  .pet200{width:200px;height:200px;object-fit:contain;display:block;}
+  .pet280{width:280px;height:280px;object-fit:contain;display:block;}
+  img.shot{max-width:100%;display:block;border-radius:8px;}
+  table{width:100%;border-collapse:collapse;font-size:13px;}
+  th{text-align:left;font-size:11px;letter-spacing:.05em;text-transform:uppercase;color:var(--muted);
+    font-weight:500;padding:0 10px 8px;border-bottom:1px solid var(--line);}
+  td{padding:9px 10px;border-bottom:1px solid #f1ece1;}
+  td.num{text-align:right;font-variant-numeric:tabular-nums;color:var(--muted);}
+  code{background:#f1ece1;padding:1px 5px;border-radius:4px;font-size:12.5px;}
+  .note{background:#fbf7ee;border-left:3px solid var(--warn);padding:12px 14px;border-radius:0 8px 8px 0;
+    font-size:13px;color:#6b5a35;}
+  .note.stop{border-left-color:var(--danger);color:#7a3b34;background:#fbf0ee;}
+  .toggle{display:inline-flex;border:1px solid var(--line);border-radius:8px;overflow:hidden;margin-bottom:14px;}
+  .toggle button{border:0;background:var(--panel);padding:7px 16px;font-size:13px;cursor:pointer;color:var(--muted);font-family:inherit;}
+  .toggle button.on{background:var(--accent);color:#fff;}
+  .hint{font-size:12px;color:var(--muted);}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>小桔桌宠 · 形象换成「工作小桔」+ 序列帧流水线样张</h1>
+  <div class="sub">2026-11-05 · 对应 commit 444cfcb2 的未完成部分 · 只做形象与素材链路，桌宠交互（拖动/点击开面板/双击开星图/走动）全部不变</div>
+  <div class="badges">
+    <span class="badge ok">抠像流水线已跑通</span>
+    <span class="badge ok">绿叶与绿幕已可区分</span>
+    <span class="badge danger">视频生成额度不足 · 9 个 clip 源片未生成</span>
+  </div>
+
+  <h2>1. 先确认：桌宠现在是哪一个小桔</h2>
+  <div class="card">
+    <div class="sub" style="margin-bottom:14px">
+      桌宠（<code>DeskMateOverlay.tsx:715 → XiaojuMascot</code>）用的是<b>站姿全身小桔</b>；
+      全息屏里那个伏案工作的形象只出现在「小桔在忙」卡片（<code>AgencyPanel.tsx:126/132</code>），
+      而且是两张静态 PNG 靠 CSS 交替，本身也不是动态。下面按 200px 实际显示尺寸并排给你看差别。
+    </div>
+    <div class="toggle" id="tg">
+      <button data-k="stand" class="on">站姿（现状）</button>
+      <button data-k="work">工作（原定形象）</button>
+    </div>
+    <div class="row">
+      <figure>
+        <div class="stage"><img id="img200" class="pet200" src="assets/xiaoju-standing.png" alt="站姿小桔 200px"></div>
+        <figcaption>200px 实际桌宠尺寸</figcaption>
+      </figure>
+      <figure>
+        <div class="stage"><img id="img280" class="pet280" src="assets/xiaoju-standing.png" alt="站姿小桔 放大"></div>
+        <figcaption>放大 280px 看细节</figcaption>
+      </figure>
+      <div style="flex:1;min-width:240px">
+        <div class="note">
+          换成工作形象后要留意的一点：工作小桔自带书桌、台灯、椅子，画面被家具占掉一大块，
+          同样 200px 下<b>脸会比站姿小一圈</b>。如果桌宠偏小看不清表情，可以把默认 <code>petScale</code>
+          从 1.0 提到 1.25 左右，或者把书桌下缘裁掉一点。这个先不擅自改，等你定。
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <h2>2. 抠像验证：绿幕 → 透明序列帧</h2>
+  <div class="card">
+    <div class="sub" style="margin-bottom:14px">
+      新素材要求<b>纯色 #00FF00 背景</b>（旧 idle 源片是渐变绿 + 地面投影，所以键不干净）。
+      头顶绿叶已从纯绿改成深青绿 <code>rgb(3,80,91)</code>，与绿幕的 <code>rgb(15,245,10)</code> 色相差 80° 以上，
+      键控时不会再被一起打掉。右下角「AI生成」水印在抠像阶段按区域强制透明（水印只压在纯背景上，不碰角色）。
+    </div>
+    <div class="row">
+      <figure>
+        <div class="stage checker" style="width:340px;height:340px">
+          <img class="pet280" src="assets/xiaoju-working-keyed.png" alt="工作小桔抠像结果">
+        </div>
+        <figcaption>工作小桔绿幕母图抠像结果（棋盘格 = 透明）</figcaption>
+      </figure>
+      <figure style="flex:1;min-width:320px">
+        <img class="shot" src="assets/keying-compare.png" alt="抠像对比">
+        <figcaption>1 新流水线（旧渐变源片） · 2 现有 webp（叶子已被键掉） · 3 新素材（纯色底，干净）</figcaption>
+      </figure>
+    </div>
+  </div>
+
+  <h2>3. 阈值标定（为什么把 SPILL_HI 定在 80）</h2>
+  <div class="card">
+    <img class="shot" src="assets/threshold-sweep.png" alt="阈值扫描">
+    <div class="sub" style="margin-top:10px">
+      拿最坏的输入（旧 idle 渐变绿幕）扫四个阈值：130 背景几乎没键掉、100 键掉 10 万像素、
+      <b>80 键掉 31 万且只剩 1.6 万半透明</b>、60 更干净但开始啃叶子边缘。纯色底素材在 80 下完全干净，
+      所以默认取 80，兼容旧素材时也不会像现在这样留一层灰底。
+    </div>
+  </div>
+
+  <h2>4. clip 清单与缺口</h2>
+  <div class="card">
+    <table>
+      <thead><tr><th>clip</th><th>触发条件</th><th>帧数</th><th>状态</th></tr></thead>
+      <tbody>
+        <tr><td><code>idle</code></td><td>默认 / 走动</td><td class="num">121</td><td>已有，但是站姿形象，换形象后要重做</td></tr>
+        <tr><td><code>working</code></td><td>运行中 / 专注</td><td class="num">0</td><td><span class="badge danger">源片未生成</span></td></tr>
+        <tr><td><code>thinking</code></td><td>思考中</td><td class="num">0</td><td><span class="badge danger">源片未生成</span></td></tr>
+        <tr><td><code>happy</code></td><td>laugh / cheer / 情绪 happy</td><td class="num">0</td><td><span class="badge danger">源片未生成</span></td></tr>
+        <tr><td><code>cry</code></td><td>expression=cry</td><td class="num">0</td><td><span class="badge danger">源片未生成</span>（眼泪 SVG 已可用）</td></tr>
+        <tr><td><code>angry</code></td><td>expression=angry</td><td class="num">0</td><td><span class="badge danger">源片未生成</span></td></tr>
+        <tr><td><code>shock</code></td><td>expression=shock</td><td class="num">0</td><td><span class="badge danger">源片未生成</span></td></tr>
+        <tr><td><code>sleepy</code></td><td>expression=sleepy</td><td class="num">0</td><td><span class="badge danger">源片未生成</span></td></tr>
+        <tr><td><code>shy</code></td><td>expression=shy</td><td class="num">0</td><td><span class="badge danger">源片未生成</span></td></tr>
+      </tbody>
+    </table>
+    <div class="note stop" style="margin-top:14px">
+      <b>卡点：</b>9 个 clip 的源片要靠图生视频（5s / 720p / 无缝循环）。第一次提交已被媒体网关拒绝：
+      「余额不足，请充值后重试」，且返回 <code>retryable=false</code>，所以本轮没有重试。
+      工作区额度显示还有 72.68 credits，但视频这条通道报的就是额度不足 —— 需要你在 QwenWork 里确认充值或切换可用额度后我再接着跑。
+      在此之前，<code>working</code> 等 clip 的 <code>frameCount</code> 保持 0，前端继续走 PNG 换脸回退，桌宠不会白屏。
+    </div>
+  </div>
+
+  <h2>5. 已落地的工具链</h2>
+  <div class="card">
+    <div class="row">
+      <div style="flex:1;min-width:280px">
+        <p style="margin:0 0 10px"><code>scripts/xj_clip_build.py</code> —— 一条命令把绿幕 mp4 变成透明序列帧并写 manifest：</p>
+        <p style="margin:0 0 10px"><code>python3 scripts/xj_clip_build.py &lt;video.mp4&gt; working --fps 24 --size 720 [--dry-run]</code></p>
+        <p class="hint">已用现有 idle 源片验证：121 帧拆帧 → 键控 → 绿边抑制 → 水印区强制透明 → 居中裁方 → 720² 透明 WebP。</p>
+      </div>
+      <div style="flex:1;min-width:280px">
+        <p style="margin:0 0 10px">环境踩坑（已写进脚本注释）：</p>
+        <p class="hint" style="margin:0">
+          ① 本机 <code>~/.local/bin/ffmpeg</code> 是 x86_64，arm64 上直接跑报 Bad CPU type；改用 <code>pip install imageio-ffmpeg</code> 带的 aarch64 ffmpeg 9.0。<br>
+          ② PIL 没有 numpy 时的向量化抠像：只能用 <code>ImageMath.lambda_eval</code>，且函数要 <code>a["max"]</code> 取、没有 <code>clamp</code>、没有 <code>//</code>、标量减图像会崩。<br>
+          ③ 让模型「去水印」会把整张图重绘成别的角色，不可用；改为抠像阶段按区域强制透明。
+        </p>
+      </div>
+    </div>
+  </div>
+
+  <h2>6. 需要你定的两件事</h2>
+  <div class="card">
+    <table>
+      <thead><tr><th>问题</th><th>选项</th></tr></thead>
+      <tbody>
+        <tr><td>工作形象自带书桌，200px 下脸偏小</td><td>A 提高默认 petScale 到 1.25；B 裁掉书桌下缘只留上半身；C 先不动，看真机效果再说</td></tr>
+        <tr><td>旧 idle 的 121 帧站姿素材怎么处理</td><td>A 换形象后整套重做（推荐，风格统一）；B 保留站姿只给忙的时候用工作形象（两种形态并存会跳）</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+</div>
+<script>
+  const SRC={stand:'assets/xiaoju-standing.png', work:'assets/xiaoju-working-keyed.png'};
+  document.getElementById('tg').addEventListener('click', e=>{
+    const b=e.target.closest('button'); if(!b) return;
+    [...e.currentTarget.children].forEach(x=>x.classList.toggle('on', x===b));
+    document.getElementById('img200').src=SRC[b.dataset.k];
+    document.getElementById('img280').src=SRC[b.dataset.k];
+  });
+</script>
+</body>
+</html>
