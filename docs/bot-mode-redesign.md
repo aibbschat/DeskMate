@@ -409,12 +409,12 @@
 
 | 通道 | 结果 | 实测 |
 |---|---|---|
-| `ark-agent-plan-cn:deepseek-v4-flash` | 🔴 429 | `AccountQuotaExceeded`，月度配额 `2026-11-06 23:59:59 +0800` 重置 |
-| `xiaomi:mimo-v2.6-pro` | 🔴 429 | `quota exhausted` |
-| `tencent-tokenplan:hy3` | 🔴 403 | 套餐包被禁用／无调用权限 |
-| `deepseek:deepseek-flash` | ✅ | 1.3s，官方直连 |
-| `deepseek:deepseek-v4-pro` | ✅ | 1.6s，返回 `reasoning_content` |
-| `opencode-go:deepseek-v4.1-flash` | ✅ | 3.4s，须带 `User-Agent: xiaoju/1.0` + `x-opencode-session`，否则重演 400 MissingSessionID |
+| `ark-agent-plan-cn:deepseek-v4-flash` | 挂：429 | `AccountQuotaExceeded`，月度配额 `2026-11-06 23:59:59 +0800` 重置 |
+| `xiaomi:mimo-v2.6-pro` | 挂：429 | `quota exhausted` |
+| `tencent-tokenplan:hy3` | 挂：403 | 套餐包被禁用／无调用权限 |
+| `deepseek:deepseek-flash` | 可用 | 1.3s，官方直连 |
+| `deepseek:deepseek-v4-pro` | 可用 | 1.6s，返回 `reasoning_content` |
+| `opencode-go:deepseek-v4.1-flash` | 可用 | 3.4s，须带 `User-Agent: xiaoju/1.0` + `x-opencode-session`，否则重演 400 MissingSessionID |
 
 ⇒ **组内自动回退此刻救不了场**：付费组三条同时挂（火山 429 / 小米 429 / 腾讯 403），熔断表却显示全部可用——因为 bot 运行时不走 `_call_with_breaker` 记账。这是运行时事实，不是代码退化，也说明「换通道」必须显式验质量。
 
