@@ -241,7 +241,9 @@ def update_style_profile(
             "metrics": metrics_merged,
             "samples": samples,
             "buckets": buckets,
-            "ingested_hashes": list(dict.fromkeys([*hashes, digest]))[-100:],
+            # 去重表容量 500：书稿按 4 万字切块后会一次新增上百条指纹，
+            # 旧的 100 条上限会把刚喂进去的书稿块挤掉，重跑时就失去幂等性。
+            "ingested_hashes": list(dict.fromkeys([*hashes, digest]))[-500:],
             "source": source or data.get("source", ""),
             "chars": chars_total + metrics_new.get("chars", 0),
             "updates": updates + 1,
