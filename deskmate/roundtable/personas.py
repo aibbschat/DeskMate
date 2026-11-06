@@ -17,7 +17,7 @@ from typing import Optional
 # 圆桌专家的展示稳定顺序（避免每轮 UI 抖动）；id 必须与 builtin/*.md 的 id 一致。
 # 圆桌里的"文学编辑"对应上游 builtin 的 id ``lit-editor``（避开上游自带 editor.md 的撞车）。
 ROUNDTABLE_ORDER = [
-    "historian", "lit-editor", "proofreader", "reader",
+    "historian", "lit-editor", "brainstormer", "proofreader", "reader",
     "publisher", "adaptation", "genre",
 ]
 

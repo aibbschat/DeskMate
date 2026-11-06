@@ -9,7 +9,7 @@ Hermes Bot Mode 的核心工程选择（本地 ~/.hermes/hermes-agent 源码核�
 身份 / 人格 / 记忆 / 模型都由官方 registry 与 pre-spawn session 承载，
 本模块只做「窄化 + 稳定排序」的投影，绝不复制一份名册出来。
 
-阶段 1 的生效范围是已在 registry 注册且标 ``roundtable: true`` 的 7 位创作专家
+阶段 1 的生效范围是已在 registry 注册且标 ``roundtable: true`` 的创作专家
 （右侧「我的伙伴」同源）。主编线 6 个 manifest 在阶段 2 标 ``bot: true`` 后
 经 ``BOT_ORDER`` 扩入，无需改本模块的读取逻辑。
 """
@@ -22,7 +22,7 @@ from typing import Any, Iterable, Mapping, Sequence
 # 故意不 import 那个模块 —— 它有模块级 load_personas() 副作用（import 期扫 registry），
 # 会违反「禁 import 期副作用」红线。阶段 2 统一名册时再收敛成单一来源。
 BOT_ORDER: tuple[str, ...] = (
-    "historian", "lit-editor", "proofreader", "reader",
+    "historian", "lit-editor", "brainstormer", "proofreader", "reader",
     "publisher", "adaptation", "genre",
 )
 
