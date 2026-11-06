@@ -118,36 +118,31 @@ def _is_reasoning_model(model: str) -> bool:
     return any(h in m for h in _REASONING_MODEL_HINTS)
 
 
-def _chat(
+def _chat_via_main_provider(
     system: str,
     user: str,
     *,
-    temperature: float = 0.2,
-    timeout: float = 90,
-    max_tokens: int = 3000,
-    reasoning_effort: str = "low",
+    temperature: float,
+    timeout: float,
+    max_tokens: int,
+    reasoning_effort: str,
 ) -> str:
-    """调用 LLM 一次。
+    """最后兜底：直连主对话 provider（仅在后台通道组整组不可用时走到）。
 
-    max_tokens 必须显式给足：默认走 API 缺省值时，圣经合并这类「长输出」场景
-    会被静默截断成半份文档（_parse_bible_docs 只能解析出 CHARACTERS）。
-
-    reasoning_effort=low：对推理模型（deepseek-v4-flash 等）把推理预算压到最低。
-    这类「从正文抽取事实 / 合并成圣经」的批处理任务不需要深度推理，压低推理反而
-    能让正文拿到更多 max_tokens 预算，避免「四份文档全空」。非推理模型（按模型名
-    启发式判定）不会带这个参数，避免 provider 报不识别的字段。
+    ⚠️ 主对话 provider 可能是 opencode-go 这类要求 ``x-opencode-session``
+    会话头的专用网关，后台进程用裸 OpenAI SDK 打过去必然 400 MissingSessionID
+    或 Connection error。故这里只作兜底，绝不是常规路径（2026-11-06 事故）。
     """
     from openai import BadRequestError
-    from deskmate.memory.llm import _resolve_provider, _memory_use_omniroute
+    from deskmate.memory.llm import _memory_use_omniroute, _resolve_provider
 
     client = _client()
     messages = [
         {"role": "system", "content": system},
         {"role": "user", "content": user},
     ]
-    extra = None
-    if _is_reasoning_model(_model()) and reasoning_effort:
-        extra = {"reasoning_effort": reasoning_effort}
+    extra = {"reasoning_effort": reasoning_effort} \
+        if (reasoning_effort and _is_reasoning_model(_model())) else None
 
     def _create():
         return client.chat.completions.create(
@@ -192,6 +187,56 @@ def _chat(
         else:
             raise
     return (resp.choices[0].message.content or "").strip()
+
+
+def _chat(
+    system: str,
+    user: str,
+    *,
+    temperature: float = 0.2,
+    timeout: float = 300,
+    max_tokens: int = 3000,
+    reasoning_effort: str = "low",
+) -> str:
+    """后台批处理 LLM 调用一次（圣经抽取 / 一致性检查）。
+
+    🔴 2026-11-06 架构纠偏（创作圆桌「阅读全书」全批失败的根治）：这类调用
+    **不再跟随主对话 default_model**，统一走
+    :func:`deskmate.memory.llm.chat_memory` 的付费通道组（ark → 小米 → 腾讯，
+    带熔断记账与组内自动换道），与记忆抽取同架构。原因：主模型可能是 opencode-go
+    之类要求专用会话头的网关，后台裸调每批都 400 / Connection error，被 _harvest
+    吞成「抽空」，再被 build_bible 误报成「模型未按 JSON 格式返回，或正文过短」。
+
+    timeout 默认 300s：实测付费组推理模型单批抽取耗时 95~105s，原来的 90s 会
+    稳定超时。max_tokens 仍由调用方显式给足（长输出被静默截断会只剩半份文档）。
+    reasoning_effort=low 只对推理模型带，压低推理预算给正文让路。
+
+    空 content 显式抛错，绝不静默当成「这批没事实」——由 _extract_batch_records
+    的重试机制接住，并在失败诊断里如实记为 empty_reply。
+    """
+    from deskmate.memory.llm import chat_memory
+
+    extra = {"reasoning_effort": reasoning_effort} if reasoning_effort else None
+    try:
+        raw = chat_memory(
+            system, user,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            timeout=timeout,
+            extra_body=extra,
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.warning("后台通道组调用失败，回退主对话 provider：%s", e)
+        raw = _chat_via_main_provider(
+            system, user,
+            temperature=temperature,
+            timeout=timeout,
+            max_tokens=max_tokens,
+            reasoning_effort=reasoning_effort,
+        )
+    if not raw or not raw.strip():
+        raise ValueError("后台 LLM 返回空内容（推理预算耗尽或通道异常），本批不产出事实")
+    return raw
 
 
 # ---------------------------------------------------------------------------
@@ -599,12 +644,14 @@ def _batch_source_file(batch: str) -> str:
 
 def _extract_batch_records(
     idx: int, batch: str, *, seq_base: int
-) -> tuple[list["_ent.Record"], list[str]]:
+) -> tuple[list["_ent.Record"], list[str], dict]:
     """抽取单批并转成 Record（失败返回空列表，绝不伪造）。
 
-    返回 (recs, all_names)：recs 是带引证的正式条目；all_names 是本批穷举出的人名
-    （含被漏抽者），交回 _harvest 做缺口补全的种子。两者任一非空即算这批有产出。
+    返回 (recs, all_names, diag)：前两项沿用旧契约；diag 是**失败原因诊断**
+    （call_failed / empty_reply / parse_failed），交给 _harvest 汇总后由
+    build_bible 精确报错——不再把「模型调用全挂」一律误报成 JSON 格式或正文过短。
     """
+    diag = {"call_failed": 0, "empty_reply": 0, "parse_failed": 0}
     raw = ""
     for attempt in range(_EXTRACT_RETRY + 1):
         try:
@@ -614,7 +661,12 @@ def _extract_batch_records(
                 temperature=0.0 if attempt == 0 else 0.1,
             )
         except Exception as e:  # noqa: BLE001
+            key = "empty_reply" if "空内容" in str(e) else "call_failed"
+            diag[key] += 1
             logger.warning("第 %d 批抽取调用失败：%s", idx + 1, e)
+            continue
+        if not raw:
+            diag["empty_reply"] += 1
             continue
         data = _loads_lenient(raw)
         recs = _records_from_json(
@@ -622,10 +674,11 @@ def _extract_batch_records(
         )
         all_names = _all_names_from_json(data)
         if recs or all_names:
-            return recs, all_names
+            return recs, all_names, diag
+        diag["parse_failed"] += 1
     if raw:
         logger.warning("第 %d 批抽取未产出有效条目（模型返回无法解析或为空）", idx + 1)
-    return [], []
+    return [], [], diag
 
 
 def _harvest(
@@ -650,8 +703,8 @@ def _harvest(
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
     # ---- 阶段一：rich 抽取（并发）-----------------------------------------
-    results: list[tuple[list[_ent.Record], list[str]]] = [
-        ([], []) for _ in batches
+    results: list[tuple[list[_ent.Record], list[str], dict]] = [
+        ([], [], {}) for _ in batches
     ]
     with ThreadPoolExecutor(max_workers=min(5, max(1, len(batches)))) as pool:
         futures = {
@@ -664,18 +717,23 @@ def _harvest(
                 results[i] = future.result()
             except Exception as e:  # noqa: BLE001
                 logger.warning("第 %d 批抽取异常：%s", i + 1, e)
-                results[i] = ([], [])
+                results[i] = ([], [], {"call_failed": 1})
             if progress_callback:
                 progress_callback(
                     "extract_progress", {"idx": i + 1, "total": len(batches)}
                 )
 
     passed: list[_ent.Record] = []
-    counts = {"raw": 0, "confirmed": 0, "pending": 0, "rejected": 0}
+    counts = {
+        "raw": 0, "confirmed": 0, "pending": 0, "rejected": 0,
+        "call_failed": 0, "empty_reply": 0, "parse_failed": 0,
+    }
     captured_char_norm: set[str] = set()
     batch_all_names: list[list[str]] = []
-    for i, (recs, all_names) in enumerate(results):
+    for i, (recs, all_names, diag) in enumerate(results):
         batch_all_names.append(all_names)
+        for _k in ("call_failed", "empty_reply", "parse_failed"):
+            counts[_k] += int(diag.get(_k, 0) or 0)
         if not recs:
             continue
         counts["raw"] += len(recs)
@@ -741,6 +799,40 @@ def _harvest(
     return passed, counts
 
 
+def _empty_harvest_message(counts: dict) -> str:
+    """抽空时按真实失败原因给出可操作的报错。
+
+    2026-11-06：旧文案一律写「模型可能未按 JSON 格式返回，或正文过短」，
+    而现场其实是主模型网关要求专用会话头导致**每一批调用都失败**，
+    _harvest 把异常吞成「抽空」，误导排查方向。这里按 diag 分四类如实报。
+    """
+    call_failed = int(counts.get("call_failed", 0) or 0)
+    empty_reply = int(counts.get("empty_reply", 0) or 0)
+    parse_failed = int(counts.get("parse_failed", 0) or 0)
+    tail = "已保留原有圣经不动，而不是写入未经核验的内容或清空它。"
+    if call_failed:
+        return (
+            f"抽取未产出任何可核验的事实：本轮 {call_failed} 次模型调用失败"
+            "（网络不通 / 鉴权失败 / 网关要求专用会话头），并非正文长度或 JSON 格式问题。"
+            "请查看日志里「第 N 批抽取调用失败」的具体异常，"
+            "或在 设置 ▸ Models 里切换可用模型后重试。" + tail
+        )
+    if empty_reply:
+        return (
+            f"抽取未产出任何可核验的事实：本轮 {empty_reply} 次模型返回空内容"
+            "（多见于推理模型把输出预算耗在推理链上）。"
+            "可调低推理强度或换非推理模型后重试。" + tail
+        )
+    if parse_failed:
+        return (
+            f"抽取未产出任何可核验的事实：{parse_failed} 批模型输出未能解析出"
+            "任何带引证的 JSON 条目（格式跑偏或条目全部缺 evidence）。" + tail
+        )
+    return (
+        "抽取未产出任何可核验的事实：正文过短，或所有条目都没通过原文引证核验。" + tail
+    )
+
+
 def build_bible(folder: str, progress_callback: callable = None) -> dict[str, str]:
     """通读全书 -> 结构化抽取 -> 证据核验 -> 确定性入库 -> 渲染四份圣经。
 
@@ -776,10 +868,7 @@ def build_bible(folder: str, progress_callback: callable = None) -> dict[str, st
     # 若所有批次 LLM 调用失败/超时（_harvest 对异常只 warning 不抛），passed 为空，
     # 此时应**保留旧圣经**直接报错，而不是 DELETE 已提交后再 raise 让数据蒸发。
     if not passed:
-        raise ValueError(
-            "抽取未产出任何可核验的事实：模型可能未按 JSON 格式返回，"
-            "或正文过短。已保留原有圣经不动，而不是写入未经核验的内容或清空它。"
-        )
+        raise ValueError(_empty_harvest_message(counts))
 
     if progress_callback:
         progress_callback("merging", {"total_batches": len(batches), **counts})

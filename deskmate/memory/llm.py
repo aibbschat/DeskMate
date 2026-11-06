@@ -503,8 +503,14 @@ def chat_memory(
     max_tokens: int = 800,
     timeout: float = 300.0,
     free_only: bool = False,
+    extra_body: Optional[dict] = None,
 ) -> str:
     """记忆抽取专用 chat：走**通道组**（2026-10-06，设计 §二）。
+
+    ``extra_body``（2026-11-06 新增，默认 None 不影响任何既有调用方）：透传给
+    OpenAI 兼容端点的附加参数，例如小说圣经抽取对推理模型要求的
+    ``{"reasoning_effort": "low"}``。若某条通道不认该字段返回 400，会自动
+    **剥掉参数原路重试一次**（不换通道、不误熔断）。
 
     **默认走付费组**（2026-10-13 萧哥「乙」方案改判）：免费组主力曾是 Kilo，
     而 Kilo 免费池 prompt 可能被上游记录——记忆抽取输入是萧哥的对话片段，
@@ -539,11 +545,11 @@ def chat_memory(
     from deskmate.llm_channels import GROUP_FREE, GROUP_PAID, memory_group, route
 
     def _do(ak: str, bu: str, md: str) -> str:
-        from openai import OpenAI
+        from openai import BadRequestError, OpenAI
 
         client = OpenAI(api_key=ak, base_url=bu, timeout=timeout,
                         http_client=_llm_http_client())
-        resp = client.chat.completions.create(
+        payload = dict(
             model=md,
             temperature=temperature,
             max_tokens=max_tokens,
@@ -552,6 +558,22 @@ def chat_memory(
                 {"role": "user", "content": user},
             ],
         )
+        # 只给推理模型压推理预算（与 novel_memory.core._is_reasoning_model 同源
+        # 启发式）；非推理模型带了反而可能 400，白白浪费一次组内换道。
+        attach_extra = bool(extra_body) and any(
+            h in (md or "").lower()
+            for h in ("reasoner", "r1", "-flash", "thinking", "qwq", "reasoning")
+        )
+        if attach_extra:
+            payload["extra_body"] = extra_body
+        try:
+            resp = client.chat.completions.create(**payload)
+        except BadRequestError:
+            # 个别通道不认 reasoning_effort：剥掉原路重试一次，别把整条通道熔断。
+            if not attach_extra:
+                raise
+            payload.pop("extra_body", None)
+            resp = client.chat.completions.create(**payload)
         return (resp.choices[0].message.content or "").strip()
 
     def _attempt_group(group: str) -> str:

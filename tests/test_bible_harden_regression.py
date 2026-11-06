@@ -199,3 +199,85 @@ def test_atomic_write_uses_uuid_tmp(monkeypatch):
     nc._atomic_write_text(p, "内容")
     assert ".tmp" in captured["tmp"] and len(captured["tmp"]) > len("CHARACTERS.md.tmp")
     assert p.read_text(encoding="utf-8") == "内容"
+
+
+# --------------------------------------------------------------------------- #
+# 2026-11-06 创作圆桌「阅读全书」全批失败的回归（后台抽取通道治理）
+#
+# 现场：主对话 default_model = opencode-go:deepseek-v4.1-flash，该网关要求
+# x-opencode-session 会话头；core._chat 原本用裸 OpenAI SDK 跟随主 provider 直连，
+# 每批 400 MissingSessionID / Connection error 被 _harvest 吞成「抽空」，
+# build_bible 再误报「模型可能未按 JSON 格式返回，或正文过短」。
+# --------------------------------------------------------------------------- #
+def test_chat_uses_background_channel_group_not_main_provider(monkeypatch):
+    """后台批处理必须走记忆付费通道组，不跟随主对话 default_model。"""
+    import deskmate.memory.llm as llm_mod
+
+    payload = ('{"characters": [], "relations": [], "events": [], '
+               '"settings": [], "all_names": []}')
+    called = {}
+
+    def fake_chat_memory(system, user, **kw):
+        called["hit"] = True
+        called["kw"] = kw
+        return payload
+
+    monkeypatch.setattr(llm_mod, "chat_memory", fake_chat_memory)
+
+    # 主 provider 直连是事故源头：一旦被触碰立即炸，绝不静默放过
+    def forbidden_client(*a, **k):
+        raise AssertionError("后台抽取不应直连主对话 provider 网关")
+
+    monkeypatch.setattr(nc, "_client", forbidden_client)
+    assert nc._chat("sys", "正文", max_tokens=8000) == payload
+    assert called.get("hit") is True
+    # 实测付费推理模型单批 95~105s，90s 默认超时必挂
+    assert called["kw"].get("timeout", 0) >= 180
+
+
+def test_chat_empty_reply_is_not_silent(monkeypatch):
+    """空 content 不能当成功返回，否则整批静默抽空。"""
+    from types import SimpleNamespace
+
+    import deskmate.memory.llm as llm_mod
+
+    monkeypatch.setattr(llm_mod, "chat_memory", lambda *a, **k: "")
+    resp = SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content=""))]
+    )
+    client = SimpleNamespace(
+        chat=SimpleNamespace(completions=SimpleNamespace(create=lambda **kw: resp))
+    )
+    monkeypatch.setattr(nc, "_client", lambda *a, **k: client)
+    with pytest.raises(ValueError, match="空内容|空回复"):
+        nc._chat("sys", "正文")
+
+
+def test_extract_batch_records_diagnoses_call_failure(monkeypatch):
+    """抽取失败要能区分「调用失败」与「JSON 解析不出来」。"""
+    def dead_chat(*a, **k):
+        raise ConnectionError("Connection error.")
+
+    monkeypatch.setattr(nc, "_chat", dead_chat)
+    recs, names, diag = nc._extract_batch_records(0, "第一章正文", seq_base=1)
+    assert recs == [] and names == []
+    assert diag.get("call_failed") == nc._EXTRACT_RETRY + 1
+    assert diag.get("parse_failed", 0) == 0
+
+
+def test_build_bible_reports_channel_failure_not_json_hint(monkeypatch):
+    """全批调用失败时，报错必须指向模型通道，而不是误导成 JSON/正文过短。"""
+    d, _bd = _fresh_bible()
+    (d / "第一章.txt").write_text("叶鸣秋推开柴门，见董文正立在廊下。", encoding="utf-8")
+    monkeypatch.setattr(
+        nc, "_harvest",
+        lambda *a, **k: ([], {
+            "raw": 0, "call_failed": 2, "empty_reply": 0, "parse_failed": 0,
+        }),
+    )
+    with pytest.raises(ValueError) as ei:
+        nc.build_bible(str(d))
+    msg = str(ei.value)
+    assert "调用失败" in msg or "模型通道" in msg
+    assert "未按 JSON 格式返回" not in msg
+    assert "正文过短" not in msg
