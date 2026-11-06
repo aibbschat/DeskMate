@@ -1,7 +1,7 @@
-"""真 Agent 运行时 —— 7 位专家从「人设卡」升级为有 engine、有工具、自主决策的 bot。
+"""真 Agent 运行时 —— 创作专家从「人设卡」升级为有 engine、有工具、自主决策的 bot。
 
 萧哥 11-06 决策 2 的核实结论（代码实证，见 docs/bot-mode-redesign.md）：
-7 位专家的 ``coworker/personas/builtin/*.md`` 本来就是**完整 persona**（有 tools、
+专家的 ``coworker/personas/builtin/*.md`` 本来就是**完整 persona**（有 tools、
 default_permission_mode、mcp 声明），跟小桔 deskmate.md 同构。旧圆桌之所以"不是
 真 Agent"，是 ``roundtable/coordinator.py:585`` 只把 ``system_prompt`` 文本塞进
 ``chat_stream()`` 纯 prompt 注入 —— 没起 engine、没有工具、不能自己决定读稿。
@@ -20,13 +20,14 @@ default_permission_mode、mcp 声明），跟小桔 deskmate.md 同构。旧圆�
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import dataclasses
 import logging
 import os
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Any, Optional, Sequence
+from typing import Any, AsyncIterator, Optional, Sequence
 
 from coworker.agent import build_engine
 from coworker.personas.registry import get_registry
@@ -142,6 +143,18 @@ class BotRuntime:
         self.max_iterations = max(2, int(max_iterations))
         self._engines: dict[str, Any] = {}
         self._lock = threading.RLock()
+        # 同一个 bot 的常驻 engine 不能同时跑两个 turn（messages 会被交错写）。
+        # 用 threading.Lock 而非 asyncio.Lock：speak() 走 threadpool / 独立 loop，
+        # speak_stream() 走 FastAPI 主 loop，threading 锁跨两个上下文都成立。
+        self._turn_locks: dict[str, threading.Lock] = {}
+
+    def _turn_lock(self, bot_id: str) -> threading.Lock:
+        with self._lock:
+            lock = self._turn_locks.get(bot_id)
+            if lock is None:
+                lock = threading.Lock()
+                self._turn_locks[bot_id] = lock
+            return lock
 
     # ---------------------------------------------------------------- engine
     def engine(self, bot_id: str) -> Any:
@@ -207,6 +220,13 @@ class BotRuntime:
     ) -> str:
         """说一句人话 → bot 自主决定要不要读稿 → 返回它这一轮的署名发言。"""
         eng = self.engine(bot_id)
+        with self._turn_lock(bot_id):
+            return self._speak_locked(eng, text, history=history)
+
+    def _speak_locked(
+        self, eng: Any, text: str, *, history: Sequence[dict] | None
+    ) -> str:
+        """兼容旧 ``/say`` 契约的一次性发言（整段返回）。"""
         prior = format_history(history)
         prompt = (
             (prior + "\n\n" if prior else "")
@@ -220,15 +240,89 @@ class BotRuntime:
             if m.get("role") == "assistant" and str(m.get("content") or "").strip()
         ]
         reply = replies[-1].strip() if replies else ""
-        # 常驻记忆也要有界，否则一个活跃的群会把上下文越滚越大。
-        if len(eng.messages) > _HISTORY_LIMIT * 3:
-            eng.messages[:] = eng.messages[-(_HISTORY_LIMIT * 3) :]
+        self._trim_messages(eng)
         return reply
 
     @staticmethod
     async def _drive(eng: Any, prompt: str) -> None:
         async for _event in eng.run(prompt):
             pass
+
+    @staticmethod
+    def _trim_messages(eng: Any) -> None:
+        # 常驻记忆也要有界，否则一个活跃的群会把上下文越滚越大。
+        if len(eng.messages) > _HISTORY_LIMIT * 3:
+            eng.messages[:] = eng.messages[-(_HISTORY_LIMIT * 3) :]
+
+    # ------------------------------------------------------------ speak stream
+    async def speak_stream(
+        self, bot_id: str, text: str, *, history: Sequence[dict] | None = None
+    ) -> AsyncIterator[dict[str, Any]]:
+        """**原生流式发言**：把官方 TurnEngine 的逐 token 事件原样透出来。
+
+        与 ``speak()`` 不是两套 LLM 流 —— 同一 engine / 同一 prompt / 同一份常驻
+        记忆，唯一区别是旧的 ``_drive`` 用 ``pass`` 把事件全丢了，这里把
+        ``ASSISTANT_DELTA`` 转成 ``delta`` 事件给 SSE 消费。
+
+        事件：``tool``（bot 自主读稿时）/ ``delta``（逐 token）/ ``error`` /
+        ``final``（权威最终文本，供落库与前端覆盖气泡，保证与 delta 拼接一致）。
+
+        被 ``aclose()``（客户端断开 → GeneratorExit）时调 ``request_interrupt()``
+        真正掐断 provider 流，避免「页面关了 token 还在烧」（engine.py:316）。
+        """
+        eng = self.engine(bot_id)
+        lock = self._turn_lock(bot_id)
+        if not lock.acquire(blocking=False):
+            # 非阻塞：拿不到锁不能阻塞 FastAPI 的 event loop。
+            yield {"type": "error", "message": f"{bot_id} 正在发言，请稍候再试"}
+            return
+        try:
+            prior = format_history(history)
+            prompt = (
+                (prior + "\n\n" if prior else "")
+                + f"群里刚有人说：{text}\n\n请直接以你自己的身份发言。"
+            )
+            streamed: list[str] = []
+            final_text = ""
+            try:
+                async with contextlib.aclosing(eng.run(prompt)) as events:
+                    async for event in events:
+                        kind = getattr(event.type, "value", str(event.type))
+                        data = event.data or {}
+                        if kind == "assistant_delta":
+                            piece = str(data.get("text") or "")
+                            if piece:
+                                streamed.append(piece)
+                                yield {"type": "delta", "text": piece}
+                        elif kind == "tool_started":
+                            yield {
+                                "type": "tool",
+                                "name": str(data.get("name") or ""),
+                            }
+                        elif kind == "assistant_message":
+                            # 带 tool_calls 的是中间轮（模型边调工具边说的话），
+                            # 只有不带工具调用的最后一轮才是要落库的正式发言。
+                            if not data.get("tool_calls"):
+                                final_text = str(data.get("text") or "").strip()
+                        elif kind == "error":
+                            yield {
+                                "type": "error",
+                                "message": str(data.get("message") or "bot 发言出错"),
+                            }
+            except GeneratorExit:
+                eng.request_interrupt()
+                raise
+            except Exception as exc:  # noqa: BLE001 —— 一个 bot 挂了不拖垮整群
+                logger.warning("bot %s 流式发言失败：%s", bot_id, exc)
+                yield {"type": "error", "message": str(exc)}
+            else:
+                self._trim_messages(eng)
+                # 兜底：某些 provider 不吐 ASSISTANT_MESSAGE，用 delta 拼接。
+                if not final_text:
+                    final_text = "".join(streamed).strip()
+                yield {"type": "final", "text": final_text}
+        finally:
+            lock.release()
 
     def close(self) -> None:
         with self._lock:

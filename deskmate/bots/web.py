@@ -14,13 +14,17 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
+import functools
+import json
+import logging
 import os
 from pathlib import Path
 from typing import Any, Optional
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
 from .reading import default_shelf
@@ -71,6 +75,8 @@ PAGE = r"""<!doctype html>
          background:var(--panel); border:1px solid var(--line); white-space:pre-wrap; }
   .msg.me { margin-left:auto; background:var(--mine); }
   .msg .who { display:block; font-size:11px; color:var(--sub); margin-bottom:4px; }
+  .msg .hint2 { display:block; font-size:12px; color:var(--sub); }
+  .msg.typing { opacity:.88; }
   .empty { color:var(--sub); text-align:center; margin-top:80px; }
   .composer { border-top:1px solid var(--line); background:var(--panel);
               padding:14px 22px; display:flex; gap:10px; }
@@ -107,8 +113,13 @@ PAGE = r"""<!doctype html>
 </div>
 <script>
 let current = null, rooms = [], bots = [];
+const streams = {};   // turn_id -> 正在生长的气泡
 const $ = s => document.querySelector(s);
 const err = m => { $('#err').textContent = m || ''; };
+function botName(id) {
+  const b = bots.find(x => x.id === id);
+  return b ? b.name : id;
+}
 async function api(url, opt) {
   const r = await fetch(url, opt);
   const d = await r.json().catch(() => ({}));
@@ -143,7 +154,7 @@ async function loadMessages() {
   const ms = await api('/api/rooms/' + current + '/messages');
   $('#log').innerHTML = ms.length ? ms.map(m =>
     `<div class="msg ${m.author_role === 'user' ? 'me' : ''}">` +
-    `<span class="who">${esc(m.author)}${m.author_role === 'user' ? ' · 我' : ' · bot'}</span>` +
+    `<span class="who">${esc(m.author_role === 'user' ? m.author : botName(m.author))}${m.author_role === 'user' ? ' · 我' : ' · bot'}</span>` +
     `${esc(m.text)}</div>`).join('')
     : '<div class="empty">群里还没人说话。</div>';
   $('#log').scrollTop = $('#log').scrollHeight;
@@ -166,18 +177,82 @@ $('#del').onclick = async () => {
         await loadRooms(); $('#log').innerHTML = '<div class="empty">群已撤，消息留档。</div>';
   } catch (e) { err(e.message); }
 };
+function startBubble(ev) {
+  const row = document.createElement('div');
+  row.className = 'msg typing';
+  row.innerHTML = `<span class="who">${esc(ev.name)} · bot</span>` +
+                  `<span class="hint2">正在思考…</span><span class="body"></span>`;
+  $('#log').appendChild(row);
+  streams[ev.turn_id] = {
+    row, body: row.querySelector('.body'), hint: row.querySelector('.hint2'),
+    started: false
+  };
+  $('#log').scrollTop = $('#log').scrollHeight;
+}
+function handleStream(ev) {
+  const st = ev.turn_id ? streams[ev.turn_id] : null;
+  switch (ev.type) {
+    case 'bot_start': startBubble(ev); break;
+    case 'tool':
+      if (st && !st.started) st.hint.textContent =
+        ev.name === 'read_book' ? '正在读书稿…' : '正在查资料…';
+      break;
+    case 'delta':
+      if (!st) break;
+      if (!st.started) { st.started = true; st.hint.textContent = ''; st.body.textContent = ''; }
+      st.body.textContent += ev.text;                 // 逐 token 生长
+      $('#log').scrollTop = $('#log').scrollHeight;
+      break;
+    case 'bot_end':
+      if (st) {
+        st.body.textContent = ev.text;               // 以落库的权威文本覆盖
+        st.hint.textContent = ''; st.row.classList.remove('typing');
+        delete streams[ev.turn_id];
+      }
+      break;
+    case 'bot_pass':
+      if (st) { st.row.remove(); delete streams[ev.turn_id]; }
+      break;
+    case 'error': err(ev.message || '群聊出错了'); break;
+    default: break;                                 // start / final / done
+  }
+}
 async function send() {
   const text = $('#say').value.trim();
-  if (!text || !current) return;
+  if (!text || !current || $('#send').disabled) return;
   $('#say').value = ''; err(''); $('#send').disabled = true;
   $('#log').insertAdjacentHTML('beforeend',
     `<div class="msg me"><span class="who">我</span>${esc(text)}</div>`);
   $('#log').scrollTop = $('#log').scrollHeight;
   try {
-    await api('/api/rooms/' + current + '/say', {method:'POST',
-      headers:{'Content-Type':'application/json'}, body: JSON.stringify({text})});
-    await loadMessages();
-  } catch (e) { err(e.message); await loadMessages(); }
+    const resp = await fetch('/api/rooms/' + current + '/stream', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({text})
+    });
+    if (!resp.ok || !resp.body) {
+      const d = await resp.json().catch(() => ({}));
+      throw new Error(d.detail || ('HTTP ' + resp.status));
+    }
+    const reader = resp.body.getReader(), decoder = new TextDecoder();
+    let buffer = '';
+    for (;;) {
+      const {done, value} = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, {stream:true});
+      let idx;
+      while ((idx = buffer.indexOf('\n\n')) >= 0) {
+        const chunk = buffer.slice(0, idx);
+        buffer = buffer.slice(idx + 2);
+        for (const line of chunk.split('\n')) {
+          if (!line.startsWith('data:')) continue;
+          try { handleStream(JSON.parse(line.slice(5).trim())); } catch (_) {}
+        }
+      }
+    }
+  } catch (e) { err(e.message); }
+  // 清掉残留的打字占位，再用落库消息重绘一次，保证与刷新后完全一致。
+  Object.keys(streams).forEach(k => { streams[k].row.remove(); delete streams[k]; });
+  await loadMessages();
   $('#send').disabled = false;
 }
 $('#send').onclick = send;
@@ -197,7 +272,18 @@ class Say(BaseModel):
     text: str
 
 
-def create_app(base_dir: Optional[str] = None) -> FastAPI:
+logger = logging.getLogger(__name__)
+
+# 与 deskmate/roundtable/web.py:485、creation/service.py:713 同构的 SSE 帧格式。
+def _sse(event: dict[str, Any]) -> str:
+    return f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+
+
+def create_app(base_dir: Optional[str] = None, runtime: Any = None) -> FastAPI:
+    """``runtime`` 可注入伪造的 BotRuntime（离线测试 / 未来桌面端接入用）。
+
+    不传时走 ``rooms._default_runtime()`` 懒加载真 Agent，import 期不构造 provider。
+    """
     app = FastAPI(title="Bot 群")
     store = RoomStore(base_dir or os.environ.get("DESKMATE_BOT_BASE"))
 
@@ -255,10 +341,55 @@ def create_app(base_dir: Optional[str] = None) -> FastAPI:
 
     @app.post("/api/rooms/{room_id}/say")
     async def room_say(room_id: str, body: Say) -> dict[str, Any]:
+        """旧契约：一次性 JSON。保留给现有调用方与回归测试，前端已改用 /stream。"""
         try:
-            return await run_in_threadpool(store.say, room_id, body.text)
+            return await run_in_threadpool(
+                functools.partial(store.say, room_id, body.text, runtime=runtime)
+            )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/api/rooms/{room_id}/stream")
+    async def room_stream(room_id: str, body: Say, request: Request) -> StreamingResponse:
+        """原生流式群聊：TurnEngine 的 ASSISTANT_DELTA 经 SSE 逐 token 推给前端。
+
+        不是新建一套 LLM 流 —— 同一 engine / 同一 prompt / 同一份常驻记忆，只是
+        不再丢弃事件。首个事件先发 ``start``，让响应头立刻落地（SSE 经反代时
+        首个 yield 才真正下发，见 creation/service.py:728-730 的事故记录）。
+        """
+        if store.get_room(room_id) is None:
+            raise HTTPException(status_code=404, detail="群不存在或已撤")
+        if not (body.text or "").strip():
+            raise HTTPException(status_code=400, detail="群里不能发空话")
+
+        async def gen():
+            try:
+                yield _sse({"type": "start", "room_id": room_id})
+                # aclosing：客户端断开时 GeneratorExit 级联到 rooms.say_stream →
+                # runtime.speak_stream → engine.request_interrupt()，停止烧 token。
+                async with contextlib.aclosing(
+                    store.say_stream(room_id, body.text, runtime=runtime)
+                ) as events:
+                    async for ev in events:
+                        if await request.is_disconnected():
+                            logger.info("bot 群客户端断开，停止流式发言 room=%s", room_id)
+                            break
+                        yield _sse(ev)
+            except ValueError as exc:
+                yield _sse({"type": "error", "message": str(exc)})
+            except Exception as exc:  # noqa: BLE001 —— 不让异常把 SSE 连接打成半截
+                logger.warning("bot 群流式发言异常 room=%s: %s", room_id, exc)
+                yield _sse({"type": "error", "message": "群聊服务暂时不可用"})
+
+        return StreamingResponse(
+            gen(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",  # 反代不缓冲，否则逐字变一次性
+                "Connection": "keep-alive",
+            },
+        )
 
     return app
 

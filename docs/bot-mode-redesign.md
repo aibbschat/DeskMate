@@ -1,6 +1,6 @@
 # Bot Mode 统一改造规格：主编线 + 圆桌线合并
 
-> 状态：**阶段 1 骨架 + 阶段 2 真 Agent 运行时均已落地（2026-11-06）；阶段 3 退役待建群测试通过后执行**
+> 状态：**阶段 1 骨架 + 阶段 2 真 Agent 运行时 + 阶段 2.5 原生流式群聊均已落地（2026-11-06）；阶段 3 退役待建群测试通过后执行**
 > 萧哥 11-06 14:15 三个决策：① 先做新 bot 并建群测试，成功后圆桌才退役；「先读《夜不收》」是自然语言，bot 自动去读，**不做「阅读全书」工具按钮**；② 质疑 7 位专家「不是真 Agent 能用吗」（核实结论见 §11）；③ **不要纪要**。
 > 发起：萧哥 11-06 判断「圆桌在设计时是超前的，但现在已经落后了；不应该坚持用那一套东西去套现在的新东西」。两条线一起重做成新 bot 形式。
 > 参照物：Grok Bot（xAI）、Hermes Agent Bot Mode（Nous Research，本机 `~/.hermes/hermes-agent` 有源码）。
@@ -116,6 +116,17 @@
 - `tests/test_bot_mode_runtime.py`（11 例，先红后绿）：锁住自主读稿、只读工具面、付费通道、无表单、无纪要、可撤群。
 - 尚未做：接进桌面端 `TeamChatView`（前端改动须重打包）、云端 `deploy_web.sh`。
 
+**阶段 2.5 · 原生流式群聊（已落地，仍只动 `deskmate/bots/`）**
+
+关键判断：**不需要新建一套 LLM 流**。`runtime.py:186` 起的官方 `TurnEngine` 本来就逐 token yield `ASSISTANT_DELTA`（`coworker/engine.py:559-570`），旧的 `_drive` 用一行 `pass` 把事件全丢了、再从 `messages` 捞整段文本。所以改造 = **不丢事件 + 加一条 SSE 管道 + 前端增量渲染**。
+
+- `runtime.py::speak_stream()`：同一 engine / 同一 prompt / 同一份常驻记忆，把 `ASSISTANT_DELTA` → `delta`、`TOOL_STARTED` → `tool`，末尾给权威 `final`；被 `aclose()`（客户端断开）时调 `engine.request_interrupt()` 真正停流，避免「页面关了还在烧 token」。
+- `rooms.py::say_stream()`：`start` → 每 bot 的 `bot_start` / `delta*` / `bot_end`（或 `bot_pass`）→ `done`；**只在 bot 说完后 `ChatStore.post` 落库一次**，`bot_end` 的文本与落库完全一致（不双写、不留半成品）。原 `say()` 保留，旧契约与 21 例回归不破。
+- `web.py`：`POST /api/rooms/{id}/stream` 标准 SSE（`X-Accel-Buffering: no` / `no-cache`），`create_app(..., runtime=...)` 可注入便于离线测试；内嵌页改用 `fetch().body.getReader()` 分帧 + `textContent += d.text` 逐字生长气泡，`bot_end` 用权威文本覆盖，结束再按落库消息重绘一次保证一致。
+- `tests/test_bot_stream.py`（9 例）：锁 delta 拼接 == final、自主读稿可见、断开掐流、@ 定向 / pass、SSE 帧与响应头、真 TurnEngine 集成、旧 `/say` 不破。
+- 仍然**不重打包桌面 App**：9921 独立页即可验收逐字体感；`coworker/teams/*` 零改动、`ChatStore` 只读复用、凭证仍走 `route(GROUP_PAID)` + SecretStore。
+- 若要"最原生"（主 GUI 的 `/ws/session` WebSocket + `App.tsx` 逐字渲染），属阶段 3 接进桌面端时再做，本轮不动 `coworker/server/app.py`。
+
 **阶段 3 · 两条线退役（建群测试通过后才动）**
 - 撤主编入口、下线圆桌表单；**不做任何「阅读全书」迁移**（真 Agent 自然语言读稿已覆盖）。
 - 主编辑 6 个 manifest 标 `bot: true` 纳入名册（不改 `team:` trait，避免 `default_surfaced=False` 副作用）。
@@ -177,5 +188,5 @@
 ## 13. 仍待定
 
 1. 建群测试的**体感结论**：bot 发言质量是否够专业（7 位专家人设偏薄，见 §11）。
-2. 桌面端接入时机（接 `TeamChatView` 须重打包 App；本轮先用独立页 `9921` 验收形态）。
+2. 桌面端接入时机（接 `TeamChatView` 须重打包 App；本轮先用独立页 `9921` 验收形态，该页已具备逐 token 流式）。
 3. 主编线 6 个角色是否改写人设后纳入名册。

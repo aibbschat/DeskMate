@@ -20,6 +20,7 @@
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import sqlite3
@@ -27,7 +28,7 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, AsyncIterator, Optional
 
 from coworker.teams.chat import ChatStore
 
@@ -271,6 +272,106 @@ class RoomStore:
             "room_id": room_id,
             "user_message": user_msg,
             "woken": list(woken),
+            "replies": replies,
+            "bounded": bounded,
+        }
+
+    # ------------------------------------------------------------ 说人话·流式
+    async def say_stream(
+        self,
+        room_id: str,
+        text: str,
+        *,
+        runtime: Any = None,
+        author: str = "user",
+    ) -> AsyncIterator[dict[str, Any]]:
+        """``say()`` 的原生流式版本：逐 token 吐事件，**只在 bot 说完后落库一次**。
+
+        与 ``say()`` 共用同一套语义（不 @ = 全员、@ 谁谁答、后发言者看得到前文、
+        各自署名、不出纪要），区别只在传输形态：
+
+        - 旧的 ``_drive`` 把 TurnEngine 的 ``ASSISTANT_DELTA`` 全丢了，前端只能等
+          所有 bot 串行跑完拿一次性 JSON；这里改为边生成边 ``delta`` 推给 SSE。
+        - 事件序列：``start`` → 每个 bot 的 ``bot_start`` → ``tool``/``delta``*
+          → ``bot_end``（或 ``bot_pass``）→ ``done``。
+        - ``bot_end`` 时用 ``final`` 的权威文本覆盖气泡，并与 ``chat_store.post``
+          落库的文本完全一致（不双写、不留半成品消息）。
+
+        被 ``aclose()``（客户端断开）时，``aclosing`` 会把 GeneratorExit 级联到
+        ``runtime.speak_stream`` → ``engine.request_interrupt()`` 真正停掉 LLM 流。
+        """
+        room = self.get_room(room_id)
+        if room is None:
+            raise ValueError(f"群 {room_id} 不存在或已解散")
+        clean = (text or "").strip()
+        if not clean:
+            raise ValueError("群里不能发空话")
+
+        rt = runtime if runtime is not None else _default_runtime()
+        user_msg = self.chat_store.post(room_id, author, clean, author_role="user")
+        woken = list(resolve_mentions(clean, room.bot_ids))[: self.limits.max_members]
+        history = list(self.chat_store.messages(room_id))
+        replies: list[dict[str, Any]] = []
+        bounded: str | None = None
+
+        yield {
+            "type": "start",
+            "room_id": room_id,
+            "user_message": user_msg,
+            "woken": list(woken),
+        }
+
+        for bot_id in woken:
+            reason = bound_reason(1, len(replies), self.limits)
+            if reason:
+                bounded = reason
+                break
+            name = room.bot_names.get(bot_id, bot_id)
+            turn_id = f"{room_id}:{user_msg['seq']}:{bot_id}"
+            scope = {"bot_id": bot_id, "name": name, "turn_id": turn_id}
+            yield {"type": "bot_start", **scope}
+
+            final_text = ""
+            failed = False
+            try:
+                # aclosing 保证断开时 GeneratorExit 一路传到 engine.request_interrupt()
+                async with contextlib.aclosing(
+                    rt.speak_stream(bot_id, clean, history=history)
+                ) as events:
+                    async for ev in events:
+                        if ev.get("type") == "final":
+                            final_text = str(ev.get("text") or "")
+                        elif ev.get("type") == "error":
+                            failed = True
+                        yield {**ev, **scope}
+            except Exception as exc:  # noqa: BLE001 —— 一个 bot 挂了不拖垮整群
+                logger.warning("bot %s 流式发言失败：%s", bot_id, exc)
+                yield {"type": "error", "message": str(exc), **scope}
+                failed = True
+
+            reply = final_text.strip()
+            if failed or not reply:
+                # 显式 pass / 出错：不落库，前端撤掉打字占位。
+                yield {"type": "bot_pass", **scope}
+                continue
+
+            msg = self.chat_store.post(room_id, bot_id, reply, author_role="bot")
+            self.chat_store.consume(room_id, bot_id, int(msg["seq"]))
+            item = {
+                "seq": msg["seq"],
+                "author": bot_id,
+                "name": name,
+                "text": reply,
+                "author_role": "bot",
+            }
+            replies.append(item)
+            yield {"type": "bot_end", **item, "turn_id": turn_id}
+            # 后发言的 bot 看得到前面 bot 刚说的话（真讨论，不是并列的独白）。
+            history.append({"author": bot_id, "author_role": "bot", "text": reply})
+
+        yield {
+            "type": "done",
+            "room_id": room_id,
             "replies": replies,
             "bounded": bounded,
         }
