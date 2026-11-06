@@ -74,7 +74,7 @@ class _StreamingScriptedProvider:
 class _FakeStreamRuntime:
     """不依赖真 engine 的编排层替身，用于测 @ 定向 / pass / SSE 端点。"""
 
-    async def speak_stream(self, bot_id: str, text: str, *, history=None):
+    async def speak_stream(self, bot_id: str, text: str, *, history=None, **kwargs):
         yield {"type": "delta", "text": "一半"}
         yield {"type": "final", "text": "完整发言"}
 
@@ -157,18 +157,20 @@ def test_say_stream_event_order_and_single_persist(shelf_dir, tmp_path) -> None:
 
     types = [e["type"] for e in events]
     assert types[0] == "start" and types[-1] == "done"
-    assert types.count("bot_start") == 2
-    assert types.count("bot_end") == 2
+    assert types.count("round_start") >= 1, "多轮讨论要有轮次事件"
+    assert types.count("bot_start") == types.count("bot_end") + types.count("bot_pass")
     assert types.count("delta") >= 2
 
     msgs = cs.messages(room.room_id)
-    assert [m["author_role"] for m in msgs] == ["user", "bot", "bot"]
+    assert msgs[0]["author_role"] == "user"
+    assert all(m["author_role"] == "bot" for m in msgs[1:])
+    assert len(msgs) - 1 == types.count("bot_end"), "每条 bot_end 落库一次，不双写"
     assert all(m["text"] == _REPLY for m in msgs[1:])
     assert not any(
         kw in m["text"] for m in msgs for kw in ("纪要", "本轮总结", "主持人")
     )
     ends = [e for e in events if e["type"] == "bot_end"]
-    assert [e["text"] for e in ends] == [msgs[1]["text"], msgs[2]["text"]], (
+    assert [e["text"] for e in ends] == [m["text"] for m in msgs[1:]], (
         "bot_end 的权威文本必须与落库一致，不能双写"
     )
     rt.close()
@@ -180,7 +182,7 @@ def test_say_stream_respects_mentions_and_pass(tmp_path) -> None:
     """@ 只唤醒被点名的 bot；空 final = pass，不落库、不生成占位消息。"""
 
     class Fake:
-        async def speak_stream(self, bot_id, text, *, history=None):
+        async def speak_stream(self, bot_id, text, *, history=None, **kwargs):
             if bot_id == "reader":
                 yield {"type": "final", "text": ""}
                 return
@@ -226,11 +228,14 @@ def test_stream_endpoint_emits_sse_frames_and_headers(tmp_path) -> None:
     types = [f["type"] for f in frames]
     assert types[0] == "start" and types[-1] == "done"
     assert types.count("delta") >= 2
-    assert types.count("bot_end") == 2
+    assert types.count("bot_end") >= 2
+    assert types.count("round_start") >= 1
     assert all("turn_id" in f for f in frames if f["type"] in ("bot_start", "delta", "bot_end"))
 
     msgs = client.get(f"/api/rooms/{room_id}/messages").json()
-    assert [m["author_role"] for m in msgs] == ["user", "bot", "bot"]
+    assert msgs[0]["author_role"] == "user"
+    assert all(m["author_role"] == "bot" for m in msgs[1:])
+    assert len(msgs) - 1 == types.count("bot_end")
     assert msgs[-1]["text"] == "完整发言", "final 覆盖后落库的是权威文本，不是半截 delta"
 
 
@@ -251,7 +256,8 @@ def test_stream_endpoint_with_real_turn_engine(shelf_dir, tmp_path) -> None:
     ]
     types = [f["type"] for f in frames]
     assert types.count("delta") >= 2, "真 engine 的 ASSISTANT_DELTA 必须透到 SSE"
-    assert types.count("bot_end") == 2
+    assert types.count("bot_end") >= 2
+    assert types.count("round_start") >= 1
     msgs = client.get(f"/api/rooms/{room_id}/messages").json()
     assert msgs[-1]["text"] == _REPLY
     rt.close()
@@ -270,7 +276,7 @@ def test_legacy_say_endpoint_still_works(tmp_path) -> None:
     """旧 /say 一次性契约不能被流式改造破坏（现有调用方与 21 例回归）。"""
 
     class Fake:
-        def speak(self, bot_id, text, *, history=None):
+        def speak(self, bot_id, text, *, history=None, **kwargs):
             return "旧契约发言"
 
     client = TestClient(create_app(str(tmp_path), runtime=Fake()))
@@ -279,4 +285,6 @@ def test_legacy_say_endpoint_still_works(tmp_path) -> None:
     ).json()["room_id"]
     out = client.post(f"/api/rooms/{room_id}/say", json={"text": "说句话"})
     assert out.status_code == 200
-    assert [r["text"] for r in out.json()["replies"]] == ["旧契约发言", "旧契约发言"]
+    replies = out.json()["replies"]
+    assert len(replies) >= 2, "两位 bot 至少各署名一条"
+    assert all(r["text"] == "旧契约发言" for r in replies)

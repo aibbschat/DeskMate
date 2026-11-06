@@ -24,10 +24,11 @@ import contextlib
 import dataclasses
 import logging
 import os
+import re
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Any, AsyncIterator, Optional, Sequence
+from typing import Any, AsyncIterator, Mapping, Optional, Sequence
 
 from coworker.agent import build_engine
 from coworker.personas.registry import get_registry
@@ -47,7 +48,10 @@ _GROUP_GUIDANCE = """
   绝不要求填任何表格字段。读不到就直说读不到，不要编造情节或段号。
 - 只读，不写文件、不改稿、不派活、不建工作项、不做审核验收、不打回重改。
 - **不生成纪要 / 总结 / 主持人收尾**；不要替别人发言，也不要复述群历史。
+- 群里已经显示你的名字，**不要**在发言开头加署名、来源标注、@ 前缀或
+  「（来自…）」这类括号说明，直接从观点说起。
 - 群里其他人的发言已经在上下文里，接话而不是重新开始。
+- 后面几轮如果没有新的可说，直接回复 pass，不要为了凑数重复自己的观点。
 """
 
 _HISTORY_LIMIT = 20
@@ -99,14 +103,25 @@ def _run_sync(coro) -> Any:
         return pool.submit(lambda: asyncio.run(coro)).result()
 
 
-def format_history(history: Sequence[dict] | None) -> str:
-    """群历史 → 一段纯文本上下文（有上限，防上下文膨胀烧钱）。"""
+def format_history(
+    history: Sequence[dict] | None,
+    *,
+    names: Mapping[str, str] | None = None,
+) -> str:
+    """群历史 → 一段纯文本上下文（有上限，防上下文膨胀烧钱）。
+
+    ``names`` 把 ``author``（bot_id，如 historian）映射成群里显示的中文名
+    （如「史料考据」）—— 人设里的接话示范写的都是中文名，模型看到
+    ``historian（bot）: ...`` 是认不出「文学编辑说…」该接谁的。
+    """
     rows = list(history or [])[-_HISTORY_LIMIT:]
     if not rows:
         return ""
+    lookup = {str(k): str(v) for k, v in (names or {}).items()}
     lines = []
     for m in rows:
-        who = str(m.get("author") or "?")
+        author = str(m.get("author") or "?")
+        who = lookup.get(author, author)
         role = str(m.get("author_role") or "")
         tag = "（我）" if role == "user" else f"（{role}）"
         text = str(m.get("text") or "").strip()
@@ -115,10 +130,44 @@ def format_history(history: Sequence[dict] | None) -> str:
     return "群内已有发言：\n" + "\n".join(lines) if lines else ""
 
 
+def build_prompt(
+    text: str,
+    history: Sequence[dict] | None,
+    *,
+    names: Mapping[str, str] | None = None,
+    round_index: int = 1,
+) -> str:
+    """构造一次发言的 prompt。
+
+    第 1 轮由用户原话驱动；第 2 轮起是 bot 之间接话，**不重复用户原话**
+    （它已经在群历史里了），改为要求挑一个具体观点回应或显式 pass。
+    """
+    prior = format_history(history, names=names)
+    if round_index <= 1:
+        lead = f"群里刚有人说：{text}\n\n请直接以你自己的身份发言。"
+    else:
+        lead = (
+            f"这是第 {round_index} 轮接话。前面几位的发言都在上下文里，"
+            "请挑一个具体观点回应、补充或提出不同意见，不要复述别人说过的话；"
+            "如果没有新的可说，直接回复 pass。"
+        )
+    return (prior + "\n\n" if prior else "") + lead
+
+
+def _safe_segment(value: str) -> str:
+    """room_id 落进目录名前的兜底清洗（group_id 正常是 uuid hex）。"""
+    return re.sub(r"[^A-Za-z0-9._-]", "_", str(value))[:64] or "_default"
+
+
 class BotRuntime:
-    """每个 bot 一个常驻 engine（跨发言记忆不归零），群只是临时协调面。
+    """每个 ``(room, bot)`` 一个常驻 engine，群只是临时协调面。
 
     ``provider`` 可注入，便于离线测试真 Agent 的自主工具决策；默认走付费通道。
+
+    上下文只有一份：``ChatStore`` 的群历史（截断 20 条）+ 当前这句。engine
+    每轮开始前清空 ``messages``，不再把群历史的副本累积进去 —— 否则
+    「群历史 / engine.messages / 当前句」会是三重冗余，既费 token 又让 bot 复读。
+    跨发言的连续记忆由群历史承载，且天然按 room 隔离，A 群的话不会漏进 B 群。
     """
 
     def __init__(
@@ -141,30 +190,39 @@ class BotRuntime:
         self.provider = provider
         self.model = model or ""
         self.max_iterations = max(2, int(max_iterations))
-        self._engines: dict[str, Any] = {}
+        # key = (room_id, bot_id)：同一个 bot 在不同群是两份独立会话，不串味。
+        self._engines: dict[tuple[str, str], Any] = {}
         self._lock = threading.RLock()
-        # 同一个 bot 的常驻 engine 不能同时跑两个 turn（messages 会被交错写）。
+        # 同一个 (room, bot) 不能同时跑两个 turn（messages 会被交错写）。
         # 用 threading.Lock 而非 asyncio.Lock：speak() 走 threadpool / 独立 loop，
         # speak_stream() 走 FastAPI 主 loop，threading 锁跨两个上下文都成立。
-        self._turn_locks: dict[str, threading.Lock] = {}
+        self._turn_locks: dict[tuple[str, str], threading.Lock] = {}
 
-    def _turn_lock(self, bot_id: str) -> threading.Lock:
+    @staticmethod
+    def _key(room_id: str | None, bot_id: str) -> tuple[str, str]:
+        return (str(room_id or "_default"), str(bot_id))
+
+    def _turn_lock(self, key: tuple[str, str]) -> threading.Lock:
         with self._lock:
-            lock = self._turn_locks.get(bot_id)
+            lock = self._turn_locks.get(key)
             if lock is None:
                 lock = threading.Lock()
-                self._turn_locks[bot_id] = lock
+                self._turn_locks[key] = lock
             return lock
 
     # ---------------------------------------------------------------- engine
-    def engine(self, bot_id: str) -> Any:
-        """构造（并缓存）一个 bot 的官方 TurnEngine。"""
+    def engine(self, bot_id: str, *, room_id: str | None = None) -> Any:
+        """构造（并缓存）该 bot 在该群的官方 TurnEngine。
+
+        ``room_id`` 省略时落进 ``_default`` 桶（兼容阶段 2 的离线调用与测试）。
+        """
         bot_id = str(bot_id).strip()
         if bot_id not in KNOWN_BOT_IDS:
             raise ValueError(f"未知 bot：{bot_id}（bot 必须来自常驻名册）")
+        key = self._key(room_id, bot_id)
         with self._lock:
-            if bot_id in self._engines:
-                return self._engines[bot_id]
+            if key in self._engines:
+                return self._engines[key]
 
             entry = get_registry().get(bot_id)
             if entry is None:
@@ -182,7 +240,7 @@ class BotRuntime:
                 connectors=False,
                 team=None,
             )
-            ws = self.workspace_root / bot_id
+            ws = self.workspace_root / _safe_segment(key[0]) / bot_id
             ws.mkdir(parents=True, exist_ok=True)
             provider, model = self.provider, self.model
             if provider is None or not model:
@@ -211,27 +269,44 @@ class BotRuntime:
                 for name, spec in eng.registry._tools.items()
                 if name in allowed
             }
-            self._engines[bot_id] = eng
+            self._engines[key] = eng
             return eng
 
     # ---------------------------------------------------------------- speak
     def speak(
-        self, bot_id: str, text: str, *, history: Sequence[dict] | None = None
+        self,
+        bot_id: str,
+        text: str,
+        *,
+        history: Sequence[dict] | None = None,
+        names: Mapping[str, str] | None = None,
+        room_id: str | None = None,
+        round_index: int = 1,
     ) -> str:
         """说一句人话 → bot 自主决定要不要读稿 → 返回它这一轮的署名发言。"""
-        eng = self.engine(bot_id)
-        with self._turn_lock(bot_id):
-            return self._speak_locked(eng, text, history=history)
+        eng = self.engine(bot_id, room_id=room_id)
+        with self._turn_lock(self._key(room_id, bot_id)):
+            return self._speak_locked(
+                eng,
+                text,
+                history=history,
+                names=names,
+                round_index=round_index,
+            )
 
     def _speak_locked(
-        self, eng: Any, text: str, *, history: Sequence[dict] | None
+        self,
+        eng: Any,
+        text: str,
+        *,
+        history: Sequence[dict] | None,
+        names: Mapping[str, str] | None,
+        round_index: int,
     ) -> str:
         """兼容旧 ``/say`` 契约的一次性发言（整段返回）。"""
-        prior = format_history(history)
-        prompt = (
-            (prior + "\n\n" if prior else "")
-            + f"群里刚有人说：{text}\n\n请直接以你自己的身份发言。"
-        )
+        # 群历史是唯一上下文源：清掉上一轮的累积副本，避免三重冗余 / 复读。
+        eng.messages.clear()
+        prompt = build_prompt(text, history, names=names, round_index=round_index)
         before = len(eng.messages)
         _run_sync(self._drive(eng, prompt))
         replies = [
@@ -239,24 +314,23 @@ class BotRuntime:
             for m in eng.messages[before:]
             if m.get("role") == "assistant" and str(m.get("content") or "").strip()
         ]
-        reply = replies[-1].strip() if replies else ""
-        self._trim_messages(eng)
-        return reply
+        return replies[-1].strip() if replies else ""
 
     @staticmethod
     async def _drive(eng: Any, prompt: str) -> None:
         async for _event in eng.run(prompt):
             pass
 
-    @staticmethod
-    def _trim_messages(eng: Any) -> None:
-        # 常驻记忆也要有界，否则一个活跃的群会把上下文越滚越大。
-        if len(eng.messages) > _HISTORY_LIMIT * 3:
-            eng.messages[:] = eng.messages[-(_HISTORY_LIMIT * 3) :]
-
     # ------------------------------------------------------------ speak stream
     async def speak_stream(
-        self, bot_id: str, text: str, *, history: Sequence[dict] | None = None
+        self,
+        bot_id: str,
+        text: str,
+        *,
+        history: Sequence[dict] | None = None,
+        names: Mapping[str, str] | None = None,
+        room_id: str | None = None,
+        round_index: int = 1,
     ) -> AsyncIterator[dict[str, Any]]:
         """**原生流式发言**：把官方 TurnEngine 的逐 token 事件原样透出来。
 
@@ -270,17 +344,16 @@ class BotRuntime:
         被 ``aclose()``（客户端断开 → GeneratorExit）时调 ``request_interrupt()``
         真正掐断 provider 流，避免「页面关了 token 还在烧」（engine.py:316）。
         """
-        eng = self.engine(bot_id)
-        lock = self._turn_lock(bot_id)
+        eng = self.engine(bot_id, room_id=room_id)
+        lock = self._turn_lock(self._key(room_id, bot_id))
         if not lock.acquire(blocking=False):
             # 非阻塞：拿不到锁不能阻塞 FastAPI 的 event loop。
             yield {"type": "error", "message": f"{bot_id} 正在发言，请稍候再试"}
             return
         try:
-            prior = format_history(history)
-            prompt = (
-                (prior + "\n\n" if prior else "")
-                + f"群里刚有人说：{text}\n\n请直接以你自己的身份发言。"
+            eng.messages.clear()
+            prompt = build_prompt(
+                text, history, names=names, round_index=round_index
             )
             streamed: list[str] = []
             final_text = ""
@@ -316,7 +389,6 @@ class BotRuntime:
                 logger.warning("bot %s 流式发言失败：%s", bot_id, exc)
                 yield {"type": "error", "message": str(exc)}
             else:
-                self._trim_messages(eng)
                 # 兜底：某些 provider 不吐 ASSISTANT_MESSAGE，用 delta 拼接。
                 if not final_text:
                     final_text = "".join(streamed).strip()

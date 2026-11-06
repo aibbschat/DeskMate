@@ -77,6 +77,8 @@ PAGE = r"""<!doctype html>
   .msg .who { display:block; font-size:11px; color:var(--sub); margin-bottom:4px; }
   .msg .hint2 { display:block; font-size:12px; color:var(--sub); }
   .msg.typing { opacity:.88; }
+  .round-sep { text-align:center; color:var(--sub); font-size:11px; margin:6px 0 14px; }
+  .pass-note { color:var(--sub); font-size:12px; margin:0 0 12px; }
   .empty { color:var(--sub); text-align:center; margin-top:80px; }
   .composer { border-top:1px solid var(--line); background:var(--panel);
               padding:14px 22px; display:flex; gap:10px; }
@@ -192,6 +194,14 @@ function startBubble(ev) {
 function handleStream(ev) {
   const st = ev.turn_id ? streams[ev.turn_id] : null;
   switch (ev.type) {
+    case 'round_start':
+      if (ev.round > 1) {
+        const sep = document.createElement('div');
+        sep.className = 'round-sep';
+        sep.textContent = '— 第 ' + ev.round + ' 轮接话 —';
+        $('#log').appendChild(sep);
+      }
+      break;
     case 'bot_start': startBubble(ev); break;
     case 'tool':
       if (st && !st.started) st.hint.textContent =
@@ -212,6 +222,12 @@ function handleStream(ev) {
       break;
     case 'bot_pass':
       if (st) { st.row.remove(); delete streams[ev.turn_id]; }
+      if (ev.reason === 'pass') {
+        const note = document.createElement('div');
+        note.className = 'pass-note';
+        note.textContent = ev.name + ' 略过';
+        $('#log').appendChild(note);
+      }
       break;
     case 'error': err(ev.message || '群聊出错了'); break;
     default: break;                                 // start / final / done
@@ -364,7 +380,9 @@ def create_app(base_dir: Optional[str] = None, runtime: Any = None) -> FastAPI:
 
         async def gen():
             try:
-                yield _sse({"type": "start", "room_id": room_id})
+                # 不额外发 start：say_stream 的第一个事件就是 start，避免重复。
+                # StreamingResponse 在进入迭代前已发响应头；X-Accel-Buffering: no
+                # 负责挡住反代缓冲，无需靠一个假事件把头「顶」出去。
                 # aclosing：客户端断开时 GeneratorExit 级联到 rooms.say_stream →
                 # runtime.speak_stream → engine.request_interrupt()，停止烧 token。
                 async with contextlib.aclosing(

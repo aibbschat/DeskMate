@@ -1,6 +1,6 @@
 # Bot Mode 统一改造规格：主编线 + 圆桌线合并
 
-> 状态：**阶段 1 骨架 + 阶段 2 真 Agent 运行时 + 阶段 2.5 原生流式群聊均已落地（2026-11-06）；阶段 3 退役待建群测试通过后执行**
+> 状态：**阶段 1 / 2 / 2.5 / 2.6 均已落地（2026-11-06），并已做真机群聊实测；阶段 3 退役待决策**
 > 萧哥 11-06 14:15 三个决策：① 先做新 bot 并建群测试，成功后圆桌才退役；「先读《夜不收》」是自然语言，bot 自动去读，**不做「阅读全书」工具按钮**；② 质疑 7 位专家「不是真 Agent 能用吗」（核实结论见 §11）；③ **不要纪要**。
 > 发起：萧哥 11-06 判断「圆桌在设计时是超前的，但现在已经落后了；不应该坚持用那一套东西去套现在的新东西」。两条线一起重做成新 bot 形式。
 > 参照物：Grok Bot（xAI）、Hermes Agent Bot Mode（Nous Research，本机 `~/.hermes/hermes-agent` 有源码）。
@@ -127,6 +127,26 @@
 - 仍然**不重打包桌面 App**：9921 独立页即可验收逐字体感；`coworker/teams/*` 零改动、`ChatStore` 只读复用、凭证仍走 `route(GROUP_PAID)` + SecretStore。
 - 若要"最原生"（主 GUI 的 `/ws/session` WebSocket + `App.tsx` 逐字渲染），属阶段 3 接进桌面端时再做，本轮不动 `coworker/server/app.py`。
 
+**阶段 2.6 · 讨论能力硬伤修复（已落地，仍只动 `deskmate/bots/`）**
+
+| 硬伤 | 修法 |
+|---|---|
+| `max_rounds` 是死代码（只有 1 轮接龙） | `say()` / `say_stream()` 改为真正的轮次循环；`bound_reason` 传**已完成轮数**（第 1 轮传 0），`max_rounds=3` 正好跑满 3 轮、第 4 轮收口；`max_messages=10` 优先截断。≥2 位被唤醒才开多轮，每轮至少 2 位仍在实质发言才继续，全 pass / 独白立即收口。`round_start` 事件带轮次，`turn_id` 带轮次避免同 bot 跨轮气泡覆盖 |
+| 中文名没进 `format_history` | `format_history(..., names=)` 把 `author`（bot_id）映射成中文名；`rooms` 把 `room.bot_names` 一路传到 `speak` / `speak_stream`。人设里「文学编辑说…→ 接：…」的示范才对得上说话人 |
+| `@中文名` 静默失效 | `resolve_mentions(..., aliases=)` 支持 `{中文名: bot_id}`；`@史料考据` 与 `@historian` 等价。`ChatStore` 自带 mentions 只认英文 handle，不影响唤醒（唤醒走本模块） |
+| 显式 `pass` | `discussion.is_pass()` 只认短句里的弃权标记（不误杀「我不接受这个观点」）；pass 不落库、不生成占位消息、不参与后续轮，`say()` 返回 `passed`，流式发 `bot_pass` |
+| 跨群串味 | engine / 工具锁 / workspace 的 key 从 `bot_id` 改为 `(room_id, bot_id)`；同一 bot 在 A、B 群是两份独立会话。省略 `room_id` 仍落 `_default` 桶（兼容阶段 2 调用） |
+| 上下文三重冗余 | ① 刚发的当前句从群历史里排除；② 每轮开始前 `eng.messages.clear()`，群历史是唯一上下文源；③ 第 2 轮起的 prompt 不重复用户原话，只让 bot 接话。跨发言记忆由 ChatStore 群历史承载，按 room 天然隔离 |
+
+`tests/test_bot_discussion.py`（16 例）锁住上述六项；连同阶段 1/2/2.5 共 **46 例全绿**。
+
+**群聊实测（2026-11-06）**
+
+- **真机**：付费通道 `deepseek-v4-flash` 起真 `TurnEngine`，`@史料考据` 定向 → SSE 200、`text/event-stream`、`X-Accel-Buffering: no`、21 个 `delta` 逐字到达、`final` 拼接与落库文本完全一致、只有 `historian` 落库。
+- **真实 HTTP 多轮**：uvicorn + 可控 runtime，2 位 bot 全员讨论 → `round_start [1,2,3]`、6 条各自署名发言、6 个 `turn_id` 唯一、`done.rounds=3 / bounded=max_rounds`、落库 `1 user + 6 bot` 与 `bot_end` 一一对应。
+- ⚠️ **体感结论**：真机首 token 延迟 **69.5 秒**（ark plan 通道），单次发言总耗时约 89 秒。逐字流式 + typing 占位能缓解等待感，但 3 轮 × N 位 bot 串行会把一次发言放大到数分钟 —— 阶段 3 前若要正式用，需要评估并发化（多 bot 并行起 turn）或换更快通道。
+- 实测还发现模型爱在发言开头自加 `（来自 @historian · …）` 署名，已在 `_GROUP_GUIDANCE` 明令禁止；SSE 里重复的第二个 `start` 事件也已去掉。
+
 **阶段 3 · 两条线退役（建群测试通过后才动）**
 - 撤主编入口、下线圆桌表单；**不做任何「阅读全书」迁移**（真 Agent 自然语言读稿已覆盖）。
 - 主编辑 6 个 manifest 标 `bot: true` 纳入名册（不改 `team:` trait，避免 `default_surfaced=False` 副作用）。
@@ -187,6 +207,8 @@
 
 ## 13. 仍待定
 
-1. 建群测试的**体感结论**：bot 发言质量是否够专业（7 位专家人设偏薄，见 §11）。
-2. 桌面端接入时机（接 `TeamChatView` 须重打包 App；本轮先用独立页 `9921` 验收形态，该页已具备逐 token 流式）。
-3. 主编线 6 个角色是否改写人设后纳入名册。
+1. ~~建群测试的体感结论~~ → 已实测，见 §7「群聊实测」。**遗留**：首 token 69.5s 导致的串行多轮耗时，需决定并发化 / 换通道。
+2. 桌面端接入时机（接 `TeamChatView` 须重打包 App；本轮先用独立页 `9921` 验收形态，该页已具备逐 token 流式 + 多轮轮次分隔）。
+3. 主编线 5 个角色（文档旧写 6 个，代码实测为 5）是否改写人设后纳入名册。
+4. 名册数据源仍读 `roundtable: true` 字段；退役圆桌前须先切成独立的 `bot: true`（`roster.py:51`、`manifest.py:100-102`），否则清理旧字段会让名册变空。
+5. 8 位专家人设声明的 `tools` / `mcp` / `sw-*` 技能与运行时实际只有 `read_book` / `list_books` 不一致；`historian` 等仍保留圆桌时代的「逐条报告体」输出格式，与群聊 100~300 字说人话的引导冲突。

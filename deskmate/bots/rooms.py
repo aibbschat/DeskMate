@@ -34,7 +34,7 @@ from coworker.teams.chat import ChatStore
 
 from deskmate.teams_client import resolve_base
 
-from .discussion import DiscussionLimits, bound_reason, resolve_mentions
+from .discussion import DiscussionLimits, bound_reason, is_pass, resolve_mentions
 from .roster import KNOWN_BOT_IDS, list_bots
 
 logger = logging.getLogger(__name__)
@@ -215,13 +215,13 @@ class RoomStore:
         runtime: Any = None,
         author: str = "user",
     ) -> dict[str, Any]:
-        """群里说一句 → 唤醒 bot → 各自署名回话。**不填表单、不出纪要**。
+        """群里说一句 → 唤醒 bot → 多轮接话 → 各自署名回话。**不填表单、不出纪要**。
 
-        - 不 @ = 全员（受 ``max_members`` 约束），``@谁`` 只唤醒谁；
-        - 每个 bot 是**真 Agent**：要不要读稿、读哪一章由它自己决定，
-          用户不必点「阅读全书」，也不必给路径；
-        - 一轮发言有硬上限（``max_messages``）；bot 之间可接话，但不会
-          互相递归唤醒（bot 消息的 ``author_role`` 不是 user）；
+        - 不 @ = 全员（受 ``max_members`` 约束），``@谁`` 只唤醒谁；中文名 @ 也认；
+        - 每个 bot 是**真 Agent**：要不要读稿由它自己决定；
+        - ``max_rounds`` / ``max_messages`` 真正生效：≥2 位被唤醒才开多轮，
+          每轮结束至少还有 2 位在实质发言才继续，全 pass / 独白立即收口；
+        - bot 显式 pass 不落库，也不参与后续轮；
         - **绝不生成纪要 / 总结 / 主持人收尾**（萧哥 11-06 决策 3）。
         """
         room = self.get_room(room_id)
@@ -233,47 +233,79 @@ class RoomStore:
 
         rt = runtime if runtime is not None else _default_runtime()
         user_msg = self.chat_store.post(room_id, author, clean, author_role="user")
-        woken = list(resolve_mentions(clean, room.bot_ids))[: self.limits.max_members]
-        history = list(self.chat_store.messages(room_id))
+        aliases = {name: bot_id for bot_id, name in room.bot_names.items()}
+        woken = list(
+            resolve_mentions(clean, room.bot_ids, aliases=aliases)
+        )[: self.limits.max_members]
+        # 当前这句会单独进 prompt，从群历史里排除，避免同一句出现两次。
+        history = [
+            m
+            for m in self.chat_store.messages(room_id)
+            if int(m.get("seq") or 0) != int(user_msg["seq"])
+        ]
         replies: list[dict[str, Any]] = []
+        passed: list[str] = []
         bounded: str | None = None
+        multi_round = len(woken) >= 2
+        active = list(woken)
+        completed_rounds = 0
 
-        for bot_id in woken:
-            reason = bound_reason(1, len(replies), self.limits)
+        while active:
+            reason = bound_reason(completed_rounds, len(replies), self.limits)
             if reason:
                 bounded = reason
                 break
-            try:
-                reply = rt.speak(bot_id, clean, history=history)
-            except Exception as exc:  # noqa: BLE001 —— 一个 bot 挂了不拖垮整群
-                logger.warning("bot %s 发言失败：%s", bot_id, exc)
-                continue
-            if not (reply or "").strip():
-                continue
-            msg = self.chat_store.post(
-                room_id, bot_id, reply, author_role="bot"
-            )
-            self.chat_store.consume(room_id, bot_id, int(msg["seq"]))
-            replies.append(
-                {
-                    "seq": msg["seq"],
-                    "author": bot_id,
-                    "name": room.bot_names.get(bot_id, bot_id),
-                    "text": reply,
-                    "author_role": "bot",
-                }
-            )
-            # 后发言的 bot 看得到前面 bot 刚说的话（真讨论，不是并列的独白），
-            # 但不额外增加模型调用数。
-            history.append(
-                {"author": bot_id, "author_role": "bot", "text": reply}
-            )
+            round_no = completed_rounds + 1
+            spoke: list[str] = []
+            for bot_id in list(active):
+                reason = bound_reason(completed_rounds, len(replies), self.limits)
+                if reason:
+                    bounded = reason
+                    break
+                try:
+                    reply = rt.speak(
+                        bot_id,
+                        clean,
+                        history=history,
+                        names=room.bot_names,
+                        room_id=room_id,
+                        round_index=round_no,
+                    )
+                except Exception as exc:  # noqa: BLE001 —— 一个 bot 挂了不拖垮整群
+                    logger.warning("bot %s 发言失败：%s", bot_id, exc)
+                    continue
+                if not (reply or "").strip() or is_pass(reply):
+                    passed.append(bot_id)
+                    continue
+                msg = self.chat_store.post(
+                    room_id, bot_id, reply, author_role="bot"
+                )
+                self.chat_store.consume(room_id, bot_id, int(msg["seq"]))
+                replies.append(
+                    {
+                        "seq": msg["seq"],
+                        "author": bot_id,
+                        "name": room.bot_names.get(bot_id, bot_id),
+                        "text": reply,
+                        "author_role": "bot",
+                    }
+                )
+                # 后发言者看得到前面所有轮次的发言（真讨论，不是并列独白）。
+                history.append(
+                    {"author": bot_id, "author_role": "bot", "text": reply}
+                )
+                spoke.append(bot_id)
+            completed_rounds += 1
+            active = _next_active(spoke, multi_round=multi_round)
+
         return {
             "room_id": room_id,
             "user_message": user_msg,
             "woken": list(woken),
             "replies": replies,
+            "passed": passed,
             "bounded": bounded,
+            "rounds": completed_rounds,
         }
 
     # ------------------------------------------------------------ 说人话·流式
@@ -309,10 +341,22 @@ class RoomStore:
 
         rt = runtime if runtime is not None else _default_runtime()
         user_msg = self.chat_store.post(room_id, author, clean, author_role="user")
-        woken = list(resolve_mentions(clean, room.bot_ids))[: self.limits.max_members]
-        history = list(self.chat_store.messages(room_id))
+        aliases = {name: bot_id for bot_id, name in room.bot_names.items()}
+        woken = list(
+            resolve_mentions(clean, room.bot_ids, aliases=aliases)
+        )[: self.limits.max_members]
+        # 当前这句单独进 prompt，不在群历史里重复出现。
+        history = [
+            m
+            for m in self.chat_store.messages(room_id)
+            if int(m.get("seq") or 0) != int(user_msg["seq"])
+        ]
         replies: list[dict[str, Any]] = []
+        passed: list[str] = []
         bounded: str | None = None
+        multi_round = len(woken) >= 2
+        active = list(woken)
+        completed_rounds = 0
 
         yield {
             "type": "start",
@@ -321,64 +365,105 @@ class RoomStore:
             "woken": list(woken),
         }
 
-        for bot_id in woken:
-            reason = bound_reason(1, len(replies), self.limits)
+        while active:
+            reason = bound_reason(completed_rounds, len(replies), self.limits)
             if reason:
                 bounded = reason
                 break
-            name = room.bot_names.get(bot_id, bot_id)
-            turn_id = f"{room_id}:{user_msg['seq']}:{bot_id}"
-            scope = {"bot_id": bot_id, "name": name, "turn_id": turn_id}
-            yield {"type": "bot_start", **scope}
+            round_no = completed_rounds + 1
+            yield {"type": "round_start", "room_id": room_id, "round": round_no}
+            spoke: list[str] = []
+            for bot_id in list(active):
+                reason = bound_reason(completed_rounds, len(replies), self.limits)
+                if reason:
+                    bounded = reason
+                    break
+                name = room.bot_names.get(bot_id, bot_id)
+                # turn_id 带轮次：同一个 bot 跨轮发言时气泡不能互相覆盖。
+                turn_id = f"{room_id}:{user_msg['seq']}:{round_no}:{bot_id}"
+                scope = {
+                    "bot_id": bot_id, "name": name,
+                    "turn_id": turn_id, "round": round_no,
+                }
+                yield {"type": "bot_start", **scope}
 
-            final_text = ""
-            failed = False
-            try:
-                # aclosing 保证断开时 GeneratorExit 一路传到 engine.request_interrupt()
-                async with contextlib.aclosing(
-                    rt.speak_stream(bot_id, clean, history=history)
-                ) as events:
-                    async for ev in events:
-                        if ev.get("type") == "final":
-                            final_text = str(ev.get("text") or "")
-                        elif ev.get("type") == "error":
-                            failed = True
-                        yield {**ev, **scope}
-            except Exception as exc:  # noqa: BLE001 —— 一个 bot 挂了不拖垮整群
-                logger.warning("bot %s 流式发言失败：%s", bot_id, exc)
-                yield {"type": "error", "message": str(exc), **scope}
-                failed = True
+                final_text = ""
+                failed = False
+                try:
+                    # aclosing 保证断开时 GeneratorExit 一路传到 request_interrupt()
+                    async with contextlib.aclosing(
+                        rt.speak_stream(
+                            bot_id,
+                            clean,
+                            history=history,
+                            names=room.bot_names,
+                            room_id=room_id,
+                            round_index=round_no,
+                        )
+                    ) as events:
+                        async for ev in events:
+                            if ev.get("type") == "final":
+                                final_text = str(ev.get("text") or "")
+                            elif ev.get("type") == "error":
+                                failed = True
+                            yield {**ev, **scope}
+                except Exception as exc:  # noqa: BLE001 —— 一个 bot 挂了不拖垮整群
+                    logger.warning("bot %s 流式发言失败：%s", bot_id, exc)
+                    yield {"type": "error", "message": str(exc), **scope}
+                    failed = True
 
-            reply = final_text.strip()
-            if failed or not reply:
-                # 显式 pass / 出错：不落库，前端撤掉打字占位。
-                yield {"type": "bot_pass", **scope}
-                continue
+                reply = final_text.strip()
+                if failed or not reply or is_pass(reply):
+                    if is_pass(reply):
+                        passed.append(bot_id)
+                    yield {
+                        "type": "bot_pass",
+                        "reason": "error" if failed else ("pass" if is_pass(reply) else "empty"),
+                        **scope,
+                    }
+                    continue
 
-            msg = self.chat_store.post(room_id, bot_id, reply, author_role="bot")
-            self.chat_store.consume(room_id, bot_id, int(msg["seq"]))
-            item = {
-                "seq": msg["seq"],
-                "author": bot_id,
-                "name": name,
-                "text": reply,
-                "author_role": "bot",
-            }
-            replies.append(item)
-            yield {"type": "bot_end", **item, "turn_id": turn_id}
-            # 后发言的 bot 看得到前面 bot 刚说的话（真讨论，不是并列的独白）。
-            history.append({"author": bot_id, "author_role": "bot", "text": reply})
+                msg = self.chat_store.post(room_id, bot_id, reply, author_role="bot")
+                self.chat_store.consume(room_id, bot_id, int(msg["seq"]))
+                item = {
+                    "seq": msg["seq"],
+                    "author": bot_id,
+                    "name": name,
+                    "text": reply,
+                    "author_role": "bot",
+                }
+                replies.append(item)
+                yield {"type": "bot_end", **item, "turn_id": turn_id, "round": round_no}
+                # 后发言者看得到前面所有轮次的发言（真讨论，不是并列独白）。
+                history.append({"author": bot_id, "author_role": "bot", "text": reply})
+                spoke.append(bot_id)
+
+            completed_rounds += 1
+            active = _next_active(spoke, multi_round=multi_round)
 
         yield {
             "type": "done",
             "room_id": room_id,
             "replies": replies,
+            "passed": passed,
             "bounded": bounded,
+            "rounds": completed_rounds,
         }
 
     def close(self) -> None:
         with self._lock:
             self._conn.close()
+
+
+def _next_active(spoke: list[str], *, multi_round: bool) -> list[str]:
+    """下一轮还要继续吗？
+
+    至少 2 位在上一轮有实质发言才继续 —— 只剩 1 位就是一人独白，全 pass
+    更是没有讨论可续，两种情况都立即收口，避免硬凑满 3 轮灌水。
+    """
+    if not multi_round or len(spoke) < 2:
+        return []
+    return list(spoke)
 
 
 def _row_to_room(row: sqlite3.Row) -> Room:

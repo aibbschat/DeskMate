@@ -178,7 +178,8 @@ class _FakeRuntime:
     def __init__(self) -> None:
         self.spoken: list[str] = []
 
-    def speak(self, bot_id: str, text: str, *, history: list[dict]) -> str:
+    def speak(self, bot_id: str, text: str, *, history: list[dict], **kwargs) -> str:
+        # 接受 names / room_id / round_index 等群聊上下文参数（fake 不消费）。
         self.spoken.append(bot_id)
         return f"[{bot_id}] 我看了书，说一句。"
 
@@ -224,7 +225,9 @@ def test_say_is_bounded(store) -> None:
     room = store.create_room("话题", ["historian", "lit-editor", "reader", "proofreader"])
     out = store.say(room.room_id, "大家都说说", runtime=fake)
     assert len(out["replies"]) <= store.limits.max_messages
-    assert len(fake.spoken) <= store.limits.max_members
+    # 多轮下同一个 bot 会被唤醒多次，max_members 约束的是「每轮的成员数」，
+    # 总发言次数由 max_messages 约束。
+    assert len(set(fake.spoken)) <= store.limits.max_members
 
 
 def test_disband_keeps_history_and_room_id_never_reused(store) -> None:

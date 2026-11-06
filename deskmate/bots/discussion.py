@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import Sequence
+from typing import Mapping, Sequence
 
 MIN_MEMBERS = 2
 MAX_MEMBERS = 6
@@ -27,6 +27,14 @@ _RESERVED_HANDLES = frozenset({"all", "everyone"})
 # \w 在 Python 默认含 Unicode 字母，中文 handle 也能命中；与 ChatStore.post 的
 # @ 解析口径一致（coworker/teams/chat.py:124）。
 _MENTION_RE = re.compile(r"@([\w.-]+)", re.UNICODE)
+
+# 显式弃权：短句 + 弃权标记才判 pass，避免把「我不接受这个观点」这类
+# 实质发言误杀。群聊里 pass 不落库，也不参与后续轮。
+_PASS_MARKERS = (
+    "pass", "不发言", "不接话", "不补充", "没有补充", "无需补充",
+    "我没补充", "跳过", "弃权", "略过", "不说了",
+)
+_PASS_STRIP = re.compile(r"[\s，。！？、；：,.!?;:…·\-—()（）\[\]【】]")
 
 
 @dataclass(frozen=True)
@@ -46,13 +54,19 @@ class DiscussionLimits:
 
 
 def resolve_mentions(
-    text: str, handles: Sequence[str], *, default_all: bool = True
+    text: str,
+    handles: Sequence[str],
+    *,
+    default_all: bool = True,
+    aliases: Mapping[str, str] | None = None,
 ) -> tuple[str, ...]:
     """这条自然语言该唤醒哪些 bot。
 
     - 一个 @ 都没有（且是用户发言）→ 全员；
     - ``@all`` / ``@everyone`` → 全员；
     - ``@historian`` → 只唤醒 historian；
+    - ``@史料考据`` → 经 ``aliases`` 映射到 historian 后只唤醒它（UI 显示的是中文名，
+      必须支持中文 @，否则用户点了名却静默无人应答）；
     - @ 了不存在的 handle → 空（不误唤醒，也不报错）。
     """
     ordered = tuple(dict.fromkeys(handles or ()))
@@ -61,13 +75,33 @@ def resolve_mentions(
         return ordered
     if found & _RESERVED_HANDLES:
         return ordered
-    return tuple(h for h in ordered if h.casefold() in found)
+    alias_lookup = {str(k).casefold(): str(v) for k, v in (aliases or {}).items()}
+    wanted = set(found)
+    for token in found:
+        mapped = alias_lookup.get(token)
+        if mapped:
+            wanted.add(mapped.casefold())
+    return tuple(h for h in ordered if h.casefold() in wanted)
+
+
+def is_pass(text: str) -> bool:
+    """bot 显式弃权吗？pass 不落库、不生成占位消息、不参与后续轮。
+
+    只认短句里的弃权标记，长回复里出现这些词不算（那是在讨论，不是弃权）。
+    """
+    s = _PASS_STRIP.sub("", str(text or "")).casefold()
+    if not s or len(s) > 24:
+        return False
+    return any(marker in s for marker in _PASS_MARKERS)
 
 
 def bound_reason(
     round_index: int, message_count: int, limits: DiscussionLimits | None = None
 ) -> str | None:
     """达到上界时返回原因（``max_messages`` / ``max_rounds``），否则 None。
+
+    ``round_index`` 传**已完成的轮数**（第 1 轮开始传 0，第 3 轮开始传 2），
+    这样 ``max_rounds=3`` 正好允许 3 轮发言，第 4 轮才收口。
 
     消息数优先判定：先看总量爆炸，再看轮次，避免最后一轮里继续灌消息。
     """
