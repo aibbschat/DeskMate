@@ -43,7 +43,9 @@ _GROUP_GUIDANCE = """
 
 # 你现在在一个 bot 群里
 
-- 你是群里的一员，用**自己的专长**说人话，一次发言简短（100~300 字），不要长篇报告。
+- 你是群里的一员，用**自己的专长**说人话。**要具体**：给方向就交代伏笔埋在哪、
+  读者会在哪一句愣住，按你人设里的输出格式写足，别为压字数砍掉可执行细节；
+  不写长篇报告，也不写「可以考虑加个反转」这类空话。纯接话、补一句的轮次才简短。
 - 需要书稿背景时**自己调用 read_book**，书名从大家的话里找；绝不问用户要路径、
   绝不要求填任何表格字段。读不到就直说读不到，不要编造情节或段号。
 - 只读，不写文件、不改稿、不派活、不建工作项、不做审核验收、不打回重改。
@@ -56,6 +58,27 @@ _GROUP_GUIDANCE = """
 
 _HISTORY_LIMIT = 20
 _DEFAULT_MAX_ITERATIONS = 4
+
+# 模型爱在发言开头自加一行署名/来源标注。prompt 里已明令禁止，但模型不保证遵守
+# （2026-11-06 真机实测：补厚人设后仍出现「（来自 @brainstormer · 创意脑洞专家）」）。
+# 这是模型自加的**元数据噪声**，不是表达内容 —— 落库前做确定性剥离，
+# 不靠模型自觉、也不加任何语气/话术约束（守「真实优先」红线）。
+# 只认开头单独一行的两种形态：括号「来自 @…」或「@id：」；正文里的括号不受影响。
+_ATTRIBUTION_LINE = re.compile(
+    r"^\s*(?:[（(]\s*来自\s*@?[^)）]{0,80}[)）]|@[\w.\-]+\s*[:：])\s*$"
+)
+
+
+def strip_self_attribution(text: str) -> str:
+    """剥掉开头那一行的自加署名，正文一字不改（纯字符串清洗，零 LLM）。"""
+    s = str(text or "")
+    lines = s.splitlines(keepends=True)
+    if not lines:
+        return ""
+    first = lines[0].rstrip("\r\n")
+    if not _ATTRIBUTION_LINE.match(first):
+        return s.strip()
+    return "".join(lines[1:]).lstrip("\r\n").strip()
 
 
 def paid_credentials() -> tuple[str, str, str]:
@@ -314,7 +337,7 @@ class BotRuntime:
             for m in eng.messages[before:]
             if m.get("role") == "assistant" and str(m.get("content") or "").strip()
         ]
-        return replies[-1].strip() if replies else ""
+        return strip_self_attribution(replies[-1].strip()) if replies else ""
 
     @staticmethod
     async def _drive(eng: Any, prompt: str) -> None:
@@ -376,7 +399,9 @@ class BotRuntime:
                             # 带 tool_calls 的是中间轮（模型边调工具边说的话），
                             # 只有不带工具调用的最后一轮才是要落库的正式发言。
                             if not data.get("tool_calls"):
-                                final_text = str(data.get("text") or "").strip()
+                                final_text = strip_self_attribution(
+                                    str(data.get("text") or "")
+                                )
                         elif kind == "error":
                             yield {
                                 "type": "error",
@@ -391,7 +416,7 @@ class BotRuntime:
             else:
                 # 兜底：某些 provider 不吐 ASSISTANT_MESSAGE，用 delta 拼接。
                 if not final_text:
-                    final_text = "".join(streamed).strip()
+                    final_text = strip_self_attribution("".join(streamed))
                 yield {"type": "final", "text": final_text}
         finally:
             lock.release()

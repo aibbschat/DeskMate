@@ -373,11 +373,21 @@ COWORKER_DRIFT_MODULES=(
   "coworker/providers/errors.py"
   "coworker/providers/openai_provider.py"
 )
-# 人格文件（2026-10-24 补）：deskmate.md 被云端 persona loader 读取。
-# 它是 .md，下面的 ast.parse 预检会误报，故**不进 ALL_FILES**，仅走独立 scp + md5 核对
-# （见 3d/7b 段）+ 对账 .md 扫描。漏传 → 云端跑旧人格（二元硬切换未废）。
+# 人格文件（2026-10-24 补；2026-11-06 扩）：deskmate.md 被云端 persona loader 读取；
+# 8 位创作专家人设（含新增 brainstormer）是 Bot Mode / 圆桌共用的 builtin persona，
+# 本地改厚后必须一并上云，否则 7 段 .md 集合对账会报不一致却「只查不传」。
+# 它们是 .md，下面的 ast.parse 预检会误报，故**不进 ALL_FILES**，仅走独立 scp + md5
+# 核对（见 3c/7 段）+ 对账 .md 扫描。漏传 → 云端跑旧人格（二元硬切换未废）。
 PERSONA_FILES=(
   "coworker/personas/builtin/deskmate.md"
+  "coworker/personas/builtin/historian.md"
+  "coworker/personas/builtin/lit-editor.md"
+  "coworker/personas/builtin/brainstormer.md"
+  "coworker/personas/builtin/proofreader.md"
+  "coworker/personas/builtin/reader.md"
+  "coworker/personas/builtin/publisher.md"
+  "coworker/personas/builtin/adaptation.md"
+  "coworker/personas/builtin/genre.md"
 )
 CLOUD_PERSONA_DIR="$CLOUD_COWORKER_ROOT/personas/builtin"
 
