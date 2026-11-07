@@ -250,7 +250,14 @@ PAGE = r"""
   }
   .msg.mine .bubble code { background:color-mix(in srgb, var(--panel) 55%, transparent); }
 
-  .clip { max-height:180px; overflow:auto; position:relative; }
+  /* 折叠态刻意不给滚动条：滚动条会让气泡看着像个下拉控件，而且「还能往下滚」和
+     「点展开」是两个互相竞争的提示，用户不知道该做哪个。这里只做静态截断 + 渐变 + 展开按钮。
+     .open 必须同时解除 max-height —— 只靠下面的 :not(.open) 摘掉渐变遮罩，高度还卡在
+     6 行，点了「展开全文」class 变了但画面毫无反应（真机被用户抓到过）。
+     高度用 em 而不是写死 180px：气泡 font-size 就是 --fs-chat，line-height 1.75，
+     所以 10.5em 正好 6 整行，字号切到小/大档时折叠位置跟着走，不会多切半行。 */
+  .clip { max-height:10.5em; overflow:hidden; position:relative; }
+  .clip.open { max-height:min(60vh, 36em); overflow:auto; }
   .clip:not(.open)::after {
     content:""; position:absolute; left:0; right:0; bottom:0; height:38px;
     background:linear-gradient(to bottom, transparent, var(--panel)); pointer-events:none;
@@ -525,7 +532,7 @@ function daySepLabel(ts){
 }
 
 /* ===================== 渲染 ===================== */
-const LONG_TEXT = 400;   // 超过这个长度走「限高内滚动 + 展开」，不把整段倒屏上
+const LONG_TEXT = 400;   // 超过这个长度先截断 6 行 + 给「展开全文」，不把整段倒屏上
 let _atRe = null, _atReKey = null;
 function atRe(){
   // 名字和 id 都要匹配：真机历史消息里用户写的是 @historian（id），
