@@ -589,3 +589,46 @@
 ### 21.2 左侧导航收敛为「多人协作」大分类
 
 三个平铺入口（创作圆桌 / Bot 群 / 创作流水线）合并为一个 hover 展开的分类，侧栏少占两行。三个 surface、回调与 `data-testid` 全部保留；父项在任一子项 active 时高亮；除 hover 外也支持键盘 focus 与点击 toggle。浮层是同一包裹容器的子节点，`padding-top` 兼作 hover 桥，鼠标从按钮移到菜单不会提前收起。新增 `Sidebar.collaboration.test.tsx` 2 例锁住折叠/展开/回调/收起/active/focus。
+
+---
+
+## 22. 「点撤群没反应」与撤群语义澄清（11-07 09:47）
+
+### 22.1 撤群到底是什么（当前实现，非设计愿景）
+
+| 问 | 答 |
+|---|---|
+| 群还在列表里吗？ | **不在**。`bot_rooms.disbanded_at` 打墓碑，`list_rooms()` 默认 `WHERE disbanded_at IS NULL`，左栏「我的群」立刻消失 |
+| 还能聊天／续轮吗？ | **不能**。`get_room()` 返回 `None` → 发言 400、读消息 404、续轮 404 |
+| 消息被删了吗？ | **没有物理删**。`chat.db` 里的行原样留着（`RoomStore.chat_store.messages(rid)` 仍读得到，`include_disbanded=True` 也还能查到群元数据） |
+| 那「留档」能回看吗？ | **产品上不能**。`/api/rooms/{id}/messages` 对已撤群返回 404，UI 也没有「已撤群」视图。留档只是数据层保留，不是可回看的归档 —— 这是当前缺口，不能拿「没删」冒充「能看」 |
+| 群 ID 会复用吗？ | **不会**，且同话题重建拿到的是新 `room_id`，旧消息不继承 |
+| 还删了什么？ | 群级共享材料缓存 `materials.drop(room_id)`；聊天历史不动 |
+| 重复点会怎样？ | 幂等，第二次返回 `idempotent: True` |
+
+一句话：**撤群 = 从界面上抹掉 + 打墓碑，不是「群还在但禁言」**。`tests/test_bot_disband_ui.py::test_disband_lifecycle_matches_documented_semantics` 把上面每条都做成了断言。
+
+### 22.2 为什么「点撤群没反应」
+
+| 层 | 证据 |
+|---|---|
+| 页面 | `deskmate/bots/web.py` 里**唯一**的原生弹窗调用就是撤群那句 `if (!confirm(...)) return`，点完既无 toast 也无网络请求 |
+| 宿主 | `wry-0.55.1/src/wkwebview/mod.rs:602` 给 WKWebView `setUIDelegate(Some(...))`；`class/wry_web_view_ui_delegate.rs` 只实现了文件上传面板、媒体捕获权限、新窗口，**没有** `runJavaScriptConfirmPanel…` |
+| 平台契约 | Apple 文档对未实现的确认面板写明「No action is taken」/视为用户点「取消」→ `confirm()` 静默返回 `false` → handler 直接 return |
+| 排除 | 后端 DELETE 实测 **200**：建群→发言→撤群→列表清空→发言 400／读消息 404／续轮 404→幂等→新 id 不同，全链路正常 |
+
+🔴 **红线**：**内嵌 sidecar 页不得依赖宿主的 JS 弹窗能力**（`confirm` / `alert` / `prompt`）。
+桌面 WKWebView 的 delegate 是 wry 给的，不在我们掌控内；要确认就自己画。
+`tests/test_bot_disband_ui.py` 用正则锁住两种前缀页面的 PAGE 里都不许出现原生弹窗调用。
+
+### 22.3 修法与验证
+
+- `web.py` 新增页面内确认层 `#disband-dlg`（遮罩 + 卡片，走皮肤 token；支持 ESC／点遮罩取消），`askDisband(topic)` 返回 Promise；撤群成功后给一条成功色 toast；流式中点撤群给「等这一轮说完再撤群」而不是静默。
+- 确认层文案直接把 22.1 说清楚：从左侧消失、不能再发言／续轮、只在数据库留档且页面看不回来、ID 不复用、要接着聊得重建。
+- **验证盲点补齐**：此前 bot 群只有后端 `disband_room` 的用例，DOM 交互零覆盖。新增 `surfaces/gui/src/botsSidecar.disband.test.ts`，把 Python 里的 PAGE 搬进 jsdom 跑真实点击，**把宿主 `confirm` stub 成恒 false（复刻 Tauri 最坏环境）**，断言：确认层出现且含语义文案、取消不发 DELETE、确认才发 `/api/rooms/r1` DELETE、原生弹窗从未被调用。
+- 结果：先红（后端 4 红／前端 1 红）→ 全绿；`tests/test_bot_disband_ui.py` 5 例、bot 群 Python 回归 **110 例全绿**、`tsc --noEmit` 0 错、vitest 全量 417 例 413 绿／4 红（与 11-06、11-07 既有皮肤色/留言框基线同名；本次未改任何 UI 源文件，仅新增测试）。
+- **不必重打包**：页面本体在 Python sidecar，React bundle 没动；**重启 app** 让 sidecar 重新 import `web.py` 即生效。
+
+### 22.4 未做（等萧哥定）
+
+若想要「群还在、只读可回看」的归档语义，是另一笔产品改动：`list_rooms(include_disbanded=True)` 出「已撤」分组、开放只读消息接口、UI 加回看视图。本次只修故障与把现状讲清楚，**语义未改**。

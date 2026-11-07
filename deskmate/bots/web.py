@@ -336,6 +336,26 @@ PAGE = r"""
     max-width:70%; line-height:1.5;
   }
   .toast.show { display:block; }
+  .toast.ok { background:var(--ok-soft); color:var(--ok); border-color:color-mix(in srgb,var(--ok) 30%,transparent); }
+
+  /* 撤群确认层：内嵌页不能借用宿主的 JS 弹窗能力 —— Tauri/wry 的 WKWebView
+     只实现了文件上传等面板，没实现确认面板，原生调用会静默当作「取消」。 */
+  .dlg-mask {
+    position:fixed; inset:0; z-index:40; display:flex; align-items:center; justify-content:center;
+    background:var(--scrim); padding:16px;
+  }
+  .dlg {
+    width:min(430px, 100%); background:var(--panel); color:var(--ink);
+    border:1px solid var(--line-strong); border-radius:13px; padding:20px 20px 16px;
+    box-shadow:0 18px 50px var(--scrim);
+  }
+  .dlg-t { font-size:var(--fs-title); font-weight:600; }
+  .dlg-b { margin:12px 0 18px; font-size:var(--fs-ui); color:var(--muted); line-height:1.75; }
+  .dlg-b ul { margin:8px 0 0; padding-left:18px; }
+  .dlg-b li { margin:3px 0; }
+  .dlg-f { display:flex; justify-content:flex-end; gap:8px; }
+  .btn.danger { background:var(--danger); color:var(--on-solid); border-color:var(--danger); }
+  .btn.danger:hover { opacity:.88; }
   .hidden { display:none !important; }
 </style>
 </head>
@@ -392,6 +412,16 @@ PAGE = r"""
   </section>
 </div>
 <div class="toast" id="toast"></div>
+<div class="dlg-mask hidden" id="disband-dlg">
+  <div class="dlg" role="dialog" aria-modal="true" aria-labelledby="disband-title">
+    <div class="dlg-t" id="disband-title">撤掉这个群？</div>
+    <div class="dlg-b" id="disband-body"></div>
+    <div class="dlg-f">
+      <button class="btn ghost" id="disband-cancel">先不撤</button>
+      <button class="btn danger" id="disband-ok">撤群</button>
+    </div>
+  </div>
+</div>
 
 <script>
 /* ===================== 基础 ===================== */
@@ -668,8 +698,9 @@ async function api(path, opt){
   if (!r.ok) throw new Error(d.detail || ('HTTP ' + r.status));
   return d;
 }
-function toast(m){
-  const t = $('#toast'); t.textContent = m || ''; t.classList.toggle('show', !!m);
+function toast(m, ok){
+  const t = $('#toast'); t.textContent = m || '';
+  t.classList.toggle('show', !!m); t.classList.toggle('ok', !!ok);
   clearTimeout(toast._t); if (m) toast._t = setTimeout(() => t.classList.remove('show'), 4200);
 }
 async function loadBots(){ bots = await api('/api/bots'); }
@@ -688,6 +719,32 @@ async function openRoom(id){
 }
 
 /* ===================== 建群 / 撤群 ===================== */
+/* 页面内确认层。桌面 Tauri 的 WKWebView 没实现 JS 确认面板，原生调用会静默
+   当作「取消」—— 表现为「点撤群毫无反应」。这里不借用任何宿主弹窗能力，
+   也顺手把撤群到底意味着什么讲清楚，不再只问一句「确定吗」。 */
+function askDisband(topic){
+  return new Promise(resolve => {
+    const box = $('#disband-dlg');
+    $('#disband-body').innerHTML =
+      '<div>「' + esc(topic) + '」撤掉之后：</div><ul>' +
+      '<li>从左侧「我的群」里消失，不能再发言、也不能再续轮；</li>' +
+      '<li>聊天记录只在数据库留档，页面上看不回来；</li>' +
+      '<li>群 ID 不再复用，想接着聊得按同一话题重建（旧记录不继承）。</li></ul>';
+    box.classList.remove('hidden');
+    function done(ok){
+      box.classList.add('hidden');
+      $('#disband-ok').onclick = null; $('#disband-cancel').onclick = null;
+      box.onclick = null; document.removeEventListener('keydown', onKey);
+      resolve(ok);
+    }
+    function onKey(e){ if (e.key === 'Escape') done(false); }
+    $('#disband-ok').onclick = () => done(true);
+    $('#disband-cancel').onclick = () => done(false);
+    box.onclick = e => { if (e.target === box) done(false); };
+    document.addEventListener('keydown', onKey);
+    $('#disband-cancel').focus();
+  });
+}
 function startCreate(){
   creating = true; picked = new Set(bots.slice(0, 3).map(b => b.id));
   $('#mk').classList.remove('hidden'); $('#btn-new').classList.add('hidden');
@@ -714,8 +771,9 @@ $('#mk-go').onclick = async () => {
 };
 $('#head-disband').onclick = async () => {
   if (!current) return;
+  if (busy) { toast('等这一轮说完再撤群'); return; }
   const room = rooms.find(r => r.room_id === current);
-  if (!confirm('撤掉「' + (room ? room.topic : '') + '」？消息会留档，room id 不再复用。')) return;
+  if (!(await askDisband(room ? room.topic : ''))) return;
   try {
     await api('/api/rooms/' + current, {method:'DELETE'});
     current = null; msgs = []; pending = null;
@@ -727,6 +785,7 @@ $('#head-disband').onclick = async () => {
     $('#comp').classList.add('hidden');
     $('#stream').innerHTML = '<div class="empty"><div class="big">群已撤</div>' +
       '<div class="sm">消息留档，没被删掉。想接着聊就按同一个话题重建一个。</div></div>';
+    toast('已撤群：群从列表移除，聊天记录留档', true);
     syncChrome();
   } catch (e) { toast(e.message); }
 };
