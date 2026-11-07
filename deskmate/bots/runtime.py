@@ -400,6 +400,13 @@ class BotRuntime:
                 workspace=str(ws),
                 max_iterations=self.max_iterations,
             )
+            # 🔴 反向回写隔离（2026-11-07）：build_engine 在 coworker/agent.py 硬编码
+            #    挂了 post_turn_hook=_deskmate_post_turn_hook，bot engine 全盘继承 ⇒
+            #    每轮把「群里刚有人说…」当用户消息、bot 发言标成「（小桔本轮回应）」，
+            #    写进 sessions/、USER/MEMORY、萧盛影响素材池，还会用 bot 的话进化
+            #    小桔技能。群 bot **只读**共享记忆（context_provider 保留），绝不回写。
+            #    钩子是 fire-and-forget daemon，摘掉不影响本轮发言。
+            eng._post_turn_hook = None
             # 收紧工具面：build_engine 还会固定注册一堆 web/a2a/skill 工具，
             # 群 bot 只保留两个只读读稿工具（防出网、防写、防上下文爆炸）。
             allowed = {"read_book", "list_books"}

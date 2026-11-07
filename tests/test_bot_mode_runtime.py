@@ -277,3 +277,104 @@ def test_read_reports_unloaded_chapters_for_followup(shelf_dir: Path) -> None:
     assert "chapter" in out, "要告诉 bot 用哪个参数续读"
     # 只读红线：读稿不改动任何原稿
     assert (book / "附录 长篇.txt").read_text(encoding="utf-8") == "甲" * 400
+
+
+# ------------------------------------------------ 反向回写隔离（2026-11-07 收口）
+#
+# 🔴 红线：bot 群发言**不是**小桔与萧盛的对话。``build_engine`` 硬编码挂了
+#    ``post_turn_hook=_deskmate_post_turn_hook``，bot engine 全盘继承 ⇒ 每轮把
+#    「群里刚有人说…」当用户消息、把 bot 发言标成「（小桔本轮回应）」，写进
+#    sessions/、事实抽取、萧盛影响素材池，还会用 bot 的话去进化小桔的技能。
+#    实测 11-07 10:08:52 novel-review.md 被写进 bot 原话「换个姿势上班」。
+#    读取（context_provider）保留，反向回写四条链全断。
+BOT_GROUP_PROMPTS = (
+    "群里刚有人说：嗨，大家好，今天不工作，纯聊天\n\n请直接以你自己的身份发言。",
+    "群内已有发言：\n史料考据（bot）: 我读了《夜不收》。\n\n这是第 2 轮接话。"
+    "前面几位的发言都在上下文里，请挑一个具体观点回应、补充或提出不同意见。",
+)
+_NORMAL_USER_MSG = "昨天头疼，只写了三千多字，打算周末抽空补上"
+
+
+def test_bot_engine_has_no_post_turn_hook(shelf_dir: Path, tmp_path: Path) -> None:
+    """治本：bot 的 engine 上不能挂任何会话后写入钩子。"""
+    from deskmate.bots.runtime import BotRuntime
+
+    rt = BotRuntime(
+        books_root=shelf_dir,
+        workspace_root=tmp_path / "ws",
+        provider=_ScriptedProvider(),
+        model="test-model",
+    )
+    try:
+        for bot_id in roster.BOT_ORDER:
+            eng = rt.engine(bot_id)
+            assert eng._post_turn_hook is None, f"{bot_id} 仍会把群发言回写进小桔记忆"
+    finally:
+        rt.close()
+
+
+def test_bot_group_prompt_is_recognized() -> None:
+    """共享判定：群提示词命中、萧盛本人原话与空值不误伤。"""
+    from deskmate.memory.manager import is_bot_group_prompt
+
+    for prompt in BOT_GROUP_PROMPTS:
+        assert is_bot_group_prompt(prompt), f"漏判群提示词：{prompt[:24]}"
+    assert not is_bot_group_prompt(_NORMAL_USER_MSG)
+    assert not is_bot_group_prompt("我在群里听人说立冬要吃饺子，你觉得呢")
+    assert not is_bot_group_prompt("")
+    assert not is_bot_group_prompt(None)
+
+
+def test_post_session_summary_skips_bot_group(tmp_path: Path, monkeypatch) -> None:
+    """二道地板：即使有人直接调 post_session_summary，群会话也零落盘。"""
+    from deskmate.memory.manager import DeskMateMemoryManager
+
+    monkeypatch.setenv("DESKMATE_MEMORY_DIR", str(tmp_path))
+    monkeypatch.delenv("DESKMATE_AUTO_INJECT", raising=False)
+    calls: list[str] = []
+    mgr = DeskMateMemoryManager(tmp_path)
+    monkeypatch.setattr(
+        mgr, "_save_session_turn",
+        lambda *a, **k: calls.append("session") or tmp_path / "unused.md",
+    )
+    monkeypatch.setattr(
+        mgr, "_extract_single_session",
+        lambda *a, **k: calls.append("extract") or {"written": 0},
+    )
+    monkeypatch.setattr(mgr, "_learn_alter_ego", lambda *a, **k: calls.append("alter_ego"))
+
+    out = mgr.post_session_summary(BOT_GROUP_PROMPTS[0], "（bot 发言）今天立冬，张家界下雨。")
+    assert out["written"] == 0
+    assert calls == [], f"群会话仍触发了写入链：{calls}"
+    assert not (tmp_path / "agency" / "xiaosheng_observations.jsonl").exists(), (
+        "群发言被记成「萧盛影响」素材"
+    )
+
+    # 正常聊天必须照旧抽取，别把「关回写」误做成「关记忆」
+    mgr.post_session_summary(_NORMAL_USER_MSG, "头疼别硬扛。")
+    assert "session" in calls and "extract" in calls
+
+
+def test_post_turn_hook_skips_bot_group_completely(monkeypatch) -> None:
+    """三层守门：hook 既不抽记忆、也不拿 bot 发言去进化小桔的技能。"""
+    from coworker import agent as agent_mod
+
+    monkeypatch.delenv("DESKMATE_AUTO_INJECT", raising=False)
+    log: list[str] = []
+
+    class _Spy:
+        def post_session_summary(self, *_a, **_k):
+            log.append("summary")
+
+        def evolve_skill_on_success(self, *_a, **_k):
+            log.append("skill")
+
+    spy = _Spy()
+    monkeypatch.setattr(agent_mod, "_deskmate_mgr_singleton", spy, raising=False)
+    monkeypatch.setattr(agent_mod, "_deskmate_skill_mgr_singleton", spy, raising=False)
+
+    agent_mod._deskmate_post_turn_hook(BOT_GROUP_PROMPTS[0], "（bot 发言）换个姿势上班")
+    assert log == [], f"群发言仍跑了 post-turn 写入：{log}"
+
+    agent_mod._deskmate_post_turn_hook(_NORMAL_USER_MSG, "头疼别硬扛。")
+    assert "summary" in log and "skill" in log, "正常聊天的学习闭环被误关"

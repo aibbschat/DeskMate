@@ -244,6 +244,22 @@ def _deskmate_memory_context(messages: list | None = None) -> str:
         return ""
 
 
+def _bot_group_prompt_fallback(text: str | None) -> bool:
+    """``deskmate.memory.manager.is_bot_group_prompt`` 不可用时的同源兜底。
+
+    守门必须 fail-closed：deskmate 侧 import 失败时，也不能让技能进化把 bot
+    发言写进小桔的手艺规则。与 manager.py 的判定保持同一组前缀 / 指令语。
+    """
+    if not text or not isinstance(text, str):
+        return False
+    head = text.strip()[:240]
+    return (
+        head.startswith(("群里刚有人说", "群内已有发言"))
+        or "请直接以你自己的身份发言" in head
+        or ("这是第" in head and "轮接话" in head)
+    )
+
+
 def _deskmate_post_turn_hook(user_msg: str, assistant_msg: str) -> None:
     """DeskMate 会话后自动抽取（默认开启；DESKMATE_AUTO_INJECT=0 可关闭）。
 
@@ -256,6 +272,18 @@ def _deskmate_post_turn_hook(user_msg: str, assistant_msg: str) -> None:
     对话下每轮重建的开销会累积（A10 修复）。
     """
     if os.environ.get("DESKMATE_AUTO_INJECT") == "0":
+        return
+
+    # 🔴 Bot 群发言不是小桔与萧盛的对话：整轮不抽记忆、不记萧盛影响、不进化技能。
+    #    技能进化只走本 hook，是必须就地拦住的一路（实测 11-07 10:08:52 bot 原话
+    #    被写进 ~/.deskmate/skills/writing/novel-review.md）。正常路径复用
+    #    manager.py 的唯一判定；import 失败走同源 fallback，守门不跟着降级失效。
+    #    另两道：BotRuntime 摘钩子、post_session_summary 入口过滤。
+    try:
+        from deskmate.memory.manager import is_bot_group_prompt
+    except Exception:
+        is_bot_group_prompt = _bot_group_prompt_fallback
+    if is_bot_group_prompt(user_msg):
         return
 
     base = os.environ.get("DESKMATE_MEMORY_DIR") or str(Path.home() / ".deskmate")

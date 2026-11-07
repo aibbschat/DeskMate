@@ -632,3 +632,47 @@
 ### 22.4 未做（等萧哥定）
 
 若想要「群还在、只读可回看」的归档语义，是另一笔产品改动：`list_rooms(include_disbanded=True)` 出「已撤」分组、开放只读消息接口、UI 加回看视图。本次只修故障与把现状讲清楚，**语义未改**。
+
+---
+
+## 23. 反向回写隔离：bot 群发言绝不写进小桔本体（2026-11-07 收口）
+
+### 23.1 病灶（实测，不是推断）
+
+`coworker/agent.py::build_engine` **硬编码** `post_turn_hook=_deskmate_post_turn_hook`，且没有参数可关。Bot 群的 `BotRuntime.engine()` 调它起的每个 engine 全盘继承 ⇒ 每轮 bot 发言后，把「群里刚有人说…」当用户消息、把 **bot 的发言**标成「（小桔本轮回应）」（`manager.py:2640`），无差别跑完整套「小桔与萧盛对话结束」的落盘：
+
+| 落点 | 实测污染 |
+|---|---|
+| `skills/writing/novel-review.md` | **10:08:52 已中招**：`evolve_skill_on_success` 把 10:07:45 某 bot 的原话「那只是换个姿势上班」写成小桔的手艺规则，且明确「当群里宣布今天不工作纯聊天时…」 |
+| `agency/xiaosheng_observations.jsonl` | 20 条（11-06 13 + 11-07 7）伪装成 `kind=chat` 的「萧盛影响」，带「（小桔本轮回应）」标签；未 processed，按 12h×20 条节奏会自动进理解池 |
+| `sessions/` | 45 个 bot 会话暂存，是事实抽取的输入源；任何全量重抽会把它们批量抽成持久事实 |
+| `USER.md` / `MEMORY.md` / vault / `learned_history` / growth | 本次未新增 bot 事实（尾部三条 11-07 写作习惯是 09:11/09:15 萧盛本人原话），但通道全开；文件里确有历史提示词碎片与「雨天孩子更黏人」这类抽取器无据派生 |
+
+慢链最坏：观察池 →(12h 摄入)→ 理解池**带「内部·萧盛」标，权重高于外部** → `worldview_reflection` → `profile_items(layer=worldview)` → `world_context._build_worldview_block` → **回灌小桔日常上下文**。bot 编的话会被当成「萧盛亲口告诉她的」长成她自己的判断，与「真实优先」红线正面冲突。
+
+### 23.2 三层收口（读取保留，回写全断）
+
+1. **治本** `deskmate/bots/runtime.py::engine()`：`eng._post_turn_hook = None`。一处切断 sessions 暂存、事实抽取、萧盛影响素材池、技能进化四条链。钩子是 fire-and-forget daemon，摘掉不影响发言。**`context_provider` 只读注入保留**——bot 照样知道立冬、张家界下雨、两个孩子。
+2. **二道地板** `deskmate/memory/manager.py`：模块级 `is_bot_group_prompt()`（单一事实源，只认群提示词前缀/指令语，不误伤萧盛本人转述），`post_session_summary` 入口整轮 return，连 session 文件都不留。覆盖 `server/app.py` / `memory/server.py` 等所有直接调用者。
+3. **三层守门** `coworker/agent.py::_deskmate_post_turn_hook`：同源判定（import 失败走 `_bot_group_prompt_fallback`，fail-closed），就地拦住**只走本 hook** 的技能进化。
+
+🔴 **红线**：群 bot 的发言不是小桔与萧盛的对话。任何新增 bot 入口、新 hook、新记忆写入点，都必须过这三道；判定要改，**两处同源实现必须一起改**（`tests/test_bot_mode_runtime.py` 4 例锁住）。
+
+### 23.3 存量处置（先备份，不物理删）
+
+备份 `/tmp/deskmate-botclean-20261107-103512`（73M：`deskmate.db` 用 `sqlite3 .backup`、sessions 全量、两本技能、观察池/state、USER/MEMORY）。
+- 观察池 20 条 **标记 processed**（1329→1349），不删行 ⇒ `run_xiaosheng_ingestion` 的 pending 里 bot 签名为 **0**。
+- `novel-review.md` 精确删掉 bot 原话那一条 bullet；`xiaoju-writing-expert.md` 10:08:07 的「群聊接话不启动写作流程」**保留待萧哥确认**（也可能是手工群聊优化，且规则本身合理）。
+- 45 个 bot sessions **移入** `~/.deskmate/_quarantine/sessions_bot_group_20261107/`（移出扫描目录，不删除；备份快照与隔离区各 45、误伤 0）。
+- `USER.md` / `MEMORY.md` / `deskmate.db` **只备份不改**；历史提示词碎片与无据派生条目列为待萧哥拍板。
+
+### 23.4 验证（trust-but-verify）
+
+- 新增 4 例回归（`tests/test_bot_mode_runtime.py`）：**先红 4 → 全绿 16**；bot 群 Python 全量 **114 passed**；记忆组 119 例中 1 红经 HEAD 基线对照确认既有（还原后 4 文件 md5 全一致）⇒ 零新增红。
+- **真实文件系统前后快照**（离线 `_ScriptedProvider` 跑完整一轮 `BotRuntime.speak` + 直接调 `post_session_summary` + 直接调 hook）：`obs_lines / sessions_files / skills_md5 / user_md5 / mem_md5 / ingest_state_md5` **六项全 UNCHANGED**，`engine._post_turn_hook is None`。
+- 重启 app（sidecar 60114，workspace `.venv` editable 新码）：`/bots/` 200、`/bots/api/health` 200 `model_source=main`、`/bots/api/bots` 200、`/v1/settings` 401（鉴权未退化）。
+- 部署清单已含 `manager.py` / `agent.py` / `bots/runtime.py`，**零新增 Python 文件，清单无需改**。云端停机保号期间不跑 `deploy_cloud_sync.sh` / `deploy_web.sh`；未打正式 DMG、未 push origin。
+
+### 23.5 边界
+
+只读上下文仍会写 `traces/inject.jsonl`（溯源日志，不是记忆）；bot 每轮仍把 `USER.md` 私人画像随请求发给 GUI 所选第三方模型——这是隐私边界，不是本次收口范围。

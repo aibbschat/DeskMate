@@ -94,6 +94,38 @@ def _strip_diary_sections(content: str) -> str:
     cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
     return cleaned.strip() + "\n" if cleaned.strip() else cleaned
 
+# ---------------------------------------------------------------------------
+# Bot 群会话隔离（2026-11-07 收口）
+# ---------------------------------------------------------------------------
+# 🔴 红线：群 bot 的发言**不是**小桔与萧盛的对话。``coworker/agent.py`` 的
+#    ``build_engine`` 硬编码挂 ``post_turn_hook=_deskmate_post_turn_hook``，bot
+#    engine 全盘继承，曾把「群里刚有人说…」当用户消息、把 bot 发言标成
+#    「（小桔本轮回应）」，写进 sessions/、事实抽取、萧盛影响素材池，甚至拿
+#    bot 的话去进化小桔的技能（实测 11-07 10:08:52 ``novel-review.md`` 混入
+#    bot 原话「换个姿势上班」）。
+#    判定只认**群提示词前缀 / 指令语**，不认正文里转述的「群里…」，避免把
+#    萧盛本人聊天误判成群会话。命中即整轮跳过全部反向回写。
+BOT_GROUP_PROMPT_PREFIXES = ("群里刚有人说", "群内已有发言")
+BOT_GROUP_PROMPT_MARKERS = ("请直接以你自己的身份发言",)
+_BOT_GROUP_ROUND_RE = re.compile(r"这是第\s*\d+\s*轮接话")
+
+
+def is_bot_group_prompt(text: str | None) -> bool:
+    """判定一段文本是不是 Bot 群会话提示词（纯函数、零副作用、零依赖）。
+
+    供 ``post_session_summary`` 与 ``coworker.agent._deskmate_post_turn_hook``
+    共用：命中即整轮不写 sessions、不抽事实、不记萧盛影响、不进化技能。
+    """
+    if not text or not isinstance(text, str):
+        return False
+    head = text.strip()[:240]
+    if head.startswith(BOT_GROUP_PROMPT_PREFIXES):
+        return True
+    if any(m in head for m in BOT_GROUP_PROMPT_MARKERS):
+        return True
+    return bool(_BOT_GROUP_ROUND_RE.search(head))
+
+
 # 三层记忆分层常量
 CORE_TAGS = {"preference", "correction"}  # Core 层：每轮自动注入
 RECALL_WINDOW_DAYS = 7                    # Recall 层：7 天内的记忆优先注入
@@ -2595,6 +2627,15 @@ class DeskMateMemoryManager:
         注意：技能创建不在引擎层强制触发，而是由 LLM 自觉判断——
         完成复杂任务后主动提议调用 skill_create。
         """
+        # 🔴 Bot 群会话不是萧盛本人的对话：整轮零落盘（sessions 暂存 / 事实抽取 /
+        #    萧盛影响素材池 / 分身决策学习一律跳过）。放在最前面，连 session 文件
+        #    都不留，避免日后全量重抽时把它们批量抽成持久事实。判定实现见模块级
+        #    ``is_bot_group_prompt``；``coworker.agent`` 的 hook 同源守门挡技能进化。
+        if is_bot_group_prompt(user_msg):
+            return {
+                "written": 0, "skipped": 0, "learned": [],
+                "notes": "Bot 群会话，跳过记忆抽取与萧盛影响记录",
+            }
         try:
             session_file = self._save_session_turn(user_msg or "", assistant_msg or "")
         except Exception as e:
