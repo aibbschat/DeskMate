@@ -253,6 +253,45 @@ def _persona_mcp_refs(manager: "SessionManager", persona_id: str) -> set[str]:
     return refs
 
 
+def _voice_reply_module():
+    """按需语音朗读模块；非 macOS / 云端 / 导入失败一律返回 None（fail-open）。
+
+    延迟 import 是刻意的：app.py 会同步到云端，但 TTS 是**桌面本地能力**
+    （云端没有扬声器，也不该由云端触发豆包 Plan 语音端点）。Linux 上直接短路，
+    连模块都不加载。
+    """
+    import sys
+
+    if sys.platform != "darwin":
+        return None
+    try:
+        from deskmate import tts
+
+        return tts if tts.voice_reply_available() else None
+    except Exception:
+        logging.debug("voice reply module unavailable", exc_info=True)
+        return None
+
+
+def _voice_tools(voice_tts: Any) -> list[Any]:
+    """语音相关内置工具的单一出处：朗读意图 + 换音色。
+
+    两处都要用它（WS 新会话注入、engine 复用时补挂），写成一份免得漏挂其中之一 ——
+    漏了换音色工具的表现是「模型说改不了音色」，而不是报错，很难在日志里发现。
+    """
+    return [
+        voice_tts.make_voice_reply_tool(),
+        voice_tts.make_send_voice_message_tool(),
+        voice_tts.make_set_voice_tool(),
+    ]
+
+
+def _voice_reply_task_done(task: "asyncio.Task") -> None:
+    """后台朗读任务的兜底日志；朗读失败绝不冒泡到主聊天。"""
+    if not task.cancelled() and task.exception():
+        logging.warning("voice reply task failed: %s", task.exception())
+
+
 import contextlib
 from typing import Iterator
 
@@ -6819,18 +6858,24 @@ def create_app(manager: SessionManager) -> FastAPI:
                 manager.inbox.resolve(pend[0].id, resolution)
 
         workspace = ws.query_params.get("workspace")
+        # 按需语音朗读：桌面本地专属。云端 / 非 macOS 为 None，下面整条分支都不执行。
+        voice_tts = _voice_reply_module()
         mcp_tools = await manager.prepare_mcp_tools(
             session_id,
             workspace=workspace,
             agent=agent,
             mcp_refs=_persona_mcp_refs(manager, agent),
         )
+        # 工具不带正文：模型只判「用户要不要听」，念的内容由宿主从当轮最终回复取。
+        extra_tools = list(mcp_tools)
+        if voice_tts is not None:
+            extra_tools.extend(_voice_tools(voice_tts))
         engine = manager.get_engine(
             session_id,
             workspace=workspace,
             agent=agent,
             approver=approver,
-            extra_tools=mcp_tools,
+            extra_tools=extra_tools,
             directory_requester=directory_requester,
             plan_approver=plan_approver,
             question_asker=question_asker,
@@ -6849,6 +6894,12 @@ def create_app(manager: SessionManager) -> FastAPI:
             )
             await ws.close()
             return
+        # get_engine 命中缓存时不会重新消费 extra_tools（复用的会话 / 后台任务先建过
+        # engine），补挂一次，保证「语音回复」「换音色」在每个 WS 会话里都可见。
+        if voice_tts is not None:
+            for _tool in _voice_tools(voice_tts):
+                if _tool.__name__ not in engine.registry.names():
+                    engine.registry.register(_tool)
         # MCP servers that failed to start while preparing this session's tools:
         # leave a quiet, persistent notice instead of the session silently lacking
         # them (drill 2026-08-20: three silent startup failures in a row).
@@ -7074,8 +7125,11 @@ def create_app(manager: SessionManager) -> FastAPI:
             except Exception:
                 logging.exception("deskmate post-turn processing failed")
 
-        async def run_turn(content, *, retry: bool = False, display=None) -> None:            # The receive loop atomically claims this session before scheduling the task.
+        async def run_turn(content, *, retry: bool = False, display=None) -> None:
+            # The receive loop atomically claims this session before scheduling the task.
             # Keeping the claim outside prevents two back-to-back frames from both starting.
+            # 每轮新建 ⇒ 天然单轮语义：说完即静默，下一轮不继承语音标记。
+            tracker = voice_tts.VoiceTurnTracker() if voice_tts is not None else None
             try:
                 events = (
                     engine.retry()
@@ -7083,6 +7137,9 @@ def create_app(manager: SessionManager) -> FastAPI:
                     else engine.run(content, display=display)
                 )
                 async for event in events:
+                    # 记下「模型判了语音意图」与「当轮最终完整正文」（不是流式增量）。
+                    if tracker is not None:
+                        tracker.observe(event.type.value, event.data)
                     # Broadcast to every socket viewing this session (this socket included — it's a
                     # registered client), so a second view of the same session stays in sync too.
                     await manager.broadcast_session(
@@ -7137,6 +7194,50 @@ def create_app(manager: SessionManager) -> FastAPI:
                 await manager.broadcast_session(
                     session_id, {"type": "turn_done", "data": {}}
                 )
+                # 朗读必须在 turn_done 之后、且丢到线程里：TTS 是同步网络 + afplay 阻塞播放，
+                # 绝不能冻结事件循环（test_event_loop_not_blocked 锁的就是这条时序）。
+                # 念的是屏幕上那条最终回复，不是模型另写的一段朗读稿。
+                if tracker is not None and tracker.should_speak:
+                    spoken_text = tracker.text
+
+                    async def _voice_reply_task() -> None:
+                        result = await asyncio.to_thread(voice_tts.speak_reply, spoken_text)
+                        if not result.get("ok"):
+                            logging.warning("voice reply: %s", result.get("reason"))
+
+                    _vt = asyncio.create_task(_voice_reply_task())
+                    _vt.add_done_callback(_voice_reply_task_done)
+                elif tracker is not None and tracker.should_send_message:
+                    # 语音气泡：合成后发成聊天里的一条语音条，**不在服务端播放**。
+                    # 音频随事件走 base64（一条 4 秒语音约 40KB），不落盘、不留历史 ——
+                    # 萧哥选的「不用保留」，所以刷新即失，不涉及文件生命周期和清理。
+                    message_text = tracker.text
+
+                    async def _voice_message_task() -> None:
+                        payload = await asyncio.to_thread(
+                            voice_tts.build_voice_message, message_text
+                        )
+                        if not payload.get("ok"):
+                            logging.warning("voice message: %s", payload.get("reason"))
+                            return
+                        await manager.broadcast_session(
+                            session_id,
+                            {
+                                "type": "voice_message",
+                                "data": {
+                                    "audio_b64": base64.b64encode(payload["audio"]).decode(
+                                        "ascii"
+                                    ),
+                                    "mime": "audio/mpeg",
+                                    "text": payload["text"],
+                                    "seconds": payload["seconds"],
+                                    "truncated": payload["truncated"],
+                                },
+                            },
+                        )
+
+                    _vm = asyncio.create_task(_voice_message_task())
+                    _vm.add_done_callback(_voice_reply_task_done)
                 # DeskMate post-processing runs as a fire-and-forget background
                 # task so it never blocks the event loop or the turn_done signal.
                 if agent == "deskmate":

@@ -420,6 +420,11 @@ CONNECTORS_MODULES=(
   # 忘加清单——对账「仅本地有 1」抓到。云端 app.py 已含 9 处 QQ 引用，模块缺文件时
   # 虽被 try/except 当作没配不崩，但 QQ 功能在云端**静默不可用**。纯 stdlib 无依赖。
   "deskmate/connectors/qq_friend.py"
+  # ⚠️ 2026-11-07 补（按需语音朗读）：deskmate/tts.py 是新增 Python 文件。
+  # 它是**桌面本地专属**（云端无扬声器，_voice_reply_module 在 Linux 直接短路，
+  # 运行时永远不会 import 它），但集合级对账会把它报成「仅本地有 1」；
+  # 且新增文件漏传是本项目反复翻车的老坑。随语音通道整包传上去，保证代码一致。
+  "deskmate/tts.py"
 )
 
 # 办公技能工具（2026-10-15 P1 原子替换+恢复副本）：office_safe_deliver.py 被

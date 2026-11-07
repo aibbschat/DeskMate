@@ -19,6 +19,8 @@ export type EventType =
   | "interrupted"
   | "model_changed"
   | "turn_done"
+  // Voice bubble: synthesized audio arrives as base64, rendered as a tappable voice bar.
+  | "voice_message"
   // DeskMate extension events (dispatched by DeskMate MCP server)
   | "deskmate_suggestion"
   | "deskmate_memory_update"
@@ -140,6 +142,10 @@ export type Item =
   // registry — no per-connector special-casing.
   | { kind: "connector"; source: MessageSource }
   | { kind: "assistant"; text: string; ts?: number; reasoning?: string }
+  // 小桔发来的语音气泡（微信式语音条）：点了才播，不点完全静默。
+  // `audio` 是 data: URL（服务端合成后随 WS 事件以 base64 下发）。
+  // 只在本次会话内存在 —— 不落盘、不进 transcript 重放，刷新即失。
+  | { kind: "voice"; audio: string; text: string; seconds: number; truncated?: boolean; ts?: number }
   // A generated review-report card (编辑专家「生成审阅报告」产物），内嵌在会话里，
   // 重开软件后仍在。引擎发 LLM 前会剥离 `report`/`report_name` sidecar 字段。
   | { kind: "report"; name: string; report: any; caption?: string; ts?: number } // eslint-disable-line @typescript-eslint/no-explicit-any -- typed as ReviewReport at the consumer (ReportViewer)

@@ -11,6 +11,7 @@ import { ReportViewer } from "./deskmate/ReportViewer";
 import { Icon } from "./Icon";
 import { type Expert } from "./deskmate/experts";
 import XiaojuAvatar from "./XiaojuAvatar";
+import { VoiceBubble } from "./VoiceBubble";
 import { useTurnStyle } from "../turnStyle";
 
 // Long user pastes swallow the transcript (owner ask 2026-07-30): clamp past a generous
@@ -636,6 +637,18 @@ export function Transcript({
                     onRememberItem ? () => onRememberItem(stripEmote(item.text)) : undefined
                   }
                 />
+              </div>
+            );
+          case "voice":
+            // 语音气泡：说「发条语音」时出现，点一下才播。外壳与 assistant 一致（头像+名字）。
+            return (
+              <div className="group bubble-assistant" key={bi}>
+                <div className="who">
+                  <XiaojuAvatar size={44} className="who-avatar" />
+                  <span>{expert?.displayName ?? t("chat.assistant")}</span>
+                </div>
+                <VoiceBubble item={item} />
+                <BubbleMeta text={item.text} ts={item.ts} align="left" />
               </div>
             );
           case "report":

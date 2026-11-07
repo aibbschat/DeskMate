@@ -1036,6 +1036,25 @@ export function App() {
             { kind: "notice", tone: "warn", text: d.error || "That message was rejected." },
           ]);
           break;
+        case "voice_message": {
+          // 小桔发来的语音气泡（只在用户说「发条语音」时出现）。
+          // 音频随事件以 base64 到达，**不落盘、不留历史**：刷新后这条气泡就没了，
+          // 所以不做 transcript 重放（萧哥 2026-11-07 拍板「不用保留」）。
+          const audio = String(d.audio_b64 || "");
+          if (!audio) break;
+          setItems((p) => [
+            ...p,
+            {
+              kind: "voice",
+              audio: `data:${String(d.mime || "audio/mpeg")};base64,${audio}`,
+              text: String(d.text || ""),
+              seconds: Number(d.seconds || 0),
+              truncated: !!d.truncated,
+              ts: Date.now() / 1000,
+            },
+          ]);
+          break;
+        }
         case "turn_done":
           setRunning(false);
           refreshSessions();
