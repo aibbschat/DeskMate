@@ -1,0 +1,831 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light" data-text-size="default">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bot 群 · 真实聊天群改造原型</title>
+<!--
+  Bot 群 UI 改造原型（2026-11-07）。
+
+  对照物：deskmate/bots/web.py 内嵌 PAGE（现由 coworker/server/app.py:7729 挂在 /bots，
+  GUI 侧 surfaces/gui/src/App.tsx:1905 用 iframe 加载）。那一版是「后台管理页」形状：
+  checkbox 名册 + 永远摊开的建群表单 + 裸气泡 + 硬编码浅色（不跟随 GUI 主题）。
+
+  本原型改的是形状本身，不是给旧形状上漆：
+    ① 配色 / 字号全部回接 GUI token（styles.css 的 --paper/--panel/--ink/--muted/--line/
+       --accent/--solid/--fs-chat），明暗双主题 + 三档字号在右上角可切，用来验证 iframe
+       同步主题后的观感。落地时这些值由 GUI 通过 iframe src 的 query 传进来。
+    ② 左栏从「checkbox 列表 + 表单」换成「群列表 + 常驻名册」；建群是动作不是常驻表单。
+    ③ 消息流补齐真实 IM 元素：头像、发言人分组、日期/时间分隔、轮次分隔、@高亮、
+       长回答限高内滚动、打字指示器、略过提示、护栏余量、有界与只读态。
+
+  头像这里是 emoji 近似，落地时换成 surfaces/gui/src/components/Icon.tsx 里已有的
+  lucide 图标（scroll / pencil / lightbulb / spell-check / users / megaphone /
+  clapperboard / tags），数据从 /api/bots 新增的 icon 字段取（现只回 id/name/role）。
+
+  刻意没做的：主持人、纪要、总结、开始按钮、稿件路径表单 —— 见
+  docs/bot-mode-redesign.md 决策 3「不要纪要」与 §4 无表单。
+-->
+<style>
+  /* ===== GUI token 复刻（styles.css:16-231）=========================== */
+  :root {
+    color-scheme: light;
+    --paper:#f5f6f7; --panel:#ffffff; --ink:#17191c; --muted:#5b616b; --faint:#9aa1aa;
+    --line:#e8eaed; --line-strong:#d8dce1;
+    --accent:#2563eb; --accent-soft:#e9f0fd;
+    --ok:#2f7d57; --ok-soft:#eef6f0; --ok-line:#cfe6d6; --ok-dot:#3f9c5a;
+    --warn-ink:#b45309; --warn-soft:#fef3c7;
+    --danger:#b91c1c; --danger-soft:#f9e7e5;
+    --teal-ink:#0f766e; --teal-soft:#edfafa;
+    --solid:#e9ebf0; --on-solid:#1f2227;
+    --scrim:rgba(29,27,24,.32);
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Inter,system-ui,sans-serif;
+    --mono:"SF Mono","JetBrains Mono",Menlo,Consolas,monospace;
+    --fs-label:11px; --fs-meta:12px; --fs-ui:13px; --fs-body:14px;
+    --fs-heading:15px; --fs-title:16px; --fs-chat:15px;
+    /* 头像专色：底色与前景都经 color-mix 从主题色推导，切暗色不糊成一团 */
+    --tint-mix:18%; --who-mix:82%; --av-ring:32%;
+  }
+  html[data-theme="dark"] {
+    color-scheme: dark;
+    --paper:#131417; --panel:#1c1e22; --ink:#e6e8eb; --muted:#9aa1ab; --faint:#62686f;
+    --line:#2a2d33; --line-strong:#3a3e46;
+    --accent:#4c8dff; --accent-soft:#1c2a44;
+    --ok:#5cb87f; --ok-soft:#1e2f24; --ok-line:#2c4736; --ok-dot:#4dac72;
+    --warn-ink:#e8b04b; --warn-soft:#36280f;
+    --danger:#f07067; --danger-soft:#3d2422;
+    --teal-ink:#46c0b2; --teal-soft:#11302d;
+    --solid:#2e3138; --on-solid:#e6e8eb;
+    --scrim:rgba(0,0,0,.5);
+    --tint-mix:26%; --who-mix:72%; --av-ring:40%;
+  }
+  html[data-text-size="small"] {
+    --fs-label:10px; --fs-meta:11px; --fs-ui:12px; --fs-body:13px;
+    --fs-heading:14px; --fs-title:15px; --fs-chat:14px;
+  }
+  html[data-text-size="large"] {
+    --fs-label:12px; --fs-meta:13px; --fs-ui:14px; --fs-body:15px;
+    --fs-heading:16px; --fs-title:17px; --fs-chat:17px;
+  }
+
+  * { box-sizing:border-box; margin:0; padding:0; }
+  body {
+    background:#20222a; font-family:var(--sans); color:var(--ink);
+    padding:22px; display:flex; flex-direction:column; align-items:center; gap:14px;
+    min-height:100vh;
+  }
+
+  /* ===== 原型控制台（非产品 UI）===================================== */
+  .bar {
+    width:100%; max-width:1240px; background:#262932; color:#c9ced9;
+    border:1px solid #343845; border-radius:12px; padding:12px 14px;
+    display:flex; flex-wrap:wrap; gap:8px 18px; align-items:center;
+    font-size:12px;
+  }
+  .bar b { color:#fff; font-size:13px; font-weight:600; letter-spacing:.02em; }
+  .bar .grp { display:flex; align-items:center; gap:6px; flex-wrap:wrap; }
+  .bar .lab { color:#7c8496; text-transform:uppercase; letter-spacing:.1em; font-size:10px; }
+  .bar button {
+    background:#31353f; color:#c9ced9; border:1px solid #3d424f; border-radius:7px;
+    padding:5px 10px; font:inherit; cursor:pointer;
+  }
+  .bar button:hover { border-color:#5a6172; color:#fff; }
+  .bar button.on { background:#3f6bd8; border-color:#3f6bd8; color:#fff; }
+
+  /* ===== 仿真 GUI 窗口 ============================================== */
+  .win {
+    width:100%; max-width:1240px; height:820px; background:var(--paper);
+    border-radius:12px; overflow:hidden; display:flex;
+    box-shadow:0 24px 70px rgba(0,0,0,.5); border:1px solid var(--line-strong);
+  }
+  /* GUI 左侧全局导航占位：说明内嵌页不该再复制一整套一级导航 */
+  .rail {
+    width:56px; background:var(--panel); border-right:1px solid var(--line);
+    display:flex; flex-direction:column; align-items:center; gap:4px; padding:12px 0;
+    flex:none;
+  }
+  .rail .dot {
+    width:32px; height:32px; border-radius:9px; background:transparent;
+    display:flex; align-items:center; justify-content:center;
+    font-size:14px; color:var(--faint);
+  }
+  .rail .dot.cur { background:var(--accent-soft); color:var(--accent); }
+  .rail .rmark { font-size:16px; color:var(--ink); font-weight:700; margin-bottom:8px; }
+  .rail .rnote {
+    margin-top:auto; margin-bottom:10px; writing-mode:vertical-rl;
+    font-size:var(--fs-label); color:var(--faint); letter-spacing:.08em;
+  }
+
+  /* ===== 内嵌页本体：两栏 ============================================ */
+  .br { flex:1; display:flex; min-width:0; background:var(--paper); }
+
+  /* 左栏 */
+  .br-side {
+    width:264px; flex:none; background:var(--panel); border-right:1px solid var(--line);
+    display:flex; flex-direction:column; overflow:hidden;
+  }
+  .br-side-top { padding:14px 14px 10px; display:flex; align-items:center; gap:8px; }
+  .br-side-top .ttl {
+    font-size:var(--fs-label); font-weight:600; letter-spacing:.12em; color:var(--muted);
+    text-transform:uppercase; flex:1;
+  }
+  .newbtn {
+    border:1px solid var(--line-strong); background:var(--panel); color:var(--accent);
+    border-radius:6px; padding:3px 9px; font-size:var(--fs-label); cursor:pointer;
+    font-family:inherit;
+  }
+  .newbtn:hover { background:var(--accent-soft); border-color:var(--accent); }
+
+  .br-scroll { overflow:auto; flex:1; }
+  .br-scroll::-webkit-scrollbar { width:9px; }
+  .br-scroll::-webkit-scrollbar-thumb { background:var(--line-strong); border-radius:9px; }
+
+  .grp-item {
+    margin:0 8px 2px; padding:9px 10px; border-radius:8px; cursor:pointer;
+    border:1px solid transparent;
+  }
+  .grp-item:hover { background:var(--paper); }
+  .grp-item.on { background:var(--accent-soft); border-color:color-mix(in srgb,var(--accent) 30%,transparent); }
+  .grp-l1 { display:flex; align-items:center; gap:7px; }
+  .grp-name {
+    font-size:var(--fs-ui); font-weight:600; color:var(--ink); flex:1;
+    white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+  }
+  .grp-time { font-size:var(--fs-label); color:var(--faint); flex:none; }
+  .grp-unread {
+    width:7px; height:7px; border-radius:50%; background:var(--accent); flex:none;
+  }
+  .grp-l2 {
+    display:flex; align-items:center; gap:7px; margin-top:5px;
+    font-size:var(--fs-label); color:var(--muted);
+  }
+  .stack { display:flex; }
+  .stack .mini {
+    width:16px; height:16px; border-radius:5px; margin-left:-4px;
+    font-size:9px; display:flex; align-items:center; justify-content:center;
+    border:1.5px solid var(--panel); color:#fff;
+  }
+  .stack .mini:first-child { margin-left:0; }
+  .grp-last {
+    flex:1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; color:var(--faint);
+  }
+
+  .side-sep { height:1px; background:var(--line); margin:12px 14px; }
+
+  /* 名册 */
+  .bot-item {
+    margin:0 8px 3px; padding:8px 10px; border-radius:8px; cursor:pointer;
+    display:flex; align-items:center; gap:9px; border:1px solid transparent;
+  }
+  .bot-item:hover { background:var(--paper); }
+  .bot-item .av { width:26px; height:26px; border-radius:7px; font-size:13px; flex:none; }
+  .bot-item .txt { flex:1; min-width:0; }
+  .bot-item .nm { font-size:var(--fs-ui); color:var(--ink); font-weight:500; }
+  .bot-item .tg {
+    font-size:var(--fs-label); color:var(--faint); white-space:nowrap;
+    overflow:hidden; text-overflow:ellipsis; margin-top:1px;
+  }
+  .bot-item .tick {
+    width:15px; height:15px; border-radius:4px; border:1.5px solid var(--line-strong); flex:none;
+    display:flex; align-items:center; justify-content:center; font-size:10px; color:#fff;
+  }
+  /* 建群态：名册变勾选，非建群态只显示「在本群」 */
+  .br-side.creating .bot-item.unpicked .tick { background:var(--panel); }
+  .bot-item.picked .tick { background:var(--accent); border-color:var(--accent); }
+  .bot-item.picked { background:var(--accent-soft); }
+  .bot-item.off { opacity:.45; cursor:default; }
+  .bot-item .cnt {
+    font-size:var(--fs-label); color:var(--faint);
+  }
+
+  /* 建群面板 */
+  .mk {
+    margin:10px 12px; padding:12px; border:1px solid var(--line-strong);
+    border-radius:10px; background:var(--paper);
+  }
+  .mk label { display:block; font-size:var(--fs-label); color:var(--muted); margin-bottom:5px; }
+  .mk input {
+    width:100%; padding:8px 10px; border:1px solid var(--line-strong); border-radius:7px;
+    background:var(--panel); color:var(--ink); font:inherit; font-size:var(--fs-ui);
+  }
+  .mk input:focus { outline:2px solid var(--accent-soft); border-color:var(--accent); }
+  .mk .tip { font-size:var(--fs-label); color:var(--faint); margin-top:7px; line-height:1.5; }
+  .mk .row { display:flex; gap:7px; margin-top:9px; }
+  .btn {
+    border:1px solid var(--accent); background:var(--accent); color:#fff;
+    border-radius:7px; padding:7px 13px; font:inherit; font-size:var(--fs-ui); cursor:pointer;
+  }
+  .btn.ghost { background:transparent; color:var(--muted); border-color:var(--line-strong); }
+  .btn.ghost:hover { color:var(--ink); border-color:var(--faint); }
+  .btn:disabled { opacity:.45; cursor:default; }
+
+  /* 中栏 */
+  .br-main { flex:1; display:flex; flex-direction:column; min-width:0; }
+
+  .br-head {
+    height:58px; flex:none; background:var(--panel); border-bottom:1px solid var(--line);
+    display:flex; align-items:center; gap:12px; padding:0 18px;
+  }
+  .br-head .ht { font-size:var(--fs-title); font-weight:600; color:var(--ink); }
+  .br-head .avs { display:flex; align-items:center; }
+  .br-head .av {
+    width:24px; height:24px; border-radius:7px; margin-left:-5px; font-size:12px;
+    border:2px solid var(--panel); display:flex; align-items:center; justify-content:center;
+  }
+  .br-head .av:first-child { margin-left:0; }
+  .br-head .spacer { flex:1; }
+  .pill {
+    font-size:var(--fs-label); border-radius:999px; padding:3px 9px;
+    background:var(--paper); color:var(--muted); border:1px solid var(--line);
+    white-space:nowrap;
+  }
+  .pill.warn { background:var(--warn-soft); color:var(--warn-ink); border-color:transparent; }
+  .pill.read { background:var(--solid); color:var(--muted); }
+
+  /* 消息流 */
+  /* 刻意不用 scroll-behavior:smooth —— 逐 token 流式时每帧都触发动画会互相排队，
+     既掉帧又让「置底」失效；真实 IM 的流式置底本来就是 instant。 */
+  .br-stream {
+    flex:1; overflow:auto; padding:20px 24px 8px;
+  }
+  .br-stream::-webkit-scrollbar { width:10px; }
+  .br-stream::-webkit-scrollbar-thumb { background:var(--line-strong); border-radius:10px; }
+
+  .sep { display:flex; align-items:center; gap:10px; margin:6px 0 16px; }
+  .sep::before, .sep::after {
+    content:""; height:1px; background:var(--line); flex:1;
+  }
+  .sep span { font-size:var(--fs-label); color:var(--faint); white-space:nowrap; }
+  .sep.round span { color:var(--muted); }
+
+  .msg { display:flex; gap:10px; align-items:flex-start; margin-bottom:14px; }
+  .msg.mine { flex-direction:row-reverse; }
+  /* 同一人连发：第二条起不重复头像与名字，缩进对齐 */
+  .msg.cont .av { visibility:hidden; }
+  .msg.cont { margin-bottom:10px; }
+
+  .av {
+    width:32px; height:32px; border-radius:9px; flex:none; font-size:15px;
+    display:flex; align-items:center; justify-content:center;
+    background:color-mix(in srgb, var(--c) var(--tint-mix), var(--panel));
+    color:color-mix(in srgb, var(--c) var(--who-mix), var(--ink));
+    box-shadow:inset 0 0 0 1px color-mix(in srgb, var(--c) var(--av-ring), transparent);
+  }
+  .col { max-width:min(72%, 620px); display:flex; flex-direction:column; gap:4px; min-width:0; }
+  .msg.mine .col { align-items:flex-end; }
+  .meta { display:flex; align-items:baseline; gap:7px; font-size:var(--fs-label); padding:0 2px; }
+  .meta .who { color:var(--ink); font-weight:600; font-size:var(--fs-meta); }
+  .meta .role { color:var(--faint); }
+  .meta .ts { color:var(--faint); font-variant-numeric:tabular-nums; }
+
+  .bubble {
+    background:var(--panel); border:1px solid var(--line); border-radius:12px;
+    padding:11px 14px; font-size:var(--fs-chat); line-height:1.75; color:var(--ink);
+    white-space:pre-wrap; word-break:break-word;
+    box-shadow:0 1px 2px color-mix(in srgb, var(--ink) 5%, transparent);
+  }
+  .msg.mine .bubble { background:var(--solid); color:var(--on-solid); border-color:transparent; }
+  .bubble .at { color:var(--accent); font-weight:600; }
+  .bubble .cite {
+    display:inline-block; font-size:.82em; color:var(--muted); background:var(--paper);
+    border:1px solid var(--line); border-radius:4px; padding:0 5px; margin:0 2px;
+    vertical-align:1px;
+  }
+  .msg.mine .bubble .at { color:var(--accent); }
+
+  /* 长回答：限高内滚动 + 展开（不把整段倒屏上） */
+  .clip { max-height:180px; overflow:auto; position:relative; }
+  .clip:not(.open)::after {
+    content:""; position:absolute; left:0; right:0; bottom:0; height:38px;
+    background:linear-gradient(to bottom, transparent, var(--panel)); pointer-events:none;
+  }
+  .msg.mine .clip:not(.open)::after { background:linear-gradient(to bottom, transparent, var(--solid)); }
+  .expand {
+    align-self:flex-start; border:none; background:transparent; color:var(--accent);
+    font:inherit; font-size:var(--fs-label); cursor:pointer; padding:2px 4px;
+  }
+  .expand:hover { text-decoration:underline; }
+
+  /* 打字指示器 */
+  .msg.typing .bubble { display:flex; align-items:center; gap:9px; color:var(--muted); }
+  .dots { display:flex; gap:4px; }
+  .dots i {
+    width:6px; height:6px; border-radius:50%; background:var(--faint);
+    animation:blink 1.25s infinite;
+  }
+  .dots i:nth-child(2) { animation-delay:.18s; }
+  .dots i:nth-child(3) { animation-delay:.36s; }
+  @keyframes blink { 0%,70%,100%{opacity:.28} 35%{opacity:1} }
+  .doing { font-size:var(--fs-meta); }
+  .caret::after {
+    content:"▍"; color:var(--accent); animation:caret .9s steps(1) infinite; margin-left:1px;
+  }
+  @keyframes caret { 50%{opacity:0} }
+
+  /* 略过 / 系统条 */
+  .note { text-align:center; font-size:var(--fs-label); color:var(--faint); margin:0 0 14px; }
+  .sysbar {
+    margin:0 0 14px; padding:9px 13px; border-radius:9px; font-size:var(--fs-meta);
+    background:var(--warn-soft); color:var(--warn-ink); line-height:1.6;
+  }
+  .sysbar.err { background:var(--danger-soft); color:var(--danger); }
+  .sysbar.info { background:var(--paper); color:var(--muted); border:1px solid var(--line); }
+
+  /* 只读横幅 */
+  .readonly {
+    padding:10px 18px; background:var(--solid); color:var(--muted);
+    font-size:var(--fs-meta); text-align:center; border-top:1px solid var(--line);
+  }
+
+  /* 空态 */
+  .empty { text-align:center; color:var(--muted); padding:96px 32px 0; }
+  .empty .big { font-size:var(--fs-heading); color:var(--ink); margin-bottom:8px; }
+  .empty .sm { font-size:var(--fs-ui); color:var(--faint); line-height:1.8; }
+  .empty .quick { display:flex; gap:8px; justify-content:center; margin-top:18px; flex-wrap:wrap; }
+  .empty .quick button {
+    background:var(--panel); border:1px dashed var(--line-strong); color:var(--muted);
+    border-radius:8px; padding:7px 12px; font-size:var(--fs-label); cursor:pointer; font-family:inherit;
+  }
+  .empty .quick button:hover { border-color:var(--accent); color:var(--accent); border-style:solid; }
+
+  /* 输入区 */
+  .br-comp { flex:none; background:var(--panel); border-top:1px solid var(--line); padding:12px 18px 14px; position:relative; }
+  /* 他在说话 / 护栏用尽 / 群已撤时，输入区要有明确的禁用反馈，而不是只把按钮变灰 */
+  .br-comp.busy .comp-box { opacity:.58; }
+  .br-comp.busy #say { cursor:not-allowed; }
+  .comp-hint { font-size:var(--fs-label); color:var(--faint); margin-bottom:7px; line-height:1.5; }
+  .comp-row { display:flex; align-items:flex-end; gap:10px; }
+  .comp-box {
+    flex:1; background:var(--paper); border:1px solid var(--line-strong); border-radius:11px;
+    padding:10px 12px; min-height:42px; max-height:150px; position:relative;
+  }
+  .comp-box:focus-within { border-color:var(--accent); background:var(--panel); }
+  .comp-box textarea {
+    width:100%; border:none; background:transparent; color:var(--ink); resize:none;
+    font:inherit; font-size:var(--fs-chat); line-height:1.6; outline:none; max-height:120px;
+  }
+  .comp-box textarea::placeholder { color:var(--faint); }
+  .comp-foot { display:flex; align-items:center; gap:8px; margin-top:6px; }
+  .comp-foot .spacer { flex:1; }
+  .iconbtn {
+    border:none; background:transparent; color:var(--faint); cursor:pointer;
+    border-radius:5px; padding:2px 6px; font-size:var(--fs-meta); font-family:inherit;
+  }
+  .iconbtn:hover { background:var(--paper); color:var(--ink); }
+  .count { font-size:var(--fs-label); color:var(--faint); font-variant-numeric:tabular-nums; }
+  .count.near { color:var(--warn-ink); }
+
+  /* @ 补全浮层 */
+  .at-pop {
+    position:absolute; left:18px; bottom:78px; width:272px; background:var(--panel);
+    border:1px solid var(--line-strong); border-radius:10px; padding:5px;
+    box-shadow:0 12px 30px var(--scrim); display:none; z-index:5;
+  }
+  .at-pop.show { display:block; }
+  .at-pop .hd { font-size:var(--fs-label); color:var(--faint); padding:5px 8px 6px; }
+  .at-item {
+    display:flex; align-items:center; gap:9px; padding:6px 8px; border-radius:7px; cursor:pointer;
+  }
+  .at-item.active { background:var(--accent-soft); }
+  .at-item .av { width:22px; height:22px; border-radius:6px; font-size:11px; }
+  .at-item .nm { font-size:var(--fs-ui); color:var(--ink); }
+  .at-item .tg { font-size:var(--fs-label); color:var(--faint); margin-left:auto; }
+
+  .hidden { display:none !important; }
+</style>
+</head>
+<body>
+
+<div class="bar">
+  <b>Bot 群 · 真实聊天群原型</b>
+  <div class="grp"><span class="lab">主题</span>
+    <button id="t-light" class="on">浅色</button><button id="t-dark">暗色</button>
+  </div>
+  <div class="grp"><span class="lab">字号</span>
+    <button id="s-small">小</button><button id="s-default" class="on">标准</button><button id="s-large">大</button>
+  </div>
+  <div class="grp"><span class="lab">情景</span>
+    <button data-scn="live" class="on">讨论中</button>
+    <button data-scn="stream">逐字生长</button>
+    <button data-scn="create">建群</button>
+    <button data-scn="bounded">护栏用尽</button>
+    <button data-scn="disbanded">已撤群</button>
+    <button data-scn="empty">空群</button>
+    <button data-scn="error">报错</button>
+  </div>
+</div>
+
+<div class="win">
+  <div class="rail">
+    <div class="rmark">◈</div>
+    <div class="dot" title="会话">▤</div>
+    <div class="dot" title="定时">◷</div>
+    <div class="dot cur" title="Bot 群">◎</div>
+    <div class="dot" title="创作">✎</div>
+    <div class="dot" title="记忆">▦</div>
+    <div class="rnote">GUI 全局导航 · 已存在，内嵌页不再重复</div>
+  </div>
+
+  <div class="br">
+    <!-- ===================== 左栏 ===================== -->
+    <aside class="br-side" id="side">
+      <div class="br-side-top">
+        <span class="ttl">我的群</span>
+        <button class="newbtn" id="btn-new">＋ 新建</button>
+      </div>
+
+      <div class="mk hidden" id="mk">
+        <label>话题（群名就是这个）</label>
+        <input id="mk-topic" type="text" placeholder="例如：烧仓这段还能怎么写">
+        <div class="tip">勾几位 bot 即可，成员 2~6 位。没有稿件路径、章节范围、轮次表单，也没有开始按钮。</div>
+        <div class="row">
+          <button class="btn" id="mk-go">建群</button>
+          <button class="btn ghost" id="mk-cancel">取消</button>
+        </div>
+      </div>
+
+      <div class="br-scroll">
+        <div id="groups"></div>
+        <div class="side-sep"></div>
+        <div class="br-side-top"><span class="ttl" id="roster-ttl">常驻 BOT</span><span class="cnt" id="roster-cnt"></span></div>
+        <div id="roster"></div>
+      </div>
+    </aside>
+
+    <!-- ===================== 中栏 ===================== -->
+    <section class="br-main">
+      <header class="br-head">
+        <span class="ht" id="head-topic">烧仓这段还能怎么写</span>
+        <span class="avs" id="head-avs"></span>
+        <span class="spacer"></span>
+        <span class="pill" id="head-guard">本轮 5/10 · 已唤醒 4/6</span>
+        <button class="btn ghost" id="head-disband" style="font-size:var(--fs-label);padding:4px 10px">撤群</button>
+      </header>
+
+      <div class="br-stream" id="stream"></div>
+
+      <div class="readonly hidden" id="readonly">群已撤 · 消息留档可查，room id 不再复用</div>
+
+      <div class="br-comp" id="comp">
+        <div class="comp-hint" id="comp-hint">不 @ 则全员回应；@ 谁谁答。说「先读《夜不收》」，他会自己去翻群共享材料。</div>
+        <div class="comp-row">
+          <div class="comp-box">
+            <textarea id="say" rows="1" placeholder="在群里说句话…（Enter 发送 · Shift+Enter 换行 · @ 唤人）"></textarea>
+            <div class="comp-foot">
+              <button class="iconbtn" id="btn-at">@ 唤人</button>
+              <button class="iconbtn" id="btn-read">引用书稿</button>
+              <span class="spacer"></span>
+              <span class="count" id="count">本轮余 5 条</span>
+            </div>
+          </div>
+          <button class="btn" id="send">发送</button>
+        </div>
+        <div class="at-pop" id="atpop">
+          <div class="hd">唤醒谁</div>
+          <div id="atlist"></div>
+        </div>
+      </div>
+    </section>
+  </div>
+</div>
+
+<script>
+/* ============================== 数据（假） ============================== */
+/* icon 名即 lucide 名，落地时 /api/bots 需新增 icon 字段（现只回 id/name/role）；
+   这里用 emoji 近似呈现同一视觉重量。 */
+const BOTS = [
+  {id:'historian',    name:'史料考据',     icon:'scroll',       em:'📜', tag:'史实核验 · 标注出处', c:'#b07a3c'},
+  {id:'lit-editor',   name:'文学编辑',     icon:'pencil',       em:'✒️', tag:'叙事技艺 · 结构节奏', c:'#4a7c6b'},
+  {id:'brainstormer', name:'创意脑洞专家', icon:'lightbulb',    em:'💡', tag:'脑洞反转 · 惊喜设计', c:'#d18a2c'},
+  {id:'proofreader',  name:'文字校勘',     icon:'spell-check',  em:'🔍', tag:'字句打磨 · 校勘勘误', c:'#6b7f95'},
+  {id:'reader',       name:'读者视角',     icon:'users',        em:'👓', tag:'受众温度计 · 阅读体验', c:'#a4556b'},
+  {id:'publisher',    name:'发行部主任',   icon:'megaphone',    em:'📣', tag:'市场发行 · 商业化',   c:'#c25e4a'},
+  {id:'adaptation',   name:'影视改编策划', icon:'clapperboard', em:'🎬', tag:'影视化潜力 · IP 价值', c:'#5c5a8a'},
+  {id:'genre',        name:'类型出版策划', icon:'tags',         em:'🏷️', tag:'类型赛道 · 出版定位', c:'#4e8f88'},
+];
+const ME = {id:'me', name:'萧盛', em:'我', tag:'', c:'#2563eb'};
+const byId = id => BOTS.find(b => b.id === id) || ME;
+
+const GROUPS = [
+  {topic:'烧仓这段还能怎么写', bots:['historian','lit-editor','brainstormer','proofreader','reader'], last:'换个思路：他烧的不是日军的仓…', time:'07:34', unread:true},
+  {topic:'碧蹄馆水战地理核验', bots:['historian','adaptation','genre'], last:'全仓无岔河即全仓，不能有支流', time:'昨天'},
+  {topic:'第 16 卷出版定位', bots:['publisher','genre','adaptation','reader'], last:'这类题材走馆线不走畅销', time:'周一'},
+];
+
+/* 讨论中的完整消息流 */
+const SCRIPT = [
+  {sep:'date', text:'11 月 7 日'},
+  {who:'me', ts:'07:12', text:'第三章稿子放进群共享材料了。想解决的问题：主角烧完粮仓之后怎么撤，别又写成一路顺风。@史料考据 @文学编辑'},
+  {who:'historian', ts:'07:13', text:'先说史实。万历二十一年正月碧蹄馆之后，联军退守坡州一线，日军补给从龙山往开城走。《宣祖昭敬大王实录》里查不到「焚粮仓」的直接记载 —— 所以这一段不是不能写，是不能写成「烧成了」。\n\n真烧掉一个整仓，围城的日军撑不到第二年开春。建议：烧半仓，剩下那堆被连日雨雪泡塌。塌比烧更有据，也能把「费尽力气只成一半」写出来，那才是壬辰之役的常态。'},
+  {who:'lit-editor', ts:'07:15', long:true, text:'结构上三点。\n\n一、这场戏现在的问题是结果太干净。主角下令、手下执行、仓起火、撤，四个动作一行一个，读者跟着走完但记不住。烧仓的价值在「意外」：粮袋搬起来比估计的重、火折子在潮气里点不着、哨位提前半刻换班 —— 挑两个写成阻碍，比写十个细节有力。\n\n二、撤出环节现在缺一个具体障碍。你写了「趁乱撤退」，可乱是谁的乱？日军的乱会让主角显得侥幸，自己人的乱才显本事。建议让撤退队伍里少一个人，他回去找，路上撞见被泡塌的半面仓墙 —— 这个画面既接住史料考据的「塌」，也把情绪落点定下来。\n\n三、情绪落点。主角此刻不该是赢了的痛快，该是「松了口气，但清楚这点用处换不来明天」。你前半部一直用这种压抑的成就感，这里断了。'},
+  {note:'文字校勘 本轮略过'},
+  {who:'reader', ts:'07:16', text:'我只管读起来闷不闷。前面连着三章都在筹备，烧仓是第一个爆发点，可现在 4700 字里有 2100 字在搬粮袋，我第三段就想跳读。爆炸那一下放短、放响，前面再长我也认。'},
+  {sep:'time', text:'07:31'},
+  {who:'me', ts:'07:31', text:'@史料考据 「泡塌」有依据吗？这个季节的雨雪靠得住？'},
+  {who:'historian', ts:'07:32', stream:true, tool:true, text:'有。我在群共享材料里翻到你第 2 章写过「正月十七日雨」，壬辰年正月确实有雨雪记录，这个季节的土仓墙本就怕浸。建议写「夜雨夹雪，天亮时仓墙酥了半面」—— 比人为爆破省力，也符合那时候的技术条件。出处我标在这：<cite>《宣祖昭敬大王实录》卷 253</cite>'},
+  {sep:'round', text:'第 2 轮接话'},
+  {who:'brainstormer', ts:'07:34', text:'换个思路：他烧的根本不是日军的仓，是自己人先前藏起来的军粮。烧错了。\n\n这个反转能把「费尽力气只成一半」推到极端 —— 不但没伤到敌人，还把自己的接济烧了，下一卷的困境直接有了着落。史实上也有缝可钻：联军各军粮囤本就不在一处，夜里认错了旗号说得通。'},
+];
+
+/* ============================== 渲染 ============================== */
+const $ = s => document.querySelector(s);
+const esc = s => (s||'').replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+/* @提及高亮：落地时按后端 mentions[] 精确匹配；原型从名册动态构正则，不硬编码名单 */
+const AT_RE = new RegExp('@(' + BOTS.map(b => b.name).sort((a,b)=>b.length-a.length).join('|') + ')', 'g');
+function fmt(text){
+  let h = esc(text);
+  h = h.replace(AT_RE, '<span class="at">@$1</span>');
+  h = h.replace(/&lt;cite&gt;(.*?)&lt;\/cite&gt;/g, '<span class="cite">$1</span>');
+  return h;
+}
+function avatar(who){
+  const b = byId(who);
+  return `<div class="av" style="--c:${b.c}">${b.em}</div>`;
+}
+function msgHtml(m, prev){
+  const b = byId(m.who);
+  const cont = prev && prev.who === m.who;
+  const mine = m.who === 'me';
+  const meta = mine ? '' :
+    `<div class="meta"><span class="who">${esc(b.name)}</span>` +
+    `<span class="role">${esc(b.tag.split(' · ')[0])}</span><span class="ts">${m.ts||''}</span></div>`;
+  const clipCls = m.long ? ' clip' : '';
+  return `<div class="msg ${mine?'mine':''} ${cont?'cont':''}" data-who="${m.who}">` +
+    avatar(m.who) +
+    `<div class="col">${cont?'':meta}` +
+      `<div class="bubble${clipCls}">${fmt(m.text)}</div>` +
+      (m.long ? `<button class="expand">展开全文 ▾</button>` : '') +
+    `</div></div>`;
+}
+function renderScript(toIdx){
+  let out = '', prev = null;
+  SCRIPT.forEach((m, i) => {
+    if (toIdx != null && i > toIdx) return;
+    if (m.sep) { out += `<div class="sep ${m.sep}"><span>${esc(m.text)}</span></div>`; prev=null; return; }
+    if (m.note){ out += `<div class="note">${esc(m.note)}</div>`; prev=null; return; }
+    out += msgHtml(m, prev);
+    prev = m;
+  });
+  return out;
+}
+
+/* 左栏：群列表 */
+function renderGroups(active){
+  $('#groups').innerHTML = GROUPS.map((g,i) => `
+    <div class="grp-item ${i===active?'on':''}" data-i="${i}">
+      <div class="grp-l1">
+        <span class="grp-name">${esc(g.topic)}</span>
+        ${g.unread?'<span class="grp-unread"></span>':''}
+        <span class="grp-time">${g.time}</span>
+      </div>
+      <div class="grp-l2">
+        <span class="stack">${g.bots.slice(0,4).map(id=>{const b=byId(id);return `<span class="mini" style="background:${b.c}">${b.em}</span>`}).join('')}${g.bots.length>4?`<span class="mini" style="background:var(--faint)">+${g.bots.length-4}</span>`:''}</span>
+        <span class="grp-last">${esc(g.last)}</span>
+      </div>
+    </div>`).join('');
+}
+
+/* 左栏：名册（建群态可勾选，平时只标在群成员） */
+function renderRoster(picking, picked){
+  const inGroup = new Set(GROUPS[0].bots);
+  $('#roster-ttl').textContent = picking ? '勾选成员' : '常驻 BOT';
+  $('#roster-cnt').textContent = picking ? `${picked.size} / 6` : '8 位 · 不说话不花钱';
+  $('#roster').innerHTML = BOTS.map(b => {
+    const isPicked = picked.has(b.id);
+    const cls = picking
+      ? (isPicked ? 'picked' : 'unpicked')
+      : (inGroup.has(b.id) ? '' : 'off');
+    return `<div class="bot-item ${cls}" data-id="${b.id}">
+      <div class="av" style="--c:${b.c}">${b.em}</div>
+      <div class="txt"><div class="nm">${esc(b.name)}</div><div class="tg">${esc(b.tag)}</div></div>
+      ${picking ? `<div class="tick">${isPicked?'✓':''}</div>` : (inGroup.has(b.id)?'<span class="cnt">在本群</span>':'')}
+    </div>`;
+  }).join('');
+}
+
+/* ============================== 情景 ============================== */
+let scn = 'live';
+const SCEN = {
+  live:      {stream: renderScript(),     guard:'本轮 5/10 · 已唤醒 4/6', guardCls:'', disabled:false, readonly:false, count:'本轮余 5 条'},
+  stream:    {stream:'__STREAM__',        guard:'本轮 6/10 · 已唤醒 4/6', guardCls:'', disabled:true,  readonly:false, count:'他在说…'},
+  create:    {stream:null,                guard:'', guardCls:'', disabled:true, readonly:false},
+  bounded:   {stream: renderScript() +
+              `<div class="sysbar">本轮已达上限（10 条 · 6 位）。再说一句会重新起一轮 —— 这是护栏，不是出错。</div>`,
+              guard:'本轮 10/10 · 已唤醒 6/6', guardCls:'warn', disabled:true, readonly:false, count:'上限已到'},
+  disbanded: {stream: renderScript(),     guard:'群已撤', guardCls:'read', disabled:true, readonly:true, count:''},
+  empty:     {stream:`<div class="empty"><div class="big">群建好了，还没人说话</div>
+                <div class="sm">直接说人话就行。不 @ 则全员回应，@ 谁谁答。<br>想让他先读书稿，就说「先读《夜不收》第三章」。</div>
+                <div class="quick">
+                  <button>先读《夜不收》第三章，说说节奏问题</button>
+                  <button>烧仓之后怎么撤，别再写一路顺风</button>
+                  <button>这卷的史实硬伤还有哪些</button>
+                </div></div>`,
+                guard:'本轮 0/10 · 已唤醒 0/5', guardCls:'', disabled:false, readonly:false, count:'本轮余 10 条'},
+  error:     {stream: renderScript(SCRIPT.length-3) +
+              `<div class="sysbar err">群聊服务暂时不可用 —— 付费通道熔断已自动换备用道，重发一次即可，前 5 条已落库不丢。</div>`,
+              guard:'本轮 6/10 · 已唤醒 4/6', guardCls:'warn', disabled:false, readonly:false, count:'本轮余 4 条'},
+};
+function applyScn(name){
+  scn = name;
+  const s = SCEN[name];
+  document.querySelectorAll('.bar [data-scn]').forEach(b => b.classList.toggle('on', b.dataset.scn===name));
+
+  const picking = name==='create';
+  $('#side').classList.toggle('creating', picking);
+  $('#mk').classList.toggle('hidden', !picking);
+  $('#btn-new').classList.toggle('hidden', picking);
+  renderRoster(picking, picked);
+
+  const st = $('#stream');
+  if (picking){
+    $('#head-topic').textContent = '建新群';
+    $('#head-avs').innerHTML = '';
+    $('#head-guard').textContent = '';
+    $('#head-guard').classList.add('hidden');
+    $('#head-disband').classList.add('hidden');
+    $('#comp').classList.add('hidden');
+    $('#readonly').classList.add('hidden');
+    st.innerHTML = `<div class="empty"><div class="big">先勾几位，再起个话题</div>
+      <div class="sm">成员 2~6 位；群随建随撤，撤了消息留档。<br>建好之后在群里说人话，不用填稿件路径或轮次。</div></div>`;
+    return;
+  }
+  $('#head-guard').classList.remove('hidden');
+  $('#head-disband').classList.toggle('hidden', !!s.readonly);
+  $('#comp').classList.remove('hidden');
+  $('#head-topic').textContent = GROUPS[0].topic;
+  $('#head-avs').innerHTML = GROUPS[0].bots.map(id=>avatar(id)).join('');
+  $('#head-guard').textContent = s.guard;
+  $('#head-guard').className = 'pill' + (s.guardCls?' '+s.guardCls:'');
+  $('#readonly').classList.toggle('hidden', !s.readonly);
+  $('#say').disabled = s.disabled; $('#send').disabled = s.disabled;
+  $('#comp').classList.toggle('busy', !!s.disabled);
+  $('#comp-hint').textContent = s.readonly
+    ? '群已撤 · 想接着聊就按同一个话题重建一个，历史不会丢。'
+    : name === 'bounded'
+      ? '本轮已达上限（10 条 · 6 位）。再说一句会重新起一轮。'
+      : s.disabled
+        ? '他在说这句 —— 本轮说完前发不出去，这不是出错。'
+        : '不 @ 则全员回应；@ 谁谁答。说「先读《夜不收》」，他会自己去翻群共享材料。';
+  if (s.count!=null){ $('#count').textContent = s.count; $('#count').className = 'count' + (name==='bounded'?' near':''); }
+  st.innerHTML = s.stream;
+  if (s.stream === '__STREAM__') runStream();
+  st.scrollTop = st.scrollHeight;
+  bindBubbles();
+}
+
+/* 逐字生长演示：对应 SSE bot_start → tool → delta* → bot_end */
+let timer = null;
+function runStream(){
+  clearInterval(timer);
+  const upto = SCRIPT.findIndex(m => m.stream);
+  $('#stream').innerHTML = renderScript(upto-1);
+  $('#stream').insertAdjacentHTML('beforeend',
+    `<div class="msg" data-who="historian">${avatar('historian')}<div class="col">` +
+    `<div class="meta"><span class="who">史料考据</span><span class="role">史实核验</span></div>` +
+    `<div class="bubble" id="grow-bubble"><span class="dots"><i></i><i></i><i></i></span> <span class="doing">正在思考…</span></div>` +
+    `</div></div>`);
+  const bubble = $('#grow-bubble');
+  const target = SCRIPT[upto].text;
+  let phase = 0, i = 0, step = 0;
+  const raw = target.replace(/<cite>.*?<\/cite>/g, '').split('');
+  timer = setInterval(() => {
+    step++;
+    if (step === 4){                       // tool 事件：开始读书稿
+      bubble.innerHTML = `<span class="dots"><i></i><i></i><i></i></span> <span class="doing">正在读书稿…</span>`;
+    }
+    if (step >= 7 && phase === 0){          // 首个 delta：占位让位给正文
+      phase = 1; bubble.innerHTML = '<span class="caret"></span>';
+    }
+    if (phase === 1){
+      i += 2;
+      if (i >= raw.length){
+        bubble.innerHTML = fmt(target);     // bot_end：以落库的权威文本覆盖
+        clearInterval(timer);
+        // 落库后才有权威时间戳，与真机「结束后按落库消息重绘一次」的行为一致
+        const meta = bubble.closest('.col').querySelector('.meta');
+        if (meta && !meta.querySelector('.ts')) meta.insertAdjacentHTML('beforeend','<span class="ts">07:32</span>');
+        $('#stream').insertAdjacentHTML('beforeend', `<div class="note">本轮共 6 条 · 达上限会停下，不会自己接着聊</div>`);
+        $('#say').disabled = false; $('#send').disabled = false;
+        $('#comp').classList.remove('busy');
+        $('#comp-hint').textContent = '不 @ 则全员回应；@ 谁谁答。说「先读《夜不收》」，他会自己去翻群共享材料。';
+        $('#count').textContent = '本轮余 4 条'; $('#count').className = 'count';
+        $('#stream').scrollTop = $('#stream').scrollHeight;
+        return;
+      }
+      bubble.querySelector('.caret').insertAdjacentHTML('beforebegin', esc(raw.slice(i-2,i).join('')));
+      $('#stream').scrollTop = $('#stream').scrollHeight;
+    }
+  }, 22);
+}
+
+/* 限高展开 / 复制 */
+function bindBubbles(){
+  document.querySelectorAll('.expand').forEach(btn => {
+    btn.onclick = () => {
+      const b = btn.parentElement.querySelector('.bubble');
+      const open = b.classList.toggle('open');
+      btn.textContent = open ? '收起 ▴' : '展开全文 ▾';
+    };
+  });
+  document.querySelectorAll('.bubble').forEach(b => {
+    b.title = '双击复制';
+    b.ondblclick = () => { navigator.clipboard && navigator.clipboard.writeText(b.innerText); };
+  });
+}
+
+/* ============================== 交互 ============================== */
+let picked = new Set(GROUPS[0].bots);
+$('#btn-new').onclick = () => applyScn('create');
+$('#mk-cancel').onclick = () => applyScn('live');
+$('#mk-go').onclick = () => applyScn('empty');
+document.addEventListener('click', e => {
+  const item = e.target.closest('.bot-item');
+  if (!item || scn !== 'create') return;
+  const id = item.dataset.id;
+  picked.has(id) ? picked.delete(id) : (picked.size < 6 && picked.add(id));
+  renderRoster(true, picked);
+});
+$('#head-disband').onclick = () => applyScn('disbanded');
+document.querySelectorAll('.bar [data-scn]').forEach(b => b.onclick = () => applyScn(b.dataset.scn));
+/* 群切换：原型只对第一个群铺了完整消息流，其余群明确说明，不留白让人以为坏了 */
+function showOtherGroup(i){
+  const g = GROUPS[i];
+  scn = 'other';
+  document.querySelectorAll('.bar [data-scn]').forEach(b => b.classList.remove('on'));
+  renderGroups(i);
+  $('#head-topic').textContent = g.topic;
+  $('#head-avs').innerHTML = g.bots.map(id=>avatar(id)).join('');
+  $('#head-guard').textContent = `本轮 2/10 · 已唤醒 2/${g.bots.length}`;
+  $('#head-guard').className = 'pill';
+  $('#head-disband').classList.remove('hidden');
+  $('#readonly').classList.add('hidden');
+  $('#comp').classList.remove('hidden');
+  $('#say').disabled = false; $('#send').disabled = false;
+  $('#comp').classList.remove('busy');
+  $('#comp-hint').textContent = '不 @ 则全员回应；@ 谁谁答。说「先读《夜不收》」，他会自己去翻群共享材料。';
+  $('#count').textContent = '本轮余 8 条'; $('#count').className = 'count';
+  $('#stream').innerHTML =
+    `<div class="sep date"><span>11 月 7 日</span></div>` +
+    msgHtml({who:g.bots[0], ts:'06:40', text:g.last}, null) +
+    `<div class="note">原型只给第一个群铺了完整消息流；这个群同样会按上面的元素渲染</div>`;
+  $('#stream').scrollTop = 0;
+  bindBubbles();
+}
+$('#groups').addEventListener('click', e => {
+  const el = e.target.closest('.grp-item'); if (!el) return;
+  if (scn === 'create'){
+    $('#side').classList.remove('creating'); $('#mk').classList.add('hidden');
+    $('#btn-new').classList.remove('hidden'); renderRoster(false, picked);
+  }
+  const i = +el.dataset.i;
+  if (i === 0){ applyScn('live'); renderGroups(0); return; }
+  showOtherGroup(i);
+});
+$('#t-light').onclick = () => { document.documentElement.dataset.theme='light'; $('#t-light').classList.add('on'); $('#t-dark').classList.remove('on'); };
+$('#t-dark').onclick  = () => { document.documentElement.dataset.theme='dark';  $('#t-dark').classList.add('on');  $('#t-light').classList.remove('on'); };
+['small','default','large'].forEach(k => $('#s-'+k).onclick = () => {
+  document.documentElement.dataset.textSize = k;
+  ['small','default','large'].forEach(x => $('#s-'+x).classList.toggle('on', x===k));
+});
+
+/* @ 补全 */
+function showAt(){
+  $('#atpop').classList.add('show');
+  $('#atlist').innerHTML = GROUPS[0].bots.map((id,i) => {
+    const b = byId(id);
+    return `<div class="at-item ${i===0?'active':''}"><div class="av" style="--c:${b.c}">${b.em}</div>` +
+           `<span class="nm">${esc(b.name)}</span><span class="tg">${esc(b.tag)}</span></div>`;
+  }).join('') + `<div class="at-item"><div class="av" style="--c:var(--accent)">◎</div><span class="nm">全体</span><span class="tg">@all</span></div>`;
+}
+$('#btn-at').onclick = () => { const p=$('#atpop'); p.classList.contains('show') ? p.classList.remove('show') : showAt(); };
+$('#say').addEventListener('input', e => { if (/@$/.test(e.target.value)) showAt(); });
+$('#atpop').addEventListener('click', e => {
+  const it = e.target.closest('.at-item'); if (!it) return;
+  const nm = it.querySelector('.nm').textContent;
+  $('#say').value = $('#say').value.replace(/@$/, '@'+nm+' ');
+  $('#atpop').classList.remove('show'); $('#say').focus();
+});
+$('#btn-read').onclick = () => { $('#say').value += '先读《夜不收》'; $('#say').focus(); };
+$('#say').addEventListener('keydown', e => {
+  if (e.key === 'Enter' && !e.shiftKey){ e.preventDefault(); flashSend(); }
+  if (e.key === 'Escape') $('#atpop').classList.remove('show');
+});
+function flashSend(){
+  const t = $('#say').value.trim(); if (!t) return;
+  $('#stream').insertAdjacentHTML('beforeend', msgHtml({who:'me', ts:'刚刚', text:t}, null));
+  $('#stream').scrollTop = $('#stream').scrollHeight;
+  $('#say').value = ''; bindBubbles();
+}
+$('#send').onclick = flashSend;
+
+renderGroups(0);
+/* URL 参数直达状态：?theme=dark&size=large&scn=bounded
+   落地时 GUI 正是用同一套 query 把主题 / 字号档传进 iframe（App.tsx 拼 iframe src），
+   原型按这个契约演示，所以这里也读参数而不是只认按钮。 */
+const Q = new URLSearchParams(location.search);
+if (Q.get('theme') === 'dark') $('#t-dark').click();
+const sz = $('#s-' + (Q.get('size') || 'default')); if (sz) sz.click();
+applyScn(SCEN[Q.get('scn')] ? Q.get('scn') : 'live');
+</script>
+</body>
+</html>

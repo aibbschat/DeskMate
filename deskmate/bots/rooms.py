@@ -129,6 +129,33 @@ class RoomStore:
             rows = self._conn.execute(sql).fetchall()
         return [_row_to_room(r) for r in rows]
 
+    def room_previews(self, room_ids: list[str]) -> dict[str, dict[str, Any]]:
+        """每个群的「最后一条」摘要，供左栏列表当预览用。
+
+        只读复用官方 ChatStore，**不新增表、不加已读游标**：未读计数需要一个持久的
+        ``last_read_seq``，那是另一笔改动。宁可不显示红点，也不拿「最后一条是 bot 说的」
+        冒充未读 —— 那种红点用户点进去发现没新东西，比没有更糟。
+
+        ``messages`` 只能正序取（``ORDER BY seq LIMIT``），所以这里按默认上限拉一次
+        再取尾部；群本身有界（每轮 ≤10 条），量级不值得为此加索引。
+        """
+        out: dict[str, dict[str, Any]] = {}
+        for rid in room_ids:
+            try:
+                msgs = self.chat_store.messages(rid)
+            except Exception:  # noqa: BLE001 —— 预览取不到不该让整块群列表空掉
+                logger.warning("群预览读取失败 room=%s", rid, exc_info=True)
+                continue
+            last = msgs[-1] if msgs else None
+            out[rid] = {
+                "last_text": (str(last.get("text") or "")[:48] if last else ""),
+                "last_ts": last.get("ts") if last else None,
+                "last_author": str(last.get("author") or "") if last else "",
+                "last_author_role": str(last.get("author_role") or "") if last else "",
+                "count": len(msgs),
+            }
+        return out
+
     # ------------------------------------------------------------------ 写
 
     def create_room(self, topic: str, bot_ids: list[str]) -> Room:
@@ -394,6 +421,11 @@ class RoomStore:
         *,
         runtime: Any = None,
         author: str = "user",
+        rounds: int | None = None,
+        start_round: int = 1,
+        post_user: bool = True,
+        woken_override: list[str] | None = None,
+        initial_message_count: int = 0,
     ) -> AsyncIterator[dict[str, Any]]:
         """``say()`` 的原生流式版本：逐 token 吐事件，**只在 bot 说完后落库一次**。
 
@@ -409,33 +441,60 @@ class RoomStore:
 
         被 ``aclose()``（客户端断开）时，``aclosing`` 会把 GeneratorExit 级联到
         ``runtime.speak_stream`` → ``engine.request_interrupt()`` 真正停掉 LLM 流。
+
+        用户驱动续轮（默认 ``rounds=1``）：一次发言只跑一轮就交还控制权，
+        ``done`` 带 ``can_continue`` / ``next_round``；用户点「再聊一轮」走
+        ``continue_stream``，用 ``start_round`` / ``initial_message_count`` 把
+        轮次与消息数累计起来，护栏仍是 3 轮 / 10 条（**上限不取消，只是不自动烧满**）。
+        所有新参数都有默认值，旧调用方与回归测试行为不变。
         """
         room = self.get_room(room_id)
         if room is None:
             raise ValueError(f"群 {room_id} 不存在或已解散")
         clean = (text or "").strip()
-        if not clean:
+        if post_user and not clean:
             raise ValueError("群里不能发空话")
 
         rt = runtime if runtime is not None else _default_runtime()
+        # 续轮传空 text：prepare() 沿用该群已备材料，但仍验 mtime 指纹 ——
+        # 作者一边写稿一边聊，下一轮自动拿到最新进度（materials.py:164-169）。
         pack = self.materials.prepare(room_id, clean)
-        user_msg = self.chat_store.post(room_id, author, clean, author_role="user")
+        if post_user:
+            user_msg: dict[str, Any] = self.chat_store.post(
+                room_id, author, clean, author_role="user"
+            )
+            turn_seq: Any = user_msg["seq"]
+        else:
+            user_msg = {"seq": None}
+            turn_seq = f"c{start_round}"
         aliases = {name: bot_id for bot_id, name in room.bot_names.items()}
         woken = list(
-            resolve_mentions(clean, room.bot_ids, aliases=aliases)
+            woken_override
+            if woken_override is not None
+            else resolve_mentions(clean, room.bot_ids, aliases=aliases)
         )[: self.limits.max_members]
-        # 当前这句单独进 prompt，不在群历史里重复出现。
+        # 当前这句单独进 prompt，不在群历史里重复出现；续轮没有新 user 消息，
+        # 历史就是完整群历史（含前几轮所有发言）。
+        cur_seq = int(user_msg.get("seq") or 0)
         history = [
             m
             for m in self.chat_store.messages(room_id)
-            if int(m.get("seq") or 0) != int(user_msg["seq"])
+            if int(m.get("seq") or 0) != cur_seq
         ]
         replies: list[dict[str, Any]] = []
         passed: list[str] = []
         bounded: str | None = None
-        multi_round = len(woken) >= 2
+        multi_round = len(woken) >= 2 and (rounds is None or rounds > 1)
         active = list(woken)
         completed_rounds = 0
+
+        def _bound() -> str | None:
+            """累计轮次 / 累计消息数一起判护栏（跨续轮不重置）。"""
+            return bound_reason(
+                start_round - 1 + completed_rounds,
+                initial_message_count + len(replies),
+                self.limits,
+            )
 
         yield {
             "type": "start",
@@ -445,11 +504,13 @@ class RoomStore:
         }
 
         while active:
-            reason = bound_reason(completed_rounds, len(replies), self.limits)
+            if rounds is not None and completed_rounds >= rounds:
+                break
+            reason = _bound()
             if reason:
                 bounded = reason
                 break
-            round_no = completed_rounds + 1
+            round_no = start_round + completed_rounds
             yield {"type": "round_start", "room_id": room_id, "round": round_no}
             # 第 1 轮并发：N 条 LLM 流通过事件队列交错推给前端，谁先好谁先落库。
             # 第 2 轮起仍走下面的串行接话，后发言者看得到完整前文。
@@ -460,7 +521,7 @@ class RoomStore:
 
                 async def _one(bot_id: str) -> None:
                     nm = room.bot_names.get(bot_id, bot_id)
-                    tid = f"{room_id}:{user_msg['seq']}:{round_no}:{bot_id}"
+                    tid = f"{room_id}:{turn_seq}:{round_no}:{bot_id}"
                     sc = {
                         "bot_id": bot_id, "name": nm,
                         "turn_id": tid, "round": round_no,
@@ -508,9 +569,7 @@ class RoomStore:
                         reply = str(ev["final"] or "").strip()
                         sc = {k: ev[k] for k in ("bot_id", "name", "turn_id", "round")}
                         if bounded is None:
-                            bounded = bound_reason(
-                                completed_rounds, len(replies), self.limits
-                            )
+                            bounded = _bound()
                         if bounded is not None:
                             continue
                         if ev["failed"] or not reply or is_pass(reply):
@@ -555,13 +614,13 @@ class RoomStore:
                 continue
             spoke: list[str] = []
             for bot_id in list(active):
-                reason = bound_reason(completed_rounds, len(replies), self.limits)
+                reason = _bound()
                 if reason:
                     bounded = reason
                     break
                 name = room.bot_names.get(bot_id, bot_id)
                 # turn_id 带轮次：同一个 bot 跨轮发言时气泡不能互相覆盖。
-                turn_id = f"{room_id}:{user_msg['seq']}:{round_no}:{bot_id}"
+                turn_id = f"{room_id}:{turn_seq}:{round_no}:{bot_id}"
                 scope = {
                     "bot_id": bot_id, "name": name,
                     "turn_id": turn_id, "round": round_no,
@@ -623,6 +682,11 @@ class RoomStore:
             completed_rounds += 1
             active = _next_active(spoke, multi_round=multi_round)
 
+        total_rounds = start_round - 1 + completed_rounds
+        total_messages = initial_message_count + len(replies)
+        # 还能续吗：没到护栏、本轮有人实质发言、也不是被截断收口。
+        # 上限不取消，只是不再自动烧满 —— 交给用户按「再聊一轮」。
+        can_continue = bounded is None and _bound() is None and bool(replies)
         yield {
             "type": "done",
             "room_id": room_id,
@@ -630,7 +694,59 @@ class RoomStore:
             "passed": passed,
             "bounded": bounded,
             "rounds": completed_rounds,
+            "total_rounds": total_rounds,
+            "message_count": total_messages,
+            "can_continue": can_continue,
+            "next_round": start_round + completed_rounds,
+            "max_rounds": self.limits.max_rounds,
+            "max_messages": self.limits.max_messages,
         }
+
+    # ------------------------------------------------------- 用户驱动续轮
+    async def continue_stream(
+        self,
+        room_id: str,
+        round_index: int,
+        *,
+        runtime: Any = None,
+        bot_ids: list[str] | None = None,
+    ) -> AsyncIterator[dict[str, Any]]:
+        """用户点「再聊一轮」：**不落新 user 消息**，基于完整群历史再跑 1 轮接话。
+
+        - 材料包沿用该群已备的那份（``prepare(room_id, "")``），但每次仍验
+          mtime 指纹 —— 作者改稿后自动换新，不需要说「重读」。
+        - 累计轮次 / 消息数从**群历史**推导（最后一条 user 之后的 bot 消息数），
+          不信任前端传的计数，也不新增存储。
+        - ``start_round`` 让 ``build_prompt`` 用「第 N 轮接话」引导，且并发只在
+          ``round_no == 1`` 生效 ⇒ 续轮天然是串行接话，保质不变量不破。
+        """
+        room = self.get_room(room_id)
+        if room is None:
+            raise ValueError(f"群 {room_id} 不存在或已解散")
+        rows = self.chat_store.messages(room_id)
+        last_user_seq = 0
+        for m in rows:
+            if m.get("author_role") == "user":
+                last_user_seq = int(m.get("seq") or 0)
+        bot_count = sum(
+            1
+            for m in rows
+            if m.get("author_role") == "bot"
+            and int(m.get("seq") or 0) > last_user_seq
+        )
+        woken = list(bot_ids or room.bot_ids)[: self.limits.max_members]
+        idx = max(1, int(round_index))
+        async for ev in self.say_stream(
+            room_id,
+            "",
+            runtime=runtime,
+            rounds=1,
+            start_round=idx,
+            post_user=False,
+            woken_override=woken,
+            initial_message_count=bot_count,
+        ):
+            yield ev
 
     def close(self) -> None:
         with self._lock:

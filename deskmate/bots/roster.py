@@ -32,13 +32,20 @@ KNOWN_BOT_IDS: frozenset[str] = frozenset(BOT_ORDER)
 
 @dataclass(frozen=True)
 class Bot:
-    """一个常驻 bot 的投影。实体本体在官方 registry / 独立 session，不在这里。"""
+    """一个常驻 bot 的投影。实体本体在官方 registry / 独立 session，不在这里。
+
+    ``icon`` / ``tagline`` 是**展示字段**，群聊 UI 用它画头像与角色副标；两者都由
+    registry 的 manifest frontmatter 承载（``registry.py:331-332`` 的 list_all 已透出），
+    本模块只做透传，绝不另立一份图标表 —— 否则改人设时 UI 会跟着说谎。
+    """
 
     id: str
     name: str
     role: str
     system_prompt: str
     market: bool = False
+    icon: str = ""
+    tagline: str = ""
 
 
 def bots_from_entries(entries: Iterable[Mapping[str, Any]]) -> list[Bot]:
@@ -65,6 +72,8 @@ def bots_from_entries(entries: Iterable[Mapping[str, Any]]) -> list[Bot]:
                 ),
                 system_prompt=str(entry.get("system_prompt") or ""),
                 market=bool(entry.get("roundtable_market")),
+                icon=str(entry.get("icon") or ""),
+                tagline=str(entry.get("tagline") or ""),
             )
         )
     order = {pid: i for i, pid in enumerate(BOT_ORDER)}

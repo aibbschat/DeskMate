@@ -520,3 +520,53 @@
 - `app.py` 的 `except` 会吞掉 `ImportError`：云端若漏传 `deskmate/bots/*.py`，现象是「服务照常起、/bots 悄悄打不开」。已在 warning 里写明先核对清单。
 - 未跑真机群聊全文重验：本次只改模型来源与入口，§18 的质量证据仍有效；**桌面 GUI 内的实际点击与 iframe 呈现，等重打包后由萧哥目测**。
 - 所有提交仅在 `fork/base`，**未 push origin**。
+
+---
+
+## 20. 用户驱动续轮：不自动烧满 3 轮（11-07 萧哥拍板）
+
+### 20.1 问题与前提（两处澄清，代码实证）
+
+萧哥问「现在是默认 6 轮，跑完后这个群聊就结束吗？」：
+
+- **不是 6 轮**：`discussion.py:21-24` 是 `MAX_MEMBERS=6 / MAX_ROUNDS=3 / MAX_MESSAGES=10`。「6」是成员上限；§18.3 那次是 3 位 × 3 轮 = 9 条发言。`bound_reason` 传**已完成轮数**，第 1 轮传 0、第 4 轮才 `3>=3` 收口 ⇒ 正好 3 轮。
+- **跑完不结束群**：`say()` / `say_stream()` 只是「用户发一句 → 一次有界讨论」，`done` 只带 `rounds` / `bounded`，**不发墓碑、不改 `bot_rooms` 表**；`disband_room()` 全仓只被 `DELETE /api/rooms/{id}` 调用。跑完后群仍在 `list_rooms()`、历史全在 `chat.db`、成员与 `bot_names` 不变；再发一句开启新讨论（计数归零，群历史继续累积）。只有显式撤群才结束，且撤群也只打墓碑、不删消息、room_id 永不复用。
+
+⇒ 萧哥的使用形态成立：**群跟着《夜不收》一直存在，直到整本写完；只要不撤，群与共享材料一直在，下次讨论不必重建群、不必让 bot 重新翻资料。**
+
+### 20.2 「资料一直在」的准确含义（避免误解）
+
+- `RoomMaterials.prepare()`（`materials.py:150-199`）每次讨论都重算文件 `mtime+size` 指纹，按 `room_id` 缓存；指纹变则自动重建 ⇒ **作者边写边改稿，下一轮自动带最新进度 / 正文 / 圣典 / 文风，不需要说「重读」**。纯本地 IO（实测 0.1~0.2s），零 LLM、不花思考钱。
+- 缓存是**进程内**的：重启服务会重扫一次（仍是 0.1s 本地 IO，不是重新翻资料、不花 LLM）。
+- bot 的 engine 每轮清空 `messages`，它**不「记住」上次读过什么** —— 靠每次确定性重建的共享材料包 + 群历史。「不需要重新翻资料」准确说是**不需要 bot 重新做 discovery 往返**（`read_book` 试探找文件）；材料包没覆盖的章节仍会自主补读（保质设计，§18.3 实测 7 次 `tool`）。
+- 群历史有 `_HISTORY_BUDGET=18000` 字预算会裁很早的发言，但材料包每次从磁盘现读，不受影响。
+
+### 20.3 改造：把轮次决定权交还用户
+
+**只砍「零质量贡献」的自动连跑，不砍任何质量不变量**：不减唤醒人数、不降思考强度、不压输出、第 2 轮起的串行接话语义原样保留（§16.2 六条逐条不破）。**3 轮 / 10 条硬上限不取消，只是不再自动烧满。**
+
+| 层 | 改动 |
+|---|---|
+| `rooms.say_stream` | 新增可选参数 `rounds` / `start_round` / `post_user` / `woken_override` / `initial_message_count`（**全有默认值，旧调用方行为不变**）。`_bound()` 用累计轮次 + 累计消息数判护栏；`done` 带 `can_continue` / `next_round` / `total_rounds` / `message_count` |
+| `rooms.continue_stream` | 新入口：**不落新 user 消息**；累计消息数从**群历史**推导（最后一条 user 之后的 bot 消息数），不信任前端、不新增存储；`start_round` 让 `build_prompt` 用「第 N 轮接话」引导，且并发只在 `round_no == 1` ⇒ **续轮天然串行接话** |
+| `web.py` | `/stream` 传 `rounds=1`；新增 `POST /api/rooms/{id}/continue`（同一套 SSE 事件与响应头）；composer 加「再聊一轮」按钮，`done` 驱动显隐，`consumeStream()` 让新发言与续轮共用同一套逐字渲染 |
+| 材料 | 续轮传空 `text` ⇒ `prepare()` 沿用该群已备材料但**仍验 mtime 指纹**，改稿自动换新，零额外 LLM |
+
+「到此为止」不需要额外动作：不点按钮即可；随时可再发一句开新话题。到界或全 pass 时按钮自动消失并给出人话提示。
+
+### 20.4 验收
+
+| 项 | 结果 |
+|---|---|
+| 专项回归 | `tests/test_bot_user_driven_rounds.py` **7 例**（默认 1 轮 / 续轮接上前文 / 串行非并发 / 3 轮与 10 条累计收口 / 群不撤 / 向后兼容） |
+| 扩大回归 | bot 群 + 圆桌 4 文件 + 圣经抽取 **120 例全绿**；`py_compile` / `node --check` 内嵌 JS / `git diff --check` 全过 |
+| 真实 HTTP 端到端（uvicorn + 离线 runtime，零 LLM） | `/stream` → `total=1, can_continue=True, next=2`；`/continue` 2 → `total=2`；`/continue` 3 → `total=3, can_continue=False`；`/continue` 4 → `bounded=max_rounds, rounds=0`（后端挡住，不依赖前端自觉）。逐字 delta 正常、`X-Accel-Buffering: no`、页面 `BASE="/bots"` 注入正确、续轮按钮存在 |
+| 保质证据 | 续轮 bot 的发言明确引用了前一轮发言文本；全程只落 **1 条 user 消息**，落库 `1 user + 3 轮 × 2 bot = 7` 条；群仍在 `list_rooms()` |
+| 未跑 | 真 LLM 群聊全文重验（成本太高；本次是确定性调度 + 前端渲染，离线用例已锁）。桌面 GUI 内实际点击仍待重打包后萧哥目测 |
+
+### 20.5 边界
+
+- 旧 `/say` 一次性端点与 `say_stream(rounds=None)` **行为不变**（仍 3 轮），回归用例不破；前端只用 `/stream` + `/continue`。
+- `MAX_ROUNDS=3` 语义从「每次必然跑满」变为「一次讨论最多允许点 2 次续轮」；`MAX_MESSAGES=10` 变为跨续轮累计护栏。
+- 新增 Python 文件只有测试文件，云端不需要，`deploy_cloud_sync.sh` 清单无需改动；`rooms.py` / `web.py` 是已有条目。
+- 未 push origin。
