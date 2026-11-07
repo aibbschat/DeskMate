@@ -570,3 +570,22 @@
 - `MAX_ROUNDS=3` 语义从「每次必然跑满」变为「一次讨论最多允许点 2 次续轮」；`MAX_MESSAGES=10` 变为跨续轮累计护栏。
 - 新增 Python 文件只有测试文件，云端不需要，`deploy_cloud_sync.sh` 清单无需改动；`rooms.py` / `web.py` 是已有条目。
 - 未 push origin。
+
+---
+
+## 21. 桌面 GUI 真机收口：`/bots` 鉴权与侧栏分组（11-07）
+
+### 21.1 `/bots/` 必须进 sidecar token 白名单
+
+| 项 | 内容 |
+|---|---|
+| 现象 | 重打包后点「Bot 群」，iframe 直接回 `{"error":"missing or invalid OpenWorker sidecar token"}` |
+| 根因 | `coworker/server/app.py:require_sidecar_token` 白名单只有 `/roundtable/`。iframe 跑在 `http://127.0.0.1:<sidecar>`，父窗口是 `tauri://localhost`，**跨源**，页面里的 fetch 既读不到父窗口的内存 token，也不会自动带 `X-OpenWorker-Token` |
+| 修法 | 与圆桌同类的桌面内嵌本地页待遇：放行 `/bots/` 与 `/bots`（Mount redirect）；**主 `/v1` 鉴权一字不动**，前缀精确匹配（`/bots-elsewhere` 仍 401） |
+| 🔴 上轮验证盲点 | §19 用 `TestClient` 验 `/bots/` 200 时把 `COWORKER_API_TOKEN` 从 env pop 掉 —— 等于在**免鉴权环境**测路由，那个 200 是假绿。新增 `tests/test_bot_sidecar_auth.py` 在**带 token** 的 `create_app` 上跑 6 例，同时锁住「主 API 无 token 仍 401 / 错 token 401 / 对 token 放行 / 前缀不宽」 |
+| 未采用的方案 | 让父窗口经 postMessage 把 token 送进 iframe、只给 `/bots/api/*` 保留鉴权：**页面 HTML 自身也会被中间件挡**，握手通道根本建立不起来（鸡生蛋）；且圆桌既有待遇就是整前缀免鉴权 |
+| 边界 | 外层由本机环回监听 + 云端 Caddy basicauth 保护；**不要把 `/bots` 暴露到公网裸端口**。云端停机保号期间不涉及 |
+
+### 21.2 左侧导航收敛为「多人协作」大分类
+
+三个平铺入口（创作圆桌 / Bot 群 / 创作流水线）合并为一个 hover 展开的分类，侧栏少占两行。三个 surface、回调与 `data-testid` 全部保留；父项在任一子项 active 时高亮；除 hover 外也支持键盘 focus 与点击 toggle。浮层是同一包裹容器的子节点，`padding-top` 兼作 hover 桥，鼠标从按钮移到菜单不会提前收起。新增 `Sidebar.collaboration.test.tsx` 2 例锁住折叠/展开/回调/收起/active/focus。

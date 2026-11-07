@@ -335,6 +335,9 @@ export function Sidebar(props: Props) {
   // doesn't grow unbounded.
   const RECENT_PEEK = 4;
   const [recentExpanded, setRecentExpanded] = useState(false);
+  // 多人协作大分类（11-07）：圆桌 / Bot 群 / 创作流水线不再平铺三行，hover 才展开。
+  // 同时支持键盘 focus 与点击 toggle，避免只有鼠标能用。
+  const [collabOpen, setCollabOpen] = useState(false);
   // The RECENT-header group/filter popover (§20). Filter = show only these personas (empty = all).
   const [groupMenuOpen, setGroupMenuOpen] = useState(false);
   const [filterPersonas, setFilterPersonas] = useState<Set<string>>(new Set());
@@ -1083,49 +1086,97 @@ export function Sidebar(props: Props) {
         </button>
       </div>
 
-      {/* 创作圆桌：群聊式多 Agent 评审（桌搭 4 人格 + 外部 peer），独立页面。 */}
-      <div className="px-2.5 mt-1">
+      {/* 多人协作：圆桌 / Bot 群 / 创作流水线收进一个大分类，hover 自动弹出。
+          三个 surface、各自回调与 data-testid 全部保留，只是不再各占一行把左侧塞满
+          （11-07 萧哥）。浮层是同一个包裹 div 的子节点，鼠标从按钮移到菜单不会
+          触发 onMouseLeave 提前收起；键盘 focus 也能展开。 */}
+      <div
+        className="px-2.5 mt-1 relative"
+        data-testid="nav-collaboration"
+        onMouseEnter={() => setCollabOpen(true)}
+        onMouseLeave={() => setCollabOpen(false)}
+        onFocus={() => setCollabOpen(true)}
+        onBlur={(e) => {
+          if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setCollabOpen(false);
+        }}
+      >
         <button
           className={
             "w-full flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-ui text-left hover:bg-paper hover:text-ink " +
-            (props.roundtableActive ? "text-ink bg-paper" : "text-muted")
+            (props.roundtableActive || props.botRoomActive || props.creationActive
+              ? "text-ink bg-paper"
+              : "text-muted")
           }
-          data-testid="nav-roundtable"
-          onClick={props.onOpenRoundtable}
+          data-testid="nav-collaboration-toggle"
+          aria-haspopup="menu"
+          aria-expanded={collabOpen}
+          onClick={() => setCollabOpen((v) => !v)}
         >
           <Icon name="users" size={15} className="shrink-0" />
-          <span className="flex-1">{t("sidebar.roundtable")}</span>
+          <span className="flex-1">{t("sidebar.collaboration", { defaultValue: "多人协作" })}</span>
+          <Icon
+            name={collabOpen ? "chevronDown" : "chevronRight"}
+            size={13}
+            className="shrink-0 text-faint"
+          />
         </button>
-      </div>
 
-      {/* Bot 群：真 Agent 常驻、群随话题建撤。圆桌保留并存，先在 GUI 里验一遍再谈退役。 */}
-      <div className="px-2.5 mt-1">
-        <button
-          className={
-            "w-full flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-ui text-left hover:bg-paper hover:text-ink " +
-            (props.botRoomActive ? "text-ink bg-paper" : "text-muted")
-          }
-          data-testid="nav-botroom"
-          onClick={props.onOpenBotRoom}
-        >
-          <Icon name="chat" size={15} className="shrink-0" />
-          <span className="flex-1">{t("sidebar.botroom", { defaultValue: "Bot 群" })}</span>
-        </button>
-      </div>
+        {collabOpen && (
+          <div className="collab-menu" data-testid="nav-collaboration-menu" role="menu">
+            <div className="collab-menu-inner">
+              {/* 创作圆桌：群聊式多 Agent 评审（桌搭 4 人格 + 外部 peer）。 */}
+              <button
+                className={
+                  "w-full flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-ui text-left hover:bg-paper hover:text-ink " +
+                  (props.roundtableActive ? "text-ink bg-paper" : "text-muted")
+                }
+                data-testid="nav-roundtable"
+                role="menuitem"
+                onClick={() => {
+                  props.onOpenRoundtable?.();
+                  setCollabOpen(false);
+                }}
+              >
+                <Icon name="users" size={15} className="shrink-0" />
+                <span className="flex-1">{t("sidebar.roundtable")}</span>
+              </button>
 
-      {/* 创作流水线：原生 teams 执行 + 圆桌终审（线路 B → 线路 A）。 */}
-      <div className="px-2.5 mt-1">
-        <button
-          className={
-            "w-full flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-ui text-left hover:bg-paper hover:text-ink " +
-            (props.creationActive ? "text-ink bg-paper" : "text-muted")
-          }
-          data-testid="nav-creation"
-          onClick={props.onOpenCreation}
-        >
-          <Icon name="sparkle" size={15} className="shrink-0" />
-          <span className="flex-1">{t("sidebar.creation", { defaultValue: "创作流水线" })}</span>
-        </button>
+              {/* Bot 群：真 Agent 常驻、群随话题建撤；圆桌保留并存。 */}
+              <button
+                className={
+                  "w-full flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-ui text-left hover:bg-paper hover:text-ink " +
+                  (props.botRoomActive ? "text-ink bg-paper" : "text-muted")
+                }
+                data-testid="nav-botroom"
+                role="menuitem"
+                onClick={() => {
+                  props.onOpenBotRoom?.();
+                  setCollabOpen(false);
+                }}
+              >
+                <Icon name="chat" size={15} className="shrink-0" />
+                <span className="flex-1">{t("sidebar.botroom", { defaultValue: "Bot 群" })}</span>
+              </button>
+
+              {/* 创作流水线：原生 teams 执行 + 圆桌终审（线路 B → 线路 A）。 */}
+              <button
+                className={
+                  "w-full flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-ui text-left hover:bg-paper hover:text-ink " +
+                  (props.creationActive ? "text-ink bg-paper" : "text-muted")
+                }
+                data-testid="nav-creation"
+                role="menuitem"
+                onClick={() => {
+                  props.onOpenCreation?.();
+                  setCollabOpen(false);
+                }}
+              >
+                <Icon name="sparkle" size={15} className="shrink-0" />
+                <span className="flex-1">{t("sidebar.creation", { defaultValue: "创作流水线" })}</span>
+              </button>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* 个人中心：收纳默契/记忆/日记/勋章等私人化内容（勋章已集成在内）。 */}

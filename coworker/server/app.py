@@ -498,6 +498,15 @@ def create_app(manager: SessionManager) -> FastAPI:
             or request.url.path in tokenless_paths
             or request.url.path.startswith(A2A_OPEN_PREFIXES)
             or request.url.path.startswith("/roundtable/")
+            # Bot 群：与圆桌同类的「桌面 GUI 内嵌本地页」。iframe 跑在 sidecar 的
+            # http://127.0.0.1:<port>，父窗口是 tauri://localhost —— 跨源，页面里
+            # 的 fetch 拿不到父窗口的内存 token，也无法自动带 X-OpenWorker-Token，
+            # 所以整个 /bots 前缀必须像 /roundtable/ 一样放行，否则一进群就 401
+            # （2026-11-07 真机事故）。放行范围严格限定为该前缀（含无斜杠的
+            # Mount redirect），不放宽主 /v1 API；外层仍由本机环回监听与云端
+            # Caddy basicauth 保护，不要把 /bots 暴露到公网裸端口。
+            or request.url.path.startswith("/bots/")
+            or request.url.path == "/bots"
             # `/v1/board` carries its own, stronger auth: per-actor board tokens
             # (identity + access), designed to be handed to external harnesses and
             # other machines — which can never hold the machine-local sidecar token.

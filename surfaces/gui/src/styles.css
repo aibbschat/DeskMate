@@ -694,6 +694,22 @@ body {
 .roundtable-view iframe, .botroom-view iframe {
   flex: 1 1 auto; width: 100%; min-height: 0; border: 0; background: #fff;
 }
+
+/* 多人协作：hover 弹出的子分类。top:100% 紧贴触发按钮；padding-top 既是视觉间隙，
+   也是 hover 桥 —— 浮层是同一个包裹 div 的子节点，鼠标从按钮移到菜单不会跨出容器
+   触发 onMouseLeave 提前收起。颜色全部走 styles.css 的皮肤变量（单一真源）。 */
+.collab-menu {
+  position: absolute; left: 10px; right: 10px; top: 100%;
+  z-index: 40; padding-top: 4px;
+}
+.collab-menu-inner {
+  background: var(--panel);
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  padding: 4px;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.13);
+}
+
 .main-topbar {
   position: absolute;
   top: 0;
