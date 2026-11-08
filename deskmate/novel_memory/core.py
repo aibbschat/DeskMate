@@ -1164,9 +1164,23 @@ def upsert_bible_from_text(
             full_text=verify_text,
             progress_callback=progress_callback,
         )
+        # 2026-11-08 写侧加固：**别让其他地方的讨论当作圣经铁律**。
+        # 根因：_harvest 把「讨论稿/产出文本」本身当作 verify_records 的
+        # source_text，于是讨论里写的一句话在讨论里命中就判 confirmed，
+        # 回流进库后渲染时便成了「已核验事实」。两道一起堵：
+        # 1) 本函数契约是「回流产出文本」，不是抽取正文 —— 即使调用方误传
+        #    tier=manuscript 也强制降为 roundtable，杜绝讨论伪装成书稿直引。
+        # 2) 用全书正文再核一遍引文，命不中的 confirmed 降为 pending +
+        #    needs_review（只降不放；正文暂读不到时不动，避免误杀）。
+        effective_tier = _ent.TIER_ROUNDTABLE if tier == _ent.TIER_MANUSCRIPT else tier
+        demoted = _ent.demote_discussion_confirmations(passed, verify_text)
+        if demoted:
+            counts["confirmed"] = max(0, int(counts.get("confirmed", 0)) - demoted)
+            counts["pending"] = int(counts.get("pending", 0)) + demoted
         # 信任分层：回流内容（对话/产出/圆桌报告）标注出身，非书稿直引一律待作者确认
         for r in passed:
-            r.tier = tier
+            r.tier = effective_tier
+            r.needs_review = True
 
         if progress_callback:
             progress_callback("merging", {"total_batches": len(batches), **counts})

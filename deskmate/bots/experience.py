@@ -8,16 +8,18 @@
 材料。零 LLM 调用，全程只读且经过 ``sacred_paths`` 守卫：
 
 - ``<书>/.deskmate`` 下四份圣典、最新一份进度简报、``style_feeds`` 最新一份
-  逐字留档；备份目录 / 快照 / db 一律排除（实测备份里有同名旧圣典）。
+  逐字留档，以及独立成文的 ``AUTHOR_RULING.md``（作者裁定，效力最高、
+  不随 entities.db 刷新被覆盖）；备份目录 / 快照 / db 一律排除。
 - ``style_profile`` 的作者整体文风（155 份书稿样本统计出的既有字段，原样搬运，
   标明是跨书全局而非某本书专属）。
 - 最新逐字留档**尾部优先**：停笔点在那里，不在开头。群里问「接下来怎么写」
   时，这一句比第一章有用得多。
 
 预算独立有界（``DESKMATE_BOT_EXPERIENCE_CHARS``，默认 12000 字），按
-「文风 → 最新简报 → 最新留档尾部 → 圣典」的优先级确定性截断；装不下的文件
-进索引，bot 可用 ``read_book(chapter=文件名关键词)`` 按名补读。截断不是压缩：
-没进上下文的部分不会被总结成一句话，只会明确告诉 bot 还有哪些文件可点名。
+「作者裁定 → 文风 → 最新简报 → 最新留档尾部 → 圣典」的优先级确定性截断；
+装不下的文件进索引，bot 可用 ``read_book(chapter=文件名关键词)`` 按名补读。
+截断不是压缩：没进上下文的部分不会被总结成一句话，只会明确告诉 bot
+还有哪些文件可点名。
 """
 from __future__ import annotations
 
@@ -32,6 +34,9 @@ from deskmate.sacred_paths import guarded_assistance_read, guarded_dir_entry
 logger = logging.getLogger(__name__)
 
 _BIBLE_FILES = frozenset({"CHARACTERS.MD", "NOTES.MD", "OUTLINE.MD", "TIMELINE.MD"})
+# 作者裁定：效力**高于**四圣典，且独立成文、不随 entities.db 刷新被覆盖。
+# 圣典只收「已写正文事实」，作者裁定管「往后怎么走」，两者物理分离。
+_RULING_FILE = "AUTHOR_RULING.MD"
 _BRIEF_MARK = "简报"
 _FEED_PREFIX = "新增正文"
 _FEED_DIR = "style_feeds"
@@ -82,7 +87,7 @@ def _sort_key(p: Path) -> tuple[str, int, str]:
 def experience_files(book_dir: Path) -> list[Path]:
     """列出可作经验材料的既有文件（最新在前）。不做内容判断、不读正文。
 
-    只认三类：四份圣典、简报、style_feeds 的逐字留档。目录名含
+    只认四类：作者裁定、四份圣典、简报、style_feeds 的逐字留档。目录名含
     ``_backup_`` / ``_snapshots`` 的一律跳过，db / 二进制被扩展名白名单挡掉。
     """
     try:
@@ -108,9 +113,10 @@ def experience_files(book_dir: Path) -> list[Path]:
             continue
         upper = p.name.upper()
         is_bible = upper in _BIBLE_FILES and len(parts) == 1
+        is_ruling = upper == _RULING_FILE and len(parts) == 1
         is_brief = _BRIEF_MARK in p.name and upper.endswith(".MD")
         is_feed = p.name.startswith(_FEED_PREFIX) and _FEED_DIR in parts
-        if not (is_bible or is_brief or is_feed):
+        if not (is_bible or is_ruling or is_brief or is_feed):
             continue
         if not guarded_dir_entry(p):
             continue
@@ -224,13 +230,25 @@ def collect_experience(
     except (OSError, RuntimeError, ValueError):
         bible = None
     canons = [p for p in files if p.name.upper() in _BIBLE_FILES and p.parent == bible]
+    rulings = [p for p in files if p.name.upper() == _RULING_FILE and p.parent == bible]
     briefs = [p for p in files if _BRIEF_MARK in p.name]
     feeds = [p for p in files if p.name.startswith(_FEED_PREFIX) and _FEED_DIR in p.parts]
     brief = _latest(briefs)
     feed = _latest(feeds)
+    ruling = _latest(rulings)
 
     remaining = max(200, int(max_chars))
     sections: list[str] = []
+    # 作者裁定最优先：它管「往后怎么走」，效力高于已写正文事实、旧简报与
+    # 任何讨论共识；旧大纲／死序／圆桌共识与它冲突时一律以它为准。
+    if ruling is not None:
+        raw = guarded_assistance_read(ruling) or ""
+        if raw:
+            body, remaining, _ = _take(raw, remaining)
+            if body:
+                sections.append(
+                    f"## 作者裁定（现行唯一有效口径，优先于下方一切材料） · {ruling.name}\n{body}"
+                )
     style = _format_style(profile)
     if style:
         body, remaining, _ = _take(style, remaining)

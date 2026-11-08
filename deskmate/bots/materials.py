@@ -23,6 +23,12 @@
 （逐日圣典／进度简报／逐字留档／文风画像）原样摆进同一份群共享材料。
 那是她每天读过、早已存在的文件，性质是「群里多放一份」，不是本次为讨论
 生成的压缩物 ⇒ 不触发上面那条红线，红线原文不改，详见 docs §17.0。
+
+§18（11-08 萧哥定调）：**大纲／粗纲等规划类文档一律降级为「只进索引」**。
+它们本来只是参考，若还按里面的旧章纲／旧结局去想，脑洞就停在既有层面，
+等于把废弃规划又喂回群聊。现在 body 只装 ``classify==0`` 的正文／小说文本；
+参考类与协议类都只列在索引里，bot 真需要时仍可 ``read_book(chapter=关键词)``
+自主点名补读（不削真 Agent）。正文 docx 一份不减，仍是全量原文分块。
 """
 from __future__ import annotations
 
@@ -35,36 +41,15 @@ from typing import Optional, Sequence
 from deskmate.sacred_paths import guarded_assistance_read
 
 from .experience import collect_experience, load_style_profile
-from .reading import BookShelf, parse_book_title
-
-# 非创作文本：默认不喂给 bot（列进索引，bot 主动要才读）。
-_NON_FICTION_MARKS = (
-    "授权协议", "授权书", "授权合同", "改编协议", "合同", "协议",
-    "简介", "目录", "版权", "发票", "收据", "授权",
-)
-# 创作参考 material：排在正文之后，仍是有用材料（大纲/人物/脑洞汇总）。
-_REFERENCE_MARKS = (
-    "大纲", "粗纲", "人物", "脑洞", "设定", "梗概", "分集", "讲戏", "小传",
-)
+# 分类规则的**单一事实源**在 reading.py（BookShelf.read 留空补读也用它）；
+# 这里 re-export，保持 ``from deskmate.bots.materials import classify`` 兼容。
+from .reading import BookShelf, classify, parse_book_title
 
 # 备料预算。与 BookShelf 默认一致；不放大（单轮已 329s，放大只会更慢更贵）。
 _DEFAULT_MAX_CHARS = 12_000
 # 经验层独立预算：435 万字的书桶绝不能整桶塞进 prompt。
 _DEFAULT_EXPERIENCE_CHARS = 12_000
 _RELOAD_MARKS = ("重读", "重新读", "再读一遍", "刷新材料", "重新加载")
-
-
-def classify(name: str) -> int:
-    """文件名 → 优先级。0=正文/小说文本，1=创作参考，2=非创作文本。
-
-    只按名字里的关键词，不做内容判断、不调 LLM、不猜语义。
-    """
-    s = str(name or "")
-    if any(m in s for m in _NON_FICTION_MARKS):
-        return 2
-    if any(m in s for m in _REFERENCE_MARKS):
-        return 1
-    return 0
 
 
 def _fingerprint(files: Sequence[Path]) -> str:
@@ -97,6 +82,9 @@ class MaterialPack:
         exp = self.experience + "\n\n" if self.experience else ""
         return (
             "# 群里已经共享的书稿材料（只读，可直接引用）\n\n"
+            "下面的「正文」是已经写下的事实；大纲／粗纲／设定等既有规划只列在"
+            "目录索引里、不默认加载，**不要拿它们当既定框架或据此推断后续走向**。"
+            "要脑洞就跳出旧规划，以正文已写事实和作者最新裁定为准。\n\n"
             + exp
             + self.body
             + "\n\n"
@@ -214,8 +202,11 @@ class RoomMaterials:
         parts: list[str] = []
         used = 0
         for p in ranked:
-            if classify(p.name) == 2:
-                continue  # 非创作文本不进正文，只进索引
+            # §18：只有 classify==0（已写正文／小说文本）才进 body。
+            # 1=大纲/粗纲/人物/脑洞等既有规划、2=协议/简介，都只进索引：
+            # 默认喂进去会把讨论锚在旧章纲／旧结局上，脑洞出不了既有层面。
+            if classify(p.name) != 0:
+                continue
             if used >= self.max_chars:
                 break
             text = guarded_assistance_read(p, max_chars=self.max_chars)
@@ -231,9 +222,13 @@ class RoomMaterials:
         else:
             body = "\n\n".join(parts)
 
-        lines = [f"《{title}》书稿目录（共 {len(files)} 份，按需补读）："]
+        lines = [f"《{title}》书稿目录（共 {len(files)} 份；已写正文已加载，参考类只列索引）："]
         for p in ranked:
-            label = {0: "正文/小说", 1: "大纲/人物/脑洞", 2: "协议/简介/目录"}[classify(p.name)]
+            label = {
+                0: "正文/小说（本次已加载）",
+                1: "参考·大纲/粗纲/人物/脑洞（既有规划，未加载，可点名补读）",
+                2: "协议/简介/目录（非创作材料，未加载）",
+            }[classify(p.name)]
             try:
                 size = p.stat().st_size
             except OSError:
@@ -243,6 +238,11 @@ class RoomMaterials:
             "需要上面某一份而本次没读到的内容时，用 read_book 的 chapter 参数填"
             "**文件名关键词**（例如 chapter=\"绝命救援\"）单独补读；"
             "chapter 不是路径，填绝对路径不会命中。没读到的部分不要凭空编情节或段号。"
+        )
+        lines.append(
+            "注意：大纲／粗纲／设定等参考文档是**既有规划**，既不是已写正文，也不是"
+            "作者终裁。讨论新走向或要脑洞时不要拿它们当既定框架，更不要据此推断"
+            "后续情节、章序或人物命运；需要以正文已写事实和作者最新裁定为准。"
         )
         if exp is not None and exp.has_any:
             lines.append("")

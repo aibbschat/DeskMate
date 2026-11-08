@@ -137,6 +137,9 @@ __all__ = [
     "entities_db_path",
     "connect",
     "verify_records",
+    "is_manuscript_source",
+    "is_canon_fact",
+    "demote_discussion_confirmations",
     "upsert_records",
     "list_records",
     "delete_record",
@@ -203,6 +206,22 @@ _TIER_LABEL = {
     TIER_ROUNDTABLE: "圆桌共识",
     TIER_DIALOGUE: "对话推断",
 }
+
+# 2026-11-08 萧盛定调：**只有书稿正文直引才算事实**。
+# 讨论 / 圆桌 / 简报 / 大纲 / 产出文本里的话，哪怕被误标成 tier=manuscript 或
+# status=confirmed，也不许升格成圣经铁律。tier 是主闸、source_file 是兜底：
+# 现场坏档里就有 10 条「圆桌综合研判报告」来源被伪装成 manuscript/confirmed，
+# 单看 tier 拦不住，故两道一起用。命中任一关键词即判非正文来源。
+_NON_CANON_SOURCE_MARKS = (
+    # 讨论 / 会商类
+    "圆桌", "研讨", "研判", "共识", "评审", "评议", "会商",
+    "简报", "讨论", "会议", "纪要", "复盘",
+    # 既有规划类（不是已写正文）
+    "大纲", "粗纲", "梗概", "分集", "策划", "脑洞", "设定集",
+    # 产出文本类
+    "报告", "笔记", "产出", "剧本",
+    "report", "outline", "brief",
+)
 
 _DB_NAME = "entities.db"
 
@@ -437,6 +456,76 @@ def verify_records(
                 rec.reject_reason = f"原文中找不到该引证（命中率 {ratio:.0%}）"
         out.append(rec)
     return out
+
+
+# --------------------------------------------------------------------------- #
+# 来源闸门（2026-11-08 萧盛定调：别让其他地方的讨论当作圣经铁律）
+# --------------------------------------------------------------------------- #
+
+
+def _row_field(row, key: str, default=""):
+    """安全取行字段：老库 / 半写入行缺列时返回默认值，不让渲染链炸掉。"""
+    try:
+        v = row[key]
+    except (KeyError, IndexError, TypeError, ValueError):
+        return default
+    return default if v is None else v
+
+
+def is_manuscript_source(row) -> bool:
+    """来源是否够格进入圣经：tier=书稿直引 且 来源文件名不是讨论/规划/产出。
+
+    **双闸门**：tier 是主闸，source_file 是兜底。现场坏档里就有 10 条
+    「圆桌综合研判报告」来源被伪装成 tier=manuscript / status=confirmed /
+    confidence=1.0，只看 tier 拦不住，故两道一起用。
+
+    ``source_file`` 为空视为早期从正文抽取的历史数据（带逐字引文），放行，
+    避免误杀这类真实正文事实。
+    """
+    tier = str(_row_field(row, "tier", TIER_MANUSCRIPT) or TIER_MANUSCRIPT)
+    if tier != TIER_MANUSCRIPT:
+        return False
+    src = str(_row_field(row, "source_file", "") or "").strip()
+    if src and any(m in src for m in _NON_CANON_SOURCE_MARKS):
+        return False
+    return True
+
+
+def is_canon_fact(row) -> bool:
+    """能否作为**确定事实**（已确认的书稿正文直引）。
+
+    ``render_bible`` 的主区过滤只用 ``is_manuscript_source``（pending 正文材料
+    仍带【待作者确认】标注渲染，不误杀）；本函数是更严的判据，供下游需要
+    「只认铁律」时调用：非正文来源（圆桌／简报／讨论／推断）与 pending 一律 False。
+    """
+    return is_manuscript_source(row) and str(
+        _row_field(row, "status", STATUS_PENDING)
+    ) == STATUS_CONFIRMED
+
+
+def demote_discussion_confirmations(records, full_text: str) -> int:
+    """回流复核：引文必须在**真实书稿正文**里逐字命中才算 confirmed。
+
+    ``upsert_bible_from_text`` 把讨论稿本身当作核验的 ``source_text``，于是
+    「讨论里写的一句话」在讨论里命中就被判成已核验事实（这正是讨论变铁律的
+    根因）。本函数用全书正文再核一遍，**只降不放**：命不中的降为 pending +
+    needs_review，返回降级条数。full_text 为空时不动作（正文暂读不到时避免
+    误杀，与 P1-5 同思路）。
+    """
+    if not full_text or not str(full_text).strip():
+        return 0
+    full = _norm(str(full_text))
+    demoted = 0
+    for r in records:
+        if getattr(r, "status", None) != STATUS_CONFIRMED:
+            continue
+        ev = _norm(getattr(r, "evidence", "") or "")
+        if len(ev) < _MIN_EVIDENCE_CHARS or ev not in full:
+            r.status = STATUS_PENDING
+            r.confidence = min(float(getattr(r, "confidence", 0) or 0), 0.5)
+            r.needs_review = True
+            demoted += 1
+    return demoted
 
 
 # --------------------------------------------------------------------------- #
@@ -925,7 +1014,10 @@ def review_report(conn: sqlite3.Connection) -> str:
 
 _BIBLE_BANNER = (
     "<!-- deskmate-bible: v2 structured; 由 .deskmate/entities.db 确定性渲染，"
-    "请勿手工编辑本文件（会在下次刷新时被覆盖）。每条事实均附正文引证。 -->"
+    "请勿手工编辑本文件（会在下次刷新时被覆盖）。每条事实均附正文引证。"
+    "来源纪律（2026-11-08 萧盛定）：只有书稿正文逐字直引且核验通过的条目才是事实；"
+    "圆桌／简报／讨论／大纲／推断等非正文来源一律不收录，不得当作设定、情节或人物命运"
+    "的铁律，需作者明确确认后方可升格。 -->"
 )
 
 
@@ -958,14 +1050,35 @@ def render_bible(conn: sqlite3.Connection) -> dict[str, str]:
 
     与 v1 的本质区别：这里**没有任何生成**，纯粹是把已核验的事实排版输出。
     LLM 无法在这一步引入新东西。
+
+    2026-11-08 加来源闸门：圆桌／简报／讨论／大纲／推断等**非书稿正文来源**
+    一律不进主区（连"带标注列出来"都不做，只见于末尾计数），否则下游会把
+    讨论意见当设定铁律。闸门**只按出身过滤，不按 status**：pending 是
+    「正文引文未逐字命中／LLM 转述」，仍是正文材料，照旧带【待作者确认】
+    标注渲染，不因这次加固被误杀。
     """
-    chars = list_records(conn, kind=KIND_CHARACTER, limit=_RENDER_LIMIT[KIND_CHARACTER])
-    rels = list_records(conn, kind=KIND_RELATION, limit=_RENDER_LIMIT[KIND_RELATION])
-    events = list_records(conn, kind=KIND_EVENT, limit=_RENDER_LIMIT[KIND_EVENT])
-    settings = list_records(conn, kind=KIND_SETTING, limit=_RENDER_LIMIT[KIND_SETTING])
+    chars_all = list_records(conn, kind=KIND_CHARACTER)
+    rels_all = list_records(conn, kind=KIND_RELATION)
+    events_all = list_records(conn, kind=KIND_EVENT)
+    settings_all = list_records(conn, kind=KIND_SETTING)
+
+    pool = (*chars_all, *rels_all, *events_all, *settings_all)
+    sourced = [r for r in pool if is_manuscript_source(r)]
+    non_canon = [r for r in pool if not is_manuscript_source(r)]
+
+    def _sourced(kind: str) -> list[sqlite3.Row]:
+        # 先过来源闸门再限量，避免非正文条目挤占各类别的渲染名额。
+        # 不再额外要求 status==confirmed：confirmed/pending 都是正文材料，
+        # 差别由 _evidence_note 的【待作者确认】标注表达（原有行为）。
+        return [r for r in sourced if r["kind"] == kind][:_RENDER_LIMIT[kind]]
+
+    chars = _sourced(KIND_CHARACTER)
+    rels = _sourced(KIND_RELATION)
+    events = _sourced(KIND_EVENT)
+    settings = _sourced(KIND_SETTING)
 
     pending: list[sqlite3.Row] = [
-        r for r in (*chars, *rels, *events, *settings) if r["status"] == STATUS_PENDING
+        r for r in sourced if r["status"] == STATUS_PENDING
     ]
 
     # ---- CHARACTERS ----
@@ -1077,14 +1190,22 @@ def render_bible(conn: sqlite3.Connection) -> dict[str, str]:
     else:
         lines.append("- （无）")
 
-    st = stats(conn)
     lines += [
         "",
         "### 核验统计",
-        f"- 已核验条目：{sum(v for k, v in st.items() if k.endswith('.' + STATUS_CONFIRMED))}",
-        f"- 待确认条目：{sum(v for k, v in st.items() if k.endswith('.' + STATUS_PENDING))}",
-        "- 说明：凡正文中查无实据的人物 / 关系已在入库前被自动剔除，不会出现在本圣经中。",
+        "- 本圣经收录的书稿正文条目："
+        f"{len(chars) + len(rels) + len(events) + len(settings)} 条（均出自正文、附引证）",
+        f"- 待确认（引文未逐字命中）：{len(pending)} 条",
+        "- 说明：只有书稿正文直引且核验通过的条目才作事实；凡正文中查无实据的"
+        "人物／关系已在入库前自动剔除。",
     ]
+    if non_canon:
+        lines += [
+            "",
+            "### 未收录（非书稿正文来源，不得作为事实）",
+            f"- 另有 {len(non_canon)} 条来自圆桌／简报／讨论／大纲／推断的记录未收录；"
+            "讨论意见不是铁律，只有作者明确确认后才可升格，不要据此推断情节或人物命运。",
+        ]
     notes_md = "\n".join(lines)
 
     return {

@@ -302,6 +302,13 @@ GROWTH_MODULES=(
 # 落点由 3c 循环的 deskmate/* 分支自动推导。漏传→云端小说记忆跑旧码（红线不一致）。
 NOVEL_MEMORY_MODULES=(
   "deskmate/novel_memory/core.py"
+  # ⚠️ 2026-11-08 补录：core.py:21 硬依赖 `from . import entities as _ent`。
+  # 本轮「圣经来源闸门」(is_manuscript_source / is_canon_fact /
+  # demote_discussion_confirmations / render_bible 过滤) 全落在 entities.py，
+  # 且 core.upsert_bible_from_text 会调用其中的复核函数。它长期不在清单 →
+  # 只传 core 不传 entities，云端要么跑旧码把圆桌共识当铁律，要么
+  # AttributeError 被 fail-open 吞成静默失效（与 tone_record.py 同类红线坑）。
+  "deskmate/novel_memory/entities.py"
 )
 
 # 语气层（2026-10-24 补）：coworker/agent.py 的 build_engine 注入 tone block。
