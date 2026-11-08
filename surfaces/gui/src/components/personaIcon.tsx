@@ -19,6 +19,7 @@ const LEGACY: Record<string, IconName> = {
 // The glyphs a persona manifest may name directly (a curated, persona-appropriate subset).
 const NAMED: ReadonlySet<string> = new Set<IconName>([
   "sparkle",
+  "lightbulb",
   "diamond",
   "chat",
   "code",

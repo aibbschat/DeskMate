@@ -89,12 +89,19 @@ def test_no_book_title_keeps_existing_room_material(shelf_dir: Path) -> None:
 
 
 def test_read_book_docstring_points_to_material_and_rejects_paths(shelf_dir: Path) -> None:
-    """工具说明书不能再引导「留空读全书」——那正是撞到合同的入口。"""
+    """工具说明书的不变量（2026-11-08 能力常备化后重锁）。
+
+    - §16 时代的「别留空碰运气」（留空撞合同）已随 §18 classify 修复 +
+      本次全书预算而**过时**：留空现在就是读全部正文。锁的新不变量是
+      「读多少由题决定」——既不逼全书也不禁全书，教模型自己判断；
+    - 永不变的两条：引导先看群共享材料（省往返）；chapter 是文件名
+      关键词、不是路径（防绝对路径注入）。
+    """
     tools = reading.make_reading_tools(reading.BookShelf(shelf_dir, max_chars=8000))
     doc = next(t for t in tools if t.__name__ == "read_book").__doc__ or ""
-    assert "群里已经共享" in doc
-    assert "文件名关键词" in doc and "不是路径" in doc
-    assert "别留空碰运气" in doc
+    assert "读多少由题决定" in doc, "教模型按题判断，而不是代码开关或一刀切"
+    assert "先看那份" in doc, "仍要引导先看群共享材料，省工具往返"
+    assert "文件名关键词" in doc and "不是路径" in doc, "chapter 语义永不变"
 
 
 # ---------------------------------------------------------------- 2. 质量不变量

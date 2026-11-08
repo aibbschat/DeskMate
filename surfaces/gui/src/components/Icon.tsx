@@ -3,6 +3,7 @@
 
 export type IconName =
   | "sparkle"
+  | "lightbulb"
   | "logo"
   | "sidebar"
   | "sidebarRight"
@@ -80,6 +81,15 @@ export function Icon({
       return (
         <svg {...s} fill="currentColor" stroke="none">
           <path d="M12 2.4c.5 4.7 2.5 6.7 7.2 7.2-4.7.5-6.7 2.5-7.2 7.2-.5-4.7-2.5-6.7-7.2-7.2 4.7-.5 6.7-2.5 7.2-7.2z" />
+        </svg>
+      );
+    case "lightbulb":
+      // 脑洞：灯泡 + 灯丝 + 灯座（与 Bot 群页面里的 lightbulb 同一条线）。
+      return (
+        <svg {...s}>
+          <path d="M15 14.2c.2-1 .7-1.7 1.5-2.5 1-.9 1.5-2.2 1.5-3.5A6 6 0 0 0 6 8c0 1 .2 2.2 1.5 3.5.7.7 1.3 1.5 1.5 2.5" />
+          <path d="M9.2 17.8h5.6" />
+          <path d="M10.2 21.4h3.6" />
         </svg>
       );
     case "logo":

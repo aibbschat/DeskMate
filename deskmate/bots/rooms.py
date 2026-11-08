@@ -37,7 +37,13 @@ from coworker.teams.chat import ChatStore
 
 from deskmate.teams_client import resolve_base
 
-from .discussion import DiscussionLimits, bound_reason, is_pass, resolve_mentions
+from .discussion import (
+    DiscussionLimits,
+    bound_reason,
+    is_deep_dig,
+    is_pass,
+    resolve_mentions,
+)
 from .materials import RoomMaterials, default_materials
 from .reading import default_shelf
 from .roster import KNOWN_BOT_IDS, list_bots
@@ -275,14 +281,23 @@ class RoomStore:
             raise ValueError("群里不能发空话")
 
         rt = runtime if runtime is not None else _default_runtime()
-        # 群级一次备料（纯本地 IO，零 LLM）：所有人共用同一份原文 + 目录，
-        # 不再各自 list_books → 猜 → 读 → 发现不对 → 再读。
+        # 深挖判定（2026-11-08 能力常备化后降级为**信号放大器**）：材料默认
+        # 已是全书（materials.py）、read_book 全书、迭代 12 —— 能力永远在线，
+        # 「无论讨论什么都启动」由能力层保证，不靠这个词。词命中只额外给
+        # 强作业指令（build_prompt deep lead），且只作用于第 1 轮。
+        deep = is_deep_dig(clean)
+        # 群级一次备料（纯本地 IO，零 LLM）：所有人共用同一份**全书**材料。
         pack = self.materials.prepare(room_id, clean)
         user_msg = self.chat_store.post(room_id, author, clean, author_role="user")
         aliases = {name: bot_id for bot_id, name in room.bot_names.items()}
         woken = list(
             resolve_mentions(clean, room.bot_ids, aliases=aliases)
         )[: self.limits.max_members]
+        # 一对一作业形态（2026-11-08 萧哥实证「独立专家 > 群聊」后固化）：
+        # 本轮只唤醒一位（@ 单独一位，或群本身就只有一位成员）= 作者单独
+        # 找它 —— guidance / lead 换作业版，形态约束卸掉；预算与群聊一致。
+        # ≥2 位被唤醒才是群聊形态。solo 天然单轮（multi_round=False）。
+        solo = len(woken) == 1
         # 当前这句会单独进 prompt，从群历史里排除，避免同一句出现两次。
         history = [
             m
@@ -302,6 +317,7 @@ class RoomStore:
                 bounded = reason
                 break
             round_no = completed_rounds + 1
+            deep_this_round = deep and round_no == 1
             # 第 1 轮并发：各 bot 看同一份群历史 + 同一份共享材料，独立出方向。
             # 第 2 轮起仍是原来的串行接话（后发言者看得到完整前文），语义不破。
             if self._parallel_enabled() and round_no == 1 and len(active) > 1:
@@ -319,6 +335,8 @@ class RoomStore:
                             room_id=room_id,
                             round_index=round_no,
                             materials=pack,
+                            deep=deep_this_round,
+                            solo=solo,
                         ): bot_id
                         for bot_id in list(active)
                     }
@@ -375,6 +393,8 @@ class RoomStore:
                         room_id=room_id,
                         round_index=round_no,
                         materials=pack,
+                        deep=deep_this_round,
+                        solo=solo,
                     )
                 except Exception as exc:  # noqa: BLE001 —— 一个 bot 挂了不拖垮整群
                     logger.warning("bot %s 发言失败：%s", bot_id, exc)
@@ -456,6 +476,9 @@ class RoomStore:
             raise ValueError("群里不能发空话")
 
         rt = runtime if runtime is not None else _default_runtime()
+        # 深挖判定（与 say() 同源同语义）：能力常备后只是信号放大器——
+        # 材料全书、工具全书、迭代 12 恒定；词命中只给第 1 轮强作业指令。
+        deep = is_deep_dig(clean)
         # 续轮传空 text：prepare() 沿用该群已备材料，但仍验 mtime 指纹 ——
         # 作者一边写稿一边聊，下一轮自动拿到最新进度（materials.py:164-169）。
         pack = self.materials.prepare(room_id, clean)
@@ -473,6 +496,8 @@ class RoomStore:
             if woken_override is not None
             else resolve_mentions(clean, room.bot_ids, aliases=aliases)
         )[: self.limits.max_members]
+        # 一对一作业形态（与 say() 同源同语义）：本轮只唤醒一位 = 单独对话。
+        solo = len(woken) == 1
         # 当前这句单独进 prompt，不在群历史里重复出现；续轮没有新 user 消息，
         # 历史就是完整群历史（含前几轮所有发言）。
         cur_seq = int(user_msg.get("seq") or 0)
@@ -501,6 +526,8 @@ class RoomStore:
             "room_id": room_id,
             "user_message": user_msg,
             "woken": list(woken),
+            "deep": deep,
+            "solo": solo,
         }
 
         while active:
@@ -511,6 +538,7 @@ class RoomStore:
                 bounded = reason
                 break
             round_no = start_round + completed_rounds
+            deep_this_round = deep and round_no == 1
             yield {"type": "round_start", "room_id": room_id, "round": round_no}
             # 第 1 轮并发：N 条 LLM 流通过事件队列交错推给前端，谁先好谁先落库。
             # 第 2 轮起仍走下面的串行接话，后发言者看得到完整前文。
@@ -539,6 +567,8 @@ class RoomStore:
                                 room_id=room_id,
                                 round_index=round_no,
                                 materials=pack,
+                                deep=deep_this_round,
+                                solo=solo,
                             )
                         ) as events:
                             async for ev in events:
@@ -640,6 +670,8 @@ class RoomStore:
                             room_id=room_id,
                             round_index=round_no,
                             materials=pack,
+                            deep=deep_this_round,
+                            solo=solo,
                         )
                     ) as events:
                         async for ev in events:

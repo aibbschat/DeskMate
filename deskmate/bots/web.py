@@ -376,7 +376,8 @@ PAGE = r"""
     <div class="mk hidden" id="mk">
       <label>话题（群名就是它）</label>
       <input id="mk-topic" type="text" placeholder="例如：烧仓这段还能怎么写" maxlength="60">
-      <div class="tip">左边勾几位 bot，成员 2~6 位。没有稿件路径、章节范围、轮次表单，也没有开始按钮。</div>
+      <div class="tip">左边勾几位 bot，成员 2~6 位。没有稿件路径、章节范围、轮次表单，也没有开始按钮。<br>
+        <b>开脑洞请走「专家」→「创意脑洞专家」</b>（一对一更发散）；Bot 群适合碰撞、审稿、调度。</div>
       <div class="row">
         <button class="btn" id="mk-go">建群</button>
         <button class="btn ghost" id="mk-cancel">取消</button>
@@ -580,7 +581,7 @@ function renderMessages(){
   const st = $('#stream');
   if (!msgs.length){
     st.innerHTML = '<div class="empty"><div class="big">群建好了，还没人说话</div>' +
-      '<div class="sm">直接说人话就行。不 @ 则全员回应，@ 谁谁答。<br>想让他先读书稿，就说「先读《夜不收》第三章」，他自己会去翻。</div>' +
+      '<div class="sm">直接说人话就行。不 @ 则全员回应，@ 谁谁答。<br>想让他先读书稿，就说「先读《夜不收》第三章」，他自己会去翻。<br><b>开脑洞请走「专家」→「创意脑洞专家」</b>（一对一更发散）；这里适合碰撞、审稿、调度。</div>' +
       '<div class="quick">' +
       ['先读《夜不收》第三章，说说节奏问题', '烧仓之后怎么撤，别再写一路顺风', '这卷还有哪些史实硬伤']
         .map(t => '<button data-fill="' + esc(t) + '">' + esc(t) + '</button>').join('') +
@@ -985,7 +986,7 @@ document.addEventListener('click', e => {
     const target = (want && rooms.find(r => r.room_id === want)) || rooms[rooms.length - 1];
     if (target) await openRoom(target.room_id);
     else { syncChrome(); $('#stream').innerHTML = '<div class="empty"><div class="big">还没有群</div>' +
-      '<div class="sm">点左上「＋ 新建」，勾几位 bot、起个话题就能开聊。</div></div>'; }
+      '<div class="sm">点左上「＋ 新建」，勾几位 bot、起个话题就能开聊。<br><b>开脑洞请走「专家」→「创意脑洞专家」</b>（一对一更发散）；Bot 群适合碰撞、审稿、调度。</div></div>'; }
   } catch (e) { toast('群聊服务连不上：' + e.message); }
 })();
 </script>

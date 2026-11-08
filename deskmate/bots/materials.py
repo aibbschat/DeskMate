@@ -38,15 +38,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Sequence
 
-from deskmate.sacred_paths import guarded_assistance_read
-
 from .experience import collect_experience, load_style_profile
 # 分类规则的**单一事实源**在 reading.py（BookShelf.read 留空补读也用它）；
 # 这里 re-export，保持 ``from deskmate.bots.materials import classify`` 兼容。
-from .reading import BookShelf, classify, parse_book_title
+from .reading import BookShelf, classify, deep_read_chars, parse_book_title
 
-# 备料预算。与 BookShelf 默认一致；不放大（单轮已 329s，放大只会更慢更贵）。
-_DEFAULT_MAX_CHARS = 12_000
+# 备料正文预算：默认 80000 字（deep_read_chars，见 __init__）；书比预算长时按
+# 「开头 + 停笔点」装、中间显式标出（reading.Manuscript.render）。env
+# DESKMATE_BOT_MATERIAL_CHARS 仍可收紧。
 # 经验层独立预算：435 万字的书桶绝不能整桶塞进 prompt。
 _DEFAULT_EXPERIENCE_CHARS = 12_000
 _RELOAD_MARKS = ("重读", "重新读", "再读一遍", "刷新材料", "重新加载")
@@ -77,14 +76,16 @@ class MaterialPack:
     def prompt_block(self) -> str:
         """注入 prompt 的固定前缀。经验层在前，原文居中，索引在后。
 
-        §17：**只增不减** —— 原文层与索引原样保留，经验层是追加的一节。
+        2026-11-08 读稿层重做：正文按「开头 + 停笔点」装，覆盖范围在索引里
+        如实写清（多少字第几章、哪些章没加载）；**不再说「全书正文」**。
         """
         exp = self.experience + "\n\n" if self.experience else ""
         return (
             "# 群里已经共享的书稿材料（只读，可直接引用）\n\n"
-            "下面的「正文」是已经写下的事实；大纲／粗纲／设定等既有规划只列在"
-            "目录索引里、不默认加载，**不要拿它们当既定框架或据此推断后续走向**。"
-            "要脑洞就跳出旧规划，以正文已写事实和作者最新裁定为准。\n\n"
+            "下面的「正文」是已经写下的事实，**本次加载的覆盖范围见文末索引**"
+            "（书比预算长时只装开头和结尾停笔点，中间没装的章会列出来，可点名补读）。"
+            "大纲／粗纲／设定／简报等非正文材料默认不加载，也不许拿它们当既定框架"
+            "或据此推断后续走向；要脑洞就以正文已写事实和作者最新裁定为准。\n\n"
             + exp
             + self.body
             + "\n\n"
@@ -107,11 +108,16 @@ class RoomMaterials:
         max_chars: int | None = None,
         experience_chars: int | None = None,
         style_loader=None,
+        experience_sections: Sequence[str] | None = None,
     ) -> None:
         self.shelf = shelf
+        # 2026-11-08 读稿层：正文预算默认 80000 字（deep_read_chars）。书比预算
+        # 长时不再从头硬砍到 80%，而是「开头 + 结尾（停笔点）」各装一段、中间
+        # 显式标出（reading.Manuscript.render）；覆盖范围写进索引，不再说
+        # 「已加载全书」。DESKMATE_BOT_MATERIAL_CHARS（200~80000）仍可收紧。
         raw = os.environ.get("DESKMATE_BOT_MATERIAL_CHARS")
         self.max_chars = int(raw) if (raw and raw.isdigit() and 200 <= int(raw) <= 80_000) else (
-            max_chars if max_chars is not None else _DEFAULT_MAX_CHARS
+            max_chars if max_chars is not None else deep_read_chars()
         )
         raw_exp = os.environ.get("DESKMATE_BOT_EXPERIENCE_CHARS")
         if experience_chars is not None:
@@ -121,6 +127,13 @@ class RoomMaterials:
         else:
             self.experience_chars = _DEFAULT_EXPERIENCE_CHARS
         self.style_loader = style_loader or load_style_profile
+        # 2026-11-08 读稿层：经验层默认**只留作者裁定**（萧哥「以正文为准」）。
+        # 简报／圣典／文风可能过时、且与正文打架（实测「进仓只有码头一条路」
+        # vs 正文两道门），默认只列索引、要点名才读；作者裁定是他本人最新
+        # 口径，留着防「死序」污染。传 None 保持旧行为（全量）供测试/兼容。
+        self.experience_sections: tuple[str, ...] | None = (
+            tuple(experience_sections) if experience_sections is not None else ("ruling",)
+        )
         self._cache: dict[str, MaterialPack] = {}
         self._lock = threading.RLock()
 
@@ -133,6 +146,8 @@ class RoomMaterials:
         """撤群时清掉材料；消息历史不受影响（RoomStore 只打墓碑）。"""
         with self._lock:
             self._cache.pop(str(room_id), None)
+            # 11-08 双轨材料时期的 :deep 遗留键，清了无害（幂等）。
+            self._cache.pop(str(room_id) + ":deep", None)
 
     # ---------------------------------------------------------------- 备料
     def prepare(
@@ -142,7 +157,13 @@ class RoomMaterials:
         *,
         force: bool = False,
     ) -> Optional[MaterialPack]:
-        """从群里一句人话备料；抽不到书名时沿用该群已有材料（不猜、不回退路径）。"""
+        """从群里一句人话备料；抽不到书名时沿用该群已有材料（不猜、不回退路径）。
+
+        2026-11-08 读稿层（萧哥「以正文为准，读到停笔点」）：正文预算默认
+        ``deep_read_chars()``（80000）；书比预算长时自动装「开头 + 结尾停笔点」，
+        中间章节显式列出缺口（索引里的「本次未加载」），bot 可点名补读。
+        **不再有任何「已加载全书」的假话**；深挖/普通材料双轨早已合一。
+        """
         rid = str(room_id)
         force = force or self._is_reload(text)
         known = self.shelf.list_books()
@@ -169,6 +190,7 @@ class RoomMaterials:
             book_dir,
             max_chars=self.experience_chars,
             style_loader=self.style_loader,
+            sections=self.experience_sections,
         )
         fingerprint = _fingerprint(files)
         if exp.has_any:
@@ -198,34 +220,22 @@ class RoomMaterials:
         exp=None,
     ) -> MaterialPack:
         # 正文优先；同类内仍按文件名稳定排序，保证跨 bot 字节一致。
+        # 2026-11-08 读稿层：正文按章切分后按「开头 + 停笔点」装（见 reading.Manuscript），
+        # 覆盖范围（多少字 / 哪些章没加载）写进索引，不再谎称「已加载全书」。
         ranked = sorted(files, key=lambda p: (classify(p.name), p.name))
-        parts: list[str] = []
-        used = 0
-        for p in ranked:
-            # §18：只有 classify==0（已写正文／小说文本）才进 body。
-            # 1=大纲/粗纲/人物/脑洞等既有规划、2=协议/简介，都只进索引：
-            # 默认喂进去会把讨论锚在旧章纲／旧结局上，脑洞出不了既有层面。
-            if classify(p.name) != 0:
-                continue
-            if used >= self.max_chars:
-                break
-            text = guarded_assistance_read(p, max_chars=self.max_chars)
-            if not text:
-                continue
-            room = self.max_chars - used
-            body = text[:room]
-            used += len(body)
-            parts.append(f"《{title}》· {p.name}\n{body}")
+        manuscript = self.shelf.manuscript(title)
+        coverage = manuscript.render(self.max_chars) if manuscript is not None else None
+        body = coverage.body if coverage is not None else "（这本书里没有可加载的正文材料。）"
 
-        if not parts:
-            body = "（这本书里没有可加载的正文材料。）"
-        else:
-            body = "\n\n".join(parts)
-
-        lines = [f"《{title}》书稿目录（共 {len(files)} 份；已写正文已加载，参考类只列索引）："]
+        total_note = (
+            f"；正文共 {manuscript.total:,} 字 / {len(manuscript.chapters)} 章"
+            if manuscript is not None
+            else ""
+        )
+        lines = [f"《{title}》书稿目录（共 {len(files)} 份{total_note}）："]
         for p in ranked:
             label = {
-                0: "正文/小说（本次已加载）",
+                0: "正文/小说（已写正文，参与本次加载）",
                 1: "参考·大纲/粗纲/人物/脑洞（既有规划，未加载，可点名补读）",
                 2: "协议/简介/目录（非创作材料，未加载）",
             }[classify(p.name)]
@@ -234,8 +244,22 @@ class RoomMaterials:
             except OSError:
                 size = 0
             lines.append(f"- {p.name}（{label}，{size} 字节）")
+        if manuscript is not None and coverage is not None:
+            loaded = set(coverage.loaded_indexes)
+            partial = set(coverage.partial_indexes)
+            lines.append("正文分章（本次加载范围见文末；标未加载/部分加载的章可点名补读）：")
+            for chapter in manuscript.chapters:
+                if chapter.index in partial:
+                    state = " · 部分加载"
+                elif chapter.index in loaded:
+                    state = ""
+                else:
+                    state = " · 本次未加载"
+                lines.append(f"- {chapter.heading}（{chapter.chars:,} 字{state}）")
+            lines.append(coverage.note)
         lines.append(
-            "需要上面某一份而本次没读到的内容时，用 read_book 的 chapter 参数填"
+            "需要上面某一份而本次没加载的内容时，用 read_book 的 chapter 参数填"
+            "**章节**（如 chapter=\"第十一章\" / \"第五到第七章\"）或"
             "**文件名关键词**（例如 chapter=\"绝命救援\"）单独补读；"
             "chapter 不是路径，填绝对路径不会命中。没读到的部分不要凭空编情节或段号。"
         )

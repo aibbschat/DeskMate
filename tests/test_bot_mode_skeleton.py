@@ -74,12 +74,20 @@ def test_room_create_list_disband_and_keep_history(tmp_path):
 
 
 def test_room_rejects_out_of_range_members(tmp_path):
-    """Hermes 同款硬边界：2~6 个 bot。"""
+    """成员边界：0 位拒绝、7 位拒绝；1 位**合法**（2026-11-08 放开单人群）。
+
+    原下限 2 抄自 Hermes 同款硬边界；萧哥实证「独立专家一对一 > 群聊」后，
+    单人群 = 一对一作业房间是正当形态（@ 单独一位或单人群都进作业模式，
+    见 tests/test_bot_deep_dig.py 的 solo 组）。上限 6 不动。
+    """
     store = rooms.RoomStore(tmp_path)
     with pytest.raises(ValueError, match="成员"):
-        store.create_room("一个人聊不起来", ["historian"])
+        store.create_room("没人和你聊", [])
+    room = store.create_room("一对一作业房", ["historian"])
+    assert room.bot_ids == ["historian"], "单人群（一对一房间）现在合法"
     with pytest.raises(ValueError, match="成员"):
         store.create_room("人太多", [f"bot{i}" for i in range(7)])
+    store.close()
 
 
 def test_room_rejects_empty_topic_and_unknown_bot(tmp_path):

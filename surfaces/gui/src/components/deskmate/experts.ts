@@ -1,4 +1,5 @@
 import type { IconName } from "../Icon";
+import brainstormerAvatar from "../../assets/avatars/brainstormer.png";
 
 // 桌搭「专家模式」的可扩展抽象。
 // 第一个实例是「编辑专家」；未来在此注册大纲专家、人物专家、润色专家等，
@@ -38,6 +39,19 @@ export interface Expert {
 }
 
 export const EXPERTS: Expert[] = [
+  {
+    // 2026-11-08 决策 A：开脑洞固定在独立专家（不进 Bot 群、不挂共享记忆）。
+    // 卡片就是入口——想开脑洞点这里，不要回群聊里找。
+    id: "brainstormer",
+    displayName: "创意脑洞专家",
+    icon: "sparkle",
+    avatar: brainstormerAvatar,
+    description:
+      "一对一开脑洞：先给几条真正不同的方向，打开你的写作思路；你挑中一条，它再往下盘成能落笔的方案。",
+    status: "ready",
+    capabilities: ["开脑洞", "发散方向", "反转与钩子", "挑中再往下盘"],
+    personaId: "brainstormer",
+  },
   {
     id: "editor",
     displayName: "编辑专家",

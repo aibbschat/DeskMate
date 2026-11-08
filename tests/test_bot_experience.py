@@ -34,6 +34,7 @@ _CANON_MARK = "孔大贵：夜不收军校，第十章死于江心（正文引�
 _BACKUP_MARK = "旧版错误事实：孔大贵其实没有死"
 _STYLE_SUMMARY = "历史悬疑小说，半文半白的说书人腔调，幽默生动，节奏明快。"
 _STYLE_FEATURE = "多用四字格和短句，整散结合，对仗偶现"
+_RULING_TEXT = "作者裁定：三人一个也不能死，带李昖回营。"
 
 
 @pytest.fixture()
@@ -51,6 +52,7 @@ def shelf_dir(tmp_path: Path) -> Path:
     (d / "NOTES.md").write_text("伏笔：信号弹交到宁靖手里；白烟没有粮车的焦味。", encoding="utf-8")
     (d / "OUTLINE.md").write_text("主线：碧蹄馆→龙山仓→烧粮仓。", encoding="utf-8")
     (d / "TIMELINE.md").write_text("万历二十一年二月二十日。", encoding="utf-8")
+    (d / "AUTHOR_RULING.md").write_text(_RULING_TEXT, encoding="utf-8")
     (d / "进度简报-2026-11-05.md").write_text(_BRIEF_OLD, encoding="utf-8")
     (d / "进度简报-2026-11-06.md").write_text(_BRIEF_TODAY, encoding="utf-8")
     (d / "简报-2026-11-02-夜不收进度.md").write_text("最早的简报，勿采用。", encoding="utf-8")
@@ -98,7 +100,13 @@ def _fake_style_profile() -> dict:
     }
 
 
+#: 经验层各节全开（旧行为）；默认只开 "ruling"，见
+#: test_default_materials_drop_briefing_canon_style_keep_ruling。
+_ALL_SECTIONS = ("ruling", "style", "brief", "feed", "canon")
+
+
 def _materials(shelf_dir: Path, **kwargs) -> materials.RoomMaterials:
+    kwargs.setdefault("experience_sections", _ALL_SECTIONS)
     return materials.RoomMaterials(
         reading.BookShelf(shelf_dir, max_chars=8000),
         style_loader=_fake_style_profile,
@@ -287,3 +295,24 @@ def test_shared_material_is_byte_identical_across_bots(shelf_dir) -> None:
     assert pack is not None
     assert pack.prompt_block() == pack.prompt_block()
     assert "# 群里已经共享的书稿材料" in pack.prompt_block()
+
+
+def test_default_materials_drop_briefing_canon_style_keep_ruling(shelf_dir) -> None:
+    """2026-11-08 读稿层：默认只留作者裁定，简报／圣典／文风只进索引。
+
+    萧哥原话「以正文为准」。简报／圣典可能过时且与正文打架（实测
+    「进仓路线只有码头正门一条」 vs 正文两道门），默认喂进去会把脑洞锚死；
+    作者裁定是他本人最新口径，留着防旧死序／旧结局回流。
+    """
+    pack = materials.RoomMaterials(
+        reading.BookShelf(shelf_dir, max_chars=8000),
+        style_loader=_fake_style_profile,
+    ).prepare("r1", "先读《夜不收》，给三个方向")
+    assert pack is not None
+    block = pack.prompt_block()
+    assert _RULING_TEXT in block, "作者裁定默认保留（最高效力口径）"
+    assert _CANON_MARK not in block, "圣典默认不进上下文"
+    assert _BRIEF_TODAY not in block, "简报默认不进上下文"
+    assert _STYLE_SUMMARY not in block, "文风默认不进上下文"
+    assert "进度简报-2026-11-06.md" in pack.index, "但仍在索引里，可点名补读"
+    assert "CHARACTERS.md" in pack.index

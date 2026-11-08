@@ -211,12 +211,23 @@ def collect_experience(
     *,
     max_chars: int = _DEFAULT_EXPERIENCE_CHARS,
     style_loader: Callable[[], dict] | None = None,
+    sections: Sequence[str] | None = None,
 ) -> ExperienceBlock:
     """群级一次备料：把小桔既有的沉淀原样摆进材料，零 LLM、纯本地只读 IO。
+
+    ``sections`` 控制哪几节进正文（"ruling"/"style"/"brief"/"feed"/"canon"）；
+    None = 全量（旧行为）。2026-11-08 起群材料默认只留 "ruling"：萧哥定调
+    「以正文为准」，简报／圣典／文风可能过时且与正文打架，默认只进索引、
+    点名才读；文件索引始终列全。
 
     没有 ``.deskmate`` 沉淀的书直接返回空块，**不读文风画像**（避免给普通书
     引入对用户库的隐式依赖，也让离线测试完全隔离）。
     """
+    allowed = None if sections is None else set(sections)
+
+    def want(name: str) -> bool:
+        return allowed is None or name in allowed
+
     files = experience_files(book_dir)
     if not files:
         return ExperienceBlock(text="", files=(), fingerprint="", index_lines=(), has_any=False)
@@ -241,7 +252,7 @@ def collect_experience(
     sections: list[str] = []
     # 作者裁定最优先：它管「往后怎么走」，效力高于已写正文事实、旧简报与
     # 任何讨论共识；旧大纲／死序／圆桌共识与它冲突时一律以它为准。
-    if ruling is not None:
+    if ruling is not None and want("ruling"):
         raw = guarded_assistance_read(ruling) or ""
         if raw:
             body, remaining, _ = _take(raw, remaining)
@@ -249,7 +260,7 @@ def collect_experience(
                 sections.append(
                     f"## 作者裁定（现行唯一有效口径，优先于下方一切材料） · {ruling.name}\n{body}"
                 )
-    style = _format_style(profile)
+    style = _format_style(profile) if want("style") else ""
     if style:
         body, remaining, _ = _take(style, remaining)
         sections.append(body)
@@ -259,6 +270,10 @@ def collect_experience(
         ("最新写下的正文（逐字留档，末尾即停笔处）", feed),
     ):
         if path is None:
+            continue
+        if label.startswith("最新进度") and not want("brief"):
+            continue
+        if label.startswith("最新写下") and not want("feed"):
             continue
         raw = guarded_assistance_read(path) or ""
         if not raw:
@@ -271,7 +286,7 @@ def collect_experience(
         if body:
             sections.append(f"## {label} · {path.name}\n{body}")
 
-    for path in canons:
+    for path in (canons if want("canon") else ()):
         if remaining <= 0:
             break
         raw = guarded_assistance_read(path) or ""
