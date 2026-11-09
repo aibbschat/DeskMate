@@ -80,6 +80,13 @@ rejected, revise the plan using the feedback."""
 # Without these, models either never call `remember` or save noise the repo already
 # records. The conservative bias is deliberate: a wrong memory feels broken and creepy at
 # once; a missing one merely means the user repeats themselves.
+# 2026-11-09 红线段：小桔的记忆只属于她自己和主工作 Agent（cowork）。
+# 专家 / 工人 persona 的一对一会话不得读写小桔记忆——此前 build_engine 对**所有**
+# agent 都挂 post_turn_hook + memory_store + context_provider，实测：影视专家 1v1
+# 被写进 ~/.deskmate/sessions、xiaosheng_observations、USER.md，随后被"自我表达"
+# 行为当作小桔本人的话弹出。这里统一收口，只有下列 agent 进小桔记忆。
+MEMORY_COMPANION_AGENTS: frozenset[str] = frozenset({"deskmate", "cowork"})
+
 _MEMORY_GUIDANCE = """\
 Memory:
 - You have persistent memory across sessions. Use `remember` for durable facts: the user's \
@@ -629,14 +636,16 @@ def build_engine(
             return bool(memory_saving_enabled())
         return not memory_off
 
-    if memory_store is not None:
+    # 2026-11-09 红线段：非 companion agent（专家/工人 persona）不读、不写小桔记忆。
+    mem_store = memory_store if agent.name in MEMORY_COMPANION_AGENTS else None
+    if mem_store is not None:
         # Always the full toolset: the registry is fixed at build, so a session born
         # while saving was off must still be able to save the moment it's turned on.
         # Enforcement is the tools' own live check, not their absence.
         mem_ws = memory_workspace or (str(ws) if ws else None)
         registry.register_all(
             memory_tools(
-                memory_store,
+                mem_store,
                 workspace=mem_ws,
                 on_saved=on_memory_saved,
                 saving_enabled=_saving_enabled,
@@ -648,9 +657,9 @@ def build_engine(
         # turns ago cannot silently vanish — and the system prompt is the cached prefix,
         # so the facts are processed once instead of re-sent every turn. Deletions reach
         # NEW conversations; the UI says so rather than pretending otherwise.
-        remembered = memory_store.list(scope=Scope.GLOBAL)
+        remembered = mem_store.list(scope=Scope.GLOBAL)
         if mem_ws is not None:
-            remembered += memory_store.list(scope=Scope.WORKSPACE, workspace=mem_ws)
+            remembered += mem_store.list(scope=Scope.WORKSPACE, workspace=mem_ws)
         block = render_memory_block(remembered)
         if block:
             instructions = f"{instructions}\n\n{block}"
@@ -746,14 +755,14 @@ def build_engine(
         # Only the SAVING switch is per-turn (§4.3): it governs an action, not
         # knowledge, so it must bite the moment the user flips it. What the coworker
         # knows stays fixed for the session — see the instructions built above.
-        if memory_store is not None and not _saving_enabled():
+        if mem_store is not None and not _saving_enabled():
             parts.append(_MEMORY_OFF_NOTICE)
         if roots_context is not None:
             ctx = roots_context()
             if ctx:
                 parts.append(ctx)
-        # DeskMate 记忆自动注入（opt-in，DESKMATE_AUTO_INJECT=1）
-        dm_ctx = _deskmate_memory_context(messages)
+        # DeskMate 记忆自动注入（opt-in，DESKMATE_AUTO_INJECT=1）；只给 companion。
+        dm_ctx = _deskmate_memory_context(messages) if mem_store is not None else ""
         if dm_ctx:
             parts.append(dm_ctx)
         # 小桔表情词表 + 规则 + few-shot（每轮注入，保证新/恢复会话都可见）
@@ -820,7 +829,8 @@ def build_engine(
         directory_requester=directory_requester,
         plan_approver=plan_approver,
         question_asker=question_asker,
-        post_turn_hook=_deskmate_post_turn_hook,
+        # 2026-11-09 红线段：非 companion（专家/工人）不触发小桔记忆抽取/技能进化。
+        post_turn_hook=(_deskmate_post_turn_hook if mem_store is not None else None),
         tool_requester=tool_requester,
         team_approver=team_approver,
         items_approver=items_approver,    )

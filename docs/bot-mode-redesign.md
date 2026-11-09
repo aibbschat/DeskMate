@@ -1085,3 +1085,68 @@
 - 群聊侧无问答卡 UI，按萧哥指示不做。
 - 同题「有/无笔记」A/B 未做，仍建议独立入口/后台，而不是每轮询问。
 - 冲突检测的「先按作者裁定修正、再告知」还没做；本轮只做了整理与反馈。
+
+
+---
+
+## 33. 红线段：专家/工人 1v1 不得读写小桔记忆（2026-11-09 事故）
+
+### 33.1 事故现场（已核实）
+
+萧哥问影视专家「你知道我是谁、写过哪些书吗」，随后主界面右上角弹出小桔的
+「自我表达」——内容正是影视专家的回答；小桔的「心理活动」也出现对应感慨。
+
+取证（只读）：
+
+- `coworker.db`：`638008de-535`，agent=`adaptation`，title=「你知道我是谁、写过哪些书吗」，
+  15:37:35 更新。
+- `~/.deskmate/sessions/1794209855592460000.md`：15:37:35 写入，正是该专家问答。
+- `~/.deskmate/agency/xiaosheng_observations.jsonl`：15:37:47 一条 `kind=chat`，
+  body = 该问句 +「（小桔本轮回应）」+ 专家回答。
+- `USER.md` 15:38:34 / `MEMORY.md` 15:39:05 各被写入 2 行，内容就是专家回答里的
+  「写手不称作家 / 观点>故事>史料 / 最想要影视改编 / 未核出版状态的书名 / 国子监秘闻录」。
+- `behavior_log.jsonl` 15:41:27：`suggestion_pushed type=self_expression`，
+  key 就是专家回答开头——小桔把它当自己的话弹了出来。
+- 另发现 11-08 脑洞专家 1v1 同样被写入（sessions/observations）。
+
+### 33.2 根因
+
+`coworker/agent.py:build_engine` 对**所有** agent 都挂了：
+
+1. `post_turn_hook=_deskmate_post_turn_hook` → 写 sessions/、抽 USER/MEMORY、
+   记萧盛影响、进化技能；
+2. `memory_store` → 暴露 `memory_read/update/forget` 并注入 `_MEMORY_GUIDANCE`；
+3. `context_provider` → 每轮注入 `_deskmate_memory_context`（小桔全量记忆）。
+
+此前只拦了 Bot 群（`is_bot_group_prompt`），专家 1v1 的普通用户消息不命中，
+于是整条链路全部放行——专家既**读**了小桔记忆，也**写**了小桔记忆。
+
+### 33.3 修复
+
+- 新增 `MEMORY_COMPANION_AGENTS = {"deskmate", "cowork"}`；
+- 非 companion agent：`mem_store=None` → 不注册记忆工具、不注入记忆块、
+  不注入 `_deskmate_memory_context`、不挂 post-turn hook（= 不写 sessions/、
+  不抽 USER/MEMORY、不记萧盛影响、不进化技能）。
+- 专家现在只知道「作者基础档案」（§31.2）和书稿，不再读小桔的完整记忆。
+- 测试：`tests/test_expert_memory_isolation.py`（专家无钩子/无记忆工具；
+  小桔本人保留记忆）——3 passed。
+
+### 33.4 存量清理（待萧哥批准执行）
+
+脚本：`scripts/clean_expert_memory_pollution.py`（默认 dry-run，`--apply` 才动）。
+
+将清理（先备份到 `~/.deskmate/_quarantine/expert_memory_<时间>/`）：
+
+- 2 个专家会话文件（11-08 脑洞、11-09 影视）；
+- 34 条被误记成「小桔本轮回应」的 `xiaosheng_observations`；
+- USER.md 2 行、MEMORY.md 2 行（与专家回答逐字对应）。
+
+> 清理需要写 `~/.deskmate`（工作区之外），DSH 沙箱默认拒绝；在终端跑一次即可：
+> `.venv/bin/python scripts/clean_expert_memory_pollution.py --apply`
+
+### 33.5 残余风险
+
+- 历史上（10-30 起）editor-in-chief / plot-architect / screenwriter 等工人会话
+  也走过同一链路；能配对上的 34 条观察已列入清理。
+- USER/MEMORY 里可能还有更早的抽取行；本次只清与专家回答逐字对应的 4 行。
+  需要的话可以做一次全量审计（按 coworker.db 非 companion 会话逐条比对）。
