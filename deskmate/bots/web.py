@@ -27,7 +27,12 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
-from .notebooks import delete_notebook, list_notebooks, read_notebook as read_expert_notebook
+from .notebooks import (
+    delete_notebook,
+    list_notebooks,
+    read_notebook as read_expert_notebook,
+    save_notebook,
+)
 from .reading import default_shelf
 from .rooms import RoomStore
 from .roster import list_bots
@@ -1055,6 +1060,7 @@ NOTEBOOKS_PAGE = r"""
   .btn.danger { background:var(--danger); border-color:var(--danger); color:#fff; }
   .btn.danger:hover { opacity:.88; color:#fff; }
   .nb-body { margin:0; padding:18px 20px; overflow:auto; flex:1; white-space:pre-wrap; line-height:1.85; font-family:var(--mono); font-size:var(--fs-body); }
+  .nb-editor { display:block; width:100%; border:none; outline:none; resize:none; background:var(--panel); color:var(--ink); }
   .empty { margin:auto; color:var(--muted); text-align:center; padding:44px 24px; line-height:1.9; }
   .hidden { display:none !important; }
   .toast { position:fixed; left:50%; bottom:22px; transform:translateX(-50%); background:var(--solid); color:var(--on-solid); padding:9px 16px; border-radius:9px; font-size:var(--fs-ui); opacity:0; pointer-events:none; transition:opacity .15s; }
@@ -1078,9 +1084,13 @@ NOTEBOOKS_PAGE = r"""
     <header class="nb-head">
       <span class="ht" id="title">选一本笔记</span>
       <span class="spacer"></span>
+      <button class="btn" id="edit">编辑</button>
+      <button class="btn hidden" id="save">保存</button>
+      <button class="btn ghost hidden" id="cancel">取消</button>
       <button class="btn danger hidden" id="del">删除这本笔记</button>
     </header>
     <pre class="nb-body" id="body"></pre>
+    <textarea class="nb-body nb-editor hidden" id="editor" spellcheck="false"></textarea>
   </section>
 </div>
 <div class="mask hidden" id="confirm">
@@ -1100,7 +1110,7 @@ const url = p => BASE + p;
 const $ = s => document.querySelector(s);
 const esc = s => String(s == null ? '' : s).replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
 const EXPERT_NAMES = { brainstormer: '创意脑洞专家', 'lit-editor': '文学编辑', adaptation: '影视改编策划' };
-let items = [], current = null, toastTimer = null;
+let items = [], current = null, toastTimer = null, editing = false;
 
 function toast(m, ok) {
   const t = $('#toast');
@@ -1147,11 +1157,58 @@ function renderList() {
 }
 function resetView() {
   current = null;
+  editing = false;
   $('#title').textContent = '选一本笔记';
   $('#body').textContent = '';
+  $('#editor').value = '';
+  stopEditingChrome();
+  $('#edit').classList.add('hidden');
   $('#del').classList.add('hidden');
 }
+function stopEditingChrome() {
+  editing = false;
+  $('#editor').classList.add('hidden');
+  $('#body').classList.remove('hidden');
+  $('#save').classList.add('hidden');
+  $('#cancel').classList.add('hidden');
+  $('#edit').classList.remove('hidden');
+}
+function startEdit() {
+  if (!current) return;
+  editing = true;
+  const text = $('#body').textContent;
+  $('#editor').value = text === '（这本笔记本还是空的）' ? '' : text;
+  $('#body').classList.add('hidden');
+  $('#editor').classList.remove('hidden');
+  $('#edit').classList.add('hidden');
+  $('#save').classList.remove('hidden');
+  $('#cancel').classList.remove('hidden');
+  $('#del').classList.add('hidden');
+  $('#editor').focus();
+}
+function cancelEdit() {
+  if (!editing) return;
+  stopEditingChrome();
+  $('#del').classList.remove('hidden');
+}
+async function saveEdit() {
+  if (!current || !editing) return;
+  const text = $('#editor').value;
+  try {
+    await api('/api/notebooks/content', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ book: current.book, expert: current.expert, text: text })
+    });
+    toast('已保存', true);
+    stopEditingChrome();
+    await load();
+  } catch (e) {
+    toast('保存失败：' + e.message);
+  }
+}
 async function select(book, expert) {
+  if (editing) { toast('先保存或取消编辑，再切换'); return; }
   current = { book: book, expert: expert };
   renderList();
   $('#title').textContent = '《' + book + '》· ' + (EXPERT_NAMES[expert] || expert);
@@ -1159,9 +1216,11 @@ async function select(book, expert) {
     const d = await api('/api/notebooks/content?book=' + encodeURIComponent(book) + '&expert=' + encodeURIComponent(expert));
     $('#body').textContent = d.text || '（这本笔记本还是空的）';
     $('#del').classList.remove('hidden');
+    $('#edit').classList.remove('hidden');
   } catch (e) {
     $('#body').textContent = '读取失败：' + e.message;
     $('#del').classList.add('hidden');
+    $('#edit').classList.add('hidden');
   }
 }
 async function load() {
@@ -1192,12 +1251,19 @@ async function doDelete() {
     await load();
   } catch (e) { toast('删除失败：' + e.message); }
 }
-$('#back').onclick = () => { location.href = url('/'); };
+$('#back').onclick = () => { if (editing) { toast('先保存或取消编辑'); return; } location.href = url('/'); };
+$('#edit').onclick = startEdit;
+$('#save').onclick = saveEdit;
+$('#cancel').onclick = cancelEdit;
 $('#del').onclick = askDelete;
 $('#cf-cancel').onclick = () => $('#confirm').classList.add('hidden');
 $('#cf-ok').onclick = doDelete;
 $('#confirm').onclick = e => { if (e.target === $('#confirm')) $('#confirm').classList.add('hidden'); };
-document.addEventListener('keydown', e => { if (e.key === 'Escape') $('#confirm').classList.add('hidden'); });
+document.addEventListener('keydown', e => {
+  if (e.key !== 'Escape') return;
+  if (!$('#confirm').classList.contains('hidden')) { $('#confirm').classList.add('hidden'); return; }
+  if (editing) cancelEdit();
+});
 
 /* 主题 token：与 Bot 群页同一协议（父页 postMessage 计算后的变量） */
 const TOKEN_KEYS = ['--paper','--panel','--ink','--muted','--faint','--line','--line-strong',
@@ -1224,6 +1290,12 @@ load().catch(e => toast('加载失败：' + e.message));
 class NewRoom(BaseModel):
     topic: str
     bot_ids: list[str]
+
+
+class NotebookSave(BaseModel):
+    book: str
+    expert: str
+    text: str
 
 
 class Say(BaseModel):
@@ -1309,6 +1381,13 @@ def create_app(
         if text is None:
             raise HTTPException(status_code=404, detail="没有这本笔记")
         return {"book": book, "expert": expert, "text": text}
+
+    @app.post("/api/notebooks/content")
+    def notebook_save(body: NotebookSave) -> dict[str, Any]:
+        ok, message = save_notebook(default_shelf(), body.book, body.expert, body.text)
+        if not ok:
+            raise HTTPException(status_code=400, detail=message)
+        return {"ok": True}
 
     @app.delete("/api/notebooks")
     def notebook_delete(book: str, expert: str) -> dict[str, Any]:

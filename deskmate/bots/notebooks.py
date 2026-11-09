@@ -262,6 +262,19 @@ def read_notebook(shelf: BookShelf, book: str, expert: str) -> Optional[str]:
         return None
 
 
+def save_notebook(shelf: BookShelf, book: str, expert: str, content: str) -> tuple[bool, str]:
+    """作者侧：整本保存编辑后的笔记（走与专家同一套上限/原子写/守卫）。"""
+    if str(expert or "") not in NOTEBOOK_BOTS:
+        return False, "只有脑洞 / 文学编辑 / 影视改编三位有笔记本"
+    session = NotebookSession(str(expert), shelf)
+    if not session.ensure_book(book):
+        return False, "找不到这本书"
+    message = session.rewrite(content)
+    if message.startswith("重写内容为空") or message.startswith("重写内容太长"):
+        return False, message
+    return True, message
+
+
 def delete_notebook(shelf: BookShelf, book: str, expert: str) -> bool:
     """作者侧：删掉一本笔记（只删 notes.md，不碰书稿）。"""
     path = _notes_path_for(shelf, book, expert)
