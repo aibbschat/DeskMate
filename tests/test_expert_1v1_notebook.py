@@ -56,3 +56,13 @@ def test_1v1_historian_gets_author_but_no_notebook(tmp_path: Path) -> None:
     names = set(eng.registry.names())
     assert not (names & {"notebook_read", "notebook_remember", "notebook_rewrite"})
     assert "作者（你服务的人" in str(eng.messages[0].get("content") or "")
+
+def test_notebook_personas_have_conflict_rule() -> None:
+    """冲突不带着旧判断说话：三位专家人设都要有「先按作者裁定/正文改」的规则。"""
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1] / "coworker/personas/builtin"
+    for pid in ("brainstormer", "lit-editor", "adaptation"):
+        text = (root / f"{pid}.md").read_text(encoding="utf-8")
+        assert "冲突先改" in text, f"{pid} 缺少冲突修正规则"
+        assert "作者裁定 > 正文" in text, f"{pid} 冲突优先级不明确"
