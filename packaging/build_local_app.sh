@@ -43,6 +43,10 @@ echo "==> preflight 检查"
 [ -d "$GUI" ] || { echo "✗ 找不到 $GUI" >&2; exit 1; }
 command -v npm >/dev/null 2>&1 || { echo "✗ 需要 npm" >&2; exit 1; }
 command -v python3 >/dev/null 2>&1 || { echo "✗ 需要 python3" >&2; exit 1; }
+# Tauri 前后端依赖门禁（2026-11-09）：pnpm 混装曾把 plugin-dialog 从 2.7.2 漂到 2.8.4，
+# 与 Rust crate 2.7.1 minor 不符，tauri CLI 在 vite build 之后才拒构建、报错指不到根因。
+# 现在在 preflight 就卡住，并直接给出 `npm ci` 的修复动作。
+python3 "$ROOT/scripts/check_tauri_versions.py" || exit 1
 if [ ! -x "$ROOT/.venv/bin/openworker-server" ]; then
   echo "⚠ 找不到可回退的后端 $ROOT/.venv/bin/openworker-server" >&2
   echo "  本脚本产出的 app 运行时依赖它，请先建好 .venv：" >&2
