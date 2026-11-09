@@ -28,6 +28,7 @@ NOTEBOOK_BOTS: frozenset[str] = frozenset({"brainstormer", "lit-editor", "adapta
 
 _EXPERT_ROOT = "experts"
 _NOTES_NAME = "notes.md"
+_FEEDBACK_HEADING = "## 作者反馈"
 MAX_TOTAL_CHARS = 24_000
 MAX_ENTRY_CHARS = 1_200
 DIGEST_CHARS = 6_000
@@ -139,7 +140,62 @@ class NotebookSession:
             body = current + "\n" if current else ""
             text = header + body + f"- [{stamp}] {clean}\n"
             self._write_atomic(path, text)
-            return f"已记入《{self._book_title}》的笔记本（现有 {len(text)} 字）。"
+            hint = ""
+            if len(text) > MAX_TOTAL_CHARS * 0.7:
+                hint = (
+                    " 笔记本已超过七成，建议整理：先用 ask_user 问作者要不要合并/删过时"
+                    "（给出清单），同意后再 notebook_rewrite。"
+                )
+            return f"已记入《{self._book_title}》的笔记本（现有 {len(text)} 字）。{hint}"
+
+    def feedback(self, adopted: bool, note: str) -> str:
+        """记作者反馈（采纳/驳回）到笔记本顶部的「作者反馈」区；下次摘要先读到。"""
+        with self._lock:
+            path = self._path(create=True)
+            if path is None:
+                return "现在没有挂上具体哪本书，反馈记不了；先说明书名或路径。"
+            clean = " ".join(str(note or "").split()).strip()
+            if not clean:
+                return "没收到具体是哪条建议；一句话说清再用。"
+            if len(clean) > MAX_ENTRY_CHARS:
+                return f"这条反馈太长了（{len(clean)} 字，上限 {MAX_ENTRY_CHARS}）。"
+            current = self.read()
+            stamp = datetime.now().strftime("%Y-%m-%d")
+            marker = "采纳" if adopted else "驳回"
+            line = f"- [{stamp}] {marker}：{clean}"
+            if line in current:
+                return "这条反馈已经记过了，没有重复写入。"
+            if len(current) + len(line) + 32 > MAX_TOTAL_CHARS:
+                return (
+                    f"笔记本快满了（当前 {len(current)} 字，上限 {MAX_TOTAL_CHARS}）。"
+                    "先用 notebook_rewrite 整理，再记这条反馈。"
+                )
+            if not current:
+                text = (
+                    f"# {self.expert_id} 的笔记本 · 《{self._book_title}》\n"
+                    "> 只给本人看；作者可看可删。每条带日期；过时/被推翻的自己删。\n\n"
+                    f"{_FEEDBACK_HEADING}\n{line}\n"
+                )
+            elif _FEEDBACK_HEADING in current:
+                idx = current.index(_FEEDBACK_HEADING) + len(_FEEDBACK_HEADING)
+                head = current[:idx].rstrip("\n")
+                rest = current[idx:].lstrip("\n")
+                text = head + "\n" + line + "\n" + (rest + "\n" if rest else "")
+            else:
+                # 没有反馈区：插在标题/说明块之后、正文之前，保证摘要先读到。
+                lines = current.splitlines()
+                split = 0
+                while split < len(lines) and (
+                    lines[split].startswith("#") or lines[split].startswith(">")
+                ):
+                    split += 1
+                head = "\n".join(lines[:split]).rstrip("\n")
+                rest = "\n".join(lines[split:]).strip("\n")
+                text = head + f"\n\n{_FEEDBACK_HEADING}\n{line}\n"
+                if rest:
+                    text += "\n" + rest + "\n"
+            self._write_atomic(path, text)
+            return f"已记下作者反馈（{marker}）。"
 
     def rewrite(self, content: str) -> str:
         """整本重写（专家自己做合并/去重/删过时用）。"""
@@ -195,6 +251,18 @@ def make_notebook_tools(session: NotebookSession) -> list:
             return "未识别到具体哪本书：先告诉我书名（如《夜不收》）或路径，再记。"
         return session.remember(entry)
 
+    def notebook_feedback(adopted: bool, note: str, book: str = "") -> str:
+        """记录作者对一条建议的采纳/驳回（写进笔记本顶部的「作者反馈」区）。
+
+        用在作者回答「用这条 / 不用」之后，或作者自己说「这条不错/这条不行」时。
+        note 写清是哪条建议、为什么（作者原话优先）。下次开聊先读反馈，别重复推荐
+        已被驳回的东西。
+        book 不填 = 当前这本书；1v1 里带上书名。
+        """
+        if not session.ensure_book(book):
+            return "未识别到具体哪本书：先告诉我书名（如《夜不收》）或路径，再记反馈。"
+        return session.feedback(bool(adopted), note)
+
     def notebook_rewrite(content: str, book: str = "") -> str:
         """整本重写你自己的笔记本。
 
@@ -206,7 +274,7 @@ def make_notebook_tools(session: NotebookSession) -> list:
             return "未识别到具体哪本书：先告诉我书名（如《夜不收》）或路径，再整理。"
         return session.rewrite(content)
 
-    return [notebook_read, notebook_remember, notebook_rewrite]
+    return [notebook_read, notebook_remember, notebook_feedback, notebook_rewrite]
 
 # ------------------------------------------------------------------ 作者侧界面用
 def _notes_path_for(shelf: BookShelf, book: str, expert: str) -> Optional[Path]:

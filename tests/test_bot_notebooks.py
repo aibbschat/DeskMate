@@ -72,10 +72,10 @@ def test_no_book_means_no_notebook(tmp_path: Path) -> None:
     assert "没有挂上" in msg
 
 
-def test_tools_expose_three_names(tmp_path: Path) -> None:
+def test_tools_expose_expected_names(tmp_path: Path) -> None:
     tools = make_notebook_tools(_session(tmp_path))
     assert {t.__name__ for t in tools} == {
-        "notebook_read", "notebook_remember", "notebook_rewrite",
+        "notebook_read", "notebook_remember", "notebook_feedback", "notebook_rewrite",
     }
 
 
@@ -324,3 +324,38 @@ def test_author_side_rejects_non_notebook_experts(tmp_path: Path) -> None:
     shelf = _shelf(tmp_path)
     assert notebooks.read_notebook(shelf, "测试书", "historian") is None
     assert notebooks.delete_notebook(shelf, "测试书", "historian") is False
+
+# ------------------------------------------------------------------ 反馈（采纳/驳回）
+
+def test_feedback_lands_in_top_section(tmp_path: Path) -> None:
+    s = _session(tmp_path)
+    s.remember("一条普通判断")
+    assert "采纳" in s.feedback(True, "第三条方向采用，伏笔能接上")
+    assert "驳回" in s.feedback(False, "第五条太理想化")
+    text = _notes_path(tmp_path).read_text(encoding="utf-8")
+    assert "## 作者反馈" in text
+    assert "采纳：" in text and "驳回：" in text
+    # 反馈区在顶部，普通判断还在
+    assert text.index("## 作者反馈") < text.index("一条普通判断")
+    assert "采纳" in s.digest()
+
+
+def test_feedback_requires_note_and_caps(tmp_path: Path) -> None:
+    s = _session(tmp_path)
+    assert "没收到" in s.feedback(True, "")
+    assert "太长" in s.feedback(True, "长" * (notebooks.MAX_ENTRY_CHARS + 10))
+
+
+def test_feedback_tool_with_book_for_1v1(tmp_path: Path) -> None:
+    shelf = _shelf(tmp_path)
+    s = NotebookSession("adaptation", shelf)  # 不 set_book
+    tools = {t.__name__: t for t in make_notebook_tools(s)}
+    assert "未识别" in tools["notebook_feedback"](True, "x")
+    assert "采纳" in tools["notebook_feedback"](True, "用这条", book="测试书")
+    assert "采纳" in tools["notebook_read"](book="测试书")
+
+
+def test_remember_hints_consolidation_when_large(tmp_path: Path) -> None:
+    s = _session(tmp_path)
+    assert "已重写" in s.rewrite("占" * int(notebooks.MAX_TOTAL_CHARS * 0.72))
+    assert "建议整理" in s.remember("再记一条")

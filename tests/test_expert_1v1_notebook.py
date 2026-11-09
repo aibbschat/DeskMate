@@ -45,7 +45,7 @@ def _engine(persona: str, tmp_path: Path):
 def test_1v1_brainstormer_gets_notebook_tools_and_author(tmp_path: Path) -> None:
     eng = _engine("brainstormer", tmp_path)
     names = set(eng.registry.names())
-    assert {"notebook_read", "notebook_remember", "notebook_rewrite"} <= names
+    assert {"notebook_read", "notebook_remember", "notebook_feedback", "notebook_rewrite"} <= names
     system = str(eng.messages[0].get("content") or "")
     assert "作者（你服务的人" in system
     assert "AI 不代笔" in system
