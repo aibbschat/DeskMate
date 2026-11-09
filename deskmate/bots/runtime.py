@@ -42,6 +42,7 @@ from typing import Any, AsyncIterator, Mapping, Optional, Sequence
 from coworker.agent import build_engine
 from coworker.personas.registry import get_registry
 
+from .notebooks import NOTEBOOK_BOTS, NotebookSession, make_notebook_tools
 from .reading import BookShelf, default_shelf, make_reading_tools
 from .roster import KNOWN_BOT_IDS
 
@@ -129,6 +130,19 @@ _SOLO_GUIDANCE = """
 - 只读，不写文件、不改稿、不派活、不建工作项。
 - 不生成纪要 / 总结 / 收尾汇报；写完你想说的就停，别补「以上是建议」这类尾巴。
 - 界面已经显示你的名字，不要在发言开头加署名、来源标注或「（来自…）」。
+"""
+
+# 专家笔记本（2026-11-09 萧哥拍板）：三位专家各有一本「书 × 专家」的私有笔记。
+# 与共享记忆严格分开——不进群材料、别的专家读不到、不跨书、不喂小桔。
+_NOTEBOOK_GUIDANCE = """
+
+# 你的笔记本（私人，跨会话）
+
+你有一本自己的笔记本：只记这本书、只给你自己看，别的专家读不到；作者能看能删。
+- **主动记**：不用等作者说「记一下」。真正值得跨会话复用的才记——作者明确采纳/否决了什么（连同原因）、查实的设定/史实（带章节出处）、你自己认准的判断。
+- **不记**：闲聊、临时情绪、没验证的猜测、正文原文（书稿里已经有）。
+- **自己维护**：过时/被推翻的就删；同类合并成一条；作者最新裁定压过旧笔记。笔记本快满时先整理再记。
+- 工具：notebook_read（读全文）/ notebook_remember（记一条）/ notebook_rewrite（整理重写）。本轮 prompt 里已经带了最近一部分，别重复读。
 """
 
 _HISTORY_LIMIT = 20
@@ -337,6 +351,7 @@ def build_prompt(
     materials: Any = None,
     deep: bool = False,
     solo: bool = False,
+    notebook: str = "",
 ) -> str:
     """构造一次发言的 prompt。
 
@@ -403,7 +418,16 @@ def build_prompt(
             if hasattr(materials, "prompt_block")
             else str(materials)
         )
-    return (block + "\n\n" if block else "") + (prior + "\n\n" if prior else "") + lead
+    nb = ""
+    if notebook:
+        nb = (
+            "# 你的笔记本（私人，只有你看得到）\n\n"
+            "下面是你在《这本书》上记下的东西（跨会话）。它只是你的判断和作者反馈，"
+            "不是正文；和正文/作者最新裁定冲突时，以正文和裁定为准。\n\n"
+            + notebook
+            + "\n\n"
+        )
+    return (block + "\n\n" if block else "") + nb + (prior + "\n\n" if prior else "") + lead
 
 
 def _safe_segment(value: str) -> str:
@@ -488,11 +512,17 @@ class BotRuntime:
                 raise ValueError(f"persona '{bot_id}' 未注册，无法起真 Agent")
             agent = entry.agent()
             tools = make_reading_tools(self.shelf)
+            notebook: NotebookSession | None = None
+            guidance = _SOLO_GUIDANCE if solo else _GROUP_GUIDANCE
+            if bot_id in NOTEBOOK_BOTS:
+                # 专家笔记本：只给这三位；工具只作用在自己的 notes.md。
+                notebook = NotebookSession(bot_id, self.shelf)
+                tools = tools + make_notebook_tools(notebook)
+                guidance = guidance + _NOTEBOOK_GUIDANCE
             agent = dataclasses.replace(
                 agent,
                 tool_factory=lambda _ctx: tools,
-                system_prompt=(agent.system_prompt or "")
-                + (_SOLO_GUIDANCE if solo else _GROUP_GUIDANCE),
+                system_prompt=(agent.system_prompt or "") + guidance,
                 # 群 bot 不需要文件夹门禁 / 定时唤醒 / 消息外发 / 连接器
                 requires_folder=False,
                 scheduling=False,
@@ -525,16 +555,34 @@ class BotRuntime:
             #    小桔技能。群 bot **只读**共享记忆（context_provider 保留），绝不回写。
             #    钩子是 fire-and-forget daemon，摘掉不影响本轮发言。
             eng._post_turn_hook = None
-            # 收紧工具面：build_engine 还会固定注册一堆 web/a2a/skill 工具，
-            # 群 bot 只保留两个只读读稿工具（防出网、防写、防上下文爆炸）。
+            # 收紧工具面：build_engine 还会固定注册一堆 web/a2a/skill 工具。
+            # 书稿面**只读**（read_book / list_books）；只有带笔记本的三位多三个
+            # 私有笔记本工具（写只落 <书>/.deskmate/experts/<bot>/notes.md）。
             allowed = {"read_book", "list_books"}
+            if notebook is not None:
+                allowed |= {"notebook_read", "notebook_remember", "notebook_rewrite"}
             eng.registry._tools = {
                 name: spec
                 for name, spec in eng.registry._tools.items()
                 if name in allowed
             }
+            eng._notebook_session = notebook
             self._engines[key] = eng
             return eng
+
+    @staticmethod
+    def _notebook_digest(eng: Any, materials: Any) -> str:
+        """把「当前这本书」的笔记本摘要取出来；没书/没笔记/读失败都返回空。"""
+        session = getattr(eng, "_notebook_session", None)
+        if session is None:
+            return ""
+        book = getattr(materials, "book", None) if materials is not None else None
+        try:
+            session.set_book(book)
+            return session.digest()
+        except Exception as exc:  # noqa: BLE001 —— 读笔记失败不能拖垮发言
+            logger.warning("专家笔记本读取失败（本轮跳过）: %s", exc)
+            return ""
 
     # ---------------------------------------------------------------- speak
     def speak(
@@ -568,6 +616,7 @@ class BotRuntime:
                 materials=materials,
                 deep=deep,
                 solo=solo,
+                notebook=self._notebook_digest(eng, materials),
             )
 
     def _speak_locked(
@@ -581,13 +630,14 @@ class BotRuntime:
         materials: Any = None,
         deep: bool = False,
         solo: bool = False,
+        notebook: str = "",
     ) -> str:
         """兼容旧 ``/say`` 契约的一次性发言（整段返回）。"""
         # 群历史是唯一上下文源：清掉上一轮的累积副本，避免三重冗余 / 复读。
         eng.messages.clear()
         prompt = build_prompt(
             text, history, names=names, round_index=round_index,
-            materials=materials, deep=deep, solo=solo,
+            materials=materials, deep=deep, solo=solo, notebook=notebook,
         )
         before = len(eng.messages)
         _run_sync(self._drive(eng, prompt))
@@ -654,6 +704,7 @@ class BotRuntime:
             prompt = build_prompt(
                 text, history, names=names, round_index=round_index,
                 materials=materials, deep=deep, solo=solo,
+                notebook=self._notebook_digest(eng, materials),
             )
             streamed: list[str] = []
             final_text = ""

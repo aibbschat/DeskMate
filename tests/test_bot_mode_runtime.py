@@ -108,7 +108,11 @@ class _ScriptedProvider:
 
 
 def test_bot_engine_is_real_agent_with_readonly_tools(shelf_dir: Path, tmp_path: Path) -> None:
-    """7 位专家起的是官方 TurnEngine，工具面只读，provider 不跟随主对话网关。"""
+    """7 位专家起的是官方 TurnEngine；书稿工具面只读，provider 不跟随主对话网关。
+
+    2026-11-09 起，脑洞/文学编辑/影视改编三位额外有私有笔记本工具——
+    写只落 <书>/.deskmate/experts/<bot>/notes.md，不属于「写书稿」。
+    """
     from deskmate.bots.runtime import BotRuntime
 
     rt = BotRuntime(

@@ -929,3 +929,47 @@
   （novel-memory / perception / deskmate-memory / proactivity / skills / ai-circle）。
 - `tests/test_expert_personas.py` 新增：专家不得再挂 `deskmate-memory`、小桔本人例外。
 - 回归：persona + bot 全量 **187 passed**。
+
+
+---
+
+## 30. 专家笔记本 v0：书 × 专家的私有笔记，主动记、自己维护（2026-11-09）
+
+> 萧哥拍板：① 不是「作者觉得有用才记」，是专家**主动记**；② 可以自己改、优化，
+> 这样才可持续；③ 先给脑洞 / 文学编辑 / 影视改编三位（史料专家用得少，先不做）。
+
+### 30.1 设计
+
+| 项 | 定 |
+|---|---|
+| 存储 | `<书目录>/.deskmate/experts/<专家 id>/notes.md`（书 × 专家，不跨书） |
+| 可见性 | **只给该专家自己**；作者可看/可删；别的专家读不到；不进群材料、不喂小桔 |
+| 记什么 | 作者明确采纳/否决（连同原因）、查实的设定/史实（带章节）、自己认准的判断 |
+| 不记什么 | 闲聊、临时情绪、未验证猜测、正文原文 |
+| 工具 | `notebook_read` / `notebook_remember` / `notebook_rewrite`（只作用自己那本） |
+| 上桌 | 每轮 prompt 末尾带最近一段摘要（约 6k 字），全书可用 notebook_read 读 |
+| 主动记 | 人设外挂 `_NOTEBOOK_GUIDANCE`：不用作者说「记一下」，值得复用就记 |
+| 自己维护 | 少了合并、被推翻的删、过时的压成一句；快满时工具会拒绝并让先 notebook_rewrite |
+| 安全 | 专家 id 只来自常量；路径 resolve 后必须在书目录下；拒软链；原子写；单条 1.2k / 总量 24k 上限 |
+| 红线 | **书稿/取材仍只读**；笔记本是唯一的可写面，且只能写自己的 notes.md；反向回写小桔记忆的隔离不变 |
+
+### 30.2 接入
+
+- `deskmate/bots/notebooks.py`：`NotebookSession`（定位/读/摘要/追加/重写/原子写）+ 三个工具。
+- `deskmate/bots/runtime.py`：只有 `brainstormer / lit-editor / adaptation` 的 engine
+  会挂笔记本工具 + 私有 guidance；每轮按 `materials.book` 同步「当前是哪本书」，
+  摘要进 `build_prompt`（放在群材料之后，保住材料前缀缓存）。
+- 群里共享的还是书稿材料 + 本场消息；笔记本不共享、不进 materials。
+
+### 30.3 验证
+
+- 新增 `tests/test_bot_notebooks.py`（12 例）：写入/读取/重复不重记/无书不写/重写/
+  上限/软链/摘要头尾/只有三位有工具/engine 往返/**端到端脚本 provider 自主调
+  `notebook_remember` 落盘**/笔记本块进 prompt。
+- bot 全量回归 **198 passed**。
+- **未做 / 下一步**：
+  - 专家中心 1v1 还没接这个工具（persona 会话走 tool catalog，下一笔；笔记本文件已
+    按书×专家存好，接上就能读写同一本）。
+  - 作者侧 UI（看/删笔记）还没做，现在可以直接打开书目录下的 notes.md 看。
+  - 「把某条笔记显式贴到群里」未做（默认私有，分享要显式动作）。
+  - 真机效果（模型会不会主动记、记的质量）待重启后实聊验证。
