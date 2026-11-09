@@ -898,3 +898,34 @@
   - 3 张占位卡要恢复，得先写 persona 再上卡，不再先摆空壳。
 - **生效边界**沿用 §27：persona 改动重启 App 即生效；专家中心（撤卡/头像/卡面）是前端，
   要重新打包才在桌面 App 里看到。
+
+
+---
+
+## 29. 专家拔掉共享记忆 deskmate-memory（2026-11-09）
+
+> 萧哥：「不用，都拔了」——不保留编辑专家特例。
+
+### 29.1 范围
+
+| 处理 | 对象 |
+|---|---|
+| **拔掉 deskmate-memory** | historian / lit-editor / proofreader / reader / publisher / adaptation / genre / editor（8 位创作/分析专家） |
+| **保留 novel-memory** | 只读素材库 / 人物圣经检索（historian、lit-editor、editor 保留；其余原本就没挂） |
+| **不动** | `deskmate.md`（小桔本人）——deskmate-memory 就是她自己的记忆本体，不能拔 |
+
+圆桌本来就不用 MCP（coordinator 只注入 system prompt + 市场潮流简报），所以对圆桌行为零影响；
+影响面只有「专家中心 / 设置页起的 1v1 专家会话」。
+`editor` 的 `recommends` 里那条 deskmate-memory 推荐一并删掉。
+
+### 29.2 依据
+
+- §24 实证：共享记忆会带偏——所有人都顺着记忆说，且记忆可能过时；专职专家应只吃当轮稿 / 路径。
+- brainstormer 先拔，这次把其余 7 位对齐；editor 不再保留特例。
+
+### 29.3 验证
+
+- registry 实测：8 位 mcp 只剩 `novel-memory`（或空），`deskmate` 仍保留自己的记忆组
+  （novel-memory / perception / deskmate-memory / proactivity / skills / ai-circle）。
+- `tests/test_expert_personas.py` 新增：专家不得再挂 `deskmate-memory`、小桔本人例外。
+- 回归：persona + bot 全量 **187 passed**。

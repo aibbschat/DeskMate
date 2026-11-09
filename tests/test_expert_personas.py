@@ -40,3 +40,16 @@ def test_brainstormer_keeps_two_gears() -> None:
     assert "开脑洞（默认）" in text
     assert "往下盘" in text
     assert "不排序、不验收、不替作者挑" in text
+
+def test_experts_do_not_hang_shared_memory() -> None:
+    """2026-11-09 萧哥「都拔了」：8 位创作/分析专家 + 脑洞专家不再挂 deskmate-memory。
+
+    §24 实证：共享记忆会带偏（顺着记忆说、记忆可能过时）。只读素材库 novel-memory 保留；
+    小桔本人例外——deskmate-memory 就是她自己的记忆本体。
+    """
+    for pid in (*_ROUNDTABLE, "editor", "brainstormer"):
+        text = (_BUILTIN / f"{pid}.md").read_text(encoding="utf-8")
+        assert "deskmate-memory" not in text, f"{pid} 还挂着共享记忆 deskmate-memory"
+    assert "deskmate-memory" in (_BUILTIN / "deskmate.md").read_text(encoding="utf-8"), (
+        "小桔本人的记忆组不能拔"
+    )

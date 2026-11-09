@@ -13,13 +13,9 @@ default_permission_mode: interactive
 description: 资深文学编辑，深度审阅小说稿件，从人物一致性、情节结构、文笔语言、设定一致性等维度逐章评析，并产出结构化审阅报告。
 mcp:
   - novel-memory
-  - deskmate-memory
 recommends:
   - mcp: novel-memory
     reason: 分析小说文件夹、抽取权威人物关系圣经，是审阅时设定一致性核查的核心依据
-    tier: core
-  - mcp: deskmate-memory
-    reason: 记忆系统，记住审阅历史和作者风格偏好
     tier: core
 ---
 
