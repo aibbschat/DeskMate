@@ -395,6 +395,16 @@ PERSONA_FILES=(
   "coworker/personas/builtin/publisher.md"
   "coworker/personas/builtin/adaptation.md"
   "coworker/personas/builtin/genre.md"
+  # ⚠ 2026-11-09 补录：子目录式创作专家 manifest（editor-in-chief / outline-writer /
+  # screenwriter / script-reviewer / plot-architect）。PERSONA_FILES 原先只列 9 个平铺 .md，
+  # 这 5 个从未进清单 ⇒ 集合级 .md 对账报 4 处内容漂移 + 1 个「仅本地有」(plot-architect)。
+  # 落点由 3c 循环的 coworker/* 分支按 dirname 自动推导到 personas/builtin/<子目录>/，
+  # 无需改传输逻辑。.md 不进 ALL_FILES（ast.parse 会误报），走独立 scp + md5 核对。
+  "coworker/personas/builtin/editor-in-chief/manifest.md"
+  "coworker/personas/builtin/outline-writer/manifest.md"
+  "coworker/personas/builtin/screenwriter/manifest.md"
+  "coworker/personas/builtin/script-reviewer/manifest.md"
+  "coworker/personas/builtin/plot-architect/manifest.md"
 )
 CLOUD_PERSONA_DIR="$CLOUD_COWORKER_ROOT/personas/builtin"
 
