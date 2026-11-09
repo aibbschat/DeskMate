@@ -27,6 +27,10 @@ class AgentContext:
     # per-persona state (the expert notebook is per persona × per book). None for
     # non-persona agents (Code/Cowork built-ins).
     persona_id: Optional[str] = None
+    # 1v1「当前书」宿主挂载点：catalog 的 notebook capability 建好 session 后放这里，
+    # build_engine 的 context_provider 每轮用它 set_book（状态由宿主持有，不靠模型
+    # 每轮自觉带 book）。None = 这个 persona 没有笔记本，不注入任何书稿上下文。
+    notebook_session: Optional[Any] = None
 
 
 @dataclass

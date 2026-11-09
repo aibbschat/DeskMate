@@ -824,6 +824,21 @@ def build_engine(
         )
         if dm_mention:
             parts.append(dm_mention)
+        # 1v1 专家「当前书」由宿主每轮挂载（2026-11-09 §31.5）：catalog 把
+        # NotebookSession 放在 context 上，这里从最后一条 user 消息认书名并 set_book。
+        # 状态由宿主持有，不靠模型每轮自觉带 book —— 否则「带过一次就永久沿用」
+        # 会在换书时静默写回上一本。只对有笔记本的 persona 生效；只回显书名，
+        # 绝不外泄路径；异常 fail-open 不拖垮本轮。
+        nb_session = getattr(context, "notebook_session", None)
+        if nb_session is not None:
+            try:
+                from deskmate.bots.notebooks import mount_current_book
+
+                nb_ctx = mount_current_book(nb_session, messages)
+                if nb_ctx:
+                    parts.append(nb_ctx)
+            except Exception:
+                pass
         # Live skill menu (SKILLS-SPEC §4.1): recomputed every turn like the roots list, so
         # a skill installed/enabled/disabled mid-session applies from the NEXT MESSAGE —
         # no new session, no lost context.

@@ -32,7 +32,7 @@ try:  # macOS 桌面 + Linux 云端都有；非 POSIX 降级为「仅进程内�
 except ImportError:  # pragma: no cover
     fcntl = None  # type: ignore[assignment]
 
-from .reading import BookShelf
+from .reading import BookShelf, parse_book_title
 
 #: 只有这三位带笔记本（2026-11-09 萧哥：史料专家用得少，先不做）。
 NOTEBOOK_BOTS: frozenset[str] = frozenset({"brainstormer", "lit-editor", "adaptation"})
@@ -307,11 +307,11 @@ def make_notebook_tools(session: NotebookSession) -> list:
     def notebook_read(book: str = "") -> str:
         """读你自己这本笔记本的全文。
 
-        book 不填 = 当前这本书（群聊里会自动挂上）；1v1 里请填书名或路径
-        （如 book="夜不收"），否则不知道翻哪个项目。
+        book 不填 = 宿主已挂好的「当前这本书」（每轮按作者发言自动切换）；
+        只在要临时翻另一本时才填书名（如 book="夜不收"）。别填路径。
         """
         if not session.ensure_book(book):
-            return "未识别到具体哪本书：先告诉我书名（如《夜不收》）或路径，我才能翻自己的笔记本。"
+            return "未识别到具体哪本书：先告诉我书名（如《夜不收》），我才能翻自己的笔记本。"
         text = session.read()
         return text if text else "（这本笔记本还是空的）"
 
@@ -321,10 +321,10 @@ def make_notebook_tools(session: NotebookSession) -> list:
         只在真值得跨会话复用时用：作者明确采纳/否决了什么（连同原因）、查实的
         设定/史实（带章节出处）、你自己认准的判断。不要记闲聊、临时情绪、
         没验证的猜测，也不要抄正文原文。**主动记**，不用等作者说「记一下」。
-        book 不填 = 当前这本书；1v1 里带上书名。
+        book 不填 = 宿主已挂好的「当前这本书」；要临时记到另一本才填书名。
         """
         if not session.ensure_book(book):
-            return "未识别到具体哪本书：先告诉我书名（如《夜不收》）或路径，再记。"
+            return "未识别到具体哪本书：先告诉我书名（如《夜不收》），再记。"
         return session.remember(entry)
 
     def notebook_feedback(adopted: bool, note: str, book: str = "") -> str:
@@ -333,10 +333,10 @@ def make_notebook_tools(session: NotebookSession) -> list:
         用在作者回答「用这条 / 不用」之后，或作者自己说「这条不错/这条不行」时。
         note 写清是哪条建议、为什么（作者原话优先）。下次开聊先读反馈，别重复推荐
         已被驳回的东西。
-        book 不填 = 当前这本书；1v1 里带上书名。
+        book 不填 = 宿主已挂好的「当前这本书」；要临时记到另一本才填书名。
         """
         if not session.ensure_book(book):
-            return "未识别到具体哪本书：先告诉我书名（如《夜不收》）或路径，再记反馈。"
+            return "未识别到具体哪本书：先告诉我书名（如《夜不收》），再记反馈。"
         return session.feedback(bool(adopted), note)
 
     def notebook_rewrite(content: str, book: str = "") -> str:
@@ -344,13 +344,94 @@ def make_notebook_tools(session: NotebookSession) -> list:
 
         用来做维护：合并重复、删掉被推翻/过时的条目、把旧判断压成一句、
         补上作者最新裁定。不要用它把笔记越写越长。
-        book 不填 = 当前这本书；1v1 里带上书名。
+        book 不填 = 宿主已挂好的「当前这本书」；要临时整理另一本才填书名。
         """
         if not session.ensure_book(book):
-            return "未识别到具体哪本书：先告诉我书名（如《夜不收》）或路径，再整理。"
+            return "未识别到具体哪本书：先告诉我书名（如《夜不收》），再整理。"
         return session.rewrite(content)
 
     return [notebook_read, notebook_remember, notebook_feedback, notebook_rewrite]
+
+
+# ------------------------------------------------------------------ 1v1 当前书挂载
+def _last_user_text(messages) -> str:
+    """取最后一条 user 消息的文本；与 DeskMate 记忆注入的多模态取法一致。"""
+    if not messages:
+        return ""
+    for msg in reversed(messages):
+        if not isinstance(msg, dict) or msg.get("role") != "user":
+            continue
+        content = msg.get("content", "")
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            for part in content:
+                if isinstance(part, dict) and part.get("type") == "text":
+                    return str(part.get("text", ""))
+        return ""
+    return ""
+
+
+def book_from_messages(messages, shelf: BookShelf) -> Optional[str]:
+    """从当轮发言认书名 —— 与群聊 materials.prepare 同一口径（不猜、不回退路径）。
+
+    认不出返回 None，由调用方决定沿用还是要求显式书名；绝不用 mtime 推断
+    「当前在写」（那是 proactivity 关怀判断的口径，多书并行下会静默记错书）。
+    """
+    text = _last_user_text(messages)
+    if not text:
+        return None
+    try:
+        known = shelf.list_books()
+    except Exception:
+        known = []
+    try:
+        return parse_book_title(text, known=known) or None
+    except Exception:
+        return None
+
+
+def mount_current_book(session: NotebookSession, messages) -> str:
+    """宿主每轮挂书：状态由宿主持有，不交给模型自觉（群聊 runtime:589 的 1v1 对等物）。
+
+    - 当轮认出书名且书架里存在 → set_book 切过去，换书不再串到上一本；
+    - 认不出 → 沿用上一轮那本，但**如实回显书名**；
+    - 从没认出过 → 明说「还没确定」，写工具保持 fail-closed，绝不猜。
+
+    返回值是注入本轮 prompt 的一行状态；只给书名，绝不外泄绝对路径
+    （1v1 没有受守卫的 read_book，给路径只会诱导模型拿通用文件工具绕开
+    章节索引 / §18 分类规则去读正文）。
+    """
+    try:
+        title = book_from_messages(messages, session.shelf)
+        if title:
+            if session.shelf.resolve(title) is not None:
+                session.set_book(title)
+                return (
+                    f"当前在聊：《{session.book_title}》。你的笔记本已挂到这本；"
+                    "笔记本工具不带 book 就是指它。换书时说书名即可。"
+                )
+            if session.book_title:
+                return (
+                    f"你提到《{title}》，但书架里没有这本；笔记本仍挂《{session.book_title}》。"
+                    "要换书请说书架里有的书名。"
+                )
+            return (
+                f"你提到《{title}》，但书架里没有这本，笔记本还没挂上。"
+                "请说书架里有的书名，或第一次用工具时带上 book。"
+            )
+        if session.book_title:
+            return (
+                f"当前在聊：《{session.book_title}》（沿用上一轮）。你的笔记本挂在这本；"
+                "换书时说书名即可。"
+            )
+        return (
+            "当前在聊：还没确定是哪本书。第一次用笔记本工具请带书名"
+            "（book=\"夜不收\"），或先告诉我书名。"
+        )
+    except Exception:
+        return ""  # fail-open：挂书失败不能拖垮本轮对话
+
 
 # ------------------------------------------------------------------ 作者侧界面用
 def _notes_path_for(shelf: BookShelf, book: str, expert: str) -> Optional[Path]:

@@ -140,7 +140,11 @@ def _notebook(context: AgentContext) -> list:
     if pid not in NOTEBOOK_BOTS:
         return []
     try:
-        return make_notebook_tools(NotebookSession(pid, default_shelf()))
+        session = NotebookSession(pid, default_shelf())
+        # 交给 build_engine 的 context_provider：每轮从作者发言认书名并挂上去，
+        # 避免「带过一次 book 后换书静默写回上一本」（2026-11-09 §31.5 事故）。
+        context.notebook_session = session
+        return make_notebook_tools(session)
     except Exception:  # noqa: BLE001 —— 笔记工具起不来不能拖垮会话
         return []
 
