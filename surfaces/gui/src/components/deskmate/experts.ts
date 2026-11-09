@@ -100,31 +100,9 @@ export const EXPERTS: Expert[] = [
     // 由技能自动匹配注入；此处显式登记，便于将来强制 pin 与 UI 展示「关联技能」。
     metadata: { skillId: "outline" },
   },
-  {
-    id: "character",
-    displayName: "人物专家",
-    icon: "branch",
-    description: "塑造立体角色：动机、弧光、关系网与对话一致性。",
-    status: "soon",
-    capabilities: ["人物小传", "关系图谱", "弧光设计"],
-  },
-  {
-    id: "polish",
-    displayName: "润色专家",
-    icon: "sparkle",
-    description: "在保留你文风的前提下，精修语句、节奏与语感。",
-    status: "soon",
-    capabilities: ["语感打磨", "冗余精简", "节奏优化"],
-  },
-  {
-    id: "lore",
-    displayName: "设定一致性专家",
-    icon: "sliders",
-    description: "跨章节追踪时间线、地名、官职等设定，揪出前后矛盾。",
-    status: "soon",
-    capabilities: ["时间线校验", "设定冲突检测", "名词统一"],
-  },
 ];
+// 2026-11-09 萧哥定：占位卡（人物 / 润色 / 设定一致性）先撤——点进去是空的，不如不放。
+// 将来真做出来，再按「先补 persona、再上卡」的顺序加回。
 
 export function getExpert(id: string): Expert | undefined {
   return EXPERTS.find((e) => e.id === id);

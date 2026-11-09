@@ -16,4 +16,12 @@ describe("创意脑洞专家（独立专家入口）", () => {
   it("图标解析成 lightbulb（不是 fallback 的 sparkle）", () => {
     expect(personaGlyph("lightbulb", "knowledge")).toBe("lightbulb");
   });
+
+  it("不再有「即将上线」占位卡（2026-11-09 萧哥定：点进去是空的，先撤）", () => {
+    const soon = EXPERTS.filter((e) => (e.status ?? "ready") !== "ready");
+    expect(soon).toHaveLength(0);
+    for (const gone of ["character", "polish", "lore"]) {
+      expect(EXPERTS.find((e) => e.id === gone)).toBeUndefined();
+    }
+  });
 });
