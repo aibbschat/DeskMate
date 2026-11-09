@@ -477,7 +477,8 @@ def build_engine(
     executor = LocalExecutor(cwd=ws, sandbox=sandbox_cfg) if ws is not None else None
     todo = TodoList()
     context = AgentContext(
-        workspace=ws, executor=executor, todo=todo, roots=root_list or None
+        workspace=ws, executor=executor, todo=todo, roots=root_list or None,
+        persona_id=str(getattr(agent, "name", "") or "") or None,
     )
 
     registry = ToolRegistry()
@@ -589,6 +590,17 @@ def build_engine(
         registry.register_all(selfwake_tools(wake_store, session_id))
 
     instructions = f"{agent.system_prompt}\n\n{_NARRATION_GUIDANCE}\n\n{_FIRST_CONTACT_GUIDANCE}"
+    # 专家基础记忆（2026-11-09）：作者是谁/做什么/写过哪些书。从既有 USER.md +
+    # 书架动态拼，不新建记忆层；小桔等有自己记忆的 persona 不注入（author_profile_for
+    # 只对创作/分析专家返回内容）。deskmate 缺失/读失败一律跳过，不拖垮会话。
+    try:
+        from deskmate.bots.author import author_profile_for
+
+        _author_block = author_profile_for(getattr(agent, "name", ""))
+        if _author_block:
+            instructions = f"{instructions}\n\n{_author_block}"
+    except Exception:  # noqa: BLE001
+        pass
     # DeskMate 技能索引：注入 <available_skills> 块，LLM 自觉加载
     skill_index = _deskmate_skill_index()
     if skill_index:

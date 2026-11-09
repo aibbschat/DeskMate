@@ -65,6 +65,14 @@ class NotebookSession:
                 return
             self._book_title, self._book_dir = text, book_dir
 
+    def ensure_book(self, book: str | None = None) -> bool:
+        """1v1 场景：工具显式带书名；不填就沿用当前书。返回是否能定位到书。"""
+        with self._lock:
+            text = str(book or "").strip()
+            if text:
+                self.set_book(text)
+            return self._book_dir is not None
+
     def _path(self, *, create: bool = False) -> Optional[Path]:
         if self._book_dir is None:
             return None
@@ -164,26 +172,103 @@ class NotebookSession:
 def make_notebook_tools(session: NotebookSession) -> list:
     """交给真 Agent 的笔记本工具（只作用于该专家自己的那一本）。"""
 
-    def notebook_read() -> str:
-        """读你自己这本笔记本的全文（当前这本书）。"""
+    def notebook_read(book: str = "") -> str:
+        """读你自己这本笔记本的全文。
+
+        book 不填 = 当前这本书（群聊里会自动挂上）；1v1 里请填书名或路径
+        （如 book="夜不收"），否则不知道翻哪个项目。
+        """
+        if not session.ensure_book(book):
+            return "未识别到具体哪本书：先告诉我书名（如《夜不收》）或路径，我才能翻自己的笔记本。"
         text = session.read()
         return text if text else "（这本笔记本还是空的）"
 
-    def notebook_remember(entry: str) -> str:
-        """往你自己的笔记本里记一条（当前这本书）。
+    def notebook_remember(entry: str, book: str = "") -> str:
+        """往你自己的笔记本里记一条。
 
         只在真值得跨会话复用时用：作者明确采纳/否决了什么（连同原因）、查实的
         设定/史实（带章节出处）、你自己认准的判断。不要记闲聊、临时情绪、
         没验证的猜测，也不要抄正文原文。**主动记**，不用等作者说「记一下」。
+        book 不填 = 当前这本书；1v1 里带上书名。
         """
+        if not session.ensure_book(book):
+            return "未识别到具体哪本书：先告诉我书名（如《夜不收》）或路径，再记。"
         return session.remember(entry)
 
-    def notebook_rewrite(content: str) -> str:
-        """整本重写你自己的笔记本（当前这本书）。
+    def notebook_rewrite(content: str, book: str = "") -> str:
+        """整本重写你自己的笔记本。
 
         用来做维护：合并重复、删掉被推翻/过时的条目、把旧判断压成一句、
         补上作者最新裁定。不要用它把笔记越写越长。
+        book 不填 = 当前这本书；1v1 里带上书名。
         """
+        if not session.ensure_book(book):
+            return "未识别到具体哪本书：先告诉我书名（如《夜不收》）或路径，再整理。"
         return session.rewrite(content)
 
     return [notebook_read, notebook_remember, notebook_rewrite]
+
+# ------------------------------------------------------------------ 作者侧界面用
+def _notes_path_for(shelf: BookShelf, book: str, expert: str) -> Optional[Path]:
+    """定位某本书某位专家的 notes.md；非法专家/书/越界/软链一律 None。"""
+    if str(expert or "") not in NOTEBOOK_BOTS:
+        return None
+    try:
+        book_dir = shelf.resolve(str(book or ""))
+    except Exception:  # noqa: BLE001
+        return None
+    if book_dir is None:
+        return None
+    path = book_dir / ".deskmate" / _EXPERT_ROOT / str(expert) / _NOTES_NAME
+    try:
+        path.parent.resolve().relative_to(book_dir.resolve())
+    except (OSError, ValueError, RuntimeError):
+        return None
+    if path.exists() and path.is_symlink():
+        return None
+    return path
+
+
+def list_notebooks(shelf: BookShelf) -> list[dict]:
+    """作者侧：列出所有有笔记的「书 × 专家」，新的在前。"""
+    out: list[dict] = []
+    for title in shelf.list_books():
+        for expert in sorted(NOTEBOOK_BOTS):
+            path = _notes_path_for(shelf, title, expert)
+            if path is None or not path.is_file():
+                continue
+            try:
+                text = path.read_text(encoding="utf-8", errors="ignore")
+                updated = int(path.stat().st_mtime)
+            except OSError:
+                continue
+            out.append({
+                "book": title,
+                "expert": expert,
+                "chars": len(text),
+                "updated": updated,
+            })
+    out.sort(key=lambda item: item["updated"], reverse=True)
+    return out
+
+
+def read_notebook(shelf: BookShelf, book: str, expert: str) -> Optional[str]:
+    path = _notes_path_for(shelf, book, expert)
+    if path is None or not path.is_file():
+        return None
+    try:
+        return path.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return None
+
+
+def delete_notebook(shelf: BookShelf, book: str, expert: str) -> bool:
+    """作者侧：删掉一本笔记（只删 notes.md，不碰书稿）。"""
+    path = _notes_path_for(shelf, book, expert)
+    if path is None or not path.is_file():
+        return False
+    try:
+        path.unlink()
+        return True
+    except OSError:
+        return False

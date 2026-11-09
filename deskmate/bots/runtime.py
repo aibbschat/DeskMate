@@ -132,19 +132,6 @@ _SOLO_GUIDANCE = """
 - 界面已经显示你的名字，不要在发言开头加署名、来源标注或「（来自…）」。
 """
 
-# 专家笔记本（2026-11-09 萧哥拍板）：三位专家各有一本「书 × 专家」的私有笔记。
-# 与共享记忆严格分开——不进群材料、别的专家读不到、不跨书、不喂小桔。
-_NOTEBOOK_GUIDANCE = """
-
-# 你的笔记本（私人，跨会话）
-
-你有一本自己的笔记本：只记这本书、只给你自己看，别的专家读不到；作者能看能删。
-- **主动记**：不用等作者说「记一下」。真正值得跨会话复用的才记——作者明确采纳/否决了什么（连同原因）、查实的设定/史实（带章节出处）、你自己认准的判断。
-- **不记**：闲聊、临时情绪、没验证的猜测、正文原文（书稿里已经有）。
-- **自己维护**：过时/被推翻的就删；同类合并成一条；作者最新裁定压过旧笔记。笔记本快满时先整理再记。
-- 工具：notebook_read（读全文）/ notebook_remember（记一条）/ notebook_rewrite（整理重写）。本轮 prompt 里已经带了最近一部分，别重复读。
-"""
-
 _HISTORY_LIMIT = 20
 # 群历史给模型的总字数预算（不是单条发言上限）。旧实现把每条硬砍到 600 字，
 # 1676 字的具体建议只传了前 1/3 给后发言者，讨论必然退化成空泛附和 —— 撤掉
@@ -516,9 +503,9 @@ class BotRuntime:
             guidance = _SOLO_GUIDANCE if solo else _GROUP_GUIDANCE
             if bot_id in NOTEBOOK_BOTS:
                 # 专家笔记本：只给这三位；工具只作用在自己的 notes.md。
+                # 笔记本纪律写在各人设的「你的笔记本」一节（群聊/1v1 共用）。
                 notebook = NotebookSession(bot_id, self.shelf)
                 tools = tools + make_notebook_tools(notebook)
-                guidance = guidance + _NOTEBOOK_GUIDANCE
             agent = dataclasses.replace(
                 agent,
                 tool_factory=lambda _ctx: tools,

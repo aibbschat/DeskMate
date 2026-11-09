@@ -973,3 +973,63 @@
   - 作者侧 UI（看/删笔记）还没做，现在可以直接打开书目录下的 notes.md 看。
   - 「把某条笔记显式贴到群里」未做（默认私有，分享要显式动作）。
   - 真机效果（模型会不会主动记、记的质量）待重启后实聊验证。
+
+
+---
+
+## 31. 1v1 接上笔记本 + 作者基础档案 + 笔记本查看/删除界面（2026-11-09）
+
+> 萧哥：「把 1v1 接上，再做个笔记的查看/删除界面，然后再加上一个基础的记忆，
+> 比如知道我是谁、是干什么的、写了哪些书等。如果已知，就忽略。」
+
+### 31.1 1v1 接上笔记本
+
+- coworker/catalog.py 新增 notebook capability（fail-open，缺 deskmate 时空工具集）。
+- AgentContext 新增 persona_id，build_engine 用 agent.name（manifest id）填充；
+  capability 只对 NOTEBOOK_BOTS（brainstormer / lit-editor / adaptation）展开。
+- 三位专家的 persona tools 加 notebook；1v1 里工具带 book 参数自行定位
+  （没有「当前书」时 notebook_read(book="夜不收")）；群聊仍由 materials 自动挂书。
+- persona 里补「你的笔记本（私人）」一节：群聊自动带摘要；1v1 先 notebook_read；
+  主动记、自己维护（规则与群聊同一套，写在各人设里，不再靠 runtime 追加）。
+
+> 注：catalog 对 deskmate 的 import 放在工具构建时（不是模块 import 期），
+> 否则 deskmate.bots 包 init 会反向 import coworker.agent → catalog，形成循环。
+
+### 31.2 作者基础档案（如果已知就忽略）
+
+- 不新建记忆层：deskmate/bots/author.py 从既有 ~/.deskmate/USER.md + 书架动态拼：
+  - 名字/身份取 USER.md 第一条画像（如「萧盛，1977年生，写作者……」）；
+  - 出版作品从 ~/Documents/已出版 书架动态列（当前 21 本，不写死书单）；
+  - 一条硬规则：正文他亲手写、AI 不代笔；不确定别编。
+- 注入点在 coworker/agent.py 的 instructions 组装后：只对创作/分析专家
+  （9 个 persona id）注入；小桔/主 Coworker 有自己记忆，不重复注入（「已知就忽略」）。
+- bot 群和专家 1v1 都走 build_engine，所以一处注入两处生效。
+
+### 31.3 笔记本查看/删除界面（sidecar，不用打包）
+
+- deskmate/bots/web.py 新增 /notebooks 页 + API：
+  GET /api/notebooks（列表：书 × 专家 × 字数 × 更新时间）、
+  GET /api/notebooks/content?book=&expert=、DELETE /api/notebooks?book=&expert=。
+- Bot 群页 header 新增「笔记本」按钮，跳到 /notebooks；页面自带「← Bot 群」返回。
+- 页面只读 + 删除（自定义确认层，不依赖宿主的原生 confirm —— WKWebView 不吃那套）；
+  主题 token 与 Bot 群页同一套 postMessage 协议。
+- 安全：专家只允许 NOTEBOOK_BOTS；书必须经书架 resolve；越界/软链一律 404；
+  删除只删 notes.md，书稿一字不动。/bots/ 前缀沿用既有 sidecar 免鉴权放行。
+
+### 31.4 验证
+
+- tests/test_bot_notebooks.py 新增：作者侧 list/read/delete、非法专家拒绝、
+  1v1 book 参数定位。
+- tests/test_expert_1v1_notebook.py：1v1 engine 拿得到笔记本工具 + 作者档案；
+  史料专家有作者档案但没有笔记本工具。
+- tests/test_expert_author_profile.py：档案内容 + 只注入 expert persona。
+- tests/test_bot_notebooks_ui.py：页面渲染、列表/读取/删除、非法书/专家 404、
+  /bots 前缀注入、Bot 群页按钮链接。
+- 全量回归 212 passed。
+
+### 31.5 边界
+
+- 界面只能看和删，还不能编辑（编辑仍由专家自己用 notebook_rewrite）。
+- 作者档案是「最小事实」（名字/身份/作品清单/不代笔），不是把 USER.md 整份塞进去；
+  小桔的完整记忆仍归小桔。
+- 1v1 里没有「当前书」自动挂载：专家要自己带 book；人设已写明。

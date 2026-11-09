@@ -269,3 +269,58 @@ def test_model_can_actively_write_notebook_through_engine(tmp_path: Path) -> Non
         )
     finally:
         rt.close()
+
+# ------------------------------------------------------------------ 1v1（catalog）
+
+def test_catalog_exposes_notebook_only_for_three_experts(tmp_path: Path) -> None:
+    import coworker.agent  # noqa: F401 — 走真实 import 顺序，避开 catalog 历史循环
+    from coworker.agents.base import AgentContext
+    from coworker.catalog import expand
+
+    for pid in ("brainstormer", "lit-editor", "adaptation"):
+        names = {t.__name__ for t in expand(["notebook"], AgentContext(persona_id=pid))}
+        assert {"notebook_read", "notebook_remember", "notebook_rewrite"} <= names
+    for pid in ("historian", "editor", "cowork", ""):
+        assert expand(["notebook"], AgentContext(persona_id=pid)) == []
+
+
+def test_persona_tool_list_includes_notebook() -> None:
+    from coworker.personas.registry import get_registry
+
+    for pid in ("brainstormer", "lit-editor", "adaptation"):
+        entry = get_registry().get(pid)
+        assert "notebook" in entry.manifest.tools
+
+
+def test_tools_accept_explicit_book_for_1v1(tmp_path: Path) -> None:
+    """1v1 没有「当前书」，工具必须能靠 book 参数定位。"""
+    shelf = _shelf(tmp_path)
+    s = NotebookSession("lit-editor", shelf)  # 不 set_book
+    tools = {t.__name__: t for t in make_notebook_tools(s)}
+    assert "未识别" in tools["notebook_read"]()
+    msg = tools["notebook_remember"]("作者说：下一章先别写景", book="测试书")
+    assert "已记入" in msg
+    assert "先别写景" in tools["notebook_read"](book="测试书")
+
+# ------------------------------------------------------------------ 作者侧（看/删）
+
+def test_author_side_list_read_delete(tmp_path: Path) -> None:
+    s = _session(tmp_path, "adaptation")
+    s.remember("作者说：下一章先别写景")
+    entries = notebooks.list_notebooks(s.shelf)
+    assert len(entries) == 1
+    assert entries[0]["book"] == "测试书" and entries[0]["expert"] == "adaptation"
+    assert entries[0]["chars"] > 0
+    text = notebooks.read_notebook(s.shelf, "测试书", "adaptation")
+    assert text and "先别写景" in text
+    assert notebooks.delete_notebook(s.shelf, "测试书", "adaptation") is True
+    assert notebooks.list_notebooks(s.shelf) == []
+    assert (tmp_path / "books" / "16.测试书" / "正文.txt").read_text(encoding="utf-8") == (
+        "第一章：开头。正文正文正文。"
+    )
+
+
+def test_author_side_rejects_non_notebook_experts(tmp_path: Path) -> None:
+    shelf = _shelf(tmp_path)
+    assert notebooks.read_notebook(shelf, "测试书", "historian") is None
+    assert notebooks.delete_notebook(shelf, "测试书", "historian") is False

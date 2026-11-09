@@ -38,6 +38,7 @@ try:
 except Exception:  # pragma: no cover - deskmate 缺失属于部署形态问题
     review_chapter = generate_report = load_manuscript_file = None
 
+
 # Context prerequisites a capability may require, mapped to a predicate over AgentContext.
 _REQUIREMENTS: dict[str, Callable[[AgentContext], bool]] = {
     "workspace": lambda c: c.workspace is not None,
@@ -118,6 +119,32 @@ def _todo(context: AgentContext) -> list:
     return todo_tools(context.todo)  # todo_write (drives the Progress panel)
 
 
+def _notebook(context: AgentContext) -> list:
+    """专家自己的笔记本工具；只对 NOTEBOOK_BOTS 里的 persona 生效。
+
+    延迟导入 deskmate：catalog 在 import 期不能碰 deskmate.bots 包
+    （它会反向 import coworker.agent → catalog，形成循环）。
+    """
+    pid = str(getattr(context, "persona_id", "") or "").strip()
+    if not pid:
+        return []
+    try:
+        from deskmate.bots.notebooks import (
+            NOTEBOOK_BOTS,
+            NotebookSession,
+            make_notebook_tools,
+        )
+        from deskmate.bots.reading import default_shelf
+    except Exception:  # noqa: BLE001 —— 缺 deskmate 时优雅降级
+        return []
+    if pid not in NOTEBOOK_BOTS:
+        return []
+    try:
+        return make_notebook_tools(NotebookSession(pid, default_shelf()))
+    except Exception:  # noqa: BLE001 —— 笔记工具起不来不能拖垮会话
+        return []
+
+
 _CAPS: list[Capability] = [
     Capability(
         id="code_files",
@@ -178,6 +205,17 @@ _CAPS: list[Capability] = [
         ],
         requires=(),
         risk=(RiskClass.READ,),
+    ),
+    Capability(
+        id="notebook",
+        name="Expert notebook",
+        description=(
+            "每位专家对每本书的私有笔记本（读/记/整理）；只写自己的 notes.md，"
+            "不碰书稿、不跨书、别的专家读不到。"
+        ),
+        build=_notebook,
+        requires=(),
+        risk=(RiskClass.READ, RiskClass.WRITE_LOCAL),
     ),
 ]
 

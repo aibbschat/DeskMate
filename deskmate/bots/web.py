@@ -27,6 +27,7 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
+from .notebooks import delete_notebook, list_notebooks, read_notebook as read_expert_notebook
 from .reading import default_shelf
 from .rooms import RoomStore
 from .roster import list_bots
@@ -397,6 +398,7 @@ PAGE = r"""
       <span class="avs" id="head-avs"></span>
       <span class="spacer"></span>
       <span class="pill hidden" id="head-guard"></span>
+      <button class="btn ghost" id="head-notebooks" style="padding:4px 10px;font-size:var(--fs-label)" title="看专家自己写的私有笔记">笔记本</button>
       <button class="btn ghost hidden" id="head-disband" style="padding:4px 10px;font-size:var(--fs-label)">撤群</button>
     </header>
     <div class="br-stream" id="stream"></div>
@@ -764,6 +766,7 @@ function cancelCreate(){
   syncChrome();
 }
 $('#btn-new').onclick = startCreate;
+$('#head-notebooks').onclick = () => { location.href = url('/notebooks'); };
 $('#mk-cancel').onclick = cancelCreate;
 $('#mk-go').onclick = async () => {
   const topic = $('#mk-topic').value.trim();
@@ -995,6 +998,228 @@ document.addEventListener('click', e => {
 
 """
 
+NOTEBOOKS_PAGE = r"""
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>专家笔记本 · OpenWorker</title>
+<style>
+  :root {
+    color-scheme: light;
+    --paper:#f5f6f7; --panel:#ffffff; --ink:#17191c; --muted:#5b616b; --faint:#9aa1aa;
+    --line:#e8eaed; --line-strong:#d8dce1;
+    --accent:#2563eb; --accent-soft:#e9f0fd;
+    --ok:#2f7d57; --danger:#b91c1c; --danger-soft:#f9e7e5;
+    --solid:#e9ebf0; --on-solid:#1f2227; --scrim:rgba(29,27,24,.32);
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC",Inter,system-ui,sans-serif;
+    --mono:"SF Mono","JetBrains Mono",Menlo,Consolas,monospace;
+    --fs-label:11px; --fs-meta:12px; --fs-ui:13px; --fs-body:14px;
+    --fs-heading:15px; --fs-title:16px; --fs-chat:15px;
+  }
+  html[data-theme="dark"] {
+    color-scheme: dark;
+    --paper:#131417; --panel:#1c1e22; --ink:#e6e8eb; --muted:#9aa1ab; --faint:#62686f;
+    --line:#2a2d33; --line-strong:#3a3e46;
+    --accent:#4c8dff; --accent-soft:#1c2a44;
+    --ok:#5cb87f; --danger:#f07067; --danger-soft:#3d2422;
+    --solid:#2e3138; --on-solid:#e6e8eb; --scrim:rgba(0,0,0,.5);
+  }
+  html[data-text-size="small"] { --fs-label:10px; --fs-meta:11px; --fs-ui:12px; --fs-body:13px; --fs-heading:14px; --fs-title:15px; }
+  html[data-text-size="large"] { --fs-label:12px; --fs-meta:13px; --fs-ui:14px; --fs-body:15px; --fs-heading:16px; --fs-title:17px; }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  html, body { height:100%; }
+  body { background:var(--paper); color:var(--ink); font-family:var(--sans); font-size:var(--fs-body); overflow:hidden; }
+  button, textarea, input { font-family:inherit; }
+  .nb { display:flex; height:100vh; }
+  .nb-side { width:304px; flex:none; background:var(--panel); border-right:1px solid var(--line); display:flex; flex-flow:column; overflow:hidden; }
+  .side-top { padding:14px 14px 8px; display:flex; align-items:center; gap:8px; }
+  .side-top .ttl { font-size:var(--fs-label); font-weight:600; letter-spacing:.12em; color:var(--muted); text-transform:uppercase; flex:1; }
+  .back { font-size:var(--fs-label); color:var(--accent); cursor:pointer; text-decoration:none; }
+  .hint { padding:0 14px 10px; font-size:var(--fs-label); color:var(--faint); line-height:1.75; }
+  .nb-list { overflow:auto; flex:1; padding:0 8px 14px; }
+  .nb-group { font-size:var(--fs-label); color:var(--faint); padding:12px 8px 4px; letter-spacing:.05em; }
+  .nb-item { padding:9px 10px; border-radius:8px; cursor:pointer; border:1px solid transparent; }
+  .nb-item:hover { background:var(--paper); }
+  .nb-item.on { background:var(--accent-soft); border-color:color-mix(in srgb,var(--accent) 30%,transparent); }
+  .nb-item .nm { font-size:var(--fs-ui); font-weight:600; }
+  .nb-item .meta { font-size:var(--fs-label); color:var(--faint); margin-top:3px; }
+  .nb-main { flex:1; display:flex; flex-flow:column; min-width:0; }
+  .nb-head { height:52px; flex:none; display:flex; align-items:center; gap:10px; padding:0 18px; border-bottom:1px solid var(--line); background:var(--panel); }
+  .nb-head .ht { font-size:var(--fs-title); font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .spacer { flex:1; }
+  .btn { border:1px solid var(--line-strong); background:var(--panel); color:var(--ink); border-radius:7px; padding:6px 12px; font-size:var(--fs-ui); cursor:pointer; }
+  .btn:hover { border-color:var(--accent); color:var(--accent); }
+  .btn.ghost { background:transparent; }
+  .btn.danger { background:var(--danger); border-color:var(--danger); color:#fff; }
+  .btn.danger:hover { opacity:.88; color:#fff; }
+  .nb-body { margin:0; padding:18px 20px; overflow:auto; flex:1; white-space:pre-wrap; line-height:1.85; font-family:var(--mono); font-size:var(--fs-body); }
+  .empty { margin:auto; color:var(--muted); text-align:center; padding:44px 24px; line-height:1.9; }
+  .hidden { display:none !important; }
+  .toast { position:fixed; left:50%; bottom:22px; transform:translateX(-50%); background:var(--solid); color:var(--on-solid); padding:9px 16px; border-radius:9px; font-size:var(--fs-ui); opacity:0; pointer-events:none; transition:opacity .15s; }
+  .toast.show { opacity:1; }
+  .toast.ok { background:var(--ok); color:#fff; }
+  .mask { position:fixed; inset:0; background:var(--scrim); display:flex; align-items:center; justify-content:center; z-index:20; }
+  .dlg { width:min(430px,92vw); background:var(--panel); color:var(--ink); border:1px solid var(--line); border-radius:12px; padding:18px; }
+  .dlg-t { font-size:var(--fs-title); font-weight:600; margin-bottom:10px; }
+  .dlg-b { font-size:var(--fs-ui); color:var(--muted); line-height:1.75; margin-bottom:16px; }
+  .dlg-f { display:flex; justify-content:flex-end; gap:8px; }
+</style>
+</head>
+<body>
+<div class="nb">
+  <aside class="nb-side">
+    <div class="side-top"><span class="ttl">专家笔记本</span><a class="back" id="back">← Bot 群</a></div>
+    <div class="hint">专家自己写的私有笔记（书 × 专家）。这里只能看和删；笔记不进群材料，也不喂小桔。</div>
+    <div class="nb-list" id="list"></div>
+  </aside>
+  <section class="nb-main">
+    <header class="nb-head">
+      <span class="ht" id="title">选一本笔记</span>
+      <span class="spacer"></span>
+      <button class="btn danger hidden" id="del">删除这本笔记</button>
+    </header>
+    <pre class="nb-body" id="body"></pre>
+  </section>
+</div>
+<div class="mask hidden" id="confirm">
+  <div class="dlg" role="dialog" aria-modal="true">
+    <div class="dlg-t">删掉这本笔记？</div>
+    <div class="dlg-b" id="cf-body"></div>
+    <div class="dlg-f">
+      <button class="btn ghost" id="cf-cancel">先不删</button>
+      <button class="btn danger" id="cf-ok">删除</button>
+    </div>
+  </div>
+</div>
+<div class="toast" id="toast"></div>
+<script>
+const BASE = __BOT_BASE__;
+const url = p => BASE + p;
+const $ = s => document.querySelector(s);
+const esc = s => String(s == null ? '' : s).replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+const EXPERT_NAMES = { brainstormer: '创意脑洞专家', 'lit-editor': '文学编辑', adaptation: '影视改编策划' };
+let items = [], current = null, toastTimer = null;
+
+function toast(m, ok) {
+  const t = $('#toast');
+  t.textContent = m || '';
+  t.classList.toggle('show', !!m);
+  t.classList.toggle('ok', !!ok);
+  clearTimeout(toastTimer);
+  if (m) toastTimer = setTimeout(() => t.classList.remove('show'), 3200);
+}
+async function api(path, opt) {
+  const r = await fetch(url(path), opt);
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(d.detail || ('HTTP ' + r.status));
+  return d;
+}
+function fmtTime(ts) {
+  if (!ts) return '';
+  const d = new Date(ts * 1000);
+  if (isNaN(d)) return '';
+  const pad = n => String(n).padStart(2, '0');
+  return (d.getMonth() + 1) + ' 月 ' + d.getDate() + ' 日 ' + pad(d.getHours()) + ':' + pad(d.getMinutes());
+}
+function renderList() {
+  const list = $('#list');
+  if (!items.length) {
+    list.innerHTML = '<div class="empty" style="padding:28px 12px">还没有专家记过笔记。<br>去群里聊一轮，或 1v1 找脑洞 / 文学编辑 / 影视改编。</div>';
+    return;
+  }
+  const byBook = {};
+  for (const it of items) (byBook[it.book] || (byBook[it.book] = [])).push(it);
+  list.innerHTML = Object.keys(byBook).map(book =>
+    '<div class="nb-group">' + esc(book) + '</div>' +
+    byBook[book].map(it =>
+      '<div class="nb-item' + (current && current.book === it.book && current.expert === it.expert ? ' on' : '') +
+      '" data-book="' + esc(it.book) + '" data-expert="' + esc(it.expert) + '">' +
+        '<div class="nm">' + esc(EXPERT_NAMES[it.expert] || it.expert) + '</div>' +
+        '<div class="meta">' + it.chars + ' 字 · ' + fmtTime(it.updated) + '</div>' +
+      '</div>'
+    ).join('')
+  ).join('');
+  list.querySelectorAll('.nb-item').forEach(el => {
+    el.onclick = () => select(el.dataset.book, el.dataset.expert);
+  });
+}
+function resetView() {
+  current = null;
+  $('#title').textContent = '选一本笔记';
+  $('#body').textContent = '';
+  $('#del').classList.add('hidden');
+}
+async function select(book, expert) {
+  current = { book: book, expert: expert };
+  renderList();
+  $('#title').textContent = '《' + book + '》· ' + (EXPERT_NAMES[expert] || expert);
+  try {
+    const d = await api('/api/notebooks/content?book=' + encodeURIComponent(book) + '&expert=' + encodeURIComponent(expert));
+    $('#body').textContent = d.text || '（这本笔记本还是空的）';
+    $('#del').classList.remove('hidden');
+  } catch (e) {
+    $('#body').textContent = '读取失败：' + e.message;
+    $('#del').classList.add('hidden');
+  }
+}
+async function load() {
+  const d = await api('/api/notebooks');
+  items = d.items || [];
+  if (current) {
+    const still = items.find(x => x.book === current.book && x.expert === current.expert);
+    if (still) { await select(current.book, current.expert); return; }
+    resetView();
+  }
+  renderList();
+  if (items.length) await select(items[0].book, items[0].expert);
+}
+function askDelete() {
+  if (!current) return;
+  $('#cf-body').innerHTML = '「《' + esc(current.book) + '》· ' + esc(EXPERT_NAMES[current.expert] || current.expert) +
+    '」的笔记会整本删除，不可恢复。<br>书稿不受影响；专家下次从空白开始。';
+  $('#confirm').classList.remove('hidden');
+}
+async function doDelete() {
+  if (!current) return;
+  $('#confirm').classList.add('hidden');
+  const book = current.book, expert = current.expert;
+  try {
+    await api('/api/notebooks?book=' + encodeURIComponent(book) + '&expert=' + encodeURIComponent(expert), { method: 'DELETE' });
+    toast('已删除', true);
+    current = null;
+    await load();
+  } catch (e) { toast('删除失败：' + e.message); }
+}
+$('#back').onclick = () => { location.href = url('/'); };
+$('#del').onclick = askDelete;
+$('#cf-cancel').onclick = () => $('#confirm').classList.add('hidden');
+$('#cf-ok').onclick = doDelete;
+$('#confirm').onclick = e => { if (e.target === $('#confirm')) $('#confirm').classList.add('hidden'); };
+document.addEventListener('keydown', e => { if (e.key === 'Escape') $('#confirm').classList.add('hidden'); });
+
+/* 主题 token：与 Bot 群页同一协议（父页 postMessage 计算后的变量） */
+const TOKEN_KEYS = ['--paper','--panel','--ink','--muted','--faint','--line','--line-strong',
+  '--accent','--accent-soft','--ok','--danger','--solid','--on-solid','--scrim',
+  '--fs-label','--fs-meta','--fs-ui','--fs-body','--fs-heading','--fs-title'];
+window.addEventListener('message', e => {
+  const d = e.data;
+  if (!d || d.type !== 'ow-tokens') return;
+  const root = document.documentElement;
+  if (d.theme) root.dataset.theme = d.theme === 'dark' ? 'dark' : 'light';
+  if (d.textSize) root.dataset.textSize = d.textSize;
+  const vars = d.vars || {};
+  TOKEN_KEYS.forEach(k => { if (typeof vars[k] === 'string' && vars[k]) root.style.setProperty(k, vars[k]); });
+});
+try { parent.postMessage({ type: 'ow-tokens-request' }, '*'); } catch (e) {}
+
+load().catch(e => toast('加载失败：' + e.message));
+</script>
+</body>
+</html>
+"""
+
 
 class NewRoom(BaseModel):
     topic: str
@@ -1069,6 +1294,27 @@ def create_app(
             }
             for b in list_bots()
         ]
+
+    @app.get("/notebooks", response_class=HTMLResponse)
+    def notebooks_page_route() -> str:
+        return NOTEBOOKS_PAGE.replace("__BOT_BASE__", json.dumps(prefix))
+
+    @app.get("/api/notebooks")
+    def notebooks_index() -> dict[str, Any]:
+        return {"items": list_notebooks(default_shelf())}
+
+    @app.get("/api/notebooks/content")
+    def notebook_content(book: str, expert: str) -> dict[str, Any]:
+        text = read_expert_notebook(default_shelf(), book, expert)
+        if text is None:
+            raise HTTPException(status_code=404, detail="没有这本笔记")
+        return {"book": book, "expert": expert, "text": text}
+
+    @app.delete("/api/notebooks")
+    def notebook_delete(book: str, expert: str) -> dict[str, Any]:
+        if not delete_notebook(default_shelf(), book, expert):
+            raise HTTPException(status_code=404, detail="没有这本笔记")
+        return {"ok": True}
 
     @app.get("/api/rooms")
     def room_list() -> list[dict[str, Any]]:

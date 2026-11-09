@@ -23,6 +23,10 @@ class AgentContext:
     # When None, tools fall back to the single `workspace` root. Held by reference so runtime
     # add/remove of folders is seen by the file tools built from it.
     roots: Optional[list] = None
+    # Persona id (manifest id, e.g. "brainstormer") — lets catalog capabilities scope
+    # per-persona state (the expert notebook is per persona × per book). None for
+    # non-persona agents (Code/Cowork built-ins).
+    persona_id: Optional[str] = None
 
 
 @dataclass
