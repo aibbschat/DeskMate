@@ -18,7 +18,7 @@ def test_author_profile_has_identity_and_books() -> None:
 
 
 def test_author_profile_only_injected_for_experts() -> None:
-    for pid in ("brainstormer", "lit-editor", "adaptation", "historian", "editor"):
+    for pid in ("brainstormer", "lit-editor", "adaptation", "historian", "editor", "outline", "character"):
         assert author_profile_for(pid), f"{pid} 应该拿到作者档案"
     for pid in ("cowork", "deskmate", "ops", ""):
         assert author_profile_for(pid) == "", f"{pid} 不该重复注入"

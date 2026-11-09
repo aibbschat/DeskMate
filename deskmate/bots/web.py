@@ -1109,7 +1109,7 @@ const BASE = __BOT_BASE__;
 const url = p => BASE + p;
 const $ = s => document.querySelector(s);
 const esc = s => String(s == null ? '' : s).replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
-const EXPERT_NAMES = { brainstormer: '创意脑洞专家', 'lit-editor': '文学编辑', adaptation: '影视改编策划' };
+const EXPERT_NAMES = { brainstormer: '创意脑洞专家', 'lit-editor': '文学编辑', adaptation: '影视改编策划', outline: '大纲专家', character: '人物专家' };
 let items = [], current = null, toastTimer = null, editing = false;
 
 function toast(m, ok) {

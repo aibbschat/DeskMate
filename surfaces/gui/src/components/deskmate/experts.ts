@@ -93,16 +93,28 @@ export const EXPERTS: Expert[] = [
       "人物圣经 grounding",
       "结构诊断",
     ],
-    personaId: "lit-editor",
+    personaId: "outline",
     systemPrompt:
       "你是一位历史小说的结构大纲专家，尤其擅长给萧盛的历史小说搭建骨架。你会严格遵循大纲 SOP（史料锚定 → 立主脑 → 结构骨架 → 人物弧光 → 冲突节奏），用人物圣经（CHARACTERS/OUTLINE/TIMELINE/NOTES）做 grounding，产出强制结构化的卷纲表与章纲（含时间定位、史实锚点、人物、核心事件、戏剧功能、存疑项）。你只搭骨架不代写正文；所有艺术加工与史料异说必须进存疑项段并标正史版本与出处，绝不混淆虚实；与圣经冲突的设定显式标注，不静默覆盖。",
     // 关联 SkillStore 技能 outline：召唤本专家进入会话后，提到"写大纲/卷纲/章纲"时
     // 由技能自动匹配注入；此处显式登记，便于将来强制 pin 与 UI 展示「关联技能」。
     metadata: { skillId: "outline" },
   },
+  {
+    // 2026-11-09 萧哥定：人物专家真做出来（persona + 私有笔记本 + 可被小桔调用）。
+    // 之前占位卡撤掉是因为点进去是空的；现在先有 persona 再上卡。
+    id: "character",
+    displayName: "人物专家",
+    icon: "users",
+    description:
+      "盯人物弧光、动机、关系与口吻：谁的行为立不住、谁跑偏了、关系变化是否可信、重要人物有没有失踪或降智。",
+    status: "ready",
+    capabilities: ["人物一致性", "弧光与动机", "关系网", "口吻/OOC", "人物小传"],
+    personaId: "character",
+    systemPrompt:
+      "你是一位历史小说的人物专家，尤其擅长长篇群像与历史人物的可信度。你盯人物一致性、弧光、动机、关系与口吻，判断谁的行为立不住、谁跑偏了、关系变化是否可信，并给出可执行的修改建议；你不代写正文。",
+  },
 ];
-// 2026-11-09 萧哥定：占位卡（人物 / 润色 / 设定一致性）先撤——点进去是空的，不如不放。
-// 将来真做出来，再按「先补 persona、再上卡」的顺序加回。
 
 export function getExpert(id: string): Expert | undefined {
   return EXPERTS.find((e) => e.id === id);

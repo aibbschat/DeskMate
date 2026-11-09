@@ -51,6 +51,14 @@ def test_1v1_brainstormer_gets_notebook_tools_and_author(tmp_path: Path) -> None
     assert "AI 不代笔" in system
 
 
+def test_1v1_new_experts_get_notebook_and_author(tmp_path: Path) -> None:
+    for persona in ("outline", "character"):
+        eng = _engine(persona, tmp_path)
+        names = set(eng.registry.names())
+        assert {"notebook_read", "notebook_remember", "notebook_feedback", "notebook_rewrite"} <= names
+        assert "作者（你服务的人" in str(eng.messages[0].get("content") or "")
+
+
 def test_1v1_historian_gets_author_but_no_notebook(tmp_path: Path) -> None:
     eng = _engine("historian", tmp_path)
     names = set(eng.registry.names())
@@ -62,7 +70,7 @@ def test_notebook_personas_have_conflict_rule() -> None:
     from pathlib import Path
 
     root = Path(__file__).resolve().parents[1] / "coworker/personas/builtin"
-    for pid in ("brainstormer", "lit-editor", "adaptation"):
+    for pid in ("brainstormer", "lit-editor", "adaptation", "outline", "character"):
         text = (root / f"{pid}.md").read_text(encoding="utf-8")
         assert "冲突先改" in text, f"{pid} 缺少冲突修正规则"
         assert "作者裁定 > 正文" in text, f"{pid} 冲突优先级不明确"

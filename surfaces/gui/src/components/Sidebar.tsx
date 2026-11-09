@@ -1454,7 +1454,9 @@ function NewSessionSplit({
   // 三处入口全被过滤掉 ＝ 功能存在但不可达。故并入本白名单。
   // 脑洞专家例外（2026-11-08 决策 A）：开脑洞固定走独立专家，专家中心卡片 + 这里都给一个
   // 直接起会话的入口；它已按 §24 退出 Bot 群名册，不该只能靠旧会话进入。
-  const ALLOWED_NEW_SESSION = new Set(["cowork", "deskmate", "editor-in-chief", "brainstormer"]);
+  const ALLOWED_NEW_SESSION = new Set([
+    "cowork", "deskmate", "editor-in-chief", "brainstormer", "outline", "character",
+  ]);
   const enabled = (personas || []).filter((p) => p.enabled && ALLOWED_NEW_SESSION.has(p.id));
   // With a single enabled persona there is nothing to pick — the split collapses to a plain
   // button (owner ask 2026-07-09). `personas === null` (still loading) keeps the split so the

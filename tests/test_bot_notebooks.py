@@ -272,12 +272,12 @@ def test_model_can_actively_write_notebook_through_engine(tmp_path: Path) -> Non
 
 # ------------------------------------------------------------------ 1v1（catalog）
 
-def test_catalog_exposes_notebook_only_for_three_experts(tmp_path: Path) -> None:
+def test_catalog_exposes_notebook_only_for_notebook_experts(tmp_path: Path) -> None:
     import coworker.agent  # noqa: F401 — 走真实 import 顺序，避开 catalog 历史循环
     from coworker.agents.base import AgentContext
     from coworker.catalog import expand
 
-    for pid in ("brainstormer", "lit-editor", "adaptation"):
+    for pid in ("brainstormer", "lit-editor", "adaptation", "outline", "character"):
         names = {t.__name__ for t in expand(["notebook"], AgentContext(persona_id=pid))}
         assert {"notebook_read", "notebook_remember", "notebook_rewrite"} <= names
     for pid in ("historian", "editor", "cowork", ""):
@@ -287,7 +287,7 @@ def test_catalog_exposes_notebook_only_for_three_experts(tmp_path: Path) -> None
 def test_persona_tool_list_includes_notebook() -> None:
     from coworker.personas.registry import get_registry
 
-    for pid in ("brainstormer", "lit-editor", "adaptation"):
+    for pid in ("brainstormer", "lit-editor", "adaptation", "outline", "character"):
         entry = get_registry().get(pid)
         assert "notebook" in entry.manifest.tools
 

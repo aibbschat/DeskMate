@@ -1336,3 +1336,67 @@ bot / notebook / expert 相关 232 例 + 记忆 67 例均全绿。
 作为防回归锁；修后 7 passed。改动文件均已在 `deploy_cloud_sync.sh` 清单内
 （新增的是测试文件，按红线不进传输清单）。
 
+
+
+---
+
+## 37. 小桔调用专家 + 大纲/人物专家（2026-11-09）
+
+> 萧哥拍板：小桔是主体，知道专家存在、能派活；记忆仍然隔离。同步、自动派、
+> 简单 1 位、复杂 2 位、最多 3 位；专家可读全书、可写自己笔记本；汇报只进
+> 「结论 + 裁定」，专家原话不进小桔记忆。大纲/人物专家新做，各挂笔记本。
+
+### 37.1 新专家
+
+- 新增用户向 persona：
+  - `coworker/personas/builtin/outline.md`（id=outline，大纲专家）；
+  - `coworker/personas/builtin/character.md`（id=character，人物专家）。
+  两者都是独立专家（不进 Bot 群、不圆桌），tools 含 notebook；写作纪律/冲突先改/反馈/
+  整理提案与脑洞/文学编辑/影视改编写法一致。
+- 专家中心：`outline` 卡之前错挂 `lit-editor`（叫大纲专家 = 文学编辑），已改挂
+  `outline`；新增「人物专家」卡（icon=users）。侧边栏允许新会话。
+- `NOTEBOOK_BOTS` 扩到 5 位；`EXPERT_PERSONA_IDS`（作者档案）同步扩充。
+- 大纲专家不再直接复用上游 `outline-writer`（那是只听主编的流水线工人），而是
+  用户向新 persona。
+
+### 37.2 小桔怎么知道、怎么调用
+
+- 小桔的 system prompt 注入专家目录（`deskmate/consult.py:CONSULT_GUIDANCE`）：
+  文学编辑 / 脑洞 / 大纲 / 人物 / 影视改编，各自擅长和什么时候叫；**只给目录，
+  不给任何专家记忆**。
+- 只对 `agent.name == "deskmate"` 注册 `consult_experts` 工具：
+  `consult_experts(experts=[...], brief=..., book="夜不收")`。
+  - 1-3 位，去重、按给的名字/id 解析；超过 3 位拒绝；
+  - 并行（ThreadPoolExecutor，每专家一个 `asyncio.run`），单专家超时 240s；
+  - 专家引擎：`workspace=None` + `read_book/list_books`（只读全文，按需读章节）
+    + `notebook_*`；移除 `ask_user`/`save_skill`；`Mode.BYPASS_APPROVALS`
+    （没有文件/shell 工具，唯一写入是笔记本）；
+  - 专家看不到小桔记忆；小桔不读专家笔记本；
+  - 咨询记录写 `~/.deskmate/consultations/<日期>/<时间>-<专家>.md` 审计。
+- 助手看到的工具卡是 `consult_experts`（并行/耗时由卡显示）；汇报由小桔综合后给
+  萧盛，带署名，不照搬。
+
+### 37.3 记忆边界（复用 11-09 红线段）
+
+- 专家引擎：`memory_enabled=False`（deskmate_memory_allowed），无 hook、无记忆工具；
+  只有作者基础档案 + 书稿 + 自己的笔记本。
+- 小桔的**咨询轮不自动抽记忆**：consult 工具置 `consult_state.used`，post-turn hook
+  读到就跳过 USER/MEMORY/sessions 抽取并复位；下一轮恢复。专家原话不落成小桔事实。
+- 小桔汇报后可以自己用 memory 工具记「咨询了谁 + 结论 + 萧盛裁定」；原始记录在
+  consultations/ 审计里，不进长期记忆。
+
+### 37.4 验证
+
+- 新增 `tests/test_expert_consult.py`：目录 5 位、并行两专家 + 审计、非法请求拒绝、
+  专家引擎隔离（无 hook/记忆工具、有 read_book/notebook）、小桔有 consult 而专家没有、
+  咨询轮跳过自动抽记忆。
+- 扩展 notebook/1v1/author 测试到 5 位；全量 **241 passed**。
+- 前端 `tsc --noEmit` 通过、`vite build` 通过（dist 已生成）。
+
+### 37.5 未做 / 注意
+
+- 进度是通用工具卡，没有单独「正在调用专家」自定义卡；如果需要更强提示，下一刀加。
+- 咨询轮不长时记忆；「结论 + 裁定」靠小桔自己记一条，暂未自动写。
+- 审计页/咨询历史 UI 未做。
+- 装到 /Applications 需重跑 `./packaging/build_local_app.sh --install`（前端变了；
+  Python 是 editable，重启 app 生效）。

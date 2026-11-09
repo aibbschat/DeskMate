@@ -35,7 +35,9 @@ except ImportError:  # pragma: no cover
 from .reading import BookShelf, parse_book_title
 
 #: 只有这三位带笔记本（2026-11-09 萧哥：史料专家用得少，先不做）。
-NOTEBOOK_BOTS: frozenset[str] = frozenset({"brainstormer", "lit-editor", "adaptation"})
+NOTEBOOK_BOTS: frozenset[str] = frozenset({
+    "brainstormer", "lit-editor", "adaptation", "outline", "character",
+})
 
 _EXPERT_ROOT = "experts"
 _NOTES_NAME = "notes.md"
@@ -490,7 +492,7 @@ def read_notebook(shelf: BookShelf, book: str, expert: str) -> Optional[str]:
 def save_notebook(shelf: BookShelf, book: str, expert: str, content: str) -> tuple[bool, str]:
     """作者侧：整本保存编辑后的笔记（走与专家同一套上限/原子写/守卫）。"""
     if str(expert or "") not in NOTEBOOK_BOTS:
-        return False, "只有脑洞 / 文学编辑 / 影视改编三位有笔记本"
+        return False, "这位专家没有笔记本（只有脑洞 / 文学编辑 / 影视改编 / 大纲 / 人物）"
     # 先用作者侧的同一套守卫探一次：软链/越界在 rewrite 里会返回「没有挂上具体
     # 哪本书」，若只看消息前缀就会误报成功，UI 会 toast「已保存」但文件没动。
     if _notes_path_for(shelf, book, expert) is None:

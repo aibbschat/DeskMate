@@ -18,6 +18,7 @@ from .reading import BookShelf, default_shelf
 EXPERT_PERSONA_IDS: frozenset[str] = frozenset({
     "brainstormer", "lit-editor", "adaptation", "historian",
     "proofreader", "reader", "publisher", "genre", "editor",
+    "outline", "character",
 })
 
 _USER_MD = Path("~/.deskmate/USER.md")

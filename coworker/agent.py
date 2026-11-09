@@ -669,6 +669,24 @@ def build_engine(
     # 复查补强：memory_enabled 同时管技能索引 / @召唤 / 检索摄入标记，避免「只拦
     # post_turn_hook」留下旁路（engine.py::_xiaosheng_note 不走 hook）。
     mem_store = memory_store if memory_enabled else None
+    # 2026-11-09 小桔调用专家（只给小桔）：专家看不到小桔记忆；咨询轮不自动抽记忆。
+    consult_state = {"used": False}
+    consult_enabled = False
+    if agent.name == "deskmate":
+        try:
+            from deskmate.consult import CONSULT_GUIDANCE, make_consult_tool
+
+            registry.register(
+                make_consult_tool(
+                    provider=provider,
+                    model=model,
+                    on_consulted=lambda: consult_state.__setitem__("used", True),
+                )
+            )
+            instructions = f"{instructions}\n\n{CONSULT_GUIDANCE}"
+            consult_enabled = True
+        except Exception:  # noqa: BLE001 —— 咨询能力起不来不拖垮小桔
+            consult_enabled = False
     if mem_store is not None:
         # Always the full toolset: the registry is fixed at build, so a session born
         # while saving was off must still be able to save the moment it's turned on.
@@ -861,6 +879,17 @@ def build_engine(
                 )
         return "\n\n".join(parts)
 
+    if consult_enabled and mem_store is not None:
+        def _post_turn_hook(user_msg: str, assistant_msg: str) -> None:
+            if consult_state["used"]:
+                consult_state["used"] = False
+                return
+            _deskmate_post_turn_hook(user_msg, assistant_msg)
+    elif memory_enabled and mem_store is not None:
+        _post_turn_hook = _deskmate_post_turn_hook
+    else:
+        _post_turn_hook = None
+
     engine = TurnEngine(
         provider=provider,
         registry=registry,
@@ -881,7 +910,8 @@ def build_engine(
         plan_approver=plan_approver,
         question_asker=question_asker,
         # 2026-11-09 红线段：非 companion（专家/工人）不触发小桔记忆抽取/技能进化。
-        post_turn_hook=(_deskmate_post_turn_hook if memory_enabled and mem_store is not None else None),
+        # 小桔的咨询轮不自动抽记忆：专家原话不进 USER/MEMORY，由小桔汇报后自己决定记哪条。
+        post_turn_hook=_post_turn_hook,
         tool_requester=tool_requester,
         team_approver=team_approver,
         items_approver=items_approver,    )
