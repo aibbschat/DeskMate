@@ -1452,7 +1452,9 @@ function NewSessionSplit({
   // 主编例外（2026-10-28）：它是 lead，必须从"一个会话"开始才有意义——团队只能由 lead
   // 会话经 propose_team 编制出来，而它既不属圆桌 7 专家也不在 ENGINEERING_IDS 里，
   // 三处入口全被过滤掉 ＝ 功能存在但不可达。故并入本白名单。
-  const ALLOWED_NEW_SESSION = new Set(["cowork", "deskmate", "editor-in-chief"]);
+  // 脑洞专家例外（2026-11-08 决策 A）：开脑洞固定走独立专家，专家中心卡片 + 这里都给一个
+  // 直接起会话的入口；它已按 §24 退出 Bot 群名册，不该只能靠旧会话进入。
+  const ALLOWED_NEW_SESSION = new Set(["cowork", "deskmate", "editor-in-chief", "brainstormer"]);
   const enabled = (personas || []).filter((p) => p.enabled && ALLOWED_NEW_SESSION.has(p.id));
   // With a single enabled persona there is nothing to pick — the split collapses to a plain
   // button (owner ask 2026-07-09). `personas === null` (still loading) keeps the split so the
