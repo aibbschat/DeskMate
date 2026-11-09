@@ -597,6 +597,9 @@ def build_engine(
         registry.register_all(selfwake_tools(wake_store, session_id))
 
     instructions = f"{agent.system_prompt}\n\n{_NARRATION_GUIDANCE}\n\n{_FIRST_CONTACT_GUIDANCE}"
+    # 2026-11-09 红线段：小桔记忆/技能/@召唤只属于 companion。定义在这里而非后面，
+    # 因为系统 prompt 的拼装（技能索引）发生得更早，必须复用同一个判定。
+    is_companion = agent.name in MEMORY_COMPANION_AGENTS
     # 专家基础记忆（2026-11-09）：作者是谁/做什么/写过哪些书。从既有 USER.md +
     # 书架动态拼，不新建记忆层；小桔等有自己记忆的 persona 不注入（author_profile_for
     # 只对创作/分析专家返回内容）。deskmate 缺失/读失败一律跳过，不拖垮会话。
@@ -608,8 +611,9 @@ def build_engine(
             instructions = f"{instructions}\n\n{_author_block}"
     except Exception:  # noqa: BLE001
         pass
-    # DeskMate 技能索引：注入 <available_skills> 块，LLM 自觉加载
-    skill_index = _deskmate_skill_index()
+    # DeskMate 技能索引：注入 <available_skills> 块，LLM 自觉加载。
+    # 2026-11-09 红线段：这是小桔自己的技能库（~/.deskmate/skills），专家 1v1 不读。
+    skill_index = _deskmate_skill_index() if is_companion else ""
     if skill_index:
         instructions = f"{instructions}\n\n{skill_index}"
     if ws is not None:
@@ -637,7 +641,9 @@ def build_engine(
         return not memory_off
 
     # 2026-11-09 红线段：非 companion agent（专家/工人 persona）不读、不写小桔记忆。
-    mem_store = memory_store if agent.name in MEMORY_COMPANION_AGENTS else None
+    # 复查补强：is_companion 同时管技能索引 / @召唤 / 检索摄入标记，避免「只拦
+    # post_turn_hook」留下旁路（engine.py::_xiaosheng_note 不走 hook）。
+    mem_store = memory_store if is_companion else None
     if mem_store is not None:
         # Always the full toolset: the registry is fixed at build, so a session born
         # while saving was off must still be able to save the moment it's turned on.
@@ -785,7 +791,12 @@ def build_engine(
         # DeskMate @角色召唤（opt-in，DESKMATE_MENTION，默认开）：解析最后一条 user 消息的 @，
         # 命中花名册则注入 handoff 协议，让被 @ 角色临时参与本轮（会话身份 = 新建会话选定的
         # persona，@ 仅当轮补位）。default_persona_id 取会话 agent 名，供 handoff 说明基线。
-        dm_mention = _deskmate_mention_context(messages, default_persona_id=agent.name)
+        # 2026-11-09 红线段：@角色召唤是小桔的花名册协议，专家 1v1 不注入。
+        dm_mention = (
+            _deskmate_mention_context(messages, default_persona_id=agent.name)
+            if is_companion
+            else ""
+        )
         if dm_mention:
             parts.append(dm_mention)
         # Live skill menu (SKILLS-SPEC §4.1): recomputed every turn like the roots list, so
@@ -830,13 +841,16 @@ def build_engine(
         plan_approver=plan_approver,
         question_asker=question_asker,
         # 2026-11-09 红线段：非 companion（专家/工人）不触发小桔记忆抽取/技能进化。
-        post_turn_hook=(_deskmate_post_turn_hook if mem_store is not None else None),
+        post_turn_hook=(_deskmate_post_turn_hook if is_companion and mem_store is not None else None),
         tool_requester=tool_requester,
         team_approver=team_approver,
         items_approver=items_approver,    )
     engine.executor = executor  # type: ignore[attr-defined]
     engine.todo = todo  # type: ignore[attr-defined]
     engine.agent_name = agent.name  # type: ignore[attr-defined]
+    # 2026-11-09 红线段：engine 级标记，给不走 post_turn_hook 的写入点做 fail-closed
+    # 判定（engine.py::_xiaosheng_note）。默认 False；未打标即不写小桔记忆。
+    engine.deskmate_memory_enabled = is_companion  # type: ignore[attr-defined]
     engine.roots = root_list  # type: ignore[attr-defined]  # shared list; Slice C mutates in place
     # Bounded, secret-free runtime discovery — tools/folders present, not credentials or
     # access grants. Registered as a tool and exposed to the reviewer as RUNTIME FACTS so a

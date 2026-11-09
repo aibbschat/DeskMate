@@ -1920,6 +1920,12 @@ class TurnEngine:
         """
         if status != "ok":
             return
+        # 🔴 红线段（2026-11-09 复查补漏）：这条摄入钩子不走 post_turn_hook，是独立的
+        #    写入口。专家/工人 1v1 里调 web_search，同样会把检索结果当成「内部·萧盛」
+        #    素材写进 xiaosheng_observations.jsonl，进而污染世界观回望与对话上下文。
+        #    build_engine 按 agent.name 打标；未打标（CLI / 直接构造）一律 fail-closed。
+        if not getattr(self, "deskmate_memory_enabled", False):
+            return
         # 自动化任务跑的 web_search 不算萧盛影响：is_automation 由 surface/manager 在构造时
         # 打上（定时/手动运行的任务 = True，实时对话 = False）。
         if getattr(self, "is_automation", False):

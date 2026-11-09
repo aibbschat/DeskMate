@@ -1151,6 +1151,52 @@
 - USER/MEMORY 里可能还有更早的抽取行；本次只清与专家回答逐字对应的 4 行。
   需要的话可以做一次全量审计（按 coworker.db 非 companion 会话逐条比对）。
 
+### 33.6 复查补漏 + 存量清理（2026-11-09 16:25，已执行）
+
+复查发现 §33.3 的修复只拦了 `post_turn_hook` 一条线，另有四个漏洞：
+
+| # | 漏洞 | 证据 | 处置 |
+|---|---|---|---|
+| 1 | **运行层根本没加载修复** | App launch 15:33:41 < commit 16:05:37；后端 pid 未重启 | 需重启桌面 App（下条红线） |
+| 2 | `_xiaosheng_note` 是独立写入口 | `engine.py:1912` 不走 hook，专家 1v1 调 `web_search` 仍写「内部·萧盛」素材 | build_engine 打 `deskmate_memory_enabled` 标，未打标 fail-closed；BotRuntime 显式置 False |
+| 3 | 读侧没跟着收口 | `_deskmate_skill_index` / `_deskmate_mention_context` 对所有 agent 无条件注入 | 统一复用 `is_companion` 判定 |
+| 4 | 清理脚本只覆盖 6 个落点 | 指纹全盘扫描命中 18 个文件，含 growth blob / ledger / oplog / 日记素材 | 脚本重写，见下 |
+
+代码侧：`coworker/agent.py` 把 `is_companion` 提前到 prompt 拼装前，一处判定管记忆工具、
+记忆块、技能索引、@召唤、post_turn_hook、engine 标记；`tests/test_expert_memory_isolation.py`
+补齐 34 个 persona 全覆盖（原测试 skip 了 `editor-in-chief`，也没测 `plot-architect` /
+`screenwriter`），并锁住 `_xiaosheng_note` 与读侧注入。实测 34/34 门禁正确，相关子集 89+26 passed。
+
+存量清理（`--apply`，先整库 `sqlite3 .backup`）：
+
+| 落点 | 清理量 |
+|---|---|
+| sessions/*.md | 2 个专家会话移入隔离区 |
+| xiaosheng_observations | 34 行 |
+| USER.md / MEMORY.md | 4 行 / 2 行（含 11-08 脑洞专家那 2 行，原脚本漏掉） |
+| vault/preferences | 2 个文件（frontmatter `source` 指向专家 session） |
+| diary/materials | 3 行（memory_learned / skill_evolved） |
+| deskmate.db | growth.recent_events 3 条、proactive_ledger 5 条同步墓碑软删、_sync_oplog 7 条脱敏 |
+| disturb_state / behavior_log / traces/inject | 1 条 / 1 行 / 2 行 |
+
+验收：`integrity_check: ok`；后台 tick 在 16:27 重写 growth 后污染未回写（说明每次从库读）；
+文本 + SQL 指纹复扫 **0 命中**。隔离区 `~/.deskmate/_quarantine/expert_memory_20261109_162555/`
+含 81MB 整库备份、10 个 before 副本、被删行明细与 manifest，可全量回退。
+
+**故意保留（逐条核对过）**：`coworker.db` 里的专家对话记录本身；8-30 就存在的
+「表达的观点 > 故事好看 > 史料真实」长期记忆（指纹误报）；技能文件里 11-08 写入的
+「只读正文」规则（内容合理）；`proactive_ledger` 里 2026-10-11 的 snoozed 老建议
+（萧哥当时也问过同一句，属巧合命中，其 oplog payload 已从备份恢复）。
+
+🔴 **红线 / 未决**：
+- 桌面 App 必须重启，否则后端仍是 15:33 那版代码，专家 1v1 会继续写小桔记忆。
+- 剪贴板观察 → 主动建议是**另一条不经过记忆写入**的污染路径：萧哥把问句复制到剪贴板，
+  proactivity 就当成「对小桔说的话」生成 self_expression。本次只清了产物，没改行为
+  （真实优先，不硬约束表达），需要萧哥拍板要不要在观察侧加识别。
+- `_sync_oplog` 里已脱敏的历史 payload 属审计痕迹；云端目前停机保号，复活服务后
+  需做一次集合级对账确认墓碑收敛。
+- 本次修复与清理脚本尚未跑 `deploy_cloud_sync.sh`，本地↔云端代码存在漂移。
+
 
 ---
 

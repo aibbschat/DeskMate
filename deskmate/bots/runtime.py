@@ -542,6 +542,9 @@ class BotRuntime:
             #    小桔技能。群 bot **只读**共享记忆（context_provider 保留），绝不回写。
             #    钩子是 fire-and-forget daemon，摘掉不影响本轮发言。
             eng._post_turn_hook = None
+            # 同一红线：engine.py::_xiaosheng_note 不走 hook，是独立的萧盛素材写入口。
+            # 群 bot 一律 fail-closed，哪怕以后工具面放开 web_search 也不回写。
+            eng.deskmate_memory_enabled = False
             # 收紧工具面：build_engine 还会固定注册一堆 web/a2a/skill 工具。
             # 书稿面**只读**（read_book / list_books）；只有带笔记本的三位多三个
             # 私有笔记本工具（写只落 <书>/.deskmate/experts/<bot>/notes.md）。
