@@ -80,12 +80,36 @@ rejected, revise the plan using the feedback."""
 # Without these, models either never call `remember` or save noise the repo already
 # records. The conservative bias is deliberate: a wrong memory feels broken and creepy at
 # once; a missing one merely means the user repeats themselves.
-# 2026-11-09 红线段：小桔的记忆只属于她自己和主工作 Agent（cowork）。
-# 专家 / 工人 persona 的一对一会话不得读写小桔记忆——此前 build_engine 对**所有**
-# agent 都挂 post_turn_hook + memory_store + context_provider，实测：影视专家 1v1
-# 被写进 ~/.deskmate/sessions、xiaosheng_observations、USER.md，随后被"自我表达"
-# 行为当作小桔本人的话弹出。这里统一收口，只有下列 agent 进小桔记忆。
+# 2026-11-09 红线段：专家 / 工人 persona 的一对一会话不得读写小桔记忆——此前
+# build_engine 对**所有** agent 都挂 post_turn_hook + memory_store + context_provider，
+# 实测：影视专家 1v1 被写进 ~/.deskmate/sessions、xiaosheng_observations、USER.md，
+# 随后被"自我表达"行为当作小桔本人的话弹出。
+#
+# 11-09 晚复查修正：隔离对象只能是「注册在 persona 名册里的专家/工人」，不是
+# 「所有非 deskmate/cowork 的 agent」。25a1d72f 一刀切成白名单，把内置 Code agent
+# 的记忆也整块废掉了（SessionManager 默认 agent="code"，MEMORY-SPEC V1 从一开始就
+# 给它挂 memory_store + post-turn hook）——全量 test_memory / test_memory_api 12 例
+# 回归，实测 KeyError: Tool not registered: remember。基础 agent 保留原行为。
 MEMORY_COMPANION_AGENTS: frozenset[str] = frozenset({"deskmate", "cowork"})
+#: 名册里的基础 agent（不是专家/工人 persona），保留小桔记忆。
+_BASE_AGENTS_WITH_MEMORY: frozenset[str] = frozenset({"code"})
+
+
+def deskmate_memory_allowed(agent_name: str) -> bool:
+    """小桔记忆是否对该 agent 开放（记忆工具/块/技能索引/@召唤/hook 的单一判定）。
+
+    - companion（小桔 / 主 Coworker）与基础 Code agent：放行；
+    - 不在 persona 名册的内置 agent（chat / TUI 等）：放行，保留原行为；
+    - 名册里的专家 / 工人 persona：一律隔离（25a1d72f 红线）。
+    """
+    if agent_name in MEMORY_COMPANION_AGENTS or agent_name in _BASE_AGENTS_WITH_MEMORY:
+        return True
+    try:
+        from .personas.registry import get_registry
+
+        return get_registry().get(agent_name) is None
+    except Exception:  # noqa: BLE001 —— 名册异常时不擅自剥夺记忆
+        return True
 
 _MEMORY_GUIDANCE = """\
 Memory:
@@ -597,9 +621,10 @@ def build_engine(
         registry.register_all(selfwake_tools(wake_store, session_id))
 
     instructions = f"{agent.system_prompt}\n\n{_NARRATION_GUIDANCE}\n\n{_FIRST_CONTACT_GUIDANCE}"
-    # 2026-11-09 红线段：小桔记忆/技能/@召唤只属于 companion。定义在这里而非后面，
-    # 因为系统 prompt 的拼装（技能索引）发生得更早，必须复用同一个判定。
-    is_companion = agent.name in MEMORY_COMPANION_AGENTS
+    # 2026-11-09 红线段：小桔记忆/技能/@召唤只属于 companion 与基础 agent。
+    # 定义在这里而非后面，因为系统 prompt 的拼装（技能索引）发生得更早，必须复用
+    # 同一个判定；统一走 deskmate_memory_allowed，避免「只拦 hook」留下旁路。
+    memory_enabled = deskmate_memory_allowed(agent.name)
     # 专家基础记忆（2026-11-09）：作者是谁/做什么/写过哪些书。从既有 USER.md +
     # 书架动态拼，不新建记忆层；小桔等有自己记忆的 persona 不注入（author_profile_for
     # 只对创作/分析专家返回内容）。deskmate 缺失/读失败一律跳过，不拖垮会话。
@@ -613,7 +638,7 @@ def build_engine(
         pass
     # DeskMate 技能索引：注入 <available_skills> 块，LLM 自觉加载。
     # 2026-11-09 红线段：这是小桔自己的技能库（~/.deskmate/skills），专家 1v1 不读。
-    skill_index = _deskmate_skill_index() if is_companion else ""
+    skill_index = _deskmate_skill_index() if memory_enabled else ""
     if skill_index:
         instructions = f"{instructions}\n\n{skill_index}"
     if ws is not None:
@@ -641,9 +666,9 @@ def build_engine(
         return not memory_off
 
     # 2026-11-09 红线段：非 companion agent（专家/工人 persona）不读、不写小桔记忆。
-    # 复查补强：is_companion 同时管技能索引 / @召唤 / 检索摄入标记，避免「只拦
+    # 复查补强：memory_enabled 同时管技能索引 / @召唤 / 检索摄入标记，避免「只拦
     # post_turn_hook」留下旁路（engine.py::_xiaosheng_note 不走 hook）。
-    mem_store = memory_store if is_companion else None
+    mem_store = memory_store if memory_enabled else None
     if mem_store is not None:
         # Always the full toolset: the registry is fixed at build, so a session born
         # while saving was off must still be able to save the moment it's turned on.
@@ -794,7 +819,7 @@ def build_engine(
         # 2026-11-09 红线段：@角色召唤是小桔的花名册协议，专家 1v1 不注入。
         dm_mention = (
             _deskmate_mention_context(messages, default_persona_id=agent.name)
-            if is_companion
+            if memory_enabled
             else ""
         )
         if dm_mention:
@@ -841,7 +866,7 @@ def build_engine(
         plan_approver=plan_approver,
         question_asker=question_asker,
         # 2026-11-09 红线段：非 companion（专家/工人）不触发小桔记忆抽取/技能进化。
-        post_turn_hook=(_deskmate_post_turn_hook if is_companion and mem_store is not None else None),
+        post_turn_hook=(_deskmate_post_turn_hook if memory_enabled and mem_store is not None else None),
         tool_requester=tool_requester,
         team_approver=team_approver,
         items_approver=items_approver,    )
@@ -850,7 +875,7 @@ def build_engine(
     engine.agent_name = agent.name  # type: ignore[attr-defined]
     # 2026-11-09 红线段：engine 级标记，给不走 post_turn_hook 的写入点做 fail-closed
     # 判定（engine.py::_xiaosheng_note）。默认 False；未打标即不写小桔记忆。
-    engine.deskmate_memory_enabled = is_companion  # type: ignore[attr-defined]
+    engine.deskmate_memory_enabled = memory_enabled  # type: ignore[attr-defined]
     engine.roots = root_list  # type: ignore[attr-defined]  # shared list; Slice C mutates in place
     # Bounded, secret-free runtime discovery — tools/folders present, not credentials or
     # access grants. Registered as a tool and exposed to the reviewer as RUNTIME FACTS so a

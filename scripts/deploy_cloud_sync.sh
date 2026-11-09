@@ -395,6 +395,9 @@ PERSONA_FILES=(
   "coworker/personas/builtin/publisher.md"
   "coworker/personas/builtin/adaptation.md"
   "coworker/personas/builtin/genre.md"
+  # ⚠ 2026-11-09 复查补录：editor.md 是「主编」平铺人设，11-09 下午拔共享记忆时改过，
+  # 却从未进 PERSONA_FILES ⇒ .md 集合对账会报 1 处漂移却不会推。
+  "coworker/personas/builtin/editor.md"
   # ⚠ 2026-11-09 补录：子目录式创作专家 manifest（editor-in-chief / outline-writer /
   # screenwriter / script-reviewer / plot-architect）。PERSONA_FILES 原先只列 9 个平铺 .md，
   # 这 5 个从未进清单 ⇒ 集合级 .md 对账报 4 处内容漂移 + 1 个「仅本地有」(plot-architect)。
@@ -498,6 +501,7 @@ SKILLS_TOOLS_MODULES=(
 
 # 2026-11-09 集合级对账补录（本地 408 / 云端 397 个 .py，24 处内容漂移 + 11 个本地独有）。
 # 以下 17 个共有文件**从未进过任何清单** ⇒ 脚本「对账报告不一致」却「不会推」，云端长期跑旧码；
+# 末尾另有 5 个 11-09 下午「专家记忆 + 笔记本」整条线的新增/漏项，同理；
 # 另 1 个 deskmate/stt.py 是桌面本地专属模块，云端 Linux 不 import，但对账会报「仅本地有」，
 # 一并纳入让集合完全收敛（多放一个不 import 的模块无害，少放一个就是 fail-open 静默失效）。
 # ⚠ 红线：新增/漏项文件只改这里，禁止手工 scp 绕过清单（否则下次对账继续假红）。
@@ -520,6 +524,15 @@ CLOUD_CODE_DRIFT_MODULES=(
   "deskmate/roundtable/web.py"
   "deskmate/tools/review.py"
   "deskmate/stt.py"
+  # ⚠ 2026-11-09 下午「专家记忆 + 笔记本」整条线新增/漏项的 5 个文件。
+  # notebooks.py / author.py 被 coworker/catalog.py 与 coworker/agent.py 在**函数内 try/except
+  # import**：漏传不会报错，只会静默变成「笔记本工具空集 / 专家没有作者档案」——正是
+  # fail-open 静默失效。abtest.py 是同题 A/B 的依赖模块，一并收敛集合对账。
+  "deskmate/bots/notebooks.py"
+  "deskmate/bots/author.py"
+  "deskmate/bots/abtest.py"
+  "coworker/catalog.py"
+  "coworker/agents/base.py"
 )
 
 FORCE=0

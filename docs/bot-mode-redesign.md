@@ -1225,3 +1225,55 @@
 
 - 冲突检测是「专家自觉 + 人设硬规则」，不是独立的语义冲突引擎；要更硬需另做。
 - A/B 目前是 CLI，不是界面按钮；界面入口等实际跑出一次结果再决定要不要加。
+
+
+---
+
+## 35. 专家记忆 + 笔记本复查：6 个缺陷与云端清单收敛（2026-11-09 晚）
+
+> 萧哥：「专家这条线新增了每位专家的记忆和笔记本，你也查一眼有没有 bug，
+> 没有的话就同步云端，有的话修了后再同步。」
+
+复查范围：`deskmate/bots/{notebooks,author,runtime,web,abtest}.py`、
+`coworker/{catalog,agent}.py`、`coworker/agents/base.py`、三位笔记本人设、
+作者侧 UI API。**先写复现测试（8 例全红）→ 改实现（41 例全绿）→ 回归 232 例全绿。**
+
+### 35.1 实测抓到的 6 个缺陷
+
+| # | 缺陷 | 证据（修复前） | 处置 |
+|---|---|---|---|
+| 1 | **多入口并发写丢笔记 / 抛异常** | 1v1（catalog）、Bot 群（runtime）、作者编辑页、后台脚本各有独立 `NotebookSession`；只有进程内 `RLock`，读-改-写互相覆盖，且 `_write_atomic` 的 tmp 名固定为 `notes.md.tmp<pid>`，同进程多个 session 抢同一文件 ⇒ 实测 `FileNotFoundError` + 一条笔记丢失；3 进程 × 8 条也丢 | `fcntl.flock` 独立锁文件 `notes.md.lock` 包住整个「读→改→写」事务；`tempfile.mkstemp` 唯一 tmp；`delete_notebook` 同步加锁（红线「多入口写同文件须 flock」） |
+| 2 | **守卫拒绝却报保存成功** | 父目录是书外软链时 `rewrite()` 返回「没有挂上具体哪本书」，`save_notebook` 只按消息前缀判失败 ⇒ `ok=True`，UI toast「已保存」但文件没动 | 先用作者侧同一套 `_notes_path_for` 探一次；成功只认 `笔记本已重写` 前缀 |
+| 3 | **子串误判重复** | 已有长条目包含短新条目（`影视改编优先`）⇒ 被当成「已经记过」吞掉；`feedback` 的 `line in current` 同理 | 逐行精确比较（剥掉 `- [日期] ` 前缀后 `==`） |
+| 4 | **悬空软链绕过守卫** | `target.exists() and target.is_symlink()` 对 dangling symlink 短路 ⇒ 不拒 | 改用 `is_symlink()`；`_path(create=True)` 先探测父目录再 `mkdir`，避免在书外建目录 |
+| 5 | **反馈区插入把笔记劈开** | `current.index("## 作者反馈")` 命中正文里被引用的同名字符串 ⇒ 一条笔记从中间被切断 | 只认独立成行且位于首个条目之前的反馈区标题 |
+| 6 | **群聊人设与工具面不一致** | 人设承诺 `notebook_feedback` / `ask_user`，群聊 engine 实测工具面只有 `read_book / list_books / notebook_read / notebook_remember / notebook_rewrite`；guidance 又无条件写「只读，不写文件」，与「主动记」直接打架 | 工具面按萧哥「群聊不做反馈闭环」的拍板**不动**；`_NOTEBOOK_TOOL_NOTE` 同时挂到 group/solo guidance，明确「书稿只读、笔记本例外」「群里没有 ask_user / notebook_feedback」 |
+| 7 | **上一轮记忆隔离把内置 Code agent 的记忆也废了** | 全量同口径对照 52 红里有 `test_memory` 7 + `test_memory_api` 5 共 12 例，单独跑仍红 ⇒ 不是污染。25a1d72f 把门禁写成白名单 `{"deskmate","cowork"}`，而 `SessionManager.get_engine` 默认 `agent="code"`、MEMORY-SPEC V1 从一开始就给 Code 挂 `memory_store + post_turn_hook`；实测 `KeyError: Tool not registered: remember` | `deskmate_memory_allowed()` 作单一判定：companion + 基础 Code agent + 不在 persona 名册的内置 agent 放行，**只隔离名册里的专家/工人 persona**；`is_companion` 统一改名为 `memory_enabled`。测试 12 例全绿、34 个 persona 门禁仍全绿、专家隔离不变 |
+
+另核查无缺陷：`persona id == agent().name` 34/34 对齐，`NOTEBOOK_BOTS` / `EXPERT_PERSONA_IDS` / `MEMORY_COMPANION_AGENTS` 三集合无错位；作者档案实测输出正常（USER.md 画像 + 21 本已出版书目 + 不代笔），1v1 四个笔记本工具齐全、真机 `ask_user` 由 manager 的 `question_asker` 注入。
+
+全量口径：`52 failed / 4890 passed`（修复前）→ 修完上述 12 例后，剩余约 40 例均为
+11-07 已定性的既有红（权限 14、LLM 熔断/免费组 7、emotes 8 等），与本次改动无关；
+bot / notebook / expert 相关 232 例 + 记忆 67 例均全绿。
+
+### 35.2 云端同步前的存量漂移（基线停在 08:56）
+
+只读集合级对账：本地 411 / 云端 408 个 .py，**6 处内容不一致 + 3 个仅本地有**；
+人格 .md 44/44、**9 处内容不一致**；云端前端主块仍是 `main-CdaegMVG.js`，
+本地 dist 已重建为 `main-DTnueF2D.js`（含「撤 3 张占位卡」）。
+
+清单补漏（红线「新增 Python 文件必须加进 deploy_cloud_sync.sh」）：
+`deskmate/bots/{notebooks,author,abtest}.py`、`coworker/catalog.py`、
+`coworker/agents/base.py` → `CLOUD_CODE_DRIFT_MODULES`；
+`coworker/personas/builtin/editor.md` → `PERSONA_FILES`。
+🔴 `notebooks.py` / `author.py` 被 catalog / agent 在**函数内 try/except import**，
+漏传不会报错，只会静默变成「笔记本工具空集 / 专家没有作者档案」——典型 fail-open 静默失效。
+
+### 35.3 边界 / 遗留
+
+- `notes.md.lock` 是刻意保留的锁文件（不能删：删掉会让新进程创建另一个 inode，锁失效）；
+  作者侧列表只认 `notes.md`，不受影响。
+- 群聊仍不做反馈闭环 / 不弹问答卡；作者直接说「这条不错/不行」时由 `notebook_remember` 记结论。
+- 1v1 没有「当前书」自动挂载，切书仍要显式带 `book`，否则会记到上一本（§31.5 既有边界）。
+- 本地 dist 比桌面 App 里的前端新：这次只推云端，桌面 App 未重打包；要三端一致须另跑一次打包。
+- 改的是 Python 后端，**要重启桌面 App 才加载新代码**（本轮未擅自关窗口）。

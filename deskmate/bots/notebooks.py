@@ -10,16 +10,27 @@
 安全边界（红线）：
 - 只写 `<书目录>/.deskmate/experts/<专家 id>/notes.md`，绝不碰书稿/大纲/别的专家；
 - 专家 id 只来自常量集合，模型不能传路径或别人的 id；
-- resolve 后必须仍在书目录下，拒软链；原子写；总字数/单条字数有上限。
+- resolve 后必须仍在书目录下，拒软链（含悬空软链）；原子写；总字数/单条字数有上限；
+- **多入口写同一本必须 `fcntl.flock`**：1v1（catalog）、Bot 群（runtime）、作者编辑页
+  （save_notebook）、后台脚本各有独立的 NotebookSession，进程内的 RLock 拦不住彼此，
+  读-改-写会互相覆盖丢笔记。锁文件独立于被 os.replace 换 inode 的 notes.md。
 """
 from __future__ import annotations
 
 import os
+import re
+import tempfile
 import threading
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Iterator, Optional
+
+try:  # macOS 桌面 + Linux 云端都有；非 POSIX 降级为「仅进程内锁」
+    import fcntl
+except ImportError:  # pragma: no cover
+    fcntl = None  # type: ignore[assignment]
 
 from .reading import BookShelf
 
@@ -29,9 +40,54 @@ NOTEBOOK_BOTS: frozenset[str] = frozenset({"brainstormer", "lit-editor", "adapta
 _EXPERT_ROOT = "experts"
 _NOTES_NAME = "notes.md"
 _FEEDBACK_HEADING = "## 作者反馈"
+# 只认「独立成行」的反馈区标题；正文里引用同名字符串不算（2026-11-09 复查）。
+_FEEDBACK_HEADING_RE = re.compile(r"^## 作者反馈[ \t]*$", re.M)
+_FIRST_ENTRY_RE = re.compile(r"^- \[", re.M)
 MAX_TOTAL_CHARS = 24_000
 MAX_ENTRY_CHARS = 1_200
 DIGEST_CHARS = 6_000
+
+
+@contextmanager
+def _file_lock(path: Path) -> Iterator[None]:
+    """跨进程/跨入口排他锁：包住整个「读 → 改 → 原子写」事务，不是只包写文件。
+
+    os.replace 会换掉 notes.md 的 inode，锁不能加在目标文件上，用一个独立的
+    ``notes.md.lock``（与笔记同目录、0600）。fcntl.flock 在进程退出时自动释放。
+    """
+    if fcntl is None:  # pragma: no cover
+        yield
+        return
+    lock_path = path.with_name(path.name + ".lock")
+    fd: Optional[int] = None
+    try:
+        fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR, 0o600)
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        if fd is not None:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+            except OSError:
+                pass
+            os.close(fd)
+
+
+def _entry_text(line: str) -> str:
+    """去掉 ``- [2026-11-09] `` 这类前缀，取条目正文（用于整行精确去重）。"""
+    s = line.strip()
+    if s.startswith("- [") and "]" in s:
+        s = s[s.find("]") + 1:].strip()
+    return s
+
+
+def _has_entry(current: str, clean: str) -> bool:
+    """逐行精确比较，避免短条目被长条目包含时误判为「已经记过」。"""
+    return any(_entry_text(line) == clean for line in current.splitlines())
+
+
+def _has_line(current: str, line: str) -> bool:
+    return any(raw.strip() == line for raw in current.splitlines())
 
 
 @dataclass
@@ -39,7 +95,7 @@ class NotebookSession:
     """一个专家在当前这本书上的笔记本句柄（engine 级缓存，按轮更新 book）。
 
     线程安全：同一个 bot 的 engine 有 turn 锁，但整理/掉落可能在流式 abort 后
-    才写，所以这里再包一层 RLock。
+    才写，所以这里再包一层 RLock；跨 session / 跨进程靠 ``_file_lock``。
     """
 
     expert_id: str
@@ -80,13 +136,18 @@ class NotebookSession:
         book_dir = self._book_dir
         target = book_dir / ".deskmate" / _EXPERT_ROOT / self.expert_id / _NOTES_NAME
         try:
+            inside = book_dir.resolve()
+            parent = target.parent
+            # 先探测再 mkdir：父目录若是书外软链，mkdir(exist_ok=True) 不能成为
+            # 「在书外建目录」的副作用。悬空软链也要挡（is_symlink 不依赖 exists）。
+            if parent.exists() or parent.is_symlink():
+                parent.resolve().relative_to(inside)
             if create:
-                target.parent.mkdir(parents=True, exist_ok=True)
-            parent = target.parent.resolve()
-            parent.relative_to(book_dir.resolve())  # 防逃逸
+                parent.mkdir(parents=True, exist_ok=True)
+            parent.resolve().relative_to(inside)  # 防逃逸
         except (OSError, ValueError, RuntimeError):
             return None
-        if target.exists() and target.is_symlink():
+        if target.is_symlink():
             return None
         return target
 
@@ -122,24 +183,25 @@ class NotebookSession:
                 return "没收到要记的内容。"
             if len(clean) > MAX_ENTRY_CHARS:
                 return f"这条太长了（{len(clean)} 字，上限 {MAX_ENTRY_CHARS}）——只记结论和依据，细节不用抄。"
-            current = self.read()
-            if clean in current:
-                return "这条笔记已经记过了，没有重复写入。"
-            if len(current) + len(clean) + 32 > MAX_TOTAL_CHARS:
-                return (
-                    f"笔记本快满了（当前 {len(current)} 字，上限 {MAX_TOTAL_CHARS}）。"
-                    "先用 notebook_rewrite 整理：合并同类、删被推翻的、把过时的压成一句。"
-                )
-            stamp = datetime.now().strftime("%Y-%m-%d")
-            header = ""
-            if not current:
-                header = (
-                    f"# {self.expert_id} 的笔记本 · 《{self._book_title}》\n"
-                    "> 只给本人看；作者可看可删。每条带日期；过时/被推翻的自己删。\n\n"
-                )
-            body = current + "\n" if current else ""
-            text = header + body + f"- [{stamp}] {clean}\n"
-            self._write_atomic(path, text)
+            with _file_lock(path):
+                current = self.read()
+                if _has_entry(current, clean):
+                    return "这条笔记已经记过了，没有重复写入。"
+                if len(current) + len(clean) + 32 > MAX_TOTAL_CHARS:
+                    return (
+                        f"笔记本快满了（当前 {len(current)} 字，上限 {MAX_TOTAL_CHARS}）。"
+                        "先用 notebook_rewrite 整理：合并同类、删被推翻的、把过时的压成一句。"
+                    )
+                stamp = datetime.now().strftime("%Y-%m-%d")
+                header = ""
+                if not current:
+                    header = (
+                        f"# {self.expert_id} 的笔记本 · 《{self._book_title}》\n"
+                        "> 只给本人看；作者可看可删。每条带日期；过时/被推翻的自己删。\n\n"
+                    )
+                body = current + "\n" if current else ""
+                text = header + body + f"- [{stamp}] {clean}\n"
+                self._write_atomic(path, text)
             hint = ""
             if len(text) > MAX_TOTAL_CHARS * 0.7:
                 hint = (
@@ -159,42 +221,50 @@ class NotebookSession:
                 return "没收到具体是哪条建议；一句话说清再用。"
             if len(clean) > MAX_ENTRY_CHARS:
                 return f"这条反馈太长了（{len(clean)} 字，上限 {MAX_ENTRY_CHARS}）。"
-            current = self.read()
-            stamp = datetime.now().strftime("%Y-%m-%d")
-            marker = "采纳" if adopted else "驳回"
-            line = f"- [{stamp}] {marker}：{clean}"
-            if line in current:
-                return "这条反馈已经记过了，没有重复写入。"
-            if len(current) + len(line) + 32 > MAX_TOTAL_CHARS:
-                return (
-                    f"笔记本快满了（当前 {len(current)} 字，上限 {MAX_TOTAL_CHARS}）。"
-                    "先用 notebook_rewrite 整理，再记这条反馈。"
+            with _file_lock(path):
+                current = self.read()
+                stamp = datetime.now().strftime("%Y-%m-%d")
+                marker = "采纳" if adopted else "驳回"
+                line = f"- [{stamp}] {marker}：{clean}"
+                if _has_line(current, line):
+                    return "这条反馈已经记过了，没有重复写入。"
+                if len(current) + len(line) + 32 > MAX_TOTAL_CHARS:
+                    return (
+                        f"笔记本快满了（当前 {len(current)} 字，上限 {MAX_TOTAL_CHARS}）。"
+                        "先用 notebook_rewrite 整理，再记这条反馈。"
+                    )
+                # 只有「独立成行且在第一个条目之前」的标题才是真反馈区；
+                # 正文里引用「## 作者反馈」不算，否则会把一条笔记从中间劈开。
+                heading = _FEEDBACK_HEADING_RE.search(current)
+                first_entry = _FIRST_ENTRY_RE.search(current)
+                has_heading = heading is not None and (
+                    first_entry is None or heading.start() < first_entry.start()
                 )
-            if not current:
-                text = (
-                    f"# {self.expert_id} 的笔记本 · 《{self._book_title}》\n"
-                    "> 只给本人看；作者可看可删。每条带日期；过时/被推翻的自己删。\n\n"
-                    f"{_FEEDBACK_HEADING}\n{line}\n"
-                )
-            elif _FEEDBACK_HEADING in current:
-                idx = current.index(_FEEDBACK_HEADING) + len(_FEEDBACK_HEADING)
-                head = current[:idx].rstrip("\n")
-                rest = current[idx:].lstrip("\n")
-                text = head + "\n" + line + "\n" + (rest + "\n" if rest else "")
-            else:
-                # 没有反馈区：插在标题/说明块之后、正文之前，保证摘要先读到。
-                lines = current.splitlines()
-                split = 0
-                while split < len(lines) and (
-                    lines[split].startswith("#") or lines[split].startswith(">")
-                ):
-                    split += 1
-                head = "\n".join(lines[:split]).rstrip("\n")
-                rest = "\n".join(lines[split:]).strip("\n")
-                text = head + f"\n\n{_FEEDBACK_HEADING}\n{line}\n"
-                if rest:
-                    text += "\n" + rest + "\n"
-            self._write_atomic(path, text)
+                if not current:
+                    text = (
+                        f"# {self.expert_id} 的笔记本 · 《{self._book_title}》\n"
+                        "> 只给本人看；作者可看可删。每条带日期；过时/被推翻的自己删。\n\n"
+                        f"{_FEEDBACK_HEADING}\n{line}\n"
+                    )
+                elif has_heading:
+                    idx = heading.end()
+                    head = current[:idx].rstrip("\n")
+                    rest = current[idx:].lstrip("\n")
+                    text = head + "\n" + line + "\n" + (rest + "\n" if rest else "")
+                else:
+                    # 没有反馈区：插在标题/说明块之后、正文之前，保证摘要先读到。
+                    lines = current.splitlines()
+                    split = 0
+                    while split < len(lines) and (
+                        lines[split].startswith("#") or lines[split].startswith(">")
+                    ):
+                        split += 1
+                    head = "\n".join(lines[:split]).rstrip("\n")
+                    rest = "\n".join(lines[split:]).strip("\n")
+                    text = head + f"\n\n{_FEEDBACK_HEADING}\n{line}\n"
+                    if rest:
+                        text += "\n" + rest + "\n"
+                self._write_atomic(path, text)
             return f"已记下作者反馈（{marker}）。"
 
     def rewrite(self, content: str) -> str:
@@ -208,14 +278,20 @@ class NotebookSession:
                 return "重写内容为空；要清空请明确写成一句「清空」，不要用空内容。"
             if len(text) > MAX_TOTAL_CHARS:
                 return f"重写内容太长了（{len(text)} 字，上限 {MAX_TOTAL_CHARS}）——先压到上限内。"
-            self._write_atomic(path, text + "\n")
+            with _file_lock(path):
+                self._write_atomic(path, text + "\n")
             return f"笔记本已重写（现 {len(text)} 字）。"
 
     @staticmethod
     def _write_atomic(path: Path, text: str) -> None:
-        tmp = path.with_name(path.name + f".tmp{os.getpid()}")
+        """唯一临时文件 + os.replace：同进程多个 session 不再抢同一个 .tmp<pid>。"""
+        fd, tmp_name = tempfile.mkstemp(
+            dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp"
+        )
+        tmp = Path(tmp_name)
         try:
-            tmp.write_text(text, encoding="utf-8")
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(text)
             os.replace(tmp, path)
         finally:
             try:
@@ -292,7 +368,7 @@ def _notes_path_for(shelf: BookShelf, book: str, expert: str) -> Optional[Path]:
         path.parent.resolve().relative_to(book_dir.resolve())
     except (OSError, ValueError, RuntimeError):
         return None
-    if path.exists() and path.is_symlink():
+    if path.is_symlink():
         return None
     return path
 
@@ -334,22 +410,27 @@ def save_notebook(shelf: BookShelf, book: str, expert: str, content: str) -> tup
     """作者侧：整本保存编辑后的笔记（走与专家同一套上限/原子写/守卫）。"""
     if str(expert or "") not in NOTEBOOK_BOTS:
         return False, "只有脑洞 / 文学编辑 / 影视改编三位有笔记本"
+    # 先用作者侧的同一套守卫探一次：软链/越界在 rewrite 里会返回「没有挂上具体
+    # 哪本书」，若只看消息前缀就会误报成功，UI 会 toast「已保存」但文件没动。
+    if _notes_path_for(shelf, book, expert) is None:
+        return False, "路径守卫拒绝：这本书或这位专家的笔记本不可用"
     session = NotebookSession(str(expert), shelf)
     if not session.ensure_book(book):
         return False, "找不到这本书"
     message = session.rewrite(content)
-    if message.startswith("重写内容为空") or message.startswith("重写内容太长"):
-        return False, message
-    return True, message
+    return message.startswith("笔记本已重写"), message
 
 
 def delete_notebook(shelf: BookShelf, book: str, expert: str) -> bool:
     """作者侧：删掉一本笔记（只删 notes.md，不碰书稿）。"""
     path = _notes_path_for(shelf, book, expert)
-    if path is None or not path.is_file():
+    if path is None:
         return False
     try:
-        path.unlink()
+        with _file_lock(path):
+            if not path.is_file():
+                return False
+            path.unlink()
         return True
     except OSError:
         return False

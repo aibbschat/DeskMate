@@ -3,13 +3,15 @@
 背景：build_engine 此前对所有 agent 都挂 post_turn_hook + memory_store +
 context_provider，实测影视专家 1v1 被写进 ~/.deskmate/sessions、
 xiaosheng_observations、USER.md，随后被"自我表达"行为当作小桔本人的话弹出。
-本组锁住：只有 deskmate / cowork 进小桔记忆；专家 engine 无钩子、无记忆工具。
+本组锁住两件事（11-09 晚复查修正）：名册里的专家/工人 persona 无钩子、无记忆工具；
+小桔 / 主 Coworker / 内置 Code agent 等基础 agent **保留原有记忆能力**——一刀切
+白名单会废掉 MEMORY-SPEC V1 的 Code 记忆（全量 12 例回归）。
 """
 from __future__ import annotations
 
 from typing import Any
 
-from coworker.agent import MEMORY_COMPANION_AGENTS, build_engine
+from coworker.agent import MEMORY_COMPANION_AGENTS, build_engine, deskmate_memory_allowed
 from coworker.personas.registry import get_registry
 
 
@@ -42,8 +44,16 @@ def _engine(persona: str, memory_store):
     )
 
 
-def test_companion_set_is_deskmate_and_cowork() -> None:
+def test_memory_gate_keeps_base_agents_and_blocks_experts() -> None:
+    """门禁价值：不是「只有 companion」，而是「只隔离名册里的专家/工人 persona」。"""
     assert MEMORY_COMPANION_AGENTS == frozenset({"deskmate", "cowork"})
+    for name in ("deskmate", "cowork", "code", "chat"):
+        assert deskmate_memory_allowed(name) is True, f"{name} 的记忆被误撤"
+    for name in (
+        "editor-in-chief", "plot-architect", "screenwriter", "script-reviewer",
+        "adaptation", "brainstormer", "swe-worker",
+    ):
+        assert deskmate_memory_allowed(name) is False, f"{name} 仍能读写小桔记忆"
 
 
 def test_expert_engine_does_not_touch_deskmate_memory(tmp_path) -> None:
@@ -85,7 +95,8 @@ def _engine_with_workspace(persona: str, memory_store, ws):
 
 
 def test_all_personas_memory_gate(tmp_path) -> None:
-    """34 个 persona 全覆盖：只有 deskmate / cowork 拿到记忆工具 + hook + engine 标记。
+    """34 个 persona 全覆盖：专家/工人不拿记忆工具 + hook + engine 标记；
+    deskmate / cowork / code 三个基础 agent 按 deskmate_memory_allowed 放行。
 
     原测试跳过了 requires_folder 的 editor-in-chief，也没测 plot-architect /
     screenwriter —— 正是萧哥点名的几位。统一传 tmp workspace 后它们都能构造。
@@ -98,7 +109,7 @@ def test_all_personas_memory_gate(tmp_path) -> None:
     for pid, entry in sorted(entries.items()):
         agent = entry.agent()
         eng = _engine_with_workspace(pid, store, tmp_path)
-        expect = agent.name in MEMORY_COMPANION_AGENTS
+        expect = deskmate_memory_allowed(agent.name)
         has_tools = bool(
             {"memory_read", "memory_update", "memory_forget"} & set(eng.registry.names())
         )
