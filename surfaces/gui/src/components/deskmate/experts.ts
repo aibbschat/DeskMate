@@ -1,5 +1,11 @@
 import type { IconName } from "../Icon";
+import { shortPersonaName } from "../../personaScope";
 import brainstormerAvatar from "../../assets/avatars/brainstormer.png";
+// 2026-11-10 补齐编辑 / 大纲 / 人物三位的正式头像：沿用既有 256×256 米色纸纹 +
+// 圆形浅晕的扁平静物插画风格（与 brainstormer / adaptation 等成套）。
+import editorAvatar from "../../assets/avatars/editor.png";
+import outlineAvatar from "../../assets/avatars/outline.png";
+import characterAvatar from "../../assets/avatars/character.png";
 
 // 桌搭「专家模式」的可扩展抽象。
 // 第一个实例是「编辑专家」；未来在此注册大纲专家、人物专家、润色专家等，
@@ -56,6 +62,7 @@ export const EXPERTS: Expert[] = [
     id: "editor",
     displayName: "编辑专家",
     icon: "pencil",
+    avatar: editorAvatar,
     description: "深度审阅你的小说稿件，逐章细抠，并产出完整的审阅报告。",
     status: "ready",
     capabilities: ["逐章深度审阅", "产出审阅报告", "人物/情节/文笔分析", "设定一致性核查"],
@@ -83,6 +90,7 @@ export const EXPERTS: Expert[] = [
     id: "outline",
     displayName: "大纲专家",
     icon: "file",
+    avatar: outlineAvatar,
     description:
       "为你的历史小说搭建可写、可核验、史料锚定的结构化大纲：卷纲 + 章纲，每步吃人物圣经 grounding，艺术加工全进存疑项。",
     status: "ready",
@@ -106,6 +114,7 @@ export const EXPERTS: Expert[] = [
     id: "character",
     displayName: "人物专家",
     icon: "users",
+    avatar: characterAvatar,
     description:
       "盯人物弧光、动机、关系与口吻：谁的行为立不住、谁跑偏了、关系变化是否可信、重要人物有没有失踪或降智。",
     status: "ready",
@@ -118,4 +127,49 @@ export const EXPERTS: Expert[] = [
 
 export function getExpert(id: string): Expert | undefined {
   return EXPERTS.find((e) => e.id === id);
+}
+
+/** 按 persona id 反查本地专家。id 与 personaId 不总一致（short-drama → adaptation），
+ *  而会话的 agent 字段装的是 personaId，所以不能拿 getExpert(id) 直接查。 */
+export function getExpertByPersonaId(personaId: string): Expert | undefined {
+  return EXPERTS.find((e) => e.personaId === personaId);
+}
+
+/** 聊天气泡的发言者身份；null = 普通会话，仍显示小桔。 */
+export interface SessionSpeaker {
+  name: string;
+  /** persona 头像图；无图时交给 ExpertAvatar 用渐变首字占位 */
+  avatar?: string;
+  /** 本地 EXPERTS 项，供 ExpertAvatar 取头像 / 配色 */
+  expert?: Expert;
+}
+
+/**
+ * 按「会话 agent（= persona id）」派生专家发言者（2026-11-10 萧哥定：只改专家、
+ * 头像一起换、桌搭三张卡片保持原样）。事实源是会话 agent，不是 currentExpert：
+ * 后者只在专家中心召唤时写入，从右栏 / 新建会话下拉起的 1V1 会漏、刷新会丢、
+ * 切会话还会残留上一个专家 —— 正是回复者名字错配的根因。
+ * builtinAgentIds（cowork / chat / code / deskmate / myhelper）一律返回 null，
+ * 全局 chat.assistant 兜底「小桔」保持不动。
+ */
+export function expertSpeakerFor(
+  agent: string,
+  opts: {
+    builtinAgentIds: ReadonlySet<string>;
+    persona?: { id: string; name: string } | null;
+    personaAvatar?: string;
+  },
+): SessionSpeaker | null {
+  if (opts.builtinAgentIds.has(agent)) return null;
+  const local = getExpertByPersonaId(agent);
+  if (local) {
+    return {
+      name: local.displayName,
+      expert: { ...local, avatar: local.avatar || opts.personaAvatar },
+    };
+  }
+  if (opts.persona) {
+    return { name: shortPersonaName(opts.persona.name, opts.persona.id), avatar: opts.personaAvatar };
+  }
+  return null;
 }

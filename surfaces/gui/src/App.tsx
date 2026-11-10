@@ -83,7 +83,7 @@ const PERSONA_AVATAR: Record<string, string> = {
   "editor-in-chief": editorInChiefImg,
 };
 import { Sidebar } from "./components/Sidebar";
-import { ThinkingBlock, Transcript } from "./components/Transcript";
+import { SpeakerAvatar, ThinkingBlock, Transcript } from "./components/Transcript";
 import { Composer, permissionMenuAvailable } from "./components/Composer";
 import { Markdown } from "./components/Markdown";
 import { SearchModal } from "./components/SearchModal";
@@ -108,7 +108,7 @@ import { DeskHome } from "./components/deskmate/DeskHome";
 import { MailboxPage } from "./components/deskmate/MailboxPage";
 import { DeskMateProactiveInline } from "./components/deskmate/DeskMateProactiveInline";
 import { GardenProfileCenter } from "./components/garden/GardenProfileCenter";
-import { EXPERTS, getExpert, type Expert } from "./components/deskmate/experts";
+import { EXPERTS, getExpert, expertSpeakerFor, type Expert } from "./components/deskmate/experts";
 import { ExpertAvatar } from "./components/deskmate/ExpertAvatar";
 import { ReportDialog } from "./components/deskmate/ReportDialog";
 
@@ -120,7 +120,6 @@ import { TeamView } from "./components/TeamView";
 import { Gallery } from "./gallery/Gallery";
 import { BadgeWall } from "./components/deskmate/BadgeWall";
 import { useTranslation } from "react-i18next";
-import XiaojuAvatar from "./components/XiaojuAvatar";
 
 class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | null }> {
   state = { error: null as Error | null };
@@ -450,6 +449,14 @@ export function App() {
   const BUILTIN_AGENT_IDS = new Set(["cowork", "chat", "code", "deskmate", "myhelper"]);
   const expertPersona =
     !BUILTIN_AGENT_IDS.has(agent) ? personaOf(agent) : undefined;
+  // 聊天气泡的发言者：只改专家会话（名字 + 头像），普通会话与全局「小桔」兜底不动。
+  // 从会话 agent 派生，不从 currentExpert 派生 —— 后者在右栏 / 下拉起的 1V1 里是 null，
+  // 刷新会丢、切会话还会残留上一个专家。详见 experts.ts:expertSpeakerFor。
+  const sessionSpeaker = expertSpeakerFor(agent, {
+    builtinAgentIds: BUILTIN_AGENT_IDS,
+    persona: personaOf(agent),
+    personaAvatar: PERSONA_AVATAR[agent],
+  });
 
   // Pending Inbox items for the ACTIVE session — surfaced inline above the composer so an
   // unattended session's blocking question/approval can be answered in context (resolving the
@@ -1333,6 +1340,10 @@ export function App() {
 
   const startNewSession = (forAgent?: string) => {
     const target = forAgent || agent;
+    // 切会话就退出「专家模式」瞬时态（此前残留会让空态名片 / 专家条显示上一个专家）。
+    // 气泡身份另由 agent 派生（sessionSpeaker）；专家中心召唤会在本函数返回后
+    // 立刻重新 setCurrentExpert，不受影响。
+    setCurrentExpert(null);
     setSurface("session"); // return to the conversation view if we were on a sub-view
     setItems([]);
     setUsage(emptyUsage());
@@ -1421,6 +1432,7 @@ export function App() {
 
   const openSessionFromInbox = (sid: string, ws: string, ag: string) => selectSession(sid, ws, ag);
   const selectSession = async (id: string, ws: string, ag: string) => {
+    setCurrentExpert(null); // 会话切换：专家模式瞬时态不跟随，气泡身份由 agent 派生
     setSurface("session"); // selecting a conversation always returns to the conversation view
     setTodo([]);
     setStreaming("");
@@ -1512,6 +1524,7 @@ export function App() {
   const switchAgent = async (name: string) => {
     setSurface("session");
     if (name === agent) return;
+    setCurrentExpert(null); // 同上：切角色时清掉上一个专家的瞬时态
     rememberLastSession(agent, sessionId, workspace);
     const knownSessions = sessions.length ? sessions : await getSessions().catch(() => []);
     const knownProjects = projects.length ? projects : await getRecentWorkspaces().catch(() => []);
@@ -2138,6 +2151,7 @@ export function App() {
                     // group (header when collapsed, quiet line when expanded) — never as a
                     // floating paragraph.
                     streamingText={streamMode(streaming, items, running) === "quiet" ? streaming : undefined}
+                    speaker={sessionSpeaker}
                     expert={currentExpert}
                     onFinalizeIntent={finalizeIntentDiscussion}
                     onReviseIntent={reviseIntentDiscussion}
@@ -2168,8 +2182,8 @@ export function App() {
                     <div className="transcript">
                       <div className="bubble-assistant">
                         <div className="who">
-                          <XiaojuAvatar className="who-avatar" />
-                          <span>{currentExpert?.displayName ?? t("chat.assistant")}</span>
+                          <SpeakerAvatar speaker={sessionSpeaker} />
+                          <span>{sessionSpeaker?.name ?? currentExpert?.displayName ?? t("chat.assistant")}</span>
                         </div>
                         <Markdown text={streaming} />
                         <span className="stream-cursor">▍</span>

@@ -9,7 +9,8 @@ import { ConnectorMessageCard } from "./ConnectorMessageCard";
 import { BoardWakeCard } from "./BoardWakeCard";
 import { ReportViewer } from "./deskmate/ReportViewer";
 import { Icon } from "./Icon";
-import { type Expert } from "./deskmate/experts";
+import { type Expert, type SessionSpeaker } from "./deskmate/experts";
+import { ExpertAvatar } from "./deskmate/ExpertAvatar";
 import XiaojuAvatar from "./XiaojuAvatar";
 import { VoiceBubble } from "./VoiceBubble";
 import { useTurnStyle } from "../turnStyle";
@@ -485,6 +486,12 @@ interface Props {
   onRetry?: () => void;
   /** 当前激活的专家（专家模式）；为 null 时回复角色显示「助手」。 */
   expert?: Expert | null;
+  /**
+   * 聊天气泡的发言者身份（从会话 agent 派生）。只影响 assistant / voice / report
+   * 三种气泡；null = 普通会话仍显示小桔。与 expert 分开：expert 继续驱动
+   * intent_discuss 卡片（萧哥 2026-11-10 定：桌搭三张卡片保持原样）。
+   */
+  speaker?: SessionSpeaker | null;
   /** 官方 v0.2.0 自动审批审阅者「允许 anyway」覆写回调；保留 prop 以便官方 reviewer 测试
    *  通过类型检查。本 fork 的审阅者闸门 UI 接入后再接该回调。 */
   onAllowAnyway?: (tool: string, args: any) => void;
@@ -496,6 +503,44 @@ interface Props {
   onFinalizeIntent?: (intentId: string) => void;
   onReviseIntent?: (intentId: string, round: number) => void;
   onCancelIntent?: (intentId: string) => void;
+}
+
+/**
+ * 气泡头像（2026-11-10）：只有专家会话（speaker 非空）换专家头像，普通会话仍用
+ * 官方小桔立绘。复用现成的 .expert-avatar / .who-avatar 样式，零新增 CSS：
+ * 有图用图、无图交给 ExpertAvatar 的渐变首字占位。
+ */
+export function SpeakerAvatar({ speaker }: { speaker?: SessionSpeaker | null }) {
+  if (!speaker) return <XiaojuAvatar size={44} className="who-avatar" />;
+  if (speaker.expert) {
+    return <ExpertAvatar expert={speaker.expert} size={36} className="who-avatar" />;
+  }
+  if (speaker.avatar) {
+    return (
+      <img
+        src={speaker.avatar}
+        alt={speaker.name}
+        className="expert-avatar who-avatar"
+        width={36}
+        height={36}
+      />
+    );
+  }
+  return (
+    <span
+      className="expert-avatar who-avatar"
+      style={{
+        width: 36,
+        height: 36,
+        fontSize: 15,
+        background: "var(--accent-soft)",
+        color: "var(--accent)",
+      }}
+      aria-label={speaker.name}
+    >
+      {speaker.name.trim().charAt(0)}
+    </span>
+  );
 }
 
 // The transcript index whose notice gets the Retry button: the tail error notice, looking
@@ -523,6 +568,7 @@ export function Transcript({
   onReviseIntent,
   onCancelIntent,
   expert,
+  speaker,
 }: Props) {
   // §33 grouping: a turn = the maximal run of assistant/tool/resolved-approval items between
   // breakers (user, connector, notices, plan/dir requests…). Trailing assistant texts are the
@@ -624,8 +670,8 @@ export function Transcript({
             return (
               <div className="group bubble-assistant" key={bi}>
                 <div className="who">
-                  <XiaojuAvatar size={44} className="who-avatar" />
-                  <span>{expert?.displayName ?? t("chat.assistant")}</span>
+                  <SpeakerAvatar speaker={speaker} />
+                  <span>{speaker?.name ?? expert?.displayName ?? t("chat.assistant")}</span>
                 </div>
                 {item.reasoning && <ThinkingBlock text={item.reasoning} />}
                 <Markdown text={item.text} />
@@ -644,8 +690,8 @@ export function Transcript({
             return (
               <div className="group bubble-assistant" key={bi}>
                 <div className="who">
-                  <XiaojuAvatar size={44} className="who-avatar" />
-                  <span>{expert?.displayName ?? t("chat.assistant")}</span>
+                  <SpeakerAvatar speaker={speaker} />
+                  <span>{speaker?.name ?? expert?.displayName ?? t("chat.assistant")}</span>
                 </div>
                 <VoiceBubble item={item} />
                 <BubbleMeta text={item.text} ts={item.ts} align="left" />
@@ -656,8 +702,8 @@ export function Transcript({
             return (
               <div className="group bubble-assistant" key={bi}>
                 <div className="who">
-                  <XiaojuAvatar size={44} className="who-avatar" />
-                  <span>{expert?.displayName ?? t("chat.assistant")}</span>
+                  <SpeakerAvatar speaker={speaker} />
+                  <span>{speaker?.name ?? expert?.displayName ?? t("chat.assistant")}</span>
                 </div>
                 {item.caption && <p className="report-caption">{item.caption}</p>}
                 <ReportViewer report={item.report} name={item.name} />
