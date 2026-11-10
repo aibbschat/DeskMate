@@ -193,6 +193,21 @@ CHANNEL_MODULES=(
   # ImportError 被 fail-open 吞掉：书隔离在云端静默失效、USER.md 旧「当前创作」
   # 段照旧整段注入，且不报错，只能靠 md5 对账发现。
   "deskmate/memory/book_scope.py"
+  # ⚠️ 2026-11-10 欠账对账（`7fb0b095..HEAD` 四个提交的改动文件逐个比对清单）：
+  # 以下 6 个文件本地已改、云端仍是旧版——本清单是逐文件显式列举，漏了就**静默跑旧码**
+  # （对账只扫 deskmate + coworker/server，coworker/automation 更是盲区）。
+  #   scheduler.py       让路门/调度修复（前台 turn 才让路）
+  #   context_budget.py  上下文预算 + 闲聊白名单（修误判）
+  #   semantic_search.py 语义检索
+  #   recorder.py        记忆写入来源收口（auto_tasks 旁路）
+  #   digest/engine.py   记忆写入来源收口（digest 旁路）
+  #   background.py      主动后台 tick 入口
+  "coworker/automation/scheduler.py"
+  "deskmate/memory/context_budget.py"
+  "deskmate/memory/semantic_search.py"
+  "deskmate/auto_tasks/recorder.py"
+  "deskmate/digest/engine.py"
+  "deskmate/proactivity/background.py"
   # ⚠️ P2 情绪底色（2026-10-11）：小桔自己的连续内在情绪引擎。
   # manager.py（L616 注入 + L2774 after-turn hook）和 tick.py（L249 衰减 + L527 注入）
   # 均 import 它。漏传 → 云端 manager/tick 跑旧码，情绪注入因 fail-open 静默失效
