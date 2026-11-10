@@ -202,7 +202,7 @@ def _persist_to_memory(items: list[DigestItem], base_dir: Path | None = None) ->
     try:
         import datetime as _dt
 
-        from deskmate.memory.learned_store import LearnedStore
+        from deskmate.memory.learned_store import SOURCE_EXTERNAL, LearnedStore
 
         bd = base_dir or _base_dir()
         expiry = (
@@ -212,7 +212,11 @@ def _persist_to_memory(items: list[DigestItem], base_dir: Path | None = None) ->
         for it in items:
             label = _category_label(it.category)
             facts.append(f"（外部·文化产业）{label}风向：{it.title}——{it.summary}")
-        return LearnedStore(base_dir=bd).append(facts, valid_until=expiry)
+        # 首页资讯是外部观察，不是萧哥口述：显式标 external（进参考层 + 7 天过期）。
+        # 不标 → 数据层会按措辞兜底，但语义应由调用方说清，不能靠猜。
+        return LearnedStore(base_dir=bd).append(
+            facts, valid_until=expiry, source=SOURCE_EXTERNAL
+        )
     except Exception as e:  # fail-open
         logger.warning("digest persist to memory failed: %s", e)
         return 0

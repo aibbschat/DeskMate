@@ -395,11 +395,20 @@ def _age_days(ts: str, now: datetime.datetime) -> float:
     return max(0.0, (now - dt).total_seconds() / 86400.0)
 
 
+#: P2 分级衰减（设计文档 §6）：只决定「是否注入」，**绝不删行、不改 status**。
+#: setting 不自动过期——按 §3.5「设定/推理不自动过期，只在召回侧按效力降权」，
+#: 降权由 learned_store._AUTHORITY 负责；正文/裁定/偏好永久。
+_DECAY_TTL_DAYS = {
+    "progress": _PROGRESS_TTL_DAYS,
+    "reasoning": 90,
+    "roundtable": 90,
+}
+
+
 def _is_stale(row: dict, now: datetime.datetime) -> bool:
-    """进度类条目过期不再注入（推进记录不是长期设定）。"""
-    if _source_prefix(row["source"]) == "progress":
-        return _age_days(row["ts"], now) > _PROGRESS_TTL_DAYS
-    return False
+    """按来源分级判断是否陈旧（超期条目仍在库里，只是不进主块/参考层）。"""
+    ttl = _DECAY_TTL_DAYS.get(_source_prefix(row["source"]))
+    return bool(ttl and _age_days(row["ts"], now) > ttl)
 
 
 def _norm_body(text: str) -> str:
@@ -590,6 +599,20 @@ def _multi_version_block(items: list[dict]) -> str:
     return "\n".join(lines)
 
 
+def _canon_note(base_dir, row: dict) -> str:
+    """P3：正文条附「出处：书名 第N段」；非正文条不附。
+
+    云端没有本地证据索引时返回「仅本地可回查」，不假装能校验。
+    异常 fail-open，绝不让出处逻辑拖垮整轮注入。
+    """
+    try:
+        from .learned_store import _fingerprint, canon_provenance
+
+        return canon_provenance(base_dir, _fingerprint(row["fact"]), row["source"])
+    except Exception:
+        return ""
+
+
 def _truncate_reference(text: str, limit: int = _REFERENCE_FACT_MAX) -> str:
     """参考层单条截断（本地笔记常整段 500+ 字，不该吃掉注入预算）。"""
     body = str(text or "").strip()
@@ -627,17 +650,23 @@ def build_user_fact_context(
         if not rows and not terms:
             return ""
         known = _known_books(base_dir)
-        current_book = book if book else infer_current_book(base_dir, query, known)
+        current_book = str(book or "").strip()
         # 已知书单能归一时用规范名；归一时保留原书名（query 里认得出的「书形状」标题，
         # 如已完结的《衙探》——仍要拿它排除其它书的专属记忆）。
         # manager 传进来的 active_project 可能是工作区目录名（UUID/路径），
-        # 既不在书单里、也不像书名 → 当没有书上下文，不做过滤。
+        # 既不在书单里、也不像书名 → 当没有书上下文。
         if current_book:
             resolved = _resolve_book(current_book, known)
             if resolved:
                 current_book = resolved
             elif not _looks_like_title(current_book):
                 current_book = ""
+        # P1-B：显式 book 缺失或不可用（UUID/路径）时，必须回退到 query/最近会话推断。
+        # P0 原实现是 ``book if book else infer_current_book(...)``：只要 manager 传了
+        # 一个非空的 active_project，哪怕它是 UUID 被上面判空，也不会再推断 ⇒
+        # query 明明写了《夜不收》，整轮书隔离静默失效。
+        if not current_book:
+            current_book = infer_current_book(base_dir, query, known)
 
         rows = [r for r in rows if not _is_stale(r, now)]
         rows = [r for r in rows if _book_allowed(r, current_book, known)]
@@ -709,7 +738,10 @@ def build_user_fact_context(
             header = "## 你跟我说过的（长期记忆条目，只是线索，不是事实基准）"
             blocks.append(
                 header + "\n" + _FACT_DISCIPLINE + "\n"
-                + "\n".join("- " + r["fact"] for r in chosen_rows)
+                + "\n".join(
+                    "- " + r["fact"] + _canon_note(base_dir, r)
+                    for r in chosen_rows
+                )
             )
         if ref_rows:
             blocks.append(

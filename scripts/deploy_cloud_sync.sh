@@ -181,6 +181,18 @@ CHANNEL_MODULES=(
   # source_authority）。漏传 → 云端旧 learned_store 无这些符号 ⇒ ImportError 被
   # fail-open 吞掉，「抽取不标来源、注入不分层」静默复发且不报错，只能靠对账发现。
   "deskmate/memory/learned_store.py"
+  # ⚠️ 2026-11-10 P0 外部摄入来源归一：ingestion_pipeline._write_to_internal_memory
+  # 显式写 source=external（原先回落 live，外部新闻冒充用户口述进主块）。
+  # 本清单是逐文件显式列举，此文件此前从未在册，云端实测仍是 2026-09-06 旧版；
+  # 漏传 → 云端旧码继续把外部信息记成 live，读侧来源分层救不回来，且 fail-open
+  # 不报错，只能靠 md5 对账发现。与 learned_store.py 同批上云。
+  "deskmate/memory/ingestion_pipeline.py"
+  # ⚠️ 2026-11-10 P1-B 按书注入纪律：manager.build_system_prompt /
+  # build_full_context_for_turn 每轮 import book_scope（resolve_turn_book +
+  # MEMORY/USER 读侧过滤）。**新增 Python 文件必须进本清单**，漏传 → 云端
+  # ImportError 被 fail-open 吞掉：书隔离在云端静默失效、USER.md 旧「当前创作」
+  # 段照旧整段注入，且不报错，只能靠 md5 对账发现。
+  "deskmate/memory/book_scope.py"
   # ⚠️ P2 情绪底色（2026-10-11）：小桔自己的连续内在情绪引擎。
   # manager.py（L616 注入 + L2774 after-turn hook）和 tick.py（L249 衰减 + L527 注入）
   # 均 import 它。漏传 → 云端 manager/tick 跑旧码，情绪注入因 fail-open 静默失效
@@ -315,6 +327,10 @@ NOVEL_MEMORY_MODULES=(
   # 只传 core 不传 entities，云端要么跑旧码把圆桌共识当铁律，要么
   # AttributeError 被 fail-open 吞成静默失效（与 tone_record.py 同类红线坑）。
   "deskmate/novel_memory/entities.py"
+  # ⚠️ 2026-11-10 P3 正文证据锚点：learned_store.verify_canon_quote 运行时
+  # 延迟 import 本模块。云端没有书稿正文，缺文件会走 fail-open 降级（不会崩），
+  # 但按「本地与云端代码须完全一致」红线仍须在册，否则对账会出现集合漂移。
+  "deskmate/novel_memory/canon.py"
 )
 
 # 语气层（2026-10-24 补）：coworker/agent.py 的 build_engine 注入 tone block。

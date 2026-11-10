@@ -96,6 +96,11 @@ SOURCE_EXTERNAL = "external"            # 外部观察 / 新闻
 SOURCE_LOCAL_INTAKE = "local_intake"    # 本地笔记摄入（书稿资料/人物/目录）——参考层
 SOURCE_LEGACY = "legacy"                # 从 learned_history.jsonl 迁移的存量数据（低置信）
 
+#: P2 生命周期：进度类写入侧默认有效期（天）。召回侧 user_fact_context
+#: 也有 30 天 TTL；两处口径必须一致，前者让 DB 里的 valid_until 字段本身可信，
+#: 后者兜住历史存量（此前 7/1389 条才有值）。正文/裁定/偏好永不自动过期。
+PROGRESS_TTL_DAYS = 30
+
 #: 非正文来源：只能作线索，不得作为「已写事实」陈述
 NON_FACT_SOURCES = frozenset({
     SOURCE_REASONING,
@@ -281,13 +286,84 @@ def infer_source(raw: str | None, category: str, text: str = "") -> str:
         return SOURCE_USER
     if cat == "correction":
         return SOURCE_CORRECTION
-    if cat == "work":
+    # 2026-11-10 P1-A：category 有两个来源口径——LLM 抽取器的 "work"，
+    # 和 classify_fact() 的 "other"/"habit"/"tool"。原实现只在 "work" 下看
+    # 文本标记，导致数据层内建推断时「设定/进度」全部退回 live，等于没治。
+    # 现在除 preference/correction 短路外一律按措辞保守判断（宁降级成线索，
+    # 也不让设定冒充口述）；habit/tool 的「每天/用」等词不参与，避免误伤。
+    if cat in ("work", "other", ""):
         t = text or ""
         if any(m in t for m in _SETTING_MARKS):
             return SOURCE_SETTING
         if any(m in t for m in _PROGRESS_MARKS):
             return SOURCE_PROGRESS
     return SOURCE_USER
+
+
+# ---------------------------------------------------------------------------
+# P3 正文证据锚点（方案 B：零 schema、本地索引、不进同步表）
+#
+# learned_history 一行都不加列：证据指针落在 ~/.deskmate/canon_evidence.json，
+# 键用 fp（本来就在同步白名单里、双端稳定），值记 (书, 文件, 段号, 引文 hash)。
+# 这样本地可回查到正文原句，云端只看得到 source=manuscript:<书名> 的效力标记；
+# 云端没有书稿正文，验证一律失败 → 写入侧自动降级，绝不臆造「正文事实」。
+# 详见 deskmate/novel_memory/canon.py 与设计文档 §5。
+# ---------------------------------------------------------------------------
+
+CANON_EVIDENCE_FILE = "canon_evidence.json"
+
+
+def canon_evidence_path(base_dir) -> "Path":
+    from pathlib import Path
+
+    return Path(base_dir) / CANON_EVIDENCE_FILE
+
+
+def load_canon_evidence(base_dir) -> dict:
+    import json
+
+    try:
+        data = json.loads(canon_evidence_path(base_dir).read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}  # fail-open：索引缺失/损坏不阻断任何链路
+
+
+def record_canon_evidence(base_dir, fp: str, record: dict) -> None:
+    """原子写一条证据指针（临时文件 + os.replace，项目持久化红线）。"""
+    import json
+
+    from deskmate.growth._atomic import atomic_write_text
+
+    data = load_canon_evidence(base_dir)
+    data[str(fp)] = record
+    atomic_write_text(
+        canon_evidence_path(base_dir),
+        json.dumps(data, ensure_ascii=False, indent=2),
+    )
+
+
+def verify_canon_quote(quote, book_id: str = "", folder=None) -> dict:
+    """服务端闸门：引文命中本地正文才允许标 manuscript；异常一律判失败。"""
+    try:
+        from deskmate.novel_memory.canon import verify_quote
+
+        return verify_quote(quote, book_id, folder=folder)
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "reason": f"正文校验不可用：{exc}"}
+
+
+def canon_provenance(base_dir, fp: str, source: str) -> str:
+    """召回时给正文条附出处；云端无索引时明说「仅本地可回查」。"""
+    if source_prefix(source) != SOURCE_MANUSCRIPT:
+        return ""
+    ev = load_canon_evidence(base_dir).get(str(fp))
+    if not ev:
+        return "〔正文出处仅本地可回查〕"
+    return (
+        f"〔出处：{ev.get('book', '')} 第{ev.get('para_no', '?')}段"
+        f"·{ev.get('file_path', '')}〕"
+    )
 
 
 # 与 app._classify_learned_fact 保持一致的启发式归类。
@@ -496,11 +572,14 @@ class LearnedStore:
         facts: list[str],
         ts: str | None = None,
         valid_until: str | None = None,
-        source: str = "live",
+        source: str | None = None,
         *,
         book_id: str | None = None,
         anchor: str | None = None,
         supersedes: list[str] | None = None,
+        session_text: str | None = None,
+        canon_quote: str | None = None,
+        canon_folder: str | None = None,
     ) -> int:
         """追加若干条学到的事实，返回**实际新增**条数（重复的被 fp 挡掉）。
 
@@ -508,9 +587,19 @@ class LearnedStore:
             valid_until: 可选过期时间（ISO 秒精度）。外部/趋势类信息带过期，
                 到点的条目在 ``active_recent`` / ``relevant`` 中自动失效剔除。
             source: 来源与效力，``<prefix>[:<book_id>]``（见模块级常量）。
+                **P1-A：默认 None，不再默认 live。** 未给来源时逐条用
+                ``infer_source`` 按类别/措辞保守推断，并用 ``with_book`` 补书维度；
+                非法前缀同样退回推断。调用点应显式传语义化来源，数据层兜底保证
+                任何旁路都不会把设定/进度/外部信息冒充「萧哥口述」写进主块。
             book_id: 便捷写法，等价于把来源拼成 ``<source>:<book_id>``。
             anchor: 无《》书名时显式给出冲突配对键（写入 entity 列）。
             supersedes: 调用方点名的「被纠正的旧说法」原文，按 fp 精确取代。
+            session_text: 本轮会话文本，供 ``with_book`` 在单条事实无书名时
+                按「整段会话唯一书名」补书维度（判不出就不猜）。
+            canon_quote: P3 正文逐字引文。标 ``source=manuscript`` 时**必须**
+                提供且能在本地正文索引里命中；否则自动降级为 ``author_ruling``
+                （不臆造事实基准）。云端无正文 → 一律降级。
+            canon_folder: 显式书稿目录，跳过按书名发现（测试/本地工具用）。
 
         事实纪律（2026-11-10 萧哥终裁：已写正文事实是唯一事实基准）：
 
@@ -523,23 +612,61 @@ class LearnedStore:
         注意：冲突走 ``INSERT OR IGNORE``，已存在的 fp 不会被更新——因此重复
         写入同一条事实不会刷新其 ``valid_until``，过期语义稳定。
         """
-        clean: list[tuple[str, str, str, str, str, str, str | None]] = []
+        clean: list[tuple[str, str, str, str, str, str, str | None, str]] = []
         stamp = ts or _now_iso()
-        eff_source = make_source(source, book_id) if book_id else source
+        # 批级来源：显式给且合法才整批沿用；否则逐条推断（P1-A 写入纪律）。
+        # 非法前缀（例如抽取器幻觉出的值）一律退回推断，不写进 source 列。
+        given = str(source).strip() if source is not None else ""
+        batch_source = given if source_prefix(given) in VALID_SOURCE_PREFIXES else ""
+        canon_by_fp: dict[str, dict] = {}
         for raw in facts:
             fact = str(raw).strip() if raw else ""
             if not fact:
                 continue
+            cat_ = classify_fact(fact)
+            fact_source = batch_source or infer_source(None, cat_, fact)
+            fact_source = with_book(fact_source, fact, session_text or "")
+            if book_id and not source_book(fact_source):
+                fact_source = make_source(source_prefix(fact_source), book_id)
+            # P3 正文效力闸门：自称「已写正文」不够，必须有能在本地正文中
+            # 命中的逐字引文。命中则记证据指针，未命中降级为作者裁定。
+            if source_prefix(fact_source) == SOURCE_MANUSCRIPT:
+                bid = source_book(fact_source) or str(_extract_entity(fact)).removeprefix("书:")
+                fp_ = _fingerprint(fact)
+                ev = verify_canon_quote(canon_quote, bid, canon_folder)
+                if ev.get("ok"):
+                    canon_by_fp[fp_] = {
+                        "book": ev.get("book") or bid,
+                        "file_path": ev.get("file_path", ""),
+                        "para_no": ev.get("para_no"),
+                        "quote": ev.get("quote", ""),
+                        "quote_hash": ev.get("quote_hash", ""),
+                    }
+                else:
+                    fact_source = make_source(
+                        SOURCE_AUTHOR_RULING, source_book(fact_source)
+                    )
+            # P2：进度类写侧默认 30 天有效期（显式传入的优先，不覆盖）。
+            fact_valid_until = valid_until
+            if (
+                fact_valid_until is None
+                and source_prefix(fact_source) == SOURCE_PROGRESS
+            ):
+                fact_valid_until = (
+                    datetime.datetime.now()
+                    + datetime.timedelta(days=PROGRESS_TTL_DAYS)
+                ).isoformat(timespec="seconds")
             entity = anchor or _extract_entity(fact)
             clean.append(
                 (
                     stamp,
                     fact,
-                    classify_fact(fact),
+                    cat_,
                     _fingerprint(fact),
                     entity,
                     _extract_polarity(fact),
-                    valid_until,
+                    fact_valid_until,
+                    fact_source,
                 )
             )
         if not clean:
@@ -547,17 +674,25 @@ class LearnedStore:
         try:
             with self._connect() as conn:
                 inserted = 0
-                for stamp_, fact_, cat_, fp_, entity_, polarity_, valid_until_ in clean:
+                for (
+                    stamp_, fact_, cat_, fp_, entity_, polarity_, valid_until_,
+                    fact_source_,
+                ) in clean:
                     cur = conn.execute(
                         "INSERT OR IGNORE INTO learned_history"
                         "(ts, fact, category, fp, source, entity, polarity, status, valid_until, valid_from) "
                         "VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)",
-                        (stamp_, fact_, cat_, fp_, eff_source, entity_, polarity_, valid_until_, stamp_),
+                        (stamp_, fact_, cat_, fp_, fact_source_, entity_, polarity_, valid_until_, stamp_),
                     )
                     if not (cur.rowcount and cur.rowcount > 0):
                         continue  # 重复（同 fp）→ 跳过，也不做矛盾处理
                     inserted += 1
                     rid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+                    if fp_ in canon_by_fp:
+                        try:
+                            record_canon_evidence(self.base, fp_, canon_by_fp[fp_])
+                        except Exception:
+                            pass  # 证据索引写失败不阻断记忆写入（fail-open）
 
                     # (1) 显式取代：纠正方点名的旧说法，按 fp 精确命中，不误伤同书其它条
                     for old_text in supersedes or []:
@@ -574,8 +709,8 @@ class LearnedStore:
                             "ORDER BY ts DESC, id DESC",
                             (entity_, rid),
                         ).fetchall()
-                        canon_new = is_canon_source(eff_source)
-                        correction_new = source_prefix(eff_source) == SOURCE_CORRECTION
+                        canon_new = is_canon_source(fact_source_)
+                        correction_new = source_prefix(fact_source_) == SOURCE_CORRECTION
 
                         # (2) 正文事实写入：同锚点的非正文旧条一律让位
                         if canon_new:
@@ -758,6 +893,9 @@ class LearnedStore:
         2026-09-23 修复：此前不带 ``status`` 过滤 → 已遗忘（``forgotten``）/
         已被取代（``superseded``）的事实仍会被日记素材回填、 compromising
         「遗忘即刻生效」的承诺。这里只看 ``active``。
+        2026-11-10 P2：补 ``valid_until`` 过滤——进度类写入侧现在带 30 天
+        有效期，否则过期条目仍会从 recent() 回填日记素材/理解面板，与召回侧
+        ``_is_stale`` 的口径打架。
         """
         limit = max(1, min(int(limit), 5000))
         try:
@@ -765,8 +903,9 @@ class LearnedStore:
                 rows = conn.execute(
                     "SELECT ts, fact, category FROM learned_history "
                     "WHERE status='active' "
+                    "AND (valid_until IS NULL OR valid_until >= ?) "
                     "ORDER BY ts DESC, id DESC LIMIT ?",
-                    (limit,),
+                    (_now_iso(), limit),
                 ).fetchall()
         except sqlite3.Error:
             return []
@@ -970,8 +1109,11 @@ class LearnedStore:
         except sqlite3.Error:
             return []
 
-    def retire_by_source(self, source: str) -> int:
+    def retire_by_source(self, source: str, superseded_by: int | None = None) -> int:
         """把某来源的活跃条目标 ``superseded``（不再参与回忆），用于「内容变了重新沉淀」。
+
+        P2：可传 ``superseded_by`` 指向取代它的新条目 id，补全双向可查链；
+        不传时保留原有值（整批作废未必有单一后继，不臆造指向）。
 
         Returns:
             实际被取代的条数。
@@ -979,9 +1121,10 @@ class LearnedStore:
         try:
             with self._connect() as conn:
                 cur = conn.execute(
-                    "UPDATE learned_history SET status='superseded', valid_until=? "
+                    "UPDATE learned_history SET status='superseded', valid_until=?, "
+                    "superseded_by = CASE WHEN ? IS NULL THEN superseded_by ELSE ? END "
                     "WHERE status='active' AND source=?",
-                    (_now_iso(), source),
+                    (_now_iso(), superseded_by, superseded_by, source),
                 )
                 return int(cur.rowcount or 0)
         except sqlite3.Error:

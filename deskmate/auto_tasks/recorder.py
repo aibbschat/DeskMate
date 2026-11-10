@@ -202,8 +202,14 @@ class TaskRecorder:
                 pass
             return 0
         try:
-            from deskmate.memory.learned_store import LearnedStore
-            n = LearnedStore().append(facts)
+            from deskmate.memory.learned_store import SOURCE_REASONING, LearnedStore
+
+            # pending_memory_push 是自动任务读书稿后生成的「洞察/解读」，不是萧哥
+            # 口述、也不是本地笔记原文；按推理类进参考层。base_dir 必须显式传，
+            # 否则 LearnedStore 落到默认全局目录，与队列所在目录不一致。
+            n = LearnedStore(base_dir=self.base_dir).append(
+                facts, source=SOURCE_REASONING
+            )
         except Exception as e:
             logger.warning("consume_pending_memory_push failed: %s", e)
             return 0

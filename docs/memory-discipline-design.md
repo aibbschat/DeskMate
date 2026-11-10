@@ -10,7 +10,10 @@
 今早的 e35d84e1 把「来源/效力」写进了 source 列，把「记忆只是线索、正文才是基准」写进了注入文本，
 **方向对、但只修到「写入口 + 注入措辞」这一层**：召回侧不分书、不分存量来源、不报冲突，
 旁路写入仍不标 source，MEMORY.md/USER.md 这条更早的注入链完全没纳入纪律，正文索引与记忆之间也没有锚点可回查。
-本轮补上了召回侧的书隔离 / 来源兜底 / 冲突显式 / 陈旧降级（P0），其余按 P1-P3 落地。
+P0（召回侧书隔离 / 来源兜底 / 冲突显式 / 陈旧降级）于 12:51 提交 `9c56f6d7`；
+**P1–P3 已于 2026-11-10 14:09 全部落地**（写入侧来源纪律、按书注入链、生命周期与
+30 条评测集、正文证据锚点），详见 §11。本文件 §1–§8 保留的是**当时的审计证据**，
+不代表当前未做状态。
 
 ## 1. 审计结论
 
@@ -18,7 +21,7 @@
 
 | 项 | 证据 | 状态 |
 |---|---|---|
-| 同一批写入里「设定/推理/大纲/进度/外部」不再冒充用户口述事实 | learned_store.NON_FACT_SOURCES + manager 抽取 prompt 要求 source（manager.py:2485） | 已根治（新写入） |
+| 同一批写入里「设定/推理/大纲/进度/外部」不再冒充用户口述事实 | learned_store.NON_FACT_SOURCES + manager 抽取 prompt 要求 source（manager.py:2485） | 主链路已收口；旁路仍无 source，见 1.2②（P1） |
 | 注入块权威口吻「不是她猜的；优先据此作答」已删除，改为「只是线索 + 冲突须明说」 | user_fact_context._FACT_DISCIPLINE | 已根治 |
 | 无 query 时取最老 10 条的问题 | 原 SQL 无 ORDER BY，SQLite rowid 升序；现 ORDER BY ts DESC, id DESC（_rows） | 已根治 |
 | 注入无字数上限 | _FACT_CONTEXT_MAX_CHARS=4000 | 已根治 |
@@ -46,7 +49,7 @@
 - deskmate/auto_tasks/recorder.py:206 LearnedStore().append(facts)（连 base_dir 都不传）
 - deskmate/ingest/local_intake.py:290 append(facts, source=src)（src 是文件路径，语义正确，但读侧此前不认；
   本轮把 local_intake 归入参考层后已不再冒充口述）
-- deskmate/agency/engine.py:449（同族）
+- ~~deskmate/agency/engine.py:449~~（2026-11-10 复核：此处是 `resolve_subject_conflict` 冲突裁决，不写 learned_history，非旁路；真旁路只有 digest / recorder / app else 三处）
 - coworker/server/app.py:701 else 分支 store.append(facts)（sources 缺失时回落 live）
 - 影响：这些路径写进来的条目，效力只能靠文本猜；digest 写的是世界观察，却记成 live。
 
@@ -143,7 +146,7 @@ lead 在只读真实库上直接调 build_user_fact_context（实测 20-23ms/次
    - 属于其它书的条目剔除；
    - 无书维度的条目（偏好/习惯/跨书经验）保留；
    - 认不出的书名标题只用来排除「其它已知书的专属条目」，不反过来过滤通用事实。
-4. **分层**：正文/口述/裁定进主块；推理/设定/大纲/简报/进度/本地笔记/外部进参考层（最多 3 条）。
+4. **分层**：正文/口述/裁定进主块；推理/设定/大纲/简报/进度/本地笔记/外部进参考层（最多 2 条，见 1.3 第 3 条：本轮由 3 收到 2）。
 5. **排序**：相关度分 → 效力 → 时间；无 query 时 效力 → 时间（稳定排序）。
 6. **冲突显式**：两层提示——
    a) 强冲突：同锚点、极性相反、去否定词后正文等同 → 「冲突提示」，要求先回正文核；
@@ -166,8 +169,16 @@ lead 在只读真实库上直接调 build_user_fact_context（实测 20-23ms/次
   命中 hash 才落「正文」效力，否则降为 author_ruling/reasoning）。
 - 召回：主块里的正文条目附「出处：书名 第N段」；参考层冲突时提示「回正文核」并给出可执行工具
   （novel_recall / novel_search_fts5）。
-- 迁移：新表不进 sync_store_sqlite.SYNC_TABLES，避免双端静默不一致；正文索引本身按书本地重建，
-  只有「记忆→证据指针」需要跨端时再评估（那时必须同步更新两端 SYNC_TABLES.business_cols）。
+- 迁移（2026-11-10 校正，本节与 §9 P3 风险栏原先互斥，现统一为两条待拍板路线）：
+  - **方案 A · 建 canon_evidence 表并纳入双端同步**：要动的是 `SYNC_TABLES` **表注册本身**
+    + 两端 DDL/触发器/migrate，而不只是 `business_cols`（那是**列**白名单，加表不会自动带上）；
+    同时必须把新增/改动的 Python 文件补进 `deploy_cloud_sync.sh`。两端必须同版本上线，
+    否则集合级对账会漂移、且 fail-open 静默。
+  - **方案 B · 零 schema（推荐）**：复用 `novel_memory/entities.py` 已有的
+    `tier=manuscript` + `source_file` + `evidence` 闸门与 `core.py` 的按书 FTS5 索引，
+    「记忆 → 正文段」指针落在书稿目录 `.deskmate/` 内的独立索引，不进统一库、不进同步表。
+    边界：云端没有书稿正文，只能回查到指针、不能本地校验引文；需明确「正文校验只在本地发生」。
+  - 两条路线都要求「正文索引本身按书本地重建」，不随记忆同步。
 
 ## 6. 生命周期（P1-P2）
 
@@ -186,8 +197,9 @@ lead 在只读真实库上直接调 build_user_fact_context（实测 20-23ms/次
 - P1：把当前书接线到注入链：manager.prefetch / build_system_prompt / _get_core_memory 都按当前书过滤；
   MEMORY.md 里按作品名建的「§ <书名> #stable」分节只在当前书命中时注入；
   USER.md「当前创作」段改为从当前项目/最近进度动态生成（或至少加「可能过时，回项目笔记核」标注）。
-- P2：active_project 真正接线（谁在写哪本书由宿主每轮挂载，参考 44b5b3e0 的
+- P1：active_project 真正接线（谁在写哪本书由宿主每轮挂载，参考 44b5b3e0 的
   deskmate/bots/notebooks.py mount_current_book 做法），项目记忆 projects/<书名>/ 成为按书注入的正路。
+  （2026-11-10 校正：本节原标 P2，与 §9 表格 P1 矛盾；统一按 §9 定为 P1。）
 - P3：锚点表（人物/地点/事件 canonical id），跨书同名人物（如「韩效武」属国子监）靠 book_id 隔离。
 
 ## 8. 评测集与回归门禁
@@ -222,7 +234,10 @@ tests/test_memory_canon_discipline.py（11 例）锁住写入纪律。均为 tmp
 | P0 本轮 | 召回书隔离/来源兜底/冲突提示/陈旧降级/存量清洗入口 | deskmate/memory/user_fact_context.py、learned_store.py、manager.py（书后缀）、ingestion_pipeline.py、tests | 已完成 | 低；只读侧行为，异常 fail-open |
 | P1（1-2 天） | 旁路 source：digest/recorder/agency/app else 分支；active_project 接线；MEMORY.md 分节按书过滤；USER.md 当前创作动态化 | deskmate/digest/engine.py、auto_tasks/recorder.py、agency/engine.py、coworker/server/app.py、memory/manager.py、after_action.py | 80-150 行 | 中；需 lead 同意改 app.py；行为变更用开关（env）灰度 |
 | P2（3-5 天） | progress 写入侧 valid_until；consolidation/decay/archive；冲突人工确认队列扩展；评测脚本 | memory/manager.py、after_action.py、deskmate/agency/task_log.py（跨域） | 200-300 行 | 中；consolidation 会改数据，先 dry-run + 备份 |
-| P3（1-2 周） | canon_evidence（正文锚点可回查）、锚点规范化、按书项目记忆成为正路 | novel_memory/core.py、learned_store.py、需要 schema/同步方案 | 300-500 行 | 高；新表/新列必须同步更新 sync_store_sqlite.business_cols 与 deploy_cloud_sync.sh，否则双端静默不一致 |
+| P3（1-2 周） | canon_evidence（正文锚点可回查）、锚点规范化、按书项目记忆成为正路 | novel_memory/core.py、learned_store.py、需要 schema/同步方案 | 300-500 行 | 高；若走方案 A（建表并同步），须改 `SYNC_TABLES` **表注册** + 两端 DDL/触发器/migrate（不是 `business_cols`，那是列白名单）与 `deploy_cloud_sync.sh` 清单，两端同版本上线，否则双端静默不一致；方案 B（零 schema、书稿目录内索引）无此风险，但云端不能本地校验引文 |
+
+> **阶段状态（2026-11-10 14:09 更新）**：上表 P1/P2/P3 的「预估 / 风险」列是 12:44 起草时的
+> 排期口径，三阶段现已全部落地；实际改动文件、路线取舍与刻意未做项见 **§11**。
 
 ## 10. 迁移与回滚
 
@@ -230,13 +245,16 @@ tests/test_memory_canon_discipline.py（11 例）锁住写入纪律。均为 tmp
    deskmate.db → 再 dry_run=False。只改 source 列，可逆（记录 id→原 source 即可回滚）。
 2. 不新增列：P0/P1 全部复用 source/entity/status/valid_*，sync_store_sqlite.SYNC_TABLES 白名单不变
    （learned_history business_cols 已含 source/entity/polarity/status/superseded_by/valid_from/valid_until）。
-3. 新增文件必须同步 deploy_cloud_sync.sh（本次改动只在既有文件里加符号，learned_store.py /
-   user_fact_context.py / manager.py / ingestion_pipeline.py 均在清单或已有依赖，无需新增文件）。
+3. 新增文件必须同步 deploy_cloud_sync.sh。⚠️ 2026-11-10 13:45 实测纠错：本句原写
+   「均在清单或已有依赖，无需新增文件」是错的——`deskmate/memory/ingestion_pipeline.py`
+   **从未在册**，云端 `/opt/openworker/deskmate/memory/ingestion_pipeline.py` 仍是 2026-09-06
+   旧版，P0 加的 `source=external` 不会上云且被 fail-open 静默吞掉。已补进 CHANNEL_MODULES。
+   本次其余改动文件（learned_store.py / user_fact_context.py / manager.py / app.py / persona md）均在册。
 4. 回滚：代码 git revert 即可；数据侧只动了 source（可逆）。不要回滚 MEMORY.md/USER.md（人工标注是证据）。
 
 ## 11. 本轮已做 / 建议做（明确边界）
 
-已做（本工作区未提交）：
+已做（**已提交 `9c56f6d7`，2026-11-10 12:51**；本节原写「本工作区未提交」为起草时状态，已校正）：
 - deskmate/memory/learned_store.py：local_intake/legacy 来源常量、BOOKISH_SOURCES、
   effective_source/looks_external/fact_titles/fact_book/infer_book_hint/with_book、
   reclassify_legacy（默认 dry-run）。
@@ -247,13 +265,26 @@ tests/test_memory_canon_discipline.py（11 例）锁住写入纪律。均为 tmp
 - coworker/personas/builtin/deskmate.md：加「按书隔离」规则。
 - tests/test_memory_recall_scope.py：13 例回归。
 
-建议做（需跨域/lead 同意，本轮未改）：
-- coworker/server/app.py:701 else 分支与 7149-7153：sources 缺失时不要回落 live，逐条 infer_source。
-- deskmate/digest/engine.py:215、deskmate/auto_tasks/recorder.py:206、deskmate/agency/engine.py:449：
-  按语义传 source（external/reasoning/progress），recorder 还要补 base_dir。
-- manager.prefetch/_get_core_memory/build_system_prompt 按当前书过滤 MEMORY.md 分节（P1）。
-- active_project 应用层接线（P1）。
-- canon_evidence 表 + 正文锚点回查（P3，先出方案再动 schema）。
+### P1–P3 已落地（2026-11-10 14:09，萧哥拍板「全做」）
+
+原「建议做」清单已全部实现，逐项对照：
+
+| 原建议 | 落地 | 状态 |
+|---|---|---|
+| app else 分支不回落 live | `_append_learned_history` 显式 `source=None` 分组；`LearnedStore.append` 默认 source 从 `"live"` 改为 `None`，逐条 `infer_source` + `with_book` | ✅ |
+| digest / recorder 按语义传 source | digest → `external`；recorder → `reasoning` 且补 `base_dir`；ingestion_pipeline → `external`（P0 已做但**漏传清单**，本轮补进 `deploy_cloud_sync.sh`） | ✅ |
+| ~~agency/engine.py:449~~ | 复核为 `resolve_subject_conflict` 冲突裁决，不写记忆，非旁路，不需改 | 误列，已删 |
+| MEMORY/USER 读侧按书过滤 | 新增 `deskmate/memory/book_scope.py`：`resolve_turn_book` + 整节/条目两级过滤。实测真实 MEMORY.md 只有 `§ 纠正/§ 工作/§ 创作`、无按书名分节，故补**条目级**过滤；USER.md「当前创作」段按书剔除并标注「可能过时」，**文件本体一字未改** | ✅ |
+| active_project 应用层接线 | 改为**按轮解析**（`build_full_context_for_turn` / `build_system_prompt` / `prefetch` 共用 `_book`），不写进程级 `active_project`——云端多会话共享单例 manager，写全局状态会串味。顺带修 P0 缺口：显式 book 是工作区 UUID 被判空后不再回退 query 推断，会让整轮书隔离静默失效 | ✅ |
+| P2 生命周期 | progress 写侧默认 30 天 `valid_until`；reasoning/roundtable 90 天降权（不删行）；`recent()` 补过期过滤；`retire_by_source(superseded_by=)` 补链；`scripts/memory_lifecycle.py` **只读 dry-run**（decay/consolidation/conflict_review 三组候选，不自动发卡、不改库） | ✅ |
+| 30 条评测集 | `scripts/bench_memory_recall_discipline.py`：18 条真实库只读 `.backup` 快照不变量 + 12 条合成库结构用例；实测 **30/30 PASS，书隔离 6/6** | ✅ |
+| canon_evidence + 正文锚点回查（P3） | **按方案 B（零 schema）落地**，未建表、未改 `SYNC_TABLES`：新增 `deskmate/novel_memory/canon.py`（复用按书 FTS5 索引，F 段号 = content 按 `\n` 的 1-based 行号）；`LearnedStore.append(canon_quote=, canon_folder=)` 校验引文命中本地正文才允许 `source=manuscript`，否则降级 `author_ruling`；证据指针写 `~/.deskmate/canon_evidence.json`（原子写、键用 fp、不进同步表）；召回附「出处：书名 第N段」，云端无索引时明说「仅本地可回查」 | ✅ |
+
+**P3 路线拍板说明**：选方案 B 而非文档 §5 原案 A（建 canon_evidence 表并纳入双端同步）。理由：A 要改 `SYNC_TABLES` 表注册 + 两端 DDL/触发器/migrate，而云端**没有书稿正文**，建了表也无法校验引文，只换来双端不一致风险；B 把校验明确限定在本地、云端自动降级，零 schema、零同步白名单改动。若要切回 A，需单独排期做两端同版本迁移。
+
+**刻意未做（诚实边界）**：L2 提议卡新增 `memory_multi_version` 动作类型，需 `agency/engine.resolve_proposal` 与前端 `AgencyPanel` 动作枚举同版本上线，且自动发卡会打扰萧哥。本轮只做**候选发现**（`memory_lifecycle.py` 的 `conflict_review` 组），机器不替人裁决。
+
+**新增文件均已补云同步清单**：`book_scope.py`、`canon.py`。运维脚本 `scripts/memory_lifecycle.py` / `scripts/bench_memory_recall_discipline.py` 是本地工具、不被云端 import，不需在册。
 
 ---
 

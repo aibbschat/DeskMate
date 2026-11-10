@@ -723,7 +723,8 @@ def create_app(manager: SessionManager) -> FastAPI:
 
         ``sources`` 与 ``facts`` 一一对应时按来源分组写入：设定／推理／大纲／进度
         进参考层，不再一律以 ``live`` 冒充用户口述事实（2026-11-10 萧哥终裁）。
-        缺失时回退历史行为，保证旧抽取结果也能落盘。
+        缺失时**不回落 live**：显式传 ``source=None``，交给 ``LearnedStore.append``
+        逐条 ``infer_source`` 保守推断并补书维度，保证旧抽取结果也能落盘且不再冒充口述。
         """
         from pathlib import Path
 
@@ -731,14 +732,15 @@ def create_app(manager: SessionManager) -> FastAPI:
         hist_dir.mkdir(parents=True, exist_ok=True)
         try:
             store = _learned_store(Path(desk_dir))
+            groups: "dict[str | None, list[str]]" = {}
             if sources and len(sources) == len(facts):
-                groups: "dict[str, list[str]]" = {}
                 for fact, src in zip(facts, sources):
-                    groups.setdefault(str(src or "live"), []).append(str(fact))
-                for src, group in groups.items():
-                    store.append(group, source=src)
+                    key = str(src).strip() or None
+                    groups.setdefault(key, []).append(str(fact))
             else:
-                store.append(facts)
+                groups[None] = [str(f) for f in facts]
+            for src, group in groups.items():
+                store.append(group, source=src)
         except Exception:
             logging.exception("append learned history failed")
 

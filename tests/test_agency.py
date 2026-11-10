@@ -24,9 +24,15 @@ class _FakeLearnedStore:
     def __init__(self, *a, **k):
         self.appended = []
 
-    def append(self, facts, ts=None):
+    def append(self, facts, ts=None, valid_until=None, source=None, **kwargs):
+        """与 LearnedStore.append 的真实签名同步（P0 起调用方会传 source）。
+
+        之前只收 facts/ts，ingestion_pipeline 传 source=external 时抛
+        TypeError 被 fail-open 吞掉，测试夹具反而掩盖了写入链路。
+        """
         facts = list(facts or [])
         self.appended.extend(facts)
+        self.last_source = source
         return len(facts)
 
 

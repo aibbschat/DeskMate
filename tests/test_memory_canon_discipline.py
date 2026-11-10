@@ -27,6 +27,36 @@ def store(tmp_path) -> LearnedStore:
     return LearnedStore(base_dir=tmp_path)
 
 
+@pytest.fixture()
+def canon_book(tmp_path) -> str:
+    """P3 正文效力闸门：标 manuscript 必须给出命中本地正文的逐字引文。
+
+    本组用例锁的是「取代规则」，引文与 fact 的相关性由
+    ``tests/test_memory_canon_evidence.py`` 单独锁；这里只造最小 FTS5 档案，
+    让正文效力在新契约下依然成立，不改变用例原本锁的价值。
+    """
+    folder = tmp_path / "16.夜不收"
+    (folder / ".deskmate").mkdir(parents=True)
+    con = sqlite3.connect(str(folder / ".deskmate" / "fts5.db"))
+    try:
+        con.execute(
+            "CREATE VIRTUAL TABLE novels USING fts5("
+            "file_path, title, content, tokenize='unicode61')"
+        )
+        con.execute(
+            "INSERT INTO novels(file_path, title, content) VALUES (?, ?, ?)",
+            (
+                "夜不收：绝命救援.docx",
+                "夜不收：绝命救援",
+                "夜不收：绝命救援\n第十一章\n粮仓没有烧成，孔大贵炸开仓门后战死\n小队共十五人",
+            ),
+        )
+        con.commit()
+    finally:
+        con.close()
+    return str(folder)
+
+
 def _statuses(store: LearnedStore) -> dict[str, str]:
     con = sqlite3.connect(store.db_path)
     try:
@@ -80,21 +110,23 @@ def test_infer_source_falls_back_conservatively():
 # 2. 写入层：正文取代非正文、非正文不能推翻正文、纠正取代旧条
 # ---------------------------------------------------------------------------
 
-def test_manuscript_supersedes_non_fact_on_same_entity(store):
+def test_manuscript_supersedes_non_fact_on_same_entity(store, canon_book):
     """正文事实写入时，同锚点的设定/推理/大纲旧条必须让位（治「什么都算事实」）。"""
     store.append(["《夜不收》第十一章粮仓被烧毁"], source="setting:夜不收")
     store.append(["《夜不收》第十一章粮仓未烧成，孔大贵炸开仓门后战死"],
-                 source="manuscript:夜不收")
+                 source="manuscript:夜不收",
+                 canon_quote="粮仓没有烧成", canon_folder=canon_book)
     st = _statuses(store)
     assert st["《夜不收》第十一章粮仓被烧毁"] == "superseded"
     assert st["《夜不收》第十一章粮仓未烧成，孔大贵炸开仓门后战死"] == "active"
 
 
-def test_non_fact_cannot_supersede_manuscript(store):
+def test_non_fact_cannot_supersede_manuscript(store, canon_book):
     """反极性的设定/推理不得推翻已写正文事实（原有取代逻辑的危险面）。"""
     # 「没有」命中 _DENY_RE ⇒ 两条 polarity 相反，旧实现会据此取代正文条
     canon = "《夜不收》粮仓没有烧成"
-    store.append([canon], source="manuscript:夜不收")
+    store.append([canon], source="manuscript:夜不收",
+                 canon_quote="粮仓没有烧成", canon_folder=canon_book)
     store.append(["《夜不收》粮仓烧成了"], source="setting:夜不收")
     st = _statuses(store)
     assert st[canon] == "active", "正文事实被设定推翻了"
@@ -113,13 +145,14 @@ def test_correction_supersedes_previous_active_on_same_entity(store):
     assert active_old == ["《夜不收》东旗旗主是柳平原，韩效武是《国子监秘闻录》的人物"]
 
 
-def test_explicit_supersedes_by_text(store):
+def test_explicit_supersedes_by_text(store, canon_book):
     """调用方显式给出被取代文本时按 fp 精确取代（不误伤同书其它条）。"""
     old = "《夜不收》小队共十四人"
     keep = "《夜不收》作者是萧盛"
     store.append([old, keep], source="live")
     store.append(["《夜不收》小队共十五人"], source="manuscript:夜不收",
-                 supersedes=[old])
+                 supersedes=[old],
+                 canon_quote="小队共十五人", canon_folder=canon_book)
     st = _statuses(store)
     assert st[old] == "superseded"
     assert st[keep] == "active"
