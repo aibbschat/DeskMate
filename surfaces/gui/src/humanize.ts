@@ -94,6 +94,24 @@ export function humanizeTool(name: string, args: any): HumanLine {
       return { pre: "Used skill: ", obj: String(a.name ?? "") };
     case "ask_user":
       return { pre: "Asked you a question" };
+    case "consult_experts": {
+      // 小桔调专家：不要露原始 JSON（experts/brief 很长），只显示谁+哪本书。
+      const names: Record<string, string> = {
+        "lit-editor": "文学编辑",
+        brainstormer: "脑洞专家",
+        outline: "大纲专家",
+        character: "人物专家",
+        adaptation: "影视改编",
+      };
+      const list = Array.isArray(a.experts) ? a.experts : [];
+      const who = list.map((e: unknown) => names[String(e)] || String(e)).join("、");
+      const book = typeof a.book === "string" && a.book.trim() ? a.book.trim() : "";
+      return {
+        pre: "请专家看下：",
+        obj: who || "专家",
+        ...(book ? { post: " · 《" + book + "》" } : {}),
+      };
+    }
     case "propose_plan":
       return { pre: "Proposed a plan" };
     case "request_directory":
