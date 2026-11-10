@@ -209,6 +209,76 @@ def build_writing_status(workspace, *, limit: int = 6, now: float | None = None)
     )
 
 
+def manuscript_location_context(
+    workspace, *, limit: int = 4, now: float | None = None
+) -> str:
+    """「萧哥的稿子在哪」固定注入块（刀1，2026-11-10 萧哥拍板）。
+
+    病灶（2026-11-10 晚实测）：正稿路径知识只在 learned_history 里靠 query
+    2-gram 召回，而萧哥日常消息（「你去看一下」）带不上路径词 → 每轮注入两手
+    空空，小桔只能全盘乱翻（还翻到过桌面同名旧快照）。本块**不依赖对话关键词**：
+    只读扫描写作工作区（与 ``scan_writing_books`` 同口径：一级子目录、
+    .docx/.md、排除 ~$ 与隐藏文件），给出书稿根目录 + 当前在写正稿的**绝对路径**
+    + 最近动笔时间。绝不写稿件（只 stat）。
+
+    fail-open：workspace 为空/异常一律返回空串，不阻断注入。
+    """
+    try:
+        if workspace is None:
+            return ""
+        root = Path(workspace).expanduser()
+        if not root.is_dir():
+            return ""
+        ref = time.time() if now is None else now
+        found: list[tuple[float, str, str]] = []  # (mtime, 书名, 正稿绝对路径)
+        for d in sorted(root.iterdir()):
+            if not d.is_dir() or d.name.startswith("."):
+                continue
+            act = _newest_activity(d)
+            if act is None:
+                continue
+            found.append((act[0], _book_name(d.name), str(d / act[1])))
+        if not found:
+            return ""
+        found.sort(key=lambda x: x[0], reverse=True)
+        cur = (
+            found[0]
+            if (ref - found[0][0]) / 86400.0 < CURRENT_BOOK_WINDOW_DAYS
+            else None
+        )
+
+        def _when(m: float) -> str:
+            days = (ref - m) / 86400.0
+            if days < 1:
+                return "今天动过笔"
+            if days < 2:
+                return "昨天动过笔"
+            return f"{int(days)} 天没动笔"
+
+        lines = [
+            "## 萧哥的稿子在哪（系统实时探测，非记忆；读稿/报进度直接用）",
+            f"- 书稿根目录：{root}（每本书一个子目录，稿件只读；"
+            "读 docx 用 officecli view 并带 TMPDIR=<可写目录>）",
+        ]
+        if cur is not None:
+            lines.append(
+                f"- 当前在写：《{cur[1]}》正稿={cur[2]}（{_when(cur[0])}）"
+                "——读稿、对进度一律以此路径为准，别处的同名文件不是正稿"
+            )
+            for m, name, path in found[1:limit]:
+                lines.append(
+                    f"- 其他书：《{name}》{path}（{_when(m)}；换书在写 ≠ 停笔/卡住）"
+                )
+        else:
+            m, name, path = found[0]
+            lines.append(f"- 最近动笔的书：《{name}》{path}（{_when(m)}）")
+            for m, name, path in found[1:limit]:
+                lines.append(f"- 其他书：《{name}》{path}（{_when(m)}）")
+        return "\n".join(lines)[:800]
+    except Exception:
+        return ""
+
+
 def _name_aliases(name: str) -> list[str]:
     """书名别名：去掉副标题 + 中文长书名的前三字简称。
 

@@ -162,7 +162,9 @@ def memory_search(query: str, scope: str = "all") -> str:
 
     Args:
         query: 搜索关键词或自然语言查询
-        scope: 搜索范围 — 'global'（全局记忆）| 'project'（项目记忆）| 'all'（全部）
+        scope: 搜索范围 — 'user'（用户档案）| 'global'（全局记忆）|
+            'project'（项目记忆）| 'learned'（长期记忆库 learned_history：口述
+            事实/创作裁定，即每轮注入的同一批条目）| 'all'（全部）
 
     Returns:
         匹配的记忆片段
@@ -170,6 +172,10 @@ def memory_search(query: str, scope: str = "all") -> str:
     try:
         mgr = _get_mgr()
         parts: list[str] = []
+        if scope in ("user", "all"):
+            result = mgr._search_user_memory(query)
+            if result:
+                parts.append(f"【用户档案】\n{result}")
         if scope in ("global", "all"):
             result = mgr._search_global_memory(query)
             if result:
@@ -178,6 +184,23 @@ def memory_search(query: str, scope: str = "all") -> str:
             result = mgr._search_project_memory(query, mgr.active_project)
             if result:
                 parts.append(f"【项目记忆：{mgr.active_project}】\n{result}")
+        # 刀2（2026-11-10）：补 learned_history 库侧检索——此前只搜三套**文件**
+        # 记忆，库永远搜不到（正稿路径条目长期 active 却搜不出，只能全盘乱翻）。
+        # 检索口径与每轮注入同源（user_fact_context.search_user_facts）。
+        if scope in ("learned", "all"):
+            try:
+                from .user_fact_context import search_user_facts
+
+                hits = search_user_facts(mgr.base_dir, query, limit=8)
+            except Exception:
+                hits = []
+            if hits:
+                lines = ["【长期记忆库（learned_history·每轮注入的同源条目）】"]
+                for ts, fact, source in hits:
+                    stamp = (str(ts) or "")[:10]
+                    tag = f"（{source}）" if source else ""
+                    lines.append(f"- [{stamp}] {str(fact)[:200]}{tag}")
+                parts.append("\n".join(lines))
         if not parts:
             return "（未找到相关记忆）"
         combined = "\n\n".join(parts)

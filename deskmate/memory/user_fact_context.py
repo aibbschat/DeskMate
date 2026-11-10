@@ -381,6 +381,40 @@ def _active_user_facts(base_dir, limit: int = _FETCH_FACTS_CAP) -> list[tuple[st
     return [(r["fact"], r["source"]) for r in _rows(base_dir, limit)]
 
 
+def search_user_facts(
+    base_dir, query: str, limit: int = 8, now: datetime.datetime | None = None
+) -> list[tuple[str, str, str]]:
+    """按 query 检索活跃用户事实（memory_search 的库侧检索，刀2 2026-11-10）。
+
+    病灶（2026-11-10 晚实测）：memory_search 只搜 USER/MEMORY/项目三套**文件**
+    记忆，learned_history 库永远搜不到——知识放在库里等于没有（正稿路径条目
+    长期 active 却搜不出，她只能全盘乱翻）。
+
+    口径与每轮注入同源：同一批活跃条目（status='active' 且未过期）、同一
+    2-gram/书名权重、同一近重复去重与陈旧过滤；**不做书隔离**（显式搜索可跨
+    书查）。query 为空时退化为最近条目；query 无命中返回空列表。
+    返回 [(ts, fact, source)]，最多 limit 条。fail-open：任何异常返回空列表。
+    """
+    try:
+        rows = _rows(base_dir)
+        if not rows:
+            return []
+        now = now or datetime.datetime.now()
+        rows = [r for r in rows if not _is_stale(r, now)]
+        weights = _term_weights(query or "")
+        if weights:
+            scored = []
+            for row in rows:
+                score = sum(w for t, w in weights.items() if t in row["fact"])
+                if score > 0:
+                    scored.append((score, row))
+            scored.sort(key=lambda x: -x[0])
+            rows = _dedupe([row for _, row in scored])
+        return [(r["ts"], r["fact"], r["source"]) for r in rows[:limit]]
+    except Exception:
+        return []
+
+
 def _source_prefix(source: str) -> str:
     from .learned_store import source_prefix
 

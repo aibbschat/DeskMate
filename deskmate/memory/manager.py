@@ -768,6 +768,28 @@ class DeskMateMemoryManager:
                 _add("clock", _clock_ctx, priority=0, cap=200)
         except Exception:
             pass  # fail-open：时钟缺失不影响主对话
+        # 「萧哥的稿子在哪」（2026-11-10 刀1）：**固定注入，不依赖对话关键词**。
+        # 病根：正稿路径知识只在 learned_history 里按 2-gram 召回，而萧哥日常消息
+        # （「你去看一下」）带不上路径词 → 她每轮两手空空只能全盘乱翻（2026-11-10
+        # 晚还翻到过桌面同名旧快照当正稿读）。数据源 = writing_context（多书并行
+        # 契约的唯一事实源，只读 mtime/stat，绝不写稿件）。
+        # fail-open；单独开关 DESKMATE_WRITING_INJECT=0。
+        try:
+            if os.environ.get("DESKMATE_WRITING_INJECT", "1") != "0":
+                from deskmate.proactivity.writing_context import (
+                    manuscript_location_context,
+                    resolve_writing_workspace,
+                )
+
+                _ms_ctx = manuscript_location_context(
+                    resolve_writing_workspace(base_dir=self.base_dir)
+                )
+                if _ms_ctx:
+                    # 优先级低 = 预算紧张时最后被丢（同 clock 一族）；块很小，
+                    # 闲聊轮也保留（keep_light 默认 True）。
+                    _add("manuscript", _ms_ctx, priority=5, cap=800)
+        except Exception:
+            pass  # fail-open：稿子定位失败不影响主记忆注入
         # 天气感知（2026-10-15）：他问起窗外/出门时注入真实天气（缓存+双源，
         # 她用真实数据回答不编）；外面正下雨/雪/打雷时给一行氛围——她置身其中。
         # 情绪影响走 proactivity tick 的 apply_weather_mood（规则直驱），不在这里。
@@ -942,6 +964,44 @@ class DeskMateMemoryManager:
             })
 
         return "<memory-context>\n" + rendered + "\n</memory-context>"
+
+    def _search_user_memory(self, query: str, limit: int = 4) -> str:
+        """在 USER.md 里按关键词找条目录回。
+
+        memory_search 此前只搜全局记忆（MEMORY.md）与项目记忆，USER.md 里的长期
+        事实（书稿固定位置、桌面旧快照勿读等）搜不到——2026-11-10 她找不到稿子
+        路径就直接去翻桌面、读了 10-31 的旧快照。这里按词面重合度召回，只返回命中的
+        条目，不整块灌 USER.md。
+        """
+        try:
+            content = load_user(self.base_dir) or ""
+            if not content.strip():
+                return ""
+            q = (query or "").strip()
+            if len(q) < 2:
+                return ""
+            terms = [t for t in re.split(r"[\s,，。;；:：/\\|（）()\[\]「」《》\"'“”]+", q) if len(t) >= 2]
+            grams = {q[i:i + 2] for i in range(len(q) - 1)} if len(q) >= 2 else set()
+            hits: list[tuple[int, int, str]] = []
+            for idx, line in enumerate(content.split("\n")):
+                line = line.strip()
+                if not line:
+                    continue
+                score = sum(3 for t in terms if t in line)
+                if score == 0 and grams:
+                    score = sum(1 for g in grams if g in line)
+                # 至少要命中一个完整词，或 >=3 个二字碎片，避免泛词召回噪声
+                if score and (any(t in line for t in terms) or score >= 3):
+                    hits.append((score, -idx, line))
+            if not hits:
+                return ""
+            hits.sort(reverse=True)
+            picked: list[str] = []
+            for _score, _negidx, line in hits[:limit]:
+                picked.append(f"- {line}")
+            return "\n".join(picked)
+        except Exception:
+            return ""
 
     def _search_auto_tasks_reading(self, user_message: str) -> str:
         """检索『每日读书』沉淀里与被问及书籍相关的心得，注入对话上下文。
