@@ -308,6 +308,7 @@ class SessionManager:
             self.task_store,
             self._run_scheduled_task,
             extra_tick=self._combined_extra_tick,
+            foreground_busy=self._foreground_turn_running,
         )
         # Cached DeskMate proactive engine (created once, reused across ticks).
         # Without this, _combined_extra_tick would construct a new ProactiveEngine
@@ -6420,6 +6421,24 @@ class SessionManager:
 
     def is_running(self, session_id: str) -> bool:
         return session_id in self._running_sessions
+
+    def _foreground_turn_running(self) -> bool:
+        """True while a USER-facing turn is running: a session that is mid-turn AND has a
+        live client attached. The scheduler gates its whole tick on this so a background
+        automation / self-wake resume / DeskMate proactive pass defers to the next tick
+        instead of competing for the event loop with the turn the human is watching
+        (2026-11-10). Deferring loses nothing: due tasks and due wakes stay due.
+
+        COWORKER_BACKGROUND_YIELD=0 restores the old always-run behaviour; a background
+        turn on a session with no live client (headless automation) does not count.
+        """
+        if os.environ.get("COWORKER_BACKGROUND_YIELD", "1") == "0":
+            return False
+        running = getattr(self, "_running_sessions", None)
+        clients = getattr(self, "_session_clients", None)
+        if not running or not clients:
+            return False
+        return any(session_id in clients for session_id in running)
 
     async def _resume_wake(self, wake) -> None:
         message = self._wake_message(wake)

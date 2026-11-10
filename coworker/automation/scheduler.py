@@ -28,12 +28,18 @@ class Scheduler:
         *,
         tick_seconds: float = 30.0,
         extra_tick: Optional[Callable[[], Awaitable[None]]] = None,
+        foreground_busy: Optional[Callable[[], bool]] = None,
     ) -> None:
         self.store = store
         self.runner = runner
         self.tick_seconds = tick_seconds
         # An extra per-tick coroutine (self-wake resumption: resume sessions whose wakes are due).
         self.extra_tick = extra_tick
+        # Yield policy (2026-11-10): while a user-facing turn is running, defer the WHOLE
+        # tick (due automations + extra_tick) to the next one instead of racing the event
+        # loop against the turn the human is watching. Nothing is dropped — store.due()
+        # and wakes.due() still return the same work next tick. None = never yield.
+        self.foreground_busy = foreground_busy
         self._task: Optional[asyncio.Task] = None
         self._running_ids: set[str] = set()  # overlap guard
         self._spawned: set[asyncio.Task] = set()  # keep spawned runs referenced
@@ -95,6 +101,11 @@ class Scheduler:
                 logger.exception("scheduler tick failed")
 
     async def _tick(self, *, trigger: str) -> None:
+        if self.foreground_busy is not None and self.foreground_busy():
+            logger.info(
+                "scheduler tick (%s) deferred — a foreground turn is running", trigger
+            )
+            return
         for task in self.store.due():
             # Spawn, don't await: a run can suspend on a parked approval (standing
             # scoped approvals, §25) and one blocked automation must never stall the

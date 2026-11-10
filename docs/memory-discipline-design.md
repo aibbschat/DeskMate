@@ -254,3 +254,46 @@ tests/test_memory_canon_discipline.py（11 例）锁住写入纪律。均为 tmp
 - manager.prefetch/_get_core_memory/build_system_prompt 按当前书过滤 MEMORY.md 分节（P1）。
 - active_project 应用层接线（P1）。
 - canon_evidence 表 + 正文锚点回查（P3，先出方案再动 schema）。
+
+---
+
+## 12. 上下文 token 预算与闲聊跳块（2026-11-10 已落地，性能收口）
+
+**为什么**：召回纪律解决「注入什么」，这一节解决「注入多少」。实测 `build_full_context_for_turn`
+每轮注入 **约 40KB（约 3 万 token）**：USER 画像 12.4KB / cognitive 8KB / world 7.5KB /
+prefetch 5.3KB 是 prefill 大头，闲聊一句「早」也照灌，直接拉长模型首包时间。
+
+**机制**（`deskmate/memory/context_budget.py`）：
+1. 每个注入块登记 `(name, priority, cap, cap_light, keep_light)`；总预算按估算 token
+   （中文 0.75/字、其它 0.25/字符）控制，默认 **13000 token**（quality-first：
+   兼顾 prefill 与人格/认知/世界观完整度；调小更省，调大更保）。
+2. 超预算：先整块丢 `priority > 50` 的明显可选长块（溯源标注/信箱/读后感/课时），
+   **功能块**（画像、prefetch 记忆检索、认知/分身、世界观、用户事实、情绪、时钟、意图）
+   只截断不整块丢——开了的功能不会因为预算静默失效。各块上限：画像 6000（闲聊 2600）、
+   prefetch 4500、cognitive 4500、world 4500、用户事实 2000（闲聊 900）、
+   emotion_state 1800、emotional 1200、intent 800。
+3. 注入前先剥 USER.md 的「## 自动复盘 · 日期」流水段（稳定画像只有 ~2.6KB，
+   其余 ~9.7KB 是每日复盘日志），把画像块从 12.4KB 降到 ~2.6KB 而不丢画像内容。
+4. 闲聊轮：短（≤24 字）、含中文、无《书名》、无写作/书籍/检索/记忆指代类词、非寒暄例外的
+   消息，跳过 cognitive / world / prefetch / lessons / reflection / intent，只留画像（短）、
+   用户事实（短）、情绪与时钟。**「记得/上次/之前/后来/结局/怎样」等记忆指代词不算闲聊**。
+
+**实测**（完整真实 ~/.deskmate COW 克隆，同一句分别按工作轮/闲聊轮）：
+
+| 场景 | 改前 | 改后 | 降幅 |
+|---|---|---|---|
+| 写作轮（"夜不收 粮仓 方向 怎么改"） | 40070 chars / ≈3 万 token | 22000–22800 chars / ≈12.7–12.9k token | −57% |
+| 闲聊轮（"早"） | 40070 chars | 5450 chars / ≈3.2k token | −89% |
+
+写作轮里只有各块的**尾部**被截断（prefetch/cognitive/world 的头部=核心/最近/最相关，
+保留；画像的稳定段全保留，只丢每日复盘流水）；闲聊轮才整块跳重块。
+
+**env 旋钮**：
+- `DESKMATE_CONTEXT_TOKEN_BUDGET`（默认 13000；24000≈完全旧保真，0=不限制）
+- `DESKMATE_CONTEXT_LIGHT=0` 关闲聊跳块（怀疑误判时用）
+- `DESKMATE_CONTEXT_BUDGET=0` 整体关预算（恢复旧行为，排障用）
+- `DESKMATE_CONTEXT_LIGHT_MAX_CHARS`（默认 24）闲聊长度阈值
+
+**边界与调优**：轻判是启发式，保守优先——纯英文短词、带《书名》、带写作/检索/记忆指代词都不算闲聊；
+如果真实使用中发现「该带的记忆没带上」，先 `DESKMATE_CONTEXT_LIGHT=0` 对照，再调长度阈值或补关键词。
+预算只裁「每轮注入的记忆上下文」，不动 system prompt。回归：`tests/test_context_budget.py`（31 例）。

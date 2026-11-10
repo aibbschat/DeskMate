@@ -279,6 +279,15 @@ class TurnEngine:
         # Completed tool calls so far, so a fact can say how many steps back the write was.
         self._step = 0
         self._last_context_tokens: Optional[int] = None
+        # Cheap compaction signal (2026-11-10). _outbound_estimate_tokens is the token
+        # estimate of the LAST assembled outbound view, _outbound_estimate_len how many
+        # canonical messages it covered, and _last_context_block_chars the size of the
+        # <system-context> block it appended. Together they let _compaction_due() decide
+        # WITHOUT calling context_provider (which used to block the loop for ~2.4s on the
+        # first iteration of every background turn — measured 2026-11-10).
+        self._outbound_estimate_tokens: Optional[int] = None
+        self._outbound_estimate_len: int = 0
+        self._last_context_block_chars: int = 0
         # P1-1: cross-turn effectiveness tracking. After a compaction we remember the
         # pre-compaction real token count; the next main-model round-trip reports the
         # post-compaction real count, and we compare to detect a "growing candidate"
@@ -723,15 +732,68 @@ class TurnEngine:
         cfg = self._compaction_config()
         if cfg.get("enabled") is False:
             return False
-        signal = self._last_context_tokens or _compaction.estimate_tokens(
-            self._outbound_messages()
-        )
+        signal = self._compaction_signal_tokens()
         return _compaction.should_compact(
             signal,
             cfg.get("context_window"),
             threshold_pct=float(cfg["threshold_pct"]),
             cap_tokens=int(cfg["cap_tokens"]),
         )
+
+    def _compaction_signal_tokens(self) -> int:
+        """Token signal for the compaction gate — cheap, never assembles the outbound view.
+
+        Assembling it here (the old behaviour) runs context_provider on the EVENT LOOP
+        instead of in the provider's produce thread; on a real session that is the whole
+        DeskMate memory context build (measured 2407ms of loop stall on a cold background
+        turn, 2026-11-10). Order of truth:
+        1. the last REAL prompt-token count a provider reported (unchanged, authoritative);
+        2. the last assembled outbound view + a rough estimate of the messages appended
+           since + the <system-context> block the next assembly will add again (only when
+           a new user message is in that tail — that is what carries the block);
+        3. no assembled view yet (first ever iteration): estimate the raw canonical
+           messages. This under-counts the context block once; the first provider
+           round-trip reports real usage and the next checkpoint uses it (the overflow
+           path still force-compacts if a provider rejects the prompt).
+        """
+        if self._last_context_tokens:
+            return self._last_context_tokens
+        prev = self._outbound_estimate_tokens
+        if prev is None:
+            return _compaction.estimate_tokens(self.messages)
+        tail = self.messages[self._outbound_estimate_len :]
+        est = prev
+        if tail:
+            est += _compaction.estimate_tokens(tail)
+            if self._last_context_block_chars and any(
+                m.get("role") == "user" for m in tail
+            ):
+                # 保守低估（不是精确值）：estimate_tokens 按「字符数 / 4」折算，对中文
+                # 只相当于约 0.25 token/字（真实约 0.6-0.75），所以这一项把上下文块算小
+                # 了。低估方向是安全的——只会晚压、不会早压；真到超预算，provider 的
+                # 400 由 force-compact 兜底（engine.py:586-592 is_context_overflow →
+                # _compact_now(force=True) → 强制 trim 后 continue）。
+                est += self._last_context_block_chars // 4
+        return est
+
+    def _sync_outbound_estimate(self) -> None:
+        """Re-baseline the cheap compaction signal after the outbound view changed
+        (compaction shrank it). Uses apply_to_outbound only — no context_provider."""
+        view = _compaction.apply_to_outbound(self.messages, self.compaction_state)
+        self._outbound_estimate_tokens = _compaction.estimate_tokens(view)
+        self._outbound_estimate_len = len(self.messages)
+
+    def _record_outbound_view(
+        self, out: list[dict[str, Any]], source_len: int, context_chars: int = 0
+    ) -> None:
+        """Remember what the assembled outbound view cost (called from the produce thread
+        of _astream, so the loop never has to recompute it)."""
+        try:
+            self._outbound_estimate_tokens = _compaction.estimate_tokens(out)
+            self._outbound_estimate_len = source_len
+            self._last_context_block_chars = context_chars
+        except Exception:  # never let metering break a turn
+            self._outbound_estimate_tokens = None
 
     def _check_compaction_effectiveness(self, post_tokens: int) -> None:
         """P1-1: cross-turn real-token validation. Called after each main-model
@@ -844,6 +906,7 @@ class TurnEngine:
             self._compaction_pre_tokens = self._last_context_tokens
             self.compaction_state = state
             self._last_context_tokens = None  # stale once the outbound view shrank
+            self._sync_outbound_estimate()  # new, smaller baseline for the cheap gate
             return "Context compacted — earlier turns were summarized"
 
         if failed:
@@ -873,6 +936,7 @@ class TurnEngine:
             if trimmed is not None:
                 self.compaction_state = trimmed
                 self._last_context_tokens = None
+                self._sync_outbound_estimate()  # new, smaller baseline for the cheap gate
                 if failed and self.question_asker is not None and self.is_attended and self.is_attended():
                     # P1-2: if a dedicated compression model was also configured (and
                     # failed), the "set one" hint is misleading — name both models.
@@ -898,15 +962,17 @@ class TurnEngine:
         loop = asyncio.get_running_loop()
         queue: asyncio.Queue = asyncio.Queue()
         tools = self.registry.schemas() or None
-        model, messages, settings = (
-            self.model,
-            self._outbound_messages(),
-            self.model_settings,
-        )
+        model, settings = self.model, self.model_settings
         provider = self.provider
+        # Snapshot ON the loop (a cheap shallow list copy) and do the EXPENSIVE assembly
+        # in the produce thread: context_provider (DeskMate memory recall / user-fact
+        # context) plus the pdf/image/emote adaptation used to run right here on the
+        # event loop (measured 2407ms loop stall on a cold background turn, 2026-11-10).
+        snapshot = list(self.messages)
 
         def produce():
             try:
+                messages = self._outbound_messages(snapshot)
                 for chunk in provider.stream(
                     model=model, messages=messages, tools=tools, **settings
                 ):
@@ -2435,8 +2501,11 @@ class TurnEngine:
             self.messages.append(message)
         self._steering = []
 
-    def _outbound_messages(self) -> list[dict[str, Any]]:
-        """`self.messages` prepared for the provider. The SOLE provider feed (see `_astream`).
+    def _outbound_messages(
+        self, messages: Optional[list[dict[str, Any]]] = None
+    ) -> list[dict[str, Any]]:
+        """`self.messages` (or the given snapshot) prepared for the provider. The SOLE
+        provider feed (see `_astream`).
 
         Every message is stripped of the display-only sidecars — `source`, `_display`, and
         `ts` — (providers reject unknown keys), unconditionally — whether or not a
@@ -2457,9 +2526,8 @@ class TurnEngine:
         # Auto-compaction (OPE-27): everything before the boundary is represented by the
         # compacted block. Outbound-only — the canonical history stays intact — and the
         # block+tail are byte-stable between turns, so prompt caching keeps working.
-        source_messages = _compaction.apply_to_outbound(
-            self.messages, self.compaction_state
-        )
+        source = self.messages if messages is None else messages
+        source_messages = _compaction.apply_to_outbound(source, self.compaction_state)
         out = [
             (
                 {k: v for k, v in msg.items() if k not in _SIDECARS}
@@ -2577,6 +2645,7 @@ class TurnEngine:
             self.context_provider(out) if self.context_provider is not None else ""
         ) or ""
         if not context:
+            self._record_outbound_view(out, len(source))
             return out
         block = f"\n\n<system-context>\n{context}\n</system-context>"
         for i in range(len(out) - 1, -1, -1):
@@ -2592,6 +2661,7 @@ class TurnEngine:
                 msg["content"] = block
             out[i] = msg
             break
+        self._record_outbound_view(out, len(source), len(block))
         return out
 
 

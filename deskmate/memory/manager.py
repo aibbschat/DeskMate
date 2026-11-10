@@ -244,9 +244,33 @@ class DeskMateMemoryManager:
     # System Prompt 组装（参考 Hermes build_system_prompt）
     # ------------------------------------------------------------------
 
-    def build_system_prompt(self) -> str:
-        """组装 system prompt：SOUL.md + USER.md + MEMORY.md + 项目记忆。"""
+    def build_system_prompt(self, user_message: str = "") -> str:
+        """组装 system prompt：SOUL.md + USER.md + MEMORY.md + 项目记忆。
+
+        P1-B：USER.md / MEMORY.md 在**读侧**按当前书过滤（文件本体绝不改写），
+        当前书按每轮解析，不写进程级 active_project。异常一律 fail-open 用原文。
+        """
         parts: list[str] = []
+        _known: list[str] = []
+        _book = ""
+        try:
+            from deskmate.memory import book_scope
+
+            _known = book_scope.known_books(self.base_dir)
+            _book = book_scope.resolve_turn_book(
+                self.base_dir, user_message,
+                active_project=self.active_project, known=_known,
+            )
+        except Exception:
+            pass  # fail-open：书维度不可用就按旧行为整段注入
+
+        def _scoped(text: str, fn: str) -> str:
+            try:
+                from deskmate.memory import book_scope
+
+                return getattr(book_scope, fn)(text, _book, _known)
+            except Exception:
+                return text
 
         # 1. AI 人格
         soul = load_soul(self.base_dir)
@@ -256,16 +280,17 @@ class DeskMateMemoryManager:
         # 2. 用户画像
         user = load_user(self.base_dir)
         if user:
-            parts.append(user)
+            parts.append(_scoped(user, "filter_user_profile_by_book"))
 
         # 3. 全局记忆
         memory = self._load_global_memory()
         if memory:
-            parts.append(memory)
+            parts.append(_scoped(memory, "filter_memory_sections_by_book"))
 
-        # 4. 项目记忆（如果有活跃项目）
-        if self.active_project:
-            proj_mem = format_project_memory(self.base_dir, self.active_project)
+        # 4. 项目记忆（当前书优先，active_project 兜底）
+        active = _book or self.active_project
+        if active:
+            proj_mem = format_project_memory(self.base_dir, active)
             if proj_mem:
                 parts.append(proj_mem)
 
@@ -295,7 +320,7 @@ class DeskMateMemoryManager:
             return layer[:budget] + "\n…"
         return layer
 
-    def prefetch(self, user_message: str) -> str:
+    def prefetch(self, user_message: str, *, book: str | None = None) -> str:
         """每轮对话前：检索相关记忆，返回 <memory-context> 标签包裹的内容。
 
         三层记忆架构：
@@ -338,9 +363,11 @@ class DeskMateMemoryManager:
         if vault_mem:
             context_parts.append(self._cap_layer(vault_mem, budget_per_layer))
 
-        # 5. 项目记忆
-        if self.active_project:
-            proj_mem = self._search_project_memory(user_message, self.active_project)
+        # 5. 项目记忆（P1-B：按轮解析的当前书优先，active_project 兜底；
+        #    过去应用层从不 set_active_project，这里等于把项目记忆接回正路）
+        active = book or self.active_project
+        if active:
+            proj_mem = self._search_project_memory(user_message, active)
             if proj_mem:
                 context_parts.append(proj_mem)
 
@@ -592,8 +619,58 @@ class DeskMateMemoryManager:
         注意：技能加载不在引擎层强制注入，而是通过系统 prompt 中的技能索引，
         让 LLM 自觉判断何时调用 skill_view 加载。
         """
-        parts: list[str] = []
-        relevant = self.prefetch(user_message)
+        from deskmate.memory.context_budget import ContextBlock, strip_auto_review
+
+        # 2026-11-10：每轮注入按 token 预算裁剪 + 闲聊轮跳重块（见 context_budget.py）。
+        # blocks 记录块名/优先级/上限；最后统一 render，fail-open 退回旧行为。
+        blocks: list[ContextBlock] = []
+
+        def _add(
+            name: str,
+            text: str,
+            *,
+            priority: int = 50,
+            cap: int = 4000,
+            cap_light: int | None = None,
+            keep_light: bool = True,
+        ) -> None:
+            if text and str(text).strip():
+                blocks.append(
+                    ContextBlock(
+                        name=name,
+                        text=str(text).strip(),
+                        priority=priority,
+                        cap=cap,
+                        cap_light=cap_light,
+                        keep_light=keep_light,
+                    )
+                )
+
+        # P1-B 当前书：每轮解析一次，让 MEMORY/USER 读侧隔离、项目记忆、
+        # user_fact_context 共用同一书维度（避免三处各推一次、结论打架）。
+        # 不写 self.active_project：云端多会话共享 manager，进程级状态会串味。
+        _known: list[str] = []
+        _book = ""
+        try:
+            from deskmate.memory import book_scope
+
+            _known = book_scope.known_books(self.base_dir)
+            _book = book_scope.resolve_turn_book(
+                self.base_dir, user_message,
+                active_project=self.active_project, known=_known,
+            )
+        except Exception:
+            pass  # fail-open：书维度不可用就退回旧行为
+
+        def _scoped(text: str, fn: str) -> str:
+            try:
+                from deskmate.memory import book_scope
+
+                return getattr(book_scope, fn)(text, _book, _known)
+            except Exception:
+                return text  # fail-open：绝不因隔离逻辑丢掉整块记忆
+
+        relevant = self.prefetch(user_message, book=_book)
         if relevant:
             inner = relevant.strip()
             if inner.startswith("<memory-context>"):
@@ -602,10 +679,21 @@ class DeskMateMemoryManager:
                 inner = inner[:-len("</memory-context>")]
             inner = inner.strip()
             if inner:
-                parts.append(inner)
+                inner = _scoped(inner, "filter_memory_sections_by_book")
+                # 记忆检索块：写作轮必带；闲聊轮跳过（省 prefill）
+                _add("prefetch", inner, priority=35, cap=4500, keep_light=False)
         user = load_user(self.base_dir)
         if user and user.strip():
-            parts.append(f"## 用户画像\n{user.strip()}")
+            user = _scoped(user, "filter_user_profile_by_book")
+            _add(
+                "user_profile",
+                # P1-B 的书过滤已先跑；这里再剥「自动复盘」日期流水段（非稳定画像），
+                # 把 12.4KB 压到 ~2.6KB 同时不丢画像内容。
+                f"## 用户画像\n{strip_auto_review(user.strip())}",
+                priority=40,
+                cap=6000,
+                cap_light=2600,
+            )
         # P2-6 分身模式（可选开启，默认关）：追加「另一个我」画像，
         # 让 AI 以用户的写作风格与决策偏好输出，而非通用 AI 风格。
         try:
@@ -617,7 +705,7 @@ class DeskMateMemoryManager:
             if alter_ego_enabled() and has_alter_ego_data():
                 ego = build_alter_ego_prompt(mode="full")
                 if ego:
-                    parts.append(ego)
+                    _add("alter_ego", ego, priority=44, cap=2000, keep_light=False)
         except Exception:
             pass  # fail-open：分身画像缺失不影响主记忆注入
         # 「小桔」人格上线：认知画像 + 人格底座注入（随分身模式开启）。
@@ -629,11 +717,15 @@ class DeskMateMemoryManager:
                 build_emotional_context,
                 has_cognitive_data,
             )
-            if alter_ego_enabled() and has_cognitive_data():
+            _use_cognitive = alter_ego_enabled() and has_cognitive_data()
+            if _use_cognitive:
                 # P1-2：传当轮 user_message 当 query——认知/情感层走
                 # 两级注入（核心层 + 长尾按 query 召回）；空 query/异常
                 # 内部自动退全量，行为与历史版本一致。
                 ego_cog = build_cognitive_context(query=user_message)
+                if ego_cog:
+                    # 认知画像 8KB 级重块：写作轮才注入
+                    _add("cognitive", ego_cog, priority=42, cap=4500, keep_light=False)
             else:
                 # 2026-09-21：分身关着时，仍然注入**情感画像**。
                 # 原来两件事绑在一个开关上，导致「她记着的他的情绪规律」从来没进过
@@ -641,8 +733,9 @@ class DeskMateMemoryManager:
                 # 放行范围**只有 emotional 层**：人格底座 / 认知层 / 世界观仍按原样
                 # 归分身与世界管道管，不在本次扩权内。
                 ego_cog = build_emotional_context(query=user_message)
-            if ego_cog:
-                parts.append(ego_cog)
+                if ego_cog:
+                    # 情感画像较轻（~1KB）且是"懂你"的地基：闲聊轮也保留
+                    _add("emotional", ego_cog, priority=25, cap=1200, cap_light=1000)
         except Exception:
             pass  # fail-open：认知人格缺失不影响主记忆注入
         # P2 情绪底色（2026-10-11 落地，2026-10-13 重写为「真实优先 · v2」）：
@@ -661,7 +754,8 @@ class DeskMateMemoryManager:
                 # record=True：把这份「系统读法」留一行（差异史 X 栏，只记账）
                 _emotion_ctx = _ee.describe_turn_context(record=True)
                 if _emotion_ctx:
-                    parts.append(_emotion_ctx)
+                    # 当下心情是「真实优先」的骨架块：全量约 1.3-1.6KB，给足上限
+                    _add("emotion_state", _emotion_ctx, priority=15, cap=1800, cap_light=1400)
             except Exception:
                 pass  # fail-open 退回无情绪段
         # 对话层时钟（2026-10-15）：一行纯事实「现在是 …周几 晚上 22:06」。
@@ -671,7 +765,7 @@ class DeskMateMemoryManager:
             from deskmate.perception.clock import clock_context
             _clock_ctx = clock_context()
             if _clock_ctx:
-                parts.append(_clock_ctx)
+                _add("clock", _clock_ctx, priority=0, cap=200)
         except Exception:
             pass  # fail-open：时钟缺失不影响主对话
         # 天气感知（2026-10-15）：他问起窗外/出门时注入真实天气（缓存+双源，
@@ -682,7 +776,7 @@ class DeskMateMemoryManager:
             from deskmate.perception.weather import weather_context
             _wx_ctx = weather_context(user_message, base_dir=self.base_dir)
             if _wx_ctx:
-                parts.append(_wx_ctx)
+                _add("weather", _wx_ctx, priority=20, cap=600)
         except Exception:
             pass  # fail-open：天气不可知不影响主对话
         # 「越用越懂你·每日读书」：把面板里的读书沉淀接回对话（修复死数据）
@@ -690,7 +784,7 @@ class DeskMateMemoryManager:
         try:
             reading_ctx = self._search_auto_tasks_reading(user_message)
             if reading_ctx:
-                parts.append(reading_ctx)
+                _add("reading", reading_ctx, priority=72, cap=1500, keep_light=False)
         except Exception:
             pass  # fail-open：读书沉淀缺失不影响主记忆注入
         # 「她观察到的世界」：把小桔主动摄入的外部观察（learned_history 带「（外部·」标）
@@ -703,7 +797,7 @@ class DeskMateMemoryManager:
 
             world_ctx = build_world_context(self.base_dir, query=user_message)
             if world_ctx:
-                parts.append(world_ctx)
+                _add("world", world_ctx, priority=48, cap=4500, keep_light=False)
         except Exception:
             pass
         # 「你跟我说过的 / 你近期的日常」（2026-10-08 修复：用户事实+日记此前两条
@@ -716,10 +810,12 @@ class DeskMateMemoryManager:
             user_fact_ctx = build_user_fact_context(
                 self.base_dir,
                 user_message,
-                book=getattr(self, "active_project", None),
+                # P1-B：传按轮解析的当前书，不再直接塞 active_project
+                # （它常是工作区 UUID，会让书隔离整轮静默失效）
+                book=_book or None,
             )
             if user_fact_ctx:
-                parts.append(user_fact_ctx)
+                _add("user_fact", user_fact_ctx, priority=30, cap=2000, cap_light=900)
         except Exception:
             pass  # fail-open：用户事实缺失不影响主记忆注入
         # 「她递出的卡片要接得上」（2026-10-07 §11.16 灵动三层·层一）：
@@ -738,7 +834,7 @@ class DeskMateMemoryManager:
                 delivered_today_items(self.base_dir)
             )
             if delivered_ctx:
-                parts.append(delivered_ctx)
+                _add("delivered", delivered_ctx, priority=45, cap=1200, cap_light=800)
         except Exception:
             pass  # fail-open：台账缺失/查询失败不影响主记忆注入
         # 「你有一个信箱」（信箱送达层 2026-10-09 · 设计单 §7 要害）：**常驻**告诉她这个
@@ -750,7 +846,7 @@ class DeskMateMemoryManager:
 
             mailbox_ctx = render_mailbox_self_context(self.base_dir)
             if mailbox_ctx:
-                parts.append(mailbox_ctx)
+                _add("mailbox", mailbox_ctx, priority=75, cap=900, keep_light=False)
         except Exception:
             pass  # fail-open：信箱自述缺失不影响主记忆注入
         # 「小桔学到的」（P2-R3 江河设计 §4.5 教学层）：从萧哥纠正/反馈学到的
@@ -763,7 +859,7 @@ class DeskMateMemoryManager:
 
                 lessons_ctx = build_lessons_context(self.base_dir, user_message)
                 if lessons_ctx:
-                    parts.append(lessons_ctx)
+                    _add("lessons", lessons_ctx, priority=68, cap=1500, keep_light=False)
         except Exception:
             pass  # fail-open：lessons 缺失不影响主记忆注入
         # 「小桔最近的自我反思」（R9 反思层 R1）：从 item_history 取最近对旧看法的裁决
@@ -776,7 +872,7 @@ class DeskMateMemoryManager:
 
                 refl_ctx = build_reflection_context(self.base_dir)
                 if refl_ctx:
-                    parts.append(refl_ctx)
+                    _add("reflection", refl_ctx, priority=65, cap=800, keep_light=False)
         except Exception:
             pass  # fail-open：反思缺失不影响主记忆注入
         # 「小桔自己做过的事」（R12 意图执行层）：意图被萧哥放行后她**真做出来的产物**
@@ -789,19 +885,19 @@ class DeskMateMemoryManager:
 
                 intent_ctx = build_intent_context(self.base_dir)
                 if intent_ctx:
-                    parts.append(intent_ctx)
+                    _add("intent", intent_ctx, priority=64, cap=800, keep_light=False)
         except Exception:
             pass  # fail-open：意图产物缺失不影响主记忆注入
-        if not parts:
+        if not blocks:
             return ""
 
-        # P0-4/8.3：只标注 prefetch 记忆块（parts[0]），USER 画像不标注
+        # P0-4/8.3：只标注 prefetch 记忆块，USER 画像不标注
         refs: list[dict] = []
-        if parts:
-            marked, refs = self._annotate_memory_blocks(parts[0])
-            parts[0] = marked
-
-        body = "\n\n".join(parts)
+        for _b in blocks:
+            if _b.name == "prefetch":
+                marked, refs = self._annotate_memory_blocks(_b.text)
+                _b.text = marked
+                break
 
         if refs:
             ref_lines: list[str] = []
@@ -817,16 +913,35 @@ class DeskMateMemoryManager:
                 + "\n".join(ref_lines)
                 + "\n</memory-references>"
             )
-            body += ref_block
-            # 8.3 溯源：记录本轮注入了哪些记忆 id
+            blocks.append(
+                ContextBlock(
+                    name="memory_references",
+                    text=ref_block,
+                    priority=95,
+                    cap=1500,
+                    cap_light=0,
+                    keep_light=False,
+                )
+            )
+
+        from deskmate.memory.context_budget import render_blocks
+
+        rendered, budget_stats = render_blocks(blocks, user_message=user_message)
+        if not rendered:
+            return ""
+
+        # 8.3 溯源：记录本轮注入了哪些记忆 id（顺带记预算/闲聊判定，便于排障）
+        if refs:
             self._append_trace(INJECT_TRACE_FILE, {
                 "ts": datetime.datetime.now().isoformat(timespec="seconds"),
                 "query": redact((user_message or "")[:100]),  # 8.4：query 脱敏
                 "n": len(refs),
                 "refs": refs[:20],
+                "budget": {k: budget_stats.get(k) for k in
+                           ("light", "tokens", "dropped", "trimmed")},
             })
 
-        return "<memory-context>\n" + body + "\n</memory-context>"
+        return "<memory-context>\n" + rendered + "\n</memory-context>"
 
     def _search_auto_tasks_reading(self, user_message: str) -> str:
         """检索『每日读书』沉淀里与被问及书籍相关的心得，注入对话上下文。
