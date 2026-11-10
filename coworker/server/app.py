@@ -492,6 +492,109 @@ def create_app(manager: SessionManager) -> FastAPI:
         await manager.aclose()  # stop gateway + close MCP connections on shutdown
 
     app = FastAPI(title="coworker", version="0.0.0", lifespan=lifespan)
+
+    # -- 事件循环滞后诊断（env-gated，2026-11-10「反应慢」排查用）--------------------
+    # 事件循环上的同步工作（SQLite / fastembed / 未包 to_thread 的 httpx）不会出现在任何
+    # 协程里，但会表现为「WS 帧之间凭空多出几百毫秒到几秒」。这里两档诊断：
+    #   COWORKER_LOOP_LAG_MS=200  → sleep 50ms 量一次滞后，超阈值 WARNING 打出滞后值 +
+    #                               当时所有协程的顶帧（谁是事件循环上的长任务一目了然）。
+    #   COWORKER_LOOP_DUMP_SEC=2  → faulthandler 每 N 秒 dump 所有线程栈（真正卡住主线程的
+    #                               同步调用不在协程里，只有线程栈能点名它）。
+    # 两者默认关闭，只在这类「用户说卡但日志没痕迹」的排查里打开。
+    _loop_lag_ms = float(os.environ.get("COWORKER_LOOP_LAG_MS", "0") or 0)
+    _loop_dump_sec = float(os.environ.get("COWORKER_LOOP_DUMP_SEC", "0") or 0)
+    if _loop_dump_sec > 0:
+        # faulthandler 不需要事件循环（定时线程写 stderr），所以在 create_app 里直接起。
+        import faulthandler
+
+        faulthandler.dump_traceback_later(_loop_dump_sec, repeat=True)
+
+    if _loop_lag_ms > 0:
+
+        async def _loop_lag_watch() -> None:
+            loop = asyncio.get_running_loop()
+            while True:
+                started = loop.time()
+                await asyncio.sleep(0.05)
+                lag = (loop.time() - started - 0.05) * 1000.0
+                if lag < _loop_lag_ms:
+                    continue
+                heads: list[str] = []
+                for task in asyncio.all_tasks(loop):
+                    if task is asyncio.current_task(loop):
+                        continue
+                    stack = task.get_stack(limit=3)
+                    if not stack:
+                        continue
+                    heads.append(
+                        " <- ".join(
+                            f"{Path(f.f_code.co_filename).name}:{f.f_lineno}:{f.f_code.co_name}"
+                            for f in stack
+                        )
+                    )
+                logging.warning(
+                    "event-loop lag %.0f ms; live tasks: %s",
+                    lag,
+                    " | ".join(heads[:8]) or "(none)",
+                )
+
+        def _start_watch_when_loop_ready() -> None:
+            # create_app 在建事件循环之前跑（uvicorn 之后才 run），所以等
+            # manager.start_gateway() 把 loop 记下来再挂协程；超时 60s 放弃。
+            import time as _time
+
+            for _ in range(600):
+                loop = getattr(manager, "_loop", None)
+                if loop is not None:
+                    try:
+                        asyncio.run_coroutine_threadsafe(_loop_lag_watch(), loop)
+                    except RuntimeError:  # loop 已关（测试/快速退出）
+                        pass
+                    return
+                _time.sleep(0.1)
+
+        threading.Thread(target=_start_watch_when_loop_ready, daemon=True).start()
+
+    # -- 启动后台 warmup（2026-11-10「反应慢」）--------------------------------
+    # 三件「第一次用到才付钱」的初始化，从**第一轮对话的首字前同步路径**挪到启动后的
+    # 空档里（延后 COWORKER_WARMUP_DELAY 秒，避开启动期最忙的几秒）：
+    #   1) fastembed BGE 模型加载（实测 ~1-2s，原来压在第一轮对话里）；
+    #   2) 天气缓存首刷（原来首轮问天气时要同步等 wttr.in 网络，1.7-7s）；
+    #   3) 语义检索的向量条目缓存（跨实例缓存，先灌热）。
+    # 三件都 fail-open 且只写缓存，不碰任何用户数据；COWORKER_WARMUP=0 可整体关闭。
+    if os.environ.get("COWORKER_WARMUP", "1") != "0" and "PYTEST_CURRENT_TEST" not in os.environ:
+
+        def _warm_caches() -> None:
+            import time as _time
+
+            try:
+                _time.sleep(float(os.environ.get("COWORKER_WARMUP_DELAY", "4") or 4))
+            except (TypeError, ValueError):
+                _time.sleep(4.0)
+            desk_dir = os.environ.get("DESKMATE_MEMORY_DIR") or None
+            try:
+                from deskmate.memory import semantic_search as _ss
+
+                if _ss._backend_order():
+                    # 1) 模型加载
+                    from deskmate.memory import local_embed as _le
+
+                    if _le.available():
+                        _le._load()
+                    # 3) 向量条目缓存
+                    _ss.SemanticSearcher()._load_embeddable_cached(trusted_only=True)
+            except Exception:  # noqa: BLE001 — warmup 失败只等于没热身
+                logging.debug("semantic warmup skipped", exc_info=True)
+            try:
+                # 2) 天气缓存首刷（后台线程内部再起一个线程，本函数不等网络）
+                from deskmate.perception.weather import refresh_async as _wx_refresh
+
+                _wx_refresh(desk_dir, min_interval=0.0)
+            except Exception:  # noqa: BLE001
+                pass
+
+        threading.Thread(target=_warm_caches, name="cache-warmup", daemon=True).start()
+
     api_token = os.environ.get("COWORKER_API_TOKEN", "")
     # A2A 路由前缀放行的路由（SDK 注册的 /tasks/{id} 等带路径参数的端点用前缀匹配）
     A2A_OPEN_PREFIXES = ("/tasks/", "/message:", "/.well-known/agent-card")
@@ -7717,6 +7820,22 @@ def create_app(manager: SessionManager) -> FastAPI:
                     if reject is not None:
                         await reject_input(reject)
                         continue
+                    # 2026-11-10「反应慢」：**收到即回执**。前端拿到 turn_ack 立刻点亮
+                    # 「思考中」，不再干等 engine 的第一个事件——后台 turn 抢事件循环时
+                    # （scheduler catchup / self-wake / 记忆后处理），这段空窗能被压到最小。
+                    # 同时记一笔「用户在前台聊天」，让 proactive 后台 tick 在静默窗口内让路。
+                    try:
+                        from deskmate.proactivity.background import note_user_activity
+
+                        note_user_activity()
+                    except Exception:
+                        pass  # deskmate 未部署 / 导入失败都不影响这一轮
+                    try:
+                        await ws.send_json(
+                            {"type": "turn_ack", "data": {"text": text}}
+                        )
+                    except Exception:
+                        pass  # 回执失败不是错误，engine 事件照常流
                     # The composer sends its visible model with every message — the FIRST
                     # one binds the session (race-proof across reconnects; see api.ts
                     # Session.userMessage), later ones may switch it (notice persisted).

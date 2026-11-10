@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
+import time
 from typing import Awaitable, Callable, Optional
 
 from .tick import ProactiveEngine, TickResult
@@ -20,6 +22,40 @@ from .tick import ProactiveEngine, TickResult
 logger = logging.getLogger("deskmate.proactivity.background")
 
 ExtraTick = Callable[[], Awaitable[None]]
+
+# 2026-11-10「反应慢」：后台主动 tick（感知 + LLM + 行为挖掘）自带几十个 DB 读和
+# 线程池任务，与前台 turn 抢同一进程的 GIL / SQLite 连接 / 内存。用户刚说完话的这段
+# 时间里，主动打扰本来也不该抢在前面——记录最近一次「人在聊天」的时间，静默窗口内
+# 整轮 tick 直接跳过（只是延后，不是关掉；下一次 tick 到点自然补上）。
+# DESKMATE_PROACTIVE_QUIET_SECONDS 可调，设 0 = 关闭该静默窗口（恢复旧行为）。
+_last_user_activity: float = 0.0
+_DEFAULT_QUIET_SECONDS = 90.0
+
+
+def note_user_activity() -> None:
+    """标记「用户正在前台聊天」。由接入层（server 的 user_message 处理）调用。"""
+    global _last_user_activity
+    _last_user_activity = time.time()
+
+
+def seconds_since_user_activity() -> float:
+    """距上次前台活动多少秒；从未活动过返回 inf。"""
+    if _last_user_activity <= 0.0:
+        return float("inf")
+    return max(0.0, time.time() - _last_user_activity)
+
+
+def _quiet_seconds() -> float:
+    try:
+        return max(0.0, float(os.environ.get("DESKMATE_PROACTIVE_QUIET_SECONDS", str(_DEFAULT_QUIET_SECONDS))))
+    except (TypeError, ValueError):
+        return _DEFAULT_QUIET_SECONDS
+
+
+def should_skip_background_tick() -> bool:
+    """用户刚聊过（静默窗口内）→ 本轮后台 tick 让路。"""
+    quiet = _quiet_seconds()
+    return quiet > 0.0 and seconds_since_user_activity() < quiet
 
 
 def make_extra_tick(
@@ -43,6 +79,13 @@ def make_extra_tick(
                 await wrapped()
             except Exception:
                 logger.exception("wrapped extra_tick failed")
+        # 0) 用户刚聊过 → 整轮让路（不感知、不 LLM、不挖行为模式），只延后不取消。
+        if should_skip_background_tick():
+            logger.debug(
+                "proactive tick skipped: 用户 %.0fs 前还在前台聊天",
+                seconds_since_user_activity(),
+            )
+            return None
         # 1) 主动推理（感知→判断→决策：说话/关怀/日记/花园）
         try:
             # proactive_tick 内含感知 / LLM，放到后台线程避免阻塞 scheduler 事件循环。

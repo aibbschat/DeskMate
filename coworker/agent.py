@@ -6,16 +6,43 @@ the skill catalog (progressive disclosure) + load_skill into a TurnEngine.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
 import threading
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Optional
 
 logger = logging.getLogger(__name__)
 _deskmate_mgr_lock = threading.Lock()
+# 2026-11-10 首字延迟排查：同一轮里 context_provider 会被调两次
+# （engine._compaction_due 的 token 估算 + engine._astream 真正发送，各走一次
+# _outbound_messages → context_provider），此前等于把「记忆上下文组装」整段付两遍，
+# 其中还含天气 HTTP/fastembed 等重活。这里按 messages 指纹做轮内短缓存：
+# 同一轮两次调用同指纹 → 命中；下一轮消息数/内容变了 → 自动失效。TTL 是兜底，
+# 防止长时间空闲后拿旧上下文。只缓存返回值，不改变注入内容本身。
+_deskmate_ctx_lock = threading.Lock()
+_deskmate_ctx_cache: dict[str, tuple[float, str]] = {}
+_DESKMATE_CTX_TTL = 60.0
+
+
+def _deskmate_ctx_key(messages: list | None, last_user: str) -> str:
+    """一轮对话的上下文指纹：消息条数 + 最后一条用户消息 + 最后一条消息内容。"""
+    h = hashlib.sha1()
+    h.update(str(len(messages or [])).encode("utf-8", "ignore"))
+    h.update(b"\x00")
+    h.update((last_user or "")[:4000].encode("utf-8", "ignore"))
+    if messages:
+        h.update(b"\x00")
+        try:
+            tail = json.dumps(messages[-1], ensure_ascii=False, sort_keys=True, default=str)
+        except Exception:
+            tail = str(messages[-1])
+        h.update(tail[:2000].encode("utf-8", "ignore"))
+    return h.hexdigest()
 
 from .agents import Agent, AgentContext, code_agent
 from .automation import scheduling_tools
@@ -270,7 +297,20 @@ def _deskmate_memory_context(messages: list | None = None) -> str:
                                 last_user = part.get("text", "")
                                 break
                     break
-        return mgr.build_full_context_for_turn(last_user)
+        key = _deskmate_ctx_key(messages, last_user)
+        now = time.time()
+        with _deskmate_ctx_lock:
+            hit = _deskmate_ctx_cache.get(key)
+            if hit is not None and now - hit[0] <= _DESKMATE_CTX_TTL:
+                return hit[1]
+        value = mgr.build_full_context_for_turn(last_user)
+        with _deskmate_ctx_lock:
+            # 轻量清理：只保留 TTL 内的条目，避免长会话下无界增长。
+            for stale_key, (stale_ts, _v) in list(_deskmate_ctx_cache.items()):
+                if now - stale_ts > _DESKMATE_CTX_TTL * 4:
+                    _deskmate_ctx_cache.pop(stale_key, None)
+            _deskmate_ctx_cache[key] = (now, value)
+        return value
     except Exception:
         return ""
 

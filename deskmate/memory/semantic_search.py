@@ -91,6 +91,27 @@ _last_model: str = ""
 # 留一个可查的数字，避免又变成「只能靠现象猜」。
 _last_dim_skipped: int = 0
 
+# 2026-11-10「反应慢」：每轮对话的 context_provider 会组装两次记忆上下文，
+# 且 world_context 这类调用方**每次 new 一个 SemanticSearcher**（实例缓存等于没有）。
+# 两个进程级缓存把重复开销压掉：
+#   _EMBED_TEXT_CACHE  — query 文本 → 向量（同一 turn 里两次组装 query 完全相同）
+#   _ITEMS_CACHE       — (外部信息库路径, trusted_only) → 带向量的条目（跨实例复用）
+# 都带 TTL，最长 5 分钟；写入侧（embed_pending_items / invalidate_cache）会主动清。
+_EMBED_TEXT_TTL = 300.0
+_EMBED_TEXT_MAX = 256
+_ITEMS_CACHE_TTL = 300.0
+_embed_text_cache: "dict[str, tuple[float, list[float]]]" = {}
+_items_cache: "dict[tuple[str, bool], tuple[float, list[dict]]]" = {}
+
+
+def _cache_invalidate_items(db_path: str | None = None) -> None:
+    """清条目缓存（db_path=None 全清）。供缓存失效与测试使用。"""
+    if db_path is None:
+        _items_cache.clear()
+        return
+    for key in [k for k in _items_cache if k[0] == db_path]:
+        _items_cache.pop(key, None)
+
 
 def _backend_mode() -> str:
     """``DESKMATE_EMBEDDING_BACKEND`` 的值（非法值一律当 auto）。"""
@@ -301,11 +322,26 @@ def _call_embedding_api(texts: list[str]) -> Optional[list[list[float]]]:
 
 
 def embed_text(text: str) -> Optional[list[float]]:
-    """单条文本生成向量。失败返回 None（fail-open）。"""
+    """单条文本生成向量（带进程级 TTL 缓存）。失败返回 None（fail-open）。
+
+    缓存键就是原文：同一 turn 里记忆上下文明明会被组装两次（engine._compaction_due
+    与 _astream 各调一次 context_provider），query 完全相同——第二次不必再跑一遍
+    BGE 推理。只缓存成功结果；失败不缓存（下一轮还能重试）。
+    """
+    key = text or ""
+    now = time.time()
+    hit = _embed_text_cache.get(key)
+    if hit is not None and (now - hit[0]) < _EMBED_TEXT_TTL:
+        return list(hit[1])
     vectors = _call_embedding_api([_embed_text_preprocess(text)])
     if vectors is None:
         return None
-    return vectors[0] if vectors else None
+    vec = vectors[0] if vectors else None
+    if vec:
+        if len(_embed_text_cache) >= _EMBED_TEXT_MAX:
+            _embed_text_cache.clear()
+        _embed_text_cache[key] = (now, list(vec))
+    return vec
 
 
 def cosine_similarity(a: list[float], b: list[float]) -> float:
@@ -671,6 +707,15 @@ class SemanticSearcher:
         永远走不到缓存分支，所以没被发现。现在缓存整条记录，杜绝字段丢失。
         """
         now = time.time()
+        db_key = str(getattr(self.store, "db_path", "") or id(self.store))
+        # 跨实例共享（2026-11-10）：world_context 每次都 new 一个 SemanticSearcher，
+        # 实例级缓存等于没有，等于每轮都把全表向量从 SQLite 里读两遍。
+        shared = _items_cache.get((db_key, trusted_only))
+        if shared is not None and (now - shared[0]) < _ITEMS_CACHE_TTL:
+            self._vec_cache = {it["id"]: it for it in shared[1]}
+            self._vec_cache_loaded_at = shared[0]
+            self._cache_trusted_only = trusted_only
+            return list(shared[1])
         fresh = (now - self._vec_cache_loaded_at) < self._cache_ttl
         # 闸门开关变了也不能复用旧缓存，否则会绕过 trusted_only
         same_gate = self._cache_trusted_only == trusted_only
@@ -681,6 +726,7 @@ class SemanticSearcher:
         self._vec_cache = {it["id"]: it for it in items}
         self._vec_cache_loaded_at = now
         self._cache_trusted_only = trusted_only
+        _items_cache[(db_key, trusted_only)] = (now, items)
         return items
 
     def invalidate_cache(self) -> None:
@@ -688,6 +734,7 @@ class SemanticSearcher:
         self._vec_cache.clear()
         self._vec_cache_loaded_at = 0.0
         self._cache_trusted_only = True
+        _cache_invalidate_items(str(getattr(self.store, "db_path", "") or "") or None)
 
 
 # ---------------------------------------------------------------------------

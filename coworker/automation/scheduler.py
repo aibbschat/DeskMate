@@ -38,9 +38,17 @@ class Scheduler:
         self._running_ids: set[str] = set()  # overlap guard
         self._spawned: set[asyncio.Task] = set()  # keep spawned runs referenced
 
-    def start(self) -> None:
+    def start(self, *, initial_delay: float = 0.0) -> None:
+        """Start the tick loop.
+
+        initial_delay postpones the FIRST (catch-up) pass. A cold sidecar boot must not
+        run background turns before the window can even load its first screen (boot probe
+        2026-11-10: the catch-up tick blocked the event loop for 20-37s, so uvicorn only
+        finished binding its socket ~6-9s after spawn). Default 0.0 keeps the historical
+        behaviour for tests and for callers that already gate on their own readiness.
+        """
         if self._task is None:
-            self._task = asyncio.create_task(self._loop())
+            self._task = asyncio.create_task(self._loop(initial_delay=initial_delay))
 
     async def stop(self) -> None:
         if self._task is not None:
@@ -60,7 +68,20 @@ class Scheduler:
                 pass
         self._spawned.clear()
 
-    async def _loop(self) -> None:
+    async def _loop(self, *, initial_delay: float = 0.0) -> None:
+        # Cold boot gate. The catch-up pass is: (a) due automations, (b) the extra_tick
+        # hook — self-wake resume + DeskMate background proactive reasoning, i.e. REAL
+        # LLM turns. Run at t=0 on the *same* event loop that is still bringing uvicorn
+        # up, those turns starve the socket bind and the SPA's first-screen burst
+        # (measured 2026-11-10: bind delayed 6.4-9.7s, loop stalls 1.6-3.6s, first
+        # message queued behind a ~37s tick). Deferring keeps the 'run-once-catch-up'
+        # contract — nothing is dropped, it just fires once the window has had time to
+        # come up. Manager passes the delay (env COWORKER_SCHEDULER_CATCHUP_DELAY).
+        if initial_delay > 0:
+            try:
+                await asyncio.sleep(initial_delay)
+            except asyncio.CancelledError:
+                raise
         # First pass = run-once-catch-up for anything missed while the server was down.
         try:
             await self._tick(trigger="catchup")

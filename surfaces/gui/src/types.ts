@@ -2,6 +2,9 @@ export type EventType =
   | "ready"
   | "inbound"
   | "turn_start"
+  // Server-side receipt ack (2026-11-10 latency work): arrives before the first engine
+  // event so the GUI can show "thinking" while the loop is busy with a background turn.
+  | "turn_ack"
   | "assistant_delta"
   | "reasoning_delta"
   | "assistant_message"

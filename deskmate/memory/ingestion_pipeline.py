@@ -189,10 +189,13 @@ def _write_to_internal_memory(
     if not facts:
         return 0
     try:
-        from .learned_store import LearnedStore
+        from .learned_store import SOURCE_EXTERNAL, LearnedStore
 
         store = LearnedStore(base_dir=base_dir) if base_dir else LearnedStore()
-        return int(store.append(facts) or 0)
+        # 来源显式标 external（2026-11-10 补）：事实文本本来带「（外部·…）」溯源标，
+        # 但 source 列一直默认 live —— 读侧统计/分层只能靠文本猜。显式标注后
+        # 参考层判定不依赖标记格式，也不与萧哥口述混在同一口径里。
+        return int(store.append(facts, source=SOURCE_EXTERNAL) or 0)
     except Exception as e:
         logger.warning("ingestion_pipeline: 写入内部记忆失败: %s", e)
         return 0

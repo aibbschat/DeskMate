@@ -528,6 +528,10 @@ export function App() {
   // initial: adopt the server's seed workspace if any, else force the gate.
   // Retry health for a while: the desktop shell starts its sidecar in parallel, so the
   // server may not answer for a second or two. Only fall back to the gate once it's truly up.
+  // Desktop: the window now opens BEFORE the sidecar is spawned (lib.rs — cold boot used to
+  // hold the window back ~10s), so this retry is what bridges the "window first, backend
+  // later" gap. 120 × 500ms ≈ 60s covers a cold file cache; the boot splash stays up and
+  // the friendlier wording below shows while we wait.
   const [booting, setBooting] = useState(true);
   const [onboarding, setOnboarding] = useState(false);
   // True once we've resumed a prior conversation on boot (drives the splash wording).
@@ -623,7 +627,7 @@ export function App() {
           }
         });
     };
-    attempt(40); // ~20s of 500ms retries
+    attempt(120); // ~60s of 500ms retries — window may be up before the backend is
     return () => {
       cancelled = true;
     };
@@ -837,6 +841,13 @@ export function App() {
                 .catch(() => {});
             });
           }
+          break;
+        case "turn_ack":
+          // 服务端「已收到」回执（2026-11-10 反应慢）：比首个 engine 事件更早到。
+          // 事件循环被后台 turn 抢住时，这是用户能最早看到的"她收到了"信号；
+          // turn_start 随后确认同一状态，不改变既有语义。
+          setRunning(true);
+          dmPush("正在理解你的请求…", "thinking");
           break;
         case "turn_start":
           setRunning(true);
@@ -1228,6 +1239,10 @@ export function App() {
 
   const send = (text: string, attachments?: Attachment[]) => {
     setItems((p) => [...p, { kind: "user", text, attachments, ts: Date.now() / 1000 }]);
+    // 2026-11-10「反应慢」：本地立刻进入 running（spinner/思考态），不等服务端事件。
+    // turn_ack / turn_start 会确认同一状态，turn_done 复位；断线时置 false 防止假运行
+    // （Session.send 会把消息排队，重连后再发）。
+    setRunning(connected);
     // The visible model rides along with the message (single source of truth per turn).
     sessionRef.current?.userMessage(text, attachments, model);
     followLatest(); // sending always re-engages stream-following, wherever the user had scrolled

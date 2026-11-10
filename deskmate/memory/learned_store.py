@@ -93,6 +93,8 @@ SOURCE_SETTING = "setting"              # 设定 / 大纲 / 章纲 / 规划
 SOURCE_ROUNDTABLE = "roundtable"        # 圆桌 / 简报 / 讨论 / 复盘结论
 SOURCE_PROGRESS = "progress"            # 进度 / 改稿动作记录
 SOURCE_EXTERNAL = "external"            # 外部观察 / 新闻
+SOURCE_LOCAL_INTAKE = "local_intake"    # 本地笔记摄入（书稿资料/人物/目录）——参考层
+SOURCE_LEGACY = "legacy"                # 从 learned_history.jsonl 迁移的存量数据（低置信）
 
 #: 非正文来源：只能作线索，不得作为「已写事实」陈述
 NON_FACT_SOURCES = frozenset({
@@ -101,13 +103,25 @@ NON_FACT_SOURCES = frozenset({
     SOURCE_ROUNDTABLE,
     SOURCE_PROGRESS,
     SOURCE_EXTERNAL,
+    # 2026-11-10 补：local_intake 是「本地笔记摄入」（书稿资料/人物资料/目录/大纲），
+    # 不是萧哥口述事实。此前它既非 live 也非 NON_FACT，34 条研究笔记被当成
+    # 「你跟我说过的」主块注入（实测 12:40 快照：34/633）。
+    SOURCE_LOCAL_INTAKE,
 })
 
 #: 写入侧允许的 source 前缀（抽取器输出经此白名单过滤，未知值退回 live）
 VALID_SOURCE_PREFIXES = frozenset({
     SOURCE_MANUSCRIPT, SOURCE_AUTHOR_RULING, SOURCE_USER, SOURCE_CORRECTION,
     SOURCE_REASONING, SOURCE_SETTING, SOURCE_ROUNDTABLE,
-    SOURCE_PROGRESS, SOURCE_EXTERNAL,
+    SOURCE_PROGRESS, SOURCE_EXTERNAL, SOURCE_LOCAL_INTAKE,
+})
+
+#: 「与书有关」的来源：写入时若能从正文/会话判定书名，就把书名拼进 source 后缀，
+#: 让召回侧有书维度可用。live 偏好类不拼——一句「已出版《明朝的裂变》」是通用
+#: 事实，拼上书维度后会在其它书的会话里被隔离掉，反而丢信息。
+BOOKISH_SOURCES = frozenset({
+    SOURCE_MANUSCRIPT, SOURCE_AUTHOR_RULING, SOURCE_CORRECTION,
+    SOURCE_SETTING, SOURCE_PROGRESS, SOURCE_REASONING, SOURCE_ROUNDTABLE,
 })
 
 _AUTHORITY = {
@@ -115,8 +129,8 @@ _AUTHORITY = {
     SOURCE_AUTHOR_RULING: 60,
     SOURCE_USER: 50,
     SOURCE_CORRECTION: 50,
-    "legacy": 40,
-    "local_intake": 40,
+    SOURCE_LEGACY: 40,
+    SOURCE_LOCAL_INTAKE: 25,
     SOURCE_PROGRESS: 30,
     SOURCE_SETTING: 20,
     SOURCE_REASONING: 15,
@@ -152,8 +166,100 @@ def is_canon_source(source: str | None) -> bool:
 
 
 def is_non_fact_source(source: str | None) -> bool:
-    """是否非正文来源（推理/设定/大纲/简报/进度/外部），只能作线索。"""
+    """是否非正文来源（推理/设定/大纲/简报/进度/外部/本地笔记），只能作线索。"""
     return source_prefix(source) in NON_FACT_SOURCES
+
+
+# ---------------------------------------------------------------------------
+# 存量来源兜底（2026-11-10 补）
+#
+# 实测（12:40 只读快照）：active 1389 条里 live 1123、legacy 211、local_intake 34，
+# manuscript 0 条、author_ruling 只有 4 条。存量里混着外部新闻、小桔自己的决定/
+# 复盘口吻、本地笔记摘要——它们写库时没有来源维度，不能靠改历史数据「补齐」，
+# 只能在**读侧**归一：召回时按内容特征把它们降进参考层。
+#
+# 关键取舍：只认高置信的**外部信源标记**，不做「像新闻就降级」的模糊判断——
+# 误把萧哥口述降级，比漏降一条外部新闻更糟。存量清洗另有 reclassify_legacy()
+# 显式迁移方法（默认 dry-run），不自动跑。
+# ---------------------------------------------------------------------------
+_EXTERNAL_SIGNS = (
+    "（外部",
+    "【天下要闻】", "【财经脉动】", "【国际观察】",
+    "【人文现场】", "【科技前沿】",
+    "财联社", "新华网", "央视网", "新闻联播",
+    "早啊！新闻", "早8点", "川观早",
+)
+
+
+def looks_external(fact: str) -> bool:
+    """一条事实是否带高置信的外部信源标记（存量 live/legacy 降级用）。"""
+    text = str(fact or "")
+    return any(sign in text for sign in _EXTERNAL_SIGNS)
+
+
+def effective_source(source: str | None, fact: str = "") -> str:
+    """读侧归一来源：给存量无维度条目一个保守的「实际效力」判定。
+
+    - 空值按 legacy（比 live 更保守：不冒充用户口述）；
+    - live / legacy 但正文带外部信源标记 → external（只能作参考）；
+    - 其余原样返回（含 <prefix>:<book_id>）。
+    """
+    prefix = source_prefix(source)
+    if not source:
+        return SOURCE_EXTERNAL if looks_external(fact) else SOURCE_LEGACY
+    if prefix == SOURCE_LEGACY:
+        return SOURCE_EXTERNAL if looks_external(fact) else SOURCE_LEGACY
+    if prefix == SOURCE_USER and looks_external(fact):
+        return SOURCE_EXTERNAL
+    return str(source)
+
+
+def fact_titles(fact: str) -> list[str]:
+    """取一条事实里的《书名》/「引号专名」，去重保序（最多 8 个）。"""
+    seen: list[str] = []
+    pattern = r"[《「『\u201c\u0022](.+?)[》」』\u201d\u0022]"
+    for raw in re.findall(pattern, str(fact or "")):
+        title = raw.strip()
+        if title and title not in seen:
+            seen.append(title)
+    return seen[:8]
+
+
+def fact_book(source: str | None, fact: str = "") -> str:
+    """一条事实的「书维度」原始提示：优先 source 后缀，其次正文里唯一的书名。
+
+    - manuscript:夜不收 → 夜不收
+    - 无 source 后缀、正文只提到一本《X》 → X
+    - 正文提到多本（如创作阶段回顾）/ 一本都没提 → 空串（视为通用事实）
+    """
+    book = source_book(source)
+    if book:
+        return book
+    titles = fact_titles(fact)
+    return titles[0] if len(titles) == 1 else ""
+
+
+def infer_book_hint(fact: str, session_text: str = "") -> str:
+    """写入侧推断书维度：本条事实唯一书名优先，其次整段会话唯一书名。
+
+    宁缺勿错：都判不出来就返回空串（通用事实），不猜当前项目。
+    """
+    titles = fact_titles(fact)
+    if len(titles) == 1:
+        return titles[0]
+    if len(titles) > 1:
+        return ""
+    session_titles = fact_titles(session_text)
+    return session_titles[0] if len(session_titles) == 1 else ""
+
+
+def with_book(source: str, fact: str = "", session_text: str = "") -> str:
+    """给「与书有关」的来源补上书维度后缀（幂等，已有后缀不覆盖）。"""
+    prefix = source_prefix(source)
+    if source_book(source) or prefix not in BOOKISH_SOURCES:
+        return source
+    hint = infer_book_hint(fact, session_text)
+    return make_source(prefix, hint) if hint else source
 
 
 # 抽取器漏给 source（本地规则抽取 / 旧版 LLM 输出）时的保守兜底。
@@ -880,6 +986,52 @@ class LearnedStore:
                 return int(cur.rowcount or 0)
         except sqlite3.Error:
             return 0
+
+    def reclassify_legacy(self, dry_run: bool = True) -> dict[str, Any]:
+        """存量来源清洗：把带高置信外部信源标记的 live/legacy 条目标成 external。
+
+        只动「来源列」，不动 fact/ts/status；默认 dry-run（真实库不被自动改写）。
+        这是给运维/迁移留的显式入口，不在任何主链路上调用。
+
+        Returns:
+            {scanned, candidates, updated, samples}
+        """
+        try:
+            with self._connect() as conn:
+                rows = conn.execute(
+                    "SELECT id, fact, source FROM learned_history "
+                    "WHERE source NOT LIKE '%:%' OR source IN (?, ?)",
+                    (SOURCE_USER, SOURCE_LEGACY),
+                ).fetchall()
+        except sqlite3.Error:
+            return {"scanned": 0, "candidates": 0, "updated": 0, "samples": []}
+        targets: list[tuple[int, str]] = []
+        samples: list[str] = []
+        for rid, fact, source in rows:
+            if source_prefix(source) not in (SOURCE_USER, SOURCE_LEGACY):
+                continue
+            if not looks_external(fact):
+                continue
+            targets.append((SOURCE_EXTERNAL, int(rid)))
+            if len(samples) < 5:
+                samples.append(str(fact)[:80])
+        if not dry_run and targets:
+            try:
+                with self._connect() as conn:
+                    conn.executemany(
+                        "UPDATE learned_history SET source=? WHERE id=?", targets
+                    )
+            except sqlite3.Error:
+                return {
+                    "scanned": len(rows), "candidates": len(targets),
+                    "updated": 0, "samples": samples,
+                }
+        return {
+            "scanned": len(rows),
+            "candidates": len(targets),
+            "updated": 0 if dry_run else len(targets),
+            "samples": samples,
+        }
 
     # ------------------------------------------------------------------
     # 迁移：learned_history.jsonl → DB

@@ -713,7 +713,11 @@ class DeskMateMemoryManager:
         try:
             from deskmate.memory.user_fact_context import build_user_fact_context
 
-            user_fact_ctx = build_user_fact_context(self.base_dir, user_message)
+            user_fact_ctx = build_user_fact_context(
+                self.base_dir,
+                user_message,
+                book=getattr(self, "active_project", None),
+            )
             if user_fact_ctx:
                 parts.append(user_fact_ctx)
         except Exception:
@@ -2515,7 +2519,7 @@ class DeskMateMemoryManager:
             except Exception:
                 return {"written": 0, "notes": "抽取结果解析失败（已跳过）"}
 
-        from deskmate.memory.learned_store import infer_source
+        from deskmate.memory.learned_store import infer_source, with_book
 
         written = 0
         skipped = 0
@@ -2532,7 +2536,13 @@ class DeskMateMemoryManager:
                 continue
             # 来源归一：抽取器漏给 source 时按类别/措辞保守推断，
             # 设定与进度降进参考层，不再冒充用户口述事实。
-            src = infer_source(fact.get("source"), category, fact_text)
+            # 书维度（2026-11-10 补）：与书有关的来源补上 <prefix>:<书名> 后缀，
+            # 否则召回侧永远无从判断「这条属于哪本书」——实测存量 1335/1389 无书维度。
+            src = with_book(
+                infer_source(fact.get("source"), category, fact_text),
+                fact_text,
+                text,
+            )
             try:
                 if category == "preference":
                     result = self.append_to_section("user", fact_text)

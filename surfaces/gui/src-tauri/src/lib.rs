@@ -175,10 +175,13 @@ fn sidecar_env() -> std::collections::HashMap<String, String> {
     std::collections::HashMap::new()
 }
 
-/// 预热闸门：阻塞等待 sidecar 在指定端口就绪（最长 timeout 秒）。
-/// 窗口在此之前不会展示，因此用户首条消息不会卡在"后端冷启动"上——这是
-/// 把 onedir 首启从感知上的卡顿压下去的关键（对标 esbuild 单文件压冷启动的等价思路）。
-/// 超时也返回，由健康 watcher 兜底，绝不因此卡死启动。
+/// 观测 sidecar 在指定端口就绪的耗时（最长 timeout 秒），只记日志、不拦截启动。
+///
+/// 2026-11-10 改：它以前是**窗口的启动闸门**（窗口在它返回前不创建）——实测后端冷启动
+/// spawn→端口可连要 9.7s，于是用户整整十秒看不到任何东西；而真正让这段时间变长的
+/// 是后端起服前就在跑的后台 turn（见 coworker/automation/scheduler.py 冷启动让路）。
+/// 现在由 setup 在后台线程里调它，窗口先出、骨架先画，SPA 侧 /v1/health 重试兜住
+/// 「窗口先到、后端后到」的窗口期；这里失败也只记一行，绝不卡死启动。
 fn wait_for_sidecar(port: u16, timeout_secs: u64) {
     use std::net::{TcpStream, ToSocketAddrs};
     use std::time::{Duration, Instant};
@@ -918,7 +921,50 @@ pub fn run() {
             // 0. Windows 安装中断自愈（Mac 下为空操作，立即返回）
             ensure_sidecar_integrity();
 
-            // 1. Start the Python server sidecar on the chosen port (inherits our env).
+            // 1. Build the window FIRST, then start the backend behind it.
+            //    Cold start used to block here: wait_for_sidecar() held the window back
+            //    until the port accepted (~9.7s measured 2026-11-10), and sidecar_env()
+            //    (a `zsh -ilc env` probe with a 5s cap) ran before the spawn as well — so
+            //    the user stared at nothing for the whole backend boot. The webview now
+            //    paints its boot splash immediately and the SPA's health retry (~60s)
+            //    bridges until the sidecar answers; the pre-warm probe still logs its
+            //    readiness time (from a background thread) and the health watcher keeps
+            //    covering the failure case.
+            //    Overlay title bar (macOS): traffic lights float over the edge-to-edge UI.
+            let mut builder =
+                WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
+                    .title("OpenWorker")
+                    .inner_size(1360.0, 900.0)
+                    .min_inner_size(980.0, 640.0)
+                    // Let the WEBVIEW receive OS file drags: Tauri's own drag-drop handler
+                    // otherwise intercepts them, so the composer's HTML5 onDrop (attach by
+                    // dragging a file in) never fired in the desktop shell — browser dev
+                    // worked, DMGs didn't. main.tsx guards against drops outside the
+                    // composer navigating the page.
+                    .disable_drag_drop_handler()
+                    .initialization_script(&inject);
+            #[cfg(target_os = "macos")]
+            {
+                builder = builder
+                    .title_bar_style(tauri::TitleBarStyle::Overlay)
+                    .hidden_title(true)
+                    // Nudge the traffic lights down + in so they sit vertically centered in a
+                    // roomier top strip, aligned with the sidebar toggle and title rather than
+                    // jammed against the top edge.
+                    .traffic_light_position(tauri::LogicalPosition::new(19.0, 24.0));
+            }
+            let win = builder.build()?;
+
+            // Close-to-tray: hide instead of quitting so the sidecar keeps running.
+            let w = win.clone();
+            win.on_window_event(move |event| {
+                if let WindowEvent::CloseRequested { api, .. } = event {
+                    let _ = w.hide();
+                    api.prevent_close();
+                }
+            });
+
+            // 2. Start the Python server sidecar on the chosen port (inherits our env).
             let mut server_cmd = Command::new(server_bin());
             server_cmd
                 .args(["--host", "127.0.0.1", "--port", &port.to_string()])
@@ -969,8 +1015,10 @@ pub fn run() {
                     None
                 }
             };
-            // 预热闸门：等后端真正监听端口再放行窗口，避免首条消息卡在冷启动
-            wait_for_sidecar(port, 45);
+            // 预热闸门改为「后台观测」：窗口已经在上面创建好了，这里只负责把「后端花了
+            // 多久才可连」记进 stderr（排障用，之前那行是唯一能看到冷启动耗时的证据），
+            // 绝不再拿它挡住 UI。首条消息由 SPA 的健康重试兜住：/v1/health 通了才连 WS。
+            std::thread::spawn(move || wait_for_sidecar(port, 45));
             app.manage(ServerProcess(Mutex::new(child)));
 
             // Restore keep-awake from the last session.
@@ -994,41 +1042,6 @@ pub fn run() {
                 None => dictation,
             };
             app.manage(Arc::new(dictation));
-
-            // 2. Build the window, injecting the sidecar endpoints before the SPA loads.
-            //    Overlay title bar (macOS): traffic lights float over the edge-to-edge UI.
-            let mut builder =
-                WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
-                    .title("OpenWorker")
-                    .inner_size(1360.0, 900.0)
-                    .min_inner_size(980.0, 640.0)
-                    // Let the WEBVIEW receive OS file drags: Tauri's own drag-drop handler
-                    // otherwise intercepts them, so the composer's HTML5 onDrop (attach by
-                    // dragging a file in) never fired in the desktop shell — browser dev
-                    // worked, DMGs didn't. main.tsx guards against drops outside the
-                    // composer navigating the page.
-                    .disable_drag_drop_handler()
-                    .initialization_script(&inject);
-            #[cfg(target_os = "macos")]
-            {
-                builder = builder
-                    .title_bar_style(tauri::TitleBarStyle::Overlay)
-                    .hidden_title(true)
-                    // Nudge the traffic lights down + in so they sit vertically centered in a
-                    // roomier top strip, aligned with the sidebar toggle and title rather than
-                    // jammed against the top edge.
-                    .traffic_light_position(tauri::LogicalPosition::new(19.0, 24.0));
-            }
-            let win = builder.build()?;
-
-            // Close-to-tray: hide instead of quitting so the sidecar keeps running.
-            let w = win.clone();
-            win.on_window_event(move |event| {
-                if let WindowEvent::CloseRequested { api, .. } = event {
-                    let _ = w.hide();
-                    api.prevent_close();
-                }
-            });
 
             // 3. System tray: Open / Settings / Quit.
             let open_i = MenuItem::with_id(app, "open", "Open OpenWorker", true, None::<&str>)?;

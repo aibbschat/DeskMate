@@ -111,6 +111,27 @@ _SCOPES = {s.value for s in Scope}
 
 logger = logging.getLogger("coworker.manager")
 
+#: Cold-boot gate for the scheduler's first (catch-up) pass, in seconds.
+#: The pass runs due automations AND the extra_tick hook (self-wake resume + DeskMate
+#: background proactive reasoning = real LLM turns). Firing it at t=0 competes with
+#: uvicorn's socket bind and the SPA's first-screen burst on the same event loop —
+#: measured 2026-11-10: spawn->port 6.4-9.7s with 1.6-3.6s stalls, all of which
+#: disappeared once the first pass was deferred. Set 0 to restore immediate catch-up
+#: (tests do this via Scheduler.start(initial_delay=0) / the env var).
+_STARTUP_CATCHUP_DELAY_ENV = "COWORKER_SCHEDULER_CATCHUP_DELAY"
+_STARTUP_CATCHUP_DELAY_DEFAULT = 30.0
+
+
+def _startup_catchup_delay() -> float:
+    """Seconds to postpone the scheduler's first pass after (cold) start."""
+    raw = os.environ.get(_STARTUP_CATCHUP_DELAY_ENV)
+    if raw is None or not str(raw).strip():
+        return _STARTUP_CATCHUP_DELAY_DEFAULT
+    try:
+        return max(0.0, float(raw))
+    except (TypeError, ValueError):
+        return _STARTUP_CATCHUP_DELAY_DEFAULT
+
 
 def _grants_of(engine) -> dict[str, Any]:
     """The engine's session-scoped "Always allow" approvals, in persistable shape."""
@@ -5357,7 +5378,14 @@ class SessionManager:
                 logger.info("启动对账：%s 个幽灵 run 标记为 interrupted", reconciled)
         except Exception:
             logger.warning("启动对账失败（fail-open）", exc_info=True)
-        self.scheduler.start()  # tick scheduler for automations (independent of connectors)
+        # tick scheduler for automations (independent of connectors). The first pass is
+        # deferred during cold boot: it runs due automations AND the extra_tick hook
+        # (self-wake resume + DeskMate background proactive LLM turns), and at t=0 it
+        # starves the event loop that is still binding the HTTP socket — measured
+        # 2026-11-10: spawn->port went from ~1s to 6.4-9.7s, with 1.6-3.6s stalls,
+        # because uvicorn could not finish create_server(). Nothing is dropped: the
+        # catch-up pass still runs, just after the window has had time to come up.
+        self.scheduler.start(initial_delay=_startup_catchup_delay())
         return await self._build_and_start_gateway()
 
     async def refresh_gateway(self) -> list[str]:

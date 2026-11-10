@@ -101,7 +101,7 @@ def base(tmp_path, monkeypatch):
         lambda url: (_ for _ in ()).throw(AssertionError(f"网络未 patch: {url}")),
     )
     # 默认「无网 → IP 定位失败」：各用例按需覆盖成具体城市（见 test_geo_*）
-    monkeypatch.setattr(wx_mod, "_fetch_ip_geo", lambda: None)
+    monkeypatch.setattr(wx_mod, "_fetch_ip_geo", lambda *a, **kw: None)
     monkeypatch.setattr(
         wx_mod, "_http_get_text",
         lambda url: (_ for _ in ()).throw(AssertionError(f"网络(text)未 patch: {url}")),
@@ -307,7 +307,7 @@ def test_geo_ip_success_feeds_both_sources(base, monkeypatch):
     seen: dict = {}
     monkeypatch.setattr(
         wx_mod, "_fetch_ip_geo",
-        lambda: {"city": "Shaoxing", "lat": 30.0, "lon": 120.5},
+        lambda *a, **kw: {"city": "Shaoxing", "lat": 30.0, "lon": 120.5},
     )
 
     def fake_wttr(location=None):
@@ -339,7 +339,7 @@ def test_geo_fresh_cache_no_network(base, monkeypatch):
     save_cache(base, {"geo": {"city": "Shaoxing", "lat": 30.0, "lon": 120.5, "ts": _t.time()}})
     monkeypatch.setattr(
         wx_mod, "_fetch_ip_geo",
-        lambda: (_ for _ in ()).throw(AssertionError("新鲜缓存不该打 IP 定位")),
+        lambda *a, **kw: (_ for _ in ()).throw(AssertionError("新鲜缓存不该打 IP 定位")),
     )
     seen: dict = {}
 
@@ -359,7 +359,7 @@ def test_geo_stale_cache_used_when_refresh_fails(base, monkeypatch):
         "city": "Shaoxing", "lat": 30.0, "lon": 120.5,
         "ts": _t.time() - 24 * 3600,  # 过期
     }})
-    monkeypatch.setattr(wx_mod, "_fetch_ip_geo", lambda: None)  # 刷新失败
+    monkeypatch.setattr(wx_mod, "_fetch_ip_geo", lambda *a, **kw: None)  # 刷新失败
     seen: dict = {}
 
     def fake_wttr(location=None):
@@ -378,7 +378,7 @@ def test_geo_manual_override_wins(base, monkeypatch):
     save_cache(base, {"geo": {"city": "Shaoxing", "lat": 30.0, "lon": 120.5, "ts": _t.time()}})
     monkeypatch.setattr(
         wx_mod, "_fetch_ip_geo",
-        lambda: (_ for _ in ()).throw(AssertionError("手动覆盖时不该打 IP 定位")),
+        lambda *a, **kw: (_ for _ in ()).throw(AssertionError("手动覆盖时不该打 IP 定位")),
     )
     seen: dict = {}
 
@@ -393,7 +393,7 @@ def test_geo_manual_override_wins(base, monkeypatch):
 
 def test_geo_all_fail_falls_back_to_ningbo(base, monkeypatch):
     """无覆盖+无缓存+定位失败 → 宁波兜底（她的家，行为同引入前）。"""
-    monkeypatch.setattr(wx_mod, "_fetch_ip_geo", lambda: None)
+    monkeypatch.setattr(wx_mod, "_fetch_ip_geo", lambda *a, **kw: None)
     seen: dict = {}
 
     def fake_wttr(location=None):

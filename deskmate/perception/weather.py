@@ -38,6 +38,7 @@ import json
 import logging
 import os
 import re
+import threading
 import time
 import urllib.parse
 from datetime import date, datetime
@@ -110,8 +111,22 @@ _WEATHER_QUERY_WORDS = (
 
 _DEFAULT_LOCATION = "宁波"
 _DEFAULT_LAT, _DEFAULT_LON = 29.87, 121.55   # 宁波（她和萧哥的家，全挂时的兜底）
-_HTTP_TIMEOUT = 8.0
-_IP_GEO_TIMEOUT = 5.0          # IP 定位超时（比天气更短：位置是手段不是目的）
+# 2026-11-10「反应慢」排查：这两个超时原来 8s / 5s，落在**每轮对话首字前**的同步路径上
+# （实测 wttr.in 单次 1.7-7s、国内网络偶尔更久），最长能把一次 turn 的上下文组装拖到
+# 十几秒。热路径已改为「只读缓存 + 后台刷新」（见 weather_context / refresh_async），
+# 这两个值只约束后台刷新线程，必须给硬上限。
+_HTTP_TIMEOUT = 3.0
+_IP_GEO_TIMEOUT = 2.5          # IP 定位超时（比天气更短：位置是手段不是目的）
+#: 一次后台刷新（定位链 + 天气双源）的总时间预算；超了就带着旧缓存收手。
+_REFRESH_BUDGET = 6.0
+#: 缓存超过这个「陈旧度」就不再当「此刻的天气」注入（宁可不提，也不拿三天前的天气说事）。
+_STALE_GRACE_SEC = 6 * 3600.0
+#: 同一缓存目录两次后台刷新的最小间隔（防抖：同一 turn 内 context_provider 可能被调多次）。
+_REFRESH_MIN_INTERVAL = 120.0
+
+_refresh_lock = threading.Lock()
+_refresh_inflight: set[str] = set()
+_refresh_last: dict[str, float] = {}
 _IP_GEO_TTL = 12 * 3600.0      # 定位缓存新鲜期（位置是慢变量，同城移动无感）
 # IP 定位源链的定义与选型依据见下方 _IP_GEO_SOURCES 注释（2026-10-16 按实测重排：
 # 国内文本源 ipip.net/cip.cc 数据准，ip-api.com 免费库数据旧会错标城市）。
@@ -499,13 +514,13 @@ def _parse_cip_cc(text: str) -> dict | None:
     return _city_from_addr(m.group(1)) if m else None
 
 
-def _geocode_city(city: str) -> tuple[float, float] | None:
+def _geocode_city(city: str, timeout: float | None = None) -> tuple[float, float] | None:
     """中文城市名 → (lat, lon)（open-meteo geocoding，免费免 key，支持中文）。"""
     url = (
         "https://geocoding-api.open-meteo.com/v1/search"
         f"?name={urllib.parse.quote(city)}&language=zh&count=1&format=json"
     )
-    data = _http_get_json(url, timeout=_IP_GEO_TIMEOUT)
+    data = _http_get_json(url, timeout=timeout or _IP_GEO_TIMEOUT)
     try:
         first = (data or {}).get("results") or [{}]
         return float(first[0]["latitude"]), float(first[0]["longitude"])
@@ -528,24 +543,42 @@ _IP_GEO_SOURCES: tuple[tuple[str, str, object], ...] = (
 )
 
 
-def _fetch_ip_geo() -> dict | None:
+def _fetch_ip_geo(deadline: float | None = None) -> dict | None:
     """IP 定位源链（ipip.net → cip.cc → ip-api.com → ipapi.co）；全失败 → None。
 
     单源挂（被墙/被 Cloudflare 拦/限流/数据旧）自动落下一源——「唯一源静默
     失效」曾让定位整体退回宁波兜底且不报错（10-16 实测根因）。国内文本源
     只给城市名：命中后立即补 geocode，补不到保留 city-only（lat/lon=None，
     wttr 直查城市名可用，open-meteo 无坐标跳过——不准比没有更糟）。
+
+    2026-11-10：源链最坏时间是「4 源 × 超时 + geocode」，串起来能到十几秒。
+    deadline（time.monotonic 口径）一到就收手返回 None——定位是手段不是目的，
+    宁可这轮没坐标也不能拖住调用方。
     """
     for kind, url, parse in _IP_GEO_SOURCES:
+        timeout = _IP_GEO_TIMEOUT
+        if deadline is not None:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0.2:
+                logger.debug("IP 定位预算用尽，跳过剩余源")
+                return None
+            timeout = min(timeout, remaining)
         if kind == "text":
-            raw: object = _http_get_text(url, timeout=_IP_GEO_TIMEOUT)
+            raw: object = _http_get_text(url, timeout=timeout)
         else:
-            raw = _http_get_json(url, timeout=_IP_GEO_TIMEOUT)
+            raw = _http_get_json(url, timeout=timeout)
         geo = parse(raw) if isinstance(raw, (dict, str)) else None
         if not geo:
             continue
         if geo.get("lat") is None:
-            coords = _geocode_city(geo["city"])
+            coords = _geocode_city(
+                geo["city"],
+                timeout=(
+                    max(0.5, deadline - time.monotonic())
+                    if deadline is not None
+                    else _IP_GEO_TIMEOUT
+                ),
+            )
             if coords:
                 geo = {**geo, "lat": coords[0], "lon": coords[1]}
         return geo
@@ -587,7 +620,7 @@ def _resolve_location(base_dir: Path | str | None, cache: dict) -> tuple[str, fl
         lat, lon = _geo_coords(geo)
         return str(geo["city"]), lat, lon, cache
 
-    fresh = _fetch_ip_geo()
+    fresh = _fetch_ip_geo(time.monotonic() + _REFRESH_BUDGET)
     if fresh:
         cache = dict(cache)
         cache["geo"] = {**fresh, "ts": time.time()}
@@ -680,7 +713,7 @@ def apply_weather_mood(base_dir: Path | str | None = None) -> Optional[dict]:
 # ---------------------------------------------------------------------------
 # 对外：聊天注入（她知道的窗外 + 报天气的素材）
 # ---------------------------------------------------------------------------
-def _format_weather_block(wx: dict) -> str:
+def _format_weather_block(wx: dict, age_sec: float | None = None) -> str:
     loc = wx.get("location") or _location()
     cond = wx.get("condition_text") or "未知"
     temp = wx.get("temp_c")
@@ -698,12 +731,70 @@ def _format_weather_block(wx: dict) -> str:
             bits.append(f"降水概率 {today['chance_of_rain']}%")
         if bits:
             line += "，".join(bits) + "。"
+    stale_note = ""
+    if age_sec is not None and age_sec >= _ttl_sec():
+        # 陈旧事实 > 没有事实，但必须让模型知道这是「上次的数据」而不是此刻。
+        try:
+            fetched = datetime.fromisoformat(str(wx.get("fetched_at") or ""))
+            stale_note = f"（数据时间：{fetched.strftime('%m-%d %H:%M')}，可能已过时）"
+        except (TypeError, ValueError):
+            stale_note = "（数据可能已过时）"
     return (
         "## 此刻窗外（真实世界的天气，你知道的）\n"
-        f"{line}\n"
+        f"{line}{stale_note}\n"
         "他问起天气，就用上面的真实数据回答，别编；"
         "也可以顺带说说你自己喜不喜欢这样的天。"
     )
+
+
+def cache_snapshot(base_dir: Path | str | None = None) -> tuple[Optional[dict], float]:
+    """只读缓存快照：(天气数据, 陈旧秒数)。**零网络、零写入**。
+
+    热路径（每轮对话首字前的记忆注入）只允许用这个：无缓存返回 (None, inf)。
+    """
+    cache = load_cache(base_dir)
+    data = cache.get("data")
+    if not isinstance(data, dict) or not data:
+        return None, float("inf")
+    try:
+        age = time.time() - float(cache.get("fetched_at_ts") or 0.0)
+    except (TypeError, ValueError):
+        age = float("inf")
+    return data, max(0.0, age)
+
+
+def refresh_async(base_dir: Path | str | None = None, *, min_interval: float | None = None) -> bool:
+    """后台刷新天气缓存（single-flight + 节流）。**热路径只调它，绝不自己联网**。
+
+    为什么（2026-11-10「反应慢」实测）：weather_context 原来每轮同步打 wttr.in，
+    单次 1.7-7s（国内网络更久），而这发生在「用户消息 → 首个 token」的同步路径上，
+    同一 turn 还会被 context_provider 调两遍。改成「先给缓存 + 后台补新」后，
+    热路径耗时从秒级降到微秒级；新数据在下一轮自然生效（天气是慢变量，差几分钟无感）。
+
+    返回 True = 真的排了一个后台刷新；False = 已在刷新中 / 刚刷过（防抖）。
+    """
+    key = str(_cache_path(base_dir))
+    now = time.time()
+    interval = _REFRESH_MIN_INTERVAL if min_interval is None else min_interval
+    with _refresh_lock:
+        if key in _refresh_inflight:
+            return False
+        if now - _refresh_last.get(key, 0.0) < interval:
+            return False
+        _refresh_inflight.add(key)
+        _refresh_last[key] = now
+
+    def _work() -> None:
+        try:
+            fetch_weather(base_dir, force=True)
+        except Exception:  # noqa: BLE001 — 后台刷新失败只影响下一轮的新鲜度
+            logger.debug("weather background refresh failed", exc_info=True)
+        finally:
+            with _refresh_lock:
+                _refresh_inflight.discard(key)
+
+    threading.Thread(target=_work, name="weather-refresh", daemon=True).start()
+    return True
 
 
 def weather_context(user_message: str = "", base_dir: Path | str | None = None) -> Optional[str]:
@@ -712,19 +803,30 @@ def weather_context(user_message: str = "", base_dir: Path | str | None = None) 
     - 关键词命中 → 完整天气块（气温/湿度/今日区间/降水概率）
     - 无关键词但正降水 → 一行氛围（「外面正下着雨（宁波）。」）——她置身其中
     - 其余（晴/阴且没人问）→ None：不是什么都值得说
+
+    2026-11-10：本函数**不再同步联网**（它跑在每轮首字前的同步路径上）。
+    缓存新鲜 → 直接用；缓存陈旧 → 先用旧值（标注数据时间）+ 排后台刷新；
+    没有缓存或旧到不能当「此刻」讲 → 不注入，只排后台刷新。
     """
     if not _enabled():
         return None
     try:
-        wx = fetch_weather(base_dir)
-        if not wx:
+        wx, age = cache_snapshot(base_dir)
+        if wx is None:
+            refresh_async(base_dir)
             return None
+        if age >= _ttl_sec():
+            refresh_async(base_dir)
+            if age > _STALE_GRACE_SEC:
+                return None  # 旧得不能当「此刻的天气」讲，等后台刷新
         msg = user_message or ""
+        stale = age >= _ttl_sec()
         if any(w in msg for w in _WEATHER_QUERY_WORDS):
-            return _format_weather_block(wx)
+            return _format_weather_block(wx, age_sec=age if stale else None)
         if str(wx.get("condition")) in _PRECIPITATION:
             phrase = _AMBIENT_PHRASE.get(str(wx.get("condition")), "外面天气有点动静")
-            return f"{phrase}（{wx.get('location') or _location()}）。"
+            line = f"{phrase}（{wx.get('location') or _location()}）。"
+            return line + ("（数据可能已过时）" if stale else "")
         return None
     except Exception:
         logger.debug("weather_context failed", exc_info=True)

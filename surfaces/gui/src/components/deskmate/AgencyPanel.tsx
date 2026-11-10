@@ -59,15 +59,25 @@ export function AgencyPanel({ onJumpToChat }: { onJumpToChat?: (intentId: string
   const [screenObservations, setScreenObservations] = useState<ScreenObservation[]>([]);
   const [observing, setObserving] = useState(false);
   const [screenError, setScreenError] = useState("");
+  // 首包是否已经回来。冷启动时窗口先出、后端还在起（见 lib.rs 的窗口/后端换序），
+  // 这段时间里「小桔暂时在发呆……」是在撒谎——她只是还没接上。先给一个"接入中"骨架，
+  // 拿到数据（哪怕是空）再显示真实空态。
+  const [loaded, setLoaded] = useState(false);
 
   const load = async () => {
-    const [data, observations] = await Promise.all([
-      getDeskmateAgencyTasks(20),
-      getScreenObservations(5),
-    ]);
-    setTasks(data.tasks || []);
-    setPending(data.pending_proposals || []);
-    setScreenObservations(observations);
+    try {
+      const [data, observations] = await Promise.all([
+        getDeskmateAgencyTasks(20),
+        getScreenObservations(5),
+      ]);
+      setTasks(data.tasks || []);
+      setPending(data.pending_proposals || []);
+      setScreenObservations(observations);
+    } catch {
+      /* 后端还没起来 / 网络抖动：保留现有内容，绝不让首页因它报错 */
+    } finally {
+      setLoaded(true);
+    }
   };
 
   useEffect(() => {
@@ -221,7 +231,9 @@ export function AgencyPanel({ onJumpToChat }: { onJumpToChat?: (intentId: string
         )}
 
         {/* 最近自主行为 */}
-        {!hasContent ? (
+        {!loaded && !hasContent ? (
+          <div className="holo-empty holo-loading">小桔正在接入……</div>
+        ) : !hasContent ? (
           <div className="holo-empty">小桔暂时在发呆……</div>
         ) : (
           recent.length > 0 && (
