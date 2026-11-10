@@ -613,14 +613,29 @@ def create_app(manager: SessionManager) -> FastAPI:
 
         return classify_fact(fact)
 
-    def _append_learned_history(desk_dir: "Path", facts: list) -> None:
-        """把本轮学到的记忆追加落盘（带时间戳 + 分类），写统一库 deskmate.db。"""
+    def _append_learned_history(
+        desk_dir: "Path", facts: list, sources: list | None = None
+    ) -> None:
+        """把本轮学到的记忆追加落盘（带时间戳 + 分类），写统一库 deskmate.db。
+
+        ``sources`` 与 ``facts`` 一一对应时按来源分组写入：设定／推理／大纲／进度
+        进参考层，不再一律以 ``live`` 冒充用户口述事实（2026-11-10 萧哥终裁）。
+        缺失时回退历史行为，保证旧抽取结果也能落盘。
+        """
         from pathlib import Path
 
         hist_dir = Path(desk_dir) / "memory"
         hist_dir.mkdir(parents=True, exist_ok=True)
         try:
-            _learned_store(Path(desk_dir)).append(facts)
+            store = _learned_store(Path(desk_dir))
+            if sources and len(sources) == len(facts):
+                groups: "dict[str, list[str]]" = {}
+                for fact, src in zip(facts, sources):
+                    groups.setdefault(str(src or "live"), []).append(str(fact))
+                for src, group in groups.items():
+                    store.append(group, source=src)
+            else:
+                store.append(facts)
         except Exception:
             logging.exception("append learned history failed")
 
@@ -7069,9 +7084,10 @@ def create_app(manager: SessionManager) -> FastAPI:
                     mm.post_session_summary, last_user, last_asst
                 )
                 learned = (summary or {}).get("learned") or []
+                learned_sources = (summary or {}).get("learned_sources") or []
                 if learned:
                     try:
-                        _append_learned_history(desk_dir, learned)
+                        _append_learned_history(desk_dir, learned, learned_sources)
                     except Exception:
                         logging.exception("persist learned history failed")
                     try:

@@ -70,6 +70,120 @@ def _fingerprint(fact: str) -> str:
     return hashlib.md5(re.sub(r"\s+", "", fact or "").encode("utf-8")).hexdigest()
 
 
+# ---------------------------------------------------------------------------
+# 来源 / 效力层级（2026-11-10 萧哥终裁：已写正文事实是唯一事实基准）
+#
+# **复用 ``source`` 列编码，零 schema 变更**。原因：learned_history 的同步链路
+# ``sync_store_sqlite.SYNC_TABLES["learned_history"]["business_cols"]`` 是硬白名单，
+# 新增列不进 oplog、远端 upsert 的 LWW 还会把对端新列抹成 NULL ⇒ 静默破坏双端
+# 收敛；而 ``source`` 已在白名单里、跨端天然同步，且有 find_active_by_source /
+# retire_by_source 配套。格式 ``<prefix>[:<book_id>]``，如 ``manuscript:夜不收``。
+#
+# 现场教训：定时读稿摘要、口述裁定、圆桌结论、外部新闻、进度流水全被压成一条
+# 无维度的 ``fact`` 且一律 active；每纠正一次就新写一条 active，旧错条仍是
+# active ⇒ 越纠越乱。下列分层的目的就是让「什么算事实」在写入时即可判定。
+# ---------------------------------------------------------------------------
+
+SOURCE_MANUSCRIPT = "manuscript"        # 已写正文逐字直引 —— 唯一事实基准
+SOURCE_AUTHOR_RULING = "author_ruling"  # 作者明确裁定（规划层「往后怎么走」）
+SOURCE_USER = "live"                    # 用户口述（偏好/习惯/一般事实），兼容历史值
+SOURCE_CORRECTION = "correction"        # 纠正：写入时取代同锚点的旧错条
+SOURCE_REASONING = "reasoning"          # 推理 / 解读 / 读后感 / 考据判断
+SOURCE_SETTING = "setting"              # 设定 / 大纲 / 章纲 / 规划
+SOURCE_ROUNDTABLE = "roundtable"        # 圆桌 / 简报 / 讨论 / 复盘结论
+SOURCE_PROGRESS = "progress"            # 进度 / 改稿动作记录
+SOURCE_EXTERNAL = "external"            # 外部观察 / 新闻
+
+#: 非正文来源：只能作线索，不得作为「已写事实」陈述
+NON_FACT_SOURCES = frozenset({
+    SOURCE_REASONING,
+    SOURCE_SETTING,
+    SOURCE_ROUNDTABLE,
+    SOURCE_PROGRESS,
+    SOURCE_EXTERNAL,
+})
+
+#: 写入侧允许的 source 前缀（抽取器输出经此白名单过滤，未知值退回 live）
+VALID_SOURCE_PREFIXES = frozenset({
+    SOURCE_MANUSCRIPT, SOURCE_AUTHOR_RULING, SOURCE_USER, SOURCE_CORRECTION,
+    SOURCE_REASONING, SOURCE_SETTING, SOURCE_ROUNDTABLE,
+    SOURCE_PROGRESS, SOURCE_EXTERNAL,
+})
+
+_AUTHORITY = {
+    SOURCE_MANUSCRIPT: 100,
+    SOURCE_AUTHOR_RULING: 60,
+    SOURCE_USER: 50,
+    SOURCE_CORRECTION: 50,
+    "legacy": 40,
+    "local_intake": 40,
+    SOURCE_PROGRESS: 30,
+    SOURCE_SETTING: 20,
+    SOURCE_REASONING: 15,
+    SOURCE_ROUNDTABLE: 10,
+    SOURCE_EXTERNAL: 5,
+}
+_DEFAULT_AUTHORITY = 40  # 未知 source 按「一般口述」处理，不臆断降权
+
+
+def source_prefix(source: str | None) -> str:
+    """取 ``<prefix>[:<book_id>]`` 的前缀；空值按 ``live``。"""
+    return str(source or SOURCE_USER).split(":", 1)[0].strip()
+
+
+def source_book(source: str | None) -> str:
+    """取书名维度；无则空串。"""
+    parts = str(source or "").split(":", 1)
+    return parts[1].strip() if len(parts) == 2 else ""
+
+
+def make_source(prefix: str, book_id: str | None = None) -> str:
+    return f"{prefix}:{book_id}" if book_id else prefix
+
+
+def source_authority(source: str | None) -> int:
+    """效力层级：数值越大越可信；只有 manuscript 是「事实基准」。"""
+    return _AUTHORITY.get(source_prefix(source), _DEFAULT_AUTHORITY)
+
+
+def is_canon_source(source: str | None) -> bool:
+    """是否「已写正文逐字直引」——唯一事实基准。"""
+    return source_prefix(source) == SOURCE_MANUSCRIPT
+
+
+def is_non_fact_source(source: str | None) -> bool:
+    """是否非正文来源（推理/设定/大纲/简报/进度/外部），只能作线索。"""
+    return source_prefix(source) in NON_FACT_SOURCES
+
+
+# 抽取器漏给 source（本地规则抽取 / 旧版 LLM 输出）时的保守兜底。
+_SETTING_MARKS = ("设定", "大纲", "章纲", "规划", "打算", "定为", "改成", "决定", "拟")
+_PROGRESS_MARKS = ("完成", "写完", "推进", "发布", "定稿", "收尾", "改完", "落盘", "新增正文")
+
+
+def infer_source(raw: str | None, category: str, text: str = "") -> str:
+    """把抽取器输出归一成合法 source；缺失/非法时按类别与措辞保守推断。
+
+    宁把「设定/进度」降到参考层，也不让它们冒充用户口述事实进主块。
+    """
+    if raw:
+        candidate = str(raw).strip()
+        if source_prefix(candidate) in VALID_SOURCE_PREFIXES:
+            return candidate
+    cat = (category or "").lower()
+    if cat == "preference":
+        return SOURCE_USER
+    if cat == "correction":
+        return SOURCE_CORRECTION
+    if cat == "work":
+        t = text or ""
+        if any(m in t for m in _SETTING_MARKS):
+            return SOURCE_SETTING
+        if any(m in t for m in _PROGRESS_MARKS):
+            return SOURCE_PROGRESS
+    return SOURCE_USER
+
+
 # 与 app._classify_learned_fact 保持一致的启发式归类。
 # 收进 store 是为了让「分类」在数据侧就定型，而不是每次读取时重算。
 _PREFERENCE_KEYS = (
@@ -277,30 +391,40 @@ class LearnedStore:
         ts: str | None = None,
         valid_until: str | None = None,
         source: str = "live",
+        *,
+        book_id: str | None = None,
+        anchor: str | None = None,
+        supersedes: list[str] | None = None,
     ) -> int:
         """追加若干条学到的事实，返回**实际新增**条数（重复的被 fp 挡掉）。
 
         Args:
             valid_until: 可选过期时间（ISO 秒精度）。外部/趋势类信息带过期，
                 到点的条目在 ``active_recent`` / ``relevant`` 中自动失效剔除。
-                为 ``None`` 时永久有效（运行时新学的用户事实默认不过期）。
+            source: 来源与效力，``<prefix>[:<book_id>]``（见模块级常量）。
+            book_id: 便捷写法，等价于把来源拼成 ``<source>:<book_id>``。
+            anchor: 无《》书名时显式给出冲突配对键（写入 entity 列）。
+            supersedes: 调用方点名的「被纠正的旧说法」原文，按 fp 精确取代。
 
-        矛盾检测（2026-09-03 补）：写入一条事实时，若库里已有一条**同实体、
-        相反极性**的活跃事实（如「《宋会要辑稿》在史料库」vs「《宋会要辑稿》
-        不在史料库」），把旧条标记 ``superseded``（记 ``valid_until`` + 指向新条
-        ``superseded_by``），而非让矛盾两条并存被一起相信。实体只在书名/引号等
-        **高置信**场景抽取，避免误判泛主体。
+        事实纪律（2026-11-10 萧哥终裁：已写正文事实是唯一事实基准）：
+
+        1. 显式 ``supersedes`` → 按 fp 精确取代指定的旧活跃条；
+        2. ``manuscript`` 写入 → 同锚点的非正文旧活跃条一律让位；
+        3. ``correction`` 写入 → 取代最近一条非正文基准的旧活跃条
+           （治「每纠正一次就新写一条 active、旧错条仍 active」）；
+        4. 原有「同实体 + 反极性」取代保留，但**正文事实不被非正文来源推翻**。
 
         注意：冲突走 ``INSERT OR IGNORE``，已存在的 fp 不会被更新——因此重复
         写入同一条事实不会刷新其 ``valid_until``，过期语义稳定。
         """
         clean: list[tuple[str, str, str, str, str, str, str | None]] = []
         stamp = ts or _now_iso()
+        eff_source = make_source(source, book_id) if book_id else source
         for raw in facts:
             fact = str(raw).strip() if raw else ""
             if not fact:
                 continue
-            entity = _extract_entity(fact)
+            entity = anchor or _extract_entity(fact)
             clean.append(
                 (
                     stamp,
@@ -322,20 +446,64 @@ class LearnedStore:
                         "INSERT OR IGNORE INTO learned_history"
                         "(ts, fact, category, fp, source, entity, polarity, status, valid_until, valid_from) "
                         "VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)",
-                        (stamp_, fact_, cat_, fp_, source, entity_, polarity_, valid_until_, stamp_),
+                        (stamp_, fact_, cat_, fp_, eff_source, entity_, polarity_, valid_until_, stamp_),
                     )
                     if not (cur.rowcount and cur.rowcount > 0):
                         continue  # 重复（同 fp）→ 跳过，也不做矛盾处理
                     inserted += 1
                     rid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
-                    if entity_:
-                        # 把同实体、相反极性的旧活跃事实标记为已被本条取代
+
+                    # (1) 显式取代：纠正方点名的旧说法，按 fp 精确命中，不误伤同书其它条
+                    for old_text in supersedes or []:
                         conn.execute(
-                            "UPDATE learned_history SET status='superseded', "
-                            "valid_until=?, superseded_by=? "
-                            "WHERE status='active' AND entity=? AND polarity!=? AND id!=?",
-                            (stamp_, rid, entity_, polarity_, rid),
+                            "UPDATE learned_history SET status='superseded', valid_until=?, superseded_by=? "
+                            "WHERE status='active' AND fp=? AND id!=?",
+                            (stamp_, rid, _fingerprint(str(old_text)), rid),
                         )
+
+                    if entity_:
+                        old_rows = conn.execute(
+                            "SELECT id, source, polarity FROM learned_history "
+                            "WHERE status='active' AND entity=? AND id!=? "
+                            "ORDER BY ts DESC, id DESC",
+                            (entity_, rid),
+                        ).fetchall()
+                        canon_new = is_canon_source(eff_source)
+                        correction_new = source_prefix(eff_source) == SOURCE_CORRECTION
+
+                        # (2) 正文事实写入：同锚点的非正文旧条一律让位
+                        if canon_new:
+                            for old_id, old_source, _pol in old_rows:
+                                if is_non_fact_source(old_source):
+                                    conn.execute(
+                                        "UPDATE learned_history SET status='superseded', "
+                                        "valid_until=?, superseded_by=? WHERE id=?",
+                                        (stamp_, rid, old_id),
+                                    )
+
+                        # (3) 纠正类写入：只取代最近一条「非正文基准」的旧活跃条
+                        if correction_new:
+                            for old_id, old_source, _pol in old_rows:
+                                if not is_canon_source(old_source):
+                                    conn.execute(
+                                        "UPDATE learned_history SET status='superseded', "
+                                        "valid_until=?, superseded_by=? WHERE id=?",
+                                        (stamp_, rid, old_id),
+                                    )
+                                    break
+
+                        # (4) 同实体 + 反极性：保留历史取代语义，但正文事实不可被非正文推翻
+                        for old_id, old_source, old_pol in old_rows:
+                            if old_pol == polarity_:
+                                continue
+                            if is_canon_source(old_source) and not canon_new:
+                                continue
+                            conn.execute(
+                                "UPDATE learned_history SET status='superseded', "
+                                "valid_until=?, superseded_by=? WHERE id=?",
+                                (stamp_, rid, old_id),
+                            )
+
                     if _subject_guard_enabled():
                         # P1-1 主体颠倒检测：同谓词挂在对立主体名下 → 新条
                         # 不内化（questioned）+ 发提议卡由用户裁决。

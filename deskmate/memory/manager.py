@@ -2478,8 +2478,20 @@ class DeskMateMemoryManager:
             "- 工具/系统的调试过程（如「测试了X工具」「发现了Y bug」）\n"
             "- 重复性维护（如「清理了冗余」「压缩了记忆」）\n"
             "- 对话流程描述（如「用户告知AI...」「AI建议...」）\n\n"
-            f"输出严格 JSON 数组，每个元素 {{category, text}}，text 格式为「YYYY-MM-DD: 一句话陈述」"
-            f"（今天日期：{today}）。\n"
+            "**来源与效力（2026-11-10 萧哥终裁：已写正文事实是唯一事实基准）**：\n"
+            "每条必须给 source，取值只能是下列之一：\n"
+            "- live：萧盛明确口述的偏好／习惯／一般事实\n"
+            "- correction：他纠正你的错误（另在 supersedes 里写出被纠正的旧说法原文）\n"
+            "- author_ruling：他对作品的明确裁定，管「往后怎么走」，不是已写正文\n"
+            "- setting：设定／大纲／章纲／规划\n"
+            "- reasoning：你的推理、解读、读后感、考据判断\n"
+            "- roundtable：圆桌／简报／讨论结论\n"
+            "- progress：进度／改稿动作记录\n"
+            "- manuscript：仅当这句话是书稿正文的逐字直引时才可用\n"
+            "推理、设定、大纲、简报、讨论结论一律不得写成「书里已经写了…」的确定陈述，\n"
+            "也不许把规划讲成已写剧情。本轮没有正文逐字直引，就不要给 manuscript。\n\n"
+            f"输出严格 JSON 数组，每个元素 {{category, text, source, supersedes?}}，"
+            f"text 格式为「YYYY-MM-DD: 一句话陈述」（今天日期：{today}）。\n"
             "**每句话都必须写清是谁做的**：萧盛做的事，主语写「萧盛」；AI 自己做的事"
             "（读书、巡检、整理、改配置等），主语写「小桔」。**不要省主语**——省了主语，"
             "往后读到这条记录的人只能靠猜，猜错就是把她的活儿记到他头上。\n"
@@ -2503,9 +2515,12 @@ class DeskMateMemoryManager:
             except Exception:
                 return {"written": 0, "notes": "抽取结果解析失败（已跳过）"}
 
+        from deskmate.memory.learned_store import infer_source
+
         written = 0
         skipped = 0
         learned: list[str] = []
+        learned_sources: list[str] = []
         for fact in facts:
             category = (fact.get("category") or "").lower()
             fact_text = (fact.get("text") or "").strip()
@@ -2515,6 +2530,9 @@ class DeskMateMemoryManager:
             if self._is_duplicate(fact_text):
                 skipped += 1
                 continue
+            # 来源归一：抽取器漏给 source 时按类别/措辞保守推断，
+            # 设定与进度降进参考层，不再冒充用户口述事实。
+            src = infer_source(fact.get("source"), category, fact_text)
             try:
                 if category == "preference":
                     result = self.append_to_section("user", fact_text)
@@ -2525,6 +2543,7 @@ class DeskMateMemoryManager:
                 else:
                     written += 1
                     learned.append(fact_text)
+                    learned_sources.append(src)
                     # 同步写入 vault（Obsidian 长期记忆）
                     # 只同步 preference 和 correction（持久价值），不同步 work（过时快）
                     try:
@@ -2550,7 +2569,13 @@ class DeskMateMemoryManager:
                 )
             except Exception as e:
                 logger.debug("growth engine record_memory_learned failed: %s", e)
-        return {"written": written, "skipped": skipped, "learned": learned, "notes": f"已归档 {written} 条（跳过 {skipped} 条重复）"}
+        return {
+            "written": written,
+            "skipped": skipped,
+            "learned": learned,
+            "learned_sources": learned_sources,
+            "notes": f"已归档 {written} 条（跳过 {skipped} 条重复）",
+        }
 
     def _is_duplicate(self, new_entry: str) -> bool:
         """写入前全局查重：检查新条目是否与 MEMORY.md 或 vault 中已有内容重复。

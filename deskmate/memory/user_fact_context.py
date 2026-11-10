@@ -22,6 +22,17 @@ from typing import Optional
 _DAIRY_DAYS = 7
 _DAIRY_SNIPPET_MAX = 80   # 日记片段上限：过长的基本是新闻/观察摘抄，非她自己的笔记
 _FETCH_FACTS_CAP = 2000  # 直接全量召回活跃用户事实的上限（库只增不减，但量级可控）
+_FACT_CONTEXT_MAX_CHARS = 4000  # 注入文本总字数上限（此前整块灌、无上限）
+_REFERENCE_LIMIT = 3      # 参考层（非正文来源）最多给几条，避免喧宾夺主
+
+# 2026-11-10 萧哥终裁：已写正文事实是唯一事实基准。此前块头写「不是她猜的；
+# 优先据此作答」，等于给长期记忆发了事实许可证——记忆里六条互斥裁定并存时，
+# 她只能挑一句当真讲。改为「只是线索」+ 冲突须明说，把判断交回正文与工具结果。
+_FACT_DISCIPLINE = (
+    "【事实纪律】已写正文逐字直引才是唯一基准；推理、设定、大纲、简报、讨论结论"
+    "与正文冲突时一律以正文为准。记忆和正文对不上，要直说哪里对不上，"
+    "不许据记忆下断言；拿不准就说不确定。"
+)
 # 日记里混着她读新闻后的摘抄（长、带信源标），这些不是「关于用户的软规律」，召回时剔除。
 _DIARY_NEWS_MARKERS = (
     "新闻", "早8点", "夜览", "新华", "川观", "记者从", "预计发送", "早啊",
@@ -50,8 +61,13 @@ def _query_terms(query: str) -> list[str]:
     return [n for n in names] + grams
 
 
-def _active_user_facts(base_dir, limit: int = _FETCH_FACTS_CAP) -> list[str]:
-    """直接取库里**活跃、非外部**的用户事实（全量，内存过滤，库小无压力）。"""
+def _active_user_facts(base_dir, limit: int = _FETCH_FACTS_CAP) -> list[tuple[str, str]]:
+    """取**活跃、非外部**的用户事实，返回 ``[(fact, source)]``。
+
+    ``ORDER BY ts DESC, id DESC``（2026-11-10 补）：此前无 ORDER BY，SQLite 默认
+    rowid 升序 ⇒ 无 query 时取到的其实是**最老**的 10 条，旧错条长期驻留。
+    ``source`` 一并取出供效力分层，避免把设定/推理当成用户口述事实。
+    """
     try:
         from .learned_store import LearnedStore, _now_iso
 
@@ -60,14 +76,15 @@ def _active_user_facts(base_dir, limit: int = _FETCH_FACTS_CAP) -> list[str]:
         try:
             con.execute("PRAGMA journal_mode=WAL")
             rows = con.execute(
-                "SELECT fact FROM learned_history WHERE status='active' "
+                "SELECT fact, source FROM learned_history WHERE status='active' "
                 "AND (valid_until IS NULL OR valid_until >= ?) "
+                "ORDER BY ts DESC, id DESC "
                 f"LIMIT {int(limit)}",
                 (_now_iso(),),
             ).fetchall()
         finally:
             con.close()
-        return [r[0] for r in rows if _is_user_fact(r[0])]
+        return [(r[0], r[1]) for r in rows if _is_user_fact(r[0])]
     except Exception:
         return []
 
@@ -149,23 +166,45 @@ def build_user_fact_context(
         「## 你跟我说过的……」+（可选）「## 你近期的日常……」段落；无则空串。
     """
     try:
+        from .learned_store import is_non_fact_source, source_authority
+
         terms = _query_terms(query) if query else []
         facts = _active_user_facts(base_dir)
         if not facts and not terms:
             return ""
 
+        # 效力分层：正文/口述/裁定进主块；推理/设定/大纲/简报/进度/外部只进参考层。
+        # 参考层默认不出现在主块，避免被当成「已经写了的事实」。
+        primary = [(f, s) for f, s in facts if not is_non_fact_source(s)]
+        reference = [(f, s) for f, s in facts if is_non_fact_source(s)]
+
         chosen: list[str] = []
+        ref_chosen: list[str] = []
         if terms:
             scored = []
-            for f in facts:
-                s = sum(2 if t in f else 0 for t in terms)
-                if s > 0:
-                    scored.append((s, f))
-            scored.sort(key=lambda x: -x[0])
-            chosen = [f for _, f in scored[:limit]]
+            for f, s in primary:
+                score = sum(2 if t in f else 0 for t in terms)
+                if score > 0:
+                    scored.append((score, source_authority(s), f))
+            # 同分时正文优先（正文是唯一事实基准）
+            scored.sort(key=lambda x: (-x[0], -x[1]))
+            chosen = [f for _, _, f in scored[:limit]]
+
+            ref_scored = [
+                (sum(2 if t in f else 0 for t in terms), f) for f, _s in reference
+            ]
+            ref_chosen = [
+                f for score, f in sorted(ref_scored, key=lambda x: -x[0])
+                if score > 0
+            ][:_REFERENCE_LIMIT]
         else:
-            chosen = facts[:limit]
+            # 稳定排序：先按效力降序，同效力保持 SQL 的 ts DESC（最新在前）
+            chosen = [
+                f for f, _s in sorted(primary, key=lambda x: -source_authority(x[1]))[:limit]
+            ]
+            ref_chosen = [f for f, _s in reference[:_REFERENCE_LIMIT]]
         chosen = [c for c in chosen if c]
+        ref_chosen = [c for c in ref_chosen if c]
 
         # 日记相关片段（软规律，如假期不写稿）
         diary_lines: list[str] = []
@@ -174,16 +213,21 @@ def build_user_fact_context(
                 diary_lines.extend(_diary_snippets(txt, terms))
             diary_lines = diary_lines[:6]
 
-        if not chosen and not diary_lines:
+        if not chosen and not ref_chosen and not diary_lines:
             return ""
 
         blocks: list[str] = []
         if chosen:
-            header = (
-                "## 你跟我说过的（小桔记着的关于你的事，不是她猜的；"
-                "涉及你的书/进度/习惯/偏好时优先据此作答）"
+            header = "## 你跟我说过的（长期记忆条目，只是线索，不是事实基准）"
+            blocks.append(
+                header + "\n" + _FACT_DISCIPLINE + "\n"
+                + "\n".join(f"- {c}" for c in chosen)
             )
-            blocks.append(header + "\n" + "\n".join(f"- {c}" for c in chosen))
+        if ref_chosen:
+            blocks.append(
+                "## 参考层（非正文来源：推理／设定／大纲／简报／进度，不得当作已写事实）\n"
+                + "\n".join(f"- {c}" for c in ref_chosen)
+            )
         if diary_lines:
             dheader = (
                 "## 你近期的日常（小桔从自己日记里读到的、关于你的软规律；"
@@ -191,6 +235,6 @@ def build_user_fact_context(
             )
             blocks.append(dheader + "\n" + "\n".join(f"- {d}" for d in diary_lines))
 
-        return "\n\n".join(blocks)
+        return "\n\n".join(blocks)[:_FACT_CONTEXT_MAX_CHARS]
     except Exception:
         return ""
