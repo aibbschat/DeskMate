@@ -84,7 +84,7 @@ const PERSONA_AVATAR: Record<string, string> = {
 };
 import { Sidebar } from "./components/Sidebar";
 import { ThinkingBlock, Transcript } from "./components/Transcript";
-import { Composer } from "./components/Composer";
+import { Composer, permissionMenuAvailable } from "./components/Composer";
 import { Markdown } from "./components/Markdown";
 import { SearchModal } from "./components/SearchModal";
 import { SessionIntro } from "./components/SessionIntro";
@@ -476,6 +476,9 @@ export function App() {
     getInbox(sessionId, "pending").then(setSessionInbox).catch(() => setSessionInbox([]));
     refreshSessions(); // attention badge should drop right away
   };
+  // 权限菜单与工作区解耦：除纯对话 Chat 外，所有会话（含专家中心 / 「我的伙伴」起的
+  // persona 1V1）都跑同一个 TurnEngine、都会遇到需审批工具，所以都该能选权限模式。
+  const canPickPermissionMode = permissionMenuAvailable(agent);
   // Shows a working-area chip / project grouping. Persona's needs_workspace; fallback before load.
   const needsWorkspace = (a: string) => personaOf(a)?.needs_workspace ?? needsWorkspaceFallback(a);
   // MUST pick a folder before starting — project-scoped personas (git-bound Code, project-bound
@@ -2221,12 +2224,15 @@ export function App() {
               onInterrupt={interrupt}
               onModeChange={changeMode}
               onModelChange={changeModel}
-              // 桌搭模式同样暴露权限选择菜单（讨论 / 需授权 / 完全访问）：它也会跑
-              // run_shell 等需审批工具，但需要「完全访问」时不应被一步步点授权卡住。
-              // workspace 本身仅为触发 ModeMenu 渲染（空串即视为已定义），桌搭无目录工作区。
+              // 权限选择（讨论 / 需授权 / 完全访问）对所有会跑工具的会话开放，含专家中心
+              // 与「我的伙伴」起的 persona 1V1：它们复用同一个 Composer / TurnEngine，同样
+              // 会遇到需审批工具。旧实现靠 workspace !== undefined 间接门控，专家会话没有
+              // 目录工作区 ⇒ 菜单消失、mode 永远停在 interactive，只能一步步点授权卡。
+              // 这里显式传开关；workspace 仍只负责工作区与「This session」绑定菜单。
+              showModeMenu={canPickPermissionMode}
               workspace={needsWorkspace(agent) || agent === "deskmate" ? (workspace || "") : undefined}
               unattended={unattended}
-              onUnattendedChange={agent !== "chat" ? toggleUnattended : undefined}
+              onUnattendedChange={canPickPermissionMode ? toggleUnattended : undefined}
               expert={currentExpert}
               onExitExpert={() => {
                 setCurrentExpert(null);

@@ -33,6 +33,14 @@ const PERMISSION_OPTIONS: (Option & { translationKey: string; descKey: string })
   { value: "bypass-approvals", label: "Full access", description: "Run everything without asking", translationKey: "composer.fullAccessLabel", descKey: "composer.fullAccessDescription" },
 ];
 
+// Which sessions get the Mode menu. Every agent except the pure-chat one runs the same
+// TurnEngine and can hit approval-gated tools — including the persona / expert 1v1
+// sessions summoned from the Experts center or the contacts rail. The old gate was
+// `workspace !== undefined`, which silently excluded those sessions (they have no
+// folder workspace) and left them stuck on "Ask for approval" with no way to switch.
+// Kept next to PERMISSION_OPTIONS so the menu and its availability rule can't drift.
+export const permissionMenuAvailable = (agent: string) => agent !== "chat";
+
 // No hardcoded model fallback: until the server supplies the list (a few seconds after a
 // cold app boot), the picker renders a disabled "Loading models…" chip. A baked-in list
 // goes stale and silently offers ids the backend never confirmed (caught 2026-07-21).
@@ -79,9 +87,14 @@ interface Props {
   onInterrupt: () => void;
   onModeChange: (mode: string) => void;
   onModelChange: (model: string) => void;
-  // When set (Code/Cowork), the Mode menu is shown. The folder/roots + branch controls left the
-  // composer for the Session settings drawer (§22) — folder access is standing session config.
+  // Working-area context for project-scoped sessions (Code/Cowork); also gates the
+  // "This session" bindings submenu. It is NOT the Mode menu's gate any more — see
+  // showModeMenu below: persona / expert 1v1 sessions have no folder workspace but still
+  // need to pick a permission mode. The folder/roots + branch controls left the composer
+  // for the Session settings drawer (§22) — folder access is standing session config.
   workspace?: string;
+  /** 显式控制权限菜单（ModeMenu）显隐；不传时回退旧的 workspace !== undefined 行为。 */
+  showModeMenu?: boolean;
   // Unattended / send-approvals-to-Inbox — folded into the Mode menu (§22): "who approves, and
   // when" is one mental model. Absent handler = no toggle (e.g. Chat).
   unattended?: boolean;
@@ -754,7 +767,7 @@ export function Composer(props: Props) {
               </span>
               <span className="text-meta text-muted tabular-nums">{recordingTime}</span>
             </div>
-          ) : props.workspace !== undefined ? (
+          ) : (props.showModeMenu ?? (props.workspace !== undefined)) ? (
             <ModeMenu
               mode={props.mode}
               onModeChange={props.onModeChange}
