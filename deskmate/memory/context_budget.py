@@ -153,20 +153,49 @@ def is_light_turn(user_message: str | None) -> bool:
     return False
 
 
-_AUTO_REVIEW_RE = re.compile(r"(?ms)^## 自动复盘.*?(?=^## |\Z)")
+_AUTO_REVIEW_HEADING_RE = re.compile(r"^##\s+自动复盘")
+
+#: 复盘段里的流水行（bullet）。真身是 LLM 每天写的一行行「- ...」。
+_REVIEW_BULLET_PREFIXES = ("-", "*", "•", "·")
 
 
 def strip_auto_review(text: str | None) -> str:
-    """去掉「## 自动复盘 · 日期」段：那是每日复盘流水，不是稳定用户画像。
+    """去掉「## 自动复盘 · 日期」段的流水条目，不是稳定用户画像。
 
     2026-11-10 实测 USER.md 12.4KB 里 ~9.7KB 是这类日期段，真正稳定的画像
     （基本信息/写作观/协作模式/日常流程）只有 ~2.6KB。注入前剥掉流水段，可以在
     不丢画像的前提下把这一块从 12.4KB 降到 ~2.6KB。
+
+    2026-11-10 二次修复：记忆写入把长期事实追加到 USER.md 文末，而文末正好落在
+    最后一个「## 自动复盘」标题后面。旧实现用正则一直删到文件末尾，把「《夜不收》
+    正稿固定位置」「桌面那份是旧快照」这类长期事实一起吞了——她因此每次都要重新
+    找稿子，还会误读桌面上的旧快照。现在按行剥：复盘段只删 bullet 流水，段内非
+    bullet 的独立段落（= 后追加的长期事实）保留。
     """
     if not text:
         return ""
     try:
-        return _AUTO_REVIEW_RE.sub("", str(text)).strip()
+        out: list[str] = []
+        in_review = False
+        for line in str(text).split("\n"):
+            if _AUTO_REVIEW_HEADING_RE.match(line):
+                in_review = True
+                continue
+            if in_review:
+                if line.startswith("## "):
+                    in_review = False
+                    out.append(line)
+                    continue
+                stripped = line.lstrip()
+                if not stripped:
+                    continue
+                if stripped[0] in _REVIEW_BULLET_PREFIXES:
+                    continue
+                # 非 bullet：这是记忆写入落在文末的长期事实，必须保留。
+                out.append(line)
+                continue
+            out.append(line)
+        return re.sub(r"\n{3,}", "\n\n", "\n".join(out)).strip()
     except Exception:  # noqa: BLE001
         return str(text).strip()
 

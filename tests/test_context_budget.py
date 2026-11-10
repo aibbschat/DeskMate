@@ -196,3 +196,26 @@ def test_strip_auto_review_keeps_stable_profile():
     assert "基本信息" in out and "工作模式" in out
     assert "自动复盘" not in out
     assert "今天聊了第三章" not in out
+
+
+def test_strip_auto_review_keeps_fact_appended_after_last_section():
+    """回归（2026-11-10）：长期事实被追加到文末，正好落在最后一个复盘标题后。
+
+    旧实现删到文件末尾，把「书稿固定位置」「桌面旧快照勿读」一起吞掉——这是
+    小桔每次重新找稿子、误读桌面旧稿的直接原因。复盘流水该删，长期事实必须留。
+    """
+    profile = (
+        "## 基本信息\n- 萧盛，历史小说家\n"
+        "## 自动复盘 · 2026-11-09\n- 昨天聊了第二章\n"
+        "## 自动复盘 · 2026-11-10\n"
+        "- 用户对助手每次找不到稿子表示不满\n"
+        "- 今天聊了第三章\n"
+        "\n"
+        "2026-11-10: 《夜不收》正稿 = /Users/xiaocheng/Documents/已出版/16.夜不收/"
+        "夜不收：绝命救援.docx（桌面上的「夜不收.docx」是旧快照，不是正稿，勿读）。"
+    )
+    out = cb.strip_auto_review(profile)
+    assert "基本信息" in out
+    assert "今天聊了第三章" not in out
+    assert "自动复盘" not in out
+    assert "绝命救援.docx" in out and "旧快照" in out
