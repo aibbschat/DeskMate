@@ -63,6 +63,32 @@ def test_long_message_not_light_even_without_keywords():
     assert not cb.is_light_turn("我" * 30)
 
 
+@pytest.mark.parametrize(
+    "msg",
+    [
+        # 2026-11-10 线上误判回归：这些都被判成闲聊，把记忆/课时/意图整块丢了
+        "早上好，接着写第二章",  # 此前被单字「早」短路
+        "麻烦把第四章大纲整理一下",  # 此前被单字「烦」短路
+        "困了，明天再写",  # 此前被单字「困」短路
+        "我早说过这段要删",  # 此前被单字「早」短路
+        "按这个思路生成一份周报",  # 短任务指令
+        "跑一遍全部测试",
+        "执行",
+        "正史",  # 短主题词：此前被默认判成闲聊，prefetch 整块被丢（trace 测试挂掉）
+        "好了没",  # 生产 trace 实录：问任务进度
+        "进度到哪了",
+        "我们接着聊",  # 需要前文/反思才接得上
+    ],
+)
+def test_short_task_commands_are_not_chitchat(msg):
+    assert not cb.is_light_turn(msg)
+
+
+@pytest.mark.parametrize("msg", ["你吃饭了吗", "早！", "我累了", "怎么这么累"])
+def test_social_short_messages_still_light(msg):
+    assert cb.is_light_turn(msg)
+
+
 # ---------------------------------------------------------------------------
 # 渲染：上限 / 预算 / 闲聊
 # ---------------------------------------------------------------------------

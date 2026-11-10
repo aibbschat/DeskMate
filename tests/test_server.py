@@ -22,6 +22,13 @@ class ScriptedProvider(ProviderClient):
         self._turns = list(turns)
 
     def complete(self, *, model, messages, tools=None, **settings):
+        # 2026-11-10：标题生成是 turn 起点的 fire-and-forget 旁路调用，与聊天 turn 并发。
+        # 它一旦 pop 队列，就会把脚本里的对话 turn 偷走（"先 tool_call 再 text" 的用例会
+        # 直接拿到 text，审批卡永不出现；表现为 WS 测试挂死/找不到 permission_required）。
+        # 之前靠"聊天请求先提交"的时序侥幸才对；engine 把上下文组装挪进 produce 线程后
+        # 顺序反转。标题不是本文件任何断言的标的 ⇒ 直接回一条定值，不动队列。
+        if messages and "title chat sessions" in str(messages[0].get("content", "")):
+            return AssistantTurn(text="A session title", finish_reason="stop")
         return self._turns.pop(0)
 
     def capabilities(self, model):

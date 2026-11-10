@@ -246,6 +246,12 @@ class SessionManager:
         self._running_sessions: set[str] = (
             set()
         )  # sessions with an in-flight turn (busy)
+        # Sessions whose CURRENT turn was started by the user in the window (WS claim_turn),
+        # not by a background delivery / self-wake / goal run. The scheduler's yield gate
+        # must use THIS set: `_running_sessions` also contains background runs, so gating on
+        # it stalled every automation for as long as a watched background turn ran
+        # (2026-11-10).
+        self._foreground_sessions: set[str] = set()
         # Sessions with an auto-title LLM call in flight (FB-010) — one call at a time.
         self._autotitle_inflight: set[str] = set()
         self._autotitle_tasks: set[asyncio.Task] = set()
@@ -6390,6 +6396,11 @@ class SessionManager:
     def mark_running(self, session_id: str) -> None:
         self._running_sessions.add(session_id)
 
+    def mark_foreground(self, session_id: str) -> None:
+        """Flag this session's current turn as user-initiated (window turn), so the
+        scheduler yields to it. Cleared by `mark_idle` together with `_running_sessions`."""
+        self._foreground_sessions.add(session_id)
+
     def try_mark_running(self, session_id: str) -> bool:
         """Atomically claim an idle session for one turn on the server event loop."""
         if session_id in self._running_sessions:
@@ -6399,6 +6410,7 @@ class SessionManager:
 
     def mark_idle(self, session_id: str) -> None:
         self._running_sessions.discard(session_id)
+        self._foreground_sessions.discard(session_id)
         # Every turn path (WS, background delivery, durable resume) marks idle when it
         # finishes — the one shared post-turn moment, so auto-titling hooks in here and
         # can never add latency to the response itself.
@@ -6423,22 +6435,27 @@ class SessionManager:
         return session_id in self._running_sessions
 
     def _foreground_turn_running(self) -> bool:
-        """True while a USER-facing turn is running: a session that is mid-turn AND has a
-        live client attached. The scheduler gates its whole tick on this so a background
-        automation / self-wake resume / DeskMate proactive pass defers to the next tick
-        instead of competing for the event loop with the turn the human is watching
-        (2026-11-10). Deferring loses nothing: due tasks and due wakes stay due.
+        """True while a USER-facing turn is running: a turn the user started in the window
+        (`_foreground_sessions`) AND whose client is still attached. The scheduler gates its
+        whole tick on this so a background automation / self-wake resume / DeskMate
+        proactive pass defers to the next tick instead of competing for the event loop with
+        the turn the human is watching (2026-11-10).
 
-        COWORKER_BACKGROUND_YIELD=0 restores the old always-run behaviour; a background
-        turn on a session with no live client (headless automation) does not count.
+        2026-11-10 修口径：不能拿 `_running_sessions` 判——它同时装着后台投递、self-wake
+        续跑和 goal 续跑。用户开着某个会话、而那个会话在跑后台任务时，整个调度器会被
+        一直让路，日更任务（9:30/9:40）就跟着饿到那个长任务结束。这里只认前台集合。
+
+        Deferring loses nothing: due tasks and due wakes stay due (`next_run<=now`).
+        COWORKER_BACKGROUND_YIELD=0 restores the old always-run behaviour; a foreground
+        turn whose client disconnected no longer counts.
         """
         if os.environ.get("COWORKER_BACKGROUND_YIELD", "1") == "0":
             return False
-        running = getattr(self, "_running_sessions", None)
+        foreground = getattr(self, "_foreground_sessions", None)
         clients = getattr(self, "_session_clients", None)
-        if not running or not clients:
+        if not foreground or not clients:
             return False
-        return any(session_id in clients for session_id in running)
+        return any(session_id in clients for session_id in foreground)
 
     async def _resume_wake(self, wake) -> None:
         message = self._wake_message(wake)

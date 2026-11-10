@@ -190,11 +190,48 @@ def test_manager_foreground_gate(monkeypatch):
 
     mgr = object.__new__(SessionManager)
     mgr._running_sessions = {"s1"}
+    mgr._foreground_sessions = {"s1"}
     mgr._session_clients = {"s1": set()}
     monkeypatch.setenv("COWORKER_BACKGROUND_YIELD", "1")
     assert mgr._foreground_turn_running() is True
     monkeypatch.setenv("COWORKER_BACKGROUND_YIELD", "0")
     assert mgr._foreground_turn_running() is False
     monkeypatch.setenv("COWORKER_BACKGROUND_YIELD", "1")
-    mgr._session_clients = {}  # 无前台客户端（纯后台 run）→ 不让路
+    mgr._session_clients = {}  # 前台客户端断开 → 不再让路
     assert mgr._foreground_turn_running() is False
+
+
+def test_background_run_in_watched_session_does_not_starve_scheduler(monkeypatch):
+    """后台投递/self-wake/goal 续跑不算前台：开着的会话在跑后台任务时，日更调度不能被饿住。"""
+    from coworker.server import SessionManager
+
+    mgr = object.__new__(SessionManager)
+    mgr._running_sessions = {"s1"}  # mark_running / try_mark_running（含后台路径）
+    mgr._foreground_sessions = set()  # 没有 claim_turn 打的前台标记
+    mgr._session_clients = {"s1": set()}
+    monkeypatch.setenv("COWORKER_BACKGROUND_YIELD", "1")
+    assert mgr._foreground_turn_running() is False
+
+
+def test_mark_idle_clears_foreground_mark():
+    from coworker.server import SessionManager
+
+    mgr = object.__new__(SessionManager)
+    mgr._running_sessions = {"s1"}
+    mgr._foreground_sessions = {"s1"}
+    mgr._maybe_autotitle = lambda sid: None
+    mgr._team_last_alive = {}
+    mgr._loop = None
+    mgr._promotion_rebuild = {}
+
+    class _Teams:
+        def for_lead_session(self, sid):
+            return False
+
+        def for_worker_session(self, sid):
+            return False
+
+    mgr.teams = _Teams()
+    mgr.mark_idle("s1")
+    assert mgr._running_sessions == set()
+    assert mgr._foreground_sessions == set()

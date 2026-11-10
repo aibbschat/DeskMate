@@ -7408,6 +7408,9 @@ def create_app(manager: SessionManager) -> FastAPI:
                     "This session is already running a turn. Wait for it to finish or stop it."
                 )
                 return
+            # 用户在前台发起的一轮（区别于后台投递/self-wake/goal 续跑）：调度器让路门
+            # 只认这个标记，避免"开着的会话在跑后台任务"把日更调度一起饿住。
+            manager.mark_foreground(session_id)
             asyncio.create_task(run_turn(content, retry=retry, display=display))
 
         # R13.1：意图讨论进行中（phase=working）→ 聊天框打字即点评，旁路主聊天。
