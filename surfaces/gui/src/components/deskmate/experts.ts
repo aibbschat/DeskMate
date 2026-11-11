@@ -173,3 +173,54 @@ export function expertSpeakerFor(
   }
   return null;
 }
+
+/** 会话空态名片的展示数据（名字 / 头像 / 人设介绍 / 开场提示）。 */
+export interface ExpertIntro {
+  name: string;
+  /** 有本地专家卡时用它渲染 ExpertAvatar（PNG 或渐变首字占位） */
+  expert?: Expert;
+  /** 无本地卡时回落静物图（圆桌老专家等） */
+  avatar?: string;
+  description: string;
+  hint: string;
+}
+
+/**
+ * 会话空态名片的唯一事实源（2026-11-11 萧哥定：同一个专家，不管从专家中心、
+ * 右栏伙伴还是任何入口进来，头像与人设介绍必须一样）。
+ *
+ * 事实源是会话 agent（= persona id），不是 `currentExpert` —— 后者只在专家中心
+ * 召唤时写入，右栏 / 下拉起的 1V1 是 null、刷新会丢、切会话会残留上一个专家，
+ * 正是「两边同一专家长得不一样」的根因。与 expertSpeakerFor 同源。
+ */
+export function expertIntroFor(
+  agent: string,
+  opts: {
+    builtinAgentIds: ReadonlySet<string>;
+    persona?: { id: string; name: string; tagline?: string } | null;
+    personaAvatar?: string;
+  },
+): ExpertIntro | null {
+  const speaker = expertSpeakerFor(agent, {
+    builtinAgentIds: opts.builtinAgentIds,
+    persona: opts.persona,
+    personaAvatar: opts.personaAvatar,
+  });
+  if (!speaker) return null;
+  if (speaker.expert) {
+    return {
+      name: speaker.name,
+      expert: speaker.expert,
+      description: speaker.expert.description,
+      hint: speaker.expert.manuscriptReview
+        ? "点右上角「提交书稿」即可开始深度审阅；选中章节后，审阅会在对话中分批完成。"
+        : "在下方输入框描述你的需求，开始与专家协作。",
+    };
+  }
+  return {
+    name: speaker.name,
+    avatar: speaker.avatar,
+    description: opts.persona?.tagline || "",
+    hint: "在下方输入框直接开聊；需要其他视角时 @名字 可临时请专家补位。",
+  };
+}

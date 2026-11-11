@@ -12,13 +12,25 @@ import pytest
 
 _BUILTIN = Path("coworker/personas/builtin")
 
+
+def _persona_text(pid: str) -> str:
+    """扁平 <id>.md 或 OPE-58 bundle <id>/manifest.md（2026-11-11 B 方案后）。
+
+    只换读取路径，下面每一条语义断言都不变。
+    """
+    flat = _BUILTIN / f"{pid}.md"
+    if flat.is_file():
+        return flat.read_text(encoding="utf-8")
+    return (_BUILTIN / pid / "manifest.md").read_text(encoding="utf-8")
+
+
 # 圆桌 7 位：作业法 + 读稿与引用纪律 + 场合
 _ROUNDTABLE = ("historian", "lit-editor", "proofreader", "reader", "publisher", "adaptation", "genre")
 
 
 @pytest.mark.parametrize("pid", _ROUNDTABLE)
 def test_roundtable_expert_has_work_method_and_discipline(pid: str) -> None:
-    text = (_BUILTIN / f"{pid}.md").read_text(encoding="utf-8")
+    text = _persona_text(pid)
     assert "## 你的作业法" in text, f"{pid} 缺少可执行的作业法"
     assert "## 读稿与引用纪律" in text, f"{pid} 缺少读稿/引用纪律"
     assert "## 场合" in text, f"{pid} 缺少群聊 vs 1v1 的场合分档"
@@ -26,7 +38,7 @@ def test_roundtable_expert_has_work_method_and_discipline(pid: str) -> None:
 
 def test_editor_expert_has_review_discipline() -> None:
     """编辑专家走 1v1 工具流，补的是审阅纪律 + 评析检查项，不是「作业法」。"""
-    text = (_BUILTIN / "editor.md").read_text(encoding="utf-8")
+    text = _persona_text("editor")
     assert "## 审阅纪律" in text
     assert "读到停笔点" in text
     assert "审阅不代写、不改稿" in text
@@ -36,7 +48,7 @@ def test_editor_expert_has_review_discipline() -> None:
 
 def test_brainstormer_keeps_two_gears() -> None:
     """脑洞专家是模板：开脑洞 / 往下盘两档不许退化成一档。"""
-    text = (_BUILTIN / "brainstormer.md").read_text(encoding="utf-8")
+    text = _persona_text("brainstormer")
     assert "开脑洞（默认）" in text
     assert "往下盘" in text
     assert "不排序、不验收、不替作者挑" in text
@@ -48,7 +60,7 @@ def test_experts_do_not_hang_shared_memory() -> None:
     小桔本人例外——deskmate-memory 就是她自己的记忆本体。
     """
     for pid in (*_ROUNDTABLE, "editor", "brainstormer"):
-        text = (_BUILTIN / f"{pid}.md").read_text(encoding="utf-8")
+        text = _persona_text(pid)
         assert "deskmate-memory" not in text, f"{pid} 还挂着共享记忆 deskmate-memory"
     assert "deskmate-memory" in (_BUILTIN / "deskmate.md").read_text(encoding="utf-8"), (
         "小桔本人的记忆组不能拔"

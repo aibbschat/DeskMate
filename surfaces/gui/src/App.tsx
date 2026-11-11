@@ -108,7 +108,7 @@ import { DeskHome } from "./components/deskmate/DeskHome";
 import { MailboxPage } from "./components/deskmate/MailboxPage";
 import { DeskMateProactiveInline } from "./components/deskmate/DeskMateProactiveInline";
 import { GardenProfileCenter } from "./components/garden/GardenProfileCenter";
-import { EXPERTS, getExpert, expertSpeakerFor, type Expert } from "./components/deskmate/experts";
+import { EXPERTS, getExpert, expertSpeakerFor, expertIntroFor, type Expert } from "./components/deskmate/experts";
 import { ExpertAvatar } from "./components/deskmate/ExpertAvatar";
 import { ReportDialog } from "./components/deskmate/ReportDialog";
 
@@ -453,6 +453,13 @@ export function App() {
   // 从会话 agent 派生，不从 currentExpert 派生 —— 后者在右栏 / 下拉起的 1V1 里是 null，
   // 刷新会丢、切会话还会残留上一个专家。详见 experts.ts:expertSpeakerFor。
   const sessionSpeaker = expertSpeakerFor(agent, {
+    builtinAgentIds: BUILTIN_AGENT_IDS,
+    persona: personaOf(agent),
+    personaAvatar: PERSONA_AVATAR[agent],
+  });
+  // 空态名片同样按会话 agent 派生：同一个专家，从专家中心、右栏或任何入口
+  // 进来，头像 / 名字 / 人设介绍必须完全一致（2026-11-11 萧哥定）。
+  const expertIntro = expertIntroFor(agent, {
     builtinAgentIds: BUILTIN_AGENT_IDS,
     persona: personaOf(agent),
     personaAvatar: PERSONA_AVATAR[agent],
@@ -2100,33 +2107,23 @@ export function App() {
             )}
             <div className="main-scroll" ref={scrollRef} onScroll={handleScroll}>
               {idle ? (
-                currentExpert ? (
+                expertIntro ? (
+                  // 唯一事实源按会话 agent 派生：专家中心 / 右栏 / 任何入口进来的
+                  // 同一位专家，头像、名字、人设介绍完全一致；不再依赖瞬时
+                  // currentExpert（它刷新会丢、切会话会残留上一个专家）。
                   <div className="expert-intro">
-                    <ExpertAvatar expert={currentExpert} size={72} />
-                    <h1 className="expert-intro-name">{currentExpert.displayName}</h1>
-                    <p className="expert-intro-desc">{currentExpert.description}</p>
-                    <div className="expert-intro-hint">
-                      {currentExpert.manuscriptReview
-                        ? "点右上角「提交书稿」即可开始深度审阅；选中章节后，审阅会在对话中分批完成。"
-                        : "在下方输入框描述你的需求，开始与专家协作。"}
-                    </div>
-                  </div>
-                ) : expertPersona ? (
-                  // 专家 persona 会话的空态名片：头像 + 名字 + 一句话定位，让「点谁跟谁聊」
-                  // 立刻可见（此前落到通用 hero「Let's build something.」，看起来像默认模式）。
-                  <div className="expert-intro">
-                    <img
-                      className="persona-intro-avatar"
-                      src={PERSONA_AVATAR[agent] || ""}
-                      alt={expertPersona.name}
-                    />
-                    <h1 className="expert-intro-name">
-                      {shortPersonaName(expertPersona.name, expertPersona.id)}
-                    </h1>
-                    <p className="expert-intro-desc">{expertPersona.tagline}</p>
-                    <div className="expert-intro-hint">
-                      在下方输入框直接开聊；需要其他视角时 @名字 可临时请专家补位。
-                    </div>
+                    {expertIntro.expert ? (
+                      <ExpertAvatar expert={expertIntro.expert} size={72} />
+                    ) : (
+                      <img
+                        className="persona-intro-avatar"
+                        src={expertIntro.avatar || ""}
+                        alt={expertIntro.name}
+                      />
+                    )}
+                    <h1 className="expert-intro-name">{expertIntro.name}</h1>
+                    <p className="expert-intro-desc">{expertIntro.description}</p>
+                    <div className="expert-intro-hint">{expertIntro.hint}</div>
                   </div>
                 ) : agent === "cowork" ? (
                   <SessionIntro

@@ -92,6 +92,19 @@ _NOTEBOOK_TOOL_NOTE = """
   时，把结论连同原因用 notebook_remember 记下就行。
 """
 
+# 独门手艺（2026-11-11 萧哥定：7 位老专家在群里也要能调用自己的手艺）。
+# 1v1 走的是同一套 OPE-58 bundle，群里此前只因工具白名单没放行而不可达。
+# 目录物理隔离 + manifest skills: 白名单双闸 ⇒ 每个人只看见自己那一本。
+_CRAFT_SKILL_NOTE = """
+
+# 你自己的独门手艺
+
+- `load_skill` 能取到你那一本手艺（判据 / 否决线 / 引证与效力纪律）。
+  下判断前先按它核一遍：哪些结论必须有正文逐字引文，哪些只是参考层。
+- 它是**方法**，不是正文、不是记忆、也不是别人的东西。目录里只有你这一本，
+  别人的看不到，别在群里提「某某的手艺怎么说」。
+"""
+
 _GROUP_GUIDANCE = """
 
 # 你现在在一个 bot 群里
@@ -126,7 +139,7 @@ _GROUP_GUIDANCE = """
   「（来自…）」这类括号说明，直接从观点说起。
 - 群里其他人的发言已经在上下文里，接话而不是重新开始。
 - 后面几轮如果没有新的可说，直接回复 pass，不要为了凑数重复自己的观点。
-""" + _NOTEBOOK_TOOL_NOTE
+""" + _NOTEBOOK_TOOL_NOTE + _CRAFT_SKILL_NOTE
 
 # 一对一作业形态（2026-11-08 萧哥实证固化：Hermes 独立专家对照群聊，独立胜出）。
 # 群聊 guidance 是为「碰撞与真实感」设计的（短发言／不排版／站队），但脑洞
@@ -148,7 +161,7 @@ _SOLO_GUIDANCE = """
   （见下方「笔记本与只读边界」）。
 - 不生成纪要 / 总结 / 收尾汇报；写完你想说的就停，别补「以上是建议」这类尾巴。
 - 界面已经显示你的名字，不要在发言开头加署名、来源标注或「（来自…）」。
-""" + _NOTEBOOK_TOOL_NOTE
+""" + _NOTEBOOK_TOOL_NOTE + _CRAFT_SKILL_NOTE
 
 _HISTORY_LIMIT = 20
 # 群历史给模型的总字数预算（不是单条发言上限）。旧实现把每条硬砍到 600 字，
@@ -515,6 +528,20 @@ class BotRuntime:
             entry = get_registry().get(bot_id)
             if entry is None:
                 raise ValueError(f"persona '{bot_id}' 未注册，无法起真 Agent")
+            manifest = entry.manifest
+            # 🔴 独门手艺（2026-11-11 萧哥拍板）：群聊与 1v1 用同一套 OPE-58
+            #    bundle 解析口径（对照 manager.py::persona_skill_scope）。
+            #    目录物理隔离（各 bot 独立 engine，只装自己 <id>/skills/）+
+            #    manifest `skills:` 单人白名单 ⇒ 每人只见自己那一本，别人读不到，
+            #    小桔不走 BotRuntime，手艺也漏不进她的技能池。
+            skill_dir = None
+            skill_allow = None
+            if manifest.source:
+                candidate = Path(manifest.source).parent / "skills"
+                if candidate.is_dir():
+                    skill_dir = candidate
+                    declared = {s for s in (manifest.skills or ()) if s}
+                    skill_allow = declared or None
             agent = entry.agent()
             tools = make_reading_tools(self.shelf)
             notebook: NotebookSession | None = None
@@ -552,6 +579,10 @@ class BotRuntime:
                 model=model,
                 workspace=str(ws),
                 max_iterations=self.max_iterations,
+                # 群里也挂上本人手艺：extra_skill_dirs 让 SkillLoader 扫到 bundle，
+                # skill_filter 用 manifest skills: 闸住目录与 load_skill 两处可见性。
+                extra_skill_dirs=[skill_dir] if skill_dir is not None else None,
+                skill_filter=skill_allow,
             )
             # 🔴 反向回写隔离（2026-11-07）：build_engine 在 coworker/agent.py 硬编码
             #    挂了 post_turn_hook=_deskmate_post_turn_hook，bot engine 全盘继承 ⇒
@@ -566,9 +597,13 @@ class BotRuntime:
             # 收紧工具面：build_engine 还会固定注册一堆 web/a2a/skill 工具。
             # 书稿面**只读**（read_book / list_books）；只有带笔记本的三位多三个
             # 私有笔记本工具（写只落 <书>/.deskmate/experts/<bot>/notes.md）。
+            # 2026-11-11 起：有 bundle 手艺的 bot 多一个 load_skill —— 它只返回
+            # 本人 SKILL.md 全文，save_skill / 写面仍在白名单外，只读红线不破。
             allowed = {"read_book", "list_books"}
             if notebook is not None:
                 allowed |= {"notebook_read", "notebook_remember", "notebook_rewrite"}
+            if skill_dir is not None:
+                allowed |= {"load_skill"}
             eng.registry._tools = {
                 name: spec
                 for name, spec in eng.registry._tools.items()

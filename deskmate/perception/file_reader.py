@@ -201,6 +201,50 @@ def split_chapters(text: str) -> list[tuple[str, str]]:
     return out
 
 
+# --------------------------------------------------------------------------- #
+# 覆盖率诚实（2026-11-11 地基 · 萧哥「只做判断更可核验」）
+#
+# 群聊侧 reading.py::Manuscript.render 早就把「正文共 N 字 / M 章，本次加载 X 字，
+# 哪些章没加载」写进索引（11-08）；但 1v1 专家走的不是那条链路，而是全局 MCP
+# `perception.read_chapter` 逐章读稿 —— 工具每次只回「【第X章】（N 字，本章完整）」，
+# 从不说全书几章、这次读了第几章、哪些没加载。真实事故：11-11 brainstormer 会话
+# 「上一轮没读第六章就把他当成空白悬念，这是我的锅」。没读到被当成书里没写，
+# 手艺再全也是「连续地错」。
+#
+# 这里复用群聊的诚实口径，但不搬 Manuscript 类（1v1 按文件路径读、群聊按书名
+# 从书架找，数据源不同），只在工具返回里补一段覆盖率标注。零新模块、零状态、
+# 零 schema、不动 1v1 组装、不碰任何记忆层。
+# --------------------------------------------------------------------------- #
+_COVERAGE_GUARD = (
+    "未加载不等于书里没写（不是正文缺失）：判断全书前先用 list_chapters 看目录、"
+    "再逐章 read_chapter 补读；没读到的章不得当作「正文没有」，"
+    "也不得据此声称读完全书。"
+)
+
+
+def _coverage_note(
+    chapters: list[tuple[str, str]],
+    picked_index: int,
+    *,
+    partial: bool = False,
+) -> str:
+    """一次 read_chapter 的覆盖率标注；放在正文之前（同 read_file_safe:90-91）。"""
+    total = len(chapters)
+    if total <= 1:
+        return (
+            "【覆盖率】本稿无章节标记，本次已加载全文。\n"
+            "仍未读到的其他正文文件不等于书里没写：判断全书前先用 list_chapters "
+            "确认目录、再逐章 read_chapter 补读；没读到的部分不得当作「正文没有」。"
+        )
+    title = chapters[picked_index][0]
+    state = "本章前半，后段未加载" if partial else "本章完整"
+    return (
+        f"【覆盖率】本稿共 {total} 章；本次仅加载第 {picked_index + 1} 章"
+        f"（{title}，{state}）；其余 {total - 1} 章本次未加载。\n"
+        + _COVERAGE_GUARD
+    )
+
+
 def list_chapters(path: str, max_bytes: int | None = None) -> str:
     """列出稿件的章节目录与各章字数——先看目录，再决定读哪一章。"""
     p = Path(path).expanduser().resolve()
@@ -218,14 +262,32 @@ def list_chapters(path: str, max_bytes: int | None = None) -> str:
     lines = [f"《{p.stem}》共 {len(chapters)} 节，全文 {len(text):,} 字："]
     lines += [f"  {i}. {title}（{len(body):,} 字）" for i, (title, body) in enumerate(chapters, 1)]
     lines.append("用 read_chapter(path, chapter) 读取其中一节，chapter 可填序号或标题。")
+    lines.append(
+        "目录只是目录：只有 read_chapter 实际返回了某章正文，那一章才算读过；"
+        "没读的章不等于书里没写，不得当作「正文没有」。"
+    )
     return "\n".join(lines)
 
 
-def read_chapter(path: str, chapter: str | int, max_chars: int = MAX_READ_SIZE, max_bytes: int | None = None) -> str:
+def read_chapter(
+    path: str,
+    chapter: str | int,
+    max_chars: int = MAX_READ_SIZE,
+    max_bytes: int | None = None,
+    *,
+    coverage: bool = True,
+) -> str:
     """只读取指定的一章——与全书长度无关，因此长稿也不会顶爆上下文。
 
     chapter 可以是序号（1 起）、完整标题，或标题片段（如「第二章」「财当道」）。
     抽取全文用于切章定位，大小上限放宽到 _LONG_TEXT_BYTES（64MB，容纳长篇）。
+
+    返回体**自带覆盖率标注**（2026-11-11）：本稿共几章、本次仅加载第几章、
+    其余章未加载，以及「未加载 ≠ 书里没写」的判据。1v1 专家据此才不会把
+    「没读到第六章」当成「第六章没写」。
+
+    ``coverage=False`` 只给**内部消费者**用：例如 creation/novel_index.py 把返回
+    当纯章节正文灌进圣经索引 / 语义检索，不该混进工具提示。MCP 工具层一律默认开。
     """
     p = Path(path).expanduser().resolve()
     if not p.is_file():
@@ -241,27 +303,39 @@ def read_chapter(path: str, chapter: str | int, max_chars: int = MAX_READ_SIZE, 
         return "（文件为空）"
 
     picked: tuple[str, str] | None = None
+    picked_index = -1
     key = str(chapter).strip()
     if key.isdigit() and 1 <= int(key) <= len(chapters):
-        picked = chapters[int(key) - 1]
+        picked_index = int(key) - 1
+        picked = chapters[picked_index]
     else:
         norm = key.replace(" ", "").replace("\u3000", "")
-        for title, body in chapters:
+        for i, (title, body) in enumerate(chapters):
             if norm and norm in title.replace(" ", "").replace("\u3000", ""):
                 picked = (title, body)
+                picked_index = i
                 break
 
     if picked is None:
         titles = "、".join(t for t, _ in chapters[:20])
-        return f"（未找到「{chapter}」。本稿章节为：{titles}）"
+        return (
+            f"（未找到「{chapter}」。本稿共 {len(chapters)} 章，章节为：{titles}；"
+            "用 list_chapters 看完整目录。）"
+        )
 
     title, body = picked
-    if len(body) > max_chars:
+    truncated = len(body) > max_chars
+    note = (
+        _coverage_note(chapters, picked_index, partial=truncated) if coverage else ""
+    )
+    prefix = f"{note}\n\n" if note else ""
+    if truncated:
         return (
+            f"{prefix}"
             f"【{title}】（本章 {len(body):,} 字，超过单次上限 {max_chars:,}，以下为前半部分，"
             f"勿据此声称读完本章）\n\n{body[:max_chars]}"
         )
-    return f"【{title}】（{len(body):,} 字，本章完整）\n\n{body}"
+    return f"{prefix}【{title}】（{len(body):,} 字，本章完整）\n\n{body}"
 
 
 def extract_file_path_from_title(title: str, app: str) -> str | None:

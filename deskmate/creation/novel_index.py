@@ -279,7 +279,9 @@ class NovelIndex:
     def _read_chapter(self, idx: int, max_chars: int = 30_000) -> str:
         from deskmate.perception.file_reader import read_chapter
 
-        return read_chapter(self.ref, idx, max_chars=max_chars)
+        # 建索引要的是纯章节正文：覆盖率标注是给「会下判断的模型」看的对话层提示，
+        # 混进 body 会污染圣经索引 / 语义检索（2026-11-11 地基）。
+        return read_chapter(self.ref, idx, max_chars=max_chars, coverage=False)
 
     def _build_bible(self, full: str, chapters: list[tuple[str, str]], *, degrade: bool = False) -> tuple[str, bool]:
         try:

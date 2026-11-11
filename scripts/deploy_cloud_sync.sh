@@ -424,33 +424,44 @@ COWORKER_DRIFT_MODULES=(
 # 核对（见 3c/7 段）+ 对账 .md 扫描。漏传 → 云端跑旧人格（二元硬切换未废）。
 PERSONA_FILES=(
   "coworker/personas/builtin/deskmate.md"
-  "coworker/personas/builtin/historian.md"
-  "coworker/personas/builtin/lit-editor.md"
-  "coworker/personas/builtin/brainstormer.md"
-  "coworker/personas/builtin/proofreader.md"
-  "coworker/personas/builtin/reader.md"
-  "coworker/personas/builtin/publisher.md"
-  "coworker/personas/builtin/adaptation.md"
-  "coworker/personas/builtin/genre.md"
-  # ⚠ 2026-11-09 复查补录：editor.md 是「主编」平铺人设，11-09 下午拔共享记忆时改过，
-  # 却从未进 PERSONA_FILES ⇒ .md 集合对账会报 1 处漂移却不会推。
-  "coworker/personas/builtin/editor.md"
-  # ⚠ 2026-11-09 补录：子目录式创作专家 manifest（editor-in-chief / outline-writer /
-  # screenwriter / script-reviewer / plot-architect）。PERSONA_FILES 原先只列 9 个平铺 .md，
-  # 这 5 个从未进清单 ⇒ 集合级 .md 对账报 4 处内容漂移 + 1 个「仅本地有」(plot-architect)。
-  # 落点由 3c 循环的 coworker/* 分支按 dirname 自动推导到 personas/builtin/<子目录>/，
-  # 无需改传输逻辑。.md 不进 ALL_FILES（ast.parse 会误报），走独立 scp + md5 核对。
+  # ⚠ 2026-11-11 B 方案（萧哥「先打地基，然后按 B 执行」）：11 位写作专家由扁平
+  # <id>.md 转成 OPE-58 bundle —— <id>/manifest.md + 各自一本独门手艺
+  # <id>/skills/<id>-method/SKILL.md。扁平 .md 会让 persona_skill_scope 指向共享的
+  # builtin/skills/（专家手艺漏进小桔技能池），必须走 bundle 才有物理隔离。
+  # 旧的 11 个扁平路径若留在清单里，scp 会指向不存在的文件；而 .md 对账用 join
+  # 只比「共有文件」，新增 bundle 文件不进清单会**静默不同步**（fail-open 同款坑）。
+  # 3c/7 段按 dirname 推导落点，多层子目录无需改传输逻辑；basename 虽同为
+  # manifest.md / SKILL.md，但循环内 scp→cp→rm 顺序执行，不会互相覆盖。
+  # 🔴 云端若仍留有旧的 11 个 <id>.md，部署时需人工确认后清理：registry 先注册
+  #    扁平、再被 bundle 覆盖（语义以 bundle 为准），但留着是脏数据且会干扰排查。
+  "coworker/personas/builtin/brainstormer/manifest.md"
+  "coworker/personas/builtin/brainstormer/skills/brainstormer-method/SKILL.md"
+  "coworker/personas/builtin/lit-editor/manifest.md"
+  "coworker/personas/builtin/lit-editor/skills/lit-editor-method/SKILL.md"
+  "coworker/personas/builtin/adaptation/manifest.md"
+  "coworker/personas/builtin/adaptation/skills/adaptation-method/SKILL.md"
+  "coworker/personas/builtin/historian/manifest.md"
+  "coworker/personas/builtin/historian/skills/historian-method/SKILL.md"
+  "coworker/personas/builtin/proofreader/manifest.md"
+  "coworker/personas/builtin/proofreader/skills/proofreader-method/SKILL.md"
+  "coworker/personas/builtin/reader/manifest.md"
+  "coworker/personas/builtin/reader/skills/reader-method/SKILL.md"
+  "coworker/personas/builtin/publisher/manifest.md"
+  "coworker/personas/builtin/publisher/skills/publisher-method/SKILL.md"
+  "coworker/personas/builtin/genre/manifest.md"
+  "coworker/personas/builtin/genre/skills/genre-method/SKILL.md"
+  "coworker/personas/builtin/editor/manifest.md"
+  "coworker/personas/builtin/editor/skills/editor-method/SKILL.md"
+  "coworker/personas/builtin/outline/manifest.md"
+  "coworker/personas/builtin/outline/skills/outline-method/SKILL.md"
+  "coworker/personas/builtin/character/manifest.md"
+  "coworker/personas/builtin/character/skills/character-method/SKILL.md"
+  # 主编 / 影视线 5 个 bundle（本轮未改，原样保留）。
   "coworker/personas/builtin/editor-in-chief/manifest.md"
   "coworker/personas/builtin/outline-writer/manifest.md"
   "coworker/personas/builtin/screenwriter/manifest.md"
   "coworker/personas/builtin/script-reviewer/manifest.md"
   "coworker/personas/builtin/plot-architect/manifest.md"
-  # ⚠ 2026-11-09 晚（commit 26285519）：新增两位独立专家人设 ——
-  # character（人物专家）、outline（大纲专家；原先由 lit-editor 兼任，现独立）。
-  # 它们是 .md，不进 ALL_FILES（ast.parse 会误报），走 3c/7 段独立 scp + md5 核对；
-  # 漏传 ⇒ 云端专家中心缺两张卡，且人格 .md 集合对账报「仅本地有 2」。
-  "coworker/personas/builtin/character.md"
-  "coworker/personas/builtin/outline.md"
 )
 CLOUD_PERSONA_DIR="$CLOUD_COWORKER_ROOT/personas/builtin"
 
@@ -466,6 +477,11 @@ CLOUD_PERSONA_DIR="$CLOUD_COWORKER_ROOT/personas/builtin"
 PERCEPTION_MODULES=(
   "deskmate/perception/weather.py"
   "deskmate/perception/clock.py"
+  # ⚠ 2026-11-11 补录：MCP 工具定义（read_chapter / list_chapters 的 docstring
+  # 与覆盖率契约在此）。它从不在任何传输清单里，但 8 段集合对账扫 deskmate/**/*.py
+  # 会抓到内容漂移 ⇒ 改了不上云就是「报告了却不传」。本轮地基改了它的工具描述，
+  # 必须与 file_reader.py 同批到云端（后者已在 EXPERT_MODULES 段）。
+  "deskmate/perception/server.py"
 )
 
 # 连接器包（2026-10-23 补）：deskmate/connectors/ 被云端运行时 import——
@@ -576,6 +592,12 @@ CLOUD_CODE_DRIFT_MODULES=(
   "deskmate/bots/abtest.py"
   "coworker/catalog.py"
   "coworker/agents/base.py"
+  # ⚠ 2026-11-11「长文档工位」：document.py 是本轮**新增**模块，由 catalog.py 顶层
+  # import —— 漏传云端直接 ImportError，整个 catalog 起不来（不是静默降级）。
+  # risk.py 本轮新增 document_finish 的 WRITE_LOCAL 分类，漏传 ⇒ 云端把成稿动作
+  # 当纯 READ（无 path scoping / 无只读门禁）。两者必须同批推送。
+  "coworker/tools/document.py"
+  "coworker/risk.py"
 )
 
 # 小桔调用专家（2026-11-09 晚 / commit 26285519）：deskmate/consult.py 是本轮新建模块。

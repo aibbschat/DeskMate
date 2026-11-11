@@ -1446,17 +1446,16 @@ function NewSessionSplit({
 }) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
-  // 新建会话 ▾ 仅保留：主 Coworker(cowork)、小桔(deskmate)、主编(editor-in-chief)。
-  // 其余角色（圆桌 7 专家、官方工程组）只从右侧「我的伙伴」进入，避免左侧下拉冗长
-  // （owner ask 2026-08-26）。
-  // 主编例外（2026-10-28）：它是 lead，必须从"一个会话"开始才有意义——团队只能由 lead
-  // 会话经 propose_team 编制出来，而它既不属圆桌 7 专家也不在 ENGINEERING_IDS 里，
-  // 三处入口全被过滤掉 ＝ 功能存在但不可达。故并入本白名单。
-  // 脑洞专家例外（2026-11-08 决策 A）：开脑洞固定走独立专家，专家中心卡片 + 这里都给一个
-  // 直接起会话的入口；它已按 §24 退出 Bot 群名册，不该只能靠旧会话进入。
-  const ALLOWED_NEW_SESSION = new Set([
-    "cowork", "deskmate", "editor-in-chief", "brainstormer", "outline", "character",
-  ]);
+  // 新建会话 ▾ 只保留默认 Coworker(cowork) 与小桔(deskmate)。
+  // 2026-11-11 萧哥定：
+  //  · 专家统一从「专家中心」进入 —— 那里有头像 + 完整人设介绍；下拉里的同名
+  //    专家是第二个入口，读的是 /v1/personas 的短 tagline 且没有头像，两边
+  //    看起来像两个不同的专家，清掉（后端 persona 仍是同一个，数据不删）。
+  //  · 主编派活线按 docs/bot-mode-redesign.md 阶段 3 退役：撤「新建 lead 会话」
+  //    入口即达成验收第 1 条；后端 editor-in-chief / propose_team / TeamView /
+  //    历史看板全部保留，既有团队会话仍可打开。
+  //  · 圆桌老专家仍从右侧「我的伙伴」进入，不在这里重复列。
+  const ALLOWED_NEW_SESSION = new Set(["cowork", "deskmate"]);
   const enabled = (personas || []).filter((p) => p.enabled && ALLOWED_NEW_SESSION.has(p.id));
   // With a single enabled persona there is nothing to pick — the split collapses to a plain
   // button (owner ask 2026-07-09). `personas === null` (still loading) keeps the split so the

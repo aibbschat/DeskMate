@@ -24,7 +24,14 @@ class RiskClass(str, Enum):
 
 
 # Built-in tools whose risk is fixed by name (the old WRITE_TOOLS / SHELL_TOOL, as data).
-WRITE_TOOLS = {"write_file", "replace_in_file", "apply_patch", "apply_unified_diff"}
+# 2026-11-11：`document_finish` 是长文档工位的成稿动作，写用户可见文件。
+# 纳入既有 WRITE_LOCAL 地板 = **收紧**（path scoping + 只读模式门禁 + 审批卡），
+# 不是放松；漏掉它会被 classify() 当成纯 READ，等于给新写工具开无地板后门。
+# `document_append` 只写会话 scratch 内的 `.part` 草稿、不接收任意路径，保持暂存语义。
+WRITE_TOOLS = {
+    "write_file", "replace_in_file", "apply_patch", "apply_unified_diff",
+    "document_finish",
+}
 SHELL_TOOL = "run_shell"
 # Model-chosen network egress. `web_fetch` takes a URL straight from the model and the
 # URL's path/query can carry data outbound, so it is NOT a pure read — it must reach the

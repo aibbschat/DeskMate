@@ -419,7 +419,7 @@
     "needs_attention": "需要关注",
     "next_workers": "下一页成员",
     "no_tasks": "还没有任务。可以让 lead 在这里提议拆活。",
-    "no_team_body": "团队由 lead 发起：新建会话时选「主编」这类 lead 角色，让它提议名单，你批准后成员才会出现。",
+    "no_team_body": "团队派活已退役：这里只保留历史团队的看板与记录，不再新建主编会话，也不再提议名单或派活。",
     "no_team_title": "这个会话还没有团队",
     "no_usage": "暂无带时间戳的用量数据。",
     "nothing_waiting": "现在没有需要你出手的事。",

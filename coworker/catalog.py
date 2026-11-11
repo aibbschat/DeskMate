@@ -21,6 +21,7 @@ import aisuite as ai
 
 from .agents.base import AgentContext
 from .risk import RiskClass
+from .tools.document import document_tools
 from .tools.files import file_tools
 from .tools.git import git_tools
 from .tools.search import search_tools
@@ -119,6 +120,16 @@ def _todo(context: AgentContext) -> list:
     return todo_tools(context.todo)  # todo_write (drives the Progress panel)
 
 
+def _long_document(context: AgentContext) -> list:
+    """长文档工位：分段攒原文 → 一次成稿为一个文件。
+
+    2026-11-11：1v1 专家写长大纲/脑洞时只能「分段分文档」，根因是
+    `write_file` 覆盖语义、没有 append。这里不放宽任何字数上限，只补
+    「同一份文档的分段工位」。草稿与成稿都钳在本会话的 writable roots 内。
+    """
+    return document_tools(context.workspace, roots=context.roots)
+
+
 def _notebook(context: AgentContext) -> list:
     """专家自己的笔记本工具；只对 NOTEBOOK_BOTS 里的 persona 生效。
 
@@ -209,6 +220,17 @@ _CAPS: list[Capability] = [
         ],
         requires=(),
         risk=(RiskClass.READ,),
+    ),
+    Capability(
+        id="long_document",
+        name="Long document workbench",
+        description=(
+            "长文档分段工位：逐字攒各段原文，一次成稿为一个文件；"
+            "不摘要、不截断、不改写、不拆成多个文档。"
+        ),
+        build=_long_document,
+        requires=("workspace",),
+        risk=(RiskClass.READ, RiskClass.WRITE_LOCAL),
     ),
     Capability(
         id="notebook",

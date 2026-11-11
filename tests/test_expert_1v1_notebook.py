@@ -71,6 +71,9 @@ def test_notebook_personas_have_conflict_rule() -> None:
 
     root = Path(__file__).resolve().parents[1] / "coworker/personas/builtin"
     for pid in ("brainstormer", "lit-editor", "adaptation", "outline", "character"):
-        text = (root / f"{pid}.md").read_text(encoding="utf-8")
+        flat = root / f"{pid}.md"
+        # 2026-11-11 B 方案：扁平 <id>.md 转 bundle <id>/manifest.md，正文原样保留。
+        p = flat if flat.is_file() else root / pid / "manifest.md"
+        text = p.read_text(encoding="utf-8")
         assert "冲突先改" in text, f"{pid} 缺少冲突修正规则"
         assert "作者裁定 > 正文" in text, f"{pid} 冲突优先级不明确"

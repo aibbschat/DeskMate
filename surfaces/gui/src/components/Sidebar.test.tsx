@@ -232,10 +232,13 @@ describe("New session button", () => {
     expect(baseProps.onNewSession).toHaveBeenCalledWith("cowork");
   });
 
-  // 主编（lead）必须能从新建会话下拉里选到：团队只能由 lead 会话经 propose_team 编制出来，
-  // 而它既不在圆桌 7 专家里、也不在右侧「我的伙伴」的 ENGINEERING_IDS 白名单里 —— 一旦它被
-  // 新建会话白名单漏掉，功能就存在但没有任何入口（2026-10-28 实测踩到）。
-  it("offers 主编 (a lead persona) in the \u25be picker and starts a session on it", async () => {
+  // 2026-11-11 萧哥定：专家统一从「专家中心」进入（有头像 + 完整人设介绍）；
+  // 主编派活线按 docs/bot-mode-redesign.md 阶段 3 退役 —— 验收第 1 条就是
+  // 「新建会话下拉不含主编；/v1/personas 里 bot 仍在，数据没删」。
+  // 下拉里的同名专家是第二个入口：它读 /v1/personas 的短 tagline、没有头像，
+  // 和专家中心看起来像两个不同的专家，一并清掉。后端 persona / propose_team /
+  // 历史看板全部保留，既有 lead 会话仍可打开，git 一行即可回滚。
+  it("keeps only Coworker + 小桔 in the picker; experts live in 专家中心 and 主编 is retired", async () => {
     stubFetch([
       {
         match: "/v1/personas",
@@ -245,6 +248,9 @@ describe("New session button", () => {
             ...PERSONAS.personas,
             { id: "deskmate", name: "小桔", icon: "deskmate", tagline: "companion", requires_folder: false, enabled: true, surfaced: true, default: false },
             { id: "editor-in-chief", name: "主编", icon: "book", tagline: "组队派活 · 审核验收 · 终审裁决", requires_folder: true, enabled: true, surfaced: true, default: false },
+            { id: "brainstormer", name: "创意脑洞专家", icon: "lightbulb", tagline: "脑洞反转 · 惊喜设计", requires_folder: true, enabled: true, surfaced: true, default: false },
+            { id: "outline", name: "大纲专家", icon: "list", tagline: "卷纲 · 章纲 · 结构骨架", requires_folder: true, enabled: true, surfaced: true, default: false },
+            { id: "character", name: "人物专家", icon: "users", tagline: "人物弧光 · 动机 · 关系", requires_folder: true, enabled: true, surfaced: true, default: false },
           ],
         },
       },
@@ -254,8 +260,10 @@ describe("New session button", () => {
     await screen.findByText("incident watch");
 
     fireEvent.click(screen.getByLabelText("Choose a persona"));
-    const entry = await screen.findByText("主编");
-    fireEvent.click(entry);
-    expect(baseProps.onNewSession).toHaveBeenCalledWith("editor-in-chief");
+    expect(screen.queryByText("主编")).toBeNull();
+    expect(screen.queryByText("创意脑洞专家")).toBeNull();
+    expect(screen.queryByText("大纲专家")).toBeNull();
+    expect(screen.queryByText("人物专家")).toBeNull();
+    expect(screen.getByText("小桔")).toBeTruthy();
   });
 });

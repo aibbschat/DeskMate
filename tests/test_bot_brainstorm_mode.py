@@ -21,10 +21,13 @@ import pytest
 from deskmate.bots import discussion, runtime
 
 _PERSONA = Path("coworker/personas/builtin/brainstormer.md")
+# 2026-11-11 B 方案：脑洞专家转 OPE-58 bundle，人设正文原样搬进 manifest.md。
+_PERSONA_BUNDLE = Path("coworker/personas/builtin/brainstormer/manifest.md")
 
 
 def _persona_text() -> str:
-    return _PERSONA.read_text(encoding="utf-8")
+    p = _PERSONA if _PERSONA.is_file() else _PERSONA_BUNDLE
+    return p.read_text(encoding="utf-8")
 
 
 # --------------------------------------------------------------------- 人设

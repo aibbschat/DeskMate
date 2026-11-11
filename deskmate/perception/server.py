@@ -183,7 +183,9 @@ def list_chapters(path: str) -> str:
         path: 稿件绝对路径
 
     Returns:
-        章节目录（含每章字数）与读取建议；文件不存在/不支持时返回错误
+        章节目录（含每章字数）与读取建议，并明确「目录 ≠ 已读」：
+        只有 read_chapter 实际返回过某一章，那一章才算读过；文件不存在/
+        不支持时返回错误
     """
     try:
         return _list_chapters(path)
@@ -206,7 +208,10 @@ def read_chapter(path: str, chapter: str, max_chars: int = 100000) -> str:
         max_chars: 单章上限（默认100000，正常章节远小于此）
 
     Returns:
-        以【章节标题】（字数，本章完整）开头的正文；未找到/不支持时返回错误
+        先是【覆盖率】标注（本稿共几章 / 本次仅加载第几章 / 其余章未加载 /
+        「未加载 ≠ 书里没写」的判据），再是【章节标题】（字数，本章完整）
+        开头的正文。判断全书前须按标注逐章补读，未读到的章不得当作正文没有；
+        未找到/不支持时返回错误
     """
     try:
         return _read_chapter(path, chapter, max_chars=max_chars)

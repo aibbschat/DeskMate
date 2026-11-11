@@ -419,7 +419,7 @@
     "needs_attention": "Needs attention",
     "next_workers": "Next workers",
     "no_tasks": "No tasks yet. The lead can propose work here.",
-    "no_team_body": "Teams start with a lead: create a session with a lead persona (e.g. Editor-in-chief), let it propose a roster, and approve it. Workers appear after that.",
+    "no_team_body": "Team staffing has been retired: this view keeps historical boards and records only. No new Editor-in-chief sessions, rosters, or assignments are created.",
     "no_team_title": "This session has no team",
     "no_usage": "No timestamped usage yet.",
     "nothing_waiting": "Nothing is waiting on you.",
