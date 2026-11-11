@@ -248,6 +248,9 @@ class TestLocalEmbedOptional:
         from deskmate.memory import local_embed
 
         local_embed.reset_cache()
+        # 本用例测「缺包」路径，需显式绕开 conftest 的全局 off（off 会在更早
+        # 一层就返回 None，不会走到 available()）。
+        monkeypatch.setenv("DESKMATE_EMBEDDING_BACKEND", "local")
         monkeypatch.setattr(local_embed, "available", lambda: False)
         assert local_embed.embed(["甲"]) is None
         assert local_embed.last_error()

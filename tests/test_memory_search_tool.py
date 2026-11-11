@@ -23,6 +23,32 @@ def test_tool_is_read_only():
         assert bad not in body, f"memory_search 出现了写操作痕迹：{bad}"
 
 
+def test_tool_creates_no_index_and_loads_no_model(tmp_path, monkeypatch):
+    """真·只读：没有索引时不建库、不同步、不下载模型。
+
+    2026-11-11 复检修：原测试只扫源码字符串，实测调用后目录里新增
+    ``deskmate.db/-wal/-shm`` 并触发模型下载，是一条假绿灯。
+    """
+    from deskmate.memory import local_embed
+
+    monkeypatch.setenv("DESKMATE_EMBEDDING_BACKEND", "off")
+    local_embed.reset_cache()
+    tool = ms.make_memory_search_tool(base=tmp_path)
+    out = tool("我喜欢什么音色")
+    assert out["count"] == 0
+    assert not list(tmp_path.glob("deskmate.db*")), "只读工具不应创建数据库文件"
+    assert local_embed._model is None, "只读工具不应载入/下载模型"
+
+
+def test_local_embed_respects_backend_off(monkeypatch):
+    from deskmate.memory import local_embed
+
+    monkeypatch.setenv("DESKMATE_EMBEDDING_BACKEND", "off")
+    local_embed.reset_cache()
+    assert local_embed.embed(["测试"]) is None
+    assert local_embed.embed(["测试"], allow_load=False) is None
+
+
 def test_registry_builds_default_tool(tmp_path):
     tools = build_tools(base=tmp_path)
     assert [t.__name__ for t in tools] == ["memory_search"]

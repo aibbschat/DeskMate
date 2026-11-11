@@ -117,6 +117,7 @@ def make_memory_search_tool(base: Optional[Path | str] = None) -> Callable[..., 
                 base=root,
                 kinds=kinds,
                 section_contains=sec_kw,
+                read_only=True,
             )
         except Exception as exc:  # noqa: BLE001 —— 索引坏了当「没查到」，不拖垮会话
             return {"error": f"索引不可用：{exc}", "count": 0, "results": []}

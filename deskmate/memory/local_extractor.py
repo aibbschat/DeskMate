@@ -96,13 +96,34 @@ def _clean_content(s: str) -> str:
 # 片段进了 MEMORY.md 会被当成永久事实反复注入，还会污染 dream/反思。
 # 这里在出口处统一判断「是不是一句完整的话」，宁可少抽不可错抽。
 _TRUNCATED_TAILS = (
-    "）", ")", "》", ">", "\"", "'", "”", "’", "…", "...", "：", ":",
+    ">", "…", "...", "：", ":",
     # 2026-11-11 补：分隔线与破折号也是「话没说完就被结构切开」的形态。
     # 典型事故：目标制重试提示里的 ``不要再原样重复）---`` 被抽成
     # 「用户不希望再原样重复）---」——它既不是句子，也不该成为永久偏好。
     # 只收多字符分隔线，不收单个 "-"（英文连字符/负数结尾是合法写法）。
     "---", "--", "——", "—", "–", "==", "***", "___", "···",
 )
+# 2026-11-11 复检修：不能把「以右括号/右引号结尾」一律判残句——那会误杀
+# 「我喜欢《明朝那些事儿》」「不喜欢太吵的环境（比如咖啡厅）」。真正的信号是
+# **右括号多于左括号**（话被从中间切开），成对出现则是合法收尾。
+_BRACKET_PAIRS = (
+    ("（", "）"), ("(", ")"), ("【", "】"), ("[", "]"),
+    ("《", "》"), ("〈", "〉"), ("「", "」"), ("『", "』"),
+)
+
+
+def _has_dangling_closer(s: str) -> bool:
+    for opener, closer in _BRACKET_PAIRS:
+        if s.count(closer) > s.count(opener):
+            return True
+    if s.count("”") > s.count("“") or s.count("’") > s.count("‘"):
+        return True
+    # ASCII 引号：奇数个才说明有一个没闭合
+    if s.count('"') % 2 == 1 or s.count("'") % 2 == 1:
+        return True
+    return False
+
+
 # Markdown 水平分隔线（整行 --- / === / ___ / *** / ——）：片段跨过分隔线说明
 # 正则已经吃到了两块本不相连的文本边界，一律视为残句。
 _SEPARATOR_LINE_RE = re.compile(r"(?m)^\s*(?:-{2,}|={2,}|\*{3,}|_{3,}|—{2,})\s*$")
@@ -130,6 +151,8 @@ def _is_complete_fragment(s: str) -> bool:
     if not s:
         return False
     if s.endswith(_TRUNCATED_TAILS):
+        return False
+    if _has_dangling_closer(s):
         return False
     if _SEPARATOR_LINE_RE.search(s):
         return False

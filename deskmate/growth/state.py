@@ -252,14 +252,16 @@ def _warn_legacy_drift_once(db_data: dict | None) -> None:
     global _LEGACY_DRIFT_CHECKED
     if _LEGACY_DRIFT_CHECKED:
         return
-    _LEGACY_DRIFT_CHECKED = True
     legacy_path = _default_base_dir() / "growth.json"
     if not isinstance(db_data, dict) or not legacy_path.is_file():
+        # 2026-11-11 复检修：不能在这里就把一次性标志置位——首次调用若 DB 还没
+        # 数据/legacy 文件还没生成，标志被空调用吃掉，之后永远不再告警。
         return
     try:
         legacy = json.loads(legacy_path.read_text(encoding="utf-8"))
     except (OSError, ValueError, json.JSONDecodeError):
         return
+    _LEGACY_DRIFT_CHECKED = True
     diffs = []
     for key in ("intimacy", "level", "total_chats", "memories_learned"):
         a, b = db_data.get(key), legacy.get(key)

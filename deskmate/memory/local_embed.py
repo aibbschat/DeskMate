@@ -54,6 +54,21 @@ DEFAULT_MIRROR = "https://hf-mirror.com"
 _ENV_MODEL = "DESKMATE_LOCAL_EMBEDDING_MODEL"
 _ENV_DIR = "DESKMATE_EMBEDDING_MODEL_DIR"
 _ENV_ENDPOINT = "HF_ENDPOINT"
+_ENV_BACKEND = "DESKMATE_EMBEDDING_BACKEND"
+_OFF_MODES = {"off", "none", "disabled"}
+
+
+def backend_allowed() -> bool:
+    """``DESKMATE_EMBEDDING_BACKEND`` 是否允许走本地模型。
+
+    2026-11-11 复检修：本模块原来完全不看这个开关，``off`` 下照样载入/下载
+    102MB 模型，绕过 semantic_search 的后端链；测试设 ``off`` 也拦不住。
+    ``api`` 表示只用远端，本地同样不该启动。
+    """
+    mode = (os.environ.get(_ENV_BACKEND, "") or "").strip().lower() or "auto"
+    if mode in _OFF_MODES or mode == "api":
+        return False
+    return True
 
 _lock = threading.Lock()
 _model = None
@@ -93,6 +108,8 @@ def last_error() -> Optional[str]:
 def _load():
     """载入并缓存模型实例；失败返回 None（**不缓存失败态**）。"""
     global _model, _last_error
+    if not backend_allowed():
+        return None
     if _model is not None:
         return _model
     with _lock:
@@ -127,15 +144,24 @@ def _load():
                 os.environ.pop(_ENV_ENDPOINT, None)
 
 
-def embed(texts: list[str]) -> Optional[list[list[float]]]:
+def embed(
+    texts: list[str], allow_load: bool = True
+) -> Optional[list[list[float]]]:
     """批量生成向量。
 
     返回向量列表；fastembed 未安装 / 模型载入失败 / 推理异常一律返回 ``None``
     （fail-open，调用方负责回落）。
+
+    ``allow_load=False``：只读检索用——模型已在本进程载入才用，否则不触发
+    懒加载（避免一次 memory_search 就去下载模型）。
     """
     global _last_error
     if not texts:
         return []
+    if not backend_allowed():
+        return None
+    if not allow_load and _model is None:
+        return None
     model = _load()
     if model is None:
         return None

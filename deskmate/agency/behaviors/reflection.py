@@ -163,7 +163,8 @@ def _recent_changes(store, limit: int) -> list[dict]:
                     "reason": reason, "ts": ts,
                     "subject_kind": _subject_kind(layer),
                     "dimension": dim, "content": content,
-                    "confidence": float(confidence or 0.5),
+                    # 0.0 是合法置信度，不能和「缺失」混为一谈
+                    "confidence": 0.5 if confidence is None else float(confidence),
                     "source": source or "",
                 })
     except Exception as e:
@@ -195,7 +196,9 @@ def change_importance(store, change: dict) -> float:
     """
     try:
         base = _ACTION_BASE.get(str(change.get("action") or ""), 3.0)
-        conf = float(change.get("confidence") or 0.5)
+        # 0.0 不等于缺失：显式 0 置信度的变化应得最低权重，而不是被抬成 0.5。
+        _conf = change.get("confidence")
+        conf = 0.5 if _conf is None else float(_conf)
         degree = 0
         try:
             degree = int(store.anchor_neighbor_count(change.get("item_id") or ""))

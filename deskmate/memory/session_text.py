@@ -89,7 +89,11 @@ def strip_system_injected_turns(session_text: str) -> str:
         header = match.group(0)
         body = session_text[match.end():end]
         # 标记可能落在本段 header 之前（含文件开头）。
-        marked = SYSTEM_TURN_MARKER in session_text[pos:match.start()]
+        # 2026-11-11 复检修：原窗口 ``session_text[pos:match.start()]`` 在第二个
+        # header 起恒为空（pos 上一轮已推进到当前 header 起点），导致第二个
+        # turn 起标记完全失效。标记一定紧挨 header 且是前文的最后一个非空行，
+        # 直接看 header 前的尾部即可。
+        marked = session_text[:match.start()].rstrip().endswith(SYSTEM_TURN_MARKER)
         if _USER_HEADER_RE.match(header.strip()) and (
             marked or is_system_injected_prompt(body)
         ):

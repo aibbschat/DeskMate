@@ -265,12 +265,15 @@ def _skill_dirs(workspace: Optional[Path]) -> list[Path]:
 
 
 def _deskmate_base_dir() -> Path:
-    """小桔记忆根：DESKMATE_MEMORY_DIR > DESKMATE_DIR > ~/.deskmate。"""
-    return Path(
-        os.environ.get("DESKMATE_MEMORY_DIR")
-        or os.environ.get("DESKMATE_DIR")
-        or str(Path.home() / ".deskmate")
-    )
+    """小桔记忆根：统一走 ``deskmate.paths.deskmate_base_dir()``。
+
+    2026-11-11 复检修：这里原来是 ``MEMORY_DIR > DIR``，而 paths.py 是
+    ``DIR > MEMORY_DIR``；两个 env 同时设置时，工具 base 与注入路径会指向
+    不同目录。优先级只保留一处定义。
+    """
+    from deskmate.paths import deskmate_base_dir
+
+    return deskmate_base_dir()
 
 
 def _get_deskmate_manager(base: Path):
