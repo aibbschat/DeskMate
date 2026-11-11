@@ -18,6 +18,8 @@ from typing import Optional
 from deskmate.growth._atomic import unique_tmp
 from deskmate.persistence import BlobStore
 
+logger = logging.getLogger(__name__)
+
 
 # 勋章解锁时间的「不可考」标记：体系建立之前就已达成、无从查证确切日期的勋章，
 # 一律用它占位而不编造日期。前端据此显示「早期补录」。
@@ -227,7 +229,12 @@ def load_state(base_dir: Path | str | None = None) -> GrowthState:
 def _load_raw(base_dir: Path | str | None) -> dict | None:
     """读取原始 dict：默认目录（None 或解析等于默认目录）走 DB；显式非默认目录走文件。"""
     if _is_default_dir(base_dir):
-        return BlobStore().get(BlobStore.KEY_GROWTH, legacy_path=_default_base_dir() / "growth.json")
+        data = BlobStore().get(BlobStore.KEY_GROWTH, legacy_path=_default_base_dir() / "growth.json")
+        # 2026-11-11 一段止血：默认目录以 DB 为准，但 legacy growth.json 仍可能被
+        # 旧进程/旧脚本写入，两份数字会漂移（实测 DB 默契 100/Lv.12，文件 62/Lv.5）。
+        # 这里做一次性只读比对并告警，绝不自动覆盖，避免误删真实进度。
+        _warn_legacy_drift_once(data)
+        return data
     path = _state_path(base_dir)
     if not path.is_file():
         return None
@@ -235,6 +242,36 @@ def _load_raw(base_dir: Path | str | None) -> dict | None:
         return json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError, json.JSONDecodeError):
         return None
+
+
+_LEGACY_DRIFT_CHECKED = False
+
+
+def _warn_legacy_drift_once(db_data: dict | None) -> None:
+    """一次性比对 DB 与 legacy growth.json 的关键字段，差异明显时告警。"""
+    global _LEGACY_DRIFT_CHECKED
+    if _LEGACY_DRIFT_CHECKED:
+        return
+    _LEGACY_DRIFT_CHECKED = True
+    legacy_path = _default_base_dir() / "growth.json"
+    if not isinstance(db_data, dict) or not legacy_path.is_file():
+        return
+    try:
+        legacy = json.loads(legacy_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, json.JSONDecodeError):
+        return
+    diffs = []
+    for key in ("intimacy", "level", "total_chats", "memories_learned"):
+        a, b = db_data.get(key), legacy.get(key)
+        if not isinstance(a, (int, float)) or not isinstance(b, (int, float)):
+            continue
+        if abs(a - b) > max(1.0, abs(a) * 0.05):
+            diffs.append(f"{key}: DB={a} file={b}")
+    if diffs:
+        logger.warning(
+            "成长状态双份不一致（以 DB 为准，legacy 文件仅备查）：%s", "; ".join(diffs)
+        )
+
 
 
 def _build_state(data: dict) -> GrowthState:

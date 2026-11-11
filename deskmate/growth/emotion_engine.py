@@ -114,6 +114,12 @@ ECHO_COOLDOWN_HOURS = 24.0       # 同一件旧事 24h 内最多泛一次（不�
 # experience / echo 行是「情绪来路」，绝不裁（maybe_echo 依赖 7 天内 experience 的 narrative）。
 EMOTION_LOG_DECAY_KEEP_DAYS = 14
 
+# time_decay 落日志的三道闸（2026-11-11 一段止血）：
+# 激素变化不足 1.0 不记；两条之间至少隔 5 分钟；同一段独白 30 分钟内只记一次。
+_DECAY_LOG_MIN_DELTA = 1.0
+_DECAY_LOG_MIN_GAP_SECONDS = 300
+_DECAY_LOG_SAME_DESC_GAP_SECONDS = 1800
+
 # —— 等待（Pending）：悬着的事，她编个预期故事，参数朝故事爬坡 ——
 PENDING_MAX_OPEN = 3             # 同时最多悬 3 件（心里装不下太多）
 PENDING_CLIMB_PER_DAY = 1.0      # 每件每日爬坡量（good→dopamine / bad→cortisol）
@@ -1922,7 +1928,14 @@ class EmotionEngine:
                 tuple(new_values[k] for k in HORMONE_KEYS) + (now_str,),
             )
             deltas = {k: round(new_values[k] - old[k], 2) for k in HORMONE_KEYS}
-            if any(abs(v) > 0.01 for v in deltas.values()):
+            # 2026-11-11 一段止血：旧逻辑「任一激素动 0.01 就写一条」，结果
+            # time_decay 占了 emotion_log 的 77%（今日 86 条、去重后仅 2 种描述）。
+            # 改为「显著变化 + 最小间隔 + 同描述去重」：日志是给未来回看的，
+            # 不是给每一拍留指纹。
+            max_delta = max((abs(v) for v in deltas.values()), default=0.0)
+            if max_delta >= _DECAY_LOG_MIN_DELTA and self._should_log_decay(
+                conn, (old.get("description") or "").strip(), now
+            ):
                 conn.execute(
                     "INSERT INTO emotion_log (id, ts, source, deltas, description, conversation_id) "
                     "VALUES (?, ?, 'time_decay', ?, ?, ?)",
@@ -1932,6 +1945,35 @@ class EmotionEngine:
                 )
             # 日志卫生（2026-10-16 巡审 P0）：裁旧 time_decay 行，每天最多一次。
             self._prune_emotion_log(conn, now)
+
+    def _should_log_decay(self, conn, description: str, now: datetime) -> bool:
+        """time_decay 是否值得落日志（2026-11-11 一段止血）。
+
+        规则：距上一条至少 5 分钟；同一段独白 30 分钟内只记一次。
+        fail-open：查询失败时照写，不因日志判断影响情绪主流程。
+        """
+        try:
+            row = conn.execute(
+                "SELECT ts, description FROM emotion_log "
+                "WHERE source='time_decay' ORDER BY ts DESC LIMIT 1"
+            ).fetchone()
+        except Exception:
+            return True
+        if not row:
+            return True
+        try:
+            last = datetime.fromisoformat(row[0])
+        except (TypeError, ValueError):
+            return True
+        if last.tzinfo is None:
+            last = last.replace(tzinfo=now.tzinfo)
+        gap = (now - last).total_seconds()
+        if gap < _DECAY_LOG_MIN_GAP_SECONDS:
+            return False
+        last_desc = (row[1] or "").strip()
+        if description and description == last_desc and gap < _DECAY_LOG_SAME_DESC_GAP_SECONDS:
+            return False
+        return True
 
     def _prune_emotion_log(self, conn, now: datetime) -> None:
         """裁掉 14 天前的 time_decay 低价值行（每天最多一次，fail-open）。
