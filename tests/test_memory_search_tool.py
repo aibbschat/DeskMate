@@ -57,6 +57,60 @@ def test_registry_builds_default_tool(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# m5：合并后的超集层（项目记忆 / learned_history / 文风桶）
+# ---------------------------------------------------------------------------
+def test_project_layer_really_searches(tmp_path):
+    proj = tmp_path / "projects" / "夜不收"
+    proj.mkdir(parents=True)
+    (proj / "longterm.md").write_text("# 长期设定\n主角的刀是断的", encoding="utf-8")
+    tool = ms.make_memory_search_tool(base=tmp_path)
+    out = tool("主角的刀", layer="project")
+    assert out["count"] >= 1
+    assert any("项目记忆:夜不收" in r["section"] for r in out["results"])
+
+
+def test_learned_layer_really_searches(tmp_path):
+    from deskmate.memory.learned_store import LearnedStore
+
+    LearnedStore(base_dir=tmp_path).append(["他喜欢御姐音，不喜欢太播音腔"], source="live")
+    tool = ms.make_memory_search_tool(base=tmp_path)
+    out = tool("御姐音", layer="learned")
+    assert out["count"] >= 1
+    assert any("learned_history" in r["source"] for r in out["results"])
+
+
+def test_learned_layer_creates_no_db(tmp_path):
+    tool = ms.make_memory_search_tool(base=tmp_path)
+    out = tool("御姐音", layer="learned")
+    assert out["count"] == 0
+    assert not list(tmp_path.glob("deskmate.db*")), "learned 层只读，不能凭空建库"
+
+
+def test_style_layer_returns_both_buckets(tmp_path):
+    import json
+
+    data = {"buckets": {
+        "manuscript": {"metrics": {"n": 3}},
+        "chat": {"metrics": {"n": 5}},
+    }}
+    (tmp_path / "style_profile.json").write_text(json.dumps(data), encoding="utf-8")
+    tool = ms.make_memory_search_tool(base=tmp_path)
+    out = tool("他写东西什么文风", layer="style")
+    labels = {r["section"] for r in out["results"]}
+    assert {"文风·书稿桶", "文风·聊天桶"} <= labels
+
+
+def test_all_layer_pulls_style_only_on_style_question(tmp_path):
+    import json
+
+    data = {"buckets": {"manuscript": {"metrics": {"n": 3}}}}
+    (tmp_path / "style_profile.json").write_text(json.dumps(data), encoding="utf-8")
+    tool = ms.make_memory_search_tool(base=tmp_path)
+    assert tool("他写东西什么文风")["count"] >= 1
+    assert tool("他喜欢什么音色")["count"] == 0
+
+
+# ---------------------------------------------------------------------------
 # 层过滤 / 日期过滤 / base 固化
 # ---------------------------------------------------------------------------
 @pytest.fixture()

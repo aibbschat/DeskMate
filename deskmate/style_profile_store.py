@@ -32,6 +32,7 @@ import hashlib
 import json
 import logging
 import os
+import sqlite3
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -109,6 +110,59 @@ def save_profile(path: Path, data: dict) -> None:
     tmp = path.with_name(path.name + ".tmp")
     tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
     os.replace(tmp, path)
+
+
+def load_profile_readonly(base_dir: Path | str) -> dict:
+    """只读读取某个记忆目录的文风画像：优先 ``deskmate.db`` 的 json_blobs，
+    其次 legacy ``style_profile.json``。
+
+    ⚠ 与 ``load_profile`` 的区别：后者经 ``BlobStore()`` 构造会**创建目录/数据库/
+    表**（2026-11-11 复检修：只读检索工具一调就凭空长出 deskmate.db）。
+    这里只开 ``mode=ro``，库/文件都不存在时返回 {}。
+    """
+    base = Path(base_dir)
+    db = base / "deskmate.db"
+    if db.is_file():
+        try:
+            con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+            try:
+                row = con.execute(
+                    "SELECT data FROM json_blobs WHERE key=?", (BlobStore.KEY_STYLE,)
+                ).fetchone()
+            finally:
+                con.close()
+            if row and row[0]:
+                data = json.loads(row[0])
+                return data if isinstance(data, dict) else {}
+        except (sqlite3.Error, ValueError, json.JSONDecodeError):
+            pass
+    legacy = base / "style_profile.json"
+    if legacy.is_file():
+        try:
+            data = json.loads(legacy.read_text(encoding="utf-8"))
+            return data if isinstance(data, dict) else {}
+        except (OSError, ValueError, json.JSONDecodeError):
+            return {}
+    return {}
+
+
+def format_profile_readonly(base_dir: Path | str, bucket: str = BUCKET_MANUSCRIPT) -> str:
+    """只读版「文风指纹」格式化（语义与 ``format_profile_for_prompt`` 一致）。
+
+    - 书稿桶为空但有旧/对话指标时，同样明确降级告知，不拿聊天语感冒充文风。
+    - 不写缓存、不建库；供 ``memory_search`` 的 ``style`` 层使用。
+    """
+    data = load_profile_readonly(base_dir)
+    metrics = _bucket_metrics(data, bucket)
+    if metrics:
+        return _format_metrics_for_human(metrics)
+    if bucket == BUCKET_MANUSCRIPT and isinstance(data.get("metrics"), dict):
+        return (
+            "【暂无书稿样本：以下指标来自对话记录，仅供粗参考，勿据此收敛文风；"
+            "多读几本他的书稿后会自动切到书稿口径】\n"
+            + _format_metrics_for_human(data["metrics"])
+        )
+    return ""
 
 
 def update_style_profile(

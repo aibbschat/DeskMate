@@ -338,15 +338,32 @@ def _book_allowed(row: dict, current_book: str, known: list[str]) -> bool:
 # ---------------------------------------------------------------------------
 # 读库
 # ---------------------------------------------------------------------------
-def _rows(base_dir, limit: int = _FETCH_FACTS_CAP) -> list[dict[str, Any]]:
-    """取活跃、未过期的记忆行（含来源/锚点/时间），外部观察在调用侧剔除。"""
+def _rows(
+    base_dir, limit: int = _FETCH_FACTS_CAP, *, read_only: bool = False
+) -> list[dict[str, Any]]:
+    """取活跃、未过期的记忆行（含来源/锚点/时间），外部观察在调用侧剔除。
+
+    ``read_only=True`` 时只开 ``mode=ro`` 连接、不建目录/不建表/不切 WAL：
+    给 ``memory_search`` 这类只读工具用（2026-11-11 复检修：此前它经
+    ``LearnedStore()`` 构造会顺手创建 ``deskmate.db/-wal/-shm``）。
+    """
     try:
         from .learned_store import LearnedStore, _now_iso, effective_source
 
-        db = LearnedStore(base_dir=base_dir).db_path
-        con = sqlite3.connect(str(db))
+        if read_only:
+            from deskmate.paths import deskmate_base_dir
+            from .learned_store import _DB_NAME
+
+            db = (Path(base_dir) if base_dir else deskmate_base_dir()) / _DB_NAME
+            if not db.is_file():
+                return []
+            con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+        else:
+            db = LearnedStore(base_dir=base_dir).db_path
+            con = sqlite3.connect(str(db))
         try:
-            con.execute("PRAGMA journal_mode=WAL")
+            if not read_only:
+                con.execute("PRAGMA journal_mode=WAL")
             rows = con.execute(
                 "SELECT id, ts, fact, source, entity, polarity FROM learned_history "
                 "WHERE status='active' AND (valid_until IS NULL OR valid_until >= ?) "
@@ -382,7 +399,12 @@ def _active_user_facts(base_dir, limit: int = _FETCH_FACTS_CAP) -> list[tuple[st
 
 
 def search_user_facts(
-    base_dir, query: str, limit: int = 8, now: datetime.datetime | None = None
+    base_dir,
+    query: str,
+    limit: int = 8,
+    now: datetime.datetime | None = None,
+    *,
+    read_only: bool = False,
 ) -> list[tuple[str, str, str]]:
     """按 query 检索活跃用户事实（memory_search 的库侧检索，刀2 2026-11-10）。
 
@@ -396,7 +418,7 @@ def search_user_facts(
     返回 [(ts, fact, source)]，最多 limit 条。fail-open：任何异常返回空列表。
     """
     try:
-        rows = _rows(base_dir)
+        rows = _rows(base_dir, read_only=read_only)
         if not rows:
             return []
         now = now or datetime.datetime.now()
