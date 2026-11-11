@@ -617,6 +617,29 @@ EXPERT_MODULES=(
   "deskmate/consult.py"
 )
 
+# ⚠ 2026-11-11 记忆层第二批起（12cb484b 之后的 8 个 commit）+ bot 群「半山书院」改版。
+# 这一批既有**新增模块**也有**历史漏项本轮被改动**的共有文件，两类都必须进清单：
+#   · 新增模块云端没有 ⇒ 集合对账报「仅本地有」，被生产代码 import 时直接 ImportError，
+#     而 manager.py / catalog.py 多为函数内 try/except ⇒ fail-open 静默失效；
+#   · 历史漏项（profile.py / state.py / local_extractor.py / user_profile.py）本轮改了内容，
+#     但从未在任何清单里 ⇒ 云端跑旧码，末尾 md5 对账会报「共有文件内容不一致」。
+# 判据：本轮 `git diff --name-only 12cb484b..HEAD` 的非测试 .py 全部在册。
+MEMORY_LAYER_MODULES=(
+  # 新增：三段检索权 / USER.md 归属闸 / 反思与挂锚下沉
+  "deskmate/memory/file_index.py"
+  "deskmate/memory/file_search.py"
+  "deskmate/memory/journal_log.py"
+  "deskmate/memory/session_text.py"
+  "deskmate/memory/user_preferences.py"
+  "deskmate/tools/memory_search.py"
+  "deskmate/tools/registry.py"
+  # 历史漏项，本轮改动 ⇒ 必须同批推，否则云端停留在旧码
+  "deskmate/cognitive/profile.py"
+  "deskmate/growth/state.py"
+  "deskmate/memory/local_extractor.py"
+  "deskmate/memory/user_profile.py"
+)
+
 FORCE=0
 [[ "${1:-}" == "--force" ]] && FORCE=1
 
@@ -636,7 +659,7 @@ fi
 # ---- 1. 必须已提交（红线：本地改动先 commit 进 fork/base）----
 # ⚠️ PERSONA_FILES（.md）故意不进 ALL_FILES：下面的语法预检用 ast.parse，对 .md 会误报。
 # 它走独立的 scp + md5 核对（见 3d/7b 段），并纳入对账 .md 扫描。
-ALL_FILES=("${LOCAL_MODULES[@]}" "$LOCAL_RUNNER" "${PROACTIVITY_MODULES[@]}" "${CHANNEL_MODULES[@]}" "${AGENCY_BEHAVIORS_MODULES[@]}" "${AGENCY_MODULES[@]}" "${GARDEN_MODULES[@]}" "${GROWTH_MODULES[@]}" "${NOVEL_MEMORY_MODULES[@]}" "${COWORKER_ROOT_MODULES[@]}" "${COWORKER_DRIFT_MODULES[@]}" "${TEAMS_MODULES[@]}" "${SKILLS_TOOLS_MODULES[@]}" "${PERCEPTION_MODULES[@]}" "${CONNECTORS_MODULES[@]}" "$LOCAL_AGENCY_TICK" "$LOCAL_DRIFT_CHECK" "${CLOUD_CODE_DRIFT_MODULES[@]}" "${EXPERT_MODULES[@]}")
+ALL_FILES=("${LOCAL_MODULES[@]}" "$LOCAL_RUNNER" "${PROACTIVITY_MODULES[@]}" "${CHANNEL_MODULES[@]}" "${AGENCY_BEHAVIORS_MODULES[@]}" "${AGENCY_MODULES[@]}" "${GARDEN_MODULES[@]}" "${GROWTH_MODULES[@]}" "${NOVEL_MEMORY_MODULES[@]}" "${COWORKER_ROOT_MODULES[@]}" "${COWORKER_DRIFT_MODULES[@]}" "${TEAMS_MODULES[@]}" "${SKILLS_TOOLS_MODULES[@]}" "${PERCEPTION_MODULES[@]}" "${CONNECTORS_MODULES[@]}" "$LOCAL_AGENCY_TICK" "$LOCAL_DRIFT_CHECK" "${CLOUD_CODE_DRIFT_MODULES[@]}" "${EXPERT_MODULES[@]}" "${MEMORY_LAYER_MODULES[@]}")
 if [[ "$FORCE" -eq 0 ]]; then
   DIRTY=""
   for f in "${ALL_FILES[@]}"; do
@@ -725,7 +748,7 @@ done
 
 # ---- 3c. 推送通道组/ 熔断模块（本地与云端必须同码，见 CHANNEL_MODULES 注释）----
 echo "==> 推送通道组/熔断模块 + 自主行为包 + 天气感知到云端主程序包"
-for f in "${CHANNEL_MODULES[@]}" "${AGENCY_BEHAVIORS_MODULES[@]}" "${AGENCY_MODULES[@]}" "${GARDEN_MODULES[@]}" "${GROWTH_MODULES[@]}" "${NOVEL_MEMORY_MODULES[@]}" "${COWORKER_ROOT_MODULES[@]}" "${COWORKER_DRIFT_MODULES[@]}" "${TEAMS_MODULES[@]}" "${PERSONA_FILES[@]}" "${SKILLS_TOOLS_MODULES[@]}" "${PERCEPTION_MODULES[@]}" "${CONNECTORS_MODULES[@]}" "${CLOUD_CODE_DRIFT_MODULES[@]}" "${EXPERT_MODULES[@]}"; do
+for f in "${CHANNEL_MODULES[@]}" "${AGENCY_BEHAVIORS_MODULES[@]}" "${AGENCY_MODULES[@]}" "${GARDEN_MODULES[@]}" "${GROWTH_MODULES[@]}" "${NOVEL_MEMORY_MODULES[@]}" "${COWORKER_ROOT_MODULES[@]}" "${COWORKER_DRIFT_MODULES[@]}" "${TEAMS_MODULES[@]}" "${PERSONA_FILES[@]}" "${SKILLS_TOOLS_MODULES[@]}" "${PERCEPTION_MODULES[@]}" "${CONNECTORS_MODULES[@]}" "${CLOUD_CODE_DRIFT_MODULES[@]}" "${EXPERT_MODULES[@]}" "${MEMORY_LAYER_MODULES[@]}"; do
   base="$(basename "$f")"
   # 目标目录按本地相对路径推（deskmate/xxx.py → $CLOUD_DESKMATE_ROOT/xxx.py；
   # coworker/xxx.py → $CLOUD_COWORKER_ROOT/xxx.py），必要时建目录
@@ -810,7 +833,7 @@ done
 
 # ---- 7. 通道组/熔断模块对齐核对 ----
 echo "==> 通道组/熔断模块 + 自主行为包 + 天气感知对齐核对"
-for f in "${CHANNEL_MODULES[@]}" "${AGENCY_BEHAVIORS_MODULES[@]}" "${AGENCY_MODULES[@]}" "${GARDEN_MODULES[@]}" "${GROWTH_MODULES[@]}" "${NOVEL_MEMORY_MODULES[@]}" "${COWORKER_ROOT_MODULES[@]}" "${COWORKER_DRIFT_MODULES[@]}" "${TEAMS_MODULES[@]}" "${PERSONA_FILES[@]}" "${SKILLS_TOOLS_MODULES[@]}" "${PERCEPTION_MODULES[@]}" "${CONNECTORS_MODULES[@]}" "${CLOUD_CODE_DRIFT_MODULES[@]}" "${EXPERT_MODULES[@]}"; do
+for f in "${CHANNEL_MODULES[@]}" "${AGENCY_BEHAVIORS_MODULES[@]}" "${AGENCY_MODULES[@]}" "${GARDEN_MODULES[@]}" "${GROWTH_MODULES[@]}" "${NOVEL_MEMORY_MODULES[@]}" "${COWORKER_ROOT_MODULES[@]}" "${COWORKER_DRIFT_MODULES[@]}" "${TEAMS_MODULES[@]}" "${PERSONA_FILES[@]}" "${SKILLS_TOOLS_MODULES[@]}" "${PERCEPTION_MODULES[@]}" "${CONNECTORS_MODULES[@]}" "${CLOUD_CODE_DRIFT_MODULES[@]}" "${EXPERT_MODULES[@]}" "${MEMORY_LAYER_MODULES[@]}"; do
   base="$(basename "$f")"
   case "$f" in
     deskmate/*)   dest_dir="$CLOUD_DESKMATE_ROOT/$(dirname "${f#deskmate/}")" ;;
