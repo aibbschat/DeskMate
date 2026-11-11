@@ -34,7 +34,13 @@ from .session_text import (
     is_system_injected_prompt,
     strip_system_injected_turns,
 )
-from .user_profile import load_user, save_user, reset_user
+from .user_profile import (
+    load_user,
+    save_user,
+    save_user_ex,
+    reset_user,
+    demote_unmarked_hard_rules,
+)
 from .llm import llm_available, chat, chat_memory, memory_llm_available
 from .vault_store import VaultStore
 from .sensitivity import classify, redact, SENSITIVE  # 8.4 敏感分级
@@ -1230,10 +1236,13 @@ class DeskMateMemoryManager:
             save_soul(self.base_dir, content)
             return "SOUL.md 已更新"
         elif section == "user":
-            if not save_user(self.base_dir, content):
+            ok, why = save_user_ex(self.base_dir, content)
+            if not ok:
                 return (
-                    "USER.md 写入被拒：内容疑似异常（重复度/长度突变/分节结构丢失），"
-                    "已留存现场快照，原文件未改动。请检查后再写。"
+                    f"USER.md 写入被拒：{why}。原文件未改动，现场已留存。\n"
+                    "注意 `## 硬规矩` 是每轮常驻注入的层：整篇覆写时新增条目必须带"
+                    "「〔人工确认〕」标记（由萧盛确认过的才算），其余条目请放在"
+                    "「## 偏好与事实（非常驻·待检索）」。"
                 )
             return "USER.md 已更新"
         elif section == "memory":
@@ -2199,7 +2208,27 @@ class DeskMateMemoryManager:
                 logger.debug("archive before compression failed: %s", e)
             self._save_global_memory(compressed)
         else:
-            save_user(self.base_dir, compressed)
+            # 压缩落盘前的结构 diff：LLM 若把条目跨层搬进 `## 硬规矩`，一律降级
+            # 回偏好层（不丢内容，也不让它变成每轮常驻）。整篇拒绝会让文件一直
+            # 超限、每次写入都重压，形成死循环，故这里选降级而非拒绝。
+            compressed, demoted = demote_unmarked_hard_rules(content, compressed)
+            if demoted:
+                logger.warning(
+                    "压缩产物有 %d 条无出处硬规矩，已降级回偏好层：%s",
+                    len(demoted), "；".join(d[:40] for d in demoted[:3]),
+                )
+                self._note_compress_stalled(
+                    section, len(content), limit,
+                    f"硬规矩新增 {len(demoted)} 条无人工确认标记，已降级回偏好层",
+                )
+            ok, why = save_user_ex(self.base_dir, compressed)
+            if not ok:
+                # 落盘被拒：原文件保持不动（宁可继续超限，也不写半成品）
+                self._note_compress_stalled(section, len(content), limit, f"压缩结果被拒：{why}")
+                return False
+            if demoted:
+                # 降级告警要留着给人看，别被下面这行"成功"清掉
+                return True
 
         self._note_compress_stalled(section, len(compressed), limit, None)
         return True
@@ -2627,13 +2656,28 @@ class DeskMateMemoryManager:
         return None
 
     def _llm_compress_user(self, content: str) -> str | None:
-        """LLM 压缩 USER.md：精简用户画像，合并重复描述。"""
+        """LLM 压缩 USER.md：精简用户画像，合并重复描述。
+
+        ⚠ 两层边界写死在 prompt 里（2026-11-11 条目归属闸）：旧 prompt 只说
+        「保留 # 用户画像 的 Markdown 结构」，没提 `## 硬规矩` 与
+        `## 偏好与事实` 是**两层不同注入策略**的小节，压缩时 LLM 可以合法地
+        跨层搬运——一条偏好被并进硬规矩，就成了每轮常驻注入。prompt 是软约束，
+        真正的闸在 ``demote_unmarked_hard_rules`` + ``save_user_ex``。
+        """
         system = (
-            "你是用户画像压缩器。把一份 USER.md 压缩到更短的篇幅，规则：\n"
-            "1. 合并重复或相似的描述\n"
-            "2. 保留所有关键偏好、工作习惯、需要避免的事项\n"
-            "3. 保留 # 用户画像 的 Markdown 结构\n"
-            "4. 每条仍简洁可读\n"
+            "你是用户画像压缩器。输入这份 USER.md 有**两个记忆层**，注入策略不同，"
+            "压缩时必须原样守住：\n"
+            "1. `## 硬规矩`：每轮对话都常驻注入的短规矩，错了每轮都错；\n"
+            "2. `## 偏好与事实（非常驻·待检索）`：只在检索命中时才进上下文。\n"
+            "压缩规则：\n"
+            "· 只能在**同一层内**合并或精简；禁止把条目从一层搬到另一层，"
+            "禁止把两条跨层内容合并成一条；\n"
+            "· 两个层的标题必须逐字保留；其它 `## ` 小节（基本信息 / 写作观 / "
+            "当前创作 / 日常流程…）也不得增删、改名或换序；\n"
+            "· `## 硬规矩` 只允许原样保留或删除，**一条都不许新增**；确属同层精简的，"
+            "保留原条目里的 `〔人工确认〕` 标记；\n"
+            "· 每条仍以 `- ` 开头，保留原有 `YYYY-MM-DD:` 日期前缀；\n"
+            "· 压缩后应比原文明显更短。\n"
             "只输出压缩后的完整 USER.md 内容，不要解释。"
         )
         try:
