@@ -169,3 +169,26 @@ def test_anchor_one_hop(base: Path):
 def test_anchor_neighbor_miss_returns_empty(base: Path):
     FileIndex(base).sync()
     assert file_search._anchor_neighbors(base, ["不存在的锚"]) == []
+
+
+def test_index_healthy_is_readonly_and_bootstraps(base: Path, monkeypatch):
+    """健康检查只读探测：不清表、不建表；无 db 时放行给 sync 首次自举。
+
+    修前：index_healthy 经 ``_idx()`` 构造 FileIndex 触发 _ensure_schema，
+    CHUNK_VERSION 一变就 DELETE 全部索引表——健康检查自己就是破坏者，
+    随后 chunks=0 判不健康，唯一重建入口（sync）又被它门控，永久锁死。
+    """
+    monkeypatch.setattr("deskmate.memory.local_embed.embed", lambda texts: None)
+    # 1) 无 db、有源文件 → healthy=True（把首轮交给 search 里的 sync 自举）
+    assert (base / "deskmate.db").exists() is False
+    assert file_search.index_healthy(base) is True
+
+    # 2) 建索引后连续探测两次，chunks 计数不得被清
+    idx = FileIndex(base)
+    idx.sync()
+    before = idx.stats()["chunks"]
+    assert before > 0
+    assert file_search.index_healthy(base) is True
+    assert file_search.index_healthy(base) is True
+    after = FileIndex(base).stats()["chunks"]
+    assert after == before, f"健康探测清了表：{before} → {after}"

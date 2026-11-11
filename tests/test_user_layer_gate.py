@@ -195,3 +195,72 @@ def test_appended_entry_still_lands_in_pref_layer(base: Path):
     layers = up.split_layers(_read(base))
     assert not any(SYSTEM_TEXT in e for e in layers[up.LAYER_HARD])
     assert SYSTEM_TEXT in _read(base)
+
+
+# ---------------------------------------------------------------------------
+# 六、2026-11-11 复检修回归：fail-closed / 日期前缀 / 删除拦截 / bullet 变体
+# （Trae 修复四条致命缺陷的锁门测试；详见 reports/ 记忆层审计底稿）
+# ---------------------------------------------------------------------------
+def test_corrupt_old_file_rejects_overwrite(base: Path):
+    """旧文件含坏字节（读不出基线）必须拒写，绝不放行覆写。
+
+    修前：读旧失败置 old=""，两道闸失去比对基线，任意覆写放行——
+    端到端可产出「她说我没写过」的假答案（原硬规矩被静默抹掉）。
+    """
+    (base / "USER.md").write_bytes(
+        NORMAL.encode("utf-8") + b"\xff\xfe"
+    )
+    ok, why = up.save_user_ex(base, "# 用户画像\n\n## 硬规矩\n\n- 覆写掉一切\n")
+    assert ok is False, "读旧失败必须 fail-closed"
+    assert "读取旧内容失败" in why
+    # 原文件一字未动（坏字节与原条目都在）
+    raw = (base / "USER.md").read_bytes()
+    assert b"\xff\xfe" in raw
+    assert "不 push origin".encode() in raw
+
+
+def test_date_prefix_not_treated_as_rewrite(base: Path):
+    """日期前缀不得把不相干的新硬规矩抬成「同一句改写」。
+
+    修前：``2026-11-0x`` 前缀占字符多，两条毫无关系的硬规矩仅凭日期
+    相近就能把 SequenceMatcher 抬到 0.6，被当成改写放行（实测恰好 0.6）。
+    """
+    k_old = up._entry_key("2026-11-01: 不要在深夜吃烧烤。")
+    assert up._is_rewrite_of_old("2026-11-05: 写作时不要开太多窗口。", [k_old]) is False
+    # 真正的改写（去日期后同一句话）仍然放行
+    assert up._is_rewrite_of_old("2026-11-05: 不要在深夜吃烧烤。", [k_old]) is True
+
+
+def test_deleting_hard_rules_blocked_and_restored(base: Path):
+    """整篇写入把带人工确认的硬规矩删掉 → 闸识别 + restore 原样补回。
+
+    修前：闸只拦「新增无标记」，删除方向完全裸奔——压缩 prompt 明写
+    「允许删除」，机器可以静默删掉用户拍板过的硬规矩。
+    """
+    ruled = _insert_into_hard(NORMAL, "2026-11-11: 主稿正文一律不碰。〔人工确认〕")
+    ok, why = up.save_user_ex(base, ruled)
+    assert ok, why
+    # 整篇写入删掉这条（其余不动）
+    deleted = ruled.replace("- 2026-11-11: 主稿正文一律不碰。〔人工确认〕\n\n", "", 1)
+    ok2, why2, _bad = up.check_layer_integrity(deleted, ruled)
+    assert ok2 is False and "删除" in why2
+    restored_text, restored = up.restore_deleted_hard_rules(ruled, deleted)
+    assert len(restored) == 1
+    assert "主稿正文一律不碰" in restored_text
+
+
+def test_bullet_variants_not_bypass(base: Path):
+    """``*`` / ``•`` / ``·`` 前缀的硬规矩条目不得绕过闸。
+
+    修前：split_layers 只认 ``- `` 前缀，其它 bullet 变体写进硬规矩
+    整道闸看不见。
+    """
+    for mark in ("*", "•", "·"):
+        text = NORMAL.replace(
+            "\n## 偏好与事实",
+            f"{mark} 2026-11-11: 系统文案混进硬规矩 {mark}\n\n## 偏好与事实",
+            1,
+        )
+        bad = up.find_unmarked_hard_additions(NORMAL, text)
+        assert bad, f"{mark} 前缀的未标记硬规矩必须被识别"
+        assert any(f"系统文案混进硬规矩 {mark}" in b for b in bad)

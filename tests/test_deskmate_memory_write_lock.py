@@ -82,3 +82,24 @@ def test_concurrent_mixed_memory_writes(tmp_path):
     m_hits = sum(1 for i in range(n) if f"M{i:03d}" in m)
     assert u_hits == 1, f"USER.md 并发写异常：命中 {u_hits} 个"
     assert m_hits == 1, f"MEMORY.md 并发写异常：命中 {m_hits} 个"
+
+
+def test_concurrent_journal_append_no_loss(tmp_path):
+    """24 线程并发追加 journal 复盘条目，一条不丢。
+
+    修前：固定 ``.tmp`` 文件名 + 无锁，后写者覆盖先写者，实测丢 17~18/24，
+    且无异常路径假成功返回 added>0（上层还记「journal +1」成功日志）。
+    """
+    from datetime import date
+
+    from deskmate.memory import journal_log
+
+    n = 24
+
+    def worker(i):
+        journal_log.append_review(tmp_path, [f"并发复盘条目 {i:02d}"])
+
+    _spawn(n, worker)
+    content = journal_log._month_path(tmp_path, date.today()).read_text(encoding="utf-8")
+    hits = sum(1 for i in range(n) if f"并发复盘条目 {i:02d}" in content)
+    assert hits == n, f"并发写 journal 丢失：期望 {n} 条，实际 {hits} 条"
