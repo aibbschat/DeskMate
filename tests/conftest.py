@@ -75,53 +75,74 @@ def _isolated_state_dir(tmp_path, monkeypatch):
 # 同类泄漏还产出过真实 sessions/ 里的测试会话、creation_pipelines.json 的 stub
 # 条目、output/ 里的测试 docx。这层守卫让「跑测试写到真实目录」直接红，而不是靠人记。
 _REPO_ROOT = Path(__file__).resolve().parents[1]
-_REAL_DATA_WATCH = (
-    Path.home() / ".deskmate",
-    Path.home() / ".config" / "coworker" / "creation_pipelines.json",
-    Path.home() / ".config" / "coworker" / "automation.db",
-    Path.home() / ".config" / "coworker" / "coworker.db",
-    Path.home() / ".config" / "coworker" / "secrets.json",
+_HOME = Path.home()
+_DESKMATE_HOME = _HOME / ".deskmate"
+_COWORKER_CFG = _HOME / ".config" / "coworker"
+# 文本正文：比**内容摘要**（不是 mtime），外部进程 touch 不会误报；
+# 真被写（含同 size 改写）一定变摘要。
+_REAL_TEXT_FILES = (
+    _DESKMATE_HOME / "USER.md",
+    _DESKMATE_HOME / "MEMORY.md",
+    _DESKMATE_HOME / "SOUL.md",
+    _DESKMATE_HOME / "growth.json",
+    _DESKMATE_HOME / "style_profile.json",
+    _COWORKER_CFG / "creation_pipelines.json",
+    _COWORKER_CFG / "secrets.json",
+)
+# SQLite 库只看**存在性**：桌面端常驻会持续写库，比较 mtime/size 必然误报；
+# 但「测试凭空造出真实库」仍然要红。
+_REAL_DB_FILES = (
+    _DESKMATE_HOME / "deskmate.db",
+    _COWORKER_CFG / "automation.db",
+    _COWORKER_CFG / "coworker.db",
+)
+# 项目记忆递归盯着（文件多，存 mtime+size）；其余目录只记 mtime（新文件会改目录 mtime）。
+_REAL_TEXT_TREES = (_DESKMATE_HOME / "projects",)
+_REAL_DIR_MTIME = (
+    _DESKMATE_HOME / "sessions",
+    _DESKMATE_HOME / "vault",
+    _DESKMATE_HOME / "diary",
+    _DESKMATE_HOME / "traces",
     _REPO_ROOT / "output",
 )
-# 大库/日志/自动备份/参考语料不是「用户正文」，逐测试扫它们只会拖慢全量；排除。
-# （history 3.6G 语料、models 模型、_quarantine 隔离区均只读不写。）
-_SKIP_PARTS = {
-    "backups",
-    "logs",
-    "__pycache__",
-    ".git",
-    "history",
-    "models",
-    "_quarantine",
-}
-# 只记目录 mtime：测试泄漏到 output/ 的表现是**新建**文件，目录 mtime 足够；
-# 逐用例扫 1900 多个历史产物会显著拖慢测试。
-_DIR_MTIME_ONLY = (_REPO_ROOT / "output",)
 
 
-def _snapshot_real_data() -> dict[str, tuple[int, int]]:
-    snap: dict[str, tuple[int, int]] = {}
-    for root in _REAL_DATA_WATCH:
+def _text_digest(path: Path) -> str:
+    import hashlib
+
+    return hashlib.sha1(path.read_bytes()).hexdigest()
+
+
+def _snapshot_real_data() -> dict[str, tuple]:
+    """固定入口快照。
+
+    2026-11-11 复检修（m13）：原实现 `rglob` 整个 ``~/.deskmate``（1696 个文件），
+    每用例 2 次约 64ms；全量 5380 用例 ≈ 5.7 分钟，且桌面端后台写库时必红。
+    改为「只盯固定入口 + 按类型比较」：文本比内容、库只看存在、目录看 mtime。
+    """
+    snap: dict[str, tuple] = {}
+    for p in _REAL_TEXT_FILES:
         try:
-            if root.is_file():
-                st = root.stat()
-                snap[str(root)] = (st.st_mtime_ns, st.st_size)
-                continue
-            if not root.is_dir():
-                continue
-            if root in _DIR_MTIME_ONLY:
-                st = root.stat()
-                snap[str(root)] = (st.st_mtime_ns, 0)
-                continue
-            for p in root.rglob("*"):
-                if not p.is_file() or _SKIP_PARTS & set(p.parts):
-                    continue
-                if p.name.endswith((".db-wal", ".db-shm")):
-                    continue
-                st = p.stat()
-                snap[str(p)] = (st.st_mtime_ns, st.st_size)
+            snap[str(p)] = ("text", _text_digest(p))
         except OSError:
+            pass
+    for p in _REAL_DB_FILES:
+        snap[str(p)] = ("db", p.is_file())
+    for root in _REAL_TEXT_TREES:
+        if not root.is_dir():
             continue
+        for p in root.rglob("*.md"):
+            try:
+                st = p.stat()
+                # 项目文件量大（实测 ~290 个）：存 mtime+size，不逐次读内容。
+                snap[str(p)] = ("stat", st.st_mtime_ns, st.st_size)
+            except OSError:
+                pass
+    for d in _REAL_DIR_MTIME:
+        try:
+            snap[str(d)] = ("dir", d.stat().st_mtime_ns)
+        except OSError:
+            pass
     return snap
 
 
@@ -129,8 +150,9 @@ def _snapshot_real_data() -> dict[str, tuple[int, int]]:
 def _real_data_guard():
     """任何用例把文件写进真实 ~/.deskmate / ~/.config/coworker / 仓库 output/ 即失败。
 
-    默认开启；若开发者一边开着桌面端跑测试，可 ``OW_TEST_REALDATA_GUARD=0`` 关闭
-    （那会失去这层保护，不建议）。用 mtime_ns + size 比较（不读内容），开销可控。
+    ⚠ 桌面端常驻时（它会持续写 USER.md / 数据库），可能出现「不是测试写的也红」；
+    此时可临时 ``OW_TEST_REALDATA_GUARD=0`` 关闭本用例跑了的变化比对（会失去这层
+    保护，不建议长期关）。
     """
     if os.environ.get("OW_TEST_REALDATA_GUARD", "1") == "0":
         yield
