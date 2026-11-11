@@ -1155,7 +1155,7 @@ export function Sidebar(props: Props) {
                 }}
               >
                 <Icon name="chat" size={15} className="shrink-0" />
-                <span className="flex-1">{t("sidebar.botroom", { defaultValue: "Bot 群" })}</span>
+                <span className="flex-1">{t("sidebar.botroom", { defaultValue: "半山书院" })}</span>
               </button>
 
               {/* 创作流水线：原生 teams 执行 + 圆桌终审（线路 B → 线路 A）。 */}

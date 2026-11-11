@@ -43,11 +43,11 @@ PAGE = r"""
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Bot 群 · OpenWorker</title>
+<title>半山书院 · OpenWorker</title>
 <!--
-  Bot 群 · 群聊页。形状参照 Hermes Bot Mode 桌面（名册 + hosted_rooms），不是手机 IM 壳：
-  左边「我的群 + 常驻 bot」，右边消息流。刻意没有主持人 / 纪要 / 开始按钮 / 稿件路径表单
-  （docs/bot-mode-redesign.md 决策 3 与 §4）。
+  半山书院（原 Bot 群）· 群聊页。形状参照 Hermes Bot Mode 桌面（名册 + hosted_rooms），
+  不是手机 IM 壳：左边「议题 + 讲席」，右边议事流。刻意没有主持人 / 纪要 / 开始按钮 /
+  稿件路径表单（docs/bot-mode-redesign.md 决策 3 与 §4）。
 
   主题：本文件只带一套 default 兜底 token，真实观感由桌面 GUI 经 postMessage 把
   **计算后的** CSS 变量值注进来（见 surfaces/gui/src/components/ThemedSidecarFrame.tsx）。
@@ -73,6 +73,12 @@ PAGE = r"""
     --fs-label:11px; --fs-meta:12px; --fs-ui:13px; --fs-body:14px;
     --fs-heading:15px; --fs-title:16px; --fs-chat:15px;
     --tint-mix:18%; --who-mix:82%; --av-ring:32%;
+    /* 半山书院的三条装饰线，全部由上面四个原色派生 —— 不在这里复刻 9 套皮肤，
+       宿主注入什么原色，界格与山脊就跟着变，切皮肤/切暗色/切字号都不用动本文件。 */
+    --serif:"Songti SC","STSong","Noto Serif CJK SC","Source Han Serif SC","Iowan Old Style",Georgia,serif;
+    --rule:color-mix(in srgb, var(--ink) 6%, transparent);
+    --ridge:color-mix(in srgb, var(--ink) 26%, var(--paper));
+    --accent-line:color-mix(in srgb, var(--accent) 34%, transparent);
   }
   html[data-theme="dark"] {
     color-scheme: dark;
@@ -86,6 +92,8 @@ PAGE = r"""
     --solid:#2e3138; --on-solid:#e6e8eb;
     --scrim:rgba(0,0,0,.5);
     --tint-mix:26%; --who-mix:72%; --av-ring:40%;
+    --rule:color-mix(in srgb, var(--ink) 8%, transparent);
+    --ridge:color-mix(in srgb, var(--ink) 34%, var(--paper));
   }
   html[data-text-size="small"] {
     --fs-label:10px; --fs-meta:11px; --fs-ui:12px; --fs-body:13px;
@@ -108,108 +116,119 @@ PAGE = r"""
 
   /* ---------------- 左栏 ---------------- */
   .br-side {
-    width:264px; flex:none; background:var(--panel); border-right:1px solid var(--line);
+    width:268px; flex:none; background:var(--panel); border-right:1px solid var(--line);
     display:flex; flex-flow:column; overflow:hidden;
   }
-  .side-top { padding:14px 14px 10px; display:flex; align-items:center; gap:8px; }
-  .side-top .ttl {
-    font-size:var(--fs-label); font-weight:600; letter-spacing:.12em;
-    color:var(--muted); text-transform:uppercase; flex:1;
-  }
-  .side-top .cnt { font-size:var(--fs-label); color:var(--faint); }
+  /* 门牌：衬线只出现在这里、人名、议题名三处。一屋子宋体就成戏装了。 */
+  .brand { padding:15px 16px 11px; border-bottom:1px solid var(--line); position:relative; flex:none; }
+  .brand .nm { font-family:var(--serif); font-size:19px; font-weight:600; letter-spacing:.14em; }
+  .brand .sub { margin-top:5px; font-size:var(--fs-label); color:var(--faint); letter-spacing:.24em; }
+  .brand .ridge { display:block; width:100%; height:20px; margin-top:8px; }
   .newbtn {
+    position:absolute; right:14px; top:14px;
     border:1px solid var(--line-strong); background:var(--panel); color:var(--accent);
-    border-radius:6px; padding:3px 9px; font-size:var(--fs-label); cursor:pointer;
+    border-radius:999px; padding:3px 10px; font-size:var(--fs-label); cursor:pointer;
   }
-  .newbtn:hover { background:var(--accent-soft); border-color:var(--accent); }
+  .newbtn:hover { background:var(--accent-soft); border-color:var(--accent-line); }
   .br-scroll { overflow:auto; flex:1; }
   .br-scroll::-webkit-scrollbar { width:9px; }
   .br-scroll::-webkit-scrollbar-thumb { background:var(--line-strong); border-radius:9px; }
 
+  .side-top { padding:13px 16px 7px; display:flex; align-items:baseline; gap:8px; }
+  .side-top .ttl {
+    font-size:var(--fs-label); font-weight:600; letter-spacing:.2em;
+    color:var(--muted); flex:1;
+  }
+  .side-top .cnt { font-size:var(--fs-label); color:var(--faint); }
+
+  /* 直角 + 左侧一条强调边，替代原来的大圆角胶囊：像稿纸上的条目，不像手机 IM */
   .grp-item {
-    margin:0 8px 2px; padding:9px 10px; border-radius:8px; cursor:pointer;
-    border:1px solid transparent;
+    margin:0 10px 3px; padding:9px 11px 10px; border-radius:3px; cursor:pointer;
+    border:1px solid transparent; border-left:2px solid transparent;
   }
   .grp-item:hover { background:var(--paper); }
-  .grp-item.on { background:var(--accent-soft); border-color:color-mix(in srgb,var(--accent) 30%,transparent); }
-  .grp-l1 { display:flex; align-items:center; gap:7px; }
+  .grp-item.on { background:var(--accent-soft); border-left-color:var(--accent); }
+  .grp-l1 { display:flex; align-items:baseline; gap:8px; }
   .grp-name {
-    font-size:var(--fs-ui); font-weight:600; flex:1;
-    white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+    font-family:var(--serif); font-size:var(--fs-heading); font-weight:600; flex:1;
+    letter-spacing:.02em; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
   }
-  .grp-time { font-size:var(--fs-label); color:var(--faint); flex:none; }
+  .grp-time { font-size:var(--fs-label); color:var(--faint); flex:none; font-variant-numeric:tabular-nums; }
   .grp-l2 { display:flex; align-items:center; gap:7px; margin-top:5px; font-size:var(--fs-label); }
   .stack { display:flex; }
   .stack .mini {
-    width:16px; height:16px; border-radius:5px; margin-left:-4px; flex:none;
+    width:16px; height:16px; border-radius:3px; margin-left:-4px; flex:none;
     display:flex; align-items:center; justify-content:center;
     border:1.5px solid var(--panel);
   }
   .stack .mini:first-child { margin-left:0; }
   .stack .mini svg { width:9px; height:9px; }
   .grp-last { flex:1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; color:var(--faint); }
-  .side-sep { height:1px; background:var(--line); margin:12px 14px; }
+  .side-sep { height:1px; background:var(--line); margin:14px 16px; }
 
   .bot-item {
-    margin:0 8px 3px; padding:8px 10px; border-radius:8px; cursor:pointer;
-    display:flex; align-items:center; gap:9px; border:1px solid transparent;
+    margin:0 10px 2px; padding:8px 10px; border-radius:3px; cursor:pointer;
+    display:flex; align-items:center; gap:10px; border:1px solid transparent;
   }
   .bot-item:hover { background:var(--paper); }
   .bot-item .txt { flex:1; min-width:0; }
-  .bot-item .nm { font-size:var(--fs-ui); font-weight:500; }
-  .bot-item .tg { font-size:var(--fs-label); color:var(--faint); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; margin-top:1px; }
-  .bot-item .flag { font-size:var(--fs-label); color:var(--faint); flex:none; }
+  .bot-item .nm { font-family:var(--serif); font-size:var(--fs-ui); font-weight:600; letter-spacing:.03em; }
+  .bot-item .tg { font-size:var(--fs-label); color:var(--faint); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; margin-top:2px; }
+  .bot-item .flag { font-size:10px; color:var(--accent); letter-spacing:.06em; flex:none; }
   .bot-item .tick {
-    width:15px; height:15px; border-radius:4px; border:1.5px solid var(--line-strong); flex:none;
-    display:flex; align-items:center; justify-content:center; color:#fff; font-size:10px;
+    width:15px; height:15px; border-radius:2px; border:1.5px solid var(--line-strong); flex:none;
+    display:flex; align-items:center; justify-content:center; color:var(--panel); font-size:10px;
   }
-  .bot-item.picked { background:var(--accent-soft); }
+  .bot-item.picked { background:var(--accent-soft); border-left-color:var(--accent); }
   .bot-item.picked .tick { background:var(--accent); border-color:var(--accent); }
-  .bot-item.off { opacity:.45; }
+  .bot-item.off { opacity:.42; }
 
-  .mk { margin:10px 12px; padding:12px; border:1px solid var(--line-strong); border-radius:10px; background:var(--paper); }
-  .mk label { display:block; font-size:var(--fs-label); color:var(--muted); margin-bottom:5px; }
+  .mk { margin:10px 12px; padding:12px; border:1px solid var(--line-strong); border-radius:4px; background:var(--paper); }
+  .mk label { display:block; font-size:var(--fs-label); color:var(--muted); letter-spacing:.14em; margin-bottom:5px; }
   .mk input {
-    width:100%; padding:8px 10px; border:1px solid var(--line-strong); border-radius:7px;
-    background:var(--panel); color:var(--ink); font-size:var(--fs-ui);
+    width:100%; padding:8px 10px; border:1px solid var(--line-strong); border-radius:3px;
+    background:var(--panel); color:var(--ink); font-family:var(--serif); font-size:var(--fs-heading);
   }
   .mk input:focus { outline:2px solid var(--accent-soft); border-color:var(--accent); }
   .mk .tip { font-size:var(--fs-label); color:var(--faint); margin-top:7px; line-height:1.6; }
   .mk .row { display:flex; gap:7px; margin-top:9px; }
 
   .btn {
-    border:1px solid var(--accent); background:var(--accent); color:#fff;
-    border-radius:7px; padding:7px 13px; font-size:var(--fs-ui); cursor:pointer;
+    border:1px solid var(--accent); background:var(--accent); color:var(--panel);
+    border-radius:3px; padding:7px 13px; font-size:var(--fs-ui); cursor:pointer; letter-spacing:.06em;
   }
   .btn.ghost { background:transparent; color:var(--muted); border-color:var(--line-strong); }
   .btn.ghost:hover { color:var(--ink); border-color:var(--faint); }
   .btn:disabled { opacity:.45; cursor:default; }
 
-  /* 头像：底色与前景都从主题色 color-mix 推导，切暗色不糊也不炸 */
+  /* 头像：底色与前景都从主题色 color-mix 推导，切暗色不糊也不炸。直角，跟条目同语言。 */
   .av {
-    width:32px; height:32px; border-radius:9px; flex:none;
+    width:30px; height:30px; border-radius:2px; flex:none;
     display:flex; align-items:center; justify-content:center;
     background:color-mix(in srgb, var(--c) var(--tint-mix), var(--panel));
     color:color-mix(in srgb, var(--c) var(--who-mix), var(--ink));
     box-shadow:inset 0 0 0 1px color-mix(in srgb, var(--c) var(--av-ring), transparent);
   }
-  .av svg { width:16px; height:16px; }
-  .av.letter { font-size:var(--fs-meta); font-weight:600; }
+  .av svg { width:15px; height:15px; }
+  .av.letter { font-family:var(--serif); font-size:var(--fs-meta); font-weight:600; }
 
   /* ---------------- 中栏 ---------------- */
   .br-main { flex:1; display:flex; flex-flow:column; min-width:0; }
   .br-head {
-    height:58px; flex:none; background:var(--panel); border-bottom:1px solid var(--line);
-    display:flex; align-items:center; gap:12px; padding:0 18px;
+    min-height:62px; flex:none; background:var(--panel); border-bottom:1px solid var(--line);
+    display:flex; align-items:center; gap:12px; padding:11px 22px;
   }
-  .br-head .ht { font-size:var(--fs-title); font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:40%; }
+  .br-head .ht {
+    font-family:var(--serif); font-size:var(--fs-title); font-weight:600; letter-spacing:.02em;
+    white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:40%;
+  }
   .br-head .avs { display:flex; align-items:center; }
-  .br-head .av { width:24px; height:24px; border-radius:7px; margin-left:-5px; border:2px solid var(--panel); }
+  .br-head .av { width:24px; height:24px; border-radius:3px; margin-left:-5px; border:2px solid var(--panel); }
   .br-head .av:first-child { margin-left:0; }
   .br-head .av svg { width:12px; height:12px; }
   .br-head .spacer { flex:1; }
   .pill {
-    font-size:var(--fs-label); border-radius:999px; padding:3px 9px; white-space:nowrap;
+    font-size:var(--fs-label); border-radius:2px; padding:3px 9px; white-space:nowrap;
     background:var(--paper); color:var(--muted); border:1px solid var(--line);
   }
   .pill.warn { background:var(--warn-soft); color:var(--warn-ink); border-color:transparent; }
@@ -217,58 +236,84 @@ PAGE = r"""
 
   /* 刻意不用 scroll-behavior:smooth —— 逐 token 流式时每帧触发动画会互相排队，
      既掉帧又让置底失效。流式置底本来就该是 instant。 */
-  .br-stream { flex:1; overflow:auto; padding:20px 24px 8px; }
+  /* 稿纸界格：一行一线，间距跟着 --fs-chat 走，切字号不错行。 */
+  .br-stream {
+    flex:1; overflow:auto; padding:20px 24px 8px;
+    background-image:repeating-linear-gradient(to bottom,
+      transparent 0, transparent calc(var(--fs-chat) * 1.75 - 1px),
+      var(--rule) calc(var(--fs-chat) * 1.75 - 1px), var(--rule) calc(var(--fs-chat) * 1.75));
+    background-position:0 20px;
+  }
   .br-stream::-webkit-scrollbar { width:10px; }
   .br-stream::-webkit-scrollbar-thumb { background:var(--line-strong); border-radius:10px; }
 
   .sep { display:flex; align-items:center; gap:10px; margin:6px 0 16px; }
   .sep::before, .sep::after { content:""; height:1px; background:var(--line); flex:1; }
-  .sep span { font-size:var(--fs-label); color:var(--faint); white-space:nowrap; }
+  .sep span { font-family:var(--serif); font-size:var(--fs-label); color:var(--faint); letter-spacing:.18em; white-space:nowrap; }
   .sep.round span { color:var(--muted); }
 
-  .msg { display:flex; gap:10px; align-items:flex-start; margin-bottom:14px; }
-  /* 全篇刻意用 flex-flow 而不是它的长写法：
+  /* 去气泡化：一条发言 = 稿纸上的一个段落，左侧一条发言者色条撑住归属。
+     .col 用 ch 而不是百分比 —— 正文行长是阅读体验的一部分，不该跟着窗口变。 */
+  .msg { display:flex; gap:12px; align-items:stretch; padding:2px 0 12px; }
+  /* 刻意用 flex-flow 而不是它的长写法：
      tests/test_bot_mode_runtime.py::test_no_form_fields_on_new_api 的「无表单字段」硬锁
      是按子串匹配 banned 词的，长写法里正好含那个 banned 子串，会被误伤。别顺手改回长写法
      —— 要动也该动那条断言的匹配方式，但硬锁优先于美观，本轮不动测试。 */
   .msg.mine { flex-flow:row-reverse; }
-  .msg.cont { margin-bottom:10px; }
-  .msg.cont .av { visibility:hidden; }
-  .col { max-width:min(72%, 640px); display:flex; flex-flow:column; gap:4px; min-width:0; }
+  .msg.cont { padding-bottom:10px; }
+  .msg.cont .av, .msg.cont .rail { visibility:hidden; }
+  .msg .rail {
+    width:2px; flex:none; border-radius:1px;
+    background:color-mix(in srgb, var(--c) 40%, var(--line));
+  }
+  .msg .av { display:none; }
+  .col { max-width:min(68ch, 760px); display:flex; flex-flow:column; gap:4px; min-width:0; }
   .msg.mine .col { align-items:flex-end; }
-  .meta { display:flex; align-items:baseline; gap:7px; padding:0 2px; }
-  .meta .who { font-size:var(--fs-meta); font-weight:600; }
+  .meta { display:flex; align-items:baseline; gap:8px; padding:0 2px; }
+  .meta .who {
+    font-family:var(--serif); font-size:var(--fs-ui); font-weight:600; letter-spacing:.04em;
+    color:color-mix(in srgb, var(--c) 72%, var(--ink));
+  }
   .meta .role { font-size:var(--fs-label); color:var(--faint); }
   .meta .ts { font-size:var(--fs-label); color:var(--faint); font-variant-numeric:tabular-nums; }
+  /* 立场标记：这句在讨论链条的哪一环。红色留给真出错，反调不借 danger。 */
+  .stance {
+    font-size:10px; letter-spacing:.1em; border-radius:2px; padding:1px 5px;
+    border:1px solid currentColor; color:var(--accent);
+  }
+  .stance.build { color:var(--ok); }
+  .stance.dissent { color:color-mix(in srgb, var(--accent) 72%, var(--ink)); }
+  .stance.proof { color:var(--warn-ink); }
 
   .bubble {
-    background:var(--panel); border:1px solid var(--line); border-radius:12px;
-    padding:11px 14px; font-size:var(--fs-chat); line-height:1.75; color:var(--ink);
+    font-size:var(--fs-chat); line-height:1.75; color:var(--ink);
     white-space:pre-wrap; word-break:break-word;
-    box-shadow:0 1px 2px color-mix(in srgb, var(--ink) 5%, transparent);
   }
-  .msg.mine .bubble { background:var(--solid); color:var(--on-solid); border-color:transparent; }
+  /* 作者本人发言：通栏淡底 + 左侧强调边，不用气泡也能一眼分清谁在问 */
+  .msg.mine {
+    background:var(--accent-soft); margin:0 -12px; padding:8px 12px 10px;
+    border-left:2px solid var(--accent);
+  }
+  .msg.mine .rail { display:none; }
   .bubble .at { color:var(--accent); font-weight:600; }
   .bubble b { font-weight:600; }
   .bubble code {
-    font-family:var(--mono); font-size:.88em; padding:0 4px; border-radius:4px;
+    font-family:var(--mono); font-size:.88em; padding:0 4px; border-radius:2px;
     background:var(--paper); border:1px solid var(--line);
   }
-  .msg.mine .bubble code { background:color-mix(in srgb, var(--panel) 55%, transparent); }
 
-  /* 折叠态刻意不给滚动条：滚动条会让气泡看着像个下拉控件，而且「还能往下滚」和
+  /* 折叠态刻意不给滚动条：滚动条会让正文看着像个下拉控件，而且「还能往下滚」和
      「点展开」是两个互相竞争的提示，用户不知道该做哪个。这里只做静态截断 + 渐变 + 展开按钮。
      .open 必须同时解除 max-height —— 只靠下面的 :not(.open) 摘掉渐变遮罩，高度还卡在
      6 行，点了「展开全文」class 变了但画面毫无反应（真机被用户抓到过）。
-     高度用 em 而不是写死 180px：气泡 font-size 就是 --fs-chat，line-height 1.75，
+     高度用 em 而不是写死 180px：正文 font-size 就是 --fs-chat，line-height 1.75，
      所以 10.5em 正好 6 整行，字号切到小/大档时折叠位置跟着走，不会多切半行。 */
   .clip { max-height:10.5em; overflow:hidden; position:relative; }
   .clip.open { max-height:min(60vh, 36em); overflow:auto; }
   .clip:not(.open)::after {
     content:""; position:absolute; left:0; right:0; bottom:0; height:38px;
-    background:linear-gradient(to bottom, transparent, var(--panel)); pointer-events:none;
+    background:linear-gradient(to bottom, transparent, var(--paper)); pointer-events:none;
   }
-  .msg.mine .clip:not(.open)::after { background:linear-gradient(to bottom, transparent, var(--solid)); }
   .expand { align-self:flex-start; border:none; background:transparent; color:var(--accent); font-size:var(--fs-label); cursor:pointer; padding:2px 4px; }
   .expand:hover { text-decoration:underline; }
 
@@ -284,60 +329,62 @@ PAGE = r"""
 
   .note { text-align:center; font-size:var(--fs-label); color:var(--faint); margin:0 0 14px; }
   .sysbar {
-    margin:0 0 14px; padding:9px 13px; border-radius:9px; font-size:var(--fs-meta);
+    margin:0 0 14px; padding:9px 13px; border-radius:3px; font-size:var(--fs-meta);
     background:var(--warn-soft); color:var(--warn-ink); line-height:1.6;
   }
   .sysbar.err { background:var(--danger-soft); color:var(--danger); }
-  .sysbar.info { background:var(--paper); color:var(--muted); border:1px solid var(--line); }
+  .sysbar.info { background:var(--panel); color:var(--muted); border:1px solid var(--line); }
 
   .readonly {
     padding:10px 18px; background:var(--solid); color:var(--muted);
     font-size:var(--fs-meta); text-align:center; border-top:1px solid var(--line);
   }
 
-  .empty { text-align:center; color:var(--muted); padding:92px 32px 0; }
-  .empty .big { font-size:var(--fs-heading); color:var(--ink); margin-bottom:8px; }
-  .empty .sm { font-size:var(--fs-ui); color:var(--faint); line-height:1.85; }
-  .empty .quick { display:flex; gap:8px; justify-content:center; margin-top:20px; flex-wrap:wrap; }
+  .empty { text-align:center; color:var(--muted); padding:64px 32px 0; }
+  .empty .ridge { width:190px; height:50px; margin:0 auto 18px; display:block; }
+  .empty .big { font-family:var(--serif); font-size:var(--fs-title); color:var(--ink); letter-spacing:.1em; margin-bottom:10px; }
+  .empty .sm { font-size:var(--fs-ui); color:var(--faint); line-height:1.9; }
+  .empty .quick { display:flex; gap:9px; justify-content:center; margin-top:20px; flex-wrap:wrap; }
   .empty .quick button {
-    background:var(--panel); border:1px dashed var(--line-strong); color:var(--muted);
-    border-radius:8px; padding:7px 12px; font-size:var(--fs-label); cursor:pointer;
+    background:transparent; border:1px dashed var(--line-strong); color:var(--muted);
+    border-radius:2px; padding:7px 13px; font-size:var(--fs-label); cursor:pointer;
+    font-family:var(--serif);
   }
   .empty .quick button:hover { border-color:var(--accent); color:var(--accent); border-style:solid; }
 
   /* ---------------- 输入区 ---------------- */
-  .br-comp { flex:none; background:var(--panel); border-top:1px solid var(--line); padding:12px 18px 14px; position:relative; }
+  .br-comp { flex:none; background:var(--panel); border-top:1px solid var(--line); padding:12px 22px 14px; position:relative; }
   .comp-hint { font-size:var(--fs-label); color:var(--faint); margin-bottom:7px; line-height:1.6; }
   .comp-row { display:flex; align-items:flex-end; gap:10px; }
   .comp-box {
-    flex:1; background:var(--paper); border:1px solid var(--line-strong); border-radius:11px;
-    padding:10px 12px; min-height:44px; position:relative;
+    flex:1; background:var(--paper); border:1px solid var(--line-strong); border-radius:4px;
+    padding:10px 13px; min-height:44px; position:relative;
   }
-  .comp-box:focus-within { border-color:var(--accent); background:var(--panel); }
+  .comp-box:focus-within { border-color:var(--accent-line); background:var(--panel); }
   .comp-box textarea {
     width:100%; border:none; background:transparent; color:var(--ink); resize:none;
-    font-size:var(--fs-chat); line-height:1.6; outline:none; max-height:150px;
+    font-family:var(--serif); font-size:var(--fs-chat); line-height:1.7; outline:none; max-height:150px;
   }
-  .comp-box textarea::placeholder { color:var(--faint); }
+  .comp-box textarea::placeholder { color:var(--faint); font-family:var(--sans); }
   .comp-foot { display:flex; align-items:center; gap:8px; margin-top:6px; }
   .comp-foot .spacer { flex:1; }
-  .iconbtn { border:none; background:transparent; color:var(--faint); cursor:pointer; border-radius:5px; padding:2px 6px; font-size:var(--fs-meta); }
-  .iconbtn:hover { background:var(--paper); color:var(--ink); }
+  .iconbtn { border:none; background:transparent; color:var(--faint); cursor:pointer; border-radius:3px; padding:2px 6px; font-size:var(--fs-meta); }
+  .iconbtn:hover { background:var(--paper); color:var(--accent); }
   .count { font-size:var(--fs-label); color:var(--faint); font-variant-numeric:tabular-nums; }
   .count.near { color:var(--warn-ink); }
   .br-comp.busy .comp-box { opacity:.58; }
   .br-comp.busy textarea { cursor:not-allowed; }
 
   .at-pop {
-    position:absolute; left:18px; bottom:86px; width:276px; background:var(--panel);
-    border:1px solid var(--line-strong); border-radius:10px; padding:5px;
+    position:absolute; left:22px; bottom:86px; width:276px; background:var(--panel);
+    border:1px solid var(--line-strong); border-radius:4px; padding:5px;
     box-shadow:0 12px 30px var(--scrim); display:none; z-index:5;
   }
   .at-pop.show { display:block; }
   .at-pop .hd { font-size:var(--fs-label); color:var(--faint); padding:5px 8px 6px; }
-  .at-item { display:flex; align-items:center; gap:9px; padding:6px 8px; border-radius:7px; cursor:pointer; }
+  .at-item { display:flex; align-items:center; gap:9px; padding:6px 8px; border-radius:3px; cursor:pointer; }
   .at-item:hover, .at-item.active { background:var(--accent-soft); }
-  .at-item .av { width:22px; height:22px; border-radius:6px; }
+  .at-item .av { width:22px; height:22px; border-radius:2px; }
   .at-item .av svg { width:11px; height:11px; }
   .at-item .nm { font-size:var(--fs-ui); }
   .at-item .tg { font-size:var(--fs-label); color:var(--faint); margin-left:auto; }
@@ -345,7 +392,7 @@ PAGE = r"""
   .toast {
     position:fixed; left:50%; bottom:88px; transform:translateX(-50%);
     background:var(--danger-soft); color:var(--danger); border:1px solid color-mix(in srgb,var(--danger) 30%,transparent);
-    border-radius:9px; padding:9px 15px; font-size:var(--fs-meta); display:none; z-index:20;
+    border-radius:3px; padding:9px 15px; font-size:var(--fs-meta); display:none; z-index:20;
     max-width:70%; line-height:1.5;
   }
   .toast.show { display:block; }
@@ -359,10 +406,10 @@ PAGE = r"""
   }
   .dlg {
     width:min(430px, 100%); background:var(--panel); color:var(--ink);
-    border:1px solid var(--line-strong); border-radius:13px; padding:20px 20px 16px;
+    border:1px solid var(--line-strong); border-radius:4px; padding:20px 20px 16px;
     box-shadow:0 18px 50px var(--scrim);
   }
-  .dlg-t { font-size:var(--fs-title); font-weight:600; }
+  .dlg-t { font-family:var(--serif); font-size:var(--fs-title); font-weight:600; letter-spacing:.04em; }
   .dlg-b { margin:12px 0 18px; font-size:var(--fs-ui); color:var(--muted); line-height:1.75; }
   .dlg-b ul { margin:8px 0 0; padding-left:18px; }
   .dlg-b li { margin:3px 0; }
@@ -375,31 +422,37 @@ PAGE = r"""
 <body>
 <div class="br">
   <aside class="br-side">
-    <div class="side-top">
-      <span class="ttl">我的群</span>
-      <button class="newbtn" id="btn-new">＋ 新建</button>
+    <div class="brand">
+      <div class="nm">半山书院</div>
+      <div class="sub">众声 · 成稿</div>
+      <button class="newbtn" id="btn-new">＋ 立题</button>
+      <svg class="ridge" viewBox="0 0 240 20" preserveAspectRatio="none" aria-hidden="true">
+        <path d="M0 18 L34 11 L52 15 L86 3 L112 13 L140 7 L168 16 L196 10 L240 17"
+              fill="none" stroke="var(--ridge)" stroke-width="1.2" stroke-linejoin="round"/>
+      </svg>
     </div>
     <div class="mk hidden" id="mk">
-      <label>话题（群名就是它）</label>
+      <label>今日议题（议题名就是它）</label>
       <input id="mk-topic" type="text" placeholder="例如：烧仓这段还能怎么写" maxlength="60">
-      <div class="tip">左边勾几位 bot，成员 2~6 位。没有稿件路径、章节范围、轮次表单，也没有开始按钮。<br>
-        <b>开脑洞请走「专家」→「创意脑洞专家」</b>（一对一更发散）；Bot 群适合碰撞、审稿、调度。</div>
+      <div class="tip">下面勾 2~6 位讲席。没有稿件路径、章节范围、轮次表单，也没有开始按钮。<br>
+        <b>开脑洞请走「专家」→「创意脑洞专家」</b>（一对一更发散）；这里适合碰撞、审稿、调度。</div>
       <div class="row">
-        <button class="btn" id="mk-go">建群</button>
+        <button class="btn" id="mk-go">立题</button>
         <button class="btn ghost" id="mk-cancel">取消</button>
       </div>
     </div>
     <div class="br-scroll">
+      <div class="side-top"><span class="ttl">议 题</span><span class="cnt" id="grp-cnt"></span></div>
       <div id="groups"></div>
       <div class="side-sep"></div>
-      <div class="side-top"><span class="ttl" id="roster-ttl">常驻 BOT</span><span class="cnt" id="roster-cnt"></span></div>
+      <div class="side-top"><span class="ttl" id="roster-ttl">讲 席</span><span class="cnt" id="roster-cnt"></span></div>
       <div id="roster"></div>
     </div>
   </aside>
 
   <section class="br-main">
     <header class="br-head">
-      <span class="ht" id="head-topic">Bot 群</span>
+      <span class="ht" id="head-topic">半山书院</span>
       <span class="avs" id="head-avs"></span>
       <span class="spacer"></span>
       <span class="pill hidden" id="head-guard"></span>
@@ -412,9 +465,9 @@ PAGE = r"""
       <div class="comp-hint" id="comp-hint"></div>
       <div class="comp-row">
         <div class="comp-box">
-          <textarea id="say" rows="1" placeholder="在群里说句话…（Enter 发送 · Shift+Enter 换行 · @ 唤人）"></textarea>
+          <textarea id="say" rows="1" placeholder="执笔立论…（Enter 发送 · Shift+Enter 换行 · @ 点名请发言）"></textarea>
           <div class="comp-foot">
-            <button class="iconbtn" id="btn-at">@ 唤人</button>
+            <button class="iconbtn" id="btn-at">@ 点名</button>
             <span class="spacer"></span>
             <span class="count" id="count"></span>
           </div>
@@ -422,7 +475,7 @@ PAGE = r"""
         <button class="btn ghost hidden" id="btn-continue" title="让几位 bot 接着刚才的话再聊一轮">再聊一轮</button>
         <button class="btn" id="send">发送</button>
       </div>
-      <div class="at-pop" id="atpop"><div class="hd">唤醒谁</div><div id="atlist"></div></div>
+      <div class="at-pop" id="atpop"><div class="hd">点名请发言</div><div id="atlist"></div></div>
     </div>
   </section>
 </div>
@@ -465,6 +518,10 @@ const ICONS = {
   clapperboard: '<path d="M20.2 6 3 11l-.9-2.4c-.3-1.1.3-2.2 1.3-2.5l13.5-4c1.1-.3 2.2.3 2.5 1.3Z"/><path d="m6.2 5.3 3.1 3.9"/><path d="m12.4 3.4 3.1 4"/><path d="M3 11h18v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/>',
   tags: '<path d="m15 5 6.3 6.3a2.4 2.4 0 0 1 0 3.4L17 19"/><path d="M9.586 5.586A2 2 0 0 0 8.172 5H3a1 1 0 0 0-1 1v5.172a2 2 0 0 0 .586 1.414L8.29 18.29a2.426 2.426 0 0 0 3.42 0l3.58-3.58a2.426 2.426 0 0 0 0-3.42z"/><circle cx="6.5" cy="9.5" r=".5" fill="currentColor"/>'
 };
+/* 山脊线：整个界面只出现两次（门牌下、空态里）。颜色走派生变量，切皮肤跟着走。 */
+const RIDGE = '<svg class="ridge" viewBox="0 0 240 50" preserveAspectRatio="none" aria-hidden="true">' +
+  '<path d="M0 48 L26 33 L44 41 L74 14 L98 30 L124 6 L152 28 L176 18 L204 36 L240 26" ' +
+  'fill="none" stroke="var(--ridge)" stroke-width="1.1" stroke-linejoin="round"/></svg>';
 /* 头像色相：纯展示层，按 bot id 稳定取，不是人设属性（registry 里没有 color 字段）。 */
 const HUES = [28, 158, 38, 210, 336, 8, 244, 172];
 function tint(id){
@@ -567,18 +624,33 @@ function fmt(text){
   const re = atRe();
   return re ? h.replace(re, '<span class="at">@$1</span>') : h;
 }
+/* 立场标记（2026-11-11 半山书院）：群提示词要求 bot 首行单独写「〔立论〕」之一，
+   前端解析成标签并从正文剥掉。**标记词只活在展示层** —— ChatStore 里仍是原始纯文本，
+   没有新增字段，历史数据与旧页面都不受影响。模型不守规矩就没有标签，绝不硬编一个。 */
+const STANCES = { '立论':'argue', '补台':'build', '反调':'dissent', '勘误':'proof' };
+function splitStance(text){
+  const s = String(text == null ? '' : text);
+  const m = /^[ \t]*〔\s*(立论|补台|反调|勘误)\s*〕[ \t]*\n?/.exec(s);
+  return m ? { key:m[1], cls:STANCES[m[1]], rest:s.slice(m[0].length) } : { key:'', cls:'', rest:s };
+}
+function stanceTagHtml(cls, key){
+  return key ? '<span class="stance ' + cls + '">' + key + '</span>' : '';
+}
 function msgHtml(m, prev){
   const mine = m.author_role === 'user';
   const cont = prev && prev.author === m.author && prev.author_role === m.author_role;
-  const long = (m.text || '').length > LONG_TEXT;
+  const sp = mine ? { key:'', cls:'', rest:m.text || '' } : splitStance(m.text);
+  const long = sp.rest.length > LONG_TEXT;
+  const c = mine ? 'var(--accent)' : tint(m.author);
   const meta = mine ? '' :
     '<div class="meta"><span class="who">' + esc(authorName(m)) + '</span>' +
+    stanceTagHtml(sp.cls, sp.key) +
     '<span class="role">' + esc((botById(m.author) || {}).tagline || '') + '</span>' +
     '<span class="ts">' + clockOf(m.ts) + '</span></div>';
-  return '<div class="msg' + (mine ? ' mine' : '') + (cont ? ' cont' : '') + '">' +
-    avatarHtml(m.author, m.author_role) +
+  return '<div class="msg' + (mine ? ' mine' : '') + (cont ? ' cont' : '') + '" style="--c:' + c + '">' +
+    '<div class="rail"></div>' +
     '<div class="col">' + (cont ? '' : meta) +
-    '<div class="bubble' + (long ? ' clip' : '') + '">' + fmt(m.text) + '</div>' +
+    '<div class="bubble' + (long ? ' clip' : '') + '">' + fmt(sp.rest) + '</div>' +
     (long ? '<button class="expand">展开全文 ▾</button>' : '') +
     '</div></div>';
 }
@@ -587,8 +659,8 @@ function sepHtml(kind, text){ return '<div class="sep ' + kind + '"><span>' + es
 function renderMessages(){
   const st = $('#stream');
   if (!msgs.length){
-    st.innerHTML = '<div class="empty"><div class="big">群建好了，还没人说话</div>' +
-      '<div class="sm">直接说人话就行。不 @ 则全员回应，@ 谁谁答。<br>想让他先读书稿，就说「先读《夜不收》第三章」，他自己会去翻。<br><b>开脑洞请走「专家」→「创意脑洞专家」</b>（一对一更发散）；这里适合碰撞、审稿、调度。</div>' +
+    st.innerHTML = '<div class="empty">' + RIDGE + '<div class="big">议题立好了，还没人开口</div>' +
+      '<div class="sm">直接说人话就行。不点名则全员回应，点名谁答。<br>想让他先读书稿，就说「先读《夜不收》第三章」，他自己会去翻。<br><b>开脑洞请走「专家」→「创意脑洞专家」</b>（一对一更发散）；这里适合碰撞、审稿、调度。</div>' +
       '<div class="quick">' +
       ['先读《夜不收》第三章，说说节奏问题', '烧仓之后怎么撤，别再写一路顺风', '这卷还有哪些史实硬伤']
         .map(t => '<button data-fill="' + esc(t) + '">' + esc(t) + '</button>').join('') +
@@ -628,6 +700,8 @@ function toBottom(){ const st = $('#stream'); st.scrollTop = st.scrollHeight; }
 
 /* 左栏 */
 function renderGroups(){
+  const cnt = $('#grp-cnt');
+  if (cnt) cnt.textContent = rooms.length ? rooms.length + ' 处 · 不发言不花钱' : '';
   $('#groups').innerHTML = rooms.length ? rooms.map(r => {
     const n = r.bot_ids.length;
     const stack = r.bot_ids.slice(0, 4).map(id => {
@@ -639,13 +713,13 @@ function renderGroups(){
       '<div class="grp-l1"><span class="grp-name">' + esc(r.topic) + '</span>' +
       '<span class="grp-time">' + dayLabel(r.last_ts || r.created_at * 1000) + '</span></div>' +
       '<div class="grp-l2"><span class="stack">' + stack + '</span>' +
-      '<span class="grp-last">' + esc(r.last_text || '还没人说话') + '</span></div></div>';
-  }).join('') : '<div class="note" style="padding:10px 16px;text-align:left">还没有群</div>';
+      '<span class="grp-last">' + esc(r.last_text || '还没人开口') + '</span></div></div>';
+  }).join('') : '<div class="note" style="padding:10px 16px;text-align:left">还没有议题</div>';
   document.querySelectorAll('.grp-item').forEach(el => el.onclick = () => openRoom(el.dataset.id));
 }
 function renderRoster(){
   const inGroup = new Set((rooms.find(r => r.room_id === current) || {bot_ids:[]}).bot_ids);
-  $('#roster-ttl').textContent = creating ? '勾选成员' : '常驻 BOT';
+  $('#roster-ttl').textContent = creating ? '请 同 席' : '讲 席';
   $('#roster-cnt').textContent = creating ? picked.size + ' / 6' : bots.length + ' 位 · 不说话不花钱';
   $('#roster').innerHTML = bots.map(b => {
     const isPicked = picked.has(b.id);
@@ -655,7 +729,7 @@ function renderRoster(){
       '<div class="av' + (b.icon && ICONS[b.icon] ? '' : ' letter') + '" style="--c:' + tint(b.id) + '">' + inner + '</div>' +
       '<div class="txt"><div class="nm">' + esc(b.name) + '</div><div class="tg">' + esc(b.tagline || b.role) + '</div></div>' +
       (creating ? '<div class="tick">' + (isPicked ? '✓' : '') + '</div>'
-                : (inGroup.has(b.id) ? '<span class="flag">在本群</span>' : '')) +
+                : (inGroup.has(b.id) ? '<span class="flag">在席</span>' : '')) +
       '</div>';
   }).join('');
   document.querySelectorAll('.bot-item').forEach(el => el.onclick = () => {
@@ -674,12 +748,12 @@ function guardText(){
   if (!room) return '';
   // 只报能确定的事实：消息条数与成员数。「本轮剩几条」需要 round 游标，而 ChatStore
   // 的消息里没有 round 字段（零改动红线），所以不拿总数冒充轮次余量。
-  return '共 ' + msgs.length + ' 条 · ' + room.bot_ids.length + ' 位成员';
+  return '共 ' + msgs.length + ' 条 · 同席 ' + room.bot_ids.length + ' 位';
 }
 function syncChrome(){
   const room = rooms.find(r => r.room_id === current);
   const has = !!room;
-  $('#head-topic').textContent = creating ? '建新群' : (has ? room.topic : 'Bot 群');
+  $('#head-topic').textContent = creating ? '立 题' : (has ? room.topic : '半山书院');
   $('#head-avs').innerHTML = has && !creating ? room.bot_ids.map(id => avatarHtml(id, 'bot')).join('') : '';
   const guard = $('#head-guard');
   guard.classList.toggle('hidden', !has || creating);
@@ -699,7 +773,7 @@ function syncChrome(){
         ? '这次讨论到上限了 —— 再发一句可以开新一轮，群和材料都还在。'
         : (pending && pending.can_continue
           ? '这一轮说完了。点「再聊一轮」让他们接着刚才的话聊，或直接发新的一句。'
-          : '不 @ 则全员回应；@ 谁谁答。说「先读《夜不收》」，他会自己去翻群共享材料。'));
+          : '不点名则全员回应；点名谁答。说「先读《夜不收》」，他会自己去翻共享材料。'));
     $('#count').textContent = busy ? '他在说…' : 'Enter 发送';
     $('#count').className = 'count';
   }
@@ -794,7 +868,7 @@ $('#head-disband').onclick = async () => {
     await api('/api/rooms/' + current, {method:'DELETE'});
     current = null; msgs = []; pending = null;
     await loadRooms();
-    $('#head-topic').textContent = 'Bot 群';
+    $('#head-topic').textContent = '半山书院';
     $('#head-avs').innerHTML = '';
     $('#head-guard').classList.add('hidden');
     $('#head-disband').classList.add('hidden');
@@ -810,15 +884,27 @@ $('#head-disband').onclick = async () => {
 function startBubble(ev){
   const row = document.createElement('div');
   row.className = 'msg';
-  row.innerHTML = avatarHtml(ev.bot_id, 'bot') +
+  row.style.setProperty('--c', tint(ev.bot_id));
+  row.innerHTML = '<div class="rail"></div>' +
     '<div class="col"><div class="meta"><span class="who">' + esc(ev.name) + '</span>' +
+    '<span class="stance-slot"></span>' +
     '<span class="role">' + esc((botById(ev.bot_id) || {}).tagline || '') + '</span></div>' +
     '<div class="bubble"><span class="dots"><i></i><i></i><i></i></span> <span class="doing">正在思考…</span></div></div>';
   $('#stream').appendChild(row);
   streams[ev.turn_id] = {
-    row, bubble: row.querySelector('.bubble'), doing: row.querySelector('.doing'), started: false
+    row, bubble: row.querySelector('.bubble'), doing: row.querySelector('.doing'),
+    stance: row.querySelector('.stance-slot'), acc: '', started: false
   };
   toBottom();
+}
+/* 流式期立场标记只有几个字符宽：行首未闭合的「〔…」先不画，闭合了才挂标签。
+   不这么做的话气泡会闪出「〔立」这种半截字。done 时不再抑制 —— 模型真写了个
+   没闭合的「〔」，那是正文，原样给他。 */
+function paintStream(st, done){
+  let sp = splitStance(st.acc);
+  if (!sp.key && !done && /^[ \t]*〔[^〕]*$/.test(st.acc)) sp = { key:'', cls:'', rest:'' };
+  st.bubble.innerHTML = fmt(sp.rest) + (done ? '' : '<span class="caret"></span>');
+  if (sp.key && st.stance) st.stance.innerHTML = stanceTagHtml(sp.cls, sp.key);
 }
 function handleStream(ev){
   const st = ev.turn_id ? streams[ev.turn_id] : null;
@@ -833,12 +919,13 @@ function handleStream(ev){
       break;
     case 'delta':
       if (!st) break;
-      if (!st.started){ st.started = true; st.bubble.innerHTML = '<span class="caret"></span>'; }
-      st.bubble.querySelector('.caret').insertAdjacentHTML('beforebegin', esc(ev.text));
+      st.started = true;
+      st.acc += ev.text;
+      paintStream(st, false);
       toBottom();
       break;
     case 'bot_end':
-      if (st){ st.bubble.textContent = ev.text; delete streams[ev.turn_id]; }
+      if (st){ st.acc = ev.text; paintStream(st, true); delete streams[ev.turn_id]; }
       break;
     case 'bot_pass':
       if (st){ st.row.remove(); delete streams[ev.turn_id]; }
@@ -993,8 +1080,9 @@ document.addEventListener('click', e => {
     const want = Q.get('room');
     const target = (want && rooms.find(r => r.room_id === want)) || rooms[rooms.length - 1];
     if (target) await openRoom(target.room_id);
-    else { syncChrome(); $('#stream').innerHTML = '<div class="empty"><div class="big">还没有群</div>' +
-      '<div class="sm">点左上「＋ 新建」，勾几位 bot、起个话题就能开聊。<br><b>开脑洞请走「专家」→「创意脑洞专家」</b>（一对一更发散）；Bot 群适合碰撞、审稿、调度。</div></div>'; }
+    else { syncChrome(); $('#stream').innerHTML = '<div class="empty">' + RIDGE +
+      '<div class="big">书院初开，虚席以待</div>' +
+      '<div class="sm">点左上「＋ 立题」，请几位讲席、起个话题就能开议。<br><b>开脑洞请走「专家」→「创意脑洞专家」</b>（一对一更发散）；这里适合碰撞、审稿、调度。</div></div>'; }
   } catch (e) { toast('群聊服务连不上：' + e.message); }
 })();
 </script>
@@ -1020,6 +1108,7 @@ NOTEBOOKS_PAGE = r"""
     --solid:#e9ebf0; --on-solid:#1f2227; --scrim:rgba(29,27,24,.32);
     --sans:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC",Inter,system-ui,sans-serif;
     --mono:"SF Mono","JetBrains Mono",Menlo,Consolas,monospace;
+    --serif:"Songti SC","STSong","Noto Serif CJK SC","Source Han Serif SC","Iowan Old Style",Georgia,serif;
     --fs-label:11px; --fs-meta:12px; --fs-ui:13px; --fs-body:14px;
     --fs-heading:15px; --fs-title:16px; --fs-chat:15px;
   }
@@ -1048,11 +1137,11 @@ NOTEBOOKS_PAGE = r"""
   .nb-item { padding:9px 10px; border-radius:8px; cursor:pointer; border:1px solid transparent; }
   .nb-item:hover { background:var(--paper); }
   .nb-item.on { background:var(--accent-soft); border-color:color-mix(in srgb,var(--accent) 30%,transparent); }
-  .nb-item .nm { font-size:var(--fs-ui); font-weight:600; }
+  .nb-item .nm { font-family:var(--serif); font-size:var(--fs-ui); font-weight:600; letter-spacing:.03em; }
   .nb-item .meta { font-size:var(--fs-label); color:var(--faint); margin-top:3px; }
   .nb-main { flex:1; display:flex; flex-flow:column; min-width:0; }
   .nb-head { height:52px; flex:none; display:flex; align-items:center; gap:10px; padding:0 18px; border-bottom:1px solid var(--line); background:var(--panel); }
-  .nb-head .ht { font-size:var(--fs-title); font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .nb-head .ht { font-family:var(--serif); font-size:var(--fs-title); font-weight:600; letter-spacing:.02em; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
   .spacer { flex:1; }
   .btn { border:1px solid var(--line-strong); background:var(--panel); color:var(--ink); border-radius:7px; padding:6px 12px; font-size:var(--fs-ui); cursor:pointer; }
   .btn:hover { border-color:var(--accent); color:var(--accent); }
@@ -1076,7 +1165,7 @@ NOTEBOOKS_PAGE = r"""
 <body>
 <div class="nb">
   <aside class="nb-side">
-    <div class="side-top"><span class="ttl">专家笔记本</span><a class="back" id="back">← Bot 群</a></div>
+    <div class="side-top"><span class="ttl">专家笔记本</span><a class="back" id="back">← 半山书院</a></div>
     <div class="hint">专家自己写的私有笔记（书 × 专家）。这里只能看和删；笔记不进群材料，也不喂小桔。</div>
     <div class="nb-list" id="list"></div>
   </aside>

@@ -1966,7 +1966,7 @@ export function App() {
         // Bot 群：真 Agent 常驻、群随话题建撤。挂在主 sidecar 的 /bots/ 下，
         // 与创作圆桌并存（先在 GUI 里验一遍，确认没问题再谈圆桌退役）。
         <div className="botroom-view">
-          <ThemedSidecarFrame src={`${httpBase()}/bots/`} title="Bot 群" testId="botroom-frame" />
+          <ThemedSidecarFrame src={`${httpBase()}/bots/`} title="半山书院" testId="botroom-frame" />
         </div>
       ) : surface === "creation" ? (
         <CreationChatView onBack={() => setSurface("session")} />
