@@ -260,6 +260,23 @@ def _default_base_dir() -> Path:
     return deskmate_base_dir()
 
 
+class WriteResult(str):
+    """``append_to_section`` 的返回值。
+
+    仍然是 ``str``（日志/测试/MCP 文案一字不变），但带机器可读状态，调用方
+    不必再靠 ``"被拒" in result`` / ``"跳过" in result`` 判中文文案。
+    """
+
+    ok: bool
+    skipped: bool
+
+    def __new__(cls, message: str, *, ok: bool = True, skipped: bool = False):
+        obj = super().__new__(cls, message)
+        obj.ok = ok
+        obj.skipped = skipped
+        return obj
+
+
 class DeskMateMemoryManager:
     """记忆管理器，参考 Hermes MemoryManager 设计。"""
 
@@ -2000,7 +2017,7 @@ class DeskMateMemoryManager:
         """
         entry = entry.strip()
         if not entry:
-            return "条目为空，未写入"
+            return WriteResult("条目为空，未写入", skipped=True)
 
         if section == "user":
             current = load_user(self.base_dir)
@@ -2013,7 +2030,7 @@ class DeskMateMemoryManager:
                     # Mem0 四操作：在线 LLM 决定 合并更新 / 删旧立新 / 跳过
                     rel = self._classify_user_relation(entry_s, [dup])
                     if rel == "NOOP":
-                        return "USER.md 已覆盖该信息，跳过"
+                        return WriteResult("USER.md 已覆盖该信息，跳过", skipped=True)
                     if rel == "CONTRADICTORY":
                         if self._replace_user_entry(dup, entry_s):
                             return "USER.md 已用新信息替换旧条目"
@@ -2023,7 +2040,7 @@ class DeskMateMemoryManager:
                         return "USER.md 已合并相似条目"
                 else:
                     # 离线近重复且无 LLM → 保守跳过（防 3+ 重复堆积）
-                    return "USER.md 已存在近重复条目，跳过"
+                    return WriteResult("USER.md 已存在近重复条目，跳过", skipped=True)
 
             # 注：明显无近重复的新条目直接追加，不为每次写入都调 LLM（避免成本/延迟）；
             # LLM 四操作精判仅在「离线已怀疑重复」时触发（见上）。
@@ -2033,7 +2050,10 @@ class DeskMateMemoryManager:
                 current = current.rstrip() + "\n"
             updated = (current.rstrip() + "\n\n" + entry_s) if current.strip() else entry_s
             if not save_user(self.base_dir, updated):
-                return "USER.md 写入被拒：内容疑似异常（重复度/长度突变/分节结构丢失），已留存现场快照，原文件未改动。"
+                return WriteResult(
+                    "USER.md 写入被拒：内容疑似异常（重复度/长度突变/分节结构丢失），已留存现场快照，原文件未改动。",
+                    ok=False,
+                )
             self._compress_if_needed("user")
             return "USER.md 已追加"
 
@@ -2048,7 +2068,10 @@ class DeskMateMemoryManager:
             if memory and self._memory_llm_ok():
                 cross_dup = self._check_cross_section_duplicate(memory, entry)
                 if cross_dup:
-                    return f"MEMORY.md 已在 § {cross_dup} 中存在相似条目，跳过"
+                    return WriteResult(
+                        f"MEMORY.md 已在 § {cross_dup} 中存在相似条目，跳过",
+                        skipped=True,
+                    )
 
             # 确保有日期前缀（用于衰减判断）
             entry = self._ensure_date_prefix(entry)
@@ -2065,7 +2088,10 @@ class DeskMateMemoryManager:
                 existing_no_date = re.sub(r"^\d{4}-\d{1,2}-\d{1,2}[:：]\s*", "", found["body"])
                 new_no_date = re.sub(r"^\d{4}-\d{1,2}-\d{1,2}[:：]\s*", "", entry)
                 if new_no_date in existing_no_date:
-                    return f"MEMORY.md § {identifier} 已存在相同条目，跳过"
+                    return WriteResult(
+                        f"MEMORY.md § {identifier} 已存在相同条目，跳过",
+                        skipped=True,
+                    )
                 # 同主题合并：仅当 LLM 可用（端点未熔断）才做；否则纯追加，
                 # 避免端点故障时卡顿（SDK 重试放大成 MCP 超时）或误判跳过。
                 if self._memory_llm_ok():
@@ -2869,7 +2895,7 @@ class DeskMateMemoryManager:
             try:
                 if category == "preference":
                     result = self.append_to_section("user", fact_text)
-                    if "被拒" in result:
+                    if not getattr(result, "ok", True):
                         continue
                     written += 1
                 elif category in ("work", "correction") and self._is_book_content(fact_text):
@@ -2988,7 +3014,7 @@ class DeskMateMemoryManager:
                     result = self.append_to_section("user", fact_text)
                 else:
                     result = self.append_to_section("memory", f"#{category} {fact_text}")
-                if "跳过" in result or "被拒" in result:
+                if getattr(result, "skipped", False) or not getattr(result, "ok", True):
                     skipped += 1
                 else:
                     written += 1

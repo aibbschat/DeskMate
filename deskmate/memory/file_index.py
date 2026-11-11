@@ -220,8 +220,13 @@ def _chunk_memory(text: str) -> list[tuple[str, str]]:
             if cur:
                 chunks.extend((section, c) for c in _split_long(cur, MAX_CHUNK_CHARS))
             cur = s
-        elif cur and s:
-            cur += "\n" + s
+        elif s:
+            # 非 bullet 行：有当前条目则续行，没有则自成一个条目。
+            # ⚠ 不能只认 "- "：MEMORY.md 里 § 标题下的首行若是普通句子
+            #   （历史文件 / 人工手写 / 压缩后格式漂移），旧逻辑直接丢弃，
+            #   该节永不进索引 → 检索永远搜不到。实测「§ 喜好\n用户喜欢Python」
+            #   sync 报 changed=1 但 chunks=0。
+            cur = (cur + "\n" + s) if cur else s
     if cur:
         chunks.extend((section, c) for c in _split_long(cur, MAX_CHUNK_CHARS))
     return chunks
