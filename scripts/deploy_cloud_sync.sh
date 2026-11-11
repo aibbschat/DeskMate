@@ -638,6 +638,15 @@ MEMORY_LAYER_MODULES=(
   "deskmate/growth/state.py"
   "deskmate/memory/local_extractor.py"
   "deskmate/memory/user_profile.py"
+  # ⚠ 2026-11-11 复检修补录（四条致命缺陷修复批次）：同样「改了但从未在册」。
+  #   · dream.py：本轮改走 save_user_ex 闸（历史靠早期整包对齐，云端是旧码）；
+  #   · _fs_lock.py（045acc30 新增）：journal_log/after_action 顶层 import，
+  #     云端缺它 ⇒ ImportError 被 fail-open 吞 ⇒ journal 静默失效（红线坑）；
+  #   · _atomic.py：被 6 个生产模块顶层 import（diary/state/learned_store 等），
+  #     历史一直靠早期整包侥幸对齐，从未有清单兜底。
+  "deskmate/memory/dream.py"
+  "deskmate/memory/_fs_lock.py"
+  "deskmate/growth/_atomic.py"
 )
 
 FORCE=0
