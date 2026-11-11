@@ -617,7 +617,7 @@ EXPERT_MODULES=(
   "deskmate/consult.py"
 )
 
-# ⚠ 2026-11-11 记忆层第二批起（12cb484b 之后的 8 个 commit）+ bot 群「半山书院」改版。
+# ⚠ 2026-11-11 记忆层第二批起（12cb484b 之后的 10 个 commit）+ bot 群「半山书院」改版。
 # 这一批既有**新增模块**也有**历史漏项本轮被改动**的共有文件，两类都必须进清单：
 #   · 新增模块云端没有 ⇒ 集合对账报「仅本地有」，被生产代码 import 时直接 ImportError，
 #     而 manager.py / catalog.py 多为函数内 try/except ⇒ fail-open 静默失效；
