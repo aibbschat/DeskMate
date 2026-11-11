@@ -33,6 +33,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from deskmate.memory.file_index import FileIndex, _norm
+from deskmate.paths import deskmate_base_dir
 
 logger = logging.getLogger(__name__)
 
@@ -114,20 +115,53 @@ def _idx(base: Optional[Path | str] = None) -> FileIndex:
     return FileIndex(base)
 
 
+def _has_indexable_sources(base: Path) -> bool:
+    for name in ("USER.md", "MEMORY.md", "diary_memory.md"):
+        if (base / name).is_file():
+            return True
+    for d in ("diary", "vault"):
+        if (base / d).is_dir():
+            return True
+    return False
+
+
 def index_healthy(base: Optional[Path | str] = None) -> bool:
+    """索引是否可用于「新检索路径」（只读探测，绝不建表/清表）。
+
+    2026-11-11 复检修：原实现 ``_idx(base).stats()`` 会构造 FileIndex，进而执行
+    ``_ensure_schema``——CHUNK_VERSION 一变就 DELETE 全部索引表，健康检查本身
+    成了破坏者；随后 chunks=0 判不健康，唯一重建入口（search_memory_files 里的
+    sync）又被这个判定门控，永久锁死、永不自举。
+
+    这里改为直接读库计数；同时去掉「向量覆盖率 ≥0.9」的一票否决——纯关键词
+    FTS5 通道本身就是可用的降级形态，embedding 挂掉不该让整条检索静默关闭。
+    """
+    b = Path(base) if base else deskmate_base_dir()
+    db = b / "deskmate.db"
+    if not db.is_file():
+        return _has_indexable_sources(b)  # 有源文件：让 sync 首次自举
     try:
-        st = _idx(base).stats()
-        return st["chunks"] > 0 and st["coverage"] >= 0.9
-    except Exception:
-        return False
+        con = sqlite3.connect(str(db))
+        try:
+            chunks = con.execute("SELECT COUNT(*) FROM memory_chunks").fetchone()[0]
+        finally:
+            con.close()
+    except sqlite3.Error:
+        return _has_indexable_sources(b)  # 表还没建：交给 sync
+    if chunks <= 0:
+        return _has_indexable_sources(b)  # 版本升级后的空索引：交给 sync 重建
+    return True
 
 
 # ---------------------------------------------------------------------------
 # 锚通道
 # ---------------------------------------------------------------------------
 def _anchor_values(base: Path) -> list[str]:
+    db = base / "deskmate.db"
+    if not db.is_file():
+        return []  # 只读：不能在用户目录里凭空造库
     try:
-        con = sqlite3.connect(str(base / "deskmate.db"))
+        con = sqlite3.connect(str(db))
         rows = con.execute(
             "SELECT DISTINCT anchor_value FROM memory_anchors "
             "WHERE anchor_kind IN ('person','topic','book') "
@@ -144,8 +178,11 @@ def _anchor_neighbors(base: Path, values: list[str], cap: int = ANCHOR_NEIGHBOR_
     """一跳：同一 profile_item 上共现的其它锚值（复用 memory_anchors 的语义）。"""
     if not values:
         return []
+    db = base / "deskmate.db"
+    if not db.is_file():
+        return []
     try:
-        con = sqlite3.connect(str(base / "deskmate.db"))
+        con = sqlite3.connect(str(db))
         q = ",".join("?" * len(values))
         item_ids = [r[0] for r in con.execute(
             f"SELECT DISTINCT item_id FROM memory_anchors WHERE item_kind='profile_item' "
@@ -268,23 +305,34 @@ def search_memory_files(
     base: Optional[Path | str] = None,
     kinds: Optional[list[str]] = None,
     section_contains: Optional[str] = None,
+    read_only: bool = False,
 ) -> list[dict]:
     """三通道检索并融合。返回按分数降序的 chunk 列表。
 
     ``kinds`` / ``section_contains`` 用于局部检索（如只取 USER.md 的
     「偏好与事实」节），过滤在融合前做，避免无关层挤占预算。
+
+    ``read_only=True`` 供 ``memory_search`` 工具使用：不建库、不同步索引、
+    不懒加载模型——只读已有索引，索引不存在就返回空（宁缺不写）。
     """
     q = (query or "").strip()
     if not q:
         return []
-    idx = _idx(base)
+    if read_only:
+        try:
+            idx = FileIndex(base, read_only=True)
+        except Exception:  # noqa: BLE001 —— 没有索引就当没查到
+            return []
+    else:
+        idx = _idx(base)
     b = idx.base
 
     # 1) 增量同步（失败不阻塞，用旧索引继续）
-    try:
-        idx.sync()
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("索引同步失败（用旧索引继续）：%s", exc)
+    if not read_only:
+        try:
+            idx.sync()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("索引同步失败（用旧索引继续）：%s", exc)
 
     # 2) 三通道候选
     kw_rows = idx.search_keyword(q, limit=30)
@@ -292,7 +340,8 @@ def search_memory_files(
     try:
         from deskmate.memory import local_embed
 
-        qv = local_embed.embed([q])
+        # 只读模式不触发模型下载：模型已在本进程载入才走向量通道
+        qv = local_embed.embed([q], allow_load=not read_only)
         if qv and qv[0]:
             vec_rows = idx.vector_search(qv[0], limit=30)
     except Exception as exc:  # noqa: BLE001 —— 向量不可用则只用关键词

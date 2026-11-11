@@ -30,6 +30,7 @@ import datetime
 import hashlib
 import json
 import logging
+import os
 import re
 import sqlite3
 import threading
@@ -292,22 +293,36 @@ def chunk_file(kind: str, text: str) -> list[tuple[str, str]]:
 class FileIndex:
     """记忆文件索引。短连接 + WAL，与 ExternalStore / DiaryStore 同模式。"""
 
-    def __init__(self, base_dir: Optional[Path | str] = None) -> None:
+    def __init__(
+        self, base_dir: Optional[Path | str] = None, read_only: bool = False
+    ) -> None:
         from deskmate.paths import deskmate_base_dir
 
         self.base = Path(base_dir) if base_dir else deskmate_base_dir()
         self.db_path = self.base / "deskmate.db"
-        self.base.mkdir(parents=True, exist_ok=True)
-        self._ensure_schema()
+        self.read_only = read_only
+        if read_only:
+            # 只读实例绝不建目录/建表/改 WAL：memory_search 是「检索权」，
+            # 不能在用户目录里凭空造出一个 deskmate.db。
+            if not self.db_path.is_file():
+                raise FileNotFoundError(self.db_path)
+        else:
+            self.base.mkdir(parents=True, exist_ok=True)
+            self._ensure_schema()
         self._matrix_cache: Optional[tuple[tuple[int, str], Any, list[str]]] = None
         self._lock = threading.Lock()
 
     # -- 连接 / schema ---------------------------------------------------
     def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(str(self.db_path), isolation_level=None)
+        if self.read_only:
+            conn = sqlite3.connect(
+                f"file:{self.db_path}?mode=ro", uri=True, isolation_level=None
+            )
+        else:
+            conn = sqlite3.connect(str(self.db_path), isolation_level=None)
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA synchronous=NORMAL")
         conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA synchronous=NORMAL")
         return conn
 
     def _ensure_schema(self) -> None:
@@ -429,6 +444,18 @@ class FileIndex:
                         stats["skipped"] += 1
                         continue
                     text = path.read_text(encoding="utf-8", errors="ignore")
+                    # 2026-11-11 复检修 TOCTOU：读完再取一次 stat，和读前不一致说明
+                    # 文件在读取期间被改写（dream 旧路径就是非原子直写），这一轮
+                    # 放弃记录 state——否则会把「旧内容 + 新 mtime」写进索引，
+                    # 之后 sync 永远认为它没变，索引永久停在旧/半截内容。
+                    try:
+                        st2 = path.stat()
+                    except OSError:
+                        continue
+                    if (st.st_mtime_ns, st.st_size) != (st2.st_mtime_ns, st2.st_size):
+                        stats["skipped"] += 1
+                        continue
+                    st = st2
                     h = _sha1(text)
                     if not force and old and old["content_hash"] == h:
                         # 内容没变（touch / 重写同内容）：只更新 stat
@@ -441,7 +468,7 @@ class FileIndex:
                         continue
                     if max_files is not None and stats["changed"] >= max_files:
                         continue
-                    r = self._rebuild_one(conn, kind, rel, text)
+                    r = self._rebuild_one(conn, kind, rel, text, st)
                     stats["changed"] += 1
                     stats["chunks"] += r["chunks"]
                     stats["embedded"] += r["embedded"]
@@ -466,7 +493,8 @@ class FileIndex:
         conn.execute(f"DELETE FROM memory_chunks WHERE id IN ({q})", ids)
 
     def _rebuild_one(
-        self, conn: sqlite3.Connection, kind: str, rel: str, text: str
+        self, conn: sqlite3.Connection, kind: str, rel: str, text: str,
+        st: os.stat_result,
     ) -> dict:
         chunks = chunk_file(kind, text)
         content_hash = _sha1(text)
@@ -525,8 +553,7 @@ class FileIndex:
             "ON CONFLICT(source_path) DO UPDATE SET source_kind=excluded.source_kind, "
             "mtime_ns=excluded.mtime_ns, size=excluded.size, "
             "content_hash=excluded.content_hash, indexed_at=excluded.indexed_at",
-            (rel, kind, (self.base / rel).stat().st_mtime_ns,
-             (self.base / rel).stat().st_size, content_hash, now),
+            (rel, kind, st.st_mtime_ns, st.st_size, content_hash, now),
         )
         return {"chunks": len(chunks), "embedded": embedded}
 

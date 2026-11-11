@@ -123,6 +123,8 @@ LAYER_PREF = "偏好与事实"
 MANUAL_SOURCE_MARK = "〔人工确认〕"
 _HARD_HEAD_RE = re.compile(r"(?m)^##\s*硬规矩")
 _PREF_HEAD_RE = re.compile(r"(?m)^##\s*偏好与事实")
+#: 条目前缀。原来只认 ``- ``，``* `` / ``• `` / ``· `` 写进硬规矩就绕过了整道闸。
+_BULLET_RE = re.compile(r"^[-*•·]\s+")
 #: 改写/合并的放行阈值（与旧硬规矩某条足够像 → 视为「同一句话改了个说法」）
 _REWRITE_SIM = 0.6
 
@@ -147,8 +149,8 @@ def split_layers(text: str) -> dict[str, list[str]]:
             else:
                 layer = "其它"
             continue
-        if line.startswith("- ") and layer in out:
-            out[layer].append(line[2:].strip())
+        if _BULLET_RE.match(line) and layer in out:
+            out[layer].append(_BULLET_RE.sub("", line, count=1).strip())
     return out
 
 
@@ -158,17 +160,34 @@ def _entry_key(entry: str) -> str:
     return re.sub(r"\s+", "", s)
 
 
+_DATE_KEY_RE = re.compile(r"^\d{4}-\d{1,2}-\d{1,2}\s*[:：]?\s*")
+
+
+def _strip_date_key(key: str) -> str:
+    """比对改写时先去掉日期前缀。
+
+    2026-11-11 复检补漏：日期前缀占字符多，两条毫不相干的新旧硬规矩仅因
+    ``2026-11-0x`` 相同就能把 SequenceMatcher 抬到 0.6（实测 exactly 0.6），
+    被误判成「改写」放行。去掉日期后再比正文。
+    """
+    return _DATE_KEY_RE.sub("", key or "")
+
+
 def _is_rewrite_of_old(entry: str, old_keys: list[str]) -> bool:
     """新硬规矩条目是不是某条旧硬规矩的改写（而非凭空多出来的）。"""
     k = _entry_key(entry)
     if not k:
         return True
+    k_body = _strip_date_key(k)
     for old in old_keys:
         if not old:
             continue
         if k in old or old in k:
             return True
-        if difflib.SequenceMatcher(None, k, old).ratio() >= _REWRITE_SIM:
+        old_body = _strip_date_key(old)
+        a = k_body or k
+        b = old_body or old
+        if difflib.SequenceMatcher(None, a, b).ratio() >= _REWRITE_SIM:
             return True
     return False
 
@@ -189,6 +208,55 @@ def find_unmarked_hard_additions(old: str, new: str) -> list[str]:
     return bad
 
 
+def find_deleted_hard_rules(old: str, new: str) -> list[str]:
+    """返回旧硬规矩里在新文本中「消失」的条目（既非同条，也不是改写）。
+
+    2026-11-11 复检补漏：原闸只拦「新增无标记」，整篇写入把带
+    ``〔人工确认〕`` 的硬规矩删掉可以静默通过——防覆写只防了一个方向。
+    """
+    old_hard = split_layers(old)[LAYER_HARD]
+    new_keys = [_entry_key(e) for e in split_layers(new)[LAYER_HARD]]
+    deleted: list[str] = []
+    for entry in old_hard:
+        k = _entry_key(entry)
+        if not k:
+            continue
+        if k in new_keys:
+            continue
+        if _is_rewrite_of_old(entry, new_keys):
+            continue
+        deleted.append(entry)
+    return deleted
+
+
+def restore_deleted_hard_rules(old: str, new: str) -> tuple[str, list[str]]:
+    """把压缩产物里被删掉的旧硬规矩原样补回（不丢内容，也不让压缩死循环）。
+
+    与 ``demote_unmarked_hard_rules`` 对称：压缩是自动触发的，整篇拒绝会让文件
+    一直超限；这里选择「补回」，方向是安全的（常驻层只可能多回一条，不会少）。
+    """
+    deleted = find_deleted_hard_rules(old, new)
+    if not deleted:
+        return new, []
+    blocks = _blocks(new)
+    hard_idx = None
+    for i, (head, _) in enumerate(blocks):
+        if head and "硬规矩" in head:
+            hard_idx = i
+            break
+    if hard_idx is None:
+        return new, []
+    head, body = blocks[hard_idx]
+    at = len(body)
+    for j in range(len(body) - 1, -1, -1):
+        if body[j].strip():
+            at = j + 1
+            break
+    restored = [f"- {e}\n" for e in deleted]
+    blocks[hard_idx] = (head, body[:at] + restored + body[at:])
+    return "".join(h + "".join(b) for h, b in blocks), deleted
+
+
 def check_layer_integrity(content: str, old: str = "") -> tuple[bool, str, list[str]]:
     """条目归属闸：整篇覆写不得把机器文本升格成硬规矩。
 
@@ -207,6 +275,9 @@ def check_layer_integrity(content: str, old: str = "") -> tuple[bool, str, list[
     bad = find_unmarked_hard_additions(old, content or "")
     if bad:
         return False, f"硬规矩新增 {len(bad)} 条无人工确认标记", bad
+    deleted = find_deleted_hard_rules(old, content or "")
+    if deleted:
+        return False, f"硬规矩被删除 {len(deleted)} 条", deleted
     return True, "", []
 
 
@@ -247,7 +318,10 @@ def demote_unmarked_hard_rules(old: str, new: str) -> tuple[str, list[str]]:
     head, body = blocks[hard_idx]
     kept = [
         ln for ln in body
-        if not (ln.startswith("- ") and _entry_key(ln[2:]) in bad_keys)
+        if not (
+            _BULLET_RE.match(ln)
+            and _entry_key(_BULLET_RE.sub("", ln, count=1)) in bad_keys
+        )
     ]
     blocks[hard_idx] = (head, kept)
     moved = [f"- {b}\n" for b in bad]
@@ -365,10 +439,19 @@ def save_user_ex(
         ``(True, "")`` 已写入；``(False, 原因)`` 被护栏或闸拒绝（原文件不变）。
     """
     p = get_user_path(base_dir)
-    try:
-        old = p.read_text(encoding="utf-8") if p.is_file() else ""
-    except Exception:
-        old = ""
+    # 读旧失败必须 fail-closed：旧内容是闸的比对基线，读不到就等于「无法判断
+    # 这次覆写会不会把用户写过的硬规矩/偏好整段抹掉」。2026-11-11 复检实测：
+    # 这里原来吞异常置 old=""，直接放行任意覆写，端到端可产出「没写过」的假答案。
+    old = ""
+    if p.is_file():
+        try:
+            old = p.read_text(encoding="utf-8")
+        except Exception as e:  # noqa: BLE001
+            _record_gate_event(base_dir, "reject", {
+                "gate": "read_old", "reason": f"读取旧内容失败: {type(e).__name__}",
+            })
+            logger.error("拒绝写入 USER.md：读取旧内容失败，无法建立比对基线：%s", e)
+            return False, f"读取旧内容失败，拒绝覆写：{type(e).__name__}"
 
     if not force:
         ok, reason_ = check_user_content(content, old)

@@ -40,6 +40,7 @@ from .user_profile import (
     save_user_ex,
     reset_user,
     demote_unmarked_hard_rules,
+    restore_deleted_hard_rules,
 )
 from .llm import llm_available, chat, chat_memory, memory_llm_available
 from .vault_store import VaultStore
@@ -790,8 +791,43 @@ class DeskMateMemoryManager:
                         _add("memory_backstop",
                              format_hits(_bs, "## 兜底记忆（未主动检索时保底）"),
                              priority=60, cap=400)
-            except Exception:
-                pass  # fail-open：索引异常不影响旧路径
+            except Exception as exc:
+                # 2026-11-11 复检修：这里原来静默 pass，但上面的 prefetch 已经用
+                # skip_archival=_index_ok 跳过了 Recall/Global/vault，新路径再一
+                # 抛错整轮就全丢且零告警。现在显式回落旧 prefetch（含归档层），
+                # 再补一次 backstop；仍然 fail-open，但不再静默。
+                logger.warning(
+                    "文件层检索失败，回落到旧 prefetch（含 Recall/Global/vault）：%s",
+                    exc, exc_info=True,
+                )
+                try:
+                    _fb = self.prefetch(user_message, book=_book, skip_archival=False)
+                    _inner = (_fb or "").strip()
+                    if _inner.startswith("<memory-context>"):
+                        _inner = _inner[len("<memory-context>"):]
+                    if _inner.endswith("</memory-context>"):
+                        _inner = _inner[:-len("</memory-context>")]
+                    _inner = _inner.strip()
+                    if _inner:
+                        _inner = _scoped(_inner, "filter_memory_sections_by_book")
+                        blocks[:] = [b for b in blocks if b.name != "prefetch"]
+                        _add("prefetch", _inner, priority=35, cap=4500,
+                             keep_light=False)
+                except Exception as exc2:  # noqa: BLE001
+                    logger.warning("回落 prefetch 也失败：%s", exc2)
+                try:
+                    from deskmate.memory.file_search import (
+                        backstop_chunks as _bc,
+                        format_hits as _fh,
+                    )
+
+                    _bs = _bc(self.base_dir, limit=3, max_chars=400)
+                    if _bs:
+                        _add("memory_backstop",
+                             _fh(_bs, "## 兜底记忆（检索异常时保底）"),
+                             priority=60, cap=400)
+                except Exception:  # noqa: BLE001
+                    pass
         user = load_user(self.base_dir)
         if user and user.strip():
             user = _scoped(user, "filter_user_profile_by_book")
@@ -2211,6 +2247,14 @@ class DeskMateMemoryManager:
             # 压缩落盘前的结构 diff：LLM 若把条目跨层搬进 `## 硬规矩`，一律降级
             # 回偏好层（不丢内容，也不让它变成每轮常驻）。整篇拒绝会让文件一直
             # 超限、每次写入都重压，形成死循环，故这里选降级而非拒绝。
+            # 反方向也要防：压缩 prompt 允许「删除」，但带人工确认的硬规矩不能被
+            # 机器静默删掉。被删的一律原样补回（不是整篇拒绝，避免压缩死循环）。
+            compressed, restored = restore_deleted_hard_rules(content, compressed)
+            if restored:
+                logger.warning(
+                    "压缩产物删掉了 %d 条硬规矩，已原样补回：%s",
+                    len(restored), "；".join(d[:40] for d in restored[:3]),
+                )
             compressed, demoted = demote_unmarked_hard_rules(content, compressed)
             if demoted:
                 logger.warning(
@@ -2363,12 +2407,22 @@ class DeskMateMemoryManager:
             kept.append(e)
         after = len(kept)
         new_content = "\n\n".join(kept).strip()
+        ok = True
         if new_content and new_content != content.strip():
             try:
                 (self.base_dir / "USER.md.bak").write_text(content, encoding="utf-8")
             except OSError:
                 pass
-            save_user(self.base_dir, new_content + "\n")
+            ok = save_user(self.base_dir, new_content + "\n")
+        if not ok:
+            # 2026-11-11 复检修：原来忽略 save_user 返回值，闸拒写也照报「清洗成功」。
+            return {
+                "entries_before": before,
+                "entries_after": before,  # 原文件未改动
+                "merged": 0,
+                "removed": 0,
+                "notes": f"清洗结果被归属闸拒绝，原文件未改动（拟清洗前 {before} 条 → {after} 条）",
+            }
         return {
             "entries_before": before,
             "entries_after": after,

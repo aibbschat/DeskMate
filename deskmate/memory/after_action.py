@@ -42,7 +42,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional, Sequence
 
+from deskmate.growth._atomic import unique_tmp
+from deskmate.paths import deskmate_base_dir
+
 from . import project_memory as _pm
+from ._fs_lock import file_write_lock
 
 logger = logging.getLogger(__name__)
 
@@ -55,8 +59,6 @@ def _default_base_dir() -> Path:
     —— 模块级求值等于没隔离，``_append_to_global_memory`` 的默认落点会指向
     开发者**真实 USER.md / MEMORY.md**。同族修复见 ``memory/persistence.py``。
     """
-    from deskmate.paths import deskmate_base_dir
-
     return deskmate_base_dir()
 
 # 防刷屏门槛：用户 / 助手任意一方有效长度低于此（字符）且无产物 / 习得，视为纯客套，不写日志。
@@ -732,48 +734,60 @@ def _append_to_global_memory(base_dir: Path, filename: str, new_lines: list[str]
     if not new_lines:
         return 0
     path = base_dir / filename
-    existing = ""
     try:
-        if path.is_file():
-            existing = path.read_text(encoding="utf-8", errors="replace")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        # 2026-11-11 复检修：原来固定 ``.tmp`` 名 + 无锁，24 线程实测丢 20/24；
+        # 锁必须覆盖读-改-写整个临界区，否则后写者会拿旧快照覆盖先写者。
+        with file_write_lock(path):
+            existing = ""
+            if path.is_file():
+                try:
+                    existing = path.read_text(encoding="utf-8", errors="replace")
+                except OSError:
+                    # 读旧失败不得继续写：否则会把整篇全局记忆覆盖成只剩新块。
+                    logger.error("after_action: 读 %s 失败，放弃本次追加", filename)
+                    return 0
+            seen = set()
+            for l in existing.splitlines():
+                ls = l.strip()
+                if not ls:
+                    continue
+                ls = re.sub(r"^[-*]\s+", "", ls).strip()  # 去子弹前缀再归一化
+                seen.add(_norm(ls))
+            to_add: list[str] = []
+            for t in new_lines:
+                ts = t.strip()
+                if not ts or _norm(ts) in seen:
+                    continue
+                seen.add(_norm(ts))
+                to_add.append(ts)
+            if not to_add:
+                return 0
+            stamp = datetime.now().strftime("%Y-%m-%d")
+            if _RECAP_HEAD_RE.search(existing):
+                # 已有复盘节：按日期 upsert + 语义近重复合并（一天只留一个节头）
+                new_content, stats = _compact_recap(existing, new_lines=to_add, date=stamp)
+                if stats.get("merged"):
+                    logger.info(
+                        "after_action: 复盘节合并 %d 条近重复（保留较新说法）", stats["merged"]
+                    )
+            else:
+                block = "\n\n## 自动复盘 · %s\n" % stamp + "\n".join(
+                    "- %s" % t for t in to_add
+                )
+                new_content = existing + block
+            new_content = _trim_global_memory(new_content, filename=filename)
+            tmp = unique_tmp(path)
+            try:
+                tmp.write_text(new_content, encoding="utf-8")
+                os.replace(tmp, path)
+            except OSError:
+                logger.exception("after_action: 写全局记忆失败 %s", filename)
+                return 0
+            return len(to_add)
     except OSError:
-        existing = ""
-    seen = set()
-    for l in existing.splitlines():
-        ls = l.strip()
-        if not ls:
-            continue
-        ls = re.sub(r"^[-*]\s+", "", ls).strip()  # 去子弹前缀再归一化
-        seen.add(_norm(ls))
-    to_add: list[str] = []
-    for t in new_lines:
-        ts = t.strip()
-        if not ts or _norm(ts) in seen:
-            continue
-        seen.add(_norm(ts))
-        to_add.append(ts)
-    if not to_add:
+        logger.exception("after_action: 准备全局记忆目录失败 %s", filename)
         return 0
-    stamp = datetime.now().strftime("%Y-%m-%d")
-    if _RECAP_HEAD_RE.search(existing):
-        # 已有复盘节：按日期 upsert + 语义近重复合并（一天只留一个节头）
-        new_content, stats = _compact_recap(existing, new_lines=to_add, date=stamp)
-        if stats.get("merged"):
-            logger.info(
-                "after_action: 复盘节合并 %d 条近重复（保留较新说法）", stats["merged"]
-            )
-    else:
-        block = "\n\n## 自动复盘 · %s\n" % stamp + "\n".join("- %s" % t for t in to_add)
-        new_content = existing + block
-    new_content = _trim_global_memory(new_content, filename=filename)
-    tmp = path.with_name(path.name + ".tmp")
-    try:
-        tmp.write_text(new_content, encoding="utf-8")
-        os.replace(tmp, path)
-    except OSError:
-        logger.exception("after_action: 写全局记忆失败 %s", filename)
-        return 0
-    return len(to_add)
 
 
 def _maybe_review_memory(base_dir: Path, last_user: str, last_asst: str) -> None:

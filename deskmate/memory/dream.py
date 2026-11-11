@@ -21,7 +21,7 @@ import time
 from pathlib import Path
 
 from .manager import DeskMateMemoryManager as MemoryManager
-from .user_profile import load_user, save_user
+from .user_profile import load_user, save_user_ex
 
 # ---------------------------------------------------------------------------
 # 配置常量
@@ -257,9 +257,18 @@ def run_dream(base_dir: Path | str, aggressive: bool = False) -> dict:
             new_user_str = "\n\n".join(new_entries)
             # 注意：_synthesize_entries 会原地给旧值加标注，故用渲染字符串与原串比对
             if new_user_str != orig_user:
-                _backup_and_write(base / "USER.md", user_text,
-                                  new_user_str + "\n")
-                report["files_touched"].append("USER.md")
+                # 2026-11-11 复检修：原来这里 path.write_text 直写，绕过归属闸，
+                # 且与闸内写入并发时非原子。dream 只是「改写者」，必须和所有
+                # 自动写入走同一道闸；被拒就跳过本轮，不制造第二套写入口。
+                ok, why = save_user_ex(
+                    base, new_user_str + "\n",
+                    actor="dream", reason="run_dream 去重/矛盾消解",
+                )
+                if ok:
+                    report["files_touched"].append("USER.md")
+                else:
+                    logger.warning("dream: USER.md 改写被归属闸拒绝，跳过本轮：%s", why)
+                    report.setdefault("_rejected", []).append("USER.md")
 
         # ---- MEMORY.md 分节 ----
         memory = mgr._load_global_memory()
@@ -321,15 +330,6 @@ def run_dream(base_dir: Path | str, aggressive: bool = False) -> dict:
 
     _mark_run(base)
     return report
-
-
-def _backup_and_write(path: Path, old_text: str, new_text: str) -> None:
-    try:
-        if path.is_file():
-            (path.parent / f"{path.name}.bak").write_text(old_text, encoding="utf-8")
-        path.write_text(new_text, encoding="utf-8")
-    except OSError:
-        pass
 
 
 def _write_report(base: Path, report: dict) -> None:

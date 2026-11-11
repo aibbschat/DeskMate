@@ -22,9 +22,14 @@
 from __future__ import annotations
 
 import logging
+import os
 import re
 from datetime import date, datetime, timedelta
 from pathlib import Path
+
+from deskmate.growth._atomic import unique_tmp
+
+from ._fs_lock import file_write_lock
 
 logger = logging.getLogger(__name__)
 
@@ -110,24 +115,28 @@ def append_review(
     path = _month_path(base_dir, day)
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        entries = _read_entries(path)
-        key = day.isoformat()
-        existing = entries.setdefault(key, [])
-        seen = {_norm(t) for t in existing}
-        added = 0
-        for t in items:
-            n = _norm(t)
-            if not n or n in seen:
-                continue
-            seen.add(n)
-            existing.append(t)
-            added += 1
-        if not added:
-            return 0
-        tmp = path.with_name(path.name + ".tmp")
-        tmp.write_text(_render(entries), encoding="utf-8")
-        tmp.replace(path)
-        return added
+        # 2026-11-11 复检修：原来固定 ``.tmp`` 名且无锁，24 线程实测丢 17~18/24，
+        # 却仍返回 added>0（上层记「journal +1」成功）。锁必须覆盖整个
+        # 读-改-写临界区，否则两个线程都基于旧快照写，后写者覆盖先写者。
+        with file_write_lock(path):
+            entries = _read_entries(path)
+            key = day.isoformat()
+            existing = entries.setdefault(key, [])
+            seen = {_norm(t) for t in existing}
+            added = 0
+            for t in items:
+                n = _norm(t)
+                if not n or n in seen:
+                    continue
+                seen.add(n)
+                existing.append(t)
+                added += 1
+            if not added:
+                return 0
+            tmp = unique_tmp(path)
+            tmp.write_text(_render(entries), encoding="utf-8")
+            os.replace(tmp, path)
+            return added
     except Exception:
         logger.warning("journal: 写复盘流水失败", exc_info=True)
         return 0
@@ -152,13 +161,19 @@ def recent_digest(
         earliest = today - timedelta(days=max(0, days - 1))
         wanted = {(earliest + timedelta(days=i)).isoformat() for i in range(days)}
         merged: dict[str, list[str]] = {}
-        # 只需读最近两个月的文件（跨月最多两天）
-        for offset in (0, 1):
-            month = (today.replace(day=1) - timedelta(days=offset * 31))
+        # 2026-11-11 复检修：原来用「当月 1 号 − 31 天」近似上个月，3 月 1 日
+        # 会落到 1 月 29 日，整月漏读 2 月（每年 3/5/7/10/12 月上旬必现）。
+        # 改为按 wanted 覆盖的真实月份逐个读文件。
+        month = earliest.replace(day=1)
+        last_month = today.replace(day=1)
+        seen_months: set[date] = set()
+        while month <= last_month and month not in seen_months:
+            seen_months.add(month)
             path = _month_path(base_dir, month)
             for day, items in _read_entries(path).items():
                 if day in wanted and items:
                     merged[day] = items
+            month = (month.replace(day=28) + timedelta(days=4)).replace(day=1)
         if not merged:
             return ""
         lines = ["## 近期复盘（她记得的最近几天）", ""]
