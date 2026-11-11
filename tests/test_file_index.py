@@ -57,7 +57,7 @@ def base(tmp_path: Path, monkeypatch) -> Path:
     (archive / "old.md").write_text("归档内容不该进索引", encoding="utf-8")
 
     # 向量通道测试不加载模型
-    monkeypatch.setattr("deskmate.memory.local_embed.embed", lambda texts: None)
+    monkeypatch.setattr("deskmate.memory.local_embed.embed", lambda texts, allow_load=True: None)
     return tmp_path
 
 
@@ -178,7 +178,7 @@ def test_index_healthy_is_readonly_and_bootstraps(base: Path, monkeypatch):
     CHUNK_VERSION 一变就 DELETE 全部索引表——健康检查自己就是破坏者，
     随后 chunks=0 判不健康，唯一重建入口（sync）又被它门控，永久锁死。
     """
-    monkeypatch.setattr("deskmate.memory.local_embed.embed", lambda texts: None)
+    monkeypatch.setattr("deskmate.memory.local_embed.embed", lambda texts, allow_load=True: None)
     # 1) 无 db、有源文件 → healthy=True（把首轮交给 search 里的 sync 自举）
     assert (base / "deskmate.db").exists() is False
     assert file_search.index_healthy(base) is True
@@ -192,3 +192,20 @@ def test_index_healthy_is_readonly_and_bootstraps(base: Path, monkeypatch):
     assert file_search.index_healthy(base) is True
     after = FileIndex(base).stats()["chunks"]
     assert after == before, f"健康探测清了表：{before} → {after}"
+
+
+def test_chunk_memory_keeps_plain_first_line(tmp_path: Path, monkeypatch):
+    """§ 标题下首行是普通句子（非 bullet）不得丢弃。
+
+    修前：旧逻辑只认 ``- `` 开头，普通首行直接丢 → sync 报 changed=1
+    但 chunks=0，该节内容检索永远搜不到（历史文件/人工手写/压缩漂移）。
+    """
+    monkeypatch.setattr("deskmate.memory.local_embed.embed", lambda texts, allow_load=True: None)
+    (tmp_path / "MEMORY.md").write_text(
+        "§ 喜好\n\n用户喜欢Python和深夜写作。\n", encoding="utf-8"
+    )
+    idx = FileIndex(tmp_path)
+    idx.sync()
+    assert idx.stats()["chunks"] > 0
+    hits = file_search.search_memory_files("Python", base=tmp_path, read_only=True)
+    assert hits and any("Python" in (h.get("content") or "") for h in hits)

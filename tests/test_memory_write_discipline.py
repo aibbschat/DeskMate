@@ -170,3 +170,17 @@ class BypassCallSiteTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_append_to_section_result_is_machine_readable(tmp_path):
+    """append_to_section 返回 WriteResult：文案兼容 str，状态机器可读。
+
+    修前：调用方靠 `"被拒" in result` / `"跳过" in result` 中文子串判
+    写入状态——文案微调即静默失效。
+    """
+    from deskmate.memory.manager import DeskMateMemoryManager
+
+    mgr = DeskMateMemoryManager(base_dir=tmp_path)
+    r = mgr.append_to_section("user", "   ")
+    assert isinstance(r, str)
+    assert r.skipped is True and r.ok is True
