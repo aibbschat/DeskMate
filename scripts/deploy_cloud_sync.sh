@@ -598,6 +598,12 @@ CLOUD_CODE_DRIFT_MODULES=(
   # 当纯 READ（无 path scoping / 无只读门禁）。两者必须同批推送。
   "coworker/tools/document.py"
   "coworker/risk.py"
+  # ⚠ 2026-11-11 部署后集合级对账抓到的**历史漂移**：11-10 commit 92a6b0e1
+  # 「稿子在哪」治本两刀给 memory_search 加了 user/learned scope 与 learned_history
+  # 检索，改的就是 deskmate/memory/server.py，但它**从未进任何清单** ⇒ 云端一直跑
+  # 旧码（不报错、静默降级＝搜不到长期记忆库）。本轮 deploy 末尾 md5 对账报
+  # 「共有文件内容不一致: 1」才定位到。依赖 user_fact_context.py 已在云端且同码。
+  "deskmate/memory/server.py"
 )
 
 # 小桔调用专家（2026-11-09 晚 / commit 26285519）：deskmate/consult.py 是本轮新建模块。
