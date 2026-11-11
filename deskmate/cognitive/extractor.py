@@ -156,6 +156,7 @@ def extract_anchors(
     source_type: str = "",
     extracted_items: Optional[list] = None,
     store=None,
+    person_names: Optional[list[str]] = None,
 ) -> list[tuple[str, str]]:
     """从一次抽取产出里派生「共享锚」（P1：topic / book / person）。
 
@@ -191,7 +192,9 @@ def extract_anchors(
                     break
         if source_type == "book" and (source_title or "").strip():
             _add("book", source_title)
-        names = _active_person_names(store)
+        # person_names 由调用方一次性传入（save() 全量同步时避免每条都查一次
+        # 3191 人的注册表）；不传则维持原行为，自行从 store 取。
+        names = _active_person_names(store) if person_names is None else list(person_names)
         for name in names:
             if _person_in_text(name, text or "", names):
                 _add("person", name)

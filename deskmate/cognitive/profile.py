@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
 from typing import Optional
@@ -28,6 +29,8 @@ from .models import (
 )
 
 from .store import CognitiveStore
+
+logger = logging.getLogger(__name__)
 
 
 def _default_profile_path() -> Path:
@@ -84,6 +87,10 @@ class CognitiveProfileManager:
         """
         self.profile.last_updated = _now()
         self.store.persist(self.profile, layer=self.layer, force=force)
+        # 挂锚下沉（2026-11-11）：任何写入路径（add_stance / add_value_ranking /
+        # 世界观回望 / 日记提取 / 情绪提取 …）最终都会走 save()，故在此统一补锚。
+        # 此前挂锚只长在 extractor 的显式调用点上，生产写路径全部绕过 → 锚表恒 0 行。
+        self._sync_anchors()
         # 失效 will digest 模块级缓存（30min TTL，画像改了就别再吃旧数据）
         try:
             from deskmate.will.digest import invalidate_digest
@@ -91,6 +98,48 @@ class CognitiveProfileManager:
         except Exception:
             # will 未安装 / kill switch / 缓存模块异常 → 主流程不动
             pass
+
+    def _sync_anchors(self) -> None:
+        """把本层画像条目的共享锚同步进 ``memory_anchors``（纯增、幂等、fail-open）。
+
+        锚的派生规则复用 ``extractor.extract_anchors``（topic / book / person），
+        不另造一套口径。person 名单一次取全、逐条传参，避免每条都扫一遍注册表。
+        任何异常只告警，绝不影响画像保存主链路。
+        """
+        try:
+            from .extractor import _active_person_names, extract_anchors
+
+            items = (
+                list(self.profile.stances)
+                + list(self.profile.argument_patterns)
+                + list(self.profile.value_rankings)
+                + list(self.profile.thinking_frameworks)
+            )
+            if not items:
+                return
+            names = _active_person_names(self.store)
+            seen: set[str] = set()
+            for it in items:
+                iid = getattr(it, "id", "") or ""
+                if not iid or iid in seen:
+                    continue
+                seen.add(iid)
+                topic = getattr(it, "topic", "") or getattr(it, "domain", "") or ""
+                sources = getattr(it, "sources", None) or []
+                src = sources[0] if sources else None
+                text = (it.content or "") + ("\n" + src.excerpt if src and src.excerpt else "")
+                anchors = extract_anchors(
+                    text,
+                    (src.title if src else ""),
+                    (src.type if src else ""),
+                    [{"topic": topic, "domain": topic}],
+                    store=self.store,
+                    person_names=names,
+                )
+                if anchors:
+                    self.store.upsert_anchors("profile_item", iid, anchors)
+        except Exception as e:  # noqa: BLE001 —— fail-open：挂锚绝不阻断保存
+            logger.warning("挂锚同步失败（忽略，不影响保存）: %s", e)
 
     def get(self) -> CognitiveProfile:
         return self.profile

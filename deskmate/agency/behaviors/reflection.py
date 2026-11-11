@@ -42,7 +42,12 @@ logger = logging.getLogger(__name__)
 DEFAULT_CFG: dict[str, Any] = {
     "cooldown_hours": 168,   # 两次反思最小间隔 7 天
     "max_recent": 20,        # 一次最多回看多少条 item_history 变化
-    "min_changes": 3,        # 攒够几条未反思的变化才做一次裁决
+    "min_changes": 3,        # 旧口径：攒够几条未反思的变化才做一次裁决（阈值为 0 时兜底）
+    # 新口径（2026-11-11）：按「重要度累积」触发，不再只数条数。
+    # 40 = 历史 10 周「周累积重要度」分布的中位数（P50=40.2，P25=31.2，P75=58.5；
+    # 回算口径与样本见 reports/2026-11-11-记忆层改进总方案.md 二段-2）。
+    # 设为 0 即退回旧的「条数 ≥ min_changes」逻辑（可配置回滚）。
+    "importance_threshold": 40.0,
 }
 
 # 算作「真实变化」的 history 动作（与 store._CONTENT_ACTIONS + 状态变更合并）。
@@ -140,7 +145,8 @@ def _recent_changes(store, limit: int) -> list[dict]:
     placeholders = ",".join("?" * len(_CHANGE_ACTIONS))
     sql = (
         "SELECT h.item_id, h.seq, h.action, h.old_value, h.new_value, h.reason, h.ts, "
-        "COALESCE(p.layer, ''), COALESCE(p.dimension, ''), COALESCE(p.content, '') "
+        "COALESCE(p.layer, ''), COALESCE(p.dimension, ''), COALESCE(p.content, ''), "
+        "COALESCE(p.confidence, 0.5), COALESCE(h.source, '') "
         "FROM item_history h LEFT JOIN profile_items p ON p.id = h.item_id "
         f"WHERE h.action IN ({placeholders}) "
         "ORDER BY h.ts DESC, h.seq DESC LIMIT ?"
@@ -150,18 +156,62 @@ def _recent_changes(store, limit: int) -> list[dict]:
         with store._connect() as conn:
             for row in conn.execute(sql, (*_CHANGE_ACTIONS, limit)):
                 (item_id, seq, action, old_value, new_value, reason, ts,
-                 layer, dim, content) = row
+                 layer, dim, content, confidence, source) = row
                 out.append({
                     "item_id": item_id, "seq": seq, "action": action,
                     "old_value": old_value, "new_value": new_value,
                     "reason": reason, "ts": ts,
                     "subject_kind": _subject_kind(layer),
                     "dimension": dim, "content": content,
+                    "confidence": float(confidence or 0.5),
+                    "source": source or "",
                 })
     except Exception as e:
         logger.warning("reflection: 读 item_history 失败: %s", e)
         return []
     return out
+
+
+# 动作的「基础重要度」（1-10 分制；越不可逆 / 越像用户亲自纠错，分越高）
+_ACTION_BASE = {
+    "created": 3.0, "updated": 2.0, "deepened": 3.0, "restored": 3.0,
+    "calibrated": 5.0, "superseded": 7.0, "questioned": 6.0,
+}
+# 理由/来源里出现这些词 → 视为用户亲自纠错（额外加权）
+_USER_CORRECTION_RE = re.compile(r"纠正|删掉|删除|改为|改成|终裁|拍板|纠错|用户|萧盛")
+
+
+def change_importance(store, change: dict) -> float:
+    """给一条变化打「重要度」（1-10），用于反思触发与批次排序。
+
+    口径（可在报告里复核）：
+    - 基础分：动作本身的可逆性（superseded/questioned 最高，updated 最低）；
+    - 置信度：``confidence × 2``（不确定的条目不该被当成重要变化）；
+    - 影响面：共享锚能连到的其他条目数，``min(3, degree/3)``——一条牵动越多
+      条目的变化越重要（锚表为空时该项自然为 0，退化不影响其它两项）；
+    - 用户纠错：superseded/questioned 额外 +3；理由/来源命中纠错词 +2。
+
+    fail-open：任何字段缺失按最低分算，绝不抛。
+    """
+    try:
+        base = _ACTION_BASE.get(str(change.get("action") or ""), 3.0)
+        conf = float(change.get("confidence") or 0.5)
+        degree = 0
+        try:
+            degree = int(store.anchor_neighbor_count(change.get("item_id") or ""))
+        except Exception:
+            degree = 0
+        impact = min(3.0, degree / 3.0)
+        action = str(change.get("action") or "")
+        if action in ("superseded", "questioned"):
+            corr = 3.0
+        elif _USER_CORRECTION_RE.search(f"{change.get('reason') or ''} {change.get('source') or ''}"):
+            corr = 2.0
+        else:
+            corr = 0.0
+        return round(min(10.0, max(1.0, base + conf * 2.0 + impact + corr)), 2)
+    except Exception:
+        return 3.0
 
 
 # ----------------------------------------------------------------------
@@ -247,6 +297,7 @@ def run_reflection(base_dir: str,
     min_changes = max(1, int(cfg.get("min_changes", 3) or 3))
     max_recent = max(min_changes, int(cfg.get("max_recent", 20) or 20))
     cooldown = float(cfg.get("cooldown_hours", 168) or 0)
+    importance_threshold = float(cfg.get("importance_threshold", 40.0) or 0.0)
 
     # —— 闸门 0：打开认知库 ——
     try:
@@ -270,7 +321,20 @@ def run_reflection(base_dir: str,
         c for c in changes
         if f"{c.get('item_id')}#{c.get('seq')}" not in reflected_keys
     ]
-    if len(pending) < min_changes:
+    # 重要度打分：不再只数「几条」，而看这批变化有多重（2026-11-11 改）
+    for c in pending:
+        c["importance"] = change_importance(store, c)
+    total_importance = round(sum(c["importance"] for c in pending), 2)
+    result["importance"] = total_importance
+    result["pending"] = len(pending)
+
+    if importance_threshold > 0:
+        # 新口径：累积重要度达到阈值才反思（阈值回算依据见 DEFAULT_CFG 注释）
+        if total_importance < importance_threshold:
+            result["reason"] = f"not_important:{total_importance}/{importance_threshold:g}"
+            return result
+    elif len(pending) < min_changes:
+        # 阈值设为 0 时退回旧口径（可配置回滚）
         result["reason"] = f"not_enough:{len(pending)}/{min_changes}"
         return result
 
@@ -279,6 +343,8 @@ def run_reflection(base_dir: str,
         result["reason"] = "cooling"
         return result
 
+    # 高重要度优先进入裁决批次（同等重要度按时间新→旧，_recent_changes 已倒序）
+    pending.sort(key=lambda x: -float(x.get("importance") or 0.0))
     batch = pending[:max_recent]
 
     # —— 闸门 3：能力（默认启用 LLM 裁决；DESKMATE_REFLECTION_LLM=0 可先埋框架后置）——
@@ -319,15 +385,28 @@ def run_reflection(base_dir: str,
     recorded = 0
     for v in verdicts:
         c = batch[v["index"]]
+        # 证据回链：把「哪条变化、什么时候、什么动作」压成一行轻量溯源随裁决落库，
+        # 注入时显示成「（依据：11-06 的更新）」，让反思可被点回原始账目。
+        evidence = [{
+            "item_id": c.get("item_id"),
+            "seq": c.get("seq"),
+            "ts": c.get("ts"),
+            "action": c.get("action"),
+        }]
         if store.record_reflection(
-            c["item_id"], v["verdict"], v["reason"], c["subject_kind"]
+            c["item_id"], v["verdict"], v["reason"], c["subject_kind"],
+            evidence=evidence,
         ):
             recorded += 1
             # 第4层（真实优先）：把裁决理由写进想法流 —— 她真的做了的判断 + 为什么。
-            # fail-open：写库失败绝不阻断反思主流程（add_thought 内部已包住）。
+            # 重要度一并落进文本，便于在 thought_stream 里复核「为什么是这条触发反思」。
             try:
                 from deskmate.thought_stream import add_thought
-                add_thought(base_dir, str(v.get("reason") or ""), kind="reflection")
+                add_thought(
+                    base_dir,
+                    f"{v.get('reason') or ''}（重要度 {c.get('importance', 0):.1f}）",
+                    kind="reflection",
+                )
             except Exception:
                 pass
             if v["verdict"] in ("revise", "overturn"):

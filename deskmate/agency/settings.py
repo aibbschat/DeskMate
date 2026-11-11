@@ -120,12 +120,15 @@ DEFAULTS: dict[str, Any] = {
     },
     # reflection 行为参数（反思层 R1：回看判断/看法，做裁决 + 留 why）
     # 与 worldview_reflection **并列但错峰**：worldview 用「攒够 5 条理解」触发，
-    # 反思用「最近 item_history 变化 ≥ min_changes 条」触发（不同批次、不同素材，
+    # 反思用「未反思变化的累积重要度 ≥ 阈值」触发（不同批次、不同素材，
     # 避免同一 tick 双重 LLM 轰炸）。同样过 7 天冷却。
     "reflection": {
         "cooldown_hours": 168,   # 两次反思最小间隔 7 天
         "max_recent": 20,        # 一次最多回看多少条 item_history 变化
-        "min_changes": 3,        # 攒够几条未反思的变化才做一次裁决
+        "min_changes": 3,        # 旧口径：阈值为 0 时的条数兜底
+        # 新口径：累积重要度阈值。40 = 历史 10 周周累积重要度中位数（P50=40.2）。
+        # 设为 0 退回「条数 ≥ min_changes」。
+        "importance_threshold": 40.0,
     },
     # intent_generation 行为参数（意图层 R11：让「目标」成一等公民）
     # 低频（7 天错峰）：从河床素材（未满足的关怀 / 未接着的观察 / 长期兴趣）

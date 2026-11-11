@@ -1003,6 +1003,30 @@ class CognitiveStore:
             logger.warning("upsert_anchors 失败（忽略，不影响主抽取）: %s", e)
             return 0
 
+    def anchor_neighbor_count(self, item_id: str) -> int:
+        """该条目通过共享锚能连到的**其他条目**数（重要度的「影响面」）。
+
+        fail-open：表缺失 / 查询异常 → 0（重要度退化为其余两项，不抛）。
+        """
+        iid = (item_id or "").strip()
+        if not iid:
+            return 0
+        try:
+            with self._connect() as conn:
+                row = conn.execute(
+                    "SELECT COUNT(DISTINCT m2.item_id) FROM memory_anchors m1 "
+                    "JOIN memory_anchors m2 "
+                    "  ON m1.anchor_kind = m2.anchor_kind "
+                    " AND m1.anchor_value = m2.anchor_value "
+                    "WHERE m1.item_kind='profile_item' AND m2.item_kind='profile_item' "
+                    "  AND m1.item_id=? AND m2.item_id<>?",
+                    (iid, iid),
+                ).fetchone()
+            return int(row[0]) if row else 0
+        except Exception as e:  # noqa: BLE001 —— fail-open：影响面算不出按 0 处理
+            logger.warning("anchor_neighbor_count 失败（忽略）: %s", e)
+            return 0
+
     # ------------------------------------------------------------------
     # P2-R1：已知人名注册表（person 锚源；seed + 自生长 mode B）
     # ------------------------------------------------------------------
@@ -1181,6 +1205,7 @@ class CognitiveStore:
     def record_reflection(
         self, item_id: str, verdict: str, reason: str,
         subject_kind: str = "profile_item",
+        evidence: Optional[list[dict]] = None,
     ) -> bool:
         """把一次反思的裁决 + 理由落进 ``item_history``（``action='reflected'``）。
 
@@ -1190,8 +1215,13 @@ class CognitiveStore:
         落字段约定（复用既有列，零 DDL）：
         - ``item_id``：被反思的条目（回指它「为什么被保持/修正/推翻」）；
         - ``old_value``：裁决字面量（``maintain`` / ``revise`` / ``overturn``）；
+        - ``new_value``：证据回链 JSON（``{"evidence": [{"item_id","seq","ts","action"}]}``），
+          旧行为空串，读取方按空处理即可；
         - ``reason``：为什么（这是下一轮要召回的账，不得被覆盖吞掉）；
         - ``source``：``subject_kind``（被反思对象的类别）。
+
+        防递归：证据里若出现 ``reflected`` / ``reflected_apply`` 行，说明是「反思的
+        反思」，一律丢弃 → 反思深度恒为 1 层（不会被旧反思自我强化）。
 
         fail-open：写库异常仅告警、返回 False，绝不抛（反思痕缺失不影响主链路）。
         返回 True 表示确实写入了一行。
@@ -1201,14 +1231,28 @@ class CognitiveStore:
             return False  # 硬断言：没有理由的反思作废
         if not (item_id or "").strip():
             return False
+        # 证据回链：只收真实变化行，丢掉反思自身的痕（保证递归深度 ≤ 1）
+        payload = ""
+        try:
+            raw = evidence if isinstance(evidence, list) else ([evidence] if evidence else [])
+            evs = [
+                e for e in raw
+                if isinstance(e, dict)
+                and str(e.get("action") or "") not in ("reflected", "reflected_apply")
+                and str(e.get("item_id") or "").strip()
+            ]
+            if evs:
+                payload = json.dumps({"evidence": evs[:5]}, ensure_ascii=False)
+        except Exception:
+            payload = ""
         try:
             with self._connect() as conn:
                 conn.execute(
                     "INSERT OR REPLACE INTO item_history "
                     "(item_id, seq, action, old_value, new_value, reason, source, ts) "
                     "VALUES(?, (SELECT COALESCE(MAX(seq), -1) + 1 FROM item_history "
-                    "WHERE item_id=?), 'reflected', ?, '', ?, ?, ?)",
-                    (item_id, item_id, str(verdict or ""), r,
+                    "WHERE item_id=?), 'reflected', ?, ?, ?, ?, ?)",
+                    (item_id, item_id, str(verdict or ""), payload, r,
                      str(subject_kind or ""), _now_iso()),
                 )
             return True
@@ -1231,7 +1275,7 @@ class CognitiveStore:
             with self._connect() as conn:
                 rows = conn.execute(
                     "SELECT h.item_id, h.old_value, h.reason, h.source, h.ts, "
-                    "COALESCE(p.content, '') FROM item_history h "
+                    "COALESCE(p.content, ''), h.new_value FROM item_history h "
                     "LEFT JOIN profile_items p ON p.id = h.item_id "
                     "WHERE h.action='reflected' "
                     "ORDER BY h.ts DESC, h.seq DESC LIMIT ?",
@@ -1242,15 +1286,35 @@ class CognitiveStore:
             return []
 
         _LABELS = {"maintain": "继续保持", "revise": "修正", "overturn": "推翻"}
+        _ACTION_LABELS = {
+            "created": "新提取", "updated": "更新", "deepened": "加深",
+            "restored": "恢复", "calibrated": "校准",
+            "superseded": "被取代", "questioned": "存疑",
+        }
         out: list[str] = []
         used = 0
-        for item_id, verdict, reason, _subject_kind, _ts, content in rows:
+        for item_id, verdict, reason, _subject_kind, _ts, content, evidence_json in rows:
             r = (reason or "").strip()
             if not r:
                 continue
             subj = (content or "").strip().replace("\n", " ")[:40] or str(item_id)
             v = _LABELS.get(str(verdict), str(verdict or "裁决"))
-            text = f"对「{subj}」：{v}——{r[:200]}"
+            # 证据回链：只带一句轻量溯源（日期 + 动作），不展开原文，避免上下文膨胀。
+            prov = ""
+            try:
+                payload = json.loads(evidence_json) if evidence_json else {}
+                evs = payload.get("evidence") or []
+                if evs and isinstance(evs[0], dict):
+                    e0 = evs[0]
+                    day = str(e0.get("ts") or "")[:10]
+                    act = _ACTION_LABELS.get(str(e0.get("action") or ""), "")
+                    if day and act:
+                        prov = f"（依据：{day} 的{act}）"
+                    elif day:
+                        prov = f"（依据：{day}）"
+            except Exception:
+                prov = ""
+            text = f"对「{subj}」：{v}——{r[:200]}{prov}"
             if used + len(text) > char_cap:
                 break
             out.append(text)
