@@ -1,0 +1,644 @@
+<!doctype html>
+<html lang="zh-CN" data-scheme="A" data-state="talk" data-skin="xiaoju-orange" data-size="default">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>半山书院 · 议事两案 · 2026-11-11</title>
+<!--
+  设计原型（可点）：Bot 群 → 半山书院。两案对照，皮肤/字号可切，用来验一件事：
+  所有书院氛围都从**已注入的 token 派生**（color-mix），不新增白名单变量、不复刻 9 套皮肤。
+  数据是手写的示意稿，形状对齐 deskmate/bots/web.py 的 PAGE。
+-->
+<style>
+  /* ============ 1. 皮肤层：只模拟 4 个「原色」，其余全部派生 ============ */
+  /* 真实页面里这 4 个由 ThemedSidecarFrame 经 postMessage 注入；这里手写等价值。 */
+  :root {
+    --paper:#f5f6f7; --panel:#ffffff; --ink:#17191c; --accent:#2563eb;
+  }
+  html[data-skin="xiaoju-orange"] { --paper:#FBF6EF; --panel:#FFFCF7; --ink:#1f1a14; --accent:#F26B1F; }
+  html[data-skin="autumn-maple"]  { --paper:#FFF7ED; --panel:#FFFFFF; --ink:#1c1710; --accent:#D97706; }
+  html[data-skin="spring-grass"]  { --paper:#F5F8F0; --panel:#FFFFFF; --ink:#161c14; --accent:#6A994E; }
+  html[data-skin="night"]         { --paper:#131417; --panel:#1c1e22; --ink:#e6e8eb; --accent:#4c8dff; }
+  html[data-skin="starry"]        { --paper:#12132C; --panel:#1C1E42; --ink:#dfe1f5; --accent:#ADB7FF; }
+
+  /* ============ 2. 派生层：唯一的「设计语言」所在，皮肤无关 ============ */
+  :root {
+    --muted:      color-mix(in srgb, var(--ink) 62%, var(--paper));
+    --faint:      color-mix(in srgb, var(--ink) 38%, var(--paper));
+    --line:       color-mix(in srgb, var(--ink) 11%, var(--paper));
+    --line-strong:color-mix(in srgb, var(--ink) 20%, var(--paper));
+    --accent-soft:color-mix(in srgb, var(--accent) 13%, var(--panel));
+    --accent-line:color-mix(in srgb, var(--accent) 34%, transparent);
+    --rule:       color-mix(in srgb, var(--ink) 6%, transparent);   /* 稿纸界格 */
+    --ridge:      color-mix(in srgb, var(--ink) 26%, var(--paper)); /* 山脊线 */
+    --ok:   color-mix(in srgb,#2f7d57 88%, var(--ink));
+    --warn: color-mix(in srgb,#b45309 88%, var(--ink));
+    --dissent: color-mix(in srgb, var(--accent) 72%, var(--ink));   /* 「不合」用强调色，不借 danger */
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC",Inter,system-ui,sans-serif;
+    --serif:"Songti SC","STSong","Noto Serif CJK SC","Source Han Serif SC","Iowan Old Style",Georgia,serif;
+    --mono:"SF Mono","JetBrains Mono",Menlo,Consolas,monospace;
+    --fs-label:11px; --fs-meta:12px; --fs-ui:13px; --fs-body:14px;
+    --fs-heading:15px; --fs-title:17px; --fs-chat:15px; --fs-brand:22px;
+  }
+  html[data-skin="night"] { --ok:#5cb87f; --warn:#e8b04b; }
+  html[data-skin="starry"]{ --ok:#5cb87f; --warn:#e8b04b; }
+  html[data-size="small"]  { --fs-label:10px; --fs-meta:11px; --fs-ui:12px; --fs-body:13px; --fs-heading:14px; --fs-title:15px; --fs-chat:14px; --fs-brand:19px; }
+  html[data-size="large"]  { --fs-label:12px; --fs-meta:13px; --fs-ui:14px; --fs-body:15px; --fs-heading:16px; --fs-title:19px; --fs-chat:17px; --fs-brand:25px; }
+
+  *, *::before, *::after { box-sizing:border-box; margin:0; padding:0; }
+  html, body { height:100%; }
+  body { background:var(--paper); color:var(--ink); font-family:var(--sans); font-size:var(--fs-body); overflow:hidden; }
+  button, textarea, input { font-family:inherit; }
+  .hidden { display:none !important; }
+
+  /* ============ 3. 样图自己的工具条（不属于交付 UI） ============ */
+  .mockbar {
+    height:44px; flex:none; display:flex; align-items:center; gap:12px; padding:0 12px;
+    background:var(--ink); color:var(--paper); font-size:var(--fs-meta);
+    overflow-x:auto; white-space:nowrap;
+  }
+  .mockbar .grp { display:flex; align-items:center; gap:5px; flex:none; }
+  .mockbar .lbl { opacity:.55; letter-spacing:.08em; text-transform:uppercase; font-size:10px; }
+  .mockbar button {
+    background:transparent; border:1px solid color-mix(in srgb, var(--paper) 26%, transparent);
+    color:color-mix(in srgb, var(--paper) 80%, transparent); border-radius:999px;
+    padding:3px 10px; font-size:var(--fs-label); cursor:pointer;
+  }
+  .mockbar button.on { background:var(--paper); color:var(--ink); border-color:var(--paper); }
+  .mockbar .spacer { flex:1; }
+  .shell { display:flex; flex-flow:column; height:100vh; }
+  .stage { flex:1; min-height:0; display:flex; overflow-x:auto; }
+
+  /* ============ 4. 左栏：书院门牌 + 议题 + 讲席 ============ */
+  .br { display:flex; flex:1; min-width:1180px; }
+  .br-side {
+    width:272px; flex:none; background:var(--panel); border-right:1px solid var(--line);
+    display:flex; flex-flow:column; overflow:hidden;
+  }
+  .brand { padding:16px 16px 12px; border-bottom:1px solid var(--line); position:relative; }
+  .brand .nm {
+    font-family:var(--serif); font-size:var(--fs-brand); font-weight:600;
+    letter-spacing:.14em; line-height:1.15;
+  }
+  .brand .sub {
+    margin-top:6px; font-size:var(--fs-label); color:var(--faint); letter-spacing:.24em;
+  }
+  .brand svg { display:block; width:100%; height:22px; margin-top:9px; color:var(--ridge); }
+  .brand svg path { stroke:currentColor; stroke-width:1.2; fill:none; stroke-linejoin:round; }
+  .brand .newbtn {
+    position:absolute; right:14px; top:14px; border:1px solid var(--line-strong);
+    background:var(--panel); color:var(--accent); border-radius:999px; padding:3px 10px;
+    font-size:var(--fs-label); cursor:pointer;
+  }
+  .brand .newbtn:hover { background:var(--accent-soft); border-color:var(--accent-line); }
+
+  .br-scroll { overflow:auto; flex:1; }
+  .br-scroll::-webkit-scrollbar { width:9px; }
+  .br-scroll::-webkit-scrollbar-thumb { background:var(--line-strong); border-radius:9px; }
+  .side-top { padding:13px 16px 7px; display:flex; align-items:baseline; gap:8px; }
+  .side-top .ttl {
+    font-size:var(--fs-label); font-weight:600; letter-spacing:.2em; color:var(--muted);
+    flex:1;
+  }
+  .side-top .cnt { font-size:var(--fs-label); color:var(--faint); }
+
+  .grp-item {
+    margin:0 10px 3px; padding:9px 11px 10px; border-radius:3px; cursor:pointer;
+    border:1px solid transparent; border-left:2px solid transparent;
+  }
+  .grp-item:hover { background:var(--paper); }
+  .grp-item.on { background:var(--accent-soft); border-left-color:var(--accent); }
+  .grp-l1 { display:flex; align-items:baseline; gap:8px; }
+  .grp-name {
+    font-family:var(--serif); font-size:var(--fs-heading); font-weight:600; flex:1;
+    letter-spacing:.02em; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+  }
+  .grp-time { font-size:var(--fs-label); color:var(--faint); flex:none; font-variant-numeric:tabular-nums; }
+  .grp-l2 { display:flex; align-items:center; gap:7px; margin-top:7px; font-size:var(--fs-label); }
+  .dots-seat { display:flex; gap:3px; }
+  .dots-seat i { width:5px; height:5px; border-radius:50%; background:var(--line-strong); }
+  .dots-seat i.spoke { background:var(--accent); }
+  .tag-dissent {
+    font-size:10px; color:var(--dissent); border:1px solid var(--accent-line);
+    border-radius:2px; padding:0 4px; letter-spacing:.06em;
+  }
+  .grp-last { flex:1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; color:var(--faint); }
+
+  .side-sep { height:1px; background:var(--line); margin:14px 16px; }
+
+  .bot-item {
+    margin:0 10px 2px; padding:8px 10px; border-radius:3px; cursor:pointer;
+    display:flex; align-items:center; gap:10px; border:1px solid transparent;
+  }
+  .bot-item:hover { background:var(--paper); }
+  .bot-item .txt { flex:1; min-width:0; }
+  .bot-item .nm { font-family:var(--serif); font-size:var(--fs-ui); font-weight:600; letter-spacing:.03em; }
+  .bot-item .tg { font-size:var(--fs-label); color:var(--faint); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; margin-top:2px; }
+  .bot-item .flag { font-size:10px; color:var(--accent); letter-spacing:.06em; flex:none; }
+  .bot-item.off { opacity:.42; }
+  .bot-item.picked { background:var(--accent-soft); border-left:2px solid var(--accent); }
+
+  .av {
+    width:30px; height:30px; border-radius:2px; flex:none;
+    display:flex; align-items:center; justify-content:center;
+    background:color-mix(in srgb, var(--c) 14%, var(--panel));
+    color:color-mix(in srgb, var(--c) 78%, var(--ink));
+    box-shadow:inset 0 0 0 1px color-mix(in srgb, var(--c) 30%, transparent);
+  }
+  .av svg { width:15px; height:15px; }
+  .av.letter { font-family:var(--serif); font-size:var(--fs-meta); font-weight:600; }
+
+  /* ============ 5. 中栏 ============ */
+  .br-main { flex:1; display:flex; flex-flow:column; min-width:0; position:relative; }
+  .br-head {
+    min-height:64px; flex:none; background:var(--panel); border-bottom:1px solid var(--line);
+    display:flex; align-items:center; gap:14px; padding:12px 22px;
+  }
+  .br-head .ht {
+    font-family:var(--serif); font-size:var(--fs-title); font-weight:600; letter-spacing:.02em;
+    white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:44%;
+  }
+  .br-head .spacer { flex:1; }
+  .态势 { display:flex; align-items:center; gap:8px; font-size:var(--fs-label); color:var(--muted); margin-left:6px; }
+  .态势 b { font-weight:600; color:var(--ink); font-variant-numeric:tabular-nums; }
+  .态势 .bar { display:flex; gap:3px; align-items:center; }
+  .态势 .bar i { width:6px; height:6px; border-radius:50%; background:var(--line-strong); }
+  .态势 .bar i.on { background:var(--accent); }
+  .pill { font-size:var(--fs-label); border-radius:2px; padding:3px 8px; white-space:nowrap;
+    background:var(--paper); color:var(--muted); border:1px solid var(--line); }
+  .btn { border:1px solid var(--accent); background:var(--accent); color:var(--panel);
+    border-radius:3px; padding:7px 14px; font-size:var(--fs-ui); cursor:pointer; letter-spacing:.06em; }
+  .btn.ghost { background:transparent; color:var(--muted); border-color:var(--line-strong); }
+  .btn.ghost:hover { color:var(--ink); border-color:var(--faint); }
+
+  /* 稿纸界格：整条消息流的底层纹理，一行一线，随字号走 */
+  .br-stream {
+    flex:1; overflow:auto; padding:22px 26px 10px;
+    background-image:repeating-linear-gradient(to bottom,
+      transparent 0, transparent calc(var(--fs-chat) * 1.75 - 1px),
+      var(--rule) calc(var(--fs-chat) * 1.75 - 1px), var(--rule) calc(var(--fs-chat) * 1.75));
+    background-position:0 22px;
+  }
+  .br-stream::-webkit-scrollbar { width:10px; }
+  .br-stream::-webkit-scrollbar-thumb { background:var(--line-strong); border-radius:10px; }
+  .wrap { max-width:760px; }
+
+  .sep { display:flex; align-items:center; gap:12px; margin:4px 0 18px; }
+  .sep::before, .sep::after { content:""; height:1px; background:var(--line); flex:1; }
+  .sep span { font-family:var(--serif); font-size:var(--fs-label); color:var(--faint); letter-spacing:.18em; }
+
+  /* —— 去气泡化：发言 = 稿纸上的段落，左侧一条发言者色条 —— */
+  .turn { margin-bottom:20px; }
+  .msg { display:flex; gap:12px; padding:2px 0 12px; }
+  .msg .rail { width:2px; flex:none; background:color-mix(in srgb, var(--c) 40%, var(--line)); border-radius:1px; }
+  .msg .col { flex:1; min-width:0; }
+  .meta { display:flex; align-items:baseline; gap:8px; margin-bottom:3px; }
+  .meta .who { font-family:var(--serif); font-size:var(--fs-ui); font-weight:600; letter-spacing:.04em; color:color-mix(in srgb, var(--c) 72%, var(--ink)); }
+  .meta .role { font-size:var(--fs-label); color:var(--faint); }
+  .stance { font-size:10px; letter-spacing:.1em; border-radius:2px; padding:1px 5px; border:1px solid currentColor; }
+  .stance.argue  { color:var(--accent); }
+  .stance.dissent{ color:var(--dissent); }
+  .stance.build  { color:var(--ok); }
+  .stance.proof  { color:var(--warn); }
+  .meta .ts { font-size:var(--fs-label); color:var(--faint); margin-left:auto; font-variant-numeric:tabular-nums; }
+
+  .body {
+    font-size:var(--fs-chat); line-height:1.75; color:var(--ink);
+    white-space:pre-wrap; word-break:break-word; padding-left:1px;
+  }
+  .body .at { color:var(--accent); font-weight:600; }
+  .body b { font-weight:600; }
+  .body code { font-family:var(--mono); font-size:.86em; padding:0 4px; border-radius:2px;
+    background:var(--paper); border:1px solid var(--line); }
+  /* 作者本人发言：一条通栏淡底，不用气泡 */
+  .msg.mine { background:var(--accent-soft); margin:0 -12px; padding:8px 12px 10px;
+    border-left:2px solid var(--accent); }
+  .msg.mine .rail { display:none; }
+
+  /* —— 方案 B：同轮对看，主张与反调并排 —— */
+  html[data-scheme="B"] .turn.vs { display:grid; grid-template-columns:1fr 1px 1fr; gap:0 18px; align-items:start; }
+  html[data-scheme="B"] .turn.vs .half-forward, html[data-scheme="B"] .turn.vs .half-oppose { min-width:0; }
+  html[data-scheme="B"] .turn.vs .界 { grid-column:2; grid-row:1 / span 4; background:var(--line-strong); width:1px; justify-self:center; }
+  html[data-scheme="B"] .turn.vs .half-oppose .msg { border-left:none; }
+  html[data-scheme="B"] .turn.vs .half-oppose { padding-top:2px; }
+  html:not([data-scheme="B"]) .turn.vs { display:block; }
+  html:not([data-scheme="B"]) .界 { display:none; }
+  html[data-scheme="B"] .grp-l2 .heat { display:flex; }
+  .grp-l2 .heat { display:none; gap:1px; align-items:flex-end; height:10px; }
+  .grp-l2 .heat i { width:3px; background:var(--accent); opacity:.5; border-radius:1px; }
+
+  /* ============ 6. 右栏：席次与态势 ============ */
+  .br-rail {
+    width:236px; flex:none; background:var(--panel); border-left:1px solid var(--line);
+    padding:16px 16px 12px; overflow:auto; display:flex; flex-flow:column; gap:16px;
+  }
+  .rail-h { font-family:var(--serif); font-size:var(--fs-label); letter-spacing:.22em; color:var(--muted); }
+  .seat { display:flex; align-items:center; gap:9px; padding:5px 0; }
+  .seat .av { width:24px; height:24px; }
+  .seat .av svg { width:12px; height:12px; }
+  .seat .nm { font-family:var(--serif); font-size:var(--fs-ui); flex:1; }
+  .seat .n { font-size:var(--fs-label); color:var(--faint); font-variant-numeric:tabular-nums; }
+  .seat.silent { opacity:.5; }
+  .seat.silent .n { color:var(--warn); }
+  .dist { display:flex; height:6px; border-radius:2px; overflow:hidden; gap:1px; }
+  .dist i { background:var(--accent); }
+  .dist i.d { background:var(--dissent); opacity:.75; }
+  .dist i.b { background:var(--ok); opacity:.7; }
+  .dist i.p { background:var(--warn); opacity:.7; }
+  .dist-key { display:flex; flex-wrap:wrap; gap:4px 10px; margin-top:7px; font-size:10px; color:var(--faint); }
+  .open-q { font-size:var(--fs-meta); color:var(--muted); line-height:1.7; border-left:2px solid var(--accent-line); padding-left:9px; margin-top:6px; }
+  .open-q b { display:block; font-family:var(--serif); color:var(--ink); font-weight:600; margin-bottom:2px; }
+  .linkbtn { background:none; border:none; color:var(--accent); font-size:var(--fs-label); cursor:pointer; padding:2px 0; text-align:left; }
+  .linkbtn:hover { text-decoration:underline; }
+
+  /* ============ 7. 输入区 ============ */
+  .br-comp { flex:none; background:var(--panel); border-top:1px solid var(--line); padding:12px 22px 14px; }
+  .comp-hint { font-size:var(--fs-label); color:var(--faint); margin-bottom:7px; letter-spacing:.02em; }
+  .comp-row { display:flex; align-items:flex-end; gap:10px; }
+  .comp-box { flex:1; background:var(--paper); border:1px solid var(--line-strong); border-radius:4px; padding:10px 13px; min-height:46px; }
+  .comp-box:focus-within { border-color:var(--accent-line); background:var(--panel); }
+  .comp-box textarea { width:100%; border:none; background:transparent; color:var(--ink); resize:none;
+    font-family:var(--serif); font-size:var(--fs-chat); line-height:1.7; outline:none; }
+  .comp-box textarea::placeholder { color:var(--faint); font-family:var(--sans); }
+  .comp-foot { display:flex; align-items:center; gap:10px; margin-top:6px; }
+  .comp-foot .spacer { flex:1; }
+  .iconbtn { border:none; background:transparent; color:var(--faint); cursor:pointer; font-size:var(--fs-label); padding:2px 0; }
+  .iconbtn:hover { color:var(--accent); }
+
+  /* ============ 8. 空态 ============ */
+  .empty { text-align:center; padding:56px 32px 0; }
+  .empty svg { width:190px; height:52px; color:var(--ridge); margin-bottom:18px; }
+  .empty svg path { stroke:currentColor; stroke-width:1.1; fill:none; stroke-linejoin:round; }
+  .empty .big { font-family:var(--serif); font-size:var(--fs-title); letter-spacing:.1em; margin-bottom:10px; }
+  .empty .sm { font-size:var(--fs-ui); color:var(--faint); line-height:1.9; }
+  .empty .quick { display:flex; gap:9px; justify-content:center; margin-top:22px; flex-wrap:wrap; }
+  .empty .quick button { background:transparent; border:1px dashed var(--line-strong); color:var(--muted);
+    border-radius:2px; padding:7px 13px; font-size:var(--fs-label); cursor:pointer; font-family:var(--serif); }
+  .empty .quick button:hover { border-color:var(--accent); color:var(--accent); border-style:solid; }
+
+  /* ============ 8b. 状态切换：议事 / 空席 / 立题 ============ */
+  .view-empty, .view-talk { display:none; }
+  html[data-state="empty"] .view-empty { display:block; }
+  html[data-state="talk"]  .view-talk  { display:block; }
+  html[data-state="empty"] .br-rail, html[data-state="new"] .br-rail { display:none; }
+  html[data-state="empty"] .br-comp, html[data-state="new"] .br-comp { display:none; }
+
+  .mk { padding:12px 16px 14px; border-bottom:1px solid var(--line); background:var(--paper); display:none; }
+  html[data-state="new"] .mk { display:block; }
+  .mk label { display:block; font-size:var(--fs-label); color:var(--muted); letter-spacing:.14em; margin-bottom:6px; }
+  .mk input {
+    width:100%; padding:9px 11px; border:1px solid var(--line-strong); border-radius:3px;
+    background:var(--panel); color:var(--ink); font-family:var(--serif); font-size:var(--fs-heading);
+  }
+  .mk input:focus { outline:none; border-color:var(--accent-line); }
+  .mk .tip { font-size:var(--fs-label); color:var(--faint); margin-top:8px; line-height:1.75; }
+  .mk .row { display:flex; gap:8px; margin-top:10px; }
+  html[data-state="new"] .bot-item .flag { display:none; }
+  html[data-state="new"] .bot-item::after {
+    content:""; width:15px; height:15px; border-radius:2px; flex:none;
+    border:1.5px solid var(--line-strong);
+  }
+  html[data-state="new"] .bot-item.picked::after {
+    content:"✓"; background:var(--accent); border-color:var(--accent); color:var(--panel);
+    font-size:11px; display:flex; align-items:center; justify-content:center;
+  }
+  html[data-state="new"] .bot-item.off { opacity:1; }
+
+  /* ============ 9. 说明抽屉 ============ */
+  .spec {
+    position:fixed; right:0; top:44px; bottom:0; width:min(440px, 92vw); z-index:30;
+    background:var(--panel); border-left:1px solid var(--line-strong); overflow:auto;
+    padding:20px 22px 40px; box-shadow:-18px 0 40px var(--rule); font-size:var(--fs-ui); line-height:1.75;
+  }
+  .spec h3 { font-family:var(--serif); font-size:var(--fs-title); letter-spacing:.06em; margin:18px 0 8px; }
+  .spec h3:first-child { margin-top:0; }
+  .spec p { color:var(--muted); margin-bottom:8px; }
+  .spec ul { padding-left:18px; color:var(--muted); margin-bottom:10px; }
+  .spec li { margin:3px 0; }
+  .spec table { width:100%; border-collapse:collapse; font-size:var(--fs-meta); margin-bottom:10px; }
+  .spec td { padding:5px 6px; border-bottom:1px solid var(--line); color:var(--muted); }
+  .spec td:first-child { font-family:var(--serif); color:var(--ink); white-space:nowrap; }
+  .spec .cost { font-size:10px; letter-spacing:.08em; padding:1px 5px; border-radius:2px; }
+  .spec .c0 { background:color-mix(in srgb, var(--ok) 14%, var(--panel)); color:var(--ok); }
+  .spec .c1 { background:color-mix(in srgb, var(--warn) 16%, var(--panel)); color:var(--warn); }
+</style>
+</head>
+<body>
+<div class="shell">
+  <div class="mockbar">
+    <span class="grp"><span class="lbl">案</span>
+      <button data-scheme="A" class="on">A 议事录</button>
+      <button data-scheme="B">B 众声对看</button>
+    </span>
+    <span class="grp"><span class="lbl">状态</span>
+      <button data-state="talk" class="on">议事中</button>
+      <button data-state="empty">空席</button>
+      <button data-state="new">立题</button>
+    </span>
+    <span class="grp"><span class="lbl">皮肤</span>
+      <button data-skin="xiaoju-orange" class="on">小桔橙</button>
+      <button data-skin="default">默认钴蓝</button>
+      <button data-skin="autumn-maple">秋枫</button>
+      <button data-skin="spring-grass">春草</button>
+      <button data-skin="night">暗色</button>
+      <button data-skin="starry">星夜</button>
+    </span>
+    <span class="grp"><span class="lbl">字号</span>
+      <button data-size="small">小</button>
+      <button data-size="default" class="on">标</button>
+      <button data-size="large">大</button>
+    </span>
+    <span class="spacer"></span>
+    <button id="toggle-spec">设计说明</button>
+  </div>
+
+  <div class="stage">
+    <div class="br">
+      <!-- 左栏 -->
+      <aside class="br-side">
+        <div class="brand">
+          <div class="nm">半山书院</div>
+          <div class="sub">众声 · 成稿</div>
+          <button class="newbtn">＋ 立题</button>
+          <svg viewBox="0 0 240 22" preserveAspectRatio="none" aria-hidden="true">
+            <path d="M0 20 L34 12 L52 16 L86 4 L112 14 L140 8 L168 17 L196 11 L240 18"/>
+          </svg>
+        </div>
+        <div class="mk">
+          <label>今日议题</label>
+          <input type="text" value="烧仓之后主角怎么撤" />
+          <div class="tip">下面勾 2~6 位讲席。没有稿件路径、章节范围、轮次表单，也没有开始按钮。<br>
+            <b>开脑洞请走「专家」→「创意脑洞专家」</b>（一对一更发散）；这里适合碰撞、审稿、调度。</div>
+          <div class="row"><button class="btn">立题</button><button class="btn ghost">先不立</button></div>
+        </div>
+        <div class="br-scroll">
+          <div class="side-top"><span class="ttl">议 题</span><span class="cnt">2 处 · 不发言不花钱</span></div>
+
+          <div class="grp-item on">
+            <div class="grp-l1"><span class="grp-name">烧仓这一段还能怎么写</span><span class="grp-time">14:22</span></div>
+            <div class="grp-l2">
+              <span class="dots-seat"><i class="spoke"></i><i class="spoke"></i><i class="spoke"></i><i class="spoke"></i></span>
+              <span class="tag-dissent">有不合</span>
+              <span class="grp-last">读者视角的反调还没人接</span>
+              <span class="heat"><i style="height:4px"></i><i style="height:7px"></i><i style="height:10px"></i><i style="height:6px"></i><i style="height:9px"></i></span>
+            </div>
+          </div>
+
+          <div class="grp-item">
+            <div class="grp-l1"><span class="grp-name">第十一卷停笔点往哪接</span><span class="grp-time">昨天</span></div>
+            <div class="grp-l2">
+              <span class="dots-seat"><i class="spoke"></i><i class="spoke"></i><i></i><i></i></span>
+              <span class="grp-last">已散席 · 留 9 条</span>
+              <span class="heat"><i style="height:5px"></i><i style="height:6px"></i><i style="height:4px"></i><i style="height:8px"></i><i style="height:3px"></i></span>
+            </div>
+          </div>
+
+          <div class="side-sep"></div>
+          <div class="side-top"><span class="ttl">讲 席</span><span class="cnt">7 位</span></div>
+
+          <div class="bot-item">
+            <div class="av" style="--c:hsl(28 42% 42%)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 17V5a2 2 0 0 0-2-2H4"/><path d="M8 21h12a2 2 0 0 0 2-2v-1a1 1 0 0 0-1-1H11a1 1 0 0 0-1 1v1a2 2 0 1 1-4 0V5a2 2 0 1 0-4 0v2a1 1 0 0 0 1 1h3"/></svg></div>
+            <div class="txt"><div class="nm">史料考察</div><div class="tg">史实核验 · 标注出处</div></div>
+            <span class="flag">在席</span>
+          </div>
+          <div class="bot-item">
+            <div class="av" style="--c:hsl(158 42% 42%)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z"/><path d="m15 5 4 4"/></svg></div>
+            <div class="txt"><div class="nm">文学编辑</div><div class="tg">叙事技艺 · 结构节奏</div></div>
+            <span class="flag">在席</span>
+          </div>
+          <div class="bot-item">
+            <div class="av" style="--c:hsl(38 42% 42%)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 16 6-12 6 12"/><path d="M8 12h8"/><path d="m16 20 2 2 4-4"/></svg></div>
+            <div class="txt"><div class="nm">文字校勘</div><div class="tg">字句打磨 · 校勘勘误</div></div>
+            <span class="flag">在席</span>
+          </div>
+          <div class="bot-item">
+            <div class="av" style="--c:hsl(210 42% 42%)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg></div>
+            <div class="txt"><div class="nm">读者视角</div><div class="tg">受众温度计 · 阅读体验</div></div>
+            <span class="flag">在席</span>
+          </div>
+          <div class="bot-item"><div class="av" style="--c:hsl(336 42% 42%)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m3 11 18-5v12L3 14v-3z"/><path d="M11.6 16.8a3 3 0 1 1-5.8-1.6"/></svg></div><div class="txt"><div class="nm">发行部主任</div><div class="tg">市场发行 · 商业化</div></div></div>
+          <div class="bot-item"><div class="av" style="--c:hsl(8 42% 42%)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.2 6 3 11l-.9-2.4c-.3-1.1.3-2.2 1.3-2.5l13.5-4c1.1-.3 2.2.3 2.5 1.3Z"/><path d="m6.2 5.3 3.1 3.9"/><path d="m12.4 3.4 3.1 4"/><path d="M3 11h18v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/></svg></div><div class="txt"><div class="nm">影视改编策划</div><div class="tg">影视化潜力 · IP 价值</div></div></div>
+          <div class="bot-item"><div class="av" style="--c:hsl(244 42% 42%)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 5 6.3 6.3a2.4 2.4 0 0 1 0 3.4L17 19"/><path d="M9.586 5.586A2 2 0 0 0 8.172 5H3a1 1 0 0 0-1 1v5.172a2 2 0 0 0 .586 1.414L8.29 18.29a2.426 2.426 0 0 0 3.42 0l3.58-3.58a2.426 2.426 0 0 0 0-3.42z"/><circle cx="6.5" cy="9.5" r=".5" fill="currentColor"/></svg></div><div class="txt"><div class="nm">类型出版策划</div><div class="tg">类型赛道 · 出版定位</div></div></div>
+        </div>
+      </aside>
+
+      <!-- 中栏 -->
+      <section class="br-main">
+        <header class="br-head">
+          <span class="ht">烧仓这一段还能怎么写</span>
+          <span class="态势">
+            <span class="bar"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i></span>
+            同席 <b>4</b> · 已表态 <b>4</b> · <b style="color:var(--dissent)">1</b> 处不合
+          </span>
+          <span class="spacer"></span>
+          <span class="pill" id="head-pill">共 6 条 · 第 1 议</span>
+          <button class="btn ghost" id="head-disband">散席</button>
+        </header>
+
+        <div class="br-stream">
+          <div class="wrap view-talk">
+            <div class="sep"><span>今日 · 第一议</span></div>
+
+            <!-- 轮 1 -->
+            <div class="turn vs">
+              <div class="half-forward">
+                <div class="msg mine">
+                  <div class="col">
+                    <div class="meta"><span class="who">萧</span><span class="role">作者</span><span class="ts">14:02</span></div>
+                    <div class="body">先读《夜不收》第三章。烧仓之后主角一路顺风撤出去，我觉得假，但说不出哪儿假。</div>
+                  </div>
+                </div>
+                <div class="msg">
+                  <div class="rail" style="--c:hsl(28 42% 42%)"></div>
+                  <div class="col">
+                    <div class="meta"><span class="who" style="--c:hsl(28 42% 42%)">史料考察</span><span class="stance argue">立论</span><span class="role">史实核验</span><span class="ts">14:03</span></div>
+                    <div class="body">假不在节奏，在<b>制度</b>。明代卫所仓廒起火，第一反应是封仓上报、勘合存留，不是边打边撤。一路顺风缺的不是险，是一套逼他绕路的行政程序 —— 火起后三刻内必须有<b>人</b>来锁门。</div>
+                  </div>
+                </div>
+                <div class="msg">
+                  <div class="rail" style="--c:hsl(158 42% 42%)"></div>
+                  <div class="col">
+                    <div class="meta"><span class="who" style="--c:hsl(158 42% 42%)">文学编辑</span><span class="stance build">补台</span><span class="role">叙事技艺</span><span class="ts">14:04</span></div>
+                    <div class="body">接 @史料考察 的，但落点要挪。烧仓在叙事上是<b>主角第一次毁掉自己的退路</b>；撤得顺不顺是次要的，没写透的是他烧完之后<b>那口气没换过来</b>。现在从火到逃只隔了一句话。</div>
+                  </div>
+                </div>
+              </div>
+              <div class="界"></div>
+              <div class="half-oppose">
+                <div class="msg">
+                  <div class="rail" style="--c:hsl(210 42% 42%)"></div>
+                  <div class="col">
+                    <div class="meta"><span class="who" style="--c:hsl(210 42% 42%)">读者视角</span><span class="stance dissent">反调</span><span class="role">受众温度计</span><span class="ts">14:05</span></div>
+                    <div class="body">唱个反调：读者不会去查卫所程序，读者只在第九段问一句「<b>这章有危险吗</b>」。现在答案是没有。补行政细节加的是真实感，<b>危险感还是零</b> —— 这两件事别混着算。</div>
+                  </div>
+                </div>
+                <div class="msg">
+                  <div class="rail" style="--c:hsl(38 42% 42%)"></div>
+                  <div class="col">
+                    <div class="meta"><span class="who" style="--c:hsl(38 42% 42%)">文字校勘</span><span class="stance proof">勘误</span><span class="role">字句打磨</span><span class="ts">14:06</span></div>
+                    <div class="body">三处具体：① 「火光冲天而起」与前页「夜色如墨」撞色；② 「他冷冷道」本章出现 4 次；③ 三百字内「撤」字 11 次 —— <b>读起来像假，一半是这个词造成的</b>。</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="sep"><span>追问</span></div>
+
+            <div class="turn">
+              <div class="msg mine">
+                <div class="col">
+                  <div class="meta"><span class="who">萧</span><span class="role">作者</span><span class="ts">14:20</span></div>
+                  <div class="body">③ 说得对，我自己都没数过。那……危险感和行政程序能不能一句里同时办到？</div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="wrap view-empty">
+            <div class="empty">
+              <svg viewBox="0 0 240 52" preserveAspectRatio="none" aria-hidden="true">
+                <path d="M0 50 L26 34 L44 42 L74 14 L98 30 L124 6 L152 28 L176 18 L204 36 L240 26"/>
+              </svg>
+              <div class="big">书院初开，虚席以待</div>
+              <div class="sm">说一句人话就能开议。不点名则全员回应，点名谁答。<br>
+                想让他先读书稿，就说「先读《夜不收》第三章」，他自己会去翻。<br>
+                <b>开脑洞请走「专家」→「创意脑洞专家」</b>（一对一更发散）；这里适合碰撞、审稿、调度。</div>
+              <div class="quick">
+                <button>先读《夜不收》第三章，说说节奏问题</button>
+                <button>烧仓之后怎么撤，别再写一路顺风</button>
+                <button>这卷还有哪些史实硬伤</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="br-comp">
+          <div class="comp-hint">不点名则全员回应；说「先读《夜不收》」，他自己会去翻群共享材料。开脑洞请走「专家」→「创意脑洞专家」，这里适合碰撞、审稿、调度。</div>
+          <div class="comp-row">
+            <div class="comp-box">
+              <textarea rows="1" placeholder="执笔立论…（Enter 送入席 · @ 点名请发言）"></textarea>
+              <div class="comp-foot">
+                <button class="iconbtn">@ 点名</button>
+                <span class="spacer"></span>
+              </div>
+            </div>
+            <button class="btn ghost">追问一轮</button>
+            <button class="btn">入席</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- 右栏 -->
+      <aside class="br-rail">
+        <div>
+          <div class="rail-h">席 次</div>
+          <div class="seat"><div class="av" style="--c:hsl(28 42% 42%)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 17V5a2 2 0 0 0-2-2H4"/><path d="M8 21h12a2 2 0 0 0 2-2v-1a1 1 0 0 0-1-1H11a1 1 0 0 0-1 1v1a2 2 0 1 1-4 0V5a2 2 0 1 0-4 0v2a1 1 0 0 0 1 1h3"/></svg></div><span class="nm">史料考察</span><span class="n">1 议</span></div>
+          <div class="seat"><div class="av" style="--c:hsl(158 42% 42%)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z"/><path d="m15 5 4 4"/></svg></div><span class="nm">文学编辑</span><span class="n">1 议</span></div>
+          <div class="seat"><div class="av" style="--c:hsl(38 42% 42%)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m6 16 6-12 6 12"/><path d="M8 12h8"/><path d="m16 20 2 2 4-4"/></svg></div><span class="nm">文字校勘</span><span class="n">1 议</span></div>
+          <div class="seat"><div class="av" style="--c:hsl(210 42% 42%)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/></svg></div><span class="nm">读者视角</span><span class="n">1 议</span></div>
+          <div class="seat silent"><div class="av letter" style="--c:var(--accent)">我</div><span class="nm">未开口的</span><span class="n">2 位</span></div>
+        </div>
+
+        <div>
+          <div class="rail-h">态 势</div>
+          <div class="dist" style="margin-top:8px">
+            <i style="flex:1"></i><i class="b" style="flex:1"></i><i class="d" style="flex:1"></i><i class="p" style="flex:1"></i>
+          </div>
+          <div class="dist-key"><span>立论 1</span><span>补台 1</span><span>反调 1</span><span>勘误 1</span></div>
+        </div>
+
+        <div>
+          <div class="rail-h">未 接 的 话</div>
+          <div class="open-q"><b>读者视角 · 反调</b>危险感还是零 —— 立论与补台都没接这句。</div>
+          <button class="linkbtn">→ 请他先答这句</button>
+        </div>
+      </aside>
+    </div>
+
+    <!-- 说明抽屉 -->
+    <aside class="spec hidden" id="spec">
+      <h3>为什么叫「半山」</h3>
+      <p>半山不是山顶。写稿的人永远在半山 —— 稿子交出去那刻弦松了，人还在坡上。所以界面不做「成品陈列」，做<b>在议中</b>：能看到谁还没开口、哪句话没人接。</p>
+
+      <h3>文艺但不传统，落在这三条</h3>
+      <ul>
+        <li><b>衬线只用在三处</b>：门牌、人名、议题名。正文一律系统无衬线 —— 一屋子宋体就成戏装了。</li>
+        <li><b>直角 2~4px 圆角 + 一条 2px 色条</b>，替代现在的大圆角气泡。像稿纸上的批注段，不像手机 IM。</li>
+        <li><b>山脊线只用一次</b>（门牌下），界格线用满屏。宣纸、水墨、印章、竖排一律不上。</li>
+      </ul>
+
+      <h3>「讨论氛围」具体靠什么</h3>
+      <ul>
+        <li>立场标记：立论 / 补台 / 反调 / 勘误 —— 一眼看出这句在链条的哪一环。</li>
+        <li>右栏「未接的话」：把<b>没人回应的那句</b>顶出来，这是现在界面最缺的东西。</li>
+        <li>左栏议题项：表态点（4 个里有几个亮了）+「有不合」标，取代只有最后一句摘要。</li>
+        <li>方案 B「众声对看」：同一轮里立论与反调并排，中间一条界。分歧真的被看见，但改动最大。</li>
+        <li>B 的代价是横向空间：1180px 窗口下每栏只剩约 350px，正文换行明显变多。上 B 就得让右栏可折叠，或把最小宽度提到 1360px。</li>
+      </ul>
+
+      <h3>命名映射</h3>
+      <table>
+        <tr><td>Bot 群</td><td>半山书院</td><td><span class="cost c0">纯文案</span></td></tr>
+        <tr><td>我的群</td><td>议题</td><td><span class="cost c0">纯文案</span></td></tr>
+        <tr><td>＋ 新建</td><td>＋ 立题</td><td><span class="cost c0">纯文案</span></td></tr>
+        <tr><td>常驻 BOT</td><td>讲席</td><td><span class="cost c0">纯文案</span></td></tr>
+        <tr><td>在本群</td><td>在席</td><td><span class="cost c0">纯文案</span></td></tr>
+        <tr><td>撤群</td><td>散席</td><td><span class="cost c1">动测试断言</span></td></tr>
+        <tr><td>再聊一轮</td><td>追问一轮</td><td><span class="cost c1">动测试断言</span></td></tr>
+        <tr><td>@ 唤人</td><td>@ 点名</td><td><span class="cost c0">纯文案</span></td></tr>
+        <tr><td>笔记本</td><td>私录</td><td><span class="cost c1">另页 + 返回链</span></td></tr>
+      </table>
+
+      <h3>皮肤兼容（硬约束）</h3>
+      <p>页面只拿到宿主注入的 30 个 token，<b>不新增白名单变量</b>。上面 6 套皮肤切下来观感一致，因为书院氛围全部由 <code>color-mix()</code> 从 <code>--ink / --paper / --panel / --accent</code> 派生：界格线 = ink 6% 透明，山脊 = ink 26% 混 paper，强调底 = accent 13% 混 panel。换皮肤、换暗色、换字号都不用动这个文件。</p>
+      <p>「不合 / 反调」用强调色而不是 <code>--danger</code> —— 红色留给真出错，否则每次有人唱反调都像报错。</p>
+
+      <h3>成本分层</h3>
+      <ul>
+        <li><span class="cost c0">零后端</span> 排版、配色、字体、命名、去气泡化、界格、山脊、右栏「席次」计数（前端从消息流统计）。</li>
+        <li><span class="cost c1">需约定</span> 立场标记：最省的做法是让 bot 首行输出一个受控标记词，前端解析后剥掉；落库加 <code>stance</code> 字段更稳但要动 ChatStore 契约。</li>
+        <li><span class="cost c1">需后端</span> 方案 B 的「同轮对看」要有轮次分组游标；现在消息里没有 round 字段（§23 红线），只能按时间窗近似。</li>
+      </ul>
+
+      <h3>要动的文件</h3>
+      <ul>
+        <li><code>deskmate/bots/web.py</code> — PAGE 样式表 + 空态/文案，NOTEBOOKS_PAGE 同步</li>
+        <li><code>surfaces/gui/src/locales/zh.json</code> — sidebar.botroom</li>
+        <li><code>surfaces/gui/src/App.tsx:1969</code> — iframe title</li>
+        <li><code>surfaces/gui/src/components/Sidebar.tsx:1158</code> — 入口文案</li>
+        <li><code>tests/test_bot_brainstorm_mode.py</code> 等 4 处断言 — 文案改动会打到</li>
+      </ul>
+    </aside>
+  </div>
+</div>
+
+<script>
+  const root = document.documentElement;
+  function bind(attr){
+    document.querySelectorAll('.mockbar [data-' + attr + ']').forEach(btn => {
+      btn.onclick = () => {
+        root.setAttribute('data-' + attr, btn.dataset[attr]);
+        btn.parentElement.querySelectorAll('button').forEach(b => b.classList.toggle('on', b === btn));
+        if (attr === 'state') syncState();
+      };
+    });
+  }
+  ['scheme','skin','state','size'].forEach(bind);
+  function syncState(){
+    const st = root.dataset.state;
+    document.querySelector('.ht').textContent =
+      st === 'new' ? '立 题' : (st === 'empty' ? '半山书院' : '烧仓这一段还能怎么写');
+    document.querySelector('.态势').classList.toggle('hidden', st !== 'talk');
+    document.querySelector('#head-pill').classList.toggle('hidden', st !== 'talk');
+    document.querySelector('#head-disband').classList.toggle('hidden', st !== 'talk');
+    document.querySelectorAll('.bot-item').forEach((el, i) => el.classList.toggle('picked', st === 'new' && i < 4));
+  }
+  syncState();
+  document.getElementById('toggle-spec').onclick = e => {
+    const s = document.getElementById('spec');
+    s.classList.toggle('hidden');
+    e.currentTarget.classList.toggle('on', !s.classList.contains('hidden'));
+  };
+</script>
+</body>
+</html>
