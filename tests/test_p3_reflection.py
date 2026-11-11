@@ -261,7 +261,8 @@ def test_run_reflection_applies_revise_and_overturn(env, monkeypatch):
     )
     monkeypatch.setattr("deskmate.memory.llm.chat_memory", lambda *a, **k: out)
 
-    res = rf.run_reflection(str(env), {"cooldown_hours": 0, "min_changes": 1})
+    # importance_threshold=0 → 走旧口径（条数 ≥ min_changes），本用例只验裁决落地
+    res = rf.run_reflection(str(env), {"cooldown_hours": 0, "min_changes": 1, "importance_threshold": 0})
     assert res["reflected"] is True
     assert res["verdicts"] == 2
     # batch 顺序 ts DESC → 编号1=wv3（revise），编号2=wv2（overturn）

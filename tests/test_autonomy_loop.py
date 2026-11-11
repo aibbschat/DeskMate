@@ -354,6 +354,11 @@ def test_real_engine_receives_previous_failure_memory(tmp_path, monkeypatch):
     import deskmate.memory.after_action as after_action
 
     monkeypatch.setenv("COWORKER_STATE_DIR", str(tmp_path / "state"))
+    # 真引擎 × 真 post_turn_hook：必须把两个数据目录都钉到 tmp。
+    # ``coworker/agent.py`` 的兜底只认 DESKMATE_MEMORY_DIR（不认 DESKMATE_DIR），
+    # 漏设就会把 sessions/ 与 USER.md 抽取写进真机 ~/.deskmate。
+    monkeypatch.setenv("DESKMATE_DIR", str(tmp_path / "deskmate"))
+    monkeypatch.setenv("DESKMATE_MEMORY_DIR", str(tmp_path / "deskmate"))
     monkeypatch.setattr(after_action, "reflect_and_persist", lambda *a, **k: None)
     monkeypatch.setattr(delivery_mod, "deliver_run_result", lambda *a, **k: "")
     ws = tmp_path / "ws"

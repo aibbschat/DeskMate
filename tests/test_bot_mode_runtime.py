@@ -374,8 +374,8 @@ def test_post_turn_hook_skips_bot_group_completely(monkeypatch) -> None:
             log.append("skill")
 
     spy = _Spy()
-    monkeypatch.setattr(agent_mod, "_deskmate_mgr_singleton", spy, raising=False)
-    monkeypatch.setattr(agent_mod, "_deskmate_skill_mgr_singleton", spy, raising=False)
+    monkeypatch.setattr(agent_mod, "_get_deskmate_manager", lambda _base: spy)
+    monkeypatch.setattr(agent_mod, "_get_deskmate_skill_manager", lambda _base: spy)
 
     agent_mod._deskmate_post_turn_hook(BOT_GROUP_PROMPTS[0], "（bot 发言）换个姿势上班")
     assert log == [], f"群发言仍跑了 post-turn 写入：{log}"

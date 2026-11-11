@@ -126,7 +126,8 @@ def test_reflection_writes_thought_on_verdict(tmp_path, monkeypatch):
         lambda base_dir, text, kind="thought", about=None: calls.append((text, kind)) or True,
     )
 
-    result = refl_mod.run_reflection(str(tmp_path))
+    # importance_threshold=0 → 走旧口径；本用例只验「裁决理由写进想法流」
+    result = refl_mod.run_reflection(str(tmp_path), {"importance_threshold": 0})
     assert result["reflected"] is True
     assert result["verdicts"] >= 1
     # 裁决理由真的写进了想法流

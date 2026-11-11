@@ -176,3 +176,76 @@ class TestManagerIntegration:
         assert result["written"] >= 1
         user_md = (tmp_path / "USER.md").read_text(encoding="utf-8")
         assert "黑体" in user_md
+
+
+# 2026-11-11：vault 11-04/11-06/11-11 三条「用户不希望再原样重复）---」
+# 的回归。根因不是 LLM 抽取截断，而是本地规则从系统注入的目标制重试提示
+# 里截出半句，且截断符清单漏了 `---` 一类分隔线。
+_GOAL_OPENING = """⏰ Scheduled run — 盯一个会出错的目标
+
+--- 目标制任务（本次下达启用）---
+目标：把目标跑通
+--- 你之前几轮的尝试（已经失败的做法不要再原样重复）---
+· 07-01 [fail] boom-first-round
+"""
+
+
+class TestSystemInjectedGuard:
+    def test_separator_tail_is_rejected(self):
+        """确定性复现：修复前产出「用户不希望再原样重复）---」，修复后为空。"""
+        assert extract_facts_local(_session(_GOAL_OPENING)) == []
+
+    def test_separator_variants_rejected(self):
+        for tail in ("---", "--", "——", "—", "–", "==", "***", "___"):
+            text = _session(f"不要再原样重复{tail}")
+            assert extract_facts_local(text) == [], tail
+
+    def test_marked_system_turn_stripped(self):
+        from deskmate.memory.session_text import (
+            format_session_turn,
+            strip_system_injected_turns,
+        )
+
+        text = format_session_turn(_GOAL_OPENING, "[[NO_CHANGE]]", system_injected=True)
+        cleaned = strip_system_injected_turns(text)
+        assert "## User" not in cleaned
+        assert "deskmate:system-injected" not in cleaned
+        assert extract_facts_local(text) == []
+
+    def test_legacy_unmarked_system_turn_stripped(self):
+        """旧 session 没标记，也必须靠协议块指纹剥掉。"""
+        from deskmate.memory.session_text import strip_system_injected_turns
+
+        text = _session(_GOAL_OPENING)
+        assert "## User" not in strip_system_injected_turns(text)
+        assert extract_facts_local(text) == []
+
+    def test_human_speech_still_extracted(self):
+        """不误伤：真人消息里的否定偏好照常抽取。"""
+        facts = extract_facts_local(_session("以后都用宋体排版，不要用黑体"))
+        assert any("宋体" in f["text"] for f in facts)
+        assert any("黑体" in f["text"] for f in facts)
+
+    def test_system_turn_skips_extraction_end_to_end(self, tmp_path, monkeypatch):
+        from deskmate.memory.manager import DeskMateMemoryManager as MemoryManager
+
+        import deskmate.memory.manager as mgr
+        monkeypatch.setattr(mgr, "memory_llm_available", lambda: False)
+
+        mm = MemoryManager(base_dir=tmp_path)
+        result = mm.post_session_summary(_GOAL_OPENING, "[[NO_CHANGE]]")
+        assert result["written"] == 0
+        assert "系统注入" in result["notes"]
+
+        user_md = (tmp_path / "USER.md")
+        if user_md.exists():
+            assert "原样重复" not in user_md.read_text(encoding="utf-8")
+        # session 仍落盘，但带系统标记，供回溯且重抽时被剥离
+        files = list((tmp_path / "sessions").glob("*.md"))
+        assert len(files) == 1
+        assert "deskmate:system-injected" in files[0].read_text(encoding="utf-8")
+
+        # 历史重抽同样不产出
+        mm.extract_session_facts()
+        if user_md.exists():
+            assert "原样重复" not in user_md.read_text(encoding="utf-8")

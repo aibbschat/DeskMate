@@ -175,7 +175,7 @@ class TestProfileStore:
         assert "整体画像" in prompt2
         assert data2["metrics"]["n"] == 1
 
-    def test_default_path_points_to_home_deskmate(self, monkeypatch):
+    def test_default_path_points_to_home_deskmate(self, tmp_path, monkeypatch):
         """默认画像路径落在 ~/.deskmate（自包含，不受其它测试 DESKMATE_DIR 污染影响）。"""
         import importlib
 
@@ -183,8 +183,14 @@ class TestProfileStore:
 
         monkeypatch.delenv("DESKMATE_DIR", raising=False)
         sps = importlib.reload(sps)  # 清环境变量后重载，重新求值默认路径
-        assert sps.DEFAULT_PROFILE_PATH.name == "style_profile.json"
-        assert ".deskmate" in str(sps.DEFAULT_PROFILE_PATH)
+        try:
+            assert sps.DEFAULT_PROFILE_PATH.name == "style_profile.json"
+            assert ".deskmate" in str(sps.DEFAULT_PROFILE_PATH)
+        finally:
+            # reload 会把模块级常量永久改成真实 ~/.deskmate（模块是进程级的）。
+            # 不还原的话，后续任何用例只要触发 update_style_profile 默认路径，
+            # 就会走真实库/真实 legacy 文件迁移——这正是「测试用真实目录」的同类写法。
+            sps.DEFAULT_PROFILE_PATH = tmp_path / "style_profile.json"
 
 
 # ============================================================

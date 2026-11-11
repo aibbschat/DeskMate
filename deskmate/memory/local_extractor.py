@@ -89,6 +89,58 @@ def _clean_content(s: str) -> str:
     return s.strip()
 
 
+# 2026-11-11 一段止血：残句入库的三道闸。
+#
+# 旧规则是「关键词 + 后面任意 2~50 字」，于是「不对，结束）」被抽成
+# 「用户纠正：结束）」、「我习惯比对>」被抽成「用户习惯比对>」。这些半截
+# 片段进了 MEMORY.md 会被当成永久事实反复注入，还会污染 dream/反思。
+# 这里在出口处统一判断「是不是一句完整的话」，宁可少抽不可错抽。
+_TRUNCATED_TAILS = (
+    "）", ")", "》", ">", "\"", "'", "”", "’", "…", "...", "：", ":",
+    # 2026-11-11 补：分隔线与破折号也是「话没说完就被结构切开」的形态。
+    # 典型事故：目标制重试提示里的 ``不要再原样重复）---`` 被抽成
+    # 「用户不希望再原样重复）---」——它既不是句子，也不该成为永久偏好。
+    # 只收多字符分隔线，不收单个 "-"（英文连字符/负数结尾是合法写法）。
+    "---", "--", "——", "—", "–", "==", "***", "___", "···",
+)
+# Markdown 水平分隔线（整行 --- / === / ___ / *** / ——）：片段跨过分隔线说明
+# 正则已经吃到了两块本不相连的文本边界，一律视为残句。
+_SEPARATOR_LINE_RE = re.compile(r"(?m)^\s*(?:-{2,}|={2,}|\*{3,}|_{3,}|—{2,})\s*$")
+_TRUNCATED_TAIL_WORDS = (
+    "结束", "继续", "如下", "以下", "比如", "例如", "包括", "以及", "还有",
+    "然后", "接着", "于是", "所以", "但是", "不过", "如果", "因为", "的话",
+    "比对",
+)
+_QUOTE_LEADING_RE = re.compile(r"^(?:他说|她说|原文|引用|书上说|资料说|有人|据说)")
+# 信息量下限：中英数字符至少 2 个（「喝茶」「早起」是合法偏好，
+# 「结束」「比对」这类半句已由尾部词黑名单拦截）。
+_MIN_INFO_CHARS = 2
+
+
+def _is_complete_fragment(s: str) -> bool:
+    """判断抽出的片段是不是一句完整、可入库的话（防残句）。
+
+    三道闸：
+    1. 截断符收尾（``结束）`` / ``比对>``）——原文被切断了；
+    2. 半句词收尾（``计划时间继续``）——语义没有闭合；
+    3. 去掉标点后中文字符不足 3 个——没有信息量。
+    另外排除「他说/原文/引用」开头的复述，避免把别人的话记成用户的偏好。
+    """
+    s = (s or "").strip()
+    if not s:
+        return False
+    if s.endswith(_TRUNCATED_TAILS):
+        return False
+    if _SEPARATOR_LINE_RE.search(s):
+        return False
+    if any(s.endswith(w) for w in _TRUNCATED_TAIL_WORDS):
+        return False
+    if _QUOTE_LEADING_RE.match(s):
+        return False
+    core = re.sub(r"[^\u4e00-\u9fffA-Za-z0-9]", "", s)
+    return len(core) >= _MIN_INFO_CHARS
+
+
 def _extract_preferences(user_text: str) -> list[str]:
     """从用户文本中提取偏好类事实。"""
     facts: list[str] = []
@@ -100,6 +152,8 @@ def _extract_preferences(user_text: str) -> list[str]:
                 continue
             # 过滤明显的非偏好（如"我是说"、"我在想"）
             if content in ("说", "想", "问", "看", "听", "写", "做", "找"):
+                continue
+            if not _is_complete_fragment(content):
                 continue
             fact = template.format(content=content)
             if fact not in seen:
@@ -116,6 +170,8 @@ def _extract_corrections(user_text: str) -> list[str]:
         for m in re.finditer(pattern, user_text):
             content = _clean_content(m.group(1))
             if len(content) < 2:
+                continue
+            if not _is_complete_fragment(content):
                 continue
             fact = template.format(content=content)
             if fact not in seen:

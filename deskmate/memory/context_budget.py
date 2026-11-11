@@ -155,6 +155,10 @@ def is_light_turn(user_message: str | None) -> bool:
 
 _AUTO_REVIEW_HEADING_RE = re.compile(r"^##\s+自动复盘")
 
+#: 2026-11-11 C 方案：非常驻偏好层也不进常驻注入（改由关键词兜底按需取用）。
+#: 与「自动复盘」同样按行剥 bullet，段内非 bullet 段落照旧保留。
+_NON_RESIDENT_HEADING_RE = re.compile(r"^##\s+(?:自动复盘|偏好与事实)")
+
 #: 复盘段里的流水行（bullet）。真身是 LLM 每天写的一行行「- ...」。
 _REVIEW_BULLET_PREFIXES = ("-", "*", "•", "·")
 
@@ -171,6 +175,9 @@ def strip_auto_review(text: str | None) -> str:
     正稿固定位置」「桌面那份是旧快照」这类长期事实一起吞了——她因此每次都要重新
     找稿子，还会误读桌面上的旧快照。现在按行剥：复盘段只删 bullet 流水，段内非
     bullet 的独立段落（= 后追加的长期事实）保留。
+
+    2026-11-11 C 方案：非常驻偏好层（``## 偏好与事实``）与复盘段同法剥掉——它不进
+    常驻注入，改由 ``user_preferences.recall_preferences`` 按本轮关键词少量召回。
     """
     if not text:
         return ""
@@ -178,7 +185,7 @@ def strip_auto_review(text: str | None) -> str:
         out: list[str] = []
         in_review = False
         for line in str(text).split("\n"):
-            if _AUTO_REVIEW_HEADING_RE.match(line):
+            if _NON_RESIDENT_HEADING_RE.match(line):
                 in_review = True
                 continue
             if in_review:

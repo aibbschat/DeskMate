@@ -18,6 +18,14 @@ from typing import Any, Callable, Optional
 
 logger = logging.getLogger(__name__)
 _deskmate_mgr_lock = threading.Lock()
+
+# 每个 base_dir 复用同一个 Manager（构造会建线程池），但 base 变了必须重建：
+# 测试逐用例把 DESKMATE_* 指向不同 tmp_path，若沿用第一个用例的实例，后续用例
+# 的记忆会写进已删除的临时目录；生产侧 base 恒定，行为与旧单例一致。
+_deskmate_mgr_singleton: Any = None
+_deskmate_mgr_base: str = ""
+_deskmate_skill_mgr_singleton: Any = None
+_deskmate_skill_mgr_base: str = ""
 # 2026-11-10 首字延迟排查：同一轮里 context_provider 会被调两次
 # （engine._compaction_due 的 token 估算 + engine._astream 真正发送，各走一次
 # _outbound_messages → context_provider），此前等于把「记忆上下文组装」整段付两遍，
@@ -256,6 +264,39 @@ def _skill_dirs(workspace: Optional[Path]) -> list[Path]:
     return dirs
 
 
+def _deskmate_base_dir() -> Path:
+    """小桔记忆根：DESKMATE_MEMORY_DIR > DESKMATE_DIR > ~/.deskmate。"""
+    return Path(
+        os.environ.get("DESKMATE_MEMORY_DIR")
+        or os.environ.get("DESKMATE_DIR")
+        or str(Path.home() / ".deskmate")
+    )
+
+
+def _get_deskmate_manager(base: Path):
+    """按 base_dir 复用 DeskMateMemoryManager（base 变了就重建）。"""
+    global _deskmate_mgr_singleton, _deskmate_mgr_base
+    with _deskmate_mgr_lock:
+        if _deskmate_mgr_singleton is None or _deskmate_mgr_base != str(base):
+            from deskmate.memory.manager import DeskMateMemoryManager
+
+            _deskmate_mgr_singleton = DeskMateMemoryManager(base)
+            _deskmate_mgr_base = str(base)
+        return _deskmate_mgr_singleton
+
+
+def _get_deskmate_skill_manager(base: Path):
+    """按 base_dir 复用 SkillManager（base 变了就重建）。"""
+    global _deskmate_skill_mgr_singleton, _deskmate_skill_mgr_base
+    with _deskmate_mgr_lock:
+        if _deskmate_skill_mgr_singleton is None or _deskmate_skill_mgr_base != str(base):
+            from deskmate.skills.manager import SkillManager
+
+            _deskmate_skill_mgr_singleton = SkillManager(base_dir=base)
+            _deskmate_skill_mgr_base = str(base)
+        return _deskmate_skill_mgr_singleton
+
+
 def _deskmate_memory_context(messages: list | None = None) -> str:
     """DeskMate 记忆每轮自动注入（默认开启；DESKMATE_AUTO_INJECT=0 可关闭）。
 
@@ -270,18 +311,7 @@ def _deskmate_memory_context(messages: list | None = None) -> str:
     if os.environ.get("DESKMATE_AUTO_INJECT") == "0":
         return ""
     try:
-        from deskmate.memory.manager import DeskMateMemoryManager
-
-        base = os.environ.get("DESKMATE_MEMORY_DIR") or str(Path.home() / ".deskmate")
-        # Reuse a module-level singleton: creating a DeskMateMemoryManager constructs a
-        # ThreadPoolExecutor each time, and context_provider runs on EVERY turn before
-        # the LLM call - the overhead compounds quickly.
-        global _deskmate_mgr_singleton
-        if "_deskmate_mgr_singleton" not in globals():
-            with _deskmate_mgr_lock:
-                if "_deskmate_mgr_singleton" not in globals():
-                    _deskmate_mgr_singleton = DeskMateMemoryManager(Path(base))
-        mgr = _deskmate_mgr_singleton
+        mgr = _get_deskmate_manager(_deskmate_base_dir())
         # 从 messages 中提取最后一条用户消息
         last_user = ""
         if messages:
@@ -331,7 +361,9 @@ def _bot_group_prompt_fallback(text: str | None) -> bool:
     )
 
 
-def _deskmate_post_turn_hook(user_msg: str, assistant_msg: str) -> None:
+def _deskmate_post_turn_hook(
+    user_msg: str, assistant_msg: str, base: Optional[Path] = None
+) -> None:
     """DeskMate 会话后自动抽取（默认开启；DESKMATE_AUTO_INJECT=0 可关闭）。
 
     在引擎每轮对话完成后自动调用，提取记忆和技能。
@@ -357,33 +389,31 @@ def _deskmate_post_turn_hook(user_msg: str, assistant_msg: str) -> None:
     if is_bot_group_prompt(user_msg):
         return
 
-    base = os.environ.get("DESKMATE_MEMORY_DIR") or str(Path.home() / ".deskmate")
+    # base 由构建期固化传入，绝不在 hook 线程里重新读 env：
+    # 引擎用 daemon 线程跑本 hook，若线程活过测试用例、env 已被 monkeypatch
+    # 回滚，再读 env 就会回落到真实 ~/.deskmate，写坏真实记忆。
+    base = Path(base) if base is not None else _deskmate_base_dir()
 
     # 记忆抽取：复用 DeskMateMemoryManager 单例（与 _deskmate_memory_context 共享）
     try:
-        from deskmate.memory.manager import DeskMateMemoryManager
-
-        global _deskmate_mgr_singleton
-        if "_deskmate_mgr_singleton" not in globals():
-            with _deskmate_mgr_lock:
-                if "_deskmate_mgr_singleton" not in globals():
-                    _deskmate_mgr_singleton = DeskMateMemoryManager(Path(base))
-        _deskmate_mgr_singleton.post_session_summary(user_msg, assistant_msg)
+        _get_deskmate_manager(base).post_session_summary(user_msg, assistant_msg)
     except Exception:
         pass  # best-effort, never block
 
     # 技能进化闭环：成功执行后尝试优化相关技能（复用 SkillManager 单例）
     try:
-        from deskmate.skills.manager import SkillManager
-
-        global _deskmate_skill_mgr_singleton
-        if "_deskmate_skill_mgr_singleton" not in globals():
-            with _deskmate_mgr_lock:
-                if "_deskmate_skill_mgr_singleton" not in globals():
-                    _deskmate_skill_mgr_singleton = SkillManager(base_dir=Path(base))
-        _deskmate_skill_mgr_singleton.evolve_skill_on_success(user_msg, assistant_msg)
+        _get_deskmate_skill_manager(base).evolve_skill_on_success(user_msg, assistant_msg)
     except Exception:
         pass  # best-effort, never block
+
+
+def _make_deskmate_post_turn_hook(base: Path):
+    """把 base_dir 固化进闭包，供引擎在 daemon 线程里安全调用。"""
+
+    def _hook(user_msg: str, assistant_msg: str) -> None:
+        _deskmate_post_turn_hook(user_msg, assistant_msg, base=base)
+
+    return _hook
 
 
 def _deskmate_skill_index() -> str:
@@ -919,14 +949,17 @@ def build_engine(
                 )
         return "\n\n".join(parts)
 
+    # 构建期把记忆根固化进闭包：hook 由引擎在 daemon 线程执行，线程可能活过
+    # 测试用例 teardown；若在线程里读 env，monkeypatch 回滚后会写到真实目录。
+    _deskmate_hook_base = _deskmate_base_dir()
     if consult_enabled and mem_store is not None:
         def _post_turn_hook(user_msg: str, assistant_msg: str) -> None:
             if consult_state["used"]:
                 consult_state["used"] = False
                 return
-            _deskmate_post_turn_hook(user_msg, assistant_msg)
+            _deskmate_post_turn_hook(user_msg, assistant_msg, base=_deskmate_hook_base)
     elif memory_enabled and mem_store is not None:
-        _post_turn_hook = _deskmate_post_turn_hook
+        _post_turn_hook = _make_deskmate_post_turn_hook(_deskmate_hook_base)
     else:
         _post_turn_hook = None
 

@@ -838,11 +838,16 @@ def _maybe_review_memory(base_dir: Path, last_user: str, last_asst: str) -> None
                 mem_lines.append(text)
             else:
                 user_lines.append(text)
-        added_user = _append_to_global_memory(base_dir, "USER.md", user_lines)
+        # 2026-11-11 一段止血：复盘流水改存独立 journal（不再写 USER.md）。
+        # USER.md 里的流水在注入时被 strip_auto_review 整段剥掉，等于写了不读；
+        # journal 则会在 prefetch 里以「近期复盘」块真正进入上下文。
+        from deskmate.memory import journal_log
+
+        added_user = journal_log.append_review(base_dir, user_lines)
         added_mem = _append_to_global_memory(base_dir, "MEMORY.md", mem_lines)
         if added_user or added_mem:
             logger.info(
-                "after_action: 记忆复盘 -> USER.md +%d, MEMORY.md +%d",
+                "after_action: 记忆复盘 -> journal +%d, MEMORY.md +%d",
                 added_user, added_mem,
             )
     except Exception:
@@ -948,22 +953,56 @@ def _maybe_decay_memory(base_dir: str, every_n: int = 25) -> None:
     对话流程，导致 traces/forgot.jsonl 从未生成、遗忘对用户不可见。这里按轮数去抖，
     每 every_n 轮跑一次 cleanup_redundancy（其第一步即 decay_memory）。
 
-    零 LLM、fail-open、计数器存于函数属性（进程生命周期内有效）。
+    2026-11-11 一段止血：原计数器存在函数属性里，进程一重启就归零，开发期频繁
+    重启会永远到不了 25 轮——这是 forgot.jsonl 至今为空的直接原因。现在再加一道
+    「日期守卫」：同一进程内每 25 轮一次；跨进程每天至少一次。
+
+    环境变量 ``DESKMATE_DECAY_DRY_RUN=1`` 时只返回「将要忘什么」，不落盘。
+    零 LLM、fail-open。
     """
     try:
         counter = getattr(_maybe_decay_memory, "_counter", 0) + 1
         _maybe_decay_memory._counter = counter  # type: ignore[attr-defined]
     except Exception:
         counter = 0
-    if counter % every_n != 0:
+
+    base = Path(base_dir or str(deskmate_base_dir()))
+    guard = base / ".decay_guard"
+    today = datetime.now().strftime("%Y-%m-%d")
+    try:
+        last_run = guard.read_text(encoding="utf-8").strip()
+    except OSError:
+        last_run = ""
+
+    # 轮数去抖与日期守卫任一满足即执行：修掉「重启就永远不跑」。
+    if counter % every_n != 0 and last_run == today:
         return
+
+    dry_run = os.environ.get("DESKMATE_DECAY_DRY_RUN", "").strip().lower() in (
+        "1", "true", "yes", "on",
+    )
     try:
         from deskmate.memory.manager import DeskMateMemoryManager
 
-        manager = DeskMateMemoryManager(Path(base_dir or str(deskmate_base_dir())))
-        manager.cleanup_redundancy()
+        manager = DeskMateMemoryManager(base)
+        if dry_run:
+            result = manager.decay_memory(dry_run=True)
+            logger.info(
+                "after_action: 记忆衰减 dry-run：将归档 %s、删除 %s",
+                result.get("archived", 0), result.get("deleted", 0),
+            )
+        else:
+            result = manager.cleanup_redundancy()
+            logger.info("after_action: 记忆衰减已执行：%s", result.get("decay", result))
+        # 只有真正跑成功才记日期，失败留待下一轮重试；dry-run 不记，
+        # 否则当天真实衰减会被日期守卫误跳过。
+        if not dry_run:
+            try:
+                guard.write_text(today, encoding="utf-8")
+            except OSError:
+                pass
     except Exception:
-        logger.debug("after_action: 记忆衰减跳过", exc_info=True)
+        logger.warning("after_action: 记忆衰减失败", exc_info=True)
 
 
 def _maybe_update_decision_profile(last_user: str) -> None:

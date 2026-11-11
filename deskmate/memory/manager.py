@@ -29,6 +29,11 @@ from .project_memory import (
     write_project_file,
 )
 from .soul import load_soul, save_soul, reset_soul, evolve_soul
+from .session_text import (
+    format_session_turn,
+    is_system_injected_prompt,
+    strip_system_injected_turns,
+)
 from .user_profile import load_user, save_user, reset_user
 from .llm import llm_available, chat, chat_memory, memory_llm_available
 from .vault_store import VaultStore
@@ -320,13 +325,21 @@ class DeskMateMemoryManager:
             return layer[:budget] + "\n…"
         return layer
 
-    def prefetch(self, user_message: str, *, book: str | None = None) -> str:
+    def prefetch(
+        self, user_message: str, *, book: str | None = None,
+        skip_archival: bool = False,
+    ) -> str:
         """每轮对话前：检索相关记忆，返回 <memory-context> 标签包裹的内容。
 
         三层记忆架构：
         1. Core（热）— preference/correction，每轮无条件注入（占 1/3 预算）
         2. Recall（温）— 7 天内的近期记忆，按关键词匹配优先注入（占 1/3 预算）
         3. Archival（冷）— vault 长期知识 + 旧记忆，按关键词匹配（占 1/3 预算）
+
+        ``skip_archival=True``：三段文件索引健康时，Recall/Global/vault 由
+        ``file_search`` 的融合检索块统一负责，这里只保留 Core 与项目记忆，
+        避免同一批记忆被关键词和向量各注入一遍、挤占预算。索引不可用时
+        保持旧行为（fail-open）。
         """
         context_parts: list[str] = []
         budget_per_layer = MEMORY_CONTEXT_MAX_CHARS // 3
@@ -349,19 +362,21 @@ class DeskMateMemoryManager:
             context_parts.append(self._cap_layer(core_mem, budget_per_layer))
 
         # 2. Recall 层：7 天内的近期记忆，关键词匹配优先
-        recall_mem, recall_section_ids = self._search_recent_memory(user_message)
-        if recall_mem:
-            context_parts.append(self._cap_layer(recall_mem, budget_per_layer))
+        recall_section_ids: set[str] = set()
+        if not skip_archival:
+            recall_mem, recall_section_ids = self._search_recent_memory(user_message)
+            if recall_mem:
+                context_parts.append(self._cap_layer(recall_mem, budget_per_layer))
 
-        # 3. 全局记忆关键词匹配（补充 Recall 未覆盖的，排除 Core + Recall 已覆盖的 section）
-        global_mem = self._search_global_memory(user_message, exclude_tags=CORE_TAGS, exclude_section_ids=recall_section_ids)
-        if global_mem:
-            context_parts.append(self._cap_layer(global_mem, budget_per_layer))
+            # 3. 全局记忆关键词匹配（补充 Recall 未覆盖的，排除 Core + Recall 已覆盖的 section）
+            global_mem = self._search_global_memory(user_message, exclude_tags=CORE_TAGS, exclude_section_ids=recall_section_ids)
+            if global_mem:
+                context_parts.append(self._cap_layer(global_mem, budget_per_layer))
 
-        # 4. Archival 层：vault 长期知识
-        vault_mem = self._search_vault(user_message)
-        if vault_mem:
-            context_parts.append(self._cap_layer(vault_mem, budget_per_layer))
+            # 4. Archival 层：vault 长期知识
+            vault_mem = self._search_vault(user_message)
+            if vault_mem:
+                context_parts.append(self._cap_layer(vault_mem, budget_per_layer))
 
         # 5. 项目记忆（P1-B：按轮解析的当前书优先，active_project 兜底；
         #    过去应用层从不 set_active_project，这里等于把项目记忆接回正路）
@@ -621,6 +636,15 @@ class DeskMateMemoryManager:
         """
         from deskmate.memory.context_budget import ContextBlock, strip_auto_review
 
+        # 2026-11-11：USER.md 健康监测（旁路，节流 5 分钟一次）。直接读文件判断是否
+        # 被异常覆写（即使写入绕过了 save_user 也能发现），异常写 alerts.log + 留存快照。
+        try:
+            from deskmate.memory.user_profile import check_user_file_health
+
+            check_user_file_health(self.base_dir)
+        except Exception:  # noqa: BLE001 - 监测失败不影响本轮
+            pass
+
         # 2026-11-10：每轮注入按 token 预算裁剪 + 闲聊轮跳重块（见 context_budget.py）。
         # blocks 记录块名/优先级/上限；最后统一 render，fail-open 退回旧行为。
         blocks: list[ContextBlock] = []
@@ -670,7 +694,18 @@ class DeskMateMemoryManager:
             except Exception:
                 return text  # fail-open：绝不因隔离逻辑丢掉整块记忆
 
-        relevant = self.prefetch(user_message, book=_book)
+        # 三段：文件索引健康时，Recall/Global/vault 交给 file_search 统一检索，
+        # prefetch 只保留 Core 与项目记忆（避免重复注入）。
+        _file_index_on = os.getenv("DESKMATE_FILE_INDEX", "1") != "0"
+        _index_ok = False
+        if _file_index_on:
+            try:
+                from deskmate.memory.file_search import index_healthy
+
+                _index_ok = index_healthy(self.base_dir)
+            except Exception:
+                _index_ok = False
+        relevant = self.prefetch(user_message, book=_book, skip_archival=_index_ok)
         if relevant:
             inner = relevant.strip()
             if inner.startswith("<memory-context>"):
@@ -682,18 +717,88 @@ class DeskMateMemoryManager:
                 inner = _scoped(inner, "filter_memory_sections_by_book")
                 # 记忆检索块：写作轮必带；闲聊轮跳过（省 prefill）
                 _add("prefetch", inner, priority=35, cap=4500, keep_light=False)
+        # 三段：记忆文件层融合检索（关键词 + 向量 + 锚）。索引健康时它是
+        # Recall/Global/diary/vault/偏好 的统一入口；失败/索引缺失则整块跳过，
+        # 回落到上面的旧 prefetch 路径（DESKMATE_FILE_INDEX=0 可强制回滚）。
+        if _file_index_on and _index_ok:
+            try:
+                from deskmate.memory.file_search import (
+                    backstop_chunks,
+                    format_hits,
+                    search_memory_files,
+                )
+
+                _hits = search_memory_files(
+                    user_message, k=8, budget_chars=1200, base=self.base_dir
+                )
+                if _hits:
+                    # 按当前书隔离：把召回结果包成一个临时 § 节交给既有过滤器，
+                    # 逐行剔除「只提别的书」的条目（跨书对照/通用条目保留）。
+                    _lines = [
+                        f"- [{h['source_path']} · {h['section']}] {h['content']}"
+                        for h in _hits
+                    ]
+                    _wrapped = "§ 检索召回\n" + "\n".join(_lines)
+                    _filtered = _scoped(_wrapped, "filter_memory_sections_by_book")
+                    _body = "\n".join(
+                        ln for ln in _filtered.splitlines()
+                        if ln.strip().startswith("- ")
+                    )
+                    if _body:
+                        _add("file_recall",
+                             "## 相关记忆（按本轮问题临时检索）\n\n" + _body,
+                             priority=34, cap=1200, keep_light=False)
+                # 兜底：没有命中，或本轮只是短指令/寒暄（<6 字）时，
+                # 取 3 条/400 字的高价值底稿——不走向量，不挤占预算。
+                if not _hits or len((user_message or "").strip()) < 6:
+                    _bs = backstop_chunks(self.base_dir, limit=3, max_chars=400)
+                    if _bs:
+                        _add("memory_backstop",
+                             format_hits(_bs, "## 兜底记忆（未主动检索时保底）"),
+                             priority=60, cap=400)
+            except Exception:
+                pass  # fail-open：索引异常不影响旧路径
         user = load_user(self.base_dir)
         if user and user.strip():
             user = _scoped(user, "filter_user_profile_by_book")
+            # 2026-11-11 C 方案：USER.md 分成两层——「## 硬规矩」常驻（条目前置）、
+            # 「## 偏好与事实」不常驻（由 preference_hits 按需召回）。strip 把后者
+            # 连「自动复盘」一起剥掉，得到的就是「硬规矩 + 稳定画像」。
+            # 上限按实测重定：注入块 4,425 字符（硬规矩 1,769 + 稳定画像 2,638 + 标题），
+            # cap=5,100（×1.15，留约 675 字符≈10 条短规矩的余量）；旧值 6000 是按
+            # 拆分前 12.8K 字符的旧结构拍的，已无依据。轻量轮只保硬规矩与身份。
             _add(
                 "user_profile",
-                # P1-B 的书过滤已先跑；这里再剥「自动复盘」日期流水段（非稳定画像），
-                # 把 12.4KB 压到 ~2.6KB 同时不丢画像内容。
                 f"## 用户画像\n{strip_auto_review(user.strip())}",
                 priority=40,
-                cap=6000,
-                cap_light=2600,
+                cap=5100,
+                cap_light=3000,
             )
+        # 2026-11-11 一段止血：复盘流水已改存独立 journal（不再写 USER.md），
+        # 这里把它真正读回上下文——只取最近 7 天、每天最多 4 条、总长 ≤1200，
+        # 避免「换个体积更大的包袱」。迁移历史条目带 [归档] 前缀，digest 跳过。
+        try:
+            from deskmate.memory import journal_log
+
+            digest = journal_log.recent_digest(
+                self.base_dir, days=7, max_chars=1200, max_items_per_day=4
+            )
+            if digest:
+                _add("journal_digest", digest, priority=42, cap=1400, cap_light=900)
+        except Exception:
+            pass  # fail-open：journal 缺失不影响主记忆注入
+        # 2026-11-11 C 方案：非常驻偏好层按本轮关键词少量召回。
+        # 三段索引健康时，偏好已包含在 file_recall 的 user chunk 里，这里不再
+        # 重复注入；只有索引不可用（回滚 / 未建索引）才走旧的词面兜底。
+        if not _index_ok:
+            try:
+                from deskmate.memory.user_preferences import recall_preferences
+
+                pref_ctx = recall_preferences(self.base_dir, user_message)
+                if pref_ctx:
+                    _add("preference_hits", pref_ctx, priority=48, cap=700, cap_light=500)
+            except Exception:
+                pass  # fail-open：偏好召回失败不影响主记忆注入
         # P2-6 分身模式（可选开启，默认关）：追加「另一个我」画像，
         # 让 AI 以用户的写作风格与决策偏好输出，而非通用 AI 风格。
         try:
@@ -1097,7 +1202,11 @@ class DeskMateMemoryManager:
             save_soul(self.base_dir, content)
             return "SOUL.md 已更新"
         elif section == "user":
-            save_user(self.base_dir, content)
+            if not save_user(self.base_dir, content):
+                return (
+                    "USER.md 写入被拒：内容疑似异常（重复度/长度突变/分节结构丢失），"
+                    "已留存现场快照，原文件未改动。请检查后再写。"
+                )
             return "USER.md 已更新"
         elif section == "memory":
             self._save_global_memory(content)
@@ -1143,7 +1252,8 @@ class DeskMateMemoryManager:
             if old_text not in content:
                 return "USER.md 中未找到要替换的文本"
             updated = content.replace(old_text, new_text, 1)
-            save_user(self.base_dir, updated)
+            if not save_user(self.base_dir, updated):
+                return "USER.md 写入被拒：内容疑似异常（重复度/长度突变/分节结构丢失），已留存现场快照，原文件未改动。"
             return "USER.md 已替换"
 
         if section == "memory":
@@ -1178,7 +1288,8 @@ class DeskMateMemoryManager:
             updated = content.replace(text_to_remove, "", 1)
             # 清理可能残留的多余空行
             updated = re.sub(r"\n{3,}", "\n\n", updated).strip() + "\n"
-            save_user(self.base_dir, updated)
+            if not save_user(self.base_dir, updated):
+                return "USER.md 写入被拒：内容疑似异常（重复度/长度突变/分节结构丢失），已留存现场快照，原文件未改动。"
             return "USER.md 已删除"
 
         if section == "memory":
@@ -1662,7 +1773,7 @@ class DeskMateMemoryManager:
         today = datetime.date.today().isoformat()
         return f"{today}: {text}"
 
-    def decay_memory(self) -> dict:
+    def decay_memory(self, dry_run: bool = False) -> dict:
         """记忆衰减：按 TTL 规则淘汰过时条目。
 
         - #work 下超过 30 天的条目 → 归档到 vault
@@ -1670,6 +1781,9 @@ class DeskMateMemoryManager:
         - #preference / #correction → 永不衰减
 
         调用时机：每次 cleanup_redundancy 时附带执行，或手动触发。
+
+        2026-11-11 一段止血：新增 ``dry_run`` —— 只算「将要忘什么」并返回，
+        不写 vault、不改 MEMORY.md、不落 forgot.jsonl。用于先只读核对清单。
         """
         import datetime
 
@@ -1717,9 +1831,19 @@ class DeskMateMemoryManager:
                     continue
 
                 if age > sec_ttl:
-                    # 超龄：归档或删除
+                    # 超龄：归档或删除（dry_run 只记账不落盘）
                     if sec_ttl >= 30:
                         # 长 TTL 的归档到 vault（可恢复）
+                        if dry_run:
+                            archived += 1
+                            forgot_records.append({
+                                "action": "would_archive",
+                                "section": sec["title"],
+                                "date": m.group(1),
+                                "summary": entry[:80],
+                            })
+                            kept.append(entry)
+                            continue
                         try:
                             self.vault.write_entry(
                                 content=entry,
@@ -1745,12 +1869,13 @@ class DeskMateMemoryManager:
                     else:
                         deleted += 1
                         forgot_records.append({
-                            "action": "deleted",
+                            "action": "would_delete" if dry_run else "deleted",
                             "section": sec["title"],
                             "date": m.group(1),
                             "summary": entry[:80],
                         })
-                        sec_modified = True
+                        if not dry_run:
+                            sec_modified = True
                     if sec_modified:
                         modified = True
                     continue
@@ -1761,21 +1886,26 @@ class DeskMateMemoryManager:
             if sec_modified:
                 sec["body"] = "\n".join(kept)
 
-        if modified:
+        if modified and not dry_run:
             self._save_global_memory(self._render_sections("", sections))
 
         # 8.3 遗忘可见：把「忘了什么」留痕，前端可展示（遗忘与记忆一样透明）
         for rec in forgot_records:
             rec["ts"] = datetime.datetime.now().isoformat(timespec="seconds")
-            self._append_trace(FORGOT_TRACE_FILE, rec)
+            if not dry_run:
+                self._append_trace(FORGOT_TRACE_FILE, rec)
 
-        return {
+        result = {
             "decayed": archived + deleted,
             "archived": archived,
             "deleted": deleted,
             "forgot_count": len(forgot_records),
             "notes": f"归档 {archived} 条，删除 {deleted} 条",
         }
+        if dry_run:
+            result["dry_run"] = True
+            result["would_forget"] = forgot_records
+        return result
 
     def append_to_section(
         self,
@@ -1829,7 +1959,8 @@ class DeskMateMemoryManager:
             if current and not current.endswith("\n"):
                 current = current.rstrip() + "\n"
             updated = (current.rstrip() + "\n\n" + entry_s) if current.strip() else entry_s
-            save_user(self.base_dir, updated)
+            if not save_user(self.base_dir, updated):
+                return "USER.md 写入被拒：内容疑似异常（重复度/长度突变/分节结构丢失），已留存现场快照，原文件未改动。"
             self._compress_if_needed("user")
             return "USER.md 已追加"
 
@@ -2097,8 +2228,7 @@ class DeskMateMemoryManager:
             return False
         current = load_user(self.base_dir)
         if old in current:
-            save_user(self.base_dir, current.replace(old, new, 1))
-            return True
+            return save_user(self.base_dir, current.replace(old, new, 1))
         return False
 
     def _classify_user_relation(self, new_entry: str, existing: list[str]) -> str:
@@ -2563,9 +2693,14 @@ class DeskMateMemoryManager:
         transcript = []
         for f in files:
             try:
-                transcript.append(f.read_text(encoding="utf-8"))
+                cleaned = strip_system_injected_turns(f.read_text(encoding="utf-8"))
             except OSError:
                 continue
+            # 历史重抽：整轮系统注入的 session 剥完可能只剩 Assistant，不进入转录。
+            if "## user" in cleaned.lower():
+                transcript.append(cleaned)
+        if not transcript:
+            return {"written": 0, "notes": "仅含系统注入轮次，跳过抽取"}
         text = "\n\n---\n\n".join(transcript)
         if len(text) > 6000:
             text = text[-6000:]
@@ -2607,7 +2742,9 @@ class DeskMateMemoryManager:
                 continue
             try:
                 if category == "preference":
-                    self.append_to_section("user", fact_text)
+                    result = self.append_to_section("user", fact_text)
+                    if "被拒" in result:
+                        continue
                     written += 1
                 elif category in ("work", "correction") and self._is_book_content(fact_text):
                     # P0-6 分层：书稿/项目专属事实 → 项目记忆，不污染全局「关于你」的记忆
@@ -2638,8 +2775,10 @@ class DeskMateMemoryManager:
             text = session_file.read_text(encoding="utf-8")
         except OSError:
             return {"written": 0, "notes": "读取 session 文件失败"}
-        if not text.strip():
-            return {"written": 0, "notes": "空对话"}
+        # 历史 session / 直接调用本函数时，再剥一次系统注入段（新文件已打标记）。
+        text = strip_system_injected_turns(text)
+        if "## user" not in text.lower():
+            return {"written": 0, "notes": "仅含系统注入轮次，跳过抽取"}
         if len(text) > 6000:
             text = text[-6000:]
 
@@ -2723,7 +2862,7 @@ class DeskMateMemoryManager:
                     result = self.append_to_section("user", fact_text)
                 else:
                     result = self.append_to_section("memory", f"#{category} {fact_text}")
-                if "跳过" in result:
+                if "跳过" in result or "被拒" in result:
                     skipped += 1
                 else:
                     written += 1
@@ -2846,6 +2985,10 @@ class DeskMateMemoryManager:
                 "written": 0, "skipped": 0, "learned": [],
                 "notes": "Bot 群会话，跳过记忆抽取与萧盛影响记录",
             }
+        # 系统注入的 user 消息（定时任务开场 / 目标制协议）不是萧盛口述：
+        # 落盘时打标记，本轮不抽事实、不学决策偏好、不记萧盛影响。
+        # 标记随 session 持久化，历史重抽由 strip_system_injected_turns 兜底。
+        system_turn = is_system_injected_prompt(user_msg)
         try:
             session_file = self._save_session_turn(user_msg or "", assistant_msg or "")
         except Exception as e:
@@ -2856,7 +2999,7 @@ class DeskMateMemoryManager:
         # P2-6 学习闭环：每轮从用户消息学决策偏好（可选开启，默认关）。
         # 仅当分身模式开启时触发；无决策信号时 extract_and_update 不写盘。
         # 放在事实抽取之前，确保「学习」不依赖抽取是否成功。
-        if user_msg:
+        if user_msg and not system_turn:
             try:
                 from deskmate.alter_ego.config import is_enabled as alter_ego_enabled
                 if alter_ego_enabled():
@@ -2867,23 +3010,20 @@ class DeskMateMemoryManager:
         # 世界观素材池。best-effort、fail-open——绝不影响上面的记忆抽取。这一笔同时覆盖
         # 「聊天内容」与「写作协作讨论」（协作是在对话里进行的）。
         try:
-            # 自动化会话（首条 user_msg 以「⏰ Scheduled run」开头）不是和萧盛的聊天，
-            # 其会话摘要绝不能记成「萧盛影响」——否则自动化提示词会冒充满「内部·萧盛」标，
-            # 污染世界观回望与对话上下文。萧盛影响只来自他本人的实时对话/写作协作。
-            if (user_msg or "").strip().startswith("⏰ Scheduled run"):
+            # 系统注入的轮次不是和萧盛的聊天（定时任务开场 / 目标制协议），
+            # 其会话摘要绝不能记成「萧盛影响」——否则自动化提示词会冒充满
+            # 「内部·萧盛」标，污染世界观回望与对话上下文。萧盛影响只来自
+            # 他本人的实时对话/写作协作。
+            if system_turn:
                 pass
             elif user_msg or assistant_msg:
                 from deskmate.agency.behaviors.xiaosheng_ingestion import (
                     record_xiaosheng_observation,
                 )
-                import os
-                from pathlib import Path
 
-                _base = (
-                    os.environ.get("DESKMATE_MEMORY_DIR")
-                    or os.environ.get("DESKMATE_DIR")
-                    or str(Path.home() / ".deskmate")
-                )
+                # 用 manager 自己的 base_dir，不在线程里重新读 env：
+                # 测试用例 teardown 后 env 回滚，读到真实 ~/.deskmate 就漏了。
+                _base = str(self.base_dir)
                 _u = (user_msg or "").strip()
                 _a = (assistant_msg or "").strip()
                 _body = _u
@@ -2893,6 +3033,12 @@ class DeskMateMemoryManager:
                     record_xiaosheng_observation(_base, "chat", "", "", _body[:2000])
         except Exception:
             pass
+        if system_turn:
+            # 系统注入轮次已带标记落盘（供回溯），但绝不进入事实抽取。
+            return {
+                "written": 0, "skipped": 0, "learned": [],
+                "notes": "系统注入轮次，跳过记忆抽取",
+            }
         result = self._extract_single_session(session_file)
         return result
 
@@ -3042,7 +3188,13 @@ class DeskMateMemoryManager:
         import time
         ts = time.time_ns()
         p = sessions_dir / f"{ts}.md"
-        content = f"## User\n{user_msg}\n\n## Assistant\n{assistant_msg}\n"
+        # 系统注入的 user 消息（定时任务开场 / 目标制协议）打来源标记，
+        # 抽取入口据此整段跳过；标记随文件落盘，历史重抽同样生效。
+        content = format_session_turn(
+            user_msg or "",
+            assistant_msg or "",
+            system_injected=is_system_injected_prompt(user_msg),
+        )
         p.write_text(content, encoding="utf-8")
         # 只保留最近50个 session 文件
         files = sorted(sessions_dir.glob("*.md"), key=lambda f: f.name)

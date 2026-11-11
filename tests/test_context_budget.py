@@ -154,9 +154,12 @@ def test_render_budget_off_returns_everything(monkeypatch):
 def heavy_manager(tmp_path, monkeypatch):
     monkeypatch.setenv("DESKMATE_WEATHER", "0")
     monkeypatch.setenv("DESKMATE_EMOTION_ENGINE", "0")
-    monkeypatch.setattr(
-        "deskmate.memory.manager.load_user", lambda base: "画像" * 4000
-    )
+    # 事故教训（2026-11-11）：不要 monkeypatch 模块级读取函数。该替身是进程级的，
+    # 前一个用例遗留的 daemon 线程（engine 的 post_turn_hook）会读到 `"画像"*4000`
+    # 并写进真实 ~/.deskmate/USER.md——17:41 那次退化正是这条路径。
+    # 改成把「重画像」直接落成本用例 tmp base 里的真实 USER.md：链路不变，
+    # 影响范围严格限制在 base_dir 内。
+    (tmp_path / "USER.md").write_text("画像" * 4000, encoding="utf-8")
     monkeypatch.setattr(
         DeskMateMemoryManager,
         "prefetch",
@@ -219,3 +222,17 @@ def test_strip_auto_review_keeps_fact_appended_after_last_section():
     assert "今天聊了第三章" not in out
     assert "自动复盘" not in out
     assert "绝命救援.docx" in out and "旧快照" in out
+
+
+def test_strip_auto_review_drops_non_resident_preferences():
+    """C 方案（2026-11-11）：非常驻偏好层不进常驻注入，硬规矩与稳定画像保留。"""
+    profile = (
+        "# 用户画像\n"
+        "## 硬规矩\n- 正文只标不改\n"
+        "## 偏好与事实（非常驻·待检索）\n- 喜欢雨天码字\n- 每天读一本\n"
+        "## 基本信息\n- 萧盛，历史小说家\n"
+    )
+    out = cb.strip_auto_review(profile)
+    assert "正文只标不改" in out and "基本信息" in out
+    assert "偏好与事实" not in out
+    assert "喜欢雨天码字" not in out and "每天读一本" not in out
