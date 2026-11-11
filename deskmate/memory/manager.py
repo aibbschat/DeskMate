@@ -114,6 +114,26 @@ BOT_GROUP_PROMPT_PREFIXES = ("群里刚有人说", "群内已有发言")
 BOT_GROUP_PROMPT_MARKERS = ("请直接以你自己的身份发言",)
 _BOT_GROUP_ROUND_RE = re.compile(r"这是第\s*\d+\s*轮接话")
 
+# 四段（pref-02c / pref-04c）：指代无实体。用户说「那一条」「换成哪一种」时，
+# 本轮消息里没有任何可检索的实体，单轮检索必然落空。这里把**上一轮用户消息**
+# 拼进检索 query（只拼 240 字），让指代有一个可检索的先行词。
+# 触发条件：本轮短（<12 字）或含指代/代词；长且无指代的正常问题不做扩展，
+# 避免把上一轮的话题噪声带进来。
+_ANAPHORA_RE = re.compile(
+    r"哪一(?:种|个|条|本|句)|(?:那|这)(?:一)?(?:条|个|件|种|本|句|篇)|它|他们?"
+)
+
+
+def _expand_query(current: str, prev_user: str) -> str:
+    """指代扩展：返回用于检索的 query（不改动注入给模型的用户原话）。"""
+    cur = (current or "").strip()
+    prev = (prev_user or "").strip()
+    if not cur or not prev:
+        return cur
+    if len(cur) >= 12 and not _ANAPHORA_RE.search(cur):
+        return cur
+    return f"{prev[-240:]} {cur}"
+
 
 def is_bot_group_prompt(text: str | None) -> bool:
     """判定一段文本是不是 Bot 群会话提示词（纯函数、零副作用、零依赖）。
@@ -620,7 +640,7 @@ class DeskMateMemoryManager:
             result = result[:4000] + "\n…"
         return result, matched_ids
 
-    def build_full_context_for_turn(self, user_message: str = "") -> str:
+    def build_full_context_for_turn(self, user_message: str = "", *, prev_user: str = "") -> str:
         """构造每轮对话要注入的「完整记忆上下文」（prefetch 相关片段 + 完整 USER 画像）。
 
         用于「每轮自动注入记忆」的 opt-in 能力（DESKMATE_AUTO_INJECT）。
@@ -725,12 +745,20 @@ class DeskMateMemoryManager:
                 from deskmate.memory.file_search import (
                     backstop_chunks,
                     format_hits,
+                    gate_hits,
+                    is_chitchat,
                     search_memory_files,
                 )
 
-                _hits = search_memory_files(
-                    user_message, k=8, budget_chars=1200, base=self.base_dir
-                )
+                # 四段：闲聊门 + 相关性闸。寒暄轮不做语义检索（只能塞噪声），
+                # 其余轮把 RRF 尾部的弱相关条目挡掉，最多注入 6 条。
+                _q = _expand_query(user_message, prev_user)
+                if is_chitchat(user_message):
+                    _hits = []
+                else:
+                    _hits = gate_hits(search_memory_files(
+                        _q, k=8, budget_chars=1600, base=self.base_dir
+                    ))
                 if _hits:
                     # 按当前书隔离：把召回结果包成一个临时 § 节交给既有过滤器，
                     # 逐行剔除「只提别的书」的条目（跨书对照/通用条目保留）。

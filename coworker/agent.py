@@ -314,26 +314,33 @@ def _deskmate_memory_context(messages: list | None = None) -> str:
         mgr = _get_deskmate_manager(_deskmate_base_dir())
         # 从 messages 中提取最后一条用户消息
         last_user = ""
+        prev_user = ""
         if messages:
-            for msg in reversed(messages):
-                if msg.get("role") == "user":
-                    content = msg.get("content", "")
-                    if isinstance(content, str):
-                        last_user = content
-                    elif isinstance(content, list):
-                        # 多模态消息，取文本部分
-                        for part in content:
-                            if isinstance(part, dict) and part.get("type") == "text":
-                                last_user = part.get("text", "")
-                                break
-                    break
+            users: list[str] = []
+            for msg in messages:
+                if msg.get("role") != "user":
+                    continue
+                content = msg.get("content", "")
+                if isinstance(content, str):
+                    users.append(content)
+                elif isinstance(content, list):
+                    # 多模态消息，取文本部分
+                    for part in content:
+                        if isinstance(part, dict) and part.get("type") == "text":
+                            users.append(part.get("text", ""))
+                            break
+            if users:
+                last_user = users[-1]
+                # 四段（指代无实体）：上一轮原话给检索做先行词
+                if len(users) >= 2:
+                    prev_user = users[-2]
         key = _deskmate_ctx_key(messages, last_user)
         now = time.time()
         with _deskmate_ctx_lock:
             hit = _deskmate_ctx_cache.get(key)
             if hit is not None and now - hit[0] <= _DESKMATE_CTX_TTL:
                 return hit[1]
-        value = mgr.build_full_context_for_turn(last_user)
+        value = mgr.build_full_context_for_turn(last_user, prev_user=prev_user)
         with _deskmate_ctx_lock:
             # 轻量清理：只保留 TTL 内的条目，避免长会话下无界增长。
             for stale_key, (stale_ts, _v) in list(_deskmate_ctx_cache.items()):
@@ -782,6 +789,17 @@ def build_engine(
         block = render_memory_block(remembered)
         if block:
             instructions = f"{instructions}\n\n{block}"
+
+    # 四段·检索权：只给小桔 / 主 Coworker 挂**只读**记忆检索工具。
+    # 专家 / 工人 persona 连记忆都不读，自然也不给；写权限不开（走既有抽取管线）。
+    # base 在构造期固化，与 post_turn_hook 同一个理由：线程内读 env 会串目录。
+    if memory_enabled and agent.name in MEMORY_COMPANION_AGENTS:
+        try:
+            from deskmate.tools.registry import build_tools
+
+            registry.register_all(build_tools(base=_deskmate_base_dir()))
+        except Exception:  # noqa: BLE001 —— 检索工具起不来不拖垮小桔
+            pass
 
     # Persona dirs come FIRST so a user's global/workspace copy of the same name shadows
     # the bundle's (later dirs overwrite earlier in the loader).

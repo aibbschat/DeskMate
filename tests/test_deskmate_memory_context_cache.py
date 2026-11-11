@@ -12,7 +12,7 @@ class _FakeMgr:
     def __init__(self) -> None:
         self.calls: list[str] = []
 
-    def build_full_context_for_turn(self, query: str) -> str:
+    def build_full_context_for_turn(self, query: str, *, prev_user: str = "") -> str:
         self.calls.append(query)
         return f"ctx:{query}"
 
@@ -20,7 +20,9 @@ class _FakeMgr:
 def _setup(monkeypatch):
     fake = _FakeMgr()
     monkeypatch.setenv("DESKMATE_AUTO_INJECT", "1")
-    monkeypatch.setattr(agent, "_deskmate_mgr_singleton", fake, raising=False)
+    # 2026-11-11 起 manager 按 base 复用（_get_deskmate_manager），不再读全局
+    # _deskmate_mgr_singleton；这里按新入口打桩。
+    monkeypatch.setattr(agent, "_get_deskmate_manager", lambda *a, **k: fake)
     agent._deskmate_ctx_cache.clear()
     return fake
 

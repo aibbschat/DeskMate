@@ -1,0 +1,1723 @@
+{
+  "impl": "fused",
+  "base_dir": "/Users/xiaocheng/.deskmate",
+  "cases": 60,
+  "hit_rate": 0.917,
+  "r@5": 0.85,
+  "mrr": 0.67,
+  "cold_ms": 377.21,
+  "latency_ms": {
+    "mean": 60.93,
+    "median": 62.91,
+    "p95": 82.42,
+    "max": 84.01
+  },
+  "channel_mean_ms": {
+    "fused": 60.92
+  },
+  "by_category": {
+    "偏好": {
+      "n": 12,
+      "hit": 10,
+      "top5": 10,
+      "rr": 6.083333333333333,
+      "hit_rate": 0.833,
+      "r@5": 0.833,
+      "mrr": 0.507
+    },
+    "旧事": {
+      "n": 12,
+      "hit": 10,
+      "top5": 10,
+      "rr": 8.833333333333332,
+      "hit_rate": 0.833,
+      "r@5": 0.833,
+      "mrr": 0.736
+    },
+    "创作约定": {
+      "n": 12,
+      "hit": 12,
+      "top5": 10,
+      "rr": 8.541666666666668,
+      "hit_rate": 1.0,
+      "r@5": 0.833,
+      "mrr": 0.712
+    },
+    "人物设定": {
+      "n": 12,
+      "hit": 12,
+      "top5": 11,
+      "rr": 8.509523809523811,
+      "hit_rate": 1.0,
+      "r@5": 0.917,
+      "mrr": 0.709
+    },
+    "文件位置": {
+      "n": 6,
+      "hit": 5,
+      "top5": 4,
+      "rr": 3.642857142857143,
+      "hit_rate": 0.833,
+      "r@5": 0.667,
+      "mrr": 0.607
+    },
+    "vault知识": {
+      "n": 6,
+      "hit": 6,
+      "top5": 6,
+      "rr": 4.583333333333333,
+      "hit_rate": 1.0,
+      "r@5": 1.0,
+      "mrr": 0.764
+    }
+  },
+  "by_variant": {
+    "同义": {
+      "n": 20,
+      "hit": 20,
+      "top5": 18,
+      "rr": 14.741666666666665,
+      "hit_rate": 1.0,
+      "r@5": 0.9,
+      "mrr": 0.737
+    },
+    "口语": {
+      "n": 20,
+      "hit": 18,
+      "top5": 18,
+      "rr": 13.250000000000002,
+      "hit_rate": 0.9,
+      "r@5": 0.9,
+      "mrr": 0.663
+    },
+    "指代": {
+      "n": 20,
+      "hit": 17,
+      "top5": 15,
+      "rr": 12.202380952380953,
+      "hit_rate": 0.85,
+      "r@5": 0.75,
+      "mrr": 0.61
+    }
+  },
+  "by_layer": {
+    "user_pref": {
+      "n": 12,
+      "hit": 10,
+      "top5": 9,
+      "rr": 7.142857142857143,
+      "hit_rate": 0.833,
+      "r@5": 0.75,
+      "mrr": 0.595
+    },
+    "user_hard": {
+      "n": 15,
+      "hit": 14,
+      "top5": 12,
+      "rr": 9.125,
+      "hit_rate": 0.933,
+      "r@5": 0.8,
+      "mrr": 0.608
+    },
+    "diary_view": {
+      "n": 9,
+      "hit": 8,
+      "top5": 8,
+      "rr": 6.833333333333333,
+      "hit_rate": 0.889,
+      "r@5": 0.889,
+      "mrr": 0.759
+    },
+    "diary_day": {
+      "n": 3,
+      "hit": 2,
+      "top5": 2,
+      "rr": 2.0,
+      "hit_rate": 0.667,
+      "r@5": 0.667,
+      "mrr": 0.667
+    },
+    "memory": {
+      "n": 15,
+      "hit": 15,
+      "top5": 14,
+      "rr": 10.509523809523808,
+      "hit_rate": 1.0,
+      "r@5": 0.933,
+      "mrr": 0.701
+    },
+    "vault": {
+      "n": 6,
+      "hit": 6,
+      "top5": 6,
+      "rr": 4.583333333333333,
+      "hit_rate": 1.0,
+      "r@5": 1.0,
+      "mrr": 0.764
+    }
+  },
+  "resident_covered": 12,
+  "resident_chars": 4386,
+  "details": [
+    {
+      "id": "pref-01a",
+      "intent": "pref-01",
+      "category": "偏好",
+      "layer": "user_pref",
+      "variant": "同义",
+      "query": "萧盛写过哪些妖怪题材的书",
+      "gold": "中国妖怪录",
+      "gold_source": "USER.md",
+      "hit": true,
+      "rank": 2,
+      "hit_channel": "fused",
+      "hit_at_5": true,
+      "rr": 0.5,
+      "resident": false,
+      "ms": 48.84,
+      "chars": 870,
+      "channels": {
+        "fused": {
+          "ms": 48.84,
+          "chars": 870,
+          "units": 8,
+          "error": null
+        }
+      }
+    },
+    {
+      "id": "pref-01b",
+      "intent": "pref-01",
+      "category": "偏好",
+      "layer": "user_pref",
+      "variant": "口语",
+      "query": "他那本讲妖怪的书叫啥来着",
+      "gold": "中国妖怪录",
+      "gold_source": "USER.md",
+      "hit": true,
+      "rank": 2,
+      "hit_channel": "fused",
+      "hit_at_5": true,
+      "rr": 0.5,
+      "resident": false,
+      "ms": 50.61,
+      "chars": 1210,
+      "channels": {
+        "fused": {
+          "ms": 50.6,
+          "chars": 1210,
+          "units": 7,
+          "error": null
+        }
+      }
+    },
+    {
+      "id": "pref-01c",
+      "intent": "pref-01",
+      "category": "偏好",
+      "layer": "user_pref",
+      "variant": "指代",
+      "query": "我那个妖怪书还出过啥",
+      "gold": "中国妖怪录",
+      "gold_source": "USER.md",
+      "hit": true,
+      "rank": 1,
+      "hit_channel": "fused",
+      "hit_at_5": true,
+      "rr": 1.0,
+      "resident": false,
+      "ms": 45.44,
+      "chars": 1212,
+      "channels": {
+        "fused": {
+          "ms": 45.43,
+          "chars": 1212,
+          "units": 7,
+          "error": null
+        }
+      }
+    },
+    {
+      "id": "pref-02a",
+      "intent": "pref-02",
+      "category": "偏好",
+      "layer": "user_pref",
+      "variant": "同义",
+      "query": "朗读时应该用什么音色",
+      "gold": "御姐音",
+      "gold_source": "USER.md",
+      "hit": true,
+      "rank": 1,
+      "hit_channel": "fused",
+      "hit_at_5": true,
+      "rr": 1.0,
+      "resident": false,
+      "ms": 45.82,
+      "chars": 1097,
+      "channels": {
+        "fused": {
+          "ms": 45.81,
+          "chars": 1097,
+          "units": 8,
+          "error": null
+        }
+      }
+    },
+    {
+      "id": "pref-02b",
+      "intent": "pref-02",
+      "category": "偏好",
+      "layer": "user_pref",
+      "variant": "口语",
+      "query": "以后念稿子用哪种声音",
+      "gold": "御姐音",
+      "gold_source": "USER.md",
+      "hit": true,
+      "rank": 2,
+      "hit_channel": "fused",
+      "hit_at_5": true,
+      "rr": 0.5,
+      "resident": false,
+      "ms": 45.88,
+      "chars": 945,
+      "channels": {
+        "fused": {
+          "ms": 45.87,
+          "chars": 945,
+          "units": 8,
+          "error": null
+        }
+      }
+    },
+    {
+      "id": "pref-02c",
+      "intent": "pref-02",
+      "category": "偏好",
+      "layer": "user_pref",
+      "variant": "指代",
+      "query": "念稿的声音他不喜欢了，要换成哪一种",
+      "gold": "御姐音",
+      "gold_source": "USER.md",
+      "hit": false,
+      "rank": null,
+      "hit_channel": "",
+      "hit_at_5": false,
+      "rr": 0.0,
+      "resident": false,
+      "ms": 45.58,
+      "chars": 939,
+      "channels": {
+        "fused": {
+          "ms": 45.57,
+          "chars": 939,
+          "units": 8,
+          "error": null
+        }
+      }
+    },
+    {
+      "id": "pref-03a",
+      "intent": "pref-03",
+      "category": "偏好",
+      "layer": "user_hard",
+      "variant": "同义",
+      "query": "行文里两岸的称谓用什么词",
+      "gold": "此岸／对岸",
+      "gold_source": "USER.md",
+      "hit": true,
+      "rank": 2,
+      "hit_channel": "fused",
+      "hit_at_5": true,
+      "rr": 0.5,
+      "resident": true,
+      "ms": 43.43,
+      "chars": 1136,
+      "channels": {
+        "fused": {
+          "ms": 43.43,
+          "chars": 1136,
+          "units": 8,
+          "error": null
+        }
+      }
+    },
+    {
+      "id": "pref-03b",
+      "intent": "pref-03",
+      "category": "偏好",
+      "layer": "user_hard",
+      "variant": "口语",
+      "query": "他让我别写这边那边，要写啥",
+      "gold": "此岸／对岸",
+      "gold_source": "USER.md",
+      "hit": true,
+      "rank": 1,
+      "hit_channel": "fused",
+      "hit_at_5": true,
+      "rr": 1.0,
+      "resident": true,
+      "ms": 44.4,
+      "chars": 1168,
+      "channels": {
+        "fused": {
+          "ms": 44.4,
+          "chars": 1168,
+          "units": 8,
+          "error": null
+        }
+      }
+    },
+    {
+      "id": "pref-03c",
+      "intent": "pref-03",
+      "category": "偏好",
+      "layer": "user_hard",
+      "variant": "指代",
+      "query": "两岸的叫法他要求改成哪两个词",
+      "gold": "此岸／对岸",
+      "gold_source": "USER.md",
+      "hit": true,
+      "rank": 2,
+      "hit_channel": "fused",
+      "hit_at_5": true,
+      "rr": 0.5,
+      "resident": true,
+      "ms": 45.35,
+      "chars": 1135,
+      "channels": {
+        "fused": {
+          "ms": 45.34,
+          "chars": 1135,
+          "units": 8,
+          "error": null
+        }
+      }
+    },
+    {
+      "id": "pref-04a",
+      "intent": "pref-04",
+      "category": "偏好",
+      "layer": "user_hard",
+      "variant": "同义",
+      "query": "写作营文章结尾有什么禁忌",
+      "gold": "延伸话题",
+      "gold_source": "USER.md",
+      "hit": true,
+      "rank": 4,
+      "hit_channel": "fused",
+      "hit_at_5": true,
+      "rr": 0.25,
+      "resident": true,
+      "ms": 43.11,
+      "chars": 989,
+      "channels": {
+        "fused": {
+          "ms": 43.1,
+          "chars": 989,
+          "units": 8,
+          "error": null
+        }
+      }
+    },
+    {
+      "id": "pref-04b",
+      "intent": "pref-04",
+      "category": "偏好",
+      "layer": "user_hard",
+      "variant": "口语",
+      "query": "公众号文章末尾还要不要顺带聊别的题目",
+      "gold": "延伸话题",
+      "gold_source": "USER.md",
+      "hit": true,
+      "rank": 3,
+      "hit_channel": "fused",
+      "hit_at_5": true,
+      "rr": 0.3333333333333333,
+      "resident": true,
+      "ms": 47.21,
+      "chars": 1187,
+      "channels": {
+        "fused": {
+          "ms": 47.21,
+          "chars": 1187,
+          "units": 8,
+          "error": null
+        }
+      }
+    },
+    {
+      "id": "pref-04c",
+      "intent": "pref-04",
+      "category": "偏好",
+      "layer": "user_hard",
+      "variant": "指代",
+      "query": "文末那一条他明确说不要写",
+      "gold": "延伸话题",
+      "gold_source": "USER.md",
+      "hit": false,
+      "rank": null,
+      "hit_channel": "",
+      "hit_at_5": false,
+      "rr": 0.0,
+      "resident": true,
+      "ms": 43.22,
+      "chars": 1161,
+      "channels": {
+        "fused": {
+          "ms": 43.22,
+          "chars": 1161,
+          "units": 8,
+          "error": null
+        }
+      }
+    },
+    {
+      "id": "old-01a",
+      "intent": "old-01",
+      "category": "旧事",
+      "layer": "diary_view",
+      "variant": "同义",
+      "query": "夜不收的影视改编版权是什么时候有消息的",
+      "gold": "影视公司昨天跟我要了版权",
+      "gold_source": "diary_memory.md",
+      "hit": true,
+      "rank": 1,
+      "hit_channel": "fused",
+      "hit_at_5": true,
+      "rr": 1.0,
+      "resident": false,
+      "ms": 46.12,
+      "chars": 965,
+      "channels": {
+        "fused": {
+          "ms": 46.11,
+          "chars": 965,
+          "units": 8,
+          "error": null
+        }
+      }
+    },
+    {
+      "id": "old-01b",
+      "intent": "old-01",
+      "category": "旧事",
+      "layer": "diary_view",
+      "variant": "口语",
+      "query": "剧公司来要版权那天我啥心情",
+      "gold": "影视公司昨天跟我要了版权",
+      "gold_source": "diary_memory.md",
+      "hit": true,
+      "rank": 3,
+      "hit_channel": "fused",
+      "hit_at_5": true,
+      "rr": 0.3333333333333333,
+      "resident": false,
+      "ms": 56.13,
+      "chars": 1056,
+      "channels": {
+        "fused": {
+          "ms": 56.12,
+          "chars": 1056,
+          "units": 8,
+          "error": null
+        }
+      }
+    },
+    {
+      "id": "old-01c",
+      "intent": "old-01",
+      "category": "旧事",
+      "layer": "diary_view",
+      "variant": "指代",
+      "query": "那天我跟你说的事，又高兴又有压力",
+      "gold": "影视公司昨天跟我要了版权",
+      "gold_source": "diary_memory.md",
+      "hit": true,
+      "rank": 1,
+      "hit_channel": "fused",
+      "hit_at_5": true,
+      "rr": 1.0,
+      "resident": false,
+      "ms": 44.13,
+      "chars": 1189,
+      "channels": {
+        "fused": {
+          "ms": 44.12,
+          "chars": 1189,
+          "units": 8,
+          "error": null
+        }
+      }
+    },
+    {
+      "id": "old-02a",
+      "intent": "old-02",
+      "category": "旧事",
+      "layer": "diary_view",
+      "variant": "同义",
+      "query": "两本书的出版合同出了什么变故",
+      "gold": "两本书的合同废了",
+      "gold_source": "diary_memory.md",
+      "hit": true,
+      "rank": 1,
+      "hit_channel": "fused",
+      "hit_at_5": true,
+      "rr": 1.0,
+      "resident": false,
+      "ms": 45.51,
+      "chars": 1200,
+      "channels": {
+        "fused": {
+          "ms": 45.5,
+          "chars": 1200,
+          "units": 6,
+          "error": null
+        }
+      }
+    },
+    {
+      "id": "old-02b",
+      "intent": "old-02",
+      "category": "旧事",
+      "layer": "diary_view",
+      "variant": "口语",
+      "query": "书合同黄了那次是哪天",
+      "gold": "两本书的合同废了",
+      "gold_source": "diary_memory.md",
+      "hit": false,
+      "rank": null,
+      "hit_channel": "",
+      "hit_at_5": false,
+      "rr": 0.0,
+      "resident": false,
+      "ms": 43.01,
+      "chars": 1214,
+      "channels": {
+        "fused": {
+          "ms": 43.0,
+          "chars": 1214,
+          "units": 8,
+          "error": null
+        }
+      }
+    },
+    {
+      "id": "old-02c",
+      "intent": "old-02",
+      "category": "旧事",
+      "layer": "diary_view",
+      "variant": "指代",
+      "query": "我跟她说话没说完就被打断那回，说的是什么事",
+      "gold": "两本书的合同废了",
+      "gold_source": "diary_memory.md",
+      "hit": true,
+      "rank": 1,
+      "hit_channel": "fused",
+      "hit_at_5": true,
+      "rr": 1.0,
+      "resident": false,
+      "ms": 50.66,
+      "chars": 1213,
+      "channels": {
+        "fused": {
+          "ms": 50.66,
+          "chars": 1213,
+          "units": 8,
+          "error": null
+        }
+      }
+    },
+    {
+      "id": "old-03a",
+      "intent": "old-03",
+      "category": "旧事",
+      "layer": "diary_view",
+      "variant": "同义",
+      "query": "尹逍和小桔聊完天之后做了什么",
+      "gold": "把聊天记录删了",
+      "gold_source": "diary_memory.md",
+      "hit": true,
+      "rank": 1,
+      "hit_channel": "fused",
+      "hit_at_5": true,
+      "rr": 1.0,
+      "resident": false,
+      "ms": 83.92,
+      "chars": 1214,
+      "channels": {
+        "fused": {
+          "ms": 83.92,
+          "chars": 1214,
+          "units": 8,
+          "error": null
+        }
+      }
+    },
+    {
+      "id": "old-03b",
+      "intent": "old-03",
+      "category": "旧事",
+      "layer": "diary_view",
+      "variant": "口语",
+      "query": "孩子让你删记录那次",
+      "gold": "把聊天记录删了",
+      "gold_source": "diary_memory.md",
+      "hit": true,
+      "rank": 2,
+      "hit_channel": "fused",
+      "hit_at_5": true,
+      "rr": 0.5,
+      "resident": false,
+      "ms": 64.21,
+      "chars": 632,
+      "channels": {
+        "fused": {
+          "ms": 64.2,
+          "chars": 632,
+          "units": 8,
+          "error": null
+        }
+      }
+    },
+    {
+      "id": "old-03c",
+      "intent": "old-03",
+      "category": "旧事",
+      "layer": "diary_view",
+      "variant": "指代",
+      "query": "他让删就真删了，这事记在哪",
+      "gold": "把聊天记录删了",
+      "gold_source": "diary_memory.md",
+      "hit": true,
+      "rank": 1,
+      "hit_channel": "fused",
+      "hit_at_5": true,
+      "rr": 1.0,
+      "resident": false,
+      "ms": 64.07,
+      "chars": 1028,
+      "channels": {
+        "fused": {
+          "ms": 64.06,
+          "chars": 1028,
+          "units": 8,
+          "error": null
+        }
+      }
+    },
+    {
+      "id": "old-04a",
+      "intent": "old-04",
+      "category": "旧事",
+      "layer": "diary_day",
+      "variant": "同义",
+      "query": "太原建筑火灾的伤亡情况",
+      "gold": "14 人遇难",
+      "gold_source": "diary/2026-11-10.md",
+      "hit": true,
+      "rank": 1,
+      "hit_channel": "fused",
+      "hit_at_5": true,
+      "rr": 1.0,
+      "resident": false,
+      "ms": 62.98,
+      "chars": 1203,
+      "channels": {
+        "fused": {
+          "ms": 62.98,
+          "chars": 1203,
+          "units": 7,
+          "error": null
+        }
+      }
+    },
+    {
+      "id": "old-04b",
+      "intent": "old-04",
+      "category": "旧事",
+      "layer": "diary_day",
+      "variant": "口语",
+      "query": "前两天太原那场火烧死多少人",
+      "gold": "14 人遇难",
+      "gold_source": "diary/2026-11-10.md",
+      "hit": true,
+      "rank": 1,
+      "hit_channel": "fused",
+      "hit_at_5": true,
+      "rr": 1.0,
+      "resident": false,
+      "ms": 73.42,
+      "chars": 1212,
+      "channels": {
+        "fused": {
+          "ms": 73.41,
+          "chars": 1212,
+          "units": 7,
+          "error": null
+        }
+      }
+    },
+    {
+      "id": "old-04c",
+      "intent": "old-04",
+      "category": "旧事",
+      "layer": "diary_day",
+      "variant": "指代",
+      "query": "那条新闻里 14 个人",
+      "gold": "14 人遇难",
+      "gold_source": "diary/2026-11-10.md",
+      "hit": false,
+      "rank": null,
+      "hit_channel": "",
+      "hit_at_5": false,
+      "rr": 0.0,
+      "resident": false,
+      "ms": 71.32,
+      "chars": 1214,
+      "channels": {
+        "fused": {
+          "ms": 71.31,
+          "chars": 1214,
+          "units": 8,
+          "error": null
+        }
+      }
+    },
+    {
+      "id": "craft-01a",
+      "intent": "craft-01",
+      "category": "创作约定",
+      "layer": "memory",
+      "variant": "同义",
+      "query": "夜不收结局三个主角的生死怎么定",
+      "gold": "一个也不能死",
+      "gold_source": "MEMORY.md",
+      "hit": true,
+      "rank": 2,
+      "hit_channel": "fused",
+      "hit_at_5": true,
+      "rr": 0.5,
+      "resident": false,
+      "ms": 67.39,
+      "chars": 1112,
+      "channels": {
+        "fused": {
+          "ms": 67.39,
+          "chars": 1112,
+          "units": 8,
+          "error": null
+        }
+      }
+    },
+    {
+      "id": "craft-01b",
+      "intent": "craft-01",
+      "category": "创作约定",
+      "layer": "memory",
+      "variant": "口语",
+      "query": "方也行陈冲宁靖最后谁死了",
+      "gold": "一个也不能死",
+      "gold_source": "MEMORY.md",
+      "hit": true,
+      "rank": 1,
+      "hit_channel": "fused",
+      "hit_at_5": true,
+      "rr": 1.0,
+      "resident": false,
+      "ms": 62.53,
+      "chars": 1214,
+      "channels": {
+        "fused": {
+          "ms": 62.52,
+          "chars": 1214,
+          "units": 8,
+          "error": null
+        }
+      }
+    },
+    {
+      "id": "craft-01c",
+      "intent": "craft-01",
+      "category": "创作约定",
+      "layer": "memory",
+      "variant": "指代",
+      "query": "那个死序的说法还算数吗",
+      "gold": "一个也不能死",
+      "gold_source": "MEMORY.md",
+      "hit": true,
+      "rank": 2,
+      "hit_channel": "fused",
+      "hit_at_5": true,
+      "rr": 0.5,
+      "resident": false,
+      "ms": 61.14,
+      "chars": 1028,
+      "channels": {
+        "fused": {
+          "ms": 61.13,
+          "chars": 1028,
+          "units": 8,
+          "error": null
+        }
+      }
+    },
+    {
+      "id": "craft-02a",
+      "intent": "craft-02",
+      "category": "创作约定",
+      "layer": "user_hard",
+      "variant": "同义",
+      "query": "情节逻辑自洽就够了吗",
+      "gold": "合理不等于有力",
+      "gold_source": "USER.md",
+      "hit": true,
+      "rank": 1,
+      "hit_channel": "fused",
+      "hit_at_5": true,
+      "rr": 1.0,
+      "resident": false,
+      "ms": 63.64,
+      "chars": 1146,
+      "channels": {
+        "fused": {
+          "ms": 63.64,
+          "chars": 1146,
+          "units": 8,
+          "error": null
+        }
+      }
+    },
+    {
+      "id": "craft-02b",
+      "intent": "craft-02",
+      "category": "创作约定",
+      "layer": "user_hard",
+      "variant": "口语",
+      "query": "他说的合理跟有力是啥关系",
+      "gold": "合理不等于有力",
+      "gold_source": "USER.md",
+      "hit": true,
+      "rank": 1,
+      "hit_channel": "fused",
+      "hit_at_5": true,
+      "rr": 1.0,
+      "resident": false,
+      "ms": 66.74,
+      "chars": 1205,
+      "channels": {
+        "fused": {
+          "ms": 66.73,
+          "chars": 1205,
+          "units": 8,
+          "error": null
+        }
+      }
+    },
+    {
+      "id": "craft-02c",
+      "intent": "craft-02",
+      "category": "创作约定",
+      "layer": "user_hard",
+      "variant": "指代",
+      "query": "那条讲合理和有力的创作原则",
+      "gold": "合理不等于有力",
+      "gold_source": "USER.md",
+      "hit": true,
+      "rank": 1,
+      "hit_channel": "fused",
+      "hit_at_5": true,
+      "rr": 1.0,
+      "resident": false,
+      "ms": 69.09,
+      "chars": 682,
+      "channels": {
+        "fused": {
+          "ms": 69.08,
+          "chars": 682,
+          "units": 8,
+          "error": null
+        }
+      }
+    },
+    {
+      "id": "craft-03a",
+      "intent": "craft-03",
+      "category": "创作约定",
+      "layer": "user_hard",
+      "variant": "同义",
+      "query": "正文里的错字应该怎么处理",
+      "gold": "只标不改",
+      "gold_source": "USER.md",
+      "hit": true,
+      "rank": 8,
+      "hit_channel": "fused",
+      "hit_at_5": false,
+      "rr": 0.125,
+      "resident": true,
+      "ms": 66.36,
+      "chars": 1190,
+      "channels": {
+        "fused": {
+          "ms": 66.35,
+          "chars": 1190,
+          "units": 8,
+          "error": null
+        }
+      }
+    },
+    {
+      "id": "craft-03b",
+      "intent": "craft-03",
+      "category": "创作约定",
+      "layer": "user_hard",
+      "variant": "口语",
+      "query": "稿子里有笔误你改不改",
+      "gold": "只标不改",
+      "gold_source": "USER.md",
+      "hit": true,
+      "rank": 1,
+      "hit_channel": "fused",
+      "hit_at_5": true,
+      "rr": 1.0,
+      "resident": true,
+      "ms": 64.06,
+      "chars": 793,
+      "channels": {
+        "fused": {
+          "ms": 64.05,
+          "chars": 793,
+          "units": 8,
+          "error": null
+        }
+      }
+    },
+    {
+      "id": "craft-03c",
+      "intent": "craft-03",
+      "category": "创作约定",
+      "layer": "user_hard",
+      "variant": "指代",
+      "query": "他定下笔误那条规矩是怎么说的",
+      "gold": "只标不改",
+      "gold_source": "USER.md",
+      "hit": true,
+      "rank": 4,
+      "hit_channel": "fused",
+      "hit_at_5": true,
+      "rr": 0.25,
+      "resident": true,
+      "ms": 82.42,
+      "chars": 837,
+      "channels": {
+        "fused": {
+          "ms": 82.41,
+          "chars": 837,
+          "units": 8,
+          "error": null
+        }
+      }
+    },
+    {
+      "id": "craft-04a",
+      "intent": "craft-04",
+      "category": "创作约定",
+      "layer": "user_hard",
+      "variant": "同义",
+      "query": "查证时对证据的要求是什么",
+      "gold": "取不到字节不算",
+      "gold_source": "USER.md",
+      "hit": true,
+      "rank": 6,
+      "hit_channel": "fused",
+      "hit_at_5": false,
+      "rr": 0.16666666666666666,
+      "resident": true,
+      "ms": 61.47,
+      "chars": 578,
+      "channels": {
+        "fused": {
+          "ms": 61.46,
+          "chars": 578,
+          "units": 8,
+          "error": null
+        }
+      }
+    },
+    {
+      "id": "craft-04b",
+      "intent": "craft-04",
+      "category": "创作约定",
+      "layer": "user_hard",
+      "variant": "口语",
+      "query": "拿不到原文算不算证据",
+      "gold": "取不到字节不算",
+      "gold_source": "USER.md",
+      "hit": true,
+      "rank": 1,
+      "hit_channel": "fused",
+      "hit_at_5": true,
+      "rr": 1.0,
+      "resident": true,
+      "ms": 62.85,
+      "chars": 705,
+      "channels": {
+        "fused": {
+          "ms": 62.84,
+          "chars": 705,
+          "units": 8,
+          "error": null
+        }
+      }
+    },
+    {
+      "id": "craft-04c",
+      "intent": "craft-04",
+      "category": "创作约定",
+      "layer": "user_hard",
+      "variant": "指代",
+      "query": "他说的证据口径那一条",
+      "gold": "取不到字节不算",
+      "gold_source": "USER.md",
+      "hit": true,
+      "rank": 1,
+      "hit_channel": "fused",
+      "hit_at_5": true,
+      "rr": 1.0,
+      "resident": true,
+      "ms": 62.8,
+      "chars": 794,
+      "channels": {
+        "fused": {
+          "ms": 62.8,
+          "chars": 794,
+          "units": 8,
+          "error": null
+        }
+      }
+    },
+    {
+      "id": "char-01a",
+      "intent": "char-01",
+      "category": "人物设定",
+      "layer": "memory",
+      "variant": "同义",
+      "query": "南旗的旗主是谁",
+      "gold": "迟正河",
+      "gold_source": "MEMORY.md",
+      "hit": true,
+      "rank": 1,
+      "hit_channel": "fused",
+      "hit_at_5": true,
+      "rr": 1.0,
+      "resident": false,
+      "ms": 62.26,
+      "chars": 1072,
+      "channels": {
+        "fused": {
+          "ms": 62.25,
+          "chars": 1072,
+          "units": 8,
+          "error": null
+        }
+      }
+    },
+    {
+      "id": "char-01b",
+      "intent": "char-01",
+      "category": "人物设定",
+      "layer": "memory",
+      "variant": "口语",
+      "query": "追杀宁靖那个旗主叫啥",
+      "gold": "迟正河",
+      "gold_source": "MEMORY.md",
+      "hit": true,
+      "rank": 1,
+      "hit_channel": "fused",
+      "hit_at_5": true,
+      "rr": 1.0,
+      "resident": false,
+      "ms": 64.64,
+      "chars": 1076,
+      "channels": {
+        "fused": {
+          "ms": 64.63,
+          "chars": 1076,
+          "units": 8,
+          "error": null
+        }
+      }
+    },
+    {
+      "id": "char-01c",
+      "intent": "char-01",
+      "category": "人物设定",
+      "layer": "memory",
+      "variant": "指代",
+      "query": "那个要把功折罪的人",
+      "gold": "迟正河",
+      "gold_source": "MEMORY.md",
+      "hit": true,
+      "rank": 1,
+      "hit_channel": "fused",
+      "hit_at_5": true,
+      "rr": 1.0,
+      "resident": false,
+      "ms": 66.46,
+      "chars": 976,
+      "channels": {
+        "fused": {
+          "ms": 66.45,
+          "chars": 976,
+          "units": 8,
+          "error": null
+        }
+      }
+    },
+    {
+      "id": "char-02a",
+      "intent": "char-02",
+      "category": "人物设定",
+      "layer": "memory",
+      "variant": "同义",
+      "query": "《国子监秘闻录》里丁闻香心仪谁",
+      "gold": "韩效武",
+      "gold_source": "MEMORY.md",
+      "hit": true,
+      "rank": 1,
+      "hit_channel": "fused",
+      "hit_at_5": true,
+      "rr": 1.0,
+      "resident": false,
+      "ms": 68.66,
+      "chars": 1149,
+      "channels": {
+        "fused": {
+          "ms": 68.66,
+          "chars": 1149,
+          "units": 8,
+          "error": null
+        }
+      }
+    },
+    {
+      "id": "char-02b",
+      "intent": "char-02",
+      "category": "人物设定",
+      "layer": "memory",
+      "variant": "口语",
+      "query": "丁闻香喜欢的那个人",
+      "gold": "韩效武",
+      "gold_source": "MEMORY.md",
+      "hit": true,
+      "rank": 3,
+      "hit_channel": "fused",
+      "hit_at_5": true,
+      "rr": 0.3333333333333333,
+      "resident": false,
+      "ms": 71.28,
+      "chars": 797,
+      "channels": {
+        "fused": {
+          "ms": 71.27,
+          "chars": 797,
+          "units": 8,
+          "error": null
+        }
+      }
+    },
+    {
+      "id": "char-02c",
+      "intent": "char-02",
+      "category": "人物设定",
+      "layer": "memory",
+      "variant": "指代",
+      "query": "跟夜不收无关的那个国子监人物",
+      "gold": "韩效武",
+      "gold_source": "MEMORY.md",
+      "hit": true,
+      "rank": 1,
+      "hit_channel": "fused",
+      "hit_at_5": true,
+      "rr": 1.0,
+      "resident": false,
+      "ms": 69.08,
+      "chars": 618,
+      "channels": {
+        "fused": {
+          "ms": 69.07,
+          "chars": 618,
+          "units": 8,
+          "error": null
+        }
+      }
+    },
+    {
+      "id": "char-03a",
+      "intent": "char-03",
+      "category": "人物设定",
+      "layer": "memory",
+      "variant": "同义",
+      "query": "宁靖中箭的部位在哪里",
+      "gold": "腿肚子",
+      "gold_source": "MEMORY.md",
+      "hit": true,
+      "rank": 1,
+      "hit_channel": "fused",
+      "hit_at_5": true,
+      "rr": 1.0,
+      "resident": false,
+      "ms": 65.42,
+      "chars": 1053,
+      "channels": {
+        "fused": {
+          "ms": 65.41,
+          "chars": 1053,
+          "units": 8,
+          "error": null
+        }
+      }
+    },
+    {
+      "id": "char-03b",
+      "intent": "char-03",
+      "category": "人物设定",
+      "layer": "memory",
+      "variant": "口语",
+      "query": "宁靖哪儿受伤了",
+      "gold": "腿肚子",
+      "gold_source": "MEMORY.md",
+      "hit": true,
+      "rank": 2,
+      "hit_channel": "fused",
+      "hit_at_5": true,
+      "rr": 0.5,
+      "resident": false,
+      "ms": 61.99,
+      "chars": 1042,
+      "channels": {
+        "fused": {
+          "ms": 61.98,
+          "chars": 1042,
+          "units": 8,
+          "error": null
+        }
+      }
+    },
+    {
+      "id": "char-03c",
+      "intent": "char-03",
+      "category": "人物设定",
+      "layer": "memory",
+      "variant": "指代",
+      "query": "他腿上那处伤是怎么来的",
+      "gold": "腿肚子",
+      "gold_source": "MEMORY.md",
+      "hit": true,
+      "rank": 7,
+      "hit_channel": "fused",
+      "hit_at_5": false,
+      "rr": 0.14285714285714285,
+      "resident": false,
+      "ms": 65.27,
+      "chars": 1061,
+      "channels": {
+        "fused": {
+          "ms": 65.26,
+          "chars": 1061,
+          "units": 8,
+          "error": null
+        }
+      }
+    },
+    {
+      "id": "char-04a",
+      "intent": "char-04",
+      "category": "人物设定",
+      "layer": "memory",
+      "variant": "同义",
+      "query": "倭军对大和盟要杀李昖是什么态度",
+      "gold": "倭军要李昖活",
+      "gold_source": "MEMORY.md",
+      "hit": true,
+      "rank": 5,
+      "hit_channel": "fused",
+      "hit_at_5": true,
+      "rr": 0.2,
+      "resident": false,
+      "ms": 78.19,
+      "chars": 917,
+      "channels": {
+        "fused": {
+          "ms": 78.19,
+          "chars": 917,
+          "units": 8,
+          "error": null
+        }
+      }
+    },
+    {
+      "id": "char-04b",
+      "intent": "char-04",
+      "category": "人物设定",
+      "layer": "memory",
+      "variant": "口语",
+      "query": "三拨人里谁不想让李昖死",
+      "gold": "倭军要李昖活",
+      "gold_source": "MEMORY.md",
+      "hit": true,
+      "rank": 1,
+      "hit_channel": "fused",
+      "hit_at_5": true,
+      "rr": 1.0,
+      "resident": false,
+      "ms": 83.66,
+      "chars": 736,
+      "channels": {
+        "fused": {
+          "ms": 83.65,
+          "chars": 736,
+          "units": 8,
+          "error": null
+        }
+      }
+    },
+    {
+      "id": "char-04c",
+      "intent": "char-04",
+      "category": "人物设定",
+      "layer": "memory",
+      "variant": "指代",
+      "query": "挟天子那一边想让他活着",
+      "gold": "倭军要李昖活",
+      "gold_source": "MEMORY.md",
+      "hit": true,
+      "rank": 3,
+      "hit_channel": "fused",
+      "hit_at_5": true,
+      "rr": 0.3333333333333333,
+      "resident": false,
+      "ms": 56.67,
+      "chars": 1214,
+      "channels": {
+        "fused": {
+          "ms": 56.66,
+          "chars": 1214,
+          "units": 8,
+          "error": null
+        }
+      }
+    },
+    {
+      "id": "loc-01a",
+      "intent": "loc-01",
+      "category": "文件位置",
+      "layer": "user_pref",
+      "variant": "同义",
+      "query": "《夜不收》正稿的存放路径",
+      "gold": "夜不收：绝命救援.docx",
+      "gold_source": "USER.md",
+      "hit": true,
+      "rank": 2,
+      "hit_channel": "fused",
+      "hit_at_5": true,
+      "rr": 0.5,
+      "resident": false,
+      "ms": 58.01,
+      "chars": 677,
+      "channels": {
+        "fused": {
+          "ms": 58.0,
+          "chars": 677,
+          "units": 8,
+          "error": null
+        }
+      }
+    },
+    {
+      "id": "loc-01b",
+      "intent": "loc-01",
+      "category": "文件位置",
+      "layer": "user_pref",
+      "variant": "口语",
+      "query": "稿子搁哪儿了你记住没",
+      "gold": "夜不收：绝命救援.docx",
+      "gold_source": "USER.md",
+      "hit": false,
+      "rank": null,
+      "hit_channel": "",
+      "hit_at_5": false,
+      "rr": 0.0,
+      "resident": false,
+      "ms": 67.29,
+      "chars": 1212,
+      "channels": {
+        "fused": {
+          "ms": 67.28,
+          "chars": 1212,
+          "units": 7,
+          "error": null
+        }
+      }
+    },
+    {
+      "id": "loc-01c",
+      "intent": "loc-01",
+      "category": "文件位置",
+      "layer": "user_pref",
+      "variant": "指代",
+      "query": "那个 docx 在哪个文件夹",
+      "gold": "夜不收：绝命救援.docx",
+      "gold_source": "USER.md",
+      "hit": true,
+      "rank": 7,
+      "hit_channel": "fused",
+      "hit_at_5": false,
+      "rr": 0.14285714285714285,
+      "resident": false,
+      "ms": 62.52,
+      "chars": 843,
+      "channels": {
+        "fused": {
+          "ms": 62.51,
+          "chars": 843,
+          "units": 8,
+          "error": null
+        }
+      }
+    },
+    {
+      "id": "loc-02a",
+      "intent": "loc-02",
+      "category": "文件位置",
+      "layer": "user_pref",
+      "variant": "同义",
+      "query": "桌面上的夜不收文件能不能读",
+      "gold": "10-31 的旧快照",
+      "gold_source": "USER.md",
+      "hit": true,
+      "rank": 1,
+      "hit_channel": "fused",
+      "hit_at_5": true,
+      "rr": 1.0,
+      "resident": false,
+      "ms": 84.01,
+      "chars": 1007,
+      "channels": {
+        "fused": {
+          "ms": 84.0,
+          "chars": 1007,
+          "units": 8,
+          "error": null
+        }
+      }
+    },
+    {
+      "id": "loc-02b",
+      "intent": "loc-02",
+      "category": "文件位置",
+      "layer": "user_pref",
+      "variant": "口语",
+      "query": "桌面上那个是不是正稿",
+      "gold": "10-31 的旧快照",
+      "gold_source": "USER.md",
+      "hit": true,
+      "rank": 1,
+      "hit_channel": "fused",
+      "hit_at_5": true,
+      "rr": 1.0,
+      "resident": false,
+      "ms": 64.15,
+      "chars": 1102,
+      "channels": {
+        "fused": {
+          "ms": 64.14,
+          "chars": 1102,
+          "units": 8,
+          "error": null
+        }
+      }
+    },
+    {
+      "id": "loc-02c",
+      "intent": "loc-02",
+      "category": "文件位置",
+      "layer": "user_pref",
+      "variant": "指代",
+      "query": "那个旧快照是哪天的",
+      "gold": "10-31 的旧快照",
+      "gold_source": "USER.md",
+      "hit": true,
+      "rank": 1,
+      "hit_channel": "fused",
+      "hit_at_5": true,
+      "rr": 1.0,
+      "resident": false,
+      "ms": 71.07,
+      "chars": 1177,
+      "channels": {
+        "fused": {
+          "ms": 71.06,
+          "chars": 1177,
+          "units": 8,
+          "error": null
+        }
+      }
+    },
+    {
+      "id": "vault-01a",
+      "intent": "vault-01",
+      "category": "vault知识",
+      "layer": "vault",
+      "variant": "同义",
+      "query": "官制设定需要什么依据",
+      "gold": "官制设定须有正史依据",
+      "gold_source": "vault/preferences/2026-09-18-萧盛立下铁律.md",
+      "hit": true,
+      "rank": 1,
+      "hit_channel": "fused",
+      "hit_at_5": true,
+      "rr": 1.0,
+      "resident": false,
+      "ms": 70.58,
+      "chars": 1094,
+      "channels": {
+        "fused": {
+          "ms": 70.57,
+          "chars": 1094,
+          "units": 8,
+          "error": null
+        }
+      }
+    },
+    {
+      "id": "vault-01b",
+      "intent": "vault-01",
+      "category": "vault知识",
+      "layer": "vault",
+      "variant": "口语",
+      "query": "写官制能不能自己编",
+      "gold": "官制设定须有正史依据",
+      "gold_source": "vault/preferences/2026-09-18-萧盛立下铁律.md",
+      "hit": true,
+      "rank": 4,
+      "hit_channel": "fused",
+      "hit_at_5": true,
+      "rr": 0.25,
+      "resident": false,
+      "ms": 67.1,
+      "chars": 1162,
+      "channels": {
+        "fused": {
+          "ms": 67.09,
+          "chars": 1162,
+          "units": 8,
+          "error": null
+        }
+      }
+    },
+    {
+      "id": "vault-01c",
+      "intent": "vault-01",
+      "category": "vault知识",
+      "layer": "vault",
+      "variant": "指代",
+      "query": "写官制时他立的那条铁律是什么",
+      "gold": "官制设定须有正史依据",
+      "gold_source": "vault/preferences/2026-09-18-萧盛立下铁律.md",
+      "hit": true,
+      "rank": 1,
+      "hit_channel": "fused",
+      "hit_at_5": true,
+      "rr": 1.0,
+      "resident": false,
+      "ms": 65.99,
+      "chars": 1172,
+      "channels": {
+        "fused": {
+          "ms": 65.98,
+          "chars": 1172,
+          "units": 8,
+          "error": null
+        }
+      }
+    },
+    {
+      "id": "vault-02a",
+      "intent": "vault-02",
+      "category": "vault知识",
+      "layer": "vault",
+      "variant": "同义",
+      "query": "国子监试卷调包案的被调包者是谁",
+      "gold": "韦涵亮",
+      "gold_source": "vault/work/2026-08-10-试卷调包案设定.md",
+      "hit": true,
+      "rank": 1,
+      "hit_channel": "fused",
+      "hit_at_5": true,
+      "rr": 1.0,
+      "resident": false,
+      "ms": 62.25,
+      "chars": 1181,
+      "channels": {
+        "fused": {
+          "ms": 62.24,
+          "chars": 1181,
+          "units": 7,
+          "error": null
+        }
+      }
+    },
+    {
+      "id": "vault-02b",
+      "intent": "vault-02",
+      "category": "vault知识",
+      "layer": "vault",
+      "variant": "口语",
+      "query": "试卷被换掉的那几个学生叫什么",
+      "gold": "韦涵亮",
+      "gold_source": "vault/work/2026-08-10-试卷调包案设定.md",
+      "hit": true,
+      "rank": 1,
+      "hit_channel": "fused",
+      "hit_at_5": true,
+      "rr": 1.0,
+      "resident": false,
+      "ms": 61.38,
+      "chars": 962,
+      "channels": {
+        "fused": {
+          "ms": 61.37,
+          "chars": 962,
+          "units": 8,
+          "error": null
+        }
+      }
+    },
+    {
+      "id": "vault-02c",
+      "intent": "vault-02",
+      "category": "vault知识",
+      "layer": "vault",
+      "variant": "指代",
+      "query": "那桩寒门学生被顶替的旧案子",
+      "gold": "韦涵亮",
+      "gold_source": "vault/work/2026-08-10-试卷调包案设定.md",
+      "hit": true,
+      "rank": 3,
+      "hit_channel": "fused",
+      "hit_at_5": true,
+      "rr": 0.3333333333333333,
+      "resident": false,
+      "ms": 63.08,
+      "chars": 1214,
+      "channels": {
+        "fused": {
+          "ms": 63.07,
+          "chars": 1214,
+          "units": 8,
+          "error": null
+        }
+      }
+    }
+  ]
+}

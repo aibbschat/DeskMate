@@ -41,10 +41,73 @@ RRF_K = 10
 WEIGHT_VECTOR = 1.2
 WEIGHT_KEYWORD = 1.3
 WEIGHT_ANCHOR = 0.8
+#: 关键词头名 bonus（见 search_memory_files 中的注释）；0 = 关闭
+TOP1_KEYWORD_BONUS = 0.10
 MAX_CHUNK_CHARS = 400
 ANCHOR_NEIGHBOR_CAP = 6
 # 锚值太长时不做子串检索（新闻标题类锚，检索价值低且易误命中）
 ANCHOR_VALUE_MAX = 24
+# 预算不足时，剩余空间至少能放一行才截断保留；否则宁可跳过（避免只截出半句）
+MIN_TRUNC_CHARS = 120
+#: 单条输出下限（预算 ÷ k 的兜底）。200 字 ≈ 一条 bullet / 一段日记；
+#: 配合 _snippet 的命中句窗口，既能装下 8 条，也不会把命中句切掉。
+MIN_ITEM_CHARS = 200
+
+# 四段的「闲聊门」：这类输入本身没有信息需求，检索必然只能塞噪声。
+# 只认整句寒暄，不做子串匹配——「早写完了吗」这种带内容的不能被误判。
+_CHITCHAT_RE = re.compile(
+    r"^(?:早|早安|早上好|上午好|中午好|下午好|晚上好|晚安|嗨|hi|hello|hey|"
+    r"在吗|在么|在不在|嗯+|哦+|喔|好|好的|好滴|收到|了解|明白|谢谢|谢了|"
+    r"辛苦了|辛苦|哈+|哈哈+|嘿+|ok|okay|行|可以|没事)[\s!！。~～?？]*$",
+    re.IGNORECASE,
+)
+
+
+def is_chitchat(text: str) -> bool:
+    """整轮只是一句寒暄/确认（无实体、无诉求）时返回 True。
+
+    四段风险 #1「闲聊也注入噪声」的判定入口：命中即不做记忆检索注入，
+    只保留兜底（硬规矩/最近条目）。必须整句都在白名单里（最长 12 字），
+    「早写完了吗」这类带内容的一律不算。
+    """
+    t = (text or "").strip()
+    if not (1 <= len(t) <= 12):
+        return False
+    return bool(_CHITCHAT_RE.match(t))
+
+
+def gate_hits(
+    hits: list[dict],
+    min_vec: float = 0.32,
+    rel: float = 0.5,
+    max_items: int = 6,
+) -> list[dict]:
+    """四段的相关性闸：把「靠 RRF 尾部分数挤进来」的无关条目挡在注入之外。
+
+    保留规则（满足任一）：
+    - 第一条（最高分）永远保留；
+    - 向量余弦 ≥ ``min_vec``（语义上有真实相近，不是纯排名漂移）；
+    - 命中 ≥2 个通道（关键词/向量/锚互相印证）；
+    - 分数 ≥ 头部 × ``rel``（同一梯队）。
+    ``hits`` 为空时原样返回；不改变条目内容，只做过滤。
+    """
+    if not hits:
+        return []
+    top = float(hits[0].get("score") or 0.0)
+    kept: list[dict] = []
+    for i, h in enumerate(hits):
+        if i == 0:
+            kept.append(h)
+            continue
+        chans = h.get("channels") or []
+        vec = float(h.get("vec_score") or 0.0)
+        score = float(h.get("score") or 0.0)
+        if vec >= min_vec or len(chans) >= 2 or (top and score >= top * rel):
+            kept.append(h)
+        if len(kept) >= max_items:
+            break
+    return kept
+
 
 
 def _idx(base: Optional[Path | str] = None) -> FileIndex:
@@ -151,10 +214,57 @@ def _rrf_add(scores: dict[str, float], rows: list[dict], weight: float) -> None:
         scores[cid] = scores.get(cid, 0.0) + weight / (RRF_K + rank)
 
 
+def _snippet(content: str, query: str, cap: int) -> str:
+    """把超长条目截成「命中句附近」的窗口，而不是永远砍掉尾巴。
+
+    四段实测：日记条目「……我今天两本书的合同废了……」长 228 字，按头部截 200
+    正好把命中句切掉，检索对了却读不到。这里以 query 与正文的最长公共子串
+    位置为中心取窗口（左 1/3、右 2/3），窗口外补省略号；找不到公共片段时
+    退回头部截断。
+    """
+    if len(content) <= cap:
+        return content
+    raw_q = (query or "").strip()
+    pos = -1
+    # 从长到短找 query 的子串在正文中的原始位置（≥2 字才有意义）
+    for ln in (8, 6, 4, 3, 2):
+        if len(raw_q) < ln:
+            continue
+        for i in range(0, len(raw_q) - ln + 1):
+            j = content.find(raw_q[i : i + ln])
+            if j >= 0:
+                pos = j
+                break
+        if pos >= 0:
+            break
+    if pos < 0:
+        # 退一步：归一化后比对，再按比例映射回原文位置
+        nq, nc = _norm(raw_q), _norm(content)
+        for ln in (8, 6, 4, 3, 2):
+            if len(nq) < ln:
+                continue
+            for i in range(0, len(nq) - ln + 1):
+                j = nc.find(nq[i : i + ln])
+                if j >= 0:
+                    pos = int(j / max(1, len(nc)) * len(content))
+                    break
+            if pos >= 0:
+                break
+    if pos < 0:
+        return content[: cap - 1] + "…"
+    budget = max(20, cap - 2)  # 两端省略号也占位
+    start = max(0, pos - budget // 3)
+    end = min(len(content), start + budget)
+    start = max(0, end - budget)
+    head = "…" if start > 0 else ""
+    tail = "…" if end < len(content) else ""
+    return head + content[start:end] + tail
+
+
 def search_memory_files(
     query: str,
     k: int = 8,
-    budget_chars: int = 1200,
+    budget_chars: int = 1600,
     base: Optional[Path | str] = None,
     kinds: Optional[list[str]] = None,
     section_contains: Optional[str] = None,
@@ -205,10 +315,21 @@ def search_memory_files(
     _rrf_add(scores, vec_rows, WEIGHT_VECTOR)
     _rrf_add(scores, kw_rows, WEIGHT_KEYWORD)
     _rrf_add(scores, anchor_rows, WEIGHT_ANCHOR)
+    # 四段（old-02）：RRF 只看排名，关键词第 1 的条目（1.3/11≈0.118）会输给
+    # 「两通道都排 5~8」的条目（1.2/15+1.3/15≈0.167），于是精确词面命中被挤
+    # 出 top8。给关键词通道的**头名**加一个固定 bonus（不按名次递减）：
+    # 只抬「最像这问题的那一条」，不影响其余排序。
+    if kw_rows:
+        _cid = kw_rows[0].get("id")
+        if _cid:
+            scores[_cid] = scores.get(_cid, 0.0) + TOP1_KEYWORD_BONUS
 
     kw_ids = {r["id"] for r in kw_rows}
     vec_ids = {r["id"] for r in vec_rows}
     anchor_ids = {r["id"] for r in anchor_rows}
+    # 四段：把向量余弦透传给调用方（注入层 gate_hits 用它判断「语义是否真的接近」，
+    # RRF 分数只反映排名，无法区分「真相关」与「尾部挤入」）。
+    vec_score = {r["id"]: float(r.get("score") or 0.0) for r in vec_rows}
 
     # 4) 原文精确子串 → 置顶（引用原句 / 文件全名）
     nq = _norm(q)
@@ -241,10 +362,20 @@ def search_memory_files(
         content = (row.get("content") or "").strip()
         if not content:
             continue
-        if len(content) > MAX_CHUNK_CHARS:
-            content = content[: MAX_CHUNK_CHARS - 1] + "…"
-        if used + len(content) > budget_chars and out:
-            continue
+        # 四段（old-02a/02b、loc-01b）：单条输出上限收到 200 字。旧口径是 400，
+        # 前 3 条长 chunk 就能吃满 1200 预算，把「精确命中但排名第 5」的条目挤掉
+        # （实测：日记「两本书的合同废了」关键词通道第 1，融合后因预算整条丢失）。
+        # 200 字 ≈ 一条 bullet / 一段日记，既保留命中句，又能装下 5~6 条。
+        item_cap = max(MIN_ITEM_CHARS, budget_chars // max(1, k))
+        content = _snippet(content, q, item_cap)
+        remain = budget_chars - used
+        if len(content) > remain:
+            # 四段（loc-01b）：预算不够时**不要再整条丢弃**。旧逻辑 `continue`
+            # 让「融合排名进前 5、但正文偏长」的条目直接消失，用户问的正是它。
+            # 现在只要剩余预算放得下一行（≥120 字），就截到 remaining 保留头部。
+            if remain < MIN_TRUNC_CHARS:
+                continue
+            content = content[: remain - 1] + "…"
         per_section[key] = per_section.get(key, 0) + 1
         per_file[path] = per_file.get(path, 0) + 1
         used += len(content)
@@ -263,6 +394,7 @@ def search_memory_files(
             "content": content,
             "via_anchor": row.get("via_anchor", ""),
             "channels": chans,
+            "vec_score": round(vec_score.get(cid, 0.0), 4),
         })
         if len(out) >= k:
             break

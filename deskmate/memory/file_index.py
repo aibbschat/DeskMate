@@ -44,6 +44,13 @@ MAX_CHUNK_CHARS = 600
 # USER.md 的 bullet 通常很短；过长的（一条里塞了多个事实，如书稿路径）按句切，
 # 否则「稿子在哪」这类问法会被整条长 bullet 稀释。
 MAX_BULLET_CHARS = 220
+# 日记视图按条切块（四段 old-02）：一条日记常是整段情绪叙述（300~400 字），
+# 按 600 字整体编码时，用户问的「合同废了」只占 1/10，向量被情绪词稀释。
+# 只对 diary_view 收紧到 260 字（按句切、不跨句），不动全局 600 —— 全局降
+# 到 300 曾让 R@5 从 85.0% 掉到 81.7%（见验收报告）。
+DIARY_VIEW_CHUNK_CHARS = 260
+#: 切块算法版本；改任何切块参数都要 bump（老索引会自动重建）。
+CHUNK_VERSION = "2026-11-11-diary260-v1"
 # 首次全量 / 单次 sync 的 embedding 批大小
 EMBED_BATCH = 64
 
@@ -229,7 +236,7 @@ def _chunk_diary_view(text: str) -> list[tuple[str, str]]:
             continue
         m = re.match(r"(\d{4}-\d{2}-\d{2})", b)
         section = m.group(1) if m else "日记沉淀"
-        out.extend((section, c) for c in _split_long(b, MAX_CHUNK_CHARS))
+        out.extend((section, c) for c in _split_long(b, DIARY_VIEW_CHUNK_CHARS))
     return out
 
 
@@ -348,6 +355,26 @@ class FileIndex:
                 "CREATE VIRTUAL TABLE IF NOT EXISTS memory_chunks_fts USING fts5("
                 "chunk_id UNINDEXED, tokens, tokenize='unicode61')"
             )
+            # 切块算法版本（四段）：切块参数一变，老索引里的 chunk 边界就过期，
+            # 但 mtime/size 没变 → sync 不会重切，检索会一直用旧边界（实测：
+            # 日记 chunk 已改 260，老库仍是 600 的整块）。这里用版本号强制重建。
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS memory_index_meta ("
+                "k TEXT PRIMARY KEY, v TEXT NOT NULL)"
+            )
+            row = conn.execute(
+                "SELECT v FROM memory_index_meta WHERE k='chunk_version'"
+            ).fetchone()
+            if row is None or row[0] != CHUNK_VERSION:
+                conn.execute("DELETE FROM memory_chunks")
+                conn.execute("DELETE FROM memory_file_state")
+                conn.execute("DELETE FROM memory_chunks_fts")
+                conn.execute(
+                    "INSERT INTO memory_index_meta(k, v) VALUES('chunk_version', ?) "
+                    "ON CONFLICT(k) DO UPDATE SET v=excluded.v",
+                    (CHUNK_VERSION,),
+                )
+                self._matrix_cache = None
 
     # -- 源文件枚举 ------------------------------------------------------
     def _iter_sources(self) -> Iterable[tuple[str, str, Path]]:
