@@ -37,6 +37,8 @@ import threading
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
+from deskmate.memory import entity_link
+
 logger = logging.getLogger(__name__)
 
 # 单条 chunk 上限（字符）。试过 300：长日记不再稀释，但 chunk 数涨到 1923、
@@ -315,6 +317,7 @@ class FileIndex:
             self.base.mkdir(parents=True, exist_ok=True)
             self._ensure_schema()
         self._matrix_cache: Optional[tuple[tuple[int, str], Any, list[str]]] = None
+        self._lexicon_cache: Optional[dict[str, tuple[str, str]]] = None
         self._lock = threading.Lock()
 
     # -- 连接 / schema ---------------------------------------------------
@@ -375,9 +378,25 @@ class FileIndex:
                 "CREATE VIRTUAL TABLE IF NOT EXISTS memory_chunks_fts USING fts5("
                 "chunk_id UNINDEXED, tokens, tokenize='unicode61')"
             )
-            # 切块算法版本（四段）：切块参数一变，老索引里的 chunk 边界就过期，
-            # 但 mtime/size 没变 → sync 不会重切，检索会一直用旧边界（实测：
-            # 日记 chunk 已改 260，老库仍是 600 的整块）。这里用版本号强制重建。
+            # 实体链接（B-1）：chunk 里出现的实体 → 正名。只做索引，不新增写入方。
+            conn.execute(
+                """CREATE TABLE IF NOT EXISTS memory_chunk_entities (
+                    chunk_id     TEXT NOT NULL,
+                    entity_kind  TEXT NOT NULL,
+                    entity_value TEXT NOT NULL,
+                    surface      TEXT NOT NULL,
+                    PRIMARY KEY (chunk_id, entity_kind, entity_value, surface)
+                )
+                """
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_mcent_value "
+                "ON memory_chunk_entities(entity_kind, entity_value)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_mcent_chunk "
+                "ON memory_chunk_entities(chunk_id)"
+            )
             conn.execute(
                 "CREATE TABLE IF NOT EXISTS memory_index_meta ("
                 "k TEXT PRIMARY KEY, v TEXT NOT NULL)"
@@ -389,6 +408,7 @@ class FileIndex:
                 conn.execute("DELETE FROM memory_chunks")
                 conn.execute("DELETE FROM memory_file_state")
                 conn.execute("DELETE FROM memory_chunks_fts")
+                conn.execute("DELETE FROM memory_chunk_entities")
                 conn.execute(
                     "INSERT INTO memory_index_meta(k, v) VALUES('chunk_version', ?) "
                     "ON CONFLICT(k) DO UPDATE SET v=excluded.v",
@@ -484,6 +504,7 @@ class FileIndex:
                     self._delete_chunks(conn, ids)
                     conn.execute("DELETE FROM memory_file_state WHERE source_path=?", (rel,))
                     stats["removed"] += 1
+                stats["entities"] = self._ensure_entity_backfill(conn)
         except Exception as exc:  # noqa: BLE001 —— fail-open
             stats["error"] = f"{type(exc).__name__}: {exc}"
             logger.warning("记忆文件索引同步失败（fail-open）：%s", stats["error"])
@@ -495,7 +516,151 @@ class FileIndex:
             return
         q = ",".join("?" * len(ids))
         conn.execute(f"DELETE FROM memory_chunks_fts WHERE chunk_id IN ({q})", ids)
+        conn.execute(f"DELETE FROM memory_chunk_entities WHERE chunk_id IN ({q})", ids)
         conn.execute(f"DELETE FROM memory_chunks WHERE id IN ({q})", ids)
+
+    # -- 实体链接（B-1）---------------------------------------------------
+    def _lexicon(self) -> dict[str, tuple[str, str]]:
+        if self._lexicon_cache is None:
+            self._lexicon_cache = entity_link.load_lexicon(self.base)
+        return self._lexicon_cache
+
+    def _write_entities(
+        self, conn: sqlite3.Connection, pairs: list[tuple[str, str]]
+    ) -> int:
+        """整块重写指定 chunk 的实体行；返回写入条数。"""
+        if not pairs:
+            return 0
+        ids = [cid for cid, _ in pairs]
+        q = ",".join("?" * len(ids))
+        conn.execute(f"DELETE FROM memory_chunk_entities WHERE chunk_id IN ({q})", ids)
+        rows = list(entity_link.iter_chunk_entities(pairs, self._lexicon()))
+        if rows:
+            conn.executemany(
+                "INSERT OR IGNORE INTO memory_chunk_entities"
+                "(chunk_id, entity_kind, entity_value, surface) VALUES(?,?,?,?)",
+                rows,
+            )
+        return len(rows)
+
+    def _ensure_entity_backfill(self, conn: sqlite3.Connection) -> int:
+        """实体表为空/口径过期时，从现有 chunk 回填一次。
+
+        不 bump ``CHUNK_VERSION``：chunk 边界与向量都没变，重建整张索引会把
+        1515 条 chunk 全部重嵌，收益为零。这里只补实体行，写完立刻生效。
+        """
+        row = conn.execute(
+            "SELECT v FROM memory_index_meta WHERE k='entity_version'"
+        ).fetchone()
+        if row is not None and row[0] == entity_link.ENTITY_VERSION:
+            return 0
+        self._lexicon_cache = None  # 口径可能变了，重建词典
+        conn.execute("DELETE FROM memory_chunk_entities")
+        cursor = conn.execute(
+            "SELECT id, content FROM memory_chunks ORDER BY source_path, chunk_no"
+        )
+        total = 0
+        while True:
+            batch = cursor.fetchmany(200)
+            if not batch:
+                break
+            total += self._write_entities(
+                conn, [(r["id"], r["content"]) for r in batch]
+            )
+        conn.execute(
+            "INSERT INTO memory_index_meta(k, v) VALUES('entity_version', ?) "
+            "ON CONFLICT(k) DO UPDATE SET v=excluded.v",
+            (entity_link.ENTITY_VERSION,),
+        )
+        return total
+
+    def backfill_entities(self, force: bool = False) -> dict:
+        """手动回填（部署期跑一次，避免首个用户查询承担回填耗时）。"""
+        t0 = datetime.datetime.now()
+        stats = {"rows": 0, "ms": 0, "error": None}
+        try:
+            with self._connect() as conn:
+                if force:
+                    conn.execute("DELETE FROM memory_index_meta WHERE k='entity_version'")
+                stats["rows"] = self._ensure_entity_backfill(conn)
+        except Exception as exc:  # noqa: BLE001
+            stats["error"] = f"{type(exc).__name__}: {exc}"
+        stats["ms"] = int((datetime.datetime.now() - t0).total_seconds() * 1000)
+        return stats
+
+    def entity_chunks(
+        self, values: list[str], limit: int = 12,
+        kinds: Optional[list[str]] = None,
+    ) -> list[dict]:
+        """实体正名 → 含该实体的 chunk（DISTINCT，带 entity_value 便于标注）。"""
+        vals = [v for v in (values or []) if v]
+        if not vals:
+            return []
+        q = ",".join("?" * len(vals))
+        sql = (
+            "SELECT DISTINCT c.id, c.source_kind, c.source_path, c.section, "
+            "c.chunk_no, c.content, c.tokens, e.entity_value "
+            "FROM memory_chunk_entities e JOIN memory_chunks c ON c.id = e.chunk_id "
+            f"WHERE e.entity_value IN ({q})"
+        )
+        params: list[Any] = list(vals)
+        if kinds:
+            sql += f" AND c.source_kind IN ({','.join('?' * len(kinds))})"
+            params.extend(kinds)
+        sql += " ORDER BY c.source_path, c.chunk_no LIMIT ?"
+        params.append(max(1, int(limit)))
+        try:
+            with self._connect() as conn:
+                return [dict(r) for r in conn.execute(sql, params).fetchall()]
+        except sqlite3.Error:
+            return []
+
+    def entity_neighbors(
+        self, values: list[str], cap: int = 6
+    ) -> list[str]:
+        """一跳：与给定实体在同一个 chunk 里共现的其它实体（按共现次数降序）。"""
+        vals = [v for v in (values or []) if v]
+        if not vals:
+            return []
+        q = ",".join("?" * len(vals))
+        sql = (
+            "SELECT e2.entity_value, COUNT(*) n FROM memory_chunk_entities e1 "
+            "JOIN memory_chunk_entities e2 ON e2.chunk_id = e1.chunk_id "
+            f"WHERE e1.entity_value IN ({q}) AND e2.entity_value NOT IN ({q}) "
+            "GROUP BY e2.entity_value ORDER BY n DESC LIMIT ?"
+        )
+        try:
+            with self._connect() as conn:
+                rows = conn.execute(sql, (*vals, *vals, max(1, int(cap)))).fetchall()
+        except sqlite3.Error:
+            return []
+        return [r[0] for r in rows if r[0]]
+
+    def entity_stats(self) -> dict:
+        """验收用：实体行数、覆盖的 chunk、可命中的不同实体数。"""
+        try:
+            with self._connect() as conn:
+                rows = conn.execute(
+                    "SELECT COUNT(*) FROM memory_chunk_entities"
+                ).fetchone()[0]
+                chunks = conn.execute(
+                    "SELECT COUNT(DISTINCT chunk_id) FROM memory_chunk_entities"
+                ).fetchone()[0]
+                distinct = conn.execute(
+                    "SELECT COUNT(DISTINCT entity_value) FROM memory_chunk_entities"
+                ).fetchone()[0]
+                total = conn.execute("SELECT COUNT(*) FROM memory_chunks").fetchone()[0]
+                ver = conn.execute(
+                    "SELECT v FROM memory_index_meta WHERE k='entity_version'"
+                ).fetchone()
+        except sqlite3.Error:
+            return {"rows": 0, "chunks": 0, "distinct": 0, "coverage": 0.0,
+                    "version": ""}
+        return {
+            "rows": rows, "chunks": chunks, "distinct": distinct,
+            "coverage": round(chunks / total, 3) if total else 0.0,
+            "version": ver[0] if ver else "",
+        }
 
     def _rebuild_one(
         self, conn: sqlite3.Connection, kind: str, rel: str, text: str,
@@ -552,6 +717,7 @@ class FileIndex:
                 "INSERT INTO memory_chunks_fts(chunk_id, tokens) VALUES(?,?)",
                 (cid, " ".join(tokenize(body))),
             )
+        self._write_entities(conn, [(ids[i], new_rows[i][2]) for i in range(len(new_rows))])
         conn.execute(
             "INSERT INTO memory_file_state(source_path, source_kind, mtime_ns, size, "
             "content_hash, indexed_at) VALUES(?,?,?,?,?,?) "

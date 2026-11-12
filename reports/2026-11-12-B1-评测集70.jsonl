@@ -1,0 +1,70 @@
+{"id":"pref-01a","intent":"pref-01","category":"偏好","layer":"user_pref","variant":"同义","query":"萧盛写过哪些妖怪题材的书","gold":"中国妖怪录","gold_source":"USER.md"}
+{"id":"pref-01b","intent":"pref-01","category":"偏好","layer":"user_pref","variant":"口语","query":"他那本讲妖怪的书叫啥来着","gold":"中国妖怪录","gold_source":"USER.md"}
+{"id":"pref-01c","intent":"pref-01","category":"偏好","layer":"user_pref","variant":"指代","query":"我那个妖怪书还出过啥","gold":"中国妖怪录","gold_source":"USER.md"}
+{"id":"pref-02a","intent":"pref-02","category":"偏好","layer":"user_pref","variant":"同义","query":"朗读时应该用什么音色","gold":"御姐音","gold_source":"USER.md"}
+{"id":"pref-02b","intent":"pref-02","category":"偏好","layer":"user_pref","variant":"口语","query":"以后念稿子用哪种声音","gold":"御姐音","gold_source":"USER.md"}
+{"id":"pref-02c","intent":"pref-02","category":"偏好","layer":"user_pref","variant":"指代","query":"念稿的声音他不喜欢了，要换成哪一种","gold":"御姐音","gold_source":"USER.md"}
+{"id":"pref-03a","intent":"pref-03","category":"偏好","layer":"user_hard","variant":"同义","query":"行文里两岸的称谓用什么词","gold":"此岸／对岸","gold_source":"USER.md"}
+{"id":"pref-03b","intent":"pref-03","category":"偏好","layer":"user_hard","variant":"口语","query":"他让我别写这边那边，要写啥","gold":"此岸／对岸","gold_source":"USER.md"}
+{"id":"pref-03c","intent":"pref-03","category":"偏好","layer":"user_hard","variant":"指代","query":"两岸的叫法他要求改成哪两个词","gold":"此岸／对岸","gold_source":"USER.md"}
+{"id":"pref-04a","intent":"pref-04","category":"偏好","layer":"user_hard","variant":"同义","query":"写作营文章结尾有什么禁忌","gold":"延伸话题","gold_source":"USER.md"}
+{"id":"pref-04b","intent":"pref-04","category":"偏好","layer":"user_hard","variant":"口语","query":"公众号文章末尾还要不要顺带聊别的题目","gold":"延伸话题","gold_source":"USER.md"}
+{"id":"pref-04c","intent":"pref-04","category":"偏好","layer":"user_hard","variant":"指代","query":"文末那一条他明确说不要写","gold":"延伸话题","gold_source":"USER.md"}
+{"id":"old-01a","intent":"old-01","category":"旧事","layer":"diary_view","variant":"同义","query":"夜不收的影视改编版权是什么时候有消息的","gold":"影视公司昨天跟我要了版权","gold_source":"diary_memory.md"}
+{"id":"old-01b","intent":"old-01","category":"旧事","layer":"diary_view","variant":"口语","query":"剧公司来要版权那天我啥心情","gold":"影视公司昨天跟我要了版权","gold_source":"diary_memory.md"}
+{"id":"old-01c","intent":"old-01","category":"旧事","layer":"diary_view","variant":"指代","query":"那天我跟你说的事，又高兴又有压力","gold":"影视公司昨天跟我要了版权","gold_source":"diary_memory.md"}
+{"id":"old-02a","intent":"old-02","category":"旧事","layer":"diary_view","variant":"同义","query":"两本书的出版合同出了什么变故","gold":"两本书的合同废了","gold_source":"diary_memory.md"}
+{"id":"old-02b","intent":"old-02","category":"旧事","layer":"diary_view","variant":"口语","query":"书合同黄了那次是哪天","gold":"两本书的合同废了","gold_source":"diary_memory.md"}
+{"id":"old-02c","intent":"old-02","category":"旧事","layer":"diary_view","variant":"指代","query":"我跟她说话没说完就被打断那回，说的是什么事","gold":"两本书的合同废了","gold_source":"diary_memory.md"}
+{"id":"old-03a","intent":"old-03","category":"旧事","layer":"diary_view","variant":"同义","query":"尹逍和小桔聊完天之后做了什么","gold":"把聊天记录删了","gold_source":"diary_memory.md"}
+{"id":"old-03b","intent":"old-03","category":"旧事","layer":"diary_view","variant":"口语","query":"孩子让你删记录那次","gold":"把聊天记录删了","gold_source":"diary_memory.md"}
+{"id":"old-03c","intent":"old-03","category":"旧事","layer":"diary_view","variant":"指代","query":"他让删就真删了，这事记在哪","gold":"把聊天记录删了","gold_source":"diary_memory.md"}
+{"id":"old-04a","intent":"old-04","category":"旧事","layer":"diary_day","variant":"同义","query":"太原建筑火灾的伤亡情况","gold":"14 人遇难","gold_source":"diary/2026-11-10.md"}
+{"id":"old-04b","intent":"old-04","category":"旧事","layer":"diary_day","variant":"口语","query":"前两天太原那场火烧死多少人","gold":"14 人遇难","gold_source":"diary/2026-11-10.md"}
+{"id":"old-04c","intent":"old-04","category":"旧事","layer":"diary_day","variant":"指代","query":"那条新闻里 14 个人","gold":"14 人遇难","gold_source":"diary/2026-11-10.md"}
+{"id":"craft-01a","intent":"craft-01","category":"创作约定","layer":"memory","variant":"同义","query":"夜不收结局三个主角的生死怎么定","gold":"一个也不能死","gold_source":"MEMORY.md"}
+{"id":"craft-01b","intent":"craft-01","category":"创作约定","layer":"memory","variant":"口语","query":"方也行陈冲宁靖最后谁死了","gold":"一个也不能死","gold_source":"MEMORY.md"}
+{"id":"craft-01c","intent":"craft-01","category":"创作约定","layer":"memory","variant":"指代","query":"那个死序的说法还算数吗","gold":"一个也不能死","gold_source":"MEMORY.md"}
+{"id":"craft-02a","intent":"craft-02","category":"创作约定","layer":"user_hard","variant":"同义","query":"情节逻辑自洽就够了吗","gold":"合理不等于有力","gold_source":"USER.md"}
+{"id":"craft-02b","intent":"craft-02","category":"创作约定","layer":"user_hard","variant":"口语","query":"他说的合理跟有力是啥关系","gold":"合理不等于有力","gold_source":"USER.md"}
+{"id":"craft-02c","intent":"craft-02","category":"创作约定","layer":"user_hard","variant":"指代","query":"那条讲合理和有力的创作原则","gold":"合理不等于有力","gold_source":"USER.md"}
+{"id":"craft-03a","intent":"craft-03","category":"创作约定","layer":"user_hard","variant":"同义","query":"正文里的错字应该怎么处理","gold":"只标不改","gold_source":"USER.md"}
+{"id":"craft-03b","intent":"craft-03","category":"创作约定","layer":"user_hard","variant":"口语","query":"稿子里有笔误你改不改","gold":"只标不改","gold_source":"USER.md"}
+{"id":"craft-03c","intent":"craft-03","category":"创作约定","layer":"user_hard","variant":"指代","query":"他定下笔误那条规矩是怎么说的","gold":"只标不改","gold_source":"USER.md"}
+{"id":"craft-04a","intent":"craft-04","category":"创作约定","layer":"user_hard","variant":"同义","query":"查证时对证据的要求是什么","gold":"取不到字节不算","gold_source":"USER.md"}
+{"id":"craft-04b","intent":"craft-04","category":"创作约定","layer":"user_hard","variant":"口语","query":"拿不到原文算不算证据","gold":"取不到字节不算","gold_source":"USER.md"}
+{"id":"craft-04c","intent":"craft-04","category":"创作约定","layer":"user_hard","variant":"指代","query":"他说的证据口径那一条","gold":"取不到字节不算","gold_source":"USER.md"}
+{"id":"char-01a","intent":"char-01","category":"人物设定","layer":"memory","variant":"同义","query":"南旗的旗主是谁","gold":"迟正河","gold_source":"MEMORY.md"}
+{"id":"char-01b","intent":"char-01","category":"人物设定","layer":"memory","variant":"口语","query":"追杀宁靖那个旗主叫啥","gold":"迟正河","gold_source":"MEMORY.md"}
+{"id":"char-01c","intent":"char-01","category":"人物设定","layer":"memory","variant":"指代","query":"那个要把功折罪的人","gold":"迟正河","gold_source":"MEMORY.md"}
+{"id":"char-02a","intent":"char-02","category":"人物设定","layer":"memory","variant":"同义","query":"《国子监秘闻录》里丁闻香心仪谁","gold":"韩效武","gold_source":"MEMORY.md"}
+{"id":"char-02b","intent":"char-02","category":"人物设定","layer":"memory","variant":"口语","query":"丁闻香喜欢的那个人","gold":"韩效武","gold_source":"MEMORY.md"}
+{"id":"char-02c","intent":"char-02","category":"人物设定","layer":"memory","variant":"指代","query":"跟夜不收无关的那个国子监人物","gold":"韩效武","gold_source":"MEMORY.md"}
+{"id":"char-03a","intent":"char-03","category":"人物设定","layer":"memory","variant":"同义","query":"宁靖中箭的部位在哪里","gold":"腿肚子","gold_source":"MEMORY.md"}
+{"id":"char-03b","intent":"char-03","category":"人物设定","layer":"memory","variant":"口语","query":"宁靖哪儿受伤了","gold":"腿肚子","gold_source":"MEMORY.md"}
+{"id":"char-03c","intent":"char-03","category":"人物设定","layer":"memory","variant":"指代","query":"他腿上那处伤是怎么来的","gold":"腿肚子","gold_source":"MEMORY.md"}
+{"id":"char-04a","intent":"char-04","category":"人物设定","layer":"memory","variant":"同义","query":"倭军对大和盟要杀李昖是什么态度","gold":"倭军要李昖活","gold_source":"MEMORY.md"}
+{"id":"char-04b","intent":"char-04","category":"人物设定","layer":"memory","variant":"口语","query":"三拨人里谁不想让李昖死","gold":"倭军要李昖活","gold_source":"MEMORY.md"}
+{"id":"char-04c","intent":"char-04","category":"人物设定","layer":"memory","variant":"指代","query":"挟天子那一边想让他活着","gold":"倭军要李昖活","gold_source":"MEMORY.md"}
+{"id":"loc-01a","intent":"loc-01","category":"文件位置","layer":"user_pref","variant":"同义","query":"《夜不收》正稿的存放路径","gold":"夜不收：绝命救援.docx","gold_source":"USER.md"}
+{"id":"loc-01b","intent":"loc-01","category":"文件位置","layer":"user_pref","variant":"口语","query":"稿子搁哪儿了你记住没","gold":"夜不收：绝命救援.docx","gold_source":"USER.md"}
+{"id":"loc-01c","intent":"loc-01","category":"文件位置","layer":"user_pref","variant":"指代","query":"那个 docx 在哪个文件夹","gold":"夜不收：绝命救援.docx","gold_source":"USER.md"}
+{"id":"loc-02a","intent":"loc-02","category":"文件位置","layer":"user_pref","variant":"同义","query":"桌面上的夜不收文件能不能读","gold":"10-31 的旧快照","gold_source":"USER.md"}
+{"id":"loc-02b","intent":"loc-02","category":"文件位置","layer":"user_pref","variant":"口语","query":"桌面上那个是不是正稿","gold":"10-31 的旧快照","gold_source":"USER.md"}
+{"id":"loc-02c","intent":"loc-02","category":"文件位置","layer":"user_pref","variant":"指代","query":"那个旧快照是哪天的","gold":"10-31 的旧快照","gold_source":"USER.md"}
+{"id":"vault-01a","intent":"vault-01","category":"vault知识","layer":"vault","variant":"同义","query":"官制设定需要什么依据","gold":"官制设定须有正史依据","gold_source":"vault/preferences/2026-09-18-萧盛立下铁律.md"}
+{"id":"vault-01b","intent":"vault-01","category":"vault知识","layer":"vault","variant":"口语","query":"写官制能不能自己编","gold":"官制设定须有正史依据","gold_source":"vault/preferences/2026-09-18-萧盛立下铁律.md"}
+{"id":"vault-01c","intent":"vault-01","category":"vault知识","layer":"vault","variant":"指代","query":"写官制时他立的那条铁律是什么","gold":"官制设定须有正史依据","gold_source":"vault/preferences/2026-09-18-萧盛立下铁律.md"}
+{"id":"vault-02a","intent":"vault-02","category":"vault知识","layer":"vault","variant":"同义","query":"国子监试卷调包案的被调包者是谁","gold":"韦涵亮","gold_source":"vault/work/2026-08-10-试卷调包案设定.md"}
+{"id":"vault-02b","intent":"vault-02","category":"vault知识","layer":"vault","variant":"口语","query":"试卷被换掉的那几个学生叫什么","gold":"韦涵亮","gold_source":"vault/work/2026-08-10-试卷调包案设定.md"}
+{"id":"vault-02c","intent":"vault-02","category":"vault知识","layer":"vault","variant":"指代","query":"那桩寒门学生被顶替的旧案子","gold":"韦涵亮","gold_source":"vault/work/2026-08-10-试卷调包案设定.md"}
+{"id":"ent-01","intent":"ent-01","category":"实体链接","layer":"diary_day","variant":"别名","query":"萧盛九月十七号看到的那场外交场面","gold":"伊以同场","gold_source":"diary/2026-09-17.md"}
+{"id":"ent-02","intent":"ent-02","category":"实体链接","layer":"diary_day","variant":"别名","query":"萧盛十月十三号想到的小说主题","gold":"权力结构与暴力循环","gold_source":"diary/2026-10-13.md"}
+{"id":"ent-03","intent":"ent-03","category":"实体链接","layer":"user_pref","variant":"别名","query":"萧盛给自己定的长期读书计划","gold":"长期读书计划","gold_source":"USER.md"}
+{"id":"ent-04","intent":"ent-04","category":"实体链接","layer":"memory","variant":"书名简称","query":"国子监那本书里丁闻香心仪谁","gold":"韩效武","gold_source":"MEMORY.md"}
+{"id":"ent-05","intent":"ent-05","category":"实体链接","layer":"diary_view","variant":"书名","query":"夜不收那本书的改编版权卖给了谁","gold":"影视公司昨天跟我要了版权","gold_source":"diary_memory.md"}
+{"id":"ent-06","intent":"ent-06","category":"实体链接","layer":"vault","variant":"仅vault","query":"调包案里被换掉试卷的寒门太学生是谁","gold":"韦涵亮","gold_source":"vault/knowledge/调包案涉案人员对应表.md"}
+{"id":"ent-07","intent":"ent-07","category":"实体链接","layer":"diary_day","variant":"跨文件","query":"国子监秘闻录里被举报的那个人","gold":"温伯昭","gold_source":"diary/2026-10-01.md"}
+{"id":"ent-08","intent":"ent-08","category":"实体链接","layer":"memory","variant":"跨文件","query":"朝鲜国王李昖各方势力想让他死还是活","gold":"倭军要李昖活","gold_source":"MEMORY.md"}
+{"id":"ent-09","intent":"ent-09","category":"实体链接","layer":"diary_day","variant":"书名简称","query":"大明那本书为什么从两册缩成一册","gold":"上下两册缩减为一册","gold_source":"diary/2026-10-12.md"}
+{"id":"ent-10","intent":"ent-10","category":"实体链接","layer":"vault","variant":"别名","query":"萧盛定下的串书禁令","gold":"串书禁令","gold_source":"vault/knowledge/自动复盘--2026-09-12.md"}

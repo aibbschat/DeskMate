@@ -1,0 +1,10 @@
+{"id":"ent-01","intent":"ent-01","category":"实体链接","layer":"diary_day","variant":"别名","query":"萧盛九月十七号看到的那场外交场面","gold":"伊以同场","gold_source":"diary/2026-09-17.md"}
+{"id":"ent-02","intent":"ent-02","category":"实体链接","layer":"diary_day","variant":"别名","query":"萧盛十月十三号想到的小说主题","gold":"权力结构与暴力循环","gold_source":"diary/2026-10-13.md"}
+{"id":"ent-03","intent":"ent-03","category":"实体链接","layer":"user_pref","variant":"别名","query":"萧盛给自己定的长期读书计划","gold":"长期读书计划","gold_source":"USER.md"}
+{"id":"ent-04","intent":"ent-04","category":"实体链接","layer":"memory","variant":"书名简称","query":"国子监那本书里丁闻香心仪谁","gold":"韩效武","gold_source":"MEMORY.md"}
+{"id":"ent-05","intent":"ent-05","category":"实体链接","layer":"diary_view","variant":"书名","query":"夜不收那本书的改编版权卖给了谁","gold":"影视公司昨天跟我要了版权","gold_source":"diary_memory.md"}
+{"id":"ent-06","intent":"ent-06","category":"实体链接","layer":"vault","variant":"仅vault","query":"调包案里被换掉试卷的寒门太学生是谁","gold":"韦涵亮","gold_source":"vault/knowledge/调包案涉案人员对应表.md"}
+{"id":"ent-07","intent":"ent-07","category":"实体链接","layer":"diary_day","variant":"跨文件","query":"国子监秘闻录里被举报的那个人","gold":"温伯昭","gold_source":"diary/2026-10-01.md"}
+{"id":"ent-08","intent":"ent-08","category":"实体链接","layer":"memory","variant":"跨文件","query":"朝鲜国王李昖各方势力想让他死还是活","gold":"倭军要李昖活","gold_source":"MEMORY.md"}
+{"id":"ent-09","intent":"ent-09","category":"实体链接","layer":"diary_day","variant":"书名简称","query":"大明那本书为什么从两册缩成一册","gold":"上下两册缩减为一册","gold_source":"diary/2026-10-12.md"}
+{"id":"ent-10","intent":"ent-10","category":"实体链接","layer":"vault","variant":"别名","query":"萧盛定下的串书禁令","gold":"串书禁令","gold_source":"vault/knowledge/自动复盘--2026-09-12.md"}

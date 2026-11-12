@@ -333,7 +333,7 @@ def render_markdown(rep: dict) -> str:
     lines.append(f"# 检索基线（{rep['impl']}）")
     lines.append("")
     lines.append(f"- 语料根目录：`{rep['base_dir']}`")
-    lines.append(f"- 评测集：`reports/2026-11-11-检索评测集.jsonl`（{rep['cases']} 条 query）")
+    lines.append(f"- 评测集：`{rep.get('eval', 'reports/2026-11-11-检索评测集.jsonl')}`（{rep['cases']} 条 query）")
     lines.append(f"- 冷启动（首次调用）：{rep['cold_ms']:.0f} ms")
     lines.append("")
     lines.append("## 总览")
@@ -412,6 +412,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     cases = load_cases(args.eval)
     verify_gold(cases, base)
     rep = run(cases, base, args.impl)
+    rep["eval"] = str(args.eval)
 
     prefix = args.out_prefix or ("2026-11-11-检索基线" if args.impl == "keyword"
                                  else "2026-11-11-检索复测")

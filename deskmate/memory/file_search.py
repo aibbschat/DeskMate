@@ -32,7 +32,7 @@ import sqlite3
 from pathlib import Path
 from typing import Any, Optional
 
-from deskmate.memory.file_index import FileIndex, _norm
+from deskmate.memory.file_index import FileIndex, _norm, tokenize
 from deskmate.paths import deskmate_base_dir
 
 logger = logging.getLogger(__name__)
@@ -213,8 +213,63 @@ def _anchor_neighbors(base: Path, values: list[str], cap: int = ANCHOR_NEIGHBOR_
     return out
 
 
+def _entity_hits(idx: FileIndex, base: Path, query: str, limit: int = 12) -> list[dict]:
+    """实体链接通道（B-1）：query 里的实体 → 含该实体的 chunk；再一次一跳共现。
+
+    词典来自 ``known_persons`` + 书名/主题 + 别名归一，零 LLM。索引未回填 /
+    词典为空时返回 []，调用方继续走旧锚通道（纯增益，不回退已有召回）。
+    """
+    try:
+        from deskmate.memory.entity_link import load_lexicon, match_entities
+
+        ents = match_entities(query, load_lexicon(base), limit=4)
+    except Exception:  # noqa: BLE001 —— 实体通道任何异常都不影响检索
+        return []
+    if not ents:
+        return []
+    values = [canonical for _, canonical, _ in ents]
+    qtokens = set(tokenize(query))
+    # 高频实体（如「萧盛」488 个 chunk）按路径截 12 条会漏掉目标；先全量取
+    # （封顶 400）再做词面重合重排，保证「实体命中的 chunk 里，最贴 query 的」
+    # 排在前面。400 条 × token 交集在毫秒级，检索耗时可接受。
+    rows = idx.entity_chunks(values, limit=400)
+    for row in rows:
+        tokens = set((row.pop("tokens", "") or "").split())
+        row["_overlap"] = len(qtokens & tokens)
+    rows.sort(key=lambda r: (-r["_overlap"], -len(str(r.get("entity_value") or ""))))
+    hits: list[dict] = []
+    seen: set[str] = set()
+    for row in rows[:limit]:
+        cid = row.get("id")
+        if not cid or cid in seen:
+            continue
+        seen.add(cid)
+        row.pop("_overlap", None)
+        row["via_anchor"] = row.pop("entity_value", "") or values[0]
+        hits.append(row)
+    for v in idx.entity_neighbors(values):
+        if len(hits) >= limit + ANCHOR_NEIGHBOR_CAP:
+            break
+        for row in idx.entity_chunks([v], limit=3):
+            cid = row.get("id")
+            if not cid or cid in seen:
+                continue
+            seen.add(cid)
+            row["via_anchor"] = f"一跳:{v}"
+            row.pop("entity_value", None)
+            row.pop("tokens", None)
+            hits.append(row)
+    return hits
+
+
 def _anchor_hits(idx: FileIndex, base: Path, query: str, limit: int = 12) -> list[dict]:
-    """query 里出现的锚 → 含锚 chunk；再一次一跳邻座（纯增益）。"""
+    """query 里出现的锚 → 含锚 chunk；再一次一跳邻座（纯增益）。
+
+    顺序很重要：**旧锚通道排在前，实体链接补在尾部**。实体通道覆盖的是
+    known_persons 全量（李昖这类高频人名动辄上百 chunk），若让它插到前面，
+    会把原本靠锚命中、只差一名的条目挤出 top8（实测 ent-08 1→0）。旧锚先占位
+    后，实体只做「原来没有的召回」，保证不丢已有名次。
+    """
     nq = _norm(query)
     values = [v for v in _anchor_values(base) if _norm(v) and _norm(v) in nq]
     # 长锚优先（更具体），最多 4 个
@@ -237,6 +292,12 @@ def _anchor_hits(idx: FileIndex, base: Path, query: str, limit: int = 12) -> lis
                 seen.add(row["id"])
                 row["via_anchor"] = f"一跳:{v}"
                 hits.append(row)
+    for row in _entity_hits(idx, base, query, limit=limit):
+        if len(hits) >= limit + ANCHOR_NEIGHBOR_CAP:
+            break
+        if row["id"] not in seen:
+            seen.add(row["id"])
+            hits.append(row)
     return hits
 
 
