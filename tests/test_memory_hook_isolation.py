@@ -15,7 +15,11 @@ import coworker.agent as agent_mod
 def test_hook_binds_base_at_build_time(tmp_path, monkeypatch):
     first = tmp_path / "first"
     second = tmp_path / "second"
-    monkeypatch.setenv("DESKMATE_MEMORY_DIR", str(first))
+    lower = tmp_path / "lower-priority-memory-dir"
+    # 按 paths.py 的真实优先级布置前置条件：DESKMATE_DIR > DESKMATE_MEMORY_DIR。
+    # 两个都设上，确认 _deskmate_base_dir() 取的是高优先级的 DESKMATE_DIR。
+    monkeypatch.setenv("DESKMATE_DIR", str(first))
+    monkeypatch.setenv("DESKMATE_MEMORY_DIR", str(lower))
 
     seen = {}
 
@@ -24,8 +28,11 @@ def test_hook_binds_base_at_build_time(tmp_path, monkeypatch):
 
     monkeypatch.setattr(agent_mod, "_deskmate_post_turn_hook", _fake_hook)
 
-    hook = agent_mod._make_deskmate_post_turn_hook(agent_mod._deskmate_base_dir())
+    built_base = agent_mod._deskmate_base_dir()
+    assert Path(built_base) == first
+    hook = agent_mod._make_deskmate_post_turn_hook(built_base)
     # 模拟用例结束后 env 回滚/换到下一用例
+    monkeypatch.setenv("DESKMATE_DIR", str(second))
     monkeypatch.setenv("DESKMATE_MEMORY_DIR", str(second))
     hook("hi", "hello")
 
