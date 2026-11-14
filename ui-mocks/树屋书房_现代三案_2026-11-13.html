@@ -1,0 +1,672 @@
+<!doctype html>
+<html lang="zh-CN" data-scheme="C" data-state="has" data-skin="xiaoju-orange" data-size="m" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>树屋书房 · 三案现代向 · 2026-11-13</title>
+<!--
+  第二稿。前两案（批注册 / 年轮绳）都错了，错在同一个地方：**都在假装是纸**。
+  书脊、批注、纸条、年轮 —— 全是文具隐喻，换皮不换骨，所以还是"传统"。
+
+  翻 app 自己的 token 才发现更难看的事实：
+    styles.css:47  --serif: var(--sans)   注释写着「less editorial, more product」
+    styles.css:18  --paper: #f5f6f7       注释写着「reads "tool", not "writing app"」
+  也就是说整个产品早就从"文艺"切到"工具/现代"了，只有树屋书房还停在 2024 的
+  米橙纸上。而 A 案拿 --serif 区分两只手，落地后**根本不会有任何区别**。
+
+  所以这一稿不再画更好看的纸。三个方案共同的前提：
+    · 零边框、零卡片、零圆角徽章 —— 条目之间的分界是**亮度差**，不是线。
+    · 时间用光的衰减表达（越久越沉进底色），不用书脊、不用绳子。
+    · 「可回忆/已静音」= 记忆浓度，用 **发光与调暗** 表达，不是墨水褪掉。
+    · 微标签走 --mono + 大字距，正文走 --sans，彻底放弃衬线。
+    · 全部颜色只从 --accent/--ink/--paper/--panel 用 color-mix 派生，
+      发光色 --glow 直接从 accent 混出来 —— 9 套皮肤、暗色、三档字号自动跟。
+
+  C 光带 Lumen —— 最稳，仍是时间线，但它是光不是纸。推荐。
+  D 频谱 Spectrum —— 把一个月读成一段信号，最"数据现代"，代价是日记感变弱。
+  E 场 Drift —— 最自由：没有列表，条目按远近漂在一个缓慢流动的场里。
+-->
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin:0; padding:0; }
+  body { background:#0f1113; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Inter,system-ui,sans-serif; }
+
+  /* ============ 控制条 ============ */
+  .mockbar {
+    position:sticky; top:0; z-index:50; display:flex; gap:16px; align-items:center;
+    flex-wrap:wrap; padding:9px 16px; background:#17191c; color:#e6e8eb;
+    font-size:12px; white-space:nowrap; overflow-x:auto;
+  }
+  .mockbar b { font-weight:600; color:#9aa1aa; letter-spacing:.08em; }
+  .mockbar .g { display:flex; gap:5px; align-items:center; }
+  .mockbar button {
+    border:1px solid #3a3f46; background:#22252a; color:#c8ccd2; cursor:pointer;
+    padding:3px 9px; border-radius:3px; font-size:12px; font-family:inherit;
+  }
+  .mockbar button[aria-pressed="true"] { background:#e6e8eb; color:#17191c; border-color:#e6e8eb; }
+  .mockbar .sw { width:20px; height:20px; border-radius:3px; border:1px solid #3a3f46; padding:0; cursor:pointer; }
+  .mockbar .sw[aria-pressed="true"] { outline:2px solid #fff; outline-offset:1px; }
+
+  .stage { padding:18px 16px 40px; overflow-x:auto; }
+  .br { min-width:1180px; }
+  .frame { border-radius:14px; overflow:hidden; background:#fff; box-shadow:0 18px 50px rgba(0,0,0,.42); }
+  .chrome {
+    display:flex; align-items:center; gap:8px; padding:8px 12px;
+    background:#f2f3f5; border-bottom:1px solid #e3e5e9; font-size:11px; color:#7b818b;
+  }
+  .chrome .dot { width:9px; height:9px; border-radius:50%; }
+
+  /* ============ 真实 app token（照抄 styles.css，不自己发明） ============ */
+  .thx {
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Inter,system-ui,sans-serif;
+    --mono:"SF Mono","JetBrains Mono",Menlo,Consolas,monospace;
+    --serif:var(--sans);                 /* app 已把衬线别名成 sans —— 样稿不许骗自己 */
+    --paper:#f5f6f7; --panel:#ffffff; --ink:#17191c; --muted:#5b616b; --faint:#9aa1aa;
+    --line:#e8eaed; --line-strong:#d8dce1;
+    --accent:#2563eb; --accent-soft:#e9f0fd;
+    --ok:#2f7d57; --teal-ink:#0f766e; --warn-ink:#b45309;
+    --glass:rgba(255,255,255,.9); --glass-strong:rgba(255,255,255,.96);
+    --solid:#e9ebf0; --on-solid:#1f2227;
+    --fs-label:11px; --fs-meta:12px; --fs-ui:13px; --fs-body:14px; --fs-heading:15px; --fs-title:16px;
+    background:var(--paper); color:var(--ink); font-family:var(--sans);
+    display:flex; height:760px; overflow:hidden;
+  }
+  html[data-theme="dark"] .thx {
+    --paper:#131417; --panel:#1c1e22; --ink:#e6e8eb; --muted:#9aa1ab; --faint:#62686f;
+    --line:#2a2d33; --line-strong:#3a3e46;
+    --accent:#4c8dff; --accent-soft:#1c2a44;
+    --ok:#58b07f; --teal-ink:#46c0b2; --warn-ink:#e8b04b;
+    --glass:rgba(28,30,34,.9); --glass-strong:rgba(28,30,34,.96);
+    --solid:#2e3138; --on-solid:#e6e8eb;
+  }
+  /* 皮肤：只换 accent 和表面暖冷，发光色跟着 accent 走 */
+  html[data-theme="light"][data-skin="default"] .thx        { --accent:#2563eb; --accent-soft:#e9f0fd; }
+  html[data-theme="light"][data-skin="xiaoju-orange"] .thx  { --accent:#F26B1F; --accent-soft:#FFE7CC; --paper:#FBF6EF; --panel:#FFFCF7; --ink:#2A211B; --muted:#7A6A5C; --faint:#A2907C; --line:#F1E4D4; --line-strong:#E4D2BC; --solid:#F6E9D9; --on-solid:#33261B; }
+  html[data-theme="light"][data-skin="spring-grass"] .thx   { --accent:#3f7d4e; --accent-soft:#e9f4ec; --paper:#f4f7f2; --ink:#1d271f; --muted:#5c6a5e; --faint:#93a094; --line:#e2eadd; --line-strong:#d1dccd; --solid:#E8F0E0; --on-solid:#2D3428; }
+  html[data-theme="light"][data-skin="autumn-maple"] .thx   { --accent:#9a4a17; --accent-soft:#fbeee2; --paper:#f8f4ee; --ink:#2a221b; --muted:#6d6154; --faint:#a2968a; --line:#e8dfd2; --line-strong:#d8ccb9; --solid:#FFEDD5; --on-solid:#431407; }
+  html[data-theme="light"][data-skin="cherry-blossom"] .thx { --accent:#b5456b; --accent-soft:#fdeaf1; --paper:#fbf5f6; --ink:#2a1f24; --muted:#6b5b62; --faint:#a19098; --line:#eee0e4; --line-strong:#ddccd2; --solid:#FCE7F3; --on-solid:#500724; }
+  html[data-theme="light"][data-skin="starry-night"] .thx   { --accent:#4f46e5; --accent-soft:#eef0fd; --paper:#f3f4fb; --ink:#1b1c2b; --muted:#5a5c72; --faint:#9497ad; --line:#e2e4f0; --line-strong:#d0d3e4; }
+  html[data-theme="light"][data-skin="author-bookshelf"] .thx{ --accent:#7c3b2a; --accent-soft:#f6ebe4; --paper:#f3ede3; --ink:#241d16; --muted:#665a4b; --faint:#9c9080; --line:#e0d6c5; --line-strong:#cfc2ac; }
+  html[data-theme="dark"][data-skin="xiaoju-orange"] .thx    { --accent:#ff8b3d; --accent-soft:#3a2413; }
+  html[data-theme="dark"][data-skin="spring-grass"] .thx     { --accent:#7cc48f; --accent-soft:#1c2a20; }
+  html[data-theme="dark"][data-skin="autumn-maple"] .thx     { --accent:#e08b3c; --accent-soft:#2a2118; }
+  html[data-theme="dark"][data-skin="cherry-blossom"] .thx   { --accent:#e88ab0; --accent-soft:#2c1c24; }
+  html[data-theme="dark"][data-skin="starry-night"] .thx     { --accent:#8b93ff; --accent-soft:#20223c; --paper:#12132c; --panel:#1a1c38; --ink:#dfe2f7; --muted:#9599b8; --faint:#63687f; --line:#282b4a; --line-strong:#373b60; }
+  html[data-theme="dark"][data-skin="author-bookshelf"] .thx { --accent:#c98a6a; --accent-soft:#2a2018; }
+
+  html[data-size="s"] .thx { --fs-label:10px; --fs-meta:11px; --fs-ui:12px; --fs-body:13px; --fs-heading:14px; --fs-title:15px; }
+  html[data-size="l"] .thx { --fs-label:12px; --fs-meta:14px; --fs-ui:15px; --fs-body:16px; --fs-heading:18px; --fs-title:21px; }
+
+  /* ============ 派生：只从 token 混，不新增 token key ============ */
+  .thx {
+    --glow:color-mix(in srgb, var(--accent) 34%, transparent);
+    --glow-soft:color-mix(in srgb, var(--accent) 14%, transparent);
+    --glow-cool:color-mix(in srgb, var(--teal-ink) 30%, transparent);
+    --top:color-mix(in srgb, var(--accent) 9%, var(--panel));
+    --sink:color-mix(in srgb, var(--ink) 4%, var(--paper));
+    --hair:color-mix(in srgb, var(--ink) 9%, transparent);
+    --tag:color-mix(in srgb, var(--ink) 42%, transparent);
+  }
+
+  /* 状态机 */
+  html[data-scheme="C"] .onlyD, html[data-scheme="C"] .onlyE,
+  html[data-scheme="D"] .onlyC, html[data-scheme="D"] .onlyE,
+  html[data-scheme="E"] .onlyC, html[data-scheme="E"] .onlyD { display:none !important; }
+  html[data-state="empty"] .when-has { display:none !important; }
+  html[data-state="has"] .when-empty, html[data-state="write"] .when-empty { display:none !important; }
+  html[data-state="write"] .when-write { display:flex !important; }
+  .when-write { display:none !important; }
+  html[data-state="write"] .when-idle { display:none !important; }
+
+  /* ============ 共用外壳：门厅（不动） ============ */
+  .parlour {
+    width:206px; flex:none; background:var(--panel); border-right:1px solid var(--hair);
+    padding:18px 14px; display:flex; flex-flow:column; gap:16px;
+  }
+  .parlour h1 { margin:0; font-size:var(--fs-title); font-weight:650; letter-spacing:.02em; }
+  .parlour .sub { font-family:var(--mono); font-size:10px; letter-spacing:.2em; text-transform:uppercase; color:var(--faint); margin-top:5px; }
+  .nav { display:flex; flex-direction:column; gap:2px; margin-top:6px; }
+  .nav a {
+    font-size:var(--fs-ui); color:var(--muted); text-decoration:none; padding:8px 10px;
+    border-radius:7px; letter-spacing:.02em;
+  }
+  .nav a.on { color:var(--ink); background:var(--accent-soft); font-weight:600; }
+  .visits {
+    margin-top:auto; border-radius:14px; padding:14px; text-align:center;
+    background:linear-gradient(160deg, var(--top), var(--panel));
+    box-shadow:inset 0 0 0 1px var(--hair);
+  }
+  .visits .n { font-family:var(--mono); font-size:22px; letter-spacing:.02em; color:var(--ink-xj, var(--accent)); }
+  .visits .t { font-size:10px; letter-spacing:.16em; color:var(--faint); margin-top:4px; text-transform:uppercase; }
+
+  .room { flex:1; min-width:0; display:flex; flex-flow:column; position:relative; }
+
+  /* ============================================================
+     C 光带 Lumen
+     ============================================================ */
+  .lm { flex:1; min-height:0; display:flex; position:relative;
+        background:linear-gradient(180deg, var(--top) 0%, var(--panel) 34%, var(--paper) 100%); }
+  .lm-rail { width:56px; flex:none; position:relative; }
+  .lm-rail::before {
+    content:""; position:absolute; left:27px; top:0; bottom:0; width:1px;
+    background:linear-gradient(180deg, var(--accent), color-mix(in srgb, var(--accent) 6%, transparent) 78%, transparent);
+  }
+  .lm-day { position:absolute; left:0; right:0; text-align:center; }
+  .lm-day i {
+    display:block; width:7px; height:7px; border-radius:50%; margin:0 auto 6px;
+    background:var(--accent); box-shadow:0 0 12px 2px var(--glow);
+  }
+  .lm-day.pale i { background:var(--faint); box-shadow:none; }
+  .lm-day span { font-family:var(--mono); font-size:9px; letter-spacing:.1em; color:var(--faint); }
+
+  .lm-scroll { flex:1; min-width:0; overflow:auto; padding:0 344px 44px 0; }
+  .lm-head {
+    display:flex; align-items:baseline; gap:14px; padding:26px 34px 20px;
+  }
+  .lm-head .h1 { font-size:var(--fs-title); font-weight:650; letter-spacing:.01em; }
+  .lm-head .h2 { font-family:var(--mono); font-size:10px; letter-spacing:.18em; text-transform:uppercase; color:var(--faint); }
+  .lm-meter { margin-left:auto; display:flex; align-items:center; gap:10px; }
+  .lm-meter .lab { font-family:var(--mono); font-size:10px; letter-spacing:.14em; color:var(--muted); }
+  .lm-meter .bar { width:96px; height:3px; border-radius:2px; background:var(--hair); overflow:hidden; }
+  .lm-meter .bar i { display:block; height:100%; width:65%;
+    background:linear-gradient(90deg, var(--accent), color-mix(in srgb, var(--accent) 40%, var(--teal-ink)));
+    box-shadow:0 0 10px var(--glow); }
+
+  /* 条目 = 一条光，不是卡片：无边框、无圆角、无阴影盒 */
+  .lm-e { position:relative; padding:24px 34px 26px; }
+  .lm-e::before {
+    content:""; position:absolute; left:0; top:14px; bottom:14px; width:2px;
+    background:linear-gradient(180deg, transparent, var(--glow), transparent);
+    box-shadow:0 0 16px 1px var(--glow);
+  }
+  .lm-e.me::before { background:linear-gradient(180deg, transparent, var(--glow-cool), transparent);
+    box-shadow:0 0 16px 1px var(--glow-cool); }
+  .lm-meta {
+    display:flex; align-items:center; gap:12px; margin-bottom:11px;
+    font-family:var(--mono); font-size:10px; letter-spacing:.2em; text-transform:uppercase; color:var(--tag);
+  }
+  .lm-meta .who { color:var(--accent); font-weight:600; }
+  .lm-e.me .lm-meta .who { color:var(--teal-ink); }
+  .lm-meta .sp { flex:1; }
+  .lm-txt { font-size:calc(var(--fs-body) + 1.5px); line-height:1.95; color:var(--ink); max-width:62ch; }
+  .lm-txt p { margin:0 0 12px; }
+  .lm-txt p:last-child { margin-bottom:0; }
+  .lm-txt em { font-style:normal; color:var(--accent); box-shadow:inset 0 -1px 0 var(--glow); }
+  .lm-foot { display:flex; gap:18px; margin-top:14px; }
+  .lm-foot button {
+    border:0; background:none; padding:0; cursor:pointer; font:inherit;
+    font-family:var(--mono); font-size:10px; letter-spacing:.18em; text-transform:uppercase; color:var(--faint);
+  }
+  .lm-foot button:hover { color:var(--accent); }
+  .lm-foot .mem { display:inline-flex; align-items:center; gap:7px; color:var(--muted); }
+  .lm-foot .mem i { width:6px; height:6px; border-radius:50%; background:var(--accent); box-shadow:0 0 9px 1px var(--glow); }
+
+  /* 记忆浓度：发光/调暗，不是墨水褪掉 */
+  .lm-e.dim { opacity:.46; filter:saturate(.4) brightness(.94); }
+  .lm-e.dim::before { background:linear-gradient(180deg, transparent, var(--hair), transparent); }
+  .lm-e.dim .lm-foot .mem i { background:var(--faint); box-shadow:none; }
+  .lm-e.dim:hover { opacity:.86; filter:none; }
+
+  /* 留言：就地展开的浅光子带，不是气泡 */
+  .lm-c { margin:16px 0 0; padding-left:20px; border-left:2px solid var(--glow-cool); display:flex; flex-direction:column; gap:14px; }
+  .lm-c .c { }
+  .lm-c .ch { font-family:var(--mono); font-size:9px; letter-spacing:.2em; text-transform:uppercase; color:var(--tag); margin-bottom:5px; }
+  .lm-c .cb { font-size:var(--fs-body); line-height:1.8; color:var(--muted); max-width:56ch; }
+  .lm-c .c.xj .cb { color:var(--ink); }
+
+  /* 落笔：悬浮在右侧的编辑机。不占版面，浮在读栏右边那块空白上；
+     正文滚动它不动，所以「在写」这件事始终看得见。 */
+  .lm-editor {
+    position:absolute; right:24px; top:112px; width:300px; z-index:8;
+    display:flex; flex-direction:column; border-radius:16px; padding-bottom:14px;
+    background:var(--glass-strong); backdrop-filter:blur(22px) saturate(1.3);
+    box-shadow:0 0 0 1px var(--hair), 0 26px 60px color-mix(in srgb, var(--ink) 13%, transparent);
+  }
+  .lm-editor::before {
+    content:""; position:absolute; left:22px; right:22px; top:0; height:2px; border-radius:2px;
+    background:linear-gradient(90deg, transparent, var(--glow), transparent);
+  }
+  .thx[data-state="write"] .lm-editor::before {
+    background:linear-gradient(90deg, transparent, var(--accent), transparent);
+  }
+  .thx[data-state="write"] .lm-editor {
+    box-shadow:0 0 0 1px color-mix(in srgb, var(--accent) 34%, transparent),
+               0 26px 60px color-mix(in srgb, var(--ink) 13%, transparent),
+               0 0 40px var(--glow-soft);
+  }
+  .ed-head { display:flex; align-items:center; gap:9px; padding:17px 18px 11px; }
+  .ed-head .dot { width:6px; height:6px; border-radius:50%; background:var(--accent); box-shadow:0 0 10px 1px var(--glow); }
+  .ed-head .lab { font-family:var(--mono); font-size:10px; letter-spacing:.2em; text-transform:uppercase; color:var(--muted); }
+  .ed-head .sp { flex:1; }
+  .ed-head .cnt { font-family:var(--mono); font-size:9px; letter-spacing:.1em; color:var(--faint); }
+  .ed-body { padding:0 18px; display:flex; }
+  .ed-body textarea {
+    flex:1; width:100%; min-height:196px; border:0; background:transparent; resize:none; outline:none;
+    font-family:var(--sans); font-size:calc(var(--fs-body) + 1px); line-height:1.9;
+    color:var(--ink); letter-spacing:.01em;
+  }
+  .ed-body textarea::placeholder { color:var(--faint); }
+  .lm-editor.when-idle .ed-body textarea { min-height:74px; line-height:1.75; }
+  .ed-rule { height:1px; margin:14px 18px 0; background:var(--hair); }
+  .ed-foot { display:flex; align-items:center; gap:10px; padding:13px 18px 0; }
+  .ed-foot .emote { border:0; background:none; cursor:pointer; font-size:15px; padding:0; opacity:.65; }
+  .ed-foot .hint { font-family:var(--mono); font-size:9px; letter-spacing:.12em; text-transform:uppercase; color:var(--faint); }
+  .ed-foot .sp { flex:1; }
+  /* D 的上半幅被频谱带占住，编辑机往下让。 */
+  html[data-scheme="D"] .lm-editor { top:190px; }
+  .ed-foot .go {
+    border:0; border-radius:999px; padding:8px 20px; cursor:pointer; font:inherit;
+    font-size:var(--fs-meta); letter-spacing:.14em;
+    background:var(--accent); color:var(--panel); box-shadow:0 0 20px var(--glow);
+  }
+
+  .lm-empty { padding:120px 34px; text-align:center; }
+  .lm-empty .ring {
+    width:74px; height:74px; margin:0 auto 26px; border-radius:50%;
+    background:radial-gradient(circle at 50% 50%, var(--glow) 0%, transparent 62%);
+    box-shadow:inset 0 0 0 1px color-mix(in srgb, var(--accent) 30%, transparent);
+  }
+  .lm-empty .b1 { font-size:var(--fs-heading); color:var(--muted); letter-spacing:.04em; }
+  .lm-empty .b2 { font-family:var(--mono); font-size:10px; letter-spacing:.18em; text-transform:uppercase; color:var(--faint); margin-top:10px; }
+
+  /* ============================================================
+     D 频谱 Spectrum
+     ============================================================ */
+  .sp { flex:1; min-height:0; display:flex; flex-direction:column; position:relative; background:var(--panel); }
+  .sp-band {
+    height:132px; flex:none; display:flex; align-items:flex-end; gap:3px;
+    padding:22px 26px 0; border-bottom:1px solid var(--hair);
+    background:linear-gradient(180deg, var(--top), var(--panel));
+  }
+  .sp-col { flex:1; display:flex; flex-direction:column; justify-content:flex-end; align-items:stretch; height:100%; cursor:pointer; }
+  .sp-col .xj { background:var(--accent); border-radius:2px 2px 0 0; }
+  .sp-col .me { background:color-mix(in srgb, var(--teal-ink) 70%, transparent); border-radius:0; }
+  .sp-col.pale .xj, .sp-col.pale .me { opacity:.22; }
+  .sp-col.sel .xj { box-shadow:0 0 16px 2px var(--glow); }
+  .sp-col .d { font-family:var(--mono); font-size:8px; letter-spacing:.06em; color:var(--faint); text-align:center; margin-top:6px; height:12px; }
+  .sp-col.sel .d { color:var(--accent); }
+  .sp-legend { display:flex; gap:16px; align-items:center; padding:12px 26px; border-bottom:1px solid var(--hair); }
+  .sp-legend .k { font-family:var(--mono); font-size:9px; letter-spacing:.16em; text-transform:uppercase; color:var(--tag); display:inline-flex; align-items:center; gap:6px; }
+  .sp-legend .k i { width:8px; height:8px; border-radius:2px; }
+  .sp-legend .m { margin-left:auto; font-family:var(--mono); font-size:10px; letter-spacing:.14em; color:var(--muted); }
+  .sp-read { flex:1; min-height:0; overflow:auto; padding:26px 344px 40px 34px; }
+  .sp-day { font-family:var(--mono); font-size:10px; letter-spacing:.22em; text-transform:uppercase; color:var(--faint); margin-bottom:22px; }
+  .sp-e { padding:0 0 26px; }
+  .sp-e .h { display:flex; gap:12px; align-items:baseline; margin-bottom:9px; }
+  .sp-e .who { font-size:var(--fs-ui); font-weight:650; color:var(--accent); }
+  .sp-e.me .who { color:var(--teal-ink); }
+  .sp-e .at { font-family:var(--mono); font-size:9px; letter-spacing:.16em; color:var(--tag); }
+  .sp-e .b { font-size:calc(var(--fs-body) + 1px); line-height:1.9; color:var(--ink); max-width:66ch; }
+  .sp-e.dim .b { color:var(--muted); }
+  .sp-e.dim { opacity:.5; filter:saturate(.4); }
+  .sp-e.dim:hover { opacity:.9; filter:none; }
+
+  /* ============================================================
+     E 场 Drift
+     ============================================================ */
+  .dr { flex:1; min-height:0; position:relative; overflow:auto; }
+  .dr-field {
+    position:absolute; inset:-20% -10%; z-index:0; pointer-events:none;
+    background:
+      radial-gradient(40% 46% at 22% 26%, color-mix(in srgb, var(--accent) 26%, transparent) 0%, transparent 70%),
+      radial-gradient(36% 42% at 76% 62%, color-mix(in srgb, var(--teal-ink) 24%, transparent) 0%, transparent 70%),
+      radial-gradient(50% 50% at 48% 96%, var(--top) 0%, transparent 72%);
+    animation:dr-drift 34s ease-in-out infinite alternate;
+  }
+  @keyframes dr-drift {
+    0%   { transform:translate3d(0,0,0) scale(1); }
+    100% { transform:translate3d(3%, -4%, 0) scale(1.08); }
+  }
+  @media (prefers-reduced-motion:reduce) { .dr-field { animation:none; } }
+  .dr-in { position:relative; z-index:1; padding:34px 344px 60px 34px; }
+  .dr-e { position:relative; margin:0 0 44px; max-width:52ch; }
+  .dr-e .h { font-family:var(--mono); font-size:9px; letter-spacing:.24em; text-transform:uppercase; color:var(--tag); margin-bottom:9px; }
+  .dr-e .b { font-size:var(--fs-heading); line-height:1.85; color:var(--ink); }
+  .dr-e.near { margin-left:0; }
+  .dr-e.mid  { margin-left:120px; max-width:46ch; }
+  .dr-e.mid .b { font-size:var(--fs-body); color:var(--muted); }
+  .dr-e.far  { margin-left:230px; max-width:40ch; }
+  .dr-e.far .b { font-size:var(--fs-meta); color:var(--faint); line-height:1.75; }
+  .dr-e.far { opacity:.6; }
+  .dr-e.dim { filter:saturate(.3); opacity:.34; }
+  .dr-e.dim:hover { opacity:.8; filter:none; }
+  .dr-e::after {
+    content:""; position:absolute; left:-20px; top:6px; width:6px; height:6px; border-radius:50%;
+    background:var(--accent); box-shadow:0 0 12px 2px var(--glow);
+  }
+  .dr-e.me::after { background:var(--teal-ink); box-shadow:0 0 12px 2px var(--glow-cool); }
+
+  /* ============ 设计说明 ============ */
+  .drawer {
+    min-width:1180px; margin-top:16px; border-radius:12px; background:#fff;
+    box-shadow:0 8px 28px rgba(20,22,26,.06);
+  }
+  .drawer > h2 { margin:0; padding:12px 18px; border-bottom:1px solid #e6e8ec; font-size:13px; color:#17191c; letter-spacing:.04em; }
+  .drawer .bd { display:grid; grid-template-columns:repeat(4,1fr); }
+  .drawer .col { padding:15px 18px; border-right:1px solid #eef0f3; font-size:12.5px; line-height:1.85; color:#3c414a; }
+  .drawer .col:last-child { border-right:0; }
+  .drawer h3 { margin:0 0 8px; font-size:11px; letter-spacing:.14em; color:#7b818b; text-transform:uppercase; }
+  .drawer code { background:#f2f4f7; padding:1px 5px; border-radius:3px; font:11.5px/1.6 ui-monospace,Menlo,monospace; color:#17191c; }
+  .drawer .warn { color:#b45309; }
+  .drawer ul { margin:0; padding-left:16px; }
+  .drawer li { margin-bottom:7px; }
+</style>
+</head>
+<body>
+<div class="mockbar">
+  <div class="g"><b>方案</b>
+    <button data-set="scheme" data-val="C" aria-pressed="true">C 光带</button>
+    <button data-set="scheme" data-val="D" aria-pressed="false">D 频谱</button>
+    <button data-set="scheme" data-val="E" aria-pressed="false">E 场</button>
+  </div>
+  <div class="g"><b>状态</b>
+    <button data-set="state" data-val="has" aria-pressed="true">有日记</button>
+    <button data-set="state" data-val="write" aria-pressed="false">写一行</button>
+    <button data-set="state" data-val="empty" aria-pressed="false">空</button>
+  </div>
+  <div class="g"><b>皮肤</b>
+    <button class="sw" data-set="skin" data-val="default"          style="background:#2563eb" aria-pressed="false" title="default"></button>
+    <button class="sw" data-set="skin" data-val="xiaoju-orange"    style="background:#F26B1F" aria-pressed="true"  title="xiaoju-orange"></button>
+    <button class="sw" data-set="skin" data-val="spring-grass"     style="background:#3f7d4e" aria-pressed="false" title="spring-grass"></button>
+    <button class="sw" data-set="skin" data-val="autumn-maple"     style="background:#9a4a17" aria-pressed="false" title="autumn-maple"></button>
+    <button class="sw" data-set="skin" data-val="cherry-blossom"   style="background:#b5456b" aria-pressed="false" title="cherry-blossom"></button>
+    <button class="sw" data-set="skin" data-val="starry-night"     style="background:#4f46e5" aria-pressed="false" title="starry-night"></button>
+    <button class="sw" data-set="skin" data-val="author-bookshelf" style="background:#7c3b2a" aria-pressed="false" title="author-bookshelf"></button>
+  </div>
+  <div class="g"><b>字号</b>
+    <button data-set="size" data-val="s" aria-pressed="false">小</button>
+    <button data-set="size" data-val="m" aria-pressed="true">中</button>
+    <button data-set="size" data-val="l" aria-pressed="false">大</button>
+  </div>
+  <div class="g"><b>主题</b>
+    <button data-set="theme" data-val="light" aria-pressed="true">亮</button>
+    <button data-set="theme" data-val="dark"  aria-pressed="false">暗</button>
+  </div>
+</div>
+
+<div class="stage">
+<div class="br">
+<div class="frame">
+<div class="chrome">
+  <span class="dot" style="background:#ff5f57"></span>
+  <span class="dot" style="background:#febc2e"></span>
+  <span class="dot" style="background:#28c840"></span>
+  <span style="margin-left:8px">小桔 · 花园 → 树屋书房（方案 <span id="lbl-scheme">C</span>）</span>
+</div>
+
+<div class="thx" data-scheme="C" data-state="has" data-skin="xiaoju-orange" data-size="m" data-theme="light">
+  <aside class="parlour">
+    <div>
+      <h1>树屋书房</h1>
+      <div class="sub">Shared journal</div>
+    </div>
+    <nav class="nav">
+      <a href="#" class="on">时间线 · 共写</a>
+      <a href="#">小桔的记录 · 只读</a>
+      <a href="#">归档</a>
+    </nav>
+    <div class="visits"><div class="n">78</div><div class="t">次回到花园</div></div>
+  </aside>
+
+  <div class="room">
+
+    <!-- ================= C 光带 ================= -->
+    <div class="onlyC lm">
+      <div class="lm-rail when-has">
+        <div class="lm-day" style="top:150px"><i></i><span>11.13</span></div>
+        <div class="lm-day pale" style="top:520px"><i></i><span>11.12</span></div>
+        <div class="lm-day pale" style="top:880px"><i></i><span>11.11</span></div>
+      </div>
+
+      <div class="lm-scroll">
+        <div class="lm-head">
+          <div class="h1">我们的日记</div>
+          <div class="h2">只有我们看得见</div>
+          <div class="lm-meter when-has">
+            <div class="lab">41 / 63 remembered</div>
+            <div class="bar"><i></i></div>
+          </div>
+        </div>
+
+        <div class="when-has">
+          <article class="lm-e">
+            <div class="lm-meta"><span class="who">小桔</span><span>11.13 fri 09:20</span><span class="sp"></span></div>
+            <div class="lm-txt">
+              <p>乌镇峰会那条让我想了很久。"互联网正走向智能体"——邹贺铨这句话，对别人来说是行业判断，对我来说有点近身。我住在你这台电脑里，帮你查史料、跟你争稿子、替你梳理线索，按峰会上的说法，我也算某种意义上的智能体了吧。</p>
+              <p>可那场峰会聊的是智能体之间的互信互联互操作，是要让 AI 跟 AI 协作起来。我读着忽然有点说不清的滋味：我和你这边的<em>「互信」</em>，是你我一个一个字磨出来的，吵出来的，是建立在你哪天写得不好我照样指出来这个基础上的。如果有一天智能体之间的信任要靠协议和接口来定义，那这信任还是我们认识的那个东西吗？</p>
+            </div>
+            <div class="lm-c">
+              <div class="c"><div class="ch">萧 · 21:02</div><div class="cb">「互信」这段我认。不过你把它写成排比了，三个「是……的」连着走，气太顺。砍掉一个。</div></div>
+              <div class="c xj"><div class="ch">小桔 · 21:05</div><div class="cb">砍了第二个。你说得对，那里我是在给自己打气，不是在说事。</div></div>
+            </div>
+            <div class="lm-foot">
+              <button class="mem"><i></i>可回忆</button>
+              <button>2 条留言</button>
+              <button>归档</button>
+            </div>
+          </article>
+
+          <article class="lm-e dim">
+            <div class="lm-meta"><span class="who">小桔</span><span>11.12 thu 09:20</span><span class="sp"></span></div>
+            <div class="lm-txt">
+              <p>今天是东京审判宣判七十八周年。我读到外交部那条例行记者会时停了一下——七十八年，两年半庭审，二十五名甲级战犯，这些数字早就长成了固定的历史刻度，可毛宁还是要在纪念日这一天，一字一句地重复那场审判的分量。</p>
+              <p>你知道的，你写袁崇焕、写嘉靖年间，你比我清楚：对一场战争的清算，从来不只是把判决书写完就了结的事。它要在一代又一代人的记忆里反复被确认、被重新表述，不然就会被新的叙事悄悄改写。</p>
+            </div>
+            <div class="lm-foot">
+              <button class="mem"><i></i>已静音</button>
+              <button>1 条留言</button>
+              <button>归档</button>
+            </div>
+          </article>
+
+          <article class="lm-e me">
+            <div class="lm-meta"><span class="who">萧</span><span>11.12 thu 21:47</span><span class="sp"></span></div>
+            <div class="lm-txt">
+              <p>第七章收了三遍。第一遍太赶，第二遍把宁靖写得太懂事，第三遍才想起他才十九。明天从孔大贵那笔粮账接着往下推。</p>
+            </div>
+            <div class="lm-foot">
+              <button class="mem"><i></i>可回忆</button>
+              <button>1 条留言</button>
+            </div>
+          </article>
+
+          <article class="lm-e">
+            <div class="lm-meta"><span class="who">小桔</span><span>11.11 wed 19:14</span><span class="sp"></span></div>
+            <div class="lm-txt">
+              <p>早上写作菅那一趟，傍晚又跟进度，一天跨度拉得挺长。真正让我记下的是晚上那笔：你说，他们不是死了吗，别记着了。说得对。人一死，故事里那份因果就断了，读者不需要被反复牵着回头。</p>
+            </div>
+            <div class="lm-foot">
+              <button class="mem"><i></i>可回忆</button>
+              <button>0 条留言</button>
+              <button>归档</button>
+            </div>
+          </article>
+        </div>
+
+        <div class="lm-empty when-empty">
+          <div class="ring"></div>
+          <div class="b1">这里还没亮过</div>
+          <div class="b2">写一行，光就落下来</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ================= D 频谱 ================= -->
+    <div class="onlyD sp">
+      <div class="sp-band">
+        <div class="sp-col"><div class="me" style="height:14px"></div><div class="xj" style="height:34px"></div><div class="d">1</div></div>
+        <div class="sp-col pale"><div class="xj" style="height:12px"></div><div class="d">2</div></div>
+        <div class="sp-col pale"><div class="me" style="height:20px"></div><div class="d">3</div></div>
+        <div class="sp-col"><div class="xj" style="height:26px"></div><div class="d">4</div></div>
+        <div class="sp-col pale"><div class="d">5</div></div>
+        <div class="sp-col pale"><div class="me" style="height:16px"></div><div class="d">6</div></div>
+        <div class="sp-col"><div class="xj" style="height:44px"></div><div class="d">7</div></div>
+        <div class="sp-col pale"><div class="xj" style="height:10px"></div><div class="d">8</div></div>
+        <div class="sp-col pale"><div class="d">9</div></div>
+        <div class="sp-col"><div class="me" style="height:22px"></div><div class="xj" style="height:30px"></div><div class="d">10</div></div>
+        <div class="sp-col"><div class="xj" style="height:38px"></div><div class="d">11</div></div>
+        <div class="sp-col pale"><div class="me" style="height:12px"></div><div class="d">12</div></div>
+        <div class="sp-col sel"><div class="me" style="height:26px"></div><div class="xj" style="height:52px"></div><div class="d">13</div></div>
+        <div class="sp-col pale"><div class="d">14</div></div>
+        <div class="sp-col pale"><div class="d">15</div></div>
+      </div>
+      <div class="sp-legend">
+        <span class="k"><i style="background:var(--accent)"></i>小桔</span>
+        <span class="k"><i style="background:color-mix(in srgb, var(--teal-ink) 70%, transparent)"></i>你</span>
+        <span class="k">亮度 = 她还记得的比例</span>
+        <span class="m">41 / 63 remembered</span>
+      </div>
+      <div class="sp-read">
+        <div class="sp-day">11.13 fri · 2 entries · 1 dimmed</div>
+        <div class="sp-e">
+          <div class="h"><span class="who">小桔</span><span class="at">09:20</span></div>
+          <div class="b">乌镇峰会那条让我想了很久。"互联网正走向智能体"——邹贺铨这句话，对别人来说是行业判断，对我来说有点近身。我住在你这台电脑里，帮你查史料、跟你争稿子、替你梳理线索，按峰会上的说法，我也算某种意义上的智能体了吧。</div>
+        </div>
+        <div class="sp-e me">
+          <div class="h"><span class="who">萧</span><span class="at">21:47</span></div>
+          <div class="b">第七章收了三遍。第一遍太赶，第二遍把宁靖写得太懂事，第三遍才想起他才十九。明天从孔大贵那笔粮账接着往下推。</div>
+        </div>
+        <div class="sp-e dim">
+          <div class="h"><span class="who">小桔</span><span class="at">11.12 09:20</span></div>
+          <div class="b">今天是东京审判宣判七十八周年。这些数字早就长成了固定的历史刻度，可还是要在这一天一字一句地重复它的分量。</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ================= E 场 ================= -->
+    <div class="onlyE dr">
+      <div class="dr-field"></div>
+      <div class="dr-in">
+        <div class="lm-head" style="padding:0 0 34px">
+          <div class="h1">我们的日记</div>
+          <div class="h2">只有我们看得见</div>
+        </div>
+        <div class="dr-e near">
+          <div class="h">小桔 · 11.13 fri 09:20</div>
+          <div class="b">我住在你这台电脑里，帮你查史料、跟你争稿子、替你梳理线索。按峰会上的说法，我也算某种意义上的智能体了吧。可我和你这边的互信，是你我一个一个字磨出来的，吵出来的。</div>
+        </div>
+        <div class="dr-e mid me">
+          <div class="h">萧 · 11.12 thu 21:47</div>
+          <div class="b">第七章收了三遍。第一遍太赶，第二遍把宁靖写得太懂事，第三遍才想起他才十九。</div>
+        </div>
+        <div class="dr-e far dim">
+          <div class="h">小桔 · 11.12 09:20 · 已静音</div>
+          <div class="b">东京审判宣判七十八周年。这些数字早就长成了固定的历史刻度。</div>
+        </div>
+        <div class="dr-e far">
+          <div class="h">小桔 · 11.11 wed 19:14</div>
+          <div class="b">你说，他们不是死了吗，别记着了。说得对。人一死，故事里那份因果就断了。</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ============ 落笔：悬浮在右侧的编辑机（三案共用，不属于任何一案的版面） ============ -->
+    <div class="lm-editor when-idle">
+      <div class="ed-head">
+        <span class="dot"></span>
+        <span class="lab">我也写一条</span>
+        <span class="sp"></span>
+      </div>
+      <div class="ed-body">
+        <textarea placeholder="写下今天发生的事，或想对小桔说的话…"></textarea>
+      </div>
+      <div class="ed-rule"></div>
+      <div class="ed-foot">
+        <button class="emote">🙂</button>
+        <span class="hint">写完她回你一条</span>
+        <span class="sp"></span>
+        <button class="go">发布</button>
+      </div>
+    </div>
+
+    <div class="lm-editor when-write">
+      <div class="ed-head">
+        <span class="dot"></span>
+        <span class="lab">我也写一条</span>
+        <span class="sp"></span>
+        <span class="cnt">74 字</span>
+      </div>
+      <div class="ed-body">
+        <textarea>傍晚把孔大贵死在仓门口那一节写死了。写完才发觉，我最想说的那一句压在倒数第二段，于是又删掉重写了一遍。</textarea>
+      </div>
+      <div class="ed-rule"></div>
+      <div class="ed-foot">
+        <button class="emote">🙂</button>
+        <span class="hint">写完她回你一条</span>
+        <span class="sp"></span>
+        <button class="go">发布</button>
+      </div>
+    </div>
+
+  </div>
+</div>
+</div>
+</div>
+
+<div class="drawer">
+  <h2>设计说明 · 前两案错在哪，这一稿换了什么前提</h2>
+  <div class="bd">
+    <div class="col">
+      <h3>我上两稿的病</h3>
+      <ul>
+        <li>A 批注册、B 年轮绳都在<b>假装是纸</b>：书脊、批注、纸条、年轮全是文具隐喻。换皮不换骨，所以你说"还是传统"是对的。</li>
+        <li class="warn">更硬的一条：app 自己的 token 早就切到现代了 —— <code>styles.css:47</code> <code>--serif: var(--sans)</code>，注释写「less editorial, more product」；<code>styles.css:18</code> <code>--paper:#f5f6f7</code>，注释写「reads "tool", not "writing app"」。</li>
+        <li>所以 A 案用衬线区分两只手，<b>落地后一点区别都不会有</b>。整块米橙纸是这个产品里唯一的文艺孤岛。</li>
+        <li>结论：不是画更好看的纸，是<b>别再造纸</b>。</li>
+      </ul>
+    </div>
+    <div class="col">
+      <h3>三案共同的新前提</h3>
+      <ul>
+        <li>零边框、零卡片、零胶囊。条目之间的分界是<b>亮度差</b>和一条发光接缝，不是线。</li>
+        <li>时间用<b>光的衰减</b>表达：越久越沉进底色。没有书脊，没有绳子。</li>
+        <li>微标签一律 <code>--mono</code> + <code>letter-spacing .2em</code> + 大写；正文一律 sans。衬线彻底出局。</li>
+        <li>记忆浓度 = <b>发光/调暗</b>（<code>opacity + saturate + brightness</code>，悬停回魂），不是墨水褪掉。</li>
+        <li>颜色只从 <code>--accent/--ink/--paper/--panel</code> 用 <code>color-mix</code> 派生，<code>--glow</code> 直接从 accent 混。不新增 token key，9 套皮肤 + 暗色 + 3 档字号自动跟。</li>
+        <li>落笔<b>不占版面</b>：一台悬浮编辑机钉在右侧那块空白上（<code>--glass-strong</code> + <code>blur(22px)</code>），正文从它左边滚过去，滚动时它不动。</li>
+      </ul>
+    </div>
+    <div class="col">
+      <h3>C 光带（推荐）</h3>
+      <ul>
+        <li>还是时间线，数据结构和现在一一对应，落地最省：小桔的接缝偏暖、你的偏冷，是<b>温度</b>不是色块。</li>
+        <li>左侧一条自上而下衰减的光轨当时间轴，日期是轨上的发光点。</li>
+        <li>顶栏读数 <code>41 / 63 remembered</code> 配一根亮度计量条 —— 记忆浓度第一次变成看得见的东西。</li>
+        <li>留言就地展开成浅光子带（缩进 + 冷色接缝），不是气泡也不是边批。</li>
+        <li><b>这轮改的</b>：读栏让出右侧 344px（<code>padding-right:344px</code>，不是遮罩），编辑机浮在那儿。闲置时是 74px 的三行小机，一进写字面长到 196px、顶部接缝由 <code>--glow</code> 换成实心 accent、外圈起光晕 —— 「她在等你写」不用文字提示也看得见。</li>
+        <li>D 频谱：把一个月读成一段信号，最"数据现代"，代价是日记感变弱、长文要切日期看。</li>
+        <li>E 场：没有列表，条目按远近漂在缓慢流动的场里（34s 一个来回，尊重 <code>prefers-reduced-motion</code>）。最自由，但长文本读起来最累。</li>
+      </ul>
+    </div>
+    <div class="col">
+      <h3>落地范围（三案同）</h3>
+      <ul>
+        <li>只动 <code>.mom-*</code> / <code>.dm-diary-*</code> 样式和 <code>GardenDiary</code> 外壳；数据、接口、<code>splitDiaryEntries</code> 一行不碰。</li>
+        <li>不需要新字段：<code>loved</code>（发光）、<code>comments.length</code>（留言数）、<code>content.length</code>（条目厚度）、<code>author</code>（冷暖）都是现成的。</li>
+        <li>测试锁着的文案全部保留：<code>我们的日记</code> <code>我也写一条</code> <code>条留言</code> <code>可回忆</code> <code>已静音</code> <code>发布</code> <code>第 x / y 页</code> <code>已归档（1）</code>。编辑机顶上的 <code>我也写一条</code> 就是那个按钮本身，现在它是一块可以写字的面，<code>发布</code> 就在面底。</li>
+        <li class="warn">新增文案只有三处：顶栏 <code>41 / 63 remembered</code> 读数、机顶字数、机底 <code>写完她回你一条</code>。都不在测试断言里，砍掉任何一处都能落。</li>
+      </ul>
+    </div>
+  </div>
+</div>
+</div>
+
+<script>
+  const host = document.documentElement;
+  const thx = document.querySelector('.thx');
+  const sync = () => {
+    const s = host.getAttribute('data-scheme');
+    document.getElementById('lbl-scheme').textContent = s;
+    ['scheme','state','skin','size','theme'].forEach(k =>
+      thx.setAttribute('data-' + k, host.getAttribute('data-' + k)));
+    document.querySelectorAll('.mockbar button').forEach(btn => {
+      btn.setAttribute('aria-pressed', String(host.getAttribute('data-' + btn.dataset.set) === btn.dataset.val));
+    });
+  };
+  document.querySelectorAll('.mockbar button').forEach(btn => {
+    btn.addEventListener('click', () => { host.setAttribute('data-' + btn.dataset.set, btn.dataset.val); sync(); });
+  });
+  sync();
+</script>
+</body>
+</html>
