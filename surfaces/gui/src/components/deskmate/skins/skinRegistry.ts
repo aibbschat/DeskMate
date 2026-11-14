@@ -246,7 +246,8 @@ export const SKIN_REGISTRY: readonly SkinMeta[] = [
       panelDark: "#291809",
       lineDark: "#452A12",
       inkDark: "#FED7AA",
-      mutedDark: "#B45309",
+      // 旧值 #B45309 在深棕底上只有 3.71:1，低于 WCAG AA 4.5；提亮为暖杏（8.24:1）。
+      mutedDark: "#DEA05A",
       solidDark: "#452A12",
       onSolidDark: "#FED7AA",
       glassDark: "rgba(41, 24, 9, 0.92)",
@@ -347,20 +348,24 @@ export const SKIN_REGISTRY: readonly SkinMeta[] = [
       glow: "rgba(99, 102, 241, 0.30)",
       shadow: "rgba(99, 102, 241, 0.12)",
     },
+    // ⚠ 底图是一整张深色夜空，浅色主题下也必须用深色表面（否则正文压在深蓝底图上
+    // 只有 1.7:1）。原因见 styles.css「星空夜晚皮肤」注释。registry 是预览卡片色板的
+    // 唯一来源，必须与 CSS 同 id 选择器逐项对齐，否则预览会骗人。
     surface: {
-      paper: "#EEF2FF",
-      panel: "#FFFFFF",
-      line: "#C7D2FE",
-      ink: "#1E1B4B",
-      muted: "#4338CA",
-      solid: "#E0E7FF",
-      onSolid: "#1E1B4B",
-      glass: "rgba(238, 242, 255, 0.92)",
+      paper: "#12132C",
+      panel: "#1C1E42",
+      line: "#303466",
+      ink: "#E6EAFF",
+      muted: "#B8C1F2",
+      solid: "#2B3169",
+      onSolid: "#E6EAFF",
+      glass: "rgba(18, 19, 44, 0.90)",
       paperDark: "#0F0E24",
       panelDark: "#1E1B4B",
       lineDark: "#312E81",
       inkDark: "#C7D2FE",
-      mutedDark: "#6366F1",
+      // 旧 #6366F1 在 #0F0E24 上仅 4.24:1，提亮到 accentDark 同色（6.35:1）。
+      mutedDark: "#818CF8",
       solidDark: "#312E81",
       onSolidDark: "#C7D2FE",
       glassDark: "rgba(30, 27, 75, 0.92)",
@@ -398,7 +403,8 @@ export const SKIN_REGISTRY: readonly SkinMeta[] = [
       panelDark: "#291809",
       lineDark: "#452A12",
       inkDark: "#FDE68A",
-      mutedDark: "#B45309",
+      // 同 autumn-maple：旧 #B45309 仅 3.71:1，同步提亮到 8.25:1。
+      mutedDark: "#DEA05A",
       solidDark: "#452A12",
       onSolidDark: "#FDE68A",
       glassDark: "rgba(41, 24, 9, 0.92)",

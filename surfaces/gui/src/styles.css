@@ -265,7 +265,8 @@ html[data-theme="dark"][data-skin-pre="autumn-maple"] {
   --line: #452A12;
   --line-strong: #7C2D12;
   --ink: #FED7AA;
-  --muted: #B45309;
+  /* 次要文字须 ≥4.5:1：旧 #B45309 仅 3.71，与 registry.mutedDark 同步提亮 */
+  --muted: #DEA05A;
   --faint: #92400E;
   --solid: #452A12;
   --on-solid: #FED7AA;
@@ -442,7 +443,8 @@ html[data-theme="dark"][data-skin-pre="starry-night"] {
   --line: #312E81;
   --line-strong: #3730A3;
   --ink: #C7D2FE;
-  --muted: #6366F1;
+  /* 次要文字须 ≥4.5:1：旧 #6366F1 仅 4.24，与 registry.mutedDark 同步提亮 */
+  --muted: #818CF8;
   --faint: #4F46E5;
   --solid: #312E81;
   --on-solid: #C7D2FE;
@@ -494,7 +496,8 @@ html[data-theme="dark"][data-skin-pre="coffee-time"] {
   --line: #452A12;
   --line-strong: #78350F;
   --ink: #FDE68A;
-  --muted: #B45309;
+  /* 次要文字须 ≥4.5:1：旧 #B45309 仅 3.71，与 registry.mutedDark 同步提亮 */
+  --muted: #DEA05A;
   --faint: #92400E;
   --solid: #452A12;
   --on-solid: #FDE68A;

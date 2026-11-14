@@ -7,7 +7,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MomentFeed } from "./MomentFeed";
 
-function stubFetch() {
+function stubFetch(
+  xjReply: Array<{ id: string; author: string; text: string; createdAt: string }> = [],
+) {
   const routes: Record<string, unknown> = {
     "/v1/deskmate/moments": { items: [], next_cursor: null, comments: {} },
     "/v1/deskmate/diary": { dates: [] },
@@ -68,6 +70,11 @@ function stubFetch() {
           json: async () => ({ ok: true, archived: !!body.archived }),
         } as Response;
       }
+      // 新交互：发帖不直接吃后端返回的 reply，而是 2s 后轮询
+      // /v1/deskmate/moments/<id>，等后台 LLM 把真回复作为 xiaoju 留言落库。
+      if (method === "GET" && /\/v1\/deskmate\/moments\/[^/?]+$/.test(u)) {
+        return { ok: true, json: async () => ({ comments: xjReply }) } as Response;
+      }
       const hit = Object.entries(routes).find(([k]) => u.includes(k));
       return { ok: true, json: async () => (hit ? hit[1] : {}) } as Response;
     }),
@@ -96,13 +103,21 @@ describe("MomentFeed 微博时间线（后端版）", () => {
     expect(screen.getByText(/我也写一条/)).toBeTruthy();
   });
 
-  it("用户发日记：卡片出现，小桔真回复随附（展开留言可见）", async () => {
-    stubFetch();
+  it("用户发日记：自动展开留言区，轮询到小桔真回复后替换占位", async () => {
+    stubFetch([
+      { id: "r1", author: "xiaoju", text: "这条我好好收着。", createdAt: "2026-08-31T15:00:05" },
+    ]);
     render(<MomentFeed />);
     await writeDiary("今天把文稿定稿了，很开心。");
     expect(await screen.findByText(/今天把文稿定稿了/)).toBeTruthy();
-    fireEvent.click(screen.getByText(/条留言/));
-    expect(await screen.findByText("这条我好好收着。")).toBeTruthy();
+    // 11-13 新版：发帖即自动展开留言区（无需再点「留言」）；pending 期只显示
+    // 「正在想…」，组件刻意忽略 post.comments / reply，不拿兜底模板冒充小桔回复。
+    expect(screen.getByPlaceholderText("回复…")).toBeTruthy();
+    expect(screen.getByText(/正在想/)).toBeTruthy();
+    // 后台真回复落库后由轮询替换占位（首轮 2s）
+    expect(await screen.findByText("这条我好好收着。", {}, { timeout: 4000 })).toBeTruthy();
+    await waitFor(() => expect(screen.queryByText(/正在想/)).toBeNull());
+    expect(screen.getByText("1 条留言")).toBeTruthy();
   });
 
   it("🩷 默认全开：发日记即『可回忆』，点按=取消主动回忆（静音）", async () => {
@@ -123,7 +138,7 @@ describe("MomentFeed 微博时间线（后端版）", () => {
     render(<MomentFeed />);
     await writeDiary("晚安，今天先睡了。");
     await screen.findByText(/晚安，今天先睡了/);
-    fireEvent.click(screen.getByText(/条留言|留言/));
+    // 新交互：发帖已自动展开留言区；这里再点「留言」反而会把它收起。
     const input = screen.getByPlaceholderText("回复…");
     fireEvent.change(input, { target: { value: "明天见" } });
     fireEvent.click(screen.getByText("发送"));
