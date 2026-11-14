@@ -276,14 +276,18 @@ PAGE = r"""
   }
   .meta .role { font-size:var(--fs-label); color:var(--faint); }
   .meta .ts { font-size:var(--fs-label); color:var(--faint); font-variant-numeric:tabular-nums; }
-  /* 立场标记：这句在讨论链条的哪一环。红色留给真出错，反调不借 danger。 */
+  /* 立场标记：这句在讨论链条的哪一环。四色要真的分得开 —— 蓝/绿/琥珀/中性墨，
+     别拿两个相近的蓝糊弄（11-13 真机：立论与反调几乎同色）。红色留给真出错，
+     反调不借 danger；勘误是事实订正、不是观点，所以给它最安静的中性墨。
+     颜色之外再叠一层形状差（立论填底、其余描边），色觉不便也分得出。 */
   .stance {
     font-size:10px; letter-spacing:.1em; border-radius:2px; padding:1px 5px;
-    border:1px solid currentColor; color:var(--accent);
+    border:1px solid currentColor; color:var(--muted);
   }
+  .stance.argue { color:var(--accent); background:var(--accent-soft); }
   .stance.build { color:var(--ok); }
-  .stance.dissent { color:color-mix(in srgb, var(--accent) 72%, var(--ink)); }
-  .stance.proof { color:var(--warn-ink); }
+  .stance.dissent { color:var(--warn-ink); }
+  .stance.proof { color:var(--muted); border-style:dashed; }
 
   .bubble {
     font-size:var(--fs-chat); line-height:1.75; color:var(--ink);
@@ -626,12 +630,31 @@ function fmt(text){
 }
 /* 立场标记（2026-11-11 半山书院）：群提示词要求 bot 首行单独写「〔立论〕」之一，
    前端解析成标签并从正文剥掉。**标记词只活在展示层** —— ChatStore 里仍是原始纯文本，
-   没有新增字段，历史数据与旧页面都不受影响。模型不守规矩就没有标签，绝不硬编一个。 */
+   没有新增字段，历史数据与旧页面都不受影响。模型不守规矩就没有标签，绝不硬编一个。
+   括号形状不固定（〔〕/【】/[]/（）, 可加粗、可带冒号，甚至只写「反调：」），
+   所以解析放宽到这些变体；认不出来就当普通正文，宁可少一个标签也不认错词。 */
 const STANCES = { '立论':'argue', '补台':'build', '反调':'dissent', '勘误':'proof' };
+const STANCE_HEAD = new RegExp(
+  '^[ \\t]*(?:\\*\\*)?[〔【\\[（(]\\s*(立论|补台|反调|勘误)\\s*[〕】\\]）)](?:\\*\\*)?[ \\t]*(?::|：)?' +
+  '|^[ \\t]*\\*\\*(立论|补台|反调|勘误)\\*\\*[ \\t]*(?::|：)?' +
+  '|^[ \\t]*(立论|补台|反调|勘误)[ \\t]*(?::|：)');
 function splitStance(text){
   const s = String(text == null ? '' : text);
-  const m = /^[ \t]*〔\s*(立论|补台|反调|勘误)\s*〕[ \t]*\n?/.exec(s);
-  return m ? { key:m[1], cls:STANCES[m[1]], rest:s.slice(m[0].length) } : { key:'', cls:'', rest:s };
+  const m = STANCE_HEAD.exec(s);
+  if (!m) return { key:'', cls:'', rest:s };
+  const key = m[1] || m[2] || m[3];
+  let rest = s.slice(m[0].length);
+  if (rest.charCodeAt(0) === 10) rest = rest.slice(1);   // 标记后的换行是格式，不是内容
+  return { key:key, cls:STANCES[key], rest:rest };
+}
+/* 标记只打了一半（括号没闭合、词还没打全）时先别画，否则气泡会闪出「〔立」「**反」
+   这种半截字。done 后不再抑制 —— 模型真写了个没闭合的括号，那是正文，原样给他。 */
+function stancePartial(acc){
+  const s = String(acc == null ? '' : acc).replace(/^[ \t]+/, '');
+  if (!s) return false;
+  if (/^(?:\*\*)?[〔【\[（(][^〕】\]）)]*$/.test(s)) return true;
+  const bare = s.replace(/^\*\*/, '');
+  return Object.keys(STANCES).some(w => w.startsWith(bare));
 }
 function stanceTagHtml(cls, key){
   return key ? '<span class="stance ' + cls + '">' + key + '</span>' : '';
@@ -902,7 +925,7 @@ function startBubble(ev){
    没闭合的「〔」，那是正文，原样给他。 */
 function paintStream(st, done){
   let sp = splitStance(st.acc);
-  if (!sp.key && !done && /^[ \t]*〔[^〕]*$/.test(st.acc)) sp = { key:'', cls:'', rest:'' };
+  if (!sp.key && !done && stancePartial(st.acc)) sp = { key:'', cls:'', rest:'' };
   st.bubble.innerHTML = fmt(sp.rest) + (done ? '' : '<span class="caret"></span>');
   if (sp.key && st.stance) st.stance.innerHTML = stanceTagHtml(sp.cls, sp.key);
 }

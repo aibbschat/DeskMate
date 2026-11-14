@@ -130,3 +130,26 @@ def test_group_guidance_no_hard_length_cap() -> None:
     # 分层形态：首轮可展开、接话轮短，且「短」带「常常」的弹性
     assert "展开说透" in g
     assert "常常三五句就够" in g
+
+
+def test_stance_marker_does_not_collide_with_the_no_attribution_rule() -> None:
+    """立场标记和反署名护栏必须口径一致（2026-11-13 真机复盘）。
+
+    11-11 加半山书院的立场标记时，只在 ``build_prompt`` 的 lead 末尾补了一句，
+    而 ``_GROUP_GUIDANCE`` 里那条 11-06 的「不要在发言开头加……括号说明，直接从
+    观点说起」一个字没动 —— 系统提示词比单轮 lead 更硬，模型照旧不交标记，
+    前端四个标签色一个都没渲染出来。这里锁两件事：规矩本身进了 guidance，
+    且反署名那条明确把立场标记豁免出去。
+    """
+    g = rt._GROUP_GUIDANCE
+    for word in ("立论", "补台", "反调", "勘误"):
+        assert word in g, f"立场标记规矩没写进群指引：{word}"
+    assert "〔立论〕" in g, "guidance 里要给模型一个可抄的字面形状"
+    # 豁免必须挂在反署名那一句的射程里，否则两条规则还是打架。
+    i = g.index("在发言开头加")
+    assert "例外" in g[i:i + 220], "反署名条没给立场标记开例外"
+    # 单轮 lead 与 guidance 用同一批词，不许各说一套。
+    p1 = rt.build_prompt("烧仓之后怎么撤", None, round_index=1)
+    assert all(w in p1 for w in ("立论", "补台", "反调", "勘误"))
+    # pass 不交标记：lead 里要明说，否则会出现「〔立论〕pass」这种挂标签的空发言。
+    assert "pass" in rt._STANCE_LINE
