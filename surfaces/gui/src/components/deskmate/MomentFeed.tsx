@@ -18,7 +18,6 @@ import { emoteLabel } from "./emotes/emoteManifest";
 import { getActivePack } from "./emotes/emotePack";
 import { renderEmoteInline } from "./emotes/Emote";
 import { splitDiaryEntries } from "../../diaryEntries";
-import userAvatar from "../../assets/user-avatar.jpg";
 
 const USER_NAME = "萧盛";
 
@@ -117,6 +116,16 @@ function dateLabel(date: string): string {
     const d = new Date(`${date}T12:00:00`);
     const week = "日一二三四五六"[d.getDay()];
     return `${d.getMonth() + 1}月${d.getDate()}日 周${week}`;
+  } catch {
+    return date;
+  }
+}
+
+/** 光轨上的日期点：月.日够定位，星期交给条目头那行 */
+function dayTag(date: string): string {
+  try {
+    const d = new Date(`${date}T12:00:00`);
+    return `${d.getMonth() + 1}.${String(d.getDate()).padStart(2, "0")}`;
   } catch {
     return date;
   }
@@ -308,6 +317,34 @@ export function MomentFeed() {
   const safePage = Math.min(page, totalPages);
   const pageItems = activeMoments.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE);
 
+  /** 按天分组：光轨上的日期点跟着内容走，不靠绝对定位去对齐 */
+  const dayGroups = useMemo(() => {
+    const out: { date: string; items: Moment[] }[] = [];
+    for (const m of pageItems) {
+      const last = out[out.length - 1];
+      if (last && last.date === m.date) last.items.push(m);
+      else out.push({ date: m.date, items: [m] });
+    }
+    return out;
+  }, [pageItems]);
+
+  const remembered = useMemo(
+    () => activeMoments.filter((m) => m.loved).length,
+    [activeMoments],
+  );
+
+  /** 卡片属性：时间线和已归档区共用一份，免得两处漏传 */
+  const cardProps = (m: Moment) => ({
+    moment: m,
+    openComments: !!openComments[m.id],
+    commentDraft: commentDrafts[m.id] || "",
+    onToggleComments: () => toggleComments(m.id),
+    onCommentDraft: (v: string) => setCommentDrafts((p) => ({ ...p, [m.id]: v })),
+    onAddComment: () => addComment(m.id),
+    onLove: () => toggleLove(m.id, m.content, m.loved),
+    onArchive: () => toggleArchive(m.id, !m.archived),
+  });
+
   /** 发帖后轮询小桔真回复：后台 LLM 异步把回复作为 xiaoju 留言落库，轮询到即替换显示。
    *  绝不让兜底模板冒充小桔回复——pending 期间显示「正在想…」，真留言到达即替换。 */
   const pollXiaojuReply = useCallback((id: string) => {
@@ -489,154 +526,176 @@ export function MomentFeed() {
 
   return (
     <div className="mom-feed">
-      <div className="mom-feed-header">
-        <div className="mom-feed-title">
-          <XiaojuAvatar size={22} />
-          <span>我们的日记</span>
-          <span className="mom-feed-sub">只有我们看得见</span>
-        </div>
-        <button
-          type="button"
-          className="mom-compose-btn"
-          onClick={() => setComposerOpen((v) => !v)}
-        >
-          ✎ 我也写一条
-        </button>
-      </div>
-
-      {notice && <div className="mom-notice">{notice}</div>}
-
-      {composerOpen && (
-        <div className="mom-composer">
-          <textarea
-            value={draft}
-            onChange={(e) => setDraft(e.target.value)}
-            placeholder="写下今天发生的事，或想对小桔说的话…（可插表情）"
-            rows={3}
-          />
-          {emoteOpen && (
-            <div className="mom-emote-picker">
-              <EmotePicker onPick={insertEmote} />
+      <div className="mom-main">
+        <div className="mom-feed-header">
+          <div className="mom-feed-title">
+            <XiaojuAvatar size={22} />
+            <span>我们的日记</span>
+            <span className="mom-feed-sub">只有我们看得见</span>
+          </div>
+          {loaded && activeMoments.length > 0 && (
+            <div className="mom-meter">
+              <span className="mom-meter-lab">
+                她记着 {remembered} / {activeMoments.length}
+              </span>
+              <span className="mom-meter-bar">
+                <i
+                  style={{
+                    width: `${Math.round((remembered / activeMoments.length) * 100)}%`,
+                  }}
+                />
+              </span>
             </div>
           )}
-          <div className="mom-composer-actions">
-            <button type="button" onClick={() => setEmoteOpen((v) => !v)} aria-label="表情">
-              <span style={{ fontSize: 15 }}>🙂</span>
-            </button>
-            <span className="mom-composer-spacer" />
-            <button type="button" onClick={() => setComposerOpen(false)}>
-              取消
-            </button>
-            <button
-              type="button"
-              className="mom-primary"
-              onClick={publish}
-              disabled={!draft.trim() || publishing}
-            >
-              {publishing ? "发布中…" : "发布"}
-            </button>
-          </div>
         </div>
-      )}
 
-      {!loaded ? (
-        <p className="mom-loading">翻开我们的日记…</p>
-      ) : sorted.length === 0 ? (
-        <div className="mom-empty">
-          <p>这里还没有日记。</p>
-          <p className="mom-empty-hint">写一条，或等小桔记下今天——回忆就从这里开始。</p>
-        </div>
-      ) : (
-        <>
-          <div className="mom-timeline">
-            {pageItems.map((m) => (
-              <MomentCard
-                key={m.id}
-                moment={m}
-                openComments={!!openComments[m.id]}
-                commentDraft={commentDrafts[m.id] || ""}
-                onToggleComments={() => toggleComments(m.id)}
-                onCommentDraft={(v) => setCommentDrafts((p) => ({ ...p, [m.id]: v }))}
-                onAddComment={() => addComment(m.id)}
-                onLove={() => toggleLove(m.id, m.content, m.loved)}
-                onArchive={() => toggleArchive(m.id, !m.archived)}
-              />
-            ))}
+        {notice && <div className="mom-notice">{notice}</div>}
+
+        {!loaded ? (
+          <p className="mom-loading">翻开我们的日记…</p>
+        ) : sorted.length === 0 ? (
+          <div className="mom-empty">
+            <div className="mom-empty-ring" aria-hidden="true" />
+            <p>这里还没有日记。</p>
+            <p className="mom-empty-hint">写一条，或等小桔记下今天——回忆就从这里开始。</p>
           </div>
-          {activeMoments.length > 0 && (
-            <div className="mom-pager">
-              <button
-                type="button"
-                className="mom-pager-btn"
-                onClick={() => safePage > 1 && setPage(safePage - 1)}
-                disabled={safePage <= 1}
-              >
-                ‹ 上一页
-              </button>
-              {totalPages > 1 &&
-                totalPages <= 7 &&
-                Array.from({ length: totalPages }, (_, i) => i + 1).map((n) => (
-                  <button
-                    key={n}
-                    type="button"
-                    className={`mom-pager-num${n === safePage ? " active" : ""}`}
-                    onClick={() => setPage(n)}
-                  >
-                    {n}
-                  </button>
-                ))}
-              <span className="mom-pager-info">第 {safePage} / {totalPages} 页</span>
-              <button
-                type="button"
-                className="mom-pager-btn"
-                onClick={() => {
-                  if (safePage < totalPages) {
-                    setPage(safePage + 1);
-                  } else if (hasMore) {
-                    loadMore();
-                    setPage(Number.MAX_SAFE_INTEGER); // 续拉后由 safePage 收敛到新末页
-                  }
-                }}
-                disabled={safePage >= totalPages && !hasMore}
-              >
-                {safePage >= totalPages && hasMore
-                  ? loadingMore
-                    ? "加载中…"
-                    : "下一页 ›"
-                  : "下一页 ›"}
-              </button>
-            </div>
-          )}
-          {archivedMoments.length > 0 && (
-            <div className="mom-archived">
-              <button
-                type="button"
-                className="mom-archived-toggle"
-                onClick={() => setShowArchived((v) => !v)}
-              >
-                📦 已归档（{archivedMoments.length}）{showArchived ? "▾" : "▸"}
-              </button>
-              {showArchived && (
-                <div className="mom-timeline">
-                  {archivedMoments.map((m) => (
-                    <MomentCard
-                      key={m.id}
-                      moment={m}
-                      openComments={!!openComments[m.id]}
-                      commentDraft={commentDrafts[m.id] || ""}
-                      onToggleComments={() => toggleComments(m.id)}
-                      onCommentDraft={(v) => setCommentDrafts((p) => ({ ...p, [m.id]: v }))}
-                      onAddComment={() => addComment(m.id)}
-                      onLove={() => toggleLove(m.id, m.content, m.loved)}
-                      onArchive={() => toggleArchive(m.id, !m.archived)}
-                    />
+        ) : (
+          <>
+            <div className="mom-timeline">
+              {dayGroups.map((g, gi) => (
+                <div className={`mom-day${gi === 0 ? "" : " pale"}`} key={`${g.date}-${gi}`}>
+                  <div className="mom-day-mark">
+                    <i />
+                    <span>{dayTag(g.date)}</span>
+                  </div>
+                  {g.items.map((m) => (
+                    <MomentCard key={m.id} {...cardProps(m)} />
                   ))}
                 </div>
-              )}
+              ))}
             </div>
+          {activeMoments.length > 0 && (
+              <div className="mom-pager">
+                <button
+                  type="button"
+                  className="mom-pager-btn"
+                  onClick={() => safePage > 1 && setPage(safePage - 1)}
+                  disabled={safePage <= 1}
+                >
+                  ‹ 上一页
+                </button>
+                {totalPages > 1 &&
+                  totalPages <= 7 &&
+                  Array.from({ length: totalPages }, (_, i) => i + 1).map((n) => (
+                    <button
+                      key={n}
+                      type="button"
+                      className={`mom-pager-num${n === safePage ? " active" : ""}`}
+                      onClick={() => setPage(n)}
+                    >
+                      {n}
+                    </button>
+                  ))}
+                <span className="mom-pager-info">第 {safePage} / {totalPages} 页</span>
+                <button
+                  type="button"
+                  className="mom-pager-btn"
+                  onClick={() => {
+                    if (safePage < totalPages) {
+                      setPage(safePage + 1);
+                    } else if (hasMore) {
+                      loadMore();
+                      setPage(Number.MAX_SAFE_INTEGER); // 续拉后由 safePage 收敛到新末页
+                    }
+                  }}
+                  disabled={safePage >= totalPages && !hasMore}
+                >
+                  {safePage >= totalPages && hasMore
+                    ? loadingMore
+                      ? "加载中…"
+                      : "下一页 ›"
+                    : "下一页 ›"}
+                </button>
+              </div>
+            )}
+            {archivedMoments.length > 0 && (
+              <div className="mom-archived">
+                <button
+                  type="button"
+                  className="mom-archived-toggle"
+                  onClick={() => setShowArchived((v) => !v)}
+                >
+                  📦 已归档（{archivedMoments.length}）{showArchived ? "▾" : "▸"}
+                </button>
+                {showArchived && (
+                  <div className="mom-timeline mom-timeline-flat">
+                    {archivedMoments.map((m) => (
+                      <MomentCard key={m.id} {...cardProps(m)} />
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+          </>
+        )}
+      </div>
+
+      <aside className={`lm-editor${composerOpen ? " writing" : ""}`}>
+        <div className="ed-head">
+          <span className="ed-dot" aria-hidden="true" />
+          <button type="button" className="ed-lab" onClick={() => setComposerOpen((v) => !v)}>
+            ✎ 我也写一条
+          </button>
+          <span className="ed-sp" />
+          {composerOpen && draft.trim() !== "" && (
+            <span className="ed-cnt">{draft.trim().length} 字</span>
           )}
-        </>
-      )}
+        </div>
+
+        {composerOpen ? (
+          <>
+            <div className="ed-body">
+              <textarea
+                value={draft}
+                onChange={(e) => setDraft(e.target.value)}
+                placeholder="写下今天发生的事，或想对小桔说的话…（可插表情）"
+                rows={7}
+              />
+            </div>
+            {emoteOpen && (
+              <div className="mom-emote-picker">
+                <EmotePicker onPick={insertEmote} />
+              </div>
+            )}
+            <div className="ed-rule" />
+            <div className="ed-foot">
+              <button
+                type="button"
+                className="ed-emote"
+                onClick={() => setEmoteOpen((v) => !v)}
+                aria-label="表情"
+              >
+                <span style={{ fontSize: 15 }}>🙂</span>
+              </button>
+              <span className="ed-hint">写完她回你一条</span>
+              <span className="ed-sp" />
+              <button type="button" className="ed-cancel" onClick={() => setComposerOpen(false)}>
+                取消
+              </button>
+              <button
+                type="button"
+                className="ed-go"
+                onClick={publish}
+                disabled={!draft.trim() || publishing}
+              >
+                {publishing ? "发布中…" : "发布"}
+              </button>
+            </div>
+          </>
+        ) : (
+          <div className="ed-idle">写下今天发生的事，或想对小桔说的话…</div>
+        )}
+      </aside>
     </div>
   );
 }
@@ -665,19 +724,12 @@ function MomentCard({
   const xjTime = isXj ? moment.at.slice(11, 16) : "";
 
   return (
-    <div className={`mom-card ${isXj ? "mom-xj" : "mom-me"}`}>
-      <div className="mom-card-head">
-        {isXj ? (
-          <XiaojuAvatar size={36} />
-        ) : (
-          <img src={userAvatar} alt={USER_NAME} className="mom-me-avatar" />
-        )}
-        <div className="mom-card-meta">
-          <span className="mom-author">{isXj ? "小桔" : USER_NAME}</span>
-          <span className="mom-date">
-            {isXj ? `${dateLabel(moment.date)} ${xjTime}`.trim() : dateLabel(moment.date)}
-          </span>
-        </div>
+    <div className={`mom-card ${isXj ? "mom-xj" : "mom-me"}${moment.loved ? "" : " dim"}`}>
+      <div className="mom-card-meta">
+        <span className="mom-author">{isXj ? "小桔" : USER_NAME}</span>
+        <span className="mom-date">
+          {isXj ? `${dateLabel(moment.date)} ${xjTime}`.trim() : dateLabel(moment.date)}
+        </span>
       </div>
 
       <div className="mom-card-body">
@@ -715,7 +767,6 @@ function MomentCard({
         <div className="mom-comments">
           {moment.pendingReply && (
             <div className="mom-comment-item xj">
-              <XiaojuAvatar size={20} />
               <div className="mom-comment-bubble">
                 <span className="mom-comment-author">小桔</span>
                 <span>正在想… 🤔</span>
@@ -724,13 +775,11 @@ function MomentCard({
           )}
           {moment.comments.map((c) => (
             <div key={c.id} className={`mom-comment-item ${c.author === "xiaoju" ? "xj" : "me"}`}>
-              {c.author === "xiaoju" ? (
-                <XiaojuAvatar size={20} />
-              ) : (
-                <img src={userAvatar} alt={USER_NAME} className="mom-me-avatar sm" />
-              )}
               <div className="mom-comment-bubble">
-                <span className="mom-comment-author">{c.author === "xiaoju" ? "小桔" : USER_NAME}</span>
+                <span className="mom-comment-author">
+                  {c.author === "xiaoju" ? "小桔" : USER_NAME}
+                  {c.at ? ` · ${c.at.slice(11, 16)}` : ""}
+                </span>
                 <span>{renderEmoteInline(c.text, 16)}</span>
               </div>
             </div>
