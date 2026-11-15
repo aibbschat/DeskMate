@@ -105,7 +105,7 @@ def _load(base_dir) -> list[dict]:
         return []
 
 
-def search(base_dir, query: str, *, top_k: int = 5, min_similarity: float = 0.25) -> list[dict]:
+def search(base_dir, query: str, *, top_k: int = 5, min_similarity: float = 0.40) -> list[dict]:
     """检索与 query（创作主题/概念）最相关的认知。
 
     返回 ``[{understanding, facts, fact_keys, date, theme, score}]``。
@@ -155,22 +155,55 @@ def _serialize(score: float, e: dict) -> dict:
 
 
 def _keyword_search(entries: list[dict], query: str, top_k: int) -> list[dict]:
-    """embedding 不可用时的降级：中文按字符 2-gram 重叠、英文按单词重叠粗匹配。"""
+    """embedding 不可用时的降级检索：归一化 IDF 覆盖率（信息检索标准判据）。
+
+    2026-11-15 修：旧判定 ``score > 0`` 只要一个二字重叠就入选，而认知库里
+    「今天 / 让我 / 停下」这类通用套话遍地都是，长句随便凑三四个虚词就能召回
+    满 5 条毫不相关的新闻——灵感卡割裂的直接来源。仅靠「命中数 + 密度」也拦不住：
+    真实库 221 条实测，三个闲聊长句仍全部召回满 5 条。
+
+    改法：每个 2-gram 按文档频率给 IDF 权重（越稀有越算证据），一条命中的得分 =
+    命中权重和 / query 全部权重和，即「覆盖率」。真实库实测闲聊长句最高
+    0.21–0.42，短而准的检索词 0.84–1.0，阈值 0.6 分界干净。长句另要求至少
+    3 个 gram 在库里出现过，避免「全库只碰巧命中一个词」被归一化放大成 1.0。
+    宁可不递，也别递割裂的灵感。
+    """
+    import math
+    import re
+
     q = query.strip().lower()
     # 英文/数字单词
     words = [w for w in q.replace("（", " ").replace("）", " ").split() if len(w) > 1]
-    # 中文 2-gram
-    import re
-
     han = "".join(re.findall(r"[一-鿿]", q))
     grams = {han[i : i + 2] for i in range(len(han) - 1)} if len(han) > 1 else set()
+    if not words and not grams:
+        return []
+
+    texts = [
+        ((e.get("understanding", "") + " " + " ".join(e.get("facts", []) or [])).lower(), e)
+        for e in entries
+    ]
+    corpus = len(texts)
+    df = {g: sum(1 for t, _ in texts if g in t) for g in grams}
+    weights = {
+        g: math.log((corpus + 1) / (d + 1))
+        for g, d in df.items()
+        if d > 0
+    }
+    # 长句若全库只碰巧出现 1–2 个 gram，归一化会把它放大成「完全相关」
+    if len(han) > 4 and len(weights) < 3:
+        return []
+    total = sum(weights.values()) + len(words)
+    if total <= 0:
+        return []
+
+    _MIN_RELEVANCE = 0.6
     scored = []
-    for e in entries:
-        text = (e.get("understanding", "") + " " + " ".join(e.get("facts", []) or [])).lower()
-        hit_words = sum(1 for w in words if w in text)
-        hit_grams = sum(1 for g in grams if g in text)
-        score = hit_words + hit_grams * 0.5
-        if score > 0:
-            scored.append((score, e))
+    for text, e in texts:
+        s = sum(v for g, v in weights.items() if g in text)
+        s += sum(1.0 for w in words if w in text)
+        if s <= 0 or s / total < _MIN_RELEVANCE:
+            continue
+        scored.append((s / total, e))
     scored.sort(key=lambda x: -x[0])
     return [_serialize(float(s), e) for s, e in scored[: max(1, min(int(top_k), 20))]]

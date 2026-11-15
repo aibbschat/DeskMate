@@ -20,13 +20,17 @@ from typing import Optional
 from deskmate.persona import for_scene
 
 from ..cognition_store import search as search_cognition
-from deskmate.creation.chat_flow import _inspire_due
+from deskmate.creation.chat_flow import _inspire_due, _mark_inspire_delivered
 
 logger = logging.getLogger(__name__)
 
 # 结果长度闸门
 _MIN_CHARS = 40
 _MAX_CHARS = 900
+# 素材相关性：向量路阈值（keyword 降级路的闸在 cognition_store._keyword_search）
+_MIN_SIMILARITY = 0.40
+# 弃权：素材跟此刻聊的事搭不上时，宁可不递（对齐 AI 圈 want 弃权的既有模式）
+_ABSTAIN_MARKERS = ("无", "没有", "无关", "不相关", "搭不上", "不适用")
 
 _ROLE = """\
 你在给萧盛（历史小说作家，70 后宁波人）做**创作陪聊**——不是代笔，是给有高度的启发。
@@ -41,6 +45,7 @@ _ROLE = """\
 - 每条启发必须**锚定一条真实观察**（文中或文末点出"这让我想到那天看到的 XX"），
   不许凭空编事实、人名、数字、事件。素材里没有的，一个字都不许添。
 - 你不是客服，不是播报员，不是流水账。像一个有阅历的搭档，跟他聊创作。
+- 手里的素材跟他此刻聊的事搭不上，就回「无」弃权：宁可不递，也别递割裂的话。
 （人格底座见 deskmate/persona.py，全局唯一，勿在此另写一套。）"""
 
 _SYSTEM = for_scene(_ROLE)
@@ -51,6 +56,7 @@ def generate(
     concept: str,
     user_text: str = "",
     *,
+    recent_turns: list[str] | None = None,
     top_k: int = 5,
     temperature: float = 0.8,
 ) -> Optional[dict]:
@@ -58,15 +64,20 @@ def generate(
 
     Args:
         base_dir: 数据根目录
-        concept: 萧哥正在写的书/概念（用于检索认知库 + 作 prompt 上下文）
-        user_text: 他刚说的话（可选，用于更精准的检索与衔接）
+        concept: 萧哥正在写的书/概念；**空就是空**，不得拿用户原话顶替
+        user_text: 他刚说的话（用于检索与衔接）
+        recent_turns: 最近几轮真实对话（作 prompt 的话题锚，不进检索 query）
         top_k: 检索认知条数
 
     Returns:
-        {"suggestion": str, "refs": [[fact, ...], ...]}；任何情况不可用返回 None。
+        {"suggestion": str, "refs": [[fact, ...], ...]}；无素材 / 判为不相干 /
+        降级 / 异常一律返回 None（调用方不展示）。
     """
     try:
-        hits = search_cognition(base_dir, (concept or "") + " " + (user_text or ""), top_k=top_k)
+        # 检索只用「书名/概念 + 当前这句」：把整段对话塞进 2-gram 检索
+        # 会产生大量虚词噪声，反而把无关新闻捞回来。对话只负责在 prompt 里定话题。
+        query = " ".join(p for p in ((concept or "").strip(), (user_text or "").strip()) if p)
+        hits = search_cognition(base_dir, query, top_k=top_k, min_similarity=_MIN_SIMILARITY)
         if not hits:
             return None
 
@@ -88,19 +99,27 @@ def generate(
             blocks.append(f"{i}. （事实）{facts_s}\n   我当时的理解：{h.get('understanding', '')}")
         material = "\n".join(blocks)
 
+        recent_block = "\n".join(str(t) for t in (recent_turns or []) if str(t).strip())
         prompt = f"""下面是我平时观察世界攒下的真实素材（都是事实 + 我的理解）。
 
 {material}
 
-【他正在写的书】
+【你们刚才在聊的（按时间顺序）】
+{recent_block or '（本轮第一句，暂无上文）'}
+
+【他正在写的书 / 概念】
 {concept or '（未提供具体书名/概念）'}
 {('他刚说：' + user_text) if user_text else ''}
 
-【请你给启发】
+【最重要的闸门：先判断相不相干】
+先看这些素材跟他此刻聊的事有没有**真实关联**。如果只是字面沾边、要硬拗
+才搭得上，只回一个字「无」，不要凑内容。宁可不递，也别递一条割裂的灵感。
+
+【相干才给启发】
 用这些真实世界的动向，照进他的创作，给几条**有高度、有思想、不编**的启发。
 可以关于：世界观的运行逻辑、人物处境的映照、暗线的现实依据、创意的钩子。
 每条启发必须锚定上面某条真实观察（点明"这让我想到那天看到的 XX"），
-不许编素材之外的人名/数字/事件。100-300 字，两三条即可。
+且必须接得住他刚才聊的事；不许编素材之外的人名/数字/事件。100-300 字，两三条即可。
 
 【绝对禁止】
 1. 不许出现素材之外的人名、书名、章节号、日期、地点、数字。
@@ -109,7 +128,9 @@ def generate(
 
         out = chat_memory(_SYSTEM, prompt, temperature=temperature, max_tokens=600, timeout=30.0)
         text = " ".join(str(out or "").split())
-        if not text or not (_MIN_CHARS <= len(text) <= _MAX_CHARS):
+        if not text or text.strip("。.!！，, ：:") in _ABSTAIN_MARKERS:
+            return None
+        if not (_MIN_CHARS <= len(text) <= _MAX_CHARS):
             return None
         return {"suggestion": text, "refs": [h.get("facts", []) for h in hits]}
     except Exception as exc:  # noqa: BLE001
@@ -134,18 +155,28 @@ def is_creative_context(text: str) -> bool:
     return any(k in t for k in _CREATIVE_HINTS)
 
 
-def try_inspire(base_dir, text: str, concept: str = "", *, top_k: int = 5) -> dict:
+def try_inspire(base_dir, text: str, concept: str = "", *,
+                recent_turns: list[str] | None = None, top_k: int = 5) -> dict:
     """普通聊天（session）端点的编排：语境检测 → 冷却 → 生成灵感。
 
     抽成独立函数便于单测；``coworker/server/app.py`` 的 ``/v1/deskmate/inspire``
     端点直接调它（薄壳）。各子函数已 fail-open，任意异常由调用方兜为 triggered=False。
+
+    2026-11-15：``recent_turns`` 由前端传最近几轮真实对话，只作 prompt 的话题锚；
+    冷却改为「真出稿才刷」，弃权 / 降级不占 6 小时额度。
     """
     if not text or not is_creative_context(text):
         return {"triggered": False, "reason": "not_creative_context"}
-    if not _inspire_due(str(base_dir)):
+    if not _inspire_due(str(base_dir), commit=False):
         return {"triggered": False, "reason": "cooldown"}
-    out = generate(str(base_dir), concept or text, user_text=text, top_k=top_k)
+    # 修：此前 `concept or text` 把用户随口一句同时当成「他正在写的书」
+    # 「检索词」「他刚说」——灵感卡割裂的直接来源之一。空概念就该是空。
+    out = generate(
+        str(base_dir), (concept or "").strip(), user_text=text,
+        recent_turns=recent_turns, top_k=top_k,
+    )
     if not out:
         return {"triggered": False, "reason": "no_suggestion"}
+    _mark_inspire_delivered(str(base_dir))  # 送达凭证：真递出去才刷冷却
     refs = [f for grp in out.get("refs", []) for f in grp]
     return {"triggered": True, "suggestion": out.get("suggestion", ""), "refs": refs}

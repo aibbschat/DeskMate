@@ -4455,6 +4455,14 @@ def create_app(manager: SessionManager) -> FastAPI:
             return JSONResponse({"error": "invalid json"}, status_code=400)
         text = (body.get("text") or "").strip()
         concept = (body.get("concept") or "").strip()
+        # 2026-11-15：前端传最近几轮真实对话，只作 prompt 话题锚（不进检索 query），
+        # 修「卡片跟当时聊的事割裂」。限 6 轮 ×200 字，防止把整段 transcript 灌进 prompt。
+        raw_turns = body.get("recent_turns") or []
+        recent_turns = (
+            [str(t)[:200] for t in raw_turns[-6:] if t]
+            if isinstance(raw_turns, list)
+            else []
+        )
         try:
             from pathlib import Path as _P
 
@@ -4464,7 +4472,10 @@ def create_app(manager: SessionManager) -> FastAPI:
                 os.environ.get("DESKMATE_DIR", os.path.expanduser("~/.deskmate"))
             )
             # creative_suggest 内部走 chat_memory（同步 LLM 链）——必须走线程防冻循环。
-            return await run_llm(try_inspire, str(desk_dir), text, concept)
+            return await run_llm(
+                try_inspire, str(desk_dir), text, concept,
+                recent_turns=recent_turns,
+            )
         except Exception:
             logging.exception("deskmate inspire failed")
             return {"triggered": False, "reason": "error"}

@@ -157,6 +157,15 @@ CHANNEL_MODULES=(
   # 在云端「不知道自己递过什么」。2026-10-07 之前 deploy 脚本漏了它，云端 manager.py
   # 停在 Sep 30 旧码——本轮必须把层一注入推上去（红线：本地与云端代码须完全一致）。
   "deskmate/memory/manager.py"
+  # ⚠️ 2026-11-15 补漏：world_context.py 每轮被 manager.py 直接 import 构建 world 块，
+  # 此前**从未进过本清单** → 云端一直跑旧码。本轮修「立场/理解被 4500 字符截断」就在
+  # 这个文件里，漏传会让云端主干道继续断着，且 fail-open 静默、不报错。
+  "deskmate/memory/world_context.py"
+  # ⚠️ 2026-11-15 新增：user_episodes.py 被 manager.py 每轮 import 构建「他这几天
+  # 亲口说起的」块，且被 _extract_single_session 写入近况事件。漏传 → 云端
+  # ImportError 被 fail-open 吞掉（静默不记、不注入），本地改了等于没改。
+  # 顶层依赖 _fs_lock.py / growth/_atomic.py 已在下方清单（见 651-657 行注释）。
+  "deskmate/memory/user_episodes.py"
   # ⚠️ P1 汇流最小版（2026-10-07）：认知层两件套。store.py 新增 memory_anchors 表 +
   # recall_items 顺锚走一跳；extractor.py 抽取时顺手挂锚。云端 openworker-server 每轮
   # 经 memory_injector → CognitiveStore.recall_items 构建上下文；漏传 → 云端跑旧码
@@ -295,6 +304,10 @@ AGENCY_MODULES=(
   "deskmate/agency/engine.py"
   "deskmate/agency/registry.py"
   "deskmate/agency/settings.py"
+  # ⚠️ 2026-11-15 补漏：cognition_store.py 是 creative_suggest（已在
+  # AGENCY_BEHAVIORS_MODULES）检索认知库的唯一依赖，本轮的相关性阈值闸就改在这里。
+  # 此前从未进清单 → 云端灵感卡仍走「一个二字重叠即入选」的旧检索，割裂照旧。
+  "deskmate/agency/cognition_store.py"
 )
 
 # 花园私密层（P2 花园 / 个人中心数据源）：maybe_bloom 性能根治（2026-10-13 新事件闸门）在此。

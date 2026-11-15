@@ -4608,13 +4608,18 @@ export async function captureProactive(
   }
 }
 
-/** 普通聊天里聊写作时，小桔基于认知库主动递一条创作灵感（POST /v1/deskmate/inspire）。 */
-export async function postInspire(text: string, concept?: string): Promise<InspireResult | null> {
+/** 普通聊天里聊写作时，小桔基于认知库主动递一条创作灵感（POST /v1/deskmate/inspire）。
+ * recentTurns = 最近几轮真实对话，供后端判断素材与当下话题是否相干（2026-11-15）。 */
+export async function postInspire(
+  text: string,
+  concept?: string,
+  recentTurns?: string[],
+): Promise<InspireResult | null> {
   try {
     const res = await authedFetch(`${httpBase()}/v1/deskmate/inspire`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text, concept: concept ?? "" }),
+      body: JSON.stringify({ text, concept: concept ?? "", recent_turns: recentTurns ?? [] }),
     });
     if (!res.ok) return null;
     return (await res.json()) as InspireResult;

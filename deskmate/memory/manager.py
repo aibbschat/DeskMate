@@ -1007,11 +1007,22 @@ class DeskMateMemoryManager:
         # 而不是只取近期活跃（2026-09-06 向量检索接入）。
         # 与上面各块一致：fail-open，缺失/为空不影响主记忆注入。
         try:
+            from deskmate.memory.context_budget import budget_enabled, is_light_turn
             from deskmate.memory.world_context import build_world_context
 
-            world_ctx = build_world_context(self.base_dir, query=user_message)
+            # 2026-11-15 修「闲聊轮丢 world 块」：此前 keep_light=False 让纯寒暄轮
+            # 整块拿不到她的理解/立场/防虚构硬锚——越像「跟人说话」的场合越没有她。
+            # 改为闲聊轮走 compact 精简版（约 1000 字，不灌剪报、不跑语义检索），
+            # 靠 cap_light=1200 收窄，而不是整块丢；预算关闭时与 render_blocks 口径一致。
+            _light = budget_enabled() and is_light_turn(user_message)
+            world_ctx = build_world_context(
+                self.base_dir,
+                query=None if _light else user_message,
+                compact=_light,
+            )
             if world_ctx:
-                _add("world", world_ctx, priority=48, cap=4500, keep_light=False)
+                _add("world", world_ctx, priority=48, cap=4500,
+                     cap_light=1200, keep_light=True)
         except Exception:
             pass
         # 「你跟我说过的 / 你近期的日常」（2026-10-08 修复：用户事实+日记此前两条
@@ -1032,6 +1043,19 @@ class DeskMateMemoryManager:
                 _add("user_fact", user_fact_ctx, priority=30, cap=2000, cap_light=900)
         except Exception:
             pass  # fail-open：用户事实缺失不影响主记忆注入
+        # 「他这几天亲口说起的」（2026-11-15）：他上周说头痛、进度没完成、周末补回来了——
+        # 这些是**暂时状态**，不属于持久事实，也不该由时间卡/关键词卡代劳。
+        # 只把带逐字原话的真实状态注入（含闲聊轮），她要不要接、怎么接由她自己决定。
+        # 与 proactive_ledger / companion 时间卡完全解耦：不弹卡、不占送达额度、不做提醒。
+        try:
+            from deskmate.memory.user_episodes import build_context as build_episode_context
+
+            episode_ctx = build_episode_context(self.base_dir)
+            if episode_ctx:
+                _add("user_episodes", episode_ctx, priority=28,
+                     cap=1400, cap_light=900)
+        except Exception:
+            pass  # fail-open：没有近况事件时不注入任何东西
         # 「她递出的卡片要接得上」（2026-10-07 §11.16 灵动三层·层一）：
         # 今天已递给用户的待办（proactive_ledger delivered_at=今日、未终态）注入每轮，
         # 让她在用户回话时「有货」展开，而不是用户把她的话复制回来她才现接。
@@ -2937,13 +2961,47 @@ class DeskMateMemoryManager:
         import datetime as _dt
 
         today = _dt.date.today().isoformat()
+        # 2026-11-15：把「他此前说过、还没了结的事」清单回喂给抽取器，让它自己
+        # 判断本轮有没有把其中某件说完。真实 LLM 实测跨轮 subject 会漂移
+        # （周五抽「周五进度」、周末说「码字进度」），只靠精确匹配闭不上，
+        # 旧欠账会永远挂在他头上。语义锚定交给模型，不写关键词映射表。
+        try:
+            from deskmate.memory.user_episodes import read_items as _read_episodes
+
+            _open_subjects = [
+                str(i.get("subject"))
+                for i in _read_episodes(self.base_dir)
+                if i.get("status") == "open" and i.get("subject")
+            ][:8]
+        except Exception:
+            _open_subjects = []
+        _open_block = ""
+        if _open_subjects:
+            _open_block = (
+                "【他此前说过、还没了结的事】（subject 原样清单）\n"
+                + "、".join(_open_subjects)
+                + "\n同一件事要沿用清单里的 subject，别另造新词。\n"
+                "如果本轮 User 的话让其中某件**有了结果**，那条 episode 额外给 "
+                "closes：清单里原样的 subject（只给一件）；没有就别给 closes。\n\n"
+            )
         system = (
             "你是记忆抽取器。从对话记录中提取**值得长期记住的持久事实**，按类型归类。\n\n"
             "类别：\n"
             "- preference：用户明确表达的偏好或习惯（如「我喜欢X」「以后用Y」）\n"
             "- correction：用户纠正/否定 AI 的错误（如「不是X，是Y」「你搞错了」）\n"
-            "- work：**项目关键进展和设定决策**（如「第二章标题定为X」「人物关系改成Y」）\n\n"
-            "**不要抽取的内容**（这些是过程细节，不是持久事实）：\n"
+            "- work：**项目关键进展和设定决策**（如「第二章标题定为X」「人物关系改成Y」）\n"
+            "- episode：**他本人这几天亲口说起的、还没了结的近况**（身体不适、进度欠账、\n"
+            "  打算做的事），以及后来有了结果的同一件事。这是暂时状态，不是持久事实，\n"
+            "  单独走一条记忆链，别和上面三类混在一起。\n\n"
+            "episode 必须额外给：\n"
+            "- subject：2-8 字的短锚点（如「头痛」「本周码字进度」），同一件事前后要用同一个词\n"
+            "- status：open＝还没了结 / resolved＝有了结果（如「周末把进度补回来了」）\n"
+            "- evidence：**从 User 原话里逐字截取的一小段**，不许改写、不许脑补、不许概括\n"
+            "- state：一句平实的状态描述（不写关心话术、不写建议）\n"
+            "只认 User 段里他**自己说自己状态**的话；不抽书稿剧情、不抽任务指令、\n"
+            "不抽对小桔的评价、不抽小桔自己说的话。拿不准就不给 episode，宁缺毋滥。\n\n"
+            + _open_block
+            + "**不要抽取的内容**（这些是过程细节，不是持久事实；episode 是唯一例外）：\n"
             "- AI 的操作记录（如「AI修复了X」「AI清理了Y」「AI发现Z」）\n"
             "- 工具/系统的调试过程（如「测试了X工具」「发现了Y bug」）\n"
             "- 重复性维护（如「清理了冗余」「压缩了记忆」）\n"
@@ -2960,8 +3018,9 @@ class DeskMateMemoryManager:
             "- manuscript：仅当这句话是书稿正文的逐字直引时才可用\n"
             "推理、设定、大纲、简报、讨论结论一律不得写成「书里已经写了…」的确定陈述，\n"
             "也不许把规划讲成已写剧情。本轮没有正文逐字直引，就不要给 manuscript。\n\n"
-            f"输出严格 JSON 数组，每个元素 {{category, text, source, supersedes?}}，"
-            f"text 格式为「YYYY-MM-DD: 一句话陈述」（今天日期：{today}）。\n"
+            f"输出严格 JSON 数组。持久事实元素 {{category, text, source, supersedes?}}，"
+            f"text 格式为「YYYY-MM-DD: 一句话陈述」（今天日期：{today}）；\n"
+            f"近况事件元素 {{category:\"episode\", subject, state, status, evidence, closes?}}。\n"
             "**每句话都必须写清是谁做的**：萧盛做的事，主语写「萧盛」；AI 自己做的事"
             "（读书、巡检、整理、改配置等），主语写「小桔」。**不要省主语**——省了主语，"
             "往后读到这条记录的人只能靠猜，猜错就是把她的活儿记到他头上。\n"
@@ -2974,7 +3033,7 @@ class DeskMateMemoryManager:
             facts = extract_facts_local(text, date=today)
         else:
             try:
-                resp = chat_memory(system, text, temperature=0.2, max_tokens=1000)
+                resp = chat_memory(system, text, temperature=0.2, max_tokens=1400)
             except Exception as e:
                 return {"written": 0, "notes": f"抽取失败（已跳过）：{e}"}
 
@@ -2991,8 +3050,33 @@ class DeskMateMemoryManager:
         skipped = 0
         learned: list[str] = []
         learned_sources: list[str] = []
+        episode_written = 0
         for fact in facts:
             category = (fact.get("category") or "").lower()
+            # 近况事件是**暂时状态**：走独立记忆链，绝不落 USER.md / MEMORY.md
+            # （USER.md 有归属闸；持久事实的查重/来源效力口径也不适用）。
+            # 分流放在最前面，连 _is_duplicate 都不经过——同一件事前后两次说法
+            # 恰恰是要靠它做「闭合」的，不能被查重吃掉。
+            if category == "episode":
+                try:
+                    from deskmate.memory.user_episodes import record as record_episodes
+
+                    out = record_episodes(
+                        self.base_dir,
+                        [{
+                            "subject": fact.get("subject"),
+                            "state": fact.get("state") or fact.get("text"),
+                            "status": fact.get("status"),
+                            "evidence": fact.get("evidence"),
+                            "closes": fact.get("closes"),
+                        }],
+                        source_text=text,
+                        day=today,
+                    )
+                    episode_written += int(out.get("written", 0))
+                except Exception as e:
+                    logger.debug("user episode write failed: %s", e)
+                continue
             fact_text = (fact.get("text") or "").strip()
             if not fact_text:
                 continue
@@ -3050,6 +3134,7 @@ class DeskMateMemoryManager:
             "skipped": skipped,
             "learned": learned,
             "learned_sources": learned_sources,
+            "episodes": episode_written,
             "notes": f"已归档 {written} 条（跳过 {skipped} 条重复）",
         }
 

@@ -1254,7 +1254,15 @@ export function App() {
     sessionRef.current?.userMessage(text, attachments, model);
     followLatest(); // sending always re-engages stream-following, wherever the user had scrolled
     // 普通聊天里聊写作时，小桔基于认知库主动递一条灵感（不阻塞主对话；冷却/语境由后端控）。
-    void postInspire(text).then((insp) => {
+    // 2026-11-15：带上最近几轮真实对话作话题锚，后端据此判「素材跟此刻聊的事相不相干」，
+    // 不相干就弃权不弹——修卡片与当前讨论割裂。itemsRef 尚未包含本轮 text，正好不重复。
+    const turns: string[] = [];
+    for (const it of itemsRef.current.slice(-12)) {
+      if ((it.kind === "user" || it.kind === "assistant") && it.text) {
+        turns.push(`${it.kind === "user" ? "萧盛" : "小桔"}：${it.text.slice(0, 200)}`);
+      }
+    }
+    void postInspire(text, undefined, turns.slice(-6)).then((insp) => {
       const sug = insp?.suggestion;
       if (insp?.triggered && sug) {
         setItems((p) => [

@@ -13,8 +13,11 @@
    从最低优先级的可选块整块丢，再不够就截断最大的块；骨架块（时钟/当下心情/
    事实纪律）最后才动。
 2. 闲聊轮：只有明确命中寒暄/情绪短句才判为闲聊 → 跳过
-   cognitive / world / prefetch / lessons / reflection / intent 等重块，
+   cognitive / prefetch / lessons / reflection / intent 等重块，
    只留人格画像（短）、用户事实（短）、当下情绪与时钟。认不出来一律按工作轮。
+   2026-11-15 修：world 与 user_episodes **不再整块丢**——world 走 compact
+   精简配额（见 world_context._quotas），user_episodes 是轻量的真实状态块。
+   这两块恰是「越像跟人说话的场合越需要」的部分，整块跳过等于把她自己抽掉。
 
 env 旋钮（都可在设置/环境里改，不改代码）：
 - DESKMATE_CONTEXT_BUDGET=0         整体关闭预算（恢复旧行为，排障用）

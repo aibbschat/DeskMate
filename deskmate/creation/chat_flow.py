@@ -61,16 +61,35 @@ def _inspire_cooldown_path(base_dir) -> Path:
     return base / "agency" / "last_inspire.json"
 
 
-def _inspire_due(base_dir) -> bool:
-    """语境主动灵感是否可触发。触发即刷冷却时间戳（无论是否真生成到内容）。"""
+def _mark_inspire_delivered(base_dir) -> None:
+    """真正递出一条灵感后才刷冷却（送达凭证语义，2026-11-15）。
+
+    主聊天端点在 ``generate`` 成功返回后调它；弃权 / 降级不调，
+    避免「建了没送达」白吃 6 小时额度。
+    """
+    try:
+        path = _inspire_cooldown_path(base_dir)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"ts": time.time()}, ensure_ascii=False), encoding="utf-8")
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _inspire_due(base_dir, *, commit: bool = True) -> bool:
+    """语境主动灵感是否到点。
+
+    ``commit=True``（默认，创作空间用）：到点即刷时间戳，保持原有门控语义。
+    ``commit=False``（主聊天端点用）：只查询不落盘，等真出稿再调
+    ``_mark_inspire_delivered``——冷却按「送达」计，不按「建过」计。
+    """
     try:
         path = _inspire_cooldown_path(base_dir)
         if path.exists():
             ts = json.loads(path.read_text(encoding="utf-8")).get("ts")
             if ts and (time.time() - float(ts)) < _INSPIRE_COOLDOWN_HOURS * 3600:
                 return False
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps({"ts": time.time()}, ensure_ascii=False), encoding="utf-8")
+        if commit:
+            _mark_inspire_delivered(base_dir)
         return True
     except Exception:  # noqa: BLE001
         return True

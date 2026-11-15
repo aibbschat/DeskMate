@@ -5,7 +5,9 @@
 prefetch 5.3KB 是 prefill 大头，闲聊一句「早」也照灌。这里锁住三条护栏：
 1) 总预算按估算 token 控制，超了先丢明显可选的长块，核心内容（画像/记忆检索/事实/
    情绪/时钟）只截断、不整块丢；
-2) 闲聊轮跳过 cognitive/world/prefetch/lessons/reflection/intent 等重块；
+2) 闲聊轮跳过 cognitive/prefetch/lessons/reflection/intent 等重块；
+   ⚠ 2026-11-15 起 world 不在跳过名单：改为 compact 精简配额 + cap_light 收窄，
+   「他这几天亲口说起的」(user_episodes) 同样保留。见 test_user_episodes.py。
 3) 预算开关关掉时恢复旧行为（不裁剪），排障可用。
 """
 from __future__ import annotations

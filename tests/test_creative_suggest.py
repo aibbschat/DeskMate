@@ -48,13 +48,15 @@ def test_generate_returns_suggestion_with_refs(tmp_path):
     from deskmate.agency.behaviors.creative_suggest import generate
     from deskmate.agency.cognition_store import add_understanding
 
-    with patch("deskmate.memory.semantic_search.embed_text", _fake_embed):
-        add_understanding(str(tmp_path), date="d", fact_keys=["k1"],
-                          understanding="中东能源紧张影响丝路贸易。", facts=["（外部·财经）中东能源紧张"])
-
-    with patch("deskmate.memory.llm.chat_memory",
+    # 2026-11-15：embedding patch 必须覆盖**检索**调用，而不只是写入。
+    # 此前只包住 add_understanding，检索时真实后端不可用 → 降级关键词，靠旧的
+    # 「一个二字重叠即入选」侥幸命中（测试假绿）。收紧阈值后须走真向量路。
+    with patch("deskmate.memory.semantic_search.embed_text", _fake_embed), \
+         patch("deskmate.memory.llm.chat_memory",
                return_value="这让我想到那天看到的中东能源紧张——真实的能源与地缘张力，也许能映到你笔下的丝路商队暗线，让权谋更有重量。"), \
          patch("deskmate.memory.llm.memory_llm_available", return_value=True):
+        add_understanding(str(tmp_path), date="d", fact_keys=["k1"],
+                          understanding="中东能源紧张影响丝路贸易。", facts=["（外部·财经）中东能源紧张"])
         out = generate(str(tmp_path), "大明丝路商队", user_text="角色卡在贸易线")
 
     assert out is not None
@@ -122,15 +124,19 @@ def test_try_inspire_runs_when_due(tmp_path):
     from deskmate.agency.behaviors.creative_suggest import try_inspire
     from deskmate.agency.cognition_store import add_understanding
 
-    with patch("deskmate.memory.semantic_search.embed_text", _fake_embed):
-        add_understanding(str(tmp_path), date="d", fact_keys=["k1"],
-                          understanding="中东能源紧张影响丝路贸易。", facts=["（外部·财经）中东能源紧张"])
-
-    with patch("deskmate.creation.chat_flow._inspire_due", return_value=True), \
+    # 2026-11-15：① embedding patch 覆盖到检索调用（旧版只包住写入，靠降级误命中假绿）；
+    # ② patch 目标改为 creative_suggest 里的绑定名，而不是 chat_flow 的源属性
+    #    （``from ... import`` 已绑定，patch 源模块属性根本不生效）；
+    # ③ 出稿后新增的落冷却动作在测试里 stub 掉，不写临时目录之外的状态。
+    with patch("deskmate.memory.semantic_search.embed_text", _fake_embed), \
+         patch("deskmate.agency.behaviors.creative_suggest._inspire_due", return_value=True), \
+         patch("deskmate.agency.behaviors.creative_suggest._mark_inspire_delivered"), \
          patch("deskmate.memory.llm.chat_memory",
                return_value="这让我想到那天看到的中东能源紧张——真实的能源与地缘张力，"
                             "也许能映到你笔下的丝路商队暗线，让权谋更有重量。"), \
          patch("deskmate.memory.llm.memory_llm_available", return_value=True):
+        add_understanding(str(tmp_path), date="d", fact_keys=["k1"],
+                          understanding="中东能源紧张影响丝路贸易。", facts=["（外部·财经）中东能源紧张"])
         out = try_inspire(str(tmp_path), "我这本书里的世界观还没捋清", "大明丝路商队")
 
     assert out["triggered"] is True

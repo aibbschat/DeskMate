@@ -56,10 +56,91 @@ def is_world_fact(fact: str) -> bool:
     return bool(_SUFFIX_RE.search(t))
 
 
+# ---- 三段独立配额（2026-11-15 修「主干道断点」）------------------------------
+# 病因：三段原本按「事实 → 理解 → 立场」拼，而 manager.py 给 world 块 cap=4500、
+# context_budget._cap_text 是 text[:cap] 从头截。真实库里光事实段就 4740 字符，
+# 于是「她对世界的理解」「她自己想通透的立场」连同防虚构的作品硬锚，
+# 每轮都被静默切掉——接线正确，但一次都没抵达聊天。
+# 修法：① 每段各有配额，互不挤占；② 保头截断下越靠前越安全，所以先放
+# 「她是谁」（立场 / 理解），再放「她看过什么」（剪报）；③ 三者之和锁在
+# 4400 以内（manager 的 cap=4500 留余量），不增加每轮 token 消耗。
+_WORLD_TOTAL_CAP = 4400
+_WORKS_ANCHOR_MARK = "【萧盛真实作品事实"
+
+
+def _quota(name: str, default: int) -> int:
+    try:
+        value = int(os.environ.get(name, ""))
+        return value if value > 0 else default
+    except (TypeError, ValueError):
+        return default
+
+
+def _quotas(compact: bool = False) -> tuple[int, int, int]:
+    """三段配额；环境变量便于灰度对照，总和超限时按比例缩回。
+
+    ``compact`` 供闲聊轮用：只留「她是谁」的精简版（立场 700 / 理解 300 /
+    事实 0），不灌新闻剪报。``_clip_beliefs`` 保证作品硬锚在立场段尾部且永不裁，
+    所以硬锚位置始终 ≤700，落在闲聊轮 ``cap_light=1200`` 的存活区内。
+    """
+    if compact:
+        return (
+            _quota("DESKMATE_WORLD_LIGHT_BELIEFS_CAP", 700),
+            _quota("DESKMATE_WORLD_LIGHT_UNDERSTAND_CAP", 300),
+            0,
+        )
+    caps = [
+        _quota("DESKMATE_WORLD_BELIEFS_CAP", 1900),
+        _quota("DESKMATE_WORLD_UNDERSTAND_CAP", 900),
+        _quota("DESKMATE_WORLD_FACTS_CAP", 1500),
+    ]
+    total = sum(caps)
+    if total > _WORLD_TOTAL_CAP:
+        caps = [max(200, int(c * _WORLD_TOTAL_CAP / total)) for c in caps]
+    return caps[0], caps[1], caps[2]
+
+
+def _clip_lines(text: str, cap: int) -> str:
+    """按整行保头裁剪，不在条目中间腰斩；事实行是倒序的，保留即保留最新。"""
+    if not text or len(text) <= cap:
+        return text or ""
+    lines = text.split("\n")
+    kept: list[str] = []
+    used = 0
+    for line in lines:
+        need = len(line) + (1 if kept else 0)
+        if used + need > cap:
+            break
+        kept.append(line)
+        used += need
+    if not kept:
+        return lines[0][: max(0, cap - 1)] + "…"
+    return "\n".join(kept)
+
+
+def _clip_beliefs(text: str, cap: int) -> str:
+    """立场段裁剪：头部按配额取完整条目，尾部作品硬锚**永不裁**。
+
+    硬锚是防虚构闸门（提及萧盛作品前必须核对清单），宁可少给几条立场，
+    也不能让它在预算裁剪里消失；test_world_context.py 也锁着这条。
+    """
+    if not text:
+        return ""
+    idx = text.find(_WORKS_ANCHOR_MARK)
+    if idx < 0:
+        return _clip_lines(text, cap)
+    head = text[:idx].rstrip()
+    anchor = text[idx:].rstrip()
+    head = _clip_lines(head, max(0, cap - len(anchor) - 2))
+    return (head + "\n\n" + anchor) if head else anchor
+
+
 def build_world_context(
     base_dir: str | Path | None = None,
     limit: int = 25,
     query: str | None = None,
+    *,
+    compact: bool = False,
 ) -> str:
     """取近期活跃的「世界观察」事实 + 小桔的理解，格式化为一段注入文本。
 
@@ -71,15 +152,28 @@ def build_world_context(
                不传则保持现有行为（只从 learned_history 取近期活跃）。
                语义检索走可信闸门（trusted_only=True），只返回已验证条目；
                embedding 不可用时自动降级为纯关键词，再不行就只用 learned_history。
+        compact: 闲聊轮精简版（2026-11-15）：立场/理解用小额配额、事实段整个不取，
+                 连语义检索都不跑（「早」当 query 只会捞噪声）。合计约 1000 字符，
+                 落在闲聊轮 ``cap_light=1200`` 内，作品硬锚必然存活。
 
     Returns:
-        形如「## 她观察到的世界……」+「## 她对世界的理解……」的多行文本；
-        无任何世界观察返回空串。
+        三段拼装的多行文本，顺序为「她想通透的立场 → 她对世界的理解 →
+        她观察到的世界」，各段独立配额（见 ``_quotas``），工作轮合计不超过
+        4400 字符，保证 manager.py 的 cap=4500 从头截断时三段都还在。
+        三段皆空时返回空串（作品硬锚恒在，实际几乎不为空）。
     """
-    fact_block = _build_fact_block(base_dir, limit, query=query)
-    understand_block = _build_understand_block(base_dir)
-    worldview_block = _build_worldview_block(base_dir)
-    parts = [p for p in (fact_block, understand_block, worldview_block) if p]
+    beliefs_cap, understand_cap, facts_cap = _quotas(compact=compact)
+    if facts_cap > 0:
+        fact_block = _clip_lines(
+            _build_fact_block(base_dir, limit, query=query), facts_cap
+        )
+    else:
+        fact_block = ""
+    understand_block = _clip_lines(_build_understand_block(base_dir), understand_cap)
+    worldview_block = _clip_beliefs(_build_worldview_block(base_dir), beliefs_cap)
+    # 保头截断下越靠前越安全：先「她是谁」，再「她看过什么」。
+    # 历史顺序（事实在前）会把她的理解与立场整段挤掉，勿改回去。
+    parts = [p for p in (worldview_block, understand_block, fact_block) if p]
     if not parts:
         return ""
     return "\n\n".join(parts)

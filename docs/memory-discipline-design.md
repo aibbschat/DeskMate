@@ -306,8 +306,20 @@ prefetch 5.3KB 是 prefill 大头，闲聊一句「早」也照灌，直接拉�
 3. 注入前先剥 USER.md 的「## 自动复盘 · 日期」流水段（稳定画像只有 ~2.6KB，
    其余 ~9.7KB 是每日复盘日志），把画像块从 12.4KB 降到 ~2.6KB 而不丢画像内容。
 4. 闲聊轮：短（≤24 字）、含中文、无《书名》、无写作/书籍/检索/记忆指代类词、非寒暄例外的
-   消息，跳过 cognitive / world / prefetch / lessons / reflection / intent，只留画像（短）、
+   消息，跳过 cognitive / prefetch / lessons / reflection / intent 等重块，只留画像（短）、
    用户事实（短）、情绪与时钟。**「记得/上次/之前/后来/结局/怎样」等记忆指代词不算闲聊**。
+
+**2026-11-15 修订（萧哥提问「她真的记着吗」）**：原第 4 条把 `world` 也整块跳过，
+结果越像「跟人说话」的场合（早／在吗／晚安／好累）越没有她的理解、立场与防虚构硬锚，
+也没有「他前几天亲口说过的未了结之事」。现改为：
+
+- `world` 闲聊轮走 `compact=True` 精简配额（立场 700 / 理解 300 / 事实 0，约 1000 字），
+  `keep_light=True` + `cap_light=1200`；不灌新闻剪报、不跑语义检索，`_clip_beliefs`
+  保证「萧盛真实作品事实」硬锚永不裁且落在存活区内。
+- 新增 `user_episodes` 块（`priority=28`、`cap_light=900`、`keep_light=True`）：把用户
+  亲口说的近况（逐字引证、带 open/resolved 状态与闭合证据）作为**真实状态**注入。
+  只给状态，不给话术、不做时间/关键词触发、不弹卡、不占 proactive_ledger 送达额度。
+  详见 `deskmate/memory/user_episodes.py` 与 `tests/test_user_episodes.py`。
 
 **实测**（完整真实 ~/.deskmate COW 克隆，同一句分别按工作轮/闲聊轮）：
 
