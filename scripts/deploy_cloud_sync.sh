@@ -660,6 +660,15 @@ MEMORY_LAYER_MODULES=(
   "deskmate/memory/dream.py"
   "deskmate/memory/_fs_lock.py"
   "deskmate/growth/_atomic.py"
+  # ⚠ 2026-11-15 云端全量对账抓到的两处存量漂移（均非本轮改动，但会真崩）：
+  #   · entity_link.py（f77a24ef / 11-12 B-1 新增）：file_index.py:40 顶层
+  #     `from deskmate.memory import entity_link`，云端**根本没有** ⇒ 本轮把新
+  #     file_index.py 推上去后，云端一旦 import 就 ImportError（不是静默降级）。
+  #   · local_embed.py（11fd958e / 11-11 embedding 开关）：云端停在 Sep 22 旧版，
+  #     而 semantic_search.py:42 顶层 import 它 ⇒ 两端后端开关口径不一致。
+  # 两者都必须进册；补录后立即重跑全量，使集合对账归零。
+  "deskmate/memory/entity_link.py"
+  "deskmate/memory/local_embed.py"
 )
 
 FORCE=0
