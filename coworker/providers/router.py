@@ -20,6 +20,7 @@ logger = logging.getLogger(__name__)
 
 from .base import ProviderClient
 from .capabilities import capabilities_for
+from .matrix import normalize_model_id
 from .registry import build_provider_client, get_descriptor
 from .dynamic_route import (
     AUTO_MODEL,
@@ -151,7 +152,8 @@ class ProviderRouter(ProviderClient):
         tools: Optional[list[dict[str, Any]]] = None,
         **settings: Any,
     ):
-        model = self._resolve_auto(model, messages)
+        # 历史会话/旧 prefs 里的已下线型号，在发出请求前换成厂商指定的在售型号。
+        model = normalize_model_id(self._resolve_auto(model, messages))
         self._note_use(model)
 
         def _call(m: str):
@@ -173,7 +175,7 @@ class ProviderRouter(ProviderClient):
         tools: Optional[list[dict[str, Any]]] = None,
         **settings: Any,
     ):
-        model = self._resolve_auto(model, messages)
+        model = normalize_model_id(self._resolve_auto(model, messages))
         self._note_use(model)
 
         def _open(m: str):

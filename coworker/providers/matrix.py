@@ -172,14 +172,19 @@ MATRIX: dict[str, ModelEntry] = {
         "Kimi K2.7 Code · Volcengine Agent Plan", context_window=256_000
     ),
     # Xiaomi 官方 token-plan 端点（provider:xiaomi）。模型清单以端点
-    # GET /v1/models 实测为准（2026-10-17 复核）：mimo-v2.5 / mimo-v2.5-pro /
-    # mimo-v2.6-flash / mimo-v2.6-pro（外加 asr/tts 专用号，非对话模型）。
+    # GET /v1/models 实测为准（2026-11-15 复核）：对话模型只剩
+    # mimo-v2.6-flash / mimo-v2.6-pro；另有 mimo-v2.5-asr / -tts 系列（仍在线，
+    # 非对话模型，不在此登记）。
+    # 🔴 旧对话型号已于 2026-10-21 10:00 (UTC+8) 正式下线、原模型名失效
+    # （实测 chat/completions 返 400 "Unsupported model"）。官方替换表见
+    # DEPRECATED_MODEL_REPLACEMENTS，绝不要再铺回矩阵。
     # ⚠️ 曾经铺过的 ``xiaomi:mimo-v2.6`` 是幻影：端点没有这个 model id，
     # chat 调用必返 400 "Unsupported model"（default_model 误设成它时每轮
     # 撞墙再降级，小爱语音延迟 5-10s）。清出去，别再铺回来。
     "xiaomi:mimo-v2.6-pro": ModelEntry(
         "MiMo V2.6 Pro · Xiaomi token-plan", context_window=256_000
     ),
+    "xiaomi:mimo-v2.6-flash": ModelEntry("MiMo V2.6 Flash · Xiaomi token-plan"),
     # Tencent TokenHub Token Plan（provider:tencent-tokenplan）。Hy 套餐为纯文本线——官方
     # 「可用模型」明确写「暂不支持图片、视频等多模态能力」，故 caps 用 _AGENTIC
     # （tools=True/vision=False），不要指望它承担看图；看图仍归 vision_overrides 声明的视觉模型。
@@ -449,3 +454,25 @@ def models_for_provider(provider: str) -> list[str]:
         return [mid for mid in MATRIX if ":" not in mid]
     prefix = provider + ":"
     return [mid[len(prefix):] for mid in MATRIX if mid.startswith(prefix)]
+
+
+# ------------------------------------------------------------------ 已下线模型归一化
+# 厂商把老型号彻底摘牌后，历史 prefs / 历史会话里仍可能存着旧 id。请求路径统一由
+# ProviderRouter 归一化（只改「发出去的 model 名」，不改写历史记录），免得每轮
+# 先撞 400 再靠熔断降级。
+# 依据：https://mimo.mi.com/docs/zh-CN/updates/deprecate （2026-10-21 10:00 UTC+8
+# 正式下线，原模型名失效）；2026-11-15 实测 token-plan-cn.xiaomimimo.com/v1：
+# GET /v1/models 对话模型只剩 v2.6-flash / v2.6-pro，旧名 chat 返 400、新名返 200。
+DEPRECATED_MODEL_REPLACEMENTS: Dict[str, str] = {
+    "xiaomi:mimo-v2.5-pro": "xiaomi:mimo-v2.6-pro",
+    "xiaomi:mimo-v2.5": "xiaomi:mimo-v2.6-flash",
+}
+
+
+def normalize_model_id(model: str) -> str:
+    """把已下线的模型 id 换成厂商指定的在售型号；其余一律原样返回。
+
+    只认带 provider 前缀的完整 id：裸 ``mimo-v2.5-pro`` 走的是 OpenAI 默认车道，
+    不是小米，不能替用户改；``mimo-v2.5-asr/-tts`` 仍在线，也不动。
+    """
+    return DEPRECATED_MODEL_REPLACEMENTS.get(model, model)

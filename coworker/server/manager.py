@@ -295,6 +295,7 @@ class SessionManager:
         self._prefs = self._load_prefs()
         if self._prefs.get("default_model"):
             self.model = self._prefs["default_model"]
+        self._heal_deprecated_models()
         # Seed the PDF-fallback module global from prefs so engines see the user's
         # choice from the first turn (set_pdf_settings keeps it in sync after).
         from ..pdf_support import set_fallback_mode
@@ -4475,6 +4476,35 @@ class SessionManager:
         self._prefs_path().write_text(
             json.dumps(self._prefs, indent=2), encoding="utf-8"
         )
+
+    def _heal_deprecated_models(self) -> None:
+        """启动时把 prefs 里已下线的模型 id 换成厂商指定的在售型号（2026-11-15）。
+
+        只修 UI picker 与默认选择；历史会话的 model 字段不落库改写——请求路径
+        统一由 ProviderRouter.normalize 兜住，历史记录保持原样。
+        """
+        from ..providers.matrix import normalize_model_id
+
+        changed = False
+        default = self._prefs.get("default_model")
+        if isinstance(default, str):
+            healed = normalize_model_id(default)
+            if healed != default:
+                self._prefs["default_model"] = healed
+                self.model = healed
+                changed = True
+        models = self._prefs.get("models")
+        if isinstance(models, list):
+            healed_models = [
+                normalize_model_id(m) if isinstance(m, str) else m for m in models
+            ]
+            if all(isinstance(m, str) for m in healed_models):
+                healed_models = list(dict.fromkeys(healed_models))
+            if healed_models != models:
+                self._prefs["models"] = healed_models
+                changed = True
+        if changed:
+            self._save_prefs()
 
     # -- direct-message routing -------------------------------------------------
     def dm_session(self) -> Optional[str]:

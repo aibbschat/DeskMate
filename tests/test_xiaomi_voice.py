@@ -1340,6 +1340,106 @@ class TestPhantomModelGuard:
         assert _MODEL_ALIASES["mimo"] == "xiaomi:mimo-v2.6-pro"
 
 
+# ------------------------------------------------------------ 已下线模型护栏
+class TestDeprecatedXiaomiModelGuard:
+    """2026-10-21 10:00 (UTC+8) 小米正式下线 mimo-v2.5-pro / mimo-v2.5，原模型名失效。
+
+    2026-11-15 本机实测 token-plan-cn.xiaomimimo.com/v1：
+      GET /models      → 对话模型只剩 mimo-v2.6-flash / mimo-v2.6-pro
+                         （另有 mimo-v2.5-asr / -tts 系列，仍在线，不在替换范围）
+      chat/completions → 旧名 400 "Unsupported model"；两个新名 200
+    官方公告与替换表：https://mimo.mi.com/docs/zh-CN/updates/deprecate
+      mimo-v2.5-pro → mimo-v2.6-pro；mimo-v2.5 → mimo-v2.6-flash
+    """
+
+    DEAD = ("xiaomi:mimo-v2.5-pro", "xiaomi:mimo-v2.5")
+
+    def test_matrix_lists_only_live_xiaomi_chat_models(self):
+        from coworker.providers.matrix import MATRIX
+
+        for dead in self.DEAD:
+            assert dead not in MATRIX, f"已下线模型不得留在矩阵：{dead}"
+        assert "xiaomi:mimo-v2.6-pro" in MATRIX
+        assert "xiaomi:mimo-v2.6-flash" in MATRIX
+
+    def test_normalize_uses_official_replacements_only(self):
+        from coworker.providers.matrix import (
+            DEPRECATED_MODEL_REPLACEMENTS,
+            normalize_model_id,
+        )
+
+        assert DEPRECATED_MODEL_REPLACEMENTS == {
+            "xiaomi:mimo-v2.5-pro": "xiaomi:mimo-v2.6-pro",
+            "xiaomi:mimo-v2.5": "xiaomi:mimo-v2.6-flash",
+        }
+        assert normalize_model_id("xiaomi:mimo-v2.5-pro") == "xiaomi:mimo-v2.6-pro"
+        assert normalize_model_id("xiaomi:mimo-v2.5") == "xiaomi:mimo-v2.6-flash"
+        for kept in (
+            "xiaomi:mimo-v2.5-asr",
+            "xiaomi:mimo-v2.5-tts",
+            "xiaomi:mimo-v2.6-pro",
+            "xiaomi:mimo-v2.6-flash",
+            "gemini:gemini-2.5-pro",
+            "mimo-v2.5-pro",
+            "",
+        ):
+            assert normalize_model_id(kept) == kept, f"不得误伤 {kept}"
+
+    def test_provider_help_no_longer_advertises_dead_ids(self):
+        import json
+
+        from coworker.providers.registry import get_descriptor
+
+        descriptor = get_descriptor("xiaomi")
+        text = json.dumps(descriptor.to_dict(), ensure_ascii=False)
+        assert "mimo-v2.5-pro" not in text, "设置页仍在推荐已下线的对话模型"
+        assert "mimo-v2.6-pro" in text and "mimo-v2.6-flash" in text
+        assert descriptor.recommended_model == "mimo-v2.6-pro"
+
+    def test_router_rewrites_legacy_id_before_dispatch(self, monkeypatch):
+        from coworker.providers.router import ProviderRouter
+
+        seen = {}
+
+        class _FakeClient:
+            def complete(self, *, model, messages, tools=None, **kw):
+                seen["complete"] = model
+                return "ok"
+
+            def stream(self, *, model, messages, tools=None, **kw):
+                seen["stream"] = model
+                return iter(["a", "b"])
+
+        router = ProviderRouter(secrets=None)
+        monkeypatch.setattr(router, "_client_for", lambda m: _FakeClient())
+        msgs = [{"role": "user", "content": "hi"}]
+        router.complete(model="xiaomi:mimo-v2.5-pro", messages=msgs)
+        list(router.stream(model="xiaomi:mimo-v2.5", messages=msgs))
+        assert seen == {"complete": "mimo-v2.6-pro", "stream": "mimo-v2.6-flash"}
+
+    def test_manager_prefs_self_heal_on_startup(self, monkeypatch):
+        from coworker.server.manager import SessionManager
+
+        manager = SessionManager.__new__(SessionManager)
+        manager._prefs = {
+            "default_model": "xiaomi:mimo-v2.5-pro",
+            "models": ["xiaomi:mimo-v2.5", "tencent-tokenplan:hy3"],
+        }
+        manager.model = "xiaomi:mimo-v2.5-pro"
+        saved = []
+        monkeypatch.setattr(manager, "_save_prefs", lambda: saved.append(True))
+
+        manager._heal_deprecated_models()
+
+        assert manager.model == "xiaomi:mimo-v2.6-pro"
+        assert manager._prefs["default_model"] == "xiaomi:mimo-v2.6-pro"
+        assert manager._prefs["models"] == [
+            "xiaomi:mimo-v2.6-flash",
+            "tencent-tokenplan:hy3",
+        ]
+        assert saved == [True]
+
+
 # ---------------------------------------------------------------------- 登录 CLI
 class TestInteractiveLogin:
     """_interactive_login：MI_PASS 缺失时走 getpass 交互输入（不回显/不进历史）。"""
