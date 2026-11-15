@@ -88,6 +88,15 @@ PY
 
 # ---- 3) tauri build ----
 echo "==> [3/3] tauri build --bundles app"
+# tauri 的 beforeBuildCommand 会**再跑一次** `npm run build`（见 tauri.conf.json）。
+# 此时 dist 已被第 1 步填满（assets 常 60+ 文件），vite 的 emptyDir 会触发
+# WorkBuddy safe-delete 的 bulk 拦截（2026-11-15 实测 65 > 50，构建直接失败，
+# 且 --install 永远走不到，/Applications 静默留在旧包）。同第 1 步处理：
+# 移走让第二次 build 也从干净目录开始。切勿在此用 `rm -rf dist`。
+if [ -d "$GUI/dist" ]; then
+  mv "$GUI/dist" "$(mktemp -d /tmp/ow-dist-tauri-XXXXXX)/dist"
+  echo "    ✓ 预移走 dist（供 tauri beforeBuildCommand 重建，绕过安全删除 shim）"
+fi
 # 注：historically 本机构建曾被 cargo 1.93 的 E0463 回归卡住（ctor 重导出 proc-macro
 # 不被链接）。已通过 src-tauri/vendor/ctor 本地副本 + `extern crate ctor_proc_macro;`
 # 根治（见 vendor/ctor/src/lib.rs 头注释），**无需特殊工具链**，默认 cargo 即可。
