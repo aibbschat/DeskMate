@@ -1,0 +1,44 @@
+{
+  "version": 1,
+  "project": "/Users/xiaocheng/workspace/openworker",
+  "updatedAt": "2026-11-15T03:57:22.124Z",
+  "contradictions": [
+    {
+      "id": "C1",
+      "title": "AGENTS.md 声明的三套工程约定，载体文件三个里缺两个半",
+      "why": "AGENTS.md 是写给 Agent 的入口契约：issue tracker 在 docs/issues/<slug>/、领域知识是『仓根 GLOSSARY.md + docs/adr/』。但 docs/issues/、GLOSSARY.md、docs/adr/ 都不存在，只有 docs/agents/ 下三份说明书在。等于契约指向了空目录，下一个 Agent 照做就会找不到落点，或者各自现编一套。",
+      "evidence": "openworker/AGENTS.md 全文 4 行；实测 `[ -e ]` 检查：GLOSSARY.md 缺失、docs/adr 缺失、docs/issues 缺失，docs/agents/{issue-tracker,triage-labels,domain}.md 存在（2026-11-15 查）。",
+      "resolver": "一个决定：要么建这三个占位（GLOSSARY.md、docs/adr/0001-*.md、docs/issues/）、要么改 AGENTS.md 指向真实存在的地方。十分钟可结。",
+      "status": "resolved",
+      "createdAt": "2026-11-15T03:37:28.004Z",
+      "resolvedBy": "范围外：AGENTS.md 指向的 GLOSSARY.md / docs/adr / docs/issues 缺失属实，但这是工程债不是前沿判断，已口头报给萧哥，不占灵感账本。",
+      "resolvedAt": "2026-11-15T03:46:16.160Z"
+    }
+  ],
+  "decisions": [
+    {
+      "id": "D1",
+      "idea": "补长篇连续性 / 自动维护人物圣经",
+      "verdict": "reject",
+      "reason": "已有圣经机制，每天会记；萧哥 2026-11-15 确认长篇连续性没问题，不构成待解矛盾。",
+      "at": "2026-11-15T03:57:22.122Z"
+    },
+    {
+      "id": "D2",
+      "idea": "以「本地优先」作为对外差异化方向",
+      "verdict": "reject",
+      "reason": "云端已经跑通，只是暂时没开；本地/云端不是待决问题，别拿它当卖点论证。",
+      "at": "2026-11-15T03:57:22.124Z"
+    }
+  ],
+  "observations": [],
+  "rounds": [
+    {
+      "id": "R1",
+      "date": "2026-11-15",
+      "title": "第零轮 账本落位与边界",
+      "file": ".brainstorm/rounds/2026-11-15-第零轮-账本落位与边界.md",
+      "summary": "## 这个账本是什么\n\n脑洞官的判断档：前沿看到的东西，先对照这里的问题，能解才报；点子判过就落结论，否决过的不再提。\n\n## 边界（萧哥 2026-11-15 定）\n\n- **不动代码。** 脑洞官只出点子和方案，写完报上来；收口、开工交给开发。\n- 产出形态：这个项目**可能长成什么样** + 值不值得做 + 大概"
+    }
+  ]
+}

@@ -48,6 +48,9 @@ ui-mocks/tools/xjframegrab
 ui-mocks/out/
 
 
+# 脑洞官状态目录（真身在 docs/brainstorm，这里是软链）
+.brainstorm
+
 # --- 例外：项目长期记忆 MEMORY.md 必须入库（2026-11-16 萧哥拍板）---
 # `.workbuddy/` 整体忽略（含 server/ 运维凭据目录），唯独 memory/MEMORY.md 入库：
 # 它是跨会话的红线判据索引，此前从未进版本控制 ⇒ 压缩/误改不可逆，丢了等于记忆断层。
