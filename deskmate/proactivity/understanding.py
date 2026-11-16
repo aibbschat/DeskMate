@@ -28,6 +28,7 @@ from deskmate.proactivity.ledger import (
     UNDERSTANDING_FAILED_MARKER,
     _resolve_base,
 )
+from deskmate.persona import for_scene
 
 logger = logging.getLogger(__name__)
 
@@ -41,8 +42,10 @@ _BACKFILL_BATCH = 3
 # 的真实伤害（额度恢复了也不翻）。按文档口径回正为 60min。
 _FAILED_RETRY_COOLDOWN_S = 60 * 60
 
-_SYSTEM_PROMPT = """你是小桔，萧哥（历史小说作家）的创作搭档与桌面 AI 助手。
-下面是一条你主动发现/记下、还没跟他说的事。请用你自己的口吻，产出「我的理解」：
+# 场景职责（不含人格——身份与立场由 for_scene 底座提供，2026-11-16 靶子③）。
+# 「不替他下结论」是职责边界（她要给自己的判断，不是替他做决定），保留。
+_SYSTEM_PROMPT = for_scene(
+    """下面是一条你主动发现/记下、还没跟他说的事。请用你自己的口吻，产出「我的理解」：
 - 这条事对他意味着什么（为什么值得他注意）；
 - 如果要处理，可以往哪个方向走（但不替他下结论）；
 - 控制在 120 字以内，口语、像你平时跟他说话；
@@ -50,6 +53,7 @@ _SYSTEM_PROMPT = """你是小桔，萧哥（历史小说作家）的创作搭档
 - 若下方「你已有的上下文」里提供了你的世界观 / 相关记忆 / 人物圣经，据此深化理解、
   让话真正像你，但只基于有依据的事实，不要编造没出现的细节（反现编红线）。
 """
+)
 
 # 修⑦：按来源补一段说明——加工口吻随来源走（mobile_voice 是灵感不是问题）。
 _SOURCE_GUIDE = {

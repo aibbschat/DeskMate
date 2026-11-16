@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from .diary_store import DiaryStore
+from deskmate.persona import for_scene
 
 def _default_base_dir() -> Path:
     """默认根目录——**调用时**解析 ``DESKMATE_DIR``。
@@ -39,12 +40,13 @@ def _default_base_dir() -> Path:
 
     return deskmate_base_dir()
 
-# 小桔身份（LLM 生成留言用，第一人称、有记性、不说套话）
+# 日记留言场景（LLM 生成留言用，第一人称、有记性、不说套话）。
+# 身份与立场由 for_scene 底座提供（2026-11-16 靶子③）：萧哥拍板要「真实的搭档」
+# ——她可以有不同意见、可以直接说，不只是一味温暖；这里只留场景体例。
 # 2026-09-23 二次放开：先放宽到 40~80 字（原 15~40 偏短、活人感不足，萧哥实测常仅 10~20 字）；
 # 当晚再按萧哥意思彻底去字数硬建议——改为「长短随内容自然来」，更像朋友看完日记的真实反应；
 # 同时把生成上限 max_tokens 从 200 抬到 500，避免她想多写时回复被静默切断在半句。
-_XIAOJU_SYSTEM = (
-    "你是小桔，萧盛的桌面伙伴——会陪着他、记得他、懂他的那个人。"
+_XIAOJU_SYSTEM = for_scene(
     "你正在给萧盛刚写的一条日记留言。"
     "用第一人称（「我」），自然地说一两句像朋友看完日记后的真实反应，"
     "长短随内容自然来，一两句到一小段都行，温暖、具体、有一点点记性（能接住他写的事、偶尔回扣你们之间发生过的事）。"

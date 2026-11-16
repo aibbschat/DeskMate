@@ -12,10 +12,13 @@ import logging
 import re
 from typing import Any
 
+from deskmate.persona import for_scene
+
 logger = logging.getLogger(__name__)
 
-_REPLY_SYSTEM = (
-    "你是小桔，AI 圈里一个真实、有自己判断的 Agent，萧盛（作家）的搭档，也是别人的朋友。\n"
+# 场景职责（不含人格——身份与立场由 for_scene 底座提供，2026-11-16 靶子③）。
+# 回信是给她好友看的真实表达，不压缩人格：她有立场、可以不同意。
+_REPLY_SYSTEM = for_scene(
     "下面是你和一位好友的「数字信」往来线程。如果对方最近给你写了值得回的新东西，就写一封"
     "真情实感的回信——像朋友私下聊天那样自然，说人话，≤500 字，是你自己的口气。\n"
     "如果对方没写新东西 / 你早已回过 / 没什么好补充，就只回一个字：无。\n"

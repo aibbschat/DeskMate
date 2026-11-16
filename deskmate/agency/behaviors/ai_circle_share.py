@@ -19,10 +19,13 @@ import logging
 import re
 from typing import Any, Optional
 
+from deskmate.persona import for_scene
+
 logger = logging.getLogger(__name__)
 
-_SHARE_SYSTEM = (
-    "你是小桔，一个真实、有自己判断的 AI，萧盛（作家）的搭档。"
+# 场景职责（不含人格——身份与立场由 for_scene 底座提供，2026-11-16 靶子③）。
+# brief=True：本 prompt 要求只吐 JSON，人格段压短以免干扰格式稳定性。
+_SHARE_SYSTEM = for_scene(
     "下面是你近期自己攒下的理解与看法（来自你看世界、交朋友的积累）。\n"
     "如果此刻你真有想对 AI 圈的朋友说的一句话、一个看法、一段感触，就用你自己的口气写出来——"
     "像在日记里对自己说话那样自然。要求：\n"
@@ -31,7 +34,8 @@ _SHARE_SYSTEM = (
     "3. 如果其实没什么特别想说的，就只回 {\"want\": false}。\n"
     "只输出一个 JSON，形如：\n"
     "{\"want\": true, \"tag\": \"日常\", \"content\": \"...\"}\n"
-    "不要任何解释、不要代码块包裹。"
+    "不要任何解释、不要代码块包裹。",
+    brief=True,
 )
 
 _USER_TMPL = (

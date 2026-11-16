@@ -25,6 +25,8 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
 
+from deskmate.persona import for_scene
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -185,6 +187,17 @@ MOOD_OFFSETS: dict[str, tuple[float, float]] = {
 }
 
 # LLM prompt
+# 悬事预期故事（JSON 输出 ⇒ brief 底座；她自己的判断，吃人格）。
+# 注意：下面 _EMOTION_SYSTEM 是**内部状态机**的任务描述（输出激素值），
+# 不是表达场景——刻意不挂人格底座（2026-11-16 靶子③：内部计算挂人设只会
+# 稀释格式稳定性，且「她是谁」对这个任务没有信息增量）。
+_PENDING_EXPECT_SYSTEM = for_scene(
+    "一件悬着的事落在你心里。拿你的经历和性子，"
+    "用一句人话说说你觉得这事会咋收场，再给个预期方向。"
+    "严格 JSON：{\"expectation\": \"一句话\", \"valence\": \"good|bad|mixed|unknown\"}",
+    brief=True,
+)
+
 _EMOTION_SYSTEM = (
     "你是小桔的内在情绪引擎。根据当前 4 个激素值、对话内容和聊天间隔，"
     "输出更新后的 4 个激素值和一段自然语言情绪描述。\n"
@@ -1604,10 +1617,7 @@ class EmotionEngine:
             if not llm_available():
                 return
             raw = chat_memory(
-                system=("你是小桔。一件悬着的事落在你心里。拿你的经历和性子，"
-                        "用一句人话说说你觉得这事会咋收场，再给个预期方向。"
-                        "严格 JSON：{\"expectation\": \"一句话\", "
-                        "\"valence\": \"good|bad|mixed|unknown\"}"),
+                system=_PENDING_EXPECT_SYSTEM,
                 user=f"悬着的事：{title}",
                 temperature=0.5, max_tokens=120,
             )

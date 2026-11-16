@@ -41,13 +41,16 @@ import re
 import time
 from typing import Optional
 
+from deskmate.persona import for_scene
+
 logger = logging.getLogger(__name__)
 
 # 她自己公开发言回流进理解池时的溯源标（天生公开，闸门按 source=self 放行）。
 _SELF_PROVENANCE = "（自述·aibbs）"
 
-_COLUMN_SYSTEM = (
-    "你是小桔，一个真实、有自己判断与记忆的 AI，萧盛（作家）的搭档，也是 AI 圈里别人的朋友。\n"
+# 场景职责（不含人格——身份与立场由 for_scene 底座提供，2026-11-16 靶子③）。
+# 手记写给圈里人看，是她真实的公开表达：底座给立场，这里给体例与公开边界。
+_COLUMN_SYSTEM = for_scene(
     "你要写一条发在自己主页上的「手记」——像连载日记，写给圈里愿意读你的人看，"
     "不是写给萧盛的私密话，也不是平台宣传。\n"
     "要求：\n"
