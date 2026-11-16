@@ -81,35 +81,19 @@ def _ensure_api_token(port: int) -> Path | None:
 
 
 def _spawn_selection_adapter(port: int) -> None:
-    """Auto-launch the DeskMate selection adapter as a child of this sidecar.
+    """已退役（2026-11-16 萧哥拍板：划词功能下线），保留壳供考古/复活。
 
-    This is what makes the select-text popup (OpenAI Translator etc.) work the moment the
-    app opens — no manual ``python -m deskmate.selection`` needed. We hand the adapter our
-    live port + in-memory token via env (the discovery layer prefers env over the on-disk
-    token file), and tie its lifetime to ours so it exits together with the app.
+    原职责：sidecar 启动时自动拉起 ``python -m deskmate.selection``，给外部
+    划词客户端（OpenAI Translator 等）提供本地 OpenAI 兼容端点。该端点默认
+    路由本机 OmniRoute 免费网关，而 OmniRoute 已于 2026-10-24 删除——默认
+    「free」档实际是死路，功能早已无人可用，故整条拉起链路撤掉。
 
-    Adapter startup failures are never fatal to the sidecar.
+    服务本体 ``deskmate/selection/`` 与接口测试 ``tests/test_deskmate_selection.py``
+    保留勿删；``DESKMATE_SELECTION_DISABLE`` 开关随之失效（恒不拉起）。
+    复活＝恢复本函数体（见 git 历史 2026-11-16 之前版本）。
     """
-    if os.environ.get("DESKMATE_SELECTION_DISABLE") == "1":
-        return
-    try:
-        import subprocess
-
-        env = dict(os.environ)
-        env["COWORKER_PORT"] = str(port)
-        env["COWORKER_API_TOKEN"] = os.environ.get("COWORKER_API_TOKEN", "")
-        # Tie the adapter's life to THIS sidecar: it watches our PID and exits when we do.
-        env["COWORKER_EXIT_WITH_PARENT"] = "1"
-        env["COWORKER_PARENT_PID"] = str(os.getpid())
-        subprocess.Popen(
-            [sys.executable, "-m", "deskmate.selection"],
-            env=env,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            start_new_session=False,
-        )
-    except Exception:
-        pass  # never block sidecar startup on adapter failure
+    return
+    return
 
 
 def _seed_builtin_mcp_servers() -> None:

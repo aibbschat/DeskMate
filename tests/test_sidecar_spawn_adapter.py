@@ -1,57 +1,31 @@
-"""sidecar 自动拉起划词适配器的回归测试。
+"""sidecar 划词适配器拉起——已退役（2026-11-16）的回归测试。
 
-验证：
-- ``DESKMATE_SELECTION_DISABLE=1`` 时完全不拉起（不调用 Popen）。
-- 正常时调用 Popen，且子进程环境带上 sidecar 的 port/token 与「随父退出」标记。
-不依赖真实进程。
+验证：无论 ``DESKMATE_SELECTION_DISABLE`` 与否，``_spawn_selection_adapter``
+都不再 Popen 任何子进程（划词功能下线，萧哥 2026-11-16 拍板：外部划词客户端
+OpenAI Translator 等所依赖的本地端点默认路由早已是死路——OmniRoute 2026-10-24
+已删——实际无人可用）。
+
+服务本体 ``deskmate/selection/`` 与其接口测试 ``tests/test_deskmate_selection.py``
+保留供考古/复活，勿删。
 """
 from __future__ import annotations
 
-import os
 import subprocess
-
-import pytest
 
 import coworker.server.run as run
 
 
-class _FakePopen:
-    def __init__(self, cmd, env=None, **kw):
-        self.cmd = cmd
-        self.env = dict(env or {})
-
-
-def test_disable_flag_skips_spawn(monkeypatch):
+def test_retired_never_spawns(monkeypatch):
     calls = []
-    monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: calls.append((a, k)) or _FakePopen("x"))
+    monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: calls.append((a, k)))
+    monkeypatch.delenv("DESKMATE_SELECTION_DISABLE", raising=False)
+    run._spawn_selection_adapter(8123)
+    assert calls == [], "划词适配器已退役：任何情况下都不应再拉起子进程"
+
+
+def test_retired_ignores_disable_flag(monkeypatch):
+    calls = []
+    monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: calls.append((a, k)))
     monkeypatch.setenv("DESKMATE_SELECTION_DISABLE", "1")
     run._spawn_selection_adapter(8123)
-    assert calls == [], "disabled 时不应拉起适配器"
-
-
-def test_spawn_passes_port_token_and_orphan_flag(monkeypatch):
-    captured = {}
-
-    def fake_popen(cmd, env=None, **kw):
-        captured["cmd"] = cmd
-        captured["env"] = dict(env or {})
-        return _FakePopen(cmd, env)
-
-    monkeypatch.setattr(subprocess, "Popen", fake_popen)
-    monkeypatch.delenv("DESKMATE_SELECTION_DISABLE", raising=False)
-    monkeypatch.setenv("COWORKER_API_TOKEN", "secret-token")
-    monkeypatch.setenv("COWORKER_PORT", "8123")
-
-    run._spawn_selection_adapter(8123)
-
-    assert captured, "enabled 时应调用 Popen"
-    assert captured["cmd"][:3] == [
-        os.sys.executable,
-        "-m",
-        "deskmate.selection",
-    ], captured["cmd"]
-    env = captured["env"]
-    assert env["COWORKER_PORT"] == "8123"
-    assert env["COWORKER_API_TOKEN"] == "secret-token"
-    assert env["COWORKER_EXIT_WITH_PARENT"] == "1"
-    assert env["COWORKER_PARENT_PID"] == str(os.getpid())
+    assert calls == []
