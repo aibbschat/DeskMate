@@ -294,7 +294,52 @@ class OpenAIProvider(ProviderClient):
         else:
             return client.chat.completions.create(**kwargs)
 
+    def _messages_char_len(self, messages: list[dict[str, Any]]) -> int:
+        """请求侧字符数（用量账本的代理指标；usage 拿不到时靠它）。"""
+        total = 0
+        for m in messages or []:
+            if isinstance(m, dict):
+                c = m.get("content")
+                if isinstance(c, str):
+                    total += len(c)
+        return total
+
     def complete(
+        self,
+        *,
+        model: str,
+        messages: list[dict[str, Any]],
+        tools: Optional[list[dict[str, Any]]] = None,
+        **settings: Any,
+    ) -> AssistantTurn:
+        """complete 出口记账（2026-11-16 B1 用量账本）后委托原实现。
+
+        fail-open：账本任何异常在 coworker.llm_usage 内部吞掉，不影响对话。
+        """
+        from .. import llm_usage
+
+        prompt_chars = self._messages_char_len(messages)
+        try:
+            turn = self._complete_impl(model=model, messages=messages, tools=tools, **settings)
+        except BaseException as exc:
+            llm_usage.record(
+                model=model,
+                provider=self._base_url,
+                prompt_chars=prompt_chars,
+                status="error",
+                error="%s: %s" % (type(exc).__name__, exc),
+            )
+            raise
+        llm_usage.record(
+            model=model,
+            provider=self._base_url,
+            usage=getattr(turn, "usage", None),
+            prompt_chars=prompt_chars,
+            completion_chars=len(getattr(turn, "text", None) or ""),
+        )
+        return turn
+
+    def _complete_impl(
         self,
         *,
         model: str,
@@ -352,6 +397,56 @@ class OpenAIProvider(ProviderClient):
         return capabilities_for(model)
 
     def stream(
+        self,
+        *,
+        model: str,
+        messages: list[dict[str, Any]],
+        tools: Optional[list[dict[str, Any]]] = None,
+        **settings: Any,
+    ):
+        """stream 出口记账（2026-11-16 B1 用量账本）后委托原生成器。
+
+        成功：以末 chunk 的 AssistantTurn.usage 记账（含增量中途被弃的
+        GeneratorExit/中断——那些也是真实花掉的钱，记 status=error）。
+        fail-open：账本任何异常在 coworker.llm_usage 内部吞掉，不影响对话。
+        """
+        from .. import llm_usage
+
+        prompt_chars = self._messages_char_len(messages)
+        streamed_chars = 0
+        final_usage: Optional[TokenUsage] = None
+        final_text_len = 0
+        try:
+            for chunk in self._stream_impl(
+                model=model, messages=messages, tools=tools, **settings
+            ):
+                turn = getattr(chunk, "turn", None)
+                if turn is not None:
+                    final_usage = getattr(turn, "usage", None)
+                    final_text_len = len(getattr(turn, "text", None) or "")
+                delta_text = getattr(chunk, "text_delta", None)
+                if delta_text:
+                    streamed_chars += len(delta_text)
+                yield chunk
+        except BaseException as exc:
+            llm_usage.record(
+                model=model,
+                provider=self._base_url,
+                prompt_chars=prompt_chars,
+                completion_chars=streamed_chars,
+                status="error",
+                error="%s: %s" % (type(exc).__name__, exc),
+            )
+            raise
+        llm_usage.record(
+            model=model,
+            provider=self._base_url,
+            usage=final_usage,
+            prompt_chars=prompt_chars,
+            completion_chars=final_text_len or streamed_chars,
+        )
+
+    def _stream_impl(
         self,
         *,
         model: str,
