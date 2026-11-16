@@ -725,3 +725,63 @@ def test_snapshot_carries_face_for_frontend(engine):
     assert snap["face"] == "laugh"
     assert snap["mood"]["label"] == "开心"
     assert "dopamine" in snap and "description" in snap
+
+
+# ---------------------------------------------------------------------------
+# P0 · 情感层前置：宾语（object_ref/object_kind）与事件摘要
+# ---------------------------------------------------------------------------
+
+def test_clean_object_normalizes_kind_and_ref():
+    """类型非法退 none、none 清空引用、超长截断到 40 字。"""
+    from deskmate.growth.emotion_engine import _clean_object
+
+    assert _clean_object("萧盛", "person") == ("萧盛", "person")
+    assert _clean_object("萧盛", "PERSON") == ("萧盛", "person")
+    # 非法类型 → none，引用一并清空（不猜）
+    assert _clean_object("萧盛", "human") == ("", "none")
+    # none 时即便给了引用，也清空
+    assert _clean_object("萧盛", "none") == ("", "none")
+    # 超长截断
+    assert _clean_object("夜" * 60, "work") == ("夜" * 40, "work")
+
+
+def test_normalize_object_never_defaults_to_xiaosheng():
+    """缺字段/只给类型都不猜对象；空对象不默认萧盛。"""
+    from deskmate.growth.emotion_engine import _normalize_object
+
+    assert _normalize_object({}) == ("", "none")
+    assert _normalize_object({"object_ref": "萧盛"}) == ("", "none")
+    assert _normalize_object({"object_kind": "person"}) == ("", "person")
+    assert _normalize_object(
+        {"object_ref": "《夜不收》", "object_kind": "work"}
+    ) == ("《夜不收》", "work")
+
+
+def _latest_log(engine):
+    with sqlite3.connect(str(engine._db)) as conn:
+        return conn.execute(
+            "SELECT source, event_summary, object_ref, object_kind, attributed"
+            " FROM emotion_log ORDER BY ts DESC, rowid DESC LIMIT 1"
+        ).fetchone()
+
+
+def test_apply_event_direct_writes_object_columns(engine):
+    """关系类事件：宾语落 relation，在线归因标 1，摘要仍是事件名。"""
+    engine.apply_event_direct(
+        "feeling_understood", object_ref="和小桔的相处", object_kind="relation"
+    )
+    row = _latest_log(engine)
+    assert row[0] == "event_direct"
+    assert row[1] == "他接住了我"
+    assert row[2] == "和小桔的相处"
+    assert row[3] == "relation"
+    assert row[4] == 1
+
+
+def test_apply_event_direct_defaults_to_none(engine):
+    """天气类不传宾语 → none、引用空、仍标在线归因 1。"""
+    engine.apply_event_direct("weather_rain")
+    row = _latest_log(engine)
+    assert row[2] == ""
+    assert row[3] == "none"
+    assert row[4] == 1

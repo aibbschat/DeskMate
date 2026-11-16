@@ -233,6 +233,16 @@ _EMOTION_SYSTEM = (
     "12. 若之前悬着的某件事这轮有了结果，多输出 \"pending_landed\": "
     "{\"title\": \"事名\", \"outcome\": \"better|worse|as_expected\"}"
     "（比你预想的好/差/差不多）；没有就不输出。只报告，参数系统定。\n"
+    "13. 每轮再多带三个字段，记「这件事关于谁/什么」：\n"
+    "    \"object_ref\": 具体对象名（如 \"萧盛\"、\"《夜不收》\"、\"那个读者\"），"
+    "指不到就空字符串；\n"
+    "    \"object_kind\": person|work|thing|relation|none；\n"
+    "    \"event_summary\": 不超过 40 字，只写发生了什么，不写你的感觉。\n"
+    "    指不到具体对象就 kind=none、ref 留空——不要把泛泛的情绪安到萧盛头上。"
+    "relation 只用于「我与他的相处」这类互动（被接受/被拒绝/被接住），"
+    "不要用它代替具体的人。示例：聊他的书稿→work/《夜不收》；"
+    "「他驳回了我的建议」→relation/和小桔的相处；「他今天状态不好」→person/萧盛；"
+    "「核对完文件松了口气」→none/空。\n"
     "严格 JSON 输出："
 )
 
@@ -362,6 +372,12 @@ def _ensure_schema(db: Path) -> None:
             ("narrative",     "ALTER TABLE emotion_log ADD COLUMN narrative TEXT NOT NULL DEFAULT ''"),
             ("salience",      "ALTER TABLE emotion_log ADD COLUMN salience REAL NOT NULL DEFAULT 0.5"),
             ("origin",        "ALTER TABLE emotion_log ADD COLUMN origin TEXT NOT NULL DEFAULT 'system'"),
+            # P0 情感层前置（2026-11-16）：给情绪事件补宾语 + 一句人话摘要的归因标记。
+            # attributed 三态：0=未归因（衰减/悬事/脾气行永远停这）、1=在线归因、
+            # 2=历史回填。二态会让「回填 1944 条」在上线后第一条新聊天就数错。
+            ("object_ref",    "ALTER TABLE emotion_log ADD COLUMN object_ref TEXT NOT NULL DEFAULT ''"),
+            ("object_kind",   "ALTER TABLE emotion_log ADD COLUMN object_kind TEXT NOT NULL DEFAULT 'none'"),
+            ("attributed",    "ALTER TABLE emotion_log ADD COLUMN attributed INTEGER NOT NULL DEFAULT 0"),
         ):
             if name not in cols:
                 conn.execute(ddl)
@@ -370,6 +386,13 @@ def _ensure_schema(db: Path) -> None:
         # 补一条 ts 索引，成本一行。
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_emotion_log_ts ON emotion_log(ts)")
+        # P0 情感层前置索引：按对象回看（P1 候选池）与按归因状态回填（脚本选行）。
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_emotion_log_object"
+            " ON emotion_log(object_kind, object_ref, ts)")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_emotion_log_unattributed"
+            " ON emotion_log(attributed, source, ts)")
         # 2026-11-01：系统读法留痕（差异史 X 栏）。每轮注入给她的和弦/文本存一行，
         # 供以后比对「系统读她 X / 她自认 Y」；只记账，不参与任何参数或行为。
         conn.execute("""
@@ -412,6 +435,30 @@ def _clamp_salience(v) -> float:
         return max(0.0, min(1.0, float(v)))
     except (TypeError, ValueError):
         return 0.5
+
+
+# P0 情感层前置（2026-11-16）：情绪事件的宾语取值域。
+# relation 只落库、不进候选池（P1 的 R2 只收 person/work/thing）。
+_OBJECT_KINDS = ("person", "work", "thing", "relation", "none")
+
+
+def _clean_object(ref, kind) -> tuple[str, str]:
+    """宾语取值归一：类型非法退 none，none 时引用一律清空。"""
+    kind = str(kind or "").strip().lower()
+    if kind not in _OBJECT_KINDS:
+        kind = "none"
+    ref = str(ref or "").strip()[:40] if kind != "none" else ""
+    return ref, kind
+
+
+def _normalize_object(parsed: dict) -> tuple[str, str]:
+    """从 LLM 输出取「对象 + 类型」，非法值一律退 none（不猜、不默认萧盛）。"""
+    return _clean_object(parsed.get("object_ref"), parsed.get("object_kind"))
+
+
+def _event_summary_from(parsed: dict) -> str:
+    """事件摘要：只写发生了什么，≤80 字；缺字段留空（不拿 description 顶替）。"""
+    return str(parsed.get("event_summary") or "").strip()[:80]
 
 
 # 情绪标签集合（护栏 2 检测用）：独白若并列多个标签 → 报菜名，丢弃回退。
@@ -1114,7 +1161,10 @@ class EmotionEngine:
             f"你回复：{assistant_trunc}\n"
             f"请输出 JSON：{{\"dopamine\": 新值, \"serotonin\": 新值, "
             f"\"oxytocin\": 新值, \"cortisol\": 新值, "
-            f"\"description\": \"内心独白\", \"reason\": \"变化原因\"}}"
+            f"\"description\": \"内心独白\", \"reason\": \"变化原因\", "
+            f"\"object_ref\": \"这轮事件指向谁/什么，指不到就留空\", "
+            f"\"object_kind\": \"person|work|thing|relation|none\", "
+            f"\"event_summary\": \"≤40字，只写发生了什么\"}}"
         )
 
         raw = chat_memory(
@@ -1152,12 +1202,19 @@ class EmotionEngine:
                 log_desc = f"{desc}（{reason}）" if reason else desc
                 narrative = str(parsed.get("narrative", ""))[:200]
                 salience = _clamp_salience(parsed.get("salience", 0.5))
+                # P0：宾语与事件摘要独立落值。event_summary 不用 description 顶替
+                # ——后者的独白在护栏回退时会保留旧值、与这一件事脱钩。
+                obj_ref, obj_kind = _normalize_object(parsed)
+                evt_summary = _event_summary_from(parsed)
                 conn.execute(
                     "INSERT INTO emotion_log (id, ts, source, deltas, description,"
-                    " conversation_id, event_type, narrative, salience, origin)"
-                    " VALUES (?, ?, 'chat', ?, ?, ?, 'interaction', ?, ?, 'system')",
+                    " conversation_id, event_type, event_summary, narrative, salience,"
+                    " origin, object_ref, object_kind, attributed)"
+                    " VALUES (?, ?, 'chat', ?, ?, ?, 'interaction', ?, ?, ?, 'system',"
+                    " ?, ?, 1)",
                     (str(uuid.uuid4()), now_iso, json.dumps(deltas, ensure_ascii=False),
-                     log_desc, None, narrative, salience),
+                     log_desc, None, evt_summary, narrative, salience,
+                     obj_ref, obj_kind),
                 )
 
             self._maybe_trigger_self_expression(deltas, now)
@@ -1169,7 +1226,13 @@ class EmotionEngine:
         # threading.Lock 不可重入，锁内调会死锁）。仍在 try/except 内，fail-open。
         ev = str(parsed.get("event") or "").strip()
         if ev:
-            self.apply_event_direct(ev)
+            # P0：被接住是「我与他的相处」，不是「关于萧盛这个人」——归 relation，
+            # 这条同时是 P1 候选池要挡掉的伪情感来源。
+            if ev == "feeling_understood":
+                self.apply_event_direct(ev, object_ref="和小桔的相处",
+                                        object_kind="relation")
+            else:
+                self.apply_event_direct(ev)
 
         # 二期 · 等待 spoken 入口（LLM 侦探 + 规则定参数，与 feeling_understood 同构）：
         # pending_new=她表达了在等一件未来的事 → 立项（她编的预期故事随报随存）；
@@ -1243,7 +1306,10 @@ class EmotionEngine:
             f"当时我想：[独白]。(≤80字)\", "
             f"\"salience\": 0.0到1.0的数字——这件事对你有多重要："
             f"触及你和萧哥的关系/你的信念与愧疚给0.8-1.0，"
-            f"有真实情绪波动的日常给0.4-0.7，日常琐碎给0.0-0.3}}"
+            f"有真实情绪波动的日常给0.4-0.7，日常琐碎给0.0-0.3, "
+            f"\"object_ref\": \"这件事关于谁/什么，指不到就留空\", "
+            f"\"object_kind\": \"person|work|thing|relation|none\", "
+            f"\"event_summary\": \"≤40字，只写发生了什么\"}}"
         )
 
         raw = chat_memory(
@@ -1278,12 +1344,17 @@ class EmotionEngine:
                 self._write_state_unlocked(conn, new_values, desc, now_str)
                 deltas = {k: round(new_values[k] - old[k], 2) for k in HORMONE_KEYS}
                 log_desc = f"{desc}（{reason}）" if reason else desc
+                obj_ref, obj_kind = _normalize_object(parsed)
+                # 经历摘要回退用 exp（这段本身就是「发生了什么」），不拿独白顶替。
+                evt_summary = _event_summary_from(parsed) or exp[:80]
                 conn.execute(
                     "INSERT INTO emotion_log (id, ts, source, deltas, description,"
-                    " conversation_id, event_type, event_summary, narrative, salience, origin)"
-                    " VALUES (?, ?, 'experience', ?, ?, NULL, 'experience', ?, ?, ?, 'system')",
+                    " conversation_id, event_type, event_summary, narrative, salience,"
+                    " origin, object_ref, object_kind, attributed)"
+                    " VALUES (?, ?, 'experience', ?, ?, NULL, 'experience', ?, ?, ?,"
+                    " 'system', ?, ?, 1)",
                     (str(uuid.uuid4()), now_str, json.dumps(deltas, ensure_ascii=False),
-                     log_desc, exp, narrative, salience),
+                     log_desc, evt_summary, narrative, salience, obj_ref, obj_kind),
                 )
 
         self._update_traits(narrative, "experience", deltas, salience)
@@ -1342,9 +1413,12 @@ class EmotionEngine:
         "weather_haze": "外面有霾，闷",
     }
 
-    def apply_event_direct(self, event: str) -> None:
+    def apply_event_direct(self, event: str, object_ref: str = "",
+                           object_kind: str = "none") -> None:
         """事件直驱参数：按预设规则改参数 + 写 emotion_log，不调 LLM。
 
+        宾语由调用方显式传入（P0）：天气/反思 → none；提案裁决与被接住 →
+        relation（互动，不是「关于萧盛这个人」）。不传即 none，系统不替她猜。
         fail-open：未知事件 / 引擎关闭 / 任何异常都静默返回（绝不影响主流程）。
         """
         try:
@@ -1364,13 +1438,16 @@ class EmotionEngine:
                     deltas = {k: round(new_values[k] - old[k], 2)
                               for k in HORMONE_KEYS if abs(new_values[k] - old[k]) > 0.001}
                     event_desc = self.EVENT_DIRECT_DESC.get(event, event)
+                    obj_ref, obj_kind = _clean_object(object_ref, object_kind)
                     conn.execute(
                         "INSERT INTO emotion_log (id, ts, source, deltas, description,"
-                        " conversation_id, event_type, event_summary, narrative, salience, origin)"
-                        " VALUES (?, ?, 'event_direct', ?, ?, NULL, 'experience', ?, '', 0.5, 'system')",
+                        " conversation_id, event_type, event_summary, narrative, salience,"
+                        " origin, object_ref, object_kind, attributed)"
+                        " VALUES (?, ?, 'event_direct', ?, ?, NULL, 'experience', ?, '',"
+                        " 0.5, 'system', ?, ?, 1)",
                         (str(uuid.uuid4()), now_str,
                          json.dumps(deltas, ensure_ascii=False),
-                         f"{desc}（{event_desc}）", event_desc),
+                         f"{desc}（{event_desc}）", event_desc, obj_ref, obj_kind),
                     )
         except Exception as e:  # fail-open
             logger.debug("apply_event_direct(%s) failed: %s", event, e)
@@ -1380,7 +1457,9 @@ class EmotionEngine:
     # ------------------------------------------------------------------
     def _apply_deltas_unlocked(self, conn, old: dict, deltas: dict,
                                source: str, event_summary: str,
-                               narrative: str = "") -> dict:
+                               narrative: str = "", object_ref: str = "",
+                               object_kind: str = "none",
+                               attributed: int = 0) -> dict:
         """锁内通用改参：deltas 逐项钳制后写状态 + emotion_log 留痕。
 
         调用方必须已持有 self._lock。返回实际生效的 deltas。
@@ -1394,14 +1473,16 @@ class EmotionEngine:
         self._write_state_unlocked(conn, new_values, desc, now_str)
         applied = {k: round(new_values[k] - old[k], 2)
                    for k in HORMONE_KEYS if abs(new_values[k] - old[k]) > 0.001}
+        obj_ref, obj_kind = _clean_object(object_ref, object_kind)
         conn.execute(
             "INSERT INTO emotion_log (id, ts, source, deltas, description,"
-            " conversation_id, event_type, event_summary, narrative, salience, origin)"
-            " VALUES (?, ?, ?, ?, ?, NULL, 'experience', ?, ?, 0.5, 'system')",
+            " conversation_id, event_type, event_summary, narrative, salience, origin,"
+            " object_ref, object_kind, attributed)"
+            " VALUES (?, ?, ?, ?, ?, NULL, 'experience', ?, ?, 0.5, 'system', ?, ?, ?)",
             (str(uuid.uuid4()), now_str, source,
              json.dumps(applied, ensure_ascii=False),
              f"{desc}（{event_summary}）" if event_summary else desc,
-             event_summary, narrative),
+             event_summary, narrative, obj_ref, obj_kind, attributed),
         )
         return applied
 
@@ -1421,13 +1502,14 @@ class EmotionEngine:
             cooldown = (now - timedelta(hours=ECHO_COOLDOWN_HOURS)).isoformat(timespec="seconds")
             with _connect(self._db) as conn:
                 rows = conn.execute(
-                    "SELECT id, deltas, narrative, salience FROM emotion_log "
+                    "SELECT id, deltas, narrative, salience, object_ref, object_kind"
+                    " FROM emotion_log "
                     "WHERE ts >= ? AND ts < ? AND narrative != '' "
                     "AND event_type='experience' AND source != 'echo' "
                     "ORDER BY salience DESC, ts DESC LIMIT 5",
                     (lo, hi),
                 ).fetchall()
-                for rid, deltas_json, narrative, salience in rows:
+                for rid, deltas_json, narrative, salience, obj_ref, obj_kind in rows:
                     echoed = conn.execute(
                         "SELECT COUNT(*) FROM emotion_log "
                         "WHERE source='echo' AND event_summary=? AND ts >= ?",
@@ -1452,7 +1534,9 @@ class EmotionEngine:
                     with self._lock:
                         old = self._get_state_unlocked()
                         self._apply_deltas_unlocked(
-                            conn, old, ripple, "echo", rid, narrative[:200])
+                            conn, old, ripple, "echo", rid, narrative[:200],
+                            object_ref=obj_ref or "", object_kind=obj_kind or "none",
+                            attributed=1)
                     return (narrative or "").strip() or None
             return None
         except Exception as e:  # fail-open：回潮失败不影响注入

@@ -426,7 +426,10 @@ class AgencyEngine:
                 TaskStatus.NEVER: "proposal_never",
             }.get(decision)
             if _ev:
-                EmotionEngine(base_dir=str(self.base_dir)).apply_event_direct(_ev)
+                # P0：提案被采纳/否掉/永不再提，都是「我与他的相处」，归 relation；
+                # 不归到「萧盛」这个人的档案上（那不是她对他的判断）。
+                EmotionEngine(base_dir=str(self.base_dir)).apply_event_direct(
+                    _ev, object_ref="和小桔的相处", object_kind="relation")
         except Exception:
             pass
 
