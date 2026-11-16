@@ -481,8 +481,15 @@ class BookShelf:
             if manuscript is not None:
                 chapters = manuscript.find_chapters(needle)
                 if chapters:
+                    # 2026-11-16 靶子①修复（萧哥拍板）：多章点名的预算按章数均分，
+                    # 总量受单次预算封顶。旧行为每章各吃满 budget ⇒「第1到第3章」
+                    # = 3×budget 无上限（默认 80k 下可达 24 万字）。保底
+                    # _MULTI_CHAPTER_MIN 字防碎片化；单章点名均分即 budget，行为不变。
+                    per = budget if len(chapters) == 1 else max(
+                        _MULTI_CHAPTER_MIN, budget // len(chapters)
+                    )
                     return "\n\n".join(
-                        manuscript.render_chapter(c, budget) for c in chapters
+                        manuscript.render_chapter(c, per) for c in chapters
                     )
             matched = [p for p in self._chapter_files(book_dir) if needle in p.name]
             if not matched:
@@ -531,6 +538,10 @@ def default_shelf() -> BookShelf:
 # 读稿预算（2026-11-08 能力常备化）
 # --------------------------------------------------------------------------- #
 DEEP_READ_CHARS_DEFAULT = 80_000
+
+# 多章点名（区间/多标签命中）时每章保底字数（2026-11-16 靶子①）：区间均分预算
+# 后，防止章数一多每章只剩几百字的碎片化。单章点名不受它影响（吃满预算）。
+_MULTI_CHAPTER_MIN = 1_000
 
 
 def deep_read_chars() -> int:

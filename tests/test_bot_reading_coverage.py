@@ -81,11 +81,44 @@ def test_read_book_matches_chapter_title(tmp_path: Path) -> None:
 
 
 def test_read_book_supports_chapter_range(tmp_path: Path) -> None:
+    # 2026-11-16 起区间点名按章均分预算（见下方「多章点名预算总量封顶」组）：
+    # 预算给足（3 章 × 8k < 30k）时仍能读到每章章尾；预算不足时诚实截断。
     root = _make_book(tmp_path)
-    out = _shelf(root).read("测试书", chapter="第5章到第7章")
+    out = _shelf(root, max_chars=30_000).read("测试书", chapter="第5章到第7章")
     for i in (5, 6, 7):
         assert f"章末标记{i}" in out
     assert "章末标记8" not in out
+
+
+# ------------------------------------------------------- 多章点名预算总量封顶
+# 2026-11-16 靶子①修复（萧哥拍板）：read(chapter=区间) 过去每章各吃满 budget，
+# 「第1到第3章」= 3×budget 无总量上限（默认 80k 预算下可达 24 万字）。
+# 契约：多章点名按章数均分预算（保底 1000 字防碎片化），总量受单次预算封顶；
+# 单章点名行为不变（仍吃满预算）。截断时 render_chapter 如实报
+# 「本章共 X 字，本次读取上限 Y 字」，模型可换更窄的区间再点。
+
+
+def test_multi_chapter_range_caps_total_budget(tmp_path: Path) -> None:
+    root = _make_book(tmp_path, chapters=6, per_chapter=40_000)  # 每章 4 万字
+    out = _shelf(root, max_chars=30_000).read("测试书", chapter="第1章到第3章")
+    assert "第1章：标题1" in out
+    assert "第2章：标题2" in out
+    assert "第3章：标题3" in out
+    assert len(out) < 30_000 + 3_000, "三章点名总加载量必须受单次预算封顶（旧行为会到 9 万）"
+
+
+def test_single_chapter_keeps_full_budget(tmp_path: Path) -> None:
+    root = _make_book(tmp_path, chapters=6, per_chapter=40_000)
+    out = _shelf(root, max_chars=30_000).read("测试书", chapter="第2章")
+    assert len(out) > 29_000, "单章点名仍吃满预算（行为不变）"
+
+
+def test_many_chapters_floor_prevents_slivers(tmp_path: Path) -> None:
+    root = _make_book(tmp_path, chapters=30, per_chapter=20_000)
+    out = _shelf(root, max_chars=30_000).read("测试书", chapter="第1章到第30章")
+    assert "第30章：标题30" in out
+    assert "本次读取上限 1000" in out, "保底均分：每章 1000 字，不许再碎片化到几百字"
+    assert len(out) < 45_000, "整本区间点名总量 ≈ n×1000，受控"
 
 
 # --------------------------------------------------------------------- 材料索引
