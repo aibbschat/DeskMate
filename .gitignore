@@ -47,3 +47,14 @@ ui-mocks/tools/xjframegrab
 # 全息键盘的 look-test 产出（预览图/对比条/动图），随时由 xj_holo_bake.py 重出
 ui-mocks/out/
 
+
+# --- 例外：项目长期记忆 MEMORY.md 必须入库（2026-11-16 萧哥拍板）---
+# `.workbuddy/` 整体忽略（含 server/ 运维凭据目录），唯独 memory/MEMORY.md 入库：
+# 它是跨会话的红线判据索引，此前从未进版本控制 ⇒ 压缩/误改不可逆，丢了等于记忆断层。
+# ⚠ 刻意**不**豁免 PITFALLS.md 与按日日志：备份仓是公开的，PITFALLS 内含云端主机
+#   IP 与 SSH 登录身份（见其 §十三），一律留本地。
+!.workbuddy/
+.workbuddy/*
+!.workbuddy/memory/
+.workbuddy/memory/*
+!.workbuddy/memory/MEMORY.md
