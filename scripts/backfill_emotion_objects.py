@@ -361,14 +361,20 @@ def main() -> int:
                     " SUM(object_kind='none'), SUM(object_kind='relation')"
                     " FROM emotion_log WHERE attributed=2"
                 ).fetchone()
+                # 分来源计数从库里取，不用本轮增量——回填可分段续跑，
+                # 最后一轮只补几十条，拿它当总账会把 1,507 写成 21。
+                by_source = dict(conn.execute(
+                    "SELECT source, COUNT(*) FROM emotion_log"
+                    " WHERE attributed=2 GROUP BY source"
+                ).fetchall())
                 blob = {
                     "ts": time.strftime("%Y-%m-%dT%H:%M:%S"),
                     "total": stats[0] or 0,
                     "none": stats[1] or 0,
                     "relation": stats[2] or 0,
-                    "llm": n_llm,
-                    "event_direct": n_direct,
-                    "echo": n_echo,
+                    "llm": by_source.get("chat", 0) + by_source.get("experience", 0),
+                    "event_direct": by_source.get("event_direct", 0),
+                    "echo": by_source.get("echo", 0),
                     "elapsed_s": round(elapsed, 1),
                 }
                 conn.execute(
