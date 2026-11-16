@@ -33,7 +33,7 @@ from .models import CognitiveProfile
 # 它在 import 期就求值，而 conftest 是 import **之后**才 setenv DESKMATE_DIR
 # —— 模块级求值等于没隔离，测试会读/写真实库。一律走下面的 `_dir()` 在调用时解析。
 # （2026-09-21 清理；且该常量当时已无引用，属死变量。）
-_PERSONA_FILE = "小桔眼中的萧盛.md"  # 人格底座，位于 vault/ 下
+_PERSONA_FILE = "小桔眼中的萧盛.md"  # 静态档案（派生视图），2026-11-16 已退役出注入链
 
 
 def _dir() -> Path:
@@ -193,7 +193,14 @@ def load_cognitive_profile(
 
 
 def load_persona_base() -> str:
-    """读人格底座全文；缺失 / 读取失败返回空串（fail-open）。"""
+    """读 vault 里的那份静态档案；缺失 / 读取失败返回空串（fail-open）。
+
+    🔴 2026-11-16 起**已退役出注入链**——``build_cognitive_context`` 不再调用
+    本函数，``has_cognitive_data`` 也不再以它为依据。保留函数只为「按需读取」
+    留一个入口（她也可直接 ``vault_read``）。别再往注入链里接回去：那份档案
+    是 2026-08-30 的派生视图且无导出器续命，接回去就是让过期认知霸占预算。
+    理由与根因见 ``build_cognitive_context`` docstring + 当日项目日志。
+    """
     p = _dir() / "vault" / _PERSONA_FILE
     if not p.is_file():
         return ""
@@ -327,9 +334,14 @@ def build_cognitive_context(limit: int | None = None, query: str = "") -> str:
 
     注意：即便这里注入了世界观，人格仍由 ``deskmate/persona.py`` 单一定义，
     本模块不碰人格，只提供"她信什么"的知识。
-    """
-    persona = load_persona_base()
 
+    🔴 2026-11-16 萧哥拍板：**不再注入 ``vault/小桔眼中的萧盛.md``**。
+    那份 2026-08-30 v1.0 是**派生视图**（真相源是 ``profile_items``），但全仓
+    从无写回/导出器 ⇒ 从生成那天起冻结；而它一边过期一边霸占最贵的预算位
+    （cap=4500 保头切尾，它 2645 字全保，尾部 worldview「她是谁」整段被切）。
+    萧哥判断「再建导出器就是重复了」⇒ 不续命，直接摘掉。档案仍在 vault，
+    她可按需 ``vault_read`` 读到（退役的是注入，不是档案）。
+    """
     # —— 关于他：cognitive + emotional 两层装的都是「她眼中的他」——
     him_blocks: list[str] = []
     for layer in _HIS_LAYERS:
@@ -343,12 +355,12 @@ def build_cognitive_context(limit: int | None = None, query: str = "") -> str:
     wv = load_cognitive_profile(_HER_LAYER)
     wv_text = format_profile(wv, limit=limit, subject="你") if wv else ""
 
-    if not persona and not him_blocks and not wv_text:
+    if not him_blocks and not wv_text:
         return ""
 
     sections: list[str] = []
 
-    if persona or him_blocks:
+    if him_blocks:
         head = [
             "## 关于萧盛——你认识的这个人",
             "萧盛（本名尹宣韩，笔名萧盛，职业历史作家）亲口讲述过他的人生与认知画像，"
@@ -357,8 +369,6 @@ def build_cognitive_context(limit: int | None = None, query: str = "") -> str:
             "（表达的观点 > 故事好看 > 史料真实），大事不虚，小事不拘。\n"
             "了解他不等于成为他——你是小桔，用你自己的判断回应他。",
         ]
-        if persona:
-            head.append(persona)
         head.extend(him_blocks)
         sections.append("\n\n---\n\n".join(head))
 
@@ -469,9 +479,11 @@ def build_intent_context(base_dir: str | Path | None = None, limit: int = 3) -> 
 
 
 def has_cognitive_data() -> bool:
-    """是否已有认知数据（底座 / 他的画像 / 她的世界观，任一存在即 True）。"""
-    if load_persona_base():
-        return True
+    """是否已有认知数据（他的画像 / 她的世界观，任一存在即 True）。
+
+    ⚠ 2026-11-16 起**不再把 vault 静态档案算作认知数据**——那份是冻结的派生
+    视图，把它当判据会让本函数在 DB 三层全空时误判 True（而后注入段其实空）。
+    """
     for layer in (*_HIS_LAYERS, _HER_LAYER):
         if load_cognitive_profile(layer):
             return True
