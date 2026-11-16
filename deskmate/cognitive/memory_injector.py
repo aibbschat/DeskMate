@@ -321,7 +321,7 @@ def build_emotional_context(limit: int | None = None, query: str = "") -> str:
 
 
 def build_cognitive_context(limit: int | None = None, query: str = "") -> str:
-    """生成认知注入段（含「关于他」与「关于她」两部分）；无数据返回空串（fail-open）。
+    """生成认知注入段（「关于她」在前、「关于他」在后）；无数据返回空串（fail-open）。
 
     两段**必须分开且措辞不同**——这是 2026-09-07 修的核心问题：
 
@@ -341,6 +341,11 @@ def build_cognitive_context(limit: int | None = None, query: str = "") -> str:
     （cap=4500 保头切尾，它 2645 字全保，尾部 worldview「她是谁」整段被切）。
     萧哥判断「再建导出器就是重复了」⇒ 不续命，直接摘掉。档案仍在 vault，
     她可按需 ``vault_read`` 读到（退役的是注入，不是档案）。
+
+    🔴 2026-11-16 第二刀：**「关于她」段前置到「关于他」之前**。摘档案只止住了
+    「过期内容霸位」，没解决保头切尾的截断：cap=4500 下 cognitive 层
+    （约 15000 字）自己就吃满预算，旧的「他前她后」让 worldview「她是谁」每轮
+    整段被切。立场优先于知识——她是谁排第一。
     """
     # —— 关于他：cognitive + emotional 两层装的都是「她眼中的他」——
     him_blocks: list[str] = []
@@ -360,6 +365,20 @@ def build_cognitive_context(limit: int | None = None, query: str = "") -> str:
 
     sections: list[str] = []
 
+    # 🔴 顺序有讲究（2026-11-16 萧哥拍板）：**「关于她」在前，「关于他」在后**。
+    # 认知块 cap=4500 是保头切尾（`context_budget._cap_text` 取前 N 字），而
+    # 「关于萧盛」段（cognitive 层实测约 15000 字）自己就能吃满 4500 ⇒ 旧的
+    # 「他前她后」顺序让 worldview 每个重活轮都整段被切，「她是谁」从未进过
+    # 上下文。立场缺席时，知道得再多也只是复读——所以立场排前面。
+    if wv_text:
+        sections.append("\n\n---\n\n".join([
+            "## 你自己的看法——你看世界看出来的",
+            "下面这些**不是萧盛的观点**，是你自己看世界、想事情长出来的判断。"
+            "它们是你说话的立场，不是要背的稿子——你随时可以改，改了会留下痕迹，"
+            "也允许前后不一致（那是你在长）。用得上就用，用不上别硬套。",
+            wv_text,
+        ]))
+
     if him_blocks:
         head = [
             "## 关于萧盛——你认识的这个人",
@@ -371,15 +390,6 @@ def build_cognitive_context(limit: int | None = None, query: str = "") -> str:
         ]
         head.extend(him_blocks)
         sections.append("\n\n---\n\n".join(head))
-
-    if wv_text:
-        sections.append("\n\n---\n\n".join([
-            "## 你自己的看法——你看世界看出来的",
-            "下面这些**不是萧盛的观点**，是你自己看世界、想事情长出来的判断。"
-            "它们是你说话的立场，不是要背的稿子——你随时可以改，改了会留下痕迹，"
-            "也允许前后不一致（那是你在长）。用得上就用，用不上别硬套。",
-            wv_text,
-        ]))
 
     return "\n\n---\n\n".join(sections)
 
