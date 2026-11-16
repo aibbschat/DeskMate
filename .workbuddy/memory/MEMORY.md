@@ -32,6 +32,7 @@
 - 🔴 **划词退役（`b2be102c`）**：`_spawn_selection_adapter` 恒不拉起；本体 `deskmate/selection/` 与接口测试**保留勿删**；复活＝按 git 历史恢复函数体。
 
 ## 五、环境 / 打包 / 测试
+- 🔴 **本文件已入 git（`238796b8`）**：`.gitignore` 逐级豁免只开一个口子（`!.workbuddy/memory/MEMORY.md`）；**PITFALLS.md 与按日日志刻意不入库**——备份仓公开，PITFALLS §十三含云端主机 IP 与 SSH 身份。改本文件须跟提交，否则等于改了不带历史。
 - Tauri 2.x arm64：改 Python 重启 app 即生效；**前端改动须重打包**（`./packaging/build_local_app.sh --install`）；版本三处+`Cargo.lock`。判新代码三件套：`lsappinfo` launch time > commit、`__pycache__` 重编译、真实行为证据。🔴 双副本：`/Applications` 与 `~/Applications` 须同步或只留一个。
 - STT：SenseVoiceSmall int8（`~/.config/coworker/models/sensevoice/`），缺入口 fail-fast 不回退；正式 DMG 须把 `openworker-stt`+`sherpa-onnx==1.13.8` 打进 sidecar。
 - pytest 须 `dangerouslyDisableSandbox`+`env -u PYTHONPATH`+`--basetemp=/tmp/pt_<新目录>`。**既有红基线＝41 红 / 5076 passed**（11-11 口径）⇒ 判回归必须**同口径**比对失败清单。🔴 取 HEAD 基线禁 `git worktree`（`cp` 备份+`trap`+`git show HEAD:`）。前端 vitest **0 红 / 462 passed** ⇒ 再红即新回归。🔴 肤色护栏「修一个冒一个」：每个 `it` 首断言失败即中断，同 for 循环其余皮肤不暴露；改配色前先脚本复刻 `_contrast` 全量算。`npx tsc --noEmit` 须 0 错。
@@ -46,7 +47,7 @@
 - 🔴 **AI 味溯源**：真漏气口=bullet 思维外化+JSON title 逼正式腔+小模型难循禁单。三通道已撤负面清单+title；禁语气映射表/禁词表；日记 narrator 口吻不碰；日记不加「聊一下」；🔴「她读」日记链路**禁语义层截断**（展示上限归前端）。
 - 人格单一事实源 `deskmate/persona.py`（经 `deskmate.md` 的 `persona_base:` 注入）。🔴 **人格旁路已关闭（靶子③，`test_persona_bypass_closed.py`）**：6 处真旁路（moments／understanding／ai_circle column·reply·share／emotion_engine 悬事预期）全改 `for_scene()`，**场景 prompt 只留职责与体例、身份只由底座说一次**；JSON 场景 `brief=True`。**明确不挂**：`emotion_engine._EMOTION_SYSTEM`（内部状态机）、`memory_injector` 的「了解他不等于成为他」（澄清句）。萧哥拍板：日记留言要「真实的搭档」（给反驳权）、ai_circle 公开形象不介意变化。日记 `diary_inspiration.py` 纯规则零 LLM，人称「我=小桔/你=萧盛」，禁 `re.sub(r"\s+")`；**日记绝不落本文件**。情感层 日记自述>行为推断>平静（kill `DESKMATE_EMOTION_SENSE=0`）；意志层 `will/`（kill `DESKMATE_WILL_ENABLED=0`），**5 个** `modulate_*` fail-open。
 - 🔴 **vault 静态档案已退役出注入链（`b93d441d`）**：`vault/小桔眼中的萧盛.md` 是 08-30 派生视图、无导出器续命，曾 2645 字霸占 cap=4500 头部、把尾部 worldview「她是谁」整段切掉。`build_cognitive_context` 不再注入、`has_cognitive_data` 不以它为依据；`load_persona_base` 保留供按需 `vault_read`。**禁接回注入链**（再建导出器＝重复），契约 `test_cognitive_persona_archive_retired.py`。
-- 认知层 profile_items：layer×dimension 双轴，加层=插行零 DDL；主体「他」(萧盛)，小桔世界观 `layer='worldview'`。L2 边界 `agency/`；写文件/发消息/删除=高风险必走提议卡；**无据 gap 不许提问**；关键词≥2 字才算证据；外部 credibility<0.7→L2 提议卡。书稿记忆家 `§ 创作 #stable`。
+- 认知层 profile_items：layer×dimension 双轴，加层=插行零 DDL；主体「他」(萧盛)，小桔世界观 `layer='worldview'`。🔴 **注入顺序「关于她」在前、「关于他」在后（`00166938`）**：cap=4500 是保头切尾，他层 15959 字自己就吃满 ⇒ 他前她后会让「她是谁」整段被切；实测现 窗口内 她 3674/他 839 字。契约 `test_cognitive_worldview_priority.py`。L2 边界 `agency/`；写文件/发消息/删除=高风险必走提议卡；**无据 gap 不许提问**；关键词≥2 字才算证据；外部 credibility<0.7→L2 提议卡。书稿记忆家 `§ 创作 #stable`。
 
 ## 八、其它契约（细则全在 PITFALLS.md）
 - **小桔形象永不被皮肤替换**：新视觉字段自描述(`hero`/`decorativeStamp`)，禁 `mascot/image/picture/icon/character/figure`；皮肤图纯景物放边角。**mood 是派生值**：唯一写入口 `engine.set_mood_from_emotion()`。史料版权仅收作者去世满 50 年者（钱穆2040/黄仁宇2050 禁入库）。
