@@ -32,7 +32,7 @@
 - 🔴 **划词退役（`b2be102c`）**：`_spawn_selection_adapter` 恒不拉起；本体 `deskmate/selection/` 与接口测试**保留勿删**；复活＝按 git 历史恢复函数体。
 
 ## 五、环境 / 打包 / 测试
-- 🔴 **本文件已入 git（`238796b8`）**：`.gitignore` 逐级豁免只开一个口子（`!.workbuddy/memory/MEMORY.md`）；**PITFALLS.md 与按日日志刻意不入库**——备份仓公开，PITFALLS §十三含云端主机 IP 与 SSH 身份。改本文件须跟提交，否则等于改了不带历史。
+- 🔴 **本文件已入本地 git（`238796b8`），但未推 backup**（萧哥 2026-11-16 决定：含内部结构暂不公开）⇒ 远端公开仓**没有**本文件，别以为有备份。`.gitignore` 逐级豁免只开一个口子（`!.workbuddy/memory/MEMORY.md`）；**PITFALLS.md 与按日日志刻意不入库**——含云端主机 IP 与 SSH 身份。改本文件须跟提交，否则等于改了不带历史。
 - Tauri 2.x arm64：改 Python 重启 app 即生效；**前端改动须重打包**（`./packaging/build_local_app.sh --install`）；版本三处+`Cargo.lock`。判新代码三件套：`lsappinfo` launch time > commit、`__pycache__` 重编译、真实行为证据。🔴 双副本：`/Applications` 与 `~/Applications` 须同步或只留一个。
 - STT：SenseVoiceSmall int8（`~/.config/coworker/models/sensevoice/`），缺入口 fail-fast 不回退；正式 DMG 须把 `openworker-stt`+`sherpa-onnx==1.13.8` 打进 sidecar。
 - pytest 须 `dangerouslyDisableSandbox`+`env -u PYTHONPATH`+`--basetemp=/tmp/pt_<新目录>`。**既有红基线＝41 红 / 5076 passed**（11-11 口径）⇒ 判回归必须**同口径**比对失败清单。🔴 取 HEAD 基线禁 `git worktree`（`cp` 备份+`trap`+`git show HEAD:`）。前端 vitest **0 红 / 462 passed** ⇒ 再红即新回归。🔴 肤色护栏「修一个冒一个」：每个 `it` 首断言失败即中断，同 for 循环其余皮肤不暴露；改配色前先脚本复刻 `_contrast` 全量算。`npx tsc --noEmit` 须 0 错。
