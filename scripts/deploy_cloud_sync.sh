@@ -23,6 +23,7 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
 SSH_HOST="${SSH_HOST:-openworker-mirror}"
+
 CLOUD_DESKMATE="/var/lib/openworker/.deskmate"
 CLOUD_SYNC_DIR="$CLOUD_DESKMATE/sync"
 CLOUD_RUNNER="$CLOUD_DESKMATE/sync_runner.py"
@@ -35,49 +36,37 @@ LOCAL_MODULES=(
 )
 LOCAL_RUNNER="scripts/sync_daemon_runner.py"
 
-# 主动产出台账模块（主程序包，不是 sync 平铺包）：随 sync 文件一起上云，
-# 避免每次改 proactivity 都手动 scp。目标云端 /opt/openworker/deskmate/proactivity/。
-# ⚠️ confidence.py（§11.14 should_act 闸门）+ health_producers.py（P2 三生产者）务必纳入，
-# 否则云端跑旧码 → §11.14 修复与 P2 离线生效（10-07 实测：漏传 confidence.py 会让
-# 「没发现异常也递卡」在云端照旧复发）。
-PROACTIVITY_MODULES=(
-  "deskmate/proactivity/ledger.py"
-  "deskmate/proactivity/tick.py"
-  "deskmate/proactivity/judge.py"
-  "deskmate/proactivity/understanding.py"
-  "deskmate/proactivity/server.py"
-  "deskmate/proactivity/confidence.py"
-  "deskmate/proactivity/health_producers.py"
-  "deskmate/proactivity/disabled_producers.py"
-  # ⚠️ 2026-10-24 主动性改造：新增 4 个 proactivity 模块（阶段一二三四六）。
-  # tick.py（已部署）import writing_context / suggestion_types / deferred；
-  # ledger.py + server.py（已部署）import next_steps。漏传 → 云端跑旧 tick/ledger/server
-  # 触发 ImportError 被 fail-open 吞 → 云端静默停摆。务必随 tick/ledger 同批同步。
-  "deskmate/proactivity/deferred.py"
-  "deskmate/proactivity/next_steps.py"
-  "deskmate/proactivity/suggestion_types.py"
-  "deskmate/proactivity/writing_context.py"
-  # ⚠️ 2026-10-13 补：companion.py 属「真实优先」活感 WIP 批，被云端代码 import，
-  # 漏传 → 云端跑旧码（与 ledger/her_voice 同类漏传教训）。随 tick/ledger 同批同步。
-  "deskmate/proactivity/companion.py"
+# ============================================================================
+# 主程序包集合：全量自动发现 + 显式排除（2026-11-16 治本改造，萧哥拍板）
+# ============================================================================
+# 病根：本脚本过去用 16 个数组**逐文件白名单**登记要上云的 .py。每加一个文件
+# 都得人肉记得进清单，忘了 = 云端缺文件/跑旧码，ImportError 被 fail-open 吞掉
+# ⇒ 静默失效（2026-11-16 复核实测：在册约 193 个 vs 生产 425 个，232 个未登记，
+# 含被生产 import 的 deskmate/memory/sync.py、coworker/automation/store.py 等）。
+# 处置（原则反转）：**默认全传，「不传的」才登记**——
+#   MAIN_SET    = find deskmate coworker 全量生产 .py（排除 test_* 与 __pycache__）；
+#   MAIN_EXCLUDE = 显式排除表，当前为空。今后确有「只本地不上云」的文件，必须
+#                 在这里登记并写明理由；漏登记从此结构上不可能发生。
+# 桌面本地专属模块（stt.py / tts.py / xiaomi_* 等）也照传：项目既有先例——
+# 「多放一个不 import 的模块无害，少放一个就是 fail-open 静默失效」，且红线要求
+# 两端代码完全一致。
+# 2026-10 ~ 2026-11 各批「必须同批同步」的事故注释（user_fact_context / world_context /
+# manager / inbox / constants 包 / …）已随 16 个数组一并移除：全量同批后「忘了同批」
+# 不再可能。历史教训可考：git 历史中本文件 2026-11-16 之前的版本，与
+# .workbuddy/memory/PITFALLS.md。
+MAIN_EXCLUDE=(
+  # （当前无排除项。加条目必须写理由；条目会同步作用于末尾 _reconcile 对账口径。）
 )
-# ⚠️ 2026-10-09 新增：disabled_producers.py（automation 误报止血模块）。
-# tick.py 与 xiaoju_agency_tick.py 均 `from deskmate.proactivity.disabled_producers import ...`，
-# 漏传 → 云端 tick 每轮抛 ImportError（被 except 吞掉）→ 云端**悄悄停跑所有健康生产者**，
-# 且不留任何日志线索。务必与 tick.py 同批同步。
-
-# ⚠️ 2026-10-09 新增：主链路付费组回退。
-# router.py 改为 `from .paid_fallback import complete_with_fallback / stream_with_fallback`。
-# 漏传 paid_fallback.py 的后果特别隐蔽：import 写在**函数体内**，故导入期不报错、
-# 服务能正常启动，但**每次调用主链路都抛 ModuleNotFoundError** ⇒ 云端小桔彻底不能对话。
-# router.py 与它必须同批同步（本次实测：火山周额度撞顶后必须能自动切小米/hy）。
-# 两者已列入下方 CHANNEL_MODULES，复用其传输与 md5 校验循环。
-# ⚠️ judge.py 必须随 tick.py 一起上云：tick.py:30 `from .judge import JudgmentResult,
-# judge_proactive_action`，而云端 xiaoju_agency_tick.py:146 跑 run_producers_all → 调 tick 内的
-# `_cloud_audit_producer`，该生产者用 `judgment.finding_key`（2026-10-09 提交 1729942 新增）。
-# 漏传 → 云端跑旧 judge.py，JudgmentResult 无 finding_key → 锚点合并特性在云端静默失效
-# （退回内容指纹），且违反「本地与云端代码须完全一致」红线。务必与 tick/ledger 同批同步。
-CLOUD_PROACTIVITY_DIR="/opt/openworker/deskmate/proactivity"
+MAIN_SET=()
+while IFS= read -r _f; do
+  _skip=0
+  for _x in ${MAIN_EXCLUDE[@]+"${MAIN_EXCLUDE[@]}"}; do
+    [[ "$_f" == "$_x" ]] && _skip=1
+  done
+  if [[ "$_skip" -eq 0 ]]; then
+    MAIN_SET+=("$_f")
+  fi
+done < <(find deskmate coworker -name '*.py' -not -path '*__pycache__*' -not -name 'test_*' -not -path '*/tests/*' | sort)
 
 # P3-c 手动 oplog GC 工具（§11.15）：随 runner 一起上云到 /var/lib/openworker/.deskmate/，
 # 与 sync_runner.py 同目录（--cloud-pkg-path 默认即该目录，可 `python3 gc_sync_oplog.py --mode cloud`）。
@@ -98,343 +87,16 @@ CLOUD_AGENCY_TICK="$CLOUD_SYNC_DIR/xiaoju_agency_tick.py"
 LOCAL_DRIFT_CHECK="scripts/sync_drift_check.py"
 CLOUD_DRIFT_CHECK="$CLOUD_SYNC_DIR/sync_drift_check.py"
 
-# LLM 通道组+ 熔断（2026-10-06，设计 §二/§3）：本地与云端**必须同码同熔断表**，
-# 否则会出现「本地熔断了、云端还在撞」——与记忆里「48 条身份分裂」同类的事故。
-# 目标：/opt/openworker/deskmate/{memory,proactivity}/ 与 /opt/openworker/coworker/{server,providers}/
+# 主程序包镜像根（MAIN_SET 落点）：
+#   deskmate/xxx.py → $CLOUD_DESKMATE_ROOT/xxx.py；coworker/xxx.py → $CLOUD_COWORKER_ROOT/xxx.py
 CLOUD_DESKMATE_ROOT="/opt/openworker/deskmate"
 CLOUD_COWORKER_ROOT="/opt/openworker/coworker"
-CHANNEL_MODULES=(
-  "deskmate/llm_circuit_breaker.py"       # 熔断表 + 错误解析
-  "deskmate/llm_channels.py"              # 通道组（付费/免费 + 组内自动排）
-  "deskmate/memory/llm.py"                # chat/chat_memory 接入熔断与通道组
-  # ⚠️ 聊天框免费模型动态刷新（2026-10-09 a6a1e54）：matrix.py 的 entry_for 接入
-  # opencode 免费模型的动态清单（opencode: 前缀先查动态清单、降级冷启动/离线兜底）。
-  # 它正是『云端聊天框还是老模型』的根因——原清单独漏 matrix.py，导致云端停在 10-06 旧码
-  # （实测 mtime=Oct 6 10:25、a6a1e54 特征串命中 0、entry_for 在 372 行无动态分支）。
-  # 漏传即云端永远跑老矩阵、免费模型不刷新且不报错，必须随 router/paid_fallback 同批同步。
-  # 🔴 2026-10-18：opencode / Kilo 外网免费车道已**删除**（萧哥拍板——opencode 官方
-  # 封禁免费使用，探测多了会被封号，留着没用下次也不敢再踩）。zen_catalog /
-  # kilo_catalog / kilo_provider / opencode_provider 四个模块连同本清单中的条目
-  # 一并移除；matrix.py 保留在清单里（静态条目已清、OpenRouter 动态清单仍在）。
-  "coworker/providers/matrix.py"          # ProviderMatrix（OpenRouter 动态清单；免费车道已删）
-  # ⚠️ 2026-10-11 MiMo v2.5→v2.6 切换：registry.py（recommended_model / endpoint_help）
-  # 与 selection/server.py（mimo 别名 → xiaomi:mimo-v2.6）必须随 matrix 同批同步，否则
-  # 云端聊天框推荐模型/别名仍指向已下架的 v2.5，且本地云端代码不一致（红线）。
-  "coworker/providers/registry.py"        # Provider 注册表（recommended_model / endpoint_help）
-  "deskmate/selection/server.py"          # 模型别名解析（mimo → xiaomi:mimo-v2.6）
-  # ⚠️ 主链路付费组回退三件套（2026-10-09 新增）：实测火山周额度撞顶 429 时，
-  # router.py 裸奔（不查熔断、不换通道）导致主聊天每 35 秒撞一次墙，而熔断器在旁边
-  # 正确记账——两套配置脱节。修法是把跨套餐回退（火山→小米→腾讯 hy3）接进 router。
-  # 三者**必须同批**：router import paid_fallback，且 import 写在函数体内，
-  # 漏传时服务照常启动但每次调用都 ModuleNotFoundError ⇒ 云端小桔彻底不能对话。
-  # ⚠️ 2026-10-15 补：dynamic_route.py（P0 动态路由 judge 层）。router.py L24 顶层
-  # `from .dynamic_route import ...` 直接引用它——漏传 ⇒ 云端 router.py 导入期即崩 ⇒
-  # openworker-server 起不来。它位于 coworker/providers/，而本脚本全量对账只扫
-  # deskmate + coworker/server（扫不到 providers/，属对账盲区），故必须显式列此清单
-  # 才能推上去；否则对账永远假绿。务必随 router.py 同批。
-  "coworker/providers/dynamic_route.py"     # P0 动态路由 judge 层（router.py 顶层 import）
-  "coworker/providers/router.py"           # ProviderRouter（已接入 paid_fallback）
-  "coworker/providers/paid_fallback.py"   # 付费组跨套餐回退 + 熔断记账
-  "coworker/server/app.py"                # /v1/llm-channels* 端点 + LLM 专用池/超时中间件
-  "coworker/server/run.py"                # uvicorn 启动入口（access log 时间戳，2026-10-13）
-  # ⚠️ 2026-10-13 补录：coworker/server/manager.py **此前只在集合级对账里被检查、
-  # 从未被传输**（对账查≠推得上去）—— 云端因此长期跑旧 manager.py。本轮它新增了
-  # `model_vendors`（picker 按厂商分组的数据源），漏推的后果是「同步显示成功、云端
-  # 选择器仍按旧两档平铺」，且**不报错**，只能靠对账抓。
-  # 它必须与 matrix.py / registry.py 同批：三者共同决定 picker 的模型清单与分组。
-  # ⚠️ 云端 openworker-server 每轮经 manager.py 构建小桔上下文，改动语义面很宽，
-  # 推完务必确认 systemctl 状态（当前为「停机保号」态，重开即生效）。
-  "coworker/server/manager.py"            # SessionManager（每轮上下文 + 模型清单/分组）
-  # ⚠️ 主程序包的同步三件套（2026-10-06 补）：云端 `/opt/openworker/deskmate/memory/`
-  # 另有一份 sync_store_sqlite.py，而上面的 CHANNEL_MODULES 里的 llm.py 正是 import它。
-  # 只同步平铺包（LOCAL_MODULES）会导致「主程序包跑旧 SYNC_TABLES」——
-  # 实测踩过：migrate() 抛 KeyError: 'llm_circuit_breaker'，熔断表建了但没触发器/同步列。
-  "deskmate/memory/sync_store_sqlite.py"
-  "deskmate/memory/sync_daemon.py"
-  "deskmate/memory/sync_transport.py"
-  # ⚠️ 每轮上下文注入（§11.16 层一）：build_full_context_for_turn 挂「今天已递待办」块；
-  # 云端聊天（openworker-server 走 manager.py 构建小桔每轮上下文）必须同码，否则小桔
-  # 在云端「不知道自己递过什么」。2026-10-07 之前 deploy 脚本漏了它，云端 manager.py
-  # 停在 Sep 30 旧码——本轮必须把层一注入推上去（红线：本地与云端代码须完全一致）。
-  "deskmate/memory/manager.py"
-  # ⚠️ 2026-11-15 补漏：world_context.py 每轮被 manager.py 直接 import 构建 world 块，
-  # 此前**从未进过本清单** → 云端一直跑旧码。本轮修「立场/理解被 4500 字符截断」就在
-  # 这个文件里，漏传会让云端主干道继续断着，且 fail-open 静默、不报错。
-  "deskmate/memory/world_context.py"
-  # ⚠️ 2026-11-15 新增：user_episodes.py 被 manager.py 每轮 import 构建「他这几天
-  # 亲口说起的」块，且被 _extract_single_session 写入近况事件。漏传 → 云端
-  # ImportError 被 fail-open 吞掉（静默不记、不注入），本地改了等于没改。
-  # 顶层依赖 _fs_lock.py / growth/_atomic.py 已在下方清单（见 651-657 行注释）。
-  "deskmate/memory/user_episodes.py"
-  # ⚠️ P1 汇流最小版（2026-10-07）：认知层两件套。store.py 新增 memory_anchors 表 +
-  # recall_items 顺锚走一跳；extractor.py 抽取时顺手挂锚。云端 openworker-server 每轮
-  # 经 memory_injector → CognitiveStore.recall_items 构建上下文；漏传 → 云端跑旧码
-  # （无锚表 / 不顺锚），本地同步上去的锚数据也召不回邻座（同 manager.py 漏传教训）。
-  "deskmate/cognitive/store.py"
-  "deskmate/cognitive/extractor.py"
-  # ⚠️ P2-R3 lessons 注入（2026-10-07）：memory_injector.py 含 build_lessons_context，
-  # manager.py L662 函数内 `from ... import build_lessons_context` 直接引用它。
-  # 漏传 → 云端旧 memory_injector 无此函数，R3 lessons 注入因 fail-open 静默失效
-  # （小桔在云端「学不会」你教的规矩）。本轮补足，确保 P2-R3 云端真生效。
-  "deskmate/cognitive/memory_injector.py"
-  # ⚠️ 用户事实回灌（c06ab7e / 2026-10-08）：manager.py:642 与 understanding.py:161
-  # 都 `from deskmate.memory.user_fact_context import build_user_fact_context`。
-  # 本清单是**逐文件显式列举**，加新文件若忘了往这里加 → 云端静默缺文件，
-  # 那两处 import 抛 ImportError 被 fail-open 吞掉 ⇒ 云端小桔「不知道自己知道」
-  # （库里存着的事实/日记回灌不进理解与聊天），且**不报错**，只能靠对账发现。
-  # 2026-10-09 实测：集合级对账（211 共有文件 0 漂移）抓出本条唯一差异。
-  "deskmate/memory/user_fact_context.py"
-  # ⚠️ 2026-11-10 记忆事实纪律（已写正文是唯一事实基准）：learned_store.py 是
-  # 来源/效力常量的单一事实源，manager.py 的 _extract_single_session 与
-  # user_fact_context.py 都在运行时 import 它（infer_source / is_non_fact_source /
-  # source_authority）。漏传 → 云端旧 learned_store 无这些符号 ⇒ ImportError 被
-  # fail-open 吞掉，「抽取不标来源、注入不分层」静默复发且不报错，只能靠对账发现。
-  "deskmate/memory/learned_store.py"
-  # ⚠️ 2026-11-10 P0 外部摄入来源归一：ingestion_pipeline._write_to_internal_memory
-  # 显式写 source=external（原先回落 live，外部新闻冒充用户口述进主块）。
-  # 本清单是逐文件显式列举，此文件此前从未在册，云端实测仍是 2026-09-06 旧版；
-  # 漏传 → 云端旧码继续把外部信息记成 live，读侧来源分层救不回来，且 fail-open
-  # 不报错，只能靠 md5 对账发现。与 learned_store.py 同批上云。
-  "deskmate/memory/ingestion_pipeline.py"
-  # ⚠️ 2026-11-10 P1-B 按书注入纪律：manager.build_system_prompt /
-  # build_full_context_for_turn 每轮 import book_scope（resolve_turn_book +
-  # MEMORY/USER 读侧过滤）。**新增 Python 文件必须进本清单**，漏传 → 云端
-  # ImportError 被 fail-open 吞掉：书隔离在云端静默失效、USER.md 旧「当前创作」
-  # 段照旧整段注入，且不报错，只能靠 md5 对账发现。
-  "deskmate/memory/book_scope.py"
-  # ⚠️ 2026-11-10 欠账对账（`7fb0b095..HEAD` 四个提交的改动文件逐个比对清单）：
-  # 以下 6 个文件本地已改、云端仍是旧版——本清单是逐文件显式列举，漏了就**静默跑旧码**
-  # （对账只扫 deskmate + coworker/server，coworker/automation 更是盲区）。
-  #   scheduler.py       让路门/调度修复（前台 turn 才让路）
-  #   context_budget.py  上下文预算 + 闲聊白名单（修误判）
-  #   semantic_search.py 语义检索
-  #   recorder.py        记忆写入来源收口（auto_tasks 旁路）
-  #   digest/engine.py   记忆写入来源收口（digest 旁路）
-  #   background.py      主动后台 tick 入口
-  "coworker/automation/scheduler.py"
-  "deskmate/memory/context_budget.py"
-  "deskmate/memory/semantic_search.py"
-  "deskmate/auto_tasks/recorder.py"
-  "deskmate/digest/engine.py"
-  "deskmate/proactivity/background.py"
-  # ⚠️ P2 情绪底色（2026-10-11）：小桔自己的连续内在情绪引擎。
-  # manager.py（L616 注入 + L2774 after-turn hook）和 tick.py（L249 衰减 + L527 注入）
-  # 均 import 它。漏传 → 云端 manager/tick 跑旧码，情绪注入因 fail-open 静默失效
-  # （小桔在云端「没有自己的天气」），且**不报错**（同 user_fact_context 漏传教训）。
-  "deskmate/growth/emotion_engine.py"
-  # 活感第4层（2026-10-13）：想法流存储模块。emotion_engine.describe_turn_context
-  # 每轮 import 它召回「最近在想的事」；reflection/worldview_reflection 写入。
-  # 漏传 → 云端 ImportError（非 fail-open 吞掉的静默失效，会直接崩注入块）→ 小桔
-  # 在云端「没有自己的想法」。务必随 emotion_engine.py 同批上云。
-  "deskmate/thought_stream.py"
-  # 活感第3层（2026-10-13）：小桔自己的声音来源。moments/companion/diary/ledger 四处兜底
-  # 与陪伴语都 import 它取「她写过的第一人称原句」；漏传 → 云端 import 崩（非 fail-open
-  # 吞掉的静默失效），小桔在云端 LLM 不可用时退回客服模板（失去真实优先）。务必随上方
-  # 四文件同批上云。
-  "deskmate/growth/her_voice.py"
-  # ⚠️ 认知访谈/验证引擎（2026-10-11 补）：interview.py（③b 深度访谈闭环）与
-  # validation_engine.py（认知 Turing test 验证）均被云端代码 import 且云端真实跑——
-  #   - proactivity/tick.py:362   `from deskmate.cognitive.interview import maybe_trigger_interview`
-  #   - proactivity/tick.py:427   `from deskmate.cognitive.validation_engine import run_validation`
-  #   - coworker/server/app.py:3762 `from deskmate.cognitive.validation_engine import run_validation`
-  # 原清单漏了这两文件 → 云端一直跑 9月/10月旧码：「永不换题」(generate_scenario 永远
-  # 取最高置信第一条+template[0])、验证答对「沉淀新认知」静默丢弃（apply_feedback 抽取失败
-  # 只告警不落）、访谈回答抽取失败静默丢弃（_absorb_response 仅 llm_not_available 才兜底）
-  # 三处 2026-10-11 修复全没生效。这正是「同步成功≠云端完整」陷阱：清单逐文件列举，
-  # 漏了就云端缺/旧且不报错（同 user_fact_context 漏传教训）。现补入，确保认知引擎
-  # 本地与云端同码（红线）。
-  "deskmate/cognitive/interview.py"
-  "deskmate/cognitive/validation_engine.py"
-  # ⚠️ 情绪态常量单一真相源（P0#1 / commit e710796）原子部署单元：deskmate/constants/ 是
-  # 新包（云端此前根本没有），emotion_profile.py / emotion_sense.py / emotion_timeline.py
-  # 已重构为 `from deskmate.constants.emotion import ...`。三者必须和**新包同批**上云——
-  # 只推任一部分，云端要么 ImportError 崩、要么继续跑重构前旧码（旧码不依赖 constants）。
-  # 这 5 个文件是集合级对账发现的**存量漂移**（非本轮改动）：云端缺 constants 包、3 个
-  # 情绪文件停留在重构前旧版。收掉才满足「本地与云端代码须完全一致」红线。本地
-  # cognitive(92)+growth(131) 全绿已验证该重构行为保持，上云即与本地真相源对齐。
-  "deskmate/constants/__init__.py"
-  "deskmate/constants/emotion.py"
-  "deskmate/cognitive/emotion_profile.py"
-  "deskmate/growth/emotion_sense.py"
-  "deskmate/growth/emotion_timeline.py"
-  # ⚠️ 2026-11-04 自主能力 ABC（A/B1/B2/C1）新增包：manager.py 顶层 import
-  # deskmate/autonomy/{delivery,attendance,goal}，漏传 ⇒ 云端 openworker-server
-  # 启动期 ImportError 被 fail-open 吞掉 = 送达/目标制静默失效（同 clock.py/weather.py 教训）。
-  # 整包 5 个文件必须同批；落点走 deskmate/* → $CLOUD_DESKMATE_ROOT/$(dirname)，自动建目录。
-  # 当前云端「停机保号」，本清单仅预置，未执行 deploy；复活时随整批同步。
-  "deskmate/autonomy/__init__.py"
-  "deskmate/autonomy/delivery.py"
-  "deskmate/autonomy/gate.py"
-  "deskmate/autonomy/attendance.py"
-  "deskmate/autonomy/goal.py"
-)
 
-# 小桔手记行为（ai_circle_column.py）：含「专属表情 [xj:id] 封闭词表」注入（2026-10-07
-# 247d4e2）。此前 deploy 清单不含 agency/behaviors/ 包，导致云端跑 10-01 整包旧码、手记
-# 无表情块。现纳入同步 → 目标 /opt/openworker/deskmate/agency/behaviors/（与 CHANNEL_MODULES
-# 同款 deskmate/* 落点 + 清 __pycache__ + md5 核对）。⚠️ 该文件改动须先 commit 进 fork/base，
-# 否则预检会拒（与清单内其它文件同一红线）。
-AGENCY_BEHAVIORS_MODULES=(
-  "deskmate/agency/behaviors/ai_circle_column.py"
-  # R9 反思层 R1（2026-10-08）：新增反思行为
-  "deskmate/agency/behaviors/reflection.py"
-  # R9/R10：世界观反思行为（也调 record_reflection）
-  "deskmate/agency/behaviors/worldview_reflection.py"
-  # R11 意图层（2026-10-08）：起心动念行为
-  "deskmate/agency/behaviors/intent_generation.py"
-  # R12 出海口后半程（2026-10-08）：意图执行器（放行后真做出来；护栏钉死）
-  "deskmate/agency/behaviors/intent_executor.py"
-  # R13 意图讨论流（2026-10-08）：start/run/finalize/cancel + 反馈分类；
-  # /v1/deskmate/agency/intent/discuss/* 端点 lazy import 本模块——漏传会让云端端点
-  # ImportError → 500（与上面同类漏传事故）。必须随行为包一起上云。
-  "deskmate/agency/behaviors/intent_discuss.py"
-  # 2026-10-10 免费优先路由（free_only）：以下 4 个自主/反思行为文件同步纳入，
-  # 否则云端跑旧码（不带 free_only）→ 本地与云端不一致（"同步成功≠云端完整"陷阱）。
-  "deskmate/agency/behaviors/ai_circle_share.py"
-  "deskmate/agency/behaviors/ai_circle_reply.py"
-  "deskmate/agency/behaviors/creative_suggest.py"
-  "deskmate/agency/behaviors/understand_observations.py"
-)
-
-# 自主层核心（engine / registry / settings）：R9 反思 + R10 教学回流 + R11 意图层 + R12 意图执行
-# 全改在这三文件。云端 openworker-server 与 xiaoju_agency_tick 经
-# /opt/openworker/deskmate/agency/ 加载；漏传 → 云端跑旧码（反思/教学/意图层/执行
-# 在云端不生效，与 P2/P1 漏传教训同类事故）。目标 /opt/openworker/deskmate/agency/。
-AGENCY_MODULES=(
-  "deskmate/agency/engine.py"
-  "deskmate/agency/registry.py"
-  "deskmate/agency/settings.py"
-  # ⚠️ 2026-11-15 补漏：cognition_store.py 是 creative_suggest（已在
-  # AGENCY_BEHAVIORS_MODULES）检索认知库的唯一依赖，本轮的相关性阈值闸就改在这里。
-  # 此前从未进清单 → 云端灵感卡仍走「一个二字重叠即入选」的旧检索，割裂照旧。
-  "deskmate/agency/cognition_store.py"
-)
-
-# 花园私密层（P2 花园 / 个人中心数据源）：maybe_bloom 性能根治（2026-10-13 新事件闸门）在此。
-# deskmate/garden 整个包相互 import（clock → flowers/season/state，flowers → state），必须整包
-# 同批上云，否则云端跑旧码 → 花园端点 ImportError 被 fail-open 吞掉 → 个人中心/全息屏在云端
-# 「取不到数」且不报错（同 user_fact_context 漏传教训，10-09 实测）。
-# ⚠️ 本清单逐文件显式列举，漏加即静默不同步（"同步成功≠云端完整"陷阱，2026-10-13 补入）。
-GARDEN_MODULES=(
-  "deskmate/garden/__init__.py"
-  "deskmate/garden/flowers.py"
-  "deskmate/garden/state.py"
-  "deskmate/garden/clock.py"
-  "deskmate/garden/season.py"
-  "deskmate/garden/storybook.py"
-)
-
-# 成长/日记/人格核心（2026-10-13 补）：发日记真回复异步落库 + 单条 GET 委托 + 「真实优先」活感 WIP。
-# 这些文件被云端 openworker-server 运行时 import：app.py 的 /v1/deskmate/moments/* 端点直接调用
-# MomentsStore.get_post（定义在 moments.py，经 diary_store.py 落地）；diary.py/persona.py 是「真实优先」
-# 活感 WIP。漏传 → 云端复活后该端点 AttributeError 崩 / 云端跑旧人格码（与 user_fact_context 同类
-# 「同步成功≠云端完整」陷阱）。务必随 app.py 同批同步，否则云端与本地代码不一致（红线）。
-GROWTH_MODULES=(
-  "deskmate/growth/moments.py"
-  "deskmate/growth/diary_store.py"
-  "deskmate/growth/diary.py"
-  "deskmate/persona.py"
-  # ⚠️ 2026-10-24 语气层（真实优先）：tone_record.py 每轮把小桔自己上一轮独白+叙事原样回灌，
-  # 由 agent.build_engine 注入 tone block 作参考（全 fail-open）。云端 openworker-server 走
-  # manager.py 构建上下文，漏传 → ImportError 被 fail-open 吞 → 语气层完全不生效（红线坑）。
-  # 随 moments 同批同步。
-  "deskmate/growth/tone_record.py"
-)
-
-# 长编小说记忆模块（2026-10-26 补）：全量对账抓出 1 处存量漂移——云端
-# /opt/openworker/deskmate/novel_memory/core.py 的 mtime 停在 2026-09-24，
-# 本地已推进到 10-24（704a5316 删除 OmniRoute 免费网关等）。它此前不在任何
-# 清单→同步脚本不传。现纳入，随主程序包上云到 /opt/openworker/deskmate/novel_memory/，
-# 落点由 3c 循环的 deskmate/* 分支自动推导。漏传→云端小说记忆跑旧码（红线不一致）。
-NOVEL_MEMORY_MODULES=(
-  "deskmate/novel_memory/core.py"
-  # ⚠️ 2026-11-08 补录：core.py:21 硬依赖 `from . import entities as _ent`。
-  # 本轮「圣经来源闸门」(is_manuscript_source / is_canon_fact /
-  # demote_discussion_confirmations / render_bible 过滤) 全落在 entities.py，
-  # 且 core.upsert_bible_from_text 会调用其中的复核函数。它长期不在清单 →
-  # 只传 core 不传 entities，云端要么跑旧码把圆桌共识当铁律，要么
-  # AttributeError 被 fail-open 吞成静默失效（与 tone_record.py 同类红线坑）。
-  "deskmate/novel_memory/entities.py"
-  # ⚠️ 2026-11-10 P3 正文证据锚点：learned_store.verify_canon_quote 运行时
-  # 延迟 import 本模块。云端没有书稿正文，缺文件会走 fail-open 降级（不会崩），
-  # 但按「本地与云端代码须完全一致」红线仍须在册，否则对账会出现集合漂移。
-  "deskmate/novel_memory/canon.py"
-)
-
-# 语气层（2026-10-24 补）：coworker/agent.py 的 build_engine 注入 tone block。
-# 云端 manager.py:23 `from ..agent import build_engine` 实测云端 Sep-23 旧码未注入 tone；
-# 它既不在传输清单也不在对账扫描（coworker/ 根目录，双重盲区）→ 本地改了云上没动。
-# 随通道组同批推送（dest_dir=$CLOUD_COWORKER_ROOT），并纳入对账 .py 扫描。
-COWORKER_ROOT_MODULES=(
-  "coworker/agent.py"
-  # ⚠️ 2026-10-28 补录：engine.py 长期「不在清单」却与云端一致（靠早期整包/手动 scp 对齐），
-  # 一改就断档。本轮审批卡对账需要 permission_required/TOOL_FINISHED 自带 tool_call_id，
-  # 漏传 → 云端仍发无 id 事件 → 前端只能按 name 粗略撤卡（历史卡残留/去重降级）。
-  "coworker/engine.py"
-  # ⚠️ 2026-10-28 补：toolresult.py（PagedToolResult）。上游 teams/{store,artifacts}.py
-  # `from ..toolresult import PagedToolResult` —— 云端缺这一个文件，整个 coworker/teams
-  # 包 import 就炸，团队功能（含 lead 的 propose_team）在云端直接不可用。
-  "coworker/toolresult.py"
-  # ⚠️ 2026-10-30 补（团队委托审批移植）：runtime_context.py 是本轮新建的 coworker/ 根目录
-  # 文件，已由 agent.py:build_engine `from .runtime_context import capture, runtime_context_tool`
-  # 顶层 import —— 云端缺它，agent 建引擎就 ImportError（被 fail-open 吞，无日志），
-  # 连带 runtime_facts 探查与 reviewer 的 WORKER ACTION CONTEXT 静默失效。
-  # 同属「coworker/ 根目录双重盲区」，随 agent.py/engine.py 同批推送。
-  "coworker/runtime_context.py"
-  # ⚠️ 2026-10-30 补：reviewer.py 在 2b1b26f0（团队委托审批移植）改过——新增
-  # `action_context` 形参 + WORKER ACTION CONTEXT 段，主编代理审批的评审上下文全靠它。
-  # 但它从未进过传输清单，且 agent.py:825 是在**函数体内** `from .reviewer import Reviewer`
-  # （导入期不报错，最隐蔽）——漏传 ⇒ 云端继续跑旧 reviewer.py，委托审批静默降级。
-  "coworker/reviewer.py"
-  # ⚠️ 2026-10-30 补（最关键）：inbox.py 是团队委托审批级联的**唯一实现处**——
-  # resolve() 的「拒绝 lead 的 allow 代理 ⇒ 原子拒绝原始 worker 调用」+ 依赖卡 supersede，
-  # 以及 add() 的 supersede-on-add，全在 2b1b26f0 改出来。它同样从未进过传输清单：
-  # 漏传 ⇒ 云端跑旧 inbox.py，主编审批 worker 请求这条链路在云端**整体静默失效**
-  # （不报错、不告警，只表现为「派下去的活又卡住」）。
-  "coworker/inbox.py"
-  # ⚠️ 2026-10-31 补：permissions.py 是 worker 车道（worker_scope / worker_shared_scopes）
-  # 的唯一实现处。它从未进过传输清单，而 manager.get_engine 是**运行期赋值**
-  # （engine.permissions.worker_scope = ...），导入期不报错、不告警 —— 漏传的后果不是崩，
-  # 是云端 worker 每写一个文件都弹审批卡，无人值守即永久卡死（团队场景最隐蔽的静默失效）。
-  "coworker/permissions.py"
-)
-# 团队底座（2026-10-28 整包对齐上游）：store/summary 等被 server/manager.py 直接 import。
-# 本次移植 TeamView 需要 summary.make_summary + store 的 set_status/分页/附件鉴权，
-# 原先本地落后上游若干迭代（store 差 506 行、tools 240 行、attachments 115 行）。
-# 目标是 /opt/openworker/coworker/teams/（下方 case 分支按 coworker/* 推子目录）。
-# 漏传任一文件 = ImportError 被 fail-open 吞 = 团队看板静默空白。
-TEAMS_MODULES=(
-  "coworker/teams/__init__.py"
-  "coworker/teams/artifacts.py"
-  "coworker/teams/attachments.py"
-  "coworker/teams/chat.py"
-  "coworker/teams/cli.py"
-  "coworker/teams/dialect.py"
-  "coworker/teams/journal.py"
-  "coworker/teams/mcp_server.py"
-  "coworker/teams/model.py"
-  "coworker/teams/proposals.py"
-  "coworker/teams/registry.py"
-  "coworker/teams/store.py"
-  "coworker/teams/summary.py"
-  "coworker/teams/tokens.py"
-  "coworker/teams/tools.py"
-)
-# coworker/ 历史漂移补推（2026-10-24 补）：扩对账到 coworker/ 后，集合级全量比对抓出 4 个
-# 本地比云端新的历史漂移（此前是对账盲区）。含 openai_provider.py 的 5d04171 high-risk 风控钩子，
-# 云端一直没生效。它们的 case 映射走 coworker/* → $CLOUD_COWORKER_ROOT + dirname（与
-# COWORKER_ROOT_MODULES 同路），落到 /opt/openworker/coworker/personas/ 与 /providers/。
-COWORKER_DRIFT_MODULES=(
-  "coworker/personas/loading.py"
-  "coworker/personas/manifest.py"
-  "coworker/providers/errors.py"
-  "coworker/providers/openai_provider.py"
-)
 # 人格文件（2026-10-24 补；2026-11-06 扩）：deskmate.md 被云端 persona loader 读取；
 # 8 位创作专家人设（含新增 brainstormer）是 Bot Mode / 圆桌共用的 builtin persona，
 # 本地改厚后必须一并上云，否则 7 段 .md 集合对账会报不一致却「只查不传」。
-# 它们是 .md，下面的 ast.parse 预检会误报，故**不进 ALL_FILES**，仅走独立 scp + md5
-# 核对（见 3c/7 段）+ 对账 .md 扫描。漏传 → 云端跑旧人格（二元硬切换未废）。
+# 它们是 .md，下面的 ast.parse 预检会误报，故**不进 ALL_FILES**，仅走 3c 段 scp
+# + 末尾对账 .md 扫描。漏传 → 云端跑旧人格。
 PERSONA_FILES=(
   "coworker/personas/builtin/deskmate.md"
   # ⚠ 2026-11-11 B 方案（萧哥「先打地基，然后按 B 执行」）：11 位写作专家由扁平
@@ -443,7 +105,7 @@ PERSONA_FILES=(
   # builtin/skills/（专家手艺漏进小桔技能池），必须走 bundle 才有物理隔离。
   # 旧的 11 个扁平路径若留在清单里，scp 会指向不存在的文件；而 .md 对账用 join
   # 只比「共有文件」，新增 bundle 文件不进清单会**静默不同步**（fail-open 同款坑）。
-  # 3c/7 段按 dirname 推导落点，多层子目录无需改传输逻辑；basename 虽同为
+  # 3c 段按 dirname 推导落点，多层子目录无需改传输逻辑；basename 虽同为
   # manifest.md / SKILL.md，但循环内 scp→cp→rm 顺序执行，不会互相覆盖。
   # 🔴 云端若仍留有旧的 11 个 <id>.md，部署时需人工确认后清理：registry 先注册
   #    扁平、再被 bundle 覆盖（语义以 bundle 为准），但留着是脏数据且会干扰排查。
@@ -469,7 +131,7 @@ PERSONA_FILES=(
   "coworker/personas/builtin/outline/skills/outline-method/SKILL.md"
   "coworker/personas/builtin/character/manifest.md"
   "coworker/personas/builtin/character/skills/character-method/SKILL.md"
-  # 主编 / 影视线 5 个 bundle（本轮未改，原样保留）。
+  # 主编 / 影视线 5 个 bundle（原样保留）。
   "coworker/personas/builtin/editor-in-chief/manifest.md"
   "coworker/personas/builtin/outline-writer/manifest.md"
   "coworker/personas/builtin/screenwriter/manifest.md"
@@ -478,205 +140,13 @@ PERSONA_FILES=(
 )
 CLOUD_PERSONA_DIR="$CLOUD_COWORKER_ROOT/personas/builtin"
 
-# 天气感知（2026-10-16 补）：weather.py 被 manager.py:649（聊天注入 weather_context）与
-# tick.py:263（apply_weather_mood 情绪通道）import——云端 openworker-server 每轮上下文与
-# 云端 agency tick 都会走到。**10-15 天气感知落地时它不在任何清单里**：集合级对账只
-# 「报告」不「传输」（manager.py 同款教训），实测云端 /opt/openworker/deskmate/perception/
-# 根本没有 weather.py ⇒ 那处 import 一直 ImportError 被 fail-open 吞掉 ⇒ 云端小桔
-# 「没有天气」且不报错。目标 /opt/openworker/deskmate/perception/。
-# ⚠️ clock.py 同批补（10-16 实测同类漏网）：manager.py 对话上下文「情绪块之后天气块
-# 之前」挂 clock_context，云端 manager.py 是新码但 clock.py 从未上云 ⇒ 注入点
-# ImportError 被 fail-open 吞 ⇒ 云端她不知道现在几点且不报错（对账「仅本地有 1」抓到的）。
-PERCEPTION_MODULES=(
-  "deskmate/perception/weather.py"
-  "deskmate/perception/clock.py"
-  # ⚠ 2026-11-11 补录：MCP 工具定义（read_chapter / list_chapters 的 docstring
-  # 与覆盖率契约在此）。它从不在任何传输清单里，但 8 段集合对账扫 deskmate/**/*.py
-  # 会抓到内容漂移 ⇒ 改了不上云就是「报告了却不传」。本轮地基改了它的工具描述，
-  # 必须与 file_reader.py 同批到云端（后者已在 EXPERT_MODULES 段）。
-  "deskmate/perception/server.py"
-)
-
-# 连接器包（2026-10-23 补）：deskmate/connectors/ 被云端运行时 import——
-# coworker/server/app.py:356 `from deskmate.connectors.xiaomi_voice import build_voice_channel`，
-# agency 行为包多处 `from deskmate.connectors.aicircle import ...`；xiaomi_voice 又
-# `from .xiaomi_speaker import ...`。原清单只字未列 → 对账抓出 xiaomi_* 两个「仅本地有」
-# （云端 config 开了语音通道就 ImportError），aicircle/__init__ 则是历史上手动传过、
-# 改了也不会再同步的暗区。整包同批上云（"同步成功≠云端完整"陷阱同类）。
-CONNECTORS_MODULES=(
-  "deskmate/connectors/__init__.py"
-  "deskmate/connectors/aicircle.py"
-  "deskmate/connectors/xiaomi_speaker.py"
-  "deskmate/connectors/xiaomi_voice.py"
-  # ⚠️ 2026-10-28 补：qq_friend.py（QQ 好友私聊 OneBot 11 / commit 108d0820）当时
-  # 忘加清单——对账「仅本地有 1」抓到。云端 app.py 已含 9 处 QQ 引用，模块缺文件时
-  # 虽被 try/except 当作没配不崩，但 QQ 功能在云端**静默不可用**。纯 stdlib 无依赖。
-  "deskmate/connectors/qq_friend.py"
-  # ⚠️ 2026-11-07 补（按需语音朗读）：deskmate/tts.py 是新增 Python 文件。
-  # 它是**桌面本地专属**（云端无扬声器，_voice_reply_module 在 Linux 直接短路，
-  # 运行时永远不会 import 它），但集合级对账会把它报成「仅本地有 1」；
-  # 且新增文件漏传是本项目反复翻车的老坑。随语音通道整包传上去，保证代码一致。
-  "deskmate/tts.py"
-)
-
-# 办公技能工具（2026-10-15 P1 原子替换+恢复副本）：office_safe_deliver.py 被
-# office-word/excel/pptx 技能的交付步经 `python -m deskmate.skills.tools.office_safe_deliver`
-# 调用；云端自主副本（xiaoju_agency_tick）经仓库 cwd 跑同一条命令，故必须随主链路同批上云，
-# 否则云端技能交付步 ImportError（"同步成功≠云端完整"陷阱，与 user_fact_context 同类漏传事故）。
-SKILLS_TOOLS_MODULES=(
-  "deskmate/skills/tools/office_safe_deliver.py"
-  # 2026-10-15 补：seed_office.py（办公技能幂等 seed / ensure_office_skills）。虽当前未被
-  # 云端运行时 import（纯 seed 脚本，对账「本地独有」告警即它），但补入可消除告警、并让云端
-  # 具备同款 seed 能力；随 office_safe_deliver.py 同批上云到 /opt/openworker/deskmate/skills/。
-  "deskmate/skills/seed_office.py"
-  # 2026-10-26 方案乙：小桔技能落盘统一改写到 Coworker 规范池。skill_store.py 实现
-  # publish_to_coworker + include_coworker 合并视图；server.py 的 skill_list 与
-  # manager.py 的 build_skill_index 改为 include_coworker=True。三文件必须随主链路
-  # 同批上云，否则云端小桔技能仍落旧目录、skill_list 看不到（与 seed_office 同类漏传）。
-  "deskmate/skills/skill_store.py"
-  "deskmate/skills/server.py"
-  "deskmate/skills/manager.py"
-  # 创作圆桌整包（2026-10-31 补）：app.py 把 deskmate.roundtable.web 挂到 /roundtable，
-  # 而 roundtable 立刻 import deskmate.creation.*（pipeline 顶层 `from . import
-  # agent_bridge`）。整包此前从未进清单 —— 云端一旦跑旧码/缺文件，挂载失败被
-  # `except: 创作圆桌挂载失败（功能不可用）` 一行 warning 吞掉：服务照常起、圆桌
-  # 悄悄不可用，正是「漏传 = 静默失效」的同款事故。整包相互 import，必须同批上云。
-  "deskmate/creation/__init__.py"
-  "deskmate/creation/agent_bridge.py"
-  "deskmate/creation/bible_feedback.py"
-  "deskmate/creation/chat_flow.py"
-  "deskmate/creation/docx_export.py"
-  "deskmate/creation/executor.py"
-  "deskmate/creation/final_review.py"
-  "deskmate/creation/global_profile.py"
-  "deskmate/creation/guard.py"
-  "deskmate/creation/novel_index.py"
-  "deskmate/creation/personas_loader.py"
-  "deskmate/creation/pipeline.py"
-  "deskmate/creation/service.py"
-  # Bot Mode 骨架（2026-11-06 补）：整包相互 import（__init__ 会 import 三个模块），
-  # 必须同批上云；漏一个就是 ImportError 被 fail-open 吞掉的静默失效。
-  "deskmate/bots/__init__.py"
-  "deskmate/bots/roster.py"
-  "deskmate/bots/rooms.py"
-  "deskmate/bots/discussion.py"
-  "deskmate/bots/reading.py"
-  "deskmate/bots/materials.py"
-  "deskmate/bots/experience.py"
-  # §17 经验层新引入的既有依赖：load_style_profile() 会读文风画像 BlobStore。
-  # 它是函数内 import 且 fail-open，漏传只会静默跳过文风段，不会报错 —— 正是
-  # 「漏传 = 静默失效」的典型，故一并列入增量白名单。
-  "deskmate/style_profile_store.py"
-  "deskmate/bots/runtime.py"
-  "deskmate/bots/web.py"
-)
-
-# 2026-11-09 集合级对账补录（本地 408 / 云端 397 个 .py，24 处内容漂移 + 11 个本地独有）。
-# 以下 17 个共有文件**从未进过任何清单** ⇒ 脚本「对账报告不一致」却「不会推」，云端长期跑旧码；
-# 末尾另有 5 个 11-09 下午「专家记忆 + 笔记本」整条线的新增/漏项，同理；
-# 另 1 个 deskmate/stt.py 是桌面本地专属模块，云端 Linux 不 import，但对账会报「仅本地有」，
-# 一并纳入让集合完全收敛（多放一个不 import 的模块无害，少放一个就是 fail-open 静默失效）。
-# ⚠ 红线：新增/漏项文件只改这里，禁止手工 scp 绕过清单（否则下次对账继续假红）。
-CLOUD_CODE_DRIFT_MODULES=(
-  "coworker/automation/models.py"
-  "coworker/automation/tools.py"
-  "coworker/conversations.py"
-  "coworker/sandbox/config.py"
-  "coworker/sandbox/macos_sandbox.py"
-  "coworker/selfwake.py"
-  "coworker/tools/ask.py"
-  "coworker/tools/files.py"
-  "deskmate/alter_ego/decision_profile.py"
-  "deskmate/alter_ego/persona.py"
-  "deskmate/cognitive/writing_advisor.py"
-  "deskmate/memory/after_action.py"
-  "deskmate/perception/file_reader.py"
-  "deskmate/persistence.py"
-  "deskmate/roundtable/personas.py"
-  "deskmate/roundtable/web.py"
-  "deskmate/tools/review.py"
-  "deskmate/stt.py"
-  # ⚠ 2026-11-09 下午「专家记忆 + 笔记本」整条线新增/漏项的 5 个文件。
-  # notebooks.py / author.py 被 coworker/catalog.py 与 coworker/agent.py 在**函数内 try/except
-  # import**：漏传不会报错，只会静默变成「笔记本工具空集 / 专家没有作者档案」——正是
-  # fail-open 静默失效。abtest.py 是同题 A/B 的依赖模块，一并收敛集合对账。
-  "deskmate/bots/notebooks.py"
-  "deskmate/bots/author.py"
-  "deskmate/bots/abtest.py"
-  "coworker/catalog.py"
-  "coworker/agents/base.py"
-  # ⚠ 2026-11-11「长文档工位」：document.py 是本轮**新增**模块，由 catalog.py 顶层
-  # import —— 漏传云端直接 ImportError，整个 catalog 起不来（不是静默降级）。
-  # risk.py 本轮新增 document_finish 的 WRITE_LOCAL 分类，漏传 ⇒ 云端把成稿动作
-  # 当纯 READ（无 path scoping / 无只读门禁）。两者必须同批推送。
-  "coworker/tools/document.py"
-  "coworker/risk.py"
-  # ⚠ 2026-11-11 部署后集合级对账抓到的**历史漂移**：11-10 commit 92a6b0e1
-  # 「稿子在哪」治本两刀给 memory_search 加了 user/learned scope 与 learned_history
-  # 检索，改的就是 deskmate/memory/server.py，但它**从未进任何清单** ⇒ 云端一直跑
-  # 旧码（不报错、静默降级＝搜不到长期记忆库）。本轮 deploy 末尾 md5 对账报
-  # 「共有文件内容不一致: 1」才定位到。依赖 user_fact_context.py 已在云端且同码。
-  "deskmate/memory/server.py"
-)
-
-# 小桔调用专家（2026-11-09 晚 / commit 26285519）：deskmate/consult.py 是本轮新建模块。
-# ⚠ 新增 Python 文件必须进清单：coworker/agent.py 在**函数体内、fail-open** 地给
-# deskmate persona 注册 consult_experts 工具 ⇒ 云端缺这个文件，服务照常启动、不报错
-# 不告警，但小桔「请专家」的工具凭空消失（同 user_fact_context / runtime_context 的
-# 静默失效老坑）。它函数内还 import coworker.{agent,permissions,events}、
-# coworker.personas.registry、deskmate.bots.reading；这些均已在云端（上轮集合对账
-# .py 411/411 全绿）且本轮未改，故不重复列入。
-EXPERT_MODULES=(
-  "deskmate/consult.py"
-)
-
-# ⚠ 2026-11-11 记忆层第二批起（12cb484b 之后的 10 个 commit）+ bot 群「半山书院」改版。
-# 这一批既有**新增模块**也有**历史漏项本轮被改动**的共有文件，两类都必须进清单：
-#   · 新增模块云端没有 ⇒ 集合对账报「仅本地有」，被生产代码 import 时直接 ImportError，
-#     而 manager.py / catalog.py 多为函数内 try/except ⇒ fail-open 静默失效；
-#   · 历史漏项（profile.py / state.py / local_extractor.py / user_profile.py）本轮改了内容，
-#     但从未在任何清单里 ⇒ 云端跑旧码，末尾 md5 对账会报「共有文件内容不一致」。
-# 判据：本轮 `git diff --name-only 12cb484b..HEAD` 的非测试 .py 全部在册。
-MEMORY_LAYER_MODULES=(
-  # 新增：三段检索权 / USER.md 归属闸 / 反思与挂锚下沉
-  "deskmate/memory/file_index.py"
-  "deskmate/memory/file_search.py"
-  "deskmate/memory/journal_log.py"
-  "deskmate/memory/session_text.py"
-  "deskmate/memory/user_preferences.py"
-  "deskmate/tools/memory_search.py"
-  "deskmate/tools/registry.py"
-  # 历史漏项，本轮改动 ⇒ 必须同批推，否则云端停留在旧码
-  "deskmate/cognitive/profile.py"
-  "deskmate/growth/state.py"
-  "deskmate/memory/local_extractor.py"
-  "deskmate/memory/user_profile.py"
-  # ⚠ 2026-11-11 复检修补录（四条致命缺陷修复批次）：同样「改了但从未在册」。
-  #   · dream.py：本轮改走 save_user_ex 闸（历史靠早期整包对齐，云端是旧码）；
-  #   · _fs_lock.py（045acc30 新增）：journal_log/after_action 顶层 import，
-  #     云端缺它 ⇒ ImportError 被 fail-open 吞 ⇒ journal 静默失效（红线坑）；
-  #   · _atomic.py：被 6 个生产模块顶层 import（diary/state/learned_store 等），
-  #     历史一直靠早期整包侥幸对齐，从未有清单兜底。
-  "deskmate/memory/dream.py"
-  "deskmate/memory/_fs_lock.py"
-  "deskmate/growth/_atomic.py"
-  # ⚠ 2026-11-15 云端全量对账抓到的两处存量漂移（均非本轮改动，但会真崩）：
-  #   · entity_link.py（f77a24ef / 11-12 B-1 新增）：file_index.py:40 顶层
-  #     `from deskmate.memory import entity_link`，云端**根本没有** ⇒ 本轮把新
-  #     file_index.py 推上去后，云端一旦 import 就 ImportError（不是静默降级）。
-  #   · local_embed.py（11fd958e / 11-11 embedding 开关）：云端停在 Sep 22 旧版，
-  #     而 semantic_search.py:42 顶层 import 它 ⇒ 两端后端开关口径不一致。
-  # 两者都必须进册；补录后立即重跑全量，使集合对账归零。
-  "deskmate/memory/entity_link.py"
-  "deskmate/memory/local_embed.py"
-)
-
 FORCE=0
 [[ "${1:-}" == "--force" ]] && FORCE=1
 
 echo "==> 仓库根: $REPO_ROOT"
 echo "==> 云端 host: $SSH_HOST"
 echo "==> 云端同步包: $CLOUD_SYNC_DIR + $CLOUD_RUNNER"
+echo "==> 主程序包自动发现: ${#MAIN_SET[@]} 个生产 .py（显式排除 ${#MAIN_EXCLUDE[@]} 个）"
 
 # ---- 0. 连通性 + 云端路径校验 ----
 if ! ssh -o ConnectTimeout=15 -o BatchMode=yes "$SSH_HOST" "test -d '$CLOUD_SYNC_DIR' && test -f '$CLOUD_RUNNER'" >/dev/null 2>&1; then
@@ -688,9 +158,10 @@ if ! ssh -o ConnectTimeout=15 -o BatchMode=yes "$SSH_HOST" "test -d '$CLOUD_SYNC
 fi
 
 # ---- 1. 必须已提交（红线：本地改动先 commit 进 fork/base）----
-# ⚠️ PERSONA_FILES（.md）故意不进 ALL_FILES：下面的语法预检用 ast.parse，对 .md 会误报。
-# 它走独立的 scp + md5 核对（见 3d/7b 段），并纳入对账 .md 扫描。
-ALL_FILES=("${LOCAL_MODULES[@]}" "$LOCAL_RUNNER" "${PROACTIVITY_MODULES[@]}" "${CHANNEL_MODULES[@]}" "${AGENCY_BEHAVIORS_MODULES[@]}" "${AGENCY_MODULES[@]}" "${GARDEN_MODULES[@]}" "${GROWTH_MODULES[@]}" "${NOVEL_MEMORY_MODULES[@]}" "${COWORKER_ROOT_MODULES[@]}" "${COWORKER_DRIFT_MODULES[@]}" "${TEAMS_MODULES[@]}" "${SKILLS_TOOLS_MODULES[@]}" "${PERCEPTION_MODULES[@]}" "${CONNECTORS_MODULES[@]}" "$LOCAL_AGENCY_TICK" "$LOCAL_DRIFT_CHECK" "${CLOUD_CODE_DRIFT_MODULES[@]}" "${EXPERT_MODULES[@]}" "${MEMORY_LAYER_MODULES[@]}")
+# ALL_FILES = 特殊目的地脚本 + MAIN_SET（自动发现的全量生产 .py）。
+# PERSONA_FILES（.md）故意不进 ALL_FILES：下面的语法预检用 ast.parse，对 .md 会误报；
+# 它们走 3c 段 scp + 末尾对账 .md 扫描。
+ALL_FILES=("${LOCAL_MODULES[@]}" "$LOCAL_RUNNER" "${MAIN_SET[@]}" "$LOCAL_AGENCY_TICK" "$LOCAL_DRIFT_CHECK")
 if [[ "$FORCE" -eq 0 ]]; then
   DIRTY=""
   for f in "${ALL_FILES[@]}"; do
@@ -710,22 +181,31 @@ if [[ "$FORCE" -eq 0 ]]; then
     printf "%b" "$DIRTY" >&2
     exit 1
   fi
-  echo "==> 预检通过：sync 模块 + runner + gc 工具 + proactivity 模块 + 通道/熔断模块 + 云端 L2 agency tick + 云端 drift 脚本均为已提交状态"
+  echo "==> 预检通过：sync 模块 + runner + gc 工具 + 主程序包全量 ${#MAIN_SET[@]} 个 .py + 云端 L2 agency tick + 云端 drift 脚本均为已提交状态"
 else
   echo "==> --force：跳过「必须已提交」校验（仅在你明确知道在做什么时用）"
 fi
 
-# ---- 2. 语法预检（本地）----
-echo "==> 本地语法预检"
-for f in "${ALL_FILES[@]}"; do
-  python3 -c "import ast,sys; ast.parse(open('$f', encoding='utf-8').read())" \
-    || { echo "✗ 语法错误: $f" >&2; exit 1; }
-done
-# AGENCY_MODULES 也过一遍语法（上面 ALL_FILES 已含，这里冗余保险）
-for f in "${AGENCY_MODULES[@]}"; do
-  python3 -c "import ast,sys; ast.parse(open('$f', encoding='utf-8').read())" \
-    || { echo "✗ 语法错误: $f" >&2; exit 1; }
-done
+# ---- 2. 语法预检（本地，批量单进程；2026-11-16 起全量 .py 一次跑完）----
+echo "==> 本地语法预检（${#ALL_FILES[@]} 个文件）"
+printf '%s\n' "${ALL_FILES[@]}" | python3 -c '
+import ast, sys
+bad = []
+for line in sys.stdin:
+    f = line.rstrip("\n")
+    if not f:
+        continue
+    try:
+        with open(f, encoding="utf-8") as fh:
+            ast.parse(fh.read())
+    except SyntaxError as e:
+        bad.append("%s: %s" % (f, e))
+    except OSError as e:
+        bad.append("%s: %s" % (f, e))
+if bad:
+    sys.stderr.write("✗ 语法错误:\n" + "\n".join(bad) + "\n")
+    sys.exit(1)
+'
 
 # ---- 3. scp 经 /tmp 中转 + sudo -u openworker cp ----
 # 注意：scp 把 /tmp 中转文件建成登录用户（ubuntu）所有，故清理用登录用户直接 rm；
@@ -764,22 +244,12 @@ ssh -o ConnectTimeout=15 "$SSH_HOST" "sudo -n -u openworker cp '/tmp/drift_deplo
 ssh -o ConnectTimeout=15 "$SSH_HOST" "rm -f '/tmp/drift_deploy_check.py'" || true
 echo "    ✓ sync_drift_check.py"
 
-# ---- 3b. 推送 proactivity 模块到云端主程序包 ----
-echo "==> 推送 proactivity 模块到云端 $CLOUD_PROACTIVITY_DIR"
-for f in "${PROACTIVITY_MODULES[@]}"; do
-  base="$(basename "$f")"
-  scp -q -o ConnectTimeout=15 "$f" "$SSH_HOST:/tmp/proactivity_deploy_$base"
-  ssh -o ConnectTimeout=15 "$SSH_HOST" "sudo chmod 644 /tmp/proactivity_deploy_$base || true"   # scp 以 ubuntu 写入，默认 0600；openworker 无读权限（实测 Permission denied）
-  ssh -o ConnectTimeout=15 "$SSH_HOST" "sudo -n -u openworker cp '/tmp/proactivity_deploy_$base' '$CLOUD_PROACTIVITY_DIR/$base'"
-  ssh -o ConnectTimeout=15 "$SSH_HOST" "rm -f '/tmp/proactivity_deploy_$base'" || true
-  # 清 proactivity 的 __pycache__，避免旧 .pyc 复用（与手动 scp 同风险）
-  ssh -o ConnectTimeout=15 "$SSH_HOST" "sudo -n -u openworker rm -rf '$CLOUD_PROACTIVITY_DIR/__pycache__'" || true
-  echo "    ✓ $base"
-done
-
-# ---- 3c. 推送通道组/ 熔断模块（本地与云端必须同码，见 CHANNEL_MODULES 注释）----
-echo "==> 推送通道组/熔断模块 + 自主行为包 + 天气感知到云端主程序包"
-for f in "${CHANNEL_MODULES[@]}" "${AGENCY_BEHAVIORS_MODULES[@]}" "${AGENCY_MODULES[@]}" "${GARDEN_MODULES[@]}" "${GROWTH_MODULES[@]}" "${NOVEL_MEMORY_MODULES[@]}" "${COWORKER_ROOT_MODULES[@]}" "${COWORKER_DRIFT_MODULES[@]}" "${TEAMS_MODULES[@]}" "${PERSONA_FILES[@]}" "${SKILLS_TOOLS_MODULES[@]}" "${PERCEPTION_MODULES[@]}" "${CONNECTORS_MODULES[@]}" "${CLOUD_CODE_DRIFT_MODULES[@]}" "${EXPERT_MODULES[@]}" "${MEMORY_LAYER_MODULES[@]}"; do
+# ---- 3c. 推送主程序包（MAIN_SET 自动发现全量）+ 人格 .md ----
+# 2026-11-16 起 proactivity / 通道熔断 / agency / garden / growth / novel_memory /
+# coworker 根目录 / teams / skills / perception / connectors / 咨询 / 记忆层等
+# 历史数组全部并入 MAIN_SET，统一走本循环镜像上传。
+echo "==> 推送主程序包 ${#MAIN_SET[@]} 个 .py + 人格 ${#PERSONA_FILES[@]} 个 .md 到云端主程序包"
+for f in "${MAIN_SET[@]}" "${PERSONA_FILES[@]}"; do
   base="$(basename "$f")"
   # 目标目录按本地相对路径推（deskmate/xxx.py → $CLOUD_DESKMATE_ROOT/xxx.py；
   # coworker/xxx.py → $CLOUD_COWORKER_ROOT/xxx.py），必要时建目录
@@ -802,7 +272,7 @@ done
 echo "==> 清云端 __pycache__"
 ssh -o ConnectTimeout=15 "$SSH_HOST" "sudo -n -u openworker rm -rf '$CLOUD_SYNC_DIR/__pycache__' && echo '    ✓ cleared'"
 
-# ---- 5. 摘要（md5 对齐核对）----
+# ---- 5. 摘要（md5 对齐核对：特殊目的地文件）----
 echo "==> 对齐核对（本地 vs 云端 md5）"
 for f in "${LOCAL_MODULES[@]}"; do
   base="$(basename "$f")"
@@ -848,23 +318,9 @@ else
   exit 1
 fi
 
-# ---- 6. proactivity 模块对齐核对 ----
-echo "==> proactivity 模块对齐核对"
-for f in "${PROACTIVITY_MODULES[@]}"; do
-  base="$(basename "$f")"
-  local_md5="$(md5 -q "$f")"
-  cloud_md5="$(ssh -o ConnectTimeout=15 "$SSH_HOST" "sudo -n -u openworker md5sum '$CLOUD_PROACTIVITY_DIR/$base' 2>/dev/null | awk '{print \$1}'")"
-  if [[ "$local_md5" == "$cloud_md5" ]]; then
-    echo "    ✓ $base  $local_md5"
-  else
-    echo "    ✗ $base  本地=$local_md5 云端=$cloud_md5  (不一致!)" >&2
-    exit 1
-  fi
-done
-
-# ---- 7. 通道组/熔断模块对齐核对 ----
-echo "==> 通道组/熔断模块 + 自主行为包 + 天气感知对齐核对"
-for f in "${CHANNEL_MODULES[@]}" "${AGENCY_BEHAVIORS_MODULES[@]}" "${AGENCY_MODULES[@]}" "${GARDEN_MODULES[@]}" "${GROWTH_MODULES[@]}" "${NOVEL_MEMORY_MODULES[@]}" "${COWORKER_ROOT_MODULES[@]}" "${COWORKER_DRIFT_MODULES[@]}" "${TEAMS_MODULES[@]}" "${PERSONA_FILES[@]}" "${SKILLS_TOOLS_MODULES[@]}" "${PERCEPTION_MODULES[@]}" "${CONNECTORS_MODULES[@]}" "${CLOUD_CODE_DRIFT_MODULES[@]}" "${EXPERT_MODULES[@]}" "${MEMORY_LAYER_MODULES[@]}"; do
+# ---- 7. 主程序包 + 人格 .md 对齐核对 ----
+echo "==> 主程序包 ${#MAIN_SET[@]} 个 .py + 人格 ${#PERSONA_FILES[@]} 个 .md 对齐核对"
+for f in "${MAIN_SET[@]}" "${PERSONA_FILES[@]}"; do
   base="$(basename "$f")"
   case "$f" in
     deskmate/*)   dest_dir="$CLOUD_DESKMATE_ROOT/$(dirname "${f#deskmate/}")" ;;
@@ -874,36 +330,40 @@ for f in "${CHANNEL_MODULES[@]}" "${AGENCY_BEHAVIORS_MODULES[@]}" "${AGENCY_MODU
   local_md5="$(md5 -q "$f")"
   cloud_md5="$(ssh -o ConnectTimeout=15 "$SSH_HOST" "sudo -n -u openworker md5sum '$dest_dir/$base' 2>/dev/null | awk '{print \$1}'")"
   if [[ "$local_md5" == "$cloud_md5" ]]; then
-    echo "    ✓ $base  $local_md5"
+    echo "    ✓ $f  $local_md5"
   else
-    echo "    ✗ $base  本地=$local_md5 云端=$cloud_md5  (不一致!)" >&2
+    echo "    ✗ $f  本地=$local_md5 云端=$cloud_md5  (不一致!)" >&2
     exit 1
   fi
 done
 
 echo ""
-echo "✅ 本地→云端代码已对齐（3 个 sync 文件 + runner + gc 工具 + 6 个 proactivity + 5 个通道/熔断模块 + 3 个 agency 核心 + 5 个 agency 行为 + 天气感知 + 云端 L2 agency tick + 云端 drift 脚本 + 语气层 agent.py/tone_record.py + 人格 deskmate.md）。"
+echo "✅ 本地→云端代码已对齐（3 个 sync 文件 + runner + gc 工具 + 主程序包全量 ${#MAIN_SET[@]} 个 .py + 人格 ${#PERSONA_FILES[@]} 个 .md + 云端 L2 agency tick + 云端 drift 脚本）。"
 
-# ---- 对账（2026-10-09 加）：本清单是逐文件显式列举，漏加即静默不同步 ----
-# 起因：user_fact_context.py（c06ab7e）被 manager.py/understanding.py import 却不在
-# 清单里，云端缺文件 → ImportError 被 fail-open 吞掉，「小桔不知道她自己知道」且**不报错**。
-# 同步成功≠云端完整；必须做集合级对账（md5 全量比对），别只信脚本自称。
+# ---- 对账：全量集合级对账（2026-10-09 加；2026-11-16 起判红升级）----
+# 起因：旧清单逐文件显式列举，漏加即静默不同步（user_fact_context.py 教训：
+# 云端缺文件 → ImportError 被 fail-open 吞掉，「小桔不知道她自己知道」且不报错）。
+# 2026-11-16 治本后：MAIN_SET 自动发现全量，「仅本地有」不再可能是「忘加清单」，
+# 只可能是传输失败或排除表未同步口径 ⇒ 三项差异**全部判红**，脚本以非零码退出。
 echo ""
 echo "==> 对账：本地 vs 云端 md5 全量比对"
+RECONCILE_FAILED=0
 _reconcile() {
   local tmp_l tmp_c
   tmp_l="$(mktemp)"; tmp_c="$(mktemp)"
-  # ⚠️ 对账范围 = **生产代码**（2026-10-13 修）。原先把 `test_*.py` 也算进来，
-  # 而云端只跑 openworker-server + 同步窗口、**从不跑测试** ⇒ 这5 个测试文件永远
-  # 「不一致」，把真漏项埋进噪音里（本次即4 真差异 + 5 测试噪音混在一起）。
-  # 判据：只有**会被云端 import 的模块**才可能造成静默失效，测试文件不属于此类。
-  # 测试文件差异仍会打印（供人工知悉），但不参与红绿判定。
+  # ⚠️ 对账范围 = **生产代码**。云端只跑 openworker-server + 同步窗口、**从不跑测试**，
+  # 故 test_*.py 不参与红绿判定（仍会打印差异供人工知悉）。
   local XTRA='-not -name test_*.py'
   # 本地：deskmate/coworker 全量 .py（抓「本地有、云端没有」的漏项）。
-  # ⚠️ 2026-10-24 扩到 coworker/（原只扫 coworker/server）：coworker/ 根目录与
-  # personas/providers/ 等此前是对账盲区，agent.py/deskmate.md 等漂移抓不到。
   ( cd "$REPO_ROOT" && find deskmate coworker -name '*.py' $XTRA -not -path '*__pycache__*' -type f \
       | while read -r f; do printf '%s  %s\n' "$(md5 -q "$f")" "$f"; done ) | sort > "$tmp_l"
+  # 显式排除表同口径过滤：MAIN_EXCLUDE 里的文件「本地有、云端没有」属预期，不报红。
+  if [[ ${#MAIN_EXCLUDE[@]} -gt 0 ]]; then
+    for x in "${MAIN_EXCLUDE[@]}"; do
+      grep -vF "  $x" "$tmp_l" > "$tmp_l.f" || true
+      mv "$tmp_l.f" "$tmp_l"
+    done
+  fi
   ssh "$SSH_HOST" "sudo find /opt/openworker/deskmate /opt/openworker/coworker -name '*.py' $XTRA -not -path '*__pycache__*' -type f 2>/dev/null | while read -r f; do printf '%s  %s\n' \"\$(sudo md5sum \"\$f\" 2>/dev/null | cut -d' ' -f1)\" \"\${f#/opt/openworker/}\"; done" 2>/dev/null | grep -vE "Warning|setlocale" | sort > "$tmp_c"
   local only_l only_c diff
   only_l="$(comm -23 <(cut -d' ' -f3- "$tmp_l" | sort) <(cut -d' ' -f3- "$tmp_c" | sort) | wc -l | tr -d ' ')"
@@ -911,18 +371,16 @@ _reconcile() {
   diff="$(join -j 2 -o 0,1.1,2.1 <(sort -k2 "$tmp_l") <(sort -k2 "$tmp_c") 2>/dev/null \
           | awk '$2 != $3' | wc -l | tr -d ' ')"
   echo "   共有文件内容不一致: $diff"
-  echo "   仅本地有（云端缺，可能静默失效）: $only_l"
+  echo "   仅本地有（云端缺）: $only_l"
   echo "   仅云端有（云端有旧漂移）: $only_c"
   # 测试文件差异：云端不跑测试，故仅提示不判红（列出来供人工知悉）。
   local _t
   _t="$( { comm -3 <(cd "$REPO_ROOT" && find deskmate coworker -name 'test_*.py' -not -path '*__pycache__*' -type f | sort) \
              <(ssh "$SSH_HOST" "sudo find /opt/openworker/deskmate /opt/openworker/coworker -name 'test_*.py' -not -path '*__pycache__*' -type f 2>/dev/null | sed 's|^|/opt/openworker/|'" 2>/dev/null | grep -vE "Warning|setlocale" | sed 's|^/opt/openworker/||' | sort) ; } 2>/dev/null | wc -l | tr -d ' ')"
   [ "$_t" != "0" ] && echo "   （提示）测试文件差异 $_t 处 —— 云端不跑测试，不影响运行"
-  if [ "$diff" != "0" ] || [ "$only_c" != "0" ]; then
-    echo "   ❌ 对账未通过——上面两项非 0 即云端与本地不一致，请逐条查（红线：须完全一致）"
-  elif [ "$only_l" != "0" ]; then
-    echo "   ⚠️ 有本地独有文件未上云。若它们被云端代码 import，跑到那处会 ImportError"
-    echo "      被 fail-open 吞掉（功能静默失效且不报错）。须补进本脚本清单后重跑。"
+  if [ "$diff" != "0" ] || [ "$only_c" != "0" ] || [ "$only_l" != "0" ]; then
+    echo "   ❌ 对账未通过（三项全判红：清单已全量自动发现，任何非 0 都是传输缺口/云端旧漂移/排除表口径不一致，请逐条查。红线：须完全一致）"
+    RECONCILE_FAILED=1
   else
     echo "   ✅ 对账通过：云端与本地完全一致"
   fi
@@ -936,6 +394,7 @@ _reconcile() {
   md_diff="$(join -j 2 -o 0,1.1,2.1 <(sort -k2 "$tl_md") <(sort -k2 "$tc_md") 2>/dev/null | awk '$2 != $3' | wc -l | tr -d ' ')"
   if [ "$md_diff" != "0" ]; then
     echo "   ❌ 人格 .md 对账未通过（deskmate.md 等与云端不一致）: $md_diff"
+    RECONCILE_FAILED=1
   else
     echo "   ✅ 人格 .md 对账通过"
   fi
@@ -948,3 +407,8 @@ echo "     sudo systemctl restart openworker-server"
 echo "   ⚠️ 通道/熔断模块若与云端不一致，会出现「本地熔断了、云端还在撞」"
 echo "      ——与记忆里「48 条身份分裂」同类事故，故务必跑本脚本对齐。"
 echo "   如需立即生效，可手动跑一次：sudo /usr/local/sbin/xiaoju-sync-window.sh"
+
+if [[ "$RECONCILE_FAILED" != "0" ]]; then
+  echo "✗ 对账存在红项，本次部署判失败（红线：云端与本地须完全一致）" >&2
+  exit 1
+fi
