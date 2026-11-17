@@ -100,6 +100,54 @@ _CHAPTER_LINE = re.compile(
 # 从一句话里抽章节标签（"读一下第五到第七章" / "第十章、第十一章"）。
 _CH_LABEL_IN_TEXT = re.compile(r"第[零一二三四五六七八九十百千两\d]{1,8}[章回]")
 
+# 🔴 2026-11-17：区间 / 并列写法的解析（"第七到第九章" / "第7-9章" / "第七、八、九章"）。
+# 旧实现只有上面那条 `第X章` 正则，而区间写法里**只有最后一个序号跟着「章」**，
+# 于是 "第七到第九章" 只匹配到第九章 —— 文档明写支持 "第五到第七章"，实际只返回一章，
+# 模型以为读了三章、拿到的是一章，只能反复重读整本。这是专家读不完书的直接原因之一。
+_CH_NUM_CHARS = "零一二三四五六七八九十百千两"
+_CN_DIGITS = {
+    "零": 0, "一": 1, "二": 2, "两": 2, "三": 3, "四": 4,
+    "五": 5, "六": 6, "七": 7, "八": 8, "九": 9,
+}
+#: 序号后必须紧跟「章/回」、并列符、区间符或结尾 —— 否则 "第一人称" 这类会误命中。
+_CH_NUM_LOOSE = re.compile(
+    rf"第?([{_CH_NUM_CHARS}\d]{{1,8}})(?=[章回、，,~～至到\-—–]|$)"
+)
+_RANGE_SEPS = ("~", "～", "至", "到", "-", "—", "–")
+_LIST_SEPS = ("、", "，", ",")
+
+
+def _cn_to_int(raw: str) -> Optional[int]:
+    """「九」→9、「十一」→11、「二十一」→21、「7」→7；解析不了返回 None。"""
+    s = str(raw or "").strip()
+    if not s:
+        return None
+    if s.isdigit():
+        return int(s)
+    section = 0
+    num = 0
+    for ch in s:
+        if ch in _CN_DIGITS:
+            num = _CN_DIGITS[ch]
+        elif ch == "十":
+            section += (num or 1) * 10
+            num = 0
+        elif ch == "百":
+            section += (num or 1) * 100
+            num = 0
+        elif ch == "千":
+            section += (num or 1) * 1000
+            num = 0
+        else:
+            return None
+    return section + num
+
+
+def _label_to_int(chapter: "Chapter") -> Optional[int]:
+    """Chapter.label("第九章") → 9；"楔子"/"全文" → None。"""
+    m = re.match(rf"第([{_CH_NUM_CHARS}\d]{{1,8}})[章回]", str(chapter.label or ""))
+    return _cn_to_int(m.group(1)) if m else None
+
 
 @dataclass(frozen=True)
 class Chapter:
@@ -195,10 +243,33 @@ class Manuscript:
 
     # -------------------------------------------------------------- 选章
     def find_chapters(self, needle: str) -> list[Chapter]:
-        """按章节标签 / 章节标题 / 区间（"第五到第七章"）定位章节。"""
+        """按章节标签 / 章节标题 / 区间（"第五到第七章"）定位章节。
+
+        区间与并列写法先走序号解析（2026-11-17 修）：模型实际会写
+        "第七到第九章"、"第7-9章"、"第七、八、九章"，这几种里只有最后一个
+        序号跟着「章」字，旧的 `第X章` 正则只认出一个，于是"点三章只给一章"。
+        """
         s = str(needle or "").strip()
         if not s:
             return []
+
+        # ① 区间 / 并列：至少两个序号才判定，单个序号交给下面的原逻辑（含标题匹配）。
+        nums = [n for n in (_cn_to_int(m) for m in _CH_NUM_LOOSE.findall(s)) if n is not None]
+        if len(nums) >= 2:
+            if any(sep in s for sep in _RANGE_SEPS):
+                lo, hi = min(nums), max(nums)
+                picked = [
+                    c for c in self.chapters
+                    if (n := _label_to_int(c)) is not None and lo <= n <= hi
+                ]
+            elif any(sep in s for sep in _LIST_SEPS):
+                want = set(nums)
+                picked = [c for c in self.chapters if _label_to_int(c) in want]
+            else:
+                picked = []
+            if picked:
+                return picked
+
         labels = _CH_LABEL_IN_TEXT.findall(s)
         if labels:
             want: list[Chapter] = []

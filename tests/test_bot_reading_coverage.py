@@ -167,3 +167,50 @@ def test_real_manuscript_reaches_writing_frontier() -> None:
     assert "第十一章" in pack.index, "索引必须列出第十一章"
     assert "本次未加载" in pack.index, "10.16 万字 > 80k 预算，必须如实标出缺口"
     assert "已写正文已加载" not in pack.index
+
+
+# ----------------------------------------------------------------- 区间写法
+# 2026-11-17 实盘事故：人物专家 900 秒没交出一个字。
+#
+# 它按工具文档写了 `chapter="第七到第九章"`——**只有末位带「章」字**。旧正则
+# `第[...]+[章回]` 于是只认出一个标签，find_chapters 返回 1 章：点三章给一章。
+# 专家以为读了三章、实际只拿到第九章，只能反复重读整本来找中间内容，prompt 从
+# 24k 涨到 199k，15 分钟全花在读上。
+#
+# 🔴 教训：测试必须用**模型的真实写法**。历史用例写的是「第5章到第7章」（每位都带
+# 「章」），恰好绕过这个 bug，所以 11-16 那轮「多章均分预算」是纸面上绿、实盘全红。
+
+@pytest.mark.parametrize(
+    "needle",
+    [
+        "第七到第九章",      # 模型最常写：只有末位带「章」
+        "第五到第七章",
+        "第7-9章",          # 阿拉伯数字 + 连字符
+        "第7到9章",
+        "第七、第八、第九章",  # 顿号并列
+        "第七、八、九章",     # 顿号并列的省略式
+        "第七～第九章",       # 波浪线
+        "第五至第九章",
+    ],
+)
+def test_chapter_range_accepts_real_model_phrasings(tmp_path: Path, needle: str) -> None:
+    root = _make_book(tmp_path, chapters=12, per_chapter=800)
+    shelf = _shelf(root, max_chars=30_000)
+    manuscript = shelf.manuscript("测试书")
+    picked = [c.label for c in manuscript.find_chapters(needle)]
+    assert picked, f"{needle!r} 一节都没命中"
+    # 区间/并列必须真的给出中间那些章，不是只给末位
+    assert len(picked) >= 3, f"{needle!r} 只命中 {picked}——又退回「点三章给一章」了"
+
+    out = shelf.read("测试书", chapter=needle, max_chars=30_000)
+    for label in picked:
+        assert label in out, f"{label} 没进正文"
+
+
+def test_chapter_range_does_not_hit_inline_prose(tmp_path: Path) -> None:
+    """宽松序号解析不能把散文误当章节：「第一人称视角」不是第一章。"""
+    root = _make_book(tmp_path, chapters=12, per_chapter=800)
+    manuscript = _shelf(root, max_chars=30_000).manuscript("测试书")
+    assert manuscript.find_chapters("第一人称视角") == []
+    # 越界序号（书只有 12 章）也不许凭空造章
+    assert manuscript.find_chapters("第十七到第十九章") == []
