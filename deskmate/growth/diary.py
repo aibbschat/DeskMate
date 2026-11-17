@@ -217,8 +217,23 @@ _ENTRY_HEAD_RE = re.compile(r"^##\s", re.MULTILINE)
 # 别人头上（这是早期设计的结构性缺陷，2026-09-03 起根治）。
 _EID_RE = re.compile(r"<!--xj:([0-9A-Za-z-]+)-->")
 
-# 这一则里「说明是几则/几条素材」的行——不是内容，别喂给情绪层
-_BADGE_LINE_RE = re.compile(r"^-\s*(默契|信任|心情|Lv\.|累计对话|今日徽章)")
+# 这一则里「说明是几则/几条素材」的行——不是内容，别喂给情绪层。
+# 2026-11-17 复查：旧规则只认「今日徽章」，渲染器实际写的是「今天解锁徽章」
+# 「我更懂你了」；来源标记也不对，于是真实日记里 9/1/9 则仍把它们喂了进去。
+_BADGE_LINE_RE = re.compile(
+    r"^-\s*(默契|信任|心情|Lv\.|累计对话|今日徽章|今天解锁徽章|我更懂你了)"
+)
+# 落款行（``> 累计对话 N 轮。这份日记由今日真实信号生成…``）——同样不是内容。
+_FOOTER_LINE_RE = re.compile(r"^>\s*(累计对话|这份日记由今日真实信号生成)")
+
+# 段落式的纯新闻转载没有 ``- `` 前缀，靠来源标记识别；有这些标记的行不算
+# 她自己的话（2026-11-17：只认列表项时，旧版段落式新闻会漏进情绪层）。
+_NEWS_LINE_RE = re.compile(
+    r"(_[\u4e00-\u9fa5]{2,10}(新闻|网|频道)|"
+    r"【[^】]{0,12}(要闻|早报|观察|脉动|天下)】|"
+    r"（外部[^）]*）|https?://|"
+    r"\d{4}[-年]\d{1,2}[-月]\d{1,2}日?\s+\d{1,2}:\d{2})"
+)
 
 # 传给情绪引擎的正文上限。2026-11-17 实测 645 则：p50=275 字、p90=410、
 # 最长 1,550。截太短会把结尾她的反应切掉（反应通常写在后面）。
@@ -238,7 +253,7 @@ _DIARY_ECHO_NOTE = (
 )
 
 
-def _entry_plain_text(body: str, limit: int = _DIARY_ECHO_MAX) -> str:
+def _entry_plain_text(body: str, limit: int | None = _DIARY_ECHO_MAX) -> str:
     """把渲染好的一则日记剥成「她说了什么」，供情绪引擎读。
 
     2026-11-17 之前这里传的是 ``f"写下了今天第 {seq} 则日记（{n} 条素材）"``
@@ -248,8 +263,11 @@ def _entry_plain_text(body: str, limit: int = _DIARY_ECHO_MAX) -> str:
     却被降维成「我做完了一件事」。判据见
     ``reports/2026-11-16_小桔_情感层设计.md`` §17.3。
 
-    剥掉的是 markdown 结构（标题行、徽章行），保留的是正文原字——
+    剥掉的是 markdown 结构与版式（标题行、徽章行、落款），保留的是正文原字——
     这里绝不改写、不概括，概括是 LLM 的事，不是渲染层的事。
+
+    ``limit=None`` 表示不裁剪：统计「她自己写了多少字」必须在完整正文上算，
+    否则裁剪尾巴会切断列表项的 ``- `` 前缀，把新闻转载算成她自己的话。
     """
     out: list[str] = []
     for ln in str(body or "").splitlines():
@@ -258,29 +276,35 @@ def _entry_plain_text(body: str, limit: int = _DIARY_ECHO_MAX) -> str:
             continue
         if s.startswith("#"):          # 文件标题 / 则标题（## HH:MM <!--eid-->）
             continue
-        if _BADGE_LINE_RE.match(s):    # 默契/信任/心情/徽章落款
+        if _BADGE_LINE_RE.match(s):    # 默契/信任/心情/徽章
+            continue
+        if _FOOTER_LINE_RE.match(s):   # > 累计对话 N 轮 / 生成说明
             continue
         out.append(s)
     text = "\n".join(out)
-    if len(text) <= limit:
+    if limit is None or len(text) <= limit:
         return text
     # 超限保头保尾：头是「发生了什么」，尾是「她当时的反应」
     return f"{text[: limit - 180]}\n……\n{text[-160:]}"
 
 
 def _own_words_len(text: str) -> int:
-    """她自己写的话有多少字（不吃列表项）。
+    """她自己写的话有多少字（不吃列表项、不吃新闻来源行）。
 
     日记里有两种「一则」：一种是她写的（有心事、有反应），另一种是纯外部
     信息转载——「今天我留意到世界上的一些新动静，记下来：」加七八条新闻，
     里面没有她一句话。后者按 §17 的判据不该进情感层：她没反应，就不算触动；
     喂进去只会得到空宾语，还每天白烧七八次调用。
     """
-    return sum(
-        len(ln.strip())
-        for ln in str(text or "").splitlines()
-        if ln.strip() and not ln.strip().startswith(("- ", "* "))
-    )
+    total = 0
+    for ln in str(text or "").splitlines():
+        s = ln.strip()
+        if not s or s.startswith(("- ", "* ")):
+            continue
+        if _NEWS_LINE_RE.search(s):    # 段落式转载：来源/日期/外链
+            continue
+        total += len(s)
+    return total
 
 
 def _gen_eid(date: str, at: str) -> str:
@@ -724,8 +748,11 @@ class DiaryWriter:
         # 旧版传计数串，情绪层只能判出「我把事做完了」，7455 条情绪日志里
         # 没有一条来自日记正文——「有情绪没情感」的第一因就在这一行。
         # fail-open：引擎异常/LLM 不可用绝不阻断日记落盘（日记已写完，此处只是回声）。
+        # 门槛按**完整正文**算：先裁剪再数会把列表项的 "- " 前缀切掉，
+        # 160 字新闻尾巴被当成她自己的话（2026-11-17 实测 5 则漏网）。
+        full = _entry_plain_text(body, limit=None)
         echo = _entry_plain_text(body)
-        if echo and _own_words_len(echo) >= _DIARY_ECHO_MIN_OWN:
+        if echo and _own_words_len(full) >= _DIARY_ECHO_MIN_OWN:
             try:
                 from deskmate.growth.emotion_engine import EmotionEngine
                 EmotionEngine(base_dir=self.base).update_after_experience(

@@ -68,6 +68,9 @@ def _pool_map():
         # 「人/自己」标记会放过这两句。
         (lambda d: d.update(real_link="我自己写得挺顺"), "work_no_real_link"),
         (lambda d: d.update(real_link="这段写得人物很活"), "work_no_real_link"),
+        # 2026-11-17 复审点名的两句：靠「真实」「身边」白过
+        (lambda d: d.update(real_link="这段写得很真实"), "work_no_real_link"),
+        (lambda d: d.update(real_link="身边的人物都很鲜活"), "work_no_real_link"),
         (
             lambda d: d.update(
                 stance="第九章那个雨夜我读了三遍，像他改稿时不肯松手的样子。",
@@ -103,6 +106,39 @@ def test_validate_accepts_good_item():
     assert clean["confidence"] == 0.5
     assert clean["work_anchor"] == {"level": "chapter", "what": "第七章"}
     assert clean["real_link"] == "像他改稿时不肯松手的样子"
+
+
+@pytest.mark.parametrize(
+    "link",
+    [
+        "像他改稿时不肯松手的样子",
+        "让我想到萧盛跟人说起改编时那种硬扛",
+        "当年交稿时也这样",
+        "想到他",
+        "现实生活里他就是这样",
+    ],
+)
+def test_has_real_link_accepts_concrete(link):
+    from deskmate.agency.behaviors.feeling_reflection import _has_real_link
+
+    assert _has_real_link(link), link
+
+
+@pytest.mark.parametrize(
+    "link",
+    [
+        "交付流程对得上",
+        "我自己写得挺顺",
+        "这段写得人物很活",
+        "这段写得很真实",
+        "身边的人物都很鲜活",
+        "他写得很好",
+    ],
+)
+def test_has_real_link_rejects_text_only(link):
+    from deskmate.agency.behaviors.feeling_reflection import _has_real_link
+
+    assert not _has_real_link(link), link
 
 
 def test_parse_items_tolerates_fence_and_garbage():

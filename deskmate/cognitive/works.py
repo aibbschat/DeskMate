@@ -38,6 +38,9 @@ logger = logging.getLogger(__name__)
 #: 默认书架；与 bots/reading.py 的 _DEFAULT_BOOKS_ROOT 一致。
 DEFAULT_BOOKS_ROOT = Path("~/Documents/已出版")
 
+#: 上次从书架重扫的时间戳（json_blobs），用来把扫描限在一周一次。
+_SEED_TS_KEY = "works_seed_ts"
+
 #: 目录名编号前缀（"16.夜不收" → "夜不收"）。
 _NUM_PREFIX = re.compile(r"^\d+[.\-_、\s]+")
 
@@ -134,6 +137,16 @@ class WorksStore:
         conn.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS ux_works_title ON works(title)"
         )
+        # seed 时间戳借道已有的 json_blobs（同一个库），不新建表、不改架构。
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS json_blobs (
+                key        TEXT PRIMARY KEY,
+                data       TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
 
     # ------------------------------------------------------------------
     # 写
@@ -211,35 +224,58 @@ class WorksStore:
         return count
 
     def ensure_seeded(self, max_age_days: int = 7) -> bool:
-        """按需补 seed：表为空，或距上次从书架登记已超过 ``max_age_days``。
+        """按需补 seed：距上次重扫超过 ``max_age_days``（默认 7 天）才扫描。
 
-        2026-11-17 复查修正：初版只在「表为空」时 seed，等于第一次 seed 之后
-        永远不再扫描——新书出版、改名、新增短写别名都进不来，周更钩子形同
-        虚设。改成按 ``source='shelf'`` 的最近 ``updated_at`` 判断是否过期，
+        2026-11-17 复查修正两处：
+        1. 初版只在「表为空」时 seed，第一次之后永远不再扫描——新书、改名、
+           新增短写别名都进不来，周更钩子形同虚设；
+        2. 第二版按 ``source='shelf'`` 的最近 ``updated_at`` 判断，但云端没有
+           书架时这个集合永远为空，等于每 tick 全量扫 ``learned_history``
+           并逐条开连接。现在用 ``json_blobs[works_seed_ts]`` 记「上次重扫」，
+           与有没有书架、有没有 shelf 行无关，扫描频率被真正限在一周一次。
+
         幂等、失败 fail-open。返回本次是否真的重扫。
         """
+        now = datetime.now()
         try:
             with self._connect() as conn:
                 self._ensure_schema(conn)
-                n = conn.execute("SELECT COUNT(*) FROM works").fetchone()[0]
                 row = conn.execute(
-                    "SELECT MAX(updated_at) FROM works WHERE source='shelf'"
+                    "SELECT data FROM json_blobs WHERE key=?", (_SEED_TS_KEY,)
                 ).fetchone()
-            last = str((row[0] if row else "") or "")
-            stale = True
+            last = str((row["data"] if row else "") or "")
             if last:
                 try:
-                    age = datetime.now() - datetime.fromisoformat(last)
-                    stale = age.total_seconds() >= max_age_days * 86400
+                    age = now - datetime.fromisoformat(last)
+                    if age.total_seconds() < max_age_days * 86400:
+                        return False
                 except ValueError:
-                    stale = True
-            if not n or stale:
-                self.seed_from_shelf()
-                return True
-            return False
+                    pass
+        except Exception as e:  # noqa: BLE001
+            logger.warning("works.ensure_seeded 读时间戳失败（继续重扫）: %s", e)
+
+        try:
+            return self._seed_and_mark(now)
         except Exception as e:  # noqa: BLE001
             logger.warning("works.ensure_seeded 失败（忽略）: %s", e)
             return False
+
+    def _seed_and_mark(self, now: datetime) -> bool:
+        """扫一次书架并记下时间戳；seed 内部已 fail-open，这里只保证记账。"""
+        try:
+            self.seed_from_shelf()
+        finally:
+            ts = now.isoformat(timespec="seconds")
+            with self._connect() as conn:
+                self._ensure_schema(conn)
+                conn.execute(
+                    "INSERT INTO json_blobs(key, data, updated_at) VALUES(?,?,?) "
+                    "ON CONFLICT(key) DO UPDATE SET data=excluded.data, "
+                    "updated_at=excluded.updated_at",
+                    (_SEED_TS_KEY, ts, ts),
+                )
+                conn.commit()
+        return True
 
     # ------------------------------------------------------------------
     # 读

@@ -12,7 +12,6 @@
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest import mock
@@ -53,7 +52,13 @@ def test_append_entry_feeds_entry_text_not_counter():
                 captured["text"] = text
                 captured["note"] = note
 
-        with mock.patch.dict(os.environ, {"DESKMATE_DIARY_NARRATE": "0"}):
+        body = (
+            "## 09:10 <!--xj:2026-11-17-0910-aaaaaa-->\n"
+            "今天上午开了圆桌讨论，争到第三轮才把第三章的节奏定下来。"
+            "他让了一步，我也认了自己的固执，这事算是过去了。\n"
+            "- 默契 100.0/100 · 信任 0.5 · 心情 80.0 · Lv.12\n"
+        )
+        with mock.patch.object(writer, "_render_entry", return_value=body):
             with mock.patch(
                 "deskmate.growth.emotion_engine.EmotionEngine", FakeEngine
             ):
@@ -100,6 +105,82 @@ def test_clip_experience_keeps_reaction_at_tail():
     out = _clip_experience("事" * 700 + "最后她说有点刺我")
     assert out.endswith("最后她说有点刺我")
     assert len(out) < 650
+
+
+def test_entry_plain_text_strips_real_renderer_scaffold():
+    """渲染器实际写的徽章/落款都要剥掉（2026-11-17 复审：旧规则没认出来）。"""
+    body = (
+        "## 21:40 <!--xj:2026-11-17-2140-abcdef-->\n"
+        "今天我们一起做了些事，我都记在心里。\n"
+        "- 今天解锁徽章：「第一章·开张」。\n"
+        "- 我更懂你了：你在「改稿」上最投入。\n"
+        "- 默契 100.0/100 · 信任 0.5 · 心情 80.0 · Lv.12\n"
+        "> 累计对话 206 轮。这份日记由今日真实信号生成，没有的我不编。\n"
+    )
+    out = _entry_plain_text(body)
+    for junk in ("今天解锁徽章", "我更懂你了", "默契", "累计对话", "由今日真实信号生成"):
+        assert junk not in out, (junk, out)
+    assert "今天我们一起做了些事" in out
+
+
+def test_template_only_entry_is_skipped():
+    """只剩兜底模板的日记不算她被触动（真实两则 18 字曾靠落款过门槛）。"""
+    with TemporaryDirectory() as tmp:
+        base = Path(tmp)
+        writer = _make_writer(base)
+        called: dict = {}
+        body = (
+            "## 09:45 <!--xj:2026-09-02-0945-aaaaaa-->\n"
+            "今天我们一起做了些事，我都记在心里。\n"
+            "- 今天解锁徽章：「第一章·开张」。\n"
+            "- 我更懂你了：你在「改稿」上最投入。\n"
+            "> 累计对话 206 轮。这份日记由今日真实信号生成，没有的我不编。\n"
+        )
+        with mock.patch.object(writer, "_render_entry", return_value=body):
+            with mock.patch(
+                "deskmate.growth.emotion_engine.EmotionEngine",
+                _capture_engine(called),
+            ):
+                writer.append_entry("2026-09-02", [], [], at="09:45")
+
+        assert called.get("n", 0) == 0, "只剩模板的日记不该喂"
+
+
+def test_long_news_dump_is_skipped_before_clipping():
+    """超过 600 字的纯转载也不能因为裁剪尾巴丢掉列表前缀而混进来。"""
+    with TemporaryDirectory() as tmp:
+        base = Path(tmp)
+        writer = _make_writer(base)
+        called: dict = {}
+        body = (
+            "## 10:29 <!--xj:2026-09-08-1029-bbbbbb-->\n"
+            "今天我留意到世界上的一些新动静，记下来：\n"
+            + "".join(
+                f"- 新华网：第 {i} 条要闻，国际频道，2026-09-08 07:18:15。\n"
+                for i in range(20)
+            )
+        )
+        with mock.patch.object(writer, "_render_entry", return_value=body):
+            with mock.patch(
+                "deskmate.growth.emotion_engine.EmotionEngine",
+                _capture_engine(called),
+            ):
+                writer.append_entry("2026-09-08", [], [], at="10:29")
+
+        assert called.get("n", 0) == 0, "纯转载不该因为裁剪尾巴而混进来"
+
+
+def test_paragraph_news_source_lines_do_not_count_as_her_words():
+    """段落式转载靠来源标记识别，不能只认 ``- `` 列表项。"""
+    from deskmate.growth.diary import _own_words_len
+
+    body = (
+        "今天我留意到世界上的一些新动静，记下来：\n"
+        "国际_图片频道_新华网：【天下要闻】巴拿马运河管理局或将再减通航量 "
+        "2026-09-08 07:18:15 9月7日，在巴拿马首都巴拿马城……\n"
+        "早啊!新闻来了〔2026.09.08〕_央视新闻：【天下要闻】○平陆运河将于9月16日建成通航\n"
+    )
+    assert _own_words_len(body) < 30
 
 
 def _reply() -> str:

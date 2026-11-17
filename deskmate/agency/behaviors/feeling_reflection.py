@@ -89,7 +89,9 @@ _SYSTEM = for_scene(
 - **如果这一组是「作品」（work）：只写作品整体不算情感。** 你必须同时说清
   两件事，缺一不可：
   ① work_anchor：作品里的具体指向——哪一章、哪个情节、哪个人物、哪句话；
-  ② real_link：这个具体指向让你想到现实里的谁、哪件事。
+  ② real_link：这个具体指向让你想到现实里的谁、哪件事。要落到具体的人
+    （名字或明确称谓）、具体的事，或现实生活/时间；「写得很真实」「人物很
+    鲜活」「我自己写得挺顺」这种对文本的评价不算。
   只写「稿子交付流程对不对得上」「稿子让我焦虑」都不算——那是流程或你的
   状态，不是情感。说不出具体指向的，返回 {"items": []}，不许为凑数放宽。
 - 不许复述事件本身，也不许抄他日记里的原句。
@@ -268,16 +270,35 @@ _PLOT_RE = re.compile(r"(情节|桥段|场景|段落|片段|开头|结尾|结局
 _CHAPTER_TOKEN_RE = re.compile(r"第?[一二三四五六七八九十百千0-9]+[章节回卷部篇]|序章|楔子|尾声|番外")
 
 #: 「现实连接」必须真的指到**现实里的人或现实生活**。
-#: 2026-11-17 复查：初版把「人」「自己」也当标记，等于谁都能过——
-#: 「我自己写得挺顺」「这段写得人物很活」都会命中，而这两句恰恰是判据要
-#: 拦下的「文本内部感受」。现在分两档：现实里的人（他/她/我们/朋友…）或
-#: 现实生活与时间（现实/生活/身边/当年…）。单独一个「人」不再算——
-#: 「人物」「人们」这些文本词会假命中；单独「自己」也不算。
-_REAL_LINK_PERSON_RE = re.compile(
-    r"(他|她|萧盛|我们|你|朋友|家人|同事|编辑|主编|读者|身边人)"
+#: 2026-11-17 复查：「人」「自己」「身边」「真实」这些文本词都能假命中——
+#: 「我自己写得挺顺」「这段写得人物很活」「这段写得很真实」「身边的人物都很
+#: 鲜活」都会白过，而它们恰恰是判据要拦下的「文本内部感受」。
+#: 现在要求落到具体的东西：现实里的人（名字/明确称谓）、具体的事、或现实
+#: 生活与时间；形容词和泛词不算。
+#: 「现实里的人」：名字或明确称谓。`你` 在她的语境里指萧盛，算具体的人。
+#: 单独「人」「自己」不算；「身边」也不再算（2026-11-17 复查：「身边的人物
+#: 都很鲜活」曾靠「身边」白过）。
+_REAL_PERSON_RE = re.compile(
+    r"(萧盛|他|她|你|我们|朋友|家人|同事|编辑|主编|读者|身边人|"
+    r"妻子|丈夫|孩子|父母|女儿|儿子|母亲|父亲|老师|学生)"
 )
-_REAL_LINK_WORLD_RE = re.compile(
-    r"(现实|生活|身边|日常|平时|那天|那年|当年|以前|那时|那阵子|往常|真实)"
+#: 「现实里的时间」：具体的时间锚，不是「往往」「总是」这种泛化。
+_REAL_TIME_RE = re.compile(
+    r"(那天|那年|当年|以前|那时|那阵子|往常|去年|上周|上个月|昨天|今天|"
+    r"刚才|小时候|后来|如今|最近|年初|年底)"
+)
+#: 「具体的事 / 场合」：交稿、改稿、签售、吃饭这类能落到现实动作上的词。
+_REAL_EVENT_RE = re.compile(
+    r"(改稿|交稿|写稿|定稿|签售|发布会|书展|选题会|开会|吃饭|聊天|说起|"
+    r"打电话|电话里|见面|回家|上班|加班|出差|生病|搬家|过年|婚礼|葬礼|"
+    r"过日子|家里|书房|路上|单位|公司|学校|医院|楼下|饭桌)"
+)
+#: 「现实生活」的整体说法。
+_REAL_LIFE_RE = re.compile(r"(现实生活|日常生活|生活里|日子里|现实里|过日子)")
+#: 对文本本身的评价：不能拿它冒充「现实连接」。只有具体的人/事/时间都没有时
+#: 才用它做否决——「他改稿时写得很真实」有具体的事，仍然算连到现实。
+_TEXT_EVAL_RE = re.compile(
+    r"(写得|文笔|真实|鲜活|精彩|细腻|流畅|好看|震撼|感染力|有味道|很顺)"
 )
 
 
@@ -318,10 +339,17 @@ def _chapter_tokens(text: str) -> list[str]:
 def _has_real_link(text: str) -> bool:
     """这条 ``real_link`` 有没有真的连到现实里的人/事。
 
-    「想到自己当年交稿」靠「当年」过；只有「自己」是不够的。
+    判定顺序：
+    1. 有具体的事/场合、现实生活、或具体时间 —— 直接算；
+    2. 只有具体的人时，必须不是纯文本评价（「你自己写得挺顺」不算）；
+    3. 「真实」「鲜活」「身边」这类词没有固定搭配的人/事，不再单独立得住。
     """
     s = str(text or "")
-    return bool(_REAL_LINK_PERSON_RE.search(s) or _REAL_LINK_WORLD_RE.search(s))
+    if _REAL_EVENT_RE.search(s) or _REAL_LIFE_RE.search(s) or _REAL_TIME_RE.search(s):
+        return True
+    if _REAL_PERSON_RE.search(s) and not _TEXT_EVAL_RE.search(s):
+        return True
+    return False
 
 
 def _validate(
@@ -465,9 +493,8 @@ def run_feeling_reflection(
         from deskmate.cognitive.works import WorksStore
 
         works = WorksStore(db_path=db_path)
-        works.ensure_seeded()
     except Exception as e:  # noqa: BLE001
-        logger.warning("works.ensure_seeded 失败（忽略）: %s", e)
+        logger.warning("WorksStore 初始化失败（忽略）: %s", e)
 
     # R5：每次回顾顺手做一次月级淡化（content 永不删）
     try:
@@ -494,6 +521,13 @@ def run_feeling_reflection(
             return result
 
     # —— 闸门 2：候选池 ——
+    # 书架重扫放在冷却之后：一个一周才响一次的钩子，不该在每个 tick 都开连接。
+    if works is not None:
+        try:
+            works.ensure_seeded()
+        except Exception as e:  # noqa: BLE001
+            logger.warning("works.ensure_seeded 失败（忽略）: %s", e)
+
     pool = store.build_pool(
         limit=int(cfg["max_objects"]), evidence_cap=int(cfg["evidence_per_object"])
     )

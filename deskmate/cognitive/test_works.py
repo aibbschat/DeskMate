@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import sqlite3
+from datetime import datetime, timedelta
 
 from deskmate.cognitive.works import (
     WorksStore,
@@ -102,3 +103,45 @@ def test_seed_aliases_only_from_short_forms(tmp_path):
     # 噪声不建作品
     assert store.resolve("某条新闻栏目") is None
     assert len(store.list_active()) == 3
+
+
+def test_ensure_seeded_reseeds_after_seven_days(tmp_path):
+    """7 天重扫：新书要能进来；没到期不重复扫；扫完重新记账。"""
+    db = _mk_db(tmp_path)
+    shelf = _mk_shelf(tmp_path, ["夜不收"])
+    store = WorksStore(db, books_root=shelf)
+
+    assert store.ensure_seeded() is True
+    assert store.resolve("夜不收")["title"] == "夜不收"
+
+    # 未过期：不重扫，新书暂时进不来
+    (shelf / "国子监秘闻录").mkdir()
+    assert store.ensure_seeded() is False
+    assert store.resolve("国子监秘闻录") is None
+
+    # 把记账时间推到 8 天前 → 重扫，新书登记进来
+    old = (datetime.now() - timedelta(days=8)).isoformat(timespec="seconds")
+    conn = sqlite3.connect(db)
+    conn.execute(
+        "UPDATE json_blobs SET data=?, updated_at=? WHERE key='works_seed_ts'",
+        (old, old),
+    )
+    conn.commit()
+    conn.close()
+
+    assert store.ensure_seeded() is True
+    assert store.resolve("国子监秘闻录")["title"] == "国子监秘闻录"
+    # 刚扫过，下一次不再扫
+    assert store.ensure_seeded() is False
+
+
+def test_ensure_seeded_without_shelf_scans_once_per_week(tmp_path):
+    """云端没有书架时不能每 tick 全量扫（这次复查的第二个问题）。"""
+    store = WorksStore(_mk_db(tmp_path), books_root=tmp_path / "nope")
+    calls: list[int] = []
+    store.seed_from_shelf = lambda: calls.append(1) or 0  # type: ignore[method-assign]
+
+    assert store.ensure_seeded() is True
+    assert store.ensure_seeded() is False
+    assert store.ensure_seeded() is False
+    assert len(calls) == 1
