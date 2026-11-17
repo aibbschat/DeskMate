@@ -81,13 +81,28 @@ def test_build_provider_third_party_requires_key():
     assert isinstance(build_provider("brave", "brv-x"), BraveProvider)
 
 
-def test_tool_surfaces_missing_key_error(tmp_path):
+def test_tool_surfaces_missing_key_error(tmp_path, monkeypatch):
+    """主车道缺 key → 跳过它降级到 ddgs；两条都不成才报错（2026-11-17 起有备胎）。"""
+    from coworker.web import tool as web_tool
+
     secrets = SecretStore(tmp_path / "secrets.json")
     secrets.put("web_search:default", {"provider": "tavily"})  # no api_key
-    out = make_web_search_tool(secrets)(
-        query="q"
-    )  # resolve_provider raises ValueError → error dict
+
+    def fake_build(name, api_key=None):
+        if name == "duckduckgo":  # 备胎也假装断网，免得测试真去打 ddgs
+            class Dead(WebSearchProvider):
+                name = "duckduckgo"
+
+                def search(self, *a, **kw):
+                    raise RuntimeError("offline")
+
+            return Dead()
+        return build_provider(name, api_key)
+
+    monkeypatch.setattr(web_tool, "build_provider", fake_build)
+    out = make_web_search_tool(secrets)(query="q")
     assert "needs an API key" in out["error"]
+    assert out["tried"][0]["provider"] == "tavily"
 
 
 def test_resolve_provider_from_secretstore(tmp_path):
