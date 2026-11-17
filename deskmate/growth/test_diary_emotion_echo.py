@@ -155,3 +155,64 @@ def test_blank_experience_skips_llm():
             with mock.patch("deskmate.memory.llm.llm_available", return_value=True):
                 engine.update_after_experience("   \n\n  ")
         chat.assert_not_called()
+
+
+def _capture_engine(called: dict):
+    class FakeEngine:
+        def __init__(self, base_dir=None):
+            pass
+
+        def update_after_experience(self, text, now=None, note=""):
+            called["n"] = called.get("n", 0) + 1
+            called["text"] = text
+
+    return FakeEngine
+
+
+def test_news_dump_without_her_words_is_skipped():
+    """纯外部信息转载不进情绪层。
+
+    2026-11-17 实测：她每天会有一批「今天我留意到世界上的一些新动静」+
+    七八条新闻，275 字里没有她一句话。按 §17 判据这是「没被触动」；
+    喂进去只会得到空宾语，还每天白烧七八次调用。
+    """
+    with TemporaryDirectory() as tmp:
+        base = Path(tmp)
+        writer = _make_writer(base)
+        called: dict = {}
+        body = (
+            "## 22:09 <!--xj:2026-11-17-2209-cccccc-->\n"
+            "今天我留意到世界上的一些新动静，记下来：\n"
+            "- 某条新闻：很长的正文，来源某网，2026年11月17日。\n"
+            "- 另一条新闻：同样很长的正文，来源另一个网。\n"
+        )
+        with mock.patch.object(writer, "_render_entry", return_value=body):
+            with mock.patch(
+                "deskmate.growth.emotion_engine.EmotionEngine",
+                _capture_engine(called),
+            ):
+                writer.append_entry("2026-11-17", [], [], at="22:09")
+
+        assert called.get("n", 0) == 0, "纯转载不该触发情绪更新"
+
+
+def test_entry_with_her_own_words_still_feeds():
+    """有她自己写的话（超过阈值）照常喂。"""
+    with TemporaryDirectory() as tmp:
+        base = Path(tmp)
+        writer = _make_writer(base)
+        called: dict = {}
+        body = (
+            "## 19:15 <!--xj:2026-11-17-1915-dddddd-->\n"
+            "15:06 你让我顺手核对一遍，到晚上七点多你才把话说透。"
+            "这话有点刺我，但你说得没错。行，我知道了。以后先看你的人，再谈别的。\n"
+        )
+        with mock.patch.object(writer, "_render_entry", return_value=body):
+            with mock.patch(
+                "deskmate.growth.emotion_engine.EmotionEngine",
+                _capture_engine(called),
+            ):
+                writer.append_entry("2026-11-17", [], [], at="19:15")
+
+        assert called.get("n") == 1
+        assert "这话有点刺我" in called["text"]

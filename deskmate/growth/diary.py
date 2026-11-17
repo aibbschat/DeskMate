@@ -224,6 +224,9 @@ _BADGE_LINE_RE = re.compile(r"^-\s*(默契|信任|心情|Lv\.|累计对话|今�
 # 最长 1,550。截太短会把结尾她的反应切掉（反应通常写在后面）。
 _DIARY_ECHO_MAX = 600
 
+#: 她自己写的话少于这个字数，就不算「她被触动了」——多用于挡纯新闻转载。
+_DIARY_ECHO_MIN_OWN = 30
+
 # 日记这条通道的说明。不写这句，模型会把「她写完了日记」当成事件本身，
 # 继续产出「写日记梳理今天的事」那类没有宾语的独白。
 _DIARY_ECHO_NOTE = (
@@ -263,6 +266,21 @@ def _entry_plain_text(body: str, limit: int = _DIARY_ECHO_MAX) -> str:
         return text
     # 超限保头保尾：头是「发生了什么」，尾是「她当时的反应」
     return f"{text[: limit - 180]}\n……\n{text[-160:]}"
+
+
+def _own_words_len(text: str) -> int:
+    """她自己写的话有多少字（不吃列表项）。
+
+    日记里有两种「一则」：一种是她写的（有心事、有反应），另一种是纯外部
+    信息转载——「今天我留意到世界上的一些新动静，记下来：」加七八条新闻，
+    里面没有她一句话。后者按 §17 的判据不该进情感层：她没反应，就不算触动；
+    喂进去只会得到空宾语，还每天白烧七八次调用。
+    """
+    return sum(
+        len(ln.strip())
+        for ln in str(text or "").splitlines()
+        if ln.strip() and not ln.strip().startswith(("- ", "* "))
+    )
 
 
 def _gen_eid(date: str, at: str) -> str:
@@ -707,7 +725,7 @@ class DiaryWriter:
         # 没有一条来自日记正文——「有情绪没情感」的第一因就在这一行。
         # fail-open：引擎异常/LLM 不可用绝不阻断日记落盘（日记已写完，此处只是回声）。
         echo = _entry_plain_text(body)
-        if echo:
+        if echo and _own_words_len(echo) >= _DIARY_ECHO_MIN_OWN:
             try:
                 from deskmate.growth.emotion_engine import EmotionEngine
                 EmotionEngine(base_dir=self.base).update_after_experience(
