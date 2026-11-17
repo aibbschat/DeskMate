@@ -38,6 +38,11 @@ INLINE_MIN_CHARS = 6
 #: 不知道作者是转述还是编的——这个边界不能糊。
 UNVERIFIED_MARK = "（正文未见原句）"
 
+#: 文末清单的标题。`scan` 会忽略这一行之后的所有引号：清单里列的就是「未见」的
+#: 句子，把已交付的文本（正文 + 清单）再核一次时，它们不该被当成新引文。
+#: 没有这条，同一份文本每核一遍就长一批——实测 53 处 → 72 处、39 条 → 55 条。
+SUMMARY_HEADING = "## 引文核验（机械比对，非模型判断）"
+
 #: 右引号之后最多看几个字符算「章号标注」（"……"（第四章））。
 #: 窗口别放太宽：章号常是**下一句**在说别的事（"（第十五章重提此案）"），
 #: 一律算成这句的出处就会造出一堆假警报。
@@ -157,11 +162,23 @@ def _chapters_flat(manuscript: Any) -> dict[str, str]:
 
 
 def scan(text: str, manuscript: Any) -> list[Citation]:
-    """扫出所有引号并逐条核对。不修改 `text`。"""
+    """扫出所有引号并逐条核对。不修改 `text`。
+
+    幂等：已经标过「正文未见原句」的引文、以及文末清单里的引号一律跳过。
+    这两个来源都是**我们自己写上去的**，不是专家原话——不跳过的话，
+    「核一遍再核一遍」会让同一份交付物每过一道就多出一批「未见」。
+    """
+    raw = str(text or "")
+    cut = raw.find(SUMMARY_HEADING)
+    if cut != -1:
+        raw = raw[:cut]
     flat, index = _flatten(getattr(manuscript, "text", "") or "")
     per_chapter = _chapters_flat(manuscript)
     found_list: list[Citation] = []
-    for match in _QUOTE_PAT.finditer(str(text or "")):
+    mark_span = len(UNVERIFIED_MARK) + 8  # annotate 会把标记挪到右括号之后
+    for match in _QUOTE_PAT.finditer(raw):
+        if UNVERIFIED_MARK in raw[match.end() : match.end() + mark_span]:
+            continue
         inner = match.group("cjk") if match.group("cjk") is not None else match.group("straight")
         inner = str(inner or "")
         if len(normalize(inner)) < MIN_QUOTE_CHARS:
@@ -172,7 +189,7 @@ def scan(text: str, manuscript: Any) -> list[Citation]:
             orig = index[hit] if hit < len(index) else 0
             chapter = _chapter_at(manuscript, orig)
             cite.chapter = str(getattr(chapter, "label", "") or "")
-            claimed = _claimed_chapter(str(text or ""), cite)
+            claimed = _claimed_chapter(raw, cite)
             if claimed:
                 cite.claimed = claimed
                 # 只有「这句话在该章里确实找不到」才算章号不符。

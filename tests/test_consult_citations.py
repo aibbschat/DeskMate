@@ -278,3 +278,24 @@ def test_quote_check_tool_accepts_book_override() -> None:
     assert "error" in tool(["人肉护盾"])
     out = tool(["人肉护盾"], "假书")
     assert out["results"][0]["found"] is True
+
+
+def test_check_is_idempotent_on_delivered_text() -> None:
+    """核过的文本再核一遍，不该再长出新账（2026-11-17 实测雪球）。
+
+    投递文本 = 原文（含就地标记）+ 文末清单。清单里列的就是「未见」的句子，
+    如果 `scan` 把它们再当引文扫一遍，同一份交付物每过一道就多一批：
+    实测 53 处 → 72 处、39 条 → 55 条。这条锁住「清单与已标引文不再复扫」。
+    """
+    text = '他写道：“这句话正文根本没有，纯属拼接。”又说：“人肉护盾”才是原文。'
+    first = citations.check(text, _manuscript())
+    delivered = first.annotated + "\n\n" + citations.summary(first)
+    second = citations.check(delivered, _manuscript())
+    third = citations.check(second.annotated + "\n\n" + citations.summary(second), _manuscript())
+
+    assert first.total == 2  # 一处编的、一处真的
+    assert len(first.unverified) == 1
+    # 再核不会变大：编的那处已被标记跳过，清单里的引号也被 SUMMARY_HEADING 截断
+    assert second.total <= first.total
+    assert second.total == third.total
+    assert len(second.unverified) == len(third.unverified)
