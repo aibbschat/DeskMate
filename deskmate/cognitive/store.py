@@ -556,7 +556,16 @@ class CognitiveStore:
 
         因此：库里本层有数据、而要写入的条目为 0 时，默认**拒绝写入**并抛错。
         确有清空需求（如重置某层）请显式传 ``force=True``。
+
+        ``layer='feeling'`` 一律拒绝：情感层走 ``FeelingStore`` 的单条 upsert，
+        它的 content 永不删、旧判断靠 ``item_history`` 留痕。走整层覆盖会把
+        情感史（含 superseded 的旧判断）一次抹掉。
         """
+        if layer == "feeling":
+            raise RuntimeError(
+                "refuse persist(layer='feeling')：情感层必须走 FeelingStore"
+                "（整层覆盖会抹掉情感史）"
+            )
         # D 项：记录最近一次 persist 调用方（定位谁在写认知层）
         try:
             _fr = sys._getframe(1)
