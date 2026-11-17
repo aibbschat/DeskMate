@@ -484,3 +484,156 @@ def test_read_tool_head_shows_budget() -> None:
     assert "这是第 3 次读稿" in out, "读之前计数，所以是第 3 次"
     assert "累计 40,000 字" in out
     assert out.endswith("正文内容")
+
+
+# ---------------------------------------------------------------- 2026-11-17 web_search 事故
+# 事故形态：专家 900s 一次书都没读（read_book 零调用），全烧在联网查证的
+# 「失败→换词重试」循环。下面的测试锁四道闸：白名单、迭代上限、查证纪律、
+# 工具飞行记录 + 硬超时。改任何一处先想想会不会把事故重新放出来。
+
+
+def test_expert_engine_tools_are_whitelisted(tmp_path: Path) -> None:
+    """专家只碰读稿 / 本地史料 / 联网兜底 / 自己的笔记本，其余默认工具一概不给。"""
+    shelf = _shelf(tmp_path)
+    eng = _build_expert_engine("character", _ScriptedProvider(), "scripted", shelf)
+    names = set(eng.registry.names())
+    assert names <= consult_mod._CONSULT_ALLOWED_TOOLS, sorted(names - consult_mod._CONSULT_ALLOWED_TOOLS)
+    # 四类核心工具必须在：读稿 / 本地史料 / 联网兜底（萧哥拍板保留）/ 笔记本
+    assert {"read_book", "list_books", "search_history", "web_search", "web_fetch",
+            "notebook_read"} <= names
+    # 事故相关的越界工具必须不在：a2a / todo / plan / skill / runtime_context
+    assert not (names & {"a2a_call", "a2a_discover", "todo_write", "propose_plan",
+                         "load_skill", "runtime_context", "ask_user", "save_skill"})
+
+
+def test_expert_engine_max_turns_capped(tmp_path: Path) -> None:
+    """迭代上限从 150（编码 agent 额度）压到咨询档位，重试循环烧不满 900s。"""
+    shelf = _shelf(tmp_path)
+    eng = _build_expert_engine("character", _ScriptedProvider(), "scripted", shelf)
+    assert eng.max_iterations == consult_mod._CONSULT_MAX_TURNS
+    assert consult_mod._CONSULT_MAX_TURNS <= 25
+
+
+def test_prompt_teaches_local_first_research() -> None:
+    """查证纪律必须是「本地优先、联网兜底」，不是一刀切禁网。"""
+    text = consult_mod._prompt("character", "给韩孝民写人物小传，把动机定死。", "夜不收", 900)
+    assert "search_history" in text, "必须点名本地史料库工具"
+    assert "本地" in text and "web_search" in text
+    assert "没有" in text, "必须写清『本地没有再联网』的兜底顺序"
+    assert "未核实" in text, "查不到时的出路是标注，不是无限重试"
+
+
+def test_non_reading_tools_get_flight_recorder(tmp_path: Path) -> None:
+    """带 run_id 构建时，非读稿工具也要被包上飞行记录（busy/账目/超时）。"""
+    shelf = _shelf(tmp_path)
+    eng = _build_expert_engine(
+        "character", _ScriptedProvider(), "scripted", shelf, "c-flight-1"
+    )
+    spec = eng.registry.get("web_search")
+    assert spec is not None
+    assert hasattr(spec.func, "__wrapped__"), "web_search 必须被 _instrument_tool 包过"
+    # 读稿工具走的是带预算的 _instrument_reading，不能被漏掉
+    assert hasattr(eng.registry.get("read_book").func, "__wrapped__")
+
+
+def test_instrument_tool_times_out_and_records(tmp_path: Path, monkeypatch) -> None:
+    """硬超时：到点返回错误（让模型换路），不干等；失败要进工具账目。"""
+    import time as _time
+
+    run_id = "c-tool-timeout-1"
+    stop = _seed_running(run_id)
+    monkeypatch.setenv("DESKMATE_CONSULT_TOOL_TIMEOUT", "0.2")
+
+    def slow_search(query: str, max_results: int = 5) -> dict:
+        """假联网工具：睡过超时窗口，模拟挂死的调用。"""
+        _time.sleep(1.0)
+        return {"results": []}
+
+    try:
+        wrapped = consult_mod._instrument_tool(
+            slow_search, run_id=run_id, expert_id="character"
+        )
+        out = wrapped("己卯士祸")
+        assert isinstance(out, dict) and "error" in out
+        assert "没有返回" in out["error"], "错误要说清是超时，不是含糊的失败"
+        assert "search_history" in out["error"], "超时后要指路：先查本地史料库"
+        prog = consult_mod.read_runs(session_id="sess-p")["active"][0]["progress"]["character"]
+        assert prog["busy"] == ""
+        stats = prog["tools"]["slow_search"]
+        assert stats["calls"] == 1 and stats["errors"] == 1
+        assert stats["last_ms"] >= 200
+    finally:
+        stop.set()
+
+
+def test_instrument_tool_records_success_and_passes_through(tmp_path: Path) -> None:
+    """正常调用：返回值原样透传（不被包装改形），账目记 calls/last_ms。"""
+    run_id = "c-tool-ok-1"
+    stop = _seed_running(run_id)
+
+    def fake_history(query: str, limit: int = 8) -> dict:
+        """假史料检索：秒回。"""
+        return {"results": [query]}
+
+    try:
+        wrapped = consult_mod._instrument_tool(
+            fake_history, run_id=run_id, expert_id="character"
+        )
+        out = wrapped("燕山君 士祸")
+        assert out == {"results": ["燕山君 士祸"]}, "工具返回值必须原样透传"
+        prog = consult_mod.read_runs(session_id="sess-p")["active"][0]["progress"]["character"]
+        stats = prog["tools"]["fake_history"]
+        assert stats["calls"] == 1 and stats.get("errors", 0) == 0
+    finally:
+        stop.set()
+
+
+def test_tool_failure_reraises_and_is_counted(tmp_path: Path) -> None:
+    """工具自身抛错：照旧上抛给 engine，但失败也要记账（不许静默）。"""
+    run_id = "c-tool-raise-1"
+    stop = _seed_running(run_id)
+
+    def broken(query: str) -> dict:
+        """假工具：直接抛错。"""
+        raise RuntimeError("boom")
+
+    try:
+        wrapped = consult_mod._instrument_tool(
+            broken, run_id=run_id, expert_id="character"
+        )
+        with pytest.raises(RuntimeError, match="boom"):
+            wrapped("x")
+        prog = consult_mod.read_runs(session_id="sess-p")["active"][0]["progress"]["character"]
+        stats = prog["tools"]["broken"]
+        assert stats["calls"] == 1 and stats["errors"] == 1
+        assert prog["busy"] == ""
+    finally:
+        stop.set()
+
+
+def test_audit_includes_tool_ledger(tmp_path: Path) -> None:
+    """审计里要有「工具调用」一节——出事时的时间去向，直接可读。"""
+    run = {
+        "id": "c-audit-1",
+        "elapsed": 900.0,
+        "model": "scripted",
+        "progress": {
+            "character": {
+                "tools": {
+                    "web_search": {"calls": 12, "errors": 11, "last_ms": 31000},
+                    "read_book": {"calls": 0, "errors": 0, "last_ms": 0},
+                }
+            }
+        },
+    }
+    path = consult_mod._write_audit(
+        [{"expert": "character", "name": "人物专家", "status": "timeout", "text": "先补读…"}],
+        "简报",
+        "夜不收",
+        run,
+        tmp_path / "audit",
+    )
+    assert path is not None
+    text = Path(path).read_text(encoding="utf-8")
+    assert "## 工具调用" in text
+    assert "web_search：12 次（失败 11" in text

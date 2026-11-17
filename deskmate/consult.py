@@ -34,6 +34,7 @@ import secrets
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import TimeoutError as FuturesTimeoutError
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -56,6 +57,40 @@ _READ_STOP_RATIO = 0.35
 #: （整本 80k = 首四章+尾六章，再一次「第五章到第九章」补中间）。所以默认就是 4：
 #: 第 5 次起不再供料。`DESKMATE_CONSULT_READ_CAP` 可调大（21 卷那种长卷任务）。
 _READ_CALLS_CAP_DEFAULT = 4
+
+#: 专家引擎的工具白名单（2026-11-17 web_search 事故后立）。事故形态：专家 900s 里
+#: **一次书都没读**（read_book 零调用，progress 无记录），全烧在联网查证的
+#: 「失败→换词重试」循环——web_search 走免密钥 ddgs 车道，单次实测 23~35s、
+#: 约一半失败。事故后只保留四类工具：读稿 / 本地史料（含私人资料）/ 联网兜底 /
+#: 自己的笔记本。a2a、todo_write、propose_plan、load_skill、runtime_context 一律不给。
+#: 🔴 web_search **保留**（萧哥 2026-11-17 拍板）：本地史料库没有的（如古代朝鲜史实）
+#: 必须能联网查——纪律是「本地优先、联网兜底」，写进 _prompt，超时由 _instrument_tool 兜底。
+_CONSULT_ALLOWED_TOOLS = frozenset({
+    "read_book",
+    "list_books",
+    "search_history",
+    "history_library_check",
+    "search_private",
+    "web_search",
+    "web_fetch",
+    "notebook_read",
+    "notebook_remember",
+    "notebook_rewrite",
+    "notebook_feedback",
+})
+
+#: 单个工具调用的硬超时（秒）。ddgs 车道本身没传超时（Tavily/Brave 有 20s），
+#: 一次挂死的联网调用足以吃掉整个 900s 预算；工具执行在 engine 里又没有超时
+#: （asyncio.to_thread 裸跑）。这里给**所有**专家工具兜底：到点放一条错误给模型，
+#: 让它换工具/换来源继续，而不是干等。env `DESKMATE_CONSULT_TOOL_TIMEOUT` 可调。
+#: 60s 的算术：web_search 走主备两车道，最坏 = 豆包 20s（httpx timeout）+ ddgs
+#: 实测 23~35s ≈ 55s，仍容得下一次完整降级；再小会砍掉备胎，再大只是让挂死的
+#: 调用多吃预算。豆包常态 1.5s，绝大多数查询根本碰不到这个上限。
+_TOOL_TIMEOUT_DEFAULT = 60.0
+
+#: 专家引擎的迭代上限。build_engine 默认 150 是给编码 agent 的额度；文学专家
+#: 「读稿 + 查证 + 交付」15~20 轮足够，卡住时也别让它在重试循环里转 150 轮。
+_CONSULT_MAX_TURNS = 20
 
 #: 状态文件保留多少条历史（running 的不受限制）。
 RUNS_KEEP = 20
@@ -254,8 +289,12 @@ _PROGRESS_TOOLS = frozenset({"read_book", "list_books"})
 def _merge_progress(run_id: str, expert_id: str, **fields: Any) -> None:
     """把一位专家的进度并进状态文件；无变化就不广播。
 
-    `fields` 里 `reads_inc` / `chars_inc` 是累加量，其余是覆盖值（None = 不改）。
+    `fields` 里 `reads_inc` / `chars_inc` 是累加量，`tool_stat` 是工具账目
+    （(工具名, 毫秒, 是否出错)，按工具累计 calls/errors/last_ms），其余是覆盖值
+    （None = 不改）。
     """
+    tool_stat = fields.pop("tool_stat", None)
+
     def _do(state: dict[str, Any]) -> Optional[dict[str, Any]]:
         run = _find(state, run_id)
         if run is None or run.get("status") != "running":
@@ -269,6 +308,17 @@ def _merge_progress(run_id: str, expert_id: str, **fields: Any) -> None:
             cur["reads"] = int(cur.get("reads") or 0) + reads_inc
         if chars_inc:
             cur["chars"] = int(cur.get("chars") or 0) + chars_inc
+        if tool_stat:
+            tname, tms, terror = tool_stat
+            stats = dict(cur.get("tools") or {})
+            row = dict(stats.get(tname) or {})
+            row["calls"] = int(row.get("calls") or 0) + 1
+            if terror:
+                row["errors"] = int(row.get("errors") or 0) + 1
+            row["last_ms"] = int(tms)
+            stats[tname] = row
+            cur["tools"] = stats
+            changed = True
         for key, value in fields.items():
             if value is not None and cur.get(key) != value:
                 cur[key] = value
@@ -371,6 +421,77 @@ def _instrument_reading(fn: Any, *, run_id: str, expert_id: str) -> Any:
                 reads_inc=1 if name == "read_book" else 0,
                 chars_inc=len(text),
             )
+
+    return inner
+
+
+def _tool_timeout() -> float:
+    """单工具硬超时（秒）。`DESKMATE_CONSULT_TOOL_TIMEOUT` 可调，非法值回落默认。"""
+    raw = os.environ.get("DESKMATE_CONSULT_TOOL_TIMEOUT", "")
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return _TOOL_TIMEOUT_DEFAULT
+    return value if value > 0 else _TOOL_TIMEOUT_DEFAULT
+
+
+#: 工具超时用的隔离线程池：到点后底层调用可能还挂在 socket 上（线程杀不掉），
+#: 只能弃单返回错误——挂死的调用在池里自生自灭，不占 engine 的执行器。
+_TOOL_POOL = ThreadPoolExecutor(max_workers=6, thread_name_prefix="consult-tool")
+
+
+def _instrument_tool(fn: Any, *, run_id: str, expert_id: str) -> Any:
+    """给**非读稿**工具套的三件套：飞行记录 + 硬超时 + 失败计数。
+
+    为什么读稿工具不在这里包（它走 `_instrument_reading`）：读稿有自己的预算闸
+    （次数/时间段供料），两个包装叠一起会把预算逻辑搅浑。
+
+    - 飞行记录：进入时记 `busy=工具名`，结束记按工具累计的 calls/errors/last_ms
+      ——2026-11-17 事故里 web_search 失败了十几轮，界面上却什么都看不见，
+      因为进度只仪表化了读稿工具。这条记录同时喂状态条和审计，事后可复盘。
+    - 硬超时：`fn` 丢进 `_TOOL_POOL` 等 `_tool_timeout()` 秒，到点返回一条错误
+      （换工具/换来源继续），异常照旧上抛交给 engine 处理。
+    `functools.wraps` 保留签名/文档/schema——注册表靠它生成工具描述（有测试钉）。
+    """
+    name = str(getattr(fn, "__name__", "") or "")
+
+    @functools.wraps(fn)
+    def inner(*args: Any, **kwargs: Any) -> Any:
+        _merge_progress(run_id, expert_id, busy=name)
+        started = time.time()
+        try:
+            future = _TOOL_POOL.submit(fn, *args, **kwargs)
+            try:
+                out = future.result(timeout=_tool_timeout())
+            except FuturesTimeoutError:
+                _merge_progress(
+                    run_id,
+                    expert_id,
+                    tool_stat=(name, (time.time() - started) * 1000, True),
+                )
+                return {
+                    "error": (
+                        f"{name} 超过 {_tool_timeout():.0f}s 没有返回，已放弃本次调用。"
+                        "别原样重试——换工具或换来源继续（查史实先用 search_history 查"
+                        "本地史料库，秒回；实在查不到就标注「未核实」继续交付）。"
+                    )
+                }
+            _merge_progress(
+                run_id,
+                expert_id,
+                tool_stat=(name, (time.time() - started) * 1000, False),
+            )
+            return out
+        except BaseException:
+            # 工具自身抛错：照旧上抛（engine 会把错误回给模型），但失败也要记账。
+            _merge_progress(
+                run_id,
+                expert_id,
+                tool_stat=(name, (time.time() - started) * 1000, True),
+            )
+            raise
+        finally:
+            _merge_progress(run_id, expert_id, busy="")
 
     return inner
 
@@ -563,10 +684,30 @@ def _build_expert_engine(
         workspace=None,
         mode=Mode.BYPASS_APPROVALS,
         extra_tools=reading,
+        # 150 是编码 agent 的额度；专家「读稿+查证+交付」用不了那么多轮，
+        # 卡在重试循环里时也不该让它转满 150 轮（2026-11-17 事故形态之一）。
+        max_iterations=_CONSULT_MAX_TURNS,
     )
     # 咨询里不允许弹问询卡片，也不允许沉淀 skill：专家只交意见，问题由小桔对萧盛说。
     engine.registry._tools.pop("ask_user", None)
     engine.registry._tools.pop("save_skill", None)
+    # 工具白名单（2026-11-17 事故后立）：build_engine 给每个 agent 都挂全套默认工具
+    # （web/a2a/todo/plan/skill/runtime_context 共 17 个），群聊的 BotRuntime 对同样的
+    # 专家是显式白名单的，这条咨询路径当时漏抄了。现在对齐：只留白名单内的。
+    for tool_name in list(engine.registry.names()):
+        if tool_name not in _CONSULT_ALLOWED_TOOLS:
+            engine.registry._tools.pop(tool_name, None)
+    # 飞行记录 + 硬超时：非读稿工具逐个包一层（读稿工具已在上面带预算地包好）。
+    # register 按名覆盖注册，functools.wraps 保住 schema（有测试钉这一条）。
+    if run_id:
+        for tool_name in list(engine.registry.names()):
+            if tool_name in _PROGRESS_TOOLS:
+                continue
+            spec = engine.registry._tools.get(tool_name)
+            if spec is not None:
+                engine.registry.register(
+                    _instrument_tool(spec.func, run_id=run_id, expert_id=expert_id)
+                )
     return engine
 
 
@@ -585,6 +726,11 @@ def _prompt(expert_id: str, brief: str, book: str, timeout: int = 0) -> str:
         "就能覆盖全书，**读够了就必须动笔**。反复补读会让整个任务超时，最后一个字都交不出来"
         "（这已经实际发生过两次）。读稿工具自带预算：次数或时间用尽后它会直接拒绝供料，"
         "只回你一句「现在必须开始交付」。\n\n"
+        "【查证纪律：本地优先，联网兜底】查证史实**先走本地**——search_history 查本地"
+        "史料库（秒回、权威），history_library_check 核对收录。本地史料库**没有**的"
+        "（比如古代朝鲜、域外史实）才用 web_search 联网查——**联网现在是秒回**的"
+        "（豆包搜索，带信源权威等级），查得到就直接引用、不必犹豫；查两三个词确实没有，"
+        "才把该处标「未核实」继续交付。本地查得到的绝不联网。\n\n"
         "输出要求：中文；结论先行；给依据（章节/人物/设定）；不确定的标出来；"
         "不要写成品正文。"
     )
@@ -683,6 +829,22 @@ def _write_audit(
                 str(r.get("status")), ""
             )
             lines += [f"## {r.get('name')}（{r.get('status')}{flag}）", "", str(r.get("text") or ""), ""]
+        # 工具账目（飞行记录）：哪个工具被调了几次、失败几次、最后耗时。出事时
+        # 这几行就是「时间花哪了」的直接答案——2026-11-17 事故复盘全靠事后补测，
+        # 有这段就不用了。
+        progress = run.get("progress") or {}
+        tool_rows = []
+        for expert_id, prog in progress.items():
+            tools = (prog or {}).get("tools") or {}
+            for tname, stat in tools.items():
+                if not isinstance(stat, dict):
+                    continue
+                tool_rows.append(
+                    f"- {expert_id} · {tname}：{stat.get('calls', 0)} 次"
+                    f"（失败 {stat.get('errors', 0)}，最后 {stat.get('last_ms', 0)}ms）"
+                )
+        if tool_rows:
+            lines += ["## 工具调用", ""] + tool_rows + [""]
         lines.append("> 专家意见仅供参考，不是小桔本人判断，也不自动进入小桔长期记忆。")
         path.write_text("\n".join(lines), encoding="utf-8")
         return str(path)
@@ -740,8 +902,23 @@ def _job_thread(
             "results": results,
             "error": "",
         }
+
+        # 先取运行期攒下的进度（工具账目）再落审计：审计与最终记录都要带上它，
+        # 出事时能直接看到「web_search 失败 12 次」这类事实（2026-11-17 教训）。
+        with _LOCK:
+            prior = _find(_read_state(), run_id) or {}
+        run["progress"] = dict(prior.get("progress") or {})
         audit_path = _write_audit(results, brief, book, run, audit_dir)
         run["audit_path"] = audit_path or ""
+
+        def _finish(state: dict[str, Any]) -> Optional[dict[str, Any]]:
+            target = _find(state, run_id)
+            if target is None:
+                return None
+            target.update(run)
+            return dict(target)
+
+        snapshot = _mutate(_finish) or run
 
         def _finish(state: dict[str, Any]) -> Optional[dict[str, Any]]:
             target = _find(state, run_id)

@@ -32,6 +32,20 @@ function amount(chars?: number): string {
   return n >= 10000 ? `${(n / 10000).toFixed(1)} 万字` : `${n} 字`;
 }
 
+/** 非 read_book 工具的显示名：让「专家在干嘛」如实可见（2026-11-17 web_search 事故：
+ *  专家联网查证失败循环烧掉 900s，界面上却只显示「正在看稿」——失败必须看得见）。 */
+const TOOL_LABELS: Record<string, string> = {
+  web_search: "正在联网查证",
+  web_fetch: "正在读网页",
+  search_history: "正在查史料库",
+  search_private: "正在查私人资料",
+  history_library_check: "正在核史料收录",
+  notebook_read: "正在翻自己的笔记本",
+  notebook_remember: "正在记笔记",
+  notebook_rewrite: "正在整理笔记",
+  notebook_feedback: "正在补笔记",
+};
+
 /**
  * 一位专家此刻在做什么。**只翻译后端记录的事实**（哪个工具在跑、哪一章、读了几次），
  * 不做「已完成 37%」这类推算——百分比一旦是猜的，用户就会据此判断「快了」。
@@ -41,9 +55,16 @@ function expertState(p: ConsultExpertProgress | undefined, book: string): string
   const reads = Number(p?.reads ?? 0);
   if (p?.busy === "read_book") return chapter ? `正在读「${chapter}」` : "正在通读全书";
   if (p?.busy === "list_books") return "正在翻书架";
+  if (p?.busy && TOOL_LABELS[p.busy]) return TOOL_LABELS[p.busy];
   if (reads > 0) {
     const sum = amount(p?.chars);
     return `已读 ${reads} 次${sum ? `（${sum}）` : ""}，正在梳理`;
+  }
+  // 没读书但工具账目有失败：把「查证不顺」亮出来，别让失败静默成「正在看稿」。
+  const failed = Object.entries(p?.tools || {}).filter(([, t]) => (t?.errors || 0) > 0);
+  if (failed.length > 0) {
+    const [name, t] = failed.sort((a, b) => (b[1]?.last_ms || 0) - (a[1]?.last_ms || 0))[0];
+    return `查证不顺：${name} 已失败 ${t?.errors} 次，仍在梳理`;
   }
   // 还没动工具：只能说「在看这本书」，别说「在读」——读没读我们还不知道。
   return book ? `正在看《${book}》` : "正在看稿";

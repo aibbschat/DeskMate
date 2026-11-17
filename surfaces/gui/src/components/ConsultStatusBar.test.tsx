@@ -98,6 +98,43 @@ describe("ConsultStatusBar", () => {
     expect(after.textContent).not.toContain("正在读「第十一章」");
   });
 
+  it("非读稿工具也要说清在干嘛：联网查证 / 查史料库", async () => {
+    // 2026-11-17 web_search 事故：专家联网查证失败循环烧掉 900s，
+    // 界面上却只显示「正在看稿」——失败必须看得见。
+    vi.mocked(getConsultRuns).mockResolvedValue({
+      active: [
+        {
+          ...RUNNING,
+          progress: { character: { busy: "web_search", reads: 0 } },
+        },
+      ],
+      recent: [],
+    });
+    render(<ConsultStatusBar sessionId="s1" />);
+    const row = await screen.findByTestId("consult-running");
+    expect(row.textContent).toContain("正在联网查证");
+
+    // 联网失败挂账：不再装作「正在看稿」，把失败次数亮出来
+    act(() => {
+      window.dispatchEvent(
+        new CustomEvent("deskmate:consult", {
+          detail: {
+            ...RUNNING,
+            progress: {
+              character: {
+                busy: "",
+                reads: 0,
+                tools: { web_search: { calls: 5, errors: 4, last_ms: 31000 } },
+              },
+            },
+          },
+        }),
+      );
+    });
+    const after = await screen.findByTestId("consult-running");
+    expect(after.textContent).toContain("查证不顺：web_search 已失败 4 次");
+  });
+
   it("多位专家各说各的，不合成一句「正在读稿」", async () => {
     vi.mocked(getConsultRuns).mockResolvedValue({
       active: [

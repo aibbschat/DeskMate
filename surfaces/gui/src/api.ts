@@ -3436,7 +3436,7 @@ export async function getProactiveHeartbeat(): Promise<ProactiveHeartbeat | null
  */
 /** 单个专家的实时进度（只有事实：在读哪章、读了几次、累计读入多少字）。 */
 export interface ConsultExpertProgress {
-  /** 当前正在跑的工具名：read_book / list_books；空串 = 没在读，正在推理。 */
+  /** 当前正在跑的工具名：read_book / list_books / web_search / search_history…；空串 = 没在调工具，正在推理。 */
   busy?: string;
   /** read_book 的章节参数（空串 = 通读整本）。 */
   chapter?: string;
@@ -3444,6 +3444,9 @@ export interface ConsultExpertProgress {
   reads?: number;
   /** 累计读入的字符数（工具返回文本长度，含覆盖率头）。 */
   chars?: number;
+  /** 工具账目（2026-11-17 web_search 事故）：按工具累计的调用/失败次数与最后耗时。
+   *  出事时这几行就是「时间花哪了」的直接答案——别再让失败静默。 */
+  tools?: Record<string, { calls?: number; errors?: number; last_ms?: number }>;
   updated_at?: number;
 }
 
