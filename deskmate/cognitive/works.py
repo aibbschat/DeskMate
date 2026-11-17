@@ -210,16 +210,36 @@ class WorksStore:
             logger.warning("works 别名补齐失败（忽略）: %s", e)
         return count
 
-    def ensure_seeded(self) -> None:
-        """作品表为空时，从书架补一次（周更维护钩子用，不在读路径自动跑）。"""
+    def ensure_seeded(self, max_age_days: int = 7) -> bool:
+        """按需补 seed：表为空，或距上次从书架登记已超过 ``max_age_days``。
+
+        2026-11-17 复查修正：初版只在「表为空」时 seed，等于第一次 seed 之后
+        永远不再扫描——新书出版、改名、新增短写别名都进不来，周更钩子形同
+        虚设。改成按 ``source='shelf'`` 的最近 ``updated_at`` 判断是否过期，
+        幂等、失败 fail-open。返回本次是否真的重扫。
+        """
         try:
             with self._connect() as conn:
                 self._ensure_schema(conn)
                 n = conn.execute("SELECT COUNT(*) FROM works").fetchone()[0]
-            if not n:
+                row = conn.execute(
+                    "SELECT MAX(updated_at) FROM works WHERE source='shelf'"
+                ).fetchone()
+            last = str((row[0] if row else "") or "")
+            stale = True
+            if last:
+                try:
+                    age = datetime.now() - datetime.fromisoformat(last)
+                    stale = age.total_seconds() >= max_age_days * 86400
+                except ValueError:
+                    stale = True
+            if not n or stale:
                 self.seed_from_shelf()
+                return True
+            return False
         except Exception as e:  # noqa: BLE001
             logger.warning("works.ensure_seeded 失败（忽略）: %s", e)
+            return False
 
     # ------------------------------------------------------------------
     # 读

@@ -29,8 +29,8 @@ def _load_backfill():
 bf = _load_backfill()
 
 BATCH = [
-    ("e1", "2026-11-01T10:00:00", "chat", "他说这段不合史实，把稿子退回来了"),
-    ("e2", "2026-11-02T10:00:00", "chat", "我今天核对完三个版本的稿子"),
+    ("e1", "2026-11-01T10:00:00", "chat", "他说《夜不收》这段不合史实，退回来了"),
+    ("e2", "2026-11-02T10:00:00", "chat", "我今天把《夜不收》三个版本都核对完了"),
 ]
 
 
@@ -58,9 +58,9 @@ def db(tmp_path):
 def _reply():
     return json.dumps(
         [
-            {"id": "e1", "object_ref": "稿子", "object_kind": "work",
-             "event_summary": "他退回稿件"},
-            {"id": "e2", "object_ref": "稿子", "object_kind": "work",
+            {"id": "e1", "object_ref": "夜不收", "object_kind": "work",
+             "event_summary": "他退回夜不收那段"},
+            {"id": "e2", "object_ref": "夜不收", "object_kind": "work",
              "event_summary": "核完三个版本"},
         ],
         ensure_ascii=False,
@@ -84,7 +84,7 @@ def test_batch_writes_all_rows(db, monkeypatch):
     assert (wrote, failed) == (2, 0)
     rows = _rows(db)
     assert [r[4] for r in rows] == [bf.BACKFILLED, bf.BACKFILLED]
-    assert rows[0][1] == "稿子" and rows[0][2] == "work"
+    assert rows[0][1] == "夜不收" and rows[0][2] == "work"
 
 
 def test_batch_rolls_back_whole_batch_on_write_error(db, monkeypatch):
@@ -123,3 +123,24 @@ def test_backfill_prompt_bans_observer_voice():
     """回填 prompt 也要管视角：摘要写「用户/对方」会把旁观口吻带进情感证据。"""
     assert "不许写「用户」" in bf._SYSTEM
     assert "她的口吻" in bf._SYSTEM
+
+
+def test_batch_drops_category_object(db, monkeypatch):
+    """类别泛称不是情感对象：回填也不许把「稿子」写成 work。
+
+    2026-11-17 判据调整后，`_clean_object` 对「稿子/章节/文章」判 none。
+    这条钉住回填层与在线层同口径——否则回填出来的旧口径会污染候选池。
+    """
+    reply = json.dumps(
+        [
+            {"id": "e1", "object_ref": "稿子", "object_kind": "work",
+             "event_summary": "他退回稿件"},
+            {"id": "e2", "object_ref": "稿子", "object_kind": "work",
+             "event_summary": "核完三个版本"},
+        ],
+        ensure_ascii=False,
+    )
+    monkeypatch.setattr(bf, "_llm_complete", lambda *a, **k: reply)
+    wrote, failed = bf._run_batch(db, BATCH, 1, 5.0)
+    assert (wrote, failed) == (2, 0)
+    assert [(r[1], r[2]) for r in _rows(db)] == [("", "none"), ("", "none")]

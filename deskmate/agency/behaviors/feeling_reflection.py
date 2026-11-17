@@ -263,9 +263,22 @@ _WORK_ANCHOR_LEVELS = ("chapter", "plot", "character", "sentence", "scene")
 _CHAPTER_RE = re.compile(r"第?[一二三四五六七八九十百千0-9]+[章节回卷部篇]|(序章|楔子|尾声|番外)")
 _CHARACTER_RE = re.compile(r"(人物|角色|主角|配角|男主|女主|反派|原型|那个人物)")
 _SENTENCE_RE = re.compile(r"(台词|对白|那?句话|那句|这段文字|原文|一行字)")
-_PLOT_RE = re.compile(r"(情节|桥段|场景|段落|片段|开头|结尾|结局|转折|伏笔|悬念|冲突)")
-#: 「现实连接」至少要点到一个真实的人/现实生活，不能只写「我觉得」。
-_REAL_LINK_MARKERS = ("他", "她", "萧盛", "现实", "身边", "生活", "自己", "我们", "人")
+_PLOT_RE = re.compile(r"(情节|桥段|场景|段落|片段|开头|结尾|结局|转折|伏笔|悬念|冲突|那场戏|这场戏)")
+#: 章节号是硬信息：抽取「第七章 / 序章」这类 token，逐个到证据里核对。
+_CHAPTER_TOKEN_RE = re.compile(r"第?[一二三四五六七八九十百千0-9]+[章节回卷部篇]|序章|楔子|尾声|番外")
+
+#: 「现实连接」必须真的指到**现实里的人或现实生活**。
+#: 2026-11-17 复查：初版把「人」「自己」也当标记，等于谁都能过——
+#: 「我自己写得挺顺」「这段写得人物很活」都会命中，而这两句恰恰是判据要
+#: 拦下的「文本内部感受」。现在分两档：现实里的人（他/她/我们/朋友…）或
+#: 现实生活与时间（现实/生活/身边/当年…）。单独一个「人」不再算——
+#: 「人物」「人们」这些文本词会假命中；单独「自己」也不算。
+_REAL_LINK_PERSON_RE = re.compile(
+    r"(他|她|萧盛|我们|你|朋友|家人|同事|编辑|主编|读者|身边人)"
+)
+_REAL_LINK_WORLD_RE = re.compile(
+    r"(现实|生活|身边|日常|平时|那天|那年|当年|以前|那时|那阵子|往常|真实)"
+)
 
 
 def _infer_anchor_level(what: str) -> Optional[str]:
@@ -297,8 +310,18 @@ def _normalize_work_anchor(raw: Any) -> Optional[dict]:
     return {"level": level, "what": what}
 
 
+def _chapter_tokens(text: str) -> list[str]:
+    """抽出文本里的章节 token（「第七章」「序章」）；用于核对锚点是不是真的。"""
+    return [m.group(0) for m in _CHAPTER_TOKEN_RE.finditer(str(text or ""))]
+
+
 def _has_real_link(text: str) -> bool:
-    return any(m in str(text or "") for m in _REAL_LINK_MARKERS)
+    """这条 ``real_link`` 有没有真的连到现实里的人/事。
+
+    「想到自己当年交稿」靠「当年」过；只有「自己」是不够的。
+    """
+    s = str(text or "")
+    return bool(_REAL_LINK_PERSON_RE.search(s) or _REAL_LINK_WORLD_RE.search(s))
 
 
 def _validate(
@@ -350,11 +373,14 @@ def _validate(
         return None, "emotion_summary"
 
     # 章节号是硬信息：必须在这组事件里真的出现过，不能凭印象编一个「第九章」。
-    # 人物/情节/语句不做字面核对（摘要里不一定写角色名），只靠 anchor 结构拦。
-    if anchor is not None and anchor["level"] == "chapter" and len(anchor["what"]) <= 8:
+    # 2026-11-17 复查：初版只在 what ≤8 字时才核对，模型只要把锚点写长
+    # （「第七十七章里那句…」）就能绕过。改成**逐个章节 token** 核对，
+    # 长度不再影响判定。人物/情节/语句不做字面核对（摘要里不一定写角色名）。
+    if anchor is not None:
         surfaced = " ".join(str(ev["summary"]) for ev in entry["evidence"])
-        if anchor["what"] not in surfaced:
-            return None, f"anchor_not_grounded:{anchor['what']}"
+        for tok in _chapter_tokens(anchor["what"]):
+            if tok not in surfaced:
+                return None, f"anchor_not_grounded:{tok}"
 
     ev_by_id = {ev["id"]: ev for ev in entry["evidence"]}
     picked: list[dict] = []

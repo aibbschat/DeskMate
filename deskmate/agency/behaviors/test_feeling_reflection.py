@@ -64,10 +64,22 @@ def _pool_map():
         (lambda d: d.update(work_anchor=None), "work_no_anchor"),
         (lambda d: d.update(real_link=""), "work_no_real_link"),
         (lambda d: d.update(real_link="交付流程对得上"), "work_no_real_link"),
+        # 2026-11-17 复查：只写文本内部的感受不算「连到现实」，初版的
+        # 「人/自己」标记会放过这两句。
+        (lambda d: d.update(real_link="我自己写得挺顺"), "work_no_real_link"),
+        (lambda d: d.update(real_link="这段写得人物很活"), "work_no_real_link"),
         (
             lambda d: d.update(
                 stance="第九章那个雨夜我读了三遍，像他改稿时不肯松手的样子。",
                 work_anchor={"level": "chapter", "what": "第九章"},
+            ),
+            "anchor_not_grounded",
+        ),
+        # 锚点写长不再能绕过章节核对（初版只看 ≤8 字）
+        (
+            lambda d: d.update(
+                stance="第九章那个雨夜我读了三遍，像他改稿时不肯松手的样子。",
+                work_anchor={"level": "chapter", "what": "第九章里那句「不回头」"},
             ),
             "anchor_not_grounded",
         ),
@@ -173,3 +185,18 @@ def test_run_writes_and_reports_only_cited_evidence(tmp_path, monkeypatch):
     assert row is not None
     # 池里 4 条、她只引了 3 条 → 留痕必须写 3，不许写 4
     assert "3 条" in row[0] and "4 条" not in row[0], row[0]
+
+
+def test_real_link_requires_real_referent():
+    """「现实连接」必须点到现实里的人/事；文本内部的感受不算。
+
+    2026-11-17 复查：初版标记里有「人」「自己」，导致
+    「我自己写得挺顺」「这段写得人物很活」都会过——这两句正是判据要拦的。
+    """
+    from deskmate.agency.behaviors.feeling_reflection import _has_real_link
+
+    for ok in ("想到他改稿时说的话", "现实里他也这样", "像他改稿时不肯松手的样子",
+               "想到身边的朋友", "想到自己当年交稿"):
+        assert _has_real_link(ok), ok
+    for bad in ("交付流程对得上", "我自己写得挺顺", "这段写得人物很活", "整本"):
+        assert not _has_real_link(bad), bad
