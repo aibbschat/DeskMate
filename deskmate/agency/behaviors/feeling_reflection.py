@@ -442,14 +442,25 @@ def run_feeling_reflection(
     )
     written: list[dict] = []
     for item in accepted:
-        entry = pool_by_ref[item["object_ref"]]
+        # 留痕说的条数/跨度必须是**她这次真正引用的证据**，不是池子里的总量
+        # （池里 45 条、她挑 6 条时写 45 条，后人审计会以为 45 条都支撑这句话）。
+        ev_dates = sorted({str(ev.get("ts") or "")[:10] for ev in item["evidence"] if ev.get("ts")})
+        ev_span = 0
+        if len(ev_dates) >= 2:
+            try:
+                ev_span = (
+                    datetime.fromisoformat(ev_dates[-1])
+                    - datetime.fromisoformat(ev_dates[0])
+                ).days
+            except ValueError:
+                ev_span = 0
         try:
             saved = store.upsert(
                 object_ref=item["object_ref"],
                 object_kind=item["object_kind"],
                 content=item["content"],
                 evidence=item["evidence"],
-                reason=reason_tpl.format(n=entry["n"], span=entry["span_days"]),
+                reason=reason_tpl.format(n=len(item["evidence"]), span=ev_span),
                 valence=item["valence"],
                 confidence=item["confidence"],
                 conflict_with=item["conflict_with"],
