@@ -785,3 +785,42 @@ def test_apply_event_direct_defaults_to_none(engine):
     assert row[2] == ""
     assert row[3] == "none"
     assert row[4] == 1
+
+
+def test_clean_object_rejects_pronouns():
+    """指代词不算对象：归一不了就 none，不留「他/你」这类假对象。"""
+    from deskmate.growth.emotion_engine import _clean_object
+
+    for p in ("他", "她", "你", "我", "它", "他们", "我们", "你们"):
+        assert _clean_object(p, "person") == ("", "none"), p
+    assert _clean_object(" 他 ", "person") == ("", "none")
+    # 真名不受影响
+    assert _clean_object("萧盛", "person") == ("萧盛", "person")
+
+
+def test_update_prompt_carries_title_and_lands_work(engine):
+    """原文里的《…》被喂进 prompt，事件能落成 work/书名。"""
+    captured = {}
+
+    def capture_chat(system, user, **kwargs):
+        captured["user"] = user
+        return json.dumps({
+            "dopamine": 55.0, "serotonin": 52.0, "oxytocin": 45.0,
+            "cortisol": 28.0, "description": "高兴又舍不得", "reason": "他的书要影视化",
+            "object_ref": "《夜不收》", "object_kind": "work",
+            "event_summary": "影视公司联系他，想买《夜不收》版权",
+        }, ensure_ascii=False)
+
+    with patch("deskmate.memory.llm.chat_memory", side_effect=capture_chat):
+        with patch("deskmate.memory.llm.llm_available", return_value=True):
+            engine.update_after_turn(
+                "《夜不收》的影视公司今天联系我了，说想买版权。",
+                "我替你高兴，也有点舍不得。",
+                300.0,
+            )
+
+    assert "《夜不收》" in captured["user"]
+    row = _latest_log(engine)
+    assert row[2] == "《夜不收》"
+    assert row[3] == "work"
+    assert row[4] == 1

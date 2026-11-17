@@ -17,6 +17,7 @@ import json
 import logging
 import math
 import os
+import re
 import sqlite3
 import threading
 import time
@@ -240,7 +241,9 @@ _EMOTION_SYSTEM = (
     "    \"event_summary\": 不超过 40 字，只写发生了什么，不写你的感觉。\n"
     "    指不到具体对象就 kind=none、ref 留空——不要把泛泛的情绪安到萧盛头上。"
     "relation 只用于「我与他的相处」这类互动（被接受/被拒绝/被接住），"
-    "不要用它代替具体的人。示例：聊他的书稿→work/《夜不收》；"
+    "不要用它代替具体的人。work 包括她或他正在写的稿子、章节、文章、帖子、"
+    "大纲、梗概——即使没有书名也算 work，ref 用书名或稿件的叫法（如"
+    "「今晚那章」），不要落 thing 或 none。示例：聊他的书稿→work/《夜不收》；"
     "「他驳回了我的建议」→relation/和小桔的相处；「他今天状态不好」→person/萧盛；"
     "「核对完文件松了口气」→none/空。\n"
     "严格 JSON 输出："
@@ -441,14 +444,42 @@ def _clamp_salience(v) -> float:
 # relation 只落库、不进候选池（P1 的 R2 只收 person/work/thing）。
 _OBJECT_KINDS = ("person", "work", "thing", "relation", "none")
 
+# 指代词不算对象：回填实测里「他/你」被当成 person，P1 会多出假对象。
+# 归一不了就置 none——宁缺，不给她一段和「他」的感情。
+_PRONOUN_REFS = {
+    "他", "她", "你", "我", "它", "您",
+    "他们", "她们", "你们", "我们", "它们",
+}
+
 
 def _clean_object(ref, kind) -> tuple[str, str]:
-    """宾语取值归一：类型非法退 none，none 时引用一律清空。"""
+    """宾语取值归一：类型非法退 none，none 或指代词时引用一律清空。"""
     kind = str(kind or "").strip().lower()
     if kind not in _OBJECT_KINDS:
         kind = "none"
     ref = str(ref or "").strip()[:40] if kind != "none" else ""
+    if ref in _PRONOUN_REFS:
+        return "", "none"
     return ref, kind
+
+
+_TITLE_RE = re.compile(r"《([^》\n]{1,40})》")
+
+
+def _titles_in(text: str) -> list[str]:
+    """抽出原文里出现的作品名（去重、保序、最多 5 个），给归因当锚。
+
+    独白/事件描述里常常只写「稿子」「那章」，书名只在用户原话里；
+    把书名显式喂进 prompt，work 才有名字可填。
+    """
+    titles: list[str] = []
+    for m in _TITLE_RE.finditer(text or ""):
+        t = m.group(1).strip()
+        if t and t not in titles:
+            titles.append(t)
+        if len(titles) >= 5:
+            break
+    return titles
 
 
 def _normalize_object(parsed: dict) -> tuple[str, str]:
@@ -1151,12 +1182,19 @@ class EmotionEngine:
 
         user_trunc = user_msg[:500] if user_msg else ""
         assistant_trunc = assistant_msg[:500] if assistant_msg else ""
+        # 书名只在原文里：把《…》显式喂进去，work 才有名字可填（独白常只写「稿子」）。
+        titles = _titles_in(f"{user_trunc}\n{assistant_trunc}")
+        titles_line = (
+            f"本轮原文提到的作品：{'、'.join(f'《{t}》' for t in titles)}"
+            "（事件若关于这些作品，object_ref 用书名）\n" if titles else ""
+        )
 
         prompt_user = (
             f"当前激素值：dopamine={s['dopamine']:.1f}, serotonin={s['serotonin']:.1f}, "
             f"oxytocin={s['oxytocin']:.1f}, cortisol={s['cortisol']:.1f}\n"
             f"当前时间：{hour}时（昼夜仅作特征参考）\n"
             f"距上次聊天间隔：{chat_interval_sec:.0f}秒\n"
+            f"{titles_line}"
             f"用户说：{user_trunc}\n"
             f"你回复：{assistant_trunc}\n"
             f"请输出 JSON：{{\"dopamine\": 新值, \"serotonin\": 新值, "
@@ -1293,11 +1331,17 @@ class EmotionEngine:
         s = self.get_state()
         hour = now.hour
         exp = (experience_desc or "")[:200]
+        titles = _titles_in(exp)
+        titles_line = (
+            f"这段里的作品：{'、'.join(f'《{t}》' for t in titles)}"
+            "（事件若关于这些作品，object_ref 用书名）\n" if titles else ""
+        )
 
         prompt_user = (
             f"当前激素值：dopamine={s['dopamine']:.1f}, serotonin={s['serotonin']:.1f}, "
             f"oxytocin={s['oxytocin']:.1f}, cortisol={s['cortisol']:.1f}\n"
             f"当前时间：{hour}时\n"
+            f"{titles_line}"
             f"你刚经历的事（你自己做的，不是看到的）：{exp}\n"
             f"请输出 JSON：{{\"dopamine\": 新值, \"serotonin\": 新值, "
             f"\"oxytocin\": 新值, \"cortisol\": 新值, "
