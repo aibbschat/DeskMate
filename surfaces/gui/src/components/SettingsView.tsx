@@ -1191,10 +1191,10 @@ function TrustProactiveCard() {
           onChange={(e) => save(e.target.checked)}
         />
         <span>
-          <span className="block text-x] text-ink">
+          <span className="block text-ui text-ink">
             信任感影响主动建议的频率
           </span>
-          <span className="block text-x] text-muted">
+          <span className="block text-meta text-muted">
             开启后，小桔对你的信任度越高，主动提供建议越积极；信任度低时会更保守、更少打扰。关闭则按固定阈值主动建议，不受信任度影响。
           </span>
         </span>

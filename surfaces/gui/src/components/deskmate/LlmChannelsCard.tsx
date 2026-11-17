@@ -76,7 +76,7 @@ export function LlmChannelsCard() {
   return (
     <div className={CARD + " p-4 mb-4"} data-testid="llm-channels-card">
       <div className={FIELD_LABEL}>小桔用哪个模型通道</div>
-      <p className="text-x] text-muted mt-1 mb-1">
+      <p className="text-meta text-muted mt-1 mb-1">
         两个总开关。组内自动排：某条通道限额了就换下一条，额度恢复会自动切回。
         两端（电脑/云端）共用同一份熔断记录。
       </p>
@@ -115,8 +115,8 @@ export function LlmChannelsCard() {
                 {label}
                 {on ? " · 当前" : ""}
               </span>
-              <span className="block text-x] text-muted mt-0.5">{hint}</span>
-              <span className="block text-x] text-muted mt-1">
+              <span className="block text-meta text-muted mt-0.5">{hint}</span>
+              <span className="block text-meta text-muted mt-1">
                 {g.total} 条候选
                 {g.open.length > 0
                   ? ` · ${g.open.length} 条限额中`
@@ -132,12 +132,12 @@ export function LlmChannelsCard() {
       {/* 熔断中的通道：让「为什么在换模型」可见 */}
       {[...grp("paid").open, ...grp("free").open].length > 0 && (
         <div className="mt-3 pt-3 border-t border-line">
-          <div className="text-x] text-muted">
+          <div className="text-meta text-muted">
             限额中（自动跳过，额度恢复后自动切回）
           </div>
           <ul className="mt-1.5 space-y-1" data-testid="llm-open-list">
             {[...grp("paid").open, ...grp("free").open].map((k) => (
-              <li key={k} className="text-x] text-muted font-mono break-all">
+              <li key={k} className="text-meta text-muted font-mono break-all">
                 {k}
               </li>
             ))}
@@ -151,10 +151,10 @@ export function LlmChannelsCard() {
           className="mt-3 pt-3 border-t border-line"
           data-testid="proactive-heartbeat"
         >
-          <div className="text-x] text-muted">后台心跳（主动推理）</div>
+          <div className="text-meta text-muted">后台心跳（主动推理）</div>
           <div
             className={[
-              "text-x] mt-1",
+              "text-meta mt-1",
               heartbeat.judge_age_seconds == null
                 ? "text-muted"
                 : heartbeat.judge_age_seconds > HEARTBEAT_STALE_SECONDS
@@ -168,7 +168,7 @@ export function LlmChannelsCard() {
               ? ` · 今日 ${heartbeat.judge_calls_today} 次`
               : ""}
           </div>
-          <div className="text-x] text-muted mt-0.5">
+          <div className="text-meta text-muted mt-0.5">
             上次心跳：{ageText(heartbeat.tick_age_seconds)}
             {heartbeat.last_skip_reason
               ? ` · ${shortReason(heartbeat.last_skip_reason)}`
@@ -180,12 +180,12 @@ export function LlmChannelsCard() {
       {/* 最近审计：为什么换了通道 */}
       {audit && audit.length > 0 && (
         <div className="mt-3 pt-3 border-t border-line">
-          <div className="text-x] text-muted">最近的通道切换</div>
+          <div className="text-meta text-muted">最近的通道切换</div>
           <ul className="mt-1.5 space-y-1" data-testid="llm-audit-list">
             {audit.map((r, i) => (
               <li
                 key={`${r.ts}-${i}`}
-                className="text-x] text-muted flex items-baseline gap-2"
+                className="text-meta text-muted flex items-baseline gap-2"
               >
                 <span className="font-mono shrink-0">{r.ts.slice(11, 19)}</span>
                 <span className="text-ink shrink-0">
