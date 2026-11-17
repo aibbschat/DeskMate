@@ -930,6 +930,19 @@ class DeskMateMemoryManager:
                     _add("emotional", ego_cog, priority=25, cap=1200, cap_light=1000)
         except Exception:
             pass  # fail-open：认知人格缺失不影响主记忆注入
+        # 情感层（2026-11-17 P1 · R4 表达链）：她对某些人/事**沉积下来**的位置。
+        # 与 emotional（关于他的情绪规律）不同：这是她自己的判断，带证据、慢淡化。
+        # 不受分身开关影响；只读 active、不出现激素数字、不给表达指令。
+        # priority 22：比 emotional(25) 略低、比当下情绪(15) 高——先有眼前心情，
+        # 再有「这个人对我意味着什么」。
+        try:
+            from deskmate.cognitive.memory_injector import build_feeling_context
+
+            _feel_ctx = build_feeling_context(query=user_message, limit=3)
+            if _feel_ctx:
+                _add("feeling", _feel_ctx, priority=22, cap=1200, cap_light=800)
+        except Exception:
+            pass  # fail-open：情感层缺失不影响主对话
         # P2 情绪底色（2026-10-11 落地，2026-10-13 重写为「真实优先 · v2」）：
         # 注入小桔「当下真实状态」——只提供状态，不给表达方式指令。
         #   - 激素原值（对照基线）+ 心情标签/detail/intensity（她的产物）

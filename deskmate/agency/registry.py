@@ -59,6 +59,12 @@ REGISTRY: dict[str, ActionSpec] = {
         label="自我反思",
         description="回看最近的判据/看法变化，对旧看法做 maintain/revise/overturn 裁决并留下为什么（落本地认知库 item_history），让沉淀变成有记忆的沉淀；不碰用户文件、不发消息",
     ),
+    "feeling_reflection": ActionSpec(
+        action_type="feeling_reflection",
+        risk="low",
+        label="情感回顾",
+        description="按周回看某个过线对象（人/作品/事物）这段时间具体发生过的事，看它在她心里现在是什么位置（写本地认知库 feeling 层，同对象只留一条 active，旧说法留痕）；空着也算，不硬编、不代笔",
+    ),
     "intent_generation": ActionSpec(
         action_type="intent_generation",
         risk="low",

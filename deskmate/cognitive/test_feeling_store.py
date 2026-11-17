@@ -58,6 +58,26 @@ def test_feeling_id_only_from_object():
     assert a.startswith("feeling_") and len(a) == len("feeling_") + 8
 
 
+def test_demonstrative_object_is_same_feeling(tmp_path):
+    """「这稿子」和「稿子」必须落同一条，否则证据被拆散、永远过不了 R2。"""
+    from deskmate.growth.emotion_engine import _clean_object
+
+    assert _clean_object("这稿子", "work") == ("稿子", "work")
+    store = FeelingStore(_mk_db(tmp_path))
+    assert store.resolve_object("这稿子", "work") == ("稿子", "work")
+    store.upsert(
+        object_ref="稿子", object_kind="thing", content="交付完也可能丢。",
+        evidence=[
+            _ev("a", "2026-10-01T10:00:00", "x"),
+            _ev("b", "2026-10-10T10:00:00", "y"),
+            _ev("c", "2026-10-20T10:00:00", "z"),
+        ],
+        reason="沉淀",
+    )
+    # 模型换叫法（「章稿子」）也要归到已有 feeling 的对象上
+    assert store.canonical_object("章稿子", "thing") == ("稿子", "thing")
+
+
 def test_upsert_keeps_one_active_and_leaves_trace(tmp_path):
     store = FeelingStore(_mk_db(tmp_path))
     first = store.upsert(
@@ -251,3 +271,128 @@ def test_fade_stale_monthly_and_never_deletes(tmp_path):
 
     # 同一个月内不重复淡（月级，不是每次调用都乘）
     assert store.fade_stale() == 0
+
+
+# ----------------------------------------------------------------------
+# R4 表达链 / 注入
+# ----------------------------------------------------------------------
+def test_build_feeling_context_threshold_and_query_recall(tmp_path, monkeypatch):
+    from deskmate.cognitive.memory_injector import build_feeling_context
+
+    store = FeelingStore(_mk_db(tmp_path))
+    common = [
+        _ev("x1", "2026-10-01T10:00:00", "第一次"),
+        _ev("x2", "2026-10-10T10:00:00", "第二次"),
+        _ev("x3", "2026-10-20T10:00:00", "第三次"),
+    ]
+    store.upsert(
+        object_ref="萧盛", object_kind="person", content="他扛得住事。",
+        evidence=common, reason="沉淀", confidence=0.6,
+    )
+    store.upsert(
+        object_ref="稿子", object_kind="thing", content="交付完也可能丢。",
+        evidence=common, reason="沉淀", confidence=0.2,
+    )
+    monkeypatch.setenv("DESKMATE_DIR", str(tmp_path))
+
+    ctx = build_feeling_context(query="今天天气不错")
+    assert "萧盛" in ctx and "他扛得住事" in ctx
+    assert "稿子" not in ctx  # 分量 <0.25 默认不主动注入
+    assert "多巴胺" not in ctx and "激素" not in ctx and "你应该" not in ctx
+
+    ctx2 = build_feeling_context(query="稿子又改了一版")
+    assert "稿子" in ctx2  # 查询命中仍可召回
+
+
+def test_build_feeling_context_empty_when_no_feeling(tmp_path, monkeypatch):
+    from deskmate.cognitive.memory_injector import build_feeling_context
+
+    _mk_db(tmp_path)
+    monkeypatch.setenv("DESKMATE_DIR", str(tmp_path))
+    assert build_feeling_context(query="萧盛") == ""
+
+
+def test_r4_parse_drops_numeric_fields():
+    from deskmate.growth.emotion_engine import _parse_feeling_reason
+
+    parsed = _parse_feeling_reason(json.dumps({
+        "description": "他说那话时，我听见的是在意。",
+        "reason": "他这次没绕开",
+        "dopamine": 99, "cortisol": 0, "serotonin": 1,
+    }))
+    assert parsed == {
+        "description": "他说那话时，我听见的是在意。",
+        "reason": "他这次没绕开",
+    }
+
+
+def test_r4_call_b_changes_text_only(tmp_path, monkeypatch):
+    from deskmate.growth.emotion_engine import EmotionEngine, HORMONE_KEYS
+
+    base = tmp_path
+    _mk_db(base)  # profile_items / item_history / memory_anchors
+    engine = EmotionEngine(base_dir=base)  # 再补 emotion_state / emotion_log
+    store = FeelingStore(base / "deskmate.db")
+    saved = store.upsert(
+        object_ref="稿子", object_kind="thing",
+        content="交付完成并不保证它真留在手里。",
+        evidence=[
+            _ev("e1", "2026-10-26T10:00:00", "稿子写完仍想回头再磨两笔"),
+            _ev("e2", "2026-10-31T10:00:00", "终裁定号，交付完成"),
+            _ev("e3", "2026-11-07T10:00:00", "更正后发现稿子丢失"),
+        ],
+        reason="沉淀", confidence=0.5,
+    )
+    conn = sqlite3.connect(base / "deskmate.db")
+    conn.execute(
+        "INSERT INTO emotion_log(id, ts, source, description) VALUES"
+        "('log1', '2026-11-17T10:00:00', 'chat', '旧独白（旧理由）')"
+    )
+    conn.commit()
+    conn.close()
+
+    before = engine.get_state()
+    monkeypatch.setattr(
+        "deskmate.memory.llm.chat_memory",
+        lambda system, user, **kw: json.dumps({
+            "description": "他说那话时，我听见的是在意。",
+            "reason": "他这次没绕开",
+            "dopamine": 99, "cortisol": 0, "serotonin": 1,
+            "meaning": 0, "control": 0, "oxytocin": 0, "fatigue": 0,
+        }),
+    )
+
+    engine._apply_feeling_reason(
+        obj_ref="章", obj_kind="work",  # 模型给了个太泛的叫法
+        values=before, deltas={k: 0.0 for k in HORMONE_KEYS},
+        user_msg="稿子找到了", assistant_msg="那就好",
+        desc="旧独白", reason="旧理由", log_id="log1",
+        now=datetime.now(),
+    )
+
+    after = engine.get_state()
+    assert all(after[k] == before[k] for k in HORMONE_KEYS)  # 数值一个不动
+    assert after["description"] == "他说那话时，我听见的是在意。"
+
+    conn = sqlite3.connect(base / "deskmate.db")
+    log_desc = conn.execute(
+        "SELECT description FROM emotion_log WHERE id='log1'"
+    ).fetchone()[0]
+    conn.close()
+    assert log_desc == "他说那话时，我听见的是在意。（他这次没绕开）"
+    # R4 使用 = 触碰（重置淡化计时）
+    assert store.get(saved["id"])["extra"]["last_touched"] != ""
+
+
+# ----------------------------------------------------------------------
+# R3 接入（settings / registry）
+# ----------------------------------------------------------------------
+def test_feeling_reflection_is_wired():
+    from deskmate.agency.registry import REGISTRY
+    from deskmate.agency.settings import AgencySettings, DEFAULTS
+
+    assert "feeling_reflection" in DEFAULTS["whitelist"]["actions"]
+    assert "feeling_reflection" in REGISTRY
+    s = AgencySettings.from_dict({})
+    assert s.feeling_reflection["cooldown_hours"] == 168
+    assert s.feeling_reflection["empty_cooldown_days"] == 30

@@ -220,6 +220,28 @@ class AgencyEngine:
                     count=res.get("verdicts", 0),
                 )
 
+            if action_type == "feeling_reflection":
+                # 情感层 R3：按周回看过线对象，由她自己写「在心里是什么位置」。
+                # 与 worldview_reflection / reflection 并列但错峰（168h 冷却）。
+                # 空输出合法（reflected=True, written=0）——连续两期空会退池 30 天，
+                # 所以这里只要跑过就记一笔，让 attempts 能累加。
+                from .behaviors.feeling_reflection import run_feeling_reflection
+
+                res = run_feeling_reflection(
+                    str(self.base_dir), settings.feeling_reflection
+                )
+                if not res.get("reflected"):
+                    return None  # 冷却中 / 没候选 / 没 provider → 不刷屏
+                return self.log.add(
+                    action_type=action_type,
+                    risk="low",
+                    status=TaskStatus.DONE,
+                    topic="",
+                    summary=res.get("summary", ""),
+                    detail="",
+                    count=res.get("written", 0),
+                )
+
             if action_type == "intent_generation":
                 # 意图层（R11）：从河床素材（关怀/观察/兴趣）里长出「她自己想干的事」，
                 # 写本地 intents（status=open）。本行为**只负责「想」不负责「做」**——

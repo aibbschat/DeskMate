@@ -94,6 +94,21 @@ def _date_of(ts: str) -> str:
     return str(ts or "")[:10]
 
 
+# 与 emotion_engine._clean_object 同一口径：「这稿子」=「稿子」。
+_DEMONSTRATIVES = (
+    "这个", "那个", "这份", "那份", "这篇", "那篇", "这本", "那本",
+    "这张", "那张", "这只", "那只", "这", "那",
+)
+
+
+def _strip_demonstrative(ref: str) -> str:
+    s = str(ref or "").strip()
+    for p in _DEMONSTRATIVES:
+        if s.startswith(p) and len(s) > len(p):
+            return s[len(p):].strip()
+    return s
+
+
 class FeelingStore:
     """情感层读写（只碰 ``profile_items`` / ``item_history`` / ``memory_anchors``）。"""
 
@@ -120,6 +135,8 @@ class FeelingStore:
         kind = str(object_kind or "").strip().lower()
         if not ref or kind not in FEELING_KINDS:
             return "", ""
+        if kind in ("work", "thing"):
+            ref = _strip_demonstrative(ref)
         try:
             with self._connect() as conn:
                 if kind == "person":
@@ -201,6 +218,35 @@ class FeelingStore:
     # ------------------------------------------------------------------
     # 读
     # ------------------------------------------------------------------
+    def canonical_object(self, object_ref: str, object_kind: str) -> tuple[str, str]:
+        """写库前把对象对齐到**已有的情感对象**（work/thing 才做包含匹配）。
+
+        模型对同一件东西会换叫法（「稿子」「这稿子」「章稿子」）。不归到
+        已有 feeling 的 topic 上，emotion_log 会裂成多个对象，R2 按对象分组
+        时证据被拆散，同对象也会长出第二条 feeling。人物不参与包含匹配，
+        避免把「萧」和「萧盛」当成一个人。
+        """
+        ref = str(object_ref or "").strip()
+        kind = str(object_kind or "").strip().lower()
+        if not ref or kind not in FEELING_KINDS:
+            return ref, kind
+        if kind in ("work", "thing"):
+            ref = _strip_demonstrative(ref)
+        if kind in ("work", "thing"):
+            try:
+                for f in self.list_active(limit=200):
+                    extra = f.get("extra") or {}
+                    fk = str(extra.get("object_kind") or "")
+                    if fk not in ("work", "thing"):
+                        continue
+                    topic = str(extra.get("object_ref") or f.get("topic") or "").strip()
+                    if len(topic) >= 2 and (topic in ref or ref in topic):
+                        # 同一样东西，work/thing 两种叫法都收；沿用已有 kind
+                        return topic, fk
+            except Exception:
+                pass
+        return ref, kind
+
     def get(self, item_id: str) -> Optional[dict]:
         try:
             with self._connect() as conn:

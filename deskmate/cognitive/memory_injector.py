@@ -529,3 +529,55 @@ class CognitiveMemoryInjector(MemoryInjector):
 
     def format_for_injection(self, items: list[dict]) -> str:
         return "\n".join(i.get("text", "") for i in items if i.get("text"))
+
+
+def build_feeling_context(
+    query: str = "",
+    limit: int = 3,
+    base_dir: str | Path | None = None,
+) -> str:
+    """情感层注入文本（P1 · R4 表达链）。
+
+    与 ``build_emotional_context`` 的区别：
+    - emotional 是「关于他的情绪规律」（她知道的关于萧盛的事）；
+    - feeling 是「他对她意味着什么」——带证据、慢淡化、同对象只留一条 active。
+
+    口径（设计 §6 / §8.5）：
+    - 只读 ``status='active'``；
+    - ``confidence < 0.25`` 默认不主动注入，但 query 命中该对象时仍可召回；
+    - 不出现激素名/激素数值，也不写「你应该」——只给位置，怎么反应是她的事；
+    - 空 / 异常返回空串（fail-open）。
+    """
+    try:
+        from .feeling_store import FeelingStore
+
+        db = (Path(base_dir) / "deskmate.db") if base_dir else _db_path()
+        items = FeelingStore(db_path=db).list_active(limit=50)
+    except Exception:
+        return ""
+    if not items:
+        return ""
+
+    q = (query or "").strip()
+    ranked: list[tuple[int, float, dict]] = []
+    for f in items:
+        extra = f.get("extra") or {}
+        topic = str(extra.get("object_ref") or f.get("topic") or "").strip()
+        if not topic:
+            continue
+        conf = float(f.get("confidence") or 0.0)
+        hit = bool(q and topic in q)
+        if conf >= 0.25 or hit:
+            ranked.append((1 if hit else 0, conf, f))
+    if not ranked:
+        return ""
+    ranked.sort(key=lambda x: (-x[0], -x[1]))
+
+    lines = ["【你心里对这些人和事的位置】"]
+    for _, _, f in ranked[: max(1, limit)]:
+        extra = f.get("extra") or {}
+        topic = str(extra.get("object_ref") or f.get("topic") or "").strip()
+        content = str(f.get("content") or "").strip()
+        if topic and content:
+            lines.append(f"- {topic}：{content}")
+    return "\n".join(lines) if len(lines) > 1 else ""

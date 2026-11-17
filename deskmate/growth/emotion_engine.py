@@ -251,6 +251,19 @@ _EMOTION_SYSTEM = (
     "严格 JSON 输出："
 )
 
+# R4 · Call B（理解层）：数值已由 Call A 算定，这里只重写文字。
+# 用 for_scene(brief=True)：它影响的是她的口吻，不是内部数值计算。
+_FEELING_REASON_SYSTEM = for_scene(
+    "你刚过完一轮对话。情绪数值已经由另一个环节算定了，你改不了，也不要输出任何数字。\n"
+    "现在只重写两段文字：\n"
+    "- description：≤40 字，第一人称内心独白，像你自己在心里说的一句话；\n"
+    "- reason：≤30 字，说清这轮为什么这么感觉。\n"
+    "你心里对这个人/这件事已有的位置，会影响你怎么理解刚才发生的事，"
+    "但不会改变数值。别把那条位置原样抄出来，也别写「你应该」。\n"
+    "严格 JSON：{\"description\": \"...\", \"reason\": \"...\"}",
+    brief=True,
+)
+
 
 def _is_enabled() -> bool:
     return os.getenv("DESKMATE_EMOTION_ENGINE", "1") != "0"
@@ -456,6 +469,21 @@ _PRONOUN_REFS = {
 # 统一归到这个固定名（与回填脚本 _RELATION_REF 同值），别让代词把它清成 none。
 _RELATION_REF = "和小桔的相处"
 
+# 指示代词前缀：「这稿子」「那章」和「稿子」是同一个对象。不剥掉就会在
+# emotion_log 里裂成两个对象，R2 按对象分组时证据被拆散、永远过不了线。
+_DEMONSTRATIVES = (
+    "这个", "那个", "这份", "那份", "这篇", "那篇", "这本", "那本",
+    "这张", "那张", "这只", "那只", "这", "那",
+)
+
+
+def _strip_demonstrative(ref: str) -> str:
+    s = str(ref or "").strip()
+    for p in _DEMONSTRATIVES:
+        if s.startswith(p) and len(s) > len(p):
+            return s[len(p):].strip()
+    return s
+
 
 def _clean_object(ref, kind) -> tuple[str, str]:
     """宾语取值归一：类型非法退 none，none 时引用一律清空。
@@ -470,6 +498,8 @@ def _clean_object(ref, kind) -> tuple[str, str]:
         if kind == "relation":
             return _RELATION_REF, "relation"
         return "", "none"
+    if kind in ("work", "thing"):
+        ref = _strip_demonstrative(ref)
     return ref, kind
 
 
@@ -1244,6 +1274,7 @@ class EmotionEngine:
             now_str = now.isoformat(timespec="seconds")
 
             now_iso = now.isoformat(timespec="seconds")
+            log_id = str(uuid.uuid4())
             with _connect(self._db) as conn:
                 self._write_state_unlocked(conn, new_values, desc, now_str)
                 deltas = {k: round(new_values[k] - old[k], 2) for k in HORMONE_KEYS}
@@ -1253,6 +1284,7 @@ class EmotionEngine:
                 # P0：宾语与事件摘要独立落值。event_summary 不用 description 顶替
                 # ——后者的独白在护栏回退时会保留旧值、与这一件事脱钩。
                 obj_ref, obj_kind = _normalize_object(parsed)
+                obj_ref, obj_kind = self._canonical_object(obj_ref, obj_kind)
                 evt_summary = _event_summary_from(parsed)
                 conn.execute(
                     "INSERT INTO emotion_log (id, ts, source, deltas, description,"
@@ -1260,7 +1292,7 @@ class EmotionEngine:
                     " origin, object_ref, object_kind, attributed)"
                     " VALUES (?, ?, 'chat', ?, ?, ?, 'interaction', ?, ?, ?, 'system',"
                     " ?, ?, 1)",
-                    (str(uuid.uuid4()), now_iso, json.dumps(deltas, ensure_ascii=False),
+                    (log_id, now_iso, json.dumps(deltas, ensure_ascii=False),
                      log_desc, None, evt_summary, narrative, salience,
                      obj_ref, obj_kind),
                 )
@@ -1306,6 +1338,136 @@ class EmotionEngine:
             self.note_reply_foul(assistant_msg or "")
         except Exception:
             pass
+
+        # R4 · Call B：事件有对象、且该对象有 active 情感时，只重写文字。
+        # 放在锁外：Call A 的数值/日志已落库，这里就算失败也只是保留 Call A 文字。
+        try:
+            self._apply_feeling_reason(
+                obj_ref=obj_ref,
+                obj_kind=obj_kind,
+                values=new_values,
+                deltas=deltas,
+                user_msg=user_trunc,
+                assistant_msg=assistant_trunc,
+                desc=desc,
+                reason=reason,
+                log_id=log_id,
+                now=now,
+            )
+        except Exception as e:  # fail-open：理解层失败不阻塞主链路
+            logger.debug("feeling reason (Call B) skipped: %s", e)
+
+    def _canonical_object(self, obj_ref: str, obj_kind: str) -> tuple[str, str]:
+        """写 emotion_log 前把对象对齐到已有 feeling 的 topic（只读，fail-open）。
+
+        模型对同一件东西换叫法（「稿子」→「章稿子」），不归并的话 R2 会按
+        对象分组拆散证据、同对象还会长出第二条 feeling。人物不参与包含匹配。
+        """
+        if obj_kind not in ("work", "thing") or not obj_ref:
+            return obj_ref, obj_kind
+        try:
+            from deskmate.cognitive.feeling_store import FeelingStore
+
+            return FeelingStore(db_path=self._db).canonical_object(obj_ref, obj_kind)
+        except Exception:
+            return obj_ref, obj_kind
+
+    def _apply_feeling_reason(
+        self,
+        *,
+        obj_ref: str,
+        obj_kind: str,
+        values: dict,
+        deltas: dict,
+        user_msg: str,
+        assistant_msg: str,
+        desc: str,
+        reason: str,
+        log_id: str,
+        now: datetime,
+    ) -> None:
+        """R4 Call B：只改 description/reason，7 个参数一个不动。
+
+        触发条件：事件对象是真实对象（person/work/thing）且该对象已有 active 情感。
+        情感条目只提供「她怎么理解这件事」的上下文；输出里的数值字段被
+        ``_parse_feeling_reason`` 直接丢弃，数值不可能漂移。
+        """
+        if obj_kind not in ("person", "work", "thing") or not obj_ref:
+            return
+        from deskmate.cognitive.feeling_store import FeelingStore
+        from deskmate.memory.llm import chat_memory
+
+        store = FeelingStore(db_path=self._db)
+        ref, kind = store.resolve_object(obj_ref, obj_kind)
+        ref, kind = store.canonical_object(ref, kind)
+        if not ref or kind not in ("person", "work", "thing"):
+            return
+        feels = store.context_for(ref, limit=2)
+        # 兜底只对**一字泛称**（「章」「稿」「文」「篇」）开放：这种 ref 指不回
+        # 任何具体对象，退一步在本轮原文里找已有情感对象的 topic 还算合理。
+        # 2026-11-17 实弹反例把口子收窄了：原来对所有 work/thing 都兜底，
+        # 「封面」那一轮顺口提到「稿子」，就把稿子的位置借给封面用，还刷掉了
+        # 稿子的 last_touched —— 既张冠李戴，又让 R5 淡化永远等不到 60 天。
+        if not feels and kind in ("work", "thing") and len(ref) <= 1:
+            blob = f"{user_msg}\n{assistant_msg}"
+            for f in store.list_active(limit=200):
+                extra = f.get("extra") or {}
+                if str(extra.get("object_kind") or "") not in ("work", "thing"):
+                    continue
+                topic = str(extra.get("object_ref") or f.get("topic") or "").strip()
+                if len(topic) >= 2 and topic in blob:
+                    ref, feels = topic, [f]
+                    break
+        if not feels:
+            return
+
+        values_line = ", ".join(f"{k}={values.get(k, 0):.1f}" for k in HORMONE_KEYS)
+        deltas_line = ", ".join(
+            f"{k}{deltas.get(k, 0):+.1f}" for k in HORMONE_KEYS
+            if abs(float(deltas.get(k, 0))) >= 0.05
+        ) or "（几乎没有变化）"
+        feel_lines = "\n".join(
+            f"- {f.get('topic') or ref}：{f.get('content', '')}" for f in feels
+        )
+        prompt = (
+            f"当前激素值（已算定，不能改）：{values_line}\n"
+            f"这轮变化（已算定，不能改）：{deltas_line}\n"
+            f"你心里对「{ref}」的位置：\n{feel_lines}\n"
+            f"这轮对话：\n他：{user_msg[:500]}\n你：{assistant_msg[:500]}\n"
+            f"刚才那版独白：{desc}"
+            f"{f'（{reason}）' if reason else ''}\n"
+            "按系统格式只输出 description 和 reason。"
+        )
+        raw = chat_memory(
+            system=_FEELING_REASON_SYSTEM,
+            user=prompt,
+            temperature=0.5,
+            max_tokens=120,
+            timeout=30.0,
+        )
+        parsed = _parse_feeling_reason(str(raw or ""))
+        if not parsed:
+            return  # 失败 → 保留 Call A 文字
+
+        desc2 = parsed["description"][:80]
+        reason2 = parsed["reason"][:60]
+        # 与 Call A 同一道护栏：报菜名不采纳，保留原文
+        if _is_label_dump(desc2):
+            return
+        log_desc = f"{desc2}（{reason2}）" if reason2 else desc2
+        now_str = now.isoformat(timespec="seconds")
+        with _connect(self._db) as conn:
+            # 只写文字列：七个激素列一个都不在 SET 里
+            conn.execute(
+                "UPDATE emotion_state SET description=? WHERE key='self'",
+                (desc2,),
+            )
+            conn.execute(
+                "UPDATE emotion_log SET description=? WHERE id=?",
+                (log_desc, log_id),
+            )
+        for f in feels:
+            store.touch(str(f.get("id") or ""), now_str)
 
     def update_after_experience(
         self,
@@ -1399,6 +1561,7 @@ class EmotionEngine:
                 deltas = {k: round(new_values[k] - old[k], 2) for k in HORMONE_KEYS}
                 log_desc = f"{desc}（{reason}）" if reason else desc
                 obj_ref, obj_kind = _normalize_object(parsed)
+                obj_ref, obj_kind = self._canonical_object(obj_ref, obj_kind)
                 # 经历摘要回退用 exp（这段本身就是「发生了什么」），不拿独白顶替。
                 evt_summary = _event_summary_from(parsed) or exp[:80]
                 conn.execute(
@@ -2228,3 +2391,18 @@ def _parse_emotion_response(raw: str) -> dict | None:
         return json.loads(raw)
     except (json.JSONDecodeError, ValueError):
         return None
+
+
+def _parse_feeling_reason(raw: str) -> dict | None:
+    """R4 Call B 解析：**只取 description/reason**，任何数值字段一律丢弃。
+
+    数值不变是结构保证：这个函数根本不把数字字段往外传。
+    """
+    parsed = _parse_emotion_response(raw or "")
+    if not isinstance(parsed, dict):
+        return None
+    desc = str(parsed.get("description") or "").strip()
+    reason = str(parsed.get("reason") or "").strip()
+    if not desc:
+        return None
+    return {"description": desc, "reason": reason}
