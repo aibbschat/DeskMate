@@ -3434,6 +3434,19 @@ export async function getProactiveHeartbeat(): Promise<ProactiveHeartbeat | null
  * 2026-11-17 咨询改成后台派发：派完小桔立刻回话，专家在后台跑。不把进度露出来的话，
  * 用户面对的就是「她说请了专家，然后没了」——所以这里读状态文件，前端显示在工作。
  */
+/** 单个专家的实时进度（只有事实：在读哪章、读了几次、累计读入多少字）。 */
+export interface ConsultExpertProgress {
+  /** 当前正在跑的工具名：read_book / list_books；空串 = 没在读，正在推理。 */
+  busy?: string;
+  /** read_book 的章节参数（空串 = 通读整本）。 */
+  chapter?: string;
+  /** 读稿工具被调用（完成）的次数。 */
+  reads?: number;
+  /** 累计读入的字符数（工具返回文本长度，含覆盖率头）。 */
+  chars?: number;
+  updated_at?: number;
+}
+
 export interface ConsultRunView {
   id: string;
   session_id?: string | null;
@@ -3445,6 +3458,8 @@ export interface ConsultRunView {
   elapsed?: number | null;
   expert_names: string[];
   experts?: string[];
+  /** expert_id → 该专家此刻在做什么。 */
+  progress?: Record<string, ConsultExpertProgress>;
   results?: { expert: string; name: string; status: string; chars: number; elapsed: number }[];
   audit_path?: string;
   excerpt?: string;

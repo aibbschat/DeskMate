@@ -28,6 +28,7 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 import os
 import secrets
 import threading
@@ -217,6 +218,90 @@ def _find(state: dict[str, Any], run_id: str) -> Optional[dict[str, Any]]:
     return None
 
 
+# ---------------------------------------------------------------------------
+# 进度（2026-11-17）：让「正在读《夜不收》」这句话真的会动
+# ---------------------------------------------------------------------------
+#
+# 之前的版本只有一个写死的标签 + 秒表：专家读了 3 章还是第 0 章，界面上一模一样。
+# 现在把**真实发生的事**记下来——哪个工具在跑、补读的是哪一章、读了几次、累计多少字。
+#
+# 🔴 红线：只报事实，不做假进度条。没有「已完成 37%」这种数字，因为我们算不出来；
+# 百分比一旦是猜的，就成了最坏的那种谎（用户会据此判断「快了」）。
+
+#: 会被记账的读稿工具（只有这两个，见 bots/reading.py:make_reading_tools）。
+_PROGRESS_TOOLS = frozenset({"read_book", "list_books"})
+
+
+def _merge_progress(run_id: str, expert_id: str, **fields: Any) -> None:
+    """把一位专家的进度并进状态文件；无变化就不广播。
+
+    `fields` 里 `reads_inc` / `chars_inc` 是累加量，其余是覆盖值（None = 不改）。
+    """
+    def _do(state: dict[str, Any]) -> Optional[dict[str, Any]]:
+        run = _find(state, run_id)
+        if run is None or run.get("status") != "running":
+            return None
+        bucket = run.setdefault("progress", {})
+        cur = dict(bucket.get(expert_id) or {})
+        reads_inc = int(fields.pop("reads_inc", 0) or 0)
+        chars_inc = int(fields.pop("chars_inc", 0) or 0)
+        changed = bool(reads_inc or chars_inc)
+        if reads_inc:
+            cur["reads"] = int(cur.get("reads") or 0) + reads_inc
+        if chars_inc:
+            cur["chars"] = int(cur.get("chars") or 0) + chars_inc
+        for key, value in fields.items():
+            if value is not None and cur.get(key) != value:
+                cur[key] = value
+                changed = True
+        if not changed:
+            return None
+        cur["updated_at"] = time.time()
+        bucket[expert_id] = cur
+        return dict(run)
+
+    snapshot = _mutate(_do)
+    if snapshot:
+        _notify("progress", snapshot)
+
+
+def _instrument_reading(fn: Any, *, run_id: str, expert_id: str) -> Any:
+    """给读稿工具套一层记账：进入时记「在跑什么」，结束时记「读了几次/多少字」。
+
+    用闭包把 run_id / expert_id 钉住，不用 thread-local：工具是在 `asyncio.to_thread`
+    的执行器线程里跑的，跟 `_run_one` 不在一个线程上，thread-local 传不过去。
+    `functools.wraps` 保留签名与文档串，注册表据此生成 schema（有测试钉这一条）。
+    """
+    name = getattr(fn, "__name__", "")
+    if name not in _PROGRESS_TOOLS:
+        return fn
+
+    @functools.wraps(fn)
+    def inner(*args: Any, **kwargs: Any) -> Any:
+        chapter = ""
+        if name == "read_book":
+            raw = kwargs.get("chapter")
+            if raw is None and len(args) > 1:
+                raw = args[1]
+            chapter = str(raw or "").strip()
+        _merge_progress(run_id, expert_id, busy=name, chapter=chapter)
+        text = ""
+        try:
+            out = fn(*args, **kwargs)
+            text = out if isinstance(out, str) else ""
+            return out
+        finally:
+            _merge_progress(
+                run_id,
+                expert_id,
+                busy="",
+                reads_inc=1 if name == "read_book" else 0,
+                chars_inc=len(text),
+            )
+
+    return inner
+
+
 def _mark_delivered(run_id: str) -> bool:
     """把一条结果标成「已投递给小桔」。返回 True 表示本次抢到了投递权（幂等去重）。"""
     claimed = {"ok": False}
@@ -268,6 +353,8 @@ def _notification_payload(run: dict[str, Any]) -> dict[str, Any]:
         "elapsed": run.get("elapsed"),
         "experts": run.get("experts") or [],
         "expert_names": run.get("expert_names") or [],
+        # 进度只带计数与当前动作，不带任何正文（前端要显示"在读第几章"，不要稿子）。
+        "progress": run.get("progress") or {},
         "results": [
             {
                 "expert": r.get("expert"),
@@ -382,20 +469,27 @@ def _normalize_experts(raw: Any) -> list[str]:
     return out
 
 
-def _build_expert_engine(expert_id: str, provider: Any, model: str, shelf: Any) -> Any:
+def _build_expert_engine(
+    expert_id: str, provider: Any, model: str, shelf: Any, run_id: str = ""
+) -> Any:
     from coworker.agent import build_engine
     from coworker.permissions import Mode
     from coworker.personas.registry import get_registry
     from deskmate.bots.reading import make_reading_tools
 
     agent = get_registry().get(expert_id).agent()
+    reading = list(make_reading_tools(shelf))
+    if run_id:
+        reading = [
+            _instrument_reading(fn, run_id=run_id, expert_id=expert_id) for fn in reading
+        ]
     engine = build_engine(
         agent=agent,
         provider=provider,
         model=model,
         workspace=None,
         mode=Mode.BYPASS_APPROVALS,
-        extra_tools=list(make_reading_tools(shelf)),
+        extra_tools=reading,
     )
     # 咨询里不允许弹问询卡片，也不允许沉淀 skill：专家只交意见，问题由小桔对萧盛说。
     engine.registry._tools.pop("ask_user", None)
@@ -454,11 +548,12 @@ def _run_one(
     model: str,
     shelf: Any,
     timeout: int,
+    run_id: str = "",
 ) -> tuple[str, str, float]:
     """返回 (状态, 文本, 耗时)。状态 ∈ {ok, timeout, error}。"""
     started = time.time()
     try:
-        engine = _build_expert_engine(expert_id, provider, model, shelf)
+        engine = _build_expert_engine(expert_id, provider, model, shelf, run_id)
         text, status = asyncio.run(_collect(engine, _prompt(expert_id, brief, book), timeout))
         text = text.strip()
         if status == "timeout":
@@ -530,7 +625,9 @@ def _job_thread(
     try:
         with ThreadPoolExecutor(max_workers=len(chosen)) as pool:
             futures = {
-                pool.submit(_run_one, eid, brief, book, provider, model, shelf, timeout): eid
+                pool.submit(
+                    _run_one, eid, brief, book, provider, model, shelf, timeout, run_id
+                ): eid
                 for eid in chosen
             }
             for fut in as_completed(futures):

@@ -36,7 +36,8 @@ describe("ConsultStatusBar", () => {
     render(<ConsultStatusBar sessionId="s1" />);
     const row = await screen.findByTestId("consult-running");
     expect(row.textContent).toContain("人物专家");
-    expect(row.textContent).toContain("正在读《夜不收》");
+    // 还没有任何读稿记录时只说「在看这本书」——说「正在读」就成了没有依据的断言。
+    expect(row.textContent).toContain("正在看《夜不收》");
     expect(row.textContent).toMatch(/已 3:1[23]/);
   });
 
@@ -62,6 +63,61 @@ describe("ConsultStatusBar", () => {
     expect(done.textContent).toContain("已交付");
     expect(done.textContent).toContain("8:32");
     expect(screen.queryByTestId("consult-running")).toBeNull();
+  });
+
+  it("进度会动：正在读哪一章 → 读了几次在梳理", async () => {
+    // 2026-11-17 萧哥指出的问题：这行以前从派出到交付永远写着「正在读《夜不收》」。
+    // 现在它翻译后端记录的事实（busy / chapter / reads / chars），不是猜的百分比。
+    vi.mocked(getConsultRuns).mockResolvedValue({
+      active: [
+        {
+          ...RUNNING,
+          progress: { character: { busy: "read_book", chapter: "第十一章", reads: 2, chars: 48000 } },
+        },
+      ],
+      recent: [],
+    });
+    render(<ConsultStatusBar sessionId="s1" />);
+    const row = await screen.findByTestId("consult-running");
+    expect(row.textContent).toContain("正在读「第十一章」");
+
+    // 读者读完、模型开始推理：同一行改成「读了几次 + 累计字数」
+    act(() => {
+      window.dispatchEvent(
+        new CustomEvent("deskmate:consult", {
+          detail: {
+            ...RUNNING,
+            progress: { character: { busy: "", chapter: "第十一章", reads: 3, chars: 72000 } },
+          },
+        }),
+      );
+    });
+    const after = await screen.findByTestId("consult-running");
+    expect(after.textContent).toContain("已读 3 次（7.2 万字）");
+    expect(after.textContent).toContain("正在梳理");
+    expect(after.textContent).not.toContain("正在读「第十一章」");
+  });
+
+  it("多位专家各说各的，不合成一句「正在读稿」", async () => {
+    vi.mocked(getConsultRuns).mockResolvedValue({
+      active: [
+        {
+          ...RUNNING,
+          experts: ["character", "lit-editor"],
+          expert_names: ["人物专家", "文学编辑"],
+          progress: {
+            character: { busy: "read_book", chapter: "第十一章" },
+            "lit-editor": { busy: "", reads: 1, chars: 900 } ,
+          },
+        },
+      ],
+      recent: [],
+    });
+    render(<ConsultStatusBar sessionId="s1" />);
+    const a = await screen.findByTestId("consult-progress-character");
+    const b = await screen.findByTestId("consult-progress-lit-editor");
+    expect(a.textContent).toContain("人物专家 正在读「第十一章」");
+    expect(b.textContent).toContain("文学编辑 已读 1 次");
   });
 
   it("横向对齐输入框那一列，不是贴窗口左边", async () => {

@@ -10,7 +10,7 @@
 // 已完成的条目留一小会儿就消失，不占据版面。
 
 import { useEffect, useState } from "react";
-import { getConsultRuns, type ConsultRunView } from "../api";
+import { getConsultRuns, type ConsultExpertProgress, type ConsultRunView } from "../api";
 
 /** 完成态显示多久后收起（毫秒）。 */
 const REVEAL_DONE_MS = 20_000;
@@ -25,6 +25,41 @@ function clock(seconds: number): string {
   return `${h ? `${h}:` : ""}${mm}:${String(s).padStart(2, "0")}`;
 }
 
+/** 累计读入字数 → 「9.6 万字」/「3200 字」。 */
+function amount(chars?: number): string {
+  const n = Number(chars ?? 0);
+  if (!n) return "";
+  return n >= 10000 ? `${(n / 10000).toFixed(1)} 万字` : `${n} 字`;
+}
+
+/**
+ * 一位专家此刻在做什么。**只翻译后端记录的事实**（哪个工具在跑、哪一章、读了几次），
+ * 不做「已完成 37%」这类推算——百分比一旦是猜的，用户就会据此判断「快了」。
+ */
+function expertState(p: ConsultExpertProgress | undefined, book: string): string {
+  const chapter = (p?.chapter || "").trim();
+  const reads = Number(p?.reads ?? 0);
+  if (p?.busy === "read_book") return chapter ? `正在读「${chapter}」` : "正在通读全书";
+  if (p?.busy === "list_books") return "正在翻书架";
+  if (reads > 0) {
+    const sum = amount(p?.chars);
+    return `已读 ${reads} 次${sum ? `（${sum}）` : ""}，正在梳理`;
+  }
+  // 还没动工具：只能说「在看这本书」，别说「在读」——读没读我们还不知道。
+  return book ? `正在看《${book}》` : "正在看稿";
+}
+
+/** 专家 id 与显示名按位置对齐（后端两个数组同序）。 */
+function expertPairs(run: ConsultRunView): { id: string; name: string }[] {
+  const ids = run.experts || [];
+  const names = run.expert_names || [];
+  const n = Math.max(ids.length, names.length);
+  return Array.from({ length: n }, (_, i) => ({
+    id: String(ids[i] ?? `#${i}`),
+    name: String(names[i] ?? "专家"),
+  }));
+}
+
 function label(run: ConsultRunView, now: number): string {
   const names = (run.expert_names || []).join("、") || "专家";
   const book = (run.book || "").trim();
@@ -36,6 +71,12 @@ function label(run: ConsultRunView, now: number): string {
       : Number(run.elapsed ?? 0);
   switch (run.status) {
     case "running": {
+      const pairs = expertPairs(run);
+      // 单专家：直接说他此刻在干什么（读第几章 / 读了几次）。
+      // 多专家：各自状态放到下面一行分别显示，这里只报总账。
+      if (pairs.length === 1) {
+        return `${names} ${expertState(run.progress?.[pairs[0].id], book)} · 已 ${clock(elapsed)}`;
+      }
       const doing = book ? `正在读《${book}》` : "正在看稿";
       return `${names} ${doing} · 已 ${clock(elapsed)}`;
     }
@@ -131,28 +172,43 @@ export function ConsultStatusBar({ sessionId }: { sessionId: string }) {
   return (
     <div className="px-6">
       <div className="mx-auto flex max-w-3xl flex-col gap-1 pb-1.5 text-meta" data-testid="consult-status">
-        {list.map((run, i) => (
-          <div
-            key={run.id}
-            className={`flex items-center gap-2 ${tone(run.status)}`}
-            data-testid={`consult-${run.status}`}
-            title={run.excerpt || run.book || ""}
-          >
-            {run.status === "running" ? (
-              <span className="waiting-spinner" />
-            ) : (
-              <span
-                aria-hidden
-                className="inline-block w-1.5 h-1.5 rounded-full flex-none"
-                style={{ background: run.status === "done" ? "var(--ok)" : "var(--warn-ink)" }}
-              />
-            )}
-            <span>
-              {i === 0 ? "专家后台任务 · " : ""}
-              {label(run, now)}
-            </span>
-          </div>
-        ))}
+        {list.map((run, i) => {
+          const pairs = run.status === "running" ? expertPairs(run) : [];
+          return (
+            <div key={run.id} className="flex flex-col gap-0.5">
+              <div
+                className={`flex items-center gap-2 ${tone(run.status)}`}
+                data-testid={`consult-${run.status}`}
+                title={run.excerpt || run.book || ""}
+              >
+                {run.status === "running" ? (
+                  <span className="waiting-spinner" />
+                ) : (
+                  <span
+                    aria-hidden
+                    className="inline-block w-1.5 h-1.5 rounded-full flex-none"
+                    style={{ background: run.status === "done" ? "var(--ok)" : "var(--warn-ink)" }}
+                  />
+                )}
+                <span>
+                  {i === 0 ? "专家后台任务 · " : ""}
+                  {label(run, now)}
+                </span>
+              </div>
+              {/* 多位专家时各自在干什么分开说——合成一句话只会剩个「正在读稿」。 */}
+              {pairs.length > 1 &&
+                pairs.map((p) => (
+                  <div
+                    key={p.id}
+                    className="pl-5 text-muted"
+                    data-testid={`consult-progress-${p.id}`}
+                  >
+                    {p.name} {expertState(run.progress?.[p.id], (run.book || "").trim())}
+                  </div>
+                ))}
+            </div>
+          );
+        })}
       </div>
     </div>
   );

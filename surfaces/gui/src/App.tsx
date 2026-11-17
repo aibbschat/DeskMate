@@ -1131,6 +1131,7 @@ export function App() {
           );
           break;
         case "deskmate_consult_started":
+        case "deskmate_consult_progress":
         case "deskmate_consult_finished":
           // 专家在后台跑（2026-11-17）：把进度交给 ConsultStatusBar，她派完活立刻回话
           // 也不会让用户空等。不在这里塞 transcript —— 结果回来会另有一条消息。

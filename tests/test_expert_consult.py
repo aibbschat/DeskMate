@@ -6,11 +6,14 @@
 from __future__ import annotations
 
 import asyncio
+import os
+import threading
 from pathlib import Path
 from typing import Any
 
 import pytest
 
+import deskmate.consult as consult_mod
 from deskmate.bots.reading import BookShelf
 from deskmate.consult import (
     CONSULT_GUIDANCE,
@@ -249,3 +252,107 @@ def test_consult_turn_skips_auto_memory_extraction(tmp_path: Path, monkeypatch) 
     assert calls == []  # 咨询轮跳过
     eng._post_turn_hook("下一轮", "正常答")
     assert len(calls) == 1  # 下一轮恢复
+
+
+# ---------------------------------------------------------------------------
+# 进度（2026-11-17）：状态条不能永远写着「正在读《夜不收》」
+# ---------------------------------------------------------------------------
+
+
+def _seed_running(run_id: str) -> threading.Event:
+    """造一条"正在跑"的任务，并给它配一个真的活线程。
+
+    必须配活线程：`_mutate` 每次都会 reap 僵尸，running 但 `_ACTIVE` 里没有活线程的
+    记录会被立刻标成 interrupted——这本身是本仓「不许静默说谎」的设计，测试要顺着它走。
+    """
+    import json
+    import time as _time
+
+    stop = threading.Event()
+    thread = threading.Thread(target=stop.wait, daemon=True)
+    thread.start()
+    consult_mod._ACTIVE[run_id] = thread
+    path = Path(os.environ["DESKMATE_CONSULT_RUNS"])
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "runs": [
+                    {
+                        "id": run_id,
+                        "session_id": "sess-p",
+                        "experts": ["character"],
+                        "expert_names": ["人物专家"],
+                        "book": "夜不收",
+                        "status": "running",
+                        "started_at": _time.time(),
+                        "results": [],
+                        "delivered": False,
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    return stop
+
+
+def test_reading_progress_is_recorded_and_broadcast(tmp_path: Path) -> None:
+    """读稿的每一步都要落成事实：在跑什么、哪一章、第几次、累计多少字。"""
+    import json
+
+    run_id = "c-progress-1"
+    stop = _seed_running(run_id)
+    seen_busy: list[str] = []
+    events: list[str] = []
+    set_notifier(lambda kind, _payload: events.append(kind))
+
+    def read_book(title: str, chapter: str = "") -> str:
+        """假读稿工具（名字必须叫 read_book 才会被记账）。"""
+        # 进入函数时，状态文件里应该已经写着「正在读这一章」
+        state = json.loads(Path(os.environ["DESKMATE_CONSULT_RUNS"]).read_text(encoding="utf-8"))
+        seen_busy.append(state["runs"][0]["progress"]["character"]["busy"])
+        return f"读到{chapter}的正文"
+
+    expect_text = "读到第十一章的正文"
+
+    try:
+        wrapped = consult_mod._instrument_reading(
+            read_book, run_id=run_id, expert_id="character"
+        )
+        out = wrapped("夜不收", chapter="第十一章")
+        assert out == expect_text
+        # ② 读完后：章节、次数、字数、busy 清空
+        # （必须在停线程之前读：线程一停，reap 就会把 running 标成 interrupted）
+        progress = consult_mod.read_runs(session_id="sess-p")["active"][0]["progress"]["character"]
+    finally:
+        stop.set()
+
+    # ① 读的当下：busy=read_book（不是等读完才补记）
+    assert seen_busy == ["read_book"]
+    assert progress["busy"] == ""
+    assert progress["chapter"] == "第十一章"
+    assert progress["reads"] == 1
+    assert progress["chars"] == len(expect_text)
+    # ③ 进度也走通知（前端靠它实时刷新，不必轮询）
+    assert "progress" in events
+
+
+def test_instrumented_tool_keeps_its_schema(tmp_path: Path) -> None:
+    """包装不能改签名/文档：注册表靠它生成工具描述，模型据此决定怎么调。"""
+    import json
+
+    from coworker.tools.registry import _schema_for
+    from deskmate.bots.reading import make_reading_tools
+
+    shelf = _shelf(tmp_path)
+    for fn in make_reading_tools(shelf):
+        raw = _schema_for(fn)
+        wrapped = _schema_for(
+            consult_mod._instrument_reading(fn, run_id="c-any", expert_id="character")
+        )
+        assert json.dumps(raw, sort_keys=True, ensure_ascii=False) == json.dumps(
+            wrapped, sort_keys=True, ensure_ascii=False
+        ), fn.__name__
