@@ -5414,6 +5414,9 @@ class SessionManager:
         (else parked). Returns the platforms whose listeners came up."""
         # Team steering/kicks are dispatched from tool threads; they need the app loop.
         self._loop = asyncio.get_running_loop()
+        # 小桔的专家咨询在后台线程里跑完（2026-11-17）：把「跑完了」这件事接回本 loop，
+        # 才能一边广播进度、一边把专家原文投回她的会话。
+        self._register_consult_notifier()
         # 上一次进程死得难看留下的幽灵 run 先落终态，否则 UI 永远「在跑」、停不掉。
         try:
             reconciled = self.reconcile_task_runs()
@@ -5627,6 +5630,13 @@ class SessionManager:
                 self.unregister_session_client(session_id, cb)
 
     async def aclose(self) -> None:
+        # 先摘掉专家咨询的回调：进程正在退出，没有 loop 可以投递了。
+        try:
+            from deskmate.consult import set_notifier
+
+            set_notifier(None)
+        except Exception:
+            pass
         await self.scheduler.stop()
         await self.stop_gateway()
         await self.mcp.aclose()
@@ -6367,6 +6377,111 @@ class SessionManager:
                     await self._broadcast_deskmate_suggestion(result)
             except Exception:
                 logging.exception("deskmate proactive background tick failed")
+
+        # 专家结果兜底投递（2026-11-17）：正常路径是「跑完立刻投」，这里兜住完成时
+        # engine 不在（app 重启 / 会话被回收）的那一份——结果躺在文件里没人说，
+        # 就是「她请了专家却永远没下文」。
+        try:
+            await self._deliver_pending_consults()
+        except Exception:
+            logging.exception("consult result fallback delivery failed")
+
+    # -- 小桔调用专家：后台任务的可见性与回投（2026-11-17） ---------------------
+    def _register_consult_notifier(self) -> None:
+        """把 consult 模块的后台线程接到本 manager 的事件循环上。
+
+        consult 在**线程**里跑完一篇八分钟的分析，它不能 await、也不该知道 manager
+        存在，所以走一个模块级回调；这里负责切回 loop。注册失败只是没有实时通知，
+        结果仍在状态文件里，tick 会兜底投递。
+        """
+        try:
+            from deskmate.consult import set_notifier
+
+            set_notifier(self._on_consult_event)
+        except Exception:
+            logger.warning("consult notifier 注册失败（fail-open）", exc_info=True)
+
+    def _on_consult_event(self, kind: str, payload: dict) -> None:
+        """后台线程回调：绝不在这里阻塞或抛错（会拖死咨询线程）。"""
+        loop = self._loop
+        if loop is None or loop.is_closed():
+            return
+        try:
+            asyncio.run_coroutine_threadsafe(self._publish_consult(kind, payload), loop)
+        except Exception:
+            pass
+
+    async def _publish_consult(self, kind: str, payload: dict) -> None:
+        """started → 只广播（前端立刻显示"专家在工作"）；finished → 广播 + 投递回会话。"""
+        from deskmate.consult import public_view
+
+        sid = str(payload.get("session_id") or "")
+        if sid:
+            try:
+                await self.broadcast_session(
+                    sid,
+                    {"type": f"deskmate_consult_{kind}", "data": public_view(payload)},
+                )
+            except Exception:
+                logger.warning("consult 事件广播失败", exc_info=True)
+        if kind == "finished":
+            await self._deliver_consult_result(payload)
+
+    async def _deliver_consult_result(self, payload: dict) -> bool:
+        """把专家原文投回小桔的会话：她会在新一回合里用自己的话汇报。
+
+        投递前先抢 `delivered` 标记（状态文件是唯一事实源，两个入口不会各投一遍）；
+        投递抛错则把标记还回去，交给下一轮 tick 重试。
+        """
+        from deskmate.consult import claim_delivery, release_delivery, result_message
+
+        run_id = str(payload.get("id") or "")
+        sid = str(payload.get("session_id") or "")
+        if not run_id or not sid:
+            return False
+        if self.get_engine(sid) is None:
+            # 会话此刻没有引擎（重启后未打开）：留着，等它回来或 tick 兜底。
+            return False
+        if not claim_delivery(run_id):
+            return False  # 已经被别人投过了
+
+        names = "、".join(str(n) for n in (payload.get("expert_names") or [])) or "专家"
+        book = str(payload.get("book") or "")
+        experts = payload.get("experts") or []
+        source = {
+            "connector": "deskmate",
+            "kind": "dm",
+            "channel_id": run_id,
+            "channel_name": book or "专家咨询",
+            "sender_id": ",".join(str(e) for e in experts),
+            "sender_name": names,
+            "ts": payload.get("finished_at") or time.time(),
+            "text": f"{names}已交付（{float(payload.get('elapsed') or 0):.0f}s）",
+        }
+        try:
+            await self.deliver_to_session(sid, result_message(payload), source=source)
+        except Exception:
+            logger.warning("consult 结果投递失败，已还给兜底队列", exc_info=True)
+            release_delivery(run_id)
+            return False
+        return True
+
+    async def _deliver_pending_consults(self) -> int:
+        """兜底：把所有有引擎、但还没投递的结果补投一遍。"""
+        from deskmate.consult import pending_delivery
+
+        delivered = 0
+        for sid in list(self._engines.keys()):
+            try:
+                pending = pending_delivery(sid)
+            except Exception:
+                continue
+            for run in pending:
+                if await self._deliver_consult_result(run):
+                    delivered += 1
+        if delivered:
+            logger.info("补投 %s 条专家咨询结果", delivered)
+        return delivered
 
     async def _broadcast_deskmate_suggestion(self, result) -> None:
         """把一次 proactive tick 产生的「建议」广播给所有已连接会话。

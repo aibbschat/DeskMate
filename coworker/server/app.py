@@ -4746,6 +4746,21 @@ def create_app(manager: SessionManager) -> FastAPI:
             logging.exception("deskmate proactive heartbeat read failed")
             return {"error": "heartbeat unavailable"}
 
+    @app.get("/v1/deskmate/consult/runs")
+    def deskmate_consult_runs(session_id: str = "") -> dict[str, Any]:
+        """专家咨询的后台任务状态（2026-11-17）。
+
+        咨询改成后台派发后，用户不能只看到「已派出」然后空等：这里返回正在工作的
+        专家（含已运行秒数）与最近完成的结果摘要。只读状态文件，不碰业务数据。
+        """
+        try:
+            from deskmate.consult import read_runs
+
+            return read_runs(session_id=session_id or None)
+        except Exception:
+            logging.exception("deskmate consult runs read failed")
+            return {"active": [], "recent": [], "error": "consult runs unavailable"}
+
     @app.get("/v1/deskmate/proactive/handoff")
     async def get_deskmate_proactive_handoff() -> dict[str, Any]:
         """获取小桔主动产出台账的「对话式对接开场白」。

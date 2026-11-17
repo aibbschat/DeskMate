@@ -750,6 +750,8 @@ def build_engine(
     # post_turn_hook」留下旁路（engine.py::_xiaosheng_note 不走 hook）。
     mem_store = memory_store if memory_enabled else None
     # 2026-11-09 小桔调用专家（只给小桔）：专家看不到小桔记忆；咨询轮不自动抽记忆。
+    # 2026-11-17 改为**后台派发**：工具立刻返回，专家在后台跑完由 manager 投递回会话
+    # （session_id 随工具闭包带下去，投递时才知道这条结果该回哪个会话）。
     consult_state = {"used": False}
     consult_enabled = False
     if agent.name == "deskmate":
@@ -760,6 +762,7 @@ def build_engine(
                 make_consult_tool(
                     provider=provider,
                     model=model,
+                    session_id=session_id or "",
                     on_consulted=lambda: consult_state.__setitem__("used", True),
                 )
             )
