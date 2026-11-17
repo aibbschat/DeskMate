@@ -3402,6 +3402,33 @@ export async function setLlmMemoryGroup(
   }
 }
 
+/** 后台心跳（2026-11-17）：她上次「真的思考」是什么时候——静默退化一眼可见。
+ *  age 由后端算好（秒），前端只负责格式化；从未发生则为 null。 */
+export interface ProactiveHeartbeat {
+  last_tick_at?: number;
+  tick_age_seconds?: number | null;
+  last_judge_at?: number;
+  judge_age_seconds?: number | null;
+  ticks_today?: number;
+  judge_calls_today?: number;
+  model?: string;
+  last_skip_reason?: string;
+  last_acted?: boolean;
+}
+
+export async function getProactiveHeartbeat(): Promise<ProactiveHeartbeat | null> {
+  try {
+    const res = await authedFetch(
+      `${httpBase()}/v1/deskmate/proactive/heartbeat`,
+    );
+    if (!res.ok) return null;
+    const data = (await res.json()) as ProactiveHeartbeat & { error?: string };
+    return data.error ? null : data;
+  } catch {
+    return null;
+  }
+}
+
 /** 最近的通道审计（本地簿记、不同步）——「为什么换了通道」一眼可见。 */
 export async function getLlmChannelAudit(
   limit = 20,

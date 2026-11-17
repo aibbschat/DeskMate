@@ -32,6 +32,26 @@ _last_user_activity: float = 0.0
 _DEFAULT_QUIET_SECONDS = 90.0
 
 
+def _record_tick(
+    engine,
+    *,
+    skipped_reason: str = "",
+    acted: bool = False,
+) -> None:
+    """心跳写盘：异常一律吞掉——可见性设施绝不许影响 tick 本身。"""
+    try:
+        from .heartbeat import record_tick
+
+        record_tick(
+            getattr(engine, "base_dir", None),
+            skipped_reason=skipped_reason,
+            acted=acted,
+            model=getattr(engine, "model", "") or "",
+        )
+    except Exception:  # noqa: BLE001
+        logger.debug("proactive heartbeat write failed", exc_info=True)
+
+
 def note_user_activity() -> None:
     """标记「用户正在前台聊天」。由接入层（server 的 user_message 处理）调用。"""
     global _last_user_activity
@@ -85,6 +105,7 @@ def make_extra_tick(
                 "proactive tick skipped: 用户 %.0fs 前还在前台聊天",
                 seconds_since_user_activity(),
             )
+            _record_tick(engine, skipped_reason="用户刚聊过，本轮让路")
             return None
         # 1) 主动推理（感知→判断→决策：说话/关怀/日记/花园）
         try:
@@ -98,6 +119,13 @@ def make_extra_tick(
         except Exception:
             logger.exception("deskmate proactive background tick failed")
             result = None
+        # 1.5) 心跳（2026-11-17）：把「这一跳发生了什么」落到文件，设置页直读。
+        # 它只回答「她还活着吗」，judge 是否真调了 LLM 由 tick 里的 record_judge 记。
+        _record_tick(
+            engine,
+            skipped_reason=(result.skipped_reason if result is not None else "tick 异常"),
+            acted=bool(result is not None and result.has_suggestion),
+        )
         # 2) L2 自主层（替你行动）：kill switch 关则整块跳过，绝不相互影响
         try:
             from deskmate.agency.engine import AgencyEngine

@@ -3,12 +3,26 @@ import {
   getLlmChannels,
   setLlmMemoryGroup,
   getLlmChannelAudit,
+  getProactiveHeartbeat,
   type LlmChannelsStatus,
   type LlmChannelAuditRow,
+  type ProactiveHeartbeat,
 } from "../../api";
 
 const CARD = "rounded-xl2 border border-line bg-panel";
 const FIELD_LABEL = "text-[12.5px] font-medium text-ink";
+
+/** 超过这个时长没真的思考，就当作「可能断了」标红（tick 30s 一跳，正常不会超过几分钟）。 */
+const HEARTBEAT_STALE_SECONDS = 30 * 60;
+
+/** 秒 → 「刚刚 / N 分钟前 / N 小时前 / N 天前」。 */
+function ageText(seconds: number | null | undefined): string {
+  if (seconds == null) return "还没有记录";
+  if (seconds < 60) return "刚刚";
+  if (seconds < 3600) return `${Math.floor(seconds / 60)} 分钟前`;
+  if (seconds < 86400) return `${Math.floor(seconds / 3600)} 小时前`;
+  return `${Math.floor(seconds / 86400)} 天前`;
+}
 
 /** LLM 通道组：两个总开关（付费组 / 免费组）+ 组内自动排的状态与审计。
  *  她对你说的话走付费组；后台任务默认也走付费组（2026-10-13 起，免费池 prompt
@@ -19,6 +33,7 @@ const FIELD_LABEL = "text-[12.5px] font-medium text-ink";
 export function LlmChannelsCard() {
   const [status, setStatus] = useState<LlmChannelsStatus | null>(null);
   const [audit, setAudit] = useState<LlmChannelAuditRow[] | null>(null);
+  const [heartbeat, setHeartbeat] = useState<ProactiveHeartbeat | null>(null);
   const [busy, setBusy] = useState(false);
 
   // 用普通函数而非 useCallback：本卡片只在自己挂载时取一次，
@@ -26,6 +41,7 @@ export function LlmChannelsCard() {
   const load = () => {
     void getLlmChannels().then((d) => d && setStatus(d));
     void getLlmChannelAudit(8).then((d) => d && setAudit(d));
+    void getProactiveHeartbeat().then((d) => d && setHeartbeat(d));
   };
 
   useEffect(() => {
@@ -118,6 +134,36 @@ export function LlmChannelsCard() {
               </li>
             ))}
           </ul>
+        </div>
+      )}
+
+      {/* 后台心跳（2026-11-17）：她还在不在思考。断了要能看见，不能只靠「感觉她变安静」。 */}
+      {heartbeat && (
+        <div
+          className="mt-3 pt-3 border-t border-line"
+          data-testid="proactive-heartbeat"
+        >
+          <div className="text-x] text-muted">后台心跳（主动推理）</div>
+          <div
+            className={[
+              "text-x] mt-1",
+              heartbeat.judge_age_seconds == null
+                ? "text-muted"
+                : heartbeat.judge_age_seconds > HEARTBEAT_STALE_SECONDS
+                  ? "text-danger"
+                  : "text-ok",
+            ].join(" ")}
+          >
+            上次思考：{ageText(heartbeat.judge_age_seconds)}
+            {heartbeat.model ? `（${heartbeat.model}）` : ""}
+            {typeof heartbeat.judge_calls_today === "number"
+              ? ` · 今日 ${heartbeat.judge_calls_today} 次`
+              : ""}
+          </div>
+          <div className="text-x] text-muted mt-0.5">
+            上次心跳：{ageText(heartbeat.tick_age_seconds)}
+            {heartbeat.last_skip_reason ? ` · ${heartbeat.last_skip_reason}` : ""}
+          </div>
         </div>
       )}
 

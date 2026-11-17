@@ -4730,6 +4730,22 @@ def create_app(manager: SessionManager) -> FastAPI:
             logging.exception("deskmate proactive tick failed")
             return JSONResponse({"error": "tick failed"}, status_code=500)
 
+    @app.get("/v1/deskmate/proactive/heartbeat")
+    def deskmate_proactive_heartbeat() -> dict[str, Any]:
+        """后台心跳（2026-11-17）：她上次真的思考是什么时候。
+
+        后台 tick 默认常开但没有出口：模型/通道挂了、tick 断了，界面照常，用户只会
+        觉得「她最近有点安静」——本仓最典型的静默退化形态。这里只读一个小 JSON
+        （``deskmate/proactivity/heartbeat.py``），不碰任何业务状态。
+        """
+        try:
+            from deskmate.proactivity.heartbeat import read_heartbeat
+
+            return read_heartbeat()
+        except Exception:
+            logging.exception("deskmate proactive heartbeat read failed")
+            return {"error": "heartbeat unavailable"}
+
     @app.get("/v1/deskmate/proactive/handoff")
     async def get_deskmate_proactive_handoff() -> dict[str, Any]:
         """获取小桔主动产出台账的「对话式对接开场白」。

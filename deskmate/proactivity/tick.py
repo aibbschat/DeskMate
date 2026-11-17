@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 import re
@@ -16,6 +17,10 @@ logger = logging.getLogger(__name__)
 # Leak B + R2 同源节流窗口（2026-10-10）：cloud_audit 的 judge 在窗口内已由任一节点
 # 产出过 pending 矛盾类发现 → 跳过 judge，省 token。与 R2 健康巡检窗口对齐（1h）。
 _JUDGE_THROTTLE_WINDOW_S = 3600
+# 上下文指纹去重的重判窗口（2026-11-17）：tick 默认 30s 一跳，什么都没变时仍会重新
+# judge 一遍——既烧额度，也把同一条发现反复喂给模型。指纹相同就跳过，但**不超过这个
+# 窗口**：长时间静坐（画面一直不动）到点仍要重判一次，免得「永久静音」。
+_JUDGE_CONTEXT_REJUDGE_S = 3600
 from pathlib import Path
 from typing import Optional
 
@@ -613,25 +618,9 @@ class ProactiveEngine:
 
         context_text = format_context_for_judge(ctx)
 
-        # 如果上下文太短（没有足够信息），跳过
-        if len(context_text.strip()) < 50:
-            return TickResult(
-                action=ActionType.NO_ACTION,
-                activity=activity,
-                skipped_reason="感知信息不足，跳过推理",
-                elapsed_ms=int((time.time() - start) * 1000),
-                heartbeat_interval_ms=self._heartbeat_interval_ms,
-            )
-
-        # ===== 2. 思考（Think）=====
-        # 共享节流（Leak B + R2 同源薄记，2026-10-10）：窗口内本 source 已有 pending 矛盾类
-        # 发现（任一节点同步来的）→ 跳过 judge，省 token。正是「同问题被重判 34 次」的止血点。
-        # 只盯矛盾类（_ANCHOR_REQUIRED_KINDS）以避免误伤 emotional_care 等；健康巡检 kind 本就
-        # 不经此入口。仍推进专注陪伴计时，避免 P1-1「工作累了来提醒」退化。
-        if _throttled_shared(
-            self.base_dir, "cloud_audit", _JUDGE_THROTTLE_WINDOW_S,
-            kinds=_ANCHOR_REQUIRED_KINDS,
-        ):
+        # 统一「跳过」出口：照样推进专注陪伴计时，别让浮层的「她在干嘛」冻住。
+        # 节流与指纹去重两处共用，避免各写一份后行为漂移。
+        def _skip_tick(reason: str) -> TickResult:
             what_doing = ""
             companion_msg = ""
             try:
@@ -644,13 +633,87 @@ class ProactiveEngine:
             return TickResult(
                 action=ActionType.NO_ACTION,
                 activity=activity,
-                skipped_reason="共享节流：窗口内已有 pending 矛盾发现，跳过 judge",
+                skipped_reason=reason,
                 elapsed_ms=int((time.time() - start) * 1000),
                 heartbeat_interval_ms=self._heartbeat_interval_ms,
                 what_user_doing=what_doing,
                 companion_message=companion_msg,
             )
+
+        # 如果上下文太短（没有足够信息），跳过
+        if len(context_text.strip()) < 50:
+            return _skip_tick("感知信息不足，跳过推理")
+
+        # 上下文指纹去重（2026-11-17）：30s 一跳，画面/记忆/情绪都没变时重判一遍只会得到
+        # 同一个结论——白烧额度，还把同一条发现反复喂给模型。指纹相同且未超过重判窗口 →
+        # 跳过；窗口到了照常重判，长时间静坐不会永久静音。
+        _fp = hashlib.sha1(context_text.encode("utf-8")).hexdigest()
+        _now = time.time()
+        # 指纹以心跳文件为准（前台 tick 与后台 scheduler 是两个 engine 实例，共享这份
+        # 落盘状态才不会各判一遍）；文件不可用时退回本实例内存。
+        _hb: dict = {}
+        try:
+            from .heartbeat import read_heartbeat
+
+            _hb = read_heartbeat(self.base_dir)
+        except Exception:  # noqa: BLE001
+            _hb = {}
+        _last_fp = str(_hb.get("last_judge_fp") or getattr(self, "_last_judge_fp", ""))
+        try:
+            _last_at = float(
+                _hb.get("last_judge_at") or getattr(self, "_last_judge_at", 0.0) or 0.0
+            )
+        except (TypeError, ValueError):
+            _last_at = 0.0
+        # 例外：情绪引擎挂着「想说一句」的 pending 时必须放行——它不依赖上下文变化，
+        # 若被指纹挡在这里，pending 会一直压到上下文变了或重判窗口到点才消费。
+        _force_judge = False
+        try:
+            from deskmate.growth.emotion_engine import EmotionEngine
+
+            _force_judge = bool(
+                EmotionEngine(base_dir=self.base_dir).get_self_expression_pending()
+            )
+        except Exception:  # noqa: BLE001 — fail-open：拿不到就当没有
+            _force_judge = False
+        if (
+            not _force_judge
+            and _fp == _last_fp
+            and (_now - _last_at) < _JUDGE_CONTEXT_REJUDGE_S
+        ):
+            return _skip_tick(
+                f"上下文未变化（{int(_now - _last_at)}s 内同一份输入），跳过重复推理"
+            )
+
+        # ===== 2. 思考（Think）=====
+        # 共享节流（Leak B + R2 同源薄记，2026-10-10）：窗口内本 source 已有 pending 矛盾类
+        # 发现（任一节点同步来的）→ 跳过 judge，省 token。正是「同问题被重判 34 次」的止血点。
+        # 只盯矛盾类（_ANCHOR_REQUIRED_KINDS）以避免误伤 emotional_care 等；健康巡检 kind 本就
+        # 不经此入口。仍推进专注陪伴计时，避免 P1-1「工作累了来提醒」退化。
+        if _throttled_shared(
+            self.base_dir, "cloud_audit", _JUDGE_THROTTLE_WINDOW_S,
+            kinds=_ANCHOR_REQUIRED_KINDS,
+        ):
+            return _skip_tick("共享节流：窗口内已有 pending 矛盾发现，跳过 judge")
+
         judgment = judge_proactive_action(context_text, model=self.model)
+        # 记下「这一份输入已判过」+ 心跳（哪天真断了，设置页能看见停止时间）。
+        self._last_judge_fp = _fp
+        self._last_judge_at = _now
+        try:
+            from .heartbeat import record_judge
+
+            _used = self.model or ""
+            if not _used:
+                try:
+                    from deskmate.memory.llm import _model as _llm_model
+
+                    _used = _llm_model()
+                except Exception:
+                    _used = ""
+            record_judge(self.base_dir, model=_used, fingerprint=_fp)
+        except Exception:  # noqa: BLE001 — 心跳失败不影响推理
+            pass
         # 阶段三（2026-10-24）：类型收敛——judge 自造的类型会让偏好学习与台账合并失效，
         # 这里统一归一后再决策；分类型阈值取“成长调制值与类型固定值中更低者”，
         # 既保留信任感调制方向，又保证写作类永远不高于 0.65 / 0.45。

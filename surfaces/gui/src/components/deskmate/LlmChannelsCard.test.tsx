@@ -9,9 +9,15 @@ vi.mock("../../api", () => ({
   getLlmChannels: vi.fn(),
   setLlmMemoryGroup: vi.fn(async () => true),
   getLlmChannelAudit: vi.fn(async () => []),
+  getProactiveHeartbeat: vi.fn(async () => null),
 }));
 
-import { getLlmChannels, getLlmChannelAudit, setLlmMemoryGroup } from "../../api";
+import {
+  getLlmChannels,
+  getLlmChannelAudit,
+  getProactiveHeartbeat,
+  setLlmMemoryGroup,
+} from "../../api";
 import { LlmChannelsCard } from "./LlmChannelsCard";
 
 afterEach(() => {
@@ -96,6 +102,35 @@ describe("LlmChannelsCard", () => {
     const list = await screen.findByTestId("llm-audit-list");
     expect(list.textContent).toContain("限额");
     expect(list.textContent).toContain("qwen3-4b-instruct");
+  });
+
+  it("心跳新鲜时显示「上次思考」与今日次数", async () => {
+    vi.mocked(getLlmChannels).mockResolvedValue(STATUS);
+    vi.mocked(getProactiveHeartbeat).mockResolvedValue({
+      tick_age_seconds: 12,
+      judge_age_seconds: 95,
+      judge_calls_today: 7,
+      model: "xiaomi:mimo-v2.6-pro",
+      last_skip_reason: "上下文未变化，跳过重复推理",
+    });
+    render(<LlmChannelsCard />);
+    const hb = await screen.findByTestId("proactive-heartbeat");
+    expect(hb.textContent).toContain("1 分钟前");
+    expect(hb.textContent).toContain("xiaomi:mimo-v2.6-pro");
+    expect(hb.textContent).toContain("今日 7 次");
+  });
+
+  it("心跳超过 30 分钟没思考 → 标红提示可能断了", async () => {
+    vi.mocked(getLlmChannels).mockResolvedValue(STATUS);
+    vi.mocked(getProactiveHeartbeat).mockResolvedValue({
+      tick_age_seconds: 3600,
+      judge_age_seconds: 3600,
+      judge_calls_today: 0,
+    });
+    render(<LlmChannelsCard />);
+    const hb = await screen.findByTestId("proactive-heartbeat");
+    expect(hb.querySelector(".text-danger")).not.toBeNull();
+    expect(hb.textContent).toContain("1 小时前");
   });
 
   it("后端拿不到状态时静默隐藏（不破坏设置页）", async () => {
