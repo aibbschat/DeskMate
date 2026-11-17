@@ -209,36 +209,97 @@ MATRIX: dict[str, ModelEntry] = {
     "tencent-tokenplan:hy4-preview": ModelEntry(
         "Hy4 Preview · Tencent Token Plan"
     ),
-    # -- OpenCode Go（付费订阅网关 opencode-go:，2026-10-28 接入）--------------------
+    # -- OpenCode Go（付费订阅网关 opencode-go:）----------------------------------
     # 静态手铺，**不接任何动态清单/探测**——opencode 免费车道就是死在持续探测上
     # （PITFALLS §P4，官方封号）。模型清单来源：官方文档 /console/go#endpoints
-    # （2026-10-28）。上下文窗口只填本矩阵已核实过的同款模型值，未核实的留 None
-    # （GUI 计量条隐藏，不拿猜的数字充数）。caps 统一 _AGENTIC：经 OpenAI 兼容
-    # 端点走翻译层，视觉未在该端点实测，看图不归它。刻意不收：Muse Spark /
-    # Iceman（会拿请求数据训练）、Beam Free（限区+免费层性质，别再碰）、
-    # GLM-5.3/Kimi K3.1 Pro 等 $15 低额度档（额度太薄，picker 里少一个坑）。
+    # （2026-11-17 复核，34 条文本模型，本表收录 31 条）。上下文窗口只填本矩阵已核
+    # 实过的同款模型值，未核实的留 None（GUI 计量条隐藏，不拿猜的数字充数）。
+    # caps 统一 _AGENTIC：经 OpenAI 兼容端点走翻译层，视觉未在该端点实测，看图不归它。
+    #
+    # 额度结构（2026-11-17 官方表）：月度额度**按模型独立**算（Go $15/$20/$30/$60/
+    # $100，Go Plus 为其 2–4 倍），换模型 ≠ 额度用尽。故 2026-10-28 那条「$15 低额度
+    # 档不收」的收窄已撤销——档位低不代表不能用，铺开反而多拿额度。免费档不占额度。
+    #
+    # 刻意不收，三个理由分开写（别再混成一条）：
+    #   ① 区域打不通：beam-free——官方明确不覆盖中国大陆（含港澳），国内出口必被拦，
+    #      收进来就是点了必错的坑；
+    #   ② 训练数据 + 限区：muse-spark-1.2/1.3-contributor（Meta 地理使用政策）；
+    #   ③ 训练数据（萧哥 2026-11-17 拍板收下，仅手动选择，见下方免费档）。
+    #
+    # ⚠ 免费档（longcat-2.5-free / hy4-flash-free / iceman-contributor-free）虽然不占
+    # 额度，但流量同样受官方 abuse 监控：只做用户手动选择，**不要接进后台循环或设成
+    # default_model**（后台 tick 每 30s 一次，无人值守 + 不限量 = 最像滥用的形态）。
+    "opencode-go:grok-4.7": ModelEntry("Grok 4.7 · OpenCode Go", _AGENTIC),
     "opencode-go:glm-5.3-flash": ModelEntry(
         "GLM-5.3-Flash · OpenCode Go", _AGENTIC
     ),
+    "opencode-go:glm-5.3": ModelEntry("GLM-5.3 · OpenCode Go", _AGENTIC),
     "opencode-go:glm-5.2": ModelEntry("GLM-5.2 · OpenCode Go", _AGENTIC, 128_000),
+    "opencode-go:kimi-k3.1-pro": ModelEntry(
+        "Kimi K3.1 Pro · OpenCode Go", _AGENTIC
+    ),
     "opencode-go:kimi-k3": ModelEntry("Kimi K3 · OpenCode Go", _AGENTIC, 1_000_000),
     "opencode-go:kimi-k2.7-code": ModelEntry(
         "Kimi K2.7 Code · OpenCode Go", _AGENTIC, 256_000
     ),
+    "opencode-go:longcat-2.0": ModelEntry("LongCat-2.0 · OpenCode Go", _AGENTIC),
     "opencode-go:deepseek-v4.1-flash": ModelEntry(
         "DeepSeek V4.1 Flash · OpenCode Go", _AGENTIC, 1_048_576
+    ),
+    # V4 Pro 的窗口两家登记值不一致（ark-agent-plan 1M / deepseek 直连 128k），
+    # 本网关未实测 → 留 None，不拿猜的数字充数。
+    "opencode-go:deepseek-v4-pro": ModelEntry(
+        "DeepSeek V4 Pro · OpenCode Go", _AGENTIC
+    ),
+    "opencode-go:mimo-v2.6-flash": ModelEntry(
+        "MiMo V2.6 Flash · OpenCode Go", _AGENTIC
     ),
     "opencode-go:mimo-v2.6-pro": ModelEntry(
         "MiMo V2.6 Pro · OpenCode Go", _AGENTIC, 256_000
     ),
+    "opencode-go:mimo-v2.5": ModelEntry("MiMo V2.5 · OpenCode Go", _AGENTIC),
+    "opencode-go:mimo-v2.5-pro": ModelEntry("MiMo V2.5 Pro · OpenCode Go", _AGENTIC),
+    "opencode-go:minimax-m3.1-flash": ModelEntry(
+        "MiniMax M3.1 Flash · OpenCode Go", _AGENTIC
+    ),
+    "opencode-go:minimax-m3": ModelEntry(
+        "MiniMax M3 · OpenCode Go", _AGENTIC, 1_048_576
+    ),
+    "opencode-go:qwen4-max": ModelEntry("Qwen4 Max · OpenCode Go", _AGENTIC),
+    "opencode-go:qwen3.8-max": ModelEntry("Qwen3.8 Max · OpenCode Go", _AGENTIC),
     "opencode-go:qwen3.8-flash": ModelEntry(
         "Qwen3.8 Flash · OpenCode Go", _AGENTIC
     ),
+    "opencode-go:qwen3.7-plus": ModelEntry("Qwen3.7 Plus · OpenCode Go", _AGENTIC),
+    "opencode-go:hy4": ModelEntry("Hy4 · OpenCode Go", _AGENTIC),
+    "opencode-go:hy4-preview": ModelEntry("Hy4 Preview · OpenCode Go", _AGENTIC),
     "opencode-go:hy3": ModelEntry("Hy3 · OpenCode Go", _AGENTIC, 256_000),
+    "opencode-go:step-5-preview": ModelEntry(
+        "Step 5 Preview · OpenCode Go", _AGENTIC
+    ),
     "opencode-go:claude-haiku-5-5": ModelEntry(
         "Claude Haiku 5.5 · OpenCode Go", _AGENTIC
     ),
     "opencode-go:gpt-6-luna": ModelEntry("GPT-6 Luna · OpenCode Go", _AGENTIC),
+    "opencode-go:gpt-5.6-luna": ModelEntry(
+        "GPT-5.6 Luna · OpenCode Go", _AGENTIC, 400_000
+    ),
+    "opencode-go:gemini-4-argon": ModelEntry(
+        "Gemini 4 Argon · OpenCode Go", _AGENTIC
+    ),
+    # 免费档（官方标 Free / Unlimited，不占月度额度）——只给手动选择。
+    # longcat-2.5-free：上游托管在中国，需在 Console › Privacy 的 Regions 里选 Global；
+    # hy4-flash-free：0 天留存、不训练，最干净的一个；
+    # iceman：免费换训练数据（Training=Yes / Not ZDR）——萧哥已知情并拍板收下。
+    "opencode-go:longcat-2.5-free": ModelEntry(
+        "LongCat 2.5 · OpenCode Go 免费", _AGENTIC
+    ),
+    "opencode-go:hy4-flash-free": ModelEntry(
+        "Hy4 Flash · OpenCode Go 免费", _AGENTIC
+    ),
+    "opencode-go:iceman-contributor-free": ModelEntry(
+        "Iceman Contributor · OpenCode Go 免费", _AGENTIC
+    ),
     # -- direct OpenAI-compatible vendors ----------------------------------------
     # Muse Spark (Meta Model API, public preview 2026-07-09): multimodal + tools via
     # their OpenAI-compat surface. Vision yes; PDFs unverified over compat — falls

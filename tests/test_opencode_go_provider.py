@@ -1,19 +1,59 @@
-"""OpenCode Go（付费订阅网关）接入契约（2026-10-28）。
+"""OpenCode Go（付费订阅网关）接入契约（2026-10-28，2026-11-17 对齐官方全表）。
 
 与 `test_free_lane_removed.py`（免费车道删除契约）的关系：那份锁的是**免费层**
 （opencode: / kilo: 前缀、动态清单探测、探针、后台刷新）不许复活；本份锁的是**付费
 接入**（provider 名 `opencode-go`、静态模型表、诚实 UA + 会话头）。两者前缀不同
 （`opencode-go:` vs `opencode:`），互不冲突——本文件的存在**不**修改删除态契约的任何断言。
 
-萧哥拍板的接入边界（2026-10-28「不用这么复杂」）：
-1. 只加设置页 provider 入口 + 静态矩阵条目，用户自己填 key；
-2. 不动付费组三链路（ark→小米→腾讯）——opencode-go 不入 PAID_GROUP，
+萧哥拍板的接入边界：
+1. 2026-10-28「不用这么复杂」：只加设置页 provider 入口 + 静态矩阵条目，用户自己填 key；
+2. 2026-11-17「一起补上」：官方 Go 列表 34 条，除 beam-free（国内限区，必被拦）与
+   muse-spark-1.2/1.3-contributor（训练数据 + Meta 限区）外全部收进矩阵（31 条）；
+   免费档（含 iceman，训练数据代价萧哥已知情）只做手动选择，不进后台循环/默认模型；
+3. 不动付费组三链路（ark→小米→腾讯）——opencode-go 不入 PAID_GROUP，
    tests/test_free_lane_removed.py::test_paid_group_intact 继续锁三链路；
-3. 不做任何动态探测（清单/健康检查/后台刷新一律不许有——封号教训 PITFALLS §P4）。
+4. 不做任何动态探测（清单/健康检查/后台刷新一律不许有——封号教训 PITFALLS §P4）。
 
 不碰活库、不发任何网络请求。
 """
 from __future__ import annotations
+
+#: 2026-11-17 官方 /console/go#endpoints 的 34 条文本模型，去掉三条刻意排除
+#: （beam-free 国内限区 / muse-spark-1.2、1.3-contributor 训练+限区）后的全集。
+#: 官方上下架时改这份清单——它是「picker 里应该有什么」的契约，别默默漂。
+_GO_CURATED = {
+    "grok-4.7",
+    "glm-5.3-flash",
+    "glm-5.3",
+    "glm-5.2",
+    "kimi-k3.1-pro",
+    "kimi-k3",
+    "kimi-k2.7-code",
+    "longcat-2.0",
+    "deepseek-v4.1-flash",
+    "deepseek-v4-pro",
+    "mimo-v2.6-flash",
+    "mimo-v2.6-pro",
+    "mimo-v2.5",
+    "mimo-v2.5-pro",
+    "minimax-m3.1-flash",
+    "minimax-m3",
+    "qwen4-max",
+    "qwen3.8-max",
+    "qwen3.8-flash",
+    "qwen3.7-plus",
+    "hy4",
+    "hy4-preview",
+    "hy3",
+    "step-5-preview",
+    "claude-haiku-5-5",
+    "gpt-6-luna",
+    "gpt-5.6-luna",
+    "gemini-4-argon",
+    "longcat-2.5-free",
+    "hy4-flash-free",
+    "iceman-contributor-free",
+}
 
 
 def test_descriptor_registered_with_priced_gateway():
@@ -45,8 +85,8 @@ def test_free_lane_contract_still_holds():
 def test_matrix_entries_are_static_and_agentic():
     """矩阵条目静态手铺：全部 opencode: 前缀无关、全部 agent 能力（tools on）。
 
-    不收 muse-spark/iceman（训练数据）与 beam-free（限区免费层）——刻意排除，
-    改矩阵时别加回来。
+    仍不收 beam-free（国内限区，请求必被拦）与 muse-spark-1.2/1.3（训练数据 + 限区）——
+    改矩阵时别加回来。iceman 2026-11-17 已由萧哥拍板收下（仅手动选择）。
     """
     from coworker.providers import matrix as M
 
@@ -57,9 +97,34 @@ def test_matrix_entries_are_static_and_agentic():
     for bare in go_ids:
         caps = M.MATRIX[f"opencode-go:{bare}"].caps
         assert caps.tools and caps.streaming, bare
-    # 关键排除项（隐私/限区红线）
-    for banned in ("muse-spark", "iceman", "beam-free"):
+    # 关键排除项（限区红线 / 训练数据 + 限区）
+    for banned in ("muse-spark", "beam-free"):
         assert not any(banned in m for m in go_ids), banned
+
+
+def test_matrix_covers_official_go_catalog():
+    """官方 34 条 → 本表 31 条（去掉 beam-free 与 muse-spark 两位）。
+
+    这是「picker 里应该有什么」的快照契约：官方上下架时连同本文件一起改，
+    避免模型表悄悄漂移或漏收。
+    """
+    from coworker.providers import matrix as M
+
+    got = set(M.models_for_provider("opencode-go"))
+    assert got == _GO_CURATED, (
+        f"矩阵与官方清单不一致：缺 {sorted(_GO_CURATED - got)}，"
+        f"多 {sorted(got - _GO_CURATED)}"
+    )
+    assert len(got) == 31
+
+
+def test_free_tier_entries_present_and_marked():
+    """三个免费档必须在（手动选项），标签要能看出「免费」——避免被当成计费模型。"""
+    from coworker.providers import matrix as M
+
+    for bare in ("longcat-2.5-free", "hy4-flash-free", "iceman-contributor-free"):
+        entry = M.MATRIX[f"opencode-go:{bare}"]
+        assert "免费" in entry.label, bare
 
 
 def test_builder_sets_honest_ua_and_session_header():

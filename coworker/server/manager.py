@@ -4653,11 +4653,17 @@ class SessionManager:
         for _m in selectable:
             _prov = _m.split(":", 1)[0] if ":" in _m else "openai"
             _d = get_descriptor(_prov)
-            # `:free` 后缀的模型（如 openrouter 免费档）无论所属 provider 是否需 key，
-            # 实际 $0 余额可用，故直接判为免费档，避免被归到「付费」区误导用户。
+            # 免费档判定：`:free` 后缀（openrouter）与 `-free` 后缀（OpenCode Go 的
+            # longcat-2.5-free / hy4-flash-free / iceman-contributor-free，官方标
+            # Free/Unlimited、不占月度额度）都归免费区——否则标签写着「免费」却被
+            # 排进付费段，用户会以为它计费。仍需订阅 key，但调用本身 $0。
             tiers[_m] = (
                 "free"
-                if (_m.endswith(":free") or (_d is not None and not _d.needs_key))
+                if (
+                    _m.endswith(":free")
+                    or _m.endswith("-free")
+                    or (_d is not None and not _d.needs_key)
+                )
                 else "paid"
             )
 

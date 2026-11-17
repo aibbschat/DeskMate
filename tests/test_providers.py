@@ -577,9 +577,11 @@ def test_matrix_labels_and_custom_model_fallback():
     # <60，此后陆续接入火山 Agent Plan、腾讯 Token Plan、Bedrock、Vertex 等条目 → 66
     # （2026-10-02）。顶到阈值时先自问"这个 provider 该不该进矩阵"，再上调阈值并写明日期；
     # 不要默默删掉这条 —— 逐条锁住的其实是下面那行 all(caps.tools)。
+    # 2026-11-17：OpenCode Go 对齐官方全表（10 → 31 条）→ 98，阈值上调到 <100。
+    # 这批是萧哥明确要求「一起补上」的一次性扩容，不是无节制膨胀；再要加先过数量关。
     _free = lambda k: k.split(":", 1)[0] == "omniroute"
     _agentic = {k: e for k, e in MATRIX.items() if not _free(k)}
-    assert len(_agentic) < 80
+    assert len(_agentic) < 100
     assert all(e.caps.tools for e in _agentic.values())
     # A custom (unlisted) reseller model falls back to the conservative default — usable,
     # but at the user's own risk (no parallel tool calls assumed).
