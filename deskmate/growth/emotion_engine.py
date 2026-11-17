@@ -538,6 +538,23 @@ def _normalize_object(parsed: dict) -> tuple[str, str]:
     return _clean_object(parsed.get("object_ref"), parsed.get("object_kind"))
 
 
+#: 经历文本上限。日记接入前这里是 ``[:200]``——只够装一句「写下了第 N 则」，
+#: 换成真实正文后不够：645 则实测 p50=275、p90=410、最长 1,550 字。
+_EXPERIENCE_MAX_CHARS = 600
+
+
+def _clip_experience(text: str, limit: int = _EXPERIENCE_MAX_CHARS) -> str:
+    """经历文本裁剪：短的原样，长的保头保尾。
+
+    头是「发生了什么」，尾通常是「她当时的反应」。只截头会把反应全部切掉，
+    那正是情感最需要的那半句。
+    """
+    s = "\n".join(ln.strip() for ln in str(text or "").splitlines() if ln.strip())
+    if len(s) <= limit:
+        return s
+    return f"{s[: limit - 180]}\n……\n{s[-160:]}"
+
+
 def _event_summary_from(parsed: dict) -> str:
     """事件摘要：只写发生了什么，≤80 字；缺字段留空（不拿 description 顶替）。"""
     return str(parsed.get("event_summary") or "").strip()[:80]
@@ -972,24 +989,35 @@ class EmotionEngine:
         return {**state, "mood": mood, "face": mood.get("face", "smile")}
 
     def recent_log_descriptions(
-        self, since_hours: float = 24.0, limit: int = 3
+        self,
+        since_hours: float = 24.0,
+        limit: int = 3,
+        skip_recent_hours: float = 0.0,
     ) -> list[str]:
         """取最近 N 条带 description 的 emotion_log（当日经历真实摘要）。
 
         相邻重复内容跳过（只做无害的数据清洗，不改变语义——不是导演她）。
+
+        ``skip_recent_hours``：跳过最近 N 小时内产生的独白。用于「拿她过去的话
+        当开场白」的场景——同一则日记刚产生的独白属于**当下**，再引它一次
+        就是复述刚说过的事（2026-11-17，``test_second_entry_does_not_repeat_first``）。
+
         fail-open：任何异常 → ``[]``（不影响主聊天注入）。
         """
         try:
-            since = (datetime.now() - timedelta(hours=max(0.0, since_hours))) \
+            now = datetime.now()
+            since = (now - timedelta(hours=max(0.0, since_hours))) \
+                .isoformat(timespec="seconds")
+            until = (now - timedelta(hours=max(0.0, skip_recent_hours))) \
                 .isoformat(timespec="seconds")
             # 多取一些再做去重，避免去重后不足 limit 条
             fetch = max(1, int(limit)) * 4
             with _connect(self._db) as conn:
                 rows = conn.execute(
                     "SELECT description FROM emotion_log "
-                    "WHERE description <> '' AND ts >= ? "
+                    "WHERE description <> '' AND ts >= ? AND ts <= ? "
                     "ORDER BY ts DESC LIMIT ?",
-                    (since, fetch),
+                    (since, until, fetch),
                 ).fetchall()
             out: list[str] = []
             prev = None
@@ -1494,18 +1522,22 @@ class EmotionEngine:
         self,
         experience_desc: str,
         now: datetime | None = None,
+        note: str = "",
     ) -> None:
         """她自己的经历后情绪更新（活感 v3 §4：event_type='experience'）。
 
         调用方：reflection 完成、worldview 回望完成、日记生成后。
         与 update_after_turn 同构——激素仍由参数推导（origin 恒 'system'，
         v3 只做「记得她做了什么」，不做「她自己决定怎么感受」；§7.2 两轴正交）。
+        ``note``：给这次经历补一句说明（可空）。日记用它讲清「这是一则日记，
+        里面既有她经历的事，也有她读到的新闻」——不传时沿用旧口径
+        「你自己做的，不是看到的」，另外两个调用方行为不变。
         fail-open：LLM 不可用/返回垃圾 → 保持原值，不抛异常。
         """
         if not self.enabled:
             return
         try:
-            self._do_update_after_experience(experience_desc, now)
+            self._do_update_after_experience(experience_desc, now, note=note)
         except Exception as e:
             logger.warning("emotion experience update skipped: %s", e)
 
@@ -1513,6 +1545,7 @@ class EmotionEngine:
         self,
         experience_desc: str,
         now: datetime | None,
+        note: str = "",
     ) -> None:
         from deskmate.memory.llm import chat_memory, llm_available
 
@@ -1523,19 +1556,27 @@ class EmotionEngine:
         now = now or datetime.now()
         s = self.get_state()
         hour = now.hour
-        exp = (experience_desc or "")[:200]
+        exp = _clip_experience(experience_desc)
+        if not exp:
+            return
         titles = _titles_in(exp)
         titles_line = (
             f"这段里的作品：{'、'.join(f'《{t}》' for t in titles)}"
             "（事件若关于这些作品，object_ref 用书名）\n" if titles else ""
         )
+        # 有 note 时不再说「你自己做的，不是看到的」——日记里读到的新闻也算
+        # 她经历过的事（被触动本身就是经历），沿用旧口径会把这类全判成旁观。
+        note_txt = str(note or "").strip()
+        preface = f"{note_txt}\n" if note_txt else ""
+        qualifier = "" if note_txt else "（你自己做的，不是看到的）"
 
         prompt_user = (
             f"当前激素值：dopamine={s['dopamine']:.1f}, serotonin={s['serotonin']:.1f}, "
             f"oxytocin={s['oxytocin']:.1f}, cortisol={s['cortisol']:.1f}\n"
             f"当前时间：{hour}时\n"
             f"{titles_line}"
-            f"你刚经历的事（你自己做的，不是看到的）：{exp}\n"
+            f"{preface}"
+            f"你刚经历的事{qualifier}：{exp}\n"
             f"请输出 JSON：{{\"dopamine\": 新值, \"serotonin\": 新值, "
             f"\"oxytocin\": 新值, \"cortisol\": 新值, "
             f"\"description\": \"内心独白(≤40字)\", \"reason\": \"变化原因(≤30字)\", "
@@ -1584,7 +1625,8 @@ class EmotionEngine:
                 obj_ref, obj_kind = _normalize_object(parsed)
                 obj_ref, obj_kind = self._canonical_object(obj_ref, obj_kind)
                 # 经历摘要回退用 exp（这段本身就是「发生了什么」），不拿独白顶替。
-                evt_summary = _event_summary_from(parsed) or exp[:80]
+                # exp 现在可能是多行正文，摘要必须是单行，否则换行会进库。
+                evt_summary = _event_summary_from(parsed) or " ".join(exp.split())[:80]
                 conn.execute(
                     "INSERT INTO emotion_log (id, ts, source, deltas, description,"
                     " conversation_id, event_type, event_summary, narrative, salience,"

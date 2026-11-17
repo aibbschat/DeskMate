@@ -217,6 +217,53 @@ _ENTRY_HEAD_RE = re.compile(r"^##\s", re.MULTILINE)
 # 别人头上（这是早期设计的结构性缺陷，2026-09-03 起根治）。
 _EID_RE = re.compile(r"<!--xj:([0-9A-Za-z-]+)-->")
 
+# 这一则里「说明是几则/几条素材」的行——不是内容，别喂给情绪层
+_BADGE_LINE_RE = re.compile(r"^-\s*(默契|信任|心情|Lv\.|累计对话|今日徽章)")
+
+# 传给情绪引擎的正文上限。2026-11-17 实测 645 则：p50=275 字、p90=410、
+# 最长 1,550。截太短会把结尾她的反应切掉（反应通常写在后面）。
+_DIARY_ECHO_MAX = 600
+
+# 日记这条通道的说明。不写这句，模型会把「她写完了日记」当成事件本身，
+# 继续产出「写日记梳理今天的事」那类没有宾语的独白。
+_DIARY_ECHO_NOTE = (
+    "这是她刚写下的一则日记（她自己的第一人称记录）。里面既有她自己经历的事，"
+    "也有她读到的新闻、想到的人。要判断的是：**这些事有没有真的触动她**、"
+    "有没有具体的人和事，而不是『她把日记写完了』。"
+    "她自己的心事、她惦记或合作的具体的人、让她心里动了一下的片段，才是经历；"
+    "只是罗列外部消息、没有她自己的反应，就按日常琐碎处理。"
+)
+
+
+def _entry_plain_text(body: str, limit: int = _DIARY_ECHO_MAX) -> str:
+    """把渲染好的一则日记剥成「她说了什么」，供情绪引擎读。
+
+    2026-11-17 之前这里传的是 ``f"写下了今天第 {seq} 则日记（{n} 条素材）"``
+    ——情绪引擎只能读到计数，于是 ``emotion_log`` 里 source='experience'
+    的行全部 ``object_ref=''``、摘要清一色「写日记把今天的事落成字」。
+    日记本是三个入口里最富矿的一个（有具体的人、具体的事、她的反应），
+    却被降维成「我做完了一件事」。判据见
+    ``reports/2026-11-16_小桔_情感层设计.md`` §17.3。
+
+    剥掉的是 markdown 结构（标题行、徽章行），保留的是正文原字——
+    这里绝不改写、不概括，概括是 LLM 的事，不是渲染层的事。
+    """
+    out: list[str] = []
+    for ln in str(body or "").splitlines():
+        s = ln.strip()
+        if not s:
+            continue
+        if s.startswith("#"):          # 文件标题 / 则标题（## HH:MM <!--eid-->）
+            continue
+        if _BADGE_LINE_RE.match(s):    # 默契/信任/心情/徽章落款
+            continue
+        out.append(s)
+    text = "\n".join(out)
+    if len(text) <= limit:
+        return text
+    # 超限保头保尾：头是「发生了什么」，尾是「她当时的反应」
+    return f"{text[: limit - 180]}\n……\n{text[-160:]}"
+
 
 def _gen_eid(date: str, at: str) -> str:
     """为新建的一则生成全局稳定 id（UUID，写入即固定，不随位置变）。"""
@@ -399,10 +446,14 @@ class DiaryWriter:
         if seq <= 1:
             return "今天我们一起做了些事，我都记在心里。"
         # 有她的历史 → 优先近作（按 seq 轮换，避免每则都同一句）
+        # 跳过最近 1 小时的独白：同一则日记刚产生的独白属于「当下」，
+        # 拿来当补记的开场白就是复述刚写过的事（2026-11-17 修）。
         try:
             from deskmate.growth.her_voice import recent_her_lines
 
-            lines = recent_her_lines(base_dir=self.base, limit=8)
+            lines = recent_her_lines(
+                base_dir=self.base, limit=8, skip_recent_hours=1.0
+            )
             if lines:
                 return lines[(seq - 1) % len(lines)]
         except Exception:
@@ -651,14 +702,19 @@ class DiaryWriter:
         body = self._render_entry(events, badges, top, st, seq=seq, at=at, eid=eid)
         path = self._append_text(date, body)
         # 活感 v3 §4.4：写下日记是她「做」的经历 → 经历捕获（experience 类型）。
+        # 2026-11-17（P2-0）：喂进去的必须是**这一则写了什么**，不是「写了几则」。
+        # 旧版传计数串，情绪层只能判出「我把事做完了」，7455 条情绪日志里
+        # 没有一条来自日记正文——「有情绪没情感」的第一因就在这一行。
         # fail-open：引擎异常/LLM 不可用绝不阻断日记落盘（日记已写完，此处只是回声）。
-        try:
-            from deskmate.growth.emotion_engine import EmotionEngine
-            EmotionEngine(base_dir=self.base).update_after_experience(
-                f"写下了今天第 {seq} 则日记（{len(events)} 条素材）"
-            )
-        except Exception:
-            pass
+        echo = _entry_plain_text(body)
+        if echo:
+            try:
+                from deskmate.growth.emotion_engine import EmotionEngine
+                EmotionEngine(base_dir=self.base).update_after_experience(
+                    echo, note=_DIARY_ECHO_NOTE
+                )
+            except Exception:
+                pass
         return {"date": date, "path": path, "seq": seq, "at": at}
 
     def _append_text(self, date: str, body: str) -> str:

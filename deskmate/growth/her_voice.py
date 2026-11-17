@@ -19,6 +19,22 @@ from typing import Optional
 _DIARY_FILES = 7          # 近 N 天日记
 _MONOLOGUE_DAYS = 30      # 独白回看窗口
 
+#: 系统渲染的固定句（``diary._opening`` 的兜底 + 空转句）。它们不是「她写的话」，
+#: 拿它们当她的原句就是自己抄自己。**改 diary._opening 的固定句时必须同步这里。**
+_TEMPLATE_LINES = {
+    "今天我们一起做了些事，我都记在心里。",
+    "这一阵没什么动静。我安静地待着，等你忙完。",
+    "上午过后又有了些新动静，我接着记。",
+    "下午又有了些新动静，我接着记。",
+    "入夜了又添了几笔，我接着记。",
+}
+
+#: 结构行（徽章、落款、图片），是版式不是句子
+_SKIP_LINE_RE = re.compile(
+    r"(?:^|[-*]\s*)(?:默契\s|信任\s|今天解锁徽章|我更懂你了|累计对话)"
+    r"|^>\s*累计对话|^!\["
+)
+
 
 def _bigrams(s: str) -> set[str]:
     s = re.sub(r"\s+", "", s or "")
@@ -35,24 +51,52 @@ def _overlap(query: str, line: str) -> tuple[float, int]:
 
 
 def _diary_section_bodies(path: Path) -> list[str]:
-    """取日记文件中每个 ``## `` 小节的正文（去 header 行）。"""
+    """取日记每个 ``## `` 小节里她写的**句子**（一行一句），不是整段。
+
+    2026-11-17 修：原实现返回整段，于是 ``diary._opening(seq>1)`` 把上一则
+    全文当成开场白——第二则开头变成第一则整段、落款还重复一遍
+    （``test_append_two_entries`` 抓的就是这个，长期被当成「既有红」）。
+    ``pick_her_line`` 那边同样受害：几百字的整段做 2-gram 匹配几乎什么都能命中，
+    挑出来的「她的一句原句」其实是半篇日记。
+    """
     try:
         text = path.read_text(encoding="utf-8")
     except OSError:
         return []
-    bodies: list[str] = []
+    out: list[str] = []
     for part in re.split(r"(?m)^##\s+", text)[1:]:
-        body = "\n".join(part.splitlines()[1:]).strip()
-        if body:
-            bodies.append(body)
-    return bodies
+        # 第一行是 ``HH:MM <!--xj:...-->`` 标题，跳过
+        for raw in part.splitlines()[1:]:
+            s = raw.strip()
+            if not s or _SKIP_LINE_RE.search(s):
+                continue
+            # 清单项（``- 我们一起整理了文稿。``）是渲染器按素材生成的描述，
+            # 不是她写的话。取来当开场白就是「第二则复述第一则」——
+            # ``test_second_entry_does_not_repeat_first`` 抓的就是这个。
+            # 宁可回落固定兜底句，也不拿清单冒充她的话。
+            if s.startswith(("- ", "* ")):
+                continue
+            s = re.sub(r"\[xj:[^\]]*\]", "", s).strip()
+            for sent in re.split(r"(?<=[。！？…])", s):
+                sent = sent.strip()
+                if len(sent) >= 6 and sent not in _TEMPLATE_LINES:
+                    out.append(sent)
+    return out
 
 
-def recent_her_lines(base_dir: Optional[Path] = None, limit: int = 8) -> list[str]:
+def recent_her_lines(
+    base_dir: Optional[Path] = None,
+    limit: int = 8,
+    skip_recent_hours: float = 0.0,
+) -> list[str]:
     """收集她最近的第一人称原句，最新在前。
 
     - 情绪独白（emotion_log.description，去尾随「（原因）」meta）
-    - 日记正文行（近 7 天文件，正序 → 反转成最新在前）
+    - 日记叙述句（近 7 天文件，正序 → 反转成最新在前）
+
+    ``skip_recent_hours``：跳过最近 N 小时的独白。写日记时开场白要用「她过去
+    说过的话」；同一则刚产生的独白属于当下，再引一次就是复述。
+
     fail-open：任何异常段被吞，返回已收集部分（至少 []）。
     """
     monologues: list[str] = []
@@ -60,7 +104,11 @@ def recent_her_lines(base_dir: Optional[Path] = None, limit: int = 8) -> list[st
         from deskmate.growth.emotion_engine import EmotionEngine
 
         eng = EmotionEngine(base_dir=base_dir)
-        for d in eng.recent_log_descriptions(since_hours=24 * _MONOLOGUE_DAYS, limit=limit * 2):
+        for d in eng.recent_log_descriptions(
+            since_hours=24 * _MONOLOGUE_DAYS,
+            limit=limit * 2,
+            skip_recent_hours=skip_recent_hours,
+        ):
             d = re.sub(r"[（(][^（）()]*[）)]$", "", (d or "").strip())
             if d:
                 monologues.append(d)
