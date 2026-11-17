@@ -309,20 +309,31 @@ def read_runs(*, session_id: Optional[str] = None) -> dict[str, Any]:
 
 def pending_delivery(session_id: str) -> list[dict[str, Any]]:
     """已完成但还没告诉小桔的任务（完成时 engine 不在、app 重启等场景的兜底）。"""
+    return pending_by_session().get(session_id, [])
+
+
+def pending_by_session() -> dict[str, list[dict[str, Any]]]:
+    """一次读完所有待投递，按会话分组。
+
+    调度器每 30s 扫一遍；若按会话逐个读，几十个会话就是几十次文件读。分组返回后
+    调用方只需处理「有引擎的那些」，其余留着下次再试。
+    """
     with _LOCK:
         state = _read_state()
         if _reap_zombies(state):
             _write_state(state)
-    out = []
+    out: dict[str, list[dict[str, Any]]] = {}
     for run in state.get("runs", []):
         if not isinstance(run, dict):
             continue
         if run.get("status") == "running" or run.get("delivered"):
             continue
-        if run.get("session_id") != session_id:
+        sid = str(run.get("session_id") or "")
+        if not sid:
             continue
-        out.append(run)
-    out.sort(key=lambda r: r.get("finished_at") or 0)
+        out.setdefault(sid, []).append(run)
+    for runs in out.values():
+        runs.sort(key=lambda r: r.get("finished_at") or 0)
     return out
 
 

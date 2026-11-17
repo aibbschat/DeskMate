@@ -6468,15 +6468,18 @@ class SessionManager:
 
     async def _deliver_pending_consults(self) -> int:
         """兜底：把所有有引擎、但还没投递的结果补投一遍。"""
-        from deskmate.consult import pending_delivery
+        from deskmate.consult import pending_by_session
 
+        try:
+            pending = pending_by_session()
+        except Exception:
+            logger.warning("读取待投递的专家结果失败", exc_info=True)
+            return 0
         delivered = 0
-        for sid in list(self._engines.keys()):
-            try:
-                pending = pending_delivery(sid)
-            except Exception:
-                continue
-            for run in pending:
+        for sid, runs in pending.items():
+            if sid not in self._engines:
+                continue  # 会话没开着：留着，等它回来
+            for run in runs:
                 if await self._deliver_consult_result(run):
                     delivered += 1
         if delivered:
