@@ -50,6 +50,70 @@ export function stripEmote(text: string): string {
   return text.replace(EMOTE_STRIP_RE, "").replace(/\s{2,}/g, " ").trim();
 }
 
+// ---------------------------------------------------------------- 中文加粗修复
+// CommonMark 的强调规则（flanking delimiter run）：闭合 `**` 前面若是标点、后面又紧跟
+// 非空白非标点的字符（汉字正是这一类），这个 `**` 就不被认作闭合标记，于是整对 `**`
+// 原样输出——界面上看到的就是「**三、……当钩子用。**敌人……」。而「**小标题。**正文」
+// 恰恰是中文写作里最常见的句式，所以这不是偶发，是必现。
+// 修法：只把「按规则判定必然失效」的那一对标记去掉——丢的是加粗，一个字都不丢；
+// 合法加粗（`**敌人**十`、`**一**，`）一律不动。未闭合的孤星、以及 fenced 代码块里的
+// 星号另有处理：孤星删掉，代码块原样保留。
+const PUNCT_OR_SYMBOL = /[\p{P}\p{S}]/u;
+const FENCED_CODE = /(```[\s\S]*?```)/;
+
+function isFlankingOk(text: string, pos: number, opening: boolean): boolean {
+  // opening: 看后一个字符；closing: 看前一个字符。
+  const inner = opening ? text[pos + 2] ?? "" : text[pos - 1] ?? "";
+  const outer = opening ? text[pos - 1] ?? "" : text[pos + 2] ?? "";
+  if (!inner || /\s/.test(inner)) return false;
+  if (!PUNCT_OR_SYMBOL.test(inner)) return true;
+  // 内侧是标点时，外侧必须是空白或标点才成立（CommonMark 的 flanking 条件）
+  return !outer || /\s/.test(outer) || PUNCT_OR_SYMBOL.test(outer);
+}
+
+function repairSegment(text: string): string {
+  if (text.indexOf("**") === -1) return text;
+  const marks: number[] = [];
+  for (let i = 0; i + 1 < text.length; i += 1) {
+    if (text[i] === "*" && text[i + 1] === "*" && text[i + 2] !== "*" && text[i - 1] !== "*") {
+      marks.push(i);
+      i += 1; // 跳过第二个星号，避免把 `**` 的尾星当成新的开头
+    }
+  }
+  if (marks.length === 0) return text;
+
+  const dead = new Set<number>();
+  for (let k = 0; k + 1 < marks.length; k += 2) {
+    const open = marks[k];
+    const close = marks[k + 1];
+    if (!isFlankingOk(text, open, true) || !isFlankingOk(text, close, false)) {
+      dead.add(open);
+      dead.add(close);
+    }
+  }
+  // 落单的奇数个标记：没有配对就是裸星号，同样删掉
+  if (marks.length % 2 === 1) dead.add(marks[marks.length - 1]);
+  if (dead.size === 0) return text;
+
+  let out = "";
+  let prev = 0;
+  for (const pos of [...dead].sort((a, b) => a - b)) {
+    out += text.slice(prev, pos);
+    prev = pos + 2;
+  }
+  return out + text.slice(prev);
+}
+
+/** 修掉中文标点导致的加粗失效（详见上方注释）。代码块原样返回。 */
+export function repairCjkEmphasis(src: string): string {
+  const text = String(src ?? "");
+  if (text.indexOf("**") === -1) return text;
+  return text
+    .split(FENCED_CODE)
+    .map((part, i) => (i % 2 === 1 ? part : repairSegment(part)))
+    .join("");
+}
+
 function ArtifactChip({ path, title }: { path: string; title: string }) {
   const file = path.split("/").pop() || path;
   return (
@@ -100,7 +164,7 @@ function detectMemoryReference(text: string): boolean {
 }
 
 export function Markdown({ text }: { text: string }) {
-  const rendered = withEmoteSyntax(text);
+  const rendered = repairCjkEmphasis(withEmoteSyntax(text));
   const hasMemoryRef = detectMemoryReference(text || "");
   return (
     <div className="md">
