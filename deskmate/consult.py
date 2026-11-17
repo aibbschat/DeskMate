@@ -48,6 +48,15 @@ DEFAULT_TIMEOUT = 900
 #: 避免一次派活把机器和通道打满。
 MAX_CONCURRENT_RUNS = 4
 
+#: 读稿硬闸一：剩余预算低于这个比例就不再供料，把时间留给「写」。
+#: 15 分钟预算里，读稿实测 72 秒就能覆盖 15 章，剩下的时间必须留给交付。
+_READ_STOP_RATIO = 0.35
+
+#: 读稿硬闸二：次数上限。15 章 / 13.7 万字的书实测 **4 次**即覆盖全书
+#: （整本 80k = 首四章+尾六章，再一次「第五章到第九章」补中间）。所以默认就是 4：
+#: 第 5 次起不再供料。`DESKMATE_CONSULT_READ_CAP` 可调大（21 卷那种长卷任务）。
+_READ_CALLS_CAP_DEFAULT = 4
+
 #: 状态文件保留多少条历史（running 的不受限制）。
 RUNS_KEEP = 20
 
@@ -142,6 +151,16 @@ def _timeout() -> int:
     except (TypeError, ValueError):
         return DEFAULT_TIMEOUT
     return value if value > 0 else DEFAULT_TIMEOUT
+
+
+def _read_calls_cap() -> int:
+    """读稿次数上限（`DESKMATE_CONSULT_READ_CAP` 可调，长卷任务才需要调大）。"""
+    raw = os.environ.get("DESKMATE_CONSULT_READ_CAP", "")
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return _READ_CALLS_CAP_DEFAULT
+    return value if value > 0 else _READ_CALLS_CAP_DEFAULT
 
 
 def _read_state() -> dict[str, Any]:
@@ -265,12 +284,55 @@ def _merge_progress(run_id: str, expert_id: str, **fields: Any) -> None:
         _notify("progress", snapshot)
 
 
+def _run_snapshot(run_id: str, expert_id: str) -> dict[str, Any]:
+    """读一次运行时快照：这个任务已经跑了多久、读了几次、累计多少字。"""
+    with _LOCK:
+        state = _read_state()
+    run = _find(state, run_id) or {}
+    prog = (run.get("progress") or {}).get(expert_id) or {}
+    started = float(run.get("started_at") or time.time())
+    budget = float(run.get("timeout") or _timeout())
+    return {
+        "elapsed": max(0.0, time.time() - started),
+        "budget": max(1.0, budget),
+        "reads": int(prog.get("reads") or 0),
+        "chars": int(prog.get("chars") or 0),
+    }
+
+
+def _budget_head(snap: dict[str, Any]) -> str:
+    left = max(0.0, snap["budget"] - snap["elapsed"])
+    return (
+        f"【读稿预算】已用 {snap['elapsed']:.0f}s / {snap['budget']:.0f}s（剩 {left:.0f}s）"
+        f"，这是第 {snap['reads'] + 1} 次读稿，累计 {snap['chars']:,} 字。"
+    )
+
+
+def _budget_stop(reason: str, snap: dict[str, Any]) -> str:
+    """硬闸返回：不给正文，只给一句「必须开始交付」。
+
+    2026-11-17 两次实盘（生产 + 复现）都栽在同一个行为上：书 72 秒就读完了
+    （4 次、14.9 万字），剩下 828 秒全在重复补读，最后交出的是一句「我要再补读
+    第十二到十四章」——一个字正文都没有。模型没有时间感，工具又只喊「还缺几章」，
+    于是它永远在准备。这条提示把「再读下去的真实后果」直接摆在它面前。
+    """
+    return (
+        f"（{reason}：本任务已进行 {snap['elapsed']:.0f}s / {snap['budget']:.0f}s，"
+        f"已读 {snap['reads']} 次共 {snap['chars']:,} 字。🔴 **现在必须开始交付**——"
+        "继续补读会让整个任务超时，最终一个字都交不出来（这不是警告，是已经发生过两次的事实）。"
+        "基于已读内容作答；确实没读到的章节，在「存疑处」里写明章节名，不要再用读稿工具。）"
+    )
+
+
 def _instrument_reading(fn: Any, *, run_id: str, expert_id: str) -> Any:
     """给读稿工具套一层记账：进入时记「在跑什么」，结束时记「读了几次/多少字」。
 
     用闭包把 run_id / expert_id 钉住，不用 thread-local：工具是在 `asyncio.to_thread`
     的执行器线程里跑的，跟 `_run_one` 不在一个线程上，thread-local 传不过去。
     `functools.wraps` 保留签名与文档串，注册表据此生成 schema（有测试钉这一条）。
+
+    2026-11-17 起它还负责**预算**：每次读稿的返回开头带「已用 Xs / 共 Ys」，
+    预算见底或次数到顶就直接不给正文——只给一句「开始交付」。理由见 `_budget_stop`。
     """
     name = getattr(fn, "__name__", "")
     if name not in _PROGRESS_TOOLS:
@@ -284,11 +346,22 @@ def _instrument_reading(fn: Any, *, run_id: str, expert_id: str) -> Any:
             if raw is None and len(args) > 1:
                 raw = args[1]
             chapter = str(raw or "").strip()
+        snap = _run_snapshot(run_id, expert_id)
+        if name == "read_book":
+            left = snap["budget"] - snap["elapsed"]
+            cap = _read_calls_cap()
+            if left <= snap["budget"] * _READ_STOP_RATIO:
+                return _budget_stop("读稿时间段已用完", snap)
+            if snap["reads"] >= cap:
+                return _budget_stop(f"读稿次数已达上限（{cap} 次）", snap)
         _merge_progress(run_id, expert_id, busy=name, chapter=chapter)
         text = ""
         try:
             out = fn(*args, **kwargs)
             text = out if isinstance(out, str) else ""
+            if name == "read_book" and text:
+                # 预算行放最前面：模型对工具结果的开头最敏感，塞在 8 万字末尾会被淹掉。
+                return f"{_budget_head(snap)}\n{text}"
             return out
         finally:
             _merge_progress(
@@ -497,15 +570,21 @@ def _build_expert_engine(
     return engine
 
 
-def _prompt(expert_id: str, brief: str, book: str) -> str:
+def _prompt(expert_id: str, brief: str, book: str, timeout: int = 0) -> str:
     name = _NAME.get(expert_id, expert_id)
     book_line = f"《{book}》" if book else "未指定（可以先 list_books 查书架）"
+    mins = f"{timeout / 60:.0f} 分钟" if timeout else "有限时间"
     return (
         f"你是「{name}」。萧盛让小桔（他的主助手）请你独立看一个问题。你只给专家意见，"
         "不直接对话、不反问、不写正文。\n"
         f"书：{book_line}\n"
         "任务简报：\n"
         f"{brief}\n\n"
+        f"【时间预算】总共 {mins}。读稿很慢——每读一次都要重新过一遍上下文。"
+        "一本 15 章、13 万字左右的书，读 2 到 4 次（先整本看首尾、再点名补中间缺的章）"
+        "就能覆盖全书，**读够了就必须动笔**。反复补读会让整个任务超时，最后一个字都交不出来"
+        "（这已经实际发生过两次）。读稿工具自带预算：次数或时间用尽后它会直接拒绝供料，"
+        "只回你一句「现在必须开始交付」。\n\n"
         "输出要求：中文；结论先行；给依据（章节/人物/设定）；不确定的标出来；"
         "不要写成品正文。"
     )
@@ -554,7 +633,9 @@ def _run_one(
     started = time.time()
     try:
         engine = _build_expert_engine(expert_id, provider, model, shelf, run_id)
-        text, status = asyncio.run(_collect(engine, _prompt(expert_id, brief, book), timeout))
+        text, status = asyncio.run(
+            _collect(engine, _prompt(expert_id, brief, book, timeout), timeout)
+        )
         text = text.strip()
         if status == "timeout":
             if text:

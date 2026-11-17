@@ -323,7 +323,10 @@ def test_reading_progress_is_recorded_and_broadcast(tmp_path: Path) -> None:
             read_book, run_id=run_id, expert_id="character"
         )
         out = wrapped("夜不收", chapter="第十一章")
-        assert out == expect_text
+        # 正文照旧，但开头多一行预算（模型据此知道还剩多少时间、读了几次）
+        assert expect_text in out
+        assert out.startswith("【读稿预算】"), "预算行必须在最前面，塞末尾会被长正文淹掉"
+        assert "这是第 1 次读稿" in out
         # ② 读完后：章节、次数、字数、busy 清空
         # （必须在停线程之前读：线程一停，reap 就会把 running 标成 interrupted）
         progress = consult_mod.read_runs(session_id="sess-p")["active"][0]["progress"]["character"]
@@ -356,3 +359,128 @@ def test_instrumented_tool_keeps_its_schema(tmp_path: Path) -> None:
         assert json.dumps(raw, sort_keys=True, ensure_ascii=False) == json.dumps(
             wrapped, sort_keys=True, ensure_ascii=False
         ), fn.__name__
+
+
+# ---------------------------------------------------------------------------
+# 读稿硬闸（2026-11-17）：两次实盘超时都是「书读完了还在读，从不落笔」
+# ---------------------------------------------------------------------------
+
+def _seed_reading_state(
+    run_id: str, *, reads: int, elapsed: float, budget: int = 900
+) -> threading.Event:
+    """造一条已读 N 次、已跑了 elapsed 秒的 running 任务。"""
+    import json
+    import time as _time
+
+    stop = threading.Event()
+    thread = threading.Thread(target=stop.wait, daemon=True)
+    thread.start()
+    consult_mod._ACTIVE[run_id] = thread
+    path = Path(os.environ["DESKMATE_CONSULT_RUNS"])
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "runs": [
+                    {
+                        "id": run_id,
+                        "session_id": "sess-cap",
+                        "experts": ["character"],
+                        "expert_names": ["人物专家"],
+                        "book": "夜不收",
+                        "status": "running",
+                        "started_at": _time.time() - elapsed,
+                        "timeout": budget,
+                        "progress": {
+                            "character": {
+                                "busy": "",
+                                "chapter": "",
+                                "reads": reads,
+                                "chars": reads * 20_000,
+                            }
+                        },
+                        "results": [],
+                        "delivered": False,
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    return stop
+
+
+def test_read_tool_refuses_after_call_cap() -> None:
+    """读够次数就断供：不真的去读，只回一句「现在必须开始交付」。
+
+    实测一本 15 章 / 13.7 万字的书读 4 次就覆盖全书；第 9 次还在读的那两次实盘，
+    最后交出的都是一句「我要再补读第 X 到 Y 章」——零字正文。
+    """
+    run_id = "c-cap-1"
+    stop = _seed_reading_state(
+        run_id, reads=consult_mod._READ_CALLS_CAP_DEFAULT, elapsed=60
+    )
+    real_calls: list[str] = []
+
+    def read_book(title: str, chapter: str = "") -> str:
+        real_calls.append(chapter)
+        return "正文"
+
+    try:
+        wrapped = consult_mod._instrument_reading(
+            read_book, run_id=run_id, expert_id="character"
+        )
+        out = wrapped("夜不收", chapter="第十二章")
+    finally:
+        stop.set()
+
+    assert real_calls == [], "到顶后不许真的去读书"
+    assert "现在必须开始交付" in out
+    assert "次数已达上限" in out
+
+
+def test_read_tool_refuses_when_time_runs_out() -> None:
+    """剩余预算不足 35% 时断供——把最后那段时间强制留给「写」。"""
+    run_id = "c-time-1"
+    stop = _seed_reading_state(run_id, reads=1, elapsed=700)  # 700/900，剩 22%
+    real_calls: list[str] = []
+
+    def read_book(title: str, chapter: str = "") -> str:
+        real_calls.append(chapter)
+        return "正文"
+
+    try:
+        wrapped = consult_mod._instrument_reading(
+            read_book, run_id=run_id, expert_id="character"
+        )
+        out = wrapped("夜不收", chapter="第十一章")
+    finally:
+        stop.set()
+
+    assert real_calls == [], "时间见底后不许再读"
+    assert "读稿时间段已用完" in out
+
+
+def test_read_tool_head_shows_budget() -> None:
+    """还没到极值时照常供料，但开头必须带「已用/剩余/第几次」。"""
+    run_id = "c-head-1"
+    stop = _seed_reading_state(run_id, reads=2, elapsed=100)
+
+    def read_book(title: str, chapter: str = "") -> str:
+        """假读稿：函数名必须是 read_book，包装只认这个名字。"""
+        return "正文内容"
+
+    try:
+        wrapped = consult_mod._instrument_reading(
+            read_book, run_id=run_id, expert_id="character"
+        )
+        out = wrapped("夜不收", chapter="第五章到第九章")
+    finally:
+        stop.set()
+
+    assert out.startswith("【读稿预算】")
+    assert "这是第 3 次读稿" in out, "读之前计数，所以是第 3 次"
+    assert "累计 40,000 字" in out
+    assert out.endswith("正文内容")
