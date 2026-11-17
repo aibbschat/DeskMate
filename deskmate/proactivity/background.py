@@ -121,10 +121,14 @@ def make_extra_tick(
             result = None
         # 1.5) 心跳（2026-11-17）：把「这一跳发生了什么」落到文件，设置页直读。
         # 它只回答「她还活着吗」，judge 是否真调了 LLM 由 tick 里的 record_judge 记。
+        # 用 getattr 取：tick() 的假实现/旧实现可能返回别的类型（测试用 str），
+        # 心跳可见性不该因为一个字段的类型假设把整轮 tick 打挂。
         _record_tick(
             engine,
-            skipped_reason=(result.skipped_reason if result is not None else "tick 异常"),
-            acted=bool(result is not None and result.has_suggestion),
+            skipped_reason=str(getattr(result, "skipped_reason", "") or "")
+            if result is not None
+            else "tick 异常",
+            acted=bool(getattr(result, "has_suggestion", False)),
         )
         # 2) L2 自主层（替你行动）：kill switch 关则整块跳过，绝不相互影响
         try:
