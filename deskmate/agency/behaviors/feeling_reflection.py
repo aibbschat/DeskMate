@@ -95,6 +95,10 @@ _SYSTEM = for_scene(
   只写「稿子交付流程对不对得上」「稿子让我焦虑」都不算——那是流程或你的
   状态，不是情感。说不出具体指向的，返回 {"items": []}，不许为凑数放宽。
 - 不许复述事件本身，也不许抄他日记里的原句。
+- 如果给了「你之前写下的判断」和「这句话当时由这些证据撑着」：原话一字未改地看，
+  不要替她改写，也不许写「你应该改成……」。原话比证据走得更远时（例如写
+  「他认我的判断」，而最近一条证据只是「纠正了错误」），只把落差摆在那里，
+  由她自己决定要不要收窄；不收窄也成立。
 - stance 8–80 字，用你自己的口吻。
 - 如果写了「我们之间」，证据里必须真的有你们共同在场的事。
 - confidence 可以不给；不给就沿用你现在的分量。给了就是重新给值，不是累加。
@@ -201,6 +205,28 @@ def _render_prompt(pool: list[dict], existing: dict[str, dict],
         if cur:
             parts.append(f"你现在的说法：{cur.get('content', '')}（分量 {cur.get('confidence', 0):.2f}）")
             parts.append("（可以维持，也可以改；改要说清为什么。）")
+            # 2026-11-17：把「这句话由哪些证据撑着」原样摊开，让她自己决定要不要收窄。
+            # 系统不改她的字，也不写「你应该改成……」，只负责把落差摆出来。
+            old_evs = sorted(
+                (e for e in ((cur.get("extra") or {}).get("evidence") or [])
+                 if isinstance(e, dict)),
+                key=lambda e: str(e.get("ts") or ""),
+            )
+            if old_evs:
+                old_dates = sorted(
+                    str(e.get("ts") or "")[:10] for e in old_evs if e.get("ts")
+                )
+                latest = old_dates[-1] if old_dates else "（没有日期）"
+                parts.append(
+                    f"这句话当时由这些证据撑着（共 {len(old_evs)} 条，最近一条 {latest}）："
+                )
+                for e in old_evs:
+                    day = str(e.get("ts") or "")[:10]
+                    parts.append(f"  - {day} {e.get('summary') or ''}")
+                parts.append(
+                    "（把原话和这些证据自己对照：原话比证据走得更远时，你可以收窄或改写；"
+                    "不改也成立。系统不替你改字，也不会让你只往某个方向改。）"
+                )
         parts.append("发生过的事：")
         for ev in entry["evidence"]:
             day = str(ev.get("ts") or "")[:10]

@@ -141,6 +141,31 @@ def test_has_real_link_rejects_text_only(link):
     assert not _has_real_link(link), link
 
 
+def test_prompt_shows_evidence_boundary_without_rewriting_her_words():
+    """周更把「这句话由哪些证据撑着」原样摊开；不改她的字、不下改写指令。"""
+    from deskmate.agency.behaviors.feeling_reflection import _render_prompt
+
+    cur = {
+        "content": "他认我的判断。",
+        "confidence": 0.65,
+        "extra": {
+            "evidence": [
+                {"src": "emotion_log", "id": "e1", "ts": "2026-10-10T10:00:00",
+                 "summary": "他让我按自己的判断来"},
+                {"src": "emotion_log", "id": "e2", "ts": "2026-11-06T10:00:00",
+                 "summary": "纠正了错误"},
+            ]
+        },
+    }
+    text = _render_prompt([_pool_entry()], {"夜不收": cur}, {})
+
+    assert "他认我的判断。" in text                    # 原话一字不改
+    assert "共 2 条，最近一条 2026-11-06" in text      # 边界摊开
+    assert "2026-11-06 纠正了错误" in text
+    assert "你可以收窄或改写" in text
+    assert "你应该改成" not in text                    # 系统不替她改
+
+
 def test_parse_items_tolerates_fence_and_garbage():
     fenced = "```json\n" + json.dumps({"items": [GOOD]}, ensure_ascii=False) + "\n```"
     assert len(_parse_items(fenced)) == 1

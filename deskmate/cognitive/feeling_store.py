@@ -38,30 +38,17 @@ FEELING_KINDS = ("person", "work", "thing")
 
 #: R2 候选池：同一对象、≥3 条独立事件、跨 ≥7 天、≥3 个不同日期。
 #: ``salience >= 0.85`` 特例在 P1 关闭（当前数据里几乎不可用）。
-_POOL_SQL = """
-SELECT object_ref, object_kind,
-       COUNT(*) AS n,
-       COUNT(DISTINCT date(ts)) AS days,
-       COUNT(DISTINCT event_summary) AS summaries,
-       MIN(ts) AS first_ts, MAX(ts) AS last_ts
+#: 2026-11-17 P2-1：先按行取出，再在 Python 里把 work/thing 的散名归并到
+#: ``works.title``，最后才套门槛——否则「《国子监》」与「国子监」各算一组，
+#: 永远到不了 3 条。历史 ``object_ref`` 不改，归并只发生在解析/取证层。
+_ROWS_SQL = """
+SELECT object_ref, object_kind, id, ts, event_summary
 FROM emotion_log
 WHERE object_kind IN ('person', 'work', 'thing')
   AND object_ref != ''
   AND event_summary != ''
   AND source NOT IN ('time_decay', 'pending', 'lapsed', 'landed', 'temper_foul')
   AND ts >= date('now', '-90 day')
-GROUP BY object_ref, object_kind
-HAVING n >= 3 AND days >= 3 AND summaries >= 3
-   AND julianday(MAX(ts)) - julianday(MIN(ts)) >= 7
-ORDER BY n DESC, days DESC, MAX(ts) DESC
-"""
-
-_EVIDENCE_SQL = """
-SELECT id, ts, event_summary
-FROM emotion_log
-WHERE object_ref = ? AND object_kind = ?
-  AND event_summary != ''
-  AND source NOT IN ('time_decay', 'pending', 'lapsed', 'landed', 'temper_foul')
 ORDER BY ts
 """
 
@@ -184,13 +171,36 @@ class FeelingStore:
 
         每条 evidence 为 ``{src,id,ts,summary}``：``ts/summary`` 可跨端携带，
         ``id`` 供本地回查。``relation`` 不进池（SQL 里已限定 kind）。
+
+        2026-11-17 P2-1：先在解析层把 work/thing 的散名归并到 ``works.title``，
+        再按归并后的对象套门槛、取证。历史 ``object_ref`` 一字不改；归不到
+        同一本书的（「第五部」「稿件」「旧梗概」这类序数与类别）保持原样或
+        直接不进池，不硬并成一个跨年大筐。
         """
         out: list[dict] = []
         try:
-            from .works import is_generic_work_ref
+            from .works import WorksStore, is_generic_work_ref
+
+            works = WorksStore(self._db)
+            canon_cache: dict[tuple[str, str], tuple[str, str] | None] = {}
+
+            def _canonical(ref: str, kind: str) -> tuple[str, str] | None:
+                key = (ref, kind)
+                if key in canon_cache:
+                    return canon_cache[key]
+                resolved: tuple[str, str] | None = (ref, kind)
+                if kind in ("work", "thing"):
+                    s = _strip_demonstrative(ref)
+                    if is_generic_work_ref(s):
+                        resolved = None
+                    else:
+                        hit = works.resolve(s) if s else None
+                        if hit:
+                            resolved = (str(hit["title"]), "work")
+                canon_cache[key] = resolved
+                return resolved
 
             with self._connect() as conn:
-                rows = conn.execute(_POOL_SQL).fetchall()
                 # 已撤下（retired/superseded）的对象不再回池；「稿子/章节」这类
                 # 类别泛称也不是情感对象（2026-11-17 判据），不进池、不耗调用。
                 retired = {
@@ -200,47 +210,59 @@ class FeelingStore:
                         "WHERE layer='feeling' AND status!='active'"
                     ).fetchall()
                 }
-                for row in rows:
+                groups: dict[tuple[str, str], list[dict]] = {}
+                for row in conn.execute(_ROWS_SQL).fetchall():
                     ref, kind = str(row["object_ref"]), str(row["object_kind"])
-                    if kind in ("work", "thing") and is_generic_work_ref(ref):
-                        continue
                     if (kind, ref) in retired:
                         continue
-                    evs = conn.execute(_EVIDENCE_SQL, (ref, kind)).fetchall()
-                    # 超过上限时均匀取样：保住首尾，跨期不被截断
-                    if len(evs) > evidence_cap:
-                        step = (len(evs) - 1) / (evidence_cap - 1)
-                        evs = [evs[round(i * step)] for i in range(evidence_cap)]
-                    evidence = [
+                    canonical = _canonical(ref, kind)
+                    if canonical is None:
+                        continue
+                    cref, ckind = canonical
+                    if not cref or (ckind, cref) in retired:
+                        continue
+                    groups.setdefault(canonical, []).append(
                         {
                             "src": "emotion_log",
-                            "id": str(e["id"]),
-                            "ts": str(e["ts"]),
-                            "summary": str(e["event_summary"]),
-                        }
-                        for e in evs[-evidence_cap:]
-                    ]
-                    out.append(
-                        {
-                            "object_ref": ref,
-                            "object_kind": kind,
-                            "n": int(row["n"]),
-                            "days": int(row["days"]),
-                            "summaries": int(row["summaries"]),
-                            "first_ts": str(row["first_ts"]),
-                            "last_ts": str(row["last_ts"]),
-                            "span_days": max(
-                                0,
-                                (
-                                    datetime.fromisoformat(_date_of(row["last_ts"]))
-                                    - datetime.fromisoformat(_date_of(row["first_ts"]))
-                                ).days,
-                            ),
-                            "evidence": evidence,
+                            "id": str(row["id"]),
+                            "ts": str(row["ts"]),
+                            "summary": str(row["event_summary"]),
                         }
                     )
-                    if len(out) >= limit:
-                        break
+
+            for (cref, ckind), evs in groups.items():
+                total = len(evs)
+                first_ts, last_ts = evs[0]["ts"], evs[-1]["ts"]
+                days = len({_date_of(e["ts"]) for e in evs if e["ts"]})
+                summaries = len({e["summary"] for e in evs if e["summary"]})
+                span_days = max(
+                    0,
+                    (
+                        datetime.fromisoformat(_date_of(last_ts))
+                        - datetime.fromisoformat(_date_of(first_ts))
+                    ).days,
+                )
+                if total < 3 or days < 3 or summaries < 3 or span_days < 7:
+                    continue
+                # 超过上限时均匀取样：保住首尾，跨期不被截断
+                if total > evidence_cap:
+                    step = (total - 1) / (evidence_cap - 1)
+                    evs = [evs[round(i * step)] for i in range(evidence_cap)]
+                out.append(
+                    {
+                        "object_ref": cref,
+                        "object_kind": ckind,
+                        "n": total,
+                        "days": days,
+                        "summaries": summaries,
+                        "first_ts": first_ts,
+                        "last_ts": last_ts,
+                        "span_days": span_days,
+                        "evidence": evs,
+                    }
+                )
+            out.sort(key=lambda p: (p["n"], p["days"], p["last_ts"]), reverse=True)
+            out = out[:limit]
         except Exception as e:  # noqa: BLE001 —— 读路径 fail-open
             logger.warning("build_pool 失败（返回空池）: %s", e)
             return []
@@ -425,8 +447,14 @@ class FeelingStore:
                 confidence = float(row["confidence"]) if row else 0.4
             confidence = max(0.0, min(1.0, float(confidence)))
 
-            action = "revised" if row else "created"
-            review_count = int(old_extra.get("review_count") or 0) + (1 if row else 0)
+            # 2026-11-17 R5 改正：她这次写下的字和原来一字不差，就不是「修订」。
+            # 不写 revised 留痕，也不刷新 last_touched——否则每周重述同一句话会
+            # 把 60 天淡化计时器永久按住，R5 永远不触发。
+            unchanged = bool(row) and content == old_content
+            action = "unchanged" if unchanged else ("revised" if row else "created")
+            review_count = int(old_extra.get("review_count") or 0) + (
+                1 if row and not unchanged else 0
+            )
             extra = {
                 **old_extra,
                 "object_ref": ref,
@@ -435,7 +463,9 @@ class FeelingStore:
                 "evidence": merged,
                 "conflict_with": str(conflict_with or ""),
                 "supersedes": str(old_extra.get("supersedes") or ""),
-                "last_touched": now,
+                "last_touched": (
+                    str(old_extra.get("last_touched") or now) if unchanged else now
+                ),
                 "evidence_count": len(merged),
                 "span_days": span_days,
                 "review_count": review_count,
@@ -447,33 +477,42 @@ class FeelingStore:
             if real_link:
                 extra["real_link"] = str(real_link)
 
-            conn.execute(
-                "INSERT INTO profile_items"
-                "(id, layer, dimension, topic, content, category, status, confidence,"
-                " extra_json, first_extracted, last_updated, valid_from)"
-                " VALUES(?, 'feeling', 'stance', ?, ?, ?, 'active', ?, ?, ?, ?, ?)"
-                " ON CONFLICT(id) DO UPDATE SET"
-                "  content=excluded.content,"
-                "  category=excluded.category,"
-                "  status='active',"
-                "  confidence=excluded.confidence,"
-                "  extra_json=excluded.extra_json,"
-                "  last_updated=excluded.last_updated,"
-                "  valid_until=NULL",
-                (
-                    fid, ref, content, kind, confidence,
-                    json.dumps(extra, ensure_ascii=False), now, now, now,
-                ),
-            )
+            if unchanged:
+                # 只并新证据（如有），不动 last_updated / last_touched / 留痕
+                conn.execute(
+                    "UPDATE profile_items SET extra_json=?, confidence=?, "
+                    "status='active', valid_until=NULL "
+                    "WHERE id=? AND layer='feeling'",
+                    (json.dumps(extra, ensure_ascii=False), confidence, fid),
+                )
+            else:
+                conn.execute(
+                    "INSERT INTO profile_items"
+                    "(id, layer, dimension, topic, content, category, status, confidence,"
+                    " extra_json, first_extracted, last_updated, valid_from)"
+                    " VALUES(?, 'feeling', 'stance', ?, ?, ?, 'active', ?, ?, ?, ?, ?)"
+                    " ON CONFLICT(id) DO UPDATE SET"
+                    "  content=excluded.content,"
+                    "  category=excluded.category,"
+                    "  status='active',"
+                    "  confidence=excluded.confidence,"
+                    "  extra_json=excluded.extra_json,"
+                    "  last_updated=excluded.last_updated,"
+                    "  valid_until=NULL",
+                    (
+                        fid, ref, content, kind, confidence,
+                        json.dumps(extra, ensure_ascii=False), now, now, now,
+                    ),
+                )
 
-            # 留痕：旧内容不删，进 item_history（情感史）
-            conn.execute(
-                "INSERT OR REPLACE INTO item_history "
-                "(item_id, seq, action, old_value, new_value, reason, source, ts) "
-                "VALUES(?, (SELECT COALESCE(MAX(seq), -1) + 1 FROM item_history "
-                "WHERE item_id=?), ?, ?, ?, ?, 'feeling', ?)",
-                (fid, fid, action, old_content, content, reason, now),
-            )
+                # 留痕：旧内容不删，进 item_history（情感史）
+                conn.execute(
+                    "INSERT OR REPLACE INTO item_history "
+                    "(item_id, seq, action, old_value, new_value, reason, source, ts) "
+                    "VALUES(?, (SELECT COALESCE(MAX(seq), -1) + 1 FROM item_history "
+                    "WHERE item_id=?), ?, ?, ?, ?, 'feeling', ?)",
+                    (fid, fid, action, old_content, content, reason, now),
+                )
             conn.commit()
 
         # 对象锚（memory_anchors 是对象索引视角，不新增表）

@@ -127,6 +127,106 @@ def test_upsert_keeps_one_active_and_leaves_trace(tmp_path):
     assert hist[1][3] == "改口"
 
 
+def test_upsert_unchanged_content_does_not_rewrite_history_or_touch(tmp_path):
+    """R5 改正：一字未变就不是修订——不写 revised、不刷新 last_touched。"""
+    store = FeelingStore(_mk_db(tmp_path))
+    evidence = [
+        _ev("e1", "2026-10-01T10:00:00", "他纠正了我一处判断"),
+        _ev("e2", "2026-10-10T10:00:00", "他让我按自己的判断来"),
+        _ev("e3", "2026-11-06T10:00:00", "纠正了错误"),
+    ]
+    first = store.upsert(
+        object_ref="萧盛",
+        object_kind="person",
+        content="他认我的判断。",
+        evidence=evidence,
+        reason="第一次长出来",
+        confidence=0.65,
+        now="2026-11-07T00:00:00",
+    )
+    row1 = store.get(first["id"])
+    touched_1 = row1["extra"]["last_touched"]
+    updated_1 = row1["last_updated"]
+
+    # 第二次周更：同一个字，只多了一条新证据
+    second = store.upsert(
+        object_ref="萧盛",
+        object_kind="person",
+        content="他认我的判断。",
+        evidence=[_ev("e4", "2026-11-12T10:00:00", "他又认了一次")],
+        reason="周更回顾",
+        now="2026-11-14T00:00:00",
+    )
+    row2 = store.get(first["id"])
+    assert second["action"] == "unchanged"
+    assert row2["content"] == "他认我的判断。"       # 她的字一字不改
+    assert row2["extra"]["last_touched"] == touched_1  # 不刷新
+    assert row2["last_updated"] == updated_1            # 时间戳不动
+    assert row2["extra"]["evidence_count"] == 4         # 新证据仍然并进来
+
+    conn = sqlite3.connect(store._db)
+    hist = conn.execute(
+        "SELECT action FROM item_history WHERE item_id=? ORDER BY seq",
+        (first["id"],),
+    ).fetchall()
+    conn.close()
+    assert [h[0] for h in hist] == ["created"], "一字未变不该写 revised 留痕"
+
+    # 真的改口时，照旧记 revised 并刷新时间
+    third = store.upsert(
+        object_ref="萧盛",
+        object_kind="person",
+        content="他开始认我的判断，但还谈不上完全放心。",
+        evidence=evidence,
+        reason="收窄",
+        now="2026-11-21T00:00:00",
+    )
+    assert third["action"] == "revised"
+    assert store.get(first["id"])["last_updated"] == "2026-11-21T00:00:00"
+
+
+def test_build_pool_merges_scattered_work_refs(tmp_path):
+    """P2-1：散名按 works.title 归并后再套门槛，历史 object_ref 一字不改。"""
+    db = _mk_db(tmp_path)
+    from deskmate.cognitive.works import WorksStore
+
+    WorksStore(db, books_root=tmp_path / "nope").register("国子监秘闻录")
+
+    conn = sqlite3.connect(db)
+    conn.executemany(
+        "INSERT INTO emotion_log(id,ts,source,event_summary,object_ref,object_kind)"
+        " VALUES(?,?,?,?,?,?)",
+        [
+            ("a1", "2026-10-20T10:00:00", "chat", "国子监第一卷定稿",
+             "《国子监》", "work"),
+            ("a2", "2026-10-24T10:00:00", "chat", "国子监第二卷改完",
+             "国子监", "thing"),
+            ("a3", "2026-10-29T10:00:00", "chat", "国子监第三卷交稿",
+             "国子监秘闻录", "work"),
+            # 序数与类别：归不到某本书，不许硬并
+            ("b1", "2026-10-20T11:00:00", "chat", "第五部还没写完",
+             "第五部", "work"),
+            ("c1", "2026-10-20T12:00:00", "chat", "稿件又退回来了",
+             "稿件", "work"),
+        ],
+    )
+    conn.commit()
+    conn.close()
+
+    pool = FeelingStore(db).build_pool(limit=5)
+    got = [(p["object_ref"], p["object_kind"], p["n"]) for p in pool]
+    assert got == [("国子监秘闻录", "work", 3)], got
+
+    # 归并只在解析/取证层：历史行原封不动
+    conn = sqlite3.connect(db)
+    refs = {
+        r[0]
+        for r in conn.execute("SELECT object_ref FROM emotion_log").fetchall()
+    }
+    conn.close()
+    assert {"《国子监》", "国子监", "国子监秘闻录", "第五部", "稿件"} <= refs
+
+
 def test_upsert_requires_reason(tmp_path):
     store = FeelingStore(_mk_db(tmp_path))
     with pytest.raises(ValueError):
