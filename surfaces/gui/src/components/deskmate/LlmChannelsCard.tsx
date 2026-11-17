@@ -15,6 +15,14 @@ const FIELD_LABEL = "text-[12.5px] font-medium text-ink";
 /** 超过这个时长没真的思考，就当作「可能断了」标红（tick 30s 一跳，正常不会超过几分钟）。 */
 const HEARTBEAT_STALE_SECONDS = 30 * 60;
 
+/** judge 的跳过理由是它的**整段自述**（实测一次 200 多字），卡片底部只留开头一句，
+ *  否则一条灰字绕行六七行，把整张卡撑散。完整内容仍在心跳文件里可查。 */
+function shortReason(text: string | null | undefined, limit = 48): string {
+  if (!text) return "";
+  const one = text.replace(/\s+/g, " ").trim();
+  return one.length > limit ? `${one.slice(0, limit)}…` : one;
+}
+
 /** 秒 → 「刚刚 / N 分钟前 / N 小时前 / N 天前」。 */
 function ageText(seconds: number | null | undefined): string {
   if (seconds == null) return "还没有记录";
@@ -162,7 +170,9 @@ export function LlmChannelsCard() {
           </div>
           <div className="text-x] text-muted mt-0.5">
             上次心跳：{ageText(heartbeat.tick_age_seconds)}
-            {heartbeat.last_skip_reason ? ` · ${heartbeat.last_skip_reason}` : ""}
+            {heartbeat.last_skip_reason
+              ? ` · ${shortReason(heartbeat.last_skip_reason)}`
+              : ""}
           </div>
         </div>
       )}

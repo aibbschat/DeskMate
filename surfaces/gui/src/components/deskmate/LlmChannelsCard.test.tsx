@@ -133,6 +133,25 @@ describe("LlmChannelsCard", () => {
     expect(hb.textContent).toContain("1 小时前");
   });
 
+  it("跳过理由是整段自述时截断，别把卡片撑散", async () => {
+    // 实盘证据（2026-11-17 14:47 心跳文件）：judge 把自己的整段推理塞进
+    // skipped_reason，200+ 字。卡片只留开头一句。
+    const long =
+      "用户处于 casual 状态、正在做模型配置类技术工作（剪贴板内容涉及模型矩阵补全），" +
+      "非写作场景。最近日记明确说过「不用总是来问我进度」，这是清晰的边界信号。";
+    vi.mocked(getLlmChannels).mockResolvedValue(STATUS);
+    vi.mocked(getProactiveHeartbeat).mockResolvedValue({
+      tick_age_seconds: 5,
+      judge_age_seconds: 30,
+      last_skip_reason: long,
+    });
+    render(<LlmChannelsCard />);
+    const hb = await screen.findByTestId("proactive-heartbeat");
+    expect(hb.textContent).toContain("用户处于 casual 状态");
+    expect(hb.textContent).toContain("…");
+    expect(hb.textContent).not.toContain("这是清晰的边界信号"); // 尾部不出现 = 真截断了
+  });
+
   it("后端拿不到状态时静默隐藏（不破坏设置页）", async () => {
     vi.mocked(getLlmChannels).mockResolvedValue(null);
     const { container } = render(<LlmChannelsCard />);
