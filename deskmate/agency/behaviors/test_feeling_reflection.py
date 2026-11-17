@@ -261,3 +261,36 @@ def test_real_link_requires_real_referent():
         assert _has_real_link(ok), ok
     for bad in ("交付流程对得上", "我自己写得挺顺", "这段写得人物很活", "整本"):
         assert not _has_real_link(bad), bad
+
+
+def test_second_run_same_words_reports_unchanged_not_written(tmp_path, monkeypatch):
+    """一字未变的第二次回顾不许报成「修订」。。
+
+    2026-11-17 副本预演实测撞到：`upsert` 已经不再写 revised 留痕、也不刷
+    `last_touched`，但 `written` 计数和 summary 仍把这条算成「修订了 1 条」。
+    她要连着看几周才发现「说法没变」，计数一骗人，这几周就白看了。
+    """
+    _mk_db(tmp_path)
+
+    def fake_chat(system, user, **kwargs):
+        return json.dumps({"items": [GOOD]}, ensure_ascii=False)
+
+    monkeypatch.setattr("deskmate.memory.llm.chat_memory", fake_chat)
+    monkeypatch.setattr("deskmate.memory.llm.memory_llm_available", lambda: True)
+
+    first = run_feeling_reflection(str(tmp_path), backfill=True, force=True)
+    assert first["written"] == 1 and first["unchanged"] == 0, first
+
+    second = run_feeling_reflection(str(tmp_path), backfill=True, force=True)
+    assert second["written"] == 0, second          # 不是修订
+    assert second["unchanged"] == 1, second        # 单独计数
+    assert second["items"][0]["action"] == "unchanged", second
+    assert "说法没变" in second["summary"], second
+    assert "修订" not in second["summary"], second
+
+    from deskmate.persistence import BlobStore
+    import json as _json
+
+    state = dict(BlobStore(db_path=str(tmp_path / "deskmate.db")).get("feeling_pool") or {})
+    assert state["last_written"] == 0, state
+    assert state["last_unchanged"] == 1, state

@@ -499,8 +499,8 @@ def run_feeling_reflection(
         "summary": str, "pool": int}``
     """
     result: dict[str, Any] = {
-        "reflected": False, "reason": "", "written": 0, "items": [],
-        "summary": "", "pool": 0,
+        "reflected": False, "reason": "", "written": 0, "unchanged": 0,
+        "items": [], "summary": "", "pool": 0,
     }
     cfg = dict(DEFAULT_CFG)
     if isinstance(config, dict):
@@ -637,7 +637,7 @@ def run_feeling_reflection(
         if backfill
         else "周更回顾：这次回看 {n} 条事件后，她把说法改成了现在这样"
     )
-    written: list[dict] = []
+    saved: list[dict] = []
     for item in accepted:
         # 留痕说的条数/跨度必须是**她这次真正引用的证据**，不是池子里的总量
         # （池里 45 条、她挑 6 条时写 45 条，后人审计会以为 45 条都支撑这句话）。
@@ -652,7 +652,7 @@ def run_feeling_reflection(
             except ValueError:
                 ev_span = 0
         try:
-            saved = store.upsert(
+            stored = store.upsert(
                 object_ref=item["object_ref"],
                 object_kind=item["object_kind"],
                 content=item["content"],
@@ -666,14 +666,20 @@ def run_feeling_reflection(
                 real_link=item.get("real_link") or "",
                 now=now.isoformat(timespec="seconds"),
             )
-            written.append(saved)
+            saved.append(stored)
         except Exception as e:  # noqa: BLE001 —— 单条失败不影响其余
             logger.warning("feeling 写库失败（跳过 %s）: %s", item.get("object_ref"), e)
             rejected.append({"object": item["object_ref"], "reason": f"write_failed:{e}"})
 
+    # 一字未变（action='unchanged'）不是修订：计数、摘要、last_written 都另算。
+    # 否则每周重述同一句话都会被报成「修订了 1 条」，观测口径直接骗人
+    # （2026-11-17 副本预演实测：content 一字未改，summary 仍写「修订了 1 条」）。
+    changed = [w for w in saved if str(w.get("action") or "") != "unchanged"]
+    untouched = [w for w in saved if str(w.get("action") or "") == "unchanged"]
+
     # —— 状态：空输出合法；连续两期空 → 冷却 30 天 ——
     now_ts = time.time()
-    if written:
+    if saved:
         state["attempts"] = 0
         state["cooldown_until"] = 0
     else:
@@ -681,7 +687,8 @@ def run_feeling_reflection(
         if state["attempts"] >= int(cfg["empty_attempts_before_cooldown"]):
             state["cooldown_until"] = now_ts + float(cfg["empty_cooldown_days"]) * 86400
     state["last_run"] = now_ts
-    state["last_written"] = len(written)
+    state["last_written"] = len(changed)
+    state["last_unchanged"] = len(untouched)
     state["rejected"] = rejected
     _save_pool_state(base_dir, state)
 
@@ -691,17 +698,22 @@ def run_feeling_reflection(
             {
                 "ts": now.isoformat(timespec="seconds"),
                 "pool": [p["object_ref"] for p in pool],
-                "written": len(written),
+                "written": len(changed),
+                "unchanged": len(untouched),
                 "rejected": rejected,
             },
         )
 
     result["reflected"] = True
-    result["written"] = len(written)
-    result["items"] = written
-    if written:
-        names = "、".join(f"{w['object_ref']}" for w in written)
-        result["summary"] = f"情感回顾：长出/修订了 {len(written)} 条（{names}）"
+    result["written"] = len(changed)
+    result["unchanged"] = len(untouched)
+    result["items"] = saved
+    if changed:
+        names = "、".join(f"{w['object_ref']}" for w in changed)
+        result["summary"] = f"情感回顾：长出/修订了 {len(changed)} 条（{names}）"
+    elif untouched:
+        names = "、".join(f"{w['object_ref']}" for w in untouched)
+        result["summary"] = f"情感回顾：又看了一遍，说法没变（{names}）"
     else:
         result["summary"] = "情感回顾：看了这些事，她这次没写出能指回具体事的判断"
     return result
