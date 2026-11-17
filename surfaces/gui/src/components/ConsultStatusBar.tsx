@@ -101,8 +101,23 @@ function label(run: ConsultRunView, now: number): string {
       const doing = book ? `正在读《${book}》` : "正在看稿";
       return `${names} ${doing} · 已 ${clock(elapsed)}`;
     }
-    case "done":
-      return `${names} 已交付 · 用时 ${clock(elapsed)} · 她马上会来汇报`;
+    case "done": {
+      // 交付 ≠ 每句都真：引文核验有未见原句时，这里必须说出来。
+      // 「专家交付了」这句话不该盖住「其中三句是编的」（2026-11-17 编造台词事故）。
+      const cites = (run.results || []).reduce(
+        (acc, r) => ({
+          missing: acc.missing + Number(r.citations?.unverified || 0),
+          wrong: acc.wrong + Number(r.citations?.mismatched || 0),
+        }),
+        { missing: 0, wrong: 0 },
+      );
+      const flags = [
+        cites.missing ? `${cites.missing} 处引文正文未见` : "",
+        cites.wrong ? `${cites.wrong} 处章号不符` : "",
+      ].filter(Boolean);
+      const tail = flags.length ? ` · ${flags.join("、")}` : "";
+      return `${names} 已交付 · 用时 ${clock(elapsed)}${tail} · 她马上会来汇报`;
+    }
     case "timeout":
       return `${names} 超时，只交出了已产出的部分`;
     case "failed":

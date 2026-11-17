@@ -77,6 +77,8 @@ _CONSULT_ALLOWED_TOOLS = frozenset({
     "notebook_remember",
     "notebook_rewrite",
     "notebook_feedback",
+    # 引文自检（2026-11-17 编造台词事故后加）：交付前自己逐字核一遍，别等出门被标。
+    "quote_check",
 })
 
 #: 单个工具调用的硬超时（秒）。ddgs 车道本身没传超时（Tavily/Brave 有 20s），
@@ -556,6 +558,9 @@ def _notification_payload(run: dict[str, Any]) -> dict[str, Any]:
                 "status": r.get("status"),
                 "chars": len(str(r.get("text") or "")),
                 "elapsed": r.get("elapsed"),
+                # 引文核验计数（2026-11-17）：前端据此说「3 处引文正文未见」，
+                # 不让「专家交付了」这句话盖住「其中几句是编的」。
+                "citations": r.get("citations") or {},
             }
             for r in results
             if isinstance(r, dict)
@@ -664,15 +669,24 @@ def _normalize_experts(raw: Any) -> list[str]:
 
 
 def _build_expert_engine(
-    expert_id: str, provider: Any, model: str, shelf: Any, run_id: str = ""
+    expert_id: str,
+    provider: Any,
+    model: str,
+    shelf: Any,
+    run_id: str = "",
+    book: str = "",
 ) -> Any:
     from coworker.agent import build_engine
     from coworker.permissions import Mode
     from coworker.personas.registry import get_registry
+    from deskmate.bots.citations import make_quote_check_tool
     from deskmate.bots.reading import make_reading_tools
 
     agent = get_registry().get(expert_id).agent()
     reading = list(make_reading_tools(shelf))
+    # 引文自检工具（2026-11-17 编造台词事故后加）：专家交付前自己核一遍要引的话，
+    # 核不到就改成转述。它读的是同一本正文，逐字比对，不给模型留「像不像」的余地。
+    reading.append(make_quote_check_tool(shelf, book))
     if run_id:
         reading = [
             _instrument_reading(fn, run_id=run_id, expert_id=expert_id) for fn in reading
@@ -731,6 +745,11 @@ def _prompt(expert_id: str, brief: str, book: str, timeout: int = 0) -> str:
         "（比如古代朝鲜、域外史实）才用 web_search 联网查——**联网现在是秒回**的"
         "（豆包搜索，带信源权威等级），查得到就直接引用、不必犹豫；查两三个词确实没有，"
         "才把该处标「未核实」继续交付。本地查得到的绝不联网。\n\n"
+        "【引文纪律：引号里只放原话】正文是唯一事实源。要引用原话，先用 quote_check "
+        "逐字核一遍；**核不到就不要加引号**——改成转述，或直接标「正文未见」。"
+        "转述、概括、拼接都不许塞进引号里：上一版专家小传就是这么出的错，"
+        "几句正文根本没有的台词被加了引号、标上章号，读起来像原文，等于凭空给作者"
+        "造了已写事实。章号同理，只写你真读到的章；没读到就写「正文未见」，不要凭印象补。\n\n"
         "输出要求：中文；结论先行；给依据（章节/人物/设定）；不确定的标出来；"
         "不要写成品正文。"
     )
@@ -765,6 +784,39 @@ async def _collect(engine: Any, prompt: str, timeout: int) -> tuple[str, str]:
         return partial, "timeout"
 
 
+def _verify_citations(text: str, shelf: Any, book: str) -> tuple[str, dict[str, Any]]:
+    """机械核对专家引文，返回 (加注后的文本, 统计)。
+
+    红线：**正文未见就是未见**。这一步不做语义判断、不调模型——只问一句
+    「这句原话在正文里逐字存在吗」。找不到就在引号后就地标「（正文未见原句）」，
+    并在文末附清单；找到的顺带核对章号。
+
+    为什么不交给模型自检了事：模型会在下一轮忘了上一轮编过什么。出门前这一道
+    机械闸是唯一不依赖模型自觉的保证（2026-11-17 编造台词事故）。
+    """
+    stats: dict[str, Any] = {}
+    if not (text and book and shelf is not None):
+        return text, stats
+    try:
+        manuscript = shelf.manuscript(book)
+        if manuscript is None:
+            return text, stats
+        from deskmate.bots.citations import check, summary
+
+        report = check(text, manuscript)
+    except Exception:  # noqa: BLE001 —— 核验失败不许拖垮咨询投递
+        return text, stats
+    stats = {
+        "total": report.total,
+        "found": report.found,
+        "unverified": len(report.unverified),
+        "mismatched": len(report.mismatched),
+    }
+    if report.flagged:
+        text = f"{report.annotated}\n\n{summary(report)}"
+    return text, stats
+
+
 def _run_one(
     expert_id: str,
     brief: str,
@@ -775,10 +827,10 @@ def _run_one(
     timeout: int,
     run_id: str = "",
 ) -> tuple[str, str, float]:
-    """返回 (状态, 文本, 耗时)。状态 ∈ {ok, timeout, error}。"""
+    """返回 (状态, 文本, 耗时, 引文核验统计)。状态 ∈ {ok, timeout, error}。"""
     started = time.time()
     try:
-        engine = _build_expert_engine(expert_id, provider, model, shelf, run_id)
+        engine = _build_expert_engine(expert_id, provider, model, shelf, run_id, book)
         text, status = asyncio.run(
             _collect(engine, _prompt(expert_id, brief, book, timeout), timeout)
         )
@@ -788,12 +840,14 @@ def _run_one(
                 text = f"{text}\n\n（注：专家超过 {timeout}s 预算被截断，以上是已产出的部分。）"
             else:
                 text = f"【{_NAME.get(expert_id, expert_id)}】超过 {timeout}s 仍未产出任何内容。"
-        return status, (text or "（专家没有产出文字）"), time.time() - started
+        text, cites = _verify_citations(text, shelf, book)
+        return status, (text or "（专家没有产出文字）"), time.time() - started, cites
     except Exception as exc:  # noqa: BLE001 —— 一位专家失败不拖垮整次咨询
         return (
             "error",
             f"【{_NAME.get(expert_id, expert_id)}】调用失败：{type(exc).__name__}: {exc}",
             time.time() - started,
+            {},
         )
 
 
@@ -828,7 +882,21 @@ def _write_audit(
             flag = {"ok": "", "timeout": " · 超时截断", "error": " · 失败"}.get(
                 str(r.get("status")), ""
             )
-            lines += [f"## {r.get('name')}（{r.get('status')}{flag}）", "", str(r.get("text") or ""), ""]
+            lines += [
+                f"## {r.get('name')}（{r.get('status')}{flag}）",
+                "",
+                str(r.get("text") or ""),
+                "",
+            ]
+            cites = r.get("citations") or {}
+            if cites:
+                lines += [
+                    f"> 引文核验：{cites.get('total', 0)} 处引号，"
+                    f"{cites.get('found', 0)} 处逐字命中，"
+                    f"{cites.get('unverified', 0)} 处正文未见，"
+                    f"{cites.get('mismatched', 0)} 处章号不符。",
+                    "",
+                ]
         # 工具账目（飞行记录）：哪个工具被调了几次、失败几次、最后耗时。出事时
         # 这几行就是「时间花哪了」的直接答案——2026-11-17 事故复盘全靠事后补测，
         # 有这段就不用了。
@@ -876,12 +944,15 @@ def _job_thread(
             for fut in as_completed(futures):
                 eid = futures[fut]
                 try:
-                    status, text, elapsed = fut.result()
+                    status, text, elapsed, cites = fut.result()
                 except Exception as exc:  # noqa: BLE001
-                    status, text, elapsed = "error", f"调用失败：{exc}", time.time() - started
+                    status, text, elapsed, cites = (
+                        "error", f"调用失败：{exc}", time.time() - started, {}
+                    )
                 results.append(
                     {"expert": eid, "name": _NAME.get(eid, eid), "status": status,
-                     "text": text, "elapsed": round(elapsed, 1)}
+                     "text": text, "elapsed": round(elapsed, 1),
+                     "citations": cites or {}}
                 )
         order = {eid: i for i, eid in enumerate(chosen)}
         results.sort(key=lambda r: order.get(str(r.get("expert")), 99))
@@ -908,6 +979,11 @@ def _job_thread(
         with _LOCK:
             prior = _find(_read_state(), run_id) or {}
         run["progress"] = dict(prior.get("progress") or {})
+        # model 只在派发时落过 state，收尾合成的 run 里没有——不补的话审计
+        # 永远写「模型 ?」（19:10 那份实测漏的就是它）。
+        for field in ("model", "session_id", "started_at", "deadline_at"):
+            if not run.get(field) and prior.get(field):
+                run[field] = prior[field]
         audit_path = _write_audit(results, brief, book, run, audit_dir)
         run["audit_path"] = audit_path or ""
 
@@ -1042,9 +1118,29 @@ def _result_text(run: dict[str, Any]) -> str:
         body = f"（本次没有产出任何意见：{reason}）"
     audit = run.get("audit_path")
     tail = f"\n\n（审计：{audit}）" if audit else ""
+    # 引文核验结果放最前面：小桔读这段是要转述给萧盛的，编造的台词如果在
+    # 4000 字里被转述出去，事后标注再多也白搭（2026-11-17 编造台词事故）。
+    missing = sum(
+        int((r.get("citations") or {}).get("unverified") or 0) for r in results
+    )
+    wrong_ch = sum(
+        int((r.get("citations") or {}).get("mismatched") or 0) for r in results
+    )
+    warning = ""
+    if missing or wrong_ch:
+        bits = []
+        if missing:
+            bits.append(f"{missing} 处引文正文未见原句")
+        if wrong_ch:
+            bits.append(f"{wrong_ch} 处章号与正文不符")
+        warning = (
+            f"【⚠ 引文核验】{'、'.join(bits)}——原文里已就地标注并附清单。"
+            "这些句子**不是**已写事实，汇报时不要当原话引用，也不要替它圆场；"
+            "要点可以保留，但必须说成「专家的判断/推演」。\n\n"
+        )
     return (
         f"【专家任务结束】{names or '专家'}·《{run.get('book') or '未指定书'}》"
-        f"，用时 {float(run.get('elapsed') or 0):.0f}s。{tail}\n\n{body}\n\n"
+        f"，用时 {float(run.get('elapsed') or 0):.0f}s。{tail}\n\n{warning}{body}\n\n"
         "（以上是专家意见原文，仅供参考。请用你自己的话向萧盛汇报：结论先行、标明是谁的判断；"
         "不要照搬，不要把专家原话当事实。若还缺关键信息，可以再派一次。）"
     )

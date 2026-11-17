@@ -3463,7 +3463,15 @@ export interface ConsultRunView {
   experts?: string[];
   /** expert_id → 该专家此刻在做什么。 */
   progress?: Record<string, ConsultExpertProgress>;
-  results?: { expert: string; name: string; status: string; chars: number; elapsed: number }[];
+  results?: {
+    expert: string;
+    name: string;
+    status: string;
+    chars: number;
+    elapsed: number;
+    /** 引文核验计数（2026-11-17 编造台词事故后加）：前端要能说「3 处正文未见」。 */
+    citations?: { total?: number; found?: number; unverified?: number; mismatched?: number };
+  }[];
   audit_path?: string;
   excerpt?: string;
   error?: string;

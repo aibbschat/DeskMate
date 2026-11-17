@@ -65,6 +65,39 @@ describe("ConsultStatusBar", () => {
     expect(screen.queryByTestId("consult-running")).toBeNull();
   });
 
+  it("交付但引文有编的：把「N 处正文未见」亮在这一行", async () => {
+    // 2026-11-17 编造台词事故：专家交付得很漂亮，里面却有正文根本没有的台词。
+    // 「已交付」这句话不许盖住这件事。
+    vi.mocked(getConsultRuns).mockResolvedValue({ active: [], recent: [] });
+    render(<ConsultStatusBar sessionId="s1" />);
+    await act(async () => {
+      window.dispatchEvent(
+        new CustomEvent("deskmate:consult", {
+          detail: {
+            ...RUNNING,
+            status: "done",
+            elapsed: 196,
+            finished_at: Date.now() / 1000,
+            results: [
+              {
+                expert: "character",
+                name: "人物专家",
+                status: "ok",
+                chars: 3983,
+                elapsed: 196,
+                citations: { total: 53, found: 14, unverified: 39, mismatched: 3 },
+              },
+            ],
+          },
+        }),
+      );
+    });
+    const done = await screen.findByTestId("consult-done");
+    expect(done.textContent).toContain("已交付");
+    expect(done.textContent).toContain("39 处引文正文未见");
+    expect(done.textContent).toContain("3 处章号不符");
+  });
+
   it("进度会动：正在读哪一章 → 读了几次在梳理", async () => {
     // 2026-11-17 萧哥指出的问题：这行以前从派出到交付永远写着「正在读《夜不收》」。
     // 现在它翻译后端记录的事实（busy / chapter / reads / chars），不是猜的百分比。
