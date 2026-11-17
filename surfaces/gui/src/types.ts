@@ -29,6 +29,10 @@ export type EventType =
   | "deskmate_memory_update"
   | "deskmate_memory_learned"
   | "deskmate_context_injected"
+  // 专家咨询的后台任务（2026-11-17）：派发 → started，跑完 → finished。
+  // 前端据此显示「专家正在工作 · 已 3:12」，派完立刻回话也不会让用户空等。
+  | "deskmate_consult_started"
+  | "deskmate_consult_finished"
   | "compacting"
   | "compacted";
 

@@ -236,6 +236,9 @@ export const CONNECTORS: Record<string, ConnectorRegistryEntry> = {
   email: { label: "Email", logo: EmailLogo },
   browser: { label: "Browser", logo: BrowserLogo },
   mcp: { label: "MCP", logo: McpLogo },
+  // DeskMate 内部来源（2026-11-17）：小桔调用专家的结果回投。它不是外部连接器，但复用
+  // 同一张卡片——用户一眼能看出「这条不是我说的，是专家回来了」，而不是一个用户气泡。
+  deskmate: { label: "专家咨询", logo: PlugLogo },
 };
 
 /**

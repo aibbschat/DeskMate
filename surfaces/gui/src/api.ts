@@ -3429,6 +3429,47 @@ export async function getProactiveHeartbeat(): Promise<ProactiveHeartbeat | null
   }
 }
 
+/** 专家咨询的后台任务（进行中的 + 最近完成的）。
+ *
+ * 2026-11-17 咨询改成后台派发：派完小桔立刻回话，专家在后台跑。不把进度露出来的话，
+ * 用户面对的就是「她说请了专家，然后没了」——所以这里读状态文件，前端显示在工作。
+ */
+export interface ConsultRunView {
+  id: string;
+  session_id?: string | null;
+  book: string;
+  model?: string;
+  status: "running" | "done" | "timeout" | "failed" | "interrupted" | string;
+  started_at: number;
+  finished_at?: number | null;
+  elapsed?: number | null;
+  expert_names: string[];
+  experts?: string[];
+  results?: { expert: string; name: string; status: string; chars: number; elapsed: number }[];
+  audit_path?: string;
+  excerpt?: string;
+  error?: string;
+}
+
+export async function getConsultRuns(
+  sessionId?: string,
+): Promise<{ active: ConsultRunView[]; recent: ConsultRunView[] } | null> {
+  try {
+    const qs = sessionId ? `?session_id=${encodeURIComponent(sessionId)}` : "";
+    const res = await authedFetch(`${httpBase()}/v1/deskmate/consult/runs${qs}`);
+    if (!res.ok) return null;
+    const data = (await res.json()) as {
+      active?: ConsultRunView[];
+      recent?: ConsultRunView[];
+      error?: string;
+    };
+    if (data.error) return null;
+    return { active: data.active ?? [], recent: data.recent ?? [] };
+  } catch {
+    return null;
+  }
+}
+
 /** 最近的通道审计（本地簿记、不同步）——「为什么换了通道」一眼可见。 */
 export async function getLlmChannelAudit(
   limit = 20,

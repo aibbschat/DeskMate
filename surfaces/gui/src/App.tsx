@@ -107,6 +107,7 @@ import { DeskMateOverlay } from "./components/deskmate/DeskMateOverlay";
 import { DeskHome } from "./components/deskmate/DeskHome";
 import { MailboxPage } from "./components/deskmate/MailboxPage";
 import { DeskMateProactiveInline } from "./components/deskmate/DeskMateProactiveInline";
+import { ConsultStatusBar } from "./components/ConsultStatusBar";
 import { GardenProfileCenter } from "./components/garden/GardenProfileCenter";
 import { EXPERTS, getExpert, expertSpeakerFor, expertIntroFor, type Expert } from "./components/deskmate/experts";
 import { ExpertAvatar } from "./components/deskmate/ExpertAvatar";
@@ -1127,6 +1128,17 @@ export function App() {
           // 本轮向对话注入了相关记忆 → 让浮层低调提示「我在用记忆帮你」（非模态轻提示）
           window.dispatchEvent(
             new CustomEvent("deskmate:context-injected", { detail: d }),
+          );
+          break;
+        case "deskmate_consult_started":
+        case "deskmate_consult_finished":
+          // 专家在后台跑（2026-11-17）：把进度交给 ConsultStatusBar，她派完活立刻回话
+          // 也不会让用户空等。不在这里塞 transcript —— 结果回来会另有一条消息。
+          if (agent !== "deskmate") break;
+          window.dispatchEvent(
+            new CustomEvent("deskmate:consult", {
+              detail: { ...d, phase: ev.type },
+            }),
           );
           break;
       }
@@ -2241,6 +2253,10 @@ export function App() {
                 onOpenMailbox={() => setSurface("mailbox")}
               />
             )}
+
+            {/* 专家后台任务（2026-11-17）：她派完活立刻回话，专家还在后台读稿。
+                这条细行让「已派出 → 结果回来」之间的几分钟有交代，不用空等。 */}
+            {agent === "deskmate" && <ConsultStatusBar sessionId={sessionId} />}
 
             <Composer
               mode={mode}
