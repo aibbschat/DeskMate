@@ -243,11 +243,12 @@ _EMOTION_SYSTEM = (
     "「该用户」这类旁观的第三人称**（那是别人的系统在说话，不是你在记事）。\n"
     "    指不到具体对象就 kind=none、ref 留空——不要把泛泛的情绪安到萧盛头上。"
     "relation 只用于「我与他的相处」这类互动（被接受/被拒绝/被接住），"
-    "不要用它代替具体的人。work 包括你或他正在写的稿子、章节、文章、帖子、"
-    "大纲、梗概——即使没有书名也算 work，ref 用书名或稿件的叫法（如"
-    "「今晚那章」），不要落 thing 或 none。示例：聊他的书稿→work/《夜不收》；"
-    "「他驳回了我的建议」→relation/和小桔的相处；「他今天状态不好」→person/萧盛；"
-    "「核对完文件松了口气」→none/空。\n"
+    "不要用它代替具体的人。work 只算能叫出具体名字的作品（如「夜不收」），"
+    "或稿件里具体到某一章、某个情节、某个人物、某句话。只说「稿子」「章节」"
+    "「文章」这种类别、说不出具体是哪本书/哪一章/哪个人物的，判 none——那是"
+    "类别，不是情感对象，不要把类别当个体。示例：聊《夜不收》→work/夜不收；"
+    "只聊「稿子」没说哪本→none/空；「他驳回了我的建议」→relation/和小桔的相处；"
+    "「他今天状态不好」→person/萧盛；「核对完文件松了口气」→none/空。\n"
     "严格 JSON 输出："
 )
 
@@ -489,6 +490,8 @@ def _clean_object(ref, kind) -> tuple[str, str]:
     """宾语取值归一：类型非法退 none，none 时引用一律清空。
 
     指代词：relation 归到固定名（指代是合法的），其余类型退 none。
+    work/thing 再走一遍作品归一：书名号去掉；「稿子/章节/文章」这类**类别
+    泛称不是情感对象**，退 none（2026-11-17 判据：情感必须落到具体个体）。
     """
     kind = str(kind or "").strip().lower()
     if kind not in _OBJECT_KINDS:
@@ -500,6 +503,14 @@ def _clean_object(ref, kind) -> tuple[str, str]:
         return "", "none"
     if kind in ("work", "thing"):
         ref = _strip_demonstrative(ref)
+        try:
+            from deskmate.cognitive.works import clean_surface, is_generic_work_ref
+
+            ref = clean_surface(ref)
+            if is_generic_work_ref(ref):
+                return "", "none"
+        except Exception:  # noqa: BLE001 —— 作品模块不可用时保持旧行为
+            pass
     return ref, kind
 
 
@@ -1394,6 +1405,7 @@ class EmotionEngine:
         """
         if obj_kind not in ("person", "work", "thing") or not obj_ref:
             return
+        _bump_call_b(self._db, "candidates", now)
         from deskmate.cognitive.feeling_store import FeelingStore
         from deskmate.memory.llm import chat_memory
 
@@ -1401,6 +1413,7 @@ class EmotionEngine:
         ref, kind = store.resolve_object(obj_ref, obj_kind)
         ref, kind = store.canonical_object(ref, kind)
         if not ref or kind not in ("person", "work", "thing"):
+            _bump_call_b(self._db, "unresolved", now)
             return
         feels = store.context_for(ref, limit=2)
         # 兜底只对**一字泛称**（「章」「稿」「文」「篇」）开放：这种 ref 指不回
@@ -1419,6 +1432,7 @@ class EmotionEngine:
                     ref, feels = topic, [f]
                     break
         if not feels:
+            _bump_call_b(self._db, "no_feeling", now)
             return
 
         values_line = ", ".join(f"{k}={values.get(k, 0):.1f}" for k in HORMONE_KEYS)
@@ -1438,21 +1452,27 @@ class EmotionEngine:
             f"{f'（{reason}）' if reason else ''}\n"
             "按系统格式只输出 description 和 reason。"
         )
-        raw = chat_memory(
-            system=_FEELING_REASON_SYSTEM,
-            user=prompt,
-            temperature=0.5,
-            max_tokens=120,
-            timeout=30.0,
-        )
+        try:
+            raw = chat_memory(
+                system=_FEELING_REASON_SYSTEM,
+                user=prompt,
+                temperature=0.5,
+                max_tokens=120,
+                timeout=30.0,
+            )
+        except Exception:
+            _bump_call_b(self._db, "failed", now)
+            raise
         parsed = _parse_feeling_reason(str(raw or ""))
         if not parsed:
+            _bump_call_b(self._db, "failed", now)
             return  # 失败 → 保留 Call A 文字
 
         desc2 = parsed["description"][:80]
         reason2 = parsed["reason"][:60]
         # 与 Call A 同一道护栏：报菜名不采纳，保留原文
         if _is_label_dump(desc2):
+            _bump_call_b(self._db, "failed", now)
             return
         log_desc = f"{desc2}（{reason2}）" if reason2 else desc2
         now_str = now.isoformat(timespec="seconds")
@@ -1468,6 +1488,7 @@ class EmotionEngine:
             )
         for f in feels:
             store.touch(str(f.get("id") or ""), now_str)
+        _bump_call_b(self._db, "fired", now)
 
     def update_after_experience(
         self,
@@ -2406,3 +2427,56 @@ def _parse_feeling_reason(raw: str) -> dict | None:
     if not desc:
         return None
     return {"description": desc, "reason": reason}
+
+
+#: Call B 触发计数（可查）：SELECT data FROM json_blobs WHERE key='feeling_call_b'
+_FEELING_CALL_B_STAT_KEY = "feeling_call_b"
+
+
+def _bump_call_b(db_path, field: str, now: datetime | None = None) -> None:
+    """累加一次 Call B 计数；永不抛（计数失败不影响情绪主链路）。
+
+    字段：candidates（有真实对象）/ fired（真的用情感改写成功）/
+    no_feeling（对象没有 active 情感）/ unresolved（归一后无对象）/
+    failed（LLM 失败、解析失败或报菜名）。触发率看 fired / candidates。
+    """
+    try:
+        conn = sqlite3.connect(str(db_path), timeout=10)
+        conn.isolation_level = None
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS json_blobs ("
+                "key TEXT PRIMARY KEY, data TEXT, updated_at TEXT)"
+            )
+            row = conn.execute(
+                "SELECT data FROM json_blobs WHERE key=?", (_FEELING_CALL_B_STAT_KEY,)
+            ).fetchone()
+            data: dict = {}
+            if row and row[0]:
+                try:
+                    data = json.loads(row[0])
+                except Exception:
+                    data = {}
+            data[field] = int(data.get(field) or 0) + 1
+            data["last_ts"] = (now or datetime.now()).isoformat(timespec="seconds")
+            conn.execute(
+                "INSERT INTO json_blobs(key,data,updated_at) VALUES(?,?,?) "
+                "ON CONFLICT(key) DO UPDATE SET data=excluded.data,"
+                " updated_at=excluded.updated_at",
+                (
+                    _FEELING_CALL_B_STAT_KEY,
+                    json.dumps(data, ensure_ascii=False),
+                    data["last_ts"],
+                ),
+            )
+            conn.execute("COMMIT")
+        except Exception:
+            try:
+                conn.execute("ROLLBACK")
+            except Exception:
+                pass
+        finally:
+            conn.close()
+    except Exception:
+        pass

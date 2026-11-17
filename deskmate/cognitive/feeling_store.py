@@ -126,10 +126,14 @@ class FeelingStore:
     # 对象归一：只对齐已有对象，不自动建新人
     # ------------------------------------------------------------------
     def resolve_object(self, object_ref: str, object_kind: str) -> tuple[str, str]:
-        """把对象 surface 形式对齐到已知人物/主题；对不上就原样保留。
+        """把对象 surface 形式对齐到已知人物/主题/作品；对不上就原样保留。
 
         依据设计 §3.4：``normalized_ref`` 先过 ``known_persons`` / ``memory_anchors``
         规范化；对不上保留 surface 形式，**不自动建新人**。
+
+        作品（work）另走 ``WorksStore``：别名归一到正名（《夜不收》=夜不收），
+        而「稿子/章节/文章」这类类别泛称**不是情感对象**，返回空——情感必须
+        落到具体作品或稿件里的具体指向（2026-11-17 判据）。
         """
         ref = str(object_ref or "").strip()
         kind = str(object_kind or "").strip().lower()
@@ -137,6 +141,18 @@ class FeelingStore:
             return "", ""
         if kind in ("work", "thing"):
             ref = _strip_demonstrative(ref)
+        try:
+            from .works import WorksStore, clean_surface, is_generic_work_ref
+
+            ref = clean_surface(ref)
+            if kind in ("work", "thing") and is_generic_work_ref(ref):
+                return "", ""
+            if kind in ("work", "thing"):
+                hit = WorksStore(self._db).resolve(ref)
+                if hit:
+                    return str(hit["title"]), "work"
+        except Exception as e:  # noqa: BLE001 —— 作品归一失败保留 surface
+            logger.debug("resolve_object works 归一失败（保留 surface）: %s", e)
         try:
             with self._connect() as conn:
                 if kind == "person":
@@ -171,10 +187,25 @@ class FeelingStore:
         """
         out: list[dict] = []
         try:
+            from .works import is_generic_work_ref
+
             with self._connect() as conn:
                 rows = conn.execute(_POOL_SQL).fetchall()
+                # 已撤下（retired/superseded）的对象不再回池；「稿子/章节」这类
+                # 类别泛称也不是情感对象（2026-11-17 判据），不进池、不耗调用。
+                retired = {
+                    (str(r["category"] or ""), str(r["topic"] or ""))
+                    for r in conn.execute(
+                        "SELECT topic, category FROM profile_items "
+                        "WHERE layer='feeling' AND status!='active'"
+                    ).fetchall()
+                }
                 for row in rows:
                     ref, kind = str(row["object_ref"]), str(row["object_kind"])
+                    if kind in ("work", "thing") and is_generic_work_ref(ref):
+                        continue
+                    if (kind, ref) in retired:
+                        continue
                     evs = conn.execute(_EVIDENCE_SQL, (ref, kind)).fetchall()
                     # 超过上限时均匀取样：保住首尾，跨期不被截断
                     if len(evs) > evidence_cap:
@@ -233,6 +264,18 @@ class FeelingStore:
         if kind in ("work", "thing"):
             ref = _strip_demonstrative(ref)
         if kind in ("work", "thing"):
+            # 先落作品个体：别名归一到正名；类别泛称不是对象。
+            try:
+                from .works import WorksStore, clean_surface, is_generic_work_ref
+
+                ref = clean_surface(ref)
+                if is_generic_work_ref(ref):
+                    return "", "none"
+                hit = WorksStore(self._db).resolve(ref)
+                if hit:
+                    return str(hit["title"]), "work"
+            except Exception:
+                pass
             try:
                 for f in self.list_active(limit=200):
                     extra = f.get("extra") or {}
@@ -309,6 +352,8 @@ class FeelingStore:
         confidence: Optional[float] = None,
         conflict_with: str = "",
         origin: str = "",
+        work_anchor: Optional[dict] = None,
+        real_link: str = "",
         now: Optional[str] = None,
     ) -> dict:
         """写一条情感（同对象幂等：修订同一条，旧内容留 item_history）。
@@ -317,6 +362,8 @@ class FeelingStore:
             evidence: ``[{src,id,ts,summary}, ...]``，必须真实。
             reason: 必填——没有理由的改写作废（与 ``record_reflection`` 同一硬断言）。
             confidence: ``None`` 表示沿用现值（含已淡过的值），新条目默认 0.4。
+            work_anchor: work 类对象的具体指向（哪一章/哪个情节/哪个人物/哪句话）。
+            real_link: 这个具体指向连到现实里的谁/哪件事。
 
         Returns:
             ``{"id","action","object_ref","object_kind","content"}``
@@ -395,6 +442,10 @@ class FeelingStore:
             }
             if origin:
                 extra["origin"] = origin
+            if work_anchor:
+                extra["work_anchor"] = dict(work_anchor)
+            if real_link:
+                extra["real_link"] = str(real_link)
 
             conn.execute(
                 "INSERT INTO profile_items"
@@ -467,6 +518,64 @@ class FeelingStore:
             return True
         except Exception as e:  # noqa: BLE001
             logger.warning("FeelingStore.touch 失败（忽略）: %s", e)
+            return False
+
+    def retire(
+        self,
+        object_ref: str,
+        object_kind: str = "",
+        reason: str = "",
+        now: Optional[str] = None,
+    ) -> bool:
+        """撤下一条情感：``status='retired'``，content 不删，留痕写撤下理由。
+
+        用于「对象不成立」——例如「稿子」只是类别而非个体（2026-11-17 判据）。
+        撤下后 ``list_active`` / 注入 / R4 / R2 回池都看不到它；内容与历史仍在，
+        以后出现具体指向时按新对象（具体作品）重新长，不复用这条。
+        """
+        reason = str(reason or "").strip()
+        if not reason:
+            raise ValueError("retire 需要 reason（撤下也要说清为什么）")
+        ref = str(object_ref or "").strip()
+        kind = str(object_kind or "").strip().lower()
+        now = now or _now_iso()
+        try:
+            with self._connect() as conn:
+                row = None
+                if kind in FEELING_KINDS and ref:
+                    row = conn.execute(
+                        "SELECT id, content, status FROM profile_items "
+                        "WHERE id=? AND layer='feeling'",
+                        (feeling_id(kind, ref),),
+                    ).fetchone()
+                if row is None and ref:
+                    row = conn.execute(
+                        "SELECT id, content, status FROM profile_items "
+                        "WHERE layer='feeling' AND topic=? "
+                        "ORDER BY CASE status WHEN 'active' THEN 0 ELSE 1 END LIMIT 1",
+                        (ref,),
+                    ).fetchone()
+                if row is None or str(row["status"]) != "active":
+                    return False
+                conn.execute(
+                    "UPDATE profile_items SET status='retired', last_updated=?,"
+                    " valid_until=? WHERE id=?",
+                    (now, now, str(row["id"])),
+                )
+                conn.execute(
+                    "INSERT OR REPLACE INTO item_history "
+                    "(item_id, seq, action, old_value, new_value, reason, source, ts) "
+                    "VALUES(?, (SELECT COALESCE(MAX(seq), -1) + 1 FROM item_history "
+                    "WHERE item_id=?), 'retired', ?, ?, ?, 'feeling', ?)",
+                    (
+                        str(row["id"]), str(row["id"]), str(row["content"]),
+                        str(row["content"]), reason, now,
+                    ),
+                )
+                conn.commit()
+            return True
+        except Exception as e:  # noqa: BLE001
+            logger.warning("FeelingStore.retire 失败（%s）: %s", ref, e)
             return False
 
     def fade_stale(

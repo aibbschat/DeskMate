@@ -754,7 +754,7 @@ def test_normalize_object_never_defaults_to_xiaosheng():
     assert _normalize_object({"object_kind": "person"}) == ("", "person")
     assert _normalize_object(
         {"object_ref": "《夜不收》", "object_kind": "work"}
-    ) == ("《夜不收》", "work")
+    ) == ("夜不收", "work")
 
 
 def _latest_log(engine):
@@ -838,12 +838,18 @@ def test_update_prompt_carries_title_and_lands_work(engine):
     assert "不许写「用户」" in captured["system"]
     assert "旁观的第三人称" in captured["system"]
     row = _latest_log(engine)
-    assert row[2] == "《夜不收》"
+    assert row[2] == "夜不收"
     assert row[3] == "work"
     assert row[4] == 1
 
 
-def _seed_feeling(engine, ref="稿子", kind="thing", content="交付完也可能丢。", conf=0.45):
+def _seed_feeling(
+    engine,
+    ref="夜不收",
+    kind="work",
+    content="第七章那个雨夜，他回头那一下写得我发紧。",
+    conf=0.45,
+):
     from deskmate.cognitive.feeling_store import FeelingStore
     from deskmate.cognitive.store import CognitiveStore
 
@@ -857,14 +863,16 @@ def _seed_feeling(engine, ref="稿子", kind="thing", content="交付完也可�
             {"src": "emotion_log", "id": "e3", "ts": "2026-11-03T10:00:00", "summary": "c"},
         ],
         reason="沉淀", confidence=conf,
+        work_anchor={"level": "chapter", "what": "第七章"},
+        real_link="像他改稿时不肯松手",
     )
 
 
 def test_r4_does_not_borrow_feeling_from_mentioned_object(engine):
-    """本轮对象是「封面」，正文顺口提到「稿子」→ 不得借用稿子的情感。
+    """本轮对象是「封面」，正文顺口提到「夜不收」→ 不得借用它的情感。
 
-    2026-11-17 实弹反例：兜底匹配把稿子的位置借给了封面，还刷了稿子的
-    last_touched，R5 淡化因此等不到 60 天。兜底已移除。
+    2026-11-17 实弹反例：兜底匹配把别的作品的位置借给了封面，还刷了
+    last_touched，R5 淡化因此等不到 60 天。兜底已收窄到一字泛称。
     """
     saved = _seed_feeling(engine)
     from deskmate.cognitive.feeling_store import FeelingStore
@@ -883,8 +891,8 @@ def test_r4_does_not_borrow_feeling_from_mentioned_object(engine):
     with patch("deskmate.memory.llm.chat_memory", side_effect=lambda *a, **k: (calls.append(1), fake_chat(*a, **k))[1]):
         with patch("deskmate.memory.llm.llm_available", return_value=True):
             engine.update_after_turn(
-                "封面这版我换掉了，稿子那边先放着不动。",
-                "封面换了好，稿子不急这一两天。",
+                "封面这版我换掉了，夜不收那边先放着不动。",
+                "封面换了好，夜不收不急这一两天。",
                 3600.0,
             )
 
@@ -902,19 +910,19 @@ def test_r4_fires_when_object_matches(engine):
 
     def call_a(system, user, **kwargs):
         return _make_llm_response(
-            description="又得重来", reason="稿子改不动",
-            object_ref="稿子", object_kind="thing",
-            event_summary="稿子改到第三遍",
+            description="又得重来", reason="第七章改不动",
+            object_ref="夜不收", object_kind="work",
+            event_summary="第七章改到第三遍",
         )
 
     def call_b(system, user, **kwargs):
-        return json.dumps({"description": "稿子攥不紧，但还是想再改一遍。", "reason": "记着它靠不住"}, ensure_ascii=False)
+        return json.dumps({"description": "第七章攥不紧，但还是想再改一遍。", "reason": "记着它靠不住"}, ensure_ascii=False)
 
     seq = [call_a, call_b]
     with patch("deskmate.memory.llm.chat_memory", side_effect=lambda *a, **k: seq.pop(0)(*a, **k) if seq else call_b(*a, **k)):
         with patch("deskmate.memory.llm.llm_available", return_value=True):
             engine.update_after_turn(
-                "稿子我改到第三遍了，还是觉得不对。",
+                "夜不收第七章我改到第三遍了，还是觉得不对。",
                 "那先别交，我陪你把第三遍过一遍。",
                 3600.0,
             )

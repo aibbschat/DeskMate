@@ -86,6 +86,12 @@ _SYSTEM = for_scene(
   是在描述你自己当时的感受。要写关于对象本身的东西，而且能被具体事件印证。
 - stance 里要能看出**至少一件具体发生过的事**（哪次交付、哪次丢、哪一次改到
   第几遍），但不许复述事件、不许只写「他值得信任」「它很重要」这种空总评。
+- **如果这一组是「作品」（work）：只写作品整体不算情感。** 你必须同时说清
+  两件事，缺一不可：
+  ① work_anchor：作品里的具体指向——哪一章、哪个情节、哪个人物、哪句话；
+  ② real_link：这个具体指向让你想到现实里的谁、哪件事。
+  只写「稿子交付流程对不对得上」「稿子让我焦虑」都不算——那是流程或你的
+  状态，不是情感。说不出具体指向的，返回 {"items": []}，不许为凑数放宽。
 - 不许复述事件本身，也不许抄他日记里的原句。
 - stance 8–80 字，用你自己的口吻。
 - 如果写了「我们之间」，证据里必须真的有你们共同在场的事。
@@ -95,6 +101,9 @@ _SYSTEM = for_scene(
 {"items": [{"object": "对象名", "kind": "person|work|thing",
             "stance": "8–80字", "valence": "positive|negative|mixed",
             "confidence": 0.3, "evidence": ["evt_…", "evt_…", "evt_…"],
+            "work_anchor": {"level": "chapter|plot|character|sentence|scene",
+                            "what": "第七章 / 主角 / 那句台词"},
+            "real_link": "这个具体指向让我想到现实里的…",
             "conflict_with": ""}]}""",
     brief=True,
 )
@@ -181,6 +190,12 @@ def _render_prompt(pool: list[dict], existing: dict[str, dict],
             f"【{ref}】（{kind}；{entry['n']} 件事，跨 {entry['span_days']} 天）"
         )
         cur = existing.get(ref)
+        if kind == "work":
+            parts.append(
+                "（这是作品：回答时必须给出具体指向 work_anchor——哪一章/哪个情节/"
+                "哪个人物/哪句话，以及它连到现实里的谁/哪件事 real_link。"
+                "只写作品整体不算情感，说不出来就空着。）"
+            )
         if cur:
             parts.append(f"你现在的说法：{cur.get('content', '')}（分量 {cur.get('confidence', 0):.2f}）")
             parts.append("（可以维持，也可以改；改要说清为什么。）")
@@ -240,15 +255,91 @@ def _is_emotion_summary(stance: str) -> bool:
     return bool(_EMO_SUMMARY_RE.search(stance) or _SELF_FEELING_RE.search(stance))
 
 
-def _validate(item: dict, pool_by_ref: dict[str, dict]) -> tuple[Optional[dict], str]:
+# —— 作品情感的具体指向（2026-11-17 判据）——
+# work 类只写作品整体不算情感：必须落到作品里的某一章/某个情节/某个人物/
+# 某句话，并且说清它连到现实里的谁/哪件事。这里做机械校验；判不准就拒，
+# 不为了凑一条工作类情感放宽。
+_WORK_ANCHOR_LEVELS = ("chapter", "plot", "character", "sentence", "scene")
+_CHAPTER_RE = re.compile(r"第?[一二三四五六七八九十百千0-9]+[章节回卷部篇]|(序章|楔子|尾声|番外)")
+_CHARACTER_RE = re.compile(r"(人物|角色|主角|配角|男主|女主|反派|原型|那个人物)")
+_SENTENCE_RE = re.compile(r"(台词|对白|那?句话|那句|这段文字|原文|一行字)")
+_PLOT_RE = re.compile(r"(情节|桥段|场景|段落|片段|开头|结尾|结局|转折|伏笔|悬念|冲突)")
+#: 「现实连接」至少要点到一个真实的人/现实生活，不能只写「我觉得」。
+_REAL_LINK_MARKERS = ("他", "她", "萧盛", "现实", "身边", "生活", "自己", "我们", "人")
+
+
+def _infer_anchor_level(what: str) -> Optional[str]:
+    s = str(what or "").strip()
+    if not s:
+        return None
+    if _CHAPTER_RE.search(s):
+        return "chapter"
+    if _CHARACTER_RE.search(s):
+        return "character"
+    if _SENTENCE_RE.search(s):
+        return "sentence"
+    if _PLOT_RE.search(s):
+        return "plot"
+    return None
+
+
+def _normalize_work_anchor(raw: Any) -> Optional[dict]:
+    """``work_anchor`` → ``{"level","what"}``；认不出来就不是具体指向。"""
+    if isinstance(raw, dict):
+        what = str(raw.get("what") or "").strip()
+    else:
+        what = str(raw or "").strip()
+    if len(what) < 2:
+        return None
+    level = _infer_anchor_level(what)
+    if level not in _WORK_ANCHOR_LEVELS:
+        return None
+    return {"level": level, "what": what}
+
+
+def _has_real_link(text: str) -> bool:
+    return any(m in str(text or "") for m in _REAL_LINK_MARKERS)
+
+
+def _validate(
+    item: dict,
+    pool_by_ref: dict[str, dict],
+    works: Any = None,
+) -> tuple[Optional[dict], str]:
     """校验一条候选。返回 ``(clean, "")`` 或 ``(None, 拒因)``。"""
-    ref = str(item.get("object") or "").strip()
-    entry = pool_by_ref.get(ref)
+    from deskmate.cognitive.works import clean_surface, is_generic_work_ref
+
+    raw_ref = str(item.get("object") or "").strip()
+    ref = clean_surface(raw_ref)
+    entry = pool_by_ref.get(raw_ref) or pool_by_ref.get(ref)
+    if entry is None and works is not None:
+        try:
+            hit = works.resolve(ref)
+            if hit:
+                entry = pool_by_ref.get(hit["title"])
+        except Exception:  # noqa: BLE001 —— 归一失败按对不上处理
+            entry = None
     if entry is None:
-        return None, f"object_not_in_pool:{ref}"
+        return None, f"object_not_in_pool:{raw_ref}"
+    # 池里是正名（《夜不收》已在归因层归一）；回答里的别名也认，但写库用池里的名。
+    ref = str(entry["object_ref"])
     kind = str(item.get("kind") or entry["object_kind"]).strip().lower()
     if kind != entry["object_kind"]:
         return None, f"kind_mismatch:{kind}"
+
+    # 类别不是情感对象：「稿子/章节/文章」不论被标成 work 还是 thing，都拒。
+    if kind in ("work", "thing") and is_generic_work_ref(ref):
+        return None, "category_not_individual"
+
+    anchor: Optional[dict] = None
+    real_link = ""
+    if kind == "work":
+        anchor = _normalize_work_anchor(item.get("work_anchor"))
+        if anchor is None:
+            return None, "work_no_anchor"
+        real_link = str(item.get("real_link") or "").strip()
+        if len(real_link) < 6 or not _has_real_link(real_link):
+            return None, "work_no_real_link"
 
     stance = str(item.get("stance") or "").strip()
     if not (8 <= len(stance) <= 80):
@@ -257,6 +348,13 @@ def _validate(item: dict, pool_by_ref: dict[str, dict]) -> tuple[Optional[dict],
         return None, "banned_voice"
     if _is_emotion_summary(stance):
         return None, "emotion_summary"
+
+    # 章节号是硬信息：必须在这组事件里真的出现过，不能凭印象编一个「第九章」。
+    # 人物/情节/语句不做字面核对（摘要里不一定写角色名），只靠 anchor 结构拦。
+    if anchor is not None and anchor["level"] == "chapter" and len(anchor["what"]) <= 8:
+        surfaced = " ".join(str(ev["summary"]) for ev in entry["evidence"])
+        if anchor["what"] not in surfaced:
+            return None, f"anchor_not_grounded:{anchor['what']}"
 
     ev_by_id = {ev["id"]: ev for ev in entry["evidence"]}
     picked: list[dict] = []
@@ -300,6 +398,8 @@ def _validate(item: dict, pool_by_ref: dict[str, dict]) -> tuple[Optional[dict],
         "confidence": conf,
         "evidence": picked,
         "conflict_with": str(item.get("conflict_with") or "").strip(),
+        "work_anchor": anchor,
+        "real_link": real_link,
     }, ""
 
 
@@ -331,6 +431,17 @@ def run_feeling_reflection(
     db_path = os.path.join(base_dir, "deskmate.db")
     store = FeelingStore(db_path=db_path)
     now = datetime.now()
+
+    # 作品个体化：周更时补一次作品表（书架 + 别名），让 work 对象落到具体书上。
+    # 读路径不做自动 seed；这里是维护钩子，失败不影响回顾。
+    works = None
+    try:
+        from deskmate.cognitive.works import WorksStore
+
+        works = WorksStore(db_path=db_path)
+        works.ensure_seeded()
+    except Exception as e:  # noqa: BLE001
+        logger.warning("works.ensure_seeded 失败（忽略）: %s", e)
 
     # R5：每次回顾顺手做一次月级淡化（content 永不删）
     try:
@@ -425,7 +536,7 @@ def run_feeling_reflection(
     rejected: list[dict] = []
     seen_ref: set[str] = set()
     for it in raw_items:
-        clean, why = _validate(it, pool_by_ref)
+        clean, why = _validate(it, pool_by_ref, works=works)
         if clean is None:
             rejected.append({"object": it.get("object"), "reason": why})
             continue
@@ -465,6 +576,8 @@ def run_feeling_reflection(
                 confidence=item["confidence"],
                 conflict_with=item["conflict_with"],
                 origin="backfill" if backfill else "weekly",
+                work_anchor=item.get("work_anchor"),
+                real_link=item.get("real_link") or "",
                 now=now.isoformat(timespec="seconds"),
             )
             written.append(saved)
