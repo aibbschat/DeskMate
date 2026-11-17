@@ -8,7 +8,8 @@
   里（event_type 被写死成 'experience'），取值有限，直接查表。
 - ``echo``（114 行）：``event_summary`` 存的是原 emotion_log.id，复制原行宾语。
 - ``chat`` / ``experience``（1,507 行）：LLM 归因，**每批 10 条、max_tokens=1600**。
-  整批失败不写（下次重跑），绝不部分写入。
+  整批一个事务：解析出来的条目要么全落库、要么一条不落；模型漏掉的 id 保持
+  ``attributed=0``，重跑再取。
 
 红线：
 - 只写 object_ref / object_kind / event_summary / attributed，**不碰 deltas、不碰激素**。
@@ -73,9 +74,13 @@ _SYSTEM = (
     "- **正在写的稿子、章节、文章、帖子、大纲、梗概也算 work**，即使没有书名；"
     "object_ref 用书名或稿件的叫法（如「今晚那章」），不要落 thing 或 none。\n"
     "- **不许把泛泛的情绪安到萧盛头上**。只有事件本身真的关于他，才写 person/萧盛。\n"
+    "- 审核/退稿/等结果这类**流程**里的角色（主编、总编、审稿人）不是情感对象，落 none；"
+    "只有事件本身在说这个人，才写 person。\n"
     "- object_ref 必须来自事件文本，不许推断、不许编。\n"
     "- event_summary 不超过 40 字，只写发生了什么；若原文只有她的感受、看不出"
     "发生了什么，摘要留空字符串，**不要编**。\n"
+    "- 摘要用**她的口吻**：对话另一人写「他」或直接写名字，**不许写「用户」「对方」"
+    "「该用户」这类旁观的第三人称**。\n"
     "严格输出 JSON 数组，每项 {\"id\", \"object_ref\", \"object_kind\", \"event_summary\"}，"
     "id 必须原样回填，不要多不要少。"
 )
@@ -202,7 +207,11 @@ def _llm_complete(system: str, user: str, timeout: float) -> str:
 
 
 def _run_batch(db: Path, batch: list, idx: int, timeout: float) -> tuple[int, int]:
-    """跑一批归因并落库。返回 (写入条数, 失败批数)。整批失败不写。"""
+    """跑一批归因并落库。返回 (写入条数, 失败批数)。
+
+    整批一个事务：要么这批解析出的条目全部落库，要么一条不落（进程中断/DB 错
+    回滚，不会留下写了一半的批）。模型漏掉的 id 保持 attributed=0，重跑会再取。
+    """
     lines = [
         f"- id={rid} | {(ts or '')[:10]} | {source} | {(desc or '')[:200]}"
         for rid, ts, source, desc in batch
@@ -227,6 +236,7 @@ def _run_batch(db: Path, batch: list, idx: int, timeout: float) -> tuple[int, in
     wrote = 0
     conn = _connect(db)
     try:
+        conn.execute("BEGIN IMMEDIATE")
         for rid, _ts, _source, _desc in batch:
             item = by_id.get(rid)
             if item is None:
@@ -239,8 +249,20 @@ def _run_batch(db: Path, batch: list, idx: int, timeout: float) -> tuple[int, in
                 (ref, kind, summary, BACKFILLED, rid),
             )
             wrote += 1
-    finally:
+        conn.execute("COMMIT")
+    except Exception:  # noqa: BLE001 写库出错：整批回滚，不留半批
+        try:
+            conn.execute("ROLLBACK")
+        except sqlite3.Error:
+            pass
         conn.close()
+        print(f"  batch {idx} 写库失败，整批回滚")
+        return 0, 1
+    finally:
+        try:
+            conn.close()
+        except sqlite3.Error:
+            pass
     print(f"  batch {idx}: {wrote}/{len(batch)} 条（{time.time() - t0:.1f}s）")
     if wrote != len(batch):
         return wrote, 1

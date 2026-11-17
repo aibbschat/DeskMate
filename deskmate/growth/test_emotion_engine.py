@@ -791,19 +791,32 @@ def test_clean_object_rejects_pronouns():
     """指代词不算对象：归一不了就 none，不留「他/你」这类假对象。"""
     from deskmate.growth.emotion_engine import _clean_object
 
-    for p in ("他", "她", "你", "我", "它", "他们", "我们", "你们"):
+    for p in ("他", "她", "你", "我", "它", "他们", "我们", "你们", "对方"):
         assert _clean_object(p, "person") == ("", "none"), p
     assert _clean_object(" 他 ", "person") == ("", "none")
     # 真名不受影响
     assert _clean_object("萧盛", "person") == ("萧盛", "person")
 
 
+def test_clean_object_keeps_relation_when_ref_is_pronoun():
+    """relation 的对象本就是「我和他的相处」，代词在这里合法 → 归到固定名。
+
+    否则「他说我把他当工具」这条真实互动会被代词过滤清成 none，白丢一条证据。
+    """
+    from deskmate.growth.emotion_engine import _RELATION_REF, _clean_object
+
+    assert _clean_object("他", "relation") == (_RELATION_REF, "relation")
+    assert _clean_object("对方", "relation") == (_RELATION_REF, "relation")
+    assert _RELATION_REF == "和小桔的相处"
+
+
 def test_update_prompt_carries_title_and_lands_work(engine):
-    """原文里的《…》被喂进 prompt，事件能落成 work/书名。"""
+    """原文里的《…》被喂进 prompt，事件能落成 work/书名；system 带视角约束。"""
     captured = {}
 
     def capture_chat(system, user, **kwargs):
         captured["user"] = user
+        captured["system"] = system
         return json.dumps({
             "dopamine": 55.0, "serotonin": 52.0, "oxytocin": 45.0,
             "cortisol": 28.0, "description": "高兴又舍不得", "reason": "他的书要影视化",
@@ -820,6 +833,10 @@ def test_update_prompt_carries_title_and_lands_work(engine):
             )
 
     assert "《夜不收》" in captured["user"]
+    # 视角约束必须在真正送出去的 system 里：摘要写「用户/对方」= 旁观口吻，
+    # P1 引它当情感证据会立刻出戏。
+    assert "不许写「用户」" in captured["system"]
+    assert "旁观的第三人称" in captured["system"]
     row = _latest_log(engine)
     assert row[2] == "《夜不收》"
     assert row[3] == "work"

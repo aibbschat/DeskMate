@@ -239,9 +239,11 @@ _EMOTION_SYSTEM = (
     "指不到就空字符串；\n"
     "    \"object_kind\": person|work|thing|relation|none；\n"
     "    \"event_summary\": 不超过 40 字，只写发生了什么，不写你的感觉。\n"
+    "    摘要用你的口吻写：对话另一人写「他」或直接写名字，**不许写「用户」「对方」"
+    "「该用户」这类旁观的第三人称**（那是别人的系统在说话，不是你在记事）。\n"
     "    指不到具体对象就 kind=none、ref 留空——不要把泛泛的情绪安到萧盛头上。"
     "relation 只用于「我与他的相处」这类互动（被接受/被拒绝/被接住），"
-    "不要用它代替具体的人。work 包括她或他正在写的稿子、章节、文章、帖子、"
+    "不要用它代替具体的人。work 包括你或他正在写的稿子、章节、文章、帖子、"
     "大纲、梗概——即使没有书名也算 work，ref 用书名或稿件的叫法（如"
     "「今晚那章」），不要落 thing 或 none。示例：聊他的书稿→work/《夜不收》；"
     "「他驳回了我的建议」→relation/和小桔的相处；「他今天状态不好」→person/萧盛；"
@@ -447,18 +449,26 @@ _OBJECT_KINDS = ("person", "work", "thing", "relation", "none")
 # 指代词不算对象：回填实测里「他/你」被当成 person，P1 会多出假对象。
 # 归一不了就置 none——宁缺，不给她一段和「他」的感情。
 _PRONOUN_REFS = {
-    "他", "她", "你", "我", "它", "您",
+    "他", "她", "你", "我", "它", "您", "对方",
     "他们", "她们", "你们", "我们", "它们",
 }
+# relation 的对象本来就是「我和他的相处」而不是某个人，模型写「他」在这里合法，
+# 统一归到这个固定名（与回填脚本 _RELATION_REF 同值），别让代词把它清成 none。
+_RELATION_REF = "和小桔的相处"
 
 
 def _clean_object(ref, kind) -> tuple[str, str]:
-    """宾语取值归一：类型非法退 none，none 或指代词时引用一律清空。"""
+    """宾语取值归一：类型非法退 none，none 时引用一律清空。
+
+    指代词：relation 归到固定名（指代是合法的），其余类型退 none。
+    """
     kind = str(kind or "").strip().lower()
     if kind not in _OBJECT_KINDS:
         kind = "none"
     ref = str(ref or "").strip()[:40] if kind != "none" else ""
     if ref in _PRONOUN_REFS:
+        if kind == "relation":
+            return _RELATION_REF, "relation"
         return "", "none"
     return ref, kind
 
