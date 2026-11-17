@@ -124,30 +124,36 @@ export function ConsultStatusBar({ sessionId }: { sessionId: string }) {
   if (!list.length) return null;
   const now = Date.now() / 1000;
 
+  // 对齐契约：这条是 Composer 的兄弟节点，而 Composer 的外层同样是**全宽**容器，
+  // 靠内部的 `max-w-3xl mx-auto` 自己居中（见 Composer.tsx 的 composer-wrap + 内层）。
+  // 这里不复制这一层，就会贴着窗口最左边、压在壁纸插画上（2026-11-17 实盘如此）。
+  // px-6 与 composer-wrap 的左右内边距同值，窄窗下才和输入框同边。
   return (
-    <div className="flex flex-col gap-1 pb-1.5 text-meta" data-testid="consult-status">
-      {list.map((run, i) => (
-        <div
-          key={run.id}
-          className={`flex items-center gap-2 ${tone(run.status)}`}
-          data-testid={`consult-${run.status}`}
-          title={run.excerpt || run.book || ""}
-        >
-          {run.status === "running" ? (
-            <span className="waiting-spinner" />
-          ) : (
-            <span
-              aria-hidden
-              className="inline-block w-1.5 h-1.5 rounded-full flex-none"
-              style={{ background: run.status === "done" ? "var(--ok)" : "var(--warn-ink)" }}
-            />
-          )}
-          <span>
-            {i === 0 ? "专家后台任务 · " : ""}
-            {label(run, now)}
-          </span>
-        </div>
-      ))}
+    <div className="px-6">
+      <div className="mx-auto flex max-w-3xl flex-col gap-1 pb-1.5 text-meta" data-testid="consult-status">
+        {list.map((run, i) => (
+          <div
+            key={run.id}
+            className={`flex items-center gap-2 ${tone(run.status)}`}
+            data-testid={`consult-${run.status}`}
+            title={run.excerpt || run.book || ""}
+          >
+            {run.status === "running" ? (
+              <span className="waiting-spinner" />
+            ) : (
+              <span
+                aria-hidden
+                className="inline-block w-1.5 h-1.5 rounded-full flex-none"
+                style={{ background: run.status === "done" ? "var(--ok)" : "var(--warn-ink)" }}
+              />
+            )}
+            <span>
+              {i === 0 ? "专家后台任务 · " : ""}
+              {label(run, now)}
+            </span>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }

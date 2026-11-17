@@ -64,6 +64,21 @@ describe("ConsultStatusBar", () => {
     expect(screen.queryByTestId("consult-running")).toBeNull();
   });
 
+  it("横向对齐输入框那一列，不是贴窗口左边", async () => {
+    // 2026-11-17 实盘：这条挂在 Composer 同一层（全宽），自己没带居中约束，
+    // 于是贴在最左边、压在壁纸插画上。这里把几何契约钉住，别再退回全宽。
+    vi.mocked(getConsultRuns).mockResolvedValue({ active: [RUNNING], recent: [] });
+    const { container } = render(<ConsultStatusBar sessionId="s1" />);
+    const bar = await screen.findByTestId("consult-status");
+    const column = bar.parentElement as HTMLElement;
+    expect(bar.className).toContain("max-w-3xl");
+    expect(bar.className).toContain("mx-auto");
+    // 外层补 composer-wrap 同值的左右内边距：窄窗下才跟输入框同边起。
+    expect(column.className).toContain("px-6");
+    expect(column.className).not.toContain("max-w-3xl");
+    expect(container.firstElementChild).toBe(column);
+  });
+
   it("没有任务时整条不渲染（不占版面、不留空壳）", async () => {
     vi.mocked(getConsultRuns).mockResolvedValue({ active: [], recent: [] });
     const { container } = render(<ConsultStatusBar sessionId="s1" />);
