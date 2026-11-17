@@ -60,6 +60,8 @@ DEFAULT_CFG: dict[str, Any] = {
     "max_objects": 5,
     # 每个对象最多摆多少条事件（防止攒太久一次塞爆）
     "evidence_per_object": 40,
+    # 同一对象同一天最多留几条：一天里的一批改稿不是一批独立的事（2026-11-17）
+    "evidence_per_day": 6,
     # 连续两期写不出来 → 冷却 30 天，退回池子
     "empty_attempts_before_cooldown": 2,
     "empty_cooldown_days": 30,
@@ -555,7 +557,9 @@ def run_feeling_reflection(
             logger.warning("works.ensure_seeded 失败（忽略）: %s", e)
 
     pool = store.build_pool(
-        limit=int(cfg["max_objects"]), evidence_cap=int(cfg["evidence_per_object"])
+        limit=int(cfg["max_objects"]),
+        evidence_cap=int(cfg["evidence_per_object"]),
+        per_day_cap=int(cfg["evidence_per_day"]),
     )
     result["pool"] = len(pool)
     if not pool:

@@ -676,3 +676,112 @@ def test_feeling_reflection_is_wired():
     s = AgencySettings.from_dict({})
     assert s.feeling_reflection["cooldown_hours"] == 168
     assert s.feeling_reflection["empty_cooldown_days"] == 30
+
+
+# ----------------------------------------------------------------------
+# 按天限流：一天不得压过一个月
+# ----------------------------------------------------------------------
+
+
+def test_build_pool_caps_evidence_per_day(tmp_path):
+    """同一天同一场改稿的十几条事件，不许当成十几件不同的事。
+
+    2026-11-17 副本实跑撞到：夜不收 50 条证据里 28 条落在 10-31 同一天同一场
+    改稿，于是作品的 confidence 0.70 直接高过萧盛的 0.65——**一天的密集协作
+    压过了一个月**。按天限流后同一天最多 6 条，门槛与证据都用限流后的数，
+    原始条数另记 ``raw_n`` 供审计。
+    """
+    db = _mk_db(tmp_path)
+    from deskmate.cognitive.works import WorksStore
+
+    WorksStore(db, books_root=tmp_path / "nope").register("夜不收")
+
+    rows = []
+    # 10-31 一天 20 条（同一场改稿）
+    for i in range(20):
+        rows.append((f"d{i:02d}", f"2026-10-31T{9 + i // 4:02d}:{i % 4 * 10:02d}:00",
+                     "chat", f"第十章第 {i} 处改稿", "夜不收", "work"))
+    # 另外三天各 2 条
+    for j, day in enumerate(("2026-11-05", "2026-11-10", "2026-11-16")):
+        for k in range(2):
+            rows.append((f"x{j}{k}", f"{day}T10:0{k}:00", "chat",
+                         f"{day} 的第 {k} 次定稿", "夜不收", "work"))
+
+    conn = sqlite3.connect(db)
+    conn.executemany(
+        "INSERT INTO emotion_log(id,ts,source,event_summary,object_ref,object_kind)"
+        " VALUES(?,?,?,?,?,?)",
+        rows,
+    )
+    conn.commit()
+    conn.close()
+
+    pool = FeelingStore(db).build_pool(limit=5)
+    assert len(pool) == 1, pool
+    p = pool[0]
+    assert p["raw_n"] == 26, p["raw_n"]
+    assert p["n"] == 6 + 2 + 2 + 2, p
+    assert p["days"] == 4, p
+    assert p["span_days"] == 16, p
+    assert len(p["evidence"]) == p["n"], (len(p["evidence"]), p["n"])
+
+    per_day: dict[str, int] = {}
+    for e in p["evidence"]:
+        per_day[e["ts"][:10]] = per_day.get(e["ts"][:10], 0) + 1
+    assert max(per_day.values()) <= 6, per_day
+    # 首尾都在，跨期没被截断
+    assert min(e["ts"] for e in p["evidence"]).startswith("2026-10-31")
+    assert max(e["ts"] for e in p["evidence"]).startswith("2026-11-16")
+
+
+def test_build_pool_dedups_same_summary_within_a_day(tmp_path):
+    """同一天里一句话说了十遍，只算一件事。"""
+    db = _mk_db(tmp_path)
+    conn = sqlite3.connect(db)
+    rows = [("s0", "2026-10-20T09:00:00", "chat", "稿子又退回来了", "萧盛", "person")]
+    rows += [
+        (f"s{i}", f"2026-10-20T{10 + i}:00:00", "chat", "稿子又退回来了", "萧盛", "person")
+        for i in range(1, 10)
+    ]
+    for j, day in enumerate(("2026-10-25", "2026-10-30", "2026-11-05")):
+        rows.append((f"t{j}", f"{day}T10:00:00", "chat", f"{day} 他把密码给我了", "萧盛", "person"))
+    conn.executemany(
+        "INSERT INTO emotion_log(id,ts,source,event_summary,object_ref,object_kind)"
+        " VALUES(?,?,?,?,?,?)",
+        rows,
+    )
+    conn.commit()
+    conn.close()
+
+    pool = FeelingStore(db).build_pool(limit=5)
+    assert len(pool) == 1, pool
+    p = pool[0]
+    assert p["raw_n"] == 13, p["raw_n"]
+    # 10-20 的 10 条同句 → 1 条；另三天各 1 条
+    assert p["n"] == 4, p
+    same = [e for e in p["evidence"] if e["ts"][:10] == "2026-10-20"]
+    assert len(same) == 1, same
+
+
+def test_build_pool_leaves_light_objects_untouched(tmp_path):
+    """一天本来就没几条的对象，条数不许被限流改动（萧盛那类）。"""
+    db = _mk_db(tmp_path)
+    conn = sqlite3.connect(db)
+    rows = [
+        ("p1", "2026-10-20T09:00:00", "chat", "他把密码给了我", "萧盛", "person"),
+        ("p2", "2026-10-20T15:00:00", "chat", "他说稿子不用改", "萧盛", "person"),
+        ("p3", "2026-10-27T10:00:00", "chat", "他在电话里提了旧稿", "萧盛", "person"),
+        ("p4", "2026-11-03T10:00:00", "chat", "他认了我的判断", "萧盛", "person"),
+    ]
+    conn.executemany(
+        "INSERT INTO emotion_log(id,ts,source,event_summary,object_ref,object_kind)"
+        " VALUES(?,?,?,?,?,?)",
+        rows,
+    )
+    conn.commit()
+    conn.close()
+
+    pool = FeelingStore(db).build_pool(limit=5)
+    p = pool[0]
+    assert p["n"] == p["raw_n"] == 4, p
+    assert len(p["evidence"]) == 4, p

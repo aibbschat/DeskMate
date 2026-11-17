@@ -81,6 +81,41 @@ def _date_of(ts: str) -> str:
     return str(ts or "")[:10]
 
 
+# 同一对象、同一天，最多留几条进证据（2026-11-17 萧哥拍板「补 + 按天限流」）。
+PER_DAY_CAP = 6
+
+
+def _cap_per_day(evs: list[dict], cap: int = PER_DAY_CAP) -> list[dict]:
+    """同一天最多留 ``cap`` 条：先按摘要完全去重，再均匀取样保住当天首尾。
+
+    一天里同一场改稿会产出十几条事件，它们不是十几件不同的事。不压住的话，
+    一天的密集协作就会压过一个月的稀疏往来——2026-11-17 副本实测：「夜不收」
+    50 条证据里 28 条落在同一天同一场改稿，confidence 0.70 直接盖过萧盛的 0.65。
+
+    ``evs`` 需已按 ``ts`` 升序（``_ROWS_SQL`` 的 ORDER BY）。去重只认逐字相同的
+    摘要：换措辞的近似重复交给 ``evidence_cap`` 的均匀取样，不做语义合并。
+    """
+    if cap <= 0 or not evs:
+        return evs
+    by_day: dict[str, list[dict]] = {}
+    for e in evs:
+        d = _date_of(e["ts"])
+        bucket = by_day.setdefault(d, [])
+        if any(x["summary"] == e["summary"] for x in bucket):
+            continue
+        bucket.append(e)
+
+    out: list[dict] = []
+    for bucket in by_day.values():
+        if cap == 1:
+            bucket = bucket[:1]
+        elif len(bucket) > cap:
+            step = (len(bucket) - 1) / (cap - 1)
+            bucket = [bucket[round(i * step)] for i in range(cap)]
+        out.extend(bucket)
+    return out
+
+
 # 与 emotion_engine._clean_object 同一口径：「这稿子」=「稿子」。
 _DEMONSTRATIVES = (
     "这个", "那个", "这份", "那份", "这篇", "那篇", "这本", "那本",
@@ -166,7 +201,9 @@ class FeelingStore:
     # ------------------------------------------------------------------
     # R2 候选池
     # ------------------------------------------------------------------
-    def build_pool(self, limit: int = 5, evidence_cap: int = 40) -> list[dict]:
+    def build_pool(
+        self, limit: int = 5, evidence_cap: int = 40, per_day_cap: int = PER_DAY_CAP
+    ) -> list[dict]:
         """返回过 R2 门槛的对象及其实证事件（只读）。
 
         每条 evidence 为 ``{src,id,ts,summary}``：``ts/summary`` 可跨端携带，
@@ -176,6 +213,9 @@ class FeelingStore:
         再按归并后的对象套门槛、取证。历史 ``object_ref`` 一字不改；归不到
         同一本书的（「第五部」「稿件」「旧梗概」这类序数与类别）保持原样或
         直接不进池，不硬并成一个跨年大筐。
+
+        2026-11-17 按天限流：门槛与 ``n`` 都用**限流后**的条数，``raw_n`` 另记
+        原始条数供审计。否则一天里的一批事件会把对象顶成「高频强关系」。
         """
         out: list[dict] = []
         try:
@@ -231,7 +271,11 @@ class FeelingStore:
                     )
 
             for (cref, ckind), evs in groups.items():
+                raw_n = len(evs)
+                evs = _cap_per_day(evs, per_day_cap)
                 total = len(evs)
+                if not total:
+                    continue
                 first_ts, last_ts = evs[0]["ts"], evs[-1]["ts"]
                 days = len({_date_of(e["ts"]) for e in evs if e["ts"]})
                 summaries = len({e["summary"] for e in evs if e["summary"]})
@@ -253,6 +297,7 @@ class FeelingStore:
                         "object_ref": cref,
                         "object_kind": ckind,
                         "n": total,
+                        "raw_n": raw_n,
                         "days": days,
                         "summaries": summaries,
                         "first_ts": first_ts,

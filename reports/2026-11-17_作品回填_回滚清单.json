@@ -1,0 +1,278 @@
+{
+ "created_at": "2026-11-17T13:32:22",
+ "kind": "emotion_log.object_ref backfill（work）",
+ "rows": [
+  {
+   "id": "983f5735-7d09-4d05-8476-1da995aa5241",
+   "ts": "2026-10-31",
+   "summary": "发现交付物是旧稿，救回第十四章",
+   "old_ref": "旧稿",
+   "old_kind": "thing",
+   "book": "夜不收"
+  },
+  {
+   "id": "0ac73eab-3859-4634-a930-a2ad7b6329d0",
+   "ts": "2026-10-31",
+   "summary": "发现交付物是旧稿，救回第十四章",
+   "old_ref": "旧稿",
+   "old_kind": "thing",
+   "book": "夜不收"
+  },
+  {
+   "id": "f7a01a5a-7dfd-4d33-92df-376359623de9",
+   "ts": "2026-10-31",
+   "summary": "发现交付物是旧稿，救回第十四章",
+   "old_ref": "旧稿",
+   "old_kind": "thing",
+   "book": "夜不收"
+  },
+  {
+   "id": "f9e91cec-734d-45e9-a250-db9d784bcfa2",
+   "ts": "2026-10-31",
+   "summary": "发现交付物是旧稿，救回第十四章",
+   "old_ref": "旧稿",
+   "old_kind": "thing",
+   "book": "夜不收"
+  },
+  {
+   "id": "def94c5f-5c8e-4bfa-8640-eaf5c8705438",
+   "ts": "2026-10-31",
+   "summary": "发现交付物是旧稿，救回第十四章",
+   "old_ref": "旧稿",
+   "old_kind": "thing",
+   "book": "夜不收"
+  },
+  {
+   "id": "5c3b6f7d-c0e2-4e2d-a8a8-81c4e9553496",
+   "ts": "2026-10-31",
+   "summary": "发现交付物是旧稿，救回第十四章",
+   "old_ref": "旧稿",
+   "old_kind": "thing",
+   "book": "夜不收"
+  },
+  {
+   "id": "bb39e707-1c24-4548-a4ca-53fecd9f0b0d",
+   "ts": "2026-10-31",
+   "summary": "翻看发现是旧稿，救回了第十四章那笔",
+   "old_ref": "旧稿",
+   "old_kind": "thing",
+   "book": "夜不收"
+  },
+  {
+   "id": "cc87cb61-53e7-4673-8682-7b45c91fece4",
+   "ts": "2026-10-31",
+   "summary": "翻看发现是旧稿，救回了第十四章那笔",
+   "old_ref": "旧稿",
+   "old_kind": "thing",
+   "book": "夜不收"
+  },
+  {
+   "id": "f1e53f89-cc6a-4096-a149-86a4dac9c53a",
+   "ts": "2026-10-31",
+   "summary": "翻看发现是旧稿，救回了第十四章那笔",
+   "old_ref": "旧稿",
+   "old_kind": "thing",
+   "book": "夜不收"
+  },
+  {
+   "id": "097a79d0-880a-46a1-8d55-458439839481",
+   "ts": "2026-10-31",
+   "summary": "发现稿件冲突，需等拍板决定",
+   "old_ref": "",
+   "old_kind": "none",
+   "book": "夜不收"
+  },
+  {
+   "id": "6feda01a-993f-436d-90d7-dde851322b09",
+   "ts": "2026-10-31",
+   "summary": "章纲交稿，等待验收",
+   "old_ref": "",
+   "old_kind": "none",
+   "book": "夜不收"
+  },
+  {
+   "id": "ca144b59-f6f8-4249-b017-78c1da2103f2",
+   "ts": "2026-10-31",
+   "summary": "收口定稿，撤回错误结论",
+   "old_ref": "",
+   "old_kind": "none",
+   "book": "夜不收"
+  },
+  {
+   "id": "a6e0f0f2-624f-4f7d-93d4-fc68b705d877",
+   "ts": "2026-10-31",
+   "summary": "终裁定号，稿子全对上，交付完成",
+   "old_ref": "稿子",
+   "old_kind": "thing",
+   "book": "夜不收"
+  },
+  {
+   "id": "6b457a52-2a1d-4bb6-9007-db4b110795b0",
+   "ts": "2026-10-31",
+   "summary": "认了错又坚持删字，封口前五个字像五根刺",
+   "old_ref": "",
+   "old_kind": "none",
+   "book": "夜不收"
+  },
+  {
+   "id": "7cf0a07b-289b-455c-a159-6cf38610358e",
+   "ts": "2026-10-31",
+   "summary": "大纲成稿，六处要返工",
+   "old_ref": "",
+   "old_kind": "none",
+   "book": "夜不收"
+  },
+  {
+   "id": "6cec1e53-1750-4071-b082-454cbc2bd572",
+   "ts": "2026-10-31",
+   "summary": "大纲落定，jinyao六字待办未清",
+   "old_ref": "",
+   "old_kind": "none",
+   "book": "夜不收"
+  },
+  {
+   "id": "32791505-9a2e-400b-bf39-3ffcf3c67785",
+   "ts": "2026-10-31",
+   "summary": "审定通过、文件落盘；旧梗概已过时",
+   "old_ref": "那份旧梗概",
+   "old_kind": "work",
+   "book": "夜不收"
+  },
+  {
+   "id": "1f86a20e-ea54-4883-94ad-140a7110273d",
+   "ts": "2026-11-01",
+   "summary": "稿子发出去了，想再碰碰改过的句子",
+   "old_ref": "",
+   "old_kind": "none",
+   "book": "夜不收"
+  },
+  {
+   "id": "6d0fc1f3-927c-452c-8134-966a4d409019",
+   "ts": "2026-11-06",
+   "summary": "回看七条，正文与大纲对不上后及时纠偏",
+   "old_ref": "",
+   "old_kind": "none",
+   "book": "夜不收"
+  },
+  {
+   "id": "643d163d-4b8b-4abf-b71d-24095e92f783",
+   "ts": "2026-11-06",
+   "summary": "压舱的交付完成，第一章一句话没着落",
+   "old_ref": "",
+   "old_kind": "none",
+   "book": "夜不收"
+  },
+  {
+   "id": "9b7ca092-c189-492e-89a9-0c60e1bd8620",
+   "ts": "2026-11-06",
+   "summary": "核完发现缺口在第九章，悬案解决",
+   "old_ref": "第九章",
+   "old_kind": "thing",
+   "book": "夜不收"
+  },
+  {
+   "id": "b7e034d4-ba41-4fe2-b0da-1238d682d889",
+   "ts": "2026-11-06",
+   "summary": "复核抓到重复错字，结论未变",
+   "old_ref": "",
+   "old_kind": "none",
+   "book": "夜不收"
+  },
+  {
+   "id": "f8623aa7-c717-4b16-807d-36375f01e2f6",
+   "ts": "2026-11-06",
+   "summary": "稿件回应了此前想法，完成得比预想高明",
+   "old_ref": "稿件",
+   "old_kind": "work",
+   "book": "夜不收"
+  },
+  {
+   "id": "d644e316-de1c-4d07-91a3-7d6975ad9bf3",
+   "ts": "2026-11-06",
+   "summary": "主编说「我收」，同时点破概括不算正文",
+   "old_ref": "主编",
+   "old_kind": "person",
+   "book": "夜不收"
+  },
+  {
+   "id": "0807e525-2d1b-4568-a3ff-30768aa45b37",
+   "ts": "2026-11-06",
+   "summary": "获总编真答案认可，对质第十章出处",
+   "old_ref": "总编",
+   "old_kind": "person",
+   "book": "夜不收"
+  },
+  {
+   "id": "0394159e-91fe-475f-9b5b-fc8b969afc56",
+   "ts": "2026-11-06",
+   "summary": "核完错字，字数仍有缺口",
+   "old_ref": "",
+   "old_kind": "none",
+   "book": "夜不收"
+  },
+  {
+   "id": "1c09ba3f-8224-4c9a-af21-cff1d6808876",
+   "ts": "2026-11-11",
+   "summary": "稿子交出去了，屋里没人接话",
+   "old_ref": "",
+   "old_kind": "none",
+   "book": "夜不收"
+  },
+  {
+   "id": "06a46d7e-7428-43d5-838d-7c63f7e67519",
+   "ts": "2026-11-11",
+   "summary": "稿子交出去了，屋里没人接话",
+   "old_ref": "",
+   "old_kind": "none",
+   "book": "夜不收"
+  },
+  {
+   "id": "55570497-ff0c-4019-bea9-88613cf5588a",
+   "ts": "2026-11-11",
+   "summary": "稿子交出去了，屋里没人接话",
+   "old_ref": "",
+   "old_kind": "none",
+   "book": "夜不收"
+  },
+  {
+   "id": "f141ccd0-1be2-4705-a889-6f537e48702e",
+   "ts": "2026-11-11",
+   "summary": "稿子交出去了，屋里没人接话",
+   "old_ref": "",
+   "old_kind": "none",
+   "book": "夜不收"
+  },
+  {
+   "id": "0aa0f9cf-32f1-4f8a-99c0-e8e00e268001",
+   "ts": "2026-11-11",
+   "summary": "稿子交出去了，屋里没人接话",
+   "old_ref": "",
+   "old_kind": "none",
+   "book": "夜不收"
+  },
+  {
+   "id": "9ea01faa-c217-409a-8932-f9fad0e28936",
+   "ts": "2026-11-11",
+   "summary": "稿子交出去了，屋里没人接话",
+   "old_ref": "",
+   "old_kind": "none",
+   "book": "夜不收"
+  },
+  {
+   "id": "e98e590d-f4d2-4e8c-ab6f-2166170caf39",
+   "ts": "2026-11-11",
+   "summary": "稿子交出去了，屋里没人接话",
+   "old_ref": "",
+   "old_kind": "none",
+   "book": "夜不收"
+  },
+  {
+   "id": "958b9be5-070d-4886-af91-eef0688f6d12",
+   "ts": "2026-11-11",
+   "summary": "稿子交出去了，屋里没人接话",
+   "old_ref": "",
+   "old_kind": "none",
+   "book": "夜不收"
+  }
+ ]
+}

@@ -35,7 +35,7 @@
 - 🔴 **本文件已入本地 git（`238796b8`），但未推 backup**（萧哥 2026-11-16 决定：含内部结构暂不公开）⇒ 远端公开仓**没有**本文件，别以为有备份。`.gitignore` 逐级豁免只开一个口子（`!.workbuddy/memory/MEMORY.md`）；**PITFALLS.md 与按日日志刻意不入库**——含云端主机 IP 与 SSH 身份。改本文件须跟提交，否则等于改了不带历史。
 - Tauri 2.x arm64：改 Python 重启 app 即生效；**前端改动须重打包**（`./packaging/build_local_app.sh --install`）；版本三处+`Cargo.lock`。判新代码三件套：`lsappinfo` launch time > commit、`__pycache__` 重编译、真实行为证据。🔴 双副本：`/Applications` 与 `~/Applications` 须同步或只留一个。
 - STT：SenseVoiceSmall int8（`~/.config/coworker/models/sensevoice/`），缺入口 fail-fast 不回退；正式 DMG 须把 `openworker-stt`+`sherpa-onnx==1.13.8` 打进 sidecar。
-- pytest 须 `dangerouslyDisableSandbox`+`env -u PYTHONPATH`+`--basetemp=/tmp/pt_<新目录>`。**既有红基线＝41 红 / 5076 passed**（11-11 口径）⇒ 判回归必须**同口径**比对失败清单。🔴 取 HEAD 基线禁 `git worktree`（`cp` 备份+`trap`+`git show HEAD:`）。前端 vitest **0 红 / 462 passed** ⇒ 再红即新回归。🔴 肤色护栏「修一个冒一个」：每个 `it` 首断言失败即中断，同 for 循环其余皮肤不暴露；改配色前先脚本复刻 `_contrast` 全量算。`npx tsc --noEmit` 须 0 错。
+- pytest 须 `dangerouslyDisableSandbox`+`env -u PYTHONPATH`+`--basetemp=/tmp/pt_<新目录>`。**既有红基线＝41 红 / 5076 passed**（11-11 口径）⇒ 判回归必须**同口径**比对失败清单。🔴 取 HEAD 基线禁 `git worktree`（`cp` 备份+`trap`+`git show HEAD:`）。前端 vitest **0 红 / 462 passed** ⇒ 再红即新回归。🔴 **「既有红」不能只看 HEAD 也红，要看红的内容**：`test_append_two_entries`／`test_second_entry_does_not_repeat_first` 被当基线噪声许久，实为 `her_voice` 把整则日记当「她的一句话」的真 bug（11-17 修绿）。🔴 肤色护栏「修一个冒一个」：每个 `it` 首断言失败即中断，同 for 循环其余皮肤不暴露；改配色前先脚本复刻 `_contrast` 全量算。`npx tsc --noEmit` 须 0 错。
 
 ## 六、交互送达 / proactivity
 - **送达闭合四件套**：①发起点②承载通道③出口呈现④凭证(冷却/去重/计数)。交互分支禁后台跑→`tick(allow_interactive=False)`。运维巡检类＝信箱收、开场不念（`ledger.py:OPS_MAILBOX_ONLY_KINDS`）；遥测 `*_error` 走 `_is_telemetry_kind()` 三出口同源。
