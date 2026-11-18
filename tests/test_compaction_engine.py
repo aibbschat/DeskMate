@@ -342,7 +342,7 @@ async def test_cooldown_suppresses_repeat_compaction_within_window(tmp_path):
     assert asked == []  # no re-prompt
 
 
-async def test_compression_model_failover_to_main(tmp_path):
+async def test_compression_model_failover_to_main(tmp_path, caplog):
     # P1-2: when a dedicated compression model is configured but fails, the engine
     # falls back to the main model rather than dropping straight to a trim.
     provider = FailoverProvider(
@@ -357,6 +357,9 @@ async def test_compression_model_failover_to_main(tmp_path):
         "model": "deepseek-v4-pro",  # dedicated compression model configured
     }
 
+    import logging
+
+    caplog.set_level(logging.WARNING, logger="coworker.engine")
     n = await engine._compact_now()
     # The summary succeeded via the main-model fallback — no trim.
     assert n is not None and "compacted" in n.lower()
@@ -365,6 +368,14 @@ async def test_compression_model_failover_to_main(tmp_path):
     # Both models were attempted: the dedicated one failed, the main one succeeded.
     tried = [c["model"] for c in provider.summary_calls]
     assert "deepseek-v4-pro" in tried and "gpt-5.5" in tried
+    # The silent degradation is logged (2026-11-18): a dead dedicated model must leave
+    # a greppable trace even while the main model quietly rescues every compaction.
+    fallback_logs = [
+        r
+        for r in caplog.records
+        if "fell back" in r.getMessage() and "deepseek-v4-pro" in r.getMessage()
+    ]
+    assert fallback_logs, "expected a 'dedicated model unavailable, fell back' warning"
 
 
 async def test_compression_model_failover_both_fail_trims(tmp_path):

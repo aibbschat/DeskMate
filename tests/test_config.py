@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from coworker.config import load_config
 
 
@@ -13,6 +15,26 @@ def test_defaults_when_no_files(tmp_path):
     assert cfg.mode == "interactive"
     assert cfg.max_iterations == 150
     assert cfg.allowed_commands == []
+    assert cfg.tool_result_max_bytes is None  # engine falls back to the 10,000 default
+
+
+def test_tool_result_max_bytes_toml_and_env(tmp_path, monkeypatch):
+    g = tmp_path / "global.toml"
+    g.write_text("tool_result_max_bytes = 4000\n", encoding="utf-8")
+    monkeypatch.delenv("COWORKER_TOOL_RESULT_MAX_BYTES", raising=False)
+    cfg = load_config(global_path=g)
+    assert cfg.tool_result_max_bytes == 4000
+    # The env var overrides the file; 0 (bounding off) is a legal value.
+    monkeypatch.setenv("COWORKER_TOOL_RESULT_MAX_BYTES", "0")
+    cfg = load_config(global_path=g)
+    assert cfg.tool_result_max_bytes == 0
+    # Garbage and negatives are rejected, not silently ignored.
+    monkeypatch.setenv("COWORKER_TOOL_RESULT_MAX_BYTES", "-5")
+    with pytest.raises(ValueError):
+        load_config(global_path=g)
+    monkeypatch.setenv("COWORKER_TOOL_RESULT_MAX_BYTES", "yes")
+    with pytest.raises(ValueError):
+        load_config(global_path=g)
 
 
 def test_global_and_workspace_override(tmp_path):

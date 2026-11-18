@@ -9,6 +9,8 @@ workspace path. Other permission grants remain global-only.
 
 from __future__ import annotations
 
+import os
+
 try:
     import tomllib  # stdlib since 3.11
 except ModuleNotFoundError:  # 3.10, the floor requires-python declares
@@ -83,6 +85,11 @@ class Config:
     cloud_relay_ws_url: str = (
         "wss://l4z1paxb83.execute-api.us-east-1.amazonaws.com/ocw-connect"
     )
+    # OPE-186: bound every tool result before it enters the conversation. A result whose
+    # serialised form exceeds this many bytes is stored as head + marker + tail, with the
+    # full text in a spill file the model can read. Unset = 10,000; 0 = off.
+    # Environment override: COWORKER_TOOL_RESULT_MAX_BYTES.
+    tool_result_max_bytes: Optional[int] = None
 
 
 _FIELDS = {
@@ -106,7 +113,19 @@ _FIELDS = {
     "cloud_client_id",
     "cloud_audience",
     "cloud_relay_ws_url",
+    "tool_result_max_bytes",
 }
+
+TOOL_RESULT_MAX_BYTES_ENV = "COWORKER_TOOL_RESULT_MAX_BYTES"
+
+
+def _nonnegative_int(value: Any, source: str) -> int:
+    """`tool_result_max_bytes`: an integer >= 0 (0 turns bounding off); bools rejected."""
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ValueError(
+            f"tool_result_max_bytes must be an integer >= 0, got {value!r} ({source})"
+        )
+    return value
 
 # These fields change what consequential actions can run without a prompt, so the normal
 # workspace override pass never applies them. `allowed_commands` is added separately only
@@ -168,4 +187,15 @@ def load_config(
                         [*cfg.allowed_commands, *workspace_allowed_commands(workspace)]
                     )
                 )
+    if cfg.tool_result_max_bytes is not None:
+        cfg.tool_result_max_bytes = _nonnegative_int(
+            cfg.tool_result_max_bytes, "config.toml"
+        )
+    raw_cap = (os.environ.get(TOOL_RESULT_MAX_BYTES_ENV) or "").strip()
+    if raw_cap:
+        try:
+            parsed: Any = int(raw_cap)
+        except ValueError:
+            parsed = raw_cap
+        cfg.tool_result_max_bytes = _nonnegative_int(parsed, TOOL_RESULT_MAX_BYTES_ENV)
     return cfg
