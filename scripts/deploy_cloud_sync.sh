@@ -129,6 +129,10 @@ PERSONA_FILES=(
   "coworker/personas/builtin/editor/skills/editor-method/SKILL.md"
   "coworker/personas/builtin/outline/manifest.md"
   "coworker/personas/builtin/outline/skills/outline-method/SKILL.md"
+  # 2026-11-18 新增第 12 位：情节架构专家（plot）。漏登记 → 云端跑不到这人设，
+  # 而 .md 末尾对账只比「共有文件」，会静默不同步。
+  "coworker/personas/builtin/plot/manifest.md"
+  "coworker/personas/builtin/plot/skills/plot-method/SKILL.md"
   "coworker/personas/builtin/character/manifest.md"
   "coworker/personas/builtin/character/skills/character-method/SKILL.md"
   # 主编 / 影视线 5 个 bundle（原样保留）。

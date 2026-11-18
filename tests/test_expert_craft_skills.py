@@ -27,11 +27,11 @@ from coworker.providers import ModelCapabilities, ProviderClient
 from coworker.server.manager import SessionManager
 from coworker.sessions import SessionRecord
 
-# 与 deskmate/bots/author.py::EXPERT_PERSONA_IDS 同源（11 位写作专家）。
+# 与 deskmate/bots/author.py::EXPERT_PERSONA_IDS 同源（12 位写作专家）。
 EXPERT_IDS = (
     "brainstormer", "lit-editor", "adaptation", "historian",
     "proofreader", "reader", "publisher", "genre", "editor",
-    "outline", "character",
+    "outline", "plot", "character",
 )
 
 

@@ -30,11 +30,11 @@ from coworker.agents.code import CODE_CAPABILITIES  # noqa: F401
 from coworker.catalog import CATALOG, expand
 from coworker.roots import RootDir
 
-# 11 位写作专家（deskmate/bots/author.py::EXPERT_PERSONA_IDS 同源，2026-11-11 转 bundle）。
+# 12 位写作专家（deskmate/bots/author.py::EXPERT_PERSONA_IDS 同源，2026-11-11 转 bundle）。
 EXPERT_IDS = (
     "brainstormer", "lit-editor", "adaptation", "historian",
     "proofreader", "reader", "publisher", "genre", "editor",
-    "outline", "character",
+    "outline", "plot", "character",
 )
 _ROOT = Path(__file__).resolve().parents[1]
 _PERSONA_DIR = _ROOT / "coworker" / "personas" / "builtin"

@@ -69,7 +69,7 @@ def _shelf(tmp_path: Path) -> BookShelf:
 
 def test_directory_has_five_experts() -> None:
     assert {item["id"] for item in EXPERTS} == {
-        "lit-editor", "brainstormer", "outline", "character", "adaptation",
+        "lit-editor", "brainstormer", "outline", "plot", "character", "adaptation",
     }
     assert MAX_EXPERTS == 3
     assert "你可以调用专家" in CONSULT_GUIDANCE

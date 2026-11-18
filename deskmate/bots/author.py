@@ -18,7 +18,7 @@ from .reading import BookShelf, default_shelf
 EXPERT_PERSONA_IDS: frozenset[str] = frozenset({
     "brainstormer", "lit-editor", "adaptation", "historian",
     "proofreader", "reader", "publisher", "genre", "editor",
-    "outline", "character",
+    "outline", "plot", "character",
 })
 
 _USER_MD = Path("~/.deskmate/USER.md")
@@ -33,13 +33,20 @@ def _user_md_text() -> str:
 
 
 def _name_and_line(text: str) -> tuple[str, str]:
-    """从 USER.md「基本信息」的第一条 bullet 里取名字与一句身份。"""
+    """从 USER.md「基本信息」的第一条 bullet 里取名字与一句身份。
+
+    带日期的 bullet 是硬规矩（如「2026-10-31: 萧盛要求——…」），不是身份行；
+    USER.md 硬规矩排在前面时，先前实现会把规矩当身份拼进档案（实测：专家拿到的
+    「作者身份」是代笔规矩那一句），跳过带日期的行再认。
+    """
     for line in text.splitlines():
         stripped = line.strip()
         if not stripped.startswith("- "):
             continue
         body = stripped[2:].strip()
         if not body or "萧" not in body:
+            continue
+        if re.match(r"\d{4}-\d{2}-\d{2}", body):
             continue
         name = "萧盛"
         head = re.split(r"[，,；;：:]", body, maxsplit=1)

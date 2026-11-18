@@ -34,11 +34,11 @@ from coworker.agents.code import CODE_CAPABILITIES  # noqa: F401
 from coworker.catalog import CATALOG
 from deskmate.perception import file_reader
 
-# 11 位写作专家（deskmate/bots/author.py::EXPERT_PERSONA_IDS 同源）。
+# 12 位写作专家（deskmate/bots/author.py::EXPERT_PERSONA_IDS 同源）。
 EXPERT_IDS = (
     "brainstormer", "lit-editor", "adaptation", "historian",
     "proofreader", "reader", "publisher", "genre", "editor",
-    "outline", "character",
+    "outline", "plot", "character",
 )
 _PERSONA_DIR = Path(__file__).resolve().parents[1] / "coworker" / "personas" / "builtin"
 
