@@ -56,7 +56,10 @@ _COMPACTION_ANTI_THRASH_SECONDS = 300
 # 几十个工具定义重发一遍（实测裸 deskmate 11 个 ≈6KB，挂上连接器后翻倍），
 # 既是 token 税也增加选错工具的概率。按注册顺序保留，0 = 关闭预算。
 _TOOL_SCHEMA_MAX_CHARS_ENV = "COWORKER_TOOL_SCHEMA_MAX_CHARS"
-_TOOL_SCHEMA_DEFAULT_CHARS = 20000
+# 2026-11-19 二次修复：原 20000 连 pinned 自身（39 个核心 ≈ 17KB）都快装不下，
+# 挂上 MCP 后非核心工具 100% 被裁、连 write_file 都看不到。提到 48000 给
+# 「pinned + 一批常用工具」留出空间；仍是每轮 token 税，故不无限放大。
+_TOOL_SCHEMA_DEFAULT_CHARS = 48000
 
 # 2026-11-19 回归修复：查证/读稿/技能是本项目的核心纪律工具，绝不能被预算裁掉。
 # 它们排在 100+ 个 MCP 工具之后，按注册顺序裁剪时被误裁 —— 模型看不到就以为
@@ -66,9 +69,29 @@ _PINNED_TOOLS: frozenset[str] = frozenset({
     "search_history", "history_library_check", "search_private",  # 史料/私人资料查证
     "read_file", "list_files", "grep", "search_text", "read_chapter", "list_chapters",
     "read_paragraphs",                   # 读稿（含新增的按段号读取）
-    "load_skill", "save_skill",          # 技能加载/沉淀
+    # 文件写入/修改/执行地基：没这些工具 agent 无法干活，且它们排在 100+ MCP 工具
+    # 之后，按注册顺序裁剪必然被误伤（2026-11-19 二次回归）。
+    "write_file", "apply_patch", "apply_unified_diff", "replace_in_file",
+    "run_shell", "shell_task_output", "shell_task_kill", "todo_write",
+    "propose_plan",                      # 复杂任务的计划工具
+    "load_skill", "save_skill", "skill_view", "skill_search",  # 技能加载/沉淀/查阅（含 MCP 末段）
     "ask_user", "runtime_context",       # 问人与环境事实
+    "consult_experts", "memory_search",  # 专家咨询 / 长期记忆检索（项目核心能力）
 })
+# MCP 工具名带 mcp__<server>__<tool> 前缀，裸名匹配不到。
+# 2026-11-19 二次修复：不再按 server 整组 pin（一次塞 42 个工具、21KB 直接撑爆
+# 预算，导致全部非 pinned 包括 write_file 被裁）。改为**只按末段裸名 pin**：
+# 核心能力（mcp__perception__read_file / mcp__any__search_history）仍无条件保留，
+# 非核心（get_active_window / vault_write / skill_create）回到预算内按序保留。
+def _is_pinned_tool(name: str) -> bool:
+    if name in _PINNED_TOOLS:
+        return True
+    if name.startswith("mcp__"):
+        parts = name.split("__", 2)
+        # mcp__<server>__<tool> —— 只看末段裸名，不整组放大 server
+        if len(parts) == 3 and parts[2] in _PINNED_TOOLS:
+            return True
+    return False
 
 
 def _tool_schema_budget() -> int:
@@ -91,7 +114,10 @@ def _select_tool_schemas(schemas: list[dict]) -> list[dict]:
 
     2026-11-19 回归修复：原实现按注册顺序保留，而 web_search/search_history 等
     查证工具排在 100+ 个 MCP 工具之后，被预算裁掉 → 模型以为"没挂"，转而凭记忆
-    回答，违反"史料库过了才算数"红线。查证/读稿/技能工具现在无条件保留。
+    回答，违反"史料库过了才算数"红线。查证/读稿/技能/文件写入工具现在无条件保留。
+
+    二次修复：不再按 MCP server 整组 pin（曾一次塞 42 工具撑爆预算，反把
+    write_file 等全裁掉）；改为只按末段裸名 pin 核心工具，并抬高默认预算。
 
     仍保持 schema 列表的**原始顺序**（协议/缓存敏感）：用标记删除、原位输出，
     不重排、不把 pinned 挤到前面。被裁工具仍留在 registry，硬调用可执行。
@@ -99,7 +125,7 @@ def _select_tool_schemas(schemas: list[dict]) -> list[dict]:
     budget = _tool_schema_budget()
     if budget <= 0 or len(schemas) <= 1:
         return schemas
-    pinned_mask = [_tool_name(s) in _PINNED_TOOLS for s in schemas]
+    pinned_mask = [_is_pinned_tool(_tool_name(s)) for s in schemas]
     pinned_total = sum(
         len(json.dumps(s, ensure_ascii=False)) for s, p in zip(schemas, pinned_mask) if p
     )
