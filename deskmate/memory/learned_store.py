@@ -40,8 +40,10 @@ from __future__ import annotations
 import datetime
 import hashlib
 import json
+import os
 import re
 import sqlite3
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -58,6 +60,22 @@ def _default_base_dir() -> Path:
     return deskmate_base_dir()
 _DB_NAME = "deskmate.db"
 _LEGACY_REL = Path("memory") / "learned_history.jsonl"
+
+
+def _file_identity(path: Path) -> tuple[int, int, int] | None:
+    """库文件的稳定身份：设备 + inode + 创建时间。
+
+    只用 inode 会被系统回收复用（删库后新库恰好拿到同一个 inode），从而误判
+    "表已建好"；带上 birthtime（APFS/Linux 都有的 ctime 近似）即可区分重建。
+    """
+    try:
+        st = path.stat()
+    except OSError:
+        return None
+    birth = getattr(st, "st_birthtime_ns", None)
+    if birth is None:
+        birth = getattr(st, "st_ctime_ns", 0)
+    return (st.st_dev, st.st_ino, int(birth or 0))
 
 
 def _now_iso() -> str:
@@ -494,6 +512,12 @@ def _extract_subject(fact: str) -> tuple[str, str]:
 class LearnedStore:
     """长期记忆的 SQLite 持久层。短连接 + 自动提交（WAL 支持并发读）。"""
 
+    # 2026-11-19 PR12: 此前每次构造 `LearnedStore()`（注入热路径上每轮多次）都会开
+    # 8+ 条短连接做 PRAGMA/ALTER 探测。现在按库文件身份（dev/inode/birthtime）在
+    # 进程内记一次"已验证"，库被删掉重建就自动失效。`DESKMATE_SCHEMA_CACHE=0` 回滚。
+    _SCHEMA_READY: dict[str, tuple[int, int, int]] = {}
+    _SCHEMA_LOCK = threading.Lock()
+
     def __init__(self, base_dir: Path | str | None = None) -> None:
         self.base = Path(base_dir) if base_dir else _default_base_dir()
         self.db_path = self.base / _DB_NAME
@@ -505,10 +529,10 @@ class LearnedStore:
     # 连接 / schema
     # ------------------------------------------------------------------
     def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(str(self.db_path), isolation_level=None)
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA synchronous=NORMAL")
-        return conn
+        # #29：统一 WAL + synchronous=NORMAL + busy_timeout=5000。
+        from ._sqlite import connect as _sqlite_connect
+
+        return _sqlite_connect(self.db_path, isolation_level=None)
 
     def _add_column(self, table: str, col: str, col_type: str) -> None:
         """兼容已存在的库：缺失列才补（SQLite 无 ADD COLUMN IF NOT EXISTS）。"""
@@ -521,6 +545,23 @@ class LearnedStore:
             pass
 
     def _ensure_schema(self) -> None:
+        if os.environ.get("DESKMATE_SCHEMA_CACHE", "1") == "0":  # 回滚开关
+            self._ensure_schema_locked()
+            return
+        key = str(self.db_path)
+        fid = _file_identity(self.db_path)
+        if fid is not None and LearnedStore._SCHEMA_READY.get(key) == fid:
+            return
+        with LearnedStore._SCHEMA_LOCK:
+            fid = _file_identity(self.db_path)
+            if fid is not None and LearnedStore._SCHEMA_READY.get(key) == fid:
+                return
+            self._ensure_schema_locked()
+            fid = _file_identity(self.db_path)
+            if fid is not None:
+                LearnedStore._SCHEMA_READY[key] = fid
+
+    def _ensure_schema_locked(self) -> None:
         with self._connect() as conn:
             conn.execute(
                 """

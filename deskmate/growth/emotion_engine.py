@@ -266,65 +266,17 @@ _FEELING_REASON_SYSTEM = for_scene(
 )
 
 
-def _is_enabled() -> bool:
-    return os.getenv("DESKMATE_EMOTION_ENGINE", "1") != "0"
-
-
-def _chord_enabled() -> bool:
-    """情绪和弦开关（独立通道 · 步 7 回退闸）。默认开；=0 退回单值标签。"""
-    return os.getenv("DESKMATE_EMOTION_CHORD", "1") != "0"
-
-
-def _echo_enabled() -> bool:
-    """回潮开关（二期回退闸）。默认开；=0 旧事不再泛微澜。"""
-    return os.getenv("DESKMATE_EMOTION_ECHO", "1") != "0"
-
-
-def _pending_enabled() -> bool:
-    """等待开关（二期回退闸）。默认开；=0 悬事不立项不爬坡。"""
-    return os.getenv("DESKMATE_EMOTION_PENDING", "1") != "0"
-
-
-def _due_ts_from_bucket(bucket: str) -> str | None:
-    """LLM 报的粗粒度兑期 → due_ts（规则映射，LLM 不碰数值）。fail-open → None。"""
-    try:
-        hours = PENDING_DUE_BUCKET_HOURS.get((bucket or "").strip().lower())
-        if not hours:
-            return None
-        return (datetime.now() + timedelta(hours=hours)).isoformat(timespec="seconds")
-    except Exception:
-        return None
-
-
-def _same_affair(title: str, other: str) -> bool:
-    """两件事名是否算「同一摊事」：字符重合 ≥0.6 且两边都够长。
-
-    短名（如「悬事A」）撞字概率高，不参与模糊合并；只留给 spoken 侦探转述
-    同一件事时的变体（「等 review 核稿结果」↔「等主编的 review」）。
-    """
-    try:
-        a = {ch.lower() for ch in (title or "") if ch.isalnum()}
-        b = {ch.lower() for ch in (other or "") if ch.isalnum()}
-        if len(a) < PENDING_FUZZY_DEDUP_MIN_CHARS \
-                or len(b) < PENDING_FUZZY_DEDUP_MIN_CHARS:
-            return False
-        return len(a & b) / max(len(a), len(b)) >= PENDING_FUZZY_DEDUP_RATIO
-    except Exception:
-        return False
-
-
-def _temper_enabled() -> bool:
-    """脾气开关（二期回退闸）。默认开；=0 注入块脾气段整段消失。"""
-    return os.getenv("DESKMATE_EMOTION_TEMPER", "1") != "0"
-
-
-def _is_abusive(text: str) -> bool:
-    """脾气黑名单：大骂/脏字是另一性质，不是小刺。命中 → temper_foul 留痕。"""
-    if not text:
-        return False
-    return any(w in text for w in _ABUSIVE_WORDS)
-
-
+# ---- 已机械抽取到 emotion_helpers.py（PR16/#33），此处 re-export 兼容。
+from deskmate.growth.emotion_helpers import (  # noqa: E402,F401
+    _is_enabled,
+    _chord_enabled,
+    _echo_enabled,
+    _pending_enabled,
+    _due_ts_from_bucket,
+    _same_affair,
+    _temper_enabled,
+    _is_abusive,
+)
 def _db_path(base_dir: Path | None = None) -> Path:
     if base_dir:
         return Path(base_dir) / "deskmate.db"
@@ -333,17 +285,103 @@ def _db_path(base_dir: Path | None = None) -> Path:
 
 
 def _connect(db: Path) -> sqlite3.Connection:
-    conn = sqlite3.connect(str(db), isolation_level=None)
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA synchronous=NORMAL")
-    # 2026-10-16 巡审 P0：server / 后台 scheduler / MCP memory 可能多进程同摸 deskmate.db，
-    # 锁冲突会直接抛 "database is locked"，再被 fail-open 静默吞掉——表现成「情绪莫名不更新」，
-    # 极难排查。busy_timeout 让 SQLite 遇锁先等 5s 重试，而不是立刻失败。
-    conn.execute("PRAGMA busy_timeout=5000")
-    return conn
+    # #29：统一 WAL + synchronous=NORMAL + busy_timeout=5000（多进程同摸 deskmate.db 时
+    # 遇锁先等 5s 重试，而不是立刻抛 "database is locked" 被 fail-open 静默吞掉）。
+    from deskmate.memory._sqlite import connect as _sqlite_connect
+
+    try:
+        return _sqlite_connect(db, isolation_level=None)
+    except sqlite3.Error:
+        return sqlite3.connect(str(db))
+
+
+_SCHEMA_LOCK = threading.Lock()
+# 改 emotion_state/emotion_log 表结构时 +1。
+_EMOTION_SCHEMA_VERSION = 1
+
+# #26 情绪读账本保留期（PR13）：每 100 次写清理一次「超龄 + 超量」行。
+_READ_LOG_WRITES = 0
+_READ_LOG_LOCK = threading.Lock()
+_READ_LOG_RETAIN_MAX = 2000
+
+
+def _maybe_prune_read_log(db: Path) -> None:
+    """每 100 次写触发一次清理：保留最近 N 天 + 最多 2000 行。
+
+    ``DESKMATE_EMOTION_READ_RETAIN=0`` 关闭（默认 14 天）。
+    """
+    global _READ_LOG_WRITES
+    try:
+        days = float(os.environ.get("DESKMATE_EMOTION_READ_RETAIN", "14"))
+    except ValueError:
+        days = 14.0
+    if days <= 0:
+        return
+    with _READ_LOG_LOCK:
+        _READ_LOG_WRITES += 1
+        if _READ_LOG_WRITES % 100 != 0:
+            return
+    try:
+        cutoff = (datetime.now() - timedelta(days=days)).isoformat(
+            timespec="seconds"
+        )
+        with _connect(db) as conn:
+            conn.execute("DELETE FROM emotion_read_log WHERE ts < ?", (cutoff,))
+            conn.execute(
+                "DELETE FROM emotion_read_log WHERE id NOT IN ("
+                " SELECT id FROM emotion_read_log ORDER BY ts DESC LIMIT ?)",
+                (_READ_LOG_RETAIN_MAX,),
+            )
+    except Exception as exc:  # fail-open：清理失败不影响注入
+        logger.debug("emotion_read_log prune failed: %s", exc)
 
 
 def _ensure_schema(db: Path) -> None:
+    # 2026-11-19 PR12: 每轮注入都会 new EmotionEngine(...)，而构造即跑一遍 DDL/ALTER
+    # 探测（8+ 条短连接）。现在改为库里记一行 schema 版本，构造时只做一条 SELECT。
+    # DESKMATE_SCHEMA_CACHE=0 回到「每次构造都探测」的旧行为。
+    if os.environ.get("DESKMATE_EMOTION_SCHEMA_CACHE", "1") == "0":
+        _ensure_schema_locked(db)
+        return
+    if _schema_ready(db):
+        return
+    with _SCHEMA_LOCK:
+        if _schema_ready(db):
+            return
+        _ensure_schema_locked(db)
+        _mark_schema_ready(db)
+
+
+def _schema_ready(db: Path) -> bool:
+    try:
+        with _connect(db) as conn:
+            row = conn.execute(
+                "SELECT ver FROM _deskmate_schema WHERE key='emotion'"
+            ).fetchone()
+            has_table = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='emotion_state'"
+            ).fetchone()
+        return bool(row) and bool(has_table) and int(row[0]) >= _EMOTION_SCHEMA_VERSION
+    except Exception:
+        return False
+
+
+def _mark_schema_ready(db: Path) -> None:
+    try:
+        with _connect(db) as conn:
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS _deskmate_schema (key TEXT PRIMARY KEY, ver INTEGER NOT NULL)"
+            )
+            conn.execute(
+                "INSERT INTO _deskmate_schema(key, ver) VALUES('emotion', ?) "
+                "ON CONFLICT(key) DO UPDATE SET ver=excluded.ver",
+                (_EMOTION_SCHEMA_VERSION,),
+            )
+    except Exception:
+        pass
+
+
+def _ensure_schema_locked(db: Path) -> None:
     with _connect(db) as conn:
         conn.execute("""
             CREATE TABLE IF NOT EXISTS emotion_state (
@@ -864,6 +902,9 @@ class EmotionEngine:
         self._db = _db_path(self._base_dir)
         self._db.parent.mkdir(parents=True, exist_ok=True)
         _ensure_schema(self._db)
+        # PR1b：describe_turn_context(record=True) 在延迟模式下把记账 payload
+        # 放这里，由 turn 结束钩子取走写回（见 record_turn_read）。
+        self.pending_read_record: dict | None = None
 
     @property
     def enabled(self) -> bool:
@@ -1034,11 +1075,13 @@ class EmotionEngine:
             logger.warning("emotion_engine: 读当日经历失败: %s", e)
             return []
 
-    def describe_turn_context(self, record: bool = False) -> str:
+    def describe_turn_context(self, record: bool | str = False) -> str:
         """每轮聊天注入用的「小桔当下真实状态」文本（真实优先 · v2）。
 
         record=True 时额外把这份系统读法写进 emotion_read_log（差异史 X 栏），
         只记账、不改注入内容；默认 False，测试/探针调用不留痕。
+        record="defer"（PR1b）：不立即写库，把 payload 暂存到 pending_read_record，
+        由 turn 结束钩子调 record_turn_read 写回——组装阶段保持只读。
 
         设计原则（reports/活感方案v2_真实优先）：**只提供真实状态，不给任何
         表达方式指令**。含：
@@ -1204,23 +1247,44 @@ class EmotionEngine:
             )
             text = "\n".join(lines)
             if record:
-                try:
-                    with _connect(self._db) as conn:
-                        conn.execute(
-                            "INSERT INTO emotion_read_log (id, ts, lead, voices,"
-                            " context) VALUES (?, ?, ?, ?, ?)",
-                            (str(uuid.uuid4()),
-                             datetime.now().isoformat(timespec="seconds"),
-                             str(chord.get("lead") or ""),
-                             json.dumps(voices, ensure_ascii=False),
-                             text),
-                        )
-                except Exception as e:  # fail-open：记账失败不影响注入
-                    logger.debug("emotion_read_log failed: %s", e)
+                payload = {
+                    "ts": datetime.now().isoformat(timespec="seconds"),
+                    "lead": str(chord.get("lead") or ""),
+                    "voices": json.dumps(voices, ensure_ascii=False),
+                    "context": text,
+                }
+                if record == "defer":
+                    # PR1b：组装阶段只读——这行「系统读法」记账暂存到实例上，
+                    # 由 turn 结束钩子（memory manager._save_session_turn）写回。
+                    # 组装在首字延迟的关键路径上，不该为记账付一次写库。
+                    self.pending_read_record = payload
+                else:
+                    try:
+                        self._write_read_log(payload)
+                    except Exception as e:  # fail-open：记账失败不影响注入
+                        logger.debug("emotion_read_log failed: %s", e)
             return text
         except Exception as e:  # fail-open：状态取数失败 → 无情绪段
             logger.warning("emotion_engine: 构造每轮情绪上下文失败: %s", e)
             return ""
+
+    def _write_read_log(self, payload: dict) -> None:
+        with _connect(self._db) as conn:
+            conn.execute(
+                "INSERT INTO emotion_read_log (id, ts, lead, voices,"
+                " context) VALUES (?, ?, ?, ?, ?)",
+                (str(uuid.uuid4()), payload.get("ts"),
+                 payload.get("lead", ""), payload.get("voices", "[]"),
+                 payload.get("context", "")),
+            )
+        _maybe_prune_read_log(self._db)
+
+    def record_turn_read(self, payload: dict) -> None:
+        """PR1b：turn 结束时写回组装阶段暂存的「系统读法」记账（fail-open）。"""
+        try:
+            self._write_read_log(payload)
+        except Exception as e:
+            logger.debug("emotion_read_log deferred write failed: %s", e)
 
     def update_after_turn(
         self,

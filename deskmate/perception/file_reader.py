@@ -125,6 +125,66 @@ def read_full_text(path: str, max_bytes: int | None = None) -> str:
     return text
 
 
+def read_paragraphs(
+    path: str,
+    start: int,
+    end: int,
+    *,
+    max_chars: int = 40000,
+) -> str:
+    """按「段号范围」读取正文逐字原文（1-based 行号，含首尾），一次取全不截断。
+
+    2026-11-19 工具对口：此前 agent 要读「第 2150-2241 段」时，只能把 docx 导成
+    文本、用字符 offset 试凑段号，导致截断 + 补读 + 反复解码转义。本函数直接
+    复用 :func:`read_full_text` 的 docx 抽取（无 shell 转义），按行号切片。
+
+    段号口径与 ``novel_memory.canon.paragraphs`` 一致：按 ``\\n`` 切分后的
+    1-based 行号，空行跳过（不占段号），与原文字逐字一致。
+
+    Args:
+        path: 文件绝对路径（支持 .docx / 文本文件）
+        start: 起始段号（1-based，含）
+        end: 结束段号（1-based，含）
+        max_chars: 单次返回字符上限（默认 40000，超出时如实告知，不静默截断）
+
+    Returns:
+        带段号的原文（每段一行 ``[段号] 原文``），或错误/超限说明。
+    """
+    text = read_full_text(path)
+    if text.startswith("（") and "\n" not in text:
+        return text  # 抽取阶段的错误说明，原样返回
+    lines = [ln.rstrip() for ln in str(text).split("\n") if ln.strip()]
+    total = len(lines)
+    try:
+        lo, hi = int(start), int(end)
+    except (TypeError, ValueError):
+        return "（段号必须是整数）"
+    if lo < 1 or hi < lo:
+        return f"（段号范围无效：start={start}, end={end}；应为 1 ≤ start ≤ end）"
+    selected = [(n, lines[n - 1]) for n in range(lo, min(hi, total) + 1)]
+    if not selected:
+        return f"（段号 {lo}-{hi} 超出文件范围，全文共 {total} 段）"
+
+    header = f"【{Path(path).name}】段 {lo}-{min(hi, total)} / 共 {total} 段\n"
+    body_parts: list[str] = []
+    used = 0
+    truncated_at: int | None = None
+    for n, line in selected:
+        chunk = f"[{n}] {line}"
+        if used + len(chunk) > max_chars:
+            truncated_at = n
+            break
+        body_parts.append(chunk)
+        used += len(chunk) + 1
+    out = header + "\n".join(body_parts)
+    if truncated_at is not None:
+        out += (
+            f"\n\n⚠️ 单页上限 {max_chars:,} 字符，本次返回到段 {truncated_at - 1}；"
+            f"未读完的部分从段 {truncated_at} 继续（不要据此声称读完）。"
+        )
+    return out
+
+
 def _extract_text(p: Path, max_bytes: int | None = None) -> str | None:
     """把文件抽成纯文本全文（不截断）。不支持的类型返回 None。"""
     ext = p.suffix.lower()

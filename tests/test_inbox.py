@@ -127,3 +127,43 @@ def test_approval_body_includes_tool_args():
 
     req2 = PermissionRequest("rm", {"path": "/x"}, None, "destructive")
     assert _approval_body(req2).startswith("destructive")  # reason leads when present
+
+
+def test_restart_never_duplicates_archived_items(tmp_path):
+    """冷条目归档后，每重启一次 + 触发一次保存，归档都不能重复追加（PR11 #18 回归）。
+
+    根因：_ensure_archive_loaded 把归档条目读回 _items 却没登记 _archived_ids，
+    下次 _save() 又把它们当新冷条目再写一遍归档——只增不减，几轮重启后翻倍。
+    """
+    import json
+    from datetime import datetime, timedelta, timezone
+
+    p = tmp_path / "inbox.json"
+    old = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+
+    st = InboxStore(p)
+    item = st.add_approval("s1", "cold item")
+    st._items[item.id].state = STATE_RESOLVED
+    st._items[item.id].resolved_at = old
+    st._save()
+
+    archives = list(tmp_path.glob("inbox-archive-*.jsonl"))
+    assert archives, "冷条目应被归档"
+    arch = archives[0]
+
+    def _ids():
+        return [
+            json.loads(line)["id"]
+            for line in arch.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+
+    assert len(_ids()) == 1
+    # 三次「重启 → 全历史查询（触发惰性加载归档）→ 新写入（触发 _save）」
+    for i in range(3):
+        reopened = InboxStore(p)
+        reopened.list()  # state=None → 惰性读归档进 _items
+        reopened.add_approval("s1", f"live {i}")
+        ids = _ids()
+        assert len(ids) == len(set(ids)), f"第 {i+1} 次重启后归档出现重复 id"
+        assert len(ids) == 1, f"第 {i+1} 次重启后归档行数从 1 涨到 {len(ids)}"

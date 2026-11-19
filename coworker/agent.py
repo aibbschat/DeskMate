@@ -308,7 +308,9 @@ def _get_deskmate_skill_manager(base: Path):
         return _deskmate_skill_mgr_singleton
 
 
-def _deskmate_memory_context(messages: list | None = None) -> str:
+def _deskmate_memory_context(
+    messages: list | None = None, active_project: str | None = None
+) -> str:
     """DeskMate 记忆每轮自动注入（默认开启；DESKMATE_AUTO_INJECT=0 可关闭）。
 
     接入 OpenWorker 官方每轮 context_provider 机制：返回的 <system-context> 块在
@@ -345,13 +347,15 @@ def _deskmate_memory_context(messages: list | None = None) -> str:
                 # 四段（指代无实体）：上一轮原话给检索做先行词
                 if len(users) >= 2:
                     prev_user = users[-2]
-        key = _deskmate_ctx_key(messages, last_user)
+        key = _deskmate_ctx_key(messages, last_user) + ("|" + active_project if active_project else "")
         now = time.time()
         with _deskmate_ctx_lock:
             hit = _deskmate_ctx_cache.get(key)
             if hit is not None and now - hit[0] <= _DESKMATE_CTX_TTL:
                 return hit[1]
-        value = mgr.build_full_context_for_turn(last_user, prev_user=prev_user)
+        value = mgr.build_full_context_for_turn(
+            last_user, prev_user=prev_user, active_project=active_project
+        )
         with _deskmate_ctx_lock:
             # 轻量清理：只保留 TTL 内的条目，避免长会话下无界增长。
             for stale_key, (stale_ts, _v) in list(_deskmate_ctx_cache.items()):
@@ -926,7 +930,11 @@ def build_engine(
         # sessions — and carries no time of day, which absolute scheduling
         # (sleep_until, scheduled tasks) needs to compute wake times.
         now = datetime.now().astimezone()
-        parts = [f"Now: {now.strftime('%Y-%m-%d %H:%M')} ({now.tzname()})"]
+        # 2026-11-19 缓存优化：时钟每行/每分钟变，放到 parts 最末尾，
+        # 让前面的稳定块（画像/记忆/史料纪律/技能菜单）逐字节不变，
+        # 服务端前缀缓存才能覆盖整段（小米命中缓存 2 vs 未命中 100 Credits）。
+        _now_block = f"Now: {now.strftime('%Y-%m-%d %H:%M')} ({now.tzname()})"
+        parts: list[str] = []
         if permissions.mode is Mode.PLAN:
             parts.append(_PLAN_MODE_CONTEXT)
         elif permissions.mode is Mode.DISCUSS:
@@ -941,7 +949,14 @@ def build_engine(
             if ctx:
                 parts.append(ctx)
         # DeskMate 记忆自动注入（opt-in，DESKMATE_AUTO_INJECT=1）；只给 companion。
-        dm_ctx = _deskmate_memory_context(messages) if mem_store is not None else ""
+        # PR10：把工作区目录名作为本轮 active_project 传入（每轮传参、不写单例），
+        # resolve_turn_book 内部用 _looks_like_title 挡掉 UUID / 纯路径，
+        # 因此普通工作区不会被误当成书名；真正的书名工作区则能读回 projects/<书>/ 记忆。
+        _ws_project = ws.name if ws is not None else None
+        dm_ctx = (
+            _deskmate_memory_context(messages, active_project=_ws_project)
+            if mem_store is not None else ""
+        )
         if dm_ctx:
             parts.append(dm_ctx)
         # 小桔表情词表 + 规则 + few-shot（每轮注入，保证新/恢复会话都可见）
@@ -1007,6 +1022,8 @@ def build_engine(
                     f'Note: the skill "{name}" has been disabled by the user — stop '
                     "following its instructions from here on."
                 )
+        # 时钟块放最后（缓存优化，见本函数开头注释）
+        parts.append(_now_block)
         return "\n\n".join(parts)
 
     # 构建期把记忆根固化进闭包：hook 由引擎在 daemon 线程执行，线程可能活过

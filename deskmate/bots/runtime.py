@@ -719,15 +719,19 @@ class BotRuntime:
         engine 的 payload 是 ``{"error": ..., "error_type": ...}``，旧实现全部
         pass 掉，配额超限 / 通道 429 会被误当成「bot 没说话」。抛出去让
         ``RoomStore.say`` 的 except 记下真实原因（行为仍是不落库）。"""
-        async for event in eng.run(prompt):
-            kind = getattr(getattr(event, "type", None), "value", None)
-            if kind is None:
-                kind = str(getattr(event, "type", ""))
-            if kind == "error":
-                data = getattr(event, "data", None) or {}
-                detail = str(data.get("error") or data.get("message") or "bot 发言出错")
-                etype = str(data.get("error_type") or "error")
-                raise RuntimeError(f"{etype}: {detail}")
+        # PR3：bot 群发言单独打场景标签，便于账本区分前台/群聊成本。
+        from coworker.llm_usage import scene_scope
+
+        with scene_scope("bot_group"):
+            async for event in eng.run(prompt):
+                kind = getattr(getattr(event, "type", None), "value", None)
+                if kind is None:
+                    kind = str(getattr(event, "type", ""))
+                if kind == "error":
+                    data = getattr(event, "data", None) or {}
+                    detail = str(data.get("error") or data.get("message") or "bot 发言出错")
+                    etype = str(data.get("error_type") or "error")
+                    raise RuntimeError(f"{etype}: {detail}")
 
     # ------------------------------------------------------------ speak stream
     async def speak_stream(
@@ -824,3 +828,20 @@ class BotRuntime:
     def close(self) -> None:
         with self._lock:
             self._engines.clear()
+
+    def evict_room(self, room_id: str) -> int:
+        """Drop cached engines (and their turn locks) for a disbanded room.
+
+        Rooms are disposable containers (`materials.py` keeps them in memory only),
+        but engines were keyed by (room, bot) and never evicted on disband — a
+        long-lived process accumulated one engine per room×bot forever.
+        """
+        room = str(room_id or "_default")
+        prefixes = {room, f"{room}:solo"}
+        removed = 0
+        with self._lock:
+            for key in [k for k in self._engines if k[0] in prefixes]:
+                self._engines.pop(key, None)
+                self._turn_locks.pop(key, None)
+                removed += 1
+        return removed

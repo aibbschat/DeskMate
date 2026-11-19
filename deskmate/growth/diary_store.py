@@ -124,10 +124,13 @@ class DiaryStore:
     # 连接 / schema
     # ------------------------------------------------------------------
     def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(str(self.db_path), isolation_level=None)
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA synchronous=NORMAL")
-        conn.execute("PRAGMA foreign_keys=ON")
+        from deskmate.memory._sqlite import connect as _sqlite_connect
+
+        conn = _sqlite_connect(self.db_path, isolation_level=None)
+        try:
+            conn.execute("PRAGMA foreign_keys=ON")
+        except sqlite3.Error:
+            pass
         return conn
 
     def _ensure_schema(self) -> None:

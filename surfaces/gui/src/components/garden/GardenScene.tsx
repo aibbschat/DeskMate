@@ -12,15 +12,26 @@
  * 全部确定性：底图/标题由 scene + 本地季节决定，零 LLM。
  */
 
+import { useEffect, useState } from "react";
 import { XiaojuMascot } from "../deskmate/XiaojuMascot";
 import { DAYPARTS, SEASONS, type DaypartKey, type SeasonKey } from "./SeasonTheme";
-import imgSpring from "../../assets/garden/garden-spring.jpg";
-import imgSummer from "../../assets/garden/garden-summer.jpg";
-import imgAutumn from "../../assets/garden/garden-autumn.jpg";
-import imgWinter from "../../assets/garden/garden-winter.jpg";
-import imgTreehouse from "../../assets/garden/garden-treehouse.jpg";
-import imgHut from "../../assets/garden/garden-hut.jpg";
-import imgToolroom from "../../assets/garden/garden-toolroom.jpg";
+
+/**
+ * 2026-11-19 PR15（#31）：7 张 0.7–1.0MB 的底图原来静态 import，进一次花园
+ * 会把 7 张全拉下来（~7MB）。改成按 scene/season 动态 import：首屏只加载当前
+ * 那一张，其它等真正切过去再取；<img> 同时加 loading="lazy"。
+ */
+const SEASON_LOADERS: Record<string, () => Promise<{ default: string }>> = {
+  spring: () => import("../../assets/garden/garden-spring.jpg"),
+  summer: () => import("../../assets/garden/garden-summer.jpg"),
+  autumn: () => import("../../assets/garden/garden-autumn.jpg"),
+  winter: () => import("../../assets/garden/garden-winter.jpg"),
+};
+const ROOM_LOADERS: Record<string, () => Promise<{ default: string }>> = {
+  treehouse: () => import("../../assets/garden/garden-treehouse.jpg"),
+  hut: () => import("../../assets/garden/garden-hut.jpg"),
+  toolroom: () => import("../../assets/garden/garden-toolroom.jpg"),
+};
 
 export type GardenSceneKey = "yard" | "treehouse" | "hut" | "toolroom";
 
@@ -32,20 +43,37 @@ interface Props {
   scene?: GardenSceneKey;
 }
 
-/** 季节 → 院子底图（yard 用，随季节切换）。 */
-const SEASON_BG: Record<string, string> = {
-  spring: imgSpring,
-  summer: imgSummer,
-  autumn: imgAutumn,
-  winter: imgWinter,
+/** 房间 → 标题 + 氛围副标题。 */
+const ROOM_SCENES: Record<string, { title: string; sub: string }> = {
+  treehouse: { title: "树屋书房", sub: "最私密的一间" },
+  hut: { title: "常驻的朋友", sub: "小窝亮着灯等你" },
+  toolroom: { title: "工具房", sub: "打理花园的日常" },
 };
 
-/** 房间 → 专属底图 + 标题 + 氛围副标题。 */
-const ROOM_SCENES: Record<string, { bg: string; title: string; sub: string }> = {
-  treehouse: { bg: imgTreehouse, title: "树屋书房", sub: "最私密的一间" },
-  hut: { bg: imgHut, title: "常驻的朋友", sub: "小窝亮着灯等你" },
-  toolroom: { bg: imgToolroom, title: "工具房", sub: "打理花园的日常" },
-};
+/** 当前场景/季节对应的底图 URL（按需加载，切走时丢弃上一张的在途结果）。 */
+function useSceneBackground(scene: GardenSceneKey, season: SeasonKey): string {
+  const [url, setUrl] = useState("");
+  useEffect(() => {
+    let cancelled = false;
+    setUrl("");
+    const loader =
+      scene !== "yard"
+        ? ROOM_LOADERS[scene]
+        : (SEASON_LOADERS[season] ?? SEASON_LOADERS.autumn);
+    if (!loader) return;
+    loader()
+      .then((m) => {
+        if (!cancelled) setUrl(m.default);
+      })
+      .catch(() => {
+        /* 图片缺失不该让花园白屏：保持占位，等下一次切换 */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [scene, season]);
+  return url;
+}
 
 const SEASON_PARTICLES: Record<string, { chars: string[]; cls: string }> = {
   spring: { chars: ["🌸", "🌷", "💮", "🌸", "🦋"], cls: "garden-season-petal" },
@@ -58,14 +86,25 @@ export function GardenScene({ season, daypart, visitCount, treeStage, scene = "y
   const s = SEASONS[season];
   const dp = DAYPARTS[daypart];
   const room = scene !== "yard" ? ROOM_SCENES[scene] : null;
-  const bg = room ? room.bg : (SEASON_BG[season] ?? imgAutumn);
+  const bgUrl = useSceneBackground(scene, season);
   const particles = SEASON_PARTICLES[season] ?? SEASON_PARTICLES.spring;
   const indoor = scene === "treehouse" || scene === "toolroom";
 
   return (
     <div className={`garden-scene${room ? " is-room" : ""}${indoor ? " is-indoor" : ""}`} data-season={season} data-daypart={daypart} data-scene={scene}>
       {/* 场景底图（房间各有其景） */}
-      <img className="garden-scene-bg" src={bg} alt="" draggable={false} />
+      {bgUrl ? (
+        <img
+          className="garden-scene-bg"
+          src={bgUrl}
+          alt=""
+          draggable={false}
+          loading="lazy"
+          decoding="async"
+        />
+      ) : (
+        <div className="garden-scene-bg garden-scene-bg--loading" />
+      )}
 
       {/* 光照层：院子随昼夜；室内是暖橘灯色 */}
       <div className="garden-scene-light" />

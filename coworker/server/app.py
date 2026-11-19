@@ -841,7 +841,7 @@ def create_app(manager: SessionManager) -> FastAPI:
         out: list[dict[str, Any]] = []
         for i in items:
             d = asdict(i)
-            rec = manager.session_store.load(i.session_id)
+            rec = manager.session_store.load_meta(i.session_id)
             if (
                 rec is None
                 and not session_id
@@ -875,7 +875,7 @@ def create_app(manager: SessionManager) -> FastAPI:
         # the same channel is visible).
         out: list[dict[str, Any]] = []
         for sub in manager.subscriptions.all():
-            rec = manager.session_store.load(sub.session_id)
+            rec = manager.session_store.load_meta(sub.session_id)
             agent = rec.agent if rec else ""
             routing = manager._routing_targets(sub.session_id, agent or "cowork")
             out.append(
@@ -1353,6 +1353,8 @@ def create_app(manager: SessionManager) -> FastAPI:
     @app.patch("/v1/sessions/{session_id}")
     def session_patch(session_id: str, body: dict) -> dict[str, Any]:
         body = body or {}
+        if "model" in body:
+            return manager.set_session_model(session_id, str(body.get("model") or ""))
         if "pinned" in body or "archived" in body:
             return manager.set_session_flags(
                 session_id,
@@ -6550,7 +6552,9 @@ def create_app(manager: SessionManager) -> FastAPI:
             # 保存报告
             rdir = desk_dir / "reports"
             rdir.mkdir(parents=True, exist_ok=True)
-            (rdir / f"{safe}.json").write_text(
+            # #28：报告 JSON 可能几 MB，写盘丢线程池，别在事件循环里做同步 I/O。
+            await asyncio.to_thread(
+                (rdir / f"{safe}.json").write_text,
                 json.dumps({"name": safe, "report": report}, ensure_ascii=False, indent=1),
                 encoding="utf-8",
             )
@@ -8037,35 +8041,8 @@ def create_app(manager: SessionManager) -> FastAPI:
     return app
 
 
-def _parse_json(s: str) -> dict[str, Any]:
-    """Parse a structured Inbox resolution (directory/plan carry their reply as a JSON string)."""
-    try:
-        v = json.loads(s) if s else {}
-        return v if isinstance(v, dict) else {}
-    except Exception:
-        return {}
-
-
-def _openai_response(model: str, turn: AssistantTurn) -> dict[str, Any]:
-    message: dict[str, Any] = {"role": "assistant", "content": turn.text or ""}
-    if turn.tool_calls:
-        message["tool_calls"] = [
-            {
-                "id": tc.id,
-                "type": "function",
-                "function": {"name": tc.name, "arguments": json.dumps(tc.arguments)},
-            }
-            for tc in turn.tool_calls
-        ]
-    return {
-        "id": "chatcmpl-" + uuid.uuid4().hex[:12],
-        "object": "chat.completion",
-        "model": model,
-        "choices": [
-            {
-                "index": 0,
-                "message": message,
-                "finish_reason": turn.finish_reason or "stop",
-            }
-        ],
-    }
+# ---- 已机械抽取到 app_helpers.py（PR16/#33），此处 re-export 兼容。
+from coworker.server.app_helpers import (  # noqa: E402,F401
+    _parse_json,
+    _openai_response,
+)

@@ -784,15 +784,19 @@ async def _collect(engine: Any, prompt: str, timeout: int) -> tuple[str, str]:
     而这七轮本身往往已经够小桔用了（2026-11-17 实盘：8 轮跑到第 8 轮才被掐）。
     """
     from coworker.events import EventType
+    from coworker.llm_usage import scene_scope
 
     chunks: list[str] = []
 
     async def consume() -> None:
-        async for event in engine.run(prompt):
-            if event.type == EventType.ASSISTANT_MESSAGE:
-                chunk = (event.data or {}).get("text") or ""
-                if chunk:
-                    chunks.append(chunk)
+        # PR3：给本轮所有 provider 出口打 expert_consult 场景标签；
+        # engine 已把 contextvars 复制进 produce 线程，标签不会在线程池边界丢失。
+        with scene_scope("expert_consult"):
+            async for event in engine.run(prompt):
+                if event.type == EventType.ASSISTANT_MESSAGE:
+                    chunk = (event.data or {}).get("text") or ""
+                    if chunk:
+                        chunks.append(chunk)
 
     try:
         await asyncio.wait_for(consume(), timeout=timeout)

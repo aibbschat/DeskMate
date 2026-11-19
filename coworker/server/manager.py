@@ -337,7 +337,7 @@ class SessionManager:
         # hand-edit of teams.json. Never fatal: a probe problem must not block startup.
         try:
             for gone in self.teams.prune_missing_sessions(
-                lambda sid: self.session_store.load(sid) is not None
+                lambda sid: self.session_store.exists(sid)
             ):
                 logger.warning(
                     "pruned ghost team member: %s '%s' (session %s) from team %s%s",
@@ -602,7 +602,7 @@ class SessionManager:
         connect rebuilds against the new path — callers must reconnect after this."""
         if not dest or not dest.strip():
             return {"ok": False, "error": "no destination folder"}
-        record = self.session_store.load(session_id)
+        record = self.session_store.load_meta(session_id)
         src = record.workspace if record and record.workspace else None
         if not src:
             engine = self._engines.get(session_id)
@@ -643,7 +643,7 @@ class SessionManager:
         self, session_id: str, *, workspace: Optional[str] = None, agent: str = "code"
     ) -> Optional[str]:
         """The workspace `get_engine` would bind — for prepping MCP tools beforehand."""
-        record = self.session_store.load(session_id)
+        record = self.session_store.load_meta(session_id)
         if record:
             return record.workspace or None
         return self.resolve_workspace(workspace)
@@ -687,6 +687,11 @@ class SessionManager:
         # scheduled path. Without this, a manual "Run now" session only had the workspace as a
         # writable root and could not drop its article on the Desktop.
         owning_task = self.task_store.task_for_run_session(session_id)
+        # 🔴 这里必须用 load()（带正文），不能用 load_meta()（PR11 #18 的元数据快路径）。
+        # get_engine 要用 record.messages 重建引擎的对话线程：会话从磁盘恢复后
+        # （重启 / 引擎被逐出 / durable resume），空正文会让引擎只剩 system 提示——
+        # 历史对话全丢，resume() 也找不回未应答的 tool call（表现为「问人卡答完没反应」）。
+        # 元数据只读快路径留给不需要正文的调用点（列表端点 / 团队剪枝 / 工作区解析）。
         record = self.session_store.load(session_id)
         is_new_session = record is None
         agent_name = (record.agent if record else agent) or "code"
@@ -975,7 +980,7 @@ class SessionManager:
         live = getattr(engine, "agent_name", None) if engine is not None else None
         if live:
             return live
-        record = self.session_store.load(session_id)
+        record = self.session_store.load_meta(session_id)
         return (record.agent if record else None) or self.personas.default_id()
 
     def _persona_connector_grant(self, persona_id: str) -> Optional[set[str]]:
@@ -2575,7 +2580,7 @@ class SessionManager:
             team = self.teams.for_lead_session(session_id)
             if team is None:
                 return None, "", None
-            record = self.session_store.load(session_id)
+            record = self.session_store.load_meta(session_id)
             actor = TeamActor(
                 id=team.lead_actor,
                 role=TeamRole.LEAD,
@@ -2797,7 +2802,7 @@ class SessionManager:
                 "approved": False,
                 "error": "this session leads no team — create one first",
             }
-        record = self.session_store.load(lead_session_id)
+        record = self.session_store.load_meta(lead_session_id)
         workspace = (
             workspace
             or (record.workspace if record is not None else "")
@@ -8707,6 +8712,26 @@ class SessionManager:
             "title": " ".join((title or "").split())[:120],
         }
 
+    def set_session_model(self, session_id: str, model: str) -> dict[str, Any]:
+        """Per-session model (§9 #30)："" 表示回到全局默认。
+
+        引擎缓存里已建好的实例直接改 ``model``，避免为了换模型把会话重建
+        （重建会丢掉运行中的 turn 状态与工具上下文）。
+        """
+        if session_id.startswith("__"):
+            return {"ok": False, "error": "internal sessions cannot be modified here"}
+        if os.environ.get("COWORKER_SESSION_MODEL", "1") == "0":
+            return {"ok": False, "error": "session model disabled"}
+        ok = self.session_store.set_model(session_id, model or "")
+        if ok:
+            engine = self._engines.get(session_id)
+            if engine is not None:
+                try:
+                    engine.model = model or self.model
+                except Exception:
+                    pass
+        return {"ok": ok, "session_id": session_id, "model": model or ""}
+
     def set_session_flags(
         self,
         session_id: str,
@@ -8815,7 +8840,7 @@ class SessionManager:
                 # Attention = Inbox items awaiting this session (the amber count that bubbles
                 # session → persona → footer Inbox). Liveness = working (in-flight turn) /
                 # sleeping (a self-wake is pending) / idle — a count-less dot that never bubbles.
-                "attention": len(self.inbox.pending(session_id=r.session_id)),
+                "attention": self.inbox.pending_count(session_id=r.session_id),
                 "liveness": self._session_liveness(r.session_id),
                 # When sleeping: the next timer fire (ISO) — drives the "sleeping
                 # until…" strip so a scheduled agent never reads as a dead one.
@@ -9273,104 +9298,15 @@ class SessionManager:
         )
 
 
-def _parse_inbox_json(s: str) -> dict[str, Any]:
-    """Parse a structured Inbox resolution (directory/plan carry their reply as a JSON string)."""
-    import json as _json
-
-    try:
-        v = _json.loads(s) if s else {}
-        return v if isinstance(v, dict) else {}
-    except Exception:
-        return {}
-
-
-def _epoch() -> float:
-    import time
-
-    return time.time()
-
-
-# A Slack message ts looks like "1700000001.000001" (epoch seconds + microseconds). Other
-# platforms use opaque/incrementing ids (e.g. a Telegram integer), so only parse the Slack shape.
-_SLACK_TS_RE = re.compile(r"^\d+\.\d+$")
-
-
-def _inbound_epoch(message_id: Optional[str]) -> float:
-    """Best-effort epoch-seconds for a MessageSource: a Slack-style ts, else wall-clock now."""
-    if message_id and _SLACK_TS_RE.match(str(message_id)):
-        try:
-            return float(message_id)
-        except ValueError:
-            pass
-    return time.time()
-
-
-def _last_assistant_text(messages: list[dict[str, Any]]) -> Optional[str]:
-    for msg in reversed(messages or []):
-        if msg.get("role") == "assistant" and msg.get("content"):
-            return msg["content"]
-    return None
-
-
-def _recent_files(workspace: str, *, since: float, limit: int = 20) -> list[str]:
-    """Files in the task workspace modified during the run — the run's artifacts."""
-    out: list[str] = []
-    root = Path(workspace)
-    if not root.is_dir():
-        return out
-    for path in root.rglob("*"):
-        if any(part.startswith(".") for part in path.relative_to(root).parts):
-            continue
-        try:
-            if path.is_file() and path.stat().st_mtime >= since - 1:
-                out.append(str(path.relative_to(root)))
-        except OSError:
-            continue
-        if len(out) >= limit:
-            break
-    return out
-
-
-def _artifact_kind(path: Path) -> str:
-    suffix = path.suffix.lower()
-    if suffix in {".md", ".markdown"}:
-        return "markdown"
-    if suffix in {".html", ".htm"}:
-        return "html"
-    if suffix in {".png", ".jpg", ".jpeg", ".webp", ".gif"}:
-        return "image"
-    if suffix == ".pdf":
-        return "pdf"
-    if suffix in {".xlsx", ".xls"}:
-        return "sheet"
-    if suffix in {".pptx", ".ppt", ".pptm", ".docx", ".doc", ".docm"}:
-        return "office"
-    if suffix in {".csv", ".tsv"}:
-        return "csv"
-    if suffix in {".py", ".js", ".ts", ".tsx", ".css", ".json"}:
-        return "code"
-    return "text"
-
-
-def _redact(raw: dict[str, Any]) -> dict[str, Any]:
-    """Copy of a server config safe to return over REST — env/header values masked."""
-    out = dict(raw)
-    for key in ("env", "headers"):
-        if isinstance(out.get(key), dict):
-            out[key] = {k: ("***" if v else v) for k, v in out[key].items()}
-    return out
-
-
-def _git_branch(path: Path) -> Optional[str]:
-    try:
-        result = subprocess.run(
-            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-            cwd=path,
-            capture_output=True,
-            text=True,
-            timeout=3,
-        )
-        branch = result.stdout.strip()
-        return branch or None
-    except (OSError, subprocess.SubprocessError):
-        return None
+# ---- 已机械抽取到 manager_helpers.py（PR16/#33），此处 re-export 兼容。
+from coworker.server.manager_helpers import (  # noqa: E402,F401
+    _SLACK_TS_RE,
+    _parse_inbox_json,
+    _epoch,
+    _inbound_epoch,
+    _last_assistant_text,
+    _recent_files,
+    _artifact_kind,
+    _redact,
+    _git_branch,
+)

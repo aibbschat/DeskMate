@@ -13,8 +13,10 @@ engine says `needs_user`, the engine emits `PERMISSION_REQUIRED` and awaits the 
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import json
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from enum import Enum
 from pathlib import Path
@@ -24,6 +26,12 @@ import logging
 
 from . import compaction as _compaction
 logger = logging.getLogger(__name__)
+
+# 2026-11-19 PR4：provider 流和工具执行各自用专用池，不再和 asyncio 默认池
+# （也和 server 的 LLM_EXECUTOR）抢工人。一个慢 shell 或卡住的 stream 因此
+# 不会饿死另一类调用。线程池懒建线程，import 期无副作用。
+_PROVIDER_POOL = ThreadPoolExecutor(max_workers=8, thread_name_prefix="coworker-provider")
+_TOOL_POOL = ThreadPoolExecutor(max_workers=8, thread_name_prefix="coworker-tool")
 from . import provenance
 from . import session_facts
 from . import toolchain as _toolchain
@@ -43,6 +51,79 @@ _COMPACTION_COOLDOWN_LADDER = (60, 300, 900)
 # this long instead of hammering a summarizer that can't win. A `/compress force`
 # still overrides (Hermes-style recovery probe).
 _COMPACTION_ANTI_THRASH_SECONDS = 300
+
+# 2026-11-19 PR5：工具 schema 预算。接了很多 connector/MCP 的会话每轮都要把
+# 几十个工具定义重发一遍（实测裸 deskmate 11 个 ≈6KB，挂上连接器后翻倍），
+# 既是 token 税也增加选错工具的概率。按注册顺序保留，0 = 关闭预算。
+_TOOL_SCHEMA_MAX_CHARS_ENV = "COWORKER_TOOL_SCHEMA_MAX_CHARS"
+_TOOL_SCHEMA_DEFAULT_CHARS = 20000
+
+# 2026-11-19 回归修复：查证/读稿/技能是本项目的核心纪律工具，绝不能被预算裁掉。
+# 它们排在 100+ 个 MCP 工具之后，按注册顺序裁剪时被误裁 —— 模型看不到就以为
+# "没挂工具"，转而凭记忆回答（违反"史料库过了才算数"）。这些名字无条件保留。
+_PINNED_TOOLS: frozenset[str] = frozenset({
+    "web_search", "web_fetch",           # 联网查证
+    "search_history", "history_library_check", "search_private",  # 史料/私人资料查证
+    "read_file", "list_files", "grep", "search_text", "read_chapter", "list_chapters",
+    "read_paragraphs",                   # 读稿（含新增的按段号读取）
+    "load_skill", "save_skill",          # 技能加载/沉淀
+    "ask_user", "runtime_context",       # 问人与环境事实
+})
+
+
+def _tool_schema_budget() -> int:
+    import os
+
+    try:
+        raw = (os.environ.get(_TOOL_SCHEMA_MAX_CHARS_ENV) or "").strip()
+        return int(raw) if raw else _TOOL_SCHEMA_DEFAULT_CHARS
+    except (TypeError, ValueError):
+        return _TOOL_SCHEMA_DEFAULT_CHARS
+
+
+def _tool_name(schema: dict) -> str:
+    fn = schema.get("function", {}) if isinstance(schema, dict) else {}
+    return str(fn.get("name", "") if isinstance(fn, dict) else "")
+
+
+def _select_tool_schemas(schemas: list[dict]) -> list[dict]:
+    """按字符预算裁剪工具 schema；**pinned 核心工具永不裁剪**。
+
+    2026-11-19 回归修复：原实现按注册顺序保留，而 web_search/search_history 等
+    查证工具排在 100+ 个 MCP 工具之后，被预算裁掉 → 模型以为"没挂"，转而凭记忆
+    回答，违反"史料库过了才算数"红线。查证/读稿/技能工具现在无条件保留。
+
+    仍保持 schema 列表的**原始顺序**（协议/缓存敏感）：用标记删除、原位输出，
+    不重排、不把 pinned 挤到前面。被裁工具仍留在 registry，硬调用可执行。
+    """
+    budget = _tool_schema_budget()
+    if budget <= 0 or len(schemas) <= 1:
+        return schemas
+    pinned_mask = [_tool_name(s) in _PINNED_TOOLS for s in schemas]
+    pinned_total = sum(
+        len(json.dumps(s, ensure_ascii=False)) for s, p in zip(schemas, pinned_mask) if p
+    )
+    kept: list[dict] = []
+    total = pinned_total
+    dropped: list[str] = []
+    for schema, pinned in zip(schemas, pinned_mask):
+        if pinned:
+            kept.append(schema)  # 无条件保留，不参与预算判断
+            continue
+        size = len(json.dumps(schema, ensure_ascii=False))
+        if total + size > budget:
+            dropped.append(_tool_name(schema) or "?")
+            continue
+        kept.append(schema)
+        total += size
+    if dropped:
+        logger.warning(
+            "tool schema budget %d chars (+%d pinned): dropped %d tools: %s",
+            budget, len([p for p in pinned_mask if p]), len(dropped), ", ".join(dropped),
+        )
+    return kept
+
+
 _REVIEWER_PAUSED_TEXT = (
     "Auto-approve is paused for the rest of this turn — the reviewer blocked "
     f"{_REVIEWER_TRIP} actions in a row, so approvals now come to you."
@@ -1011,7 +1092,7 @@ class TurnEngine:
         thread + queue, so text deltas surface live without blocking the event loop."""
         loop = asyncio.get_running_loop()
         queue: asyncio.Queue = asyncio.Queue()
-        tools = self.registry.schemas() or None
+        tools = _select_tool_schemas(self.registry.schemas()) or None
         model, settings = self.model, self.model_settings
         provider = self.provider
         # Snapshot ON the loop (a cheap shallow list copy) and do the EXPENSIVE assembly
@@ -1036,7 +1117,10 @@ class TurnEngine:
             finally:
                 loop.call_soon_threadsafe(queue.put_nowait, ("done", None))
 
-        loop.run_in_executor(None, produce)
+        # PR3：把调用方的 contextvars（含 llm_usage.scene_scope）复制进 produce 线程，
+        # 否则 scene 标签在线程池边界丢失，账本无法区分 bot 群 / 专家 / 后台任务。
+        _ctx = contextvars.copy_context()
+        loop.run_in_executor(_PROVIDER_POOL, _ctx.run, produce)
         while True:
             # Race the queue against Stop so a stalled stream (no chunks arriving —
             # the pre-first-token wait, a wedged connection) can't hold the turn.
@@ -1136,7 +1220,10 @@ class TurnEngine:
                 yield Event(EventType.TOOL_STARTED, {"name": tool_call.name})
                 self._audit(tool_call, stage="started")
             outcomes = await asyncio.gather(
-                *[asyncio.to_thread(self._execute_sync, tc) for tc in concurrent]
+                *[
+                    asyncio.get_running_loop().run_in_executor(_TOOL_POOL, self._execute_sync, tc)
+                    for tc in concurrent
+                ]
             )
             for tool_call, (result, status) in zip(concurrent, outcomes):
                 yield self._record_result(tool_call, result, status)
@@ -1147,7 +1234,9 @@ class TurnEngine:
                 continue
             yield Event(EventType.TOOL_STARTED, {"name": tool_call.name})
             self._audit(tool_call, stage="started")
-            result, status = await asyncio.to_thread(self._execute_sync, tool_call)
+            result, status = await asyncio.get_running_loop().run_in_executor(
+                _TOOL_POOL, self._execute_sync, tool_call
+            )
             yield self._record_result(tool_call, result, status)
 
     def _mangled_tool(self, tool_call: ToolCall) -> Event:

@@ -231,6 +231,12 @@ class RoomStore:
             self._conn.commit()
         # 群级材料随撤群清掉（消息历史不动，room_id 永不复用）。
         self.materials.drop(room_id)
+        # 2026-11-19 PR12: 引擎缓存同样按群释放；否则「随建随撤」的临时群会把
+        # 每个 (群, bot) 的 engine 永久留在内存里。
+        try:
+            _default_runtime().evict_room(room_id)
+        except Exception:  # fail-open：清理失败不影响撤群
+            pass
         return {"room_id": room_id, "disbanded_at": now, "idempotent": False}
 
     def post(

@@ -15,11 +15,30 @@ import json
 import logging
 import os
 import re
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Optional
 
 logger = logging.getLogger(__name__)
+
+# 2026-11-19 PR1：每轮上下文组装的昂贵**只读**块（语义检索 / world / 用户事实 /
+# 情感画像）并行预取用的共享池。4 路足够覆盖 4 个块，且不会和 disk/SQLite 抢太多。
+# 单例 + 懒建：import 期不建线程；池里的任务全部只读、路径调用时解析，
+# 不持有跨会话可变状态（测试 teardown 后线程自然空闲，不会写真实目录）。
+_CONTEXT_POOL: Optional[ThreadPoolExecutor] = None
+_CONTEXT_POOL_LOCK = threading.Lock()
+
+
+def _context_pool() -> ThreadPoolExecutor:
+    global _CONTEXT_POOL
+    if _CONTEXT_POOL is None:
+        with _CONTEXT_POOL_LOCK:
+            if _CONTEXT_POOL is None:
+                _CONTEXT_POOL = ThreadPoolExecutor(
+                    max_workers=4, thread_name_prefix="dm-ctx"
+                )
+    return _CONTEXT_POOL
 
 from .project_memory import (
     format_project_memory,
@@ -285,6 +304,8 @@ class DeskMateMemoryManager:
         self.base_dir.mkdir(parents=True, exist_ok=True)
         self.active_project = active_project
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="deskmate-mem")
+        # PR1b：组装阶段暂存的情绪「系统读法」记账，turn 结束时写回（见 _save_session_turn）。
+        self._pending_emotion_read: dict | None = None
         # VaultStore：Obsidian vault 作为长期记忆存储层
         vault_path = vault_dir or self.base_dir / "vault"
         self.vault = VaultStore(vault_dir=vault_path)
@@ -664,7 +685,10 @@ class DeskMateMemoryManager:
             result = result[:4000] + "\n…"
         return result, matched_ids
 
-    def build_full_context_for_turn(self, user_message: str = "", *, prev_user: str = "") -> str:
+    def build_full_context_for_turn(
+        self, user_message: str = "", *, prev_user: str = "",
+        active_project: str | None = None,
+    ) -> str:
         """构造每轮对话要注入的「完整记忆上下文」（prefetch 相关片段 + 完整 USER 画像）。
 
         用于「每轮自动注入记忆」的 opt-in 能力（DESKMATE_AUTO_INJECT）。
@@ -678,7 +702,7 @@ class DeskMateMemoryManager:
         注意：技能加载不在引擎层强制注入，而是通过系统 prompt 中的技能索引，
         让 LLM 自觉判断何时调用 skill_view 加载。
         """
-        from deskmate.memory.context_budget import ContextBlock, strip_auto_review
+        from deskmate.memory.context_budget import ContextBlock, VOLATILE_BLOCKS, strip_auto_review
 
         # 2026-11-11：USER.md 健康监测（旁路，节流 5 分钟一次）。直接读文件判断是否
         # 被异常覆写（即使写入绕过了 save_user 也能发现），异常写 alerts.log + 留存快照。
@@ -693,6 +717,24 @@ class DeskMateMemoryManager:
         # blocks 记录块名/优先级/上限；最后统一 render，fail-open 退回旧行为。
         blocks: list[ContextBlock] = []
 
+        # 2026-11-19 PR0 基线埋点：记录每块的采集耗时与字符数。纯旁路——不参与
+        # render、不改注入文本、不影响预算判定；失败一律 fail-open。
+        # 用可变容器避免 _add 闭包里写 nonlocal（也便于 PR1 复用同一组统计）。
+        import time as _time
+
+        _ctx_t0 = _time.perf_counter()
+        _last_add = [_ctx_t0]
+        _block_stats: list[dict] = []
+        # PR9：静默失败可见化。原来十余处 `except: pass` 让整块记忆悄悄消失，
+        # 只能靠现象猜；这里统一收集失败块名 + 异常类型，写进 trace（不含正文）。
+        _ctx_failures: list[dict] = []
+
+        def _note_ctx_fail(name: str, exc: BaseException) -> None:
+            try:
+                _ctx_failures.append({"block": name, "error": type(exc).__name__})
+            except Exception:
+                pass
+
         def _add(
             name: str,
             text: str,
@@ -703,20 +745,36 @@ class DeskMateMemoryManager:
             keep_light: bool = True,
         ) -> None:
             if text and str(text).strip():
+                stripped = str(text).strip()
                 blocks.append(
                     ContextBlock(
                         name=name,
-                        text=str(text).strip(),
+                        text=stripped,
                         priority=priority,
                         cap=cap,
                         cap_light=cap_light,
                         keep_light=keep_light,
+                        volatile=name in VOLATILE_BLOCKS,
                     )
                 )
+                try:
+                    _now = _time.perf_counter()
+                    # 上一块 add 到这一块 add 之间的耗时 ≈ 这一块的采集成本
+                    _block_stats.append({
+                        "name": name,
+                        "ms": round((_now - _last_add[0]) * 1000, 2),
+                        "chars": len(stripped),
+                    })
+                    _last_add[0] = _now
+                except Exception:
+                    pass
 
         # P1-B 当前书：每轮解析一次，让 MEMORY/USER 读侧隔离、项目记忆、
         # user_fact_context 共用同一书维度（避免三处各推一次、结论打架）。
-        # 不写 self.active_project：云端多会话共享 manager，进程级状态会串味。
+        # PR10：优先用本轮传入的 active_project（每轮传参、不写单例字段，
+        # 避免多会话共享 manager 时串味）；没传才退回 self.active_project
+        # （MCP memory server 手动设置的那条旧路径，保持向后兼容）。
+        _turn_project = active_project or self.active_project
         _known: list[str] = []
         _book = ""
         try:
@@ -725,7 +783,7 @@ class DeskMateMemoryManager:
             _known = book_scope.known_books(self.base_dir)
             _book = book_scope.resolve_turn_book(
                 self.base_dir, user_message,
-                active_project=self.active_project, known=_known,
+                active_project=_turn_project, known=_known,
             )
         except Exception:
             pass  # fail-open：书维度不可用就退回旧行为
@@ -749,7 +807,80 @@ class DeskMateMemoryManager:
                 _index_ok = index_healthy(self.base_dir)
             except Exception:
                 _index_ok = False
-        relevant = self.prefetch(user_message, book=_book, skip_archival=_index_ok)
+
+        # 2026-11-19 PR1b：light 判定前置。keep_light=False 的重块在闲聊轮本来
+        # 就会被 render_blocks 丢掉——以前是「先付完整 I/O / 检索代价再丢」，
+        # 现在直接不生产。判据与 render 完全同源（budget_enabled + is_light_turn），
+        # 所以渲染输出逐字节不变；省的只是被丢块的生产成本。
+        # DESKMATE_CONTEXT_PREFILTER=0 回滚到「生产后再丢」的旧行为。
+        _prefilter = os.getenv("DESKMATE_CONTEXT_PREFILTER", "1") != "0"
+        try:
+            from deskmate.memory.context_budget import budget_enabled, is_light_turn
+
+            _light_turn = budget_enabled() and is_light_turn(user_message)
+        except Exception:
+            _light_turn = False
+        _skip_heavy = _prefilter and _light_turn
+
+        # 2026-11-19 PR1：把最贵的只读块提前并行预取。注入文本顺序仍由下面的
+        # _add() 决定，与改动前逐字节一致（prompt cache 依赖这一点）。
+        # DESKMATE_CONTEXT_PARALLEL=0 可一键退回旧的串行路径。
+        _parallel = os.getenv("DESKMATE_CONTEXT_PARALLEL", "1") != "0"
+        _futures: dict = {}
+        if _parallel:
+            try:
+                from deskmate.cognitive.memory_injector import build_feeling_context
+                from deskmate.memory.file_search import (
+                    gate_hits, is_chitchat, search_memory_files,
+                )
+                from deskmate.memory.user_fact_context import build_user_fact_context
+                from deskmate.memory.world_context import build_world_context
+
+                _light = _light_turn
+                _pool = _context_pool()
+                # 必须全用关键字：签名是 (base_dir, limit=25, query=None, *, compact=False)，
+                # 位置传参会把 query/compact 错位到 limit/query 上。
+                _futures["world"] = _pool.submit(
+                    build_world_context, self.base_dir,
+                    query=None if _light else user_message, compact=_light,
+                )
+                _futures["user_fact"] = _pool.submit(
+                    build_user_fact_context, self.base_dir, user_message,
+                    book=_book or None,
+                )
+                _futures["feeling"] = _pool.submit(
+                    build_feeling_context, user_message, 3,
+                )
+                if (_file_index_on and _index_ok and not _skip_heavy
+                        and not is_chitchat(user_message)):
+                    # 必须用 lambda 包住整条链：否则 search_memory_files() 会在
+                    # submit() 的参数求值阶段就在主线程跑完，并行等于没做。
+                    _futures["file_recall"] = _pool.submit(
+                        lambda: gate_hits(search_memory_files(
+                            _expand_query(user_message, prev_user),
+                            k=8, budget_chars=1600, base=self.base_dir,
+                        ))
+                    )
+            except Exception as exc:  # noqa: BLE001 — 预取失败退回全串行
+                logger.debug("context prefetch submit failed: %s", exc)
+                _futures.clear()
+
+        def _resolve(name: str, fallback):
+            """取预取结果；没有预取（或预取异常）时退回原同步调用。"""
+            fut = _futures.get(name)
+            if fut is None:
+                return fallback()
+            try:
+                return fut.result()
+            except Exception as exc:  # noqa: BLE001 — 与原 try/except pass 等价
+                _note_ctx_fail(name, exc)
+                logger.debug("context prefetch %s failed: %s", name, exc)
+                return None
+
+        # PR1b：闲聊轮不生产 prefetch（keep_light=False，render 反正会丢）。
+        relevant = "" if _skip_heavy else self.prefetch(
+            user_message, book=_book, skip_archival=_index_ok
+        )
         if relevant:
             inner = relevant.strip()
             if inner.startswith("<memory-context>"):
@@ -776,9 +907,17 @@ class DeskMateMemoryManager:
 
                 # 四段：闲聊门 + 相关性闸。寒暄轮不做语义检索（只能塞噪声），
                 # 其余轮把 RRF 尾部的弱相关条目挡掉，最多注入 6 条。
+                # 🔴 2026-11-19 PR1b 修：这里不能用 _skip_heavy（is_light_turn）。
+                # _hits 还决定下面的 memory_backstop（keep_light=True，会真注入）：
+                # is_light_turn 比 is_chitchat 宽，"辛苦了辛苦了"（≥6字）在 HEAD 会
+                # 检索、命中则不注入 backstop；若照 _skip_heavy 跳过检索，_hits=[] 会
+                # 反常注入 backstop，破坏"闲聊轮输出与改动前逐字节一致"的承诺（cache）。
+                # 跳过条件必须与 HEAD 的 is_chitchat 判定完全对齐。
                 _q = _expand_query(user_message, prev_user)
                 if is_chitchat(user_message):
                     _hits = []
+                elif "file_recall" in _futures:
+                    _hits = _futures["file_recall"].result() or []
                 else:
                     _hits = gate_hits(search_memory_files(
                         _q, k=8, budget_chars=1600, base=self.base_dir
@@ -818,7 +957,9 @@ class DeskMateMemoryManager:
                     exc, exc_info=True,
                 )
                 try:
-                    _fb = self.prefetch(user_message, book=_book, skip_archival=False)
+                    _fb = "" if _skip_heavy else self.prefetch(
+                        user_message, book=_book, skip_archival=False
+                    )
                     _inner = (_fb or "").strip()
                     if _inner.startswith("<memory-context>"):
                         _inner = _inner[len("<memory-context>"):]
@@ -894,7 +1035,7 @@ class DeskMateMemoryManager:
                 build_alter_ego_prompt,
                 has_alter_ego_data,
             )
-            if alter_ego_enabled() and has_alter_ego_data():
+            if not _skip_heavy and alter_ego_enabled() and has_alter_ego_data():
                 ego = build_alter_ego_prompt(mode="full")
                 if ego:
                     _add("alter_ego", ego, priority=44, cap=2000, keep_light=False)
@@ -914,7 +1055,8 @@ class DeskMateMemoryManager:
                 # P1-2：传当轮 user_message 当 query——认知/情感层走
                 # 两级注入（核心层 + 长尾按 query 召回）；空 query/异常
                 # 内部自动退全量，行为与历史版本一致。
-                ego_cog = build_cognitive_context(query=user_message)
+                # PR1b：闲聊轮不生产（keep_light=False，8KB 重块反正会被丢）。
+                ego_cog = "" if _skip_heavy else build_cognitive_context(query=user_message)
                 if ego_cog:
                     # 认知画像 8KB 级重块：写作轮才注入
                     _add("cognitive", ego_cog, priority=42, cap=4500, keep_light=False)
@@ -938,7 +1080,9 @@ class DeskMateMemoryManager:
         try:
             from deskmate.cognitive.memory_injector import build_feeling_context
 
-            _feel_ctx = build_feeling_context(query=user_message, limit=3)
+            _feel_ctx = _resolve(
+                "feeling", lambda: build_feeling_context(query=user_message, limit=3)
+            )
             if _feel_ctx:
                 _add("feeling", _feel_ctx, priority=22, cap=1200, cap_light=800)
         except Exception:
@@ -956,12 +1100,21 @@ class DeskMateMemoryManager:
             try:
                 from deskmate.growth.emotion_engine import EmotionEngine
                 _ee = EmotionEngine(base_dir=self.base_dir)
-                # record=True：把这份「系统读法」留一行（差异史 X 栏，只记账）
-                _emotion_ctx = _ee.describe_turn_context(record=True)
+                # record：把这份「系统读法」留一行（差异史 X 栏，只记账）。
+                # PR1b：默认 "defer"——组装阶段只读，payload 暂存到 self，
+                # turn 结束（_save_session_turn）再写库，不占首字延迟。
+                # DESKMATE_EMOTION_READ_DEFER=0 回滚到组装时立即写（record=True）。
+                _defer_read = os.getenv("DESKMATE_EMOTION_READ_DEFER", "1") != "0"
+                _emotion_ctx = _ee.describe_turn_context(
+                    record="defer" if _defer_read else True
+                )
+                if getattr(_ee, "pending_read_record", None):
+                    self._pending_emotion_read = _ee.pending_read_record
                 if _emotion_ctx:
                     # 当下心情是「真实优先」的骨架块：全量约 1.3-1.6KB，给足上限
                     _add("emotion_state", _emotion_ctx, priority=15, cap=1800, cap_light=1400)
-            except Exception:
+            except Exception as exc:
+                _note_ctx_fail("emotion_state", exc)
                 pass  # fail-open 退回无情绪段
         # 对话层时钟（2026-10-15）：一行纯事实「现在是 …周几 晚上 22:06」。
         # 不补她聊天时永远不知道几点；纯本地零 LLM，不导演（怎么反应是她的事）。
@@ -1004,15 +1157,17 @@ class DeskMateMemoryManager:
             _wx_ctx = weather_context(user_message, base_dir=self.base_dir)
             if _wx_ctx:
                 _add("weather", _wx_ctx, priority=20, cap=600)
-        except Exception:
+        except Exception as exc:
+            _note_ctx_fail("weather", exc)
             pass  # fail-open：天气不可知不影响主对话
         # 「越用越懂你·每日读书」：把面板里的读书沉淀接回对话（修复死数据）
         # —— auto_tasks 读书洞察此前只展示在「作品与创作」面板，聊天检索链路不消费。
         try:
-            reading_ctx = self._search_auto_tasks_reading(user_message)
+            reading_ctx = "" if _skip_heavy else self._search_auto_tasks_reading(user_message)
             if reading_ctx:
                 _add("reading", reading_ctx, priority=72, cap=1500, keep_light=False)
-        except Exception:
+        except Exception as exc:
+            _note_ctx_fail("reading", exc)
             pass  # fail-open：读书沉淀缺失不影响主记忆注入
         # 「她观察到的世界」：把小桔主动摄入的外部观察（learned_history 带「（外部·」标）
         # 回灌对话——修复「看世界」只落库、聊天不消费的断点（2026-09-06）。
@@ -1028,10 +1183,13 @@ class DeskMateMemoryManager:
             # 改为闲聊轮走 compact 精简版（约 1000 字，不灌剪报、不跑语义检索），
             # 靠 cap_light=1200 收窄，而不是整块丢；预算关闭时与 render_blocks 口径一致。
             _light = budget_enabled() and is_light_turn(user_message)
-            world_ctx = build_world_context(
-                self.base_dir,
-                query=None if _light else user_message,
-                compact=_light,
+            world_ctx = _resolve(
+                "world",
+                lambda: build_world_context(
+                    self.base_dir,
+                    query=None if _light else user_message,
+                    compact=_light,
+                ),
             )
             if world_ctx:
                 _add("world", world_ctx, priority=48, cap=4500,
@@ -1045,12 +1203,15 @@ class DeskMateMemoryManager:
         try:
             from deskmate.memory.user_fact_context import build_user_fact_context
 
-            user_fact_ctx = build_user_fact_context(
-                self.base_dir,
-                user_message,
-                # P1-B：传按轮解析的当前书，不再直接塞 active_project
-                # （它常是工作区 UUID，会让书隔离整轮静默失效）
-                book=_book or None,
+            user_fact_ctx = _resolve(
+                "user_fact",
+                lambda: build_user_fact_context(
+                    self.base_dir,
+                    user_message,
+                    # P1-B：传按轮解析的当前书，不再直接塞 active_project
+                    # （它常是工作区 UUID，会让书隔离整轮静默失效）
+                    book=_book or None,
+                ),
             )
             if user_fact_ctx:
                 _add("user_fact", user_fact_ctx, priority=30, cap=2000, cap_light=900)
@@ -1095,7 +1256,7 @@ class DeskMateMemoryManager:
         try:
             from deskmate.proactivity.ledger import render_mailbox_self_context
 
-            mailbox_ctx = render_mailbox_self_context(self.base_dir)
+            mailbox_ctx = "" if _skip_heavy else render_mailbox_self_context(self.base_dir)
             if mailbox_ctx:
                 _add("mailbox", mailbox_ctx, priority=75, cap=900, keep_light=False)
         except Exception:
@@ -1105,7 +1266,7 @@ class DeskMateMemoryManager:
         # fail-open 与上面各块一致；总开关 DESKMATE_AUTO_INJECT=0 已整体关闭本函数，
         # 本块随之关闭；单独开关 DESKMATE_LESSONS_INJECT=0 可只关这一块。
         try:
-            if os.environ.get("DESKMATE_LESSONS_INJECT", "1") != "0":
+            if not _skip_heavy and os.environ.get("DESKMATE_LESSONS_INJECT", "1") != "0":
                 from deskmate.cognitive.memory_injector import build_lessons_context
 
                 lessons_ctx = build_lessons_context(self.base_dir, user_message)
@@ -1118,7 +1279,7 @@ class DeskMateMemoryManager:
         # fail-open 与上面各块一致；总开关 DESKMATE_AUTO_INJECT=0 已整体关闭本函数，
         # 本块随之关闭；单独开关 DESKMATE_REFLECTION_INJECT=0 可只关这一块。
         try:
-            if os.environ.get("DESKMATE_REFLECTION_INJECT", "1") != "0":
+            if not _skip_heavy and os.environ.get("DESKMATE_REFLECTION_INJECT", "1") != "0":
                 from deskmate.cognitive.memory_injector import build_reflection_context
 
                 refl_ctx = build_reflection_context(self.base_dir)
@@ -1131,7 +1292,7 @@ class DeskMateMemoryManager:
         # fail-open 与上面各块一致；总开关 DESKMATE_AUTO_INJECT=0 已整体关闭本函数，
         # 本块随之关闭；单独开关 DESKMATE_INTENT_INJECT=0 可只关这一块。
         try:
-            if os.environ.get("DESKMATE_INTENT_INJECT", "1") != "0":
+            if not _skip_heavy and os.environ.get("DESKMATE_INTENT_INJECT", "1") != "0":
                 from deskmate.cognitive.memory_injector import build_intent_context
 
                 intent_ctx = build_intent_context(self.base_dir)
@@ -1178,19 +1339,33 @@ class DeskMateMemoryManager:
         from deskmate.memory.context_budget import render_blocks
 
         rendered, budget_stats = render_blocks(blocks, user_message=user_message)
-        if not rendered:
-            return ""
 
-        # 8.3 溯源：记录本轮注入了哪些记忆 id（顺带记预算/闲聊判定，便于排障）
-        if refs:
-            self._append_trace(INJECT_TRACE_FILE, {
+        # 8.3 溯源 + 2026-11-19 PR0 性能基线：
+        # 默认保持原契约（只有 refs 非空才写 trace，test_no_memory_no_trace 依赖此行为）。
+        # 设 DESKMATE_CTX_TRACE_ALL=1 时每轮都写轻量记录（只含块名/耗时/字符数/
+        # 预算统计，不含正文），供基线采集与收益对比；_append_trace 自身 fail-open。
+        try:
+            if not refs and os.getenv("DESKMATE_CTX_TRACE_ALL", "0") != "1":
+                if not rendered:
+                    return ""
+                return "<memory-context>\n" + rendered + "\n</memory-context>"
+            _trace: dict = {
                 "ts": datetime.datetime.now().isoformat(timespec="seconds"),
                 "query": redact((user_message or "")[:100]),  # 8.4：query 脱敏
                 "n": len(refs),
                 "refs": refs[:20],
                 "budget": {k: budget_stats.get(k) for k in
                            ("light", "tokens", "dropped", "trimmed")},
-            })
+                "blocks": _block_stats,
+                "failures": _ctx_failures,  # PR9：静默失败可见化（只有块名+异常类型）
+                "total_ms": round((_time.perf_counter() - _ctx_t0) * 1000, 2),
+            }
+            self._append_trace(INJECT_TRACE_FILE, _trace)
+        except Exception:
+            pass
+
+        if not rendered:
+            return ""
 
         return "<memory-context>\n" + rendered + "\n</memory-context>"
 
@@ -3456,6 +3631,13 @@ class DeskMateMemoryManager:
         # 线程即双重异步、绝不阻塞主对话。
         try:
             from deskmate.growth.emotion_engine import EmotionEngine
+            _ee_turn = EmotionEngine(base_dir=self.base_dir)
+            # PR1b：把组装阶段暂存的「系统读法」记账在这里写回（turn 结束、已异步）。
+            # 取走即清空，避免下一轮没组装情绪块时重复写旧 payload。
+            _pending_read = self._pending_emotion_read
+            self._pending_emotion_read = None
+            if _pending_read:
+                _ee_turn.record_turn_read(_pending_read)
             chat_interval = 300.0
             prev_files = [f for f in files if f.name != p.name]
             if prev_files:
@@ -3464,7 +3646,7 @@ class DeskMateMemoryManager:
                     chat_interval = max(0.0, (ts - prev_ts) / 1e9)
                 except (ValueError, IndexError):
                     pass
-            EmotionEngine(base_dir=self.base_dir).update_after_turn(
+            _ee_turn.update_after_turn(
                 user_msg, assistant_msg, chat_interval_sec=chat_interval,
             )
         except Exception:

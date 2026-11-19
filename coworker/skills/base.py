@@ -29,24 +29,48 @@ class SkillLoader:
     def __init__(self, dirs: list[str | Path]) -> None:
         self._dirs = [Path(d) for d in dirs]
         self._skills: dict[str, Skill] = {}
+        # PR6：path → (指纹, 已解析对象)。按路径缓存，rescan 只重建 _skills 的
+        # 名字索引，不重新读文件；_parsed 跨越多次 rescan 复用。
+        self._parsed: dict[str, tuple[tuple[int, int], Skill]] = {}
         self.rescan()
 
-    def rescan(self) -> None:
+    def rescan(self, *, force: bool = False) -> None:
         """Re-read the skill dirs. load_skill rescans on a miss so a skill created AFTER
         the session's engine was built is still loadable (the catalog line stays static
-        until the next session, but an explicitly requested skill must not 404)."""
+        until the next session, but an explicitly requested skill must not 404).
+
+        2026-11-19 PR6：每轮 context_provider 都会调 rescan()；旧实现逐目录
+        `read_text` 全部 SKILL.md（本机 43 个 ≈2.4ms 热缓存 / 冷盘更高）。
+        改为按 (path, mtime_ns, size) 复用已解析对象——目录没变就零文件读取。
+        `force=True` 仍全量重读，保持「新建技能立即可用」契约。
+        """
         self._skills = {}
         for directory in self._dirs:
-            self._discover(directory)
+            self._discover(directory, force=force)
 
-    def _discover(self, directory: Path) -> None:
+    def _discover(self, directory: Path, *, force: bool = False) -> None:
         if not directory.is_dir():
             return
         for sub in sorted(directory.iterdir()):
             md = sub / "SKILL.md"
-            if md.is_file():
+            if not md.is_file():
+                continue
+            try:
+                st = md.stat()
+                fingerprint = (st.st_mtime_ns, st.st_size)
+            except OSError:
+                continue
+            key = str(md)
+            cached = self._parsed.get(key)
+            if not force and cached is not None and cached[0] == fingerprint:
+                self._skills[cached[1].name] = cached[1]
+                continue
+            try:
                 skill = _parse_skill(md)
-                self._skills[skill.name] = skill
+            except Exception:
+                continue  # 与原行为一致：单个坏技能不拖垮会话
+            self._skills[skill.name] = skill
+            self._parsed[key] = (fingerprint, skill)
 
     def names(self) -> list[str]:
         return list(self._skills)
@@ -119,9 +143,20 @@ def skill_catalog_text(
     if not catalog:
         return ""
     lines = [f"- {c['name']}: {c['description']}" for c in catalog]
+    # 2026-11-19 技能机制对齐 Hermes：弱建议式引导（"when relevant"）会让模型
+    # 在长任务里跳过技能、自由发挥。改成强制 + 宁滥勿缺，与 Hermes 的
+    # prompt_builder 「MUST load ... even if you think basic tools suffice」对齐。
     return (
-        "Available skills — call load_skill(name) to load one's full instructions when "
-        "it's relevant to the task:\n" + "\n".join(lines)
+        "## Skills\n"
+        "Before replying, scan the skills below. If a skill matches or is even partially "
+        "relevant to your task, you MUST load it with load_skill(name) and follow its "
+        "instructions. Err on the side of loading — it is always better to have context "
+        "you don't need than to miss critical steps, pitfalls, or established workflows. "
+        "Skills encode the user's preferred approach, conventions, quality standards, and "
+        "step-by-step processes — load them even if you think you could handle the task "
+        "with basic tools, and even for tasks you already know how to do.\n"
+        "Only proceed without loading a skill if genuinely none are relevant.\n"
+        "\n<available_skills>\n" + "\n".join(lines) + "\n</available_skills>"
     )
 
 
@@ -142,7 +177,7 @@ def skill_tools(loader: SkillLoader, allowed: AllowedSkills = None) -> list:
         skill from the catalog is relevant to the current task."""
         skill = loader.get(name)
         if skill is None:
-            loader.rescan()  # created after this session started? pick it up now
+            loader.rescan(force=True)  # created/changed after session start? pick it up now
             skill = loader.get(name)
         gate = _allowed_now()
         if skill is None or (gate is not None and name not in gate):

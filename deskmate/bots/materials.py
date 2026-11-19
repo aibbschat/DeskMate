@@ -38,7 +38,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Sequence
 
-from .experience import collect_experience, load_style_profile
+from .experience import collect_experience, experience_files, load_style_profile
 # 分类规则的**单一事实源**在 reading.py（BookShelf.read 留空补读也用它）；
 # 这里 re-export，保持 ``from deskmate.bots.materials import classify`` 兼容。
 from .reading import BookShelf, classify, deep_read_chars, parse_book_title
@@ -72,6 +72,9 @@ class MaterialPack:
     body: str
     index: str
     experience: str = ""
+    # 2026-11-19 PR12: 轻量失效判据（只 stat，不读正文/经验文件）。
+    body_fingerprint: str = ""
+    experience_meta: str = ""
 
     def prompt_block(self) -> str:
         """注入 prompt 的固定前缀。经验层在前，原文居中，索引在后。
@@ -184,6 +187,21 @@ class RoomMaterials:
         if not files:
             return cached
 
+        # 2026-11-19 PR12：先用纯 stat 指纹做一次廉价命中——正文与经验文件都没动
+        # 就直接返回缓存，不再白读 ruling/brief 与文风画像（旧实现每句群消息都读）。
+        body_fp = _fingerprint(files)
+        exp_files = experience_files(book_dir)
+        exp_meta = self._experience_meta(exp_files)
+        if (
+            os.environ.get("DESKMATE_MATERIALS_FASTPATH", "1") != "0"
+            and not force
+            and cached is not None
+            and cached.book == title
+            and cached.body_fingerprint == body_fp
+            and cached.experience_meta == exp_meta
+        ):
+            return cached
+
         # 群级一次备料：小桔既有沉淀也纳入同一份指纹，改稿 / 新简报 / 书桶
         # 补集后下一句哪怕只是「接着聊」也自动换新。
         exp = collect_experience(
@@ -192,7 +210,7 @@ class RoomMaterials:
             style_loader=self.style_loader,
             sections=self.experience_sections,
         )
-        fingerprint = _fingerprint(files)
+        fingerprint = body_fp
         if exp.has_any:
             fingerprint += "|exp:" + exp.fingerprint
         if (
@@ -203,7 +221,10 @@ class RoomMaterials:
         ):
             return cached
 
-        pack = self._build(title, files, fingerprint, exp)
+        pack = self._build(
+            title, files, fingerprint, exp,
+            body_fingerprint=body_fp, experience_meta=exp_meta,
+        )
         with self._lock:
             self._cache[rid] = pack
         return pack
@@ -212,12 +233,35 @@ class RoomMaterials:
     def _is_reload(text: str) -> bool:
         return any(m in str(text or "") for m in _RELOAD_MARKS)
 
+    def _experience_meta(self, exp_files: Sequence[Path]) -> str:
+        """经验文件的廉价失效判据：只 stat 文件 + 读文风计数器（不读正文）。
+
+        文风桶的 ``updates/chars`` 就是 ``experience._fingerprint`` 里的
+        ``style:`` 段，这里复刻同一判据，避免「补了一轮文风却继续拿旧材料」。
+        没有 .deskmate 沉淀时不读用户文风库（与 collect_experience 的隔离承诺一致）。
+        """
+        if not exp_files:
+            return ""
+        meta = _fingerprint(exp_files)
+        try:
+            profile = (self.style_loader or load_style_profile)() or {}
+        except Exception:
+            profile = {}
+        bucket = (profile.get("buckets") or {}).get("manuscript") or {}
+        ver = "|".join(
+            str(bucket.get(k) or profile.get(k) or "") for k in ("updates", "chars")
+        )
+        return meta + "|style:" + ver
+
     def _build(
         self,
         title: str,
         files: Sequence[Path],
         fingerprint: str,
         exp=None,
+        *,
+        body_fingerprint: str = "",
+        experience_meta: str = "",
     ) -> MaterialPack:
         # 正文优先；同类内仍按文件名稳定排序，保证跨 bot 字节一致。
         # 2026-11-08 读稿层：正文按章切分后按「开头 + 停笔点」装（见 reading.Manuscript），
@@ -278,6 +322,8 @@ class RoomMaterials:
             body=body,
             index="\n".join(lines),
             experience=exp.text if exp is not None else "",
+            body_fingerprint=body_fingerprint,
+            experience_meta=experience_meta,
         )
 
 

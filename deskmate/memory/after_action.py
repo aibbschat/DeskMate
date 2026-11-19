@@ -38,6 +38,8 @@ import json
 import logging
 import os
 import re
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, Sequence
@@ -49,6 +51,61 @@ from . import project_memory as _pm
 from ._fs_lock import file_write_lock
 
 logger = logging.getLogger(__name__)
+
+
+# 2026-11-19 PR12: 回合后反思链原来是「每轮新起一个 daemon Thread」。快节奏多轮
+# 对话下线程数随回合线性增长，链上最多 11 个任务里还有会发 LLM 的（dream /
+# review_memory / evolve），会互相抢模型通道。改为：
+#   - 进程级有界线程池（默认 2 工人，DESKMATE_AFTER_ACTION_WORKERS 可调）；
+#   - 同一 base_dir 单飞（上一轮链没跑完就跳过本轮，避免堆积）；
+#   - DESKMATE_AFTER_ACTION_POOL=0 回到旧的每轮起线程行为。
+_AA_POOL: Optional[ThreadPoolExecutor] = None
+_AA_LOCK = threading.Lock()
+_AA_INFLIGHT: set[str] = set()
+
+
+def _after_action_pool() -> ThreadPoolExecutor:
+    global _AA_POOL
+    if _AA_POOL is None:
+        with _AA_LOCK:
+            if _AA_POOL is None:
+                workers = 2
+                try:
+                    workers = max(1, min(8, int(os.environ.get("DESKMATE_AFTER_ACTION_WORKERS", "2"))))
+                except ValueError:
+                    workers = 2
+                _AA_POOL = ThreadPoolExecutor(
+                    max_workers=workers, thread_name_prefix="after_action"
+                )
+    return _AA_POOL
+
+
+def _submit_after_action(base_dir: Path | str | None, fn) -> None:
+    """Run the reflection chain in the bounded pool, single-flight per base_dir."""
+    if os.environ.get("DESKMATE_AFTER_ACTION_POOL", "1") == "0":
+        threading.Thread(target=fn, daemon=True).start()
+        return
+    key = str(base_dir or _default_base_dir())
+    with _AA_LOCK:
+        if key in _AA_INFLIGHT:
+            logger.debug("after_action: chain already in flight for %s — skipped", key)
+            return
+        _AA_INFLIGHT.add(key)
+
+    def _run() -> None:
+        try:
+            fn()
+        except Exception:  # noqa: BLE001 — the chain is fail-open by design
+            logger.exception("after_action: background chain failed")
+        finally:
+            with _AA_LOCK:
+                _AA_INFLIGHT.discard(key)
+
+    try:
+        _after_action_pool().submit(_run)
+    except RuntimeError:  # interpreter shutting down
+        with _AA_LOCK:
+            _AA_INFLIGHT.discard(key)
 
 def _default_base_dir() -> Path:
     """默认根目录——**调用时**解析 ``DESKMATE_DIR``。
@@ -1174,9 +1231,8 @@ def reflect_and_persist(
             _distill_to_longterm(base_dir, project, learned or [])
         except Exception:
             logger.exception("after_action: 蒸馏长期记忆失败")
-        # 闭环后主动抽取可复用技能 + 主动闭环识别 + 技能进化 —— 全部放到后台 daemon 线程
+        # 闭环后主动抽取可复用技能 + 主动闭环识别 + 技能进化 —— 全部放到后台线程
         # ⚠️ 绝对不能等它们跑完才能返回响应，必须立刻回给前端，否则界面卡住
-        from threading import Thread
         def _bg():
             _maybe_extract_skill(base_dir, last_user, last_asst)
             _maybe_proactive_close_loop(base_dir, workspace, last_user, last_asst)
@@ -1197,7 +1253,7 @@ def reflect_and_persist(
             # 每 N 轮（含本轮日志写入）跑一次 cleanup_redundancy（内部先调 decay_memory），
             # 零 LLM、fail-open，漏跑不影响主流程。
             _maybe_decay_memory(base_dir)
-        Thread(target=_bg, daemon=True).start()
+        _submit_after_action(base_dir, _bg)
 
     # ---- 2. 刷新圣经（文件侧，快、同步）----
     try:

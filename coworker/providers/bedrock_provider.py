@@ -393,7 +393,7 @@ class _BedrockConverseClient(ProviderClient):
                 if text:
                     reasoning_parts.append(text)
         stop_reason = response.get("stopReason")
-        return AssistantTurn(
+        _turn = AssistantTurn(
             text="".join(text_parts) or None,
             tool_calls=tool_calls,
             finish_reason=_STOP_REASON_MAP.get(stop_reason, stop_reason),
@@ -401,6 +401,11 @@ class _BedrockConverseClient(ProviderClient):
             reasoning="".join(reasoning_parts) or None,
             usage=_usage_from(response.get("usage")),
         )
+        # PR3：用量账本（fail-open，见 coworker.llm_usage）
+        from .. import llm_usage
+
+        llm_usage.record_turn(model=model, provider="bedrock", turn=_turn, messages=messages)
+        return _turn
 
     def stream(
         self,
@@ -458,15 +463,17 @@ class _BedrockConverseClient(ProviderClient):
             )
             for i in sorted(tool_accum)
         ]
-        yield StreamChunk(
-            turn=AssistantTurn(
-                text="".join(text_parts) or None,
-                tool_calls=tool_calls,
-                finish_reason=_STOP_REASON_MAP.get(stop_reason, stop_reason),
-                reasoning="".join(reasoning_parts) or None,
-                usage=usage,
-            )
+        _turn = AssistantTurn(
+            text="".join(text_parts) or None,
+            tool_calls=tool_calls,
+            finish_reason=_STOP_REASON_MAP.get(stop_reason, stop_reason),
+            reasoning="".join(reasoning_parts) or None,
+            usage=usage,
         )
+        from .. import llm_usage
+
+        llm_usage.record_turn(model=model, provider="bedrock", turn=_turn, messages=messages)
+        yield StreamChunk(turn=_turn)
 
     def capabilities(self, model: str) -> ModelCapabilities:
         return capabilities_for(f"bedrock:other/{model}")

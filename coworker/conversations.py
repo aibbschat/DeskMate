@@ -87,6 +87,9 @@ class ConversationStore:
 
         # 消息缓存：避免重复读取 JSONL 文件
         self._message_cache: dict[str, tuple[float, list[dict]]] = {}  # {sid: (mtime, messages)}
+        # 2026-11-19 PR8：save() 在每个 checkpoint 都调 _count() 全量扫 JSONL；
+        # 2MB / 10k 行转录每次数百 ms。行数按 sid 缓存，append 时递增。
+        self._count_cache: dict[str, tuple[int, int]] = {}  # sid -> (mtime_ns, count)
         self._conn.executescript("""
             CREATE TABLE IF NOT EXISTS sessions (
                 session_id TEXT PRIMARY KEY, workspace TEXT, model TEXT, mode TEXT,
@@ -275,26 +278,41 @@ class ConversationStore:
         return repaired
 
     def _count(self, sid: str) -> int:
+        # PR8：同一进程内行数是单调的（只在 _append 追加 / 原子重写时变化），
+        # 直接用缓存；首次从 sessions.n_msgs 初始化（DB 列本就维护），扫文件
+        # 仅作为 DB 值缺失/不可信时的兜底。
         path = self._file(sid)
-        if not path.exists():
+        try:
+            mtime_ns = path.stat().st_mtime_ns if path.exists() else 0
+        except OSError:
+            mtime_ns = 0
+        cached = self._count_cache.get(sid)
+        if cached is not None and cached[0] == mtime_ns:
+            return cached[1]
+        if not mtime_ns:
+            self._count_cache[sid] = (0, 0)
             return 0
-        # Iterate lazily over file lines instead of reading the entire file
-        # into memory. For large conversations (2MB+) this avoids a multi-hundred-
-        # millisecond blocking read on every save() call (save runs on every
-        # CHECKPOINT event: turn_start, iteration_end, permission_required, etc.).
         count = 0
         with open(path, "r", encoding="utf-8") as f:
             for line in f:
                 if line.strip():
                     count += 1
+        self._count_cache[sid] = (mtime_ns, count)
         return count
 
     def _append(self, sid: str, messages: list[dict]) -> None:
         with open(self._file(sid), "a", encoding="utf-8") as f:
             for m in messages:
                 f.write(json.dumps(m) + "\n")
-        # 写入后清除缓存
+            f.flush()
+        # 写入后清除消息缓存；行数直接递增，不再全文件重扫
         self._message_cache.pop(sid, None)
+        prev = self._count_cache.get(sid, (0, 0))
+        try:
+            mtime_ns = self._file(sid).stat().st_mtime_ns
+        except OSError:
+            mtime_ns = prev[0]
+        self._count_cache[sid] = (mtime_ns, prev[1] + len(messages))
 
     def _backfill_counts(self) -> None:
         """One-time per session: move any inline blob into a .jsonl and persist
@@ -363,8 +381,13 @@ class ConversationStore:
                     for m in record.messages:
                         f.write(json.dumps(m) + "\n")
                 tmp.replace(path)
-                # 覆盖写入后清除缓存
+                # 覆盖写入后清除缓存；行数以本次写入为准
                 self._message_cache.pop(sid, None)
+                try:
+                    _mt = path.stat().st_mtime_ns
+                except OSError:
+                    _mt = 0
+                self._count_cache[sid] = (_mt, len(record.messages))
 
             title = record.title or title_from(record.messages)
             self._conn.execute(
@@ -415,15 +438,49 @@ class ConversationStore:
         # interrupted turn can persist a user message between an assistant
         # tool_calls block and its tool result, which providers reject (400).
         messages = self._repair_tool_pairing(messages)
+        return self._record_from_row(row, messages, message_count=len(messages))
+
+    def load_meta(self, session_id: str) -> Optional[SessionRecord]:
+        """Metadata-only load: title/agent/workspace/counts without the transcript.
+
+        List endpoints (Inbox / Subscriptions / team pruning) only need the label
+        fields. Calling ``load()`` for those parses the whole JSONL and runs a
+        full ``_repair_tool_pairing`` pass — O(transcript) per row, on every poll.
+        This path never touches the conversation file.
+        """
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM sessions WHERE session_id = ?", (session_id,)
+            ).fetchone()
+        if not row:
+            return None
+        return self._record_from_row(
+            row, [], message_count=int(row["n_msgs"] or 0)
+        )
+
+    def exists(self, session_id: str) -> bool:
+        """Cheap existence probe (one indexed SELECT, no transcript read)."""
+        with self._lock:
+            return (
+                self._conn.execute(
+                    "SELECT 1 FROM sessions WHERE session_id = ?", (session_id,)
+                ).fetchone()
+                is not None
+            )
+
+    @staticmethod
+    def _record_from_row(
+        row: sqlite3.Row, messages: list[dict], *, message_count: int
+    ) -> SessionRecord:
         return SessionRecord(
-            session_id=session_id,
+            session_id=row["session_id"],
             workspace=row["workspace"],
             model=row["model"],
             mode=row["mode"],
             messages=messages,
             title=_display_title(row),
             agent=row["agent"] or "code",
-            message_count=len(messages),
+            message_count=message_count,
             updated_at=row["updated_at"],
             extra_roots=_load_roots(
                 row["extra_roots"] if "extra_roots" in row.keys() else None
@@ -568,6 +625,7 @@ class ConversationStore:
             path.unlink()
         # 删除后清除缓存
         self._message_cache.pop(session_id, None)
+        self._count_cache.pop(session_id, None)
         return cur.rowcount > 0
 
     def rename(self, session_id: str, title: str) -> bool:
@@ -632,6 +690,20 @@ class ConversationStore:
             cur = self._conn.execute(
                 f"UPDATE sessions SET {', '.join(sets)} WHERE session_id = ?",
                 (*params, session_id),
+            )
+            self._conn.commit()
+        return cur.rowcount > 0
+
+    def set_model(self, session_id: str, model: str) -> bool:
+        """Pin a per-session model without touching updated_at (§9 #30).
+
+        Engine build already prefers ``record.model`` over ``manager.model`` (see
+        ``get_engine``); this only persists the choice. Empty string = follow global.
+        """
+        with self._lock:
+            cur = self._conn.execute(
+                "UPDATE sessions SET model = ? WHERE session_id = ?",
+                (str(model or ""), session_id),
             )
             self._conn.commit()
         return cur.rowcount > 0

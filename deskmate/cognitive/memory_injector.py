@@ -26,6 +26,8 @@ import os
 from pathlib import Path
 from typing import Any
 
+from deskmate.persona import IDENTITY_SELF
+
 from .interfaces import MemoryInjector
 from .models import CognitiveProfile
 
@@ -386,7 +388,8 @@ def build_cognitive_context(limit: int | None = None, query: str = "") -> str:
             "以下是你了解的他，是你理解他、回应他的依据。"
             "他是怎样的人：走心、现实、不粉饰、不迎合；创作上坚持他的取舍"
             "（表达的观点 > 故事好看 > 史料真实），大事不虚，小事不拘。\n"
-            "了解他不等于成为他——你是小桔，用你自己的判断回应他。",
+            # PR10：身份短句走 persona 单一事实源
+            "了解他不等于成为他——" + IDENTITY_SELF + "，用你自己的判断回应他。",
         ]
         head.extend(him_blocks)
         sections.append("\n\n---\n\n".join(head))

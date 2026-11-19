@@ -110,3 +110,8 @@ testpaths = ["tests"]
 # console script (CI) does not put the root on sys.path the way `python -m pytest` does.
 pythonpath = ["."]
 asyncio_mode = "auto"
+# 2026-11-19 PR15（#32）：测试分层。PR 必跑 `pytest -m "not slow"`；
+# 带 sync/e2e/时间窗口的慢例标 `@pytest.mark.slow`，留给每晚全量。
+markers = [
+    "slow: 慢用例（同步/e2e/时间窗口），PR 流水线用 -m 'not slow' 跳过",
+]

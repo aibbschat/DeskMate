@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { usePolling } from "../../hooks/usePolling";
 import {
   addMcpServer,
   connectMcp,
@@ -102,11 +103,8 @@ export function CustomMcpGroup({
   // (owner-hit 2026-08-21, add-by-URL against a guarded server). While any row is
   // authorizing, poll the parent's refresh until every row settles.
   const anyAuthorizing = servers.some((s) => s.status === "authorizing");
-  useEffect(() => {
-    if (!anyAuthorizing) return;
-    const t = setInterval(onChanged, 1000);
-    return () => clearInterval(t);
-  }, [anyAuthorizing, onChanged]);
+  // PR15：统一 usePolling —— 后台标签不再每秒打一次接口，间隔仍为 1s。
+  usePolling(onChanged, 1000, { enabled: anyAuthorizing });
   const presets = MCP_PRESETS.filter((p) => !servers.some((s) => s.name === p.name));
   if (servers.length === 0 && presets.length === 0) return null;
 

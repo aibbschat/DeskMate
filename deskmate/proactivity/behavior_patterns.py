@@ -24,11 +24,21 @@
 
 from __future__ import annotations
 
+import atexit
 import json
 import os
+import threading
 import time
 from pathlib import Path
 from deskmate.paths import deskmate_base_dir
+
+# fsync 节流（PR13）：数据仍逐行 append+flush（读后立刻可见），只把昂贵的 fsync
+# 合并到「每 20 条或每 5 秒」一次。
+_FLUSH_MAX = 20
+_FLUSH_SEC = 5.0
+_BUF_LOCK = threading.Lock()
+_PENDING: dict[str, int] = {}
+_LAST_SYNC: dict[str, float] = {}
 
 WEEKDAYS = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
 
@@ -78,20 +88,61 @@ def _log_path(base_dir: str | Path | None) -> Path:
 
 
 def _append_line(path: Path, record: dict) -> None:
-    """追加一行事件（直接 append，POSIX 下单次 write 原子，失败静默）。
+    """追加一行事件；``flush`` 每条都做（读后立刻可见），``fsync`` 合并节流。
 
-    注意：不能用「临时文件 + os.replace」——那会整文件替换，同一进程内多次
-    调用会互相覆盖只留最后一行。日志必须是追加写。
+    PR13：实测 ``behavior_log.jsonl`` 27k 行 / 7.3MB，旧实现每条都
+    ``open→write→flush→fsync``，fsync 是每轮对话的固定磁盘开销。行为日志是
+    **可丢的观测数据**：数据仍逐行落页缓存，只把 fsync 合并成 20 条 / 5 秒一次，
+    异常断电最多丢最后一批（语义可接受）。
+    ``DESKMATE_BEHAVIOR_LOG_SYNC=1`` 回到逐条 fsync（排查用）。
     """
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         line = json.dumps(record, ensure_ascii=False) + "\n"
+    except (OSError, TypeError, ValueError):
+        return
+    key = str(path)
+    force_sync = os.environ.get("DESKMATE_BEHAVIOR_LOG_SYNC", "0") == "1"
+    sync_now = force_sync
+    with _BUF_LOCK:
+        n = _PENDING.get(key, 0) + 1
+        _PENDING[key] = n
+        _LAST_SYNC.setdefault(key, time.time())
+        if n >= _FLUSH_MAX or (time.time() - _LAST_SYNC[key]) >= _FLUSH_SEC:
+            sync_now = True
+            _PENDING[key] = 0
+            _LAST_SYNC[key] = time.time()
+    try:
         with open(path, "a", encoding="utf-8") as f:
             f.write(line)
             f.flush()
-            os.fsync(f.fileno())
+            if sync_now:
+                os.fsync(f.fileno())
     except OSError:
         pass  # 行为日志失败绝不阻断主流程
+
+
+def flush_behavior_log(base_dir: str | Path | None = None) -> None:
+    """把本轮事件强制 fsync 落盘（切进程/测试收尾/运维脚本用）。"""
+    path = _log_path(base_dir)
+    key = str(path)
+    with _BUF_LOCK:
+        _PENDING[key] = 0
+        _LAST_SYNC[key] = time.time()
+    try:
+        if path.is_file():
+            with open(path, "a", encoding="utf-8") as f:
+                os.fsync(f.fileno())
+    except OSError:
+        pass
+
+
+def _flush_all() -> None:
+    for key in list(_PENDING.keys()):
+        flush_behavior_log(Path(key).parent)
+
+
+atexit.register(_flush_all)
 
 
 def _scrub(obj):
@@ -155,23 +206,71 @@ def log_reschedule(task_type: str, from_weekday: int, to_weekday: int,
     )
 
 
+def _iter_lines_reverse(path: Path, block: int = 16384):
+    """按字节块从文件尾反向逐行产出（新→旧），只读一遍，不整文件进内存。"""
+    with open(path, "rb") as f:
+        size = os.fstat(f.fileno()).st_size
+        pos = size
+        buf = b""
+        while pos > 0:
+            step = min(block, pos)
+            pos -= step
+            f.seek(pos)
+            data = f.read(step) + buf
+            parts = data.split(b"\n")
+            buf = parts[0]  # 头部可能是半行，留到下一块
+            for raw in reversed(parts[1:]):
+                if raw.strip():
+                    yield raw
+        if buf.strip():
+            yield buf
+
+
+def _tail_lines(path: Path, max_bytes: int = 65536) -> tuple[list[str], bool]:
+    """从文件尾部反向取一段行。返回 ``(lines 旧→新, whole_file)``。"""
+    out: list[str] = []
+    read = 0
+    whole = True
+    for raw in _iter_lines_reverse(path):
+        read += len(raw) + 1
+        if read > max_bytes:
+            whole = False
+            break
+        out.append(raw.decode("utf-8", "replace"))
+    out.reverse()
+    return out, whole
+
+
 def _recent_logged(kind: str, within_sec: int, base_dir=None) -> bool:
-    """判断最近 within_sec 秒内是否已记过同类事件（去重用）。"""
+    """判断最近 within_sec 秒内是否已记过同类事件（去重用）。
+
+    PR13：只读文件尾部（旧实现每次读全文件 7.3MB），事件按时间追加，
+    碰到早于窗口的记录即可停止。
+    """
     try:
         p = _log_path(base_dir)
         if not p.is_file():
             return False
-        lines = p.read_text(encoding="utf-8").splitlines()
+        flush_behavior_log(base_dir)  # 缓冲里最新的也要算进来
         now = time.time()
-        for line in reversed(lines[-200:]):
-            try:
-                rec = json.loads(line)
-            except ValueError:
-                continue
-            if rec.get("kind") != kind:
-                continue
-            return (now - float(rec.get("ts", 0))) < within_sec
-    except OSError:
+        cutoff = now - within_sec
+        window = 65536
+        while True:
+            lines, whole = _tail_lines(p, max_bytes=window)
+            for line in reversed(lines):
+                try:
+                    rec = json.loads(line)
+                except ValueError:
+                    continue
+                ts = float(rec.get("ts", 0) or 0)
+                if ts < cutoff:
+                    return False
+                if rec.get("kind") == kind:
+                    return True
+            if whole:
+                return False
+            window *= 8
+    except (OSError, ValueError):
         return False
     return False
 
@@ -188,23 +287,29 @@ def log_focus_deep(app: str = "", title: str = "", base_dir=None) -> None:
 # ---------------------------------------------------------------------------
 
 def _load_events(base_dir, since_ts: float) -> list[dict]:
+    """读取 since_ts 之后的事件（PR13：从文件尾部反向读，越过窗口即停）。
+
+    旧实现 ``read_text().splitlines()`` 把 7.3MB 全量进内存再逐行 json；
+    现在按需扩大尾部窗口（256KB 起、每次 4×），读到早于窗口的记录或文件头即停。
+    """
     p = _log_path(base_dir)
     if not p.is_file():
         return []
+    flush_behavior_log(base_dir)
     out: list[dict] = []
     try:
-        for line in p.read_text(encoding="utf-8").splitlines():
-            line = line.strip()
-            if not line:
-                continue
+        for raw in _iter_lines_reverse(p):
             try:
-                rec = json.loads(line)
+                rec = json.loads(raw.decode("utf-8", "replace"))
             except ValueError:
                 continue
-            if float(rec.get("ts", 0)) >= since_ts:
-                out.append(rec)
+            ts = float(rec.get("ts", 0) or 0)
+            if ts < since_ts:
+                break  # 事件按时间追加：越过窗口即可停，不再往回读
+            out.append(rec)
     except OSError:
         return []
+    out.reverse()
     return out
 
 
@@ -393,6 +498,78 @@ def to_context(base_dir: str | Path | None = None, days: int = 120) -> str:
         return mine_patterns(base_dir, days=days).get("context", "")
     except Exception:
         return ""
+
+
+def archive_behavior_log(
+    base_dir: str | Path | None = None, days: int = 90, *, dry_run: bool = True
+) -> dict:
+    """把超过 ``days`` 的行为事件滚到 ``behavior_log.YYYYQn.jsonl.gz``。
+
+    默认 **dry-run**（只报表数）；``dry_run=False`` 才真正：
+      1. 旧事件按季度分桶追加进 gzip（多成员 gzip 合法，可续写）；
+      2. 热文件用「同目录临时文件 + os.replace」原子替换，只留窗口内事件。
+
+    ``_load_events`` 不读归档 ⇒ 归档后 ``mine_patterns(days=120)`` 实际窗口上限
+    就是 ``days``（本方案默认 90，需 Owner 确认，见文档 §9.7）。
+    """
+    p = _log_path(base_dir)
+    if not p.is_file():
+        return {"archived": 0, "kept": 0, "files": [], "dry_run": dry_run}
+    flush_behavior_log(base_dir)
+    cutoff = time.time() - float(days) * 86400
+    old: dict[str, list[str]] = {}
+    kept: list[str] = []
+    try:
+        with open(p, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    ts = float(json.loads(line).get("ts", 0) or 0)
+                except (ValueError, TypeError):
+                    kept.append(line)
+                    continue
+                if ts >= cutoff:
+                    kept.append(line)
+                    continue
+                t = time.localtime(ts)
+                q = (t.tm_mon - 1) // 3 + 1
+                name = f"behavior_log.{t.tm_year}Q{q}.jsonl.gz"
+                old.setdefault(name, []).append(line)
+    except OSError:
+        return {"archived": 0, "kept": 0, "files": [], "dry_run": dry_run}
+
+    total_old = sum(len(v) for v in old.values())
+    if dry_run or total_old == 0:
+        return {
+            "archived": total_old,
+            "kept": len(kept),
+            "files": sorted(old),
+            "dry_run": dry_run,
+        }
+
+    dir_ = p.parent
+    written: list[str] = []
+    try:
+        import gzip
+
+        for name, lines in old.items():
+            target = dir_ / name
+            with open(target, "ab") as raw:
+                with gzip.GzipFile(fileobj=raw, mode="wb") as gz:
+                    gz.write(("\n".join(lines) + "\n").encode("utf-8"))
+            written.append(name)
+        tmp = p.with_suffix(".jsonl.tmp")
+        with open(tmp, "w", encoding="utf-8") as f:
+            if kept:
+                f.write("\n".join(kept) + "\n")
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, p)
+    except OSError:
+        return {"archived": 0, "kept": len(kept), "files": written, "dry_run": dry_run}
+    return {"archived": total_old, "kept": len(kept), "files": written, "dry_run": False}
 
 
 if __name__ == "__main__":

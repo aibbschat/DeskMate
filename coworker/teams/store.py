@@ -1508,51 +1508,13 @@ class TeamStore:
             )
 
 
-def _like_escape(text: str) -> str:
-    """Quote LIKE metacharacters so a literal string matches only itself. Space
-    keys are filesystem paths, where `_` (LIKE's single-character wildcard) is
-    ordinary — left raw it also matches a neighbouring space's rows."""
-    for char in ("\\", "%", "_"):
-        text = text.replace(char, "\\" + char)
-    return text
-
-
-def _canonical(payload: dict[str, Any]) -> str:
-    return json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
-
-
-def _hash(record: dict[str, Any], *, fields: tuple[str, ...] = _HASHED_FIELDS) -> str:
-    material = _canonical({key: record[key] for key in fields})
-    return hashlib.sha256(material.encode("utf-8")).hexdigest()
-
-
-def _row_to_item(row: sqlite3.Row) -> dict[str, Any]:
-    item = dict(row)
-    item["proposal"] = json.loads(item.get("proposal") or "null")
-    try:
-        item["refs"] = json.loads(item.get("refs") or "[]")
-    except json.JSONDecodeError:
-        item["refs"] = []
-    return item
-
-
-def _row_to_event(row: sqlite3.Row) -> dict[str, Any]:
-    event = dict(row)
-    try:
-        event["payload"] = json.loads(event.get("payload") or "{}")
-    except json.JSONDecodeError:
-        event["payload"] = {}
-    return event
-
-
-def validate_text_page(offset: int, max_chars: int) -> None:
-    if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
-        raise BoardError("offset must be a non-negative integer")
-    if isinstance(max_chars, bool) or not isinstance(max_chars, int) or not 1 <= max_chars <= 16000:
-        raise BoardError("max_chars must be between 1 and 16000")
-
-
-def text_page(text: str, offset: int, max_chars: int) -> dict:
-    end = min(len(text), offset + max_chars)
-    return {"text": text[offset:end], "offset": offset, "next_offset": end,
-            "total_chars": len(text), "has_more": end < len(text)}
+# ---- 已机械抽取到 store_helpers.py（PR16/#33），此处 re-export 兼容。
+from coworker.teams.store_helpers import (  # noqa: E402,F401
+    _like_escape,
+    _canonical,
+    _hash,
+    _row_to_item,
+    _row_to_event,
+    validate_text_page,
+    text_page,
+)

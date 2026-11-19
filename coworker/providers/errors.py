@@ -15,6 +15,36 @@ from __future__ import annotations
 
 from typing import Optional
 
+
+class ProviderStall(Exception):
+    """模型调用停滞（首字超时 / 流中途 idle 超时）。
+
+    2026-11-19 PR2：SDK 的 read timeout 默认 600s，连接卡住时最长 10 分钟没有
+    任何异常，`paid_fallback` 因而无从降级。本异常把"卡住"变成普通可重试错误：
+    消息含 ``timeout``，会被 `deskmate.llm_circuit_breaker.classify_error` 归为
+    transient/retryable；且只在尚未吐出第一个 chunk 时由回退链换通道。
+    """
+
+    def __init__(self, kind: str, timeout_s: float) -> None:
+        self.kind = kind
+        self.timeout_s = float(timeout_s)
+        super().__init__(f"provider {kind} timeout after {timeout_s:g}s (stalled upstream)")
+
+
+class FirstTokenTimeout(ProviderStall):
+    """连接建立后首字迟迟不来。"""
+
+    def __init__(self, timeout_s: float) -> None:
+        super().__init__("first-token", timeout_s)
+
+
+class StreamIdleTimeout(ProviderStall):
+    """流已开始但两次 chunk 间隔超过阈值。"""
+
+    def __init__(self, timeout_s: float) -> None:
+        super().__init__("stream-idle", timeout_s)
+
+
 # Error-body markers, verbatim from the vendors' error codes/messages:
 # OpenAI: {"error": {"code": "model_not_found", "message": "The model `X` does not exist or
 #   you do not have access to it."}} (404/403) and {"code": "insufficient_quota"} (429).

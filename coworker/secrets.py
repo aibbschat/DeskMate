@@ -140,6 +140,14 @@ class SecretStore:
         self.path = Path(path).expanduser() if path else state_dir() / "secrets.json"
         self._dotenv_path = self.path.parent / ".env"
         self._lock = threading.Lock()
+        # 2026-11-19 PR11: file contents are cached by (mtime_ns, size, inode).
+        # get() is called ~100+ times a turn (connectors, provider routing, MCP),
+        # and used to re-read secrets.json and re-parse .env on every call.
+        # Cache the RAW parsed JSON only — `${ENV}` refs are still resolved at
+        # read time, so an env change is visible immediately. put()/delete()
+        # invalidate explicitly; an external edit invalidates by mtime.
+        self._cache: Optional[tuple[int, int, int, dict[str, Any]]] = None
+        self._dotenv_cache: Optional[tuple[int, int, dict[str, str]]] = None
 
     # -- reads ------------------------------------------------------------------
     def get(self, profile: str) -> Optional[dict[str, Any]]:
@@ -151,7 +159,7 @@ class SecretStore:
 
     def resolve(self, value: Any) -> Any:
         """Resolve `${VAR}` refs in a value (recursively) from env + the local `.env`."""
-        env = _load_dotenv(self._dotenv_path)
+        env = self._dotenv()
 
         def _walk(v: Any) -> Any:
             if isinstance(v, str):
@@ -204,12 +212,39 @@ class SecretStore:
 
     # -- internals --------------------------------------------------------------
     def _read(self) -> dict[str, Any]:
-        if not self.path.is_file():
-            return {}
         try:
-            return json.loads(self.path.read_text(encoding="utf-8"))
+            st = self.path.stat()
+        except OSError:
+            self._cache = None
+            return {}
+        key = (st.st_mtime_ns, st.st_size, getattr(st, "st_ino", 0))
+        cached = self._cache
+        if cached is not None and cached[:3] == key:
+            return cached[3]
+        try:
+            data = json.loads(self.path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             return {}
+        if not isinstance(data, dict):
+            return {}
+        self._cache = (key[0], key[1], key[2], data)
+        return data
+
+    def _dotenv(self) -> dict[str, str]:
+        """`.env` parsed once per (mtime, size); env vars always win at resolve time."""
+        try:
+            st = self._dotenv_path.stat()
+        except OSError:
+            self._dotenv_cache = None
+            return {}
+        key = (st.st_mtime_ns, st.st_size)
+        cached = self._dotenv_cache
+        if cached is not None and cached[:2] == key:
+            return cached[2]
+        env = _load_dotenv(self._dotenv_path)
+        self._dotenv_cache = (key[0], key[1], env)
+        return env
 
     def _write(self, store: dict[str, Any]) -> None:
         _atomic_private_write(self.path, json.dumps(store, indent=2))
+        self._cache = None

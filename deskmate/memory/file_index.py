@@ -322,14 +322,11 @@ class FileIndex:
 
     # -- 连接 / schema ---------------------------------------------------
     def _connect(self) -> sqlite3.Connection:
-        if self.read_only:
-            conn = sqlite3.connect(
-                f"file:{self.db_path}?mode=ro", uri=True, isolation_level=None
-            )
-        else:
-            conn = sqlite3.connect(str(self.db_path), isolation_level=None)
-            conn.execute("PRAGMA journal_mode=WAL")
-            conn.execute("PRAGMA synchronous=NORMAL")
+        from ._sqlite import connect as _sqlite_connect
+
+        conn = _sqlite_connect(
+            self.db_path, readonly=self.read_only, isolation_level=None
+        )
         conn.row_factory = sqlite3.Row
         return conn
 

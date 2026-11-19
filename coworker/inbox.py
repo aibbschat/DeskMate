@@ -15,12 +15,21 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import tempfile
 import threading
 import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
+
+# 2026-11-19 PR11: keep only recent resolved items in the hot file. Older ones are
+# appended once to a monthly archive and dropped from the main JSON — otherwise every
+# `add`/`resolve` rewrites the ENTIRE history (measured 730 items / 2.44MB, 729 resolved
+# on this machine), and startup parses it all. Full-history queries load the archive
+# lazily, so `pending()` / `list_sessions` never pay for it.
+_HOT_DAYS = float(os.environ.get("COWORKER_INBOX_HOT_DAYS", "7") or 7)
 
 KIND_APPROVAL = "approval"
 KIND_QUESTION = "question"
@@ -105,24 +114,119 @@ class InboxStore:
         # The loop a waiter was created on, so a resolve from ANY thread (REST, lead
         # delegation, connector) can wake it with call_soon_threadsafe.
         self._waiter_loops: dict[str, asyncio.AbstractEventLoop] = {}
+        # Items already moved to the cold archive (this process only — a restart simply
+        # won't see them in the hot file, so they can never be appended twice).
+        self._archived_ids: set[str] = set()
+        self._archive_loaded = False
         self._load()
 
     # -- persistence ------------------------------------------------------------
+    @staticmethod
+    def _item_from_raw(raw: Any) -> Optional[InboxItem]:
+        """Tolerant rehydration: ignore unknown legacy fields, require the basics."""
+        if not isinstance(raw, dict):
+            return None
+        allowed = set(InboxItem.__dataclass_fields__)
+        kwargs = {k: v for k, v in raw.items() if k in allowed}
+        if not {"id", "session_id", "kind", "title"} <= set(kwargs):
+            return None
+        try:
+            return InboxItem(**kwargs)
+        except TypeError:
+            return None
+
     def _load(self) -> None:
-        if self.path and self.path.is_file():
+        if not (self.path and self.path.is_file()):
+            return
+        try:
             data = json.loads(self.path.read_text(encoding="utf-8"))
-            for raw in data.get("items", []):
-                item = InboxItem(**raw)
+        except (OSError, json.JSONDecodeError):
+            return
+        for raw in data.get("items", []) if isinstance(data, dict) else []:
+            item = self._item_from_raw(raw)
+            if item is not None:
                 self._items[item.id] = item
+
+    @staticmethod
+    def _age_days(ts: Optional[str]) -> float:
+        if not ts:
+            return 0.0
+        try:
+            dt = datetime.fromisoformat(str(ts))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return (datetime.now(timezone.utc) - dt).total_seconds() / 86400.0
+        except (TypeError, ValueError):
+            return 0.0
+
+    def _is_hot(self, item: InboxItem) -> bool:
+        # Anything unresolved stays hot (it is the store of record for a parked turn).
+        if item.state != STATE_RESOLVED:
+            return True
+        return self._age_days(item.resolved_at or item.created_at) < _HOT_DAYS
+
+    def _archive_path(self, stamp: str) -> Path:
+        # stamp = YYYY-MM (or "unknown"); one append-only shard per month.
+        return self.path.with_name(f"{self.path.stem}-archive-{stamp or 'unknown'}.jsonl")
+
+    def _ensure_archive_loaded(self) -> None:
+        """Load cold history on demand (full-history listing only — never on pending())."""
+        if self._archive_loaded or not self.path:
+            return
+        self._archive_loaded = True
+        for p in sorted(self.path.parent.glob(f"{self.path.stem}-archive-*.jsonl")):
+            try:
+                lines = p.read_text(encoding="utf-8").splitlines()
+            except OSError:
+                continue
+            for line in lines:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    raw = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                item = self._item_from_raw(raw)
+                if item is not None and item.id not in self._items:
+                    self._items[item.id] = item
+                    # 🔴 归档里读回来的条目必须同时登记进 _archived_ids，否则下一次
+                    # _save() 会把它当「新冷条目」再追加一遍归档——每重启一次就多一份
+                    # 重复行（归档只增不减，几轮重启后体积翻倍）。
+                    self._archived_ids.add(item.id)
 
     def _save(self) -> None:
         if not self.path:
             return
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.write_text(
-            json.dumps({"items": [asdict(i) for i in self._items.values()]}, indent=2),
-            encoding="utf-8",
-        )
+        # 1) Move newly-cold items to the month shard exactly once.
+        for item in list(self._items.values()):
+            if self._is_hot(item) or item.id in self._archived_ids:
+                continue
+            stamp = (item.resolved_at or item.created_at or "")[:7]
+            target = self._archive_path(stamp)
+            try:
+                with open(target, "a", encoding="utf-8") as f:
+                    f.write(json.dumps(asdict(item), ensure_ascii=False) + "\n")
+                self._archived_ids.add(item.id)
+            except OSError:
+                pass  # keep it in the hot file rather than lose it
+        # 2) Atomically rewrite the hot file (compact JSON — no indent).
+        hot = [asdict(i) for i in self._items.values() if self._is_hot(i)]
+        payload = json.dumps({"items": hot}, ensure_ascii=False, separators=(",", ":"))
+        try:
+            fd, tmp_name = tempfile.mkstemp(
+                dir=str(self.path.parent), prefix=f".{self.path.name}.", suffix=".tmp"
+            )
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                    fh.write(payload)
+                os.replace(tmp_name, self.path)
+            finally:
+                Path(tmp_name).unlink(missing_ok=True)
+        except OSError:
+            # Fallback: last-resort direct write (same contract as before).
+            self.path.write_text(payload, encoding="utf-8")
 
     # -- adding -----------------------------------------------------------------
     def add(
@@ -323,6 +427,10 @@ class InboxStore:
         inbox: Optional[str] = None,
         visibility: Optional[str] = None,
     ) -> list[InboxItem]:
+        # A full-history query (no state filter) is the only caller that needs the cold
+        # archive; pending/dashboard paths must stay O(hot items).
+        if state is None:
+            self._ensure_archive_loaded()
         out = list(self._items.values())
         if session_id is not None:
             out = [i for i in out if i.session_id == session_id]
@@ -336,6 +444,16 @@ class InboxStore:
 
     def pending(self, session_id: Optional[str] = None) -> list[InboxItem]:
         return self.list(session_id=session_id, state=STATE_PENDING)
+
+    def pending_count(self, session_id: Optional[str] = None) -> int:
+        """O(items) count without materialising/sorting the full list (list_sessions poll)."""
+        if session_id is None:
+            return sum(1 for i in self._items.values() if i.state == STATE_PENDING)
+        return sum(
+            1
+            for i in self._items.values()
+            if i.state == STATE_PENDING and i.session_id == session_id
+        )
 
     # -- the state machine ------------------------------------------------------
     # -- the state machine ------------------------------------------------------

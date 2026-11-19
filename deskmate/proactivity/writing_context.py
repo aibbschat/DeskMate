@@ -258,7 +258,9 @@ def manuscript_location_context(
         lines = [
             "## 萧哥的稿子在哪（系统实时探测，非记忆；读稿/报进度直接用）",
             f"- 书稿根目录：{root}（每本书一个子目录，稿件只读；"
-            "读 docx 用 officecli view 并带 TMPDIR=<可写目录>）",
+            "读正文优先用 perception.read_chapter（按章）/ read_paragraphs（按段号范围）/ "
+            "read_file（自带 docx 抽取、无转义），不要用 shell+officecli+python 解码；"
+            "officecli 仅用于编辑/导出）",
         ]
         if cur is not None:
             lines.append(

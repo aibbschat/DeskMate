@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import time
 from pathlib import Path
 from typing import Any, Optional
 
@@ -147,6 +148,15 @@ DEFAULT_MAX_TOKENS = 32000
 # stream can die with a bare "Connection error." We (a) disable keep-alive on the SDK
 # client and (b) retry transient wire failures on a freshly built socket at the app layer.
 _CONNECTION_RETRIES = 3
+
+
+def _env_timeout(name: str, default: float) -> float:
+    """2026-11-19 PR2：看门狗阈值（秒）。空串/垃圾值一律回退默认，<=0 表示关闭该项。"""
+    try:
+        raw = (os.environ.get(name) or "").strip()
+        return float(raw) if raw else default
+    except (TypeError, ValueError):
+        return default
 
 
 def _is_retryable_connection_error(exc: BaseException) -> bool:
@@ -416,19 +426,99 @@ class OpenAIProvider(ProviderClient):
         streamed_chars = 0
         final_usage: Optional[TokenUsage] = None
         final_text_len = 0
+        # 2026-11-19 PR0 首字延迟基线：只记时长数字，不记内容；记账失败由 llm_usage fail-open 吞掉。
+        _t0 = time.perf_counter()
+        _first_ms: Optional[float] = None
+
+        # 2026-11-19 PR2：首字 / idle 看门狗。SDK 的 read timeout 默认 600s，
+        # 上游卡住时不会产生异常，回退链无从触发。把底层阻塞迭代放进 pump 线程，
+        # 本线程按"距上次 chunk 的剩余预算"取数；超时抛 ProviderStall（消息含
+        # timeout ⇒ 熔断器归 transient；paid_fallback 只在吐字前换通道）。
+        from .errors import FirstTokenTimeout, StreamIdleTimeout
+
+        _first_timeout = _env_timeout("COWORKER_FIRST_TOKEN_TIMEOUT", 75.0)
+        _idle_timeout = _env_timeout("COWORKER_STREAM_IDLE_TIMEOUT", 120.0)
+        _watchdog_on = (
+            os.environ.get("COWORKER_WATCHDOG", "1") != "0"
+            and (_first_timeout > 0 or _idle_timeout > 0)
+        )
+        _stop: Any = None
+
         try:
-            for chunk in self._stream_impl(
-                model=model, messages=messages, tools=tools, **settings
-            ):
-                turn = getattr(chunk, "turn", None)
-                if turn is not None:
-                    final_usage = getattr(turn, "usage", None)
-                    final_text_len = len(getattr(turn, "text", None) or "")
-                delta_text = getattr(chunk, "text_delta", None)
-                if delta_text:
-                    streamed_chars += len(delta_text)
-                yield chunk
+            if not _watchdog_on:
+                for chunk in self._stream_impl(
+                    model=model, messages=messages, tools=tools, **settings
+                ):
+                    if _first_ms is None:
+                        _first_ms = round((time.perf_counter() - _t0) * 1000, 2)
+                    turn = getattr(chunk, "turn", None)
+                    if turn is not None:
+                        final_usage = getattr(turn, "usage", None)
+                        final_text_len = len(getattr(turn, "text", None) or "")
+                    delta_text = getattr(chunk, "text_delta", None)
+                    if delta_text:
+                        streamed_chars += len(delta_text)
+                    yield chunk
+            else:
+                import queue
+                import threading
+
+                q: "queue.Queue" = queue.Queue()
+                _stop = threading.Event()
+
+                def _pump() -> None:
+                    try:
+                        for c in self._stream_impl(
+                            model=model, messages=messages, tools=tools, **settings
+                        ):
+                            if _stop.is_set():
+                                break
+                            q.put(("chunk", c))
+                    except BaseException as exc:  # noqa: BLE001 - 原样交给主循环
+                        q.put(("error", exc))
+                    finally:
+                        q.put(("done", None))
+
+                threading.Thread(
+                    target=_pump, name="provider-stream-pump", daemon=True
+                ).start()
+                _last = _t0
+                while True:
+                    limit = _first_timeout if _first_ms is None else _idle_timeout
+                    remaining = limit - (time.perf_counter() - _last)
+                    if limit > 0 and remaining <= 0:
+                        raise (
+                            FirstTokenTimeout(_first_timeout)
+                            if _first_ms is None
+                            else StreamIdleTimeout(_idle_timeout)
+                        )
+                    try:
+                        kind, payload = q.get(timeout=remaining if limit > 0 else None)
+                    except queue.Empty:
+                        raise (
+                            FirstTokenTimeout(_first_timeout)
+                            if _first_ms is None
+                            else StreamIdleTimeout(_idle_timeout)
+                        )
+                    if kind == "chunk":
+                        if _first_ms is None:
+                            _first_ms = round((time.perf_counter() - _t0) * 1000, 2)
+                        _last = time.perf_counter()
+                        turn = getattr(payload, "turn", None)
+                        if turn is not None:
+                            final_usage = getattr(turn, "usage", None)
+                            final_text_len = len(getattr(turn, "text", None) or "")
+                        delta_text = getattr(payload, "text_delta", None)
+                        if delta_text:
+                            streamed_chars += len(delta_text)
+                        yield payload
+                    elif kind == "error":
+                        raise payload
+                    else:
+                        break
         except BaseException as exc:
+            if _stop is not None:
+                _stop.set()
             llm_usage.record(
                 model=model,
                 provider=self._base_url,
@@ -436,6 +526,8 @@ class OpenAIProvider(ProviderClient):
                 completion_chars=streamed_chars,
                 status="error",
                 error="%s: %s" % (type(exc).__name__, exc),
+                first_chunk_ms=_first_ms,
+                stream_ms=round((time.perf_counter() - _t0) * 1000, 2),
             )
             raise
         llm_usage.record(
@@ -444,6 +536,8 @@ class OpenAIProvider(ProviderClient):
             usage=final_usage,
             prompt_chars=prompt_chars,
             completion_chars=final_text_len or streamed_chars,
+            first_chunk_ms=_first_ms,
+            stream_ms=round((time.perf_counter() - _t0) * 1000, 2),
         )
 
     def _stream_impl(

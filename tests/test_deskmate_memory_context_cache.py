@@ -12,7 +12,9 @@ class _FakeMgr:
     def __init__(self) -> None:
         self.calls: list[str] = []
 
-    def build_full_context_for_turn(self, query: str, *, prev_user: str = "") -> str:
+    def build_full_context_for_turn(
+        self, query: str, *, prev_user: str = "", active_project: str | None = None
+    ) -> str:
         self.calls.append(query)
         return f"ctx:{query}"
 

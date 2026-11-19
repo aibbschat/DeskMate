@@ -8,9 +8,10 @@
 - get_recent_file_changes  最近文件变更
 - read_clipboard       剪贴板内容
 - get_calendar_events  日历事件
-- read_file            安全读取文件（超大文件会提示分页/按章读取，不静默截断）
+- read_file            安全读取文件（支持 .docx 自动抽取正文、无转义；超大文件提示分页/按章）
 - list_chapters        列出稿件章节目录与字数
 - read_chapter         只读指定的一章（与全书长度无关，长稿不会顶爆上下文）
+- read_paragraphs      按段号范围一次读全（如 2150-2241 段），不走字符分页、不截断
 - list_directory       列出目录内容
 - diff_files           对比文件差异
 """
@@ -22,7 +23,13 @@ from mcp.server.fastmcp import FastMCP
 from .calendar_reader import get_calendar_events
 from .clipboard_monitor import clipboard_has_image, read_clipboard
 from .diff_changes import diff_files
-from .file_reader import list_dir, read_chapter as _read_chapter, list_chapters as _list_chapters, read_file_safe
+from .file_reader import (
+    list_dir,
+    read_chapter as _read_chapter,
+    list_chapters as _list_chapters,
+    read_file_safe,
+    read_paragraphs as _read_paragraphs,
+)
 from .filesystem_watcher import FilesystemWatcher
 from .window_monitor import get_active_window as _get_active_window
 
@@ -147,11 +154,14 @@ def get_calendar_events_tool(days: int = 1, max_events: int = 20) -> str:
 
 @mcp.tool()
 def read_file(path: str, max_chars: int = 40000, offset: int = 0) -> str:
-    """安全读取文件内容（支持文本/代码/配置/小说等常见格式）。
+    """安全读取文件内容（支持文本/代码/配置/小说等常见格式，以及 .docx）。
+
+    .docx 由内置 python-docx 直接抽取正文，**无需 officecli、不产生终端转义**——
+    读 Word 原稿一律优先用本工具或 read_chapter，不要用 shell + officecli + python 解码。
 
     超大文件**不会静默截断**：超出默认上限时会返回全文总字数、剩余字数，
     并明确提示「继续顺读用 offset=N」（即 next_offset 续读游标），
-    同时告知可改用 list_chapters / read_chapter 按章读取。
+    同时告知可改用 list_chapters / read_chapter 按章读取、read_paragraphs 按段号范围读取。
     若只读取了片段，会明确标注「未读完」并给出后续 offset，
     **不得据此声称读完了或编造正文未见的内容**。
 
@@ -217,6 +227,30 @@ def read_chapter(path: str, chapter: str, max_chars: int = 100000) -> str:
         return _read_chapter(path, chapter, max_chars=max_chars)
     except Exception as e:
         return f"（读取章节失败：{e}）"
+
+
+@mcp.tool()
+def read_paragraphs(path: str, start: int, end: int, max_chars: int = 40000) -> str:
+    """按「段号范围」一次读全正文逐字原文（1-based 行号，含首尾）。
+
+    2026-11-19 新增：用于「读第 2150-2241 段」这类**细粒度段号定位**。
+    段号口径与小说正文索引一致（按换行切分的 1-based 行号，空行不占号）。
+    一次返回 [start, end] 全部段落、带段号，**不走字符分页、不会截断补读**，
+    也**不需要**把 docx 导成文件再用 shell/编码解码（无转义问题）。
+
+    Args:
+        path: 稿件绝对路径（支持 .docx / 文本文件）
+        start: 起始段号（1-based，含）
+        end: 结束段号（1-based，含）
+        max_chars: 单页字符上限（默认 40000；超出时如实告知未读完，不静默截断）
+
+    Returns:
+        每段一行 ``[段号] 原文``，首行标注文件名/范围/总段数；错误时返回说明。
+    """
+    try:
+        return _read_paragraphs(path, start, end, max_chars=max_chars)
+    except Exception as e:
+        return f"（按段号读取失败：{e}）"
 
 
 @mcp.tool()

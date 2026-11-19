@@ -43,6 +43,20 @@ _DEFAULT_TOKEN_BUDGET = 13000
 _DEFAULT_LIGHT_MAX_CHARS = 24
 _ELLIPSIS = "\n…（已按上下文预算节选）"
 
+# 2026-11-19 缓存优化：这些块的内容每轮（或每分钟）字节级变化，必须排到
+# <system-context> 末尾，避免击穿前面稳定大块（画像/认知/world/prefetch）的
+# 服务端前缀缓存。只列"真会变"的小块；按 user_message 召回的大块在同一
+# 用户消息的多轮工具调用之间字节稳定，不列进来。
+VOLATILE_BLOCKS: frozenset[str] = frozenset({
+    "clock",        # "现在是 … 周四 13:47" 每分钟变
+    "weather",      # 带 fetched_at / 缓存时间
+    "emotion_state",# 情绪独白 + 时间戳，每轮变
+    "delivered",    # 今日已递台账状态
+    "mailbox",      # 今日读了几封
+    "user_episodes",# 近况事件带相对时间
+    "manuscript",   # 稿件 mtime / 进度实时探测
+})
+
 #: 出现这些词 → 不是闲聊（写作/书籍/检索/任务/工具类意图）。
 #: 2026-11-10 修误判：这组判断必须排在寒暄词之前。此前「早上好，接着写第二章」
 #: 会被单字「早」短路成闲聊，把 prefetch/cognitive/world/lessons/intent 整块丢掉。
@@ -220,6 +234,11 @@ class ContextBlock:
     cap: int = 4000
     cap_light: int | None = None
     keep_light: bool = True
+    # 2026-11-19 缓存优化：volatile=True 的块内容每轮都变（时钟/天气/情绪/
+    # 台账计数等）。render_blocks 输出时把它们排到最后，使前面的稳定块
+    # （画像/认知/史料纪律）逐字节不变，服务端前缀缓存才能整段命中。
+    # 小米 Token Plan 命中缓存输入 2 Credits vs 未命中 100 Credits（1/50）。
+    volatile: bool = False
 
     def effective_cap(self, light: bool) -> int:
         if light and self.cap_light is not None:
@@ -288,6 +307,7 @@ def render_blocks(
                     cap=b.cap,
                     cap_light=b.cap_light,
                     keep_light=b.keep_light,
+                    volatile=b.volatile,
                 )
             )
 
@@ -319,12 +339,18 @@ def render_blocks(
                 stats["trimmed"].append(f"{biggest.name}:budget")
 
         stats["kept"] = [b.name for b in kept]
-        text = "\n\n".join(b.text for b in kept)
+        # 2026-11-19 缓存优化：稳定块在前、volatile 块在后（各自内部保持原顺序）。
+        # 服务端按请求前缀缓存，尾部变动只击穿尾部；若每轮变动的时钟/情绪块夹在
+        # 中间，会把整段 13k 稳定前缀一起失效。这里只改渲染顺序，不改 kept 顺序
+        # 与统计口径（stats["kept"] 仍是声明顺序），避免影响既有断言。
+        ordered = [b for b in kept if not b.volatile] + [b for b in kept if b.volatile]
+        text = "\n\n".join(b.text for b in ordered)
         stats["tokens"] = estimate_tokens(text)
         return text, stats
     except Exception as exc:  # noqa: BLE001 — fail-open：预算异常绝不阻断注入
         kept = [b for b in blocks if str(b.text or "").strip()]
-        text = "\n\n".join(str(b.text).strip() for b in kept)
+        ordered = [b for b in kept if not b.volatile] + [b for b in kept if b.volatile]
+        text = "\n\n".join(str(b.text).strip() for b in ordered)
         stats["error"] = f"{type(exc).__name__}: {exc}"
         stats["tokens"] = estimate_tokens(text)
         return text, stats

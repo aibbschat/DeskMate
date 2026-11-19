@@ -250,6 +250,7 @@ class SyncNode:
         if res.get("ok"):
             self._consecutive_fail = 0
             self._check_drift()  # 隧道通时做集合级对账（仅 Mac 侧、节流）
+            self._maybe_gc_oplog()  # 2026-11-19 PR13：每小时窗口后清已推送副本
         else:
             self._consecutive_fail += 1
             LOG.warning("tick 失败(第%d次): %s", self._consecutive_fail, res.get("error"))
@@ -294,6 +295,46 @@ class SyncNode:
                 run_producer("sync_health", ctx={"drift": drift_map})
         except Exception as exc:  # noqa: BLE001
             LOG.debug("drift 检测失败（不阻断）: %r", exc)
+
+    def _maybe_gc_oplog(self) -> None:
+        """每小时做一次 oplog 清理（#25）：只删「已推送且超龄」的传输日志。
+
+        `gc_oplog` 的护栏原样委托：``seq <= push_after_seq`` 且超 ``keep_days`` 才删；
+        游标不动。本处再加三道人手护栏：
+          - 进程内每小时节流，且只在 tick 成功之后跑；
+          - 本进程**首次**执行一律 dry-run，只写日志（便于核对量级）；
+          - 水位为 0（还没推送过任何东西）直接跳过。
+        ``DESKMATE_OPLOG_GC=0`` 关闭；``DESKMATE_OPLOG_KEEP_DAYS`` 可调保留期。
+        """
+        if os.environ.get("DESKMATE_OPLOG_GC", "1") == "0":
+            return
+        now = time.time()
+        if now - getattr(self, "_last_oplog_gc", 0.0) < 3600:
+            return
+        self._last_oplog_gc = now
+        try:
+            keep_days = float(os.environ.get("DESKMATE_OPLOG_KEEP_DAYS", "14"))
+            min_safe = int(getattr(self.cursor, "push_after_seq", 0) or 0)
+            if min_safe <= 0:
+                return
+            dry = not getattr(self, "_oplog_gc_armed", False)
+            conn = sqlite3.connect(self.db_path)
+            try:
+                n = self.sync_sql.gc_oplog(conn, keep_days, min_safe, dry_run=dry)
+                conn.commit()
+            finally:
+                conn.close()
+            self._oplog_gc_armed = True
+            LOG.info(
+                "oplog GC%s：%s %d 条（keep_days=%s, min_safe_seq=%d）",
+                "（首次 dry-run）" if dry else "",
+                "将删除" if dry else "已删除",
+                n,
+                keep_days,
+                min_safe,
+            )
+        except Exception as exc:  # noqa: BLE001  GC 失败不阻断同步
+            LOG.debug("oplog GC 失败（不阻断）: %r", exc)
 
     def _run_baseline(self) -> bool:
         """首连基线：逐表拉对端快照，reconcile_baseline_oplog 双向收敛。全部成功返 True。

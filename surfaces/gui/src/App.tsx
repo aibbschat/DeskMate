@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type PointerEvent, Component, type ReactNode } from "react";
+import { usePolling } from "./hooks/usePolling";
 import {
   announceInboxUnlock,
   finalizeAutomationRun,
@@ -295,18 +296,58 @@ export function App() {
   // Ref mirror of `streaming`: the WS handler closure is built once per socket and can't read
   // fresh state — the interrupted/error flush below needs the live buffer at event time.
   const streamingRef = useRef("");
-  const setStreaming = (value: string | ((s: string) => string)) => {
-    streamingRef.current = typeof value === "function" ? value(streamingRef.current) : value;
+  // 2026-11-19 PR9：delta 按帧合批。服务端逐 token 推 assistant_delta，逐条 setState
+  // 会让长回复触发上百次 React 重渲染；这里把文本累加进 ref，用 rAF 每帧最多提交一次。
+  // `streamingRef` 仍是实时权威值（turn_start / finalize / 中断处直接读它）。
+  const streamFrameRef = useRef<number | null>(null);
+  const flushStream = () => {
+    streamFrameRef.current = null;
     setStreamingState(streamingRef.current);
   };
+  const setStreaming = (value: string | ((s: string) => string)) => {
+    streamingRef.current = typeof value === "function" ? value(streamingRef.current) : value;
+    if (typeof value === "function" || value === "") {
+      // 功能性更新 / 清空立即提交，避免丢帧或 finalize 后残留旧文本
+      if (streamFrameRef.current !== null) {
+        cancelAnimationFrame(streamFrameRef.current);
+        streamFrameRef.current = null;
+      }
+      setStreamingState(streamingRef.current);
+      return;
+    }
+    if (streamFrameRef.current === null) {
+      streamFrameRef.current = requestAnimationFrame(flushStream);
+    }
+  };
+  useEffect(() => () => {
+    if (streamFrameRef.current !== null) cancelAnimationFrame(streamFrameRef.current);
+  }, []);
   // The turn's live thinking text (reasoning_delta events) — same ref-mirror pattern.
   // Folded onto the assistant item when the message finalizes; cleared on turn_start.
   const [reasoningStream, setReasoningStreamState] = useState("");
   const reasoningRef = useRef("");
+  const reasoningFrameRef = useRef<number | null>(null);
+  const flushReasoning = () => {
+    reasoningFrameRef.current = null;
+    setReasoningStreamState(reasoningRef.current);
+  };
   const setReasoningStream = (value: string) => {
     reasoningRef.current = value;
-    setReasoningStreamState(value);
+    if (value === "") {
+      if (reasoningFrameRef.current !== null) {
+        cancelAnimationFrame(reasoningFrameRef.current);
+        reasoningFrameRef.current = null;
+      }
+      setReasoningStreamState("");
+      return;
+    }
+    if (reasoningFrameRef.current === null) {
+      reasoningFrameRef.current = requestAnimationFrame(flushReasoning);
+    }
   };
+  useEffect(() => () => {
+    if (reasoningFrameRef.current !== null) cancelAnimationFrame(reasoningFrameRef.current);
+  }, []);
   // DeskMate perception: tool success/failure tallies used as a live confidence proxy.
   const dmToolTotal = useRef(0);
   const dmToolOk = useRef(0);
@@ -738,10 +779,7 @@ export function App() {
   // the App.tsx session-poll comment records exactly what over-polling did to it (REST every
   // ~2s, session switches queued behind). This payload has no liveness/badge requirement, so
   // there is nothing to gain from a fast interval.
-  useEffect(() => {
-    const t = setInterval(loadSettings, 10 * 60 * 1000);
-    return () => clearInterval(t);
-  }, [loadSettings]);
+  usePolling(loadSettings, 10 * 60 * 1000);
 
   useEffect(() => {
     refreshSessions();
@@ -754,10 +792,8 @@ export function App() {
   // inbox.pending() + liveness + subscriptions for each one - a synchronous burst on the
   // single-threaded Python event loop. Combined with the 4s inbox poll, the server was
   // servicing a REST request every ~2s, and session-switch requests queued behind them.
-  useEffect(() => {
-    const t = setInterval(refreshSessions, 15000);
-    return () => clearInterval(t);
-  }, [refreshSessions]);
+  // PR9: 改用统一 hook（页面隐藏暂停 / 失败退避），间隔保持 15s 不变。
+  usePolling(refreshSessions, 15000);
 
   // Persona toggles can archive sessions server-side (disable-archives, §18): refetch on the
   // personas-changed event so the sidebar section disappears immediately, not on the next poll.
@@ -887,7 +923,12 @@ export function App() {
           }
           break;
         case "assistant_delta":
-          setStreaming((s) => s + (d.text || ""));
+          // PR9 修：必须传字符串（读实时 ref）而不是函数式更新。setStreaming 对
+          // 函数式更新是立即提交（为避免丢帧/残留），传函数等于每个 token 都
+          // setState 一次，合批从未生效。字符串形式走 rAF 每帧最多提交一次；
+          // streamingRef 仍是实时权威值，finalize 用消息的完整 d.text、中断读
+          // ref，故延迟提交不丢尾部——与 reasoning_delta 一致。
+          setStreaming(streamingRef.current + (d.text || ""));
           dmPush("正在写回复…", "focused");
           break;
         case "reasoning_delta":
@@ -1235,27 +1276,28 @@ export function App() {
   // 10s (was 4s): the 4s poll fires two REST calls (getInbox + getUnattended) that queue on
   // the Python event loop. When combined with the session-list poll, switching sessions
   // had to wait behind a pile of in-flight poll responses.
-  useEffect(() => {
+  const loadSessionInbox = useCallback(() => {
     if (surface !== "session") return;
-    const load = () => {
-      getInbox(sessionId, "pending")
-        .then((list) => {
-          setSessionInbox(list);
-          // 信箱里已经回答、聊天里那张卡还挂着 → 撤卡。只在真有带 id 的未回答卡时才多拉
-          // 一次 resolved 列表，平时不多发请求（这条 10s 轮询很在意开销）。
-          if (hasOpenGates(itemsRef.current)) {
-            getInbox(sessionId, "resolved")
-              .then((resolved) => setItems((p) => reconcileResolvedGates(p, resolved)))
-              .catch(() => {});
-          }
-        })
-        .catch(() => setSessionInbox([]));
-      getUnattended(sessionId).then(markUnattended).catch(() => markUnattended(false));
-    };
-    load();
-    const t = setInterval(load, 10000);
-    return () => clearInterval(t);
-  }, [surface, sessionId, browserRefreshKey, markUnattended]);
+    getInbox(sessionId, "pending")
+      .then((list) => {
+        setSessionInbox(list);
+        // 信箱里已经回答、聊天里那张卡还挂着 → 撤卡。只在真有带 id 的未回答卡时才多拉
+        // 一次 resolved 列表，平时不多发请求（这条 10s 轮询很在意开销）。
+        if (hasOpenGates(itemsRef.current)) {
+          getInbox(sessionId, "resolved")
+            .then((resolved) => setItems((p) => reconcileResolvedGates(p, resolved)))
+            .catch(() => {});
+        }
+      })
+      .catch(() => setSessionInbox([]));
+    getUnattended(sessionId).then(markUnattended).catch(() => markUnattended(false));
+  }, [surface, sessionId, markUnattended]);
+  // 会话切换 / 手动刷新时立即拉一次（原 load() 语义）
+  useEffect(() => {
+    loadSessionInbox();
+  }, [loadSessionInbox, browserRefreshKey]);
+  // PR9：10s 轮询交给统一 hook（页面隐藏暂停 / 失败退避），间隔不变。
+  usePolling(loadSessionInbox, 10000, { enabled: surface === "session" });
 
   const send = (text: string, attachments?: Attachment[]) => {
     setItems((p) => [...p, { kind: "user", text, attachments, ts: Date.now() / 1000 }]);

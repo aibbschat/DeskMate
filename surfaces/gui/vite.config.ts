@@ -71,6 +71,18 @@ export default defineConfig(({ command }) => {
           main: path.resolve(__dirname, "index.html"),
           mobile: path.resolve(__dirname, "mobile.html"),
         },
+        // 2026-11-19 PR9：主包 752KB / styles 541KB 触发 Vite 500KB 告警。
+        // 把稳定的第三方库拆成独立 chunk（vendor-react / vendor-md / vendor-i18n），
+        // 业务代码改动时这些 chunk 的哈希不变，浏览器可长期缓存。
+        output: {
+          manualChunks(id: string) {
+            if (!id.includes("node_modules")) return undefined;
+            if (/node_modules\/(react|react-dom|scheduler|react\/)/.test(id)) return "vendor-react";
+            if (/node_modules\/(react-markdown|remark-|mdast-|micromark|unified|unist-|vfile|hast-|mdast-util)/.test(id)) return "vendor-md";
+            if (/node_modules\/(i18next|react-i18next)/.test(id)) return "vendor-i18n";
+            return undefined;
+          },
+        },
       },
     },
     server: { port: 1420, strictPort: true },

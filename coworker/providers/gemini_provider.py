@@ -476,7 +476,7 @@ class GeminiProvider(ProviderClient):
             ToolCall(id=f"call_{i}", name=c.name, arguments=c.arguments)
             for i, c in enumerate(parsed.calls)
         ]
-        return AssistantTurn(
+        _turn = AssistantTurn(
             text="".join(parsed.texts) or None,
             tool_calls=tool_calls,
             finish_reason=_map_finish(parsed.finish, bool(tool_calls)),
@@ -485,6 +485,11 @@ class GeminiProvider(ProviderClient):
             extras=_signature_extras(parsed.text_sig, parsed.call_sigs),
             usage=_usage_from(getattr(response, "usage_metadata", None)),
         )
+        # PR3：用量账本（fail-open，见 coworker.llm_usage）
+        from .. import llm_usage
+
+        llm_usage.record_turn(model=model, provider="gemini", turn=_turn, messages=messages)
+        return _turn
 
     def capabilities(self, model: str) -> ModelCapabilities:
         return capabilities_for(model)
@@ -535,13 +540,15 @@ class GeminiProvider(ProviderClient):
             ToolCall(id=f"call_{i}", name=c.name, arguments=c.arguments)
             for i, c in enumerate(calls)
         ]
-        yield StreamChunk(
-            turn=AssistantTurn(
-                text="".join(text_parts) or None,
-                tool_calls=tool_calls,
-                finish_reason=_map_finish(finish, bool(tool_calls)),
-                reasoning="".join(thought_parts) or None,
-                extras=_signature_extras(text_sig, call_sigs),
-                usage=usage,
-            )
+        _turn = AssistantTurn(
+            text="".join(text_parts) or None,
+            tool_calls=tool_calls,
+            finish_reason=_map_finish(finish, bool(tool_calls)),
+            reasoning="".join(thought_parts) or None,
+            extras=_signature_extras(text_sig, call_sigs),
+            usage=usage,
         )
+        from .. import llm_usage
+
+        llm_usage.record_turn(model=model, provider="gemini", turn=_turn, messages=messages)
+        yield StreamChunk(turn=_turn)

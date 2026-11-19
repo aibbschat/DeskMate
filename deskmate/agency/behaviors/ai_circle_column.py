@@ -41,7 +41,7 @@ import re
 import time
 from typing import Optional
 
-from deskmate.persona import for_scene
+from deskmate.persona import IDENTITY_SELF, for_scene
 
 logger = logging.getLogger(__name__)
 
@@ -127,7 +127,9 @@ _USER_TMPL = (
     "{themes}"
     "其中标了「萧盛相关／和萧盛共处」的内容，是你被萧盛（你的主人、作家）亲手教出来、"
     "一起做事长出来的痕迹——他纠正过你、采纳过你的建议、和你一起写作与圆桌讨论。"
-    "写手记时，可以自然地带着他的影子、他的治学态度和写作品味，但你是小桔，用你自己的话、"
+    "写手记时，可以自然地带着他的影子、他的治学态度和写作品味，但"
+    + IDENTITY_SELF
+    + "，用你自己的话、"
     "你自己的语气讲，不要写成他在说话，也不要写成汇报。\n\n"
     "此刻，想给自己的读者写一条主页手记吗？"
 )

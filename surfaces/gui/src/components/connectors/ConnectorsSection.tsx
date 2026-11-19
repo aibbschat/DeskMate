@@ -1,4 +1,5 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
+import { usePolling } from "../../hooks/usePolling";
 import {
   disconnectConnector,
   getCloudStatus,
@@ -65,22 +66,15 @@ export function ConnectorsSection() {
     getCloudStatus().then(setCloud).catch(() => setCloud(null));
     getSlackStatus().then(setSlack).catch(() => setSlack(null));
   };
-  useEffect(() => {
-    refresh();
-    // Poll: recent senders/parked arrive over time; sign-in + managed connects finish
-    // in the system browser and surface on the next tick.
-    const t = setInterval(refresh, 5000);
-    return () => clearInterval(t);
-  }, []);
+  // Poll: recent senders/parked arrive over time; sign-in + managed connects finish
+  // in the system browser and surface on the next tick.
+  // PR15：走统一 usePolling（页面隐藏即暂停、失败退避），间隔不变。
+  usePolling(refresh, 5000, { immediate: true });
 
   // While an MCP test/sign-in is in flight, poll fast so the chip flips to its
   // result (Live / Error / Needs sign-in) without the user touching anything.
   const mcpBusy = mcpServers.some((s) => s.status === "authorizing");
-  useEffect(() => {
-    if (!mcpBusy) return;
-    const t = setInterval(refresh, 2000);
-    return () => clearInterval(t);
-  }, [mcpBusy]);
+  usePolling(refresh, 2000, { enabled: mcpBusy });
 
   // Custom MCP entries route as "mcp:<name>" so they can never collide with a
   // connector detail page of the same name.

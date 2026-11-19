@@ -520,7 +520,7 @@ class AnthropicProvider(ProviderClient):
                 )
         stop_reason = getattr(response, "stop_reason", None)
         _raise_on_refusal(stop_reason, response)
-        return AssistantTurn(
+        _turn = AssistantTurn(
             text="".join(text_parts) or None,
             tool_calls=tool_calls,
             finish_reason=_STOP_REASON_MAP.get(stop_reason, stop_reason),
@@ -529,6 +529,11 @@ class AnthropicProvider(ProviderClient):
             extras=_thinking_extras(thinking_blocks),
             usage=_usage_from(getattr(response, "usage", None)),
         )
+        # PR3：与 OpenAI 出口对齐的用量账本（fail-open，见 coworker.llm_usage）
+        from .. import llm_usage
+
+        llm_usage.record_turn(model=model, provider="anthropic", turn=_turn, messages=messages)
+        return _turn
 
     def capabilities(self, model: str) -> ModelCapabilities:
         return capabilities_for(model)
@@ -641,13 +646,15 @@ class AnthropicProvider(ProviderClient):
             )
         thinking_blocks = [thinking_accum[i] for i in sorted(thinking_accum)]
 
-        yield StreamChunk(
-            turn=AssistantTurn(
-                text="".join(text_parts) or None,
-                tool_calls=tool_calls,
-                finish_reason=_STOP_REASON_MAP.get(stop_reason, stop_reason),
-                reasoning=_reasoning_text(thinking_blocks),
-                extras=_thinking_extras(thinking_blocks),
-                usage=usage,
-            )
+        _turn = AssistantTurn(
+            text="".join(text_parts) or None,
+            tool_calls=tool_calls,
+            finish_reason=_STOP_REASON_MAP.get(stop_reason, stop_reason),
+            reasoning=_reasoning_text(thinking_blocks),
+            extras=_thinking_extras(thinking_blocks),
+            usage=usage,
         )
+        from .. import llm_usage
+
+        llm_usage.record_turn(model=model, provider="anthropic", turn=_turn, messages=messages)
+        yield StreamChunk(turn=_turn)

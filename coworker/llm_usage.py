@@ -48,10 +48,47 @@ CREATE TABLE IF NOT EXISTS llm_usage (
   completion_chars INTEGER NOT NULL DEFAULT 0,
   status TEXT NOT NULL DEFAULT 'ok',
   error TEXT,
-  scene TEXT
+  scene TEXT,
+  first_chunk_ms REAL,
+  stream_ms REAL
 );
 CREATE INDEX IF NOT EXISTS idx_llm_usage_ts ON llm_usage(ts);
 """
+
+# 2026-11-19 PR0：首字/流耗时埋点。旧库只建了 12 列，需幂等补列；
+# 缓存键沿用 _ensured_paths，避免每次记账都跑 PRAGMA。
+_LATENCY_COLUMNS = {
+    "first_chunk_ms": "REAL",
+    "stream_ms": "REAL",
+}
+
+
+def record_turn(
+    *,
+    model: str,
+    provider: str,
+    turn: Any,
+    messages: Optional[list] = None,
+) -> None:
+    """PR3：把一次 Agent 回合的 token 用量记账（非 OpenAI provider 出口用）。
+
+    从 ``AssistantTurn.usage`` 取 token 四列；没有 usage 时用消息字符数兜底。
+    fail-open 由 :func:`record` 内部保证。
+    """
+    usage = getattr(turn, "usage", None)
+    text = getattr(turn, "text", None) or ""
+    prompt_chars = 0
+    if messages:
+        for m in messages:
+            content = m.get("content", "") if isinstance(m, dict) else ""
+            prompt_chars += len(content) if isinstance(content, str) else 0
+    record(
+        model=model,
+        provider=provider,
+        usage=usage,
+        prompt_chars=prompt_chars,
+        completion_chars=len(text),
+    )
 
 
 @contextmanager
@@ -87,6 +124,15 @@ def _ensure_schema(con: sqlite3.Connection, db_key: str) -> None:
         if db_key in _ensured_paths:
             return
         con.executescript(_SCHEMA)
+        # 旧库兼容：CREATE TABLE IF NOT EXISTS 不会补新列，逐列检查后 ALTER。
+        # fail-open 由 record() 的外层 try 兜住，这里只吞单列失败。
+        existing = {r[1] for r in con.execute("PRAGMA table_info(llm_usage)").fetchall()}
+        for col, decl in _LATENCY_COLUMNS.items():
+            if col not in existing:
+                try:
+                    con.execute(f"ALTER TABLE llm_usage ADD COLUMN {col} {decl}")
+                except Exception:
+                    pass
         con.commit()
         _ensured_paths.add(db_key)
 
@@ -101,6 +147,8 @@ def record(
     status: str = "ok",
     error: Optional[str] = None,
     scene: Optional[str] = None,
+    first_chunk_ms: Optional[float] = None,
+    stream_ms: Optional[float] = None,
 ) -> None:
     """记一条用量（fail-open：任何异常静默吞掉，绝不向上抛）。
 
@@ -113,6 +161,7 @@ def record(
         status: "ok" | "error"。
         error: 失败时的简短错误描述（建议 ``type(exc).__name__: str(exc)`` 截断）。
         scene: 显式场景标签；None 时取 ambient scene_scope。
+        first_chunk_ms / stream_ms: 2026-11-19 PR0 首字延迟基线（provider 出口填）。
     """
     try:
         db = _db_path()
@@ -131,7 +180,8 @@ def record(
             con.execute(
                 "INSERT INTO llm_usage (ts, provider, model, input_tokens, cache_read,"
                 " cache_write, completion_tokens, prompt_chars, completion_chars,"
-                " status, error, scene) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                " status, error, scene, first_chunk_ms, stream_ms)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     time.time(),
                     provider,
@@ -145,6 +195,8 @@ def record(
                     status or "ok",
                     (str(error)[:200] if error else None),
                     (scene if scene is not None else current_scene()),
+                    (float(first_chunk_ms) if first_chunk_ms is not None else None),
+                    (float(stream_ms) if stream_ms is not None else None),
                 ),
             )
             con.commit()

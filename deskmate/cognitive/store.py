@@ -247,9 +247,13 @@ class CognitiveStore:
     def _connect(self):
         import sqlite3
 
-        conn = sqlite3.connect(str(self.db_path))
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA foreign_keys=ON")
+        from deskmate.memory._sqlite import connect as _sqlite_connect
+
+        conn = _sqlite_connect(self.db_path)
+        try:
+            conn.execute("PRAGMA foreign_keys=ON")
+        except sqlite3.Error:
+            pass
         try:
             yield conn
             conn.commit()
@@ -544,6 +548,133 @@ class CognitiveStore:
     # ------------------------------------------------------------------
     # 持久化（全量 upsert，规模小、简单且正确）
     # ------------------------------------------------------------------
+
+    def _persist_noop(self, conn, profile, layer: str) -> bool:
+        """PR7：逐列比对「待写状态」与「库中状态」，完全一致则跳过整次写入。
+
+        只比对真正会写进表的列（含 meta / sources / history / gaps）。任何一列
+        不一致、表结构异常、读取失败 → 返回 False 走原来的写入路径（保守）。
+        这样反复 persist 相同 profile 的后台 tick 不再产生 DELETE+INSERT 对
+        和 2N 条 oplog；已同步条目的 sync 身份也完全不动。
+        """
+        try:
+            dims = (
+                ("stance", profile.stances),
+                ("argument_pattern", profile.argument_patterns),
+                ("value_ranking", profile.value_rankings),
+                ("thinking_framework", profile.thinking_frameworks),
+            )
+            want_items: dict[str, tuple] = {}
+            want_src: dict[tuple, tuple] = {}
+            want_hist: dict[tuple, tuple] = {}
+            for dim, items in dims:
+                for it in items:
+                    topic = getattr(it, _DIM_MAP[dim][1] or "", "") if _DIM_MAP[dim][1] else ""
+                    extra = json.dumps(self._item_extra(dim, it), ensure_ascii=False)
+                    want_items[it.id] = (
+                        layer, dim, topic, it.content, it.category,
+                        it.status, float(it.confidence), extra,
+                        it.first_extracted, it.last_updated,
+                        it.first_extracted, None,  # valid_from / valid_until
+                    )
+                    for i, s in enumerate(it.sources):
+                        want_src[(it.id, i)] = (
+                            s.type, s.title, s.excerpt, s.date, float(s.confidence),
+                        )
+                    for j, h in enumerate(it.history):
+                        want_hist[(it.id, j)] = (
+                            h.action, h.old_value, h.new_value, h.reason, h.source, h.timestamp,
+                        )
+
+            want_gaps: dict[str, tuple] = {}
+            for g in profile.cognitive_gaps:
+                want_gaps[g.id] = (
+                    layer, g.topic, g.reason, float(g.priority),
+                    json.dumps(g.related_items, ensure_ascii=False), g.status,
+                    g.created_at, getattr(g, "resolved_at", "") or "",
+                )
+            want_meta = {
+                "version": profile.version,
+                "created_at": profile.created_at,
+                "last_updated": profile.last_updated,
+                "extraction_count": profile.extraction_count,
+                "calibration_count": profile.calibration_count,
+                "summary": profile.summary,
+            }
+
+            # 墓碑条目即使出现在 profile 里也不会写（见 persist 后段），
+            # 比对时把它们从 want 中剔除，否则会误判为"有变化"而反复写。
+            try:
+                dead = {r[0] for r in conn.execute("SELECT item_id FROM forgotten_items")}
+            except sqlite3.Error:
+                dead = set()
+            if dead:
+                want_items = {k: v for k, v in want_items.items() if k not in dead}
+                want_src = {k: v for k, v in want_src.items() if k[0] not in dead}
+                want_hist = {k: v for k, v in want_hist.items() if k[0] not in dead}
+
+            got_items: dict[str, tuple] = {}
+            for r in conn.execute(
+                "SELECT id, layer, dimension, topic, content, category, status, confidence, "
+                "extra_json, first_extracted, last_updated, valid_from, valid_until "
+                "FROM profile_items WHERE layer=?", (layer,),
+            ):
+                got_items[r[0]] = (
+                    r[1], r[2], r[3], r[4], r[5], r[6], float(r[7] or 0),
+                    r[8], r[9], r[10], r[11], r[12],
+                )
+            if got_items != want_items:
+                return False
+
+            ids = list(want_items)
+            got_src: dict[tuple, tuple] = {}
+            got_hist: dict[tuple, tuple] = {}
+            if ids:
+                marks = ",".join("?" for _ in ids)
+                for r in conn.execute(
+                    f"SELECT item_id, idx, type, title, excerpt, date, confidence "
+                    f"FROM item_sources WHERE item_id IN ({marks})", ids,
+                ):
+                    got_src[(r[0], r[1])] = (r[2], r[3], r[4], r[5], float(r[6] or 0))
+                for r in conn.execute(
+                    f"SELECT item_id, seq, action, old_value, new_value, reason, source, ts "
+                    f"FROM item_history WHERE item_id IN ({marks})", ids,
+                ):
+                    got_hist[(r[0], r[1])] = (r[2], r[3], r[4], r[5], r[6], r[7])
+            # 库里若有不属于 want 的孤儿 source/history，说明状态不同，不能跳过
+            # （用全表计数差值判断，避免全表比对）。
+            if conn.execute("SELECT COUNT(*) FROM item_sources").fetchone()[0] != len(got_src):
+                return False
+            n_hist = conn.execute(
+                "SELECT COUNT(*) FROM item_history WHERE action NOT IN "
+                "('reflected', 'reflected_apply')"
+            ).fetchone()[0]
+            if n_hist != len(got_hist):
+                return False
+            if got_src != want_src or got_hist != want_hist:
+                return False
+
+            got_gaps: dict[str, tuple] = {}
+            for r in conn.execute(
+                "SELECT id, layer, topic, reason, priority, related_items_json, status, "
+                "created_at, resolved_at FROM cognitive_gaps WHERE layer=?", (layer,),
+            ):
+                got_gaps[r[0]] = (
+                    r[1], r[2], r[3], float(r[4] or 0), r[5], r[6], r[7], r[8] or "",
+                )
+            if got_gaps != want_gaps:
+                return False
+
+            for k, v in want_meta.items():
+                row = conn.execute(
+                    "SELECT value FROM profile_meta WHERE key=?", (k,)
+                ).fetchone()
+                if row is None or row[0] != json.dumps(v, ensure_ascii=False):
+                    return False
+            return True
+        except Exception:  # noqa: BLE001 - 任何不确定都走原写入路径
+            return False
+
     def persist(self, profile: CognitiveProfile, layer: str = _LAYER,
                 force: bool = False):
         """持久化某一层（全量覆盖）。
@@ -601,6 +732,10 @@ class CognitiveStore:
                     f"refuse to wipe layer={layer}: {existing} existing items "
                     f"but 0 incoming (use force=True if intended)"
                 )
+            # PR7：状态完全没变就整次跳过——不再 DELETE+重插，不产生 2N 条 oplog，
+            # 也不碰已同步条目的 sync 身份。force=True 时仍强制重写。
+            if not force and existing > 0 and self._persist_noop(conn, profile, layer):
+                return
             # meta
             meta = {
                 "version": profile.version,
