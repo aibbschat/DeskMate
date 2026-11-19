@@ -12,7 +12,13 @@ import json
 import sqlite3
 from typing import Any
 
-from coworker.teams import store as _L
+# _L 懒代理父模块（复检修复）：避免子模块被「首个直接导入」时与父模块 re-export 循环导入。
+# 仅在函数调用访问 _L.X 时解析父模块（此时必已完整加载）；monkeypatch(父, X) 经 getattr 实时生效。
+class _LazyParent:
+    def __getattr__(self, name):
+        from coworker.teams import store as _m
+        return getattr(_m, name)
+_L = _LazyParent()
 from coworker.teams.model import BoardError
 
 

@@ -10,7 +10,13 @@ from __future__ import annotations
 
 import re
 
-from deskmate.novel_memory import core as _L
+# _L 懒代理父模块（复检修复）：避免子模块被「首个直接导入」时与父模块 re-export 循环导入。
+# 仅在函数调用访问 _L.X 时解析父模块（此时必已完整加载）；monkeypatch(父, X) 经 getattr 实时生效。
+class _LazyParent:
+    def __getattr__(self, name):
+        from deskmate.novel_memory import core as _m
+        return getattr(_m, name)
+_L = _LazyParent()
 
 
 def check_consistency(bible_docs: dict[str, str], new_text: str) -> dict:
