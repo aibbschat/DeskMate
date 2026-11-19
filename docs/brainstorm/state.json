@@ -1,7 +1,7 @@
 {
   "version": 1,
   "project": "/Users/xiaocheng/workspace/openworker",
-  "updatedAt": "2026-11-15T03:57:22.124Z",
+  "updatedAt": "2026-11-19T11:47:03.235465Z",
   "contradictions": [
     {
       "id": "C1",
@@ -29,6 +29,13 @@
       "verdict": "reject",
       "reason": "云端已经跑通，只是暂时没开；本地/云端不是待决问题，别拿它当卖点论证。",
       "at": "2026-11-15T03:57:22.124Z"
+    },
+    {
+      "id": "D3",
+      "idea": "本轮续做巨型文件架构重构：SessionManager/EmotionEngine/TeamStore 类主体拆 mixin、app.py 325 路由模块化、api.ts 剩余域续抽",
+      "verdict": "defer",
+      "reason": "萧哥 2026-11-19 确认先不做。三项均为纯结构改动、无运行时收益：①类主体拆 mixin 动 MRO/patch 路径，实测 EmotionEngine 32 处/9 文件、TeamStore 22 处/8 文件测试耦合，且本轮 get_engine 一行改动即造成 4 个真回归；②325 路由全捕获 manager 闭包，模块化=重写注册架构，风险最高；③api.ts 续抽三类中风险最低（barrel 模式已验证、tsc 0 错/485 passed），但仍无性能收益。性能优化本轮已净消除 4 回归、零新增红，见好就收。若将来做须独立立项、单独分支 + HEAD 基线同口径失败清单 + 先红后绿护栏，不可并入性能 PR。",
+      "at": "2026-11-19T11:47:03.235465Z"
     }
   ],
   "observations": [],
