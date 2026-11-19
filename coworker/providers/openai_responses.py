@@ -45,6 +45,7 @@ from .base import (
     ToolCall,
 )
 from .capabilities import capabilities_for
+from . import timeouts as _timeouts
 from .openai_provider import resolve_api_key
 
 # Request params passed through from model settings; everything else (frequency_penalty,
@@ -342,6 +343,9 @@ class OpenAIResponsesProvider(ProviderClient):
                     "or add your key in Manage → Settings."
                 )
             kwargs = {"api_key": key}
+            _sdk_read = _timeouts.sdk_read_timeout()
+            if _sdk_read:
+                kwargs["timeout"] = _sdk_read
             if self._base_url:
                 kwargs["base_url"] = self._base_url
             self._client = OpenAI(**kwargs)

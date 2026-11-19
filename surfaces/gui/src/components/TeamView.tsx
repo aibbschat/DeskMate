@@ -53,6 +53,7 @@ import {
   filterWorkers,
   type WorkerFilter,
 } from "../teamRoster";
+import { usePolling } from "../hooks/usePolling";
 
 const POLL_MS = 3000;
 const ROSTER_PAGE = 8;
@@ -838,11 +839,11 @@ export function TeamView({
     }
   }, [teamId, t]);
 
+  // PR20(#51)：团队摘要轮询迁 usePolling（隐藏页暂停、失败退避、不并发）。
   useEffect(() => {
     void load();
-    const timer = window.setInterval(() => void load(), POLL_MS);
-    return () => window.clearInterval(timer);
   }, [load]);
+  usePolling(load, POLL_MS);
 
   const items = summary?.items ?? [];
   const byGroup = useMemo(() => {

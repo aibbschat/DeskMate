@@ -9,6 +9,7 @@ request handlers touch it from different threads.
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import threading
 from datetime import datetime, timezone
@@ -76,7 +77,11 @@ class TaskStore:
     def __init__(self, path: str | Path) -> None:
         self.path = str(path)
         self._lock = threading.RLock()
-        self._conn = sqlite3.connect(self.path, check_same_thread=False)
+        # PR18(#40)：改走统一口径（WAL + busy_timeout），与 learned/emotion 等库一致，
+        # 多进程（daemon + 云端窗口 + MCP）并发写时不再 `database is locked`。
+        from deskmate.memory._sqlite import connect as _sqlite_connect
+
+        self._conn = _sqlite_connect(self.path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._init()
 
@@ -156,7 +161,55 @@ class TaskStore:
                 (run.run_id, run.task_id, run.started_at, json.dumps(run.to_dict())),
             )
             self._conn.commit()
+            self._maybe_prune_runs()
         return run
+
+    def _maybe_prune_runs(self) -> None:
+        """PR18(#39)：task_runs 只插入不清理 → 每 200 次写入裁剪一次旧 run。
+
+        每个 task 只保留最近 ``COWORKER_TASK_RUNS_KEEP``（默认 50）条，另删 90 天前
+        的孤儿 run（task 已删的情况由 delete 级联兜底）。``=0`` 关闭。
+        """
+        self._run_writes = getattr(self, "_run_writes", 0) + 1
+        if self._run_writes % 200 != 0:
+            return
+        self.prune_runs()
+
+    def prune_runs(self, keep_per_task: Optional[int] = None, max_age_days: int = 90) -> int:
+        """裁剪 task_runs：每 task 保留最近 N 条 + 删除超龄孤儿。返回删除行数。"""
+        if keep_per_task is None:
+            try:
+                keep_per_task = int(
+                    (os.environ.get("COWORKER_TASK_RUNS_KEEP") or "").strip() or 50
+                )
+            except ValueError:
+                keep_per_task = 50
+        if keep_per_task <= 0:
+            return 0
+        cutoff = _epoch_now() - max_age_days * 86400
+        removed = 0
+        with self._lock:
+            task_ids = [
+                r["task_id"]
+                for r in self._conn.execute("SELECT DISTINCT task_id FROM task_runs")
+            ]
+            for tid in task_ids:
+                rows = self._conn.execute(
+                    "SELECT run_id FROM task_runs WHERE task_id=? ORDER BY started_at DESC",
+                    (tid,),
+                ).fetchall()
+                stale = [r["run_id"] for r in rows[keep_per_task:]]
+                if stale:
+                    self._conn.executemany(
+                        "DELETE FROM task_runs WHERE run_id=?", [(rid,) for rid in stale]
+                    )
+                    removed += len(stale)
+            old = self._conn.execute(
+                "DELETE FROM task_runs WHERE started_at < ?", (cutoff,)
+            ).rowcount
+            removed += max(0, old or 0)
+            self._conn.commit()
+        return removed
 
     def find_run(self, run_id: str) -> Optional[TaskRun]:
         with self._lock:

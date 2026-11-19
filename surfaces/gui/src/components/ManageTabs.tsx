@@ -35,6 +35,7 @@ import { CloudSignInInline, CloudStatusPending } from "./connectors/CloudSignIn"
 import { ModelChecklist } from "./ModelChecklist";
 import { ProviderCards, ProviderForm, useProviderSetup } from "../providers/ProviderSetup";
 import { Toggle } from "./Toggle";
+import { usePolling } from "../hooks/usePolling";
 
 // "2h ago"-style label for the providers' Last-used line (null when never used).
 const relTime = (epoch?: number | null): string | null => {
@@ -478,11 +479,8 @@ export function McpTab() {
   // While a browser sign-in is in flight, poll so the row flips to connected (or
   // surfaces the error) without the user having to touch anything.
   const authorizing = servers.some((s) => s.status === "authorizing");
-  useEffect(() => {
-    if (!authorizing) return;
-    const t = window.setInterval(refresh, 2000);
-    return () => window.clearInterval(t);
-  }, [authorizing]);
+  // PR20(#51)：登录进行中的 2s 轮询迁 usePolling（enabled = 有 authorizing 的服务器）。
+  usePolling(refresh, 2000, { enabled: authorizing });
 
   const toggle = async (s: McpServer) => {
     await patchMcpServer(s.name, { enabled: !s.enabled });

@@ -35,7 +35,8 @@
     "proposedPlan": "proposed plan",
     "planApproved": "Plan approved",
     "sentBackWithFeedback": "Sent back with feedback",
-    "retry": "Retry"
+    "retry": "Retry",
+    "showEarlier": "Show {{n}} earlier"
   },
   "sidebar": {
     "awaitingAttention": "{{count}} awaiting your attention",

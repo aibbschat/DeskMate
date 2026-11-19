@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import {
   getConnectors,
   getDmRoute,
@@ -19,6 +19,7 @@ import {
 import type { SessionInfo } from "../types";
 import { ChannelPicker } from "./SubscriptionsChip";
 import { Icon } from "./Icon";
+import { usePolling } from "../hooks/usePolling";
 
 // Inbox ▸ Configure (UX-DECISIONS §28): the former Connectors ▸ "Messaging routing" page,
 // relocated whole — where inbox items go out (mirror channel), how inbound messages reach
@@ -70,11 +71,8 @@ function InboxRoutingCard() {
       })
       .catch(() => setTarget(""));
   };
-  useEffect(() => {
-    load();
-    const t = setInterval(load, 5000);
-    return () => clearInterval(t);
-  }, []);
+  // PR20(#51)：5s 轮询迁 usePolling（隐藏页暂停 / 失败退避 / 不并发）。
+  usePolling(load, 5000, { immediate: true });
 
   const save = async () => {
     const addr = draft.trim();
@@ -168,11 +166,8 @@ function DmRouteCard() {
     getSessions().then(setSessions).catch(() => setSessions([]));
     getDmRoute().then((s) => setDm(s || "")).catch(() => setDm(""));
   };
-  useEffect(() => {
-    load();
-    const t = setInterval(load, 5000);
-    return () => clearInterval(t);
-  }, []);
+  // PR20(#51)：5s 轮询迁 usePolling（隐藏页暂停 / 失败退避 / 不并发）。
+  usePolling(load, 5000, { immediate: true });
 
   const real = sessions.filter((s) => !s.session_id.startsWith("__"));
   const choose = async (sessionId: string) => {
@@ -218,11 +213,8 @@ function SubscriptionsCard() {
     getSessions().then(setSessions).catch(() => setSessions([]));
     getRecentChannels().then(setRecent).catch(() => setRecent([]));
   };
-  useEffect(() => {
-    load();
-    const t = setInterval(load, 5000);
-    return () => clearInterval(t);
-  }, []);
+  // PR20(#51)：5s 轮询迁 usePolling（隐藏页暂停 / 失败退避 / 不并发）。
+  usePolling(load, 5000, { immediate: true });
 
   const real = sessions.filter((s) => !s.session_id.startsWith("__"));
   const add = async () => {
@@ -328,12 +320,9 @@ function SubscriptionsCard() {
 function UnroutedTable() {
   const [items, setItems] = useState<UnroutedItem[] | null>(null);
 
-  useEffect(() => {
-    const load = () => getUnrouted().then(setItems).catch(() => setItems([]));
-    load();
-    const t = setInterval(load, 5000);
-    return () => clearInterval(t);
-  }, []);
+  const load = () => getUnrouted().then(setItems).catch(() => setItems([]));
+  // PR20(#51)：轮询迁 usePolling。
+  usePolling(load, 5000, { immediate: true });
 
   if (items && items.length === 0)
     return (

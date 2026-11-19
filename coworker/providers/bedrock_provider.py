@@ -48,6 +48,7 @@ from .base import (
     ToolCall,
 )
 from .capabilities import capabilities_for
+from . import timeouts as _timeouts
 
 # Lock for thread-safe os.environ mutation (boto3 reads env vars at session creation time)
 _env_lock = threading.Lock()
@@ -318,7 +319,19 @@ class _BedrockConverseClient(ProviderClient):
                 with _env_lock:
                     os.environ["AWS_BEARER_TOKEN_BEDROCK"] = self._bedrock_api_key
             session = boto3.session.Session(**self._session_kwargs)
-            self._client = session.client("bedrock-runtime", region_name=self._region)
+            _read = _timeouts.sdk_read_timeout()
+            _conn = _timeouts.sdk_connect_timeout()
+            _cfg = None
+            if _read or _conn:
+                from botocore.config import Config as _BotoConfig
+
+                _cfg = _BotoConfig(
+                    read_timeout=_read, connect_timeout=_conn, retries={"max_attempts": 2}
+                )
+            self._client = session.client(
+                "bedrock-runtime", region_name=self._region,
+                **({"config": _cfg} if _cfg else {}),
+            )
         return self._client
 
     def _request_kwargs(
@@ -538,7 +551,10 @@ class BedrockProvider(ProviderClient):
                     "AWS_BEARER_TOKEN_BEDROCK"
                 )
                 if bearer:
-                    sdk = AnthropicBedrock(api_key=bearer, aws_region=self._region)
+                    sdk = AnthropicBedrock(
+                        api_key=bearer, aws_region=self._region,
+                        timeout=_timeouts.sdk_read_timeout(),
+                    )
                 else:
                     sdk = AnthropicBedrock(
                         aws_region=self._region,
@@ -546,6 +562,7 @@ class BedrockProvider(ProviderClient):
                         aws_access_key=self._access_key_id,
                         aws_secret_key=self._secret_access_key,
                         aws_session_token=self._session_token,
+                        timeout=_timeouts.sdk_read_timeout(),
                     )
                 client = AnthropicProvider(client=sdk)
             else:

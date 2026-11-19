@@ -33,6 +33,8 @@ def test_responses_custom_base_url_reaches_sdk(monkeypatch):
 
     provider._ensure_client()
 
+    # PR17(#34)：SDK 客户端现在显式带 read timeout（默认 300s，env 可调）。
+    assert captured.pop("timeout") == 300.0
     assert captured == {
         "api_key": "ark-key",
         "base_url": "https://ark.example/api/v3",
@@ -52,6 +54,8 @@ def test_stock_openai_responses_path_unchanged(monkeypatch):
 
     provider._ensure_client()
 
+    # PR17(#34)：同上，timeout 随行（stock 路径其余参数不变）。
+    assert captured.pop("timeout") == 300.0
     assert captured == {"api_key": "openai-key"}
 
 # -- fakes ------------------------------------------------------------------------

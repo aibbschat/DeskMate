@@ -16,6 +16,7 @@ import { InboxItemCard } from "./InboxItemCard";
 import { InboxConfigure } from "./InboxConfigure";
 import { PanelHead } from "./IntegrationsView";
 import { shortPersonaName } from "../personaScope";
+import { usePolling } from "../hooks/usePolling";
 
 const ICON_FOR: Record<string, "diamond" | "chat" | "code"> = {
   cowork: "diamond",
@@ -85,12 +86,16 @@ export function InboxView({
       .then((cs) => setSlackConnected(!!cs.find((c) => c.name === "slack" && c.connected)))
       .catch(() => {});
     getRecentChannels().then(setRecent).catch(() => setRecent([]));
-    const t = setInterval(() => {
+  }, []);
+  // PR20(#51)：4s 轮询迁 usePolling（Pending 页隐藏时不再打接口）。
+  usePolling(
+    () => {
       load();
       loadRouting(); // edits happen on the Configure tab; keep Pending's status line honest
-    }, 4000);
-    return () => clearInterval(t);
-  }, []);
+    },
+    4000,
+    { immediate: true },
+  );
 
   const resolve = async (id: string, resolution: string) => {
     await resolveInboxItem(id, resolution);

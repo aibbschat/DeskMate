@@ -35,7 +35,8 @@
     "proposedPlan": "提出的计划",
     "planApproved": "计划已批准",
     "sentBackWithFeedback": "已反馈退回",
-    "retry": "重试"
+    "retry": "重试",
+    "showEarlier": "显示更早的 {{n}} 条"
   },
   "sidebar": {
     "awaitingAttention": "{{count}} 项等待处理",

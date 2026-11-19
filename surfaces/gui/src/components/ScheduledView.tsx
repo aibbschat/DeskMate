@@ -15,6 +15,7 @@ import {
 import { Icon } from "./Icon";
 import { PanelHead } from "./IntegrationsView";
 import { AutomationQuickstart } from "./AutomationQuickstart";
+import { usePolling } from "../hooks/usePolling";
 
 // Shared utility strings (the §28 page shell — mirrors IntegrationsView's constants).
 const CARD = "rounded-xl2 border border-line bg-panel";
@@ -78,11 +79,8 @@ export function ScheduledView({ onOpenRun, onRunNow, initialOpenId }: Props) {
   }, [initialOpenId]);
 
   const refresh = () => getAutomations().then(setTasks).catch(() => setTasks([]));
-  useEffect(() => {
-    refresh();
-    const h = setInterval(refresh, 5000);
-    return () => clearInterval(h);
-  }, []);
+  // PR20(#51)：列表轮询迁 usePolling（隐藏页暂停 / 失败退避 / 不并发）。
+  usePolling(refresh, 5000, { immediate: true });
 
   // Create from a payload, refresh the list, and open the new task's detail. `permissions`
   // rides through for quickstart recipes (§25 write grants).
@@ -345,10 +343,7 @@ function TaskDetail({
   // Autonomy §C1 "visible": the detail used to refresh only on user actions, so
   // a live run's step/checkpoint never moved. Poll while the detail is open;
   // the global stop/finish events are consumed in App.tsx (single WS connection).
-  useEffect(() => {
-    const h = window.setInterval(refresh, 5000);
-    return () => window.clearInterval(h);
-  }, [id]);
+  usePolling(refresh, 5000);
 
   if (!task)
     return (

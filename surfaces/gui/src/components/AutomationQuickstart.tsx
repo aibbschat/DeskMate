@@ -12,6 +12,7 @@ import { ConnectSetup } from "./ManageTabs";
 import { ConnectorBadge } from "../connectors/ConnectorIcon";
 import { ChannelPicker } from "./SubscriptionsChip";
 import { SelectMenu } from "./SelectMenu";
+import { usePolling } from "../hooks/usePolling";
 
 // The Automations quickstart (UX-DECISIONS §29): ONE template system. The former onboarding
 // recipe step (§24's role recipes) merged into the page's "Start from a template" grid — every
@@ -179,7 +180,7 @@ export function AutomationQuickstart({
   };
   // Connector state drives the card dots, so load once up front; poll only while a template
   // is being configured (the connect sheet flips the card to connected out-of-band).
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // PR20(#51)：仅在配置模板期间轮询，迁 usePolling（enabled 由 picked 控制）。
   useEffect(() => {
     refresh();
   }, []);
@@ -187,12 +188,9 @@ export function AutomationQuickstart({
     if (!picked) return;
     refresh();
     getRecentChannels().then(setRecent).catch(() => {});
-    pollRef.current = setInterval(refresh, 3000);
-    return () => {
-      if (pollRef.current) clearInterval(pollRef.current);
-    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pickedKey]);
+  usePolling(refresh, 3000, { enabled: !!picked });
 
   const connState = (name: string) => connectors.find((c) => c.name === name);
   const allConnected = !picked || picked.conns.every((c) => connState(c.name)?.connected);

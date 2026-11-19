@@ -292,6 +292,30 @@ export function App() {
   useEffect(() => {
     itemsRef.current = items;
   }, [items]);
+  // PR20(#52)：WS 事件逐条 setItems 会各触发一次整树重渲（React 的自动批处理只覆盖
+  // 同一宏任务内的多次 setState）。把 transcript 的追加/修改压进队列，rAF 内合并成
+  // 一次提交——同一帧到达的 tool_result / approval / notice 不再各渲染一遍。
+  const itemsQueueRef = useRef<Array<(p: Item[]) => Item[]>>([]);
+  const itemsFrameRef = useRef<number | null>(null);
+  const flushItems = () => {
+    itemsFrameRef.current = null;
+    const queue = itemsQueueRef.current;
+    itemsQueueRef.current = [];
+    if (!queue.length) return;
+    setItems((p) => queue.reduce((acc, fn) => fn(acc), p));
+  };
+  const queueItems = (fn: (p: Item[]) => Item[]) => {
+    itemsQueueRef.current.push(fn);
+    if (itemsFrameRef.current === null) {
+      itemsFrameRef.current = requestAnimationFrame(flushItems);
+    }
+  };
+  useEffect(
+    () => () => {
+      if (itemsFrameRef.current !== null) cancelAnimationFrame(itemsFrameRef.current);
+    },
+    [],
+  );
   const [streaming, setStreamingState] = useState("");
   // Ref mirror of `streaming`: the WS handler closure is built once per socket and can't read
   // fresh state — the interrupted/error flush below needs the live buffer at event time.
@@ -848,7 +872,7 @@ export function App() {
         if (!partial && !thinking) return;
         setStreaming("");
         setReasoningStream("");
-        setItems((p) => [
+        queueItems((p) => [
           ...p,
           {
             kind: "assistant",
@@ -907,14 +931,14 @@ export function App() {
           // Foreground turns already appended it in send(); skip the duplicate.
           if (d.source?.connector) {
             const src = d.source as MessageSource;
-            setItems((p) => {
+            queueItems((p) => {
               const last = p[p.length - 1];
               return last && last.kind === "connector" && last.source.ts === src.ts && last.source.text === src.text
                 ? p
                 : [...p, { kind: "connector", source: src }];
             });
           } else if (typeof d.input === "string" && d.input) {
-            setItems((p) => {
+            queueItems((p) => {
               const last = p[p.length - 1];
               return last && last.kind === "user" && last.text === d.input
                 ? p
@@ -944,7 +968,7 @@ export function App() {
           // 三按钮的 intent_discuss 卡片（opening 阶段只显示文字）。
           const meta = d.meta || {};
           if (meta.origin === "intent_handoff" && (d.text || "")) {
-            setItems((p) => [
+            queueItems((p) => [
               ...p,
               {
                 kind: "intent_discuss",
@@ -967,13 +991,13 @@ export function App() {
               try { report = JSON.parse(report); } catch { report = null; }
             }
             if (report && typeof report === "object") {
-              setItems((p) => [
+              queueItems((p) => [
                 ...p,
                 { kind: "report", name: String(d.report_name), report },
               ]);
             }
           } else if (d.text || reasoning) {
-            setItems((p) => [
+            queueItems((p) => [
               ...p,
               {
                 kind: "assistant",
@@ -990,7 +1014,7 @@ export function App() {
         case "tool_proposed":
           if (d.name === "todo_write" && (d.arguments?.todos || d.arguments?.items))
             setTodo(normalizeTodos(d.arguments.todos ?? d.arguments.items));
-          setItems((p) => [
+          queueItems((p) => [
             ...p,
             { kind: "tool", id: d.id || newId(), name: d.name, args: d.arguments, status: "…" },
           ]);
@@ -998,7 +1022,7 @@ export function App() {
         case "permission_required":
           // Unattended → the backend parked it in the Inbox; don't also surface a live card.
           if (unattendedRef.current) break;
-          setItems((p) =>
+          queueItems((p) =>
             dedupeGates([
               ...p,
               {
@@ -1018,18 +1042,18 @@ export function App() {
           break;
         case "directory_requested":
           if (unattendedRef.current) break;
-          setItems((p) => [
+          queueItems((p) => [
             ...p,
             { kind: "dirreq", reason: d.reason || "", path: d.path || "", writable: !!d.writable },
           ]);
           break;
         case "plan_proposed":
           if (unattendedRef.current) break;
-          setItems((p) => [...p, { kind: "planreq", plan: d.plan || "" }]);
+          queueItems((p) => [...p, { kind: "planreq", plan: d.plan || "" }]);
           break;
         case "question_requested":
           // ask_user in an attended session — answered inline (not routed to the Inbox).
-          setItems((p) => [
+          queueItems((p) => [
             ...p,
             {
               kind: "question",
@@ -1044,7 +1068,7 @@ export function App() {
           dmPush(`正在调用工具：${d.name}`, "focused");
           break;
         case "tool_finished":
-          setItems((p) =>
+          queueItems((p) =>
             // 完成即权威：这个调用已经跑完（或被拒），它那张门卡不该还能点。
             retireFinishedGate(
               updateLastTool(
@@ -1073,15 +1097,15 @@ export function App() {
           break;
         case "turn_end":
           // 一轮结束还没人回答的门卡：后端不再等它，标成失效（历史留住，但不能再点）。
-          setItems((p) => expireOpenGates(p));
+          queueItems((p) => expireOpenGates(p));
           if (d.status === "max_iterations_exceeded")
-            setItems((p) => [...p, { kind: "notice", tone: "warn", text: "Stopped: max iterations reached." }]);
+            queueItems((p) => [...p, { kind: "notice", tone: "warn", text: "Stopped: max iterations reached." }]);
           break;
         case "model_changed":
           // Mid-session switch (server-applied): update the header fact and drop the
           // persisted marker into the live transcript (replay renders it from history).
           if (d.model) setModel(d.model);
-          setItems((p) => [...p, { kind: "notice", tone: "info", text: d.text || "Model switched" }]);
+          queueItems((p) => [...p, { kind: "notice", tone: "info", text: d.text || "Model switched" }]);
           break;
         case "compacting":
           setCompacting(true);
@@ -1089,21 +1113,21 @@ export function App() {
         case "compacted":
           // Auto-compaction marker (OPE-27): outbound-only — the transcript stays intact,
           // this divider just shows where the model's memory was summarized.
-          setItems((p) => [...p, { kind: "notice", tone: "info", text: d.text || "Context compacted", compact: true }]);
+          queueItems((p) => [...p, { kind: "notice", tone: "info", text: d.text || "Context compacted", compact: true }]);
           break;
         case "interrupted":
           flushPartialStream();
-          setItems((p) => [...p, { kind: "notice", tone: "warn", text: "Interrupted." }]);
+          queueItems((p) => [...p, { kind: "notice", tone: "warn", text: "Interrupted." }]);
           break;
         case "error":
           flushPartialStream();
-          setItems((p) => [
+          queueItems((p) => [
             ...p,
             { kind: "notice", tone: "warn", text: "Error: " + (d.error || "unknown"), retriable: true },
           ]);
           break;
         case "input_rejected":
-          setItems((p) => [
+          queueItems((p) => [
             ...p,
             { kind: "notice", tone: "warn", text: d.error || "That message was rejected." },
           ]);
@@ -1114,7 +1138,7 @@ export function App() {
           // 所以不做 transcript 重放（萧哥 2026-11-07 拍板「不用保留」）。
           const audio = String(d.audio_b64 || "");
           if (!audio) break;
-          setItems((p) => [
+          queueItems((p) => [
             ...p,
             {
               kind: "voice",

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 from datetime import date as _date
 from pathlib import Path
 from typing import Optional
@@ -13,6 +14,13 @@ from .registry import get_registry
 
 import logging
 logger = logging.getLogger(__name__)
+
+# PR19(#43)：timeline.jsonl 每轮全量逐行解析 + 全量 sort（非闲聊轮必跑）。
+# 按 (路径, mtime_ns, size) 缓存解析结果——文件不变就不重复解析；行数随自动任务
+# 每次运行 +1，缓存也随之失效一次，成本回到「一行」的增量。
+_TIMELINE_CACHE: dict[tuple[str, int, int], list] = {}
+_TIMELINE_LOCK = threading.Lock()
+_TIMELINE_MAX = 4
 
 
 class TaskRecorder:
@@ -221,22 +229,38 @@ class TaskRecorder:
         return n
 
     def get_timeline(self, limit: int = 50, task_type: Optional[str] = None) -> list[TaskRecord]:
-        """读取时间线，倒序返回。"""
+        """读取时间线，倒序返回。
+
+        PR19(#43)：按文件指纹缓存解析结果，避免每轮全量重解析 + 全量排序。
+        """
         if not self.timeline_file.exists():
             return []
-        records = []
-        with open(self.timeline_file, "r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    rec = TaskRecord.from_jsonl(line)
-                    if task_type is None or rec.task_type == task_type:
-                        records.append(rec)
-                except Exception:
-                    continue
-        records.sort(key=lambda r: r.ts, reverse=True)
+        try:
+            st = self.timeline_file.stat()
+        except OSError:
+            return []
+        key = (str(self.timeline_file), st.st_mtime_ns, st.st_size)
+        with _TIMELINE_LOCK:
+            records = _TIMELINE_CACHE.get(key)
+        if records is None:
+            parsed: list[TaskRecord] = []
+            with open(self.timeline_file, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        parsed.append(TaskRecord.from_jsonl(line))
+                    except Exception:
+                        continue
+            parsed.sort(key=lambda r: r.ts, reverse=True)
+            with _TIMELINE_LOCK:
+                if len(_TIMELINE_CACHE) >= _TIMELINE_MAX:
+                    _TIMELINE_CACHE.pop(next(iter(_TIMELINE_CACHE)), None)
+                _TIMELINE_CACHE[key] = parsed
+            records = parsed
+        if task_type is not None:
+            records = [r for r in records if r.task_type == task_type]
         return records[:limit]
 
     def get_stats(self) -> dict:

@@ -32,6 +32,7 @@ from .base import (
     ToolCall,
 )
 from .capabilities import capabilities_for
+from . import timeouts as _timeouts
 
 
 def _usage_from(usage: Any) -> Optional[TokenUsage]:
@@ -412,7 +413,8 @@ class AnthropicProvider(ProviderClient):
                     "No Anthropic API key configured. Set ANTHROPIC_API_KEY in the environment, "
                     "or add your key in Manage → Configure Models."
                 )
-            self._client = Anthropic(api_key=key)
+            _t = _timeouts.sdk_read_timeout()
+            self._client = Anthropic(api_key=key, timeout=_t) if _t else Anthropic(api_key=key)
         return self._client
 
     def _request_kwargs(

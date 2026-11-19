@@ -36,6 +36,7 @@ import { ConnectSetup } from "./ManageTabs";
 import { RootRow } from "./RootRow";
 import { ChannelPicker } from "./SubscriptionsChip";
 import { Toggle } from "./Toggle";
+import { usePolling } from "../hooks/usePolling";
 
 // A channel address's platform: "slack:C0123" → "slack"; a bare id or "#mention" defaults to
 // slack (the backend's own default when no platform prefix is given).
@@ -122,22 +123,21 @@ export function AccessSection({
   // Folders mirrors Sources: flat rows + a quiet "+" link that expands the inline form.
   const [addingFolder, setAddingFolder] = useState(false);
   const [cloud, setCloud] = useState<CloudStatus | null>(null);
+  const loadCloud = () => getCloudStatus().then(setCloud).catch(() => {});
   useEffect(() => {
     if (!connectFor) return;
     // null means UNKNOWN (renders as "checking"), never signed-out: a single failed
     // fetch here used to demand sign-in from a signed-in user with no way to recover
     // (FB-013). Poll while the connect pane is open, keep last-good on failure, and
     // listen for the sign-in broadcast so the pane flips the moment login lands.
-    const load = () => getCloudStatus().then(setCloud).catch(() => {});
-    load();
-    const t = setInterval(load, 5000);
-    window.addEventListener(CLOUD_CHANGED, load);
-    return () => {
-      clearInterval(t);
-      window.removeEventListener(CLOUD_CHANGED, load);
-    };
+    // PR20(#51)：轮询交给下面的 usePolling（enabled = 连接面板打开时），
+    // 这个 effect 只负责登录广播监听与首屏补一次。
+    void loadCloud();
+    window.addEventListener(CLOUD_CHANGED, loadCloud);
+    return () => window.removeEventListener(CLOUD_CHANGED, loadCloud);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [!!connectFor]);
+  usePolling(loadCloud, 5000, { enabled: !!connectFor });
   const [subs, setSubs] = useState<Subscription[]>([]);
   const [recent, setRecent] = useState<RecentChannel[]>([]);
   const [draft, setDraft] = useState("");
@@ -490,17 +490,19 @@ function ConnectInline({
   onDone: () => void;
   onBack: () => void;
 }) {
-  useEffect(() => {
-    const t = setInterval(async () => {
+  // PR20(#51)：等待 OAuth 落地的轮询迁 usePolling（隐藏页暂停、失败退避）。
+  usePolling(
+    async () => {
       try {
         const list = await getConnectors();
         if (list.find((x) => x.name === c.name)?.connected) onDone();
       } catch {
         /* poll again */
       }
-    }, 2500);
-    return () => clearInterval(t);
-  }, [c.name, onDone]);
+    },
+    2500,
+    { immediate: true },
+  );
 
   return (
     <div>

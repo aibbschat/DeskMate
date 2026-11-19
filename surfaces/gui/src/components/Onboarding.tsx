@@ -11,6 +11,7 @@ import {
 import { ConnectorBadge } from "../connectors/ConnectorIcon";
 import { ProviderCards, ProviderForm, useProviderSetup } from "../providers/ProviderSetup";
 import { Spinner } from "./AutomationQuickstart";
+import { usePolling } from "../hooks/usePolling";
 
 // First-run onboarding (UX-DECISIONS §24 → §29 → §39): model → your tools → go.
 // §39 (owner design, 2026-07-18): step 1 is a PROVIDER GALLERY — 13 real brand
@@ -71,17 +72,18 @@ export function Onboarding({ onDone }: { onDone: (next?: "work" | "gallery" | "a
 
   // Poll while on the tools page: sign-in AND vendor consents land out-of-band in
   // the system browser. Tighten while either is actually in flight.
+  const load = () => {
+    getConnectors().then(setConnectors).catch(() => {});
+    getCloudStatus().then(setCloud).catch(() => {});
+  };
+  const fast = signinPhase === "waiting" || pendingTool !== null;
+  // PR20(#51)：首屏补一次后交给 usePolling（快慢档随登录/授权进行中切换）。
   useEffect(() => {
     if (step !== 1) return;
-    const load = () => {
-      getConnectors().then(setConnectors).catch(() => {});
-      getCloudStatus().then(setCloud).catch(() => {});
-    };
-    load();
-    const fast = signinPhase === "waiting" || pendingTool !== null;
-    const t = setInterval(load, fast ? 750 : 3000);
-    return () => clearInterval(t);
-  }, [step, signinPhase, pendingTool]);
+    void load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [step]);
+  usePolling(load, fast ? 750 : 3000, { enabled: step === 1 });
 
   // The poll flips the card to ✓ when the consent lands.
   useEffect(() => {

@@ -34,6 +34,7 @@ from .base import (
     ToolCall,
 )
 from .capabilities import capabilities_for
+from . import timeouts as _timeouts
 
 
 def _usage_from(meta: Any) -> Optional[TokenUsage]:
@@ -426,7 +427,12 @@ class GeminiProvider(ProviderClient):
                     "No Gemini API key configured. Set GEMINI_API_KEY in the environment, "
                     "or add your key in Manage → Configure Models."
                 )
-            self._client = genai.Client(api_key=key)
+            _http = _timeouts.genai_http_options()
+            self._client = (
+                genai.Client(api_key=key, http_options=_http)
+                if _http
+                else genai.Client(api_key=key)
+            )
         return self._client
 
     def _request_kwargs(

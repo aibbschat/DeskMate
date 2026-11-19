@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 import os
 import re
 import sqlite3
@@ -24,6 +25,13 @@ from . import entities as _ent
 _norm = _ent._norm
 
 logger = logging.getLogger(__name__)
+
+# PR19(#44)：圣经 verify 每次都把全书重新 read_text 拼接（≤5M 字符）再做正则复核。
+# 按「文件集指纹（路径+mtime+size）+ max_chars + exclude_aux」缓存合并正文：
+# 未改稿时直接命中；改一篇只需重读该文件（指纹变 → 整份重拼一次，仍远低于每轮重跑）。
+_SCAN_CACHE: dict[tuple, tuple[str, list[str]]] = {}
+_SCAN_LOCK = threading.Lock()
+_SCAN_MAX = 4
 
 # 稳定公开 API（圆桌等外部模块只应依赖以下名字，避免直连下划线私有函数/常量，
 # 否则 core.py 重构这些下划线符号时会静默失效）。
@@ -348,6 +356,21 @@ def scan_novel(folder: str, max_chars: int = 400_000, *, exclude_aux: bool = Fal
     files = _iter_text_files(scan_root)
     if exclude_aux:
         files = [p for p in files if not _is_aux_file(p)]
+    # PR19(#44)：指纹缓存（文件集未变直接返回上次合并正文）。
+    cache_key = None
+    try:
+        cache_key = (
+            str(scan_root),
+            int(max_chars),
+            bool(exclude_aux),
+            tuple((str(f), f.stat().st_mtime_ns, f.stat().st_size) for f in files),
+        )
+        with _SCAN_LOCK:
+            cached = _SCAN_CACHE.get(cache_key)
+        if cached is not None:
+            return cached
+    except OSError:
+        cache_key = None
     for p in files:
         text = _read_file_text(p)
         if not text.strip():
@@ -368,7 +391,13 @@ def scan_novel(folder: str, max_chars: int = 400_000, *, exclude_aux: bool = Fal
             break
         chunks.append(block)
         total += len(block)
-    return "\n".join(chunks), titles
+    result = ("\n".join(chunks), titles)
+    if cache_key is not None and result[0]:
+        with _SCAN_LOCK:
+            if len(_SCAN_CACHE) >= _SCAN_MAX:
+                _SCAN_CACHE.pop(next(iter(_SCAN_CACHE)), None)
+            _SCAN_CACHE[cache_key] = result
+    return result
 
 
 def _split_batches(text: str, size: int = 12000, overlap: int = 400) -> list[str]:

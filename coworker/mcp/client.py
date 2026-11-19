@@ -118,12 +118,26 @@ class MCPManager:
         return self._stderr_tails.get(name)
 
     async def call(
-        self, name: str, tool: str, arguments: Optional[dict[str, Any]]
+        self,
+        name: str,
+        tool: str,
+        arguments: Optional[dict[str, Any]],
+        *,
+        timeout: Optional[float] = None,
     ) -> Any:
         conn = self._conns.get(name)
         if conn is None:
             raise RuntimeError(f"MCP server not connected: {name}")
-        result = await conn.session.call_tool(tool, arguments or {})
+        # PR18(#37)：可选协程级超时——wait_for 超时会真正 cancel 底层 call_tool，
+        # 与 tools.py 的 future.cancel 形成双保险（前者释放连接、后者释放线程等待）。
+        coro = conn.session.call_tool(tool, arguments or {})
+        if timeout is not None and timeout > 0:
+            try:
+                result = await asyncio.wait_for(coro, timeout)
+            except asyncio.TimeoutError:
+                raise TimeoutError(f"MCP tool {tool} timed out after {timeout:g}s") from None
+        else:
+            result = await coro
         return _result_payload(result)
 
     async def aclose(self) -> None:

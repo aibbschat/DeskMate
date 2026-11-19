@@ -40,6 +40,7 @@ from .base import AssistantTurn, ModelCapabilities, ProviderClient
 from .capabilities import capabilities_for
 from .gemini_provider import GeminiProvider
 from .openai_provider import OpenAIProvider
+from . import timeouts as _timeouts
 
 _SCOPES = ["https://www.googleapis.com/auth/cloud-platform"]
 
@@ -163,14 +164,22 @@ class VertexProvider(ProviderClient):
                 if self._api_key:
                     # Express mode: the key excludes project/location (SDK enforces
                     # mutual exclusivity — the key already identifies the project).
-                    sdk = genai.Client(vertexai=True, api_key=self._api_key)
+                    _http = _timeouts.genai_http_options()
+                    _kw = {"vertexai": True, "api_key": self._api_key}
+                    if _http:
+                        _kw["http_options"] = _http
+                    sdk = genai.Client(**_kw)
                 else:
-                    sdk = genai.Client(
-                        vertexai=True,
-                        project=self._project,
-                        location=self._location,
-                        credentials=self._explicit_credentials(),
-                    )
+                    _http = _timeouts.genai_http_options()
+                    _kw = {
+                        "vertexai": True,
+                        "project": self._project,
+                        "location": self._location,
+                        "credentials": self._explicit_credentials(),
+                    }
+                    if _http:
+                        _kw["http_options"] = _http
+                    sdk = genai.Client(**_kw)
                 client = GeminiProvider(client=sdk)
             else:
                 from anthropic import AnthropicVertex
@@ -180,6 +189,7 @@ class VertexProvider(ProviderClient):
                         project_id=self._project,
                         region=self._location,
                         credentials=self._explicit_credentials(),
+                        timeout=_timeouts.sdk_read_timeout(),
                     )
                 )
             self._clients[family] = client

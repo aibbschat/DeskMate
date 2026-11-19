@@ -29,6 +29,7 @@ from __future__ import annotations
 import logging
 import re
 import sqlite3
+import threading
 from pathlib import Path
 from typing import Any, Optional
 
@@ -111,8 +112,50 @@ def gate_hits(
 
 
 
+# PR19(#42)：查询向量 LRU。追问/重复问题此前每轮都重新跑 embed(query) 的 CPU 推理。
+# 只缓存非空结果（模型未加载时的空结果不能缓存，否则加载后仍返回空）。
+_QUERY_VEC: dict[tuple[str, bool], Any] = {}
+_QUERY_LOCK = threading.Lock()
+_QUERY_MAX = 128
+
+
+def _query_vector(text: str, allow_load: bool) -> Any:
+    key = (text, bool(allow_load))
+    with _QUERY_LOCK:
+        if key in _QUERY_VEC:
+            return _QUERY_VEC[key]
+    from deskmate.memory import local_embed
+
+    qv = local_embed.embed([text], allow_load=allow_load)
+    vec = qv[0] if qv and qv[0] else None
+    if vec:
+        with _QUERY_LOCK:
+            _QUERY_VEC[key] = vec
+            if len(_QUERY_VEC) > _QUERY_MAX:
+                _QUERY_VEC.pop(next(iter(_QUERY_VEC)), None)
+    return vec
+
+
+# PR19(#41)：模块级单例。此前每轮 `FileIndex(base)` 都会重建：schema 12+ 条 DDL、
+# `_matrix_cache`（3.3MB 向量矩阵 + 正文）失效重载、全 vault rglob。实例常驻后
+# 三者都只付一次成本；按 base 路径分桶（DESKMATE_DIR 切换/测试隔离互不串）。
+_INDEX_CACHE: dict[str, Any] = {}
+_INDEX_LOCK = threading.Lock()
+_INDEX_MAX = 4
+
+
 def _idx(base: Optional[Path | str] = None) -> FileIndex:
-    return FileIndex(base)
+    from deskmate.paths import deskmate_base_dir
+
+    key = str(Path(base) if base is not None else deskmate_base_dir())
+    with _INDEX_LOCK:
+        idx = _INDEX_CACHE.get(key)
+        if idx is None:
+            if len(_INDEX_CACHE) >= _INDEX_MAX:
+                _INDEX_CACHE.pop(next(iter(_INDEX_CACHE)), None)
+            idx = FileIndex(base)
+            _INDEX_CACHE[key] = idx
+        return idx
 
 
 def _has_indexable_sources(base: Path) -> bool:
@@ -399,12 +442,11 @@ def search_memory_files(
     kw_rows = idx.search_keyword(q, limit=30)
     vec_rows: list[dict] = []
     try:
-        from deskmate.memory import local_embed
-
-        # 只读模式不触发模型下载：模型已在本进程载入才走向量通道
-        qv = local_embed.embed([q], allow_load=not read_only)
-        if qv and qv[0]:
-            vec_rows = idx.vector_search(qv[0], limit=30)
+        # 只读模式不触发模型下载：模型已在本进程载入才走向量通道。
+        # PR19(#42)：查询向量按文本缓存（同问不重复推理）。
+        qvec = _query_vector(q, allow_load=not read_only)
+        if qvec:
+            vec_rows = idx.vector_search(qvec, limit=30)
     except Exception as exc:  # noqa: BLE001 —— 向量不可用则只用关键词
         logger.warning("查询向量化失败（退关键词）：%s", exc)
     anchor_rows = _anchor_hits(idx, b, q)

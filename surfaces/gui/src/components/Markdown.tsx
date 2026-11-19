@@ -1,3 +1,4 @@
+import { memo } from "react";
 import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Icon } from "./Icon";
@@ -163,7 +164,46 @@ function detectMemoryReference(text: string): boolean {
   return MEMORY_REF_PATTERNS.some((p) => p.test(text));
 }
 
-export function Markdown({ text }: { text: string }) {
+// PR20(#49)：remarkPlugins / urlTransform / components 每次 render 新建会让
+// ReactMarkdown 内部缓存全部失效（每帧重解析**全部历史消息**）。三者都不依赖
+// props，提升为模块常量；组件本体再 memo，text 不变就完全不重渲染。
+const REMARK_PLUGINS = [remarkGfm];
+
+const URL_TRANSFORM = (url: string) =>
+  url.startsWith("artifact:") || url.startsWith(EMOTE_PROTOCOL) || url.startsWith("board:")
+    ? url
+    : defaultUrlTransform(url);
+
+const MD_COMPONENTS = {
+  a: ({ node: _n, href, children, ...props }: any) => {
+    if (href?.startsWith("artifact:")) {
+      const title = Array.isArray(children) ? children.join("") : String(children ?? "");
+      return <ArtifactChip path={href.slice("artifact:".length)} title={title} />;
+    }
+    if (href?.startsWith("board:")) {
+      const label = Array.isArray(children) ? children.join("") : String(children ?? "");
+      return <BoardChip label={label} />;
+    }
+    return (
+      <a href={href} {...props} target="_blank" rel="noreferrer">
+        {children}
+      </a>
+    );
+  },
+  img: ({ node: _n, src, alt, ...props }: any) => {
+    if (typeof src === "string" && src.startsWith(EMOTE_PROTOCOL)) {
+      const raw = src.slice(EMOTE_PROTOCOL.length);
+      const ci = raw.indexOf(":");
+      const name = ci === -1 ? raw : raw.slice(ci + 1);
+      return (
+        <Emote name={name} size={48} title={typeof alt === "string" ? alt : undefined} />
+      );
+    }
+    return <img src={src} alt={alt} {...props} />;
+  },
+};
+
+export const Markdown = memo(function Markdown({ text }: { text: string }) {
   const rendered = repairCjkEmphasis(withEmoteSyntax(text));
   const hasMemoryRef = detectMemoryReference(text || "");
   return (
@@ -188,49 +228,14 @@ export function Markdown({ text }: { text: string }) {
         </div>
       )}
       <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
+        remarkPlugins={REMARK_PLUGINS}
         // artifact: and emote: are ours — keep them through the sanitizer (everything else
         // gets the default http/https/mailto policy). emote: is intercepted in components.img.
-        urlTransform={(url) =>
-          url.startsWith("artifact:") || url.startsWith(EMOTE_PROTOCOL) || url.startsWith("board:")
-            ? url
-            : defaultUrlTransform(url)
-        }
-        components={{
-          a: ({ node: _n, href, children, ...props }) => {
-            if (href?.startsWith("artifact:")) {
-              const title = Array.isArray(children) ? children.join("") : String(children ?? "");
-              return <ArtifactChip path={href.slice("artifact:".length)} title={title} />;
-            }
-            if (href?.startsWith("board:")) {
-              const label = Array.isArray(children) ? children.join("") : String(children ?? "");
-              return <BoardChip label={label} />;
-            }
-            return (
-              <a href={href} {...props} target="_blank" rel="noreferrer">
-                {children}
-              </a>
-            );
-          },
-          img: ({ node: _n, src, alt, ...props }) => {
-            if (typeof src === "string" && src.startsWith(EMOTE_PROTOCOL)) {
-              const raw = src.slice(EMOTE_PROTOCOL.length);
-              const ci = raw.indexOf(":");
-              const name = ci === -1 ? raw : raw.slice(ci + 1);
-              return (
-                <Emote
-                  name={name}
-                  size={48}
-                  title={typeof alt === "string" ? alt : undefined}
-                />
-              );
-            }
-            return <img src={src} alt={alt} {...props} />;
-          },
-        }}
+        urlTransform={URL_TRANSFORM}
+        components={MD_COMPONENTS}
       >
         {rendered}
       </ReactMarkdown>
     </div>
   );
-}
+});

@@ -234,6 +234,8 @@ def test_api_key_method_builds_express_gemini_client(monkeypatch):
     from coworker.providers import GeminiProvider
 
     assert isinstance(sub, GeminiProvider)
+    # PR17(#34)：Gemini 客户端现在带 HttpOptions(timeout=ms)。
+    assert captured.pop("http_options") is not None
     assert captured == {"vertexai": True, "api_key": "AQ.k"}
 
 

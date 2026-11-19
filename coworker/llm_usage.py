@@ -21,6 +21,7 @@ deskmate 不可 import 的环境（上游单机形态）自动 no-op。
 from __future__ import annotations
 
 import contextvars
+import os
 import sqlite3
 import threading
 import time
@@ -33,6 +34,9 @@ _scene: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
 
 _lock = threading.Lock()
 _ensured_paths: set[str] = set()
+# PR18(#47)：llm_usage 只插入不清理（本机 1278 行、每个 LLM 轮 +1）。
+_PRUNE_EVERY = 500
+_prune_writes = 0
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS llm_usage (
@@ -137,6 +141,36 @@ def _ensure_schema(con: sqlite3.Connection, db_key: str) -> None:
         _ensured_paths.add(db_key)
 
 
+def prune(days: Optional[int] = None) -> int:
+    """PR18(#47)：删除超龄用量行（默认保留 ``DESKMATE_LLM_USAGE_KEEP_DAYS``=120 天）。
+
+    fail-open：任何异常返回 0，绝不影响对话。返回删除行数。
+    """
+    try:
+        db = _db_path()
+        if db is None:
+            return 0
+        if days is None:
+            try:
+                days = int(
+                    (os.environ.get("DESKMATE_LLM_USAGE_KEEP_DAYS") or "").strip() or 120
+                )
+            except ValueError:
+                days = 120
+        if days <= 0:
+            return 0
+        cutoff = time.time() - days * 86400
+        con = sqlite3.connect(str(db), timeout=5.0)
+        try:
+            n = con.execute("DELETE FROM llm_usage WHERE ts < ?", (cutoff,)).rowcount
+            con.commit()
+            return max(0, n or 0)
+        finally:
+            con.close()
+    except Exception:
+        return 0
+
+
 def record(
     *,
     model: str,
@@ -202,6 +236,10 @@ def record(
             con.commit()
         finally:
             con.close()
+        global _prune_writes
+        _prune_writes += 1
+        if _prune_writes % _PRUNE_EVERY == 0:
+            prune()
     except Exception:
         # fail-open：记账失败绝不影响对话本身
         pass

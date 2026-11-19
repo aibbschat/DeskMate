@@ -447,6 +447,9 @@ def prune_stale(known_channels: set, *, base_dir: Optional[Path] = None) -> int:
     return n
 
 
+_AUDIT_ROTATE_BYTES = 5 * 1024 * 1024
+
+
 # --------------------------------------------------------------------------- #
 # 审计（本地簿记，不同步—— §3.3）
 # --------------------------------------------------------------------------- #
@@ -472,6 +475,14 @@ def audit(*, event: str, channel: str = "", kind: str = "", detail: str = "",
     }
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
+        # PR18(#45)：审计只增不减（实测 9.5MB）→ 超 5MB 轮转，只留一份 .1。
+        try:
+            if path.stat().st_size > _AUDIT_ROTATE_BYTES:
+                rotated = path.with_suffix(path.suffix + ".1")
+                rotated.unlink(missing_ok=True)
+                path.replace(rotated)
+        except OSError:
+            pass
         with open(path, "a", encoding="utf-8") as f:
             f.write(json.dumps(row, ensure_ascii=False) + "\n")
     except Exception as e:  # noqa: BLE001

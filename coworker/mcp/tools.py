@@ -10,6 +10,7 @@ explicit OpenAI schema built straight from the MCP `inputSchema` for fidelity.
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import re
 from typing import Any, Awaitable, Callable
 
@@ -70,7 +71,15 @@ def build_callables(
 
         def _invoke(_remote: str = remote, **kwargs: Any) -> Any:
             future = asyncio.run_coroutine_threadsafe(call_async(_remote, kwargs), loop)
-            return future.result(timeout)
+            try:
+                return future.result(timeout)
+            except concurrent.futures.TimeoutError:
+                # PR18(#37)：超时后必须 cancel，否则协程仍挂在连接上继续跑，
+                # 长跑累积占满 MCP 会话。cancel 会让底层 call_tool 收到 CancelledError。
+                future.cancel()
+                raise TimeoutError(
+                    f"MCP tool {_remote} timed out after {timeout:g}s"
+                ) from None
 
         # We attach the schema + metadata explicitly (rather than via `ai.tool`, which would
         # try to derive a schema from this `**kwargs` wrapper): the registry reads both attrs.

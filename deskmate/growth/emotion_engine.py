@@ -2436,6 +2436,22 @@ class EmotionEngine:
                 "DELETE FROM emotion_log WHERE source='time_decay' AND ts < ?",
                 (cutoff,),
             )
+            # PR18(#46)：experience / echo 等非 time_decay 行此前没有保留期。
+            # 它们不会每拍写，但长期也只增不减（本机约 2500 行）。保留 180 天
+            # （DESKMATE_EMOTION_LOG_KEEP_DAYS 可调）——远大于 maybe_echo 需要的 7 天。
+            try:
+                keep_days = int(
+                    (os.environ.get("DESKMATE_EMOTION_LOG_KEEP_DAYS") or "").strip() or 180
+                )
+            except ValueError:
+                keep_days = 180
+            if keep_days > 0:
+                keep_cutoff = (now - timedelta(days=keep_days)).isoformat(
+                    timespec="seconds")
+                conn.execute(
+                    "DELETE FROM emotion_log WHERE source!='time_decay' AND ts < ?",
+                    (keep_cutoff,),
+                )
             guard.write_text(today, encoding="utf-8")
         except Exception as e:  # fail-open
             logger.debug("prune emotion_log skipped: %s", e)

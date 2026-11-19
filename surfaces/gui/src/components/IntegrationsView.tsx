@@ -1,7 +1,8 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { getConnectors } from "../api";
 import { ConnectorsSection } from "./connectors/ConnectorsSection";
 import { Icon } from "./Icon";
+import { usePolling } from "../hooks/usePolling";
 
 // The Connectors surface (renamed from "Integrations", §26). The separate "MCP
 // servers" tab is retired (UX-034): custom MCP servers now live on the Connectors
@@ -14,14 +15,11 @@ export function IntegrationsView() {
   // Sub-nav count: how many connectors exist. Polled so the badge stays live.
   const [connCount, setConnCount] = useState<number | null>(null);
 
-  useEffect(() => {
-    const load = () => {
-      getConnectors().then((cs) => setConnCount(cs.length)).catch(() => {});
-    };
-    load();
-    const t = setInterval(load, 5000);
-    return () => clearInterval(t);
-  }, []);
+  // PR20(#51)：徽标计数轮询迁 usePolling。
+  const load = () => {
+    getConnectors().then((cs) => setConnCount(cs.length)).catch(() => {});
+  };
+  usePolling(load, 5000, { immediate: true });
 
   return (
     <main className="flex-1 min-w-0 flex bg-paper">

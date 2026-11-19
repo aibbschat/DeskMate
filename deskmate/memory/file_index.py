@@ -297,6 +297,21 @@ def chunk_file(kind: str, text: str) -> list[tuple[str, str]]:
 # ---------------------------------------------------------------------------
 # 索引
 # ---------------------------------------------------------------------------
+# PR19(#41)：schema 记账。FileIndex 每轮重建会跑 12+ 条 DDL（CREATE TABLE IF
+# NOT EXISTS 在 macOS 上仍是 fcntl 加锁 + schema 解析），进程内建一次就够；
+# 以 db 路径为键（DESKMATE_DIR 切换/测试隔离时每个新库仍会建表）。
+_SCHEMA_READY: set[str] = set()
+_SCHEMA_LOCK = threading.Lock()
+
+
+def _sync_ttl_seconds() -> float:
+    """PR19(#41)：全 vault rglob+stat 的同步节流窗口（默认 60s）。0 = 不节流。"""
+    try:
+        return float((os.environ.get("DESKMATE_FILE_INDEX_SYNC_TTL") or "").strip() or 60)
+    except ValueError:
+        return 60.0
+
+
 class FileIndex:
     """记忆文件索引。短连接 + WAL，与 ExternalStore / DiaryStore 同模式。"""
 
@@ -315,7 +330,13 @@ class FileIndex:
                 raise FileNotFoundError(self.db_path)
         else:
             self.base.mkdir(parents=True, exist_ok=True)
-            self._ensure_schema()
+            db_key = str(self.db_path)
+            if db_key not in _SCHEMA_READY:
+                self._ensure_schema()
+                with _SCHEMA_LOCK:
+                    _SCHEMA_READY.add(db_key)
+        self._last_sync: float = 0.0
+        self._last_sync_stats: dict[str, Any] = {}
         self._matrix_cache: Optional[tuple[tuple[int, str], Any, list[str]]] = None
         self._lexicon_cache: Optional[dict[str, tuple[str, str]]] = None
         self._lock = threading.Lock()
@@ -442,7 +463,28 @@ class FileIndex:
 
     # -- 增量同步 --------------------------------------------------------
     def sync(self, force: bool = False, max_files: Optional[int] = None) -> dict:
-        """增量同步；返回统计。任何异常 fail-open 返回空统计。"""
+        """增量同步；返回统计。任何异常 fail-open 返回空统计。
+
+        PR19(#41)：TTL 节流——短窗口内的重复调用直接返回上次统计（sync 是
+        「全 vault rglob + 637 次 stat」的重活，而 conversation 每轮都会触发一次）。
+        ``DESKMATE_FILE_INDEX_SYNC_TTL``（默认 60s，0 关闭）；force/max_files 不节流。
+        """
+        if not force and max_files is None:
+            ttl = _sync_ttl_seconds()
+            if ttl > 0 and self._last_sync and (datetime.datetime.now().timestamp() - self._last_sync) < ttl:
+                # 窗口内复用上次统计，并按「未变更」重述一遍，语义与真跑一致：
+                # scanned 仍是源文件数，changed/embedded/chunks 归零。
+                cached = dict(self._last_sync_stats)
+                cached.update({
+                    "changed": 0,
+                    "embedded": 0,
+                    "chunks": 0,
+                    "removed": 0,
+                    "error": None,
+                    "ms": 0,
+                    "skipped": cached.get("scanned", 0),
+                })
+                return cached
         stats = {"scanned": 0, "changed": 0, "chunks": 0, "embedded": 0,
                  "skipped": 0, "removed": 0, "error": None, "ms": 0}
         t0 = datetime.datetime.now()
@@ -506,6 +548,9 @@ class FileIndex:
             stats["error"] = f"{type(exc).__name__}: {exc}"
             logger.warning("记忆文件索引同步失败（fail-open）：%s", stats["error"])
         stats["ms"] = int((datetime.datetime.now() - t0).total_seconds() * 1000)
+        # PR19(#41)：记录本次同步时间/结果，供 TTL 节流复用。
+        self._last_sync = datetime.datetime.now().timestamp()
+        self._last_sync_stats = dict(stats)
         return stats
 
     def _delete_chunks(self, conn: sqlite3.Connection, ids: list[str]) -> None:

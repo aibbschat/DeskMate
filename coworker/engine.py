@@ -1147,20 +1147,49 @@ class TurnEngine:
         # 否则 scene 标签在线程池边界丢失，账本无法区分 bot 群 / 专家 / 后台任务。
         _ctx = contextvars.copy_context()
         loop.run_in_executor(_PROVIDER_POOL, _ctx.run, produce)
+        # 2026-11-19 PR17(#34)：消费端统一首字 / idle 看门狗。PR2 只在 OpenAI 出口
+        # 的 pump 线程装了看门狗；anthropic / gemini / vertex / bedrock / codex 的 SDK
+        # 无显式 read timeout（默认 600s），上游 stall 时不产生异常，paid_fallback
+        # 无从降级。这里对 queue 取数设 wait 超时，一处覆盖全部 provider：超时抛
+        # ProviderStall（消息含 timeout ⇒ 熔断归 transient）。
+        from .providers import timeouts as _timeouts
+
+        _first_seen = False
+        _last = time.monotonic()
         while True:
             # Race the queue against Stop so a stalled stream (no chunks arriving —
             # the pre-first-token wait, a wedged connection) can't hold the turn.
             get_task = asyncio.ensure_future(queue.get())
             cancel_task = asyncio.ensure_future(self._cancel.wait())
+            _limit = 0.0
+            if _timeouts.watchdog_enabled():
+                _limit = (
+                    _timeouts.stream_idle_timeout()
+                    if _first_seen
+                    else _timeouts.first_token_timeout()
+                )
+            _remaining = (_limit - (time.monotonic() - _last)) if _limit > 0 else None
             done, _ = await asyncio.wait(
-                {get_task, cancel_task}, return_when=asyncio.FIRST_COMPLETED
+                {get_task, cancel_task},
+                timeout=_remaining,
+                return_when=asyncio.FIRST_COMPLETED,
             )
             cancel_task.cancel()
             if get_task not in done:
                 get_task.cancel()
+                if not done and _limit > 0:
+                    from .providers.errors import FirstTokenTimeout, StreamIdleTimeout
+
+                    raise (
+                        StreamIdleTimeout(_limit)
+                        if _first_seen
+                        else FirstTokenTimeout(_limit)
+                    )
                 return  # interrupted — the producer exits on its own next chunk
             kind, payload = get_task.result()
             if kind == "chunk":
+                _first_seen = True
+                _last = time.monotonic()
                 yield payload
             elif kind == "error":
                 raise payload

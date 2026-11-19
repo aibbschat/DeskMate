@@ -12,6 +12,7 @@ owns the wake records + the due/complete logic; the scheduler tick consumes ``du
 from __future__ import annotations
 
 import json
+import os
 import threading
 import uuid
 from dataclasses import asdict, dataclass, field
@@ -77,9 +78,32 @@ class WakeStore:
             if migrated:
                 self._save()
 
+    def _prune_terminal(self) -> None:
+        """PR18(#38)：只留最近 N 条已 fired/cancelled 的终态记录。
+
+        此前全文件只增不减（fired/cancelled 永不淘汰），dict 与每次 ``indent=2``
+        全量重写都随之 O(n) 增长。pending/due 一律保留；终态按 created_at 取最近
+        ``COWORKER_WAKE_KEEP``（默认 200）条，其余丢弃。``=0`` 关闭。
+        """
+        try:
+            keep = int((os.environ.get("COWORKER_WAKE_KEEP") or "").strip() or 200)
+        except ValueError:
+            keep = 200
+        if keep <= 0:
+            return
+        terminal = [
+            w for w in self._wakes.values()
+            if w.state in (STATE_FIRED, STATE_CANCELLED)
+        ]
+        if len(terminal) <= keep:
+            return
+        for w in sorted(terminal, key=lambda w: w.created_at)[: len(terminal) - keep]:
+            self._wakes.pop(w.id, None)
+
     def _save(self) -> None:
         if not self.path:
             return
+        self._prune_terminal()
         self.path.parent.mkdir(parents=True, exist_ok=True)
         temporary = self.path.with_suffix(self.path.suffix + ".tmp")
         temporary.write_text(

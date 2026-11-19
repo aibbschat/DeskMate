@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { ApprovalDecision, Item } from "../types";
 import { shortArgs } from "./ApprovalCard";
@@ -337,7 +337,9 @@ function TurnGroup({
   // 折叠卡片（cards）＝「动态可见→收敛」：运行中自动展开让每步思考实时可看，
   // 跑完自动收起只留「N 步」+答案（萧盛 2026-11-03：旧版运行中也强制收起＝每步思考不可见，
   // 是"没治好"的根）。用户手动开合（userToggle）始终优先于自动态。
-  const rows = buildRows(items);
+  // PR20(#50)：buildRows 内部对每个 approval 扫全 items × rows.find，此前每次 render
+  // 都重算；流式期间每帧一次 → 用 useMemo 只在 items 变化时重算。
+  const rows = useMemo(() => buildRows(items), [items]);
   const tools = items.filter((it): it is ToolItem => it.kind === "tool");
   const running = live || tools.some((t) => t.status === "…");
   const [userToggle, setUserToggle] = useState<boolean | null>(null);
@@ -543,6 +545,9 @@ export function SpeakerAvatar({ speaker }: { speaker?: SessionSpeaker | null }) 
   );
 }
 
+// PR20(#48)：长会话窗口化——首屏只挂最近 N 个 block，向上按钮按页展开。
+const HISTORY_WINDOW = 80;
+
 // The transcript index whose notice gets the Retry button: the tail error notice, looking
 // through info notices after it (model switches must not consume the retry — switching
 // models and THEN retrying is the intended recovery path). -1 when the tail is anything else.
@@ -611,9 +616,28 @@ export function Transcript({
 
   const { t } = useTranslation();
   const lastTurnIndex = blocks.reduce((acc, b, i) => ("turn" in b ? i : acc), -1);
+  // PR20(#48)：零依赖窗口化（§10.6 未拍板 react-window/virtuoso 时的保守落地）。
+  // 长会话此前把全部消息都挂在 DOM 上，与流式重渲叠加后卡顿。这里只渲染最近
+  // `windowSize` 个 block，向上点「显示更早」按页展开；key 仍用原始索引，
+  // 展开时已有 block 的 React 状态不会被重置。
+  const [windowSize, setWindowSize] = useState(HISTORY_WINDOW);
+  const hidden = Math.max(0, blocks.length - windowSize);
+  const visible = hidden ? blocks.slice(hidden) : blocks;
   return (
     <div className="transcript">
-      {blocks.map((block, bi) => {
+      {hidden > 0 && (
+        <div className="transcript-more">
+          <button
+            type="button"
+            className="transcript-more-btn"
+            onClick={() => setWindowSize((n) => n + HISTORY_WINDOW)}
+          >
+            {t("chat.showEarlier", { n: hidden })}
+          </button>
+        </div>
+      )}
+      {visible.map((block, idx) => {
+        const bi = hidden + idx;
         if ("turn" in block)
           return (
             <TurnGroup

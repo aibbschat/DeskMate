@@ -239,6 +239,9 @@ class SessionManager:
         if self.default_workspace:
             self.session_store.touch_workspace(self.default_workspace)
         self._engines: dict[str, TurnEngine] = {}
+        # PR18(#36)：engine 缓存 LRU 记账。每个 TurnEngine 常驻整份消息历史，内存随
+        # 会话数线性增长；插入新引擎时按最近使用淘汰空闲会话（有 viewer/在跑/当前会话豁免）。
+        self._engine_touched: dict[str, float] = {}
         # Sessions whose workspace was promoted mid-turn (workspace-scratch-design.md §5):
         # evicted from the engine cache at the next mark_idle so the following turn
         # rebuilds fully anchored on the new workspace.
@@ -308,6 +311,11 @@ class SessionManager:
         # App-wide event sockets (/ws/events): session-independent pushes — today the
         # automation-run-started toast (UX-026); badges could ride it later.
         self._event_clients: set[Any] = set()
+        # PR18(#35)：每个 live-view socket 一个独立发送队列 + drain 任务。广播不再逐
+        # 客户端同步 await —— 慢客户端（TCP 背压）只积压自己的队列，不会阻塞同会话
+        # 其它广播、也不会拖住在跑回合。队列有界，满了丢最旧一条（丢包优于停摆）。
+        self._client_outbox: dict[Any, asyncio.Queue] = {}
+        self._client_drain: dict[Any, asyncio.Task] = {}
         # Automation: scheduled tasks store + the tick scheduler (started in the lifespan).
         # The scheduler also resumes self-wake'd sessions each tick (extra_tick).
         self.task_store = TaskStore(base / "automation.db")
@@ -627,6 +635,7 @@ class SessionManager:
             record.workspace = new_path
             self.session_store.save(record)
         self._engines.pop(session_id, None)
+        self._engine_touched.pop(session_id, None)
         self.session_store.touch_workspace(new_path)
         return {"ok": True, "path": new_path}
 
@@ -665,6 +674,7 @@ class SessionManager:
     ) -> Optional[TurnEngine]:
         engine = self._engines.get(session_id)
         if engine is not None:
+            self._engine_touched[session_id] = time.monotonic()
             if approver is not None:
                 engine.approver = approver
             if directory_requester is not None:
@@ -922,6 +932,8 @@ class SessionManager:
         if self.teams.for_lead_session(session_id) is not None:
             engine.permissions.team_lead = True
         self._engines[session_id] = engine
+        self._engine_touched[session_id] = time.monotonic()
+        self._evict_idle_engines(keep=session_id)
         # 自动化运行标记：本会话若是某个定时/手动任务的运行实例，它跑出的 web_search 等
         # 工具结果不能算作萧盛影响（否则检索转储会冒充满「内部·萧盛」标）。owning_task 在
         # get_engine 开头已解析（task_for_run_session）。实时对话会话 owning_task 为 None。
@@ -5597,15 +5609,95 @@ class SessionManager:
     def register_session_client(self, session_id: str, send_cb: Any) -> None:
         self._session_clients.setdefault(session_id, set()).add(send_cb)
 
+    def _ensure_client_worker(self, session_id: str, send_cb: Any) -> asyncio.Queue | None:
+        """PR18(#35)：首个广播时懒建 per-client 队列与 drain 任务（幂等）。
+
+        只在实际广播（必在事件循环里）时创建，注册阶段不建 → 兼容同步测试路径
+        与跨 loop 复用（task 绑定的 loop 已关闭/切换时重建）。
+        """
+        q = self._client_outbox.get(send_cb)
+        task = self._client_drain.get(send_cb)
+        if q is not None and task is not None and not task.done():
+            try:
+                if task.get_loop() is asyncio.get_running_loop():
+                    return q
+            except RuntimeError:
+                return None
+            # loop 变了（如测试多次 asyncio.run）：重建 worker
+            self._client_outbox.pop(send_cb, None)
+            self._client_drain.pop(send_cb, None)
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return None
+        q = asyncio.Queue(maxsize=256)
+        self._client_outbox[send_cb] = q
+        self._client_drain[send_cb] = asyncio.ensure_future(
+            self._drain_client(session_id, send_cb, q)
+        )
+        return q
+
+    async def _drain_client(self, session_id: str, send_cb: Any, q: asyncio.Queue) -> None:
+        """单客户端串行发送：保序，且把慢/死 socket 的代价限制在它自己身上。"""
+        try:
+            while True:
+                message = await q.get()
+                try:
+                    await send_cb(message)
+                except Exception:
+                    self.unregister_session_client(session_id, send_cb)
+                    return
+        except asyncio.CancelledError:
+            raise
+
+    def _stop_client_worker(self, send_cb: Any) -> None:
+        self._client_outbox.pop(send_cb, None)
+        task = self._client_drain.pop(send_cb, None)
+        if task is not None and not task.done():
+            try:
+                current = asyncio.current_task()
+            except RuntimeError:
+                current = None
+            if task is not current:
+                task.cancel()
+
     def unregister_session_client(self, session_id: str, send_cb: Any) -> None:
         clients = self._session_clients.get(session_id)
         if clients is not None:
             clients.discard(send_cb)
             if not clients:
                 self._session_clients.pop(session_id, None)
+        self._stop_client_worker(send_cb)
 
     def has_session_clients(self, session_id: str) -> bool:
         return bool(self._session_clients.get(session_id))
+
+    def _evict_idle_engines(self, *, keep: str) -> None:
+        """PR18(#36)：服务端 engine 缓存按 LRU 淘汰空闲会话（默认上限 32）。
+
+        bot 侧已有 `evict_room`，服务端此前没有任何上限。只淘汰既无 live viewer、
+        也未在跑的会话；`keep`（刚建/刚取的）与活跃会话一律豁免。
+        ``COWORKER_ENGINE_CACHE_MAX=0`` 关闭（恢复无上限旧行为）。
+        """
+        try:
+            raw = (os.environ.get("COWORKER_ENGINE_CACHE_MAX") or "").strip()
+            limit = int(raw) if raw else 32
+        except ValueError:
+            limit = 32
+        if limit <= 0 or len(self._engines) <= limit:
+            return
+        spill = len(self._engines) - limit
+        idle = [
+            sid
+            for sid in self._engines
+            if sid != keep
+            and not self.has_session_clients(sid)
+            and not self.is_running(sid)
+        ]
+        idle.sort(key=lambda s: self._engine_touched.get(s, 0.0))
+        for sid in idle[:spill]:
+            self._engines.pop(sid, None)
+            self._engine_touched.pop(sid, None)
 
     async def promote_pending_prompts(self, session_id: str) -> int:
         """The last viewer left while the agent waits on an inline prompt: move it to the
@@ -5629,10 +5721,28 @@ class SessionManager:
             if worker_call:
                 message = {**message, "data": {**data, "worker_call": worker_call}}
         for cb in list(self._session_clients.get(session_id, ())):
+            q = self._client_outbox.get(cb)
+            if q is None:
+                q = self._ensure_client_worker(session_id, cb)
+            if q is None:
+                # 注册/注销并发窗口里还没建 worker：退回直接发送，保持旧行为。
+                try:
+                    await cb(message)
+                except Exception:
+                    self.unregister_session_client(session_id, cb)
+                continue
             try:
-                await cb(message)
-            except Exception:
-                self.unregister_session_client(session_id, cb)
+                q.put_nowait(message)
+            except asyncio.QueueFull:
+                # 慢客户端积压已满：丢最旧一条（丢包优于把整条广播链堵死）。
+                try:
+                    q.get_nowait()
+                except asyncio.QueueEmpty:
+                    pass
+                try:
+                    q.put_nowait(message)
+                except asyncio.QueueFull:
+                    pass
 
     async def aclose(self) -> None:
         # 先摘掉专家咨询的回调：进程正在退出，没有 loop 可以投递了。
@@ -5642,6 +5752,11 @@ class SessionManager:
             set_notifier(None)
         except Exception:
             pass
+        for task in list(self._client_drain.values()):
+            if not task.done():
+                task.cancel()
+        self._client_drain.clear()
+        self._client_outbox.clear()
         await self.scheduler.stop()
         await self.stop_gateway()
         await self.mcp.aclose()

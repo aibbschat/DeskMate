@@ -155,6 +155,14 @@ def record_letter_seen(base_dir: Optional[Path] = None, rid: Optional[str] = Non
     # 追加写。此前是「写临时文件 + os.replace」——那是**覆盖**，三次标已读只剩最后
     # 一条记录，等于把回流吃掉了（与 docstring 的 append-only 自相矛盾）。append 模式
     # 单次 write 即落一行，进程中断最坏是半行，读侧按 JSON 解析失败逐行跳过。
+    # PR18(#45)：同型「只增不减」账本 → 超 5MB 轮转，只留一份 .1。
+    try:
+        if path.stat().st_size > 5 * 1024 * 1024:
+            rotated = path.with_suffix(path.suffix + ".1")
+            rotated.unlink(missing_ok=True)
+            path.replace(rotated)
+    except OSError:
+        pass
     with open(path, "a", encoding="utf-8") as f:
         f.write(line + "\n")
 

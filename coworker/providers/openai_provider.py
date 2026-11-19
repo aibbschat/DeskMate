@@ -26,6 +26,7 @@ from .base import (
     ToolCall,
 )
 from .capabilities import capabilities_for
+from . import timeouts as _timeouts
 
 # --------------------------------------------------------------------------- #
 # 风控载荷取证（2026-10-24）：小米 MiMo / 火山 ark 会以 "…considered high risk"
@@ -280,7 +281,12 @@ class OpenAIProvider(ProviderClient):
             kwargs: dict[str, Any] = {
                 "api_key": key,
                 "max_retries": 2,
-                "timeout": httpx.Timeout(connect=15.0, read=600.0, write=60.0, pool=30.0),
+                "timeout": httpx.Timeout(
+                    connect=(_timeouts.sdk_connect_timeout() or 15.0),
+                    read=(_timeouts.sdk_read_timeout() or 600.0),
+                    write=60.0,
+                    pool=30.0,
+                ),
                 "http_client": http_client,
             }
             if self._base_url:

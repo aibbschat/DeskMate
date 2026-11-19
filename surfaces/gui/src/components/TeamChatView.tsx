@@ -4,6 +4,7 @@
 // No derived board-event clusters (owner call, eighth pass): status lives on the
 // board rail one click away — this surface is pure messages.
 import { useEffect, useRef, useState } from "react";
+import { usePolling } from "../hooks/usePolling";
 import { getTeamChat, postTeamChat, type TeamChat } from "../api";
 import { Icon } from "./Icon";
 
@@ -35,11 +36,11 @@ export function TeamChatView({ teamId, onClose }: { teamId: string; onClose: () 
   const bottom = useRef<HTMLDivElement | null>(null);
 
   const load = () => getTeamChat(teamId).then(setChat).catch(() => {});
+  // PR20(#51)：迁到 usePolling——隐藏标签自动暂停、失败退避、不并发。
   useEffect(() => {
-    load();
-    const t = setInterval(load, 3000);
-    return () => clearInterval(t);
+    void load();
   }, [teamId]);
+  usePolling(load, 3000);
   useEffect(() => {
     bottom.current?.scrollIntoView({ block: "end" });
   }, [chat?.messages.length]);
