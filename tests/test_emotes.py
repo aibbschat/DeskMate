@@ -2,6 +2,7 @@
 
 P0 止血三板斧：① 系统侧语义标注 ② 结构化词表注入 ③ few-shot 示例。
 前端 Manifest 化已完成（emotes.manifest.json + SVG 渲染），本测试覆盖后端语义层。
+v2 manifest 的单一 pack 为 xiaoju-clay（16 个小桔黏土表情）。
 """
 
 from __future__ import annotations
@@ -16,9 +17,9 @@ class TestManifestLoading:
         assert len(emotes.EMOTES) == 16
 
     def test_core_emotes_present(self):
-        for eid in ["wave", "cheer", "idea", "shy", "v", "sleepy", "tea",
-                     "hug", "stuck", "facepalm", "peek", "clap", "check",
-                     "shock", "heart", "inbox"]:
+        for eid in ["wave", "cheer", "rage", "shy", "v", "sleepy", "tea",
+                     "hug", "cry", "facepalm", "peek", "clap", "think",
+                     "shock", "heart", "lol"]:
             assert eid in emotes.EMOTES, f"missing emote: {eid}"
 
     def test_each_emote_has_semantic_fields(self):
@@ -28,22 +29,21 @@ class TestManifestLoading:
             assert e["category"], f"{eid} missing category"
             assert e["emotion"], f"{eid} missing emotion"
 
-    def test_inherit_pack_expanded(self):
-        """moling-mono 继承 moling-default，语义应已展开。"""
+    def test_default_pack_has_all_emotes(self):
         packs = emotes.list_packs()
-        mono = [p for p in packs if p["id"] == "moling-mono"]
-        assert mono and mono[0]["inherit"] == "moling-default"
+        clay = [p for p in packs if p["id"] == "xiaoju-clay"]
+        assert clay and clay[0]["inherit"] is None
 
 
 class TestSemanticAnnotation:
     """P0-1：用户消息里的 emote 标记展开为语义说明。"""
 
     def test_markdown_image_syntax(self):
-        text = "我写不出来了 ![卡文抓狂](emote:stuck)"
+        text = "我写不出来了 ![崩溃抓狂](emote:rage)"
         result = emotes.expand_emotes_in_content(text)
-        assert "[用户表情：卡文抓狂 —— 含义：" in result
-        assert "卡文" in result
-        assert "emote:stuck" not in result  # 原始标记被替换
+        assert "[用户表情：崩溃抓狂 —— 含义：" in result
+        assert "抓狂" in result
+        assert "emote:rage" not in result  # 原始标记被替换
 
     def test_bracket_syntax(self):
         text = "嗨 [[emote:wave]]"
@@ -53,9 +53,9 @@ class TestSemanticAnnotation:
 
     def test_with_pack_name(self):
         """emote:PACK:NAME 带包名写法。"""
-        text = "休息一下 ![摸鱼喝茶](emote:moling-mono:tea)"
+        text = "休息一下 ![摸鱼喝茶](emote:xiaoju-clay:tea)"
         result = emotes.expand_emotes_in_content(text)
-        assert "[用户表情：摸鱼喝茶" in result
+        assert "[用户表情：喝茶摸鱼" in result
         assert "emote:" not in result
 
     def test_unknown_emote_falls_back_to_alt(self):
@@ -76,12 +76,12 @@ class TestSemanticAnnotation:
     def test_content_parts_list(self):
         """OpenAI content-parts 形态。"""
         content = [
-            {"type": "text", "text": "我卡住了 ![卡文抓狂](emote:stuck)"},
+            {"type": "text", "text": "我卡住了 ![崩溃抓狂](emote:rage)"},
             {"type": "image_url", "image_url": {"url": "x"}},
         ]
         result = emotes.expand_emotes_in_content(content)
         assert isinstance(result, list)
-        assert "[用户表情：卡文抓狂" in result[0]["text"]
+        assert "[用户表情：崩溃抓狂" in result[0]["text"]
         assert result[1]["type"] == "image_url"  # 非 text 部分不动
 
     def test_multiple_emotes(self):
@@ -100,7 +100,7 @@ class TestSystemBlock:
         assert "小桔表情词表" in block
         assert "| 表情名(emote) | 中文含义 |" in block
         # 每个表情都应在词表里
-        for eid in ["wave", "stuck", "heart", "tea"]:
+        for eid in ["wave", "rage", "heart", "tea"]:
             assert f"| {eid} |" in block
 
     def test_contains_rules(self):
@@ -111,14 +111,14 @@ class TestSystemBlock:
 
     def test_contains_few_shot(self):
         block = emotes.emote_system_block()
-        assert "卡文抓狂" in block  # few-shot 示例 1
+        assert "崩溃抓狂" in block  # few-shot 示例 1
         assert "招手问好" in block  # few-shot 示例 2
         assert "比心" in block  # few-shot 示例 3
 
     def test_with_active_pack(self):
-        block = emotes.emote_system_block(pack="moling-mono")
-        assert "emote:moling-mono:" in block  # 带包名输出示例
-        assert "moling-mono" in block
+        block = emotes.emote_system_block(pack="xiaoju-clay")
+        assert "emote:xiaoju-clay:" in block  # 带包名输出示例
+        assert "xiaoju-clay" in block
 
     def test_without_pack_uses_bare(self):
         block = emotes.emote_system_block(pack=None)
@@ -130,19 +130,19 @@ class TestBakeAssistantEmotes:
     """助手输出回填包名。"""
 
     def test_bare_emote_gets_pack(self):
-        emotes.set_active_pack("moling-default")
+        emotes.set_active_pack("xiaoju-clay")
         try:
             text = "你好 ![招手问好](emote:wave)"
             result = emotes.bake_assistant_emotes(text)
-            assert "emote:moling-default:wave" in result
-            assert "emote:wave" not in result.replace("emote:moling-default:wave", "")
+            assert "emote:xiaoju-clay:wave" in result
+            assert "emote:wave" not in result.replace("emote:xiaoju-clay:wave", "")
         finally:
             emotes.set_active_pack(None)
 
     def test_already_packed_unchanged(self):
-        emotes.set_active_pack("moling-default")
+        emotes.set_active_pack("xiaoju-clay")
         try:
-            text = "![招手问好](emote:moling-mono:wave)"
+            text = "![招手问好](emote:xiaoju-clay:wave)"
             result = emotes.bake_assistant_emotes(text)
             assert result == text  # 已带包名不动
         finally:
@@ -158,11 +158,11 @@ class TestBakeAssistantEmotes:
         assert emotes.bake_assistant_emotes(None) is None
 
     def test_content_parts_list(self):
-        emotes.set_active_pack("moling-default")
+        emotes.set_active_pack("xiaoju-clay")
         try:
             content = [{"type": "text", "text": "hi ![招手问好](emote:wave)"}]
             result = emotes.bake_assistant_emotes(content)
-            assert "emote:moling-default:wave" in result[0]["text"]
+            assert "emote:xiaoju-clay:wave" in result[0]["text"]
         finally:
             emotes.set_active_pack(None)
 
@@ -198,15 +198,14 @@ class TestEmoteQueries:
     def test_list_packs(self):
         packs = emotes.list_packs()
         ids = [p["id"] for p in packs]
-        assert "moling-default" in ids
-        assert "moling-mono" in ids
+        assert "xiaoju-clay" in ids
 
 
 class TestActivePack:
     def test_set_get(self):
         assert emotes.get_active_pack() is None  # 初始
-        assert emotes.set_active_pack("moling-mono") is True
-        assert emotes.get_active_pack() == "moling-mono"
+        assert emotes.set_active_pack("xiaoju-clay") is True
+        assert emotes.get_active_pack() == "xiaoju-clay"
         emotes.set_active_pack(None)
         assert emotes.get_active_pack() is None
 

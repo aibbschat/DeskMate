@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import sqlite3
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from deskmate.growth.her_voice import pick_her_line, recent_her_lines
@@ -27,7 +28,7 @@ def _write_monologue(base: Path, desc: str) -> None:
         c.execute(
             "INSERT INTO emotion_log (id, ts, source, deltas, description, conversation_id) "
             "VALUES (?, ?, 'chat', '{}', ?, NULL)",
-            ("m1", "2026-10-13T10:00:00", desc),
+            ("m1", (datetime.now() - timedelta(days=1)).isoformat(timespec="seconds"), desc),
         )
 
 

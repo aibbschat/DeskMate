@@ -62,7 +62,8 @@ class ColumnTest(unittest.TestCase):
         ))
 
     def tearDown(self):
-        for p in self.patchers:
+        # 同一属性可能在一项测试里被 patch 多次；后开先关，避免 mock 泄漏。
+        for p in reversed(self.patchers):
             p.stop()
         if self.base.exists():
             shutil.rmtree(self.base)

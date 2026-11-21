@@ -28,6 +28,15 @@ from fastapi import FastAPI
 from coworker.server import run as run_mod
 
 
+# 本机回环测试直连：忽略环境 HTTP(S)_PROXY，否则 127.0.0.1 请求被代理转成 502。
+def _local_get(url, **kwargs):
+    return httpx.get(url, trust_env=False, **kwargs)
+
+
+def _local_post(url, **kwargs):
+    return httpx.post(url, trust_env=False, **kwargs)
+
+
 def _free_port() -> int:
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
@@ -61,7 +70,7 @@ class _Server:
         self._thread.start()
         for _ in range(80):
             try:
-                if httpx.get(f"{self.base}/v1/health", timeout=2).status_code == 200:
+                if _local_get(f"{self.base}/v1/health", timeout=2).status_code == 200:
                     return
             except Exception:
                 time.sleep(0.1)

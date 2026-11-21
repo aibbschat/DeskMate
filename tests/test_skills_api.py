@@ -347,16 +347,17 @@ def test_ws_force_run_unknown_and_muted_error_without_killing_socket(tmp_path):
         assert ws.receive_json()["type"] == "ready"
         # unknown skill → visible rejection, no turn
         ws.send_json({"type": "user_message", "text": "x", "skill": "ghost"})
-        evt = ws.receive_json()
-        assert evt["type"] == "input_rejected"
+        types, evt = _drain(ws)
+        assert "input_rejected" in types
         assert "not available" in evt["data"]["error"]
         # muted skill → same rejection (§4.6 #15: no silent auto-unmute)
         ws.send_json({"type": "user_message", "text": "x", "skill": "greet"})
-        evt = ws.receive_json()
-        assert evt["type"] == "input_rejected"
+        types, evt = _drain(ws)
+        assert "input_rejected" in types
         # empty name → invalid frame
         ws.send_json({"type": "user_message", "text": "x", "skill": "  "})
-        assert ws.receive_json()["type"] == "input_rejected"
+        types, evt = _drain(ws)
+        assert "input_rejected" in types
         # socket still healthy: a normal message runs a turn
         ws.send_json({"type": "user_message", "text": "plain"})
         types, _ = _drain(ws)

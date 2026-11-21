@@ -200,13 +200,17 @@ def test_build_engine_deskmate_auto_inject_wiring(tmp_path, monkeypatch):
 
     # 修复 pre-existing 测试顺序污染：_deskmate_mgr_singleton 是模块级单例，
     # 文件内更早的测试会用它绑定 ~/.deskmate，导致本测试复用旧 base、读不到临时记忆。
-    monkeypatch.delattr("coworker.agent._deskmate_mgr_singleton", raising=False)
+    monkeypatch.setattr("coworker.agent._deskmate_mgr_singleton", None)
+    monkeypatch.setattr("coworker.agent._deskmate_mgr_base", "")
+    monkeypatch.setattr("coworker.agent._deskmate_ctx_cache", {})
 
     mem_dir = tmp_path / "deskmate_mem"
     mem_dir.mkdir()
     (mem_dir / "USER.md").write_text(
         "用户偏好标记-DESKMATE_INJECT_TEST", encoding="utf-8"
     )
+    # deskmate.paths 以 DESKMATE_DIR 为首选；只设 MEMORY_DIR 会被外部环境变量覆盖。
+    monkeypatch.setenv("DESKMATE_DIR", str(mem_dir))
     monkeypatch.setenv("DESKMATE_MEMORY_DIR", str(mem_dir))
     monkeypatch.delenv("DESKMATE_AUTO_INJECT", raising=False)
 

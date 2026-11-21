@@ -193,6 +193,9 @@ async def fake_slack(monkeypatch):
     fake = FakeSlack()
     await fake.start()
     monkeypatch.setenv("SLACK_API_URL", fake.api_url)
+    # 同步 WebClient（SlackAdapter）同样读代理环境；强制回环直连。
+    monkeypatch.setenv("NO_PROXY", "*")
+    monkeypatch.setenv("no_proxy", "*")
     try:
         yield fake
     finally:

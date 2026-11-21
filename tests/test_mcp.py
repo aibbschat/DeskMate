@@ -410,6 +410,7 @@ async def test_connect_mcp_http_401_sets_auth_hint(tmp_path, monkeypatch):
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     try:
         monkeypatch.setenv("COWORKER_STATE_DIR", str(tmp_path / "state"))
+        monkeypatch.setenv("NO_PROXY", "*")
         _write_json(
             tmp_path / "state" / "mcp.json",
             {

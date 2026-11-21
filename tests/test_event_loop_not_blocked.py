@@ -32,6 +32,15 @@ from coworker.server import SessionManager, create_app
 BLOCK_SECONDS = 2.5
 
 
+# 本机回环测试直连：忽略环境 HTTP(S)_PROXY，否则 127.0.0.1 请求被代理转成 502。
+def _local_get(url, **kwargs):
+    return httpx.get(url, trust_env=False, **kwargs)
+
+
+def _local_post(url, **kwargs):
+    return httpx.post(url, trust_env=False, **kwargs)
+
+
 class _StubProvider(ProviderClient):
     def complete(self, **kwargs):  # pragma: no cover - engine never completes here
         raise NotImplementedError
@@ -59,7 +68,7 @@ class _Server:
         self._thread.start()
         for _ in range(80):  # 最多等 8s 就绪
             try:
-                if httpx.get(f"{self.base}/v1/health", timeout=2).status_code == 200:
+                if _local_get(f"{self.base}/v1/health", timeout=2).status_code == 200:
                     return
             except Exception:
                 time.sleep(0.1)
@@ -85,7 +94,7 @@ def _health_stays_fast_while(server: _Server, fire) -> None:
     t.start()
     time.sleep(0.5)  # 让请求真正进入慢调用
     t0 = time.monotonic()
-    r = httpx.get(f"{server.base}/v1/health", timeout=BLOCK_SECONDS + 5)
+    r = _local_get(f"{server.base}/v1/health", timeout=BLOCK_SECONDS + 5)
     dt = time.monotonic() - t0
     assert r.status_code == 200
     assert dt < 1.0, (
@@ -114,7 +123,7 @@ async def test_handoff_get_llm_does_not_block_loop(tmp_path, monkeypatch):
     server = _make_server(tmp_path)
     try:
         _health_stays_fast_while(
-            server, lambda base: httpx.get(f"{base}/v1/deskmate/proactive/handoff", timeout=30)
+            server, lambda base: _local_get(f"{base}/v1/deskmate/proactive/handoff", timeout=30)
         )
     finally:
         server.stop()
@@ -136,7 +145,7 @@ async def test_inspire_llm_does_not_block_loop(tmp_path, monkeypatch):
     try:
         _health_stays_fast_while(
             server,
-            lambda base: httpx.post(
+            lambda base: _local_post(
                 f"{base}/v1/deskmate/inspire",
                 json={"text": "我在写第三章", "concept": ""},
                 timeout=30,
@@ -164,7 +173,7 @@ async def test_moment_comment_reply_does_not_block_loop(tmp_path, monkeypatch):
     try:
         _health_stays_fast_while(
             server,
-            lambda base: httpx.post(
+            lambda base: _local_post(
                 f"{base}/v1/deskmate/moments/comment",
                 json={"moment_id": seed["id"], "author": "me", "text": "写得真好"},
                 timeout=30,

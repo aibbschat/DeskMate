@@ -166,7 +166,8 @@ def test_runtime_wires_bundle_scope_into_build_engine() -> None:
 
 
 def test_runtime_is_in_deploy_manifest() -> None:
-    """改了 runtime.py 而不在传输清单里 ⇒ 云端静默失效（既有红线）。"""
+    """部署脚本自动发现全量生产 .py，runtime.py 必须落在该口径内。"""
     root = Path(__file__).resolve().parents[1]
     script = (root / "scripts/deploy_cloud_sync.sh").read_text(encoding="utf-8")
-    assert "deskmate/bots/runtime.py" in script
+    assert "find deskmate coworker -name '*.py'" in script
+    assert (root / "deskmate/bots/runtime.py").is_file()

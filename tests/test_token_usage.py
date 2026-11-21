@@ -54,8 +54,25 @@ class _FakeAnthropicClient:
             self.kwargs = kwargs
             return events
 
-        self.messages = SimpleNamespace(create=create)
-        self.beta = SimpleNamespace(messages=SimpleNamespace(create=create))
+        class _Stream:
+            def __init__(self, value):
+                self.value = value
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def get_final_message(self):
+                return self.value
+
+        def stream(**kwargs):
+            self.kwargs = kwargs
+            return _Stream(events)
+
+        self.messages = SimpleNamespace(create=create, stream=stream)
+        self.beta = SimpleNamespace(messages=SimpleNamespace(create=create, stream=stream))
 
 
 def test_anthropic_stream_captures_usage():

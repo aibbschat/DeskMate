@@ -298,9 +298,10 @@ def test_injection_subject_tag(tmp_base):
         ctx = mgr.build_full_context_for_turn("你好")
         # 2026-10-11 修订：注入改为「当下心情标签」（get_mood_label），强制语气对齐，
         # 不再注入滞后的自由文本 description。激素(50,50,40,30) → 标签「平静」。
+        # 标题在后续版本改为「你此刻的真实状态」，保留「不是萧盛的」防混淆。
+        assert "你此刻的真实状态" in ctx
         assert "你此刻的心情" in ctx
         assert "不是萧盛的" in ctx
-        assert "你现在的真实心情" in ctx
         assert "平静" in ctx
     finally:
         os.environ.pop("DESKMATE_EMOTION_ENGINE", None)
@@ -330,12 +331,12 @@ def test_injection_carries_monologue_and_intensity(tmp_base):
         from deskmate.memory.manager import DeskMateMemoryManager
         mgr = DeskMateMemoryManager(base_dir=tmp_base)
         ctx = mgr.build_full_context_for_turn("你好")
-        # 独白原文必须进上下文
+        # 独白原文必须进上下文（当前标题：「你心里最近的一句话」）
         assert monologue in ctx
-        assert "独白" in ctx
-        # 强度分级措辞必须出现（dopamine -8 → 低落，强度约 0.63 → 「挺明显的」）
-        assert "低落" in ctx
-        assert any(g in ctx for g in ("很强烈", "挺明显的", "淡淡的", "很淡"))
+        assert "你心里最近的一句话" in ctx
+        # 强度措辞必须出现（dopamine -8 → 怅然若失，强度约 0.63 → 「挺明显的」）
+        assert "怅然若失" in ctx
+        assert "挺明显的" in ctx
     finally:
         os.environ.pop("DESKMATE_EMOTION_ENGINE", None)
 
@@ -808,6 +809,47 @@ def test_clean_object_keeps_relation_when_ref_is_pronoun():
     assert _clean_object("他", "relation") == (_RELATION_REF, "relation")
     assert _clean_object("对方", "relation") == (_RELATION_REF, "relation")
     assert _RELATION_REF == "和小桔的相处"
+
+
+def test_clean_object_fills_relation_ref_when_empty():
+    """relation 没给名字（模型只给了类型）→ 回落固定名，不留空宾语。
+
+    2026-11-21 实测 2 条 experience 落成「空/relation」：不是模型没归因，
+    而是给了 relation 却空着引用。relation 的对象通过「相处」指向她，
+    空引用回落固定名即可，不需要名字。
+    """
+    from deskmate.growth.emotion_engine import _RELATION_REF, _clean_object
+
+    assert _clean_object("", "relation") == (_RELATION_REF, "relation")
+    assert _clean_object(None, "relation") == (_RELATION_REF, "relation")
+
+
+def test_maybe_echo_inherits_summary_not_id(engine):
+    """echo 行继承原事件的**文字**，来源 id 单独存（2026-11-21 回归）。
+
+    修复前把来源 id 塞进了 event_summary，摘要成了一串 UUID；R3 把它当证据
+    摆给她看时读不懂。现在 event_summary 是人话，source_event_id 才是链接。
+    """
+    src_ts = (datetime.now() - timedelta(hours=48)).isoformat(timespec="seconds")
+    with sqlite3.connect(engine._db) as conn:
+        conn.execute(
+            "INSERT INTO emotion_log (id, ts, source, deltas, description, event_type,"
+            " event_summary, narrative, salience, origin, object_ref, object_kind,"
+            " attributed) VALUES (?, ?, 'experience', ?, '有点开心', 'experience',"
+            " ?, ?, 0.8, 'system', '萧盛', 'person', 1)",
+            ("src-echo-1", src_ts, json.dumps({"dopamine": 20.0}),
+             "他出门前说了一声", "他出门吃饭前说了一声，不查进度。"),
+        )
+
+    assert engine.maybe_echo()
+
+    with sqlite3.connect(engine._db) as conn:
+        row = conn.execute(
+            "SELECT event_summary, source_event_id FROM emotion_log"
+            " WHERE source='echo'"
+        ).fetchone()
+    assert row[0] == "他出门前说了一声"     # 人话，不是 UUID
+    assert row[1] == "src-echo-1"           # 链接单独存
 
 
 def test_update_prompt_carries_title_and_lands_work(engine):

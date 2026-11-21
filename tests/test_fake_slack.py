@@ -185,7 +185,7 @@ async def test_interaction_reaches_gateway_handler(fake_slack):
 # 5. POST /control/reset returns a clean slate (exercises the HTTP control surface).
 async def test_control_reset_clears_state(fake_slack):
     base = fake_slack.control_url
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(trust_env=False) as client:
         assert (await client.get(f"{base}/health")).json()["ok"] is True
 
         await client.post(f"{base}/users", json={"id": "U1", "name": "alice"})

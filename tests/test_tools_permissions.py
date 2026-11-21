@@ -138,14 +138,14 @@ def test_custom_mode_auto_allows_configured_tools(tmp_path):
     assert not escape.allowed
 
 
-def test_auto_mode_allows_but_path_scopes(tmp_path):
+def test_full_access_mode_allows_but_other_modes_path_scope(tmp_path):
     reg = _registry(tmp_path)
-    eng = PermissionEngine(workspace_root=tmp_path, mode=Mode.BYPASS_APPROVALS)
-    ok = eng.evaluate(
-        "write_file", {"path": "x.py", "content": "x"}, _meta(reg, "write_file")
-    )
-    escape = eng.evaluate(
-        "write_file", {"path": "../x.py", "content": "x"}, _meta(reg, "write_file")
-    )
-    assert ok.allowed
-    assert not escape.allowed
+    bypass = PermissionEngine(workspace_root=tmp_path, mode=Mode.BYPASS_APPROVALS)
+    ok = bypass.evaluate("write_file", {"path": "x.py", "content": "x"}, _meta(reg, "write_file"))
+    escape = bypass.evaluate("write_file", {"path": "../x.py", "content": "x"}, _meta(reg, "write_file"))
+    assert ok.allowed and escape.allowed  # bypass full access
+    for mode in (Mode.INTERACTIVE, Mode.CUSTOM, Mode.AUTO_APPROVE):
+        eng = PermissionEngine(workspace_root=tmp_path, mode=mode)
+        assert not eng.evaluate(
+            "write_file", {"path": "../x.py", "content": "x"}, _meta(reg, "write_file")
+        ).allowed

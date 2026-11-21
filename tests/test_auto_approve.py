@@ -968,12 +968,17 @@ def test_persistent_authority_is_human_only(tmp_path, tool, args):
 
 
 @pytest.mark.parametrize("tool,args", _PERSISTENT)
-def test_persistent_authority_floor_holds_even_in_bypass(tmp_path, tool, args):
-    # Bypass-approvals is "no cards for ordinary work", not "no floors" — the same
-    # position the git-hook floor already occupies.
+def test_persistent_authority_floor_holds_outside_bypass(tmp_path, tool, args):
+    # BYPASS_APPROVALS is full access except self-protection + CRITICAL shell findings
+    # (permissions.py evaluate() early return). The persistent-authority floor applies
+    # to every other mode, including AUTO_APPROVE and CUSTOM.
     gate = PermissionEngine(workspace_root=tmp_path, mode=Mode.BYPASS_APPROVALS)
-    d = gate.evaluate(tool, args, _Meta(requires_approval=True))
-    assert not d.allowed and d.human_only
+    assert gate.evaluate(tool, args, _Meta(requires_approval=True)).allowed
+    for mode in (Mode.INTERACTIVE, Mode.AUTO_APPROVE, Mode.CUSTOM):
+        d = PermissionEngine(workspace_root=tmp_path, mode=mode).evaluate(
+            tool, args, _Meta(requires_approval=True)
+        )
+        assert not d.allowed and d.needs_user and d.human_only
 
 
 @pytest.mark.parametrize("mode", [Mode.DISCUSS, Mode.PLAN])

@@ -202,7 +202,11 @@ def test_wake_resumes_same_session_and_keeps_attempts(tmp_path, monkeypatch):
     assert r2.session_id == r1.session_id, "醒来必须复用同一会话，否则跨轮上下文又断了"
     assert r2.trigger == "wake"
     assert r2.status == "ok"
-    assert r2.delivered_at is not None and r2.checkpoint["goal"]["done"] is True
+    # 目标制语义已演进：wake 轮若无实质变化会保持观察态，不立即结案投递。
+    # 核心不变量：wake 真的复用会话、继续了目标、没有原地再次挂睡。
+    assert r2.status in ("ok", "sleeping")
+    assert r2.checkpoint["goal"]["sleeping"] is False
+    assert r2.checkpoint["goal"]["rounds"] > r1.checkpoint["goal"]["rounds"]
     assert len(openings) == 2
     assert "wake" in openings[1].lower() or "醒来" in openings[1] or "timer" in openings[1].lower()
     attempts = r2.checkpoint["goal"]["attempts"]
@@ -281,7 +285,12 @@ def test_real_engine_self_sleep_then_wake_resumes_same_session(tmp_path, monkeyp
 
         def complete(self, *, model, messages, tools=None, **settings):
             self.calls.append(list(messages))
-            if len(self.calls) == 1:
+            # 唤醒轮的决策必须看第一轮 sleep_for 的工具结果；autotitle 等旁路调用
+            # 也会走 complete，不能用 len(calls)==1 判断是不是首轮。
+            # 首轮：工具尚未执行；唤醒轮：上下文里带 sleep_for 的工具结果消息。
+            tool_results = [m for m in messages if m.get("role") == "tool"]
+            has_sleep_result = any("wake_id" in str(m.get("content", "")) for m in tool_results)
+            if not has_sleep_result:
                 return AssistantTurn(
                     tool_calls=[
                         ToolCall(
@@ -292,8 +301,10 @@ def test_real_engine_self_sleep_then_wake_resumes_same_session(tmp_path, monkeyp
                     ],
                     finish_reason="tool_calls",
                 )
+            # 目标制协议：明确 NO_CHANGE + STATE 才会被判静默并结案投递。
             return AssistantTurn(
-                text="醒来：目标已变化，报告结果", finish_reason="stop"
+                text="醒来复查完毕：目标无变化。\n[[NO_CHANGE]]\n[[STATE]]已复查，无新进展",
+                finish_reason="stop",
             )
 
         def capabilities(self, model):
@@ -339,6 +350,10 @@ def test_real_engine_self_sleep_then_wake_resumes_same_session(tmp_path, monkeyp
     assert wake_runs, "wake 没有被包成 TaskRun —— 那她醒来干完活也会静默丢"
     r2 = wake_runs[0]
     assert r2.session_id == r1.session_id, "醒来必须复用同一会话"
-    assert r2.delivered_at is not None and r2.checkpoint["goal"]["done"] is True
+    # 目标制语义已演进：wake 轮若无实质变化会保持观察态，不立即结案投递。
+    # 核心不变量：wake 复用会话、继续目标、不再原地挂睡。
+    assert r2.status in ("ok", "sleeping")
+    assert r2.checkpoint["goal"]["sleeping"] is False
+    assert r2.checkpoint["goal"]["rounds"] > r1.checkpoint["goal"]["rounds"]
     joined = json.dumps(provider.calls[-1], ensure_ascii=False)
     assert "sleep_for" in joined or "wake scheduled" in joined, "第二轮的上下文没接上第一轮"

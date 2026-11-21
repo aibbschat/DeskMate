@@ -122,7 +122,8 @@ def test_speak_stream_surfaces_self_decided_tool_call(shelf_dir, tmp_path) -> No
     )
     tools = [e for e in events if e["type"] == "tool"]
     assert tools and tools[0]["name"] == "read_book"
-    assert "".join(e["text"] for e in events if e["type"] == "delta") == _REPLY
+    streamed = "".join(e["text"] for e in events if e["type"] == "delta")
+    assert _REPLY in streamed  # tool preamble may precede the final reply
     assert [e["text"] for e in events if e["type"] == "final"] == [_REPLY]
     assert prov.step == 2, "应当发生一次自主工具调用 + 一次流式发言"
     rt.close()

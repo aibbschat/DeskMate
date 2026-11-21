@@ -67,16 +67,18 @@ def test_timeline_has_today(base):
 
 
 def test_cron_missed():
+    from datetime import datetime
+
     from deskmate.proactivity.health_producers import _cron_missed
 
-    now = time.time()
-    # 已跑过：last_run 在最近一次应跑点之后（hourly ⇒ 最近应跑点在 1 小时内）
+    # 固定时刻（整点后 45 分钟）避免测试落在 30 分钟宽限期内而随机失败。
+    now = datetime(2026, 11, 21, 12, 45).timestamp()
+    # 已跑过：last_run 在最近一次应跑点之后（hourly ⇒ 最近应跑点在 12:00）
     assert _cron_missed("0 * * * *", now - 60, now) is False
     # 没跑过：last_run=None，应跑点已过 30 分钟宽限 → miss
     assert _cron_missed("0 * * * *", None, now) is True
     # 无 cron → 不报
     assert _cron_missed(None, None, now) is False
-
 
 # ---- automation 生产者 ----
 def _make_automation_db(base, *, last_run=None, run_status="ok", task_type="daily_reading"):
@@ -477,7 +479,8 @@ def test_stale_task_still_reported_as_missed(tmp_path, monkeypatch):
     tid = "t_stale"
     c.execute(
         "INSERT INTO scheduled_tasks VALUES (?,1,?)",
-        (tid, json.dumps({"title": "该跑没跑", "schedule": {"cron": "0 * * * *"}})),
+        # 每分钟都该跑：任意时刻都存在超过 30 分钟宽限的应跑点。
+        (tid, json.dumps({"title": "该跑没跑", "schedule": {"cron": "* * * * *"}})),
     )
     # 没有任何 run 记录、last_run 也为 None → 真 miss
     c.commit()

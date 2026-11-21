@@ -38,6 +38,15 @@ from coworker.server import SessionManager, create_app
 SLOW_SECONDS = 3.0
 
 
+# 本机回环测试直连：忽略环境 HTTP(S)_PROXY，否则 127.0.0.1 请求被代理转成 502。
+def _local_get(url, **kwargs):
+    return httpx.get(url, trust_env=False, **kwargs)
+
+
+def _local_post(url, **kwargs):
+    return httpx.post(url, trust_env=False, **kwargs)
+
+
 class _StubProvider(ProviderClient):
     def complete(self, **kwargs):  # pragma: no cover
         raise NotImplementedError
@@ -63,7 +72,7 @@ class _Server:
         self._thread.start()
         for _ in range(80):
             try:
-                if httpx.get(f"{self.base}/v1/health", timeout=2).status_code == 200:
+                if _local_get(f"{self.base}/v1/health", timeout=2).status_code == 200:
                     return
             except Exception:
                 time.sleep(0.1)
@@ -98,7 +107,7 @@ async def test_handoff_fast_when_backfill_slow(tmp_path, monkeypatch):
     server = _make_server(tmp_path)
     try:
         t0 = time.monotonic()
-        r = httpx.get(f"{server.base}/v1/deskmate/proactive/handoff", timeout=30)
+        r = _local_get(f"{server.base}/v1/deskmate/proactive/handoff", timeout=30)
         dt = time.monotonic() - t0
         assert r.status_code == 200
         assert dt < 1.5, (
@@ -130,7 +139,7 @@ async def test_llm_pool_isolated_from_data_endpoints(tmp_path, monkeypatch):
         # 并发打 16 个慢 inspire（每个占一个执行器工人 3s）
         def _fire():
             try:
-                httpx.post(
+                _local_post(
                     f"{server.base}/v1/deskmate/inspire",
                     json={"text": "压测", "concept": ""},
                     timeout=60,
@@ -146,7 +155,7 @@ async def test_llm_pool_isolated_from_data_endpoints(tmp_path, monkeypatch):
         # 数据端点必须不受影响（diary 纯 async 读文件；moments 走 DB）
         for path in ("/v1/deskmate/diary", "/v1/deskmate/moments?limit=5"):
             t0 = time.monotonic()
-            r = httpx.get(f"{server.base}{path}", timeout=15)
+            r = _local_get(f"{server.base}{path}", timeout=15)
             dt = time.monotonic() - t0
             assert r.status_code == 200, f"{path} -> {r.status_code}"
             assert dt < 2.5, f"{path} 被拖慢到 {dt:.2f}s —— LLM 必须隔离在专用池"
@@ -182,7 +191,7 @@ async def test_data_endpoint_timeout_returns_504(tmp_path, monkeypatch):
     server = _make_server(tmp_path)
     try:
         t0 = time.monotonic()
-        r = httpx.get(f"{server.base}/v1/deskmate/diary", timeout=40)
+        r = _local_get(f"{server.base}/v1/deskmate/diary", timeout=40)
         dt = time.monotonic() - t0
         assert r.status_code == 504, f"应 504 快速失败，实得 {r.status_code}"
         assert dt < 25, f"不应比底层 20s 更久，实得 {dt:.1f}s"

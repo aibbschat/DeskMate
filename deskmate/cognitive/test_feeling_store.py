@@ -227,6 +227,40 @@ def test_build_pool_merges_scattered_work_refs(tmp_path):
     assert {"《国子监》", "国子监", "国子监秘闻录", "第五部", "稿件"} <= refs
 
 
+def test_build_pool_merges_person_alias(tmp_path):
+    """萧哥 / 萧盛 是同一个人：只在取证层归并，历史 object_ref 一字不改。
+
+    2026-11-21 实测同一个人被算成两份，证据条数与跨度都被拆散。称呼归一
+    走既有词典 ``entity_aliases.json``（与记忆层同一份）。
+    """
+    db = _mk_db(tmp_path)
+    (tmp_path / "entity_aliases.json").write_text(
+        json.dumps({"萧哥": "萧盛"}, ensure_ascii=False), encoding="utf-8")
+    conn = sqlite3.connect(db)
+    conn.executemany(
+        "INSERT INTO emotion_log(id,ts,source,event_summary,object_ref,object_kind)"
+        " VALUES(?,?,?,?,?,?)",
+        [
+            ("p1", "2026-10-20T10:00:00", "chat", "他把密码给了我", "萧盛", "person"),
+            ("p2", "2026-10-23T10:00:00", "chat", "他点我审稿的毛病", "萧哥", "person"),
+            ("p3", "2026-10-27T10:00:00", "chat", "他认了我的判断", "萧哥", "person"),
+        ],
+    )
+    conn.commit()
+    conn.close()
+
+    pool = FeelingStore(db).build_pool(limit=5)
+    got = [(p["object_ref"], p["object_kind"], p["n"], p["days"], p["span_days"])
+           for p in pool]
+    assert got == [("萧盛", "person", 3, 3, 7)], got
+
+    conn = sqlite3.connect(db)
+    refs = [r[0] for r in conn.execute(
+        "SELECT object_ref FROM emotion_log ORDER BY id").fetchall()]
+    conn.close()
+    assert refs == ["萧盛", "萧哥", "萧哥"]   # 历史行未被改写
+
+
 def test_upsert_requires_reason(tmp_path):
     store = FeelingStore(_mk_db(tmp_path))
     with pytest.raises(ValueError):

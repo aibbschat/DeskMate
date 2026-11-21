@@ -67,8 +67,6 @@ def test_protected_paths_cover_the_grant_and_trust_stores():
     names = {p.name for p in protected_paths()}
     assert {"config.toml", "risk_overrides.json", "workspace_trust.json", "coworker.db"} <= names
 
-
-# -- in-project files that run later --------------------------------------------
 @pytest.mark.parametrize(
     "rel",
     [
@@ -78,9 +76,13 @@ def test_protected_paths_cover_the_grant_and_trust_stores():
         ".coworker/config.toml",
     ],
 )
-def test_protected_in_project_never_auto_approved(tmp_path, rel):
-    # Writable (inside the root) but must always reach a human, even in auto mode.
-    for mode in (Mode.BYPASS_APPROVALS, Mode.CUSTOM, Mode.INTERACTIVE):
+def test_protected_in_project_asks_outside_bypass(tmp_path, rel):
+    # BYPASS_APPROVALS returns full access before the protected-in-project floor;
+    # other modes must still route these deferred-execution files to a human.
+    bypass = _engine(tmp_path, Mode.BYPASS_APPROVALS, auto_allow_tools={"write_file"})
+    bypass.allow_tool_for_session("write_file")
+    assert bypass.evaluate("write_file", {"path": rel, "content": "x"}, None).allowed
+    for mode in (Mode.CUSTOM, Mode.INTERACTIVE):
         eng = _engine(tmp_path, mode, auto_allow_tools={"write_file"})
         eng.allow_tool_for_session("write_file")
         d = eng.evaluate("write_file", {"path": rel, "content": "x"}, None)

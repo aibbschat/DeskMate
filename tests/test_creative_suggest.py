@@ -97,8 +97,9 @@ def test_observation_diary_writes_cognition(tmp_path):
             return [{"fact": "（外部·财经）中东能源紧张", "credibility": 0.8}]
 
     with patch("deskmate.memory.learned_store.LearnedStore", FakeLearnedStore), \
-         patch("deskmate.agency.behaviors.understand_observations.understand_observations",
-               return_value="小桔理解：中东能源紧张影响丝路贸易。"), \
+         patch("deskmate.agency.behaviors.understand_observations.decide_and_digest",
+               return_value=[{"body": "小桔理解：中东能源紧张影响丝路贸易。",
+                              "fact_keys": []}]), \
          patch("deskmate.memory.semantic_search.embed_text", _fake_embed):
         res = run_observation_diary(str(tmp_path),
                                     {"cooldown_hours": 0, "max_observations": 6, "understand": True})

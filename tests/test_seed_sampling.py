@@ -310,6 +310,9 @@ class BehaviorWiringTest(unittest.TestCase):
         self.assertEqual(res.get("reason"), "post_failed")
         self.assertEqual(ss.load_rounds(str(self.base)), [])   # 没发出去 → 不记锚点
 
+        # 第一次失败已由 claim_outbound 预留额度；清掉状态再测成功路径。
+        from deskmate.agency.outbound import _state_path
+        _state_path(str(self.base)).unlink(missing_ok=True)
         post.side_effect = None
         post.return_value = {"ok": True}
         res = share_mod.run_ai_circle_share(str(self.base), settings)

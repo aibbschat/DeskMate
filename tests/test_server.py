@@ -543,6 +543,7 @@ def test_ws_error_persists_notice_and_retry_reruns(tmp_path):
             return ModelCapabilities()
 
     manager = SessionManager(workspace=tmp_path, provider=FlakyProvider())
+    manager._maybe_autotitle = lambda sid: None  # autotitle 也走 provider，别吃掉首次故障
     client = TestClient(create_app(manager))
     with client.websocket_connect("/ws/session/flaky") as ws:
         assert ws.receive_json()["type"] == "ready"

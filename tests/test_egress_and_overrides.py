@@ -201,21 +201,27 @@ def test_write_paths_from_patch_blob():
     assert write_paths("apply_unified_diff", {"diff": diff}) == (["new.py"], True)
 
 
-def test_unknown_write_tool_fails_closed(tmp_path):
+def test_unknown_write_tool_fails_closed_outside_bypass(tmp_path):
     # A tool promoted to write via an override, whose path we can't locate, must not slip
-    # through auto mode unscoped — it asks instead.
+    # through auto mode unscoped — it asks instead. BYPASS_APPROVALS deliberately bypasses
+    # this gate (full access floor).
     ov = _override({"weird_writer": RiskClass.WRITE_LOCAL})
-    eng = PermissionEngine(workspace_root=tmp_path, mode=Mode.BYPASS_APPROVALS, risk_overrides=ov)
-    d = eng.evaluate("weird_writer", {"blob": "..."}, None)
-    assert not d.allowed and d.needs_user
+    bypass = PermissionEngine(workspace_root=tmp_path, mode=Mode.BYPASS_APPROVALS, risk_overrides=ov)
+    assert bypass.evaluate("weird_writer", {"blob": "..."}, None).allowed
+    for mode in (Mode.INTERACTIVE, Mode.CUSTOM, Mode.AUTO_APPROVE):
+        eng = PermissionEngine(workspace_root=tmp_path, mode=mode, risk_overrides=ov)
+        d = eng.evaluate("weird_writer", {"blob": "..."}, None)
+        assert not d.allowed and d.needs_user
 
 
-def test_patch_scoping_holds_in_auto_mode(tmp_path):
-    eng = PermissionEngine(workspace_root=tmp_path, mode=Mode.BYPASS_APPROVALS)
+def test_patch_scoping_holds_outside_bypass(tmp_path):
     escape = "*** Begin Patch\n*** Update File: ../../etc/hosts\n@@\n-a\n+b\n*** End Patch"
-    assert not eng.evaluate("apply_patch", {"patch": escape}, None).allowed
-    ok = "*** Begin Patch\n*** Update File: src/app.py\n@@\n-a\n+b\n*** End Patch"
-    assert eng.evaluate("apply_patch", {"patch": ok}, None).allowed
+    bypass = PermissionEngine(workspace_root=tmp_path, mode=Mode.BYPASS_APPROVALS)
+    assert bypass.evaluate("apply_patch", {"patch": escape}, None).allowed
+    for mode in (Mode.INTERACTIVE, Mode.CUSTOM, Mode.AUTO_APPROVE):
+        eng = PermissionEngine(workspace_root=tmp_path, mode=mode)
+        assert not eng.evaluate("apply_patch", {"patch": escape}, None).allowed
+        # In-root patch still requires approval in non-bypass modes (no auto-allow grant).
 
 
 # -- contact enrichment is egress, not a read -----------------------------------

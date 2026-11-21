@@ -285,9 +285,10 @@ def test_registry_end_to_end_mounts_document_tools(tmp_path: Path, monkeypatch) 
 
 
 def test_new_python_module_is_in_deploy_manifest() -> None:
-    """红线：新增 .py 必须进 deploy_cloud_sync.sh 清单，漏传＝云端静默失效。"""
+    """红线：生产 .py 自动发现机制必须覆盖本模块。"""
     script = (_ROOT / "scripts" / "deploy_cloud_sync.sh").read_text(encoding="utf-8")
-    assert "coworker/tools/document.py" in script
+    assert "find deskmate coworker -name '*.py'" in script
+    assert (_ROOT / "coworker/tools/document.py").is_file()
 
 
 def test_deploy_manifest_lists_all_expert_bundle_files() -> None:

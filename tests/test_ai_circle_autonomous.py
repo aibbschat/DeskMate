@@ -58,7 +58,9 @@ class ShareTest(unittest.TestCase):
         self.patchers.append(self.avail)
 
     def tearDown(self):
-        for p in self.patchers:
+        # 同一个属性（如 chat_memory）可能在一项测试里被 patch 多次；
+        # 必须后开先关，否则先停外层会把更早的 MagicMock 留在模块上。
+        for p in reversed(self.patchers):
             p.stop()
         if self.base.exists():
             shutil.rmtree(self.base)
@@ -169,7 +171,9 @@ class ReplyTest(unittest.TestCase):
         self.patchers.append(self.avail)
 
     def tearDown(self):
-        for p in self.patchers:
+        # 同一个属性（如 chat_memory）可能在一项测试里被 patch 多次；
+        # 必须后开先关，否则先停外层会把更早的 MagicMock 留在模块上。
+        for p in reversed(self.patchers):
             p.stop()
         if self.base.exists():
             shutil.rmtree(self.base)
@@ -255,7 +259,9 @@ class ShareFreedomTest(unittest.TestCase):
         self.patchers.append(self.avail)
 
     def tearDown(self):
-        for p in self.patchers:
+        # 同一个属性（如 chat_memory）可能在一项测试里被 patch 多次；
+        # 必须后开先关，否则先停外层会把更早的 MagicMock 留在模块上。
+        for p in reversed(self.patchers):
             p.stop()
         if self.base.exists():
             shutil.rmtree(self.base)

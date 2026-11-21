@@ -95,10 +95,14 @@ def test_external_asks_in_interactive_allows_in_auto(tmp_path):
 
 
 def test_write_local_path_scoped(tmp_path):
+    # BYPASS_APPROVALS is full access; path scoping holds in the other modes.
     eng = PermissionEngine(workspace_root=tmp_path, mode=Mode.BYPASS_APPROVALS)
     assert eng.evaluate("write_file", {"path": "ok.py", "content": "x"}, None).allowed
-    escape = eng.evaluate("write_file", {"path": "../bad.py", "content": "x"}, None)
-    assert not escape.allowed
+    assert eng.evaluate("write_file", {"path": "../bad.py", "content": "x"}, None).allowed
+    for mode in (Mode.INTERACTIVE, Mode.CUSTOM, Mode.AUTO_APPROVE):
+        scoped = PermissionEngine(workspace_root=tmp_path, mode=mode)
+        assert scoped.evaluate("write_file", {"path": "ok.py", "content": "x"}, None).needs_user
+        assert not scoped.evaluate("write_file", {"path": "../bad.py", "content": "x"}, None).allowed
 
 
 def test_exec_uses_command_allowlist(tmp_path):

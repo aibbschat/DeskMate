@@ -228,9 +228,9 @@ def test_engine_records_and_strips_timing(tmp_path):
     _collect(engine, "read")
     model = next(m for m in engine.messages if m["role"] == "assistant")
     tool = next(m for m in engine.messages if m["role"] == "tool")
-    assert model["timing"]["model_ms"] >= 0
-    assert tool["timing"]["tool_ms"] >= 0
+    # 引擎已不再给 transcript 消息挂 timing sidecar；核心不变量是外发视图绝不含它。
     assert all("timing" not in m for m in engine._outbound_messages())
+    assert all("timing" not in m for m in engine.messages)
 
 
 def test_call_after_review_is_not_attributed_to_the_previous_item():
