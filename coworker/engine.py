@@ -34,12 +34,32 @@ logger = logging.getLogger(__name__)
 # 2026-11-20 事故修复：8 工人被并发流占满后，排队中的 produce 不发请求即被
 # 75s 看门狗"冤杀"（表现为全通道 first-token timeout 且账本零记录）。默认
 # 扩到 24，可经 COWORKER_PROVIDER_POOL_SIZE 覆盖（见 providers/timeouts.py）。
+from .providers.timeouts import env_seconds as _env_seconds
 from .providers.timeouts import provider_pool_size as _provider_pool_size
 
 _PROVIDER_POOL = ThreadPoolExecutor(
     max_workers=_provider_pool_size(), thread_name_prefix="coworker-provider"
 )
 _TOOL_POOL = ThreadPoolExecutor(max_workers=8, thread_name_prefix="coworker-tool")
+
+# 2026-11-21 优化建议 P0-1：工具执行超时 + turn 总时限。
+# 此前工具调用外层无任何超时，_TOOL_POOL 只有 8 个工人，一个挂死的工具永久占住
+# 一个工人，8 个挂死即整条工具链停摆；_loop 的 max_iterations 只限迭代次数，
+# 不限单轮总耗时。默认工具 300s、单轮 1800s；设为 0 即关闭该项。
+# 注意：asyncio.wait_for 只能让等待端脱身，不能杀死 _TOOL_POOL 里已在跑的线程——
+# 超时工具仍会在池里跑完，只是 turn 不再被它拖住；超时结果以 error 喂回模型。
+_TOOL_TIMEOUT_ENV = "COWORKER_TOOL_TIMEOUT"
+_TOOL_TIMEOUT_DEFAULT_S = 300.0
+_TURN_TIMEOUT_ENV = "COWORKER_TURN_TIMEOUT"
+_TURN_TIMEOUT_DEFAULT_S = 1800.0
+
+
+def _tool_timeout_seconds() -> float:
+    return _env_seconds(_TOOL_TIMEOUT_ENV, _TOOL_TIMEOUT_DEFAULT_S)
+
+
+def _turn_timeout_seconds() -> float:
+    return _env_seconds(_TURN_TIMEOUT_ENV, _TURN_TIMEOUT_DEFAULT_S)
 from . import provenance
 from . import session_facts
 from . import toolchain as _toolchain
@@ -680,7 +700,20 @@ class TurnEngine:
         self._yield_for_wake = False
         self._empty_turn_retries = 0
         iterations = 0
+        # 2026-11-21 P0-1：turn 总时限（单次 _loop 调用内计时，run/retry/resume 各算一次）。
+        turn_started = time.monotonic()
+        turn_timeout = _turn_timeout_seconds()
         while True:
+            if turn_timeout and turn_timeout > 0 and (time.monotonic() - turn_started) > turn_timeout:
+                yield Event(
+                    EventType.TURN_END,
+                    {
+                        "status": "turn_timeout_exceeded",
+                        "iterations": iterations,
+                        "elapsed_s": round(time.monotonic() - turn_started, 1),
+                    },
+                )
+                return
             if iterations >= self.max_iterations:
                 yield Event(
                     EventType.TURN_END,
@@ -1413,10 +1446,7 @@ class TurnEngine:
                 yield Event(EventType.TOOL_STARTED, {"name": tool_call.name})
                 self._audit(tool_call, stage="started")
             outcomes = await asyncio.gather(
-                *[
-                    asyncio.get_running_loop().run_in_executor(_TOOL_POOL, self._execute_sync, tc)
-                    for tc in concurrent
-                ]
+                *[self._execute_tool_call(tc) for tc in concurrent]
             )
             for tool_call, (result, status) in zip(concurrent, outcomes):
                 yield self._record_result(tool_call, result, status)
@@ -1427,9 +1457,7 @@ class TurnEngine:
                 continue
             yield Event(EventType.TOOL_STARTED, {"name": tool_call.name})
             self._audit(tool_call, stage="started")
-            result, status = await asyncio.get_running_loop().run_in_executor(
-                _TOOL_POOL, self._execute_sync, tool_call
-            )
+            result, status = await self._execute_tool_call(tool_call)
             yield self._record_result(tool_call, result, status)
 
     def _mangled_tool(self, tool_call: ToolCall) -> Event:
@@ -2114,6 +2142,41 @@ class TurnEngine:
             # Captured so _execute_sync can re-verify nothing changed before running.
             self._authorized_delegates[tool_call.id] = delegated
         yield True
+
+    async def _execute_tool_call(self, tool_call: ToolCall) -> tuple[Any, str]:
+        """Execute one authorized call with a timeout (2026-11-21 P0-1).
+
+        超时后等待端脱身、turn 继续，超时以 error 结果喂回模型（与
+        _execute_sync 的错误契约一致）。wait_for 杀不死 _TOOL_POOL 里已在跑的
+        线程——超时工具仍会在池里跑完，只是不再拖住 turn；这点已在日志里明说，
+        不要误以为超时就释放了池工人。
+        """
+        timeout = _tool_timeout_seconds()
+        coro = asyncio.get_running_loop().run_in_executor(
+            _TOOL_POOL, self._execute_sync, tool_call
+        )
+        if not timeout or timeout <= 0:
+            return await coro
+        try:
+            return await asyncio.wait_for(coro, timeout=timeout)
+        except (asyncio.TimeoutError, TimeoutError):
+            logger.warning(
+                "工具调用超时（%s，%.0fs）：turn 继续，超时结果以 error 喂回模型；"
+                "池内线程仍会跑完",
+                tool_call.name,
+                timeout,
+            )
+            return (
+                {
+                    "error": (
+                        f"tool {tool_call.name} timed out after {timeout:g}s "
+                        f"({_TOOL_TIMEOUT_ENV}); the call may still be running "
+                        "in the tool pool"
+                    ),
+                    "error_type": "TimeoutError",
+                },
+                "error",
+            )
 
     def _execute_sync(self, tool_call: ToolCall) -> tuple[Any, str]:
         """Execute one authorized call (runs in a worker thread)."""

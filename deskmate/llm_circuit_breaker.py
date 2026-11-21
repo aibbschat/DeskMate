@@ -170,16 +170,7 @@ def classify_error(
             retryable=False,
         )
 
-    # ④ opencode 403：FreeTierError = 该模型对匿名免费层不可用（长期）
-    if status_code == 403 or "FreeTierError" in blob:
-        return Verdict(
-            kind=KIND_UNAVAILABLE,
-            cooldown_until=now + LONG_COOLDOWN_S,
-            detail="403 free tier unavailable",
-            retryable=False,
-        )
-
-    # ⑥ 内容风控拦截（2026-10-24 实测定性：小米 MiMo / 火山 ark 均出现，
+    # ④ 内容风控拦截（2026-10-24 实测定性：小米 MiMo / 火山 ark 均出现，
     #    同一 30-90s 窗口内聊天 + 后台 tick 多条独立链路齐拒、同载荷稍后重放全过）
     #    ⇒ 网关级瞬时风控窗口，**非额度、非内容定罪**。短冷却跳过窗口期，
     #    禁止原地重试（窗口内重试必再拒，白烧一次调用）。放在兜底分支**之前**，
@@ -194,6 +185,15 @@ def classify_error(
             kind=KIND_RISK,
             cooldown_until=now + RISK_COOLDOWN_S,
             detail="provider risk-control window (self-heals ~1-2 min)",
+            retryable=False,
+        )
+
+    # ⑥ opencode 403：FreeTierError = 该模型对匿名免费层不可用（长期）
+    if status_code == 403 or "FreeTierError" in blob:
+        return Verdict(
+            kind=KIND_UNAVAILABLE,
+            cooldown_until=now + LONG_COOLDOWN_S,
+            detail="403 free tier unavailable",
             retryable=False,
         )
 
@@ -408,7 +408,8 @@ def record_success(channel_key: str, *, base_dir: Optional[Path] = None) -> None
                 f" cooldown_until, last_error_detail, strike_count, source_node, updated_at)"
                 f" VALUES (?,'closed','','','','',0,'',?)"
                 f" ON CONFLICT(channel_key) DO UPDATE SET"
-                f"   state='closed', kind='', cooldown_until='', updated_at=excluded.updated_at",
+                f"   state='closed', kind='', cooldown_until='', strike_count=0,"
+                f"   updated_at=excluded.updated_at",
                 (channel_key, now_s),
             )
             c.commit()

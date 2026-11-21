@@ -81,6 +81,26 @@ def _date_of(ts: str) -> str:
     return str(ts or "")[:10]
 
 
+def _person_alias_lookup(db_path: Path, ref: str) -> str:
+    """人物称呼归一：正名、known_persons 别名、entity_aliases.json 手工别名。
+
+    与记忆层 ``memory.entity_link`` 用同一份词典，零新存储；冲突（同一称呼
+    指向两个正名）时该称呼直接丢，宁缺不猜。对不上返回空串，保留 surface。
+    """
+    ref = str(ref or "").strip()
+    if not ref:
+        return ""
+    try:
+        from deskmate.memory.entity_link import load_lexicon
+
+        hit = load_lexicon(db_path.parent).get(ref)
+        if hit and hit[0] == "person" and str(hit[1] or "").strip():
+            return str(hit[1]).strip()
+    except Exception as e:  # noqa: BLE001 —— 归一是增强，失败保留 surface
+        logger.debug("人物别名归一失败（保留 surface）: %s", e)
+    return ""
+
+
 # 同一对象、同一天，最多留几条进证据（2026-11-17 萧哥拍板「补 + 按天限流」）。
 PER_DAY_CAP = 6
 
@@ -196,6 +216,12 @@ class FeelingStore:
                         return str(row["anchor_value"]), kind
         except Exception as e:  # noqa: BLE001 —— 归一是增强，失败保留 surface
             logger.debug("resolve_object 失败（保留 surface）: %s", e)
+        if kind == "person":
+            # known_persons 里没有萧盛（没种子过），手工称呼归一放在
+            # entity_aliases.json 里（与记忆层同一份词典）：萧哥 → 萧盛。
+            canon = _person_alias_lookup(self._db, ref)
+            if canon:
+                return canon, kind
         return ref, kind
 
     # ------------------------------------------------------------------
@@ -229,6 +255,12 @@ class FeelingStore:
                 if key in canon_cache:
                     return canon_cache[key]
                 resolved: tuple[str, str] | None = (ref, kind)
+                if kind == "person":
+                    # 萧哥 / 萧盛 是同一个人（2026-11-21）：只在取证层归并，
+                    # 历史 object_ref 一字不改。
+                    canon = _person_alias_lookup(self._db, ref)
+                    if canon:
+                        resolved = (canon, "person")
                 if kind in ("work", "thing"):
                     s = _strip_demonstrative(ref)
                     if is_generic_work_ref(s):
@@ -327,6 +359,12 @@ class FeelingStore:
         ref = str(object_ref or "").strip()
         kind = str(object_kind or "").strip().lower()
         if not ref or kind not in FEELING_KINDS:
+            return ref, kind
+        if kind == "person":
+            # 称呼别名只在解析层归一（萧哥 → 萧盛），不做包含匹配。
+            canon = _person_alias_lookup(self._db, ref)
+            if canon:
+                return canon, kind
             return ref, kind
         if kind in ("work", "thing"):
             ref = _strip_demonstrative(ref)

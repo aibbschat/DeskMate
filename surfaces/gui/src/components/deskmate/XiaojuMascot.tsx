@@ -27,16 +27,18 @@ import { resolveClip } from "./petClipMap";
 import { XjFramePlayer } from "./XjFramePlayer";
 // clip manifest：声明哪些情绪有真序列帧素材（frameCount>0），有就走序列帧，没有回退 PNG
 import petManifest from "../../../public/pet-clips/manifest.json";
-import mascotImg from "../../assets/mascot-xiaoju.png";
-// B 方案表情帧：同一构图只换脸（1024² 透明 PNG，assets/mascot-frames/）
-import laughImg from "../../assets/mascot-frames/laugh.png";
-import cheerImg from "../../assets/mascot-frames/cheer.png";
-import cryImg from "../../assets/mascot-frames/cry.png";
-import angryImg from "../../assets/mascot-frames/angry.png";
-import shockImg from "../../assets/mascot-frames/shock.png";
-import sleepyImg from "../../assets/mascot-frames/sleepy.png";
-import shyImg from "../../assets/mascot-frames/shy.png";
-import neutralImg from "../../assets/mascot-frames/neutral.png";
+import mascotImg from "../../assets/mascot-xiaoju.webp";
+// B 方案表情帧：同一构图只换脸（1024² 透明 WebP，assets/mascot-frames/；
+// 2026-11-21 优化建议 P0-6：由同名 PNG 转制，quality 85，9 张合计 6.16MB → 0.51MB，
+// 原 PNG 暂留作回滚备份，确认无误后可删）
+import laughImg from "../../assets/mascot-frames/laugh.webp";
+import cheerImg from "../../assets/mascot-frames/cheer.webp";
+import cryImg from "../../assets/mascot-frames/cry.webp";
+import angryImg from "../../assets/mascot-frames/angry.webp";
+import shockImg from "../../assets/mascot-frames/shock.webp";
+import sleepyImg from "../../assets/mascot-frames/sleepy.webp";
+import shyImg from "../../assets/mascot-frames/shy.webp";
+import neutralImg from "../../assets/mascot-frames/neutral.webp";
 // 真动态层（旧 diff 贴纸方案已废弃，改用序列帧）
 // import eyesClosedImg from "../../assets/mascot-layers/eyes-closed.png";
 // import mouthOpenImg from "../../assets/mascot-layers/mouth-open.png";

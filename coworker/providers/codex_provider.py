@@ -26,6 +26,7 @@ from .codex_auth import (
     backend_headers,
 )
 from .openai_responses import OpenAIResponsesProvider
+from .timeouts import sdk_connect_timeout, sdk_read_timeout
 
 
 def _status_code(exc: Exception) -> Optional[int]:
@@ -68,11 +69,26 @@ class CodexProvider(OpenAIResponsesProvider):
         if self._client is None or token != self._client_token:
             from openai import OpenAI
 
-            self._client = OpenAI(
-                api_key=token,
-                base_url=CODEX_BASE_URL,
-                default_headers=backend_headers(account, self._session_id),
-            )
+            # 2026-11-21 优化建议 P0-2：此前无 timeout，SDK 默认最长 600s，
+            # 上游 stall 时 produce 线程幽灵占用 _PROVIDER_POOL 工人 600s。
+            # 与父类 OpenAIResponsesProvider 对齐：默认 read 300s / connect 15s
+            #（见 providers/timeouts.py；COWORKER_SDK_READ_TIMEOUT<=0 恢复 SDK 默认）。
+            _read = sdk_read_timeout()
+            _connect = sdk_connect_timeout()
+            _kwargs: dict[str, Any] = {
+                "api_key": token,
+                "base_url": CODEX_BASE_URL,
+                "default_headers": backend_headers(account, self._session_id),
+            }
+            if _read is not None and _connect is not None:
+                import httpx
+
+                _kwargs["timeout"] = httpx.Timeout(
+                    connect=_connect, read=_read, write=60.0, pool=30.0
+                )
+            elif _read is not None:
+                _kwargs["timeout"] = _read
+            self._client = OpenAI(**_kwargs)
             self._client_token = token
         return self._client
 

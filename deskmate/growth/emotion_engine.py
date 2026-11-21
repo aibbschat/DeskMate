@@ -289,8 +289,14 @@ def _connect(db: Path) -> sqlite3.Connection:
     # 遇锁先等 5s 重试，而不是立刻抛 "database is locked" 被 fail-open 静默吞掉）。
     from deskmate.memory._sqlite import connect as _sqlite_connect
 
+    # 2026-11-21 优化建议 P0-5（原子写修复）：此前 isolation_level=None（autocommit），
+    # 每条语句立即落盘，`_do_decay_step` 的 UPDATE + INSERT + 两条 DELETE 在同一 `with`
+    # 块里也不是一个事务，中途崩溃留半态，与 L903「单原子事务写回」的注释不符。
+    # 改为默认 deferred：本文件全部 24 处调用点都用 `with _connect(...) as conn:`，
+    # 块正常结束时一次提交、异常时回滚，恰好就是一个事务。回退路径的裸
+    # sqlite3.connect 本来就是 deferred，两边行为现在一致。
     try:
-        return _sqlite_connect(db, isolation_level=None)
+        return _sqlite_connect(db, isolation_level="")
     except sqlite3.Error:
         return sqlite3.connect(str(db))
 
@@ -435,6 +441,9 @@ def _ensure_schema_locked(db: Path) -> None:
             ("object_ref",    "ALTER TABLE emotion_log ADD COLUMN object_ref TEXT NOT NULL DEFAULT ''"),
             ("object_kind",   "ALTER TABLE emotion_log ADD COLUMN object_kind TEXT NOT NULL DEFAULT 'none'"),
             ("attributed",    "ALTER TABLE emotion_log ADD COLUMN attributed INTEGER NOT NULL DEFAULT 0"),
+            # echo 行的来源事件 id（2026-11-21）：此前把 id 塞进了 event_summary，
+            # 导致摘要成 UUID、冷却去重也靠错字段。文字归文字，链接单独存。
+            ("source_event_id", "ALTER TABLE emotion_log ADD COLUMN source_event_id TEXT NOT NULL DEFAULT ''"),
         ):
             if name not in cols:
                 conn.execute(ddl)
@@ -539,6 +548,11 @@ def _clean_object(ref, kind) -> tuple[str, str]:
         if kind == "relation":
             return _RELATION_REF, "relation"
         return "", "none"
+    # 模型给了 relation 却没给名字（2026-11-21 实测 2 条）：relation 的对象本来
+    # 就不是某个人，而是「我和他的相处」，空引用回落固定名，别留一条没有宾语的
+    # relation 行。
+    if kind == "relation" and not ref:
+        return _RELATION_REF, "relation"
     if kind in ("work", "thing"):
         ref = _strip_demonstrative(ref)
         try:
@@ -1466,7 +1480,7 @@ class EmotionEngine:
         模型对同一件东西换叫法（「稿子」→「章稿子」），不归并的话 R2 会按
         对象分组拆散证据、同对象还会长出第二条 feeling。人物不参与包含匹配。
         """
-        if obj_kind not in ("work", "thing") or not obj_ref:
+        if obj_kind not in ("work", "thing", "person") or not obj_ref:
             return obj_ref, obj_kind
         try:
             from deskmate.cognitive.feeling_store import FeelingStore
@@ -1803,10 +1817,15 @@ class EmotionEngine:
                                source: str, event_summary: str,
                                narrative: str = "", object_ref: str = "",
                                object_kind: str = "none",
-                               attributed: int = 0) -> dict:
+                               attributed: int = 0,
+                               source_event_id: str = "") -> dict:
         """锁内通用改参：deltas 逐项钳制后写状态 + emotion_log 留痕。
 
         调用方必须已持有 self._lock。返回实际生效的 deltas。
+
+        ``source_event_id`` 只给 echo 用：它记「泛的是哪件旧事」，与
+        ``event_summary``（人话摘要）分开。2026-11-21 前把来源 id 塞进了
+        event_summary，摘要因此成了一串 UUID。
         """
         new_values = {k: old[k] for k in HORMONE_KEYS}
         for k, d in deltas.items():
@@ -1821,12 +1840,13 @@ class EmotionEngine:
         conn.execute(
             "INSERT INTO emotion_log (id, ts, source, deltas, description,"
             " conversation_id, event_type, event_summary, narrative, salience, origin,"
-            " object_ref, object_kind, attributed)"
-            " VALUES (?, ?, ?, ?, ?, NULL, 'experience', ?, ?, 0.5, 'system', ?, ?, ?)",
+            " object_ref, object_kind, attributed, source_event_id)"
+            " VALUES (?, ?, ?, ?, ?, NULL, 'experience', ?, ?, 0.5, 'system', ?, ?, ?, ?)",
             (str(uuid.uuid4()), now_str, source,
              json.dumps(applied, ensure_ascii=False),
              f"{desc}（{event_summary}）" if event_summary else desc,
-             event_summary, narrative, obj_ref, obj_kind, attributed),
+             event_summary, narrative, obj_ref, obj_kind, attributed,
+             str(source_event_id or "")),
         )
         return applied
 
@@ -1846,18 +1866,23 @@ class EmotionEngine:
             cooldown = (now - timedelta(hours=ECHO_COOLDOWN_HOURS)).isoformat(timespec="seconds")
             with _connect(self._db) as conn:
                 rows = conn.execute(
-                    "SELECT id, deltas, narrative, salience, object_ref, object_kind"
+                    "SELECT id, deltas, narrative, salience, object_ref, object_kind,"
+                    " event_summary"
                     " FROM emotion_log "
                     "WHERE ts >= ? AND ts < ? AND narrative != '' "
                     "AND event_type='experience' AND source != 'echo' "
                     "ORDER BY salience DESC, ts DESC LIMIT 5",
                     (lo, hi),
                 ).fetchall()
-                for rid, deltas_json, narrative, salience, obj_ref, obj_kind in rows:
+                for rid, deltas_json, narrative, salience, obj_ref, obj_kind, src_summary in rows:
+                    # 冷却去重按来源 id 走；老 echo 行的 id 还压在 event_summary 里，
+                    # 保留那条腿直到历史行回填完（2026-11-21）。
                     echoed = conn.execute(
                         "SELECT COUNT(*) FROM emotion_log "
-                        "WHERE source='echo' AND event_summary=? AND ts >= ?",
-                        (rid, cooldown),
+                        "WHERE source='echo'"
+                        " AND (source_event_id=? OR (source_event_id='' AND event_summary=?))"
+                        " AND ts >= ?",
+                        (rid, rid, cooldown),
                     ).fetchone()[0]
                     if echoed:
                         continue
@@ -1877,10 +1902,15 @@ class EmotionEngine:
                         continue  # 不够劲的旧事，不硬泛
                     with self._lock:
                         old = self._get_state_unlocked()
+                        # 摘要跟着原事件的文字走，不再继承 id。原事件没有摘要时
+                        # 用它的叙事顶（都是人话）；两者都空就留空，宁可进不了
+                        # 证据池，也不让 UUID 混进去。
+                        human = (src_summary or "").strip()[:80] or \
+                            (narrative or "").strip()[:80]
                         self._apply_deltas_unlocked(
-                            conn, old, ripple, "echo", rid, narrative[:200],
+                            conn, old, ripple, "echo", human, narrative[:200],
                             object_ref=obj_ref or "", object_kind=obj_kind or "none",
-                            attributed=1)
+                            attributed=1, source_event_id=rid)
                     return (narrative or "").strip() or None
             return None
         except Exception as e:  # fail-open：回潮失败不影响注入

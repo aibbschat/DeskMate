@@ -61,6 +61,9 @@ _RISK_CONSERVATIVE = [
     r"稳[一点些]?",
     r"别太[激进冒]",
 ]
+# 否定式激进（「别太激进」「不要激进」）已在保守表里，激进匹配必须避开它们：
+# 否则同一句话同时命中两侧，按「靠后者胜」会得出相反的保守意图（2026-11-21 回归）。
+_RISK_AGGRESSIVE_NEGATED = re.compile(r"(?:别太|不要|别)[^，。！？\n]{0,3}(?:激进|冒险)")
 # 风险偏好：激进/大胆
 _RISK_AGGRESSIVE = [
     r"大胆[一点些]?",
@@ -163,6 +166,8 @@ def extract_signals(user_text: str) -> list[DecisionSignal]:
     # 1. 风险偏好（同一 risk 维度互斥：保守/激进不可同时成立，取更靠后出现的表态）
     cons = _first_hit(_RISK_CONSERVATIVE, user_text)
     agg = _first_hit(_RISK_AGGRESSIVE, user_text)
+    if agg and _RISK_AGGRESSIVE_NEGATED.search(user_text[max(0, agg[1] - 4):agg[1] + len(agg[0]) + 2]):
+        agg = None
     if cons and agg:
         # 文本同时出现两种相反表态 → 自相矛盾，保留更靠后出现的（更代表当前意图）
         if agg[1] >= cons[1]:
