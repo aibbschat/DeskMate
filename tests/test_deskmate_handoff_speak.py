@@ -108,3 +108,34 @@ def test_speak_appends_to_existing_session(desk, tmp_path, monkeypatch):
     assert len(rec.messages) == 2
     assert rec.messages[0]["role"] == "user"  # 原有消息不被覆盖
     assert rec.messages[1]["role"] == "assistant"
+
+
+def test_speak_same_item_twice_dedupes(desk, tmp_path, monkeypatch):
+    """C.（2026-11-21）同一条目同秒双发 → 只落一条，第二次幂等成功。
+
+    现场：3bb34d79-964 会话 04:42，GUI「开聊即递」双发把同一句话落成两条
+    ts 完全相同的 assistant 行。修复后端点对同文消息去重。
+    """
+    base, rid = desk
+    monkeypatch.setenv("COWORKER_STATE_DIR", str(tmp_path / "state"))
+    client = _client(tmp_path)
+    session_id = "dedup-check-1"
+
+    r1 = client.post(
+        "/v1/deskmate/proactive/handoff/speak",
+        json={"id": rid, "session_id": session_id},
+    )
+    assert r1.status_code == 200 and r1.json()["ok"]
+    r2 = client.post(
+        "/v1/deskmate/proactive/handoff/speak",
+        json={"id": rid, "session_id": session_id},
+    )
+    assert r2.status_code == 200 and r2.json()["ok"]
+    assert r2.json().get("deduped") is True
+
+    from coworker.server.manager import SessionManager
+
+    store = SessionManager(data_dir=tmp_path / "data").session_store
+    record = store.load(session_id)
+    contents = [m["content"] for m in record.messages if m.get("role") == "assistant"]
+    assert len(contents) == 1, f"同一句话只允许落一条，实际 {len(contents)}"

@@ -122,6 +122,30 @@ def _without_reasoning_hint(settings: dict[str, Any]) -> dict[str, Any]:
     return settings
 
 
+def _prepare_messages(
+    messages: list[dict[str, Any]], *, base_url: Optional[str] = None
+) -> list[dict[str, Any]]:
+    """出站前的消息整形。
+
+    除了剥掉外家 sidecar（下划线前缀），还要处理 reasoning：
+    - DeepSeek 官方（api.deepseek.com）的 thinking 模式要求历史 assistant 消息把
+      thinking 原文作为 reasoning_content 回传，否则整单 400
+      （实测 2026-11-20 21:18 / 22:12：The reasoning_content in the thinking mode
+      must be passed back to the API）。
+    - 其它兼容网关不认这个字段，带上反而 400，所以一律剥掉。
+    """
+    official_deepseek = "api.deepseek.com" in (base_url or "")
+    out: list[dict[str, Any]] = []
+    for m in messages:
+        reasoning = m.get("reasoning")
+        touched = bool(reasoning) or any(k.startswith("_") for k in m)
+        m2 = {k: v for k, v in m.items() if not k.startswith("_") and k != "reasoning"}
+        if official_deepseek and reasoning and m2.get("role") == "assistant":
+            m2["reasoning_content"] = reasoning
+        out.append(m2 if touched else m)
+    return out
+
+
 def _strip_foreign_sidecars(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Drop provider-private message sidecars (underscore-prefixed keys, e.g. `_gemini`
     thought signatures — see providers/base.py): they belong to other providers, and the
@@ -365,7 +389,7 @@ class OpenAIProvider(ProviderClient):
     ) -> AssistantTurn:
         kwargs: dict[str, Any] = {
             "model": model,
-            "messages": _strip_foreign_sidecars(messages),
+            "messages": _prepare_messages(messages, base_url=self._base_url),
             **_without_reasoning_hint(settings),
         }
         if tools:
@@ -556,7 +580,7 @@ class OpenAIProvider(ProviderClient):
     ):
         kwargs: dict[str, Any] = {
             "model": model,
-            "messages": _strip_foreign_sidecars(messages),
+            "messages": _prepare_messages(messages, base_url=self._base_url),
             "stream": True,
             # Usage on the final chunk (empty `choices`). Compat servers that reject
             # the option get a one-shot retry without it (_param_fix_retry).

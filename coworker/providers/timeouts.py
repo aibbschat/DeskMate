@@ -52,6 +52,22 @@ def sdk_read_timeout() -> float | None:
     return value if value > 0 else None
 
 
+def provider_pool_size() -> int:
+    """engine._PROVIDER_POOL 的工人数量（2026-11-20 线上事故定案）。
+
+    8 工人在「用户会话 + 机器人 + 后台任务」并发流式 + 免费通道慢流场景下会被
+    占满：produce 线程在线程池排队，请求根本没发出去 → 消费端 75s 首字超时 →
+    降级链每通道都"stalled upstream"且 llm_usage 零记录。默认提到 24；
+    ``COWORKER_PROVIDER_POOL_SIZE`` 可覆盖（最低 8，避免误配成 1 个工人）。
+    """
+    try:
+        raw = (os.environ.get("COWORKER_PROVIDER_POOL_SIZE") or "").strip()
+        size = int(raw) if raw else 24
+    except (TypeError, ValueError):
+        size = 24
+    return max(8, size)
+
+
 def sdk_connect_timeout() -> float | None:
     """SDK 级 connect timeout（秒）。默认 15s；<=0 → None。"""
     value = env_seconds("COWORKER_SDK_CONNECT_TIMEOUT", 15.0)

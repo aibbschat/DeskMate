@@ -3476,7 +3476,6 @@ def create_app(manager: SessionManager) -> FastAPI:
                 "auto_archive_candidates": result.get("auto_archive_candidates", []),
                 "archived_now": archived_now,
                 "archived_names": archived_names,
-                "report_path": result.get("report_path", ""),
             }
         except Exception:
             logging.exception("get deskmate skills curator failed")
@@ -4955,6 +4954,28 @@ def create_app(manager: SessionManager) -> FastAPI:
                     "handoff speak 兜底建会话记录失败（不阻断）", exc_info=True
                 )
             text = compose_speak_text(item)
+            # 2026-11-21 幂等守卫：GUI「开聊即递」存在同秒双发（React 重挂载 /
+            # 重试），曾把同一句话落成两条 ts 完全相同的 assistant 行（3bb34d79-964
+            # 会话 04:42 实证）。文案对同一条目是确定的——会话里已有同文消息就
+            # 不再落库，只补广播与账（幂等成功，前端无感）。
+            try:
+                _existing = manager.session_store.load(session_id)
+                _dup = any(
+                    m.get("role") == "assistant" and m.get("content") == text
+                    for m in (_existing.messages if _existing else [])
+                )
+            except Exception:
+                _dup = False
+            if _dup:
+                await manager.broadcast_session(
+                    session_id, {"type": "assistant_message", "data": {"text": text}}
+                )
+                try:
+                    mark_delivered(base_dir=desk_dir, rid=rid)
+                    acknowledge_ledger(base_dir=desk_dir, rid=rid, new_status="in_progress")
+                except Exception:
+                    logging.debug("speak(去重) 补账失败（不阻断）", exc_info=True)
+                return {"ok": True, "id": rid, "short": _short_id(rid), "text": text, "deduped": True}
             ok = manager.append_session_messages(
                 session_id,
                 [{"role": "assistant", "content": text, "ts": int(_t.time())}],
@@ -6483,16 +6504,10 @@ def create_app(manager: SessionManager) -> FastAPI:
                 )
             elif path:
                 from deskmate.novel_memory.core import read_bible, scan_novel
-                from deskmate.memory.after_action import refresh_bible_if_novel
 
                 pp = _P(path).expanduser()
-                # 读稿前先增量刷新记忆（修"读稿不更新记忆"）：已建圣经的书会自动纠正陈旧实体
-                try:
-                    # P2-10：刷新圣经内含多批 LLM 抽取（秒到分钟级），若在 async 端点
-                    # 内同步调用会阻塞整个 sidecar。包进线程池，不挡其他请求。
-                    await run_llm(refresh_bible_if_novel, str(pp))
-                except Exception:
-                    logging.warning("报告流刷新圣经失败（不影响报告生成）：%s", pp)
+                # 圣典自动刷新已于 2026-11-20 退役（萧哥拍板）：写稿从不读圣典，
+                # 读稿前刷新只带来多批 LLM 抽取耗时。此处不再自动刷新。
                 if pp.is_dir():
                     try:
                         raw_text, _ = scan_novel(str(pp))
@@ -7082,36 +7097,47 @@ def create_app(manager: SessionManager) -> FastAPI:
         # Auto-compaction failure prompt (OPE-27): only an ATTENDED session may be asked
         # Retry/Trim — unattended runs auto-trim (the policy in engine._compact_now).
         engine.is_attended = lambda: _visibility() == VIS_INLINE
-        await ws.send_json(
-            {
-                "type": "ready",
-                "data": {
-                    "session_id": session_id,
-                    # A reconnect can land MID-TURN (sidebar revisit, app relaunch, WS
-                    # drop). Without server truth the GUI never learns a turn is live —
-                    # no Stop button, no waiting row (owner catch 2026-08-24).
-                    "running": manager.is_running(session_id),
-                    "agent": getattr(engine, "agent_name", "code"),
-                    "model": engine.model,
-                    "mode": engine.permissions.mode.value,
-                    "workspace": (
-                        str(getattr(engine, "executor").cwd)
-                        if getattr(engine, "executor", None)
-                        else None
-                    ),
-                    # UX-029: the GUI never shows a temporary folder's raw path — this flag
-                    # is how it knows to say "Temporary folder" (and offer Save as project).
-                    "temp_workspace": manager.is_temp_workspace(
-                        str(getattr(engine, "executor").cwd)
-                        if getattr(engine, "executor", None)
-                        else None
-                    ),
-                    "command_trust": manager.workspace_command_trust(
-                        str(getattr(engine, "audit_context", {}).get("workspace", ""))
-                    ),
-                },
-            }
-        )
+        # 2026-11-21 僵尸连接修复：客户端可能在 accept 之后、ready 发送之前的一瞬
+        # 断开（GUI 切会话/React 重挂载）。此时 send_json 会抛 RuntimeError，把整个
+        # ws_session 协程炸死、WS 关闭握手中途夭折，TCP 残留 ESTABLISHED——GUI 侧
+        # onclose 永不触发，消息发进死管道，界面无限 "Waiting for agent..."（今晨
+        # 3bb34d79-964 会话事故）。断连属于正常生命周期：吞掉异常干净返回，让
+        # uvicorn 完成 close 握手，GUI 才能走到重连 + outbox 补发。
+        try:
+            await ws.send_json(
+                {
+                    "type": "ready",
+                    "data": {
+                        "session_id": session_id,
+                        # A reconnect can land MID-TURN (sidebar revisit, app relaunch, WS
+                        # drop). Without server truth the GUI never learns a turn is live —
+                        # no Stop button, no waiting row (owner catch 2026-08-24).
+                        "running": manager.is_running(session_id),
+                        "agent": getattr(engine, "agent_name", "code"),
+                        "model": engine.model,
+                        "mode": engine.permissions.mode.value,
+                        "workspace": (
+                            str(getattr(engine, "executor").cwd)
+                            if getattr(engine, "executor", None)
+                            else None
+                        ),
+                        # UX-029: the GUI never shows a temporary folder's raw path — this flag
+                        # is how it knows to say "Temporary folder" (and offer Save as project).
+                        "temp_workspace": manager.is_temp_workspace(
+                            str(getattr(engine, "executor").cwd)
+                            if getattr(engine, "executor", None)
+                            else None
+                        ),
+                        "command_trust": manager.workspace_command_trust(
+                            str(getattr(engine, "audit_context", {}).get("workspace", ""))
+                        ),
+                    },
+                }
+            )
+        except Exception:
+            # 连接已死（发送撞上已关闭的 socket）：无需再向它发任何东西，直接放弃
+            # 本连接；引擎与落盘状态不受影响（此刻尚未处理任何消息）。
+            return
 
         # Checkpoint events: persist mid-turn so a crash/quit can't eat the conversation.
         # turn_start = the user message just landed (a brand-new session gets its row here,

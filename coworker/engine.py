@@ -30,7 +30,14 @@ logger = logging.getLogger(__name__)
 # 2026-11-19 PR4：provider 流和工具执行各自用专用池，不再和 asyncio 默认池
 # （也和 server 的 LLM_EXECUTOR）抢工人。一个慢 shell 或卡住的 stream 因此
 # 不会饿死另一类调用。线程池懒建线程，import 期无副作用。
-_PROVIDER_POOL = ThreadPoolExecutor(max_workers=8, thread_name_prefix="coworker-provider")
+# 2026-11-20 事故修复：8 工人被并发流占满后，排队中的 produce 不发请求即被
+# 75s 看门狗"冤杀"（表现为全通道 first-token timeout 且账本零记录）。默认
+# 扩到 24，可经 COWORKER_PROVIDER_POOL_SIZE 覆盖（见 providers/timeouts.py）。
+from .providers.timeouts import provider_pool_size as _provider_pool_size
+
+_PROVIDER_POOL = ThreadPoolExecutor(
+    max_workers=_provider_pool_size(), thread_name_prefix="coworker-provider"
+)
 _TOOL_POOL = ThreadPoolExecutor(max_workers=8, thread_name_prefix="coworker-tool")
 from . import provenance
 from . import session_facts
@@ -424,6 +431,10 @@ class TurnEngine:
         ):
             self.messages.insert(0, {"role": "system", "content": instructions})
         self._cancel = asyncio.Event()
+        # 2026-11-20 事故修复：仅作用于"单次 produce 尝试"的放弃信号。看门狗超时
+        # 置位、每次 _astream 进入时清零 —— 与 _cancel（用户中断，轮级）分开，
+        # 避免把同轮降级重试误判成用户 Stop。
+        self._produce_abort = asyncio.Event()
         # Whether the latest assistant turn hit the output-token limit — decides which
         # diagnosis a mangled (unparseable-args) tool call gets answered with.
         self._turn_truncated = False
@@ -514,6 +525,8 @@ class TurnEngine:
         self._reviewer_denials = 0
         self._reviewer_verdicts.clear()
         self._authorized_delegates.clear()
+        # 2026-11-20：每个用户轮只自动重试一次上游 stall（见 _loop 的 except）。
+        self._stall_retries = 0
         data: dict[str, Any] = {"input": user_input}
         if source is not None:
             data["source"] = source
@@ -701,6 +714,22 @@ class TurnEngine:
                     if chunk.turn is not None:
                         turn = chunk.turn
             except Exception as exc:  # provider failure
+                # 2026-11-20（萧哥：读文件转圈到天荒地老）：上游 stall（首字/流 idle
+                # 超时）且本轮一个字都还没吐出来时，自动重试一次，不把「重试」甩给用户。
+                # ProviderStall 的消息含 timeout，熔断把它归 transient —— 重试会落到
+                # 下一个候选通道；即便仍是原通道，随机 stall 也有第二次机会。
+                from .providers.errors import ProviderStall as _ProviderStall
+
+                if (
+                    isinstance(exc, _ProviderStall)
+                    and not streamed
+                    and not streamed_reasoning
+                    and getattr(self, "_stall_retries", 0) < 1
+                    and not self._cancel.is_set()
+                ):
+                    self._stall_retries = getattr(self, "_stall_retries", 0) + 1
+                    self._append_notice("stall_retry", str(exc))
+                    continue
                 # A raw context-overflow 400 (compaction mispredicted, e.g. the estimate
                 # path) routes into the compaction policy instead of surfacing. The retry
                 # is progress-guarded: each pass moves the boundary forward or gives up,
@@ -917,6 +946,32 @@ class TurnEngine:
         except Exception:  # never let metering break a turn
             self._outbound_estimate_tokens = None
 
+    def _apply_context_total_budget(
+        self, out: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        """实验装置（默认关闭）：出站总预算硬上限，见 context_window_budget。
+
+        关闭时 ``apply`` 原样返回同一个 list，逐字节不变——不动 11-19 的
+        prompt-cache 前缀契约。开启时按白名单豁免裁中间过程轮次，report 存
+        ``self._last_context_budget_report`` 供 trace/排障读取，并在真正裁剪
+        时打一条 warning（低频，仅实验开启时出现）。
+        """
+        from . import context_window_budget as cwb
+
+        trimmed, report = cwb.apply(out)
+        self._last_context_budget_report = report
+        if report.get("enabled") and report.get("removed_turns"):
+            logger.warning(
+                "context total budget: %d -> %d chars (budget %d, removed %d "
+                "turns, routes %s)",
+                report["before"],
+                report["after"],
+                report["budget"],
+                report["removed_turns"],
+                report["trimmed_routes"],
+            )
+        return trimmed
+
     def _check_compaction_effectiveness(self, post_tokens: int) -> None:
         """P1-1: cross-turn real-token validation. Called after each main-model
         round-trip with its real prompt-token count. If a compaction happened on the
@@ -1126,6 +1181,10 @@ class TurnEngine:
         # context) plus the pdf/image/emote adaptation used to run right here on the
         # event loop (measured 2407ms loop stall on a cold background turn, 2026-11-10).
         snapshot = list(self.messages)
+        # 容错取用：允许测试替身不跑完整 __init__（_FakeEngine 直连 _astream）。
+        abort_evt = getattr(self, "_produce_abort", None)
+        if abort_evt is not None:
+            abort_evt.clear()
 
         def produce():
             try:
@@ -1133,9 +1192,12 @@ class TurnEngine:
                 for chunk in provider.stream(
                     model=model, messages=messages, tools=tools, **settings
                 ):
-                    # User pressed Stop: drop the stream between chunks (reading the
+                    # User pressed Stop (or the watchdog abandoned this attempt —
+                    # 2026-11-20): drop the stream between chunks (reading the
                     # asyncio.Event's flag from a thread is safe; we only read).
-                    if self._cancel.is_set():
+                    if self._cancel.is_set() or (
+                        abort_evt is not None and abort_evt.is_set()
+                    ):
                         break
                     loop.call_soon_threadsafe(queue.put_nowait, ("chunk", chunk))
             except Exception as exc:  # surfaced to the awaiting consumer
@@ -1180,6 +1242,30 @@ class TurnEngine:
                 if not done and _limit > 0:
                     from .providers.errors import FirstTokenTimeout, StreamIdleTimeout
 
+                    # 2026-11-20 事故修复：置 _produce_abort（仅本次尝试），让仍在
+                    # 产出的 produce 在下一个 chunk 边界自行退出，尽快归还
+                    # _PROVIDER_POOL 工人。之前超时只丢弃消费端，produce 会把整条
+                    # 被放弃的响应流完（免费通道长生成可达数分钟），8 工人被这种
+                    # "幽灵流"占满后，后续所有通道的 produce 在池里排队、请求发不
+                    # 出去，被看门狗逐个冤杀——正是"三通道连环 stalled upstream"
+                    # 的根因。不用 _cancel：它会让同轮降级重试被误判为用户中断。
+                    if abort_evt is not None:
+                        abort_evt.set()
+                    _active = 0
+                    try:  # 诊断：看门狗触发时的池占用（非公开 API，仅日志）
+                        _active = sum(
+                            1 for t in _PROVIDER_POOL._threads if t.is_alive()
+                        )
+                    except Exception:
+                        pass
+                    logger.warning(
+                        "provider watchdog fired (%ss): cancel=%s, provider-pool "
+                        "alive threads=%s/%s — 若接近上限，排队中的请求会被冤杀",
+                        _limit,
+                        "idle" if _first_seen else "first-token",
+                        _active,
+                        _PROVIDER_POOL._max_workers,
+                    )
                     raise (
                         StreamIdleTimeout(_limit)
                         if _first_seen
@@ -2848,6 +2934,7 @@ class TurnEngine:
             self.context_provider(out) if self.context_provider is not None else ""
         ) or ""
         if not context:
+            out = self._apply_context_total_budget(out)
             self._record_outbound_view(out, len(source))
             return out
         block = f"\n\n<system-context>\n{context}\n</system-context>"
@@ -2864,6 +2951,7 @@ class TurnEngine:
                 msg["content"] = block
             out[i] = msg
             break
+        out = self._apply_context_total_budget(out)
         self._record_outbound_view(out, len(source), len(block))
         return out
 
@@ -2930,7 +3018,10 @@ def _sanitize_mangled_calls(turn: AssistantTurn) -> None:
 
 
 def _tool_result_message(tool_call: ToolCall, result: Any) -> dict[str, Any]:
-    content = result if isinstance(result, str) else json.dumps(result, default=str)
+    # 与 toolresult.serialize_result 必须逐字一致（含 ensure_ascii=False）：
+    # 后者按字节决定截断/溢出，前者是实际发出的内容；不一致会让 cap 失准。
+    # 默认 ASCII 转义还会把中文正文变成反斜杠 u 序列，模型补读时得自己解码。
+    content = result if isinstance(result, str) else json.dumps(result, default=str, ensure_ascii=False)
     return {
         "role": "tool",
         "tool_call_id": tool_call.id,
