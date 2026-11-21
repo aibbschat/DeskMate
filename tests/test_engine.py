@@ -99,6 +99,7 @@ def test_tool_turn_order_and_execution(tmp_path):
     assert EventType.PERMISSION_REQUIRED not in _types(events)
     assert _types(events) == [
         EventType.TURN_START,
+        EventType.ASSISTANT_DELTA,  # 首次工具轮的可见进度（非持久）
         EventType.ASSISTANT_MESSAGE,
         EventType.TOOL_PROPOSED,
         EventType.TOOL_STARTED,
@@ -107,6 +108,9 @@ def test_tool_turn_order_and_execution(tmp_path):
         EventType.ASSISTANT_MESSAGE,
         EventType.TURN_END,
     ]
+    progress = next(e for e in events if e.type == EventType.ASSISTANT_DELTA)
+    assert "read_file" in progress.data["text"]
+    assert not any("我先处理这一步" in str(m.get("content", "")) for m in engine.messages)
     finished = next(e for e in events if e.type == EventType.TOOL_FINISHED)
     assert finished.data["status"] == "ok"
     assert any(

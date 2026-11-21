@@ -11,6 +11,7 @@
 - read_file            安全读取文件（支持 .docx 自动抽取正文、无转义；超大文件提示分页/按章）
 - list_chapters        列出稿件章节目录与字数
 - read_chapter         只读指定的一章（与全书长度无关，长稿不会顶爆上下文）
+- read_chapters        一次读多章（跨章比对面 prev 逐章往返；正文一字不砍）
 - read_paragraphs      按段号范围一次读全（如 2150-2241 段），不走字符分页、不截断
 - list_directory       列出目录内容
 - diff_files           对比文件差异
@@ -26,6 +27,7 @@ from .diff_changes import diff_files
 from .file_reader import (
     list_dir,
     read_chapter as _read_chapter,
+    read_chapters as _read_chapters,
     list_chapters as _list_chapters,
     read_file_safe,
     read_paragraphs as _read_paragraphs,
@@ -227,6 +229,43 @@ def read_chapter(path: str, chapter: str, max_chars: int = 100000) -> str:
         return _read_chapter(path, chapter, max_chars=max_chars)
     except Exception as e:
         return f"（读取章节失败：{e}）"
+
+
+@mcp.tool()
+def read_chapters(
+    path: str,
+    chapters: list,
+    max_chars_per: int = 100000,
+    max_total: int = 120000,
+) -> str:
+    """一次读取多章正文——**跨章比对优先用本工具**，别逐章 read_chapter 往返。
+
+    典型场景：「归营路线对不对、会不会跟夜不收来路冲突」这类要同时看 4–5 章的题。
+    逐章读 = 4–5 次工具往返、每轮把累积历史整包重发（实测一次提问 20 次读稿往返、
+    83 万 token 花在重发上）；一次读多章把往返砍到 1 次，**正文一字不砍**。
+
+    chapters 每项可以是章序号（从 1 起）、完整标题，或标题片段（如「第三章」「夜不收」）。
+    按书内顺序返回，不按传入顺序。
+
+    安全护栏：每章仍带【覆盖率】标注（本稿共几章 / 本次加载哪几章 / 其余未加载 /
+    「未加载 ≠ 书里没写」）。单章超 max_chars_per 标注「后半未加载、勿据此声称读完」；
+    合计超 max_total 则后续章不读、明确告知分批与下一批参数——**绝不静默截断**。
+
+    Args:
+        path: 稿件绝对路径
+        chapters: 章序号 / 标题 / 标题片段的列表，如 [1, 3, "夜不收"]
+        max_chars_per: 单章字符上限（默认100000）
+        max_total: 本批合计字符上限（默认120000，低于压缩触发线）
+
+    Returns:
+        覆盖率标注 + 逐章【标题】（字数）开头的正文；超限/未找到处有明确提示
+    """
+    try:
+        return _read_chapters(
+            path, chapters, max_chars_per=max_chars_per, max_total=max_total
+        )
+    except Exception as e:
+        return f"（读取多章失败：{e}）"
 
 
 @mcp.tool()

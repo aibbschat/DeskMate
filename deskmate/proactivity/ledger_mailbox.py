@@ -33,7 +33,6 @@ _MAILBOX_DENY_KINDS = frozenset(
         "no_action",
         "memory_write_error",
         "memory_write_failure",
-        "timeline_error",
         "hard_anchor_error",
         "incomplete_response",
         "event_timeline_provision",
@@ -41,6 +40,10 @@ _MAILBOX_DENY_KINDS = frozenset(
         "api_key_exposure_alert",
     }
 )
+# 2026-11-20 收窄（萧哥拍板：门不撤，只放行活类别）：timeline_error 是
+# judge / next_steps / preferences 在用的合法写作建议类型，不能因为通用
+# `_error` 后缀兜底就被挡掉。这里显式豁免；其余安全项与后缀规则照旧。
+_MAILBOX_ALLOW_KINDS = frozenset({"timeline_error"})
 _MAILBOX_DENY_SUFFIXES = (
     "_error",
     "_failure",
@@ -74,6 +77,8 @@ def _is_telemetry_kind(kind: str) -> bool:
     遥测行仍留在台账里（不丢声），层一每轮回查与「他真问起」时仍可被动浮现。
     """
     kind = str(kind or "")
+    if kind in _MAILBOX_ALLOW_KINDS:
+        return False
     if kind in _deny_mailbox_kinds():
         return True
     return kind.endswith(_MAILBOX_DENY_SUFFIXES)

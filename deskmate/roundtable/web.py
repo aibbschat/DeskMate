@@ -20,7 +20,6 @@ import asyncio
 import json
 import logging
 import os
-import threading
 from pathlib import Path
 from typing import Optional
 
@@ -491,15 +490,8 @@ def create_app(
                 )
                 if sid:
                     logger.info("圆桌纪要已存入历史对话栏 session=%s", sid)
-            # B：圆桌《综合研判报告》回流进稿件圣经（A 的内容侧闭环）。
-            # 后台守护线程跑，避免真实 LLM 抽取拖住 SSE 关闭；失败仅记日志。
-            if mp and _synthesis:
-                try:
-                    threading.Thread(
-                        target=_upsert_report_to_bible, args=(mp, _synthesis), daemon=True
-                    ).start()
-                except Exception as exc:  # noqa: BLE001
-                    logger.warning("启动圆桌报告回流线程失败：%s", exc)
+            # 圣典自动写入已于 2026-11-20 退役（萧哥拍板）：圆桌报告不再回流圣典。
+            # _upsert_report_to_bible 本体保留可复活，但绝不在此自动拉起。
 
         return StreamingResponse(
             gen(),

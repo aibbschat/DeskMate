@@ -926,26 +926,27 @@ def _maybe_review_memory(base_dir: Path, last_user: str, last_asst: str) -> None
 
 
 def _maybe_curate_skills(base_dir: Path) -> None:
-    """后台定期巡检技能库（curator 自整理）。默认非破坏性：只出报告。
+    """后台技能巡检（2026-11-20：默认彻底不跑）。
 
-    自动归档是否开启由 curator.auto_archive_enabled() 控制（env
-    DESKMATE_CURATOR_AUTO_ARCHIVE），开启后仅归档「从未使用 + 陈旧 + 高重叠」
-    的严格低价值技能，且支持 skill_restore 一键还原。
-    距上次巡检超过间隔才运行（见 curator._should_run），避免每轮都扫。
-    任何异常都不阻断主流程（fail-open）。
+    报告文件零内容读者已停产；现场现算走 HTTP / SkillStore 页面。
+    只有 opt-in 打开 DESKMATE_CURATOR_AUTO_ARCHIVE 时才在后台归档严格
+    低价值技能（从未使用 + 陈旧 + 高重叠，可 skill_restore 还原），
+    并按时间戳节流。任何异常都不阻断主流程（fail-open）。
     """
     try:
         from deskmate.skills import curator as _curator
 
+        if not _curator.auto_archive_enabled():
+            return
         if not _curator._should_run(base_dir):
             return
-        result = _curator.curate_skills(base_dir, auto_archive=_curator.auto_archive_enabled())
+        result = _curator.curate_skills(base_dir, auto_archive=True)
         logger.info(
-            "after_action: 技能巡检 -> 扫描 %d, 合并候选 %d, 归档候选 %d, 报告 %s",
+            "after_action: 技能巡检 -> 扫描 %d, 合并候选 %d, 归档候选 %d, 已归档 %s",
             result.get("total", 0),
             len(result.get("merge_candidates") or []),
             len(result.get("archive_candidates") or []),
-            result.get("report_path", ""),
+            result.get("archived", []),
         )
     except Exception:
         logger.exception("after_action: 技能巡检失败")
@@ -1240,14 +1241,15 @@ def reflect_and_persist(
             _maybe_review_memory(base_dir, last_user, last_asst)
             _maybe_curate_skills(base_dir)
             _maybe_dream(base_dir)
-            # P1-5 收尾：从用户消息学文风（零 LLM 纯统计，快）。
-            # 只传 last_user —— 抽助手输出会学到 AI 的文风，正好学反。
-            _maybe_update_style_profile(last_user)
+            # chat 文风桶 2026-11-20 停写：它是 08-30 的前期产物，而写作/审稿/
+            # 分身三端只认 11-02 加的书稿桶（record_reading 登记写入）。
+            # 函数本体与 bucket 参数保留，存量 chat 数据仍可被 memory_search 检索。
             # P2-6 收尾：从用户消息学决策偏好（零 LLM 纯规则，快）。
             # 与文风并列——文风是"怎么写"，决策偏好是"怎么选"。
             _maybe_update_decision_profile(last_user)
-            # A：内容侧闭环（产出文本 / 产物文件回流圣经），LLM 抽取较慢，放后台不阻塞响应
-            _upsert_content_loop(workspace, last_asst, artifacts)
+            # 圣典自动写入已于 2026-11-20 退役（萧哥拍板）：写稿从不读圣典，
+            # 错字/疑笔在回复里直报后作者直接改稿。自动回流=空转+污染+耗 LLM。
+            # _upsert_content_loop 本体保留可复活，但绝不在此自动拉起。
             # P2-11：定期记忆衰减 → 让「遗忘可见」(traces/forgot.jsonl) 真实产生。
             # decay_memory 本身只在被显式调用时跑，此前从未进入每轮流程，导致遗忘 trace 永远为空。
             # 每 N 轮（含本轮日志写入）跑一次 cleanup_redundancy（内部先调 decay_memory），
@@ -1255,11 +1257,9 @@ def reflect_and_persist(
             _maybe_decay_memory(base_dir)
         _submit_after_action(base_dir, _bg)
 
-    # ---- 2. 刷新圣经（文件侧，快、同步）----
-    try:
-        refresh_bible_if_novel(workspace)
-    except Exception:
-        logger.exception("after_action: 刷新圣经（文件侧）失败")
+    # ---- 2. 圣典文件侧刷新已退役（2026-11-20 萧哥拍板）----
+    # 写稿从不读圣典；自动刷新=空转+对话污染实体库+多批 LLM 抽取耗时。
+    # refresh_bible_if_novel 本体保留供显式工具调用 / 按 git 历史复活，此处不再自动触发。
 
 
 async def reflect_and_persist_async(

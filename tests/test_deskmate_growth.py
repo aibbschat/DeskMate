@@ -260,7 +260,9 @@ class TestModulation:
         eng.state.intimacy = 0
         assert eng.modulate_tone_prompt() == ""
         eng.state.intimacy = 80
-        assert "老朋友" in eng.modulate_tone_prompt()
+        out = eng.modulate_tone_prompt()
+        assert "亲密度 80" in out  # 只给事实，不给语气演出指令
+        assert "老朋友" not in out
 
     def test_proactive_frequency_by_vitality(self):
         eng = GrowthEngine()

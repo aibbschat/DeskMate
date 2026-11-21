@@ -87,7 +87,7 @@ def test_no_bible_root_untouched(
 
 
 def test_prevent_spam_short_message(tmp_path: Path) -> None:
-    """防刷屏：极短且无产物 / 习得时跳过项目日志，但仍刷新圣经。"""
+    """防刷屏：极短且无产物 / 习得时跳过项目日志（圣典刷新已退役，不再触发）。"""
     ws = str(tmp_path / "x")
     aa.reflect_and_persist(ws, "hi", "谢谢", base_dir=tmp_path)
     proj = aa._project_name_for(ws)

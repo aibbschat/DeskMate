@@ -104,4 +104,6 @@ def test_timeout_defaults_are_tightened():
     # stalled upstream）；默认回到 75/120，与 PR17 文档口径一致。
     assert _timeouts.first_token_timeout() == 75.0
     assert _timeouts.stream_idle_timeout() == 120.0
+    # shell 前台命令独立收紧到 30s（marker 失步时不站满两分钟）；真正长命令
+    # 由调用方显式传 timeout_seconds，上限仍是 _MAX_TIMEOUT=600s。
     assert _shell._DEFAULT_TIMEOUT == 30.0, "卡死的命令不该再站满两分钟"

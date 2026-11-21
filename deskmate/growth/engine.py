@@ -403,28 +403,20 @@ class GrowthEngine:
         return result
 
     def modulate_tone_prompt(self) -> str:
-        """亲密度语气提示（注入 system prompt）。
+        """关系真实状态（注入主聊天上下文；只给事实，不给表达方式）。
 
-        亲密度高 → 提示 AI 语气更亲切；低 → 保持礼貌克制。空串表示无需注入。
-        关系进入高阶段（知己及以上）后，追加一句更懂彼此的提示。
+        2026-11-20 按萧哥拍板「只留真实状态」重写：亲密度数值与关系阶段名
+        是事实，will 的「他表达过：…」是用户亲口立场的转述；**不出现任何
+        "语气应该怎样"的演出指令**——表达类模板/映射表是项目红线
+        （真实优先 v2：系统只给真实状态，不给表达方式）。
 
-        意志层增量（W2b-3）：高置信立场（≥0.7 active）≥2 条 → 追加一句
-        "他表达过：…"，把用户亲口说过的偏好带进语气。严格长度截断
-        （tone_prompt_max_len，默认 80 字，可在设置区调），超限丢整段。
-        空画像 / kill switch / 异常 → 不追加，逐字等同现状。
+        亲密度 < 10 → 空串；空画像 / will kill switch / 异常 → 不追加，fail-open。
         """
         intimacy = self.state.intimacy
-        if intimacy >= 60:
-            base = "你们已经很熟悉了（亲密度高）。可以自然地用轻松亲切的语气，不必拘谨，像老朋友一样。"
-            idx, name = self.bond_stage_from_depth(self.state.bond_depth)
-            if idx >= 3:  # 知己及以上
-                base = base + f" 你们的关系已到「{name}」阶段，语气可以更懂彼此、更自然，少一点客套。"
-        elif intimacy >= 25:
-            base = "你们的关系正在升温（亲密度中）。语气可以逐渐自然，偶尔带一点亲近感。"
-        elif intimacy >= 10:
-            base = "你们刚认识不久（亲密度低）。保持礼貌友善，不要太自来熟。"
-        else:
-            return ""  # 亲密度太低，不注入任何语气提示
+        if intimacy < 10:
+            return ""
+        _, stage_name = self.bond_stage_from_depth(self.state.bond_depth)
+        base = f"关系状态：亲密度 {int(intimacy)}（{stage_name}）。"
 
         # 意志层增量：高置信立场 → 追加用户表达过的偏好
         try:

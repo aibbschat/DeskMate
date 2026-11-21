@@ -41,8 +41,14 @@ class PagedToolResult(dict):
 
 
 def serialize_result(result: Any) -> str:
-    """Exactly what `_tool_result_message` puts in the message content."""
-    return result if isinstance(result, str) else json.dumps(result, default=str)
+    """Exactly what `_tool_result_message` puts in the message content.
+
+    `ensure_ascii=False` 与 `engine._tool_result_message` 必须同步：默认 ASCII
+    转义会把中文正文变成反斜杠 u 序列，模型补读落盘正文时得自己写解码脚本；
+    而且会把字节数撑成约 2 倍，让 `bound_tool_result` 的截断判定按膨胀后的
+    体积算。改这里必须同改那边（契约锁在 tests/test_tool_result_unicode.py）。
+    """
+    return result if isinstance(result, str) else json.dumps(result, default=str, ensure_ascii=False)
 
 
 def _nbytes(text: str) -> int:

@@ -1082,7 +1082,6 @@ export interface DeskmateCuratorStatus {
   auto_archive_candidates: { name: string; uses: number; stale_days: number }[];
   archived_now: number;
   archived_names: string[];
-  report_path: string;
 }
 
 export async function getDeskmateSkillsCurator(): Promise<DeskmateCuratorStatus> {

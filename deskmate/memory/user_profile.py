@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import difflib
 import hashlib
-import json
 import logging
 import re
 import shutil
@@ -128,8 +127,9 @@ _BULLET_RE = re.compile(r"^[-*•·]\s+")
 #: 改写/合并的放行阈值（与旧硬规矩某条足够像 → 视为「同一句话改了个说法」）
 _REWRITE_SIM = 0.6
 
-#: 闸事件日志（拒写 / 降级 / 强制写入），每行一条 JSON
-_GATE_TRACE = "traces/user_layer_gate.jsonl"
+# 2026-11-20：闸事件 jsonl 留痕已停写（本机 0 条、无任何查看口＝空转）。
+# 归属闸本体（check_user_content / check_layer_integrity / fail-closed / 补回）
+# 全部保留；被拒内容的现场快照 _record_alert 也保留。
 
 
 def split_layers(text: str) -> dict[str, list[str]]:
@@ -343,19 +343,6 @@ def demote_unmarked_hard_rules(old: str, new: str) -> tuple[str, list[str]]:
     return "".join(h + "".join(b) for h, b in blocks), bad
 
 
-def _record_gate_event(base_dir: Path, kind: str, payload: dict) -> None:
-    """写一行闸事件（拒写 / 降级 / 强制写入），供事后追查「谁在什么时候放的」。"""
-    try:
-        d = base_dir / "traces"
-        d.mkdir(parents=True, exist_ok=True)
-        rec = {"ts": datetime.now().astimezone().isoformat(timespec="seconds"), "kind": kind}
-        rec.update(payload or {})
-        with (d / "user_layer_gate.jsonl").open("a", encoding="utf-8") as fh:
-            fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
-    except Exception as e:  # noqa: BLE001
-        logger.debug("写 USER.md 闸事件失败: %s", e)
-
-
 def _record_alert(base_dir: Path, content: str, reason: str) -> None:
     """把被拒内容留存现场快照，并写一行告警（不注入正文）。"""
     try:
@@ -432,8 +419,9 @@ def save_user_ex(
     HTTP ``write_memory``、MCP ``memory_write`` 三条整篇覆写路径都从这里落盘，
     闸放在这一层才没有旁路。判据见 ``check_layer_integrity``。
 
-    ``force=True`` 是逃生口：跳过两道检查，但**必须留痕**（``actor`` 是谁、
-    ``reason`` 为什么），写入 ``traces/user_layer_gate.jsonl``，事后可追查。
+    ``force=True`` 是逃生口：跳过两道检查；``actor`` / ``reason`` 保留供调用方
+    表达意图。2026-11-20 起不再写 ``traces/user_layer_gate.jsonl``（0 消费者），
+    闸本体与被拒现场快照不变。
 
     Returns:
         ``(True, "")`` 已写入；``(False, 原因)`` 被护栏或闸拒绝（原文件不变）。
@@ -447,9 +435,6 @@ def save_user_ex(
         try:
             old = p.read_text(encoding="utf-8")
         except Exception as e:  # noqa: BLE001
-            _record_gate_event(base_dir, "reject", {
-                "gate": "read_old", "reason": f"读取旧内容失败: {type(e).__name__}",
-            })
             logger.error("拒绝写入 USER.md：读取旧内容失败，无法建立比对基线：%s", e)
             return False, f"读取旧内容失败，拒绝覆写：{type(e).__name__}"
 
@@ -457,10 +442,6 @@ def save_user_ex(
         ok, reason_ = check_user_content(content, old)
         if not ok:
             _record_alert(base_dir, content, reason_)
-            _record_gate_event(base_dir, "reject", {
-                "gate": "content", "reason": reason_,
-                "new_chars": len(content or ""), "old_chars": len(old),
-            })
             logger.warning(
                 "拒绝写入 USER.md：%s（新 %d 字符 / 旧 %d 字符）",
                 reason_,
@@ -472,21 +453,11 @@ def save_user_ex(
         ok, reason_, bad = check_layer_integrity(content, old)
         if not ok:
             _record_alert(base_dir, content, reason_)
-            _record_gate_event(base_dir, "reject", {
-                "gate": "layer", "reason": reason_,
-                "entries": [b[:120] for b in bad[:5]],
-            })
             logger.warning("拒绝写入 USER.md（条目归属闸）：%s", reason_)
             detail = "；".join(b[:60] for b in bad[:2])
             return False, f"{reason_}：{detail}" if detail else reason_
-    else:
-        # 逃生口：留痕（谁 / 何时 / 为什么 / 搬了哪些条目）
-        _record_gate_event(base_dir, "force", {
-            "actor": actor or "unknown",
-            "reason": reason or "未说明",
-            "hard_added": [e[:120] for e in find_unmarked_hard_additions(old, content)][:5],
-            "new_chars": len(content or ""), "old_chars": len(old),
-        })
+    # force=True 为显式逃生口：跳过上面两道闸直接放行（2026-11-20 起不再写 jsonl
+    # 留痕；actor/reason 参数保留，供调用方表达意图）。
 
     _rolling_backup(base_dir, p)
     atomic_write_locked(p, content)

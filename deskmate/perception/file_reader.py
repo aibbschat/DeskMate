@@ -37,6 +37,12 @@ _LONG_TEXT_BYTES = 64 * 1024 * 1024
 # 20K 字符 ≈ 18K tokens，够读两三个正常章节；整本长稿必然超限，从而被导向按章读取。
 DEFAULT_READ_CHARS = 20_000
 
+# 一次读多章（read_chapters）的默认总量上限。约 12 万字符，刻意低于 compaction
+# 触发线（0.8×128000≈102400 token），避免单次工具返回就把上下文顶过压缩线——
+# 压缩器清掉工具返回后模型「读完就忘」，正是编造的成因。超限不静默截断，
+# 而是明确告知分两批读（见 read_chapters）。
+DEFAULT_MULTI_CHAPTER_TOTAL = 120_000
+
 # 章节标题识别：第X章/回/节（可带标题）、楔子、序章、尾声、番外、后记。
 _CHAPTER_RE = re.compile(
     r"^[\s\u3000]*("
@@ -396,6 +402,134 @@ def read_chapter(
             f"勿据此声称读完本章）\n\n{body[:max_chars]}"
         )
     return f"{prefix}【{title}】（{len(body):,} 字，本章完整）\n\n{body}"
+
+
+def read_chapters(
+    path: str,
+    chapters: list[str | int],
+    *,
+    max_chars_per: int = MAX_READ_SIZE,
+    max_total: int = DEFAULT_MULTI_CHAPTER_TOTAL,
+    coverage: bool = True,
+    max_bytes: int | None = None,
+) -> str:
+    """一次读取指定的多章正文——为「跨章比对」把往返从 N 次压到 1 次（2026-11-20）。
+
+    为什么需要它：`read_chapter` 一次只读一章。像「归营路线对不对、会不会跟
+    夜不收来路冲突」这类要同时看 4–5 章的题，逐章读 = 4–5 次工具往返，而引擎
+    每轮把累积历史整包重发，代价复利式膨胀（实测一次提问 40 次调用里 20 次是
+    读稿、83 万 token 花在重发上）。一次读多章把往返砍到 1 次，**正文一字不砍**。
+
+    安全护栏（与 read_chapter 同源，绝不静默截断）：
+    - 每章仍带【覆盖率】标注：本稿共几章、本次加载哪几章、其余未加载、
+      「未加载 ≠ 书里没写」的判据。
+    - 单章超过 max_chars_per：该章标注「本章前半，后段未加载」，不得据此声称读完。
+    - 合计超过 max_total：**后续章不读取**，明确告知分批与下一批的 read_chapters 参数；
+      已读章正文原样保留，不砍字也不假装全读了。
+    - 未找到的章：列出实际章标题，不编造正文。
+
+    ``coverage=False`` 只给内部消费者（如建索引），不混进工具提示。
+    """
+    p = Path(path).expanduser().resolve()
+    if not p.is_file():
+        return f"（文件不存在：{path}）"
+    if not chapters:
+        return "（章节列表为空；用 list_chapters 看目录后再指定）"
+
+    text = _extract_text(p, max_bytes=max_bytes or _LONG_TEXT_BYTES)
+    if text is None:
+        return f"（不支持的文件类型：{p.suffix or '无扩展名'}）"
+    if text.startswith("（") and "\n" not in text:
+        return text
+    all_chapters = split_chapters(text)
+    if not all_chapters:
+        return "（文件为空）"
+
+    # 解析每个 key → index（序号 / 完整标题 / 标题片段），与 read_chapter 同口径。
+    picked: list[tuple[int, str]] = []
+    missing: list[str] = []
+    seen: set[int] = set()
+    for key in chapters:
+        k = str(key).strip()
+        idx = -1
+        if k.isdigit() and 1 <= int(k) <= len(all_chapters):
+            idx = int(k) - 1
+        else:
+            norm = k.replace(" ", "").replace("\u3000", "")
+            for i, (title, _body) in enumerate(all_chapters):
+                if norm and norm in title.replace(" ", "").replace("\u3000", ""):
+                    idx = i
+                    break
+        if idx < 0:
+            missing.append(k)
+        elif idx not in seen:
+            seen.add(idx)
+            picked.append((idx, k))
+
+    if not picked:
+        titles = "、".join(t for t, _ in all_chapters[:20])
+        return (
+            f"（未找到章节：{'、'.join(missing)}。本稿共 {len(all_chapters)} 章，"
+            f"章节为：{titles}；用 list_chapters 看完整目录。）"
+        )
+
+    # 逐章组装：单章上限 + 总量上限；超限明确标注、不静默截断。
+    # 先把点名的章按书内顺序排（而非用户给的顺序），便于交叉比对。
+    picked.sort(key=lambda x: x[0])
+    blocks: list[str] = []
+    loaded_idx: list[int] = []
+    deferred: list[tuple[int, str]] = []
+    used = 0
+    total = len(all_chapters)
+    cap_per = max(1, int(max_chars_per))
+    cap_total = max(1, int(max_total))
+    for idx, key in picked:
+        title, body = all_chapters[idx]
+        if used + min(len(body), cap_per) > cap_total and blocks:
+            deferred.append((idx, key))
+            continue
+        # 顶部已有一次全局【覆盖率】标注；章内不再复用单章版（那会谎称
+        # 「本次仅加载第 N 章」并与全局标注矛盾）。章内只保留轻量标题/截断提示。
+        if len(body) > cap_per:
+            shown = body[:cap_per]
+            head = (
+                f"【{title}】（本章 {len(body):,} 字，超过单章上限 {cap_per:,}，"
+                f"以下为前半部分，勿据此声称读完本章）"
+            )
+        else:
+            shown = body
+            head = f"【{title}】（{len(body):,} 字，本章完整）"
+        blocks.append(f"{head}\n\n{shown}")
+        loaded_idx.append(idx)
+        used += len(shown)
+
+    out: list[str] = []
+    if coverage:
+        if total <= 1:
+            out.append(
+                "【覆盖率】本稿无章节标记，本次已加载全文。\n"
+                "仍未读到的其他正文文件不等于书里没写：判断全书前先用 list_chapters "
+                "确认目录、再逐章补读；没读到的部分不得当作「正文没有」。"
+            )
+        else:
+            loaded_nums = "、".join(str(i + 1) for i in loaded_idx)
+            out.append(
+                f"【覆盖率】本稿共 {total} 章；本次加载 {len(loaded_idx)} 章"
+                f"（第 {loaded_nums} 章，共 {used:,} 字）；其余 {total - len(loaded_idx)} "
+                f"章本次未加载。\n{_COVERAGE_GUARD}"
+            )
+    if missing:
+        out.append(f"（未找到：{'、'.join(missing)}；已加载其余点名章节，未编造其正文。）")
+    if deferred:
+        next_keys = ", ".join(str(i + 1) for i, _ in deferred)
+        out.append(
+            f"⚠️ 已达本次总量上限 {cap_total:,} 字符：第 "
+            f"{'、'.join(str(i + 1) for i, _ in deferred)} 章未加载"
+            f"（不是书里没写，只是本批没读）。请分两批读，下一批："
+            f"read_chapters(path, [{next_keys}])。"
+        )
+    out.extend(blocks)
+    return "\n\n".join(out)
 
 
 def extract_file_path_from_title(title: str, app: str) -> str | None:

@@ -191,7 +191,10 @@ def test_summarizer_failure_attended_nonblocking_notice_and_cooldown(tmp_path):
     assert asked == []
     # Failure is surfaced as a non-blocking COMPACTED notice, not a modal prompt.
     compacted = [e for e in events if e.type == EventType.COMPACTED]
-    assert compacted and "summarizer was unavailable" in compacted[0].data["text"].lower()
+    assert compacted and "summarizer failed" in compacted[0].data["text"].lower()
+    # 当前默认策略就是主模型兼任摘要器：提示不能暗示用户漏配了专用模型
+    text = compacted[0].data["text"].lower()
+    assert "set a dedicated compression model" not in text
     assert engine.compaction_state is not None and engine.compaction_state.trimmed
     # Cooldown engaged so we don't re-prompt (or re-hammer) on the next turn.
     assert engine._compaction_cooldown_until > 0

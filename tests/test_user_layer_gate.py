@@ -10,14 +10,15 @@
 2. 整篇回写把系统文案写进硬规矩 → 拒写，原文件不动；
 3. 同层精简（合法压缩）→ 放行，不误伤；
 4. 同层重排（合法整理）→ 放行。
-另锁：原 `check_user_content` 三道护栏仍生效、不替代；`force=True` 留痕。
+另锁：原 `check_user_content` 三道护栏仍生效、不替代；`force=True` 放行。
+2026-11-20 起 `traces/user_layer_gate.jsonl` 停写（0 消费者）——闸本体不变，
+只锁"拒绝/强制仍照旧生效且不再产生留痕文件"。
 
 全部用 tmp 目录，绝不碰真实 ~/.deskmate/USER.md。
 """
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import pytest
@@ -98,12 +99,7 @@ def test_whole_file_write_system_text_into_hard_rejected(base: Path):
     assert ok is False
     assert "无人工确认标记" in why
     assert _read(base) == NORMAL  # 原文件一字未动
-    # 闸事件留痕
-    ev = [
-        json.loads(x)
-        for x in (base / "traces" / "user_layer_gate.jsonl").read_text(encoding="utf-8").splitlines()
-    ]
-    assert ev[-1]["kind"] == "reject" and ev[-1]["gate"] == "layer"
+    assert not (base / "traces" / "user_layer_gate.jsonl").exists()  # 留痕已停写
 
 
 def test_manager_write_memory_rejects_with_hint(base: Path):
@@ -167,25 +163,17 @@ def test_content_guard_still_active(base: Path):
     bad = "画像" * 4000
     ok, why = up.save_user_ex(base, bad)
     assert ok is False and "重复片段过长" in why
-    ev = [
-        json.loads(x)
-        for x in (base / "traces" / "user_layer_gate.jsonl").read_text(encoding="utf-8").splitlines()
-    ]
-    assert ev[-1]["gate"] == "content"
+    assert not (base / "traces" / "user_layer_gate.jsonl").exists()
 
 
-def test_force_write_leaves_trace(base: Path):
+def test_force_write_still_passes_without_trace(base: Path):
     bad = _insert_into_hard(NORMAL, SYSTEM_TEXT)
     ok, why = up.save_user_ex(
-        base, bad, force=True, actor="test-suite", reason="验证逃生口留痕",
+        base, bad, force=True, actor="test-suite", reason="验证逃生口仍可放行",
     )
     assert ok, why
-    rec = json.loads(
-        (base / "traces" / "user_layer_gate.jsonl").read_text(encoding="utf-8").splitlines()[-1]
-    )
-    assert rec["kind"] == "force"
-    assert rec["actor"] == "test-suite" and rec["reason"] == "验证逃生口留痕"
-    assert rec["hard_added"] and "不希望写报告" in rec["hard_added"][0]
+    assert "不希望写报告" in _read(base)
+    assert not (base / "traces" / "user_layer_gate.jsonl").exists()
 
 
 def test_appended_entry_still_lands_in_pref_layer(base: Path):

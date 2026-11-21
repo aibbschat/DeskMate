@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
+from contextlib import nullcontext as _nullcontext
 import json
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -74,7 +75,7 @@ _TOOL_SCHEMA_DEFAULT_CHARS = 48000
 _PINNED_TOOLS: frozenset[str] = frozenset({
     "web_search", "web_fetch",           # 联网查证
     "search_history", "history_library_check", "search_private",  # 史料/私人资料查证
-    "read_file", "list_files", "grep", "search_text", "read_chapter", "list_chapters",
+    "read_file", "list_files", "grep", "search_text", "read_chapter", "read_chapters", "list_chapters",
     "read_paragraphs",                   # 读稿（含新增的按段号读取）
     # 文件写入/修改/执行地基：没这些工具 agent 无法干活，且它们排在 100+ MCP 工具
     # 之后，按注册顺序裁剪必然被误伤（2026-11-19 二次回归）。
@@ -518,6 +519,9 @@ class TurnEngine:
         self.messages.append(message)
         self._cancel.clear()
         self._yield_for_wake = False
+        self._visibility_progress_sent = False
+        self._visibility_tool_rounds = 0
+        self._visibility_turn_started = time.monotonic()
         if self.session_facts is not None:
             self.session_facts.begin_turn()
         # §8.4 retry guard resets per user turn: two reviewer denials in one turn route
@@ -532,9 +536,19 @@ class TurnEngine:
             data["source"] = source
         if display is not None:
             data["display"] = display
-        yield Event(EventType.TURN_START, data)
-        async for event in self._loop():
-            yield event
+        # 2026-11-21 场景归因：llm_usage.scene 此前只有专家/bot 两处打了标签，
+        # 前台/自动化全是空。这里给每个用户轮补一个默认场景；外层已有更具体的
+        # scene_scope（expert_consult / bot_group）时不覆盖。provider produce 线程
+        # 会 copy_context，所以标签能穿到真正记账的出口。
+        from .llm_usage import current_scene, scene_scope
+
+        _default_scene = None
+        if current_scene() is None:
+            _default_scene = "automation" if getattr(self, "is_automation", False) else "foreground"
+        with scene_scope(_default_scene) if _default_scene else _nullcontext():
+            yield Event(EventType.TURN_START, data)
+            async for event in self._loop():
+                yield event
 
     def switch_model(self, model: str) -> Optional[str]:
         """Rebind the session's model mid-conversation (roadmap item 3). History is
@@ -707,6 +721,7 @@ class TurnEngine:
                             EventType.REASONING_DELTA, {"text": chunk.reasoning_delta}
                         )
                     if chunk.text_delta:
+                        self._visibility_progress_sent = True
                         streamed.append(chunk.text_delta)
                         yield Event(
                             EventType.ASSISTANT_DELTA, {"text": chunk.text_delta}
@@ -775,6 +790,30 @@ class TurnEngine:
             self._turn_truncated = turn.finish_reason == "length"
             _sanitize_mangled_calls(turn)
             self.messages.append(_assistant_message(turn, model=self.model))
+            # 2026-11-21：工具空转可见性。模型只吐 tool_call、正文为空时，GUI 只剩
+            # 工具卡片 + "Waiting for agent..."。发一段非持久 ASSISTANT_DELTA 立即
+            # 替换 Waiting；不进 history / 不改 turn.text，绝不污染 prompt/cache。
+            if turn.tool_calls and not (turn.text or "").strip():
+                self._visibility_tool_rounds += 1
+                names = list(dict.fromkeys(tc.name for tc in turn.tool_calls))
+                if not self._visibility_progress_sent:
+                    self._visibility_progress_sent = True
+                    text = (
+                        "我先处理这一步："
+                        + "、".join(names)[:80]
+                        + "，有结果就给你结论。\n\n"
+                    )
+                elif self._visibility_tool_rounds % 5 == 0:
+                    # 后续每 5 个工具轮更新一次，既不刷屏，也别让长任务像假死。
+                    secs = int(time.monotonic() - self._visibility_turn_started)
+                    text = (
+                        f"已处理 {self._visibility_tool_rounds} 步工具（约 {secs}s），"
+                        + "继续核对：" + "、".join(names)[:60] + "。\n\n"
+                    )
+                else:
+                    text = ""
+                if text:
+                    yield Event(EventType.ASSISTANT_DELTA, {"text": text})
             payload: dict[str, Any] = {
                 "text": turn.text,
                 "tool_calls": [tc.name for tc in turn.tool_calls],
@@ -1150,19 +1189,32 @@ class TurnEngine:
                 self._last_context_tokens = None
                 self._sync_outbound_estimate()  # new, smaller baseline for the cheap gate
                 if failed and self.question_asker is not None and self.is_attended and self.is_attended():
-                    # P1-2: if a dedicated compression model was also configured (and
-                    # failed), the "set one" hint is misleading — name both models.
+                    # 失败原因必须可查：以前只在 cooldown 分支记日志，trim 成功后
+                    # 这条失败被吞掉，用户只看到含糊的 notice。
+                    logger.warning(
+                        "compaction: summarizer unavailable (%s), trimmed oldest turns without summary; "
+                        "dedicated=%s main=%s",
+                        (
+                            last_err.__class__.__name__ + ": " + str(last_err)
+                            if last_err is not None
+                            else "unknown error"
+                        ),
+                        compression_model or "(unset)",
+                        main_model,
+                    )
                     if compression_model:
                         return (
                             "Context trimmed — both the dedicated compression model and the "
                             "main model were unavailable, so older turns were dropped without "
                             "a summary (details in the log)."
                         )
-                    # P0-3: non-blocking notice instead of the old blocking Retry prompt.
+                    # P0-3: non-blocking notice. 当前默认策略是「主模型兼任摘要器」，
+                    # 不能暗示用户漏配了专用模型；如实说主模型这次失败、已安全裁剪。
                     return (
-                        "Context trimmed — the summarizer was unavailable, so older turns "
-                        "were dropped without a summary (details in the log). Set a "
-                        "dedicated compression model in settings to avoid this."
+                        "Context trimmed — the summarizer failed on this pass, so older turns "
+                        "were dropped without a summary (details in the log). The session "
+                        "model is used for summaries by default; you can pin a dedicated "
+                        "compression model in settings to reduce this."
                     )
                 return "Context trimmed — oldest turns dropped (summary unavailable)"
         return None

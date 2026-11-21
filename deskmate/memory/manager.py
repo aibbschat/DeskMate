@@ -364,15 +364,8 @@ class DeskMateMemoryManager:
             if proj_mem:
                 parts.append(proj_mem)
 
-        # 5. 亲密度语气提示（成长系统）
-        try:
-            from deskmate.growth.engine import GrowthEngine
-
-            tone = GrowthEngine(base_dir=self.base_dir).modulate_tone_prompt()
-            if tone:
-                parts.append(f"## 与用户的关系\n{tone}")
-        except Exception as e:
-            logger.debug("growth engine tone prompt failed: %s", e)
+        # 关系真实状态已于 2026-11-20 移到 build_full_context_for_turn
+        # （主聊天每轮走的那条链）；此处不再注入，避免 MCP read(all) 重复。
 
         return "\n\n---\n\n".join(parts)
 
@@ -1116,6 +1109,19 @@ class DeskMateMemoryManager:
             except Exception as exc:
                 _note_ctx_fail("emotion_state", exc)
                 pass  # fail-open 退回无情绪段
+        # 关系真实状态（2026-11-20 接通）：亲密度/阶段名 + will 里他亲口说过的
+        # 立场。只给事实，不给表达方式指令（表达类模板为项目红线）。
+        # 专家 1v1 走不到这条链（mem_store=None），不会把小桔的关系感带进附体专家。
+        # kill switch 随 DESKMATE_GROWTH* / will settings；异常 fail-open。
+        try:
+            from deskmate.growth.engine import GrowthEngine
+
+            _relation_ctx = GrowthEngine(base_dir=self.base_dir).modulate_tone_prompt()
+            if _relation_ctx:
+                _add("relation_state", _relation_ctx, priority=20, cap=500, cap_light=300)
+        except Exception as exc:
+            _note_ctx_fail("relation_state", exc)
+            pass  # fail-open：关系状态缺失不影响主对话
         # 对话层时钟（2026-10-15）：一行纯事实「现在是 …周几 晚上 22:06」。
         # 不补她聊天时永远不知道几点；纯本地零 LLM，不导演（怎么反应是她的事）。
         # 开关：DESKMATE_CLOCK=0。fail-open。

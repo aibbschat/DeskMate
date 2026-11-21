@@ -27,7 +27,9 @@ logger = logging.getLogger(__name__)
 _CURATOR_INTERVAL_DAYS = int(os.environ.get("DESKMATE_CURATOR_INTERVAL_DAYS", "7"))
 _CURATOR_STALE_DAYS = int(os.environ.get("DESKMATE_CURATOR_STALE_DAYS", "30"))
 _OVERLAP_THRESHOLD = float(os.environ.get("DESKMATE_CURATOR_OVERLAP", "0.5"))
-_REPORT_FILE = "curator_report.md"
+# 2026-11-20：curator_report.md 停写（零内容读者，前端 SkillStore 走 HTTP 现场现算）。
+# opt-in 归档仍要节流，改看轻量时间戳文件，不再依赖报告 mtime。
+_RUN_MARKER = ".curator_last_run"
 
 
 def auto_archive_enabled() -> bool:
@@ -94,26 +96,40 @@ def _parse_date(s: str | None) -> float | None:
 
 
 def _should_run(base_dir: Path) -> bool:
-    """距上次巡检超过间隔（默认 7 天）或报告缺失才运行，避免每轮都扫。"""
-    report = _skills_dir(base_dir) / _REPORT_FILE
-    if not report.is_file():
+    """距上次巡检超过间隔（默认 7 天）才运行，避免每轮都扫。
+
+    2026-11-20 起不再依赖 curator_report.md 的 mtime（报告已停写）；
+    改看独立时间戳文件，只在 opt-in 归档路径上生效。
+    """
+    marker = _skills_dir(base_dir) / _RUN_MARKER
+    if not marker.is_file():
         return True
     try:
-        age_days = (time.time() - report.stat().st_mtime) / 86400.0
+        age_days = (time.time() - marker.stat().st_mtime) / 86400.0
         return age_days >= _CURATOR_INTERVAL_DAYS
     except OSError:
         return True
 
 
+def _mark_run(base_dir: Path) -> None:
+    """记一次巡检时间（仅节流用，不承载任何内容）。"""
+    try:
+        marker = _skills_dir(base_dir) / _RUN_MARKER
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text(str(int(time.time())), encoding="utf-8")
+    except OSError:
+        logger.debug("curator: 写巡检时间戳失败", exc_info=True)
+
+
 def curate_skills(base_dir: Path, *, auto_archive: bool = False) -> dict:
-    """巡检技能库，产出整理报告（默认非破坏性）。
+    """巡检技能库，返回候选数据（默认非破坏性；不再写报告文件）。
 
     Args:
         base_dir: 记忆根目录（默认 ~/.deskmate）。
         auto_archive: True 时仅归档「从未使用 + 陈旧 + 高重叠」的严格低价值技能；默认 False 只出报告。
 
     Returns:
-        {"ok", "total", "merge_candidates", "archive_candidates", "auto_archive_candidates", "archived", "report_path"}
+        {"ok", "total", "merge_candidates", "archive_candidates", "auto_archive_candidates", "archived"}
     """
     try:
         from deskmate.skills.manager import SkillManager
@@ -189,10 +205,9 @@ def curate_skills(base_dir: Path, *, auto_archive: bool = False) -> dict:
             except Exception as e:
                 logger.debug("curator: 归档 %s 失败: %s", c["name"], e)
 
-    report_path = _write_report(
-        store.skills_dir, skills, merge_candidates, archive_candidates,
-        auto_archive_candidates, archived, auto_archive,
-    )
+    # 2026-11-20：不再写 curator_report.md；候选数据由 HTTP 端点现场现算返回，
+    # 前端 SkillStore 直接消费。这里只留时间戳供 opt-in 归档节流。
+    _mark_run(base_dir)
     return {
         "ok": True,
         "total": n,
@@ -200,63 +215,7 @@ def curate_skills(base_dir: Path, *, auto_archive: bool = False) -> dict:
         "archive_candidates": archive_candidates,
         "auto_archive_candidates": auto_archive_candidates,
         "archived": archived,
-        "report_path": str(report_path),
     }
 
 
-def _write_report(
-    skills_dir: Path,
-    skills: list[dict],
-    merge_candidates: list[dict],
-    archive_candidates: list[dict],
-    auto_archive_candidates: list[dict],
-    archived: list[str],
-    auto_archive: bool,
-) -> Path:
-    """写出巡检报告（原子写）；返回报告路径。"""
-    report = Path(skills_dir) / _REPORT_FILE
-    stamp = datetime.now().strftime("%Y-%m-%d %H:%M")
-    mode = "报告 + 自动归档" if auto_archive else "报告（非破坏性，待你确认）"
-    lines = [
-        "# 技能库巡检报告 · %s" % stamp,
-        "",
-        "共扫描 %d 个技能（导入包已跳过）。" % len(skills),
-        "模式：%s。" % mode,
-        "",
-    ]
-    if merge_candidates:
-        lines.append("## 建议合并（功能重叠，需你确认后执行）")
-        for c in merge_candidates:
-            lines.append("- `%s` ↔ `%s`（相似度 %.2f）" % (c["a"], c["b"], c["similarity"]))
-        lines.append("")
-    if archive_candidates:
-        strict = {c["name"] for c in auto_archive_candidates}
-        lines.append("## 建议归档（从未使用且陈旧）")
-        for c in archive_candidates:
-            if c["name"] in strict:
-                mark = "✅ 已归档" if c["name"] in archived else "🔁 可自动归档（高重叠，冗余）"
-            else:
-                mark = "⏳ 待确认（唯一技能，不自动归档）"
-            lines.append("- `%s`（%d 天未用）%s" % (c["name"], c["stale_days"], mark))
-        lines.append("")
-    if not merge_candidates and not archive_candidates:
-        lines.append("## 结论")
-        lines.append("技能库整洁，暂无需整理。")
-        lines.append("")
-    lines.append("---")
-    lines.append(
-        "合并需你确认后再执行（自动合并可能丢信息）；归档候选若为手写的低频技能，请勿自动归档。"
-    )
-    lines.append("归档技能仅移入 archive/ 子目录、未删除，可用 skill_restore 一键还原。")
-    content = "\n".join(lines)
-    try:
-        report.parent.mkdir(parents=True, exist_ok=True)
-        tmp = report.with_name(report.name + ".tmp")
-        tmp.write_text(content, encoding="utf-8")
-        os.replace(tmp, report)
-    except OSError:
-        logger.exception("curator: 写报告失败")
-    return report
-
-
-__all__ = ["curate_skills", "_should_run"]
+__all__ = ["curate_skills", "_should_run", "_mark_run"]

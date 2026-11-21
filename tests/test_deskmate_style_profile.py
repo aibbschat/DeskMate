@@ -251,18 +251,22 @@ class TestStyleAutoExtract:
 
         assert load_profile(path)["updates"] == 1
 
-    def test_wired_into_reflect_and_persist(self):
-        """接线存在性：防止该函数变回死代码（P2-6 教训）。
+    def test_chat_bucket_write_retired_from_reflect_and_persist(self):
+        """2026-11-20：chat 桶是前期产物，写作/审稿/分身只认书稿桶，故停每轮写入。
 
-        只断言「reflect_and_persist 内部确实用用户消息调用了它」——
-        不实际跑 reflect_and_persist（它会起 daemon 线程、写日志、扫文件）。
+        函数本体与 bucket 参数保留（存量数据仍可被动检索、CLI 可显式调用）；
+        读稿登记走 manuscript 桶，必须保留。
         """
         import inspect
 
         from deskmate.memory.after_action import reflect_and_persist
 
         src = inspect.getsource(reflect_and_persist)
-        assert "_maybe_update_style_profile(last_user)" in src
+        assert "_maybe_update_style_profile(last_user)" not in src
+
+        repo = Path(__file__).resolve().parents[1]
+        reg = (repo / "scripts" / "record_reading.py").read_text(encoding="utf-8")
+        assert 'bucket="manuscript"' in reg
 
     def test_fail_open_on_error(self, tmp_path: Path, monkeypatch):
         """画像写入抛异常时不冒泡，绝不阻塞 after_action 主流程。"""

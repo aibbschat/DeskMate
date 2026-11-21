@@ -44,7 +44,7 @@ logger = logging.getLogger(__name__)
 
 # Foreground timeout bounds: long enough for installs/builds/test runs by default, capped so
 # a model-requested timeout can't wedge the turn for more than ten minutes.
-_DEFAULT_TIMEOUT = 120.0
+_DEFAULT_TIMEOUT = 30.0
 _MAX_TIMEOUT = 600.0
 
 # Env defaults that discourage commands from blocking on a prompt.

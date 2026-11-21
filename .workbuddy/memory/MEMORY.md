@@ -13,7 +13,7 @@
 - **API key** 写 `~/.config/coworker/secrets.json:provider:<vendor>`（0600）；改默认模型先退 app 再改 `prefs.json:default_model`。
 - 统一库 `~/.deskmate/deskmate.db`；圣经索引=`<小说目录>/.deskmate/entities.db`；产出 `/Users/xiaocheng/OpenWorker/<project-id>/`；Automations 真身 `~/.config/coworker/automation.db:scheduled_tasks`（30s 生效）。技能两套 `~/.deskmate/skills/`、`~/.config/coworker/skills`；**加了技能≠她会用**，要在 instructions 点名。
 - 🔴 **已写正文＝唯一事实基准**（`e35d84e1`，`docs/memory-discipline-design.md` §9-11）：记忆/大纲/圆桌结论与正文冲突**以正文为准**；正文效力 `novel_memory/canon.py`（`manuscript` 须逐字引文命中否则降级）。记忆层「零 schema」四铁律（source 白名单／只注入 `active`／`book_scope` 认不出书不过滤／进度类 30 天）见 PITFALLS §二十八；改链路须跑 `test_memory_canon_discipline/_evidence/_book_scope`。圣典主角丢失只能 `upsert_records` MERGE，**绝不用 `build_bible`**（DELETE 全表，PITFALLS §P1）。
-- 🔴 **USER.md 归属闸**：唯一写入口 `save_user_ex`（护栏+归属闸+留痕 `traces/user_layer_gate.jsonl`）；硬规矩新增须〔人工确认〕、删除被拦+补回、读旧失败 fail-closed、改写比对先去日期前缀、bullet 认 `-*•·`。锁门 `test_user_layer_gate.py`。dream/journal/after_action 全收口此闸或 `file_write_lock`。
+- 🔴 **USER.md 归属闸**：唯一写入口 `save_user_ex`（护栏+归属闸；**jsonl 留痕 11-20 停写**——本机 0 条且无查看口）；硬规矩新增须〔人工确认〕、删除被拦+补回、读旧失败 fail-closed、改写比对先去日期前缀、bullet 认 `-*•·`。锁门 `test_user_layer_gate.py`。dream/journal/after_action 全收口此闸或 `file_write_lock`。
 
 ## 三、Bot 群 / 模型
 - 🔴 **双方向契约（萧哥终裁）**：**小桔本体**＝越来越懂你／像个人（人格/情绪/意志/日记/关系/proactivity）；**附体专家**＝唯一目标「让专家更专业」＝「判断更可核验」，绝不叠加自传/活感/关系/情绪/自主回访，**禁借用小桔的人格/记忆/意志/proactivity 模块**。判据：先问「这让他的判断更可核验吗」，不是就砍。
@@ -63,3 +63,9 @@
 - 权限 14 红已定性：`permissions.py` bypass 前置短路跳过三道地板；**改安全策略须萧哥拍板**。定时/自主会话 `_build_task_engine` 硬编码 `BYPASS_APPROVALS`。
 - 访谈卡「点稍后只关窗不上报→白吃 3 天冷却」+ `useProactiveTick.ts:57-58` 起新对话丢整包 → 需前端重打包。
 - 工作区遗留：`workbuddy-skin/` 110 个资源已删除状态；`.trae/`、`.qwenwork-media-result-*`、`:memory:.ses` 为外部工具残留，禁入提交。
+
+## 十、模块去留判据（萧哥终裁 2026-11-20）
+- 🔴 **消费端判据**：任何在运转的机制必须有**可指认的下游消费者**（人／流程／代码），否则＝空转＝负担，**拆掉优于留着**。"将来可能有用"不算消费者。两度拍板：圣典自动写入全线退役（无人读它）；Linger 评估里它的 wiki 每晚整理但"所有 agent 可搜"＝有消费者，故不是空转。
+- 核心区分：**有消费者的沉淀＝记忆；无消费者的沉淀＝自己记录自己**（圣典原状态）。审计任何模块先问"谁读它／谁用它"，答不出即列拆除候选，报萧哥拍板。
+- 已据此退役：主编派活入口、划词适配、vault 静态档案注入、圣典四处自动写入（11-20）。
+- 🔴 **11-20 二次拍板（体检报告逐项处置）**：①will 语气**只留真实状态**（亲密度/阶段/「他表达过」）接进主链，禁把旧"亲密度→语气句"映射表复活；②归属闸留痕停写、闸本体不动；③遥测门**收窄不撤**：`timeline_error` 显式豁免（后缀 `_error` 会再挡），安全项与历史行不动（39＝改前旧守门「精确名单+后缀」全口径实拦数、pending 34；豁免后当前实拦 36；报告 §六 的 30/33 是「仅后缀命中」口径，勿当 39 被推翻）；④curator 报告文件停产、默认关后台不跑、opt-in 用 `.curator_last_run` 节流，现场现算保留；⑤`deskmate-growth` MCP 出口摘除（先 `BUILTIN_SERVERS` 后 mcp.json，server.py 留）；⑥roundtable MCP 只接 `export_docx`，11 个 pid 工具摘掉，`run_roundtable` 保留实现但**不注册**（同步长任务，须先后台化）；⑦chat 文风桶停每轮写，书稿桶/`record_reading` 保留；⑧**`GrowthState.mood` 不动**（查出还驱动 Mascot 动画+日记心情行，非纯展示）。⑨分身实测 `~/.deskmate/alter_ego_config.json={"enabled":true}`，decision_profile 不动。
