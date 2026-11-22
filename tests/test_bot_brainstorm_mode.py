@@ -5,10 +5,11 @@
 实际产出是「三条野路子 → 逐条过审 → 我认哪条 → 落笔建议」的 2158 字方案，
 方向正好相反。本组锁住：
 
-- 人设默认档 = 开脑洞：4~6 条真不同、允许半成品、不排序/不替作者挑/不写
-  分层方案或大纲；
-- 往下盘只在作者挑中之后：盘局势、查伏笔、算代价，动作过三问（谁有权 /
-  对手怎么破 / 里面的人凭什么）；
+- 人设默认档 = 开脑洞：条数不设死、允许半成品、火花阶段不审/不排序/
+  不替作者挑/不写分层方案；
+- 往下盘只在作者挑中或点名要方案之后：盘局势、查伏笔、算代价，动作过三问
+  （谁有权 / 对手怎么破 / 里面的人凭什么）；
+- 「下一步怎么办」不等于要方案——先给可能性，不交一二三步；
 - 「脑洞大开 / 先读原稿」不再被误判成深挖（该走默认开脑洞档）；
 - 群聊 guidance、solo lead、第 2 轮接话 lead 都不得把开脑洞收敛成方案。
 """
@@ -30,14 +31,20 @@ def _persona_text() -> str:
     return p.read_text(encoding="utf-8")
 
 
+def _skill_text() -> str:
+    return Path(
+        "coworker/personas/builtin/brainstormer/skills/brainstormer-method/SKILL.md"
+    ).read_text(encoding="utf-8")
+
+
 # --------------------------------------------------------------------- 人设
 
 def test_persona_defaults_to_divergent_brainstorm() -> None:
     text = _persona_text()
     assert "开脑洞（默认）" in text
     assert "往下盘" in text
-    # 发散档的四条硬约束
-    assert "4~6 条真正不同的" in text
+    # 发散档的硬约束（2026-11-22：不设条数，避免把火花写成配额）
+    assert "条数不设死" in text
     assert "允许半成品" in text
     assert "不排序、不验收、不替作者挑" in text
     assert "不写成分层方案" in text
@@ -49,7 +56,7 @@ def test_persona_converges_only_after_author_picks() -> None:
     # 往下盘的三问：谁有权 / 对手怎么破 / 里面的人凭什么
     assert "谁有权让它发生" in text
     assert "对手会怎么破" in text
-    assert "凭什么照你说的做" in text
+    assert "人物凭什么这么做" in text
 
 
 def test_persona_still_keeps_reading_and_honesty_red_lines() -> None:
@@ -59,6 +66,37 @@ def test_persona_still_keeps_reading_and_honesty_red_lines() -> None:
     assert "本次未加载" in text
     assert "钉死出处，绝不编造" in text
     assert "半空的冒充成正文" in text
+
+
+def test_spark_phase_has_no_quota_or_self_audit() -> None:
+    """火花档不设条数、不在生成时自审——把「正确的废话」挡在门外。"""
+    text = _persona_text()
+    skill = _skill_text()
+    assert "条数不设死" in text and "条数不设死" in skill
+    assert "通常 2-4" not in text
+    assert "哪里可能塌" not in skill
+    assert "火花阶段不审" in skill
+    assert "判据只有一条" in skill
+
+
+def test_next_step_question_does_not_trigger_plan() -> None:
+    """作者问「下一步怎么办」不是要方案；先给可能性，不交一二三步。"""
+    text = _persona_text()
+    skill = _skill_text()
+    assert "下一步怎么办" in text
+    assert "不等于要方案" in text and "不等于要方案" in skill
+    assert "不交一二三步" in text
+
+
+def test_down_gear_needs_explicit_plan_request() -> None:
+    text = _persona_text()
+    assert "给方案" in text and "写大纲" in text
+    assert "才进这个档" in text
+
+
+def test_memory_does_not_recycle_old_sparks() -> None:
+    text = _persona_text()
+    assert "旧判断、旧火花只当参考" in text
 
 
 # --------------------------------------------------------------------- 群聊形态
@@ -79,8 +117,8 @@ def test_round_two_lead_allows_brainstorm_branching() -> None:
 
 def test_solo_guidance_keeps_brainstorm_short() -> None:
     solo = runtime._SOLO_GUIDANCE
-    assert "开脑洞时" in solo
-    assert "往下盘时" in solo
+    assert "要火花/方向/碰撞" in solo
+    assert "他明确要你盘深" in solo
 
 
 def test_deep_lead_is_still_the_convergent_gear() -> None:

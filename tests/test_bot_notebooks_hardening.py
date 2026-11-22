@@ -230,6 +230,6 @@ def test_group_guidance_matches_actual_tool_surface(tmp_path: Path) -> None:
     assert "notebook_feedback" not in names, "群聊按拍板不做反馈闭环"
     assert "ask_user" not in names, "群聊没有问答卡"
     prompt = str(eng.messages[0].get("content") or "")
-    assert "群里没有 ask_user" in prompt, "人设必须显式说明群里没有问答卡"
+    assert "没有 ask_user" in prompt, "人设必须显式说明当前没有问答卡"
     assert "没有 notebook_feedback" in prompt, "人设必须显式说明群里没有反馈工具"
     assert "书稿只读" in prompt, "「只读」要限定为书稿，不能压掉主动记笔记"

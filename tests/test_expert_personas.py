@@ -30,10 +30,19 @@ _ROUNDTABLE = ("historian", "lit-editor", "proofreader", "reader", "publisher", 
 
 @pytest.mark.parametrize("pid", _ROUNDTABLE)
 def test_roundtable_expert_has_work_method_and_discipline(pid: str) -> None:
-    text = _persona_text(pid)
-    assert "## 你的作业法" in text, f"{pid} 缺少可执行的作业法"
-    assert "## 读稿与引用纪律" in text, f"{pid} 缺少读稿/引用纪律"
-    assert "## 场合" in text, f"{pid} 缺少群聊 vs 1v1 的场合分档"
+    """2026-11-22 人化后：人味在人设，方法/红线在手艺；不许只剩人味没有手艺。"""
+    manifest = _persona_text(pid)
+    assert "## 你这个人" in manifest, f"{pid} 缺少人物感"
+    assert "## 怎么跟作者聊" in manifest, f"{pid} 缺少说话方式"
+    assert "## 硬底线" in manifest, f"{pid} 缺少硬底线"
+    assert "## 1v1 读稿" in manifest, f"{pid} 缺少 1v1 读稿纪律"
+
+    skill = (
+        _BUILTIN / pid / "skills" / f"{pid}-method" / "SKILL.md"
+    ).read_text(encoding="utf-8")
+    assert "## 内行判据" in skill, f"{pid} 手艺缺少内行判据"
+    assert "## 否决线" in skill, f"{pid} 手艺缺少否决线"
+    assert "参考层" in skill, f"{pid} 手艺缺少效力顺序"
 
 
 def test_editor_expert_has_review_discipline() -> None:

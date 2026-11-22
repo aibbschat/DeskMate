@@ -377,7 +377,7 @@ def test_solo_guidance_keeps_redlines_drops_chat_form() -> None:
     for banned in ("三五句", "像在群里说话", "站队", "接话"):
         assert banned not in g, f"solo 版不该有群聊形态约束：{banned}"
     # 长短由题定（不是由群规定）
-    assert "该三千字就三千字" in g
+    assert "该长就长、该分层就分层" in g
 
 
 def test_engine_solo_is_separate_instance_same_budget(tmp_path: Path) -> None:

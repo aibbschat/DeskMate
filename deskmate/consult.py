@@ -111,26 +111,26 @@ EXPERTS: tuple[dict[str, str], ...] = (
     {
         "id": "brainstormer",
         "name": "脑洞专家",
-        "best": "发散方向、反转、钩子",
-        "when": "下一步怎么走、需要几条真正不同的方向",
+        "best": "发散方向、岔路、反转、钩子",
+        "when": "卡在下一步、需要几条真正不同的方向；不是要方案",
     },
     {
         "id": "outline",
         "name": "大纲专家",
-        "best": "概念→结构化大纲、卷纲、章纲、主线支线、节奏",
-        "when": "从概念/点子落大纲，或大纲/章序/结构骨架/主线支线问题",
+        "best": "卷/章形状、结构岔路；要章纲时再排",
+        "when": "这卷/这几章怎么长；点名要章纲时再排",
     },
     {
         "id": "plot",
         "name": "情节架构专家",
-        "best": "情节架构、主线支线咬合、升级阶梯、节奏钩子分布、结构诊断",
-        "when": "情节怎么搭/搭不搭得住、情节线断在哪、下一步往哪走、分集架构",
+        "best": "代价、岔路、主线升级、结构诊断",
+        "when": "情节往哪拧、人物会被逼成什么样；要诊断时再盘",
     },
     {
         "id": "character",
         "name": "人物专家",
-        "best": "人物弧光、动机、关系、口吻、OOC",
-        "when": "某人的行为是否合理、是否跑偏、关系是否可信、人物下一步",
+        "best": "动机、关系、弧光可能、口吻",
+        "when": "这个人还能被逼成什么样；要一致性诊断时再盘",
     },
     {
         "id": "adaptation",
@@ -140,6 +140,8 @@ EXPERTS: tuple[dict[str, str], ...] = (
     },
 )
 EXPERT_IDS = frozenset(item["id"] for item in EXPERTS)
+# 创作型专家走「搭档」壳：默认给可能性/岔路，不交专家报告。
+CREATIVE_EXPERTS = frozenset({"brainstormer", "plot", "outline", "character"})
 _NAME_TO_ID = {item["name"]: item["id"] for item in EXPERTS}
 _NAME = {item["id"]: item["name"] for item in EXPERTS}
 
@@ -169,6 +171,8 @@ CONSULT_GUIDANCE = directory_text() + """
 
 口径：**先派再聊**。你对情节可以有聊天的看法，但「立不立得住、怎么改」这类专业结论
 要来自专家；你可以先说一句自己的直觉，同时把问题派出去，别等聊完才想起叫人。
+要火花/岔路/可能时也派；但转述时别把他们的可能性改成「专家认为……」的报告体，
+把岔路原样递到萧盛手上。
 简单顺手的问题（查个事实、捋个名单）你自己干，不必事事都派。
 
 用法：consult_experts(experts=["lit-editor"], brief="自包含的任务简报", book="夜不收")
@@ -754,9 +758,22 @@ def _prompt(expert_id: str, brief: str, book: str, timeout: int = 0) -> str:
     name = _NAME.get(expert_id, expert_id)
     book_line = f"《{book}》" if book else "未指定（可以先 list_books 查书架）"
     mins = f"{timeout / 60:.0f} 分钟" if timeout else "有限时间"
+    creative = expert_id in CREATIVE_EXPERTS
+    stance = (
+        "你以创作搭档的身份看这个问题：不是审稿报告，也不是替他拿主意；"
+        "不直接对话、不反问、不写正文。"
+        if creative
+        else "你只给专家意见，不直接对话、不反问、不写正文。"
+    )
+    output_rule = (
+        "输出要求：中文；先接住他卡住的那股劲，给几条真正不同的可能/岔路；"
+        "作者点名要方案/诊断时，再给判断和改法；依据能落章就落章，不确定的标出来；"
+        "不要写成品正文。"
+        if creative
+        else "输出要求：中文；结论先行；给依据（章节/人物/设定）；不确定的标出来；不要写成品正文。"
+    )
     return (
-        f"你是「{name}」。萧盛让小桔（他的主助手）请你独立看一个问题。你只给专家意见，"
-        "不直接对话、不反问、不写正文。\n"
+        f"你是「{name}」。萧盛让小桔（他的主助手）请你独立看一个问题。{stance}\n"
         f"书：{book_line}\n"
         "任务简报：\n"
         f"{brief}\n\n"
@@ -775,8 +792,7 @@ def _prompt(expert_id: str, brief: str, book: str, timeout: int = 0) -> str:
         "转述、概括、拼接都不许塞进引号里：上一版专家小传就是这么出的错，"
         "几句正文根本没有的台词被加了引号、标上章号，读起来像原文，等于凭空给作者"
         "造了已写事实。章号同理，只写你真读到的章；没读到就写「正文未见」，不要凭印象补。\n\n"
-        "输出要求：中文；结论先行；给依据（章节/人物/设定）；不确定的标出来；"
-        "不要写成品正文。"
+        f"{output_rule}"
     )
 
 

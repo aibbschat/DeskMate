@@ -1,16 +1,17 @@
 # openworker — 研究笔记
 
 > 这个文件由脑洞官插件在每次写入时重新生成。**不要手改**，改动会被覆盖。
-> 最后更新：2026-11-20T14:14:43.933Z
+> 最后更新：2026-11-22T05:27:50.931Z
 
-## 待解矛盾（2 条开着 / 3 条合计）
+## 待解矛盾（3 条开着 / 4 条合计）
 
 | # | 矛盾 | 为什么是矛盾 | 要什么才能解 |
 |---|---|---|---|
 | C2 | 想按场景分流到更快通道，但跨通道切换会因 reasoning_content 契约直接 400；且当前通道池大面积失效 | 11-20 21:18:06 切到 deepseek 官方后立刻 400：『The reasoning_content in the thinking mode must be passed back to the API』——DeepSeek thinking 模式要求把历史 assistant 的 reasoning_content 原样回传；而 coworker/providers/base.py:63-65 明确把 reasoning 设计成 display-only sidecar（只落库展示、不回传），engine 出站消息里没有任何 reasoning_content 映射。于是『会话中途切去 deepseek』是确定性失败，不是网络慢、重试无用；用户看到的『转圈』实为反复被拒。同一窗口/mimo-v2.6-pro strike=42 quota exhausted、ark deepseek-v4-flash strike=113 network error、tencent hy3 403、opencode-go 多通道 400 全灭。 | 先做一次小实验：在 openai_provider 出站侧，把历史 assistant 的 reasoning 按目标通道契约映射成 reasoning_content（配对：仅当该轮开了 thinking 才回传），用测试钉死；再用同一会话切 deepseek 跑一轮，验证不再 400。结论落地后再谈按场景分流。 |
 | C3 | 工具执行偶发吃满 120s 硬超时（UI 表现为「转圈两分钟」），命令本身 0.09 秒 | 持久 shell 的 marker 同步在部分命令后会失步：命令已输出完，但 trailer marker 迟迟不到，执行器一路等到 _DEFAULT_TIMEOUT=120.0（coworker/tools/shell.py:47），SIGINT 打断后才收尾返回。用户看到的是 model 已答完、界面「Waiting for agent...」空转两分钟，且看不到任何进度。已排除模型侧：同窗口 deepseek 连续 5 次调用首字 0.8-1.3s、1-5s 返回。 | 读 coworker/tools/shell.py 的 marker/trailer 协议与 _execute_sync 路径，复现「命令已退出但 marker 未到」的场景（重点：后台子进程继承 stdout、命令未 flush、上一条超时后的会话失步）；给出先红后绿契约测试，并在工具执行侧加可见进度与 idle watchdog，避免静默站满 120 秒。 |
+| C4 | 创作型专家按「判断可核验」验收，作者要的是「被点亮」 | 11-01 草案写的是「一句话、一个桥段、一个意象」「灵感测试：你卡住时它给的那一下真能让你想通」；11-08 的验收却把「313 行、9 层战术 + 前文回收表 + 代价分析」当成质量跃升，11-11 的提交标题直接是「专家只做判断更可核验」。质量轴从「有没有让作者想写」换成了「判断是否可核验、方案是否可执行」。对写了三十年的作者，后者是最不缺的。 | 一次盲评：同题让情节/大纲各出「灵感档」与「方案档」，作者只回答「哪份让我想写」，不看引证/格式；以「是否产生新句子/新场面」作为唯一验收，重定这三个专家的交付契约。 |
 
-## 已否决 / 已采纳（8 条）
+## 已否决 / 已采纳（11 条）
 
 | 点子 | 结论 | 理由 |
 |---|---|---|
@@ -22,11 +23,20 @@
 | 继续在 OpenWorker 内靠「砍上下文」提速 | reject | 《上下文总预算实验报告_2026-11-20》A/B 已证：可裁部分仅 193 字（1.3%），原文 tool result 与人称底座是豁免项。PR0-PR21 已把 token/缓存方向吃干，继续投入边际收益趋零。真正未动的是每步往返后的整轮重算与模型 decode 速度。 |
 | 把「上游 stall 自动重试一次 + 三类超时收紧」作为读文件转圈的第一刀 | accept | 萧哥 2026-11-20 拍板「治好，不要让我选」。改动：①timeouts.py 首字 75→25s、流 idle 120→45s；②shell.py _DEFAULT_TIMEOUT 120→30s；③engine._loop 在 ProviderStall 且本轮零输出时自动重试一次（只一次，防死循环），notice kind=stall_retry。理由：实测 deepseek 正常首字 0.9-1.4s、hy4 5-7s，25s 已是 3 倍余量；工具层两次异常分别 121.0s/123.1s，正好等于旧 120s 硬超时。测试：tests/test_engine_stall_retry.py 三例 + test_shell/test_engine_empty_turn 共 18 passed，宽回归 68 passed。未解决：沙箱内单条命令为何真跑 121 秒（exit_code=0，非超时路径），LocalExecutor 本地复现仅 0.04s。 |
 | 「切 DeepSeek 首字超时」是假象，真因是 reasoning_content 契约 400；出站层按目标通道决定是否回传 reasoning | accept | 实测 22:12:16 deepseek-flash 在 433 毫秒内就返回 400（The reasoning_content in the thinking mode must be passed back to the API），不是 25s 首字超时。根因：assistant 消息的 reasoning 是 display-only sidecar，出站时只被 _strip_foreign_sidecars 处理（不剥 reasoning、也不改名），DeepSeek thinking 模式要求以 reasoning_content 回传。修法：openai_provider 新增 _prepare_messages，base_url 含 api.deepseek.com 时把 assistant.reasoning 改名 reasoning_content，其它网关一律剥掉。测试 tests/test_deepseek_reasoning_passthrough.py 4 例 + provider 回归 38 passed。教训：上一轮只治了超时阈值就宣布治好，漏了这条确定性 400。 |
+| 2026-11-22 10:22 这轮 bot 群优化（只改脑洞专家 manifest/skill + BotRuntime solo 提示）已经对齐萧哥要的灵感型专家 | reject | 方向对一半，但只治了脑洞一个：plot/outline 一字未动，仍是「问题清单+可执行改法」「照着开写」；群协议仍是「立论/补台/反调/勘误 + 有判断才算发言」；小桔派专家仍是「专业判断叫专家 + 结论先行/给依据」。同批 6 个既有测试挂了（test_bot_brainstorm_mode 4、test_expert_personas 1、test_bot_notebooks_hardening 1），没补测试；脑洞 manifest 还多了一个重复的「## 怎么聊」。 |
+| 脑洞专家这版已经改到位，可以直接拿它当模板推进其他 bot | reject | 只能算「可以开试」，不算到位：①火花档仍在自审——manifest 说「火花优先」但「怎么聊」第一句是「先蹦一句判断」，skill 又要求每条火花交代「哪里可能塌或还虚」，会把野点子拉回「正确的废话」；②条数定死 2-4，容易凑数、稀释一条特别狠的；③入口仍是旧框——1v1 人设生效，但经小桔 consult 会被「你只给专家意见/结论先行/给依据」压回报告，专家卡也还写「创意脑洞专家…往下盘成方案」。另：重复「## 怎么聊」+ 8 条测试红着，实验前要清。 |
+| 2026-11-22 这轮扩写（七位评审专家人化 + 脑洞回群）可以直接收 | reject | ①脑洞被覆盖回旧契约：roundtable:true、通常 2-4 条、哪里还虚或会塌、先蹦一句判断；萧哥刚测过并认可的「条数不设死/火花阶段不审/下一步不等于方案/旧火花不回收」全丢，实验结论不能沿用；②动错对象：plot/outline/character 一字未动，仍是「问题清单+可执行改法」；③45 条测试红，384 通过；④史料 skill 删掉了版权红线（作者去世未满 50 年不入库）和明代七维高频硬伤，校对删了跨卷专名表，编辑删了五问/改法三档——人味对了，内部方法薄了。 |
 
-## 观察清单（2 条）
+## 观察清单（8 条）
 
 - 小桔主力 mimo-v2.6-flash 的 decode 速度 30-42 tok/s，是 Hermes（火山 deepseek-v3-2）的 1/2~1/3；且任务型 automation 中 41/43 轮为单工具调用，无并行。后台 proactive/judge 并发 2-3 路时单次 throughput 再降约 29%（实测 42→30 tok/s）。　→ 升级条件：若同一任务在 deepseek/ark 通道上墙钟 < 1/2 且产出可用，则升级为「按场景分流模型」方向：任务型走最快通道、创作对话保留 mimo。
 - 通道池体检（11-20 21:20）：hy3 403 free-tier unavailable / strike 54；opencode-go:mimo-v2.6-pro strike 226、deepseek-v4.1-flash strike 122、glm-5.3-flash strike 189 全部 open 熔断；ark deepseek-v4-flash 113 次 network error；xiaomi mimo-pro quota exhausted；mimo-flash 主体可用但 decode 30-42 tok/s。　→ 升级条件：若有连续 30 分钟单通道零失败，可把它定为『任务型默认通道』；否则先修重试/退避与首字超时的用户可见反馈。
+- 小桔的 consult 链路是独立于 BotRuntime 的第二层「专家壳」：expert prompt 仍写「你只给专家意见…结论先行；给依据」，小桔人格仍写「专业判断叫专家、先派再聊」。即使 1v1 专家改成搭档口吻，经小桔转述仍会被压回「专家认为…」的报告体。　→ 升级条件：若萧哥确认他多数时候是通过小桔收到专家意见（而不是直接开专家 1v1），则把 consult.py 的 expert prompt 与 deskmate.md 的派发规则列为主治对象，而不只是改 persona。
+- 补跑 tests/test_expert_craft_skills.py 后，brainstormer 再挂 2 条（「覆盖率诚实」「交付形态」），本轮相关 4 个测试文件合计 8 失败、84 通过。D9 里写的 6 是前 3 个文件的数，以此条为准。　→ 升级条件：若这轮改动要继续，先把这 8 条按新契约重写或删掉；不要用「旧测试不代表新方向」直接放过，否则下一轮没人知道哪些是故意改的、哪些是改坏了。
+- 2026-11-22 已补脑洞三刀：①火花档去掉「通常 2-4 条」配额和「哪里可能塌」自审，改成「条数不设死、火花阶段不审」；②「下一步怎么办」明确不算要方案，只有「就这条/往下推/盘细/给方案/写大纲」才进往下盘；③旧判断/旧火花只当参考，避免记忆把新脑洞拉回旧结论。另修重复「## 怎么聊」、8 条旧契约红测试；bot/expert 全量 429 passed。实验仍走专家 1v1；小桔 consult 的「你只给专家意见/结论先行」旧壳没动。　→ 升级条件：若 1v1 三个真卡点盲测里两次以上出现「让作者想写」的句子/场面，再把这套契约推到情节/大纲；若仍然只是短了/整齐了，说明变量不在人设，回去查模型与读稿上下文。
+- 七位评审专家的人化方向是对的：群聊里少交作业、多像人说话。但「改语气」不等于「删方法」——old skill 自己写过「判据内化，不端出来」，正确做法是保留内部判据、只改交付形态；这轮把判据和红线一起删薄了。下一步应是：保留新语气，补回史料版权红线/明代高频硬伤、校对跨卷专名表、编辑五问与改法三档、读者三类卡、发行开卷三页、类型纯度、改编审查/制作可行性；再把创作契约（不是语气）推到 plot/outline/character。　→ 升级条件：若萧哥确认七位评审专家的新语气确实让群聊更愿意聊，则把这套「人味外壳 + 内部方法」定为群专家的统一模板；若只是读着舒服但判断变虚，则回滚方法层。
+- 2026-11-22 已按萧哥拍板收口这轮扩写：①脑洞并回测试版契约并保留新语气——撤 roundtable、条数不设死、火花阶段不审、下一步怎么办不等于方案、旧火花只当参考、冲突先改；②七位评审专家保留新人味，手艺层补回内行判据/否决线：史料恢复版权红线+七维+明代高频硬伤，校对恢复跨卷专名表/年号干支/异体判断，编辑恢复五问/改法三档，读者恢复三类信号/回翻，发行恢复开卷三页/对标/卖点，类型恢复契约/纯度/对标，改编恢复 beat/镜头/审查/制作可行性；③测试 rebaseline 为「人设层人物感 + 手艺层内部方法」，bot/expert 全量 429 passed。plot/outline/character 仍未动，等萧哥拍板。　→ 升级条件：若萧哥接下来要把创作契约推到 plot/outline/character，先按脑洞的「默认给可能性、诊断/方案点名才开」做，不要再按群评审专家的「人味」模板；两者是不同骨头。
+- 2026-11-22 已把创作契约推到 plot/outline/character：默认档只给可能性——情节给「代价/岔路」，大纲给「卷/章形状、不排施工单」，人物给「这个人还能被逼成什么样、不急着判」；只有作者点名「就这条/往下推/给方案/写大纲/排章纲/写小传/帮我诊断」才进往下盘。三份手艺都分成「火花档 / 内行判据（往下盘才用）/ 否决线」，旧的结构方法、史料边界、读稿诚实、参考层效力都保留。UI 专家卡与小桔 consult 的创作型壳也同步改成「搭档」口吻，不再只给「专家意见/结论先行」。验收：bot/expert 429 passed，persona 邻近 91 passed，前端专家卡 19 passed，tsc 0 错。　→ 升级条件：接下来真机同题 A/B：同一卡点分别问情节/大纲/人物，看默认档给的是「岔路/形状/人物可能」还是又滑回「问题清单+改法」；若滑回，先查 consult/群协议是否又把它们拉回报告体，而不是继续改人设。
 
 ## 轮次（2 份）
 

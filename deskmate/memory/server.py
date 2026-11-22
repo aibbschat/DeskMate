@@ -199,7 +199,7 @@ def memory_search(query: str, scope: str = "all") -> str:
                 for ts, fact, source in hits:
                     stamp = (str(ts) or "")[:10]
                     tag = f"（{source}）" if source else ""
-                    lines.append(f"- [{stamp}] {str(fact)[:200]}{tag}")
+                    lines.append(f"- [{stamp}] {str(fact)[:600]}{tag}")
                 parts.append("\n".join(lines))
         if not parts:
             return "（未找到相关记忆）"
