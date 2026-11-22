@@ -511,6 +511,7 @@ def build_engine(
     secrets: Optional[SecretStore] = None,
     task_store: Optional[Any] = None,
     wake_store: Optional[Any] = None,
+    orchestration_store: Optional[Any] = None,
     session_id: Optional[str] = None,
     audit_sink: Optional[Any] = None,
     roots: Optional[list] = None,
@@ -804,6 +805,7 @@ def build_engine(
                     model=model,
                     session_id=session_id or "",
                     on_consulted=lambda: consult_state.__setitem__("used", True),
+                    orchestration_store=orchestration_store,
                 )
             )
             instructions = f"{instructions}\n\n{CONSULT_GUIDANCE}"

@@ -48,3 +48,20 @@ def test_user_with_reasoning_is_not_promoted():
     out = _prepare_messages(msgs, base_url=_DEEPSEEK)
     assert "reasoning_content" not in out[0]
     assert out[0]["content"] == "x"
+
+
+def test_deepseek_adds_empty_reasoning_content_when_missing():
+    msgs = [
+        {"role": "assistant", "content": "ok", "tool_calls": []},
+        {"role": "assistant", "content": "plain"},
+    ]
+    out = _prepare_messages(msgs, base_url=_DEEPSEEK)
+    assert out[0]["reasoning_content"] == ""
+    assert out[1]["reasoning_content"] == ""
+
+
+def test_deepseek_preserves_existing_reasoning_content_when_no_reasoning():
+    msgs = [{"role": "assistant", "content": "ok", "reasoning_content": "kept"}]
+    out = _prepare_messages(msgs, base_url=_DEEPSEEK)
+    assert out[0]["reasoning_content"] == "kept"
+    assert "reasoning" not in out[0]

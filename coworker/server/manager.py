@@ -325,6 +325,29 @@ class SessionManager:
             extra_tick=self._combined_extra_tick,
             foreground_busy=self._foreground_turn_running,
         )
+        # Orchestration substrate: checkpointed jobs/steps shared by automation
+        # and interactive long-running flows. Separate DB keeps task run history
+        # and orchestration checkpoints independent.
+        try:
+            from coworker.orchestration import OrchestrationStore
+
+            self.orchestration_store = OrchestrationStore(base / "orchestration.db")
+            # Checkpoints are bookkeeping duplicates (automation.db keeps the real
+            # run history), so old finished jobs are pruned instead of growing
+            # orchestration.db forever.
+            try:
+                _days = float(os.environ.get("COWORKER_ORCHESTRATION_RETENTION_DAYS") or 30)
+            except (TypeError, ValueError):
+                _days = 30.0
+            try:
+                self.orchestration_store.prune(max_age_days=_days)
+            except Exception:
+                # A locked DB at startup must not disable orchestration for the
+                # whole process; prune will run again on the next start.
+                logger.debug("orchestration prune skipped", exc_info=True)
+        except Exception:
+            logger.warning("orchestration store unavailable", exc_info=True)
+            self.orchestration_store = None
         # Cached DeskMate proactive engine (created once, reused across ticks).
         # Without this, _combined_extra_tick would construct a new ProactiveEngine
         # every 30s, discarding DisturbManager state (consecutive-ignore counters,
@@ -816,6 +839,7 @@ class SessionManager:
             secrets=self.secrets,
             task_store=self.task_store,
             wake_store=self.wakes,
+            orchestration_store=getattr(self, "orchestration_store", None),
             session_id=session_id,
             audit_sink=self.audit_store.append,
             roots=roots,
@@ -6288,6 +6312,7 @@ class SessionManager:
             # task, and instructions that mention timing ("every day at 5:32pm…") otherwise tempt
             # it to create another automation instead of running this one.
             task_store=None,
+            orchestration_store=getattr(self, "orchestration_store", None),
             roots=roots,
             session_id=session_id,
             audit_sink=self.audit_store.append,
@@ -6708,6 +6733,247 @@ class SessionManager:
     def is_running(self, session_id: str) -> bool:
         return session_id in self._running_sessions
 
+    def orchestration_runner(self):
+        """Build an orchestration runner backed by the manager's checkpoint store."""
+        store = getattr(self, "orchestration_store", None)
+        if store is None:
+            return None
+        from coworker.orchestration import ConcurrencyLeases, LeaseConfig, OrchestrationRunner
+
+        return OrchestrationRunner(store, ConcurrencyLeases(LeaseConfig()))
+
+    def _checkpoint_automation_run(self, task, run, *, phase: str = "produce") -> None:
+        """Persist automation run artifacts into orchestration store (fail-open)."""
+        store = getattr(self, "orchestration_store", None)
+        if store is None:
+            return
+        try:
+            from coworker.orchestration import Artifact, Job, JobStatus, StepKind, StepSpec, StepStatus
+
+            job_id = f"automation:{getattr(task, 'id', 'task')}:{getattr(run, 'run_id', 'run')}"
+            job = store.get_job(job_id) or Job(
+                id=job_id,
+                title=getattr(task, "title", "") or "automation",
+                source="automation",
+                steps=[
+                    StepSpec(id="produce", title="Produce", kind=StepKind.COMPUTE),
+                    StepSpec(id="deliver", title="Deliver", kind=StepKind.SIDE_EFFECT, deps=["produce"]),
+                ],
+                meta={"task_id": getattr(task, "id", ""), "run_id": getattr(run, "run_id", "")},
+            )
+            now = _epoch()
+            artifacts = []
+            for a in (getattr(run, "artifacts", None) or [])[:50]:
+                artifacts.append(Artifact(name=str(a), kind="file", path=str(a), step_id="produce"))
+            if getattr(run, "result_text", None):
+                artifacts.append(Artifact(name="result_text", kind="text", value=run.result_text, step_id="produce"))
+            produce = job.ensure_run("produce")
+            if run.status in ("ok", "stuck"):
+                produce.status = StepStatus.OK
+            elif run.status in ("skipped", "blocked", "expired"):
+                # Not a failure: the run never produced because it was gated out.
+                produce.status = StepStatus.SKIPPED
+                produce.error = f"run {run.status}"
+            else:
+                produce.status = StepStatus.FAILED
+            produce.result = {"status": run.status, "phase": phase}
+            produce.artifacts = artifacts
+            produce.finished_at = now
+            deliver = job.ensure_run("deliver")
+            if phase == "delivered":
+                deliver.status = StepStatus.OK
+                deliver.finished_at = now
+            elif produce.status != StepStatus.OK:
+                deliver.status = StepStatus.SKIPPED
+                deliver.error = "produce not successful"
+            if produce.status == StepStatus.FAILED:
+                job.status = JobStatus.FAILED
+            elif produce.status == StepStatus.SKIPPED:
+                job.status = JobStatus.CANCELED
+            elif deliver.status == StepStatus.OK:
+                job.status = JobStatus.OK
+            else:
+                job.status = JobStatus.RUNNING
+            store.save_job(job)
+        except Exception:
+            logger.debug("automation orchestration checkpoint failed", exc_info=True)
+
+    async def _run_orchestrated_automation(self, task, run, trigger: str, spec: dict) -> TaskRun:
+        """Run an automation as an explicit orchestration pipeline."""
+        from coworker.orchestration import Artifact, ConcurrencyLeases, Job, JobStatus, LeaseConfig, OrchestrationRunner, StepKind, StepSpec
+
+        mode = str(spec.get("mode") or "")
+        store = getattr(self, "orchestration_store", None)
+        runner = OrchestrationRunner(store, ConcurrencyLeases(LeaseConfig())) if store else None
+        job_id = f"automation-pipeline:{task.id}:{run.run_id}"
+        steps: list[StepSpec] = []
+        handlers: dict = {}
+
+        async def _run_agent_step(prompt: str, step_id: str):
+            step_session = f"{run.session_id}:{step_id}"
+            engine = self._build_task_engine(task, session_id=step_session)
+            # _build_task_engine already registered the engine under step_session;
+            # also point the run's own session at it so a socket watching the run
+            # sees the step that is currently executing.
+            self._engines[run.session_id] = engine
+            try:
+                self._engine_touched[run.session_id] = time.monotonic()
+            except Exception:
+                pass
+            opening = (
+                f"⏰ Scheduled run — {task.title}\n\n"
+                "This automation is due now: carry out the task below immediately and produce the result. "
+                "The schedule already exists — do not create or modify any scheduled tasks.\n\n"
+                f"{prompt}"
+            )
+            async for _ev in engine.run(opening):
+                pass
+            result_text = _last_assistant_text(engine.messages)
+            artifacts = _recent_files(task.workspace, since=run.started_at)
+            return {"result_text": result_text, "artifacts": artifacts}
+
+        if mode in ("produce_publish", "checkpointed_publish"):
+            publish_prompt = str(spec.get("publish_prompt") or "").strip()
+            if not publish_prompt:
+                raise ValueError("orchestration.publish_prompt is required")
+            idem = str(spec.get("publish_idempotency_key") or f"publish:{task.id}:{run.run_id}")
+            publish_target = str(spec.get("publish_target") or f"task:{task.id}")
+            produce_prompt = str(spec.get("produce_prompt") or task.instructions)
+
+            steps = [
+                # timeout_s=0: agent steps own their budget internally (engine
+                # watchdog / provider timeouts), exactly like the legacy path.
+                # The StepSpec default (300s) would guillotine long produce runs
+                # at 5 minutes while the engine turn keeps going.
+                StepSpec(id="produce", title="Produce", kind=StepKind.COMPUTE, timeout_s=0.0, retries=int(spec.get("produce_retries", 0)), meta={"uses_llm": True}),
+                StepSpec(id="publish", title="Publish", kind=StepKind.SIDE_EFFECT, deps=["produce"], timeout_s=0.0, retries=int(spec.get("publish_retries", 2)), idempotency_key=idem, target=publish_target, meta={"uses_llm": True}),
+            ]
+
+            async def produce_handler(step, job, ctx):
+                out = await _run_agent_step(produce_prompt, "produce")
+                arts = [Artifact(name="result_text", kind="text", value=out["result_text"], step_id="produce")]
+                for a in (out["artifacts"] or [])[:50]:
+                    arts.append(Artifact(name=str(a), kind="file", path=str(a), step_id="produce"))
+                return {"result": out, "artifacts": arts}
+
+            async def publish_handler(step, job, ctx):
+                produce = ctx.result("produce") or {}
+                draft = (produce.get("result_text") or "") if isinstance(produce, dict) else ""
+                prompt = publish_prompt.replace("{{produce_result}}", draft[:12000])
+                out = await _run_agent_step(prompt, "publish")
+                arts = [Artifact(name="publish_result_text", kind="text", value=out["result_text"], step_id="publish")]
+                for a in (out["artifacts"] or [])[:50]:
+                    arts.append(Artifact(name=str(a), kind="file", path=str(a), step_id="publish"))
+                return {"result": out, "artifacts": arts}
+
+            handlers = {"produce": produce_handler, "publish": publish_handler}
+        else:
+            raise ValueError(f"unsupported orchestration mode: {mode}")
+
+        job = Job(id=job_id, title=task.title, source="automation", steps=steps, meta={"task_id": task.id, "run_id": run.run_id, "mode": mode})
+        if store:
+            existing = store.get_job(job_id)
+            if existing is not None:
+                job = existing
+        if runner is None:
+            raise RuntimeError("orchestration store unavailable")
+
+        # Session mutex, same contract as the legacy path: cron and wake may both
+        # arrive; the second one yields instead of running the same task twice.
+        # This method returns straight to the caller, so it must own both the
+        # claim and the cleanup (control mark + mark_idle) itself.
+        claimed = False
+        if getattr(self, "_running_sessions", None) is not None:
+            try:
+                claimed = self.try_mark_running(run.session_id)
+            except Exception:
+                claimed = False
+            if not claimed:
+                run.status, run.finished_at = "skipped", _epoch()
+                self.task_store.add_run(run)
+                return run
+
+        try:
+            await self.broadcast_event({
+                "type": "automation_run_started",
+                "data": {"task_id": task.id, "task_title": task.title, "session_id": run.session_id, "workspace": task.workspace, "agent": task.agent, "trigger": trigger},
+            })
+            job = await runner.run(job, handlers, resume=True)
+            produce_run = job.runs.get("produce")
+            publish_run = job.runs.get("publish")
+            produce_out = (produce_run.result or {}) if produce_run else {}
+            publish_out = (publish_run.result or {}) if publish_run else {}
+            if isinstance(produce_out, dict):
+                run.result_text = publish_out.get("result_text") if isinstance(publish_out, dict) and publish_out.get("result_text") else produce_out.get("result_text")
+                arts = []
+                for a in ((produce_out.get("artifacts") or []) + ((publish_out.get("artifacts") or []) if isinstance(publish_out, dict) else [])):
+                    if a not in arts:
+                        arts.append(a)
+                run.artifacts = arts
+            run.status = "ok" if job.status == JobStatus.OK else "error"
+            if job.status != JobStatus.OK:
+                errs = [r.error for r in job.runs.values() if r.error]
+                run.error = "; ".join(errs)[:1000] if errs else "orchestration failed"
+        except Exception as exc:
+            run.status, run.error = "error", str(exc)
+            # Keep whatever produce already wrote — a publish failure must not
+            # throw away the draft (that is the whole point of checkpointing).
+            try:
+                produce_run = job.runs.get("produce")
+                if produce_run is not None and isinstance(produce_run.result, dict):
+                    run.result_text = produce_run.result.get("result_text") or run.result_text
+                    run.artifacts = list(produce_run.result.get("artifacts") or run.artifacts)
+            except Exception:
+                pass
+            logger.exception("orchestrated automation run failed: %s", task.id)
+        finally:
+            run.finished_at = _epoch()
+            # Deliver first: deliver_run_result stamps run.delivered_at, and the
+            # checkpoint below reads it to mark the deliver step OK.
+            try:
+                from deskmate.autonomy.delivery import build_completion_event, deliver_run_result
+                if run.status in ("ok", "stuck", "error"):
+                    ledger_id = deliver_run_result(task, run)
+                    if ledger_id:
+                        self.task_store.add_run(run)
+                        await self.broadcast_event(build_completion_event(task, run, status=run.status, ledger_id=ledger_id))
+            except Exception:
+                logger.warning("orchestrated delivery failed (fail-open)", exc_info=True)
+            try:
+                self.task_store.add_run(run)
+            except Exception:
+                pass
+            self._checkpoint_automation_run(task, run, phase="delivered" if getattr(run, "delivered_at", None) else "produce")
+            # Same after-action bookkeeping as the legacy path: a delivered run
+            # should still feed memory reflection, or orchestrated tasks would
+            # silently stop contributing to what the agent remembers.
+            try:
+                import threading as _th
+
+                from deskmate.memory.after_action import reflect_and_persist
+
+                if run.status in ("ok", "stuck") and run.result_text:
+                    _th.Thread(
+                        target=reflect_and_persist,
+                        args=(task.workspace, task.instructions, run.result_text),
+                        kwargs={"artifacts": run.artifacts},
+                        daemon=True,
+                    ).start()
+            except Exception:
+                logger.warning("after_action 任务收尾触发失败", exc_info=True)
+            try:
+                if task.notify_on_completion and run.status in ("ok", "error", "stuck"):
+                    await self._notify_task_done(task, run)
+            except Exception:
+                logger.warning("orchestrated notify failed (fail-open)", exc_info=True)
+            self._control_marks().pop(run.run_id, None)
+            if claimed:
+                try:
+                    self.mark_idle(run.session_id)
+                except Exception:
+                    logger.debug("mark_idle 失败（fail-open）", exc_info=True)
+        return run
+
     def _foreground_turn_running(self) -> bool:
         """True while a USER-facing turn is running: a turn the user started in the window
         (`_foreground_sessions`) AND whose client is still attached. The scheduler gates its
@@ -7084,6 +7350,12 @@ class SessionManager:
             )
 
             goal_on = goal_enabled(task)
+            orch_spec = getattr(task, "orchestration", None)
+            if (not goal_on) and isinstance(orch_spec, dict) and orch_spec.get("mode"):
+                try:
+                    return await self._run_orchestrated_automation(task, run, trigger, orch_spec)
+                except Exception:
+                    logger.exception("orchestrated automation failed, falling back to legacy run")
             if goal_on:
                 prior = [
                     r
@@ -7452,11 +7724,21 @@ class SessionManager:
                         )
                     if run.event_count % 5 == 0:
                         self.task_store.add_run(run)
+                    if run.event_count % 10 == 0:
+                        try:
+                            run.artifacts = _recent_files(task.workspace, since=run.started_at)
+                            self._checkpoint_automation_run(task, run, phase="produce")
+                        except Exception:
+                            pass
                 except Exception:
                     pass
             run.result_text = _last_assistant_text(engine.messages)
             run.artifacts = _recent_files(task.workspace, since=run.started_at)
             run.status = "ok"
+            try:
+                self._checkpoint_automation_run(task, run, phase="produce")
+            except Exception:
+                pass
             # A goal run may declare either "no change" (a quiet check) or a blocker
             # ([[STUCK]]). Both are parsed before any notification / memory write:
             # a stuck turn is NOT a result, and a quiet turn must not disturb.
@@ -7735,6 +8017,7 @@ class SessionManager:
                     )
                 except Exception:
                     logger.warning("自主任务停止事件发送失败", exc_info=True)
+            self._checkpoint_automation_run(task, run, phase="delivered" if getattr(run, "delivered_at", None) else "produce")
             self._control_marks().pop(run.run_id, None)
             if _claimed_session:
                 try:
@@ -8246,6 +8529,27 @@ class SessionManager:
         if changes.get("goal_mode") is not None:
             # Declared at launch/update time, never inferred from a task category.
             task.goal_mode = str(changes["goal_mode"] or "")
+        if "orchestration" in changes:
+            # Opt-in checkpointed pipeline (produce → idempotent publish). None/{}
+            # clears back to the legacy single-run path. Validate here so a typo
+            # surfaces at update time instead of silently falling back at run time.
+            raw_orch = changes["orchestration"]
+            if raw_orch in (None, {}, ""):
+                task.orchestration = None
+            elif (
+                isinstance(raw_orch, dict)
+                and raw_orch.get("mode") in ("produce_publish", "checkpointed_publish")
+                and str(raw_orch.get("publish_prompt") or "").strip()
+            ):
+                task.orchestration = dict(raw_orch)
+            else:
+                return {
+                    "ok": False,
+                    "error": (
+                        "orchestration requires mode produce_publish/checkpointed_publish "
+                        "and a non-empty publish_prompt"
+                    ),
+                }
         if changes.get("restart_goal"):
             # §C1: re-open a concluded goal WITHOUT rewriting history. Every run
             # is stamped with the generation it belongs to (see _run_scheduled_task),

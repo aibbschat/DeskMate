@@ -246,20 +246,24 @@ def test_watchdog_abort_does_not_poison_next_attempt(monkeypatch):
         yield SimpleNamespace(text_delta="late")
 
     engine = _FakeEngine(stalled)
-    with pytest.raises(FirstTokenTimeout):
-        asyncio.run(_drain(engine))
-    assert engine._produce_abort.is_set()
 
-    # 第二次尝试（降级重试）：流正常通过 —— abort 已被清零。
-    def ok(**_kw):
-        yield SimpleNamespace(text_delta="good")
+    # 两次尝试必须跑在**同一个事件循环**里：生产里一轮 turn 只有一个 loop，
+    # 降级重试是同一个 loop 里的第二次 _astream。拆成两次 asyncio.run 会让
+    # _FakeEngine 复用的 _cancel 绑定到已关闭的 loop，测的就不是重试语义了。
+    async def scenario():
+        with pytest.raises(FirstTokenTimeout):
+            async for _ in TurnEngine._astream(engine):
+                pass
+        assert engine._produce_abort.is_set()
 
-    engine.provider = SimpleNamespace(stream=ok)
+        # 第二次尝试（降级重试）：流正常通过 —— 上一次的 abort 不影响这一次。
+        def ok(**_kw):
+            yield SimpleNamespace(text_delta="good")
 
-    async def collect():
+        engine.provider = SimpleNamespace(stream=ok)
         out = []
         async for x in TurnEngine._astream(engine):
             out.append(x)
         return out
 
-    assert [c.text_delta for c in asyncio.run(collect())] == ["good"]
+    assert [c.text_delta for c in asyncio.run(scenario())] == ["good"]

@@ -151,6 +151,9 @@ class ScheduledTask:
     # generation can never keep the reopened goal "skipped". 0 = every pre-C1 task,
     # which makes the default behaviour byte-for-byte identical to B2.
     goal_generation: int = 0
+    # Optional orchestration pipeline spec (checkpointed steps / idempotent side effects).
+    # None keeps the legacy single-run execution path.
+    orchestration: Optional[dict[str, Any]] = None
 
     def __post_init__(self) -> None:
         if not self.task_session_id:

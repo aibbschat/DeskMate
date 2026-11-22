@@ -625,3 +625,32 @@ async def test_scheduled_run_broadcasts_run_started_event(tmp_path, monkeypatch)
     assert event["data"]["session_id"] == run.session_id
     assert event["data"]["trigger"] == "schedule"
     assert dead not in manager._event_clients  # dropped, not fatal
+
+
+# -- orchestration spec wiring (update_automation whitelist) --------------------
+def test_update_automation_sets_and_clears_orchestration(tmp_path):
+    from coworker.server.manager import SessionManager
+
+    mgr = SessionManager.__new__(SessionManager)
+    mgr.task_store = TaskStore(str(tmp_path / "automation.db"))
+    mgr._engines = {}
+    task = _task()
+    mgr.task_store.save(task)
+
+    spec = {"mode": "produce_publish", "publish_prompt": "把结果发布出去：{{produce_result}}"}
+    out = mgr.update_automation(task.id, {"orchestration": spec})
+    assert out["ok"] is True
+    # Survives the store round-trip (to_dict/__dict__ + from_dict known-fields).
+    assert mgr.task_store.get(task.id).orchestration == spec
+
+    # Invalid specs are rejected at update time, not silently at run time.
+    bad = mgr.update_automation(task.id, {"orchestration": {"mode": "produce_publish"}})
+    assert bad["ok"] is False
+    bad2 = mgr.update_automation(task.id, {"orchestration": {"mode": "nope", "publish_prompt": "x"}})
+    assert bad2["ok"] is False
+    assert mgr.task_store.get(task.id).orchestration == spec
+
+    # None clears back to the legacy single-run path.
+    cleared = mgr.update_automation(task.id, {"orchestration": None})
+    assert cleared["ok"] is True
+    assert mgr.task_store.get(task.id).orchestration is None

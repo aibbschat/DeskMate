@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import asyncio
 import functools
+import logging
 import os
 import secrets
 import threading
@@ -38,6 +39,8 @@ from concurrent.futures import TimeoutError as FuturesTimeoutError
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Optional
+
+logger = logging.getLogger(__name__)
 
 MAX_EXPERTS = 3
 
@@ -956,30 +959,121 @@ def _job_thread(
     shelf: Any,
     timeout: int,
     audit_dir: Optional[Path],
+    orchestration_store: Any = None,
 ) -> None:
     started = time.time()
     results: list[dict[str, Any]] = []
     try:
-        with ThreadPoolExecutor(max_workers=len(chosen)) as pool:
-            futures = {
-                pool.submit(
-                    _run_one, eid, brief, book, provider, model, shelf, timeout, run_id
-                ): eid
-                for eid in chosen
-            }
-            for fut in as_completed(futures):
-                eid = futures[fut]
-                try:
-                    status, text, elapsed, cites = fut.result()
-                except Exception as exc:  # noqa: BLE001
-                    status, text, elapsed, cites = (
-                        "error", f"调用失败：{exc}", time.time() - started, {}
-                    )
-                results.append(
-                    {"expert": eid, "name": _NAME.get(eid, eid), "status": status,
-                     "text": text, "elapsed": round(elapsed, 1),
-                     "citations": cites or {}}
+        if orchestration_store is not None:
+            try:
+                from coworker.orchestration import (
+                    ConcurrencyLeases,
+                    Job,
+                    LeaseConfig,
+                    OrchestrationRunner,
+                    StepKind,
+                    StepSpec,
+                    StepStatus,
                 )
+
+                async def _run_via_orch() -> list[dict[str, Any]]:
+                    job = Job(
+                        id=f"consult-{run_id}",
+                        title=f"consult {'/'.join(chosen)}",
+                        source="consult",
+                        steps=[
+                            StepSpec(
+                                id=f"expert:{eid}",
+                                title=_NAME.get(eid, eid),
+                                kind=StepKind.READ,
+                                # 预算由 _run_one 自己管（_collect 超时后**保留已产出
+                                # 的部分**并标 timeout）。这里再设同额 timeout_s 会先
+                                # 一步抛 TimeoutError，把部分产出换成「调用失败」，而且
+                                # asyncio.run 退出时还要等 to_thread 线程跑完——时间
+                                # 一分不省、内容全丢。
+                                timeout_s=0.0,
+                                meta={"expert": eid, "book": book, "uses_llm": True},
+                            )
+                            for eid in chosen
+                        ],
+                        meta={"run_id": run_id, "book": book},
+                    )
+
+                    async def handler(spec, _job, _ctx):
+                        eid = spec.meta["expert"]
+                        status, text, elapsed, cites = await asyncio.to_thread(
+                            _run_one, eid, brief, book, provider, model, shelf, timeout, run_id
+                        )
+                        return {
+                            "expert": eid,
+                            "name": _NAME.get(eid, eid),
+                            "status": status,
+                            "text": text,
+                            "elapsed": round(elapsed, 1),
+                            "citations": cites or {},
+                        }
+
+                    runner = OrchestrationRunner(
+                        orchestration_store,
+                        ConcurrencyLeases(LeaseConfig(max_parallel=max(1, len(chosen)), max_read=max(1, len(chosen)))),
+                    )
+                    try:
+                        await runner.run(job, handler)
+                    except Exception:
+                        # 检查点库出错时保留已完成的那几位，绝不为了重试把整轮专家
+                        # 再跑一遍（每位专家都是一次完整 LLM 调用）。
+                        logger.exception("consult orchestration run failed: %s", run_id)
+                    if not any(
+                        r.status in (StepStatus.OK, StepStatus.FAILED, StepStatus.SKIPPED)
+                        for r in job.runs.values()
+                    ):
+                        # 一步都没跑成 → 交给下面的老路，不算重复花钱。
+                        return []
+                    rows: list[dict[str, Any]] = []
+                    for eid in chosen:
+                        run_rec = job.runs.get(f"expert:{eid}")
+                        if run_rec and run_rec.status is StepStatus.OK and isinstance(run_rec.result, dict):
+                            rows.append(run_rec.result)
+                        else:
+                            err = (run_rec.error if run_rec else None) or "interrupted"
+                            rows.append(
+                                {
+                                    "expert": eid,
+                                    "name": _NAME.get(eid, eid),
+                                    "status": "error",
+                                    "text": f"调用失败：{err}",
+                                    "elapsed": 0.0,
+                                    "citations": {},
+                                }
+                            )
+                    return rows
+
+                results = asyncio.run(_run_via_orch())
+            except Exception:
+                # Orchestration is an enhancement; fall back to legacy parallel path.
+                logger.exception("consult orchestration unavailable, using legacy path")
+                results = []
+        if not results:
+            with ThreadPoolExecutor(max_workers=len(chosen)) as pool:
+                futures = {
+                    pool.submit(
+                        _run_one, eid, brief, book, provider, model, shelf, timeout, run_id
+                    ): eid
+                    for eid in chosen
+                }
+                for fut in as_completed(futures):
+                    eid = futures[fut]
+                    try:
+                        status, text, elapsed, cites = fut.result()
+                    except Exception as exc:  # noqa: BLE001
+                        status, text, elapsed, cites = (
+                            "error", f"调用失败：{exc}", time.time() - started, {}
+                        )
+                    results.append(
+                        {"expert": eid, "name": _NAME.get(eid, eid), "status": status,
+                         "text": text, "elapsed": round(elapsed, 1),
+                         "citations": cites or {}}
+                    )
         order = {eid: i for i, eid in enumerate(chosen)}
         results.sort(key=lambda r: order.get(str(r.get("expert")), 99))
         elapsed = time.time() - started
@@ -1012,15 +1106,6 @@ def _job_thread(
                 run[field] = prior[field]
         audit_path = _write_audit(results, brief, book, run, audit_dir)
         run["audit_path"] = audit_path or ""
-
-        def _finish(state: dict[str, Any]) -> Optional[dict[str, Any]]:
-            target = _find(state, run_id)
-            if target is None:
-                return None
-            target.update(run)
-            return dict(target)
-
-        snapshot = _mutate(_finish) or run
 
         def _finish(state: dict[str, Any]) -> Optional[dict[str, Any]]:
             target = _find(state, run_id)
@@ -1070,6 +1155,7 @@ def dispatch(
     shelf: Any = None,
     audit_dir: Optional[Path] = None,
     timeout: Optional[int] = None,
+    orchestration_store: Any = None,
 ) -> dict[str, Any]:
     """起一个后台咨询任务，立刻返回任务记录。校验由调用方负责。"""
     run_id = _new_run_id()
@@ -1099,7 +1185,7 @@ def dispatch(
         _mutate(_add)
         thread = threading.Thread(
             target=_job_thread,
-            args=(run_id, list(chosen), brief, book, provider, model, shelf, budget, audit_dir),
+            args=(run_id, list(chosen), brief, book, provider, model, shelf, budget, audit_dir, orchestration_store),
             name=f"consult-{run_id}",
             daemon=True,
         )
@@ -1186,6 +1272,7 @@ def make_consult_tool(
     shelf: Any = None,
     audit_dir: Optional[Path] = None,
     session_id: str = "",
+    orchestration_store: Any = None,
 ):
     """给小桔的 consult_experts 工具（**后台派发，立即返回**）。"""
 
@@ -1238,6 +1325,7 @@ def make_consult_tool(
             shelf=sh,
             audit_dir=audit_dir,
             timeout=timeout,
+            orchestration_store=orchestration_store,
         )
         if on_consulted is not None:
             try:

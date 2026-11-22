@@ -131,17 +131,23 @@ def _prepare_messages(
     - DeepSeek 官方（api.deepseek.com）的 thinking 模式要求历史 assistant 消息把
       thinking 原文作为 reasoning_content 回传，否则整单 400
       （实测 2026-11-20 21:18 / 22:12：The reasoning_content in the thinking mode
-      must be passed back to the API）。
+      must be passed back to the API）。即使 reasoning 缺失/为空，也要补
+      reasoning_content=""，否则 thinking 模式仍会 400。
     - 其它兼容网关不认这个字段，带上反而 400，所以一律剥掉。
     """
     official_deepseek = "api.deepseek.com" in (base_url or "")
     out: list[dict[str, Any]] = []
     for m in messages:
         reasoning = m.get("reasoning")
-        touched = bool(reasoning) or any(k.startswith("_") for k in m)
+        has_sidecar = any(k.startswith("_") for k in m)
+        touched = has_sidecar or ("reasoning" in m)
         m2 = {k: v for k, v in m.items() if not k.startswith("_") and k != "reasoning"}
-        if official_deepseek and reasoning and m2.get("role") == "assistant":
-            m2["reasoning_content"] = reasoning
+        if official_deepseek and m2.get("role") == "assistant":
+            rc = reasoning if isinstance(reasoning, str) else m2.get("reasoning_content")
+            if not isinstance(rc, str):
+                rc = ""
+            m2["reasoning_content"] = rc
+            touched = True
         out.append(m2 if touched else m)
     return out
 

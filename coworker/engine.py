@@ -1266,29 +1266,93 @@ class TurnEngine:
         # context) plus the pdf/image/emote adaptation used to run right here on the
         # event loop (measured 2407ms loop stall on a cold background turn, 2026-11-10).
         snapshot = list(self.messages)
-        # 容错取用：允许测试替身不跑完整 __init__（_FakeEngine 直连 _astream）。
-        abort_evt = getattr(self, "_produce_abort", None)
-        if abort_evt is not None:
-            abort_evt.clear()
+        # Per-attempt abort signal (2026-11-22): a fresh event per attempt,
+        # published on the engine so the watchdog can set it. Never cleared — a
+        # shared, cleared event would revive the previous attempt's ghost pump
+        # thread: the stall-retry path calls _astream again while the old pump is
+        # still blocked in an SDK read, and a cleared flag lets it stream the
+        # whole abandoned response into a queue nobody reads.
+        abort_evt = asyncio.Event()
+        self._produce_abort = abort_evt
 
         def produce():
+            def _post(message: tuple[str, Any]) -> None:
+                # The consumer's loop can be gone by the time an abandoned
+                # attempt posts its last message; that is not an error.
+                try:
+                    loop.call_soon_threadsafe(queue.put_nowait, message)
+                except RuntimeError:
+                    pass
+
             try:
                 messages = self._outbound_messages(snapshot)
-                for chunk in provider.stream(
-                    model=model, messages=messages, tools=tools, **settings
+                # 2026-11: if the consumer watchdog already abandoned this attempt
+                # while we were queued in the provider pool, bail before opening a
+                # new upstream stream. Otherwise a queued-then-aborted produce would
+                # block in provider.stream() until SDK read timeout, holding a pool
+                # worker and contributing to "stalled upstream" saturation.
+                if self._cancel.is_set() or (
+                    abort_evt is not None and abort_evt.is_set()
                 ):
-                    # User pressed Stop (or the watchdog abandoned this attempt —
-                    # 2026-11-20): drop the stream between chunks (reading the
-                    # asyncio.Event's flag from a thread is safe; we only read).
+                    return
+
+                # Iterate provider.stream() in a daemon pump thread so the pool
+                # worker never blocks indefinitely inside an SDK read. When the
+                # consumer watchdog fires, this worker exits within ~1s instead of
+                # holding a _PROVIDER_POOL slot until SDK read timeout (300s),
+                # which otherwise accumulates into pool saturation on long-running
+                # automation workloads.
+                import queue as _queue
+                import threading as _threading
+
+                inner: "_queue.Queue[tuple[str, Any]]" = _queue.Queue()
+                _pump_ctx = contextvars.copy_context()
+
+                def _pump() -> None:
+                    def _body() -> None:
+                        try:
+                            for chunk in provider.stream(
+                                model=model,
+                                messages=messages,
+                                tools=tools,
+                                **settings,
+                            ):
+                                if self._cancel.is_set() or (
+                                    abort_evt is not None and abort_evt.is_set()
+                                ):
+                                    break
+                                inner.put(("chunk", chunk))
+                        except Exception as exc:  # surfaced to the awaiting consumer
+                            inner.put(("error", exc))
+                        finally:
+                            inner.put(("done", None))
+
+                    _pump_ctx.run(_body)
+
+                _threading.Thread(
+                    target=_pump, name="provider-stream-pump", daemon=True
+                ).start()
+
+                while True:
                     if self._cancel.is_set() or (
                         abort_evt is not None and abort_evt.is_set()
                     ):
                         break
-                    loop.call_soon_threadsafe(queue.put_nowait, ("chunk", chunk))
+                    try:
+                        kind, payload = inner.get(timeout=1.0)
+                    except _queue.Empty:
+                        continue
+                    if kind == "chunk":
+                        _post(("chunk", payload))
+                    elif kind == "error":
+                        _post(("error", payload))
+                        return
+                    else:
+                        return
             except Exception as exc:  # surfaced to the awaiting consumer
-                loop.call_soon_threadsafe(queue.put_nowait, ("error", exc))
+                _post(("error", exc))
             finally:
-                loop.call_soon_threadsafe(queue.put_nowait, ("done", None))
+                _post(("done", None))
 
         # PR3：把调用方的 contextvars（含 llm_usage.scene_scope）复制进 produce 线程，
         # 否则 scene 标签在线程池边界丢失，账本无法区分 bot 群 / 专家 / 后台任务。
@@ -1328,12 +1392,13 @@ class TurnEngine:
                     from .providers.errors import FirstTokenTimeout, StreamIdleTimeout
 
                     # 2026-11-20 事故修复：置 _produce_abort（仅本次尝试），让仍在
-                    # 产出的 produce 在下一个 chunk 边界自行退出，尽快归还
-                    # _PROVIDER_POOL 工人。之前超时只丢弃消费端，produce 会把整条
-                    # 被放弃的响应流完（免费通道长生成可达数分钟），8 工人被这种
-                    # "幽灵流"占满后，后续所有通道的 produce 在池里排队、请求发不
-                    # 出去，被看门狗逐个冤杀——正是"三通道连环 stalled upstream"
-                    # 的根因。不用 _cancel：它会让同轮降级重试被误判为用户中断。
+                    # 产出的 produce 在 ~1s 内自行退出，尽快归还 _PROVIDER_POOL 工人。
+                    # produce 现通过 daemon pump 线程读取 provider.stream()，因此即使
+                    # 上游卡在 SDK read 上、无 chunk 边界可检查，pool worker 也不会被
+                    # 幽灵流长期占满；pump daemon 线程可能残留至 SDK read timeout，但
+                    # 不占池。之前超时只丢弃消费端，produce 会把整条被放弃的响应流完，
+                    # 导致"三通道连环 stalled upstream"。不用 _cancel：它会让同轮降级
+                    # 重试被误判为用户中断。
                     if abort_evt is not None:
                         abort_evt.set()
                     _active = 0
