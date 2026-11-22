@@ -348,6 +348,24 @@ class SessionManager:
         except Exception:
             logger.warning("orchestration store unavailable", exc_info=True)
             self.orchestration_store = None
+        # 后台 Job 宿主：派发即返回 + 后台线程跑 checkpointed job + 崩溃后自愈。
+        # 与 consult 的 daemon 线程同构，但泛化给任何读/查/检扇出任务。notifier
+        # 在 start_gateway 里按 loop 注册（同 consult），这里先建空宿主。
+        self.orchestration_host = None
+        # 自愈 resolver 注册表：只有显式登记的 source 才在启动时接管其未完成 job。
+        # automation job 的 handler 绑定 task/session，崩溃后无法可靠重建，默认不
+        # 登记——消费者（handler 是可重建纯函数）接入时自行登记。
+        self._orch_recover_resolvers: dict[str, Any] = {}
+        if self.orchestration_store is not None:
+            try:
+                from coworker.orchestration import JobHost
+
+                self.orchestration_host = JobHost(
+                    self.orchestration_store,
+                    notifier=self._on_orch_event,
+                )
+            except Exception:
+                logger.warning("orchestration host unavailable", exc_info=True)
         # Cached DeskMate proactive engine (created once, reused across ticks).
         # Without this, _combined_extra_tick would construct a new ProactiveEngine
         # every 30s, discarding DisturbManager state (consecutive-ignore counters,
@@ -841,6 +859,9 @@ class SessionManager:
             wake_store=self.wakes,
             orchestration_store=getattr(self, "orchestration_store", None),
             session_id=session_id,
+            # 2026-11-22 通用后台子任务分派：host + 结果回灌回调。
+            orchestration_host=getattr(self, "orchestration_host", None),
+            delegate_deliver=self._delegate_deliver,
             audit_sink=self.audit_store.append,
             roots=roots,
             # WS sessions pass mode-aware callbacks (attended → live prompt, unattended → Inbox).
@@ -5465,6 +5486,12 @@ class SessionManager:
                 logger.info("启动对账：%s 个幽灵 run 标记为 interrupted", reconciled)
         except Exception:
             logger.warning("启动对账失败（fail-open）", exc_info=True)
+        # 后台 Job 自愈：上次进程留下的、handler 可重建的读/查/检 job 重新派发。
+        # 默认无登记 source ⇒ 空跑；消费者接入 register_orch_recovery 后生效。
+        try:
+            self.recover_orchestration_jobs()
+        except Exception:
+            logger.warning("后台 job 自愈失败（fail-open）", exc_info=True)
         # tick scheduler for automations (independent of connectors). The first pass is
         # deferred during cold boot: it runs due automations AND the extra_tick hook
         # (self-wake resume + DeskMate background proactive LLM turns), and at t=0 it
@@ -6315,6 +6342,9 @@ class SessionManager:
             orchestration_store=getattr(self, "orchestration_store", None),
             roots=roots,
             session_id=session_id,
+            # 后台子任务分派同样对自动任务开放（写稿/发布长任务可派独立核验块）。
+            orchestration_host=getattr(self, "orchestration_host", None),
+            delegate_deliver=self._delegate_deliver,
             audit_sink=self.audit_store.append,
             # Scheduled runs respect the same per-session connection hierarchy as live sessions:
             # expose only the persona's effective-enabled connectors' tools (§4.3).
@@ -6734,13 +6764,115 @@ class SessionManager:
         return session_id in self._running_sessions
 
     def orchestration_runner(self):
-        """Build an orchestration runner backed by the manager's checkpoint store."""
+        """Return the shared orchestration runner.
+
+        Prefers the background host's runner so interactive, automation and
+        background jobs draw from the SAME global lease budget. Falls back to a
+        fresh runner when the host is unavailable (store locked at boot).
+        """
+        host = getattr(self, "orchestration_host", None)
+        if host is not None:
+            return host.runner
         store = getattr(self, "orchestration_store", None)
         if store is None:
             return None
         from coworker.orchestration import ConcurrencyLeases, LeaseConfig, OrchestrationRunner
 
         return OrchestrationRunner(store, ConcurrencyLeases(LeaseConfig()))
+
+    # -- 后台 Job 宿主：派发 / 自愈 / 通知 ------------------------------------
+    def register_orch_recovery(self, source: str, resolver: Any) -> None:
+        """登记某类 job 的 handler 重建器，使其崩溃后可在启动时自愈。
+
+        ``resolver(job) -> handler | None``。只有登记过的 source 才被接管——
+        automation 这类绑定运行时 session 的 job 不登记，避免错误重跑。
+        """
+        self._orch_recover_resolvers[str(source)] = resolver
+
+    def submit_background_job(self, job: Any, handler: Any) -> Optional[str]:
+        """把 checkpointed job 派到后台线程，立即返回 job id（fail-open 返回 None）。"""
+        host = getattr(self, "orchestration_host", None)
+        if host is None:
+            return None
+        try:
+            return host.submit(job, handler)
+        except Exception:
+            logger.warning("后台 job 派发失败", exc_info=True)
+            return None
+
+    def recover_orchestration_jobs(self) -> int:
+        """启动自愈：接管上次进程留下的、已登记 handler 的未完成 job。"""
+        host = getattr(self, "orchestration_host", None)
+        if host is None or not self._orch_recover_resolvers:
+            return 0
+        try:
+            def resolver(job):
+                fn = self._orch_recover_resolvers.get(str(job.source))
+                return fn(job) if fn else None
+
+            resumed = host.recover(
+                resolver, sources=set(self._orch_recover_resolvers)
+            )
+            if resumed:
+                logger.info("启动自愈：接管 %s 个未完成后台 job", len(resumed))
+            return len(resumed)
+        except Exception:
+            logger.warning("后台 job 启动自愈失败（fail-open）", exc_info=True)
+            return 0
+
+    def _on_orch_event(self, kind: str, payload: dict) -> None:
+        """宿主后台线程回调：切回 manager loop，绝不在这里阻塞/抛错。"""
+        loop = self._loop
+        if loop is None or loop.is_closed():
+            return
+        try:
+            asyncio.run_coroutine_threadsafe(
+                self._broadcast_orch_event(kind, payload), loop
+            )
+        except Exception:
+            pass
+
+    def _delegate_deliver(self, session_id: str, message: str, job_id: str) -> None:
+        """后台子任务线程回灌结果：切回 manager loop 投递为新消息（非阻塞）。
+
+        与 consult 的 _on_consult_event 同源——绝不在工作线程里直接 await。
+        投递幂等由 delegation._make_result_notifier 的 side-effect 账本保证。
+        """
+        loop = self._loop
+        if loop is None or loop.is_closed():
+            logger.warning("后台子任务 %s 结果无法回灌：事件循环不可用", job_id)
+            return
+        try:
+            asyncio.run_coroutine_threadsafe(
+                self.deliver_to_session(
+                    session_id,
+                    message,
+                    source={
+                        "connector": "deskmate",
+                        "kind": "dm",
+                        "channel_id": job_id,
+                        "channel_name": "后台子任务",
+                        "sender_id": job_id,
+                        "sender_name": "后台子任务",
+                        "ts": time.time(),
+                        "text": "后台子任务完成",
+                    },
+                ),
+                loop,
+            )
+        except Exception:  # noqa: BLE001 —— 回灌失败不能拖垮已完成的后台 job
+            logger.warning("后台子任务 %s 回灌调度失败", job_id, exc_info=True)
+
+    async def _broadcast_orch_event(self, kind: str, payload: dict) -> None:
+        sid = str(payload.get("session_id") or "")
+        if not sid:
+            return
+        try:
+            await self.broadcast_session(
+                sid, {"type": f"deskmate_job_{kind}", "data": payload}
+            )
+        except Exception:
+            logger.debug("后台 job 事件广播失败", exc_info=True)
 
     def _checkpoint_automation_run(self, task, run, *, phase: str = "produce") -> None:
         """Persist automation run artifacts into orchestration store (fail-open)."""
@@ -6800,11 +6932,13 @@ class SessionManager:
 
     async def _run_orchestrated_automation(self, task, run, trigger: str, spec: dict) -> TaskRun:
         """Run an automation as an explicit orchestration pipeline."""
-        from coworker.orchestration import Artifact, ConcurrencyLeases, Job, JobStatus, LeaseConfig, OrchestrationRunner, StepKind, StepSpec
+        from coworker.orchestration import Artifact, Job, JobStatus, StepKind, StepSpec
 
         mode = str(spec.get("mode") or "")
         store = getattr(self, "orchestration_store", None)
-        runner = OrchestrationRunner(store, ConcurrencyLeases(LeaseConfig())) if store else None
+        # Share the host runner so automation draws from the same global lease
+        # budget as interactive/background jobs, instead of a private pool.
+        runner = self.orchestration_runner()
         job_id = f"automation-pipeline:{task.id}:{run.run_id}"
         steps: list[StepSpec] = []
         handlers: dict = {}

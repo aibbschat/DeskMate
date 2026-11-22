@@ -513,6 +513,11 @@ def build_engine(
     wake_store: Optional[Any] = None,
     orchestration_store: Optional[Any] = None,
     session_id: Optional[str] = None,
+    # 2026-11-22 后台子任务分派：host 提供派发/自愈，deliver 把结果回灌源会话。
+    # 由 manager 注入；未注入时（CLI/tests）不注册 delegate_task，行为不变。
+    orchestration_host: Optional[Any] = None,
+    delegate_deliver: Optional[Any] = None,
+    delegate_enabled: bool = True,
     audit_sink: Optional[Any] = None,
     roots: Optional[list] = None,
     directory_requester: Optional[Any] = None,
@@ -812,6 +817,41 @@ def build_engine(
             consult_enabled = True
         except Exception:  # noqa: BLE001 —— 咨询能力起不来不拖垮小桔
             consult_enabled = False
+
+    # 2026-11-22 通用后台子任务分派（对所有 agent，不只小桔）：agent 在长任务里
+    # 自己判断某块工作可独立做/要并行核验/没把握时，派到后台只读 subagent，结果
+    # 作为新消息回灌本会话。复用 JobHost + consult 的 deliver_to_session 通道。
+    # 缺 host/deliver（CLI/测试直调 build_engine）时不注册，行为与以前一致。
+    if delegate_enabled and orchestration_host is not None and delegate_deliver is not None:
+        try:
+            from deskmate.delegation import (
+                DELEGATE_GUIDANCE,
+                build_delegate_engine,
+                delegate_builder,
+            )
+
+            def _run_delegate_subtask(task: str, job_id: str):
+                from deskmate.delegation import collect_subtask_report
+
+                child = build_delegate_engine(
+                    provider=provider,
+                    model=model,
+                    workspace=str(ws) if ws else str(_deskmate_base_dir()),
+                    model_settings=model_settings,
+                )
+                return collect_subtask_report(child, task)
+
+            registry.register(
+                delegate_builder(
+                    host=orchestration_host,
+                    run_subtask=_run_delegate_subtask,
+                    session_id=session_id or "",
+                    deliver=delegate_deliver,
+                )()
+            )
+            instructions = f"{instructions}\n\n{DELEGATE_GUIDANCE}"
+        except Exception:  # noqa: BLE001 —— 分派能力起不来不拖垮主会话
+            logger.warning("delegate_task 注册失败（fail-open）", exc_info=True)
     if mem_store is not None:
         # Always the full toolset: the registry is fixed at build, so a session born
         # while saving was off must still be able to save the moment it's turned on.

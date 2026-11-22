@@ -130,6 +130,40 @@ def build_read_check_merge_pipeline(
     )
 
 
+def submit_read_check_merge(
+    host: Any,
+    *,
+    job_id: str,
+    title: str,
+    source: str,
+    items: list[dict[str, Any]],
+    extract_handler: StepFn,
+    merge_handler: StepFn,
+    check_handler: StepFn | None = None,
+    meta: Optional[dict[str, Any]] = None,
+) -> str:
+    """Submit a parallel read/check/merge job to a background host.
+
+    This is the消费者-facing entry point: callers describe *what* to extract
+    per item and how to merge, and get a job id back immediately. All steps run
+    in background threads under the host's concurrency cap and the shared LLM
+    lease; the CHECK steps fan out after their extract, MERGE waits for all
+    terminal steps. A process restart re-dispatches unfinished steps via
+    ``host.recover()`` without re-running completed ones.
+    """
+    job, handlers = build_read_check_merge_pipeline(
+        job_id=job_id,
+        title=title,
+        source=source,
+        items=items,
+        extract_handler=extract_handler,
+        merge_handler=merge_handler,
+        check_handler=check_handler,
+        meta={**(meta or {}), "pattern": "read_check_merge"},
+    )
+    return host.submit(job, handlers)
+
+
 def build_checkpointed_publish_pipeline(
     *,
     job_id: str,
