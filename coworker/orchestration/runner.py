@@ -65,6 +65,7 @@ class OrchestrationRunner:
         On resume, completed steps are reused and failed steps are retried when
         their retry budget allows. Steps whose dependencies failed are skipped.
         """
+        self._validate_job(job)
         self.store.save_job(job)
         ctx = self._build_context(job)
         self._normalize_for_run(job, resume=resume)
@@ -110,6 +111,43 @@ class OrchestrationRunner:
         self._finalize_job(job)
         self.store.save_job(job)
         return job
+
+    @staticmethod
+    def _validate_job(job: Job) -> None:
+        """Fail fast on a job that can never complete: duplicate step ids,
+        dependencies pointing at nothing, or a dependency cycle. Without
+        this, a typo'd dep left the step PENDING forever and the job died
+        FAILED with no hint which dep was wrong (2026-11-22)."""
+        seen: set[str] = set()
+        for step_id in (s.id for s in job.steps):
+            if step_id in seen:
+                raise ValueError(f"duplicate step id: {step_id}")
+            seen.add(step_id)
+        for spec in job.steps:
+            for dep in spec.deps:
+                if dep not in seen:
+                    raise ValueError(
+                        f"step {spec.id} depends on unknown step {dep}"
+                    )
+        # Kahn's algorithm: anything left over is on a cycle.
+        indegree = {s.id: 0 for s in job.steps}
+        dependents: dict[str, list[str]] = {s.id: [] for s in job.steps}
+        for spec in job.steps:
+            for dep in spec.deps:
+                indegree[spec.id] += 1
+                dependents[dep].append(spec.id)
+        queue = [s.id for s in job.steps if indegree[s.id] == 0]
+        visited = 0
+        while queue:
+            current = queue.pop()
+            visited += 1
+            for nxt in dependents[current]:
+                indegree[nxt] -= 1
+                if indegree[nxt] == 0:
+                    queue.append(nxt)
+        if visited != len(job.steps):
+            cyclic = sorted(s for s in indegree if indegree[s] > 0)
+            raise ValueError(f"dependency cycle involving: {', '.join(cyclic)}")
 
     def _build_context(self, job: Job) -> RunContext:
         ctx = RunContext(job=job)
@@ -186,7 +224,7 @@ class OrchestrationRunner:
                 ):
                     run.status = StepStatus.SKIPPED
                     run.error = f"dependency not satisfied: {dep}"
-                    run.finished_at = run.finished_at or 0.0
+                    run.finished_at = run.finished_at or _now()
                     changed = True
                     break
         if changed:
@@ -194,6 +232,10 @@ class OrchestrationRunner:
 
     def _finalize_job(self, job: Job) -> None:
         statuses = [job.ensure_run(s.id).status for s in job.steps]
+        if not statuses:
+            # An empty job has nothing to fail.
+            job.status = JobStatus.OK
+            return
         if any(s == StepStatus.CANCELED for s in statuses):
             job.status = JobStatus.CANCELED
         elif any(s in (StepStatus.FAILED, StepStatus.SKIPPED) for s in statuses):
@@ -210,7 +252,7 @@ class OrchestrationRunner:
             run = job.ensure_run(spec.id)
             if run.status in (StepStatus.PENDING, StepStatus.READY, StepStatus.RUNNING):
                 run.status = StepStatus.CANCELED
-                run.finished_at = run.finished_at or 0.0
+                run.finished_at = run.finished_at or _now()
         job.status = JobStatus.CANCELED
 
     async def _run_step(
@@ -224,7 +266,7 @@ class OrchestrationRunner:
         run = job.ensure_run(spec.id)
         if cancel_event is not None and cancel_event.is_set():
             run.status = StepStatus.CANCELED
-            run.finished_at = 0.0
+            run.finished_at = _now()
             self.store.save_job(job)
             return
 
@@ -234,7 +276,7 @@ class OrchestrationRunner:
             if rec and rec.get("status") == "ok":
                 run.status = StepStatus.OK
                 run.result = rec.get("result")
-                run.finished_at = run.finished_at or 0.0
+                run.finished_at = run.finished_at or _now()
                 run.error = None
                 ctx.results[spec.id] = run.result
                 self.store.save_job(job)
@@ -312,6 +354,10 @@ class OrchestrationRunner:
             run.finished_at = _now()
             if run.attempt <= max(0, int(spec.retries)):
                 run.status = StepStatus.PENDING
+                # Back off before the next round re-runs this step, or a
+                # failing publish retries 3 times in a row with no pause
+                # (same class of bug as the 11-21 provider retry note).
+                await asyncio.sleep(min(2.0 ** (run.attempt - 1), 8.0))
                 logger.info("step %s failed, will retry: %s", spec.id, e)
             else:
                 run.status = StepStatus.FAILED

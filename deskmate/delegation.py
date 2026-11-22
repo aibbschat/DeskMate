@@ -22,6 +22,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import re
+import time
 from typing import Any, Callable, Optional
 
 logger = logging.getLogger(__name__)
@@ -47,9 +48,13 @@ def _result_text(result: Any) -> str:
     if isinstance(result, str):
         return result
     if isinstance(result, dict):
-        report = result.get("report") or result.get("conclusion") or result.get("text")
-        if isinstance(report, str) and report.strip():
-            return report
+        if any(k in result for k in ("report", "conclusion", "text")):
+            report = result.get("report") or result.get("conclusion") or result.get("text")
+            if isinstance(report, str):
+                # A blank report is empty, not content: returning the dict as
+                # JSON here would defeat the notifier's empty-result guard.
+                return report.strip()
+            return "" if report is None else str(report)
         # Structured-but-unknown: keep it readable rather than dumping repr noise.
         try:
             import json
@@ -83,9 +88,26 @@ def _make_result_notifier(store: Any, deliver: Deliver, session_id: str = "") ->
             claim = store.begin_side_effect(key, job_id=job_id, step_id=_STEP_ID)
         except Exception:  # noqa: BLE001 —— ledger unavailable: still try once
             claim = {"existing": False}
-        if claim.get("existing"):
+        # Only a record whose status is "ok" means delivered. A "failed"
+        # record (deliver raised, job vanished, empty result, no session)
+        # must NOT block the retry: the old check skipped on any existing
+        # record, so one failed delivery lost the result forever (2026-11-22).
+        # A "running" record means a duplicate notification arrived while a
+        # delivery is in flight; proceeding would double-deliver, so the
+        # runner's pre-check semantics apply here too: only "ok" reuses.
+        if claim.get("existing") and claim.get("status") == "ok":
             logger.debug("delegated result %s already delivered", job_id)
             return
+        if claim.get("existing") and claim.get("status") == "running":
+            # A concurrent duplicate notification while a delivery is in
+            # flight: skip, or the result would be delivered twice. But a
+            # "running" record older than 10 minutes is a stale leftover of a
+            # delivery attempt that died mid-flight (delivery itself is one
+            # function call) — retry instead of losing the result forever.
+            stale = (time.time() - float(claim.get("updated_at") or 0)) > 600
+            if not stale:
+                logger.debug("delegated result %s delivery already in flight", job_id)
+                return
         try:
             job = store.get_job(job_id)
             if job is None:
@@ -140,6 +162,10 @@ def delegate_builder(
     # meta['session_id'], so multiple sessions sharing this host are safe. Guard
     # with an attribute so rebuilding engines for the same host doesn't stack
     # duplicate notifiers (which would double-deliver).
+    # Assumption: the whole process passes ONE deliver (manager._delegate_deliver,
+    # which routes by session_id). If a future caller passes a session-bound
+    # deliver, the second install is silently dropped and that session's results
+    # would go to the first deliver — register notifiers per session then.
     if deliver is not None and not getattr(host, "_delegate_notify_installed", False):
         result_notify = _make_result_notifier(store, deliver, session_id=session_id)
         base_notifier = getattr(host, "_notifier", None)
@@ -166,12 +192,14 @@ def delegate_builder(
                 return f"子任务太短（至少 {_MIN_TASK_CHARS} 个字）：写清要查/核什么、材料在哪、要什么产出。"
 
             # Dedup: same normalized task already dispatched → refuse.
+            # The claim lives in the side-effect ledger under the task
+            # fingerprint (O(1) lookup), not a scan of the newest 200 jobs:
+            # a long-running task used to slip past the scan once 200 newer
+            # jobs had piled up behind it. The claim points at the latest
+            # dispatched job; only a still pending/running job blocks a
+            # re-dispatch — a finished job's claim is re-pointed at the new
+            # job (see store.reassign_side_effect).
             fp = _fingerprint(clean)
-            for job in store.list_jobs(limit=200):
-                if str(job.source) != SOURCE:
-                    continue
-                if str(job.meta.get("task_fp") or "") == fp and job.status.value in ("pending", "running"):
-                    return "这件子任务已经在后台跑了，别重复派；等结果回来再说。"
 
             from coworker.orchestration import Job, JobStatus, StepKind, StepSpec
 
@@ -190,12 +218,49 @@ def delegate_builder(
             )
             status = job.status.value
 
+            dispatch_key = f"delegate-dispatch:{fp}"
+            try:
+                claim = store.begin_side_effect(
+                    dispatch_key, job_id=job.id, step_id=_STEP_ID
+                )
+            except Exception:  # noqa: BLE001 —— ledger unavailable: fall back to no dedup
+                claim = {"existing": False}
+            if claim.get("existing"):
+                old = store.get_job(str(claim.get("job_id") or ""))
+                if old is not None and old.status.value in ("pending", "running"):
+                    return "这件子任务已经在后台跑了，别重复派；等结果回来再说。"
+                if old is None:
+                    # Claim exists but its job was never persisted: the other
+                    # dispatch is between claim and submit (or died there).
+                    # Refuse while the claim is fresh; only a stale claim
+                    # (older than a minute) is treated as abandoned.
+                    age = time.time() - float(claim.get("updated_at") or 0)
+                    if age < 60:
+                        return "这件子任务已经在后台跑了，别重复派；等结果回来再说。"
+                # Previous claim finished or vanished: re-point the key at
+                # this job, or the next duplicate dispatch would still read
+                # the stale job and double-dispatch.
+                try:
+                    store.reassign_side_effect(
+                        dispatch_key, job_id=job.id, step_id=_STEP_ID
+                    )
+                except Exception:  # noqa: BLE001 —— re-point failed: dedup may miss once
+                    pass
+
             def handler(spec, _job, _ctx):
                 return run_subtask(clean, job.id)
 
             try:
                 job_id = host.submit(job, handler)
             except RuntimeError as exc:
+                # Free the dispatch claim: the job never started, so a later
+                # identical dispatch must not be refused as "already running".
+                try:
+                    store.finish_side_effect(
+                        dispatch_key, status="failed", result={"error": str(exc)}
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
                 return f"现在后台派发槽位满了或重复：{exc}。等一个子任务回来再派。"
 
             return (

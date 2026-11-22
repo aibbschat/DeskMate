@@ -334,8 +334,9 @@ async def test_checkpointed_publish_failure_preserves_artifacts(tmp_path):
 def test_process_gate_caps_concurrency_across_event_loops():
     """The provider pool is shared by several loops (manager + consult threads).
 
-    asyncio.Semaphore is loop-bound, so a per-runner cap cannot bound that
-    traffic; the cross-loop gate must.
+    The process gate is loop-free, so it bounds that traffic. (Per-runner
+    leases are loop-free too since 2026-11-22; this test still pins the
+    process gate itself.)
     """
     import threading
 

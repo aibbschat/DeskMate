@@ -453,8 +453,10 @@ class TurnEngine:
             self.messages.insert(0, {"role": "system", "content": instructions})
         self._cancel = asyncio.Event()
         # 2026-11-20 事故修复：仅作用于"单次 produce 尝试"的放弃信号。看门狗超时
-        # 置位、每次 _astream 进入时清零 —— 与 _cancel（用户中断，轮级）分开，
-        # 避免把同轮降级重试误判成用户 Stop。
+        # 置位 —— 与 _cancel（用户中断，轮级）分开，避免把同轮降级重试误判成
+        # 用户 Stop。2026-11-22 改为每次 _astream 新建一个事件并发布到这里，
+        # 永不清零（旧的共享事件 + clear 会让上一轮的幽灵 pump 复活）。
+        # 这里只是初始占位值，第一次 _astream 就会换成当次的新事件。
         self._produce_abort = asyncio.Event()
         # Whether the latest assistant turn hit the output-token limit — decides which
         # diagnosis a mangled (unparseable-args) tool call gets answered with.
@@ -1285,16 +1287,19 @@ class TurnEngine:
                     pass
 
             try:
-                messages = self._outbound_messages(snapshot)
                 # 2026-11: if the consumer watchdog already abandoned this attempt
-                # while we were queued in the provider pool, bail before opening a
-                # new upstream stream. Otherwise a queued-then-aborted produce would
-                # block in provider.stream() until SDK read timeout, holding a pool
-                # worker and contributing to "stalled upstream" saturation.
+                # while we were queued in the provider pool, bail before doing
+                # anything — including _outbound_messages (memory recall, the
+                # heaviest part of produce). Otherwise a queued-then-aborted
+                # produce would block in provider.stream() until SDK read
+                # timeout, holding a pool worker and contributing to "stalled
+                # upstream" saturation. Stays inside the try so the finally
+                # still posts ("done", None) to the consumer.
                 if self._cancel.is_set() or (
                     abort_evt is not None and abort_evt.is_set()
                 ):
                     return
+                messages = self._outbound_messages(snapshot)
 
                 # Iterate provider.stream() in a daemon pump thread so the pool
                 # worker never blocks indefinitely inside an SDK read. When the
@@ -1310,13 +1315,14 @@ class TurnEngine:
 
                 def _pump() -> None:
                     def _body() -> None:
+                        stream_gen = provider.stream(
+                            model=model,
+                            messages=messages,
+                            tools=tools,
+                            **settings,
+                        )
                         try:
-                            for chunk in provider.stream(
-                                model=model,
-                                messages=messages,
-                                tools=tools,
-                                **settings,
-                            ):
+                            for chunk in stream_gen:
                                 if self._cancel.is_set() or (
                                     abort_evt is not None and abort_evt.is_set()
                                 ):
@@ -1325,6 +1331,16 @@ class TurnEngine:
                         except Exception as exc:  # surfaced to the awaiting consumer
                             inner.put(("error", exc))
                         finally:
+                            # Close the upstream generator explicitly on abort
+                            # instead of waiting for the GC to collect it: the
+                            # underlying HTTP response stays open until then
+                            # (2026-11-22).
+                            close = getattr(stream_gen, "close", None)
+                            if close is not None:
+                                try:
+                                    close()
+                                except Exception:
+                                    pass
                             inner.put(("done", None))
 
                     _pump_ctx.run(_body)

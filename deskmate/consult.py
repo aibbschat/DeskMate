@@ -871,7 +871,7 @@ def _run_one(
     shelf: Any,
     timeout: int,
     run_id: str = "",
-) -> tuple[str, str, float]:
+) -> tuple[str, str, float, dict[str, Any]]:
     """返回 (状态, 文本, 耗时, 引文核验统计)。状态 ∈ {ok, timeout, error}。"""
     started = time.time()
     try:
@@ -1173,7 +1173,12 @@ def dispatch(
     timeout: Optional[int] = None,
     orchestration_store: Any = None,
 ) -> dict[str, Any]:
-    """起一个后台咨询任务，立刻返回任务记录。校验由调用方负责。"""
+    """起一个后台咨询任务，立刻返回任务记录。
+
+    并发上限在这里、同一把锁里做“检查 + 占位”：调用方的前置检查挡不住
+    两个会话同时派发（都通过检查、都派发，跑到 5 个），2026-11-22 修。
+    满员时抛 RuntimeError，调用方把它翻回给用户的提示。
+    """
     run_id = _new_run_id()
     budget = timeout or _timeout()
     now = time.time()
@@ -1198,6 +1203,12 @@ def dispatch(
         state.setdefault("runs", []).append(run)
 
     with _LOCK:
+        live = sum(1 for t in _ACTIVE.values() if t.is_alive())
+        if live >= MAX_CONCURRENT_RUNS:
+            raise RuntimeError(
+                f"现在已经有 {MAX_CONCURRENT_RUNS} 个专家任务在跑（后台），先别再派："
+                "等结果回来、或等其中一位结束再派。别把同一件事重派一遍。"
+            )
         _mutate(_add)
         thread = threading.Thread(
             target=_job_thread,
@@ -1325,24 +1336,32 @@ def make_consult_tool(
             except Exception:  # noqa: BLE001
                 return f"找不到《{book_title}》这本书；先用 list_books 对一下书名。"
 
+        # Fast path only: the authoritative check lives inside dispatch(),
+        # under the same lock that registers the new thread.
         if _active_count() >= MAX_CONCURRENT_RUNS:
             return (
                 f"现在已经有 {MAX_CONCURRENT_RUNS} 个专家任务在跑（后台），先别再派："
                 "等结果回来、或等其中一位结束再派。别把同一件事重派一遍。"
             )
 
-        run = dispatch(
-            chosen=chosen,
-            brief=clean,
-            book=book_title,
-            provider=provider,
-            model=model,
-            session_id=session_id,
-            shelf=sh,
-            audit_dir=audit_dir,
-            timeout=timeout,
-            orchestration_store=orchestration_store,
-        )
+        try:
+            run = dispatch(
+                chosen=chosen,
+                brief=clean,
+                book=book_title,
+                provider=provider,
+                model=model,
+                session_id=session_id,
+                shelf=sh,
+                audit_dir=audit_dir,
+                timeout=timeout,
+                orchestration_store=orchestration_store,
+            )
+        except RuntimeError:
+            return (
+                f"现在已经有 {MAX_CONCURRENT_RUNS} 个专家任务在跑（后台），先别再派："
+                "等结果回来、或等其中一位结束再派。别把同一件事重派一遍。"
+            )
         if on_consulted is not None:
             try:
                 on_consulted()

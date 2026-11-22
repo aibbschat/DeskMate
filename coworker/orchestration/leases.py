@@ -8,6 +8,9 @@ Two layers of bounding:
 
 * **Per-runner** (``LeaseConfig``): ``max_parallel`` / ``max_read`` /
   ``max_compute`` / ``max_llm``. A single job may not fan out wider than this.
+  These gates are loop-free too (``_CrossLoopLimiter``), so one shared runner
+  keeps its budget even when the manager loop and JobHost worker threads use
+  it at the same time.
 * **Per-process** (``_CrossLoopLimiter``): the provider pool is shared by the
   manager loop, the consult worker threads (each runs its own loop) and any
   future automation runner. ``asyncio.Semaphore`` is loop-bound, so a shared
@@ -123,6 +126,17 @@ class _CrossLoopLimiter:
         with self._lock:
             return {"limit": self._limit, "active": self._active, "waiting": len(self._waiters)}
 
+    @property
+    def _value(self) -> int:
+        """Remaining capacity, mirroring ``asyncio.Semaphore._value``.
+
+        Tests read this to assert a cancelled waiter did not inflate capacity.
+        Invariant: waiters are only queued while ``_active == _limit``, so
+        ``limit - active`` is 0 exactly when the gate is saturated.
+        """
+        with self._lock:
+            return max(0, self._limit - self._active)
+
 
 _PROCESS_GLOBAL: Optional[_CrossLoopLimiter] = None
 _PROCESS_LLM: Optional[_CrossLoopLimiter] = None
@@ -150,58 +164,51 @@ def reset_process_gates() -> None:
 
 
 class ConcurrencyLeases:
+    """Per-runner concurrency caps that hold across event loops.
+
+    All gates here are :class:`_CrossLoopLimiter` instances, not ``asyncio``
+    primitives: one runner is shared between the manager loop and the JobHost
+    worker threads (each runs its own loop), and an ``asyncio.Semaphore`` is
+    bound to the loop that first awaited it. The old ``_ensure`` rebuilt the
+    semaphores whenever a second loop showed up — under in-flight
+    acquisitions, which silently inflated capacity and dropped the per-target
+    serialization (2026-11-22 fix). Loop-free gates keep one honest budget
+    per instance, so the shared runner in ``manager.orchestration_runner``
+    is now safe to use from both loops at once.
+    """
+
     def __init__(self, config: LeaseConfig | None = None) -> None:
         self.config = config or LeaseConfig()
-        self._loop: Optional[asyncio.AbstractEventLoop] = None
-        self._global: Optional[asyncio.Semaphore] = None
-        self._llm: Optional[asyncio.Semaphore] = None
-        self._read: Optional[asyncio.Semaphore] = None
-        self._compute: Optional[asyncio.Semaphore] = None
-        self._targets: dict[str, asyncio.Lock] = {}
-        self._targets_guard: Optional[asyncio.Lock] = None
+        self._global = _CrossLoopLimiter(max(1, int(self.config.max_parallel)))
+        self._llm = _CrossLoopLimiter(self.config.resolved_max_llm())
+        self._read = _CrossLoopLimiter(max(1, int(self.config.max_read)))
+        self._compute = _CrossLoopLimiter(max(1, int(self.config.max_compute)))
+        self._targets: dict[str, _CrossLoopLimiter] = {}
+        self._targets_guard = threading.Lock()
 
-    def _ensure(self) -> None:
-        # NOTE: an instance is bound to one loop at a time. Do not share a single
-        # ConcurrencyLeases across loops running concurrently — the semaphores
-        # would be rebuilt under in-flight acquisitions. The process gates above
-        # are what carries the cap across loops.
-        loop = asyncio.get_running_loop()
-        if self._loop is loop and self._global is not None:
-            return
-        self._loop = loop
-        self._global = asyncio.Semaphore(max(1, int(self.config.max_parallel)))
-        self._llm = asyncio.Semaphore(self.config.resolved_max_llm())
-        self._read = asyncio.Semaphore(max(1, int(self.config.max_read)))
-        self._compute = asyncio.Semaphore(max(1, int(self.config.max_compute)))
-        self._targets = {}
-        self._targets_guard = asyncio.Lock()
-
-    async def _target_lock(self, target: str) -> asyncio.Lock:
-        self._ensure()
-        assert self._targets_guard is not None
-        async with self._targets_guard:
-            lock = self._targets.get(target)
-            if lock is None:
-                lock = asyncio.Lock()
-                self._targets[target] = lock
-            return lock
+    def _target_limiter(self, target: str) -> _CrossLoopLimiter:
+        # Plain dict get-or-create under a threading lock: the critical
+        # section is microseconds and never awaits, so it cannot stall a loop.
+        with self._targets_guard:
+            limiter = self._targets.get(target)
+            if limiter is None:
+                limiter = _CrossLoopLimiter(1)
+                self._targets[target] = limiter
+            return limiter
 
     @asynccontextmanager
     async def acquire(
         self, spec: StepSpec, *, uses_llm: bool = False
     ) -> AsyncIterator[None]:
-        self._ensure()
-        assert self._global and self._llm and self._read and self._compute
-
         # Target serialization comes FIRST. Acquiring it after the global/llm
         # slots meant a write step parked on a contended target kept a global
         # slot and an LLM slot for the whole wait — four same-target writes
         # could starve every read in the job.
-        target_lock: Optional[asyncio.Lock] = None
+        target_lock: Optional[_CrossLoopLimiter] = None
         if spec.target:
-            target_lock = await self._target_lock(f"{spec.kind.value}:{spec.target}")
+            target_lock = self._target_limiter(f"{spec.kind.value}:{spec.target}")
 
-        kind_sem: Optional[asyncio.Semaphore] = None
+        kind_sem: Optional[_CrossLoopLimiter] = None
         if spec.kind == StepKind.READ:
             kind_sem = self._read
         elif spec.kind == StepKind.COMPUTE:

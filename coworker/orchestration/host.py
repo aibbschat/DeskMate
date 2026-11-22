@@ -81,15 +81,23 @@ class JobHost:
                 raise RuntimeError(
                     f"并发上限 {self._max_concurrent} 已满，任务 {job.id} 未派发"
                 )
-            self.store.save_job(job)
-            thread = threading.Thread(
-                target=self._execute,
-                args=(job.id, handler),
-                name=f"orchjob-{job.id}",
-                daemon=True,
-            )
-            self._active[job.id] = thread
-            thread.start()
+            try:
+                self.store.save_job(job)
+                thread = threading.Thread(
+                    target=self._execute,
+                    args=(job.id, handler),
+                    name=f"orchjob-{job.id}",
+                    daemon=True,
+                )
+                self._active[job.id] = thread
+                thread.start()
+            except Exception:
+                # The slot was already taken above; a save_job/Thread failure
+                # here must give it back, or the host permanently loses one
+                # dispatch slot per failure (2026-11-22). _execute's finally
+                # releases the slot only when the thread actually started.
+                self._slots.release()
+                raise
         self._notify("started", self._snapshot(job.id))
         return job.id
 
@@ -139,12 +147,15 @@ class JobHost:
           a later resolver can pick it up). The direct-host test opts in.
         """
         resumed: list[str] = []
+        # Filter by status in SQL: the limit applies after filtering, so an
+        # unfinished job is no longer hidden behind 200 newer finished ones.
         with self._lock:
             candidates = [
                 j
-                for j in self.store.list_jobs(limit=limit)
-                if j.status in (JobStatus.RUNNING, JobStatus.PENDING)
-                and not self._is_live(j.id)
+                for j in self.store.list_jobs(
+                    limit=limit, statuses=["running", "pending"]
+                )
+                if not self._is_live(j.id)
                 and (sources is None or str(j.source) in sources)
             ]
         for job in candidates:
@@ -165,7 +176,12 @@ class JobHost:
             try:
                 self.submit(job, handler)
                 resumed.append(job.id)
-            except RuntimeError:
+            except RuntimeError as exc:
+                # Do not swallow silently: a full slot here means an orphaned
+                # job was NOT resumed, and nobody would ever know (2026-11-22).
+                logger.warning(
+                    "orphaned job %s skipped during recover: %s", job.id, exc
+                )
                 continue
         return resumed
 

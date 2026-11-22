@@ -39,6 +39,13 @@ def build_pipeline_job(
     steps: list[PipelineStep],
     meta: Optional[dict[str, Any]] = None,
 ) -> tuple[Job, dict[str, StepFn]]:
+    if not steps:
+        raise ValueError("build_pipeline_job requires at least one step")
+    seen: set[str] = set()
+    for s in steps:
+        if s.id in seen:
+            raise ValueError(f"duplicate step id: {s.id}")
+        seen.add(s.id)
     specs: list[StepSpec] = []
     handlers: dict[str, StepFn] = {}
     for s in steps:
@@ -83,6 +90,17 @@ def build_read_check_merge_pipeline(
     Each item becomes a READ step; optional CHECK steps depend on extracts.
     A single COMPUTE merge step depends on all terminal read/check steps.
     """
+    if not items:
+        raise ValueError("build_read_check_merge_pipeline requires at least one item")
+    seen_ids: set[str] = set()
+    for item in items:
+        item_id = str(item.get("id") or "")
+        if item_id and item_id in seen_ids:
+            raise ValueError(f"duplicate item id: {item_id}")
+        if item_id:
+            seen_ids.add(item_id)
+    if "merge" in seen_ids:
+        raise ValueError("item id 'merge' collides with the merge step id")
     steps: list[PipelineStep] = []
     terminal_deps: list[str] = []
     for i, item in enumerate(items):
@@ -144,12 +162,14 @@ def submit_read_check_merge(
 ) -> str:
     """Submit a parallel read/check/merge job to a background host.
 
-    This is the消费者-facing entry point: callers describe *what* to extract
+    This is the caller-facing entry point: callers describe *what* to extract
     per item and how to merge, and get a job id back immediately. All steps run
     in background threads under the host's concurrency cap and the shared LLM
     lease; the CHECK steps fan out after their extract, MERGE waits for all
     terminal steps. A process restart re-dispatches unfinished steps via
-    ``host.recover()`` without re-running completed ones.
+    ``host.recover(resolver)`` without re-running completed ones — but only
+    once the caller registers a resolver that rebuilds the handlers; without
+    one, unfinished steps stay checkpointed, not re-dispatched.
     """
     job, handlers = build_read_check_merge_pipeline(
         job_id=job_id,
