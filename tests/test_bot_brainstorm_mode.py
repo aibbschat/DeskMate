@@ -151,6 +151,28 @@ def test_brainstormer_in_group_roster_and_expert() -> None:
     assert get_registry().get("brainstormer") is not None, "专家入口仍须能解析到它"
 
 
+def test_creation_pipeline_workers_not_in_group_roster() -> None:
+    """编剧创作者流水线（creation/）的内部 worker 不进半山书院群池。
+
+    2026-11-24：a5db0918 自由拉群曾一刀切给 16 位人设加 group_chat，
+    误把 4 位流水线 worker 拉进群，导致 outline/outline-writer、
+    plot/plot-architect 两组重名。流水线仍活着（creation/ 硬编码引用、
+    editor-in-chief 为 lead），这些 worker 只接受主编派活、不直接对用户说话，
+    故从群池摘除（回退到改动前状态），但人设与流水线代码不动。
+    """
+    from coworker.personas.registry import get_registry
+    from deskmate.bots.roster import list_bots
+
+    ids = {b.id for b in list_bots()}
+    for worker in ("outline-writer", "plot-architect", "screenwriter", "script-reviewer"):
+        assert worker not in ids, f"流水线 worker {worker} 不应出现在群名册"
+        # 人设仍须能被 registry 解析（流水线内部还在用，不能删）
+        assert get_registry().get(worker) is not None, f"{worker} 人设须保留供流水线使用"
+
+    # 正主仍在群池，重名已消除
+    assert "outline" in ids and "plot" in ids
+
+
 def test_bot_group_page_points_brainstorm_to_expert() -> None:
     """Bot 群页面要主动引导：开脑洞去「专家」找脑洞搭档，而不是在群里找。"""
     from deskmate.bots import web as bots_web
