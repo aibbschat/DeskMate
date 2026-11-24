@@ -840,8 +840,9 @@
    - 专家卡 `avatar` 用同一张图。
 4. **图标不再 fallback**：`Icon.tsx` 新增 `lightbulb`，`personaIcon.tsx` 的 NAMED 收编——
    侧栏 persona 列表里的脑洞专家是一个灯泡，不再和别的 persona 一样退化成 sparkle。
-5. **已知 seam（不改）**：`KNOWN_BOT_IDS` 仍含 `brainstormer`，旧群 / 实验脚本还能解析它；
-   UI 已无入口。要彻底拒绝，得把 `BOT_ORDER` 里也删掉并改一批测试——暂时留作兼容。
+5. 当时的兼容 seam（`KNOWN_BOT_IDS` 含 `brainstormer`、UI 无入口）已在 2026-11-24
+   半山书院自由拉群时彻底收口：brainstormer 标 `group_chat: true` 正式入群，
+   `KNOWN_BOT_IDS` 静态别名因零消费者已删除，准入统一走 `eligible_bot_ids()`。见本节末「后续变更」。
 
 ### 27.3 验证
 
@@ -852,6 +853,17 @@
   lightbulb 图标解析），**2 passed**。
 - ⚠️ **生效边界**：sidecar 文案重启 App 即生效；**头像 / 专家卡 / 图标是 React 侧改动，
   需要重新 build 前端（最好重打包桌面 App）才能在桌面里看到**。本次已跑 `vite build`。
+
+### 27.4 后续变更（2026-11-24 半山书院自由拉群）
+
+决策 A「脑洞不进群」的**入口收口部分**（专家中心独立卡、开脑洞 1v1 引导、头像图标）保留；
+但**「不做群成员」的准入限制已放开**：萧哥要自由拉群，`brainstormer` 及
+plot/outline/character/editor/outline-writer/plot-architect/screenwriter/script-reviewer
+共 16 位创作人设标 `group_chat: true`，与 7 位圆桌讲席一起进入可拉池。
+准入从静态 `KNOWN_BOT_IDS` 白名单改为 `eligible_bot_ids()` 动态读 registry
+（`roundtable` 或 `group_chat` 均可入群），静态别名因零消费者已删。
+本节 27.1/27.2 的真机依据与历史决定是当时事实，按档案原貌保留，不代表现行准入规则。
+同批撤掉立场标记（立论/补台/反调/勘误）整套，旧消息仅留展示层剥离。
 
 
 ---

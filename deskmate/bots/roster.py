@@ -93,8 +93,3 @@ def list_bots() -> list[Bot]:
 def eligible_bot_ids() -> frozenset[str]:
     """当前可入群的 bot id 集合。动态读取 registry，不做静态硬编码。"""
     return frozenset(b.id for b in list_bots())
-
-
-# 兼容旧导入：历史代码把它当静态白名单；现在改为动态集合的惰性快照不可行，
-# 保留名称但只包含首选已知 id。请优先使用 eligible_bot_ids()/list_bots()。
-KNOWN_BOT_IDS: frozenset[str] = frozenset(BOT_ORDER)
