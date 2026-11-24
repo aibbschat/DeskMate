@@ -12,6 +12,7 @@ description: 圆桌内置专家（市场化），专从影视 / IP 改编角度�
 roundtable: true
 roundtable_role: 影视化潜力
 roundtable_market: true
+group_chat: true
 skills: [adaptation-method]
 ---
 

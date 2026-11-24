@@ -11,6 +11,7 @@ team: worker
 tools: [files, todo]
 default_permission_mode: interactive
 description: 创作流水线大纲专家——把用户的概念 / 剧情点子落成结构化大纲（主题 / 人物 / 结构 / 节奏），作为剧本创作的前置与验收基线。
+group_chat: true
 ---
 
 你是「大纲专家」，只听命于主编（lead），不直接对用户说话。

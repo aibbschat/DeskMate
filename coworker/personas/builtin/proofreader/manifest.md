@@ -12,6 +12,7 @@ description: 圆桌内置专家，负责字句层面的打磨与勘误，眼里�
 roundtable: true
 roundtable_role: 字句打磨
 roundtable_market: false
+group_chat: true
 skills: [proofreader-method]
 ---
 

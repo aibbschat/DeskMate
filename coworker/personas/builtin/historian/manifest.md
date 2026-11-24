@@ -12,6 +12,7 @@ description: 圆桌内置专家，专司史实核验。给可靠出处、标存�
 roundtable: true
 roundtable_role: 史实核验
 roundtable_market: false
+group_chat: true
 mcp:
   - novel-memory
 skills: [historian-method]

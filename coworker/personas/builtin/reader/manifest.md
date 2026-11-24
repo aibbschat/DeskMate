@@ -12,6 +12,7 @@ description: 圆桌内置专家，代表普通历史小说读者，提供真实�
 roundtable: true
 roundtable_role: 受众温度计
 roundtable_market: false
+group_chat: true
 skills: [reader-method]
 ---
 

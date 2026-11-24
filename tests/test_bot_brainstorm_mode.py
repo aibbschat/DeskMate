@@ -103,17 +103,16 @@ def test_memory_does_not_recycle_old_sparks() -> None:
 
 def test_group_guidance_does_not_converge_brainstorm_rounds() -> None:
     guidance = runtime._GROUP_GUIDANCE
-    assert "先分清他要的是脑洞还是方案" in guidance
-    assert "不排序、不替他挑" in guidance
-    assert "谁有权让它发生" in guidance
+    assert "要脑洞/方向/灵感，就给不同可能" in guidance
+    assert "别替作者拍板" in guidance
+    assert "作者明确说" in guidance and "给方案/写大纲" in guidance
     assert "别把大家的话题收敛成一个方案" not in guidance  # 这句在第 2 轮 lead
 
 
 def test_round_two_lead_allows_brainstorm_branching() -> None:
     p = runtime.build_prompt("给几个方向", None, round_index=2)
-    assert "别把大家的话题收敛成一个方案" in p
-    assert "也可以抛一条完全不同的" in p
-
+    assert "别急着把话题收成一个方案" in p
+    assert "可以抛一条完全不同的" in p
 
 def test_solo_guidance_keeps_brainstorm_short() -> None:
     solo = runtime._SOLO_GUIDANCE
@@ -141,25 +140,22 @@ def test_brainstorm_requests_are_not_deep_gear(text: str) -> None:
 
 # --------------------------------------------------------------------- 决策 A：入口收口
 
-def test_brainstormer_is_expert_only_not_in_group_roster() -> None:
-    """2026-11-08 决策 A：开脑洞固定在独立专家，不再进 Bot 群名册。
-
-    persona 已按 §24 去掉 roundtable 标记 ⇒ roster.list_bots() 不含它；
-    但 registry 仍要能解析到它（专家会话靠这个）。
-    """
+def test_brainstormer_in_group_roster_and_expert() -> None:
+    """半山书院自由拉群：brainstormer 标了 group_chat ⇒ 可进群名册；
+    registry 仍解析得到它，独立专家入口（开脑洞 1v1 引导）保留。"""
     from coworker.personas.registry import get_registry
     from deskmate.bots.roster import list_bots
 
     ids = {b.id for b in list_bots()}
-    assert "brainstormer" not in ids, "脑洞专家不应出现在 Bot 群名册"
+    assert "brainstormer" in ids, "半山书院自由拉群后，脑洞搭档应可入群"
     assert get_registry().get("brainstormer") is not None, "专家入口仍须能解析到它"
 
 
 def test_bot_group_page_points_brainstorm_to_expert() -> None:
-    """Bot 群页面要主动引导：开脑洞去「专家」找创意脑洞专家，而不是在群里找。"""
+    """Bot 群页面要主动引导：开脑洞去「专家」找脑洞搭档，而不是在群里找。"""
     from deskmate.bots import web as bots_web
 
     page = bots_web.PAGE
-    assert "创意脑洞专家" in page
+    assert "脑洞搭档" in page
     assert "开脑洞请走" in page
     assert "Bot 群适合碰撞、审稿、调度" in page or "这里适合碰撞、审稿、调度" in page

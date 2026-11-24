@@ -12,6 +12,7 @@ description: 圆桌内置专家，关注叙事技艺，从读者体验与专业�
 roundtable: true
 roundtable_role: 叙事技艺
 roundtable_market: false
+group_chat: true
 mcp:
   - novel-memory
 skills: [lit-editor-method]

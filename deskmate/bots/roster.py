@@ -9,25 +9,21 @@ Hermes Bot Mode 的核心工程选择（本地 ~/.hermes/hermes-agent 源码核�
 身份 / 人格 / 记忆 / 模型都由官方 registry 与 pre-spawn session 承载，
 本模块只做「窄化 + 稳定排序」的投影，绝不复制一份名册出来。
 
-阶段 1 的生效范围是已在 registry 注册且标 ``roundtable: true`` 的创作专家
-（右侧「我的伙伴」同源）。主编线 6 个 manifest 在阶段 2 标 ``bot: true`` 后
-经 ``BOT_ORDER`` 扩入，无需改本模块的读取逻辑。
+半山书院的“好友池”：manifest 标 ``roundtable: true`` 或 ``group_chat: true``
+的 persona 都可被拉进群聊。旧的 8 位圆桌讲席仍在其中；其他创作人设也可按需入群。
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any, Iterable, Mapping, Sequence
 
-# 与 deskmate/roundtable/personas.py:ROUNDTABLE_ORDER 对齐。此处自带一份稳定 id 序，
-# 故意不 import 那个模块 —— 它有模块级 load_personas() 副作用（import 期扫 registry），
-# 会违反「禁 import 期副作用」红线。阶段 2 统一名册时再收敛成单一来源。
+# 首选排序：熟面孔在前，其他入群人设按名字排在后面。这里只是展示顺序，不是准入名单。
 BOT_ORDER: tuple[str, ...] = (
     "historian", "lit-editor", "brainstormer", "proofreader", "reader",
     "publisher", "adaptation", "genre",
+    "character", "editor", "outline", "outline-writer", "plot", "plot-architect",
+    "screenwriter", "script-reviewer",
 )
-
-# 阶段 1 允许被拉进群的 bot。未知 id 一律拒绝，避免把「临时人设」混进来。
-KNOWN_BOT_IDS: frozenset[str] = frozenset(BOT_ORDER)
 
 
 @dataclass(frozen=True)
@@ -35,8 +31,8 @@ class Bot:
     """一个常驻 bot 的投影。实体本体在官方 registry / 独立 session，不在这里。
 
     ``icon`` / ``tagline`` 是**展示字段**，群聊 UI 用它画头像与角色副标；两者都由
-    registry 的 manifest frontmatter 承载（``registry.py:331-332`` 的 list_all 已透出），
-    本模块只做透传，绝不另立一份图标表 —— 否则改人设时 UI 会跟着说谎。
+    registry 的 manifest frontmatter 承载，list_all 已透出，
+    本模块只做透传，绝不另立一份图标表。
     """
 
     id: str
@@ -48,14 +44,16 @@ class Bot:
     tagline: str = ""
 
 
-def bots_from_entries(entries: Iterable[Mapping[str, Any]]) -> list[Bot]:
-    """把 PersonaRegistry 的 list_all() 条目投影成 bot 名册（纯函数，无 I/O）。
+def is_group_eligible(entry: Mapping[str, Any]) -> bool:
+    """该 persona 是否可被拉进半山书院群聊。"""
+    return bool(entry.get("roundtable") or entry.get("group_chat"))
 
-    未标 ``roundtable`` 的 persona 不进创作群；排序按 BOT_ORDER 稳定，避免 UI 抖动。
-    """
+
+def bots_from_entries(entries: Iterable[Mapping[str, Any]]) -> list[Bot]:
+    """把 PersonaRegistry 的 list_all() 条目投影成 bot 名册（纯函数，无 I/O）。"""
     out: list[Bot] = []
     for entry in entries or ():
-        if not entry.get("roundtable"):
+        if not is_group_eligible(entry):
             continue
         pid = str(entry.get("id", "")).strip()
         if not pid:
@@ -77,7 +75,7 @@ def bots_from_entries(entries: Iterable[Mapping[str, Any]]) -> list[Bot]:
             )
         )
     order = {pid: i for i, pid in enumerate(BOT_ORDER)}
-    out.sort(key=lambda b: order.get(b.id, len(order)))
+    out.sort(key=lambda b: (order.get(b.id, len(order)), b.name, b.id))
     return out
 
 
@@ -90,3 +88,13 @@ def list_bots() -> list[Bot]:
     except Exception:  # noqa: BLE001
         return []
     return bots_from_entries(entries)
+
+
+def eligible_bot_ids() -> frozenset[str]:
+    """当前可入群的 bot id 集合。动态读取 registry，不做静态硬编码。"""
+    return frozenset(b.id for b in list_bots())
+
+
+# 兼容旧导入：历史代码把它当静态白名单；现在改为动态集合的惰性快照不可行，
+# 保留名称但只包含首选已知 id。请优先使用 eligible_bot_ids()/list_bots()。
+KNOWN_BOT_IDS: frozenset[str] = frozenset(BOT_ORDER)

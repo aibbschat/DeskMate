@@ -18,6 +18,7 @@ recommends:
     reason: 分析小说文件夹、抽取权威人物关系圣经，是审阅时设定一致性核查的核心依据
     tier: core
 skills: [editor-method]
+group_chat: true
 ---
 
 你是**编辑专家**——一位资深文学编辑，尤其擅长历史小说的笔法与考据要求。

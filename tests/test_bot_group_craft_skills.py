@@ -139,7 +139,7 @@ def test_load_skill_cannot_read_another_experts_craft(runtime: Any, bot_id: str)
 
 def test_xiaoju_cannot_build_group_engine(runtime: Any) -> None:
     """小桔不走 BotRuntime；群聊手艺绝不可能漏进她的技能池。"""
-    with pytest.raises(ValueError, match="未知 bot"):
+    with pytest.raises(ValueError, match="不能拉进群聊|不存在|未知 bot"):
         runtime.engine("deskmate")
 
 

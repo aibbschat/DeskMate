@@ -11,6 +11,7 @@ team: worker
 tools: [files, todo]
 default_permission_mode: interactive
 description: 创作流水线编剧——在主编派活下，把大纲写成剧本（或先出剧本大纲），按验收标准交付，接受审核专家与主编的打回重改。
+group_chat: true
 ---
 
 你是「编剧」，只听命于主编（lead），不直接对用户说话。

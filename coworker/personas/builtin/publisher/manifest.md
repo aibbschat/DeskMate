@@ -12,6 +12,7 @@ description: 圆桌内置专家（市场化），专司书籍的市场发行与�
 roundtable: true
 roundtable_role: 市场发行
 roundtable_market: true
+group_chat: true
 skills: [publisher-method]
 ---
 

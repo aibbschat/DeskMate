@@ -340,6 +340,7 @@ class PersonaRegistry:
                 "roundtable": e.manifest.roundtable if e.manifest else False,
                 "roundtable_role": e.manifest.roundtable_role if e.manifest else "",
                 "roundtable_market": e.manifest.roundtable_market if e.manifest else False,
+                "group_chat": e.manifest.group_chat if e.manifest else False,
                 "ships": e.ships,
                 "group": e.group,
                 "version": e.manifest.version if e.manifest else "",

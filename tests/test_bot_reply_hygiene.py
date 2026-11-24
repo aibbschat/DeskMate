@@ -108,17 +108,8 @@ def test_speak_stream_final_strips_prefix(tmp_path: Path) -> None:
 def test_group_guidance_no_hard_length_cap() -> None:
     """群聊层不得设数字型字数上限；具体度锚点永在（防 11-06 空泛复发）。
 
-    设计变更史（两次都有真机证据，方向相反的两种病）：
-    - 11-06：撤「100~300 字」硬上限——它与「具体到能落笔」直接矛盾，模型会
-      砍细节凑字数。当时也不留任何长度暗示，防的是**换皮软上限**。
-    - 11-07：引入**分层形态**指引（萧哥拍板换骨架）——真机 11-06 夜《夜不收》
-      定义讨论里全员 1500~2500 字 markdown 文档体，接话轮也是整篇文档。
-      新版指引「首轮可以展开说透；接话轮常常三五句就够」：治的是体例与
-      轮次分工，不是内容长度——短的是接话，不是首轮展开，更不是数字上限。
-
-    永不变的三条：①数字上限（100~300 / 300 字）永不回来；②「具体 / 伏笔 /
-    愣住」的具体度锚点永在——空泛和文档体是两种病，都要防；③「常常…就够」
-    必须是弹性措辞，不许绝对化成「必须三五句」的新软上限。
+    形态上允许长短弹性：想多说就多说，想一句接住也行，但不能写成数字硬上限，
+    也不能把“短”绝对化成新的软上限。具体度锚点要留着，防空泛复发。
     """
     g = rt._GROUP_GUIDANCE
     assert "100~300" not in g
@@ -126,30 +117,9 @@ def test_group_guidance_no_hard_length_cap() -> None:
     assert "长篇" not in g
     assert "才简短" not in g
     # 具体度锚点（防空泛复发）
-    assert "具体" in g and "伏笔" in g and "愣住" in g
-    # 分层形态：首轮可展开、接话轮短，且「短」带「常常」的弹性
-    assert "展开说透" in g
-    assert "常常三五句就够" in g
+    assert "具体" in g and "愣住" in g
+    # 弹性形态：允许长短，不把短写成硬规则
+    assert "想多说就多说" in g
+    assert "想一句接住也行" in g
 
 
-def test_stance_marker_does_not_collide_with_the_no_attribution_rule() -> None:
-    """立场标记和反署名护栏必须口径一致（2026-11-13 真机复盘）。
-
-    11-11 加半山书院的立场标记时，只在 ``build_prompt`` 的 lead 末尾补了一句，
-    而 ``_GROUP_GUIDANCE`` 里那条 11-06 的「不要在发言开头加……括号说明，直接从
-    观点说起」一个字没动 —— 系统提示词比单轮 lead 更硬，模型照旧不交标记，
-    前端四个标签色一个都没渲染出来。这里锁两件事：规矩本身进了 guidance，
-    且反署名那条明确把立场标记豁免出去。
-    """
-    g = rt._GROUP_GUIDANCE
-    for word in ("立论", "补台", "反调", "勘误"):
-        assert word in g, f"立场标记规矩没写进群指引：{word}"
-    assert "〔立论〕" in g, "guidance 里要给模型一个可抄的字面形状"
-    # 豁免必须挂在反署名那一句的射程里，否则两条规则还是打架。
-    i = g.index("在发言开头加")
-    assert "例外" in g[i:i + 220], "反署名条没给立场标记开例外"
-    # 单轮 lead 与 guidance 用同一批词，不许各说一套。
-    p1 = rt.build_prompt("烧仓之后怎么撤", None, round_index=1)
-    assert all(w in p1 for w in ("立论", "补台", "反调", "勘误"))
-    # pass 不交标记：lead 里要明说，否则会出现「〔立论〕pass」这种挂标签的空发言。
-    assert "pass" in rt._STANCE_LINE

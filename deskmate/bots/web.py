@@ -276,18 +276,6 @@ PAGE = r"""
   }
   .meta .role { font-size:var(--fs-label); color:var(--faint); }
   .meta .ts { font-size:var(--fs-label); color:var(--faint); font-variant-numeric:tabular-nums; }
-  /* 立场标记：这句在讨论链条的哪一环。四色要真的分得开 —— 蓝/绿/琥珀/中性墨，
-     别拿两个相近的蓝糊弄（11-13 真机：立论与反调几乎同色）。红色留给真出错，
-     反调不借 danger；勘误是事实订正、不是观点，所以给它最安静的中性墨。
-     颜色之外再叠一层形状差（立论填底、其余描边），色觉不便也分得出。 */
-  .stance {
-    font-size:10px; letter-spacing:.1em; border-radius:2px; padding:1px 5px;
-    border:1px solid currentColor; color:var(--muted);
-  }
-  .stance.argue { color:var(--accent); background:var(--accent-soft); }
-  .stance.build { color:var(--ok); }
-  .stance.dissent { color:var(--warn-ink); }
-  .stance.proof { color:var(--muted); border-style:dashed; }
 
   .bubble {
     font-size:var(--fs-chat); line-height:1.75; color:var(--ink);
@@ -439,7 +427,7 @@ PAGE = r"""
       <label>今日议题（议题名就是它）</label>
       <input id="mk-topic" type="text" placeholder="例如：烧仓这段还能怎么写" maxlength="60">
       <div class="tip">下面勾 2~6 位讲席。没有稿件路径、章节范围、轮次表单，也没有开始按钮。<br>
-        <b>开脑洞请走「专家」→「创意脑洞专家」</b>（一对一更发散）；这里适合碰撞、审稿、调度。</div>
+        <b>开脑洞请走「专家」→「脑洞搭档」</b>（一对一更发散）；这里适合碰撞、审稿、调度。</div>
       <div class="row">
         <button class="btn" id="mk-go">立题</button>
         <button class="btn ghost" id="mk-cancel">取消</button>
@@ -469,7 +457,7 @@ PAGE = r"""
       <div class="comp-hint" id="comp-hint"></div>
       <div class="comp-row">
         <div class="comp-box">
-          <textarea id="say" rows="1" placeholder="执笔立论…（Enter 发送 · Shift+Enter 换行 · @ 点名请发言）"></textarea>
+          <textarea id="say" rows="1" placeholder="想到什么就说…（Enter 发送 · Shift+Enter 换行 · @ 点名请发言）"></textarea>
           <div class="comp-foot">
             <button class="iconbtn" id="btn-at">@ 点名</button>
             <span class="spacer"></span>
@@ -628,52 +616,25 @@ function fmt(text){
   const re = atRe();
   return re ? h.replace(re, '<span class="at">@$1</span>') : h;
 }
-/* 立场标记（2026-11-11 半山书院）：群提示词要求 bot 首行单独写「〔立论〕」之一，
-   前端解析成标签并从正文剥掉。**标记词只活在展示层** —— ChatStore 里仍是原始纯文本，
-   没有新增字段，历史数据与旧页面都不受影响。模型不守规矩就没有标签，绝不硬编一个。
-   括号形状不固定（〔〕/【】/[]/（）, 可加粗、可带冒号，甚至只写「反调：」），
-   所以解析放宽到这些变体；认不出来就当普通正文，宁可少一个标签也不认错词。 */
-const STANCES = { '立论':'argue', '补台':'build', '反调':'dissent', '勘误':'proof' };
-const STANCE_HEAD = new RegExp(
-  '^[ \\t]*(?:\\*\\*)?[〔【\\[（(]\\s*(立论|补台|反调|勘误)\\s*[〕】\\]）)](?:\\*\\*)?[ \\t]*(?::|：)?' +
-  '|^[ \\t]*\\*\\*(立论|补台|反调|勘误)\\*\\*[ \\t]*(?::|：)?' +
-  '|^[ \\t]*(立论|补台|反调|勘误)[ \\t]*(?::|：)');
-function splitStance(text){
-  const s = String(text == null ? '' : text);
-  const m = STANCE_HEAD.exec(s);
-  if (!m) return { key:'', cls:'', rest:s };
-  const key = m[1] || m[2] || m[3];
-  let rest = s.slice(m[0].length);
-  if (rest.charCodeAt(0) === 10) rest = rest.slice(1);   // 标记后的换行是格式，不是内容
-  return { key:key, cls:STANCES[key], rest:rest };
-}
-/* 标记只打了一半（括号没闭合、词还没打全）时先别画，否则气泡会闪出「〔立」「**反」
-   这种半截字。done 后不再抑制 —— 模型真写了个没闭合的括号，那是正文，原样给他。 */
-function stancePartial(acc){
-  const s = String(acc == null ? '' : acc).replace(/^[ \t]+/, '');
-  if (!s) return false;
-  if (/^(?:\*\*)?[〔【\[（(][^〕】\]）)]*$/.test(s)) return true;
-  const bare = s.replace(/^\*\*/, '');
-  return Object.keys(STANCES).some(w => w.startsWith(bare));
-}
-function stanceTagHtml(cls, key){
-  return key ? '<span class="stance ' + cls + '">' + key + '</span>' : '';
+/* 兼容旧消息：历史里可能存着“〔立论〕”这类首行标记，只做展示层剥离，不再生成。 */
+const _LEGACY_STANCE = /^[ \t]*(?:\*\*)?[〔【\[(（(]\s*(立论|补台|反调|勘误)\s*[〕】\])）)](?:\*\*)?[ \t]*(?::|：)?[ \t]*\n?/;
+function stripLegacyStance(text){
+  return String(text == null ? '' : text).replace(_LEGACY_STANCE, '');
 }
 function msgHtml(m, prev){
   const mine = m.author_role === 'user';
   const cont = prev && prev.author === m.author && prev.author_role === m.author_role;
-  const sp = mine ? { key:'', cls:'', rest:m.text || '' } : splitStance(m.text);
-  const long = sp.rest.length > LONG_TEXT;
+  const body = mine ? (m.text || '') : stripLegacyStance(m.text);
+  const long = body.length > LONG_TEXT;
   const c = mine ? 'var(--accent)' : tint(m.author);
   const meta = mine ? '' :
     '<div class="meta"><span class="who">' + esc(authorName(m)) + '</span>' +
-    stanceTagHtml(sp.cls, sp.key) +
     '<span class="role">' + esc((botById(m.author) || {}).tagline || '') + '</span>' +
     '<span class="ts">' + clockOf(m.ts) + '</span></div>';
   return '<div class="msg' + (mine ? ' mine' : '') + (cont ? ' cont' : '') + '" style="--c:' + c + '">' +
     '<div class="rail"></div>' +
     '<div class="col">' + (cont ? '' : meta) +
-    '<div class="bubble' + (long ? ' clip' : '') + '">' + fmt(sp.rest) + '</div>' +
+    '<div class="bubble' + (long ? ' clip' : '') + '">' + fmt(body) + '</div>' +
     (long ? '<button class="expand">展开全文 ▾</button>' : '') +
     '</div></div>';
 }
@@ -683,7 +644,7 @@ function renderMessages(){
   const st = $('#stream');
   if (!msgs.length){
     st.innerHTML = '<div class="empty">' + RIDGE + '<div class="big">议题立好了，还没人开口</div>' +
-      '<div class="sm">直接说人话就行。不点名则全员回应，点名谁答。<br>想让他先读书稿，就说「先读《夜不收》第三章」，他自己会去翻。<br><b>开脑洞请走「专家」→「创意脑洞专家」</b>（一对一更发散）；这里适合碰撞、审稿、调度。</div>' +
+      '<div class="sm">直接说人话就行。不点名则全员回应，点名谁答。<br>想让他先读书稿，就说「先读《夜不收》第三章」，他自己会去翻。<br><b>开脑洞请走「专家」→「脑洞搭档」</b>（一对一更发散）；这里适合碰撞、审稿、调度。</div>' +
       '<div class="quick">' +
       ['先读《夜不收》第三章，说说节奏问题', '烧仓之后怎么撤，别再写一路顺风', '这卷还有哪些史实硬伤']
         .map(t => '<button data-fill="' + esc(t) + '">' + esc(t) + '</button>').join('') +
@@ -910,24 +871,17 @@ function startBubble(ev){
   row.style.setProperty('--c', tint(ev.bot_id));
   row.innerHTML = '<div class="rail"></div>' +
     '<div class="col"><div class="meta"><span class="who">' + esc(ev.name) + '</span>' +
-    '<span class="stance-slot"></span>' +
     '<span class="role">' + esc((botById(ev.bot_id) || {}).tagline || '') + '</span></div>' +
     '<div class="bubble"><span class="dots"><i></i><i></i><i></i></span> <span class="doing">正在思考…</span></div></div>';
   $('#stream').appendChild(row);
   streams[ev.turn_id] = {
     row, bubble: row.querySelector('.bubble'), doing: row.querySelector('.doing'),
-    stance: row.querySelector('.stance-slot'), acc: '', started: false
+    acc: '', started: false
   };
   toBottom();
 }
-/* 流式期立场标记只有几个字符宽：行首未闭合的「〔…」先不画，闭合了才挂标签。
-   不这么做的话气泡会闪出「〔立」这种半截字。done 时不再抑制 —— 模型真写了个
-   没闭合的「〔」，那是正文，原样给他。 */
 function paintStream(st, done){
-  let sp = splitStance(st.acc);
-  if (!sp.key && !done && stancePartial(st.acc)) sp = { key:'', cls:'', rest:'' };
-  st.bubble.innerHTML = fmt(sp.rest) + (done ? '' : '<span class="caret"></span>');
-  if (sp.key && st.stance) st.stance.innerHTML = stanceTagHtml(sp.cls, sp.key);
+  st.bubble.innerHTML = fmt(st.acc) + (done ? '' : '<span class="caret"></span>');
 }
 function handleStream(ev){
   const st = ev.turn_id ? streams[ev.turn_id] : null;
@@ -1105,7 +1059,7 @@ document.addEventListener('click', e => {
     if (target) await openRoom(target.room_id);
     else { syncChrome(); $('#stream').innerHTML = '<div class="empty">' + RIDGE +
       '<div class="big">书院初开，虚席以待</div>' +
-      '<div class="sm">点左上「＋ 立题」，请几位讲席、起个话题就能开议。<br><b>开脑洞请走「专家」→「创意脑洞专家」</b>（一对一更发散）；这里适合碰撞、审稿、调度。</div></div>'; }
+      '<div class="sm">点左上「＋ 立题」，请几位讲席、起个话题就能开议。<br><b>开脑洞请走「专家」→「脑洞搭档」</b>（一对一更发散）；这里适合碰撞、审稿、调度。</div></div>'; }
   } catch (e) { toast('群聊服务连不上：' + e.message); }
 })();
 </script>
@@ -1221,7 +1175,7 @@ const BASE = __BOT_BASE__;
 const url = p => BASE + p;
 const $ = s => document.querySelector(s);
 const esc = s => String(s == null ? '' : s).replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
-const EXPERT_NAMES = { brainstormer: '创意脑洞专家', 'lit-editor': '文学编辑', adaptation: '影视改编策划', outline: '大纲专家', character: '人物专家' };
+const EXPERT_NAMES = { brainstormer: '脑洞搭档', 'lit-editor': '文学编辑', adaptation: '影视改编策划', outline: '大纲专家', character: '人物专家' };
 let items = [], current = null, toastTimer = null, editing = false;
 
 function toast(m, ok) {

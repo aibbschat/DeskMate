@@ -46,7 +46,7 @@ from .discussion import (
 )
 from .materials import RoomMaterials, default_materials
 from .reading import default_shelf
-from .roster import KNOWN_BOT_IDS, list_bots
+from .roster import eligible_bot_ids, list_bots
 
 logger = logging.getLogger(__name__)
 
@@ -175,9 +175,10 @@ class RoomStore:
             raise ValueError(
                 f"群成员须为 {lim.min_members}~{lim.max_members} 个 bot，当前 {len(ids)}"
             )
-        unknown = [b for b in ids if b not in KNOWN_BOT_IDS]
+        eligible = eligible_bot_ids()
+        unknown = [b for b in ids if b not in eligible]
         if unknown:
-            raise ValueError(f"未知 bot：{', '.join(unknown)}（bot 必须来自常驻名册）")
+            raise ValueError(f"这些人设不能拉进群聊：{', '.join(unknown)}")
 
         names = {b.id: b.name for b in list_bots()}
         bot_names = {b: names.get(b, b) for b in ids}

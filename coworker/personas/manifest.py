@@ -100,6 +100,8 @@ class PersonaManifest:
     roundtable: bool = False
     roundtable_role: str = ""  # 圆桌 UI / 纪要用的短角色标签（如「史实核验」）
     roundtable_market: bool = False  # 市场化人格：圆桌向其注入「当前生效」潮流简报
+    # 半山书院好友池：可被拉进 bot 群自由讨论。roundtable 为 true 时隐含可入群。
+    group_chat: bool = False
 
     def to_agent(self):
         """Materialize the runtime Agent (prompt + catalog-expanded tools + traits)."""
@@ -388,6 +390,7 @@ def parse_manifest(
         roundtable=bool(meta.get("roundtable", False)),
         roundtable_role=str(meta.get("roundtable_role", "")).strip(),
         roundtable_market=bool(meta.get("roundtable_market", False)),
+        group_chat=bool(meta.get("group_chat", False)),
     )
 
 

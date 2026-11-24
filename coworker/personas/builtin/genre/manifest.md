@@ -12,6 +12,7 @@ description: 圆桌内置专家（市场化），专从类型文学出版角度�
 roundtable: true
 roundtable_role: 类型赛道
 roundtable_market: true
+group_chat: true
 skills: [genre-method]
 ---
 
